@@ -80,6 +80,19 @@ const (
 // minimizes the replay window while tolerating modest inter-node clock skew.
 const DefaultTTL = 30 * time.Second
 
+// MaxBodyBytes bounds the body a node reads from a forwarded request that
+// carries an on-behalf assertion. The body must be read before its digest can
+// be checked against the assertion's binding, so this is the most a cluster
+// peer can make the node buffer ahead of that check.
+//
+// It must admit the largest body any REST handler forwards to the leader,
+// which is the rebalance plan (16 MiB + 4 KiB) and a guarded write (twice
+// the 8 MiB Raft entry ceiling). pkg/api/rest asserts every forwarding
+// handler's bound stays within it. The 64 KiB above those bounds is
+// headroom for their envelopes, not a limit a caller can use: each handler
+// re-applies its own bound to the bytes it is handed.
+const MaxBodyBytes = int64(16<<20) + 64<<10
+
 // clockSkewTolerance is the allowance applied to both the not-before and
 // not-after checks so that small clock differences between cluster nodes do not
 // reject an otherwise-valid assertion.
@@ -159,6 +172,23 @@ func BodyDigest(body []byte) string {
 	return string(out)
 }
 
+// ClusterPeer returns the node identity of peerCert, or
+// *ForwardAssertionNotClusterPeerError when peerCert is nil or carries no
+// node-scoped SPIFFE SAN (under pinnedTrustDomain when non-empty). It is
+// Verify's first check, exposed so a receiver can refuse a presenter that
+// is not a cluster node BEFORE reading anything the request carries: only a
+// cluster node can present an assertion that will be honored.
+func ClusterPeer(peerCert *x509.Certificate, pinnedTrustDomain string) (spiffe.NodeIdentity, error) {
+	if peerCert == nil {
+		return spiffe.NodeIdentity{}, &ForwardAssertionNotClusterPeerError{Err: spiffe.ErrNoNodeSPIFFEID}
+	}
+	nodeID, err := spiffe.NodeFromCert(peerCert, pinnedTrustDomain)
+	if err != nil {
+		return spiffe.NodeIdentity{}, &ForwardAssertionNotClusterPeerError{Err: err}
+	}
+	return nodeID, nil
+}
+
 // Sign serializes the assertion canonically and signs the SHA-256 digest of the
 // serialized bytes with key (an ECDSA private key). It returns the base64
 // assertion and base64 signature to place in HeaderAssertion / HeaderSignature.
@@ -191,14 +221,10 @@ func Sign(a CallerAssertion, key crypto.Signer) (assertionB64, sigB64 string, er
 // opaque 401/403 to avoid a reconnaissance oracle. Verify NEVER returns role
 // information: the caller re-resolves roles from its own authorization data.
 func Verify(assertionB64, sigB64 string, peerCert *x509.Certificate, pinnedTrustDomain string, now time.Time, method, path, bodySHA256 string) (*CallerAssertion, error) {
-	if peerCert == nil {
-		return nil, &ForwardAssertionNotClusterPeerError{Err: spiffe.ErrNoNodeSPIFFEID}
-	}
-
 	// (1) The presenter must be a cluster node.
-	nodeID, nErr := spiffe.NodeFromCert(peerCert, pinnedTrustDomain)
+	nodeID, nErr := ClusterPeer(peerCert, pinnedTrustDomain)
 	if nErr != nil {
-		return nil, &ForwardAssertionNotClusterPeerError{Err: nErr}
+		return nil, nErr
 	}
 
 	// Decode the canonical assertion bytes and the signature.

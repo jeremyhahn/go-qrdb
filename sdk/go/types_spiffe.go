@@ -53,14 +53,22 @@ var ErrSpiffeNoTenantID = spiffe.ErrNoTenantSPIFFEID
 // pkg/auth/spiffe.ErrTrustDomainMismatch.)
 var ErrSpiffeTrustDomainMismatch = spiffe.ErrTrustDomainMismatch
 
+// SpiffeAmbiguousTenantError is returned when a certificate's tenant SPIFFE
+// SANs name more than one distinct tenant; such a certificate names no
+// tenant. (Aliases pkg/auth/spiffe.AmbiguousTenantError.)
+type SpiffeAmbiguousTenantError = spiffe.AmbiguousTenantError
+
 // ---------------------------------------------------------------------------
 // SPIFFE functions
 // ---------------------------------------------------------------------------
 
-// TenantFromCert scans a certificate's URI SANs for a tenant-scoped SPIFFE
-// identity, enforcing the pinned trust domain (fail-closed). When
-// pinnedTrustDomain is non-empty, any SPIFFE tenant SAN whose trust domain
-// differs returns ErrSpiffeTrustDomainMismatch. When no tenant SPIFFE SAN is
-// present, returns ErrSpiffeNoTenantID. (Aliases
-// pkg/auth/spiffe.TenantFromCert.)
+// TenantFromCert scans every URI SAN of a certificate for a tenant-scoped
+// SPIFFE identity, enforcing the pinned trust domain (fail-closed). When
+// pinnedTrustDomain is non-empty, ANY SPIFFE SAN whose trust domain differs
+// returns ErrSpiffeTrustDomainMismatch. Tenant SANs naming more than one
+// distinct tenant return *SpiffeAmbiguousTenantError. When no tenant SPIFFE
+// SAN is present, returns ErrSpiffeNoTenantID. pinnedTrustDomain == ""
+// accepts any trust domain and is for tests only; composers must pin. Most
+// callers want TenantFromClientCert, the full rule with the OU fallback.
+// (Aliases pkg/auth/spiffe.TenantFromCert.)
 var TenantFromCert = spiffe.TenantFromCert

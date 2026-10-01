@@ -359,6 +359,143 @@ func TestAuthenticate_UserEnrichment(t *testing.T) {
 	}
 }
 
+// TestAuthenticate_UserEnrichment_RoleBindingsAndAttributes asserts the
+// go-qrdb#192 item 4 enrichment: the user's tenant-scoped RoleBindings land
+// on the identity for rbac.effectiveRoles to consume, and the user's ABAC
+// Attributes land on identity.Attributes — a SEPARATE field from Metadata,
+// never merged into it (see auth.Identity.Attributes and
+// abac.Decorator.Authorize for why: Attributes must never be able to shadow
+// an authentication-derived Metadata key).
+func TestAuthenticate_UserEnrichment_RoleBindingsAndAttributes(t *testing.T) {
+	id := &auth.Identity{Subject: "charlie", TenantID: "t1"}
+	authn := &mockAuthenticator{name: "mtls", identity: id}
+	authz := &mockAuthorizer{}
+	users := &mockUserServicer{
+		user: &user.User{
+			ID:           1,
+			Username:     "charlie",
+			TenantID:     "t1",
+			Lifecycle:    user.LifecycleActive,
+			RoleBindings: []user.RoleBinding{{RoleID: "role-a", TenantID: "acme"}},
+			Attributes:   map[string]string{"department": "eng"},
+		},
+	}
+
+	m := New(authz, WithAuthenticator(authn), WithUserService(users))
+
+	_, identity, err := m.authenticate(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(identity.RoleBindings) != 1 || identity.RoleBindings[0] != (auth.RoleBinding{RoleID: "role-a", TenantID: "acme"}) {
+		t.Fatalf("identity.RoleBindings = %+v, want [{role-a acme}]", identity.RoleBindings)
+	}
+	if identity.Attributes["department"] != "eng" {
+		t.Fatalf("identity.Attributes[department] = %q, want eng", identity.Attributes["department"])
+	}
+	if identity.Metadata != nil {
+		t.Fatalf("identity.Metadata = %v, want nil: Attributes must never write into Metadata", identity.Metadata)
+	}
+}
+
+// TestAuthenticate_UserEnrichment_NoRoleBindingsOrAttributesLeavesThemAbsent
+// asserts a bare user (neither field set) does not manufacture an empty,
+// non-nil RoleBindings slice or a non-nil Attributes map.
+func TestAuthenticate_UserEnrichment_NoRoleBindingsOrAttributesLeavesThemAbsent(t *testing.T) {
+	id := &auth.Identity{Subject: "charlie", TenantID: "t1"}
+	authn := &mockAuthenticator{name: "mtls", identity: id}
+	authz := &mockAuthorizer{}
+	users := &mockUserServicer{
+		user: &user.User{ID: 1, Username: "charlie", TenantID: "t1", Lifecycle: user.LifecycleActive},
+	}
+
+	m := New(authz, WithAuthenticator(authn), WithUserService(users))
+
+	_, identity, err := m.authenticate(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if identity.RoleBindings != nil {
+		t.Errorf("identity.RoleBindings = %v, want nil", identity.RoleBindings)
+	}
+	if identity.Attributes != nil {
+		t.Errorf("identity.Attributes = %v, want nil", identity.Attributes)
+	}
+	if identity.Metadata != nil {
+		t.Errorf("identity.Metadata = %v, want nil", identity.Metadata)
+	}
+}
+
+// TestAuthenticate_UserEnrichment_StoreIsTheOnlySourceOfBindings asserts
+// store-backed withdrawal fails closed: RoleBindings and Attributes an
+// identity carried in from its authenticator never survive finalizeIdentity
+// when a user store is configured — whether the record now holds none, does
+// not exist, or cannot be read because its tenant is sealed.
+func TestAuthenticate_UserEnrichment_StoreIsTheOnlySourceOfBindings(t *testing.T) {
+	tests := []struct {
+		name  string
+		users *mockUserServicer
+	}{
+		{
+			name:  "record holds none",
+			users: &mockUserServicer{user: &user.User{ID: 1, Username: "charlie", TenantID: "t1", Lifecycle: user.LifecycleActive}},
+		},
+		{
+			name:  "record not found",
+			users: &mockUserServicer{err: &user.UserNotFoundError{ID: 1}},
+		},
+		{
+			name:  "tenant sealed",
+			users: &mockUserServicer{err: tenant.ErrTenantSealed},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id := &auth.Identity{
+				Subject:      "charlie",
+				TenantID:     "t1",
+				RoleBindings: []auth.RoleBinding{{RoleID: "stale-role", TenantID: "acme"}},
+				Attributes:   map[string]string{"department": "stale"},
+			}
+			authn := &mockAuthenticator{name: "mtls", identity: id}
+			m := New(&mockAuthorizer{}, WithAuthenticator(authn), WithUserService(tt.users))
+
+			_, identity, err := m.authenticate(context.Background())
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if identity.RoleBindings != nil {
+				t.Errorf("identity.RoleBindings = %+v, want nil", identity.RoleBindings)
+			}
+			if identity.Attributes != nil {
+				t.Errorf("identity.Attributes = %+v, want nil", identity.Attributes)
+			}
+		})
+	}
+}
+
+// TestAuthenticate_UserEnrichment_AttributesDoNotAliasTheRecord asserts the
+// identity's Attributes is a copy, so a later mutation of the record's map
+// cannot change an identity already issued.
+func TestAuthenticate_UserEnrichment_AttributesDoNotAliasTheRecord(t *testing.T) {
+	rec := &user.User{
+		ID: 1, Username: "charlie", TenantID: "t1", Lifecycle: user.LifecycleActive,
+		Attributes: map[string]string{"department": "eng"},
+	}
+	authn := &mockAuthenticator{name: "mtls", identity: &auth.Identity{Subject: "charlie", TenantID: "t1"}}
+	m := New(&mockAuthorizer{}, WithAuthenticator(authn), WithUserService(&mockUserServicer{user: rec}))
+
+	_, identity, err := m.authenticate(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	rec.Attributes["department"] = "changed"
+	if got := identity.Attributes["department"]; got != "eng" {
+		t.Fatalf("identity.Attributes[department] = %q after mutating the record, want eng", got)
+	}
+}
+
 func TestAuthenticate_UserDisabled(t *testing.T) {
 	id := &auth.Identity{Subject: "disabled-user", TenantID: "t1"}
 	authn := &mockAuthenticator{name: "mtls", identity: id}
@@ -1746,6 +1883,87 @@ func TestAuthenticate_BlankAuthenticatorNameCannotBypassThePolicy(t *testing.T) 
 	}
 }
 
+// CheckAuthMethod is the exported form of the rule, run by a layer that
+// performs its own login ceremony. It must admit and refuse exactly what the
+// middleware does for an OBSERVED method, and it names the refused method in
+// the same normalized spelling the policy is stored in.
+func TestCheckAuthMethod_AppliesThePolicy(t *testing.T) {
+	u := &user.User{Username: "erin", TenantID: "t1", AuthMethods: []string{auth.MethodPIV, auth.MethodWebAuthn}}
+
+	cases := []struct {
+		name       string
+		u          *user.User
+		method     string
+		wantRefuse bool
+		wantMethod string
+	}{
+		{name: "nil user states no restriction", u: nil, method: auth.MethodMTLS},
+		{name: "empty policy states no restriction", u: &user.User{Username: "erin"}, method: auth.MethodMTLS},
+		{name: "permitted method", u: u, method: auth.MethodPIV},
+		{name: "permitted after normalization", u: u, method: "  WebAuthn "},
+		{name: "method outside the policy", u: u, method: auth.MethodMTLS, wantRefuse: true, wantMethod: auth.MethodMTLS},
+		{name: "refusal names the normalized method", u: u, method: "MTLS", wantRefuse: true, wantMethod: auth.MethodMTLS},
+		{name: "blank method fails closed", u: u, method: "  ", wantRefuse: true, wantMethod: "  "},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := CheckAuthMethod(tc.u, tc.method)
+			if !tc.wantRefuse {
+				if err != nil {
+					t.Fatalf("CheckAuthMethod(%q) refused: %v", tc.method, err)
+				}
+				return
+			}
+			var refused *AuthMethodNotPermittedError
+			if !errors.As(err, &refused) {
+				t.Fatalf("expected *AuthMethodNotPermittedError, got %T: %v", err, err)
+			}
+			if refused.Method != tc.wantMethod {
+				t.Errorf("Method = %q, want %q", refused.Method, tc.wantMethod)
+			}
+			if refused.Username != "erin" || refused.TenantID != "t1" {
+				t.Errorf("refusal names %s/%s, want erin/t1", refused.TenantID, refused.Username)
+			}
+			if len(refused.Permitted) != 2 {
+				t.Errorf("Permitted = %v, want the stored policy", refused.Permitted)
+			}
+		})
+	}
+}
+
+// The middleware and the exported function are one rule. For every observed
+// method, the middleware's decision must be CheckAuthMethod's decision — a
+// ceremony layer calling the exported form cannot be more or less permissive
+// than the transports.
+func TestCheckAuthMethod_IsTheMiddlewareRule(t *testing.T) {
+	u := &user.User{Username: "erin", TenantID: "t1", AuthMethods: []string{auth.MethodWebAuthn}}
+	for _, name := range []string{auth.MethodMTLS, auth.MethodPIV, auth.MethodWebAuthn, "WEBAUTHN", "", " "} {
+		exported := CheckAuthMethod(u, name)
+		internal := checkAuthMethod(u, knownMethod(name))
+		if (exported == nil) != (internal == nil) {
+			t.Errorf("method %q: exported=%v, middleware=%v", name, exported, internal)
+		}
+	}
+}
+
+// A policy stored before the vocabulary was enforced may hold a token qrdb no
+// longer accepts on write. The gate must not lock that account out: the entry
+// still matches the method it names (a composing host's ceremony reporting
+// it), a known entry beside it still admits, and anything else is refused as
+// before.
+func TestCheckAuthMethod_LegacyStoredPolicyIsNotALockout(t *testing.T) {
+	u := &user.User{Username: "carol", TenantID: "t1", AuthMethods: []string{"legacy-otp", auth.MethodMTLS}}
+	for _, admitted := range []string{"legacy-otp", "Legacy-OTP", auth.MethodMTLS} {
+		if err := CheckAuthMethod(u, admitted); err != nil {
+			t.Errorf("CheckAuthMethod(%q) against a legacy policy: %v", admitted, err)
+		}
+	}
+	var refused *AuthMethodNotPermittedError
+	if err := CheckAuthMethod(u, auth.MethodPIV); !errors.As(err, &refused) {
+		t.Errorf("piv against a policy without it: err = %v, want a refusal", err)
+	}
+}
+
 func TestAuthMethodNotPermittedError_Message(t *testing.T) {
 	e := &AuthMethodNotPermittedError{
 		Username: "erin", TenantID: "t1", Method: "mtls", Permitted: []string{"webauthn", "piv"},
@@ -1766,5 +1984,27 @@ func TestAuthMethodNotPermitted_MapsToForbidden(t *testing.T) {
 	}
 	if got := status.Code(mapGRPCAuthError(err)); got != codes.PermissionDenied {
 		t.Errorf("gRPC: got %v, want %v", got, codes.PermissionDenied)
+	}
+}
+
+// TestAuthenticate_NoUserStoreCarriesNoBindings asserts RoleBindings and
+// Attributes an authenticator hands in never survive authentication, even
+// with no user store configured: they are user-record state, and with no
+// store there is no record to grant them.
+func TestAuthenticate_NoUserStoreCarriesNoBindings(t *testing.T) {
+	id := &auth.Identity{
+		Subject:      "charlie",
+		TenantID:     "t1",
+		RoleBindings: []auth.RoleBinding{{RoleID: "smuggled", TenantID: "acme"}},
+		Attributes:   map[string]string{"department": "smuggled"},
+	}
+	m := New(&mockAuthorizer{}, WithAuthenticator(&mockAuthenticator{name: "mtls", identity: id}))
+
+	_, identity, err := m.authenticate(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if identity.RoleBindings != nil || identity.Attributes != nil {
+		t.Fatalf("identity kept RoleBindings=%v Attributes=%v, want both cleared", identity.RoleBindings, identity.Attributes)
 	}
 }

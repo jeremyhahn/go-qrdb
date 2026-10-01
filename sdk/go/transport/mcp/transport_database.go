@@ -77,6 +77,10 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 		}
 	}
 
+	if req.SQL != nil && req.SQL.Concurrency != "" {
+		args["sql_concurrency"] = req.SQL.Concurrency
+	}
+
 	text, err := t.callTool(ctx, "qrdb_database_create", args)
 	if err != nil {
 		return nil, &transport.RequestError{Method: "CreateDatabase", Err: err}
@@ -283,6 +287,33 @@ func (t *Transport) UpdateDatabaseBarrier(ctx context.Context, req transport.Upd
 	var info transport.DatabaseInfo
 	if jsonErr := json.Unmarshal([]byte(text), &info); jsonErr != nil {
 		return nil, &transport.RequestError{Method: "UpdateDatabaseBarrier", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return &info, nil
+}
+
+// UpdateDatabaseSQL updates a database's SQL settings by calling the
+// qrdb_database_update_sql MCP tool. A nil SQL, or one without a mode,
+// omits the concurrency argument, which clears the settings and restores
+// the defaults -- the same as an absent sql on every other transport.
+func (t *Transport) UpdateDatabaseSQL(ctx context.Context, req transport.UpdateDatabaseSQLRequest) (*transport.DatabaseInfo, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	args := map[string]any{"name": req.Name}
+	if req.SQL != nil && req.SQL.Concurrency != "" {
+		args["concurrency"] = req.SQL.Concurrency
+	}
+
+	text, err := t.callTool(ctx, "qrdb_database_update_sql", args)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "UpdateDatabaseSQL", Err: err}
+	}
+
+	var info transport.DatabaseInfo
+	if jsonErr := json.Unmarshal([]byte(text), &info); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "UpdateDatabaseSQL", Err: &jsonDecodeError{Err: jsonErr}}
 	}
 
 	return &info, nil

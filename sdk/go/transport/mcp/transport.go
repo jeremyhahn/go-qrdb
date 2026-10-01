@@ -72,7 +72,7 @@ var _ transport.DatabaseScoper = (*Transport)(nil)
 // while sharing the parent's MCP client connection. Scoping to the empty string
 // or the default "system" database yields an unscoped clone (no database
 // argument is added). It implements transport.DatabaseScoper.
-func (t *Transport) WithDatabase(database string) transport.Transport {
+func (t *Transport) withDatabase(database string) *Transport {
 	clone := &Transport{
 		config:    t.config,
 		client:    t.client,
@@ -81,6 +81,13 @@ func (t *Transport) WithDatabase(database string) transport.Transport {
 	}
 	clone.closed.Store(t.closed.Load())
 	return clone
+}
+
+// WithDatabase implements transport.DatabaseScoper. Scoping a network
+// transport never fails: the database travels with every data-plane request
+// and the server resolves it.
+func (t *Transport) WithDatabase(database string) (transport.Transport, error) {
+	return t.withDatabase(database), nil
 }
 
 // mcpDataPlaneExactTools is the set of data-plane MCP tool names with no shared
@@ -176,18 +183,25 @@ func (t *Transport) Connect(ctx context.Context) error {
 		client, err = mcpclient.NewInProcessClient(t.mcpServer)
 	} else {
 		// Network connection via Streamable HTTP.
-		var httpOpts []mcptransport.StreamableHTTPCOption
-		if tlsCfg, tlsErr := t.buildTLSConfig(); tlsErr != nil {
+		tlsCfg, tlsErr := t.buildTLSConfig()
+		if tlsErr != nil {
 			return &transport.ConnectionError{
 				Address: t.config.Address,
 				Err:     tlsErr,
 			}
-		} else if tlsCfg != nil {
-			httpOpts = append(httpOpts, mcptransport.WithHTTPBasicClient(&http.Client{
-				Transport: &http.Transport{TLSClientConfig: tlsCfg},
-			}))
 		}
-		client, err = mcpclient.NewStreamableHttpClient(t.config.Address, httpOpts...)
+		base := http.DefaultTransport.(*http.Transport).Clone() //nolint:errcheck,forcetypeassert // net/http always installs a *http.Transport as DefaultTransport
+		if tlsCfg != nil {
+			base.TLSClientConfig = tlsCfg
+		}
+		// A call made with a context bound by transport.WithSOPIN carries the
+		// SO PIN in the X-QRDB-SO-PIN header of its HTTP request -- over
+		// https to the configured host only, on every hop including
+		// redirects.
+		client, err = mcpclient.NewStreamableHttpClient(t.config.Address,
+			mcptransport.WithHTTPBasicClient(&http.Client{
+				Transport: transport.SOPINRoundTripper(base, "mcp", transport.ConfiguredHost(t.config.Address)),
+			}))
 	}
 	if err != nil {
 		return &transport.ConnectionError{
@@ -608,6 +622,8 @@ func (t *Transport) Capabilities(ctx context.Context) (*transport.CapabilitiesRe
 		PostgreSQL:  raw.PostgreSQL,
 		Etcd:        raw.Etcd,
 		FTS:         raw.FTS,
+
+		UnencryptedAtRest: raw.UnencryptedAtRest,
 	}, nil
 }
 
@@ -786,6 +802,8 @@ type serverCapabilities struct {
 	PostgreSQL  bool   `json:"postgresql"`
 	Etcd        bool   `json:"etcd"`
 	FTS         bool   `json:"fts"`
+
+	UnencryptedAtRest []string `json:"unencryptedAtRest"`
 }
 
 // serverShardState mirrors service.ShardStateResponse for JSON decoding.

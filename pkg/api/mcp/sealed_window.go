@@ -16,6 +16,7 @@ package mcp
 
 import (
 	"context"
+	"net/http"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -50,18 +51,82 @@ var SealedWindowAllowlist = sealedwindow.MCPAllowlist()
 func (s *Server) sealedWindowMiddleware() mcpserver.ToolHandlerMiddleware {
 	return func(next mcpserver.ToolHandlerFunc) mcpserver.ToolHandlerFunc {
 		return func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-			if s.sealedWindowProbe == nil || !s.sealedWindowProbe.IsSealed() {
+			name := req.Params.Name
+			if s.sealedWindowListener != nil {
+				// Held until the tool call completes; see
+				// sealedwindow.Admission.
+				_, transition := sealedWindowTransition[name]
+				defer s.sealedWindowListener.Admit(transition)()
+			}
+			_, allowlisted := SealedWindowAllowlist[name]
+			decision := sealedwindow.Request{
+				Sealed:      s.sealedWindowSealed(),
+				Allowlisted: allowlisted,
+				Listener:    s.sealedWindowListener != nil,
+			}
+			if _, preOp := sealedWindowPreOperationalOnly[name]; preOp && decision.Listener && decision.Sealed && decision.Allowlisted {
+				decision.PreOperationalOnly = true
+				decision.EnrollmentOpen = s.sealedWindowListener.EnrollmentOpen(ctx)
+			}
+			refusal, refused := sealedWindowRefusals[sealedwindow.Decide(decision)]
+			if !refused {
+				if decision.Listener {
+					ctx = sealedwindow.WithAnonymous(ctx)
+				}
 				return next(ctx, req)
 			}
-			if _, ok := SealedWindowAllowlist[req.Params.Name]; ok {
-				return next(ctx, req)
-			}
-			// CodeUnavailable, matching REST's 503, gRPC's codes.Unavailable
-			// and QUIC's StatusUnavailable for the same gate. A sealed barrier
-			// is a node that will serve this tool later, and a client that can
-			// read that from the code retries instead of reporting a failure
-			// its operator then has to diagnose from prose (go-qrdb#438).
-			return toolErrorResult(req.Params.Name, wire.CodeUnavailable, "barrier sealed"), nil
+			// CodeUnavailable for a sealed or closed window, matching REST's
+			// 503, gRPC's codes.Unavailable and QUIC's StatusUnavailable for
+			// the same gate. A sealed barrier is a node that will serve this
+			// tool later, and a client that can read that from the code
+			// retries instead of reporting a failure its operator then has to
+			// diagnose from prose (go-qrdb#438). A closed enrollment is
+			// CodePermissionDenied: retrying will not help.
+			return toolErrorResult(name, refusal.code, refusal.msg), nil
 		}
 	}
+}
+
+// sealedWindowTransition holds the MCP tools of the Transition verbs
+// (initialize and unseal), which run alone on the boot-time listener.
+var sealedWindowTransition = sealedwindow.MCPTransition()
+
+// sealedWindowPreOperationalOnly holds the MCP tools of the
+// PreOperationalOnly verbs (officer and recovery-officer registration).
+var sealedWindowPreOperationalOnly = sealedwindow.MCPPreOperationalOnly()
+
+// sealedWindowRefusal is how the MCP gate answers one refusing Decision.
+type sealedWindowRefusal struct {
+	code wire.Code
+	msg  string
+}
+
+// sealedWindowRefusals maps each refusing sealedwindow.Decision to its tool
+// error. sealedwindow.Serve is absent: it admits.
+var sealedWindowRefusals = map[sealedwindow.Decision]sealedWindowRefusal{
+	sealedwindow.RefuseSealed:           {code: wire.CodeUnavailable, msg: "barrier sealed"},
+	sealedwindow.RefuseClosed:           {code: wire.CodeUnavailable, msg: sealedwindow.ClosedMessage},
+	sealedwindow.RefuseEnrollmentClosed: {code: wire.CodePermissionDenied, msg: sealedwindow.EnrollmentClosedMessage},
+}
+
+// sealedWindowSealed samples the probe. A nil probe reads as unsealed,
+// which the boot-time listener's gate refuses.
+func (s *Server) sealedWindowSealed() bool {
+	return s.sealedWindowProbe != nil && s.sealedWindowProbe.IsSealed()
+}
+
+// sealedWindowClosedHandler wraps the MCP endpoint of the boot-time
+// sealed-window listener. Once the barrier is unsealed it answers every
+// HTTP request 503 before mcp-go reads it, so not even initialize or
+// tools/list is served anonymously against an unsealed barrier. The tool
+// middleware above refuses the calls themselves.
+func (s *Server) sealedWindowClosedHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.sealedWindowSealed() {
+			w.Header().Set("Retry-After", "5")
+			http.Error(w, sealedwindow.ClosedMessage, http.StatusServiceUnavailable)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }

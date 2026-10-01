@@ -19,6 +19,7 @@ import (
 	"sort"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -173,5 +174,18 @@ func (t *Transport) RBACClient() transport.RBACClient {
 func WithRBACAuthorizer(authz auth.Authorizer) Option {
 	return func(t *Transport) {
 		t.rbacAuthz = authz
+	}
+}
+
+// WithAuthMiddleware installs the AuthMiddleware this transport's gated
+// writes authorize through -- the SAME instance the node's network
+// transports enforce with, so a role-assignment write (CreateUser's RoleIDs,
+// UpdateUser's RoleIDs, RoleBindings and Attributes) needs roles:assign here
+// exactly as it does over REST, gRPC, QUIC or MCP. A nil mw (the default)
+// authorizes nothing, matching a network transport with no AuthMiddleware;
+// role references are validated either way.
+func WithAuthMiddleware(mw *authmw.AuthMiddleware) Option {
+	return func(t *Transport) {
+		t.authMW = mw
 	}
 }

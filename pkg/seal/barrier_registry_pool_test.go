@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package seal_test
+package seal
 
 import (
 	"context"
@@ -28,7 +28,6 @@ import (
 	"github.com/jeremyhahn/go-objstore/pkg/local"
 	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 )
@@ -45,9 +44,9 @@ func poolTestLogger() *slog.Logger {
 // newSoftwareStrategy returns a SoftwareStrategy with a deterministic
 // passphrase. Used by every pooled-tenant test that needs to register a
 // barrier against a fresh per-tenant Pebble.
-func newPoolSoftwareStrategy(t *testing.T) *seal.SoftwareStrategy {
+func newPoolSoftwareStrategy(t *testing.T) *SoftwareStrategy {
 	t.Helper()
-	s, err := seal.NewSoftwareStrategy([]byte("pool-test-pass"))
+	s, err := NewSoftwareStrategy([]byte("pool-test-pass"))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}
@@ -56,10 +55,10 @@ func newPoolSoftwareStrategy(t *testing.T) *seal.SoftwareStrategy {
 
 // newPoolSystemBarrier builds a StorageBarrier suitable as the registry's
 // system barrier in pool tests.
-func newPoolSystemBarrier(t *testing.T) *seal.StorageBarrier {
+func newPoolSystemBarrier(t *testing.T) *StorageBarrier {
 	t.Helper()
-	store := seal.NewMemoryBackend()
-	b, err := seal.NewStorageBarrier(poolTestLogger(), store, seal.BarrierConfig{
+	store := NewMemoryBackend()
+	b, err := NewStorageBarrier(poolTestLogger(), store, BarrierConfig{
 		RootKeyPath: "system/root-key",
 	}, newPoolSoftwareStrategy(t))
 	if err != nil {
@@ -103,7 +102,7 @@ func newStateStore(t *testing.T) (*qrdbpool.PebbleStateStore, *pebblestore.Pebbl
 // volume pool, a Pebble-backed state store, and a per-tenant Pebble
 // registry. Returns the registry plus the two pool path roots so tests
 // can assert which root each tenant's Pebble landed under.
-func newPooledRegistry(t *testing.T) (*seal.BarrierRegistry, []string, pebblestore.PerTenantRegistry) {
+func newPooledRegistry(t *testing.T) (*BarrierRegistry, []string, pebblestore.PerTenantRegistry) {
 	t.Helper()
 
 	c1, p1 := configuredLocal(t)
@@ -120,11 +119,11 @@ func newPooledRegistry(t *testing.T) (*seal.BarrierRegistry, []string, pebblesto
 	perTenantReg := pebblestore.NewPerTenantRegistry()
 	t.Cleanup(func() { _ = perTenantReg.CloseAll(context.Background()) })
 
-	reg, err := seal.NewBarrierRegistry(
+	reg, err := NewBarrierRegistry(
 		poolTestLogger(),
 		system,
-		seal.WithVolumePool(mgr, state, "default"),
-		seal.WithPerTenantRegistry(perTenantReg),
+		WithVolumePool(mgr, state, "default"),
+		WithPerTenantRegistry(perTenantReg),
 	)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry: %v", err)
@@ -137,7 +136,7 @@ func TestRegisterTenant_PooledFlow_RoundRobinAcrossTwoPaths(t *testing.T) {
 	ctx := context.Background()
 
 	// First tenant lands at root[0].
-	tb1, err := reg.RegisterTenant(ctx, "alpha", nil, seal.BarrierConfig{}, newPoolSoftwareStrategy(t))
+	tb1, err := reg.RegisterTenant(ctx, "alpha", nil, BarrierConfig{}, newPoolSoftwareStrategy(t))
 	if err != nil {
 		t.Fatalf("RegisterTenant(alpha): %v", err)
 	}
@@ -154,7 +153,7 @@ func TestRegisterTenant_PooledFlow_RoundRobinAcrossTwoPaths(t *testing.T) {
 	}
 
 	// Second tenant lands at root[1].
-	if _, err := reg.RegisterTenant(ctx, "beta", nil, seal.BarrierConfig{}, newPoolSoftwareStrategy(t)); err != nil {
+	if _, err := reg.RegisterTenant(ctx, "beta", nil, BarrierConfig{}, newPoolSoftwareStrategy(t)); err != nil {
 		t.Fatalf("RegisterTenant(beta): %v", err)
 	}
 
@@ -194,19 +193,19 @@ func TestRegisterTenant_PooledFlow_CursorPersistsAcrossRestart(t *testing.T) {
 	system1 := newPoolSystemBarrier(t)
 	perTenantReg1 := pebblestore.NewPerTenantRegistry()
 
-	reg1, err := seal.NewBarrierRegistry(poolTestLogger(), system1,
-		seal.WithVolumePool(mgr1, state1, "default"),
-		seal.WithPerTenantRegistry(perTenantReg1),
+	reg1, err := NewBarrierRegistry(poolTestLogger(), system1,
+		WithVolumePool(mgr1, state1, "default"),
+		WithPerTenantRegistry(perTenantReg1),
 	)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry (boot 1): %v", err)
 	}
 
 	ctx := context.Background()
-	if _, err := reg1.RegisterTenant(ctx, "alpha", nil, seal.BarrierConfig{}, newPoolSoftwareStrategy(t)); err != nil {
+	if _, err := reg1.RegisterTenant(ctx, "alpha", nil, BarrierConfig{}, newPoolSoftwareStrategy(t)); err != nil {
 		t.Fatalf("RegisterTenant(alpha): %v", err)
 	}
-	if _, err := reg1.RegisterTenant(ctx, "beta", nil, seal.BarrierConfig{}, newPoolSoftwareStrategy(t)); err != nil {
+	if _, err := reg1.RegisterTenant(ctx, "beta", nil, BarrierConfig{}, newPoolSoftwareStrategy(t)); err != nil {
 		t.Fatalf("RegisterTenant(beta): %v", err)
 	}
 
@@ -239,15 +238,15 @@ func TestRegisterTenant_PooledFlow_CursorPersistsAcrossRestart(t *testing.T) {
 	perTenantReg2 := pebblestore.NewPerTenantRegistry()
 	defer func() { _ = perTenantReg2.CloseAll(ctx) }()
 
-	reg2, err := seal.NewBarrierRegistry(poolTestLogger(), system2,
-		seal.WithVolumePool(mgr2, state2, "default"),
-		seal.WithPerTenantRegistry(perTenantReg2),
+	reg2, err := NewBarrierRegistry(poolTestLogger(), system2,
+		WithVolumePool(mgr2, state2, "default"),
+		WithPerTenantRegistry(perTenantReg2),
 	)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry (boot 2): %v", err)
 	}
 
-	if _, err := reg2.RegisterTenant(ctx, "gamma", nil, seal.BarrierConfig{}, newPoolSoftwareStrategy(t)); err != nil {
+	if _, err := reg2.RegisterTenant(ctx, "gamma", nil, BarrierConfig{}, newPoolSoftwareStrategy(t)); err != nil {
 		t.Fatalf("RegisterTenant(gamma): %v", err)
 	}
 
@@ -260,13 +259,13 @@ func TestRegisterTenant_PooledFlow_CursorPersistsAcrossRestart(t *testing.T) {
 
 func TestRegisterTenant_PooledFlow_NoPoolConfigured(t *testing.T) {
 	system := newPoolSystemBarrier(t)
-	reg, err := seal.NewBarrierRegistry(poolTestLogger(), system)
+	reg, err := NewBarrierRegistry(poolTestLogger(), system)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
 
-	_, err = reg.RegisterTenant(context.Background(), "gamma", nil, seal.BarrierConfig{}, newPoolSoftwareStrategy(t))
-	if !errors.Is(err, seal.ErrPoolNotConfigured) {
+	_, err = reg.RegisterTenant(context.Background(), "gamma", nil, BarrierConfig{}, newPoolSoftwareStrategy(t))
+	if !errors.Is(err, ErrPoolNotConfigured) {
 		t.Errorf("RegisterTenant nil backend without pool: got %v, want ErrPoolNotConfigured", err)
 	}
 }
@@ -282,16 +281,16 @@ func TestRegisterTenant_PooledFlow_NoPerTenantRegistryConfigured(t *testing.T) {
 	}
 
 	system := newPoolSystemBarrier(t)
-	reg, err := seal.NewBarrierRegistry(poolTestLogger(), system,
-		seal.WithVolumePool(mgr, state, "default"),
+	reg, err := NewBarrierRegistry(poolTestLogger(), system,
+		WithVolumePool(mgr, state, "default"),
 		// Intentionally no PerTenantRegistry.
 	)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
 
-	_, err = reg.RegisterTenant(context.Background(), "alpha", nil, seal.BarrierConfig{}, newPoolSoftwareStrategy(t))
-	if !errors.Is(err, seal.ErrPerTenantRegistryNotConfigured) {
+	_, err = reg.RegisterTenant(context.Background(), "alpha", nil, BarrierConfig{}, newPoolSoftwareStrategy(t))
+	if !errors.Is(err, ErrPerTenantRegistryNotConfigured) {
 		t.Errorf("RegisterTenant nil backend without per-tenant registry: got %v, want ErrPerTenantRegistryNotConfigured", err)
 	}
 }
@@ -315,16 +314,16 @@ func TestRegisterTenant_PooledFlow_RejectsCloudBackend(t *testing.T) {
 	perTenantReg := pebblestore.NewPerTenantRegistry()
 	t.Cleanup(func() { _ = perTenantReg.CloseAll(context.Background()) })
 
-	reg, err := seal.NewBarrierRegistry(poolTestLogger(), system,
-		seal.WithVolumePool(mgr, state, "default"),
-		seal.WithPerTenantRegistry(perTenantReg),
+	reg, err := NewBarrierRegistry(poolTestLogger(), system,
+		WithVolumePool(mgr, state, "default"),
+		WithPerTenantRegistry(perTenantReg),
 	)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
 
-	_, err = reg.RegisterTenant(context.Background(), "delta", nil, seal.BarrierConfig{}, newPoolSoftwareStrategy(t))
-	if !errors.Is(err, seal.ErrPoolBackendNotLocal) {
+	_, err = reg.RegisterTenant(context.Background(), "delta", nil, BarrierConfig{}, newPoolSoftwareStrategy(t))
+	if !errors.Is(err, ErrPoolBackendNotLocal) {
 		t.Errorf("RegisterTenant with cloud backend: got %v, want ErrPoolBackendNotLocal", err)
 	}
 }
@@ -348,15 +347,15 @@ func TestRegisterTenant_PooledFlow_LocalOnlyRejectsCloud(t *testing.T) {
 	perTenantReg := pebblestore.NewPerTenantRegistry()
 	t.Cleanup(func() { _ = perTenantReg.CloseAll(context.Background()) })
 
-	reg, err := seal.NewBarrierRegistry(poolTestLogger(), system,
-		seal.WithVolumePool(mgr, state, "default"),
-		seal.WithPerTenantRegistry(perTenantReg),
+	reg, err := NewBarrierRegistry(poolTestLogger(), system,
+		WithVolumePool(mgr, state, "default"),
+		WithPerTenantRegistry(perTenantReg),
 	)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
 
-	_, err = reg.RegisterTenant(context.Background(), "delta", nil, seal.BarrierConfig{}, newPoolSoftwareStrategy(t))
+	_, err = reg.RegisterTenant(context.Background(), "delta", nil, BarrierConfig{}, newPoolSoftwareStrategy(t))
 	var nonLocal *objpool.NonLocalCandidateError
 	if !errors.As(err, &nonLocal) {
 		t.Errorf("RegisterTenant via LocalOnly with cloud backend: got %v, want NonLocalCandidateError", err)
@@ -369,15 +368,15 @@ func TestRegisterTenant_KeyspaceFlow_UnchangedWhenBackendProvided(t *testing.T) 
 	// is configured; the in-memory backend round-trips through the
 	// existing direct-construction path.
 	system := newPoolSystemBarrier(t)
-	reg, err := seal.NewBarrierRegistry(poolTestLogger(), system)
+	reg, err := NewBarrierRegistry(poolTestLogger(), system)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
 
 	tb, err := reg.RegisterTenant(context.Background(),
 		"keyspace-tenant",
-		seal.NewMemoryBackend(),
-		seal.BarrierConfig{},
+		NewMemoryBackend(),
+		BarrierConfig{},
 		newPoolSoftwareStrategy(t),
 	)
 	if err != nil {
@@ -405,25 +404,25 @@ func TestBarrierRegistry_AttachOption_LateBinding(t *testing.T) {
 	perTenantReg := pebblestore.NewPerTenantRegistry()
 	t.Cleanup(func() { _ = perTenantReg.CloseAll(context.Background()) })
 
-	reg, err := seal.NewBarrierRegistry(poolTestLogger(), system)
+	reg, err := NewBarrierRegistry(poolTestLogger(), system)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
 
 	// Before Attach, the pooled flow must error.
-	_, err = reg.RegisterTenant(context.Background(), "early", nil, seal.BarrierConfig{}, newPoolSoftwareStrategy(t))
-	if !errors.Is(err, seal.ErrPoolNotConfigured) {
+	_, err = reg.RegisterTenant(context.Background(), "early", nil, BarrierConfig{}, newPoolSoftwareStrategy(t))
+	if !errors.Is(err, ErrPoolNotConfigured) {
 		t.Fatalf("expected ErrPoolNotConfigured before Attach, got %v", err)
 	}
 
 	// Attach pool + per-tenant registry.
 	reg.Attach(
-		seal.WithVolumePool(mgr, state, "default"),
-		seal.WithPerTenantRegistry(perTenantReg),
+		WithVolumePool(mgr, state, "default"),
+		WithPerTenantRegistry(perTenantReg),
 	)
 
 	// Now the pooled flow succeeds.
-	if _, err := reg.RegisterTenant(context.Background(), "late", nil, seal.BarrierConfig{}, newPoolSoftwareStrategy(t)); err != nil {
+	if _, err := reg.RegisterTenant(context.Background(), "late", nil, BarrierConfig{}, newPoolSoftwareStrategy(t)); err != nil {
 		t.Errorf("RegisterTenant after Attach: %v", err)
 	}
 	if got := reg.PerTenantPebbleRegistry(); got != perTenantReg {
@@ -520,12 +519,12 @@ func readDir(path string) ([]string, error) {
 // empty in-memory maps (tenants, tenantDataRoots).
 //
 // The returned attachOptions slice is pre-built from the shared pool manager
-// and per-tenant registry; pass it to seal.NewBarrierRegistry via the
+// and per-tenant registry; pass it to NewBarrierRegistry via the
 // variadic opts argument. The roots slice contains the two pool-root paths so
 // callers can assert DataRoot placement.
 func newShareableComponents(t *testing.T) (
-	system *seal.StorageBarrier,
-	attachOptions []seal.Option,
+	system *StorageBarrier,
+	attachOptions []Option,
 	roots []string,
 ) {
 	t.Helper()
@@ -543,9 +542,9 @@ func newShareableComponents(t *testing.T) (
 	perTenantReg := pebblestore.NewPerTenantRegistry()
 	t.Cleanup(func() { _ = perTenantReg.CloseAll(context.Background()) })
 
-	attachOptions = []seal.Option{
-		seal.WithVolumePool(mgr, state, "default"),
-		seal.WithPerTenantRegistry(perTenantReg),
+	attachOptions = []Option{
+		WithVolumePool(mgr, state, "default"),
+		WithPerTenantRegistry(perTenantReg),
 	}
 	roots = []string{p1, p2}
 	return

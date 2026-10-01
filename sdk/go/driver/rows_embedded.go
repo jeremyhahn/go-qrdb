@@ -80,12 +80,19 @@ func (r *embeddedRows) Next(dest []driver.Value) error {
 	if err != nil {
 		return err
 	}
+	// database/sql sizes dest from Columns(). A row of any other width would
+	// either index past it or leave the previous row's values in the slots
+	// it does not fill, so it is refused rather than half-copied.
+	if len(row) != len(dest) {
+		return &RowWidthError{Columns: len(dest), Values: len(row)}
+	}
 
 	for i, v := range row {
 		resolved, err := r.resolve(i, v)
 		if err != nil {
 			return err
 		}
+		// #nosec G602 -- len(row) == len(dest) is checked above, and i ranges over row.
 		dest[i] = convertValue(resolved)
 	}
 	return nil

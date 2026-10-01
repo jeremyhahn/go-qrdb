@@ -1,6 +1,12 @@
 # Vector Database — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
+> Scope: go-qrdb · Last verified: 2026-09-28
+>
+> "Target" notes describe the vector half of the multi-model database program
+> ([architecture.md](architecture.md)); they are approved by the owner on 2026-09-30 and not
+> implemented. OD-n refers to the ruled decisions in
+> [../databases/architecture.md](../databases/architecture.md).
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column. Every capability
@@ -61,6 +67,13 @@ Upsert:
 Vector IDs are `uint64`; they travel as JSON strings so large values survive
 JavaScript clients. `vector` length must equal the namespace `dimension`.
 
+**`shard_id` selects nothing today** (see architecture.md "Current state").
+Target: it is removed from all twenty requests on every transport (OD-14 A);
+the database named by the request's database scope decides where the
+namespace lives. Every capability is then served for every database on every
+backend, including volume- and raft-isolated tenants, where it is refused as
+not implemented today.
+
 Similarity search:
 
 ```json
@@ -112,7 +125,10 @@ all but the internal ones answered 500.
 | Barrier sealed | 503 | `UNAVAILABLE` | `service.BarrierSealedError` |
 | Storage or index fault | 500 | `INTERNAL` | `service.VectorOperationError` |
 | Built without `qrdb_vector` | 404 (route not registered) | `UNIMPLEMENTED` | — |
+| Target: namespace index still loading after a restart | 503 | `UNAVAILABLE` | `service.VectorIndexWarmingError` (new), retryable |
+| Target: write after the database's drop fence | as the drop-fence contract defines | as the drop-fence contract defines | the guard refusal |
 
 ## Versioning
 
-Vector REST paths are unversioned (`/vector/...`). Nothing here is deprecated.
+Vector REST paths are unversioned (`/vector/...`). Removing `shard_id` (OD-14
+A) is a breaking change carried by a MINOR release.

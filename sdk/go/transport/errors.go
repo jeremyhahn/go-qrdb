@@ -27,6 +27,22 @@ func (e *ConfigError) Error() string {
 	return "transport: invalid config field " + e.Field + ": " + e.Reason
 }
 
+// DatabaseScopeUnsupportedError is returned when a caller asks for a
+// database-scoped client over a transport that cannot confine its data plane
+// to that database. It is a refusal, never a fallback: serving the default
+// database to a caller that named another would read and write the wrong
+// data.
+type DatabaseScopeUnsupportedError struct {
+	Database string
+	// Reason names what the transport is missing.
+	Reason string
+}
+
+// Error returns a human-readable description.
+func (e *DatabaseScopeUnsupportedError) Error() string {
+	return "transport: cannot scope to database " + e.Database + ": " + e.Reason
+}
+
 // ConnectionError is returned when a transport connection operation fails.
 type ConnectionError struct {
 	Address string

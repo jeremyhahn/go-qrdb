@@ -162,7 +162,7 @@ func tenantCLIArgsForProto(node *multiProtoNode, proto multiProtocol, certPath, 
 // parity gap), so this file works around it in its own fixture rather than
 // changing product code.
 var dataPlanePermissions = []string{
-	"databases:create", "databases:read", "databases:list",
+	"databases:create", "databases:create_raft", "databases:create_volume", "databases:read", "databases:list",
 	"kv:put", "kv:get",
 	"admin:health",
 }
@@ -663,7 +663,7 @@ func TestTenantIsolation_SystemSealed_BlocksTenantData_PerProtocol(t *testing.T)
 // service layer). admin:health is required to OPEN a gRPC/QUIC/Unix connection
 // (see dataPlanePermissions for the rationale).
 var dbBarrierControlPermissions = []string{
-	"databases:create", "databases:read", "databases:list",
+	"databases:create", "databases:create_raft", "databases:create_volume", "databases:read", "databases:list",
 	"databases:seal", "databases:unseal", "databases:barrier_status",
 	"admin:health",
 }
@@ -672,18 +672,17 @@ var dbBarrierControlPermissions = []string{
 // the per-database barrier control surface fails closed cross-tenant on EVERY
 // transport: a tenant-local admin that HOLDS databases:seal/unseal/
 // barrier_status cannot seal, unseal, or read the barrier status of a database
-// owned by ANOTHER tenant, addressing it by its global catalog name. The
-// identical command run by the OWNING tenant, and by the SYSTEM admin, is NOT
-// refused as an authorization denial -- proving the refusal is the server-side
-// ownership check (database.TenantAccessDeniedError -> 403 / PermissionDenied)
-// and not a blanket loss of the permission.
+// owned by ANOTHER tenant, addressing it by its global catalog name. It gets
+// the same "not found" a name nobody holds gets, so it cannot tell which names
+// other tenants use. The identical command run by the OWNING tenant, and by
+// the SYSTEM admin, is NOT refused -- proving the refusal is the server-side
+// ownership check and not a blanket loss of the permission.
 //
 // Both tenants are plain "prefix" tenants sharing the system store, so the
 // target database carries no dedicated barrier; the ownership check is
-// evaluated BEFORE the barrier manager is consulted, so a non-owner is refused
-// with an access denial and never learns whether the database or its barrier
-// exists, while the owner/system caller passes the ownership gate and reaches
-// the barrier layer (a non-authorization outcome).
+// evaluated BEFORE the barrier manager is consulted, so a non-owner never
+// learns whether the database or its barrier exists, while the owner/system
+// caller passes the ownership gate and reaches the barrier layer.
 func TestTenantIsolation_CrossTenantDatabaseBarrier_FailsClosed_PerProtocol(t *testing.T) {
 	node := startMultiProtocolNode(t)
 
@@ -739,22 +738,23 @@ func testCrossTenantDatabaseBarrierOverProtocol(t *testing.T, node *multiProtoNo
 }
 
 // assertCrossTenantDatabaseControlForbidden runs a per-database barrier control
-// command as a non-owning tenant and fails the test unless it is refused as a
-// cross-tenant access denial (never a "not found" that would leak whether the
-// database exists under another owner, and never a bare barrier-not-configured
-// artifact that would mean the ownership gate was skipped).
+// command as a non-owning tenant and fails the test unless it is refused with
+// the same "not found" a missing database gets (an access denial would tell
+// the caller the name is held by another tenant), and never a bare
+// barrier-not-configured artifact that would mean the ownership gate was
+// skipped.
 func assertCrossTenantDatabaseControlForbidden(t *testing.T, node *multiProtoNode, proto multiProtocol, conn []string, args ...string) {
 	t.Helper()
 	out, err := runQRDB(t, node.cli, conn, args...)
 	if err == nil {
-		t.Fatalf("[%s] %v as a non-owning tenant must be FORBIDDEN, got success: %s", proto.name, args, out)
+		t.Fatalf("[%s] %v as a non-owning tenant must be refused, got success: %s", proto.name, args, out)
 	}
 	lower := strings.ToLower(out)
-	forbidden := strings.Contains(lower, "access denied") ||
-		strings.Contains(lower, "permission denied") ||
-		strings.Contains(lower, "forbidden")
-	if !forbidden {
-		t.Fatalf("[%s] %v must be refused as a cross-tenant access denial, got: %s", proto.name, args, out)
+	if !strings.Contains(lower, "not found") {
+		t.Fatalf("[%s] %v must be refused as not found, like a missing database, got: %s", proto.name, args, out)
+	}
+	if strings.Contains(lower, "access denied") || strings.Contains(lower, "forbidden") {
+		t.Fatalf("[%s] %v revealed that another tenant holds the name: %s", proto.name, args, out)
 	}
 	// The refusal must be the ownership denial, not the barrier reporting it is
 	// unconfigured (which would mean the guard ran AFTER the barrier manager

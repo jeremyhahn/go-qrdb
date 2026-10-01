@@ -27,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -77,8 +78,8 @@ type tenantHost struct {
 func buildTenantRaftConfigs(dataRoot string) (quicraftconfig.HostConfig, quicraftconfig.Config) {
 	hostRoot := filepath.Join(dataRoot, "databases")
 	hostCfg := quicraftconfig.HostConfig{
-		WALDir:        filepath.Join(hostRoot, "wal"),
-		NodeHostDir:   filepath.Join(hostRoot, "nodehost"),
+		WALDir:        filepath.Join(hostRoot, database.TenantHostWALDirName),
+		NodeHostDir:   filepath.Join(hostRoot, database.TenantHostNodeHostDirName),
 		RaftAddress:   "127.0.0.1:63901", // unused: WithoutTransport disables network I/O
 		ListenAddress: "127.0.0.1:63901",
 		DeploymentID:  1,

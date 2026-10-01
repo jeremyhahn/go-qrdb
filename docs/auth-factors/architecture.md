@@ -183,6 +183,7 @@ they return are part of the seam and every one of them has an `sdk/go` surface:
 | Enrolment input invalid | `AuthFactorEnrollmentInvalidError` |
 | Challenge expired | `AuthFactorChallengeExpiredError` |
 | Signature did not verify | `AuthFactorVerificationFailedError` |
+| Caller named a factor other than the enrollment's | `AuthFactorMismatchError` |
 | Device unreachable | `AuthFactorHardwareUnavailableError`, or the sentinel `ErrAuthFactorHardwareUnavailable` |
 
 The last row is the reason this table exists. Both transports map a

@@ -104,18 +104,18 @@ import (
 // package exists to close — a core dump, a swapped page, /proc/<pid>/mem —
 // and nothing observable changed. It was caught in review, not by the gate.
 //
-// So the honest statement of what a green sweep means is narrower than it
-// looks: NO DECLARATION IN THIS TREE HOLDS KEY MATERIAL AS A RAW TYPE. It does
-// not mean the copies taken out of those declarations are bounded, and the
-// standard S2 writes down for the codec boundary — "every handler that reads
-// one wipes it before returning" — is at present enforced by review alone.
+// So what securecheck's green sweep means is narrower than it looks: NO
+// DECLARATION IN THIS TREE HOLDS KEY MATERIAL AS A RAW TYPE. It does not mean
+// the copies taken out of those declarations are bounded.
 //
-// Closing it needs a different analysis from anything here: escape and
-// dataflow from every Buffer.WithBytes / Buffer.Bytes call site to a wipe or a
-// consumer that documents ownership. That is a real analyzer, not a clause,
-// and it is tracked in go-qrdb#459 rather than sketched. Until it exists, a
-// copy-out is a REVIEW OBLIGATION, and the two this change introduced carry
-// the reasoning for their wipes at the site.
+// That needed a different analysis from anything in this file: dataflow from
+// every borrow to a wipe, a return, or a consumer that takes ownership. It is
+// securecopy (copyout.go, go-qrdb#459), a second analyzer in the same vet
+// tool, and it reports the #429 instance above. Its limits are listed there;
+// what it cannot see is still a review obligation. The codec-boundary standard
+// S2 states ("every handler that reads one wipes it before returning") is one
+// of those limits: a decoder-materialised field never lived in protected
+// memory, so securecopy has no source for it.
 
 // generatedFileScope reports whether f carries the Go toolchain's canonical
 // generated-code marker.

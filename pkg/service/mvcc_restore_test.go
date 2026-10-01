@@ -334,6 +334,7 @@ func assertStrings(t *testing.T, label string, got, want []string) {
 		t.Fatalf("%s: got %v, want %v", label, got, want)
 	}
 	for i := range got {
+		// #nosec G602 -- the lengths are compared equal above, and i ranges over got.
 		if got[i] != want[i] {
 			t.Fatalf("%s: got %v, want %v", label, got, want)
 		}

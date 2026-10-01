@@ -49,7 +49,7 @@ func (e *PathError) Error() string {
 //   - no symlink component, checked against the deepest EXISTING ancestor.
 //     This one cannot be folded into the canonical check: filepath.Clean
 //     reasons about a path lexically, while the syscall follows it
-//     physically, so a perfectly canonical /mnt/disk-a/x can still be a
+//     physically, so a perfectly canonical /srv/volume-a/x can still be a
 //     symlink to anywhere.
 //
 // A path whose leaf does not exist yet is accepted: the caller creates the

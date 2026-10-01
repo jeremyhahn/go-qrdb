@@ -98,6 +98,14 @@ type updateUserWireRequest struct {
 	AuthMethods []string `json:"authMethods"`
 	Lifecycle   string   `json:"lifecycle,omitempty"`
 	LastAuth    string   `json:"lastAuth,omitempty"`
+	// RoleBindings replaces the tenant-scoped role bindings when PRESENT. NO
+	// `omitempty`, for the same reason as AuthMethods: absent (nil) leaves it
+	// alone, `[]` (non-nil empty) clears it, and omitempty would make the
+	// clear indistinguishable from "no change" on the wire.
+	RoleBindings []roleBindingWire `json:"roleBindings"`
+	// Attributes replaces the ABAC attributes when PRESENT. Same reasoning:
+	// no `omitempty`, nil leaves it alone, `{}` clears it.
+	Attributes map[string]string `json:"attributes"`
 }
 
 // deleteUserWireRequest is the JSON wire payload for user.Delete.
@@ -142,8 +150,21 @@ type userWireResponse struct {
 	// CertBindings are the account's enrolled mTLS keys, expired ones
 	// included; the server renders {thumbprint, kind, notAfter}.
 	CertBindings []certBindingWire `json:"certBindings,omitempty"`
-	CreatedAt    string            `json:"createdAt"`
-	UpdatedAt    string            `json:"updatedAt"`
+	// RoleBindings grants roles within a tenant scope, additive alongside
+	// RoleIDs.
+	RoleBindings []roleBindingWire `json:"roleBindings,omitempty"`
+	// Attributes carries ABAC key/value pairs evaluated by policy.
+	Attributes map[string]string `json:"attributes,omitempty"`
+	// Factors lists enrolled auth-factor METADATA ONLY; the opaque data blob
+	// never crosses this or any other transport (go-qrdb#192/#197).
+	Factors []factorMetadataWire `json:"factors,omitempty"`
+	// MFAEnabled/MFAMethods/MFAEnrolledAt are DERIVED from Factors, never
+	// stored.
+	MFAEnabled    bool     `json:"mfaEnabled"`
+	MFAMethods    []string `json:"mfaMethods,omitempty"`
+	MFAEnrolledAt string   `json:"mfaEnrolledAt,omitempty"`
+	CreatedAt     string   `json:"createdAt"`
+	UpdatedAt     string   `json:"updatedAt"`
 }
 
 // certBindingWire mirrors the server's JSON form of one enrolled mTLS key.
@@ -151,6 +172,21 @@ type certBindingWire struct {
 	Thumbprint string `json:"thumbprint"`
 	Kind       string `json:"kind"`
 	NotAfter   string `json:"notAfter,omitempty"`
+}
+
+// roleBindingWire mirrors the server's JSON form of one tenant-scoped role
+// binding.
+type roleBindingWire struct {
+	RoleID   string `json:"roleID"`
+	TenantID string `json:"tenantID"`
+}
+
+// factorMetadataWire mirrors the server's JSON form of one enrolled auth
+// factor, Data omitted.
+type factorMetadataWire struct {
+	ID         string `json:"id"`
+	FactorName string `json:"factorName"`
+	CreatedAt  string `json:"createdAt,omitempty"`
 }
 
 // listUsersWireResponse is the JSON wire payload returned by user.List.
@@ -532,14 +568,16 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 	}
 
 	payload, err := json.Marshal(updateUserWireRequest{
-		ID:          req.ID,
-		Username:    req.Username,
-		Email:       req.Email,
-		Name:        req.Name,
-		RoleIDs:     req.RoleIDs,
-		AuthMethods: req.AuthMethods,
-		Lifecycle:   req.Lifecycle,
-		LastAuth:    req.LastAuth,
+		ID:           req.ID,
+		Username:     req.Username,
+		Email:        req.Email,
+		Name:         req.Name,
+		RoleIDs:      req.RoleIDs,
+		AuthMethods:  req.AuthMethods,
+		Lifecycle:    req.Lifecycle,
+		LastAuth:     req.LastAuth,
+		RoleBindings: roleBindingsToWire(req.RoleBindings),
+		Attributes:   req.Attributes,
 	})
 	if err != nil {
 		return nil, &transport.RequestError{Method: "UpdateUser", Err: &MarshalError{Err: err}}
@@ -1016,19 +1054,25 @@ func wireToUser(w *userWireResponse) *transport.User {
 		return nil
 	}
 	return &transport.User{
-		ID:           w.ID,
-		Username:     w.Username,
-		Email:        w.Email,
-		Name:         w.Name,
-		TenantID:     w.TenantID,
-		RoleIDs:      w.RoleIDs,
-		System:       w.System,
-		Lifecycle:    w.Lifecycle,
-		AuthMethods:  w.AuthMethods,
-		LastAuth:     w.LastAuth,
-		CertBindings: wireToCertBindings(w.CertBindings),
-		CreatedAt:    w.CreatedAt,
-		UpdatedAt:    w.UpdatedAt,
+		ID:            w.ID,
+		Username:      w.Username,
+		Email:         w.Email,
+		Name:          w.Name,
+		TenantID:      w.TenantID,
+		RoleIDs:       w.RoleIDs,
+		System:        w.System,
+		Lifecycle:     w.Lifecycle,
+		AuthMethods:   w.AuthMethods,
+		LastAuth:      w.LastAuth,
+		CertBindings:  wireToCertBindings(w.CertBindings),
+		RoleBindings:  wireToRoleBindings(w.RoleBindings),
+		Attributes:    w.Attributes,
+		Factors:       wireToFactorMetadata(w.Factors),
+		MFAEnabled:    w.MFAEnabled,
+		MFAMethods:    w.MFAMethods,
+		MFAEnrolledAt: w.MFAEnrolledAt,
+		CreatedAt:     w.CreatedAt,
+		UpdatedAt:     w.UpdatedAt,
 	}
 }
 
@@ -1041,6 +1085,47 @@ func wireToCertBindings(in []certBindingWire) []transport.CertBinding {
 	out := make([]transport.CertBinding, len(in))
 	for i, b := range in {
 		out[i] = transport.CertBinding{Thumbprint: b.Thumbprint, Kind: b.Kind, NotAfter: b.NotAfter}
+	}
+	return out
+}
+
+// wireToRoleBindings converts the wire role-binding list to the transport
+// form; nil for an empty list.
+func wireToRoleBindings(in []roleBindingWire) []transport.RoleBinding {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]transport.RoleBinding, len(in))
+	for i, b := range in {
+		out[i] = transport.RoleBinding{RoleID: b.RoleID, TenantID: b.TenantID}
+	}
+	return out
+}
+
+// roleBindingsToWire is the inverse of wireToRoleBindings, used by
+// UpdateUser to build the wire request. A nil input round-trips to nil,
+// preserving the leave-alone/clear distinction.
+func roleBindingsToWire(in []transport.RoleBinding) []roleBindingWire {
+	if in == nil {
+		return nil
+	}
+	out := make([]roleBindingWire, len(in))
+	for i, b := range in {
+		out[i] = roleBindingWire{RoleID: b.RoleID, TenantID: b.TenantID}
+	}
+	return out
+}
+
+// wireToFactorMetadata converts the wire factor-metadata list to the
+// transport form; nil for an empty list. The Data blob never crosses this or
+// any other transport (go-qrdb#192/#197).
+func wireToFactorMetadata(in []factorMetadataWire) []transport.FactorMetadata {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]transport.FactorMetadata, len(in))
+	for i, f := range in {
+		out[i] = transport.FactorMetadata{ID: f.ID, FactorName: f.FactorName, CreatedAt: f.CreatedAt}
 	}
 	return out
 }

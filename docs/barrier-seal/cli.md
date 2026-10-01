@@ -190,7 +190,10 @@ Generate a root token by reconstructing from Shamir shares.
 
 ## Per-database barriers
 
-A database with a dedicated store can have its own barrier — see
+A non-raft database with its own `--data-dir`, created by the system tenant,
+can have its own barrier; every other shape is refused because the barrier
+would not be on its data path. Until per-database storage bindings land, a
+non-system tenant cannot create one — see
 [../databases/cli.md](../databases/cli.md):
 
 ```bash

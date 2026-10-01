@@ -18,6 +18,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -32,7 +33,12 @@ func (stubSQLService) Execute(_ context.Context, _, _ string) (*service.SQLQuery
 var _ service.SQLServicer = stubSQLService{}
 
 // fakeSealedProbe is a deterministic sealedWindowProbe test double.
-type fakeSealedProbe struct{ sealed bool }
+type fakeSealedProbe struct {
+	sealed, enrollment bool
+	sealedwindow.Admission
+}
+
+func (f *fakeSealedProbe) EnrollmentOpen(context.Context) bool { return f.enrollment }
 
 func (f *fakeSealedProbe) IsSealed() bool { return f.sealed }
 

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-enclave"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
@@ -71,6 +72,7 @@ func TestCopyEnclaveToBuffer_SurvivesConcurrentWipeAll(t *testing.T) {
 	if dir := os.Getenv("GOCOVERDIR"); dir != "" {
 		args = append(args, "-test.gocoverdir="+dir)
 	}
+	// #nosec G204,G702 -- re-exec of this test binary: argv[0] is os.Args[0], the path `go test` invoked, and the arguments are compile-time literals plus the GOCOVERDIR the go tool exported for this run. No shell is involved.
 	cmd := exec.Command(os.Args[0], args...)
 	cmd.Env = append(os.Environ(), copyEnclaveRaceChildEnv+"=1")
 	out, err := cmd.CombinedOutput()
@@ -136,7 +138,7 @@ func runCopyEnclaveRaceChild() {
 	if wipeErr != nil {
 		fail("enclave.WipeAll: %v", wipeErr)
 	}
-	fmt.Printf("WipeAll ran concurrently with copyEnclaveToBuffer's held copy: remaining=%d\n", remaining)
+	fmt.Fprintf(os.Stdout, "WipeAll ran concurrently with copyEnclaveToBuffer's held copy: remaining=%d\n", remaining)
 
 	result := <-done
 	if result.err != nil {
@@ -149,5 +151,5 @@ func runCopyEnclaveRaceChild() {
 			"the destination's pages were mutated or unmapped out from under the copy", got, want)
 	}
 
-	fmt.Println("PASS: copyEnclaveToBuffer observed the uncorrupted plaintext throughout")
+	fmt.Fprintln(os.Stdout, "PASS: copyEnclaveToBuffer observed the uncorrupted plaintext throughout")
 }

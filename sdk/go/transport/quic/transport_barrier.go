@@ -69,7 +69,17 @@ func (t *Transport) BarrierSeal(ctx context.Context) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
-	_, err := t.call(ctx, "barrier.Seal", nil)
+	// The barrier SO PIN, when one is configured, comes from the PIN bound by
+	// transport.WithSOPIN: BarrierSeal takes no request of its own.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierSeal", "")
+	if err != nil {
+		return err
+	}
+	payload, err := proto.Marshal(&pb.BarrierSealRequest{SoPin: soPIN})
+	if err != nil {
+		return &marshalError{Err: err}
+	}
+	_, err = t.callWithSecret(ctx, "barrier.Seal", payload)
 	return err
 }
 
@@ -102,17 +112,22 @@ func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	// QUIC carries the SO PIN in the request message; see transport.WithSOPIN.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierInitializeShamir", req.SOPin)
+	if err != nil {
+		return nil, err
+	}
 	payload, err := proto.Marshal(&pb.BarrierShamirInitializeRequest{
 		Secret:      req.Secret,
 		Threshold:   int32(req.Threshold),
 		TotalShares: int32(req.TotalShares),
-		SoPin:       req.SOPin,
+		SoPin:       soPIN,
 		UserPin:     req.UserPin,
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}
 	}
-	respBytes, err := t.call(ctx, "barrier.ShamirInitialize", payload)
+	respBytes, err := t.callWithSecret(ctx, "barrier.ShamirInitialize", payload)
 	if err != nil {
 		return nil, err
 	}
@@ -176,15 +191,20 @@ func (t *Transport) BarrierRekey(ctx context.Context, req *transport.BarrierReke
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	// QUIC carries the SO PIN in the request message; see transport.WithSOPIN.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierRekey", req.SOPin)
+	if err != nil {
+		return nil, err
+	}
 	payload, err := proto.Marshal(&pb.BarrierRekeyRequest{
 		Threshold: int32(req.Threshold),
 		Total:     int32(req.Total),
-		SoPin:     req.SOPin,
+		SoPin:     soPIN,
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}
 	}
-	respBytes, err := t.call(ctx, "barrier.Rekey", payload)
+	respBytes, err := t.callWithSecret(ctx, "barrier.Rekey", payload)
 	if err != nil {
 		return nil, err
 	}
@@ -241,15 +261,20 @@ func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transp
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	// QUIC carries the SO PIN in the request message; see transport.WithSOPIN.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierGenerateRecoveryKeys", req.SOPin)
+	if err != nil {
+		return nil, err
+	}
 	payload, err := proto.Marshal(&pb.BarrierRecoveryGenerateRequest{
 		Threshold: int32(req.Threshold),
 		Total:     int32(req.Total),
-		SoPin:     req.SOPin,
+		SoPin:     soPIN,
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}
 	}
-	respBytes, err := t.call(ctx, "barrier.RecoveryGenerate", payload)
+	respBytes, err := t.callWithSecret(ctx, "barrier.RecoveryGenerate", payload)
 	if err != nil {
 		return nil, err
 	}
@@ -284,7 +309,16 @@ func (t *Transport) BarrierDeleteRecoveryKeys(ctx context.Context) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
-	_, err := t.call(ctx, "barrier.RecoveryDelete", nil)
+	// QUIC carries the SO PIN in the request message; see transport.WithSOPIN.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierDeleteRecoveryKeys", "")
+	if err != nil {
+		return err
+	}
+	payload, err := proto.Marshal(&pb.BarrierRecoveryDeleteRequest{SoPin: soPIN})
+	if err != nil {
+		return &marshalError{Err: err}
+	}
+	_, err = t.callWithSecret(ctx, "barrier.RecoveryDelete", payload)
 	return err
 }
 

@@ -93,7 +93,17 @@ func (t *Transport) BarrierSeal(ctx context.Context) error {
 		return &transport.ClosedError{}
 	}
 
-	if _, err := t.callTool(ctx, "qrdb_barrier_seal", nil); err != nil {
+	// The barrier SO PIN, when one is configured, comes from the PIN bound by
+	// transport.WithSOPIN: BarrierSeal takes no request of its own.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierSeal", "")
+	if err != nil {
+		return &transport.RequestError{Method: "BarrierSeal", Err: err}
+	}
+	var args map[string]any
+	if soPIN != "" {
+		args = map[string]any{"so_pin": soPIN}
+	}
+	if _, err := t.callTool(ctx, "qrdb_barrier_seal", args); err != nil {
 		return &transport.RequestError{Method: "BarrierSeal", Err: err}
 	}
 
@@ -127,14 +137,21 @@ func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	// The SO PIN travels in the request's own so_pin field too, which the
+	// server reads; it comes from the PIN bound by transport.WithSOPIN when
+	// the request carries none, exactly as on QUIC.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierInitializeShamir", req.SOPin)
+	if err != nil {
+		return nil, err
+	}
 
 	args := map[string]any{
 		"secret":       secretArg(req.Secret),
 		"threshold":    req.Threshold,
 		"total_shares": req.TotalShares,
 	}
-	if req.SOPin != "" {
-		args["so_pin"] = req.SOPin
+	if soPIN != "" {
+		args["so_pin"] = soPIN
 	}
 	if req.UserPin != "" {
 		args["user_pin"] = req.UserPin
@@ -198,13 +215,20 @@ func (t *Transport) BarrierRekey(ctx context.Context, req *transport.BarrierReke
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	// The SO PIN travels in the request's own so_pin field too, which the
+	// server reads; it comes from the PIN bound by transport.WithSOPIN when
+	// the request carries none, exactly as on QUIC.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierRekey", req.SOPin)
+	if err != nil {
+		return nil, err
+	}
 
 	args := map[string]any{
 		"threshold": req.Threshold,
 		"total":     req.Total,
 	}
-	if req.SOPin != "" {
-		args["so_pin"] = req.SOPin
+	if soPIN != "" {
+		args["so_pin"] = soPIN
 	}
 	text, err := t.callTool(ctx, "qrdb_barrier_rekey", args)
 	if err != nil {
@@ -270,13 +294,20 @@ func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transp
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	// The SO PIN travels in the request's own so_pin field too, which the
+	// server reads; it comes from the PIN bound by transport.WithSOPIN when
+	// the request carries none, exactly as on QUIC.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierGenerateRecoveryKeys", req.SOPin)
+	if err != nil {
+		return nil, err
+	}
 
 	args := map[string]any{
 		"threshold": req.Threshold,
 		"total":     req.Total,
 	}
-	if req.SOPin != "" {
-		args["so_pin"] = req.SOPin
+	if soPIN != "" {
+		args["so_pin"] = soPIN
 	}
 	text, err := t.callTool(ctx, "qrdb_barrier_recovery_generate", args)
 	if err != nil {

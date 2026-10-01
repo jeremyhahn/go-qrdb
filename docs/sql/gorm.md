@@ -114,6 +114,7 @@ Both in-process schemes share one grammar (`driver.ParseEmbeddedDSN`):
 | `tenant` | Scopes every statement on the connection to a tenant namespace. Empty means the system tenant. |
 | `user` | Subject recorded on the session identity (informational for in-process connections, which the driver does not authenticate). |
 | `loc` | IANA time zone (or `Local`) used to render `time.Time` arguments as SQL datetime literals. Empty means UTC. |
+| `concurrency` | `optimistic` or `pessimistic`: sets `qrdb_concurrency` on every connection. Empty leaves the database's own setting in force. See [../row-locking/](../row-locking/). |
 
 The path component is the data directory: `node:///var/lib/qrdb?...`. A
 `node://` DSN that names no data directory gets a temporary one, removed when
@@ -377,6 +378,17 @@ func transfer(db *gorm.DB, from, to uint64, amount int64) error {
 
 The conflicted transaction is already rolled back by the time you see the error
 — its write-set is cleared, matching InnoDB — so a retry starts clean.
+
+### Avoiding the retry: pessimistic mode
+
+Add `concurrency=pessimistic` to the DSN (or, over a wire protocol, set the
+database's `sql.concurrency`) and concurrent writers of the same row **wait** for
+each other instead of one failing at commit. The scenario of GORM's own
+`TestConcurrentMany2ManyAssociation` — concurrent
+`Association("Languages").Append` calls on one user — passes that way
+(`sdk/go/gorm/concurrent_association_test.go`). `clause.Locking{Strength: "UPDATE"}` (`SELECT ... FOR UPDATE`) and
+`clause.Locking{Strength: "SHARE"}` lock in either mode. See
+[../row-locking/](../row-locking/).
 
 ## Known limitations
 

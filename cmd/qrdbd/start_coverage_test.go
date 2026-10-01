@@ -626,10 +626,16 @@ func (m *mockTenantServicer) TenantBarrierShamirSealVote(_ context.Context, _, _
 // runFirstBoot: admin already exists
 // ---------------------------------------------------------------------------
 
+// TestRunFirstBoot_AdminAlreadyExists is the fast-path case: an admin that
+// is already the System user is skipped entirely (go-qrdb#106/#192 round 2
+// narrowed this from "admin exists" to "admin exists AND is already
+// System" — an admin that exists but is not yet System falls through to
+// the full bootstrap path instead, so it gets reconciled; see
+// TestRunFirstBoot_AdminExistsButNotSystem_FallsThroughToReconcile).
 func TestRunFirstBoot_AdminAlreadyExists(t *testing.T) {
 	userSvc := &mockUserServicer{
 		getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
-			return &user.User{ID: 9001, Username: "admin"}, nil
+			return &user.User{ID: 9001, Username: "admin", System: true}, nil
 		},
 	}
 	roleSvc := &mockRoleServicer{}
@@ -637,6 +643,35 @@ func TestRunFirstBoot_AdminAlreadyExists(t *testing.T) {
 
 	err := runFirstBoot(context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
 	require.NoError(t, err)
+}
+
+// TestRunFirstBoot_AdminExistsButNotSystem_FallsThroughToReconcile is the
+// round-2 regression test: an admin that exists but is NOT yet the System
+// user must NOT be skipped — runFirstBoot must fall through to the full,
+// idempotent bootstrap path so pkg/firstboot's reconciliation can promote
+// it. Asserted by observing that CreateUser IS called again (proving the
+// fall-through happened) rather than by a full end-to-end promotion, which
+// pkg/firstboot/firstboot_test.go and pkg/user/system_user_test.go already
+// cover with doubles that implement PromoteToSystemUser.
+func TestRunFirstBoot_AdminExistsButNotSystem_FallsThroughToReconcile(t *testing.T) {
+	createCalled := false
+	userSvc := &mockUserServicer{
+		getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
+			return &user.User{ID: 9001, Username: "admin", System: false}, nil
+		},
+		createUserFn: func(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
+			createCalled = true
+			return &user.User{ID: 9001, Username: req.Username, TenantID: req.TenantID}, nil
+		},
+	}
+	roleSvc := &mockRoleServicer{}
+	node := &mockRaftNode{} // default: leader ready
+
+	err := runFirstBoot(context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
+	require.NoError(t, err)
+	if !createCalled {
+		t.Fatal("expected runFirstBoot to fall through to the bootstrap path (CreateUser) for a non-System existing admin")
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -798,8 +833,16 @@ func TestRunFirstBoot_AdminUsernameExists(t *testing.T) {
 		// UsernameExistsError alone. A resolver contradicting its own
 		// CreateUser (not-found here, already-exists there) models a store
 		// no real implementation is.
+		// The record is the admin first boot itself would have made (its
+		// Admin role, a live lifecycle), created before the System flag
+		// existed: the fast path must not skip it, and the idempotent path
+		// must accept it as the admin rather than a squatter.
 		getUserByUsernameFn: func(_ context.Context, tenantID, username string) (*user.User, error) {
-			return &user.User{ID: 1, Username: username, TenantID: tenantID}, nil
+			return &user.User{
+				ID: 1, Username: username, TenantID: tenantID,
+				RoleIDs:   []string{"r-" + role.RoleNameAdmin}, // mockRoleServicer.GetRoleByName's id
+				Lifecycle: user.LifecycleActive,
+			}, nil
 		},
 		createUserFn: func(_ context.Context, _ *user.CreateUserRequest) (*user.User, error) {
 			return nil, &user.UsernameExistsError{Username: "admin", TenantID: "system"}

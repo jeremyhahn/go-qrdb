@@ -1,6 +1,11 @@
 # Time Series — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
+> Scope: go-qrdb · Last verified: 2026-09-28
+>
+> "Target" sections describe the time-series half of the multi-model database
+> program ([../databases/architecture.md](../databases/architecture.md)); they
+> are approved by the owner on 2026-09-30 and not implemented. OD-n refers to that document's ruled decisions.
 
 Command group: `qrdb ts`. **Present only in builds carrying the `qrdb_ts` tag**
 (`make build WITH_QRDB_TS=1`); confirm with `qrdb admin capabilities`

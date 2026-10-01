@@ -7,8 +7,8 @@
 //     http://www.apache.org/licenses/LICENSE-2.0
 
 // White-box companion to tenant_kvstore_test.go: exercises the concrete
-// *tenantBarrierKVStore type, which is unexported and unreachable from the
-// black-box seal_test package.
+// *tenantBarrierKVStore type directly, where tenant_kvstore_test.go drives it
+// only through the exported TenantBarrier surface.
 
 package seal
 

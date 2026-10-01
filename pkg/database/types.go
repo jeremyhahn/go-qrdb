@@ -407,6 +407,15 @@ type EtcdConfig struct {
 	AdvertiseClientURLs []string `yaml:"advertise_client_urls" json:"advertise_client_urls,omitempty"`
 }
 
+// etcdEngineError returns the typed refusal for enabling etcd on a database
+// of engine, or nil. Disabling is always allowed.
+func etcdEngineError(name string, engine EngineType, etcd *EtcdConfig) error {
+	if etcd == nil || !etcd.Enabled || engine == EngineKV {
+		return nil
+	}
+	return &EtcdEngineUnsupportedError{Name: name, Engine: engine}
+}
+
 // Validate checks that the etcd config has required fields when enabled.
 func (e *EtcdConfig) Validate() error {
 	if !e.Enabled {
@@ -416,6 +425,57 @@ func (e *EtcdConfig) Validate() error {
 		return &EtcdListenAddrRequiredError{}
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// SQL configuration
+// ---------------------------------------------------------------------------
+
+// Concurrency is a database's default SQL concurrency mode: whether DML in
+// an SQL transaction takes row locks (pessimistic) or relies on the
+// commit-time compare-and-swap alone (optimistic). SELECT ... FOR UPDATE and
+// FOR SHARE take row locks in either mode. See docs/row-locking/.
+type Concurrency string
+
+const (
+	// ConcurrencyOptimistic is the default: DML takes no locks, and a
+	// conflicting commit fails with MySQL 1213.
+	ConcurrencyOptimistic Concurrency = "optimistic"
+
+	// ConcurrencyPessimistic makes DML take exclusive row locks, with current
+	// reads, so concurrent writers of a row wait instead of failing at commit.
+	ConcurrencyPessimistic Concurrency = "pessimistic"
+)
+
+// concurrencies is the set of accepted modes.
+var concurrencies = map[Concurrency]bool{
+	ConcurrencyOptimistic:  true,
+	ConcurrencyPessimistic: true,
+}
+
+// SQLConfig holds a database's SQL settings.
+type SQLConfig struct {
+	// Concurrency is the database's default concurrency mode. Empty means
+	// ConcurrencyOptimistic.
+	Concurrency Concurrency `yaml:"concurrency" json:"concurrency,omitempty"`
+}
+
+// Validate refuses a concurrency mode that is neither empty nor one of the
+// defined modes.
+func (c *SQLConfig) Validate() error {
+	if c.Concurrency == "" || concurrencies[c.Concurrency] {
+		return nil
+	}
+	return &InvalidConcurrencyError{Concurrency: string(c.Concurrency)}
+}
+
+// EffectiveConcurrency returns the mode c selects: ConcurrencyOptimistic for
+// a nil config or an empty mode.
+func (c *SQLConfig) EffectiveConcurrency() Concurrency {
+	if c == nil || c.Concurrency == "" {
+		return ConcurrencyOptimistic
+	}
+	return c.Concurrency
 }
 
 // ---------------------------------------------------------------------------
@@ -450,6 +510,33 @@ type DatabaseConfig struct {
 	Raft         *DatabaseRaftConfig       `yaml:"raft"                    json:"raft,omitempty"`
 	Barrier      *DatabaseBarrierConfig    `yaml:"barrier"                 json:"barrier,omitempty"`
 	Connection   *DatabaseConnectionConfig `yaml:"connection"              json:"connection,omitempty"`
+	SQL          *SQLConfig                `yaml:"sql"                     json:"sql,omitempty"`
+}
+
+// Directory names a volume-isolated tenant's own Raft host keeps under
+// {DataRoot}/databases, beside that tenant's per-database directories
+// ({DataRoot}/databases/<name>). They are the single source for both the host
+// layout and the names a database may not take.
+const (
+	// TenantHostWALDirName is the tenant host's WAL directory.
+	TenantHostWALDirName = "wal"
+	// TenantHostNodeHostDirName is the tenant host's node-host directory.
+	TenantHostNodeHostDirName = "nodehost"
+)
+
+// reservedNames is the set of database names that collide with a directory
+// the node keeps beside per-database directories, lower-cased so the check
+// also holds on a case-insensitive filesystem.
+var reservedNames = map[string]struct{}{
+	TenantHostWALDirName:      {},
+	TenantHostNodeHostDirName: {},
+}
+
+// IsReservedName reports whether name is reserved for node state and may not
+// name a database.
+func IsReservedName(name string) bool {
+	_, reserved := reservedNames[strings.ToLower(name)]
+	return reserved
 }
 
 // Validate checks that the configuration is complete and consistent.
@@ -461,6 +548,9 @@ type DatabaseConfig struct {
 func (c *DatabaseConfig) Validate() error {
 	if c.Name == "" || !namePattern.MatchString(c.Name) {
 		return &InvalidNameError{Name: c.Name}
+	}
+	if IsReservedName(c.Name) {
+		return &ReservedNameError{Name: c.Name}
 	}
 	if !c.Engine.Valid() {
 		return &InvalidEngineError{Engine: string(c.Engine)}
@@ -494,6 +584,15 @@ func (c *DatabaseConfig) Validate() error {
 
 	if c.Protocol.Etcd != nil {
 		if err := c.Protocol.Etcd.Validate(); err != nil {
+			return err
+		}
+		if err := etcdEngineError(c.Name, c.Engine, c.Protocol.Etcd); err != nil {
+			return err
+		}
+	}
+
+	if c.SQL != nil {
+		if err := c.SQL.Validate(); err != nil {
 			return err
 		}
 	}
@@ -537,6 +636,23 @@ func (c *DatabaseConfig) HasDedicatedStore() bool {
 	return c.Backend == BackendRaft || strings.TrimSpace(c.DataDir) != ""
 }
 
+// BarrierOnDataPath reports whether a per-database barrier on this database
+// would wrap the store its data is served from. That holds only for a
+// non-raft database with a store of its own (an explicit DataDir): the
+// Manager wraps that store in a BarrierBackend and the request resolver
+// serves the database from it. A backend: raft database has a dedicated
+// store too (HasDedicatedStore), but its data is served from its Raft group,
+// never from the Backend the Manager opens for it, so a barrier there would
+// wrap an unused placeholder.
+//
+// The configuration alone cannot see the owning tenant's isolation mode. A
+// volume- or raft-isolated tenant serves every database from the tenant's
+// own store, so the service layer refuses a barrier for those tenants on top
+// of this check; see BarrierOffDataPathError.
+func (c *DatabaseConfig) BarrierOnDataPath() bool {
+	return c.Backend != BackendRaft && strings.TrimSpace(c.DataDir) != ""
+}
+
 // ---------------------------------------------------------------------------
 // Metadata
 // ---------------------------------------------------------------------------
@@ -556,6 +672,7 @@ type DatabaseMeta struct {
 	Raft         *DatabaseRaftConfig       `json:"raft,omitempty"`
 	Barrier      *DatabaseBarrierConfig    `json:"barrier,omitempty"`
 	Connection   *DatabaseConnectionConfig `json:"connection,omitempty"`
+	SQL          *SQLConfig                `json:"sql,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -579,4 +696,5 @@ type DatabaseInfo struct {
 	Raft         *DatabaseRaftConfig       `json:"raft,omitempty"`
 	Barrier      *DatabaseBarrierConfig    `json:"barrier,omitempty"`
 	Connection   *DatabaseConnectionConfig `json:"connection,omitempty"`
+	SQL          *SQLConfig                `json:"sql,omitempty"`
 }

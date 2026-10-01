@@ -15,6 +15,7 @@
 package database
 
 import (
+	"sync"
 	"sync/atomic"
 )
 
@@ -55,6 +56,16 @@ type Database struct {
 	status         atomic.Value // stores StatusType
 	dataDir        string
 	barrierEnabled atomic.Bool
+
+	// statusMu serializes status transitions with the serving signal below,
+	// so the signal is closed exactly once per stretch the database is not
+	// open and replaced exactly once when it opens again. Status reads stay
+	// lock-free.
+	statusMu sync.Mutex
+
+	// serving is closed when the database stops serving -- sealed, closed by
+	// a drop, or failed -- and replaced by a fresh one when it opens again.
+	serving atomic.Pointer[chan struct{}]
 }
 
 // NewDatabase creates a Database from the given config and backend.
@@ -67,6 +78,8 @@ func NewDatabase(config DatabaseConfig, backend Backend, dataDir string) *Databa
 	db.activeBackend.Store(&backendHolder{backend: backend})
 	db.config.Store(&config)
 	db.status.Store(StatusOpen)
+	open := make(chan struct{})
+	db.serving.Store(&open)
 	return db
 }
 
@@ -164,7 +177,46 @@ func (d *Database) Status() StatusType {
 
 // SetStatus sets the operational status of the database.
 func (d *Database) SetStatus(status StatusType) {
+	d.setStatus(status)
+}
+
+// setStatus records status and moves the serving signal with it: leaving
+// StatusOpen closes the current signal, and returning to StatusOpen installs a
+// fresh one.
+func (d *Database) setStatus(status StatusType) {
+	d.statusMu.Lock()
+	defer d.statusMu.Unlock()
 	d.status.Store(status)
+	ch := d.serving.Load()
+	closed := isClosed(*ch)
+	switch {
+	case status == StatusOpen && closed:
+		fresh := make(chan struct{})
+		d.serving.Store(&fresh)
+	case status != StatusOpen && !closed:
+		close(*ch)
+	}
+}
+
+// isClosed reports whether ch is closed. ch is only ever closed, never sent
+// on.
+func isClosed(ch chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}
+
+// Unserved returns a channel that is closed once the database stops serving
+// -- it is sealed, closed by a drop, or fails -- or that is already closed if
+// it is not serving now. A long-lived reader (a watch or keep-alive stream)
+// holds it from the moment it opens and ends when it closes, so it does not
+// keep reading a database that was sealed or dropped under it. A database
+// that opens again hands later callers a fresh channel.
+func (d *Database) Unserved() <-chan struct{} {
+	return *d.serving.Load()
 }
 
 // BarrierEnabled reports whether this database has barrier encryption enabled.
@@ -246,6 +298,24 @@ func (d *Database) updateBarrier(barrier *DatabaseBarrierConfig) {
 	}
 }
 
+// SQLConfig returns the database's SQL settings, nil when none were ever
+// set (which means the defaults).
+func (d *Database) SQLConfig() *SQLConfig {
+	return d.config.Load().SQL
+}
+
+// updateSQL atomically replaces the SQL settings.
+func (d *Database) updateSQL(sqlCfg *SQLConfig) {
+	for {
+		old := d.config.Load()
+		updated := *old
+		updated.SQL = sqlCfg
+		if d.config.CompareAndSwap(old, &updated) {
+			return
+		}
+	}
+}
+
 // updateConnection atomically replaces the connection configuration.
 func (d *Database) updateConnection(conn *DatabaseConnectionConfig) {
 	for {
@@ -276,6 +346,7 @@ func (d *Database) Info() DatabaseInfo {
 		Raft:         cfg.Raft,
 		Barrier:      cfg.Barrier,
 		Connection:   cfg.Connection,
+		SQL:          cfg.SQL,
 	}
 	if cfg.Raft != nil {
 		info.ShardID = cfg.Raft.ShardID
@@ -303,9 +374,9 @@ func (d *Database) Close() error {
 		}
 	}
 	if closeErr != nil {
-		d.status.Store(StatusError)
+		d.setStatus(StatusError)
 		return &CloseError{Name: d.config.Load().Name, Err: closeErr}
 	}
-	d.status.Store(StatusClosed)
+	d.setStatus(StatusClosed)
 	return nil
 }

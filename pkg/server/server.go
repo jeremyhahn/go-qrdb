@@ -38,6 +38,7 @@ import (
 	mcpapi "github.com/jeremyhahn/go-qrdb/pkg/api/mcp"
 	quicapi "github.com/jeremyhahn/go-qrdb/pkg/api/quic"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	unixapi "github.com/jeremyhahn/go-qrdb/pkg/api/unix"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
@@ -120,6 +121,10 @@ var newSQLServiceFn buildSQLServiceFn
 // based on the protocol configuration and manages their lifecycles with
 // rollback on startup failure.
 type Server struct {
+	// sealedWindowAdmission is the boot-time sealed-window listener's
+	// Admission, shared by all of its transports (see listenerProbe).
+	sealedWindowAdmission sealedwindow.Admission
+
 	config      *config.Config
 	kvSvc       service.KVServicer
 	adminSvc    service.AdminServicer
@@ -246,6 +251,11 @@ type serverOptions struct {
 	// Wired identically across protocol servers so operators see the
 	// same envelope on every transport.
 	sealedWindowProbe SealedWindowProbe
+
+	// sealedWindowListener marks the boot-time sealed-window listener built
+	// by ServeSealedWindow. Its gates refuse every request once the barrier
+	// is unsealed, and it serves no SQL wire protocol.
+	sealedWindowListener bool
 
 	// clusterKeyReceiver handles the /v1/cluster/keydelivery and
 	// /v1/cluster/nodekey endpoints. When nil the routes are not registered.
@@ -415,7 +425,56 @@ func WithAuthMiddleware(mw *authmw.AuthMiddleware) ServerOption {
 // option drives all protocol surfaces so operators see consistent
 // behavior across transports.
 func WithSealedWindowProbe(probe SealedWindowProbe) ServerOption {
-	return func(o *serverOptions) { o.sealedWindowProbe = probe }
+	return func(o *serverOptions) {
+		o.sealedWindowProbe = probe
+		o.sealedWindowListener = false
+	}
+}
+
+// withSealedWindowListener installs the boot-time sealed-window listener's
+// gates on every transport, backed by probe: the allowlist while the barrier
+// is sealed, and a refusal of every request once it is unsealed, sampled per
+// request. The listener runs without authentication -- while sealed there is
+// no identity plane to authenticate against -- so nothing may be served
+// through it against an unsealed barrier, even in the moment between the
+// unseal and the listener's Stop. Only ServeSealedWindow applies it.
+func withSealedWindowListener(probe SealedWindowProbe) ServerOption {
+	return func(o *serverOptions) {
+		o.sealedWindowProbe = probe
+		o.sealedWindowListener = true
+	}
+}
+
+// sealedWindowListenerProbe is the boot-time sealed-window listener's probe:
+// the barrier's sealed state, and whether officer enrollment is still open to
+// an unauthenticated caller, read from the ceremony core the listener serves
+// (ceremony.CeremonyService.EnrollmentOpen). With no ceremony core there is
+// no enrollment to keep open, so it reports closed.
+type sealedWindowListenerProbe struct {
+	SealedWindowProbe
+	*sealedwindow.Admission
+	ceremony *ceremony.CeremonyService
+}
+
+// EnrollmentOpen implements sealedwindow.ListenerProbe under the request's
+// context; ceremony.CeremonyService.EnrollmentOpen bounds the read further
+// and fails closed.
+func (p sealedWindowListenerProbe) EnrollmentOpen(ctx context.Context) bool {
+	return p.ceremony != nil && p.ceremony.EnrollmentOpen(ctx)
+}
+
+var _ sealedwindow.ListenerProbe = sealedWindowListenerProbe{}
+
+// listenerProbe returns the boot-time sealed-window listener's probe over
+// this server's barrier probe and ceremony service.
+func (s *Server) listenerProbe() sealedwindow.ListenerProbe {
+	p := sealedWindowListenerProbe{SealedWindowProbe: s.opts.sealedWindowProbe, Admission: &s.sealedWindowAdmission}
+	if s.opts.ceremonySvc != nil {
+		if core, ok := service.CeremonyServiceCore(s.opts.ceremonySvc); ok {
+			p.ceremony = core
+		}
+	}
+	return p
 }
 
 // WithCABootstrap enables the /v1/ca/bootstrap endpoint on the REST
@@ -861,8 +920,27 @@ func New(cfg *config.Config, kvSvc service.KVServicer, adminSvc service.AdminSer
 	s.wireVolumeStoreResolver()
 	s.wireTenantDataProbe()
 	s.wireReclaimStoreResolver()
+	s.wireProvisioningAuthorization()
 
 	return s
+}
+
+// wireProvisioningAuthorization gives the database service every network
+// transport and both SQL wire listeners create through the provisioning
+// check: databases:create_raft and databases:create_volume, in addition to
+// the databases:create their entry check makes. Which one a create needs
+// depends on the request's backend and the tenant's isolation tier, which no
+// entry check can see. Without authentication there is no entry check to
+// add to, and the service is left as it is.
+func (s *Server) wireProvisioningAuthorization() {
+	if s.opts.databaseSvc == nil || s.opts.authMW == nil {
+		return
+	}
+	var tenants service.TenantInfoLookup
+	if s.opts.tenantSvc != nil {
+		tenants = s.opts.tenantSvc
+	}
+	s.opts.databaseSvc = service.NewProvisioningAuthorizedDatabaseService(s.opts.databaseSvc, s.opts.authMW, tenants)
 }
 
 // wireTenantDataProbe gives the tenant service the data probe its
@@ -1055,6 +1133,22 @@ func (s *Server) start() error {
 		return err
 	}
 
+	// The RAG pipeline resolves every record through the same
+	// per-(tenant, database) registry the transports use. A node with no
+	// database registry leaves it unbound, and RAG then refuses rather than
+	// serve records outside any database's seal, ownership and isolation.
+	//
+	// With request authentication every transport binds the caller's tenant,
+	// and a call without one is refused. Without it no call carries a tenant
+	// and the operator owns every call, so they act for the system tenant.
+	if binder, ok := s.opts.ragSvc.(service.RAGRegistryBinder); ok {
+		var opts []service.RAGBindOption
+		if s.opts.authMW == nil {
+			opts = append(opts, service.RAGUnauthenticatedTenant(tenant.SystemTenantID))
+		}
+		binder.BindRegistry(s.transportServiceRegistry(), opts...)
+	}
+
 	if s.config.Protocols.REST {
 		if err := s.startREST(); err != nil {
 			return err
@@ -1095,7 +1189,11 @@ func (s *Server) start() error {
 		}
 	}
 
-	if s.config.Protocols.MySQL && startMySQLFn != nil {
+	// The SQL wire protocols carry no sealed-window verb, so the boot-time
+	// sealed-window listener has nothing to serve on them. It does not
+	// start them: a listener that refuses everything is still an
+	// unauthenticated surface.
+	if s.config.Protocols.MySQL && startMySQLFn != nil && !s.opts.sealedWindowListener {
 		if err := startMySQLFn(s); err != nil {
 			s.stopMCP()
 			s.stopUnix()
@@ -1106,7 +1204,7 @@ func (s *Server) start() error {
 		}
 	}
 
-	if s.config.Protocols.PostgreSQL && startPgSQLFn != nil {
+	if s.config.Protocols.PostgreSQL && startPgSQLFn != nil && !s.opts.sealedWindowListener {
 		if err := startPgSQLFn(s); err != nil {
 			s.stopMySQL()
 			s.stopMCP()
@@ -1228,6 +1326,36 @@ func (s *Server) MCPAddr() string {
 }
 
 // startREST creates and starts the REST server with configured options.
+// soDualFactorEnabled is the ONE predicate for whether the SO dual-factor
+// gate is on: auth.so_dual_factor set and an SO authenticator wired. REST's
+// SOMiddleware and the gate the gRPC, Unix, QUIC and MCP transports install
+// both follow it, so the transports cannot disagree about whether the SO
+// surface needs the second factor. It does not depend on an auth middleware:
+// a gate with nothing to authenticate the caller fails closed on every
+// transport, which is what REST always did.
+func (s *Server) soDualFactorEnabled() bool {
+	return s.config.Auth.SODualFactor && s.opts.soAuthenticator != nil
+}
+
+// soGate returns the SO dual-factor gate the gRPC, Unix, QUIC and MCP
+// transports install, or nil when soDualFactorEnabled is false. It is built over the same role service,
+// audit logger and audit failure policy REST uses. An unrecognised policy
+// fails the start, as it does for REST.
+func (s *Server) soGate() (*authmw.SOGate, error) {
+	if !s.soDualFactorEnabled() {
+		return nil, nil
+	}
+	policy, err := audit.ParseFailurePolicy(s.config.Auth.AuditFailurePolicy)
+	if err != nil {
+		return nil, err
+	}
+	var roles role.NameResolver
+	if s.opts.roleSvc != nil {
+		roles = s.opts.roleSvc
+	}
+	return authmw.NewSOGate(roles, s.opts.soAuthenticator, s.opts.auditLogger, policy, slog.Default()), nil
+}
+
 func (s *Server) startREST() error {
 	addr := net.JoinHostPort(s.config.Server.Host, strconv.Itoa(s.config.Server.AdminPort))
 
@@ -1273,7 +1401,11 @@ func (s *Server) startREST() error {
 		restOpts = append(restOpts, rest.WithAuthMiddleware(s.opts.authMW))
 	}
 	if s.opts.sealedWindowProbe != nil {
-		restOpts = append(restOpts, rest.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+		if s.opts.sealedWindowListener {
+			restOpts = append(restOpts, rest.WithSealedWindowListener(s.listenerProbe()))
+		} else {
+			restOpts = append(restOpts, rest.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+		}
 	}
 	if s.opts.batchSvc != nil {
 		restOpts = append(restOpts, rest.WithBatch(s.opts.batchSvc))
@@ -1371,7 +1503,7 @@ func (s *Server) startREST() error {
 	if s.opts.soAuthenticator != nil {
 		restOpts = append(restOpts, rest.WithSOAuthenticator(s.opts.soAuthenticator))
 	}
-	if s.config.Auth.SODualFactor {
+	if s.soDualFactorEnabled() {
 		restOpts = append(restOpts, rest.WithSODualFactor())
 	}
 	// The SO dual-factor gate reads the operator's audit failure posture from
@@ -1502,6 +1634,11 @@ func (s *Server) startGRPC() error {
 	if s.opts.roleSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithRoleService(s.opts.roleSvc))
 	}
+	if gate, err := s.soGate(); err != nil {
+		return err
+	} else if gate != nil {
+		grpcOpts = append(grpcOpts, grpcapi.WithSOGate(gate))
+	}
 	if s.opts.certProv != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithCertProvider(s.opts.certProv))
 	}
@@ -1509,7 +1646,11 @@ func (s *Server) startGRPC() error {
 		grpcOpts = append(grpcOpts, grpcapi.WithAuthMiddleware(s.opts.authMW))
 	}
 	if s.opts.sealedWindowProbe != nil {
-		grpcOpts = append(grpcOpts, grpcapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+		if s.opts.sealedWindowListener {
+			grpcOpts = append(grpcOpts, grpcapi.WithSealedWindowListener(s.listenerProbe()))
+		} else {
+			grpcOpts = append(grpcOpts, grpcapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+		}
 	}
 	if s.opts.barrierSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithBarrierService(s.opts.barrierSvc))
@@ -1627,6 +1768,11 @@ func (s *Server) startQUIC() error {
 	if s.opts.roleSvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithRoleService(s.opts.roleSvc))
 	}
+	if gate, err := s.soGate(); err != nil {
+		return err
+	} else if gate != nil {
+		quicOpts = append(quicOpts, quicapi.WithSOGate(gate))
+	}
 	if s.opts.certProv != nil {
 		quicOpts = append(quicOpts, quicapi.WithCertProvider(s.opts.certProv))
 	}
@@ -1634,7 +1780,11 @@ func (s *Server) startQUIC() error {
 		quicOpts = append(quicOpts, quicapi.WithAuthMiddleware(s.opts.authMW))
 	}
 	if s.opts.sealedWindowProbe != nil {
-		quicOpts = append(quicOpts, quicapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+		if s.opts.sealedWindowListener {
+			quicOpts = append(quicOpts, quicapi.WithSealedWindowListener(s.listenerProbe()))
+		} else {
+			quicOpts = append(quicOpts, quicapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+		}
 	}
 	if s.opts.collectionSvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithCollectionService(s.opts.collectionSvc))
@@ -1749,6 +1899,11 @@ func (s *Server) startUnix() error {
 	if s.opts.roleSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithRoleService(s.opts.roleSvc))
 	}
+	if gate, err := s.soGate(); err != nil {
+		return err
+	} else if gate != nil {
+		unixOpts = append(unixOpts, unixapi.WithSOGate(gate))
+	}
 	if s.opts.certProv != nil {
 		unixOpts = append(unixOpts, unixapi.WithCertProvider(s.opts.certProv))
 	}
@@ -1756,7 +1911,11 @@ func (s *Server) startUnix() error {
 		unixOpts = append(unixOpts, unixapi.WithAuthMiddleware(s.opts.authMW))
 	}
 	if s.opts.sealedWindowProbe != nil {
-		unixOpts = append(unixOpts, unixapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+		if s.opts.sealedWindowListener {
+			unixOpts = append(unixOpts, unixapi.WithSealedWindowListener(s.listenerProbe()))
+		} else {
+			unixOpts = append(unixOpts, unixapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+		}
 	}
 	if s.opts.barrierSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithBarrierService(s.opts.barrierSvc))
@@ -1884,11 +2043,20 @@ func (s *Server) startMCP() error {
 	if s.opts.roleSvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithRoleService(s.opts.roleSvc))
 	}
+	if gate, err := s.soGate(); err != nil {
+		return err
+	} else if gate != nil {
+		mcpOpts = append(mcpOpts, mcpapi.WithSOGate(gate))
+	}
 	if s.opts.certProv != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithCertProvider(s.opts.certProv))
 	}
 	if s.opts.sealedWindowProbe != nil {
-		mcpOpts = append(mcpOpts, mcpapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+		if s.opts.sealedWindowListener {
+			mcpOpts = append(mcpOpts, mcpapi.WithSealedWindowListener(s.listenerProbe()))
+		} else {
+			mcpOpts = append(mcpOpts, mcpapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+		}
 	}
 	if s.opts.barrierSvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithBarrierService(s.opts.barrierSvc))

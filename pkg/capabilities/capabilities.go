@@ -20,7 +20,10 @@
 // not-compiled, mode-gated, or config-disabled.
 package capabilities
 
-import "sync"
+import (
+	"slices"
+	"sync"
+)
 
 // Run modes reported through Capabilities.Mode.
 const (
@@ -64,6 +67,13 @@ type Capabilities struct {
 	PostgreSQL  bool   `json:"postgresql"`
 	Etcd        bool   `json:"etcd"`
 	FTS         bool   `json:"fts"`
+
+	// UnencryptedAtRest lists, when seal is enabled, where this node keeps
+	// data on disk outside the barrier's at-rest encryption -- a state
+	// machine or a local storage backend that does not route its files
+	// through the barrier. Empty when seal is off or everything on disk is
+	// encrypted. It is a report, not a refusal: the node runs, and says so.
+	UnencryptedAtRest []string `json:"unencryptedAtRest,omitempty"`
 }
 
 var (
@@ -85,6 +95,7 @@ func Register(feature string) {
 // Get returns exactly this profile. Sealing again replaces the profile;
 // composition roots must seal exactly once, before serving traffic.
 func Seal(c Capabilities) {
+	c.UnencryptedAtRest = slices.Clone(c.UnencryptedAtRest)
 	mu.Lock()
 	sealed = &c
 	mu.Unlock()
@@ -108,7 +119,9 @@ func Get() Capabilities {
 	defer mu.RUnlock()
 
 	if sealed != nil {
-		return *sealed
+		c := *sealed
+		c.UnencryptedAtRest = slices.Clone(c.UnencryptedAtRest)
+		return c
 	}
 
 	_, ts := features["timeSeries"]

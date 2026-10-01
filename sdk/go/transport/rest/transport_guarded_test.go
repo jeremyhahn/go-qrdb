@@ -274,7 +274,8 @@ func TestRESTGuarded_CarriesTheDatabaseScope(t *testing.T) {
 		writeJSON(w, putIfAbsentWireResponse{Stored: true})
 	})
 
-	scoped, ok := rt.WithDatabase("orders").(transport.GuardedKVClient)
+	var scopedTr transport.Transport = rt.withDatabase("orders")
+	scoped, ok := scopedTr.(transport.GuardedKVClient)
 	if !ok {
 		t.Fatal("the database-scoped clone does not implement transport.GuardedKVClient")
 	}

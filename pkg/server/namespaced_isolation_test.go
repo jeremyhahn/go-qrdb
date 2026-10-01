@@ -97,7 +97,7 @@ func newTwoTenantStore() *seededMVCC {
 
 func TestNamespacedMVCC_RangeNeverLeaksForeignNamespace(t *testing.T) {
 	inner := newTwoTenantStore()
-	wA := newNamespacedMVCCService(inner, "tenantA/db/")
+	wA := newNamespacedMVCCService(inner, "tenantA/db/", nil)
 	ctx := context.Background()
 
 	bounds := []struct {

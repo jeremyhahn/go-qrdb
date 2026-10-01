@@ -57,6 +57,7 @@ the code, the document is wrong and gets fixed — never the reverse.
 | [full-text-search](full-text-search/) | inverted index, analyzer, tokenizer *(build tag `qrdb_fts`)* |
 | [collections](collections/) | document collections and ID strategies |
 | [sql](sql/) | MySQL and PostgreSQL wire protocols, relational tables, transactions, privileges |
+| [row-locking](row-locking/) | optimistic vs pessimistic SQL concurrency, `FOR UPDATE` / `FOR SHARE`, the replicated lock table, deadlock detection |
 | [vectors](vectors/) | vector namespaces, k-NN and hybrid search, index maintenance *(`qrdb_vector`)* |
 | [time-series](time-series/) | metrics, tags, aggregation, retention *(`qrdb_ts`)* |
 | [embeddings](embeddings/) | text→vector provider proxy with caching |
@@ -74,6 +75,7 @@ the code, the document is wrong and gets fixed — never the reverse.
 | [run-modes](run-modes/) | standalone vs raft, the three capability gates |
 | [configuration](configuration/) | load order, validation, the flag/YAML mapping |
 | [deployment](deployment/) | host requirements — locked memory, container and systemd caps |
+| [release](release/) | cutting a release: the Release workflow, VERSION as the release record, lockstep module tags, tag protection |
 | [api-server](api-server/) | the unified multi-protocol server and the `ServiceModule` seam |
 
 ### Security and identity
@@ -103,10 +105,11 @@ the code, the document is wrong and gets fixed — never the reverse.
 
 ## Migration state
 
-**All 39 currently-implemented features have a `docs/<feature>/` folder with all
+**All 41 currently-implemented features have a `docs/<feature>/` folder with all
 five files** (migrated 2026-08-19; [rate-limit](rate-limit/) and
 [coordination](coordination/) added 2026-09-10;
-[attested-caller](attested-caller/) added 2026-09-25; [tenant-dek](tenant-dek/) added
+[attested-caller](attested-caller/) added 2026-09-25;
+[row-locking](row-locking/) added 2026-09-30; [tenant-dek](tenant-dek/) added
 2026-10-01). The portfolio view is derived,
 not maintained — count `docs/*/architecture.md`.
 

@@ -165,6 +165,12 @@ func (b *StorageBarrier) RecoverWithKeys(ctx context.Context, shareValues []stri
 		return err
 	}
 	defer rootBuf.Destroy()
+	// The alias spans storage I/O, a JSON decode and newRecoveryStrategyFn,
+	// which copies the key into an enclave of its own: a protected allocation
+	// that rule 6 keeps out of a borrow. The same holds on the
+	// recoverWithSoftwareStrategy path (go-qrdb#428).
+	//
+	//secure:unborrowed allocates-protected newRecoveryStrategyFn copies rootKey into its own enclave
 	rootKey := rootBuf.Bytes()
 
 	// Use unsealDirect to initialize/unseal the EpochBarrier with the recovered

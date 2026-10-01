@@ -51,11 +51,11 @@ func TestRun_WriteThenCheckPasses(t *testing.T) {
 	prof := writeProfile(t, 4, 9) // 90%: under the floor, so only the ratchet can pass it
 	base := filepath.Join(t.TempDir(), "baseline.txt")
 
-	if err := run([]string{"-profile", prof, "-baseline", base, "-write", "-discovery-floor", "4"}, io.Discard); err != nil {
+	if err := run([]string{"-tags", "t", "-profile", prof, "-baseline", base, "-write", "-discovery-floor", "4"}, io.Discard); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	var out strings.Builder
-	err := run([]string{"-profile", prof, "-baseline", base, "-min", "85", "-discovery-floor", "4"}, &out)
+	err := run([]string{"-tags", "t", "-profile", prof, "-baseline", base, "-min", "85", "-discovery-floor", "4"}, &out)
 	if err != nil {
 		t.Fatalf("check against its own baseline: %v", err)
 	}
@@ -69,10 +69,10 @@ func TestRun_WriteThenCheckPasses(t *testing.T) {
 // "pass" that could not fail would prove nothing.
 func TestRun_CheckCatchesARegressionAgainstAWrittenBaseline(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "baseline.txt")
-	if err := run([]string{"-profile", writeProfile(t, 4, 10), "-baseline", base, "-write", "-discovery-floor", "4"}, io.Discard); err != nil {
+	if err := run([]string{"-tags", "t", "-profile", writeProfile(t, 4, 10), "-baseline", base, "-write", "-discovery-floor", "4"}, io.Discard); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	err := run([]string{"-profile", writeProfile(t, 4, 9), "-baseline", base, "-min", "85", "-discovery-floor", "4"}, io.Discard)
+	err := run([]string{"-tags", "t", "-profile", writeProfile(t, 4, 9), "-baseline", base, "-min", "85", "-discovery-floor", "4"}, io.Discard)
 	var ge *GateError
 	if !errors.As(err, &ge) || len(ge.Regressed) != 4 {
 		t.Fatalf("err = %v, want all four packages regressed 100%% -> 90%%", err)
@@ -105,11 +105,11 @@ func TestRun_MissingInputsAreErrors(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "absent")
 
 	var pe *ProfileError
-	if err := run([]string{"-profile", missing, "-baseline", "b", "-min", "91"}, io.Discard); !errors.As(err, &pe) {
+	if err := run([]string{"-tags", "t", "-profile", missing, "-baseline", "b", "-min", "91"}, io.Discard); !errors.As(err, &pe) {
 		t.Errorf("missing profile: err = %v, want *ProfileError", err)
 	}
 	var be *BaselineError
-	if err := run([]string{"-profile", writeProfile(t, 1, 10), "-baseline", missing, "-min", "91", "-discovery-floor", "1"}, io.Discard); !errors.As(err, &be) {
+	if err := run([]string{"-tags", "t", "-profile", writeProfile(t, 1, 10), "-baseline", missing, "-min", "91", "-discovery-floor", "1"}, io.Discard); !errors.As(err, &be) {
 		t.Errorf("missing baseline: err = %v, want *BaselineError", err)
 	}
 }
@@ -120,7 +120,7 @@ func TestRun_MissingInputsAreErrors(t *testing.T) {
 // only as "new". The discovery floor guards -write as well as the check.
 func TestRun_WriteRefusesATruncatedProfile(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "baseline.txt")
-	err := run([]string{"-profile", writeProfile(t, 2, 10), "-baseline", base, "-write", "-discovery-floor", "50"}, io.Discard)
+	err := run([]string{"-tags", "t", "-profile", writeProfile(t, 2, 10), "-baseline", base, "-write", "-discovery-floor", "50"}, io.Discard)
 	var fe *DiscoveryFloorError
 	if !errors.As(err, &fe) {
 		t.Fatalf("err = %v, want *DiscoveryFloorError", err)
@@ -134,7 +134,7 @@ func TestRun_WriteRefusesATruncatedProfile(t *testing.T) {
 // into the baseline, or excluding it later would leave a stale entry.
 func TestRun_WriteLeavesExcludedPackagesOut(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "baseline.txt")
-	if err := run([]string{"-profile", writeProfile(t, 3, 10), "-baseline", base, "-write",
+	if err := run([]string{"-tags", "t", "-profile", writeProfile(t, 3, 10), "-baseline", base, "-write",
 		"-exclude", "example.com/m/p0", "-discovery-floor", "2"}, io.Discard); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -155,11 +155,11 @@ func TestRun_WriteLeavesExcludedPackagesOut(t *testing.T) {
 // that checked nothing, so what it excluded and what has headroom are printed.
 func TestRun_ReportShowsHeadroomAndStaleExclusions(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "baseline.txt")
-	if err := run([]string{"-profile", writeProfile(t, 3, 9), "-baseline", base, "-write", "-discovery-floor", "3"}, io.Discard); err != nil {
+	if err := run([]string{"-tags", "t", "-profile", writeProfile(t, 3, 9), "-baseline", base, "-write", "-discovery-floor", "3"}, io.Discard); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	var out strings.Builder
-	err := run([]string{"-profile", writeProfile(t, 3, 10), "-baseline", base, "-min", "85",
+	err := run([]string{"-tags", "t", "-profile", writeProfile(t, 3, 10), "-baseline", base, "-min", "85",
 		"-exclude", "example.com/m/never-measured", "-discovery-floor", "3"}, &out)
 	if err != nil {
 		t.Fatalf("check: %v", err)
@@ -180,7 +180,7 @@ func TestRun_ReportShowsHeadroomAndStaleExclusions(t *testing.T) {
 // written.
 func TestRun_WriteReportsAnUncreatableBaseline(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "no-such-dir", "baseline.txt")
-	err := run([]string{"-profile", writeProfile(t, 2, 10), "-baseline", base, "-write", "-discovery-floor", "2"}, io.Discard)
+	err := run([]string{"-tags", "t", "-profile", writeProfile(t, 2, 10), "-baseline", base, "-write", "-discovery-floor", "2"}, io.Discard)
 	var be *BaselineError
 	if !errors.As(err, &be) || be.Reason != "cannot create" {
 		t.Fatalf("err = %v, want *BaselineError(cannot create)", err)
@@ -195,12 +195,16 @@ func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("disk ful
 // TestWriteBaseline_PropagatesWriteFailures: a baseline that could not be
 // written must not look written. Both the header and a package line can fail.
 func TestWriteBaseline_PropagatesWriteFailures(t *testing.T) {
-	if err := WriteBaseline(failingWriter{}, map[string]Stats{"a": {1, 1}}); err == nil {
+	if err := WriteBaseline(failingWriter{}, map[string]Stats{"a": {1, 1}}, "t"); err == nil {
 		t.Error("a failed header write was swallowed")
 	}
-	// Let the header through, then fail on the first package line.
-	w := &countingWriter{failAfter: 1}
-	if err := WriteBaseline(w, map[string]Stats{"a": {1, 1}}); err == nil {
+	// Let the build-tags directive through, then fail on the first package line.
+	if err := WriteBaseline(&countingWriter{failAfter: 1}, map[string]Stats{"a": {1, 1}}, "t"); err == nil {
+		t.Error("a failed build-tags write was swallowed")
+	}
+	// Let the header and the directive through, then fail on the first package line.
+	w := &countingWriter{failAfter: 2}
+	if err := WriteBaseline(w, map[string]Stats{"a": {1, 1}}, "t"); err == nil {
 		t.Error("a failed package-line write was swallowed")
 	}
 }

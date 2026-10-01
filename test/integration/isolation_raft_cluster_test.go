@@ -214,7 +214,7 @@ func TestIsolationRaft_EndToEnd(t *testing.T) {
 			"name":      "db-admin",
 			"tenant_id": iraftTenantID,
 			"permissions": []string{
-				"databases:create",
+				"databases:create", "databases:create_raft",
 				"databases:create_raft",
 				"databases:read",
 				"databases:list",

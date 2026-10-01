@@ -1,6 +1,11 @@
 # Databases — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
+> Scope: go-qrdb · Last verified: 2026-09-28
+>
+> "Target" sections describe the multi-model database program in
+> [architecture.md](architecture.md); they are approved by the owner on 2026-09-30 and not
+> implemented. OD-n refers to that document's ruled decisions.
 
 Command group: `qrdb database` (alias `qrdb db`) — create, inspect, list, drop
 and reconfigure databases. All verbs accept the root persistent flags documented
@@ -10,12 +15,12 @@ in [../key-value/cli.md](../key-value/cli.md#global-flags).
 
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
-| `--engine` | string | `kv` | `kv \| timeseries` |
-| `--backend` | string | `pebble` | `pebble \| memory \| file \| raft` |
-| `--data-dir` | string | — | dedicated data directory; **required for a real per-database barrier** |
+| `--engine` | string | `kv` | `kv \| timeseries` — **removed in the target design** |
+| `--backend` | string | `pebble` | `pebble \| memory \| file \| raft \| objstore` — see below |
+| `--data-dir` | string | — | dedicated data directory; **required for a per-database barrier**. Honoured for the system tenant only |
 | `--cluster-mode` | string | `local` | `local \| distributed` — **raft backend only** |
 | `--replicas` | int | 1 | replication factor — **raft backend only** |
-| `--barrier-enabled` | bool | false | enable a per-database encryption barrier (**requires a dedicated store**) |
+| `--barrier-enabled` | bool | false | enable a per-database encryption barrier (**non-raft `--data-dir` database, system tenant only**) |
 | `--barrier-strategy` | string | `passphrase` | `passphrase \| shamir` |
 | `--barrier-passphrase` | string | — | passphrase, when strategy is `passphrase` |
 | `--barrier-shamir-threshold` | int | — | quorum threshold, when strategy is `shamir` |
@@ -27,15 +32,50 @@ in [../key-value/cli.md](../key-value/cli.md#global-flags).
 ```bash
 qrdb database create app
 qrdb database create billing --engine kv --backend raft --replicas 3 --cluster-mode distributed
-qrdb database create secure --data-dir /var/lib/qrdb/secure \
+qrdb database create secure --data-dir <install-dir>/secure \
      --barrier-enabled --barrier-strategy passphrase --barrier-passphrase "$PASSPHRASE"
 qrdb database create k8s --engine kv --backend raft --etcd --etcd-listen-addr :2379
 ```
 
-**A barrier needs a dedicated store.** `--barrier-enabled` is accepted only with
-an explicit `--data-dir`, a `--backend raft` database, or a database created for
-an IsolationVolume / IsolationRaft tenant. On a database sharing the default
-store it is **rejected**, not warned about.
+**A barrier must be on the data path.** `--barrier-enabled` is accepted only on
+a non-raft database with an explicit `--data-dir`, which only the system tenant
+can set. It is **rejected**, not warned about, on a database sharing the default
+store (`SharedStoreBarrierUnsupportedError`), on a `--backend raft` database and
+on any database of a volume- or raft-isolated tenant
+(`BarrierOffDataPathError`): each is served from a store the barrier would not
+wrap. Both refusals are `422` / `FAILED_PRECONDITION`.
+
+**Reserved names.** `wal` and `nodehost` (in any case) name node state and
+are refused for every database.
+
+Measured: `--backend` is recorded and, for most databases, not where the data
+lives, and `--backend objstore` fails when the store is opened. See
+[architecture.md](architecture.md) "Current state".
+
+### Target: `qrdb database create <name>`
+
+`--engine` is removed; passing it is an unknown-flag error. Every database
+serves every compiled-in engine.
+
+| Flag | Type | Default | Meaning |
+|---|---|---|---|
+| `--backend` | string | node `database_defaults.backend` (OD-3) | `memory \| file \| pebble \| raft \| objstore` — where **every** engine of the database stores its data |
+| `--data-dir` | string | under the tenant's data root | the database's store directory; for volume and raft tenants it must lie under the tenant's root |
+| `--cluster-mode` | string | node default | `local \| distributed` — **raft backend only**, refused otherwise |
+| `--replicas` | int | node default | replication factor — **raft backend only**, refused otherwise |
+| `--raft-state-storage` | string | node default | `pebble \| file \| memory` — the raft state machine's local store (OD-8) |
+| `--barrier-*`, `--etcd*` | | | as above; a barrier is refused on `memory`, etcd is refused on anything but `raft` |
+
+```bash
+qrdb database create app                                   # node default backend
+qrdb database create cache --backend memory
+qrdb database create archive --backend objstore
+qrdb database create billing --backend raft --replicas 3 --cluster-mode distributed
+```
+
+`qrdb database info <name> --output json` reports the resolved `binding` —
+local or raft, owning or replica nodes, whose key encrypts it, and the
+generation.
 
 ## `qrdb database info <name>` / `list`
 
@@ -115,6 +155,15 @@ qrdb database unseal secure --secret "$SECRET"
 | `--mysql` | bool | enable the MySQL wire protocol |
 | `--postgresql` | bool | enable the PostgreSQL wire protocol |
 
+### `qrdb database update-sql <name>`
+
+| Flag | Type | Meaning |
+|---|---|---|
+| `--concurrency` | string | `optimistic \| pessimistic` — the database's default SQL concurrency mode |
+
+`qrdb database create` takes the same setting as `--sql-concurrency`. See
+[../row-locking/cli.md](../row-locking/cli.md).
+
 ### `qrdb database update-etcd <name>`
 
 | Flag | Type | Default | Meaning |
@@ -135,7 +184,8 @@ qrdb database update-etcd --name k8s --enabled --listen-addr :2379
 
 ### `qrdb database update-connection <name>`
 
-For a database backed by a remote node.
+For a database backed by a remote node. Measured: the connection is recorded and
+never used — no remote proxy is constructed. Removed in the target design, with remote mode (OD-9, ruled A).
 
 | Flag | Type | Default | Meaning |
 |---|---|---|---|

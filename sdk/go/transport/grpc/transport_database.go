@@ -63,6 +63,10 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 		}
 	}
 
+	if req.SQL != nil {
+		pbReq.Sql = &pb.DatabaseSQLConfig{Concurrency: req.SQL.Concurrency}
+	}
+
 	resp, err := t.client.DatabaseCreate(ctx, pbReq)
 	if err != nil {
 		return nil, mapGRPCError("CreateDatabase", err)
@@ -225,6 +229,26 @@ func (t *Transport) UpdateDatabaseBarrier(ctx context.Context, req transport.Upd
 	return protoToDatabaseInfo(resp), nil
 }
 
+// UpdateDatabaseSQL updates a database's SQL settings by calling the
+// DatabaseUpdateSQL gRPC method.
+func (t *Transport) UpdateDatabaseSQL(ctx context.Context, req transport.UpdateDatabaseSQLRequest) (*transport.DatabaseInfo, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	pbReq := &pb.DatabaseUpdateSQLRequest{Name: req.Name}
+	if req.SQL != nil {
+		pbReq.Sql = &pb.DatabaseSQLConfig{Concurrency: req.SQL.Concurrency}
+	}
+
+	resp, err := t.client.DatabaseUpdateSQL(ctx, pbReq)
+	if err != nil {
+		return nil, mapGRPCError("UpdateDatabaseSQL", err)
+	}
+
+	return protoToDatabaseInfo(resp), nil
+}
+
 // UpdateDatabaseConnection updates the connection configuration for a
 // database.
 func (t *Transport) UpdateDatabaseConnection(ctx context.Context, req transport.UpdateDatabaseConnectionRequest) (*transport.DatabaseInfo, error) {
@@ -299,6 +323,10 @@ func protoToDatabaseInfo(resp *pb.DatabaseInfoResponse) *transport.DatabaseInfo 
 			CertFile:  c.GetCertFile(),
 			KeyFile:   c.GetKeyFile(),
 		}
+	}
+
+	if q := resp.GetSql(); q != nil {
+		info.SQL = &transport.DatabaseSQLConfig{Concurrency: q.GetConcurrency()}
 	}
 
 	return info

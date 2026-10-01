@@ -216,6 +216,26 @@ type DatabaseConfig struct {
 
 	// PostgreSQL enables the PostgreSQL wire protocol for this database.
 	PostgreSQL bool `yaml:"postgresql,omitempty" json:"postgresql,omitempty"`
+
+	// SQL holds the database's SQL settings. When set, it is applied at
+	// every start -- the file is the declaration -- and a database it is
+	// absent from keeps whatever was last set through UpdateDatabaseSQL.
+	SQL *DatabaseSQLConfig `yaml:"sql,omitempty" json:"sql,omitempty"`
+}
+
+// DatabaseSQLConfig is a database's SQL settings in the configuration file.
+// See docs/row-locking/.
+type DatabaseSQLConfig struct {
+	// Concurrency is "optimistic" (the default when empty) or "pessimistic".
+	Concurrency string `yaml:"concurrency" json:"concurrency,omitempty"`
+}
+
+// validDatabaseConcurrencies are the accepted sql.concurrency values; empty
+// means the default.
+var validDatabaseConcurrencies = map[string]struct{}{
+	"":            {},
+	"optimistic":  {},
+	"pessimistic": {},
 }
 
 // ServerConfig configures the QRDB server's network listeners.
@@ -1900,6 +1920,11 @@ func (c *Config) Validate() error {
 		}
 		if _, ok := validDatabaseBackends[db.Backend]; !ok {
 			return &DatabaseConfigError{Name: db.Name, Message: "backend must be one of: memory, file, pebble, raft, objstore"}
+		}
+		if db.SQL != nil {
+			if _, ok := validDatabaseConcurrencies[db.SQL.Concurrency]; !ok {
+				return &DatabaseConfigError{Name: db.Name, Message: "sql.concurrency must be one of: optimistic, pessimistic"}
+			}
 		}
 		if _, dup := seen[db.Name]; dup {
 			return &DatabaseConfigError{Name: db.Name, Message: "duplicate database name"}

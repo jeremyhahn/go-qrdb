@@ -32,6 +32,7 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -67,7 +68,7 @@ var _ transport.DatabaseScoper = (*Transport)(nil)
 // parent's underlying QUIC connection. Scoping to the empty string or the
 // default "system" database yields an unscoped clone (no database is sent). It
 // implements transport.DatabaseScoper.
-func (t *Transport) WithDatabase(database string) transport.Transport {
+func (t *Transport) withDatabase(database string) *Transport {
 	clone := &Transport{
 		config:   t.config,
 		conn:     t.conn,
@@ -75,6 +76,13 @@ func (t *Transport) WithDatabase(database string) transport.Transport {
 	}
 	clone.closed.Store(t.closed.Load())
 	return clone
+}
+
+// WithDatabase implements transport.DatabaseScoper. Scoping a network
+// transport never fails: the database travels with every data-plane request
+// and the server resolves it.
+func (t *Transport) WithDatabase(database string) (transport.Transport, error) {
+	return t.withDatabase(database), nil
 }
 
 // New creates a new QUIC transport with the given options. The transport
@@ -574,6 +582,8 @@ func (t *Transport) Capabilities(ctx context.Context) (*transport.CapabilitiesRe
 		PostgreSQL:  resp.GetPostgresql(),
 		Etcd:        resp.GetEtcd(),
 		FTS:         resp.GetFts(),
+
+		UnencryptedAtRest: resp.GetUnencryptedAtRest(),
 	}, nil
 }
 
@@ -715,6 +725,18 @@ func (t *Transport) callContext(ctx context.Context) (context.Context, context.C
 // acknowledgement that the response arrived, which the server waits for
 // before it can close the connection during a system-scope migration's
 // recycle (go-qrdb#550). See wire.ProtocolV2.
+// callWithSecret is call for a request whose payload carries the SO PIN in
+// its so_pin field: the payload is wiped once the call returns, sent or not.
+// The PIN string the message was built from cannot be wiped; this removes the
+// one byte copy the SDK owns.
+func (t *Transport) callWithSecret(ctx context.Context, method string, payload []byte) ([]byte, error) {
+	defer secure.Wipe(payload)
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	return t.call(ctx, method, payload)
+}
+
 func (t *Transport) call(ctx context.Context, method string, payload []byte) ([]byte, error) {
 	ctx, cancel := t.callContext(ctx)
 	defer cancel()

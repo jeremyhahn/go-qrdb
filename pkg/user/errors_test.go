@@ -221,3 +221,230 @@ func TestUserNotFoundError_IsTheSDKTransportType(t *testing.T) {
 		t.Errorf("Lookup = %q", viaTransport.Lookup)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// EmailExistsError
+// ---------------------------------------------------------------------------
+
+func TestEmailExistsError_Message(t *testing.T) {
+	err := &EmailExistsError{Email: "a@example.com", TenantID: "acme"}
+	want := "user: email already exists: a@example.com in tenant acme"
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SystemTenantRequiredError
+// ---------------------------------------------------------------------------
+
+func TestSystemTenantRequiredError_Message(t *testing.T) {
+	err := &SystemTenantRequiredError{TenantID: "acme"}
+	want := "user: system flag requires the system tenant, got: acme"
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SystemUserAlreadyExistsError
+// ---------------------------------------------------------------------------
+
+func TestSystemUserAlreadyExistsError_MessageWithID(t *testing.T) {
+	err := &SystemUserAlreadyExistsError{ExistingID: 7}
+	want := "user: a system user already exists: 7"
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+}
+
+func TestSystemUserAlreadyExistsError_MessageUnresolved(t *testing.T) {
+	err := &SystemUserAlreadyExistsError{}
+	want := "user: a system user already exists"
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CertBindingNotFoundError
+// ---------------------------------------------------------------------------
+
+func TestCertBindingNotFoundError_Message(t *testing.T) {
+	err := &CertBindingNotFoundError{UserID: 3, Thumbprint: "AAAA"}
+	want := "user: cert thumbprint AAAA is not bound to user 3"
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// IndexCompensationError
+// ---------------------------------------------------------------------------
+
+func TestIndexCompensationError_Message(t *testing.T) {
+	cause := errors.New("write failed")
+	err := &IndexCompensationError{
+		Op:       "update",
+		UserID:   5,
+		Cause:    cause,
+		Failures: []error{errors.New("f1"), errors.New("f2")},
+	}
+	want := "user: update failed for id 5 and index rollback was incomplete (2 cleanup failure(s)): write failed"
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+	if !errors.Is(err, cause) {
+		t.Fatal("errors.Is(err, cause) = false, want true via Unwrap")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// HandleReclaimedError
+// ---------------------------------------------------------------------------
+
+func TestHandleReclaimedError_Message(t *testing.T) {
+	err := &HandleReclaimedError{Key: "username/bob"}
+	want := "user: handle username/bob was reclaimed before rollback could restore it"
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ConcurrentUpdateError
+// ---------------------------------------------------------------------------
+
+func TestConcurrentUpdateError_Message(t *testing.T) {
+	err := &ConcurrentUpdateError{ID: 9}
+	want := "user: concurrent update to user 9; re-read and retry"
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CommitOutcomeUnknownError
+// ---------------------------------------------------------------------------
+
+func TestCommitOutcomeUnknownError_MessageWithErr(t *testing.T) {
+	inner := errors.New("timeout")
+	err := &CommitOutcomeUnknownError{ID: 4, Err: inner}
+	want := "user: commit outcome unknown for user 4; re-read and reconcile before retrying: timeout"
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+	if !errors.Is(err, inner) {
+		t.Fatal("errors.Is(err, inner) = false, want true via Unwrap")
+	}
+}
+
+func TestCommitOutcomeUnknownError_MessageNoErr(t *testing.T) {
+	err := &CommitOutcomeUnknownError{ID: 4}
+	want := "user: commit outcome unknown for user 4; re-read and reconcile before retrying"
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+	if err.Unwrap() != nil {
+		t.Fatal("Unwrap() with no Err should return nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// IDEncodingError
+// ---------------------------------------------------------------------------
+
+func TestIDEncodingError_Message(t *testing.T) {
+	err := &IDEncodingError{Length: 3}
+	want := "user: malformed id index value: expected 8 bytes, got 3"
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// HandleContendedError
+// ---------------------------------------------------------------------------
+
+func TestHandleContendedError_Message(t *testing.T) {
+	err := &HandleContendedError{Key: "user/idx/k", Attempts: 8}
+	want := "user: handle user/idx/k changed hands on each of 8 claim attempts; retry"
+	if err.Error() != want {
+		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
+	}
+}
+
+// TestClaimOrHolder_SustainedChurnIsContended: every claim finds the key held
+// and every read finds it released again. The claim neither spins nor reports
+// a holder it never saw; it gives up with the typed contention error.
+func TestClaimOrHolder_SustainedChurnIsContended(t *testing.T) {
+	kv := newMemKVStore()
+	s := &kvUserStore{store: kv}
+	ctx := context.Background()
+	const key = "handle/churning"
+	if err := kv.Put(ctx, key, encodeID(9)); err != nil {
+		t.Fatal(err)
+	}
+	claims := 0
+	kv.afterPutIfAbsent = func(k string, stored bool) {
+		if k == key && !stored {
+			claims++
+			kv.data.Delete(key) // the holder releases before the read
+		}
+	}
+	kv.afterGet = func(k string) {
+		if k == key {
+			kv.data.Store(key, encodeID(9)) // and re-takes it before the next claim
+		}
+	}
+	holder, err := s.claimOrHolder(ctx, key, encodeID(1))
+	var contended *HandleContendedError
+	if !errors.As(err, &contended) || holder != nil {
+		t.Fatalf("claimOrHolder = %v, %v; want *HandleContendedError", holder, err)
+	}
+	if contended.Attempts != handleClaimAttempts || claims != handleClaimAttempts {
+		t.Fatalf("attempts = %d, claims = %d; want %d each", contended.Attempts, claims, handleClaimAttempts)
+	}
+}
+
+// TestClaimOrHolder_StoreErrorsAreNotConflicts: a store that cannot claim, or
+// cannot read the holder of a key it found held, reports that failure and
+// never a holder -- for the claim and for a rollback's restore alike.
+func TestClaimOrHolder_StoreErrorsAreNotConflicts(t *testing.T) {
+	ctx := context.Background()
+	claimFails := errors.New("claim failed")
+	readFails := errors.New("read failed")
+	for name, kv := range map[string]*errKVStore{
+		"claim": {putErr: claimFails},
+		"read":  {getErr: readFails},
+	} {
+		t.Run(name, func(t *testing.T) {
+			want := map[string]error{"claim": claimFails, "read": readFails}[name]
+			s := &kvUserStore{store: kv}
+			if holder, err := s.claimOrHolder(ctx, "k", encodeID(1)); !errors.Is(err, want) || holder != nil {
+				t.Fatalf("claimOrHolder = %v, %v; want %v", holder, err, want)
+			}
+			if err := s.restoreHandle(ctx, "k", encodeID(1)); !errors.Is(err, want) {
+				t.Fatalf("restoreHandle = %v, want %v", err, want)
+			}
+		})
+	}
+}
+
+// TestHeldByOther covers the three holder readings: none (claimed), self,
+// another user, and an undecodable value, which is an error rather than a
+// conflict.
+func TestHeldByOther(t *testing.T) {
+	if _, other, err := heldByOther(nil, 1); other || err != nil {
+		t.Fatalf("nil holder: other=%v err=%v", other, err)
+	}
+	if _, other, err := heldByOther(encodeID(1), 1); other || err != nil {
+		t.Fatalf("self holder: other=%v err=%v", other, err)
+	}
+	if owner, other, err := heldByOther(encodeID(2), 1); !other || owner != 2 || err != nil {
+		t.Fatalf("other holder: owner=%d other=%v err=%v", owner, other, err)
+	}
+	if _, other, err := heldByOther([]byte("not-an-id"), 1); other || err == nil {
+		t.Fatalf("undecodable holder: other=%v err=%v; want an error", other, err)
+	}
+}

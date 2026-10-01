@@ -730,6 +730,12 @@ service QRDBService {
         option (qrdb.v1.permission) = "databases:update";
     }
 
+    // DatabaseUpdateSQL updates a database's SQL settings -- its
+    // sql.concurrency (optimistic or pessimistic). See docs/row-locking/.
+    rpc DatabaseUpdateSQL(DatabaseUpdateSQLRequest) returns (DatabaseInfoResponse) {
+        option (qrdb.v1.permission) = "databases:update";
+    }
+
     // -----------------------------------------------------------------------
     // Barrier operations
     // -----------------------------------------------------------------------
@@ -746,7 +752,7 @@ service QRDBService {
     }
 
     // BarrierSeal seals the barrier, preventing data access until unsealed.
-    rpc BarrierSeal(google.protobuf.Empty) returns (google.protobuf.Empty) {
+    rpc BarrierSeal(BarrierSealRequest) returns (google.protobuf.Empty) {
         option (qrdb.v1.permission) = "seal:seal";
     }
 
@@ -845,7 +851,7 @@ service QRDBService {
     }
 
     // BarrierRecoveryDelete deletes all stored recovery keys.
-    rpc BarrierRecoveryDelete(google.protobuf.Empty) returns (google.protobuf.Empty) {
+    rpc BarrierRecoveryDelete(BarrierRecoveryDeleteRequest) returns (google.protobuf.Empty) {
         option (qrdb.v1.permission) = "seal:generate_recovery";
     }
 
@@ -2079,6 +2085,9 @@ message CapabilitiesResponse {
     bool postgresql = 17;
     bool etcd = 18;
     bool fts = 19;
+    // unencrypted_at_rest lists, when seal is enabled, where the node keeps
+    // data on disk outside the barrier's at-rest encryption. Empty otherwise.
+    repeated string unencrypted_at_rest = 20;
 }
 
 // StartShardRequest is the request payload for StartShard.
@@ -2560,6 +2569,17 @@ message UpdateUserProtoRequest {
     // when > 0. Seconds since the epoch, UTC. A value at or before the stored
     // one writes nothing.
     int64 last_auth_unix = 11;
+    // role_bindings replaces the tenant-scoped role bindings when
+    // has_role_bindings is true. proto3 cannot distinguish an absent repeated
+    // field from an empty one, so has_role_bindings carries the nil-vs-empty
+    // distinction the domain request needs, exactly as has_auth_methods does.
+    repeated RoleBinding role_bindings = 12;
+    bool has_role_bindings = 13;
+    // attributes replaces the ABAC attributes when has_attributes is true.
+    // Same nil-vs-empty reasoning as role_bindings: proto3 maps have no way
+    // to represent "absent".
+    map<string, string> attributes = 14;
+    bool has_attributes = 15;
 }
 
 // DeleteUserRequest removes a user by ID.
@@ -2624,6 +2644,21 @@ message UserResponse {
     // authenticates as an account with any binding). A thumbprint read here
     // can be passed straight to RemoveCertBinding.
     repeated CertBinding cert_bindings = 15;
+    // role_bindings grants roles within a tenant scope (tenant-scoped RBAC),
+    // additive alongside role_ids (system-scoped roles).
+    repeated RoleBinding role_bindings = 16;
+    // attributes carries ABAC key/value pairs evaluated by policy.
+    map<string, string> attributes = 17;
+    // factors lists enrolled auth-factor METADATA ONLY; the opaque data blob
+    // a factor interprets during verification never crosses this or any
+    // other transport (go-qrdb#192/#197).
+    repeated FactorMetadata factors = 18;
+    // mfa_enabled/mfa_methods/mfa_enrolled_at are DERIVED from factors, never
+    // stored: an enrolled factor is not a policy statement that MFA is
+    // required for this account.
+    bool mfa_enabled = 19;
+    repeated string mfa_methods = 20;
+    string mfa_enrolled_at = 21;
 }
 
 // CertBinding is one mTLS key enrolled on a user.
@@ -2636,6 +2671,20 @@ message CertBinding {
     // not_after_unix is when the binding stops authenticating, seconds since
     // the epoch UTC. Zero when the binding does not expire on its own.
     int64 not_after_unix = 3;
+}
+
+// RoleBinding grants a role within a tenant scope.
+message RoleBinding {
+    string role_id = 1;
+    string tenant_id = 2;
+}
+
+// FactorMetadata is the wire projection of a user's enrolled auth factor with
+// its opaque data blob omitted.
+message FactorMetadata {
+    string id = 1;
+    string factor_name = 2;
+    string created_at = 3;
 }
 
 // ===========================================================================
@@ -2965,6 +3014,8 @@ message DatabaseCreateRequest {
     // encryption barrier at creation time using the embedded secret /
     // strategy / threshold / total. See DatabaseBarrierConfig.
     DatabaseBarrierConfig barrier = 8;
+    // sql holds the database's SQL settings; unset means the defaults.
+    DatabaseSQLConfig sql = 9;
 }
 
 // DatabaseGetRequest retrieves information about a specific database.
@@ -2999,6 +3050,14 @@ message DatabaseInfoResponse {
     // replicas is the replication factor of a dedicated-raft database. Zero for
     // non-raft databases.
     uint32 replicas = 13;
+    // sql holds the database's SQL settings; unset means the defaults.
+    DatabaseSQLConfig sql = 14;
+}
+
+// DatabaseSQLConfig holds a database's SQL settings.
+message DatabaseSQLConfig {
+    // concurrency is "optimistic" (the default when empty) or "pessimistic".
+    string concurrency = 1;
 }
 
 // DatabaseProtocolConfig holds wire protocol settings for a database.
@@ -3131,6 +3190,13 @@ message DatabaseUpdateConnectionRequest {
     DatabaseConnectionConfig connection = 2;
 }
 
+// DatabaseUpdateSQLRequest updates a database's SQL settings. An unset sql
+// restores the defaults.
+message DatabaseUpdateSQLRequest {
+    string name = 1;
+    DatabaseSQLConfig sql = 2;
+}
+
 // ===========================================================================
 // Barrier messages
 // ===========================================================================
@@ -3258,6 +3324,25 @@ message BarrierRecoveryGenerateRequest {
     int32 threshold = 1;
     int32 total = 2;
     string so_pin = 3;
+}
+
+// BarrierSealRequest seals the node barrier. It replaced google.protobuf.Empty
+// so the request can carry the barrier SO PIN, which REST and MCP already
+// verified against the configured PIN backend and gRPC, the Unix socket and
+// QUIC could not carry. An empty message encodes exactly as Empty did, so the
+// change is wire-compatible.
+message BarrierSealRequest {
+    string so_pin = 1;
+}
+
+// BarrierRecoveryDeleteRequest deletes all stored recovery keys. It replaced
+// google.protobuf.Empty so the operation can carry the SO PIN in the request
+// itself, which is the only per-request carrier the QUIC frame has: the SO
+// dual-factor gate reads so_pin there. On gRPC and the Unix socket the gate
+// reads the x-qrdb-so-pin metadata entry instead. An empty message encodes
+// exactly as Empty did, so the change is wire-compatible.
+message BarrierRecoveryDeleteRequest {
+    string so_pin = 1;
 }
 
 // BarrierRecoveryKeysResponse is the share-free result of recovery key

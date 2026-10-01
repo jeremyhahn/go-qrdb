@@ -545,7 +545,9 @@ func TestKMeansPlusPlusInit_OverflowDistanceClamped(t *testing.T) {
 		require.False(t, math.IsInf(float64(l2Squared(vectors[0], vectors[1])), 0))
 
 		for seed := uint64(1); seed <= seeds; seed++ {
+			// #nosec G404 -- deterministic test fixture: the seed is fixed so the case is reproducible, and no key, nonce, token or identifier derives from these values.
 			got := kmeansPlusPlusInit(vectors, numCentroids, rand.New(rand.NewPCG(seed, seed)))
+			// #nosec G404 -- deterministic test fixture: the seed is fixed so the case is reproducible, and no key, nonce, token or identifier derives from these values.
 			want := referenceKMeansPlusPlusInit(rand.New(rand.NewPCG(seed, seed)), vectors, numCentroids)
 			require.Truef(t, kmeansPlusPlusInitEqual(t, got, want), "seed %d: got %v, want %v", seed, got, want)
 		}
@@ -561,7 +563,9 @@ func TestKMeansPlusPlusInit_OverflowDistanceClamped(t *testing.T) {
 
 		diverged := false
 		for seed := uint64(1); seed <= seeds; seed++ {
+			// #nosec G404 -- deterministic test fixture: the seed is fixed so the case is reproducible, and no key, nonce, token or identifier derives from these values.
 			got := kmeansPlusPlusInit(vectors, numCentroids, rand.New(rand.NewPCG(seed, seed)))
+			// #nosec G404 -- deterministic test fixture: the seed is fixed so the case is reproducible, and no key, nonce, token or identifier derives from these values.
 			want := referenceKMeansPlusPlusInit(rand.New(rand.NewPCG(seed, seed)), vectors, numCentroids)
 
 			require.Len(t, got, numCentroids)

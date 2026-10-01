@@ -167,9 +167,35 @@ func TestQuotaCollection_DropReleasesALargeCollection(t *testing.T) {
 	}
 }
 
-// TestCollectionSweeper_RunStopsOnCancel drives the ticker loop through one
-// pass and out.
+// TestCollectionSweeper_RunStopsOnCancel drives the loop through exactly one
+// pass and out. The pass trigger is an injected channel holding one tick: a
+// 1ms wall-clock ticker could fire again before run observed the cancellation
+// the pass made, and select then picked a second pass at random (about 1 run
+// in 340 under -race).
 func TestCollectionSweeper_RunStopsOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ticks := make(chan time.Time, 1)
+	ticks <- time.Now()
+	passes := 0
+	sweeper := &collectionSweeper{
+		ticks:  ticks,
+		logger: slog.Default(),
+		targets: func(context.Context) ([]collectionSweepTarget, error) {
+			passes++
+			cancel()
+			return nil, nil
+		},
+	}
+	sweeper.run(ctx)
+	if passes != 1 {
+		t.Fatalf("passes = %d, want 1", passes)
+	}
+}
+
+// TestCollectionSweeper_RunUsesIntervalTicker: with no injected trigger, run
+// paces passes on its interval ticker and still returns on cancellation. It
+// asserts at least one pass, which is all the real ticker can promise.
+func TestCollectionSweeper_RunUsesIntervalTicker(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	passes := 0
 	sweeper := &collectionSweeper{
@@ -182,8 +208,8 @@ func TestCollectionSweeper_RunStopsOnCancel(t *testing.T) {
 		},
 	}
 	sweeper.run(ctx)
-	if passes != 1 {
-		t.Fatalf("passes = %d, want 1", passes)
+	if passes < 1 {
+		t.Fatalf("passes = %d, want at least 1", passes)
 	}
 }
 
@@ -223,6 +249,7 @@ func TestServer_CollectionSweepTargets_TenantsAndDatabases(t *testing.T) {
 		t.Fatalf("targets = %v, want %v", got, want)
 	}
 	for i := range want {
+		// #nosec G602 -- the lengths are compared equal above, and i ranges over want.
 		if got[i] != want[i] {
 			t.Fatalf("targets = %v, want %v", got, want)
 		}

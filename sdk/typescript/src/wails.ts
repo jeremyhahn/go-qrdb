@@ -68,7 +68,10 @@ import type {
     DatabaseBarrierConfig,
     DatabaseConnectionConfig,
     DatabaseRaftConfig,
+    DatabaseProtocolConfig,
     DatabaseSQLConfig,
+    UpdateDatabaseProtocolRequest,
+    UpdateDatabaseSQLRequest,
     CreateNamespaceResponse,
     CreateRoleRequest,
     CreateUserRequest,
@@ -1068,8 +1071,20 @@ export class WailsClient implements Client {
             drop: async (name: string): Promise<void> => {
                 await b.Drop(name);
             },
-            updateSQL: async (name: string, sql: DatabaseSQLConfig): Promise<DatabaseInfo> => {
-                return b.UpdateSQL(name, sql) as Promise<DatabaseInfo>;
+            updateProtocol: async (name: string, protocol: DatabaseProtocolConfig): Promise<DatabaseInfo> => {
+                // DatabaseBinding.UpdateProtocol takes the Go
+                // UpdateDatabaseProtocolRequest, whose JSON is {mysql, postgresql}.
+                const req: UpdateDatabaseProtocolRequest = {
+                    mysql: protocol.mysql ?? false,
+                    postgresql: protocol.postgresql ?? false,
+                };
+                return b.UpdateProtocol(name, req) as Promise<DatabaseInfo>;
+            },
+            updateSQL: async (name: string, sql?: DatabaseSQLConfig): Promise<DatabaseInfo> => {
+                // DatabaseBinding.UpdateSQL takes the Go UpdateDatabaseSQLRequest,
+                // whose JSON is {sql: {...}}; an absent sql restores the defaults.
+                const req: UpdateDatabaseSQLRequest = sql === undefined ? {} : { sql };
+                return b.UpdateSQL(name, req) as Promise<DatabaseInfo>;
             },
             updateRaft: async (name: string, raft: DatabaseRaftConfig): Promise<DatabaseInfo> => {
                 return b.UpdateRaft(name, raft) as Promise<DatabaseInfo>;

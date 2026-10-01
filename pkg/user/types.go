@@ -84,7 +84,11 @@ type User struct {
 	// since withdrawn must not become a way in.
 	//
 	// Empty means qrdb states no restriction — the layer performing the
-	// ceremony decides. Values are opaque, lowercased and de-duplicated.
+	// ceremony decides. Values are lowercased, de-duplicated tokens of the
+	// node's method vocabulary — the built-in tokens (auth.BuiltinAuthMethods)
+	// plus the names of the authenticators in the node's chain
+	// (middleware.AuthMiddleware.AuthMethods) — enforced when the policy is
+	// written.
 	AuthMethods []string `json:"authMethods,omitempty"`
 
 	// LastAuth records the last successful authentication (UTC). Nil for an
@@ -104,10 +108,15 @@ type User struct {
 	// thumbprint — qrdb-owned mTLS identity. See cert_binding.go.
 	CertBindings []CertBinding `json:"certBindings,omitempty"`
 
-	// Factors holds extensible auth-factor enrollments (webauthn/fido2/piv),
-	// registered via pkg/authfactors. qrdb stores them opaquely; the registered
-	// factor interprets Data.
-	Factors []FactorEnrollment `json:"factors,omitempty"`
+	// There is deliberately NO Factors field here. Enrolled auth factors have
+	// exactly one source of truth: pkg/auth.AuthFactor via
+	// service.UserAuthFactorServicer (the /v1/users/factors API on every
+	// transport). A parallel, independently-writable field on this struct
+	// would let it drift from the records that API reports — the same defect
+	// go-qrdb#106 found in User.System before something was made to populate
+	// it, except here duplicated rather than dead. Factor metadata and the
+	// derived MFA state are computed at READ time from those records; see
+	// FactorLister, WireFactors and WireMFA in mfa.go.
 
 	// CreatedAt records when the user was created (UTC).
 	CreatedAt time.Time `json:"createdAt"`
@@ -188,6 +197,22 @@ type CreateUserRequest struct {
 	// AuthMethods are the initial permitted authentication methods. Empty
 	// states no restriction.
 	AuthMethods []string
+
+	// System marks the record as a built-in, undeletable user (see
+	// User.System). It exists SOLELY for the internal first-boot orchestration
+	// (pkg/firstboot) to mint the single system-tenant bootstrap admin — the
+	// one account a cluster can never be locked out of by an accidental
+	// delete.
+	//
+	// No wire DTO on any transport (REST, gRPC, QUIC, MCP, unix, embedded)
+	// ever carries this field: every handler builds CreateUserRequest
+	// field-by-field from its own request type, none of which declares a
+	// System input, so an external caller has no representable way to set it
+	// regardless of permissions held. Per-tenant admins minted by
+	// pkg/bootstrap.ProvisionTenant deliberately leave this false — those
+	// accounts must remain deletable when a tenant is deprovisioned; only the
+	// single system-tenant admin is immutable.
+	System bool
 }
 
 // UpdateUserRequest holds parameters for updating a user.
@@ -218,8 +243,9 @@ type UpdateUserRequest struct {
 	// maintains the SPKI-thumbprint secondary index accordingly.
 	CertBindings []CertBinding
 
-	// Factors replaces the auth-factor enrollments when non-nil.
-	Factors []FactorEnrollment
+	// There is deliberately no Factors field here either: enrollment is its
+	// own verb (service.UserAuthFactorServicer), never a bulk field on this
+	// request. See the note on User.
 
 	// Lifecycle transitions the account when non-empty. The move is checked
 	// against the transition table: a state the record cannot reach from where

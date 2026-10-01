@@ -244,6 +244,7 @@ func newCompletedRequestState(result quicraft.RequestResult) *quicraft.RequestSt
 	v := reflect.ValueOf(rs).Elem()
 	completedField := v.FieldByName("completedC")
 	// Use unsafe to bypass the unexported field restriction.
+	// #nosec G103 -- builds a completed quicraft.RequestState fixture through its unexported channel; the field is resolved by reflection just above.
 	completedCPtr := unsafe.Pointer(completedField.UnsafeAddr())
 	completedC := *(*chan quicraft.RequestResult)(completedCPtr)
 

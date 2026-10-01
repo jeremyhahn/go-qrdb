@@ -71,7 +71,41 @@ func (r *permRegistry) snapshot() map[string]permission.Permission {
 // the dispatch map. AuthorizeQUIC consults it with DEFAULT-DENY semantics —
 // a method with no entry is denied.
 type QUICMethodRegistry struct {
-	reg permRegistry
+	reg     permRegistry
+	targets map[string]QUICTargetFunc
+}
+
+// QUICTargetFunc extracts the Target a QUIC frame's payload names. A payload
+// it cannot read is an error (*TargetBodyInvalidError), and AuthorizeQUIC
+// refuses the request rather than authorizing it against the caller's own
+// tenant.
+type QUICTargetFunc func(payload []byte) (Target, error)
+
+// SetTarget declares how method's payload names the tenant it acts on, so
+// AuthorizeQUIC authorizes the method's permission against that tenant (see
+// Target). The method must already be registered: attaching a target to an
+// unregistered method panics, a construction-time bug like a duplicate.
+func (r *QUICMethodRegistry) SetTarget(method string, fn QUICTargetFunc) {
+	if _, ok := r.reg.lookup(method); !ok {
+		panic("quic: SetTarget on unregistered method " + method)
+	}
+	if r.targets == nil {
+		r.targets = make(map[string]QUICTargetFunc)
+	}
+	r.targets[method] = fn
+}
+
+// target returns the Target payload names under method's extractor, or the
+// caller's own tenant when the method declares none.
+func (r *QUICMethodRegistry) target(method string, payload []byte) (Target, error) {
+	if r == nil {
+		return SelfTarget(), nil
+	}
+	fn, ok := r.targets[method]
+	if !ok {
+		return SelfTarget(), nil
+	}
+	return fn(payload)
 }
 
 // NewQUICMethodRegistry creates an empty QUIC method registry.
@@ -120,7 +154,40 @@ func (r *QUICMethodRegistry) Entries() map[string]permission.Permission {
 // schema and handler at the registration site. AuthorizeMCP consults it with
 // DEFAULT-DENY semantics — a tool with no entry is denied.
 type MCPToolRegistry struct {
-	reg permRegistry
+	reg     permRegistry
+	targets map[string]MCPTargetFunc
+}
+
+// MCPTargetFunc extracts the Target an MCP tool call's arguments name. An
+// argument it cannot read names the caller's own tenant; the tool then
+// rejects the malformed argument itself.
+type MCPTargetFunc func(args map[string]any) Target
+
+// SetTarget declares how toolName's arguments name the tenant it acts on, so
+// AuthorizeMCP authorizes the tool's permission against that tenant (see
+// Target). The tool must already be registered; attaching a target to an
+// unregistered tool panics.
+func (r *MCPToolRegistry) SetTarget(toolName string, fn MCPTargetFunc) {
+	if _, ok := r.reg.lookup(toolName); !ok {
+		panic("mcp: SetTarget on unregistered tool " + toolName)
+	}
+	if r.targets == nil {
+		r.targets = make(map[string]MCPTargetFunc)
+	}
+	r.targets[toolName] = fn
+}
+
+// target returns the Target args name under toolName's extractor, or the
+// caller's own tenant when the tool declares none.
+func (r *MCPToolRegistry) target(toolName string, args map[string]any) Target {
+	if r == nil {
+		return SelfTarget()
+	}
+	fn, ok := r.targets[toolName]
+	if !ok {
+		return SelfTarget()
+	}
+	return fn(args)
 }
 
 // NewMCPToolRegistry creates an empty MCP tool registry.

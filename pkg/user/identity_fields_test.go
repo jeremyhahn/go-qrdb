@@ -697,7 +697,6 @@ func TestLastAuthOnly_AnyOtherFieldDisqualifies(t *testing.T) {
 		"RoleBindings": func(r *UpdateUserRequest) { r.RoleBindings = []RoleBinding{} },
 		"Attributes":   func(r *UpdateUserRequest) { r.Attributes = map[string]string{} },
 		"CertBindings": func(r *UpdateUserRequest) { r.CertBindings = []CertBinding{} },
-		"Factors":      func(r *UpdateUserRequest) { r.Factors = []FactorEnrollment{} },
 		"AuthMethods":  func(r *UpdateUserRequest) { r.AuthMethods = []string{} },
 	}
 	for name, set := range disqualifying {
@@ -810,7 +809,6 @@ func TestUpdateUser_TerminalRecordRefusesEveryEdit(t *testing.T) {
 		"authMethods":  {ID: u.ID, AuthMethods: []string{"piv"}},
 		"attributes":   {ID: u.ID, Attributes: map[string]string{"a": "b"}},
 		"certBindings": {ID: u.ID, CertBindings: []CertBinding{}},
-		"factors":      {ID: u.ID, Factors: []FactorEnrollment{}},
 		"lastAuth":     {ID: u.ID, LastAuth: &at},
 	}
 	for name, req := range edits {
@@ -890,7 +888,6 @@ func TestOnlyReassertsLifecycle_AnyOtherFieldDisqualifies(t *testing.T) {
 		"RoleBindings": func(r *UpdateUserRequest) { r.RoleBindings = []RoleBinding{} },
 		"Attributes":   func(r *UpdateUserRequest) { r.Attributes = map[string]string{} },
 		"CertBindings": func(r *UpdateUserRequest) { r.CertBindings = []CertBinding{} },
-		"Factors":      func(r *UpdateUserRequest) { r.Factors = []FactorEnrollment{} },
 		"AuthMethods":  func(r *UpdateUserRequest) { r.AuthMethods = []string{} },
 	}
 	for name, set := range disqualifying {

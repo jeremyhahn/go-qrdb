@@ -119,7 +119,7 @@ func (t *RelationalTable) GetNextAutoIncrementValue(ctx *sqle.Context, insertVal
 		}
 		return 0, nil
 	}
-	next, err := t.autoInc.next(ctx, t.seqSvc, t.def.Database, t.autoIncSequenceName())
+	next, _, err := t.autoInc.next(ctx, t.seqSvc, t.def.Database, t.autoIncSequenceName())
 	if err != nil {
 		return 0, err
 	}

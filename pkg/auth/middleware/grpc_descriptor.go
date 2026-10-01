@@ -37,7 +37,7 @@ type grpcPermEntry struct {
 
 // grpcPermCache memoizes LookupGRPCFromDescriptor results. The gRPC server
 // only invokes interceptors for methods registered on it, so the cache is
-// bounded by the registered method set (plus health/reflection infrastructure
+// bounded by the registered method set (plus the health infrastructure
 // methods) and lock-free reads keep the per-RPC hot path cheap.
 var grpcPermCache sync.Map // string -> grpcPermEntry
 

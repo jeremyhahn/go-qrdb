@@ -112,7 +112,7 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 			authnErr error
 		)
 		if hasOnBehalfAssertion(r) {
-			ctx, identity, authnErr = m.authenticateOnBehalf(ctx, r)
+			ctx, identity, authnErr = m.authenticateOnBehalf(ctx, w, r)
 		} else {
 			ctx, identity, authnErr = m.authenticate(ctx)
 		}
@@ -228,7 +228,24 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 		// Authorize the action (permission.IdentityGated short-circuits inside
 		// authorize: possession of an authenticated identity is the middleware
 		// requirement and the handler enforces the real binding check).
-		if authzErr := m.authorize(ctx, identity, perm); authzErr != nil {
+		//
+		// The permission is authorized against the tenant the request names
+		// (the route's RESTTargetFunc), resolved before the check: a
+		// RoleBinding grants only in its own tenant, so the check must be
+		// made where the operation lands. The handler's context keeps the
+		// caller's own tenant.
+		// Extracting the target may read a body prefix and put it back on
+		// this request, so the SAME request value is handed on below.
+		r = r.WithContext(ctx)
+		target, targetErr := routes.targetFor(r)
+		if targetErr != nil {
+			// The body the route names its tenant in could not be read: the
+			// tenant is unknown, so the request is refused rather than
+			// authorized against the caller's own.
+			writeJSONError(w, targetBodyStatus(targetErr), targetErr.Error())
+			return
+		}
+		if authzErr := m.authorizeTarget(ctx, identity, perm, target); authzErr != nil {
 			code := mapHTTPAuthError(authzErr)
 			// Must be set before writeJSONError's WriteHeader call --
 			// net/http silently drops headers set after the status line has
@@ -238,7 +255,7 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 			return
 		}
 
-		next.ServeHTTP(w, r.WithContext(ctx))
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -286,4 +303,14 @@ func writeJSONError(w http.ResponseWriter, statusCode int, message string) {
 	if err := json.NewEncoder(w).Encode(restErrorResponse{Error: message}); err != nil {
 		slog.Error("auth/middleware: JSON encode error", "error", err)
 	}
+}
+
+// targetBodyStatus is the status of a target-extraction refusal: 413 for a
+// body past the bound, 400 for one that does not decode.
+func targetBodyStatus(err error) int {
+	var tooLarge *TargetBodyTooLargeError
+	if errors.As(err, &tooLarge) {
+		return http.StatusRequestEntityTooLarge
+	}
+	return http.StatusBadRequest
 }

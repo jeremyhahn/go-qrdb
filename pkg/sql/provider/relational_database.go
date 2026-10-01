@@ -20,6 +20,8 @@ import (
 
 	sqle "github.com/dolthub/go-mysql-server/sql"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/rowlock"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -96,6 +98,9 @@ func (d *Database) relationalTable(ctx *sqle.Context, name string) (sqle.Table, 
 		WithTableService(tableSvc),
 		WithTransactionService(txnSvc),
 		WithSequenceService(seqSvc),
+		WithRowLocks(func() (*rowlock.Table, error) {
+			return d.rowLockTable(tenantID, txnSvc, mvccSvc)
+		}, d.concurrency(tenantID)),
 	}
 	if d.postgres {
 		opts = append(opts, WithPostgreSQLDialect())
@@ -106,6 +111,32 @@ func (d *Database) relationalTable(ctx *sqle.Context, name string) (sqle.Table, 
 		return nil, false, err
 	}
 	return tbl, true, nil
+}
+
+// rowLockTable builds the lock table of this database for tenantID's
+// session: the same (tenant, database)-scoped store the rows live in, so the
+// lock records are replicated with them and confined to the tenant exactly
+// as the rows are. A registry that cannot resolve a lease or watch service
+// leaves the table without one; the error is reported only to a statement
+// that needs a lock.
+func (d *Database) rowLockTable(tenantID string, txnSvc service.TransactionServicer, mvccSvc service.MVCCKVServicer) (*rowlock.Table, error) {
+	leaseSvc, err := d.registry.LeaseService(tenantID, d.name)
+	if err != nil {
+		return nil, err
+	}
+	watchSvc, err := d.registry.WatchService(tenantID, d.name)
+	if err != nil {
+		return nil, err
+	}
+	return rowlock.New(rowlock.Deps{Txn: txnSvc, MVCC: mvccSvc, Lease: leaseSvc, Watch: watchSvc}, tenantID+"/"+d.name)
+}
+
+// concurrency returns this database's configured SQL concurrency mode.
+func (d *Database) concurrency(tenantID string) database.Concurrency {
+	if d.sqlConfigOf == nil {
+		return database.ConcurrencyOptimistic
+	}
+	return d.sqlConfigOf(tenantID, d.name).EffectiveConcurrency()
 }
 
 // getTableResumingRewrite calls tableSvc.GetTable and, when it reports

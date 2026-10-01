@@ -15,6 +15,7 @@
 package middleware
 
 import (
+	"strconv"
 	"strings"
 	"time"
 
@@ -119,6 +120,18 @@ type InvalidPublicGRPCMethodError struct {
 // Error returns a human-readable description of the malformed method name.
 func (e *InvalidPublicGRPCMethodError) Error() string {
 	return "auth/middleware: invalid public gRPC method name (want \"/package.Service/Method\"): " + e.Method
+}
+
+// InvalidGRPCTargetError is returned by RegisterGRPCTargets for a method name
+// that is not a full gRPC method name ("/package.Service/Method") or that is
+// registered with no extractor.
+type InvalidGRPCTargetError struct {
+	Method string
+}
+
+// Error returns a human-readable description of the rejected registration.
+func (e *InvalidGRPCTargetError) Error() string {
+	return "auth/middleware: invalid gRPC target registration (want \"/package.Service/Method\" and an extractor): " + e.Method
 }
 
 // AuthMethodNotPermittedError is returned when an account authenticated
@@ -322,4 +335,35 @@ type CertSerialUnresolvableError struct {
 func (e *CertSerialUnresolvableError) Error() string {
 	return "auth/middleware: cannot authorize revocation of serial " + e.Serial +
 		": no certificate provider is wired to resolve its owning tenant"
+}
+
+// TargetBodyInvalidError is returned when a targeted request's body cannot be
+// read or decoded, so the tenant it acts on is unknown. The request is refused
+// (400) rather than authorized against the caller's own tenant: a body the
+// check cannot read is not one it may assume names nothing.
+type TargetBodyInvalidError struct {
+	Err error
+}
+
+// Error returns a human-readable description of the unreadable body.
+func (e *TargetBodyInvalidError) Error() string {
+	msg := "auth/middleware: request body does not decode"
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Unwrap exposes the read or decode error.
+func (e *TargetBodyInvalidError) Unwrap() error { return e.Err }
+
+// TargetBodyTooLargeError is returned when a targeted request's body exceeds
+// the bound the target extraction reads under (413).
+type TargetBodyTooLargeError struct {
+	Limit int64
+}
+
+// Error names the bound.
+func (e *TargetBodyTooLargeError) Error() string {
+	return "auth/middleware: request body exceeds " + strconv.FormatInt(e.Limit, 10) + " bytes"
 }

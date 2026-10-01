@@ -227,7 +227,7 @@ func TestEnableEncryption_SystemScope_DataSurvivesInProcessRecycle(t *testing.T)
 	client := mtlsHTTPClient(t, ca, 15*time.Second)
 	body, status := iraftAPIPost(t, client,
 		fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/enable-encryption", adminPort),
-		map[string]interface{}{"strategy": "passphrase", "passphrase": newPassphrase},
+		map[string]interface{}{"strategy": "passphrase", "passphrase": []byte(newPassphrase)},
 	)
 	if status != http.StatusOK {
 		t.Fatalf("enable-encryption: status %d, body: %s", status, body)
@@ -367,7 +367,7 @@ func TestEnableEncryption_TenantScope_OnlineRecycleNoServerRestart(t *testing.T)
 			"name":      "db-admin",
 			"tenant_id": tenantID,
 			"permissions": []string{
-				"databases:create", "databases:read", "databases:list",
+				"databases:create", "databases:create_volume", "databases:read", "databases:list",
 				"kv:put", "kv:get",
 				"tenant_barrier:status", "tenant_barrier:init",
 			},
@@ -426,7 +426,7 @@ func TestEnableEncryption_TenantScope_OnlineRecycleNoServerRestart(t *testing.T)
 	const tenantPass = "tenant-acme-passphrase"
 	migBody, migStatus := iraftAPIPost(t, sysClient,
 		fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/enable-encryption", adminPort),
-		map[string]interface{}{"tenant_id": tenantID, "strategy": "passphrase", "passphrase": tenantPass},
+		map[string]interface{}{"tenant_id": tenantID, "strategy": "passphrase", "passphrase": []byte(tenantPass)},
 	)
 	if migStatus != http.StatusOK {
 		t.Fatalf("tenant enable-encryption: status %d, body: %s", migStatus, migBody)

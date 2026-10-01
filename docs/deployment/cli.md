@@ -16,12 +16,18 @@ limitations under the License.
 
 # Deployment — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-25
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-30
 
 No verbs of its own. The one flag involved is `qrdbd start
 --secure-memory-budget-mib` (int64 MiB, default `0` = derive from the host),
 documented with its environment and YAML forms in
 [../configuration/cli.md](../configuration/cli.md#secure-memory-budget).
+
+One environment variable is read by `qrdbd start` and by the `qrdb` desktop and
+CLI binary, and is deliberately not a configuration key: `QRDB_SECURE_ALLOW_PROCESS_INSPECTION=true` leaves the
+process readable by a debugger, with a warning logged at start (see
+[user.md](user.md#attaching-a-debugger)). Unset is the default and the only
+production setting.
 
 Run-time settings the host supplies:
 

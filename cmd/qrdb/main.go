@@ -20,11 +20,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // version, gitCommit, and buildDate are set at build time via ldflags:
@@ -98,6 +101,28 @@ func initLogger(level, file string) (*logger.Logger, error) {
 	return logger.New(cfg)
 }
 
+// hardenProcess is secure.HardenProcess, indirected only so a test can observe
+// run's handling of a refusal without making its own test binary
+// non-dumpable, which cannot be undone.
+var hardenProcess = secure.HardenProcess
+
+// hardenAtStartup applies process inspection hardening, sending any warning
+// (the opt-out, or a platform with no mechanism) to w as text.
+//
+// The warning goes to w — standard error — and not to the application
+// logger, which writes to standard output: stdout is a CLI command's data, and
+// on a platform with no mechanism the warning is logged on every invocation,
+// where it would corrupt `qrdb kv get key > file`.
+//
+// The outcome is not recorded anywhere else: this binary is a client and a
+// desktop shell with no compliance audit trail of its own, so the warning on
+// standard error is the record. An embedded node it starts writes its own
+// trail.
+func hardenAtStartup(w io.Writer) error {
+	_, err := hardenProcess(slog.New(slog.NewTextHandler(w, nil)))
+	return err
+}
+
 func main() {
 	os.Exit(run())
 }
@@ -111,6 +136,15 @@ func run() int {
 	level, file := parseLogArgs()
 	log, err := initLogger(level, file)
 	if err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+
+	// Harden before either branch: the desktop GUI and the CLI both unseal
+	// barriers and read passphrases, PINs and shares into protected memory,
+	// and none of it may be readable by a debugger or a same-user process
+	// (go-qrdb#554). A refusal is fatal, exactly as it is for qrdbd.
+	if err := hardenAtStartup(os.Stderr); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
 		return 1
 	}

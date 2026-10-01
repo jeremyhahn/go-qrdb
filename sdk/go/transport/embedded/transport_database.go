@@ -51,24 +51,23 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 		Raft:       fromTransportRaftConfig(req.Raft),
 		Barrier:    fromTransportBarrierConfig(req.Barrier),
 		Connection: fromTransportConnectionConfig(req.Connection),
+		SQL:        fromTransportSQLConfig(req.SQL),
 	}
 
-	var info *database.DatabaseInfo
-	var err error
+	// The tenant-scoped create, as on every network transport: the database
+	// is owned by the context's tenant and metered against its quota, and a
+	// database service composed with the provisioning check enforces
+	// databases:create_raft and databases:create_volume here too. A context
+	// carrying no tenant creates for the system tenant.
+	var creds seal.Credentials
 	if req.Barrier != nil {
-		creds, credErr := seal.CredentialsFor([]byte(req.Barrier.Secret))
-		if credErr != nil {
-			return nil, credErr
+		var err error
+		if creds, err = seal.CredentialsFor([]byte(req.Barrier.Secret)); err != nil {
+			return nil, err
 		}
 		defer creds.Secret.Destroy()
-		if cc, ok := t.dbSvc.(service.DatabaseCredentialCreator); ok {
-			info, err = cc.CreateWithCredentials(ctx, cfg, creds)
-		} else {
-			info, err = t.dbSvc.Create(cfg)
-		}
-	} else {
-		info, err = t.dbSvc.Create(cfg)
 	}
+	info, err := service.CreateDatabaseForTenantWithCredentials(ctx, t.dbSvc, cfg, creds)
 	if err != nil {
 		return nil, err
 	}
@@ -207,9 +206,31 @@ func (t *Transport) UpdateDatabaseConnection(_ context.Context, req transport.Up
 	return toTransportDatabaseInfo(info), nil
 }
 
+// UpdateDatabaseSQL updates a database's SQL settings by delegating to the
+// injected DatabaseServicer.
+func (t *Transport) UpdateDatabaseSQL(_ context.Context, req transport.UpdateDatabaseSQLRequest) (*transport.DatabaseInfo, error) {
+	if t.dbSvc == nil {
+		return nil, &NilServiceError{Service: "DatabaseServicer"}
+	}
+	info, err := t.dbSvc.UpdateSQL(req.Name, fromTransportSQLConfig(req.SQL))
+	if err != nil {
+		return nil, err
+	}
+	return toTransportDatabaseInfo(info), nil
+}
+
 // ---------------------------------------------------------------------------
 // Type conversion helpers
 // ---------------------------------------------------------------------------
+
+// fromTransportSQLConfig converts transport SQL settings to the domain type;
+// nil stays nil (the defaults).
+func fromTransportSQLConfig(c *transport.DatabaseSQLConfig) *database.SQLConfig {
+	if c == nil {
+		return nil
+	}
+	return &database.SQLConfig{Concurrency: database.Concurrency(c.Concurrency)}
+}
 
 // toTransportDatabaseInfo converts a database.DatabaseInfo to a
 // transport.DatabaseInfo.
@@ -261,6 +282,9 @@ func toTransportDatabaseInfo(info *database.DatabaseInfo) *transport.DatabaseInf
 			CertFile:  info.Connection.CertFile,
 			KeyFile:   info.Connection.KeyFile,
 		}
+	}
+	if info.SQL != nil {
+		ti.SQL = &transport.DatabaseSQLConfig{Concurrency: string(info.SQL.Concurrency)}
 	}
 	return ti
 }

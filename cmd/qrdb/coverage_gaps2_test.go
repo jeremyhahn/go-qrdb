@@ -963,6 +963,14 @@ func (m *fullFnDatabaseService) UpdateConnectionForTenant(_ context.Context, _ s
 	return nil, nil
 }
 
+func (m *fullFnDatabaseService) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
+	return &database.DatabaseInfo{Name: name, SQL: sqlCfg}, nil
+}
+
+func (m *fullFnDatabaseService) UpdateSQLForTenant(_ context.Context, name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
+	return m.UpdateSQL(name, sqlCfg)
+}
+
 // newFullFnDatabaseService creates a fullFnDatabaseService with default no-op
 // implementations for the base CRUD methods.
 func newFullFnDatabaseService() *fullFnDatabaseService {

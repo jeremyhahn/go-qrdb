@@ -157,6 +157,7 @@ const (
 	QRDBService_DatabaseScale_FullMethodName                     = "/qrdb.v1.QRDBService/DatabaseScale"
 	QRDBService_DatabaseUpdateBarrier_FullMethodName             = "/qrdb.v1.QRDBService/DatabaseUpdateBarrier"
 	QRDBService_DatabaseUpdateConnection_FullMethodName          = "/qrdb.v1.QRDBService/DatabaseUpdateConnection"
+	QRDBService_DatabaseUpdateSQL_FullMethodName                 = "/qrdb.v1.QRDBService/DatabaseUpdateSQL"
 	QRDBService_BarrierInitialize_FullMethodName                 = "/qrdb.v1.QRDBService/BarrierInitialize"
 	QRDBService_BarrierUnseal_FullMethodName                     = "/qrdb.v1.QRDBService/BarrierUnseal"
 	QRDBService_BarrierSeal_FullMethodName                       = "/qrdb.v1.QRDBService/BarrierSeal"
@@ -520,13 +521,16 @@ type QRDBServiceClient interface {
 	DatabaseUpdateBarrier(ctx context.Context, in *DatabaseUpdateBarrierRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error)
 	// DatabaseUpdateConnection updates the remote connection configuration.
 	DatabaseUpdateConnection(ctx context.Context, in *DatabaseUpdateConnectionRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error)
+	// DatabaseUpdateSQL updates a database's SQL settings -- its
+	// sql.concurrency (optimistic or pessimistic). See docs/row-locking/.
+	DatabaseUpdateSQL(ctx context.Context, in *DatabaseUpdateSQLRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error)
 	// BarrierInitialize initializes the cryptographic barrier with a single
 	// master key.
 	BarrierInitialize(ctx context.Context, in *BarrierInitializeRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// BarrierUnseal unseals the barrier using the master key.
 	BarrierUnseal(ctx context.Context, in *BarrierUnsealRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// BarrierSeal seals the barrier, preventing data access until unsealed.
-	BarrierSeal(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	BarrierSeal(ctx context.Context, in *BarrierSealRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// BarrierStatus returns the current barrier state.
 	BarrierStatus(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*BarrierStatusResponse, error)
 	// BarrierShamirInitialize initializes the barrier with Shamir secret sharing.
@@ -567,7 +571,7 @@ type QRDBServiceClient interface {
 	// BarrierRecoveryRecover unseals the barrier using recovery keys.
 	BarrierRecoveryRecover(ctx context.Context, in *BarrierRecoveryRecoverRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// BarrierRecoveryDelete deletes all stored recovery keys.
-	BarrierRecoveryDelete(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	BarrierRecoveryDelete(ctx context.Context, in *BarrierRecoveryDeleteRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// BarrierRecoveryStatus checks whether recovery keys have been generated.
 	BarrierRecoveryStatus(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*BarrierRecoveryStatusResponse, error)
 	// BarrierRootToken generates a new root token using Shamir shares.
@@ -1979,6 +1983,16 @@ func (c *qRDBServiceClient) DatabaseUpdateConnection(ctx context.Context, in *Da
 	return out, nil
 }
 
+func (c *qRDBServiceClient) DatabaseUpdateSQL(ctx context.Context, in *DatabaseUpdateSQLRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DatabaseInfoResponse)
+	err := c.cc.Invoke(ctx, QRDBService_DatabaseUpdateSQL_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *qRDBServiceClient) BarrierInitialize(ctx context.Context, in *BarrierInitializeRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(emptypb.Empty)
@@ -1999,7 +2013,7 @@ func (c *qRDBServiceClient) BarrierUnseal(ctx context.Context, in *BarrierUnseal
 	return out, nil
 }
 
-func (c *qRDBServiceClient) BarrierSeal(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+func (c *qRDBServiceClient) BarrierSeal(ctx context.Context, in *BarrierSealRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(emptypb.Empty)
 	err := c.cc.Invoke(ctx, QRDBService_BarrierSeal_FullMethodName, in, out, cOpts...)
@@ -2179,7 +2193,7 @@ func (c *qRDBServiceClient) BarrierRecoveryRecover(ctx context.Context, in *Barr
 	return out, nil
 }
 
-func (c *qRDBServiceClient) BarrierRecoveryDelete(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+func (c *qRDBServiceClient) BarrierRecoveryDelete(ctx context.Context, in *BarrierRecoveryDeleteRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(emptypb.Empty)
 	err := c.cc.Invoke(ctx, QRDBService_BarrierRecoveryDelete_FullMethodName, in, out, cOpts...)
@@ -3060,13 +3074,16 @@ type QRDBServiceServer interface {
 	DatabaseUpdateBarrier(context.Context, *DatabaseUpdateBarrierRequest) (*DatabaseInfoResponse, error)
 	// DatabaseUpdateConnection updates the remote connection configuration.
 	DatabaseUpdateConnection(context.Context, *DatabaseUpdateConnectionRequest) (*DatabaseInfoResponse, error)
+	// DatabaseUpdateSQL updates a database's SQL settings -- its
+	// sql.concurrency (optimistic or pessimistic). See docs/row-locking/.
+	DatabaseUpdateSQL(context.Context, *DatabaseUpdateSQLRequest) (*DatabaseInfoResponse, error)
 	// BarrierInitialize initializes the cryptographic barrier with a single
 	// master key.
 	BarrierInitialize(context.Context, *BarrierInitializeRequest) (*emptypb.Empty, error)
 	// BarrierUnseal unseals the barrier using the master key.
 	BarrierUnseal(context.Context, *BarrierUnsealRequest) (*emptypb.Empty, error)
 	// BarrierSeal seals the barrier, preventing data access until unsealed.
-	BarrierSeal(context.Context, *emptypb.Empty) (*emptypb.Empty, error)
+	BarrierSeal(context.Context, *BarrierSealRequest) (*emptypb.Empty, error)
 	// BarrierStatus returns the current barrier state.
 	BarrierStatus(context.Context, *emptypb.Empty) (*BarrierStatusResponse, error)
 	// BarrierShamirInitialize initializes the barrier with Shamir secret sharing.
@@ -3107,7 +3124,7 @@ type QRDBServiceServer interface {
 	// BarrierRecoveryRecover unseals the barrier using recovery keys.
 	BarrierRecoveryRecover(context.Context, *BarrierRecoveryRecoverRequest) (*emptypb.Empty, error)
 	// BarrierRecoveryDelete deletes all stored recovery keys.
-	BarrierRecoveryDelete(context.Context, *emptypb.Empty) (*emptypb.Empty, error)
+	BarrierRecoveryDelete(context.Context, *BarrierRecoveryDeleteRequest) (*emptypb.Empty, error)
 	// BarrierRecoveryStatus checks whether recovery keys have been generated.
 	BarrierRecoveryStatus(context.Context, *emptypb.Empty) (*BarrierRecoveryStatusResponse, error)
 	// BarrierRootToken generates a new root token using Shamir shares.
@@ -3649,13 +3666,16 @@ func (UnimplementedQRDBServiceServer) DatabaseUpdateBarrier(context.Context, *Da
 func (UnimplementedQRDBServiceServer) DatabaseUpdateConnection(context.Context, *DatabaseUpdateConnectionRequest) (*DatabaseInfoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DatabaseUpdateConnection not implemented")
 }
+func (UnimplementedQRDBServiceServer) DatabaseUpdateSQL(context.Context, *DatabaseUpdateSQLRequest) (*DatabaseInfoResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DatabaseUpdateSQL not implemented")
+}
 func (UnimplementedQRDBServiceServer) BarrierInitialize(context.Context, *BarrierInitializeRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierInitialize not implemented")
 }
 func (UnimplementedQRDBServiceServer) BarrierUnseal(context.Context, *BarrierUnsealRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierUnseal not implemented")
 }
-func (UnimplementedQRDBServiceServer) BarrierSeal(context.Context, *emptypb.Empty) (*emptypb.Empty, error) {
+func (UnimplementedQRDBServiceServer) BarrierSeal(context.Context, *BarrierSealRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierSeal not implemented")
 }
 func (UnimplementedQRDBServiceServer) BarrierStatus(context.Context, *emptypb.Empty) (*BarrierStatusResponse, error) {
@@ -3709,7 +3729,7 @@ func (UnimplementedQRDBServiceServer) BarrierRecoveryGenerate(context.Context, *
 func (UnimplementedQRDBServiceServer) BarrierRecoveryRecover(context.Context, *BarrierRecoveryRecoverRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierRecoveryRecover not implemented")
 }
-func (UnimplementedQRDBServiceServer) BarrierRecoveryDelete(context.Context, *emptypb.Empty) (*emptypb.Empty, error) {
+func (UnimplementedQRDBServiceServer) BarrierRecoveryDelete(context.Context, *BarrierRecoveryDeleteRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierRecoveryDelete not implemented")
 }
 func (UnimplementedQRDBServiceServer) BarrierRecoveryStatus(context.Context, *emptypb.Empty) (*BarrierRecoveryStatusResponse, error) {
@@ -6117,6 +6137,24 @@ func _QRDBService_DatabaseUpdateConnection_Handler(srv interface{}, ctx context.
 	return interceptor(ctx, in, info, handler)
 }
 
+func _QRDBService_DatabaseUpdateSQL_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DatabaseUpdateSQLRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).DatabaseUpdateSQL(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_DatabaseUpdateSQL_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).DatabaseUpdateSQL(ctx, req.(*DatabaseUpdateSQLRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _QRDBService_BarrierInitialize_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(BarrierInitializeRequest)
 	if err := dec(in); err != nil {
@@ -6154,7 +6192,7 @@ func _QRDBService_BarrierUnseal_Handler(srv interface{}, ctx context.Context, de
 }
 
 func _QRDBService_BarrierSeal_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(emptypb.Empty)
+	in := new(BarrierSealRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
@@ -6166,7 +6204,7 @@ func _QRDBService_BarrierSeal_Handler(srv interface{}, ctx context.Context, dec 
 		FullMethod: QRDBService_BarrierSeal_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).BarrierSeal(ctx, req.(*emptypb.Empty))
+		return srv.(QRDBServiceServer).BarrierSeal(ctx, req.(*BarrierSealRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -6478,7 +6516,7 @@ func _QRDBService_BarrierRecoveryRecover_Handler(srv interface{}, ctx context.Co
 }
 
 func _QRDBService_BarrierRecoveryDelete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(emptypb.Empty)
+	in := new(BarrierRecoveryDeleteRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
@@ -6490,7 +6528,7 @@ func _QRDBService_BarrierRecoveryDelete_Handler(srv interface{}, ctx context.Con
 		FullMethod: QRDBService_BarrierRecoveryDelete_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).BarrierRecoveryDelete(ctx, req.(*emptypb.Empty))
+		return srv.(QRDBServiceServer).BarrierRecoveryDelete(ctx, req.(*BarrierRecoveryDeleteRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -8051,6 +8089,10 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DatabaseUpdateConnection",
 			Handler:    _QRDBService_DatabaseUpdateConnection_Handler,
+		},
+		{
+			MethodName: "DatabaseUpdateSQL",
+			Handler:    _QRDBService_DatabaseUpdateSQL_Handler,
 		},
 		{
 			MethodName: "BarrierInitialize",

@@ -34,8 +34,16 @@
 //
 // Usage:
 //
-//	coverratchet -profile coverage/total.out -baseline test/coverage-baseline.txt -min 91
-//	coverratchet -profile coverage/total.out -baseline test/coverage-baseline.txt -write
+//	coverratchet -profile coverage/total.out -baseline test/coverage-baseline.txt -tags "codec_json raft ..." -min 91
+//	coverratchet -profile coverage/total.out -baseline test/coverage-baseline.txt -tags "codec_json raft ..." -write
+//
+// -tags IS THE CALLER'S ASSERTION, NOT A MEASUREMENT. A Go coverage profile
+// does not record the build tags it was produced under, so this tool cannot
+// derive them: it trusts the caller to pass the set its `go test -tags` used.
+// `make coverage` and `make coverage-baseline` pass $(BUILD_TAGS), the same
+// variable their `go test` invocation expands, which is what makes the
+// assertion true there. A caller that passes one set and measured under
+// another defeats the check, and nothing here can detect that.
 package main
 
 import (
@@ -69,6 +77,8 @@ type config struct {
 	exclude        map[string]bool
 	discoveryFloor int
 	write          bool
+	// tags is the normalised build-tag set the profile was measured under.
+	tags string
 }
 
 func parseFlags(args []string, w io.Writer) (*config, error) {
@@ -83,12 +93,16 @@ func parseFlags(args []string, w io.Writer) (*config, error) {
 	fs.StringVar(&exclude, "exclude", "", "comma-separated import paths to leave out of every check (test helpers)")
 	fs.IntVar(&cfg.discoveryFloor, "discovery-floor", defaultDiscoveryFloor, "fewest packages the profile must measure")
 	fs.BoolVar(&cfg.write, "write", false, "regenerate the baseline from the profile instead of checking it")
+	fs.StringVar(&cfg.tags, "tags", "", "space-separated build tags the caller ASSERTS the profile was measured under (a profile does not record them)")
 	if err := fs.Parse(args); err != nil {
 		return nil, &ConfigError{Reason: err.Error()}
 	}
 
 	if cfg.profile == "" {
 		return nil, &ConfigError{Reason: "-profile is required"}
+	}
+	if cfg.tags = NormalizeTags(cfg.tags); cfg.tags == "" {
+		return nil, &ConfigError{Reason: "-tags is required: a baseline is only comparable with a profile measured under the same build tags"}
 	}
 	if cfg.baseline == "" {
 		return nil, &ConfigError{Reason: "-baseline is required"}
@@ -140,8 +154,12 @@ func run(args []string, w io.Writer) error {
 		return err
 	}
 
+	if baseline.Tags != cfg.tags {
+		return &BuildTagsError{Path: cfg.baseline, Baseline: baseline.Tags, Profile: cfg.tags}
+	}
+
 	gate := Gate{RepoMin: cfg.min, Tolerance: cfg.tolerance, Exclude: cfg.exclude, DiscoveryFloor: cfg.discoveryFloor}
-	res, evalErr := gate.Evaluate(measured, baseline)
+	res, evalErr := gate.Evaluate(measured, baseline.Held)
 	report(w, gate, res)
 	return evalErr
 }
@@ -163,7 +181,7 @@ func writeBaseline(cfg *config, measured map[string]Stats, w io.Writer) error {
 	if err != nil {
 		return &BaselineError{Path: cfg.baseline, Reason: "cannot create", Err: err}
 	}
-	if err := WriteBaseline(f, kept); err != nil {
+	if err := WriteBaseline(f, kept, cfg.tags); err != nil {
 		_ = f.Close()
 		return &BaselineError{Path: cfg.baseline, Reason: "write failed", Err: err}
 	}

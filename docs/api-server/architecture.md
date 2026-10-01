@@ -117,6 +117,13 @@ Optional extensions:
 | `MCPToolPermissioner` | declare each MCP tool's permission; **a tool registered without one stays fail-closed** |
 | `GRPCPublicMethodLister` | declare gRPC methods reachable without auth, symmetric with `HandlePublic` |
 | `ModuleAuthFallback` | authenticate credentials the host does not understand — a capability's own session-token plane |
+| `ConnObserver` | observe each connection opened and closed on every listener (REST, HTTP/3, gRPC, unix, QUIC, MCP), so a host keeps its own active-connection metrics for connections qrdb accepts on its behalf |
+
+`ConnObserver` is a per-module option on the one listener set, not a second
+listener. The alternative — a host counting connections on a listener of its
+own — is exactly the parallel transport stack the seam exists to remove. It is
+reported per listener (`Transport`), and REST's two sockets are reported apart
+(`rest` for TCP, `http3` for QUIC) because they are different connections.
 
 ### `ModuleAuthFallback` — the important one
 
@@ -341,8 +348,16 @@ kernel-assigned port.
   (`/v1/databases/{name}` and the like); a wildcard route (`/kv/*`) receives
   the decoded key as it always did.
 - **Public routes are explicit and few** — `GET /health`,
-  `GET /v1/config/initialized`, and `GET /v1/ca/bootstrap` when configured.
-  `GET /metrics` requires authentication but no specific permission.
+  `GET /v1/config/initialized`, `GET /v1/ca/bootstrap` when configured, the
+  two cluster key routes when a receiver is wired (they authorize the peer
+  node themselves), and the MCP protected-resource metadata document when
+  configured. `GET /metrics` requires authentication but no specific
+  permission. The full list is in
+  [engineering.md](engineering.md#public-and-authenticated-only-routes).
+- **MCP authenticates before the MCP layer reads anything.** With
+  authentication configured, every request to the MCP endpoint is
+  authenticated at the HTTP layer, so `initialize`, `ping` and `tools/list`
+  are not answered anonymously, and every request body is bounded.
 - **A module cannot grant itself authority.** Its fallback returns an identity;
   the host enriches and authorizes it.
 - **A malformed public gRPC method name is rejected at registration**, so a typo

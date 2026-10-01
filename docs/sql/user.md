@@ -63,6 +63,28 @@ CREATE INDEX idx_email ON users (email);
 normal; duplicates are impossible.** If you need consecutive ids within one
 multi-row `INSERT`, this is not the store for that guarantee.
 
+`ALTER TABLE users AUTO_INCREMENT = 0` restarts the counter at 1, and every
+session — on any node — stops using ids it had reserved before the restart:
+from its next statement on, its generated ids come from the restarted
+counter. A multi-row `INSERT` already running when the restart commits may
+finish with ids from before it, and can then fail with a duplicate-key error
+that a retry resolves. Rows already in the table are
+not renumbered and the counter is not checked against them: an
+`AUTO_INCREMENT = 0` on a table that still holds id 1 means the next insert
+fails with a duplicate-key error (MySQL would instead move the counter past
+the largest id).
+
+**Upgrading a cluster:** finish upgrading every node before running
+`ALTER TABLE ... AUTO_INCREMENT = 0` or a MySQL `TRUNCATE TABLE`. While some
+nodes still run an earlier release, a reset cannot reliably stop other
+sessions from reusing ids they reserved before it.
+
+`TRUNCATE TABLE users` resets `AUTO_INCREMENT` back to 1 on the MySQL wire
+protocol, matching MySQL. On the PostgreSQL wire protocol, plain `TRUNCATE`
+leaves the sequence exactly where it was, matching PostgreSQL's own default
+(`RESTART IDENTITY` is not supported). Either way, no session goes on
+inserting ids reserved before the `TRUNCATE`.
+
 **Use transactions.**
 
 ```sql
@@ -74,7 +96,11 @@ ROLLBACK TO SAVEPOINT sp1;
 COMMIT;
 ```
 
-`ROLLBACK` is free — nothing was sent until `COMMIT`.
+`ROLLBACK` is free — nothing was sent until `COMMIT`. A statement that fails
+inside a transaction — a duplicate key on its third row, say — is undone whole
+and the transaction carries on with its earlier statements intact. Outside a
+transaction a multi-row statement is not all-or-nothing: the rows written before
+the failure stay committed.
 
 **Re-create tables from v0.20.0 through v0.21.0.** A relational table created
 by one of those releases is refused with **MySQL error 1459** (SQLSTATE 55000
@@ -89,6 +115,12 @@ truncated, dropped or altered while it ran fails the same way, as do the REST
 (409), gRPC (`ABORTED`) and QUIC (`StatusAborted`) endpoints. Retry by **re-running the
 statements**, not by re-issuing `COMMIT`: the server buffered operations, not
 your SQL, so replaying `SET n = n + 1` would re-apply a stale value.
+
+**Wait instead of retrying.** If 1213s are frequent, lock the rows instead:
+`SELECT ... FOR UPDATE` serialises a read-modify-write in any mode, and
+`SET qrdb_concurrency = 'pessimistic'` makes every `UPDATE`/`DELETE`/`INSERT`
+wait for the row rather than fail at `COMMIT`. See
+[../row-locking/user.md](../row-locking/user.md).
 
 **Tighten conflict detection for one session.**
 
@@ -209,7 +241,9 @@ statement*, naming it, rather than surprising you at `COMMIT`.
 
 **`SET TRANSACTION ISOLATION LEVEL` seems to do nothing.** It is accepted and
 recorded, not interpreted. Those levels describe a lock-based engine; QRDB's
-transactions are optimistic. Use `qrdb_isolation` instead.
+transactions are optimistic unless you select pessimistic mode. Use
+`qrdb_isolation` for conflict detection and `qrdb_concurrency` (see
+[../row-locking/](../row-locking/)) for blocking behaviour.
 
 **Your PostgreSQL client cannot introspect the schema.** The `pg_catalog`
 subset covers `pg_type`, `pg_class`, `pg_namespace`, `pg_description` and

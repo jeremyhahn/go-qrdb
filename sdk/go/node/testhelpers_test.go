@@ -22,6 +22,7 @@ import (
 
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -106,4 +107,16 @@ func newTenantIsolationConfig(t *testing.T) *qrdbconfig.Config {
 	cfg.Protocols.Unix = false
 	cfg.Protocols.MCP = false
 	return cfg
+}
+
+// volumeEntitlements returns the entitlement set that permits creating
+// IsolationVolume tenants with system-managed auto-unseal barriers. These are
+// used only in tests; production operators configure entitlements via the
+// operator config.
+func volumeEntitlements() *quota.Entitlements {
+	return &quota.Entitlements{
+		AllowedIsolationModes:     []string{quota.IsolationModeVolume},
+		AllowVolumeStorage:        true,
+		AllowSystemManagedBarrier: true,
+	}
 }

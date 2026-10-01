@@ -17,6 +17,7 @@
 package integration_test
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -37,18 +38,21 @@ type cliTestCase struct {
 	nodes     int
 }
 
-// startTestCases exercises only the state machines a node can actually
-// complete first boot with: qrdbd's boot-time role/user stores now require a
-// kvstore.GuardedBatchKVStore-capable state machine (go-qrdb#555), which
-// "memory" and "concurrent" do not implement, so a node started with either
-// refuses at first boot rather than becoming healthy — see
-// TestCLI_Start_UnsupportedStateMachineFailsClosed below for THAT behavior.
-// "pebble" and "mvcc" replace them here for the healthy-startup matrix.
+// startTestCases is the healthy-startup matrix. Every --sm type serves the
+// guarded batches first boot's atomic role/user creation commits (go-qrdb#136,
+// option A), so "memory" and "concurrent" -- the two types go-qrdb#555 once
+// refused at first boot -- sit beside the default "pebble" and "mvcc" here.
+// TestCLI_Start_EverySMTypeCompletesFirstBoot below proves they get all the
+// way through first boot, which host.id alone does not.
 var startTestCases = []cliTestCase{
 	{name: "pebble/static/1-node", smType: "pebble", discovery: "static", nodes: 1},
 	{name: "pebble/static/3-node", smType: "pebble", discovery: "static", nodes: 3},
 	{name: "mvcc/static/1-node", smType: "mvcc", discovery: "static", nodes: 1},
 	{name: "mvcc/static/3-node", smType: "mvcc", discovery: "static", nodes: 3},
+	{name: "memory/static/1-node", smType: "memory", discovery: "static", nodes: 1},
+	{name: "memory/static/3-node", smType: "memory", discovery: "static", nodes: 3},
+	{name: "concurrent/static/1-node", smType: "concurrent", discovery: "static", nodes: 1},
+	{name: "concurrent/static/3-node", smType: "concurrent", discovery: "static", nodes: 3},
 }
 
 func TestCLI_Start_TableDriven(t *testing.T) {
@@ -228,16 +232,17 @@ func TestCLI_Start_InvalidSM(t *testing.T) {
 	}
 }
 
-// TestCLI_Start_UnsupportedStateMachineFailsClosed is the direct end-to-end
-// counterpart to startTestCases' removal of "memory" and "concurrent": both
-// are VALID --sm values (TestCLI_Start_InvalidSM covers an unknown one), so
-// the daemon gets past flag validation and into first boot, where
-// probeGuardedBatchCapability (go-qrdb#555) discovers — against the real,
-// running state machine, not a static descriptor — that neither implements
-// the transaction plane atomic role/user creation requires. The process must
-// exit non-zero with the typed capability error rather than hang waiting for
-// a health signal that will never come.
-func TestCLI_Start_UnsupportedStateMachineFailsClosed(t *testing.T) {
+// TestCLI_Start_EverySMTypeCompletesFirstBoot is the end-to-end pin for
+// go-qrdb#136 option A. It replaces a test that asserted the opposite: under
+// go-qrdb#555 alone "memory" and "concurrent" had no transaction plane, the
+// boot-time guarded-batch probe refused them, and the daemon exited. Since
+// option A every sm_type decides guarded batches against its own keyspace
+// (docs/firstboot/cli.md: "No registered type does" fail the probe), so the
+// same daemon must pass the probe, create the system roles and the admin user
+// atomically, open its admin API -- which starts only after first boot
+// completes -- and serve a write. A daemon that still refused would exit, and
+// its admin API would never answer.
+func TestCLI_Start_EverySMTypeCompletesFirstBoot(t *testing.T) {
 	binary := buildBinary(t)
 	ca := generateTestCA(t)
 
@@ -263,12 +268,14 @@ func TestCLI_Start_UnsupportedStateMachineFailsClosed(t *testing.T) {
 			}
 			args = append(args, ca.tlsFlags(t)...)
 
-			out, err := runCLI(t, binary, args...)
-			if err == nil {
-				t.Fatalf("expected non-zero exit for --sm %s (no transaction support); output:\n%s", smType, out)
-			}
-			if !strings.Contains(out, "transaction support") {
-				t.Errorf("expected output naming the capability refusal, got:\n%s", out)
+			startNode(t, binary, args, fmt.Sprintf("[sm=%s] ", smType))
+			waitForAdmin(t, ca.Pool, adminPorts[0], 60*time.Second)
+
+			key := "firstboot-" + smType
+			want := []byte("served-by-" + smType)
+			httpPut(t, ca, adminPorts[0], key, want)
+			if got := httpGet(t, ca, adminPorts[0], key); !bytes.Equal(got, want) {
+				t.Fatalf("GET %s = %q, want %q", key, got, want)
 			}
 		})
 	}

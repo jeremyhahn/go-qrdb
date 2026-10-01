@@ -71,8 +71,9 @@ func (m *AuthMiddleware) UnaryInterceptor() grpc.UnaryServerInterceptor {
 			})
 		}
 
-		// Authorize the action.
-		if authzErr := m.authorize(ctx, identity, perm); authzErr != nil {
+		// Authorize the action against the tenant the request names (see
+		// Target and RegisterGRPCTargets).
+		if authzErr := m.authorizeTarget(ctx, identity, perm, m.grpcTarget(info.FullMethod, req)); authzErr != nil {
 			return nil, mapGRPCAuthError(authzErr)
 		}
 
@@ -80,21 +81,69 @@ func (m *AuthMiddleware) UnaryInterceptor() grpc.UnaryServerInterceptor {
 	}
 }
 
-// isPublicGRPCMethod reports whether a gRPC full method belongs to an
-// infrastructure service (health checking, server reflection) that is
-// intentionally reachable without an application permission. Application
-// services (QRDBService, TenantBarrierService) are NOT public — every method
-// must carry a permission mapping, or be declared public by a capability
-// module via RegisterPublicGRPCMethods, or it is denied.
-func isPublicGRPCMethod(fullMethod string) bool {
-	switch {
-	case strings.HasPrefix(fullMethod, "/grpc.health.v1.Health/"):
-		return true
-	case strings.HasPrefix(fullMethod, "/grpc.reflection."):
-		return true
-	default:
-		return false
+// GRPCTargetFunc extracts the Target a unary gRPC request names.
+type GRPCTargetFunc func(req any) Target
+
+// RegisterGRPCTargets declares, per full method name, how a request names
+// the tenant it acts on, so UnaryInterceptor authorizes the method's
+// permission against that tenant rather than the caller's own (see Target).
+// A method with no registration acts on the caller's own tenant.
+//
+// Safe to call more than once and concurrently with in-flight requests, like
+// RegisterPublicGRPCMethods: every transport sharing this middleware may
+// register the same service's table, and the set only grows, replaced in one
+// atomic store. A malformed method name or a nil extractor is refused with
+// InvalidGRPCTargetError, so a typo fails startup instead of silently leaving
+// the method authorized against the caller's own tenant.
+func (m *AuthMiddleware) RegisterGRPCTargets(targets map[string]GRPCTargetFunc) error {
+	if len(targets) == 0 {
+		return nil
 	}
+	for method, fn := range targets {
+		if !isValidGRPCMethodName(method) || fn == nil {
+			return &InvalidGRPCTargetError{Method: method}
+		}
+	}
+	next := make(map[string]GRPCTargetFunc, len(targets))
+	if existing := m.grpcTargets.Load(); existing != nil {
+		for method, fn := range *existing {
+			next[method] = fn
+		}
+	}
+	for method, fn := range targets {
+		next[method] = fn
+	}
+	m.grpcTargets.Store(&next)
+	return nil
+}
+
+// grpcTarget returns the Target req names under fullMethod's registration,
+// or the caller's own tenant when the method has none.
+func (m *AuthMiddleware) grpcTarget(fullMethod string, req any) Target {
+	targets := m.grpcTargets.Load()
+	if targets == nil {
+		return SelfTarget()
+	}
+	fn, ok := (*targets)[fullMethod]
+	if !ok {
+		return SelfTarget()
+	}
+	return fn(req)
+}
+
+// isPublicGRPCMethod reports whether a gRPC full method belongs to the one
+// infrastructure service intentionally reachable without credentials: health
+// checking, which reports liveness and nothing else. Application services
+// (QRDBService, TenantBarrierService) are NOT public — every method must
+// carry a permission mapping, or be declared public by a capability module
+// via RegisterPublicGRPCMethods, or it is denied.
+//
+// Server reflection is deliberately NOT exempt. It answers with the node's
+// whole schema -- every service, method and message -- so a composer that
+// registers it and wants it anonymous must declare that explicitly through
+// RegisterPublicGRPCMethods.
+func isPublicGRPCMethod(fullMethod string) bool {
+	return strings.HasPrefix(fullMethod, "/grpc.health.v1.Health/")
 }
 
 // RegisterPublicGRPCMethods declares gRPC full method names that must be

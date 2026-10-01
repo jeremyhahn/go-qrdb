@@ -431,6 +431,35 @@ func TestRoutingUserService_SameTenantRoutesToSelf(t *testing.T) {
 	}
 }
 
+// GetUserByEmail routes on the effective tenant exactly as GetUserByUsername
+// does: same-tenant resolves to the caller's own store, and a system caller
+// may target another tenant's store by name.
+func TestRoutingUserService_GetUserByEmail(t *testing.T) {
+	svc, storeA, _ := crossTenantSetup(t)
+	actx := tenant.WithTenantID(context.Background(), "a")
+
+	created, err := svc.CreateUser(actx, &CreateUserRequest{Username: "annie", Email: "annie@example.com", TenantID: "a"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if len(storeA.m) == 0 {
+		t.Fatal("user was not routed to tenant A's store")
+	}
+
+	got, err := svc.GetUserByEmail(actx, "", "annie@example.com")
+	if err != nil {
+		t.Fatalf("GetUserByEmail(empty tenant): %v", err)
+	}
+	if got.ID != created.ID || got.TenantID != "a" {
+		t.Fatalf("GetUserByEmail = %+v, want ID=%d TenantID=a", got, created.ID)
+	}
+
+	var xt *tenant.CrossTenantDeniedError
+	if _, err := svc.GetUserByEmail(actx, "b", "annie@example.com"); !errors.As(err, &xt) {
+		t.Fatalf("GetUserByEmail(cross-tenant) = %v, want *tenant.CrossTenantDeniedError", err)
+	}
+}
+
 // A system-tenant caller MAY target another tenant: the request tenant is
 // honored and the record lands in that tenant's store.
 func TestRoutingUserService_SystemCallerMayTargetTenant(t *testing.T) {
@@ -1268,5 +1297,54 @@ func TestRoutingUserService_ReadsNeverProbe(t *testing.T) {
 	}
 	if store.probes != 1 {
 		t.Errorf("probes = %d, want exactly the create's one", store.probes)
+	}
+}
+
+// TestRoutingUserService_PromoteToSystemUser_RoutesByID is the round-2
+// regression test: routingUserService (the production servicer
+// pkg/firstboot's OPTIONAL systemPromoter type assertion must match) has to
+// implement PromoteToSystemUser itself, routing by id exactly as GetUser
+// does, rather than leaving the assertion to fail silently against the
+// production servicer the way it did before this method existed.
+func TestRoutingUserService_PromoteToSystemUser_RoutesByID(t *testing.T) {
+	shared := newMemKVStore()
+	resolver := &fakeResolver{shared: shared}
+	svc, err := NewRoutingService(resolver, newTestIDGen(t))
+	if err != nil {
+		t.Fatalf("NewRoutingService: %v", err)
+	}
+
+	ctx := context.Background()
+	created, err := svc.CreateUser(ctx, &CreateUserRequest{
+		WithoutEmailLoginKey: true, Username: "legacy-admin", TenantID: tenant.SystemTenantID,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if created.System {
+		t.Fatal("setup: the record must start as an ordinary (non-System) user")
+	}
+
+	promoter, ok := svc.(interface {
+		PromoteToSystemUser(ctx context.Context, id uint64) (*User, error)
+	})
+	if !ok {
+		t.Fatal("routingUserService must implement PromoteToSystemUser")
+	}
+
+	promoted, err := promoter.PromoteToSystemUser(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("PromoteToSystemUser: %v", err)
+	}
+	if !promoted.System {
+		t.Fatal("expected the routed promotion to set System=true")
+	}
+
+	fetched, err := svc.GetUser(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetUser: %v", err)
+	}
+	if !fetched.System {
+		t.Error("expected the persisted record to read back System=true")
 	}
 }

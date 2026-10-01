@@ -27,8 +27,10 @@ package secure
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/jeremyhahn/go-enclave"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
@@ -66,7 +68,29 @@ type (
 	ProviderError     = secure.ProviderError
 	NestedBorrowError = secure.NestedBorrowError
 	EmptyBorrowError  = secure.EmptyBorrowError
+
+	ProcessHardeningError               = secure.ProcessHardeningError
+	ProcessInspectionOptOutError        = secure.ProcessInspectionOptOutError
+	ProcessInspectionOptOutRefusedError = secure.ProcessInspectionOptOutRefusedError
+	ProcessTracedError                  = secure.ProcessTracedError
 )
+
+// ProcessHardening is the SDK re-export of secure.ProcessHardening: what
+// HardenProcess did to the process.
+type ProcessHardening = secure.ProcessHardening
+
+// The HardenProcess outcomes, re-exported from secure.
+const (
+	ProcessHardened             = secure.ProcessHardened
+	ProcessInspectionAllowed    = secure.ProcessInspectionAllowed
+	ProcessHardeningUnavailable = secure.ProcessHardeningUnavailable
+)
+
+// AllowProcessInspectionEnv is the SDK re-export of
+// secure.AllowProcessInspectionEnv: the environment variable that opts a
+// process out of HardenProcess, with a logged warning, so a debugger can
+// attach.
+const AllowProcessInspectionEnv = secure.AllowProcessInspectionEnv
 
 // ErrAllocatorInstalled is the SDK re-export of the same sentinel
 // enclave.SetAllocator returns: the process-wide locked-memory budget was
@@ -269,6 +293,17 @@ func NewStdinProvider() *StdinProvider { return secure.NewStdinProvider() }
 // NewCallbackProvider is the SDK re-export of secure.NewCallbackProvider.
 func NewCallbackProvider(fn func(ctx context.Context, prompt string) ([]byte, error)) *CallbackProvider {
 	return secure.NewCallbackProvider(fn)
+}
+
+// HardenProcess is the SDK re-export of secure.HardenProcess. Like
+// SetAllocator it belongs to the BINARY that owns the process: call it once
+// at startup, before anything constructs a Buffer or Secret, so that a
+// debugger or a same-user process cannot read protected memory through ptrace
+// or /proc/<pid>/mem. A binary with an audit trail records an outcome of
+// ProcessInspectionAllowed there. cmd/qrdbd's start command is the reference
+// wiring.
+func HardenProcess(logger *slog.Logger) (ProcessHardening, error) {
+	return secure.HardenProcess(logger)
 }
 
 // NewAllocatorWithinRLimit is the SDK re-export of

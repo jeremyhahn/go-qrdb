@@ -298,8 +298,10 @@ describe('Bug 3 – index query parameter naming', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Bug 4: updateSQL must send PATCH /v1/databases/{name}/protocol with
-//         {mysql, postgresql} body, not PATCH /databases/{name}/sql.
+// Bug 4: updateProtocol must send PATCH /v1/databases/{name}/protocol with
+//         {mysql, postgresql} body. (It was named updateSQL until the name
+//         was taken by the SQL settings, matching the Go SDK's
+//         UpdateDatabaseProtocol / UpdateDatabaseSQL.)
 // ---------------------------------------------------------------------------
 
 describe('Bug 4 – database protocol endpoint path and body', () => {
@@ -316,7 +318,7 @@ describe('Bug 4 – database protocol endpoint path and body', () => {
             protocol: { mysql: true, postgresql: false },
         });
 
-        await client.database.updateSQL('default', { mysql: true, postgresql: false });
+        await client.database.updateProtocol('default', { mysql: true, postgresql: false });
 
         expect(calls).toHaveLength(1);
         const req = calls[0];
@@ -338,11 +340,90 @@ describe('Bug 4 – database protocol endpoint path and body', () => {
             protocol: { mysql: false, postgresql: true },
         });
 
-        await client.database.updateSQL('my db', { mysql: false, postgresql: true });
+        await client.database.updateProtocol('my db', { mysql: false, postgresql: true });
 
         expect(calls).toHaveLength(1);
         const url = new URL(calls[0].url);
         expect(url.pathname).toBe('/v1/databases/my%20db/protocol');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// updateSQL sets a database's SQL settings -- its concurrency mode -- with
+// PATCH /v1/databases/{name}/sql and a {"sql": {...}} body, the same request
+// the Go SDK's UpdateDatabaseSQL sends. Omitting the settings restores the
+// defaults.
+// ---------------------------------------------------------------------------
+
+describe('database SQL settings (concurrency)', () => {
+    beforeEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('sends PATCH /v1/databases/{name}/sql with {sql: {concurrency}}', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({
+            name: 'shop',
+            engine: 'kv',
+            backend: 'pebble',
+            status: 'open',
+            sql: { concurrency: 'pessimistic' },
+        });
+
+        const info = await client.database.updateSQL('shop', { concurrency: 'pessimistic' });
+
+        expect(calls).toHaveLength(1);
+        const req = calls[0];
+        expect(new URL(req.url).pathname).toBe('/v1/databases/shop/sql');
+        expect(req.method).toBe('PATCH');
+        expect(req.body).toEqual({ sql: { concurrency: 'pessimistic' } });
+        expect(info.sql?.concurrency).toBe('pessimistic');
+    });
+
+    it('omitting the settings sends no sql, restoring the defaults', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({ name: 'shop', engine: 'kv', backend: 'pebble', status: 'open' });
+
+        const info = await client.database.updateSQL('shop');
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0].body).toEqual({});
+        expect(info.sql).toBeUndefined();
+    });
+
+    it('percent-encodes the database name', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({ name: 'my db', engine: 'kv', backend: 'pebble', status: 'open' });
+
+        await client.database.updateSQL('my db', { concurrency: 'optimistic' });
+
+        expect(new URL(calls[0].url).pathname).toBe('/v1/databases/my%20db/sql');
+    });
+
+    it('creates a database with sql settings and protocol settings side by side', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({
+            name: 'shop',
+            engine: 'kv',
+            backend: 'pebble',
+            status: 'open',
+            protocol: { mysql: true, postgresql: false },
+            sql: { concurrency: 'pessimistic' },
+        });
+
+        const info = await client.database.create({
+            name: 'shop',
+            engine: 'kv',
+            backend: 'pebble',
+            protocol: { mysql: true, postgresql: false },
+            sql: { concurrency: 'pessimistic' },
+        });
+
+        const body = calls[0].body as Record<string, unknown>;
+        expect(body.protocol).toEqual({ mysql: true, postgresql: false });
+        expect(body.sql).toEqual({ concurrency: 'pessimistic' });
+        expect(info.protocol?.mysql).toBe(true);
+        expect(info.sql?.concurrency).toBe('pessimistic');
     });
 });
 

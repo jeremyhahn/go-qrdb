@@ -611,7 +611,10 @@ func TestServer_StartStop_WithServiceRegistry_ResolvesRelationalTable(t *testing
 	mgr := database.NewManager(slog.Default(), dataDir)
 	defer func() { _ = mgr.Close() }()
 
+	// Owned by the tenant the query runs as: a session sees only its own
+	// tenant's databases.
 	_, err := mgr.Create(database.DatabaseConfig{
+		TenantID: "acme",
 		Name:     "testdb",
 		Engine:   database.EngineKV,
 		Backend:  database.BackendPebble,
@@ -637,6 +640,64 @@ func TestServer_StartStop_WithServiceRegistry_ResolvesRelationalTable(t *testing
 	assert.Empty(t, rows)
 }
 
+// TestServer_StartStop_WithServiceRegistry_NoManager_KeepsSequenceOnTruncate
+// pins go-qrdb#547 on the construction path without a database manager
+// (WithServiceRegistry alone, as pkg/server composes it when no manager is
+// configured). That path built its provider with no protocol, so relational
+// tables took MySQL's TRUNCATE semantics on a PostgreSQL listener and
+// restarted their sequence. Plain PostgreSQL TRUNCATE leaves an owned
+// sequence where it was.
+func TestServer_StartStop_WithServiceRegistry_NoManager_KeepsSequenceOnTruncate(t *testing.T) {
+	kvSvc := &mockKVService{scanData: map[string][]byte{}}
+	adminSvc := &mockAdminService{}
+
+	h := sqltest.NewHarness()
+	_, err := h.TableSvc.CreateTable(context.Background(), &service.CreateTableRequest{
+		Database: "testdb",
+		Name:     "widgets",
+		Columns: []service.ColumnDef{
+			{Name: "id", Type: "BIGINT UNSIGNED", Nullable: false, AutoIncrement: true},
+			{Name: "name", Type: "VARCHAR(64)", Nullable: true},
+		},
+		PrimaryKey: []service.PKColumn{{Name: "id"}},
+	})
+	require.NoError(t, err)
+
+	s := NewServer(kvSvc, adminSvc, "127.0.0.1:0",
+		WithDatabaseName("testdb"),
+		WithServiceRegistry(h.Registry),
+	)
+	require.NoError(t, s.Start())
+	defer s.Stop()
+
+	runSQL(t, s.sqlEngine, "testdb", "acme", "INSERT INTO widgets (name) VALUES ('a')")
+	runSQL(t, s.sqlEngine, "testdb", "acme", "INSERT INTO widgets (name) VALUES ('b')")
+	runSQL(t, s.sqlEngine, "testdb", "acme", "TRUNCATE TABLE widgets")
+	runSQL(t, s.sqlEngine, "testdb", "acme", "INSERT INTO widgets (name) VALUES ('c')")
+
+	_, rows := runSQL(t, s.sqlEngine, "testdb", "acme", "SELECT id FROM widgets")
+	require.Len(t, rows, 1)
+	assert.Equal(t, uint64(3), rows[0][0], "PostgreSQL's plain TRUNCATE must not restart the sequence")
+}
+
+// TestServer_StartStop_WithServiceRegistry_NoManager_ServesPGCatalog is the
+// other half of the same wiring: without a database manager the listener is
+// still PostgreSQL's, so unqualified pg_catalog relations resolve.
+func TestServer_StartStop_WithServiceRegistry_NoManager_ServesPGCatalog(t *testing.T) {
+	kvSvc := &mockKVService{scanData: map[string][]byte{}}
+	adminSvc := &mockAdminService{}
+
+	s := NewServer(kvSvc, adminSvc, "127.0.0.1:0",
+		WithDatabaseName("testdb"),
+		WithServiceRegistry(sqltest.NewHarness().Registry),
+	)
+	require.NoError(t, s.Start())
+	defer s.Stop()
+
+	_, rows := runSQL(t, s.sqlEngine, "testdb", "acme", "SELECT typname FROM pg_type WHERE typname = 'int8'")
+	require.Len(t, rows, 1)
+}
+
 // TestServer_StartStop_WithCollectionService_ListsCollection proves that
 // WithCollectionService reaches the provider serving sessions: a collection
 // registered on a FakeCollectionService is visible through SHOW TABLES
@@ -649,7 +710,10 @@ func TestServer_StartStop_WithCollectionService_ListsCollection(t *testing.T) {
 	mgr := database.NewManager(slog.Default(), dataDir)
 	defer func() { _ = mgr.Close() }()
 
+	// Owned by the tenant the query runs as: a session sees only its own
+	// tenant's databases.
 	_, err := mgr.Create(database.DatabaseConfig{
+		TenantID: "acme",
 		Name:     "testdb",
 		Engine:   database.EngineKV,
 		Backend:  database.BackendPebble,

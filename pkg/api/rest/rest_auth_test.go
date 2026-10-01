@@ -284,6 +284,14 @@ func testRole() *role.Role {
 	}
 }
 
+// tenantRoleService answers GetRole with a role owned by tenantID, so a
+// role-assignment write naming it passes validation.
+func tenantRoleService(tenantID string) *mockRoleService {
+	return &mockRoleService{getRoleFn: func(_ context.Context, id string) (*role.Role, error) {
+		return &role.Role{ID: id, TenantID: tenantID}, nil
+	}}
+}
+
 func newAuthServer(userSvc user.UserServicer, roleSvc role.RoleServicer, certProv cert.CertProvider) *Server {
 	var opts []ServerOption
 	if userSvc != nil {
@@ -323,7 +331,7 @@ func TestHandleCreateUser_Success(t *testing.T) {
 			return testUser(), nil
 		},
 	}
-	srv := newAuthServer(svc, nil, nil)
+	srv := newAuthServer(svc, tenantRoleService("tenant-1"), nil)
 
 	body := `{"username":"alice","tenant_id":"tenant-1","role_ids":["role-admin"]}`
 	req := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(body))
@@ -635,6 +643,7 @@ func TestHandleGetUser_Uint64IDRoundTrip(t *testing.T) {
 
 func TestHandleUpdateUser_Success(t *testing.T) {
 	svc := &mockUserService{
+		getUserFn: func(context.Context, uint64) (*user.User, error) { return testUser(), nil },
 		updateUserFn: func(_ context.Context, req *user.UpdateUserRequest) (*user.User, error) {
 			if req.ID != 1001 {
 				t.Fatalf("id = %d, want %d", req.ID, uint64(1001))
@@ -647,7 +656,7 @@ func TestHandleUpdateUser_Success(t *testing.T) {
 			return u, nil
 		},
 	}
-	srv := newAuthServer(svc, nil, nil)
+	srv := newAuthServer(svc, tenantRoleService("tenant-1"), nil)
 
 	body := `{"username":"bob","role_ids":["role-admin"]}`
 	req := httptest.NewRequest(http.MethodPut, "/users/1001", strings.NewReader(body))
@@ -879,7 +888,7 @@ func TestHandleUser_MissingID(t *testing.T) {
 func TestUserToResponse_NilRoleIDs(t *testing.T) {
 	u := testUser()
 	u.RoleIDs = nil
-	resp := userToResponse(u)
+	resp := mustUserToResponse(t, nil, u)
 	if resp.RoleIDs == nil {
 		t.Fatal("roleIDs should be empty slice, not nil")
 	}
@@ -889,7 +898,7 @@ func TestUserToResponse_NilRoleIDs(t *testing.T) {
 }
 
 func TestUserToResponse_Nil(t *testing.T) {
-	resp := userToResponse(nil)
+	resp := mustUserToResponse(t, nil, nil)
 	if resp != nil {
 		t.Fatal("expected nil response for nil user")
 	}
@@ -3030,7 +3039,7 @@ func TestUserToResponse_CarriesLifecycle(t *testing.T) {
 	u := testUser()
 	u.Lifecycle = user.LifecycleSuspended
 
-	resp := userToResponse(u)
+	resp := mustUserToResponse(t, nil, u)
 	if resp.Lifecycle != string(user.LifecycleSuspended) {
 		t.Fatalf("lifecycle = %q, want %q", resp.Lifecycle, user.LifecycleSuspended)
 	}
@@ -3057,7 +3066,7 @@ func TestUserToResponse_CarriesEveryIdentityField(t *testing.T) {
 	u.AuthMethods = []string{"webauthn", "piv"}
 	u.LastAuth = &at
 
-	resp := userToResponse(u)
+	resp := mustUserToResponse(t, nil, u)
 	if len(resp.AuthMethods) != 2 || resp.AuthMethods[1] != "piv" {
 		t.Errorf("auth_methods: got %v", resp.AuthMethods)
 	}
@@ -3075,7 +3084,7 @@ func TestUserToResponse_CarriesCertBindingsIncludingExpired(t *testing.T) {
 		{Thumbprint: "AAAA", Kind: user.CertBindingSPKIThumbprint},
 		{Thumbprint: "BBBB", Kind: user.CertBindingSPKIThumbprint, NotAfter: expired},
 	}
-	resp := userToResponse(u)
+	resp := mustUserToResponse(t, nil, u)
 	if len(resp.CertBindings) != 2 {
 		t.Fatalf("cert_bindings: got %+v, want both bindings", resp.CertBindings)
 	}
@@ -3086,7 +3095,7 @@ func TestUserToResponse_CarriesCertBindingsIncludingExpired(t *testing.T) {
 		t.Errorf("cert_bindings[1] = %+v; the expired binding must be listed with its expiry", resp.CertBindings[1])
 	}
 	u.CertBindings = nil
-	if got := userToResponse(u).CertBindings; got != nil {
+	if got := mustUserToResponse(t, nil, u).CertBindings; got != nil {
 		t.Errorf("no bindings must render as absent, got %+v", got)
 	}
 }

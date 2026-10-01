@@ -1,6 +1,11 @@
 # Time Series — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
+> Scope: go-qrdb · Last verified: 2026-09-28
+>
+> "Target" sections describe the time-series half of the multi-model database
+> program ([../databases/architecture.md](../databases/architecture.md)); they
+> are approved by the owner on 2026-09-30 and not implemented. OD-n refers to that document's ruled decisions.
 
 > **Build-tag gated.** Available only in builds carrying `qrdb_ts`
 > (`WITH_QRDB_TS=1`). `qrdb admin capabilities` reports `timeSeries` when it is
@@ -80,6 +85,81 @@ Retention is **per metric**, not global, and carries three fields:
 That triple is what makes retention a downsampling policy rather than a delete
 policy: a metric can keep a year at hourly resolution instead of keeping nothing.
 
+**Measured: retention is stored, not enforced.** `TSSetRetention` persists the
+policy and `TSGetRetention` returns it; no code expires or downsamples a point.
+Enforcing it is part of this program (OD-16, ruled A); see "Retention
+enforcement" below.
+
+## Current state (measured)
+
+- **Pebble only.** `timeseries.Storage` is built over a raw `*pebble.DB`. It
+  exists on the Pebble-native state machines and on a pebble standalone node.
+  The other state-machine families have a time-series store hook that no
+  production path wires, and a standalone node on another backend has none, so
+  there every call answers as not configured.
+- **Outside the apply batch.** The engine's time-series handlers ignore the
+  apply batch they are given and write points, the metric index and the tag
+  index straight to Pebble with synchronous writes. A time-series write is
+  therefore not atomic with the rest of its Raft entry: if the entry's batch
+  fails after the points were written, the points stay.
+- **Per database by metric prefix.** In a shared store a database's series are
+  distinguished by a `<tenant>/<db>/` prefix on the metric name. The tag index
+  (`idx:tag:`) carries no metric, so no database owns it and a database drop
+  cannot reclaim it.
+
+## Target design — time series as an engine of the database binding
+
+Time series is an engine of the database, stored in the database's
+[storage binding](../databases/architecture.md#the-storage-binding) like every
+other engine.
+
+- **Over the storage interface.** `pkg/timeseries` reads through
+  `storage.Reader` and writes into the apply `storage.Batch`. It imports no
+  storage engine. Points, the metric index, the tag index and retention records
+  commit with the entry that wrote them, or not at all.
+- **Every backend.** memory, file, pebble, objstore and raft. On objstore a range
+  query is an ordered object listing, so it is correct and slower; that is the
+  cost of the backend the database chose.
+- **Replicated with the database.** On a raft binding every write is proposed to
+  the database's Raft group and carries the database's drop fence, like every
+  other write.
+- **Tenant scoped by construction.** The store belongs to one database of one
+  tenant and is encrypted under the binding's encryptor, so metric names carry
+  no database prefix and the tag index belongs to the database. A drop destroys
+  the store and everything in it, the tag index included.
+- **Key layout unchanged inside the store** — `ts:`, `idx:metric:`,
+  `idx:tag:`, `retention:` — minus the `<tenant>/<db>/` metric prefix, which a
+  store of one's own does not need. The encoding and the `AggFunc` numbering
+  remain wire and disk format.
+
+### Retention enforcement (OD-16 A)
+
+A retention sweep changes stored data, so it must be the same on every replica.
+It is therefore a command, not a background delete:
+
+- The binding's leader (for a local binding, the owning node) runs a periodic
+  driver. For each metric with a policy it proposes one
+  `TSApplyRetention{metric, cutoff_ns}` command, where `cutoff_ns` is computed
+  by the driver from its clock and carried in the command.
+- The engine applies it in the batch, deterministically from `cutoff_ns` and the
+  stored policy: points older than `cutoff_ns - duration_ns` are deleted, and
+  when the policy has a resolution, points older than the cutoff are replaced by
+  one downsampled point per `resolution_ns` bucket computed with the policy's
+  aggregation. Replicas never consult their own clocks.
+- The command is behind the cluster feature gate: the driver proposes it only
+  once every member of the group supports it.
+- The command is guarded by the drop fence and bounded per entry; a metric with
+  more expired points than one entry's bound is swept over several commands.
+
+### Alternatives rejected
+
+- **Keep time series on Pebble and give other backends a separate time-series
+  store.** Rejected: two implementations of one engine, and the non-Pebble one
+  would still be outside the apply batch.
+- **A replica-local retention sweep.** Rejected: replicas would delete different
+  points at different times, and a follower read would disagree with the
+  leader.
+
 ## Trust boundaries
 
 - Metrics are scoped per (tenant, database) like every other data-plane object.
@@ -87,8 +167,10 @@ policy: a metric can keep a year at hourly resolution instead of keeping nothing
   `timeseries:query`, `timeseries:delete_series`, `timeseries:set_retention`, …).
   Setting retention is destructive over time and is a distinct grant from
   writing.
-- Points are barrier-encrypted at rest and fail closed when the barrier is
-  sealed.
+- Points are encrypted at rest under the store's encryptor and fail closed
+  when that barrier is sealed. Shipped, the store is the shared system store or
+  a volume or raft tenant's store; target, it is the database's binding, under
+  the tenant's key.
 
 ## What this feature deliberately does not do
 

@@ -220,6 +220,12 @@ func (m *mockUserClient) UpdateUser(_ context.Context, req *transport.UpdateUser
 	if len(req.RoleIDs) > 0 {
 		u.RoleIDs = req.RoleIDs
 	}
+	if req.RoleBindings != nil {
+		u.RoleBindings = req.RoleBindings
+	}
+	if req.Attributes != nil {
+		u.Attributes = req.Attributes
+	}
 	u.UpdatedAt = "2026-02-26T12:00:00Z"
 	return u, nil
 }
@@ -686,6 +692,80 @@ func TestUsersUpdateCmd_SuccessWithRoles(t *testing.T) {
 	}
 	if !strings.Contains(out, "role-admin") {
 		t.Fatalf("expected role-admin in output, got: %q", out)
+	}
+}
+
+func TestUsersUpdateCmd_RoleBindingReplace(t *testing.T) {
+	root := newTestRootCmdAuth()
+
+	out, err := executeCommand(root, "users", "update", "1", "--role-binding", "role-a:tenant-a")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if !strings.Contains(out, "role-a") || !strings.Contains(out, "tenant-a") {
+		t.Fatalf("expected role binding in output, got: %q", out)
+	}
+}
+
+func TestUsersUpdateCmd_RoleBindingInvalidFormat(t *testing.T) {
+	root := newTestRootCmdAuth()
+
+	_, err := executeCommand(root, "users", "update", "1", "--role-binding", "not-valid")
+	if err == nil {
+		t.Fatal("expected error for malformed --role-binding")
+	}
+	var target *InvalidFlagValueError
+	if !errors.As(err, &target) {
+		t.Fatalf("expected *InvalidFlagValueError, got %T: %v", err, err)
+	}
+}
+
+func TestUsersUpdateCmd_ClearRoleBindings(t *testing.T) {
+	root := newTestRootCmdAuth()
+
+	out, err := executeCommand(root, "users", "update", "1", "--clear-role-bindings")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if strings.Contains(out, "RoleBinding:") {
+		t.Fatalf("expected no RoleBinding lines after clear, got: %q", out)
+	}
+}
+
+func TestUsersUpdateCmd_AttributeReplace(t *testing.T) {
+	root := newTestRootCmdAuth()
+
+	out, err := executeCommand(root, "users", "update", "1", "--attribute", "department=eng")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if !strings.Contains(out, "department=eng") {
+		t.Fatalf("expected attribute in output, got: %q", out)
+	}
+}
+
+func TestUsersUpdateCmd_AttributeInvalidFormat(t *testing.T) {
+	root := newTestRootCmdAuth()
+
+	_, err := executeCommand(root, "users", "update", "1", "--attribute", "not-valid")
+	if err == nil {
+		t.Fatal("expected error for malformed --attribute")
+	}
+	var target *InvalidFlagValueError
+	if !errors.As(err, &target) {
+		t.Fatalf("expected *InvalidFlagValueError, got %T: %v", err, err)
+	}
+}
+
+func TestUsersUpdateCmd_ClearAttributes(t *testing.T) {
+	root := newTestRootCmdAuth()
+
+	out, err := executeCommand(root, "users", "update", "1", "--clear-attributes")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if strings.Contains(out, "Attribute:") {
+		t.Fatalf("expected no Attribute lines after clear, got: %q", out)
 	}
 }
 

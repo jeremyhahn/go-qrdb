@@ -79,7 +79,7 @@ func (e *NilSealedWindowProbeError) Error() string {
 // API-only multi-protocol server (no KV / admin services) that exposes
 // ONLY the endpoints on the canonical sealed-window allowlist
 // (pkg/api/sealedwindow), gated by the sealed-window middleware /
-// interceptors installed via WithSealedWindowProbe.
+// interceptors installed by withSealedWindowListener.
 //
 // The function blocks until the probe reports unsealed (operator-driven)
 // or ctx is canceled, then stops the listener cleanly. On unseal it
@@ -89,8 +89,13 @@ func (e *NilSealedWindowProbeError) Error() string {
 // opts carry the seal-layer services the listener serves —
 // WithBarrierService, WithCeremonyService, WithCredentialService,
 // WithBarrierRegistry — plus TLS and any other composition options.
-// WithSealedWindowProbe(probe) is appended automatically so the
-// allowlist gate is always active. All in-memory ceremony state
+// The boot-time listener's gate (withSealedWindowListener(probe)) is
+// appended automatically, so it wins over any WithSealedWindowProbe in
+// opts. The listener installs no authentication middleware unless opts
+// supply one, so its allowlist is anonymous while the barrier is sealed;
+// once the barrier is unsealed every request on every transport is refused,
+// on the request itself, before the poll below notices and stops the
+// listener. The SQL wire protocols are not started. All in-memory ceremony state
 // (enclave-held pending shares, cache-only officer registrations,
 // outstanding claim challenges) lives in the service instances supplied
 // via opts, so it survives the listener teardown; callers MUST reuse
@@ -106,7 +111,7 @@ func ServeSealedWindow(ctx context.Context, cfg *config.Config, probe SealedWind
 
 	serverOpts := make([]ServerOption, 0, len(opts)+1)
 	serverOpts = append(serverOpts, opts...)
-	serverOpts = append(serverOpts, WithSealedWindowProbe(probe))
+	serverOpts = append(serverOpts, withSealedWindowListener(probe))
 
 	srv := New(cfg, nil, nil, serverOpts...)
 	if err := srv.Start(); err != nil {

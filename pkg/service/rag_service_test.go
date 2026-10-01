@@ -311,7 +311,7 @@ func newTestRAGService(ingestErr, retrieveErr error) (RAGServicer, *ragMockKVSvc
 		}
 	}
 
-	svc := NewRAGService(ingestor, retriever, kvSvc)
+	svc := NewRAGService(ingestor, retriever, newBoundRAGStore(kvSvc))
 	return svc, kvSvc
 }
 
@@ -370,7 +370,7 @@ func TestRAGService_Query_Success(t *testing.T) {
 		},
 	}
 
-	querySvc := NewRAGService(&ragMockIngestor{}, retriever, kvSvc)
+	querySvc := NewRAGService(&ragMockIngestor{}, retriever, newBoundRAGStore(kvSvc))
 
 	resp, err := querySvc.Query(context.Background(), &RAGQueryRequest{
 		Query:     "fox",
@@ -388,7 +388,7 @@ func TestRAGService_Query_EmptyQuery(t *testing.T) {
 			return nil, errors.New("empty query")
 		},
 	}
-	svc := NewRAGService(&ragMockIngestor{}, retriever, newRAGMockKV())
+	svc := NewRAGService(&ragMockIngestor{}, retriever, newBoundRAGStore(newRAGMockKV()))
 	_, err := svc.Query(context.Background(), &RAGQueryRequest{
 		Query:     "",
 		Namespace: "ns",

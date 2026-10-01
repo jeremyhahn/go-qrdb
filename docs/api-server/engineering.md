@@ -43,9 +43,27 @@ type ModuleHTTPRegistrar          = apimodule.HTTPRegistrar
 type ModuleMCPToolPermissioner    = apimodule.MCPToolPermissioner
 type ModuleGRPCPublicMethodLister = apimodule.GRPCPublicMethodLister
 type ModuleAuthFallback           = apimodule.ModuleAuthFallback
+type ModuleConnObserver           = apimodule.ConnObserver
+type ModuleTransport              = apimodule.Transport   // + ModuleTransportGRPC … ModuleTransportQUIC
 
 var NewModuleHTTPRegistrar = apimodule.NewHTTPRegistrar
 ```
+
+`sdk/go/types_mcp_wire.go` — the MCP tool-error contract (`pkg/api/mcp/wire`):
+
+```go
+type MCPCode          = wire.Code          // + MCPCodeOK … MCPCodeInternal, all seventeen
+type MCPErrorPayload  = wire.ErrorPayload
+type MCPErrorEnvelope = wire.ErrorEnvelope
+
+var NewMCPErrorEnvelope   = wire.NewErrorEnvelope
+var DecodeMCPErrorPayload = wire.DecodeErrorPayload
+var MCPCodes              = wire.Codes
+```
+
+A module does not use these to report a failure: its MCP tool returns an error
+and the server's outermost `errorCodeMiddleware` renders the envelope, exactly
+as for a built-in tool (`TestModuleTool_ErrorsCarryTheClassifiedEnvelope`).
 
 ## `ServiceModule`
 
@@ -97,7 +115,32 @@ type GRPCPublicMethodLister interface {
 type ModuleAuthFallback interface {
 	AuthenticateHTTP(r *http.Request) (*auth.Identity, error)
 }
+
+type ConnObserver interface {
+	ConnOpened(t Transport)   // Transport: grpc, unix, rest, http3, mcp, quic
+	ConnClosed(t Transport)
+}
 ```
+
+`ConnObserver` is wired from each transport's existing `WithServiceModules`
+option: at `Start`, every listener collects the modules that implement it
+(`apimodule.ConnObserversOf`) and reports through them. The zero set costs
+nothing — the listener is not wrapped at all.
+
+| Listener | Where a connection is reported |
+|---|---|
+| gRPC, unix | `ConnObservers.Credentials` wraps the TLS transport credentials: `ServerHandshake` reports the open, returns a conn that reports its close, and reports the close at once on a failed handshake. The listener is NOT wrapped — grpc-go sets `TCP_USER_TIMEOUT` only on the `*net.TCPConn` it accepts, and a wrapped listener silently dropped it from 20000ms to 0 (`TestConnObserver_KeepsGRPCTCPUserTimeout` reads the kernel's value) |
+| REST (TCP), MCP | the raw TCP listener is wrapped **beneath** `tls.NewListener`, so `http.Server` still sees a `*tls.Conn` and negotiates HTTP/2 |
+| REST (HTTP/3) | `http3.Server.ConnContext` reports the open; `context.AfterFunc` on the connection's context reports the close |
+| QUIC | `handleConnection` spans exactly the connection's life; it reports the open on entry and the close on return, before `Stop`'s wait completes |
+
+Each connection is reported opened exactly once and closed exactly once (the
+close function is a `sync.OnceFunc`, so every close path may call it). A
+connection that fails its TLS handshake was accepted, so it is counted and then
+closed. The callbacks run synchronously on the accept and close paths and must
+not block. `TestModuleConnObserver_SeesEveryListener` (pkg/server) proves the
+counts balance on all six listeners of a real server while each carries a real
+request.
 
 ## Invariants
 
@@ -193,6 +236,10 @@ type ModuleAuthFallback interface {
 | `GET /v1/ca/bootstrap` | **public**, only when a bootstrap certificate is configured |
 | `GET /v1/cluster/nodekey`, `POST /v1/cluster/keydelivery` | **public**, only when a cluster key receiver is wired |
 | `GET /metrics` | **authenticated**, no specific permission, only when a gatherer is configured |
+| gRPC / Unix `/grpc.health.v1.Health/*` | **public**: liveness only |
+| gRPC / Unix server reflection (`/grpc.reflection.*`) | **not public**. qrdb registers none. One a composer registers is authenticated and default-denied like any other unmapped method, unless the composer declares it public through `GRPCPublicMethodLister` |
+| MCP `GET /.well-known/oauth-protected-resource` | **public**, only when `mcp.WithProtectedResourceMetadata` is configured |
+| MCP `/mcp`, every JSON-RPC method (`initialize`, `ping` and `tools/list` included) | **authenticated at the HTTP layer** before the MCP layer reads the request; each tool call then carries a permission |
 
 Everything else carries a permission.
 
@@ -237,6 +284,10 @@ over the same services, not a seventh transport.
 | A module calling `Mount`, `Route`, `NotFound`, `MethodNotAllowed` or `Use` on the registrar's router | `*apimodule.UnsupportedRouterMethodError` panics at construction | **yes** |
 | An unmatched request under a module's route prefix | 404 from the REST middleware; never reaches the router's fallback | **yes** |
 | MCP tool with no `MCPToolPermissions()` entry | fail-closed at call time | **yes** |
+| Client offering 0-RTT early data on a resumed session, on the native QUIC listener or REST's HTTP/3 listener | refused. Neither listener allows 0-RTT, because early data is replayable, so the client completes a full handshake before any request is accepted. HTTP/3 sets this through an explicit `QUICConfig`, because quic-go's `http3.Server` allows 0-RTT by default | **yes** |
+| MCP request no authenticator accepts, with authentication configured | 401 at the HTTP layer before the MCP layer reads the body, with `WWW-Authenticate` when `mcp.WithBearerChallenge` is set | **yes** |
+| MCP request body over `maxRequestBodyBytes` (the base64 batch-import bound plus 1 MiB) | the read fails with `*http.MaxBytesError` and the request is refused | **yes** |
+| MCP request body over 1 MiB (`maxAnonymousRequestBodyBytes`) on a listener without authentication -- the boot-time sealed-window listener, or a node with authentication off | refused the same way. Its callers are anonymous, and everything it serves them is a small JSON-RPC document | **yes** |
 | Malformed public gRPC method name | rejected at registration; startup fails | **yes** |
 | Module gRPC method declared public with no permission option, projected onto QUIC | skipped (logged); unreachable over QUIC only | n/a |
 | `ModuleAuthFallback` returning no identity | request unauthenticated | **yes** |

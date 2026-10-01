@@ -15,6 +15,7 @@
 package qrdbdharness
 
 import (
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -48,6 +49,17 @@ import (
 //     allocate listen ports OUTSIDE the ephemeral range, which outbound
 //     connections never draw from.
 //
+//  3. Cross-process re-hand: the reservation table is per PROCESS, and every
+//     process walks the same window from the same base. `go test` runs
+//     packages as concurrent processes, so two of them each bind-verified
+//     the same candidate in turn -- each probe closed before the other's
+//     ran -- and both handed it out. Their servers then collided ("listen
+//     udp ...: bind: address already in use") or, worse, two Raft clusters
+//     dialled each other's hosts and never elected a leader. Each reserved
+//     port is therefore also LOCKED across processes by binding an abstract
+//     Unix socket named for it (see lockPortAcrossProcesses), held until the
+//     process exits.
+//
 // Do not "simplify" this back to net.Listen(":0").
 
 const (
@@ -71,7 +83,27 @@ const (
 
 	// loopbackHost is the address probe listeners bind to.
 	loopbackHost = "127.0.0.1"
+
+	// portLockPrefix names the abstract Unix sockets that lock a port across
+	// processes. The leading "@" selects Linux's abstract namespace, which
+	// has no filesystem presence and, like the ports themselves, is scoped to
+	// the network namespace -- so a container's harness never contends with
+	// the host's, while two test processes on one host always do.
+	portLockPrefix = "@go-qrdb/qrdbdharness/port/"
 )
+
+// portLocker takes the cross-process lock for a port, failing when another
+// holder has it. Closing the returned lock releases it.
+type portLocker func(port int) (io.Closer, error)
+
+// lockPortAcrossProcesses binds the abstract Unix socket named for port. The
+// kernel admits one binder per name and releases it when the socket closes or
+// its process exits -- a crash included, so a lock can never be orphaned. The
+// harness already requires Linux (it reads the ephemeral range from /proc), and
+// Go opens sockets close-on-exec, so a spawned daemon never inherits a lock.
+func lockPortAcrossProcesses(port int) (io.Closer, error) {
+	return net.Listen("unix", portLockPrefix+strconv.Itoa(port))
+}
 
 // allocator is the process-wide port reservation table. It is a type rather
 // than a set of package variables purely so its failure modes are testable;
@@ -79,6 +111,7 @@ const (
 // makes the reservation process-wide.
 type allocator struct {
 	rangePath string
+	lock      portLocker
 
 	lowOnce sync.Once
 	low     int
@@ -87,14 +120,19 @@ type allocator struct {
 	mu       sync.Mutex
 	reserved map[int]struct{}
 	next     int
+	// locks keeps every handed-out port's cross-process lock referenced for
+	// the life of the process; a dropped listener could be closed by its
+	// finalizer, releasing a port another process would then take.
+	locks []io.Closer
 }
 
 // defaultAllocator is the singleton every exported reservation call uses.
-var defaultAllocator = newAllocator(ephemeralRangePath)
+var defaultAllocator = newAllocator(ephemeralRangePath, lockPortAcrossProcesses)
 
-// newAllocator returns an allocator that reads its ephemeral floor from path.
-func newAllocator(path string) *allocator {
-	return &allocator{rangePath: path, reserved: make(map[int]struct{})}
+// newAllocator returns an allocator that reads its ephemeral floor from path
+// and locks each port it hands out with lock.
+func newAllocator(path string, lock portLocker) *allocator {
+	return &allocator{rangePath: path, lock: lock, reserved: make(map[int]struct{})}
 }
 
 // ReserveTCPPort reserves a single free TCP port. See ReserveTCPPorts.
@@ -109,11 +147,14 @@ func ReserveTCPPort() (int, error) {
 // ReserveTCPPorts reserves n free TCP ports for server listen addresses. Ports
 // are drawn from the reserved non-ephemeral window and bind-verified before
 // being returned; probe listeners are held open until the whole batch is
-// determined, and no port is ever handed out twice by this process.
+// determined, and no port is ever handed out twice by this process or by any
+// other harness process in the same network namespace.
+//
+// Every port is verified free on UDP as well as TCP (see probeBothProtocols),
+// so a REST admin port -- whose HTTP/3 sibling binds the same number on UDP --
+// is safe to take from here.
 func ReserveTCPPorts(n int) ([]int, error) {
-	return defaultAllocator.reserve("TCP", n, func(addr string) (io.Closer, error) {
-		return net.Listen("tcp", addr)
-	})
+	return defaultAllocator.reserve("TCP", n, probeBothProtocols)
 }
 
 // ReserveUDPPort reserves a single free UDP port. See ReserveUDPPorts.
@@ -126,37 +167,79 @@ func ReserveUDPPort() (int, error) {
 }
 
 // ReserveUDPPorts reserves n free UDP ports for Raft/QUIC listen addresses.
-// It shares its reservation table with ReserveTCPPorts, so a number handed out
-// for one protocol is never handed out for the other.
+// It shares its reservation table, its cross-process lock and its dual-stack
+// probe with ReserveTCPPorts, so a number handed out for one protocol is never
+// handed out for the other.
 func ReserveUDPPorts(n int) ([]int, error) {
-	return defaultAllocator.reserve("UDP", n, func(addr string) (io.Closer, error) {
-		return net.ListenPacket("udp", addr)
-	})
+	return defaultAllocator.reserve("UDP", n, probeBothProtocols)
 }
 
+// probeBothProtocols binds addr on TCP and on UDP and holds both. TCP and UDP
+// are separate port namespaces: a number free on one says nothing about the
+// other, and a REST listener takes its port on TCP while its HTTP/3 sibling
+// co-binds the same number on UDP (go-qrdb#248, go-qrdb#257). Since one table
+// hands each number out once for either protocol, certifying it on both lets
+// any caller use it for any listener family.
+func probeBothProtocols(addr string) (io.Closer, error) {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	pc, err := net.ListenPacket("udp", addr)
+	if err != nil {
+		_ = ln.Close()
+		return nil, err
+	}
+	return closerFunc(func() error { return errors.Join(ln.Close(), pc.Close()) }), nil
+}
+
+// closerFunc adapts a function to io.Closer.
+type closerFunc func() error
+
+// Close calls f.
+func (f closerFunc) Close() error { return f() }
+
 // reserve draws candidates from the window and keeps the ones that bind.
+//
+// A candidate is taken only when this process wins its cross-process lock AND
+// the port binds. The lock comes first: a port another harness process has
+// handed out may be momentarily unbound (its probe closed, its server not yet
+// listening), so a bind check alone would certify it again. The lock outlives
+// the probe and is kept for the life of the process.
 func (a *allocator) reserve(network string, n int, listen func(addr string) (io.Closer, error)) ([]int, error) {
 	ports := make([]int, 0, n)
-	var listeners []io.Closer
+	var listeners, locks []io.Closer
 	var lastErr error
 	for attempt := 0; len(ports) < n && attempt < maxReservationAttempts; attempt++ {
 		port, err := a.nextPort()
 		if err != nil {
 			closeAll(listeners)
+			closeAll(locks)
 			return nil, err
+		}
+		lock, err := a.lock(port)
+		if err != nil {
+			lastErr = err // handed out by another test process; draw the next candidate
+			continue
 		}
 		conn, err := listen(net.JoinHostPort(loopbackHost, strconv.Itoa(port)))
 		if err != nil {
+			_ = lock.Close()
 			lastErr = err // busy outside the test process; draw the next candidate
 			continue
 		}
 		listeners = append(listeners, conn)
+		locks = append(locks, lock)
 		ports = append(ports, port)
 	}
 	closeAll(listeners)
 	if len(ports) < n {
+		closeAll(locks)
 		return nil, &PortReservationError{Network: network, Requested: n, Reserved: len(ports), LastErr: lastErr}
 	}
+	a.mu.Lock()
+	a.locks = append(a.locks, locks...)
+	a.mu.Unlock()
 	return ports, nil
 }
 

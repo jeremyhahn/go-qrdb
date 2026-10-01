@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-enclave"
+
 	secure "github.com/jeremyhahn/go-qrdb/sdk/go/secure"
 )
 

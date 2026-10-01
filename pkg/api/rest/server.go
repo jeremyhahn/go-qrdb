@@ -35,8 +35,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus"
+	quicgo "github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
@@ -231,10 +233,16 @@ type Server struct {
 	serviceRegistry ServiceRegistry
 
 	// sealedWindowProbe controls the sealed-window middleware. When set
-	// and IsSealed() returns true, every request whose path is not on
+	// and IsSealed() returns true, every request not on
 	// SealedWindowAllowlist is rejected with 503. When nil, the
 	// middleware is not installed and the server behaves as before.
 	sealedWindowProbe sealedWindowProbe
+
+	// sealedWindowListener is the boot-time sealed-window listener's probe,
+	// and selects that listener's gate: every request refused once the
+	// barrier is unsealed, and officer registration refused once enrollment
+	// has closed. Nil for a regular listener's gate.
+	sealedWindowListener sealedwindow.ListenerProbe
 
 	// clusterKeyReceiver handles the cluster peer key-delivery endpoints
 	// (/v1/cluster/keydelivery and /v1/cluster/nodekey). When nil these
@@ -652,17 +660,32 @@ func WithServiceRegistry(reg ServiceRegistry) ServerOption {
 
 // WithSealedWindowProbe installs the sealed-window middleware backed by
 // the supplied probe. While probe.IsSealed() returns true, every request
-// whose path is not on SealedWindowAllowlist is rejected with 503.
-// Once unsealed the middleware is a passthrough; on re-seal it engages
-// again.
+// not on SealedWindowAllowlist is rejected with 503. Once unsealed the
+// middleware is a passthrough; on re-seal it engages again.
 //
-// The middleware is wrapped just outside the per-request mux but inside
-// any auth middleware, so allowlisted endpoints (notably /v1/barrier/*)
-// remain reachable without authentication during the sealed window —
-// the Vault model where possession of the unseal credential is itself
-// the authorization to drive unseal.
+// The middleware wraps the authentication middleware, so an allowlisted
+// request is still authenticated and authorized by it when one is
+// installed. The allowlist is anonymous only on a listener without one:
+// the boot-time sealed-window listener (see WithSealedWindowListener).
 func WithSealedWindowProbe(probe sealedWindowProbe) ServerOption {
-	return func(s *Server) { s.sealedWindowProbe = probe }
+	return func(s *Server) {
+		s.sealedWindowProbe = probe
+		s.sealedWindowListener = nil
+	}
+}
+
+// WithSealedWindowListener installs the gate of the boot-time sealed-window
+// listener (SealedWindowListenerMiddleware) backed by probe: the allowlist
+// while the barrier is sealed, less officer registration once enrollment has
+// closed, and a 503 for every request once it is unsealed, sampled per
+// request. A nil probe refuses everything. It replaces WithSealedWindowProbe;
+// the last of the two applied wins.
+func WithSealedWindowListener(probe sealedwindow.ListenerProbe) ServerOption {
+	return func(s *Server) {
+		probe = sealedwindow.OrFailClosed(probe)
+		s.sealedWindowProbe = probe
+		s.sealedWindowListener = probe
+	}
 }
 
 // WithClusterKeyReceiver registers the cluster peer key-delivery routes when
@@ -802,10 +825,11 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	// scopeMiddleware runs before auth so that auth middleware can read the
 	// tenant/database from context if it needs to (future-proof). CORS is the
 	// outermost layer so that preflight OPTIONS requests are handled before any
-	// other processing. The sealed-window middleware sits between auth and
-	// scope so that allowlisted endpoints (e.g. /v1/barrier/unseal) bypass
-	// auth — possession of the unseal credential is the authorization, per
-	// the Vault model.
+	// other processing. The sealed-window middleware wraps auth, so it
+	// refuses a non-allowlisted request while the barrier is sealed before
+	// any authentication work, and an allowlisted request still reaches auth
+	// when auth is installed. Only a listener without auth -- the boot-time
+	// sealed-window listener -- serves its allowlist anonymously.
 	// The SO dual-factor middleware is the innermost wrapper (directly
 	// around the mux) so it runs AFTER the auth middleware has resolved
 	// the caller's identity into the request context. It gates only the
@@ -814,13 +838,13 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	// wired — default posture is unchanged.
 	var handler http.Handler = r
 	if s.soDualFactor && s.soPINVerifier != nil {
-		handler = authmw.SOMiddleware(s.routePerms, s.soPINVerifier, s.auditLogger, s.auditFailure, slog.Default(), handler)
+		handler = authmw.SOMiddleware(s.routePerms, s.roleSvc, s.soPINVerifier, s.auditLogger, s.auditFailure, slog.Default(), handler)
 	}
 	if s.authMW != nil {
 		handler = s.authMW.RESTMiddleware(s.routePerms, handler)
 	}
 	if s.sealedWindowProbe != nil {
-		handler = SealedWindowMiddleware(s.sealedWindowProbe, nil)(handler)
+		handler = sealedWindowGate(s.sealedWindowProbe, nil, s.sealedWindowListener)(handler)
 	}
 	handler = scopeMiddleware(handler)
 	if s.corsConfig != nil {
@@ -872,6 +896,12 @@ func (s *Server) Start() error {
 			return &StartError{Addr: s.addr, Err: err}
 		}
 	}
+
+	// Report every accepted connection to the modules that observe them.
+	// Wrapped BENEATH the TLS listener, so http.Server still sees a *tls.Conn
+	// and negotiates HTTP/2 over it.
+	observers := apimodule.ConnObserversOf(s.modules)
+	ln = observers.Listener(ln, apimodule.TransportREST)
 
 	// Wrap listener with TLS (always configured; guarded above).
 	ln = tls.NewListener(ln, s.tlsConfig)
@@ -953,9 +983,19 @@ func (s *Server) Start() error {
 	if h3Conn != nil {
 		s.http3Conn = h3Conn
 		s.http3Server = &http3.Server{
-			Addr:      h3Conn.LocalAddr().String(),
-			TLSConfig: s.tlsConfig,
-			Handler:   s.server.Handler,
+			Addr:       h3Conn.LocalAddr().String(),
+			TLSConfig:  s.tlsConfig,
+			Handler:    s.server.Handler,
+			QUICConfig: http3QUICConfig(),
+		}
+		if len(observers) > 0 {
+			// http3.Server accepts QUIC connections itself, so there is no
+			// net.Listener to wrap. ConnContext runs once per accepted
+			// connection, and the connection's own context ends when it closes.
+			s.http3Server.ConnContext = func(ctx context.Context, c *quicgo.Conn) context.Context {
+				context.AfterFunc(c.Context(), observers.Open(apimodule.TransportHTTP3))
+				return ctx
+			}
 		}
 		go func() {
 			if serveErr := s.http3Server.Serve(h3Conn); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) && !errors.Is(serveErr, net.ErrClosed) {
@@ -966,6 +1006,24 @@ func (s *Server) Start() error {
 	}
 
 	return nil
+}
+
+// http3QUICConfig is the QUIC configuration of the HTTP/3 listener. Without
+// one quic-go's http3.Server accepts 0-RTT, and 0-RTT early data is
+// replayable: an on-path attacker can resend a captured flight and the server
+// processes it again, and this listener serves the same handlers as HTTP/2,
+// state-changing ones included. Allow0RTT stays false, so a resumed client
+// completes a full handshake first. The idle, keep-alive and bidirectional
+// stream limits match the native QUIC listener (pkg/api/quic); unidirectional
+// streams keep quic-go's default, which HTTP/3's control and QPACK streams
+// need.
+func http3QUICConfig() *quicgo.Config {
+	return &quicgo.Config{
+		MaxIdleTimeout:     30 * time.Second,
+		KeepAlivePeriod:    10 * time.Second,
+		MaxIncomingStreams: 1000,
+		Allow0RTT:          false,
+	}
 }
 
 // closePrebound closes the sockets handed over by WithListener and
@@ -1102,6 +1160,25 @@ func (s *Server) routeIf(enabled bool, method, pattern string, perm permission.P
 	}
 	s.router.Method(method, pattern, h)
 	s.recordStaticRoute(method, pattern, h)
+}
+
+// routeTarget is route for a route whose request names the tenant it acts on:
+// target extracts that tenant, and the middleware authorizes perm against it
+// rather than against the caller's own tenant (see authmw.Target).
+func (s *Server) routeTarget(method, pattern string, perm permission.Permission, target authmw.RESTTargetFunc, h http.HandlerFunc) {
+	s.routeIfTarget(true, method, pattern, perm, target, h)
+}
+
+// routeIfTarget is routeIf plus a target extractor. The extractor is attached
+// only to a route this server registered: a module that already claimed the
+// route keeps its own contract.
+func (s *Server) routeIfTarget(enabled bool, method, pattern string, perm permission.Permission, target authmw.RESTTargetFunc, h http.HandlerFunc) {
+	if s.routePerms.Covered(method, pattern) {
+		s.routeIf(enabled, method, pattern, perm, h)
+		return
+	}
+	s.routeIf(enabled, method, pattern, perm, h)
+	s.routePerms.SetTarget(method, pattern, target)
 }
 
 // public registers a route that is reachable WITHOUT authentication. The
@@ -1496,6 +1573,7 @@ func (s *Server) registerRoutes() {
 	s.route(http.MethodDelete, "/v1/databases/{name}", permission.DatabasesDelete, s.handleDatabaseByName)
 	s.route(http.MethodPatch, "/v1/databases/{name}/barrier", permission.DatabasesUpdate, s.handleDatabaseByName)
 	s.route(http.MethodPatch, "/v1/databases/{name}/connection", permission.DatabasesUpdate, s.handleDatabaseByName)
+	s.route(http.MethodPatch, "/v1/databases/{name}/sql", permission.DatabasesUpdate, s.handleDatabaseByName)
 	s.route(http.MethodPatch, "/v1/databases/{name}/etcd", permission.DatabasesUpdate, s.handleDatabaseByName)
 	s.route(http.MethodPatch, "/v1/databases/{name}/protocol", permission.DatabasesUpdate, s.handleDatabaseByName)
 	s.route(http.MethodPatch, "/v1/databases/{name}/raft", permission.DatabasesUpdate, s.handleDatabaseByName)
@@ -1543,40 +1621,40 @@ func (s *Server) registerRoutes() {
 
 	// User management routes.
 	userOn := s.userSvc != nil
-	s.routeIf(userOn, http.MethodPost, "/users", permission.UsersCreate, s.handleCreateUser)
-	s.routeIf(userOn, http.MethodGet, "/users/list", permission.UsersList, s.handleListUsers)
+	s.routeIfTarget(userOn, http.MethodPost, "/users", permission.UsersCreate, createUserTarget, s.handleCreateUser)
+	s.routeIfTarget(userOn, http.MethodGet, "/users/list", permission.UsersList, authmw.RESTQueryTenant("tenantID"), s.handleListUsers)
 
 	// User path-param routes (the handler nil-checks the user service).
-	s.route(http.MethodGet, "/users/{id}", permission.UsersRead, s.handleUser)
-	s.route(http.MethodPut, "/users/{id}", permission.UsersUpdate, s.handleUser)
-	s.route(http.MethodDelete, "/users/{id}", permission.UsersDelete, s.handleUser)
-	s.route(http.MethodPost, "/users/{id}/enable", permission.UsersEnable, s.handleUser)
-	s.route(http.MethodPost, "/users/{id}/disable", permission.UsersDisable, s.handleUser)
-	s.route(http.MethodPost, "/users/{id}/cert-bindings", permission.UsersAddCertBinding, s.handleUser)
-	s.route(http.MethodDelete, "/users/{id}/cert-bindings/{thumbprint}", permission.UsersRemoveCertBinding, s.handleUser)
+	s.routeTarget(http.MethodGet, "/users/{id}", permission.UsersRead, authmw.RESTPathUser("id"), s.handleUser)
+	s.routeTarget(http.MethodPut, "/users/{id}", permission.UsersUpdate, authmw.RESTPathUser("id"), s.handleUser)
+	s.routeTarget(http.MethodDelete, "/users/{id}", permission.UsersDelete, authmw.RESTPathUser("id"), s.handleUser)
+	s.routeTarget(http.MethodPost, "/users/{id}/enable", permission.UsersEnable, authmw.RESTPathUser("id"), s.handleUser)
+	s.routeTarget(http.MethodPost, "/users/{id}/disable", permission.UsersDisable, authmw.RESTPathUser("id"), s.handleUser)
+	s.routeTarget(http.MethodPost, "/users/{id}/cert-bindings", permission.UsersAddCertBinding, authmw.RESTPathUser("id"), s.handleUser)
+	s.routeTarget(http.MethodDelete, "/users/{id}/cert-bindings/{thumbprint}", permission.UsersRemoveCertBinding, authmw.RESTPathUser("id"), s.handleUser)
 	s.route(http.MethodGet, "/users/by-cert-thumbprint/{thumbprint}", permission.UsersGetByCertThumbprint, s.handleUser)
-	s.route(http.MethodGet, "/users/by-username/{username}", permission.UsersRead, s.handleUser)
-	s.route(http.MethodPost, "/users/lookup", permission.UsersRead, s.handleUser)
+	s.routeTarget(http.MethodGet, "/users/by-username/{username}", permission.UsersRead, authmw.RESTQueryTenant("tenantID"), s.handleUser)
+	s.routeTarget(http.MethodPost, "/users/lookup", permission.UsersRead, lookupUserTarget, s.handleUser)
 
 	// Role management routes.
 	rolesOn := s.roleSvc != nil
-	s.routeIf(rolesOn, http.MethodPost, "/roles", permission.RolesCreate, s.handleCreateRole)
-	s.routeIf(rolesOn, http.MethodGet, "/roles/list", permission.RolesList, s.handleListRoles)
-	s.routeIf(rolesOn, http.MethodGet, "/roles/by-name", permission.RolesRead, s.handleGetRoleByName)
+	s.routeIfTarget(rolesOn, http.MethodPost, "/roles", permission.RolesCreate, createRoleTarget, s.handleCreateRole)
+	s.routeIfTarget(rolesOn, http.MethodGet, "/roles/list", permission.RolesList, authmw.RESTQueryTenant("tenantID"), s.handleListRoles)
+	s.routeIfTarget(rolesOn, http.MethodGet, "/roles/by-name", permission.RolesRead, authmw.RESTQueryTenant("tenant_id"), s.handleGetRoleByName)
 	s.routeIf(rolesOn, http.MethodPost, "/roles/resolve-permissions", permission.PermissionsResolve, s.handleResolvePermissions)
 	// Reconcile carries roles:create, not a verb of its own. Reconciliation IS
 	// the seeding operation applied to an existing tenant, and a dedicated
 	// permission would be missing from every role seeded before it existed —
 	// so nobody would hold the grant needed to repair that exact absence.
-	s.routeIf(rolesOn, http.MethodPost, "/roles/reconcile", permission.RolesCreate, s.handleReconcileRoles)
-	s.routeIf(rolesOn, http.MethodPost, "/roles/assign", permission.RolesAssign, s.handleAssignRole)
-	s.routeIf(rolesOn, http.MethodPost, "/roles/unassign", permission.RolesUnassign, s.handleUnassignRole)
+	s.routeIfTarget(rolesOn, http.MethodPost, "/roles/reconcile", permission.RolesCreate, reconcileRolesTarget, s.handleReconcileRoles)
+	s.routeIfTarget(rolesOn, http.MethodPost, "/roles/assign", permission.RolesAssign, assignRoleTarget, s.handleAssignRole)
+	s.routeIfTarget(rolesOn, http.MethodPost, "/roles/unassign", permission.RolesUnassign, assignRoleTarget, s.handleUnassignRole)
 	s.routeIf(rolesOn, http.MethodGet, "/permissions", permission.PermissionsList, s.handleListPermissions)
 
 	// Role path-param routes (the handler nil-checks the role service).
-	s.route(http.MethodGet, "/roles/{id}", permission.RolesRead, s.handleRole)
-	s.route(http.MethodPut, "/roles/{id}", permission.RolesUpdate, s.handleRole)
-	s.route(http.MethodDelete, "/roles/{id}", permission.RolesDelete, s.handleRole)
+	s.routeTarget(http.MethodGet, "/roles/{id}", permission.RolesRead, authmw.RESTPathRole("id"), s.handleRole)
+	s.routeTarget(http.MethodPut, "/roles/{id}", permission.RolesUpdate, authmw.RESTPathRole("id"), s.handleRole)
+	s.routeTarget(http.MethodDelete, "/roles/{id}", permission.RolesDelete, authmw.RESTPathRole("id"), s.handleRole)
 
 	// Without a role service the legacy dispatcher still routed the /roles/
 	// keyword paths to handleRole, which reports 501. Attach the same
@@ -1628,8 +1706,8 @@ func (s *Server) registerRoutes() {
 	// ONLY while the middleware reports the tenant's IAM as unreachable
 	// (middleware.IdentityIAMSealed); see authorizeTenantBarrierSealedOp.
 	s.route(http.MethodGet, "/v1/tenants/{id}/barrier/status", permission.IdentityGated, s.handleTenantByID)
-	s.route(http.MethodGet, "/v1/tenants/{id}/barrier/officers", permission.TenantBarrierOfficerList, s.handleTenantByID)
-	s.route(http.MethodGet, "/v1/tenants/{id}/barrier/officers/claim-status", permission.TenantBarrierOfficerList, s.handleTenantByID)
+	s.routeTarget(http.MethodGet, "/v1/tenants/{id}/barrier/officers", permission.TenantBarrierOfficerList, authmw.RESTPathTenant("id"), s.handleTenantByID)
+	s.routeTarget(http.MethodGet, "/v1/tenants/{id}/barrier/officers/claim-status", permission.TenantBarrierOfficerList, authmw.RESTPathTenant("id"), s.handleTenantByID)
 	// barrier/init is IdentityGated at the ROUTE level because its real
 	// authorization is conditional and lives in the handler
 	// (authorizeTenantBarrierInit): an initialized barrier demands the full
@@ -1641,9 +1719,9 @@ func (s *Server) registerRoutes() {
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/init", permission.IdentityGated, s.handleTenantByID)
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/unseal", permission.IdentityGated, s.handleTenantByID)
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/unseal-share", permission.IdentityGated, s.handleTenantByID)
-	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/seal", permission.TenantBarrierSeal, s.handleTenantByID)
-	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/seal-vote", permission.TenantBarrierSealVote, s.handleTenantByID)
-	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/officers", permission.TenantBarrierOfficerRegister, s.handleTenantByID)
+	s.routeTarget(http.MethodPost, "/v1/tenants/{id}/barrier/seal", permission.TenantBarrierSeal, authmw.RESTPathTenant("id"), s.handleTenantByID)
+	s.routeTarget(http.MethodPost, "/v1/tenants/{id}/barrier/seal-vote", permission.TenantBarrierSealVote, authmw.RESTPathTenant("id"), s.handleTenantByID)
+	s.routeTarget(http.MethodPost, "/v1/tenants/{id}/barrier/officers", permission.TenantBarrierOfficerRegister, authmw.RESTPathTenant("id"), s.handleTenantByID)
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/officers/{username}/claim/begin", permission.IdentityGated, s.handleTenantByID)
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/officers/{username}/claim/complete", permission.IdentityGated, s.handleTenantByID)
 

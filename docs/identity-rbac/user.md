@@ -1,6 +1,6 @@
 # Identity and RBAC — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-23
 
 Who someone is, and what they may do. There are no passwords: a certificate is
 the identity, and roles carry the permissions.
@@ -129,7 +129,60 @@ everything is already current and changes nothing.
 - **Tenant-scoped** (`roleBindings`) — the role applies only inside one tenant.
 
 They add up. This is how somebody can be tenant-admin for one customer without
-being an admin of the whole system.
+being an admin of the whole system — a binding counts whenever the request
+acts on the tenant it names, and nowhere else. A request that names a user or
+a role acts on the tenant that user or role belongs to; a per-tenant barrier
+operation acts on the tenant it names; everything else — including managing
+a tenant's own record, quotas and entitlements — acts on your own. This holds
+on REST, gRPC, the unix socket, QUIC and MCP.
+
+```bash
+qrdb users update "$USER" --role-binding "$ROLE:acme"
+qrdb users update "$USER" --attribute department=eng --attribute region=us-east
+```
+
+Both flags **replace** the whole set each time you use them; there is no "add
+one" verb. `qrdb users update "$USER" --clear-role-bindings` removes every
+tenant-scoped binding, and `--clear-attributes` does the same for ABAC
+attributes.
+
+Setting `--role-binding`, `--clear-role-bindings`, `--attribute`, or
+`--clear-attributes` requires the operator's identity to hold `roles:assign`
+— the same permission required to assign a role directly — in addition to
+the `users:update` permission the plain update needs. A `--role-binding`
+naming a tenant requires `roles:assign` in THAT tenant too: granting a role
+in tenant `acme` from an identity that only administers tenant `contoso`
+is refused even if the operator can otherwise update the target account. The
+named role must exist and belong to the binding's tenant: every tenant has
+its own copy of the built-in roles (`admin`, `operator`, `user`, ...), so use that
+tenant's copy. A role that does not exist, or belongs to some other tenant —
+including the system tenant's built-ins — is refused before anything
+is written.
+
+Only a system-tenant user can hold a binding outside its own tenant. A user
+that belongs to tenant `acme` is refused every request on any other tenant
+before a binding is looked at, so a `globex` binding on it could never grant
+anything; it is refused with 400 rather than stored. An empty tenant in a
+binding means the system tenant and is stored as `system`.
+
+An attribute set with `--attribute` is visible to ABAC policies as
+`subject.user_attrs.<name>` (or the match key `user_attrs.<name>`), never as
+a certificate or token attribute: setting `--attribute organization=acme`
+cannot satisfy a policy that trusts the organization in the caller's
+certificate. See [../auth/abac.md](../auth/abac.md).
+
+## Seeing whether someone has a second factor
+
+`qrdb users get "$USER"` prints `MFAEnabled`, and `MFAMethods` when it is
+true — computed at read time from the account's real enrolled factors
+(never a stored field you set directly, and never something a role-
+assignment write can forge). A `Factor:` line, when one is present, shows the
+factor's id and type — never its credential material, which never leaves the
+server on any interface. Enroll or remove a factor through
+[../auth-factors/user.md](../auth-factors/user.md); this account's `MFAEnabled`
+reflects that enrollment immediately, on every transport. If the factor
+records cannot be read at that moment, the command fails with an
+"unavailable" error rather than showing `MFAEnabled: false`; retry it.
 
 ## Moving a fleet to required certificate enrolment
 
@@ -287,10 +340,13 @@ to change a built-in role's permissions; `roles update` refuses.
 registry — you cannot invent `kv:frobnicate`. `qrdb roles permissions` lists
 what exists.
 
-**You cannot delete a user or a role.** Built-in users and the six built-in
+**You cannot delete a user or a role.** The bootstrap admin — the one built-in
+user, created the first time the cluster ever comes up — and the six built-in
 roles are undeletable, and a built-in role cannot be re-permissioned either.
 Disable the user instead; for a built-in role's permissions, use
-`qrdb roles reconcile`, which is the only writer the guard admits.
+`qrdb roles reconcile`, which is the only writer the guard admits. Every other
+user, including an additional tenant's own admin account, is an ordinary
+account and can be deleted like any other.
 
 **You are looking for the password field.** There isn't one. The user model is
 passwordless throughout; the credential is the certificate. For a second factor

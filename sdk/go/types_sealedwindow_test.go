@@ -15,20 +15,24 @@
 package sdk_test
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 )
 
 // fakeProbe is a deterministic sdk.SealedWindowProbe.
 type fakeProbe struct {
-	sealed bool
+	sealed, enrollment bool
+	sealedwindow.Admission
 }
 
-func (p *fakeProbe) IsSealed() bool { return p.sealed }
+func (p *fakeProbe) IsSealed() bool                      { return p.sealed }
+func (p *fakeProbe) EnrollmentOpen(context.Context) bool { return p.enrollment }
 
 // Compile-time checks that the sealed-window re-exports satisfy the
 // upstream contracts.
@@ -72,21 +76,28 @@ func TestSealedWindowAllowlists_ReExported(t *testing.T) {
 		return false
 	}
 
-	// The unified rekey verb must be present on all four transports. The gRPC
-	// allowlist is fully service-qualified (a security hardening: matching the
-	// bare method tail would admit a same-named method on any co-registered
-	// service while sealed), so the entry is the full /service/method path.
-	if !restHas("/v1/barrier/rekey") {
-		t.Error("REST allowlist missing /v1/barrier/rekey")
+	// The unified unseal verb must be present on all four transports. The
+	// gRPC allowlist is fully service-qualified (a security hardening:
+	// matching the bare method tail would admit a same-named method on any
+	// co-registered service while sealed), so the entry is the full
+	// /service/method path.
+	if !restHas("/v1/barrier/unseal") {
+		t.Error("REST allowlist missing /v1/barrier/unseal")
 	}
-	if !grpcHas("/qrdb.v1.QRDBService/BarrierRekey") {
-		t.Error("gRPC allowlist missing /qrdb.v1.QRDBService/BarrierRekey")
+	if !grpcHas("/qrdb.v1.QRDBService/BarrierUnseal") {
+		t.Error("gRPC allowlist missing /qrdb.v1.QRDBService/BarrierUnseal")
 	}
-	if _, ok := sdk.QUICSealedWindowAllowlist["barrier.Rekey"]; !ok {
-		t.Error("QUIC allowlist missing barrier.Rekey")
+	if _, ok := sdk.QUICSealedWindowAllowlist["barrier.Unseal"]; !ok {
+		t.Error("QUIC allowlist missing barrier.Unseal")
 	}
-	if _, ok := sdk.MCPSealedWindowAllowlist["qrdb_barrier_rekey"]; !ok {
-		t.Error("MCP allowlist missing qrdb_barrier_rekey")
+	if _, ok := sdk.MCPSealedWindowAllowlist["qrdb_barrier_unseal"]; !ok {
+		t.Error("MCP allowlist missing qrdb_barrier_unseal")
+	}
+
+	// Rekey refuses while sealed, so it is on no transport's allowlist: on
+	// the boot-time listener it would be an anonymous destructive verb.
+	if restHas("/v1/barrier/rekey") || grpcHas("/qrdb.v1.QRDBService/BarrierRekey") {
+		t.Error("rekey must not be on the sealed-window allowlist")
 	}
 
 	// SealedWindowRESTAllowlist derives a fresh, equal list.
@@ -121,6 +132,30 @@ func TestSealedWindowMiddleware_ReExport(t *testing.T) {
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/barrier/unseal", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("allowlisted path status = %d, want 200", rec.Code)
+	}
+}
+
+// TestSealedWindowListenerMiddleware_ReExport verifies the re-exported
+// boot-time listener gate refuses an allowlisted verb once the barrier
+// probe reports unsealed.
+func TestSealedWindowListenerMiddleware_ReExport(t *testing.T) {
+	probe := &fakeProbe{sealed: true}
+	handler := sdk.SealedWindowListenerMiddleware(probe, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/barrier/unseal", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("allowlisted path while sealed: status = %d, want 200", rec.Code)
+	}
+	probe.sealed = false
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/barrier/unseal", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("allowlisted path once unsealed: status = %d, want 503", rec.Code)
+	}
+	if sdk.SealedWindowListenerUnaryInterceptor(probe, nil) == nil || sdk.SealedWindowListenerStreamInterceptor(probe, nil) == nil {
+		t.Fatal("listener interceptor re-exports returned nil")
 	}
 }
 

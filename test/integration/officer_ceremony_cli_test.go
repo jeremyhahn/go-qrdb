@@ -806,10 +806,19 @@ func TestCLI_BarrierOfficerRegister_SealedWindow(t *testing.T) {
 		t.Errorf("expected cert_pem to decode into a PEM certificate, got: %s", reg.CertPEM)
 	}
 
-	// The registry now carries exactly the two registered officers.
-	out, err = runQRDB(t, cli, node.restArgsNoAuth(), "barrier", "officer", "list", "--output", "json")
+	// The officer list is not an anonymous sealed-window verb: the listener
+	// runs without authentication, and the list is served post-unseal to
+	// authenticated callers.
+	if out, err := runQRDB(t, cli, node.restArgsNoAuth(), "barrier", "officer", "list", "--output", "json"); err == nil {
+		t.Fatalf("barrier officer list succeeded anonymously on the sealed-window listener: %s", out)
+	}
+
+	// The registry now carries exactly the two registered officers, as the
+	// first-boot claim-status view reports them: by share index, without
+	// their usernames, because the sealed-window listener answers anonymously.
+	out, err = runQRDB(t, cli, node.restArgsNoAuth(), "barrier", "officer", "claim-status", "--output", "json")
 	if err != nil {
-		t.Fatalf("barrier officer list: %v\noutput: %s", err, out)
+		t.Fatalf("barrier officer claim-status: %v\noutput: %s", err, out)
 	}
 	var officers []struct {
 		Username   string `json:"username"`
@@ -819,8 +828,11 @@ func TestCLI_BarrierOfficerRegister_SealedWindow(t *testing.T) {
 	if len(officers) != 2 {
 		t.Fatalf("expected exactly 2 enrolled officers, got %d: %s", len(officers), out)
 	}
-	if officers[0].Username != "off1" || officers[1].Username != "off2" {
-		t.Errorf("expected officers off1, off2; got %+v", officers)
+	if officers[0].ShareIndex != 1 || officers[1].ShareIndex != 2 {
+		t.Errorf("expected share indexes 1 and 2; got %+v", officers)
+	}
+	if strings.Contains(out, "off1") || strings.Contains(out, "off2") {
+		t.Errorf("anonymous claim-status named an officer: %s", out)
 	}
 }
 

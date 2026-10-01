@@ -23,10 +23,9 @@ limitations under the License.
 | File | Holds |
 |---|---|
 | `sdk/go/coordination.go` | the whole surface: interfaces, `Coordinator`, the concrete lease and watch stream, every error type |
-| `sdk/go/coordination_test.go` | unit tests over fakes for the four transport sub-clients |
+| `sdk/go/coordination_test.go` | unit tests over fakes for the four transport sub-clients. It is an in-package test (`package sdk`) because it shortens the unexported `leaseCleanupTimeout` directly, the only test seam |
 | `sdk/go/coordination_standalone_test.go` | end to end against a real standalone node — the capability split |
 | `sdk/go/coordination_raft_test.go` | end to end against a real single-replica raft group — lease lifecycle, expiry, exclusivity, renewal cadence, watch delivery |
-| `sdk/go/export_test.go` | `SetLeaseCleanupTimeoutForTest`, the only test seam |
 
 ## Exported surface
 

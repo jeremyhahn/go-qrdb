@@ -123,6 +123,29 @@ func (e *EnrollmentRevokedError) Error() string {
 	return "authfactors: enrollment already revoked: " + e.EnrollmentID
 }
 
+// FactorMismatchError is returned when a caller verifies a challenge naming a
+// factor other than the one the challenge's enrollment was made with.
+//
+// The enrollment's recorded factor is authoritative: a challenge is only ever
+// verified by the factor that enrolled it. Honouring a caller-supplied name
+// instead would let a caller answer a strong factor's challenge through a
+// weaker factor registered beside it, so a mismatch is refused rather than
+// corrected, and the challenge is consumed either way.
+type FactorMismatchError struct {
+	// EnrollmentID identifies the enrollment the challenge was issued for.
+	EnrollmentID string
+	// Enrolled is the factor the enrollment was made with.
+	Enrolled string
+	// Requested is the factor the caller named.
+	Requested string
+}
+
+// Error implements the error interface.
+func (e *FactorMismatchError) Error() string {
+	return "authfactors: enrollment " + e.EnrollmentID + " was made with factor " +
+		e.Enrolled + ", not " + e.Requested
+}
+
 // FactorRegisterError is returned by FactorRegistry.Register when a factor
 // cannot be installed (nil factor, empty Name()).
 type FactorRegisterError struct {

@@ -546,7 +546,7 @@ func TestPeerAttestationGate_ReachesEveryTransportWithAPeer(t *testing.T) {
 			}
 			methods := NewQUICMethodRegistry()
 			methods.Register("kv.Get", gatedPerm)
-			return m.AuthorizeQUIC(ctx, methods, "kv.Get")
+			return m.AuthorizeQUIC(ctx, methods, "kv.Get", nil)
 		}},
 		"MCP": {gatedPerm, func(m *AuthMiddleware, ck certKey) error {
 			ctx, _, err := m.Authenticate(mtlsContext(ck))
@@ -555,7 +555,7 @@ func TestPeerAttestationGate_ReachesEveryTransportWithAPeer(t *testing.T) {
 			}
 			tools := NewMCPToolRegistry()
 			tools.Register("qrdb_get", gatedPerm)
-			return m.AuthorizeMCP(ctx, tools, "qrdb_get")
+			return m.AuthorizeMCP(ctx, tools, "qrdb_get", nil)
 		}},
 		"tenant-targeted handlers": {gatedPerm, func(m *AuthMiddleware, ck certKey) error {
 			ctx, _, err := m.Authenticate(mtlsContext(ck))

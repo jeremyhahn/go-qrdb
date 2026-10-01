@@ -129,10 +129,12 @@ func TestDatabaseCreateCmd_BarrierEnabled_PassphraseFlowsToCredentials(t *testin
 	}
 }
 
-// TestDatabaseCreateCmd_BarrierDisabled_UsesPlainCreate verifies that without
-// --barrier-enabled the create command does not populate a Barrier config and
-// dispatches through the plain (non-credentialed) create path.
-func TestDatabaseCreateCmd_BarrierDisabled_UsesPlainCreate(t *testing.T) {
+// TestDatabaseCreateCmd_BarrierDisabled_SendsNoCredential verifies that
+// without --barrier-enabled the create command does not populate a Barrier
+// config and hands the service no credential. The embedded transport always
+// creates through the tenant-scoped credentialed path; for the service a
+// create with an empty credential is the plain create.
+func TestDatabaseCreateCmd_BarrierDisabled_SendsNoCredential(t *testing.T) {
 	dbSvc := newCredentialedDatabaseService()
 
 	_, err := executeDatabaseCmd(t, dbSvc, "create", "plain-db")
@@ -140,8 +142,11 @@ func TestDatabaseCreateCmd_BarrierDisabled_UsesPlainCreate(t *testing.T) {
 		t.Fatalf("database create error: %v", err)
 	}
 
-	if dbSvc.calledWith != "create" {
-		t.Fatalf("calledWith = %q, want %q", dbSvc.calledWith, "create")
+	if dbSvc.calledWith == "" {
+		t.Fatal("the service was never asked to create")
+	}
+	if dbSvc.gotSecret != nil {
+		t.Errorf("Credentials.Secret = %q, want none", dbSvc.gotSecret)
 	}
 	if dbSvc.gotCfg.Barrier != nil {
 		t.Errorf("Barrier = %+v, want nil", dbSvc.gotCfg.Barrier)

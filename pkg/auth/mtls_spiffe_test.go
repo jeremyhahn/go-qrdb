@@ -32,6 +32,15 @@ import (
 // spiffeCert builds a self-signed leaf carrying the given SPIFFE URI SAN.
 func spiffeCert(t *testing.T, cn string, ou []string, spiffeURI string) *x509.Certificate {
 	t.Helper()
+	if spiffeURI == "" {
+		return spiffeCertURIs(t, cn, ou)
+	}
+	return spiffeCertURIs(t, cn, ou, spiffeURI)
+}
+
+// spiffeCertURIs builds a self-signed leaf carrying every given URI SAN.
+func spiffeCertURIs(t *testing.T, cn string, ou []string, uris ...string) *x509.Certificate {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("key: %v", err)
@@ -42,12 +51,12 @@ func spiffeCert(t *testing.T, cn string, ou []string, spiffeURI string) *x509.Ce
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(time.Hour),
 	}
-	if spiffeURI != "" {
-		u, perr := url.Parse(spiffeURI)
+	for _, raw := range uris {
+		u, perr := url.Parse(raw)
 		if perr != nil {
 			t.Fatalf("parse uri: %v", perr)
 		}
-		tmpl.URIs = []*url.URL{u}
+		tmpl.URIs = append(tmpl.URIs, u)
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {

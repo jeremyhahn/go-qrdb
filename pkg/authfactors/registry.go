@@ -16,6 +16,7 @@ package authfactors
 
 import (
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -50,7 +51,7 @@ func (r *FactorRegistry) Register(f Factor) error {
 	if f == nil {
 		return &FactorRegisterError{Reason: "nil factor"}
 	}
-	name := f.Name()
+	name := NormalizeName(f.Name())
 	if name == "" {
 		return &FactorRegisterError{Reason: "factor returned empty Name()"}
 	}
@@ -68,7 +69,7 @@ func (r *FactorRegistry) Register(f Factor) error {
 func (r *FactorRegistry) Unregister(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.factors, name)
+	delete(r.factors, NormalizeName(name))
 }
 
 // Lookup returns the Factor registered under name. It returns
@@ -76,7 +77,7 @@ func (r *FactorRegistry) Unregister(name string) {
 func (r *FactorRegistry) Lookup(name string) (Factor, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	f, ok := r.factors[name]
+	f, ok := r.factors[NormalizeName(name)]
 	if !ok {
 		return nil, &FactorNotFoundError{Name: name}
 	}
@@ -112,3 +113,10 @@ func (r *FactorRegistry) All() []Factor {
 	}
 	return out
 }
+
+// NormalizeName is the ONE normalisation of a factor name: the registry keys
+// factors by it and the auth-factor service dispatches and compares names by
+// it, so two spellings that select the same factor can never be registered as
+// two factors, judged two factors, or dispatched differently. Names are
+// case-insensitive.
+func NormalizeName(name string) string { return strings.ToLower(name) }

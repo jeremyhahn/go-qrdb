@@ -613,7 +613,6 @@ func TestLeaseService_Leases_UnexpectedResultType(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLeaseService_translateProposeError_NotLeader(t *testing.T) {
-
 	err := translateProposeError(&quicraft.NotLeaderError{
 		ShardID:       10,
 		LeaderID:      2,

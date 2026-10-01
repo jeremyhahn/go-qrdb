@@ -157,7 +157,7 @@ func TestAuthorizeMCP_NilRegistryDenied(t *testing.T) {
 		TenantID: "t1",
 		Roles:    []string{"admin"},
 	})
-	if err := m.AuthorizeMCP(ctx, nil, "qrdb_put"); err == nil {
+	if err := m.AuthorizeMCP(ctx, nil, "qrdb_put", nil); err == nil {
 		t.Fatal("expected nil registry to deny, got nil error")
 	}
 }

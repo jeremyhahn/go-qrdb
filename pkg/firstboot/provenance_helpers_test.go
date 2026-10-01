@@ -186,7 +186,7 @@ func TestAdminUserAlreadyExists(t *testing.T) {
 		{name: "suspended since by an operator", u: admin(func(u *user.User) { u.Lifecycle = user.LifecycleSuspended }), want: true},
 		{name: "disabled since by an operator", u: admin(func(u *user.User) { u.Lifecycle = user.LifecycleDisabled }), want: true},
 		{name: "missing the admin role", u: admin(func(u *user.User) { u.RoleIDs = []string{"role-owner"} }), want: false},
-		{name: "a system user", u: admin(func(u *user.User) { u.System = true }), want: false},
+		{name: "the admin as the System user", u: admin(func(u *user.User) { u.System = true }), want: true},
 		{name: "being deleted", u: admin(func(u *user.User) { u.Lifecycle = user.LifecycleDeleting }), want: false},
 		{name: "unknown lifecycle", u: admin(func(u *user.User) { u.Lifecycle = "hibernating" }), want: false},
 		{name: "no lifecycle", u: admin(func(u *user.User) { u.Lifecycle = "" }), want: false},

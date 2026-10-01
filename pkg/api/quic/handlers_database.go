@@ -53,6 +53,7 @@ func (s *Server) handleDatabaseCreate(ctx context.Context, payload []byte) ([]by
 	if req.Connection != nil {
 		cfg.Connection = req.Connection
 	}
+	cfg.SQL = req.SQL
 
 	var creds seal.Credentials
 	if req.Barrier != nil {
@@ -326,6 +327,34 @@ func (s *Server) handleDatabaseUpdateConnection(ctx context.Context, payload []b
 	return resp, nil
 }
 
+// handleDatabaseUpdateSQL applies a database's SQL settings -- its
+// sql.concurrency -- via the service layer and returns the updated info. An
+// absent sql restores the defaults.
+func (s *Server) handleDatabaseUpdateSQL(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.databaseSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "database"}
+	}
+
+	var req databaseUpdateSQLRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+	if req.Name == "" {
+		return nil, &InvalidArgumentError{Reason: "database name is required"}
+	}
+
+	info, err := s.databaseSvc.UpdateSQLForTenant(ctx, req.Name, req.SQL)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := json.Marshal(info)
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
 // ---------------------------------------------------------------------------
 // Wire-format request types for JSON-based database handlers
 // ---------------------------------------------------------------------------
@@ -346,6 +375,7 @@ type databaseCreateRequest struct {
 	Raft       *database.DatabaseRaftConfig       `json:"raft,omitempty"`
 	Barrier    *databaseCreateBarrierConfig       `json:"barrier,omitempty"`
 	Connection *database.DatabaseConnectionConfig `json:"connection,omitempty"`
+	SQL        *database.SQLConfig                `json:"sql,omitempty"`
 }
 
 // databaseCreateBarrierConfig is the JSON wire format for the barrier
@@ -438,4 +468,11 @@ type databaseUpdateBarrierRequest struct {
 type databaseUpdateConnectionRequest struct {
 	Name       string                             `json:"name"`
 	Connection *database.DatabaseConnectionConfig `json:"connection"`
+}
+
+// databaseUpdateSQLRequest is the JSON wire format for updating a
+// database's SQL settings.
+type databaseUpdateSQLRequest struct {
+	Name string              `json:"name"`
+	SQL  *database.SQLConfig `json:"sql"`
 }

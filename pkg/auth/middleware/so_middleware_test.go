@@ -28,7 +28,6 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
-	"github.com/jeremyhahn/go-qrdb/pkg/role"
 )
 
 // discardLogger MOVED UP, to so_audit_failclosed_test.go, which carries NO
@@ -77,12 +76,14 @@ func newSORequest(method, path, pin string) *http.Request {
 	return req
 }
 
-// withSOIdentity stores an SO identity in the request context.
-func withSOIdentity(req *http.Request, tenantID string) *http.Request {
+// withSOIdentity stores an SO identity in the request context. soRoleID is
+// the identifier the role store persisted the SO role under (seededSORoles):
+// identity.Roles carries role identifiers, never role names (go-qrdb#569).
+func withSOIdentity(req *http.Request, tenantID, soRoleID string) *http.Request {
 	id := &auth.Identity{
 		Subject:  "custodian",
 		TenantID: tenantID,
-		Roles:    []string{role.RoleNameSO},
+		Roles:    []string{soRoleID},
 	}
 	return req.WithContext(auth.WithIdentity(req.Context(), id))
 }
@@ -92,12 +93,13 @@ func withSOIdentity(req *http.Request, tenantID string) *http.Request {
 // ---------------------------------------------------------------------------
 
 func TestSOMiddleware_PlainHTTP_Rejected(t *testing.T) {
+	roles, _ := seededSORoles(t)
 	verifier := &mockSOVerifier{}
 	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Error("next should not be called for plain HTTP")
 	})
 
-	h := SOMiddleware(testRESTRoutes(), verifier, nil, audit.FailClosed, discardLogger(), next)
+	h := SOMiddleware(testRESTRoutes(), roles, verifier, nil, audit.FailClosed, discardLogger(), next)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/initialize", nil)
 	// req.TLS is nil — plain HTTP
@@ -117,6 +119,7 @@ func TestSOMiddleware_PlainHTTP_Rejected(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSOMiddleware_UnmappedRoute_PassesThrough(t *testing.T) {
+	roles, _ := seededSORoles(t)
 	verifier := &mockSOVerifier{}
 	nextCalled := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -124,7 +127,7 @@ func TestSOMiddleware_UnmappedRoute_PassesThrough(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	h := SOMiddleware(testRESTRoutes(), verifier, nil, audit.FailClosed, discardLogger(), next)
+	h := SOMiddleware(testRESTRoutes(), roles, verifier, nil, audit.FailClosed, discardLogger(), next)
 
 	req := newSORequest(http.MethodGet, "/v1/status", "")
 	rec := httptest.NewRecorder()
@@ -143,6 +146,7 @@ func TestSOMiddleware_UnmappedRoute_PassesThrough(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSOMiddleware_NonSOPermission_PassesThrough(t *testing.T) {
+	roles, _ := seededSORoles(t)
 	verifier := &mockSOVerifier{}
 	nextCalled := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -150,7 +154,7 @@ func TestSOMiddleware_NonSOPermission_PassesThrough(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	h := SOMiddleware(testRESTRoutes(), verifier, nil, audit.FailClosed, discardLogger(), next)
+	h := SOMiddleware(testRESTRoutes(), roles, verifier, nil, audit.FailClosed, discardLogger(), next)
 
 	// PUT /v1/kv/{key} maps to KVPut which is NOT an SO permission.
 	req := newSORequest(http.MethodPut, "/v1/kv/mykey", "")
@@ -170,12 +174,13 @@ func TestSOMiddleware_NonSOPermission_PassesThrough(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSOMiddleware_SORoute_NoIdentity_Forbidden(t *testing.T) {
+	roles, _ := seededSORoles(t)
 	verifier := &mockSOVerifier{}
 	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Error("next should not be called without identity")
 	})
 
-	h := SOMiddleware(testRESTRoutes(), verifier, nil, audit.FailClosed, discardLogger(), next)
+	h := SOMiddleware(testRESTRoutes(), roles, verifier, nil, audit.FailClosed, discardLogger(), next)
 
 	req := newSORequest(http.MethodPost, "/v1/ceremony/initialize", "correct-pin")
 	// No identity stored in context.
@@ -192,12 +197,13 @@ func TestSOMiddleware_SORoute_NoIdentity_Forbidden(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSOMiddleware_SORoute_NonSORole_Forbidden(t *testing.T) {
+	roles, _ := seededSORoles(t)
 	verifier := &mockSOVerifier{}
 	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Error("next should not be called without SO role")
 	})
 
-	h := SOMiddleware(testRESTRoutes(), verifier, nil, audit.FailClosed, discardLogger(), next)
+	h := SOMiddleware(testRESTRoutes(), roles, verifier, nil, audit.FailClosed, discardLogger(), next)
 
 	req := newSORequest(http.MethodPost, "/v1/ceremony/initialize", "pin")
 	id := &auth.Identity{Subject: "alice", TenantID: "t1", Roles: []string{"operator"}}
@@ -215,16 +221,17 @@ func TestSOMiddleware_SORoute_NonSORole_Forbidden(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSOMiddleware_SORoute_MissingPIN_Unauthorized(t *testing.T) {
+	roles, soRoleID := seededSORoles(t)
 	verifier := &mockSOVerifier{}
 	al := &mockSOAuditLogger{}
 	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Error("next should not be called when PIN is missing")
 	})
 
-	h := SOMiddleware(testRESTRoutes(), verifier, al, audit.FailClosed, discardLogger(), next)
+	h := SOMiddleware(testRESTRoutes(), roles, verifier, al, audit.FailClosed, discardLogger(), next)
 
 	req := newSORequest(http.MethodPost, "/v1/ceremony/initialize", "" /* no PIN */)
-	req = withSOIdentity(req, "t1")
+	req = withSOIdentity(req, soGateTenant, soRoleID)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -247,16 +254,17 @@ func TestSOMiddleware_SORoute_MissingPIN_Unauthorized(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSOMiddleware_SORoute_WrongPIN_Unauthorized(t *testing.T) {
+	roles, soRoleID := seededSORoles(t)
 	verifier := &mockSOVerifier{err: errors.New("pin mismatch")}
 	al := &mockSOAuditLogger{}
 	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Error("next should not be called with wrong PIN")
 	})
 
-	h := SOMiddleware(testRESTRoutes(), verifier, al, audit.FailClosed, discardLogger(), next)
+	h := SOMiddleware(testRESTRoutes(), roles, verifier, al, audit.FailClosed, discardLogger(), next)
 
 	req := newSORequest(http.MethodPost, "/v1/ceremony/initialize", "wrong-pin")
-	req = withSOIdentity(req, "t1")
+	req = withSOIdentity(req, soGateTenant, soRoleID)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -284,6 +292,7 @@ func TestSOMiddleware_SORoute_WrongPIN_Unauthorized(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSOMiddleware_SORoute_CorrectPIN_Success(t *testing.T) {
+	roles, soRoleID := seededSORoles(t)
 	verifier := &mockSOVerifier{err: nil}
 	al := &mockSOAuditLogger{}
 	nextCalled := false
@@ -292,10 +301,10 @@ func TestSOMiddleware_SORoute_CorrectPIN_Success(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	h := SOMiddleware(testRESTRoutes(), verifier, al, audit.FailClosed, discardLogger(), next)
+	h := SOMiddleware(testRESTRoutes(), roles, verifier, al, audit.FailClosed, discardLogger(), next)
 
 	req := newSORequest(http.MethodPost, "/v1/ceremony/initialize", "correct-pin")
-	req = withSOIdentity(req, "t1")
+	req = withSOIdentity(req, soGateTenant, soRoleID)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -321,16 +330,17 @@ func TestSOMiddleware_SORoute_CorrectPIN_Success(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSOMiddleware_NilAuditLogger_NoPanic(t *testing.T) {
+	roles, soRoleID := seededSORoles(t)
 	verifier := &mockSOVerifier{err: errors.New("bad pin")}
 	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Error("next should not be called")
 	})
 
 	// nil audit logger — must not panic.
-	h := SOMiddleware(testRESTRoutes(), verifier, nil, audit.FailClosed, discardLogger(), next)
+	h := SOMiddleware(testRESTRoutes(), roles, verifier, nil, audit.FailClosed, discardLogger(), next)
 
 	req := newSORequest(http.MethodPost, "/v1/ceremony/initialize", "pin")
-	req = withSOIdentity(req, "t1")
+	req = withSOIdentity(req, soGateTenant, soRoleID)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -348,6 +358,7 @@ func TestSOMiddleware_NilAuditLogger_NoPanic(t *testing.T) {
 // over plain HTTP must pass through untouched, so enabling the SO
 // dual-factor flag never changes behavior outside SOPermissions.
 func TestSOMiddleware_PlainHTTP_NonSORoute_PassesThrough(t *testing.T) {
+	roles, _ := seededSORoles(t)
 	verifier := &mockSOVerifier{}
 	nextCalled := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -355,7 +366,7 @@ func TestSOMiddleware_PlainHTTP_NonSORoute_PassesThrough(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	h := SOMiddleware(testRESTRoutes(), verifier, nil, audit.FailClosed, discardLogger(), next)
+	h := SOMiddleware(testRESTRoutes(), roles, verifier, nil, audit.FailClosed, discardLogger(), next)
 
 	// GET /v1/barrier/status maps to a non-SO permission; req.TLS is nil.
 	req := httptest.NewRequest(http.MethodGet, "/v1/barrier/status", nil)

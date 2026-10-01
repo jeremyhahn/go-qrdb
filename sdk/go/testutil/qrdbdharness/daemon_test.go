@@ -19,6 +19,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -53,6 +54,16 @@ func runHelper(mode string) int {
 			return 1
 		}
 		os.Stdout.WriteString(dir + "\n")
+	case reservePortsHelperMode:
+		// A second harness process, as `go test` runs one per package.
+		ports, err := ReserveUDPPorts(reservePortsHelperCount)
+		if err != nil {
+			os.Stderr.WriteString(err.Error() + "\n")
+			return 1
+		}
+		for _, p := range ports {
+			os.Stdout.WriteString(strconv.Itoa(p) + "\n")
+		}
 	default:
 		return 2
 	}

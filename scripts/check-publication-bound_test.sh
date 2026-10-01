@@ -205,9 +205,9 @@ expect reject "planted go-qrdb#999 in a feature folder" \
 expect reject "planted internal hostname in a feature folder" \
 	"$(plant host docs/delta/user.md 'The forge answers at gitea.internal.')"
 expect reject "planted workstation path in a feature folder" \
-	"$(plant path docs/delta/user.md 'Config at /home/jhahn/.config/qrdb/qrdb.yaml.')"
+	"$(plant path docs/delta/user.md 'Config at /home/dev/.config/qrdb/qrdb.yaml.')"
 expect reject "planted 192.168 address in a feature folder" \
-	"$(plant addr docs/delta/user.md 'The forge answers at 198.51.100.91:3001.')"
+	"$(plant addr docs/delta/user.md 'The forge answers at 192.168.7.91:3001.')"
 expect reject "planted 172.16 address in a feature folder" \
 	"$(plant addr172 docs/delta/user.md 'Peer at 172.20.4.7:63001.')"
 expect reject "planted 10/8 address in a feature folder" \
@@ -283,8 +283,8 @@ fi
 
 echo "== COVERAGE: several plants at once are all reported =="
 multi="$(plant multi docs/delta/user.md 'Tracked as go-qrdb#999.')"
-printf '%s\n' 'Peer at 198.51.100.91.' >> "$multi/docs/gamma/architecture.md"
-printf '%s\n' 'Config at /home/jhahn/x.' >> "$multi/docs/gamma/reference/deep.md"
+printf '%s\n' 'Peer at 192.168.7.91.' >> "$multi/docs/gamma/architecture.md"
+printf '%s\n' 'Config at /home/dev/x.' >> "$multi/docs/gamma/reference/deep.md"
 expect reject "three plants across three files" "$multi"
 if "$subject" "$multi" > "$work/multi.out" 2>&1; then :; else :; fi
 missing=""

@@ -62,6 +62,12 @@ func hasOnBehalfAssertion(r *http.Request) bool {
 //   - That peer certificate must not be REVOKED. This path bypasses the
 //     authenticator chain, so it applies auth.EnforceRevocation itself rather
 //     than inheriting the mTLS authenticator's check.
+//   - The peer certificate must be a cluster node's (forward.ClusterPeer),
+//     checked BEFORE the body is read: a user or service certificate that
+//     chains to the cluster CA can never present an honored assertion, so it
+//     must not be able to make this node read anything.
+//   - The body is read under forward.MaxBodyBytes, the largest body a node
+//     forwards, because its digest is needed for the binding check below.
 //   - forward.Verify requires that peer certificate to be a cluster-node SPIFFE
 //     certificate, verifies the assertion signature against it, and checks the
 //     assertion is unexpired and bound to THIS request (method, path, and body
@@ -74,7 +80,7 @@ func hasOnBehalfAssertion(r *http.Request) bool {
 //
 // The request body is buffered to compute its digest for binding verification
 // and then restored on r so the downstream handler reads the identical bytes.
-func (m *AuthMiddleware) authenticateOnBehalf(ctx context.Context, r *http.Request) (context.Context, *auth.Identity, error) {
+func (m *AuthMiddleware) authenticateOnBehalf(ctx context.Context, w http.ResponseWriter, r *http.Request) (context.Context, *auth.Identity, error) {
 	peerCert, err := verifiedPeerCertificate(r.TLS)
 	if err != nil {
 		return ctx, nil, err
@@ -88,7 +94,14 @@ func (m *AuthMiddleware) authenticateOnBehalf(ctx context.Context, r *http.Reque
 		return ctx, nil, rerr
 	}
 
-	body, err := drainAndRestoreBody(r)
+	// Only a cluster node can present an honored assertion. Refuse anything
+	// else before reading a byte of the body, with the same opaque error as
+	// every other verification failure below.
+	if _, perr := forward.ClusterPeer(peerCert, ""); perr != nil {
+		return ctx, nil, &auth.AuthError{Code: "unauthorized", Message: "on-behalf assertion rejected"}
+	}
+
+	body, err := drainAndRestoreBody(w, r, forward.MaxBodyBytes)
 	if err != nil {
 		return ctx, nil, &auth.AuthError{Code: "unauthorized", Message: "cannot read request body for on-behalf binding"}
 	}
@@ -149,14 +162,15 @@ func verifiedPeerCertificate(state *tls.ConnectionState) (*x509.Certificate, err
 	return state.VerifiedChains[0][0], nil
 }
 
-// drainAndRestoreBody reads the full request body and restores it on r so the
-// downstream handler can read the identical bytes. It returns the buffered body
-// (nil for an empty body).
-func drainAndRestoreBody(r *http.Request) ([]byte, error) {
+// drainAndRestoreBody reads the request body under limit and restores it on r
+// so the downstream handler can read the identical bytes. It returns the
+// buffered body (nil for an empty body), or the *http.MaxBytesError of a body
+// over limit, having read at most limit+1 bytes of it.
+func drainAndRestoreBody(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, error) {
 	if r.Body == nil || r.Body == http.NoBody {
 		return nil, nil
 	}
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
 	_ = r.Body.Close()
 	if err != nil {
 		return nil, err

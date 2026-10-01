@@ -88,6 +88,7 @@ func assertIndexed(t *testing.T, eng *MVCCEngine, name string, want ...string) {
 		t.Fatalf("index %q holds %v; want %v", name, got, want)
 	}
 	for i := range got {
+		// #nosec G602 -- the lengths are compared equal above, and i ranges over got.
 		if got[i] != want[i] {
 			t.Fatalf("index %q holds %v; want %v", name, got, want)
 		}
@@ -351,6 +352,7 @@ func assertKVIndexed(t *testing.T, eng *KVEngine, name string, want ...string) {
 		t.Fatalf("index %q holds %v; want %v", name, got, want)
 	}
 	for i := range got {
+		// #nosec G602 -- the lengths are compared equal above, and i ranges over got.
 		if got[i] != want[i] {
 			t.Fatalf("index %q holds %v; want %v", name, got, want)
 		}

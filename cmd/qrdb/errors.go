@@ -84,12 +84,20 @@ func (e *InvalidArgError) Error() string {
 type DatabaseScopeError struct {
 	Database  string
 	Transport string
+	Err       error
 }
 
 // Error returns a human-readable description.
 func (e *DatabaseScopeError) Error() string {
-	return "qrdb: transport " + e.Transport + " does not support scoping to database " + e.Database
+	msg := "qrdb: transport " + e.Transport + " does not support scoping to database " + e.Database
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
 }
+
+// Unwrap returns the transport's refusal.
+func (e *DatabaseScopeError) Unwrap() error { return e.Err }
 
 // InvalidLeaseIDError is returned when a lease ID argument cannot
 // be parsed as an int64.
@@ -317,4 +325,17 @@ type EmbeddedTransportUnavailableError struct{}
 // Error returns a human-readable description.
 func (e *EmbeddedTransportUnavailableError) Error() string {
 	return "qrdb: --transport=embedded is only available in the desktop/GUI build (which links the server side in-process); use --transport=unix for a local connection over the default Unix socket"
+}
+
+// InvalidFlagValueError is returned when a repeatable flag value does not
+// match the shape it declares (e.g. "role_id:tenant_id" or "key=value").
+type InvalidFlagValueError struct {
+	Flag  string
+	Value string
+	Want  string
+}
+
+// Error returns a human-readable description.
+func (e *InvalidFlagValueError) Error() string {
+	return "qrdb: invalid --" + e.Flag + " value " + strconv.Quote(e.Value) + ": want " + e.Want
 }

@@ -267,20 +267,29 @@ func (c *Client) WithTenant(tenantID string) (transport.KVClient, error) {
 // shares the underlying connection but carries its own immutable database
 // scope, so scopes never leak across clients and no global mutable state is
 // involved. Scoping to the default ("system") database or the empty string
-// yields an unscoped client.
+// yields the receiver.
 //
-// When the active transport does not support per-database scoping (e.g. the
-// embedded transport, which operates on a single in-process database), the
-// receiver is returned unchanged.
-func (c *Client) DatabaseScoped(name string) *Client {
+// A client is never handed the default database in place of the one it
+// named: when the active transport cannot confine its data plane to the
+// database -- it does not implement transport.DatabaseScoper, or it does but
+// lacks what scoping needs (an embedded transport with no service registry)
+// -- DatabaseScoped returns a *transport.DatabaseScopeUnsupportedError.
+func (c *Client) DatabaseScoped(name string) (*Client, error) {
 	if c.closed.Load() {
-		return c
+		return nil, &ClientClosedError{}
+	}
+	if transport.NormalizeDatabaseScope(name) == "" {
+		return c, nil
 	}
 	scoper, ok := c.transport.(transport.DatabaseScoper)
 	if !ok {
-		return c
+		return nil, &transport.DatabaseScopeUnsupportedError{Database: name, Reason: "the transport does not support per-database scoping"}
 	}
-	return &Client{transport: scoper.WithDatabase(name)}
+	scoped, err := scoper.WithDatabase(name)
+	if err != nil {
+		return nil, err
+	}
+	return &Client{transport: scoped}, nil
 }
 
 // Permissions returns a PermissionClient exposing the read-only

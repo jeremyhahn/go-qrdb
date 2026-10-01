@@ -124,6 +124,14 @@ type AuthFactorServicer interface {
 	// challenge, consuming it. challengeID must be the identifier
 	// ChallengeFactor returned; any other shape is refused as
 	// *authfactors.EnrollmentNotFoundError.
+	//
+	// The challenge is verified by the factor its enrollment was made with,
+	// never by one the caller names. factorName may be empty; a non-empty
+	// factorName that differs from the enrollment's factor is refused with
+	// *authfactors.FactorMismatchError. A challenge whose enrollment has been
+	// revoked since it was issued is refused with
+	// *authfactors.EnrollmentRevokedError. The challenge is consumed in
+	// every case.
 	VerifyFactor(ctx context.Context, factorName string, challengeID string, response *authfactors.Response) error
 
 	// ListFactors returns all active (non-revoked) enrollments for the given subject.
@@ -180,7 +188,17 @@ type AuthFactorServiceConfig struct {
 func NewAuthFactorService(cfg AuthFactorServiceConfig) (AuthFactorServicer, error) {
 	factors := make(map[string]authfactors.Factor, len(cfg.Factors))
 	for _, f := range cfg.Factors {
-		factors[f.Name()] = f
+		if f == nil {
+			return nil, &authfactors.FactorRegisterError{Reason: "nil factor"}
+		}
+		key := factorKey(f.Name())
+		// Two factors whose names normalise alike are one factor name: the
+		// second would silently replace the first, and which one a challenge
+		// is verified by would depend on list order.
+		if _, dup := factors[key]; dup {
+			return nil, &authfactors.FactorAlreadyRegisteredError{Name: key}
+		}
+		factors[key] = f
 	}
 	return &authFactorService{
 		factors: factors,
@@ -260,8 +278,9 @@ func (s *authFactorService) ChallengeFactor(ctx context.Context, enrollmentID st
 	return &issued, nil
 }
 
-// VerifyFactor looks up the pending challenge by challengeID, locates the
-// factor, and calls Verify.
+// VerifyFactor consumes the pending challenge named by challengeID, loads the
+// enrollment it was issued for, and calls Verify on the factor that
+// enrollment was made with. See AuthFactorServicer.VerifyFactor.
 func (s *authFactorService) VerifyFactor(ctx context.Context, factorName string, challengeID string, response *authfactors.Response) error {
 	challenge, err := s.consumeChallenge(ctx, challengeID)
 	if err != nil {
@@ -272,16 +291,31 @@ func (s *authFactorService) VerifyFactor(ctx context.Context, factorName string,
 		return &authfactors.ChallengeExpiredError{ChallengeID: challengeID}
 	}
 
-	name := factorName
-	if name == "" {
-		enrollment, err := s.loadEnrollment(ctx, challenge.EnrollmentID)
-		if err != nil {
-			return err
+	// The enrollment's recorded factor is authoritative (go-qrdb#577). The
+	// caller's factorName is at most an assertion about it: empty asserts
+	// nothing, and anything else must agree or the request is refused. It is
+	// never used to choose the factor, because a caller that could choose
+	// could answer a strong factor's challenge through a weaker one.
+	//
+	// The enrollment is loaded unconditionally, which also means a challenge
+	// issued before its enrollment was revoked can no longer be redeemed
+	// after: ChallengeFactor refuses a revoked enrollment, and so does this.
+	enrollment, err := s.loadEnrollment(ctx, challenge.EnrollmentID)
+	if err != nil {
+		return err
+	}
+	if !enrollment.RevokedAt.IsZero() {
+		return &authfactors.EnrollmentRevokedError{EnrollmentID: enrollment.EnrollmentID}
+	}
+	if factorName != "" && factorKey(factorName) != factorKey(enrollment.FactorName) {
+		return &authfactors.FactorMismatchError{
+			EnrollmentID: enrollment.EnrollmentID,
+			Enrolled:     enrollment.FactorName,
+			Requested:    factorName,
 		}
-		name = enrollment.FactorName
 	}
 
-	f, err := s.factor(name)
+	f, err := s.factor(enrollment.FactorName)
 	if err != nil {
 		return err
 	}
@@ -355,12 +389,18 @@ func (s *authFactorService) RevokeFactor(ctx context.Context, enrollmentID strin
 
 // factor returns the registered factor for the given name or ErrFactorNotFound.
 func (s *authFactorService) factor(name string) (authfactors.Factor, error) {
-	f, ok := s.factors[strings.ToLower(name)]
+	f, ok := s.factors[factorKey(name)]
 	if !ok {
 		return nil, &authfactors.FactorNotFoundError{Name: name}
 	}
 	return f, nil
 }
+
+// factorKey is the ONE normalisation of a factor name: the registry lookup in
+// factor and the enrollment-versus-caller comparison in VerifyFactor both use
+// it, so two names that select the same factor can never be judged different
+// factors, nor two that select different factors the same one.
+func factorKey(name string) string { return authfactors.NormalizeName(name) }
 
 // persistEnrollment serialises the enrollment to JSON and writes it to the KV store.
 func (s *authFactorService) persistEnrollment(ctx context.Context, e *authfactors.Enrollment) error {

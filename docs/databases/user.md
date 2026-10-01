@@ -1,8 +1,12 @@
 # Databases — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
+> Scope: go-qrdb · Last verified: 2026-09-28
+>
+> "Coming change" sections describe the multi-model database design in
+> [architecture.md](architecture.md). It is approved and not yet implemented.
 
-A database is a container inside your tenant with its own engine, storage,
+A database is a container inside your tenant with its own storage,
 replication, wire protocols and — if you want one — its own encryption key.
 
 ## Prerequisites
@@ -36,6 +40,33 @@ You pick these at creation and cannot change them afterwards.
 
 Engines are `kv` (the default) and `timeseries`.
 
+**Know what the backend does today.** For most databases the backend you choose
+is recorded but is not where the data goes: the tenant's isolation mode and the
+server's own settings decide that. Vector data from every database on a node
+goes to one node-local store. `objstore` is accepted and then fails when the
+database is opened. The design below fixes all three.
+
+### Coming change: every database is multi-model
+
+- **There is no engine to choose.** Every database stores keys, SQL tables,
+  collections, secondary indexes, vectors, time series, leases and watches,
+  as far as your server build includes them. `--engine` goes away.
+- **The backend you choose is where all of it lives** — vectors and time series
+  included, and on every tenant isolation level.
+
+| Backend | What you get | Pick it when |
+|---|---|---|
+| `raft` | its own Raft group, replicated across the cluster | anything you cannot afford to lose to one node |
+| `pebble` | a durable store on one node | single-node deployments, or data you can rebuild |
+| `file` | a store of plain files on one node | small data sets you want to inspect with ordinary tools |
+| `objstore` | an object store (local directory, S3, GCS, Azure, MinIO…) | large, cold data where object-store durability is what you want |
+| `memory` | nothing survives a restart | tests and caches |
+
+If you leave `--backend` out, the server's default is used: replicated `raft`
+on a cluster and `pebble` on a standalone node, unless your operator sets a
+different one. `qrdb database info <name>` shows where a
+database actually lives.
+
 ## Common tasks
 
 **Create a replicated database.**
@@ -51,21 +82,25 @@ part.
 qrdb database scale billing --replicas 5
 ```
 
-**Give a database its own encryption key.** This needs a dedicated store: an
-explicit `--data-dir`, a `--backend raft` database, or a volume/raft-isolated
-tenant.
+**Give a database its own encryption key.** A per-database barrier is accepted
+only where it wraps the store the database is actually served from: a non-raft
+database with an explicit `--data-dir`, created by the system tenant (an
+operator). Anywhere else it is refused, because the data would live somewhere
+the barrier does not reach and sealing it would protect nothing:
+
+- a `--backend raft` database is served from its Raft group;
+- every database of a volume- or raft-isolated tenant is served from that
+  tenant's own store, which the tenant's barrier already encrypts;
+- a non-system tenant's `--data-dir` is ignored, so its databases share the
+  default store.
+
+Until per-database storage bindings land, a non-system tenant therefore cannot
+create a per-database barrier at all; the bindings restore it with a barrier
+that is on the data path for every backend.
 
 ```bash
-qrdb database create secure --data-dir /var/lib/qrdb/secure \
+qrdb database create secure --data-dir <install-dir>/secure \
      --barrier-enabled --barrier-strategy passphrase --barrier-passphrase "$PASSPHRASE"
-```
-
-Or with a Shamir quorum instead of a passphrase:
-
-```bash
-qrdb database create vault --backend raft \
-     --barrier-enabled --barrier-strategy shamir \
-     --barrier-shamir-threshold 3 --barrier-shamir-total 5
 ```
 
 **Seal and unseal it.**
@@ -139,9 +174,21 @@ database you would not notice until later.
 **You want to change engine or backend.** Not possible in place. Create a new
 database with the shape you want and migrate the data — backup and restore
 ([../backup-restore/user.md](../backup-restore/user.md)) is the usual route.
+After the coming change there is no engine to change: every database already
+has every engine.
+
+**Coming change: `--backend raft` is refused.** You are on a standalone node,
+which has no Raft groups. Use `pebble`, or run a cluster.
+
+**Coming change: `--replicas` or `--cluster-mode` is refused.** Those apply to
+`--backend raft` only; they are no longer silently ignored on other backends.
+
+**Coming change: a barrier on a `memory` database is refused.** Nothing is
+stored at rest, so there is nothing for it to protect.
 
 **Everything in one database returns "unavailable" while others work.** That
-database's barrier is sealed. `qrdb database barrier-status <name>` confirms it;
+database is sealed; every engine on every transport refuses it until it is
+unsealed. `qrdb database barrier-status <name>` confirms it;
 `qrdb database unseal <name> --secret ...` opens it.
 
 **Creating a raft database failed with a permission error even though you can

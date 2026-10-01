@@ -208,7 +208,7 @@ func (t *Transport) ReconcileDeletedTenants(ctx context.Context) (*transport.Rec
 	for _, f := range report.Failed {
 		out.Failed = append(out.Failed, transport.TenantResidueFailure{TenantID: f.TenantID, Op: f.Op, Path: f.Path, Error: f.Error})
 	}
-	// In-process, the node's own *tenant.ResidueReconcileErrors is kept
+	// In-process, the node's own *tenant.ResidueReconcileFailuresError is kept
 	// reachable through errors.As.
 	return out, transport.ReconcileFailure(out, err)
 }

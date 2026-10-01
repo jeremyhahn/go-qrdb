@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -30,6 +31,14 @@ var errMockUser = errors.New("mock user error")
 // newUserServer creates a Server with the given user service mock.
 func newUserServer(us user.UserServicer) *Server {
 	return NewServer(nil, nil, "localhost:0", WithUserService(us))
+}
+
+// tenantRoleService answers GetRole with a role owned by tenantID, so a
+// role-assignment write naming it passes validation.
+func tenantRoleService(tenantID string) *mockRoleService {
+	return &mockRoleService{getRoleFn: func(_ context.Context, id string) (*role.Role, error) {
+		return &role.Role{ID: id, TenantID: tenantID}, nil
+	}}
 }
 
 // ---------------------------------------------------------------------------
@@ -58,7 +67,7 @@ func TestHandleCreateUser_Success(t *testing.T) {
 		},
 	}
 
-	srv := newUserServer(mock)
+	srv := NewServer(nil, nil, "localhost:0", WithUserService(mock), WithRoleService(tenantRoleService("tenant-1")))
 	payload, _ := json.Marshal(createUserWireRequest{
 		Username: "alice",
 		TenantID: "tenant-1",
@@ -229,6 +238,9 @@ func TestHandleGetUser_NilService(t *testing.T) {
 func TestHandleUpdateUser_Success(t *testing.T) {
 	now := time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)
 	mock := &mockUserService{
+		getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
+			return &user.User{ID: id, TenantID: "tenant-1"}, nil
+		},
 		updateUserFn: func(_ context.Context, req *user.UpdateUserRequest) (*user.User, error) {
 			if req.ID != 1003 {
 				t.Fatalf("expected ID 1003, got %d", req.ID)
@@ -248,7 +260,7 @@ func TestHandleUpdateUser_Success(t *testing.T) {
 		},
 	}
 
-	srv := newUserServer(mock)
+	srv := NewServer(nil, nil, "localhost:0", WithUserService(mock), WithRoleService(tenantRoleService("tenant-1")))
 	payload, _ := json.Marshal(updateUserWireRequest{
 		ID:       1003,
 		Username: "carol-updated",
@@ -557,7 +569,7 @@ func TestHandleDisableUser_NilService(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestUserToWireResponse_NilInput(t *testing.T) {
-	result := userToWireResponse(nil)
+	result := mustUserToWireResponse(t, nil, nil)
 	if result != nil {
 		t.Fatalf("expected nil, got %v", result)
 	}
@@ -575,7 +587,7 @@ func TestUserToWireResponse_NilRoleIDs(t *testing.T) {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	result := userToWireResponse(u)
+	result := mustUserToWireResponse(t, nil, u)
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}
@@ -602,7 +614,7 @@ func TestUserToWireResponse_WithRoleIDs(t *testing.T) {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	result := userToWireResponse(u)
+	result := mustUserToWireResponse(t, nil, u)
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}
@@ -712,7 +724,7 @@ func TestUserToWireResponse_CarriesLifecycle(t *testing.T) {
 			CreatedAt: now,
 			UpdatedAt: now,
 		}
-		result := userToWireResponse(u)
+		result := mustUserToWireResponse(t, nil, u)
 		if result.Lifecycle != string(lc) {
 			t.Errorf("Lifecycle: got %q, want %q", result.Lifecycle, lc)
 		}
@@ -744,7 +756,7 @@ func TestUserToWireResponse_CarriesEveryIdentityField(t *testing.T) {
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
-	got := userToWireResponse(u)
+	got := mustUserToWireResponse(t, nil, u)
 	if len(got.AuthMethods) != 1 || got.AuthMethods[0] != "piv" {
 		t.Errorf("authMethods: got %v", got.AuthMethods)
 	}
@@ -753,7 +765,7 @@ func TestUserToWireResponse_CarriesEveryIdentityField(t *testing.T) {
 	}
 
 	u.LastAuth = nil
-	if got := userToWireResponse(u).LastAuth; got != "" {
+	if got := mustUserToWireResponse(t, nil, u).LastAuth; got != "" {
 		t.Errorf("never-authenticated lastAuth: got %q, want empty", got)
 	}
 }
@@ -767,7 +779,7 @@ func TestUserToWireResponse_CarriesCertBindingsIncludingExpired(t *testing.T) {
 		{Thumbprint: "AAAA", Kind: user.CertBindingSPKIThumbprint},
 		{Thumbprint: "BBBB", Kind: user.CertBindingFullCertFingerprint, NotAfter: expired},
 	}}
-	got := userToWireResponse(u).CertBindings
+	got := mustUserToWireResponse(t, nil, u).CertBindings
 	if len(got) != 2 {
 		t.Fatalf("certBindings: got %+v, want both bindings", got)
 	}
@@ -778,7 +790,7 @@ func TestUserToWireResponse_CarriesCertBindingsIncludingExpired(t *testing.T) {
 		t.Errorf("certBindings[1] = %+v; the expired binding must be listed with its expiry", got[1])
 	}
 	u.CertBindings = nil
-	if got := userToWireResponse(u).CertBindings; got != nil {
+	if got := mustUserToWireResponse(t, nil, u).CertBindings; got != nil {
 		t.Errorf("no bindings must render as absent, got %+v", got)
 	}
 }

@@ -152,31 +152,49 @@ func testIndexLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 		}
 	}
 
-	out, err = runCLIProto(t, node, proto, "--output", "json", "index", "scan", idxPriority, "--start", "a", "--end", "d")
-	if err != nil {
-		t.Fatalf("[%s] index scan %s --start a --end d: %v\noutput: %s", proto.name, idxPriority, err, out)
+	// Each bound is optional: an omitted --start or --end is an OPEN bound,
+	// not an empty string (#115), so a one-sided or unbounded scan returns
+	// every match on the open side. The priority index holds exactly p1..p3
+	// ("a", "b", "c"), which makes every range's membership exact.
+	p1, p2, p3 := kprefix+"p1", kprefix+"p2", kprefix+"p3"
+	scanCases := []struct {
+		bounds []string
+		want   []string
+		absent []string
+	}{
+		{bounds: []string{"--start", "a", "--end", "d"}, want: []string{p1, p2, p3}},
+		{bounds: nil, want: []string{p1, p2, p3}},
+		{bounds: []string{"--start", "b"}, want: []string{p2, p3}, absent: []string{p1}},
+		{bounds: []string{"--end", "b"}, want: []string{p1}, absent: []string{p2, p3}},
 	}
-	var scanResp transport.IndexScanResponse
-	if jerr := json.Unmarshal([]byte(out), &scanResp); jerr != nil {
-		t.Fatalf("[%s] decode `index scan` JSON: %v\noutput: %s", proto.name, jerr, out)
-	}
-	scannedKeys := map[string]bool{}
-	for _, entry := range scanResp.Entries {
-		for _, k := range entry.Keys {
-			scannedKeys[k] = true
+	for _, sc := range scanCases {
+		args := append([]string{"--output", "json", "index", "scan", idxPriority}, sc.bounds...)
+		out, err = runCLIProto(t, node, proto, args...)
+		if err != nil {
+			t.Fatalf("[%s] index scan %s %v: %v\noutput: %s", proto.name, idxPriority, sc.bounds, err, out)
 		}
-	}
-	for _, want := range []string{kprefix + "p1", kprefix + "p2", kprefix + "p3"} {
-		if !scannedKeys[want] {
-			t.Fatalf("[%s] index scan %s --start a --end d entries = %+v, want it to contain %s",
-				proto.name, idxPriority, scanResp.Entries, want)
+		var scanResp transport.IndexScanResponse
+		if jerr := json.Unmarshal([]byte(out), &scanResp); jerr != nil {
+			t.Fatalf("[%s] decode `index scan %v` JSON: %v\noutput: %s", proto.name, sc.bounds, jerr, out)
 		}
-	}
-
-	// scan with no --start/--end: cobra must reject the required flags.
-	out, err = runCLIProto(t, node, proto, "index", "scan", idxPriority)
-	if err == nil {
-		t.Fatalf("[%s] index scan with no --start/--end succeeded, want error (output: %s)", proto.name, out)
+		scannedKeys := map[string]bool{}
+		for _, entry := range scanResp.Entries {
+			for _, k := range entry.Keys {
+				scannedKeys[k] = true
+			}
+		}
+		for _, want := range sc.want {
+			if !scannedKeys[want] {
+				t.Fatalf("[%s] index scan %s %v entries = %+v, want it to contain %s",
+					proto.name, idxPriority, sc.bounds, scanResp.Entries, want)
+			}
+		}
+		for _, absent := range sc.absent {
+			if scannedKeys[absent] {
+				t.Fatalf("[%s] index scan %s %v entries = %+v, want it to exclude %s",
+					proto.name, idxPriority, sc.bounds, scanResp.Entries, absent)
+			}
+		}
 	}
 
 	// --- create (unique index) enforces the uniqueness constraint. -----

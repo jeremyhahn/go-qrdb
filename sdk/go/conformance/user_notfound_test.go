@@ -21,11 +21,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
@@ -366,7 +368,7 @@ func TestUserNotFound_MissingRoleIsNotAMissingUser(t *testing.T) {
 		t.Run(string(tk), func(t *testing.T) {
 			c := bootUserCell(t, tk)
 
-			err := c.roles.AssignRole(boundedCtx(t), c.realUserID, "no-such-role")
+			err := c.roles.AssignRole(c.callerCtx(t, tk), c.realUserID, "no-such-role")
 			if err == nil {
 				t.Fatalf("%s: assigning a role that does not exist succeeded", tk)
 			}
@@ -410,6 +412,41 @@ type userClients struct {
 	// arranging state no transport can write -- a binding whose expiry has
 	// passed, which enrolment refuses -- never for the calls under test.
 	store user.UserServicer
+
+	// rawRoles is the SAME in-process domain role.RoleServicer the server
+	// under test resolves role references against. It exists to seed a REAL
+	// role in an arbitrary tenant (e.g. one a RoleBinding names) so a
+	// conformance test exercising go-qrdb#192 item 3's role-existence
+	// validation is not refused by the very check it is trying to get past.
+	rawRoles role.RoleServicer
+
+	// rawUserAuthFactors is the SAME in-process service.UserAuthFactorServicer
+	// the server under test derives Factors metadata and MFA state FROM at
+	// read time (pkg/user.FactorLister). Enrollment has exactly one source of
+	// truth -- this service -- and no wire request populates it on any
+	// transport, so seeding a real enrollment for a conformance test goes
+	// through here, the same way store seeds the identity fixtures no
+	// transport's own client can create.
+	rawUserAuthFactors service.UserAuthFactorServicer
+}
+
+// callerCtx returns a bounded context to call this cell with. The five remote
+// cells authenticate by their client certificate, which resolves to the
+// "matrix" identity seedIdentityFixtures grants c.roleID. The embedded
+// transport authenticates nothing on its own, but sdk/go/node hands it the
+// same AuthMiddleware the remote cells enforce with, so its context carries
+// an identity holding the same role.
+func (c userClients) callerCtx(t *testing.T, tk transportKind) context.Context {
+	t.Helper()
+	ctx := boundedCtx(t)
+	if tk == embeddedTransport {
+		ctx = auth.WithIdentity(ctx, &auth.Identity{
+			Subject:  "conformance-embedded",
+			TenantID: tenant.SystemTenantID,
+			Roles:    []string{c.roleID},
+		})
+	}
+	return ctx
 }
 
 // bootUserCell brings up a standalone node carrying exactly one listener and
@@ -438,13 +475,15 @@ func bootCell(t *testing.T, tk transportKind, extraPerms ...permission.Permissio
 		roleID, realUserID = seedIdentityFixtures(t, n, extraPerms...)
 	})
 	return userClients{
-		users:      c.Users(),
-		roles:      c.Roles(),
-		roleID:     roleID,
-		realUserID: realUserID,
-		tenants:    c.Tenants(),
-		node:       booted,
-		store:      booted.Services().User,
+		users:              c.Users(),
+		roles:              c.Roles(),
+		roleID:             roleID,
+		realUserID:         realUserID,
+		tenants:            c.Tenants(),
+		node:               booted,
+		store:              booted.Services().User,
+		rawRoles:           booted.Services().Role,
+		rawUserAuthFactors: booted.Services().UserAuthFactor,
 	}
 }
 

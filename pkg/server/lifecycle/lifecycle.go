@@ -214,6 +214,13 @@ type Infra struct {
 	// recovery. The caller constructs and owns the sink's lifecycle (e.g. the
 	// storage.Storage it wraps); BuildServices only reads from it.
 	BackupSink service.BackupSink
+
+	// AuthMethodVocabulary, when non-nil, is the permitted-method vocabulary of
+	// THIS node's auth chain (usually middleware.AuthMethodVocabulary's
+	// IsAuthMethod, bound once the node's middleware is built). Every user
+	// store BuildServices creates validates written policies against it
+	// (user.WithAuthMethodVocabulary). Nil means the built-in tokens only.
+	AuthMethodVocabulary func(method string) bool
 }
 
 // Node aggregates all services built by BuildServices and provides a
@@ -433,6 +440,9 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	if err != nil {
 		return nil, &UserServiceError{Err: err}
 	}
+	// Every user store below validates written permitted-method policies
+	// against THIS node's auth-chain vocabulary.
+	userOpts = append(userOpts, user.WithAuthMethodVocabulary(infra.AuthMethodVocabulary))
 	userSvc, err := user.NewStore(authStore, userIDGen, userOpts...)
 	if err != nil {
 		return nil, &UserServiceError{Err: err}
@@ -715,6 +725,10 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 			dbOpts = append(dbOpts, placementOpts...)
 			n.Database = service.NewDatabaseService(dbManager, dbOpts...)
 		}
+		// dbManager.Open warned for the barrier records it can classify
+		// alone; a volume- or raft-isolated tenant's needs the tenant
+		// service, which exists only now.
+		service.WarnBarriersOffDataPath(ctx, dbManager.List(), n.Tenant, log)
 	}
 
 	// infra.SealEnabled is the composer's own seal.enabled config decision,

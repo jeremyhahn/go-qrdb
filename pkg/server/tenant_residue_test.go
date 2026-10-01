@@ -148,7 +148,7 @@ func TestReconcileDeletedTenantsAtBoot_PartialFailureStillLogsWhatWasDone(t *tes
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	svc := &failingReconcileSvc{
 		report: &tenant.ReconcileReport{Inspected: 2, Reclaimed: []tenant.ReclaimedPath{{TenantID: "vb", Path: "/srv/vb"}}},
-		err:    &tenant.ResidueReconcileErrors{Errors: []*tenant.ResidueReconcileError{{TenantID: "va", Op: "remove", Err: errors.New("boom")}}},
+		err:    &tenant.ResidueReconcileFailuresError{Errors: []*tenant.ResidueReconcileError{{TenantID: "va", Op: "remove", Err: errors.New("boom")}}},
 	}
 	reconcileDeletedTenantsAtBoot(context.Background(), svc, logger)
 	out := buf.String()

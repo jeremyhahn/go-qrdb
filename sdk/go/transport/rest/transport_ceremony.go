@@ -36,9 +36,18 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	// The SO PIN travels in the request's own so_pin field too, which the
+	// server reads; it comes from the PIN bound by transport.WithSOPIN when
+	// the request carries none, exactly as on QUIC.
+	soPIN, err := transport.ResolveSOPIN(ctx, "CeremonyInitialize", req.SOPin)
+	if err != nil {
+		return nil, err
+	}
+	body := *req
+	body.SOPin = soPIN
 
 	var resp transport.CeremonyInitializeResponse
-	if err := t.postJSONDecode(ctx, "CeremonyInitialize", "/v1/ceremony/initialize", req, &resp); err != nil {
+	if err := t.postJSONDecode(ctx, "CeremonyInitialize", "/v1/ceremony/initialize", &body, &resp); err != nil {
 		return nil, err
 	}
 
@@ -154,9 +163,18 @@ func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRI
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	// The SO PIN travels in the request's own so_pin field too, which the
+	// server reads; it comes from the PIN bound by transport.WithSOPIN when
+	// the request carries none, exactly as on QUIC.
+	soPIN, err := transport.ResolveSOPIN(ctx, "CeremonySignCSR", req.SOPin)
+	if err != nil {
+		return nil, err
+	}
+	body := *req
+	body.SOPin = soPIN
 
 	var resp transport.SignCSRInitResponse
-	if err := t.postJSONDecode(ctx, "CeremonySignCSR", "/v1/ceremony/sign-csr", req, &resp); err != nil {
+	if err := t.postJSONDecode(ctx, "CeremonySignCSR", "/v1/ceremony/sign-csr", &body, &resp); err != nil {
 		return nil, err
 	}
 

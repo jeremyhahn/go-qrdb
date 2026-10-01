@@ -39,7 +39,7 @@ func TestWithDatabasePropagatesScope(t *testing.T) {
 		return wire.StatusOK, nil
 	})
 
-	scoped, ok := tr.WithDatabase("db2").(*Transport)
+	scoped, ok := tr.withDatabase("db2"), true
 	if !ok {
 		t.Fatal("WithDatabase did not return a *Transport")
 	}
@@ -75,7 +75,7 @@ func TestWithDatabaseSystemIsUnscoped(t *testing.T) {
 				return wire.StatusOK, nil
 			})
 
-			scoped, ok := tr.WithDatabase(tc.database).(*Transport)
+			scoped, ok := tr.withDatabase(tc.database), true
 			if !ok {
 				t.Fatal("WithDatabase did not return a *Transport")
 			}

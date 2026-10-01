@@ -384,8 +384,10 @@ func (s *quotaKVService) releaseIfProvenNotStored(err error, n int) {
 // The enumeration this replaced was a copy of the service layer's knowledge
 // kept in the wrapper, and it had already drifted: it tested
 // kvstore.ErrAtomicWriteUnsupported, while the KVServicer this wraps returns
-// the distinct database.ErrAtomicWriteUnsupported sentinel, so a refused
-// atomic write leaked its reservation on every call (go-qrdb#100).
+// what was then a distinct database.ErrAtomicWriteUnsupported sentinel, so a
+// refused atomic write leaked its reservation on every call (go-qrdb#100).
+// kvstore.ErrAtomicWriteUnsupported is now the only such marker, but this
+// still asks the service layer's ErrNotStored rather than enumerate causes.
 func writeProvenNotStored(err error) bool {
 	return errors.Is(err, service.ErrNotStored)
 }

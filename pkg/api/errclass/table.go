@@ -18,6 +18,8 @@ import (
 	"context"
 	"errors"
 
+	"github.com/dolthub/vitess/go/mysql"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
@@ -34,6 +36,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/rowlock"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
@@ -80,6 +83,16 @@ var dominantRules = []rule{
 	// Dominant for the same reason as the layout refusal.
 	tableResolutionStaleRule,
 
+	// A row-lock request that lost: a lock-wait timeout, NOWAIT on a held
+	// row, a deadlock victim, a lost lock -- typed, or in the SQL engine's
+	// numbered rendering. Each is a lost race the client retries, never a
+	// fault. Dominant for the same reason as the two rules above: the
+	// refusal reaches a transport inside SQLExecutionError.
+	rowLockRule,
+
+	// SKIP LOCKED, refused by name.
+	rowLockUnsupportedRule,
+
 	// A closed store is the node going away underneath the request (go-qrdb#371).
 	// It arrives wrapped in ProposeError, ReadError, BatchError, TimeSeriesError
 	// — every one of which would otherwise claim it as a server fault.
@@ -112,6 +125,12 @@ var dominantRules = []rule{
 	// reporting the cause would drop the fact that secondary state may now be
 	// inconsistent.
 	as(&user.IndexCompensationError{}, DataLoss),
+
+	// A user was read but its enrolled auth factors could not be listed, so
+	// the response cannot say whether it has a second factor. Retryable,
+	// whatever store failure the listing met: that cause is not the answer
+	// the caller asked for.
+	as(&user.FactorLookupError{}, Unavailable),
 
 	// A collection document write whose outcome is unknown -- the write
 	// failed and may have committed, its post-write fence could not read the
@@ -172,6 +191,7 @@ var vectorRules = []rule{
 	as(&service.VectorServiceClosedError{}, Unavailable),
 	// Strict tenant isolation refuses a request bound to no tenant.
 	as(&service.TenantRequiredError{}, PermissionDenied),
+	as(&service.RAGTenantRequiredError{}, PermissionDenied),
 }
 
 // collectionRules are the document-collection conditions.
@@ -261,10 +281,19 @@ var databaseRules = []rule{
 	as(&database.AlreadyExistsError{}, AlreadyExists),
 	as(&database.NotFoundError{}, NotFound),
 	as(&database.InvalidNameError{}, InvalidArgument),
+	as(&database.ReservedNameError{}, InvalidArgument),
+	// etcd enabled on a database whose engine is not kv.
+	as(&database.EtcdEngineUnsupportedError{}, InvalidArgument),
 	as(&database.InvalidEngineError{}, InvalidArgument),
 	as(&database.InvalidBackendError{}, InvalidArgument),
-	// A per-database control operation on another tenant's database.
-	as(&database.TenantAccessDeniedError{}, PermissionDenied),
+	// A per-database barrier requested where it would not wrap the store the
+	// database is served from. The caller cannot change a database's backend
+	// or data_dir, so this is the configuration refusing the feature, as
+	// tenant.ErrBarrierIsolationUnavailable is -- not a precondition the
+	// caller can restore.
+	as(&database.SharedStoreBarrierUnsupportedError{}, Unprocessable),
+	as(&database.BarrierOffDataPathError{}, Unprocessable),
+	as(&database.InvalidConcurrencyError{}, InvalidArgument),
 	// A per-database barrier operation on a node with no barrier manager.
 	as(&service.BarrierManagerNotConfiguredError{}, Unimplemented),
 }
@@ -429,6 +458,10 @@ var backupRules = []rule{
 
 // identityRules are the user, role and certificate conditions.
 var identityRules = []rule{
+	// A targeted request whose body names the tenant it acts on could not be
+	// read: refused rather than authorized against the caller's own tenant.
+	as(&authmw.TargetBodyInvalidError{}, InvalidArgument),
+	as(&authmw.TargetBodyTooLargeError{}, TooLarge),
 	as(&user.UserNotFoundError{}, NotFound),
 	// A withdrawal naming a binding the account does not hold.
 	as(&user.CertBindingNotFoundError{}, NotFound),
@@ -437,6 +470,14 @@ var identityRules = []rule{
 	// primary record (go-qrdb#555).
 	as(&user.UserIDExistsError{}, AlreadyExists),
 	as(&user.EmailExistsError{}, AlreadyExists),
+	// A second System user: at most one exists, the bootstrap admin
+	// (go-qrdb#106).
+	as(&user.SystemUserAlreadyExistsError{}, AlreadyExists),
+	// The System flag asked for outside the system tenant: a bad field value.
+	as(&user.SystemTenantRequiredError{}, InvalidArgument),
+	// A RoleBinding naming another tenant on a non-system user, which could
+	// never grant: a bad field value in the write.
+	as(&user.RoleBindingTenantError{}, InvalidArgument),
 	// A thumbprint already bound to ANOTHER user: rebinding it silently would
 	// hand the caller that user's mTLS identity (go-qrdb#536).
 	as(&user.CertBindingConflictError{}, AlreadyExists),
@@ -458,6 +499,15 @@ var identityRules = []rule{
 	// The state is valid; the record is not somewhere this move starts from.
 	as(&user.LifecycleTransitionError{}, FailedPrecondition),
 	as(&user.ValidationError{}, InvalidArgument),
+	// A role-assignment write named a role that does not exist, or one that
+	// may not be granted in the tenant it targets: a bad field in the write,
+	// whose subject is a user, not the role. ReferenceError wraps the lookup's
+	// RoleNotFoundError, so it must precede that row.
+	as(&role.ReferenceError{}, InvalidArgument),
+	as(&role.NotAssignableError{}, InvalidArgument),
+	// A role-assignment write named a role and the node has no role service
+	// to check it against: the node cannot serve the write as composed.
+	as(&role.ServiceRequiredError{}, Unimplemented),
 	as(&role.RoleNotFoundError{}, NotFound),
 	as(&role.RoleNameExistsError{}, AlreadyExists),
 	as(&role.RoleIDExistsError{}, AlreadyExists),
@@ -571,6 +621,9 @@ var authFactorRules = []rule{
 	// An enrolment naming a tenant other than the caller's context
 	// (go-qrdb#464): the caller's input, not a server fault.
 	as(&service.AuthFactorTenantMismatchError{}, InvalidArgument),
+	// A verify naming a factor other than the enrollment's own (go-qrdb#577):
+	// the caller's input, refused rather than corrected.
+	as(&authfactors.FactorMismatchError{}, InvalidArgument),
 	as(&authfactors.EnrollmentRevokedError{}, Gone),
 	as(&authfactors.ChallengeExpiredError{}, Gone),
 	as(&authfactors.VerificationFailedError{}, Unauthenticated),
@@ -610,6 +663,9 @@ var ceremonyRules = []rule{
 	is(seal.ErrAlreadyInitialized, FailedPrecondition),
 	is(seal.ErrNotInitialized, FailedPrecondition),
 	is(ceremony.ErrCertThumbprintMismatch, PermissionDenied),
+	// An anonymous officer registration after enrollment closed: retrying
+	// will not help; register through an authenticated listener.
+	is(ceremony.ErrEnrollmentClosed, PermissionDenied),
 	is(ceremony.ErrOfficerNotFound, NotFound),
 	is(ceremony.ErrShareAlreadyClaimed, FailedPrecondition),
 	is(ceremony.ErrNoPendingShare, NotFound),
@@ -749,6 +805,60 @@ var tableResolutionStaleRule = rule{
 		&service.TableGenerationStaleError{Database: "shop", Name: "orders", Expected: 0, Actual: 1},
 		&service.TableDefinitionStaleError{Database: "shop", Name: "orders", Reason: "index idx_sku was dropped"},
 		&service.ReadError{Err: &service.TableGenerationStaleError{Database: "shop", Name: "orders", Expected: 0, Actual: 1}},
+	},
+}
+
+// rowLockConflicts are the row-lock refusals rowLockRule recognises by type,
+// anywhere in the chain including through Cause() links.
+var rowLockConflicts = []func(error) bool{
+	func(err error) bool { var e *rowlock.LockWaitTimeoutError; return service.AsCause(err, &e) },
+	func(err error) bool { var e *rowlock.LockNotAvailableError; return service.AsCause(err, &e) },
+	func(err error) bool { var e *rowlock.DeadlockError; return service.AsCause(err, &e) },
+	func(err error) bool { var e *rowlock.LockLostError; return service.AsCause(err, &e) },
+}
+
+// rowLockNumbers are the MySQL numbers the SQL layer renders a lock-wait
+// timeout and a NOWAIT refusal as.
+var rowLockNumbers = map[int]bool{
+	rowlock.SQLCodeLockWaitTimeout: true,
+	rowlock.SQLCodeLockNowait:      true,
+}
+
+// rowLockRule classifies a lost row-lock request as Aborted.
+var rowLockRule = rule{
+	name: "rowlock conflict",
+	classify: func(err error) (Class, bool) {
+		for _, match := range rowLockConflicts {
+			if match(err) {
+				return Aborted, true
+			}
+		}
+		var numbered interface{ Number() int }
+		return Aborted, errors.As(err, &numbered) && rowLockNumbers[numbered.Number()]
+	},
+	samples: []error{
+		&rowlock.LockWaitTimeoutError{Key: "k", Mode: rowlock.ModeExclusive},
+		&rowlock.LockNotAvailableError{Key: "k", Mode: rowlock.ModeShared},
+		&rowlock.DeadlockError{Key: "k", Mode: rowlock.ModeExclusive},
+		&rowlock.LockLostError{Key: "k"},
+		mysql.NewSQLError(rowlock.SQLCodeLockWaitTimeout, "HY000", "%s", "Lock wait timeout exceeded"),
+		mysql.NewSQLError(rowlock.SQLCodeLockNowait, "HY000", "%s", "NOWAIT"),
+	},
+}
+
+// sqlCodeNotSupportedYet is MySQL's ER_NOT_SUPPORTED_YET, which the SQL
+// layer refuses SKIP LOCKED with.
+const sqlCodeNotSupportedYet = 1235
+
+// rowLockUnsupportedRule classifies ER_NOT_SUPPORTED_YET as Unimplemented.
+var rowLockUnsupportedRule = rule{
+	name: "ER_NOT_SUPPORTED_YET",
+	classify: func(err error) (Class, bool) {
+		var numbered interface{ Number() int }
+		return Unimplemented, errors.As(err, &numbered) && numbered.Number() == sqlCodeNotSupportedYet
+	},
+	samples: []error{
+		mysql.NewSQLError(sqlCodeNotSupportedYet, "42000", "%s", "SKIP LOCKED is not supported"),
 	},
 }
 

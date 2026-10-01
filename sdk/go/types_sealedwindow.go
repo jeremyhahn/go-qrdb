@@ -109,6 +109,26 @@ var SealedWindowUnaryInterceptor = grpcapi.SealedWindowUnaryInterceptor
 // SealedWindowUnaryInterceptor.
 var SealedWindowStreamInterceptor = grpcapi.SealedWindowStreamInterceptor
 
+// SealedWindowListenerProbe is what a boot-time sealed-window listener's
+// gate reads per request: the barrier's sealed state and whether anonymous
+// officer enrollment is still open.
+type SealedWindowListenerProbe = sealedwindow.ListenerProbe
+
+// SealedWindowListenerMiddleware is the REST gate of a boot-time
+// sealed-window listener, a listener with no authentication behind it: the
+// allowlist while the barrier probe reports sealed, and a 503 for every
+// request once it reports unsealed.
+var SealedWindowListenerMiddleware = restapi.SealedWindowListenerMiddleware
+
+// SealedWindowListenerUnaryInterceptor is the gRPC unary gate of a
+// boot-time sealed-window listener: the allowlist while sealed, and
+// codes.Unavailable for every method once unsealed.
+var SealedWindowListenerUnaryInterceptor = grpcapi.SealedWindowListenerUnaryInterceptor
+
+// SealedWindowListenerStreamInterceptor is the streaming-RPC sibling of
+// SealedWindowListenerUnaryInterceptor.
+var SealedWindowListenerStreamInterceptor = grpcapi.SealedWindowListenerStreamInterceptor
+
 // ---------------------------------------------------------------------------
 // Seal-only service graph (pre-host sealed window)
 // ---------------------------------------------------------------------------

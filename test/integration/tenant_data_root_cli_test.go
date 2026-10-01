@@ -138,7 +138,7 @@ func provisionTenantCLIIdentity(t *testing.T, ca *testCA, adminPort int, sysClie
 			"name":      "db-admin",
 			"tenant_id": tenantID,
 			"permissions": []string{
-				"databases:create", "databases:read", "databases:list",
+				"databases:create", "databases:create_raft", "databases:create_volume", "databases:read", "databases:list",
 				"kv:put", "kv:get",
 			},
 		},

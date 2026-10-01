@@ -126,24 +126,49 @@ func (a *MTLSAuthenticator) Name() string {
 	return MethodMTLS
 }
 
-// TenantFromCert derives the tenant from a verified client certificate using
-// the SPIFFE SAN (pinned trust domain) with an OU fallback. It returns the
-// derived tenant ID and reports whether the tenant came from a SPIFFE SAN.
-//
-// A SPIFFE SAN under a mismatched trust domain returns a non-nil error and
-// must cause the login to fail closed.
+// TenantFromCert derives the tenant from a verified client certificate with
+// TenantFromClientCert under this authenticator's pinned trust domain.
 func (a *MTLSAuthenticator) TenantFromCert(cert *x509.Certificate) (tenantID string, fromSPIFFE bool, err error) {
+	return TenantFromClientCert(cert, a.pinnedTrustDomain)
+}
+
+// TenantFromClientCert is qrdb's certificate-to-tenant rule, the one the mTLS
+// authenticator applies to every login. It returns the tenant a verified
+// client certificate names and reports whether it came from a SPIFFE SAN:
+//
+//   - a tenant-scoped SPIFFE URI SAN wins. When pinnedTrustDomain is
+//     non-empty, ANY SPIFFE SAN under another trust domain fails closed and
+//     is never overridden by the OU;
+//   - SANs naming more than one distinct tenant fail closed
+//     (spiffe.AmbiguousTenantError), as does a malformed SPIFFE SAN;
+//   - every fail-closed answer is a *CertificateTenantError, which matches
+//     ErrInvalidCertificate under errors.Is and carries the spiffe cause;
+//   - with pinnedTrustDomain empty, any trust domain is accepted. That is
+//     for tests and single-domain labs: a composer must pin its domain;
+//   - with no SPIFFE tenant SAN, the first Subject OU is the tenant;
+//   - with neither, the tenant is "" and err is nil.
+//
+// "" is not an error: the authentication middleware folds it onto the system
+// tenant (tenant.Normalize) before anything reads it. A composing host that
+// resolves a certificate's user outside the middleware -- before any tenant
+// is bound, on a public route -- applies this rule, normalizes the result the
+// same way, binds that tenant into the context, and looks the thumbprint up
+// within it. It never searches other tenants for the thumbprint.
+//
+// cert must already be verified against the CA; this reads names, it does
+// not check signatures.
+func TenantFromClientCert(cert *x509.Certificate, pinnedTrustDomain string) (tenantID string, fromSPIFFE bool, err error) {
 	if cert == nil {
 		return "", false, ErrInvalidCertificate
 	}
 
-	id, serr := spiffe.TenantFromCert(cert, a.pinnedTrustDomain)
+	id, serr := spiffe.TenantFromCert(cert, pinnedTrustDomain)
 	switch {
 	case serr == nil:
 		return id.TenantID, true, nil
 	case errors.Is(serr, spiffe.ErrTrustDomainMismatch):
 		// Foreign trust domain: fail closed, do not fall back.
-		return "", false, ErrInvalidCertificate
+		return "", false, &CertificateTenantError{Err: serr}
 	case errors.Is(serr, spiffe.ErrNoTenantSPIFFEID):
 		// No SPIFFE SAN: legacy OU fallback.
 		if len(cert.Subject.OrganizationalUnit) > 0 {
@@ -151,8 +176,9 @@ func (a *MTLSAuthenticator) TenantFromCert(cert *x509.Certificate) (tenantID str
 		}
 		return "", false, nil
 	default:
-		// Malformed SPIFFE SAN: fail closed.
-		return "", false, ErrInvalidCertificate
+		// Malformed SPIFFE SAN, or SANs naming more than one tenant: fail
+		// closed.
+		return "", false, &CertificateTenantError{Err: serr}
 	}
 }
 

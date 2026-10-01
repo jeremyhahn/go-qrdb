@@ -32,8 +32,24 @@ type Identity struct {
 	// uses an empty TenantID as a sentinel.
 	TenantID string
 
-	// Roles contains the roles assigned to this identity.
+	// Roles contains the IDENTIFIERS of the roles assigned to this identity.
+	// The authentication middleware sets it from the user record's RoleIDs.
+	// A role NAME found here did not come from the role store, so to ask
+	// whether the identity holds a named system role, resolve the name
+	// through the role store (role.HoldsSystemRole) rather than comparing
+	// the name here.
 	Roles []string
+
+	// RoleBindings carries the identity's TENANT-SCOPED role grants —
+	// user.RoleBinding's shape, copied rather than imported: pkg/user
+	// already imports pkg/auth, so pkg/auth cannot import pkg/user without
+	// closing a cycle. Unlike Roles, which the system-tenant rule already
+	// treats as reaching every tenant for a system-tenant identity, a
+	// RoleBinding grants its RoleID ONLY within its own TenantID — the RBAC
+	// authorizer (pkg/auth/rbac) resolves a binding into the effective role
+	// set exactly when the request's target tenant equals the binding's
+	// TenantID, never otherwise (go-qrdb#192 item 4).
+	RoleBindings []RoleBinding
 
 	// ScopePermissions carries permissions that were pre-resolved by a
 	// TRUSTED in-process issuance path — the "resource:action" set stamped
@@ -52,14 +68,38 @@ type Identity struct {
 	// does not carry it).
 	ScopePermissions []string
 
-	// Metadata holds additional identity attributes.
+	// Metadata holds additional identity attributes derived from
+	// AUTHENTICATION — the certificate, the token, the assertion that
+	// established this identity. Every writer of this map is a trusted,
+	// in-process authentication step (see the sealed-window sentinel this
+	// package's own middleware uses it for as an example); it must never be
+	// populated from a caller-controlled request field.
 	Metadata map[string]string
+
+	// Attributes holds ABAC key/value pairs sourced from the USER RECORD's
+	// attribute set, which an administrator holding roles:assign writes — a
+	// weaker trust level than Metadata's. It is a separate field so it can
+	// never be read as Metadata: the ABAC decorator exposes it to policies
+	// only in its own user_attrs namespace (see abac.Subject.UserAttributes).
+	Attributes map[string]string
 }
 
-// HasRole reports whether this identity has the specified role.
-func (id *Identity) HasRole(role string) bool {
+// RoleBinding grants Role within a tenant scope (tenant-scoped RBAC). It
+// mirrors user.RoleBinding's two fields; see Identity.RoleBindings for why
+// this package carries its own copy rather than importing that type.
+type RoleBinding struct {
+	RoleID   string
+	TenantID string
+}
+
+// HasRole reports whether this identity carries the role identifier roleID,
+// compared verbatim. Roles holds identifiers, so passing a role NAME here is
+// a defect: it refuses every real holder and admits any identity whose roles
+// happen to carry that string (go-qrdb#569). Use role.HoldsSystemRole for a
+// named system role.
+func (id *Identity) HasRole(roleID string) bool {
 	for _, r := range id.Roles {
-		if r == role {
+		if r == roleID {
 			return true
 		}
 	}

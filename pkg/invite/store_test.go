@@ -370,8 +370,14 @@ func TestNewDAOStoreRefusesNonAtomicStore(t *testing.T) {
 		t.Fatalf("NewDAOStore(nil) err = %v, want ErrNilStore", err)
 	}
 
-	if _, err := NewDAOStore(plainKV{}); !errors.Is(err, ErrAtomicWriteUnsupported) {
-		t.Fatalf("NewDAOStore(non-atomic) err = %v, want ErrAtomicWriteUnsupported", err)
+	// The refusal is the stack's one atomic-refusal marker, and it proves
+	// nothing was written.
+	_, err := NewDAOStore(plainKV{})
+	if !errors.Is(err, kvstore.ErrAtomicWriteUnsupported) {
+		t.Fatalf("NewDAOStore(non-atomic) err = %v, want kvstore.ErrAtomicWriteUnsupported", err)
+	}
+	if !errors.Is(err, kvstore.ErrNotApplied) {
+		t.Fatalf("NewDAOStore(non-atomic) err = %v, want it to match kvstore.ErrNotApplied", err)
 	}
 }
 

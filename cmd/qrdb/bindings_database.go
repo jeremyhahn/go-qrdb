@@ -208,3 +208,21 @@ func (b *DatabaseBinding) UpdateConnection(name string, req *transport.UpdateDat
 	b.logger.Debug("UpdateConnection completed", "name", name)
 	return info, nil
 }
+
+// UpdateSQL updates a database's SQL settings (its concurrency mode).
+func (b *DatabaseBinding) UpdateSQL(name string, req *transport.UpdateDatabaseSQLRequest) (*transport.DatabaseInfo, error) {
+	b.logger.Debug("UpdateSQL called", "name", name)
+	cl, err := b.conn.loadClient()
+	if err != nil {
+		b.logger.Error("UpdateSQL failed", "error", err)
+		return nil, err
+	}
+	req.Name = name
+	info, err := cl.Database().UpdateDatabaseSQL(context.Background(), *req)
+	if err != nil {
+		b.logger.Error("UpdateSQL failed", "name", name, "error", err)
+		return nil, err
+	}
+	b.logger.Debug("UpdateSQL completed", "name", name)
+	return info, nil
+}

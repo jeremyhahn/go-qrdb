@@ -23,15 +23,15 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
-// migrationRefusal stands in for a migrator's own typed refusal -- the shape
+// migrationRefusalError stands in for a migrator's own typed refusal -- the shape
 // sdk/go/node's MigrationNotSupportedError has -- which is NOT the sentinel
 // itself but reports as it through errors.Is. A mapping that compared with ==
 // instead of errors.Is would miss it.
-type migrationRefusal struct{ reason string }
+type migrationRefusalError struct{ reason string }
 
-func (e *migrationRefusal) Error() string { return "migration not supported: " + e.reason }
+func (e *migrationRefusalError) Error() string { return "migration not supported: " + e.reason }
 
-func (e *migrationRefusal) Is(target error) bool {
+func (e *migrationRefusalError) Is(target error) bool {
 	return target == service.ErrMigrationProviderUnavailable
 }
 
@@ -39,7 +39,7 @@ func (e *migrationRefusal) Is(target error) bool {
 // migrator declining the migration answers 501 like an unwired one does,
 // rather than falling through to 500.
 func TestHandleBarrierEnableEncryption_MigratorRefusalIs501(t *testing.T) {
-	mig := &captureMigrator{ch: make(chan migrateCall, 1), err: &migrationRefusal{reason: "no seal store"}}
+	mig := &captureMigrator{ch: make(chan migrateCall, 1), err: &migrationRefusalError{reason: "no seal store"}}
 	srv := newEnableEncTestServer(t, mig)
 	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/enable-encryption",
 		strings.NewReader(`{"strategy":"passphrase","passphrase":"cHc="}`))

@@ -11,6 +11,973 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Changed — BREAKING
+
+- **New interface methods.** `service.DatabaseServicer` gains `UpdateSQL` and
+  `UpdateSQLForTenant`, and the Go SDK's `transport.DatabaseClient` interface
+  gains `UpdateDatabaseSQL` (which `transport.TenantDatabaseClient` forwards).
+  Every
+  implementation outside this repository — a composer's own service, a test
+  double, a custom transport — must add them to keep compiling.
+- **TypeScript SDK (`@qrdb/sdk`): the wire-protocol names now match the Go
+  SDK, and the old names carry the SQL settings.** `DatabaseClient.updateSQL`
+  is renamed `updateProtocol`, `DatabaseSQLConfig` (`{mysql, postgresql}`) is
+  renamed `DatabaseProtocolConfig` — including the type of
+  `DatabaseInfo.protocol` and `CreateDatabaseRequest.protocol` — and the old
+  `UpdateDatabaseSQLRequest` is `UpdateDatabaseProtocolRequest`. The freed names
+  are the per-database SQL settings: `updateSQL(name, {concurrency})`
+  (`PATCH /v1/databases/{name}/sql`; omit the settings to restore the
+  defaults), `DatabaseSQLConfig {concurrency?: 'optimistic' | 'pessimistic'}`
+  and an `sql` field on `DatabaseInfo` and `CreateDatabaseRequest`. A caller
+  passing `{mysql, postgresql}` to `updateSQL` no longer type-checks; rename the
+  call to `updateProtocol`. The desktop client's binding call is fixed with it:
+  the protocol toggle invoked a `DatabaseBinding.UpdateSQL` the binding did not
+  have.
+- **MySQL error 1235 (`ER_NOT_SUPPORTED_YET`) is classified `Unimplemented`**
+  by `pkg/api/errclass` (501 / `UNIMPLEMENTED` / `StatusUnimplemented`). It
+  was unclassified, so each transport answered with its internal-error
+  fallback. `SKIP LOCKED` is what raises it.
+- **PostgreSQL wire: `SET qrdb_<name>` reaches the engine.** It was accepted
+  and ignored, whatever the name; an unknown `qrdb_*` setting, or an invalid
+  value for a known one, is now an error. `SET LOCAL lock_timeout` and `SET
+  LOCAL qrdb_*` are refused with SQLSTATE 0A000 instead of succeeding as a
+  no-op.
+- **`SET GLOBAL innodb_lock_wait_timeout` is refused**; the variable is
+  session-scoped (see Added).
+- **A per-database barrier is accepted only where it is on the database's data
+  path, so a non-system tenant can no longer create one.** Until this release a
+  barrier was accepted on a `backend: raft` database and on any database of a
+  volume- or raft-isolated tenant, although none of those is served from the
+  store the barrier wraps — the barrier was decorative. Those requests now fail
+  with `database.BarrierOffDataPathError` (`422` / `FAILED_PRECONDITION`). The
+  one remaining shape is a non-raft database with an explicit `--data-dir`,
+  which only the system tenant can set, so until per-database storage bindings
+  land (they restore per-database barriers for every tenant and backend, with
+  the barrier on the data path) tenants cannot have one. A barrier-enabled
+  record already on disk -- a raft database's, or any database's of a volume-
+  or raft-isolated tenant -- still opens, sealed, fails closed until unsealed,
+  and is named in a startup warning.
+- **`service.BarrierSealedError` names the sealed database in `Database`.** A
+  refusal because a database's own barrier is sealed now carries the database
+  in `Database` and reads `barrier sealed for database: <name> (tenant: <id>)`;
+  `TenantID` alone, and the `barrier sealed for tenant: <id>` text, now mean
+  the tenant's barrier. A client that took every `BarrierSealedError` to be the
+  tenant's must check `Database` first.
+- **etcd listeners need TLS, the node's authentication and a client
+  certificate.** A listener no longer starts without TLS and authentication; a
+  client without a certificate, or from a tenant other than the database's
+  owner, is refused. Only the mapped RPCs are served: `Auth.*`, member
+  changes, `Defragment`, `Snapshot`, `Hash`, `HashKV`, `MoveLeader` and
+  `Downgrade` are refused with `PERMISSION_DENIED` (previously stubs, no-ops or
+  `Unimplemented`). Keys are stored under the database's
+  `<tenant>/<database>/` namespace rather than at the shard root, so data
+  written through an etcd listener before this release is not visible through
+  it; export it with the previous binary and re-import it. `Compact` on the
+  shared shard is reserved to the system tenant, as on every other transport.
+- **SQL `CREATE DATABASE` / `DROP DATABASE` now require `databases:create` /
+  `databases:delete`**, and a tenant session creates a database its tenant
+  owns (counted against its quota) and can drop only its own. A role that
+  relied on reaching either statement without those grants, or a tenant that
+  relied on dropping a database it does not own, is refused.
+- **RAG needs the node's database registry.** It is bound by the server at
+  start; a server composed without one refuses RAG with
+  `service.CapabilityUnsupportedError`. `qrdbd`, `sdk/go/node` and the
+  `node://` driver all compose one.
+  `service.NewScopedRAGStore` takes a `*service.RAGBinding`.
+- **`service.NewRAGService` takes a `*service.ScopedRAGStore`** instead of a
+  `KVServicer`. RAG documents ingested before this release sit at the store
+  root and are no longer read; re-ingest them.
+- **`database.TenantAccessDeniedError` is removed.** Nothing returns it: a
+  tenant addressing another tenant's database now gets
+  `database.NotFoundError` (`404` / `NOT_FOUND`) instead of `403` /
+  `PERMISSION_DENIED`. A SQL session sees only its own tenant's databases in
+  `HasDatabase` and `USE`, as it already did in `SHOW DATABASES`.
+- **`wal` and `nodehost` are no longer valid database names.** Creating one
+  fails with `database.ReservedNameError` (`400` / `INVALID_ARGUMENT`). A
+  database of either name created before this release still opens.
+- **`Client.DatabaseScoped` returns `(*Client, error)`** and
+  `transport.DatabaseScoper.WithDatabase` returns `(Transport, error)`, so a
+  transport that cannot scope refuses instead of returning the unscoped
+  client. Scoping to `""` or `system` returns the receiver.
+- **Creating a raft-backed or volume-isolated database needs its provisioning
+  permission.** A role holding `databases:create` but not
+  `databases:create_raft` can no longer create a `backend: raft` database or
+  any database of a raft-isolated tenant; one without `databases:create_volume`
+  can no longer create a database of a volume-isolated tenant. The built-in
+  roles that grant database management hold both.
+- **etcd is served only by an `engine: kv` database on a node in mode
+  `raft`.** Enabling etcd on a timeseries or vector database is refused at
+  create and on update with `database.EtcdEngineUnsupportedError` (`400` /
+  `INVALID_ARGUMENT`); it would have served that engine's internal keys. A
+  standalone node's etcd listener refuses to start
+  (`service.CapabilityUnsupportedError`, "requires mode: raft"): MVCC, leases
+  and watches are raft-only on every other transport, and the listener used to
+  serve them anyway. `backend: raft` is not required -- the documentation
+  said it was, and nothing checked it.
+- **The sealed-window allowlist is trimmed to verbs that are justified as
+  anonymous.** Officer list, rekey, recovery-key generate / delete / status,
+  external officer enrollment (`/v1/init/enroll-external-officer`,
+  `CeremonyEnrollExternalOfficer`), and the `/v1/init/` and `/v1/bootstrap/`
+  REST prefixes are no longer reachable while the barrier is sealed, on any
+  transport: they answer `503` / `UNAVAILABLE`. Rekey and the recovery-key
+  verbs already refused while sealed. Use `barrier officer claim-status`
+  during first boot, and `barrier officer list` once the node is unsealed.
+  The REST allowlist can now hold method-qualified entries (`POST
+  /v1/barrier/officers`), so a composer matching entries itself must use
+  `sealedwindow.RESTEntryMatches`.
+- **The boot-time sealed-window listener refuses every request once the
+  barrier is unsealed**, with `503` and `{"code":"SEALED_WINDOW_CLOSED"}` on
+  REST, and `UNAVAILABLE` with `sealed-window listener closed: barrier
+  unsealed` on gRPC, Unix, QUIC and MCP. A client polling it across the unseal
+  retries against the regular listener. It no longer starts the MySQL or
+  PostgreSQL wire protocols, which carry no sealed-window verb.
+- Writing `roleIDs` (`CreateUser`, `UpdateUser`) or `roleBindings` or `attributes`
+  (`UpdateUser`) requires `roles:assign` in the user's tenant, and in the tenant of every
+  binding written, on every transport including embedded; `AssignRole` and `UnassignRole` go
+  through the same gate (`roles:assign` / `roles:unassign` in the user's tenant, and an assigned
+  role is validated like any other). Every referenced role must exist
+  and belong to that tenant itself -- the system tenant's built-in roles are not assignable in
+  other tenants, which seed their own (400 / `INVALID_ARGUMENT`) -- whether or not RBAC is enabled; a node
+  with no role service refuses the write (501 / `UNIMPLEMENTED`).
+- User attributes reach ABAC policies only as `subject.user_attrs.<key>` (match key
+  `user_attrs.<key>`), never as the authenticated `subject.attrs.<key>`, so an attribute
+  cannot forge a certificate- or token-derived value.
+- `User.Factors` is removed. Factors and MFA state are read from the auth-factor store once
+  per response; if that read fails the request fails with 503 / `UNAVAILABLE` instead of
+  reporting no second factor.
+- **`service.SequenceServicer` carries an epoch** (#547).
+  `Allocate` returns `(first, epoch, err)`, and a new `Epoch` method reads a
+  sequence's current epoch. `Reset`, and a MySQL-dialect `TRUNCATE TABLE`'s
+  sequence reset, advance the epoch in the same compare-and-swap that zeroes
+  the counter. Implementations and callers outside this module must follow
+  the new signature. The stored value grows from 8 to 16 bytes, counter
+  first; a counter-only value written by an earlier release is read as that
+  counter at epoch 0, so no sequence restarts on upgrade.
+- **Upgrade note: finish upgrading every node before running
+  `ALTER TABLE ... AUTO_INCREMENT = 0` or a MySQL `TRUNCATE TABLE`** (#547).
+  During a mixed-version window, a node still on an earlier release rewrites
+  a sequence's stored value as 8 bytes whenever it allocates, which resets
+  its epoch to 0. A later reset can then bring the epoch back to a value
+  that a block reserved before the first reset still carries, and that block
+  would be accepted as current.
+- **An embedded create is tenant-scoped and provisioning-checked.** The
+  embedded transport's `CreateDatabase` called the system-scoped `Create`; it
+  now creates through `CreateForTenant` for the context's tenant (owned by it,
+  inside its quota; a context with no tenant creates for the system tenant).
+  On an `sdk/go/node` node with request authentication, a raft-backed or
+  volume-isolated create through it needs an identity in the context holding
+  `databases:create_raft` / `databases:create_volume`, as on every other
+  transport.
+- A `roleBindings` entry on a user outside the system tenant must name that user's own tenant;
+  any other is refused with `user.RoleBindingTenantError` (400 / `INVALID_ARGUMENT`), because
+  such a user is refused every request on another tenant before a binding is consulted and the
+  binding could never grant. A system-tenant user may hold bindings in any tenant. A binding's
+  tenant is stored normalized, so an empty tenant is stored as `system`.
+- MCP user records render `certBindings[].kind` as its string label (`spki_thumbprint`,
+  `full_cert_fingerprint`, `piv_attested`) instead of the numeric ordinal, matching REST, gRPC
+  and QUIC, and omit `certBindings[].notAfter` when the binding has no expiry instead of
+  sending the zero time.
+
+### Added
+
+- `rest.SealedWindowListenerMiddleware`,
+  `grpc.SealedWindowListenerUnaryInterceptor` /
+  `SealedWindowListenerStreamInterceptor` (re-exported from the Go SDK), a
+  `WithSealedWindowListener` option on the REST, gRPC, Unix, QUIC and MCP
+  servers, and `sealedwindow.Decide` / `RESTEntryMatches`: the gate of a
+  boot-time sealed-window listener, which refuses every request once the
+  barrier is unsealed and anonymous officer registration once enrollment has
+  closed (`sealedwindow.ListenerProbe`, re-exported as
+  `sdk.SealedWindowListenerProbe`).
+- `ceremony.CeremonyService.EnrollmentOpen`,
+  `seal.StorageBarrier.MarkCeremonyOperational` / `CeremonyOperational` /
+  `Initialized`.
+- `forward.ClusterPeer` and `forward.MaxBodyBytes`, the cluster-node check
+  and the body bound a receiver applies to a forwarded on-behalf request
+  before reading its body.
+- `ceremony.SOPINLockedError` and `service.SignCSRThrottledError`.
+- `sealedwindow.WithAnonymous` / `Anonymous`, the mark the boot-time
+  sealed-window listener sets on every request it admits.
+- `pkg/authfactors/authfactorstest`: a software `authfactors.Factor` for tests
+  that drive the real auth-factor service, with a strict variant that
+  verifies a possession proof over each nonce and a permissive one. Imported
+  by tests only.
+- `sdk.TenantFromClientCert` (and `sdk.ErrInvalidClientCertificate`): qrdb's
+  certificate-to-tenant rule, extracted from
+  `MTLSAuthenticator.TenantFromCert` into `auth.TenantFromClientCert` and
+  re-exported, so a composing host can resolve a verified certificate's user
+  before any tenant is bound: derive the tenant, bind it with
+  `sdk.ContextWithTenant(ctx, sdk.NormalizeTenantID(t))`, then call
+  `GetUserByCertThumbprint` within it. The authenticator delegates to the same
+  function, so there is one rule. No cross-tenant thumbprint index is added.
+  `pinnedTrustDomain == ""` accepts any trust domain and is for tests only;
+  composers must pin.
+- `sdk.WithSOPIN(ctx, pin) (ctx, release, err)`: the Go SDK presents the SO
+  dual-factor PIN on every network transport -- the `X-QRDB-SO-PIN` header on
+  REST and MCP, `x-qrdb-so-pin` metadata on gRPC and the Unix socket, the
+  request's `so_pin` field on QUIC. The PIN is sealed in protected memory,
+  never logged, and destroyed by `release`; per-request plaintext copies are
+  wiped once written. `err` is a protected-memory failure sealing it. Every
+  network transport also fills the request's own `so_pin` field
+  (`BarrierSeal`, `BarrierInitializeShamir`, `BarrierRekey`,
+  `BarrierGenerateRecoveryKeys`, `CeremonyInitialize`, `CeremonySignCSR`) from
+  the bound PIN when the request carries none, because the server reads that
+  field too; a caller never sets `SOPin` by hand. A request whose own `SOPin`
+  differs is refused with `sdk.SOPINConflictError` on every transport.
+- Every transport's user response carries `roleBindings`, `attributes`, the metadata of the
+  account's enrolled auth `factors` (never their credential data), and `mfaEnabled`,
+  `mfaMethods` and `mfaEnrolledAt` derived from those factors. `UpdateUser` sets or clears
+  `roleBindings` and `attributes` on every transport.
+- A role binding grants its role in authorization checks that target the binding's tenant,
+  and nowhere else. REST, gRPC, unix, QUIC and MCP resolve the tenant a request acts on — the
+  tenant of the user or role it names, or the tenant a per-tenant barrier operation names —
+  before the route-level permission check and authorize against it, so a binding for tenant A
+  works on every route that acts on A. Tenant administration (a tenant's record, quotas and
+  entitlements) stays checked against the caller's own tenant. A tenant named in a request body
+  or payload is read by decoding it into the handler's own request type, so the check authorizes
+  exactly the value the handler acts on; a body that does not decode is refused with 400 (QUIC
+  `StatusInvalidArgument`) and one over 1 MiB with 413. MCP reads an id argument the way its tools
+  do, a JSON number or a string. The FIPS 140-3 Security Officer deny-list and strict separation of duties
+  apply to bound roles as they do to held ones.
+- `embedded.WithAuthMiddleware`; `sdk/go/node` hands the embedded transport the same
+  `AuthMiddleware` its network transports enforce with. The SDK re-exports
+  `RoleNotAssignableError`, `RoleServiceRequiredError`, `RoleBindingTenantError` and
+  `UserFactorLookupError`.
+- **The permitted-authentication-method rule is exported.**
+  `CheckAuthMethod(user, method)` in `pkg/auth/middleware` is the function the
+  authentication gate runs, re-exported as `sdk.CheckAuthMethod` together with
+  `sdk.AuthMethodNotPermittedError`, so a composing host that runs its own login
+  ceremony enforces `User.AuthMethods` without restating the rule. The method
+  tokens gain `auth.MethodPIV` (`"piv"`) and `auth.MethodWebAuthn`
+  (`"webauthn"`) beside `MethodMTLS`, each re-exported by the SDK.
+- **Every cross-scope permission and the RBAC denial type cross the SDK
+  boundary.** `sdk/go/types_permission_cross.go` names each `ScopeCross`
+  permission (`sdk.PermissionAuditReadCross`, the tenants, volume-pool,
+  registration-config and credentials families, `sdk.PermissionMVCCCompact`,
+  and the node-barrier SO permissions `sdk.PermissionSealSeal`,
+  `sdk.PermissionSealRekey`, `sdk.PermissionSealRotateRootKey`,
+  `sdk.PermissionSealGenerateRecovery` and `sdk.PermissionSealInitializeShamir`,
+  which are now system-tenant only), and a test fails when the registry holds one the SDK does not name.
+  `sdk.PermissionDeniedError` aliases `rbac.PermissionDeniedError`, so a
+  consumer tells a denial apart from an authorizer that failed to decide.
+- **`SaveIfAbsent`'s refusal is typed and crosses the SDK boundary.**
+  `dao.AtomicWriteUnsupportedError` (entity type, plus the store's refusal when
+  there is one) is re-exported as `sdk.DAOAtomicWriteUnsupportedError`. It
+  matches `sdk.ErrKVAtomicWriteUnsupported`, so an SDK consumer fails closed on
+  a non-atomic store without importing `pkg/dao`.
+- **The MCP tool-error contract is exported through the SDK.**
+  `sdk/go/types_mcp_wire.go` re-exports `pkg/api/mcp/wire`: `sdk.MCPCode` and
+  its seventeen constants, `sdk.MCPErrorPayload`, `sdk.MCPErrorEnvelope`,
+  `sdk.NewMCPErrorEnvelope`, `sdk.DecodeMCPErrorPayload` and `sdk.MCPCodes`. A
+  module's MCP tools already receive the classified envelope from the server's
+  error-code middleware when they return an error; a test now pins that.
+- **A capability module can observe connections on every listener.**
+  `apimodule.ConnObserver` (`ConnOpened` / `ConnClosed`, with the
+  `apimodule.Transport` the connection arrived on) is an optional
+  `ServiceModule` extension; the unified server reports each connection
+  accepted on REST (TCP and HTTP/3), gRPC, unix, native QUIC and MCP exactly
+  once opened and once closed. A composing host keeps its own active-connection
+  metrics without a parallel listener. Re-exported as `sdk.ModuleConnObserver`,
+  `sdk.ModuleTransport` and `sdk.ModuleTransport*`. A server whose modules do
+  not implement it wraps no listener.
+- **The secure analyzer's rule 4: an unborrowed `secure.Buffer.Bytes` read
+  must say why** (#428). `Bytes` holds no lock once it returns, so a
+  concurrent destroy can unmap the pages mid-read. Every reference outside a
+  `_test.go` file now needs a `//secure:unborrowed <injected-interface|allocates-protected|nested-enclave> <reason>`
+  directive trailing the read or standing alone on the line above it; `make secure-analyzer` (CI's Lint
+  job) fails without it, and `make test-secure-analyzer` plants a bare read to
+  prove the gate goes red. The eleven reads left on `main` each reach code rule 6 keeps out of a borrow
+  (a consumer-supplied interface, or a protected allocation) and are marked: the cluster DEK wrap (2, the
+  subject of the protected-barrier design in #145) and nine in the Shamir
+  unseal, recovery, root-token and custodian paths that the share-holder
+  rewrite replaces. The `SecretValue.WithBytes` and nested-enclave reads the
+  issue listed were already converted by the go-enclave adoption.
+- **`securecopy`: the secure analyzer now checks lifetimes, not only
+  declarations** (#459). A copy of protected bytes into ordinary memory
+  (`append`, `copy`, `bytes.Clone`, `string(...)`, or a call that returns one)
+  must be wiped or consumed after it is made, or returned to a caller that
+  then owns it. Consumers and copy-returners are inferred across packages from
+  go-enclave's `Wipe`/`NewSealed`; `//secure:consumes` declares a contract
+  inference cannot see, and `//secure:unwiped <reason>` justifies a copy at
+  its site. A `defer secure.Wipe(x)` written before the copy is reported, since
+  it wipes what `x` held when the defer ran. It runs in the same
+  `make secure-analyzer` sweep, and the self-test plants the unwiped copy-out
+  that motivated it. 24 copy-outs were measured; 2 carry `//secure:unwiped`.
+  What it cannot see (path sensitivity, aliases, interface dispatch, views
+  handed to callees) is listed in `docs/barrier-seal/engineering.md`.
+- **`make check-public-releasable`, a whole-tree publication gate, runs in the
+  Lint job.** Every tracked file publishes, so the gate rejects any tracked
+  file that names the private development fleet: an address on one of its
+  subnets, one of its host names, or a path under the owner's home directory
+  or the lab mount. It also rejects tracked per-machine agent state
+  (`.serena/`, `.claude/`, any `.env`). It reads every path in the index,
+  including binary files and symlink values, and it fails closed if git fails
+  or a file goes unread. A line whose meaning *is* the value can carry an
+  inline `public-release-ok: <reason>` waiver. `make test-public-releasable`
+  covers the gate's rejecting paths. The fleet's values are not in the
+  tracked tree: the gate loads them at run time from an untracked pattern
+  file (`PUBLIC_RELEASE_PATTERNS_FILE`, the handbook checkout beside the
+  repository, or `$XDG_CONFIG_HOME/go-qrdb/public-release-patterns`) and
+  fails closed without one. CI reads the `PUBLIC_RELEASE_PATTERNS` secret.
+- **A Release workflow is the only path that creates release tags.**
+  `.github/workflows/release.yml` is `workflow_dispatch` only. It reads
+  `VERSION` from `main`, which is authoritative, and runs
+  `make release-alpha` as a dedicated release bot. That creates signed tags
+  for the root module, `sdk/go` and `sdk/go/gorm/conformance`, and publishes
+  them in one atomic push. It then fetches the remote's tags and runs the
+  lockstep audit over them. **BREAKING for anyone cutting releases by hand:**
+  `release-alpha` no longer writes VERSION or commits. It tags the merged
+  VERSION/CHANGELOG commit and refuses a `VERSION=` argument that VERSION on
+  `HEAD` does not name ("merge the VERSION/CHANGELOG bump first"), an unsigned
+  `HEAD`, and a `HEAD` the remote's `main` does not hold. It pushes only the
+  tags. The bot token is never persisted in the checkout
+  (`persist-credentials: false`); only the push step receives it, as a
+  per-step header (`scripts/git-extraheader.sh`). `docs/release/` covers
+  the flow and the owner's one-time setup (tag protection for `v*`,
+  `sdk/go/v*` and `sdk/go/gorm/conformance/v*`, plus the
+  `RELEASE_BOT_TOKEN` / `RELEASE_BOT_SIGNING_KEY` secrets and
+  `RELEASE_BOT_NAME` / `RELEASE_BOT_EMAIL` variables).
+- **SQL row locking and pessimistic concurrency** (docs/row-locking).
+  `SELECT ... FOR UPDATE`, `FOR SHARE` and `LOCK IN SHARE MODE` (and
+  PostgreSQL's `FOR NO KEY UPDATE` / `FOR KEY SHARE`) now take real row locks
+  in every mode, with `NOWAIT`; go-mysql-server discarded the clause. A
+  database's new `sql.concurrency` (`optimistic`, the default, or
+  `pessimistic`) and the session override `SET qrdb_concurrency` make DML in
+  pessimistic mode lock the rows it touches and read them at their latest
+  committed version, so concurrent writers of a row wait instead of failing at
+  `COMMIT` with 1213. The commit-time compare-and-swap stays in both modes.
+  - The lock table (`pkg/rowlock`) is lease-bound records in the database's own
+    store over the existing transaction, lease and watch operations -- no new
+    Raft command. Waiters queue FIFO by create revision; a crashed holder's
+    locks expire with its lease; a leader change loses nothing.
+  - Lock-wait timeout per session: `innodb_lock_wait_timeout` (now accepting
+    MySQL's 1..1073741824 seconds, default 50; go-mysql-server allowed only 1;
+    session scope only -- `SET GLOBAL` is refused, since the engine's globals
+    are shared by every tenant on the node) and PostgreSQL `lock_timeout`, failing the statement with MySQL 1205 /
+    SQLSTATE 55P03. `NOWAIT` is 3572 / 55P03.
+  - A pessimistic `UPDATE` or `DELETE` never writes a row that changed while it
+    waited: a row it did not read under its lock (a cascade's child rows) is
+    compared with what it matched once the lock is granted, and a mismatch or
+    a vanished row fails the statement with 1213.
+  - Deadlocks are detected at enqueue; the victim's whole transaction is rolled
+    back with 1213 / 40P01, and its later statements fail (25P02 on PostgreSQL)
+    until the client ends it. `SKIP LOCKED` is refused (1235 / 0A000).
+  - Lock errors are classified on every transport through `pkg/api/errclass`
+    (Aborted; SKIP LOCKED Unimplemented).
+  - Metrics: `qrdb_sql_row_lock_requests_total{mode,outcome}`,
+    `qrdb_sql_row_lock_wait_seconds{mode}`, `qrdb_sql_row_lock_waiters`.
+- **Per-database SQL settings** on all six transports, the CLI and YAML:
+  `UpdateDatabaseSQL` (`PATCH /v1/databases/{name}/sql`, gRPC/Unix
+  `DatabaseUpdateSQL`, QUIC `db.UpdateSQL`, MCP `qrdb_database_update_sql`,
+  embedded `UpdateDatabaseSQL`), an `sql` field on create and on database info,
+  `qrdb database update-sql --concurrency` and `qrdb database create
+  --sql-concurrency`, and `databases[].sql.concurrency` in the configuration
+  file. The in-process driver takes a `concurrency=` DSN parameter.
+- `sealedwindow.Admission`, `Names.Transition` and the per-transport
+  `*Transition` derivations; `ListenerProbe.Admit`.
+
+### Changed
+
+- **BREAKING (Go API):** `middleware.SOMiddleware` takes a
+  `role.NameResolver` as its second parameter. `rest.Server` passes its
+  role service (`rest.WithRoleService`); a server with the gate enabled and
+  no role service refuses SO-gated routes with `503`.
+- `auth.Identity.HasRole` documents that it compares role identifiers, and
+  its parameter is renamed `roleID`.
+- REST `POST /v1/authfactors/{id}/verify` reads the body's `factor_name`
+  (which the SDK REST client already sent) and passes it to the service, like
+  the other five transports, so a mismatch is refused rather than ignored.
+- **BREAKING (gRPC API and generated Go client):** `BarrierRecoveryDelete`
+  takes `BarrierRecoveryDeleteRequest{so_pin}` instead of
+  `google.protobuf.Empty`, so QUIC can carry the SO PIN for it. The wire is
+  compatible (an empty request encodes exactly as `Empty` did); Go code
+  calling or implementing `QRDBServiceClient`/`QRDBServiceServer.BarrierRecoveryDelete`
+  must pass or accept `*qrdbv1.BarrierRecoveryDeleteRequest`. The SDK's
+  `BarrierDeleteRecoveryKeys(ctx)` signature is unchanged.
+- **Breaking: one marker for "this store cannot write atomically".**
+  `kvstore.ErrAtomicWriteUnsupported` (`sdk.ErrKVAtomicWriteUnsupported`) is
+  the only one. `dao.ErrAtomicWriteUnsupported`, `database.ErrAtomicWriteUnsupported`,
+  `custodian.ErrAtomicWriteUnsupported` and `invite.ErrAtomicWriteUnsupported`
+  are removed: the DAO refuses with the typed `dao.AtomicWriteUnsupportedError`,
+  and the database backends, the service layer, the custodian service and the
+  invitation store return the kvstore marker itself.
+  `sdk.ErrInviteAtomicWriteUnsupported` is now an alias of
+  `sdk.ErrKVAtomicWriteUnsupported` (same value; its message is the kvstore
+  one). The marker, and the DAO's typed refusal, also match
+  `kvstore.ErrNotApplied` (new SDK alias `sdk.ErrKVNotApplied`): a capability
+  refusal writes nothing, so a caller need not reconcile. Before, a caller
+  testing one marker missed a refusal carrying another; the server's own KV
+  adapter, for one, refused with the database sentinel, which neither the
+  kvstore nor the dao marker matched.
+- **Breaking: a permitted-method policy names methods this node can
+  authenticate with, or it is refused.** The vocabulary is the built-in `mtls`,
+  `piv` and `webauthn` plus the `Name()` of every authenticator in the node's
+  own chain, including embedder-supplied ones (`ExtraAuthenticators`, the SDK
+  node's `WithAuthenticators`). It is per node, never process-wide: the auth
+  middleware exposes it (`AuthMiddleware.IsAuthMethod`), and the node's user
+  stores receive it through the new `user.WithAuthMethodVocabulary` option
+  (`lifecycle.Infra.AuthMethodVocabulary`), late-bound through
+  `middleware.AuthMethodVocabulary`. `CreateUser` and `UpdateUser` refuse any
+  other token with the typed
+  `user.UnknownAuthMethodError` (`sdk.UserUnknownAuthMethodError`), a
+  validation error answered 400 / `INVALID_ARGUMENT` on every transport. A
+  misspelled token used to be stored and then match nothing, silently refusing
+  the method it named. Stored policies are not re-validated: they read back
+  unchanged, an update may keep an entry the policy already held (but not add
+  a new unknown one), and the authentication gate compares with the new
+  `auth.CanonicalAuthMethod` (no vocabulary check), so no existing account is
+  locked out. `auth.IsBuiltinAuthMethod`, `auth.BuiltinAuthMethods` and
+  `auth.CanonicalAuthMethod` are re-exported by the SDK.
+- **`secure.StdinProvider` reads a seekable stream in bulk** (#440). When
+  standard input can seek (redirected from a file), the passphrase line is read
+  straight into the mlocked buffer in one or two `read(2)` calls instead of one
+  per byte, and the bytes read past the newline are sought back, so the rest of
+  the stream is still there for its next reader. A pipe or terminal cannot give
+  bytes back, so it is still read one byte per call rather than over-read. A
+  seek-back the stream refuses fails the read with `*ProviderError`. On
+  either path, 100 consecutive empty reads (`(0, nil)`) fail the read with
+  `io.ErrNoProgress` instead of spinning forever.
+- **The module forge's address is no longer a Makefile default.** Set
+  `GITEA_HOST` in the gitignored `.devcontainer/.env` (documented in the new
+  `.devcontainer/.env.example`) or in the environment. A `.env` that has a
+  token but no host now fails with an error naming the variable. The devcontainer
+  compose services resolve modules from the public proxy when `GITEA_HOST` is
+  unset.
+- **`make gosec`, `gosec-sdk` and `gosec-sarif` scan test variants
+  (`-tests`), at `-severity=low`, and skip generated code.** All three take
+  their analysis flags from one `GOSEC_FLAGS` variable, so they cannot
+  drift. Every site the lower floor surfaced was fixed or annotated with its
+  reason. `pkg/index` replaces an `unsafe` float cast with `math.Float64bits`.
+  G104 (unchecked errors) is excluded in `_test.go` files only, where every
+  site was, so production code stays armed. The REST auth-factor round-trip
+  test now verifies the server against its certificate instead of skipping
+  verification. The `export_test.go` idiom is gone from
+  `pkg/seal` and `sdk/go`, because gosec's loader cannot typecheck an external
+  test package that relies on it. Those tests now run in-package.
+- **The coverage baseline records the build tags it was measured under, and
+  the gate refuses a profile measured under any other set.** Coverage depends
+  on which files the tags compile. On the same tree, `pkg/api/grpc`, `quic`
+  and `mcp` read 90.7/97.0/91.3% under `BUILD_TAGS` but 77.1/88.6/80.7% under
+  `codec_json raft` alone, which lanes had misread as regressions.
+  `coverratchet` takes `-tags`, and `make print-build-tags` prints the set.
+  The baseline was regenerated under `BUILD_TAGS`. No number was lowered;
+  seven packages that measured fractionally under their baseline, within the
+  tolerance, keep their previous number.
+- **`pkg/server` is at 91.5%, above the 91% floor** (baseline 90.71). New
+  tests cover the raft observer promoter, `StartedAsObserver`, and
+  `CloseAndPurge`. `CloseAndPurge` is the demotion teardown that deletes a
+  demoted replica's ciphertext, and it had no test.
+- **`pkg/ratelimit` measures the same coverage on every run.** Its coverage
+  used to alternate between 95.60% and 96.70% depending on thread timing,
+  which could fail the coverage gate at random. The token-bucket decision is
+  now a pure function (`take`), and `Allow`'s compare-and-swap loop only
+  retries it. Tests trigger the reaper with explicit ticks instead of sleeping
+  on the wall clock. Five consecutive runs produced identical profiles at
+  97.75%; only two unreachable panic guards are uncovered.
+- **BREAKING: `tenant.ResidueReconcileErrors` is renamed
+  `tenant.ResidueReconcileFailuresError`**, to follow the `XxxError` naming
+  every other error type here uses (errname). Its fields, message and
+  `Unwrap() []error` are unchanged. `errclass.Conditions`, `errclass.Condition`
+  and `errclass.RuleCount` move out of a test-only `export_test.go` into the
+  package proper, so gosec's `-tests` loader can typecheck the transport
+  parity test that reads them.
+- **Documentation: approved multi-model database design.** `docs/databases/`,
+  `docs/vectors/` and `docs/time-series/` now carry the approved design in which
+  every database serves every engine (KV, MVCC and transactions, SQL,
+  collections, secondary indexes, vector, time series, leases and watches) on the
+  storage backend it chose, for every tenant isolation mode, through one
+  per-database storage binding. They also cover removing the database `engine`
+  field and the node-wide backend overrides, migrating existing data, a phased
+  implementation plan, and the owner's rulings on its sixteen design decisions
+  (every recommendation accepted on 2026-09-30; the drop fence and every new Raft
+  command ship behind a cluster feature gate). The same change
+  corrects claims those folders made about shipped behaviour: a database's
+  `backend` does not decide where most databases' data lives; `objstore` is
+  refused when a database store is opened; vector data lives in one node-local
+  store under the node key, and its `shard_id` selects nothing; similarity search
+  returns nothing on namespaces loaded at startup until the index is rebuilt;
+  time-series retention policies are stored but never applied; and no check
+  refuses etcd on a non-raft database. No code changes.
+- **BREAKING (gRPC API and generated Go client):** `BarrierSeal` takes
+  `BarrierSealRequest{so_pin}` instead of `google.protobuf.Empty`, so gRPC and
+  the Unix socket can carry the barrier SO PIN. The wire is compatible (an empty
+  request encodes exactly as `Empty` did). Go code calling or implementing
+  `QRDBServiceClient`/`QRDBServiceServer.BarrierSeal` must pass or accept
+  `*qrdbv1.BarrierSealRequest`. The SDK's `BarrierSeal(ctx)` signature is
+  unchanged, and every SDK transport fills `so_pin` from `sdk.WithSOPIN`.
+
+### Removed
+
+- The tracked `.serena/` project state, the `.claude/skills` directory and the
+  `tmp-probe` developer diagnostic. The first two were already in
+  `.gitignore`, and the new gate keeps them out.
+
+### Fixed
+
+- **A standalone `sdk/go/node` node serves its named databases.** Its server
+  was composed with neither the database catalog nor a database service
+  registry, so no database other than the node's own resolved: a
+  database-scoped client was refused outright, and databases created at
+  runtime were not reopened at the next boot. The node now opens its catalog
+  itself (reopening every database a previous run created) and composes the
+  server with it and with a registry whose default entry is the node's own
+  service graph (`lifecycle.SystemDatabase`), as `qrdbd` does; the clustered
+  node's server gains the same wiring. A scoped embedded client serves exactly
+  the families its unscoped transport serves, so on a standalone node MVCC,
+  leases and watches stay refused.
+- **Unix SDK: a successful `VerifyFactor` or `RevokeFactor` no longer returns
+  an error.** `mapGRPCError` turned a nil gRPC error into a `RequestError`, so
+  both calls reported failure on success.
+- The admin account first boot creates in the system tenant is now the System user, so
+  `DeleteUser` refuses it. A cluster whose admin predates this is promoted on its next start,
+  and at most one System user can exist in a cluster.
+- **`SaveIfAbsent` reports a store's call-time atomic refusal as its typed
+  refusal.** A store that implements `AtomicKVStore` but refused the write came
+  back as a bare store error. It is now `*dao.AtomicWriteUnsupportedError`,
+  the same as a store without the method, with the store's refusal kept in the
+  chain. Any other store error is still returned unchanged.
+- **`sdk/go/driver`: the embedded `Rows.Next` no longer panics on a row
+  wider than its columns.** It wrote `dest[i]` for every cell the engine
+  returned. `database/sql` sizes `dest` from `Columns()`, so a wider row
+  indexed past it inside the caller's `rows.Next`. A row of any other width
+  now returns `*driver.RowWidthError`. A narrower row used to leave the
+  previous row's values in the slots it did not fill, and it now gets the same
+  error. gosec's G602 found this once the severity floor was lowered.
+- **A reset no longer lets a session emit AUTO_INCREMENT values from a block
+  reserved before it** (#547). After `ALTER TABLE ... AUTO_INCREMENT = 0` or
+  a MySQL `TRUNCATE TABLE`, a session still holding part of a pre-reset block
+  kept handing those values out while the restarted counter handed them out
+  again, so concurrent inserts collided with MySQL error 1062. The block
+  allocator now checks a block's epoch once per statement that draws from a
+  block it did not reserve, and refills from the post-reset counter when a
+  reset has intervened, on this node or any other. A statement costs at most
+  one extra linearizable read, however many rows it inserts.
+- **PostgreSQL `TRUNCATE TABLE` keeps the table's sequence on every server
+  construction path** (#547). A PostgreSQL server composed with
+  `WithServiceRegistry` but no database manager built its provider without
+  the PostgreSQL protocol, so its relational tables took MySQL's `TRUNCATE`
+  semantics and restarted `AUTO_INCREMENT` at 1, and unqualified
+  `pg_catalog` relations did not resolve. `pgsql.Server.Start` now
+  applies `WithProtocol(ProtocolPostgreSQL)` on both paths. MySQL `TRUNCATE
+  TABLE` resets `AUTO_INCREMENT` to 1, matching MySQL.
+- **`SET qrdb_isolation` over the PostgreSQL wire took no effect.** Every `SET`
+  was a no-op there; `SET [SESSION] qrdb_*` now reaches the engine and
+  `lock_timeout` is translated.
+- A `COMMIT` that loses its compare-and-swap now ends the session's
+  transaction, as InnoDB's rollback on ER_LOCK_DEADLOCK does, instead of
+  leaving go-mysql-server in a transaction that no longer exists.
+- **A `UNIQUE` index was not enforced by an `UPDATE` inside a transaction that
+  left the row's primary key unchanged.** Two rows of one transaction could be
+  given the same value and both commit; a value a committed row held failed
+  only at `COMMIT`. Such an `UPDATE` now fails with 1062 at the statement, as it
+  does in autocommit.
+- **A statement that failed part way inside a transaction kept its partial
+  effects.** `INSERT ... VALUES (1), (2), (5)` failing on a duplicate `5` left
+  rows 1 and 2 to be committed; a foreign-key cascade that timed out on a
+  locked child row left its parent deleted. A failed DML statement is now undone
+  whole — across every table it edited — while the transaction's earlier
+  statements are kept, as in InnoDB. Outside a transaction a multi-row statement
+  is still not atomic: each row is its own commit.
+- **Auth-factor names have one normalisation.** `authfactors.NormalizeName`
+  (case-insensitive) keys factors in `FactorRegistry` (Register, Lookup,
+  Unregister) and in `NewAuthFactorService`, which also uses it for dispatch.
+  Two factors whose names normalise alike, such as `PIV` and `piv`, are now
+  refused with `*authfactors.FactorAlreadyRegisteredError`; before, the second
+  silently replaced the first. A nil factor is refused with
+  `*authfactors.FactorRegisterError`. `FactorRegistry.List` reports normalised
+  names.
+- **A user update that raced another update of an index handle failed with a
+  bogus conflict.** Re-claiming a username, email or certificate thumbprint
+  could find the key held and then, before reading who held it, see the
+  holder release it; the update reported the handle as taken (for a
+  thumbprint, "already bound to user 0") instead of taking the now-free key.
+  The claim is now retried, and a key that changes hands on every attempt
+  fails with `user.HandleContendedError`. A rollback that finds its released
+  handle already re-inserted for the same user no longer reports it as
+  `HandleReclaimedError`. Together these turned a lost concurrent withdrawal
+  of the bootstrap admin's keys into an `IndexCompensationError` rather than
+  the expected lockout refusal.
+- **`qrdbdharness` handed the same port to concurrent test processes.** The
+  port reservation table was per process and every process walked the same
+  window from the same base, so two `go test` package processes each
+  bind-verified a port the other had just released and both used it: a
+  listener failed with `bind: address already in use`, or two in-test Raft
+  clusters dialled each other and never elected a leader. Every reserved port
+  is now also locked across processes by an abstract Unix socket held for the
+  life of the process, so callers of `ReserveTCPPorts`/`ReserveUDPPorts` need
+  no change. Every reserved port is also verified free on both TCP and UDP,
+  so a REST admin port -- whose HTTP/3 sibling binds the same number on UDP
+  -- can be taken from either function.
+
+### Security
+
+- **A sealed database now fails closed on every engine and every transport
+  (critical).** Sealing a per-database barrier set the database's status to
+  `sealed`, but no request path read that status: a database served from the
+  shared system shard, a volume tenant's host or a raft group stayed readable
+  and writable while reported sealed. The service registry every transport
+  resolves through now refuses every accessor for a sealed database the caller
+  owns with `service.BarrierSealedError`, which gains a `Database` field and
+  maps to `503` / `UNAVAILABLE`. Another tenant naming the database still sees
+  not-found.
+- `database.SharedStoreBarrierUnsupportedError` was answered as an internal
+  error (`500` / `INTERNAL`) on every transport, contrary to the documented
+  `FAILED_PRECONDITION`; it and the new `BarrierOffDataPathError` now map to
+  Unprocessable -- `422` on REST, `FAILED_PRECONDITION` on gRPC, Unix, QUIC
+  and MCP -- because the caller cannot change a database's backend or
+  data_dir (the documentation said `400`).
+- **The per-database etcd listener is confined to its database and
+  authenticates every request (high).** It was wired to the node's raw,
+  un-namespaced system-shard services, so any etcd client reaching the port
+  read and wrote every tenant's keys, and its only "authentication" was the
+  stub `Auth` service. The listener now resolves its MVCC, transaction, watch
+  and lease services through the per-(tenant, database) service registry for
+  the database's owning tenant, authenticates every RPC with the node's
+  authenticator chain, refuses callers from other tenants with a generic
+  `etcd: permission denied` that names neither the database nor its owner
+  (the detail is logged server-side), checks a
+  default-deny RPC-to-permission map, and re-resolves the database on every
+  RPC so a sealed or dropped database is refused. Leases are confined to the
+  (tenant, database) that granted them on every transport, etcd included: lease
+  IDs are global, and the lease view used to list, keep alive and revoke any
+  tenant's lease by ID; ownership is now recorded at grant and a foreign ID is
+  answered exactly as a missing one (not-found; `Revoke` is the idempotent
+  no-op success and revokes nothing; a write attaching it is refused and
+  writes nothing). It refuses to start without
+  TLS and authentication (`etcd.AuthRequiredError`) or without a catalog and
+  registry to confine it (`etcd.ScopeUnavailableError`). An open `Watch` or
+  `LeaseKeepAlive` stream ends with the database's typed refusal the moment
+  the database is sealed or dropped, as every transport's watch stream does.
+- **SQL `DROP DATABASE` can no longer drop another tenant's database, and SQL
+  `CREATE DATABASE` is owned, metered and authorized (critical).** Over the
+  MySQL and PostgreSQL wire, `DROP DATABASE` called the database manager by
+  name with no ownership check, and the privilege plane deferred the statement
+  to an RBAC check nothing performed, so any tenant could drop any tenant's
+  database; `CREATE DATABASE` created a system-owned database outside the
+  caller's quota. Both statements now go through the tenant-scoped
+  `DatabaseService` (`CreateForTenant` / `DropForTenant`) and check
+  `databases:create` / `databases:delete` for the session's tenant. A listener
+  without that service or an authorizer refuses both to non-system sessions
+  with `provider.DatabaseLifecycleUnavailableError`. New options:
+  `provider.WithDatabaseService`, `provider.WithLifecycleAuthorizer`,
+  `mysql.WithDatabaseService`, `pgsql.WithDatabaseService`.
+- **RAG chunk text and document records are confined to the caller's tenant
+  and database (medium).** They were keyed `rag:{namespace}:{document}:{chunk}`
+  in the shared store with no tenant or database, so two tenants using the same
+  namespace and document ID overwrote each other's chunk text, a retrieval
+  returned the other tenant's text for its own vector hits, and listing and
+  deleting reached across tenants; RAG also ignored database seal, ownership,
+  quota and isolation, and its vectors were scoped by tenant only, so a
+  document in one database overwrote another database's vector. Chunk text,
+  document records and vectors are now all resolved through the node's
+  per-(tenant, database) service registry on every call
+  (`service.RAGBinding`, bound by the server at start; `service.ScopedRAGStore`
+  and `service.NewScopedVectorStoreAdapter`), so a sealed database refuses
+  RAG, an unknown or foreign `X-QRDB-Database` is a not-found, and vectors are
+  per database. On a node with request authentication a RAG call that carries
+  no tenant is refused (`service.RAGTenantRequiredError`) instead of acting
+  for the system tenant. REST and gRPC/Unix now also bind the request's database as the
+  canonical `tenant.DatabaseFromContext` scope, as QUIC and MCP already did.
+- **Another tenant's database is answered as missing (medium).** Database
+  names are one node-wide namespace, and a tenant addressing another tenant's
+  database got an access denial (`403` / `PERMISSION_DENIED`) where a missing
+  name got not-found, so it could probe which names other tenants hold; SQL
+  `HasDatabase` and `USE` also answered for every tenant's databases. Every
+  tenant-scoped database operation (get, drop, update, seal, unseal, barrier
+  status) now returns `database.NotFoundError` for another tenant's database,
+  and the SQL provider answers only for the session tenant's databases -- and
+  for the configured default SQL database (`sql.default_database`), which
+  every tenant has in its own namespace, exactly as the service registry
+  resolves it. The
+  ad-hoc SQL query (`/sql/query`, `SQLQuery`) resolves the database through
+  the service registry before the node-wide catalog, so an unused name and
+  another tenant's name get the same not-found. The
+  catalog re-key that scopes names per tenant — and closes the last signal, a
+  create colliding with another tenant's name — is separate work.
+- **Database names that collide with node state are reserved (medium).** A
+  volume-isolated tenant's database lives at `{DataRoot}/databases/<name>`,
+  beside the tenant's own Raft host, so a database named `wal` or `nodehost`
+  was created inside that host's WAL or node-host directory. Both names (any
+  case) are now refused for every database with `database.ReservedNameError`
+  before any directory is made. Database-catalog refusals also map to their
+  documented status on gRPC, Unix, QUIC and MCP, where they were answered as
+  internal errors: not found is `NOT_FOUND`, a taken name `ALREADY_EXISTS`, an
+  invalid or reserved name `INVALID_ARGUMENT`.
+- **A database-scoped client is never handed the default database.** Over the
+  embedded transport `Client.DatabaseScoped(name)` returned the unscoped
+  client, so a caller that named database X read and wrote the node's default
+  database. The embedded transport now implements `transport.DatabaseScoper`
+  through the node's per-(tenant, database) service registry
+  (`embedded.WithServiceRegistry`, wired by `sdk/go/node`), resolving each
+  data-plane call -- KV, MVCC, transactions, batches, watches, leases, indexes,
+  time series, vectors, collections, locks, RAG -- as the network transports'
+  server does, so a sealed or dropped database is refused; without a registry,
+  and over any transport that cannot scope, `DatabaseScoped` refuses with
+  `transport.DatabaseScopeUnsupportedError`. Embedded SQL queries resolve
+  through the same registry: they used to read the node's default store under
+  the database's prefix, which served a sealed database's data and, on a scoped
+  transport, prefixed the already-scoped store a second time.
+- **A node reports, and warns at startup, when seal is enabled but its data
+  is stored unencrypted (high, report only).** The barrier's encrypted
+  filesystem covers a standalone node's `pebble` backend, not its `file` or
+  `objstore` backend, which kept data in plaintext with nothing saying so (a
+  raft node refuses at start any state machine storage that would persist
+  plaintext, so it reports no gap). Every
+  composition root now logs one WARNING per gap at boot, and the capability
+  report carries them as `UnencryptedAtRest` (`unencrypted_at_rest` field 20
+  in `CapabilitiesResponse`) on REST, gRPC, Unix, QUIC, MCP and embedded, and
+  in `qrdb admin capabilities`. Encrypting those stores is separate work.
+- **`databases:create_raft` and `databases:create_volume` are enforced
+  (high).** Both were documented as required in addition to `databases:create`
+  and checked nowhere, so any holder of `databases:create` could provision a
+  dedicated Raft group (`backend: raft`, or any database of a raft-isolated
+  tenant) or a database on a volume-isolated tenant's volume. Every create
+  path -- REST, gRPC, Unix, QUIC, MCP and SQL `CREATE DATABASE` -- now checks
+  them against the caller's tenant through the database service the server
+  composes (`service.NewProvisioningAuthorizedDatabaseService`); a refusal is
+  `service.ProvisioningDeniedError`, `403` / `PERMISSION_DENIED`.
+- **The boot-time sealed-window listener served anonymous requests against an
+  unsealed barrier (high).** That listener has no authentication middleware,
+  because while the barrier is sealed there is no identity plane. Its gate
+  became a pass-through the moment the barrier unsealed, and the listener kept
+  serving until the next 250 ms poll noticed and `Stop` completed. In that
+  window every route registered on it ran anonymously against an unsealed
+  barrier, including `DELETE /v1/barrier/recovery` (proven by
+  `TestServeSealedWindow_RefusesAnonymousRequestsAfterUnseal`, which destroyed
+  the recovery keys with an anonymous request on the unfixed tree) and the
+  credential routes. The gate now samples the barrier on every request and
+  refuses everything once it is unsealed, on REST, gRPC, Unix, QUIC and MCP.
+- **Anonymous sealed-window verbs are limited to liveness, credential
+  possession, first-boot trust on first use, and handler-bound handshakes.**
+  The officer list disclosed officer enrollment anonymously. Recovery-key
+  delete, rekey and external officer enrollment were destructive or
+  SO-only verbs that were allowlisted, and only the service's own refusal
+  while sealed kept the first two inert.
+- **A forwarded on-behalf request no longer lets any cluster-CA certificate
+  make the leader buffer an unbounded body (medium).** The REST middleware
+  read the whole body of a request carrying on-behalf headers, with no bound,
+  to compute the digest the assertion binds. It did this before verifying the
+  assertion, and for any certificate chaining to the cluster CA, including a
+  user's. It now refuses a presenter that is not a cluster node
+  (`forward.ClusterPeer`) before reading anything, and reads a cluster node's
+  body under `forward.MaxBodyBytes`: 16 MiB + 64 KiB, the largest body a REST
+  handler forwards.
+- **MCP authenticates every request before the MCP layer reads it, and bounds
+  the body (medium).** With authentication configured, a request that no
+  authenticator accepted went on to mcp-go without an identity, and only tool
+  calls were refused. `initialize`, `ping` and `tools/list` were answered to
+  anonymous callers, and `tools/list` enumerates the whole admin tool surface.
+  mcp-go also parsed bodies of any size. Every request to `/mcp` is now
+  authenticated at the HTTP layer and refused with `401` if it fails, with
+  `WWW-Authenticate` when a bearer challenge is configured. An authenticated
+  caller's body is bounded at the batch-import limit plus 1 MiB of envelope.
+  On a listener without authentication (the boot-time sealed-window
+  listener, or a node with authentication off), every caller is anonymous,
+  and the bound is 1 MiB.
+- **gRPC server reflection is no longer exempt from authentication (low).**
+  The gRPC and Unix interceptors let `/grpc.reflection.*` through with no
+  credentials. qrdb registers no reflection service, but a composer that
+  registered one exposed the node's whole schema anonymously. Reflection is
+  now authenticated and default-denied like any other unmapped method. A
+  composer that wants it anonymous declares it through
+  `GRPCPublicMethodLister`.
+- **ceremony-sign-csr compares the SO PIN in constant time and is throttled
+  (medium).** The endpoint is reachable without authentication on the
+  boot-time sealed-window listener, and the SO PIN is its only authorization.
+  It compared the PIN with `!=` and answered every guess immediately, which
+  made it a timing side channel and an unthrottled online PIN oracle. The
+  comparison is now `subtle.ConstantTimeCompare` over SHA-256 digests.
+  Checks run one at a time, and each failure is counted before the next
+  check. After 5 failures in a row, every further failure locks the check
+  for a backoff that doubles from 1 s up to 15 min. A correct PIN resets the
+  count. Only failed checks count, so anonymous load cannot starve a
+  legitimate officer. While locked, the call fails with
+  `service.SignCSRThrottledError`, which unwraps to `pin.ErrPINLocked` and is
+  answered `429` / `RESOURCE_EXHAUSTED` on every transport. The REST 429
+  carries `Retry-After` with the wait in seconds, rounded up. The SO PIN needs
+  at least 40 bits of entropy (docs/ceremony).
+- **Neither the native QUIC listener nor REST's HTTP/3 listener accepts 0-RTT
+  any more (medium).** The native listener set `Allow0RTT`. The HTTP/3
+  listener had no QUIC configuration, and quic-go's `http3.Server` allows 0-RTT
+  by default. On both, a resumed client's early data was accepted before the
+  handshake completed. 0-RTT data is replayable, so an on-path attacker could
+  resend a captured request, including a state-changing one, and have it
+  processed again. A resumed client now completes a full handshake first. The
+  HTTP/3 listener also takes the native listener's idle, keep-alive and
+  stream limits.
+- **Anonymous officer enrollment closes once the ceremony is over, including
+  after a restart while sealed (high).** Officer and recovery-officer
+  registration CA-sign any CSR they are given, and they are anonymous on the
+  boot-time sealed-window listener. They were flagged `PreOperationalOnly`,
+  but nothing enforced that. Ceremony state lives in memory, so a daemon
+  restarted while sealed started a fresh, pre-operational ceremony and gave an
+  anonymous caller a certificate signed by the cluster CA. The listener now
+  refuses both verbs once enrollment has closed. It closes when the ceremony
+  is operational, when the barrier records an operational ceremony (a marker
+  written to the barrier's plaintext store, readable while sealed), or when
+  the barrier is initialized. It fails closed. The refusal is `403`
+  `ENROLLMENT_CLOSED` / `PERMISSION_DENIED`. The ceremony enforces the same
+  rule itself, under its own lock: `RegisterOfficer` and
+  `RegisterRecoveryOfficer` refuse an anonymous request with
+  `ceremony.ErrEnrollmentClosed` once enrollment has closed.
+- **The anonymous officer claim status no longer names the officers
+  (medium).** `officer-claim-status` is anonymous on the boot-time
+  sealed-window listener, so the first-boot wizard can follow claims, and it
+  returned every officer's username, certificate thumbprint and auth factor
+  to any caller. That listener now answers with the share index, enrolment
+  and claim times and pending state only. `BarrierOfficerClaimStatus` redacts
+  by default, for every caller whose context carries no authenticated
+  identity and for every request the sealed-window listener marks anonymous
+  (`sealedwindow.WithAnonymous`). An authenticated caller on a regular
+  listener still gets the full record. The wizard keys its claim table by share index and names
+  rows from its own registrations.
+- **The SO dual-factor gate recognises a real Security Officer, and only
+  one.** `middleware.SOMiddleware` checked `identity.HasRole("so")`, but an
+  authenticated identity's `Roles` holds role *identifiers* (from the user
+  record's `RoleIDs`). Every real officer was refused with
+  `403 SO role required`, and an identity whose roles carried the literal
+  string `so` (a token claim for a subject with no user record) passed the
+  role step; the SO PIN was still required. The gate now resolves the SO
+  role through the role store with the new `role.HoldsSystemRole`: the
+  caller must carry the identifier under which its own tenant's `so` role is
+  persisted. Names never match. A role store that cannot answer refuses with
+  `503`.
+- **The SO dual-factor gate now guards every network transport, not only
+  REST.** With `auth.so_dual_factor` on, the SO-gated operations
+  (`middleware.SOPermissions`: barrier rekey, Shamir initialize, recovery
+  generate, root-key rotation, ceremony initialize, custodian enrol and revoke,
+  CSR signing) were reachable over gRPC, the Unix socket, QUIC and MCP by any
+  caller RBAC admitted, such as a token principal granted `seal:rekey`, with
+  no SO role and no SO PIN. The gate is now one implementation,
+  `middleware.SOGate`, which the orchestrator installs on all of them
+  (`WithSOGate` on each server). The PIN travels in `x-qrdb-so-pin` metadata
+  on gRPC and Unix, in the `X-QRDB-SO-PIN` header on MCP, and in the request's
+  `so_pin` field on QUIC. The Go SDK sends it on every network transport
+  from `sdk.WithSOPIN` (see Added). Refusals are typed
+  (`SOFactorError`, `SORoleRequiredError`, `SORoleUnresolvedError`) and map to
+  the same class on every transport.
+- **`VerifyFactor` is dispatched to the enrollment's own factor.** The
+  caller's factor name used to choose the factor that verified a challenge,
+  and the enrollment was consulted only when the name was empty. With two
+  factors registered, a caller could answer a strong factor's challenge
+  through a weaker one: reproduced on gRPC, Unix, QUIC, MCP and embedded with
+  a junk response. The service now loads the enrollment, dispatches to its
+  factor, and refuses a non-empty caller name that differs with the typed
+  `*authfactors.FactorMismatchError` (`AuthFactorMismatchError` in `sdk/go`):
+  400 on REST, `INVALID_ARGUMENT` on gRPC and Unix, `StatusInvalidArgument` on
+  QUIC, `CodeInvalidArgument` on MCP. The challenge is consumed either way. A
+  challenge whose enrollment was revoked after it was issued is now refused
+  too (`*authfactors.EnrollmentRevokedError`). Factor names are compared
+  through the registry's own normalisation (case-insensitive), which the
+  registry now also applies when a factor is registered, so a factor whose
+  `Name()` is not lower case can be enrolled at all.
+- **A client certificate whose SPIFFE SANs name more than one tenant, or that
+  carries any SPIFFE SAN outside the pinned trust domain, is refused.** The
+  certificate-to-tenant rule read only the first tenant SAN, so the issuer's
+  SAN order chose the tenant, and a foreign-domain SAN after a good one was
+  ignored. Every URI SAN is now examined, on login and in
+  `sdk.TenantFromClientCert` alike. The refusal is the new
+  `*auth.CertificateTenantError` (`sdk.ClientCertificateTenantError`), which
+  still matches `ErrInvalidCertificate`, so every transport answers as
+  before; an ambiguous certificate carries the new
+  `*spiffe.AmbiguousTenantError` (`sdk.SpiffeAmbiguousTenantError`).
+- **`qrdbd start` makes its memory unreadable to other processes before it
+  holds any key** (#554). mlock kept protected memory out of swap, but a
+  process running as the same user could still read every enclave through
+  ptrace, `/proc/<pid>/mem` or a core file. `start` now calls the new
+  `secure.HardenProcess` first: `prctl(PR_SET_DUMPABLE, 0)` on Linux,
+  `ptrace(PT_DENY_ATTACH)` on macOS, and a logged no-op where no mechanism
+  exists (Windows). It is unconditional; `QRDB_SECURE_ALLOW_PROCESS_INSPECTION=true`
+  leaves the process inspectable for a debugging session and logs a warning.
+  A malformed opt-out value, or a platform refusal, fails `start` with
+  `*ProcessInspectionOptOutError` / `*ProcessHardeningError`. Re-exported from
+  `sdk/go/secure` (with `AllowProcessInspectionEnv` and both error types) so
+  embedding binaries apply the same posture at their own startup. Operators:
+  `gdb -p`/`dlv attach` now need the opt-out, a crash writes no core file, and
+  non-root monitoring agents lose `qrdbd`'s `/proc/<pid>/` entries.
+  Hardening is the first statement of the start command, before any
+  configuration is read. A tracer already attached (`TracerPid` in
+  `/proc/self/status` not 0) fails start with `*ProcessTracedError`. In FIPS
+  140-3 mode the opt-out is refused (`*ProcessInspectionOptOutRefusedError`),
+  and an honoured opt-out is written to the compliance audit trail
+  (`disable-inspection-hardening`); a node that cannot record it does not run.
+  `HardenProcess` returns the outcome (`ProcessHardened`,
+  `ProcessInspectionAllowed`, `ProcessHardeningUnavailable`) with the error.
+- **The `qrdb` desktop and CLI binary hardens itself the same way** (#554). It
+  unseals barriers and reads passphrases, PINs and shares too, so it calls
+  `secure.HardenProcess` before the GUI/CLI branch, honours the same
+  `QRDB_SECURE_ALLOW_PROCESS_INSPECTION` opt-out, and exits 1 on a refusal. Its
+  warning goes to standard error so it never mixes into a command's output.
+- **No anonymous request on the boot-time sealed-window listener runs across
+  the unseal (medium).** The listener's gate checked the barrier when a
+  request arrived, so a request admitted while sealed could finish after
+  another request had unsealed the barrier, running anonymously against an
+  unsealed barrier. Requests now hold the listener's `sealedwindow.Admission`
+  until they complete. The verbs that can initialize or unseal the barrier
+  (`sealedwindow.Names.Transition`) hold it exclusively, so they wait for
+  the requests in flight, and every later request is refused.
+- **A tenant's Security Officer can no longer operate the node barrier.**
+  `seal:rekey`, `seal:rotate-root-key`, `seal:generate-recovery` and
+  `seal:initialize-shamir` were ScopeSelf. For an operation that names no
+  tenant, ScopeSelf compares the caller's tenant with itself, so the check was
+  vacuous: an SO of tenant A, presenting tenant A's own valid SO PIN, could
+  rekey or regenerate recovery keys for the node barrier that protects every
+  tenant -- on every transport, gate on or off. They are now `ScopeCross`:
+  system-tenant identities only.
+- **The Go SDK sends the SO PIN only over TLS, and only to the configured
+  host.** `sdk.WithSOPIN` attached the PIN on gRPC and Unix connections with
+  insecure credentials, on MCP to `http://` URLs, and on REST to every redirect
+  hop, including a cross-host or `http` one. gRPC and Unix now send it only over
+  TLS credentials. REST and MCP send it only on an `https` hop to the configured
+  host, checked on every hop. A PIN-bound call otherwise fails before anything
+  is sent, with the new `sdk.SOPINRequiresTLSError` (plaintext) or
+  `sdk.SOPINForeignHostError` (a redirect elsewhere).
+- **A configured barrier SO PIN is required to seal the node barrier on every
+  transport, and only the system tenant may seal it.** REST and MCP verified
+  the request's `so_pin` against the PIN backend. gRPC and the Unix socket took
+  `google.protobuf.Empty` for `BarrierSeal`, and QUIC ignored the request body,
+  so on those three transports the configured PIN was skipped. They now verify
+  it the same way. Separately, `seal:seal` was ScopeSelf. For an operation that
+  names no tenant, ScopeSelf passes vacuously, so another tenant's Admin or
+  Operator could seal the node barrier and stop every tenant's data plane. It
+  is now `ScopeCross`, like the other node-barrier verbs.
+- **The SO dual-factor gate fails closed without authentication on every
+  transport.** The orchestrator installed the gate on gRPC, Unix, QUIC and MCP
+  only when an auth middleware was configured, so with `auth.so_dual_factor`
+  on and authentication off, those four transports skipped the gate. REST
+  already refused in that case. One predicate (`so_dual_factor` set and an SO
+  authenticator wired) now governs all five transports. With no one to
+  authenticate, the gate refuses every SO-gated operation.
+- **The SO PIN is held in protected memory, on the server and in the Go
+  SDK.** The server's per-request SO factor (`middleware.SOFactor.PIN`) and
+  the SDK's PIN bound by `sdk.WithSOPIN` were plain byte slices, which
+  `make secure-analyzer` refuses. Both are now a `secure.Secret`: sealed when
+  the PIN is read, opened only for the verifier or the wire write, and
+  destroyed when the gate has decided or `release` runs. The server builds
+  the factor with the new `middleware.NewSOFactor` (and
+  `middleware.SOFactorFromHTTPRequest` for REST and MCP). A PIN the node
+  cannot hold in protected memory is refused with the new
+  `middleware.SOPINUnavailableError` (503 / `Unavailable`), not reported as a
+  bad PIN.
+
+### Known limits
+
+- **A database's seal is enforced per node.** Its barrier and its `sealed`
+  status are node-local, not replicated: sealing it on one node of a cluster
+  does not seal it on the others, and a node on which it is unsealed keeps
+  serving it. Seal it on every node that serves it.
+- **A barrier off the data path is only as good as its seal.** A
+  barrier-enabled record written before this release refused that shape (a
+  raft database's, or a volume- or raft-isolated tenant's) fails closed while
+  sealed, and once unsealed its data is served unencrypted from the store the
+  barrier does not wrap.
+- **A stream's permission is decided when it opens.** A change to the
+  caller's roles applies to its next etcd stream or watch, not to one already
+  open. (A seal or a drop does end open streams.)
+- **Database names are still one node-wide namespace.** Another tenant's
+  database is answered as missing everywhere except creation: a create naming
+  a database another tenant holds fails with `database.AlreadyExistsError`.
+
 ## [0.23.0-alpha] - 2026-09-30
 
 Tracks go-quicraft v0.15.0-alpha. BREAKING: wipe each node's Raft WAL directory and re-sync from peers when upgrading.

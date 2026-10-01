@@ -13,33 +13,49 @@ protocol is not a realistic migration path.
 
 ## Shape chosen
 
-**Per-database etcd clusters, not one global facade.** Each database with
-`etcd: enabled` gets its own etcd-compatible gRPC server bound to that
-database's shard-scoped service layer.
-
-Each database with `etcd: enabled` gets its own etcd-compatible gRPC server bound to its shard's service layer (MVCC, Watch, Lease, Transaction). Unlike a global facade, each database is an independent "etcd cluster" with its own revision counter, watches, leases, and encryption barrier.
+**Per-database etcd listeners, not one global facade.** Each database with
+`etcd: enabled` gets its own etcd-compatible gRPC server, confined to that
+database: its MVCC, transaction, watch and lease services are resolved through
+the node's per-(tenant, database) service registry for the database's owning
+tenant, exactly as every other transport resolves a request.
 
 ```
-etcdctl/kube-apiserver --> etcd gRPC server --> qrdb service layer --> Raft
-                           (per-database)       (shard-scoped)
+etcdctl/kube-apiserver --> etcd gRPC server --> service registry --> qrdb service layer --> Raft
+                           (per-database)       (tenant, database)
 ```
 
-The etcd gRPC server implements the core etcd v3 API surface (`etcdserverpb`) by translating etcd protobuf types to QRDB service calls. Each database operates as an isolated etcd cluster: revision counters, watch streams, lease tables, and encryption barriers are scoped to the database's shard.
+The etcd gRPC server implements the core etcd v3 API surface (`etcdserverpb`)
+by translating etcd protobuf types to QRDB service calls. What a listener sees
+is its database's keyspace, and nothing else:
 
+- **Keys** are the database's `<tenant>/<database>/` namespace on the shared
+  shard, or the tenant's own store under volume and raft isolation.
+- **Watches** see only that keyspace.
+- **Leases** are the ones this database granted; another database's lease ID
+  is answered as a missing one (not-found; `LeaseRevoke` succeeds as a no-op).
+- **Revisions** are those of the store serving the database: store-global on
+  the shared shard (which is why `Compact` is reserved to the system tenant
+  there), per group for a raft-isolated tenant's database.
+- **Encryption at rest** is the store's: the node or tenant barrier, not a
+  per-database one.
 
-The consequence is the design's whole point: each database is an **independent
-etcd cluster** with its own revision counter, watch streams, lease table and
-encryption barrier. Two databases on one node are two etcd clusters that cannot
-see each other.
+Two databases on one node are two listeners that cannot see each other's keys,
+watches or leases; on the shared shard they do share one revision sequence.
+*(Corrected: this section used to call each database an independent etcd
+cluster with its own revision counter and encryption barrier; see
+[api.md](api.md).)*
 
 ### Alternatives rejected
 
-- **A single global etcd facade over the whole store.** Rejected: etcd's
-  revision counter is global to a cluster, so one facade would force every
-  database to share a revision space, and a compaction driven by one
-  `kube-apiserver` would truncate history another consumer depended on.
-- **Implementing etcd's `Auth` RPCs.** Rejected: `AuthServer` is a deliberate
-  stub returning `Unimplemented`. This store authenticates with mTLS; adding a
+- **A single global etcd facade over the whole store.** Rejected: one facade
+  would serve every tenant's and every database's keys to one etcd client, and
+  a compaction driven by one `kube-apiserver` would truncate history every
+  other consumer depended on. A listener per database confines keys, watches
+  and leases to that database; on the shared shard its revisions stay
+  store-global, which is why `Compact` there is reserved to the system tenant.
+- **Implementing etcd's `Auth` RPCs.** Rejected: the `Auth` service is not
+  served — its RPCs are refused like every other unmapped RPC. This store
+  authenticates with mTLS; adding a
   second, weaker username/password path to satisfy a protocol shape would be a
   security regression.
 - **Reimplementing etcd's storage semantics.** Rejected: the MVCC engine, watch
@@ -48,81 +64,92 @@ see each other.
 
 ## Authentication
 
-The etcd protocol uses mTLS exclusively -- no password authentication or etcd `Auth` RPCs. The certificate Common Name (CN) maps to the username, and the Organizational Unit (OU) maps to the tenant ID.
+Every RPC is authenticated with the node's own authenticator chain — the mTLS
+client certificate, mapped to an identity and enriched from the user store —
+and authorized against the database's owning tenant:
+
+- A caller from **another tenant** is refused (`PERMISSION_DENIED`, message
+  `etcd: permission denied`); the system tenant, the store-global
+  administrator, is admitted. The refusal names neither the database nor its
+  owning tenant, so it does not tell a stranger what the port serves; the
+  caller, its tenant, the owner and the database are logged on the server.
+- The RPC's permission (table below) is checked for the owning tenant.
+- A client that presents **no certificate** is refused (`UNAUTHENTICATED`).
+
+The listener **refuses to start** (`etcd.AuthRequiredError`) unless the node has
+TLS and its authentication configured, and refuses to start
+(`etcd.ScopeUnavailableError`) when it cannot resolve the database through the
+node's database catalog and service registry: the etcd `Auth` service is not
+implemented, so either gap would serve the database to anyone who can reach the
+port, or serve the raw shard.
 
 ```
 Client cert (CN=alice, OU=acme-corp)
   --> mTLS handshake
   --> Identity{Subject: "alice", TenantID: "acme-corp"}
   --> User store enrichment (roles)
-  --> Database-scoped session (tenant-scoped)
+  --> owning tenant and RBAC check, database re-resolved
 ```
-
-The etcd `AuthServer` is implemented as a stub that returns `Unimplemented` for all auth RPCs. Clients must use mTLS client certificates instead of etcd's built-in username/password authentication.
 
 ## Authorization
 
-Per-request RBAC authorization maps etcd API operations to QRDB permissions:
+Per-request RBAC authorization maps each etcd RPC to a qrdb permission. The map
+is default-deny: an RPC without a row is refused before its handler runs.
 
-| etcd Operation | Permission |
-|---|---|
-| `KV.Range` | `kv:range` |
-| `KV.Put` | `kv:put` |
-| `KV.DeleteRange` | `kv:delete` |
-| `KV.Txn` | `kv:transaction` |
-| `KV.Compact` | `kv:compact` |
-| `Watch.Watch` | `kv:watch` |
-| `Lease.*` | `lease:*` |
-| `Cluster.MemberList` | `admin:peers` |
-| `Maintenance.Status` | `admin:status` |
+| etcd service | RPC | Backed by | Permission |
+|---|---|---|---|
+| `KV` | `Range` | `MVCCKVService.Range` / `GetRevision` | `kv:range` |
+| `KV` | `Put` | `MVCCKVService.PutWithLease` | `kv:put` |
+| `KV` | `DeleteRange` | `MVCCKVService.Delete` | `kv:delete` |
+| `KV` | `Txn` | `TransactionService.Execute` | `transaction:execute` |
+| `KV` | `Compact` | `MVCCKVService.Compact` | `mvcc:compact` (system tenant only) |
+| `Watch` | `Watch` | `WatchService.Watch` / `WatchPrefix` | `watch:watch_prefix` |
+| `Lease` | `LeaseGrant` | `LeaseService.Grant` | `lease:grant` |
+| `Lease` | `LeaseRevoke` | `LeaseService.Revoke` | `lease:revoke` |
+| `Lease` | `LeaseKeepAlive` | `LeaseService.KeepAlive` | `lease:keepalive` |
+| `Lease` | `LeaseTimeToLive` | `LeaseService.TimeToLive` | `lease:ttl` |
+| `Lease` | `LeaseLeases` | `LeaseService.Leases` | `lease:list` |
+| `Cluster` | `MemberList` | `AdminService.Peers` | `admin:peers` |
+| `Maintenance` | `Status` | current revision | `admin:status` |
+| `Maintenance` | `Alarm` | — | `admin:status`; returns no alarms |
+| every other RPC — `Auth.*`, member changes, `Defragment`, `Snapshot`, `Hash`, `HashKV`, `MoveLeader`, `Downgrade` | | — | **refused** with `PERMISSION_DENIED` before any handler runs |
 
 ## API Operations
 
-The etcd gRPC services map to QRDB service layer calls:
-
-| etcd gRPC Service | etcd RPC | QRDB Service | QRDB Method |
-|---|---|---|---|
-| `KV` | `Range` | `MVCCKVService` | `Range(ctx, key, rangeEnd, opts)` |
-| `KV` | `Put` | `MVCCKVService` | `Put(ctx, key, value)` |
-| `KV` | `DeleteRange` | `MVCCKVService` | `DeleteRange(ctx, key, rangeEnd)` |
-| `KV` | `Txn` | `TransactionService` | `Execute(ctx, compares, successOps, failureOps)` |
-| `KV` | `Compact` | `MVCCKVService` | `Compact(ctx, revision)` |
-| `Watch` | `Watch` | `WatchService` | `Watch(ctx, key, opts)` / `WatchPrefix(ctx, prefix, opts)` |
-| `Lease` | `LeaseGrant` | `LeaseService` | `Grant(ctx, ttl)` |
-| `Lease` | `LeaseRevoke` | `LeaseService` | `Revoke(ctx, leaseID)` |
-| `Lease` | `LeaseKeepAlive` | `LeaseService` | `KeepAlive(ctx, leaseID)` |
-| `Lease` | `LeaseTimeToLive` | `LeaseService` | `TTL(ctx, leaseID)` |
-| `Lease` | `LeaseLeases` | `LeaseService` | `List(ctx)` |
-| `Cluster` | `MemberList` | `AdminService` | `Peers(ctx)` |
-| `Maintenance` | `Status` | `AdminService` | `Status(ctx)` |
-| `Maintenance` | `Defragment` | `MVCCKVService` | `Compact(ctx, revision)` |
-| `Maintenance` | `Alarm` | -- | Returns current alarm state |
-| `Auth` | `*` | -- | Stub (`Unimplemented`, mTLS instead) |
+The served RPCs, the services behind them and their permissions are the table under Authorization above.
 
 The `translate.go` module handles bidirectional type conversion between etcd protobuf types (`mvccpb.KeyValue`, `etcdserverpb.RangeRequest`, etc.) and QRDB service types (`service.KeyValue`, `service.RangeOptions`, etc.).
 
 
 ## Multi-Tenancy
 
-Tenant isolation is enforced at the storage level, identical to the SQL wire protocol. Each database with etcd enabled operates as a fully independent etcd cluster:
-
-- **Independent revision counters** -- each database maintains its own monotonically increasing revision, starting from 1 at database creation.
-- **Independent watch streams** -- watch events from one database never leak to another.
-- **Independent lease tables** -- lease IDs are scoped to the database.
-- **Independent encryption barriers** -- each database's data is encrypted with its own DEK via the TenantBarrier.
-
-Keys are automatically prefixed with the tenant ID from the client certificate:
+The listener is **confined to its database**. Its MVCC, transaction, watch and
+lease services are resolved through the same per-(tenant, database) service
+registry every other transport uses, for the tenant that owns the database. On
+the shared shard that is the `<owner-tenant>/<database>/` namespace: the prefix
+is added on write and stripped on read, and a range can never leave it.
 
 ```bash
-# Client cert: CN=alice, OU=acme-corp
+# etcd enabled on database "k8s" owned by tenant "acme-corp"
 etcdctl put /registry/pods/default/nginx '{"kind":"Pod",...}'
-# Stored as: acme-corp//registry/pods/default/nginx
-
-etcdctl get /registry/pods/default/nginx
-# Reads: acme-corp//registry/pods/default/nginx
-# Returns: key='/registry/pods/default/nginx' (prefix stripped)
+# Stored as: acme-corp/k8s//registry/pods/default/nginx
+etcdctl get "" --from-key
+# Returns only keys of acme-corp/k8s, prefix stripped
 ```
 
+A volume- or raft-isolated tenant's database is served from the tenant's own
+store exactly as on every other transport. A database that is sealed, dropped
+or whose tenant barrier is sealed is refused on the next request: the listener
+re-resolves the database on every RPC.
+
+Revision counters are those of the store serving the database: a database on
+the shared shard sees the shard's store-global revisions (which is why `Compact`
+is reserved to the system tenant there), and a raft-isolated tenant's database
+has its own group and its own counter. Watches and leases resolve through the
+same scoped services, so events and lease-attached keys never cross databases.
+*(Corrected: earlier revisions of this document claimed every database had its
+own revision counter starting at 1, and that keys were prefixed with the
+client's tenant; neither was what the code did.)*
 
 ## Package Structure
 
@@ -153,10 +180,12 @@ pkg/api/etcd/
 
 ## What this feature deliberately does not do
 
-- **No etcd `Auth` RPCs.** They return `Unimplemented`; use mTLS.
+- **No etcd `Auth` RPCs.** They are refused; use mTLS.
 - **No global etcd cluster view.** `MemberList` and `Status` report the qrdb
   cluster, per database.
 - **No etcd v2 API.**
-- **No support outside `engine: kv` + `backend: raft`.** Configuration
-  validation refuses other combinations, because etcd semantics need MVCC and
-  replication.
+- **No support outside `engine: kv`, or on a standalone node.** Enabling etcd
+  on another engine is refused at create and on update
+  (`database.EtcdEngineUnsupportedError`), and a standalone node's listener
+  refuses to start, because etcd semantics need MVCC, leases and watches,
+  which are raft-only. Any backend serves it. *(Corrected: `backend: raft` was documented as required and was neither required nor checked -- the listener serves any backend through the service registry -- and `engine: kv` was documented as validated and was not.)*

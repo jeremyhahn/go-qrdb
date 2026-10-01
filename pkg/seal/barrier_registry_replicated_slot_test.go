@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package seal_test
+package seal
 
 import (
 	"context"
@@ -25,7 +25,6 @@ import (
 	"github.com/jeremyhahn/go-objstore/pkg/local"
 	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 )
@@ -63,7 +62,7 @@ func (k *slotFakeKV) Put(_ context.Context, key string, value []byte) error {
 
 // replicatedNode bundles one simulated node's registry and its local pool roots.
 type replicatedNode struct {
-	reg   *seal.BarrierRegistry
+	reg   *BarrierRegistry
 	roots []string // local candidate paths, index = relative slot
 }
 
@@ -71,7 +70,7 @@ type replicatedNode struct {
 // round-robin cursor is the SHARED rr strategy (so the cursor is cluster-wide)
 // and whose tenant→slot assignment store is the SHARED slotStore. slotStore nil
 // selects standalone (node-local) behavior.
-func newReplicatedNode(t *testing.T, rr *objpool.RoundRobinStrategy, slotStore seal.StorageBackend) replicatedNode {
+func newReplicatedNode(t *testing.T, rr *objpool.RoundRobinStrategy, slotStore StorageBackend) replicatedNode {
 	t.Helper()
 
 	roots := make([]string, 2)
@@ -94,14 +93,14 @@ func newReplicatedNode(t *testing.T, rr *objpool.RoundRobinStrategy, slotStore s
 	perTenantReg := pebblestore.NewPerTenantRegistry()
 	t.Cleanup(func() { _ = perTenantReg.CloseAll(context.Background()) })
 
-	opts := []seal.Option{
-		seal.WithVolumePool(objpool.LocalOnly(mgr), rr.State, "default"),
-		seal.WithPerTenantRegistry(perTenantReg),
+	opts := []Option{
+		WithVolumePool(objpool.LocalOnly(mgr), rr.State, "default"),
+		WithPerTenantRegistry(perTenantReg),
 	}
 	if slotStore != nil {
-		opts = append(opts, seal.WithReplicatedSlotStore(slotStore))
+		opts = append(opts, WithReplicatedSlotStore(slotStore))
 	}
-	reg, err := seal.NewBarrierRegistry(poolTestLogger(), newPoolSystemBarrier(t), opts...)
+	reg, err := NewBarrierRegistry(poolTestLogger(), newPoolSystemBarrier(t), opts...)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
@@ -132,7 +131,7 @@ func TestReplicatedSlot_TwoNodesResolveSameRelativeSlot(t *testing.T) {
 		t.Fatalf("NewBoundReplicatedStateStore: %v", err)
 	}
 	rr := &objpool.RoundRobinStrategy{State: cursorStore}
-	slotStore := seal.NewMemoryBackend()
+	slotStore := NewMemoryBackend()
 
 	nodeA := newReplicatedNode(t, rr, slotStore)
 	nodeB := newReplicatedNode(t, rr, slotStore)
@@ -141,7 +140,7 @@ func TestReplicatedSlot_TwoNodesResolveSameRelativeSlot(t *testing.T) {
 	// under test is assigned a NON-zero relative slot. This makes the assertion
 	// meaningful: if node B were to pick instead of resolve, the shared cursor
 	// (now at 2) would route it to slot 0, not the recorded slot 1.
-	if _, err := nodeA.reg.RegisterTenant(ctx, "warmup", nil, seal.BarrierConfig{}, newPoolSoftwareStrategy(t)); err != nil {
+	if _, err := nodeA.reg.RegisterTenant(ctx, "warmup", nil, BarrierConfig{}, newPoolSoftwareStrategy(t)); err != nil {
 		t.Fatalf("register warmup on node A: %v", err)
 	}
 	if got := nodeA.slotOf("warmup"); got != 0 {
@@ -150,7 +149,7 @@ func TestReplicatedSlot_TwoNodesResolveSameRelativeSlot(t *testing.T) {
 
 	// Node A assigns the tenant under test: cursor 1 -> slot 1, recorded in the
 	// shared slot store.
-	if _, err := nodeA.reg.RegisterTenant(ctx, "t1", nil, seal.BarrierConfig{}, newPoolSoftwareStrategy(t)); err != nil {
+	if _, err := nodeA.reg.RegisterTenant(ctx, "t1", nil, BarrierConfig{}, newPoolSoftwareStrategy(t)); err != nil {
 		t.Fatalf("register t1 on node A: %v", err)
 	}
 	slotA := nodeA.slotOf("t1")
@@ -160,7 +159,7 @@ func TestReplicatedSlot_TwoNodesResolveSameRelativeSlot(t *testing.T) {
 
 	// Node B provisions the SAME tenant via the pooled flow. It must resolve the
 	// recorded relative slot (1) at its own local root — not pick afresh.
-	if _, err := nodeB.reg.RegisterTenant(ctx, "t1", nil, seal.BarrierConfig{}, newPoolSoftwareStrategy(t)); err != nil {
+	if _, err := nodeB.reg.RegisterTenant(ctx, "t1", nil, BarrierConfig{}, newPoolSoftwareStrategy(t)); err != nil {
 		t.Fatalf("register t1 on node B: %v", err)
 	}
 	slotB := nodeB.slotOf("t1")
@@ -191,7 +190,7 @@ func TestReplicatedSlot_RegisterVolumeTenant_SameSlot(t *testing.T) {
 		t.Fatalf("NewBoundReplicatedStateStore: %v", err)
 	}
 	rr := &objpool.RoundRobinStrategy{State: cursorStore}
-	slotStore := seal.NewMemoryBackend()
+	slotStore := NewMemoryBackend()
 
 	nodeA := newReplicatedNode(t, rr, slotStore)
 	nodeB := newReplicatedNode(t, rr, slotStore)
@@ -224,7 +223,7 @@ func TestReplicatedSlot_RegisterVolumeTenant_SameSlot(t *testing.T) {
 // the two nodes use independent node-local cursors.
 func TestReplicatedSlot_MigrationSeedsAssignment(t *testing.T) {
 	ctx := context.Background()
-	slotStore := seal.NewMemoryBackend()
+	slotStore := NewMemoryBackend()
 
 	// Independent cursors: a fresh pick would land both at slot 0. Resolution
 	// must instead come from the seeded assignment.
@@ -250,11 +249,11 @@ func TestReplicatedSlot_MigrationSeedsAssignment(t *testing.T) {
 	}
 }
 
-// hookSlotStore wraps a seal.MemoryBackend so a test can script Get and
+// hookSlotStore wraps a MemoryBackend so a test can script Get and
 // PutIfAbsent responses for the slot-assignment key while delegating every
 // other method to the real in-memory backend.
 type hookSlotStore struct {
-	*seal.MemoryBackend
+	*MemoryBackend
 	getHook         func(key string) (data []byte, handled bool)
 	putIfAbsentHook func(key string) (stored bool, handled bool)
 }
@@ -263,7 +262,7 @@ func (h *hookSlotStore) Get(ctx context.Context, key string) ([]byte, error) {
 	if h.getHook != nil {
 		if data, handled := h.getHook(key); handled {
 			if data == nil {
-				return nil, seal.ErrSecretNotFound
+				return nil, ErrSecretNotFound
 			}
 			return data, nil
 		}
@@ -299,7 +298,7 @@ func TestReplicatedSlot_UnresolvableRecordRepicks(t *testing.T) {
 	// getHook always reports slot 99 for the assignment key (out of range for a
 	// 2-candidate pool); PutIfAbsent uses the real backend.
 	store := &hookSlotStore{
-		MemoryBackend: seal.NewMemoryBackend(),
+		MemoryBackend: NewMemoryBackend(),
 		getHook: func(key string) ([]byte, bool) {
 			if filepath.Base(key) == "t1" {
 				return []byte(`{"pool":"default","slot":99}`), true
@@ -326,7 +325,7 @@ func TestReplicatedSlot_LostRaceDefersToWinner(t *testing.T) {
 	ctx := context.Background()
 	var getCalls int
 	store := &hookSlotStore{
-		MemoryBackend: seal.NewMemoryBackend(),
+		MemoryBackend: NewMemoryBackend(),
 		getHook: func(key string) ([]byte, bool) {
 			if filepath.Base(key) != "t1" {
 				return nil, false
@@ -362,7 +361,7 @@ func TestReplicatedSlot_LostRaceDefersToWinner(t *testing.T) {
 func TestReplicatedSlot_CorruptRecordRepicks(t *testing.T) {
 	ctx := context.Background()
 	store := &hookSlotStore{
-		MemoryBackend: seal.NewMemoryBackend(),
+		MemoryBackend: NewMemoryBackend(),
 		getHook: func(key string) ([]byte, bool) {
 			if filepath.Base(key) == "t1" {
 				return []byte("not-json"), true
@@ -386,7 +385,7 @@ func TestReplicatedSlot_CorruptRecordRepicks(t *testing.T) {
 // assignment recorded), so a peer still picks independently.
 func TestReplicatedSlot_SeedNonCandidateBaseSkips(t *testing.T) {
 	ctx := context.Background()
-	slotStore := seal.NewMemoryBackend()
+	slotStore := NewMemoryBackend()
 	storeA, _, _ := newStateStore(t)
 	nodeA := newReplicatedNode(t, &objpool.RoundRobinStrategy{State: storeA}, slotStore)
 
@@ -426,10 +425,10 @@ func TestReplicatedSlot_StandaloneUsesNodeLocalPick(t *testing.T) {
 	nodeB := newReplicatedNode(t, rrB, nil)
 
 	// Each node's first pick uses its own cursor at 0 -> slot 0. No coordination.
-	if _, err := nodeA.reg.RegisterTenant(ctx, "t1", nil, seal.BarrierConfig{}, newPoolSoftwareStrategy(t)); err != nil {
+	if _, err := nodeA.reg.RegisterTenant(ctx, "t1", nil, BarrierConfig{}, newPoolSoftwareStrategy(t)); err != nil {
 		t.Fatalf("register t1 on node A: %v", err)
 	}
-	if _, err := nodeB.reg.RegisterTenant(ctx, "t1", nil, seal.BarrierConfig{}, newPoolSoftwareStrategy(t)); err != nil {
+	if _, err := nodeB.reg.RegisterTenant(ctx, "t1", nil, BarrierConfig{}, newPoolSoftwareStrategy(t)); err != nil {
 		t.Fatalf("register t1 on node B: %v", err)
 	}
 	if got := nodeA.slotOf("t1"); got != 0 {

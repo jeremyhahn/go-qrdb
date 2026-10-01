@@ -91,7 +91,7 @@ flags alone.
 | `mode: standalone` with `mvcc.enabled` / `watch.enabled` / `lease.enabled: true`, `raft.join`, or multi-member `raft.peers` | validation error — `requires mode: raft` |
 | A wire protocol enabled without its build tag | boot-time error **naming the tag** (`ValidateCapabilities`) |
 | MySQL or PostgreSQL enabled with TLS or auth disabled | refused |
-| etcd enabled on a database that is not `engine: kv` + `backend: raft` | refused |
+| etcd enabled on a database that is not `engine: kv` | refused (`database.EtcdEngineUnsupportedError`); any backend serves etcd |
 | Objstore as `raft.sm_storage` | refused — snapshot/backup tier only |
 | Non-pebble `sm_storage` with a state machine that carries its own storage (anything but `disk`, `fast`) | refused |
 | Seal barrier enabled with `disk`/`fast` over `file` `sm_storage` | refused at start: file storage cannot be encrypted at rest (`pebble` storage is encrypted and allowed) |

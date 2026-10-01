@@ -15,7 +15,7 @@
   limitations under the License.
 -->
 <script lang="ts">
-  import type { Client, DatabaseInfo, CreateDatabaseRequest, DatabaseSQLConfig } from "@qrdb/sdk";
+  import type { Client, DatabaseInfo, CreateDatabaseRequest, DatabaseProtocolConfig } from "@qrdb/sdk";
   import { ChevronLeft, Server, HardDrive, MemoryStick, Network, KeyRound, Clock, Compass } from "lucide-svelte";
   import { onMount } from "svelte";
   import { showToast } from "$stores/toast.svelte.ts";
@@ -207,9 +207,9 @@
         name: name.trim(),
         engine,
         backend,
-        protocol: (sqlMySQL || sqlPostgreSQL)
-          ? { mysql: sqlMySQL, postgresql: sqlPostgreSQL }
-          : undefined,
+        ...((sqlMySQL || sqlPostgreSQL)
+          ? { protocol: { mysql: sqlMySQL, postgresql: sqlPostgreSQL } }
+          : {}),
       };
       await client.database.create(req);
       showToast("success", `Database "${name.trim()}" created`);
@@ -245,14 +245,14 @@
   async function handleSQLToggle(protocol: "mysql" | "postgresql", enabled: boolean): Promise<void> {
     if (existingDb === null) return;
 
-    const updated: DatabaseSQLConfig = {
+    const updated: DatabaseProtocolConfig = {
       mysql: protocol === "mysql" ? enabled : (existingDb.protocol?.mysql ?? false),
       postgresql: protocol === "postgresql" ? enabled : (existingDb.protocol?.postgresql ?? false),
     };
 
     try {
       sqlUpdating = true;
-      existingDb = await client.database.updateSQL(existingDb.name, updated);
+      existingDb = await client.database.updateProtocol(existingDb.name, updated);
       showToast("success", `${protocol === "mysql" ? "MySQL" : "PostgreSQL"} ${enabled ? "enabled" : "disabled"}`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to update SQL config";

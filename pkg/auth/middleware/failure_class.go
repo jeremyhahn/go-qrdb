@@ -203,6 +203,26 @@ var authFailureRules = []struct {
 		}
 		return AuthFailureUnauthorized, true
 	}},
+	// The SO dual-factor gate's four refusals (so_gate.go), ahead of the
+	// generic rules so a role store error wrapped by SORoleUnresolvedError is
+	// classified by what the gate concluded, not by whatever that error
+	// happens to wrap.
+	{"SOFactorError", func(err error) (AuthFailureClass, bool) {
+		var e *SOFactorError
+		return AuthFailureUnauthenticated, errors.As(err, &e)
+	}},
+	{"SORoleRequiredError", func(err error) (AuthFailureClass, bool) {
+		var e *SORoleRequiredError
+		return AuthFailureUnauthorized, errors.As(err, &e)
+	}},
+	{"SORoleUnresolvedError", func(err error) (AuthFailureClass, bool) {
+		var e *SORoleUnresolvedError
+		return AuthFailureUnavailable, errors.As(err, &e)
+	}},
+	{"SOPINUnavailableError", func(err error) (AuthFailureClass, bool) {
+		var e *SOPINUnavailableError
+		return AuthFailureUnavailable, errors.As(err, &e)
+	}},
 	{"auth.AuthError", func(err error) (AuthFailureClass, bool) {
 		var authErr *auth.AuthError
 		if !errors.As(err, &authErr) {

@@ -89,6 +89,15 @@ func (t *Transport) dialOptions() ([]grpc.DialOption, error) {
 		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
 
+	// A context bound by transport.WithSOPIN carries the SO PIN in the
+	// x-qrdb-so-pin metadata entry, on every RPC made with it.
+	// Only over TLS credentials: on a plaintext connection a PIN-bound RPC is
+	// refused with *transport.SOPINRequiresTLSError and never sent.
+	opts = append(opts,
+		grpc.WithChainUnaryInterceptor(transport.SOPINUnaryClientInterceptor("unix", t.config.TLSEnabled)),
+		grpc.WithChainStreamInterceptor(transport.SOPINStreamClientInterceptor("unix", t.config.TLSEnabled)),
+	)
+
 	if t.activeDatabase != "" {
 		opts = append(opts,
 			grpc.WithChainUnaryInterceptor(transport.DatabaseUnaryClientInterceptor(t.activeDatabase)),
@@ -117,7 +126,7 @@ func (t *Transport) buildTLSConfig() (*tls.Config, error) {
 // the clone's Connect dials the scoped connection. Scoping to the default
 // ("system") database or the empty string yields an unscoped clone that shares
 // the parent's connection.
-func (t *Transport) WithDatabase(database string) transport.Transport {
+func (t *Transport) withDatabase(database string) *Transport {
 	db := transport.NormalizeDatabaseScope(database)
 	clone := &Transport{config: t.config, activeDatabase: db}
 	clone.closed.Store(t.closed.Load())
@@ -147,6 +156,13 @@ func (t *Transport) WithDatabase(database string) transport.Transport {
 	clone.conn = t.conn
 	clone.client = t.client
 	return clone
+}
+
+// WithDatabase implements transport.DatabaseScoper. Scoping a network
+// transport never fails: the database travels with every data-plane request
+// and the server resolves it.
+func (t *Transport) WithDatabase(database string) (transport.Transport, error) {
+	return t.withDatabase(database), nil
 }
 
 // New creates a new Unix socket transport with the given options. The
@@ -541,6 +557,8 @@ func (t *Transport) Capabilities(ctx context.Context) (*transport.CapabilitiesRe
 		PostgreSQL:  resp.GetPostgresql(),
 		Etcd:        resp.GetEtcd(),
 		FTS:         resp.GetFts(),
+
+		UnencryptedAtRest: resp.GetUnencryptedAtRest(),
 	}, nil
 }
 
@@ -634,8 +652,14 @@ func (t *Transport) GetTopology(ctx context.Context) (*transport.TopologyRespons
 // ---------------------------------------------------------------------------
 
 // mapGRPCError translates a gRPC status error into the appropriate SDK
-// transport error type.
+// transport error type. A nil err is success and maps to nil: status.FromError
+// reports a nil error as codes.OK with ok=true, which the switch below would
+// otherwise have turned into a RequestError, so VerifyFactor and RevokeFactor,
+// which return the mapped error unconditionally, failed every successful call.
 func mapGRPCError(method string, err error) error {
+	if err == nil {
+		return nil
+	}
 	st, ok := status.FromError(err)
 	if !ok {
 		return &transport.RequestError{Method: method, Err: err}

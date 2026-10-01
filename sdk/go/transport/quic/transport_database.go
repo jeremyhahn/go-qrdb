@@ -271,6 +271,36 @@ func (t *Transport) UpdateDatabaseBarrier(ctx context.Context, req transport.Upd
 	return &info, nil
 }
 
+// UpdateDatabaseSQL updates a database's SQL settings by calling the
+// db.UpdateSQL handler.
+func (t *Transport) UpdateDatabaseSQL(ctx context.Context, req transport.UpdateDatabaseSQLRequest) (*transport.DatabaseInfo, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	payload, err := json.Marshal(struct {
+		Name string                       `json:"name"`
+		SQL  *transport.DatabaseSQLConfig `json:"sql"`
+	}{
+		Name: req.Name,
+		SQL:  req.SQL,
+	})
+	if err != nil {
+		return nil, &marshalError{Err: err}
+	}
+
+	respBytes, err := t.call(ctx, "db.UpdateSQL", payload)
+	if err != nil {
+		return nil, err
+	}
+
+	var info transport.DatabaseInfo
+	if err := json.Unmarshal(respBytes, &info); err != nil {
+		return nil, &unmarshalError{Err: err}
+	}
+	return &info, nil
+}
+
 // UpdateDatabaseConnection updates the remote connection configuration
 // for a database by calling the db.UpdateConnection handler.
 func (t *Transport) UpdateDatabaseConnection(ctx context.Context, req transport.UpdateDatabaseConnectionRequest) (*transport.DatabaseInfo, error) {

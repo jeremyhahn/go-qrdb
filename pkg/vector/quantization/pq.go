@@ -110,8 +110,8 @@ func (pq *PQQuantizer) Train(vectors [][]float32) error {
 	// all of them. Seeded from the clock: nothing here needs to be
 	// reproducible in production, only injectable in tests (see
 	// kmeansCluster's doc comment).
-	// #nosec G404 -- k-means++ seeding; statistical sampling, not security.
 	now := uint64(time.Now().UnixNano())
+	// #nosec G404 -- k-means++ seeding; statistical sampling, not security.
 	rng := rand.New(rand.NewPCG(now, now^0x9E3779B97F4A7C15))
 
 	for sub := 0; sub < pq.m; sub++ {

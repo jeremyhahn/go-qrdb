@@ -15,8 +15,10 @@
 package provider
 
 import (
-	"context"
 	"sync"
+	"time"
+
+	sqle "github.com/dolthub/go-mysql-server/sql"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -44,6 +46,30 @@ import (
 // established by a Raft-committed CAS, so two concurrent allocators -- on
 // the same node or different ones -- can never both believe they own the
 // same value.
+//
+// Fencing: a reset -- ALTER TABLE ... AUTO_INCREMENT = 0, or a MySQL-dialect
+// TRUNCATE TABLE -- restarts the counter at 1, so the post-reset counter
+// hands out again every value a block reserved before the reset still
+// holds. SequenceServicer carries an epoch that every reset advances, and
+// Allocate reports the epoch a block was reserved under; sequenceBlock keeps
+// it beside the block, and the first time a statement draws a cached value
+// from a block the statement did not itself reserve, it compares that epoch
+// with SequenceServicer.Epoch. A block that still has unconsumed capacity
+// when a reset commits -- through another session, another handle, or
+// another node -- is therefore discarded by the next statement that would
+// use it, rather than at its natural exhaustion, and next refills from the
+// post-reset counter.
+//
+// The check is once per statement, not once per value. One linearizable
+// read per generated value would cost a multi-row INSERT one round trip per
+// row, and it would buy nothing a per-statement check does not: a value
+// drawn before a reset and committed after it is a window no allocator-side
+// check can close (a reset between the check and the row's commit is
+// indistinguishable from one just after the commit), and inside one
+// statement that is the only window there is. After TRUNCATE the statement's
+// rows are refused by the generation fence anyway; after ALTER TABLE ...
+// AUTO_INCREMENT = 0 they are rows already written, which Reset's contract
+// leaves to the caller.
 // ---------------------------------------------------------------------------
 
 const (
@@ -68,31 +94,78 @@ type sequenceBlock struct {
 	mu       sync.Mutex
 	cursor   uint64 // next unused value in the reserved block
 	end      uint64 // exclusive upper bound of the reserved block
+	epoch    uint64 // the sequence's epoch when [cursor, end) was reserved
 	lastSize uint64 // size of the most recently requested block; 0 before the first allocation
+
+	// current is the statement for which [cursor, end) is known to belong
+	// to the sequence's current epoch: the one that reserved it, or the one
+	// that last verified it. Zero before either has happened.
+	current statementID
 }
 
-// next returns the next value to hand out, allocating a fresh block from
-// seqSvc via a Raft-committed CAS whenever the current one is exhausted.
-// Each successive block requested by the same sequenceBlock is at least as
-// large as the last (see nextBlockSizeLocked), amortizing the Raft round
-// trip cost across a large multi-row INSERT.
-func (b *sequenceBlock) next(ctx context.Context, seqSvc service.SequenceServicer, database, seqName string) (uint64, error) {
+// statementID identifies the statement a *sqle.Context executes. The engine
+// builds one context per statement, stamping it with the statement's pid and
+// the instant it began; every derived context (WithContext, WithQuery, a
+// subquery's) carries both unchanged, so they stay equal for the whole
+// statement and differ from the next one's. The zero value names no
+// statement.
+type statementID struct {
+	pid   uint64
+	began time.Time
+}
+
+// statementOf returns the statementID of the statement ctx executes.
+func statementOf(ctx *sqle.Context) statementID {
+	return statementID{pid: ctx.Pid(), began: ctx.QueryTime()}
+}
+
+// is reports whether id and other name the same statement. time.Time's
+// Equal compares the monotonic readings both carry, so two statements that
+// began in the same wall-clock tick are still told apart.
+func (id statementID) is(other statementID) bool {
+	return id.pid == other.pid && !id.began.IsZero() && id.began.Equal(other.began)
+}
+
+// next returns the next value to hand out and the epoch it was reserved
+// under. A cached value the calling statement has not yet vouched for is
+// handed out only after one Epoch read confirms its block's epoch is still
+// the sequence's current one (see the fencing note above); a stale block is
+// discarded. Whenever the block is exhausted or discarded, next allocates a
+// fresh one from seqSvc via a Raft-committed CAS, which reports the epoch
+// itself. Each successive block requested by the same sequenceBlock is at
+// least as large as the last (see nextBlockSizeLocked), amortizing the Raft
+// round trip cost of a large multi-row INSERT's allocations.
+func (b *sequenceBlock) next(ctx *sqle.Context, seqSvc service.SequenceServicer, database, seqName string) (uint64, uint64, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	stmt := statementOf(ctx)
+	if b.cursor < b.end && !b.current.is(stmt) {
+		current, err := seqSvc.Epoch(ctx, database, seqName)
+		if err != nil {
+			return 0, 0, err
+		}
+		if current != b.epoch {
+			b.cursor, b.end = 0, 0
+		}
+		b.current = stmt
+	}
+
 	if b.cursor >= b.end {
 		size := b.nextBlockSizeLocked()
-		first, err := seqSvc.Allocate(ctx, database, seqName, size)
+		first, epoch, err := seqSvc.Allocate(ctx, database, seqName, size)
 		if err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 		b.cursor = first
 		b.end = first + size
+		b.epoch = epoch
+		b.current = stmt
 	}
 
 	v := b.cursor
 	b.cursor++
-	return v, nil
+	return v, b.epoch, nil
 }
 
 // nextBlockSizeLocked returns the size of the next block to request,
@@ -118,5 +191,6 @@ func (b *sequenceBlock) nextBlockSizeLocked() uint64 {
 func (b *sequenceBlock) discard() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.cursor, b.end, b.lastSize = 0, 0, 0
+	b.cursor, b.end, b.epoch, b.lastSize = 0, 0, 0, 0
+	b.current = statementID{}
 }

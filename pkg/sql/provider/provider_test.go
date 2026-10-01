@@ -810,9 +810,10 @@ func TestManagerProvider_Database_WithSession_TenantScoping(t *testing.T) {
 	svc := &mockKVService{}
 
 	_, err := mgr.Create(database.DatabaseConfig{
-		Name:    "tenantdb",
-		Engine:  database.EngineKV,
-		Backend: database.BackendMemory,
+		TenantID: "acme",
+		Name:     "tenantdb",
+		Engine:   database.EngineKV,
+		Backend:  database.BackendMemory,
 	})
 	require.NoError(t, err)
 

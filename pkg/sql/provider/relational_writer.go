@@ -681,20 +681,52 @@ type relationalWriter struct {
 	table *RelationalTable
 }
 
-// StatementBegin marks the start of a statement. No-op: every write below
-// is applied immediately via its own Execute call; there is no in-flight
-// state to check-point.
-func (w *relationalWriter) StatementBegin(_ *sqle.Context) {}
+// StatementBegin marks the start of a statement. Inside an interactive
+// transaction it opens an implicit statement savepoint on the transaction's
+// WriteSet, so a statement that fails part way can be undone whole (see
+// writeset_statement.go). Outside one it does nothing: each autocommit row
+// write is its own compare-and-swap, committed before the next row is
+// written, and there is nothing in flight to check-point.
+func (w *relationalWriter) StatementBegin(ctx *sqle.Context) {
+	if ws := statementWriteSet(ctx); ws != nil {
+		ws.beginStatement()
+	}
+}
 
-// DiscardChanges discards changes made since StatementBegin. No-op: nothing
-// is buffered that could be discarded (see StatementBegin).
-func (w *relationalWriter) DiscardChanges(_ *sqle.Context, _ error) error { return nil }
+// DiscardChanges undoes everything the failed statement buffered into the
+// interactive transaction's WriteSet since StatementBegin, across every
+// table the statement edited. The transaction's earlier statements, its
+// row locks and its reads are kept. Outside a transaction it does nothing:
+// the rows the statement already wrote are committed (see StatementBegin).
+func (w *relationalWriter) DiscardChanges(ctx *sqle.Context, _ error) error {
+	if ws := statementWriteSet(ctx); ws != nil {
+		ws.discardStatement()
+	}
+	return nil
+}
 
-// StatementComplete marks the end of a statement. No-op.
-func (w *relationalWriter) StatementComplete(_ *sqle.Context) error { return nil }
+// StatementComplete marks the end of a statement, keeping what it buffered
+// -- unless the statement's context was cancelled (KILL QUERY, a client
+// disconnect, a deadline). go-mysql-server's table-editor iterator reports
+// a cancellation noticed between rows from Next without recording it as
+// the statement's error, so a killed statement reaches StatementComplete,
+// not DiscardChanges; it is discarded here, as a failed one is.
+func (w *relationalWriter) StatementComplete(ctx *sqle.Context) error {
+	ws := statementWriteSet(ctx)
+	if ws == nil {
+		return nil
+	}
+	if ctx.Err() != nil {
+		ws.discardStatement()
+		return nil
+	}
+	ws.completeStatement()
+	return nil
+}
 
-// Close finalizes the writer. No-op: every write is durable as soon as its
-// Execute call returns.
+// Close finalizes the writer. No-op: an autocommit write is durable as soon
+// as its Execute call returns, and a buffered one is the transaction's to
+// commit.
 func (w *relationalWriter) Close(_ *sqle.Context) error { return nil }
 
 // Insert inserts row, together with one physical entry per secondary index
@@ -744,6 +776,14 @@ func (w *relationalWriter) Insert(ctx *sqle.Context, row sqle.Row) error {
 		return err
 	}
 	candidates = append([]uniqueCandidate{{key: rowKey, isPK: true}}, candidates...)
+
+	// Pessimistic mode locks the keys the row is about to occupy and reads
+	// them at their latest committed version, so the duplicate check below
+	// sees a concurrent inserter's committed row instead of failing on it at
+	// COMMIT.
+	if err := t.lockForWrite(ctx, candidateKeys(candidates)); err != nil {
+		return err
+	}
 
 	ws, err := t.activeWriteSet(ctx)
 	if err != nil {
@@ -934,6 +974,17 @@ func (w *relationalWriter) Delete(ctx *sqle.Context, row sqle.Row) error {
 		actions = append(actions, indexAction{key: key, delete: true})
 	}
 
+	// Pessimistic mode holds the row being deleted. A row the transaction
+	// read under its lock is the row the statement matched; one that reached
+	// Delete another way (a foreign-key cascade, or a read that took no
+	// lock) is locked here and must still be the row the statement matched
+	// -- see lockMatchedRow.
+	if _, pessimistic := t.writeLock(ctx); pessimistic {
+		if err := t.lockMatchedRow(ctx, rowKey, row); err != nil {
+			return err
+		}
+	}
+
 	ws, err := t.activeWriteSet(ctx)
 	if err != nil {
 		return err
@@ -942,8 +993,15 @@ func (w *relationalWriter) Delete(ctx *sqle.Context, row sqle.Row) error {
 		return applyActionsToWriteSet(ctx, ws, actions)
 	}
 
+	// As in Update: a row read under a lock was read at a known revision,
+	// and the autocommit delete is guarded on it, so a writer that took no
+	// lock cannot have its change deleted.
+	rowGuard, guarded := t.lockedRowGuard(ctx, rowKey)
 	ops, _ := actionsToOpsAndCompares(actions)
 	compares := t.resolutionCompares(g)
+	if guarded {
+		compares = append(compares, rowGuard)
+	}
 	if err := checkProposalSize(t.def.Name, compares, ops); err != nil {
 		return err
 	}
@@ -958,9 +1016,18 @@ func (w *relationalWriter) Delete(ctx *sqle.Context, row sqle.Row) error {
 	if staleErr := t.checkResolutionStale(ctx, g); staleErr != nil {
 		return staleErr
 	}
-	// The generation compare is the only precondition this proposal carries,
-	// so a failure that is not a stale generation should not happen; report
-	// it as a conflict rather than silently treating it as success.
+	if guarded {
+		moved, gerr := t.rowGuardFailed(ctx, rowGuard)
+		if gerr != nil {
+			return gerr
+		}
+		if moved {
+			return rowChangedError(rowKey)
+		}
+	}
+	// The generation compare and the row guard are the only preconditions
+	// this proposal carries, so a failure that is neither should not happen;
+	// report it as a conflict rather than silently treating it as success.
 	return &TransactionConflictRetriesExhaustedError{Table: t.def.Name}
 }
 
@@ -1032,6 +1099,17 @@ func (w *relationalWriter) Update(ctx *sqle.Context, old, newRow sqle.Row) error
 		candidates = append([]uniqueCandidate{{key: newRowKey, isPK: true}}, candidates...)
 	}
 
+	// Pessimistic mode holds the row being rewritten and the keys it moves
+	// to; see lockMatchedRow for a row that was not read under its lock.
+	if _, pessimistic := t.writeLock(ctx); pessimistic {
+		if err := t.lockMatchedRow(ctx, oldRowKey, old); err != nil {
+			return err
+		}
+		if err := t.lockForWrite(ctx, candidateKeys(candidates)); err != nil {
+			return err
+		}
+	}
+
 	ws, err := t.activeWriteSet(ctx)
 	if err != nil {
 		return err
@@ -1040,10 +1118,18 @@ func (w *relationalWriter) Update(ctx *sqle.Context, old, newRow sqle.Row) error
 		return t.bufferUpdate(ctx, ws, g, candidates, oldRowKey, newRowKey, encodedNewRow, pkChanged, actions)
 	}
 
+	// A row this statement read under a lock was read at a known revision;
+	// the autocommit write is guarded on it, so a writer that took no lock
+	// cannot have its change overwritten (go-qrdb row-locking's commit CAS).
+	rowGuard, guarded := t.lockedRowGuard(ctx, oldRowKey)
+
 	for attempt := 0; attempt < writeMaxAttempts; attempt++ {
 		idxOps, idxCompares := actionsToOpsAndCompares(actions)
 		var compares []service.Compare
 		var ops []service.Op
+		if guarded {
+			compares = append(compares, rowGuard)
+		}
 
 		if pkChanged {
 			compares = append(compares, service.Compare{
@@ -1073,6 +1159,14 @@ func (w *relationalWriter) Update(ctx *sqle.Context, old, newRow sqle.Row) error
 		if staleErr := t.checkResolutionStale(ctx, g); staleErr != nil {
 			return staleErr
 		}
+		if guarded {
+			if moved, gerr := t.rowGuardFailed(ctx, rowGuard); gerr != nil || moved {
+				if gerr != nil {
+					return gerr
+				}
+				return rowChangedError(oldRowKey)
+			}
+		}
 
 		dupErr, transient, rerr := t.resolveDuplicate(ctx, g, candidates)
 		if rerr != nil {
@@ -1085,21 +1179,66 @@ func (w *relationalWriter) Update(ctx *sqle.Context, old, newRow sqle.Row) error
 	return &TransactionConflictRetriesExhaustedError{Table: t.def.Name}
 }
 
-// bufferUpdate is Update's interactive-transaction path. A pkChanged update
-// is, from the write-set's point of view, a delete of oldRowKey plus a
-// unique-guarded insert of newRowKey (checked against the transaction's own
-// view first -- see bufferInsert's doc comment for why); an in-place update
-// buffers newRowKey (== oldRowKey) with Put, which derives a
+// candidateKeys returns the keys of candidates, in order.
+func candidateKeys(candidates []uniqueCandidate) []string {
+	keys := make([]string, len(candidates))
+	for i, c := range candidates {
+		keys[i] = c.key
+	}
+	return keys
+}
+
+// lockedRowGuard returns the commit precondition of a row the statement's
+// transaction read under a lock, and whether there is one.
+func (t *RelationalTable) lockedRowGuard(ctx *sqle.Context, key string) (service.Compare, bool) {
+	_, ws := lockState(ctx)
+	if ws == nil {
+		return service.Compare{}, false
+	}
+	c, ok := ws.currentState(key)
+	if !ok {
+		return service.Compare{}, false
+	}
+	return c.compare(key), true
+}
+
+// rowGuardFailed reports whether the row a lockedRowGuard guards no longer
+// holds the state it was read in.
+func (t *RelationalTable) rowGuardFailed(ctx *sqle.Context, guard service.Compare) (bool, error) {
+	kv, err := t.mvccSvc.GetRevision(ctx, string(guard.Key))
+	switch {
+	case err != nil && isNotFound(err):
+		return guard.Target != service.CompareVersion, nil
+	case err != nil:
+		return false, err
+	case guard.Target == service.CompareVersion:
+		return true, nil
+	default:
+		return kv.ModRevision != guard.ModRevision, nil
+	}
+}
+
+// bufferUpdate is Update's interactive-transaction path. Every candidate --
+// the new primary key when it moved, and every UNIQUE index value the row
+// newly occupies whether or not the primary key moved -- is first checked
+// against the transaction's own view, exactly as bufferInsert does and for
+// the same reason: the commit-time absence compare cannot see a value this
+// same transaction already gave another row, and a value a committed row
+// holds must fail the statement with 1062, not the commit.
+//
+// A pkChanged update is then, from the write-set's point of view, a delete
+// of oldRowKey plus a unique-guarded insert of newRowKey; an in-place
+// update buffers newRowKey (== oldRowKey) with Put, which derives a
 // snapshot-ModRevision precondition rather than an absence check, giving
 // the row itself first-committer-wins protection for the duration of the
 // transaction.
 func (t *RelationalTable) bufferUpdate(ctx *sqle.Context, ws *WriteSet, g *tableGeneration, candidates []uniqueCandidate, oldRowKey, newRowKey string, encodedNewRow []byte, pkChanged bool, actions []indexAction) error {
+	if dupErr, transient, err := t.resolveDuplicate(ctx, g, candidates); err != nil {
+		return err
+	} else if !transient {
+		return dupErr
+	}
 	if pkChanged {
-		if dupErr, transient, err := t.resolveDuplicate(ctx, g, candidates); err != nil {
-			return err
-		} else if !transient {
-			return dupErr
-		}
 		if err := ws.Delete(ctx, oldRowKey); err != nil {
 			return err
 		}

@@ -160,13 +160,24 @@ func TestClassify_ServiceConditionsTheTableOnceMissed(t *testing.T) {
 	}
 }
 
-type selfClassed struct{}
+// A dead RoleBinding is a bad field in the write, whether it arrives bare or
+// wrapped by a service layer.
+func TestClassify_RoleBindingTenantIsInvalidArgument(t *testing.T) {
+	err := &user.RoleBindingTenantError{UserID: 1, UserTenantID: "acme", BindingTenantID: "globex"}
+	for name, e := range map[string]error{"bare": err, "wrapped": wrapped{err}} {
+		if got := Classify(e); got != InvalidArgument {
+			t.Errorf("%s: got %s, want %s", name, got, InvalidArgument)
+		}
+	}
+}
 
-func (selfClassed) Error() string     { return "self" }
-func (selfClassed) ErrorClass() Class { return Gone }
+type selfClassedError struct{}
+
+func (selfClassedError) Error() string     { return "self" }
+func (selfClassedError) ErrorClass() Class { return Gone }
 
 func TestClassify_HonoursClassed(t *testing.T) {
-	if got := Classify(wrapped{selfClassed{}}); got != Gone {
+	if got := Classify(wrapped{selfClassedError{}}); got != Gone {
 		t.Errorf("got %s, want gone", got)
 	}
 }

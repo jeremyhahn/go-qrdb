@@ -126,10 +126,15 @@ func TestRunFirstBoot_WithBarriers_AdminAlreadyExists(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = sub.Close() }()
 
-	// Admin exists → runFirstBoot skips bootstrap.BootstrapSystem entirely.
+	// Admin exists AND is already the System user → runFirstBoot skips
+	// bootstrap.BootstrapSystem entirely (go-qrdb#106/#192 round 2: the fast
+	// path only skips reconciliation when there is nothing left to
+	// reconcile; an admin that exists but is not yet System still falls
+	// through to the full, idempotent bootstrap path so it gets promoted —
+	// see TestRunFirstBoot_WithBarriers_AdminExistsButNotSystem_Reconciles).
 	userSvc := &mockUserServicer{
 		getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
-			return &user.User{ID: 9001, Username: "admin"}, nil
+			return &user.User{ID: 9001, Username: "admin", System: true}, nil
 		},
 	}
 	roleSvc := &mockRoleServicer{}

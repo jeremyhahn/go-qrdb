@@ -242,7 +242,7 @@ tombstones, or the live tenant set) is an error status, with no report.
 The Go SDK returns **both** for a partly failed pass: the response, with
 `Failed` populated, and a `*transport.ReconcileDeletedTenantsError` naming the
 same failures. On the embedded transport that error also unwraps to the
-node's own `*tenant.ResidueReconcileErrors`.
+node's own `*tenant.ResidueReconcileFailuresError`.
 
 The only predicate is the retirement record. A directory a live tenant claims
 is never removed and is reported with `reason`:

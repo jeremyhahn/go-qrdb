@@ -217,8 +217,10 @@ func (m *Manager) CreateWithCredentials(ctx context.Context, cfg DatabaseConfig,
 	if err := m.validateDataDir(cfg.Name, cfg.DataDir); err != nil {
 		return nil, err
 	}
-	if cfg.Barrier != nil && cfg.Barrier.Enabled && !cfg.HasDedicatedStore() {
-		return nil, &SharedStoreBarrierUnsupportedError{Name: cfg.Name, Backend: cfg.Backend}
+	if cfg.Barrier != nil && cfg.Barrier.Enabled {
+		if err := barrierDataPathError(cfg); err != nil {
+			return nil, err
+		}
 	}
 
 	// Check for duplicates.
@@ -358,9 +360,26 @@ func (m *Manager) Open(name string) (*Database, error) {
 		Raft:         meta.Raft,
 		Barrier:      meta.Barrier,
 		Connection:   meta.Connection,
+		SQL:          meta.SQL,
 	}
 	if meta.Barrier != nil && meta.Barrier.Enabled && !cfg.HasDedicatedStore() {
 		return nil, &SharedStoreBarrierUnsupportedError{Name: name, Backend: cfg.Backend}
+	}
+	if meta.Barrier != nil && meta.Barrier.Enabled && !cfg.BarrierOnDataPath() {
+		// A record written before creation refused a barrier off the data
+		// path. It still opens -- sealed, like every barrier-enabled
+		// database -- because the request resolver refuses every data-plane
+		// request to a sealed database. Refusing to open it would drop it
+		// from the catalog, and a raft-isolated tenant's database is served
+		// from its placement record without a catalog entry at all, so the
+		// refusal would unprotect it rather than protect it.
+		//
+		// A volume- or raft-isolated tenant's record is warned for by
+		// service.WarnBarriersOffDataPath at boot: the tenant's isolation is
+		// not visible here.
+		m.logger.Warn(BarrierOffDataPathWarning,
+			slog.String("name", name),
+			slog.String("backend", string(cfg.Backend)))
 	}
 	if err := m.validateDataDir(name, meta.DataDir); err != nil {
 		return nil, err
@@ -533,6 +552,7 @@ func (m *Manager) UpdateProtocol(name string, protocol ProtocolConfig) error {
 		Raft:         cfg.Raft,
 		Barrier:      cfg.Barrier,
 		Connection:   cfg.Connection,
+		SQL:          cfg.SQL,
 	}
 	dbDir := m.dbDir(name)
 	if err := m.writeMeta(dbDir, meta); err != nil {
@@ -559,6 +579,9 @@ func (m *Manager) UpdateEtcd(name string, etcd *EtcdConfig) error {
 		return &NotFoundError{Name: name}
 	}
 	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
+	if err := etcdEngineError(name, db.Config().Engine, etcd); err != nil {
+		return err
+	}
 	db.UpdateEtcd(etcd)
 
 	return m.rewriteMeta(name, db)
@@ -630,8 +653,8 @@ func (m *Manager) UpdateBarrier(name string, barrier *DatabaseBarrierConfig) err
 
 	if wantEnabled {
 		cfg := db.Config()
-		if !cfg.HasDedicatedStore() {
-			return &SharedStoreBarrierUnsupportedError{Name: name, Backend: cfg.Backend}
+		if err := barrierDataPathError(cfg); err != nil {
+			return err
 		}
 		if barrier.Mode != "" && barrier.Mode != BarrierModePassphrase {
 			return &UnsupportedBarrierStrategyError{Mode: barrier.Mode}
@@ -666,6 +689,30 @@ func (m *Manager) UpdateConnection(name string, conn *DatabaseConnectionConfig) 
 	return m.rewriteMeta(name, db)
 }
 
+// UpdateSQL replaces the SQL settings of a database, in memory and in its
+// meta.json. A nil sqlCfg restores the defaults.
+func (m *Manager) UpdateSQL(name string, sqlCfg *SQLConfig) error {
+	if sqlCfg != nil {
+		if err := sqlCfg.Validate(); err != nil {
+			return err
+		}
+	}
+	val, ok := m.databases.Load(name)
+	if !ok {
+		return &NotFoundError{Name: name}
+	}
+	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
+	db.updateSQL(sqlCfg)
+
+	if err := m.rewriteMeta(name, db); err != nil {
+		return err
+	}
+	m.logger.Info("database sql config updated",
+		slog.String("name", name),
+		slog.String("concurrency", string(sqlCfg.EffectiveConcurrency())))
+	return nil
+}
+
 // rewriteMeta rebuilds and rewrites the meta.json for a database from its
 // current in-memory configuration.
 func (m *Manager) rewriteMeta(name string, db *Database) error {
@@ -683,6 +730,7 @@ func (m *Manager) rewriteMeta(name string, db *Database) error {
 		Raft:         cfg.Raft,
 		Barrier:      cfg.Barrier,
 		Connection:   cfg.Connection,
+		SQL:          cfg.SQL,
 	}
 	dbDir := m.dbDir(name)
 	return m.writeMeta(dbDir, meta)
@@ -772,6 +820,21 @@ func (m *Manager) OpenAll() error {
 // DataDir returns the root data directory for all databases.
 func (m *Manager) DataDir() string {
 	return m.dataDir
+}
+
+// barrierDataPathError returns the typed refusal for a per-database barrier
+// on cfg, or nil when the barrier would wrap the store the database's data is
+// served from. A database with no store of its own is refused with
+// SharedStoreBarrierUnsupportedError; a database whose own store is not its
+// data path (backend: raft) with BarrierOffDataPathError.
+func barrierDataPathError(cfg DatabaseConfig) error {
+	if !cfg.HasDedicatedStore() {
+		return &SharedStoreBarrierUnsupportedError{Name: cfg.Name, Backend: cfg.Backend}
+	}
+	if !cfg.BarrierOnDataPath() {
+		return &BarrierOffDataPathError{Name: cfg.Name, ServedBy: ServedByRaftGroup}
+	}
+	return nil
 }
 
 // dbDir returns the directory path for a specific database.

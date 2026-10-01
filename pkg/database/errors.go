@@ -15,7 +15,6 @@
 package database
 
 import (
-	"errors"
 	"strconv"
 )
 
@@ -28,6 +27,19 @@ type InvalidNameError struct {
 // Error returns a human-readable description of the invalid name.
 func (e *InvalidNameError) Error() string {
 	return "database: invalid database name: " + strconv.Quote(e.Name)
+}
+
+// ReservedNameError is returned when a database name collides with a
+// directory the node keeps beside per-database directories (see
+// IsReservedName). A database of that name would be created inside that
+// state, so the name is refused before any directory is made.
+type ReservedNameError struct {
+	Name string
+}
+
+// Error returns a human-readable description of the reserved name.
+func (e *ReservedNameError) Error() string {
+	return "database: database name is reserved: " + strconv.Quote(e.Name)
 }
 
 // InvalidEngineError is returned when an unrecognized engine type is specified.
@@ -345,19 +357,6 @@ func (e *MigrationError) Unwrap() error {
 	return e.Err
 }
 
-// TenantAccessDeniedError is returned when a tenant attempts to access
-// a database that belongs to a different tenant.
-type TenantAccessDeniedError struct {
-	TenantID     string
-	DatabaseName string
-}
-
-// Error returns a human-readable description of the access denial.
-func (e *TenantAccessDeniedError) Error() string {
-	return "database: tenant " + strconv.Quote(e.TenantID) +
-		" access denied for database " + strconv.Quote(e.DatabaseName)
-}
-
 // TenantIDRequiredError is returned when a tenant-scoped operation is
 // called without a tenant ID in the context.
 type TenantIDRequiredError struct {
@@ -420,6 +419,18 @@ func (e *InvalidStorageCodecError) Error() string {
 	return "database: invalid or unsupported storage codec: " + strconv.Quote(e.Codec)
 }
 
+// InvalidConcurrencyError is returned when a database's SQL concurrency mode
+// is neither optimistic nor pessimistic.
+type InvalidConcurrencyError struct {
+	Concurrency string
+}
+
+// Error returns a human-readable description of the invalid mode.
+func (e *InvalidConcurrencyError) Error() string {
+	return "database: invalid SQL concurrency mode " + strconv.Quote(e.Concurrency) +
+		" (want optimistic or pessimistic)"
+}
+
 // SharedStoreBarrierUnsupportedError is returned when a caller attempts to
 // enable a per-database encryption barrier on a database that has no
 // dedicated store of its own (see DatabaseConfig.HasDedicatedStore) -- i.e.
@@ -438,6 +449,47 @@ func (e *SharedStoreBarrierUnsupportedError) Error() string {
 		strconv.Quote(e.Name) + " (backend " + strconv.Quote(string(e.Backend)) +
 		") uses the shared default store"
 }
+
+// BarrierOffDataPathError is returned when a caller asks for a per-database
+// encryption barrier on a database whose data would not be served from the
+// store that barrier wraps. The barrier is only on the data path of a
+// non-raft database with a store of its own under a tenant that serves the
+// database from that store (see DatabaseConfig.BarrierOnDataPath). Anywhere
+// else -- a backend: raft database, whose data lives in a Raft group, or any
+// database of a volume- or raft-isolated tenant, whose data lives in the
+// tenant's own store -- the barrier would wrap an unused store while the data
+// stayed readable and writable, and sealing it would protect nothing. The
+// request fails closed instead of creating that decorative barrier.
+type BarrierOffDataPathError struct {
+	Name string
+	// ServedBy names the store the database's data is actually served from.
+	ServedBy string
+}
+
+// Error returns a human-readable description of the refused request.
+func (e *BarrierOffDataPathError) Error() string {
+	return "database: a per-database barrier would not protect database " +
+		strconv.Quote(e.Name) + ": its data is served from " + e.ServedBy +
+		", not from a store the barrier wraps"
+}
+
+// Barrier data-path descriptions carried by BarrierOffDataPathError.ServedBy.
+const (
+	// ServedByRaftGroup is the data path of a backend: raft database.
+	ServedByRaftGroup = "its raft group"
+	// ServedByVolumeTenantStore is the data path of every database of a
+	// volume-isolated tenant.
+	ServedByVolumeTenantStore = "the volume-isolated tenant's own store"
+	// ServedByRaftTenantGroup is the data path of every database of a
+	// raft-isolated tenant.
+	ServedByRaftTenantGroup = "the raft-isolated tenant's dedicated raft group"
+)
+
+// BarrierOffDataPathWarning is the startup warning logged for a
+// barrier-enabled database record whose barrier does not wrap the store its
+// data is served from: one written before creation refused that shape. The
+// database fails closed while sealed and is unprotected once unsealed.
+const BarrierOffDataPathWarning = "database barrier is not on the data path; the database fails closed while sealed and is unprotected once unsealed"
 
 // UnsupportedBarrierStrategyError is returned when a database barrier is
 // requested with a strategy mode that EnsureBarrier does not yet implement.
@@ -536,10 +588,16 @@ func (e *BarrierEncryptorUnavailableError) Error() string {
 	return "database: barrier encryptor unavailable for database " + strconv.Quote(e.Name) + " immediately after registration"
 }
 
-// ErrAtomicWriteUnsupported is returned when a conditional write is requested
-// of a backend that cannot perform one atomically.
-//
-// It is a refusal, not a fallback. Performing the check and the write as two
-// operations would appear to succeed while allowing two callers to both create
-// the same key, which for a single-use credential means issuing it twice.
-var ErrAtomicWriteUnsupported = errors.New("database: backend does not support atomic conditional writes")
+// EtcdEngineUnsupportedError is returned when the etcd wire protocol is
+// enabled on a database whose engine is not kv. etcd serves a key-value
+// keyspace; on a timeseries or vector database it would serve that engine's
+// internal keys as etcd keys.
+type EtcdEngineUnsupportedError struct {
+	Name   string
+	Engine EngineType
+}
+
+// Error returns a human-readable description.
+func (e *EtcdEngineUnsupportedError) Error() string {
+	return "database: etcd is served only by an engine: kv database; " + e.Name + " is engine: " + string(e.Engine)
+}

@@ -15,6 +15,7 @@
 package secure
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -88,21 +89,20 @@ const MaxStdinPassphraseLen = 1024
 // StdinProvider reads a passphrase from os.Stdin up to the first newline.
 // Intended for CI / piped invocations. The trailing newline is stripped.
 //
-// The read goes one byte at a time straight into mlocked memory. That is not
-// a performance choice, and it is deliberately not a bufio.Reader: a
-// bufio.Reader stages the passphrase in an ordinary heap buffer that this
-// package never gets to wipe, which would leave a plaintext copy behind in
-// exactly the provider whose job is to prevent one. Byte-at-a-time is also
-// the only shape that does not OVER-READ — a buffered reader consumes past
-// the newline, stealing bytes from whatever reads os.Stdin next.
+// The read goes straight into mlocked memory and is deliberately not a
+// bufio.Reader: a bufio.Reader stages the passphrase in an ordinary heap
+// buffer that this package never gets to wipe, which would leave a plaintext
+// copy behind in exactly the provider whose job is to prevent one, and it
+// OVER-READS — it consumes past the newline, stealing bytes from whatever
+// reads os.Stdin next.
 //
-// The cost is one read(2) per byte. That is a known, accepted tradeoff on a
-// path that runs once per process start and already blocks on a human or a
-// pipe; it is not a regression, since bufio made the same blocking reads and
-// merely amortized them. If it ever needs amortizing, the shape is a small
-// (32-64 byte) mlocked read ring that scans for the newline inside protected
-// memory — NOT a return to bufio, which reintroduces both the unwipeable
-// staging buffer and the over-read. See go-qrdb#440.
+// How many read(2) calls that takes depends on the stream (go-qrdb#440). One
+// that can seek — stdin redirected from a file — is read in bulk and the
+// bytes past the newline are sought back, so a line costs one or two reads.
+// One that cannot — a pipe or a terminal — is read one byte per call, because
+// no larger read of a pipe can avoid consuming past the newline. On a path
+// that runs once per process start and waits on a human or a pipe, the
+// per-byte cost is not observable; the over-read would be.
 type StdinProvider struct {
 	// reader is optional; if nil, os.Stdin is used. Exported for tests.
 	reader io.Reader
@@ -177,28 +177,41 @@ func (p *StdinProvider) Passphrase(ctx context.Context, _ string) (*Buffer, erro
 	return result, nil
 }
 
-// readStdinLine reads one byte at a time from r into line until a newline,
-// EOF, or line is full, and returns the passphrase length. It never reads past
+// readStdinLine reads one line from r into line, the provider's mlocked
+// scratch, and returns the passphrase length. It never leaves r advanced past
 // the newline, so the rest of r is left for its next consumer.
+//
+// Two paths, chosen by what the STREAM can do, not by preference (go-qrdb#440):
+//
+//   - A stream that can seek — os.Stdin redirected from a regular file, or an
+//     in-memory reader — is read in bulk, straight into line, and any bytes
+//     read past the newline are handed back with a relative Seek. One or two
+//     read(2) calls replace one per byte. The over-read bytes only ever land
+//     in line, which is mlocked and destroyed with the scratch, so the bulk
+//     path leaves no unprotected copy either.
+//   - A stream that cannot — a pipe, a terminal — is read one byte at a time.
+//     That is not a fallback that could be tuned away: a pipe has no way to
+//     give bytes back, so ANY read longer than one byte may consume past the
+//     newline and steal them from the stream's next reader, which is the
+//     defect a bufio.Reader had. A read ring in protected memory does not
+//     change that; it only changes who holds the stolen bytes.
 //
 // A CR is stripped only as the first half of a CRLF. A passphrase that
 // genuinely ends in CR and was terminated by EOF keeps it: truncating there
 // would silently accept a different credential than was supplied.
 func readStdinLine(r io.Reader, line []byte) (int, error) {
-	n := 0
-	sawNewline := false
-	for n < len(line) {
-		if _, rerr := io.ReadFull(r, line[n:n+1]); rerr != nil {
-			if errors.Is(rerr, io.EOF) || errors.Is(rerr, io.ErrUnexpectedEOF) {
-				break
-			}
-			return 0, &ProviderError{Source: "stdin", Err: rerr}
-		}
-		if line[n] == '\n' {
-			sawNewline = true
-			break
-		}
-		n++
+	var (
+		n          int
+		sawNewline bool
+		err        error
+	)
+	if s, start, ok := seekableStream(r); ok {
+		n, sawNewline, err = readLineSeekable(s, start, line)
+	} else {
+		n, sawNewline, err = readLineBytewise(r, line)
+	}
+	if err != nil {
+		return 0, err
 	}
 	if n == len(line) {
 		return 0, &ProviderError{Source: "stdin", Err: errPassphraseTooLong}
@@ -210,6 +223,113 @@ func readStdinLine(r io.Reader, line []byte) (int, error) {
 		return 0, &ProviderError{Source: "stdin", Err: errEmptyPassphrase}
 	}
 	return n, nil
+}
+
+// seekableStream reports whether r can give back bytes it has read, and the
+// offset it is at. The type assertion alone does not answer that: *os.File
+// satisfies io.Seeker for a pipe or a terminal too. A pipe fails the call with
+// ESPIPE, but a character device may accept lseek and still be unable to
+// replay what was read, so an *os.File must also be a regular file. The probe
+// itself is a no-op Seek to the current offset, and an offset that cannot be
+// a file position is not trusted either.
+func seekableStream(r io.Reader) (io.ReadSeeker, int64, bool) {
+	s, ok := r.(io.ReadSeeker)
+	if !ok {
+		return nil, 0, false
+	}
+	if f, isFile := r.(*os.File); isFile {
+		fi, err := f.Stat()
+		if err != nil || !fi.Mode().IsRegular() {
+			return nil, 0, false
+		}
+	}
+	off, err := s.Seek(0, io.SeekCurrent)
+	if err != nil || off < 0 {
+		return nil, 0, false
+	}
+	return s, off, true
+}
+
+// readLineSeekable reads into line in bulk until it holds a newline, the
+// stream ends, or line is full, then seeks s back over every byte read past
+// the newline. start is the offset the probe reported. It returns the index
+// of the newline (or the byte count when there is none) and whether a
+// newline was seen.
+//
+// The seek-back's answer is checked against start: the stream must end up
+// exactly one byte past the newline, and a stream that reports anywhere else
+// has left its next reader at a position nobody verified.
+func readLineSeekable(s io.ReadSeeker, start int64, line []byte) (int, bool, error) {
+	filled, empty := 0, 0
+	for filled < len(line) {
+		got, rerr := s.Read(line[filled:])
+		if got == 0 && rerr == nil {
+			if empty++; empty >= maxConsecutiveEmptyReads {
+				return 0, false, &ProviderError{Source: "stdin", Err: io.ErrNoProgress}
+			}
+			continue
+		}
+		empty = 0
+		if i := bytes.IndexByte(line[filled:filled+got], '\n'); i >= 0 {
+			nl := filled + i
+			if over := filled + got - (nl + 1); over > 0 {
+				at, serr := s.Seek(-int64(over), io.SeekCurrent)
+				if serr != nil {
+					return 0, false, &ProviderError{Source: "stdin", Err: serr}
+				}
+				if at != start+int64(nl+1) {
+					return 0, false, &ProviderError{Source: "stdin", Err: errSeekOffsetMismatch}
+				}
+			}
+			return nl, true, nil
+		}
+		filled += got
+		if rerr != nil {
+			if errors.Is(rerr, io.EOF) {
+				return filled, false, nil
+			}
+			return 0, false, &ProviderError{Source: "stdin", Err: rerr}
+		}
+	}
+	return filled, false, nil
+}
+
+// maxConsecutiveEmptyReads bounds how many reads in a row may return (0, nil)
+// before a stream is treated as broken. io.Reader discourages that answer, and
+// a stream that keeps giving it would otherwise hold the read loop forever.
+// The figure is bufio's, which gives up the same way, with io.ErrNoProgress.
+const maxConsecutiveEmptyReads = 100
+
+// readLineBytewise reads r one byte at a time into line until a newline, the
+// stream ends, or line is full. It returns the index of the newline (or the
+// byte count when there is none) and whether a newline was seen.
+//
+// It calls Read directly rather than io.ReadFull, because io.ReadFull retries
+// a (0, nil) answer without limit; a stream that keeps giving it ends here in
+// io.ErrNoProgress, as it does on the bulk path.
+func readLineBytewise(r io.Reader, line []byte) (int, bool, error) {
+	n, empty := 0, 0
+	for n < len(line) {
+		got, rerr := r.Read(line[n : n+1])
+		if got == 0 {
+			if rerr == nil {
+				if empty++; empty >= maxConsecutiveEmptyReads {
+					return 0, false, &ProviderError{Source: "stdin", Err: io.ErrNoProgress}
+				}
+				continue
+			}
+			if errors.Is(rerr, io.EOF) {
+				return n, false, nil
+			}
+			return 0, false, &ProviderError{Source: "stdin", Err: rerr}
+		}
+		empty = 0
+		if line[n] == '\n' {
+			return n, true, nil
+		}
+		n++
+	}
+	return n, false, nil
 }
 
 // copyPrefix copies the first n bytes of src into dst, with dst's borrow and
@@ -266,4 +386,7 @@ var (
 	errEmptyPassphrase   = errors.New("empty passphrase")
 	errNilCallback       = errors.New("nil callback")
 	errPassphraseTooLong = errors.New("passphrase exceeds the maximum stdin length")
+	// errSeekOffsetMismatch is a seek-back that left the stream somewhere
+	// other than just after the newline.
+	errSeekOffsetMismatch = errors.New("stdin seek-back landed at an unexpected offset")
 )

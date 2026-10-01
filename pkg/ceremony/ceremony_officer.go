@@ -40,6 +40,10 @@ func (s *CeremonyService) RegisterOfficer(ctx context.Context, req RegisterOffic
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if err := s.refuseClosedAnonymousEnrollmentLocked(ctx); err != nil {
+		return nil, err
+	}
+
 	if s.ca == nil {
 		return nil, ErrCANotInitialized
 	}
@@ -202,7 +206,7 @@ func (s *CeremonyService) CompleteClaimShare(
 	}
 
 	if s.allClaimsComplete() {
-		s.state = StateOperational
+		s.becomeOperationalLocked(ctx)
 		s.logger.Info("all claims complete, ceremony operational")
 	}
 
@@ -429,6 +433,7 @@ func completeClaimShareLocked(
 	}
 
 	// Claim the share exactly once.
+	//secure:unwiped the claimed share is handed to the officer in ShareClaimResult, and the transport response owns it
 	shareBytes, claimErr := store.Claim(username)
 	if claimErr != nil {
 		delete(challenges, challengeKey)

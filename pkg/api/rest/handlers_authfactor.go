@@ -55,6 +55,11 @@ type challengeFactorResponse struct {
 
 // verifyFactorRequest is the JSON payload for POST /v1/authfactors/{enrollment_id}/verify.
 type verifyFactorRequest struct {
+	// FactorName optionally asserts the factor the challenge's enrollment
+	// was made with. It never chooses the factor: a non-empty value that
+	// differs from the enrollment's is refused (400, go-qrdb#577), exactly
+	// as the other five transports refuse it.
+	FactorName  string            `json:"factor_name,omitempty"`
 	ChallengeID string            `json:"challenge_id"`
 	Value       []byte            `json:"value"`
 	Metadata    map[string]string `json:"metadata,omitempty"`
@@ -189,7 +194,7 @@ func (s *Server) handleAuthFactorVerify(w http.ResponseWriter, r *http.Request) 
 		resp.Metadata = make(map[string]string)
 	}
 
-	if err := s.authFactorSvc.VerifyFactor(r.Context(), "", req.ChallengeID, resp); err != nil {
+	if err := s.authFactorSvc.VerifyFactor(r.Context(), req.FactorName, req.ChallengeID, resp); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}

@@ -18,9 +18,9 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/json"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -30,6 +30,34 @@ import (
 type RoleBinding struct {
 	RoleID   string `json:"roleID"`
 	TenantID string `json:"tenantID"`
+}
+
+// NormalizeRoleBindings returns bindings as they are stored on the user with
+// id userID in userTenant: each TenantID folded onto its canonical form with
+// tenant.Normalize, in a new slice so the caller's request is not mutated.
+// The read side compares a binding's TenantID with the normalized target
+// tenant, so a binding stored as "" would never match anything.
+//
+// A non-system user may hold a binding only in its own tenant, and any other
+// is refused with *RoleBindingTenantError: RBAC refuses such a user every
+// request outside its own tenant before a binding is consulted, so the
+// binding could never grant. A nil bindings is returned as nil, keeping the
+// leave-alone meaning UpdateUserRequest gives it.
+func NormalizeRoleBindings(userID uint64, userTenant string, bindings []RoleBinding) ([]RoleBinding, error) {
+	if bindings == nil {
+		return nil, nil
+	}
+	userTenant = tenant.Normalize(userTenant)
+	inSystem := tenant.IsSystemTenant(userTenant)
+	out := make([]RoleBinding, len(bindings))
+	for i, b := range bindings {
+		b.TenantID = tenant.Normalize(b.TenantID)
+		if !inSystem && b.TenantID != userTenant {
+			return nil, &RoleBindingTenantError{UserID: userID, UserTenantID: userTenant, BindingTenantID: b.TenantID}
+		}
+		out[i] = b
+	}
+	return out, nil
 }
 
 // CertBindingKind identifies how an mTLS certificate is matched to a user.
@@ -61,16 +89,6 @@ type CertBinding struct {
 	Thumbprint string          `json:"thumbprint"`
 	Kind       CertBindingKind `json:"kind"`
 	NotAfter   time.Time       `json:"notAfter,omitempty"`
-}
-
-// FactorEnrollment is an opaque auth-factor enrollment record (webauthn, fido2,
-// piv, ...). qrdb stores it; the registered pkg/authfactors.Factor named by
-// FactorName interprets Data during verification. qrdb never inspects Data.
-type FactorEnrollment struct {
-	ID         string          `json:"id"`
-	FactorName string          `json:"factorName"`
-	Data       json.RawMessage `json:"data,omitempty"`
-	CreatedAt  time.Time       `json:"createdAt"`
 }
 
 // spkiThumbprintLen is the decoded byte length of a canonical SPKI thumbprint
@@ -160,6 +178,36 @@ func WireCertBindings(bindings []CertBinding) []transport.CertBinding {
 		if !b.NotAfter.IsZero() {
 			out[i].NotAfter = b.NotAfter.UTC().Format(time.RFC3339)
 		}
+	}
+	return out
+}
+
+// WireRoleBindings projects the account's tenant-scoped role bindings onto
+// the SDK wire type. Every transport's response projection calls this so a
+// binding's shape never drifts between them (go-qrdb#197).
+func WireRoleBindings(bindings []RoleBinding) []transport.RoleBinding {
+	if len(bindings) == 0 {
+		return nil
+	}
+	out := make([]transport.RoleBinding, len(bindings))
+	for i, b := range bindings {
+		out[i] = transport.RoleBinding{RoleID: b.RoleID, TenantID: b.TenantID}
+	}
+	return out
+}
+
+// RoleBindingsFromWire is the inverse of WireRoleBindings, used by every
+// transport's UpdateUser handler to translate a wire request back into the
+// domain shape before calling UpdateUser. A nil input round-trips to nil, so
+// the domain's "nil leaves it alone, non-nil-empty clears it" contract
+// survives the wire.
+func RoleBindingsFromWire(bindings []transport.RoleBinding) []RoleBinding {
+	if bindings == nil {
+		return nil
+	}
+	out := make([]RoleBinding, len(bindings))
+	for i, b := range bindings {
+		out[i] = RoleBinding{RoleID: b.RoleID, TenantID: b.TenantID}
 	}
 	return out
 }

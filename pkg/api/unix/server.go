@@ -38,6 +38,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	grpcpkg "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
@@ -92,6 +93,9 @@ type Server struct {
 	userAuthFactorSvc service.UserAuthFactorServicer
 	tenantBarrierSvc  tenant.TenantServicer
 	auditLogger       audit.AuditLogger
+
+	// soGate is the SO dual-factor gate; nil leaves it off. See WithSOGate.
+	soGate            *authmw.SOGate
 	sqlSvc            service.SQLServicer
 	registry          service.Registry
 	modules           []apimodule.ServiceModule
@@ -99,9 +103,12 @@ type Server struct {
 	tlsErr            error
 	authMW            *authmw.AuthMiddleware
 	sealedWindowProbe sealedWindowProbe
-	server            *grpc.Server
-	listener          net.Listener
-	serveWg           sync.WaitGroup
+	// sealedWindowListener is the boot-time sealed-window listener's probe,
+	// and selects that listener's interceptors. Nil for a regular listener.
+	sealedWindowListener sealedwindow.ListenerProbe
+	server               *grpc.Server
+	listener             net.Listener
+	serveWg              sync.WaitGroup
 }
 
 // ServerOption configures optional Server dependencies.
@@ -176,6 +183,15 @@ func WithRoleService(svc role.RoleServicer) ServerOption {
 	return func(s *Server) { s.roleSvc = svc }
 }
 
+// WithSOGate installs the SO dual-factor gate (authmw.SOGate) on every RPC
+// whose permission is in authmw.SOPermissions, after authentication: the
+// caller must hold the SO role and present the SO PIN in the "x-qrdb-so-pin" metadata
+// entry over TLS. It is the same gate the REST transport applies, built by the
+// orchestrator when auth.so_dual_factor is on; nil leaves it off.
+func WithSOGate(gate *authmw.SOGate) ServerOption {
+	return func(s *Server) { s.soGate = gate }
+}
+
 // WithCertProvider configures the Unix socket server with a certificate provider.
 func WithCertProvider(svc cert.CertProvider) ServerOption {
 	return func(s *Server) { s.certProv = svc }
@@ -214,7 +230,24 @@ type sealedWindowProbe interface {
 // While probe.IsSealed() returns true, every method whose trailing
 // component is not on the allowlist is rejected with codes.Unavailable.
 func WithSealedWindowProbe(probe sealedWindowProbe) ServerOption {
-	return func(s *Server) { s.sealedWindowProbe = probe }
+	return func(s *Server) {
+		s.sealedWindowProbe = probe
+		s.sealedWindowListener = nil
+	}
+}
+
+// WithSealedWindowListener installs the boot-time sealed-window listener's
+// interceptors (grpcpkg.SealedWindowListenerUnaryInterceptor and
+// grpcpkg.SealedWindowListenerStreamInterceptor), exactly as the TCP gRPC
+// server's WithSealedWindowListener does: the allowlist while the barrier is
+// sealed, and codes.Unavailable for every method once it is unsealed. It
+// replaces WithSealedWindowProbe; the last of the two applied wins.
+func WithSealedWindowListener(probe sealedwindow.ListenerProbe) ServerOption {
+	return func(s *Server) {
+		probe = sealedwindow.OrFailClosed(probe)
+		s.sealedWindowProbe = probe
+		s.sealedWindowListener = probe
+	}
 }
 
 // WithPINBackend configures the Unix socket server with the canonical
@@ -478,11 +511,32 @@ func (s *Server) Start() error {
 		grpcpkg.DatabaseScopeUnaryInterceptor,
 	}
 	if s.authMW != nil {
+		// The same per-method target table TCP gRPC registers: this listener
+		// serves the same services, so a method is authorized against the
+		// same tenant on both.
+		if err := s.authMW.RegisterGRPCTargets(grpcpkg.IdentityTargets()); err != nil {
+			return err
+		}
 		unaryInterceptors = append(unaryInterceptors, s.authMW.UnaryInterceptor())
 	}
-	if s.sealedWindowProbe != nil {
-		unaryInterceptors = append(unaryInterceptors,
-			grpcpkg.SealedWindowUnaryInterceptor(s.sealedWindowProbe, nil))
+	// The SO gate installs whenever there is one, auth middleware or not:
+	// with nothing to authenticate the caller there is no SO to admit, so it
+	// fails closed rather than being skipped.
+	if s.soGate != nil {
+		unaryInterceptors = append(unaryInterceptors, authmw.SOGateUnaryInterceptor(s.soGate))
+	}
+	var sealedUnary grpc.UnaryServerInterceptor
+	var sealedStream grpc.StreamServerInterceptor
+	switch {
+	case s.sealedWindowListener != nil:
+		sealedUnary = grpcpkg.SealedWindowListenerUnaryInterceptor(s.sealedWindowListener, nil)
+		sealedStream = grpcpkg.SealedWindowListenerStreamInterceptor(s.sealedWindowListener, nil)
+	case s.sealedWindowProbe != nil:
+		sealedUnary = grpcpkg.SealedWindowUnaryInterceptor(s.sealedWindowProbe, nil)
+		sealedStream = grpcpkg.SealedWindowStreamInterceptor(s.sealedWindowProbe, nil)
+	}
+	if sealedUnary != nil {
+		unaryInterceptors = append(unaryInterceptors, sealedUnary)
 	}
 	streamInterceptors := []grpc.StreamServerInterceptor{
 		streamRecoveryInterceptor,
@@ -492,9 +546,11 @@ func (s *Server) Start() error {
 	if s.authMW != nil {
 		streamInterceptors = append(streamInterceptors, s.authMW.StreamInterceptor())
 	}
-	if s.sealedWindowProbe != nil {
-		streamInterceptors = append(streamInterceptors,
-			grpcpkg.SealedWindowStreamInterceptor(s.sealedWindowProbe, nil))
+	if s.soGate != nil {
+		streamInterceptors = append(streamInterceptors, authmw.SOGateStreamInterceptor(s.soGate))
+	}
+	if sealedStream != nil {
+		streamInterceptors = append(streamInterceptors, sealedStream)
 	}
 
 	serverOpts := []grpc.ServerOption{
@@ -503,15 +559,14 @@ func (s *Server) Start() error {
 		grpc.MaxRecvMsgSize(grpcpkg.MaxImportMessageSize),
 	}
 
-	// Add TLS credentials when configured. The Unix transport is intended
-	// to run "verified TLS 1.3 only" in production (see cmd/qrdb and
-	// cmd/qrdbd CLAUDE.md); TLS is threaded in as an option, mirroring the
-	// TCP gRPC server, so tests and embedded callers that construct their
-	// own plaintext loopback may still opt out.
-	if s.tls != nil {
-		creds := credentials.NewTLS(s.tls)
-		serverOpts = append(serverOpts, grpc.Creds(creds))
-	}
+	// TLS credentials, unconditionally: the Unix transport is TLS-only, and
+	// Start returned TLSNotConfiguredError above when s.tls is nil, so this
+	// server never serves plaintext and there is no plaintext connection for
+	// an observer to miss. Connections are reported to observing modules
+	// through the credentials, never by wrapping the listener, so grpc-go
+	// receives the accepted socket unchanged.
+	creds := apimodule.ConnObserversOf(s.modules).Credentials(credentials.NewTLS(s.tls), apimodule.TransportUnix)
+	serverOpts = append(serverOpts, grpc.Creds(creds))
 
 	s.server = grpc.NewServer(serverOpts...)
 
@@ -519,6 +574,14 @@ func (s *Server) Start() error {
 	var regOpts []grpcpkg.RegisterOption
 	if s.userSvc != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterUserService(s.userSvc))
+	}
+	// WithRegisterUserAuthFactorService wires the SAME instance the dedicated
+	// UserAuthFactorService RPCs below are registered with into the shared
+	// qrdbServiceServer's GetUser/ListUsers/UpdateUser projection, so Factors
+	// metadata and the derived MFA state are computed from the real
+	// enrollment records on this transport too, not silently empty.
+	if s.userAuthFactorSvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterUserAuthFactorService(s.userAuthFactorSvc))
 	}
 	if s.roleSvc != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterRoleService(s.roleSvc))
@@ -625,13 +688,12 @@ func (s *Server) Start() error {
 		grpcpkg.RegisterAuthFactorService(s.server, s.authFactorSvc)
 	}
 
-	// Register UserAuthFactorService (M14) alongside QRDBService when
-	// configured. RegisterUserAuthFactorService itself no-ops on a nil
-	// service, but the guard here keeps this call site consistent with the
-	// AuthFactorService one above.
-	if s.userAuthFactorSvc != nil {
-		grpcpkg.RegisterUserAuthFactorService(s.server, s.userAuthFactorSvc, s.userSvc)
-	}
+	// UserAuthFactorService (M14) is registered by RegisterService above, via
+	// the WithRegisterUserAuthFactorService regOpt: that same call also wires
+	// s.userAuthFactorSvc into the shared qrdbServiceServer's GetUser/
+	// ListUsers/UpdateUser projection, so a second, direct
+	// RegisterUserAuthFactorService call here would register the
+	// qrdb.v1.UserAuthFactorService proto service on s.server twice.
 
 	// Register TenantBarrierService alongside QRDBService when configured.
 	// The same TenantServicer can be passed to both WithTenantService (for

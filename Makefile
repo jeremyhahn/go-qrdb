@@ -79,13 +79,22 @@ GOVULNCHECK   := govulncheck
 #   G115      440            148          yes
 #   G304       48              0          yes
 #   G704        2              0          yes
-#   G103        0              0          no -- 8 findings, all LOW
-#   G104        0              0          no
+#   G104      287             21          TEST FILES ONLY -- see below
+#   G103        0              0          no -- fixed or annotated (#408)
 #   G118        0              0          no -- 5 sites carry #nosec G118
 #   G122        0              0          no -- 2 sites carry #nosec G122
 #   G705        0              0          no -- 1 site carries #nosec G705
 #
-# THE THREE THAT ARE KEPT:
+# THE THREE THAT ARE KEPT, plus one PATH-SCOPED exclusion that is not in this
+# list (the G104 row is measured under #408's flags, -tests -severity=low,
+# 2026-09-30; the other rows predate them):
+#
+#   G104: unchecked errors, graded LOW, so the old -severity=medium floor never
+#         printed one. At -severity=low with -tests, EVERY site is in a
+#         _test.go file. It is therefore NOT in GOSEC_EXCLUDE: GOSEC_FLAGS
+#         excludes it for `_test.go` paths only (-exclude-rules), so a new
+#         unchecked error in production code reddens this leg as well as
+#         errcheck in `make lint`.
 #
 #   G115: integer overflow in conversions. Protocol-spec bounded shard/replica
 #         IDs and length prefixes; 440 sites in the root module and 148 in
@@ -129,13 +138,11 @@ GOVULNCHECK   := govulncheck
 # zero" is not the same claim as "it can never fire", and a reader deciding
 # whether to re-add one needs to know which:
 #
-#   G103  8 findings exist (pkg/index/metadata.go, generated .pb.go) but every
-#         one is LOW severity, and this leg runs at -severity=medium. The
-#         exclusion was doing nothing the severity floor was not already doing.
-#         Lower that floor and these appear -- which is the correct outcome:
-#         they would then be audited rather than silently pre-cleared.
-#   G104  no findings at all, at any severity. gosec reports unchecked errors
-#         only in audit mode, which this leg does not enable.
+#   G103  8 findings existed (pkg/index/metadata.go, generated .pb.go), all
+#         LOW, held out by the old -severity=medium floor rather than by this
+#         list. #408 lowered the floor and audited them: pkg/index now uses
+#         math.Float64bits, the .pb.go sites fall to -exclude-generated, and
+#         the deliberate test uses carry `#nosec G103` with their reasons.
 #   G118  5 findings, every one already suppressed by an inline `#nosec G118`
 #         carrying its reason at the site (pkg/auth/login.go, pkg/service,
 #         pkg/api/{grpc,quic,mcp}). The list entry was a second suppression
@@ -149,10 +156,8 @@ GOVULNCHECK   := govulncheck
 # list still covered it; now it reddens this leg. That is #181's rule -- the
 # justification lives at the site -- turned from a convention into a gate.
 #
-# WHAT -tests WOULD DO TO THIS TABLE, measured 2026-09-10 so the next person to
-# reach for the flag does not have to (#395). It is NOT on -- the `gosec` target
-# below records why -- but the numbers are the reason the table above is still
-# the whole truth about what this leg suppresses:
+# WHAT -tests DID TO THIS TABLE, measured 2026-09-10 (#395) before #408 turned
+# it on. These are the numbers the kept entries now suppress:
 #
 #   G115   440 -> 599 sites (161 more, all in root test files)
 #   G304    48 ->  87 sites root, and 0 -> 6 in sdk/go
@@ -226,15 +231,23 @@ COMPOSE_FILE  := .devcontainer/docker-compose.yml
 # ---------------------------------------------------------------------------
 # Module credentials for EVERY entrypoint that builds .devcontainer/Dockerfile
 # ---------------------------------------------------------------------------
-# The forge's address, in ONE place. It moved once already (2026-09-07,
-# 198.51.100.91 -> 198.51.100.50) and broke every devcontainer target that
-# resolves a first-party module, because the same URL was written out three
-# times across this file and .devcontainer/docker-compose.yml. Compose reads the
-# same name with a ":-" default, and that default is load-bearing -- #322
-# measured that an interpolated compose value with nothing behind it expands to
-# the EMPTY STRING and overrides the fallback it was meant to have. Override the
-# variable; do not edit the literal.
-GITEA_HOST ?= git.example.internal
+# The forge's address, GITEA_HOST (host:port), in ONE place -- and that place
+# is NOT a tracked file. Everything tracked publishes, so the internal forge's
+# address lives in the gitignored .devcontainer/.env beside the token that
+# already lives there (.devcontainer/.env.example documents both), or in the
+# environment, which wins over the file. `make check-public-releasable` rejects
+# the literal anywhere in the tree.
+#
+# It is one name for every consumer: stage-gomodauth below sources the .env
+# file, and docker compose reads the same file for .devcontainer/docker-compose.yml.
+# It used to be a Makefile default, and before that the same URL was written
+# out three times; the forge moved once (2026-09-07) and broke every
+# devcontainer target that resolves a first-party module.
+#
+# There is deliberately no default. A .env that carries a token and no host is
+# an error that names the variable, not a silent fall-through to the public
+# proxy, because that combination is a half-configured forge rather than a
+# machine without one.
 
 # go.mod pins first-party modules published only to the internal Gitea, and a
 # docker build inherits nothing from its caller's environment. The four
@@ -262,7 +275,7 @@ GITEA_HOST ?= git.example.internal
 # MEASURED before adopting, because the issue made it conditional on the
 # BuildKit floor (option 2 "if the floor allows it, else 1"):
 #   workstation      docker 29.1.3, compose 2.40.3
-#   gpu-host (runner) docker 29.1.3, buildx 0.30.1
+#   CI runner        docker 29.1.3, buildx 0.30.1
 # and end to end on both shapes: set -> secret mounted; UNSET and EMPTY ->
 # build succeeds with no secret, which is the fall-through #302 requires so a
 # GitHub build resolves from the public proxy.
@@ -298,8 +311,11 @@ if [ -n "$${GIT_CONFIG_KEY_0:-}" ]; then \
   export GOMODAUTH; \
   echo "==> module credentials: from the job environment"; \
 elif [ -f $(CURDIR)/.devcontainer/.env ]; then \
+  gitea_host_env="$${GITEA_HOST:-}"; \
   . $(CURDIR)/.devcontainer/.env; \
-  GOMODAUTH="export GOPRIVATE='github.com/jeremyhahn/*'; export GIT_CONFIG_COUNT='1'; export GIT_CONFIG_KEY_0='url.http://x:$${GITEA_GO_TOKEN}@$(GITEA_HOST)/jeremyhahn/.insteadOf'; export GIT_CONFIG_VALUE_0='https://github.com/jeremyhahn/'"; \
+  GITEA_HOST="$${gitea_host_env:-$${GITEA_HOST:-}}"; \
+  [ -n "$$GITEA_HOST" ] || { echo "ERROR: $(CURDIR)/.devcontainer/.env exists but GITEA_HOST is unset. Add GITEA_HOST=<host:port> of the module forge to it (see .devcontainer/.env.example), or export it." >&2; exit 1; }; \
+  GOMODAUTH="export GOPRIVATE='github.com/jeremyhahn/*'; export GIT_CONFIG_COUNT='1'; export GIT_CONFIG_KEY_0='url.http://x:$${GITEA_GO_TOKEN}@$${GITEA_HOST}/jeremyhahn/.insteadOf'; export GIT_CONFIG_VALUE_0='https://github.com/jeremyhahn/'"; \
   export GOMODAUTH; \
   echo "==> module credentials: from $(CURDIR)/.devcontainer/.env"; \
 else \
@@ -1152,7 +1168,19 @@ endef
 COVER_BASELINE     := test/coverage-baseline.txt
 COVER_TOLERANCE    := 1.0
 COVER_EXCLUDE_PKGS := github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest,github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest,github.com/jeremyhahn/go-qrdb/pkg/auth/authtest,github.com/jeremyhahn/go-qrdb/pkg/api/grpc/grpctest
-COVER_RATCHET       = $(GO) run ./test/tools/coverratchet -profile $(COVER_DIR)/total.out -baseline $(COVER_BASELINE) -exclude "$(COVER_EXCLUDE_PKGS)"
+#
+# THE BASELINE IS MEASURED UNDER BUILD_TAGS, the default feature set, and says
+# so in its `# build-tags:` line. A package's coverage depends on which of its
+# files the tags compile: on one tree pkg/api/grpc reads 90.7% under BUILD_TAGS
+# and 77.1% under `codec_json raft` alone (quic 97.0 vs 88.6, mcp 91.3 vs 80.7).
+# Lanes that measured under the minimal rung read a 13-point regression that
+# was never there. The ratchet now takes the tag set the profile was measured
+# under -- as the CALLER'S ASSERTION: a coverage profile does not record its
+# tags, so the tool cannot derive them. This recipe keeps the assertion true by
+# passing the same $(BUILD_TAGS) its `go test` expands. The ratchet refuses a
+# baseline recorded under a different set. A per-package
+# figure taken by hand is comparable only under `make print-build-tags`.
+COVER_RATCHET       = $(GO) run ./test/tools/coverratchet -profile $(COVER_DIR)/total.out -baseline $(COVER_BASELINE) -exclude "$(COVER_EXCLUDE_PKGS)" -tags "$(strip $(BUILD_TAGS))"
 
 # COVERAGE_MERGE_SUBPROCESS builds the combined profile from two DISJOINT
 # package sets: the bulk `-coverprofile` run below, over every package EXCEPT
@@ -1548,7 +1576,7 @@ ci:
 # asserts is that `security`'s trivy leg refuses a database too old to know
 # about a current advisory (#451). A guard for the suite belongs before the
 # suite, so a broken guard reports as a broken guard.
-_ci: check-tool-versions test-tool-versions check-bundled-gosec test-bundled-gosec test-trivy-db check-compose-targets test-compose-targets check-action-pins test-nightly-signal fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound secure-analyzer test-secure-analyzer security build-server test
+_ci: check-tool-versions test-tool-versions check-bundled-gosec test-bundled-gosec test-trivy-db check-compose-targets test-compose-targets check-action-pins test-nightly-signal fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound check-public-releasable test-public-releasable test-git-extraheader secure-analyzer test-secure-analyzer security build-server test
 	@echo "CI pipeline passed"
 
 # ============================================================================
@@ -1713,6 +1741,33 @@ check-publication-bound:
 .PHONY: test-publication-bound
 test-publication-bound:
 	@./scripts/check-publication-bound_test.sh
+
+# The WHOLE tracked tree names no fleet value: no lab address, no lab host, no
+# path under the owner's home, and no tracked per-machine agent state (#565).
+# check-publication-bound's sibling, deliberately narrower in WHAT it matches
+# and wider in WHERE it looks -- the header of scripts/check-public-releasable.sh
+# says why each is so. ~2s over the whole index.
+#
+# The fleet's values are loaded at run time from an UNTRACKED pattern file:
+# $PUBLIC_RELEASE_PATTERNS_FILE, else ../handbook/software/conventions/
+# public-release-patterns, else $XDG_CONFIG_HOME/go-qrdb/public-release-patterns.
+# None of them is a failure, never a pass. CI writes the PUBLIC_RELEASE_PATTERNS
+# secret to a temp file. docs/release/user.md has the setup.
+.PHONY: check-public-releasable
+check-public-releasable:
+	@./scripts/check-public-releasable.sh
+
+# Its rejecting and fail-closed branches, against throwaway repositories.
+.PHONY: test-public-releasable
+test-public-releasable:
+	@./scripts/check-public-releasable_test.sh
+
+# The Release workflow's per-step forge credential (scripts/git-extraheader.sh):
+# git sees the header from the environment only, nothing is written to a git
+# config file, and an empty token stops the step. No network.
+.PHONY: test-git-extraheader
+test-git-extraheader:
+	@./scripts/git-extraheader_test.sh
 
 # Every `uses:` in every workflow resolves to a 40-hex commit (#367).
 #
@@ -1960,6 +2015,16 @@ check-artifact-paths:
 test-artifact-paths:
 	@./scripts/check-artifact-paths_test.sh
 
+# sdk/go/transport/embedded/database_scope_services.go is generated from the
+# pkg/service interfaces by internal/scopegen (go generate in that package).
+# An interface that grows a method, or a hand edit to the file, leaves it
+# stale; this fails until it is regenerated. The generator's own tests
+# (TestCommittedFileIsCurrent) make the same check under `go test`, and cover
+# its rejecting branches.
+.PHONY: check-generated
+check-generated:
+	cd sdk/go && GOWORK=off $(GO) run ./transport/embedded/internal/scopegen -check transport/embedded/database_scope_services.go
+
 .PHONY: vet
 vet:
 	$(GOVET) $(TAG_FLAG) ./...
@@ -2167,6 +2232,13 @@ vet-tags:
 print-tag-sets:
 	@printf '%s\n' $(SUPPORTED_TAG_SETS)
 
+# print-build-tags prints BUILD_TAGS, the default feature set `make test` and
+# `make coverage` compile, and so the only tag set a coverage figure is
+# comparable with test/coverage-baseline.txt under.
+.PHONY: print-build-tags
+print-build-tags:
+	@printf '%s\n' "$(strip $(BUILD_TAGS))"
+
 # print-trivy-version prints TRIVY_VERSION for the same reason: ci.yml's
 # blocking trivy job installs the scanner PINNED to it, and a workflow that
 # restated "v0.74.0" would be a second copy of the pin that drifts the first
@@ -2210,6 +2282,7 @@ fmt:
 .PHONY: check-tag-lockstep
 check-tag-lockstep:
 	@./scripts/check-tag-lockstep.sh
+
 
 .PHONY: test-tag-lockstep
 test-tag-lockstep:
@@ -2478,89 +2551,72 @@ TRIVY_INSTALL       := curl -sfL https://raw.githubusercontent.com/aquasecurity/
 # nothing left to drift; a second name spelled a second way is what produced
 # this defect.
 #
-# -tests IS DELIBERATELY ABSENT FROM ALL THREE INVOCATIONS BELOW, AND THAT IS A
-# MEASURED DECISION, NOT AN OVERSIGHT (#395). Do not add it without reading
-# this; #395 was filed to add it and the measurements say it cannot be, yet.
+# GOSEC_FLAGS: EVERY ANALYSIS-AFFECTING FLAG, IN ONE VARIABLE THE THREE
+# INVOCATIONS BELOW SHARE (#408). A flag that reached two of them and not the
+# third is how this class of defect kept surviving: #293 gave `gosec` a tag
+# list and left `gosec-sarif` bare, #295 found the tag list inert, and #395
+# found -tests missing from all three. One variable cannot disagree with
+# itself, so no scanner is needed to hold them together.
 #
-# WHY IT LOOKS LIKE IT SHOULD BE ON. gosec's default is -tests=false, and that
-# is not merely "test files are skipped": the analyzer-backed rules run over a
-# package's SSA, and the test variant BUILDS MORE OF THE PACKAGE, so omitting it
-# reaches less of the NON-TEST code. Measured on gosec v2.29.0 with the tags
-# above, no excludes, no severity floor, duplicate (file, line, rule) tuples
-# collapsed:
+# -tests IS ON. gosec's default is -tests=false, and that is not merely "test
+# files are skipped": the analyzer-backed rules run over a package's SSA, and
+# the test variant BUILDS MORE OF THE PACKAGE, so omitting it reached less of
+# the NON-TEST code -- 19 G602 sites (15 root, 4 sdk/go) this leg never saw.
 #
-#                unique findings in NON-TEST files
-#                    root      sdk/go
-#   no -tests          504         148
-#   -tests             519         152
+# IT WAS OFF because gosec loads a package by handing go/packages a FILE LIST,
+# which makes the loaded package `command-line-arguments`: an external test
+# package (`package foo_test`) importing its own package by import path then
+# binds to the un-augmented package, every identifier an `export_test.go`
+# exposes is undefined, and gosec exits 1 on the loader error with zero
+# findings. pkg/seal and sdk/go both hit it. #408 removed the idiom rather than
+# waiting on the scanner: the tests that borrowed an unexported symbol now live
+# in the package they test, and neither export_test.go exists. A new
+# export_test.go consumed by an external test package reddens this gate with
+# "undefined:" -- move that test in-package instead.
 #
-# The 15 and the 4 are all G602, and they are exactly the sets recorded against
-# .golangci.yml's G602 entry -- that leg sets `run.tests: true`, so its gosec
-# has always reached them.
+# -severity=low, NOT medium. gosec grades G602 LOW, so -tests alone restored
+# the G602 sites without printing them: the floor was the other half of the
+# blindness (#408). -confidence=medium stays, and is what holds out the
+# LOW-confidence G101 credential-name guesses.
 #
-# WHY IT IS STILL OFF. Two independent reasons, either one sufficient:
+# -exclude-generated. Lowering the floor admits G103 in protoc output
+# (pkg/api/grpc/proto/qrdbv1: authz.pb.go:85, qrdb.pb.go x2, measured
+# 2026-09-30), and protoc rewrites those files, so they cannot carry an inline
+# justification. Generated code is recognised by its standard
+# "Code generated ... DO NOT EDIT." header, not by a path.
 #
-#   1. IT FAILS THE GATE. gosec loads a package by handing go/packages a FILE
-#      LIST, which makes the loaded package `command-line-arguments`. With
-#      -tests it adds XTestGoFiles to that list, and an external test package
-#      (`package foo_test`) importing its own package by IMPORT PATH then binds
-#      to the real, un-augmented package -- so every identifier an
-#      `export_test.go` exposes is undefined. gosec exits 1 on loader errors
-#      even with zero findings. This tree has two such packages, pkg/seal and
-#      sdk/go, and both fail:
+# WHAT THE LOWER FLOOR SURFACED, AND WHERE IT WENT (gosec v2.29.0, both
+# modules, 2026-09-30). Every site was read, and each one was either fixed or
+# annotated in place with `#nosec <RULE> -- <reason>`:
 #
-#        pkg/seal/barrier_registry_strategy_test.go:128: undefined:
-#            seal.NewCaptureDistributor
-#        sdk/go/membership_test.go:124: undefined:
-#            sdk.TranslateMemberEventForTest        (+ 8 more in sdk/go)
+#   G602  30 root + 4 sdk/go. One was a REAL latent panic: sdk/go/driver's
+#         embedded Rows.Next wrote dest[i] for every cell the engine returned,
+#         so a row wider than the columns database/sql sized dest from indexed
+#         past it. It now returns *RowWidthError. The rest are guarded: the
+#         sm.StateMachine Update contract (len(results) == len(entries)), or a
+#         length check just above the index.
+#   G103  8. pkg/index's float encoding used an unsafe cast for what
+#         math.Float64bits does -- replaced, and unsafe is gone from that file.
+#         The pkg/secure and pkg/service tests use unsafe on purpose, and each
+#         says why.
+#   G204/G702  10 test-binary re-execs. G404  6 fixed-seed fixtures + the
+#         k-means++ seeding, whose annotation sat one statement too early.
+#         G301/G306  14 fixture modes in test/buildgates, tightened to
+#         0750/0600. G122 2, G117 1, G402 1, G407 1, G703 1 in tests. G118 1
+#         in sdk/go/transport/embedded, which had been missing its annotation.
 #
-#      `go vet` and `go test` typecheck both packages fine, so this is gosec's
-#      loader, not this tree. Reproduced on 22 lines: a package, an
-#      `export_test.go` exporting one unexported symbol, and an external test
-#      using it -- `go vet` and `go test` pass, `gosec` passes, `gosec -tests`
-#      exits 1 with "Issues: 0". `gosec@latest` resolved to v2.29.0 on
-#      2026-09-10, so there is no newer release to take.
-#
-#      Working around it means deleting the `export_test.go` idiom from
-#      pkg/seal and sdk/go -- restructuring tests in a security-review path to
-#      suit a scanner bug. That is a change for an owner to approve, not a
-#      side effect of a flag. Carried by #408 with both options written out.
-#
-#   2. IT WOULD NOT CHANGE WHAT THIS LEG REPORTS ANYWAY. This leg runs at
-#      -severity=medium and gosec grades G602 LOW/HIGH, so all 19 of the sites
-#      -tests restores sit under the floor. Measured the same day, unique
-#      non-test sites at each floor:
-#
-#                              root   sdk/go
-#        -severity=medium       488      148   <- what this leg reports
-#        -severity=low          519      152
-#          G602                  15        4   <- what -tests restores
-#          G101                  11        0   <- LOW confidence too, so the
-#                                                 -confidence floor holds these
-#                                                 out at either severity
-#          G103                   5        0   <- 3 of them in generated .pb.go
-#
-#      So -tests is necessary but NOT sufficient for the G602 blindness #395
-#      names; the severity floor is the other half, and lowering it is its own
-#      change (three of the sites are in generated protobuf output, which
-#      cannot carry an inline justification because protoc rewrites it). #408.
-#
-# WHAT IS ALREADY PAID FOR. The 91 findings a -tests run admits in _test.go
-# files -- the reason #395 called this a separate change -- are triaged and
-# gone: directory and file modes tightened to 0750/0600 at 39 sites, and 48
-# inline `#nosec <RULE> -- reason` annotations at the rest (G102, G120, G122,
-# G202, G204, G302, G404, G407, G702, G703), each read individually. Both
-# scanner versions honour those, so when the loader defect is resolved this
-# becomes a one-word change to three lines with a green gate behind it.
-#
-# The three invocations are listed one after another ON PURPOSE. A flag that
-# reaches two of them and not the third is how this class of defect survives:
-# #293 gave `gosec` a tag list and left `gosec-sarif` bare, and #295 found the
-# tag list was inert anyway. Whatever you change here, change all three.
+# G104 IS EXCLUDED IN TEST FILES ONLY (-exclude-rules, gosec's path-scoped
+# exclusion), and that changes nothing the old floor reported: gosec grades
+# unchecked errors LOW, so -severity=medium never printed one. At
+# -severity=low with -tests it reports 287 root and 21 sdk/go sites, EVERY ONE
+# in a _test.go file (idx.Add(...) in a fixture) -- the policy .golangci.yml's
+# test-file rule already takes for errcheck. Production code stays armed: a new
+# unchecked error there is reported by this leg and by errcheck in `make lint`.
+GOSEC_FLAGS := -concurrency 4 -tests -exclude-generated -tags "$(LINT_TAGS)" -exclude=$(GOSEC_EXCLUDE) -exclude-rules='_test\.go$$:G104' -severity=low -confidence=medium
 .PHONY: gosec
 gosec:
 	$(call require-scanner,$(GOSEC),$(GOSEC_INSTALL))
-	$(GOSEC) -concurrency 4 -tags "$(LINT_TAGS)" -exclude=$(GOSEC_EXCLUDE) $(GOSEC_EXCLUDE_DIRS) -severity=medium -confidence=medium ./...
+	$(GOSEC) $(GOSEC_FLAGS) $(GOSEC_EXCLUDE_DIRS) ./...
 
 # The SDK module, scanned with the same exclusions so the two legs cannot
 # disagree about what is suppressed. sdk/go/gorm/conformance is a module nested
@@ -2579,14 +2635,14 @@ gosec-sdk:
 	$(call require-scanner,$(GOSEC),$(GOSEC_INSTALL))
 	@$(stage-gomodauth) \
 	eval "$${GOMODAUTH:-}"; \
-	cd $(SDK_DIR) && $(GOSEC) -concurrency 4 -tags "$(LINT_TAGS)" -exclude=$(GOSEC_EXCLUDE) -severity=medium -confidence=medium ./...
+	cd $(SDK_DIR) && $(GOSEC) $(GOSEC_FLAGS) ./...
 
 # SARIF for GitHub code scanning. Same exclusions as `gosec` above so the
 # dashboard and the gate never disagree; non-blocking because `gosec` is the
 # gate.
 .PHONY: gosec-sarif
 gosec-sarif:
-	$(GOSEC) -concurrency 4 -tags "$(LINT_TAGS)" -fmt=sarif -out=gosec.sarif -exclude=$(GOSEC_EXCLUDE) $(GOSEC_EXCLUDE_DIRS) -severity=medium -confidence=medium ./... || true
+	$(GOSEC) $(GOSEC_FLAGS) -fmt=sarif -out=gosec.sarif $(GOSEC_EXCLUDE_DIRS) ./... || true
 
 # Blocking. govulncheck is the forcing function for toolchain currency
 # (devops.md §9) — swallowing its exit code is what lets a known-vulnerable
@@ -3440,6 +3496,22 @@ export GOWORK=off
 #
 #     make release-alpha VERSION=v0.17.0-alpha
 #
+# THE RELEASE WORKFLOW IS THE CALLER (#13, owner ruling 2026-09-30: "workflow
+# wraps release-alpha"). .github/workflows/release.yml reads VERSION from main,
+# which is authoritative, and runs this recipe as the release bot, whose token
+# tag protection alone admits.
+#
+# VERSION IS AUTHORITATIVE, SO THIS RECIPE NEVER WRITES IT. The release is the
+# reviewed commit that bumps VERSION and CHANGELOG; this recipe tags that commit
+# and creates no commit of its own. A VERSION= argument that is not what
+# VERSION on HEAD already names is refused before anything is fetched or
+# written ("merge the VERSION/CHANGELOG bump first"), as is an unsigned HEAD and
+# a HEAD that is not exactly what the remote's main holds. The push therefore
+# carries only the tags: the release commit is already on main.
+# The argument is still required: it is the operator's statement of what they
+# expect to publish, checked against the file rather than replacing it.
+# docs/release/ has the whole flow and the owner's one-time setup.
+#
 # Overridable inputs, all with sane defaults for this repository:
 #
 #   AGENT_GIT       the identity/signing wrapper, resolved from PATH. Not an
@@ -3558,6 +3630,9 @@ release-alpha: check-tag-lockstep
 # creates and updates local refs -- so a dirty tree has to be caught while the
 # only thing that has happened is reading. Raised in review of PR #212.
 	@test -z "$$(git status --porcelain)" || { echo 'ERROR: working tree not clean'; exit 1; }
+	@HEAD_VERSION=$$(git show HEAD:VERSION 2>/dev/null | tr -d '[:space:]'); \
+	test "$$HEAD_VERSION" = "$${REL_VERSION#v}" || { echo "ERROR: VERSION on HEAD names $${HEAD_VERSION:-nothing}, not $${REL_VERSION#v}; merge the VERSION/CHANGELOG bump first. VERSION is authoritative: this recipe tags the commit that names the release and never writes VERSION itself"; exit 1; }
+	@test "$$(git cat-file commit HEAD | grep -c '^gpgsig')" -eq 1 || { echo 'ERROR: HEAD names this release but carries no SSH signature. main enforces signed commits, so an unsigned HEAD means this clone is not what main holds'; exit 1; }
 	@test -n "$$REL_REPO" || { echo 'ERROR: REPO_NAME is empty - set it to the literal repo name, never the checkout directory name'; exit 1; }
 	@printf '%s' "$$REL_REPO" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$$' || { echo "ERROR: REPO_NAME is not a plain repo name: $$REL_REPO"; exit 1; }
 	@command -v "$$REL_AGENT_GIT" >/dev/null 2>&1 || { echo "ERROR: AGENT_GIT does not resolve to an executable: $$REL_AGENT_GIT. Every git write in this recipe signs through it, and a bad path must fail before VERSION is written. Put agent-git.sh on PATH or pass AGENT_GIT=/path/to/agent-git.sh"; exit 1; }
@@ -3656,6 +3731,8 @@ release-alpha: check-tag-lockstep
 # the whole discovered set (in the tag loop below). Reconciling the history of
 # a newly-added namespace is a migration question, and it is go-qrdb#50's.
 	@./scripts/check-tag-lockstep.sh || { echo "ERROR: the published tag set is not in lockstep. This is the audit that matters: the prerequisite ran before the fetch above and saw only this clone's tags. Fix the published skew before cutting a release on top of it"; exit 1; }
+	@REMOTE_MAIN=$$(git ls-remote "$$REL_REMOTE" refs/heads/main 2>/dev/null | awk '{print $$1}'); \
+	test -n "$$REMOTE_MAIN" && test "$$REMOTE_MAIN" = "$$(git rev-parse HEAD)" || { echo "ERROR: HEAD $$(git rev-parse --short HEAD) is not what $$REL_REMOTE main holds ($${REMOTE_MAIN:-unreadable}). A release tags the reviewed VERSION/CHANGELOG commit once it is merged: merge the bump first, then release from that exact commit"; exit 1; }
 # The discovery runs when make PARSES the file; the tags are cut much later. So
 # it is re-checked here against the filesystem it claimed to describe, rather
 # than trusted -- reading a value at entry and acting on it later is exactly the
@@ -3830,15 +3907,10 @@ release-alpha: check-tag-lockstep
 	fail() { \
 	  cleanup; \
 	  echo "$$1" >&2; \
-	  echo '  Nothing was published. The release commit and any tag this run created have been removed and the tree is back where it started, so fixing the cause and re-running the target is the whole recovery.' >&2; \
+	  echo '  Nothing was published. Every tag this run created has been removed and the tree is back where it started, so fixing the cause and re-running the target is the whole recovery.' >&2; \
 	  exit 1; \
 	}; \
-	printf '%s\n' "$${REL_VERSION#v}" > VERSION; \
-	"$$REL_AGENT_GIT" "$$REL_REPO" add VERSION || fail "ERROR: could not stage VERSION"; \
-	"$$REL_AGENT_GIT" "$$REL_REPO" commit -q -m "chore(release): $$REL_VERSION" || fail 'ERROR: the release VERSION commit failed - v1 swallowed this with || true and tagged anyway, which is how a tag comes to disagree with its own VERSION file'; \
-	test "$$(git show HEAD:VERSION)" = "$${REL_VERSION#v}" || fail "ERROR: HEAD is not the release commit for $$REL_VERSION - refusing to tag"; \
-	test "$$(git cat-file commit HEAD | grep -c '^gpgsig')" -eq 1 || fail 'ERROR: the release commit carries no SSH signature. main enforces signed commits, so this would be rejected at push time - and without this check that rejection would arrive after the tags already existed'; \
-	test "$$(git log -1 --format='%an %cn')" = "agent-$${REL_REPO#agent-} agent-$${REL_REPO#agent-}" || fail "ERROR: the release commit is authored/committed by $$(git log -1 --format='%an / %cn'), not the repository agent. AGENT_GIT is not the identity wrapper"; \
+	test "$$(git show HEAD:VERSION | tr -d '[:space:]')" = "$${REL_VERSION#v}" || fail "ERROR: HEAD no longer names $$REL_VERSION - refusing to tag"; \
 	REL_COMMIT=$$(git rev-parse HEAD); \
 	TAGS="$$REL_VERSION"; \
 	REFS="refs/tags/$$REL_VERSION"; \
@@ -3854,17 +3926,17 @@ release-alpha: check-tag-lockstep
 	  test "$$(git rev-parse "$$t^{commit}")" = "$$REL_COMMIT" || fail "ERROR: $$t does not point at the release commit. This is the lockstep property for THIS release, checked over every discovered module rather than left to an audit that only knows the default one"; \
 	done; \
 	./scripts/check-tag-lockstep.sh || fail "ERROR: the tags just created are not in lockstep with each other. Nothing was pushed - this is the one moment a skewed release can still be prevented rather than reported (go-qrdb#13)"; \
-	if "$$REL_AGENT_GIT" "$$REL_REPO" push --atomic "$$REL_REMOTE" "$$REL_COMMIT:refs/heads/main" $$REFS; then \
-	  echo "Released $$REL_VERSION on $$REL_REMOTE (signed commit; annotated signed tags:$$TAGS; atomic push of exactly those refs)"; \
+	if "$$REL_AGENT_GIT" "$$REL_REPO" push --atomic "$$REL_REMOTE" $$REFS; then \
+	  echo "Released $$REL_VERSION on $$REL_REMOTE (merged release commit $$REL_COMMIT; annotated signed tags:$$TAGS; atomic push of exactly those tags)"; \
 	  exit 0; \
 	fi; \
 	echo 'WARNING: the push client reported failure. That does not say WHICH outcome occurred, so the remote is being asked what it actually holds before anything is touched.' >&2; \
-	PROBE=$$(git ls-remote "$$REL_REMOTE" refs/heads/main $$REFS 2>/dev/null) || PROBE='@@unqueryable@@'; \
+	PROBE=$$(git ls-remote "$$REL_REMOTE" $$REFS 2>/dev/null) || PROBE='@@unqueryable@@'; \
 	if [ "$$PROBE" = '@@unqueryable@@' ]; then \
-	  echo "ERROR: the push to $$REL_REMOTE failed AND the remote cannot be queried, so whether this release was published is UNKNOWN. Nothing has been rolled back on purpose: the release commit and the tags$$TAGS are intact locally, because deleting the only local copy of a release that may already be live and immutable is worse than leaving it. Restore access and compare: git ls-remote $$REL_REMOTE refs/heads/main$$REFS" >&2; \
+	  echo "ERROR: the push to $$REL_REMOTE failed AND the remote cannot be queried, so whether this release was published is UNKNOWN. Nothing has been rolled back on purpose: the tags$$TAGS are intact locally, because deleting the only local copy of a release that may already be live and immutable is worse than leaving it. Restore access and compare: git ls-remote $$REL_REMOTE$$REFS" >&2; \
 	  exit 1; \
 	fi; \
-	CHECK="refs/heads/main=$$REL_COMMIT"; \
+	CHECK=""; \
 	for t in $$TAGS; do CHECK="$$CHECK refs/tags/$$t=$$(git rev-parse "refs/tags/$$t")"; done; \
 	MATCH=0; TOTAL=0; DETAIL=""; \
 	for c in $$CHECK; do \
@@ -3877,13 +3949,13 @@ release-alpha: check-tag-lockstep
 	done; \
 	if [ "$$MATCH" -eq "$$TOTAL" ]; then \
 	  echo "NOTE: the remote holds every intended ref at the expected object, so the release IS published and the client error was in reporting it, not in doing it. Nothing was rolled back." >&2; \
-	  echo "Released $$REL_VERSION on $$REL_REMOTE (signed commit; annotated signed tags:$$TAGS; the push client errored after the remote had applied every ref)"; \
+	  echo "Released $$REL_VERSION on $$REL_REMOTE (merged release commit $$REL_COMMIT; annotated signed tags:$$TAGS; the push client errored after the remote had applied every tag)"; \
 	  exit 0; \
 	fi; \
 	if [ "$$MATCH" -eq 0 ]; then \
 	  fail "ERROR: the push to $$REL_REMOTE failed and the remote carries none of this release - established by asking it what it holds, not by reading the client's exit code"; \
 	fi; \
-	printf 'ERROR: the push to %s failed and the remote is in a MIXED state, which --atomic is meant to make impossible. NOTHING HAS BEEN ROLLED BACK: the release commit and the tags%s are intact locally, because part of this release may already be published and immutable. Reconcile by hand and do not re-run until you have.%b\n' "$$REL_REMOTE" "$$TAGS" "$$DETAIL" >&2; \
+	printf 'ERROR: the push to %s failed and the remote is in a MIXED state, which --atomic is meant to make impossible. NOTHING HAS BEEN ROLLED BACK: the tags%s are intact locally, because part of this release may already be published and immutable. Reconcile by hand and do not re-run until you have.%b\n' "$$REL_REMOTE" "$$TAGS" "$$DETAIL" >&2; \
 	exit 1
 
 deps-latest:

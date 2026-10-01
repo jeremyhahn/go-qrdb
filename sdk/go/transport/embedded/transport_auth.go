@@ -19,6 +19,7 @@ import (
 	"encoding/base64"
 	"time"
 
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -42,6 +43,11 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 	if t.userSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "CreateUser"}
 	}
+	if len(req.RoleIDs) > 0 {
+		if err := t.authMW.AuthorizeRoleAssignmentWriteOnCreate(ctx, t.roleSvc, req.TenantID, req.RoleIDs); err != nil {
+			return nil, err
+		}
+	}
 	u, err := t.userSvc.CreateUser(ctx, &user.CreateUserRequest{
 		Username:             req.Username,
 		Email:                req.Email,
@@ -56,7 +62,7 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 	if err != nil {
 		return nil, err
 	}
-	return userToTransport(u), nil
+	return userToTransport(ctx, t.userAuthFactorSvc, u)
 }
 
 // GetUser retrieves a user by ID via the embedded user service.
@@ -68,7 +74,7 @@ func (t *Transport) GetUser(ctx context.Context, id uint64) (*transport.User, er
 	if err != nil {
 		return nil, err
 	}
-	return userToTransport(u), nil
+	return userToTransport(ctx, t.userAuthFactorSvc, u)
 }
 
 // GetUserByUsername retrieves a user by tenant-scoped username via the
@@ -81,7 +87,7 @@ func (t *Transport) GetUserByUsername(ctx context.Context, tenantID, username st
 	if err != nil {
 		return nil, err
 	}
-	return userToTransport(u), nil
+	return userToTransport(ctx, t.userAuthFactorSvc, u)
 }
 
 // GetUserByEmail resolves the canonical login key through the embedded service.
@@ -93,7 +99,7 @@ func (t *Transport) GetUserByEmail(ctx context.Context, tenantID, email string) 
 	if err != nil {
 		return nil, err
 	}
-	return userToTransport(u), nil
+	return userToTransport(ctx, t.userAuthFactorSvc, u)
 }
 
 // GetUserByCertThumbprint resolves a user by mTLS SPKI thumbprint via the
@@ -106,7 +112,7 @@ func (t *Transport) GetUserByCertThumbprint(ctx context.Context, thumbprint stri
 	if err != nil {
 		return nil, err
 	}
-	return userToTransport(u), nil
+	return userToTransport(ctx, t.userAuthFactorSvc, u)
 }
 
 // AddCertBinding binds an mTLS SPKI thumbprint to a user via the embedded
@@ -119,7 +125,7 @@ func (t *Transport) AddCertBinding(ctx context.Context, userID uint64, thumbprin
 	if err != nil {
 		return nil, err
 	}
-	return userToTransport(u), nil
+	return userToTransport(ctx, t.userAuthFactorSvc, u)
 }
 
 // RemoveCertBinding withdraws an mTLS SPKI thumbprint from a user via the
@@ -132,7 +138,7 @@ func (t *Transport) RemoveCertBinding(ctx context.Context, userID uint64, thumbp
 	if err != nil {
 		return nil, err
 	}
-	return userToTransport(u), nil
+	return userToTransport(ctx, t.userAuthFactorSvc, u)
 }
 
 // UpdateUser applies partial updates to a user via the embedded user service.
@@ -141,13 +147,15 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 		return nil, &transport.NotImplementedError{Method: "UpdateUser"}
 	}
 	updateReq := &user.UpdateUserRequest{
-		ID:          req.ID,
-		Username:    req.Username,
-		Email:       req.Email,
-		Name:        req.Name,
-		RoleIDs:     req.RoleIDs,
-		AuthMethods: req.AuthMethods,
-		Lifecycle:   user.Lifecycle(req.Lifecycle),
+		ID:           req.ID,
+		Username:     req.Username,
+		Email:        req.Email,
+		Name:         req.Name,
+		RoleIDs:      req.RoleIDs,
+		AuthMethods:  req.AuthMethods,
+		Lifecycle:    user.Lifecycle(req.Lifecycle),
+		RoleBindings: user.RoleBindingsFromWire(req.RoleBindings),
+		Attributes:   req.Attributes,
 	}
 	if req.LastAuth != "" {
 		at, perr := time.Parse(time.RFC3339, req.LastAuth)
@@ -157,11 +165,16 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 		utc := at.UTC()
 		updateReq.LastAuth = &utc
 	}
+	if authmw.TouchesRoleAssignment(updateReq.RoleIDs, updateReq.RoleBindings, updateReq.Attributes) {
+		if err := t.authMW.AuthorizeRoleAssignmentWrite(ctx, t.userSvc, t.roleSvc, req.ID, updateReq.RoleIDs, updateReq.RoleBindings); err != nil {
+			return nil, err
+		}
+	}
 	u, err := t.userSvc.UpdateUser(ctx, updateReq)
 	if err != nil {
 		return nil, err
 	}
-	return userToTransport(u), nil
+	return userToTransport(ctx, t.userAuthFactorSvc, u)
 }
 
 // DeleteUser removes a non-system user by ID via the embedded user service.
@@ -187,7 +200,9 @@ func (t *Transport) ListUsers(ctx context.Context, req *transport.ListUsersReque
 	}
 	users := make([]*transport.User, len(resp.Users))
 	for i, u := range resp.Users {
-		users[i] = userToTransport(u)
+		if users[i], err = userToTransport(ctx, t.userAuthFactorSvc, u); err != nil {
+			return nil, err
+		}
 	}
 	return &transport.ListUsersResponse{
 		Users:   users,
@@ -304,8 +319,10 @@ func (t *Transport) AssignRole(ctx context.Context, userID uint64, roleID string
 		return &transport.NotImplementedError{Method: "AssignRole"}
 	}
 
-	// Validate role exists.
-	if _, err := t.roleSvc.GetRole(ctx, roleID); err != nil {
+	// The same gate every role-assignment write passes: roles:assign in the
+	// user's tenant (when an AuthMiddleware is installed), and the role must
+	// exist there.
+	if err := t.authMW.AuthorizeRoleAssignmentWrite(ctx, t.userSvc, t.roleSvc, userID, []string{roleID}, nil); err != nil {
 		return err
 	}
 
@@ -334,6 +351,9 @@ func (t *Transport) UnassignRole(ctx context.Context, userID uint64, roleID stri
 	}
 	if t.userSvc == nil {
 		return &transport.NotImplementedError{Method: "UnassignRole"}
+	}
+	if err := t.authMW.AuthorizeRoleUnassignment(ctx, t.userSvc, userID); err != nil {
+		return err
 	}
 
 	u, err := t.userSvc.GetUser(ctx, userID)
@@ -462,29 +482,45 @@ func (t *Transport) ListCerts(ctx context.Context, tenantID string) (*transport.
 // ---------------------------------------------------------------------------
 
 // userToTransport converts a domain user to its transport representation.
-func userToTransport(u *user.User) *transport.User {
+// Factors metadata and the derived MFA fields are computed at read time from
+// the real enrollment records via lister (service.UserAuthFactorServicer),
+// read once -- never from a stored field on u. lister may be nil (the
+// auth-factor subsystem is not configured for this deployment); a lister that
+// fails returns the *user.FactorLookupError rather than a user claiming no
+// factors.
+func userToTransport(ctx context.Context, lister user.FactorLister, u *user.User) (*transport.User, error) {
 	if u == nil {
-		return nil
+		return nil, nil
 	}
 	roleIDs := u.RoleIDs
 	if roleIDs == nil {
 		roleIDs = []string{}
 	}
-	return &transport.User{
-		ID:           u.ID,
-		Username:     u.Username,
-		Email:        u.Email,
-		Name:         u.Name,
-		TenantID:     u.TenantID,
-		RoleIDs:      roleIDs,
-		System:       u.System,
-		Lifecycle:    string(u.Lifecycle),
-		AuthMethods:  u.AuthMethods,
-		LastAuth:     formatLastAuth(u.LastAuth),
-		CertBindings: user.WireCertBindings(u.CertBindings),
-		CreatedAt:    u.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:    u.UpdatedAt.Format(time.RFC3339),
+	factors, err := user.ResolveFactorView(ctx, lister, u.ID)
+	if err != nil {
+		return nil, err
 	}
+	return &transport.User{
+		ID:            u.ID,
+		Username:      u.Username,
+		Email:         u.Email,
+		Name:          u.Name,
+		TenantID:      u.TenantID,
+		RoleIDs:       roleIDs,
+		System:        u.System,
+		Lifecycle:     string(u.Lifecycle),
+		AuthMethods:   u.AuthMethods,
+		LastAuth:      formatLastAuth(u.LastAuth),
+		CertBindings:  user.WireCertBindings(u.CertBindings),
+		RoleBindings:  user.WireRoleBindings(u.RoleBindings),
+		Attributes:    u.Attributes,
+		Factors:       factors.Factors,
+		MFAEnabled:    factors.MFAEnabled,
+		MFAMethods:    factors.MFAMethods,
+		MFAEnrolledAt: factors.MFAEnrolledAt,
+		CreatedAt:     u.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:     u.UpdatedAt.Format(time.RFC3339),
+	}, nil
 }
 
 // roleToTransport converts a domain role to its transport representation.

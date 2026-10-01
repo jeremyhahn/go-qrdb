@@ -162,16 +162,21 @@ func TestTokenBucketLimiter_InvalidPolicyIsAlwaysDenied(t *testing.T) {
 	}
 }
 
+// TestTokenBucketLimiter_ReapEvictsIdleBuckets drives the reaper with an
+// explicit tick instead of a wall-clock ticker, so nothing waits on real time.
+// The tick channel is unbuffered: the second send cannot complete until the
+// reaper has returned from the first sweep and is back in its select, which is
+// what makes the eviction observable deterministically.
 func TestTokenBucketLimiter_ReapEvictsIdleBuckets(t *testing.T) {
 	clock := newFakeClock(time.Now())
-	l := NewTokenBucketLimiter(withClock(clock.Now), WithIdleTTL(time.Second), WithSweepInterval(time.Millisecond))
+	ticks := make(chan time.Time)
+	l := NewTokenBucketLimiter(withClock(clock.Now), WithIdleTTL(time.Second), withSweepTicks(ticks))
 	t.Cleanup(func() { _ = l.Close() })
 	policy := Policy{RatePerSecond: 1, Burst: 1}
 
 	if allowed, _ := l.Allow("caller-f", policy); !allowed {
 		t.Fatal("want the first request allowed")
 	}
-
 	// Consume the burst so a survived bucket would still refuse the next
 	// request; only reclamation (a fresh bucket at full burst) explains an
 	// allow after this point.
@@ -179,19 +184,70 @@ func TestTokenBucketLimiter_ReapEvictsIdleBuckets(t *testing.T) {
 		t.Fatal("want the second request denied before any reap")
 	}
 
-	clock.Advance(2 * time.Second)
-	// Give the reaper goroutine, which runs on the wall clock's sweep
-	// interval, a chance to observe the advanced fake clock.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, loaded := l.buckets.Load("caller-f"); !loaded {
-			break
-		}
-		time.Sleep(time.Millisecond)
+	// A sweep before the bucket is idle keeps it.
+	ticks <- time.Time{}
+	ticks <- time.Time{}
+	if _, loaded := l.buckets.Load("caller-f"); !loaded {
+		t.Fatal("a bucket touched within idleTTL was reclaimed")
 	}
 
+	clock.Advance(2 * time.Second)
+	ticks <- time.Time{}
+	ticks <- time.Time{}
 	if _, loaded := l.buckets.Load("caller-f"); loaded {
 		t.Fatal("want the idle bucket reclaimed by the reaper")
+	}
+	if allowed, _ := l.Allow("caller-f", policy); !allowed {
+		t.Fatal("a reclaimed key must start again at full burst")
+	}
+}
+
+// TestTokenBucketLimiter_RefillIsCappedAtBurst: however long a key sits idle,
+// it never accrues more than burst tokens.
+func TestTokenBucketLimiter_RefillIsCappedAtBurst(t *testing.T) {
+	clock := newFakeClock(time.Now())
+	l := newTestLimiter(t, clock)
+	policy := Policy{RatePerSecond: 10, Burst: 3}
+
+	if allowed, _ := l.Allow("caller-h", policy); !allowed {
+		t.Fatal("want the first request allowed")
+	}
+	clock.Advance(time.Hour) // 36000 tokens' worth of refill
+	for i := range 3 {
+		if allowed, _ := l.Allow("caller-h", policy); !allowed {
+			t.Fatalf("request %d of the burst was denied", i+1)
+		}
+	}
+	if allowed, _ := l.Allow("caller-h", policy); allowed {
+		t.Fatal("an hour idle refilled beyond burst")
+	}
+}
+
+// TestTake is the decision function on its own: a new key, a spend, a refill
+// and a denial with its retry-after, every branch without a goroutine.
+func TestTake(t *testing.T) {
+	policy := Policy{RatePerSecond: 2, Burst: 2}
+	const second = int64(time.Second)
+
+	next, allowed, wait := take(nil, 0, policy)
+	if !allowed || wait != 0 || next.tokens != 1 {
+		t.Fatalf("new key: next=%+v allowed=%v wait=%v, want 1 token left and allowed", next, allowed, wait)
+	}
+	next, allowed, _ = take(next, 0, policy)
+	if !allowed || next.tokens != 0 {
+		t.Fatalf("second spend: next=%+v allowed=%v", next, allowed)
+	}
+	denied, allowed, wait := take(next, 0, policy)
+	if allowed || wait != 500*time.Millisecond || denied.tokens != 0 {
+		t.Fatalf("empty bucket: next=%+v allowed=%v wait=%v, want denied with 500ms", denied, allowed, wait)
+	}
+	refilled, allowed, _ := take(denied, second/2, policy)
+	if !allowed || refilled.tokens != 0 || refilled.lastRefill != second/2 || refilled.lastAccess != second/2 {
+		t.Fatalf("half a second later: next=%+v allowed=%v, want one token earned and spent", refilled, allowed)
+	}
+	capped, _, _ := take(refilled, 100*second, policy)
+	if capped.tokens != 1 {
+		t.Fatalf("long idle: tokens=%v, want burst-1", capped.tokens)
 	}
 }
 

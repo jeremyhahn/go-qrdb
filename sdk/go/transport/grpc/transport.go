@@ -529,6 +529,8 @@ func (t *Transport) Capabilities(ctx context.Context) (*transport.CapabilitiesRe
 		PostgreSQL:  resp.GetPostgresql(),
 		Etcd:        resp.GetEtcd(),
 		FTS:         resp.GetFts(),
+
+		UnencryptedAtRest: resp.GetUnencryptedAtRest(),
 	}, nil
 }
 
@@ -648,6 +650,15 @@ func (t *Transport) buildDialOptions() ([]grpc.DialOption, error) {
 	// When a database is scoped, inject the x-qrdb-database metadata on every
 	// RPC. The server only consults it for data-plane handlers; management and
 	// admin RPCs ignore it, so universal injection is safe.
+	// A context bound by transport.WithSOPIN carries the SO PIN in the
+	// x-qrdb-so-pin metadata entry, on every RPC made with it.
+	// Only over TLS credentials: on a plaintext connection a PIN-bound RPC is
+	// refused with *transport.SOPINRequiresTLSError and never sent.
+	opts = append(opts,
+		grpc.WithChainUnaryInterceptor(transport.SOPINUnaryClientInterceptor("grpc", t.config.TLSEnabled)),
+		grpc.WithChainStreamInterceptor(transport.SOPINStreamClientInterceptor("grpc", t.config.TLSEnabled)),
+	)
+
 	if t.activeDatabase != "" {
 		opts = append(opts,
 			grpc.WithChainUnaryInterceptor(transport.DatabaseUnaryClientInterceptor(t.activeDatabase)),
@@ -664,7 +675,7 @@ func (t *Transport) buildDialOptions() ([]grpc.DialOption, error) {
 // no eager I/O); when not yet connected, the clone's Connect dials the scoped
 // connection. Scoping to the default ("system") database or the empty string
 // yields an unscoped clone that shares the parent's connection.
-func (t *Transport) WithDatabase(database string) transport.Transport {
+func (t *Transport) withDatabase(database string) *Transport {
 	db := transport.NormalizeDatabaseScope(database)
 	clone := &Transport{config: t.config, activeDatabase: db}
 	clone.closed.Store(t.closed.Load())
@@ -696,6 +707,13 @@ func (t *Transport) WithDatabase(database string) transport.Transport {
 	clone.conn = t.conn
 	clone.client = t.client
 	return clone
+}
+
+// WithDatabase implements transport.DatabaseScoper. Scoping a network
+// transport never fails: the database travels with every data-plane request
+// and the server resolves it.
+func (t *Transport) WithDatabase(database string) (transport.Transport, error) {
+	return t.withDatabase(database), nil
 }
 
 // timeoutUnaryInterceptor returns a gRPC unary client interceptor that

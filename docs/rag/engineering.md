@@ -152,8 +152,23 @@ Source: `pkg/service/rag_errors.go`.
 
 ## Persistence
 
-- **Chunk text and metadata**: KV entries, tenant-scoped, barrier-encrypted.
-- **Chunk embeddings**: vectors in the named vector namespace.
+- **Chunk text and metadata**: KV entries at
+  `<tenant>/<database>/rag:{namespace}:{document}:{chunk}` and
+  `...:meta`, barrier-encrypted. `service.ScopedRAGStore` resolves the KV
+  servicer for the request's (tenant, database) through the node's registry
+  on every call (`service.RAGBinding`, bound by the server at start), and is
+  the only store `service.NewRAGService` accepts, so the pipeline cannot be
+  composed unscoped. Records sit inside the database's keyspace, so dropping
+  the database reclaims them. Until the binding is set -- and on a node with
+  no database registry -- every RAG call is refused with
+  `service.CapabilityUnsupportedError`.
+- **Upgrading.** Records written before the scope was added sit at the store
+  root (`rag:...`) and are no longer read. Re-ingest those documents after
+  upgrading.
+- **Chunk embeddings**: vectors in the named vector namespace of the
+  request's database, resolved per call through the same binding
+  (`service.NewScopedVectorStoreAdapter`); the registry prefixes the namespace
+  with `<tenant>/<database>/`.
 - **Document metadata**: `RAGDocumentInfo` (`id`, `namespace`, `chunk_count`,
   `metadata`).
 

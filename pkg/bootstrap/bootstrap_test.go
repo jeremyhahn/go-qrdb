@@ -635,6 +635,12 @@ func TestProvisionTenant_CreatesTenantAdminAndBindsCert(t *testing.T) {
 	if len(adminReq.RoleIDs) != 1 || adminReq.RoleIDs[0] != wantRoleID {
 		t.Errorf("admin RoleIDs = %v, want [%q]", adminReq.RoleIDs, wantRoleID)
 	}
+	// go-qrdb#106: a per-tenant admin minted by ProvisionTenant must stay
+	// deletable, so it must NOT carry the immutable System flag reserved for
+	// the single system-tenant bootstrap admin.
+	if adminReq.System {
+		t.Error("per-tenant admin CreateUserRequest.System = true, want false (go-qrdb#106)")
+	}
 
 	// Cert enrolled + bound.
 	if ca.lastID != "acme" || ca.lastSubj != "admin" {
@@ -883,10 +889,11 @@ func TestProvisionTenant_DeferredReRunRecoversAdminID(t *testing.T) {
 // TestProvisionTenant_DeferredReRunFailsClosedOnNonPendingAdmin asserts a
 // deferred re-run refuses to convert any non-pending preexisting admin into
 // an invitation target: activated admins, disabled admins that still hold a
-// bound certificate or enrolled factors (e.g. disabled for incident
-// response), and credentialless admins in any lifecycle other than pending —
-// absent and unrecognized included — all fail with
-// PendingAdminUnresolvableError.
+// bound certificate (e.g. disabled for incident response), and
+// credentialless admins in any lifecycle other than pending — absent and
+// unrecognized included — all fail with PendingAdminUnresolvableError.
+// Enrolled auth factors are a separate, canonical-store check
+// (ensureNoActiveFactors / AdminFactorChecker), covered by its own tests.
 func TestProvisionTenant_DeferredReRunFailsClosedOnNonPendingAdmin(t *testing.T) {
 	wantRoleID := role.SystemRoleID("acme", role.RoleNameAdmin)
 	for _, tc := range []struct {
@@ -901,11 +908,6 @@ func TestProvisionTenant_DeferredReRunFailsClosedOnNonPendingAdmin(t *testing.T)
 			ID: 42, Username: "admin", TenantID: "acme",
 			RoleIDs: []string{wantRoleID}, Lifecycle: user.LifecycleDisabled,
 			CertBindings: []user.CertBinding{{Thumbprint: "aa"}},
-		}},
-		{"disabled with enrolled factors", &user.User{
-			ID: 42, Username: "admin", TenantID: "acme",
-			RoleIDs: []string{wantRoleID}, Lifecycle: user.LifecycleDisabled,
-			Factors: []user.FactorEnrollment{{FactorName: "webauthn"}},
 		}},
 		// Credentialless records that are NOT pending: only an explicit
 		// pending lifecycle is an invitation target. An absent or unknown

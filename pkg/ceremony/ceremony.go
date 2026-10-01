@@ -17,6 +17,8 @@ package ceremony
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
@@ -27,6 +29,7 @@ import (
 
 	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
@@ -59,6 +62,9 @@ type CredentialServicer interface {
 // sharing for officer enrollment, and coordinates certificate issuance
 // and claim operations.
 type CeremonyService struct {
+	// soPIN serializes and counts SO PIN checks; see soPINAttempts.
+	soPIN soPINAttempts
+
 	mu          sync.RWMutex
 	config      *CeremonyConfig
 	barrier     *seal.StorageBarrier
@@ -472,8 +478,8 @@ func (s *CeremonyService) SignCSRInit(
 	if soPin == "" {
 		return nil, ErrInvalidSOPIN
 	}
-	if soPin != s.config.SOPin {
-		return nil, ErrSOPINMismatch
+	if err := s.soPIN.check(soPin, s.config.SOPin); err != nil {
+		return nil, err
 	}
 	if len(csrPEM) == 0 {
 		return nil, ErrMissingCSRPEM
@@ -675,12 +681,92 @@ func (s *CeremonyService) initializeMofN(ctx context.Context, result *InitResult
 
 // initializeSingleAdmin transitions directly to the operational state
 // when M-of-N is not configured.
-func (s *CeremonyService) initializeSingleAdmin(_ context.Context, result *InitResult) error {
+func (s *CeremonyService) initializeSingleAdmin(ctx context.Context, result *InitResult) error {
 	result.ShareCount = 0
 	result.State = StateOperational
-	s.state = StateOperational
+	s.becomeOperationalLocked(ctx)
 
 	s.logger.Info("single admin mode, ceremony operational")
+	return nil
+}
+
+// becomeOperationalLocked moves the ceremony to StateOperational and records
+// that on the barrier (seal.StorageBarrier.MarkCeremonyOperational), where the
+// boot-time sealed-window listener reads it after a restart, when this
+// in-memory state is gone. Must be called with s.mu held for writing.
+//
+// A failure to record it is logged, not returned: the transition has already
+// happened -- on the claim path the last share has been released -- and
+// EnrollmentOpen closes the anonymous enrollment exemption on an initialized
+// barrier regardless, so only a ceremony that is operational on a barrier
+// that is still uninitialized depends on the record alone.
+func (s *CeremonyService) becomeOperationalLocked(ctx context.Context) {
+	s.state = StateOperational
+	if err := s.barrier.MarkCeremonyOperational(ctx); err != nil {
+		s.logger.Error("failed to record the operational ceremony on the barrier; "+
+			"officer enrollment stays closed while the barrier is initialized",
+			slog.String("error", err.Error()))
+	}
+}
+
+// EnrollmentOpen reports whether officer enrollment is still open to an
+// unauthenticated caller -- the sealedwindow.PreOperationalOnly exemption the
+// boot-time sealed-window listener grants officer and recovery-officer
+// registration. RegisterOfficer CA-signs any CSR it is given and assigns a
+// share index, so the exemption is justified only while the enrollment
+// ceremony it serves can still use a new officer.
+//
+// It is closed as soon as any of these holds, each read so that it survives a
+// restart while sealed, when this service's in-memory state starts over:
+//   - this ceremony is operational in memory;
+//   - the barrier records an operational ceremony (MarkCeremonyOperational);
+//   - the barrier is initialized: the shares a newly enrolled officer would
+//     hold are distributed at initialization, and every later enrollment
+//     (rekey, recovery) runs on the authenticated listener.
+//
+// It fails closed: an unreadable record is treated as closed.
+func (s *CeremonyService) EnrollmentOpen(ctx context.Context) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.enrollmentOpenLocked(ctx)
+}
+
+// enrollmentProbeTimeout bounds EnrollmentOpen's reads of the barrier's
+// plaintext store. The answer gates an anonymous request, and the boot-time
+// listener holds its admission while it waits, so a store that stops
+// answering must cost a refusal, not a request that never ends.
+const enrollmentProbeTimeout = 2 * time.Second
+
+// enrollmentOpenLocked is EnrollmentOpen with s.mu already held. Its reads
+// run under ctx and enrollmentProbeTimeout, whichever ends first, and a read
+// that does not finish counts as closed.
+func (s *CeremonyService) enrollmentOpenLocked(ctx context.Context) bool {
+	if s.state == StateOperational {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, enrollmentProbeTimeout)
+	defer cancel()
+	if ctx.Err() != nil {
+		return false
+	}
+	if marked, err := s.barrier.CeremonyOperational(ctx); err != nil || marked {
+		return false
+	}
+	initialized, err := s.barrier.Initialized(ctx)
+	return err == nil && !initialized
+}
+
+// refuseClosedAnonymousEnrollmentLocked returns ErrEnrollmentClosed when ctx
+// is an unauthenticated request (sealedwindow.Anonymous) and enrollment has
+// closed. The boot-time sealed-window listener's gate applies the same rule,
+// but it samples enrollment before the request runs; this check runs under
+// s.mu, in the same critical section as the registration it guards, so no
+// anonymous registration can slip in once enrollment has closed. Must be
+// called with s.mu held.
+func (s *CeremonyService) refuseClosedAnonymousEnrollmentLocked(ctx context.Context) error {
+	if sealedwindow.Anonymous(ctx) && !s.enrollmentOpenLocked(ctx) {
+		return ErrEnrollmentClosed
+	}
 	return nil
 }
 
@@ -828,4 +914,15 @@ func (s *CeremonyService) Cleanup() {
 		secure.Wipe(challenge.Nonce)
 		delete(s.challenges, username)
 	}
+}
+
+// soPINMatches reports whether presented is the configured SO PIN, in time
+// independent of where, and whether, the two differ. Both are hashed first, so
+// the comparison runs over equal-length digests and leaks neither the PIN's
+// length nor the length of the matching prefix: ceremony-sign-csr is reachable
+// without authentication, and a byte-wise == there is a timing oracle.
+func soPINMatches(presented, configured string) bool {
+	p := sha256.Sum256([]byte(presented))
+	c := sha256.Sum256([]byte(configured))
+	return subtle.ConstantTimeCompare(p[:], c[:]) == 1
 }

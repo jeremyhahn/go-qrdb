@@ -57,8 +57,15 @@ type Server struct {
 	tlsConfig *tls.Config
 	authMW    *authmw.AuthMiddleware
 	dbName    string
-	logger    *slog.Logger
-	dbManager *database.Manager
+
+	// sharedDefaultDB is the configured default SQL database, which exists
+	// for every tenant (WithSharedDefaultDatabase). Empty shares nothing.
+	sharedDefaultDB string
+	logger          *slog.Logger
+	dbManager       *database.Manager
+	// databaseSvc is the tenant-scoped database lifecycle behind CREATE
+	// DATABASE and DROP DATABASE (see WithDatabaseService).
+	databaseSvc service.DatabaseServicer
 	// sealedProbe gates new connections while the storage barrier is
 	// sealed. When nil the gate is disabled (no seal subsystem).
 	sealedProbe sealedWindowProbe
@@ -107,6 +114,16 @@ func WithDatabaseName(name string) ServerOption {
 	}
 }
 
+// WithSharedDefaultDatabase marks name -- the configured default SQL
+// database -- as existing for every tenant, as the service registry treats it
+// (server.WithSharedSQLDefaultDatabase). Each tenant session sees its own
+// namespace of it; every other database is visible only to its owner.
+func WithSharedDefaultDatabase(name string) ServerOption {
+	return func(s *Server) {
+		s.sharedDefaultDB = name
+	}
+}
+
 // WithDatabaseManager configures the server with a database.Manager for
 // multi-database support. When set, the server uses
 // provider.NewManagerProvider instead of provider.NewProvider, enabling
@@ -114,6 +131,17 @@ func WithDatabaseName(name string) ServerOption {
 func WithDatabaseManager(manager *database.Manager) ServerOption {
 	return func(s *Server) {
 		s.dbManager = manager
+	}
+}
+
+// WithDatabaseService routes CREATE DATABASE and DROP DATABASE through the
+// tenant-scoped database service every API transport uses, so a session
+// creates a database its own tenant owns, inside its quota, and drops only
+// its own tenant's databases. Without it only system-tenant sessions may run
+// either statement.
+func WithDatabaseService(svc service.DatabaseServicer) ServerOption {
+	return func(s *Server) {
+		s.databaseSvc = svc
 	}
 }
 
@@ -210,10 +238,19 @@ func (s *Server) Start() error {
 	if s.registry != nil {
 		svcOpts = append(svcOpts, provider.WithRegistry(s.registry))
 	}
+	if s.databaseSvc != nil {
+		svcOpts = append(svcOpts, provider.WithDatabaseService(s.databaseSvc))
+	}
+	if s.authMW != nil {
+		svcOpts = append(svcOpts, provider.WithLifecycleAuthorizer(s.authMW))
+	}
 
 	var prov *provider.Provider
 	if s.dbManager != nil {
 		managerOpts := append([]func(*provider.Provider){provider.WithProtocol(provider.ProtocolMySQL)}, svcOpts...)
+		if s.sharedDefaultDB != "" {
+			managerOpts = append(managerOpts, provider.WithSharedDefaultDatabase(s.sharedDefaultDB))
+		}
 		prov = provider.NewManagerProvider(s.dbManager, s.kvSvc, managerOpts...)
 	} else {
 		prov = provider.NewProvider(s.dbName, s.kvSvc)

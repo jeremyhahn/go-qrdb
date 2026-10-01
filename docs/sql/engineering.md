@@ -24,7 +24,11 @@ In-process paths, both gated on `qrdb_sql`:
 
 - `sdk/go/driver` — a `database/sql` driver. Its connection owns exactly one
   `provider.QRDBSession` for its lifetime, which is what makes transactions
-  work on it.
+  work on it. Its embedded `Rows.Next` refuses a row whose width differs from
+  the result's column count with `*driver.RowWidthError`: `database/sql`
+  sizes the destination from `Columns()`, so a wider row would index past it
+  and a narrower one would leave the previous row's values in the unfilled
+  slots.
 - `sdk/go/gorm` — the GORM dialector. See [gorm.md](gorm.md) for the two
   in-process DSN schemes (`node://`, `embedded://`), which differ in exactly
   whether the relational catalog is reachable.
@@ -236,6 +240,8 @@ Relational tables shadow a same-named collection: if both a relational table and
 
 **`AUTO_INCREMENT` is Raft-committed and block-allocated.** Values come from `service.SequenceServicer` under `service.TableAutoIncrementSequenceName(TableID)`, handed out in blocks so a multi-row `INSERT` costs one proposal per block rather than one per row. Nothing about the allocation is process-local, so two nodes can never hand out the same value. **Gaps are permitted; duplicates are not** — which is exactly MySQL's own `innodb_autoinc_lock_mode=2` (interleaved) behaviour. The "consecutive values within a single multi-row `INSERT`" guarantee of modes 0/1 is *not* offered (`AcquireAutoIncrementLock` is a no-op, since block allocation already prevents collisions). An explicitly supplied value at or above the counter advances the sequence past it (`SequenceServicer.Advance`), so a later generated value can never collide with one a caller supplied. `ALTER TABLE ... AUTO_INCREMENT = N` is implemented, but — unlike InnoDB — it can only ever raise the counter, never lower it below a value already committed.
 
+**A reset fences every block reserved before it, by epoch.** Two statements restart the counter at 1: `ALTER TABLE ... AUTO_INCREMENT = 0` (`SequenceServicer.Reset`) and a MySQL-dialect `TRUNCATE TABLE` (below). A session that reserved a block before the reset would otherwise keep handing out its unconsumed values — which the post-reset counter hands out again — so two sessions would each generate the same key and one of them would fail with 1062. `SequenceServicer` therefore stores an **epoch** beside the counter, in the same value and so under the same compare-and-swap: a reset's epoch advance is exactly as replicated and failover-safe as the counter it zeroes, and no reader on any node sees one without the other. A reset advances the epoch whenever it actually changes the counter (a counter already at 0 has nothing reserved against it); `Advance` never does. `Allocate` reports the epoch a block was reserved under, and `sequenceBlock` (`relational_sequence.go`) compares it with `SequenceServicer.Epoch` — a linearizable read, not a proposal — the first time a statement draws a cached value from a block that statement did not reserve itself, discarding a stale block and refilling from the post-reset counter. A statement is identified by its `*sql.Context`'s pid and start time, which every context derived from it keeps. The check runs **once per statement, not once per value**: a 10,000-row `INSERT` pays at most one read, not 10,000, and a statement drawing only from blocks it reserved itself pays none, because `Allocate` reported their epoch. Checking more often would buy nothing, because what fencing cannot reach is a value taken before the reset whose row has not yet committed — a reset between any check and the row's commit is indistinguishable from one just after it — and within one statement that is the only window there is. After `TRUNCATE` such a row fails the generation fence and the statement is retried; after `ALTER TABLE ... AUTO_INCREMENT = 0` it is the same case as a row already written, which `Reset`'s contract leaves to the caller. The counter is stored as 16 bytes — the 8-byte counter, then the 8-byte epoch — so the leading 8 bytes are the counter-only value earlier releases wrote; such a value is read as that counter at epoch 0, and a sequence allocated from by an earlier release keeps counting rather than restarting. **The reverse is not true, so finish a rolling upgrade before resetting a sequence.** A node still running an earlier release rewrites the value as 8 bytes whenever it allocates, which drops the epoch back to 0; a later reset can then bring the epoch back to a value a block reserved before the first reset still carries, and that block is wrongly accepted as current. Run `ALTER TABLE ... AUTO_INCREMENT = 0` or a MySQL `TRUNCATE TABLE` only once every node runs this release.
+
 `REPLACE INTO` composes for free from the same writer: go-mysql-server's insert loop calls `Insert`, and on the duplicate-key error above calls `Delete` with the *existing* conflicting row before retrying — so the old row and its index entries are removed atomically, then the new row and its own entries are written atomically.
 
 ### `TRUNCATE TABLE`: generation-scoped keys, O(1) regardless of table size
@@ -243,7 +249,7 @@ Relational tables shadow a same-named collection: if both a relational table and
 Every row and index-entry key carries a **generation** number in its prefix: `service.TableDataPrefix(database, tableID, generation)` and `service.TableIndexPrefix(database, tableID, generation, incarnation)`. `TRUNCATE TABLE` (`TableService.TruncateTable`) does not scan or delete a single row. It is ONE `TransactionServicer.Execute` call that:
 
 1. Bumps a dedicated generation counter key (`service.TableGenerationKey`) with a `CompareModRevision` CAS — absent decodes as generation 0, the same "absent means zero" contract every counter in this package uses.
-2. Optionally resets the table's `AUTO_INCREMENT` sequence to 0 in the SAME proposal — **MySQL semantics**: `TRUNCATE TABLE` resets the counter, matching real MySQL's behavior. **PostgreSQL keeps its sequence**: plain `TRUNCATE` (without `RESTART IDENTITY`, which this engine does not parse as a distinct form) leaves a sequence the table owns untouched, matching real PostgreSQL. `RelationalTable.postgres` (set via `WithPostgreSQLDialect`, itself derived from the session's wire protocol) decides which behavior a given `TRUNCATE` gets — the same generation bump runs either way; only the sequence-reset flag differs.
+2. Optionally resets the table's `AUTO_INCREMENT` sequence to 0 in the SAME proposal, advancing its epoch exactly as `SequenceServicer.Reset` does so that blocks other sessions reserved before the `TRUNCATE` are fenced (see "A reset fences every block reserved before it" above) — **MySQL semantics**: `TRUNCATE TABLE` resets the counter, matching real MySQL's behavior. **PostgreSQL keeps its sequence**: plain `TRUNCATE` (without `RESTART IDENTITY`, which this engine does not parse as a distinct form) leaves a sequence the table owns untouched, matching real PostgreSQL. `RelationalTable.postgres` (set via `WithPostgreSQLDialect`, itself derived from the session's wire protocol) decides which behavior a given `TRUNCATE` gets — the same generation bump runs either way; only the sequence-reset flag differs. The wire protocol reaches the table through the serving `Provider`'s `WithProtocol(ProtocolPostgreSQL)` (`Database.postgres`), and `pkg/sql/pgsql.Server.Start` applies that option on **every** construction path — the `database.Manager` one and the single-database one a composer reaches with `WithServiceRegistry` alone — so a PostgreSQL listener never serves MySQL's `TRUNCATE` semantics (or hides `pg_catalog`) because of how it was composed.
 3. Publishes a `service.ReclaimJob` naming the OLD generation's data prefix and that generation's WHOLE index keyspace (`service.TableIndexGenerationPrefix`, every index incarnation at once — so entries of an index the catalog no longer lists go too) as orphaned, in the SAME transaction as the bump, in the table's own store — so a crash immediately after commit still leaves a durable record of what to reclaim.
 
 The table's `TableDef.Generation` (populated fresh on every `GetTable`/`AlterTable`/`CompleteRewrite`/`RewriteJournal`, never persisted in the metadata record itself) is read ONCE when a statement resolves the table and never re-read on the successful path. `GetTable` also reports the revisions it read — `TableDef.MetadataRevision` and `TableDef.GenerationRevision` — and `TableDef.GenerationReadAt`, when the generation read began on the local monotonic clock: the start of the statement's **generation pin** (see "Reader quiescence" below). A handle publishes its generation, the row prefix derived from it and its pin as one immutable value behind one atomic pointer, so a `TRUNCATE` on the handle is never observed half-applied.
@@ -395,6 +401,7 @@ An open transaction buffers its writes in a `provider.WriteSet` and **commits th
 - **First-committer-wins.** Each key the transaction *writes* carries one commit-time precondition — the `ModRevision` (or absence) it had at the pinned snapshot. A concurrent transaction that modified the same key after the snapshot makes this transaction's commit fail atomically.
 - **Compares cover the write set, not the read set.** A read-set compare would grow without bound across a large `SELECT` and exceed the proposal's operation ceiling almost immediately. This is the deliberate trade: write-write conflicts are detected, read-write ones are not.
 - **`ROLLBACK` is free** — nothing was ever proposed, so discarding the buffer *is* the rollback. `SAVEPOINT` marks a position in the write-set's undo log; `ROLLBACK TO SAVEPOINT` replays it in reverse and discards any savepoint marked after it, matching MySQL.
+- **A failed statement is undone whole.** go-mysql-server brackets every DML statement with its table editors' `StatementBegin` and then `DiscardChanges` or `StatementComplete`, on every editor the statement uses — the target table's, each foreign-key cascade's, the `ON DUPLICATE KEY` updater's. The relational editor turns these into an implicit statement savepoint on the write-set (`pkg/sql/provider/writeset_statement.go`): a stack of undo-log positions, pushed at `StatementBegin` and popped at the end, with `DiscardChanges` undoing back to its mark. A statement that fails part way — a duplicate key on its third row, a lock-wait timeout, a cascade that cannot proceed — therefore leaves nothing behind, and the transaction's earlier statements are kept, as in InnoDB. `INSERT IGNORE` / `UPDATE IGNORE` are bracketed per row, so only the ignored row is undone. A statement whose context is cancelled — `KILL QUERY`, a client disconnect, a deadline — is undone too: go-mysql-server reports a cancellation noticed between rows without recording it as the statement's error, so the statement reaches `StatementComplete` rather than `DiscardChanges`, and `StatementComplete` discards when the context is done. The statement's reads and row locks are not undone (see [../row-locking/architecture.md](../row-locking/architecture.md)), exactly as `ROLLBACK TO SAVEPOINT` keeps them.
 - **Limits.** A transaction may buffer at most 8 MiB and 100,000 distinct keys; exceeding either fails the *buffering statement* (`WriteSetLimitError`), naming it, rather than deferring the failure to `COMMIT`. If the pinned snapshot is compacted before commit, the transaction fails with `TransactionSnapshotExpiredError` rather than silently downgrading to a fresh read.
 - **One database per transaction.** A single CAS commit targets one Raft shard, so a write to a second database inside an open transaction is refused with `CrossDatabaseTransactionError` rather than split into two non-atomic commits.
 - **`START TRANSACTION READ ONLY`** is honoured: any buffered write returns `ReadOnlyTransactionError`.
@@ -439,6 +446,18 @@ because the row is locked until commit, which `none` does not; InnoDB's
 `REPEATABLE READ` *blocks* a second writer and then applies it, where QRDB
 aborts it with 1213.
 
+### Row locks and pessimistic mode
+
+Everything above is the **optimistic** mode, which is the default. `SELECT ...
+FOR UPDATE` / `FOR SHARE` take real, Raft-replicated row locks in either mode,
+and `SET qrdb_concurrency = 'pessimistic'` (or the database's
+`sql.concurrency`) makes DML lock the rows it touches and read them at their
+latest committed version. The commit-time compare-and-swap described here stays
+in both modes; a locked row's precondition is the revision observed when its
+lock was granted. The full contract — lock modes, the lock table, timeouts
+(1205 / 55P03), deadlocks (1213 / 40P01) — is in
+[../row-locking/engineering.md](../row-locking/engineering.md).
+
 ### Conflicts surface as MySQL 1213
 
 A losing commit clears the write-set (matching InnoDB, which rolls back a transaction that hits `ER_LOCK_DEADLOCK`) and returns a `TransactionConflictError` wrapped in go-mysql-server's `sql.ErrLockDeadlock` — which `sql.CastSQLError` maps to **MySQL error 1213 / SQLSTATE 40001**. That is the code `database/sql` clients and ORM retry loops already recognise as "retry the transaction". A genuine infrastructure error (an unreachable leader, say) leaves the write-set in place instead, so `COMMIT` may safely be retried without losing buffered work.
@@ -451,7 +470,7 @@ A losing commit clears the write-set (matching InnoDB, which rolls back a transa
 
 Both wire protocols and the in-process driver carry this, because transaction state lives on the **session**, not the query context — so every statement of a connection must share one `provider.QRDBSession`. `sdk/go/driver`'s connection owns exactly one session for its lifetime; the MySQL listener builds one per connection; on the PostgreSQL listener the session is created once per connection by a `wire.SessionMiddleware` handler (`pkg/sql/pgsql/parse.go`) and threaded through every statement, since `psql-wire` calls its parse function once per statement with no connection handle. PostgreSQL's `END` / `END WORK` / `END TRANSACTION` — spellings the vitess-derived parser does not accept — are rewritten to `COMMIT` before reaching the engine.
 
-Single-statement atomicity is still provided by Raft for every table kind, and the KV transaction API (`TransactionServicer.Execute`) remains available directly.
+Outside a transaction, each **row** write is atomic — the row and every index entry it touches commit in one Raft proposal — but a **multi-row** statement is not: each row is its own commit, so a statement that fails on its third row leaves the first two committed. Run a multi-row statement inside a transaction when it must be all-or-nothing. The KV transaction API (`TransactionServicer.Execute`) remains available directly.
 
 
 ## PostgreSQL Syntax Translation
@@ -576,6 +595,7 @@ QRDB-specific string:
 |---|---|---|
 | Duplicate key / unique violation | MySQL **1062** | from `sql.NewUniqueKeyErr`, naming `PRIMARY` or the index |
 | Transaction conflict (first-committer-wins loss) | MySQL **1213** / SQLSTATE **40001** | the code ORM retry loops already recognise |
+| Row lock wait timeout / `NOWAIT` / deadlock | MySQL **1205** / **3572** / **1213**; SQLSTATE **55P03** / **55P03** / **40P01** | see [../row-locking/engineering.md](../row-locking/engineering.md#error-mapping) |
 | Database access denied | MySQL **1044** | `ER_DBACCESS_DENIED_ERROR` |
 | Table access denied | MySQL **1142** | `ER_TABLEACCESS_DENIED_ERROR` |
 | Column access denied | MySQL **1143** | `ER_COLUMNACCESS_DENIED_ERROR` |
@@ -636,3 +656,6 @@ Coverage floors are enforced by those targets, not by convention:
   database costs no reads at all**, which is the signal that the latch has not
   been tripped.
 - `SELECT @@qrdb_isolation` reports the session's conflict-detection scope.
+- `SELECT @@qrdb_concurrency` reports the session's concurrency mode; row-lock
+  metrics (`qrdb_sql_row_lock_*`) are listed in
+  [../row-locking/engineering.md](../row-locking/engineering.md#observability).

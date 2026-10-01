@@ -61,6 +61,7 @@ return the protocol's own codes directly.
 | Table truncated or its definition changed under the statement (retry it) | 409 | `ABORTED` | MySQL **1213** / SQLSTATE **40001** |
 | Table created by v0.20.0–v0.21.0 (drop and re-create it) | 412 | `FAILED_PRECONDITION` | MySQL **1459** / SQLSTATE **55000** |
 | Database / table / column access denied | 403 | `PERMISSION_DENIED` | MySQL **1044** / **1142** / **1143** |
+| `CREATE DATABASE` without `databases:create`, `DROP DATABASE` without `databases:delete` or of another tenant's database, or either with no tenant-scoped lifecycle configured | — | — | statement error; nothing is created or dropped |
 | Cached plan result-type change | — | — | SQLSTATE **0A000** (PostgreSQL only) |
 | Missing `kv:range` | 403 | `PERMISSION_DENIED` | connection refused at auth |
 | Barrier sealed | 503 | `UNAVAILABLE` | connection refused |

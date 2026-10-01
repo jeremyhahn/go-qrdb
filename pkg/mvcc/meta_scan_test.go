@@ -90,6 +90,7 @@ func seekingRange(t *testing.T, store storage.Storage, start, end []byte) []stri
 // longer than the keys, the seeking scan returns exactly the full scan's keys
 // in the full scan's order.
 func TestForEachMetaKeyInRange_AgreesWithTheFullScan(t *testing.T) {
+	// #nosec G404 -- deterministic test fixture: the seed is fixed so the case is reproducible, and no key, nonce, token or identifier derives from these values.
 	rng := rand.New(rand.NewSource(1))
 	alphabet := []byte("abj:\x00\xff")
 	randomKey := func(maxLen int) []byte {

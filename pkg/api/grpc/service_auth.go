@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // ---------------------------------------------------------------------------
@@ -38,6 +39,12 @@ import (
 func (s *qrdbServiceServer) CreateUser(ctx context.Context, req *pb.CreateUserRequest) (*pb.UserResponse, error) {
 	if s.userSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "user"})
+	}
+
+	if len(req.GetRoleIds()) > 0 {
+		if err := s.authMW.AuthorizeRoleAssignmentWriteOnCreate(ctx, s.roleSvc, req.GetTenantId(), req.GetRoleIds()); err != nil {
+			return nil, mapServiceError(err)
+		}
 	}
 
 	u, err := s.userSvc.CreateUser(ctx, &user.CreateUserRequest{
@@ -55,7 +62,7 @@ func (s *qrdbServiceServer) CreateUser(ctx context.Context, req *pb.CreateUserRe
 		return nil, mapServiceError(err)
 	}
 
-	return userToProto(u), nil
+	return s.userResponse(ctx, u)
 }
 
 // GetUser retrieves a user by ID.
@@ -69,7 +76,7 @@ func (s *qrdbServiceServer) GetUser(ctx context.Context, req *pb.GetUserRequest)
 		return nil, mapServiceError(err)
 	}
 
-	return userToProto(u), nil
+	return s.userResponse(ctx, u)
 }
 
 // GetUserByUsername retrieves a user by tenant-scoped username.
@@ -83,7 +90,7 @@ func (s *qrdbServiceServer) GetUserByUsername(ctx context.Context, req *pb.GetUs
 		return nil, mapServiceError(err)
 	}
 
-	return userToProto(u), nil
+	return s.userResponse(ctx, u)
 }
 
 // GetUserByEmail retrieves a user by tenant-scoped email — the canonical login
@@ -99,7 +106,7 @@ func (s *qrdbServiceServer) GetUserByEmail(ctx context.Context, req *pb.GetUserB
 		return nil, mapServiceError(err)
 	}
 
-	return userToProto(u), nil
+	return s.userResponse(ctx, u)
 }
 
 // GetUserByCertThumbprint resolves a user by mTLS SPKI thumbprint.
@@ -113,7 +120,7 @@ func (s *qrdbServiceServer) GetUserByCertThumbprint(ctx context.Context, req *pb
 		return nil, mapServiceError(err)
 	}
 
-	return userToProto(u), nil
+	return s.userResponse(ctx, u)
 }
 
 // AddCertBinding binds an mTLS SPKI thumbprint to a user.
@@ -127,7 +134,7 @@ func (s *qrdbServiceServer) AddCertBinding(ctx context.Context, req *pb.AddCertB
 		return nil, mapServiceError(err)
 	}
 
-	return userToProto(u), nil
+	return s.userResponse(ctx, u)
 }
 
 // RemoveCertBinding withdraws an mTLS SPKI thumbprint from a user.
@@ -141,7 +148,7 @@ func (s *qrdbServiceServer) RemoveCertBinding(ctx context.Context, req *pb.Remov
 		return nil, mapServiceError(err)
 	}
 
-	return userToProto(u), nil
+	return s.userResponse(ctx, u)
 }
 
 // UpdateUser applies partial updates to an existing user.
@@ -175,13 +182,28 @@ func (s *qrdbServiceServer) UpdateUser(ctx context.Context, req *pb.UpdateUserPr
 		at := time.Unix(sec, 0).UTC()
 		updateReq.LastAuth = &at
 	}
+	if req.GetHasRoleBindings() {
+		updateReq.RoleBindings = protoToRoleBindings(req.GetRoleBindings())
+	}
+	if req.GetHasAttributes() {
+		updateReq.Attributes = req.GetAttributes()
+		if updateReq.Attributes == nil {
+			updateReq.Attributes = map[string]string{}
+		}
+	}
+
+	if authmw.TouchesRoleAssignment(updateReq.RoleIDs, updateReq.RoleBindings, updateReq.Attributes) {
+		if err := s.authMW.AuthorizeRoleAssignmentWrite(ctx, s.userSvc, s.roleSvc, req.GetId(), updateReq.RoleIDs, updateReq.RoleBindings); err != nil {
+			return nil, mapServiceError(err)
+		}
+	}
 
 	u, err := s.userSvc.UpdateUser(ctx, updateReq)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
 
-	return userToProto(u), nil
+	return s.userResponse(ctx, u)
 }
 
 // DeleteUser removes a non-system user by ID.
@@ -214,7 +236,9 @@ func (s *qrdbServiceServer) ListUsers(ctx context.Context, req *pb.ListUsersRequ
 
 	users := make([]*pb.UserResponse, len(resp.Users))
 	for i, u := range resp.Users {
-		users[i] = userToProto(u)
+		if users[i], err = s.userResponse(ctx, u); err != nil {
+			return nil, err
+		}
 	}
 
 	return &pb.ListUsersResponse{
@@ -383,8 +407,9 @@ func (s *qrdbServiceServer) AssignRole(ctx context.Context, req *pb.AssignRoleRe
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "user"})
 	}
 
-	// Validate that the role exists.
-	if _, err := s.roleSvc.GetRole(ctx, req.GetRoleId()); err != nil {
+	// The same gate every role-assignment write passes: roles:assign in the
+	// user's tenant, and the role must exist there.
+	if err := s.authMW.AuthorizeRoleAssignmentWrite(ctx, s.userSvc, s.roleSvc, req.GetUserId(), []string{req.GetRoleId()}, nil); err != nil {
 		return nil, mapServiceError(err)
 	}
 
@@ -419,6 +444,10 @@ func (s *qrdbServiceServer) UnassignRole(ctx context.Context, req *pb.UnassignRo
 	}
 	if s.userSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "user"})
+	}
+
+	if err := s.authMW.AuthorizeRoleUnassignment(ctx, s.userSvc, req.GetUserId()); err != nil {
+		return nil, mapServiceError(err)
 	}
 
 	// Get the user and remove the role.
@@ -665,10 +694,31 @@ func (s *qrdbServiceServer) ListCerts(ctx context.Context, req *pb.ListCertsRequ
 // Auth type conversion helpers
 // ---------------------------------------------------------------------------
 
-// userToProto converts a user.User to its protobuf representation.
-func userToProto(u *user.User) *pb.UserResponse {
+// userResponse projects u (see userToProto) with this server's factor
+// lister, mapping a failed factor lookup to its gRPC status.
+func (s *qrdbServiceServer) userResponse(ctx context.Context, u *user.User) (*pb.UserResponse, error) {
+	resp, err := userToProto(ctx, s.userAuthFactorSvc, u)
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return resp, nil
+}
+
+// userToProto converts a user.User to its protobuf representation. Factors
+// metadata and the derived MFA fields are computed at read time from the
+// real enrollment records via lister (service.UserAuthFactorServicer), read
+// once -- never from a stored field on u -- so they cannot drift from what
+// /v1/users/factors (or its gRPC equivalent) reports. lister may be nil (the
+// auth-factor subsystem is not configured for this deployment); a lister
+// that fails returns the *user.FactorLookupError rather than a response
+// claiming no factors.
+func userToProto(ctx context.Context, lister user.FactorLister, u *user.User) (*pb.UserResponse, error) {
 	if u == nil {
-		return nil
+		return nil, nil
+	}
+	factors, err := user.ResolveFactorView(ctx, lister, u.ID)
+	if err != nil {
+		return nil, err
 	}
 	return &pb.UserResponse{
 		Id:          u.ID,
@@ -683,11 +733,17 @@ func userToProto(u *user.User) *pb.UserResponse {
 		// Seconds rather than RFC 3339 because this is a point in time a client
 		// compares and orders, not one it displays; zero says "never
 		// authenticated" without a second presence field.
-		LastAuthUnix: lastAuthUnix(u.LastAuth),
-		CertBindings: certBindingsToProto(u.CertBindings),
-		CreatedAt:    u.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:    u.UpdatedAt.Format(time.RFC3339),
-	}
+		LastAuthUnix:  lastAuthUnix(u.LastAuth),
+		CertBindings:  certBindingsToProto(u.CertBindings),
+		RoleBindings:  roleBindingsToProto(u.RoleBindings),
+		Attributes:    u.Attributes,
+		Factors:       factorsToProto(factors.Factors),
+		MfaEnabled:    factors.MFAEnabled,
+		MfaMethods:    factors.MFAMethods,
+		MfaEnrolledAt: factors.MFAEnrolledAt,
+		CreatedAt:     u.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:     u.UpdatedAt.Format(time.RFC3339),
+	}, nil
 }
 
 // certBindingsToProto renders the account's bindings in full, expired ones
@@ -704,6 +760,42 @@ func certBindingsToProto(bindings []user.CertBinding) []*pb.CertBinding {
 		if !b.NotAfter.IsZero() {
 			out[i].NotAfterUnix = b.NotAfter.UTC().Unix()
 		}
+	}
+	return out
+}
+
+// roleBindingsToProto renders the account's tenant-scoped role bindings.
+func roleBindingsToProto(bindings []user.RoleBinding) []*pb.RoleBinding {
+	if len(bindings) == 0 {
+		return nil
+	}
+	out := make([]*pb.RoleBinding, len(bindings))
+	for i, b := range bindings {
+		out[i] = &pb.RoleBinding{RoleId: b.RoleID, TenantId: b.TenantID}
+	}
+	return out
+}
+
+// protoToRoleBindings is the inverse of roleBindingsToProto, used by
+// UpdateUser to translate a wire request back into the domain shape.
+func protoToRoleBindings(bindings []*pb.RoleBinding) []user.RoleBinding {
+	out := make([]user.RoleBinding, len(bindings))
+	for i, b := range bindings {
+		out[i] = user.RoleBinding{RoleID: b.GetRoleId(), TenantID: b.GetTenantId()}
+	}
+	return out
+}
+
+// factorsToProto renders factor METADATA (see user.FactorView); the opaque
+// Data blob a factor interprets during verification never crosses this or
+// any other transport (go-qrdb#192/#197).
+func factorsToProto(factors []transport.FactorMetadata) []*pb.FactorMetadata {
+	if len(factors) == 0 {
+		return nil
+	}
+	out := make([]*pb.FactorMetadata, len(factors))
+	for i, f := range factors {
+		out[i] = &pb.FactorMetadata{Id: f.ID, FactorName: f.FactorName, CreatedAt: f.CreatedAt}
 	}
 	return out
 }

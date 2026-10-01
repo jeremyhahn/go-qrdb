@@ -82,10 +82,11 @@ func (roundTripAdminStub) Health(context.Context) (*service.HealthStatus, error)
 }
 
 // generateRoundTripTLSConfig returns a minimal self-signed server TLS config
-// for localhost/127.0.0.1. The SDK client trusts it via InsecureSkipVerify
-// rather than a matching CA pool: this test's subject is the REST wire
-// contract (request fields, status codes), not certificate verification.
-func generateRoundTripTLSConfig(t *testing.T) *tls.Config {
+// for localhost/127.0.0.1, and a pool holding that certificate for the client
+// to trust. The client verifies the server normally against that pool, so the
+// test exercises the transport's real TLS path rather than switching
+// verification off.
+func generateRoundTripTLSConfig(t *testing.T) (*tls.Config, *x509.CertPool) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -109,16 +110,23 @@ func generateRoundTripTLSConfig(t *testing.T) *tls.Config {
 	if err != nil {
 		t.Fatalf("create certificate: %v", err)
 	}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("parse certificate: %v", err)
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(leaf)
 	return &tls.Config{
 		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}},
-	}
+	}, roots
 }
 
 // newRoundTripServer starts the REAL pkg/api/rest.Server, bound to a real
 // loopback-only port (127.0.0.1:0 -- never a routable address, and no DNS or
 // external dependency), over a REAL tenant-routed AuthFactorServicer -- the
 // same construction pkg/server's ensureAuthFactorService produces -- and
-// returns it alongside the base URL an SDK transport can reach it at.
+// returns the pool that trusts its certificate and the base URL an SDK
+// transport can reach it at.
 //
 // This is unavoidable, not a shortcut: pkg/api/rest.Server exposes no
 // http.Handler / ServeMux accessor a test could hand to httptest.NewTLSServer
@@ -138,7 +146,7 @@ func generateRoundTripTLSConfig(t *testing.T) *tls.Config {
 // which tenant isolation (already covered by
 // pkg/api/rest/handlers_authfactor_tenant_test.go in the main module) is
 // orthogonal to.
-func newRoundTripServer(t *testing.T) (srv *restserver.Server, baseURL string) {
+func newRoundTripServer(t *testing.T) (roots *x509.CertPool, baseURL string) {
 	t.Helper()
 	store := kvstore.NewMemoryKVStore()
 	tenants, err := tenant.NewKVTenantService(store, slog.New(slog.DiscardHandler))
@@ -157,24 +165,25 @@ func newRoundTripServer(t *testing.T) (srv *restserver.Server, baseURL string) {
 		t.Fatalf("NewRoutingAuthFactorService: %v", err)
 	}
 
-	srv = restserver.NewServer(nil, roundTripAdminStub{}, "127.0.0.1:0",
+	serverTLS, roots := generateRoundTripTLSConfig(t)
+	srv := restserver.NewServer(nil, roundTripAdminStub{}, "127.0.0.1:0",
 		restserver.WithAuthFactorService(authSvc),
-		restserver.WithTLS(generateRoundTripTLSConfig(t)),
+		restserver.WithTLS(serverTLS),
 	)
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	t.Cleanup(srv.Stop)
-	return srv, "https://" + srv.Addr()
+	return roots, "https://" + srv.Addr()
 }
 
-// newRoundTripClient builds the REAL SDK REST transport, trusting the test
-// server's self-signed certificate, and connects it.
-func newRoundTripClient(t *testing.T, baseURL string) *Transport {
+// newRoundTripClient builds the REAL SDK REST transport, trusting only the
+// test server's self-signed certificate, and connects it.
+func newRoundTripClient(t *testing.T, baseURL string, roots *x509.CertPool) *Transport {
 	t.Helper()
 	tr, err := New(
 		transport.WithAddress(baseURL),
-		transport.WithTLSConfig(&tls.Config{InsecureSkipVerify: true}), //nolint:gosec // test-only, self-signed loopback cert
+		transport.WithTLSConfig(&tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS13}),
 	)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -198,8 +207,8 @@ func newRoundTripClient(t *testing.T, baseURL string) *Transport {
 // the server's 201 on enroll checked against a client that only accepted
 // 200, and the server's 204 on revoke likewise.
 func TestAuthFactorRoundTrip_EnrollChallengeVerifyListRevoke(t *testing.T) {
-	_, baseURL := newRoundTripServer(t)
-	tr := newRoundTripClient(t, baseURL)
+	roots, baseURL := newRoundTripServer(t)
+	tr := newRoundTripClient(t, baseURL, roots)
 	ctx := context.Background()
 
 	enrollResp, err := tr.EnrollFactor(ctx, &transport.EnrollFactorRequest{
@@ -253,8 +262,8 @@ func TestAuthFactorRoundTrip_EnrollChallengeVerifyListRevoke(t *testing.T) {
 // mismatch was invisible because EVERY enrollment failed at 400 regardless
 // of Subject, and no test ever sent a request the server could accept at all.
 func TestAuthFactorRoundTrip_EnrollMissingUserIDIsRejected(t *testing.T) {
-	_, baseURL := newRoundTripServer(t)
-	tr := newRoundTripClient(t, baseURL)
+	roots, baseURL := newRoundTripServer(t)
+	tr := newRoundTripClient(t, baseURL, roots)
 
 	_, err := tr.EnrollFactor(context.Background(), &transport.EnrollFactorRequest{FactorName: "fake"})
 	if err == nil {

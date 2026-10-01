@@ -79,7 +79,23 @@ which lease a key hangs off.
 - **Revoke is immediate and idempotent from the caller's view**: revoking an
   already-expired lease is not an error worth distinguishing, and both end with
   the lease gone.
-- **A lease ID is meaningful only within its (tenant, database) scope.**
+- **A lease ID is meaningful only within its (tenant, database) scope.** Lease
+  IDs are global integers, so the scope is recorded rather than implied: at
+  Grant the namespaced lease view attaches an ownership record
+  (`__sys:lease-owner/<tenant>/<database>/<id>`, outside every database's
+  keyspace) to the new lease. `Leases` lists only leases carrying the caller's
+  record; `KeepAlive` and `TimeToLive` answer any other ID with the same
+  `service.LeaseNotFoundError` a missing lease gets, and `Revoke` with the same
+  idempotent success -- without revoking it. The no-op is answered by the view
+  rather than passed to the lessor, since IDs are allocated in sequence and a
+  not-yet-granted ID passed through could revoke a lease another scope is
+  granted in between. The record is
+  attached, so it is replicated with the lease and deleted with it. A lease
+  whose record cannot be written is revoked and the grant fails. A write may
+  attach only a lease its own namespace owns: `PutWithLease` and
+  `PutWithLeaseAndMode` (and the etcd `Put` that rides on them) answer any
+  other lease ID with `service.LeaseNotFoundError` and write nothing. This
+  holds on every transport, etcd included.
 - **TTL granularity is seconds.**
 
 ## Error semantics

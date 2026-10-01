@@ -298,6 +298,14 @@ func (m *databaseSvcMini) UpdateBarrierForTenant(_ context.Context, _ string, _ 
 func (m *databaseSvcMini) UpdateConnectionForTenant(_ context.Context, _ string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
 	return m.updateResult, m.updateErr
 }
+
+func (m *databaseSvcMini) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
+	return &database.DatabaseInfo{Name: name, SQL: sqlCfg}, nil
+}
+
+func (m *databaseSvcMini) UpdateSQLForTenant(_ context.Context, name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
+	return m.UpdateSQL(name, sqlCfg)
+}
 func (m *databaseSvcMini) ScaleForTenant(_ context.Context, _ string, _ int) (*database.DatabaseInfo, error) {
 	return m.updateResult, m.updateErr
 }
@@ -508,7 +516,7 @@ func TestBarrier_Seal_Success(t *testing.T) {
 	client, cleanup := startTestServerFull(t, WithBarrierService(svc))
 	defer cleanup()
 
-	_, err := client.BarrierSeal(context.Background(), &emptypb.Empty{})
+	_, err := client.BarrierSeal(context.Background(), &pb.BarrierSealRequest{})
 	if err != nil {
 		t.Fatalf("BarrierSeal failed: %v", err)
 	}
@@ -520,7 +528,7 @@ func TestBarrier_Seal_Error(t *testing.T) {
 	client, cleanup := startTestServerFull(t, WithBarrierService(svc))
 	defer cleanup()
 
-	_, err := client.BarrierSeal(context.Background(), &emptypb.Empty{})
+	_, err := client.BarrierSeal(context.Background(), &pb.BarrierSealRequest{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -849,7 +857,7 @@ func TestBarrier_RecoveryDelete_Success(t *testing.T) {
 	client, cleanup := startTestServerFull(t, WithBarrierService(svc))
 	defer cleanup()
 
-	_, err := client.BarrierRecoveryDelete(context.Background(), &emptypb.Empty{})
+	_, err := client.BarrierRecoveryDelete(context.Background(), &pb.BarrierRecoveryDeleteRequest{})
 	if err != nil {
 		t.Fatalf("BarrierRecoveryDelete failed: %v", err)
 	}
@@ -861,7 +869,7 @@ func TestBarrier_RecoveryDelete_Error(t *testing.T) {
 	client, cleanup := startTestServerFull(t, WithBarrierService(svc))
 	defer cleanup()
 
-	_, err := client.BarrierRecoveryDelete(context.Background(), &emptypb.Empty{})
+	_, err := client.BarrierRecoveryDelete(context.Background(), &pb.BarrierRecoveryDeleteRequest{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -871,7 +879,7 @@ func TestBarrier_RecoveryDelete_NilService(t *testing.T) {
 	client, cleanup := startTestServerFull(t)
 	defer cleanup()
 
-	_, err := client.BarrierRecoveryDelete(context.Background(), &emptypb.Empty{})
+	_, err := client.BarrierRecoveryDelete(context.Background(), &pb.BarrierRecoveryDeleteRequest{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

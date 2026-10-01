@@ -94,6 +94,11 @@ import (
 
 // startFlags holds the parsed CLI flags for the start command.
 type startFlags struct {
+	// processHardening is what secure.HardenProcess did at the top of the
+	// start command. It is not a flag: RunE sets it, and runStart audits an
+	// honoured opt-out (ProcessInspectionAllowed).
+	processHardening secure.ProcessHardening
+
 	mode            string
 	configFile      string
 	listen          string
@@ -374,6 +379,20 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 			"  2. CLI flags (backward compatible)\n" +
 			"CLI flags override YAML values when both are provided.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// Process hardening is the FIRST thing start does: before the
+			// configuration (which may name secret references) is read, before
+			// the budget, before anything protected exists, so nothing this
+			// process ever holds is readable by a debugger or a same-user
+			// process through ptrace or /proc/<pid>/mem (go-qrdb#554). A
+			// refusal is fatal. An honoured opt-out is carried to runStart,
+			// which records it in the compliance audit trail once that trail
+			// exists.
+			hardening, herr := hardenSecureProcess(slog.Default())
+			if herr != nil {
+				return herr
+			}
+			f.processHardening = hardening
+
 			if err := resolveStartFlags(cmd, f); err != nil {
 				return err
 			}
@@ -916,7 +935,14 @@ func applyTLSClientAuth(f *startFlags, bundle *TLSBundle) {
 // path it reads and installs nothing, which is why TestMain leaves it real.
 // It is indirected for the test double the ErrAllocatorInstalled mismatch
 // check needs (go-qrdb#114 review, round 3).
+//
+// hardenSecureProcess is indirected for the same reason: secure.HardenProcess
+// makes the calling process non-dumpable (Linux) or refuses every later
+// debugger attach (macOS), and neither can be undone, so the test binary that
+// drives the start command must not apply it to itself. TestMain doubles it; the real
+// mechanism is proven from a subprocess in pkg/secure.
 var (
+	hardenSecureProcess    = secure.HardenProcess
 	newSecureAllocator     = secure.NewAllocatorWithinRLimit
 	setSecureAllocator     = secure.SetAllocator
 	processSecureAllocator = secure.ProcessAllocator
@@ -1132,6 +1158,7 @@ func runStart(f *startFlags) (err error) {
 			Name:    dbCfg.Name,
 			Engine:  database.EngineType(dbCfg.Engine),
 			Backend: database.BackendType(dbCfg.Backend),
+			SQL:     databaseSQLConfig(dbCfg.SQL),
 		}
 		if _, err := dbManager.Create(dCfg); err != nil {
 			// Try opening if it already exists (idempotent startup).
@@ -1139,6 +1166,13 @@ func runStart(f *startFlags) (err error) {
 			if errors.As(err, &ae) {
 				if _, err := dbManager.Open(dbCfg.Name); err != nil {
 					return err
+				}
+				// The file declares the database's SQL settings: a
+				// database that already existed takes them too.
+				if dCfg.SQL != nil {
+					if err := dbManager.UpdateSQL(dbCfg.Name, dCfg.SQL); err != nil {
+						return err
+					}
 				}
 				continue
 			}
@@ -1470,6 +1504,10 @@ func runStart(f *startFlags) (err error) {
 			if err != nil {
 				return err
 			}
+			// The at-rest report reads the seal posture and the standalone
+			// backend (databases[0]), which the server config does not carry.
+			capCfg.Seal = f.sealConfig
+			capCfg.Databases = f.databases
 			profile := capCfg.EffectiveCapabilities()
 			if !standalone {
 				// A raft node serves what its state machine serves: the
@@ -1480,9 +1518,17 @@ func runStart(f *startFlags) (err error) {
 					return &UnknownSMError{Name: f.smType}
 				}
 			}
+			profile.WarnUnencryptedAtRest(slog.Default())
 			capabilities.Seal(profile)
 
+			// This node's permitted-method vocabulary: every user store below
+			// validates written policies against it, and it is bound to the
+			// node's own auth middleware once bootstrapAuthEnforcement builds
+			// it. Until then, and with auth disabled, it is the built-in tokens.
+			authMethods := &middleware.AuthMethodVocabulary{}
+
 			svcNode, err := lifecycle.BuildServices(sigCtx, lifecycle.Infra{
+				AuthMethodVocabulary:      authMethods.IsAuthMethod,
 				Host:                      svcHost,
 				Profile:                   &profile,
 				WatchHub:                  watchHub,
@@ -1606,6 +1652,15 @@ func runStart(f *startFlags) (err error) {
 			defer func() { _ = complianceAudit.Close() }()
 			_ = runtimeKVAdapter // used below when auth is enabled
 
+			// A node that runs inspectable does so on the record: the opt-out
+			// honoured at the top of start is written to the compliance trail
+			// the moment the trail exists, and a node that cannot record it
+			// does not run.
+			if err := auditInspectionOptOut(sigCtx, complianceAudit, f.processHardening); err != nil {
+				_ = shutdownNode(nodeCloser)
+				return err
+			}
+
 			// Under auth.mtls_binding_policy "required" every user store
 			// refuses any change that would lock the bootstrap admin out of
 			// certificate login (lifecycle.UserStoreOptions).
@@ -1619,6 +1674,10 @@ func runStart(f *startFlags) (err error) {
 				}
 				userOpts = opts
 			}
+			// Every user store validates written permitted-method policies
+			// against THIS node's auth-chain vocabulary (built-ins until the
+			// middleware is bound below, and with auth disabled).
+			userOpts = append(userOpts, user.WithAuthMethodVocabulary(authMethods.IsAuthMethod))
 			mgmtResult, err := bootstrapUserRoleStores(sigCtx, bootKVSvc, authKVSvc, txSvc, rnode, shard.ShardKV, f.replicaID, tenantSvcInst, strictSoD, bootBarriers, bootStrategy, complianceAudit, userOpts...)
 			if err != nil {
 				_ = shutdownNode(nodeCloser)
@@ -1653,6 +1712,7 @@ func runStart(f *startFlags) (err error) {
 					return err
 				}
 				defer func() { _ = authResult.auditLogger.Close() }()
+				authMethods.Bind(authResult.authMW)
 			} else {
 				slog.Warn("authentication disabled: all endpoints accessible without credentials")
 			}
@@ -2210,21 +2270,8 @@ func runStart(f *startFlags) (err error) {
 			// Currently all databases share the system shard services. As per-database
 			// shard allocation (Phase 1.2) is enabled, each database will get its
 			// own service set backed by a dedicated shard.
-			dbRegistry := server.NewDatabaseServiceRegistry("system")
-			dbRegistry.Register("system", &server.DatabaseServices{
-				Name:        "system",
-				ShardID:     shard.ShardKV,
-				KV:          kvSvc,
-				MVCC:        mvccSvc,
-				Batch:       batchSvc,
-				Transaction: txSvc,
-				Lease:       leaseSvc,
-				TimeSeries:  tsSvc,
-				Index:       indexSvc,
-				Watch:       watchSvc,
-				Collection:  collectionSvc,
-				Vector:      vectorSvc,
-			})
+			dbRegistry := server.NewDatabaseServiceRegistry(lifecycle.SystemDatabase)
+			dbRegistry.Register(lifecycle.SystemDatabase, svcNode.DatabaseServices(lifecycle.SystemDatabase, shard.ShardKV))
 			serverOpts = append(serverOpts, server.WithDatabaseServiceRegistry(dbRegistry))
 
 			srv := server.New(serverCfg, kvSvc, adminSvc, serverOpts...)
@@ -3606,9 +3653,25 @@ func runFirstBoot(ctx context.Context, node raftNode, shardID uint64, userSvc us
 	// Phase 2: Check if admin user already exists using local state
 	// machine reads (StaleRead via bootstrapHostAdapter). This returns
 	// immediately without waiting for ReadIndex.
-	if adminExists(ctx, userSvc, tenant.SystemTenantID) {
-		slog.Debug("first-boot: admin user exists, skipping")
-		return nil
+	//
+	// The fast path only skips Phase 3 when the existing admin is ALREADY
+	// the System user. An admin created before go-qrdb#106 -- or one whose
+	// flag did not persist for any other reason -- carries System: false,
+	// and returning here unconditionally skipped the ONLY code path that
+	// ever repairs that: firstboot.Initialize/BootstrapSystem's idempotent
+	// createAdminUser, whose UsernameExistsError branch calls
+	// reconcileExistingAdmin. A cluster upgraded across #106 would keep an
+	// admin that was permanently System: false and therefore deletable,
+	// forever, because every subsequent start took this same early return.
+	if existingAdmin, ok := adminExists(ctx, userSvc, tenant.SystemTenantID); ok {
+		if existingAdmin.System {
+			slog.Debug("first-boot: admin user exists and is already the System user, skipping")
+			return nil
+		}
+		slog.Info("first-boot: admin user exists but is not yet the System user; running reconciliation",
+			slog.Uint64("user_id", existingAdmin.ID))
+		// Fall through to Phase 3: its idempotent init path reconciles the
+		// existing admin's System flag without minting a second user.
 	}
 
 	// Phase 3: Run the canonical first-boot path. It creates the system
@@ -3825,11 +3888,16 @@ func warmupReadIndex(ctx context.Context, kvSvc service.KVServicer) {
 	}
 }
 
-// adminExists checks whether the admin user already exists using
-// a local StaleRead (via bootstrapHostAdapter).
-func adminExists(ctx context.Context, userSvc user.UserServicer, tenantID string) bool {
-	_, err := userSvc.GetUserByUsername(ctx, tenantID, "admin")
-	return err == nil
+// adminExists checks whether the admin user already exists using a local
+// StaleRead (via bootstrapHostAdapter), returning the record so a caller can
+// inspect its System flag rather than only the boolean fact of its
+// existence.
+func adminExists(ctx context.Context, userSvc user.UserServicer, tenantID string) (*user.User, bool) {
+	u, err := userSvc.GetUserByUsername(ctx, tenantID, "admin")
+	if err != nil {
+		return nil, false
+	}
+	return u, true
 }
 
 // waitForAdminReplication polls the local state machine until the admin
@@ -3841,7 +3909,7 @@ func waitForAdminReplication(ctx context.Context, userSvc user.UserServicer, ten
 	backoff := 100 * time.Millisecond
 
 	for time.Now().Before(deadline) {
-		if adminExists(ctx, userSvc, tenantID) {
+		if _, ok := adminExists(ctx, userSvc, tenantID); ok {
 			slog.Info("auth bootstrap: admin user replicated from leader")
 			return nil
 		}
@@ -4014,4 +4082,13 @@ func (a *raftFollowerAdder) LeaderReplicaID(_ context.Context, shardID uint64) (
 // removal rather than the replica being removed.
 func (a *raftFollowerAdder) RequestLeaderTransfer(ctx context.Context, shardID, targetReplicaID uint64) error {
 	return a.host.RequestLeaderTransfer(ctx, shardID, targetReplicaID)
+}
+
+// databaseSQLConfig converts a configuration file's database SQL settings to
+// the database package's; nil stays nil (the defaults).
+func databaseSQLConfig(c *qrdbconfig.DatabaseSQLConfig) *database.SQLConfig {
+	if c == nil {
+		return nil
+	}
+	return &database.SQLConfig{Concurrency: database.Concurrency(c.Concurrency)}
 }

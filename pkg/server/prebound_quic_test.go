@@ -52,7 +52,9 @@ func TestLifetimePacketConn_EndedLifetimeCannotMoveTheDeadline(t *testing.T) {
 			udp := listenUDP(t)
 			srvTLS := selfSignedTLSConfig(t)
 			srvTLS.NextProtos = []string{"qrdb-test"}
-			cliTLS := &tls.Config{InsecureSkipVerify: true, NextProtos: []string{"qrdb-test"}} //nolint:gosec // self-signed loopback test server
+			// The client trusts exactly the server's self-signed certificate
+			// (selfSignedTLSConfig puts it in RootCAs) and verifies it normally.
+			cliTLS := &tls.Config{RootCAs: srvTLS.RootCAs, NextProtos: []string{"qrdb-test"}, MinVersion: tls.VersionTLS13}
 			ctx, cancel := context.WithTimeout(context.Background(), preboundBound)
 			defer cancel()
 

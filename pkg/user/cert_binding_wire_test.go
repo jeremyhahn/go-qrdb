@@ -73,3 +73,53 @@ func TestWireCertBindings_NoneIsNil(t *testing.T) {
 		t.Fatalf("WireCertBindings(empty) = %v, want nil", got)
 	}
 }
+
+func TestWireRoleBindings_RoundTrip(t *testing.T) {
+	domain := []RoleBinding{
+		{RoleID: "role-a", TenantID: "acme"},
+		{RoleID: "role-b", TenantID: "beta"},
+	}
+	wire := WireRoleBindings(domain)
+	if len(wire) != len(domain) {
+		t.Fatalf("WireRoleBindings() len = %d, want %d", len(wire), len(domain))
+	}
+	for i := range domain {
+		if wire[i].RoleID != domain[i].RoleID || wire[i].TenantID != domain[i].TenantID {
+			t.Errorf("WireRoleBindings()[%d] = %+v, want %+v", i, wire[i], domain[i])
+		}
+	}
+
+	back := RoleBindingsFromWire(wire)
+	if len(back) != len(domain) {
+		t.Fatalf("RoleBindingsFromWire() len = %d, want %d", len(back), len(domain))
+	}
+	for i := range domain {
+		if back[i] != domain[i] {
+			t.Errorf("RoleBindingsFromWire()[%d] = %+v, want %+v", i, back[i], domain[i])
+		}
+	}
+}
+
+func TestWireRoleBindings_NoneIsNil(t *testing.T) {
+	if got := WireRoleBindings(nil); got != nil {
+		t.Fatalf("WireRoleBindings(nil) = %v, want nil", got)
+	}
+	if got := WireRoleBindings([]RoleBinding{}); got != nil {
+		t.Fatalf("WireRoleBindings(empty) = %v, want nil", got)
+	}
+}
+
+func TestRoleBindingsFromWire_NilVsEmpty(t *testing.T) {
+	// nil MUST stay nil (leave-alone semantics on UpdateUserRequest); an
+	// explicit empty slice MUST stay a non-nil empty slice (clear semantics).
+	if got := RoleBindingsFromWire(nil); got != nil {
+		t.Fatalf("RoleBindingsFromWire(nil) = %v, want nil", got)
+	}
+	got := RoleBindingsFromWire([]transport.RoleBinding{})
+	if got == nil {
+		t.Fatal("RoleBindingsFromWire(empty) = nil, want non-nil empty slice")
+	}
+	if len(got) != 0 {
+		t.Fatalf("RoleBindingsFromWire(empty) len = %d, want 0", len(got))
+	}
+}

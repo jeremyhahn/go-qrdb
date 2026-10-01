@@ -85,7 +85,7 @@ func TestWithDatabase_ScopesDataPlaneRequests(t *testing.T) {
 	base.baseRT = http.DefaultTransport
 	base.client = &http.Client{Transport: base.scopedRoundTripper()}
 
-	scoped := base.WithDatabase("db2").(*Transport)
+	scoped := base.withDatabase("db2")
 	if scoped.activeDatabase != "db2" {
 		t.Fatalf("expected activeDatabase db2, got %q", scoped.activeDatabase)
 	}
@@ -96,7 +96,7 @@ func TestWithDatabase_ScopesDataPlaneRequests(t *testing.T) {
 	}
 
 	// system normalizes to unscoped.
-	un := base.WithDatabase("system").(*Transport)
+	un := base.withDatabase("system")
 	if un.activeDatabase != "" {
 		t.Fatalf("system should be unscoped, got %q", un.activeDatabase)
 	}

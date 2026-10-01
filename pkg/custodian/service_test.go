@@ -210,8 +210,8 @@ type nonAtomicKV struct{ kvstore.KVStore }
 func TestNewService_RefusesAStoreWithoutAtomicWrites(t *testing.T) {
 	logger := slog.Default()
 	svc, err := custodian.NewService(&nonAtomicKV{newMemKV()}, &noopAudit{}, logger)
-	if !errors.Is(err, custodian.ErrAtomicWriteUnsupported) {
-		t.Fatalf("err = %v, want ErrAtomicWriteUnsupported", err)
+	if !errors.Is(err, kvstore.ErrAtomicWriteUnsupported) {
+		t.Fatalf("err = %v, want kvstore.ErrAtomicWriteUnsupported, the canonical marker", err)
 	}
 	if svc != nil {
 		t.Error("a service was returned for a store that cannot claim a username")

@@ -15,7 +15,7 @@ unchanged.
 | Scope | **one listener per database** with `etcd: enabled` |
 | Default listen address | `:2379` (`protocol.etcd.listen_addr`) |
 | Advertised URLs | `protocol.etcd.advertise_client_urls` |
-| Authentication | **mTLS only** — CN is the username, OU is the tenant |
+| Authentication | **mTLS only**, per RPC, through the node's authenticator chain; the caller must belong to the database's owning tenant (or be the system tenant) |
 | Build tag | `qrdb_etcd` |
 
 TLS and auth must both be enabled, the database `engine` must be `kv` and its
@@ -25,57 +25,55 @@ TLS and auth must both be enabled, the database `engine` must be `kv` and its
 
 | etcd service | RPC | Backed by | Permission |
 |---|---|---|---|
-| `KV` | `Range` | `MVCCKVService.Range` | `kv:range` |
-| `KV` | `Put` | `MVCCKVService.Put` | `kv:put` |
-| `KV` | `DeleteRange` | `MVCCKVService.DeleteRange` | `kv:delete` |
-| `KV` | `Txn` | `TransactionService.Execute` | `kv:transaction` |
-| `KV` | `Compact` | `MVCCKVService.Compact` | `kv:compact` |
-| `Watch` | `Watch` | `WatchService.Watch` / `WatchPrefix` | `kv:watch` |
+| `KV` | `Range` | `MVCCKVService.Range` / `GetRevision` | `kv:range` |
+| `KV` | `Put` | `MVCCKVService.PutWithLease` | `kv:put` |
+| `KV` | `DeleteRange` | `MVCCKVService.Delete` | `kv:delete` |
+| `KV` | `Txn` | `TransactionService.Execute` | `transaction:execute` |
+| `KV` | `Compact` | `MVCCKVService.Compact` | `mvcc:compact` (system tenant only) |
+| `Watch` | `Watch` | `WatchService.Watch` / `WatchPrefix` | `watch:watch_prefix` |
 | `Lease` | `LeaseGrant` | `LeaseService.Grant` | `lease:grant` |
 | `Lease` | `LeaseRevoke` | `LeaseService.Revoke` | `lease:revoke` |
 | `Lease` | `LeaseKeepAlive` | `LeaseService.KeepAlive` | `lease:keepalive` |
-| `Lease` | `LeaseTimeToLive` | `LeaseService.TTL` | `lease:ttl` |
-| `Lease` | `LeaseLeases` | `LeaseService.List` | `lease:list` |
+| `Lease` | `LeaseTimeToLive` | `LeaseService.TimeToLive` | `lease:ttl` |
+| `Lease` | `LeaseLeases` | `LeaseService.Leases` | `lease:list` |
 | `Cluster` | `MemberList` | `AdminService.Peers` | `admin:peers` |
-| `Maintenance` | `Status` | `AdminService.Status` | `admin:status` |
-| `Maintenance` | `Defragment` | `MVCCKVService.Compact` | `kv:compact` |
-| `Maintenance` | `Alarm` | — | returns the current alarm state |
-| `Auth` | **all** | — | **`Unimplemented`** — mTLS instead |
+| `Maintenance` | `Status` | current revision | `admin:status` |
+| `Maintenance` | `Alarm` | — | `admin:status`; returns no alarms |
+| every other RPC — `Auth.*`, member changes, `Defragment`, `Snapshot`, `Hash`, `HashKV`, `MoveLeader`, `Downgrade` | | — | **refused** with `PERMISSION_DENIED` before any handler runs |
 
-`Maintenance.Defragment` maps to `Compact`: it is not a separate storage
-operation, and calling it discards revision history exactly as compaction does.
-
-`Auth` being unimplemented is permanent. There is no username/password path.
+The listener refuses to start without TLS and the node's authentication
+(`etcd.AuthRequiredError`) or without a database catalog and service registry
+to confine it (`etcd.ScopeUnavailableError`).
 
 ## Key namespacing
 
-Keys are tenant-prefixed transparently, using the tenant from the client
-certificate's OU. The prefix is added on write and stripped on read:
-
+The listener is **confined to its database**. Its MVCC, transaction, watch and
+lease services are resolved through the same per-(tenant, database) service
+registry every other transport uses, for the tenant that owns the database. On
+the shared shard that is the `<owner-tenant>/<database>/` namespace: the prefix
+is added on write and stripped on read, and a range can never leave it.
 
 ```bash
-# Client cert: CN=alice, OU=acme-corp
+# etcd enabled on database "k8s" owned by tenant "acme-corp"
 etcdctl put /registry/pods/default/nginx '{"kind":"Pod",...}'
-# Stored as: acme-corp//registry/pods/default/nginx
-
-etcdctl get /registry/pods/default/nginx
-# Reads: acme-corp//registry/pods/default/nginx
-# Returns: key='/registry/pods/default/nginx' (prefix stripped)
+# Stored as: acme-corp/k8s//registry/pods/default/nginx
+etcdctl get "" --from-key
+# Returns only keys of acme-corp/k8s, prefix stripped
 ```
 
+A volume- or raft-isolated tenant's database is served from the tenant's own
+store exactly as on every other transport. A database that is sealed, dropped
+or whose tenant barrier is sealed is refused on the next request: the listener
+re-resolves the database on every RPC.
 
 ## Per-database isolation
 
-Each etcd-enabled database is a fully independent etcd cluster:
-
-- **Independent revision counters** — each starts at 1 at database creation.
-- **Independent watch streams** — events never cross databases.
-- **Independent lease tables** — lease IDs are database-scoped.
-- **Independent encryption barriers** — each database's data is encrypted with
-  its own DEK through the `TenantBarrier`.
-
-A client cannot see, or interfere with, another database's revisions, watches or
-leases.
+Each etcd listener serves exactly one database, and a client can neither see nor
+change another database's keys, watches or leases through it. Revisions are
+those of the store serving the database — store-global on the shared shard, and
+per group for a raft-isolated tenant — so they do not start at 1 per database
+on the shared shard. *(Corrected: this section previously claimed a per-database
+counter starting at 1.)*
 
 ## Kubernetes
 
@@ -91,10 +89,11 @@ kube-apiserver \
 
 **Requirements:**
 
-- The database must be created with `engine: kv`, `backend: raft`, and `etcd: enabled`.
+- The database must be `engine: kv` with `etcd: enabled`; enabling etcd on any other engine is refused at create and on update with `database.EtcdEngineUnsupportedError` (`400` / `INVALID_ARGUMENT`). Any backend serves it: the listener resolves the database's engines through the service registry.
+- The node must run in mode `raft`: MVCC, leases and watches are raft-only, and a standalone node's listener refuses to start (`service.CapabilityUnsupportedError`, "requires mode: raft"). *(Corrected: `backend: raft` was documented as required and was neither required nor checked -- the listener serves any backend through the service registry -- and `engine: kv` was documented as validated and was not.)*
 - The `sm_type` must be `mvcc` (Kubernetes requires MVCC semantics: revisions, watches, leases, transactions).
 - mTLS must be enabled with certificates signed by the same CA as the `kube-apiserver` client certificate.
-- The RBAC role assigned to the Kubernetes client certificate must include `kv:range`, `kv:put`, `kv:delete`, `kv:transaction`, `kv:watch`, `kv:compact`, and `lease:*` permissions.
+- The RBAC role assigned to the Kubernetes client certificate must include `kv:range`, `kv:put`, `kv:delete`, `transaction:execute`, `watch:watch_prefix`, `admin:status` and `lease:*` permissions, and must be issued to a user of the tenant that owns the database. `Compact` is reserved to the system tenant on the shared shard.
 
 **Supported Kubernetes operations:**
 
@@ -110,7 +109,7 @@ kube-apiserver \
 etcd's own error semantics are preserved: a compacted revision produces etcd's
 compacted-revision error, a failed `Txn` returns `succeeded: false` rather than
 an error, and an authorization failure surfaces on the RPC rather than at
-connection time. Every `Auth` RPC returns `Unimplemented`.
+connection time. Every `Auth` RPC, and every other RPC without a permission mapping, is refused with `PERMISSION_DENIED`.
 
 ## Versioning
 

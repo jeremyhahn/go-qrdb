@@ -20,7 +20,6 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -46,9 +45,17 @@ var (
 // The cert list handler returns []*cert.CertRecord which uses time.Time
 // (RFC 3339 strings), while the SDK CertRecord uses string timestamps.
 
-// serverUser mirrors user.User for JSON decoding. The server-side
-// struct has json tags matching the SDK type. User's CreatedAt and
-// UpdatedAt are time.Time (marshaled as RFC 3339 strings).
+// serverUser mirrors the MCP server's userRecord wire type for JSON decoding
+// (pkg/api/mcp's userRecord). Every field in this payload — including nested
+// CertBindings/RoleBindings/Factors entries — shares the server's camelCase
+// convention, so this client decodes into LOCAL camelCase structs
+// (serverCertBinding, serverRoleBinding, serverFactorMetadata) rather than
+// the SDK's snake_case transport.CertBinding/RoleBinding/FactorMetadata
+// directly; those tags would not match this transport's wire keys. The
+// server projects through user.WireCertBindings / user.WireRoleBindings /
+// user.WireFactors before marshaling, so the kind already arrives as its wire
+// label and Factors already omits Data, unlike this transport's historical
+// behavior of marshaling the domain *user.User directly (go-qrdb#192/#197).
 type serverUser struct {
 	ID       uint64 `json:"id"`
 	Username string `json:"username"`
@@ -61,43 +68,40 @@ type serverUser struct {
 	System   bool     `json:"system"`
 	// Lifecycle is the canonical and only account state (pending, active,
 	// suspended, locked, disabled, deleting).
-	Lifecycle   string   `json:"lifecycle,omitempty"`
-	AuthMethods []string `json:"authMethods,omitempty"`
-	LastAuth    string   `json:"lastAuth,omitempty"`
-	// CertBindings decode the DOMAIN record's bindings: this transport
-	// marshals user.User itself, so the kind arrives as pkg/user's ordinal
-	// and notAfter as a time.Time, whose zero value marshals as
-	// 0001-01-01T00:00:00Z rather than being omitted.
-	CertBindings []serverCertBinding `json:"certBindings,omitempty"`
-	CreatedAt    string              `json:"createdAt"`
-	UpdatedAt    string              `json:"updatedAt"`
+	Lifecycle    string                 `json:"lifecycle,omitempty"`
+	AuthMethods  []string               `json:"authMethods,omitempty"`
+	LastAuth     string                 `json:"lastAuth,omitempty"`
+	CertBindings []serverCertBinding    `json:"certBindings,omitempty"`
+	RoleBindings []serverRoleBinding    `json:"roleBindings,omitempty"`
+	Attributes   map[string]string      `json:"attributes,omitempty"`
+	Factors      []serverFactorMetadata `json:"factors,omitempty"`
+	// MFAEnabled/MFAMethods/MFAEnrolledAt are DERIVED from Factors, never
+	// stored.
+	MFAEnabled    bool     `json:"mfaEnabled"`
+	MFAMethods    []string `json:"mfaMethods,omitempty"`
+	MFAEnrolledAt string   `json:"mfaEnrolledAt,omitempty"`
+	CreatedAt     string   `json:"createdAt"`
+	UpdatedAt     string   `json:"updatedAt"`
 }
 
-// serverCertBinding mirrors user.CertBinding for JSON decoding.
+// serverCertBinding mirrors the MCP server's mcpCertBinding wire type.
 type serverCertBinding struct {
 	Thumbprint string `json:"thumbprint"`
-	Kind       int    `json:"kind"`
+	Kind       string `json:"kind"`
 	NotAfter   string `json:"notAfter,omitempty"`
 }
 
-// serverCertBindingsToTransport converts the domain-shaped bindings to the
-// transport form: the kind ordinal becomes its wire label, and a zero
-// notAfter — a binding that does not expire on its own — becomes empty, as it
-// is on every other transport.
-func serverCertBindingsToTransport(in []serverCertBinding) []transport.CertBinding {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]transport.CertBinding, len(in))
-	for i, b := range in {
-		out[i] = transport.CertBinding{Thumbprint: b.Thumbprint, Kind: transport.CertBindingKindLabel(b.Kind)}
-		if b.NotAfter != "" {
-			if at, err := time.Parse(time.RFC3339Nano, b.NotAfter); err == nil && !at.IsZero() {
-				out[i].NotAfter = at.UTC().Format(time.RFC3339)
-			}
-		}
-	}
-	return out
+// serverRoleBinding mirrors the MCP server's mcpRoleBinding wire type.
+type serverRoleBinding struct {
+	RoleID   string `json:"roleID"`
+	TenantID string `json:"tenantID"`
+}
+
+// serverFactorMetadata mirrors the MCP server's mcpFactorMetadata wire type.
+type serverFactorMetadata struct {
+	ID         string `json:"id"`
+	FactorName string `json:"factorName"`
+	CreatedAt  string `json:"createdAt,omitempty"`
 }
 
 // serverListUsersResponse mirrors user.ListUsersResponse for JSON decoding.
@@ -178,20 +182,66 @@ type serverCertRecord struct {
 // representation.
 func serverUserToTransport(u *serverUser) *transport.User {
 	return &transport.User{
-		ID:           u.ID,
-		Username:     u.Username,
-		Email:        u.Email,
-		Name:         u.Name,
-		TenantID:     u.TenantID,
-		RoleIDs:      u.RoleIDs,
-		System:       u.System,
-		Lifecycle:    u.Lifecycle,
-		AuthMethods:  u.AuthMethods,
-		LastAuth:     u.LastAuth,
-		CertBindings: serverCertBindingsToTransport(u.CertBindings),
-		CreatedAt:    u.CreatedAt,
-		UpdatedAt:    u.UpdatedAt,
+		ID:            u.ID,
+		Username:      u.Username,
+		Email:         u.Email,
+		Name:          u.Name,
+		TenantID:      u.TenantID,
+		RoleIDs:       u.RoleIDs,
+		System:        u.System,
+		Lifecycle:     u.Lifecycle,
+		AuthMethods:   u.AuthMethods,
+		LastAuth:      u.LastAuth,
+		CertBindings:  serverCertBindingsToTransport(u.CertBindings),
+		RoleBindings:  serverRoleBindingsToTransport(u.RoleBindings),
+		Attributes:    u.Attributes,
+		Factors:       serverFactorMetadataToTransport(u.Factors),
+		MFAEnabled:    u.MFAEnabled,
+		MFAMethods:    u.MFAMethods,
+		MFAEnrolledAt: u.MFAEnrolledAt,
+		CreatedAt:     u.CreatedAt,
+		UpdatedAt:     u.UpdatedAt,
 	}
+}
+
+// serverCertBindingsToTransport converts the server's camelCase cert-binding
+// list to the SDK transport form.
+func serverCertBindingsToTransport(in []serverCertBinding) []transport.CertBinding {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]transport.CertBinding, len(in))
+	for i, b := range in {
+		out[i] = transport.CertBinding{Thumbprint: b.Thumbprint, Kind: b.Kind, NotAfter: b.NotAfter}
+	}
+	return out
+}
+
+// serverRoleBindingsToTransport converts the server's camelCase role-binding
+// list to the SDK transport form.
+func serverRoleBindingsToTransport(in []serverRoleBinding) []transport.RoleBinding {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]transport.RoleBinding, len(in))
+	for i, b := range in {
+		out[i] = transport.RoleBinding{RoleID: b.RoleID, TenantID: b.TenantID}
+	}
+	return out
+}
+
+// serverFactorMetadataToTransport converts the server's camelCase
+// factor-metadata list to the SDK transport form. The Data blob never
+// crosses this or any other transport (go-qrdb#192/#197).
+func serverFactorMetadataToTransport(in []serverFactorMetadata) []transport.FactorMetadata {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]transport.FactorMetadata, len(in))
+	for i, f := range in {
+		out[i] = transport.FactorMetadata{ID: f.ID, FactorName: f.FactorName, CreatedAt: f.CreatedAt}
+	}
+	return out
 }
 
 // serverRoleToTransport converts a server-side Role to the SDK transport
@@ -463,6 +513,20 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 		if len(req.AuthMethods) == 0 {
 			args["clear_auth_methods"] = true
 		} else if err := putJSONList(args, "auth_methods", req.AuthMethods); err != nil {
+			return nil, &transport.RequestError{Method: "UpdateUser", Err: err}
+		}
+	}
+	if req.RoleBindings != nil {
+		if len(req.RoleBindings) == 0 {
+			args["clear_role_bindings"] = true
+		} else if err := putJSONValue(args, "role_bindings", req.RoleBindings); err != nil {
+			return nil, &transport.RequestError{Method: "UpdateUser", Err: err}
+		}
+	}
+	if req.Attributes != nil {
+		if len(req.Attributes) == 0 {
+			args["clear_attributes"] = true
+		} else if err := putJSONValue(args, "attributes", req.Attributes); err != nil {
 			return nil, &transport.RequestError{Method: "UpdateUser", Err: err}
 		}
 	}
@@ -911,6 +975,18 @@ func putJSONList(args map[string]any, key string, values []string) error {
 		return nil
 	}
 	encoded, err := json.Marshal(values)
+	if err != nil {
+		return &jsonEncodeError{Err: err}
+	}
+	args[key] = string(encoded)
+	return nil
+}
+
+// putJSONValue encodes an arbitrary non-empty value (a role-binding list, an
+// attribute map, ...) into args as a JSON-encoded string, the same
+// array/object-argument convention putJSONList uses for opaque string lists.
+func putJSONValue(args map[string]any, key string, v any) error {
+	encoded, err := json.Marshal(v)
 	if err != nil {
 		return &jsonEncodeError{Err: err}
 	}

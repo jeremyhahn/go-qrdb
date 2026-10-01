@@ -68,6 +68,7 @@ func TestAllocationFailure_TypedErrorNotProcessAbort(t *testing.T) {
 		return
 	}
 
+	// #nosec G204,G702 -- re-exec of this test binary: argv[0] is os.Args[0], the path `go test` invoked, and the arguments are compile-time literals plus the GOCOVERDIR the go tool exported for this run. No shell is involved.
 	cmd := exec.Command(os.Args[0],
 		subprocessTestArgs("TestAllocationFailure_TypedErrorNotProcessAbort", 20*time.Second)...)
 	cmd.Env = append(os.Environ(), allocationFailureChildEnv+"=1")
@@ -155,7 +156,7 @@ func runAllocationFailureChild() {
 				"wiping on allocation failure", i, c)
 		}
 	}
-	fmt.Println("PASS: budget exhausted with a typed error")
+	fmt.Fprintln(os.Stdout, "PASS: budget exhausted with a typed error")
 
 	// The regression this whole test exists to catch: under the old memguard
 	// wrapper, reaching this failure would have already purged `live` and
@@ -169,7 +170,7 @@ func runAllocationFailureChild() {
 	}); err != nil {
 		fail("live buffer did not survive the refused allocation: %v", err)
 	}
-	fmt.Println("PASS: the live buffer survived the refused allocation")
+	fmt.Fprintln(os.Stdout, "PASS: the live buffer survived the refused allocation")
 
 	// Give the child a moment to flush stdout before the parent reads it via
 	// CombinedOutput's pipe; exec.Cmd already waits for the process to exit,
@@ -198,6 +199,7 @@ func TestNewSecretFromBuffer_SealsWithoutAdmittingPlaintextCopy(t *testing.T) {
 		return
 	}
 
+	// #nosec G204,G702 -- re-exec of this test binary: argv[0] is os.Args[0], the path `go test` invoked, and the arguments are compile-time literals plus the GOCOVERDIR the go tool exported for this run. No shell is involved.
 	cmd := exec.Command(os.Args[0],
 		subprocessTestArgs("TestNewSecretFromBuffer_SealsWithoutAdmittingPlaintextCopy", 20*time.Second)...)
 	cmd.Env = append(os.Environ(), sealUnderExhaustedBudgetChildEnv+"=1")
@@ -264,5 +266,5 @@ func runSealUnderExhaustedBudgetChild() {
 		fail("sealed content = %q, want %q", got, material)
 	}
 
-	fmt.Println("PASS: sealed from the input's own pages with the budget exhausted")
+	fmt.Fprintln(os.Stdout, "PASS: sealed from the input's own pages with the budget exhausted")
 }

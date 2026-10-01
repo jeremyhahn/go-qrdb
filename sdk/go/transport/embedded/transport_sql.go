@@ -33,10 +33,16 @@ var (
 // sqlSvc returns the transport's cached SQLServicer, building it on first
 // use from t.kvSvc and t.dbSvc. Returns nil when either service is not
 // configured.
+//
+// With a service registry (WithServiceRegistry) every query resolves the
+// named database through it, as the network transports' SQL does: the
+// database's own store, unprefixed, with its seal, ownership, quota and
+// isolation applied. Without one the query reads t.kvSvc under the
+// "<tenant>/<db>/" prefix.
 func (t *Transport) sqlSvc() service.SQLServicer {
 	t.sqlOnce.Do(func() {
 		if t.kvSvc != nil && t.dbSvc != nil {
-			t.sqlSvcCache = sqlquery.NewService(t.kvSvc, t.dbSvc)
+			t.sqlSvcCache = sqlquery.NewService(t.kvSvc, t.dbSvc, sqlquery.WithRegistry(t.registry))
 		}
 	})
 	return t.sqlSvcCache

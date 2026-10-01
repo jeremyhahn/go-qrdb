@@ -27,6 +27,7 @@ import (
 
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
@@ -77,6 +78,9 @@ type Server struct {
 	authFactorSvc     service.AuthFactorServicer
 	userAuthFactorSvc service.UserAuthFactorServicer
 	auditLogger       audit.AuditLogger
+
+	// soGate is the SO dual-factor gate; nil leaves it off. See WithSOGate.
+	soGate *authmw.SOGate
 	// registry, when set, resolves data-plane services per (tenant, database)
 	// scope. The tenant comes from the authenticated identity; the database
 	// from the optional "database" tool argument. When nil, the singleton
@@ -110,6 +114,10 @@ type Server struct {
 	// gRPC, and native-QUIC sealed-window gates so operators see the same
 	// envelope on every transport.
 	sealedWindowProbe sealedWindowProbe
+
+	// sealedWindowListener is the boot-time sealed-window listener's probe,
+	// and selects that listener's gate. Nil for a regular listener.
+	sealedWindowListener sealedwindow.ListenerProbe
 
 	// bearerChallenge, when non-empty, is the exact WWW-Authenticate header
 	// value returned with 401 Unauthorized when a request to the MCP
@@ -425,13 +433,41 @@ func WithAuditLogger(l audit.AuditLogger) ServerOption {
 	return func(s *Server) { s.auditLogger = l }
 }
 
+// WithSOGate installs the SO dual-factor gate (authmw.SOGate) on every tool
+// whose permission is in authmw.SOPermissions, after authorization: the caller
+// must hold the SO role and present the SO PIN in the X-QRDB-SO-PIN header of
+// the /mcp request (authmw.SOPINHeader), the same header REST reads. It is the
+// same gate the REST transport applies, built by the orchestrator when
+// auth.so_dual_factor is on; nil leaves it off.
+func WithSOGate(gate *authmw.SOGate) ServerOption {
+	return func(s *Server) { s.soGate = gate }
+}
+
 // WithSealedWindowProbe installs the sealed-window tool-handler middleware
 // on the MCP server. While probe.IsSealed() returns true, every tool call
 // not on SealedWindowAllowlist is rejected with a tool-result error, giving
 // operators the same sealed-window envelope on MCP as on REST, gRPC, and
 // native QUIC.
 func WithSealedWindowProbe(probe sealedWindowProbe) ServerOption {
-	return func(s *Server) { s.sealedWindowProbe = probe }
+	return func(s *Server) {
+		s.sealedWindowProbe = probe
+		s.sealedWindowListener = nil
+	}
+}
+
+// WithSealedWindowListener installs the boot-time sealed-window listener's
+// gate backed by probe: the allowlist while the barrier is sealed, and a
+// refusal of every request once it is unsealed -- a 503 at the HTTP layer
+// and CodeUnavailable for a tool call -- sampled per request. That listener
+// runs without authentication, so it must not serve anything against an
+// unsealed barrier, even in the moment before it is stopped. It replaces
+// WithSealedWindowProbe; the last of the two applied wins.
+func WithSealedWindowListener(probe sealedwindow.ListenerProbe) ServerOption {
+	return func(s *Server) {
+		probe = sealedwindow.OrFailClosed(probe)
+		s.sealedWindowProbe = probe
+		s.sealedWindowListener = probe
+	}
 }
 
 // WithServiceRegistry configures the MCP server with a per-(tenant, database)
@@ -497,7 +533,7 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		// has just stopped having.
 		mcpserver.WithToolHandlerMiddleware(errorCodeMiddleware()),
 	}
-	if s.authMW != nil {
+	if s.authMW != nil || s.soGate != nil {
 		mcpOpts = append(mcpOpts, mcpserver.WithToolHandlerMiddleware(s.toolAuthzMiddleware()))
 	}
 	if s.sealedWindowProbe != nil {
@@ -562,10 +598,10 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		s.addTools(ragTools(s.ragSvc)...)
 	}
 	if s.userSvc != nil {
-		s.addTools(userTools(s.userSvc)...)
+		s.addTools(userTools(s.userSvc, s.userAuthFactorSvc, s.authMW, s.roleSvc)...)
 	}
 	if s.roleSvc != nil && s.userSvc != nil {
-		s.addTools(roleTools(s.roleSvc, s.userSvc)...)
+		s.addTools(roleTools(s.roleSvc, s.userSvc, s.authMW)...)
 	}
 	if s.certProv != nil {
 		s.addTools(certTools(s.certProv, s.authMW)...)
@@ -641,6 +677,10 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		s.addTools(sqlTools(s.sqlSvc)...)
 	}
 
+	// Declare, for every built-in tool that acts on a named user, role or
+	// tenant, how its arguments name it (see targets.go).
+	s.registerTargets()
+
 	// Register module tools last so they layer on top of the built-in tool
 	// sets on the same real mcp-go server. A module that implements
 	// MCPToolPermissioner declares each tool's permission, which is fed into
@@ -682,6 +722,9 @@ func (s *Server) Start() error {
 		return &StartError{Addr: s.addr, Err: err}
 	}
 
+	// Report every accepted connection to the modules that observe them.
+	// Wrapped BENEATH the TLS listener, so http.Server still sees a *tls.Conn.
+	ln = apimodule.ConnObserversOf(s.modules).Listener(ln, apimodule.TransportMCP)
 	ln = tls.NewListener(ln, s.tlsConfig)
 	s.listener = ln
 
@@ -690,21 +733,29 @@ func (s *Server) Start() error {
 	// peer and injects the resulting identity into the per-request context so
 	// the tool-handler authorization middleware can enforce permissions.
 	var streamOpts []mcpserver.StreamableHTTPOption
-	if s.authMW != nil {
+	if s.authMW != nil || s.soGate != nil {
 		streamOpts = append(streamOpts, mcpserver.WithHTTPContextFunc(s.authHTTPContext))
 	}
 	streamHandler := mcpserver.NewStreamableHTTPServer(s.mcpSrv, streamOpts...)
 
-	// The MCP endpoint handler. When a bearer challenge is configured (an
-	// embedder running the MCP authorization flow), an unauthenticated
-	// request is answered 401 + WWW-Authenticate BEFORE reaching the MCP
-	// layer — the discovery entry point OAuth clients depend on. A request
-	// that authenticates proceeds with its identity already bound into the
-	// request context; authHTTPContext detects it and skips the second
-	// authentication pass.
-	var mcpHandler http.Handler = streamHandler
-	if s.authMW != nil && s.bearerChallenge != "" {
-		mcpHandler = s.bearerChallengeHandler(streamHandler)
+	// The MCP endpoint handler, from the outside in:
+	//
+	//   - the boot-time sealed-window listener's gate, when this is one;
+	//   - authentication, whenever it is configured: an unauthenticated
+	//     request is answered 401 (with WWW-Authenticate when a bearer
+	//     challenge is configured) BEFORE mcp-go reads anything, so not even
+	//     initialize or tools/list is answered anonymously. A request that
+	//     authenticates proceeds with its identity bound into the request
+	//     context, where authHTTPContext reuses it;
+	//   - the request-body bound, on every request: 1 MiB when the caller is
+	//     anonymous (no authentication, or the sealed-window listener), the
+	//     batch-import bound otherwise.
+	mcpHandler := boundedBodyHandler(s.requestBodyLimit(), streamHandler)
+	if s.authMW != nil {
+		mcpHandler = s.authenticateHandler(mcpHandler)
+	}
+	if s.sealedWindowListener != nil {
+		mcpHandler = s.sealedWindowClosedHandler(mcpHandler)
 	}
 
 	mux := http.NewServeMux()

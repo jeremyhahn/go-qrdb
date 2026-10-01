@@ -30,7 +30,9 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/status"
 )
 
 // ---------------------------------------------------------------------------
@@ -164,10 +166,7 @@ func createDatabaseWithEtcd(t *testing.T, ca *testCA, adminPort int, dbName stri
 func waitForEtcdReady(t *testing.T, ca *testCA, port int, timeout time.Duration) {
 	t.Helper()
 
-	tlsCfg := &tls.Config{
-		RootCAs:    ca.Pool,
-		MinVersion: tls.VersionTLS13,
-	}
+	tlsCfg := etcdClientTLS(t, ca)
 
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -198,15 +197,25 @@ func waitForEtcdReady(t *testing.T, ca *testCA, port int, timeout time.Duration)
 	t.Fatalf("waitForEtcdReady: timed out after %v waiting for etcd on port %d", timeout, port)
 }
 
+// etcdClientTLS returns the TLS configuration an etcd client presents: the
+// admin client certificate. The etcd listener authenticates every RPC with
+// the node's authenticator chain and refuses a client that presents none.
+func etcdClientTLS(t *testing.T, ca *testCA) *tls.Config {
+	t.Helper()
+	_ = mtlsHTTPClient(t, ca, time.Second) // mints ca.adminCert once
+	return &tls.Config{
+		RootCAs:      ca.Pool,
+		Certificates: []tls.Certificate{ca.adminCert},
+		MinVersion:   tls.VersionTLS13,
+	}
+}
+
 // newEtcdClient creates an etcd v3 client configured with TLS for the
 // given port and test CA. The client is registered for cleanup via t.Cleanup.
 func newEtcdClient(t *testing.T, ca *testCA, port int) *clientv3.Client {
 	t.Helper()
 
-	tlsCfg := &tls.Config{
-		RootCAs:    ca.Pool,
-		MinVersion: tls.VersionTLS13,
-	}
+	tlsCfg := etcdClientTLS(t, ca)
 
 	cli, err := clientv3.New(clientv3.Config{
 		Endpoints:   []string{fmt.Sprintf("https://127.0.0.1:%d", port)},
@@ -544,13 +553,12 @@ func TestEtcd_AuthStatus(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Call AuthStatus and verify Enabled=false.
-	resp, err := cli.AuthStatus(ctx)
-	if err != nil {
-		t.Fatalf("AuthStatus: %v", err)
-	}
-	if resp.Enabled {
-		t.Error("AuthStatus: expected Enabled=false, got true")
+	// The etcd Auth service is not served: callers authenticate with their
+	// client certificate through the node's authenticator chain, and an RPC
+	// the listener does not serve is refused rather than answered by a stub
+	// claiming authentication is off.
+	if _, err := cli.AuthStatus(ctx); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("AuthStatus: err = %v, want PermissionDenied", err)
 	}
 }
 
@@ -633,27 +641,35 @@ func TestEtcd_TwoDatabases_Isolated(t *testing.T) {
 		t.Errorf("db2 value: got %q, want %q", string(resp2.Kvs[0].Value), "db2-value")
 	}
 
-	// Both endpoints share the same underlying Raft shard, so keys
-	// written via one endpoint are visible from the other.
+	// Each endpoint serves exactly its own database's keyspace. The two
+	// databases share one Raft shard, but each listener resolves its
+	// database's "<tenant>/<database>/" namespace, so a key written through
+	// one endpoint is not visible through the other. This test used to
+	// assert the opposite: both listeners served the raw shard.
 	resp1Cross, err := cli1.Get(ctx, "/multi/key2")
 	if err != nil {
 		t.Fatalf("Get db2 key from db1 endpoint: %v", err)
 	}
-	if len(resp1Cross.Kvs) != 1 {
-		t.Fatalf("cross-read via db1: expected 1 kv, got %d", len(resp1Cross.Kvs))
-	}
-	if string(resp1Cross.Kvs[0].Value) != "db2-value" {
-		t.Errorf("cross-read value: got %q, want %q", string(resp1Cross.Kvs[0].Value), "db2-value")
+	if len(resp1Cross.Kvs) != 0 {
+		t.Fatalf("db1's endpoint read db2's key: %q", resp1Cross.Kvs[0].Value)
 	}
 
 	resp2Cross, err := cli2.Get(ctx, "/multi/key1")
 	if err != nil {
 		t.Fatalf("Get db1 key from db2 endpoint: %v", err)
 	}
-	if len(resp2Cross.Kvs) != 1 {
-		t.Fatalf("cross-read via db2: expected 1 kv, got %d", len(resp2Cross.Kvs))
+	if len(resp2Cross.Kvs) != 0 {
+		t.Fatalf("db2's endpoint read db1's key: %q", resp2Cross.Kvs[0].Value)
 	}
-	if string(resp2Cross.Kvs[0].Value) != "db1-value" {
-		t.Errorf("cross-read value: got %q, want %q", string(resp2Cross.Kvs[0].Value), "db1-value")
+
+	// A prefix read over the whole keyspace is confined as well.
+	all, err := cli1.Get(ctx, "", clientv3.WithFromKey())
+	if err != nil {
+		t.Fatalf("Get all from db1 endpoint: %v", err)
+	}
+	for _, kv := range all.Kvs {
+		if string(kv.Key) != "/multi/key1" {
+			t.Errorf("db1's endpoint returned a key outside its database: %q", kv.Key)
+		}
 	}
 }

@@ -78,6 +78,9 @@ type DatabaseServicer interface {
 	// UpdateConnection updates the remote connection configuration for a database.
 	UpdateConnection(name string, conn *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error)
 
+	// UpdateSQL updates a database's SQL settings -- its sql.concurrency.
+	UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error)
+
 	// SealDatabase seals the encryption barrier for a database after verifying
 	// the caller's tenant owns it (system tenant may target any database).
 	SealDatabase(ctx context.Context, name string) error
@@ -120,6 +123,9 @@ type DatabaseServicer interface {
 
 	// UpdateConnectionForTenant updates connection config with tenant enforcement.
 	UpdateConnectionForTenant(ctx context.Context, name string, conn *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error)
+
+	// UpdateSQLForTenant updates SQL settings with tenant enforcement.
+	UpdateSQLForTenant(ctx context.Context, name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error)
 
 	// ScaleForTenant changes the replication factor of a dedicated-raft
 	// database after verifying tenant ownership and quota.
@@ -880,6 +886,21 @@ func (s *DatabaseService) UpdateConnection(name string, conn *database.DatabaseC
 	return &info, nil
 }
 
+// UpdateSQL updates the SQL settings of the named database -- its
+// sql.concurrency, see docs/row-locking/ -- and returns the updated runtime
+// information.
+func (s *DatabaseService) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
+	if err := s.manager.UpdateSQL(name, sqlCfg); err != nil {
+		return nil, err
+	}
+	db, err := s.manager.Get(name)
+	if err != nil {
+		return nil, err
+	}
+	info := db.Info()
+	return &info, nil
+}
+
 // authorizeDatabaseTenant verifies that the caller bound to ctx is permitted
 // to perform a per-database control operation on the named database. Database
 // names are a single global namespace, so a per-database barrier operation
@@ -891,27 +912,22 @@ func (s *DatabaseService) UpdateConnection(name string, conn *database.DatabaseC
 // The system tenant is the store-global admin and may target any database. A
 // non-system caller may target only a database whose owning TenantID matches
 // its own; any mismatch — including an unowned/legacy database with an empty
-// TenantID — fails closed with *database.TenantAccessDeniedError. A database
-// that does not exist surfaces the manager's typed NotFoundError unchanged.
+// TenantID — fails closed with the same *database.NotFoundError a missing
+// database gets, so the answer does not tell the caller which names other
+// tenants hold.
 func (s *DatabaseService) authorizeDatabaseTenant(ctx context.Context, name string) error {
 	tenantID := tenant.FromContext(ctx)
 	if tenant.IsSystemTenant(tenantID) {
 		return nil
 	}
-	db, err := s.manager.Get(name)
-	if err != nil {
-		return err
-	}
-	if db.TenantID() != tenantID {
-		return &database.TenantAccessDeniedError{TenantID: tenantID, DatabaseName: name}
-	}
-	return nil
+	_, err := s.manager.GetForTenant(ctx, name)
+	return err
 }
 
 // SealDatabase seals the encryption barrier for the named database.
 func (s *DatabaseService) SealDatabase(ctx context.Context, name string) error {
 	// Authorize ownership BEFORE consulting the barrier manager: a non-owning
-	// tenant must be refused with a cross-tenant access denial and must never
+	// tenant must be answered as if the database did not exist, and must never
 	// learn whether the target database or its barrier even exists.
 	if err := s.authorizeDatabaseTenant(ctx, name); err != nil {
 		return err
@@ -957,6 +973,16 @@ func (s *DatabaseService) DatabaseBarrierStatus(ctx context.Context, name string
 		return nil, &BarrierManagerNotConfiguredError{}
 	}
 	return s.barrierMgr.BarrierStatus(name)
+}
+
+// isolationBarrierDataPath maps each tenant isolation mode that serves its
+// databases from a tenant-owned store to that store's description. A
+// per-database barrier under one of these modes would wrap a store no request
+// reads, so CreateForTenantWithCredentials refuses it with
+// database.BarrierOffDataPathError.
+var isolationBarrierDataPath = map[tenant.IsolationType]string{
+	tenant.IsolationVolume: database.ServedByVolumeTenantStore,
+	tenant.IsolationRaft:   database.ServedByRaftTenantGroup,
 }
 
 // CreateForTenant creates a new database scoped to the context's tenant
@@ -1022,6 +1048,13 @@ func (s *DatabaseService) CreateForTenantWithCredentials(ctx context.Context, cf
 		info, err := s.tenantInfo.GetTenant(ctx, tenantID)
 		if err != nil {
 			return nil, err
+		}
+		// A volume- or raft-isolated tenant serves every database from the
+		// tenant's own store, never from the per-database store a barrier
+		// would wrap, so a per-database barrier there protects nothing.
+		// Refused before any quota reservation or store I/O.
+		if servedBy, offPath := isolationBarrierDataPath[info.EffectiveIsolationType()]; offPath && cfg.Barrier != nil && cfg.Barrier.Enabled {
+			return nil, &database.BarrierOffDataPathError{Name: cfg.Name, ServedBy: servedBy}
 		}
 		switch info.IsolationType {
 		case tenant.IsolationVolume:
@@ -1518,6 +1551,18 @@ func (s *DatabaseService) UpdateConnectionForTenant(ctx context.Context, name st
 		return s.UpdateConnection(name, conn)
 	}
 	if err := s.manager.UpdateConnectionForTenant(ctx, name, conn); err != nil {
+		return nil, err
+	}
+	return s.GetForTenant(ctx, name)
+}
+
+// UpdateSQLForTenant updates the SQL settings of the named database with
+// tenant enforcement and returns the updated runtime information.
+func (s *DatabaseService) UpdateSQLForTenant(ctx context.Context, name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
+	if tenant.IsSystemTenant(tenant.FromContext(ctx)) {
+		return s.UpdateSQL(name, sqlCfg)
+	}
+	if err := s.manager.UpdateSQLForTenant(ctx, name, sqlCfg); err != nil {
 		return nil, err
 	}
 	return s.GetForTenant(ctx, name)

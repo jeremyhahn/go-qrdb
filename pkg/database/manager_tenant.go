@@ -45,26 +45,15 @@ func (m *Manager) CreateForTenantWithCredentials(ctx context.Context, cfg Databa
 }
 
 // GetForTenant returns a database by name after verifying tenant ownership.
-// Returns TenantAccessDeniedError if the database belongs to a different tenant.
+// A database of another tenant is answered with NotFoundError, exactly as a
+// missing one is (see getOwned).
 func (m *Manager) GetForTenant(ctx context.Context, name string) (*Database, error) {
 	tenantID := tenant.FromContext(ctx)
 	if tenant.IsSystemTenant(tenantID) {
 		return nil, &TenantIDRequiredError{Operation: "GetForTenant"}
 	}
 
-	db, err := m.Get(name)
-	if err != nil {
-		return nil, err
-	}
-
-	if db.TenantID() != tenantID {
-		return nil, &TenantAccessDeniedError{
-			TenantID:     tenantID,
-			DatabaseName: name,
-		}
-	}
-
-	return db, nil
+	return m.getOwned(name, tenantID)
 }
 
 // ListForTenant returns databases owned by the tenant from the context.
@@ -89,24 +78,17 @@ func (m *Manager) ListForTenant(ctx context.Context) ([]DatabaseInfo, error) {
 	return infos, nil
 }
 
-// DropForTenant drops a database after verifying tenant ownership.
-// Returns TenantAccessDeniedError if the database belongs to a different tenant.
+// DropForTenant drops a database after verifying tenant ownership. A database
+// of another tenant is answered with NotFoundError, exactly as a missing one
+// is (see getOwned).
 func (m *Manager) DropForTenant(ctx context.Context, name string) error {
 	tenantID := tenant.FromContext(ctx)
 	if tenant.IsSystemTenant(tenantID) {
 		return &TenantIDRequiredError{Operation: "DropForTenant"}
 	}
 
-	// Verify ownership before dropping.
-	db, err := m.Get(name)
-	if err != nil {
+	if _, err := m.getOwned(name, tenantID); err != nil {
 		return err
-	}
-	if db.TenantID() != tenantID {
-		return &TenantAccessDeniedError{
-			TenantID:     tenantID,
-			DatabaseName: name,
-		}
 	}
 
 	return m.Drop(ctx, name)
@@ -119,15 +101,8 @@ func (m *Manager) UpdateProtocolForTenant(ctx context.Context, name string, prot
 		return &TenantIDRequiredError{Operation: "UpdateProtocolForTenant"}
 	}
 
-	db, err := m.Get(name)
-	if err != nil {
+	if _, err := m.getOwned(name, tenantID); err != nil {
 		return err
-	}
-	if db.TenantID() != tenantID {
-		return &TenantAccessDeniedError{
-			TenantID:     tenantID,
-			DatabaseName: name,
-		}
 	}
 
 	return m.UpdateProtocol(name, protocol)
@@ -140,15 +115,8 @@ func (m *Manager) UpdateEtcdForTenant(ctx context.Context, name string, etcd *Et
 		return &TenantIDRequiredError{Operation: "UpdateEtcdForTenant"}
 	}
 
-	db, err := m.Get(name)
-	if err != nil {
+	if _, err := m.getOwned(name, tenantID); err != nil {
 		return err
-	}
-	if db.TenantID() != tenantID {
-		return &TenantAccessDeniedError{
-			TenantID:     tenantID,
-			DatabaseName: name,
-		}
 	}
 
 	return m.UpdateEtcd(name, etcd)
@@ -161,15 +129,8 @@ func (m *Manager) UpdateRaftForTenant(ctx context.Context, name string, raft *Da
 		return &TenantIDRequiredError{Operation: "UpdateRaftForTenant"}
 	}
 
-	db, err := m.Get(name)
-	if err != nil {
+	if _, err := m.getOwned(name, tenantID); err != nil {
 		return err
-	}
-	if db.TenantID() != tenantID {
-		return &TenantAccessDeniedError{
-			TenantID:     tenantID,
-			DatabaseName: name,
-		}
 	}
 
 	return m.UpdateRaft(name, raft)
@@ -182,15 +143,8 @@ func (m *Manager) UpdateBarrierForTenant(ctx context.Context, name string, barri
 		return &TenantIDRequiredError{Operation: "UpdateBarrierForTenant"}
 	}
 
-	db, err := m.Get(name)
-	if err != nil {
+	if _, err := m.getOwned(name, tenantID); err != nil {
 		return err
-	}
-	if db.TenantID() != tenantID {
-		return &TenantAccessDeniedError{
-			TenantID:     tenantID,
-			DatabaseName: name,
-		}
 	}
 
 	return m.UpdateBarrier(name, barrier)
@@ -203,18 +157,42 @@ func (m *Manager) UpdateConnectionForTenant(ctx context.Context, name string, co
 		return &TenantIDRequiredError{Operation: "UpdateConnectionForTenant"}
 	}
 
-	db, err := m.Get(name)
-	if err != nil {
+	if _, err := m.getOwned(name, tenantID); err != nil {
 		return err
-	}
-	if db.TenantID() != tenantID {
-		return &TenantAccessDeniedError{
-			TenantID:     tenantID,
-			DatabaseName: name,
-		}
 	}
 
 	return m.UpdateConnection(name, conn)
+}
+
+// UpdateSQLForTenant updates the SQL settings after verifying tenant
+// ownership.
+func (m *Manager) UpdateSQLForTenant(ctx context.Context, name string, sqlCfg *SQLConfig) error {
+	tenantID := tenant.FromContext(ctx)
+	if tenant.IsSystemTenant(tenantID) {
+		return &TenantIDRequiredError{Operation: "UpdateSQLForTenant"}
+	}
+
+	if _, err := m.getOwned(name, tenantID); err != nil {
+		return err
+	}
+
+	return m.UpdateSQL(name, sqlCfg)
+}
+
+// getOwned returns the named database when tenantID owns it, and
+// NotFoundError otherwise -- for a database that does not exist and for one
+// another tenant owns alike. Database names are one node-wide namespace, so
+// answering another tenant's database with an access denial told the caller
+// which names other tenants use; the two answers are now the same.
+func (m *Manager) getOwned(name, tenantID string) (*Database, error) {
+	db, err := m.Get(name)
+	if err != nil {
+		return nil, err
+	}
+	if db.TenantID() != tenantID {
+		return nil, &NotFoundError{Name: name}
+	}
+	return db, nil
 }
 
 // Compile-time interface check: the tenant teardown's refusal reads this

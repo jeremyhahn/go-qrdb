@@ -12,15 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package seal_test
+package seal
 
 import (
 	"context"
 	"errors"
 	"path/filepath"
 	"testing"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
 // TestRegisterTenantPooledWithStrategy_DurableBackend verifies that the
@@ -32,7 +30,7 @@ func TestRegisterTenantPooledWithStrategy_DurableBackend(t *testing.T) {
 	reg, roots, perTenantReg := newPooledRegistry(t)
 	ctx := context.Background()
 
-	none := seal.NewNoneStrategy()
+	none := NewNoneStrategy()
 	tb, err := reg.RegisterTenantPooledWithStrategy(ctx, "alpha", none)
 	if err != nil {
 		t.Fatalf("RegisterTenantPooledWithStrategy(alpha): %v", err)
@@ -65,24 +63,24 @@ func TestRegisterTenantPooledWithStrategy_AppliesGivenStrategy(t *testing.T) {
 	reg, _, _ := newPooledRegistry(t)
 	ctx := context.Background()
 
-	none := seal.NewNoneStrategy()
+	none := NewNoneStrategy()
 	tb, err := reg.RegisterTenantPooledWithStrategy(ctx, "alpha", none)
 	if err != nil {
 		t.Fatalf("RegisterTenantPooledWithStrategy(alpha): %v", err)
 	}
 
 	tenantStrategies := tb.Barrier().Strategies()
-	if _, ok := tenantStrategies[seal.StrategyNone]; !ok {
+	if _, ok := tenantStrategies[StrategyNone]; !ok {
 		t.Errorf("tenant barrier missing the specified StrategyNone; have %v", keysOf(tenantStrategies))
 	}
 
 	// The system barrier's posture must be the passphrase strategy — proof
 	// the tenant did NOT inherit the system posture.
 	systemStrategies := reg.SystemBarrier().Strategies()
-	if _, ok := systemStrategies[seal.StrategyPassphrase]; !ok {
+	if _, ok := systemStrategies[StrategyPassphrase]; !ok {
 		t.Fatalf("test precondition: system barrier expected StrategyPassphrase; have %v", keysOf(systemStrategies))
 	}
-	if _, ok := tenantStrategies[seal.StrategyPassphrase]; ok {
+	if _, ok := tenantStrategies[StrategyPassphrase]; ok {
 		t.Error("tenant barrier unexpectedly inherited the system's StrategyPassphrase posture")
 	}
 }
@@ -100,7 +98,7 @@ func TestRegisterTenantPooled_InheritsSystemStrategy(t *testing.T) {
 	}
 
 	tenantStrategies := tb.Barrier().Strategies()
-	if _, ok := tenantStrategies[seal.StrategyPassphrase]; !ok {
+	if _, ok := tenantStrategies[StrategyPassphrase]; !ok {
 		t.Errorf("pooled tenant did not inherit system StrategyPassphrase; have %v", keysOf(tenantStrategies))
 	}
 }
@@ -120,15 +118,15 @@ func TestRegisterTenantPooledShamir_InitUnsealRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterTenantPooledShamir(alpha): %v", err)
 	}
-	if _, ok := tb.Barrier().Strategies()[seal.StrategyShamir]; !ok {
+	if _, ok := tb.Barrier().Strategies()[StrategyShamir]; !ok {
 		t.Fatalf("tenant barrier missing StrategyShamir; have %v", keysOf(tb.Barrier().Strategies()))
 	}
 
 	// Wire a CaptureDistributor so InitializeTenantShamir can seal shares.
-	dist := seal.NewCaptureDistributor()
+	dist := newCaptureDistributor()
 	tb.Barrier().SetCeremonyDistributor(dist)
 
-	res, err := reg.InitializeTenantShamir(ctx, "alpha", seal.Credentials{})
+	res, err := reg.InitializeTenantShamir(ctx, "alpha", Credentials{})
 	if err != nil {
 		t.Fatalf("InitializeTenantShamir(alpha): %v", err)
 	}
@@ -191,13 +189,13 @@ func TestRegisterTenantPooledShamir_InvalidThreshold(t *testing.T) {
 // ErrPoolNotConfigured rather than silently falling back to memory.
 func TestRegisterTenantPooledWithStrategy_NoPoolConfigured(t *testing.T) {
 	system := newPoolSystemBarrier(t)
-	reg, err := seal.NewBarrierRegistry(poolTestLogger(), system)
+	reg, err := NewBarrierRegistry(poolTestLogger(), system)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
 
-	_, err = reg.RegisterTenantPooledWithStrategy(context.Background(), "alpha", seal.NewNoneStrategy())
-	if !errors.Is(err, seal.ErrPoolNotConfigured) {
+	_, err = reg.RegisterTenantPooledWithStrategy(context.Background(), "alpha", NewNoneStrategy())
+	if !errors.Is(err, ErrPoolNotConfigured) {
 		t.Errorf("RegisterTenantPooledWithStrategy without pool: got %v, want ErrPoolNotConfigured", err)
 	}
 }
@@ -210,7 +208,7 @@ func TestRegisterTenantPooledSystemManaged_RegistrationSucceeds(t *testing.T) {
 	reg, _, _ := newPooledRegistry(t)
 
 	// Unseal the system barrier so the SystemBarrierStrategy is functional.
-	if err := reg.SystemBarrier().Initialize(ctx, seal.MustCredentials([]byte("pool-test-pass"))); err != nil {
+	if err := reg.SystemBarrier().Initialize(ctx, MustCredentials([]byte("pool-test-pass"))); err != nil {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 
@@ -232,20 +230,20 @@ func TestRegisterTenantPooledSystemManaged_RegistrationSucceeds(t *testing.T) {
 // propagates ErrPoolNotConfigured when no volume pool is attached.
 func TestRegisterTenantPooledSystemManaged_NoPool(t *testing.T) {
 	system := newPoolSystemBarrier(t)
-	reg, err := seal.NewBarrierRegistry(poolTestLogger(), system)
+	reg, err := NewBarrierRegistry(poolTestLogger(), system)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
 
 	_, err = reg.RegisterTenantPooledSystemManaged(context.Background(), "sys-mgd-nopool")
-	if !errors.Is(err, seal.ErrPoolNotConfigured) {
+	if !errors.Is(err, ErrPoolNotConfigured) {
 		t.Errorf("RegisterTenantPooledSystemManaged without pool: got %v, want ErrPoolNotConfigured", err)
 	}
 }
 
 // keysOf returns the StrategyID keys of a strategies map for diagnostics.
-func keysOf(m map[seal.StrategyID]seal.SealingStrategy) []seal.StrategyID {
-	ids := make([]seal.StrategyID, 0, len(m))
+func keysOf(m map[StrategyID]SealingStrategy) []StrategyID {
+	ids := make([]StrategyID, 0, len(m))
 	for id := range m {
 		ids = append(ids, id)
 	}

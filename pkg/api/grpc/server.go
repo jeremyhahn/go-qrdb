@@ -32,6 +32,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
@@ -94,11 +95,14 @@ type Server struct {
 	sqlSvc            service.SQLServicer
 	authMW            *authmw.AuthMiddleware
 	auditLogger       audit.AuditLogger
-	addr              string
-	server            *grpc.Server
-	listener          net.Listener
-	tls               *tls.Config
-	tlsErr            error
+
+	// soGate is the SO dual-factor gate; nil leaves it off. See WithSOGate.
+	soGate   *authmw.SOGate
+	addr     string
+	server   *grpc.Server
+	listener net.Listener
+	tls      *tls.Config
+	tlsErr   error
 
 	// registry, when set, resolves data-plane services per (tenant, database)
 	// scope. When nil the singleton service fields are used.
@@ -109,6 +113,10 @@ type Server struct {
 	// component is not on SealedWindowAllowlist is rejected with
 	// codes.Unavailable. When nil the interceptors are not installed.
 	sealedWindowProbe sealedWindowProbe
+
+	// sealedWindowListener is the boot-time sealed-window listener's probe,
+	// and selects that listener's interceptors. Nil for a regular listener.
+	sealedWindowListener sealedwindow.ListenerProbe
 
 	// modules holds capability modules whose gRPC services are attached
 	// to the *grpc.Server at construction. Set via WithServiceModules by
@@ -314,6 +322,15 @@ func WithRoleService(svc role.RoleServicer) ServerOption {
 	return func(s *Server) { s.roleSvc = svc }
 }
 
+// WithSOGate installs the SO dual-factor gate (authmw.SOGate) on every RPC
+// whose permission is in authmw.SOPermissions, after authentication: the
+// caller must hold the SO role and present the SO PIN in the "x-qrdb-so-pin" metadata
+// entry over TLS. It is the same gate the REST transport applies, built by the
+// orchestrator when auth.so_dual_factor is on; nil leaves it off.
+func WithSOGate(gate *authmw.SOGate) ServerOption {
+	return func(s *Server) { s.soGate = gate }
+}
+
 // WithCertProvider configures the gRPC server with a certificate provider.
 func WithCertProvider(svc cert.CertProvider) ServerOption {
 	return func(s *Server) { s.certProv = svc }
@@ -364,13 +381,30 @@ func WithAuthMiddleware(mw *authmw.AuthMiddleware) ServerOption {
 // "barrier sealed". Once unsealed the interceptors are passthrough;
 // on re-seal they engage again.
 //
-// The interceptors are appended to the chain after auth so that
-// allowlisted methods (notably Barrier* and Ceremony*) remain
-// reachable without authentication during the sealed window — the
-// Vault model where possession of the unseal credential is itself
-// the authorization to drive unseal.
+// The interceptors are appended to the chain after auth, so an
+// allowlisted method is still authenticated and authorized when an auth
+// middleware is installed. The allowlist is anonymous only on a server
+// without one: the boot-time sealed-window listener (see
+// WithSealedWindowListener).
 func WithSealedWindowProbe(probe sealedWindowProbe) ServerOption {
-	return func(s *Server) { s.sealedWindowProbe = probe }
+	return func(s *Server) {
+		s.sealedWindowProbe = probe
+		s.sealedWindowListener = nil
+	}
+}
+
+// WithSealedWindowListener installs the boot-time sealed-window listener's
+// interceptors (SealedWindowListenerUnaryInterceptor and
+// SealedWindowListenerStreamInterceptor) backed by probe: the allowlist
+// while the barrier is sealed, and codes.Unavailable for every method once
+// it is unsealed, sampled per call. It replaces WithSealedWindowProbe; the
+// last of the two applied wins.
+func WithSealedWindowListener(probe sealedwindow.ListenerProbe) ServerOption {
+	return func(s *Server) {
+		probe = sealedwindow.OrFailClosed(probe)
+		s.sealedWindowProbe = probe
+		s.sealedWindowListener = probe
+	}
 }
 
 // WithServiceRegistry configures the gRPC server with a per-(tenant, database)
@@ -485,11 +519,20 @@ func (s *Server) Start() error {
 		DatabaseScopeUnaryInterceptor,
 	}
 	if s.authMW != nil {
+		if err := s.authMW.RegisterGRPCTargets(IdentityTargets()); err != nil {
+			return err
+		}
 		unaryInterceptors = append(unaryInterceptors, s.authMW.UnaryInterceptor())
+	}
+	// The SO gate installs whenever there is one, auth middleware or not:
+	// with nothing to authenticate the caller there is no SO to admit, so it
+	// fails closed rather than being skipped.
+	if s.soGate != nil {
+		unaryInterceptors = append(unaryInterceptors, authmw.SOGateUnaryInterceptor(s.soGate))
 	}
 	if s.sealedWindowProbe != nil {
 		unaryInterceptors = append(unaryInterceptors,
-			SealedWindowUnaryInterceptor(s.sealedWindowProbe, nil))
+			sealedWindowUnary(s.sealedWindowProbe, nil, s.sealedWindowListener))
 	}
 	streamInterceptors := []grpc.StreamServerInterceptor{
 		streamRecoveryInterceptor,
@@ -499,9 +542,12 @@ func (s *Server) Start() error {
 	if s.authMW != nil {
 		streamInterceptors = append(streamInterceptors, s.authMW.StreamInterceptor())
 	}
+	if s.soGate != nil {
+		streamInterceptors = append(streamInterceptors, authmw.SOGateStreamInterceptor(s.soGate))
+	}
 	if s.sealedWindowProbe != nil {
 		streamInterceptors = append(streamInterceptors,
-			SealedWindowStreamInterceptor(s.sealedWindowProbe, nil))
+			sealedWindowStream(s.sealedWindowProbe, nil, s.sealedWindowListener))
 	}
 	serverOpts := []grpc.ServerOption{
 		grpc.ChainUnaryInterceptor(unaryInterceptors...),
@@ -509,47 +555,51 @@ func (s *Server) Start() error {
 		grpc.MaxRecvMsgSize(MaxImportMessageSize),
 	}
 
-	// Add TLS credentials when configured.
-	if s.tls != nil {
-		creds := credentials.NewTLS(s.tls)
-		serverOpts = append(serverOpts, grpc.Creds(creds))
-	}
+	// TLS credentials, unconditionally: Start returned TLSNotConfiguredError
+	// above when s.tls is nil, so this server never serves plaintext and there
+	// is no plaintext connection for an observer to miss. Connections are
+	// reported to observing modules through the credentials, never by wrapping
+	// the listener: grpc-go sets TCP_USER_TIMEOUT only on the *net.TCPConn it
+	// accepts.
+	creds := apimodule.ConnObserversOf(s.modules).Credentials(credentials.NewTLS(s.tls), apimodule.TransportGRPC)
+	serverOpts = append(serverOpts, grpc.Creds(creds))
 
 	s.server = grpc.NewServer(serverOpts...)
 
 	// Register the QRDB gRPC service.
 	svc := &qrdbServiceServer{
-		kvSvc:         s.kvSvc,
-		adminSvc:      s.adminSvc,
-		mvccSvc:       s.mvccSvc,
-		txSvc:         s.txSvc,
-		batchSvc:      s.batchSvc,
-		watchSvc:      s.watchSvc,
-		leaseSvc:      s.leaseSvc,
-		lockSvc:       s.lockSvc,
-		indexSvc:      s.indexSvc,
-		tsSvc:         s.tsSvc,
-		vectorSvc:     s.vectorSvc,
-		embeddingSvc:  s.embeddingSvc,
-		ragSvc:        s.ragSvc,
-		databaseSvc:   s.databaseSvc,
-		barrierSvc:    s.barrierSvc,
-		encMigrator:   s.encMigrator,
-		pinBackend:    s.pinBackend,
-		ceremonySvc:   s.ceremonySvc,
-		ceremonyCA:    s.ceremonyCA,
-		credentialSvc: s.credentialSvc,
-		dekSvc:        s.dekSvc,
-		tenantSvc:     s.tenantSvc,
-		userSvc:       s.userSvc,
-		roleSvc:       s.roleSvc,
-		certProv:      s.certProv,
-		collectionSvc: s.collectionSvc,
-		backupSvc:     s.backupSvc,
-		rebalanceSvc:  s.rebalanceSvc,
-		sqlSvc:        s.sqlSvc,
-		registry:      s.registry,
-		authMW:        s.authMW,
+		kvSvc:             s.kvSvc,
+		adminSvc:          s.adminSvc,
+		mvccSvc:           s.mvccSvc,
+		txSvc:             s.txSvc,
+		batchSvc:          s.batchSvc,
+		watchSvc:          s.watchSvc,
+		leaseSvc:          s.leaseSvc,
+		lockSvc:           s.lockSvc,
+		indexSvc:          s.indexSvc,
+		tsSvc:             s.tsSvc,
+		vectorSvc:         s.vectorSvc,
+		embeddingSvc:      s.embeddingSvc,
+		ragSvc:            s.ragSvc,
+		databaseSvc:       s.databaseSvc,
+		barrierSvc:        s.barrierSvc,
+		encMigrator:       s.encMigrator,
+		pinBackend:        s.pinBackend,
+		ceremonySvc:       s.ceremonySvc,
+		ceremonyCA:        s.ceremonyCA,
+		credentialSvc:     s.credentialSvc,
+		dekSvc:            s.dekSvc,
+		tenantSvc:         s.tenantSvc,
+		userSvc:           s.userSvc,
+		userAuthFactorSvc: s.userAuthFactorSvc,
+		roleSvc:           s.roleSvc,
+		certProv:          s.certProv,
+		collectionSvc:     s.collectionSvc,
+		backupSvc:         s.backupSvc,
+		rebalanceSvc:      s.rebalanceSvc,
+		sqlSvc:            s.sqlSvc,
+		registry:          s.registry,
+		authMW:            s.authMW,
 	}
 	pb.RegisterQRDBServiceServer(s.server, svc)
 

@@ -383,6 +383,11 @@ func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, 
 	if cfg.UserServiceFallback != nil {
 		opts = append(opts, middleware.WithUserServiceFallback(cfg.UserServiceFallback))
 	}
+	if cfg.RoleService != nil {
+		// Route-level checks resolve a request that names a role to the
+		// tenant the role belongs to (middleware.ResolveTarget).
+		opts = append(opts, middleware.WithRoleService(cfg.RoleService))
+	}
 	if cfg.AuditLogger != nil {
 		opts = append(opts,
 			middleware.WithAuditLogger(cfg.AuditLogger),

@@ -254,6 +254,12 @@ implemented here; do not describe this as enclave-protected until it is.
   CA private key in `pkg/cert.DefaultCertProvider` is the current exception —
   see its own lifecycle section above — and is wiped (`secure.Wipe`) but not
   mlocked while live.
+- **Protected memory is not readable from outside the process.** `qrdbd
+  start` and the `qrdb` desktop/CLI binary mark themselves non-dumpable (Linux) or denies debugger attach (macOS)
+  before it holds any key, so a same-user process cannot read the mlocked pages
+  through ptrace, `/proc/<pid>/mem` or a core file. The environment opt-out for
+  debugging logs a warning; see
+  [../deployment/architecture.md](../deployment/architecture.md#process-inspection-hardening).
 - **PINs follow dual control**: supplying `--so-pin` requires `--user-pin` and
   vice versa, so the resulting pair satisfies FIPS 140-3 and PCI-DSS v4 dual
   control. PINs are rejected outright with `--barrier-strategy=none`.
@@ -265,7 +271,13 @@ implemented here; do not describe this as enclave-protected until it is.
 - **No strategy change without a migration.** The strategy is fixed at
   initialization; moving off `none` is `barrier enable-encryption`, which is a
   real re-encryption, not a config flip.
-- **No per-tenant barrier on a shared store.** See
+- **No per-tenant barrier on a shared store, and no per-database barrier off
+  the database's data path.** A per-database barrier is accepted only where it
+  wraps the store the database is served from, and a sealed database is refused
+  at request resolution on every engine -- on the node where it is sealed: a
+  database's seal state is node-local, not replicated, so each node serving it
+  must be sealed. Until per-database storage bindings
+  land, only the system tenant can create one. See
   [../databases/](../databases/architecture.md).
 - **No custody model.** Officers, shares, quorum, recovery and root tokens are
   [../shamir-custody/](../shamir-custody/).

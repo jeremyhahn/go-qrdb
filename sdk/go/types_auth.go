@@ -16,6 +16,7 @@ package sdk
 
 import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 )
 
@@ -37,6 +38,19 @@ type Authorizer = auth.Authorizer
 // NoopAuthorizer permits all actions. Useful for development or single-user
 // deployments.
 type NoopAuthorizer = auth.NoopAuthorizer
+
+// PermissionDeniedError is the RBAC authorizer's denial: the identity holds no
+// grant for the requested resource and action, or holds one it may not
+// exercise (a cross-scope permission outside the system tenant, a
+// cryptographic operation on the Security Officer role). Reason is set when
+// the denial is more than a plain permission miss.
+//
+// It is the only error the RBAC authorizer returns that means "denied".
+// Anything else — a role-resolution failure, a cancelled context — is the
+// authorizer failing to decide, so a consumer tells the two apart with
+// errors.As rather than treating every error as a denial. (An authorizer
+// wrapped by DecorateAuthorizer adds the ABAC policy's own denial.)
+type PermissionDeniedError = rbac.PermissionDeniedError
 
 // MethodMTLS is the name the built-in mTLS authenticator reports, and
 // therefore the exact token a user's permitted-method policy
@@ -70,6 +84,92 @@ var ParseMTLSBindingPolicy = auth.ParseMTLSBindingPolicy
 
 // InvalidMTLSBindingPolicyError reports an unrecognised policy spelling.
 type InvalidMTLSBindingPolicyError = auth.InvalidMTLSBindingPolicyError
+
+// TenantFromClientCert is qrdb's certificate-to-tenant rule -- the one the
+// mTLS authenticator applies to every login -- for a composing host that
+// resolves a verified client certificate's user before any tenant is bound
+// (a public route, where the middleware authenticates nothing).
+//
+//   - The SPIFFE tenant SAN wins. Every URI SAN is examined, never just the
+//     first: SANs naming more than one distinct tenant are refused
+//     (SpiffeAmbiguousTenantError), and under a pin ANY SPIFFE SAN from
+//     another trust domain is refused (ErrSpiffeTrustDomainMismatch), as is a
+//     malformed one. A refusal is never overridden by the OU.
+//   - With no SPIFFE tenant SAN, the first Subject OU is the tenant; with
+//     neither, the tenant is "".
+//   - Every refusal is a *ClientCertificateTenantError, which matches
+//     ErrInvalidClientCertificate under errors.Is and carries the cause.
+//
+// pinnedTrustDomain == "" ACCEPTS A SPIFFE SAN FROM ANY TRUST DOMAIN. That is
+// for tests only. A composer MUST pass the trust domain its CA issues under
+// (the same value it configures qrdb with); an unpinned call lets a
+// certificate from any SPIFFE issuer the CA pool trusts choose its tenant.
+//
+// Bind the result exactly as the middleware does, then look the thumbprint up
+// within that tenant only:
+//
+//	tenantID, _, err := sdk.TenantFromClientCert(cert, trustDomain) // never ""
+//	if err != nil { /* refuse */ }
+//	ctx = sdk.ContextWithTenant(ctx, sdk.NormalizeTenantID(tenantID))
+//	u, err := client.Users().GetUserByCertThumbprint(ctx, sdk.ComputeSPKIThumbprint(cert))
+//
+// (Aliases pkg/auth.TenantFromClientCert.)
+var TenantFromClientCert = auth.TenantFromClientCert
+
+// ErrInvalidClientCertificate is what every TenantFromClientCert refusal
+// matches under errors.Is: a nil certificate, a SPIFFE SAN outside the pinned
+// trust domain, a malformed SPIFFE SAN, or SANs naming more than one tenant.
+// (Aliases pkg/auth.ErrInvalidCertificate.)
+var ErrInvalidClientCertificate = auth.ErrInvalidCertificate
+
+// ClientCertificateTenantError is TenantFromClientCert's refusal: it matches
+// ErrInvalidClientCertificate and wraps the SPIFFE cause.
+// (Aliases pkg/auth.CertificateTenantError.)
+type ClientCertificateTenantError = auth.CertificateTenantError
+
+// MethodPIV is the permitted-method token for a PIV smart-card login. A layer
+// that runs the PIV ceremony enforces the account's policy with
+// CheckAuthMethod(u, MethodPIV). It is distinct from MethodMTLS, so a policy
+// can permit one without the other.
+const MethodPIV = auth.MethodPIV
+
+// MethodWebAuthn is the permitted-method token for a WebAuthn (FIDO2
+// authenticator) login. There is no separate FIDO2 token: a FIDO2
+// authenticator is presented through the WebAuthn ceremony.
+const MethodWebAuthn = auth.MethodWebAuthn
+
+// IsBuiltinAuthMethod reports whether a canonical name is one of qrdb's own
+// method tokens (MethodMTLS, MethodPIV, MethodWebAuthn). A node's full
+// vocabulary also holds the Name() of every authenticator in its chain; a
+// login method a host wants policies to name must therefore be an
+// authenticator in that chain (node WithAuthenticators).
+var IsBuiltinAuthMethod = auth.IsBuiltinAuthMethod
+
+// BuiltinAuthMethods returns qrdb's own method tokens, sorted.
+var BuiltinAuthMethods = auth.BuiltinAuthMethods
+
+// CanonicalAuthMethod is the form method names are stored and compared in —
+// trimmed and lowercased, NOT validated — so a stored policy entry predating
+// the vocabulary still matches the method it names.
+var CanonicalAuthMethod = auth.CanonicalAuthMethod
+
+// CheckAuthMethod enforces a user's permitted-authentication-method policy
+// (User.AuthMethods) against the method that authenticated the request. It is
+// the same function the qrdb authentication middleware runs, exported so a
+// layer that runs its own login ceremony applies the identical rule: an empty
+// policy (or a nil user) states no restriction; otherwise the method and each
+// stored entry are compared in CanonicalAuthMethod form (trimmed, lowercased,
+// NOT checked against the vocabulary, so a legacy entry still matches), and a
+// method matching no entry — including a blank one — fails closed with
+// *AuthMethodNotPermittedError.
+var CheckAuthMethod = authmw.CheckAuthMethod
+
+// AuthMethodNotPermittedError is returned by CheckAuthMethod, and by the
+// authentication middleware on every transport, when an account authenticated
+// successfully by a method its own policy does not permit. It names the
+// refused method and the permitted set. Transports render it as 403 /
+// PermissionDenied: the credential is valid, the way in is not.
+type AuthMethodNotPermittedError = authmw.AuthMethodNotPermittedError
 
 // ---------------------------------------------------------------------------
 // Auth context helpers

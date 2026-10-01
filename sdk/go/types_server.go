@@ -85,6 +85,30 @@ type ModuleMCPToolPermissioner = apimodule.MCPToolPermissioner
 // HTTPRegistrar.HandlePublic admits unauthenticated REST routes.
 type ModuleGRPCPublicMethodLister = apimodule.GRPCPublicMethodLister
 
+// ModuleConnObserver is the optional ServiceModule extension through which a
+// module observes the connection lifecycle on every listener of the unified
+// server: each accepted connection is reported once to ConnOpened and, when
+// it ends, once to ConnClosed, with the ModuleTransport it arrived on. It lets
+// a composing host keep active-connection metrics for the connections qrdb
+// accepts on its behalf. Both methods run synchronously on the accept and
+// close paths and must not block.
+type ModuleConnObserver = apimodule.ConnObserver
+
+// ModuleTransport names the listener a ModuleConnObserver event came from.
+type ModuleTransport = apimodule.Transport
+
+// The listeners a ModuleConnObserver hears from. REST is reported per socket:
+// ModuleTransportREST for TCP (HTTP/1.1, HTTP/2) and ModuleTransportHTTP3 for
+// QUIC.
+const (
+	ModuleTransportGRPC  = apimodule.TransportGRPC
+	ModuleTransportUnix  = apimodule.TransportUnix
+	ModuleTransportREST  = apimodule.TransportREST
+	ModuleTransportHTTP3 = apimodule.TransportHTTP3
+	ModuleTransportMCP   = apimodule.TransportMCP
+	ModuleTransportQUIC  = apimodule.TransportQUIC
+)
+
 // WithModule registers a capability module into the embedded qrdb server. Its
 // gRPC/REST/MCP/QUIC surfaces are attached to every transport at startup and
 // its Start/Stop lifecycle runs with the server's.

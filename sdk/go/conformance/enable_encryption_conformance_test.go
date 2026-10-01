@@ -187,7 +187,6 @@ func waitForRootStrategy(t *testing.T, n *node.Node, want seal.StrategyID) {
 //     standalone node to reproduce on most runs.
 func TestBarrierEnableEncryption_ConformsAcrossEverySDKTransport(t *testing.T) {
 	for _, tk := range transportKinds {
-		tk := tk
 		t.Run(string(tk), func(t *testing.T) {
 			barrier, n := bootBarrierNode(t, tk, database.BackendPebble)
 
@@ -243,7 +242,6 @@ func TestBarrierEnableEncryption_ConformsAcrossEverySDKTransport(t *testing.T) {
 // the path.
 func TestBarrierEnableEncryption_ConformsAcrossEverySDKTransport_MemoryBackend(t *testing.T) {
 	for _, tk := range transportKinds {
-		tk := tk
 		t.Run(string(tk), func(t *testing.T) {
 			barrier, n := bootBarrierNode(t, tk, database.BackendMemory)
 

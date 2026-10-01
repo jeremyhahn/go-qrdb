@@ -45,6 +45,7 @@ func newDatabaseCmd() *cobra.Command {
 		newDatabaseScaleCmd(),
 		newDatabaseUpdateBarrierCmd(),
 		newDatabaseUpdateConnectionCmd(),
+		newDatabaseUpdateSQLCmd(),
 		newDatabaseSealCmd(),
 		newDatabaseUnsealCmd(),
 		newDatabaseBarrierStatusCmd(),
@@ -70,6 +71,8 @@ func newDatabaseCreateCmd() *cobra.Command {
 		barrierPassphrase      string
 		barrierShamirThreshold int
 		barrierShamirTotal     int
+
+		sqlConcurrency string
 	)
 
 	cmd := &cobra.Command{
@@ -118,6 +121,10 @@ func newDatabaseCreateCmd() *cobra.Command {
 				}
 			}
 
+			if sqlConcurrency != "" {
+				req.SQL = &transport.DatabaseSQLConfig{Concurrency: sqlConcurrency}
+			}
+
 			info, err := client.Database().CreateDatabase(cmd.Context(), req)
 			if err != nil {
 				return err
@@ -141,6 +148,38 @@ func newDatabaseCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&barrierPassphrase, "barrier-passphrase", "", "Passphrase used to initialize the barrier (barrier-strategy=passphrase)")
 	cmd.Flags().IntVar(&barrierShamirThreshold, "barrier-shamir-threshold", 0, "Shamir quorum threshold (barrier-strategy=shamir)")
 	cmd.Flags().IntVar(&barrierShamirTotal, "barrier-shamir-total", 0, "Shamir total share count (barrier-strategy=shamir)")
+
+	cmd.Flags().StringVar(&sqlConcurrency, "sql-concurrency", "", "The database's SQL concurrency mode (optimistic, pessimistic; defaults to optimistic)")
+
+	return cmd
+}
+
+// newDatabaseUpdateSQLCmd creates the "database update-sql" subcommand.
+func newDatabaseUpdateSQLCmd() *cobra.Command {
+	var concurrency string
+
+	cmd := &cobra.Command{
+		Use:   "update-sql <name>",
+		Short: "Update a database's SQL settings",
+		Long: "Update a database's SQL concurrency mode. In pessimistic mode SQL DML takes row " +
+			"locks and concurrent writers of a row wait instead of failing at COMMIT; " +
+			"SELECT ... FOR UPDATE and FOR SHARE lock in either mode. New transactions " +
+			"pick the change up.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			info, err := client.Database().UpdateDatabaseSQL(cmd.Context(), transport.UpdateDatabaseSQLRequest{
+				Name: args[0],
+				SQL:  &transport.DatabaseSQLConfig{Concurrency: concurrency},
+			})
+			if err != nil {
+				return err
+			}
+			return printDatabaseInfo(info)
+		},
+	}
+
+	cmd.Flags().StringVar(&concurrency, "concurrency", "", "SQL concurrency mode (optimistic, pessimistic)")
+	_ = cmd.MarkFlagRequired("concurrency")
 
 	return cmd
 }
@@ -504,6 +543,10 @@ func printDatabaseInfo(info *transport.DatabaseInfo) error {
 			_, _ = fmt.Fprintf(outputWriter, "Connection:\n")
 			_, _ = fmt.Fprintf(outputWriter, "  Transport: %s\n", info.Connection.Transport)
 			_, _ = fmt.Fprintf(outputWriter, "  Address:   %s\n", info.Connection.Address)
+		}
+		if info.SQL != nil && info.SQL.Concurrency != "" {
+			_, _ = fmt.Fprintf(outputWriter, "SQL:\n")
+			_, _ = fmt.Fprintf(outputWriter, "  Concurrency: %s\n", info.SQL.Concurrency)
 		}
 		return nil
 	}

@@ -13,6 +13,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# A module-forge token without the forge's address is a half-configured
+# .devcontainer/.env. The Makefile's stage-gomodauth refuses it; compose cannot
+# express the same condition, so it hands the two facts in and this refuses it
+# at start (see the client-build service in docker-compose.yml). Without the
+# refusal git would silently skip the rewrite and resolve from the public
+# proxy, which is not what a machine holding a token asked for.
+if [ -n "${QRDB_FORGE_TOKEN_SET:-}" ] && [ -z "${QRDB_FORGE_HOST:-}" ]; then
+    echo "ERROR: .devcontainer/.env sets GITEA_GO_TOKEN but not GITEA_HOST." >&2
+    echo "Add GITEA_HOST=<host:port> of the module forge (see .devcontainer/.env.example)." >&2
+    exit 1
+fi
+
 # Increase UDP receive/send buffer limits for QUIC transport.
 # quic-go requires at least 7168 KiB (~7.3 MB); we set 7500000 bytes
 # to provide headroom. See:

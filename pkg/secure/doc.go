@@ -142,4 +142,10 @@
 // sweep, not a substitute for destroying what was constructed. Library code
 // in this repository never calls either enclave.SetAllocator or
 // enclave.WipeAll.
+//
+// The owning binary also calls HardenProcess once at startup, before it
+// creates any protected memory: mlock keeps these pages out of swap but does
+// not stop a same-user process reading them through ptrace, /proc/<pid>/mem
+// or a core file, and HardenProcess closes those routes where the platform
+// offers a way (go-qrdb#554). Library code never calls it either.
 package secure

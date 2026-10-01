@@ -137,7 +137,7 @@ func New(cfg Config) *sqle.Engine {
 		AddOverrides(sql.EngineOverrides{Builder: sql.BuilderOverrides{
 			// Repair the bind-time HAVING-subquery aggregation collision on
 			// every entry path; see having_subquery.go.
-			Parser: newHavingSubqueryParser(sql.NewMysqlParser()),
+			Parser: newLockClauseParser(newHavingSubqueryParser(sql.NewMysqlParser())),
 		}}).
 		Build()
 	if newInfoSchema, ok := infoSchemaByDialect[cfg.Dialect]; ok {

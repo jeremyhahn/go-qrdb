@@ -263,29 +263,33 @@ func buildEmbeddingAndRAG(
 		log.Info("embedding provider registered", slog.String("name", name))
 	}
 
-	// Build the RAG pipeline only when a vector service is available. The
-	// KVServicer satisfies rag.KVStore directly (verified by the compile-time
-	// check in pkg/service/rag_adapters.go).
+	// Build the RAG pipeline only when a vector service is available. Its
+	// chunk text, document records and vectors are all resolved per call
+	// through one RAGBinding -- the node's per-(tenant, database) registry,
+	// bound by the server at start -- so they are confined to the caller's
+	// database and its seal, ownership, quota and isolation apply.
 	var ragSvc service.RAGServicer
 	if vectorSvc != nil {
+		binding := service.NewRAGBinding()
 		embedAdapter := service.NewEmbedProviderAdapter(embSvc)
-		vectorAdapter := service.NewVectorStoreAdapter(vectorSvc)
+		vectorAdapter := service.NewScopedVectorStoreAdapter(binding)
+		ragStore := service.NewScopedRAGStore(binding)
 
 		ingestor := rag.NewIngestor(
 			embedAdapter,
 			vectorAdapter,
-			kvSvc,
+			ragStore,
 			ragCfg.MaxDocumentSize,
 		)
 		retriever := rag.NewRetriever(
 			embedAdapter,
 			vectorAdapter,
-			kvSvc,
+			ragStore,
 		)
 		ragSvc = service.NewRAGService(
 			newRAGIngestorAdapter(ingestor),
 			newRAGRetrieverAdapter(retriever),
-			kvSvc,
+			ragStore,
 		)
 		log.Info("RAG service initialized")
 	}

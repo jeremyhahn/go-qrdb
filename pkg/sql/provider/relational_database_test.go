@@ -150,6 +150,13 @@ type fakeRelationalRegistry struct {
 	collectionSvc service.CollectionServicer
 	collectionErr error
 
+	// leaseSvc and watchSvc back the row-lock table; nil (the default)
+	// leaves a relational table without one.
+	leaseSvc service.LeaseServicer
+	leaseErr error
+	watchSvc service.WatchServicer
+	watchErr error
+
 	// mu guards calls: a registry is resolved from every concurrent
 	// statement a SQL engine runs, and this double must be as safe for that
 	// as the production registry.
@@ -182,10 +189,10 @@ func (r *fakeRelationalRegistry) MVCCService(tenantID, db string) (service.MVCCK
 }
 
 func (r *fakeRelationalRegistry) WatchService(string, string) (service.WatchServicer, error) {
-	return nil, nil
+	return r.watchSvc, r.watchErr
 }
 func (r *fakeRelationalRegistry) LeaseService(string, string) (service.LeaseServicer, error) {
-	return nil, nil
+	return r.leaseSvc, r.leaseErr
 }
 func (r *fakeRelationalRegistry) IndexService(string, string) (service.IndexServicer, error) {
 	return nil, nil
@@ -285,6 +292,65 @@ func TestDatabase_GetTableInsensitive_RelationalShadowsCollection(t *testing.T) 
 	_, isRelational := tbl.(*RelationalTable)
 	assert.True(t, isRelational, "a relational table must shadow a same-named collection")
 	assert.False(t, collectionCalled, "the collection service must not be consulted once the relational catalog resolves the name")
+}
+
+// TestDatabase_RelationalTable_PostgreSQLDialectPropagates pins the wiring
+// go-qrdb#547 depends on: a Database served over the PostgreSQL protocol
+// (postgres: true) hands every RelationalTable it builds the PostgreSQL
+// dialect, so TRUNCATE on that table keeps its sequence.
+func TestDatabase_RelationalTable_PostgreSQLDialectPropagates(t *testing.T) {
+	h := newDDLHarness()
+	_, err := h.tableSvc.CreateTable(context.Background(), autoIncCreateRequest())
+	require.NoError(t, err)
+
+	db := &Database{name: "shop", kvSvc: h.kvSvc, registry: h.registry, postgres: true}
+
+	tbl, found, err := db.GetTableInsensitive(newTestContext(), "widgets")
+	require.NoError(t, err)
+	require.True(t, found)
+	rt, ok := tbl.(*RelationalTable)
+	require.True(t, ok)
+	assert.True(t, rt.postgres, "Database.postgres must propagate to RelationalTable")
+
+	ctx := newTestContext()
+	for i := 0; i < 3; i++ {
+		_, err := rt.GetNextAutoIncrementValue(ctx, nil)
+		require.NoError(t, err)
+	}
+	_, err = rt.Truncate(ctx)
+	require.NoError(t, err)
+
+	next, err := rt.GetNextAutoIncrementValue(ctx, nil)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(4), next, "a PostgreSQL-dialect table resolved through Database must not reset its sequence on TRUNCATE")
+}
+
+// TestDatabase_RelationalTable_MySQLDialectResetsOnTruncate is the MySQL
+// counterpart: a Database not served over PostgreSQL builds MySQL-dialect
+// tables, whose TRUNCATE restarts AUTO_INCREMENT at 1.
+func TestDatabase_RelationalTable_MySQLDialectResetsOnTruncate(t *testing.T) {
+	h := newDDLHarness()
+	_, err := h.tableSvc.CreateTable(context.Background(), autoIncCreateRequest())
+	require.NoError(t, err)
+
+	tbl, found, err := h.newDDLDatabase("shop").GetTableInsensitive(newTestContext(), "widgets")
+	require.NoError(t, err)
+	require.True(t, found)
+	rt, ok := tbl.(*RelationalTable)
+	require.True(t, ok)
+	assert.False(t, rt.postgres)
+
+	ctx := newTestContext()
+	for i := 0; i < 2; i++ {
+		_, err := rt.GetNextAutoIncrementValue(ctx, nil)
+		require.NoError(t, err)
+	}
+	_, err = rt.Truncate(ctx)
+	require.NoError(t, err)
+
+	next, err := rt.GetNextAutoIncrementValue(ctx, nil)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(1), next)
 }
 
 func TestDatabase_GetTableInsensitive_TableNotFoundFallsThroughToCollection(t *testing.T) {

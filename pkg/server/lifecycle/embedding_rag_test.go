@@ -151,6 +151,7 @@ func TestBuildServices_EmbeddingAndRAGNonNil(t *testing.T) {
 		t.Fatalf("BuildServices: %v", err)
 	}
 	defer func() { _ = node.Stop(context.Background()) }()
+	bindNodeRAG(node)
 
 	if node.Embedding == nil {
 		t.Error("Embedding is nil; expected non-nil when providers are configured")
@@ -178,6 +179,7 @@ func TestBuildServices_EmbeddingAndRAGNilWhenNoProviders(t *testing.T) {
 		t.Fatalf("BuildServices: %v", err)
 	}
 	defer func() { _ = node.Stop(context.Background()) }()
+	bindNodeRAG(node)
 
 	if node.Embedding != nil {
 		t.Error("Embedding must be nil when no providers are configured")
@@ -214,6 +216,7 @@ func TestBuildServices_EmbeddingWithCacheCapacity(t *testing.T) {
 		t.Fatalf("BuildServices with cache: %v", err)
 	}
 	defer func() { _ = node.Stop(context.Background()) }()
+	bindNodeRAG(node)
 
 	if node.Embedding == nil {
 		t.Error("Embedding is nil with CacheCapacity > 0")
@@ -253,6 +256,7 @@ func TestBuildServices_EmbeddingProviderDefaultName(t *testing.T) {
 		t.Fatalf("BuildServices empty provider name: %v", err)
 	}
 	defer func() { _ = node.Stop(context.Background()) }()
+	bindNodeRAG(node)
 
 	if node.Embedding == nil {
 		t.Error("Embedding is nil when provider name defaulted to 'default'")
@@ -294,6 +298,7 @@ func TestBuildServices_EmbeddingBaseURLStripV1Suffix(t *testing.T) {
 		t.Fatalf("BuildServices strip-v1: %v", err)
 	}
 	defer func() { _ = node.Stop(context.Background()) }()
+	bindNodeRAG(node)
 
 	if node.Embedding == nil {
 		t.Error("Embedding is nil after /v1-strip construction")
@@ -329,6 +334,7 @@ func TestBuildServices_EmbeddingTimeoutParsed(t *testing.T) {
 		t.Fatalf("BuildServices timeout-parsed: %v", err)
 	}
 	defer func() { _ = node.Stop(context.Background()) }()
+	bindNodeRAG(node)
 
 	if node.Embedding == nil {
 		t.Error("Embedding is nil with explicit timeout")
@@ -366,6 +372,7 @@ func TestOpenAIProviderAdapter_Embed(t *testing.T) {
 		t.Fatalf("BuildServices: %v", err)
 	}
 	defer func() { _ = node.Stop(context.Background()) }()
+	bindNodeRAG(node)
 
 	resp, err := node.Embedding.Embed(context.Background(), &service.EmbedRequest{
 		Texts:    []string{"hello world"},
@@ -413,6 +420,7 @@ func TestOpenAIProviderAdapter_EmbedUsageInfo(t *testing.T) {
 		t.Fatalf("BuildServices: %v", err)
 	}
 	defer func() { _ = node.Stop(context.Background()) }()
+	bindNodeRAG(node)
 
 	resp, err := node.Embedding.Embed(context.Background(), &service.EmbedRequest{
 		Texts:    []string{"one", "two"},
@@ -454,6 +462,7 @@ func TestOpenAIProviderAdapter_Models(t *testing.T) {
 		t.Fatalf("BuildServices: %v", err)
 	}
 	defer func() { _ = node.Stop(context.Background()) }()
+	bindNodeRAG(node)
 
 	resp, err := node.Embedding.ListModels(context.Background(), &service.ListEmbeddingModelsRequest{
 		Provider: "fake",
@@ -535,6 +544,7 @@ func TestRAGIngestorAdapter_Ingest(t *testing.T) {
 		t.Fatalf("BuildServices: %v", err)
 	}
 	defer func() { _ = node.Stop(context.Background()) }()
+	bindNodeRAG(node)
 
 	resp, err := node.RAG.IngestDocument(context.Background(), &service.IngestDocumentRequest{
 		DocumentID: "doc-1",
@@ -585,6 +595,7 @@ func TestRAGRetrieverAdapter_Retrieve(t *testing.T) {
 		t.Fatalf("BuildServices: %v", err)
 	}
 	defer func() { _ = node.Stop(context.Background()) }()
+	bindNodeRAG(node)
 
 	ctx := context.Background()
 
@@ -645,6 +656,7 @@ func TestRAGIngestorAdapter_IngestWithChunkConfig(t *testing.T) {
 		t.Fatalf("BuildServices: %v", err)
 	}
 	defer func() { _ = node.Stop(context.Background()) }()
+	bindNodeRAG(node)
 
 	resp, err := node.RAG.IngestDocument(context.Background(), &service.IngestDocumentRequest{
 		DocumentID: "doc-chunk",
@@ -693,6 +705,7 @@ func TestRAGRetrieverAdapter_RetrieveWithFilter(t *testing.T) {
 		t.Fatalf("BuildServices: %v", err)
 	}
 	defer func() { _ = node.Stop(context.Background()) }()
+	bindNodeRAG(node)
 
 	ctx := context.Background()
 

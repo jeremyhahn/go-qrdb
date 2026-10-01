@@ -207,6 +207,7 @@ func (c *KeyCodec) EncodeValues(vals []any) (string, error) {
 	byteVals := make([][]byte, len(c.components))
 	valueTypes := make([]index.IndexValueType, len(c.components))
 	for i, comp := range c.components {
+		// #nosec G602 -- len(vals) == len(c.components) is checked above, and i ranges over c.components.
 		numeric, raw, err := encodeKeyComponent(comp, vals[i])
 		if err != nil {
 			return "", err

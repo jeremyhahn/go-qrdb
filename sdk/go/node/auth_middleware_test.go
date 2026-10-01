@@ -20,7 +20,6 @@ import (
 	"context"
 	"crypto/tls"
 	"io"
-	"net"
 	"net/http"
 	"testing"
 
@@ -36,16 +35,15 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
-// freeTCPPort reserves and immediately releases a loopback TCP port so the
-// REST server can bind a real, collision-free listener. AdminPort left at
-// its zero value would be forced to the fixed default 63001 by
+// freeTCPPort reserves a port for the REST server through the shared harness
+// allocator, which certifies it on TCP and on UDP (the HTTP/3 sibling binds
+// the same number) and locks it against every other test process. AdminPort
+// left at its zero value would be forced to the fixed default 63001 by
 // buildNodeServerConfig, risking collisions between parallel test binaries.
 func freeTCPPort(t *testing.T) int {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	port, err := qrdbdharness.ReserveTCPPort()
 	require.NoError(t, err)
-	port := ln.Addr().(*net.TCPAddr).Port
-	require.NoError(t, ln.Close())
 	return port
 }
 

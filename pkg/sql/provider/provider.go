@@ -20,9 +20,11 @@ import (
 
 	sqle "github.com/dolthub/go-mysql-server/sql"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/entity"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/pgcatalog"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -73,6 +75,76 @@ type Provider struct {
 	readOnly      bool                       // true strips write capability from every served table
 	prescopedKV   bool                       // true when kvSvc is already scoped to the caller's namespace
 	registry      service.Registry           // nil when relational tables are not available
+
+	// databaseSvc is the tenant-scoped database lifecycle CREATE DATABASE
+	// and DROP DATABASE go through -- the same service every API transport
+	// uses, so ownership, quota and entitlement are enforced once. nil
+	// confines the lifecycle to system-tenant sessions (see CreateDatabase).
+	databaseSvc service.DatabaseServicer
+
+	// lifecycleAuthz authorizes CREATE DATABASE (databases:create) and DROP
+	// DATABASE (databases:delete) against the session's tenant. nil confines
+	// the lifecycle to system-tenant sessions, which only exist on a listener
+	// with no authentication configured.
+	lifecycleAuthz DatabaseLifecycleAuthorizer
+
+	// sharedDefaultDB is the configured default SQL database
+	// (sql.default_database), which exists for every tenant: each session
+	// sees its own tenant's "<tenant>/<db>/" namespace of it, exactly as the
+	// service registry resolves it. Empty shares nothing.
+	sharedDefaultDB string
+	sqlConfigOf     SQLConfigResolver // nil means every database runs the default (optimistic)
+}
+
+// WithSharedDefaultDatabase marks name, the configured default SQL
+// database, as existing for every tenant, as the service registry treats it
+// (server.WithSharedSQLDefaultDatabase). Every other database is visible only
+// to the tenant that owns it.
+func WithSharedDefaultDatabase(name string) func(*Provider) {
+	return func(prov *Provider) {
+		prov.sharedDefaultDB = name
+	}
+}
+
+// DatabaseLifecycleAuthorizer authorizes a database lifecycle statement for
+// the identity carried by ctx against an explicit target tenant. It is
+// satisfied by *middleware.AuthMiddleware, the same authorizer every API
+// transport consults for databases:create and databases:delete.
+type DatabaseLifecycleAuthorizer interface {
+	AuthorizeTenant(ctx context.Context, targetTenantID string, perm permission.Permission) error
+}
+
+// WithDatabaseService returns a functional option that routes CREATE
+// DATABASE and DROP DATABASE through svc's tenant-scoped CreateForTenant and
+// DropForTenant, so a SQL session creates a database its own tenant owns,
+// inside that tenant's quota, and can drop only a database its tenant owns.
+func WithDatabaseService(svc service.DatabaseServicer) func(*Provider) {
+	return func(prov *Provider) {
+		prov.databaseSvc = svc
+	}
+}
+
+// WithLifecycleAuthorizer returns a functional option that checks
+// databases:create and databases:delete for CREATE DATABASE and DROP
+// DATABASE -- the RBAC half of the lifecycle, which the SQL privilege plane
+// defers to by design (see pkg/sql/privilege).
+func WithLifecycleAuthorizer(a DatabaseLifecycleAuthorizer) func(*Provider) {
+	return func(prov *Provider) {
+		prov.lifecycleAuthz = a
+	}
+}
+
+// SQLConfigResolver returns the SQL settings of database name owned by
+// tenantID, nil when it has none (the defaults).
+type SQLConfigResolver func(tenantID, name string) *database.SQLConfig
+
+// WithSQLConfig returns a functional option that supplies how a database's
+// SQL settings -- its sql.concurrency -- are resolved. A provider built with
+// NewManagerProvider resolves them from its manager without this option.
+func WithSQLConfig(resolve SQLConfigResolver) func(*Provider) {
+	return func(prov *Provider) {
+		prov.sqlConfigOf = resolve
+	}
 }
 
 // WithProtocol returns a functional option that sets the protocol filter
@@ -164,13 +236,26 @@ func NewProvider(dbName string, kvSvc service.KVServicer) *Provider {
 // protocol-level filtering.
 func NewManagerProvider(manager *database.Manager, kvSvc service.KVServicer, opts ...func(*Provider)) *Provider {
 	p := &Provider{
-		manager: manager,
-		kvSvc:   kvSvc,
+		manager:     manager,
+		kvSvc:       kvSvc,
+		sqlConfigOf: managerSQLConfig(manager),
 	}
 	for _, opt := range opts {
 		opt(p)
 	}
 	return p
+}
+
+// managerSQLConfig resolves a database's SQL settings from manager's
+// catalog.
+func managerSQLConfig(manager *database.Manager) SQLConfigResolver {
+	return func(_, name string) *database.SQLConfig {
+		db, err := manager.Get(name)
+		if err != nil {
+			return nil
+		}
+		return db.SQLConfig()
+	}
 }
 
 // NewProviderWithEngine creates a single-database Provider with engine
@@ -222,6 +307,7 @@ func (p *Provider) newDatabase(name string, engine database.EngineType) sqle.Dat
 		readOnly:      p.readOnly,
 		prescopedKV:   p.prescopedKV,
 		registry:      p.registry,
+		sqlConfigOf:   p.sqlConfigOf,
 		postgres:      p.servesPGCatalog(),
 	}
 	if p.readOnly {
@@ -251,7 +337,7 @@ func (p *Provider) Registry() service.Registry {
 // plan builder resolves it while building every GRANT, REVOKE, and SHOW
 // GRANTS statement. CreateDatabase refuses the name for the same reason, so
 // the reservation cannot shadow a database a caller was allowed to create.
-func (p *Provider) Database(_ *sqle.Context, name string) (sqle.Database, error) {
+func (p *Provider) Database(ctx *sqle.Context, name string) (sqle.Database, error) {
 	if strings.EqualFold(name, MySQLSchemaName) {
 		return mysqlSchema{}, nil
 	}
@@ -259,8 +345,8 @@ func (p *Provider) Database(_ *sqle.Context, name string) (sqle.Database, error)
 		return pgcatalog.New(), nil
 	}
 	if p.manager != nil {
-		db, err := p.manager.Get(name)
-		if err != nil {
+		db, ok := p.sessionDatabase(ctx, name)
+		if !ok {
 			return nil, &DatabaseNotFoundError{Name: name}
 		}
 		if !p.isAllowed(db) {
@@ -288,20 +374,23 @@ func (p *Provider) servesPGCatalog() bool {
 	return p.protocol == ProtocolPostgreSQL
 }
 
-// HasDatabase reports whether the named database exists. When backed by
-// a manager, it checks all managed databases; otherwise it checks the
-// single legacy database name.
+// HasDatabase reports whether the named database exists for the session.
+// When backed by a manager it answers only for databases the session's
+// tenant owns -- another tenant's database is reported absent, exactly like a
+// name nobody holds, because database names are one node-wide namespace and
+// answering for every tenant told a session which names other tenants use.
+// Otherwise it checks the single legacy database name.
 //
 // pg_catalog answers true on a PostgreSQL provider for the same reason
 // Database resolves it: a schema a caller can select from is a schema that
 // exists.
-func (p *Provider) HasDatabase(_ *sqle.Context, name string) bool {
+func (p *Provider) HasDatabase(ctx *sqle.Context, name string) bool {
 	if p.servesPGCatalog() && strings.EqualFold(name, pgcatalog.SchemaName) {
 		return true
 	}
 	if p.manager != nil {
-		_, err := p.manager.Get(name)
-		return err == nil
+		_, ok := p.sessionDatabase(ctx, name)
+		return ok
 	}
 	return strings.EqualFold(name, p.dbName)
 }
@@ -331,7 +420,7 @@ func (p *Provider) AllDatabases(ctx *sqle.Context) []sqle.Database {
 		infos := p.manager.List()
 		dbs := make([]sqle.Database, 0, len(infos))
 		for _, info := range infos {
-			if !strings.EqualFold(databaseOwner(info), tenantID) {
+			if !p.visibleTo(info, tenantID) {
 				continue
 			}
 			if p.protocol != ProtocolAny {
@@ -348,6 +437,28 @@ func (p *Provider) AllDatabases(ctx *sqle.Context) []sqle.Database {
 		return dbs
 	}
 	return []sqle.Database{p.newDatabase(p.dbName, p.engine)}
+}
+
+// sessionDatabase returns the managed database name when the session's tenant
+// owns it, with the same ownership rule AllDatabases lists by.
+func (p *Provider) sessionDatabase(ctx *sqle.Context, name string) (*database.Database, bool) {
+	db, err := p.manager.Get(name)
+	if err != nil {
+		return nil, false
+	}
+	if !p.visibleTo(db.Info(), providerSessionTenantID(ctx)) {
+		return nil, false
+	}
+	return db, true
+}
+
+// visibleTo reports whether tenantID's sessions see the managed database
+// info: the tenant owns it, or it is the shared default SQL database.
+func (p *Provider) visibleTo(info database.DatabaseInfo, tenantID string) bool {
+	if p.sharedDefaultDB != "" && strings.EqualFold(info.Name, p.sharedDefaultDB) {
+		return true
+	}
+	return strings.EqualFold(databaseOwner(info), tenantID)
 }
 
 // databaseOwner returns the tenant a managed database belongs to, treating an
@@ -380,26 +491,77 @@ func providerSessionTenantID(ctx *sqle.Context) string {
 	return tenant.SystemTenantID
 }
 
-// CreateDatabase creates a new database via the manager. The database
-// defaults to the KV engine with pebble backend (SQL syntax for engine
-// and backend selection is not yet supported). Returns
+// CreateDatabase creates a new database for the session's tenant. The
+// database defaults to the KV engine with pebble backend (SQL syntax for
+// engine and backend selection is not yet supported). Returns
 // MutableOperationNotSupportedError in legacy single-database mode.
-func (p *Provider) CreateDatabase(_ *sqle.Context, name string) error {
+//
+// The statement is the API's database create in SQL clothing, and is held to
+// the same rules: the caller needs databases:create, the database is owned by
+// the session's tenant, and the tenant's database quota and entitlements
+// apply -- all enforced by the tenant-scoped DatabaseService, never by a
+// second implementation here. Without that service or an authorizer only a
+// system-tenant session may create, because nothing else could meter or
+// attribute the database.
+func (p *Provider) CreateDatabase(ctx *sqle.Context, name string) error {
 	if strings.EqualFold(name, MySQLSchemaName) || strings.EqualFold(name, pgcatalog.SchemaName) {
 		return &ReservedDatabaseNameError{Name: name}
 	}
 	if p.manager == nil {
 		return &MutableOperationNotSupportedError{Operation: "CREATE DATABASE"}
 	}
+	tenantID := providerSessionTenantID(ctx)
+	lctx := p.lifecycleContext(ctx, tenantID)
+	if err := p.authorizeLifecycle(lctx, tenantID, "CREATE DATABASE", permission.DatabasesCreate); err != nil {
+		return &CreateDatabaseError{Name: name, Err: err}
+	}
 	cfg := database.DatabaseConfig{
 		Name:    name,
 		Engine:  database.EngineKV,
 		Backend: database.BackendPebble,
 	}
-	if _, err := p.manager.Create(cfg); err != nil {
+	var err error
+	switch {
+	case p.databaseSvc != nil:
+		_, err = p.databaseSvc.CreateForTenant(lctx, cfg)
+	case tenant.IsSystemTenant(tenantID):
+		_, err = p.manager.Create(cfg)
+	default:
+		err = &DatabaseLifecycleUnavailableError{Operation: "CREATE DATABASE", TenantID: tenantID}
+	}
+	if err != nil {
 		return &CreateDatabaseError{Name: name, Err: err}
 	}
 	return nil
+}
+
+// lifecycleContext returns the context a lifecycle statement runs under: the
+// SQL context's own (so a drop's replicated reclamation stays cancellable),
+// scoped to the session's tenant and carrying the session's authenticated
+// identity for the authorizer.
+func (p *Provider) lifecycleContext(ctx *sqle.Context, tenantID string) context.Context {
+	lctx := tenant.WithTenantID(providerContext(ctx), tenantID)
+	if ctx != nil && ctx.Session != nil {
+		if sess, ok := ctx.Session.(*QRDBSession); ok && sess.Identity() != nil {
+			lctx = auth.WithIdentity(lctx, sess.Identity())
+		}
+	}
+	return lctx
+}
+
+// authorizeLifecycle checks perm for the session's tenant. With no
+// authorizer configured only a system-tenant session passes: that session
+// exists only on a listener with no authentication, where the operator owns
+// every connection, and every other session would otherwise run the
+// statement unchecked.
+func (p *Provider) authorizeLifecycle(ctx context.Context, tenantID, operation string, perm permission.Permission) error {
+	if p.lifecycleAuthz != nil {
+		return p.lifecycleAuthz.AuthorizeTenant(ctx, tenantID, perm)
+	}
+	if tenant.IsSystemTenant(tenantID) {
+		return nil
+	}
+	return &DatabaseLifecycleUnavailableError{Operation: operation, TenantID: tenantID}
 }
 
 // DropDatabase drops an existing database via the manager. Returns
@@ -408,12 +570,13 @@ func (p *Provider) CreateDatabase(_ *sqle.Context, name string) error {
 // write against pg_catalog that is syntactically reachable at all, since
 // none of its relations implements a write-capability interface.
 //
-// The SQL context's own context.Context is threaded through to the manager,
+// The statement is the API's database drop and is held to the same rules:
+// the caller needs databases:delete, and a non-system session may drop only a
+// database its own tenant owns (DatabaseService.DropForTenant). It used to
+// call database.Manager.Drop by name, so any session could drop any tenant's
+// database. The SQL context's own context.Context is threaded through,
 // because the drop reclaims the database's keys from the shared store and
-// that is a replicated operation. DROP DATABASE over the MySQL and
-// PostgreSQL wire protocols reaches the manager directly rather than through
-// DatabaseServicer, so passing a background context here would leave the one
-// drop path an operator is most likely to use uncancellable.
+// that is a replicated operation that must stay cancellable.
 func (p *Provider) DropDatabase(ctx *sqle.Context, name string) error {
 	if strings.EqualFold(name, MySQLSchemaName) || strings.EqualFold(name, pgcatalog.SchemaName) {
 		return &ReservedDatabaseNameError{Name: name}
@@ -421,7 +584,21 @@ func (p *Provider) DropDatabase(ctx *sqle.Context, name string) error {
 	if p.manager == nil {
 		return &MutableOperationNotSupportedError{Operation: "DROP DATABASE"}
 	}
-	if err := p.manager.Drop(providerContext(ctx), name); err != nil {
+	tenantID := providerSessionTenantID(ctx)
+	lctx := p.lifecycleContext(ctx, tenantID)
+	if err := p.authorizeLifecycle(lctx, tenantID, "DROP DATABASE", permission.DatabasesDelete); err != nil {
+		return &DropDatabaseError{Name: name, Err: err}
+	}
+	var err error
+	switch {
+	case p.databaseSvc != nil:
+		err = p.databaseSvc.DropForTenant(lctx, name)
+	case tenant.IsSystemTenant(tenantID):
+		err = p.manager.Drop(lctx, name)
+	default:
+		err = &DatabaseLifecycleUnavailableError{Operation: "DROP DATABASE", TenantID: tenantID}
+	}
+	if err != nil {
 		return &DropDatabaseError{Name: name, Err: err}
 	}
 	return nil
@@ -442,6 +619,7 @@ type Database struct {
 	readOnly      bool                       // true strips write capability from served tables
 	prescopedKV   bool                       // true when kvSvc is already scoped to the caller's namespace
 	registry      service.Registry           // nil when relational tables are not available
+	sqlConfigOf   SQLConfigResolver          // nil means the default SQL settings
 
 	// postgres is true when this database is served over the PostgreSQL
 	// wire protocol (provider.protocol == ProtocolPostgreSQL). It drives
@@ -529,7 +707,11 @@ func (d *Database) GetTableInsensitive(ctx *sqle.Context, name string) (sqle.Tab
 	if d.hasTable(lower) {
 		switch lower {
 		case tableName:
-			tbl := NewKVTable(d.kvSvc, d.namespacePrefix(ctx), d.indexSvc)
+			kv, prefix, err := d.kvService(ctx)
+			if err != nil {
+				return nil, false, err
+			}
+			tbl := NewKVTable(kv, prefix, d.indexSvc)
 			return d.maybeReadOnly(tbl), true, nil
 		case datapointsTableName:
 			return NewDatapointsTable(), true, nil
@@ -544,7 +726,11 @@ func (d *Database) GetTableInsensitive(ctx *sqle.Context, name string) (sqle.Tab
 
 	// Check entity registry for DAO-registered entity types.
 	if reg, ok := entity.Global().Get(lower); ok {
-		tbl := NewEntityTable(d.kvSvc, d.namespacePrefix(ctx), reg, d.indexSvc)
+		kv, prefix, err := d.kvService(ctx)
+		if err != nil {
+			return nil, false, err
+		}
+		tbl := NewEntityTable(kv, prefix, reg, d.indexSvc)
 		return d.maybeReadOnly(tbl), true, nil
 	}
 
@@ -626,6 +812,33 @@ func (d *Database) collectionService(ctx *sqle.Context) (service.CollectionServi
 		return d.collectionSvc, nil
 	}
 	return d.registry.CollectionService(d.sessionTenantID(ctx), d.name)
+}
+
+// kvService returns the KV servicer the kv and entity tables of this session
+// are served from, and the key prefix they apply on top of it.
+//
+// When a registry is configured the servicer is resolved per (session
+// tenant, database) on every table lookup, exactly as collectionService and
+// relationalTable resolve theirs, and the prefix is empty: the registry has
+// already scoped the servicer to the database's keyspace, and resolving it is
+// what applies the database's seal, ownership, quota and isolation routing.
+// Serving these tables from the provider-level d.kvSvc under a composed
+// prefix skipped all four -- a sealed database stayed readable and writable
+// over the MySQL and PostgreSQL wire, and a volume- or raft-isolated tenant's
+// kv table was served from the shared store instead of its own. A refused
+// resolution is returned, never swallowed into "no such table".
+//
+// Without a registry -- the single-tenant, legacy-provider composition -- the
+// provider-level servicer and the composed prefix are used as before.
+func (d *Database) kvService(ctx *sqle.Context) (service.KVServicer, string, error) {
+	if d.registry == nil {
+		return d.kvSvc, d.namespacePrefix(ctx), nil
+	}
+	kv, err := d.registry.KVService(d.sessionTenantID(ctx), d.name)
+	if err != nil {
+		return nil, "", err
+	}
+	return kv, "", nil
 }
 
 // namespacePrefix returns the composite key prefix used to scope KV and

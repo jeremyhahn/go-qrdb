@@ -31,6 +31,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
@@ -483,6 +484,11 @@ func TestInitialize_FreshBootCreatesEverything(t *testing.T) {
 	if len(adminReq.RoleIDs) != 2 || adminReq.RoleIDs[0] != wantAdminRoleID || adminReq.RoleIDs[1] != wantOwnerRoleID {
 		t.Errorf("admin RoleIDs = %v, want [%q %q]", adminReq.RoleIDs, wantAdminRoleID, wantOwnerRoleID)
 	}
+	// go-qrdb#106: the system-tenant bootstrap admin is the one identity
+	// createAdminUser marks immutable.
+	if !adminReq.System {
+		t.Error("admin CreateUserRequest.System = false, want true (go-qrdb#106)")
+	}
 
 	if ca.called.Load() != 1 {
 		t.Errorf("CA called = %d, want 1", ca.called.Load())
@@ -536,6 +542,78 @@ func TestInitialize_StrictSeparationOfDuties(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Idempotency
 // ---------------------------------------------------------------------------
+
+// TestReconcileExistingAdmin_UnsupportedUserCreatorIsANoOp asserts that a
+// UserCreator without the systemPromoter capability -- exactly the shape a
+// downstream composer's adapter to its own IAM store takes, per
+// Dependencies' own doc comment -- is skipped rather than treated as an
+// error. fakeUsers implements only UserCreator's required CreateUser plus
+// the wider user.UserServicer surface some other tests need, but never
+// PromoteToSystemUser, so it stands in for that adapter shape here.
+func TestReconcileExistingAdmin_UnsupportedUserCreatorIsANoOp(t *testing.T) {
+	got := reconcileExistingAdmin(context.Background(), Dependencies{
+		Users:  &fakeUsers{exists: true},
+		Logger: discardLogger(),
+	}, tenant.SystemTenantID)
+	if got != nil {
+		t.Errorf("reconcileExistingAdmin(unsupported UserCreator) = %+v, want nil", got)
+	}
+}
+
+// fakeSystemPromoter implements systemPromoter (and the bare UserCreator it
+// is asserted against) with fully controllable failure injection, for the
+// two reconcileExistingAdmin branches fakeUsers cannot reach at all: it
+// implements neither method at all.
+type fakeSystemPromoter struct {
+	getByUsernameResult *user.User
+	getByUsernameErr    error
+	promoteResult       *user.User
+	promoteErr          error
+}
+
+func (f *fakeSystemPromoter) CreateUser(_ context.Context, _ *user.CreateUserRequest) (*user.User, error) {
+	return nil, &user.UsernameExistsError{Username: adminUsername}
+}
+
+func (f *fakeSystemPromoter) GetUserByUsername(_ context.Context, _, _ string) (*user.User, error) {
+	return f.getByUsernameResult, f.getByUsernameErr
+}
+
+func (f *fakeSystemPromoter) PromoteToSystemUser(_ context.Context, _ uint64) (*user.User, error) {
+	return f.promoteResult, f.promoteErr
+}
+
+// TestReconcileExistingAdmin_GetUserByUsernameErrorIsANoOp covers the
+// best-effort contract when resolving the existing admin itself fails: the
+// reconciliation gives up rather than propagating a transient store error
+// out of an otherwise-successful first-boot.
+func TestReconcileExistingAdmin_GetUserByUsernameErrorIsANoOp(t *testing.T) {
+	got := reconcileExistingAdmin(context.Background(), Dependencies{
+		Users:  &fakeSystemPromoter{getByUsernameErr: errors.New("transient lookup failure")},
+		Logger: discardLogger(),
+	}, tenant.SystemTenantID)
+	if got != nil {
+		t.Errorf("reconcileExistingAdmin(GetUserByUsername error) = %+v, want nil", got)
+	}
+}
+
+// TestReconcileExistingAdmin_PromoteErrorReturnsTheUnpromotedRecord covers
+// the same best-effort contract for a promotion that fails after the
+// existing record was successfully resolved: the caller gets back the
+// record it already had (not System yet), not an error and not nil.
+func TestReconcileExistingAdmin_PromoteErrorReturnsTheUnpromotedRecord(t *testing.T) {
+	existing := &user.User{ID: 42, Username: adminUsername, TenantID: tenant.SystemTenantID}
+	got := reconcileExistingAdmin(context.Background(), Dependencies{
+		Users: &fakeSystemPromoter{
+			getByUsernameResult: existing,
+			promoteErr:          errors.New("sentinel already held"),
+		},
+		Logger: discardLogger(),
+	}, tenant.SystemTenantID)
+	if got != existing {
+		t.Errorf("reconcileExistingAdmin(promote error) = %+v, want the unpromoted %+v", got, existing)
+	}
+}
 
 func TestInitialize_AllPresentReturnsIdempotent(t *testing.T) {
 	tenants := &fakeTenants{createAlreadyErr: true}
@@ -1173,6 +1251,121 @@ func TestInitialize_RealTenantServicerAcceptsSystemTenantID(t *testing.T) {
 	}
 	if got.ID != tenant.SystemTenantID {
 		t.Errorf("got.ID = %q, want %q", got.ID, tenant.SystemTenantID)
+	}
+}
+
+// TestInitialize_ReconcilesPreExistingAdminToSystem is the go-qrdb#106
+// review's Finding 1, closed against the REAL store rather than a double:
+// an admin created by a build that predates the System flag (or one whose
+// flag did not persist for any other reason) must be healed to System: true
+// the next time Initialize runs, not left permanently unprotected because
+// CreateUser's own already-exists response carries no information about
+// which flags the existing record holds.
+func TestInitialize_ReconcilesPreExistingAdminToSystem(t *testing.T) {
+	kv := newGuardedMemoryKVStore()
+	idgen, err := dao.NewSnowflakeGenerator(1)
+	if err != nil {
+		t.Fatalf("NewSnowflakeGenerator: %v", err)
+	}
+	userSvc, err := user.NewStore(kv, idgen)
+	if err != nil {
+		t.Fatalf("user.NewStore: %v", err)
+	}
+	tenantSvc, err := tenant.NewKVTenantService(kv, slog.Default())
+	if err != nil {
+		t.Fatalf("NewKVTenantService: %v", err)
+	}
+
+	// Simulate a cluster whose admin was minted before go-qrdb#106 existed:
+	// same username and tenant createAdminUser itself would use, but with no
+	// System flag -- bypassing Initialize entirely for this seed, exactly as
+	// an older release's own first-boot would have.
+	pre, err := userSvc.CreateUser(context.Background(), &user.CreateUserRequest{
+		WithoutEmailLoginKey: true,
+		Username:             adminUsername,
+		TenantID:             tenant.SystemTenantID,
+		RoleIDs:              []string{role.SystemRoleID(tenant.SystemTenantID, role.RoleNameAdmin)},
+	})
+	if err != nil {
+		t.Fatalf("seed CreateUser: %v", err)
+	}
+	if pre.System {
+		t.Fatal("test setup: the seeded admin must not already be System")
+	}
+
+	roles := &fakeRoles{}
+	result, err := Initialize(context.Background(), Dependencies{
+		Tenants: tenantSvc,
+		Users:   userSvc,
+		Roles:   roles,
+		Logger:  discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if result.AdminCreated {
+		t.Error("AdminCreated = true, want false: the admin already existed")
+	}
+
+	got, gerr := userSvc.GetUserByUsername(context.Background(), tenant.SystemTenantID, adminUsername)
+	if gerr != nil {
+		t.Fatalf("GetUserByUsername: %v", gerr)
+	}
+	if !got.System {
+		t.Fatal("the pre-existing admin was not promoted to System")
+	}
+	if got.ID != pre.ID {
+		t.Fatalf("promoted a different record: got ID %d, want the seeded admin's %d", got.ID, pre.ID)
+	}
+
+	// DeleteUser must now actually refuse it -- the point of the whole
+	// reconciliation.
+	var immutable *user.SystemUserImmutableError
+	if derr := userSvc.DeleteUser(context.Background(), got.ID); !errors.As(derr, &immutable) {
+		t.Fatalf("DeleteUser after reconciliation: err = %v, want *SystemUserImmutableError", derr)
+	}
+}
+
+// TestInitialize_ReconciliationIsIdempotent asserts a SECOND Initialize call
+// against an already-reconciled admin is a no-op success, not a repeated
+// promotion attempt that trips the uniqueness sentinel against itself.
+func TestInitialize_ReconciliationIsIdempotent(t *testing.T) {
+	kv := newGuardedMemoryKVStore()
+	idgen, err := dao.NewSnowflakeGenerator(1)
+	if err != nil {
+		t.Fatalf("NewSnowflakeGenerator: %v", err)
+	}
+	userSvc, err := user.NewStore(kv, idgen)
+	if err != nil {
+		t.Fatalf("user.NewStore: %v", err)
+	}
+	tenantSvc, err := tenant.NewKVTenantService(kv, slog.Default())
+	if err != nil {
+		t.Fatalf("NewKVTenantService: %v", err)
+	}
+
+	deps := Dependencies{Tenants: tenantSvc, Users: userSvc, Roles: &fakeRoles{}, Logger: discardLogger()}
+
+	if _, err := Initialize(context.Background(), deps); err != nil {
+		t.Fatalf("first Initialize: %v", err)
+	}
+	firstResult, err := userSvc.GetUserByUsername(context.Background(), tenant.SystemTenantID, adminUsername)
+	if err != nil {
+		t.Fatalf("GetUserByUsername after first Initialize: %v", err)
+	}
+	if !firstResult.System {
+		t.Fatal("fresh admin was not created with System: true")
+	}
+
+	if _, err := Initialize(context.Background(), deps); err != nil {
+		t.Fatalf("second Initialize: %v", err)
+	}
+	secondResult, err := userSvc.GetUserByUsername(context.Background(), tenant.SystemTenantID, adminUsername)
+	if err != nil {
+		t.Fatalf("GetUserByUsername after second Initialize: %v", err)
+	}
+	if !secondResult.System || secondResult.ID != firstResult.ID {
+		t.Fatalf("second Initialize changed the record: got %+v, want unchanged %+v", secondResult, firstResult)
 	}
 }
 

@@ -36,12 +36,12 @@ type partialReconcileSvc struct {
 func (p partialReconcileSvc) ReconcileDeletedTenants(context.Context) (*tenant.ReconcileReport, error) {
 	boom := errors.New("device busy")
 	return &tenant.ReconcileReport{
-			Inspected: 2,
-			Reclaimed: []tenant.ReclaimedPath{{TenantID: "vb", Path: "/srv/vb"}},
-			Failed:    []tenant.FailedReclaim{{TenantID: "va", Op: "remove", Path: "/srv/va", Error: boom.Error()}},
-		}, &tenant.ResidueReconcileErrors{Errors: []*tenant.ResidueReconcileError{
-			{TenantID: "va", Op: "remove", Path: "/srv/va", Err: boom},
-		}}
+		Inspected: 2,
+		Reclaimed: []tenant.ReclaimedPath{{TenantID: "vb", Path: "/srv/vb"}},
+		Failed:    []tenant.FailedReclaim{{TenantID: "va", Op: "remove", Path: "/srv/va", Error: boom.Error()}},
+	}, &tenant.ResidueReconcileFailuresError{Errors: []*tenant.ResidueReconcileError{
+		{TenantID: "va", Op: "remove", Path: "/srv/va", Err: boom},
+	}}
 }
 
 func (p partialReconcileSvc) CreateTenant(ctx context.Context, id, name string, iso tenant.IsolationType, opts ...tenant.CreateTenantOption) (*tenant.TenantInfo, error) {
@@ -90,14 +90,14 @@ func TestEmbedded_CreateTenant_DataRootOverlapIsTyped(t *testing.T) {
 
 // TestEmbedded_ReconcileDeletedTenants_PartialFailureCarriesBoth: the
 // response and the error both come back, and in-process the error still
-// reaches the service's own *tenant.ResidueReconcileErrors.
+// reaches the service's own *tenant.ResidueReconcileFailuresError.
 func TestEmbedded_ReconcileDeletedTenants_PartialFailureCarriesBoth(t *testing.T) {
 	tr := newExtTransport(t, WithTenantService(partialReconcileSvc{TenantServicer: retiredEmbeddedTenants(t)}))
 	resp, err := tr.ReconcileDeletedTenants(context.Background())
 	assertPartial(t, resp, err)
-	var agg *tenant.ResidueReconcileErrors
+	var agg *tenant.ResidueReconcileFailuresError
 	if !errors.As(err, &agg) || len(agg.Errors) != 1 {
-		t.Fatalf("err = %v; want the service's *tenant.ResidueReconcileErrors reachable", err)
+		t.Fatalf("err = %v; want the service's *tenant.ResidueReconcileFailuresError reachable", err)
 	}
 }
 

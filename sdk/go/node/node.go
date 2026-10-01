@@ -649,6 +649,12 @@ type Node struct {
 	// constructor to wireClientAndServer.
 	peerAttestation *middleware.PeerAttestationGate
 
+	// authMethods is THIS node's permitted-method vocabulary, handed to every
+	// user store BuildServices creates and bound to the node's own auth
+	// middleware once wireClientAndServer builds it. Per node, never
+	// process-wide: two nodes in one process have two authenticator chains.
+	authMethods middleware.AuthMethodVocabulary
+
 	// authorizer is the composed RBAC[+ABAC] auth.Authorizer built by
 	// decorateABAC in buildEmbeddedOpts (nil when svcNode.Role is nil, i.e.
 	// no Role service). wireClientAndServer forwards this SAME instance to
@@ -910,6 +916,14 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 
 	localHost := backend.NewLocalBackend(smAdapter)
 
+	dbManager, err := n.openStandaloneDatabaseManager(pending.dataDir)
+	if err != nil {
+		_ = localHost.Close()
+		_ = n.stg.Close()
+		n.stg = nil
+		return err
+	}
+
 	var encryptor *atrest.Encryptor
 	if barrier != nil {
 		encryptor = atrest.New(barrier)
@@ -923,11 +937,13 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 	profileCfg := *pending.cfg
 	profileCfg.Mode = capabilities.ModeStandalone
 	profile := profileCfg.EffectiveCapabilities()
+	profile.WarnUnencryptedAtRest(n.logger)
 
 	svcNode, err := lifecycle.BuildServices(ctx, lifecycle.Infra{
 		Host:              localHost,
 		WatchHub:          watchHub,
 		DataDir:           pending.dataDir,
+		DatabaseManager:   dbManager,
 		ReplicaID:         pending.cfg.Raft.ReplicaID,
 		Profile:           &profile,
 		Logger:            n.logger,
@@ -943,6 +959,8 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		// Under "required" the user store refuses to withdraw the bootstrap
 		// admin's last live binding (go-qrdb#517).
 		MTLSBindingPolicy: pending.cfg.Auth.MTLSBindingPolicy,
+		// The node's own auth-chain vocabulary (see Node.authMethods).
+		AuthMethodVocabulary: n.authMethods.IsAuthMethod,
 		// Forward an injected (xkms) seal StrategyRegistry into the
 		// TenantService so per-tenant hardware/cloud seal strategies resolve.
 		// This must happen here (before BuildServices), not via server.New,
@@ -954,6 +972,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		_ = localHost.Close()
 		_ = n.stg.Close()
 		n.stg = nil
+		n.closeDatabaseManager()
 		return &ServicesCreateError{Err: err}
 	}
 	n.svcNode.Store(svcNode)
@@ -986,6 +1005,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 			_ = localHost.Close()
 			_ = n.stg.Close()
 			n.stg = nil
+			n.closeDatabaseManager()
 			return &TenantInfraError{Err: tiErr}
 		}
 		n.tenantHosts = ti.Hosts
@@ -1008,9 +1028,36 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 			_ = n.tenantHosts.CloseAll()
 			n.tenantHosts = nil
 		}
+		n.closeDatabaseManager()
 		return err
 	}
 	return nil
+}
+
+// openStandaloneDatabaseManager opens the standalone node's database catalog
+// under dataDir, reopening every database a previous run created, and records
+// it on the node, which owns its lifetime. It is the standalone counterpart of
+// the clustered boot's manager: the manager is handed to BuildServices and to
+// the server, so a named database resolves through the server's registry, is
+// confined to its owning tenant, and is refused while sealed. It used to be
+// built inside BuildServices, which never reopened a previous run's databases
+// and which the server never saw.
+func (n *Node) openStandaloneDatabaseManager(dataDir string) (*database.Manager, error) {
+	dbManager := database.NewManager(n.logger, dataDir, database.WithAllocator(shard.NewAllocator()))
+	if err := dbManager.OpenAll(); err != nil {
+		_ = dbManager.Close()
+		return nil, &StorageCreateError{Backend: "database-manager", Err: err}
+	}
+	n.dbManager = dbManager
+	return dbManager, nil
+}
+
+// closeDatabaseManager closes the node's database catalog, if open.
+func (n *Node) closeDatabaseManager() {
+	if n.dbManager != nil {
+		_ = n.dbManager.Close()
+		n.dbManager = nil
+	}
 }
 
 // clusteredCreateFunc selects the Raft state-machine factory for a clustered
@@ -1229,6 +1276,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		_ = dbManager.Close()
 		return err
 	}
+	profile.WarnUnencryptedAtRest(n.logger)
 
 	svcNode, err := lifecycle.BuildServices(ctx, lifecycle.Infra{
 		Host:              hostAdapter,
@@ -1249,6 +1297,8 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		// Under "required" the user store refuses to withdraw the bootstrap
 		// admin's last live binding (go-qrdb#517).
 		MTLSBindingPolicy: pending.cfg.Auth.MTLSBindingPolicy,
+		// The node's own auth-chain vocabulary (see Node.authMethods).
+		AuthMethodVocabulary: n.authMethods.IsAuthMethod,
 		// DatabaseManager is shared so the shard allocator is not reset
 		// mid-flight and lifecycle does not open a second manager on the same
 		// data directory.
@@ -1741,23 +1791,34 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 
 	localHost := backend.NewLocalBackend(smAdapter)
 
+	dbManager, err := n.openStandaloneDatabaseManager(dataDir)
+	if err != nil {
+		_ = localHost.Close()
+		_ = n.stg.Close()
+		return nil, err
+	}
+
 	// Per-instance effective capability profile: standalone semantics by
 	// construction (see completeStandaloneBoot for the rationale).
 	profileCfg := *cfg
 	profileCfg.Mode = capabilities.ModeStandalone
 	profile := profileCfg.EffectiveCapabilities()
+	profile.WarnUnencryptedAtRest(n.logger)
 
 	svcNode, err := lifecycle.BuildServices(ctx, lifecycle.Infra{
-		Host:        localHost,
-		WatchHub:    watchHub,
-		DataDir:     dataDir,
-		ReplicaID:   cfg.Raft.ReplicaID,
-		Profile:     &profile,
-		Logger:      log,
-		SealEnabled: cfg.Seal.Enabled,
+		Host:            localHost,
+		WatchHub:        watchHub,
+		DataDir:         dataDir,
+		DatabaseManager: dbManager,
+		ReplicaID:       cfg.Raft.ReplicaID,
+		Profile:         &profile,
+		Logger:          log,
+		SealEnabled:     cfg.Seal.Enabled,
 		// Under "required" the user store refuses to withdraw the bootstrap
 		// admin's last live binding (go-qrdb#517).
 		MTLSBindingPolicy: cfg.Auth.MTLSBindingPolicy,
+		// The node's own auth-chain vocabulary (see Node.authMethods).
+		AuthMethodVocabulary: n.authMethods.IsAuthMethod,
 		// Forward an injected (xkms) seal StrategyRegistry into the
 		// TenantService even on the no-seal data path, so the option a
 		// composer passes via server.WithStrategyRegistry is honored rather
@@ -1768,6 +1829,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 	if err != nil {
 		_ = localHost.Close()
 		_ = n.stg.Close()
+		n.closeDatabaseManager()
 		return nil, &ServicesCreateError{Err: err}
 	}
 	n.svcNode.Store(svcNode)
@@ -1777,6 +1839,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		_ = svcNode.Stop(context.Background())
 		_ = localHost.Close()
 		_ = n.stg.Close()
+		n.closeDatabaseManager()
 		return nil, err
 	}
 
@@ -1938,6 +2001,8 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		// Under "required" the user store refuses to withdraw the bootstrap
 		// admin's last live binding (go-qrdb#517).
 		MTLSBindingPolicy: cfg.Auth.MTLSBindingPolicy,
+		// The node's own auth-chain vocabulary (see Node.authMethods).
+		AuthMethodVocabulary: n.authMethods.IsAuthMethod,
 	})
 	if err != nil {
 		_ = host.Close()
@@ -2271,21 +2336,6 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	if err != nil {
 		return err
 	}
-	tp, err := embedded.New(svcNode.KV, svcNode.Admin, embeddedOpts...)
-	if err != nil {
-		return &ClientCreateError{Err: err}
-	}
-
-	// Create SDK client.
-	client, err := sdk.NewClient(tp)
-	if err != nil {
-		return &ClientCreateError{Err: err}
-	}
-	if err := client.Connect(ctx); err != nil {
-		_ = client.Close()
-		return &ClientCreateError{Err: err}
-	}
-	n.client.Store(client)
 
 	// Build the canonical RBAC[+ABAC]-authorized, mTLS-authenticated auth
 	// middleware and install it on the multi-protocol server so every
@@ -2298,6 +2348,12 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// never received server.WithAuthMiddleware, even though the
 	// in-process embedded transport (buildEmbeddedOpts, above) already
 	// enforced RBAC via node.Client().RBAC().
+	//
+	// It is built BEFORE the embedded transport, and the same instance is
+	// handed to it (embedded.WithAuthMiddleware), so a gated write on the
+	// in-process transport -- a role assignment -- is authorized by exactly
+	// the middleware the network transports use, and by nothing when auth
+	// is disabled, as they are.
 	//
 	// cfg.Auth.Enabled mirrors the operator's --auth-enabled posture from
 	// the same DaemonConfig re-export qrdbd itself loads; when false, auth
@@ -2335,8 +2391,6 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// rather than quietly reverting to a default the embedder did not choose.
 	revocationTTL, err := qrdbconfig.ParseRevocationCacheTTL(cfg.Auth.RevocationCacheTTL)
 	if err != nil {
-		_ = client.Close()
-		n.client.Store(nil)
 		return &AuthMiddlewareWiringError{Err: err}
 	}
 	// The audit failure posture: fail-closed unless the embedder's config says
@@ -2346,8 +2400,6 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// daemon.
 	auditFailure, err := audit.ParseFailurePolicy(cfg.Auth.AuditFailurePolicy)
 	if err != nil {
-		_ = client.Close()
-		n.client.Store(nil)
 		return &AuthMiddlewareWiringError{Err: err}
 	}
 	// The mTLS enrolment posture: "enrolled" unless the embedder's config says
@@ -2358,15 +2410,11 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// (the owner's refuse-to-boot ruling, go-qrdb#517).
 	bindingPolicy, err := auth.ParseMTLSBindingPolicy(cfg.Auth.MTLSBindingPolicy)
 	if err != nil {
-		_ = client.Close()
-		n.client.Store(nil)
 		return &AuthMiddlewareWiringError{Err: err}
 	}
 	n.bindingPolicy.Store(int32(bindingPolicy))
 	if bindingPolicy == auth.MTLSBindingRequired && cfg.Auth.IsEnabled() {
 		if verr := verifyExistingAdminBinding(ctx, svcNode.User, firstboot.AdminBindingLookupTimeout); verr != nil {
-			_ = client.Close()
-			n.client.Store(nil)
 			return &AuthMiddlewareWiringError{Err: verr}
 		}
 	}
@@ -2391,14 +2439,47 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		PeerAttestation:    n.peerAttestation,
 	})
 	if err != nil {
-		_ = client.Close()
-		n.client.Store(nil)
 		return &AuthMiddlewareWiringError{Err: err}
 	}
+	// This node's user stores now validate policies against THIS chain's
+	// methods (built-ins plus WithAuthenticators' names). A nil middleware
+	// (auth disabled) leaves the built-in tokens.
+	n.authMethods.Bind(authMW)
+
+	if authMW != nil {
+		embeddedOpts = append(embeddedOpts, embedded.WithAuthMiddleware(authMW))
+	}
+
+	// The embedded transport creates through the same provisioning check the
+	// server composes over its database service: databases:create_raft and
+	// databases:create_volume are checked against the identity the call
+	// carries, so "every create path" includes the in-process one. Without
+	// request authentication there is no identity to check, exactly as on
+	// the network transports.
+	if authMW != nil {
+		embeddedOpts = append(embeddedOpts, embedded.WithDatabaseService(
+			service.NewProvisioningAuthorizedDatabaseService(svcNode.Database, authMW, svcNode.Tenant)))
+	}
+
+	tp, err := embedded.New(svcNode.KV, svcNode.Admin, embeddedOpts...)
+	if err != nil {
+		return &ClientCreateError{Err: err}
+	}
+
+	// Create SDK client.
+	client, err := sdk.NewClient(tp)
+	if err != nil {
+		return &ClientCreateError{Err: err}
+	}
+	if err := client.Connect(ctx); err != nil {
+		_ = client.Close()
+		return &ClientCreateError{Err: err}
+	}
+	n.client.Store(client)
 
 	// Build multi-protocol server.
 	serverCfg := buildNodeServerConfig(cfg)
-	allOpts := buildServerOpts(svcNode, callerOpts, standalone)
+	allOpts := buildServerOpts(svcNode, n.dbManager, callerOpts, standalone)
 	if authMW != nil {
 		allOpts = append(allOpts, server.WithAuthMiddleware(authMW))
 	}
@@ -2520,6 +2601,10 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, strictSoD bool, standa
 		// behaves the same as through REST/gRPC/Unix/QUIC/MCP instead of
 		// the transport-specific stub it used to be (go-qrdb#558).
 		embedded.WithEncryptionMigrator(&nodeEmbeddedMigrator{node: n}),
+		// Database scoping (Client.DatabaseScoped) resolves through the
+		// running server's per-(tenant, database) registry, the same one the
+		// network transports use; see nodeServiceRegistry.
+		embedded.WithServiceRegistry(&nodeServiceRegistry{node: n}),
 	}
 	// The transaction/CAS family is served in EVERY mode (owner ruling
 	// 2026-08-23, go-qrdb#62). A standalone node is engine-direct and
@@ -2759,8 +2844,23 @@ func principalRoles(u *user.User) []string {
 // buildServerOpts constructs the server.ServerOption slice that wires the
 // lifecycle.Node's services into server.New. Caller opts are appended last
 // so they can override any default wiring.
-func buildServerOpts(svcNode *lifecycle.Node, callerOpts []server.ServerOption, standalone bool) []server.ServerOption {
+//
+// The database catalog and a database service registry are wired as the
+// daemon wires them: the registry's default entry is the node's own service
+// graph (lifecycle.SystemDatabase), and every other database resolves from
+// the catalog as a namespace over it.
+// Without them no named database resolved on the node's server, so a
+// database-scoped client was refused outright and RAG, which is bound to the
+// registry, refused every call.
+func buildServerOpts(svcNode *lifecycle.Node, dbManager *database.Manager, callerOpts []server.ServerOption, standalone bool) []server.ServerOption {
+	var shardID uint64
+	if !standalone {
+		shardID = shard.ShardKV
+	}
+	dbRegistry := server.NewDatabaseServiceRegistry(lifecycle.SystemDatabase)
+	dbRegistry.Register(lifecycle.SystemDatabase, svcNode.DatabaseServices(lifecycle.SystemDatabase, shardID))
 	opts := []server.ServerOption{
+		server.WithDatabaseServiceRegistry(dbRegistry),
 		server.WithBatch(svcNode.Batch),
 		server.WithIndex(svcNode.Index),
 		server.WithTimeSeries(svcNode.TimeSeries),
@@ -2807,6 +2907,21 @@ func buildServerOpts(svcNode *lifecycle.Node, callerOpts []server.ServerOption, 
 	if svcNode.User != nil {
 		opts = append(opts, server.WithUserService(svcNode.User))
 	}
+	// StoreResolver and UserAuthFactor travel together (lifecycle.Node's own
+	// invariant: UserAuthFactor is non-nil exactly when StoreResolver is). The
+	// resolver lets Server.ensureUserAuthFactorService build the tenant-routed
+	// service itself, but WithUserAuthFactorService below wires the SAME
+	// instance this node already built, so every SDK-managed transport (REST,
+	// gRPC, QUIC, Unix, MCP) computes Factors metadata and MFA state from the
+	// identical enrollment records the embedded transport and this node's own
+	// login ceremony already read from — one source of truth, not a second
+	// one constructed lazily per server.
+	if svcNode.StoreResolver != nil {
+		opts = append(opts, server.WithTenantStoreResolver(svcNode.StoreResolver))
+	}
+	if svcNode.UserAuthFactor != nil {
+		opts = append(opts, server.WithUserAuthFactorService(svcNode.UserAuthFactor))
+	}
 	if svcNode.Role != nil {
 		opts = append(opts, server.WithRoleService(svcNode.Role))
 	}
@@ -2843,6 +2958,9 @@ func buildServerOpts(svcNode *lifecycle.Node, callerOpts []server.ServerOption, 
 	}
 	if svcNode.Backup != nil {
 		opts = append(opts, server.WithBackupService(svcNode.Backup))
+	}
+	if dbManager != nil {
+		opts = append(opts, server.WithDatabaseManager(dbManager))
 	}
 	// Caller opts last: allow overriding any of the above.
 	return append(opts, callerOpts...)

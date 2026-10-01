@@ -132,7 +132,10 @@ func (t *Transport) Connect(ctx context.Context) error {
 		timeout = 30 * time.Second
 	}
 
-	t.baseRT = httpTransport
+	// Every request made with a context bound by transport.WithSOPIN carries
+	// the SO PIN header -- over https to the configured host only, on every
+	// hop including redirects.
+	t.baseRT = transport.SOPINRoundTripper(httpTransport, "rest", transport.ConfiguredHost(t.baseURL))
 	t.client = &http.Client{
 		Transport: t.scopedRoundTripper(),
 		Timeout:   timeout,
@@ -771,7 +774,7 @@ func (t *Transport) scopedRoundTripper() http.RoundTripper {
 // shares the same underlying HTTP connection pool and configuration but tags
 // every data-plane request with the X-QRDB-Database header. Scoping to the
 // default ("system") database, or the empty string, yields an unscoped clone.
-func (t *Transport) WithDatabase(database string) transport.Transport {
+func (t *Transport) withDatabase(database string) *Transport {
 	db := transport.NormalizeDatabaseScope(database)
 	clone := &Transport{
 		config:         t.config,
@@ -787,6 +790,13 @@ func (t *Transport) WithDatabase(database string) transport.Transport {
 		}
 	}
 	return clone
+}
+
+// WithDatabase implements transport.DatabaseScoper. Scoping a network
+// transport never fails: the database travels with every data-plane request
+// and the server resolves it.
+func (t *Transport) WithDatabase(database string) (transport.Transport, error) {
+	return t.withDatabase(database), nil
 }
 
 // buildTLSConfig constructs the TLS configuration from the transport config.

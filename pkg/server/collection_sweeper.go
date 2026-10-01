@@ -100,7 +100,12 @@ type collectionSweeper struct {
 	// DefaultCollectionSweepTargetTimeout.
 	targetTimeout time.Duration
 	logger        *slog.Logger
-	running       atomic.Bool
+	// ticks, when non-nil, replaces the interval ticker as run's pass
+	// trigger. Tests inject it so each pass is one send rather than a race
+	// against a wall-clock ticker that can fire again before cancellation
+	// is observed.
+	ticks   <-chan time.Time
+	running atomic.Bool
 	// unresolved counts consecutive passes a journaled target failed to
 	// resolve. Passes never overlap (running), so it needs no lock of its own.
 	unresolved map[string]int
@@ -109,13 +114,17 @@ type collectionSweeper struct {
 // run sweeps on the configured interval until ctx is cancelled. Passes never
 // overlap.
 func (s *collectionSweeper) run(ctx context.Context) {
-	ticker := time.NewTicker(s.interval)
-	defer ticker.Stop()
+	ticks := s.ticks
+	if ticks == nil {
+		ticker := time.NewTicker(s.interval)
+		defer ticker.Stop()
+		ticks = ticker.C
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-ticks:
 			s.sweepOnce(ctx)
 		}
 	}

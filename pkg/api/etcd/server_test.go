@@ -479,7 +479,7 @@ func TestAddrBeforeStartReturnsEmptyWhenEmpty(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStartOnEphemeralPortSucceeds(t *testing.T) {
-	s := NewServer("testdb", "127.0.0.1:0")
+	s := newStartable("testdb", "127.0.0.1:0")
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -494,7 +494,7 @@ func TestStartOnEphemeralPortSucceeds(t *testing.T) {
 }
 
 func TestStartAddrReturnsBoundAddress(t *testing.T) {
-	s := NewServer("testdb", "127.0.0.1:0")
+	s := newStartable("testdb", "127.0.0.1:0")
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -510,7 +510,7 @@ func TestStartAddrReturnsBoundAddress(t *testing.T) {
 }
 
 func TestStartAddrContainsNonZeroPort(t *testing.T) {
-	s := NewServer("testdb", "127.0.0.1:0")
+	s := newStartable("testdb", "127.0.0.1:0")
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -527,7 +527,7 @@ func TestStartAddrContainsNonZeroPort(t *testing.T) {
 }
 
 func TestStopSucceeds(t *testing.T) {
-	s := NewServer("testdb", "127.0.0.1:0")
+	s := newStartable("testdb", "127.0.0.1:0")
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -540,13 +540,13 @@ func TestStopSucceeds(t *testing.T) {
 }
 
 func TestStopBeforeStartIsNoop(t *testing.T) {
-	s := NewServer("testdb", ":0")
+	s := newStartable("testdb", ":0")
 	// Should not panic or error.
 	s.Stop()
 }
 
 func TestStopIdempotent(t *testing.T) {
-	s := NewServer("testdb", "127.0.0.1:0")
+	s := newStartable("testdb", "127.0.0.1:0")
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -560,7 +560,7 @@ func TestStopIdempotent(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStartOnInvalidAddrReturnsStartError(t *testing.T) {
-	s := NewServer("testdb", "invalid-addr-no-port")
+	s := newStartable("testdb", "invalid-addr-no-port")
 	err := s.Start()
 	if err == nil {
 		s.Stop()
@@ -591,7 +591,7 @@ func TestStartOnBusyPortReturnsStartError(t *testing.T) {
 	}()
 
 	busyAddr := lis.Addr().String()
-	s := NewServer("testdb", busyAddr)
+	s := newStartable("testdb", busyAddr)
 	startErr := s.Start()
 	if startErr == nil {
 		s.Stop()
@@ -608,7 +608,7 @@ func TestStartOnBusyPortReturnsStartError(t *testing.T) {
 }
 
 func TestStartErrorUnwrap(t *testing.T) {
-	s := NewServer("db", "invalid-addr-no-port")
+	s := newStartable("db", "invalid-addr-no-port")
 	err := s.Start()
 	if err == nil {
 		s.Stop()
@@ -628,7 +628,7 @@ func TestStartErrorUnwrap(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStartNoServicesRegistersAuthOnly(t *testing.T) {
-	s := NewServer("emptydb", "127.0.0.1:0")
+	s := newStartable("emptydb", "127.0.0.1:0")
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -645,7 +645,7 @@ func TestStartNoServicesRegistersAuthOnly(t *testing.T) {
 }
 
 func TestStartNoServicesGrpcServerNotNil(t *testing.T) {
-	s := NewServer("emptydb", "127.0.0.1:0")
+	s := newStartable("emptydb", "127.0.0.1:0")
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -661,7 +661,7 @@ func TestStartNoServicesGrpcServerNotNil(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStartWithAllServices(t *testing.T) {
-	s := NewServer("fulldb", "127.0.0.1:0",
+	s := newStartable("fulldb", "127.0.0.1:0",
 		WithMVCC(&mockMVCCSvc{}),
 		WithTransaction(&mockTxSvc{}),
 		WithWatch(&mockWatchSvc{}),
@@ -688,7 +688,7 @@ func TestStartWithAllServices(t *testing.T) {
 }
 
 func TestStartWithAllServicesAddrIsValid(t *testing.T) {
-	s := NewServer("fulldb", "127.0.0.1:0",
+	s := newStartable("fulldb", "127.0.0.1:0",
 		WithMVCC(&mockMVCCSvc{}),
 		WithTransaction(&mockTxSvc{}),
 		WithWatch(&mockWatchSvc{}),
@@ -718,7 +718,7 @@ func TestStartWithAllServicesAddrIsValid(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStartWithMVCCOnly(t *testing.T) {
-	s := NewServer("mvccdb", "127.0.0.1:0",
+	s := newStartable("mvccdb", "127.0.0.1:0",
 		WithMVCC(&mockMVCCSvc{}),
 	)
 	if err := s.Start(); err != nil {
@@ -736,7 +736,7 @@ func TestStartWithMVCCOnly(t *testing.T) {
 }
 
 func TestStartWithLeaseOnly(t *testing.T) {
-	s := NewServer("leasedb", "127.0.0.1:0",
+	s := newStartable("leasedb", "127.0.0.1:0",
 		WithLease(&mockLeaseSvc{}),
 	)
 	if err := s.Start(); err != nil {
@@ -754,7 +754,7 @@ func TestStartWithLeaseOnly(t *testing.T) {
 }
 
 func TestStartWithWatchOnly(t *testing.T) {
-	s := NewServer("watchdb", "127.0.0.1:0",
+	s := newStartable("watchdb", "127.0.0.1:0",
 		WithWatch(&mockWatchSvc{}),
 		WithMVCC(&mockMVCCSvc{}),
 	)
@@ -773,7 +773,7 @@ func TestStartWithWatchOnly(t *testing.T) {
 }
 
 func TestStartWithAdminOnly(t *testing.T) {
-	s := NewServer("admindb", "127.0.0.1:0",
+	s := newStartable("admindb", "127.0.0.1:0",
 		WithAdmin(&mockAdminSvc{}),
 	)
 	if err := s.Start(); err != nil {
@@ -796,7 +796,7 @@ func TestStartWithAdminOnly(t *testing.T) {
 
 func TestStartWithTLSOptionSetsConfig(t *testing.T) {
 	cfg := &tls.Config{MinVersion: tls.VersionTLS13}
-	s := NewServer("tlsdb", "127.0.0.1:0", WithTLS(cfg))
+	s := newStartable("tlsdb", "127.0.0.1:0", WithTLS(cfg))
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -812,7 +812,7 @@ func TestStartWithTLSOptionSetsConfig(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStartRegistersMaintenanceAlways(t *testing.T) {
-	s := NewServer("maintenancedb", "127.0.0.1:0")
+	s := newStartable("maintenancedb", "127.0.0.1:0")
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -825,7 +825,7 @@ func TestStartRegistersMaintenanceAlways(t *testing.T) {
 }
 
 func TestStartRegistersAuthAlways(t *testing.T) {
-	s := NewServer("authdb", "127.0.0.1:0")
+	s := newStartable("authdb", "127.0.0.1:0")
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -838,7 +838,7 @@ func TestStartRegistersAuthAlways(t *testing.T) {
 }
 
 func TestStartRegistersKVWhenMVCCProvided(t *testing.T) {
-	s := NewServer("kvdb", "127.0.0.1:0", WithMVCC(&mockMVCCSvc{}))
+	s := newStartable("kvdb", "127.0.0.1:0", WithMVCC(&mockMVCCSvc{}))
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -851,7 +851,7 @@ func TestStartRegistersKVWhenMVCCProvided(t *testing.T) {
 }
 
 func TestStartDoesNotRegisterKVWithoutMVCC(t *testing.T) {
-	s := NewServer("nokvdb", "127.0.0.1:0")
+	s := newStartable("nokvdb", "127.0.0.1:0")
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -864,7 +864,7 @@ func TestStartDoesNotRegisterKVWithoutMVCC(t *testing.T) {
 }
 
 func TestStartRegistersLeaseWhenProvided(t *testing.T) {
-	s := NewServer("leasedb", "127.0.0.1:0", WithLease(&mockLeaseSvc{}))
+	s := newStartable("leasedb", "127.0.0.1:0", WithLease(&mockLeaseSvc{}))
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -877,7 +877,7 @@ func TestStartRegistersLeaseWhenProvided(t *testing.T) {
 }
 
 func TestStartDoesNotRegisterLeaseWithoutService(t *testing.T) {
-	s := NewServer("noleasedb", "127.0.0.1:0")
+	s := newStartable("noleasedb", "127.0.0.1:0")
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -890,7 +890,7 @@ func TestStartDoesNotRegisterLeaseWithoutService(t *testing.T) {
 }
 
 func TestStartRegistersWatchWhenProvided(t *testing.T) {
-	s := NewServer("watchdb", "127.0.0.1:0",
+	s := newStartable("watchdb", "127.0.0.1:0",
 		WithWatch(&mockWatchSvc{}),
 		WithMVCC(&mockMVCCSvc{}),
 	)
@@ -906,7 +906,7 @@ func TestStartRegistersWatchWhenProvided(t *testing.T) {
 }
 
 func TestStartDoesNotRegisterWatchWithoutService(t *testing.T) {
-	s := NewServer("nowatchdb", "127.0.0.1:0")
+	s := newStartable("nowatchdb", "127.0.0.1:0")
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -919,7 +919,7 @@ func TestStartDoesNotRegisterWatchWithoutService(t *testing.T) {
 }
 
 func TestStartRegistersClusterWhenAdminProvided(t *testing.T) {
-	s := NewServer("clusterdb", "127.0.0.1:0", WithAdmin(&mockAdminSvc{}))
+	s := newStartable("clusterdb", "127.0.0.1:0", WithAdmin(&mockAdminSvc{}))
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -932,7 +932,7 @@ func TestStartRegistersClusterWhenAdminProvided(t *testing.T) {
 }
 
 func TestStartDoesNotRegisterClusterWithoutAdmin(t *testing.T) {
-	s := NewServer("noclusterdb", "127.0.0.1:0")
+	s := newStartable("noclusterdb", "127.0.0.1:0")
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -945,7 +945,7 @@ func TestStartDoesNotRegisterClusterWithoutAdmin(t *testing.T) {
 }
 
 func TestStartAllServicesRegistersAll(t *testing.T) {
-	s := NewServer("alldb", "127.0.0.1:0",
+	s := newStartable("alldb", "127.0.0.1:0",
 		WithMVCC(&mockMVCCSvc{}),
 		WithTransaction(&mockTxSvc{}),
 		WithWatch(&mockWatchSvc{}),

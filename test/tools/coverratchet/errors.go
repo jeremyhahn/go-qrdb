@@ -90,6 +90,34 @@ func (e *BaselineError) Error() string {
 // Unwrap returns the underlying error.
 func (e *BaselineError) Unwrap() error { return e.Err }
 
+// BuildTagsError is returned when the baseline was measured under a different
+// build-tag set from the profile, or records none.
+//
+// Coverage depends on which of a package's files the tags compile, so numbers
+// taken under two sets are not comparable: pkg/api/grpc measured 90.7% under
+// the default feature set and 77.1% under the minimal rung on the same tree.
+// Comparing them would report a regression that is not there, or hide one
+// that is.
+type BuildTagsError struct {
+	// Path is the baseline file.
+	Path string
+	// Baseline is the normalised set the baseline records, or "" for none.
+	Baseline string
+	// Profile is the normalised set the profile was measured under.
+	Profile string
+}
+
+// Error implements the error interface.
+func (e *BuildTagsError) Error() string {
+	if e.Baseline == "" {
+		return "coverratchet: baseline " + e.Path + " records no `" + buildTagsDirective + "` line, so what it measured is unknown: " +
+			"regenerate it with `make coverage-baseline`"
+	}
+	return "coverratchet: baseline " + e.Path + " was measured under build tags [" + e.Baseline + "] but this profile under [" +
+		e.Profile + "]: coverage depends on which files the tags compile, so the two are not comparable. " +
+		"Measure with `make coverage`, or run `make coverage-baseline` if the tag set changed on purpose"
+}
+
 // DiscoveryFloorError is returned when the profile names fewer packages than
 // the floor.
 //

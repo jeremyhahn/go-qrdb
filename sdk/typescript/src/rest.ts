@@ -80,7 +80,9 @@ import type {
     DatabaseBarrierConfig,
     DatabaseConnectionConfig,
     DatabaseRaftConfig,
+    DatabaseProtocolConfig,
     DatabaseSQLConfig,
+    UpdateDatabaseSQLRequest,
     CreateNamespaceResponse,
     CreateRoleRequest,
     CreateUserRequest,
@@ -1668,16 +1670,27 @@ export class RestClient implements Client {
                     { method: 'DELETE' },
                 );
             },
-            updateSQL: async (name: string, sql: DatabaseSQLConfig): Promise<DatabaseInfo> => {
+            updateProtocol: async (name: string, protocol: DatabaseProtocolConfig): Promise<DatabaseInfo> => {
                 this.ensureConnected();
                 return this.fetchJSON<DatabaseInfo>(`/v1/databases/${encodeURIComponent(name)}/protocol`,
                     {
                         method: 'PATCH',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
-                            mysql: sql.mysql ?? false,
-                            postgresql: sql.postgresql ?? false,
+                            mysql: protocol.mysql ?? false,
+                            postgresql: protocol.postgresql ?? false,
                         }),
+                    },
+                );
+            },
+            updateSQL: async (name: string, sql?: DatabaseSQLConfig): Promise<DatabaseInfo> => {
+                this.ensureConnected();
+                const req: UpdateDatabaseSQLRequest = sql === undefined ? {} : { sql };
+                return this.fetchJSON<DatabaseInfo>(`/v1/databases/${encodeURIComponent(name)}/sql`,
+                    {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(req),
                     },
                 );
             },

@@ -332,6 +332,174 @@ func TestDecorator_SubjectAttributesFromMetadata(t *testing.T) {
 	}
 }
 
+// TestDecorator_SubjectAttributesFromIdentityAttributes asserts identity.
+// Attributes (a user record's own ABAC attributes) reach a policy through the
+// user_attrs namespace, and only through it.
+func TestDecorator_SubjectAttributesFromIdentityAttributes(t *testing.T) {
+	tests := []struct {
+		name     string
+		matchKey string
+		wantOK   bool
+	}{
+		{name: "user_attrs namespace matches", matchKey: UserAttributePrefix + "department", wantOK: true},
+		{name: "bare key never reads a user attribute", matchKey: "department", wantOK: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inner := &fakeAuthorizer{err: fakeDeniedError{}}
+			policy := &Policy{
+				APIVersion: "abac.qrdb.io/v1",
+				Kind:       PolicyKind,
+				Metadata:   PolicyMetadata{Name: "dept", Tenant: "tenant-a"},
+				Spec: PolicySpec{
+					Subjects: SubjectSelector{Match: map[string]interface{}{tt.matchKey: "engineering"}},
+					Rules: []Rule{{
+						Name:      "eng-read",
+						Effect:    EffectAllow,
+						Actions:   []string{"read"},
+						Resources: []string{"/eng/**"},
+					}},
+				},
+			}
+			authz, err := Decorate(inner, WithPolicies([]*Policy{policy}))
+			if err != nil {
+				t.Fatalf("Decorate() error = %v", err)
+			}
+			ctx := tenant.WithTenantID(context.Background(), "tenant-a")
+
+			eng := testIdentity("alice", "tenant-a")
+			eng.Attributes = map[string]string{"department": "engineering"}
+			err = authz.Authorize(ctx, eng, "/eng/specs", "read")
+			if tt.wantOK && err != nil {
+				t.Fatalf("Authorize() = %v, want allowed", err)
+			}
+			if !tt.wantOK && !errors.As(err, &fakeDeniedError{}) {
+				t.Fatalf("Authorize() = %v, want the inner denial", err)
+			}
+		})
+	}
+}
+
+// TestDecorator_AttributesCannotForgeAuthenticatedKeys is the forgery test: a
+// user-record attribute named after an authentication-derived key must never
+// satisfy a policy written against that key — neither by overriding the value
+// the authenticator set, nor by supplying one the authenticator did not set.
+func TestDecorator_AttributesCannotForgeAuthenticatedKeys(t *testing.T) {
+	tests := []struct {
+		name     string
+		metadata map[string]string
+		matchKey string
+		matchVal string
+	}{
+		{
+			name:     "authenticator set the key",
+			metadata: map[string]string{"organization": "untrusted-inc"},
+			matchKey: "organization",
+			matchVal: "trusted-corp",
+		},
+		{
+			name:     "authenticator did not set the key",
+			metadata: nil,
+			matchKey: "organization",
+			matchVal: "trusted-corp",
+		},
+		{
+			name:     "certificate SAN",
+			metadata: map[string]string{"dns_san": "client.example.com"},
+			matchKey: "dns_san",
+			matchVal: "admin.example.com",
+		},
+		{
+			name:     "tenant source sentinel",
+			metadata: nil,
+			matchKey: "tenant_source",
+			matchVal: "certificate",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inner := &fakeAuthorizer{err: fakeDeniedError{}}
+			policy := &Policy{
+				APIVersion: "abac.qrdb.io/v1",
+				Kind:       PolicyKind,
+				Metadata:   PolicyMetadata{Name: "trusted", Tenant: "tenant-a"},
+				Spec: PolicySpec{
+					Subjects: SubjectSelector{Match: map[string]interface{}{tt.matchKey: tt.matchVal}},
+					Rules: []Rule{{
+						Name:      "trusted-admin",
+						Effect:    EffectAllow,
+						Actions:   []string{"admin"},
+						Resources: []string{"/vault/**"},
+					}},
+				},
+			}
+			authz, err := Decorate(inner, WithPolicies([]*Policy{policy}))
+			if err != nil {
+				t.Fatalf("Decorate() error = %v", err)
+			}
+			ctx := tenant.WithTenantID(context.Background(), "tenant-a")
+
+			attacker := testIdentity("mallory", "tenant-a")
+			attacker.Metadata = tt.metadata
+			attacker.Attributes = map[string]string{tt.matchKey: tt.matchVal}
+
+			err = authz.Authorize(ctx, attacker, "/vault/secrets", "admin")
+			if !errors.As(err, &fakeDeniedError{}) {
+				t.Fatalf("a user attribute %q forged a trusted key: Authorize() = %v", tt.matchKey, err)
+			}
+		})
+	}
+}
+
+// TestDecorator_UserAttrsConditionNamespace asserts condition expressions
+// reach user-record attributes only as subject.user_attrs.<key>, and that
+// subject.attrs.<key> does not see them.
+func TestDecorator_UserAttrsConditionNamespace(t *testing.T) {
+	tests := []struct {
+		name   string
+		expr   string
+		wantOK bool
+	}{
+		{name: "user_attrs resolves", expr: "subject.user_attrs.region == 'us-east'", wantOK: true},
+		{name: "attrs does not see user attributes", expr: "subject.attrs.region == 'us-east'", wantOK: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inner := &fakeAuthorizer{err: fakeDeniedError{}}
+			policy := &Policy{
+				APIVersion: "abac.qrdb.io/v1",
+				Kind:       PolicyKind,
+				Metadata:   PolicyMetadata{Name: "region", Tenant: "tenant-a"},
+				Spec: PolicySpec{
+					Subjects: SubjectSelector{Authenticated: true},
+					Rules: []Rule{{
+						Name:      "region-read",
+						Effect:    EffectAllow,
+						Actions:   []string{"read"},
+						Resources: []string{"/geo/**"},
+						When:      []Condition{{Expression: tt.expr}},
+					}},
+				},
+			}
+			authz, err := Decorate(inner, WithPolicies([]*Policy{policy}))
+			if err != nil {
+				t.Fatalf("Decorate() error = %v", err)
+			}
+			ctx := tenant.WithTenantID(context.Background(), "tenant-a")
+
+			id := testIdentity("alice", "tenant-a")
+			id.Attributes = map[string]string{"region": "us-east"}
+			err = authz.Authorize(ctx, id, "/geo/map", "read")
+			if tt.wantOK && err != nil {
+				t.Fatalf("Authorize() = %v, want allowed", err)
+			}
+			if !tt.wantOK && !errors.As(err, &fakeDeniedError{}) {
+				t.Fatalf("Authorize() = %v, want the inner denial", err)
+			}
+		})
+	}
+}
+
 func TestDecorate_PolicyDir(t *testing.T) {
 	dir := t.TempDir()
 	policyYAML := `apiVersion: abac.qrdb.io/v1

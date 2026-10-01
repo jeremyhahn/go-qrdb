@@ -17,6 +17,7 @@ package service
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
@@ -397,9 +398,17 @@ func (s *CeremonyService) CeremonyCompleteClaimShare(
 // CeremonySignCSR signs a CSR during the ceremony by delegating to the
 // underlying CeremonyService's SignCSRInit method and mapping the result
 // to the service-layer CeremonySignCSRResult type.
+//
+// While the ceremony's SO PIN check is locked out after repeated failures
+// (ceremony.SOPINLockedError) it returns *SignCSRThrottledError, on every
+// transport, because this service is where they all meet.
 func (s *CeremonyService) CeremonySignCSR(ctx context.Context, username, soPin, csrPEM, role string) (*CeremonySignCSRResult, error) {
 	result, err := s.ceremony.SignCSRInit(ctx, username, soPin, []byte(csrPEM), role)
 	if err != nil {
+		var locked *ceremony.SOPINLockedError
+		if errors.As(err, &locked) {
+			return nil, &SignCSRThrottledError{RetryAfter: locked.RetryAfter}
+		}
 		return nil, err
 	}
 

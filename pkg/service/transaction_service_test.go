@@ -690,7 +690,6 @@ func TestTransactionService_Execute_RejectsUnknownOpType(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestTransactionService_translateProposeError_NotLeaderError(t *testing.T) {
-
 	err := translateProposeError(&quicraft.NotLeaderError{
 		ShardID:       77,
 		LeaderID:      5,
@@ -727,7 +726,6 @@ func TestTransactionService_translateProposeError_GenericError(t *testing.T) {
 }
 
 func TestTransactionService_translateProposeError_NotLeaderUnknownLeader(t *testing.T) {
-
 	err := translateProposeError(&quicraft.NotLeaderError{
 		ShardID:       10,
 		LeaderID:      0,

@@ -80,9 +80,14 @@ func (s *qrdbServiceServer) BarrierUnseal(ctx context.Context, req *pb.BarrierUn
 // enforcement is available through the REST surface which carries the
 // barrierSealRequest JSON body; QUIC, MCP and Unix mirror REST semantics
 // for parity.
-func (s *qrdbServiceServer) BarrierSeal(ctx context.Context, _ *emptypb.Empty) (*emptypb.Empty, error) {
+func (s *qrdbServiceServer) BarrierSeal(ctx context.Context, req *pb.BarrierSealRequest) (*emptypb.Empty, error) {
 	if s.barrierSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
+	}
+
+	// The configured barrier SO PIN, exactly as REST and MCP verify it.
+	if err := verifyBarrierSOPIN(s.pinBackend, req.GetSoPin()); err != nil {
+		return nil, mapServiceError(err)
 	}
 
 	if err := s.barrierSvc.BarrierSeal(ctx); err != nil {
@@ -344,7 +349,7 @@ func (s *qrdbServiceServer) BarrierRecoveryRecover(ctx context.Context, req *pb.
 }
 
 // BarrierRecoveryDelete removes recovery key metadata from storage.
-func (s *qrdbServiceServer) BarrierRecoveryDelete(ctx context.Context, _ *emptypb.Empty) (*emptypb.Empty, error) {
+func (s *qrdbServiceServer) BarrierRecoveryDelete(ctx context.Context, _ *pb.BarrierRecoveryDeleteRequest) (*emptypb.Empty, error) {
 	if s.barrierSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
 	}

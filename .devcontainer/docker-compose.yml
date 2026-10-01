@@ -139,9 +139,26 @@ services:
       - go-build-cache:/root/.cache/go-build
     working_dir: /workspace/go-qrdb
     environment:
-      - GOPRIVATE=github.com/jeremyhahn/*
-      - GIT_CONFIG_COUNT=1
-      - GIT_CONFIG_KEY_0=url.http://x:${GITEA_GO_TOKEN}@${GITEA_HOST:-git.example.internal}/jeremyhahn/.insteadOf
+      # The internal forge is configured ONLY by GITEA_HOST in the gitignored
+      # .devcontainer/.env (see .env.example); no tracked file names it
+      # (make check-public-releasable). With it unset, GOPRIVATE and
+      # GIT_CONFIG_COUNT expand EMPTY -- git then ignores the rewrite and Go
+      # resolves github.com/jeremyhahn/* from the public proxy, the same
+      # fall-through stage-gomodauth takes in the Makefile (#302).
+      #
+      # A token WITHOUT a host is a half-configured forge, not a machine
+      # without one, and the Makefile refuses it. Compose cannot: it has no
+      # conditional, and `${GITEA_HOST:?...}` is evaluated eagerly -- nested
+      # inside `${GITEA_GO_TOKEN:+...}` it still fails the WHOLE file, every
+      # service included, on a machine with no .env at all (measured, compose
+      # 2.40.3). So compose passes the two facts in, and the image's entrypoint
+      # (.devcontainer/entrypoint.sh) refuses to start when the token is set
+      # and the host is not -- the Makefile's rule, enforced at `run`.
+      - QRDB_FORGE_TOKEN_SET=${GITEA_GO_TOKEN:+1}
+      - QRDB_FORGE_HOST=${GITEA_HOST:-}
+      - GOPRIVATE=${GITEA_HOST:+github.com/jeremyhahn/*}
+      - GIT_CONFIG_COUNT=${GITEA_HOST:+1}
+      - GIT_CONFIG_KEY_0=url.http://x:${GITEA_GO_TOKEN:-}@${GITEA_HOST:-}/jeremyhahn/.insteadOf
       - GIT_CONFIG_VALUE_0=https://github.com/jeremyhahn/
     command: ["make", "_build-client"]
 
@@ -163,9 +180,12 @@ services:
     working_dir: /workspace/go-qrdb
     environment:
       - CI=true
-      - GOPRIVATE=github.com/jeremyhahn/*
-      - GIT_CONFIG_COUNT=1
-      - GIT_CONFIG_KEY_0=url.http://x:${GITEA_GO_TOKEN}@${GITEA_HOST:-git.example.internal}/jeremyhahn/.insteadOf
+      # GITEA_HOST: see the client-build service above.
+      - QRDB_FORGE_TOKEN_SET=${GITEA_GO_TOKEN:+1}
+      - QRDB_FORGE_HOST=${GITEA_HOST:-}
+      - GOPRIVATE=${GITEA_HOST:+github.com/jeremyhahn/*}
+      - GIT_CONFIG_COUNT=${GITEA_HOST:+1}
+      - GIT_CONFIG_KEY_0=url.http://x:${GITEA_GO_TOKEN:-}@${GITEA_HOST:-}/jeremyhahn/.insteadOf
       - GIT_CONFIG_VALUE_0=https://github.com/jeremyhahn/
     command: ["make", "_test-e2e"]
     # The e2e suite starts qrdbd; same locked-memory caps as devcontainer.

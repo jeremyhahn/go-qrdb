@@ -19,6 +19,12 @@ type AtomicKVStore = kvstore.AtomicKVStore
 var  ErrKVIndexUnsupported       = kvstore.ErrIndexUnsupported
 var  ErrKVAtomicWriteUnsupported = kvstore.ErrAtomicWriteUnsupported
 
+// DAO.SaveIfAbsent's refusal when the store cannot write atomically, whether
+// it is not an AtomicKVStore at all or refused the call (the store's refusal
+// is then reachable through Unwrap). It matches ErrKVAtomicWriteUnsupported,
+// the one marker for the condition across the stack.
+type DAOAtomicWriteUnsupportedError = dao.AtomicWriteUnsupportedError
+
 // An in-process store with real index maintenance and real atomicity, for
 // unit-testing DAO code without booting a node.
 var NewMemoryKVStore = kvstore.NewMemoryKVStore
@@ -298,9 +304,22 @@ bucketing — see [../time-series/](../time-series/engineering.md).
 | Store maintains no indexes — planned `Find().Where(...)` | full scan, correct results | **yes** — no plan routes to an index that does not exist |
 | Registration fails for any other reason | DAO construction fails | **yes** |
 | Shared store lacks compare-and-set — `tenantSharedKVStore.PutIfAbsent` | `kvstore.ErrAtomicWriteUnsupported` | **yes** — never degrades to `Exists`-then-`Put` |
+| DAO `SaveIfAbsent` over a store with no atomic write, or one that refused it | `*dao.AtomicWriteUnsupportedError` (matches `kvstore.ErrAtomicWriteUnsupported`; a store refusal stays in the chain) | **yes** — never degrades to `Get`-then-`Save`; any other store error is returned unchanged as outcome-unknown |
 | Store lacks the guarded swap — `CompareAndSwap` | `kvstore.ErrAtomicWriteUnsupported` | **yes** — a read followed by an unguarded put is the race the guard exists to close |
 | Guarded verb on an ABSENT key — `CompareAndSwap` / `CompareAndDelete` | `(false, nil)` | **yes** — absence is an outcome, not a failure; an error here cannot be told from a broken store |
 | `CompareAndSwap` outcome UNKNOWN (non-nil error) | error, reservation retained by the quota wrapper | **yes** — a Raft proposal can commit and lose its response; releasing would under-count a stored value |
+
+**There is one atomic-refusal marker: `kvstore.ErrAtomicWriteUnsupported`.**
+Every layer that refuses a guarded write for want of the capability — the
+kvstore implementations, `dao.AtomicWriteUnsupportedError`, the database
+backends, the service layer, the custodian service and the invitation store —
+returns it or matches it under `errors.Is`
+(`sdk.ErrInviteAtomicWriteUnsupported` is an alias of it). The package-local
+sentinels that used to exist beside it are gone: five spellings of one
+condition meant a caller testing one missed a refusal carrying another. The
+marker also matches `kvstore.ErrNotApplied`: a capability refusal happens
+before anything commits, so it proves nothing was written and a caller need
+not read back to reconcile.
 
 The unknown-index refusal matters: degrading to a full scan would turn a typo
 into a silent performance cliff on a production dataset.

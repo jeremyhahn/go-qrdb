@@ -262,6 +262,10 @@ type WriteSet struct {
 
 	savepoints map[string]int // name -> undoLog length at the time of the mark
 
+	// statements is the stack of implicit statement savepoints: the undoLog
+	// length at each open StatementBegin. See writeset_statement.go.
+	statements []int
+
 	totalBytes int
 
 	// resolutions holds one resolutionGuard per relational table this
@@ -276,6 +280,12 @@ type WriteSet struct {
 	// which otherwise attaches no preconditions at all, must not skip them.
 	resolutions     map[string]resolutionGuard
 	resolutionOrder []string
+
+	// rowLocks is this transaction's row-lock state -- its lock owner, the
+	// current reads its locks were granted with, and whether it was rolled
+	// back as a deadlock victim. See writeset_locks.go and
+	// docs/row-locking/.
+	rowLocks
 }
 
 // resolutionGuard is one relational table's commit-time fence on what the
@@ -478,6 +488,14 @@ func (ws *WriteSet) Lookup(ctx context.Context, key string) (value []byte, found
 		}
 		return e.value, true, nil
 	}
+	if c, ok := ws.current[key]; ok {
+		// A key this transaction locked is read as of its lock grant, not
+		// its snapshot (see recordCurrent).
+		if rerr := ws.recordRead(key, c.compare(key)); rerr != nil {
+			return nil, false, rerr
+		}
+		return c.value, c.found, nil
+	}
 	if !ws.bound {
 		return nil, false, nil
 	}
@@ -610,6 +628,17 @@ func (ws *WriteSet) RangeOverlay(ctx context.Context, prefix string) (map[string
 		}
 	}
 
+	for key, c := range ws.current {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		if c.found {
+			out[key] = c.value
+		} else {
+			delete(out, key)
+		}
+	}
+
 	for _, key := range ws.order {
 		if !strings.HasPrefix(key, prefix) {
 			continue
@@ -727,8 +756,14 @@ func (ws *WriteSet) recordTouch(ctx context.Context, key string, value []byte, t
 // baselineCompare resolves the commit-time precondition for a key's first
 // touch by reading its state at the pinned snapshot revision: absence
 // (Version==0) if it did not exist there, otherwise equality against the
-// ModRevision it held there.
+// ModRevision it held there. A key the transaction locked is compared
+// against the state it was read in when its lock was granted instead (see
+// recordCurrent): that is the version the transaction's statements worked
+// from.
 func (ws *WriteSet) baselineCompare(ctx context.Context, key string) (service.Compare, error) {
+	if c, ok := ws.current[key]; ok {
+		return c.compare(key), nil
+	}
 	kv, err := ws.mvccSvc.GetAtRevision(ctx, key, ws.revision)
 	if err != nil {
 		if snapshotAbsent(err) {
@@ -782,7 +817,25 @@ func (ws *WriteSet) RollbackTo(name string) error {
 	if !ok {
 		return &SavepointNotFoundError{Name: name}
 	}
+	ws.undoTo(mark)
 
+	for n, m := range ws.savepoints {
+		if m > mark {
+			delete(ws.savepoints, n)
+		}
+	}
+	return nil
+}
+
+// undoTo undoes every buffered mutation recorded at or after position mark
+// of the undo log, in reverse order, restoring each affected key to its
+// state before the mark (or removing it entirely if the mark predates its
+// first touch). A mark beyond the end of the log -- one taken before the
+// write-set was emptied by abortWith -- has nothing left to undo.
+func (ws *WriteSet) undoTo(mark int) {
+	if mark >= len(ws.undoLog) {
+		return
+	}
 	for i := len(ws.undoLog) - 1; i >= mark; i-- {
 		rec := ws.undoLog[i]
 		if !rec.existed {
@@ -801,13 +854,6 @@ func (ws *WriteSet) RollbackTo(name string) error {
 	}
 	ws.undoLog = ws.undoLog[:mark]
 	ws.rebuildOrder()
-
-	for n, m := range ws.savepoints {
-		if m > mark {
-			delete(ws.savepoints, n)
-		}
-	}
-	return nil
 }
 
 // Release discards name from the set of active savepoints without

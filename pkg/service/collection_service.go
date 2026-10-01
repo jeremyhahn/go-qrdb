@@ -2109,7 +2109,7 @@ func (s *CollectionService) reserveExplicitDocumentID(ctx context.Context, info 
 // leaves a window in which a second caller sees the same free ID, and both
 // write, and one document is silently gone. The guarded write has no such
 // window on any backend that offers it, and a backend that does not offer it
-// refuses with database.ErrAtomicWriteUnsupported rather than degrading -- an
+// refuses with kvstore.ErrAtomicWriteUnsupported rather than degrading -- an
 // insert that cannot promise the ID is the caller's fails, which is the whole
 // point of the promise.
 //
@@ -2177,7 +2177,7 @@ func collectionIDGenKey(info *CollectionInfo) string {
 // function's doc comment for why that fallback can produce duplicate IDs.
 func (s *CollectionService) nextDocumentID(ctx context.Context, info *CollectionInfo, entity dao.Entity) (uint64, error) {
 	if info.IDStrategy == IDStrategyIncrement && s.seqSvc != nil {
-		id, err := s.seqSvc.Allocate(ctx, info.Database, collectionSequenceName(info), 1)
+		id, _, err := s.seqSvc.Allocate(ctx, info.Database, collectionSequenceName(info), 1)
 		if err != nil {
 			return 0, &CollectionMetadataError{Op: "allocate-id", Err: err}
 		}

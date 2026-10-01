@@ -288,6 +288,46 @@ func (r *routingUserService) GetUser(ctx context.Context, id uint64) (*User, err
 	return svc.GetUser(ctx, id)
 }
 
+// PromoteToSystemUser routes on the tenant that HOLDS id, exactly as GetUser
+// does, and satisfies pkg/firstboot's OPTIONAL systemPromoter interface
+// (reached by type assertion, not declared on UserServicer) so the
+// production, routed servicer -- not just the per-tenant kvUserStore it
+// wraps -- can reconcile a pre-existing bootstrap admin's System flag.
+//
+// Before this method existed, deps.Users.(systemPromoter) failed silently
+// for the production servicer (routingUserService embedded no such method),
+// so reconcileExistingAdmin's type assertion never matched in a real
+// deployment and a pre-#106 admin was never promoted, no matter how many
+// times first-boot's idempotent path ran.
+func (r *routingUserService) PromoteToSystemUser(ctx context.Context, id uint64) (*User, error) {
+	target, err := r.targetTenant(ctx, id, "promote system user")
+	if err != nil {
+		return nil, err
+	}
+	svc, err := r.storeFor(ctx, target)
+	if err != nil {
+		return nil, err
+	}
+	promoter, ok := svc.(systemPromoter)
+	if !ok {
+		// Unreachable in production: storeFor always returns a *kvUserStore,
+		// which implements this. Kept as a typed refusal rather than a panic
+		// so a future storeFor backend that does not implement promotion
+		// fails closed and visibly instead of crashing the caller.
+		return nil, &StoreError{Op: "promote_system", Detail: "backing store does not support promotion", Err: ErrStoreNotAtomic}
+	}
+	return promoter.PromoteToSystemUser(ctx, id)
+}
+
+// systemPromoter is the promotion capability a routingUserService's backing
+// store must implement for PromoteToSystemUser to route to it. kvUserStore
+// satisfies it (system.go); it is declared here, at the routing seam that
+// consumes it, rather than exported, since nothing outside this package
+// calls through it directly.
+type systemPromoter interface {
+	PromoteToSystemUser(ctx context.Context, id uint64) (*User, error)
+}
+
 // GetUserByUsername routes on the EFFECTIVE tenant reconciled from the
 // caller's identity and the explicit tenant argument. Enumeration/read of
 // another tenant's users is denied for a normal tenant caller

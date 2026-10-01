@@ -106,7 +106,16 @@ var ErrKVIndexUnsupported = kvstore.ErrIndexUnsupported
 // cannot perform a write whose outcome is defined under concurrency. A store
 // reports this rather than degrading to Exists-then-Put, which would deliver
 // the exact race the capability exists to eliminate while reporting success.
+//
+// It is the one marker for the condition across qrdb: the DAO's typed refusal
+// and ErrInviteAtomicWriteUnsupported match it too. It also matches
+// ErrKVNotApplied, since a capability refusal writes nothing.
 var ErrKVAtomicWriteUnsupported = kvstore.ErrAtomicWriteUnsupported
+
+// ErrKVNotApplied marks a conditional-write error that PROVES nothing was
+// written — a refused capability, no leader to propose it. A caller holding it
+// need not read back to reconcile; an error without it has an unknown outcome.
+var ErrKVNotApplied = kvstore.ErrNotApplied
 
 // EntityIndex defines a secondary index on a DAO entity field.
 type EntityIndex = kvstore.EntityIndex

@@ -78,6 +78,27 @@ type createDatabaseRequest struct {
 	} `json:"protocol"`
 	Raft    *raftConfigRequest    `json:"raft,omitempty"`
 	Barrier *barrierConfigRequest `json:"barrier,omitempty"`
+	SQL     *sqlConfigJSON        `json:"sql,omitempty"`
+}
+
+// sqlConfigJSON is the JSON representation of a database's SQL settings, in
+// requests and responses alike. See docs/row-locking/api.md.
+type sqlConfigJSON struct {
+	Concurrency string `json:"concurrency,omitempty"`
+}
+
+// updateDatabaseSQLRequest is the JSON payload for PATCH /v1/databases/{name}/sql.
+type updateDatabaseSQLRequest struct {
+	SQL *sqlConfigJSON `json:"sql"`
+}
+
+// sqlConfigFromJSON converts a request's SQL settings; nil stays nil (the
+// defaults).
+func sqlConfigFromJSON(c *sqlConfigJSON) *database.SQLConfig {
+	if c == nil {
+		return nil
+	}
+	return &database.SQLConfig{Concurrency: database.Concurrency(c.Concurrency)}
 }
 
 // barrierConfigRequest is the JSON representation of encryption barrier
@@ -211,6 +232,7 @@ type databaseInfoResponse struct {
 	Raft         *raftConfigResponse       `json:"raft,omitempty"`
 	Barrier      *barrierConfigResponse    `json:"barrier,omitempty"`
 	Connection   *connectionConfigResponse `json:"connection,omitempty"`
+	SQL          *sqlConfigJSON            `json:"sql,omitempty"`
 }
 
 // raftConfigResponse is the JSON representation of Raft consensus configuration
@@ -303,6 +325,7 @@ func (s *Server) handleCreateDatabase(w http.ResponseWriter, r *http.Request) {
 	if req.Raft != nil {
 		cfg.Raft = raftConfigFromRequest(req.Raft)
 	}
+	cfg.SQL = sqlConfigFromJSON(req.SQL)
 
 	var creds seal.Credentials
 	if req.Barrier != nil {
@@ -366,7 +389,8 @@ func (s *Server) handleListDatabases(w http.ResponseWriter, r *http.Request) {
 // DELETE /v1/databases/{name}, PATCH /v1/databases/{name}/protocol,
 // PATCH /v1/databases/{name}/etcd, PATCH /v1/databases/{name}/raft,
 // PATCH /v1/databases/{name}/barrier, PATCH /v1/databases/{name}/connection,
-// and PATCH /v1/databases/{name}/scale to the appropriate handler
+// PATCH /v1/databases/{name}/sql, and PATCH /v1/databases/{name}/scale to the
+// appropriate handler
 // using the database name extracted from the URL path.
 func (s *Server) handleDatabaseByName(w http.ResponseWriter, r *http.Request) {
 	if s.databaseSvc == nil {
@@ -412,6 +436,10 @@ func (s *Server) handleDatabaseByName(w http.ResponseWriter, r *http.Request) {
 	}
 	if subPath == "connection" && r.Method == http.MethodPatch {
 		s.handleUpdateDatabaseConnection(w, r, name)
+		return
+	}
+	if subPath == "sql" && r.Method == http.MethodPatch {
+		s.handleUpdateDatabaseSQL(w, r, name)
 		return
 	}
 	if subPath == "seal" && r.Method == http.MethodPost {
@@ -627,6 +655,24 @@ func (s *Server) handleUpdateDatabaseConnection(w http.ResponseWriter, r *http.R
 	writeJSON(w, databaseInfoToResponse(info))
 }
 
+// handleUpdateDatabaseSQL handles PATCH /v1/databases/{name}/sql -- updates
+// a database's SQL settings (its sql.concurrency).
+func (s *Server) handleUpdateDatabaseSQL(w http.ResponseWriter, r *http.Request, name string) {
+	var req updateDatabaseSQLRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+
+	info, err := s.databaseSvc.UpdateSQLForTenant(r.Context(), name, sqlConfigFromJSON(req.SQL))
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+
+	writeJSON(w, databaseInfoToResponse(info))
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -675,6 +721,9 @@ func databaseInfoToResponse(info *database.DatabaseInfo) databaseInfoResponse {
 			CertFile:  info.Connection.CertFile,
 			KeyFile:   info.Connection.KeyFile,
 		}
+	}
+	if info.SQL != nil {
+		resp.SQL = &sqlConfigJSON{Concurrency: string(info.SQL.Concurrency)}
 	}
 	return resp
 }

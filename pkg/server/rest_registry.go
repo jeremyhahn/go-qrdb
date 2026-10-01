@@ -242,6 +242,14 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 		return nil, err
 	}
 
+	// A sealed database fails closed on every engine, whichever store serves
+	// it. This is checked here, ahead of the isolation branches, because most
+	// of those stores are shared and nothing on the store itself refuses a
+	// request for one sealed database among many.
+	if err := r.refuseSealedDatabase(tenantID, db); err != nil {
+		return nil, err
+	}
+
 	// IsolationVolume tenants are backed by a dedicated per-tenant Raft Host on
 	// their own DataRoot (full engines, encrypted under the tenant DEK). The
 	// per-tenant Host exposes one shard shared by all the tenant's databases;
@@ -375,29 +383,16 @@ func (r *restServiceRegistry) resolveShared(tenantID, db string, info *tenant.Te
 // (buildDedicatedStoreServices); it fails closed when the database's barrier
 // is sealed rather than falling back to the shared (unencrypted) store.
 func (r *restServiceRegistry) resolveDedicatedDatabaseBarrier(tenantID, db string, info *tenant.TenantInfo) (*DatabaseServices, error) {
-	if r.dbManager == nil {
-		return nil, errNotDedicatedDatabaseBarrier
-	}
-	dbase, err := r.dbManager.Get(db)
-	if err != nil {
+	dbase, ok := r.ownedDatabase(tenantID, db)
+	if !ok {
 		return nil, errNotDedicatedDatabaseBarrier
 	}
 
-	// Ownership check mirrors managerCatalog.DatabaseExists and
-	// managerRaftInfoSource.databaseInfo: the system tenant sees databases
-	// with no owner or the system owner; every other tenant sees only
-	// databases it owns. A mismatch is treated as "not this database" so the
-	// caller falls through to the normal not-found/shared-store handling
-	// instead of granting cross-tenant access to a dedicated encrypting store.
-	owner := dbase.TenantID()
-	if tenantID == r.systemTenant {
-		if owner != "" && owner != r.systemTenant {
-			return nil, errNotDedicatedDatabaseBarrier
-		}
-	} else if owner != tenantID {
-		return nil, errNotDedicatedDatabaseBarrier
-	}
-
+	// Raft-backed isolation is never resolved here: it comes exclusively from
+	// an IsolationRaft tenant's dedicated shard (handled above by the
+	// tenant.IsolationRaft branch in resolve), never from a per-database
+	// barrier layered onto a shared/prefix tenant's database.
+	// BarrierOnDataPath excludes it.
 	cfg := dbase.Config()
 	if !servesFromNodeLocalStore(&cfg) {
 		return nil, errNotDedicatedDatabaseBarrier
@@ -414,7 +409,49 @@ func (r *restServiceRegistry) resolveDedicatedDatabaseBarrier(tenantID, db strin
 // dedicated shard, never from a per-database barrier layered onto a
 // shared/prefix tenant's database.
 func servesFromNodeLocalStore(cfg *database.DatabaseConfig) bool {
-	return cfg.Barrier != nil && cfg.Barrier.Enabled && cfg.HasDedicatedStore() && cfg.Backend != database.BackendRaft
+	return cfg.Barrier != nil && cfg.Barrier.Enabled && cfg.BarrierOnDataPath()
+}
+
+// ownedDatabase returns the catalog record for db when tenantID may address
+// it, and false when there is no database manager, no such database, or the
+// database belongs to another tenant. The ownership rule mirrors
+// managerCatalog.DatabaseExists and managerRaftInfoSource.databaseInfo: the
+// system tenant sees databases with no owner or the system owner; every other
+// tenant sees only databases it owns. A mismatch is "not this database", so a
+// caller never learns anything about another tenant's database.
+func (r *restServiceRegistry) ownedDatabase(tenantID, db string) (*database.Database, bool) {
+	if r.dbManager == nil {
+		return nil, false
+	}
+	dbase, err := r.dbManager.Get(db)
+	if err != nil {
+		return nil, false
+	}
+	owner := dbase.TenantID()
+	if tenantID == r.systemTenant {
+		if owner != "" && owner != r.systemTenant {
+			return nil, false
+		}
+	} else if owner != tenantID {
+		return nil, false
+	}
+	return dbase, true
+}
+
+// refuseSealedDatabase returns a *service.BarrierSealedError naming db when
+// the caller's database is sealed, and nil otherwise. It is the data-plane
+// half of database seal: DatabaseService.SealDatabase marks the database
+// sealed, and this refusal is what makes the mark mean anything on the stores
+// that do not refuse by themselves -- the shared system shard, a volume
+// tenant's host and a raft group. A database opened from disk with a barrier
+// starts sealed, so the refusal also holds across a restart until the owner
+// unseals it.
+func (r *restServiceRegistry) refuseSealedDatabase(tenantID, db string) error {
+	dbase, ok := r.ownedDatabase(tenantID, db)
+	if !ok || dbase.Status() != database.StatusSealed {
+		return nil
+	}
+	return &rest.BarrierSealedError{TenantID: tenantID, Database: db}
 }
 
 // applyQuota wraps the resolved KV and MVCC servicers with storage-byte quota
@@ -608,17 +645,25 @@ func (r *restServiceRegistry) applyComposite(svcs *DatabaseServices, tenantID, d
 	if svcs.KV != nil {
 		out.KV = &namespacedKVService{inner: svcs.KV, prefix: prefix}
 	}
+	// The lease view is built first: the MVCC view attaches only leases it
+	// owns.
+	var leases *namespacedLeaseService
+	if svcs.Lease != nil {
+		leases = newNamespacedLeaseService(svcs.Lease, svcs.MVCC, prefix)
+		out.Lease = leases
+	}
 	if svcs.MVCC != nil {
-		out.MVCC = newNamespacedMVCCService(svcs.MVCC, prefix)
+		var owned leaseOwnership
+		if leases != nil {
+			owned = leases
+		}
+		out.MVCC = newNamespacedMVCCService(svcs.MVCC, prefix, owned)
 	}
 	if svcs.Batch != nil {
 		out.Batch = newNamespacedBatchService(svcs.Batch, prefix)
 	}
 	if svcs.Transaction != nil {
 		out.Transaction = newNamespacedTransactionService(svcs.Transaction, prefix)
-	}
-	if svcs.Lease != nil {
-		out.Lease = newNamespacedLeaseService(svcs.Lease, prefix)
 	}
 	if svcs.TimeSeries != nil {
 		out.TimeSeries = newNamespacedTimeSeriesService(svcs.TimeSeries, prefix)
@@ -669,7 +714,26 @@ func (r *restServiceRegistry) WatchService(tenantID, db string) (service.WatchSe
 	if svcs.Watch == nil {
 		return nil, notImplemented("watch", "")
 	}
+	// A watch is a stream that outlives this resolution: one on a
+	// catalogued database ends when the database is sealed or dropped,
+	// rather than delivering its events after the refusal every new request
+	// gets.
+	if dbase, ok := r.ownedDatabase(tenantID, db); ok {
+		return newServedWatchService(svcs.Watch, dbase, func() error {
+			return databaseUnservedError(dbase, tenantID, db)
+		}), nil
+	}
 	return svcs.Watch, nil
+}
+
+// databaseUnservedError is the refusal a stream on dbase ends with once the
+// database stops serving: the sealed refusal for a sealed database, and the
+// not-found a dropped one answers every request with.
+func databaseUnservedError(dbase *database.Database, tenantID, db string) error {
+	if dbase.Status() == database.StatusSealed {
+		return &rest.BarrierSealedError{TenantID: tenantID, Database: db}
+	}
+	return &rest.DatabaseNotFoundError{TenantID: tenantID, Database: db}
 }
 
 // LeaseService returns the LeaseServicer for the given (tenant, db) scope.

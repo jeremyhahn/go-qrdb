@@ -14,7 +14,10 @@
 
 package capabilities
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 // TestSeal_GetReturnsSealedProfileVerbatim pins the runtime-truth
 // contract: after a composition root seals the effective profile, Get
@@ -37,7 +40,7 @@ func TestSeal_GetReturnsSealedProfileVerbatim(t *testing.T) {
 		t.Fatal("Sealed() = false after Seal")
 	}
 	got := Get()
-	if got != profile {
+	if !reflect.DeepEqual(got, profile) {
 		t.Fatalf("Get() = %+v, want the sealed profile %+v", got, profile)
 	}
 	if got.MVCC || got.Watch || got.Lease || got.Lock || got.Cluster || got.Backup || got.Rebalance || got.Transaction {

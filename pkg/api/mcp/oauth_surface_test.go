@@ -61,7 +61,7 @@ func TestBearerChallengeHandler_Unauthenticated401(t *testing.T) {
 	s := newBearerTestServer(t, challenge)
 
 	reached := false
-	h := s.bearerChallengeHandler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached = true }))
+	h := s.authenticateHandler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached = true }))
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/mcp", nil))
@@ -85,7 +85,7 @@ func TestBearerChallengeHandler_AuthenticatedPassesIdentity(t *testing.T) {
 	s := newBearerTestServer(t, "Bearer realm=\"mcp\"")
 
 	var seen *auth.Identity
-	h := s.bearerChallengeHandler(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	h := s.authenticateHandler(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		seen = auth.IdentityFromContext(r.Context())
 		// authHTTPContext must short-circuit on the pre-bound identity.
 		ctx := s.authHTTPContext(r.Context(), r)

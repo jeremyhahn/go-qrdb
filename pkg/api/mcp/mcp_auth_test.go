@@ -371,7 +371,7 @@ func (e *certGenerateError) Error() string { return "cert generation failed: " +
 
 func TestUserCreateTool_Success(t *testing.T) {
 	svc := &mockUserService{}
-	handler := handleUserCreate(svc)
+	handler := handleUserCreate(svc, nil, nil, &mockRoleService{})
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"username": "alice",
@@ -419,7 +419,9 @@ func TestUserCreateTool_WithTenantID(t *testing.T) {
 			}, nil
 		},
 	}
-	handler := handleUserCreate(svc)
+	handler := handleUserCreate(svc, nil, nil, &mockRoleService{getRoleFn: func(_ context.Context, id string) (*role.Role, error) {
+		return &role.Role{ID: id, TenantID: "tenant-42"}, nil
+	}})
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"username":  "bob",
@@ -445,7 +447,7 @@ func TestUserCreateTool_WithTenantID(t *testing.T) {
 
 func TestUserCreateTool_MissingUsername(t *testing.T) {
 	svc := &mockUserService{}
-	handler := handleUserCreate(svc)
+	handler := handleUserCreate(svc, nil, nil, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{}))
 	if err != nil {
@@ -462,7 +464,7 @@ func TestUserCreateTool_ServiceError(t *testing.T) {
 			return nil, errors.New("internal error")
 		},
 	}
-	handler := handleUserCreate(svc)
+	handler := handleUserCreate(svc, nil, nil, nil)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
 		"username": "alice",
@@ -481,7 +483,7 @@ func TestUserCreateTool_ServiceError(t *testing.T) {
 
 func TestUserGetTool_Success(t *testing.T) {
 	svc := &mockUserService{}
-	handler := handleUserGet(svc)
+	handler := handleUserGet(svc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"id": "1001",
@@ -514,7 +516,7 @@ func TestUserGetTool_Uint64IDRoundTrip(t *testing.T) {
 			return &user.User{ID: id, Username: "snowflake", Lifecycle: user.LifecycleActive}, nil
 		},
 	}
-	handler := handleUserGet(svc)
+	handler := handleUserGet(svc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"id": "9223372036854783585",
@@ -540,7 +542,7 @@ func TestUserGetTool_NotFound(t *testing.T) {
 			return nil, &userNotFoundError{ID: strconv.FormatUint(id, 10)}
 		},
 	}
-	handler := handleUserGet(svc)
+	handler := handleUserGet(svc, nil)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
 		"id": "9999",
@@ -556,7 +558,7 @@ func TestUserGetTool_NotFound(t *testing.T) {
 
 func TestUserGetTool_MissingID(t *testing.T) {
 	svc := &mockUserService{}
-	handler := handleUserGet(svc)
+	handler := handleUserGet(svc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{}))
 	if err != nil {
@@ -569,7 +571,7 @@ func TestUserGetTool_MissingID(t *testing.T) {
 
 func TestUserUpdateTool_Success(t *testing.T) {
 	svc := &mockUserService{}
-	handler := handleUserUpdate(svc)
+	handler := handleUserUpdate(svc, nil, nil, &mockRoleService{})
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"id":       "1001",
@@ -594,7 +596,7 @@ func TestUserUpdateTool_Success(t *testing.T) {
 
 func TestUserUpdateTool_MissingID(t *testing.T) {
 	svc := &mockUserService{}
-	handler := handleUserUpdate(svc)
+	handler := handleUserUpdate(svc, nil, nil, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"username": "new-name",
@@ -613,7 +615,7 @@ func TestUserUpdateTool_ServiceError(t *testing.T) {
 			return nil, errors.New("update failed")
 		},
 	}
-	handler := handleUserUpdate(svc)
+	handler := handleUserUpdate(svc, nil, nil, nil)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
 		"id":       "1001",
@@ -636,7 +638,7 @@ func TestUserUpdateTool_NoRoleIDsPreservesNil(t *testing.T) {
 			return &user.User{ID: req.ID, Username: req.Username}, nil
 		},
 	}
-	handler := handleUserUpdate(svc)
+	handler := handleUserUpdate(svc, nil, nil, nil)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
 		"id":       "1001",
@@ -704,7 +706,7 @@ func TestUserDeleteTool_ServiceError(t *testing.T) {
 
 func TestUserListTool_Success(t *testing.T) {
 	svc := &mockUserService{}
-	handler := handleUserList(svc)
+	handler := handleUserList(svc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{}))
 	if err != nil {
@@ -735,7 +737,7 @@ func TestUserListTool_WithPagination(t *testing.T) {
 			}, nil
 		},
 	}
-	handler := handleUserList(svc)
+	handler := handleUserList(svc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"tenant_id": "tenant-42",
@@ -776,7 +778,7 @@ func TestUserListTool_ServiceError(t *testing.T) {
 			return nil, errors.New("storage unavailable")
 		},
 	}
-	handler := handleUserList(svc)
+	handler := handleUserList(svc, nil)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{}))
 	if err == nil {
@@ -892,7 +894,7 @@ func TestUserDisableTool_ServiceError(t *testing.T) {
 
 func TestUserTools_Registration(t *testing.T) {
 	svc := &mockUserService{}
-	tools := userTools(svc)
+	tools := userTools(svc, nil, nil, nil)
 
 	expectedNames := []string{
 		"qrdb_user_create",
@@ -1346,7 +1348,7 @@ func TestRoleListTool_ServiceError(t *testing.T) {
 
 func TestRoleAssignTool_Success(t *testing.T) {
 	userSvc := &mockUserService{}
-	handler := handleRoleAssign(&mockRoleService{}, userSvc)
+	handler := handleRoleAssign(&mockRoleService{}, userSvc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"user_id": "1001",
@@ -1368,7 +1370,7 @@ func TestRoleAssignTool_RoleNotFound(t *testing.T) {
 		},
 	}
 	userSvc := &mockUserService{}
-	handler := handleRoleAssign(roleSvc, userSvc)
+	handler := handleRoleAssign(roleSvc, userSvc, nil)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
 		"user_id": "1001",
@@ -1392,7 +1394,7 @@ func TestRoleAssignTool_AlreadyAssigned(t *testing.T) {
 			}, nil
 		},
 	}
-	handler := handleRoleAssign(&mockRoleService{}, userSvc)
+	handler := handleRoleAssign(&mockRoleService{}, userSvc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"user_id": "1001",
@@ -1409,7 +1411,7 @@ func TestRoleAssignTool_AlreadyAssigned(t *testing.T) {
 
 func TestRoleAssignTool_MissingUserID(t *testing.T) {
 	userSvc := &mockUserService{}
-	handler := handleRoleAssign(&mockRoleService{}, userSvc)
+	handler := handleRoleAssign(&mockRoleService{}, userSvc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"role_id": "r-001",
@@ -1424,7 +1426,7 @@ func TestRoleAssignTool_MissingUserID(t *testing.T) {
 
 func TestRoleAssignTool_MissingRoleID(t *testing.T) {
 	userSvc := &mockUserService{}
-	handler := handleRoleAssign(&mockRoleService{}, userSvc)
+	handler := handleRoleAssign(&mockRoleService{}, userSvc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"user_id": "1001",
@@ -1443,7 +1445,7 @@ func TestRoleAssignTool_GetUserError(t *testing.T) {
 			return nil, &userNotFoundError{ID: "u-999"}
 		},
 	}
-	handler := handleRoleAssign(&mockRoleService{}, userSvc)
+	handler := handleRoleAssign(&mockRoleService{}, userSvc, nil)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
 		"user_id": "9999",
@@ -1467,7 +1469,7 @@ func TestRoleAssignTool_UpdateUserError(t *testing.T) {
 			return nil, errors.New("update failed")
 		},
 	}
-	handler := handleRoleAssign(&mockRoleService{}, userSvc)
+	handler := handleRoleAssign(&mockRoleService{}, userSvc, nil)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
 		"user_id": "1001",
@@ -1496,7 +1498,7 @@ func TestRoleUnassignTool_Success(t *testing.T) {
 			return &user.User{ID: req.ID, RoleIDs: req.RoleIDs}, nil
 		},
 	}
-	handler := handleRoleUnassign(userSvc)
+	handler := handleRoleUnassign(userSvc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"user_id": "1001",
@@ -1524,7 +1526,7 @@ func TestRoleUnassignTool_Success(t *testing.T) {
 
 func TestRoleUnassignTool_MissingUserID(t *testing.T) {
 	userSvc := &mockUserService{}
-	handler := handleRoleUnassign(userSvc)
+	handler := handleRoleUnassign(userSvc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"role_id": "r-001",
@@ -1539,7 +1541,7 @@ func TestRoleUnassignTool_MissingUserID(t *testing.T) {
 
 func TestRoleUnassignTool_MissingRoleID(t *testing.T) {
 	userSvc := &mockUserService{}
-	handler := handleRoleUnassign(userSvc)
+	handler := handleRoleUnassign(userSvc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"user_id": "1001",
@@ -1558,7 +1560,7 @@ func TestRoleUnassignTool_GetUserError(t *testing.T) {
 			return nil, &userNotFoundError{ID: "u-999"}
 		},
 	}
-	handler := handleRoleUnassign(userSvc)
+	handler := handleRoleUnassign(userSvc, nil)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
 		"user_id": "9999",
@@ -1582,7 +1584,7 @@ func TestRoleUnassignTool_UpdateUserError(t *testing.T) {
 			return nil, errors.New("update failed")
 		},
 	}
-	handler := handleRoleUnassign(userSvc)
+	handler := handleRoleUnassign(userSvc, nil)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
 		"user_id": "1001",
@@ -1636,7 +1638,7 @@ func TestPermissionsListTool_ReturnsValidJSON(t *testing.T) {
 func TestRoleTools_Registration(t *testing.T) {
 	roleSvc := &mockRoleService{}
 	userSvc := &mockUserService{}
-	tools := roleTools(roleSvc, userSvc)
+	tools := roleTools(roleSvc, userSvc, nil)
 
 	expectedNames := []string{
 		"qrdb_role_create",
@@ -2393,7 +2395,7 @@ func TestUserCreateTool_CarriesEmailAndName(t *testing.T) {
 		},
 	}
 
-	if _, err := handleUserCreate(svc)(context.Background(), makeReq(map[string]any{
+	if _, err := handleUserCreate(svc, nil, nil, nil)(context.Background(), makeReq(map[string]any{
 		"username": "alice",
 		"email":    "alice@example.com",
 		"name":     "Alice",
@@ -2420,7 +2422,7 @@ func TestUserUpdateTool_CarriesEmailAndName(t *testing.T) {
 		},
 	}
 
-	if _, err := handleUserUpdate(svc)(context.Background(), makeReq(map[string]any{
+	if _, err := handleUserUpdate(svc, nil, nil, nil)(context.Background(), makeReq(map[string]any{
 		"id":    "42",
 		"email": "new@example.com",
 		"name":  "New Name",
@@ -2469,7 +2471,7 @@ func TestUserCreateTool_CarriesIdentityFields(t *testing.T) {
 			return &user.User{ID: 1001}, nil
 		},
 	}
-	handler := handleUserCreate(svc)
+	handler := handleUserCreate(svc, nil, nil, nil)
 
 	if _, err := handler(context.Background(), makeReq(map[string]any{
 		"username":     "alice",
@@ -2539,7 +2541,7 @@ func TestUserUpdateTool_ClearFlagExpressesClear(t *testing.T) {
 					return &user.User{ID: 1001}, nil
 				},
 			}
-			if _, err := handleUserUpdate(svc)(context.Background(), makeReq(tc.args)); err != nil {
+			if _, err := handleUserUpdate(svc, nil, nil, nil)(context.Background(), makeReq(tc.args)); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if got == nil {
@@ -2573,7 +2575,7 @@ func TestUserUpdateTool_MalformedLastAuthIsAnErrorResult(t *testing.T) {
 			return &user.User{ID: 1001}, nil
 		},
 	}
-	result, err := handleUserUpdate(svc)(context.Background(), makeReq(map[string]any{
+	result, err := handleUserUpdate(svc, nil, nil, nil)(context.Background(), makeReq(map[string]any{
 		"id":        "1001",
 		"last_auth": "yesterday",
 	}))
@@ -2601,7 +2603,7 @@ func TestUserUpdateTool_MalformedIdentifierListIsAnErrorResult(t *testing.T) {
 				return &user.User{ID: 1001}, nil
 			},
 		}
-		result, err := handleUserUpdate(svc)(context.Background(), makeReq(map[string]any{
+		result, err := handleUserUpdate(svc, nil, nil, nil)(context.Background(), makeReq(map[string]any{
 			"id":           "1001",
 			"auth_methods": bad,
 		}))
@@ -2627,7 +2629,7 @@ func TestUserUpdateTool_BlankIdentifierElementReachesTheStore(t *testing.T) {
 			return &user.User{ID: 1001}, nil
 		},
 	}
-	if _, err := handleUserUpdate(svc)(context.Background(), makeReq(map[string]any{
+	if _, err := handleUserUpdate(svc, nil, nil, nil)(context.Background(), makeReq(map[string]any{
 		"id":           "1001",
 		"auth_methods": `["ok",""]`,
 	})); err != nil {
@@ -2742,7 +2744,7 @@ func TestUserUpdateTool_EmptyListClearsThroughEveryEncoding(t *testing.T) {
 					return &user.User{ID: 1001}, nil
 				},
 			}
-			if _, err := handleUserUpdate(svc)(context.Background(), makeReq(map[string]any{
+			if _, err := handleUserUpdate(svc, nil, nil, nil)(context.Background(), makeReq(map[string]any{
 				"id":           "1001",
 				"auth_methods": value,
 			})); err != nil {

@@ -95,12 +95,12 @@ func TestManager_GetForTenant_CrossTenantDenied(t *testing.T) {
 	if err == nil {
 		t.Fatal("GetForTenant() cross-tenant = nil, want error")
 	}
-	var accessErr *TenantAccessDeniedError
+	var accessErr *NotFoundError
 	if !errors.As(err, &accessErr) {
-		t.Fatalf("error type = %T, want *TenantAccessDeniedError", err)
+		t.Fatalf("error type = %T, want *NotFoundError (another tenant's database is answered as missing)", err)
 	}
-	if accessErr.TenantID != "tenant-b" {
-		t.Errorf("TenantID = %q, want %q", accessErr.TenantID, "tenant-b")
+	if accessErr.Name != "cross-tenant-db" {
+		t.Errorf("Name = %q, want %q", accessErr.Name, "cross-tenant-db")
 	}
 }
 
@@ -256,9 +256,9 @@ func TestManager_DropForTenant_CrossTenantDenied(t *testing.T) {
 	if err == nil {
 		t.Fatal("DropForTenant() cross-tenant = nil, want error")
 	}
-	var accessErr *TenantAccessDeniedError
+	var accessErr *NotFoundError
 	if !errors.As(err, &accessErr) {
-		t.Fatalf("error type = %T, want *TenantAccessDeniedError", err)
+		t.Fatalf("error type = %T, want *NotFoundError (another tenant's database is answered as missing)", err)
 	}
 }
 
@@ -330,9 +330,9 @@ func TestManager_UpdateProtocolForTenant_CrossTenantDenied(t *testing.T) {
 	if err == nil {
 		t.Fatal("UpdateProtocolForTenant() cross-tenant = nil, want error")
 	}
-	var accessErr *TenantAccessDeniedError
+	var accessErr *NotFoundError
 	if !errors.As(err, &accessErr) {
-		t.Fatalf("error type = %T, want *TenantAccessDeniedError", err)
+		t.Fatalf("error type = %T, want *NotFoundError (another tenant's database is answered as missing)", err)
 	}
 }
 
@@ -367,9 +367,9 @@ func TestManager_UpdateEtcdForTenant_CrossTenantDenied(t *testing.T) {
 	if err == nil {
 		t.Fatal("UpdateEtcdForTenant() cross-tenant = nil, want error")
 	}
-	var accessErr *TenantAccessDeniedError
+	var accessErr *NotFoundError
 	if !errors.As(err, &accessErr) {
-		t.Fatalf("error type = %T, want *TenantAccessDeniedError", err)
+		t.Fatalf("error type = %T, want *NotFoundError (another tenant's database is answered as missing)", err)
 	}
 }
 
@@ -404,9 +404,9 @@ func TestManager_UpdateRaftForTenant_CrossTenantDenied(t *testing.T) {
 	if err == nil {
 		t.Fatal("UpdateRaftForTenant() cross-tenant = nil, want error")
 	}
-	var accessErr *TenantAccessDeniedError
+	var accessErr *NotFoundError
 	if !errors.As(err, &accessErr) {
-		t.Fatalf("error type = %T, want *TenantAccessDeniedError", err)
+		t.Fatalf("error type = %T, want *NotFoundError (another tenant's database is answered as missing)", err)
 	}
 }
 
@@ -450,9 +450,9 @@ func TestManager_UpdateBarrierForTenant_CrossTenantDenied(t *testing.T) {
 	if err == nil {
 		t.Fatal("UpdateBarrierForTenant() cross-tenant = nil, want error")
 	}
-	var accessErr *TenantAccessDeniedError
+	var accessErr *NotFoundError
 	if !errors.As(err, &accessErr) {
-		t.Fatalf("error type = %T, want *TenantAccessDeniedError", err)
+		t.Fatalf("error type = %T, want *NotFoundError (another tenant's database is answered as missing)", err)
 	}
 }
 
@@ -488,9 +488,9 @@ func TestManager_UpdateConnectionForTenant_CrossTenantDenied(t *testing.T) {
 	if err == nil {
 		t.Fatal("UpdateConnectionForTenant() cross-tenant = nil, want error")
 	}
-	var accessErr *TenantAccessDeniedError
+	var accessErr *NotFoundError
 	if !errors.As(err, &accessErr) {
-		t.Fatalf("error type = %T, want *TenantAccessDeniedError", err)
+		t.Fatalf("error type = %T, want *NotFoundError (another tenant's database is answered as missing)", err)
 	}
 }
 

@@ -226,6 +226,14 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 		}
 		pbReq.LastAuthUnix = at.UTC().Unix()
 	}
+	if req.RoleBindings != nil {
+		pbReq.RoleBindings = roleBindingsToProto(req.RoleBindings)
+		pbReq.HasRoleBindings = true
+	}
+	if req.Attributes != nil {
+		pbReq.Attributes = req.Attributes
+		pbReq.HasAttributes = true
+	}
 
 	resp, err := t.client.UpdateUser(ctx, pbReq)
 	if err != nil {
@@ -547,19 +555,25 @@ func protoToUser(resp *pb.UserResponse) *transport.User {
 		return nil
 	}
 	return &transport.User{
-		ID:           resp.GetId(),
-		TenantID:     resp.GetTenantId(),
-		Username:     resp.GetUsername(),
-		Email:        resp.GetEmail(),
-		Name:         resp.GetName(),
-		RoleIDs:      resp.GetRoleIds(),
-		System:       resp.GetSystem(),
-		Lifecycle:    resp.GetLifecycle(),
-		AuthMethods:  resp.GetAuthMethods(),
-		LastAuth:     unixToRFC3339(resp.GetLastAuthUnix()),
-		CertBindings: protoToCertBindings(resp.GetCertBindings()),
-		CreatedAt:    resp.GetCreatedAt(),
-		UpdatedAt:    resp.GetUpdatedAt(),
+		ID:            resp.GetId(),
+		TenantID:      resp.GetTenantId(),
+		Username:      resp.GetUsername(),
+		Email:         resp.GetEmail(),
+		Name:          resp.GetName(),
+		RoleIDs:       resp.GetRoleIds(),
+		System:        resp.GetSystem(),
+		Lifecycle:     resp.GetLifecycle(),
+		AuthMethods:   resp.GetAuthMethods(),
+		LastAuth:      unixToRFC3339(resp.GetLastAuthUnix()),
+		CertBindings:  protoToCertBindings(resp.GetCertBindings()),
+		RoleBindings:  protoToRoleBindings(resp.GetRoleBindings()),
+		Attributes:    resp.GetAttributes(),
+		Factors:       protoToFactorMetadata(resp.GetFactors()),
+		MFAEnabled:    resp.GetMfaEnabled(),
+		MFAMethods:    resp.GetMfaMethods(),
+		MFAEnrolledAt: resp.GetMfaEnrolledAt(),
+		CreatedAt:     resp.GetCreatedAt(),
+		UpdatedAt:     resp.GetUpdatedAt(),
 	}
 }
 
@@ -577,6 +591,43 @@ func protoToCertBindings(in []*pb.CertBinding) []transport.CertBinding {
 			Kind:       b.GetKind(),
 			NotAfter:   unixToRFC3339(b.GetNotAfterUnix()),
 		}
+	}
+	return out
+}
+
+// protoToRoleBindings converts the proto role-binding list to the transport
+// form. Nil for an empty list.
+func protoToRoleBindings(in []*pb.RoleBinding) []transport.RoleBinding {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]transport.RoleBinding, len(in))
+	for i, b := range in {
+		out[i] = transport.RoleBinding{RoleID: b.GetRoleId(), TenantID: b.GetTenantId()}
+	}
+	return out
+}
+
+// roleBindingsToProto is the inverse of protoToRoleBindings, used by
+// UpdateUser to build the wire request.
+func roleBindingsToProto(in []transport.RoleBinding) []*pb.RoleBinding {
+	out := make([]*pb.RoleBinding, len(in))
+	for i, b := range in {
+		out[i] = &pb.RoleBinding{RoleId: b.RoleID, TenantId: b.TenantID}
+	}
+	return out
+}
+
+// protoToFactorMetadata converts the proto factor-metadata list to the
+// transport form. The Data blob never crosses this or any other transport
+// (go-qrdb#192/#197), so there is nothing to carry beyond metadata.
+func protoToFactorMetadata(in []*pb.FactorMetadata) []transport.FactorMetadata {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]transport.FactorMetadata, len(in))
+	for i, f := range in {
+		out[i] = transport.FactorMetadata{ID: f.GetId(), FactorName: f.GetFactorName(), CreatedAt: f.GetCreatedAt()}
 	}
 	return out
 }

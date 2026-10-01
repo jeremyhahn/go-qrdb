@@ -30,6 +30,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
@@ -122,12 +123,24 @@ type Transport struct {
 	auditLogger       audit.AuditLogger
 	encMigrator       service.EncryptionMigrator
 
+	// registry is the node's per-(tenant, database) service registry, the
+	// seam WithDatabase scopes the data plane through. nil means the
+	// transport can serve only the node's default service set.
+	registry service.Registry
+
 	// sqlOnce/sqlSvcCache lazily construct the SQL query service from
 	// kvSvc/dbSvc on first Query call. See transport_sql.go (compiled
 	// only under the qrdb_sql build tag; without it the fields are
 	// unused and the transport does not implement transport.SQLProvider).
 	sqlOnce     sync.Once
 	sqlSvcCache service.SQLServicer
+
+	// authMW is the AuthMiddleware the node's network transports enforce
+	// with, installed by WithAuthMiddleware so this transport's gated
+	// writes are authorized by the same instance. Nil -- the default, and
+	// what sdk/go/node installs when auth is disabled -- authorizes
+	// nothing, exactly as a network transport with no AuthMiddleware.
+	authMW *authmw.AuthMiddleware
 
 	// Phase 3 auth/identity wiring. All optional; SDK accessors return
 	// typed Missing*Error values when the corresponding service is not
@@ -800,6 +813,8 @@ func (t *Transport) Capabilities(ctx context.Context) (*transport.CapabilitiesRe
 		PostgreSQL:  caps.PostgreSQL,
 		Etcd:        caps.Etcd,
 		FTS:         caps.FTS,
+
+		UnencryptedAtRest: caps.UnencryptedAtRest,
 	}, nil
 }
 
@@ -1621,7 +1636,11 @@ func (t *Transport) TSGetRetention(ctx context.Context, req *transport.TSGetRete
 		return nil, &NilServiceError{Service: "TimeSeriesServicer"}
 	}
 
-	policy, err := t.tsSvc.GetRetentionPolicy(req.Metric)
+	svc, err := t.timeSeriesFor(ctx)
+	if err != nil {
+		return nil, translateError(err)
+	}
+	policy, err := svc.GetRetentionPolicy(req.Metric)
 	if err != nil {
 		return nil, translateError(err)
 	}
@@ -1641,8 +1660,12 @@ func (t *Transport) TSSetRetention(ctx context.Context, req *transport.TSSetRete
 		return &NilServiceError{Service: "TimeSeriesServicer"}
 	}
 
+	svc, err := t.timeSeriesFor(ctx)
+	if err != nil {
+		return translateError(err)
+	}
 	policy := toServiceRetentionPolicy(req.Policy)
-	return translateError(t.tsSvc.SetRetentionPolicy(req.Metric, policy))
+	return translateError(svc.SetRetentionPolicy(req.Metric, policy))
 }
 
 // TSListMetrics lists metric names matching a prefix through the
@@ -1666,7 +1689,10 @@ func (t *Transport) TSListMetrics(ctx context.Context, req *transport.TSListMetr
 	if roptsSet {
 		metrics, err = t.tsSvc.ListMetricsWithConsistency(ctx, req.Prefix, int(req.Limit), ropts)
 	} else {
-		metrics, err = t.tsSvc.ListMetrics(req.Prefix, int(req.Limit))
+		var svc service.TimeSeriesServicer
+		if svc, err = t.timeSeriesFor(ctx); err == nil {
+			metrics, err = svc.ListMetrics(req.Prefix, int(req.Limit))
+		}
 	}
 	if err != nil {
 		return nil, translateError(err)

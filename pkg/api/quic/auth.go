@@ -19,6 +19,7 @@ import (
 
 	quicgo "github.com/quic-go/quic-go"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
@@ -54,8 +55,11 @@ func (s *Server) authenticate(ctx context.Context, conn *quicgo.Conn) (context.C
 // the given QUIC method, resolving the required permission from the
 // registration-site methodPerms registry (DEFAULT-DENY for unregistered
 // methods).
-func (s *Server) authorize(ctx context.Context, method string) error {
-	if err := s.authMW.AuthorizeQUIC(ctx, s.methodPerms, method); err != nil {
+//
+// payload is the frame's request payload: the permission is authorized
+// against the tenant the payload names (see authmw.Target).
+func (s *Server) authorize(ctx context.Context, method string, payload []byte) error {
+	if err := s.authMW.AuthorizeQUIC(ctx, s.methodPerms, method, payload); err != nil {
 		// Err carries the middleware's own typed error. Without it the
 		// wrapper ERASED the distinction between "you may not" and "this node
 		// could not answer" -- errors.As could see nothing through it, so the
@@ -138,6 +142,13 @@ var quicStatusByClass = map[authmw.AuthFailureClass]uint16{
 func authzStatus(err error) uint16 {
 	if st, ok := quicStatusByClass[authmw.ClassifyAuthError(err)]; ok {
 		return st
+	}
+	// Not an authorization outcome at all -- the request's own payload could
+	// not be read to find the tenant it acts on. The one classification
+	// table every transport renders answers it (a bad request), so QUIC says
+	// the same as REST and gRPC rather than calling it a denial.
+	if errclass.Classify(err) != errclass.Unclassified {
+		return ServiceErrorStatus(err)
 	}
 	return wire.StatusPermissionDenied
 }

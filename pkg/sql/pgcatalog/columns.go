@@ -224,6 +224,7 @@ func extendRow(row sqle.Row) (sqle.Row, error) {
 	extended = append(extended, row...)
 	extended[tableCatalogIdx] = row[tableSchemaIdx]
 
+	// #nosec G602 -- len(row) == mysqlColumnCount is checked above, and every *Idx constant is below it.
 	dataType, _ := row[dataTypeIdx].(string)
 	udtName := UDTName(dataType)
 
@@ -231,11 +232,13 @@ func extendRow(row sqle.Row) (sqle.Row, error) {
 	// A radix describes how a precision is counted, so it is reported for
 	// exactly those columns that report a precision -- PostgreSQL leaves
 	// both NULL together.
+	// #nosec G602 -- len(row) == mysqlColumnCount is checked above.
 	if r, ok := NumericRadix(udtName); ok && row[numericPrecisionIdx] != nil {
 		radix = r
 	}
 
 	var increment interface{}
+	// #nosec G602 -- len(row) == mysqlColumnCount is checked above.
 	if extra, ok := row[extraIdx].(string); ok && strings.Contains(strings.ToLower(extra), autoIncrementExtra) {
 		increment = identityIncrement
 	}

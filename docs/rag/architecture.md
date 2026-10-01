@@ -87,8 +87,30 @@ live.
 
 ## Trust boundaries
 
-- Documents, chunks and vectors are **tenant-scoped and barrier-encrypted**.
-  A sealed barrier fails ingest and query closed.
+- Documents, chunks and vectors belong to **one database of one tenant**.
+  Every record the pipeline reads or writes -- chunk text, document metadata
+  and vectors -- is resolved through the node's per-(tenant, database) service
+  registry for the request's tenant and database scope (`X-QRDB-Database`,
+  `x-qrdb-database`, or the QUIC/MCP database argument; `system` when none is
+  given), exactly as a data-plane request is (`service.RAGBinding`). So:
+  - a **sealed database** -- or a sealed tenant barrier -- refuses ingest,
+    query, list and delete;
+  - a database the caller **does not have** (unknown, or another tenant's) is
+    a not-found, never a new keyspace;
+  - the tenant's **quota** and **isolation routing** (volume and raft tenants)
+    apply;
+  - **vectors are per database**: the same document in two databases has two
+    vectors, and neither overwrites the other.
+  The registry is bound by the server at start. A server composed with no
+  database registry refuses RAG rather than serve records outside any
+  database's seal and isolation; `qrdbd`, `sdk/go/node` and the `node://`
+  driver all compose one. The tenant is the one the request carries: on a
+  node with request authentication, a call whose context carries no tenant is
+  refused (`service.RAGTenantRequiredError`, `PERMISSION_DENIED`) rather than
+  resolved for the system tenant; only a node without request authentication,
+  where no call carries a tenant, acts for the system tenant.
+  *(Corrected: chunk text used to be keyed `rag:{namespace}:{document}:{chunk}`
+  with no tenant at all, and vectors were scoped by tenant only.)*
 - **Ingest sends document text to the configured embedding provider**, which may
   be external. That is a data-egress decision — see
   [../embeddings/architecture.md](../embeddings/architecture.md#trust-boundaries).

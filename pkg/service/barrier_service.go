@@ -19,6 +19,8 @@ import (
 	"encoding/hex"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
@@ -515,7 +517,26 @@ func (s *BarrierService) BarrierOfficerClaimStatus(ctx context.Context) ([]*Barr
 		return nil, err
 	}
 
-	return mapOfficerStatuses(statuses), nil
+	out := mapOfficerStatuses(statuses)
+	if auth.IdentityFromContext(ctx) == nil || sealedwindow.Anonymous(ctx) {
+		redactOfficerIdentities(out)
+	}
+	return out, nil
+}
+
+// redactOfficerIdentities strips from statuses everything that identifies an
+// officer -- username, certificate thumbprint and auth factor -- leaving the
+// share index, the enrolment and claim times and whether a share is pending.
+// That is all the first-boot wizard needs to track claims. It is what every
+// caller gets unless the context carries an authenticated identity: the
+// anonymous boot-time sealed-window listener, an unauthenticated listener,
+// and any composer path that did not authenticate.
+func redactOfficerIdentities(statuses []*BarrierOfficerStatus) {
+	for _, st := range statuses {
+		st.Username = ""
+		st.CertThumbprint = ""
+		st.AuthFactor = ""
+	}
 }
 
 // BarrierShareClaimBegin issues a challenge nonce to the named Security Officer

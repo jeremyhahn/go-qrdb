@@ -32,7 +32,7 @@ func newTestSequenceService() (*SequenceService, *fakeCatalogStore) {
 
 func TestSequenceService_Allocate_StartsAtOne(t *testing.T) {
 	svc, _ := newTestSequenceService()
-	first, err := svc.Allocate(context.Background(), "db", "seq", 1)
+	first, _, err := svc.Allocate(context.Background(), "db", "seq", 1)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(1), first)
 }
@@ -41,11 +41,11 @@ func TestSequenceService_Allocate_Sequential(t *testing.T) {
 	svc, _ := newTestSequenceService()
 	ctx := context.Background()
 
-	first, err := svc.Allocate(ctx, "db", "seq", 1)
+	first, _, err := svc.Allocate(ctx, "db", "seq", 1)
 	require.NoError(t, err)
-	second, err := svc.Allocate(ctx, "db", "seq", 1)
+	second, _, err := svc.Allocate(ctx, "db", "seq", 1)
 	require.NoError(t, err)
-	third, err := svc.Allocate(ctx, "db", "seq", 1)
+	third, _, err := svc.Allocate(ctx, "db", "seq", 1)
 	require.NoError(t, err)
 
 	assert.Equal(t, []uint64{1, 2, 3}, []uint64{first, second, third})
@@ -55,7 +55,7 @@ func TestSequenceService_Allocate_ContiguousBlockForNGreaterThanOne(t *testing.T
 	svc, _ := newTestSequenceService()
 	ctx := context.Background()
 
-	first, err := svc.Allocate(ctx, "db", "seq", 5)
+	first, _, err := svc.Allocate(ctx, "db", "seq", 5)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(1), first)
 
@@ -63,7 +63,7 @@ func TestSequenceService_Allocate_ContiguousBlockForNGreaterThanOne(t *testing.T
 	require.NoError(t, err)
 	assert.Equal(t, uint64(5), peek, "a block of 5 must advance the counter by exactly 5")
 
-	next, err := svc.Allocate(ctx, "db", "seq", 1)
+	next, _, err := svc.Allocate(ctx, "db", "seq", 1)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(6), next, "the next allocation must not overlap the previous block")
 }
@@ -72,9 +72,9 @@ func TestSequenceService_Allocate_DistinctSequencesIndependent(t *testing.T) {
 	svc, _ := newTestSequenceService()
 	ctx := context.Background()
 
-	a, err := svc.Allocate(ctx, "db", "seq_a", 1)
+	a, _, err := svc.Allocate(ctx, "db", "seq_a", 1)
 	require.NoError(t, err)
-	b, err := svc.Allocate(ctx, "db", "seq_b", 1)
+	b, _, err := svc.Allocate(ctx, "db", "seq_b", 1)
 	require.NoError(t, err)
 
 	assert.Equal(t, uint64(1), a)
@@ -83,7 +83,7 @@ func TestSequenceService_Allocate_DistinctSequencesIndependent(t *testing.T) {
 
 func TestSequenceService_Allocate_InvalidCount(t *testing.T) {
 	svc, _ := newTestSequenceService()
-	_, err := svc.Allocate(context.Background(), "db", "seq", 0)
+	_, _, err := svc.Allocate(context.Background(), "db", "seq", 0)
 	var e *SequenceInvalidCountError
 	require.ErrorAs(t, err, &e)
 }
@@ -91,11 +91,11 @@ func TestSequenceService_Allocate_InvalidCount(t *testing.T) {
 func TestSequenceService_Allocate_Validation(t *testing.T) {
 	svc, _ := newTestSequenceService()
 
-	_, err := svc.Allocate(context.Background(), "", "seq", 1)
+	_, _, err := svc.Allocate(context.Background(), "", "seq", 1)
 	var emptyDB *SequenceEmptyDatabaseError
 	assert.ErrorAs(t, err, &emptyDB)
 
-	_, err = svc.Allocate(context.Background(), "db", "", 1)
+	_, _, err = svc.Allocate(context.Background(), "db", "", 1)
 	var emptyName *SequenceEmptyNameError
 	assert.ErrorAs(t, err, &emptyName)
 }
@@ -112,11 +112,11 @@ func TestSequenceService_Allocate_AbsentKeyCreateRace(t *testing.T) {
 	ctx := context.Background()
 
 	store.forceConflicts = 1
-	first, err := svc.Allocate(ctx, "db", "seq", 1)
+	first, _, err := svc.Allocate(ctx, "db", "seq", 1)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(1), first)
 
-	second, err := svc.Allocate(ctx, "db", "seq", 1)
+	second, _, err := svc.Allocate(ctx, "db", "seq", 1)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(2), second)
 	assert.NotEqual(t, first, second, "a losing race on an absent key must never produce a duplicate allocation")
@@ -127,7 +127,7 @@ func TestSequenceService_Allocate_RetryThenSucceed(t *testing.T) {
 	ctx := context.Background()
 
 	store.forceConflicts = 3
-	first, err := svc.Allocate(ctx, "db", "seq", 1)
+	first, _, err := svc.Allocate(ctx, "db", "seq", 1)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(1), first)
 	assert.Equal(t, 4, store.executeCallsSnapshot())
@@ -138,7 +138,7 @@ func TestSequenceService_Allocate_RetryExhausted(t *testing.T) {
 	ctx := context.Background()
 
 	store.forceConflicts = 1000
-	_, err := svc.Allocate(ctx, "db", "seq", 1)
+	_, _, err := svc.Allocate(ctx, "db", "seq", 1)
 	require.Error(t, err)
 
 	var conflict *SequenceConflictError
@@ -152,7 +152,7 @@ func TestSequenceService_Allocate_ReadError(t *testing.T) {
 	svc, store := newTestSequenceService()
 	store.injectGetRevisionErr = &ReadError{Err: errors.New("boom")}
 
-	_, err := svc.Allocate(context.Background(), "db", "seq", 1)
+	_, _, err := svc.Allocate(context.Background(), "db", "seq", 1)
 	require.Error(t, err)
 	assert.Equal(t, 0, store.executeCallsSnapshot(), "a non-conflict read error must not be retried")
 }
@@ -161,7 +161,7 @@ func TestSequenceService_Allocate_ExecuteError(t *testing.T) {
 	svc, store := newTestSequenceService()
 	store.injectExecuteErr = errors.New("propose failed")
 
-	_, err := svc.Allocate(context.Background(), "db", "seq", 1)
+	_, _, err := svc.Allocate(context.Background(), "db", "seq", 1)
 	require.Error(t, err)
 	assert.Equal(t, 1, store.executeCallsSnapshot(), "a non-conflict execute error must not be retried")
 }
@@ -177,7 +177,7 @@ func TestSequenceService_Peek_ReflectsAllocations(t *testing.T) {
 	svc, _ := newTestSequenceService()
 	ctx := context.Background()
 
-	_, err := svc.Allocate(ctx, "db", "seq", 3)
+	_, _, err := svc.Allocate(ctx, "db", "seq", 3)
 	require.NoError(t, err)
 
 	v, err := svc.Peek(ctx, "db", "seq")
@@ -241,7 +241,7 @@ func TestSequenceService_Advance_ThenAllocateContinuesFromAdvancedValue(t *testi
 	ctx := context.Background()
 
 	require.NoError(t, svc.Advance(ctx, "db", "seq", 100))
-	next, err := svc.Allocate(ctx, "db", "seq", 1)
+	next, _, err := svc.Allocate(ctx, "db", "seq", 1)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(101), next)
 }
@@ -265,7 +265,7 @@ func TestSequenceService_Reset_ReturnsToZero(t *testing.T) {
 	svc, _ := newTestSequenceService()
 	ctx := context.Background()
 
-	_, err := svc.Allocate(ctx, "db", "seq", 5)
+	_, _, err := svc.Allocate(ctx, "db", "seq", 5)
 	require.NoError(t, err)
 
 	require.NoError(t, svc.Reset(ctx, "db", "seq"))
@@ -287,11 +287,11 @@ func TestSequenceService_Reset_ThenAllocateStartsOverAtOne(t *testing.T) {
 	svc, _ := newTestSequenceService()
 	ctx := context.Background()
 
-	_, err := svc.Allocate(ctx, "db", "seq", 10)
+	_, _, err := svc.Allocate(ctx, "db", "seq", 10)
 	require.NoError(t, err)
 	require.NoError(t, svc.Reset(ctx, "db", "seq"))
 
-	first, err := svc.Allocate(ctx, "db", "seq", 1)
+	first, _, err := svc.Allocate(ctx, "db", "seq", 1)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(1), first)
 }
@@ -306,7 +306,7 @@ func TestSequenceService_Reset_Validation(t *testing.T) {
 func TestSequenceService_Reset_RetryExhausted(t *testing.T) {
 	svc, store := newTestSequenceService()
 	ctx := context.Background()
-	_, err := svc.Allocate(ctx, "db", "seq", 1)
+	_, _, err := svc.Allocate(ctx, "db", "seq", 1)
 	require.NoError(t, err)
 
 	store.forceConflicts = 1000
@@ -328,7 +328,7 @@ func TestSequenceService_Delete_ReclaimsTheCounterKey(t *testing.T) {
 	ctx := context.Background()
 	key := tableSequenceKey("db", "seq")
 
-	_, err := svc.Allocate(ctx, "db", "seq", 5)
+	_, _, err := svc.Allocate(ctx, "db", "seq", 5)
 	require.NoError(t, err)
 	_, err = store.Get(ctx, key)
 	require.NoError(t, err, "allocating must have created the counter key")
@@ -348,7 +348,7 @@ func TestSequenceService_Reset_LeavesTheCounterKeyBehind(t *testing.T) {
 	ctx := context.Background()
 	key := tableSequenceKey("db", "seq")
 
-	_, err := svc.Allocate(ctx, "db", "seq", 5)
+	_, _, err := svc.Allocate(ctx, "db", "seq", 5)
 	require.NoError(t, err)
 	require.NoError(t, svc.Reset(ctx, "db", "seq"))
 
@@ -361,11 +361,11 @@ func TestSequenceService_Delete_ThenAllocateStartsOverAtOne(t *testing.T) {
 	svc, _ := newTestSequenceService()
 	ctx := context.Background()
 
-	_, err := svc.Allocate(ctx, "db", "seq", 10)
+	_, _, err := svc.Allocate(ctx, "db", "seq", 10)
 	require.NoError(t, err)
 	require.NoError(t, svc.Delete(ctx, "db", "seq"))
 
-	first, err := svc.Allocate(ctx, "db", "seq", 1)
+	first, _, err := svc.Allocate(ctx, "db", "seq", 1)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(1), first, "a deleted sequence materializes fresh on next use")
 
@@ -392,7 +392,7 @@ func TestSequenceService_Delete_IsIdempotent(t *testing.T) {
 	svc, _ := newTestSequenceService()
 	ctx := context.Background()
 
-	_, err := svc.Allocate(ctx, "db", "seq", 3)
+	_, _, err := svc.Allocate(ctx, "db", "seq", 3)
 	require.NoError(t, err)
 
 	require.NoError(t, svc.Delete(ctx, "db", "seq"))
@@ -404,11 +404,11 @@ func TestSequenceService_Delete_DistinctSequencesUnaffected(t *testing.T) {
 	svc, _ := newTestSequenceService()
 	ctx := context.Background()
 
-	_, err := svc.Allocate(ctx, "db", "seq_a", 4)
+	_, _, err := svc.Allocate(ctx, "db", "seq_a", 4)
 	require.NoError(t, err)
-	_, err = svc.Allocate(ctx, "db", "seq_b", 7)
+	_, _, err = svc.Allocate(ctx, "db", "seq_b", 7)
 	require.NoError(t, err)
-	_, err = svc.Allocate(ctx, "other", "seq_a", 9)
+	_, _, err = svc.Allocate(ctx, "other", "seq_a", 9)
 	require.NoError(t, err)
 
 	require.NoError(t, svc.Delete(ctx, "db", "seq_a"))
@@ -440,7 +440,7 @@ func TestSequenceService_Delete_RetryThenSucceed(t *testing.T) {
 	svc, store := newTestSequenceService()
 	ctx := context.Background()
 
-	_, err := svc.Allocate(ctx, "db", "seq", 1)
+	_, _, err := svc.Allocate(ctx, "db", "seq", 1)
 	require.NoError(t, err)
 
 	store.forceConflicts = 2
@@ -455,7 +455,7 @@ func TestSequenceService_Delete_RetryExhausted(t *testing.T) {
 	svc, store := newTestSequenceService()
 	ctx := context.Background()
 
-	_, err := svc.Allocate(ctx, "db", "seq", 1)
+	_, _, err := svc.Allocate(ctx, "db", "seq", 1)
 	require.NoError(t, err)
 
 	store.forceConflicts = 1000
@@ -475,7 +475,7 @@ func TestSequenceService_Delete_ExecuteError(t *testing.T) {
 	svc, store := newTestSequenceService()
 	ctx := context.Background()
 
-	_, err := svc.Allocate(ctx, "db", "seq", 1)
+	_, _, err := svc.Allocate(ctx, "db", "seq", 1)
 	require.NoError(t, err)
 
 	sentinel := errors.New("boom")

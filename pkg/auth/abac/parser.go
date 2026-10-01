@@ -421,6 +421,11 @@ func resolveSubjectField(parts []string, subject *Subject) interface{} {
 			return subject.Attributes[parts[1]]
 		}
 		return subject.Attributes
+	case "user_attrs", "user_attributes":
+		if len(parts) > 1 && subject.UserAttributes != nil {
+			return subject.UserAttributes[parts[1]]
+		}
+		return subject.UserAttributes
 	}
 
 	return nil

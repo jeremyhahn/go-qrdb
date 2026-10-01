@@ -25,15 +25,15 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
-// migrationRefusal stands in for a migrator's own typed refusal -- the shape
+// migrationRefusalError stands in for a migrator's own typed refusal -- the shape
 // sdk/go/node's MigrationNotSupportedError has -- which is NOT the sentinel
 // itself but reports as it through errors.Is. A mapping that compared with ==
 // instead of errors.Is would miss it.
-type migrationRefusal struct{ reason string }
+type migrationRefusalError struct{ reason string }
 
-func (e *migrationRefusal) Error() string { return "migration not supported: " + e.reason }
+func (e *migrationRefusalError) Error() string { return "migration not supported: " + e.reason }
 
-func (e *migrationRefusal) Is(target error) bool {
+func (e *migrationRefusalError) Is(target error) bool {
 	return target == service.ErrMigrationProviderUnavailable
 }
 
@@ -47,7 +47,7 @@ func TestHandleBarrierEnableEncryption_MigratorRefusalIsUnimplemented(t *testing
 		err  error
 	}{
 		{name: "the shared sentinel", err: service.ErrMigrationProviderUnavailable},
-		{name: "a typed refusal matching it", err: &migrationRefusal{reason: "no seal store"}},
+		{name: "a typed refusal matching it", err: &migrationRefusalError{reason: "no seal store"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

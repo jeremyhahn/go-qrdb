@@ -29,8 +29,9 @@ type (
 	CertBinding = user.CertBinding
 	// CertBindingKind selects the cert-matching scheme.
 	CertBindingKind = user.CertBindingKind
-	// FactorEnrollment is an opaque auth-factor enrollment (webauthn/fido2/piv).
-	FactorEnrollment = user.FactorEnrollment
+	// There is deliberately no FactorEnrollment re-export: enrolled auth
+	// factors have exactly one source of truth, pkg/auth.AuthFactor via the
+	// AuthFactorService already re-exported below.
 	// RoleBinding grants a role within a tenant scope (tenant-scoped RBAC).
 	RoleBinding = user.RoleBinding
 
@@ -76,6 +77,16 @@ type (
 // folded because these are protocol names from a closed vocabulary, and a list
 // holding both "WebAuthn" and "webauthn" is a policy that will eventually deny
 // what it meant to allow.
+//
+// It checks against the BUILT-IN tokens only (BuiltinAuthMethods: mtls, piv,
+// webauthn): it has no node, so it cannot know a chain. Anything else fails
+// closed with *UserUnknownAuthMethodError. A node's user store validates
+// against more: the built-in tokens plus the names of the authenticators in
+// that node's chain (an authenticator passed to the node's WithAuthenticators,
+// say "oauth"), so a policy this function refuses may still be accepted by a
+// node that can authenticate with it. The store also lets an update keep an
+// entry the replaced policy already held. A stored policy is never
+// re-validated on read.
 var NormalizeAuthMethods = user.NormalizeAuthMethods
 
 const (
@@ -98,5 +109,21 @@ var NormalizeEmail = user.NormalizeEmail
 // it.
 var ComputeSPKIThumbprint = user.ComputeSPKIThumbprint
 
+// UserFactorLookupError is returned when a user was read but its enrolled
+// auth factors could not be listed, so its Factors and MFA fields are unknown.
+// It is returned instead of a user reported as having no second factor.
+type UserFactorLookupError = user.FactorLookupError
+
+// RoleBindingTenantError is returned when an UpdateUser write would give a
+// user outside the system tenant a RoleBinding naming another tenant, which
+// could never grant: such a user is refused every request on another tenant
+// before a binding is consulted.
+type RoleBindingTenantError = user.RoleBindingTenantError
+
 // UserValidationError is returned when a user request fails validation.
 type UserValidationError = user.ValidationError
+
+// UserUnknownAuthMethodError is returned when a permitted-method policy being
+// written names a method outside the vocabulary. It unwraps to a
+// *UserValidationError, so transports answer it as a bad argument.
+type UserUnknownAuthMethodError = user.UnknownAuthMethodError

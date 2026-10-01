@@ -120,6 +120,13 @@ var (
 	// the stored SO PIN.
 	ErrSOPINMismatch = errors.New("ceremony: SO PIN mismatch")
 
+	// ErrEnrollmentClosed is returned when an unauthenticated caller (a
+	// request the boot-time sealed-window listener admitted, see
+	// sealedwindow.Anonymous) registers an officer after enrollment has
+	// closed (EnrollmentOpen). Officers are registered after that through an
+	// authenticated listener.
+	ErrEnrollmentClosed = errors.New("ceremony: officer enrollment is closed to unauthenticated callers")
+
 	// ErrCANotInitialized is returned when a CA operation is attempted
 	// before the CA has been set via Initialize.
 	ErrCANotInitialized = errors.New("ceremony: CA not initialized")

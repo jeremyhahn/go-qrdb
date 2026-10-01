@@ -34,10 +34,25 @@ import (
 // the one ultimately passed to every tool handler. Authentication failures are
 // NOT surfaced here (the hook cannot return an error); instead no identity is
 // injected, and the tool-handler authorization middleware denies the call.
+//
+// authenticateHandler runs in front of mcp-go whenever authentication is
+// configured and refuses an unauthenticated request outright, so on that path
+// the identity is always already bound and this hook only reuses it. It
+// remains the tool gate's second line, not its first.
 func (s *Server) authHTTPContext(ctx context.Context, r *http.Request) context.Context {
-	// bearerChallengeHandler may already have authenticated this request
-	// and bound the identity into the request context; a second pass would
-	// only repeat the same chain walk.
+	// The SO second factor rides the HTTP request, and this hook is the one
+	// place the tool path can see it. It is bound before the early return
+	// below so a request authenticateHandler already authenticated carries
+	// it too.
+	ctx = withSOFactor(ctx, r)
+	// With an SO gate but no auth middleware there is no one to
+	// authenticate; the gate then refuses every SO-gated tool.
+	if s.authMW == nil {
+		return ctx
+	}
+	// authenticateHandler has already authenticated this request and bound
+	// the identity into the request context; a second pass would only
+	// repeat the same chain walk.
 	if auth.IdentityFromContext(ctx) != nil {
 		return ctx
 	}
@@ -50,6 +65,15 @@ func (s *Server) authHTTPContext(ctx context.Context, r *http.Request) context.C
 		return ctx
 	}
 	return authCtx
+}
+
+// withSOFactor binds the SO second factor the /mcp request presented. The
+// header is read only from a TLS connection, as REST reads it.
+func withSOFactor(ctx context.Context, r *http.Request) context.Context {
+	if r == nil {
+		return ctx
+	}
+	return authmw.WithSOFactor(ctx, authmw.SOFactorFromHTTPRequest(r))
 }
 
 // withHTTPRequestCredentials binds the request's transport-level credential
@@ -85,24 +109,66 @@ func (s *Server) protectedResourceMetadataHandler(w http.ResponseWriter, r *http
 	}
 }
 
-// bearerChallengeHandler wraps the MCP endpoint handler with the 401 +
-// WWW-Authenticate discovery response of the MCP authorization flow: a
-// request no configured authenticator accepts is refused at the HTTP layer
-// with the embedder-composed challenge (WithBearerChallenge) instead of
-// proceeding identity-less into per-tool DEFAULT-DENY errors, which an
-// OAuth client cannot interpret as "go authorize". A request that does
-// authenticate proceeds with its identity bound into the request context,
-// where authHTTPContext picks it up without re-authenticating.
-func (s *Server) bearerChallengeHandler(next http.Handler) http.Handler {
+// authenticateHandler wraps the MCP endpoint whenever authentication is
+// configured, and authenticates every HTTP request BEFORE mcp-go reads any of
+// it. A request no configured authenticator accepts is answered 401 at the
+// HTTP layer, so initialize, ping and tools/list -- which enumerates the whole
+// tool surface -- are never answered to an anonymous caller, and mcp-go never
+// parses an anonymous body. A request that does authenticate proceeds with its
+// identity bound into the request context, where authHTTPContext picks it up
+// without re-authenticating, and the per-tool DEFAULT-DENY gate still
+// authorizes every call.
+//
+// When a bearer challenge is configured (WithBearerChallenge), the 401 carries
+// it as WWW-Authenticate: the discovery entry point of the MCP authorization
+// flow, which an OAuth client reads as "go authorize".
+func (s *Server) authenticateHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := withHTTPRequestCredentials(r.Context(), r)
 		authCtx, _, err := s.authMW.Authenticate(ctx)
 		if err != nil {
-			w.Header().Set("WWW-Authenticate", s.bearerChallenge)
+			slog.Debug("mcp: request authentication failed", "error", err)
+			if s.bearerChallenge != "" {
+				w.Header().Set("WWW-Authenticate", s.bearerChallenge)
+			}
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(authCtx))
+	})
+}
+
+// maxRequestBodyBytes bounds an MCP HTTP request body. The largest legitimate
+// request is a batch import, whose base64 "file" argument is at most
+// maxEncodedImportFileSize; the 1 MiB above it is the JSON-RPC envelope's
+// headroom. mcp-go reads and decodes the whole body before any tool handler
+// runs, so the bound has to be applied here, at the HTTP layer.
+var maxRequestBodyBytes = int64(maxEncodedImportFileSize) + 1<<20
+
+// maxAnonymousRequestBodyBytes bounds an MCP request body on a listener with
+// no authentication: the boot-time sealed-window listener, or a node with
+// authentication off. Its callers are anonymous, and everything it serves
+// them -- initialize, tools/list and the sealed-window tools -- is a small
+// JSON-RPC document, so they get 1 MiB, not the batch-import bound.
+const maxAnonymousRequestBodyBytes = int64(1 << 20)
+
+// requestBodyLimit is the body bound for this server's MCP endpoint.
+func (s *Server) requestBodyLimit() int64 {
+	if s.authMW == nil || s.sealedWindowListener != nil {
+		return maxAnonymousRequestBodyBytes
+	}
+	return maxRequestBodyBytes
+}
+
+// boundedBodyHandler caps every request body at limit before next reads it.
+// A body over the cap fails the read with *http.MaxBytesError, which mcp-go
+// answers as a malformed request, and the connection is closed.
+func boundedBodyHandler(limit int64, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -204,10 +270,24 @@ func (s *Server) authorizeTenantBarrierSealedOp(ctx context.Context, tenantID st
 func (s *Server) toolAuthzMiddleware() mcpserver.ToolHandlerMiddleware {
 	return func(next mcpserver.ToolHandlerFunc) mcpserver.ToolHandlerFunc {
 		return func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-			if err := s.authMW.AuthorizeMCP(ctx, s.toolPerms, req.Params.Name); err != nil {
-				slog.Warn("mcp: tool call denied",
-					"tool", req.Params.Name, "error", err)
-				return authzToolError(err), nil
+			// The SO PIN bound for this request is wiped once the call is
+			// done, whether or not the tool was SO-gated.
+			defer authmw.WipeSOFactor(ctx)
+			if s.authMW != nil {
+				if err := s.authMW.AuthorizeMCP(ctx, s.toolPerms, req.Params.Name, req.GetArguments()); err != nil {
+					slog.Warn("mcp: tool call denied",
+						"tool", req.Params.Name, "error", err)
+					return authzToolError(err), nil
+				}
+			}
+			if s.soGate != nil {
+				if perm, ok := s.toolPerms.Lookup(req.Params.Name); ok {
+					if err := s.soGate.Enforce(ctx, perm, req.Params.Name, "call"); err != nil {
+						slog.Warn("mcp: SO dual factor refused",
+							"tool", req.Params.Name, "error", err)
+						return authzToolError(err), nil
+					}
+				}
 			}
 			return next(ctx, req)
 		}

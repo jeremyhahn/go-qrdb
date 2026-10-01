@@ -1434,6 +1434,14 @@ func (s *stubDatabaseSvc) UpdateBarrierForTenant(_ context.Context, _ string, _ 
 func (s *stubDatabaseSvc) UpdateConnectionForTenant(_ context.Context, _ string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
 	return nil, nil
 }
+
+func (s *stubDatabaseSvc) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
+	return &database.DatabaseInfo{Name: name, SQL: sqlCfg}, nil
+}
+
+func (s *stubDatabaseSvc) UpdateSQLForTenant(_ context.Context, name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
+	return s.UpdateSQL(name, sqlCfg)
+}
 func (s *stubDatabaseSvc) ScaleForTenant(_ context.Context, _ string, _ int) (*database.DatabaseInfo, error) {
 	return nil, nil
 }

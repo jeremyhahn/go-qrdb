@@ -172,6 +172,21 @@ the only thing that can change the outcome. Exhausting it reports
 `*ConcurrentUpdateError`: an operator withdrawing a compromised key must never
 read a success that did not happen.
 
+**Index handles are claimed, then their holder is read — and the holder can
+leave in between.** Every handle `updateUserAt` takes (username, email, each
+thumbprint it keeps or adds) goes through `claimOrHolder`: `PutIfAbsent`, and
+on a held key a read of who holds it. A concurrent update of the same handle
+can release it between the two steps; the key is then free, so the claim is
+taken again rather than read as a conflict with "user 0". A key that changes
+hands on every one of `handleClaimAttempts` claims fails with
+`*HandleContendedError`. The rollback's `restoreHandle` uses the same claim, and
+a key it finds re-inserted for the **same** user — the winning update kept the
+handle — is already restored; only a key held by another user is
+`*HandleReclaimedError`. Without both, two concurrent withdrawals of the
+bootstrap admin's last two keys could fail the loser with an
+`*IndexCompensationError` instead of judging it against the winner and refusing
+it as a lockout.
+
 **Withdrawal deliberately does not validate the thumbprint's shape.**
 `IsValidSPKIThumbprint` is a write-side gate added after the field existed, so a
 record written before it can hold a non-canonical string; refusing to withdraw
@@ -258,6 +273,20 @@ the identity fails.
 | `ScopeCross` | denied | any tenant |
 | `ScopeTenantOnly` | own tenant only | **denied, structurally** |
 | `ScopeSelfStrict` | own tenant only | **own tenant only** (not lifted) |
+
+**Every `ScopeCross` permission has an SDK name.** `sdk/go/types_permission_cross.go`
+re-exports each one (`sdk.PermissionAuditReadCross`, the `tenants`,
+`volumepool`, `registration_config` and `credentials` families,
+`sdk.PermissionMVCCCompact`), and `TestSDK_CrossScopePermissions_AreComplete`
+compares that list with the registry, so a cross-scope permission added without
+an SDK name is a red test rather than a string a consumer has to restate.
+
+**A denial is a type, and only a denial is.** The RBAC authorizer answers a
+refused grant or a failed scope with `*rbac.PermissionDeniedError`, re-exported
+as `sdk.PermissionDeniedError`. Every other error from `Authorize` — a role the
+store cannot resolve, a cancelled context — means the authorizer could not
+decide, and a consumer tells the two apart with `errors.As` instead of reading
+every error as a denial.
 
 **Choose by asking whose material the permission acts on, not who usually calls
 it.** `ScopeTenantOnly` means *"tenant-admin-only, system-admin-denied, no
@@ -507,11 +536,64 @@ wrong fails a test rather than passing a typed-in column.
   authenticator that names itself `""` is observed, not unobservable, and
   conflating the two let it walk past a non-empty policy through the ordinary
   chain. An observed method whose name does not normalize fails closed.
+- **A forwarded on-behalf request is not read until its presenter is a
+  cluster node, and then only under a bound.** The leader must read the body
+  to check the assertion's body digest. Before it reads anything, it
+  requires the verified, unrevoked peer certificate to be a cluster node's
+  (`forward.ClusterPeer`). Any other certificate that chains to the cluster
+  CA, such as a user's, can never present an honored assertion, and is
+  refused with the same opaque 401 as every other assertion failure. A
+  cluster node's body is then read under `forward.MaxBodyBytes`, which is
+  the largest body any REST handler forwards (a test in `pkg/api/rest` keeps
+  every forwarding handler's bound within it). Previously any certificate
+  chaining to the cluster CA could make the node buffer an unbounded body
+  before the signature was checked.
+- **The rule is one exported function, `CheckAuthMethod(u, method)`**
+  (`pkg/auth/middleware`, re-exported as `sdk.CheckAuthMethod` with
+  `sdk.AuthMethodNotPermittedError`). The middleware calls it for every method
+  its authenticator chain observes; a layer that runs its own ceremony (a PIV or
+  WebAuthn login handler) calls the same function rather than restating the
+  rule. `TestCheckAuthMethod_IsTheMiddlewareRule` pins that the two agree on
+  every observed method.
+- **The method tokens are qrdb constants.** `auth.MethodMTLS` (`"mtls"`),
+  `auth.MethodPIV` (`"piv"`) and `auth.MethodWebAuthn` (`"webauthn"`), each
+  re-exported by the SDK. A method is a way in, not an enrolled factor, so
+  there is no `"fido2"` method: a FIDO2 authenticator is presented through the
+  WebAuthn ceremony. PIV and mTLS are separate tokens so a policy can permit one
+  without the other.
+- **The vocabulary is the node's own auth chain, enforced on write.** It is
+  the built-in `mtls`, `piv` and `webauthn` plus the `Name()` of every
+  authenticator in THAT node's chain — including those an embedder plugs in
+  through `wiring.AuthMiddlewareConfig.ExtraAuthenticators` or the SDK node's
+  `WithAuthenticators` (the pluggable-auth-chain ruling). The middleware owns
+  it (`AuthMiddleware.IsAuthMethod` / `AuthMethods`, fixed at `New`), and the
+  node's user stores receive it through `user.WithAuthMethodVocabulary`,
+  wired by `lifecycle.BuildServices` (`Infra.AuthMethodVocabulary`), the SDK
+  node and `qrdbd` from the node's own middleware. Because the store is built
+  before the middleware that enriches from it, the wiring goes through a
+  late-bound `middleware.AuthMethodVocabulary`, bound once the middleware
+  exists; unbound, or with auth disabled, it is the built-in tokens. There is
+  no process-wide registry: two nodes in one process have two chains, and
+  `TestAuthMethodVocabulary_IsPerNode` pins that `oauth` is writable only on
+  the node whose chain has it. A login method a host wants policies to name
+  must be an authenticator in the chain. The store refuses a token outside its
+  vocabulary with `*UnknownAuthMethodError`, which unwraps to a
+  `*ValidationError` (400 / `INVALID_ARGUMENT` on every transport);
+  `CreateUser` and `UpdateUser` are the only write paths and both apply it —
+  to a policy being WRITTEN only. The package-level `NormalizeAuthMethods`
+  has no node and validates against the built-ins.
+- **Legacy entries cannot lock an account out.** A stored policy is never
+  re-validated: it reads back unchanged, an update that does not replace it
+  carries it along, and the gate compares entries with
+  `auth.CanonicalAuthMethod` (trim and lowercase, no vocabulary check). An
+  admin replacing a legacy policy may KEEP an entry the old policy held even
+  if the vocabulary no longer knows it, but may not ADD a new unknown one; once
+  dropped, it cannot be re-added.
 - **`EnableUser` / `DisableUser` are transitions, not boolean sets** — to
   `active` and `disabled` respectively. Both are refused on a `deleting` record.
-- **`AuthMethods` are opaque and case-FOLDED.** They are trimmed and
-  de-duplicated by `NormalizeAuthMethods`, and a blank entry is refused rather
-  than dropped. On an update, `nil` means "leave alone" and an empty non-nil
+- **`AuthMethods` are vocabulary tokens and case-FOLDED.** They are trimmed and
+  de-duplicated by `NormalizeAuthMethods`, a blank entry is refused rather than
+  dropped, and an entry outside the vocabulary is refused (above). On an update, `nil` means "leave alone" and an empty non-nil
   slice means "clear".
 - **There is no group-membership field.** The former `GroupIDs` (and the SDK's
   `NormalizeGroupIDs`) is removed: no qrdb authorization path read it.
@@ -531,7 +613,47 @@ wrong fails a test rather than passing a typed-in column.
   request. `lastAuthOnly` is an exhaustive field list: a field added to
   `UpdateUserRequest` without being named there would be silently dropped by the
   fast path, and a test asserts the list covers every field.
-- **`System: true` records are undeletable.**
+- **`System: true` records are undeletable**, and exactly one is ever produced:
+  the cluster-wide bootstrap admin `pkg/firstboot.Initialize` creates in the
+  system tenant. `DeleteUser` refuses it with `SystemUserImmutableError`
+  before the delete cascade touches anything. `CreateUserRequest.System` is
+  the only way to request one, and it is set from a single call site inside
+  `pkg/firstboot` — no wire request type on any transport declares a `system`
+  input, so no transport handler can forward one through, regardless of the
+  caller's permissions. A per-tenant admin minted by
+  `pkg/bootstrap.ProvisionTenant` deliberately leaves this false: those
+  accounts must stay deletable when their tenant is deprovisioned, or
+  deprovisioning could never fully remove a tenant's users.
+- **At most one System user exists, recorded by a uniqueness sentinel.** The
+  sentinel names the System record and is written in the same write as the
+  flag: on the atomic create path it is one more guard and write in the
+  create's guarded batch, and `PromoteToSystemUser` — which first boot calls
+  to heal an admin created before the flag existed — writes the flag and the
+  sentinel as ONE `kvstore.MultiGuardedBatchKVStore.PutAllIfAllUnchanged`,
+  guarded on the sentinel being absent and the record being unchanged since
+  it was read. No crash can leave one without the other, a concurrent
+  promotion of a different record fails the guard, and a concurrent update of
+  the admin is retried rather than overwritten. A store without that
+  capability is refused (`ErrStoreNotAtomic`) instead of being promoted in two
+  steps, and a lost response is `CommitOutcomeUnknownError`: the retry answers
+  from what committed.
+- **MFA state and `Factors` metadata are computed AT READ TIME from the real
+  enrollment records, never stored on the domain `User`.** There is no
+  `User.Factors` field: `pkg/user.FactorLister` is the narrow interface
+  every transport's projection consumes, backed in production by
+  `service.UserAuthFactorServicer` — the SAME store `/v1/users/factors`
+  reads and writes. `user.ResolveFactorView` lists the account's factors
+  ONCE and derives everything from that one list: `Factors` (`ID`,
+  `FactorName`, `CreatedAt` for each active factor; `Data` is dropped
+  unconditionally), `MFAEnabled` (true iff at least one active factor),
+  `MFAMethods` (distinct factor types in first-registration order) and
+  `MFAEnrolledAt` (earliest active registration). One list means `Factors`
+  and the MFA fields can never describe two different moments. A failed list
+  is `*user.FactorLookupError` — 503 on REST, `Unavailable` on gRPC, QUIC and
+  MCP, the typed error on embedded — never a response reporting the account
+  as having no second factor. No transport's create or update request
+  declares a `factors` input, so enrollment stays its own factor-specific
+  verb, never `CreateUser`/`UpdateUser`.
 - **The system-tenant rule reads `identity.TenantID`, so that field must
   arrive NORMALIZED.** `rbac.IsSystemTenant(identity)` is what lifts a
   `ScopeCross` permission and what denies a `ScopeTenantOnly` one; it delegates
@@ -552,6 +674,158 @@ wrong fails a test rather than passing a typed-in column.
 - **Built-in role IDs are deterministic** UUIDv8 over SHA-256 — see
   [../firstboot/](../firstboot/engineering.md) and the identifier-compatibility
   rules under [Persistence](#persistence).
+
+## Authorization model
+
+Writing `RoleIDs`, `RoleBindings`, or `Attributes` requires `roles:assign` —
+the same permission the RBAC model already defines for granting a role
+directly — in addition to the route's own `users:create`/`users:update`
+permission. `pkg/auth/middleware.AuthorizeRoleAssignmentWrite` (`UpdateUser`)
+and `AuthorizeRoleAssignmentWriteOnCreate` (`CreateUser`, `RoleIDs` only —
+`RoleBindings`/`Attributes` are not settable at create time) are the ONE
+gate, called by every transport. Embedded calls it on the `AuthMiddleware`
+installed with `embedded.WithAuthMiddleware`; `sdk/go/node` builds its
+network `AuthMiddleware` before the embedded transport and hands it the same
+instance, so the two authorize identically — and neither authorizes anything
+when auth is disabled.
+
+Each gate is two steps with different conditions:
+
+1. **Authorization** — `roles:assign` in the target tenant, and again in the
+   `TenantID` of every `RoleBindings` entry. Writing a binding that names
+   tenant `acme` is an act of granting a role WITHIN `acme`, so holding
+   `roles:assign` only in the target user's own tenant must not be enough to
+   mint an `acme` grant. A nil `*AuthMiddleware` (no RBAC configured) skips
+   this step, as every `AuthMiddleware` gate does.
+2. **Validation** — never skipped. `role.ValidateAssignable` confirms every
+   `RoleIDs` entry exists and belongs to the target tenant, and every
+   binding's role to the binding's tenant. There is no exception for
+   built-ins: every tenant seeds its own copy, and the role store resolves an
+   id only in the tenant that owns it, so a system-tenant built-in written
+   onto a tenant-A principal would make every later decision for it fail as
+   unavailable. A role reference with no role service to check it is
+   `*role.ServiceRequiredError`: a refusal, never an unvalidated write.
+
+The user store then applies `user.NormalizeRoleBindings` to the request's
+bindings against the decoded record, before the first index mutation, so it
+holds on every path that writes a user and with or without the gate:
+
+- **Each `TenantID` is stored as `tenant.Normalize` folds it.** `boundRoleIDs`
+  compares it with `tenant.FromContext`, which is always normalized, so a
+  binding stored as `""` would never match a request. The request's slice is
+  copied, not edited.
+- **A non-system user's binding must name its own tenant.** RBAC's scope rule
+  refuses a non-system identity every request whose target is another tenant
+  before any binding is consulted, so a binding elsewhere is a grant that can
+  never apply. It is refused with `*user.RoleBindingTenantError`
+  (`InvalidArgument`, 400) rather than stored as one that reads as live. A
+  system-tenant user may hold bindings in any tenant: that is the cross-tenant
+  grant bindings exist to express.
+
+`AssignRole` and `UnassignRole` pass the same gate on every transport,
+embedded included: `AssignRole` is `AuthorizeRoleAssignmentWrite` with the
+one role being added (`roles:assign` in the user's tenant, and the role must
+exist there), and `UnassignRole` is `AuthorizeRoleUnassignment`
+(`roles:unassign` in the user's tenant; removing a grant names no role to
+validate).
+
+The target tenant for `UpdateUser` is resolved by READING THE EXISTING RECORD
+(`userSvc.GetUser(ctx, id).TenantID`), never taken from the caller's ambient
+context tenant: `UpdateUser` routes its target purely by id, so a
+system-tenant administrator updating a tenant-A user is authorized, and has
+its `RoleIDs` validated, against tenant A. `CreateUser`'s target tenant is
+the EFFECTIVE tenant the new record will be created in
+(`tenant.EffectiveTenant`), the resolution `routingUserService.CreateUser`
+performs itself.
+
+The gate's refusals are typed, and every transport renders them through the
+one classification table (`pkg/api/errclass`), not a mapper of its own. A role
+that does not exist is `*role.ReferenceError` (it wraps the lookup's
+`*role.RoleNotFoundError`) and a role that may not be granted where it is
+being granted is `*role.NotAssignableError`; both are `InvalidArgument` (400),
+DELIBERATELY not the `NotFound` a missing user gets: `UpdateUser` is a
+single-subject method whose id names the USER, and the SDK's not-found
+reconstruction rebuilds `transport.UserNotFoundError` from that id whenever
+the status means "not found", so a bad ROLE reference reported that way would
+name the wrong subject as missing. The `ReferenceError` row sits above the
+`RoleNotFoundError` row for exactly that reason. `*role.ServiceRequiredError`
+is `Unimplemented` (501): a composition fault, not a caller error. A target
+user the gate cannot find is the ordinary `*user.UserNotFoundError`.
+
+`pkg/auth/rbac.RBACAuthorizer.Authorize` consumes `RoleBindings` on the READ
+side. `finalizeIdentity` clears `auth.Identity.RoleBindings` and
+`Attributes` unconditionally before the user lookup, then fills them from the
+record, so the store is their only source and a withdrawn binding stops
+applying on every path — found, not found, tenant sealed, and no user store
+at all, where an authenticator-asserted binding has no record behind it. The
+bindings whose `TenantID` equals the check's target tenant are resolved
+SEPARATELY from `identity.Roles`, in that tenant, and the two permission sets
+are unioned. Resolving both as one role-id list in one tenant — the shape
+this replaced — failed the whole call whenever the tenants disagreed,
+because `kvRoleStore.ResolvePermissions` errors on any id absent from the
+tenant it resolves against. The FIPS 140-3 SO deny-list and the strict
+separation-of-duties Owner strip apply to that effective set: a bound SO
+role is resolved in its tenant and denied like a held one, and a bound Owner
+role is stripped in the tenant that issued it.
+`pkg/auth/rbac/role_binding_test.go` proves it against a tenant-aware role
+double that fails, as production does, on an id from the wrong tenant.
+
+**Route-level checks resolve the target first.** A RoleBinding only counts
+when the check's target tenant is the one it names, so every transport
+resolves the request's target before its route-level permission check and
+authorizes against it (`pkg/auth/middleware/target.go`). The resolution lives
+in one place, `AuthMiddleware.ResolveTarget`, over a `Target` value each
+transport extracts from its own request shape:
+
+| Transport | Where the extractor is declared |
+|---|---|
+| REST | `routeTarget`/`routeIfTarget` beside the route (`RESTPathUser`, `RESTPathRole`, `RESTPathTenant`, `RESTQueryTenant`, and `RESTBody` over the handler's own request type, in `pkg/api/rest/targets.go`) |
+| gRPC and unix | `grpc.IdentityTargets`, registered on the shared middleware with `RegisterGRPCTargets` by both listeners |
+| QUIC | `identityTargets` in `pkg/api/quic/targets.go`, each decoding the handler's own wire request type, attached to the method registry |
+| MCP | `identityTargets` in `pkg/api/mcp/targets.go`, attached to the tool registry |
+| embedded | no route-level check of its own; its role-assignment gate authorizes against the record's tenant, and `AuthMiddleware.AuthorizeTarget` is the entry point for a typed call's target |
+
+**A body is read the way its handler reads it.** A target named in a request
+body is decoded into the handler's OWN request type with the handler's own
+decoder (`encoding/json`), never looked up in a generic map: a struct field
+matches its key case-insensitively and the last occurrence wins, so a body
+carrying both `user_id` and `USER_ID` would otherwise be authorized on one
+value and acted on with the other. MCP reads an argument with the same
+`mcp.ParseString` its tools use, so an id sent as a JSON number and one sent
+as a string name the same user. A targeted REST body that does not decode is
+refused with 400, and one past `RESTTargetBodyLimit` (1 MiB) with 413; an
+undecodable QUIC payload is refused as `InvalidArgument`. Neither is ever
+authorized against the caller's own tenant instead. An empty body names the
+caller's own tenant, as every targeted handler treats it.
+
+A `UserTarget` or `RoleTarget` is resolved by reading the record through the
+same routed user or role service the handler uses, with the caller's own
+context. A record the caller cannot see — absent, or in a tenant the routed
+service hides from it — resolves to the caller's own tenant, and the handler
+then answers not-found as before; any other lookup failure refuses the
+request as unavailable rather than authorizing against a guess. The target
+is bound into a context used only for the decision: the handler still sees
+the caller's own tenant, so nothing downstream mistakes the target for the
+caller. Requests that name nothing — the data plane — are checked against the
+caller's own tenant, exactly as before, and so is the tenant-administration
+surface (a tenant's record, quotas and entitlements): those are the platform
+operator's, and a binding in a tenant must not reach its own plan. The
+binding fixture in `pkg/auth/authtest` is the one every transport's test
+drives, over the real built-in role store: a system-tenant operator whose
+only grant is a tenant-A binding to that tenant's Admin role is allowed the
+update of a tenant-A user and refused a tenant-B one.
+
+`Attributes` reaches `pkg/auth/abac` through `auth.Identity.Attributes`, a
+field kept separate from `Identity.Metadata` and exposed in its own
+namespace: `abac.Subject.UserAttributes`, read by `subject.user_attrs.<key>`
+in a condition and by a `user_attrs.<key>` match key. `Metadata` is
+authentication-derived (certificate fields, token claims) and becomes
+`Subject.Attributes` (`subject.attrs.<key>`, bare match keys); `Attributes`
+is written by anyone holding `roles:assign`, a weaker trust level. A bare
+name never reads the user namespace, so an attribute called `organization`,
+`dns_san` or `tenant_source` can never satisfy a policy written against the
+authenticated value — whether or not the authenticator set one.
+`pkg/auth/abac/decorator_test.go` attempts exactly that forgery for each.
 
 ## Error semantics
 
@@ -613,6 +887,8 @@ and nothing already persisted becomes unresolvable:
 | Identifier → role | Unchanged: a stored identifier is looked up verbatim, so `GetRole`, `ListRoles` and `ResolvePermissions` resolve a legacy record as they always did. |
 | Tenant + name → identifier | `role.ResolveSystemRoleID` answers from the name index rather than from a hash, so a grant binds to the record that exists. Bootstrap and first boot use it when assigning system roles. |
 | "Is this identifier role X?" | `role.SystemRoleIDs` returns both the canonical and the persisted identifier. The RBAC authorizer matches against the whole set, so the SO deny-list (FIPS 140-3 AS10.03) and the strict-separation-of-duties Owner strip still void a grant made before the migration. |
+| Node-barrier SO permissions | `seal:rekey`, `seal:rotate-root-key`, `seal:generate-recovery` and `seal:initialize-shamir` are `ScopeCross` (`pkg/permission/node_barrier_scope.go`): the node barrier is a platform singleton, so ScopeSelf -- which compares the caller's tenant with itself for an operation that names no tenant -- would let any tenant's SO rekey it. |
+| "Does this caller hold role X?" (admitting) | `role.HoldsSystemRole` matches only the identifier the role store persists the role under, in the caller's own tenant. It never matches the role *name* and never the canonical identifier when a legacy one is persisted: a control that ADMITS a caller must under-match, where a control that voids a grant over-matches. The SO dual-factor gate uses it. `Identity.Roles` holds role identifiers, so comparing a role name against it (`Identity.HasRole("so")`) refuses every real holder and admits any identity whose roles carry the literal string. |
 
 No capability is absent from a FIPS build as a result: the v8 derivation is the
 only one compiled, in every build.

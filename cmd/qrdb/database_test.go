@@ -102,8 +102,11 @@ func (m *fnDatabaseService) DatabaseBarrierStatus(_ context.Context, _ string) (
 	return &seal.BarrierStatus{Sealed: false}, nil
 }
 
-func (m *fnDatabaseService) CreateForTenant(_ context.Context, _ database.DatabaseConfig) (*database.DatabaseInfo, error) {
-	return nil, nil
+// CreateForTenant creates as Create does: these tests run with no tenant in
+// the context, and DatabaseService.CreateForTenant takes the system tenant's
+// create path for such a caller.
+func (m *fnDatabaseService) CreateForTenant(_ context.Context, cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
+	return m.createFn(cfg)
 }
 
 func (m *fnDatabaseService) GetForTenant(_ context.Context, _ string) (*database.DatabaseInfo, error) {
@@ -136,6 +139,14 @@ func (m *fnDatabaseService) UpdateBarrierForTenant(_ context.Context, _ string, 
 
 func (m *fnDatabaseService) UpdateConnectionForTenant(_ context.Context, _ string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
 	return nil, nil
+}
+
+func (m *fnDatabaseService) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
+	return &database.DatabaseInfo{Name: name, SQL: sqlCfg}, nil
+}
+
+func (m *fnDatabaseService) UpdateSQLForTenant(_ context.Context, name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
+	return m.UpdateSQL(name, sqlCfg)
 }
 
 func (m *fnDatabaseService) ScaleForTenant(_ context.Context, name string, targetReplicas int) (*database.DatabaseInfo, error) {
@@ -748,8 +759,8 @@ func TestDatabaseCmd_HasAlias(t *testing.T) {
 func TestDatabaseCmd_SubcommandCount(t *testing.T) {
 	cmd := newDatabaseCmd()
 	subs := cmd.Commands()
-	if len(subs) != 13 {
-		t.Errorf("expected 13 subcommands, got %d", len(subs))
+	if len(subs) != 14 {
+		t.Errorf("expected 14 subcommands, got %d", len(subs))
 	}
 
 	wantNames := map[string]bool{
@@ -763,6 +774,7 @@ func TestDatabaseCmd_SubcommandCount(t *testing.T) {
 		"scale":             false,
 		"update-barrier":    false,
 		"update-connection": false,
+		"update-sql":        false,
 		"seal":              false,
 		"unseal":            false,
 		"barrier-status":    false,

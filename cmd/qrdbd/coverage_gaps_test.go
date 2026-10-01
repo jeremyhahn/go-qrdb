@@ -335,7 +335,8 @@ func TestAdminExists_UserFound(t *testing.T) {
 			return &user.User{ID: 9001, Username: "admin"}, nil
 		},
 	}
-	assert.True(t, adminExists(context.Background(), userSvc, "default"))
+	_, ok := adminExists(context.Background(), userSvc, "default")
+	assert.True(t, ok)
 }
 
 func TestAdminExists_UserNotFound(t *testing.T) {
@@ -344,7 +345,8 @@ func TestAdminExists_UserNotFound(t *testing.T) {
 			return nil, &user.UserNotFoundError{Lookup: "admin"}
 		},
 	}
-	assert.False(t, adminExists(context.Background(), userSvc, "default"))
+	_, ok := adminExists(context.Background(), userSvc, "default")
+	assert.False(t, ok)
 }
 
 func TestAdminExists_OtherError(t *testing.T) {
@@ -354,7 +356,8 @@ func TestAdminExists_OtherError(t *testing.T) {
 		},
 	}
 	// Any error means admin does not exist (conservatively).
-	assert.False(t, adminExists(context.Background(), userSvc, "default"))
+	_, ok := adminExists(context.Background(), userSvc, "default")
+	assert.False(t, ok)
 }
 
 // ---------------------------------------------------------------------------

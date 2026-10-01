@@ -31,6 +31,7 @@ import (
 	quicgo "github.com/quic-go/quic-go"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
@@ -88,7 +89,13 @@ type Server struct {
 	sqlSvc            service.SQLServicer
 	authMW            *authmw.AuthMiddleware
 	auditLogger       audit.AuditLogger
+
+	// soGate is the SO dual-factor gate; nil leaves it off. See WithSOGate.
+	soGate            *authmw.SOGate
 	sealedWindowProbe sealedWindowProbe
+	// sealedWindowListener is the boot-time sealed-window listener's probe,
+	// and selects that listener's gate. Nil for a regular listener.
+	sealedWindowListener sealedwindow.ListenerProbe
 
 	// registry, when set, resolves data-plane services per (tenant, database)
 	// scope. The tenant comes from the authenticated identity; the database
@@ -100,6 +107,11 @@ type Server struct {
 	// the QUIC frame dispatch table by buildHandlers via each module's
 	// RegisterQUIC hook. Set via WithServiceModules by the server orchestrator.
 	modules []apimodule.ServiceModule
+
+	// connObservers are the modules observing the connection lifecycle,
+	// collected from modules at Start. handleConnection reports each accepted
+	// connection to them for as long as it runs.
+	connObservers apimodule.ConnObservers
 
 	addr      string
 	tlsConfig *tls.Config
@@ -261,6 +273,17 @@ func WithRoleService(svc role.RoleServicer) ServerOption {
 	return func(s *Server) { s.roleSvc = svc }
 }
 
+// WithSOGate installs the SO dual-factor gate (authmw.SOGate) on every method
+// whose permission is in authmw.SOPermissions, after authorization: the caller
+// must hold the SO role and present the SO PIN in the request message's
+// so_pin field (see soPINCarriers: a QUIC frame has no header section). QUIC
+// is TLS-only, so the factor always arrives over TLS. It is the same gate the REST transport
+// applies, built by the orchestrator when auth.so_dual_factor is on; nil
+// leaves it off.
+func WithSOGate(gate *authmw.SOGate) ServerOption {
+	return func(s *Server) { s.soGate = gate }
+}
+
 // WithCertProvider configures the QUIC server with a certificate provider.
 func WithCertProvider(prov cert.CertProvider) ServerOption {
 	return func(s *Server) { s.certProv = prov }
@@ -307,7 +330,25 @@ type sealedWindowProbe interface {
 // admin.Health / admin.Status) is rejected with wire.StatusUnavailable,
 // mirroring SealedWindowAllowlist on the gRPC/REST servers.
 func WithSealedWindowProbe(probe sealedWindowProbe) ServerOption {
-	return func(s *Server) { s.sealedWindowProbe = probe }
+	return func(s *Server) {
+		s.sealedWindowProbe = probe
+		s.sealedWindowListener = nil
+	}
+}
+
+// WithSealedWindowListener installs the boot-time sealed-window listener's
+// gate backed by probe: the allowlist while the barrier is sealed, and
+// wire.StatusUnavailable for every method once it is unsealed, sampled per
+// request. That listener runs without authentication, so it must not serve
+// anything against an unsealed barrier, even in the moment before it is
+// stopped. It replaces WithSealedWindowProbe; the last of the two applied
+// wins.
+func WithSealedWindowListener(probe sealedwindow.ListenerProbe) ServerOption {
+	return func(s *Server) {
+		probe = sealedwindow.OrFailClosed(probe)
+		s.sealedWindowProbe = probe
+		s.sealedWindowListener = probe
+	}
 }
 
 // WithPINBackend configures the QUIC server with the canonical
@@ -460,12 +501,15 @@ func (s *Server) Start() error {
 	// connecting under a label it will not be served by.
 	tlsCfg.NextProtos = []string{wire.ProtocolV2}
 
+	// 0-RTT stays off (Allow0RTT is false). Early data is replayable: an
+	// on-path attacker can resend a captured flight and the server processes
+	// it again. Every frame this listener serves is a request, and many of
+	// them change state. A resumed client completes a full handshake first.
 	quicCfg := &quicgo.Config{
 		MaxIdleTimeout:        30 * time.Second,
 		KeepAlivePeriod:       10 * time.Second,
 		MaxIncomingStreams:    1000,
 		MaxIncomingUniStreams: 0,
-		Allow0RTT:             true,
 	}
 
 	udpAddr, err := net.ResolveUDPAddr("udp", s.addr)
@@ -486,6 +530,7 @@ func (s *Server) Start() error {
 	s.udpConn = udpConn
 	s.transport = tr
 	s.listener = ln
+	s.connObservers = apimodule.ConnObserversOf(s.modules)
 	s.stopping = make(chan struct{})
 
 	slog.Info("QUIC server started", "addr", ln.Addr().String())
@@ -700,6 +745,11 @@ func (s *Server) acceptLoop() {
 func (s *Server) handleConnection(conn *quicgo.Conn) {
 	defer s.wg.Done()
 	defer s.conns.Delete(conn)
+	// handleConnection runs for exactly the connection's life -- it returns
+	// only once AcceptStream fails because the connection closed -- so its
+	// span is the span reported to connection observers. Deferred after
+	// wg.Done so the close is reported before Stop's wg.Wait returns.
+	defer s.connObservers.Open(apimodule.TransportQUIC)()
 
 	for {
 		stream, err := conn.AcceptStream(context.Background())
@@ -778,7 +828,7 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 			return
 		}
 
-		if authErr := s.authorize(ctx, method); authErr != nil {
+		if authErr := s.authorize(ctx, method, payload); authErr != nil {
 			// The status follows the CLASS of the failure, not the call site.
 			// Hard-coding PermissionDenied told a caller whose request this
 			// node merely could not RECORD that it was not permitted, and
@@ -790,15 +840,38 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 		}
 	}
 
+	// The SO dual-factor gate, after authorization and before any handler,
+	// exactly where the REST and gRPC transports apply it. It runs whenever
+	// there is a gate, auth middleware or not: with nothing to authenticate
+	// the caller there is no SO to admit, so it fails closed rather than
+	// being skipped.
+	if s.soGate != nil {
+		if soErr := s.enforceSOGate(ctx, conn, method, payload); soErr != nil {
+			soStatus := authzStatus(soErr)
+			_ = s.writeResponse(stream, requestID, soStatus, []byte(soErr.Error()))
+			s.logRequest(method, requestID, soStatus, start)
+			return
+		}
+	}
+
 	// Sealed-window gate: while the barrier is sealed, every method not on
 	// SealedWindowAllowlist is rejected so operators can still drive the
 	// unseal flow (barrier.*/ceremony.*) and liveness probes (admin.Health,
-	// admin.Status) over the native QUIC transport. Mirrors the REST/gRPC
-	// sealed-window middleware/interceptors.
-	if s.sealedWindowProbe != nil && s.sealedWindowProbe.IsSealed() && !sealedWindowAllowed(method) {
-		_ = s.writeResponse(stream, requestID, wire.StatusUnavailable, []byte("barrier sealed"))
-		s.logRequest(method, requestID, wire.StatusUnavailable, start)
+	// admin.Status) over the native QUIC transport. On the boot-time
+	// sealed-window listener every method is rejected once the barrier is
+	// unsealed. Mirrors the REST/gRPC sealed-window middleware/interceptors.
+	if s.sealedWindowListener != nil {
+		// Held until this request completes; see sealedwindow.Admission.
+		_, transition := sealedWindowTransition[method]
+		defer s.sealedWindowListener.Admit(transition)()
+	}
+	if refusal, refused := s.sealedWindowRefusal(ctx, method); refused {
+		_ = s.writeResponse(stream, requestID, refusal.status, []byte(refusal.msg))
+		s.logRequest(method, requestID, refusal.status, start)
 		return
+	}
+	if s.sealedWindowListener != nil {
+		ctx = sealedwindow.WithAnonymous(ctx)
 	}
 
 	// Watch is server-streaming: it writes a stream of response frames on this

@@ -499,16 +499,16 @@ func (e *ResidueReconcileError) Error() string {
 
 func (e *ResidueReconcileError) Unwrap() error { return e.Err }
 
-// ResidueReconcileErrors is returned by ReconcileDeletedTenants when one or
+// ResidueReconcileFailuresError is returned by ReconcileDeletedTenants when one or
 // more retired ids could not be fully reclaimed. A per-id failure does not
 // stop the pass: the other ids are still reclaimed, the report describes what
 // was done, and this error collects what was not. Each entry is a
 // *ResidueReconcileError; errors.Is and errors.As reach every one of them.
-type ResidueReconcileErrors struct {
+type ResidueReconcileFailuresError struct {
 	Errors []*ResidueReconcileError
 }
 
-func (e *ResidueReconcileErrors) Error() string {
+func (e *ResidueReconcileFailuresError) Error() string {
 	msg := "tenant: reconcile deleted tenants: " + strconv.Itoa(len(e.Errors)) + " failed"
 	for _, err := range e.Errors {
 		msg += "; " + err.Error()
@@ -517,7 +517,7 @@ func (e *ResidueReconcileErrors) Error() string {
 }
 
 // Unwrap returns every collected failure.
-func (e *ResidueReconcileErrors) Unwrap() []error {
+func (e *ResidueReconcileFailuresError) Unwrap() []error {
 	out := make([]error, len(e.Errors))
 	for i, err := range e.Errors {
 		out[i] = err

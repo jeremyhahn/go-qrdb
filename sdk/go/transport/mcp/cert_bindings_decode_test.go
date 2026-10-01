@@ -21,17 +21,19 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-// This transport decodes the DOMAIN record's JSON — the kind is pkg/user's
-// ordinal and a non-expiring binding's notAfter is the zero time.Time, which
-// marshals as 0001-01-01T00:00:00Z. Both must come out as they do on every
-// other transport: the label, and an empty expiry (go-qrdb#535).
+// The MCP server now projects CertBindings through user.WireCertBindings
+// before marshaling (go-qrdb#192/#197), exactly as REST and QUIC do, rather
+// than marshaling the domain *user.User directly. The kind therefore arrives
+// as its wire label, not pkg/user's ordinal, and a non-expiring binding's
+// notAfter is already omitted rather than the zero time.Time's
+// 0001-01-01T00:00:00Z (go-qrdb#535's fix, now shared by this transport too).
 func TestServerUserToTransport_DecodesCertBindings(t *testing.T) {
 	var in serverUser
 	if err := json.Unmarshal([]byte(`{"id":1,"certBindings":[
-		{"thumbprint":"AAAA","kind":0,"notAfter":"0001-01-01T00:00:00Z"},
-		{"thumbprint":"BBBB","kind":1,"notAfter":"2020-01-01T00:00:00Z"},
-		{"thumbprint":"CCCC","kind":2,"notAfter":"2030-06-01T12:34:56.789Z"},
-		{"thumbprint":"DDDD","kind":7,"notAfter":"0001-01-01T00:00:00Z"}]}`), &in); err != nil {
+		{"thumbprint":"AAAA","kind":"spki_thumbprint"},
+		{"thumbprint":"BBBB","kind":"full_cert_fingerprint","notAfter":"2020-01-01T00:00:00Z"},
+		{"thumbprint":"CCCC","kind":"piv_attested","notAfter":"2030-06-01T12:34:56Z"},
+		{"thumbprint":"DDDD","kind":"unknown(7)"}]}`), &in); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	out := serverUserToTransport(&in)

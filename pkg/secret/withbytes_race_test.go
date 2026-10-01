@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-enclave"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/secret"
 )
 
@@ -57,6 +58,7 @@ func TestSecretValue_WithBytes_SurvivesConcurrentWipeAll(t *testing.T) {
 	if dir := os.Getenv("GOCOVERDIR"); dir != "" {
 		args = append(args, "-test.gocoverdir="+dir)
 	}
+	// #nosec G204,G702 -- re-exec of this test binary: argv[0] is os.Args[0], the path `go test` invoked, and the arguments are compile-time literals plus the GOCOVERDIR the go tool exported for this run. No shell is involved.
 	cmd := exec.Command(os.Args[0], args...)
 	cmd.Env = append(os.Environ(), withBytesRaceChildEnv+"=1")
 	out, err := cmd.CombinedOutput()
@@ -119,11 +121,11 @@ func runWithBytesRaceChild() {
 	if wipeErr != nil {
 		fail("enclave.WipeAll: %v", wipeErr)
 	}
-	fmt.Printf("WipeAll ran concurrently with WithBytes' callback: remaining=%d\n", remaining)
+	fmt.Fprintf(os.Stdout, "WipeAll ran concurrently with WithBytes' callback: remaining=%d\n", remaining)
 
 	if err := <-done; err != nil {
 		fail("WithBytes callback failed: %v", err)
 	}
 
-	fmt.Println("PASS: WithBytes' callback observed the uncorrupted plaintext throughout")
+	fmt.Fprintln(os.Stdout, "PASS: WithBytes' callback observed the uncorrupted plaintext throughout")
 }

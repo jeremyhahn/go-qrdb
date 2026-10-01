@@ -1,6 +1,6 @@
 # Identity and RBAC — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-23
 
 Users, roles, the permission vocabulary, and the single policy decision point
 that authorizes every request on every transport.
@@ -180,8 +180,9 @@ The admin is identified the way the boot check finds it — `admin` in the
 `system` tenant — evaluated on the record as committed, before the change. A
 rename is therefore itself refused, so under `required` the admin cannot stop
 being the admin, and the username index keeps any other account from taking
-the name. (It is not a `System` user; first boot creates it with
-`System == false`.)
+the name. It is also the `System` user: first boot creates it with
+`System: true` (and promotes an admin created before the flag existed), so
+`DeleteUser` refuses it whatever the binding policy.
 
 **A live binding is not the whole check.** The boot check also refuses an admin
 whose lifecycle state does not permit a login (`AdminBindingCannotAuthenticate`)
@@ -255,6 +256,66 @@ module, not to the subject.
 
 Tenant-scoped bindings are the reason a control-plane user can be tenant-admin
 for tenant X without being an admin of the system tenant.
+
+All three fields influence an authorization decision. `finalizeIdentity`
+carries `RoleBindings` and `Attributes` onto the authenticated identity
+alongside `RoleIDs`. The user store is their only source: whatever the
+authenticator carried in is always cleared, and the store's current state
+replaces it, so a withdrawn binding or a cleared attribute stops applying on
+the next request — including when the record is not found, the tenant is
+sealed, or no user store is configured at all (then the identity carries
+none). `pkg/auth/rbac.RBACAuthorizer.
+Authorize` resolves `RoleIDs` in the identity's own tenant and, separately,
+resolves any `RoleBindings` entry whose `TenantID` equals the tenant the
+check targets, in THAT tenant, then unions the two permission sets — a
+binding for tenant A grants there and nowhere else. The FIPS 140-3 SO
+deny-list and the strict separation-of-duties Owner strip both apply to the
+effective role set: a bound SO role is denied exactly as a directly held
+one, and a bound Owner role is stripped in the tenant that issued it.
+
+`Attributes` reaches `pkg/auth/abac` in its own namespace
+(`subject.user_attrs.<key>`, or a `user_attrs.<key>` match key), never in
+the authenticated one (`subject.attrs.<key>`) that certificate fields and
+token claims populate, so an attribute written to a user record can never
+satisfy a policy written against an authentication-derived value of the same
+name. See [../auth/abac.md](../auth/abac.md#tenant-scoping).
+
+**Which tenant a binding is matched against.** A binding counts in an
+authorization check whose target is the tenant it names, and in no other. The
+target is resolved from the request BEFORE the route-level permission check,
+on every network transport: a request that names a user or role is checked
+against the tenant that user or role belongs to, a per-tenant barrier
+operation against the tenant it names, and every other request — the whole
+data plane, and the tenant-administration surface (a tenant's record, its
+quotas and entitlements), which only the platform operator may manage —
+against the caller's own tenant. A system-tenant operator whose only grant
+for tenant A is a binding can therefore update a tenant-A user through any
+transport, and is refused the same update on a tenant-B user. Only the
+decision uses the target; the operation itself still runs as the caller.
+
+Writing `RoleIDs`, `RoleBindings`, or `Attributes` — on `CreateUser` for
+`RoleIDs`, on `UpdateUser` for all three — requires `roles:assign` in
+addition to the route's own `users:create`/`users:update` permission, on
+every transport including embedded, which authorizes through the node's own
+`AuthMiddleware`. The check targets the tenant the record lives in (read from
+the record on update, the effective create tenant on create), and each
+`RoleBindings` entry additionally requires `roles:assign` in the tenant it
+names: writing a binding is itself an act of granting a role there. Every
+referenced role is validated to exist and to belong to that tenant itself
+(each tenant seeds its own built-in roles, and a role from another tenant —
+the system tenant's included — cannot be resolved there) before the write
+commits — whether or not RBAC is enabled. See
+[engineering.md](engineering.md#authorization-model) for the mechanism and
+its tests.
+
+The user store owns two invariants on `RoleBindings`, so they hold whatever
+path the write took. Each binding's `TenantID` is stored normalized (an empty
+tenant becomes `system`), because the read side matches it against the
+normalized target tenant. And a non-system user may hold a binding only in its
+own tenant: RBAC refuses such an identity every request outside that tenant
+before any binding is consulted, so a binding elsewhere could never grant, and
+the write is refused with `user.RoleBindingTenantError` instead of storing a
+grant that reads as live and is not.
 
 ### Alternatives rejected
 
@@ -385,12 +446,18 @@ handle, so a global index would forbid that while buying nothing.
 - **`AuthMethods` is a policy qrdb enforces for the authenticators it owns.**
   An empty policy states no restriction. Where the method is not observable to
   qrdb — a forwarded assertion, a capability module's own session token — the
-  layer that ran the ceremony enforces it.
+  layer that ran the ceremony enforces it, through the same exported
+  `CheckAuthMethod` the middleware runs and with the method spelled by a qrdb
+  constant (`MethodMTLS`, `MethodPIV`, `MethodWebAuthn`).
 - **Group membership is not a qrdb field.** qrdb authorization resolves
   user → role bindings → roles → permissions, and nothing in it reads a group.
   A layer that needs group membership stores it itself; the former `GroupIDs`
   field, which influenced no decision, has been removed.
-- **`System: true` users and the built-in roles cannot be deleted.**
+- **`System: true` marks exactly one user — the cluster-wide bootstrap admin —
+  and it, like the built-in roles, cannot be deleted.** No request on any
+  transport can set the flag; it is populated once, in-process, by first-boot.
+  A per-tenant admin created by tenant provisioning is an ordinary, deletable
+  user.
 - **Factor data is opaque.** qrdb never parses it, so a factor implementation
   cannot smuggle a decision past the PDP through its blob.
 

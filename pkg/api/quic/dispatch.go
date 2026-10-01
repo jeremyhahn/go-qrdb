@@ -281,6 +281,7 @@ func (s *Server) buildHandlers() {
 	s.handle("db.Scale", permission.DatabasesScale, s.handleDatabaseScale)
 	s.handle("db.UpdateBarrier", permission.DatabasesUpdate, s.handleDatabaseUpdateBarrier)
 	s.handle("db.UpdateConnection", permission.DatabasesUpdate, s.handleDatabaseUpdateConnection)
+	s.handle("db.UpdateSQL", permission.DatabasesUpdate, s.handleDatabaseUpdateSQL)
 	s.handle("db.Seal", permission.DatabasesSeal, s.handleDatabaseSeal)
 	s.handle("db.Unseal", permission.DatabasesUnseal, s.handleDatabaseUnseal)
 	s.handle("db.BarrierStatus", permission.DatabasesBarrierStatus, s.handleDatabaseBarrierStatus)
@@ -451,6 +452,11 @@ func (s *Server) buildHandlers() {
 	// module's full-gRPC-method frame key can never shadow a built-in's
 	// dot-separated key; see registerModules.
 	s.registerModules()
+
+	// Declare, for every method that acts on a named user, role or tenant,
+	// how its payload names it, so the route-level check authorizes against
+	// that tenant (see targets.go).
+	s.registerTargets()
 
 	s.assertMethodsAuthorized()
 }

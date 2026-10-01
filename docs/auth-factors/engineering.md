@@ -295,6 +295,25 @@ into the store both calls already share removes the dependency on instance
 identity entirely: the router now builds a fresh `authFactorService` on every
 call, with no cache to keep coherent across resolver behavior.
 
+- **The enrollment's factor is authoritative.** `VerifyFactor` consumes the
+  challenge, loads the enrollment it names, refuses a revoked enrollment
+  (`*authfactors.EnrollmentRevokedError`), refuses a non-empty caller
+  `factorName` that differs from `Enrollment.FactorName`
+  (`*authfactors.FactorMismatchError`), and then dispatches to the
+  enrollment's factor. It used to dispatch to whatever name the caller passed
+  and consult the enrollment only when the name was empty, so with two
+  factors registered a caller could answer a strong factor's challenge
+  through a weaker one. The name is kept on every transport as an assertion
+  rather than dropped, so a caller that states the wrong factor learns it
+  instead of silently being verified against a different one. Names are
+  compared through the same normalisation the registry uses to register and
+  look a factor up (case-insensitive), so `PIV` and `piv` are one factor and
+  can never be judged different, nor two different factors the same. That
+  normalisation is `authfactors.NormalizeName`, and both
+  `authfactors.FactorRegistry` and `NewAuthFactorService` key factors by it. A
+  second factor whose name normalises to a registered one is refused
+  (`*authfactors.FactorAlreadyRegisteredError`) rather than silently
+  replacing it.
 - **Single-use consumption is a guarded delete, not a tombstone.**
   `VerifyFactor` reads the pending challenge and clears it with
   `CompareAndDelete(key, dataJustRead)`, not an unconditional `Put`: a Get

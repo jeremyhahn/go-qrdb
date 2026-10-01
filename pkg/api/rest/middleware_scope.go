@@ -17,6 +17,8 @@ package rest
 import (
 	"context"
 	"net/http"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // scopeMiddleware reads X-QRDB-Database from the incoming request header and
@@ -42,6 +44,10 @@ func scopeMiddleware(next http.Handler) http.Handler {
 
 		ctx := r.Context()
 		ctx = context.WithValue(ctx, dbNameKey, dbName)
+		// Bind the canonical database scope as well, so a service that reads
+		// the (tenant, database) pair from the context -- the RAG store, for
+		// one -- sees the same database on REST as on QUIC and MCP.
+		ctx = tenant.WithDatabase(ctx, dbName)
 
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})

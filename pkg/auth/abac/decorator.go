@@ -173,12 +173,22 @@ func (d *Decorator) Reload(policies []*Policy) error {
 //   - no match       → delegate to the inner authorizer
 //
 // The check subject is built from the identity: Subject/TenantID/Roles map
-// directly, identity Metadata becomes the ABAC attribute map, and
-// Authenticated is true only for a non-nil identity. A nil identity
-// produces an empty subject that matches no policy, so unauthenticated
-// requests always fall through to the inner authorizer's own handling.
-// The target tenant is exposed to condition expressions as
+// directly, and Authenticated is true only for a non-nil identity. A nil
+// identity produces an empty subject that matches no policy, so
+// unauthenticated requests always fall through to the inner authorizer's
+// own handling. The target tenant is exposed to condition expressions as
 // request.tenant.
+//
+// The subject carries two attribute namespaces that are never merged:
+// identity.Metadata (authentication-derived — certificate fields, token
+// claims, the middleware's own sentinels) becomes subject.Attributes, and
+// identity.Attributes (the user record's attributes, which an administrator
+// holding roles:assign writes) becomes subject.UserAttributes. A policy
+// reaches the second only through the user_attrs namespace
+// (subject.user_attrs.<key>, or a match key carrying UserAttributePrefix), so
+// a user-record attribute named "organization" or "dns_san" can never satisfy
+// a policy written against the authenticated value of that name — whether or
+// not the authenticator set it.
 func (d *Decorator) Authorize(ctx context.Context, identity *auth.Identity, resource, action string) error {
 	target := tenant.FromContext(ctx)
 
@@ -187,13 +197,8 @@ func (d *Decorator) Authorize(ctx context.Context, identity *auth.Identity, reso
 		subject.ID = identity.Subject
 		subject.TenantID = identity.TenantID
 		subject.Roles = identity.Roles
-		if len(identity.Metadata) > 0 {
-			attrs := make(map[string]interface{}, len(identity.Metadata))
-			for k, v := range identity.Metadata {
-				attrs[k] = v
-			}
-			subject.Attributes = attrs
-		}
+		subject.Attributes = stringMapToAttributes(identity.Metadata)
+		subject.UserAttributes = stringMapToAttributes(identity.Attributes)
 	}
 
 	req := &CheckRequest{
@@ -233,4 +238,18 @@ func (d *Decorator) Authorize(ctx context.Context, identity *auth.Identity, reso
 	default:
 		return d.inner.Authorize(ctx, identity, resource, action)
 	}
+}
+
+// stringMapToAttributes copies m into the interface-valued map an ABAC
+// Subject carries, returning nil for an empty m so an absent namespace stays
+// absent rather than becoming an empty map.
+func stringMapToAttributes(m map[string]string) map[string]interface{} {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }

@@ -31,44 +31,114 @@ drift apart:
 | QUIC | `pkg/api/quic.SealedWindowAllowlist` | `sealedwindow.QUICAllowlist()` |
 | MCP | `pkg/api/mcp.SealedWindowAllowlist` | `sealedwindow.MCPAllowlist()` |
 
-The canonical verb set (union of the historical per-transport lists,
-minus the deliberate exclusions below):
+**Every verb on this list is anonymous on the boot-time sealed-window
+listener**, which has no authentication middleware (see
+[Auth model](#auth-model-during-the-sealed-window)). Each one is therefore
+justified as an anonymous verb, and belongs to one of these classes:
 
-- `health`, `status` — liveness probes.
-- Barrier lifecycle: `barrier-status`, `barrier-initialize`,
-  `barrier-unseal`.
-- Shamir: `shamir-initialize`, `shamir-unseal-share`,
-  `shamir-unseal-shares`, `shamir-verify` (REST + QUIC only — no gRPC
-  RPC or MCP tool exists), `rekey`, `root-token`.
-- Recovery: `recovery-generate`, `recovery-recover`, `recovery-delete`,
-  `recovery-status`.
-- Security Officers: `officer-register`, `officer-list`,
-  `officer-claim-status`, `share-claim-begin`, `share-claim-complete`,
-  `recovery-officer-register`, `recovery-share-claim-begin`,
-  `recovery-share-claim-complete`.
-- Ceremony: `ceremony-initialize`, `ceremony-status`,
-  `ceremony-claim-cert-begin`, `ceremony-claim-cert-complete`,
-  `ceremony-claim-share`, `ceremony-sign-csr`,
-  `ceremony-claim-share-begin`, `ceremony-claim-share-complete`,
-  `ceremony-submit-unseal-share`, `ceremony-enroll-external-officer`
-  (gRPC method; on REST the same operation lives at
-  `/v1/init/enroll-external-officer`, covered by the `/v1/init/`
-  prefix).
+- **Liveness**: `health`, `status`, `barrier-status`.
+- **Credential possession**, the Vault model, where holding the unseal
+  credential is the authorization: `barrier-unseal`,
+  `shamir-unseal-share`, `shamir-unseal-shares`,
+  `ceremony-submit-unseal-share`, `recovery-recover`, `root-token`.
+- **First-boot trust on first use**: `barrier-initialize`,
+  `shamir-initialize`, `ceremony-initialize`, `officer-register`,
+  `recovery-officer-register`.
+- **Handshakes whose binding authorization the handler enforces**:
+  `share-claim-begin`/`-complete`, `recovery-share-claim-begin`/`-complete`,
+  `ceremony-claim-cert-begin`/`-complete`,
+  `ceremony-officer-share-begin`/`-complete`,
+  `ceremony-claim-share-begin`/`-complete`, and `ceremony-sign-csr`
+  (SO PIN). The first-boot wizard tracks claim progress through
+  `officer-claim-status`, and `ceremony-status` reports the ceremony state.
+  On this listener `officer-claim-status` is **redacted**: each officer's
+  share index, enrolment and claim times and whether a share is pending,
+  with the username, certificate thumbprint and auth factor left empty.
+  That is what the wizard needs, and nothing that names an officer.
+  `service.BarrierService.BarrierOfficerClaimStatus` redacts **by default**:
+  every caller whose context carries no authenticated identity
+  (`auth.IdentityFromContext`) gets the redacted form, and so does any
+  request the listener marked anonymous (`sealedwindow.WithAnonymous`). A
+  regular listener's authenticated caller with `seal:officer_list` gets the
+  full record.
 
-REST additionally allowlists three transport-specific prefixes with no
-transport-neutral verb (`sealedwindow.RESTExtra`): `/v1/init/`,
-`/v1/bootstrap/`, and `/v1/cluster/` (cluster peer key-transport; the
-receiver self-authorises via node-cert + placement check, and the auth
-middleware also pre-exempts `/v1/cluster/` unconditionally). REST path
-entries ending in `/` match by prefix; everything else is an exact
-match. gRPC entries are method tails (the suffix after the last `/` in
-`info.FullMethod`).
+The full per-transport names are in `sealedwindow.Table`.
+
+REST entries are paths, or method-qualified `METHOD /path` entries where
+one path serves several verbs. `officer-register` is `POST
+/v1/barrier/officers`, because `GET` on the same path is the officer list, and
+`recovery-officer-register` is `POST /v1/barrier/recovery/officers`.
+A path ending in `/` matches by prefix, and anything else matches exactly
+(`sealedwindow.RESTEntryMatches`). REST additionally allowlists one
+transport-specific prefix with no transport-neutral verb
+(`sealedwindow.RESTExtra`): `/v1/cluster/`, the cluster peer key transport.
+Its receiver authorizes itself with the node certificate and a placement
+check, and the auth middleware also pre-exempts `/v1/cluster/`
+unconditionally. gRPC entries are fully-qualified
+`/qrdb.v1.QRDBService/<Method>` paths, so a method of the same name on
+another service is not admitted.
 
 The Security Officer registration and share-claim routes are
 allowlisted because first-boot Shamir initialization is reachable
 only through the sealed-window listener: officers must be registered
 (and able to claim their shares) before and immediately after
 `InitializeShamir` runs, while the barrier is still sealed.
+
+### No request runs across the unseal (`Transition`, `Admission`)
+
+The gate checks the barrier when a request arrives. Without more than that, a
+request admitted while sealed could still be running when another request
+unseals the barrier, and would finish anonymously against an unsealed
+barrier. The verbs that can take the barrier out of the sealed state are
+marked `Transition`: `barrier-initialize`, `barrier-unseal`,
+`shamir-initialize`, `shamir-unseal-share`, `shamir-unseal-shares`,
+`recovery-recover`, `ceremony-initialize` and
+`ceremony-submit-unseal-share`. Every request on the boot-time listener
+holds the listener's `sealedwindow.Admission` for its whole duration. A
+`Transition` request holds it exclusively and every other request holds it
+shared, on all transports together. So an unsealing request waits for the
+requests already in flight, none starts while it runs, and every request
+admitted after it sees the barrier unsealed and is refused.
+
+### Officer enrollment closes (`PreOperationalOnly`)
+
+`officer-register` and `recovery-officer-register` are the two
+`PreOperationalOnly` verbs. Registration CA-signs any CSR it is given and
+assigns a share index, so it is anonymous on the boot-time listener only while
+the enrollment ceremony can still use a new officer. The listener asks
+`ceremony.CeremonyService.EnrollmentOpen` on every request, and enrollment
+closes as soon as any of these is true:
+
+- the ceremony is operational in this process;
+- the barrier records an operational ceremony. The ceremony writes that record
+  (`seal.StorageBarrier.MarkCeremonyOperational`) to the barrier's plaintext
+  store when it reaches operational. The store is readable while sealed, so
+  the record survives a restart while sealed, when the ceremony's in-memory
+  state starts over;
+- the barrier is initialized (`seal.StorageBarrier.Initialized`). Shares are
+  distributed at initialization, and every later enrollment (rekey, recovery
+  officers) runs on the authenticated listener. This also covers a node whose
+  ceremony completed before the record existed.
+
+It fails closed: an unreadable record, or a listener with no ceremony
+service, counts as closed. The reads run under the request's context and a
+2-second deadline (`enrollmentProbeTimeout`), so a seal store that stops
+answering costs a refusal, not a request that holds the listener's
+admission indefinitely. Once enrollment is closed the listener answers
+registration with `403` and `{"code":"ENROLLMENT_CLOSED"}` on REST,
+`PERMISSION_DENIED` on gRPC and Unix, `StatusPermissionDenied` on QUIC and
+`PERMISSION_DENIED` on MCP. There is no `Retry-After`, because waiting does
+not reopen enrollment. A regular listener never applies this rule: its
+authentication and the route's `seal:officer_register` permission decide.
+
+The ceremony enforces the same rule itself. `RegisterOfficer` and
+`RegisterRecoveryOfficer` refuse with `ceremony.ErrEnrollmentClosed` when the
+request is marked anonymous (`sealedwindow.Anonymous`) and enrollment is
+closed. They check this under the ceremony's lock, in the same critical
+section as the registration. The gate samples enrollment before the request
+runs; this check holds even if enrollment closes in between, and covers any
+path that reaches the ceremony anonymously. The error classifies as
+permission denied on every transport.
 
 ### Deliberate exclusions
 
@@ -86,6 +156,20 @@ Never allowlisted, on any transport:
 - **custodian enroll/revoke** (`/v1/ceremony/enroll-custodian`,
   `/v1/ceremony/revoke-custodian`) — SO-gated governance operations
   served post-unseal.
+- **officer list** (`GET /v1/barrier/officers`, `BarrierOfficerList`,
+  `barrier.OfficerList`, `qrdb_barrier_officer_list`). It is served
+  post-unseal to authenticated callers.
+- **rekey, recovery-key generate, delete and status**. Each one refuses
+  while the barrier is sealed (`seal.ErrSealed`), so allowlisting them
+  added only an anonymous destructive surface. Nothing is lost by refusing
+  them at the gate.
+- **external officer enrollment** (`/v1/init/enroll-external-officer`,
+  `CeremonyEnrollExternalOfficer`). It is an SO-only administrative
+  enrollment that records caller-supplied trust material, so it is never
+  anonymous.
+- **`/v1/bootstrap/` and `shamir-verify`**. Neither has a route on any
+  transport. A prefix allowlisted over an empty subtree would silently
+  exempt whatever is registered there next.
 
 ## MySQL / PostgreSQL wire protocols
 
@@ -104,6 +188,8 @@ Once the barrier is unsealed both gates are passthrough; on re-seal
 they engage again (MySQL for new connections; established MySQL
 sessions fail at the storage layer with `seal.ErrSealed`).
 
+The boot-time sealed-window listener does not start either protocol.
+
 ## Response envelope
 
 REST returns:
@@ -118,22 +204,56 @@ Retry-After: 5
 
 gRPC returns `codes.Unavailable` with message `"barrier sealed"`.
 
+Once its barrier is unsealed, the boot-time sealed-window listener refuses
+every request with a distinct envelope:
+
+```http
+HTTP/1.1 503 Service Unavailable
+Content-Type: application/json
+Retry-After: 5
+
+{"error":"sealed-window listener closed: barrier unsealed","code":"SEALED_WINDOW_CLOSED"}
+```
+
+gRPC and Unix return `codes.Unavailable`, QUIC returns `StatusUnavailable`,
+and MCP returns `UNAVAILABLE` for a tool call, all with the message
+`sealed-window listener closed: barrier unsealed`. MCP also answers any HTTP
+request to its endpoint with 503 before the MCP layer reads it. The client
+retries, and the regular listener answers once the boot completes.
+
 ## Auth model during the sealed window
 
-Allowlisted endpoints flow through the middleware **before** auth in
-the REST chain (`mux → auth → sealed-window → scope → CORS`) and
-**after** auth in the gRPC interceptor chain. In both cases auth is
-optional for allowlisted endpoints — the unseal endpoints in
-particular are unauthenticated by design. This is the Vault model:
-possession of the unseal credential (passphrase, Shamir share, or
-hardware-bound TPM/HSM authentication context) is itself the
-authorization to drive unseal. Every action is recorded in the
-audit log regardless of the auth path used.
+There are two listeners, and they differ in exactly one respect.
 
-After unseal, the middleware becomes a passthrough and the regular
-auth middleware takes effect for all endpoints. On re-seal (operator
-calls `/v1/barrier/seal` with `barrier:seal` permission), the
-sealed-window engages again automatically.
+**The regular listener** is the one the node serves once it has booted.
+When its barrier is re-sealed, its gate refuses non-allowlisted requests.
+Every transport runs both the gate and authentication. On REST the chain, from
+the outside in, is `canonical path → CORS → scope → sealed-window → auth →
+SO dual factor → router`, and on gRPC and Unix the sealed-window
+interceptor runs after the auth interceptor. **An allowlisted request is
+therefore still authenticated and authorized** by the route's permission
+on this listener. Nothing on it is anonymous because it is allowlisted.
+After unseal the gate passes everything to authentication. On re-seal
+(`/v1/barrier/seal` with `seal:seal`) it engages again.
+
+**The boot-time sealed-window listener** (`server.ServeSealedWindow`, see
+[below](#pre-host-listener-boot-time-sealed-window)) has **no
+authentication middleware**, because while the barrier is sealed there is
+no identity plane to authenticate against. Its allowlist is anonymous. That
+is the Vault model: possession of the unseal credential (passphrase, Shamir
+share, or a hardware-bound authentication context) is itself the
+authorization to drive unseal. Every action is recorded in the audit log.
+
+That is why the allowlist is kept to the verbs that are justified as
+anonymous, and why this listener's gate differs from the regular one: **once
+the barrier is unsealed it refuses every request, allowlisted or not.** It
+samples the barrier on every request, so it does not depend on the 250 ms
+poll that stops the listener. Before this, the gate became a pass-through at
+unseal, and until the poll noticed and `Stop` completed, every route
+registered on the listener ran anonymously against an unsealed barrier. That
+included `DELETE /v1/barrier/recovery` and the credential routes. The
+listener does not start the MySQL or PostgreSQL wire protocols, because
+they carry no sealed-window verb.
 
 ### Identity-gated claim routes after unseal
 
@@ -204,9 +324,11 @@ restructures the boot sequence as follows:
    API-only `server.New(...)` configured with TLS, the seal-only
    service set produced by
    `pkg/server/lifecycle.BuildSealServicesOnly`, and the
-   `server.WithSealedWindowProbe(barrier)` middleware (appended
-   automatically). The probe keeps the canonical allowlist active so
-   only the unseal-related endpoints accept requests. SDK embedders
+   boot-time listener's gate on every transport (appended
+   automatically, over any `WithSealedWindowProbe` in the options). The
+   gate keeps the canonical allowlist active so only the unseal-related
+   endpoints accept requests while sealed, and refuses everything once
+   unsealed. SDK embedders
    get the same listener for nodes returned in the sealed state via
    `sdk/go/node.ServeSealedWindow(ctx, n, extraOpts...)`, which serves
    the node's own seal-service instances and returns once the operator
@@ -231,6 +353,9 @@ restructures the boot sequence as follows:
    down and returns nil when the operator drives unseal, or (b) tears
    the listener down and returns `*server.SealedWindowCanceledError`
    on `SIGINT`/`SIGTERM`, which the daemon treats as a clean exit.
+   The poll only stops the listener. Refusing requests after unseal is
+   done by the listener's gate on every request, so the window between
+   unseal and `Stop` serves nothing.
 5. After unseal, the regular boot resumes: `initializeNode` opens
    the host on top of the encfs-wrapped Pebble,
    `lifecycle.BuildServices` constructs the full service graph,

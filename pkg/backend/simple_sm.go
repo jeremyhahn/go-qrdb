@@ -82,14 +82,17 @@ func (s *SimpleStateMachine) Update(_ context.Context, entries []sm.Entry, resul
 			err = &UnsupportedOperationError{Op: cmd.Op}
 		}
 
+		// #nosec G602 -- i ranges over entries.
 		resolved, stop, applyErr := statemachine.ResolveApplyError(slog.Default(), entries[i].Index, result, err)
 		if stop {
 			// The failure marker predates the classifier and is kept: Raft
 			// discards results for a halted Apply, but LocalBackend calls
 			// Update directly and reads them.
+			// #nosec G602 -- the sm.StateMachine Update contract pre-allocates results with len(results) == len(entries), and i ranges over entries.
 			results[i] = sm.Result{Value: 1}
 			return applyErr
 		}
+		// #nosec G602 -- the sm.StateMachine Update contract pre-allocates results with len(results) == len(entries), and i ranges over entries.
 		results[i] = resolved
 	}
 	return nil

@@ -253,12 +253,12 @@ func (e *PolicyEvaluator) validateCapturedVars(capturedVars map[string]string, s
 			case "tenant", "tenant_id":
 				expectedValue = subject.TenantID
 			default:
-				// Check in attributes map
-				if subject.Attributes != nil {
-					if v, ok := subject.Attributes[attrName]; ok {
-						if s, ok := v.(string); ok {
-							expectedValue = s
-						}
+				// Check the attribute namespace the name selects (see
+				// Subject.attribute): a bare name reads only the
+				// authentication-derived map.
+				if v, ok := subject.attribute(attrName); ok {
+					if s, ok := v.(string); ok {
+						expectedValue = s
 					}
 				}
 			}

@@ -98,6 +98,56 @@ func (e *SystemUserImmutableError) Error() string {
 	return "user: system user cannot be deleted: " + strconv.FormatUint(e.ID, 10)
 }
 
+// SystemTenantRequiredError is returned when a caller asks to create or
+// promote a System user outside the system tenant. The cluster-wide
+// bootstrap admin is scoped to the system tenant by definition; nothing
+// else may ever carry the flag.
+type SystemTenantRequiredError struct {
+	TenantID string
+}
+
+// Error returns a human-readable description of the tenant constraint.
+func (e *SystemTenantRequiredError) Error() string {
+	return "user: system flag requires the system tenant, got: " + e.TenantID
+}
+
+// RoleBindingTenantError is returned when a write would give a non-system
+// user a RoleBinding naming a tenant other than its own. A binding grants only
+// on a request whose target is the tenant it names, and RBAC refuses a
+// non-system identity every request outside its own tenant before any binding
+// is consulted, so such a binding could never grant anything. It is refused at
+// write rather than stored as a dead grant that reads as a live one.
+type RoleBindingTenantError struct {
+	UserID          uint64
+	UserTenantID    string
+	BindingTenantID string
+}
+
+// Error returns a human-readable description of the refused binding.
+func (e *RoleBindingTenantError) Error() string {
+	return "user: role binding in tenant " + e.BindingTenantID +
+		" can never apply to user " + strconv.FormatUint(e.UserID, 10) +
+		" of tenant " + e.UserTenantID +
+		": only a system-tenant user may hold a binding outside its own tenant"
+}
+
+// SystemUserAlreadyExistsError is returned when a caller asks to create or
+// promote a second System user. At most one such record may exist in the
+// store at any time -- the single, cluster-wide bootstrap admin.
+type SystemUserAlreadyExistsError struct {
+	// ExistingID names the record that already holds the flag, when it could
+	// be resolved. Zero when the holder could not be read (best-effort).
+	ExistingID uint64
+}
+
+// Error returns a human-readable description of the uniqueness constraint.
+func (e *SystemUserAlreadyExistsError) Error() string {
+	if e.ExistingID == 0 {
+		return "user: a system user already exists"
+	}
+	return "user: a system user already exists: " + strconv.FormatUint(e.ExistingID, 10)
+}
+
 // StoreError is returned for store-level operation failures.
 type StoreError struct {
 	Op     string
@@ -129,6 +179,33 @@ type ValidationError struct {
 // Error returns a human-readable description of the validation failure.
 func (e *ValidationError) Error() string {
 	return "user: validation failed: " + e.Field + ": " + e.Reason
+}
+
+// UnknownAuthMethodError is returned when a permitted-method policy being
+// written names a method outside the store's vocabulary: the built-in tokens
+// plus, where the store was given one (WithAuthMethodVocabulary), the names of
+// the authenticators in its node's chain. Method
+// is the normalized token and Index its position in the normalized policy.
+//
+// It is a validation failure and unwraps to a *ValidationError, so every
+// transport already answers it as a bad argument (400 / InvalidArgument).
+type UnknownAuthMethodError struct {
+	Method string
+	Index  int
+}
+
+// Error names the refused token.
+func (e *UnknownAuthMethodError) Error() string {
+	return "user: unknown authentication method " + strconv.Quote(e.Method) +
+		": not a built-in method or an authenticator in this node's chain"
+}
+
+// Unwrap returns the equivalent *ValidationError.
+func (e *UnknownAuthMethodError) Unwrap() error {
+	return &ValidationError{
+		Field:  "authMethods",
+		Reason: "entry " + strconv.Itoa(e.Index) + " names unknown method " + strconv.Quote(e.Method),
+	}
 }
 
 // CertBindingConflictError is returned when a caller attempts to bind a
@@ -241,6 +318,22 @@ type HandleReclaimedError struct {
 // Error returns a human-readable description of the lost race.
 func (e *HandleReclaimedError) Error() string {
 	return "user: handle " + e.Key + " was reclaimed before rollback could restore it"
+}
+
+// HandleContendedError reports that a handle index key changed hands on every
+// attempt to claim it: each claim found it held, and each time the holder had
+// released it again before it could be read. The handle is under sustained
+// concurrent churn, so neither "it is yours" nor "someone else holds it" can be
+// stated; the caller should retry later.
+type HandleContendedError struct {
+	Key      string
+	Attempts int
+}
+
+// Error names the key and how many claims were made.
+func (e *HandleContendedError) Error() string {
+	return "user: handle " + e.Key + " changed hands on each of " + strconv.Itoa(e.Attempts) +
+		" claim attempts; retry"
 }
 
 // ConcurrentUpdateError reports that another update committed to the same user
@@ -366,3 +459,24 @@ func joinLifecycles(states []Lifecycle) string {
 	}
 	return out
 }
+
+// FactorLookupError is returned when a user's enrolled auth factors could not
+// be listed while projecting the user for a response. It fails the read rather
+// than reporting no factors, because "the lookup failed" and "the account has
+// no second factor" are different answers and only one of them is true.
+type FactorLookupError struct {
+	UserID uint64
+	Err    error
+}
+
+// Error returns a human-readable description of the failure.
+func (e *FactorLookupError) Error() string {
+	msg := "user: could not list auth factors for user " + strconv.FormatUint(e.UserID, 10)
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Unwrap exposes the underlying factor-store error.
+func (e *FactorLookupError) Unwrap() error { return e.Err }

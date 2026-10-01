@@ -21,11 +21,11 @@
 
   It receives the already-loaded DatabaseInfo as a prop so it does not need
   to perform its own fetch — the workspace parent owns the data lifecycle.
-  SQL toggling calls client.database.updateSQL() and reflects the result
+  SQL toggling calls client.database.updateProtocol() and reflects the result
   locally without a full page reload.
 -->
 <script lang="ts">
-  import type { Client, DatabaseInfo, DatabaseSQLConfig } from "@qrdb/sdk";
+  import type { Client, DatabaseInfo, DatabaseProtocolConfig } from "@qrdb/sdk";
   import { showToast } from "../../stores/toast.svelte.ts";
   import { updateDatabase } from "../../stores/database.svelte.ts";
   import StatusBadge from "../../components/StatusBadge.svelte";
@@ -90,14 +90,14 @@
     protocol: 'mysql' | 'postgresql',
     enabled: boolean,
   ): Promise<void> {
-    const updated: DatabaseSQLConfig = {
+    const updated: DatabaseProtocolConfig = {
       mysql:      protocol === 'mysql'      ? enabled : (database.protocol?.mysql      ?? false),
       postgresql: protocol === 'postgresql' ? enabled : (database.protocol?.postgresql ?? false),
     };
 
     try {
       sqlUpdating = true;
-      database = await client.database.updateSQL(database.name, updated);
+      database = await client.database.updateProtocol(database.name, updated);
       // Propagate the fresh snapshot into the shared store: the workspace tab
       // bar derives the SQL Browser tab from the store's database entry, so
       // without this the tab only appears after a full list reload.

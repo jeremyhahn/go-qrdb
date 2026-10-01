@@ -727,6 +727,7 @@ func (s *CeremonyService) reconstructAndUnseal(ctx context.Context, rawShares []
 		return err
 	}
 
+	//secure:unborrowed injected-interface ext.BarrierUnseal is a consumer-supplied barrier unseal (go-qrdb#428)
 	if err := ext.BarrierUnseal.UnsealWithKey(ctx, rootBuf.Bytes()); err != nil {
 		return err
 	}

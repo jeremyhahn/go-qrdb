@@ -56,6 +56,7 @@ func TestHashRouter_Distribution(t *testing.T) {
 		if id >= partitions {
 			t.Fatalf("Route returned %d, want < %d", id, partitions)
 		}
+		// #nosec G602 -- id < partitions is checked above, and counts has partitions entries.
 		counts[id]++
 	}
 

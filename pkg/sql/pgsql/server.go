@@ -61,10 +61,17 @@ type Server struct {
 	tlsConfig *tls.Config
 	authMW    *authmw.AuthMiddleware
 	dbName    string
-	logger    *slog.Logger
-	cancel    context.CancelFunc
-	dbManager *database.Manager
-	done      chan struct{} // closed when Serve goroutine exits
+
+	// sharedDefaultDB is the configured default SQL database, which exists
+	// for every tenant (WithSharedDefaultDatabase). Empty shares nothing.
+	sharedDefaultDB string
+	logger          *slog.Logger
+	cancel          context.CancelFunc
+	dbManager       *database.Manager
+	done            chan struct{} // closed when Serve goroutine exits
+	// databaseSvc is the tenant-scoped database lifecycle behind CREATE
+	// DATABASE and DROP DATABASE (see WithDatabaseService).
+	databaseSvc service.DatabaseServicer
 	// sealedProbe gates connections and queries while the storage
 	// barrier is sealed. When nil the gate is disabled.
 	sealedProbe sealedWindowProbe
@@ -113,6 +120,16 @@ func WithDatabaseName(name string) ServerOption {
 	}
 }
 
+// WithSharedDefaultDatabase marks name -- the configured default SQL
+// database -- as existing for every tenant, as the service registry treats it
+// (server.WithSharedSQLDefaultDatabase). Each tenant session sees its own
+// namespace of it; every other database is visible only to its owner.
+func WithSharedDefaultDatabase(name string) ServerOption {
+	return func(s *Server) {
+		s.sharedDefaultDB = name
+	}
+}
+
 // WithDatabaseManager configures the server with a database.Manager for
 // multi-database support. When set, the server uses
 // provider.NewManagerProvider instead of provider.NewProvider, enabling
@@ -120,6 +137,17 @@ func WithDatabaseName(name string) ServerOption {
 func WithDatabaseManager(manager *database.Manager) ServerOption {
 	return func(s *Server) {
 		s.dbManager = manager
+	}
+}
+
+// WithDatabaseService routes CREATE DATABASE and DROP DATABASE through the
+// tenant-scoped database service every API transport uses, so a session
+// creates a database its own tenant owns, inside its quota, and drops only
+// its own tenant's databases. Without it only system-tenant sessions may run
+// either statement.
+func WithDatabaseService(svc service.DatabaseServicer) ServerOption {
+	return func(s *Server) {
+		s.databaseSvc = svc
 	}
 }
 
@@ -207,7 +235,15 @@ func (s *Server) Start() error {
 	// constructed *provider.Provider -- the exported option functions are
 	// just closures over unexported fields and work identically regardless
 	// of which constructor built the Provider.
-	var svcOpts []func(*provider.Provider)
+	//
+	// WithProtocol(ProtocolPostgreSQL) is in that set, so it applies on
+	// EVERY construction path, not only the database-manager one: it is what
+	// makes this a PostgreSQL-dialect provider at all, gating pg_catalog
+	// resolution (Provider.servesPGCatalog) and, through Database.postgres
+	// and WithPostgreSQLDialect, TRUNCATE's keeping of a table's sequence. A
+	// composer that supplies WithServiceRegistry without WithDatabaseManager
+	// must not be served MySQL semantics on a PostgreSQL listener.
+	svcOpts := []func(*provider.Provider){provider.WithProtocol(provider.ProtocolPostgreSQL)}
 	if s.collectionSvc != nil {
 		svcOpts = append(svcOpts, provider.WithCollectionService(s.collectionSvc))
 	}
@@ -217,10 +253,19 @@ func (s *Server) Start() error {
 	if s.registry != nil {
 		svcOpts = append(svcOpts, provider.WithRegistry(s.registry))
 	}
+	if s.databaseSvc != nil {
+		svcOpts = append(svcOpts, provider.WithDatabaseService(s.databaseSvc))
+	}
+	if s.authMW != nil {
+		svcOpts = append(svcOpts, provider.WithLifecycleAuthorizer(s.authMW))
+	}
 
 	var dbProvider *provider.Provider
 	if s.dbManager != nil {
-		managerOpts := append([]func(*provider.Provider){provider.WithProtocol(provider.ProtocolPostgreSQL)}, svcOpts...)
+		managerOpts := svcOpts
+		if s.sharedDefaultDB != "" {
+			managerOpts = append(managerOpts, provider.WithSharedDefaultDatabase(s.sharedDefaultDB))
+		}
 		dbProvider = provider.NewManagerProvider(s.dbManager, s.kvSvc, managerOpts...)
 	} else {
 		dbProvider = provider.NewProvider(s.dbName, s.kvSvc)
@@ -304,9 +349,14 @@ func (s *Server) Start() error {
 	if authenticator != nil {
 		wireOpts = append(wireOpts,
 			wire.SessionMiddleware(sessionHandler(authenticator)),
-			wire.CloseConn(closeHandler(authenticator)),
 		)
 	}
+
+	// psql-wire runs ONE close handler, after the session middleware, with
+	// the connection's context; it ends the connection's SQL session --
+	// releasing any row locks an abandoned transaction still holds -- and
+	// clears authentication state.
+	wireOpts = append(wireOpts, wire.CloseConn(closeHandler(authenticator)))
 
 	// Register the per-connection QRDBSession handler LAST (after any auth
 	// middleware above), so it sees whatever identity authentication
@@ -453,10 +503,19 @@ func sealedWireError(severity psqlerr.Severity) error {
 	return psqlerr.WithSeverity(psqlerr.WithCode(&BarrierSealedError{}, codes.CannotConnectNow), severity)
 }
 
-// closeHandler returns a psql-wire CloseFn that cleans up TLS state
-// for the connection identified by its remote address.
+// closeHandler returns a psql-wire CloseFn that ends the connection's SQL
+// session -- so an open transaction's row locks are released now rather
+// than left to expire with their lease -- and, when authentication is on,
+// cleans up the TLS state of the connection identified by its remote
+// address.
 func closeHandler(authenticator *Authenticator) wire.CloseFn {
 	return func(ctx context.Context) error {
+		if session := connectionSessionFromContext(ctx); session != nil {
+			session.SessionEnd()
+		}
+		if authenticator == nil {
+			return nil
+		}
 		remoteAddr := wire.RemoteAddress(ctx)
 		if remoteAddr != nil {
 			authenticator.ClearTLSState(remoteAddr.String())

@@ -39,7 +39,11 @@ func (m *AuthMiddleware) AuthenticateQUIC(ctx context.Context) (context.Context,
 // permission; an unregistered method (or a nil registry) is rejected rather
 // than treated as public, so a newly-added handler cannot silently become
 // unauthorized.
-func (m *AuthMiddleware) AuthorizeQUIC(ctx context.Context, methods *QUICMethodRegistry, method string) error {
+//
+// payload is the frame's request payload; the method's registered
+// QUICTargetFunc reads the tenant it acts on from it, and the permission is
+// authorized against that tenant (see Target).
+func (m *AuthMiddleware) AuthorizeQUIC(ctx context.Context, methods *QUICMethodRegistry, method string, payload []byte) error {
 	identity := auth.IdentityFromContext(ctx)
 	if identity == nil {
 		return &auth.AuthError{Code: "unauthenticated", Message: "no identity in context"}
@@ -53,5 +57,9 @@ func (m *AuthMiddleware) AuthorizeQUIC(ctx context.Context, methods *QUICMethodR
 		}
 	}
 
-	return m.authorize(ctx, identity, perm)
+	target, err := methods.target(method, payload)
+	if err != nil {
+		return err
+	}
+	return m.authorizeTarget(ctx, identity, perm, target)
 }

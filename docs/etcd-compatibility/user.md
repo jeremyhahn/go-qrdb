@@ -16,11 +16,11 @@ and it works as an etcd v3 endpoint.
 
 ## First run
 
-Create a database with etcd enabled. It must be a `kv` engine on a `raft`
-backend.
+Create a database with etcd enabled. It must be a `kv` engine, on a node
+running in mode `raft`; any backend serves it.
 
 ```bash
-qrdb database create --name k8s --engine kv --backend raft \
+qrdb database create --name k8s --engine kv \
      --etcd --etcd-listen-addr :2379
 ```
 
@@ -57,42 +57,48 @@ kube-apiserver \
 ```
 
 The `kube-apiserver` client certificate's role needs `kv:range`, `kv:put`,
-`kv:delete`, `kv:transaction`, `kv:watch`, `kv:compact` and the `lease:*`
-permissions. The daemon's `sm_type` must be `mvcc` — Kubernetes depends on
+`kv:delete`, `transaction:execute`, `watch:watch_prefix`, `admin:status` and the
+`lease:*` permissions, and must belong to the tenant that owns the database. The daemon's `sm_type` must be `mvcc` — Kubernetes depends on
 revisions, watches, leases and transactions.
 
 **Run more than one etcd cluster.** Create a second database with etcd enabled.
-It is a genuinely separate cluster: its own revision counter starting at 1, its
-own watches, its own leases, its own encryption key. Two Kubernetes clusters can
-share a qrdb deployment without seeing each other.
+Each listener serves only its own database's keys, watches and leases, so two
+Kubernetes clusters can share a qrdb deployment without seeing each other. On the
+shared shard revisions are store-global; give each cluster a raft-isolated
+tenant if it needs a revision counter of its own.
 
 ## Troubleshooting
 
-**The etcd listener never came up.** Configuration validation refuses the
-combination at startup rather than failing later. Check that the database is
-`engine: kv` on `backend: raft`, and that TLS and auth are both enabled.
+**The etcd listener never came up.** The listener refuses to start rather than
+fail later. Check that the node runs in mode `raft`, that TLS and auth are both
+enabled, and that the database is not sealed. (A database of an engine other
+than `kv` cannot have etcd enabled at all.)
 
-**`etcdctl user` or `etcdctl role` returns "Unimplemented".** That is permanent.
-Authentication is mTLS and authorization is qrdb RBAC; etcd's own auth RPCs are
-a deliberate stub. Use `qrdb roles` to grant permissions.
+**`etcdctl user` or `etcdctl role` returns "permission denied".** That is
+permanent. Authentication is mTLS and authorization is qrdb RBAC; etcd's own
+auth RPCs are not served. Use `qrdb roles` to grant permissions.
+
+**The etcd listener refuses to start with "refusing to serve database ...
+without authentication".** The node has no TLS or no authentication configured.
+The listener never serves an unauthenticated port.
+
+**Every RPC fails with "unauthenticated" or "may not access database".** Present
+a client certificate, issued to a user of the tenant that owns the database.
 
 **Operations fail with permission errors partway through a workload.**
 Authorization is per RPC, mapped from the etcd operation to a qrdb permission.
 Your certificate's role is missing one of them — the mapping table is in
 [api.md](api.md).
 
-**Revisions start at 1 on a database you expected to have history.** Each
-etcd-enabled database has its own revision counter, starting at 1 at database
-creation. You are looking at a different database.
 
 **`kube-apiserver` reports compacted revisions.** `kube-apiserver` calls
 `Compact` periodically; that is normal, and it discards revision history by
 design. If a watcher fell behind further than the retained window, it must
 re-list rather than resume.
 
-**`etcdctl defrag` did something you did not expect.** `Maintenance.Defragment`
-is mapped to `Compact`. It is not a space-reclamation no-op; it discards
-revision history.
+**`etcdctl defrag` is refused.** `Maintenance.Defragment` is not served; the
+storage engine compacts on its own.
 
 **A watch on one database saw nothing from another.** Correct — watch streams do
-not cross databases. Each is an independent etcd cluster.
+not cross databases. Each listener serves only its own database's keys, watches
+and leases.

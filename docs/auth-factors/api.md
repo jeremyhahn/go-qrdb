@@ -60,6 +60,31 @@ The embedded transport returns the typed `*authfactors.EnrollmentNotFoundError`.
 A challenge nobody verifies is reclaimed some minutes after it expires, by the
 server itself; there is no call to cancel one.
 
+### `Verify` is dispatched to the enrollment's factor, and `factor_name` is checked, not chosen
+
+A challenge is verified by the factor its enrollment was made with. The
+optional `factor_name` on `Verify` (the JSON body field on REST, the request
+field on gRPC / Unix / QUIC, the tool argument on MCP, `FactorName` on
+embedded) never selects the factor:
+
+- **Empty** — the enrollment's factor verifies the response.
+- **Equal to the enrollment's factor** — the same.
+- **Anything else** (compared case-insensitively, as the registry compares
+  factor names) — refused. The permissive factor is never consulted, and
+  the challenge is consumed, so a refused attempt cannot be retried against
+  it.
+
+A challenge whose enrollment was revoked after it was issued is refused on
+`Verify`, just as `Challenge` refuses a revoked enrollment.
+
+| Condition | REST | gRPC / Unix | QUIC | MCP tool |
+|---|---|---|---|---|
+| `factor_name` differs from the enrollment's factor | 400 | `INVALID_ARGUMENT` | `StatusInvalidArgument` | `CodeInvalidArgument` |
+| enrollment revoked since the challenge was issued | 410 | `FAILED_PRECONDITION` | `StatusFailedPrecondition` | `CodeFailedPrecondition` |
+
+The embedded transport returns the typed `*authfactors.FactorMismatchError`
+(`AuthFactorMismatchError` in `sdk/go`) and `*authfactors.EnrollmentRevokedError`.
+
 ### Enrolment is scoped to the caller's tenant, and `tenant_id` is checked, not chosen
 
 Every one of these five verbs routes on the caller's authenticated context
@@ -72,7 +97,8 @@ against the one the call's context already resolved to:
 
 - **Empty** — filled in from the context tenant.
 - **Equal to the context tenant** — passes unchanged.
-- **Anything else** — refused. The record would otherwise physically land in
+- **Anything else** (compared case-insensitively, as the registry compares
+  factor names) — refused. The record would otherwise physically land in
   the context tenant while the field claimed a different one, and correcting
   it silently would hide that the caller's belief about its own tenant was
   wrong rather than surface it.

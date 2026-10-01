@@ -334,8 +334,9 @@ func (s *Server) handleAssignRole(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
 
-	// Validate that the role exists.
-	if _, err := s.roleSvc.GetRole(ctx, req.RoleID); err != nil {
+	// The same gate every role-assignment write passes: roles:assign in the
+	// user's tenant, and the role must exist there.
+	if err := s.authMW.AuthorizeRoleAssignmentWrite(ctx, s.userSvc, s.roleSvc, req.UserID, []string{req.RoleID}, nil); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
@@ -350,7 +351,7 @@ func (s *Server) handleAssignRole(w http.ResponseWriter, r *http.Request) {
 	// Check if role is already assigned.
 	for _, rid := range u.RoleIDs {
 		if rid == req.RoleID {
-			writeJSON(w, userToResponse(u))
+			s.writeUserJSON(ctx, w, http.StatusOK, u)
 			return
 		}
 	}
@@ -365,7 +366,7 @@ func (s *Server) handleAssignRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, userToResponse(updated))
+	s.writeUserJSON(ctx, w, http.StatusOK, updated)
 }
 
 // handleUnassignRole handles POST /roles/unassign -- removes a role from
@@ -388,6 +389,11 @@ func (s *Server) handleUnassignRole(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
+
+	if err := s.authMW.AuthorizeRoleUnassignment(ctx, s.userSvc, req.UserID); err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
 
 	// Get the user and remove the role.
 	u, err := s.userSvc.GetUser(ctx, req.UserID)
@@ -412,7 +418,7 @@ func (s *Server) handleUnassignRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, userToResponse(updated))
+	s.writeUserJSON(ctx, w, http.StatusOK, updated)
 }
 
 // handleListPermissions handles GET /permissions -- returns all registered

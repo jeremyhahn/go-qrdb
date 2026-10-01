@@ -188,7 +188,7 @@ func TestCall_AcknowledgesResponseByClosingAfterReading(t *testing.T) {
 	// and make one more call through a database-scoped clone, which shares
 	// the connection and must follow the same discipline.
 	<-observed
-	scoped, ok := tr.WithDatabase("orders").(*Transport)
+	scoped, ok := tr.withDatabase("orders"), true
 	if !ok {
 		t.Fatal("WithDatabase did not return *Transport")
 	}

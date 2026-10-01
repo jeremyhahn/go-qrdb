@@ -103,7 +103,7 @@ var testTime = time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
 // ---------------------------------------------------------------------------
 
 func TestUserToProto_Nil(t *testing.T) {
-	result := userToProto(nil)
+	result := mustUserToProto(t, nil, nil)
 	if result != nil {
 		t.Fatalf("expected nil, got %v", result)
 	}
@@ -120,7 +120,7 @@ func TestUserToProto_Valid(t *testing.T) {
 		CreatedAt: testTime,
 		UpdatedAt: testTime,
 	}
-	result := userToProto(u)
+	result := mustUserToProto(t, nil, u)
 	if result.GetId() != 1 {
 		t.Fatalf("expected ID 1, got %d", result.GetId())
 	}
@@ -514,7 +514,8 @@ func TestGRPC_CreateUser_Success(t *testing.T) {
 			CreatedAt: testTime, UpdatedAt: testTime,
 		},
 	}
-	client, cleanup := startTestServerFull(t, WithUserService(userSvc))
+	roleSvc := &mockRoleService{getResult: &role.Role{ID: "r1", TenantID: "t1"}}
+	client, cleanup := startTestServerFull(t, WithUserService(userSvc), WithRoleService(roleSvc))
 	defer cleanup()
 
 	resp, err := client.CreateUser(context.Background(), &pb.CreateUserRequest{WithoutEmailLoginKey: true,
@@ -642,12 +643,14 @@ func TestGRPC_GetUser_NilService(t *testing.T) {
 
 func TestGRPC_UpdateUser_Success(t *testing.T) {
 	userSvc := &mockUserService{
+		getResult: &user.User{ID: 1, TenantID: "t1"},
 		updateResult: &user.User{
 			ID: 1, Username: "alice-updated", Lifecycle: user.LifecycleActive,
 			CreatedAt: testTime, UpdatedAt: testTime,
 		},
 	}
-	client, cleanup := startTestServerFull(t, WithUserService(userSvc))
+	roleSvc := &mockRoleService{getResult: &role.Role{ID: "r2", TenantID: "t1"}}
+	client, cleanup := startTestServerFull(t, WithUserService(userSvc), WithRoleService(roleSvc))
 	defer cleanup()
 
 	resp, err := client.UpdateUser(context.Background(), &pb.UpdateUserProtoRequest{
@@ -1801,7 +1804,7 @@ func TestUserToProto_CarriesLifecycle(t *testing.T) {
 			CreatedAt: testTime,
 			UpdatedAt: testTime,
 		}
-		result := userToProto(u)
+		result := mustUserToProto(t, nil, u)
 		if result.GetLifecycle() != string(l) {
 			t.Errorf("lifecycle: got %q, want %q", result.GetLifecycle(), l)
 		}
@@ -1894,7 +1897,7 @@ func TestUserToProto_CarriesEveryIdentityField(t *testing.T) {
 		CreatedAt:   testTime,
 		UpdatedAt:   testTime,
 	}
-	got := userToProto(u)
+	got := mustUserToProto(t, nil, u)
 	if len(got.GetAuthMethods()) != 2 || got.GetAuthMethods()[1] != "piv" {
 		t.Errorf("auth_methods: got %v", got.GetAuthMethods())
 	}
@@ -1903,7 +1906,7 @@ func TestUserToProto_CarriesEveryIdentityField(t *testing.T) {
 	}
 
 	u.LastAuth = nil
-	if got := userToProto(u).GetLastAuthUnix(); got != 0 {
+	if got := mustUserToProto(t, nil, u).GetLastAuthUnix(); got != 0 {
 		t.Errorf("never-authenticated last_auth_unix: got %d, want 0", got)
 	}
 }
@@ -1917,7 +1920,7 @@ func TestUserToProto_CarriesCertBindingsIncludingExpired(t *testing.T) {
 			{Thumbprint: "AAAA", Kind: user.CertBindingSPKIThumbprint},
 			{Thumbprint: "BBBB", Kind: user.CertBindingPIVAttested, NotAfter: expired},
 		}}
-	got := userToProto(u).GetCertBindings()
+	got := mustUserToProto(t, nil, u).GetCertBindings()
 	if len(got) != 2 {
 		t.Fatalf("cert_bindings: got %d, want 2", len(got))
 	}
@@ -1928,7 +1931,7 @@ func TestUserToProto_CarriesCertBindingsIncludingExpired(t *testing.T) {
 		t.Errorf("cert_bindings[1] = %v; the expired binding must be listed with its expiry", got[1])
 	}
 	u.CertBindings = nil
-	if got := userToProto(u).GetCertBindings(); len(got) != 0 {
+	if got := mustUserToProto(t, nil, u).GetCertBindings(); len(got) != 0 {
 		t.Errorf("no bindings must render as none, got %v", got)
 	}
 }

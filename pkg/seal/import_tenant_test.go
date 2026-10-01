@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package seal_test
+package seal
 
 import (
 	"bytes"
@@ -20,17 +20,15 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
 // initSystemBarrierForImport initializes the registry's system barrier using
 // the NoneStrategy (credential-free), which satisfies
 // SystemBarrierStrategy.Available() for subsequent auto-unseal tenant operations.
-func initSystemBarrierForImport(t *testing.T, reg *seal.BarrierRegistry) {
+func initSystemBarrierForImport(t *testing.T, reg *BarrierRegistry) {
 	t.Helper()
 	ctx := context.Background()
-	if err := reg.SystemBarrier().Initialize(ctx, seal.Credentials{}); err != nil {
+	if err := reg.SystemBarrier().Initialize(ctx, Credentials{}); err != nil {
 		t.Fatalf("Initialize system barrier: %v", err)
 	}
 }
@@ -45,8 +43,8 @@ func buildValidSealedBlob(t *testing.T) []byte {
 	for i := range salt {
 		salt[i] = byte(i + 1)
 	}
-	key := seal.SealedRootKey{
-		Strategy:    seal.StrategyNone,
+	key := SealedRootKey{
+		Strategy:    StrategyNone,
 		Version:     1,
 		Epoch:       1,
 		Salt:        salt,
@@ -76,7 +74,7 @@ func TestBarrierRegistry_ImportTenant_AutoUnseal(t *testing.T) {
 	}
 	_ = leaderDataRoot
 
-	if err := leaderTB.Initialize(ctx, seal.Credentials{}); err != nil {
+	if err := leaderTB.Initialize(ctx, Credentials{}); err != nil {
 		t.Fatalf("Initialize(leader tenant): %v", err)
 	}
 
@@ -135,7 +133,7 @@ func TestBarrierRegistry_ImportTenant_AutoUnseal_CrossNodeDEKParity(t *testing.T
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant(dek-leader): %v", err)
 	}
-	if err := leaderTB.Initialize(ctx, seal.Credentials{}); err != nil {
+	if err := leaderTB.Initialize(ctx, Credentials{}); err != nil {
 		t.Fatalf("Initialize(dek-leader): %v", err)
 	}
 
@@ -207,7 +205,7 @@ func TestBarrierRegistry_ImportTenant_AutoUnseal_NilImportedKey(t *testing.T) {
 	initSystemBarrierForImport(t, reg)
 
 	_, err := reg.ImportTenant(ctx, "nil-key-tenant", "", true, nil, nil)
-	if !errors.Is(err, seal.ErrImportedKeyNil) {
+	if !errors.Is(err, ErrImportedKeyNil) {
 		t.Errorf("expected ErrImportedKeyNil, got %v", err)
 	}
 }
@@ -221,7 +219,7 @@ func TestBarrierRegistry_ImportTenant_SelfManaged_NilBlob(t *testing.T) {
 	initSystemBarrierForImport(t, reg)
 
 	_, err := reg.ImportTenant(ctx, "nil-blob-tenant", "", false, nil, nil)
-	if !errors.Is(err, seal.ErrImportSealedBlobNil) {
+	if !errors.Is(err, ErrImportSealedBlobNil) {
 		t.Errorf("expected ErrImportSealedBlobNil, got %v", err)
 	}
 }
@@ -243,7 +241,7 @@ func TestBarrierRegistry_ImportTenant_Idempotency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant(idem-leader): %v", err)
 	}
-	if err := leaderTB.Initialize(ctx, seal.Credentials{}); err != nil {
+	if err := leaderTB.Initialize(ctx, Credentials{}); err != nil {
 		t.Fatalf("Initialize(idem-leader): %v", err)
 	}
 	exported, err := leaderTB.Barrier().ExportRootKeyContext()

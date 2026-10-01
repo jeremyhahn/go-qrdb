@@ -90,7 +90,7 @@ func TestMCPToolRegistry_LookupNotFound(t *testing.T) {
 func TestAuthorizeMCP_NoIdentity_Denied(t *testing.T) {
 	m := New(&mockAuthorizer{})
 	ctx := context.Background()
-	err := m.AuthorizeMCP(ctx, testMCPToolRegistry(), "qrdb_kv_put")
+	err := m.AuthorizeMCP(ctx, testMCPToolRegistry(), "qrdb_kv_put", nil)
 	if err == nil {
 		t.Fatal("expected error when no identity in context")
 	}
@@ -111,7 +111,7 @@ func TestAuthorizeMCP_UnmappedTool_Denied(t *testing.T) {
 		Roles:    []string{"admin"},
 	}
 	ctx := auth.WithIdentity(context.Background(), identity)
-	err := m.AuthorizeMCP(ctx, testMCPToolRegistry(), "qrdb_tool_that_does_not_exist")
+	err := m.AuthorizeMCP(ctx, testMCPToolRegistry(), "qrdb_tool_that_does_not_exist", nil)
 	if err == nil {
 		t.Fatal("expected error for unmapped tool (default-deny)")
 	}
@@ -132,7 +132,7 @@ func TestAuthorizeMCP_AuthorizedCaller_Allowed(t *testing.T) {
 		Roles:    []string{"admin"},
 	}
 	ctx := auth.WithIdentity(context.Background(), identity)
-	if err := m.AuthorizeMCP(ctx, testMCPToolRegistry(), "qrdb_put"); err != nil {
+	if err := m.AuthorizeMCP(ctx, testMCPToolRegistry(), "qrdb_put", nil); err != nil {
 		t.Fatalf("expected success, got: %v", err)
 	}
 }
@@ -146,7 +146,7 @@ func TestAuthorizeMCP_AuthorizerDenied(t *testing.T) {
 		Roles:    []string{"reader"},
 	}
 	ctx := auth.WithIdentity(context.Background(), identity)
-	err := m.AuthorizeMCP(ctx, testMCPToolRegistry(), "qrdb_put")
+	err := m.AuthorizeMCP(ctx, testMCPToolRegistry(), "qrdb_put", nil)
 	if err == nil {
 		t.Fatal("expected deny from authorizer")
 	}
@@ -248,8 +248,8 @@ func TestIsPublicGRPCMethod_Health(t *testing.T) {
 }
 
 func TestIsPublicGRPCMethod_Reflection(t *testing.T) {
-	if !isPublicGRPCMethod("/grpc.reflection.v1.ServerReflection/ServerReflectionInfo") {
-		t.Error("reflection method should be public")
+	if isPublicGRPCMethod("/grpc.reflection.v1.ServerReflection/ServerReflectionInfo") {
+		t.Error("reflection exposes the whole schema and must not be public by default")
 	}
 }
 

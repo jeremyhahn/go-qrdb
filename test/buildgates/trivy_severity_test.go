@@ -628,7 +628,7 @@ func TestTheWiringCheckSeesEachWayTheReportCanBeUnplugged(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "nightly.yml")
-			if err := os.WriteFile(path, []byte(tc.body), 0o644); err != nil {
+			if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
 				t.Fatalf("write: %v", err)
 			}
 			got := trivyWiringDefects(jobSteps(t, path, "trivy"))

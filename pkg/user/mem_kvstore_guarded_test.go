@@ -47,6 +47,14 @@ func (m *memKVStore) PutAllIfUnchanged(ctx context.Context, guardKey string, gua
 // — the empty-vs-absent hole go-qrdb#555's review found in the adapters. A
 // double that got this wrong would make that regression invisible here.
 func (m *memKVStore) PutAllIfAllUnchanged(_ context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	if m.beforeBatch != nil {
+		m.beforeBatch()
+	}
+	if m.batchErr != nil {
+		if err := m.batchErr(); err != nil {
+			return false, err
+		}
+	}
 	m.atomicMu.Lock()
 	defer m.atomicMu.Unlock()
 	for _, g := range guards {

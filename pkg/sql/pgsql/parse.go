@@ -158,9 +158,11 @@ func (h *ParseHandler) HandleParse(ctx context.Context, query string) (wire.Prep
 	// returned, which matches what a client sees from PostgreSQL itself
 	// (earlier results are superseded on the wire). The extended protocol
 	// forbids the form entirely when parameters are involved, and so does
-	// this path: the split only fires for parameterless text.
+	// this path: the split only fires for parameterless text. A placeholder
+	// spelling inside a string literal or comment ('costs $1') is not a
+	// parameter, so it does not stop the split.
 	if statements := engine.SplitTopLevelStatements(trimmed); len(statements) > 1 &&
-		len(wire.ParseParameters(trimmed)) == 0 {
+		!engine.MatchesOutsideLiterals(trimmed, wire.QueryParameters) {
 		for _, statement := range statements[:len(statements)-1] {
 			if _, err := h.HandleParse(ctx, statement); err != nil {
 				return nil, err
@@ -179,7 +181,15 @@ func (h *ParseHandler) HandleParse(ctx context.Context, query string) (wire.Prep
 	// comment -- so they fall through to translation/execution below like
 	// any other statement.
 	upper := strings.ToUpper(trimmed)
-	if h.isNoopStatement(upper) {
+	if routed, ok, err := routeSessionSet(trimmed); ok {
+		// A SET of a QRDB setting, or of lock_timeout, is not PostgreSQL
+		// session decoration: it changes how this session's statements
+		// run, so it reaches the engine instead of being swallowed.
+		if err != nil {
+			return nil, sessionSetWireError(err)
+		}
+		trimmed = routed
+	} else if h.isNoopStatement(upper) {
 		return h.emptyResult()
 	}
 
@@ -284,8 +294,10 @@ var createIndexStatementRe = regexp.MustCompile(`(?i)^\s*CREATE\s+(?:UNIQUE\s+)?
 // This path is used for non-parameterized queries where all values are
 // available in the SQL text itself.
 func (h *ParseHandler) executeEager(ctx context.Context, trimmed, translated string, preparsed sqlparser.Statement) (wire.PreparedStatements, error) {
-	// Build a GMS sql.Context with the QRDB session carrying identity.
-	sqlCtx := h.buildSQLContext(ctx)
+	// Build a GMS sql.Context with the QRDB session carrying identity, and
+	// the statement text the engine runs: the SQL layer reads a
+	// statement's row-lock intent from it (see docs/row-locking/).
+	sqlCtx := h.buildSQLContext(ctx, sql.WithQuery(translated))
 
 	warningBaseline := len(sqlCtx.Warnings())
 
@@ -468,8 +480,9 @@ func (h *ParseHandler) executeDeferredCallback(
 		return err
 	}
 
-	// Build a fresh sql.Context for execution.
-	sqlCtx := h.buildSQLContext(ctx)
+	// Build a fresh sql.Context for execution, carrying the statement text
+	// (see executeEager).
+	sqlCtx := h.buildSQLContext(ctx, sql.WithQuery(translated))
 
 	warningBaseline := len(sqlCtx.Warnings())
 
@@ -985,8 +998,9 @@ func emptyResultFn(_ context.Context, writer wire.DataWriter, _ []wire.Parameter
 
 // buildSQLContext creates a go-mysql-server sql.Context from the connection
 // context. If an auth identity is present, it is carried through via a
-// QRDBSession for tenant-scoped operations.
-func (h *ParseHandler) buildSQLContext(ctx context.Context) *sql.Context {
+// QRDBSession for tenant-scoped operations. opts are applied to the context
+// as it is built -- an executing statement passes sql.WithQuery.
+func (h *ParseHandler) buildSQLContext(ctx context.Context, opts ...sql.ContextOption) *sql.Context {
 	session := connectionSessionFromContext(ctx)
 	if session == nil {
 		// Defensive fallback for a caller that bypasses the connection-level
@@ -1001,7 +1015,7 @@ func (h *ParseHandler) buildSQLContext(ctx context.Context) *sql.Context {
 		identity := IdentityFromContext(ctx)
 		session = provider.NewSession(sql.NewBaseSession(), identity)
 	}
-	sqlCtx := sql.NewContext(ctx, sql.WithSession(session))
+	sqlCtx := sql.NewContext(ctx, append([]sql.ContextOption{sql.WithSession(session)}, opts...)...)
 	sqlCtx.SetCurrentDatabase(sessionDatabase(wire.ClientParameters(ctx), h.dbName))
 	return sqlCtx
 }

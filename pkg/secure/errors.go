@@ -14,6 +14,8 @@
 
 package secure
 
+import "strconv"
+
 // NilSecretError is returned when Open is called on a Secret whose
 // underlying enclave has not been initialized or has already been
 // destroyed.
@@ -112,4 +114,73 @@ type EmptyBorrowError struct{}
 // Error implements the error interface.
 func (e *EmptyBorrowError) Error() string {
 	return "secure: borrow yielded no bytes; the protected pages are gone"
+}
+
+// ProcessHardeningError is returned by HardenProcess when the platform refused
+// the mechanism that stops other processes reading this one's memory. The
+// process is NOT hardened. Mechanism names what was attempted, for example
+// "prctl(PR_SET_DUMPABLE, 0)".
+type ProcessHardeningError struct {
+	Mechanism string
+	Err       error
+}
+
+// Error implements the error interface.
+func (e *ProcessHardeningError) Error() string {
+	return "secure: process inspection hardening " + e.Mechanism + " failed: " + e.Err.Error()
+}
+
+// Unwrap returns the platform error.
+func (e *ProcessHardeningError) Unwrap() error {
+	return e.Err
+}
+
+// ProcessInspectionOptOutError is returned by HardenProcess when
+// AllowProcessInspectionEnv holds a value strconv.ParseBool rejects. The
+// process is NOT hardened: a malformed security opt-out is refused rather
+// than read as either answer. Value is the rejected text, which is an
+// operator-supplied switch and never key material.
+type ProcessInspectionOptOutError struct {
+	Value string
+	Err   error
+}
+
+// Error implements the error interface.
+func (e *ProcessInspectionOptOutError) Error() string {
+	return "secure: " + AllowProcessInspectionEnv + "=" + strconv.Quote(e.Value) +
+		" is not a boolean; unset it, or set it to true to leave the process inspectable"
+}
+
+// Unwrap returns the parse error.
+func (e *ProcessInspectionOptOutError) Unwrap() error {
+	return e.Err
+}
+
+// ProcessInspectionOptOutRefusedError is returned by HardenProcess when
+// AllowProcessInspectionEnv is set in a mode that forbids it. Mode names the
+// mode, for example "FIPS 140-3". The process is NOT hardened: the opt-out is
+// refused rather than silently ignored, so the operator learns that the
+// debugging session they asked for cannot happen in this mode.
+type ProcessInspectionOptOutRefusedError struct {
+	Mode string
+}
+
+// Error implements the error interface.
+func (e *ProcessInspectionOptOutRefusedError) Error() string {
+	return "secure: " + AllowProcessInspectionEnv + " is refused in " + e.Mode +
+		" mode; a process in this mode must not be inspectable, so unset it"
+}
+
+// ProcessTracedError is returned by HardenProcess when a tracer is already
+// attached to the process. Marking the process non-dumpable stops new
+// attaches but leaves an existing tracer its access, so the process refuses to
+// continue. TracerPID is the tracer's process ID.
+type ProcessTracedError struct {
+	TracerPID int
+}
+
+// Error implements the error interface.
+func (e *ProcessTracedError) Error() string {
+	return "secure: process is already traced by pid " + strconv.Itoa(e.TracerPID) +
+		"; detach the tracer, or set " + AllowProcessInspectionEnv + "=true to debug"
 }

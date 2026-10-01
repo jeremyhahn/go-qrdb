@@ -23,7 +23,7 @@
 # ifacesweep prints the source file of every interface method it finds, and
 # the first version of it printed token.Position.Filename VERBATIM. That is
 # absolute — go/packages resolves it against the checkout, so the committed
-# TSV read e.g. /home/jhahn/sources/.wt/go-qrdb-271-iface-sweep/cmd/qrdbd/
+# TSV read e.g. /home/dev/sources/.wt/go-qrdb-271-iface-sweep/cmd/qrdbd/
 # cluster_migrate.go on 996 of 996 rows. Caught in review, not by a check:
 # the publication-bound scanner's scope is docs/*/, so an absolute host path
 # under test/tools/ was invisible to it (go-qrdb, filed separately). Two

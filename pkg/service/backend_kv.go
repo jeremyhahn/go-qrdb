@@ -24,6 +24,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
@@ -72,7 +73,7 @@ func NewNamedBackendKVService(name string, backend database.Backend) *BackendKVS
 func (s *BackendKVService) translateSealed(err error) error {
 	var sealed *database.SealedError
 	if errors.As(err, &sealed) {
-		return &BarrierSealedError{TenantID: s.name}
+		return &BarrierSealedError{Database: s.name}
 	}
 	return err
 }
@@ -98,8 +99,8 @@ func (s *BackendKVService) PutIfAbsent(ctx context.Context, key string, value []
 	if !ok {
 		// Marked: the capability was refused up front, so the write is
 		// provably not stored. The wrapping keeps
-		// errors.Is(err, database.ErrAtomicWriteUnsupported) true.
-		return false, markNotStored(database.ErrAtomicWriteUnsupported)
+		// errors.Is(err, kvstore.ErrAtomicWriteUnsupported) true.
+		return false, markNotStored(kvstore.ErrAtomicWriteUnsupported)
 	}
 	stored, err := atomicBackend.PutIfAbsent(ctx, []byte(key), value)
 	if err != nil {
@@ -110,15 +111,15 @@ func (s *BackendKVService) PutIfAbsent(ctx context.Context, key string, value []
 
 // CompareAndDelete removes key only when its stored value still equals
 // expected, delegating to the backend's own guarded delete. A backend without
-// one refuses with database.ErrAtomicWriteUnsupported rather than degrading
+// one refuses with kvstore.ErrAtomicWriteUnsupported rather than degrading
 // to a read-then-delete, which is the window the operation exists to close.
 func (s *BackendKVService) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
 	atomicBackend, ok := s.backend.(database.AtomicBackend)
 	if !ok {
 		// Marked: the capability was refused up front, so the write is
 		// provably not stored. The wrapping keeps
-		// errors.Is(err, database.ErrAtomicWriteUnsupported) true.
-		return false, markNotStored(database.ErrAtomicWriteUnsupported)
+		// errors.Is(err, kvstore.ErrAtomicWriteUnsupported) true.
+		return false, markNotStored(kvstore.ErrAtomicWriteUnsupported)
 	}
 	deleted, err := atomicBackend.CompareAndDelete(ctx, []byte(key), expected)
 	if err != nil {
@@ -136,8 +137,8 @@ func (s *BackendKVService) CompareAndSwap(ctx context.Context, key string, expec
 	if !ok {
 		// Marked: the capability was refused up front, so the write is
 		// provably not stored. The wrapping keeps
-		// errors.Is(err, database.ErrAtomicWriteUnsupported) true.
-		return false, markNotStored(database.ErrAtomicWriteUnsupported)
+		// errors.Is(err, kvstore.ErrAtomicWriteUnsupported) true.
+		return false, markNotStored(kvstore.ErrAtomicWriteUnsupported)
 	}
 	swapped, err := atomicBackend.CompareAndSwap(ctx, []byte(key), expected, next)
 	if err != nil {

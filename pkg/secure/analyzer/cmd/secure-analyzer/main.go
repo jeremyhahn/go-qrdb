@@ -6,8 +6,10 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-// Command secure-analyzer is a standalone go vet tool that runs the
-// pkg/secure policy analyzer. Build it and use it via:
+// Command secure-analyzer is a standalone go vet tool that runs the two
+// pkg/secure analyzers: securecheck (declaration and access rules 1-4) and
+// securecopy (lifetimes of copies taken out of protected memory). Build it and
+// use it via:
 //
 //	go build -o $(go env GOPATH)/bin/secure-analyzer \
 //	    ./pkg/secure/analyzer/cmd/secure-analyzer
@@ -15,11 +17,11 @@
 package main
 
 import (
-	"golang.org/x/tools/go/analysis/singlechecker"
+	"golang.org/x/tools/go/analysis/multichecker"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/secure/analyzer"
 )
 
 func main() {
-	singlechecker.Main(analyzer.Analyzer)
+	multichecker.Main(analyzer.Analyzer, analyzer.CopyOutAnalyzer)
 }

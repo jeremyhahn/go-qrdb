@@ -105,7 +105,10 @@ func assertIsolation(t *testing.T, base *sdk.Client, label string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	scoped := base.DatabaseScoped("db2")
+	scoped, err := base.DatabaseScoped("db2")
+	if err != nil {
+		t.Fatalf("[%s] DatabaseScoped(db2): %v", label, err)
+	}
 	sharedKey := "scope/" + label + "/shared"
 	sysOnlyKey := "scope/" + label + "/sys-only"
 	dbOnlyKey := "scope/" + label + "/db2-only"

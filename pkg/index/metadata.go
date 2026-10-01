@@ -19,7 +19,6 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
-	"unsafe"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/errors"
 )
@@ -287,9 +286,9 @@ func encodeInt64(v int64) []byte {
 
 // encodeFloat64 encodes a float64 to bytes with proper sorting.
 func encodeFloat64(v float64) []byte {
-	//nolint:gosec // G103: unsafe used for zero-copy float64 to uint64 conversion - performance critical
-	// Convert to uint64 bits
-	bits := *(*uint64)(unsafe.Pointer(&v))
+	// The IEEE 754 bit pattern. math.Float64bits is the same zero-copy
+	// reinterpretation an unsafe cast performs, without the unsafe.
+	bits := math.Float64bits(v)
 
 	// Flip bits for negative numbers to ensure proper sorting
 	if v < 0 {
@@ -442,8 +441,7 @@ func DecodeNumericValue(b []byte) (string, error) {
 		// Was negative — reverse the all-bits flip.
 		bits = ^bits
 	}
-	//nolint:gosec // G103: unsafe used for zero-copy uint64 to float64 conversion
-	f = *(*float64)(unsafe.Pointer(&bits))
+	f = math.Float64frombits(bits)
 
 	// Format as integer when the value is whole and fits in int64.
 	if f == math.Trunc(f) && f >= math.MinInt64 && f <= math.MaxInt64 {

@@ -26,6 +26,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-enclave"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/secret"
 )
 
@@ -58,6 +59,7 @@ func TestNewSecretValue_SealingFailureFailsClosed(t *testing.T) {
 		// profile by `make coverage`'s `go tool covdata textfmt` step.
 		args = append(args, "-test.gocoverdir="+dir)
 	}
+	// #nosec G204,G702 -- re-exec of this test binary: argv[0] is os.Args[0], the path `go test` invoked, and the arguments are compile-time literals plus the GOCOVERDIR the go tool exported for this run. No shell is involved.
 	cmd := exec.Command(os.Args[0], args...)
 	cmd.Env = append(os.Environ(), sealFailureChildEnv+"=1")
 	out, err := cmd.CombinedOutput()
@@ -163,5 +165,5 @@ func runSealFailureChild() {
 		fail("JSON encoding of SealFailedError carries the plaintext secret: %s", encoded)
 	}
 
-	fmt.Println("PASS: sealing failure returned *SealFailedError, not a silently empty SecretValue")
+	fmt.Fprintln(os.Stdout, "PASS: sealing failure returned *SealFailedError, not a silently empty SecretValue")
 }

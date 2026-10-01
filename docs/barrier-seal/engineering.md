@@ -221,8 +221,9 @@ For field documentation and the complete struct definition, see `pkg/seal/barrie
   (the go-enclave migration removed the process-wide lock that made it), but converting
   these sites to a held borrow is a separate, not-yet-landed change.
   Those sites read without a borrow deliberately, each with a
-  comment saying so, and are covered by a regression test that fails if a
-  borrow is reintroduced.
+  `//secure:unborrowed injected-interface` directive the secure analyzer
+  requires (rule 4 below), and are covered by a regression test that fails if
+  a borrow is reintroduced.
 - **The rule is checked, not just written down.** `secure.GuardBorrows`-armed
   tests drive each converted path and report a nested borrow as a test failure
   naming both sites, instead of a process that stops with no diagnostic.
@@ -378,10 +379,30 @@ dropping them before the directory is gone would orphan it.
 See [../multi-tenancy/architecture.md](../multi-tenancy/architecture.md) for
 where it sits in the tenant teardown order.
 
+## Reading a passphrase from standard input
+
+`secure.StdinProvider` (re-exported from `sdk/go/secure`) reads one line
+straight into an mlocked buffer, never through a `bufio.Reader`: that would
+stage the passphrase in heap memory nothing wipes, and it would consume bytes
+past the newline that belong to the stream's next reader. The rest of the
+stream is always left where it was.
+
+The number of `read(2)` calls depends on the stream. When standard input is a
+regular file — redirected from one — the line is read in bulk and the bytes
+past the newline are sought back, so a line costs one or two reads; the offset
+the seek reports must be exactly one byte past the newline, or the read fails.
+Anything else — a pipe, a terminal or another character device, even one that
+accepts a seek — is read one byte per call, because it cannot give bytes back
+and any larger read may take bytes past the newline.
+Lines longer than `MaxStdinPassphraseLen` (1024 bytes) are refused, not
+truncated, on either path. A stream that answers 100 reads in a row with no
+bytes and no error is broken, and the read fails with `io.ErrNoProgress`, as
+`bufio` does, rather than spinning.
+
 ## Secure-memory rules, and what enforces them
 
 Key material in this repository is held through `pkg/secure`, a facade over a
-process-wide mlocking allocator. Three rules protect that boundary, and they
+process-wide mlocking allocator. Four rules protect that boundary, and they
 are enforced by a `go vet` plugin under `pkg/secure/analyzer/` that `make
 secure-analyzer` runs in CI's Lint job over **every Go module in the tree**
 under **every combination in the Makefile's `SUPPORTED_TAG_SETS`**.
@@ -391,6 +412,18 @@ under **every combination in the Makefile's `SUPPORTED_TAG_SETS`**.
 | 1 | No raw `memguard` import anywhere (go-enclave is the protected-memory library; `pkg/secure` is its facade) | Every file, tests included |
 | 2 | No `ssh.ParsePrivateKey`; use `ParsePrivateKeyWithPassphrase` on Buffer-backed bytes | Every file, tests included |
 | 3 | No struct field named `Passphrase`, `Password`, `PIN`, `Secret`, `PrivateKey`, `KeyMaterial` or `RecoveryShare` typed `string` or `[]byte` | Scoped — see below |
+| 4 | No `secure.Buffer.Bytes` reference (call, method value or method expression) unless a `//secure:unborrowed <kind> <reason>` directive trailing the read, or standing alone on the line above it, names why it cannot hold a borrow; `<kind>` is `injected-interface`, `allocates-protected` or `nested-enclave` | Every file except `_test.go` |
+
+Rule 4 exists because `Bytes` returns a slice into locked pages with no lock
+held, so a concurrent destroy — the shutdown sweep above all — can unmap the
+pages mid-read and fault the process. `WithBytes` and `secure.CopyOut` hold
+the borrow across the read. A read that cannot hold one crosses an interface a
+consumer implements (the barrier's `Encrypt`, a sealing strategy, the share
+distributor), which `pkg/secure` forbids reaching from inside a borrow. The
+directive is written at the site and read by the analyzer; it is not an
+allowlist, and nothing away from the line can silence a read. Test files are
+out of scope: a test reads its buffer on the goroutine that owns it, with no
+shutdown sweep running.
 
 Both the sweep and its module coverage matter. `./...` does not cross a module
 boundary, so `sdk/go` needs its own pass; and a single tag combination reports
@@ -428,12 +461,73 @@ not yet enforce the `[]byte` half — converting the remaining `string` fields
 is a wire-format break, since JSON renders `[]byte` as base64 — and that gap
 is tracked rather than assumed away.
 
+### Lifetimes: where a copy of protected bytes ends
+
+The four rules are about declarations and access. None of them asks what
+happens to bytes once they are copied out of protected memory, and that is how
+an unrecoverable plaintext copy once landed with every rule green: a
+passphrase moved into a `secure.Buffer`, read back with
+`append([]byte(nil), b...)` inside `WithBytes`, and never wiped. A second
+analyzer in the same tool, `securecopy`, follows every such copy.
+
+**A copy-out** is `append(x, view...)`, `copy(dst, view)` into a
+non-protected destination, `bytes.Clone`/`slices.Clone` of a view,
+`string(view)`, or a call to a function known to return one. A *view* is the
+`[]byte` a literal `WithBytes` callback receives, a `Buffer.Bytes` result, or
+a re-slice of either.
+
+**The obligation ends** when the variable holding the copy is:
+
+- **wiped or consumed** after the copy: passed to `secure.Wipe`, the builtin
+  `clear`, or any function that hands its parameter on to one. go-enclave's
+  `Wipe` and `NewSealed` are the roots, and consumers are inferred from them
+  across packages, so `secure.NewBufferFromBytes` and `seal.NewCredentials`
+  count with no annotation. A contract inference cannot see (an interface
+  method, for example) is declared with `//secure:consumes` in its doc
+  comment.
+- **returned**, which makes the function a copy-returner and moves the
+  obligation to every caller, across packages.
+
+Anything else is reported. `defer secure.Wipe(x)` written *before* the copy
+is reported too: a deferred call evaluates `x` when the defer statement runs,
+so it wipes whatever `x` held then. `defer func() { secure.Wipe(x) }()` reads
+`x` at exit and counts wherever it is written. A copy that has to outlive every
+wipe carries `//secure:unwiped <reason>` trailing it, or standing alone on the
+line above it, in the same per-site form as rule 4.
+
+**What it cannot see**, which stays a review obligation:
+
+- a wipe that only some paths reach (the analysis is not path-sensitive; a
+  `defer` right after the copy removes the question);
+- a wipe through a second variable (reported, a false positive in the safe
+  direction), and an `append` that reallocates the copy after it was made
+  (not seen);
+- what a callee does with a view it is handed. A view passed to a function
+  is not a copy-out, and inside that function the parameter is an ordinary
+  `[]byte`;
+- copies returned through an interface method or a function value. Facts
+  attach to concrete functions, so the obligation is not traced past dynamic
+  dispatch. That is where credential retrieval leaves the analysis: the
+  service interface the transports call;
+- callbacks passed to `WithBytes` by variable rather than as a literal;
+- copies the compiler or runtime makes, and plaintext that never lived in
+  protected memory (a decoded request field, for example).
+
+Measured when the analyzer landed: 24 copy-outs across both modules. 19 are
+returned to a caller that owns them, 3 are wiped or consumed, and 2 carry
+`//secure:unwiped`: the per-tenant credential retrieval returned through a
+function value to the resolver that wipes it, and the officer share claim
+returned to its transport response.
+
 ### The gate is checked against a known instance
 
-`make test-secure-analyzer` plants a raw `memguard` import and a raw holder
-field, requires both to be reported, and requires `go vet` to exit nonzero —
+`make test-secure-analyzer` plants a raw `memguard` import, a raw holder
+field, a bare `secure.Buffer.Bytes` read, an unwiped copy-out and a copy-out
+whose deferred wipe precedes it, requires each to be reported, and requires `go vet` to exit nonzero —
 a diagnostic that does not fail the command does not block a merge. It also
-requires the four scoped populations to stay silent through the real binary.
+requires the four scoped populations, a directive-justified read, a read in a
+test file and a correctly wiped copy-out to stay silent through the real
+binary.
 A clean sweep and a neutered analyzer print the same thing; only the red run
 distinguishes them.
 
@@ -471,6 +565,44 @@ All barrier operations emit audit events when an `AuditLogger` is configured:
 With strategy `none`, every one of those events is marked `strategy: none`, so
 the absence of encryption is permanently visible in the trail rather than
 inferable.
+
+### Seal enabled, storage not encrypted
+
+Enabling seal does not by itself encrypt every byte the node writes. The
+barrier's encrypted filesystem wraps Pebble's file system. On a raft node it
+covers every state machine that persists anything -- `mvcc` and `pebble`, and
+`disk` and `fast` over pebble storage -- and a state machine whose storage
+would persist plaintext (`disk` or `fast` over `file`) is refused at start
+(see [../storage-engines/](../storage-engines/engineering.md)), so a raft node reports no
+gap. On a standalone node it covers the `pebble` backend, not the `file` or
+`objstore` backend.
+
+Such a node still runs. It says so in two places, both computed once at boot
+from the configuration (`config.Config.EffectiveCapabilities`):
+
+- **A startup WARNING** per gap, logged by every composition root (the daemon
+  and `sdk/go/node`) before the node serves traffic:
+
+  ```
+  seal is enabled but data is stored unencrypted at rest  where="standalone backend \"file\" stores its data without the seal barrier's at-rest encryption; use backend \"pebble\""
+  ```
+
+- **The capability report**: `UnencryptedAtRest` (`unencryptedAtRest` in JSON,
+  `unencrypted_at_rest` in the protobuf) lists the same gaps on REST, gRPC,
+  Unix, QUIC, MCP and the embedded transport, and `qrdb admin capabilities`
+  prints one `unencryptedAtRest` row per gap. It is empty when seal is off or
+  everything on disk is encrypted.
+
+The report judges the node's own store, because that is where every
+database's data lives. A database is a namespace over the node's store
+whatever `backend` its catalog record names: the store the database manager
+opens for a `file` database holds no data unless the database carries a
+per-database barrier, and then the barrier encrypts its values (not its keys)
+separately. A configured database after the first, or one created at runtime,
+therefore adds no gap of its own; on a standalone node the first configured
+database's backend *is* the node's store. `objstore` is a node-store backend
+only: the database manager refuses to open a database with it
+(`database.InvalidBackendError`).
 
 ### `seal.enabled: false` startup warning
 

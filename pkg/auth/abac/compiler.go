@@ -255,10 +255,7 @@ type exactAttributeMatcher struct {
 }
 
 func (m *exactAttributeMatcher) Match(subject *Subject) bool {
-	if subject.Attributes == nil {
-		return false
-	}
-	if val, ok := subject.Attributes[m.key]; ok {
+	if val, ok := subject.attribute(m.key); ok {
 		return fmt.Sprintf("%v", val) == m.value
 	}
 	return false
@@ -271,10 +268,7 @@ type numericAttributeMatcher struct {
 }
 
 func (m *numericAttributeMatcher) Match(subject *Subject) bool {
-	if subject.Attributes == nil {
-		return false
-	}
-	attrVal, ok := subject.Attributes[m.key]
+	attrVal, ok := subject.attribute(m.key)
 	if !ok {
 		return false
 	}
@@ -305,10 +299,7 @@ type stringAttributeMatcher struct {
 }
 
 func (m *stringAttributeMatcher) Match(subject *Subject) bool {
-	if subject.Attributes == nil {
-		return false
-	}
-	attrVal, ok := subject.Attributes[m.key]
+	attrVal, ok := subject.attribute(m.key)
 	if !ok {
 		return false
 	}
@@ -332,10 +323,7 @@ type inAttributeMatcher struct {
 }
 
 func (m *inAttributeMatcher) Match(subject *Subject) bool {
-	if subject.Attributes == nil {
-		return false
-	}
-	attrVal, ok := subject.Attributes[m.key]
+	attrVal, ok := subject.attribute(m.key)
 	if !ok {
 		return false
 	}

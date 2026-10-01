@@ -45,7 +45,10 @@ type dbContextKey struct{}
 
 // withDatabase stores the resolved database name in ctx.
 func withDatabase(ctx context.Context, db string) context.Context {
-	return context.WithValue(ctx, dbContextKey{}, db)
+	// The canonical database scope is bound as well, so a service that reads
+	// the (tenant, database) pair from the context -- the RAG store, for one
+	// -- sees the same database on gRPC and Unix as on QUIC and MCP.
+	return tenant.WithDatabase(context.WithValue(ctx, dbContextKey{}, db), db)
 }
 
 // databaseFromContext returns the database name bound by the scope interceptor.

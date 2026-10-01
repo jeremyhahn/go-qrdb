@@ -457,7 +457,7 @@ func connectAuthInProcess(t *testing.T, uSvc user.UserServicer, rSvc role.RoleSe
 
 func TestCreateUser_Success(t *testing.T) {
 	svc := newMockUserSvc()
-	tr, cleanup := connectAuthInProcess(t, svc, nil, nil)
+	tr, cleanup := connectAuthInProcess(t, svc, newMockRoleSvc(), nil)
 	defer cleanup()
 
 	u, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{WithoutEmailLoginKey: true,
@@ -590,7 +590,7 @@ func TestGetUserByUsername_NotFound(t *testing.T) {
 
 func TestUpdateUser_Success(t *testing.T) {
 	svc := newMockUserSvc()
-	tr, cleanup := connectAuthInProcess(t, svc, nil, nil)
+	tr, cleanup := connectAuthInProcess(t, svc, newMockRoleSvc(), nil)
 	defer cleanup()
 
 	u, err := tr.UpdateUser(context.Background(), &transport.UpdateUserRequest{
@@ -1049,7 +1049,9 @@ func TestListCerts_ServiceError(t *testing.T) {
 // checking the one that was reported, so the next addition has somewhere to fail.
 func TestTransport_CreateUser_ForwardsEveryField(t *testing.T) {
 	svc := &mockUserSvc{}
-	tr, cleanup := connectAuthInProcess(t, svc, nil, nil)
+	roles := newMockRoleSvc()
+	roles.getResp.TenantID = "acme"
+	tr, cleanup := connectAuthInProcess(t, svc, roles, nil)
 	defer cleanup()
 
 	// A certificate-only identity: no email, opt-out declared.

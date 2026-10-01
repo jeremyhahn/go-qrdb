@@ -190,9 +190,9 @@ func TestReconcileDeletedTenants_OneFailingIdDoesNotStopTheOthers(t *testing.T) 
 	}
 
 	report, err := svc.ReconcileDeletedTenants(ctx)
-	var agg *ResidueReconcileErrors
+	var agg *ResidueReconcileFailuresError
 	if !errors.As(err, &agg) || len(agg.Errors) != 1 || agg.Errors[0].TenantID != "va" || !errors.Is(err, boom) {
-		t.Fatalf("err = %v; want *ResidueReconcileErrors with va's removal failure", err)
+		t.Fatalf("err = %v; want *ResidueReconcileFailuresError with va's removal failure", err)
 	}
 	if msg := err.Error(); !strings.Contains(msg, "1 failed") || !strings.Contains(msg, "va") {
 		t.Fatalf("message = %q; want the failure count and the failed id", msg)
@@ -377,7 +377,7 @@ func TestReconcileDeletedTenants_MountPointDataRootIsReclaimed(t *testing.T) {
 // that does not carry it), is still an error.
 func TestReconcileResponseError_OnlyPerIDFailuresTravelInTheReport(t *testing.T) {
 	boom := errors.New("boom")
-	agg := &ResidueReconcileErrors{Errors: []*ResidueReconcileError{{TenantID: "va", Op: "remove", Err: boom}}}
+	agg := &ResidueReconcileFailuresError{Errors: []*ResidueReconcileError{{TenantID: "va", Op: "remove", Err: boom}}}
 	carried := &ReconcileReport{Failed: []FailedReclaim{{TenantID: "va", Op: "remove", Error: "boom"}}}
 	guard := &ResidueReconcileError{Op: "list-tenants", Err: boom}
 	cases := []struct {

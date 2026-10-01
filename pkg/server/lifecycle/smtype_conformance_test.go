@@ -95,7 +95,6 @@ func smCells(t *testing.T) []smCell {
 			kinds = []string{"pebble", "file", "memory"}
 		}
 		for _, kind := range kinds {
-			name, kind := name, kind
 			cellName := name
 			if kind != "" {
 				cellName = name + "/" + kind

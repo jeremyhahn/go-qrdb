@@ -300,6 +300,7 @@ func TestShareStore_FailedClaimDoesNotConsumeTheShare(t *testing.T) {
 		// profile by `make coverage`'s `go tool covdata textfmt` step.
 		args = append(args, "-test.gocoverdir="+dir)
 	}
+	// #nosec G204,G702 -- re-exec of this test binary: argv[0] is os.Args[0], the path `go test` invoked, and the arguments are compile-time literals plus the GOCOVERDIR the go tool exported for this run. No shell is involved.
 	cmd := exec.Command(os.Args[0], args...)
 	cmd.Env = append(os.Environ(), childEnv+"=1")
 	out, err := cmd.CombinedOutput()
@@ -341,7 +342,7 @@ func runShareStoreWipeAllChild() {
 		fail("a failed claim marked the share consumed — the custodian holds " +
 			"nothing and the store will never hand it over again")
 	}
-	fmt.Println("PASS: claim after WipeAll refused and did not consume the share")
+	fmt.Fprintln(os.Stdout, "PASS: claim after WipeAll refused and did not consume the share")
 }
 
 // emptyBorrow is a borrow that yields no bytes — the shape a process-wide

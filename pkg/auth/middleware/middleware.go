@@ -22,6 +22,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -29,6 +31,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -39,10 +42,20 @@ import (
 // an audit logger.
 type AuthMiddleware struct {
 	authenticators []auth.Authenticator
-	authorizer     auth.Authorizer
-	users          user.UserServicer
-	usersFallback  user.UserServicer
-	audit          audit.Logger
+
+	// methods is this middleware's permitted-method vocabulary: the built-in
+	// tokens plus the canonical Name() of every authenticator in its chain,
+	// fixed at New. See IsAuthMethod.
+	methods       map[string]struct{}
+	authorizer    auth.Authorizer
+	users         user.UserServicer
+	usersFallback user.UserServicer
+	audit         audit.Logger
+
+	// roles resolves a RoleTarget to the tenant the role belongs to (see
+	// ResolveTarget). Optional: without it a RoleTarget is the caller's own
+	// tenant.
+	roles role.RoleServicer
 
 	// auditFailure is what authorize() does when m.audit cannot record a
 	// decision. Its ZERO VALUE is audit.FailClosed, so an AuthMiddleware built
@@ -87,6 +100,10 @@ type AuthMiddleware struct {
 	// whole set in one atomic store, and the interceptors' per-request lookup
 	// stays lock-free.
 	publicGRPCMethods atomic.Pointer[map[string]struct{}]
+
+	// grpcTargets maps a gRPC full method name to how its request names the
+	// tenant it acts on. See RegisterGRPCTargets.
+	grpcTargets atomic.Pointer[map[string]GRPCTargetFunc]
 }
 
 // authLookupSyncTimeout bounds the per-request linearizable user lookup. A
@@ -109,7 +126,55 @@ func New(authorizer auth.Authorizer, opts ...Option) *AuthMiddleware {
 	for _, opt := range opts {
 		opt(m)
 	}
+	// Every authenticator in the chain names a method a permitted-method
+	// policy may be written with ON THIS NODE. The set is this instance's, not
+	// the process's: see IsAuthMethod.
+	m.methods = make(map[string]struct{}, len(m.authenticators)+3)
+	for _, b := range auth.BuiltinAuthMethods() {
+		m.methods[b] = struct{}{}
+	}
+	for _, a := range m.authenticators {
+		if a == nil {
+			continue
+		}
+		if name := auth.CanonicalAuthMethod(a.Name()); name != "" {
+			m.methods[name] = struct{}{}
+		}
+	}
 	return m
+}
+
+// IsAuthMethod reports whether name — canonicalized first — is in this
+// middleware's permitted-method vocabulary: a built-in token, or the Name() of
+// an authenticator in its chain (including those an embedder plugs in through
+// wiring's ExtraAuthenticators or the SDK node's WithAuthenticators).
+//
+// It is the vocabulary the node's user store validates a policy against
+// (user.WithAuthMethodVocabulary). It is scoped to this instance on purpose: a
+// process running two nodes has two chains, and a method one node can
+// authenticate must not become writable on the other. A nil middleware (auth
+// disabled) answers for the built-in tokens only.
+func (m *AuthMiddleware) IsAuthMethod(name string) bool {
+	c := auth.CanonicalAuthMethod(name)
+	if m == nil {
+		return auth.IsBuiltinAuthMethod(c)
+	}
+	_, ok := m.methods[c]
+	return ok
+}
+
+// AuthMethods returns this middleware's permitted-method vocabulary, sorted.
+// A nil middleware returns the built-in tokens.
+func (m *AuthMiddleware) AuthMethods() []string {
+	if m == nil {
+		return auth.BuiltinAuthMethods()
+	}
+	out := make([]string, 0, len(m.methods))
+	for name := range m.methods {
+		out = append(out, name)
+	}
+	slices.Sort(out)
+	return out
 }
 
 // WithAuthenticator appends an authenticator to the chain. Authenticators
@@ -323,6 +388,15 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 	// decision; it is not this one, and it does not belong in a fold.
 	identity.TenantID = tenant.Normalize(identity.TenantID)
 
+	// RoleBindings and Attributes are user-record state: the user store is
+	// their ONLY source. Clear whatever the authenticator carried in, before
+	// anything else, so every path below -- found, not found, tenant sealed,
+	// and no user store at all -- starts from none: a binding withdrawn from
+	// the record, never on it, or asserted by an authenticator with no record
+	// behind it cannot reach the authorizer.
+	identity.RoleBindings = nil
+	identity.Attributes = nil
+
 	if m.users != nil {
 		u, err := m.lookupUser(ctx, identity.TenantID, identity.Subject)
 		if err != nil {
@@ -417,8 +491,19 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 				return ctx, nil, perr
 			}
 
-			// Enrich identity with persistent role assignments.
+			// Enrich identity with persistent role assignments. Roles,
+			// RoleBindings and Attributes are overwritten from the store's
+			// current state, never merged, so a withdrawal on the record
+			// takes effect here.
 			identity.Roles = u.RoleIDs
+			identity.RoleBindings = convertRoleBindings(u.RoleBindings)
+
+			// Attributes stays separate from Metadata (see
+			// auth.Identity.Attributes): Metadata is authentication-derived,
+			// Attributes is record state an administrator holding
+			// roles:assign writes. Cloned so the identity never aliases the
+			// record's map.
+			identity.Attributes = maps.Clone(u.Attributes)
 		}
 	} else if rerr := checkUnresolvedCertLogin(ctx, identity, method, m.bindingPolicy); rerr != nil {
 		// No user store: no account can be resolved, so under the
@@ -436,6 +521,27 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 	ctx = tenant.WithTenantID(ctx, identity.TenantID)
 
 	return ctx, identity, nil
+}
+
+// convertRoleBindings copies a user's RoleBindings into their auth.RoleBinding
+// mirror, field by field rather than through a shared type: pkg/auth cannot
+// import pkg/user (pkg/user already imports pkg/auth), so auth.RoleBinding is
+// this package's own copy of the same two fields.
+//
+// A nil or empty input returns nil rather than an empty non-nil slice, so
+// finalizeIdentity's unconditional assignment (identity.RoleBindings =
+// convertRoleBindings(u.RoleBindings)) correctly CLEARS the field when the
+// store reports no bindings, rather than requiring a caller to special-case
+// emptiness itself.
+func convertRoleBindings(bindings []user.RoleBinding) []auth.RoleBinding {
+	if len(bindings) == 0 {
+		return nil
+	}
+	out := make([]auth.RoleBinding, len(bindings))
+	for i, b := range bindings {
+		out[i] = auth.RoleBinding{RoleID: b.RoleID, TenantID: b.TenantID}
+	}
+	return out
 }
 
 // lookupUser looks up a user by username, first trying the primary user
@@ -783,30 +889,48 @@ func knownMethod(name string) authMethod { return authMethod{name: name, known: 
 // plane. It is not "no method"; it is "not ours to know".
 func unknownMethod() authMethod { return authMethod{} }
 
-// checkAuthMethod enforces a user's permitted-authentication-method policy
-// against the method that actually authenticated this request.
+// checkAuthMethod applies CheckAuthMethod to the method the authenticator
+// chain observed. It adds exactly one case to CheckAuthMethod's rule: an
+// UNOBSERVABLE method is permitted. Only the authenticator chain qrdb owns can
+// name the method; a forwarded on-behalf assertion and a capability module's
+// session token cannot, and refusing them on a policy qrdb could not evaluate
+// would deny a request on no evidence. The layer that ran that ceremony is the
+// one that must enforce the policy there — through CheckAuthMethod.
+func checkAuthMethod(u *user.User, method authMethod) error {
+	if !method.known {
+		return nil
+	}
+	return CheckAuthMethod(u, method.name)
+}
+
+// CheckAuthMethod enforces u's permitted-authentication-method policy
+// (user.User.AuthMethods) against method, the method that actually
+// authenticated the request. It returns nil when the method is permitted and
+// an *AuthMethodNotPermittedError when it is not.
 //
-// It permits the request in two cases, both statements rather than oversights:
+// It is THE rule, exported so a layer that runs its own login ceremony — a
+// capability's PIV or WebAuthn handler, an authenticator that resolves the
+// account itself — applies the same policy the middleware does instead of
+// restating it. The middleware calls it for every method its own
+// authenticator chain observes.
 //
-//   - The policy is EMPTY. User.AuthMethods empty means qrdb states no
-//     restriction, so every account written before the field existed keeps
-//     working. Enforcing an empty list as "nothing is allowed" would lock out
-//     the entire fleet the moment this shipped.
-//   - The method is UNOBSERVABLE. Only the authenticator chain qrdb owns can
-//     name the method; a forwarded on-behalf assertion and a capability
-//     module's session token cannot, and refusing them on a policy qrdb could
-//     not evaluate would deny a request on no evidence.
+// It permits the request when u is nil or its policy is EMPTY. User.AuthMethods
+// empty means qrdb states no restriction, so every account written before the
+// field existed keeps working. Enforcing an empty list as "nothing is allowed"
+// would lock out the entire fleet the moment this shipped.
 //
-// Everything else FAILS CLOSED, including an observed method with a blank or
-// unnormalizable name: it cannot match any stored policy entry, and this is an
+// Everything else FAILS CLOSED, including a blank or unnormalizable method
+// name: it cannot match any stored policy entry, and this is an
 // authentication gate.
 //
-// Comparison uses the SAME normalization the store applied when the policy was
-// written, so a policy stored as "webauthn" matches an authenticator named
-// "WebAuthn". Normalizing only one side is how a policy silently stops matching
-// the thing it was written to allow.
-func checkAuthMethod(u *user.User, method authMethod) error {
-	if u == nil || len(u.AuthMethods) == 0 || !method.known {
+// Both sides are compared in canonical form (auth.CanonicalAuthMethod), so a
+// policy stored as "webauthn" matches an authenticator named "WebAuthn".
+// Normalizing only one side is how a policy silently stops matching the thing
+// it was written to allow. The vocabulary is enforced when a policy is
+// WRITTEN, not here, so a stored entry predating it still matches. Spell the
+// method with auth.MethodMTLS, auth.MethodPIV or auth.MethodWebAuthn.
+func CheckAuthMethod(u *user.User, method string) error {
+	if u == nil || len(u.AuthMethods) == 0 {
 		return nil
 	}
 	refuse := func(name string) error {
@@ -817,17 +941,19 @@ func checkAuthMethod(u *user.User, method authMethod) error {
 			Permitted: u.AuthMethods,
 		}
 	}
-	normalized, err := user.NormalizeAuthMethods([]string{method.name})
-	if err != nil || len(normalized) == 0 {
-		// An observed method whose name does not survive normalization — blank,
-		// whitespace — matches nothing. A misconfigured authenticator must not
-		// become a way past the policy.
-		return refuse(method.name)
+	name := auth.CanonicalAuthMethod(method)
+	if name == "" {
+		// A blank method name matches nothing. A misconfigured authenticator
+		// must not become a way past the policy.
+		return refuse(method)
 	}
 	for _, permitted := range u.AuthMethods {
-		if permitted == normalized[0] {
+		// The stored entry is compared in canonical form too, and is NOT
+		// checked against the vocabulary: a policy written before the
+		// vocabulary was enforced must keep admitting the method it names.
+		if auth.CanonicalAuthMethod(permitted) == name {
 			return nil
 		}
 	}
-	return refuse(normalized[0])
+	return refuse(name)
 }

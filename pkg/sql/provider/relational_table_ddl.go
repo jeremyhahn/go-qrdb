@@ -337,8 +337,11 @@ type indexBuildInserter struct {
 
 var _ sqle.RowInserter = (*indexBuildInserter)(nil)
 
-// StatementBegin marks the start of the build. No-op: there is no
-// in-flight state to check-point.
+// StatementBegin marks the start of the build. No-op: an index build is DDL,
+// which commits any open transaction before it runs, so there is no
+// transaction write-set to open a statement savepoint on (contrast
+// relationalWriter.StatementBegin); the build's own pending buffer is
+// written in generation-fenced chunks as it fills (see flush).
 func (ib *indexBuildInserter) StatementBegin(_ *sqle.Context) {}
 
 // DiscardChanges discards changes made since StatementBegin. No-op: an
@@ -526,9 +529,10 @@ var _ sqle.RowInserter = (*noopRowInserter)(nil)
 func (noopRowInserter) StatementBegin(_ *sqle.Context) {}
 
 // DiscardChanges discards changes made since StatementBegin. No-op: the
-// metadata change already committed is not undone by this (the same as
-// every other DDL statement in this package, none of which support
-// mid-statement rollback).
+// metadata change already committed is not undone by this. DDL commits
+// implicitly and is not part of any transaction, so -- unlike DML inside a
+// transaction (see relationalWriter.DiscardChanges) -- no DDL statement in
+// this package rolls back mid-statement.
 func (noopRowInserter) DiscardChanges(_ *sqle.Context, _ error) error { return nil }
 
 // StatementComplete marks the end of the operation. No-op.

@@ -25,8 +25,17 @@ import (
 	"github.com/jeroenrinzema/psql-wire/codes"
 	psqlerr "github.com/jeroenrinzema/psql-wire/errors"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/rowlock"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/provider"
 )
+
+// rowLockNotAvailable holds the MySQL numbers PostgreSQL reports as
+// lock_not_available (55P03): a lock wait that timed out, and NOWAIT.
+var rowLockNotAvailable = map[int]bool{
+	rowlock.SQLCodeLockWaitTimeout: true,
+	rowlock.SQLCodeLockNowait:      true,
+}
 
 // wireQueryError wraps a failed statement's error for the PostgreSQL wire,
 // attaching the standard SQLSTATE the failure class carries in PostgreSQL
@@ -75,13 +84,31 @@ func sqlStateFor(err error) (codes.Code, bool) {
 
 // sqlStateForLevel classifies one level of the error chain.
 func sqlStateForLevel(err error) (codes.Code, bool) {
-	var mysqlErr *mysql.SQLError
+	var (
+		mysqlErr *mysql.SQLError
+		aborted  *provider.TransactionAbortedError
+		deadlock *rowlock.DeadlockError
+	)
 	switch {
 	case errors.As(err, &mysqlErr) && mysqlErr.Num == provider.ErrCodeTableLayoutUnsupported:
 		// A table created by v0.20.0 through v0.21.0, which this version
 		// cannot read until it is dropped and re-created: PostgreSQL's
 		// class for an object not in the state the operation requires.
 		return codes.ObjectNotInPrerequisiteState, true
+	case errors.As(err, &mysqlErr) && rowLockNotAvailable[mysqlErr.Num]:
+		// A row-lock wait that timed out, or a NOWAIT that found the row
+		// held: PostgreSQL reports both as lock_not_available.
+		return codes.LockNotAvailable, true
+	case errors.As(err, &mysqlErr) && mysqlErr.Num == provider.SQLCodeSkipLockedUnsupported:
+		return codes.FeatureNotSupported, true
+	case service.AsCause(err, &aborted):
+		// A statement in a transaction already rolled back as a deadlock
+		// victim. Checked before the deadlock itself, which is its cause,
+		// and before the ER_LOCK_DEADLOCK wrapper that carries both.
+		return codes.InFailedSQLTransaction, true
+	case service.AsCause(err, &deadlock):
+		// PostgreSQL names a deadlock apart from a serialization failure.
+		return codes.DeadlockDetected, true
 	case sql.ErrLockDeadlock.Is(err):
 		// ErrLockDeadlock is go-mysql-server's own vocabulary for a
 		// serialization failure (see that Kind's doc comment): a buffered

@@ -54,8 +54,8 @@ func TestRefusalMessagesCarryTheOffendingValue(t *testing.T) {
 		},
 		{
 			name:     "non-empty data root names the path",
-			err:      &DataRootNotEmptyError{DataRoot: "/mnt/disk1/tenant-a"},
-			contains: []string{"/mnt/disk1/tenant-a", "not empty"},
+			err:      &DataRootNotEmptyError{DataRoot: "/srv/volume1/tenant-a"},
+			contains: []string{"/srv/volume1/tenant-a", "not empty"},
 		},
 		{
 			name: "overlap names both paths and the kind",

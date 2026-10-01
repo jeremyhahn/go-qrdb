@@ -216,6 +216,14 @@ func testRole() *role.Role {
 	}
 }
 
+// tenantRoleServicer answers GetRole with a role owned by tenantID, so a
+// role-assignment write naming it passes validation.
+func tenantRoleServicer(tenantID string) *mockRoleServicer {
+	return &mockRoleServicer{getRoleFn: func(_ context.Context, id string) (*role.Role, error) {
+		return &role.Role{ID: id, TenantID: tenantID}, nil
+	}}
+}
+
 // newAuthTransport creates a Transport with the given auth services injected.
 func newAuthTransport(t *testing.T, opts ...Option) *Transport {
 	t.Helper()
@@ -258,7 +266,7 @@ func TestCreateUser_Success(t *testing.T) {
 			return testUser(), nil
 		},
 	}
-	tr := newAuthTransport(t, WithUserService(mock))
+	tr := newAuthTransport(t, WithUserService(mock), WithRoleService(tenantRoleServicer("tenant-a")))
 
 	u, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "alice",
@@ -1199,7 +1207,9 @@ func TestAssignRole_RoleNotFound(t *testing.T) {
 			return nil, &role.RoleNotFoundError{ID: id}
 		},
 	}
-	userMock := &mockUserServicer{}
+	userMock := &mockUserServicer{
+		getUserFn: func(_ context.Context, _ uint64) (*user.User, error) { return testUser(), nil },
+	}
 	tr := newAuthTransport(t, WithRoleService(roleMock), WithUserService(userMock))
 
 	err := tr.AssignRole(context.Background(), 1001, "role-missing")
@@ -1761,7 +1771,7 @@ func TestListCerts_Empty(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestUserToTransport_NilInput(t *testing.T) {
-	result := userToTransport(nil)
+	result := mustUserToTransport(t, nil, nil)
 	if result != nil {
 		t.Errorf("expected nil for nil input, got %v", result)
 	}
@@ -1771,7 +1781,7 @@ func TestUserToTransport_NilRoleIDs(t *testing.T) {
 	u := testUser()
 	u.RoleIDs = nil
 
-	result := userToTransport(u)
+	result := mustUserToTransport(t, nil, u)
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}
@@ -1785,7 +1795,7 @@ func TestUserToTransport_NilRoleIDs(t *testing.T) {
 
 func TestUserToTransport_FullConversion(t *testing.T) {
 	u := testUser()
-	result := userToTransport(u)
+	result := mustUserToTransport(t, nil, u)
 
 	if result.ID != u.ID {
 		t.Errorf("expected ID %d, got %d", u.ID, result.ID)

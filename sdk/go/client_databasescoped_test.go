@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package sdk_test
+package sdk
 
 import (
 	"context"
+	"errors"
 	"testing"
 
-	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -26,6 +26,7 @@ import (
 // scoped to and implements transport.DatabaseScoper.
 type scoperTransport struct {
 	database string
+	refuse   error
 }
 
 func (s *scoperTransport) Connect(context.Context) error { return nil }
@@ -35,8 +36,11 @@ func (s *scoperTransport) Request(context.Context, string, any, any) error {
 	return nil
 }
 
-func (s *scoperTransport) WithDatabase(database string) transport.Transport {
-	return &scoperTransport{database: transport.NormalizeDatabaseScope(database)}
+func (s *scoperTransport) WithDatabase(database string) (transport.Transport, error) {
+	if s.refuse != nil {
+		return nil, s.refuse
+	}
+	return &scoperTransport{database: transport.NormalizeDatabaseScope(database)}, nil
 }
 
 // plainTransport does NOT implement DatabaseScoper.
@@ -48,36 +52,63 @@ func (plainTransport) Healthy(context.Context) bool                    { return 
 func (plainTransport) Request(context.Context, string, any, any) error { return nil }
 
 func TestDatabaseScoped_DelegatesToTransport(t *testing.T) {
-	c, err := sdk.NewClient(&scoperTransport{})
+	c, err := NewClient(&scoperTransport{})
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}
-	scoped := c.DatabaseScoped("db2")
+	scoped, err := c.DatabaseScoped("db2")
+	if err != nil {
+		t.Fatalf("DatabaseScoped: %v", err)
+	}
 	if scoped == c {
 		t.Fatal("expected a distinct scoped client")
 	}
 	// The scoped client wraps a scoper transport carrying db2.
-	st, ok := scoped.TransportForTest().(*scoperTransport)
+	st, ok := scoped.transport.(*scoperTransport)
 	if !ok {
-		t.Fatalf("unexpected transport type %T", scoped.TransportForTest())
+		t.Fatalf("unexpected transport type %T", scoped.transport)
 	}
 	if st.database != "db2" {
 		t.Fatalf("expected db2, got %q", st.database)
 	}
 }
 
-func TestDatabaseScoped_SystemIsUnscoped(t *testing.T) {
-	c, _ := sdk.NewClient(&scoperTransport{})
-	scoped := c.DatabaseScoped("system")
-	st := scoped.TransportForTest().(*scoperTransport)
-	if st.database != "" {
-		t.Fatalf("system should normalize to unscoped, got %q", st.database)
+func TestDatabaseScoped_SystemIsTheReceiver(t *testing.T) {
+	for _, tr := range []transport.Transport{&scoperTransport{}, plainTransport{}} {
+		c, _ := NewClient(tr)
+		for _, name := range []string{"", "system"} {
+			scoped, err := c.DatabaseScoped(name)
+			if err != nil || scoped != c {
+				t.Fatalf("DatabaseScoped(%q) over %T = %v, %v; want the receiver", name, tr, scoped, err)
+			}
+		}
 	}
 }
 
-func TestDatabaseScoped_UnsupportedTransportReturnsSelf(t *testing.T) {
-	c, _ := sdk.NewClient(plainTransport{})
-	if got := c.DatabaseScoped("db2"); got != c {
-		t.Fatal("expected the same client when transport is not a DatabaseScoper")
+// A transport that cannot scope is refused, never answered with the default
+// database under the requested name.
+func TestDatabaseScoped_UnsupportedTransportRefuses(t *testing.T) {
+	c, _ := NewClient(plainTransport{})
+	scoped, err := c.DatabaseScoped("db2")
+	var unsupported *transport.DatabaseScopeUnsupportedError
+	if !errors.As(err, &unsupported) || scoped != nil {
+		t.Fatalf("DatabaseScoped over a non-scoper = %v, %v; want *transport.DatabaseScopeUnsupportedError", scoped, err)
+	}
+}
+
+func TestDatabaseScoped_TransportRefusalPropagates(t *testing.T) {
+	refusal := &transport.DatabaseScopeUnsupportedError{Database: "db2", Reason: "test"}
+	c, _ := NewClient(&scoperTransport{refuse: refusal})
+	if _, err := c.DatabaseScoped("db2"); !errors.Is(err, refusal) {
+		t.Fatalf("err = %v, want the transport's refusal", err)
+	}
+}
+
+func TestDatabaseScoped_ClosedClient(t *testing.T) {
+	c, _ := NewClient(&scoperTransport{})
+	_ = c.Close()
+	var closed *ClientClosedError
+	if _, err := c.DatabaseScoped("db2"); !errors.As(err, &closed) {
+		t.Fatalf("err = %v, want *ClientClosedError", err)
 	}
 }

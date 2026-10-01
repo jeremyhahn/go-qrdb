@@ -289,3 +289,21 @@ func TestApplyCast_LiteralAdjacentToCastNotConsumedByInterior(t *testing.T) {
 	query := "SELECT 'has ::text inside' FROM dual"
 	assert.Equal(t, query, applyCast(query))
 }
+
+func TestMatchesOutsideLiterals(t *testing.T) {
+	param := regexp.MustCompile(`\$(\d+)|\?`)
+	cases := []struct {
+		q    string
+		want bool
+	}{
+		{"SELECT * FROM t WHERE id = $1", true},
+		{"SELECT 'costs $1'", false},
+		{"SELECT 1 -- $1 in a comment", false},
+		{"SELECT $$ $1 $$", false},
+		{"SELECT 'what?' , $2", true},
+		{"SELECT 1", false},
+	}
+	for _, c := range cases {
+		assert.Equal(t, c.want, MatchesOutsideLiterals(c.q, param), c.q)
+	}
+}

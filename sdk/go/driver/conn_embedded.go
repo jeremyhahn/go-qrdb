@@ -85,6 +85,9 @@ func (c *embeddedConn) Close() error {
 		return nil
 	}
 	if c.session != nil {
+		// Ending the session releases any row lock an open transaction on
+		// this connection still holds, rather than leaving it to expire.
+		c.session.SessionEnd()
 		c.engine.CloseSession(c.session.ID())
 	}
 	return nil

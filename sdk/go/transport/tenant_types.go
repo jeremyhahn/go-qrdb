@@ -212,7 +212,7 @@ type TenantResidueFailure struct {
 // Failed repeats the response's list of what was not.
 //
 // Err is the node's own typed error when the transport runs in-process (the
-// embedded transport: a *tenant.ResidueReconcileErrors, reachable through
+// embedded transport: a *tenant.ResidueReconcileFailuresError, reachable through
 // errors.As); a network transport carries only the per-id messages, so Err is
 // nil there.
 type ReconcileDeletedTenantsError struct {

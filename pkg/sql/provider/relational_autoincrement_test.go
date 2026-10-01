@@ -39,7 +39,7 @@ type spySequenceService struct {
 	allocateSizes []uint64
 }
 
-func (s *spySequenceService) Allocate(ctx context.Context, database, name string, n uint64) (uint64, error) {
+func (s *spySequenceService) Allocate(ctx context.Context, database, name string, n uint64) (uint64, uint64, error) {
 	s.allocateSizes = append(s.allocateSizes, n)
 	return s.SequenceServicer.Allocate(ctx, database, name, n)
 }
@@ -377,4 +377,61 @@ func TestRelationalTable_PublishLastInsertIDGuards(t *testing.T) {
 
 	tbl.publishLastInsertID(ctx, 7)
 	assert.Equal(t, int64(7), lastInsertID(ctx))
+}
+
+// ---------------------------------------------------------------------------
+// Truncate and AUTO_INCREMENT (go-qrdb#547)
+// ---------------------------------------------------------------------------
+
+// TestRelationalTable_Truncate_ResetsAutoIncrement pins MySQL's TRUNCATE
+// TABLE semantics end to end over a real TableService and SequenceService:
+// the table returns to its just-created state, so the next generated value
+// starts back at 1 however far the sequence had advanced.
+func TestRelationalTable_Truncate_ResetsAutoIncrement(t *testing.T) {
+	h := newDDLHarness()
+	tbl, _ := newAutoIncHarnessTable(t, h)
+	ctx := newTestContext()
+
+	for i := 0; i < 3; i++ {
+		v, err := tbl.GetNextAutoIncrementValue(ctx, nil)
+		require.NoError(t, err)
+		require.Equal(t, uint64(i+1), v)
+	}
+
+	_, err := tbl.Truncate(ctx)
+	require.NoError(t, err)
+
+	next, err := tbl.GetNextAutoIncrementValue(ctx, nil)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(1), next, "TRUNCATE TABLE must reset AUTO_INCREMENT to its initial value, matching MySQL")
+}
+
+// TestRelationalTable_Truncate_PostgreSQLDialect_DoesNotResetSequence pins
+// the PostgreSQL side: plain TRUNCATE (RESTART IDENTITY is not parsed as
+// part of TRUNCATE by the shared MySQL-grammar parser) leaves an owned
+// sequence where it was, so a WithPostgreSQLDialect table keeps counting.
+func TestRelationalTable_Truncate_PostgreSQLDialect_DoesNotResetSequence(t *testing.T) {
+	h := newDDLHarness()
+	def, err := h.tableSvc.CreateTable(context.Background(), autoIncCreateRequest())
+	require.NoError(t, err)
+	tbl, err := NewRelationalTable(def, h.kvSvc, h.mvccSvc,
+		WithTableService(h.tableSvc),
+		WithTransactionService(h.txnSvc),
+		WithSequenceService(h.seqSvc),
+		WithPostgreSQLDialect(),
+	)
+	require.NoError(t, err)
+	ctx := newTestContext()
+
+	for i := 0; i < 3; i++ {
+		_, err := tbl.GetNextAutoIncrementValue(ctx, nil)
+		require.NoError(t, err)
+	}
+
+	_, err = tbl.Truncate(ctx)
+	require.NoError(t, err)
+
+	next, err := tbl.GetNextAutoIncrementValue(ctx, nil)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(4), next, "PostgreSQL's plain TRUNCATE must not reset the sequence")
 }

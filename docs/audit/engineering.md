@@ -259,7 +259,7 @@ it, on **one** `audit.FailurePolicy` value:
 | Gate | Where | Component | How the policy reaches it |
 |---|---|---|---|
 | authorization decision | `AuthMiddleware.authorize` → `auditDecision` | `authorize` | `middleware.WithAuditFailurePolicy` |
-| SO dual factor (route gate) | `middleware.SOMiddleware` | `so-dual-factor` | the `policy` **parameter**, set by `rest.WithAuditFailurePolicy` |
+| SO dual factor (route gate) | `middleware.SOGate` (REST `SOMiddleware`; gRPC, Unix, QUIC, MCP `WithSOGate`) | `so-dual-factor` | the `policy` **parameter**, set by `rest.WithAuditFailurePolicy` |
 | SO PIN verification | `auth.SOAuthenticator.VerifySOPIN` | `so-auth` | `auth.WithSOAuditFailurePolicy` |
 
 All three read the operator's single `auth.audit_failure_policy`, resolved once

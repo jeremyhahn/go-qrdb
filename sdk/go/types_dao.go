@@ -191,6 +191,17 @@ var NewDAOFactoryWithConfig = dao.NewFactoryWithConfig
 // DAONotFoundError is returned when a DAO entity lookup finds no result.
 type DAONotFoundError = dao.NotFoundError
 
+// DAOAtomicWriteUnsupportedError is SaveIfAbsent's refusal when the KVStore
+// cannot perform an atomic conditional write: either it is not an
+// AtomicKVStore at all, or it is one and refused the operation (the refusal is
+// then reachable through Unwrap). Nothing was written, and retrying against
+// the same store will not write it. It matches ErrKVAtomicWriteUnsupported,
+// the one marker for the condition, under errors.Is.
+//
+// A consumer that needs exactly-once creation fails closed on it; it must not
+// fall back to a Get-then-Save, which is the race SaveIfAbsent exists to close.
+type DAOAtomicWriteUnsupportedError = dao.AtomicWriteUnsupportedError
+
 // DAOSerializationFailedError is returned when entity serialization fails.
 type DAOSerializationFailedError = dao.SerializationFailedError
 

@@ -52,6 +52,20 @@ type DatabaseInfo struct {
 	Raft       *DatabaseRaftConfig       `json:"raft,omitempty"`
 	Barrier    *DatabaseBarrierConfig    `json:"barrier,omitempty"`
 	Connection *DatabaseConnectionConfig `json:"connection,omitempty"`
+	SQL        *DatabaseSQLConfig        `json:"sql,omitempty"`
+}
+
+// DatabaseSQLConfig holds a database's SQL settings. See docs/row-locking/.
+type DatabaseSQLConfig struct {
+	// Concurrency is "optimistic" (the default when empty) or "pessimistic".
+	Concurrency string `json:"concurrency,omitempty"`
+}
+
+// UpdateDatabaseSQLRequest represents a request to update a database's SQL
+// settings. A nil SQL restores the defaults.
+type UpdateDatabaseSQLRequest struct {
+	Name string             `json:"-"`
+	SQL  *DatabaseSQLConfig `json:"sql"`
 }
 
 // DatabaseRaftConfig holds Raft consensus settings for a database.
@@ -101,6 +115,7 @@ type CreateDatabaseRequest struct {
 	Raft       *DatabaseRaftConfig       `json:"raft,omitempty"`
 	Barrier    *DatabaseBarrierConfig    `json:"barrier,omitempty"`
 	Connection *DatabaseConnectionConfig `json:"connection,omitempty"`
+	SQL        *DatabaseSQLConfig        `json:"sql,omitempty"`
 }
 
 // UpdateDatabaseRaftRequest represents a request to update Raft config.
@@ -194,6 +209,10 @@ type DatabaseClient interface {
 	// UpdateDatabaseConnection updates the remote connection configuration
 	// for a database.
 	UpdateDatabaseConnection(ctx context.Context, req UpdateDatabaseConnectionRequest) (*DatabaseInfo, error)
+
+	// UpdateDatabaseSQL updates a database's SQL settings -- its
+	// concurrency mode -- and returns the updated database information.
+	UpdateDatabaseSQL(ctx context.Context, req UpdateDatabaseSQLRequest) (*DatabaseInfo, error)
 
 	// SealDatabase seals the encryption barrier for a database.
 	SealDatabase(ctx context.Context, name string) error

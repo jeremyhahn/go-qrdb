@@ -21,12 +21,14 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
@@ -50,6 +52,15 @@ const (
 	// keyPrefixCertThumbprint is the prefix for the mTLS SPKI-thumbprint
 	// secondary index (thumbprint -> user ID).
 	keyPrefixCertThumbprint = "__sys:user_idx/cert_spki/"
+
+	// keySystemSentinel is the single fixed key that names whichever user, if
+	// any, holds System: true. CreateUser and PromoteToSystemUser both claim
+	// it atomically (PutIfAbsent) before a record is ever written or flipped
+	// with the flag set, so the store can never hold more than one such
+	// record at a time -- enforcing in the store what the type's own name
+	// promises ("the cluster-wide bootstrap admin", singular), independent of
+	// which in-process caller asks (go-qrdb#106 review).
+	keySystemSentinel = "__sys:users/system_sentinel"
 
 	// defaultPageSize is used when ListUsersRequest.PageSize is zero.
 	defaultPageSize = 100
@@ -123,6 +134,11 @@ type kvUserStore struct {
 	// logger receives the store's operational warnings. Nil means
 	// slog.Default(); see WithLogger.
 	logger *slog.Logger
+
+	// knownMethod is the permitted-method vocabulary a policy is validated
+	// against when written (WithAuthMethodVocabulary). nil means the built-in
+	// tokens only.
+	knownMethod func(method string) bool
 
 	// reconcilePollInterval/reconcileWindow bound reconcileAmbiguousCreate's
 	// retry loop. Zero means "use the production default"; see that
@@ -217,7 +233,7 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (c
 	if lerr != nil {
 		return nil, lerr
 	}
-	authMethods, aerr := NormalizeAuthMethods(req.AuthMethods)
+	authMethods, aerr := normalizeAuthMethods(req.AuthMethods, nil, s.knownMethod)
 	if aerr != nil {
 		return nil, aerr
 	}
@@ -225,6 +241,21 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (c
 	tenantID := req.TenantID
 	if tenantID == "" {
 		tenantID = tenant.SystemTenantID
+	}
+
+	// System is the flag that makes a record undeletable. It has no wire
+	// representation on any transport request -- an ordinary caller has no
+	// way to construct one -- but an in-process consumer holding a raw
+	// user.UserServicer (sdk/go's embedded surface, a downstream composer's
+	// adapter) calls this exact method directly, so the invariant has to be
+	// enforced HERE, independent of caller identity, rather than trusted to
+	// the wire boundary alone. Two checks, both cheap and both required
+	// before anything is written: the flag only ever applies to the system
+	// tenant, and at most one such record may ever exist.
+	if req.System {
+		if tenantID != tenant.SystemTenantID {
+			return nil, &SystemTenantRequiredError{TenantID: tenantID}
+		}
 	}
 
 	if s.quotaChecker != nil {
@@ -314,6 +345,13 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (c
 	// makes uniqueness real under concurrency; the previous Get-then-Put let two
 	// concurrent creates both observe the key absent and both proceed.
 	//
+	// The username claim goes FIRST, ahead of the system-sentinel claim below:
+	// a repeated CreateUser for a username that already exists (the shape every
+	// idempotent bootstrap re-run takes) must still be reported as
+	// UsernameExistsError, not preempted by a sentinel that a PRIOR successful
+	// call already claimed. Claiming the sentinel first would turn every
+	// idempotent re-run of the system-user create into a hard failure instead
+	// of the recognized already-exists response callers rely on.
 	takenName, cerr := s.claimHandle(ctx, usernameKey, idBytes)
 	if cerr != nil {
 		return nil, &StoreError{Op: "create", Detail: "claim username index", Err: cerr}
@@ -322,6 +360,20 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (c
 		return nil, &UsernameExistsError{Username: req.Username, TenantID: tenantID}
 	}
 	claimed = append(claimed, usernameKey)
+
+	// The username claim just succeeded, so this is unambiguously a NEW
+	// record — not a race with, and not a retry of, any existing one. Only
+	// now does a second system-user attempt need to be refused.
+	if req.System {
+		takenSystem, serr := s.claimHandle(ctx, keySystemSentinel, idBytes)
+		if serr != nil {
+			return nil, &StoreError{Op: "create", Detail: "claim system sentinel", Err: serr}
+		}
+		if takenSystem {
+			return nil, &SystemUserAlreadyExistsError{ExistingID: s.existingSystemUserID(ctx)}
+		}
+		claimed = append(claimed, keySystemSentinel)
+	}
 
 	if emailKey != "" {
 		takenEmail, eerr := s.claimHandle(ctx, emailKey, idBytes)
@@ -353,7 +405,7 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (c
 		// field silently — an invited-but-not-yet-enrolled account would come
 		// back ENABLED. It now folds into Lifecycle via initialLifecycle.
 		Lifecycle:   initial,
-		System:      false,
+		System:      req.System,
 		AuthMethods: authMethods,
 		CreatedAt:   now,
 		UpdatedAt:   now,
@@ -438,7 +490,7 @@ func (s *kvUserStore) createUserAtomic(ctx context.Context, req *CreateUserReque
 		TenantID:    tenantID,
 		RoleIDs:     req.RoleIDs,
 		Lifecycle:   initial,
-		System:      false,
+		System:      req.System,
 		AuthMethods: authMethods,
 		CreatedAt:   now,
 		UpdatedAt:   now,
@@ -466,6 +518,13 @@ func (s *kvUserStore) createUserAtomic(ctx context.Context, req *CreateUserReque
 	if emailKey != "" {
 		guards = append(guards, kvstore.Guard{Key: emailKey})
 		writes = append(writes, kvstore.KV{Key: emailKey, Value: idBytes})
+	}
+	// A System record claims the uniqueness sentinel in the same batch, so
+	// it exists exactly when the record does and a second System create
+	// fails the guard instead of racing it.
+	if req.System {
+		guards = append(guards, kvstore.Guard{Key: keySystemSentinel})
+		writes = append(writes, kvstore.KV{Key: keySystemSentinel, Value: idBytes})
 	}
 
 	applied, err := guarded.PutAllIfAllUnchanged(ctx, guards, writes)
@@ -519,6 +578,8 @@ func (s *kvUserStore) diagnoseAtomicGuardFailure(ctx context.Context, req *Creat
 			occupied = &UsernameExistsError{Username: req.Username, TenantID: tenantID}
 		case emailKey != "" && s.keyPresent(dctx, emailKey):
 			occupied = &EmailExistsError{Email: email, TenantID: tenantID}
+		case req.System && s.keyPresent(dctx, keySystemSentinel):
+			occupied = &SystemUserAlreadyExistsError{ExistingID: s.existingSystemUserID(dctx)}
 		}
 		return occupied != nil
 	})
@@ -1077,11 +1138,6 @@ func (s *kvUserStore) updateUserAt(ctx context.Context, req *UpdateUserRequest, 
 	// construction (it is itself a write that can fail, and reports
 	// IndexCompensationError when it does). Trading a guaranteed no-op for a
 	// probable undo is a bad trade when the check costs nothing.
-	authMethods, aerr := NormalizeAuthMethods(req.AuthMethods)
-	if aerr != nil {
-		return nil, aerr
-	}
-
 	existing := &User{}
 	if uerr := json.Unmarshal(base, existing); uerr != nil {
 		return nil, &StoreError{Op: "update", Detail: "unmarshal", Err: uerr}
@@ -1090,6 +1146,20 @@ func (s *kvUserStore) updateUserAt(ctx context.Context, req *UpdateUserRequest, 
 	// below are replaced rather than edited in place, so a shallow copy stays
 	// the committed view.
 	prior := *existing
+
+	// Still before any write. The stored policy is the keep-set: an entry it
+	// already holds may stay even if the vocabulary no longer knows it.
+	authMethods, aerr := normalizeAuthMethods(req.AuthMethods, existing.AuthMethods, s.knownMethod)
+	if aerr != nil {
+		return nil, aerr
+	}
+
+	// Role bindings depend on the record's tenant, so they are checked here,
+	// once it is decoded, and still before the first index mutation.
+	roleBindings, rberr := NormalizeRoleBindings(existing.ID, existing.TenantID, req.RoleBindings)
+	if rberr != nil {
+		return nil, rberr
+	}
 
 	// The lifecycle transition is checked here, immediately after the decode and
 	// still before the first index mutation, so a refused transition is also a
@@ -1289,26 +1359,24 @@ func (s *kvUserStore) updateUserAt(ctx context.Context, req *UpdateUserRequest, 
 		// would leave the account reachable by neither handle if the claim then
 		// failed.
 		newKey := usernameIndexKey(existing.TenantID, req.Username)
-		taken, cerr := s.claimHandle(ctx, newKey, idBytes)
+		holder, cerr := s.claimOrHolder(ctx, newKey, idBytes)
 		if cerr != nil {
 			return nil, &StoreError{Op: "update", Detail: "claim username index", Err: cerr}
 		}
-		if taken {
-			// A key already held by THIS user is not a duplicate. Two updates
-			// racing the same user to the same new handle both find it taken by
-			// their own id; reporting "someone else owns this" is simply false,
-			// and permanent from the caller's point of view. Fall through and
-			// let the conditional commit decide which one wins — registering no
-			// release, because this call did not insert it (the cert path in
-			// this same function already worked this way).
-			ownerID, oerr := s.handleOwner(ctx, newKey)
-			if oerr != nil {
-				return nil, &StoreError{Op: "update", Detail: "read username index owner", Err: oerr}
-			}
-			if ownerID != existing.ID {
-				return nil, &UsernameExistsError{Username: req.Username, TenantID: existing.TenantID}
-			}
-		} else {
+		// A key already held by THIS user is not a duplicate. Two updates
+		// racing the same user to the same new handle both find it taken by
+		// their own id; reporting "someone else owns this" is simply false,
+		// and permanent from the caller's point of view. Fall through and let
+		// the conditional commit decide which one wins — registering no
+		// release, because this call did not insert it (the cert path in this
+		// same function already worked this way).
+		_, other, oerr := heldByOther(holder, existing.ID)
+		switch {
+		case oerr != nil:
+			return nil, &StoreError{Op: "update", Detail: "read username index owner", Err: oerr}
+		case other:
+			return nil, &UsernameExistsError{Username: req.Username, TenantID: existing.TenantID}
+		case holder == nil:
 			claimedKeys = append(claimedKeys, newKey)
 		}
 
@@ -1341,20 +1409,18 @@ func (s *kvUserStore) updateUserAt(ctx context.Context, req *UpdateUserRequest, 
 		// a concurrent claim stays enabled with a login key resolving to another
 		// account.
 		newKey := emailIndexKey(existing.TenantID, newEmail)
-		taken, cerr := s.claimHandle(ctx, newKey, idBytes)
+		holder, cerr := s.claimOrHolder(ctx, newKey, idBytes)
 		if cerr != nil {
 			return nil, &StoreError{Op: "update", Detail: "claim email index", Err: cerr}
 		}
-		if taken {
-			// Self-owned is not a duplicate — see the username branch above.
-			ownerID, oerr := s.handleOwner(ctx, newKey)
-			if oerr != nil {
-				return nil, &StoreError{Op: "update", Detail: "read email index owner", Err: oerr}
-			}
-			if ownerID != existing.ID {
-				return nil, &EmailExistsError{Email: newEmail, TenantID: existing.TenantID}
-			}
-		} else {
+		// Self-owned is not a duplicate — see the username branch above.
+		_, other, oerr := heldByOther(holder, existing.ID)
+		switch {
+		case oerr != nil:
+			return nil, &StoreError{Op: "update", Detail: "read email index owner", Err: oerr}
+		case other:
+			return nil, &EmailExistsError{Email: newEmail, TenantID: existing.TenantID}
+		case holder == nil:
 			claimedKeys = append(claimedKeys, newKey)
 		}
 
@@ -1382,13 +1448,10 @@ func (s *kvUserStore) updateUserAt(ctx context.Context, req *UpdateUserRequest, 
 		existing.RoleIDs = req.RoleIDs
 	}
 	if req.RoleBindings != nil {
-		existing.RoleBindings = req.RoleBindings
+		existing.RoleBindings = roleBindings
 	}
 	if req.Attributes != nil {
 		existing.Attributes = req.Attributes
-	}
-	if req.Factors != nil {
-		existing.Factors = req.Factors
 	}
 	if req.AuthMethods != nil {
 		existing.AuthMethods = authMethods
@@ -1480,16 +1543,16 @@ func (s *kvUserStore) updateUserAt(ctx context.Context, req *UpdateUserRequest, 
 			// which is where release-then-reclaim actually caused harm.
 			// A thumbprint is an authentication credential: claim it, so two
 			// users cannot both take one because each read it as absent.
-			taken, cerr := s.claimHandle(ctx, key, idBytes)
+			holder, cerr := s.claimOrHolder(ctx, key, idBytes)
 			if cerr != nil {
 				return nil, &StoreError{Op: "update", Detail: "claim cert index", Err: cerr}
 			}
-			if taken {
-				boundID, oerr := s.handleOwner(ctx, key)
+			if holder != nil {
+				boundID, other, oerr := heldByOther(holder, existing.ID)
 				if oerr != nil {
 					return nil, &StoreError{Op: "update", Detail: "read cert index owner", Err: oerr}
 				}
-				if boundID != existing.ID {
+				if other {
 					return nil, &CertBindingConflictError{
 						Thumbprint:   b.Thumbprint,
 						BoundUserID:  boundID,
@@ -2091,7 +2154,6 @@ func onlyReassertsLifecycle(req *UpdateUserRequest) bool {
 		req.RoleBindings == nil &&
 		req.Attributes == nil &&
 		req.CertBindings == nil &&
-		req.Factors == nil &&
 		req.AuthMethods == nil
 }
 
@@ -2169,7 +2231,6 @@ func lastAuthOnly(req *UpdateUserRequest) bool {
 		req.RoleBindings == nil &&
 		req.Attributes == nil &&
 		req.CertBindings == nil &&
-		req.Factors == nil &&
 		req.AuthMethods == nil
 }
 
@@ -2411,29 +2472,59 @@ func (s *kvUserStore) releaseClaims(ctx context.Context, keys []string, idBytes 
 	return failures
 }
 
-// handleOwner reports which user id currently holds a handle index key.
+// handleClaimAttempts bounds claimOrHolder. Each extra attempt needs another
+// caller to insert AND release the key inside one claim-then-read window, so a
+// handful is ample; the bound turns sustained churn into a typed error rather
+// than a spin.
+const handleClaimAttempts = 8
+
+// claimOrHolder claims a handle index key for idBytes or reports who holds it.
+// A nil holder means THIS call inserted the key; otherwise holder is the
+// stored owner id, which may be idBytes itself.
 //
-// It exists because the answer was being computed inline at three call sites
-// with both errors discarded (`owner, _ := ...`), which turned a transient read
-// failure or a malformed stored value into a DUPLICATE-HANDLE conflict — telling
-// a caller to pick another name when the truth was that the store could not
-// answer, and letting the cert path report BoundUserID: 0 as though user zero
-// held the thumbprint (Codex, PR #191).
+// A failed claim and the read of its holder are two steps, and the holder can
+// release the key between them. That is a concurrent update moving off the
+// handle -- withdrawing the binding, renaming away -- and it leaves the key
+// FREE, so the claim is simply taken again. Reading the absence as a conflict
+// was wrong both ways: it refused a handle nobody held, and the cert path
+// reported it as bound to user 0 (a lost withdrawal race surfaced as "already
+// bound to user 0" instead of being judged against the winner).
 //
-// A store failure is a store failure. Only a successfully read and decoded owner
-// justifies a conflict error.
-func (s *kvUserStore) handleOwner(ctx context.Context, key string) (uint64, error) {
-	raw, err := s.store.Get(ctx, key)
+// A store failure is a store failure: it is returned, never read as a
+// conflict (Codex, PR #191).
+func (s *kvUserStore) claimOrHolder(ctx context.Context, key string, idBytes []byte) (holder []byte, err error) {
+	for range handleClaimAttempts {
+		taken, cerr := s.claimHandle(ctx, key, idBytes)
+		if cerr != nil {
+			return nil, cerr
+		}
+		if !taken {
+			return nil, nil
+		}
+		raw, gerr := s.store.Get(ctx, key)
+		if gerr != nil {
+			return nil, gerr
+		}
+		if raw != nil {
+			return raw, nil
+		}
+	}
+	return nil, &HandleContendedError{Key: key, Attempts: handleClaimAttempts}
+}
+
+// heldByOther reports whether holder, as returned by claimOrHolder, names a
+// user other than self. A holder that cannot be decoded is an error, not a
+// conflict: only a decoded owner justifies telling a caller the handle is
+// someone else's.
+func heldByOther(holder []byte, self uint64) (uint64, bool, error) {
+	if holder == nil {
+		return 0, false, nil
+	}
+	owner, err := decodeID(holder)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
-	if raw == nil {
-		// The holder released it between the failed claim and this read. Report
-		// a zero owner with no error; the caller treats "not us" as a conflict,
-		// which is the safe reading of a key that is contended right now.
-		return 0, nil
-	}
-	return decodeID(raw)
+	return owner, owner != self, nil
 }
 
 // releaseHandle removes a handle index entry only while it still names this
@@ -2560,19 +2651,19 @@ func intersecting(keys []string, set map[string]bool) []string {
 // record unreachable by its own unique handle, turning our failed update into
 // somebody else's outage.
 //
-// A key that has been re-taken is therefore a compensation FAILURE, not a
-// success: the caller is told the rollback was incomplete (IndexCompensationError)
-// instead of silently trading its problem for another account's.
+// A key that has been re-taken by ANOTHER user is therefore a compensation
+// FAILURE, not a success: the caller is told the rollback was incomplete
+// (IndexCompensationError) instead of silently trading its problem for another
+// account's. A key re-taken by THIS user -- a concurrent update of the same
+// record that kept the handle and re-inserted it after we released it -- is
+// already in the state the restore exists to reach, and reporting it as
+// reclaimed turned a lost withdrawal race into a spurious cleanup failure.
 func (s *kvUserStore) restoreHandle(ctx context.Context, key string, idBytes []byte) error {
-	atomicStore, ok := s.store.(kvstore.AtomicKVStore)
-	if !ok {
-		return ErrStoreNotAtomic
-	}
-	stored, err := atomicStore.PutIfAbsent(ctx, key, idBytes)
+	holder, err := s.claimOrHolder(ctx, key, idBytes)
 	if err != nil {
 		return err
 	}
-	if !stored {
+	if holder != nil && !bytes.Equal(holder, idBytes) {
 		return &HandleReclaimedError{Key: key}
 	}
 	return nil
@@ -2591,15 +2682,53 @@ func NormalizeEmail(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
 }
 
-// NormalizeAuthMethods canonicalises a permitted-method set: trimmed,
-// lowercased, de-duplicated, first-seen order preserved.
+// NormalizeAuthMethods canonicalises a permitted-method set for WRITING:
+// trimmed, lowercased, de-duplicated, first-seen order preserved, and every
+// entry one of qrdb's built-in method tokens (auth.BuiltinAuthMethods). An
+// entry outside them fails closed with *UnknownAuthMethodError.
 //
-// Case IS folded because these are protocol names from a small closed
-// vocabulary ("webauthn", "piv") rather than minted identifiers — and a policy
-// list in which "WebAuthn" and "webauthn" are two different permissions is a
-// list that will eventually deny a method it meant to allow.
+// A user store validates against its NODE's vocabulary instead — the built-in
+// tokens plus the names of the authenticators in that node's chain, supplied
+// with WithAuthMethodVocabulary — so a policy may name a plugged-in method
+// only on a node that can authenticate with it.
+//
+// Case IS folded because these are protocol names rather than minted
+// identifiers — and a policy list in which "WebAuthn" and "webauthn" are two
+// different permissions is a list that will eventually deny a method it meant
+// to allow. An unknown token is refused for the same reason: "webauth"
+// matches no authenticator, so a policy holding it silently refuses the method
+// its author meant to allow.
+//
+// It validates a policy being written, never one already stored: a record
+// written before the vocabulary was enforced reads back unchanged, and an
+// update that does not replace the policy carries it along untouched.
 func NormalizeAuthMethods(methods []string) ([]string, error) {
-	return dedupeTokens(methods, "authMethods", true)
+	return normalizeAuthMethods(methods, nil, nil)
+}
+
+// normalizeAuthMethods is NormalizeAuthMethods against a store's own
+// vocabulary (known; nil means the built-in tokens) and with a keep-set: an
+// entry outside the vocabulary is still accepted when the policy being
+// replaced already held it. An admin editing a legacy policy may keep an entry
+// the node no longer knows — dropping it silently would change what the
+// account may do — but may not add a new one.
+func normalizeAuthMethods(methods, keep []string, known func(string) bool) ([]string, error) {
+	if known == nil {
+		known = auth.IsBuiltinAuthMethod
+	}
+	out, err := dedupeTokens(methods, "authMethods", true)
+	if err != nil {
+		return nil, err
+	}
+	for i, m := range out {
+		if known(m) || slices.ContainsFunc(keep, func(k string) bool {
+			return auth.CanonicalAuthMethod(k) == m
+		}) {
+			continue
+		}
+		return nil, &UnknownAuthMethodError{Method: m, Index: i}
+	}
+	return out, nil
 }
 
 // dedupeTokens trims, optionally lowercases, and de-duplicates an opaque token
