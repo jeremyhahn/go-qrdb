@@ -11,6 +11,278 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Added
+
+- **The embedded-server wizard enrols share holders before a Shamir
+  initialization.** Its Shamir mode called `initializeShamir` with no holder
+  enrolled, which the server refuses. It now starts the embedded server,
+  pauses for the operator to enrol exactly the configured number of holders
+  (username, role, CSR; the issued certificate is shown to hand back), and
+  only then initializes. The enrolment forms are one component shared with
+  the setup wizard.
+- **A frontend CI job.** The `frontend` job (`make test-frontend`) runs the
+  TypeScript SDK's type check and vitest suite, svelte-check over the web UI
+  and the mocked Playwright tier, and gates `ci-gate`. The Playwright specs
+  that encoded the retired custody model are ported to share holders; the
+  real-backend tier claims and submits with a headless `qrdb` CLI
+  (`QRDB_BIN`, built by `make build-cli-headless`).
+- **Re-initializing a barrier to Shamir in the Seal Manager enrols its
+  holders first,** as the setup wizards do.
+- **Tenant share holders in the web UI.** The Tenant Manager gains a
+  Holders panel per tenant: it lists the Shamir tenant barrier's holders with
+  role, share index and claim state, and opens rekey and revocation rounds
+  (`startTenantRekey`, `revokeTenantOfficer`). The rekey/revoke form is one
+  component shared with the Seal Manager's system-barrier panel.
+- **Unified share holders.** Security Officers and key custodians are one
+  kind of share holder, distinguished only by role (`so` | `custodian`) and
+  the RBAC rights that role carries. Both are enrolled the same way — by an
+  Admin or a Security Officer, never by themselves — from a CSR whose public
+  key is all the CA takes: the ceremony CA assigns `CN=<username>` and a
+  SPIFFE URI in the holder namespace
+  (`spiffe://<trust-domain>/tenant/<tenant>/holder/<username>`), which the
+  authentication layer refuses as a login identity. Enrolment records an
+  envelope recipient key (the certificate key, or a separate HPKE key) and
+  the holder's authentication factors: `mtls` always, plus any factor the
+  composer registered with `WithFactorRegistry`. One person holds one share,
+  in one role, per scope. See `docs/shamir-custody/`.
+- **Algorithm-agile HPKE (`pkg/keydelivery`).** A fixed suite registry —
+  `dhkem-p256`, `dhkem-p384`, `dhkem-x25519` and the post-quantum hybrid
+  `mlkem768-x25519` — shared by node key delivery and share envelopes.
+- **The `mtls` authentication factor (`pkg/authfactors/mtls`).** Possession
+  of the enrolled certificate key, proved by signing a server nonce, so it
+  works on every transport; when the caller arrived over a verified TLS
+  session, the session certificate must also be the enrolled one.
+- **The holder roster.** Each key domain's wrapped-key blob (now version 2)
+  carries the public list of its holders, their share indexes and their
+  factors' public material, with the roster's SHA-256 digest in the AEAD
+  associated data: readable while sealed, and any edit makes the key fail to
+  open (`ErrUnsealKeyMismatch`). A factor policy — `designated` (default) or
+  `any-enrolled` — is chosen per share set and bound into the roster.
+- **One authenticated quorum.** Unseal, seal, root token, rekey completion
+  and recovery all run through `StorageBarrier.SubmitHolderShare`: a share
+  counts only for a holder in the roster, not being revoked, not already
+  counted in the round, whose factor proof verifies against the roster over
+  a challenge issued for exactly that round, and whose share carries its own
+  index. Served on every transport as `quorum begin` / `quorum submit`
+  (REST `POST /v1/barrier/quorum/{begin,submit}`, gRPC/Unix
+  `BarrierQuorumBegin`/`BarrierQuorumSubmit`, QUIC `barrier.QuorumBegin`/
+  `barrier.QuorumSubmit`, MCP `qrdb_barrier_quorum_begin`/`_submit`,
+  embedded), reachable through the sealed window, with tenant equivalents.
+- **Quorum-gated rekey and holder revocation.** `BarrierRekeyStart` /
+  `BarrierOfficerRevoke` (REST `POST /v1/barrier/rekey/start`,
+  `POST /v1/barrier/officers/revoke`; permissions `seal:rekey` and the new
+  `seal:officer_revoke`, plus the SO PIN) open a round that completes only
+  when M current holders submit; revocation removes the holder, is completed
+  by M of the remaining holders, and is refused when M would exceed N−1.
+  Tenant forms: `tenant_barrier:rekey`, `tenant_barrier:officer_revoke`.
+- **An independent recovery key.** Recovery generation wraps the root key
+  under its own key with its own blob and roster, split to the recovery
+  holders; it unseals with `op: recover` and is rekeyed on its own.
+- **Holder CLI and desktop verbs.** `qrdb barrier officer
+  register|list|claim|claim-begin|claim-complete|revoke`, `qrdb barrier quorum
+  begin|submit`, `qrdb barrier rekey`, their `qrdb tenant barrier-officer`,
+  `barrier-quorum`, `barrier-rekey` forms, and `qrdb init --custodians
+  --policy`. The desktop `OfficerBinding` offers `RegisterHolder`,
+  `ListHolders`, `ClaimEnvelope`, `SubmitShare`, `StartRekey`,
+  `RevokeHolder`; keys stay in the calling process.
+- **Share-holder errors in the one classification table.**
+  `pkg/api/errclass` classifies every holder, quorum and envelope error, so
+  the same failure answers the same way on REST, gRPC, Unix, QUIC, MCP and
+  embedded.
+- **Test support:** `pkg/seal/sealtest.Custody` (in-memory distributor and
+  verifier for code that sits on a Shamir barrier) and `pkg/pin/pintest`.
+
+### Security
+
+- **Share submissions are authenticated and counted once per holder.** The
+  unauthenticated string-share unseal, seal-vote, root-token and recovery
+  entry points are gone; one person who has seen M shares can no longer act
+  as M people.
+- **Shares reach only their holder.** Each share is HPKE-sealed to its
+  holder's enrolled key, held only in go-enclave protected memory with a
+  time-to-live, delivered once to the holder's own mTLS session and wiped.
+  No response other than the claim carries share material, and the claim
+  carries it sealed.
+- **The CA assigns holder identities.** A CSR can no longer choose its own
+  subject or SANs.
+- **SO PIN checks are hashed and constant-time, and fail closed.** Every SO
+  PIN comparison goes through the `pin.PINBackend`; raw PINs are never
+  compared with `!=`. Every SO-PIN-gated operation is refused without a PIN
+  backend (REST 412, `FAILED_PRECONDITION` elsewhere).
+- **Transports wipe the share bytes they decode** from a quorum submission.
+- **A Shamir barrier can no longer be initialized from a credential.**
+  `Initialize`/`InitializeWithStrategy` on a Shamir barrier wrote an envelope
+  with no wrapped key and no roster, which could never be unsealed once
+  sealed; they now refuse with `seal.ErrShamirInitializeRequiresHolders`.
+  That covers `bootstrap.InitializeTenantBarrier` on a pre-registered Shamir
+  tenant barrier and `sdk/go/node`'s `Node.Unseal` on an uninitialized one,
+  and `qrdb barrier init --barrier-strategy shamir` is refused locally.
+- **X25519 envelope suites are refused in FIPS mode.** `dhkem-x25519` and
+  `mlkem768-x25519` are not FIPS 140-3 approved; in FIPS mode
+  `keydelivery.LookupSuite` refuses them with `SuiteNotApprovedError`, so
+  such a holder is refused at enrolment rather than at sealing.
+- **Membership changes need the quorum.** Adding, removing or re-policing
+  holders is a rekey, and a rekey completes only with M current holders.
+- **A system-scope encryption migration to Shamir no longer loses the share
+  envelopes.** The in-process data-plane restart it triggers built a new
+  ceremony service and discarded the envelopes the migration had just
+  distributed, so the barrier came back sealed with no holder able to open it
+  and every datum on the node was unreachable. The restart now carries the
+  running ceremony service across (`ceremony.CeremonyService.Rebind` moves it
+  to the rebuilt barrier), in the daemon and in `sdk/go/node`, so the holders
+  claim from the sealed node and a quorum unseals it.
+- **A Shamir initialization whose share distribution fails is rolled back.**
+  The barrier used to stay initialized and unsealed with a root key no holder
+  had a share of, and every retry was refused as already initialized.
+  `InitializeShamir` now discards the key, seals, and deletes the persisted
+  root key, wrapped key and metadata, so storage and status read as
+  uninitialized. The epoch barrier cannot leave the initialized state within
+  the process, so a retry needs a node restart; until then initialization
+  answers the new `seal.ErrRestartRequired` (FailedPrecondition). A rollback
+  that fails returns `seal.ShamirInitRollbackError` (Internal).
+- **The REST sealed window no longer admits holder revocation.** The claim
+  routes were allowlisted by an `/v1/barrier/officers/` prefix, which also let
+  `POST /v1/barrier/officers/revoke` through while the barrier was sealed. The
+  allowlist now names the claim routes as one-segment patterns
+  (`/v1/barrier/officers/{username}/claim/begin` and `.../complete`, and the
+  recovery forms), so a sealed node answers the revocation 503.
+- **A distributed Shamir share is destroyed if it is not claimed in time.**
+  Every envelope held for a share holder now carries its own expiry timer
+  (`CeremonyConfig.ShareTTL`, default `ceremony.DefaultShareTTL` = 24h) and is
+  wiped at its deadline. A late claim is refused with the new
+  `ceremony.ErrShareExpired` (`sdk/go.ErrCeremonyShareExpired`) at claim
+  begin and complete, in the Gone class (REST 410, gRPC/Unix
+  `FAILED_PRECONDITION`); the remedy is a rekey. Replacing a held share now destroys the old enclave
+  instead of dropping it for the collector.
+- **The barrier root key is decrypted straight into protected memory.**
+  Unwrapping the Shamir-wrapped root key (unseal, root-token verification)
+  now opens the AEAD in place into a `pkg/secure` buffer and hands it to the
+  recovery strategy without an intermediate heap slice; an AEAD that returns
+  memory it allocated itself is refused with the new
+  `seal.UnprotectedDecryptError`.
+
+### Fixed
+
+### Removed — BREAKING
+
+- **The parallel custodian subsystem is deleted**: `pkg/custodian`,
+  `ceremony.CeremonyExtension`, `CeremonyEnrollExternalOfficer`, the
+  custodian-group service on every transport, and the ceremony's own share
+  claims. Custodians are share holders with `--role custodian`.
+- **The empty Custodian RBAC role**: `role.RoleNameCustodian` and the SDK's
+  `RoleNameCustodian` are removed, and `role.BuiltInRoles` returns five roles
+  (SO, Admin, Operator, User, Auditor). The role granted nothing; a key
+  custodian is a share holder, not an RBAC principal. A tenant seeded by an
+  earlier build keeps its stored `custodian` role record, which grants nothing
+  and is no longer a reserved system role name, so any user still assigned it
+  keeps resolving; remove the assignment and the role at leisure.
+- **Batch and unauthenticated share entry points**: `UnsealWithShare(s)`,
+  `SubmitSealVote`, `GenerateRootToken`, `RecoverWithKeys`, the one-call
+  `Rekey`, and the `ShareExchangeCoordinator` skeleton (never wired; nodes do
+  not exchange shares).
+- **REST routes**: `/v1/barrier/shamir/unseal-share`,
+  `/v1/barrier/shamir/unseal-shares`, `/v1/barrier/shamir/seal-vote`,
+  `/v1/barrier/rekey`, `/v1/barrier/recovery/recover`,
+  `/v1/barrier/root-token`, `/v1/barrier/officers/claim-status`,
+  `/v1/barrier/unseal-share`, `/v1/ceremony/claim-cert/{begin,complete}`,
+  `/v1/ceremony/officer-share/{begin,complete}`,
+  `/v1/ceremony/claim-share/{begin,complete}`,
+  `/v1/ceremony/enroll-custodian`, `/v1/ceremony/revoke-custodian`,
+  `/v1/init/enroll-external-officer`,
+  `/v1/tenants/{id}/barrier/{unseal-share,seal-vote}`,
+  `/v1/tenants/{id}/barrier/officers/claim-status`.
+- **gRPC/Unix RPCs**: `BarrierShamirUnsealShare(s)`, `BarrierRekey`,
+  `BarrierOfficerClaimStatus`, `BarrierShamirSealVote`,
+  `BarrierRecoveryRecover`, `BarrierRootToken`, `CeremonyClaimCert*`,
+  `CeremonyBeginClaimShare`, `CeremonyCompleteClaimShare`,
+  `CeremonyClaimShare*`, `CeremonyEnrollExternalOfficer`,
+  `CeremonySubmitUnsealShare`, and `TenantBarrierService` `UnsealShare`,
+  `OfficerClaimStatus`, `ShamirSealVote`. QUIC methods and MCP tools of the
+  same operations are removed with them.
+- **Permissions**: `seal:recover_with_keys`, `seal:submit_seal_vote`,
+  `barrier:unseal-share`, `ceremony:enroll_custodian`,
+  `ceremony:revoke_custodian`, `ceremony:claim_cert`,
+  `ceremony:claim_share_begin`, `ceremony:claim_share_complete`,
+  `tenant_barrier:claim_share`, `tenant_barrier:seal_vote`. The Custodian
+  role now grants nothing; it is kept so persisted role references resolve.
+- **CLI verbs**: `barrier unseal-shares`, `barrier shamir-seal-vote`,
+  `barrier root-token`, `barrier recovery recover`, `barrier officer
+  claim-status`, `barrier recovery officer …`, `ceremony claim-cert …`,
+  `ceremony claim-share …`, `ceremony claim-share-begin|complete`,
+  `ceremony submit-unseal-share`, `tenant barrier-shamir-seal-vote`, and
+  `tenant barrier-unseal --share`.
+- **`transport.TenantBarrierUnsealRequest.Share`**: the credential unseal
+  takes `Key` only.
+- **The User-PIN Shamir split in `qrdb init --officers`**: the ceremony now
+  splits only the barrier's unseal key, to the named holders.
+- **Credential-mode Shamir and legacy direct mode**: a Shamir barrier always
+  holds its key under unseal-key indirection with a roster. A barrier whose
+  wrapped blob predates the roster answers `seal.ErrHolderRosterMissing`;
+  there is no migration (pre-release).
+- **Dead error sentinels** of the removed flows in `pkg/ceremony`,
+  `pkg/seal` and their `sdk/go` re-exports.
+- **`tenant.SystemTenantID`, `tenant.IsSystemTenant` and `tenant.Normalize`
+  moved to the new leaf package `pkg/tenantid`** as `tenantid.System`,
+  `tenantid.IsSystem` and `tenantid.Normalize`. `pkg/tenant` imports
+  `pkg/ceremony` and `pkg/auth`, so those packages could not name the system
+  tenant; the leaf package imports nothing from this module. The SDK aliases
+  (`sdk/go.SystemTenantID`, `IsSystemTenant`, `NormalizeTenantID`) are
+  unchanged.
+- **`ceremony.ShareService` is deleted.** It stored raw Shamir share bytes in
+  the replicated store (`SubmitShare`) and returned them (`ListShares`,
+  `GetShare`), contradicting the rule that share material is never persisted.
+  Removed with it: `ceremony.ShareServicer`, `ceremony.NewShareService`,
+  `ceremony.ShareServiceError`, `lifecycle.Node.Share`,
+  `lifecycle.ShareServiceError`, the embedded `WithShareService` option,
+  `transport.ShareClient` and its request/response types (`SubmitShareRequest`,
+  `SubmitShareResponse`, `ShareInfo`, `ListSharesResponse`,
+  `ShareCollectionStatus`), the MCP stubs, and the SDK's `Client.Shares()`,
+  `sdk/go.ShareServicer`, `sdk/go.ShareService`, `sdk/go.NewShareService` and
+  `sdk/go.CeremonyShareServiceError` aliases. There is no replacement: shares
+  leave the node only through the barrier's ceremony distributor and the
+  one-time claim.
+
+### Changed — BREAKING
+
+- **Holder enrolment and claim wire types.** `OfficerRegisterRequest` gains
+  `role`, `encryption_kem`, `encryption_key`, `factors` and `designated`; its
+  response carries the CA-issued certificate, role, designated factor, KEM
+  and enrolled factors, and no share index. `ShareClaimCompleteResponse`
+  carries the sealed `envelope`, not share bytes.
+- **`BarrierInitializeShamirRequest`** takes `threshold`, `total_shares`
+  (which must equal the enrolled holder count) and `policy`; there is no
+  secret. Recovery generation takes `threshold`, `policy` and the SO PIN and
+  splits to every enrolled recovery holder.
+- **A share claim without a client certificate is Unauthenticated on every
+  transport.** gRPC and Unix answered `INVALID_ARGUMENT`, QUIC
+  PermissionDenied and MCP Internal. The one typed error is now
+  `service.ClientCertRequiredError`, classified Unauthenticated in
+  `pkg/api/errclass` (REST 401, gRPC/Unix/QUIC/MCP `UNAUTHENTICATED`). The
+  per-transport types it replaces are removed: `grpc.ClientCertRequiredError`,
+  `quic.ClientCertRequiredError`, the REST and MCP unexported twins and the
+  SDK's `embedded.ClientCertRequiredError`; match
+  `*service.ClientCertRequiredError` instead.
+- **The TypeScript SDK and web UI follow the share-holder model.** They called
+  routes the server no longer serves (`/v1/barrier/shamir/unseal-share`,
+  `/unseal-shares`, `/seal-vote`, `/v1/barrier/officers/claim-status`, the
+  tenant `unseal-share` and `seal-vote`) and read share bytes from claims.
+  `OfficerClient` now administers holders only: `registerOfficer`,
+  `registerRecoveryOfficer`, `listOfficers`, `startRekey`, `revokeOfficer` and
+  their tenant forms (`registerTenantOfficer`, `listTenantOfficers`,
+  `startTenantRekey`, `revokeTenantOfficer`), with the enrolment fields `role`,
+  `encryptionKem`, `encryptionKey`, `factors` and `designated`; the claim and
+  seal-vote methods are removed. `SealClient.initializeShamir` takes
+  `{threshold, totalShares, policy, soPin, userPin}` and no secret;
+  `SealClient.unseal` and `TenantClient.barrierUnseal` serve passphrase
+  barriers only, and `TenantClient.barrierUnsealShare` is removed. The web UI
+  drops the officer claim page and the share and seal-vote inputs: a sealed
+  Shamir barrier shows which command its holders run, and the Seal Manager
+  enrols, lists, rekeys and revokes holders. Holder keys never enter the page;
+  holders claim and submit from the CLI or the desktop app.
+- **The desktop `SealBinding`**: `InitializeShamir(threshold, total, policy)`;
+  `Unseal` refuses a Shamir barrier, which its holders unseal. The embedded
+  node no longer auto-unseals a Shamir barrier.
+
 ## [0.33.2-alpha] - 2026-10-03
 
 The audit chain verifier no longer reports a missing log on an honest trail while the log rotates. Highlights:
@@ -3243,219 +3515,6 @@ Merge train 2: transactions and guarded batches on every state machine type, O(1
   an earlier incarnation of a name can reach a later one.
 - Listing a collection's documents sorted every key with an insertion sort,
   quadratic in the collection's size; it now uses the standard library's sort.
-
-### Security
-
-- **Share submissions are authenticated and counted once per holder.** The
-  unauthenticated string-share unseal, seal-vote, root-token and recovery
-  entry points are gone; one person who has seen M shares can no longer act
-  as M people.
-- **Shares reach only their holder.** Each share is HPKE-sealed to its
-  holder's enrolled key, held only in go-enclave protected memory with a
-  time-to-live, delivered once to the holder's own mTLS session and wiped.
-  No response other than the claim carries share material, and the claim
-  carries it sealed.
-- **The CA assigns holder identities.** A CSR can no longer choose its own
-  subject or SANs.
-- **SO PIN checks are hashed and constant-time, and fail closed.** Every SO
-  PIN comparison goes through the `pin.PINBackend`; raw PINs are never
-  compared with `!=`. Every SO-PIN-gated operation is refused without a PIN
-  backend (REST 412, `FAILED_PRECONDITION` elsewhere).
-- **Transports wipe the share bytes they decode** from a quorum submission.
-- **A Shamir barrier can no longer be initialized from a credential.**
-  `Initialize`/`InitializeWithStrategy` on a Shamir barrier wrote an envelope
-  with no wrapped key and no roster, which could never be unsealed once
-  sealed; they now refuse with `seal.ErrShamirInitializeRequiresHolders`.
-  That covers `bootstrap.InitializeTenantBarrier` on a pre-registered Shamir
-  tenant barrier and `sdk/go/node`'s `Node.Unseal` on an uninitialized one,
-  and `qrdb barrier init --barrier-strategy shamir` is refused locally.
-- **X25519 envelope suites are refused in FIPS mode.** `dhkem-x25519` and
-  `mlkem768-x25519` are not FIPS 140-3 approved; in FIPS mode
-  `keydelivery.LookupSuite` refuses them with `SuiteNotApprovedError`, so
-  such a holder is refused at enrolment rather than at sealing.
-- **Membership changes need the quorum.** Adding, removing or re-policing
-  holders is a rekey, and a rekey completes only with M current holders.
-- **A system-scope encryption migration to Shamir no longer loses the share
-  envelopes.** The in-process data-plane restart it triggers built a new
-  ceremony service and discarded the envelopes the migration had just
-  distributed, so the barrier came back sealed with no holder able to open it
-  and every datum on the node was unreachable. The restart now carries the
-  running ceremony service across (`ceremony.CeremonyService.Rebind` moves it
-  to the rebuilt barrier), in the daemon and in `sdk/go/node`, so the holders
-  claim from the sealed node and a quorum unseals it.
-- **A Shamir initialization whose share distribution fails is rolled back.**
-  The barrier used to stay initialized and unsealed with a root key no holder
-  had a share of, and every retry was refused as already initialized.
-  `InitializeShamir` now discards the key, seals, and deletes the persisted
-  root key, wrapped key and metadata, so storage and status read as
-  uninitialized. The epoch barrier cannot leave the initialized state within
-  the process, so a retry needs a node restart; until then initialization
-  answers the new `seal.ErrRestartRequired` (FailedPrecondition). A rollback
-  that fails returns `seal.ShamirInitRollbackError` (Internal).
-- **The REST sealed window no longer admits holder revocation.** The claim
-  routes were allowlisted by an `/v1/barrier/officers/` prefix, which also let
-  `POST /v1/barrier/officers/revoke` through while the barrier was sealed. The
-  allowlist now names the claim routes as one-segment patterns
-  (`/v1/barrier/officers/{username}/claim/begin` and `.../complete`, and the
-  recovery forms), so a sealed node answers the revocation 503.
-- **A distributed Shamir share is destroyed if it is not claimed in time.**
-  Every envelope held for a share holder now carries its own expiry timer
-  (`CeremonyConfig.ShareTTL`, default `ceremony.DefaultShareTTL` = 24h) and is
-  wiped at its deadline. A late claim is refused with the new
-  `ceremony.ErrShareExpired` (`sdk/go.ErrCeremonyShareExpired`) at claim
-  begin and complete, in the FailedPrecondition class (REST 409, gRPC/Unix
-  `FAILED_PRECONDITION`); the remedy is a rekey. Replacing a held share now destroys the old enclave
-  instead of dropping it for the collector.
-- **The barrier root key is decrypted straight into protected memory.**
-  Unwrapping the Shamir-wrapped root key (unseal, root-token verification)
-  now opens the AEAD in place into a `pkg/secure` buffer and hands it to the
-  recovery strategy without an intermediate heap slice; an AEAD that returns
-  memory it allocated itself is refused with the new
-  `seal.UnprotectedDecryptError`.
-
-### Fixed
-
-- A reopened keyed barrier (`ReopenKeyed`) kept neither the holder verifier
-  nor the quorum TTL, so no holder could unseal it after an encryption
-  migration.
-- `sdk/go/node` did not hand the ceremony CA to the ceremony service, and the
-  full boot discarded the sealed-window ceremony state, losing envelopes not
-  yet claimed; the sealed window also ran without the PIN backend.
-- The embedded transport's `CeremonyInitialize` dropped each holder's role,
-  the factor policy and the returned holder certificates.
-- `qrdb init --shares` was checked only for range; the key was silently split
-  to however many holders were named. It must now equal the number of
-  `--officers` plus `--custodians`.
-- `seal.ErrShamirUnsealRequiresQuorum` fell through to REST 500 and gRPC
-  `INTERNAL`; it now maps like `ErrShamirBarrierRequiresQuorum` (422,
-  `FAILED_PRECONDITION`). Ceremony initialization errors (`ErrNoOfficers`,
-  `ErrInvalidThreshold`, `ErrAlreadyInitialized`) are now classified instead
-  of answering 500.
-- The QUIC transport classifies claim errors like every other transport.
-- The sealed-window allowlist named a `shamir-verify` verb no transport
-  served.
-
-### Removed — BREAKING
-
-- **The parallel custodian subsystem is deleted**: `pkg/custodian`,
-  `ceremony.CeremonyExtension`, `CeremonyEnrollExternalOfficer`, the
-  custodian-group service on every transport, and the ceremony's own share
-  claims. Custodians are share holders with `--role custodian`.
-- **The empty Custodian RBAC role**: `role.RoleNameCustodian` and the SDK's
-  `RoleNameCustodian` are removed, and `role.BuiltInRoles` returns five roles
-  (SO, Admin, Operator, User, Auditor). The role granted nothing; a key
-  custodian is a share holder, not an RBAC principal. A tenant seeded by an
-  earlier build keeps its stored `custodian` role record, which grants nothing
-  and is no longer a reserved system role name, so any user still assigned it
-  keeps resolving; remove the assignment and the role at leisure.
-- **Batch and unauthenticated share entry points**: `UnsealWithShare(s)`,
-  `SubmitSealVote`, `GenerateRootToken`, `RecoverWithKeys`, the one-call
-  `Rekey`, and the `ShareExchangeCoordinator` skeleton (never wired; nodes do
-  not exchange shares).
-- **REST routes**: `/v1/barrier/shamir/unseal-share`,
-  `/v1/barrier/shamir/unseal-shares`, `/v1/barrier/shamir/seal-vote`,
-  `/v1/barrier/rekey`, `/v1/barrier/recovery/recover`,
-  `/v1/barrier/root-token`, `/v1/barrier/officers/claim-status`,
-  `/v1/barrier/unseal-share`, `/v1/ceremony/claim-cert/{begin,complete}`,
-  `/v1/ceremony/officer-share/{begin,complete}`,
-  `/v1/ceremony/claim-share/{begin,complete}`,
-  `/v1/ceremony/enroll-custodian`, `/v1/ceremony/revoke-custodian`,
-  `/v1/init/enroll-external-officer`,
-  `/v1/tenants/{id}/barrier/{unseal-share,seal-vote}`,
-  `/v1/tenants/{id}/barrier/officers/claim-status`.
-- **gRPC/Unix RPCs**: `BarrierShamirUnsealShare(s)`, `BarrierRekey`,
-  `BarrierOfficerClaimStatus`, `BarrierShamirSealVote`,
-  `BarrierRecoveryRecover`, `BarrierRootToken`, `CeremonyClaimCert*`,
-  `CeremonyBeginClaimShare`, `CeremonyCompleteClaimShare`,
-  `CeremonyClaimShare*`, `CeremonyEnrollExternalOfficer`,
-  `CeremonySubmitUnsealShare`, and `TenantBarrierService` `UnsealShare`,
-  `OfficerClaimStatus`, `ShamirSealVote`. QUIC methods and MCP tools of the
-  same operations are removed with them.
-- **Permissions**: `seal:recover_with_keys`, `seal:submit_seal_vote`,
-  `barrier:unseal-share`, `ceremony:enroll_custodian`,
-  `ceremony:revoke_custodian`, `ceremony:claim_cert`,
-  `ceremony:claim_share_begin`, `ceremony:claim_share_complete`,
-  `tenant_barrier:claim_share`, `tenant_barrier:seal_vote`. The Custodian
-  role now grants nothing; it is kept so persisted role references resolve.
-- **CLI verbs**: `barrier unseal-shares`, `barrier shamir-seal-vote`,
-  `barrier root-token`, `barrier recovery recover`, `barrier officer
-  claim-status`, `barrier recovery officer …`, `ceremony claim-cert …`,
-  `ceremony claim-share …`, `ceremony claim-share-begin|complete`,
-  `ceremony submit-unseal-share`, `tenant barrier-shamir-seal-vote`, and
-  `tenant barrier-unseal --share`.
-- **`transport.TenantBarrierUnsealRequest.Share`**: the credential unseal
-  takes `Key` only.
-- **The User-PIN Shamir split in `qrdb init --officers`**: the ceremony now
-  splits only the barrier's unseal key, to the named holders.
-- **Credential-mode Shamir and legacy direct mode**: a Shamir barrier always
-  holds its key under unseal-key indirection with a roster. A barrier whose
-  wrapped blob predates the roster answers `seal.ErrHolderRosterMissing`;
-  there is no migration (pre-release).
-- **Dead error sentinels** of the removed flows in `pkg/ceremony`,
-  `pkg/seal` and their `sdk/go` re-exports.
-- **`tenant.SystemTenantID`, `tenant.IsSystemTenant` and `tenant.Normalize`
-  moved to the new leaf package `pkg/tenantid`** as `tenantid.System`,
-  `tenantid.IsSystem` and `tenantid.Normalize`. `pkg/tenant` imports
-  `pkg/ceremony` and `pkg/auth`, so those packages could not name the system
-  tenant; the leaf package imports nothing from this module. The SDK aliases
-  (`sdk/go.SystemTenantID`, `IsSystemTenant`, `NormalizeTenantID`) are
-  unchanged.
-- **`ceremony.ShareService` is deleted.** It stored raw Shamir share bytes in
-  the replicated store (`SubmitShare`) and returned them (`ListShares`,
-  `GetShare`), contradicting the rule that share material is never persisted.
-  Removed with it: `ceremony.ShareServicer`, `ceremony.NewShareService`,
-  `ceremony.ShareServiceError`, `lifecycle.Node.Share`,
-  `lifecycle.ShareServiceError`, the embedded `WithShareService` option,
-  `transport.ShareClient` and its request/response types (`SubmitShareRequest`,
-  `SubmitShareResponse`, `ShareInfo`, `ListSharesResponse`,
-  `ShareCollectionStatus`), the MCP stubs, and the SDK's `Client.Shares()`,
-  `sdk/go.ShareServicer`, `sdk/go.ShareService`, `sdk/go.NewShareService` and
-  `sdk/go.CeremonyShareServiceError` aliases. There is no replacement: shares
-  leave the node only through the barrier's ceremony distributor and the
-  one-time claim.
-
-### Changed — BREAKING
-
-- **Holder enrolment and claim wire types.** `OfficerRegisterRequest` gains
-  `role`, `encryption_kem`, `encryption_key`, `factors` and `designated`; its
-  response carries the CA-issued certificate, role, designated factor, KEM
-  and enrolled factors, and no share index. `ShareClaimCompleteResponse`
-  carries the sealed `envelope`, not share bytes.
-- **`BarrierInitializeShamirRequest`** takes `threshold`, `total_shares`
-  (which must equal the enrolled holder count) and `policy`; there is no
-  secret. Recovery generation takes `threshold`, `policy` and the SO PIN and
-  splits to every enrolled recovery holder.
-- **REST renders the FailedPrecondition class as 409** (a claim after the
-  envelope's time-to-live was 410).
-- **A share claim without a client certificate is Unauthenticated on every
-  transport.** gRPC and Unix answered `INVALID_ARGUMENT`, QUIC
-  PermissionDenied and MCP Internal; REST already answered 401. The one typed
-  error is now `service.ClientCertRequiredError`, in the new
-  `service.ClassUnauthenticated` class (REST 401, gRPC/Unix/QUIC/MCP
-  `UNAUTHENTICATED`). The per-transport types it replaces are removed:
-  `grpc.ClientCertRequiredError`, `quic.ClientCertRequiredError` and the SDK's
-  `embedded.ClientCertRequiredError`; match `*service.ClientCertRequiredError`
-  instead.
-- **The TypeScript SDK and web UI follow the share-holder model.** They called
-  routes the server no longer serves (`/v1/barrier/shamir/unseal-share`,
-  `/unseal-shares`, `/seal-vote`, `/v1/barrier/officers/claim-status`, the
-  tenant `unseal-share` and `seal-vote`) and read share bytes from claims.
-  `OfficerClient` now administers holders only: `registerOfficer`,
-  `registerRecoveryOfficer`, `listOfficers`, `startRekey`, `revokeOfficer` and
-  their tenant forms (`registerTenantOfficer`, `listTenantOfficers`,
-  `startTenantRekey`, `revokeTenantOfficer`), with the enrolment fields `role`,
-  `encryptionKem`, `encryptionKey`, `factors` and `designated`; the claim and
-  seal-vote methods are removed. `SealClient.initializeShamir` takes
-  `{threshold, totalShares, policy, soPin, userPin}` and no secret;
-  `SealClient.unseal` and `TenantClient.barrierUnseal` serve passphrase
-  barriers only, and `TenantClient.barrierUnsealShare` is removed. The web UI
-  drops the officer claim page and the share and seal-vote inputs: a sealed
-  Shamir barrier shows which command its holders run, and the Seal Manager
-  enrols, lists, rekeys and revokes holders. Holder keys never enter the page;
-  holders claim and submit from the CLI or the desktop app.
-- **The desktop `SealBinding`**: `InitializeShamir(threshold, total, policy)`;
-  `Unseal` refuses a Shamir barrier, which its holders unseal. The embedded
-  node no longer auto-unseals a Shamir barrier.
 
 ## [0.21.3-alpha] - 2026-09-30
 
