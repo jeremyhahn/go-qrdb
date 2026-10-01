@@ -138,6 +138,12 @@ Adds the per-tenant DEK keyring on every transport, bearer authenticators on gRP
   as ciphertext under a destroyed barrier, or as plaintext under barrier
   protection `none`. The reclaim now covers the range.
 
+- **`make fmt` and `make lint` pass together again.** Six test doubles
+  returned two composite literals in one `return`. go1.27's `gofmt` and
+  golangci-lint's gofmt indent that form oppositely, so the tree failed one
+  check or the other. They now return named values, which both formatters
+  accept. The change is to test code only.
+
 - **A database-scoped embedded transport keeps the standalone refusal.**
   `Client.DatabaseScoped` on a standalone node dropped the standalone flag,
   so the raft-only families fell back to `NilServiceError` there.
