@@ -468,6 +468,11 @@ are not reconstructed here — their history is in the git log.
 - A `COMMIT` that loses its compare-and-swap now ends the session's
   transaction, as InnoDB's rollback on ER_LOCK_DEADLOCK does, instead of
   leaving go-mysql-server in a transaction that no longer exists.
+- **A `UNIQUE` index was not enforced by an `UPDATE` inside a transaction that
+  left the row's primary key unchanged.** Two rows of one transaction could be
+  given the same value and both commit; a value a committed row held failed
+  only at `COMMIT`. Such an `UPDATE` now fails with 1062 at the statement, as it
+  does in autocommit.
 
 ### Security
 

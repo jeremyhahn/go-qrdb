@@ -1165,21 +1165,27 @@ func (t *RelationalTable) rowGuardFailed(ctx *sqle.Context, guard service.Compar
 	}
 }
 
-// bufferUpdate is Update's interactive-transaction path. A pkChanged update
-// is, from the write-set's point of view, a delete of oldRowKey plus a
-// unique-guarded insert of newRowKey (checked against the transaction's own
-// view first -- see bufferInsert's doc comment for why); an in-place update
-// buffers newRowKey (== oldRowKey) with Put, which derives a
+// bufferUpdate is Update's interactive-transaction path. Every candidate --
+// the new primary key when it moved, and every UNIQUE index value the row
+// newly occupies whether or not the primary key moved -- is first checked
+// against the transaction's own view, exactly as bufferInsert does and for
+// the same reason: the commit-time absence compare cannot see a value this
+// same transaction already gave another row, and a value a committed row
+// holds must fail the statement with 1062, not the commit.
+//
+// A pkChanged update is then, from the write-set's point of view, a delete
+// of oldRowKey plus a unique-guarded insert of newRowKey; an in-place
+// update buffers newRowKey (== oldRowKey) with Put, which derives a
 // snapshot-ModRevision precondition rather than an absence check, giving
 // the row itself first-committer-wins protection for the duration of the
 // transaction.
 func (t *RelationalTable) bufferUpdate(ctx *sqle.Context, ws *WriteSet, g *tableGeneration, candidates []uniqueCandidate, oldRowKey, newRowKey string, encodedNewRow []byte, pkChanged bool, actions []indexAction) error {
+	if dupErr, transient, err := t.resolveDuplicate(ctx, g, candidates); err != nil {
+		return err
+	} else if !transient {
+		return dupErr
+	}
 	if pkChanged {
-		if dupErr, transient, err := t.resolveDuplicate(ctx, g, candidates); err != nil {
-			return err
-		} else if !transient {
-			return dupErr
-		}
 		if err := ws.Delete(ctx, oldRowKey); err != nil {
 			return err
 		}
