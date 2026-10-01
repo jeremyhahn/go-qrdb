@@ -545,14 +545,14 @@ func (s *Server) Start() error {
 		grpc.MaxRecvMsgSize(MaxImportMessageSize),
 	}
 
-	// Add TLS credentials when configured.
-	if s.tls != nil {
-		// Connections are reported to observing modules through the
-		// credentials, never by wrapping the listener: grpc-go sets
-		// TCP_USER_TIMEOUT only on the *net.TCPConn it accepts.
-		creds := apimodule.ConnObserversOf(s.modules).Credentials(credentials.NewTLS(s.tls), apimodule.TransportGRPC)
-		serverOpts = append(serverOpts, grpc.Creds(creds))
-	}
+	// TLS credentials, unconditionally: Start returned TLSNotConfiguredError
+	// above when s.tls is nil, so this server never serves plaintext and there
+	// is no plaintext connection for an observer to miss. Connections are
+	// reported to observing modules through the credentials, never by wrapping
+	// the listener: grpc-go sets TCP_USER_TIMEOUT only on the *net.TCPConn it
+	// accepts.
+	creds := apimodule.ConnObserversOf(s.modules).Credentials(credentials.NewTLS(s.tls), apimodule.TransportGRPC)
+	serverOpts = append(serverOpts, grpc.Creds(creds))
 
 	s.server = grpc.NewServer(serverOpts...)
 

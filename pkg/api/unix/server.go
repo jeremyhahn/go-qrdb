@@ -549,18 +549,14 @@ func (s *Server) Start() error {
 		grpc.MaxRecvMsgSize(grpcpkg.MaxImportMessageSize),
 	}
 
-	// Add TLS credentials when configured. The Unix transport is intended
-	// to run "verified TLS 1.3 only" in production (see cmd/qrdb and
-	// cmd/qrdbd CLAUDE.md); TLS is threaded in as an option, mirroring the
-	// TCP gRPC server, so tests and embedded callers that construct their
-	// own plaintext loopback may still opt out.
-	if s.tls != nil {
-		// Connections are reported to observing modules through the
-		// credentials, never by wrapping the listener, so grpc-go receives the
-		// accepted socket unchanged.
-		creds := apimodule.ConnObserversOf(s.modules).Credentials(credentials.NewTLS(s.tls), apimodule.TransportUnix)
-		serverOpts = append(serverOpts, grpc.Creds(creds))
-	}
+	// TLS credentials, unconditionally: the Unix transport is TLS-only, and
+	// Start returned TLSNotConfiguredError above when s.tls is nil, so this
+	// server never serves plaintext and there is no plaintext connection for
+	// an observer to miss. Connections are reported to observing modules
+	// through the credentials, never by wrapping the listener, so grpc-go
+	// receives the accepted socket unchanged.
+	creds := apimodule.ConnObserversOf(s.modules).Credentials(credentials.NewTLS(s.tls), apimodule.TransportUnix)
+	serverOpts = append(serverOpts, grpc.Creds(creds))
 
 	s.server = grpc.NewServer(serverOpts...)
 
