@@ -389,7 +389,7 @@ type TenantService struct {
 	store            seal.StorageBackend
 	registry         *seal.BarrierRegistry
 	strategyRegistry seal.StrategyRegistry
-	tenantCeremonies *ceremony.TenantCeremonyRegistry
+	tenantCeremonies *ceremony.ScopedCeremonyRegistry
 	holderDeps       *ceremony.HolderDeps
 	defaultQuotas    *quota.Quotas
 	defaultEnts      *quota.Entitlements
@@ -435,7 +435,7 @@ func WithStrategyRegistry(reg seal.StrategyRegistry) TenantServiceOption {
 
 // WithTenantHolderDeps injects the share-holder dependencies (the ceremony CA,
 // the SPIFFE trust domain and the factor registry) used when lazily
-// constructing per-tenant TenantCeremonyService instances. Without them
+// constructing per-tenant ScopedCeremonyService instances. Without them
 // Shamir tenant barriers have no holder authority, and Shamir initialization
 // and every holder operation fail with ErrCeremonyDistributorNotConfigured.
 func WithTenantHolderDeps(deps ceremony.HolderDeps) TenantServiceOption {
@@ -503,7 +503,7 @@ func NewTenantService(
 	svc := &TenantService{
 		store:            store,
 		registry:         registry,
-		tenantCeremonies: ceremony.NewTenantCeremonyRegistry(),
+		tenantCeremonies: ceremony.NewScopedCeremonyRegistry(),
 		removeAll:        registry.RemoveDataRoot,
 		logger:           logger,
 	}
@@ -1951,7 +1951,7 @@ func TenantIDFromKey(key string) string {
 	return key[len(metadataPrefix):]
 }
 
-// tenantCeremony returns the TenantCeremonyService for the given tenant,
+// tenantCeremony returns the ScopedCeremonyService for the given tenant,
 // constructing and registering it on first access. The backend priority is:
 //
 //  1. The tenant barrier's own StorageBarrier (when available and unsealed),
@@ -1962,7 +1962,7 @@ func TenantIDFromKey(key string) string {
 //     called (design §6.1, §10.1).
 //
 // holderDeps must be non-nil; callers should guard this before calling.
-func (s *TenantService) tenantCeremony(tenantID string) (*ceremony.TenantCeremonyService, error) {
+func (s *TenantService) tenantCeremony(tenantID string) (*ceremony.ScopedCeremonyService, error) {
 	if svc, ok := s.tenantCeremonies.Get(tenantID); ok {
 		s.installHolderAuthority(tenantID, svc)
 		return svc, nil
@@ -1988,7 +1988,7 @@ func (s *TenantService) tenantCeremony(tenantID string) (*ceremony.TenantCeremon
 // installHolderAuthority installs svc as the tenant barrier's distributor and
 // holder verifier, when the barrier exists. It is idempotent, and runs on
 // every lookup so a barrier re-registered after a restart is re-wired.
-func (s *TenantService) installHolderAuthority(tenantID string, svc *ceremony.TenantCeremonyService) {
+func (s *TenantService) installHolderAuthority(tenantID string, svc *ceremony.ScopedCeremonyService) {
 	if tb, err := s.registry.GetTenant(tenantID); err == nil {
 		tb.Barrier().SetCeremonyDistributor(svc)
 		tb.Barrier().SetHolderVerifier(svc)
@@ -1997,7 +1997,7 @@ func (s *TenantService) installHolderAuthority(tenantID string, svc *ceremony.Te
 
 // holderAuthority resolves the tenant's holder authority after the common
 // argument, scope and existence checks every holder operation shares.
-func (s *TenantService) holderAuthority(ctx context.Context, tenantID, op string) (*ceremony.TenantCeremonyService, error) {
+func (s *TenantService) holderAuthority(ctx context.Context, tenantID, op string) (*ceremony.ScopedCeremonyService, error) {
 	if tenantID == "" {
 		return nil, ErrEmptyTenantID
 	}

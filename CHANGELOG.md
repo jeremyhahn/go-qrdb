@@ -297,6 +297,11 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed — BREAKING
 
+- **`ceremony.TenantCeremonyService` is `ceremony.ScopedCeremonyService`**
+  (and `TenantCeremonyRegistry` is `ScopedCeremonyRegistry`): one holder
+  authority type serves a tenant barrier (`NewTenantCeremonyService`) and a
+  database barrier (`NewDatabaseCeremonyService`, scope
+  `ceremony.ScopeDatabase(tenant, database)`).
 - **Holder enrolment and claim wire types.** `OfficerRegisterRequest` gains
   `role`, `encryption_kem`, `encryption_key`, `factors` and `designated`; its
   response carries the CA-issued certificate, role, designated factor, KEM

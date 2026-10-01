@@ -28,6 +28,7 @@ const (
 	scopeSystem   scopeKind = iota
 	scopeTenant             // per-tenant barrier
 	scopeRecovery           // recovery key distribution
+	scopeDatabase           // per-database barrier
 )
 
 // BarrierScope identifies which barrier a ceremony or officer registry entry
@@ -35,7 +36,8 @@ const (
 // ScopeTenant("<tenantID>"); recovery operations use ScopeRecovery.
 type BarrierScope struct {
 	kind     scopeKind
-	tenantID string // non-empty only when kind == scopeTenant
+	tenantID string // non-empty when kind is scopeTenant or scopeDatabase
+	database string // non-empty only when kind == scopeDatabase
 }
 
 // ScopeSystem is the barrier scope for the system (global) barrier.
@@ -50,15 +52,23 @@ func ScopeTenant(tenantID string) BarrierScope {
 	return BarrierScope{kind: scopeTenant, tenantID: tenantID}
 }
 
+// ScopeDatabase returns the barrier scope for database in tenantID.
+func ScopeDatabase(tenantID, database string) BarrierScope {
+	return BarrierScope{kind: scopeDatabase, tenantID: tenantID, database: database}
+}
+
 // StoragePrefix returns the prefix used for this scope's officer registry
 // entries in the storage backend.
 //   - System:   "ceremony/officers/"
 //   - Tenant:   "ceremony/tenants/<id>/officers/"
+//   - Database: "ceremony/tenants/<id>/databases/<name>/officers/"
 //   - Recovery: "ceremony/recovery/officers/"
 func (b BarrierScope) StoragePrefix() string {
 	switch b.kind {
 	case scopeTenant:
 		return "ceremony/tenants/" + b.tenantID + "/officers/"
+	case scopeDatabase:
+		return "ceremony/tenants/" + b.tenantID + "/databases/" + b.database + "/officers/"
 	case scopeRecovery:
 		return "ceremony/recovery/officers/"
 	default:
@@ -81,6 +91,8 @@ func (b BarrierScope) String() string {
 	switch b.kind {
 	case scopeTenant:
 		return "tenant:" + b.tenantID
+	case scopeDatabase:
+		return "database:" + b.tenantID + "/" + b.database
 	case scopeRecovery:
 		return "recovery"
 	default:
@@ -95,6 +107,12 @@ func (b BarrierScope) LogValue() slog.Value {
 		return slog.GroupValue(
 			slog.String("kind", "tenant"),
 			slog.String("tenant_id", b.tenantID),
+		)
+	case scopeDatabase:
+		return slog.GroupValue(
+			slog.String("kind", "database"),
+			slog.String("tenant_id", b.tenantID),
+			slog.String("database", b.database),
 		)
 	case scopeRecovery:
 		return slog.StringValue("recovery")

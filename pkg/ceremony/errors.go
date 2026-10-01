@@ -174,8 +174,12 @@ var (
 	ErrNilCA = errors.New("ceremony: nil CA provided")
 
 	// ErrEmptyTenantID is returned when an empty tenant ID is provided to
-	// TenantCeremonyService or ScopeTenant.
+	// ScopedCeremonyService or ScopeTenant.
 	ErrEmptyTenantID = errors.New("ceremony: tenant ID must not be empty")
+
+	// ErrEmptyDatabase is returned when an empty database name is provided to
+	// a database barrier's holder authority.
+	ErrEmptyDatabase = errors.New("ceremony: database name must not be empty")
 
 	// ErrCertIdentityRequired is returned when a CSR is to be signed without
 	// a CA-assigned subject. The CA never takes a certificate's identity from

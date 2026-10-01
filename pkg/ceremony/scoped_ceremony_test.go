@@ -112,9 +112,9 @@ func TestTenantCeremony_ConstructorRefusals(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNilLogger)
 }
 
-// TestTenantCeremonyRegistry covers the per-tenant service registry.
-func TestTenantCeremonyRegistry(t *testing.T) {
-	reg := NewTenantCeremonyRegistry()
+// TestScopedCeremonyRegistry covers the per-tenant service registry.
+func TestScopedCeremonyRegistry(t *testing.T) {
+	reg := NewScopedCeremonyRegistry()
 	_, ok := reg.Get("acme")
 	assert.False(t, ok)
 	svc, err := NewTenantCeremonyService("acme", seal.NewMemoryBackend(), HolderDeps{CA: testCA(t), TrustDomain: testTrustDomain}, testLogger())
