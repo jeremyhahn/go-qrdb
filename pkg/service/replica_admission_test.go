@@ -108,8 +108,15 @@ func TestScaleForTenant_ScaleUpOfAMixedGroupIsRefused(t *testing.T) {
 		t.Fatalf("gate.Start: %v", err)
 	}
 	host.gate = gate
-	if !gate.Enabled(info.ShardID, featuregate.GuardedWrites) {
-		t.Fatal("the group's replicas all advertise guarded writes; the gate must enable them")
+	// The scale-up path below gates admission through AdmitReplica, not
+	// Enabled: nothing here is activated cluster-wide, so Enabled answers
+	// false for every group regardless of what its current members
+	// advertise (go-qrdb#482). AdmitReplica's own per-group count is what
+	// must still see n1 and n2 as fully supporting before the refusal of
+	// n3, below, is a meaningful test of that group's gate rather than of
+	// an empty one.
+	if err := gate.AdmitReplica(info.ShardID, "n2:1"); err != nil {
+		t.Fatalf("AdmitReplica(n2) = %v, want nil: the group's current replicas all advertise guarded writes", err)
 	}
 
 	_, err = svc.ScaleForTenant(scaleCtx(), "db1", 3)

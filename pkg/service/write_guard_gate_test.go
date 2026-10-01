@@ -98,3 +98,67 @@ func TestPropose_UnguardedWriteDoesNotConsultTheGate(t *testing.T) {
 		t.Fatalf("gate asked %v for an unguarded write", host.asked)
 	}
 }
+
+// staticMembership is a featuregate.MembershipSource that answers the same
+// GroupMembership forever. That is everything this test needs: the point of
+// it is that a real Gate's Enabled, before cluster-wide activation, never
+// even has a reason to read it (see featuregate.Gate.Enabled).
+type staticMembership map[uint64]featuregate.GroupMembership
+
+func (m staticMembership) GroupMembership(shardID uint64) (featuregate.GroupMembership, error) {
+	return m[shardID], nil
+}
+
+// gateBackedHost answers FeatureEnabled through a real featuregate.Gate,
+// unlike gatedHost above, whose enabled map is a test fixture standing in
+// for one. It is what proves what the gate itself decides, not just that
+// guardCommand asks and obeys whatever it is told.
+type gateBackedHost struct {
+	*mockHost
+	gate *featuregate.Gate
+}
+
+func (h *gateBackedHost) FeatureEnabled(shardID uint64, feature featuregate.Feature) bool {
+	return h.gate.Enabled(shardID, feature)
+}
+
+var _ FeatureGatedHost = (*gateBackedHost)(nil)
+
+// TestPropose_FullySupportingGroupStillWithholdsOpGuardedBeforeActivation is
+// the etcd cluster-version ruling go-qrdb#482 landed: a group whose only
+// current replica is this node itself -- the one case the gate's per-group
+// count (decide) always calls fully supporting, with no advertisement
+// needed -- still must not receive OpGuarded while the feature has not been
+// activated cluster-wide. Gate.Start is deliberately never called here, so
+// nothing is activated -- the one fact Gate.Enabled now consults. The old
+// behavior trusted decide on its own and would have proposed OpGuarded on
+// membership alone; a later membership change that added a replica running
+// an older binary would then have diverged it the moment go-quicraft
+// replayed the group's committed log onto it.
+func TestPropose_FullySupportingGroupStillWithholdsOpGuardedBeforeActivation(t *testing.T) {
+	const shardID = 70
+	members := staticMembership{
+		shardID: {Replicas: map[uint64]string{1: "n1:7000"}},
+	}
+	gate, err := featuregate.New(featuregate.Config{
+		Self:          featuregate.Self{ReplicaID: 1, Address: "n1:7000"},
+		SystemShardID: shardID,
+		Members:       members,
+	})
+	if err != nil {
+		t.Fatalf("featuregate.New: %v", err)
+	}
+	t.Cleanup(func() { _ = gate.Close() })
+
+	inner, cmds := recordingHost(sm.Result{})
+	host := &gateBackedHost{mockHost: inner, gate: gate}
+	svc := NewKVService(host, shardID)
+	ctx := WithWriteGuard(context.Background(), mustDropFenceGuard(t, "acme", "orders"))
+
+	if err := svc.Put(ctx, "k", []byte("v")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if len(*cmds) != 1 || (*cmds)[0][0] == protocol.OpGuarded {
+		t.Fatalf("proposed %x, want the unguarded command: nothing is activated cluster-wide yet", *cmds)
+	}
+}

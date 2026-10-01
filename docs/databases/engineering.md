@@ -552,7 +552,7 @@ must hold, at the entry's own log position, for it to apply:
     already serializes concurrent attempts to one winner and one immediate
     `DropInProgressError`; `Store.TryMarkDropping` reports `owned` (did THIS
     call perform the not-dropping-to-dropping transition), and a rollback is
-    gated on `owned` being true, so a `DropInProgress` loser — which never
+    gated on `owned` being true, so a `database.DropInProgressError` loser — which never
     claimed the fence — never clears it. The gate has a second half: the
     placement fence is rolled back only when `database.DropRolledBack(err)`
     reports the manager rolled its own fences back — a

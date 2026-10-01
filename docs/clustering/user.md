@@ -228,9 +228,14 @@ including REST.
 
 Upgrade one node at a time, as for any rolling upgrade. A release that
 introduces a new replicated command -- guarded writes, which make a database
-drop atomic with every write, are the first -- does not use it in a Raft group
-until every node in that group runs a release that advertises it, so a
-half-upgraded cluster keeps working and never diverges.
+drop atomic with every write, are the first -- does not use it anywhere in the
+cluster until every node, not just a given Raft group's current members, runs
+a release that advertises it. A group whose current members all advertise the
+feature is not enough on its own: a later membership change could still bring
+in a node on an older release, and that node is caught up by REPLAYING the
+group's committed log, which would already contain the new command. Gating on
+cluster-wide activation rather than a group's current membership is what
+keeps a half-upgraded cluster working and never diverging.
 
 When every node advertises the feature, the cluster **activates** it, and
 activation is permanent. **After activation, no node may be started or added on

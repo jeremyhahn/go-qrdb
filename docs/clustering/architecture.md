@@ -225,10 +225,18 @@ via `client.NewMembershipManager(self, shardID, cfg)` (or the lower-level
 
 A command only a newer binary understands must never reach a Raft group that
 still holds an older one: the older replica refuses it and writes nothing while
-its peers apply it, and the group diverges. `pkg/cluster/featuregate` decides,
-per group, when such a command may be sent. Guarded writes (`OpGuarded`, the
-drop fence's atomic write) are the first feature it gates; a future opcode is
-one more entry in the same list.
+its peers apply it, and the group diverges. It is not enough that a group's
+CURRENT replicas all support the command: go-quicraft catches a replica that
+rejoins a group -- a rolled-back node, or one removed and re-added -- up by
+REPLAYING the group's committed log, and an entry already in that log would
+use the command. A later membership change can therefore turn a group that
+looked fully upgraded a moment ago into one holding an old binary, with no way
+to tell beforehand which future change will do it. `pkg/cluster/featuregate`
+follows etcd's rule for exactly this reason: a command is sent only once every
+node in the CLUSTER -- not just a given group's current members -- supports
+it, permanently, for good. Guarded writes (`OpGuarded`, the drop fence's atomic
+write) are the first feature it gates; a future opcode is one more entry in
+the same list.
 
 - **Advertisement.** Every node with a transport advertises the features its
   binary implements in a **lease-backed** record,
@@ -241,28 +249,44 @@ one more entry in the same list.
   advertise -- stops refreshing its lease, and its record expires with it.
   Under dynamic membership a node's member registration carries its features
   too (`cluster.Member.Features`), and the gate follows both.
-- **Per-group decision.** A feature is enabled for a group when every replica
-  that applies its log (voters and observers; witnesses keep no state machine)
-  runs a binary that advertises it. A record counts only while its (replica ID,
+- **Whether a write is sent guarded.** `Gate.Enabled(shardID, feature)` is
+  exactly `Activated(feature)` -- one atomic load, nothing about shardID at
+  all. There used to also be a per-group early-enablement path here: a group
+  was treated as enabled, ahead of cluster-wide activation, whenever its
+  CURRENT replicas all happened to advertise the feature. That was unsafe for
+  the reason above -- a later membership change can bring in an old binary
+  that the group's log already has the command in -- and it is gone. Before
+  activation, every group's writes keep the documented unguarded fallback
+  (see "Before activation" below), with no exception for a group that looks
+  fully upgraded.
+- **Per-group decision.** `Gate.decide(shardID, feature, withWitnesses)`
+  reports whether every replica that applies shardID's log (voters and
+  observers; witnesses are also checked when withWitnesses is set) runs a
+  binary that advertises feature. A record counts only while its (replica ID,
   address) pair is a current system-shard member; a dedicated shard, whose
   replica IDs placement assigns, matches its members to records by raft
-  address. The decision is read from committed membership and cached per group
-  on a generation that every advertisement change and every background refresh
-  advances -- a write reads neither membership nor the store on a cache hit.
+  address. It is read fresh from committed membership on every call -- there
+  is no cache to go stale -- and it has exactly two callers, neither of them
+  the write path above: activation (the system shard, with witnesses) and
+  admission, next.
 - **Admission.** A replica -- voter, observer or witness -- is added to a group
   only on a node that advertises every feature the group uses: every activated
-  feature, and every feature enabled for the group. Go-quicraft catches a new
-  member up by replaying the group's log, so a replica on a node that cannot
-  apply a feature would diverge on the first entry that uses it, and a proposal
-  racing the config change could not be told apart from one before it; refusing
-  the add makes both impossible. Every add path asks first and changes nothing
-  when refused (`featuregate.UnsupportedReplicaError`): an explicit member add,
-  a dynamic-membership join, a scale-up, a rebalance move, and the placement
+  feature, and every feature decide finds the group's CURRENT members all
+  supporting. Go-quicraft catches a new member up by replaying the group's
+  log, so a replica on a node that cannot apply a feature would diverge on the
+  first entry that uses it, and a proposal racing the config change could not
+  be told apart from one before it; refusing the add makes both impossible.
+  Every add path asks first and changes nothing when refused
+  (`featuregate.UnsupportedReplicaError`): an explicit member add, a
+  dynamic-membership join, a scale-up, a rebalance move, and the placement
   scheduler's candidate list for a new group. A node that is not yet a member
   is judged by its own lease-backed record, feature advertisement or member
-  registration. Because of admission, a cached per-group decision that lags a
-  membership change by one refresh can only be lagging a removal, never an
-  addition the group cannot use.
+  registration. A replica admitted here can still be caught up later by a
+  cluster-wide activation triggered by OTHER groups finishing their own
+  upgrade; by then this group's own membership can only have gained support,
+  never lost it, because the system shard admits a replica under the
+  identical rule -- so refusing an unsupporting node admission now is what
+  keeps that later activation safe for every group it reaches.
 - **Activation.** Once every system-shard member -- every node, witnesses
   included, since activation enables the feature everywhere -- advertises a
   feature, it is **activated**: recorded permanently under

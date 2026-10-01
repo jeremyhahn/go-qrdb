@@ -274,22 +274,34 @@ func TestGate_EveryMemberAdvertisingActivates(t *testing.T) {
 	assert.True(t, g.Enabled(systemShard, GuardedWrites), "activation is permanent")
 }
 
-// Before activation, a group is decided on its own members: a dedicated
-// shard whose every replica advertises is enabled while the cluster as a
-// whole is not -- and when one of its nodes is rolled back, its lease lapses
-// and the group stops being enabled.
+// Before cluster-wide activation, Enabled answers false for every group --
+// including one whose own members currently all advertise the feature --
+// because Enabled is Activated and nothing else: a later membership change
+// could replace a supporting replica with a rolled-back one, and go-quicraft
+// would replay that group's committed log onto it. AdmitReplica's own,
+// separate per-group check (decide) is what a rolled-back node's lapsed
+// lease still affects: while node 2's advertisement is live, the dedicated
+// shard's current members (this node, unconditionally, and node 2) all
+// support the feature, so a brand-new node that advertises nothing is
+// refused admission. Once node 2's lease expires, decide no longer finds
+// every current member supporting the feature, so the dedicated shard stops
+// requiring it of a new member at all -- the same probe now succeeds.
 func TestGate_RolledBackNodeStopsCountingWhenItsLeaseExpires(t *testing.T) {
 	store, kv := newLeaseStore(), newMemKV()
 	store.advertise(t, 2, "n2:7000", SupportedNames()...)
 	g := newGate(t, threeNodes())
 	require.NoError(t, g.Start(context.Background(), kv, store))
 
-	require.True(t, g.Enabled(dedicatedShard, GuardedWrites), "every replica of the dedicated shard advertises")
+	require.False(t, g.Enabled(dedicatedShard, GuardedWrites), "nothing is activated cluster-wide yet")
 	require.False(t, g.Activated(GuardedWrites), "node 3 does not advertise, so nothing is activated")
 
+	var refused *UnsupportedReplicaError
+	require.ErrorAs(t, g.AdmitReplica(dedicatedShard, "n4:7000"), &refused,
+		"every current replica of the dedicated shard advertises, so a new one that advertises nothing must be refused")
+
 	store.expire(2) // node 2 rolled back to a binary that never re-advertises
-	eventually(t, func() bool { return !g.Enabled(dedicatedShard, GuardedWrites) },
-		"a node whose advertisement lapsed still counted as supporting the feature")
+	eventually(t, func() bool { return g.AdmitReplica(dedicatedShard, "n4:7000") == nil },
+		"the dedicated shard kept requiring the feature after a member's advertisement lapsed")
 }
 
 // A binary refuses to start under a cluster that activated a feature it
@@ -344,45 +356,50 @@ func TestGate_SingleNodeActivatesImmediately(t *testing.T) {
 	m := &fakeMembers{groups: map[uint64]GroupMembership{}}
 	m.set(systemShard, 1, map[uint64]string{1: "n1:7000"})
 	g := newGate(t, m)
-	assert.True(t, g.Enabled(systemShard, GuardedWrites), "before Start, the local node alone is enough")
+	assert.False(t, g.Enabled(systemShard, GuardedWrites), "nothing is activated before Start runs")
 	kv := newMemKV()
 	require.NoError(t, g.Start(context.Background(), kv, newLeaseStore()))
 	assert.True(t, g.Activated(GuardedWrites))
+	assert.True(t, g.Enabled(systemShard, GuardedWrites), "Enabled follows Activated once Start runs it")
 }
 
-// The write path reads no membership on a cache hit; the background
-// refresh re-reads it, so a membership change reaches the decision within
-// one refresh.
+// Enabled reads no membership at all -- it is one atomic load of the
+// cluster-wide activation flag. AdmitReplica's per-group decide check is the
+// one that reads membership, and it reads it fresh on every call, so a
+// membership change reaches it immediately, with no refresh delay needed.
 func TestGate_RefreshPicksUpAMembershipChange(t *testing.T) {
 	store, kv := newLeaseStore(), newMemKV()
 	store.advertise(t, 2, "n2:7000", SupportedNames()...)
 	m := threeNodes()
-	g, err := New(Config{Self: Self{ReplicaID: 1}, SystemShardID: systemShard, Members: m, RefreshInterval: 20 * time.Millisecond})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = g.Close() })
+	g := newGate(t, m)
 	require.NoError(t, g.Start(context.Background(), kv, store))
-	require.True(t, g.Enabled(dedicatedShard, GuardedWrites))
+	require.False(t, g.Enabled(dedicatedShard, GuardedWrites), "nothing is activated cluster-wide yet")
 
 	before := m.readCount()
 	for range 1000 {
 		g.Enabled(dedicatedShard, GuardedWrites)
 	}
-	assert.LessOrEqual(t, m.readCount()-before, 4, "a cached decision must not read membership on every write")
+	assert.Equal(t, before, m.readCount(), "Enabled must not read membership at all")
+
+	var refused *UnsupportedReplicaError
+	require.ErrorAs(t, g.AdmitReplica(dedicatedShard, "n4:7000"), &refused,
+		"every current replica of the dedicated shard advertises, so a new one must too")
 
 	m.set(dedicatedShard, 6, map[uint64]string{101: "n1:7000", 102: "n2:7000", 103: "n3:7000"})
-	eventually(t, func() bool { return !g.Enabled(dedicatedShard, GuardedWrites) },
-		"a replica on a non-advertising node never disabled the group")
+	assert.NoError(t, g.AdmitReplica(dedicatedShard, "n4:7000"),
+		"a replica on a non-advertising node must stop the group from requiring the feature of new members, visible on the very next call")
 }
 
 // A replica is admitted to a group only on a node that advertises every
-// feature the group uses: before activation, what the group has enabled.
+// feature the group uses: before activation, what decide finds the group's
+// current members already supporting.
 func TestGate_AdmitReplicaRefusesANodeMissingAnEnabledFeature(t *testing.T) {
 	store, kv := newLeaseStore(), newMemKV()
 	store.advertise(t, 2, "n2:7000", SupportedNames()...)
 	store.advertise(t, 3, "n3:7000") // the previous release
 	g := newGate(t, threeNodes())
 	require.NoError(t, g.Start(context.Background(), kv, store))
-	require.True(t, g.Enabled(dedicatedShard, GuardedWrites))
+	require.False(t, g.Enabled(dedicatedShard, GuardedWrites), "nothing is activated cluster-wide yet")
 
 	var refused *UnsupportedReplicaError
 	err := g.AdmitReplica(dedicatedShard, "n3:7000")
@@ -449,11 +466,12 @@ func TestGate_ActivationCountsWitnesses(t *testing.T) {
 	m.setWitnesses(systemShard, map[uint64]string{4: "n4:7000"})
 	g := newGate(t, m)
 	require.NoError(t, g.Start(context.Background(), kv, store))
-	assert.True(t, g.Enabled(systemShard, GuardedWrites), "a witness does not decide a group's writes")
+	assert.False(t, g.Enabled(systemShard, GuardedWrites), "nothing is activated cluster-wide yet")
 	assert.False(t, g.Activated(GuardedWrites), "a witness on an older node must hold activation back")
 
 	store.advertise(t, 4, "n4:7000", SupportedNames()...)
 	eventually(t, func() bool { return g.Activated(GuardedWrites) }, "the witness advertised and activation still did not happen")
+	assert.True(t, g.Enabled(systemShard, GuardedWrites), "Enabled follows Activated once the witness catches up")
 }
 
 // Anything the gate cannot decide is reported as not enabled.

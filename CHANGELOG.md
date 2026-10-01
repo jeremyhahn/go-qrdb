@@ -14,24 +14,27 @@ are not reconstructed here — their history is in the git log.
 ### Added
 
 - **Cluster feature gate (`pkg/cluster/featuregate`).** A command only newer binaries
-  understand is sent to a Raft group only once every replica in it runs a binary that
-  advertises the feature. Each node advertises its features in a lease-backed record in the
-  system store (`__sys:cluster/features/nodes/{replicaID}`), so a stopped or rolled-back
-  node stops counting when its lease expires; a dedicated shard matches its members to
-  records by raft address. Once every node advertises a feature it is activated
-  permanently (witnesses included), and a node whose binary lacks an activated feature
-  refuses to start with `featuregate.UnsupportedFeatureError`. A replica is added to a group
-  only on a node that advertises every feature the group uses -- member add, dynamic
-  membership, scale-up, rebalance and the placement scheduler all ask first and are refused
-  with `featuregate.UnsupportedReplicaError` (REST 409, gRPC/QUIC `FAILED_PRECONDITION`) --
-  because a new replica is caught up by replaying the group's log. `qrdbd` withdraws its
-  advertisement on a graceful stop; after a crash it lapses with the lease. **After
-  activation, no node may be started or added on an older release.** A brand-new `qrdbd`
-  node advertises only once it is a member, so after activation it cannot yet be added with
-  `member add`. Guarded writes are the first gated feature;
-  standalone nodes and hosts with no transport use them from the start, and a single-node
-  cluster activates them at once. A node embedded through the Go SDK cannot refuse to start
-  after it is built; it logs the refusal and reports its health as `degraded`. New:
+  understand is sent anywhere in the cluster only once every node in it -- not just a given
+  Raft group's current members -- runs a binary that advertises the feature: a later
+  membership change can bring an old binary into a group whose current members all advertise
+  today, and go-quicraft catches a rejoining or newly added replica up by replaying the
+  group's committed log, which would already hold the command. Each node advertises its
+  features in a lease-backed record in the system store
+  (`__sys:cluster/features/nodes/{replicaID}`), so a stopped or rolled-back node stops
+  counting when its lease expires; a dedicated shard matches its members to records by raft
+  address. Once every node advertises a feature it is activated permanently (witnesses
+  included), and a node whose binary lacks an activated feature refuses to start with
+  `featuregate.UnsupportedFeatureError`. Separately, and before activation too, a replica is
+  added to a group only on a node that advertises every feature that group's CURRENT members
+  already use -- member add, dynamic membership, scale-up, rebalance and the placement
+  scheduler all ask first and are refused with `featuregate.UnsupportedReplicaError` (REST
+  409, gRPC/QUIC `FAILED_PRECONDITION`). `qrdbd` withdraws its advertisement on a graceful
+  stop; after a crash it lapses with the lease. **After activation, no node may be started or
+  added on an older release.** A brand-new `qrdbd` node advertises only once it is a member,
+  so after activation it cannot yet be added with `member add`. Guarded writes are the first
+  gated feature; standalone nodes and hosts with no transport use them from the start, and a
+  single-node cluster activates them at once. A node embedded through the Go SDK cannot refuse
+  to start after it is built; it logs the refusal and reports its health as `degraded`. New:
   `service.FeatureGatedHost` and `service.ReplicaAdmitter`,
   `raftbackend.WithFeatureGate` / `NewFeatureGate`, `server.WithFeatureGate` and
   `TenantInfraConfig.FeatureGate`, `placement.WithReplicaFilter`,
@@ -122,11 +125,13 @@ are not reconstructed here — their history is in the git log.
   never reused by the name's next incarnation.
   Vector writes, which are node-local rather than Raft proposals, keep a check made
   immediately before the write.
-- **Guarded writes never reach a mixed-version group.** A replica running a binary that
+- **Guarded writes never reach a mixed-version cluster.** A replica running a binary that
   predates guarded writes would refuse one and write nothing while its peers applied it. The
-  new cluster feature gate (below) sends a guarded write to a Raft group only once every
-  replica in it advertises support; until then the group's writes are proposed unguarded and
-  the drop fence is checked when the database is resolved, as before guarded writes.
+  new cluster feature gate (below) sends a guarded write anywhere only once the feature is
+  activated cluster-wide -- every node, not just a given group's current members, so a later
+  membership change can never introduce an old binary that the group's log already has the
+  command in; until then every group's writes are proposed unguarded and the drop fence is
+  checked when the database is resolved, as before guarded writes.
 - **The default database cannot be dropped.** Every drop entry point refuses `system` with
   `database.DefaultDatabaseDropError` (REST 400 / gRPC and QUIC `INVALID_ARGUMENT`) before
   touching anything.

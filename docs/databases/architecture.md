@@ -481,17 +481,28 @@ reported as that failure, never mistaken for "no such database".
 **Mixed binary versions: the cluster feature gate.** A replica running a
 binary that predates guarded writes would refuse one as an unknown opcode
 and write nothing while its up-to-date peers applied it, leaving the
-replicas diverged. So a guarded write is only ever proposed to a group every
-replica of which runs a binary that advertises the `guarded-writes` feature
-(see [../clustering/architecture.md](../clustering/architecture.md), "Cluster
-feature gate"). Until then the group's writes are proposed unguarded and the
-drop fence is the check made when the database is resolved, before the
+replicas diverged. A replica that rejoins a group later is caught up by
+REPLAYING that group's committed log, so it is not enough for a group's
+CURRENT members to all support the opcode today — a later membership change
+could still introduce an old binary that chokes on an entry already in the
+log. So a guarded write is only ever proposed once the `guarded-writes`
+feature has been activated cluster-wide: every node in the cluster, not just
+the group's current members, has advertised support (see
+[../clustering/architecture.md](../clustering/architecture.md), "Cluster
+feature gate"). Until then every group's writes are proposed unguarded and
+the drop fence is the check made when the database is resolved, before the
 write — the protection the fence gave before guarded writes existed, with
-its check-then-write window. Once every node advertises the feature it is
-activated cluster-wide, permanently, and from then on a node whose binary
-lacks an activated feature refuses to start. A standalone node, and a
-single-node or transportless group, has one binary and uses guarded writes
-from the start.
+its check-then-write window. Activation is permanent once it happens, and
+from then on a node whose binary lacks an activated feature refuses to
+start. A standalone node, and a single-node or transportless group, has one
+binary and uses guarded writes from the start.
+
+Activation is consulted at PROPOSAL time, fresh on every write, never cached
+on a handle or re-checked against when a handle was resolved. A handle
+already in hand when activation happens is not special and needs no
+separate re-check: its next write is guarded exactly like one from a handle
+resolved after activation, because the decision was never attached to the
+handle to begin with — only to the write.
 
 The fence (`Database.Dropping`) is its own field, deliberately independent
 of `Database.Status`. Status keeps answering the question it always has —
@@ -617,7 +628,7 @@ record, finished the local half. This closes the cross-node half of two-
 progress a drop is ever allowed to claim its fence in the first place.
 
 **On that SAME node, a rollback still undoes only a fence THIS call set,
-and never on `DropInProgress`.** `Manager.Drop`'s own in-flight guard
+and never on `database.DropInProgressError`.** `Manager.Drop`'s own in-flight guard
 (`m.dropping`) already serializes two concurrent same-node attempts to one
 winner and one immediate `DropInProgressError`, but the loser must still
 never be the one to clear the replicated fence on that error: it never set
@@ -626,7 +637,7 @@ still genuinely mid-drop. `TryMarkDropping` reports whether THIS call
 performed the not-dropping-to-dropping transition (`owned`); a caller's
 rollback is gated on `owned` being true, so a call that merely observed the
 fence already set (a resumed retry finding its OWN earlier, still-recorded
-claim, or a `DropInProgress` loser) never touches it. The gate has a second
+claim, or a `database.DropInProgressError` loser) never touches it. The gate has a second
 half: the replicated fence is rolled back only when the manager-level drop
 reports that it rolled back ITS fences — `database.DropRolledBack(err)`,
 true for a `*database.LocalFenceError` (the local fence could not be

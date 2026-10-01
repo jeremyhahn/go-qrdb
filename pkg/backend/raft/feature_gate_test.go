@@ -44,8 +44,10 @@ func gateOver(t *testing.T, members groups) *featuregate.Gate {
 	return g
 }
 
-// With a gate, the adapter answers from it: a group holding a node that does
-// not advertise the feature is not enabled, and one of this node alone is.
+// With a gate, the adapter answers from it: Enabled is Activated and nothing
+// else (go-qrdb#482), so neither group is enabled here -- gate.Start is
+// never called in this test, so nothing is ever activated cluster-wide,
+// regardless of what either group's current members support.
 func TestHostAdapter_FeatureEnabledAsksTheGate(t *testing.T) {
 	gate := gateOver(t, groups{
 		1: {ConfigChangeID: 1, Replicas: map[uint64]string{1: "n1", 2: "n2"}},
@@ -54,7 +56,7 @@ func TestHostAdapter_FeatureEnabledAsksTheGate(t *testing.T) {
 	a := NewWithInner(nil, &mockQuicraftHost{})
 	WithFeatureGate(gate)(a)
 	assert.False(t, a.FeatureEnabled(1, featuregate.GuardedWrites), "node 2 advertises nothing")
-	assert.True(t, a.FeatureEnabled(7, featuregate.GuardedWrites), "a group of this node alone")
+	assert.False(t, a.FeatureEnabled(7, featuregate.GuardedWrites), "nothing is activated cluster-wide yet")
 }
 
 // With no gate and no host -- a test adapter -- every replica is this

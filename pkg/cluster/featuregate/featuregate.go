@@ -192,13 +192,9 @@ type Gate struct {
 	activated map[Feature]*atomic.Bool
 
 	// view is the current advertisement snapshot across every store the
-	// gate follows, replaced whole; gen increments with every replacement
-	// and every refresh, and every cached decision older than gen is stale.
+	// gate follows, replaced whole.
 	mu   sync.Mutex // serializes view replacement
 	view atomic.Pointer[map[viewKey]cluster.Member]
-	gen  atomic.Uint64
-
-	cache sync.Map // cacheKey -> cacheEntry
 
 	// refusal is the activated feature this binary lacks, once
 	// CheckActivated has found one; see Refusal.
@@ -210,19 +206,9 @@ type Gate struct {
 	wg      sync.WaitGroup
 }
 
-type cacheKey struct {
-	shardID uint64
-	feature Feature
-}
-
-type cacheEntry struct {
-	gen     uint64
-	enabled bool
-}
-
-// New returns a gate with no advertisements and nothing activated: until
-// Start seeds it, only a group whose every replica is the local node has a
-// feature enabled.
+// New returns a gate with no advertisements and nothing activated: until a
+// feature is activated cluster-wide, Enabled answers false for every group,
+// local-only or not.
 func New(cfg Config) (*Gate, error) {
 	if cfg.Members == nil {
 		return nil, &ConfigError{Field: "Members"}
@@ -252,29 +238,26 @@ func New(cfg Config) (*Gate, error) {
 	return g, nil
 }
 
-// Enabled reports whether feature may be used in shardID's group. After
-// activation it is one atomic load; before it, a cache lookup, and a
-// membership read only when the cached decision is older than the latest
-// advertisement change or refresh. Any failure to decide reports false,
-// which keeps the group on the path every binary understands.
-func (g *Gate) Enabled(shardID uint64, feature Feature) bool {
-	flag, ok := g.activated[feature]
-	if !ok {
-		return false
-	}
-	if flag.Load() {
-		return true
-	}
-	key := cacheKey{shardID: shardID, feature: feature}
-	gen := g.gen.Load()
-	if v, ok := g.cache.Load(key); ok {
-		if e := v.(cacheEntry); e.gen == gen { //nolint:errcheck // the cache only ever holds cacheEntry
-			return e.enabled
-		}
-	}
-	enabled := g.decide(shardID, feature, false)
-	g.cache.Store(key, cacheEntry{gen: gen, enabled: enabled})
-	return enabled
+// Enabled reports whether feature may be used in shardID's group: one atomic
+// load of the cluster-wide activation flag, nothing else.
+//
+// It used to also answer true, ahead of cluster-wide activation, for a group
+// whose CURRENT members all happened to advertise the feature (decide,
+// below) -- etcd's rule for a cluster-version gate is that no member ever
+// sees an opcode older members do not understand, and per-group early
+// enablement broke exactly that: a later membership change can replace a
+// supporting replica with one running an old binary -- a rolled-back node,
+// or a replica removed and re-added after a downgrade -- and go-quicraft
+// catches it up by REPLAYING THE GROUP'S COMMITTED LOG. An entry the group
+// applied under the earlier, narrower membership that already used the
+// feature is in that log; the old binary cannot apply it and diverges.
+// Cluster-wide activation is permanent (CheckActivated refuses to start a
+// binary that lacks an already-activated feature) specifically so this
+// cannot happen: once true, Enabled can never go false for any group again.
+// Before activation, a write that would use the feature keeps the documented
+// resolve-time fallback instead (see docs/clustering).
+func (g *Gate) Enabled(_ uint64, feature Feature) bool {
+	return g.Activated(feature)
 }
 
 // decide reads shardID's committed membership and reports whether every
@@ -357,14 +340,28 @@ func (g *Gate) Supports(raftAddr string, feature Feature) bool {
 // AdmitReplica refuses, with *UnsupportedReplicaError, to add a replica of
 // shardID -- voter, observer or witness -- on the node at raftAddr when that
 // node does not advertise every feature the group uses: every activated
-// feature, and every feature Enabled for the group. Go-quicraft catches a
-// new member up by replaying the group's log, so a replica admitted on a
-// node that cannot apply a feature would diverge on the first entry that
-// uses it, and a proposal racing the config change could not be told apart
-// from one before it. Refusing the add is what makes both impossible.
+// feature, and every feature this group's CURRENT members all support.
+// Go-quicraft catches a new member up by replaying the group's log, so a
+// replica admitted on a node that cannot apply a feature would diverge on
+// the first entry that uses it, and a proposal racing the config change
+// could not be told apart from one before it. Refusing the add is what makes
+// both impossible.
+//
+// The per-group check is decide, not Enabled: Enabled answers only whether
+// this group may be SENT the opcode today (Activated, cluster-wide, and
+// nothing less -- see its doc comment), but a replica admitted here can
+// still be caught up by a cluster-wide activation that happens later,
+// triggered by OTHER groups becoming fully upgraded. By the time that
+// happens this group's own membership may have moved on from the one
+// checked here, but it can only ever have gained support, never lost it --
+// the system shard admits a replica under the identical rule, so a node
+// that reaches cluster-wide activation already satisfies CheckActivated at
+// its next restart -- so refusing an unsupporting node admission here, on
+// the membership known right now, is what keeps that later activation safe
+// for every group it reaches.
 func (g *Gate) AdmitReplica(shardID uint64, raftAddr string) error {
 	for _, f := range supported {
-		if !g.Activated(f) && !g.Enabled(shardID, f) {
+		if !g.Activated(f) && !g.decide(shardID, f, false) {
 			continue
 		}
 		if !g.Supports(raftAddr, f) {
@@ -603,9 +600,6 @@ func (g *Gate) run(ctx context.Context, kv ActivationKV, adverts []cluster.Membe
 					g.logger.Warn("feature gate: advertisement refresh failed", "error", err)
 				}
 			}
-			// A refresh also re-reads group membership: every cached
-			// decision is recomputed on its next use.
-			g.gen.Add(1)
 			if err := g.CheckActivated(ctx, kv); err != nil {
 				g.logger.Error("feature gate: activation refresh failed", "error", err)
 			}
@@ -658,14 +652,13 @@ func (g *Gate) reseed(ctx context.Context, source int, store cluster.MembershipS
 	return nil
 }
 
-// replaceLocked installs next when it differs from the current view,
-// invalidating every cached decision. The caller holds g.mu.
+// replaceLocked installs next when it differs from the current view. The
+// caller holds g.mu.
 func (g *Gate) replaceLocked(next map[viewKey]cluster.Member) {
 	if sameView(*g.view.Load(), next) {
 		return
 	}
 	g.view.Store(&next)
-	g.gen.Add(1)
 }
 
 // sameView reports whether two views advertise the same thing.
