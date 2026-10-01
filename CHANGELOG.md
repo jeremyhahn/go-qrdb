@@ -11,6 +11,28 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.25.1-alpha] - 2026-10-01
+
+Fixes clustered qrdbd under system barrier protection `none`, which could not start on go-quicraft 0.15.
+
+### Fixed
+
+- **A cluster booting under system protection `none` starts again.**
+  go-quicraft 0.15 accepts a caller-supplied LogDB beside `WithBarrier` only
+  if it declares itself encrypted at rest. The multiplex WAL's shared route
+  truthfully reports unprotected while the system barrier is in plaintext
+  mode, so every node of such a cluster was refused at host creation. A
+  clustered node whose system barrier does not yet encrypt now takes the
+  default-WAL path a single node takes: the same `<data-dir>/wal` under the
+  same barrier, encrypting once `EnableEncryption` flips it. Dedicated-WAL
+  shards use the shared WAL until the next boot after encryption is enabled.
+  `TestClusterEnableEncryption_SystemScope_RF3` and `_TenantScope_RF3` pass
+  again.
+- **The auth CLI integration test assigns the auditor role by id.** `--roles`
+  takes role ids. The fixture passed the name `auditor`, which role-reference
+  validation correctly refuses. This was a test defect, not replication: the
+  role was seeded under its derived id.
+
 ## [0.25.0-alpha] - 2026-10-01
 
 Adds the per-tenant DEK keyring on every transport, bearer authenticators on gRPC and Unix, and a sealed-window surface hosts mount. BREAKING: the unused cluster-DEK and tenant-DEK-manager APIs are removed (see Changed — BREAKING), and `qrdbd`'s `<data-dir>/dek` directory is no longer read and may be deleted.
