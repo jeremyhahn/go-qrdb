@@ -96,8 +96,10 @@ fenced on a claim would fence on nothing.
 
 - Transactions and batches are scoped to a single (tenant, database) pair, like
   every other data-plane operation.
-- The internal-key read guard applies to any `OpRange`/`OpGet` result the
-  request produces.
+- A branch only writes: `OpGet` and `OpRange` are refused before anything is
+  proposed (`UnsupportedTransactionOpError`), so a transaction returns no
+  key data and the internal-key read guard has nothing to filter. An unmapped
+  op type fails closed rather than defaulting to a write.
 - **Import size is bounded per transport**, which is a denial-of-service control
   as much as a wire limit: REST, gRPC, Unix and MCP accept up to 100 MB; QUIC
   accepts roughly 63 MB, bounded by the QUIC wire protocol's shared per-RPC

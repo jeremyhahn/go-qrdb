@@ -91,6 +91,11 @@ type BatchRequest struct{ Ops []Op }
 type BatchResponse struct{ Responses []OpResponse }
 ```
 
+`encodeServiceOp` maps only `OpPut` and `OpDelete` to protocol opcodes. `OpGet`,
+`OpRange` and any unmapped value in a transaction branch or batch fail closed
+with `UnsupportedTransactionOpError` before anything is proposed, rather than
+defaulting to a write that would corrupt the key.
+
 Import:
 
 ```go

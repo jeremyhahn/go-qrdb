@@ -163,6 +163,34 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **The transactions docs said a branch could carry get and range ops.** The
+  code has always refused them (`UnsupportedTransactionOpError`, 400 /
+  `INVALID_ARGUMENT`) rather than risk a read defaulting to a write; the
+  documents now say so, and their examples use put and delete.
+- **Real-backend Playwright specs** that had drifted from the server: barrier
+  secrets are sent as base64 (`[]byte` fields), a created user carries the
+  email that is its login key, and the transaction spec pins the get-op
+  refusal.
+- A reopened keyed barrier (`ReopenKeyed`) kept neither the holder verifier
+  nor the quorum TTL, so no holder could unseal it after an encryption
+  migration.
+- `sdk/go/node` did not hand the ceremony CA to the ceremony service, and the
+  full boot discarded the sealed-window ceremony state, losing envelopes not
+  yet claimed; the sealed window also ran without the PIN backend.
+- The embedded transport's `CeremonyInitialize` dropped each holder's role,
+  the factor policy and the returned holder certificates.
+- `qrdb init --shares` was checked only for range; the key was silently split
+  to however many holders were named. It must now equal the number of
+  `--officers` plus `--custodians`.
+- `seal.ErrShamirUnsealRequiresQuorum` fell through to REST 500 and gRPC
+  `INTERNAL`; it now maps like `ErrShamirBarrierRequiresQuorum` (422,
+  `FAILED_PRECONDITION`). Ceremony initialization errors (`ErrNoOfficers`,
+  `ErrInvalidThreshold`, `ErrAlreadyInitialized`) are now classified instead
+  of answering 500.
+- The QUIC transport classifies claim errors like every other transport.
+- The sealed-window allowlist named a `shamir-verify` verb no transport
+  served.
+
 ### Removed — BREAKING
 
 - **The parallel custodian subsystem is deleted**: `pkg/custodian`,

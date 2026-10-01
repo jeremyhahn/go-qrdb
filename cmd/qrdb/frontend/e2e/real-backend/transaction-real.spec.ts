@@ -142,23 +142,25 @@ test.describe("Transaction (real backend — bug #8)", () => {
   );
 
   test(
-    "success op type=get returns key value in response",
+    "a get op in a branch is refused (400) and the key is untouched",
     async ({ request, daemon }) => {
+      // A transaction branch only writes: get and range ops are refused before
+      // anything is proposed, rather than defaulting to a write that would
+      // overwrite the key (docs/transactions/api.md).
       const api = new ApiClient(request, daemon.adminUrl);
       const k = key("get-op");
 
       await api.putText(`/kv/${encodeURIComponent(k)}`, "get-me");
 
-      const tx = await api.post<TransactionResponse>("/tx", {
-        compares: [],
-        success_ops: [{ type: "get", key: k }],
-        failure_ops: [],
+      const resp = await request.post(`${daemon.adminUrl}/tx`, {
+        data: { compares: [], success_ops: [{ type: "get", key: k }], failure_ops: [] },
+        headers: { "Content-Type": "application/json" },
       });
+      expect(resp.status()).toBe(400);
+      expect(await resp.text()).toContain("transaction branches support only Put and Delete");
 
-      expect(tx.succeeded).toBe(true);
-      // The response for a get op includes kv pairs
-      expect(Array.isArray(tx.responses)).toBe(true);
-      expect(tx.responses.length).toBeGreaterThan(0);
+      const after = await request.get(`${daemon.adminUrl}/kv/${encodeURIComponent(k)}`);
+      expect(await after.text()).toBe("get-me");
 
       // Cleanup
       await api.delete(`/kv/${encodeURIComponent(k)}`);

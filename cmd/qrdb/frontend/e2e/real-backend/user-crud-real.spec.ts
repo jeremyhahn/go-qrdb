@@ -11,7 +11,9 @@
  * are encoded as JSON strings (proto3 convention) to avoid Number
  * precision loss; entity keys are snake_case (tenant_id, role_ids,
  * created_at, updated_at); list responses carry users/total/has_more;
- * query parameters are camelCase (tenantID, page, pageSize).
+ * query parameters are camelCase (tenantID, page, pageSize). A user is
+ * created with an email, its login key: a create without one is refused
+ * (400) unless it declares without_email_login_key.
  *
  * User management requires auth-enabled=false (set in the daemon fixture)
  * so calls are unauthenticated. Specs check for 501 Not Implemented and
@@ -51,7 +53,7 @@ test.describe("User CRUD (real backend)", () => {
     const uname = username("create");
 
     const resp = await request.post(`${daemon.adminUrl}/users`, {
-      data: { username: uname, tenant_id: "default", role_ids: [] },
+      data: { username: uname, email: `${uname}@example.com`, tenant_id: "default", role_ids: [] },
       headers: { "Content-Type": "application/json" },
     });
 
@@ -83,7 +85,7 @@ test.describe("User CRUD (real backend)", () => {
     const uname = username("get");
 
     const createResp = await request.post(`${daemon.adminUrl}/users`, {
-      data: { username: uname, tenant_id: "default", role_ids: [] },
+      data: { username: uname, email: `${uname}@example.com`, tenant_id: "default", role_ids: [] },
       headers: { "Content-Type": "application/json" },
     });
 
@@ -108,7 +110,7 @@ test.describe("User CRUD (real backend)", () => {
     const uname = username("delete");
 
     const createResp = await request.post(`${daemon.adminUrl}/users`, {
-      data: { username: uname, tenant_id: "default", role_ids: [] },
+      data: { username: uname, email: `${uname}@example.com`, tenant_id: "default", role_ids: [] },
       headers: { "Content-Type": "application/json" },
     });
 
@@ -133,7 +135,7 @@ test.describe("User CRUD (real backend)", () => {
     const newName = username("updated");
 
     const createResp = await request.post(`${daemon.adminUrl}/users`, {
-      data: { username: uname, tenant_id: "default", role_ids: [] },
+      data: { username: uname, email: `${uname}@example.com`, tenant_id: "default", role_ids: [] },
       headers: { "Content-Type": "application/json" },
     });
 

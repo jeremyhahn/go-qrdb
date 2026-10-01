@@ -27,13 +27,16 @@ call. Recorded here so the absence of an endpoint is not read as a gap.
     { "key": "<base64>", "target": 3, "result": 0, "value": "<base64>" }
   ],
   "success_ops": [ { "type": 0, "key": "<base64>", "value": "<base64>", "lease_id": 0 } ],
-  "failure_ops": [ { "type": 1, "key": "<base64>" } ]
+  "failure_ops": [ { "type": 2, "key": "<base64>" } ]
 }
 ```
 
 `target`: `0` version · `1` create_revision · `2` mod_revision · `3` value.
 `result`: `0` equal · `1` greater · `2` less · `3` not_equal.
-op `type`: `0` put · `1` get · `2` delete · `3` range (with `range_end`).
+op `type`: `0` put · `2` delete. `1` get and `3` range are values of the
+shared `OpType` enum but are refused in a transaction or batch branch
+(`UnsupportedTransactionOpError`: REST 400, gRPC/Unix/QUIC/MCP
+`INVALID_ARGUMENT`); read the keys after the transaction commits.
 
 Response — `TransactionResponse`:
 
