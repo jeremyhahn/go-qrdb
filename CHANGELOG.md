@@ -701,7 +701,10 @@ are not reconstructed here — their history is in the git log.
   is operational, when the barrier records an operational ceremony (a marker
   written to the barrier's plaintext store, readable while sealed), or when
   the barrier is initialized. It fails closed. The refusal is `403`
-  `ENROLLMENT_CLOSED` / `PERMISSION_DENIED`.
+  `ENROLLMENT_CLOSED` / `PERMISSION_DENIED`. The ceremony enforces the same
+  rule itself, under its own lock: `RegisterOfficer` and
+  `RegisterRecoveryOfficer` refuse an anonymous request with
+  `ceremony.ErrEnrollmentClosed` once enrollment has closed.
 - **The anonymous officer claim status no longer names the officers
   (medium).** `officer-claim-status` is anonymous on the boot-time
   sealed-window listener, so the first-boot wizard can follow claims, and it

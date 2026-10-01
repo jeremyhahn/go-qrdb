@@ -127,6 +127,15 @@ registration with `403` and `{"code":"ENROLLMENT_CLOSED"}` on REST,
 not reopen enrollment. A regular listener never applies this rule: its
 authentication and the route's `seal:officer_register` permission decide.
 
+The ceremony enforces the same rule itself. `RegisterOfficer` and
+`RegisterRecoveryOfficer` refuse with `ceremony.ErrEnrollmentClosed` when the
+request is marked anonymous (`sealedwindow.Anonymous`) and enrollment is
+closed. They check this under the ceremony's lock, in the same critical
+section as the registration. The gate samples enrollment before the request
+runs; this check holds even if enrollment closes in between, and covers any
+path that reaches the ceremony anonymously. The error classifies as
+permission denied on every transport.
+
 ### Deliberate exclusions
 
 Never allowlisted, on any transport:

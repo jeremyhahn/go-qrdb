@@ -633,6 +633,9 @@ var ceremonyRules = []rule{
 	is(seal.ErrAlreadyInitialized, FailedPrecondition),
 	is(seal.ErrNotInitialized, FailedPrecondition),
 	is(ceremony.ErrCertThumbprintMismatch, PermissionDenied),
+	// An anonymous officer registration after enrollment closed: retrying
+	// will not help; register through an authenticated listener.
+	is(ceremony.ErrEnrollmentClosed, PermissionDenied),
 	is(ceremony.ErrOfficerNotFound, NotFound),
 	is(ceremony.ErrShareAlreadyClaimed, FailedPrecondition),
 	is(ceremony.ErrNoPendingShare, NotFound),

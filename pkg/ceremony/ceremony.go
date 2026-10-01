@@ -30,6 +30,7 @@ import (
 
 	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
@@ -739,9 +740,13 @@ func (s *CeremonyService) becomeOperationalLocked(ctx context.Context) {
 // It fails closed: an unreadable record is treated as closed.
 func (s *CeremonyService) EnrollmentOpen(ctx context.Context) bool {
 	s.mu.RLock()
-	operational := s.state == StateOperational
-	s.mu.RUnlock()
-	if operational {
+	defer s.mu.RUnlock()
+	return s.enrollmentOpenLocked(ctx)
+}
+
+// enrollmentOpenLocked is EnrollmentOpen with s.mu already held.
+func (s *CeremonyService) enrollmentOpenLocked(ctx context.Context) bool {
+	if s.state == StateOperational {
 		return false
 	}
 	if marked, err := s.barrier.CeremonyOperational(ctx); err != nil || marked {
@@ -749,6 +754,20 @@ func (s *CeremonyService) EnrollmentOpen(ctx context.Context) bool {
 	}
 	initialized, err := s.barrier.Initialized(ctx)
 	return err == nil && !initialized
+}
+
+// refuseClosedAnonymousEnrollmentLocked returns ErrEnrollmentClosed when ctx
+// is an unauthenticated request (sealedwindow.Anonymous) and enrollment has
+// closed. The boot-time sealed-window listener's gate applies the same rule,
+// but it samples enrollment before the request runs; this check runs under
+// s.mu, in the same critical section as the registration it guards, so no
+// anonymous registration can slip in once enrollment has closed. Must be
+// called with s.mu held.
+func (s *CeremonyService) refuseClosedAnonymousEnrollmentLocked(ctx context.Context) error {
+	if sealedwindow.Anonymous(ctx) && !s.enrollmentOpenLocked(ctx) {
+		return ErrEnrollmentClosed
+	}
+	return nil
 }
 
 // allClaimsComplete checks whether all officers have claimed both

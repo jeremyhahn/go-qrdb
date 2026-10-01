@@ -40,6 +40,10 @@ func (s *CeremonyService) RegisterOfficer(ctx context.Context, req RegisterOffic
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if err := s.refuseClosedAnonymousEnrollmentLocked(ctx); err != nil {
+		return nil, err
+	}
+
 	if s.ca == nil {
 		return nil, ErrCANotInitialized
 	}
