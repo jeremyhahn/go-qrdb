@@ -843,7 +843,12 @@ policies, rekey and revocation that serve the system and tenant barriers.
   self-scoped like the rest of `databases:*`; the database service confines
   each call to a database in the caller's tenant before it learns whether the
   database or its barrier exists. Claim and quorum are identity-gated: the
-  holder's certificate and factor proof are the credential.
+  holder's certificate and factor proof are the credential. The system
+  tenant's administrator may target any database. A share holder whose
+  identity is in the system tenant is not that administrator: it is confined
+  to the system tenant's own databases. Another tenant's database answers it
+  `NotFound`, exactly as a missing one does, so the holder routes reveal no
+  other tenant's database names.
 - **Tenants.** A Shamir barrier is held to the passphrase barrier's rule: it
   is accepted only on the database's data path, a non-raft database with its
   own data directory, which only the system tenant can set. Until per-database

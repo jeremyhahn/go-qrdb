@@ -188,6 +188,13 @@ are not reconstructed here — their history is in the git log.
   `sdk.SignShareClaim` produce it, and the CLI's `claim-begin` prints the
   exact message for an external signer. A claim signed over the bare nonce is
   refused.
+- **A system-tenant share holder could probe every tenant's database
+  names.** The database service lifts the system tenant to every database,
+  as the store-global admin. That lift also covered a share holder whose
+  identity is in the system tenant, and the identity-gated claim and quorum
+  routes then answered another tenant's database differently from a missing
+  one. Such a holder is now confined to the system tenant's databases;
+  another tenant's database answers `NotFound`.
 - **A database named like a tenant reached that tenant's barrier.** The
   per-database barrier manager kept its barriers in the seal subsystem's
   tenant registry, keyed by database name, so sealing, unsealing or reading

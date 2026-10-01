@@ -23,8 +23,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
@@ -1146,9 +1146,26 @@ func (s *DatabaseService) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*d
 // TenantID — fails closed with the same *database.NotFoundError a missing
 // database gets, so the answer does not tell the caller which names other
 // tenants hold.
+//
+// A share holder whose identity is in the system tenant is NOT the
+// store-global admin: it holds a share, and nothing else. The holder routes
+// are identity-gated rather than permission-gated, so lifting it would let
+// it probe every tenant's database names (another tenant's database would
+// answer with a holder or round refusal, a missing one with NotFound). It is
+// confined to the system tenant's own databases like any tenant caller.
 func (s *DatabaseService) authorizeDatabaseTenant(ctx context.Context, name string) error {
 	tenantID := tenant.FromContext(ctx)
 	if tenantid.IsSystem(tenantID) {
+		if !auth.IdentityFromContext(ctx).IsShareHolder() {
+			return nil
+		}
+		db, err := s.manager.Get(name)
+		if err != nil {
+			return err
+		}
+		if !tenantid.IsSystem(db.TenantID()) {
+			return &database.NotFoundError{Name: name}
+		}
 		return nil
 	}
 	_, err := s.manager.GetForTenant(ctx, name)
