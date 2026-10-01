@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -42,6 +43,11 @@ func (e *FactorParamsError) Error() string {
 
 // Unwrap returns the decode error.
 func (e *FactorParamsError) Unwrap() error { return e.Err }
+
+// ErrorClass reports a malformed request: the caller's params_json.
+func (e *FactorParamsError) ErrorClass() errclass.Class { return errclass.InvalidArgument }
+
+var _ errclass.Classed = (*FactorParamsError)(nil)
 
 // FactorsFromPB decodes the additional factor enrolments.
 func FactorsFromPB(in []*pb.HolderFactorEnrolment) ([]ceremony.FactorEnrolment, error) {

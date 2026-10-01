@@ -139,7 +139,7 @@ func TestBarrierHolders_List_ServiceError(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/v1/barrier/officers", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
-	assertStatus(t, rec, http.StatusConflict)
+	assertStatus(t, rec, http.StatusUnprocessableEntity)
 }
 
 // TestBarrierHolders_Claim_TakesThumbprintFromTLS proves both claim steps

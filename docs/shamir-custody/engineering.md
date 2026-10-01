@@ -209,7 +209,8 @@ per domain may be open (`ErrQuorumRoundInProgress`).
 | `ceremony.ErrQuorumChallengeNotFound`, `ErrQuorumChallengeMismatch`, `ErrTooManyPendingChallenges` | challenge refusals |
 | `ceremony.ErrShareEnvelopeMalformed`, `ShareEnvelopeError` | envelope parse/open failures |
 
-Every one is classified by `service.ClassifyHolderError`; see
+Every one is classified by the `holderRules` block of `pkg/api/errclass`;
+see
 [api.md](api.md#error-classes).
 
 ## Configuration

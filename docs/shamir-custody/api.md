@@ -171,8 +171,8 @@ ignored. Recovery generation takes `threshold`, `policy` and
 
 ## Error classes
 
-Every share-holder, quorum and envelope error is classified once
-(`service.ClassifyHolderError`) and each transport renders the class:
+Every share-holder, quorum and envelope error is classified once, in the
+one classification table every transport renders (`pkg/api/errclass`):
 
 | Class | REST | gRPC / Unix | Typical cause |
 |---|---|---|---|
@@ -180,7 +180,10 @@ Every share-holder, quorum and envelope error is classified once
 | PermissionDenied | 403 | `PERMISSION_DENIED` | factor proof failed; factor not admitted by the policy; holder not in roster or being revoked; share index not the holder's; certificate mismatch; self-enrolment; reconstructed key fails to open the blob (`ErrUnsealKeyMismatch`) |
 | NotFound | 404 | `NOT_FOUND` | unknown holder; no pending share; unknown factor |
 | AlreadyExists | 409 | `ALREADY_EXISTS` | holder already submitted to this round; duplicate username or key; a round already in progress |
-| FailedPrecondition | 409 | `FAILED_PRECONDITION` | no round open; round expired; share already claimed or expired; revocation would leave fewer holders than the threshold; roster missing; no verifier, CA, trust domain or PIN backend; a rolled-back initialization awaiting a restart (`ErrRestartRequired`) |
+| FailedPrecondition | 409 | `FAILED_PRECONDITION` | no round open; round expired; share already claimed; revocation would leave fewer holders than the threshold; roster missing; no verifier, CA or trust domain; a rolled-back initialization awaiting a restart (`ErrRestartRequired`) |
+| Gone | 410 | `FAILED_PRECONDITION` | the envelope outlived its claim window and was destroyed (`ceremony.ErrShareExpired`); only a rekey deals a new one |
+| PreconditionFailed | 412 | `FAILED_PRECONDITION` | no PIN backend is configured (`pin.ErrBackendNotConfigured`) |
+| Unprocessable | 422 | `FAILED_PRECONDITION` | a Shamir barrier unsealed or sealed by one caller instead of its quorum; no ceremony service configured; too few officers |
 | ResourceExhausted | 429 | `RESOURCE_EXHAUSTED` | too many pending quorum challenges |
 | Unauthenticated | 401 | `UNAUTHENTICATED` | a claim over a connection without a verified client certificate (`service.ClientCertRequiredError`) |
 | Internal | 500 | `INTERNAL` | an initialization whose distribution failed could not be rolled back (`ShamirInitRollbackError`) |

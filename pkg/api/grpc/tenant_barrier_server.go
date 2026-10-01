@@ -238,7 +238,7 @@ func (s *tenantBarrierServer) OfficerRegister(ctx context.Context, req *pb.Tenan
 
 	regReq, err := holderpb.TenantRegisterFromPB(req)
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, mapServiceError(err)
 	}
 	svcReq := service.HolderRegistration(ctx, regReq)
 	result, err := s.svc.TenantBarrierOfficerRegister(ctx, req.GetTenantId(), &svcReq)
@@ -342,7 +342,7 @@ func (s *tenantBarrierServer) ShareClaimComplete(ctx context.Context, req *pb.Te
 // the tenant service confines the caller to its own tenant.
 func (s *tenantBarrierServer) QuorumBegin(ctx context.Context, req *pb.TenantBarrierQuorumBeginRequest) (*pb.BarrierQuorumChallenge, error) {
 	if s.svc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "tenant barrier"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "tenant barrier"})
 	}
 	if req.GetTenantId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
@@ -362,7 +362,7 @@ func (s *tenantBarrierServer) QuorumSubmit(ctx context.Context, req *pb.TenantBa
 	// The decoded share is this handler's to destroy on every path.
 	defer secure.Wipe(req.GetShare())
 	if s.svc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "tenant barrier"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "tenant barrier"})
 	}
 	if req.GetTenantId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
@@ -380,7 +380,7 @@ func (s *tenantBarrierServer) QuorumSubmit(ctx context.Context, req *pb.TenantBa
 // RekeyStart opens a rekey round on the tenant barrier.
 func (s *tenantBarrierServer) RekeyStart(ctx context.Context, req *pb.TenantBarrierRekeyStartRequest) (*pb.BarrierQuorumRound, error) {
 	if s.svc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "tenant barrier"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "tenant barrier"})
 	}
 	if req.GetTenantId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
@@ -398,7 +398,7 @@ func (s *tenantBarrierServer) RekeyStart(ctx context.Context, req *pb.TenantBarr
 // OfficerRevoke revokes a tenant holder through a quorum-gated rekey.
 func (s *tenantBarrierServer) OfficerRevoke(ctx context.Context, req *pb.TenantBarrierOfficerRevokeRequest) (*pb.BarrierQuorumRound, error) {
 	if s.svc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "tenant barrier"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "tenant barrier"})
 	}
 	if req.GetTenantId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")

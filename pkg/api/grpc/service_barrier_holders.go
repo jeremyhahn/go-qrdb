@@ -18,8 +18,6 @@ import (
 	"context"
 	"time"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -44,7 +42,7 @@ func optionalPeerThumbprint(ctx context.Context) string {
 
 // barrierUnavailable is the reply when no barrier service is wired.
 func barrierUnavailable() error {
-	return status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
+	return mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
 }
 
 // registerHolder serves both the unseal and recovery registration RPCs.
@@ -54,7 +52,7 @@ func (s *qrdbServiceServer) registerHolder(ctx context.Context, domain seal.Quor
 	}
 	svcReq, err := holderpb.RegisterFromPB(req)
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, mapServiceError(err)
 	}
 	result, err := s.barrierSvc.BarrierOfficerRegister(ctx, domain, svcReq)
 	if err != nil {

@@ -133,7 +133,7 @@ func (s *Server) handleBarrierShareClaimBegin(w http.ResponseWriter, r *http.Req
 	}
 	thumbprint, err := restCertThumbprint(r)
 	if err != nil {
-		writeErrorJSON(w, http.StatusUnauthorized, err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 	challenge, err := s.barrierSvc.BarrierShareClaimBegin(r.Context(), domain, username, thumbprint)
@@ -156,7 +156,7 @@ func (s *Server) handleBarrierShareClaimComplete(w http.ResponseWriter, r *http.
 	}
 	thumbprint, err := restCertThumbprint(r)
 	if err != nil {
-		writeErrorJSON(w, http.StatusUnauthorized, err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 	var req transport.ShareClaimCompleteRequest
@@ -352,7 +352,7 @@ func (s *Server) handleTenantBarrierOfficerList(w http.ResponseWriter, r *http.R
 func (s *Server) handleTenantBarrierShareClaimBegin(w http.ResponseWriter, r *http.Request, id, username string) {
 	thumbprint, err := restCertThumbprint(r)
 	if err != nil {
-		writeErrorJSON(w, http.StatusUnauthorized, err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 	s.tenantHolderCall(w, r, id, permission.IdentityGated, nil, func(ctx context.Context) (any, error) {
@@ -371,7 +371,7 @@ func (s *Server) handleTenantBarrierShareClaimBegin(w http.ResponseWriter, r *ht
 func (s *Server) handleTenantBarrierShareClaimComplete(w http.ResponseWriter, r *http.Request, id, username string) {
 	thumbprint, err := restCertThumbprint(r)
 	if err != nil {
-		writeErrorJSON(w, http.StatusUnauthorized, err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 	var req transport.ShareClaimCompleteRequest
