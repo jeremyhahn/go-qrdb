@@ -705,12 +705,22 @@ func (w *relationalWriter) DiscardChanges(ctx *sqle.Context, _ error) error {
 	return nil
 }
 
-// StatementComplete marks the successful end of a statement, keeping what
-// it buffered.
+// StatementComplete marks the end of a statement, keeping what it buffered
+// -- unless the statement's context was cancelled (KILL QUERY, a client
+// disconnect, a deadline). go-mysql-server's table-editor iterator reports
+// a cancellation noticed between rows from Next without recording it as
+// the statement's error, so a killed statement reaches StatementComplete,
+// not DiscardChanges; it is discarded here, as a failed one is.
 func (w *relationalWriter) StatementComplete(ctx *sqle.Context) error {
-	if ws := statementWriteSet(ctx); ws != nil {
-		ws.completeStatement()
+	ws := statementWriteSet(ctx)
+	if ws == nil {
+		return nil
 	}
+	if ctx.Err() != nil {
+		ws.discardStatement()
+		return nil
+	}
+	ws.completeStatement()
 	return nil
 }
 

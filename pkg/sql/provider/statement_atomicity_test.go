@@ -15,6 +15,7 @@
 package provider
 
 import (
+	"context"
 	"testing"
 
 	sqle "github.com/dolthub/go-mysql-server/sql"
@@ -126,6 +127,43 @@ func TestStatementAtomicity_CascadeTimeoutLeavesTheParent(t *testing.T) {
 	rows := admin.must("SELECT parent_id FROM children WHERE id = 10")
 	require.Len(t, rows, 1)
 	assert.EqualValues(t, 1, rows[0][0])
+}
+
+// A statement killed part way -- its context cancelled by KILL QUERY, a
+// client disconnect or a deadline -- can reach StatementComplete rather than
+// DiscardChanges: go-mysql-server's table-editor iterator reports the
+// cancellation from Next without recording it as the statement's error, so
+// Close completes the statement. A completed-but-cancelled statement must
+// still leave nothing behind.
+func TestStatementAtomicity_CancelledStatementIsDiscardedAtComplete(t *testing.T) {
+	h := newLockHarness(t)
+	c := h.conn(t)
+	c.must("CREATE TABLE p (id BIGINT PRIMARY KEY)")
+	c.must("BEGIN")
+	c.must("INSERT INTO p VALUES (1)")
+
+	base, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx := sqle.NewContext(base, sqle.WithSession(c.sess))
+	ctx.SetCurrentDatabase("shop")
+	ctx.SetIgnoreAutoCommit(true)
+	db, err := h.prov.Database(ctx, "shop")
+	require.NoError(t, err)
+	tbl, ok, err := db.(*Database).GetTableInsensitive(ctx, "p")
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	ins := tbl.(*RelationalTable).Inserter(ctx)
+	ins.StatementBegin(ctx)
+	require.NoError(t, ins.Insert(ctx, sqle.Row{int64(2)}))
+	require.NoError(t, ins.Insert(ctx, sqle.Row{int64(3)}))
+	cancel()
+	require.NoError(t, ins.StatementComplete(ctx))
+	require.NoError(t, ins.Close(ctx))
+
+	c.must("COMMIT")
+	assert.Equal(t, []any{[]any{int64(1)}}, rowsOf(c.must("SELECT id FROM p ORDER BY id")),
+		"the cancelled statement's rows are gone; the earlier statement's row is kept")
 }
 
 // rowsOf converts engine rows to plain slices for comparison.
