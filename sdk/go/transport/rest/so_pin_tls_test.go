@@ -59,25 +59,26 @@ func (r *pinRecorder) sawPIN() bool {
 	return len(r.pins) > 0
 }
 
-// pinServer answers /health and records then serves /v1/barrier/rekey.
+// pinServer answers /health and records then serves /v1/barrier/rekey/start.
 func pinServer(rec *pinRecorder) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	mux.HandleFunc("/v1/barrier/rekey", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/barrier/rekey/start", func(w http.ResponseWriter, r *http.Request) {
 		rec.record(r)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"threshold":2,"total_shares":3}`))
+		_, _ = w.Write([]byte(`{"domain":"unseal","op":"rekey","required":2,"submitted":0}`))
 	})
 	return mux
 }
 
-// redirectingServer answers /health and redirects /v1/barrier/rekey to target.
+// redirectingServer answers /health and redirects /v1/barrier/rekey/start to
+// target.
 func redirectingServer(rec *pinRecorder, target string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	mux.HandleFunc("/v1/barrier/rekey", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/barrier/rekey/start", func(w http.ResponseWriter, r *http.Request) {
 		rec.record(r)
-		http.Redirect(w, r, target+"/v1/barrier/rekey", http.StatusTemporaryRedirect)
+		http.Redirect(w, r, target+"/v1/barrier/rekey/start", http.StatusTemporaryRedirect)
 	})
 	return mux
 }

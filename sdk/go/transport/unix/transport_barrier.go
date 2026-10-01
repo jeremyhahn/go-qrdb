@@ -338,7 +338,15 @@ func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyS
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
-	resp, err := t.client.BarrierRekeyStart(ctx, holderconv.RekeyToPB(req))
+	// The SO PIN travels in the request's own so_pin field; it comes from the
+	// PIN bound by transport.WithSOPIN when the request carries none.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierRekeyStart", req.SOPin)
+	if err != nil {
+		return nil, err
+	}
+	resolved := *req
+	resolved.SOPin = soPIN
+	resp, err := t.client.BarrierRekeyStart(ctx, holderconv.RekeyToPB(&resolved))
 	if err != nil {
 		return nil, mapGRPCError("BarrierRekeyStart", err)
 	}
@@ -350,7 +358,15 @@ func (t *Transport) BarrierOfficerRevoke(ctx context.Context, req *transport.Off
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
-	resp, err := t.client.BarrierOfficerRevoke(ctx, holderconv.RevokeToPB(req))
+	// The SO PIN travels in the request's own so_pin field; it comes from the
+	// PIN bound by transport.WithSOPIN when the request carries none.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierOfficerRevoke", req.SOPin)
+	if err != nil {
+		return nil, err
+	}
+	resolved := *req
+	resolved.SOPin = soPIN
+	resp, err := t.client.BarrierOfficerRevoke(ctx, holderconv.RevokeToPB(&resolved))
 	if err != nil {
 		return nil, mapGRPCError("BarrierOfficerRevoke", err)
 	}

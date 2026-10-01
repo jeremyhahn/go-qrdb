@@ -67,7 +67,8 @@ func newSOFixture(t *testing.T, gated bool) *soFixture {
 	serverCfg.ClientAuth = tls.RequireAnyClientCert
 	clientCfg.Certificates = serverCfg.Certificates
 	srv := NewServer(nil, nil, "127.0.0.1:0",
-		WithTLS(serverCfg), WithAuthMiddleware(mw), WithBarrierService(barrier), WithSOGate(gate))
+		WithTLS(serverCfg), WithAuthMiddleware(mw), WithBarrierService(barrier), WithSOGate(gate),
+		WithPINBackend(authtest.BarrierPINBackend(t, soTestPIN)))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("start server: %v", err)
 	}
@@ -75,7 +76,7 @@ func newSOFixture(t *testing.T, gated bool) *soFixture {
 	return &soFixture{addr: srv.Addr(), clientCfg: clientCfg, caller: caller, barrier: barrier}
 }
 
-// rekey sends one barrier.Rekey frame as id, with pin in the request's so_pin.
+// rekey sends one barrier.RekeyStart frame as id, with pin in the request's so_pin.
 func (f *soFixture) rekey(t *testing.T, id *auth.Identity, pin string) uint16 {
 	t.Helper()
 	f.caller.Set(id)
@@ -83,7 +84,7 @@ func (f *soFixture) rekey(t *testing.T, id *auth.Identity, pin string) uint16 {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	status, _ := credentialE2ERoundTrip(t, f.addr, f.clientCfg, "barrier.Rekey", payload)
+	status, _ := credentialE2ERoundTrip(t, f.addr, f.clientCfg, "barrier.RekeyStart", payload)
 	return status
 }
 
@@ -105,7 +106,10 @@ func TestSODualFactor(t *testing.T) {
 		// The node barrier is a platform singleton: a tenant's SO with its own
 		// tenant's valid PIN must not rekey it (go-qrdb#569 N2).
 		{"a tenant's SO is refused on the node barrier", true, authtest.SOIdentity(soOtherTenant, "acme-officer"), soTestPIN, wire.StatusPermissionDenied, 0},
-		{"gate off serves the same non-SO caller", false, token, "", wire.StatusOK, 1},
+		// With the gate off the barrier's own SO PIN check still applies, so the
+		// request carries the PIN; the caller's lack of the SO role is what the
+		// gate would have refused.
+		{"gate off serves the same non-SO caller", false, token, soTestPIN, wire.StatusOK, 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -211,7 +215,8 @@ func TestSODualFactor_GateWithoutAuthFailsClosed(t *testing.T) {
 	serverCfg, clientCfg := generateCredentialE2ETLS(t)
 	serverCfg.ClientAuth = tls.RequireAnyClientCert
 	clientCfg.Certificates = serverCfg.Certificates
-	srv := NewServer(nil, nil, "127.0.0.1:0", WithTLS(serverCfg), WithBarrierService(barrier), WithSOGate(gate))
+	srv := NewServer(nil, nil, "127.0.0.1:0", WithTLS(serverCfg), WithBarrierService(barrier), WithSOGate(gate),
+		WithPINBackend(authtest.BarrierPINBackend(t, soTestPIN)))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("start server: %v", err)
 	}
@@ -220,7 +225,7 @@ func TestSODualFactor_GateWithoutAuthFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	status, _ := credentialE2ERoundTrip(t, srv.Addr(), clientCfg, "barrier.Rekey", payload)
+	status, _ := credentialE2ERoundTrip(t, srv.Addr(), clientCfg, "barrier.RekeyStart", payload)
 	if barrier.Rekeys() != 0 {
 		t.Fatal("the gate was skipped for want of an auth middleware")
 	}

@@ -329,8 +329,8 @@ func TestSealedWindowListener_OfficerRegistrationFollowsEnrollment(t *testing.T)
 			t.Errorf("%s, enrollment closed: %v, want PermissionDenied", method, err)
 		}
 	}
-	if _, err := unary(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/BarrierOfficerClaimStatus"}, dummyHandler); err != nil {
-		t.Errorf("claim-status with enrollment closed: %v", err)
+	if _, err := unary(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/BarrierShareClaimBegin"}, dummyHandler); err != nil {
+		t.Errorf("a claim with enrollment closed: %v", err)
 	}
 	if _, err := SealedWindowUnaryInterceptor(probe, nil)(context.Background(), nil,
 		&grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/BarrierOfficerRegister"}, dummyHandler); err != nil {

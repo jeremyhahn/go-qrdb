@@ -38,7 +38,7 @@ import (
 
 // soGateMethod is a gRPC method whose (qrdb.v1.permission) option is
 // seal:rekey, which is in SOPermissions.
-const soGateMethod = "/qrdb.v1.QRDBService/BarrierRekey"
+const soGateMethod = "/qrdb.v1.QRDBService/BarrierRekeyStart"
 
 func newTestSOGate(t *testing.T) (*SOGate, string) {
 	t.Helper()

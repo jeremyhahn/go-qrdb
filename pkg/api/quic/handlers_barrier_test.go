@@ -25,6 +25,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -195,8 +196,13 @@ func TestHandleBarrierSeal_Success(t *testing.T) {
 			return nil
 		},
 	}
-	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(barrierSvc))
-	resp, err := srv.handleBarrierSeal(context.Background(), nil)
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(barrierSvc),
+		WithPINBackend(authtest.BarrierPINBackend(t, "seal-so-pin")))
+	payload, err := proto.Marshal(&pb.BarrierSealRequest{SoPin: "seal-so-pin"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	resp, err := srv.handleBarrierSeal(context.Background(), payload)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

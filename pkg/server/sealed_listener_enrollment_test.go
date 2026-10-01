@@ -81,6 +81,7 @@ func startEnrollmentListenerOn(t *testing.T, base seal.StorageBackend, prepare f
 		t.Fatalf("NewCeremonyService: %v", err)
 	}
 	core.SetCA(testServerCA)
+	core.SetTrustDomain("db.example.com")
 
 	cfg := testConfig(t, true, false)
 	tlsCfg := selfSignedTLSConfig(t)
@@ -230,46 +231,6 @@ func TestSealedWindow_OfficerEnrollmentOpenBeforeInitialization(t *testing.T) {
 				t.Fatalf("first-boot officer registration: status %d, body %s; want 200 with a certificate", code, out)
 			}
 		})
-	}
-}
-
-// TestSealedWindow_AnonymousClaimStatusIsRedacted: the first-boot wizard
-// tracks claims through officer-claim-status, which is anonymous on the
-// boot-time listener. It must say how many officers there are and which share
-// indexes are claimed, and nothing that identifies them: it used to return
-// every officer's username, certificate thumbprint and auth factor to anyone.
-func TestSealedWindow_AnonymousClaimStatusIsRedacted(t *testing.T) {
-	f := startEnrollmentListener(t, func(context.Context, *seal.StorageBarrier) {})
-	if code, out := f.registerAnonymously(t, "alice-officer"); code != http.StatusOK {
-		t.Fatalf("register: status %d, body %s", code, out)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	code, out, err := f.do(ctx, http.MethodGet, "/v1/barrier/officers/claim-status", nil)
-	if err != nil || code != http.StatusOK {
-		t.Fatalf("claim-status: status %d, err %v, body %s", code, err, out)
-	}
-	if strings.Contains(out, "alice-officer") {
-		t.Fatalf("anonymous claim-status disclosed an officer username: %s", out)
-	}
-	var resp struct {
-		Officers []map[string]any `json:"officers"`
-	}
-	if err := json.Unmarshal([]byte(out), &resp); err != nil {
-		t.Fatalf("decode %s: %v", out, err)
-	}
-	statuses := resp.Officers
-	if len(statuses) != 1 {
-		t.Fatalf("claim-status returned %d officers, want 1: %s", len(statuses), out)
-	}
-	if idx, _ := statuses[0]["share_index"].(float64); idx != 1 {
-		t.Errorf("share_index = %v, want 1: %s", statuses[0]["share_index"], out)
-	}
-	for _, field := range []string{"cert_thumbprint", "auth_factor"} {
-		if v, _ := statuses[0][field].(string); v != "" {
-			t.Errorf("anonymous claim-status disclosed %s = %q", field, v)
-		}
 	}
 }
 

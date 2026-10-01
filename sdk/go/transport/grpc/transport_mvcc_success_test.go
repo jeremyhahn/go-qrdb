@@ -26,6 +26,7 @@ import (
 
 	grpcpkg "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
@@ -160,6 +161,11 @@ func (f *fakeAuthFactorServicer) RevokeFactor(_ context.Context, _ string) error
 // Server with kv+admin+mvcc+tx+batch+barrier+authfactor
 // ===========================================================================
 
+// mvccSOPIN is the SO PIN committed in startMVCCServer's PIN backend. Seal is
+// SO-PIN-gated and a server with no PIN backend refuses it, so the barrier
+// round-trips bind this PIN.
+const mvccSOPIN = "mvcc-so-pin"
+
 func startMVCCServer(t *testing.T) (string, func()) {
 	t.Helper()
 	srv := googlegrpc.NewServer()
@@ -172,6 +178,7 @@ func startMVCCServer(t *testing.T) (string, func()) {
 		grpcpkg.WithRegisterTransaction(&fakeTransactionServicer{}),
 		grpcpkg.WithRegisterBatch(&fakeBatchServicer{}),
 		grpcpkg.WithRegisterBarrierService(&fakeBarrierServicer{}),
+		grpcpkg.WithRegisterPINBackend(authtest.BarrierPINBackend(t, mvccSOPIN)),
 	)
 
 	// Also register the authfactor service separately via the helper (it's
@@ -432,7 +439,12 @@ func TestGRPCBarrier_RemainingMethods_Success(t *testing.T) {
 		}
 	})
 	t.Run("BarrierSeal", func(t *testing.T) {
-		if err := tr.BarrierSeal(ctx); err != nil {
+		pinCtx, release, err := transport.WithSOPIN(ctx, []byte(mvccSOPIN))
+		if err != nil {
+			t.Fatalf("WithSOPIN: %v", err)
+		}
+		defer release()
+		if err := tr.BarrierSeal(pinCtx); err != nil {
 			t.Fatalf("BarrierSeal: %v", err)
 		}
 	})

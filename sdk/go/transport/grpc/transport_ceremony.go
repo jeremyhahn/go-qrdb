@@ -36,7 +36,15 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
-	resp, err := t.client.CeremonyInitialize(ctx, holderconv.CeremonyInitToPB(req))
+	// The SO PIN travels in the request's own so_pin field; it comes from the
+	// PIN bound by transport.WithSOPIN when the request carries none.
+	soPIN, err := transport.ResolveSOPIN(ctx, "CeremonyInitialize", req.SOPin)
+	if err != nil {
+		return nil, err
+	}
+	resolved := *req
+	resolved.SOPin = soPIN
+	resp, err := t.client.CeremonyInitialize(ctx, holderconv.CeremonyInitToPB(&resolved))
 	if err != nil {
 		return nil, mapGRPCError("CeremonyInitialize", err)
 	}

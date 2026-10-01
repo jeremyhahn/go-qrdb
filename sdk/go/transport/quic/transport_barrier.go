@@ -364,8 +364,16 @@ func (t *Transport) BarrierQuorumSubmit(ctx context.Context, req *transport.Quor
 
 // BarrierRekeyStart opens a rekey round.
 func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyStartRequest) (*transport.QuorumRound, error) {
+	// The SO PIN travels in the request's own so_pin field; it comes from the
+	// PIN bound by transport.WithSOPIN when the request carries none.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierRekeyStart", req.SOPin)
+	if err != nil {
+		return nil, err
+	}
+	resolved := *req
+	resolved.SOPin = soPIN
 	var resp pb.BarrierQuorumRound
-	if err := t.callPB(ctx, "barrier.RekeyStart", holderconv.RekeyToPB(req), &resp); err != nil {
+	if err := t.callPB(ctx, "barrier.RekeyStart", holderconv.RekeyToPB(&resolved), &resp); err != nil {
 		return nil, err
 	}
 	return holderconv.RoundFromPB(&resp), nil
@@ -373,8 +381,16 @@ func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyS
 
 // BarrierOfficerRevoke revokes a holder through a quorum-gated rekey.
 func (t *Transport) BarrierOfficerRevoke(ctx context.Context, req *transport.OfficerRevokeRequest) (*transport.QuorumRound, error) {
+	// The SO PIN travels in the request's own so_pin field; it comes from the
+	// PIN bound by transport.WithSOPIN when the request carries none.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierOfficerRevoke", req.SOPin)
+	if err != nil {
+		return nil, err
+	}
+	resolved := *req
+	resolved.SOPin = soPIN
 	var resp pb.BarrierQuorumRound
-	if err := t.callPB(ctx, "barrier.OfficerRevoke", holderconv.RevokeToPB(req), &resp); err != nil {
+	if err := t.callPB(ctx, "barrier.OfficerRevoke", holderconv.RevokeToPB(&resolved), &resp); err != nil {
 		return nil, err
 	}
 	return holderconv.RoundFromPB(&resp), nil

@@ -26,6 +26,7 @@ import (
 	"time"
 
 	unixserver "github.com/jeremyhahn/go-qrdb/pkg/api/unix"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
@@ -142,13 +143,35 @@ func TestUnixRT_BarrierUnseal(t *testing.T) {
 	}
 }
 
+// TestUnixRT_BarrierSeal: seal is SO-PIN-gated, so the server carries a PIN
+// backend and the call binds its SO PIN; the transport fills so_pin from it.
 func TestUnixRT_BarrierSeal(t *testing.T) {
+	const soPIN = "unix-seal-so-pin"
 	svc := &mockBarrierSvc{}
-	tr, cleanup := startAuthServer(t, unixserver.WithBarrierService(svc))
+	tr, cleanup := startAuthServer(t, unixserver.WithBarrierService(svc),
+		unixserver.WithPINBackend(authtest.BarrierPINBackend(t, soPIN)))
 	defer cleanup()
 
-	if err := tr.BarrierSeal(context.Background()); err != nil {
+	ctx, release, err := transport.WithSOPIN(context.Background(), []byte(soPIN))
+	if err != nil {
+		t.Fatalf("WithSOPIN: %v", err)
+	}
+	defer release()
+	if err := tr.BarrierSeal(ctx); err != nil {
 		t.Fatalf("BarrierSeal: %v", err)
+	}
+}
+
+// TestUnixRT_BarrierSeal_WithoutPINIsRefused: the same server refuses a seal
+// that carries no SO PIN.
+func TestUnixRT_BarrierSeal_WithoutPINIsRefused(t *testing.T) {
+	svc := &mockBarrierSvc{}
+	tr, cleanup := startAuthServer(t, unixserver.WithBarrierService(svc),
+		unixserver.WithPINBackend(authtest.BarrierPINBackend(t, "unix-seal-so-pin")))
+	defer cleanup()
+
+	if err := tr.BarrierSeal(context.Background()); err == nil {
+		t.Fatal("BarrierSeal without the SO PIN succeeded")
 	}
 }
 

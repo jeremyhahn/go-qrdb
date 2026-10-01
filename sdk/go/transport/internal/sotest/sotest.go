@@ -76,9 +76,11 @@ type Fixture struct {
 	// Barrier is the barrier service; it counts what reached it.
 	Barrier *authtest.Barrier
 	// PINs is the barrier PIN backend for the server's WithPINBackend, or
-	// nil for none. The request-field subtests set it to a real software
-	// backend, so an operation is admitted only when its own so_pin field
-	// carries PIN; the gate-only subtests leave it nil.
+	// nil for none. Every subtest that expects an SO-PIN-gated operation to
+	// succeed sets it to a real software backend, so the operation is
+	// admitted only when its own so_pin field carries PIN: with no backend
+	// the server refuses those operations outright. The gate-only subtests
+	// leave it nil.
 	PINs pin.PINBackend
 	// Ceremony is the ceremony service; it records the SO PIN each request
 	// handed it. CA is the ceremony CA the server needs configured.
@@ -130,6 +132,7 @@ type Client interface {
 func Run(t *testing.T, start func(t *testing.T, f *Fixture) Client) {
 	t.Run("SO rekeys with the PIN", func(t *testing.T) {
 		f := NewFixture(t)
+		f.PINs = authtest.BarrierPINBackend(t, PIN)
 		c := start(t, f)
 		ctx, release := BindPIN(t, PIN)
 		defer release()

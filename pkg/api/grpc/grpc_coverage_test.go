@@ -33,6 +33,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/dbwire"
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/internal/collectionpb"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -1086,12 +1087,26 @@ func TestGRPC_BarrierUnseal_NilService(t *testing.T) {
 
 func TestGRPC_BarrierSeal_Success(t *testing.T) {
 	barrierSvc := newMockBarrierService()
+	client, cleanup := startTestServerFull(t, WithBarrierService(barrierSvc),
+		WithPINBackend(authtest.BarrierPINBackend(t, "seal-so-pin")))
+	defer cleanup()
+
+	_, err := client.BarrierSeal(context.Background(), &pb.BarrierSealRequest{SoPin: "seal-so-pin"})
+	if err != nil {
+		t.Fatalf("BarrierSeal failed: %v", err)
+	}
+}
+
+// TestGRPC_BarrierSeal_NoPINBackendFailsClosed: seal is SO-PIN-gated, and a
+// node with no PIN backend refuses it rather than skipping the check.
+func TestGRPC_BarrierSeal_NoPINBackendFailsClosed(t *testing.T) {
+	barrierSvc := newMockBarrierService()
 	client, cleanup := startTestServerFull(t, WithBarrierService(barrierSvc))
 	defer cleanup()
 
-	_, err := client.BarrierSeal(context.Background(), &pb.BarrierSealRequest{})
-	if err != nil {
-		t.Fatalf("BarrierSeal failed: %v", err)
+	_, err := client.BarrierSeal(context.Background(), &pb.BarrierSealRequest{SoPin: "any"})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("BarrierSeal without a PIN backend = %v, want FailedPrecondition", err)
 	}
 }
 

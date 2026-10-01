@@ -28,6 +28,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/grpc/grpctest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -42,12 +43,12 @@ func TestNodeOfficerScope(t *testing.T) {
 }
 
 // startSOServer is the grpctest.SOStartFunc for the Unix socket.
-func startSOServer(t *testing.T, mw *authmw.AuthMiddleware, gate *authmw.SOGate, barrier service.BarrierServicer) *grpc.ClientConn {
+func startSOServer(t *testing.T, mw *authmw.AuthMiddleware, gate *authmw.SOGate, pins pin.PINBackend, barrier service.BarrierServicer) *grpc.ClientConn {
 	t.Helper()
 	socketPath := tempSocketPath(t)
 	tlsCfg := selfSignedTLSConfig(t)
 	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath,
-		WithTLS(tlsCfg), WithAuthMiddleware(mw), WithBarrierService(barrier), WithSOGate(gate))
+		WithTLS(tlsCfg), WithAuthMiddleware(mw), WithBarrierService(barrier), WithSOGate(gate), WithPINBackend(pins))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}

@@ -35,7 +35,7 @@ import (
 // ---------------------------------------------------------------------------
 // The SO PIN travels only over TLS, and only to the configured host.
 //
-// pinProbe is an MCP server whose qrdb_barrier_rekey tool records the
+// pinProbe is an MCP server whose qrdb_barrier_rekey_start tool records the
 // X-QRDB-SO-PIN header of the HTTP request that carried the call. It stands
 // in for a server the client must not trust -- a plaintext or foreign
 // listener -- so the property under test is what the CLIENT sends.
@@ -58,13 +58,13 @@ func (p *pinProbe) sawPIN() bool {
 
 func (p *pinProbe) handler() http.Handler {
 	srv := mcpserver.NewMCPServer("pin-probe", "1")
-	srv.AddTool(mcp.NewTool("qrdb_barrier_rekey"), func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	srv.AddTool(mcp.NewTool("qrdb_barrier_rekey_start"), func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		if pin, _ := ctx.Value(pinCtxKey{}).(string); pin != "" {
 			p.mu.Lock()
 			p.pins = append(p.pins, pin)
 			p.mu.Unlock()
 		}
-		return mcp.NewToolResultText(`{"threshold":2,"total_shares":3}`), nil
+		return mcp.NewToolResultText(`{"domain":"unseal","op":"rekey","required":2,"submitted":0}`), nil
 	})
 	return mcpserver.NewStreamableHTTPServer(srv, mcpserver.WithHTTPContextFunc(
 		func(ctx context.Context, r *http.Request) context.Context {

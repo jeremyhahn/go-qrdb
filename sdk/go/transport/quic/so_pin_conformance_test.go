@@ -21,6 +21,7 @@ import (
 	"time"
 
 	quicserver "github.com/jeremyhahn/go-qrdb/pkg/api/quic"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sotest"
@@ -66,12 +67,13 @@ func TestSOPINConformance(t *testing.T) {
 // request SOPin that differs from the bound PIN is refused before sending.
 func TestSOPINConformance_ConflictingPINsAreRefused(t *testing.T) {
 	f := sotest.NewFixture(t)
+	f.PINs = authtest.BarrierPINBackend(t, sotest.PIN)
 	tr := startSOConformance(t, f)
 	ctx, release := sotest.BindPIN(t, sotest.PIN)
 	defer release()
 	_, err := tr.BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: transport.DomainUnseal, Threshold: 2, SOPin: "other"})
 	var conflict *transport.SOPINConflictError
-	if !errors.As(err, &conflict) || conflict.Method != "BarrierRekey" {
+	if !errors.As(err, &conflict) || conflict.Method != "BarrierRekeyStart" {
 		t.Fatalf("err = %v, want *transport.SOPINConflictError", err)
 	}
 	if f.Barrier.Rekeys() != 0 {

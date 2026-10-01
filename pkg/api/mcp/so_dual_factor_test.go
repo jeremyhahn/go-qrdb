@@ -79,7 +79,8 @@ func newSOFixture(t *testing.T, gated bool) *soFixture {
 // client that presents the PIN pin holds, if any, in the SO PIN header.
 func startBarrierMCP(t *testing.T, mw *authmw.AuthMiddleware, gate *authmw.SOGate, barrier *authtest.Barrier, pin *atomic.Pointer[string]) *mcpclient.Client {
 	t.Helper()
-	return startMCP(t, nil, pin, WithAuthMiddleware(mw), WithBarrierService(barrier), WithSOGate(gate))
+	return startMCP(t, nil, pin, WithAuthMiddleware(mw), WithBarrierService(barrier), WithSOGate(gate),
+		WithPINBackend(authtest.BarrierPINBackend(t, soTestPIN)))
 }
 
 // startMCP starts an MCP server over admin (which may be nil) with opts, and
@@ -122,17 +123,19 @@ func startMCP(t *testing.T, admin service.AdminServicer, pin *atomic.Pointer[str
 	return client
 }
 
-// rekey calls qrdb_barrier_rekey as id, presenting pin in the header.
+// rekey calls qrdb_barrier_rekey_start as id, presenting pin in the header.
+// The request carries the barrier SO PIN too, which the tool verifies against
+// the barrier's PIN backend whether or not the gate is on.
 func (f *soFixture) rekey(t *testing.T, id *auth.Identity, pin string) *mcpgo.CallToolResult {
 	t.Helper()
 	f.caller.Set(id)
 	f.pin.Store(&pin)
 	req := mcpgo.CallToolRequest{}
-	req.Params.Name = "qrdb_barrier_rekey"
-	req.Params.Arguments = map[string]any{"threshold": 2, "total": 3}
+	req.Params.Name = "qrdb_barrier_rekey_start"
+	req.Params.Arguments = map[string]any{"domain": "unseal", "threshold": 2, "so_pin": soTestPIN}
 	res, err := f.client.CallTool(callCtx(t), req)
 	if err != nil {
-		t.Fatalf("qrdb_barrier_rekey: %v", err)
+		t.Fatalf("qrdb_barrier_rekey_start: %v", err)
 	}
 	return res
 }
@@ -192,6 +195,7 @@ func TestBarrierSeal_TenantAdminRefused(t *testing.T) {
 		f.caller.Set(id)
 		req := mcpgo.CallToolRequest{}
 		req.Params.Name = "qrdb_barrier_seal"
+		req.Params.Arguments = map[string]any{"so_pin": soTestPIN}
 		res, err := f.client.CallTool(callCtx(t), req)
 		if err != nil {
 			t.Fatalf("qrdb_barrier_seal: %v", err)
@@ -218,7 +222,8 @@ func TestSODualFactor_GateWithoutAuthFailsClosed(t *testing.T) {
 	gate := authmw.NewSOGate(roles, authtest.SOVerifier(t, soTestPIN, soTestTenant), audit.NewRingBuffer(64), audit.FailClosed, nil)
 	barrier := &authtest.Barrier{}
 	tlsCfg := testTLSConfig(t)
-	srv := NewServer(nil, nil, "127.0.0.1:0", WithTLS(tlsCfg), WithBarrierService(barrier), WithSOGate(gate))
+	srv := NewServer(nil, nil, "127.0.0.1:0", WithTLS(tlsCfg), WithBarrierService(barrier), WithSOGate(gate),
+		WithPINBackend(authtest.BarrierPINBackend(t, soTestPIN)))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -244,11 +249,11 @@ func TestSODualFactor_GateWithoutAuthFailsClosed(t *testing.T) {
 		t.Fatalf("initialize: %v", err)
 	}
 	req := mcpgo.CallToolRequest{}
-	req.Params.Name = "qrdb_barrier_rekey"
-	req.Params.Arguments = map[string]any{"threshold": 2, "total": 3}
+	req.Params.Name = "qrdb_barrier_rekey_start"
+	req.Params.Arguments = map[string]any{"domain": "unseal", "threshold": 2, "so_pin": soTestPIN}
 	res, err := client.CallTool(callCtx(t), req)
 	if err != nil {
-		t.Fatalf("qrdb_barrier_rekey: %v", err)
+		t.Fatalf("qrdb_barrier_rekey_start: %v", err)
 	}
 	if barrier.Rekeys() != 0 {
 		t.Fatal("the gate was skipped for want of an auth middleware")

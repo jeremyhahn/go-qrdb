@@ -28,15 +28,16 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // SOStartFunc starts the transport under test with mw as its auth
-// middleware, gate as its SO dual-factor gate (nil: off) and barrier as its
-// barrier service, and returns a client connection to it. It registers its own
-// cleanup.
-type SOStartFunc func(t *testing.T, mw *authmw.AuthMiddleware, gate *authmw.SOGate, barrier service.BarrierServicer) *grpc.ClientConn
+// middleware, gate as its SO dual-factor gate (nil: off), pins as its barrier
+// PIN backend and barrier as its barrier service, and returns a client
+// connection to it. It registers its own cleanup.
+type SOStartFunc func(t *testing.T, mw *authmw.AuthMiddleware, gate *authmw.SOGate, pins pin.PINBackend, barrier service.BarrierServicer) *grpc.ClientConn
 
 const (
 	soTenant      = tenantid.System
@@ -60,7 +61,7 @@ func newSOFixture(t *testing.T, start SOStartFunc, gated bool) *soFixture {
 		gate = authmw.NewSOGate(roles, authtest.SOVerifier(t, soPIN, soTenant, soOtherTenant), audit.NewRingBuffer(64), audit.FailClosed, nil)
 	}
 	barrier := &authtest.Barrier{}
-	conn := start(t, mw, gate, barrier)
+	conn := start(t, mw, gate, authtest.BarrierPINBackend(t, soPIN), barrier)
 	return &soFixture{caller: caller, barrier: barrier, client: pb.NewQRDBServiceClient(conn)}
 }
 
@@ -73,7 +74,7 @@ func (f *soFixture) rekey(t *testing.T, id *auth.Identity, pin string) error {
 	if pin != "" {
 		ctx = metadata.AppendToOutgoingContext(ctx, authmw.SOPINMetadataKey, pin)
 	}
-	_, err := f.client.BarrierRekeyStart(ctx, &pb.BarrierRekeyStartRequest{Domain: "unseal", Threshold: 2})
+	_, err := f.client.BarrierRekeyStart(ctx, &pb.BarrierRekeyStartRequest{Domain: "unseal", Threshold: 2, SoPin: soPIN})
 	return err
 }
 
@@ -130,9 +131,9 @@ func SODualFactor(t *testing.T, start SOStartFunc) {
 		roles := authtest.BuiltInRoles(t, soTenant)
 		gate := authmw.NewSOGate(roles, authtest.SOVerifier(t, soPIN, soTenant), audit.NewRingBuffer(64), audit.FailClosed, nil)
 		barrier := &authtest.Barrier{}
-		client := pb.NewQRDBServiceClient(start(t, nil, gate, barrier))
+		client := pb.NewQRDBServiceClient(start(t, nil, gate, authtest.BarrierPINBackend(t, soPIN), barrier))
 		ctx := metadata.AppendToOutgoingContext(callCtx(t), authmw.SOPINMetadataKey, soPIN)
-		_, err := client.BarrierRekeyStart(ctx, &pb.BarrierRekeyStartRequest{Domain: "unseal", Threshold: 2})
+		_, err := client.BarrierRekeyStart(ctx, &pb.BarrierRekeyStartRequest{Domain: "unseal", Threshold: 2, SoPin: soPIN})
 		if barrier.Rekeys() != 0 {
 			t.Fatal("the gate was skipped for want of an auth middleware")
 		}

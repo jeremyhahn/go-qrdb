@@ -2749,6 +2749,9 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// Build multi-protocol server.
 	serverCfg := buildNodeServerConfig(cfg)
 	allOpts := buildServerOpts(svcNode, n.dbManager, callerOpts, standalone)
+	if crypto.PINBackend == nil && n.sealPINBackend != nil {
+		allOpts = append(allOpts, server.WithPINBackend(n.sealPINBackend))
+	}
 	if authMW != nil {
 		allOpts = append(allOpts, server.WithAuthMiddleware(authMW))
 	}

@@ -67,6 +67,12 @@ const (
 	// from its disk.
 	PermissionTenantsReconcileDeleted = permission.TenantsReconcileDeleted
 
+	// PermissionAuditVerify ("audit:verify") verifies the tamper-evidence
+	// hash chain of the node's audit log. The chain is the whole node's
+	// trail, not a tenant-filtered slice, so it is reserved for the system
+	// tenant.
+	PermissionAuditVerify = permission.AuditVerify
+
 	// PermissionCertsRevokeCross ("certs:revoke:cross") writes a cluster-wide
 	// deny marker for a serial the node holds no issued record for.
 	PermissionCertsRevokeCross = permission.CertsRevokeCross
@@ -156,41 +162,29 @@ const (
 	// PermissionSealUnseal ("seal:unseal") unseals the node barrier.
 	PermissionSealUnseal = permission.SealUnseal
 
-	// PermissionSealRecoverWithKeys ("seal:recover_with_keys") recovers the
-	// node barrier with its offline recovery keys.
-	PermissionSealRecoverWithKeys = permission.SealRecoverWithKeys
 
 	// PermissionSealEnableEncryption ("seal:enable_encryption") migrates the
 	// node barrier, or a tenant's barrier named in the request, to an
 	// encrypting strategy.
 	PermissionSealEnableEncryption = permission.SealEnableEncryption
 
-	// PermissionSealSubmitSealVote ("seal:submit_seal_vote") submits a share
-	// toward the quorum that seals a Shamir-protected node barrier.
-	PermissionSealSubmitSealVote = permission.SealSubmitSealVote
 
-	// PermissionSealOfficerRegister ("seal:officer_register") registers a
-	// Security Officer into the node barrier's unseal or recovery domain.
+	// PermissionSealOfficerRegister ("seal:officer_register") enrols a share
+	// holder into the node barrier's unseal or recovery domain.
 	PermissionSealOfficerRegister = permission.SealOfficerRegister
 
 	// PermissionSealOfficerList ("seal:officer_list") lists the node
-	// barrier's Security Officers and their claim status.
+	// barrier's share holders and their claim state.
 	PermissionSealOfficerList = permission.SealOfficerList
 
 	// PermissionCeremonyInitialize ("ceremony:initialize") initializes the
 	// node key ceremony.
 	PermissionCeremonyInitialize = permission.CeremonyInitialize
 
-	// PermissionCeremonyEnrollCustodian ("ceremony:enroll_custodian") enrolls
-	// a custodian, or an external officer, into the node key ceremony.
-	PermissionCeremonyEnrollCustodian = permission.CeremonyEnrollCustodian
 
-	// PermissionCeremonyRevokeCustodian ("ceremony:revoke_custodian") revokes
-	// a node key-ceremony custodian.
-	PermissionCeremonyRevokeCustodian = permission.CeremonyRevokeCustodian
 
-	// PermissionCeremonySignCSR ("ceremony:sign_csr") signs a custodian
-	// enrollment CSR with the cluster CA.
+	// PermissionCeremonySignCSR ("ceremony:sign_csr") signs an enrollment
+	// CSR with the cluster CA.
 	PermissionCeremonySignCSR = permission.CeremonySignCSR
 
 	// PermissionSealSeal ("seal:seal") seals the node barrier.
@@ -212,9 +206,9 @@ const (
 	// Shamir custody of the node barrier.
 	PermissionSealInitializeShamir = permission.SealInitializeShamir
 
-	// PermissionBarrierUnsealShare ("barrier:unseal-share") submits one
-	// Shamir share toward the node barrier's unseal quorum.
-	PermissionBarrierUnsealShare = permission.BarrierUnsealShare
+	// PermissionSealOfficerRevoke ("seal:officer_revoke") revokes a share
+	// holder of the node barrier through a quorum-gated rekey.
+	PermissionSealOfficerRevoke = permission.SealOfficerRevoke
 )
 
 // The cluster-admin permissions are cross-scope because the cluster's Raft
