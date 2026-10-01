@@ -91,8 +91,11 @@ which lease a key hangs off.
   not-yet-granted ID passed through could revoke a lease another scope is
   granted in between. The record is
   attached, so it is replicated with the lease and deleted with it. A lease
-  whose record cannot be written is revoked and the grant fails. This holds on
-  every transport, etcd included.
+  whose record cannot be written is revoked and the grant fails. A write may
+  attach only a lease its own namespace owns: `PutWithLease` and
+  `PutWithLeaseAndMode` (and the etcd `Put` that rides on them) answer any
+  other lease ID with `service.LeaseNotFoundError` and write nothing. This
+  holds on every transport, etcd included.
 - **TTL granularity is seconds.**
 
 ## Error semantics

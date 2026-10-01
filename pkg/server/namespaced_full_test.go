@@ -1148,7 +1148,7 @@ func (m *mvccRec) RestoreToRevision(_ context.Context, req *service.RestoreRevis
 
 func TestNamespacedMVCC_FullRevisionSurface(t *testing.T) {
 	rec := newMVCCRec()
-	w := newNamespacedMVCCService(rec, "p/")
+	w := newNamespacedMVCCService(rec, "p/", nil)
 	ctx := context.Background()
 
 	getters := []struct {
@@ -1156,7 +1156,7 @@ func TestNamespacedMVCC_FullRevisionSurface(t *testing.T) {
 		call func() (*kvKV, error)
 	}{
 		{"PutWithLeaseAndMode", func() (*kvKV, error) {
-			return w.PutWithLeaseAndMode(ctx, "k", []byte("v"), 1, writemode.Mode(0))
+			return w.PutWithLeaseAndMode(ctx, "k", []byte("v"), 0, writemode.Mode(0))
 		}},
 		{"GetRevision", func() (*kvKV, error) { return w.GetRevision(ctx, "k") }},
 		{"GetRevisionWithConsistency", func() (*kvKV, error) {
@@ -1206,7 +1206,7 @@ func TestNamespacedMVCC_FullRevisionSurface(t *testing.T) {
 func TestNamespacedMVCC_ErrorPassthrough(t *testing.T) {
 	rec := newMVCCRec()
 	rec.err = errBoom
-	w := newNamespacedMVCCService(rec, "p/")
+	w := newNamespacedMVCCService(rec, "p/", nil)
 	ctx := context.Background()
 
 	errCalls := []struct {

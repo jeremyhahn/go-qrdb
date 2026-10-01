@@ -56,7 +56,7 @@ func TestNamespacedMVCC_Compact_NonSystemTenantRejected(t *testing.T) {
 	for _, tenantID := range []string{"tenantA", "acme", "another-tenant"} {
 		t.Run(tenantID, func(t *testing.T) {
 			inner := &compactRecordingMVCC{}
-			w := newNamespacedMVCCService(inner, tenantID+"/db/")
+			w := newNamespacedMVCCService(inner, tenantID+"/db/", nil)
 			ctx := tenant.WithTenantID(context.Background(), tenantID)
 
 			err := w.Compact(ctx, 42)
@@ -83,7 +83,7 @@ func TestNamespacedMVCC_Compact_NonSystemTenantRejected(t *testing.T) {
 // to the shared inner store at the requested revision.
 func TestNamespacedMVCC_Compact_SystemTenantAllowed(t *testing.T) {
 	inner := &compactRecordingMVCC{}
-	w := newNamespacedMVCCService(inner, tenant.SystemTenantID+"/system/")
+	w := newNamespacedMVCCService(inner, tenant.SystemTenantID+"/system/", nil)
 	ctx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
 
 	if err := w.Compact(ctx, 7); err != nil {
@@ -106,7 +106,7 @@ func TestNamespacedMVCC_Compact_SystemTenantAllowed(t *testing.T) {
 // in-process maintenance compaction is not broken.
 func TestNamespacedMVCC_Compact_UnboundContextTreatedAsSystem(t *testing.T) {
 	inner := &compactRecordingMVCC{}
-	w := newNamespacedMVCCService(inner, tenant.SystemTenantID+"/system/")
+	w := newNamespacedMVCCService(inner, tenant.SystemTenantID+"/system/", nil)
 
 	if err := w.Compact(context.Background(), 3); err != nil {
 		t.Fatalf("Compact() with unbound context returned error: %v", err)
@@ -122,7 +122,7 @@ func TestNamespacedMVCC_Compact_UnboundContextTreatedAsSystem(t *testing.T) {
 func TestNamespacedMVCC_Compact_SystemErrorPropagates(t *testing.T) {
 	sentinel := errors.New("inner compact failed")
 	inner := &compactRecordingMVCC{compactReturn: sentinel}
-	w := newNamespacedMVCCService(inner, tenant.SystemTenantID+"/system/")
+	w := newNamespacedMVCCService(inner, tenant.SystemTenantID+"/system/", nil)
 	ctx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
 
 	if err := w.Compact(ctx, 1); !errors.Is(err, sentinel) {

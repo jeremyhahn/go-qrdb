@@ -34,7 +34,7 @@ import (
 
 func TestNamespacedMVCC_RestoreToRevision_PrefixesScopeAndStripsPlan(t *testing.T) {
 	rec := newMVCCRec()
-	w := newNamespacedMVCCService(rec, "acme/reports/")
+	w := newNamespacedMVCCService(rec, "acme/reports/", nil)
 
 	result, err := w.RestoreToRevision(context.Background(), &service.RestoreRevisionRequest{
 		Revision: 7,
@@ -54,7 +54,7 @@ func TestNamespacedMVCC_RestoreToRevision_PrefixesScopeAndStripsPlan(t *testing.
 
 func TestNamespacedMVCC_RestoreToRevision_PrefixesEveryExplicitKey(t *testing.T) {
 	rec := newMVCCRec()
-	w := newNamespacedMVCCService(rec, "acme/reports/")
+	w := newNamespacedMVCCService(rec, "acme/reports/", nil)
 
 	result, err := w.RestoreToRevision(context.Background(), &service.RestoreRevisionRequest{
 		Revision: 7,
@@ -85,7 +85,7 @@ func TestNamespacedMVCC_RestoreToRevision_PrefixesEveryExplicitKey(t *testing.T)
 // caller that reuses a request does not accumulate namespace prefixes.
 func TestNamespacedMVCC_RestoreToRevision_DoesNotMutateCallerRequest(t *testing.T) {
 	rec := newMVCCRec()
-	w := newNamespacedMVCCService(rec, "acme/reports/")
+	w := newNamespacedMVCCService(rec, "acme/reports/", nil)
 
 	req := &service.RestoreRevisionRequest{Revision: 7, Keys: []string{"a"}}
 	if _, err := w.RestoreToRevision(context.Background(), req); err != nil {
@@ -110,7 +110,7 @@ func TestNamespacedMVCC_RestoreToRevision_DoesNotMutateCallerRequest(t *testing.
 // no scope at all.
 func TestNamespacedMVCC_RestoreToRevision_RejectsEmptyScopeBeforePrefixing(t *testing.T) {
 	rec := newMVCCRec()
-	w := newNamespacedMVCCService(rec, "acme/reports/")
+	w := newNamespacedMVCCService(rec, "acme/reports/", nil)
 
 	_, err := w.RestoreToRevision(context.Background(), &service.RestoreRevisionRequest{Revision: 7})
 	var empty *service.RestoreScopeEmptyError
@@ -143,7 +143,7 @@ func TestNamespacedMVCC_RestoreToRevision_RejectsInternalScopeBeforePrefixing(t 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := newMVCCRec()
-			w := newNamespacedMVCCService(rec, "acme/reports/")
+			w := newNamespacedMVCCService(rec, "acme/reports/", nil)
 
 			_, err := w.RestoreToRevision(context.Background(), tc.req)
 			var internal *service.RestoreInternalKeyError
@@ -160,7 +160,7 @@ func TestNamespacedMVCC_RestoreToRevision_RejectsInternalScopeBeforePrefixing(t 
 func TestNamespacedMVCC_RestoreToRevision_PropagatesInnerError(t *testing.T) {
 	rec := newMVCCRec()
 	rec.err = errBoom
-	w := newNamespacedMVCCService(rec, "acme/reports/")
+	w := newNamespacedMVCCService(rec, "acme/reports/", nil)
 
 	_, err := w.RestoreToRevision(context.Background(), &service.RestoreRevisionRequest{
 		Revision: 7, Prefix: "daily/",
@@ -183,7 +183,7 @@ func TestStripRestoreResult_HandlesNil(t *testing.T) {
 func TestNamespacedMVCC_RestoreToRevision_ForwardsForce(t *testing.T) {
 	for _, force := range []bool{true, false} {
 		rec := newMVCCRec()
-		w := newNamespacedMVCCService(rec, "acme/reports/")
+		w := newNamespacedMVCCService(rec, "acme/reports/", nil)
 
 		if _, err := w.RestoreToRevision(context.Background(), &service.RestoreRevisionRequest{
 			Revision: 7, Prefix: "daily/", Force: force,
@@ -203,7 +203,7 @@ func TestNamespacedMVCC_RestoreToRevision_ForwardsForce(t *testing.T) {
 func TestNamespacedMVCC_RestoreToRevision_StripsConflictKeys(t *testing.T) {
 	rec := newMVCCRec()
 	rec.conflictKeys = []string{"acme/reports/daily/conflicted"}
-	w := newNamespacedMVCCService(rec, "acme/reports/")
+	w := newNamespacedMVCCService(rec, "acme/reports/", nil)
 
 	result, err := w.RestoreToRevision(context.Background(), &service.RestoreRevisionRequest{
 		Revision: 7, Prefix: "daily/",

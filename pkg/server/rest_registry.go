@@ -645,17 +645,25 @@ func (r *restServiceRegistry) applyComposite(svcs *DatabaseServices, tenantID, d
 	if svcs.KV != nil {
 		out.KV = &namespacedKVService{inner: svcs.KV, prefix: prefix}
 	}
+	// The lease view is built first: the MVCC view attaches only leases it
+	// owns.
+	var leases *namespacedLeaseService
+	if svcs.Lease != nil {
+		leases = newNamespacedLeaseService(svcs.Lease, svcs.MVCC, prefix)
+		out.Lease = leases
+	}
 	if svcs.MVCC != nil {
-		out.MVCC = newNamespacedMVCCService(svcs.MVCC, prefix)
+		var owned leaseOwnership
+		if leases != nil {
+			owned = leases
+		}
+		out.MVCC = newNamespacedMVCCService(svcs.MVCC, prefix, owned)
 	}
 	if svcs.Batch != nil {
 		out.Batch = newNamespacedBatchService(svcs.Batch, prefix)
 	}
 	if svcs.Transaction != nil {
 		out.Transaction = newNamespacedTransactionService(svcs.Transaction, prefix)
-	}
-	if svcs.Lease != nil {
-		out.Lease = newNamespacedLeaseService(svcs.Lease, svcs.MVCC, prefix)
 	}
 	if svcs.TimeSeries != nil {
 		out.TimeSeries = newNamespacedTimeSeriesService(svcs.TimeSeries, prefix)

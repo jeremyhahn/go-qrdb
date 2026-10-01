@@ -193,10 +193,10 @@ func (m *recMVCC) Range(_ context.Context, start, end []byte, _ ...service.Range
 
 func TestNamespacedMVCC_PrefixesAndStrips(t *testing.T) {
 	rec := &recMVCC{}
-	w := newNamespacedMVCCService(rec, "acme/reports/")
+	w := newNamespacedMVCCService(rec, "acme/reports/", nil)
 	ctx := context.Background()
 
-	kvp, err := w.PutWithLease(ctx, "k", []byte("v"), 1)
+	kvp, err := w.PutWithLease(ctx, "k", []byte("v"), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestNamespacedMVCC_PrefixesAndStrips(t *testing.T) {
 
 func TestNamespacedMVCC_NilEndConfinedToNamespace(t *testing.T) {
 	rec := &recMVCC{}
-	w := newNamespacedMVCCService(rec, "p/")
+	w := newNamespacedMVCCService(rec, "p/", nil)
 	if _, _, _, err := w.Range(context.Background(), []byte("a"), nil); err != nil {
 		t.Fatal(err)
 	}

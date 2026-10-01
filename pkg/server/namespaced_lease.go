@@ -55,8 +55,11 @@ type namespacedLeaseService struct {
 	prefix string
 }
 
-// Compile-time interface check.
-var _ service.LeaseServicer = (*namespacedLeaseService)(nil)
+// Compile-time interface checks.
+var (
+	_ service.LeaseServicer = (*namespacedLeaseService)(nil)
+	_ leaseOwnership        = (*namespacedLeaseService)(nil)
+)
 
 // newNamespacedLeaseService creates a LeaseServicer scoped to the given
 // composite namespace prefix. mvcc is the engine the ownership record is
@@ -114,6 +117,12 @@ func (s *namespacedLeaseService) owned(ctx context.Context, id int64) (*lease.Le
 		return nil, &service.LeaseNotFoundError{LeaseID: id}
 	}
 	return l, nil
+}
+
+// requireOwned implements leaseOwnership.
+func (s *namespacedLeaseService) requireOwned(ctx context.Context, leaseID int64) error {
+	_, err := s.owned(ctx, leaseID)
+	return err
 }
 
 // Grant creates a new lease with the specified TTL and records this namespace

@@ -34,28 +34,61 @@ import (
 // Compact and CurrentRevision are intentionally not prefixed: MVCC revisions
 // are a store-global monotonic counter, not a per-namespace value, so they are
 // forwarded unchanged.
+//
+// A write that attaches a lease attaches only a lease this namespace owns
+// (leases): lease IDs are global, and attaching another tenant's lease would
+// tie this namespace's key to a lease that tenant controls -- revoking or
+// letting it expire would delete the key -- and reveal that the ID is live.
+// A lease this namespace does not own is answered with the not-found a
+// missing lease gets. Lease ID 0 is no lease.
 type namespacedMVCCService struct {
 	*namespacedKVService
 	inner  service.MVCCKVServicer
 	prefix string
+	leases leaseOwnership
+}
+
+// leaseOwnership confines lease attachment to the namespace's own leases.
+// It is satisfied by *namespacedLeaseService.
+type leaseOwnership interface {
+	// requireOwned returns nil for a lease this namespace owns and
+	// *service.LeaseNotFoundError for any other.
+	requireOwned(ctx context.Context, leaseID int64) error
 }
 
 // Compile-time interface check.
 var _ service.MVCCKVServicer = (*namespacedMVCCService)(nil)
 
 // newNamespacedMVCCService creates an MVCCKVServicer that prefixes all keys
-// with the given composite namespace prefix (e.g. "acme/reports/").
-func newNamespacedMVCCService(inner service.MVCCKVServicer, prefix string) *namespacedMVCCService {
+// with the given composite namespace prefix (e.g. "acme/reports/"). leases is
+// the namespace's lease view; with none, no lease can be attached.
+func newNamespacedMVCCService(inner service.MVCCKVServicer, prefix string, leases leaseOwnership) *namespacedMVCCService {
 	return &namespacedMVCCService{
 		namespacedKVService: &namespacedKVService{inner: inner, prefix: prefix},
 		inner:               inner,
 		prefix:              prefix,
+		leases:              leases,
 	}
 }
 
+// requireOwnedLease returns nil for no lease (0) or a lease this namespace
+// owns, and *service.LeaseNotFoundError for any other.
+func (s *namespacedMVCCService) requireOwnedLease(ctx context.Context, leaseID int64) error {
+	if leaseID == 0 {
+		return nil
+	}
+	if s.leases == nil {
+		return &service.LeaseNotFoundError{LeaseID: leaseID}
+	}
+	return s.leases.requireOwned(ctx, leaseID)
+}
+
 // PutWithLease stores a key-value pair with an attached lease under the
-// namespace prefix.
+// namespace prefix. The lease must be this namespace's.
 func (s *namespacedMVCCService) PutWithLease(ctx context.Context, key string, value []byte, leaseID int64) (*service.KeyValue, error) {
+	if err := s.requireOwnedLease(ctx, leaseID); err != nil {
+		return nil, err
+	}
 	kvp, err := s.inner.PutWithLease(ctx, s.prefix+key, value, leaseID)
 	if err != nil {
 		return nil, err
@@ -64,8 +97,12 @@ func (s *namespacedMVCCService) PutWithLease(ctx context.Context, key string, va
 }
 
 // PutWithLeaseAndMode stores a key-value pair with an attached lease and the
-// specified write durability under the namespace prefix.
+// specified write durability under the namespace prefix. The lease must be
+// this namespace's.
 func (s *namespacedMVCCService) PutWithLeaseAndMode(ctx context.Context, key string, value []byte, leaseID int64, mode writemode.Mode) (*service.KeyValue, error) {
+	if err := s.requireOwnedLease(ctx, leaseID); err != nil {
+		return nil, err
+	}
 	kvp, err := s.inner.PutWithLeaseAndMode(ctx, s.prefix+key, value, leaseID, mode)
 	if err != nil {
 		return nil, err

@@ -532,7 +532,8 @@ are not reconstructed here — their history is in the git log.
   IDs are global, and the lease view used to list, keep alive and revoke any
   tenant's lease by ID; ownership is now recorded at grant and a foreign ID is
   answered exactly as a missing one (not-found; `Revoke` is the idempotent
-  no-op success and revokes nothing). It refuses to start without
+  no-op success and revokes nothing; a write attaching it is refused and
+  writes nothing). It refuses to start without
   TLS and authentication (`etcd.AuthRequiredError`) or without a catalog and
   registry to confine it (`etcd.ScopeUnavailableError`). Known limit: a
   `Watch` or `LeaseKeepAlive` stream is authorized when it opens, so one
