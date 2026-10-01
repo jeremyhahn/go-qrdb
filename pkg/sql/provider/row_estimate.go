@@ -57,12 +57,19 @@ const (
 	rowEstimateIdle = 6 * rowEstimateTTL
 )
 
+// estimateStore names the (tenant, database) store a table's rows live in.
+// It is a struct rather than a joined string so no tenant or database name
+// can be read as part of the other.
+type estimateStore struct {
+	tenant, db string
+}
+
 // rowEstimateKey names one generation of one relational table in one
-// (tenant, database) store. The generation is part of the key because a
-// TRUNCATE moves the table to an empty keyspace: the new generation's
-// count starts from scratch rather than inheriting the old one's.
+// store. The generation is part of the key because a TRUNCATE moves the
+// table to an empty keyspace: the new generation's count starts from
+// scratch rather than inheriting the old one's.
 type rowEstimateKey struct {
-	scope      string // "<tenant>/<database>"
+	store      estimateStore
 	tableID    uint64
 	generation uint64
 }
@@ -87,8 +94,10 @@ type rowEstimates struct {
 	entries sync.Map // rowEstimateKey -> *rowEstimate
 	size    atomic.Int64
 
-	// refreshes counts the background recounts in flight; tests wait on it.
-	refreshes sync.WaitGroup
+	// background counts the recounts and evictions in flight; tests wait on
+	// it. evicting keeps one eviction running at a time.
+	background sync.WaitGroup
+	evicting   atomic.Bool
 }
 
 // newRowEstimates returns an empty estimate cache.
@@ -124,9 +133,9 @@ func (e *rowEstimates) estimate(ctx context.Context, key rowEstimateKey, count r
 // requesting statement's cancellation -- the statement does not wait for
 // it -- and bounded by rowEstimateRefreshTimeout instead.
 func (e *rowEstimates) refresh(ctx context.Context, est *rowEstimate, count rowCounter) {
-	e.refreshes.Add(1)
+	e.background.Add(1)
 	go func() {
-		defer e.refreshes.Done()
+		defer e.background.Done()
 		defer est.refreshing.Store(false)
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rowEstimateRefreshTimeout)
 		defer cancel()
@@ -151,8 +160,23 @@ func (e *rowEstimates) store(key rowEstimateKey, n uint64) {
 		return
 	}
 	if e.size.Add(1) > rowEstimateMaxEntries {
-		e.evict()
+		e.evictInBackground()
 	}
+}
+
+// evictInBackground starts an eviction unless one is already running. A
+// statement that grows the cache past its bound is not made to walk it:
+// the cache may sit a few entries over the bound until the eviction runs.
+func (e *rowEstimates) evictInBackground() {
+	if !e.evicting.CompareAndSwap(false, true) {
+		return
+	}
+	e.background.Add(1)
+	go func() {
+		defer e.background.Done()
+		defer e.evicting.Store(false)
+		e.evict()
+	}()
 }
 
 // forget drops key's estimate.
@@ -162,12 +186,12 @@ func (e *rowEstimates) forget(key rowEstimateKey) {
 	}
 }
 
-// forgetScope drops every estimate of the (tenant, database) store scope:
-// the database was dropped, and a database later created under the same
-// name starts its table IDs over.
-func (e *rowEstimates) forgetScope(scope string) {
+// forgetStore drops every estimate of the (tenant, database) store: the
+// database was dropped, and a database later created under the same name
+// starts its table IDs over.
+func (e *rowEstimates) forgetStore(store estimateStore) {
 	e.each(func(key rowEstimateKey, _ *rowEstimate) bool {
-		if key.scope == scope {
+		if key.store == store {
 			e.forget(key)
 		}
 		return true
@@ -214,10 +238,4 @@ func (e *rowEstimates) each(fn func(rowEstimateKey, *rowEstimate) bool) {
 		}
 		return fn(key, est)
 	})
-}
-
-// estimateScope returns the store scope a (tenant, database) pair's
-// estimates are kept under.
-func estimateScope(tenantID, database string) string {
-	return tenantID + "/" + database
 }

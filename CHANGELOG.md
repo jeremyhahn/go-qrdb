@@ -11,6 +11,12 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Changed
+
+- **The SQL point-latency benchmark target is `make bench-sqlpk`** (was
+  `make bench-sql-pk` in 0.27.0-alpha), matching its package,
+  `test/performance/sqlpk`.
+
 ### Removed
 
 - **BREAKING (Go API): `rowlock.NewOwner`.** An owner is made from the

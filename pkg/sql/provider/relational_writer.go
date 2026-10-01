@@ -668,8 +668,8 @@ func (t *RelationalTable) Truncate(ctx *sqle.Context) (int, error) {
 	old := t.gen().generation
 	t.setGeneration(newDef.Generation, newDef.GenerationReadAt)
 	t.autoInc.discard()
-	t.estimates.forget(rowEstimateKey{scope: t.estimateScope, tableID: t.def.TableID, generation: old})
-	t.estimates.store(rowEstimateKey{scope: t.estimateScope, tableID: t.def.TableID, generation: newDef.Generation}, 0)
+	t.estimates.forget(rowEstimateKey{store: t.estimateStore, tableID: t.def.TableID, generation: old})
+	t.estimates.store(rowEstimateKey{store: t.estimateStore, tableID: t.def.TableID, generation: newDef.Generation}, 0)
 
 	return 0, nil
 }

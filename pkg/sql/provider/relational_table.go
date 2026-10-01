@@ -68,13 +68,13 @@ type RelationalTable struct {
 	mvccSvc service.MVCCKVServicer // nil disables RowCount/DataLength
 
 	// estimates is the row-count estimate cache RowCount and DataLength
-	// answer from, and estimateScope the (tenant, database) store scope this
+	// answer from, and estimateStore the (tenant, database) store this
 	// table's estimates are kept under there. A table resolved through a
 	// Database shares its provider's cache (see withRowEstimates); one built
 	// without it gets a cache of its own, so a statement still counts it at
 	// most once.
 	estimates     *rowEstimates
-	estimateScope string
+	estimateStore estimateStore
 
 	// tableSvc is nil unless supplied via WithTableService. It is required
 	// for every DDL capability implemented in relational_table_ddl.go
@@ -211,12 +211,12 @@ func WithSequenceService(svc service.SequenceServicer) RelationalTableOption {
 }
 
 // withRowEstimates shares the provider's row-count estimate cache with the
-// table, keeping its estimates under scope -- "<tenant>/<database>", the
-// store the table's rows live in.
-func withRowEstimates(estimates *rowEstimates, scope string) RelationalTableOption {
+// table, keeping its estimates under store -- the (tenant, database) store
+// the table's rows live in.
+func withRowEstimates(estimates *rowEstimates, store estimateStore) RelationalTableOption {
 	return func(t *RelationalTable) {
 		t.estimates = estimates
-		t.estimateScope = scope
+		t.estimateStore = store
 	}
 }
 
@@ -502,7 +502,7 @@ func (t *RelationalTable) rowEstimate(ctx *sqle.Context) (uint64, error) {
 		return 0, &RelationalMVCCUnavailableError{Table: t.def.Name}
 	}
 	g := t.gen()
-	key := rowEstimateKey{scope: t.estimateScope, tableID: t.def.TableID, generation: g.generation}
+	key := rowEstimateKey{store: t.estimateStore, tableID: t.def.TableID, generation: g.generation}
 	return t.estimates.estimate(providerContext(ctx), key, func(rctx context.Context) (uint64, error) {
 		prefix := []byte(g.dataPrefix)
 		_, count, _, err := t.mvccSvc.RangeWithConsistency(rctx, prefix, prefixEnd(prefix), statsReadOptions, service.WithCountOnly())
@@ -630,13 +630,15 @@ func (t *RelationalTable) LookupPartitions(ctx *sqle.Context, lookup sqle.IndexL
 // already carries the classification a client acts on -- a go-mysql-server
 // error kind such as sql.ErrLockDeadlock (MySQL 1213, "retry"), or a MySQL
 // error with its own number (1205, 3572) -- is returned as it is: both are
-// recognised by type assertion on the outermost error, so wrapping one in
+// recognised by a type assertion on the OUTERMOST error, so wrapping one in
 // *IndexLookupError would turn a retryable serialization failure or a
-// lock-wait timeout into an unclassified failure. Anything else is wrapped.
+// lock-wait timeout into an unclassified failure. The test is on the
+// outermost error for the same reason: one already buried under an
+// unclassified wrapper reaches no client as classified, so wrapping it
+// hides nothing. Anything else is wrapped.
 func lookupFailure(index string, err error) error {
-	var kind *goerrors.Error
-	var wire *mysql.SQLError
-	if errors.As(err, &kind) || errors.As(err, &wire) {
+	switch err.(type) { //nolint:errorlint // the client tests the outermost error only; see above
+	case *goerrors.Error, *mysql.SQLError:
 		return err
 	}
 	return &IndexLookupError{IndexName: index, Err: err}

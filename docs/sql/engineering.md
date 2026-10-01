@@ -395,7 +395,8 @@ table's size: about 1.7 µs per row, 110 ms at 64,000 rows.
 | Freshness | served from the cache for `rowEstimateTTL` (10 s); the first request after that starts **one** background recount (detached from the statement, bounded by 30 s) and is served the previous value meanwhile. A failed recount keeps the previous value and is retried a TTL later |
 | `TRUNCATE` (through this provider) | the old generation's estimate is dropped and the new generation's is stored as 0 — no count needed |
 | `DROP TABLE` / `DROP DATABASE` (through this provider) | the table's, or the database's, estimates are dropped |
-| Bound | 4,096 entries; past it, entries unrequested for 60 s are evicted first. A `TRUNCATE` or `DROP` issued on another node leaves this node's old entry to that eviction |
+| Bound | 4,096 entries; past it, a background eviction — never the statement that grew the cache — drops entries unrequested for 60 s first. A `TRUNCATE` or `DROP` issued on another node leaves this node's old entry to that eviction |
+| Key | the store as a `{tenant, database}` pair, the table ID and the generation — never a joined string, so no name can be read as part of another |
 | `DataLength` | the same estimate times the encoded size of an all-zero-value row |
 
 **Why a cached estimate rather than a maintained counter.** A counter kept
@@ -453,9 +454,8 @@ resolved. So the provider memoizes, for the duration of one statement:
 | A failed resolution is never memoized | the next lookup reports its own outcome |
 | Nothing outlives the command | DDL committed by any session is seen by this session's next statement — the invalidation is the statement boundary, so there is no revision to compare and nothing to go stale |
 
-The tenant is still resolved once per servicer kind a statement uses — at most
-five reads per statement, where before it was five for every table
-resolution.
+The tenant is still resolved once per servicer kind per statement, where
+before it was resolved again for every servicer of every table resolution.
 
 ### Known limits
 

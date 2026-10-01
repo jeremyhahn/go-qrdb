@@ -26,7 +26,7 @@
 // regression guard for that property. Results are printed as a Markdown
 // table and written as JSON.
 //
-//	make bench-sql-pk
+//	make bench-sqlpk
 //	go run -tags benchmark ./test/performance/sqlpk -qrdbd bin/qrdbd -qrdb bin/qrdb
 package main
 

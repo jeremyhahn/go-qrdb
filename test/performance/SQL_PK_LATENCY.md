@@ -1,7 +1,7 @@
 # SQL primary-key point statements vs table size
 
 **Date**: 2026-10-01
-**Benchmark**: `test/performance/sqlpk` (`make bench-sql-pk`)
+**Benchmark**: `test/performance/sqlpk` (`make bench-sqlpk`)
 **Before**: v0.25.2-alpha. **After**: the planner row-count estimate, statement-scoped
 resolution and the per-connection row-lock lease (see `docs/sql/engineering.md`,
 "Planner statistics" and "Statement-scoped resolution", and
@@ -107,8 +107,8 @@ noise.
 ## Reproducing
 
 ```bash
-make bench-sql-pk
-make bench-sql-pk SQLPK_ARGS="-ops 500 -modes pessimistic"
+make bench-sqlpk
+make bench-sqlpk SQLPK_ARGS="-ops 500 -modes pessimistic"
 ```
 
 `-sizes`, `-modes`, `-ops`, `-label`, `-work` and `-out` are the benchmark's

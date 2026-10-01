@@ -693,8 +693,8 @@ SQLPK_TAGS := codec_json raft qrdb_sql qrdb_mysql qrdb_pgsql
 SQLPK_BIN  := $(CURDIR)/bin/sqlpk
 SQLPK_ARGS ?=
 
-.PHONY: bench-sql-pk
-bench-sql-pk:
+.PHONY: bench-sqlpk
+bench-sqlpk:
 	$(GOBUILD) -tags "$(SQLPK_TAGS)" -o $(SQLPK_BIN)/qrdbd ./cmd/qrdbd
 	$(GOBUILD) -tags "$(SQLPK_TAGS)" -o $(SQLPK_BIN)/qrdb ./cmd/qrdb
 	$(GO) run -tags benchmark ./test/performance/sqlpk -qrdbd $(SQLPK_BIN)/qrdbd -qrdb $(SQLPK_BIN)/qrdb $(SQLPK_ARGS)

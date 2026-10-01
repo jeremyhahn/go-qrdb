@@ -64,7 +64,7 @@ func constCounter(n uint64, calls *atomic.Int32) rowCounter {
 	}
 }
 
-var testEstimateKey = rowEstimateKey{scope: "acme/shop", tableID: 7, generation: 0}
+var testEstimateKey = rowEstimateKey{store: estimateStore{tenant: "acme", db: "shop"}, tableID: 7, generation: 0}
 
 func TestRowEstimates_FirstRequestCountsThenServesFromCache(t *testing.T) {
 	clock := newFakeClock()
@@ -79,7 +79,7 @@ func TestRowEstimates_FirstRequestCountsThenServesFromCache(t *testing.T) {
 	clock.Advance(rowEstimateTTL - time.Nanosecond)
 	_, err := e.estimate(context.Background(), testEstimateKey, constCounter(99, &calls))
 	require.NoError(t, err)
-	e.refreshes.Wait()
+	e.background.Wait()
 	assert.Equal(t, int32(1), calls.Load(), "within the TTL the table is never counted again")
 }
 
@@ -104,7 +104,7 @@ func TestRowEstimates_StaleEstimateIsServedWhileOneRecountRuns(t *testing.T) {
 		assert.Equal(t, uint64(3), n, "the statement is served the previous estimate, not made to wait")
 	}
 	close(release)
-	e.refreshes.Wait()
+	e.background.Wait()
 
 	assert.Equal(t, int32(1), recounts.Load(), "concurrent requests share one background recount")
 	n, err := e.estimate(context.Background(), testEstimateKey, slow)
@@ -128,7 +128,7 @@ func TestRowEstimates_RecountIsDetachedFromTheStatement(t *testing.T) {
 		return 2, nil
 	})
 	require.NoError(t, err)
-	e.refreshes.Wait()
+	e.background.Wait()
 	assert.NoError(t, recountErr, "a statement ending must not cancel the recount it started")
 }
 
@@ -162,11 +162,11 @@ func TestRowEstimates_FailedRecountKeepsEstimateAndBacksOff(t *testing.T) {
 	n, err := e.estimate(context.Background(), testEstimateKey, failing)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(6), n)
-	e.refreshes.Wait()
+	e.background.Wait()
 
 	n, err = e.estimate(context.Background(), testEstimateKey, failing)
 	require.NoError(t, err)
-	e.refreshes.Wait()
+	e.background.Wait()
 	assert.Equal(t, uint64(6), n, "a failed recount keeps serving the previous estimate")
 	assert.Equal(t, int32(1), failures.Load(), "a failed recount is not retried before another TTL")
 }
@@ -185,11 +185,11 @@ func TestRowEstimates_GenerationsAreIndependent(t *testing.T) {
 	assert.Equal(t, int32(2), calls.Load())
 }
 
-func TestRowEstimates_ForgetAndForgetScope(t *testing.T) {
+func TestRowEstimates_ForgetAndForgetStore(t *testing.T) {
 	e := newTestEstimates(newFakeClock())
-	other := rowEstimateKey{scope: "acme/billing", tableID: 7}
+	other := rowEstimateKey{store: estimateStore{tenant: "acme", db: "billing"}, tableID: 7}
 	e.store(testEstimateKey, 1)
-	e.store(rowEstimateKey{scope: testEstimateKey.scope, tableID: 8}, 2)
+	e.store(rowEstimateKey{store: testEstimateKey.store, tableID: 8}, 2)
 	e.store(other, 3)
 	require.Equal(t, int64(3), e.size.Load())
 
@@ -197,7 +197,7 @@ func TestRowEstimates_ForgetAndForgetScope(t *testing.T) {
 	e.forget(testEstimateKey) // idempotent
 	assert.Equal(t, int64(2), e.size.Load())
 
-	e.forgetScope("acme/shop")
+	e.forgetStore(estimateStore{tenant: "acme", db: "shop"})
 	assert.Equal(t, int64(1), e.size.Load())
 	_, ok := e.entries.Load(other)
 	assert.True(t, ok, "another database's estimates survive")
@@ -217,22 +217,41 @@ func TestRowEstimates_BoundEvictsIdleEntriesFirst(t *testing.T) {
 	clock := newFakeClock()
 	e := newTestEstimates(clock)
 	for i := range rowEstimateMaxEntries {
-		e.store(rowEstimateKey{scope: "idle", tableID: uint64(i)}, 1)
+		e.store(rowEstimateKey{store: estimateStore{tenant: "idle"}, tableID: uint64(i)}, 1)
 	}
 	clock.Advance(rowEstimateIdle + time.Second)
-	hot := rowEstimateKey{scope: "hot", tableID: 1}
+	hot := rowEstimateKey{store: estimateStore{tenant: "hot"}, tableID: 1}
 	e.store(hot, 5)
+	e.background.Wait()
 
 	assert.LessOrEqual(t, e.size.Load(), int64(rowEstimateMaxEntries))
 	_, ok := e.entries.Load(hot)
 	assert.True(t, ok, "the entry just stored is not the one evicted")
 }
 
+func TestRowEstimates_EvictionRunsOffTheCallersPath(t *testing.T) {
+	e := newTestEstimates(newFakeClock())
+	for i := range rowEstimateMaxEntries {
+		e.store(rowEstimateKey{store: estimateStore{tenant: "busy"}, tableID: uint64(i)}, 1)
+	}
+	// An eviction already in flight: the next store past the bound must not
+	// walk the cache itself, nor start a second walk.
+	e.evicting.Store(true)
+	e.store(rowEstimateKey{store: estimateStore{tenant: "busy"}, tableID: 1 << 40}, 1)
+	assert.Equal(t, int64(rowEstimateMaxEntries+1), e.size.Load(), "the statement that grew the cache did not evict on its own path")
+
+	e.evicting.Store(false)
+	e.store(rowEstimateKey{store: estimateStore{tenant: "busy"}, tableID: 1 << 41}, 1)
+	e.background.Wait()
+	assert.LessOrEqual(t, e.size.Load(), int64(rowEstimateMaxEntries))
+}
+
 func TestRowEstimates_BoundHoldsWhenNothingIsIdle(t *testing.T) {
 	e := newTestEstimates(newFakeClock())
 	for i := range rowEstimateMaxEntries + 10 {
-		e.store(rowEstimateKey{scope: "busy", tableID: uint64(i)}, 1)
+		e.store(rowEstimateKey{store: estimateStore{tenant: "busy"}, tableID: uint64(i)}, 1)
 	}
+	e.background.Wait()
 	assert.LessOrEqual(t, e.size.Load(), int64(rowEstimateMaxEntries))
 }
 
@@ -297,14 +316,14 @@ func TestRowEstimate_FollowsInsertsAndDeletesAtTheTTL(t *testing.T) {
 
 	clock.Advance(rowEstimateTTL)
 	tableRows(t, c, "t") // starts the recount
-	prov.estimates.refreshes.Wait()
+	prov.estimates.background.Wait()
 	rows, _ = tableRows(t, c, "t")
 	assert.Equal(t, uint64(5), rows)
 
 	c.mustExec(t, "DELETE FROM t WHERE id < 5")
 	clock.Advance(rowEstimateTTL)
 	tableRows(t, c, "t")
-	prov.estimates.refreshes.Wait()
+	prov.estimates.background.Wait()
 	rows, _ = tableRows(t, c, "t")
 	assert.Equal(t, uint64(1), rows)
 }
@@ -401,10 +420,25 @@ func TestLookupFailure_KeepsTheClientClassification(t *testing.T) {
 	wire := mysql.NewSQLError(1205, "HY000", "%s", "Lock wait timeout exceeded")
 	assert.Same(t, wire, lookupFailure("e", wire), "a lock-wait timeout keeps its MySQL number")
 
+	nowait := mysql.NewSQLError(3572, "HY000", "%s", "NOWAIT is set")
+	assert.Same(t, nowait, lookupFailure("e", nowait), "a NOWAIT refusal keeps its MySQL number")
+
 	plain := errors.New("disk")
 	got := lookupFailure("e", plain)
 	var lookupErr *IndexLookupError
 	require.ErrorAs(t, got, &lookupErr)
 	assert.Equal(t, "e", lookupErr.IndexName)
 	assert.ErrorIs(t, got, plain)
+
+	// A classified error buried under an unclassified one is classified by
+	// nobody: the client tests the outermost error only, so it is wrapped
+	// like any other.
+	buried := &wrappedError{err: sqle.ErrLockDeadlock.New("t")}
+	require.ErrorAs(t, lookupFailure("e", buried), &lookupErr)
 }
+
+// wrappedError is an unclassified error wrapping another.
+type wrappedError struct{ err error }
+
+func (e *wrappedError) Error() string { return "wrapped: " + e.err.Error() }
+func (e *wrappedError) Unwrap() error { return e.err }

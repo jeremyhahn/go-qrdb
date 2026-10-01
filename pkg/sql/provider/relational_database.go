@@ -109,7 +109,7 @@ func (d *Database) relationalTable(ctx *sqle.Context, name string) (sqle.Table, 
 		opts = append(opts, WithPostgreSQLDialect())
 	}
 	if d.estimates != nil {
-		opts = append(opts, withRowEstimates(d.estimates, estimateScope(tenantID, d.name)))
+		opts = append(opts, withRowEstimates(d.estimates, estimateStore{tenant: tenantID, db: d.name}))
 	}
 
 	tbl, err := NewRelationalTable(def, kvSvc, mvccSvc, opts...)
