@@ -11,6 +11,10 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.24.0-alpha] - 2026-10-01
+
+Adds SQL row locking, per-database SQL settings and the per-tenant DEK keyring on every transport. BREAKING: Go, gRPC and SDK API changes (see Changed — BREAKING); the unused cluster-DEK and tenant-DEK-manager APIs are removed, and `qrdbd`'s `<data-dir>/dek` directory is no longer read and may be deleted.
+
 ### Changed — BREAKING
 
 - **New interface methods.** `service.DatabaseServicer` gains `UpdateSQL` and
@@ -177,6 +181,34 @@ are not reconstructed here — their history is in the git log.
   `full_cert_fingerprint`, `piv_attested`) instead of the numeric ordinal, matching REST, gRPC
   and QUIC, and omit `certBindings[].notAfter` when the binding has no expiry instead of
   sending the zero time.
+
+- **`transport.DEKClient` is the tenant keyring and nothing else.** The
+  cluster-DEK verbs (`DEKInitialize`, `DEKGetStatus`, `DEKRotate`,
+  `DEKGetCurrent`, `DEKSyncToNode`) and `TenantDEKGetOrCreate`,
+  `TenantDEKDelete`, `TenantDEKList` and `TenantDEKGetStatus` are removed with
+  their request/response types; `TenantDEKRotate` now returns the keyring
+  status. None of them worked against a server: no transport served them, the
+  gRPC, QUIC and Unix clients were stubs, and the REST and MCP clients called
+  routes and tools that did not exist. `service.DEKServicer` is rewritten to
+  match.
+
+- **The old tenant-DEK hierarchy is deleted.** `dek.ClusterDEKManager` held its
+  key in process memory only, was never initialised by the daemon, was never
+  persisted and discarded the old key on rotation; `dek.TenantDEKManager`
+  stored keys wrapped by it in a node-local Pebble directory, so a restart or a
+  second node could read none of them. Removed with them:
+  `seal.TenantKeyManager` (no production caller) and `sdk.TenantKeyManager`,
+  the `sdk/go/dek` package, `server.WithTenantDEKManager`,
+  `lifecycle.Infra.TenantDEKManager`, and `qrdbd`'s `<data-dir>/dek` store,
+  which is no longer opened and may be deleted.
+
+- **Tenant teardown has no DEK-shred step.** `tenant.DEKShredder`,
+  `TeardownWiring.SetDEKShredder`, `tenant.WithDEKShredder`,
+  `tenant.DEKShredError` and their `sdk` re-exports are removed. The keyring is
+  a record in the tenant's own store, so it is unusable from the fence on and
+  is removed by the barrier destroy and the keyspace reclaim. The order is now
+  fence, destroy barrier, reclaim keyspace; persisting the retirement before
+  anything irreversible (#483) is unchanged.
 
 ### Added
 
@@ -375,6 +407,36 @@ are not reconstructed here — their history is in the git log.
   file. The in-process driver takes a `concurrency=` DSN parameter.
 - `sealedwindow.Admission`, `Names.Transition` and the per-transport
   `*Transition` derivations; `ListenerProbe.Admit`.
+
+- **Per-tenant data encryption keyring, served on every transport.** A tenant
+  can now encrypt and decrypt its own data under a versioned AES-256-GCM key
+  that never leaves the server — `TenantDEKEncrypt`, `TenantDEKDecrypt`,
+  `TenantDEKRewrap`, `TenantDEKRotate`, `TenantDEKRetire` and
+  `TenantDEKStatus` on REST (`/v1/dek/*`), gRPC and Unix, QUIC (`dek.*`), MCP
+  (`qrdb_dek_*`), the embedded transport and `Client.DEK()`, plus a
+  `qrdb dek` command group. See `docs/tenant-dek/`.
+
+  The keyring is one record in the tenant's own resolved store, so it is
+  wrapped by the tenant's barrier (a dedicated-isolation tenant) or the system
+  barrier (a prefix tenant), replicated through the system shard, durable
+  across restarts, unreachable while the tenant is sealed and gone with the
+  tenant. Rotation keeps old versions decrypting; rewrap moves a ciphertext to
+  the current version without returning its plaintext; retire destroys an old
+  version and refuses the current one. Ciphertext carries its key version in
+  an internal header and binds the header, the tenant and caller-supplied
+  associated data into the AEAD.
+
+  Every call acts on the caller's own tenant. A request naming another tenant
+  is refused with PermissionDenied / 403, from the system tenant too.
+
+  Six new `ScopeSelf` permissions: `dek:encrypt`, `dek:decrypt`, `dek:rewrap`
+  (crypto-use, denied to the Security Officer), `dek:rotate`, `dek:retire`,
+  `dek:status`. Built-in grants: User — encrypt, decrypt; Operator — encrypt,
+  decrypt, rewrap, status; Admin — rotate, rewrap, retire, status.
+
+  A tenant on barrier protection `none` keeps its keyring record without
+  at-rest encryption, exactly as it keeps the rest of its data; encrypt and
+  decrypt still work.
 
 ### Changed
 
@@ -608,6 +670,33 @@ are not reconstructed here — their history is in the git log.
   no change. Every reserved port is also verified free on both TCP and UDP,
   so a REST admin port -- whose HTTP/3 sibling binds the same number on UDP
   -- can be taken from either function.
+
+- **Every transport refuses a standalone node's raft-only families with one
+  typed error.** MVCC, watch, lease and lock now answer
+  `*transport.CapabilityUnsupportedError` naming `requires mode: raft` on
+  REST, gRPC, Unix, QUIC, MCP and the embedded transport alike. Before this:
+  the embedded transport answered `*embedded.NilServiceError` (the error
+  reserved for a wiring defect; it still is, via the new
+  `embedded.WithStandaloneMode` set by `node.NewStandaloneNode`); REST
+  registered the lease and lock routes only when a service was wired and
+  answered a router 404, now it attaches them and answers 501; MCP did not
+  register the MVCC, watch, lease and lock tools and answered "tool not
+  found", now it registers them and answers `UNIMPLEMENTED`. Watch refusals
+  on gRPC, Unix, QUIC and MCP arrive as the stream's terminal response, whose
+  `Err()` is the same typed error; MCP's watch poll no longer re-polls the
+  refusal forever. `sdk/go/conformance/standalone_refusal_test.go` pins every
+  transport.
+
+- **`node.Client().Lock()` works on a raft node.** The lock service was never
+  passed to the in-process transport, so the lock family answered a
+  wiring-defect error in the one mode that serves it.
+
+- **Deleting a dedicated-isolation tenant now reclaims its records in the
+  shared store.** Its identity records live under
+  `seal.TenantSharedNamespace(tenant)` (`__tiam:<tenant>/`), which
+  `service.TenantKeyPrefixes` did not cover, so they survived the delete —
+  as ciphertext under a destroyed barrier, or as plaintext under barrier
+  protection `none`. The reclaim now covers the range.
 
 ### Security
 
