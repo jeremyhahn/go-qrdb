@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/logdb/waldb"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/util/fsync"
 )
 
 // WALFormat names how a host's Raft WAL records reach disk. The two formats
@@ -195,7 +196,7 @@ func NewRaftWAL(cfg RaftWALConfig) (*RaftWAL, error) {
 // caller wrote before the marker existed.
 func claimWALFormat(dir string, want, unmarked WALFormat) error {
 	marker := filepath.Join(dir, walFormatMarker)
-	data, err := os.ReadFile(marker)
+	data, err := os.ReadFile(marker) // #nosec G304 -- marker is the host's own WAL directory joined with a constant name
 	switch {
 	case err == nil:
 		if found := WALFormat(strings.TrimSpace(string(data))); found != want {
@@ -228,13 +229,13 @@ func walHasContent(entries []os.DirEntry) bool {
 }
 
 // writeWALFormat records format durably: written to a temporary file, synced,
-// renamed over the marker, and the directory synced.
+// and renamed over the marker by fsync.Rename, which syncs the directory.
 func writeWALFormat(dir, marker string, format WALFormat) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return &RaftWALMarkerError{Path: dir, Err: err}
 	}
 	tmp := marker + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600) // #nosec G304 -- tmp is the host's own WAL directory joined with a constant name
 	if err != nil {
 		return &RaftWALMarkerError{Path: tmp, Err: err}
 	}
@@ -249,16 +250,8 @@ func writeWALFormat(dir, marker string, format WALFormat) error {
 	if err := f.Close(); err != nil {
 		return &RaftWALMarkerError{Path: tmp, Err: err}
 	}
-	if err := os.Rename(tmp, marker); err != nil {
+	if err := fsync.Rename(tmp, marker); err != nil {
 		return &RaftWALMarkerError{Path: marker, Err: err}
-	}
-	d, err := os.Open(dir)
-	if err != nil {
-		return &RaftWALMarkerError{Path: dir, Err: err}
-	}
-	defer func() { _ = d.Close() }()
-	if err := d.Sync(); err != nil {
-		return &RaftWALMarkerError{Path: dir, Err: err}
 	}
 	return nil
 }
