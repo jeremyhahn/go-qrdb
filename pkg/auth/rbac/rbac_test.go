@@ -1053,17 +1053,20 @@ func TestAuthorize_SO_MaliciousGrant_StillDenied(t *testing.T) {
 }
 
 func TestAuthorize_SO_GovernanceActionsAllowed(t *testing.T) {
-	// SO must be able to perform governance operations (barrier:initialize, etc.)
+	// SO must be able to perform governance operations (barrier:initialize,
+	// etc.). The node-barrier ones are platform scope (ScopeCross), so their
+	// officer is the system tenant's; the rest are the SO's own tenant's.
 	allowedActions := []struct {
 		resource string
 		action   string
 		perm     permission.Permission
+		tenantID string
 	}{
-		{"seal", "bootstrap", permission.SealBootstrap},
-		{"ceremony", "initialize", permission.CeremonyInitialize},
-		{"roles", "create", permission.RolesCreate},
-		{"users", "create", permission.UsersCreate},
-		{"audit", "read", permission.AuditRead},
+		{"seal", "bootstrap", permission.SealBootstrap, tenant.SystemTenantID},
+		{"ceremony", "initialize", permission.CeremonyInitialize, tenant.SystemTenantID},
+		{"roles", "create", permission.RolesCreate, "tenant-1"},
+		{"users", "create", permission.UsersCreate, "tenant-1"},
+		{"audit", "read", permission.AuditRead, "tenant-1"},
 	}
 
 	for _, tc := range allowedActions {
@@ -1075,11 +1078,11 @@ func TestAuthorize_SO_GovernanceActionsAllowed(t *testing.T) {
 
 			identity := &auth.Identity{
 				Subject:  "so-user",
-				TenantID: "tenant-1",
+				TenantID: tc.tenantID,
 				Roles:    []string{"so-role", "so"},
 			}
 
-			err := authz.Authorize(ctxFor("tenant-1"), identity, tc.resource, tc.action)
+			err := authz.Authorize(ctxFor(tc.tenantID), identity, tc.resource, tc.action)
 			if err != nil {
 				t.Fatalf("SO should be allowed %s:%s, got error: %v", tc.resource, tc.action, err)
 			}

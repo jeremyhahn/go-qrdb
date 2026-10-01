@@ -123,13 +123,14 @@ func selfScopedPermissions() []Permission {
 		CAUpdate,
 
 		// ceremony
+		//
+		// CeremonyEnrollCustodian, CeremonyInitialize,
+		// CeremonyRevokeCustodian and CeremonySignCSR are ScopeCross
+		// (node_barrier_scope.go): they decide who holds a share of the node
+		// barrier's key, and sign with the cluster CA.
 		CeremonyClaimCert,
 		CeremonyClaimShareBegin,
 		CeremonyClaimShareComplete,
-		CeremonyEnrollCustodian,
-		CeremonyInitialize,
-		CeremonyRevokeCustodian,
-		CeremonySignCSR,
 		CeremonyStatus,
 
 		// certs
@@ -270,18 +271,12 @@ func selfScopedPermissions() []Permission {
 
 		// seal
 		//
-		// SealGenerateRecovery, SealInitializeShamir, SealRekey,
-		// SealRotateRootKey and SealSeal are ScopeCross
-		// (node_barrier_scope.go): they act on the node barrier, a platform
-		// singleton no tenant owns.
-		SealBootstrap,
-		SealEnableEncryption,
-		SealOfficerList,
-		SealOfficerRegister,
-		SealRecoverWithKeys,
+		// Every other seal:* permission is ScopeCross
+		// (node_barrier_scope.go): it changes the node barrier, a platform
+		// singleton no tenant owns, or decides who holds a share of its key.
+		// SealStatus stays here: it reads the node's sealed state, strategy
+		// and Shamir threshold, and names no share holder.
 		SealStatus,
-		SealSubmitSealVote,
-		SealUnseal,
 
 		// ssh
 		SSHDelete,

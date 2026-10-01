@@ -46,6 +46,14 @@ presenting that tenant's own valid PIN -- is refused with `403` /
 node barrier. A tenant's own barrier is governed by the `tenant_barrier:*`
 permissions.
 
+The rest of the node barrier's permissions are `ScopeCross` for the same
+reason, whether or not the gate covers them: `seal:bootstrap`, `seal:unseal`,
+`seal:recover_with_keys`, `seal:enable_encryption`, `seal:submit_seal_vote`,
+the officer registry (`seal:officer_register`, `seal:officer_list`) and the
+node key ceremony (`ceremony:initialize`, `ceremony:enroll_custodian`,
+`ceremony:revoke_custodian`, `ceremony:sign_csr`). See
+[../auth/roles.md](../auth/roles.md#node-barrier-permissions-are-platform-operator-only).
+
 Sealing is not an SO-gated operation: Admin and Operator hold `seal:seal` by
 design, and the dual-factor gate does not cover it. When a barrier SO PIN is
 configured (the `pin.PINBackend`), a seal must present it in the request's

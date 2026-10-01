@@ -78,18 +78,77 @@ func SOVerifier(t testing.TB, pin string, tenantIDs ...string) *auth.SOAuthentic
 }
 
 // Barrier is a service.BarrierServicer that implements BarrierSeal,
-// BarrierRekey, BarrierDeleteRecoveryKeys, BarrierGenerateRecoveryKeys and
-// BarrierInitializeShamir and counts the calls that reached it, so a test can
-// tell a refused request from one the service performed. Every other method
-// is the nil embedded interface: a test that reaches one has left the path it
-// meant to drive.
+// BarrierRekey, BarrierDeleteRecoveryKeys, BarrierGenerateRecoveryKeys,
+// BarrierInitializeShamir and the four node Security Officer registry methods
+// (BarrierOfficerRegister, BarrierRecoveryOfficerRegister, BarrierOfficerList,
+// BarrierOfficerClaimStatus), and counts the calls that reached it, so a test
+// can tell a refused request from one the service performed. Every other
+// method is the nil embedded interface: a test that reaches one has left the
+// path it meant to drive.
 type Barrier struct {
 	service.BarrierServicer
-	rekeys      atomic.Int64
-	deletes     atomic.Int64
-	seals       atomic.Int64
-	generations atomic.Int64
-	shamirInits atomic.Int64
+	rekeys           atomic.Int64
+	deletes          atomic.Int64
+	seals            atomic.Int64
+	generations      atomic.Int64
+	shamirInits      atomic.Int64
+	officerRegs      atomic.Int64
+	recoveryRegs     atomic.Int64
+	officerReads     atomic.Int64
+	officerUsernames sync.Map
+}
+
+var _ service.BarrierServicer = (*Barrier)(nil)
+
+// BarrierOfficerRegister records the registration and answers the way the
+// real service does: a certificate and the next share index.
+func (b *Barrier) BarrierOfficerRegister(_ context.Context, req *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+	n := b.officerRegs.Add(1)
+	b.officerUsernames.Store(req.Username, int(n))
+	return &service.BarrierOfficerRegisterResult{CertPEM: []byte("certificate"), ShareIndex: int(n)}, nil
+}
+
+// OfficerRegistrations reports how many unseal-officer registrations reached
+// the service.
+func (b *Barrier) OfficerRegistrations() int64 { return b.officerRegs.Load() }
+
+// BarrierRecoveryOfficerRegister records the recovery-officer registration.
+func (b *Barrier) BarrierRecoveryOfficerRegister(_ context.Context, _ *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
+	n := b.recoveryRegs.Add(1)
+	return &service.BarrierOfficerRegisterResult{CertPEM: []byte("certificate"), ShareIndex: int(n)}, nil
+}
+
+// RecoveryOfficerRegistrations reports how many recovery-officer
+// registrations reached the service.
+func (b *Barrier) RecoveryOfficerRegistrations() int64 { return b.recoveryRegs.Load() }
+
+// BarrierOfficerList records the read and returns every officer registered
+// through this double.
+func (b *Barrier) BarrierOfficerList(context.Context) ([]*service.BarrierOfficerStatus, error) {
+	b.officerReads.Add(1)
+	return b.officers(), nil
+}
+
+// BarrierOfficerClaimStatus records the read and returns every officer
+// registered through this double.
+func (b *Barrier) BarrierOfficerClaimStatus(context.Context) ([]*service.BarrierOfficerStatus, error) {
+	b.officerReads.Add(1)
+	return b.officers(), nil
+}
+
+// OfficerReads reports how many officer list and claim-status reads reached
+// the service.
+func (b *Barrier) OfficerReads() int64 { return b.officerReads.Load() }
+
+func (b *Barrier) officers() []*service.BarrierOfficerStatus {
+	var out []*service.BarrierOfficerStatus
+	b.officerUsernames.Range(func(k, v any) bool {
+		username, _ := k.(string)
+		index, _ := v.(int)
+		out = append(out, &service.BarrierOfficerStatus{Username: username, ShareIndex: index})
+		return true
+	})
+	return out
 }
 
 // BarrierGenerateRecoveryKeys records the generation.

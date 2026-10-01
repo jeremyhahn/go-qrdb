@@ -301,19 +301,34 @@ migration is a different error, `MigrationReopenError`, and is not reported as
 
 ## Permission model
 
-| Permission | Gates |
-|---|---|
-| `seal:bootstrap` | initialize, and root-token generation |
-| `seal:unseal` / `seal:seal` | unseal / seal |
-| `seal:status` | status, including recovery status |
-| `seal:rekey` | rotating the unseal key and share set |
-| `seal:rotate_root_key` | root key rotation |
-| `seal:enable_encryption` | migrating off `none` |
-| `seal:initialize_shamir` | Shamir M-of-N initialization |
-| `seal:generate_recovery` / `seal:recover_with_keys` | recovery key lifecycle |
-| `seal:officer_register` / `seal:officer_list` | Security Officer enrolment and listing |
-| `seal:submit_seal_vote` | Shamir seal voting |
-| `barrier:unseal-share` | submitting an unseal share |
+| Permission | Gates | Scope |
+|---|---|---|
+| `seal:bootstrap` | initialize, and root-token generation | cross |
+| `seal:unseal` / `seal:seal` | unseal / seal | cross |
+| `seal:status` | status, including recovery status | self |
+| `seal:rekey` | rotating the unseal key and share set | cross |
+| `seal:rotate_root_key` | root key rotation | cross |
+| `seal:enable_encryption` | migrating off `none` (node or a named tenant) | cross |
+| `seal:initialize_shamir` | Shamir M-of-N initialization | cross |
+| `seal:generate_recovery` / `seal:recover_with_keys` | recovery key lifecycle | cross |
+| `seal:officer_register` / `seal:officer_list` | Security Officer enrolment (unseal and recovery domains) and listing | cross |
+| `seal:submit_seal_vote` | Shamir seal voting | cross |
+| `barrier:unseal-share` | submitting an unseal share | self |
+
+**Cross** is `ScopeCross` (`pkg/permission/node_barrier_scope.go`): only a
+`system`-tenant identity may exercise it. These routes name no tenant, and
+`ScopeSelf` compares the caller's tenant with the request's -- for a request
+naming none, with itself -- so as `ScopeSelf` they admitted any tenant's holder.
+That let a tenant's SO register officers into the node barrier's unseal and
+recovery domains; since every rekey, revocation and recovery-key generation
+sends a share to every registered officer, M planted officers could
+reconstruct the node unseal key. The six-transport proof is
+`TestNodeOfficerScope` (REST, gRPC, Unix, QUIC, MCP, and the embedded
+`RBACClient`); the per-permission proof over the real built-in roles is
+`TestNodeBarrier_TenantRoleHoldersAreDenied` in `pkg/auth/rbac`. The boot-time
+sealed-window listener runs no RBAC, so anonymous pre-operational officer
+registration is unaffected
+(`TestSealedWindow_OfficerEnrollmentOpenBeforeInitialization`).
 
 Officer claim endpoints are **identity-gated** rather than permission-gated: the
 claimant proves possession of the registered key by signing a nonce over mTLS.

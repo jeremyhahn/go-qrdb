@@ -153,8 +153,16 @@ func (f *enrollmentFixture) do(ctx context.Context, method, path string, body []
 	return resp.StatusCode, string(out), nil
 }
 
-// registerAnonymously submits an officer registration with no credentials.
+// registerAnonymously submits an unseal-officer registration with no
+// credentials.
 func (f *enrollmentFixture) registerAnonymously(t *testing.T, username string) (int, string) {
+	t.Helper()
+	return f.registerAnonymouslyAt(t, "/v1/barrier/officers", username)
+}
+
+// registerAnonymouslyAt submits an officer registration to path with no
+// credentials.
+func (f *enrollmentFixture) registerAnonymouslyAt(t *testing.T, path, username string) (int, string) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), crand.Reader)
 	if err != nil {
@@ -173,9 +181,9 @@ func (f *enrollmentFixture) registerAnonymously(t *testing.T, username string) (
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	code, out, err := f.do(ctx, http.MethodPost, "/v1/barrier/officers", body)
+	code, out, err := f.do(ctx, http.MethodPost, path, body)
 	if err != nil {
-		t.Fatalf("POST /v1/barrier/officers: %v", err)
+		t.Fatalf("POST %s: %v", path, err)
 	}
 	return code, out
 }
@@ -225,13 +233,22 @@ func TestSealedWindow_OfficerEnrollmentClosedByOperationalMarker(t *testing.T) {
 
 // TestSealedWindow_OfficerEnrollmentOpenBeforeInitialization: first boot
 // still works -- officers register anonymously on the sealed-window listener
-// before the barrier is initialized.
+// before the barrier is initialized, into the unseal domain and the recovery
+// domain alike. seal:officer_register is ScopeCross, so on an authenticated
+// listener only a system-tenant identity may register; this listener has no
+// authentication middleware and runs no scope rule, so the pre-operational
+// exemption (sealedwindow.PreOperationalOnly) is what admits the anonymous
+// first-boot officer, and the scope change must not reach it.
 func TestSealedWindow_OfficerEnrollmentOpenBeforeInitialization(t *testing.T) {
-	f := startEnrollmentListener(t, func(context.Context, *seal.StorageBarrier) {})
+	for _, path := range []string{"/v1/barrier/officers", "/v1/barrier/recovery/officers"} {
+		t.Run(path, func(t *testing.T) {
+			f := startEnrollmentListener(t, func(context.Context, *seal.StorageBarrier) {})
 
-	code, out := f.registerAnonymously(t, "alice")
-	if code != http.StatusOK || !strings.Contains(out, "BEGIN CERTIFICATE") {
-		t.Fatalf("first-boot officer registration: status %d, body %s; want 200 with a certificate", code, out)
+			code, out := f.registerAnonymouslyAt(t, path, "alice")
+			if code != http.StatusOK || !strings.Contains(out, "BEGIN CERTIFICATE") {
+				t.Fatalf("first-boot officer registration: status %d, body %s; want 200 with a certificate", code, out)
+			}
+		})
 	}
 }
 

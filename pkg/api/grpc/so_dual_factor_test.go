@@ -31,20 +31,29 @@ import (
 )
 
 func TestSODualFactor(t *testing.T) {
-	grpctest.SODualFactor(t, func(t *testing.T, mw *authmw.AuthMiddleware, gate *authmw.SOGate, barrier service.BarrierServicer) *grpc.ClientConn {
-		t.Helper()
-		tlsCfg := testServerTLSConfig(t)
-		srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0",
-			WithTLS(tlsCfg), WithAuthMiddleware(mw), WithBarrierService(barrier), WithSOGate(gate))
-		if err := srv.Start(); err != nil {
-			t.Fatalf("Start: %v", err)
-		}
-		t.Cleanup(srv.Stop)
-		conn, err := grpc.NewClient(srv.Addr(), grpc.WithTransportCredentials(testClientCreds(t, tlsCfg)))
-		if err != nil {
-			t.Fatalf("dial: %v", err)
-		}
-		t.Cleanup(func() { _ = conn.Close() })
-		return conn
-	})
+	grpctest.SODualFactor(t, startSOServer)
+}
+
+// TestNodeOfficerScope: a tenant's identity may not register or list the
+// node barrier's Security Officers over gRPC.
+func TestNodeOfficerScope(t *testing.T) {
+	grpctest.NodeOfficerScope(t, startSOServer)
+}
+
+// startSOServer is the grpctest.SOStartFunc for gRPC/TCP.
+func startSOServer(t *testing.T, mw *authmw.AuthMiddleware, gate *authmw.SOGate, barrier service.BarrierServicer) *grpc.ClientConn {
+	t.Helper()
+	tlsCfg := testServerTLSConfig(t)
+	srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0",
+		WithTLS(tlsCfg), WithAuthMiddleware(mw), WithBarrierService(barrier), WithSOGate(gate))
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(srv.Stop)
+	conn, err := grpc.NewClient(srv.Addr(), grpc.WithTransportCredentials(testClientCreds(t, tlsCfg)))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn
 }

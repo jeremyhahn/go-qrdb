@@ -1,0 +1,71 @@
+// Copyright (c) 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package permission
+
+import "testing"
+
+// TestNodeBarrierPermissions_AreCrossScope pins, by name, every permission
+// that changes the node barrier or decides who holds a share of its key. Each
+// was ScopeSelf, which for a route naming no tenant compares the caller's
+// tenant with itself; a tenant's SO could therefore plant officers in the node
+// barrier's unseal and recovery domains.
+func TestNodeBarrierPermissions_AreCrossScope(t *testing.T) {
+	for _, p := range []Permission{
+		SealBootstrap, SealEnableEncryption, SealGenerateRecovery,
+		SealInitializeShamir, SealRecoverWithKeys, SealRekey,
+		SealRotateRootKey, SealSeal, SealSubmitSealVote, SealUnseal,
+		SealOfficerRegister, SealOfficerList,
+		CeremonyInitialize, CeremonyEnrollCustodian,
+		CeremonyRevokeCustodian, CeremonySignCSR,
+	} {
+		if got, err := LookupScope(p); err != nil || got != ScopeCross {
+			t.Errorf("%s: scope = %v (err %v), want ScopeCross", p, got, err)
+		}
+	}
+}
+
+// TestNodeBarrierPermissions_ReadAndPossessionVerbsStaySelf pins the node
+// verbs deliberately left ScopeSelf: seal:status names no share holder, an
+// unseal share is admitted only from a caller already holding a valid share,
+// and the claim verbs are bound to an enrollment the caller must possess.
+func TestNodeBarrierPermissions_ReadAndPossessionVerbsStaySelf(t *testing.T) {
+	for _, p := range []Permission{
+		SealStatus, BarrierUnsealShare, CeremonyStatus,
+		CeremonyClaimCert, CeremonyClaimShareBegin, CeremonyClaimShareComplete,
+	} {
+		if got, err := LookupScope(p); err != nil || got != ScopeSelf {
+			t.Errorf("%s: scope = %v (err %v), want ScopeSelf", p, got, err)
+		}
+	}
+}
+
+// TestNodeBarrierPermissions_DeclaredOnce: a permission in either node-barrier
+// list must not also be declared by the self-scope list, or its scope would be
+// whichever init ran last.
+func TestNodeBarrierPermissions_DeclaredOnce(t *testing.T) {
+	self := make(map[Permission]struct{})
+	for _, p := range selfScopedPermissions() {
+		self[p] = struct{}{}
+	}
+	node := append(nodeBarrierSOPermissions(), nodeBarrierShareHolderPermissions()...)
+	if len(node) < 16 {
+		t.Fatalf("node-barrier lists hold %d permissions, want at least 16", len(node))
+	}
+	for _, p := range node {
+		if _, dup := self[p]; dup {
+			t.Errorf("%s is declared both ScopeSelf and ScopeCross", p)
+		}
+	}
+}

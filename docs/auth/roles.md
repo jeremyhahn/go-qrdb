@@ -342,6 +342,41 @@ self-scoped: a tenant's Admin may delete its own tenant (owner ruling
 2026-09-29). See
 [../multi-tenancy/api.md](../multi-tenancy/api.md#who-may-call-what).
 
+### Node-barrier permissions are platform-operator only
+
+The node barrier is a singleton: one per node, protecting every tenant's data,
+owned by no tenant. Every permission that changes it or decides who holds a
+share of its key is **cross-scope** (`ScopeCross`, declared in
+`pkg/permission/node_barrier_scope.go`):
+
+- `seal:bootstrap`, `seal:unseal`, `seal:seal`, `seal:rekey`,
+  `seal:rotate_root_key`, `seal:initialize_shamir`, `seal:generate_recovery`,
+  `seal:recover_with_keys`, `seal:enable_encryption`, `seal:submit_seal_vote`;
+- `seal:officer_register` and `seal:officer_list` -- registering a Security
+  Officer into the node barrier's unseal or recovery domain, and listing those
+  officers with their certificate thumbprints;
+- `ceremony:initialize`, `ceremony:enroll_custodian`,
+  `ceremony:revoke_custodian` and `ceremony:sign_csr` -- the node key
+  ceremony, whose CSR signing uses the cluster CA.
+
+None of these routes names a tenant. Under `ScopeSelf` the authorizer compared
+the caller's tenant with itself and admitted every holder, so a tenant's SO --
+which holds most of them through its own tenant's built-in SO role -- could
+register officers into the node barrier. Every rekey, revocation and
+recovery-key generation sends a share to every registered officer, so M planted
+officers could reconstruct the node unseal key or reach the root-token quorum.
+The built-in roles still carry these grants in every tenant, and they are inert
+outside `system`: the SO, Admin or Operator of the `system` tenant exercises
+them, and a tenant's own SO, Admin or Operator is refused on every transport.
+
+A tenant governs its own barrier through `tenant_barrier:*`, which is
+`ScopeTenantOnly` and bound to the tenant the request names. `seal:status`,
+`ceremony:status`, `barrier:unseal-share` and the share-claim verbs stay
+`ScopeSelf`: status names no share holder, and the others are admitted only
+for a caller already holding a valid share or enrollment. First-boot officer
+registration on the boot-time sealed-window listener is anonymous and runs no
+RBAC at all, so it is unaffected.
+
 ## Bootstrap and Role Lifecycle
 
 ### Role Bootstrap (Deterministic)

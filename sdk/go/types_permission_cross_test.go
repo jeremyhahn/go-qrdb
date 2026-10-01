@@ -76,6 +76,17 @@ var sdkCrossScopePermissions = []sdk.Permission{
 	sdk.PermissionSealRotateRootKey,
 	sdk.PermissionSealGenerateRecovery,
 	sdk.PermissionSealInitializeShamir,
+	sdk.PermissionSealBootstrap,
+	sdk.PermissionSealUnseal,
+	sdk.PermissionSealRecoverWithKeys,
+	sdk.PermissionSealEnableEncryption,
+	sdk.PermissionSealSubmitSealVote,
+	sdk.PermissionSealOfficerRegister,
+	sdk.PermissionSealOfficerList,
+	sdk.PermissionCeremonyInitialize,
+	sdk.PermissionCeremonyEnrollCustodian,
+	sdk.PermissionCeremonyRevokeCustodian,
+	sdk.PermissionCeremonySignCSR,
 }
 
 // TestSDK_CrossScopePermissions_AreTheCanonicalOnes pins the re-exports to
@@ -116,6 +127,17 @@ func TestSDK_CrossScopePermissions_AreTheCanonicalOnes(t *testing.T) {
 		sdk.PermissionSealRotateRootKey:          permission.SealRotateRootKey,
 		sdk.PermissionSealGenerateRecovery:       permission.SealGenerateRecovery,
 		sdk.PermissionSealInitializeShamir:       permission.SealInitializeShamir,
+		sdk.PermissionSealBootstrap:              permission.SealBootstrap,
+		sdk.PermissionSealUnseal:                 permission.SealUnseal,
+		sdk.PermissionSealRecoverWithKeys:        permission.SealRecoverWithKeys,
+		sdk.PermissionSealEnableEncryption:       permission.SealEnableEncryption,
+		sdk.PermissionSealSubmitSealVote:         permission.SealSubmitSealVote,
+		sdk.PermissionSealOfficerRegister:        permission.SealOfficerRegister,
+		sdk.PermissionSealOfficerList:            permission.SealOfficerList,
+		sdk.PermissionCeremonyInitialize:         permission.CeremonyInitialize,
+		sdk.PermissionCeremonyEnrollCustodian:    permission.CeremonyEnrollCustodian,
+		sdk.PermissionCeremonyRevokeCustodian:    permission.CeremonyRevokeCustodian,
+		sdk.PermissionCeremonySignCSR:            permission.CeremonySignCSR,
 	}
 	if len(pairs) != len(sdkCrossScopePermissions) {
 		t.Fatalf("%d distinct re-exports, want %d: two SDK names share a value", len(pairs), len(sdkCrossScopePermissions))

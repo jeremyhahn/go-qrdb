@@ -68,7 +68,16 @@ func newSOFixture(t *testing.T, gated bool) *soFixture {
 		gate = authmw.NewSOGate(roles, authtest.SOVerifier(t, soTestPIN, soTestTenant, soOtherTenant), audit.NewRingBuffer(64), audit.FailClosed, nil)
 	}
 	barrier := &authtest.Barrier{}
+	pin := &atomic.Pointer[string]{}
+	client := startBarrierMCP(t, mw, gate, barrier, pin)
+	return &soFixture{client: client, caller: caller, barrier: barrier, pin: pin}
+}
 
+// startBarrierMCP starts an MCP server over barrier with mw as its auth
+// middleware and gate as its SO gate (nil: off), and returns an initialized
+// client that presents the PIN pin holds, if any, in the SO PIN header.
+func startBarrierMCP(t *testing.T, mw *authmw.AuthMiddleware, gate *authmw.SOGate, barrier *authtest.Barrier, pin *atomic.Pointer[string]) *mcpclient.Client {
+	t.Helper()
 	tlsCfg := testTLSConfig(t)
 	srv := NewServer(nil, nil, "127.0.0.1:0",
 		WithTLS(tlsCfg), WithAuthMiddleware(mw), WithBarrierService(barrier), WithSOGate(gate))
@@ -77,7 +86,6 @@ func newSOFixture(t *testing.T, gated bool) *soFixture {
 	}
 	t.Cleanup(srv.Stop)
 
-	pin := &atomic.Pointer[string]{}
 	httpClient := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
 		RootCAs: tlsCfg.RootCAs, ServerName: "localhost", MinVersion: tls.VersionTLS13,
 	}}}
@@ -103,7 +111,7 @@ func newSOFixture(t *testing.T, gated bool) *soFixture {
 	if _, err := client.Initialize(ctx, init); err != nil {
 		t.Fatalf("initialize: %v", err)
 	}
-	return &soFixture{client: client, caller: caller, barrier: barrier, pin: pin}
+	return client
 }
 
 // rekey calls qrdb_barrier_rekey as id, presenting pin in the header.

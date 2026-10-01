@@ -1,6 +1,6 @@
 # Barrier and Seal — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column.
@@ -23,6 +23,22 @@ Officer, share-claim and recovery-officer endpoints belong to
 | Rekey | `POST /v1/barrier/rekey` | `BarrierRekey` | `barrier.Rekey` | `qrdb_barrier_rekey` | `Rekey` | `seal:rekey` |
 | Enable encryption | `POST /v1/barrier/enable-encryption` | `BarrierEnableEncryption` | `barrier.EnableEncryption` | `qrdb_barrier_enable_encryption` | `EnableEncryption` | `seal:enable_encryption` |
 | Root token | `POST /v1/barrier/root-token` | `BarrierRootToken` | `barrier.RootToken` | `qrdb_barrier_root_token` | `RootToken` | `seal:bootstrap` |
+
+### Who may call these
+
+The node barrier belongs to the platform, not to a tenant. Every permission in
+the table except `seal:status` and `barrier:unseal-share` is **cross-scope**:
+only an identity of the `system` tenant may exercise it, on every transport.
+The built-in SO, Admin and Operator roles of any other tenant carry the same
+grants and are refused with `403` / `PermissionDenied`. Apart from
+enable-encryption's optional `tenant_id`, none of these operations names a
+tenant, so there is nothing a tenant could own here; a tenant's own barrier
+has its own endpoints and `tenant_barrier:*` permissions (below).
+Enable-encryption is cross-scope for both of its targets: migrating a tenant's
+dedicated barrier named by `tenant_id` is a platform-operator act too. `seal:status` reads state and names no share holder; `barrier:unseal-share`
+is admitted only from a caller already holding a valid share. On the boot-time
+sealed-window listener no RBAC runs at all, so first-boot initialize and unseal
+are unaffected.
 
 Enable-encryption is registered **unconditionally** on REST, gRPC, Unix, QUIC,
 and MCP, independent of whether a barrier service exists on the node (a

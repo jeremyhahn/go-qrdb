@@ -1,6 +1,6 @@
 # Shamir Custody — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column.
@@ -50,6 +50,33 @@ The barrier's own operations are [../barrier-seal/api.md](../barrier-seal/api.md
 | Custodian claim begin/complete | `POST /v1/ceremony/claim-share/begin` · `/complete` | **identity-gated** |
 | Officer share begin/complete | `POST /v1/ceremony/officer-share/begin` · `/complete` | **identity-gated** |
 | Submit unseal share | `POST /v1/barrier/unseal-share` | `barrier:unseal-share` |
+
+## Who may register and list officers
+
+The officer registry decides who holds a share of the node barrier's key:
+every rekey, revocation and recovery-key generation sends a share to every
+registered officer. `seal:officer_register` (both the unseal and the recovery
+domain), `seal:officer_list` (the list and the claim status),
+`ceremony:enroll_custodian` (custodians and external officers),
+`ceremony:revoke_custodian`, `ceremony:initialize` and `ceremony:sign_csr` are
+therefore **cross-scope**: only an identity of the `system` tenant may exercise
+them, on every transport, and a tenant's SO or Admin is refused with `403` /
+`PermissionDenied` even though its built-in role carries the grant. The quorum
+and recovery operations above that change the node barrier (`seal:rekey`,
+`seal:bootstrap`, `seal:submit_seal_vote`, `seal:generate_recovery`,
+`seal:recover_with_keys`, `seal:initialize_shamir`) are cross-scope for the
+same reason; `seal:status` and `barrier:unseal-share` are not.
+
+**This changed.** These permissions were self-scoped, and because none of
+these routes names a tenant, the self-scope check compared the caller's tenant
+with itself and admitted any tenant's holder. A tenant role that relied on that
+can no longer register, list or enrol node officers; a tenant's own officers
+are registered through `POST /v1/tenants/{id}/barrier/officers`
+(`tenant_barrier:officer_register`).
+
+First-boot registration is not affected. On the boot-time sealed-window
+listener officer and recovery-officer registration are anonymous while the
+enrollment ceremony is pre-operational, and that listener runs no RBAC.
 
 ## Why the claim routes are identity-gated
 

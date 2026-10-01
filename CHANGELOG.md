@@ -11,6 +11,47 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Security
+
+- **BREAKING: a tenant can no longer enrol or list the node barrier's
+  Security Officers.** `seal:officer_register` (`POST /v1/barrier/officers`
+  and `POST /v1/barrier/recovery/officers`) and `seal:officer_list`
+  (`GET /v1/barrier/officers`, `GET /v1/barrier/officers/claim-status`) were
+  ScopeSelf. None of these routes names a tenant, so the check compared the
+  caller's tenant with itself and admitted every holder: a tenant's SO, which
+  holds both through its own tenant's built-in SO role, or a tenant Admin
+  granted them by a custom role, could plant officers in the node barrier's
+  unseal and recovery domains, and read back the node's officer names and
+  certificate thumbprints. Every rekey, revocation and recovery-key generation
+  sends a share to every registered officer, so M planted officers could
+  reconstruct the node unseal key or mint a root token through the quorum.
+  Both permissions are now `ScopeCross`, refused for every non-system identity
+  on REST, gRPC, Unix, QUIC, MCP and the embedded `RBACClient`. Anonymous
+  first-boot registration on the boot-time sealed-window listener runs no RBAC
+  and is unchanged. A tenant role that relied on the gap must move to the
+  `system` tenant, or manage its own tenant's officers through
+  `tenant_barrier:officer_register` / `tenant_barrier:officer_list`.
+- **BREAKING: the rest of the node barrier's lifecycle is system-tenant only
+  too.** The same vacuous ScopeSelf covered `seal:bootstrap` (initialize and
+  root-token generation), `seal:unseal`, `seal:recover_with_keys`,
+  `seal:submit_seal_vote`, `seal:enable_encryption` -- whose body-supplied
+  `tenant_id` let a tenant-local holder migrate the node barrier or another
+  tenant's -- and the node key ceremony's `ceremony:initialize`,
+  `ceremony:enroll_custodian` (custodians and external officers, who receive
+  node shares), `ceremony:revoke_custodian` and `ceremony:sign_csr` (which
+  signs with the cluster CA). All are now `ScopeCross`. The built-in SO, Admin
+  and Operator roles of a non-system tenant keep the grants and are refused
+  them; the same roles in the `system` tenant are unaffected. `seal:status`,
+  `ceremony:status`, `barrier:unseal-share` and the share-claim verbs stay
+  ScopeSelf.
+- The Go SDK re-exports every new cross-scope permission
+  (`sdk.PermissionSealOfficerRegister`, `sdk.PermissionSealOfficerList`,
+  `sdk.PermissionSealBootstrap`, `sdk.PermissionSealUnseal`,
+  `sdk.PermissionSealRecoverWithKeys`, `sdk.PermissionSealEnableEncryption`,
+  `sdk.PermissionSealSubmitSealVote`, `sdk.PermissionCeremonyInitialize`,
+  `sdk.PermissionCeremonyEnrollCustodian`,
+  `sdk.PermissionCeremonyRevokeCustodian`, `sdk.PermissionCeremonySignCSR`).
+
 ## [0.25.1-alpha] - 2026-10-01
 
 Fixes clustered qrdbd under system barrier protection `none`, which could not start on go-quicraft 0.15; encrypts the SDK clustered node's Raft WAL; and lets a host supply the `/v1/ca/bootstrap` bundle instead of colliding with the route. BREAKING (on disk): a sealed SDK clustered node refuses a WAL written by an earlier release; start it from an empty WAL directory.

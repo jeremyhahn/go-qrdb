@@ -425,6 +425,10 @@ const (
 // Seal management permissions
 // ---------------------------------------------------------------------------
 
+// Every seal:* permission except seal:status changes the NODE barrier, a
+// platform singleton no tenant owns, or decides who holds a share of its key,
+// and is ScopeCross (node_barrier_scope.go): only a system-tenant identity
+// exercises it. seal:status and barrier:unseal-share are ScopeSelf.
 const (
 	// SealBootstrap grants access to bootstrap the seal subsystem.
 	SealBootstrap Permission = "seal:bootstrap"
@@ -439,9 +443,10 @@ const (
 	// SealRekey grants access to rekey Shamir shares (SO only).
 	SealRekey Permission = "seal:rekey"
 	// SealEnableEncryption grants access to migrate a previously-unencrypted
-	// barrier to a keyed strategy (enable encryption after the fact). System
-	// scope is SO/Admin only; tenant scope additionally requires ownership of a
-	// tenant with its own dedicated barrier.
+	// barrier -- the node barrier, or a tenant's dedicated barrier named in the
+	// request -- to a keyed strategy (enable encryption after the fact).
+	// ScopeCross (node_barrier_scope.go): migrating a barrier is a
+	// platform-operator act, exercised only by a system-tenant identity.
 	SealEnableEncryption Permission = "seal:enable_encryption"
 	// SealGenerateRecovery grants access to generate offline recovery keys (SO only).
 	SealGenerateRecovery Permission = "seal:generate_recovery"
@@ -453,16 +458,24 @@ const (
 	// This is the sole permission granted to the Custodian role.
 	BarrierUnsealShare Permission = "barrier:unseal-share"
 
-	// SealOfficerRegister grants a system admin the ability to register a Security
-	// Officer for the system barrier.
+	// SealOfficerRegister grants the ability to register a Security Officer
+	// into the node barrier's unseal domain or its recovery domain. Every
+	// distribution sends a share to every registered officer, so it decides
+	// who can reconstruct the node key. Held by the SO role; ScopeCross
+	// (node_barrier_scope.go), so only a system-tenant identity exercises it.
+	// Anonymous first-boot registration on the sealed-window listener runs no
+	// RBAC and is unaffected (sealedwindow.PreOperationalOnly).
 	SealOfficerRegister Permission = "seal:officer_register"
 
-	// SealOfficerList grants access to list registered Security Officers and their
-	// claim status for the system barrier.
+	// SealOfficerList grants access to list the node barrier's registered
+	// Security Officers, with their certificate thumbprints and claim status.
+	// Held by the SO role; ScopeCross, so only a system-tenant identity
+	// exercises it.
 	SealOfficerList Permission = "seal:officer_list"
 
-	// SealSubmitSealVote grants a Security Officer the ability to submit a seal vote
-	// (share) to collectively seal a Shamir-protected system barrier.
+	// SealSubmitSealVote grants a Security Officer the ability to submit a seal
+	// vote (share) to collectively seal a Shamir-protected node barrier.
+	// ScopeCross.
 	SealSubmitSealVote Permission = "seal:submit_seal_vote"
 )
 

@@ -151,12 +151,57 @@ const (
 	PermissionCredentialsRetrieve = permission.CredentialsRetrieve
 )
 
-// The node-barrier SO permissions are cross-scope because the node barrier is
-// a singleton that protects every tenant's data, so an officer of one tenant
-// must never seal it, rekey it, rotate its root key or set up its recovery
-// and custody. A tenant's own barrier is governed by the tenant_barrier
-// permissions, which are not cross-scope.
+// The node-barrier permissions are cross-scope because the node barrier is a
+// singleton that protects every tenant's data, so an identity of one tenant
+// must never initialize, unseal, seal, rekey or recover it, rotate its root
+// key, set up its recovery and custody, or decide who holds a share of its
+// key. A tenant's own barrier is governed by the tenant_barrier permissions,
+// which are not cross-scope.
 const (
+	// PermissionSealBootstrap ("seal:bootstrap") initializes the node barrier
+	// and mints its root token.
+	PermissionSealBootstrap = permission.SealBootstrap
+
+	// PermissionSealUnseal ("seal:unseal") unseals the node barrier.
+	PermissionSealUnseal = permission.SealUnseal
+
+	// PermissionSealRecoverWithKeys ("seal:recover_with_keys") recovers the
+	// node barrier with its offline recovery keys.
+	PermissionSealRecoverWithKeys = permission.SealRecoverWithKeys
+
+	// PermissionSealEnableEncryption ("seal:enable_encryption") migrates the
+	// node barrier, or a tenant's barrier named in the request, to an
+	// encrypting strategy.
+	PermissionSealEnableEncryption = permission.SealEnableEncryption
+
+	// PermissionSealSubmitSealVote ("seal:submit_seal_vote") submits a share
+	// toward the quorum that seals a Shamir-protected node barrier.
+	PermissionSealSubmitSealVote = permission.SealSubmitSealVote
+
+	// PermissionSealOfficerRegister ("seal:officer_register") registers a
+	// Security Officer into the node barrier's unseal or recovery domain.
+	PermissionSealOfficerRegister = permission.SealOfficerRegister
+
+	// PermissionSealOfficerList ("seal:officer_list") lists the node
+	// barrier's Security Officers and their claim status.
+	PermissionSealOfficerList = permission.SealOfficerList
+
+	// PermissionCeremonyInitialize ("ceremony:initialize") initializes the
+	// node key ceremony.
+	PermissionCeremonyInitialize = permission.CeremonyInitialize
+
+	// PermissionCeremonyEnrollCustodian ("ceremony:enroll_custodian") enrolls
+	// a custodian, or an external officer, into the node key ceremony.
+	PermissionCeremonyEnrollCustodian = permission.CeremonyEnrollCustodian
+
+	// PermissionCeremonyRevokeCustodian ("ceremony:revoke_custodian") revokes
+	// a node key-ceremony custodian.
+	PermissionCeremonyRevokeCustodian = permission.CeremonyRevokeCustodian
+
+	// PermissionCeremonySignCSR ("ceremony:sign_csr") signs a custodian
+	// enrollment CSR with the cluster CA.
+	PermissionCeremonySignCSR = permission.CeremonySignCSR
+
 	// PermissionSealSeal ("seal:seal") seals the node barrier.
 	PermissionSealSeal = permission.SealSeal
 

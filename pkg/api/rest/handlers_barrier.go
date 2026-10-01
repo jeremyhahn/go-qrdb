@@ -717,7 +717,7 @@ func restCertThumbprint(r *http.Request) (string, error) {
 
 // handleBarrierOfficerRegister handles POST /v1/barrier/officers -- registers a
 // Security Officer for the system barrier.
-// Required permission: seal:officer_register (Admin role).
+// Required permission: seal:officer_register (SO; ScopeCross: system tenant only).
 func (s *Server) handleBarrierOfficerRegister(w http.ResponseWriter, r *http.Request) {
 	if s.barrierSvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "barrier"})
@@ -757,7 +757,7 @@ func (s *Server) handleBarrierOfficerRegister(w http.ResponseWriter, r *http.Req
 
 // handleBarrierOfficerList handles GET /v1/barrier/officers -- lists all
 // enrolled Security Officers for the system barrier.
-// Required permission: seal:officer_list (Admin, SO role).
+// Required permission: seal:officer_list (SO; ScopeCross: system tenant only).
 func (s *Server) handleBarrierOfficerList(w http.ResponseWriter, r *http.Request) {
 	if s.barrierSvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "barrier"})
@@ -777,7 +777,7 @@ func (s *Server) handleBarrierOfficerList(w http.ResponseWriter, r *http.Request
 
 // handleBarrierOfficerClaimStatus handles GET /v1/barrier/officers/claim-status --
 // returns a per-officer claim status snapshot for the system barrier.
-// Required permission: seal:officer_list (Admin, SO role).
+// Required permission: seal:officer_list (SO; ScopeCross: system tenant only).
 func (s *Server) handleBarrierOfficerClaimStatus(w http.ResponseWriter, r *http.Request) {
 	if s.barrierSvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "barrier"})
@@ -912,7 +912,7 @@ func (s *Server) handleBarrierShamirSealVote(w http.ResponseWriter, r *http.Requ
 
 // handleBarrierRecoveryOfficerRegister handles POST /v1/barrier/recovery/officers --
 // registers a Security Officer for recovery key distribution.
-// Required permission: seal:officer_register (Admin role).
+// Required permission: seal:officer_register (SO; ScopeCross: system tenant only).
 func (s *Server) handleBarrierRecoveryOfficerRegister(w http.ResponseWriter, r *http.Request) {
 	if s.barrierSvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "barrier"})
