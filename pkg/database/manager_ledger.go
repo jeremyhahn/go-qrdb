@@ -111,7 +111,7 @@ func (m *Manager) recordShardID(id uint64) error {
 // when none is (a node whose databases predate the record).
 func (m *Manager) readShardHighWater() (uint64, error) {
 	path := filepath.Join(m.dataDir, shardHighWaterFile)
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- m.dataDir is the node's own configured data directory, shardHighWaterFile a constant
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return 0, nil

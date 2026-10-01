@@ -321,6 +321,18 @@ func guardTargetSupported(target byte) bool {
 // revisions: version is presence (0 or 1), an absent key equals only the
 // empty value, and a revision target never holds. It is the rule both a
 // guard and a revision-less state machine's transaction compare apply.
+//
+// An absent key is asymmetric under CompareTargetValue: current == nil
+// holds against CompareResultEqual exactly when c.Value is also empty, but
+// it NEVER holds against CompareResultNotEqual, Greater or Less, regardless
+// of c.Value -- there is no stored byte slice for bytes.Compare to run
+// against, only the one special case tested directly. In particular a
+// NotEqual compare against a key that does not exist always evaluates to
+// false, even for a non-empty c.Value, where an ordinary not-equal reading
+// of "absent is not equal to this value" would expect true. A guard or
+// transaction compare that must refuse WHEN a key is absent has to use
+// CompareTargetVersion (0 means absent) instead of a NotEqual value
+// compare for that case.
 func CompareHolds(c DecodedCompare, current []byte) bool {
 	switch c.Target {
 	case CompareTargetVersion:

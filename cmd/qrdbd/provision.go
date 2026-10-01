@@ -68,7 +68,7 @@ func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisio
 			}
 		}
 	}
-	if f.sqlDatabase == "" || !(f.enableMySQL || f.enablePgSQL) {
+	if f.sqlDatabase == "" || (!f.enableMySQL && !f.enablePgSQL) {
 		return nil
 	}
 	_, err := dbs.Get(f.sqlDatabase)
