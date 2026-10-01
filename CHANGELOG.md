@@ -145,9 +145,14 @@ are not reconstructed here — their history is in the git log.
   `make release-alpha` as a dedicated release bot. That creates signed tags
   for the root module, `sdk/go` and `sdk/go/gorm/conformance`, and publishes
   them in one atomic push. It then fetches the remote's tags and runs the
-  lockstep audit over them. `release-alpha`
-  gains a VERSION-authoritative path: when `VERSION` on `HEAD` already names
-  the release, it tags `HEAD` and creates no commit. `docs/release/` covers
+  lockstep audit over them. **BREAKING for anyone cutting releases by hand:**
+  `release-alpha` no longer writes VERSION or commits. It tags the merged
+  VERSION/CHANGELOG commit and refuses a `VERSION=` argument that VERSION on
+  `HEAD` does not name ("merge the VERSION/CHANGELOG bump first"), an unsigned
+  `HEAD`, and a `HEAD` the remote's `main` does not hold. It pushes only the
+  tags. The bot token is never persisted in the checkout
+  (`persist-credentials: false`); only the push step receives it, as a
+  per-step header (`scripts/git-extraheader.sh`). `docs/release/` covers
   the flow and the owner's one-time setup (tag protection for `v*`,
   `sdk/go/v*` and `sdk/go/gorm/conformance/v*`, plus the
   `RELEASE_BOT_TOKEN` / `RELEASE_BOT_SIGNING_KEY` secrets and

@@ -60,19 +60,24 @@ once a consumer has recorded it in `go.sum` nobody can take it back.
    as a commit that bumps `VERSION` and adds the matching `CHANGELOG.md`
    section, before anything is published. The workflow takes no version input.
    A typed version would be a second source of truth.
-2. **The workflow wraps `make release-alpha`.** The recipe that a person could
-   run by hand is the recipe the workflow runs, with the same checks. When
-   `VERSION` on `main` already names the release, the recipe takes its
-   VERSION-authoritative path: `HEAD` is the release commit, and the recipe
-   creates only the signed tags.
-3. **One atomic push.** The recipe audits the tags it has just created for
-   lockstep, then pushes the branch and every tag in a single
-   `git push --atomic`. The server applies all of the refs or none of them, so
-   a skewed set cannot be half-published.
+2. **The workflow wraps `make release-alpha`, and the recipe never writes
+   VERSION.** The recipe a person could run by hand is the recipe the workflow
+   runs, with the same checks. It tags the merged bump and creates no commit.
+   It refuses, before fetching or writing anything, when `VERSION` on `HEAD`
+   does not already name the requested release ("merge the VERSION/CHANGELOG
+   bump first"), when `HEAD` is unsigned, and when `HEAD` is not exactly the
+   commit the remote's `main` holds.
+3. **One atomic push of the tags.** The recipe audits the tags it has just
+   created for lockstep, then pushes every tag in a single `git push --atomic`.
+   The branch is not pushed: the release commit is already on `main`. The server
+   applies all of the tags or none of them, so a skewed set cannot be
+   half-published.
 4. **Tag protection makes it the only path.** The release tag patterns are
    protected so that only the release bot, the identity the workflow
    authenticates as, can create them. A direct tag push from a workstation is
-   refused at the server, and is not merely reported afterwards.
+   refused at the server, and is not merely reported afterwards. The bot's token
+   is never persisted in the checkout: it reaches only the step that pushes, as
+   a per-step header in that step's environment.
 5. **The run ends on what the server holds.** After the push the workflow
    fetches the remote's tags and runs the lockstep audit over them, so a
    skewed set on the server fails the run that published it.

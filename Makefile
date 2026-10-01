@@ -1576,7 +1576,7 @@ ci:
 # asserts is that `security`'s trivy leg refuses a database too old to know
 # about a current advisory (#451). A guard for the suite belongs before the
 # suite, so a broken guard reports as a broken guard.
-_ci: check-tool-versions test-tool-versions check-bundled-gosec test-bundled-gosec test-trivy-db check-compose-targets test-compose-targets check-action-pins test-nightly-signal fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound check-public-releasable test-public-releasable secure-analyzer test-secure-analyzer security build-server test
+_ci: check-tool-versions test-tool-versions check-bundled-gosec test-bundled-gosec test-trivy-db check-compose-targets test-compose-targets check-action-pins test-nightly-signal fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound check-public-releasable test-public-releasable test-git-extraheader secure-analyzer test-secure-analyzer security build-server test
 	@echo "CI pipeline passed"
 
 # ============================================================================
@@ -1755,6 +1755,13 @@ check-public-releasable:
 .PHONY: test-public-releasable
 test-public-releasable:
 	@./scripts/check-public-releasable_test.sh
+
+# The Release workflow's per-step forge credential (scripts/git-extraheader.sh):
+# git sees the header from the environment only, nothing is written to a git
+# config file, and an empty token stops the step. No network.
+.PHONY: test-git-extraheader
+test-git-extraheader:
+	@./scripts/git-extraheader_test.sh
 
 # Every `uses:` in every workflow resolves to a 40-hex commit (#367).
 #
@@ -3486,12 +3493,18 @@ export GOWORK=off
 # THE RELEASE WORKFLOW IS THE CALLER (#13, owner ruling 2026-09-30: "workflow
 # wraps release-alpha"). .github/workflows/release.yml reads VERSION from main,
 # which is authoritative, and runs this recipe as the release bot, whose token
-# tag protection alone admits. VERSION on main then already names the release,
-# so the recipe takes its VERSION-AUTHORITATIVE path: HEAD is the release
-# commit, only the tags are created, and HEAD must be signed. When VERSION names
-# an older release, the original path runs: the recipe writes and signs the
-# VERSION commit itself. docs/release/ has the whole flow and the owner's
-# one-time setup.
+# tag protection alone admits.
+#
+# VERSION IS AUTHORITATIVE, SO THIS RECIPE NEVER WRITES IT. The release is the
+# reviewed commit that bumps VERSION and CHANGELOG; this recipe tags that commit
+# and creates no commit of its own. A VERSION= argument that is not what
+# VERSION on HEAD already names is refused before anything is fetched or
+# written ("merge the VERSION/CHANGELOG bump first"), as is an unsigned HEAD and
+# a HEAD that is not exactly what the remote's main holds. The push therefore
+# carries only the tags: the release commit is already on main.
+# The argument is still required: it is the operator's statement of what they
+# expect to publish, checked against the file rather than replacing it.
+# docs/release/ has the whole flow and the owner's one-time setup.
 #
 # Overridable inputs, all with sane defaults for this repository:
 #
@@ -3611,6 +3624,9 @@ release-alpha: check-tag-lockstep
 # creates and updates local refs -- so a dirty tree has to be caught while the
 # only thing that has happened is reading. Raised in review of PR #212.
 	@test -z "$$(git status --porcelain)" || { echo 'ERROR: working tree not clean'; exit 1; }
+	@HEAD_VERSION=$$(git show HEAD:VERSION 2>/dev/null | tr -d '[:space:]'); \
+	test "$$HEAD_VERSION" = "$${REL_VERSION#v}" || { echo "ERROR: VERSION on HEAD names $${HEAD_VERSION:-nothing}, not $${REL_VERSION#v}; merge the VERSION/CHANGELOG bump first. VERSION is authoritative: this recipe tags the commit that names the release and never writes VERSION itself"; exit 1; }
+	@test "$$(git cat-file commit HEAD | grep -c '^gpgsig')" -eq 1 || { echo 'ERROR: HEAD names this release but carries no SSH signature. main enforces signed commits, so an unsigned HEAD means this clone is not what main holds'; exit 1; }
 	@test -n "$$REL_REPO" || { echo 'ERROR: REPO_NAME is empty - set it to the literal repo name, never the checkout directory name'; exit 1; }
 	@printf '%s' "$$REL_REPO" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$$' || { echo "ERROR: REPO_NAME is not a plain repo name: $$REL_REPO"; exit 1; }
 	@command -v "$$REL_AGENT_GIT" >/dev/null 2>&1 || { echo "ERROR: AGENT_GIT does not resolve to an executable: $$REL_AGENT_GIT. Every git write in this recipe signs through it, and a bad path must fail before VERSION is written. Put agent-git.sh on PATH or pass AGENT_GIT=/path/to/agent-git.sh"; exit 1; }
@@ -3709,6 +3725,8 @@ release-alpha: check-tag-lockstep
 # the whole discovered set (in the tag loop below). Reconciling the history of
 # a newly-added namespace is a migration question, and it is go-qrdb#50's.
 	@./scripts/check-tag-lockstep.sh || { echo "ERROR: the published tag set is not in lockstep. This is the audit that matters: the prerequisite ran before the fetch above and saw only this clone's tags. Fix the published skew before cutting a release on top of it"; exit 1; }
+	@REMOTE_MAIN=$$(git ls-remote "$$REL_REMOTE" refs/heads/main 2>/dev/null | awk '{print $$1}'); \
+	test -n "$$REMOTE_MAIN" && test "$$REMOTE_MAIN" = "$$(git rev-parse HEAD)" || { echo "ERROR: HEAD $$(git rev-parse --short HEAD) is not what $$REL_REMOTE main holds ($${REMOTE_MAIN:-unreadable}). A release tags the reviewed VERSION/CHANGELOG commit once it is merged: merge the bump first, then release from that exact commit"; exit 1; }
 # The discovery runs when make PARSES the file; the tags are cut much later. So
 # it is re-checked here against the filesystem it claimed to describe, rather
 # than trusted -- reading a value at entry and acting on it later is exactly the
@@ -3883,20 +3901,10 @@ release-alpha: check-tag-lockstep
 	fail() { \
 	  cleanup; \
 	  echo "$$1" >&2; \
-	  echo '  Nothing was published. The release commit and any tag this run created have been removed and the tree is back where it started, so fixing the cause and re-running the target is the whole recovery.' >&2; \
+	  echo '  Nothing was published. Every tag this run created has been removed and the tree is back where it started, so fixing the cause and re-running the target is the whole recovery.' >&2; \
 	  exit 1; \
 	}; \
-	if [ "$$(git show HEAD:VERSION)" = "$${REL_VERSION#v}" ]; then \
-	  echo "release-alpha: VERSION on main already names $${REL_VERSION#v}, so HEAD is the release commit and only the tags are cut (the VERSION-authoritative path the Release workflow takes)"; \
-	  test "$$(git cat-file commit HEAD | grep -c '^gpgsig')" -eq 1 || fail 'ERROR: HEAD names this version but carries no SSH signature. main enforces signed commits, so an unsigned HEAD here means this clone is not what main holds'; \
-	else \
-	  printf '%s\n' "$${REL_VERSION#v}" > VERSION; \
-	  "$$REL_AGENT_GIT" "$$REL_REPO" add VERSION || fail "ERROR: could not stage VERSION"; \
-	  "$$REL_AGENT_GIT" "$$REL_REPO" commit -q -m "chore(release): $$REL_VERSION" || fail 'ERROR: the release VERSION commit failed - v1 swallowed this with || true and tagged anyway, which is how a tag comes to disagree with its own VERSION file'; \
-	  test "$$(git show HEAD:VERSION)" = "$${REL_VERSION#v}" || fail "ERROR: HEAD is not the release commit for $$REL_VERSION - refusing to tag"; \
-	  test "$$(git cat-file commit HEAD | grep -c '^gpgsig')" -eq 1 || fail 'ERROR: the release commit carries no SSH signature. main enforces signed commits, so this would be rejected at push time - and without this check that rejection would arrive after the tags already existed'; \
-	  test "$$(git log -1 --format='%an %cn')" = "agent-$${REL_REPO#agent-} agent-$${REL_REPO#agent-}" || fail "ERROR: the release commit is authored/committed by $$(git log -1 --format='%an / %cn'), not the repository agent. AGENT_GIT is not the identity wrapper"; \
-	fi; \
+	test "$$(git show HEAD:VERSION | tr -d '[:space:]')" = "$${REL_VERSION#v}" || fail "ERROR: HEAD no longer names $$REL_VERSION - refusing to tag"; \
 	REL_COMMIT=$$(git rev-parse HEAD); \
 	TAGS="$$REL_VERSION"; \
 	REFS="refs/tags/$$REL_VERSION"; \
@@ -3912,17 +3920,17 @@ release-alpha: check-tag-lockstep
 	  test "$$(git rev-parse "$$t^{commit}")" = "$$REL_COMMIT" || fail "ERROR: $$t does not point at the release commit. This is the lockstep property for THIS release, checked over every discovered module rather than left to an audit that only knows the default one"; \
 	done; \
 	./scripts/check-tag-lockstep.sh || fail "ERROR: the tags just created are not in lockstep with each other. Nothing was pushed - this is the one moment a skewed release can still be prevented rather than reported (go-qrdb#13)"; \
-	if "$$REL_AGENT_GIT" "$$REL_REPO" push --atomic "$$REL_REMOTE" "$$REL_COMMIT:refs/heads/main" $$REFS; then \
-	  echo "Released $$REL_VERSION on $$REL_REMOTE (signed commit; annotated signed tags:$$TAGS; atomic push of exactly those refs)"; \
+	if "$$REL_AGENT_GIT" "$$REL_REPO" push --atomic "$$REL_REMOTE" $$REFS; then \
+	  echo "Released $$REL_VERSION on $$REL_REMOTE (merged release commit $$REL_COMMIT; annotated signed tags:$$TAGS; atomic push of exactly those tags)"; \
 	  exit 0; \
 	fi; \
 	echo 'WARNING: the push client reported failure. That does not say WHICH outcome occurred, so the remote is being asked what it actually holds before anything is touched.' >&2; \
-	PROBE=$$(git ls-remote "$$REL_REMOTE" refs/heads/main $$REFS 2>/dev/null) || PROBE='@@unqueryable@@'; \
+	PROBE=$$(git ls-remote "$$REL_REMOTE" $$REFS 2>/dev/null) || PROBE='@@unqueryable@@'; \
 	if [ "$$PROBE" = '@@unqueryable@@' ]; then \
-	  echo "ERROR: the push to $$REL_REMOTE failed AND the remote cannot be queried, so whether this release was published is UNKNOWN. Nothing has been rolled back on purpose: the release commit and the tags$$TAGS are intact locally, because deleting the only local copy of a release that may already be live and immutable is worse than leaving it. Restore access and compare: git ls-remote $$REL_REMOTE refs/heads/main$$REFS" >&2; \
+	  echo "ERROR: the push to $$REL_REMOTE failed AND the remote cannot be queried, so whether this release was published is UNKNOWN. Nothing has been rolled back on purpose: the tags$$TAGS are intact locally, because deleting the only local copy of a release that may already be live and immutable is worse than leaving it. Restore access and compare: git ls-remote $$REL_REMOTE$$REFS" >&2; \
 	  exit 1; \
 	fi; \
-	CHECK="refs/heads/main=$$REL_COMMIT"; \
+	CHECK=""; \
 	for t in $$TAGS; do CHECK="$$CHECK refs/tags/$$t=$$(git rev-parse "refs/tags/$$t")"; done; \
 	MATCH=0; TOTAL=0; DETAIL=""; \
 	for c in $$CHECK; do \
@@ -3935,13 +3943,13 @@ release-alpha: check-tag-lockstep
 	done; \
 	if [ "$$MATCH" -eq "$$TOTAL" ]; then \
 	  echo "NOTE: the remote holds every intended ref at the expected object, so the release IS published and the client error was in reporting it, not in doing it. Nothing was rolled back." >&2; \
-	  echo "Released $$REL_VERSION on $$REL_REMOTE (signed commit; annotated signed tags:$$TAGS; the push client errored after the remote had applied every ref)"; \
+	  echo "Released $$REL_VERSION on $$REL_REMOTE (merged release commit $$REL_COMMIT; annotated signed tags:$$TAGS; the push client errored after the remote had applied every tag)"; \
 	  exit 0; \
 	fi; \
 	if [ "$$MATCH" -eq 0 ]; then \
 	  fail "ERROR: the push to $$REL_REMOTE failed and the remote carries none of this release - established by asking it what it holds, not by reading the client's exit code"; \
 	fi; \
-	printf 'ERROR: the push to %s failed and the remote is in a MIXED state, which --atomic is meant to make impossible. NOTHING HAS BEEN ROLLED BACK: the release commit and the tags%s are intact locally, because part of this release may already be published and immutable. Reconcile by hand and do not re-run until you have.%b\n' "$$REL_REMOTE" "$$TAGS" "$$DETAIL" >&2; \
+	printf 'ERROR: the push to %s failed and the remote is in a MIXED state, which --atomic is meant to make impossible. NOTHING HAS BEEN ROLLED BACK: the tags%s are intact locally, because part of this release may already be published and immutable. Reconcile by hand and do not re-run until you have.%b\n' "$$REL_REMOTE" "$$TAGS" "$$DETAIL" >&2; \
 	exit 1
 
 deps-latest:

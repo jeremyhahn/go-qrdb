@@ -121,12 +121,6 @@ IDENT="agent-${REPO}"
 SIGN_COMMIT=true
 SKEW=''
 case "${FAKE_GIT_FAIL:-}" in
-commit)
-	if [ "${1:-}" = commit ]; then
-		echo "fake agent-git: refusing to commit" >&2
-		exit 1
-	fi
-	;;
 sdktag)
 	if [ "${1:-}" = tag ]; then
 		for ARG in "$@"; do
@@ -144,15 +138,6 @@ push)
 		echo "fake agent-git: refusing to push" >&2
 		exit 1
 	fi
-	;;
-nosign)
-	# A wrapper that is not the signing wrapper. Nothing fails; the commit is
-	# simply unsigned, which only the recipe's gpgsig assertion can catch.
-	SIGN_COMMIT=false
-	;;
-badidentity)
-	# A wrapper handed, or ignoring, the wrong repo name. Again nothing fails.
-	IDENT="agent-not-this-repo"
 	;;
 skewtag)
 	# Create the sdk/go leg at the WRONG commit. The tag is annotated, signed
@@ -183,7 +168,7 @@ GIT() {
 # Receive-side outcomes. A push that FAILS BEFORE CONTACTING THE REMOTE (the
 # `push` mode above) cannot exercise the interesting case: whether the recipe
 # trusts the client's exit code about what the remote did. These three do.
-# Args here are: push --atomic <remote> HEAD <ref>...
+# Args here are: push --atomic <remote> <tag ref>...
 case "${FAKE_GIT_FAIL:-}" in
 pushthenfail)
 	if [ "${1:-}" = push ]; then
@@ -194,7 +179,7 @@ pushthenfail)
 	;;
 pushpartial)
 	if [ "${1:-}" = push ]; then
-		GIT push "$3" HEAD "$5" >&2 || true
+		GIT push "$3" "$5" >&2 || true
 		echo "fake agent-git: published a subset, then failed" >&2
 		exit 1
 	fi
@@ -232,9 +217,12 @@ chmod +x "${WORK}/agent-git.sh"
 # worktree or a CI workspace signs and attributes the release as the wrong
 # agent, which is the defect that made REPO_NAME a literal in the first place.
 #
-# VERSION starts at 0.1.0-alpha and CHANGELOG.md already carries a 0.2.0-alpha
-# section, which is the state a release is cut from -- notes written first, then
-# the version stamped. stray-tag exists because `push --tags` would publish it.
+# The fixture is the state a release is cut from: v0.1.0-alpha is published,
+# and the reviewed bump -- VERSION 0.2.0-alpha plus its CHANGELOG section -- is
+# merged, SIGNED and on the remote's main. VERSION is authoritative, so the
+# recipe tags that commit and writes nothing. `fixture NAME unbumped` stops
+# before the bump, which is the state the recipe must refuse. stray-tag exists
+# because `push --tags` would publish it.
 fixture() {
 	DIR="${WORK}/$1"
 	mkdir -p "${DIR}/scripts"
@@ -280,7 +268,27 @@ fixture() {
 	git -C "${DIR}" tag --no-sign stray-tag
 	git init -q --bare "${DIR}.git"
 	git -C "${DIR}" remote add dev "${DIR}.git"
+	if [ "${2:-}" != unbumped ]; then
+		printf '0.2.0-alpha\n' > "${DIR}/VERSION"
+		git -C "${DIR}" add VERSION
+		signed_commit "${DIR}" "chore(release): v0.2.0-alpha"
+	fi
 	git -C "${DIR}" push -q dev main
+}
+
+# signed_commit DIR MSG -- commit what is staged, SSH-signed with the throwaway
+# key, as a merged commit on main would be.
+signed_commit() {
+	git -C "$1" -c gpg.format=ssh -c "user.signingkey=${WORK}/signing.key" \
+		commit -q -S -m "$2"
+}
+
+# land DIR MSG -- commit everything, signed, and publish it to the remote's
+# main: the recipe releases only a commit that main already holds.
+land() {
+	git -C "$1" add -A
+	signed_commit "$1" "$2"
+	git -C "$1" push -q dev main
 }
 
 # Everything a refusal must leave untouched: the working tree, the commit, the
@@ -374,20 +382,20 @@ no_canary() {
 	fi
 }
 
-# assert_clean NAME DIR -- the contract for EVERY failure past the VERSION
-# write: the repository is exactly as it was. No release tag, no release commit,
-# no staged or modified VERSION, nothing published. A partial release is worse
-# than a failed one -- it blocks the retry on the recipe's own debris.
+# assert_clean NAME DIR -- the contract for EVERY failure once tagging starts:
+# the repository is exactly as it was. No release tag, HEAD still the merged
+# bump, VERSION untouched, nothing published. A partial release is worse than a
+# failed one -- it blocks the retry on the recipe's own debris.
 assert_clean() {
 	NAME="$1"
 	DIR="$2"
 	LEFT=$(git -C "${DIR}" tag --list 'v0.2.0-alpha' 'sdk/go/v0.2.0-alpha' | tr '\n' ' ')
 	if [ -n "${LEFT}" ]; then
 		bad "${NAME}" "a tag survived: ${LEFT}"
-	elif [ "$(git -C "${DIR}" log -1 --format=%s)" = "chore(release): v0.2.0-alpha" ]; then
-		bad "${NAME}" "the release commit survived"
-	elif [ "$(cat "${DIR}/VERSION")" != "0.1.0-alpha" ]; then
-		bad "${NAME}" "VERSION was not restored: $(cat "${DIR}/VERSION")"
+	elif [ "$(git -C "${DIR}" rev-parse HEAD)" != "$(git -C "${DIR}" rev-parse refs/remotes/dev/main 2>/dev/null || git ls-remote "${DIR}.git" refs/heads/main | awk '{print $1}')" ]; then
+		bad "${NAME}" "HEAD moved off the merged bump"
+	elif [ "$(cat "${DIR}/VERSION")" != "0.2.0-alpha" ]; then
+		bad "${NAME}" "VERSION was changed: $(cat "${DIR}/VERSION")"
 	elif [ -n "$(git -C "${DIR}" status --porcelain)" ]; then
 		bad "${NAME}" "the working tree was left dirty: $(git -C "${DIR}" status --porcelain | tr '\n' ' ')"
 	elif [ -n "$(git ls-remote --tags "${DIR}.git")" ]; then
@@ -597,8 +605,6 @@ git -C "${DIR}" tag -d v0.2.0-alpha sdk/go/v0.2.0-alpha >/dev/null
 run "${DIR}" VERSION=v0.2.0-alpha
 if [ "${STATUS}" -eq 0 ]; then
 	bad "${NAME}" "exit 0; a published version was re-cut"
-elif [ "$(git -C "${DIR}" log -1 --format=%s)" = "chore(release): v0.2.0-alpha" ]; then
-	bad "${NAME}" "the release commit was created"
 elif [ -n "$(git -C "${DIR}" status --porcelain)" ]; then
 	bad "${NAME}" "the working tree was left dirty"
 else
@@ -609,6 +615,8 @@ else
 fi
 
 fixture no-changelog
+printf '0.3.0-alpha\n' > "${WORK}/no-changelog/VERSION"
+land "${WORK}/no-changelog" "chore(release): v0.3.0-alpha, notes missing"
 refuse "a version with no CHANGELOG section is refused" "${WORK}/no-changelog" \
 	"does not carry 0.3.0-alpha as its newest released section" \
 	VERSION=v0.3.0-alpha
@@ -632,8 +640,6 @@ else
 		bad "${NAME}" "exit 0; the release was cut on top of a published skew"
 	elif [ -n "$(git -C "${DIR}" tag --list 'v0.2.0-alpha' 'sdk/go/v0.2.0-alpha')" ]; then
 		bad "${NAME}" "a release tag was created"
-	elif [ "$(git -C "${DIR}" log -1 --format=%s)" = "chore(release): v0.2.0-alpha" ]; then
-		bad "${NAME}" "the release commit was created"
 	elif [ -n "$(git -C "${DIR}" status --porcelain)" ]; then
 		bad "${NAME}" "the working tree was left dirty"
 	else
@@ -884,8 +890,7 @@ DIR="${WORK}/undeclared-new-module"
 mkdir -p "${DIR}/sdk/go/gorm/conformance"
 printf 'module github.com/jeremyhahn/go-qrdb/sdk/go/gorm/conformance\n\ngo 1.26\n' \
 	> "${DIR}/sdk/go/gorm/conformance/go.mod"
-git -C "${DIR}" add -A
-git -C "${DIR}" commit -q --no-gpg-sign -m "a second nested module, undeclared"
+land "${DIR}" "a second nested module, undeclared"
 # The lockstep prerequisite speaks first here, because the audit now fails on an
 # undeclared module too -- both halves refuse, and the audit is upstream.
 refuse "${NAME}" "${DIR}" "UNDECLARED  sdk/go/gorm/conformance" VERSION=v0.2.0-alpha
@@ -900,8 +905,7 @@ mkdir -p "${DIR}/sdk/go/gorm/conformance"
 printf 'module github.com/jeremyhahn/go-qrdb/sdk/go/gorm/conformance\n\ngo 1.26\n' \
 	> "${DIR}/sdk/go/gorm/conformance/go.mod"
 printf '%s\n' 'sdk/go/gorm/conformance v0.2.0-alpha' >> "${DIR}/lockstep-baseline"
-git -C "${DIR}" add -A
-git -C "${DIR}" commit -q --no-gpg-sign -m "first release of a second module"
+land "${DIR}" "first release of a second module"
 run "${DIR}" VERSION=v0.2.0-alpha
 if [ "${STATUS}" -ne 0 ]; then
 	bad "${NAME}" "the first release of a module was refused: exit ${STATUS}"
@@ -924,8 +928,7 @@ mkdir -p "${DIR}/sdk/go/gorm/conformance"
 printf 'module github.com/jeremyhahn/go-qrdb/sdk/go/gorm/conformance\n\ngo 1.26\n' \
 	> "${DIR}/sdk/go/gorm/conformance/go.mod"
 printf '%s\n' 'sdk/go/gorm/conformance v0.20.0-alpha' >> "${DIR}/lockstep-baseline"
-git -C "${DIR}" add -A
-git -C "${DIR}" commit -q --no-gpg-sign -m "a baseline that never existed"
+land "${DIR}" "a baseline that never existed"
 refuse "${NAME}" "${DIR}" "no root tag v0.20.0-alpha exists" VERSION=v0.2.0-alpha
 
 # A malformed baseline is refused, not treated as an exotic version string --
@@ -938,8 +941,7 @@ mkdir -p "${DIR}/sdk/go/gorm/conformance"
 printf 'module github.com/jeremyhahn/go-qrdb/sdk/go/gorm/conformance\n\ngo 1.26\n' \
 	> "${DIR}/sdk/go/gorm/conformance/go.mod"
 printf '%s\n' 'sdk/go/gorm/conformance 0x3-nonsense' >> "${DIR}/lockstep-baseline"
-git -C "${DIR}" add -A
-git -C "${DIR}" commit -q --no-gpg-sign -m "a malformed baseline"
+land "${DIR}" "a malformed baseline"
 refuse "${NAME}" "${DIR}" "malformed baseline" VERSION=v0.2.0-alpha
 
 # Declared 'unreleased' is a decision, and it is a decision NOT to release --
@@ -951,8 +953,7 @@ mkdir -p "${DIR}/sdk/go/gorm/conformance"
 printf 'module github.com/jeremyhahn/go-qrdb/sdk/go/gorm/conformance\n\ngo 1.26\n' \
 	> "${DIR}/sdk/go/gorm/conformance/go.mod"
 printf '%s\n' 'sdk/go/gorm/conformance unreleased' >> "${DIR}/lockstep-baseline"
-git -C "${DIR}" add -A
-git -C "${DIR}" commit -q --no-gpg-sign -m "a second nested module, unreleased"
+land "${DIR}" "a second nested module, unreleased"
 refuse "${NAME}" "${DIR}" "declared 'unreleased'" VERSION=v0.2.0-alpha
 
 # And once declared at the version being cut, it is published -- with no edit to
@@ -964,8 +965,7 @@ mkdir -p "${DIR}/sdk/go/gorm/conformance"
 printf 'module github.com/jeremyhahn/go-qrdb/sdk/go/gorm/conformance\n\ngo 1.26\n' \
 	> "${DIR}/sdk/go/gorm/conformance/go.mod"
 printf '%s\n' 'sdk/go/gorm/conformance v0.2.0-alpha' >> "${DIR}/lockstep-baseline"
-git -C "${DIR}" add -A
-git -C "${DIR}" commit -q --no-gpg-sign -m "a second nested module, declared"
+land "${DIR}" "a second nested module, declared"
 run "${DIR}" VERSION=v0.2.0-alpha
 if [ "${STATUS}" -ne 0 ]; then
 	bad "${NAME}" "the release failed: exit ${STATUS}"
@@ -996,8 +996,7 @@ printf 'package broken\n\nimport _ "example.com/absent"\n' \
 # Declared, so the standalone-resolution check is the one that speaks rather
 # than the baseline check upstream of it.
 printf '%s\n' 'sdk/go/broken v0.2.0-alpha' >> "${DIR}/lockstep-baseline"
-git -C "${DIR}" add -A
-git -C "${DIR}" commit -q --no-gpg-sign -m "a module whose go.mod does not match its sources"
+land "${DIR}" "a module whose go.mod does not match its sources"
 refuse "${NAME}" "${DIR}" "does not resolve standalone" VERSION=v0.2.0-alpha
 
 # Discovery is scoped to sdk/, and that scope is the one judgement in it. This
@@ -1011,8 +1010,7 @@ DIR="${WORK}/module-outside-sdk"
 mkdir -p "${DIR}/test/performance/harness"
 printf 'module github.com/jeremyhahn/go-qrdb/test/performance/harness\n\ngo 1.26\n' \
 	> "${DIR}/test/performance/harness/go.mod"
-git -C "${DIR}" add -A
-git -C "${DIR}" commit -q --no-gpg-sign -m "a benchmark harness module"
+land "${DIR}" "a benchmark harness module"
 run "${DIR}" VERSION=v0.2.0-alpha
 if [ "${STATUS}" -ne 0 ]; then
 	bad "${NAME}" "the release failed: exit ${STATUS}"
@@ -1034,8 +1032,7 @@ fi
 fixture no-modules
 rm -f "${WORK}/no-modules/sdk/go/go.mod"
 printf 'placeholder\n' > "${WORK}/no-modules/sdk/keep"
-git -C "${WORK}/no-modules" add -A
-git -C "${WORK}/no-modules" commit -q --no-gpg-sign -m "sdk/ with no modules in it"
+land "${WORK}/no-modules" "sdk/ with no modules in it"
 # Now that the audit reads the SAME derivation, the discovery's own refusal is
 # the first to speak -- the lockstep prerequisite fails before the recipe body
 # runs. Both are correct refusals; this asserts the one that actually fires.
@@ -1048,8 +1045,7 @@ refuse "an empty discovery is refused, not read as 'there are none'" \
 
 fixture no-sdk-tree
 rm -rf "${WORK}/no-sdk-tree/sdk"
-git -C "${WORK}/no-sdk-tree" add -A
-git -C "${WORK}/no-sdk-tree" commit -q --no-gpg-sign -m "no sdk tree at all"
+land "${WORK}/no-sdk-tree" "no sdk tree at all"
 refuse "a discovery whose walk fails is refused, not read as an empty set" \
 	"${WORK}/no-sdk-tree" "walking sdk/ for go.mod failed" VERSION=v0.2.0-alpha
 
@@ -1070,8 +1066,7 @@ fixture vanishing-module
 DIR="${WORK}/vanishing-module"
 printf '\nif [ -f ../.audit-ran ]; then rm -f sdk/go/go.mod; else : > ../.audit-ran; fi\n' \
 	>> "${DIR}/scripts/check-tag-lockstep.sh"
-git -C "${DIR}" add -A
-git -C "${DIR}" commit -q --no-gpg-sign -m "audit removes the module mid-run"
+land "${DIR}" "audit removes the module mid-run"
 BEFORE_VANISH=$(git -C "${DIR}" rev-parse HEAD)
 run "${DIR}" VERSION=v0.2.0-alpha
 if [ "${STATUS}" -eq 0 ]; then
@@ -1090,27 +1085,14 @@ fi
 # ---------------------------------------------------------------------------
 # Failures partway through, where the damage would be
 #
-# One contract for all of them: past the VERSION write, the target either
+# One contract for all of them: once tagging starts, the target either
 # publishes or leaves the repository exactly as it was. Every case below both
 # asserts that AND proves the recovery is nothing -- run the target again.
 #
-# The last three fail NOTHING on their own: the wrapper succeeds, the objects
-# are well formed, and only the recipe's own assertions notice. Those are the
-# paths that used to escape the cleanup handler.
+# The skewed-tag case fails NOTHING on its own: the wrapper succeeds, the
+# objects are well formed, and only the recipe's own assertions notice. That is
+# the path that used to escape the cleanup handler.
 # ---------------------------------------------------------------------------
-
-# The `|| true` defect: v1 swallowed a failed VERSION commit and tagged anyway,
-# producing a tag whose VERSION file disagreed with its own name.
-fixture failed-commit
-FAIL_MODE=commit
-run "${WORK}/failed-commit" VERSION=v0.2.0-alpha
-if [ "${STATUS}" -eq 0 ]; then
-	bad "a failed VERSION commit is fatal" "exit 0, want non-zero"
-else
-	ok "a failed VERSION commit is fatal"
-fi
-assert_clean "a failed VERSION commit leaves nothing behind" "${WORK}/failed-commit"
-assert_retry "a retry after a failed VERSION commit needs no manual steps" "${WORK}/failed-commit"
 
 # A pair half-created. The root tag exists and is valid when the sdk leg fails.
 fixture partial-tags
@@ -1144,34 +1126,6 @@ else
 fi
 assert_clean "a post-tag lockstep skew leaves nothing behind" "${WORK}/post-tag-skew"
 assert_retry "a retry after a post-tag lockstep skew needs no manual steps" "${WORK}/post-tag-skew"
-
-# An AGENT_GIT that is executable and succeeds, but does not sign.
-fixture unsigned-commit
-FAIL_MODE=nosign
-run "${WORK}/unsigned-commit" VERSION=v0.2.0-alpha
-if [ "${STATUS}" -eq 0 ]; then
-	bad "an unsigned release commit is fatal" "exit 0, want non-zero"
-else
-	case "${OUTPUT}" in
-	*"no SSH signature"*) ok "an unsigned release commit is fatal" ;;
-	*) bad "an unsigned release commit is fatal" "wrong diagnostic" ;;
-	esac
-fi
-assert_clean "an unsigned release commit leaves nothing behind" "${WORK}/unsigned-commit"
-
-# An AGENT_GIT that signs, but as the wrong principal.
-fixture wrong-identity
-FAIL_MODE=badidentity
-run "${WORK}/wrong-identity" VERSION=v0.2.0-alpha
-if [ "${STATUS}" -eq 0 ]; then
-	bad "a release commit from the wrong identity is fatal" "exit 0, want non-zero"
-else
-	case "${OUTPUT}" in
-	*"not the repository agent"*) ok "a release commit from the wrong identity is fatal" ;;
-	*) bad "a release commit from the wrong identity is fatal" "wrong diagnostic" ;;
-	esac
-fi
-assert_clean "a release commit from the wrong identity leaves nothing behind" "${WORK}/wrong-identity"
 
 # The wrapper CREATES the tag and then exits nonzero. If the cleanup set is
 # populated only after the wrapper returns, that tag is invisible to it, and the
@@ -1283,6 +1237,7 @@ mv "${WORK}/push-unqueryable.git.gone" "${WORK}/push-unqueryable.git" 2>/dev/nul
 
 fixture release
 DIR="${WORK}/release"
+RELEASE_BASE=$(git -C "${DIR}" rev-parse HEAD)
 run "${DIR}" VERSION=v0.2.0-alpha
 RELEASED=0
 if [ "${STATUS}" -ne 0 ]; then
@@ -1301,23 +1256,13 @@ if [ "${RELEASED}" -eq 0 ]; then
 	bad "the post-release assertions" "not run: the release itself failed, so there is nothing to inspect"
 else
 
-NAME="the release commit is signed"
-if [ "$(git -C "${DIR}" cat-file commit HEAD | grep -c '^gpgsig')" -eq 1 ]; then
+# VERSION is authoritative: the release is the merged bump, and the recipe
+# commits nothing of its own.
+NAME="the recipe creates no commit: the tags sit on the merged bump"
+if [ "$(git -C "${DIR}" rev-parse HEAD)" = "${RELEASE_BASE}" ] && ! grep -q '|commit|' "${DIR}.gitlog"; then
 	ok "${NAME}"
 else
-	bad "${NAME}" "expected exactly one gpgsig header on HEAD"
-fi
-
-# Authored AND committed as the agent. The wrapper takes its identity from the
-# repo name it is handed, so this asserts the argument the recipe passed -- and
-# the fixture directory is not named go-qrdb, so a REPO_NAME derived from the
-# checkout would fail here.
-NAME="the release commit is authored and committed by the repo agent"
-IDENT=$(git -C "${DIR}" log -1 --format='%an %cn')
-if [ "${IDENT}" = "agent-go-qrdb agent-go-qrdb" ]; then
-	ok "${NAME}"
-else
-	bad "${NAME}" "identity is '${IDENT}', want 'agent-go-qrdb agent-go-qrdb'"
+	bad "${NAME}" "HEAD moved from the merged bump, or the wrapper was asked to commit"
 fi
 
 NAME="the tagged commit carries the version it is tagged with"
@@ -1372,16 +1317,15 @@ fi
 #
 # The objects can look right for the wrong reason. This pins the exact call
 # list: the repo name passed to every invocation, `-s` on both tags, `--atomic`
-# and an explicit ref list on the push, and no sixth call of any kind.
+# and an explicit tag list on the push, and no fourth call of any kind -- no add,
+# no commit, and no branch in the push.
 # ---------------------------------------------------------------------------
 
 NAME="the signing wrapper is invoked exactly as intended"
 {
-	echo 'go-qrdb|add|VERSION'
-	echo 'go-qrdb|commit|-q|-m|chore(release): v0.2.0-alpha'
 	echo 'go-qrdb|tag|-s|-m|v0.2.0-alpha|v0.2.0-alpha'
 	echo 'go-qrdb|tag|-s|-m|sdk/go/v0.2.0-alpha|sdk/go/v0.2.0-alpha'
-	echo "go-qrdb|push|--atomic|dev|$(git -C "${DIR}" rev-parse HEAD):refs/heads/main|refs/tags/v0.2.0-alpha|refs/tags/sdk/go/v0.2.0-alpha"
+	echo "go-qrdb|push|--atomic|dev|refs/tags/v0.2.0-alpha|refs/tags/sdk/go/v0.2.0-alpha"
 } > "${WORK}/expected.log"
 if diff -u "${WORK}/expected.log" "${DIR}.gitlog" > "${WORK}/log.diff" 2>&1; then
 	ok "${NAME}"
@@ -1402,66 +1346,43 @@ fi
 fi
 
 # ---------------------------------------------------------------------------
-# The VERSION-authoritative path (#13, owner ruling 2026-09-30). The Release
-# workflow reads VERSION from main and passes it back as VERSION=, so main
-# already holds the release commit: the recipe must tag HEAD, make no commit of
-# its own, and still refuse a HEAD that is not signed.
+# VERSION is authoritative (#13, owner ruling 2026-09-30). The recipe tags the
+# merged VERSION/CHANGELOG commit and never writes VERSION itself, so each way
+# HEAD can fail to BE that commit is refused before anything is fetched or
+# written.
 # ---------------------------------------------------------------------------
 
-# bump_version DIR SIGN -- land the reviewed VERSION bump on main, as a merged
-# release PR would, signed or not.
-bump_version() {
-	printf '0.2.0-alpha\n' > "$1/VERSION"
-	git -C "$1" add VERSION
-	if [ "$2" = signed ]; then
-		git -C "$1" -c gpg.format=ssh -c "user.signingkey=${WORK}/signing.key" \
-			commit -q -S -m "chore(release): v0.2.0-alpha"
-	else
-		git -C "$1" commit -q --no-gpg-sign -m "chore(release): v0.2.0-alpha"
-	fi
-	git -C "$1" push -q dev main
-}
-
-NAME="VERSION already naming the release tags HEAD and commits nothing"
-fixture authoritative
-DIR="${WORK}/authoritative"
-bump_version "${DIR}" signed
-HEAD_BEFORE=$(git -C "${DIR}" rev-parse HEAD)
-run "${DIR}" VERSION=v0.2.0-alpha
-if [ "${STATUS}" -ne 0 ]; then
-	bad "${NAME}" "exit ${STATUS}"
-	echo "${OUTPUT}" | sed 's/^/        /'
-elif [ "$(git -C "${DIR}" rev-parse HEAD)" != "${HEAD_BEFORE}" ]; then
-	bad "${NAME}" "HEAD moved: the recipe made a commit of its own"
-elif grep -q '^go-qrdb|commit' "${DIR}.gitlog"; then
-	bad "${NAME}" "the wrapper was asked to commit"
+# The bump has not been merged: VERSION on HEAD still names the last release.
+# The recipe used to write VERSION itself and publish; it must refuse instead.
+fixture not-bumped unbumped
+refuse "a VERSION argument that VERSION on HEAD does not name is refused" \
+	"${WORK}/not-bumped" \
+	"VERSION on HEAD names 0.1.0-alpha, not 0.2.0-alpha; merge the VERSION/CHANGELOG bump first" \
+	VERSION=v0.2.0-alpha
+NAME="a refused VERSION argument publishes nothing"
+if [ -n "$(git ls-remote --tags "${WORK}/not-bumped.git")" ]; then
+	bad "${NAME}" "tags reached the remote"
 else
 	ok "${NAME}"
 fi
 
-NAME="the authoritative path puts every lockstep tag on the reviewed commit"
-BAD_TAG=''
-for T in v0.2.0-alpha sdk/go/v0.2.0-alpha; do
-	[ "$(git -C "${DIR}" rev-parse "${T}^{commit}" 2>/dev/null)" = "${HEAD_BEFORE}" ] || BAD_TAG="${BAD_TAG} ${T}"
-	git -C "${DIR}" cat-file tag "${T}" 2>/dev/null | grep -q 'BEGIN SSH SIGNATURE' || BAD_TAG="${BAD_TAG} ${T}(unsigned)"
-done
-if [ -n "${BAD_TAG}" ]; then
-	bad "${NAME}" "wrong or unsigned:${BAD_TAG}"
-else
-	ok "${NAME}"
-fi
+# The bump is committed and signed, but only here: the remote's main does not
+# hold it, so it was never merged.
+fixture unmerged unbumped
+printf '0.2.0-alpha\n' > "${WORK}/unmerged/VERSION"
+git -C "${WORK}/unmerged" add VERSION
+signed_commit "${WORK}/unmerged" "chore(release): v0.2.0-alpha, not pushed"
+refuse "a bump that the remote's main does not hold is refused" \
+	"${WORK}/unmerged" "is not what dev main holds" VERSION=v0.2.0-alpha
 
-NAME="the authoritative path publishes main plus exactly the two tags"
-if [ "$(git ls-remote "${DIR}.git" | awk '{print $2}' | grep -c -v '\^{}$')" -ne 3 ]; then
-	bad "${NAME}" "remote holds: $(git ls-remote "${DIR}.git" | awk '{print $2}' | tr '\n' ' ')"
-else
-	ok "${NAME}"
-fi
-
-fixture authoritative-unsigned
-bump_version "${WORK}/authoritative-unsigned" unsigned
-refuse "an unsigned HEAD that already names the release is refused" \
-	"${WORK}/authoritative-unsigned" "carries no SSH signature" VERSION=v0.2.0-alpha
+# The bump names the release but is unsigned: not what a protected main holds.
+fixture unsigned-bump unbumped
+printf '0.2.0-alpha\n' > "${WORK}/unsigned-bump/VERSION"
+git -C "${WORK}/unsigned-bump" add VERSION
+git -C "${WORK}/unsigned-bump" commit -q --no-gpg-sign -m "chore(release): v0.2.0-alpha"
+git -C "${WORK}/unsigned-bump" push -q dev main
+refuse "an unsigned HEAD that names the release is refused" \
+	"${WORK}/unsigned-bump" "carries no SSH signature" VERSION=v0.2.0-alpha
 
 if [ "${FAILURES}" -ne 0 ]; then
 	echo "${FAILURES} case(s) failed"

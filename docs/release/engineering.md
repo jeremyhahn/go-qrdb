@@ -38,17 +38,28 @@ limitations under the License.
   `test/buildgates` rejects any `git tag` or `git push` in a `run:` step of
   this workflow or of any other workflow, and rejects any other workflow that
   runs `make release-alpha`.
-- **The VERSION-authoritative path creates no commit.** When `HEAD:VERSION`
-  already equals the requested version, the recipe creates the tags at `HEAD`.
-  It still requires `HEAD` to carry an SSH signature. When `VERSION` names an
-  older release, the recipe keeps its original path: it writes and signs the
-  VERSION commit itself, then tags that commit.
+- **The recipe never writes VERSION and never commits.** It tags `HEAD` and
+  refuses, before anything is fetched or written, unless three things hold:
+  `VERSION` on `HEAD` already names the requested release (otherwise:
+  "VERSION on HEAD names X, not Y; merge the VERSION/CHANGELOG bump first"),
+  `HEAD` carries an SSH signature, and `HEAD` is exactly what the remote's
+  `main` holds. `VERSION=` is still a required argument, as the operator's
+  statement of what they expect to publish; it is checked against the file
+  and never replaces it.
 - **Every tag is annotated, SSH-signed and on the release commit**, verified
   per tag before anything is pushed, and the whole set is audited for lockstep
-  before the push. Any failure before the push removes every tag and commit the
-  run created.
-- **The push is one `git push --atomic`** of the branch and exactly the release
-  tags, never `--tags`.
+  before the push. Any failure before the push removes every tag the run
+  created.
+- **The push is one `git push --atomic`** of exactly the release tags, never
+  `--tags` and never a branch.
+- **The bot token is never persisted.** The checkout sets
+  `persist-credentials: false`. The `make release-alpha` step alone receives
+  `secrets.RELEASE_BOT_TOKEN`, in its env, and `scripts/git-extraheader.sh`
+  turns it into an `http.<server>/.extraheader` set through `GIT_CONFIG_*` in
+  that step's environment, appended after any entries the runner already set.
+  The final audit step reads with the run's own token the same way.
+  `test/buildgates` fails if `persist-credentials` is not `false` or if the bot
+  token reaches any other step.
 - **The run ends with a lockstep audit of the remote's tags**, fetched after
   the push, over the same module set `release-alpha` tagged
   (`lockstep-modules.sh`).
@@ -57,7 +68,7 @@ limitations under the License.
 
 | Name | Kind | Used for |
 |---|---|---|
-| `RELEASE_BOT_TOKEN` | secret | the checkout and the push. Tag protection admits this principal only |
+| `RELEASE_BOT_TOKEN` | secret | the `make release-alpha` step only: its fetch, its read of the remote's `main`, and the push. Tag protection admits this principal only |
 | `RELEASE_BOT_SIGNING_KEY` | secret | the bot's private SSH signing key. It is written to the runner's temporary directory with mode 0600 and removed in an `always()` step |
 | `RELEASE_BOT_NAME`, `RELEASE_BOT_EMAIL` | variables | the tagger identity |
 
@@ -68,7 +79,8 @@ unset. The wrapper refuses too, so a local misuse fails the same way.
 
 | Test | Proves |
 |---|---|
-| `scripts/check-release-alpha_test.sh` (`make test-release-alpha`) | the recipe against a local bare remote and a throwaway signing key, including the VERSION-authoritative path: HEAD is tagged, no commit is made, every tag is signed and on HEAD, exactly the branch and the tags are published, and an unsigned HEAD is refused. These cases fail on the recipe before the path existed |
+| `scripts/check-release-alpha_test.sh` (`make test-release-alpha`) | the recipe against a local bare remote and a throwaway signing key, with the merged bump as the fixture's state: HEAD is tagged, no commit is made, every tag is signed and on HEAD, exactly the two tags are pushed, and three refusals -- a VERSION argument the file does not name, a bump the remote's `main` does not hold, and an unsigned HEAD. The first two fail on the recipe that still wrote VERSION itself |
+| `scripts/git-extraheader_test.sh` (`make test-git-extraheader`) | the per-step credential: git sees the header from the environment only, existing `GIT_CONFIG_*` entries survive, the value is masked, no config file is written, and an empty token stops the step |
 | `scripts/check-tag-lockstep_test.sh` (`make test-tag-lockstep`) | the audit refuses a skewed set, including one whose deepest module's tag sits on another commit |
-| `test/buildgates/release_workflow_test.go` | the workflow's shape, with a mutation for each property: an added tag trigger, a cancellable run, running on github.com, the runner's own token, a hand-written tag push, a typed version, a missing post-push audit, or an audit that does not fetch the remote's tags first |
+| `test/buildgates/release_workflow_test.go` | the workflow's shape, with a mutation for each property: an added tag trigger, a cancellable run, running on github.com, the runner's own token, a hand-written tag push, a typed version, a persisted or unset `persist-credentials`, the bot token at checkout or outside the push step, no per-step header, a missing post-push audit, or an audit that does not fetch the remote's tags first |
 | `test/buildgates/action_pins_test.go` | every `uses:` is pinned to a 40-hex commit |

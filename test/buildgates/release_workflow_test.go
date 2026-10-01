@@ -37,7 +37,22 @@ type releaseStep struct {
 	Uses            string            `yaml:"uses"`
 	Run             string            `yaml:"run"`
 	With            map[string]string `yaml:"with"`
+	Env             map[string]string `yaml:"env"`
 	ContinueOnError string            `yaml:"continue-on-error"`
+}
+
+// botToken is the expression that names the release bot's token. It may
+// appear in exactly one place: the env of the step that pushes.
+const botToken = "secrets.RELEASE_BOT_TOKEN"
+
+// mentions reports whether any value of m contains needle.
+func mentions(m map[string]string, needle string) bool {
+	for _, v := range m {
+		if strings.Contains(v, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // releaseWorkflow is the part of the workflow this gate rules on.
@@ -79,7 +94,14 @@ func releaseWorkflowDefects(src []byte) []string {
 	}
 
 	idx := map[string]int{}
+	tokenSteps := 0
 	for i, s := range job.Steps {
+		if mentions(s.With, botToken) || mentions(s.Env, botToken) || strings.Contains(s.Run, botToken) {
+			tokenSteps++
+			if !strings.Contains(s.Run, "make release-alpha") || !mentions(s.Env, botToken) {
+				defects = append(defects, "step "+s.Name+" receives the release bot's token; only the make release-alpha step may, and only through its env")
+			}
+		}
 		if s.ContinueOnError != "" && s.ContinueOnError != "false" {
 			defects = append(defects, "step "+s.Name+" has continue-on-error; a release step's failure must fail the release")
 		}
@@ -91,8 +113,8 @@ func releaseWorkflowDefects(src []byte) []string {
 		switch {
 		case strings.HasPrefix(s.Uses, "actions/checkout@"):
 			idx["checkout"] = i + 1
-			if s.With["token"] != "${{ secrets.RELEASE_BOT_TOKEN }}" {
-				defects = append(defects, "checkout must authenticate as the release bot (secrets.RELEASE_BOT_TOKEN); tag protection admits only that principal")
+			if s.With["persist-credentials"] != "false" {
+				defects = append(defects, "checkout must set persist-credentials: false; a persisted token in .git/config is readable by every later step")
 			}
 			if s.With["ref"] != "main" || s.With["fetch-depth"] != "0" {
 				defects = append(defects, "checkout must take main with full history; the lockstep audit needs every tag")
@@ -107,12 +129,18 @@ func releaseWorkflowDefects(src []byte) []string {
 			if !strings.Contains(s.Run, "scripts/release-bot-git.sh") {
 				defects = append(defects, "make release-alpha must sign through scripts/release-bot-git.sh")
 			}
+			if !mentions(s.Env, botToken) || !strings.Contains(s.Run, ". ./scripts/git-extraheader.sh") {
+				defects = append(defects, "make release-alpha must receive the release bot's token in its env and turn it into a per-step header with scripts/git-extraheader.sh; tag protection admits only that principal")
+			}
 		case strings.Contains(s.Run, "make check-tag-lockstep"):
 			idx["audit"] = i + 1
 			if !strings.Contains(s.Run, "git fetch --quiet --tags origin") {
 				defects = append(defects, "the post-push lockstep audit must fetch the remote's tags first, or it audits only what this clone sent")
 			}
 		}
+	}
+	if tokenSteps > 1 {
+		defects = append(defects, "the release bot's token reaches more than one step")
 	}
 	for _, want := range []string{"checkout", "version", "release", "audit"} {
 		if idx[want] == 0 {
@@ -153,7 +181,11 @@ func TestTheReleaseGateSeesEachWayTheWorkflowCanDrift(t *testing.T) {
 		"a tag-push trigger":      {"on:\n  workflow_dispatch:\n", "on:\n  workflow_dispatch:\n  push:\n    tags: [\"v*\"]\n", "only trigger"},
 		"cancellable":             {"cancel-in-progress: false", "cancel-in-progress: true", "cancel-in-progress"},
 		"runs on github.com":      {"if: github.server_url != 'https://github.com'", "if: always()", "github.com"},
-		"the runner's own token":  {"token: ${{ secrets.RELEASE_BOT_TOKEN }}", "token: ${{ github.token }}", "release bot"},
+		"a persisted credential":  {"persist-credentials: false", "persist-credentials: true", "persist-credentials"},
+		"no persist setting":      {"          persist-credentials: false\n", "", "persist-credentials"},
+		"the token at checkout":   {"          persist-credentials: false\n", "          persist-credentials: false\n          token: ${{ secrets.RELEASE_BOT_TOKEN }}\n", "only the make release-alpha step"},
+		"the runner's own token":  {"FORGE_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN }}", "FORGE_TOKEN: ${{ github.token }}", "release bot's token in its env"},
+		"no per-step header":      {"          . ./scripts/git-extraheader.sh\n          export RELEASE_BOT_SIGNING_KEY_FILE", "          export RELEASE_BOT_SIGNING_KEY_FILE", "per-step header"},
 		"a hand-written tag push": {"make check-tag-lockstep", "git push origin --tags && make check-tag-lockstep", "by hand"},
 		"a typed version":         {`VERSION="$VERSION_TAG"`, `VERSION="v9.9.9-alpha"`, "authoritative"},
 		"no post-push audit":      {"make check-tag-lockstep", "echo skipped", "audit step"},

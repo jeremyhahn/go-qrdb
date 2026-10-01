@@ -33,9 +33,11 @@ From a workstation the server then refuses the push, which is intended.
 | `AGENT_GIT` | the operator's signing wrapper, from `PATH` | the identity and signing wrapper every git write goes through. The workflow passes `scripts/release-bot-git.sh` |
 | `REPO_NAME` | `go-qrdb` | the literal repository name handed to the wrapper |
 
-If `VERSION` on the current `HEAD` already names the release, the recipe tags
-`HEAD` and makes no commit. Otherwise it writes and signs the VERSION commit
-first.
+`VERSION` is authoritative: the recipe tags `HEAD` and never writes VERSION
+or commits. It refuses unless `VERSION` on `HEAD` already names the requested
+release ("VERSION on HEAD names X, not Y; merge the VERSION/CHANGELOG bump
+first"), `HEAD` is SSH-signed, and `HEAD` is exactly what the remote's `main`
+holds. It pushes only the tags.
 
 ## `make check-tag-lockstep` / `make test-tag-lockstep`
 

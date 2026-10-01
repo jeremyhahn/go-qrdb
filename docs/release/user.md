@@ -49,7 +49,7 @@ repository, and register its SSH signing public key on the account. Then add:
 
 | Name | Kind | Value |
 |---|---|---|
-| `RELEASE_BOT_TOKEN` | Actions secret | an access token for the bot with repository write scope |
+| `RELEASE_BOT_TOKEN` | Actions secret | an access token for the bot with repository write scope. The workflow never persists it in the checkout; only the step that pushes receives it |
 | `RELEASE_BOT_SIGNING_KEY` | Actions secret | the bot's private SSH signing key (OpenSSH format) |
 | `RELEASE_BOT_NAME` | Actions variable | the tagger name |
 | `RELEASE_BOT_EMAIL` | Actions variable | the tagger email |
@@ -84,3 +84,5 @@ dispatching again is the whole recovery. The most common refusals:
 | `not in lockstep` | a published tag set is already skewed; repair that first |
 | `does not resolve standalone` | a nested module's `go.mod` does not match its sources |
 | `carries no SSH signature` | the `VERSION` commit on `main` is unsigned |
+| `VERSION on HEAD names X, not Y` | the VERSION/CHANGELOG bump is not merged; merge it, then release |
+| `is not what ... main holds` | the commit being released is not exactly the remote's `main` |
