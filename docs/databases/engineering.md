@@ -1183,6 +1183,29 @@ CLI and the SDK types. A row that is not on all six is a parity defect.
 | Admin | `qrdb admin migrate vectors` added (OD-11 C) | no |
 
 Breaking rows land in one MINOR release, recorded in the CHANGELOG.
+## Shamir custody per database (contract)
+
+> **Status: CONTRACT** for new work.
+
+- `pkg/ceremony`: the holder engine's scope gains `ScopeDatabase(tenant,
+  database)` (registry prefix `ceremony/tenants/<tenant>/databases/<db>/officers/`).
+  The per-scope holder authority that today serves only tenants becomes the
+  one service for both — constructed for a tenant or for a database — and is
+  installed on the database barrier as its distributor and holder verifier.
+- `pkg/database`: `DatabaseBarrierManager` accepts the `shamir` strategy: a
+  create registers the barrier uninitialized with a Shamir strategy and
+  installs the database's holder authority; `InitializeShamir` distributes
+  through it; reopening re-installs it; drop destroys the scope.
+- `pkg/service`: the database service gains the holder operations of the
+  capability matrix, each resolving the database in the caller's tenant and
+  delegating to the database's holder authority and barrier — the same calls
+  the tenant service makes for a tenant barrier.
+- Every transport serves the matrix; errors classify through
+  `pkg/api/errclass` as every holder error does.
+- The desktop `OfficerBinding` takes a database in its `HolderScope`; the web
+  UI's database wizard offers Shamir with a dedicated store, then enrols the
+  holders (`HolderEnrolmentForms`) and initializes; the database view lists
+  holders and offers rekey and revocation (`HolderRekeyPanel`).
 
 ## Test strategy
 

@@ -103,6 +103,16 @@ qrdb database create secure --data-dir <install-dir>/secure \
      --barrier-enabled --barrier-strategy passphrase --barrier-passphrase "$PASSPHRASE"
 ```
 
+**Split a database's key between people.** A database barrier can be held
+M-of-N by share holders instead of a passphrase — the same share holders as
+the server's barrier, enrolled for this database alone. Create the database
+with a Shamir barrier and a data directory; it stays sealed until custody is
+initialized. Enrol exactly as many holders as there will be shares (each from
+a CSR they generated themselves), initialize, and have every holder claim
+their envelope with the CLI or the desktop app, never in the browser. From
+then on M holders unseal it with `barrier-quorum submit`; rekey and
+revocation work as they do for a tenant barrier.
+
 **Seal and unseal it.**
 
 ```bash

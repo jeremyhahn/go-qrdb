@@ -42,6 +42,11 @@ Both are enrolled the same way, receive a share the same way, and submit it the
 same way. There is one registry, one envelope format, one claim protocol and
 one quorum accumulator for both.
 
+Holders belong to a **scope**: the system barrier (unseal and recovery
+domains), a tenant barrier, or a database barrier
+([../databases/](../databases/architecture.md#shamir-custody-of-a-database-barrier));
+the last two have the unseal domain only.
+
 ### Enrolment
 
 An administrator or a Security Officer enrols a holder by submitting the

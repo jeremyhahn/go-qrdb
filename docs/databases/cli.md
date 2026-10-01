@@ -241,6 +241,32 @@ qrdb --database billing sql query "SELECT * FROM kv"
 
 Absent, the server's default database (`system`) is used.
 
+## Share-holder verbs (Shamir database barrier)
+
+> **Status: CONTRACT** for new work. The same verbs and flags as the tenant
+> forms in [../shamir-custody/cli.md](../shamir-custody/cli.md), taking
+> `--database <name>`; rekey and revocation are authorized by RBAC.
+
+```bash
+qrdb database create vault --data-dir /var/lib/qrdb/vault \
+     --barrier-enabled --barrier-strategy shamir
+qrdb database barrier-officer register --database vault --username alice \
+     --role so --csr alice.csr --out alice.crt
+qrdb database barrier-officer list --database vault
+qrdb database barrier-init-shamir --database vault --threshold 2 --shares 3 \
+     --policy designated
+qrdb database barrier-officer claim --database vault --username alice \
+     --cert alice.crt --key alice.key --out alice.envelope
+qrdb database barrier-quorum submit --database vault --op unseal \
+     --username alice --cert alice.crt --key alice.key --envelope alice.envelope
+qrdb database barrier-rekey --database vault --threshold 2
+qrdb database barrier-officer revoke --database vault --username bob --threshold 2
+```
+
+`qrdb database unseal` with `--secret` and `qrdb database seal` are refused for
+a Shamir database barrier; its holders unseal and seal it with
+`barrier-quorum submit --op unseal|seal`.
+
 ## Parity
 
 Every verb here has a `CommandDefinition` in the integration parity suite.

@@ -801,6 +801,58 @@ store instead of walking it (see "Drop under a binding").
   engine.** The node-local vector store under the system encryptor is the case
   this closes.
 
+## Shamir custody of a database barrier
+
+> **Status: CONTRACT** for new work — written ahead of the code it governs.
+
+A database barrier may be split M-of-N to **share holders** instead of sealed
+by a passphrase. There is no database-specific custody system: a database is
+one more **holder scope** of the one share-holder model in
+[../shamir-custody/](../shamir-custody/architecture.md) — the same registry,
+enrolment, envelope format, claim protocol, quorum accumulator, factor
+policies, rekey and revocation that serve the system and tenant barriers.
+
+- **Scope.** The scope is the pair (tenant, database). A database barrier has
+  the **unseal domain only**, as a tenant barrier does: no recovery key and no
+  root token. One person holds one share, in one role, per scope; the same
+  person may also hold a share of the system, tenant or another database's
+  barrier, each under its own enrolment.
+- **Holder identity.** Enrolment has the ceremony CA issue the holder's
+  certificate in the holder namespace of the database's tenant,
+  `spiffe://<trust-domain>/tenant/<tenant>/holder/<username>`; the CSR
+  contributes only its public key. The authentication layer refuses a holder
+  identity as a login identity, as for every other scope.
+- **Lifecycle.** A database is created with `barrier: {enabled: true, mode:
+  "shamir"}` and no secret. It then has a registered, **uninitialized**
+  barrier and fails closed — its data plane answers sealed — until custody is
+  initialized. Holders are enrolled against the database; initialization
+  (`threshold`, `total_shares` equal to the enrolled holder count, factor
+  `policy`) generates the root key, splits it to the holders and seals each
+  share to its holder in an envelope held only in protected memory. Each
+  holder claims its envelope once. From then on unseal and seal are quorum
+  rounds of the database's holders; a direct `unseal` with a secret and a
+  single-caller `seal` are refused (`ErrShamirUnsealRequiresQuorum`,
+  `ErrShamirBarrierRequiresQuorum`).
+- **Rekey and revocation.** Starting a rekey (new threshold or policy) is
+  RBAC-gated; revoking a holder is a rekey that removes them, refused when the
+  remaining holders cannot meet the threshold. Either completes only with a
+  fresh M-of-N quorum of the current holders.
+- **Where it lives.** The database barrier's wrapped key and holder roster
+  live with the barrier's metadata in the database's dedicated store, beside
+  the passphrase barrier's: a Shamir database barrier needs a dedicated store
+  exactly as a passphrase one does. Holder records live under the database's
+  barrier (encrypted at rest once it is initialized). After a restart the
+  database opens sealed and its holders' authority is re-installed; a quorum
+  unseals it.
+- **Drop.** Dropping the database destroys its holder records, every envelope
+  still held for its holders and every pending challenge.
+
+Rejected: a per-database custodian system or registry (the owner's ruling is
+one share-holder model); reusing the tenant's holders for its databases
+(different keys need different custody, and a holder's share is bound to one
+roster); recovery keys per database (a database barrier, like a tenant
+barrier, has the unseal domain only).
+
 ## What this feature deliberately does not do
 
 - **No cross-database transaction.** One commit targets one binding — see

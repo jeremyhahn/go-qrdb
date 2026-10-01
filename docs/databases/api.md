@@ -287,15 +287,44 @@ discovery on any transport; the Go SDK's MCP transport also dropped `peers` and
 `localNodeCount`.)*
 
 `DatabaseBarrierConfig` fields: `enabled`, `mode` (`passphrase|shamir`),
-`sharesRequired`, `sharesTotal`, `secret`. A per-database barrier is built in
-`passphrase` mode only: `shamir` is refused with
-`database.UnsupportedBarrierStrategyError` (400 / `INVALID_ARGUMENT` on every
-transport) until per-database Shamir share holders ship. *(Corrected: `shamir`
-was listed as served; the server has always refused it, and reported the
-refusal as a server fault.)*
+`sharesRequired`, `sharesTotal`, `secret`. On a create with `enabled` and
+`mode: "passphrase"`, the server initializes the barrier from `secret` in the
+same call; `secret` is request-only, never persisted and never returned. A
+create with `mode: "shamir"` registers an uninitialized barrier that its
+share holders' custody initializes — see the share-holder matrix below
+(contract).
 
 `DatabaseConnectionConfig` fields: `transport` (`tcp|quic`), `address`,
 `caFile`, `certFile`, `keyFile`.
+
+## Capability matrix — database barrier share holders
+
+> **Status: CONTRACT** for new work. A database barrier with Shamir custody
+> has the unseal domain only; the holder model, error classes and identity
+> gating are [../shamir-custody/api.md](../shamir-custody/api.md)'s. `{name}`
+> is the database, resolved in the caller's tenant.
+
+| Capability | REST | gRPC / Unix | QUIC | MCP tool | Embedded (`Client.Database()`) | `scp` permission |
+|---|---|---|---|---|---|---|
+| Enrol holder | `POST /v1/databases/{name}/barrier/officers` | `DatabaseBarrierOfficerRegister` | `db.BarrierOfficerRegister` | `qrdb_database_barrier_officer_register` | `DatabaseBarrierOfficerRegister` | `databases:officer_register` |
+| List holders | `GET /v1/databases/{name}/barrier/officers` | `DatabaseBarrierOfficerList` | `db.BarrierOfficerList` | `qrdb_database_barrier_officer_list` | `DatabaseBarrierOfficerList` | `databases:officer_list` |
+| Initialize Shamir custody | `POST /v1/databases/{name}/barrier/shamir/initialize` | `DatabaseBarrierShamirInitialize` | `db.BarrierShamirInitialize` | `qrdb_database_barrier_shamir_initialize` | `DatabaseBarrierShamirInitialize` | `databases:initialize_shamir` |
+| Claim begin | `POST /v1/databases/{name}/barrier/officers/{username}/claim/begin` | `DatabaseBarrierShareClaimBegin` | `db.BarrierShareClaimBegin` | `qrdb_database_barrier_share_claim_begin` | `DatabaseBarrierShareClaimBegin` | **identity-gated** |
+| Claim complete | `POST /v1/databases/{name}/barrier/officers/{username}/claim/complete` | `DatabaseBarrierShareClaimComplete` | `db.BarrierShareClaimComplete` | `qrdb_database_barrier_share_claim_complete` | `DatabaseBarrierShareClaimComplete` | **identity-gated** |
+| Quorum challenge | `POST /v1/databases/{name}/barrier/quorum/begin` | `DatabaseBarrierQuorumBegin` | `db.BarrierQuorumBegin` | `qrdb_database_barrier_quorum_begin` | `DatabaseBarrierQuorumBegin` | **identity-gated** |
+| Quorum submission | `POST /v1/databases/{name}/barrier/quorum/submit` | `DatabaseBarrierQuorumSubmit` | `db.BarrierQuorumSubmit` | `qrdb_database_barrier_quorum_submit` | `DatabaseBarrierQuorumSubmit` | **identity-gated** |
+| Start rekey | `POST /v1/databases/{name}/barrier/rekey/start` | `DatabaseBarrierRekeyStart` | `db.BarrierRekeyStart` | `qrdb_database_barrier_rekey_start` | `DatabaseBarrierRekeyStart` | `databases:rekey` |
+| Revoke holder | `POST /v1/databases/{name}/barrier/officers/revoke` | `DatabaseBarrierOfficerRevoke` | `db.BarrierOfficerRevoke` | `qrdb_database_barrier_officer_revoke` | `DatabaseBarrierOfficerRevoke` | `databases:officer_revoke` |
+
+Unseal and seal of a Shamir database barrier have no route of their own: each
+is the quorum submission with `op` `unseal` or `seal`. The new permissions are
+granted to the Admin role, as `tenant_barrier:*` are; a holder identity holds
+none of them.
+
+Initialization request: `{"threshold": 3, "total_shares": 5, "policy":
+"designated"}` — `total_shares` must equal the number of enrolled holders. The
+response is share-free: `{"threshold", "total_shares", "share_count"}`. A
+create with `mode: "shamir"` carries no `secret`; one that does is refused.
 
 ## Status and error mapping
 
