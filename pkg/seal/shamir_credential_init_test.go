@@ -44,18 +44,18 @@ func TestInitialize_RefusesShamirWithoutHolders(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			strat, err := NewShamirStrategy(2, 3)
+			shamirStrategy, err := NewShamirStrategy(2, 3)
 			if err != nil {
 				t.Fatal(err)
 			}
 			b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), BarrierConfig{
 				RootKeyPath: "root-key",
 				Shamir:      &ShamirConfig{Threshold: 2, TotalShares: 3},
-			}, strat)
+			}, shamirStrategy)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := init(b, strat); !errors.Is(err, ErrShamirInitializeRequiresHolders) {
+			if err := init(b, shamirStrategy); !errors.Is(err, ErrShamirInitializeRequiresHolders) {
 				t.Fatalf("err = %v, want ErrShamirInitializeRequiresHolders", err)
 			}
 			if exists, err := b.base.Exists(ctx, b.config.RootKeyPath); err != nil || exists {

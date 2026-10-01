@@ -17,7 +17,6 @@ package rest
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -790,92 +789,3 @@ func tenantToResponse(info *tenant.TenantInfo) *tenantResponse {
 // ---------------------------------------------------------------------------
 // Per-tenant barrier Security Officer handlers (§7.3 SO design, tenant surface)
 // ---------------------------------------------------------------------------
-
-// mapTenantError maps tenant domain errors to the appropriate HTTP status code.
-func mapTenantError(err error) int {
-	var se *tenant.StoreError
-	var be *tenant.BarrierError
-	var ite *tenant.InvalidTenantIDError
-	var itce *tenant.InvalidTenantIDCharError
-	var ise *tenant.InvalidStrategyError
-	var tse *tenant.TenantScopeError
-	var idre *tenant.InvalidDataRootError
-	var dne *tenant.DataRootNotEmptyError
-	var dite *tenant.DataRootIsolationTypeError
-	var tde *tenant.TenantDeletedError
-	var thd *tenant.TenantHasDatabasesError
-	var rte *tenant.ReservedTenantIDError
-	var tdpe *tenant.TenantDataProbeError
-
-	switch {
-	case errors.As(err, &tse):
-		return http.StatusForbidden
-	case errors.Is(err, tenant.ErrEmptyDataRoot):
-		return http.StatusBadRequest
-	case errors.As(err, &idre):
-		return http.StatusBadRequest
-	case errors.As(err, &dite):
-		return http.StatusBadRequest
-	case errors.As(err, &dne):
-		return http.StatusConflict
-	case errors.Is(err, tenant.ErrEmptyTenantID):
-		return http.StatusBadRequest
-	case errors.Is(err, tenant.ErrEmptyTenantName):
-		return http.StatusBadRequest
-	case errors.Is(err, tenant.ErrEmptyPassphrase):
-		return http.StatusBadRequest
-	case errors.Is(err, tenant.ErrEmptyShare):
-		return http.StatusBadRequest
-	case errors.Is(err, tenant.ErrSystemTenantMustBePrefix):
-		return http.StatusBadRequest
-	case errors.Is(err, tenant.ErrNilQuotas):
-		return http.StatusBadRequest
-	case errors.Is(err, tenant.ErrNilEntitlements):
-		return http.StatusBadRequest
-	case errors.As(err, &ise):
-		return http.StatusBadRequest
-	case errors.Is(err, tenant.ErrBarrierIsolationUnavailable):
-		return http.StatusUnprocessableEntity
-	case errors.Is(err, tenant.ErrBarrierNotEnabled):
-		return http.StatusUnprocessableEntity
-	case errors.Is(err, tenant.ErrTenantAlreadyExists):
-		return http.StatusConflict
-	case errors.As(err, &tde):
-		// A deleted tenant id is retired permanently, so the id is not
-		// available -- the same answer ErrTenantAlreadyExists gives, for the
-		// same reason. 410 Gone would describe the deleted TENANT; what the
-		// caller asked for is the ID, and the conflict is with the deletion.
-		return http.StatusConflict
-	case errors.As(err, &thd):
-		// The tenant still owns databases. A precondition the caller can
-		// satisfy by dropping them, which the error names.
-		return http.StatusConflict
-	case errors.Is(err, tenant.ErrTenantHasData):
-		return http.StatusConflict
-	case errors.Is(err, tenant.ErrTenantDataUnverifiable):
-		// The node could not confirm the tenant is empty, so it refused the
-		// isolation change rather than risk orphaning data.
-		return http.StatusServiceUnavailable
-	case errors.As(err, &tdpe):
-		return http.StatusServiceUnavailable
-	case errors.Is(err, tenant.ErrTenantNotFound):
-		return http.StatusNotFound
-	case errors.As(err, &ite):
-		return http.StatusBadRequest
-	case errors.As(err, &itce):
-		// An id carrying a path separator or control byte cannot name a
-		// tenant. It fell through to 500 before.
-		return http.StatusBadRequest
-	case errors.As(err, &rte):
-		// A reserved id is not the caller's to name, on create or on delete.
-		// It fell through to 500 before, which reported a client error as a
-		// server fault.
-		return http.StatusBadRequest
-	case errors.As(err, &se):
-		return http.StatusInternalServerError
-	case errors.As(err, &be):
-		return http.StatusInternalServerError
-	default:
-		return http.StatusInternalServerError
-	}
-}

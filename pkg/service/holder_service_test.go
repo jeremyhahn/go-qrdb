@@ -70,12 +70,12 @@ type holderSvcEnv struct {
 
 func shamirTestBarrier(t *testing.T, backend seal.StorageBackend, m, n int) *seal.StorageBarrier {
 	t.Helper()
-	strat, err := seal.NewShamirStrategy(m, n)
+	shamirStrategy, err := seal.NewShamirStrategy(m, n)
 	require.NoError(t, err)
 	b, err := seal.NewStorageBarrier(testLogger(), backend, seal.BarrierConfig{
 		RootKeyPath: "root-key",
 		Shamir:      &seal.ShamirConfig{Threshold: m, TotalShares: n},
-	}, strat)
+	}, shamirStrategy)
 	require.NoError(t, err)
 	return b
 }

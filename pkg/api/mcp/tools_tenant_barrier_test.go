@@ -24,12 +24,13 @@ import (
 	"strings"
 	"testing"
 
+	mcpserver "github.com/mark3labs/mcp-go/server"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
-	mcpserver "github.com/mark3labs/mcp-go/server"
 )
 
 // ---------------------------------------------------------------------------

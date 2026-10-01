@@ -231,12 +231,12 @@ func testFactors(t testing.TB) *authfactors.FactorRegistry {
 // Shamir custody at threshold-of-total.
 func shamirBarrier(t testing.TB, backend seal.StorageBackend, threshold, total int) *seal.StorageBarrier {
 	t.Helper()
-	strat, err := seal.NewShamirStrategy(threshold, total)
+	shamirStrategy, err := seal.NewShamirStrategy(threshold, total)
 	require.NoError(t, err)
 	b, err := seal.NewStorageBarrier(testLogger(), backend, seal.BarrierConfig{
 		RootKeyPath: "test/root-key",
 		Shamir:      &seal.ShamirConfig{Threshold: threshold, TotalShares: total},
-	}, strat)
+	}, shamirStrategy)
 	require.NoError(t, err)
 	return b
 }

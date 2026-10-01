@@ -154,7 +154,11 @@ are not reconstructed here — their history is in the git log.
 - **SO PIN checks are hashed and constant-time, and fail closed.** Every SO
   PIN comparison goes through the `pin.PINBackend`; raw PINs are never
   compared with `!=`. Every SO-PIN-gated operation is refused without a PIN
-  backend (REST 412, `FAILED_PRECONDITION` elsewhere).
+  backend (REST 412, `FAILED_PRECONDITION` elsewhere). Seal, rekey start and
+  holder revocation are among them. v0.24.0-alpha skipped the barrier SO PIN
+  check on a node with no PIN backend. A backend with no SO PIN provisioned
+  yet still admits the call. An embedded or `sdk/go/node` node has its
+  seal-store PIN backend by default.
 - **Transports wipe the share bytes they decode** from a quorum submission.
 - **A Shamir barrier can no longer be initialized from a credential.**
   `Initialize`/`InitializeWithStrategy` on a Shamir barrier wrote an envelope

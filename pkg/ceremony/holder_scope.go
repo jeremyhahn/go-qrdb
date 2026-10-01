@@ -519,6 +519,11 @@ func (h *holderScope) completeClaim(ctx context.Context, username, nonceHex stri
 	if err != nil || !mtls.VerifyNonceSignature(pub, c.Nonce, signature) {
 		return nil, ErrChallengeVerificationFailed
 	}
+	// The envelope is the share already sealed (HPKE) to this holder's own
+	// key: ciphertext, which leaves the node as the claim response. The
+	// store's protected copy is destroyed by Claim; this one has to outlive
+	// the function to be delivered.
+	//secure:unwiped HPKE ciphertext sealed to the holder's key, returned to the transport as the one-time claim response
 	envelope, err := h.store.Claim(username)
 	if err != nil {
 		return nil, err

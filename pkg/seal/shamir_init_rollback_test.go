@@ -24,7 +24,7 @@ import (
 // fresh memory backend with a capture distributor holding total holders.
 func newUninitializedShamirBarrier(t *testing.T, threshold, total int) (*StorageBarrier, StorageBackend, *captureDistributor) {
 	t.Helper()
-	strat, err := NewShamirStrategy(threshold, total)
+	shamirStrategy, err := NewShamirStrategy(threshold, total)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +32,7 @@ func newUninitializedShamirBarrier(t *testing.T, threshold, total int) (*Storage
 	b, err := NewStorageBarrier(testLogger(), backend, BarrierConfig{
 		RootKeyPath: "root-key",
 		Shamir:      &ShamirConfig{Threshold: threshold, TotalShares: total},
-	}, strat)
+	}, shamirStrategy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,14 +96,14 @@ func TestInitializeShamir_DistributionFailureRollsBack(t *testing.T) {
 
 	// After a restart — a new barrier over the same storage — initialization
 	// is a fresh one, and its shares open the barrier.
-	strat, err := NewShamirStrategy(2, 3)
+	shamirStrategy, err := NewShamirStrategy(2, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
 	restarted, err := NewStorageBarrier(testLogger(), backend, BarrierConfig{
 		RootKeyPath: "root-key",
 		Shamir:      &ShamirConfig{Threshold: 2, TotalShares: 3},
-	}, strat)
+	}, shamirStrategy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,14 +178,14 @@ func TestInitializeShamir_FailedRollbackReportsBothFailures(t *testing.T) {
 			ctx := context.Background()
 			stuck := errors.New("delete failed")
 			backend := &deleteFailingBackend{StorageBackend: NewMemoryBackend(), path: path, err: stuck}
-			strat, err := NewShamirStrategy(2, 3)
+			shamirStrategy, err := NewShamirStrategy(2, 3)
 			if err != nil {
 				t.Fatal(err)
 			}
 			b, err := NewStorageBarrier(testLogger(), backend, BarrierConfig{
 				RootKeyPath: "root-key",
 				Shamir:      &ShamirConfig{Threshold: 2, TotalShares: 3},
-			}, strat)
+			}, shamirStrategy)
 			if err != nil {
 				t.Fatal(err)
 			}

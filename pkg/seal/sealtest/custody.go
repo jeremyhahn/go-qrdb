@@ -121,18 +121,26 @@ func (d *Distributor) PrepareRoster(_ context.Context, domain seal.QuorumDomain,
 // Distribute implements seal.CeremonyDistributor.
 func (d *Distributor) Distribute(_ context.Context, secret []byte, roster *seal.HolderRoster, _ []byte) (int, error) {
 	defer secure.Wipe(secret)
-	raw, err := quicraftshamir.Split(secret, roster.Threshold, roster.Total)
+	// SplitBytes returns each share's wire value (the bytes of Share.Value),
+	// in index order. The double keeps them as strings because a test reads
+	// them back to submit; the split buffers themselves are wiped here.
+	values, err := quicraftshamir.SplitBytes(secret, roster.Threshold, roster.Total)
 	if err != nil {
 		return 0, err
 	}
-	byHolder := make(map[string]string, len(raw))
+	defer func() {
+		for _, v := range values {
+			secure.Wipe(v)
+		}
+	}()
+	byHolder := make(map[string]string, len(values))
 	for _, h := range roster.Holders {
-		byHolder[h.Username] = raw[h.ShareIndex-1].Value
+		byHolder[h.Username] = string(values[h.ShareIndex-1])
 	}
 	d.mu.Lock()
 	d.shares[roster.Domain] = byHolder
 	d.mu.Unlock()
-	return len(raw), nil
+	return len(values), nil
 }
 
 // Committed implements seal.CeremonyDistributor: removed holders stop being

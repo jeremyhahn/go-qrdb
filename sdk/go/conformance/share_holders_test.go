@@ -626,7 +626,6 @@ func holderStillEnrolled(t *testing.T, admin transport.BarrierClient, name strin
 // scenario on every SDK transport.
 func TestShareHolders_ConformAcrossEverySDKTransport(t *testing.T) {
 	for _, tk := range transportKinds {
-		tk := tk
 		t.Run(string(tk), func(t *testing.T) {
 			e := newHolderE2E(t, tk)
 

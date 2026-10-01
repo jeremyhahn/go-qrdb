@@ -236,14 +236,14 @@ func holderNames(n int) []string {
 // left unsealed, as initialization leaves it.
 func newHolderFixture(t testing.TB, threshold, total int) *holderFixture {
 	t.Helper()
-	strat, err := NewShamirStrategy(threshold, total)
+	shamirStrategy, err := NewShamirStrategy(threshold, total)
 	if err != nil {
 		t.Fatal(err)
 	}
 	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), BarrierConfig{
 		RootKeyPath: "root-key",
 		Shamir:      &ShamirConfig{Threshold: threshold, TotalShares: total},
-	}, strat)
+	}, shamirStrategy)
 	if err != nil {
 		t.Fatal(err)
 	}

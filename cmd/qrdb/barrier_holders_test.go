@@ -64,7 +64,7 @@ type cliHolderStack struct {
 func newCLIHolderStack(t *testing.T, threshold, total int) *cliHolderStack {
 	t.Helper()
 	ca, _ := ceremonytest.NewCA(t, "CLI Holder CA")
-	strat, err := seal.NewShamirStrategy(threshold, total)
+	shamirStrategy, err := seal.NewShamirStrategy(threshold, total)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func newCLIHolderStack(t *testing.T, threshold, total int) *cliHolderStack {
 	barrier, err := seal.NewStorageBarrier(log, seal.NewMemoryBackend(), seal.BarrierConfig{
 		RootKeyPath: "root-key",
 		Shamir:      &seal.ShamirConfig{Threshold: threshold, TotalShares: total},
-	}, strat)
+	}, shamirStrategy)
 	if err != nil {
 		t.Fatal(err)
 	}

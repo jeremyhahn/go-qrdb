@@ -498,7 +498,7 @@ func TestQuorum_DistributionFailureKeepsTheOldShareSet(t *testing.T) {
 // TestInitializeShamir_Guards covers initialization refusals.
 func TestInitializeShamir_Guards(t *testing.T) {
 	ctx := context.Background()
-	strat, _ := NewShamirStrategy(2, 3)
+	shamirStrategy, _ := NewShamirStrategy(2, 3)
 	mk := func(cfg *ShamirConfig, strategies ...SealingStrategy) *StorageBarrier {
 		b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), BarrierConfig{RootKeyPath: "rk", Shamir: cfg}, strategies...)
 		if err != nil {
@@ -507,21 +507,21 @@ func TestInitializeShamir_Guards(t *testing.T) {
 		return b
 	}
 
-	if _, err := mk(nil, strat).InitializeShamir(ctx, ""); !errors.Is(err, ErrShamirNotConfigured) {
+	if _, err := mk(nil, shamirStrategy).InitializeShamir(ctx, ""); !errors.Is(err, ErrShamirNotConfigured) {
 		t.Fatalf("no shamir config = %v", err)
 	}
 	if _, err := mk(&ShamirConfig{Threshold: 2, TotalShares: 3}, testSoftwareStrategy(t)).InitializeShamir(ctx, ""); !errors.Is(err, ErrShamirNotConfigured) {
 		t.Fatalf("no shamir strategy = %v", err)
 	}
-	if _, err := mk(&ShamirConfig{Threshold: 2, TotalShares: 3}, strat).InitializeShamir(ctx, ""); !errors.Is(err, ErrCeremonyDistributorNotConfigured) {
+	if _, err := mk(&ShamirConfig{Threshold: 2, TotalShares: 3}, shamirStrategy).InitializeShamir(ctx, ""); !errors.Is(err, ErrCeremonyDistributorNotConfigured) {
 		t.Fatalf("no distributor = %v", err)
 	}
-	b := mk(&ShamirConfig{Threshold: 4, TotalShares: 3}, strat)
+	b := mk(&ShamirConfig{Threshold: 4, TotalShares: 3}, shamirStrategy)
 	b.SetCeremonyDistributor(newCaptureDistributor("h1", "h2", "h3"))
 	if _, err := b.InitializeShamir(ctx, ""); !errors.Is(err, ErrShamirThresholdInvalid) {
 		t.Fatalf("threshold over total = %v", err)
 	}
-	b = mk(&ShamirConfig{Threshold: 2, TotalShares: 3}, strat)
+	b = mk(&ShamirConfig{Threshold: 2, TotalShares: 3}, shamirStrategy)
 	b.SetCeremonyDistributor(newCaptureDistributor("h1", "h2"))
 	var mismatch *HolderCountMismatchError
 	if _, err := b.InitializeShamir(ctx, ""); !errors.As(err, &mismatch) {

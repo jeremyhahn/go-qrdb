@@ -57,11 +57,17 @@ var ClaimInProcess = Claim{}
 // failure -- an unrouted call, say -- does not count as the refusal.
 func ClaimRefusedWithStatus(status int) Claim {
 	return Claim{refused: func(err error) bool {
+		// Every *transport.RequestError in the chain is checked, not only the
+		// outermost: a transport may wrap the one carrying the status.
 		for err != nil {
-			if re, ok := err.(*transport.RequestError); ok && re.StatusCode == status {
+			var re *transport.RequestError
+			if !errors.As(err, &re) {
+				return false
+			}
+			if re.StatusCode == status {
 				return true
 			}
-			err = errors.Unwrap(err)
+			err = re.Unwrap()
 		}
 		return false
 	}}

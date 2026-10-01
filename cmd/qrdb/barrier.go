@@ -278,12 +278,11 @@ func validateBarrierInitFlags(f *barrierInitFlags) error {
 
 // barrierInitShamirFlags holds the flag set for `barrier init-shamir`.
 type barrierInitShamirFlags struct {
-	passphrase string
-	threshold  int
-	total      int
-	policy     string
-	soPin      string
-	userPin    string
+	threshold int
+	total     int
+	policy    string
+	soPin     string
+	userPin   string
 }
 
 // newBarrierInitShamirCmd returns the canonical `barrier init-shamir`

@@ -28,12 +28,12 @@ import (
 // and therefore unsealed.
 func shamirBarrier(t *testing.T, c *Custody) *seal.StorageBarrier {
 	t.Helper()
-	strat, err := seal.NewShamirStrategy(2, 3)
+	shamirStrategy, err := seal.NewShamirStrategy(2, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
 	b, err := seal.NewStorageBarrier(slog.New(slog.NewTextHandler(io.Discard, nil)), seal.NewMemoryBackend(),
-		seal.BarrierConfig{RootKeyPath: "root-key", Shamir: &seal.ShamirConfig{Threshold: 2, TotalShares: 3}}, strat)
+		seal.BarrierConfig{RootKeyPath: "root-key", Shamir: &seal.ShamirConfig{Threshold: 2, TotalShares: 3}}, shamirStrategy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,12 +65,12 @@ func TestCustody_SealAndUnsealThroughQuorums(t *testing.T) {
 func TestCustody_RevokedHolderDropsOut(t *testing.T) {
 	ctx := context.Background()
 	c := NewCustody("alice", "bob", "carol", "dave")
-	strat, err := seal.NewShamirStrategy(2, 4)
+	shamirStrategy, err := seal.NewShamirStrategy(2, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
 	b, err := seal.NewStorageBarrier(slog.New(slog.NewTextHandler(io.Discard, nil)), seal.NewMemoryBackend(),
-		seal.BarrierConfig{RootKeyPath: "root-key", Shamir: &seal.ShamirConfig{Threshold: 2, TotalShares: 4}}, strat)
+		seal.BarrierConfig{RootKeyPath: "root-key", Shamir: &seal.ShamirConfig{Threshold: 2, TotalShares: 4}}, shamirStrategy)
 	if err != nil {
 		t.Fatal(err)
 	}

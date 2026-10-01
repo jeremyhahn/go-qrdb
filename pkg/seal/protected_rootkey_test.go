@@ -65,6 +65,7 @@ func sealForTest(t *testing.T, aead cipher.AEAD, plaintext, aad []byte) (nonce, 
 		}
 		return nonce, aead.Seal(nil, nonce, plaintext, aad)
 	}
+	// #nosec G407 -- NonceSize() is 0 only for cipher.NewGCMWithRandomNonce, which samples a fresh 96-bit nonce inside the FIPS module on every Seal and prepends it to the frame. gosec reads the nil as a hardcoded IV; passing anything else makes Seal panic.
 	frame := aead.Seal(nil, nil, plaintext, aad)
 	const wireNonce = 12
 	return frame[:wireNonce], frame[wireNonce:]

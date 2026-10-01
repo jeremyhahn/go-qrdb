@@ -118,15 +118,15 @@ func TestCeremonyInit(t *testing.T) {
 // are the caller's input on every transport, including when wrapped.
 func TestFactorParamsError_IsInvalidArgument(t *testing.T) {
 	err := &FactorParamsError{Factor: "piv", Err: errors.New("not an object")}
-	for _, e := range []error{err, &wrappedErr{inner: err}} {
+	for _, e := range []error{err, &wrappedError{inner: err}} {
 		if got := errclass.Classify(e); got != errclass.InvalidArgument {
 			t.Fatalf("Classify(%v) = %v, want InvalidArgument", e, got)
 		}
 	}
 }
 
-// wrappedErr hides an error behind one layer of wrapping.
-type wrappedErr struct{ inner error }
+// wrappedError hides an error behind one layer of wrapping.
+type wrappedError struct{ inner error }
 
-func (w *wrappedErr) Error() string { return "wrapped: " + w.inner.Error() }
-func (w *wrappedErr) Unwrap() error { return w.inner }
+func (w *wrappedError) Error() string { return "wrapped: " + w.inner.Error() }
+func (w *wrappedError) Unwrap() error { return w.inner }
