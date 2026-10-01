@@ -47,6 +47,31 @@ func TestProvision_SecondInitVerifiesInsteadOfColliding(t *testing.T) {
 	}
 }
 
+// TestRequireProvisionedSOPIN_RefusesUntilProvisioned pins the gate rekey
+// start and holder revocation use: unlike RequireSOPIN it refuses while no SO
+// PIN has been provisioned, and it fails closed without a backend.
+func TestRequireProvisionedSOPIN_RefusesUntilProvisioned(t *testing.T) {
+	if err := RequireProvisionedSOPIN(nil, "so-pin-123"); !errors.Is(err, ErrBackendNotConfigured) {
+		t.Fatalf("no backend = %v, want ErrBackendNotConfigured", err)
+	}
+	b := newProvisionBackend(t)
+	if err := RequireProvisionedSOPIN(b, "so-pin-123"); !errors.Is(err, ErrPINNotSet) {
+		t.Fatalf("not provisioned = %v, want ErrPINNotSet", err)
+	}
+	if err := RequireSOPIN(b, "so-pin-123"); err != nil {
+		t.Fatalf("RequireSOPIN still admits an unprovisioned backend: %v", err)
+	}
+	if err := Provision(b, "so-pin-123", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := RequireProvisionedSOPIN(b, "so-pin-999"); !errors.Is(err, ErrPINInvalid) {
+		t.Fatalf("wrong PIN = %v, want ErrPINInvalid", err)
+	}
+	if err := RequireProvisionedSOPIN(b, "so-pin-123"); err != nil {
+		t.Fatalf("right PIN = %v", err)
+	}
+}
+
 // TestProvision_NeverOverwritesAPIN refuses a second provision with a
 // different PIN instead of replacing it.
 func TestProvision_NeverOverwritesAPIN(t *testing.T) {
