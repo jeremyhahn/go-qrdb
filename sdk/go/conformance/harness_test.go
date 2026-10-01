@@ -31,7 +31,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -269,35 +268,34 @@ func matrix() []cell {
 // Bring-up
 // ---------------------------------------------------------------------------
 
-// freeTCPPort reserves and releases a loopback port. A zero GRPCPort would be
-// rewritten to the fixed default 63002 by buildNodeServerConfig, which
-// collides between parallel test binaries.
+// freeTCPPort reserves a listen port through the shared harness allocator. A
+// zero GRPCPort would be rewritten to the fixed default 63002 by
+// buildNodeServerConfig, which collides between parallel test binaries.
+//
+// It used to bind "127.0.0.1:0", read the number and close: a port inside the
+// kernel's ephemeral range, free only at the instant of the probe and checked
+// on TCP alone. The REST cell's HTTP/3 sibling binds the same number on UDP,
+// and a system-scope enable-encryption recycles the server -- closing and
+// re-binding its listeners -- so any outbound socket on a loaded host could
+// take the number in between and leave the migration unable to reopen ("root
+// barrier strategy never became passphrase"). qrdbdharness draws from below
+// the ephemeral range, certifies both protocols, and locks the number against
+// every other test process.
 func freeTCPPort(t *testing.T) int {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	port, err := qrdbdharness.ReserveTCPPort()
 	if err != nil {
 		t.Fatalf("reserve port: %v", err)
-	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	if err := ln.Close(); err != nil {
-		t.Fatalf("release port: %v", err)
 	}
 	return port
 }
 
-// freeUDPPort is freeTCPPort's counterpart for the QUIC cells. QUIC rides UDP,
-// and a port free on TCP says nothing about the UDP port of the same number —
-// binding the TCP one and hoping would be a coin flip run under load, which is
-// how a matrix acquires a flake that looks like a transport bug.
+// freeUDPPort is freeTCPPort's counterpart for the QUIC cells.
 func freeUDPPort(t *testing.T) int {
 	t.Helper()
-	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	port, err := qrdbdharness.ReserveUDPPort()
 	if err != nil {
 		t.Fatalf("reserve udp port: %v", err)
-	}
-	port := conn.LocalAddr().(*net.UDPAddr).Port
-	if err := conn.Close(); err != nil {
-		t.Fatalf("release udp port: %v", err)
 	}
 	return port
 }

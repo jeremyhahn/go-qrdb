@@ -21,8 +21,9 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
-	"net"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
 // freePort returns a TCP port with nothing bound to it.
@@ -33,15 +34,15 @@ import (
 // distinct ports explicitly, or a test will silently enroll against another
 // test's advertiser -- which is how this file first failed, fetching an
 // anchor-only bundle from a neighbouring test and reporting a missing CA key.
+//
+// The port comes from the shared harness allocator: a "127.0.0.1:0" probe
+// closed before the advertiser binds hands out an ephemeral-range number any
+// outbound socket -- or another test process -- can take in between.
 func freePort(t *testing.T) int {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	port, err := qrdbdharness.ReserveTCPPort()
 	if err != nil {
 		t.Fatalf("reserve port: %v", err)
-	}
-	port := l.Addr().(*net.TCPAddr).Port
-	if err := l.Close(); err != nil {
-		t.Fatalf("release reserved port: %v", err)
 	}
 	return port
 }

@@ -37,11 +37,6 @@ func fixedRangeFile(t *testing.T, contents string) string {
 	return path
 }
 
-// closerFunc adapts a function to io.Closer for listener stubs.
-type closerFunc func() error
-
-func (f closerFunc) Close() error { return f() }
-
 // unlocked is a portLocker that always grants the lock. Fixture allocators use
 // it so their exact candidate sequences do not depend on which real ports the
 // default allocator -- or another test process -- has locked.
@@ -87,6 +82,66 @@ func TestReservePortsAreDisjointAcrossProcesses(t *testing.T) {
 		if _, ours := defaultAllocator.reserved[port]; ours {
 			t.Errorf("port %d was handed out by this process AND by a concurrent one", port)
 		}
+	}
+}
+
+// TestProbeBothProtocolsRefusesAPortHeldOnUDP: a number free on TCP but held
+// on UDP is not free for a REST listener, whose HTTP/3 sibling binds the same
+// number on UDP. A TCP-only probe certified it (go-qrdb#248).
+func TestProbeBothProtocolsRefusesAPortHeldOnUDP(t *testing.T) {
+	holder, err := net.ListenPacket("udp", net.JoinHostPort(loopbackHost, "0"))
+	if err != nil {
+		t.Fatalf("hold a UDP port: %v", err)
+	}
+	defer func() { _ = holder.Close() }()
+	addr := holder.LocalAddr().String()
+
+	if probe, err := probeBothProtocols(addr); err == nil {
+		_ = probe.Close()
+		t.Fatalf("probe certified %s, which is held on UDP", addr)
+	}
+	// The TCP side the probe opened first was released, not leaked.
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("the refused probe kept %s on TCP: %v", addr, err)
+	}
+	_ = ln.Close()
+}
+
+// TestProbeBothProtocolsHoldsBothUntilClosed: a certified port is held on both
+// protocols while the batch is decided, and released on both by Close.
+func TestProbeBothProtocolsHoldsBothUntilClosed(t *testing.T) {
+	port, err := ReserveTCPPort()
+	if err != nil {
+		t.Fatalf("ReserveTCPPort: %v", err)
+	}
+	addr := net.JoinHostPort(loopbackHost, strconv.Itoa(port))
+	probe, err := probeBothProtocols(addr)
+	if err != nil {
+		t.Fatalf("probe %s: %v", addr, err)
+	}
+	if ln, err := net.Listen("tcp", addr); err == nil {
+		_ = ln.Close()
+		t.Fatal("the probe does not hold TCP")
+	}
+	if pc, err := net.ListenPacket("udp", addr); err == nil {
+		_ = pc.Close()
+		t.Fatal("the probe does not hold UDP")
+	}
+	if err := probe.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	for _, network := range []string{"tcp", "udp"} {
+		var c io.Closer
+		if network == "tcp" {
+			c, err = net.Listen(network, addr)
+		} else {
+			c, err = net.ListenPacket(network, addr)
+		}
+		if err != nil {
+			t.Fatalf("%s %s still held after Close: %v", network, addr, err)
+		}
+		_ = c.Close()
 	}
 }
 

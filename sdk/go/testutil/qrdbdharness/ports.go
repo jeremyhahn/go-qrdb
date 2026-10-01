@@ -15,6 +15,7 @@
 package qrdbdharness
 
 import (
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -146,11 +147,14 @@ func ReserveTCPPort() (int, error) {
 // ReserveTCPPorts reserves n free TCP ports for server listen addresses. Ports
 // are drawn from the reserved non-ephemeral window and bind-verified before
 // being returned; probe listeners are held open until the whole batch is
-// determined, and no port is ever handed out twice by this process.
+// determined, and no port is ever handed out twice by this process or by any
+// other harness process in the same network namespace.
+//
+// Every port is verified free on UDP as well as TCP (see probeBothProtocols),
+// so a REST admin port -- whose HTTP/3 sibling binds the same number on UDP --
+// is safe to take from here.
 func ReserveTCPPorts(n int) ([]int, error) {
-	return defaultAllocator.reserve("TCP", n, func(addr string) (io.Closer, error) {
-		return net.Listen("tcp", addr)
-	})
+	return defaultAllocator.reserve("TCP", n, probeBothProtocols)
 }
 
 // ReserveUDPPort reserves a single free UDP port. See ReserveUDPPorts.
@@ -163,13 +167,37 @@ func ReserveUDPPort() (int, error) {
 }
 
 // ReserveUDPPorts reserves n free UDP ports for Raft/QUIC listen addresses.
-// It shares its reservation table with ReserveTCPPorts, so a number handed out
-// for one protocol is never handed out for the other.
+// It shares its reservation table, its cross-process lock and its dual-stack
+// probe with ReserveTCPPorts, so a number handed out for one protocol is never
+// handed out for the other.
 func ReserveUDPPorts(n int) ([]int, error) {
-	return defaultAllocator.reserve("UDP", n, func(addr string) (io.Closer, error) {
-		return net.ListenPacket("udp", addr)
-	})
+	return defaultAllocator.reserve("UDP", n, probeBothProtocols)
 }
+
+// probeBothProtocols binds addr on TCP and on UDP and holds both. TCP and UDP
+// are separate port namespaces: a number free on one says nothing about the
+// other, and a REST listener takes its port on TCP while its HTTP/3 sibling
+// co-binds the same number on UDP (go-qrdb#248, go-qrdb#257). Since one table
+// hands each number out once for either protocol, certifying it on both lets
+// any caller use it for any listener family.
+func probeBothProtocols(addr string) (io.Closer, error) {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	pc, err := net.ListenPacket("udp", addr)
+	if err != nil {
+		_ = ln.Close()
+		return nil, err
+	}
+	return closerFunc(func() error { return errors.Join(ln.Close(), pc.Close()) }), nil
+}
+
+// closerFunc adapts a function to io.Closer.
+type closerFunc func() error
+
+// Close calls f.
+func (f closerFunc) Close() error { return f() }
 
 // reserve draws candidates from the window and keeps the ones that bind.
 //

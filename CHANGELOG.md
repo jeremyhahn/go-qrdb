@@ -596,7 +596,9 @@ are not reconstructed here — their history is in the git log.
   clusters dialled each other and never elected a leader. Every reserved port
   is now also locked across processes by an abstract Unix socket held for the
   life of the process, so callers of `ReserveTCPPorts`/`ReserveUDPPorts` need
-  no change.
+  no change. Every reserved port is also verified free on both TCP and UDP,
+  so a REST admin port -- whose HTTP/3 sibling binds the same number on UDP
+  -- can be taken from either function.
 
 ### Security
 
