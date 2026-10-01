@@ -30,9 +30,13 @@
 // key that belongs to a different owner is compatible with it; because
 // records are only appended or deleted, a grant can never be taken back.
 //
-// Releasing is revoking the owner's lease, which deletes every one of its
-// records in one replicated operation -- and which is also exactly what lease
-// expiry does when the owner's process dies.
+// The lease belongs to the client session (Session), not to the
+// transaction: the owners of a session's successive transactions bind their
+// records to one lease the session renews, so a transaction neither grants
+// nor revokes one. Releasing an owner deletes its own records; if that
+// fails, the session revokes the lease, which deletes every record bound to
+// it -- and which is also exactly what lease expiry does when the session's
+// process dies.
 //
 // Deadlocks are detected by the requester, right after it enqueues and before
 // it waits, from a linearizable read of the lock table: edges are only ever

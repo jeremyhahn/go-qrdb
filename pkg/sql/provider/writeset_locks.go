@@ -67,12 +67,14 @@ func (c currentRead) compare(key string) service.Compare {
 	return modRevisionCompare(key, c.modRevision)
 }
 
-// lockOwner returns the transaction's lock owner, creating it on first use.
-func (l *rowLocks) lockOwner() *rowlock.Owner {
+// lockOwner returns the transaction's lock owner, creating it on first use
+// as an owner of session's lease: the connection's lease, shared by all of
+// its transactions (see rowlock.Session).
+func (l *rowLocks) lockOwner(session *rowlock.Session) *rowlock.Owner {
 	l.ownerMu.Lock()
 	defer l.ownerMu.Unlock()
 	if l.owner == nil {
-		l.owner = rowlock.NewOwner()
+		l.owner = session.NewOwner()
 	}
 	return l.owner
 }

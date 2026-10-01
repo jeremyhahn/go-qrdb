@@ -31,8 +31,15 @@ func New(deps Deps, scope string, opts ...Option) (*Table, error)
 func WithLeaseTTL(seconds int64) Option
 func (t *Table) Scope() string
 
+// Session is one client session's lock lease, shared by the owners of its
+// successive transactions; one lease per scope, revoked after a TTL unused.
+func NewSession() *Session
+func (s *Session) NewOwner() *Owner
+func (s *Session) Close(ctx context.Context) error // revokes every lease
+
 // Owner is one transaction's lock holder. Its zero value is not usable;
-// NewOwner allocates its identity.
+// Session.NewOwner allocates its identity, bound to the session's lease.
+// NewOwner allocates one with a lease of its own, revoked by Release.
 func NewOwner() *Owner
 func (o *Owner) Acquire(ctx context.Context, t *Table, keys []string, mode Mode, wait time.Duration) error
 func (o *Owner) Holds(key string, mode Mode) bool
@@ -73,7 +80,9 @@ type TransactionAbortedError struct{ Cause error }
 type RowLockingUnavailableError struct{ Table string }
 
 // QRDBSession implements sql.LifecycleAwareSession: SessionEnd releases an
-// abandoned transaction's row locks.
+// abandoned transaction's row locks and revokes the connection's lock lease.
+// Every transaction of the session -- each autocommit statement is one --
+// locks through an owner of the session's rowlock.Session.
 func (s *QRDBSession) SessionEnd()
 ```
 
@@ -156,7 +165,7 @@ database's own (registry-namespaced) store.
 key    = "__sys:rowlock/" + hex8(len(rowKey)) + rowKey + "/" + ownerID + "/" + modeChar
 prefix = "__sys:rowlock/" + hex8(len(rowKey)) + rowKey + "/"        // one row's queue
 value  = [0x01 version][mode byte][8-byte big-endian enqueue time, unix nanoseconds]
-lease  = the owning transaction's lease
+lease  = the owning session's lease in this store
 ```
 
 - `hex8` is the row key's length as eight lowercase hex digits. The length
@@ -182,15 +191,25 @@ lease  = the owning transaction's lease
    whose owner differs is mode-compatible with it (`S`/`S` only).
 3. **Grants are monotonic.** Records are only appended or deleted, so a granted
    record stays granted until its owner releases it.
-4. **One lease per locking transaction.** Granted on the first lock, renewed
-   every `DefaultLeaseTTL/3`, revoked by `Release`. Every record the owner
-   writes carries it. `DefaultLeaseTTL` is 10 seconds.
+4. **One lease per session and store.** A `rowlock.Session` (one per SQL
+   connection) grants a lease at its first lock in a store, renews it every
+   `DefaultLeaseTTL/3`, and binds every record of every owner it makes in
+   that store to it. Each transaction is still its own owner, with its own
+   identity. A lease no owner has used for one `DefaultLeaseTTL` is revoked by
+   the session; `Session.Close` revokes them all. `DefaultLeaseTTL` is 10
+   seconds.
 5. **Release points.** `COMMIT` (after the commit proposal is decided, whether it
    succeeded or lost its CAS), `ROLLBACK`, the end of an autocommit statement,
    a deadlock-victim rollback, the start of a new transaction on the session
    (defensively), and the session's end (`SessionEnd`, connection close, driver
    `Close`). An infrastructure failure of `COMMIT` that leaves the write set in
-   place for a retry also leaves the locks in place.
+   place for a retry also leaves the locks in place. **Releasing deletes the
+   owner's own records** — every record it wrote and did not withdraw — in
+   ⌈N / 1,000⌉ proposals. If that delete fails, the session revokes the lease
+   instead, which deletes every record bound to it, and grants a fresh lease
+   for its next transaction: no record outlives its owner by more than the
+   lease TTL. An owner made by `NewOwner`, with a lease of its own, releases
+   by revoking it.
 6. **Enqueue is one proposal per batch.** A statement's locks on many keys are
    written in as few transactions as the per-proposal ceiling allows, never one
    per key.
@@ -396,7 +415,27 @@ A statement that locks N rows it does not already hold costs, uncontended:
 | grant evaluation | N linearizable range reads, one per row's queue | no |
 | current reads | N linearizable point reads (`GetRevision`) | no |
 | deadlock detection | one linearizable range read of the lock table, only when a request has to wait | — |
-| release | one lease revoke per transaction, whatever N is | — |
+| lease | none: the session's lease is granted once and reused by every transaction | — |
+| release | ⌈N / 1,000⌉ Raft proposals deleting the owner's records | yes |
+
+A pessimistic autocommit `UPDATE` or `DELETE` of one row therefore costs three
+proposals — the enqueue, the row's own compare-and-swap, the release — where a
+lease per transaction cost five (a grant and a revoke besides).
+
+**Why the release is not folded into the row's write.** It would save one more
+proposal, and it is not done, because the write does not know it is the
+statement's last. Outside a transaction each row an autocommit statement
+writes is its own compare-and-swap, committed as the row is written (see
+[architecture.md](architecture.md#timeouts)); a statement's locks must be held
+until the statement ends — a foreign-key cascade writes its child rows after
+the parent, and a multi-row `UPDATE` writes row by row — and the end is
+`StatementComplete`, which arrives after the last write was already proposed.
+Folding the delete into a write would release the statement's locks before
+its later writes. Folding it into the statement's end would mean buffering an
+autocommit statement's writes and committing them at once, which makes a
+multi-row autocommit statement atomic — a change to what a statement means
+outside a transaction, not an optimisation of how it releases. The enqueue
+cannot be folded either: the locks must be granted before the rows are read.
 
 The queue and current reads are per key, not per batch. The read surfaces
 offer no multi-key read that is cheaper than its parts: `MVCCKVServicer` reads
@@ -417,6 +456,12 @@ mean.
   detection (two-party, three-party, upgrade), the detection bound, lease
   expiry releasing a crashed holder's locks, keepalive keeping a live holder's,
   lost-lock detection, release idempotence, fault injection on every servicer.
+  The session lease: successive owners sharing one lease (one grant, no
+  revoke), release deleting the owner's records and waking the next waiter, a
+  deadlock victim's records deleted while its session keeps the lease, a
+  crashed session's locks expiring with its lease, a failed delete revoking
+  the lease, an idle lease revoked, a lost lease replaced, one lease per store
+  and `Close` revoking them all.
   Run against a real in-memory MVCC engine, lessor and watch hub behind the
   local backend, not against doubles that re-state the grant rule; two
   independent table handles over one store stand in for two nodes.
@@ -429,7 +474,10 @@ mean.
   session override, release at ROLLBACK, DDL and session end. Statement
   atomicity inside a transaction: a cascade that times out on a locked child
   row leaves its parent in place, and a duplicate key on a statement's last
-  row undoes the statement's other rows.
+  row undoes the statement's other rows. Pessimistic autocommit statements on
+  one connection granting one lease and revoking none, holding their locks to
+  the end of the statement and leaving no record behind, and a deadlock
+  victim's session locking again on the same lease.
 - Wire: `pkg/sql/mysql` over a real MySQL wire connection (NOWAIT 3572, timeout
   1205, deadlock 1213, SKIP LOCKED 1235, `SET qrdb_concurrency`, a dropped
   connection releasing its locks); `pkg/sql/pgsql` through the parse handler

@@ -132,7 +132,7 @@ func (t *RelationalTable) writeLock(ctx *sqle.Context) (req lockRequest, ok bool
 
 // lockKeys takes req on keys for the statement's transaction.
 func (t *RelationalTable) lockKeys(ctx *sqle.Context, keys []string, req lockRequest) error {
-	_, ws := lockState(ctx)
+	sess, ws := lockState(ctx)
 	if ws == nil {
 		return nil
 	}
@@ -146,7 +146,7 @@ func (t *RelationalTable) lockKeys(ctx *sqle.Context, keys []string, req lockReq
 	if err != nil {
 		return err
 	}
-	err = ws.lockOwner().Acquire(ctx, tbl, keys, req.mode, req.wait)
+	err = ws.lockOwner(sess.locks).Acquire(ctx, tbl, keys, req.mode, req.wait)
 	return lockFailure(ctx, ws, err)
 }
 

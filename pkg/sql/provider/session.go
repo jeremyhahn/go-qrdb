@@ -30,6 +30,7 @@ import (
 	_ "github.com/dolthub/go-mysql-server/sql/variables"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/rowlock"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -71,6 +72,12 @@ type QRDBSession struct {
 
 	// statementIndexOrigin -- see SetStatementIndexOrigin.
 	statementIndexOrigin atomic.Bool
+
+	// locks is the connection's row-lock lease, shared by the lock owners
+	// of its successive transactions -- every autocommit statement is one
+	// -- so a locking statement does not grant and revoke a lease of its
+	// own (see rowlock.Session). SessionEnd revokes it.
+	locks *rowlock.Session
 }
 
 // Compile-time interface assertion: QRDBSession implements
@@ -90,6 +97,7 @@ func NewSession(base *sqle.BaseSession, identity *auth.Identity) *QRDBSession {
 	return &QRDBSession{
 		BaseSession: base,
 		identity:    identity,
+		locks:       rowlock.NewSession(),
 	}
 }
 
@@ -397,13 +405,14 @@ func (s *QRDBSession) CommandBegin() error {
 func (s *QRDBSession) CommandEnd() {}
 
 // SessionEnd implements sql.LifecycleAwareSession: the connection is gone,
-// so its open transaction is abandoned and every row lock it holds is
-// released now. A connection that dies without this call is covered by the
-// locks' lease expiring.
+// so its open transaction is abandoned, every row lock it holds is released
+// now, and its lock lease is revoked. A connection that dies without this
+// call is covered by the lease expiring.
 func (s *QRDBSession) SessionEnd() {
 	if ws := s.ws.Swap(nil); ws != nil {
 		_ = ws.releaseLocks(context.Background())
 	}
+	_ = s.locks.Close(context.Background())
 }
 
 // CreateSavepoint marks the current position of the session's write-set

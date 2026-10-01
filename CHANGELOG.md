@@ -83,6 +83,17 @@ are not reconstructed here — their history is in the git log.
 - Database metadata records an `incarnation` (see Fixed). Metadata without one reopens with
   an empty incarnation and keeps working.
 
+- **Pessimistic autocommit statements share their connection's lock lease.**
+  Every locking transaction granted a lease before its first lock and revoked
+  it after its last, two Raft proposals on every pessimistic autocommit
+  `UPDATE`, `DELETE` and `INSERT`. A connection now holds one lease per
+  database it locks in, renewed while it lives and revoked when it ends or
+  after ten seconds unused; each transaction deletes its own lock records
+  when it ends. A crashed connection's locks still expire with its lease, a
+  deadlock victim is still rolled back, and an autocommit statement still
+  releases its locks when it ends. New in `pkg/rowlock`: `Session`,
+  `NewSession`, `Session.NewOwner`, `Session.Close`.
+
 ### Fixed
 
 - **Dynamic membership works on the default `pebble` state machine.** A lease-attached put

@@ -20,21 +20,20 @@ import (
 	"encoding/hex"
 	"errors"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
-// releaseTimeout bounds the lease revoke Release issues. Release runs on
-// paths whose own context may already be cancelled (a dropped connection, a
-// statement that hit its deadline), so it detaches from the caller's
-// cancellation and applies its own bound instead.
+// releaseTimeout bounds the record deletes and lease revokes Release issues.
+// Release runs on paths whose own context may already be cancelled (a
+// dropped connection, a statement that hit its deadline), so it detaches
+// from the caller's cancellation and applies its own bound instead.
 const releaseTimeout = 10 * time.Second
 
-// Owner is one transaction's lock holder: a fresh identity, the lease every
-// one of its records is bound to, and the locks it holds.
+// Owner is one transaction's lock holder: a fresh identity, the session
+// lease every one of its records is bound to, and the locks it holds.
 //
 // An owner is used by the one goroutine driving its transaction's current
 // statement, but Release may also arrive from another (a connection closing
@@ -43,26 +42,41 @@ const releaseTimeout = 10 * time.Second
 type Owner struct {
 	id string
 
+	// session holds the lease the owner's records are bound to. private is
+	// true for an owner made by NewOwner, whose session is its own: its
+	// release revokes the lease rather than deleting its records one by one.
+	session *Session
+	private bool
+
 	mu       sync.Mutex
 	table    *Table
-	leaseID  int64
+	lease    *sessionLease
 	held     map[string]Mode
 	released bool
-	stop     context.CancelFunc
-	stopped  chan struct{}
 
-	// lost is set by the keepalive loop when the lease can no longer be
-	// renewed: every record of this owner is gone, or about to be.
-	lost atomic.Bool
+	// records are the keys of every record the owner has written and not
+	// withdrawn: what Release deletes.
+	records map[string]struct{}
 }
 
-// NewOwner returns an owner with a fresh, random identity and no locks.
+// NewOwner returns an owner with a fresh, random identity, no locks, and a
+// lease of its own, granted at its first lock and revoked by Release. An
+// owner of a long-lived client session is made with Session.NewOwner
+// instead, which shares the session's lease.
 func NewOwner() *Owner {
+	o := newOwner()
+	o.session = NewSession()
+	o.private = true
+	return o
+}
+
+// newOwner returns an owner with a fresh, random identity and no session.
+func newOwner() *Owner {
 	var raw [ownerIDLen / 2]byte
 	// crypto/rand.Read never returns an error on the platforms Go supports
 	// (it panics internally if the system source fails), per its contract.
 	_, _ = rand.Read(raw[:])
-	return &Owner{id: hex.EncodeToString(raw[:]), held: make(map[string]Mode)}
+	return &Owner{id: hex.EncodeToString(raw[:]), held: make(map[string]Mode), records: make(map[string]struct{})}
 }
 
 // ID returns the owner's identity as it appears in its lock records.
@@ -111,7 +125,7 @@ func (o *Owner) Acquire(ctx context.Context, t *Table, keys []string, mode Mode,
 		o.mu.Unlock()
 		return &ScopeMismatchError{Bound: bound, Requested: t.scope}
 	}
-	if o.lost.Load() {
+	if o.lease != nil && o.lease.lost.Load() {
 		o.mu.Unlock()
 		o.releaseAfterLoss(ctx)
 		return &LockLostError{}
@@ -126,10 +140,11 @@ func (o *Owner) Acquire(ctx context.Context, t *Table, keys []string, mode Mode,
 		o.mu.Unlock()
 		return err
 	}
-	leaseID := o.leaseID
+	leaseID := o.lease.id
 	o.mu.Unlock()
 
 	written, err := t.enqueue(ctx, pending, o.id, mode, leaseID)
+	o.wrote(written, mode)
 	if err == nil {
 		err = t.leaseAlive(ctx, leaseID)
 	}
@@ -317,57 +332,56 @@ func (o *Owner) markHeld(key string, mode Mode) {
 	}
 }
 
-// ensureLease grants the owner's lease and starts renewing it, once.
-// Callers hold o.mu.
+// ensureLease binds the owner to its session's lease in the owner's store,
+// once. Callers hold o.mu.
 func (o *Owner) ensureLease(ctx context.Context) error {
-	if o.leaseID != 0 {
+	if o.lease != nil {
 		return nil
 	}
-	l, err := o.table.deps.Lease.Grant(ctx, o.table.leaseTTL)
+	l, err := o.session.acquire(ctx, o.table)
 	if err != nil {
 		return err
 	}
-	o.leaseID = l.ID
-	kctx, stop := context.WithCancel(context.Background())
-	o.stop = stop
-	o.stopped = make(chan struct{})
-	go o.keepalive(kctx, o.table, l.ID, o.stopped)
+	o.lease = l
 	return nil
 }
 
-// keepalive renews the lease every third of its TTL until stopped. A lease
-// that can no longer be renewed marks the owner lost: its records are, or
-// soon will be, deleted by expiry.
-func (o *Owner) keepalive(ctx context.Context, t *Table, leaseID int64, stopped chan struct{}) {
-	defer close(stopped)
-	interval := time.Duration(t.leaseTTL) * time.Second / 3
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if _, err := t.deps.Lease.KeepAlive(ctx, leaseID); err != nil {
-				var gone *service.LeaseNotFoundError
-				if errors.As(err, &gone) {
-					o.lost.Store(true)
-					return
-				}
-				// A transient failure (a leader change, a slow quorum) is
-				// retried on the next tick; two misses still leave a third
-				// of the TTL.
-			}
-		}
+// wrote records that the owner's records for mode on keys were written.
+func (o *Owner) wrote(keys []string, mode Mode) {
+	if len(keys) == 0 {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for _, k := range keys {
+		o.records[recordKey(k, o.id, mode)] = struct{}{}
 	}
 }
 
-// Release releases every lock the owner holds by revoking its lease, which
-// deletes all of its records in one replicated operation, and stops renewing
-// it. It is idempotent and safe to call from any goroutine. The revoke runs
-// detached from ctx's cancellation, bounded by its own timeout, because the
-// paths that release -- a dropped connection, a statement past its deadline
-// -- are exactly the ones whose context is already done.
+// withdrawn records that the owner's records for mode on keys were deleted.
+func (o *Owner) withdrawn(keys []string, mode Mode) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for _, k := range keys {
+		delete(o.records, recordKey(k, o.id, mode))
+	}
+}
+
+// Release releases every lock the owner holds. It is idempotent and safe to
+// call from any goroutine.
+//
+// An owner sharing a session's lease deletes its own records -- in one
+// proposal per thousand -- and leaves the lease to the session's next
+// transaction. If the delete fails, the session's lease is revoked instead,
+// which removes the records just the same; a record is never left bound to
+// a lease the session goes on renewing. An owner made by NewOwner revokes
+// its private lease, which deletes all of its records in one replicated
+// operation.
+//
+// The deletes and the revoke run detached from ctx's cancellation, bounded
+// by their own timeout, because the paths that release -- a dropped
+// connection, a statement past its deadline -- are exactly the ones whose
+// context is already done.
 func (o *Owner) Release(ctx context.Context) error {
 	o.mu.Lock()
 	if o.released {
@@ -375,31 +389,29 @@ func (o *Owner) Release(ctx context.Context) error {
 		return nil
 	}
 	o.released = true
-	t, leaseID, stop, stopped := o.table, o.leaseID, o.stop, o.stopped
+	t, l := o.table, o.lease
+	records := make([]string, 0, len(o.records))
+	for k := range o.records {
+		records = append(records, k)
+	}
 	o.held = make(map[string]Mode)
+	o.records = make(map[string]struct{})
 	o.mu.Unlock()
 
-	if stop != nil {
-		stop()
-		<-stopped
-	}
-	if t == nil || leaseID == 0 {
+	if l == nil {
 		return nil
+	}
+	if o.private {
+		return o.session.Close(ctx)
 	}
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
 	defer cancel()
-	if err := t.deps.Lease.Revoke(rctx, leaseID); err != nil {
-		var gone *service.LeaseNotFoundError
-		if errors.As(err, &gone) {
-			return nil
-		}
-		return err
-	}
-	return nil
+	err := t.deleteRecords(rctx, records)
+	return o.session.release(rctx, l, err == nil)
 }
 
 // lostAtEnqueue handles a lease found ended at enqueue: expired, or revoked
-// by the leader's sweep, after the owner's last renewal and before the
+// by the leader's sweep, after the session's last renewal and before its
 // keepalive noticed. Every record the owner held went with the lease, so the
 // transaction has lost its locks; the request fails with *LockLostError and
 // the owner is released, exactly as a waiter whose record disappeared.
@@ -408,10 +420,17 @@ func (o *Owner) Release(ctx context.Context) error {
 // carries a lease ID no longer in the lessor is stored but attached to
 // nothing (the state machine does not refuse it), so no lease revoke or
 // expiry would ever remove it: left behind, it would block its row forever.
+// The lease is marked lost, so the session grants a live one for its next
+// transaction.
 func (o *Owner) lostAtEnqueue(ctx context.Context, t *Table, written []string, key string, mode Mode) error {
+	if l := o.lease; l != nil {
+		l.lost.Store(true)
+	}
 	if len(written) > 0 {
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
-		_ = t.withdraw(rctx, written, o.id, mode)
+		if err := t.withdraw(rctx, written, o.id, mode); err == nil {
+			o.withdrawn(written, mode)
+		}
 		cancel()
 	}
 	_ = o.Release(ctx)
@@ -428,8 +447,9 @@ func (o *Owner) releaseAfterLoss(ctx context.Context) {
 // keys it does not hold in mode (a granted lock stays held until Release),
 // detached from ctx's cancellation for the same reason as Release. A failure
 // is not returned: the caller is already failing the request with the error
-// that made it withdraw, and the records are bound to the lease, which
-// Release or expiry removes regardless.
+// that made it withdraw, and a record that could not be deleted stays on
+// the owner's list, so Release deletes it -- or, failing that, revokes the
+// lease it is bound to.
 //
 // What a failed withdraw costs: the owner's transaction stays open after a
 // lock-wait timeout or NOWAIT (only the statement fails), so a waiting
@@ -456,5 +476,7 @@ func (o *Owner) withdrawBestEffort(ctx context.Context, t *Table, keys []string,
 	}
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
 	defer cancel()
-	_ = t.withdraw(rctx, unheld, o.id, mode)
+	if err := t.withdraw(rctx, unheld, o.id, mode); err == nil {
+		o.withdrawn(unheld, mode)
+	}
 }

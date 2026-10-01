@@ -134,17 +134,36 @@ one waits too: FIFO, no starvation of writers.
 
 ### Lease binding
 
-A transaction's first lock grants a lease (reusing the [lease](../leases/)
-subsystem) and attaches every lock record it ever writes to that lease. The
-session keeps the lease alive while the transaction is open.
+A **session** — one client connection — holds one lease per database it locks
+in (reusing the [lease](../leases/) subsystem), granted at its first lock and
+renewed while the session lives. Every lock record any of the session's
+transactions writes is attached to that lease; each transaction still has an
+identity of its own, so two transactions of one session are two owners in the
+queue.
 
-- `COMMIT` and `ROLLBACK` **revoke the lease**, which deletes every one of the
-  transaction's lock records in one replicated operation.
+- `COMMIT`, `ROLLBACK` and the end of an autocommit statement **delete the
+  transaction's own records**, in one replicated transaction per thousand
+  records. The lease stays for the session's next transaction, so a
+  pessimistic autocommit statement grants and revokes no lease of its own.
+- If that delete fails, the session **revokes the lease** instead, which
+  removes every record bound to it, and grants a fresh one for its next
+  transaction. A record is never left bound to a lease the session goes on
+  renewing.
+- A lease no transaction has used for one lease TTL is revoked, so an idle or
+  abandoned connection holds nothing and renews nothing. The connection's end
+  revokes its leases.
 - A session that crashes, or whose node is lost, stops renewing; the leader's
   expiry sweep deletes its records when the lease runs out, and its waiters
-  wake.
+  wake — exactly as when every transaction had a lease of its own.
 - A lost lease never silently grants the transaction anything: the CAS at
   commit is still there (see above).
+
+Why the lease is the session's and not the transaction's: a lease grant and a
+lease revoke are two Raft proposals, and in pessimistic mode every autocommit
+`UPDATE`, `DELETE` and `INSERT` is a locking transaction, so a lease per
+transaction added two proposals to every write statement whatever it locked.
+What a lease is *for* — the liveness of the holder, so a dead holder's locks
+expire — is a property of the connection, which is what now holds it.
 
 ### Wait queue and wake-up
 
@@ -167,8 +186,10 @@ that closes the cycle is the **victim**. Two requests that close the same cycle
 at the same instant can both see it and both abort — detection errs toward an
 extra abort, never toward a missed deadlock.
 
-The victim's **whole transaction is rolled back** and its lease revoked, as in
-InnoDB, and the client receives MySQL **1213** / PostgreSQL **40P01**.
+The victim's **whole transaction is rolled back** and every lock record it
+wrote deleted, as in InnoDB, and the client receives MySQL **1213** /
+PostgreSQL **40P01**. The victim's session keeps its lease for its next
+transaction.
 
 Detection reads at most a bounded number of lock records. A database whose
 lock table is larger than that bound treats the requester as the victim rather
@@ -227,8 +248,9 @@ multi-row statement inside a transaction when it must be all-or-nothing.
   so after a `TRUNCATE` new rows live under keys nobody holds a lock on. DDL
   takes no row locks and does not wait for them — there are no metadata locks
   — and the transaction that held locks on the old generation fails its
-  commit on the existing generation fence with 1213. Its lock records go with
-  its lease, not with the truncated keyspace.
+  commit on the existing generation fence with 1213. Its lock records go when
+  that transaction ends (or with its session's lease), not with the truncated
+  keyspace.
 - **The drop fence.** `DROP TABLE` behaves like `TRUNCATE` for lock holders.
   `DROP DATABASE` reclaims the whole namespace, lock records included; a
   waiter whose own record disappears is told its lock request was lost and its

@@ -222,8 +222,8 @@ func TestLockRowForUpdate_RefusesARowThatChangedSinceItWasRead(t *testing.T) {
 	// A row read elsewhere (a cascade) that still matches is accepted and
 	// is now held.
 	require.NoError(t, tbl.lockMatchedRow(ctx, rowKey, stored))
-	_, ws := lockState(ctx)
-	assert.True(t, ws.lockOwner().Holds(rowKey, rowlock.ModeExclusive))
+	sess, ws := lockState(ctx)
+	assert.True(t, ws.lockOwner(sess.locks).Holds(rowKey, rowlock.ModeExclusive))
 	require.NoError(t, tbl.lockMatchedRow(ctx, rowKey, stored), "a held row is not re-checked")
 
 	// One computed from a different version is refused, retryably.

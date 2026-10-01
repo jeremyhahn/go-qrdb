@@ -198,11 +198,22 @@ func (t *Table) leaseAlive(ctx context.Context, leaseID int64) error {
 
 // withdraw deletes owner's records for mode on keys.
 func (t *Table) withdraw(ctx context.Context, keys []string, owner string, mode Mode) error {
-	for start := 0; start < len(keys); start += maxRecordsPerProposal {
-		end := min(start+maxRecordsPerProposal, len(keys))
+	records := make([]string, len(keys))
+	for i, k := range keys {
+		records[i] = recordKey(k, owner, mode)
+	}
+	return t.deleteRecords(ctx, records)
+}
+
+// deleteRecords deletes the lock records named by records -- full record
+// keys -- in as few transactions as maxRecordsPerProposal allows. Deleting a
+// record that is already gone is not an error.
+func (t *Table) deleteRecords(ctx context.Context, records []string) error {
+	for start := 0; start < len(records); start += maxRecordsPerProposal {
+		end := min(start+maxRecordsPerProposal, len(records))
 		ops := make([]service.Op, 0, end-start)
-		for _, k := range keys[start:end] {
-			ops = append(ops, service.Op{Type: service.OpDelete, Key: []byte(recordKey(k, owner, mode))})
+		for _, r := range records[start:end] {
+			ops = append(ops, service.Op{Type: service.OpDelete, Key: []byte(r)})
 		}
 		if _, err := t.deps.Txn.Execute(ctx, nil, ops, nil); err != nil {
 			return err

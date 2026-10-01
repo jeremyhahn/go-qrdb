@@ -163,7 +163,7 @@ func TestRelease_RevokeFailure_IsReturned(t *testing.T) {
 	var inj *injectedError
 	require.ErrorAs(t, a.Release(context.Background()), &inj)
 	// The records stay bound to the lease, which expiry still removes.
-	require.NoError(t, s.deps.Lease.Revoke(context.Background(), a.leaseID))
+	require.NoError(t, s.deps.Lease.Revoke(context.Background(), a.lease.id))
 }
 
 func TestRelease_AlreadyRevokedLease_IsNotAnError(t *testing.T) {
@@ -171,7 +171,7 @@ func TestRelease_AlreadyRevokedLease_IsNotAnError(t *testing.T) {
 	tbl := s.table(t)
 	a := NewOwner()
 	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeShared, 0))
-	require.NoError(t, s.deps.Lease.Revoke(context.Background(), a.leaseID))
+	require.NoError(t, s.deps.Lease.Revoke(context.Background(), a.lease.id))
 	require.NoError(t, a.Release(context.Background()))
 }
 
@@ -181,13 +181,13 @@ func TestKeepalive_RevokedLease_MarksTheOwnerLost(t *testing.T) {
 	a := NewOwner()
 	t.Cleanup(func() { _ = a.Release(context.Background()) })
 	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeShared, 0))
-	require.NoError(t, s.deps.Lease.Revoke(context.Background(), a.leaseID))
+	require.NoError(t, s.deps.Lease.Revoke(context.Background(), a.lease.id))
 
 	deadline := time.Now().Add(3 * time.Second)
-	for !a.lost.Load() && time.Now().Before(deadline) {
+	for !a.lease.lost.Load() && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}
-	require.True(t, a.lost.Load(), "a lease that can no longer be renewed must be noticed")
+	require.True(t, a.lease.lost.Load(), "a lease that can no longer be renewed must be noticed")
 	var lost *LockLostError
 	require.ErrorAs(t, a.Acquire(context.Background(), tbl, []string{keyB}, ModeShared, 0), &lost)
 }
@@ -215,8 +215,8 @@ func TestAcquire_EnqueueOnAnEndedLease_IsALostLock(t *testing.T) {
 	a := NewOwner()
 	t.Cleanup(func() { _ = a.Release(context.Background()) })
 	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeShared, 0))
-	require.NoError(t, s.deps.Lease.Revoke(context.Background(), a.leaseID))
-	require.False(t, a.lost.Load(), "the keepalive has not noticed yet")
+	require.NoError(t, s.deps.Lease.Revoke(context.Background(), a.lease.id))
+	require.False(t, a.lease.lost.Load(), "the keepalive has not noticed yet")
 
 	err := a.Acquire(context.Background(), tbl, []string{keyB}, ModeExclusive, 0)
 	var lost *LockLostError

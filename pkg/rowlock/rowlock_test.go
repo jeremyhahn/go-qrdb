@@ -412,7 +412,7 @@ func TestAcquire_WaiterWhoseLeaseIsRevoked_GetsLockLost(t *testing.T) {
 	waitQueued(t, tbl, keyA, 2)
 
 	b.mu.Lock()
-	leaseID := b.leaseID
+	leaseID := b.lease.id
 	b.mu.Unlock()
 	require.NoError(t, s.deps.Lease.Revoke(context.Background(), leaseID))
 
@@ -426,7 +426,7 @@ func TestAcquire_AfterKeepaliveReportsLoss_FailsLockLost(t *testing.T) {
 	tbl := s.table(t)
 	a := NewOwner()
 	require.NoError(t, a.Acquire(context.Background(), tbl, []string{keyA}, ModeExclusive, 0))
-	a.lost.Store(true)
+	a.lease.lost.Store(true)
 
 	var lost *LockLostError
 	require.ErrorAs(t, a.Acquire(context.Background(), tbl, []string{keyB}, ModeExclusive, 0), &lost)
