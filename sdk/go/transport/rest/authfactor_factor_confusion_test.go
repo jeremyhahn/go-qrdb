@@ -43,15 +43,16 @@ func TestAuthFactorVerify_CallerFactorNameCannotOverrideEnrollment(t *testing.T)
 	if err != nil {
 		t.Fatalf("NewAuthFactorService: %v", err)
 	}
+	serverTLS, roots := generateRoundTripTLSConfig(t)
 	srv := restserver.NewServer(nil, roundTripAdminStub{}, "127.0.0.1:0",
 		restserver.WithAuthFactorService(svc),
-		restserver.WithTLS(generateRoundTripTLSConfig(t)),
+		restserver.WithTLS(serverTLS),
 	)
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	t.Cleanup(srv.Stop)
-	tr := newRoundTripClient(t, "https://"+srv.Addr())
+	tr := newRoundTripClient(t, "https://"+srv.Addr(), roots)
 
 	enr, err := tr.EnrollFactor(ctx, &transport.EnrollFactorRequest{FactorName: "piv", Subject: "custodian"})
 	if err != nil {
