@@ -66,6 +66,11 @@ var concurrencyValues = []string{
 // with MySQL's range and default: go-mysql-server declares it with the range
 // [1, 1] and default 1, which makes SET innodb_lock_wait_timeout = 50 -- the
 // statement every MySQL client library knows -- an out-of-range error.
+//
+// Both are SESSION-only. The engine's global variables are process-wide,
+// shared by every tenant and database on the node, so a GLOBAL scope would
+// let one tenant's SET GLOBAL change every other tenant's default. MySQL
+// allows SET GLOBAL innodb_lock_wait_timeout; here it is refused.
 func init() {
 	sqle.SystemVariables.AddSystemVariables([]sqle.SystemVariable{
 		&sqle.MysqlSystemVariable{
@@ -78,7 +83,7 @@ func init() {
 		},
 		&sqle.MysqlSystemVariable{
 			Name:              LockWaitTimeoutVariable,
-			Scope:             sqle.GetMysqlScope(sqle.SystemVariableScope_Both),
+			Scope:             sqle.GetMysqlScope(sqle.SystemVariableScope_Session),
 			Dynamic:           true,
 			SetVarHintApplies: true,
 			Type:              types.NewSystemIntType(LockWaitTimeoutVariable, 1, MaxLockWaitTimeoutSeconds, false),

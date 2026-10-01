@@ -175,8 +175,9 @@ are not reconstructed here — their history is in the git log.
     Raft command. Waiters queue FIFO by create revision; a crashed holder's
     locks expire with its lease; a leader change loses nothing.
   - Lock-wait timeout per session: `innodb_lock_wait_timeout` (now accepting
-    MySQL's 1..1073741824 seconds, default 50; go-mysql-server allowed only 1)
-    and PostgreSQL `lock_timeout`, failing the statement with MySQL 1205 /
+    MySQL's 1..1073741824 seconds, default 50; go-mysql-server allowed only 1;
+    session scope only -- `SET GLOBAL` is refused, since the engine's globals
+    are shared by every tenant on the node) and PostgreSQL `lock_timeout`, failing the statement with MySQL 1205 /
     SQLSTATE 55P03. `NOWAIT` is 3572 / 55P03.
   - Deadlocks are detected at enqueue; the victim's whole transaction is rolled
     back with 1213 / 40P01, and its later statements fail (25P02 on PostgreSQL)

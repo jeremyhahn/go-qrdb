@@ -265,7 +265,10 @@ SET lock_timeout = '5s';                -- PostgreSQL wire
 - `qrdb_concurrency` is session-scoped only; `SET GLOBAL` is refused for the
   same reason as `qrdb_isolation`. It is sampled once per transaction.
 - `innodb_lock_wait_timeout` is re-registered with MySQL's own range
-  (1 to 1073741824 seconds) and default (50).
+  (1 to 1073741824 seconds) and default (50), and session scope only. MySQL
+  also allows `SET GLOBAL`, but the engine's global variables are
+  process-wide — shared by every tenant on the node — so one tenant could set
+  every other tenant's default; `SET GLOBAL` is refused.
 - PostgreSQL `lock_timeout` is translated to `innodb_lock_wait_timeout`: a
   duration or a bare millisecond count is rounded **up** to whole seconds, and
   `0` (PostgreSQL's "no limit") becomes the maximum. The PostgreSQL default is

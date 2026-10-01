@@ -70,7 +70,7 @@ An absent `sql` object, or an empty `concurrency`, means `optimistic`.
 | Variable | Values | Scope |
 |---|---|---|
 | `qrdb_concurrency` | `database` (default), `optimistic`, `pessimistic` | session |
-| `innodb_lock_wait_timeout` | 1–1073741824 seconds, default 50 | session and global |
+| `innodb_lock_wait_timeout` | 1–1073741824 seconds, default 50 | session (`SET GLOBAL` is refused) |
 | `lock_timeout` (PostgreSQL wire) | PostgreSQL duration; translated to `innodb_lock_wait_timeout` | session |
 
 ### Error codes
