@@ -66,18 +66,32 @@ rewriting history.
 > the base entry. Verify individual fields against `pkg/audit/types.go` before
 > depending on them.
 
-## Backends
+## Sinks
 
-| Backend | Destination | Notes |
+Every sink implements one interface, `audit.AuditLogger`. There is no backend
+selector and no configuration: a caller composes the sinks it wants, and
+`NewAggregateLogger` fans one `Emit` out to all of them.
+
+| Sink | Destination | Answers `Query`? |
 |---|---|---|
-| KV | `__sys:audit/{tenantID}/{timestamp_nano}` | nanosecond keys give chronological prefix-scan order; **this is what `Query` reads** |
-| File | line-delimited JSON via `log/slog` | `O_CREATE\|O_APPEND\|O_WRONLY`, mode **0600** |
-| Multi | both | **best-effort** — one failing backend does not suppress the others |
-| Noop | nowhere | disabled, or no backend configured |
+| `ChainFileLogger` | `audit-events.ndjson`, hash-chained, one JSON object per line, mode **0600** | **yes** — scans the active file |
+| `RingBuffer` | memory, fixed capacity (the node uses 10 000) | **yes** — serves recent events |
+| `SlogSink` | the operator log via `log/slog` | no — reports `Total: -1` |
+| `NoopLogger` | nowhere | no — reports `Total: -1` |
+| `aggregateLogger` | every child | first **non-empty** page from any child |
 
-**`Query` requires the KV backend.** With `kv_backend: false` (the default)
-there is nothing in the store to query, and the file backend is a log-shipping
-surface rather than a query surface.
+`Total: -1` is how a sink that keeps nothing says **"not answerable here"**, as
+distinct from `Total: 0`, which is a real empty result. An aggregate skips the
+former and returns the first genuine page.
+
+**The node's composition** is `AggregateLogger(ChainFileLogger, RingBuffer,
+SlogSink)`, so `Query` is answered by the file and the ring.
+
+> An earlier version of this page listed a KV backend at
+> `__sys:audit/{tenantID}/{timestamp_nano}` and stated that **`Query` requires
+> the KV backend**, unavailable by default. There has never been a KV backend
+> or an `__sys:audit/` key space, and the conclusion was the opposite of the
+> truth: querying works out of the box.
 
 ## Pagination
 
@@ -91,7 +105,7 @@ Cursor-based: pass `limit` (default 100, **hard maximum 1000**) and follow
 | Success | 200 | `OK` |
 | `limit` above 1000 | clamped to 1000 | clamped |
 | Malformed `from` / `to` | 400 | `INVALID_ARGUMENT` |
-| KV backend not enabled | 200 with an empty result | `OK`, empty |
+| No composed sink can answer | 200 with an empty result | `OK`, empty |
 | Missing `audit:query` | 403 | `PERMISSION_DENIED` |
 | Barrier sealed | 503 | `UNAVAILABLE` |
 

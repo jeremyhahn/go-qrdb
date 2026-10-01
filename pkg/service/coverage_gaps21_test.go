@@ -64,14 +64,90 @@ func TestAuthFactorService_ListFactors_GetErrorForKey(t *testing.T) {
 		t.Fatalf("NewAuthFactorService: %v", err)
 	}
 
-	// ListFactors: List succeeds (returns fullKey), Get(fullKey) fails → continue.
+	// ListFactors: List succeeds (returns fullKey), Get(fullKey) fails with an
+	// error that is NOT KeyNotFoundError. Per go-qrdb#464 review round 3, this
+	// must ABORT the call rather than silently omit the record: a caller must
+	// never be told a shorter-than-true list is complete.
 	enrollments, listErr := svc.ListFactors(context.Background(), "")
-	if listErr != nil {
-		t.Fatalf("ListFactors: %v", listErr)
+	if enrollments != nil {
+		t.Fatalf("expected no partial result, got %d enrollments", len(enrollments))
 	}
-	// The error triggers continue → 0 enrollments.
-	if len(enrollments) != 0 {
-		t.Fatalf("expected 0 enrollments, got %d", len(enrollments))
+	var readErr *AuthFactorListReadError
+	if !errors.As(listErr, &readErr) {
+		t.Fatalf("ListFactors: want *AuthFactorListReadError, got %T: %v", listErr, listErr)
+	}
+	if readErr.Key != fullKey {
+		t.Fatalf("AuthFactorListReadError.Key = %q, want %q", readErr.Key, fullKey)
+	}
+	if !errors.Is(listErr, lgkv.getErr) {
+		t.Fatalf("ListFactors error does not unwrap to the underlying Get failure: %v", listErr)
+	}
+}
+
+// TestAuthFactorService_ChallengeFactor_PropagatesOperationalGetError covers
+// the other half of the same review finding: loadEnrollment used to fold
+// EVERY Get error into EnrollmentNotFoundError, including one that has
+// nothing to do with the record being absent — a sealed tenant barrier, a
+// Raft read failure, anything the store itself reports as broken rather than
+// empty. Reporting that as "not found" tells the caller to stop looking
+// instead of to retry or report the outage, which is the wrong answer for an
+// operational failure. This pins that a non-KeyNotFoundError Get failure
+// reaches ChallengeFactor's caller unfolded.
+func TestAuthFactorService_ChallengeFactor_PropagatesOperationalGetError(t *testing.T) {
+	kv := newAFMockKV()
+	enrollmentID := "sealed-mid-request"
+	fullKey := sysEnrollmentPrefix + enrollmentID
+	_ = kv.Put(context.Background(), fullKey, []byte("some-val"))
+
+	opErr := errors.New("tenant barrier sealed")
+	lgkv := &listAndGetErrorKV{afMockKV: kv, getErr: opErr, failOnKey: fullKey}
+
+	svc, err := NewAuthFactorService(AuthFactorServiceConfig{
+		Factors: []authfactors.Factor{},
+		KV:      lgkv,
+	})
+	if err != nil {
+		t.Fatalf("NewAuthFactorService: %v", err)
+	}
+
+	_, challengeErr := svc.ChallengeFactor(context.Background(), enrollmentID)
+	var notFound *authfactors.EnrollmentNotFoundError
+	if errors.As(challengeErr, &notFound) {
+		t.Fatalf("ChallengeFactor folded an operational error into EnrollmentNotFoundError: %v", challengeErr)
+	}
+	if !errors.Is(challengeErr, opErr) {
+		t.Fatalf("ChallengeFactor error does not unwrap to the underlying Get failure: %v", challengeErr)
+	}
+}
+
+// TestAuthFactorService_VerifyFactor_PropagatesOperationalChallengeGetError
+// is the same finding applied to consumeChallenge's Get, reached from
+// VerifyFactor: an operational failure reading the pending challenge must
+// not be reported as "no such challenge".
+func TestAuthFactorService_VerifyFactor_PropagatesOperationalChallengeGetError(t *testing.T) {
+	kv := newAFMockKV()
+	challengeID := challengePublicID(1, "sealed-mid-verify")
+	fullKey, _ := parseChallengeID(challengeID)
+	_ = kv.Put(context.Background(), fullKey, []byte("some-val"))
+
+	opErr := errors.New("tenant barrier sealed")
+	lgkv := &listAndGetErrorKV{afMockKV: kv, getErr: opErr, failOnKey: fullKey}
+
+	svc, err := NewAuthFactorService(AuthFactorServiceConfig{
+		Factors: []authfactors.Factor{},
+		KV:      lgkv,
+	})
+	if err != nil {
+		t.Fatalf("NewAuthFactorService: %v", err)
+	}
+
+	verifyErr := svc.VerifyFactor(context.Background(), "", challengeID, &authfactors.Response{})
+	var notFound *authfactors.EnrollmentNotFoundError
+	if errors.As(verifyErr, &notFound) {
+		t.Fatalf("VerifyFactor folded an operational error into EnrollmentNotFoundError: %v", verifyErr)
+	}
+	if !errors.Is(verifyErr, opErr) {
+		t.Fatalf("VerifyFactor error does not unwrap to the underlying Get failure: %v", verifyErr)
 	}
 }
 

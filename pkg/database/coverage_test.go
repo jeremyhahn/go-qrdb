@@ -247,7 +247,7 @@ func TestDatabaseBarrierManager_GetBarrier_ReturnsEncryptor(t *testing.T) {
 	storage := seal.NewMemoryBackend()
 
 	cfg := &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"}
-	creds := seal.Credentials{Secret: []byte("test-password")}
+	creds := seal.MustCredentials([]byte("test-password"))
 
 	if err := mgr.EnsureBarrier(ctx, "enc-getbarrier", cfg, storage, creds); err != nil {
 		t.Fatalf("EnsureBarrier: %v", err)
@@ -338,7 +338,7 @@ func TestManager_CreateWithCredentials_WithBarrierManager(t *testing.T) {
 			Enabled: true,
 		},
 	}
-	creds := seal.Credentials{Secret: []byte("test-password")}
+	creds := seal.MustCredentials([]byte("test-password"))
 
 	// With barrier manager configured, the barrier should be created and
 	// the database should be barrier-enabled.

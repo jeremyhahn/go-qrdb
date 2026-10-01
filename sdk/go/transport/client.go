@@ -117,8 +117,13 @@ type AdminClient interface {
 	// Peers returns the peer membership for all loaded shards.
 	Peers(ctx context.Context) (*PeersResponse, error)
 
-	// AddMember adds a new replica to the specified shard.
-	AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr string) error
+	// AddMember adds a new replica to the specified shard. identity is the
+	// replica's Raft member identity (spki:<sha256-hex>, as printed by
+	// `qrdbd node-identity --cert`), or "" to use the identity the cluster
+	// has already committed for the replica or its host. A node no
+	// committed membership names needs it; an identity that contradicts a
+	// committed one is refused.
+	AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error
 
 	// RemoveMember removes a replica from the specified shard.
 	RemoveMember(ctx context.Context, shardID, replicaID uint64) error
@@ -646,8 +651,9 @@ type BarrierClient interface {
 	// keyed strategy. The migration runs asynchronously on the server (a
 	// system-scope migration recycles the data-plane server in process); the
 	// response acknowledges the start and clients poll BarrierStatus for the
-	// strategy change. Supported on REST and gRPC; other transports return
-	// NotImplementedError.
+	// strategy change. Supported on every transport -- REST, gRPC, Unix,
+	// QUIC, MCP and embedded -- and refuses with a typed error when the node
+	// has no EncryptionMigrator configured.
 	BarrierEnableEncryption(ctx context.Context, req *BarrierEnableEncryptionRequest) (*BarrierEnableEncryptionResponse, error)
 
 	// BarrierGenerateRecoveryKeys generates recovery keys for disaster
@@ -903,6 +909,16 @@ type TenantClient interface {
 
 	// ListTenants lists all tenants.
 	ListTenants(ctx context.Context) (*ListTenantsResponse, error)
+
+	// ListDeletedTenants returns one page of retired tenant ids with their
+	// deletion records, in ascending id order.
+	ListDeletedTenants(ctx context.Context, req *ListDeletedTenantsRequest) (*ListDeletedTenantsResponse, error)
+
+	// ReconcileDeletedTenants removes, from the node serving the request, the
+	// on-disk residue of every retired tenant id. It never removes a directory
+	// a live tenant claims. It is node-local: in a cluster, run it against
+	// each node.
+	ReconcileDeletedTenants(ctx context.Context) (*ReconcileDeletedTenantsResponse, error)
 
 	// DeleteTenant deletes a tenant.
 	DeleteTenant(ctx context.Context, tenantID string) error

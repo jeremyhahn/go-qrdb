@@ -209,6 +209,8 @@ func (m *mockKVService) ListEntities(ctx context.Context, req *service.ListEntit
 // ---------------------------------------------------------------------------
 
 type mockAdminService struct {
+	// addIdentity records the member identity the last AddMember received.
+	addIdentity       string
 	healthFn          func(ctx context.Context) (*service.HealthStatus, error)
 	statusFn          func(ctx context.Context) (*service.StatusInfo, error)
 	peersFn           func(ctx context.Context) (*service.PeersInfo, error)
@@ -244,7 +246,8 @@ func (m *mockAdminService) Peers(ctx context.Context) (*service.PeersInfo, error
 	return &service.PeersInfo{}, nil
 }
 
-func (m *mockAdminService) AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr string) error {
+func (m *mockAdminService) AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error {
+	m.addIdentity = identity
 	if m.addMemberFn != nil {
 		return m.addMemberFn(ctx, shardID, replicaID, raftAddr)
 	}
@@ -564,6 +567,12 @@ func (m *mockIndexService) DropIndex(ctx context.Context, name string) error {
 		return m.dropIndexFn(ctx, name)
 	}
 	return nil
+}
+
+// DropOwnedIndex answers as DropIndex does: this double records no
+// ownership, and no test that uses it exercises an owner-checked drop.
+func (m *mockIndexService) DropOwnedIndex(ctx context.Context, name, _ string) error {
+	return m.DropIndex(ctx, name)
 }
 
 func (m *mockIndexService) Query(ctx context.Context, indexName string, value []byte) ([][]byte, error) {

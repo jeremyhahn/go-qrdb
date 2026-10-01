@@ -15,7 +15,6 @@ package vector
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -28,7 +27,10 @@ import (
 // TestNewPebbleVectorStorage_DBOpenError tests database open failure
 func TestNewPebbleVectorStorage_DBOpenError(t *testing.T) {
 	// Create a file where a directory should be
-	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("vector_file_%d", time.Now().UnixNano()))
+	// A FILE, inside the per-test directory: the condition under test is
+	// "the data dir path is not a directory", so this must not become
+	// t.TempDir() itself (go-qrdb#416).
+	tmpFile := filepath.Join(t.TempDir(), "not_a_dir")
 	file, err := os.Create(tmpFile)
 	require.NoError(t, err)
 	_ = file.Close()
@@ -45,7 +47,7 @@ func TestNewPebbleVectorStorage_DBOpenError(t *testing.T) {
 
 // TestLoadNamespaces_ShortSequenceBytes tests loading with short sequence bytes
 func TestLoadNamespaces_ShortSequenceBytes(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("vector_test_%d", time.Now().UnixNano()))
+	tmpDir := t.TempDir()
 	require.NoError(t, os.MkdirAll(tmpDir, 0o750))
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
@@ -172,7 +174,7 @@ func TestBatchDeleteVectors_EmptyBatch(t *testing.T) {
 
 // TestCreateNamespace_WithSyncWrites tests namespace creation with sync writes enabled
 func TestCreateNamespace_WithSyncWrites(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("vector_test_%d", time.Now().UnixNano()))
+	tmpDir := t.TempDir()
 	require.NoError(t, os.MkdirAll(tmpDir, 0o750))
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
@@ -202,7 +204,7 @@ func TestCreateNamespace_WithSyncWrites(t *testing.T) {
 
 // TestUpsertVector_WithSyncWrites tests upsert with sync writes enabled
 func TestUpsertVector_WithSyncWrites(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("vector_test_%d", time.Now().UnixNano()))
+	tmpDir := t.TempDir()
 	require.NoError(t, os.MkdirAll(tmpDir, 0o750))
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
@@ -258,7 +260,7 @@ func TestDeleteVector_NonexistentVector(t *testing.T) {
 
 // TestDeleteNamespace_WithSyncWrites tests namespace deletion with sync writes enabled
 func TestDeleteNamespace_WithSyncWrites(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("vector_test_%d", time.Now().UnixNano()))
+	tmpDir := t.TempDir()
 	require.NoError(t, os.MkdirAll(tmpDir, 0o750))
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
@@ -379,7 +381,7 @@ func TestCleanupTombstones_WithShortKey(t *testing.T) {
 
 // TestCleanupTombstones_WithSyncWrites tests tombstone cleanup with sync writes
 func TestCleanupTombstones_WithSyncWrites(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("vector_test_%d", time.Now().UnixNano()))
+	tmpDir := t.TempDir()
 	require.NoError(t, os.MkdirAll(tmpDir, 0o750))
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 

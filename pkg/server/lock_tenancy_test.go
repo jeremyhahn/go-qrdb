@@ -45,6 +45,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -655,12 +656,12 @@ func TestLockService_RefusesWhenTheScopeHasNoLockEngines(t *testing.T) {
 	if svc != nil {
 		t.Fatal("a scope with no lease/watch/MVCC engines must not resolve a lock servicer")
 	}
-	var ni *rest.ServiceNotImplementedError
-	if !errors.As(err, &ni) {
-		t.Fatalf("err = %v, want *rest.ServiceNotImplementedError", err)
+	var cue *service.CapabilityUnsupportedError
+	if !errors.As(err, &cue) {
+		t.Fatalf("err = %v, want *service.CapabilityUnsupportedError", err)
 	}
-	if ni.Service != "lock" {
-		t.Fatalf("Service = %q, want %q", ni.Service, "lock")
+	if !strings.HasPrefix(cue.Message, "lock: ") {
+		t.Fatalf("message %q must name the refused service lock", cue.Message)
 	}
 }
 
@@ -715,11 +716,11 @@ func TestLockService_RefusedUnderStandaloneMode(t *testing.T) {
 	if svc != nil {
 		t.Fatal("standalone mode must not resolve a lock servicer")
 	}
-	var ni *rest.ServiceNotImplementedError
+	var ni *service.CapabilityUnsupportedError
 	if !errors.As(err, &ni) {
-		t.Fatalf("err = %v, want *rest.ServiceNotImplementedError", err)
+		t.Fatalf("err = %v, want *service.CapabilityUnsupportedError", err)
 	}
-	if ni.Service != "lock" || ni.Hint != StandaloneModeHint {
+	if !strings.HasPrefix(ni.Message, "lock: ") || !strings.Contains(ni.Message, StandaloneModeHint) {
 		t.Fatalf("err = %+v, want service %q with hint %q", ni, "lock", StandaloneModeHint)
 	}
 

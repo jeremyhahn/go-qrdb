@@ -104,28 +104,18 @@ func TestSharedPrefixTenants_DataIsIsolated(t *testing.T) {
 	require.Empty(t, got, "a full scan for tenant globex returned tenant acme's row")
 }
 
-// TestSharedPrefixTenants_DirectIndexQueryRefuses pins the INTERIM contract
-// ruled on #41 (option A, 2026-08-19), and it is deliberately the inverse of
-// what this test asserted while it was a characterization test.
+// TestSharedPrefixTenants_DirectIndexQueryIsTenantScoped is #40's priority 1:
+// a shared-prefix tenant's DIRECT index query is answered from a real,
+// engine-maintained, per-tenant index -- and that index never answers with
+// another tenant's rows.
 //
-// Keyspace isolation and engine-backed indexes cannot coexist for
-// shared-prefix tenants under the current engine design.
-// KVEngine.entityTypeFromKey takes the FIRST path segment, so a namespaced key
-// "acme/system/workitem/1" reads as entity type "acme" rather than "workitem":
-// the adapter refuses the namespace-qualified index name, and even without
-// that guard the engine would create the index and never match a write to it.
-//
-// Isolation is the ruled priority, so the index is given up rather than the
-// confinement, and correctness is preserved by the DAO planning a full scan —
-// see TestSharedPrefixTenants_PlannedIndexQueryIsTenantScoped, which asserts
-// the user-visible query still returns the right rows.
-//
-// THIS ASSERTION MUST FLIP BACK. Teaching the engine about namespaced keys is
-// #40's priority-1 mechanism; when it lands, a shared-prefix tenant's direct
-// index query is answered from a real per-tenant index and this test asserts
-// a NON-EMPTY result again. It is an interim contract on a ruling, not a
-// statement that refusing is correct.
-func TestSharedPrefixTenants_DirectIndexQueryRefuses(t *testing.T) {
+// It is the flip of the interim contract ruled on #41 (option A), under which
+// this test asserted kvstore.ErrIndexUnsupported: the engine then selected the
+// indexes a write maintains by the key's FIRST path segment, which a tenant
+// namespace displaces, so the adapter refused every namespace-qualified index.
+// The engine now selects by key scope on every path and the adapter declares
+// the scope the namespaced store's keys actually carry.
+func TestSharedPrefixTenants_DirectIndexQueryIsTenantScoped(t *testing.T) {
 	ctx := context.Background()
 	n := newSharedTenantNode(ctx, t)
 	resolver := n.Services().StoreResolver
@@ -144,10 +134,27 @@ func TestSharedPrefixTenants_DirectIndexQueryRefuses(t *testing.T) {
 	require.NoError(t, globexDAO.Save(ctx, &workItem{Title: "globex-1", State: "ready"}))
 
 	got, err := acmeDAO.QueryByIndex(ctx, "State", "ready")
-	require.ErrorIs(t, err, kvstore.ErrIndexUnsupported,
-		"a namespaced shared store cannot maintain an engine-backed index, so the "+
-			"direct index path must refuse with the typed error (#40 flips this)")
-	require.Empty(t, got, "a refused query carries no results")
+	require.NoError(t, err, "a shared-prefix tenant's direct index query must be answered, not refused")
+	require.Len(t, got, 1, "acme's index returned %d rows; want its own one", len(got))
+	require.Equal(t, "acme-1", got[0].Title)
+
+	got, err = globexDAO.QueryByIndex(ctx, "State", "ready")
+	require.NoError(t, err)
+	require.Len(t, got, 1, "globex's index returned %d rows; want its own one", len(got))
+	require.Equal(t, "globex-1", got[0].Title)
+
+	// An update moves the entry within the tenant's own index only.
+	got[0].State = "done"
+	require.NoError(t, globexDAO.Save(ctx, got[0]))
+	acmeReady, err := acmeDAO.QueryByIndex(ctx, "State", "ready")
+	require.NoError(t, err)
+	require.Len(t, acmeReady, 1, "another tenant's update must not touch acme's index")
+	globexDone, err := globexDAO.QueryByIndex(ctx, "State", "done")
+	require.NoError(t, err)
+	require.Len(t, globexDone, 1)
+	acmeDone, err := acmeDAO.QueryByIndex(ctx, "State", "done")
+	require.NoError(t, err)
+	require.Empty(t, acmeDone, "acme's index answered with globex's updated row")
 }
 
 // TestSharedPrefixTenants_PlannedIndexQueryIsTenantScoped covers the planner

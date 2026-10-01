@@ -138,6 +138,10 @@ auth:
   # one setting. "fail-closed" (default) refuses the request; "fail-open"
   # permits it and counts the gap. See the note below before changing it.
   audit_failure_policy: "fail-closed"
+  # Whether EVERY certificate login must present an enrolled key ("required")
+  # or only accounts that enrolled one ("enrolled", the default). "required"
+  # refuses to boot while the bootstrap admin has no certificate binding.
+  mtls_binding_policy: "enrolled"
 
 cors:
   allowed_origins: ["*"]
@@ -246,6 +250,7 @@ Configures the QuicRaft consensus layer.
 | `raft_address`              | string | `127.0.0.1:63001`   | yes      | `--raft-address`                | Advertised address for Raft peer communication               |
 | `listen_address`            | string | `""`                | no       | `--listen`                      | Bind address for Raft peer communication                     |
 | `peers`                     | string | `1=127.0.0.1:63001` | no       | `--peers`                       | Comma-separated initial cluster members                      |
+| `member_identities`         | string | `""`                | multi-node | `--member-identities`         | Comma-separated `replicaID=spki:<hex>` Raft identities of the other replicas |
 | `join`                      | bool   | `false`             | no       | `--join`                        | Join an existing cluster instead of forming a new one         |
 | `snapshot_entries`          | uint64 | `0`                 | no       | `--snapshot-entries`            | Applied entries between automatic snapshots                  |
 | `compaction_overhead`       | uint64 | `0`                 | no       | `--compaction-overhead`         | Log entries to keep after a snapshot for follower catch-up    |
@@ -283,6 +288,20 @@ The `peers` field uses a comma-separated `replicaID=address` format:
 ```yaml
 peers: "1=10.0.0.1:63001,2=10.0.0.2:63001,3=10.0.0.3:63001"
 ```
+
+**Member identities format:**
+
+`member_identities` names, by replica ID, the Raft identity of every other
+replica — `spki:` plus the hex SHA-256 of that node's certificate public key,
+as printed by `qrdbd node-identity --cert FILE`:
+
+```yaml
+member_identities: "2=spki:3f9a…,3=spki:c01d…"
+```
+
+A founding node must name every member in `peers`; a joining node at least one
+existing member. The node's own entry is derived from its certificate and may be
+omitted. Ignored for a single-node cluster.
 
 **Notes:**
 
@@ -576,6 +595,8 @@ Configures authentication and role-based access control (RBAC).
 | `revocation_cache_ttl` | string | `"30s"` | no       | N/A                | **The window during which a revoked certificate still authenticates.** See the note below |
 | `separation_of_duties` | bool | `false`   | no       | N/A                | Enforce strict FIPS/PCI role separation      |
 | `audit_failure_policy` | string | `"fail-closed"` | no | N/A         | **What happens when a gating decision cannot be audited** — the authorization decision and the SO PIN verification alike. See the note below |
+| `spiffe_trust_domain` | string | `""`       | no       | N/A                | SPIFFE trust domain the mTLS authenticator **pins**, and the one the built-in CA mints client-certificate tenant SANs under. See the note below |
+| `mtls_binding_policy` | string | `"enrolled"` | no     | N/A                | **Whether every certificate login must present an enrolled key** (`"required"`) or only accounts that enrolled one are held to it (`"enrolled"`). See the note below |
 
 **Validation rules:**
 
@@ -587,6 +608,13 @@ Configures authentication and role-based access control (RBAC).
   (e.g. `"30s"`, `"0"`). An unparseable value fails the boot rather than
   reverting to the default: it is a security window, and a value silently
   different from the configured one is worse than a refusal to start.
+- `spiffe_trust_domain`, when set, must survive being written into a SPIFFE ID
+  and parsed back unchanged (no `/`, `?`, `#`, `@` or whitespace). The
+  validation error quotes the rejected value (`spiffe.TrustDomainError`).
+- `mtls_binding_policy` must be `"enrolled"`, `"required"`, or empty (empty
+  means `"enrolled"`). An unrecognised value fails configuration validation —
+  and, for a caller that builds its configuration without validating it, the
+  boot — rather than resolving to either posture.
 - `audit_failure_policy` must be `"fail-closed"`, `"fail-open"`, or empty
   (empty means `"fail-closed"`). An unrecognised value fails the boot rather
   than resolving to either posture: guessing fail-closed denies a fleet the
@@ -621,6 +649,30 @@ Configures authentication and role-based access control (RBAC).
   respectively. There is deliberately no `auth.so_audit_failure_policy`: two
   keys would let a deployment end up recording one assertion and not the other.
   See [seal/so-dual-factor.md](seal/so-dual-factor.md).
+- **`spiffe_trust_domain` pins tenant derivation and shapes the certificates
+  the built-in CA issues.** When set, the mTLS authenticator derives a
+  caller's tenant from the certificate's tenant-scoped SPIFFE URI SAN
+  (`spiffe://<trust-domain>/tenant/<tenant>/<kind>/<name>`) and refuses one
+  under any other trust domain, fail-closed; and the CA adds
+  `spiffe://<trust-domain>/tenant/<tenant>/user/<username>` to every client
+  certificate it mints, so the pin covers this deployment's own certificates.
+  The CA refuses to mint one whose SAN would not parse back to the tenant and
+  username in its Subject (a `/` in either). The value itself must be a bare
+  host name that round-trips through a SPIFFE ID; anything else fails the load. When unset, certificates carry no
+  SAN and the tenant is read from the Subject OU. Set the same value on every
+  node. See
+  [certificate-authority/architecture.md](certificate-authority/architecture.md#which-derivation-a-generated-certificate-uses).
+- **`mtls_binding_policy: "required"` closes the unenrolled-account hole and is
+  a lockout risk.** Under the default `"enrolled"`, an account that has enrolled
+  a certificate binding admits only that key, and an account that has not
+  admits any certificate from the CA whose CN and tenant name it. `"required"`
+  refuses the second kind — and a certificate that names no account — with 401.
+  The node **refuses to boot** under `"required"` when the bootstrap admin does
+  not hold an unexpired binding, because a node that started would admit nobody
+  able to repair it. Enrol every account (the admin first) under `"enrolled"`,
+  then switch; roll back by setting `"enrolled"`. Set the same value on every
+  node. See [identity-rbac/architecture.md](identity-rbac/architecture.md#the-fleet-wide-posture-authmtls_binding_policy)
+  and [identity-rbac/user.md](identity-rbac/user.md#moving-a-fleet-to-required-certificate-enrolment).
 - `separation_of_duties` selects the RBAC posture:
   - **`false` (default, standard):** the bootstrap `admin` is also granted the `owner` role (full operational authority — `permission.All()`), so a single identity runs the entire database. This is the convenient posture for commercial deployments with no regulatory separation-of-duties requirement.
   - **`true` (strict):** the canonical six-role FIPS 140-3 / PCI-DSS least-privilege model is enforced — `admin` is control-plane only, the data plane requires the `operator` role, governance requires the `SO` role, and the SO→crypto deny-list applies. The `owner` role is neither seeded nor assigned.
@@ -1006,6 +1058,8 @@ raft:
   raft_address: "10.0.0.1:63001"
   listen_address: "0.0.0.0:63001"
   peers: "1=10.0.0.1:63001,2=10.0.0.2:63001,3=10.0.0.3:63001"
+  # Identities of the other replicas: qrdbd node-identity --cert <their cert>
+  member_identities: "2=spki:<node-2 identity>,3=spki:<node-3 identity>"
   snapshot_entries: 10000
   compaction_overhead: 5000
   sm_type: "pebble"
@@ -1051,6 +1105,8 @@ raft:
   raft_address: "10.0.0.2:63001"
   listen_address: "0.0.0.0:63001"
   peers: "1=10.0.0.1:63001,2=10.0.0.2:63001,3=10.0.0.3:63001"
+  # Identities of the other replicas: qrdbd node-identity --cert <their cert>
+  member_identities: "1=spki:<node-1 identity>,3=spki:<node-3 identity>"
   snapshot_entries: 10000
   compaction_overhead: 5000
   sm_type: "pebble"
@@ -1096,6 +1152,8 @@ raft:
   raft_address: "10.0.0.3:63001"
   listen_address: "0.0.0.0:63001"
   peers: "1=10.0.0.1:63001,2=10.0.0.2:63001,3=10.0.0.3:63001"
+  # Identities of the other replicas: qrdbd node-identity --cert <their cert>
+  member_identities: "1=spki:<node-1 identity>,2=spki:<node-2 identity>"
   snapshot_entries: 10000
   compaction_overhead: 5000
   sm_type: "pebble"
@@ -1148,6 +1206,8 @@ raft:
   raft_address: "10.0.0.1:63001"
   listen_address: "0.0.0.0:63001"
   peers: "1=10.0.0.1:63001,2=10.0.0.2:63001,3=10.0.0.3:63001"
+  # Identities of the other replicas: qrdbd node-identity --cert <their cert>
+  member_identities: "2=spki:<node-2 identity>,3=spki:<node-3 identity>"
   snapshot_entries: 50000
   compaction_overhead: 10000
   max_in_mem_log_size: 10485760       # 10 MB per shard

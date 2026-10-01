@@ -198,6 +198,8 @@ func (m *mockKVService) ExistsWithConsistency(ctx context.Context, key string, _
 
 // mockAdminService is a mock admin service for testing.
 type mockAdminService struct {
+	// addIdentity records the member identity the last AddMember received.
+	addIdentity    string
 	drainCalled    bool
 	snapshotCalled bool
 	addCalled      bool
@@ -232,8 +234,9 @@ func (m *mockAdminService) Peers(_ context.Context) (*service.PeersInfo, error) 
 	}, nil
 }
 
-func (m *mockAdminService) AddMember(_ context.Context, _, _ uint64, _ string) error {
+func (m *mockAdminService) AddMember(_ context.Context, _, _ uint64, _, identity string) error {
 	m.addCalled = true
+	m.addIdentity = identity
 	return nil
 }
 
@@ -596,7 +599,7 @@ func TestAddMember_Success(t *testing.T) {
 	adminSvc := &mockAdminService{}
 	tr, _ := New(newMockKVService(), adminSvc)
 
-	err := tr.AddMember(context.Background(), 0, 2, "10.0.0.2:63001")
+	err := tr.AddMember(context.Background(), 0, 2, "10.0.0.2:63001", "")
 	if err != nil {
 		t.Fatalf("AddMember failed: %v", err)
 	}
@@ -609,7 +612,7 @@ func TestAddMember_AfterClose(t *testing.T) {
 	tr, _ := New(newMockKVService(), &mockAdminService{})
 	_ = tr.Close()
 
-	err := tr.AddMember(context.Background(), 0, 2, "addr")
+	err := tr.AddMember(context.Background(), 0, 2, "addr", "")
 	if err == nil {
 		t.Fatal("expected error after close")
 	}
@@ -1193,4 +1196,19 @@ func (m *mockKVService) CompareAndSwap(_ context.Context, key string, expected, 
 // so the filtered and unfiltered enumerations are the same call.
 func (m *mockKVService) ListAll(a0 context.Context, prefix string) ([]string, error) {
 	return m.List(a0, prefix)
+}
+
+// TestAddMember_CarriesIdentity pins that the operator-supplied member
+// identity reaches the admin service over the embedded transport.
+func TestAddMember_CarriesIdentity(t *testing.T) {
+	adminSvc := &mockAdminService{}
+	tr, _ := New(newMockKVService(), adminSvc)
+
+	identity := "spki:" + strings.Repeat("ab", 32)
+	if err := tr.AddMember(context.Background(), 0, 4, "10.0.0.4:63001", identity); err != nil {
+		t.Fatalf("AddMember: %v", err)
+	}
+	if adminSvc.addIdentity != identity {
+		t.Fatalf("service received identity %q, want %q", adminSvc.addIdentity, identity)
+	}
 }

@@ -12,21 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// White-box tests for the join path: fetching a CA bundle from a live
-// advertiser, the bundle-splitting helper, and the truststrap method wiring.
+// White-box tests for the fetch path: fetching a CA bundle from a live
+// advertiser and the truststrap method wiring.
 
 package clusterenroll
 
 import (
 	"context"
-	"crypto/x509"
 	"encoding/hex"
-	"encoding/pem"
 	"errors"
 	"net"
 	"testing"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 )
 
 // freePort returns a TCP port with nothing bound to it.
@@ -88,10 +84,11 @@ func startFirstNode(t *testing.T) (*Advertiser, BootstrapOptions) {
 	}
 }
 
-// TestJoinReportsAFetchFailure covers the path where no bootstrap method can
-// reach a bundle. Enrollment must fail loudly: a node that silently continued
-// would fall back to a self-signed identity the cluster does not trust.
-func TestJoinReportsAFetchFailure(t *testing.T) {
+// TestFetchAnchorReportsAFetchFailure covers the path where no bootstrap
+// method can reach a bundle. It must fail loudly: a node that silently
+// continued would fall back to a self-signed identity the cluster does not
+// trust.
+func TestFetchAnchorReportsAFetchFailure(t *testing.T) {
 	opts := &Options{
 		RaftAddress: "127.0.0.1:63003",
 		TrustDomain: "test.cluster",
@@ -102,9 +99,9 @@ func TestJoinReportsAFetchFailure(t *testing.T) {
 		},
 	}
 
-	_, err := Join(context.Background(), opts, discardLogger())
+	_, err := FetchAnchor(context.Background(), opts, discardLogger())
 	if err == nil {
-		t.Fatal("Join must fail when no bundle can be fetched")
+		t.Fatal("FetchAnchor must fail when no bundle can be fetched")
 	}
 	var want *FetchError
 	if !errors.As(err, &want) {
@@ -160,80 +157,6 @@ func TestAutoFetchBundleWiresEveryConfiguredMethod(t *testing.T) {
 			var want *FetchError
 			if !errors.As(err, &want) {
 				t.Fatalf("error = %v (%T), want *FetchError", err, err)
-			}
-		})
-	}
-}
-
-// TestSplitCABundleAcceptsAWellFormedBundle covers the success path against a
-// bundle produced by the real provider, so the test cannot drift from the
-// format the code actually emits.
-func TestSplitCABundleAcceptsAWellFormedBundle(t *testing.T) {
-	caCertPEM, caKeyPEM, _, _, err := clustertls.GenerateCA(clustertls.CAValidity)
-	if err != nil {
-		t.Fatalf("GenerateCA: %v", err)
-	}
-	provider := &clusterBundleProvider{caCertPEM: caCertPEM, caKeyPEM: caKeyPEM}
-	bundle, err := provider.CABundle()
-	if err != nil {
-		t.Fatalf("CABundle: %v", err)
-	}
-
-	certPEM, keyPEM, err := splitCABundle(bundle)
-	if err != nil {
-		t.Fatalf("splitCABundle: %v", err)
-	}
-
-	certBlock, _ := pem.Decode(certPEM)
-	if certBlock == nil || certBlock.Type != "CERTIFICATE" {
-		t.Fatalf("first component is not a CERTIFICATE block: %v", certBlock)
-	}
-	keyBlock, _ := pem.Decode(keyPEM)
-	if keyBlock == nil || keyBlock.Type != "EC PRIVATE KEY" {
-		t.Fatalf("second component is not an EC PRIVATE KEY block: %v", keyBlock)
-	}
-	if _, err := x509.ParseCertificate(certBlock.Bytes); err != nil {
-		t.Fatalf("split certificate does not parse: %v", err)
-	}
-}
-
-// TestSplitCABundleRejectsMalformedInput covers each rejection branch. A
-// bundle that split wrongly would hand a joining node a CA it cannot sign
-// with, so every shape that is not exactly cert-then-key must be refused
-// rather than partially accepted.
-func TestSplitCABundleRejectsMalformedInput(t *testing.T) {
-	caCertPEM, caKeyPEM, _, _, err := clustertls.GenerateCA(clustertls.CAValidity)
-	if err != nil {
-		t.Fatalf("GenerateCA: %v", err)
-	}
-
-	tests := []struct {
-		name   string
-		bundle []byte
-		kind   string
-	}{
-		{"empty input", nil, "CA certificate"},
-		{"not PEM at all", []byte("this is not pem"), "CA certificate"},
-		{"first block is the key", append(append([]byte{}, caKeyPEM...), caCertPEM...), "CA certificate"},
-		{"certificate with no key", caCertPEM, "CA private key"},
-		{"certificate followed by junk", append(append([]byte{}, caCertPEM...), []byte("trailing junk")...), "CA private key"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			certPEM, keyPEM, err := splitCABundle(tc.bundle)
-			if err == nil {
-				t.Fatal("expected a rejection")
-			}
-			var want *clustertls.KeyError
-			if !errors.As(err, &want) {
-				t.Fatalf("error = %v (%T), want *clustertls.KeyError", err, err)
-			}
-			if want.Kind != tc.kind {
-				t.Errorf("Kind = %q, want %q", want.Kind, tc.kind)
-			}
-			if certPEM != nil || keyPEM != nil {
-				t.Error("a rejected bundle must yield no components")
 			}
 		})
 	}

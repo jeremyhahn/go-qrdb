@@ -14,30 +14,6 @@
 
 package planner
 
-// NoCatalogError is returned when the planner is invoked without an
-// index catalog configured.
-type NoCatalogError struct{}
-
-// Error implements the error interface.
-func (e *NoCatalogError) Error() string {
-	return "planner: no index catalog configured"
-}
-
-// InvalidPredicateError is returned when a predicate is malformed or
-// contains an invalid combination of fields and operator.
-type InvalidPredicateError struct {
-	// Field is the predicate field that caused the error.
-	Field string
-
-	// Reason describes why the predicate is invalid.
-	Reason string
-}
-
-// Error implements the error interface.
-func (e *InvalidPredicateError) Error() string {
-	return "planner: invalid predicate on field " + e.Field + ": " + e.Reason
-}
-
 // FieldNotFoundError is returned when a predicate references a field that
 // does not exist on the entity type being evaluated.
 type FieldNotFoundError struct {

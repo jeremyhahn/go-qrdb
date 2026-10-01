@@ -29,10 +29,13 @@ import (
 	"time"
 )
 
-// startSingleNode starts a single-node memory cluster and returns the admin
-// port and the test CA for HTTPS mTLS client verification. It blocks until
-// the node is healthy, the admin server is accepting requests, and the node
-// has been elected leader.
+// startSingleNode starts a single-node cluster over the given state machine
+// and returns the admin port and the test CA for HTTPS mTLS client
+// verification. It blocks until the node is healthy, the admin server is
+// accepting requests, and the node has been elected leader.
+//
+// smType is any registered raft.sm_type: every one serves the guarded batches
+// qrdbd's boot-time role/user stores require (go-qrdb#555, go-qrdb#136).
 func startSingleNode(t *testing.T, smType string, extraArgs ...string) (int, *testCA) {
 	t.Helper()
 	bin := buildBinary(t)
@@ -81,6 +84,7 @@ func startThreeNodeCluster(t *testing.T, smType string, extraArgs ...string) ([]
 	adminPorts := allocateTCPPorts(t, 3)
 	grpcPorts := allocateTCPPorts(t, 3)
 	peersFlag := buildPeersFlag(ports)
+	nodeTLS, memberIDs := ca.clusterNodeTLS(t, len(ports))
 	dataDirs := make([]string, 3)
 
 	for i := range 3 {
@@ -95,12 +99,13 @@ func startThreeNodeCluster(t *testing.T, smType string, extraArgs ...string) ([]
 			"--sm", smType,
 			"--discovery", "static",
 			"--peers", peersFlag,
+			"--member-identities", memberIDs,
 			"--shard-id", "1",
 			"--replica-id", fmt.Sprintf("%d", i+1),
 			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
 			"--grpc-port", fmt.Sprintf("%d", grpcPorts[i]),
 		}
-		args = append(args, ca.tlsFlags(t)...)
+		args = append(args, nodeTLS[i]...)
 		args = append(args, extraArgs...)
 
 		prefix := fmt.Sprintf("[node%d] ", i+1)
@@ -126,7 +131,7 @@ func startThreeNodeCluster(t *testing.T, smType string, extraArgs ...string) ([]
 // ---------------------------------------------------------------------------
 
 func TestKV_SingleNode_PutGetDelete(t *testing.T) {
-	adminPort, ca := startSingleNode(t, "memory")
+	adminPort, ca := startSingleNode(t, "pebble")
 
 	// PUT a key.
 	httpPut(t, ca, adminPort, "greeting", []byte("hello world"))
@@ -148,7 +153,7 @@ func TestKV_SingleNode_PutGetDelete(t *testing.T) {
 }
 
 func TestKV_SingleNode_Overwrite(t *testing.T) {
-	adminPort, ca := startSingleNode(t, "memory")
+	adminPort, ca := startSingleNode(t, "pebble")
 
 	// PUT initial value.
 	httpPut(t, ca, adminPort, "mutable", []byte("version-1"))
@@ -166,7 +171,7 @@ func TestKV_SingleNode_Overwrite(t *testing.T) {
 }
 
 func TestKV_SingleNode_ListKeys(t *testing.T) {
-	adminPort, ca := startSingleNode(t, "memory")
+	adminPort, ca := startSingleNode(t, "pebble")
 
 	// Put keys with different prefixes.
 	httpPut(t, ca, adminPort, "app/key1", []byte("v1"))
@@ -184,7 +189,7 @@ func TestKV_SingleNode_ListKeys(t *testing.T) {
 }
 
 func TestKV_SingleNode_ListAll(t *testing.T) {
-	adminPort, ca := startSingleNode(t, "memory")
+	adminPort, ca := startSingleNode(t, "pebble")
 
 	httpPut(t, ca, adminPort, "a", []byte("1"))
 	httpPut(t, ca, adminPort, "b", []byte("2"))
@@ -198,7 +203,7 @@ func TestKV_SingleNode_ListAll(t *testing.T) {
 }
 
 func TestKV_SingleNode_ListEmpty(t *testing.T) {
-	adminPort, ca := startSingleNode(t, "memory")
+	adminPort, ca := startSingleNode(t, "pebble")
 
 	// No keys written -- list should return empty slice.
 	keys := httpList(t, ca, adminPort, "")
@@ -208,7 +213,7 @@ func TestKV_SingleNode_ListEmpty(t *testing.T) {
 }
 
 func TestKV_SingleNode_ListNoMatch(t *testing.T) {
-	adminPort, ca := startSingleNode(t, "memory")
+	adminPort, ca := startSingleNode(t, "pebble")
 
 	httpPut(t, ca, adminPort, "x/1", []byte("v"))
 
@@ -220,7 +225,7 @@ func TestKV_SingleNode_ListNoMatch(t *testing.T) {
 }
 
 func TestKV_SingleNode_GetNotFound(t *testing.T) {
-	adminPort, ca := startSingleNode(t, "memory")
+	adminPort, ca := startSingleNode(t, "pebble")
 
 	status := httpGetStatus(t, ca, adminPort, "nonexistent")
 	if status != http.StatusNotFound {
@@ -229,14 +234,14 @@ func TestKV_SingleNode_GetNotFound(t *testing.T) {
 }
 
 func TestKV_SingleNode_DeleteNonExistent(t *testing.T) {
-	adminPort, ca := startSingleNode(t, "memory")
+	adminPort, ca := startSingleNode(t, "pebble")
 
 	// Deleting a non-existent key should succeed (idempotent).
 	httpDelete(t, ca, adminPort, "ghost")
 }
 
 func TestKV_SingleNode_LargeValue(t *testing.T) {
-	adminPort, ca := startSingleNode(t, "memory")
+	adminPort, ca := startSingleNode(t, "pebble")
 
 	// 1MB random value.
 	largeVal := make([]byte, 1<<20)
@@ -252,7 +257,7 @@ func TestKV_SingleNode_LargeValue(t *testing.T) {
 }
 
 func TestKV_SingleNode_BinaryValue(t *testing.T) {
-	adminPort, ca := startSingleNode(t, "memory")
+	adminPort, ca := startSingleNode(t, "pebble")
 
 	// Non-UTF8 binary data including null bytes.
 	binVal := []byte{0x00, 0xFF, 0xFE, 0x80, 0x90, 0x00, 0x01}
@@ -264,7 +269,7 @@ func TestKV_SingleNode_BinaryValue(t *testing.T) {
 }
 
 func TestKV_SingleNode_EmptyValue(t *testing.T) {
-	adminPort, ca := startSingleNode(t, "memory")
+	adminPort, ca := startSingleNode(t, "pebble")
 
 	httpPut(t, ca, adminPort, "empty", []byte{})
 	got := httpGet(t, ca, adminPort, "empty")
@@ -274,7 +279,7 @@ func TestKV_SingleNode_EmptyValue(t *testing.T) {
 }
 
 func TestKV_SingleNode_SpecialCharKey(t *testing.T) {
-	adminPort, ca := startSingleNode(t, "memory")
+	adminPort, ca := startSingleNode(t, "pebble")
 
 	// Keys containing URL-safe special characters.
 	httpPut(t, ca, adminPort, "path/to/deep/key", []byte("deep"))
@@ -285,7 +290,7 @@ func TestKV_SingleNode_SpecialCharKey(t *testing.T) {
 }
 
 func TestKV_SingleNode_ManyKeys(t *testing.T) {
-	adminPort, ca := startSingleNode(t, "memory")
+	adminPort, ca := startSingleNode(t, "pebble")
 
 	// Write 200 sequential keys.
 	const count = 200
@@ -312,7 +317,7 @@ func TestKV_SingleNode_ManyKeys(t *testing.T) {
 }
 
 func TestKV_SingleNode_DeleteThenReinsert(t *testing.T) {
-	adminPort, ca := startSingleNode(t, "memory")
+	adminPort, ca := startSingleNode(t, "pebble")
 
 	httpPut(t, ca, adminPort, "cycle", []byte("first"))
 	httpDelete(t, ca, adminPort, "cycle")
@@ -336,7 +341,7 @@ func TestKV_SingleNode_DeleteThenReinsert(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestKV_ThreeNode_PutGetFromAnyNode(t *testing.T) {
-	adminPorts, _, ca := startThreeNodeCluster(t, "memory")
+	adminPorts, _, ca := startThreeNodeCluster(t, "pebble")
 	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
 
 	// Write on leader.
@@ -353,7 +358,7 @@ func TestKV_ThreeNode_PutGetFromAnyNode(t *testing.T) {
 }
 
 func TestKV_ThreeNode_AllEndpoints(t *testing.T) {
-	adminPorts, _, ca := startThreeNodeCluster(t, "memory")
+	adminPorts, _, ca := startThreeNodeCluster(t, "pebble")
 	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
 
 	// Status endpoint.
@@ -390,7 +395,7 @@ func TestKV_ThreeNode_AllEndpoints(t *testing.T) {
 }
 
 func TestKV_ThreeNode_ReadAfterWrite(t *testing.T) {
-	adminPorts, _, ca := startThreeNodeCluster(t, "memory")
+	adminPorts, _, ca := startThreeNodeCluster(t, "pebble")
 	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
 
 	// Write then immediately read -- linearizable consistency guarantee.
@@ -406,7 +411,7 @@ func TestKV_ThreeNode_ReadAfterWrite(t *testing.T) {
 }
 
 func TestKV_ThreeNode_ReplicatedList(t *testing.T) {
-	adminPorts, _, ca := startThreeNodeCluster(t, "memory")
+	adminPorts, _, ca := startThreeNodeCluster(t, "pebble")
 	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
 
 	// Write a batch of keys on the leader.
@@ -435,7 +440,7 @@ func TestKV_ThreeNode_ReplicatedList(t *testing.T) {
 }
 
 func TestKV_ThreeNode_DeleteReplicates(t *testing.T) {
-	adminPorts, _, ca := startThreeNodeCluster(t, "memory")
+	adminPorts, _, ca := startThreeNodeCluster(t, "pebble")
 	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
 
 	httpPut(t, ca, leaderPort, "del-test", []byte("exists"))
@@ -537,7 +542,7 @@ func (s *testStats) log(t *testing.T) {
 }
 
 func TestKV_ThreeNode_ConcurrentLoad(t *testing.T) {
-	adminPorts, _, ca := startThreeNodeCluster(t, "memory")
+	adminPorts, _, ca := startThreeNodeCluster(t, "pebble")
 	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
 
 	stats := &testStats{}
@@ -612,7 +617,7 @@ func TestKV_ThreeNode_ConcurrentLoad(t *testing.T) {
 }
 
 func TestKV_SingleNode_ConcurrentSameKey(t *testing.T) {
-	adminPort, ca := startSingleNode(t, "memory")
+	adminPort, ca := startSingleNode(t, "pebble")
 
 	// Multiple goroutines writing to the same key concurrently.
 	var wg sync.WaitGroup
@@ -1276,10 +1281,12 @@ func TestUsers_SingleNode_CreateAndList(t *testing.T) {
 	// avoid precision loss in JS clients.
 	payload := struct {
 		Username string   `json:"username"`
+		Email    string   `json:"email"`
 		TenantID string   `json:"tenant_id"`
 		RoleIDs  []string `json:"role_ids"`
 	}{
 		Username: "testuser1",
+		Email:    "testuser1@system.example.com",
 		TenantID: "system",
 		RoleIDs:  []string{},
 	}
@@ -1357,7 +1364,7 @@ func TestUsers_SingleNode_CreateAndList(t *testing.T) {
 }
 
 func TestRoles_SingleNode_CreateAndAssign(t *testing.T) {
-	adminPort, ca := startSingleNode(t, "memory")
+	adminPort, ca := startSingleNode(t, "pebble")
 
 	client := mtlsHTTPClient(t, ca, 10*time.Second)
 
@@ -1399,10 +1406,12 @@ func TestRoles_SingleNode_CreateAndAssign(t *testing.T) {
 	// Create a user to assign the role to.
 	userPayload := struct {
 		Username string   `json:"username"`
+		Email    string   `json:"email"`
 		TenantID string   `json:"tenant_id"`
 		RoleIDs  []string `json:"role_ids"`
 	}{
 		Username: "roleuser",
+		Email:    "roleuser@system.example.com",
 		TenantID: "system",
 		RoleIDs:  []string{},
 	}
@@ -1476,7 +1485,7 @@ func TestRoles_SingleNode_CreateAndAssign(t *testing.T) {
 }
 
 func TestRoles_SingleNode_ListPermissions(t *testing.T) {
-	adminPort, ca := startSingleNode(t, "memory")
+	adminPort, ca := startSingleNode(t, "pebble")
 
 	client := mtlsHTTPClient(t, ca, 10*time.Second)
 

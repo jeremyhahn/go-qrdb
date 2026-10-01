@@ -1,6 +1,6 @@
 # Multi-Tenancy — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
 
 Command group: `qrdb tenant` — create, delete and list tenants, manage their
 quotas and entitlements, and drive their dedicated barriers. All verbs accept
@@ -63,6 +63,54 @@ If a delete fails part-way, **re-run the same command**. The teardown is
 idempotent and resumes where it stopped; the id is already retired by then, so
 nothing can attach to whatever is left.
 
+### `qrdb tenant list-deleted`
+
+Lists retired tenant ids — every id that was deleted and can never be used
+again — with when each was retired, in ascending id order, one page at a time.
+
+| Flag | Type | Default | Meaning |
+|---|---|---|---|
+| `--page-size` | int32 | `0` (server default, 100) | records per page; above the server maximum (1000) is served at the maximum |
+| `--page-token` | string | — | the next page token the previous page printed |
+
+```
+$ qrdb tenant list-deleted --page-size 2
+ID      NAME          ISOLATION  DELETED_AT
+acme    Acme Corp     volume     2026-09-20T14:31:07Z
+globex  Globex        prefix     2026-09-21T09:02:44Z
+
+Next page token: Z2xvYmV4
+$ qrdb tenant list-deleted --page-size 2 --page-token Z2xvYmV4
+```
+
+`DELETED_AT` reads `unknown` for a record that could not be decoded; the id is
+retired either way. Requires `tenants:list_deleted`, a system-tenant
+permission.
+
+### `qrdb tenant reconcile-deleted`
+
+Removes, **from the node the client is connected to**, the directories of
+retired tenant ids — what a replica keeps when it was down, or not hosting the
+tenant, when the tenant was deleted. No flags.
+
+```
+$ qrdb --server node-2.db.example.com tenant reconcile-deleted
+Inspected: 3 retired tenant ids
+ACTION     TENANT  PATH                          REASON
+reclaimed  acme    <install-dir>/pool/acme
+skipped    old     <install-dir>/disks/shared    overlaps-live-tenant
+```
+
+It never removes a directory a live tenant claims; such a path is reported as
+`skipped` with the reason. A directory that is a mount point is emptied and
+reported as `reclaimed`; the mount stays. If some tenant ids fail, the rest
+are still reclaimed: the report is printed with a `failed` row per failed id
+(its reason is the step and the node's message), and the command then exits
+non-zero. It acts on one node, so run it against each node of
+a cluster. Every node also runs it on its own at boot, so it is needed only to
+reclaim disk without a restart. Requires `tenants:reconcile_deleted`, a
+system-tenant permission.
+
 ### `qrdb tenant update <id>`
 
 | Flag | Type | Meaning |
@@ -71,9 +119,19 @@ nothing can attach to whatever is left.
 | `--isolation-type` | string | **`barrier \| prefix` only** |
 
 Note the restriction: `update` accepts only `barrier` and `prefix`, and any
-change is refused once the tenant holds data (`ErrTenantHasData`).
+change is refused once the tenant holds data (`ErrTenantHasData`). Changing
+`--isolation-type` also needs `tenants:set_isolation`, which only a
+`system`-tenant identity can exercise; a tenant's Admin can change `--name` on
+its own tenant only.
 
 ## Governance
+
+Everything in this section is the tenant's **plan**, and only the platform
+operator sets it: `set-entitlement` needs `tenants:set_entitlements` and
+`update-quotas` needs `tenants:set_quotas`, both cross-scope, so the caller's
+certificate must be a `system`-tenant identity. So does `tenant create`
+(`tenants:create`). A tenant's Admin is refused 403 even on its own tenant. See
+[api.md](api.md#who-may-call-what).
 
 ### `qrdb tenant set-entitlement <id>`
 

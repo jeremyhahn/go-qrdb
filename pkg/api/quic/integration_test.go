@@ -99,7 +99,7 @@ func generateIntegrationTLS(t *testing.T) *integrationTLSBundle {
 		},
 		clientCfg: &tls.Config{
 			RootCAs:    caPool,
-			NextProtos: []string{"qrdb-quic"},
+			NextProtos: []string{wire.ProtocolV2},
 			MinVersion: tls.VersionTLS13,
 		},
 	}
@@ -127,11 +127,31 @@ func startIntegrationServer(
 	opts ...ServerOption,
 ) *integrationEnv {
 	t.Helper()
+	return startIntegrationServerWithHandlers(t, kvSvc, adminSvc, nil, opts...)
+}
+
+// startIntegrationServerWithHandlers is startIntegrationServer with extra
+// dispatch-table entries installed BEFORE Start. The table is read without a
+// lock by every stream the server serves, and a test's request reaching the
+// server over the network is not a happens-before edge the race detector can
+// see, so an entry added after Start is a data race however the test orders
+// it.
+func startIntegrationServerWithHandlers(
+	t *testing.T,
+	kvSvc *mockKVService,
+	adminSvc *mockAdminService,
+	handlers map[string]methodHandler,
+	opts ...ServerOption,
+) *integrationEnv {
+	t.Helper()
 
 	bundle := generateIntegrationTLS(t)
 	allOpts := append([]ServerOption{WithTLS(bundle.serverCfg)}, opts...)
 
 	srv := NewServer(kvSvc, adminSvc, "127.0.0.1:0", allOpts...)
+	for method, h := range handlers {
+		srv.handlers[method] = h
+	}
 	if err := srv.Start(); err != nil {
 		t.Fatalf("start server: %v", err)
 	}
@@ -1041,7 +1061,7 @@ func generateMutualTLS(t *testing.T) *mutualTLSBundle {
 	clientCfg := &tls.Config{
 		Certificates: []tls.Certificate{clientTLSCert},
 		RootCAs:      caPool,
-		NextProtos:   []string{"qrdb-quic"},
+		NextProtos:   []string{wire.ProtocolV2},
 		MinVersion:   tls.VersionTLS13,
 	}
 

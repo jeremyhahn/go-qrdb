@@ -46,7 +46,7 @@ func TestMintKeyedSibling_Idempotent(t *testing.T) {
 	src, _ := newNoneBarrier(t)
 
 	strategy := NewDeferredSoftwareStrategy()
-	first, err := src.MintKeyedSibling(ctx, ".migrating", strategy, Credentials{Secret: []byte("pw")})
+	first, err := src.MintKeyedSibling(ctx, ".migrating", strategy, MustCredentials([]byte("pw")))
 	if err != nil {
 		t.Fatalf("first MintKeyedSibling: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestMintKeyedSibling_Idempotent(t *testing.T) {
 	// The staging blob from the first mint is still on the backend (simulating a
 	// rolled-back / interrupted migration that didn't delete it). A second mint
 	// must still succeed.
-	second, err := src.MintKeyedSibling(ctx, ".migrating", NewDeferredSoftwareStrategy(), Credentials{Secret: []byte("pw")})
+	second, err := src.MintKeyedSibling(ctx, ".migrating", NewDeferredSoftwareStrategy(), MustCredentials([]byte("pw")))
 	if err != nil {
 		t.Fatalf("second MintKeyedSibling over leftover staging blob: %v (mint not idempotent — retries would wedge)", err)
 	}
@@ -220,7 +220,7 @@ func TestReopenKeyed_Shamir_StaysSealedPendingQuorum(t *testing.T) {
 func TestReopenKeyed_Passphrase_Unseals(t *testing.T) {
 	ctx := context.Background()
 	src, _ := newNoneBarrier(t)
-	sib, err := src.MintKeyedSibling(ctx, ".migrating", NewDeferredSoftwareStrategy(), Credentials{Secret: []byte("pw")})
+	sib, err := src.MintKeyedSibling(ctx, ".migrating", NewDeferredSoftwareStrategy(), MustCredentials([]byte("pw")))
 	if err != nil {
 		t.Fatalf("MintKeyedSibling: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestReopenKeyed_Passphrase_Unseals(t *testing.T) {
 		t.Fatalf("AdoptMigratedRootKey: %v", err)
 	}
 
-	keyed, err := src.ReopenKeyed(ctx, NewDeferredSoftwareStrategy(), Credentials{Secret: []byte("pw")})
+	keyed, err := src.ReopenKeyed(ctx, NewDeferredSoftwareStrategy(), MustCredentials([]byte("pw")))
 	if err != nil {
 		t.Fatalf("ReopenKeyed(passphrase): %v", err)
 	}
@@ -309,7 +309,7 @@ func TestMigrationJournal_RoundTrip(t *testing.T) {
 		TargetStrategy: StrategyPassphrase,
 		Mechanism:      MechanismSwap,
 		Availability:   AvailabilityQuiesced,
-		Credentials:    Credentials{Secret: []byte("pw")},
+		Credentials:    MustCredentials([]byte("pw")),
 	}
 	j, err := b.beginMigrationJournal(ctx, opts)
 	if err != nil {
@@ -402,7 +402,7 @@ func TestBeginMigrationJournal_RejectsInvalidOptionsAndNonNoneSource(t *testing.
 		t.Fatalf("NewStorageBarrier keyed: %v", err)
 	}
 	defer func() { _ = keyed.Close() }()
-	if err := keyed.Initialize(ctx, Credentials{Secret: []byte("pw")}); err != nil {
+	if err := keyed.Initialize(ctx, MustCredentials([]byte("pw"))); err != nil {
 		t.Fatalf("Initialize keyed: %v", err)
 	}
 	good := MigrationOptions{TargetStrategy: StrategyShamir, Mechanism: MechanismSwap, Availability: AvailabilityQuiesced, ShamirThreshold: 2, ShamirTotal: 3}
@@ -440,7 +440,7 @@ func TestBeginMigrationJournal_AcceptsSystemBarrierSource(t *testing.T) {
 		TargetStrategy: StrategyPassphrase,
 		Mechanism:      MechanismSwap,
 		Availability:   AvailabilityQuiesced,
-		Credentials:    Credentials{Secret: []byte("tenant-pw")},
+		Credentials:    MustCredentials([]byte("tenant-pw")),
 	}
 	j, err := tenant.beginMigrationJournal(ctx, opts)
 	if err != nil {

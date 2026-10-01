@@ -144,8 +144,9 @@ func TestMVCCLease_LeaseGrant_InvalidTTL(t *testing.T) {
 	if err := s.Update(context.Background(), entries, results); err != nil {
 		t.Fatalf("Update must not return a fatal error for TTL=0: %v", err)
 	}
-	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
-		t.Fatal("expected app-error payload for TTL=0")
+	if _, kind, ok := protocol.DecodeAppErrorKind(results[0].Data); !ok || kind != protocol.AppErrorInvalid {
+		t.Fatalf("TTL=0 result: ok=%v kind=%d; want an AppErrorInvalid refusal — the caller's "+
+			"TTL is wrong, not the node (go-qrdb#557)", ok, kind)
 	}
 }
 
@@ -179,8 +180,9 @@ func TestMVCCLease_LeaseGrant_NoLessor(t *testing.T) {
 	if err = s.Update(context.Background(), entries, results); err != nil {
 		t.Fatalf("Update must not return a fatal error granting lease without lessor: %v", err)
 	}
-	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
-		t.Fatal("expected app-error payload when granting lease without lessor")
+	if _, kind, ok := protocol.DecodeAppErrorKind(results[0].Data); !ok || kind != protocol.AppErrorCapability {
+		t.Fatalf("grant without a lessor: ok=%v kind=%d; want an AppErrorCapability refusal — "+
+			"this state machine was built without leases (go-qrdb#557)", ok, kind)
 	}
 }
 
@@ -204,8 +206,8 @@ func TestMVCCLease_LeaseRevoke_NoLessor(t *testing.T) {
 	if err = s.Update(context.Background(), entries, results); err != nil {
 		t.Fatalf("Update must not return a fatal error revoking lease without lessor: %v", err)
 	}
-	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
-		t.Fatal("expected app-error payload when revoking lease without lessor")
+	if _, kind, ok := protocol.DecodeAppErrorKind(results[0].Data); !ok || kind != protocol.AppErrorCapability {
+		t.Fatalf("revoke without a lessor: ok=%v kind=%d; want AppErrorCapability", ok, kind)
 	}
 }
 
@@ -561,6 +563,11 @@ func TestMVCCLease_Lookup_LeasesQuery_Empty(t *testing.T) {
 // Lookup: lease not found
 // ---------------------------------------------------------------------------
 
+// TestMVCCLease_Lookup_LeaseNotFound pins go-qrdb#387: MVCCStateMachine.Lookup
+// delegates to engine.MVCCEngine.Lookup, which must answer a missing lease
+// with *service.LeaseNotFoundError -- the typed error every transport's
+// error mapping recognizes -- rather than the generic *engine.InvalidQueryError
+// this used to pin.
 func TestMVCCLease_Lookup_LeaseNotFound(t *testing.T) {
 	s, _ := newTestMVCCWithLessor(t)
 
@@ -569,9 +576,12 @@ func TestMVCCLease_Lookup_LeaseNotFound(t *testing.T) {
 		t.Fatal("expected error for non-existent lease")
 	}
 
-	var iqe2 *engine.InvalidQueryError
-	if !errors.As(err, &iqe2) {
-		t.Fatalf("expected *engine.InvalidQueryError, got %T: %v", err, err)
+	var lnf *service.LeaseNotFoundError
+	if !errors.As(err, &lnf) {
+		t.Fatalf("expected *service.LeaseNotFoundError, got %T: %v", err, err)
+	}
+	if lnf.LeaseID != 999999 {
+		t.Errorf("LeaseID = %d, want 999999", lnf.LeaseID)
 	}
 }
 

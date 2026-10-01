@@ -196,7 +196,15 @@ func (b *StorageBarrier) verifyCredentialMode(ctx context.Context, secret []byte
 		return nil, ErrRootTokenVerificationFailed
 	}
 
-	rootKey, err := strategy.UnsealRootKey(ctx, &sealed, Credentials{Secret: secret})
+	// NewCredentials wipes secret; it is the caller's protected buffer,
+	// destroyed on its own return, and nothing reads it after this.
+	creds, err := NewCredentials(secret)
+	if err != nil {
+		return nil, ErrRootTokenVerificationFailed
+	}
+	defer creds.Secret.Destroy()
+
+	rootKey, err := strategy.UnsealRootKey(ctx, &sealed, creds)
 	if err != nil {
 		return nil, ErrRootTokenVerificationFailed
 	}

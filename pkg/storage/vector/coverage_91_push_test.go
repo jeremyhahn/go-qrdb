@@ -15,8 +15,6 @@ package vector
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -136,9 +134,7 @@ func TestUpsertVector_UpdateWithOldMetadata(t *testing.T) {
 }
 
 func TestUpsertVector_SyncWrites(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "vector_test_"+t.Name())
-	_ = os.RemoveAll(tmpDir)
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	config.SyncWrites = true
@@ -197,9 +193,7 @@ func TestDeleteVector_WithMetadataIndexes(t *testing.T) {
 }
 
 func TestDeleteVector_SyncWritesPath(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "vector_test_"+t.Name())
-	_ = os.RemoveAll(tmpDir)
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	config.SyncWrites = true
@@ -245,9 +239,7 @@ func TestNewPebbleVectorStorage_InvalidConfig(t *testing.T) {
 }
 
 func TestCreateNamespace_SyncWritesPath(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "vector_test_"+t.Name())
-	_ = os.RemoveAll(tmpDir)
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	config.SyncWrites = true
@@ -263,9 +255,7 @@ func TestCreateNamespace_SyncWritesPath(t *testing.T) {
 }
 
 func TestDeleteNamespace_SyncWritesPath(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "vector_test_"+t.Name())
-	_ = os.RemoveAll(tmpDir)
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	config.SyncWrites = true
@@ -282,9 +272,7 @@ func TestDeleteNamespace_SyncWritesPath(t *testing.T) {
 }
 
 func TestBatchUpsertVectors_SyncWritesPath(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "vector_test_"+t.Name())
-	_ = os.RemoveAll(tmpDir)
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	config.SyncWrites = true
@@ -304,9 +292,7 @@ func TestBatchUpsertVectors_SyncWritesPath(t *testing.T) {
 }
 
 func TestBatchDeleteVectors_SyncWritesPath(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "vector_test_"+t.Name())
-	_ = os.RemoveAll(tmpDir)
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	config.SyncWrites = true
@@ -337,9 +323,7 @@ func TestUpsertVector_UpdateVersionNoOldData(t *testing.T) {
 
 // TestStorageReopen verifies namespace data persists and loads on reopen.
 func TestStorageReopen(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "vector_test_"+t.Name())
-	_ = os.RemoveAll(tmpDir)
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 

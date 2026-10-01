@@ -841,16 +841,6 @@ func TestBackupErrors_Messages(t *testing.T) {
 			expected: "service: backup restore failed for abc: corrupted",
 		},
 		{
-			name:     "BackupVerifyError",
-			err:      &BackupVerifyError{BackupID: "abc", Err: errors.New("bad checksum")},
-			expected: "service: backup verification failed for abc: bad checksum",
-		},
-		{
-			name:     "BackupDeleteError",
-			err:      &BackupDeleteError{BackupID: "abc", Err: errors.New("locked")},
-			expected: "service: backup deletion failed for abc: locked",
-		},
-		{
 			name:     "BackupChecksumMismatchError",
 			err:      &BackupChecksumMismatchError{Expected: "aaa", Actual: "bbb"},
 			expected: "service: backup checksum mismatch: expected aaa, got bbb",
@@ -885,8 +875,6 @@ func TestBackupErrors_Unwrap(t *testing.T) {
 	}{
 		{name: "BackupCreateError", err: &BackupCreateError{Err: inner}},
 		{name: "BackupRestoreError", err: &BackupRestoreError{BackupID: "x", Err: inner}},
-		{name: "BackupVerifyError", err: &BackupVerifyError{BackupID: "x", Err: inner}},
-		{name: "BackupDeleteError", err: &BackupDeleteError{BackupID: "x", Err: inner}},
 	}
 
 	for _, tt := range tests {

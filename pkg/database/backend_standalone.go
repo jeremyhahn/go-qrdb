@@ -90,19 +90,6 @@ func NewStandaloneBackend(store storage.Storage) *StandaloneBackend {
 	return &StandaloneBackend{store: store}
 }
 
-// Storage returns the underlying storage.Storage instance. This is useful
-// when callers need direct access to the storage layer, for example when
-// the timeseries engine requires raw PebbleDB access.
-//
-// Writes issued against the returned store do NOT take writeMu and therefore
-// do not participate in the atomicity guarantee described on the type. This
-// method hands out no authority the caller did not already have -- whoever
-// calls NewStandaloneBackend supplies the store -- so it is the ownership
-// convention, not this accessor, that the guarantee rests on.
-func (b *StandaloneBackend) Storage() storage.Storage {
-	return b.store
-}
-
 // Get retrieves a value by key. The context is accepted for interface
 // compatibility but is unused by the standalone backend.
 func (b *StandaloneBackend) Get(_ context.Context, key []byte) ([]byte, error) {

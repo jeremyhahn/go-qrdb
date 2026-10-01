@@ -25,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-objstore/pkg/local"
 	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
@@ -61,6 +62,21 @@ func (f *failingBackend) PutIfAbsent(ctx context.Context, key string, data []byt
 		return false, errStoreFault
 	}
 	return f.inner.PutIfAbsent(ctx, key, data)
+}
+
+// PutIfAllAbsent is the fenced create CreateTenant commits through. It is a
+// write, so failPut applies to it exactly as it does to Put: a double that
+// injected faults into Put but let the fenced create through would stop
+// modelling a store whose writes fail.
+func (f *failingBackend) PutIfAllAbsent(ctx context.Context, key string, data []byte, fences ...string) (bool, error) {
+	if f.failPut {
+		return false, errStoreFault
+	}
+	fenced, ok := f.inner.(kvstore.FencedCreator)
+	if !ok {
+		return false, seal.ErrFencedCreateUnsupported
+	}
+	return fenced.PutIfAllAbsent(ctx, key, data, fences...)
 }
 
 // CompareAndDelete mirrors PutIfAbsent's guard on the release side:
@@ -113,7 +129,7 @@ func testSoftwareStrategy(t *testing.T) *seal.SoftwareStrategy {
 // durable, independent per-tenant Pebble at a t-scoped temp directory, so
 // crypto/physical isolation can be exercised against a real seal backend
 // without modifying the host system.
-func newTestBarrierRegistry(t *testing.T) *seal.BarrierRegistry {
+func newTestBarrierRegistry(t *testing.T, extra ...seal.Option) *seal.BarrierRegistry {
 	t.Helper()
 	store := seal.NewMemoryBackend()
 	system, err := seal.NewBarrier(testLogger(), store, seal.BarrierConfig{
@@ -147,10 +163,11 @@ func newTestBarrierRegistry(t *testing.T) *seal.BarrierRegistry {
 	perTenantReg := pebblestore.NewPerTenantRegistry()
 	t.Cleanup(func() { _ = perTenantReg.CloseAll(context.Background()) })
 
-	reg, err := seal.NewBarrierRegistry(testLogger(), system,
+	opts := append([]seal.Option{
 		seal.WithVolumePool(mgr, state, "default"),
 		seal.WithPerTenantRegistry(perTenantReg),
-	)
+	}, extra...)
+	reg, err := seal.NewBarrierRegistry(testLogger(), system, opts...)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}

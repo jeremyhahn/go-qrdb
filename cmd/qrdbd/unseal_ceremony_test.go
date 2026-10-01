@@ -96,8 +96,11 @@ func TestRunStart_UnsealCeremony_ProceedsToFullStartup(t *testing.T) {
 	}
 
 	f := &startFlags{
-		dataDir:         dir,
-		smType:          "memory",
+		dataDir: dir,
+		// "pebble", the production default. This test exercises the
+		// unseal-to-serving handover, which does not depend on which --sm
+		// backs it.
+		smType:          "pebble",
 		discoveryMethod: "static",
 		peers:           []string{fmt.Sprintf("1=%s", raftAddr)},
 		listen:          fmt.Sprintf("0.0.0.0:%d", raftPort),

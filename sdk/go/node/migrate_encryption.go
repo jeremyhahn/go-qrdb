@@ -32,10 +32,18 @@ import (
 // removed once the migration commits (or rolls back).
 const stagingRootKeySuffix = ".migrating"
 
-// MigrationNotSupportedError is returned when an encryption migration is
-// requested on a node whose backend cannot be migrated (memory/file backends
-// have no encfs at-rest store) or whose data-plane boot params were not
-// retained (clustered nodes use the cluster coordinator, not this path).
+// MigrationNotSupportedError is returned when this node cannot perform an
+// encryption migration at all: seal is not enabled, the node has not finished
+// booting, it has no seal store to persist the migrated root key in, or its
+// data-plane boot params were not retained (clustered nodes use the cluster
+// coordinator, not this path). Reason says which.
+//
+// It is the node-level form of service.ErrMigrationProviderUnavailable, and
+// errors.Is reports it as that sentinel, so every transport answers it the way
+// it answers the sentinel -- 501 on REST, Unimplemented on gRPC, unix, QUIC
+// and MCP -- while a direct caller of Node.EnableEncryption can still
+// errors.As it for the reason. A failure partway through a migration the node
+// did accept is a *MigrationReopenError, not this.
 type MigrationNotSupportedError struct {
 	Reason string
 }
@@ -44,21 +52,57 @@ func (e *MigrationNotSupportedError) Error() string {
 	return "node: encryption migration not supported: " + e.Reason
 }
 
+// Is reports whether target is service.ErrMigrationProviderUnavailable.
+func (e *MigrationNotSupportedError) Is(target error) bool {
+	return target == service.ErrMigrationProviderUnavailable
+}
+
+// MigrationReopenError is returned when a system-scope migration the node
+// accepted fails while bringing its data plane back up on the migrated
+// barrier. Unlike *MigrationNotSupportedError it is not a refusal: the
+// migration ran, and Err, when set, is the cause.
+type MigrationReopenError struct {
+	Reason string
+	Err    error
+}
+
+func (e *MigrationReopenError) Error() string {
+	msg := "node: encryption migration reopen failed: " + e.Reason
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Unwrap returns the underlying cause, if any.
+func (e *MigrationReopenError) Unwrap() error {
+	return e.Err
+}
+
 // EnableEncryption migrates a previously-unencrypted barrier to a keyed
 // strategy in place on this running node, with no process restart. It is the
 // node-level entrypoint behind the BarrierService enable-encryption operation.
 //
 // Scope routing is handled by the cached n.encMigrator (a
 // server.scopedEncryptionMigrator built in wireClientAndServer):
-//   - ScopeSystem  → nodeSystemMigrator.EnableEncryption (holds migrateMu)
+//   - ScopeSystem  → nodeSystemMigrator.EnableEncryption (holds the lifecycle gate)
 //   - ScopeTenant  → server.TenantHostRegistry.MigrateEncryption (per-tenant guard)
 //
 // Both the direct in-process call here and the transport handlers on every
 // protocol server flow through the same scoped-router semantics, guaranteeing
 // identical routing, authority, and entitlement checks.
 func (n *Node) EnableEncryption(ctx context.Context, scope service.BarrierScope, opts seal.MigrationOptions) error {
+	if n.lifeGate.isClosing() {
+		return ErrNodeClosed
+	}
 	mig := n.encMigrator.Load()
 	if mig == nil {
+		// Close retracts the router, so a nil router read after the check
+		// above may mean a Close that began in between: say so rather than
+		// "not yet booted".
+		if n.lifeGate.isClosing() {
+			return ErrNodeClosed
+		}
 		if n.barrierRegistry.Load() == nil {
 			return &MigrationNotSupportedError{Reason: "no barrier registry (seal not enabled)"}
 		}
@@ -67,8 +111,55 @@ func (n *Node) EnableEncryption(ctx context.Context, scope service.BarrierScope,
 	return (*mig).EnableEncryption(ctx, scope, opts)
 }
 
+// admitTenantMigration is the server.TenantMigrationAdmission for this node:
+// a tenant-scope migration holds the lifecycle gate SHARED — alongside other
+// tenant migrations and a system migration, which keep their own guards — so
+// Close waits for it to finish, and one that arrives after Close has begun is
+// refused with ErrNodeClosed (go-qrdb#226).
+func (n *Node) admitTenantMigration(_ context.Context) (func(), error) {
+	if err := n.lifeGate.enterShared(); err != nil {
+		return nil, err
+	}
+	return n.lifeGate.leaveShared, nil
+}
+
+// nodeEmbeddedMigrator adapts *Node to service.EncryptionMigrator for the
+// embedded SDK transport (sdk/go/transport/embedded), wired in via
+// embedded.WithEncryptionMigrator in buildEmbeddedOpts. It resolves
+// n.encMigrator on every call rather than capturing a value once: the
+// embedded transport (like the network transports) is built once per
+// data-plane construction, and a system-scope migration replaces
+// n.encMigrator's target in place (see wireClientAndServer) without
+// necessarily rebuilding the transport around it, so a captured value could
+// go stale across that recycle where a live re-resolve does not.
+//
+// Unlike Node.EnableEncryption, which is the direct Go API and returns a
+// Node-specific *MigrationNotSupportedError with a reason, this adapter
+// returns the shared service.ErrMigrationProviderUnavailable sentinel every
+// other transport (REST/gRPC/Unix/QUIC/MCP) uses for "not available" --
+// giving a caller checking for that sentinel through the embedded transport
+// the same answer it would get anywhere else, regardless of the Node-level
+// reason (seal not enabled vs. not yet unsealed).
+type nodeEmbeddedMigrator struct {
+	node *Node
+}
+
+// EnableEncryption implements service.EncryptionMigrator by delegating to the
+// node's own live scoped migrator, or refusing with
+// service.ErrMigrationProviderUnavailable when none is configured yet.
+func (m *nodeEmbeddedMigrator) EnableEncryption(ctx context.Context, scope service.BarrierScope, opts seal.MigrationOptions) error {
+	mig := m.node.encMigrator.Load()
+	if mig == nil {
+		return service.ErrMigrationProviderUnavailable
+	}
+	return (*mig).EnableEncryption(ctx, scope, opts)
+}
+
+// Compile-time check that nodeEmbeddedMigrator implements service.EncryptionMigrator.
+var _ service.EncryptionMigrator = (*nodeEmbeddedMigrator)(nil)
+
 // nodeSystemMigrator adapts *Node to service.EncryptionMigrator for the system
-// scope only. It holds n.migrateMu for the entire duration of each system
+// scope only. It holds n.lifecycle for the entire duration of each system
 // migration so the data-plane tear-down and rebuild are serialized. Tenant
 // scope is NOT handled here; the scoped router in n.encMigrator (built by
 // server.NewScopedEncryptionMigrator) intercepts tenant scope and routes it to
@@ -79,19 +170,35 @@ type nodeSystemMigrator struct {
 
 // EnableEncryption handles system-scope migration by building an
 // EncryptionMigrationService over the node's barrier registry and the
-// nodeMigrationProvider, then calling EnableSystemEncryption. The migrateMu
+// nodeMigrationProvider, then calling EnableSystemEncryption. The lifecycle gate
 // lock is held for the entire operation so concurrent system migrations are
 // serialized and the data-plane recycle (tear-down → re-encrypt → rebuild) is
 // atomic from the caller's perspective.
 func (m *nodeSystemMigrator) EnableEncryption(ctx context.Context, scope service.BarrierScope, opts seal.MigrationOptions) error {
 	switch scope.Kind {
 	case service.ScopeSystem:
-		m.node.migrateMu.Lock()
-		defer m.node.migrateMu.Unlock()
+		// The node's lifecycle lock: Close waits for this migration to finish
+		// rather than retracting the barrier underneath it (go-qrdb#226), and a
+		// migration that arrives after Close is refused.
+		if err := m.node.lifeGate.acquire(ctx); err != nil {
+			return err
+		}
+		defer m.node.lifeGate.release()
 
 		barrierRegistry := m.node.barrierRegistry.Load()
 		if barrierRegistry == nil {
 			return &MigrationNotSupportedError{Reason: "no barrier registry (seal not enabled)"}
+		}
+		// A node with a barrier registry but no seal store is not a state
+		// this package's own construction paths produce today -- both build
+		// the two together in buildNodeSealSubsystem -- but Reopen's
+		// canonicalRootKeyStrategy call depends on the seal store existing,
+		// and refusing HERE, before Quiesce ever tears the data plane down,
+		// is strictly better than the same refusal surfacing deep inside a
+		// migration already in progress. See canonicalRootKeyStrategy's doc
+		// comment for the read this specifically guards.
+		if m.node.sealStore == nil {
+			return &MigrationNotSupportedError{Reason: "no seal store (this backend cannot hold a seal store)"}
 		}
 		prov := &nodeMigrationProvider{node: m.node}
 		svc := service.NewEncryptionMigrationService(barrierRegistry, prov, m.node.logger)
@@ -137,8 +244,8 @@ type nodeTenantResolver struct {
 }
 
 // CheckBarrierMode delegates to the tenant service on the CURRENTLY live
-// svcNode. It returns MigrationNotSupportedError when no tenant service is
-// live right now — which is only reachable during the narrow synchronous
+// svcNode. It returns *service.DataPlaneRecyclingError -- temporary, so every
+// transport answers it Unavailable -- when no tenant service is live right now — which is only reachable during the narrow synchronous
 // window inside teardownDataPlane where svcNode has been swapped to nil and
 // the rebuild has not yet stored a replacement (the router's earlier checks
 // in EnableEncryption already require server.TenantHostRegistry or
@@ -148,7 +255,7 @@ type nodeTenantResolver struct {
 func (r *nodeTenantResolver) CheckBarrierMode(ctx context.Context, tenantID string, mode seal.StrategyID) error {
 	sv := r.node.svcNode.Load()
 	if sv == nil || sv.Tenant == nil {
-		return &MigrationNotSupportedError{Reason: "tenant service unavailable during data-plane recycle"}
+		return &service.DataPlaneRecyclingError{Service: "tenant"}
 	}
 	return sv.Tenant.CheckBarrierMode(ctx, tenantID, mode)
 }
@@ -159,14 +266,14 @@ func (r *nodeTenantResolver) CheckBarrierMode(ctx context.Context, tenantID stri
 func (r *nodeTenantResolver) GetTenant(ctx context.Context, tenantID string) (*tenant.TenantInfo, error) {
 	sv := r.node.svcNode.Load()
 	if sv == nil || sv.Tenant == nil {
-		return nil, &MigrationNotSupportedError{Reason: "tenant service unavailable during data-plane recycle"}
+		return nil, &service.DataPlaneRecyclingError{Service: "tenant"}
 	}
 	return sv.Tenant.GetTenant(ctx, tenantID)
 }
 
 // nodeMigrationProvider implements service.BarrierMigrationProvider against a
 // live Node, performing the online in-process data-plane recycle. It is
-// single-flight (the caller holds n.migrateMu), so its per-migration fields are
+// single-flight (the caller holds n.lifecycle), so its per-migration fields are
 // race-free for the duration of one migration.
 type nodeMigrationProvider struct {
 	node *Node
@@ -294,7 +401,7 @@ func (p *nodeMigrationProvider) Reopen(ctx context.Context, scope service.Barrie
 
 	pending := n.retainedStandalone
 	if pending == nil {
-		return &MigrationNotSupportedError{Reason: "retained boot params lost during migration"}
+		return &MigrationReopenError{Reason: "retained boot params lost during migration"}
 	}
 
 	switch committedStrategy {
@@ -309,13 +416,19 @@ func (p *nodeMigrationProvider) Reopen(ctx context.Context, scope service.Barrie
 			return serr
 		}
 		keyed, rerr := n.barrier.Load().ReopenKeyed(ctx, reopenStrat, p.creds)
+		// The caller of EnableEncryption owns the credential and destroys it
+		// once the migration returns; this was its last reader, so the
+		// reference is dropped rather than kept pointing at a dead enclave.
+		p.creds = seal.Credentials{}
 		if rerr != nil {
 			return rerr
 		}
 		n.barrier.Store(keyed)
 		n.barrierRegistry.Load().SetSystemBarrier(keyed)
-		// Drop the now-redundant staging root-key blob (best effort).
-		_ = seal.NewStorageAdapter(n.sealStore).Delete(ctx, canonicalRootKeyPath(n)+stagingRootKeySuffix)
+		// Drop the now-redundant staging blob (best effort); nil-guarded like canonicalRootKeyStrategy.
+		if n.sealStore != nil {
+			_ = seal.NewStorageAdapter(n.sealStore).Delete(ctx, canonicalRootKeyPath(n)+stagingRootKeySuffix)
+		}
 
 		if keyed.IsSealed() {
 			sealNode, serr := lifecycle.BuildSealServicesOnly(ctx, lifecycle.Infra{
@@ -327,7 +440,7 @@ func (p *nodeMigrationProvider) Reopen(ctx context.Context, scope service.Barrie
 				Logger:            n.logger,
 			})
 			if serr != nil {
-				return &MigrationNotSupportedError{Reason: "rebuild seal-window services after shamir migration: " + serr.Error()}
+				return &MigrationReopenError{Reason: "rebuild seal-window services after shamir migration", Err: serr}
 			}
 			n.svcNode.Store(sealNode)
 			n.pendingStandalone = pending
@@ -400,7 +513,19 @@ func canonicalRootKeyPath(n *Node) string {
 // canonicalRootKeyStrategy reads the persisted canonical root-key blob and
 // returns its sealing strategy, distinguishing a committed (keyed) migration
 // from a rolled-back (still-none) one.
+//
+// It reads through n.sealStore's seal.LegacyStorage interface rather than
+// assuming any concrete backend, and checks for nil explicitly before
+// handing it to seal.NewStorageAdapter: passing a nil *CONCRETE* pointer
+// into that call would satisfy the interface with a non-nil value wrapping
+// a nil receiver, so the nil would survive past the point where an explicit
+// check could still catch it and crash on the eventual read (go-qrdb#550) --
+// a backend that cannot hold a seal store at all must refuse here, never
+// segfault.
 func canonicalRootKeyStrategy(ctx context.Context, n *Node) (seal.StrategyID, error) {
+	if n.sealStore == nil {
+		return "", &MigrationNotSupportedError{Reason: "no seal store (this backend cannot hold a seal store)"}
+	}
 	blob, err := seal.NewStorageAdapter(n.sealStore).Get(ctx, canonicalRootKeyPath(n))
 	if err != nil {
 		return "", err

@@ -154,7 +154,7 @@ func TestRecoverInterruptedMigration_AdoptPutError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("keyed barrier: %v", err)
 	}
-	if err := keyed.Initialize(ctx, seal.Credentials{Secret: []byte(pw)}); err != nil {
+	if err := keyed.Initialize(ctx, seal.MustCredentials([]byte(pw))); err != nil {
 		t.Fatalf("init keyed: %v", err)
 	}
 	_ = atrest.New(keyed)

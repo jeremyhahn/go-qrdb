@@ -104,6 +104,10 @@ Aggregate and rich-query results are bounded by the bucket count.
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | Barrier sealed | 503 | `UNAVAILABLE` |
 | Built without `qrdb_ts` | 404 (route not registered) | `UNIMPLEMENTED` |
+| Write reaching a state machine with no time-series store | 501 | `UNIMPLEMENTED` — `service.CapabilityUnsupportedError` |
+| Point refused by the store on its merits (empty metric, zero timestamp, bad batch point) | 400 | `INVALID_ARGUMENT` — `service.CommandRejectedError` |
+| Time-series store closed on this replica | 503 | `UNAVAILABLE` — `service.SubsystemClosedError` |
+| Time-series store failed during apply | 500 | `INTERNAL` — `service.ApplyFaultError` |
 
 Querying an unknown metric is not an error: metrics are created implicitly by
 writing to them, so "no such metric" and "no points in range" are the same

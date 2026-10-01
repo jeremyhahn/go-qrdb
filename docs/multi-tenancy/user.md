@@ -1,6 +1,6 @@
 # Multi-Tenancy — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
 
 Running several customers on one deployment, with as much separation as each
 one needs.
@@ -10,6 +10,13 @@ one needs.
 A reachable server, client certificates, and the `tenants:*` permissions. For
 anything above `prefix` isolation you also need `storage.volume_pools`
 configured on the server.
+
+**Creating tenants and setting their plans is the platform operator's job.**
+`tenant create`, `set-entitlement`, `update-quotas` and any change of isolation
+type need a certificate for an identity in the `system` tenant. A tenant's own
+Admin manages everything inside its tenant, can read, rename and delete it, and sees
+only its own tenant in `tenant list` -- but it cannot create tenants or change
+its own limits. See [api.md](api.md#who-may-call-what).
 
 ## Pick the right rung
 
@@ -120,8 +127,35 @@ is still "not found".
 
 **A `volume` or `raft` tenant's directory after a delete.** It is removed,
 along with the key that protected it and the records that would have restored
-the barrier at the next restart. If the directory is still there, the delete
-reported an error — re-run it.
+the barrier at the next restart. If the directory is still there on the node
+that ran the delete, the delete reported an error — re-run it.
+
+**A deleted tenant's directory on ANOTHER node.** A node that was down during
+the delete, or held the tenant without hosting a shard, still has it. It
+removes it by itself the next time it starts. To reclaim the disk without a
+restart, run the reconcile against that node:
+
+```bash
+qrdb --server node-2.db.example.com tenant reconcile-deleted
+```
+
+It removes only directories of deleted tenants and never one a live tenant
+uses; anything it left alone is listed with the reason, and logged on the
+node. A deleted tenant's disk that is a mount point is emptied; unmount it
+yourself. If it fails for one tenant it still reclaims the others and then
+reports every failure; run it again once the cause is fixed.
+
+**"overlaps retired tenant ... run `qrdb tenant reconcile-deleted`" on
+create.** The directory you asked for still belongs to a deleted tenant this
+node has not cleaned up yet. Run the reconcile against that node, then create
+again.
+
+**Which tenant names can never be used again?** List them, with when each was
+deleted:
+
+```bash
+qrdb tenant list-deleted
+```
 
 **"tenant has data" when changing isolation.** Isolation is fixed once data
 exists. Migrate the data to a new tenant, or delete it first. Note `update` only

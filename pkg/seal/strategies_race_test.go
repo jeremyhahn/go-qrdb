@@ -212,7 +212,7 @@ func TestStrategiesMap_ConcurrentStatusAndChangePassword_NoRace(t *testing.T) {
 	cfg := BarrierConfig{RootKeyPath: "test/root-key"}
 	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), cfg, testSoftwareStrategy(t))
 	require.NoError(t, err)
-	require.NoError(t, b.Initialize(ctx, Credentials{Secret: []byte("initial-password")}))
+	require.NoError(t, b.Initialize(ctx, MustCredentials([]byte("initial-password"))))
 
 	stop := make(chan struct{})
 
@@ -229,7 +229,7 @@ func TestStrategiesMap_ConcurrentStatusAndChangePassword_NoRace(t *testing.T) {
 	// b.strategies on every call (see change_password.go's setStrategy).
 	for i := 0; i < 60; i++ {
 		pw := fmt.Sprintf("password-%d", i)
-		require.NoError(t, b.ChangePassword(ctx, Credentials{Secret: []byte(pw)}))
+		require.NoError(t, b.ChangePassword(ctx, MustCredentials([]byte(pw))))
 	}
 
 	close(stop)
@@ -277,14 +277,14 @@ func TestStrategiesMap_ConcurrentStatusAndUnseal_NoRace(t *testing.T) {
 	strategy := cheapSoftwareStrategy(t, "password")
 	b, err := NewStorageBarrier(testLogger(), base, cfg, strategy)
 	require.NoError(t, err)
-	require.NoError(t, b.Initialize(ctx, Credentials{Secret: []byte("password")}))
+	require.NoError(t, b.Initialize(ctx, MustCredentials([]byte("password"))))
 	require.NoError(t, b.Seal())
 
 	stop := make(chan struct{})
 	wg := spinOpposite(stop, func() { _ = b.Status() })
 
 	for i := 0; i < 60; i++ {
-		require.NoError(t, b.Unseal(ctx, Credentials{Secret: []byte("password")}))
+		require.NoError(t, b.Unseal(ctx, MustCredentials([]byte("password"))))
 		require.NoError(t, b.Seal())
 	}
 
@@ -327,7 +327,7 @@ func TestStrategiesMap_ConcurrentUnsealAndInstall_NoRace(t *testing.T) {
 	cfg := BarrierConfig{RootKeyPath: "test/root-key"}
 	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), cfg, cheapSoftwareStrategy(t, "password"))
 	require.NoError(t, err)
-	require.NoError(t, b.Initialize(ctx, Credentials{Secret: []byte("password")}))
+	require.NoError(t, b.Initialize(ctx, MustCredentials([]byte("password"))))
 	require.NoError(t, b.Seal())
 
 	shamir, err := NewShamirStrategy(2, 3)
@@ -346,7 +346,7 @@ func TestStrategiesMap_ConcurrentUnsealAndInstall_NoRace(t *testing.T) {
 	// Reader: the real Unseal path, which looks the strategy up in the map on
 	// every iteration.
 	for i := 0; i < 60; i++ {
-		require.NoError(t, b.Unseal(ctx, Credentials{Secret: []byte("password")}))
+		require.NoError(t, b.Unseal(ctx, MustCredentials([]byte("password"))))
 		require.NoError(t, b.Seal())
 	}
 

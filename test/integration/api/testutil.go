@@ -25,6 +25,8 @@ import (
 	"time"
 
 	quicgo "github.com/quic-go/quic-go"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 )
 
 // TestConfig holds configuration for integration tests.
@@ -385,7 +387,7 @@ func (cfg *TestConfig) IsProtocolAvailable(t *testing.T, protocol ProtocolType) 
 // quic.DialAddr performs the actual handshake, so it fails the way
 // isServerAvailable's HTTPS GET does: no reply, no valid response, no
 // available. It reuses the suite's CA pool (the same one loadClientTLSConfig
-// gives the other probes) and sets ALPN to "qrdb-quic" to match the
+// gives the other probes) and sets ALPN to wire.ProtocolV2 to match the
 // transport's own buildTLSConfig (sdk/go/transport/quic/transport.go) and
 // the server's Listen config (pkg/api/quic/server.go) — without matching
 // ALPN, quic-go fails the handshake before it reaches the server's
@@ -394,7 +396,7 @@ func isQUICServerAvailable(t *testing.T, cfg *TestConfig) bool {
 	t.Helper()
 
 	tlsCfg := loadClientTLSConfig(cfg)
-	tlsCfg.NextProtos = []string{"qrdb-quic"}
+	tlsCfg.NextProtos = []string{wire.ProtocolV2}
 
 	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()

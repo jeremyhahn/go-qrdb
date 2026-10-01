@@ -403,17 +403,6 @@ func TestBackupRestoreError_MessageAndUnwrap(t *testing.T) {
 	}
 }
 
-func TestBackupVerifyError_MessageAndUnwrap(t *testing.T) {
-	inner := errors.New("checksum mismatch")
-	err := &BackupVerifyError{BackupID: "bk-003", Err: inner}
-	if !strings.Contains(err.Error(), "bk-003") {
-		t.Errorf("expected backup ID in message: %q", err.Error())
-	}
-	if !errors.Is(err, inner) {
-		t.Error("Unwrap should return inner error")
-	}
-}
-
 func TestBackupEmptyDestinationError_Message(t *testing.T) {
 	err := &BackupEmptyDestinationError{}
 	want := "transport: backup destination must not be empty"
@@ -468,17 +457,6 @@ func TestRebalanceExecuteError_MessageAndUnwrap(t *testing.T) {
 	inner := errors.New("move failed")
 	err := &RebalanceExecuteError{Err: inner}
 	if !strings.Contains(err.Error(), "move failed") {
-		t.Errorf("expected inner error in message: %q", err.Error())
-	}
-	if !errors.Is(err, inner) {
-		t.Error("Unwrap should return inner error")
-	}
-}
-
-func TestImbalanceReportError_MessageAndUnwrap(t *testing.T) {
-	inner := errors.New("cluster unreachable")
-	err := &ImbalanceReportError{Err: inner}
-	if !strings.Contains(err.Error(), "cluster unreachable") {
 		t.Errorf("expected inner error in message: %q", err.Error())
 	}
 	if !errors.Is(err, inner) {

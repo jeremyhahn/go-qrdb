@@ -18,6 +18,7 @@ package database
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -176,5 +177,30 @@ func TestIsEncfsFile_Variants(t *testing.T) {
 
 	if _, err := isEncfsFile(filepath.Join(t.TempDir(), "missing")); err == nil {
 		t.Fatal("isEncfsFile(missing) must error")
+	}
+}
+
+// TestSnapshotStageError_Message: the staging step and path are what tell an
+// operator which half of a re-encryption failed and where to look, and neither
+// was covered by a test.
+func TestSnapshotStageError_Message(t *testing.T) {
+	err := &SnapshotStageError{Op: "rename", Path: "/var/lib/qrdb/orders/snap-000123", Err: io.ErrUnexpectedEOF}
+	want := "database: snapshot stage rename for /var/lib/qrdb/orders/snap-000123: unexpected EOF"
+	if got := err.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
+
+// TestSnapshotStageError_Unwrap: the cause must survive errors.Is so a caller
+// can tell a disk-full stage failure from a permission one without matching
+// on the message.
+func TestSnapshotStageError_Unwrap(t *testing.T) {
+	cause := io.ErrUnexpectedEOF
+	err := &SnapshotStageError{Op: "commit", Path: "/tmp/x", Err: cause}
+	if unwrapped := err.Unwrap(); unwrapped != cause {
+		t.Errorf("Unwrap() = %v, want %v", unwrapped, cause)
+	}
+	if !errors.Is(err, cause) {
+		t.Error("errors.Is must reach the cause through Unwrap")
 	}
 }

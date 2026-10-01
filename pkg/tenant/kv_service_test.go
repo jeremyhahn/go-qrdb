@@ -65,6 +65,24 @@ func (m *memKVStore) PutIfAbsent(_ context.Context, key string, value []byte) (b
 	return true, nil
 }
 
+// PutIfAllAbsent stores only when the key and every fence are absent.
+// CreateTenant REFUSES a store without it (ErrTenantStoreNotAtomic), so the
+// fake carries it for the same reason it carries PutIfAbsent.
+func (m *memKVStore) PutIfAllAbsent(_ context.Context, key string, value []byte, fences ...string) (bool, error) {
+	if m.err != nil {
+		return false, m.err
+	}
+	for _, k := range append([]string{key}, fences...) {
+		if _, exists := m.data[k]; exists {
+			return false, nil
+		}
+	}
+	cp := make([]byte, len(value))
+	copy(cp, value)
+	m.data[key] = cp
+	return true, nil
+}
+
 // CompareAndDelete mirrors PutIfAbsent's guard on the release side:
 // it removes the key only when the stored value still equals expected.
 func (m *memKVStore) CompareAndDelete(_ context.Context, key string, expected []byte) (bool, error) {

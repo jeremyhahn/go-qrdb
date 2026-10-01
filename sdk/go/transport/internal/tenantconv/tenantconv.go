@@ -87,3 +87,51 @@ func ToTenantInfo(resp *pb.TenantResponse) transport.TenantInfo {
 
 	return info
 }
+
+// ToListDeletedTenantsResponse converts a protobuf page of retired tenant ids
+// into its transport form. A nil response yields an empty page. Timestamps are
+// RFC 3339 on the wire; an absent or malformed one leaves the field zero.
+func ToListDeletedTenantsResponse(resp *pb.TenantListDeletedResponse) *transport.ListDeletedTenantsResponse {
+	out := &transport.ListDeletedTenantsResponse{Tenants: []transport.DeletedTenant{}}
+	if resp == nil {
+		return out
+	}
+	out.NextPageToken = resp.GetNextPageToken()
+	for _, d := range resp.GetTenants() {
+		dt := transport.DeletedTenant{
+			ID:            d.GetId(),
+			Name:          d.GetName(),
+			IsolationType: transport.TenantIsolationType(d.GetIsolationType()),
+			DataRoot:      d.GetDataRoot(),
+		}
+		if parsed, err := time.Parse(time.RFC3339, d.GetCreatedAt()); err == nil {
+			dt.CreatedAt = parsed
+		}
+		if parsed, err := time.Parse(time.RFC3339, d.GetDeletedAt()); err == nil {
+			dt.DeletedAt = parsed
+		}
+		out.Tenants = append(out.Tenants, dt)
+	}
+	return out
+}
+
+// ToReconcileDeletedTenantsResponse converts a protobuf deleted-tenant
+// reconcile report into its transport form. A nil response yields a zero
+// report.
+func ToReconcileDeletedTenantsResponse(resp *pb.TenantReconcileDeletedResponse) *transport.ReconcileDeletedTenantsResponse {
+	out := &transport.ReconcileDeletedTenantsResponse{}
+	if resp == nil {
+		return out
+	}
+	out.Inspected = int(resp.GetInspected())
+	for _, r := range resp.GetReclaimed() {
+		out.Reclaimed = append(out.Reclaimed, transport.TenantResiduePath{TenantID: r.GetTenantId(), Path: r.GetPath()})
+	}
+	for _, s := range resp.GetSkipped() {
+		out.Skipped = append(out.Skipped, transport.TenantResiduePath{TenantID: s.GetTenantId(), Path: s.GetPath(), Reason: s.GetReason()})
+	}
+	for _, f := range resp.GetFailed() {
+		out.Failed = append(out.Failed, transport.TenantResidueFailure{TenantID: f.GetTenantId(), Op: f.GetOp(), Path: f.GetPath(), Error: f.GetError()})
+	}
+	return out
+}

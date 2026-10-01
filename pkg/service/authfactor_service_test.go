@@ -19,10 +19,14 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
@@ -482,6 +486,203 @@ func TestAuthFactorService_VerifyFactor_preventReplay(t *testing.T) {
 	err = svc.VerifyFactor(ctx, "piv", challenge.ChallengeID, response)
 	if err == nil {
 		t.Error("VerifyFactor(replay): expected error, got nil")
+	}
+}
+
+// TestAuthFactorService_VerifyFactor_ConcurrentReplayExactlyOneWins covers
+// the review finding a SEQUENTIAL replay test cannot: a Get followed by an
+// unconditional Put lets two concurrent VerifyFactor calls both observe the
+// same pending challenge before either clears it, so both would invoke
+// Factor.Verify and the challenge would be replayed. consumeChallenge now
+// clears the record with CompareAndDelete(key, data), guarded on the exact
+// bytes just read, so of N concurrent callers racing the same expected
+// value the store's atomicity guarantees exactly one wins the delete.
+//
+// This uses kvstore.NewMemoryKVStore rather than afMockKV: afMockKV's
+// CompareAndDelete is a plain, unsynchronized map access, correct only under
+// the single-threaded use every OTHER test in this file makes of it, and
+// would not exercise the property this test exists to prove. MemoryKVStore's
+// CompareAndDelete is mutex-guarded and implements kvstore.AtomicKVStore for
+// real, which is what makes the race meaningful to run under -race.
+func TestAuthFactorService_VerifyFactor_ConcurrentReplayExactlyOneWins(t *testing.T) {
+	f := newSigningMockFactor(t, "piv")
+	svc, err := NewAuthFactorService(AuthFactorServiceConfig{
+		Factors: []authfactors.Factor{f},
+		KV:      kvstore.NewMemoryKVStore(),
+	})
+	if err != nil {
+		t.Fatalf("NewAuthFactorService: %v", err)
+	}
+
+	ctx := context.Background()
+	enrollment, err := svc.EnrollFactor(ctx, "piv", "custodian_concurrent", authfactors.EnrollParams{})
+	if err != nil {
+		t.Fatalf("EnrollFactor: %v", err)
+	}
+
+	challenge, err := svc.ChallengeFactor(ctx, enrollment.EnrollmentID)
+	if err != nil {
+		t.Fatalf("ChallengeFactor: %v", err)
+	}
+
+	sig, err := f.SignNonce(ctx, enrollment.Metadata["slot"], challenge.Nonce)
+	if err != nil {
+		t.Fatalf("SignNonce: %v", err)
+	}
+	response := &authfactors.Response{
+		Value:    sig,
+		Metadata: map[string]string{"public_key_pem": string(enrollment.PublicKey)},
+	}
+
+	const concurrency = 32
+	var (
+		wg        sync.WaitGroup
+		successes atomic.Int32
+	)
+	wg.Add(concurrency)
+	for range concurrency {
+		go func() {
+			defer wg.Done()
+			if err := svc.VerifyFactor(ctx, "piv", challenge.ChallengeID, response); err == nil {
+				successes.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got := successes.Load(); got != 1 {
+		t.Fatalf("concurrent VerifyFactor: %d of %d calls succeeded, want exactly 1 (replay)", got, concurrency)
+	}
+}
+
+// putGetListOnlyKV implements exactly AuthFactorKV's three verbs and nothing
+// else — no CompareAndDelete — over a plain map. It exists to exercise the
+// fail-closed path when a configured store cannot guarantee exactly-once
+// challenge consumption: production stores (KVServicer, and a
+// kvstore.KVStore backed by kvstore.AtomicKVStore) always can, so this
+// double represents a store that does not, rather than one this service is
+// actually deployed over.
+type putGetListOnlyKV struct{ store map[string][]byte }
+
+func newPutGetListOnlyKV() *putGetListOnlyKV { return &putGetListOnlyKV{store: map[string][]byte{}} }
+
+func (k *putGetListOnlyKV) Put(_ context.Context, key string, value []byte) error {
+	k.store[key] = value
+	return nil
+}
+
+func (k *putGetListOnlyKV) Get(_ context.Context, key string) ([]byte, error) {
+	return k.store[key], nil
+}
+
+func (k *putGetListOnlyKV) List(_ context.Context, prefix string) ([]string, error) {
+	var keys []string
+	for key := range k.store {
+		if strings.HasPrefix(key, prefix) {
+			keys = append(keys, key)
+		}
+	}
+	return keys, nil
+}
+
+// TestAuthFactorService_VerifyFactor_FailsClosedWithoutAtomicStore asserts
+// VerifyFactor refuses rather than degrading to a racy Get+Put when the
+// configured store cannot perform an atomic conditional delete.
+func TestAuthFactorService_VerifyFactor_FailsClosedWithoutAtomicStore(t *testing.T) {
+	f := newSigningMockFactor(t, "piv")
+	svc, err := NewAuthFactorService(AuthFactorServiceConfig{
+		Factors: []authfactors.Factor{f},
+		KV:      newPutGetListOnlyKV(),
+	})
+	if err != nil {
+		t.Fatalf("NewAuthFactorService: %v", err)
+	}
+
+	ctx := context.Background()
+	enrollment, err := svc.EnrollFactor(ctx, "piv", "custodian_noatomic", authfactors.EnrollParams{})
+	if err != nil {
+		t.Fatalf("EnrollFactor: %v", err)
+	}
+	challenge, err := svc.ChallengeFactor(ctx, enrollment.EnrollmentID)
+	if err != nil {
+		t.Fatalf("ChallengeFactor: %v", err)
+	}
+
+	err = svc.VerifyFactor(ctx, "piv", challenge.ChallengeID, &authfactors.Response{})
+	if !errors.Is(err, ErrAuthFactorAtomicStoreRequired) {
+		t.Fatalf("VerifyFactor over a non-atomic store = %v, want ErrAuthFactorAtomicStoreRequired", err)
+	}
+}
+
+// TestAuthFactorService_ChallengeMethodData_StringValuesRoundTrip pins the
+// documented contract on authfactors.Challenge.MethodData: string values, as
+// every factor in this repository and in go-xkms actually uses, survive the
+// persist/consume round trip the service now performs between
+// ChallengeFactor and VerifyFactor unchanged.
+func TestAuthFactorService_ChallengeMethodData_StringValuesRoundTrip(t *testing.T) {
+	kv := kvstore.NewMemoryKVStore()
+	svc, err := NewAuthFactorService(AuthFactorServiceConfig{KV: kv})
+	if err != nil {
+		t.Fatalf("NewAuthFactorService: %v", err)
+	}
+	impl := svc.(*authFactorService)
+	ctx := context.Background()
+
+	original := &authfactors.Challenge{
+		ChallengeID: "md-roundtrip",
+		ExpiresAt:   time.Now().UTC().Add(time.Hour),
+		MethodData: map[string]any{
+			"slot":      "9a",
+			"algorithm": "ecdsap256",
+		},
+	}
+	id, err := impl.persistChallenge(ctx, original)
+	if err != nil {
+		t.Fatalf("persistChallenge: %v", err)
+	}
+
+	got, err := impl.consumeChallenge(ctx, id)
+	if err != nil {
+		t.Fatalf("consumeChallenge: %v", err)
+	}
+	if got.MethodData["slot"] != "9a" || got.MethodData["algorithm"] != "ecdsap256" {
+		t.Errorf("MethodData after round trip = %#v, want the original string values unchanged", got.MethodData)
+	}
+}
+
+// TestAuthFactorService_ChallengeMethodData_NonStringValueRefused covers a
+// review finding: MethodData's contract was originally documented as
+// "JSON-stable" (string, bool, float64, nil, ...), but
+// pkg/api/grpc/proto's ChallengeFactorResponse.method_data is a fixed
+// map<string, string> wire schema -- a bool or float value would arrive over
+// gRPC/Unix stringified (e.g. "true") while every other transport carried
+// the native JSON type, a six-transport contract violation. The contract is
+// now string-only, and persistChallenge -- the one call site every
+// challenge from any factor over any transport passes through -- refuses a
+// non-string value outright rather than let it ship silently divergent.
+func TestAuthFactorService_ChallengeMethodData_NonStringValueRefused(t *testing.T) {
+	kv := kvstore.NewMemoryKVStore()
+	svc, err := NewAuthFactorService(AuthFactorServiceConfig{KV: kv})
+	if err != nil {
+		t.Fatalf("NewAuthFactorService: %v", err)
+	}
+	impl := svc.(*authFactorService)
+	ctx := context.Background()
+
+	original := &authfactors.Challenge{
+		ChallengeID: "md-non-string",
+		ExpiresAt:   time.Now().UTC().Add(time.Hour),
+		MethodData:  map[string]any{"user_verification": true}, // bool, not a string
+	}
+	_, err = impl.persistChallenge(ctx, original)
+	var invalid *authfactors.EnrollmentInvalidError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("persistChallenge(non-string MethodData) = %v, want *authfactors.EnrollmentInvalidError", err)
+	}
+
+	// Refused before ever reaching the store: nothing was persisted.
+	if keys, _ := kv.List(ctx, sysChallengePrefix); len(keys) != 0 {
+		t.Errorf("persistChallenge wrote %v despite refusing the challenge", keys)
 	}
 }
 

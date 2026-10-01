@@ -119,15 +119,7 @@ func toolUserCreate() mcp.Tool {
 		),
 		// A JSON array, NOT a comma-separated string — following the
 		// array-argument convention this transport already uses (see
-		// parseStringArray in tools_ceremony.go). A group id is an OPAQUE
-		// minted token, so a CSV encoding is lossy for the values it is meant
-		// to carry: an id containing a comma is split into two memberships and
-		// a blank segment is silently dropped where the store refuses it,
-		// writing a different authorization graph than the caller asked for
-		// while reporting success (Codex peer review, PR #198).
-		mcp.WithString("group_ids",
-			mcp.Description(`JSON array of opaque group-membership IDs, e.g. ["platform","sre"]. qrdb stores the membership edge and owns no Group entity.`),
-		),
+		// parseStringArray in tools_ceremony.go); see parseOpaqueStringList.
 		mcp.WithString("auth_methods",
 			mcp.Description(`JSON array of permitted authentication methods, e.g. ["webauthn","piv"]. Empty states no restriction.`),
 		),
@@ -151,14 +143,10 @@ func handleUserCreate(svc user.UserServicer) mcpserver.ToolHandlerFunc {
 		tenantID := mcp.ParseString(req, "tenant_id", "")
 		roleIDs := parseCSV(mcp.ParseString(req, "role_ids", ""))
 
-		// Opaque identifier lists arrive as arrays and are NOT split on
-		// anything. A malformed element is reported rather than coerced: the
-		// store refuses a blank entry, and this surface must not quietly send
-		// something different from what the caller wrote.
-		groupIDs, gerr := parseOpaqueStringList(req, "group_ids")
-		if gerr != nil {
-			return mcp.NewToolResultError(gerr.Error()), nil
-		}
+		// Opaque lists arrive as arrays and are NOT split on anything. A
+		// malformed element is reported rather than coerced: the store refuses
+		// a blank entry, and this surface must not quietly send something
+		// different from what the caller wrote.
 		authMethods, aerr := parseOpaqueStringList(req, "auth_methods")
 		if aerr != nil {
 			return mcp.NewToolResultError(aerr.Error()), nil
@@ -171,7 +159,6 @@ func handleUserCreate(svc user.UserServicer) mcpserver.ToolHandlerFunc {
 			WithoutEmailLoginKey: mcp.ParseBoolean(req, "without_email_login_key", false),
 			TenantID:             tenantID,
 			RoleIDs:              roleIDs,
-			GroupIDs:             groupIDs,
 			AuthMethods:          authMethods,
 			Lifecycle:            user.Lifecycle(mcp.ParseString(req, "lifecycle", "")),
 			Pending:              mcp.ParseBoolean(req, "pending", false),
@@ -459,12 +446,6 @@ func toolUserUpdate() mcp.Tool {
 		mcp.WithString("role_ids",
 			mcp.Description("Comma-separated list of role IDs to replace the current set. Left unchanged when empty."),
 		),
-		mcp.WithString("group_ids",
-			mcp.Description(`JSON array of opaque group-membership IDs to replace the current set, e.g. ["platform","sre"]. Left unchanged when absent; use clear_group_ids to revoke every membership.`),
-		),
-		mcp.WithBoolean("clear_group_ids",
-			mcp.Description("Revoke every group membership. An absent argument means 'leave alone', so clearing is its own flag."),
-		),
 		mcp.WithString("auth_methods",
 			mcp.Description(`JSON array of permitted authentication methods to replace the current set, e.g. ["piv"]. Left unchanged when absent; use clear_auth_methods to remove the restriction.`),
 		),
@@ -506,20 +487,9 @@ func handleUserUpdate(svc user.UserServicer) mcpserver.ToolHandlerFunc {
 		}
 
 		// A flat tool argument cannot carry nil-vs-empty the way JSON null-vs-[]
-		// does, so "clear" is an explicit flag. Without one, revoking every
-		// membership would be unexpressible over MCP: an empty list would read
-		// as "leave alone" and the revocation would silently do nothing.
-		groupIDs, gerr := parseOpaqueStringList(req, "group_ids")
-		if gerr != nil {
-			return mcp.NewToolResultError(gerr.Error()), nil
-		}
-		switch {
-		case groupIDs != nil:
-			updateReq.GroupIDs = groupIDs
-		case mcp.ParseBoolean(req, "clear_group_ids", false):
-			updateReq.GroupIDs = []string{}
-		}
-
+		// does, so "clear" is an explicit flag. Without one, lifting the
+		// restriction would be unexpressible over MCP: an empty list would read
+		// as "leave alone" and the clear would silently do nothing.
 		authMethods, aerr := parseOpaqueStringList(req, "auth_methods")
 		if aerr != nil {
 			return mcp.NewToolResultError(aerr.Error()), nil
@@ -710,10 +680,10 @@ func parseCSV(s string) []string {
 //
 // It does NOT split, join, trim or otherwise transform the elements. These lists
 // carry OPAQUE identifiers, so any encoding that reserves a character is lossy
-// for the values it is meant to hold: a comma-separated form silently splits an
-// id that contains a comma into two memberships and drops blank elements the
-// store would have refused, writing a different authorization graph than the
-// caller asked for while reporting success (Codex peer review, PR #198).
+// for the values it is meant to hold: a comma-separated form silently splits a
+// value that contains a comma into two and drops blank elements the store would
+// have refused, writing something different from what the caller asked for
+// while reporting success (Codex peer review, PR #198).
 //
 // It reads req.GetArguments() rather than mcp.ParseString because ParseString
 // goes through cast.ToString, which returns "" for a value it cannot convert —

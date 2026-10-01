@@ -20,26 +20,58 @@ import "context"
 // Collection management types
 // ---------------------------------------------------------------------------
 
+// Collection lifecycle states reported in CollectionInfo.State.
+const (
+	// CollectionStateActive is a collection that serves documents.
+	CollectionStateActive = "active"
+
+	// CollectionStateCreating is a collection whose secondary indexes are
+	// still being built. It serves no documents yet.
+	CollectionStateCreating = "creating"
+
+	// CollectionStateDropping is a collection being torn down. It serves no
+	// documents; the server finishes an interrupted drop on its own.
+	CollectionStateDropping = "dropping"
+)
+
+// CollectionIndexDefinition declares a secondary index on one collection
+// field. The collection creates the index, owns it, and drops it with the
+// collection.
+type CollectionIndexDefinition struct {
+	FieldName string `json:"field_name"`
+	Unique    bool   `json:"unique,omitempty"`
+	Sparse    bool   `json:"sparse,omitempty"`
+}
+
 // CollectionInfo is the transport representation of a collection.
 type CollectionInfo struct {
-	Name          string            `json:"name"`
-	Database      string            `json:"database"`
-	IDStrategy    string            `json:"id_strategy"`
-	FieldHash     string            `json:"field_hash,omitempty"`
-	Schema        map[string]string `json:"schema,omitempty"`
-	DocumentCount int64             `json:"document_count"`
-	StorageCodec  string            `json:"storage_codec,omitempty"`
-	CreatedAt     string            `json:"created_at"`
+	Name          string                      `json:"name"`
+	Database      string                      `json:"database"`
+	IDStrategy    string                      `json:"id_strategy"`
+	FieldHash     string                      `json:"field_hash,omitempty"`
+	Schema        map[string]string           `json:"schema,omitempty"`
+	Indexes       []CollectionIndexDefinition `json:"indexes,omitempty"`
+	DocumentCount int64                       `json:"document_count"`
+	StorageCodec  string                      `json:"storage_codec,omitempty"`
+	CreatedAt     string                      `json:"created_at"`
+
+	// State is the collection's lifecycle state: CollectionStateActive,
+	// CollectionStateCreating or CollectionStateDropping.
+	State string `json:"state,omitempty"`
+
+	// StateSince is when the collection entered State (RFC 3339).
+	StateSince string `json:"state_since,omitempty"`
 }
 
 // CreateCollectionRequest represents a request to create a collection
 // within a database.
 type CreateCollectionRequest struct {
-	Database     string `json:"database"`
-	Name         string `json:"name"`
-	IDStrategy   string `json:"id_strategy,omitempty"`
-	FieldHash    string `json:"field_hash,omitempty"`
-	StorageCodec string `json:"storage_codec,omitempty"`
+	Database     string                      `json:"database"`
+	Name         string                      `json:"name"`
+	IDStrategy   string                      `json:"id_strategy,omitempty"`
+	FieldHash    string                      `json:"field_hash,omitempty"`
+	StorageCodec string                      `json:"storage_codec,omitempty"`
+	Indexes      []CollectionIndexDefinition `json:"indexes,omitempty"`
 }
 
 // ListCollectionsResponse holds the list of collections returned by a

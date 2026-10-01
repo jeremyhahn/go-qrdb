@@ -61,7 +61,12 @@ type KVEngine struct {
 	// every key it indexes must carry (see ComposeIndexScope). A nil entry is
 	// an index with no derivable and no declared scope, which covers the whole
 	// state machine.
-	indexScopes   map[string][]byte
+	indexScopes map[string][]byte
+	// indexOwners holds the owner recorded for each index created through
+	// OpIndexCreate (index.IndexConfig.Owner, go-qrdb#426). An absent entry
+	// is the empty owner: the explicit index API, and every index registered
+	// locally rather than through a command.
+	indexOwners   map[string]string
 	entityIndexes map[string][]EntityIndex
 	// compoundIndexes stores compound (multi-field) indexes keyed by
 	// their fully-qualified name (e.g., "mydb.messages.ConversationID_Timestamp").
@@ -128,6 +133,7 @@ func NewKVEngine(stg storage.Storage, opts ...KVOption) *KVEngine {
 		indexes:             make(map[string]index.Index),
 		indexFields:         make(map[string]string),
 		indexScopes:         make(map[string][]byte),
+		indexOwners:         make(map[string]string),
 		entityIndexes:       make(map[string][]EntityIndex),
 		compoundIndexes:     make(map[string]*index.CompoundIndex),
 		compoundIndexFields: make(map[string][]string),
@@ -187,7 +193,7 @@ func (e *KVEngine) Update(_ context.Context, entries []sm.Entry, results []sm.Re
 			// silently dropping the write — or returning a Go error, which
 			// would stall consensus.
 			decErr := &CommandDecodeError{KVErr: err, ExtErr: extErr}
-			results[i] = sm.Result{Data: protocol.EncodeAppError(decErr.Error())}
+			results[i] = sm.Result{Data: protocol.EncodeAppError(protocol.AppErrorCorrupt, decErr.Error())}
 			continue
 		}
 
@@ -568,7 +574,7 @@ func (e *KVEngine) handleTransaction(payload []byte) (sm.Result, error) {
 	for _, dc := range txn.Compares {
 		if service.CompareTarget(dc.Target) == service.CompareCreateRevision ||
 			service.CompareTarget(dc.Target) == service.CompareModRevision {
-			return appErrResult("transaction: create_revision/mod_revision compares require an " +
+			return statemachine.CapabilityResult("transaction: create_revision/mod_revision compares require an " +
 				"MVCC state machine; this node runs a non-MVCC (file/objstore) backend. " +
 				"Compare on value or version instead."), nil
 		}
@@ -801,8 +807,14 @@ func (e *KVEngine) handleIndexCreate(payload []byte) (sm.Result, error) {
 		return sm.Result{Value: 1}, err
 	}
 
-	// Do not recreate an existing index.
+	// Do not recreate an existing index, and do not let a different owner
+	// adopt it either: a create naming an index another owner holds is
+	// refused as an application error (go-qrdb#426).
 	if _, exists := e.indexes[name]; exists {
+		owner := e.indexOwners[name]
+		if index.CheckCreateOwner(name, owner, opts.Owner) != nil {
+			return sm.Result{Data: protocol.EncodeIndexOwnershipError(name, owner)}, nil
+		}
 		return sm.Result{}, nil
 	}
 
@@ -823,6 +835,7 @@ func (e *KVEngine) handleIndexCreate(payload []byte) (sm.Result, error) {
 		// The key scope the creator declared, relative to the namespace the
 		// name carries (go-qrdb#410).
 		KeyPrefix: opts.KeyPrefix,
+		Owner:     opts.Owner,
 	}
 	if opts.Unique {
 		cfg.Type = index.IndexTypeUnique
@@ -846,6 +859,7 @@ func (e *KVEngine) handleIndexCreate(payload []byte) (sm.Result, error) {
 	e.indexes[name] = idx
 	e.indexFields[name] = fieldName
 	e.indexScopes[name] = scope
+	e.indexOwners[name] = opts.Owner
 
 	// Backfill the index with the existing data INSIDE its scope. An unscoped
 	// backfill would seed the new index with every matching key in the state
@@ -857,7 +871,7 @@ func (e *KVEngine) handleIndexCreate(payload []byte) (sm.Result, error) {
 
 // handleIndexDrop removes a secondary index by name.
 func (e *KVEngine) handleIndexDrop(payload []byte) (sm.Result, error) {
-	name, err := protocol.DecodeIndexDrop(payload)
+	name, dropOpts, err := protocol.DecodeIndexDropOpts(payload)
 	if err != nil {
 		return sm.Result{Value: 1}, err
 	}
@@ -866,11 +880,16 @@ func (e *KVEngine) handleIndexDrop(payload []byte) (sm.Result, error) {
 	if !exists {
 		return sm.Result{}, nil
 	}
+	// An owner-checked drop removes only its caller's index (go-qrdb#426).
+	if owner := e.indexOwners[name]; index.CheckDropOwner(name, owner, dropOpts.CheckOwner, dropOpts.Owner) != nil {
+		return sm.Result{Data: protocol.EncodeIndexOwnershipError(name, owner)}, nil
+	}
 
 	_ = idx.Close()
 	delete(e.indexes, name)
 	delete(e.indexFields, name)
 	delete(e.indexScopes, name)
+	delete(e.indexOwners, name)
 
 	return sm.Result{}, nil
 }
@@ -1134,10 +1153,18 @@ func defaultLogger() *logger.Logger {
 // Standalone helpers (for embedded use without Raft)
 // ---------------------------------------------------------------------------
 
-// PutWithIndexes atomically writes a key/value to storage and updates
-// indexes registered for the key's entity type. Only indexes whose name
-// starts with the entity type prefix are updated, preventing cross-entity
-// index contamination.
+// PutWithIndexes atomically writes a key/value to storage and updates every
+// index whose key scope covers the key.
+//
+// It selects indexes by SCOPE, the same rule the Raft apply path uses
+// (handleKVPut -> UpdateIndexesBatch), and never by parsing the key. It used
+// to take the key's FIRST path segment as its entity type and keep only
+// indexes NAMED "{entityType}." -- which a namespaced key defeats: under a
+// tenant namespace "acme/workitem/1" read as entity type "acme", and the
+// tenant's "acme/workitem.State" index was never maintained (go-qrdb#40). A
+// scope is declared at registration and composed with the namespace the index
+// name carries, so it holds for a bare, a per-tenant and a per-(tenant,
+// database) key alike, with nothing about the layout assumed here.
 func (e *KVEngine) PutWithIndexes(key, value []byte) error {
 	prevVal, _ := e.stg.Get(key)
 	var prevKv *qkv.KeyValue
@@ -1145,27 +1172,24 @@ func (e *KVEngine) PutWithIndexes(key, value []byte) error {
 		prevKv = &qkv.KeyValue{Key: key, Value: prevVal}
 	}
 
-	entityType := entityTypeFromKey(key)
-	filteredIndexes, filteredFields := e.filterIndexes(entityType)
-	filteredCompound, filteredCompoundFields := e.filterCompoundIndexes(entityType)
-
 	batch := e.stg.Batch()
 	defer func() { _ = batch.Close() }()
 
 	if err := batch.Set(key, value); err != nil {
 		return err
 	}
-	if err := UpdateIndexesBatch(batch, filteredIndexes, filteredFields, e.indexScopes, key, value, prevKv); err != nil {
+	if err := UpdateIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, key, value, prevKv); err != nil {
 		return err
 	}
-	if err := UpdateCompoundIndexesBatch(batch, filteredCompound, filteredCompoundFields, e.compoundIndexScopes, key, value, prevKv); err != nil {
+	if err := UpdateCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, e.compoundIndexScopes, key, value, prevKv); err != nil {
 		return err
 	}
 	return batch.Commit()
 }
 
-// DeleteWithIndexes atomically removes a key and its index entries.
-// Only indexes for the key's entity type are cleaned up.
+// DeleteWithIndexes atomically removes a key and its entries from every index
+// whose key scope covers it; see PutWithIndexes for why the selection is by
+// scope.
 func (e *KVEngine) DeleteWithIndexes(key []byte) error {
 	prevVal, _ := e.stg.Get(key)
 	var prevKv *qkv.KeyValue
@@ -1173,75 +1197,19 @@ func (e *KVEngine) DeleteWithIndexes(key []byte) error {
 		prevKv = &qkv.KeyValue{Key: key, Value: prevVal}
 	}
 
-	entityType := entityTypeFromKey(key)
-	filteredIndexes, filteredFields := e.filterIndexes(entityType)
-	filteredCompound, filteredCompoundFields := e.filterCompoundIndexes(entityType)
-
 	batch := e.stg.Batch()
 	defer func() { _ = batch.Close() }()
 
 	if err := batch.Delete(key); err != nil {
 		return err
 	}
-	if err := RemoveIndexesBatch(batch, filteredIndexes, filteredFields, e.indexScopes, key, prevKv); err != nil {
+	if err := RemoveIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, key, prevKv); err != nil {
 		return err
 	}
-	if err := RemoveCompoundIndexesBatch(batch, filteredCompound, filteredCompoundFields, e.compoundIndexScopes, key, prevKv); err != nil {
+	if err := RemoveCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, e.compoundIndexScopes, key, prevKv); err != nil {
 		return err
 	}
 	return batch.Commit()
-}
-
-// entityTypeFromKey extracts the entity type prefix from a key.
-// Keys follow the format "{entityType}/{id}".
-func entityTypeFromKey(key []byte) string {
-	for i, b := range key {
-		if b == '/' {
-			return string(key[:i])
-		}
-	}
-	return string(key)
-}
-
-// filterIndexes returns only the indexes whose names start with the given
-// entity type prefix (e.g., "messages."). When the engine has a database
-// namespace, the prefix includes it (e.g., "mydb.messages.").
-func (e *KVEngine) filterIndexes(entityType string) (map[string]index.Index, map[string]string) {
-	filtered := make(map[string]index.Index)
-	filteredFields := make(map[string]string)
-
-	// Try both prefixed and unprefixed names:
-	// - "entityType." (legacy / no database)
-	// - "database.entityType." (with database namespace)
-	prefixes := []string{entityType + "."}
-	if e.database != "" {
-		prefixes = append(prefixes, e.database+"."+entityType+".")
-	}
-
-	for name, idx := range e.indexes {
-		for _, prefix := range prefixes {
-			if len(name) > len(prefix) && name[:len(prefix)] == prefix {
-				filtered[name] = idx
-				filteredFields[name] = e.indexFields[name]
-				break
-			}
-		}
-	}
-	return filtered, filteredFields
-}
-
-// filterCompoundIndexes returns only compound indexes matching the entity type.
-func (e *KVEngine) filterCompoundIndexes(entityType string) (map[string]*index.CompoundIndex, map[string][]string) {
-	prefix := entityType + "."
-	filtered := make(map[string]*index.CompoundIndex)
-	filteredFields := make(map[string][]string)
-	for name, idx := range e.compoundIndexes {
-		if len(name) > len(prefix) && name[:len(prefix)] == prefix {
-			filtered[name] = idx
-			filteredFields[name] = e.compoundIndexFields[name]
-		}
-	}
-	return filtered, filteredFields
 }
 
 // ---------------------------------------------------------------------------

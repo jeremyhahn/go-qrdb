@@ -16,14 +16,11 @@ package grpc
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"time"
 
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	grpcpeer "google.golang.org/grpc/peer"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -43,7 +40,7 @@ import (
 // the barrier is initialized. With no backend the PIN fields are ignored.
 func (s *qrdbServiceServer) BarrierInitialize(ctx context.Context, req *pb.BarrierInitializeRequest) (*emptypb.Empty, error) {
 	if s.barrierSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
 	}
 
 	// The decoded credential is this handler's to own and to destroy. The
@@ -52,7 +49,7 @@ func (s *qrdbServiceServer) BarrierInitialize(ctx context.Context, req *pb.Barri
 	defer secure.Wipe(req.GetSecret())
 
 	if err := applyBarrierInitializePINs(s.pinBackend, req.GetSoPin(), req.GetUserPin()); err != nil {
-		return nil, mapPINError(err)
+		return nil, mapServiceError(err)
 	}
 
 	if err := s.barrierSvc.BarrierInitialize(ctx, req.GetSecret()); err != nil {
@@ -65,7 +62,7 @@ func (s *qrdbServiceServer) BarrierInitialize(ctx context.Context, req *pb.Barri
 // BarrierUnseal unseals the storage barrier with a secret credential.
 func (s *qrdbServiceServer) BarrierUnseal(ctx context.Context, req *pb.BarrierUnsealRequest) (*emptypb.Empty, error) {
 	if s.barrierSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
 	}
 
 	defer secure.Wipe(req.GetSecret())
@@ -85,7 +82,7 @@ func (s *qrdbServiceServer) BarrierUnseal(ctx context.Context, req *pb.BarrierUn
 // for parity.
 func (s *qrdbServiceServer) BarrierSeal(ctx context.Context, _ *emptypb.Empty) (*emptypb.Empty, error) {
 	if s.barrierSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
 	}
 
 	if err := s.barrierSvc.BarrierSeal(ctx); err != nil {
@@ -99,7 +96,7 @@ func (s *qrdbServiceServer) BarrierSeal(ctx context.Context, _ *emptypb.Empty) (
 // strategy, hardware backing, and initialization timestamp.
 func (s *qrdbServiceServer) BarrierStatus(ctx context.Context, _ *emptypb.Empty) (*pb.BarrierStatusResponse, error) {
 	if s.barrierSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
 	}
 
 	info, err := s.barrierSvc.BarrierStatus(ctx)
@@ -125,13 +122,13 @@ func (s *qrdbServiceServer) BarrierStatus(ctx context.Context, _ *emptypb.Empty)
 // BarrierOfficerRegister / BarrierShareClaimBegin / BarrierShareClaimComplete flow.
 func (s *qrdbServiceServer) BarrierShamirInitialize(ctx context.Context, req *pb.BarrierShamirInitializeRequest) (*pb.BarrierShamirOperationResponse, error) {
 	if s.barrierSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
 	}
 
 	defer secure.Wipe(req.GetSecret())
 
 	if err := applyBarrierInitializePINs(s.pinBackend, req.GetSoPin(), req.GetUserPin()); err != nil {
-		return nil, mapPINError(err)
+		return nil, mapServiceError(err)
 	}
 
 	info, err := s.barrierSvc.BarrierInitializeShamir(ctx, req.GetSecret(), int(req.GetThreshold()), int(req.GetTotalShares()))
@@ -150,7 +147,7 @@ func (s *qrdbServiceServer) BarrierShamirInitialize(ctx context.Context, req *pb
 // threshold and reports current unseal progress.
 func (s *qrdbServiceServer) BarrierShamirUnsealShare(ctx context.Context, req *pb.BarrierShamirUnsealShareRequest) (*pb.BarrierShamirUnsealShareResponse, error) {
 	if s.barrierSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
 	}
 
 	progress, err := s.barrierSvc.BarrierUnsealWithShare(ctx, req.GetShare())
@@ -169,7 +166,7 @@ func (s *qrdbServiceServer) BarrierShamirUnsealShare(ctx context.Context, req *p
 // Shamir shares in a single call.
 func (s *qrdbServiceServer) BarrierShamirUnsealShares(ctx context.Context, req *pb.BarrierShamirUnsealSharesRequest) (*emptypb.Empty, error) {
 	if s.barrierSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
 	}
 
 	if err := s.barrierSvc.BarrierUnsealWithShares(ctx, req.GetShares()); err != nil {
@@ -186,11 +183,11 @@ func (s *qrdbServiceServer) BarrierShamirUnsealShares(ctx context.Context, req *
 // the claim flow.
 func (s *qrdbServiceServer) BarrierRekey(ctx context.Context, req *pb.BarrierRekeyRequest) (*pb.BarrierShamirOperationResponse, error) {
 	if s.barrierSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
 	}
 
 	if err := verifyBarrierSOPIN(s.pinBackend, req.GetSoPin()); err != nil {
-		return nil, mapPINError(err)
+		return nil, mapServiceError(err)
 	}
 
 	info, err := s.barrierSvc.BarrierRekey(ctx, int(req.GetThreshold()), int(req.GetTotal()))
@@ -223,7 +220,7 @@ const grpcMigrationAcceptWindow = 750 * time.Millisecond
 // acknowledged with "migration_started"; clients poll BarrierStatus.
 func (s *qrdbServiceServer) BarrierEnableEncryption(_ context.Context, req *pb.BarrierEnableEncryptionRequest) (*pb.BarrierEnableEncryptionResponse, error) {
 	if s.encMigrator == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "encryption-migration"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "encryption-migration"})
 	}
 
 	scope := service.BarrierScope{Kind: service.ScopeSystem}
@@ -240,17 +237,25 @@ func (s *qrdbServiceServer) BarrierEnableEncryption(_ context.Context, req *pb.B
 		availability = seal.AvailabilityOnline
 	}
 
+	// The request's passphrase is copied into protected memory and the
+	// decoded copy wiped at once — the credential is what the migration reads
+	// from here on, so nothing needs the request's plaintext past this line.
+	creds, err := seal.CredentialsFor(req.GetPassphrase())
+	secure.Wipe(req.GetPassphrase())
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
 	opts := seal.MigrationOptions{
 		TargetStrategy:  seal.StrategyID(req.GetStrategy()),
 		Mechanism:       mechanism,
 		Availability:    availability,
-		Credentials:     seal.Credentials{Secret: req.GetPassphrase()},
+		Credentials:     creds,
 		ShamirThreshold: int(req.GetShamirThreshold()),
 		ShamirTotal:     int(req.GetShamirTotal()),
 	}
 	if err := opts.Validate(); err != nil {
-		secure.Wipe(req.GetPassphrase())
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		creds.Secret.Destroy()
+		return nil, mapServiceError(err)
 	}
 
 	// A background context is used because the request context is cancelled
@@ -262,17 +267,17 @@ func (s *qrdbServiceServer) BarrierEnableEncryption(_ context.Context, req *pb.B
 	// migration must survive the response returning.
 	go func() {
 		// The migration OWNS the credential from here: it outlives this
-		// request, so a deferred wipe in the handler would zero the
-		// passphrase out from under a running migration. The wipe belongs
-		// to the last reader, and that is this goroutine.
-		defer secure.Wipe(req.GetPassphrase())
+		// request, so destroying it in the handler would pull the
+		// passphrase out from under a running migration. The destroy
+		// belongs to the last reader, and that is this goroutine.
+		defer creds.Secret.Destroy()
 		resultCh <- migrator.EnableEncryption(context.Background(), scope, opts)
 	}()
 
 	select {
 	case err := <-resultCh:
 		if err != nil {
-			return nil, mapBarrierCeremonyError(err)
+			return nil, mapServiceError(err)
 		}
 		// Completed within the window with no error: an unusually fast
 		// migration (e.g. an empty barrier) already finished. Fall through
@@ -305,11 +310,11 @@ func (s *qrdbServiceServer) BarrierEnableEncryption(_ context.Context, req *pb.B
 // and claimed via the BarrierRecoveryShareClaimBegin / BarrierRecoveryShareClaimComplete flow.
 func (s *qrdbServiceServer) BarrierRecoveryGenerate(ctx context.Context, req *pb.BarrierRecoveryGenerateRequest) (*pb.BarrierRecoveryKeysResponse, error) {
 	if s.barrierSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
 	}
 
 	if err := verifyBarrierSOPIN(s.pinBackend, req.GetSoPin()); err != nil {
-		return nil, mapPINError(err)
+		return nil, mapServiceError(err)
 	}
 
 	info, err := s.barrierSvc.BarrierGenerateRecoveryKeys(ctx, int(req.GetThreshold()), int(req.GetTotal()))
@@ -328,7 +333,7 @@ func (s *qrdbServiceServer) BarrierRecoveryGenerate(ctx context.Context, req *pb
 // previously generated by BarrierRecoveryGenerate.
 func (s *qrdbServiceServer) BarrierRecoveryRecover(ctx context.Context, req *pb.BarrierRecoveryRecoverRequest) (*emptypb.Empty, error) {
 	if s.barrierSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
 	}
 
 	if err := s.barrierSvc.BarrierRecoverWithKeys(ctx, req.GetKeys()); err != nil {
@@ -341,7 +346,7 @@ func (s *qrdbServiceServer) BarrierRecoveryRecover(ctx context.Context, req *pb.
 // BarrierRecoveryDelete removes recovery key metadata from storage.
 func (s *qrdbServiceServer) BarrierRecoveryDelete(ctx context.Context, _ *emptypb.Empty) (*emptypb.Empty, error) {
 	if s.barrierSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
 	}
 
 	if err := s.barrierSvc.BarrierDeleteRecoveryKeys(ctx); err != nil {
@@ -354,7 +359,7 @@ func (s *qrdbServiceServer) BarrierRecoveryDelete(ctx context.Context, _ *emptyp
 // BarrierRecoveryStatus reports whether recovery key metadata exists in storage.
 func (s *qrdbServiceServer) BarrierRecoveryStatus(ctx context.Context, _ *emptypb.Empty) (*pb.BarrierRecoveryStatusResponse, error) {
 	if s.barrierSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
 	}
 
 	has, err := s.barrierSvc.BarrierHasRecoveryKeys(ctx)
@@ -371,7 +376,7 @@ func (s *qrdbServiceServer) BarrierRecoveryStatus(ctx context.Context, _ *emptyp
 // master key through Shamir shares.
 func (s *qrdbServiceServer) BarrierRootToken(ctx context.Context, req *pb.BarrierRootTokenRequest) (*pb.BarrierRootTokenResponse, error) {
 	if s.barrierSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
 	}
 
 	info, err := s.barrierSvc.BarrierGenerateRootToken(ctx, req.GetShares())
@@ -412,7 +417,7 @@ func peerCertThumbprint(ctx context.Context) (string, error) {
 // at init / rekey time and claimed via the share-claim flow.
 func (s *qrdbServiceServer) BarrierOfficerRegister(ctx context.Context, req *pb.BarrierOfficerRegisterRequest) (*pb.BarrierOfficerRegisterResponse, error) {
 	if s.barrierSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
 	}
 
 	svcReq := &service.BarrierOfficerRegisterRequest{
@@ -423,7 +428,7 @@ func (s *qrdbServiceServer) BarrierOfficerRegister(ctx context.Context, req *pb.
 	}
 	result, err := s.barrierSvc.BarrierOfficerRegister(ctx, svcReq)
 	if err != nil {
-		return nil, mapBarrierCeremonyError(err)
+		return nil, mapServiceError(err)
 	}
 
 	return &pb.BarrierOfficerRegisterResponse{
@@ -436,12 +441,12 @@ func (s *qrdbServiceServer) BarrierOfficerRegister(ctx context.Context, req *pb.
 // The response contains only public officer metadata — no share bytes.
 func (s *qrdbServiceServer) BarrierOfficerList(ctx context.Context, _ *emptypb.Empty) (*pb.BarrierOfficerListResponse, error) {
 	if s.barrierSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
 	}
 
 	officers, err := s.barrierSvc.BarrierOfficerList(ctx)
 	if err != nil {
-		return nil, mapBarrierCeremonyError(err)
+		return nil, mapServiceError(err)
 	}
 
 	return &pb.BarrierOfficerListResponse{
@@ -454,17 +459,17 @@ func (s *qrdbServiceServer) BarrierOfficerList(ctx context.Context, _ *emptypb.E
 // issues a challenge nonce the SO must sign to prove key possession.
 func (s *qrdbServiceServer) BarrierShareClaimBegin(ctx context.Context, req *pb.BarrierShareClaimBeginRequest) (*pb.BarrierShareClaimBeginResponse, error) {
 	if s.barrierSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
 	}
 
 	thumbprint, err := peerCertThumbprint(ctx)
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, mapServiceError(err)
 	}
 
 	challenge, err := s.barrierSvc.BarrierShareClaimBegin(ctx, req.GetUsername(), thumbprint)
 	if err != nil {
-		return nil, mapBarrierCeremonyError(err)
+		return nil, mapServiceError(err)
 	}
 
 	return &pb.BarrierShareClaimBeginResponse{
@@ -478,17 +483,17 @@ func (s *qrdbServiceServer) BarrierShareClaimBegin(ctx context.Context, req *pb.
 // are never logged and are the caller's responsibility to wipe after use.
 func (s *qrdbServiceServer) BarrierShareClaimComplete(ctx context.Context, req *pb.BarrierShareClaimCompleteRequest) (*pb.BarrierShareClaimCompleteResponse, error) {
 	if s.barrierSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
 	}
 
 	thumbprint, err := peerCertThumbprint(ctx)
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, mapServiceError(err)
 	}
 
 	result, err := s.barrierSvc.BarrierShareClaimComplete(ctx, req.GetUsername(), req.GetNonceHex(), req.GetSignature(), thumbprint)
 	if err != nil {
-		return nil, mapBarrierCeremonyError(err)
+		return nil, mapServiceError(err)
 	}
 
 	return &pb.BarrierShareClaimCompleteResponse{
@@ -501,12 +506,12 @@ func (s *qrdbServiceServer) BarrierShareClaimComplete(ctx context.Context, req *
 // barrier. The response contains only public metadata — no share bytes.
 func (s *qrdbServiceServer) BarrierOfficerClaimStatus(ctx context.Context, _ *emptypb.Empty) (*pb.BarrierOfficerClaimStatusResponse, error) {
 	if s.barrierSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
 	}
 
 	officers, err := s.barrierSvc.BarrierOfficerClaimStatus(ctx)
 	if err != nil {
-		return nil, mapBarrierCeremonyError(err)
+		return nil, mapServiceError(err)
 	}
 
 	return &pb.BarrierOfficerClaimStatusResponse{
@@ -520,12 +525,12 @@ func (s *qrdbServiceServer) BarrierOfficerClaimStatus(ctx context.Context, _ *em
 // not in Shamir mode.
 func (s *qrdbServiceServer) BarrierShamirSealVote(ctx context.Context, req *pb.BarrierShamirSealVoteRequest) (*pb.BarrierShamirSealVoteResponse, error) {
 	if s.barrierSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
 	}
 
 	progress, err := s.barrierSvc.BarrierShamirSealVote(ctx, req.GetShare())
 	if err != nil {
-		return nil, mapBarrierCeremonyError(err)
+		return nil, mapServiceError(err)
 	}
 
 	return &pb.BarrierShamirSealVoteResponse{
@@ -540,7 +545,7 @@ func (s *qrdbServiceServer) BarrierShamirSealVote(ctx context.Context, req *pb.B
 // but against the recovery scope.
 func (s *qrdbServiceServer) BarrierRecoveryOfficerRegister(ctx context.Context, req *pb.BarrierOfficerRegisterRequest) (*pb.BarrierOfficerRegisterResponse, error) {
 	if s.barrierSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
 	}
 
 	svcReq := &service.BarrierOfficerRegisterRequest{
@@ -551,7 +556,7 @@ func (s *qrdbServiceServer) BarrierRecoveryOfficerRegister(ctx context.Context, 
 	}
 	result, err := s.barrierSvc.BarrierRecoveryOfficerRegister(ctx, svcReq)
 	if err != nil {
-		return nil, mapBarrierCeremonyError(err)
+		return nil, mapServiceError(err)
 	}
 
 	return &pb.BarrierOfficerRegisterResponse{
@@ -564,17 +569,17 @@ func (s *qrdbServiceServer) BarrierRecoveryOfficerRegister(ctx context.Context, 
 // for the calling Security Officer.
 func (s *qrdbServiceServer) BarrierRecoveryShareClaimBegin(ctx context.Context, req *pb.BarrierShareClaimBeginRequest) (*pb.BarrierShareClaimBeginResponse, error) {
 	if s.barrierSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
 	}
 
 	thumbprint, err := peerCertThumbprint(ctx)
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, mapServiceError(err)
 	}
 
 	challenge, err := s.barrierSvc.BarrierRecoveryShareClaimBegin(ctx, req.GetUsername(), thumbprint)
 	if err != nil {
-		return nil, mapBarrierCeremonyError(err)
+		return nil, mapServiceError(err)
 	}
 
 	return &pb.BarrierShareClaimBeginResponse{
@@ -588,17 +593,17 @@ func (s *qrdbServiceServer) BarrierRecoveryShareClaimBegin(ctx context.Context, 
 // mTLS session. The share bytes are never logged.
 func (s *qrdbServiceServer) BarrierRecoveryShareClaimComplete(ctx context.Context, req *pb.BarrierShareClaimCompleteRequest) (*pb.BarrierShareClaimCompleteResponse, error) {
 	if s.barrierSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
 	}
 
 	thumbprint, err := peerCertThumbprint(ctx)
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, mapServiceError(err)
 	}
 
 	result, err := s.barrierSvc.BarrierRecoveryShareClaimComplete(ctx, req.GetUsername(), req.GetNonceHex(), req.GetSignature(), thumbprint)
 	if err != nil {
-		return nil, mapBarrierCeremonyError(err)
+		return nil, mapServiceError(err)
 	}
 
 	return &pb.BarrierShareClaimCompleteResponse{
@@ -610,68 +615,6 @@ func (s *qrdbServiceServer) BarrierRecoveryShareClaimComplete(ctx context.Contex
 // ---------------------------------------------------------------------------
 // Error mapping helpers
 // ---------------------------------------------------------------------------
-
-// mapBarrierCeremonyError translates ceremony and seal errors that arise from
-// the Security Officer share-distribution flow into appropriate gRPC status
-// codes.
-func mapBarrierCeremonyError(err error) error {
-	if err == nil {
-		return nil
-	}
-
-	if errors.Is(err, service.ErrCeremonyNotConfigured) {
-		return status.Error(codes.FailedPrecondition, err.Error())
-	}
-	if errors.Is(err, seal.ErrShamirBarrierRequiresQuorum) {
-		return status.Error(codes.FailedPrecondition, err.Error())
-	}
-	if errors.Is(err, seal.ErrSealVoteVerificationFailed) {
-		return status.Error(codes.PermissionDenied, err.Error())
-	}
-	if errors.Is(err, seal.ErrUnsealKeyMismatch) {
-		return status.Error(codes.PermissionDenied, err.Error())
-	}
-	if errors.Is(err, seal.ErrWrappedRootKeyCorrupt) {
-		return status.Error(codes.Internal, err.Error())
-	}
-	if errors.Is(err, ceremony.ErrCertThumbprintMismatch) {
-		return status.Error(codes.PermissionDenied, err.Error())
-	}
-	if errors.Is(err, ceremony.ErrOfficerNotFound) {
-		return status.Error(codes.NotFound, err.Error())
-	}
-	if errors.Is(err, ceremony.ErrShareAlreadyClaimed) {
-		return status.Error(codes.FailedPrecondition, err.Error())
-	}
-	if errors.Is(err, ceremony.ErrNoPendingShare) {
-		return status.Error(codes.NotFound, err.Error())
-	}
-	if errors.Is(err, ceremony.ErrInsufficientOfficers) {
-		return status.Error(codes.FailedPrecondition, err.Error())
-	}
-	if errors.Is(err, ceremony.ErrInvalidAuthenticatorType) {
-		return status.Error(codes.InvalidArgument, err.Error())
-	}
-	// Enable-encryption migration validation + scoping errors. Mirrors
-	// mapBarrierCeremonyHTTPError in pkg/api/rest/handlers_barrier.go.
-	if errors.Is(err, seal.ErrMigrationInvalidTarget) ||
-		errors.Is(err, seal.ErrMigrationInvalidMechanism) ||
-		errors.Is(err, seal.ErrMigrationInvalidAvailability) ||
-		errors.Is(err, seal.ErrShamirThresholdInvalid) {
-		return status.Error(codes.InvalidArgument, err.Error())
-	}
-	if errors.Is(err, seal.ErrMigrationSourceNotNone) || errors.Is(err, seal.ErrMigrationInProgress) {
-		return status.Error(codes.FailedPrecondition, err.Error())
-	}
-	if errors.Is(err, service.ErrSharedBarrierImmutable) {
-		return status.Error(codes.PermissionDenied, err.Error())
-	}
-	if errors.Is(err, service.ErrMigrationProviderUnavailable) {
-		return status.Error(codes.Unimplemented, err.Error())
-	}
-
-	return mapServiceError(err)
-}
 
 // barrierOfficerStatusesToProto converts service-layer BarrierOfficerStatus
 // slices to proto OfficerStatus messages.

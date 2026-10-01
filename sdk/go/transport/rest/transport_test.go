@@ -1246,7 +1246,7 @@ func TestAddMember_Success(t *testing.T) {
 	rt := newTestTransport(t, srv.URL)
 	defer rt.Close()
 
-	err := rt.AddMember(context.Background(), 0, 2, "10.0.0.2:63001")
+	err := rt.AddMember(context.Background(), 0, 2, "10.0.0.2:63001", "")
 	if err != nil {
 		t.Fatalf("AddMember failed: %v", err)
 	}
@@ -1259,7 +1259,7 @@ func TestAddMember_AfterClose(t *testing.T) {
 	rt := newTestTransport(t, srv.URL)
 	_ = rt.Close()
 
-	err := rt.AddMember(context.Background(), 0, 2, "10.0.0.2:63001")
+	err := rt.AddMember(context.Background(), 0, 2, "10.0.0.2:63001", "")
 	if err == nil {
 		t.Fatal("expected error after close")
 	}
@@ -1287,7 +1287,7 @@ func TestAddMember_ServerError(t *testing.T) {
 	rt := newTestTransport(t, srv.URL)
 	defer rt.Close()
 
-	err := rt.AddMember(context.Background(), 0, 2, "10.0.0.2:63001")
+	err := rt.AddMember(context.Background(), 0, 2, "10.0.0.2:63001", "")
 	if err == nil {
 		t.Fatal("expected error from server error response")
 	}
@@ -2478,5 +2478,27 @@ func TestStopShard_ServerError(t *testing.T) {
 	var reqErr *transport.RequestError
 	if !errors.As(err, &reqErr) {
 		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
+	}
+}
+
+// TestAddMember_CarriesIdentity pins that the operator-supplied member
+// identity is in the JSON body REST sends.
+func TestAddMember_CarriesIdentity(t *testing.T) {
+	var got transport.AddMemberRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(transport.OKResponse{Status: "ok"})
+	}))
+	defer srv.Close()
+	rt := newTestTransport(t, srv.URL)
+	defer rt.Close()
+
+	identity := "spki:" + strings.Repeat("ab", 32)
+	if err := rt.AddMember(context.Background(), 0, 4, "10.0.0.4:63001", identity); err != nil {
+		t.Fatalf("AddMember: %v", err)
+	}
+	if got.Identity != identity {
+		t.Fatalf("request identity %q, want %q", got.Identity, identity)
 	}
 }

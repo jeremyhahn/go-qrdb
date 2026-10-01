@@ -299,7 +299,7 @@ func TestHandleCredentialRetrieveVersion_VersionExpired(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/v1/credentials/k/versions/1", nil)
 	rec := httptest.NewRecorder()
 	s.handleCredentialRetrieveVersion(rec, req, "k", "1")
-	assertStatus(t, rec, http.StatusGone)
+	assertStatus(t, rec, http.StatusNotFound)
 }
 
 func TestHandleCredentialRetrieveVersion_VersionNotFound(t *testing.T) {
@@ -312,7 +312,7 @@ func TestHandleCredentialRetrieveVersion_VersionNotFound(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/v1/credentials/k/versions/99", nil)
 	rec := httptest.NewRecorder()
 	s.handleCredentialRetrieveVersion(rec, req, "k", "99")
-	assertStatus(t, rec, http.StatusGone)
+	assertStatus(t, rec, http.StatusNotFound)
 }
 
 func TestHandleCredentialRetrieveVersion_CredentialNotFound(t *testing.T) {
@@ -622,7 +622,7 @@ func TestHandleCredentialByPath_TooDeep(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// mapCredentialHTTPError
+// mapHTTPError
 // ---------------------------------------------------------------------------
 
 func TestMapCredentialHTTPError(t *testing.T) {
@@ -633,8 +633,8 @@ func TestMapCredentialHTTPError(t *testing.T) {
 	}{
 		{"not found", credentials.ErrCredentialNotFound, http.StatusNotFound},
 		{"enumeration", credentials.ErrEnumerationNotSupported, http.StatusNotImplemented},
-		{"version not found", credentials.ErrVersionNotFound, http.StatusGone},
-		{"version expired", credentials.ErrVersionExpired, http.StatusGone},
+		{"version not found", credentials.ErrVersionNotFound, http.StatusNotFound},
+		{"version expired", credentials.ErrVersionExpired, http.StatusNotFound},
 		{"grace negative", credentials.ErrInvalidGracePeriod, http.StatusBadRequest},
 		{"empty name", credentials.ErrEmptyCredentialName, http.StatusBadRequest},
 		{"empty value", credentials.ErrEmptyCredentialValue, http.StatusBadRequest},
@@ -643,9 +643,9 @@ func TestMapCredentialHTTPError(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := mapCredentialHTTPError(c.err)
+			got := mapHTTPError(c.err)
 			if got != c.want {
-				t.Errorf("mapCredentialHTTPError(%v) = %d, want %d", c.err, got, c.want)
+				t.Errorf("mapHTTPError(%v) = %d, want %d", c.err, got, c.want)
 			}
 		})
 	}

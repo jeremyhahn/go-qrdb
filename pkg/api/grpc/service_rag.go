@@ -17,9 +17,6 @@ package grpc
 import (
 	"context"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -41,7 +38,7 @@ func protoToChunkConfig(c *pb.ChunkConfig) *service.ChunkConfig {
 // RAGIngestDocument chunks, embeds, and stores a document.
 func (s *qrdbServiceServer) RAGIngestDocument(ctx context.Context, req *pb.RAGIngestDocumentRequest) (*pb.RAGIngestDocumentResponse, error) {
 	if s.ragSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "rag"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "rag"})
 	}
 	resp, err := s.ragSvc.IngestDocument(ctx, &service.IngestDocumentRequest{
 		DocumentID:  req.GetDocumentId(),
@@ -65,7 +62,7 @@ func (s *qrdbServiceServer) RAGIngestDocument(ctx context.Context, req *pb.RAGIn
 // RAGQuery retrieves the most semantically similar passages from a namespace.
 func (s *qrdbServiceServer) RAGQuery(ctx context.Context, req *pb.RAGQueryRequest) (*pb.RAGQueryResponse, error) {
 	if s.ragSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "rag"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "rag"})
 	}
 	resp, err := s.ragSvc.Query(ctx, &service.RAGQueryRequest{
 		Query:     req.GetQuery(),
@@ -94,7 +91,7 @@ func (s *qrdbServiceServer) RAGQuery(ctx context.Context, req *pb.RAGQueryReques
 // RAGDeleteDocument removes a document and all of its chunk vectors and KV entries.
 func (s *qrdbServiceServer) RAGDeleteDocument(ctx context.Context, req *pb.RAGDeleteDocumentRequest) (*pb.RAGDeleteDocumentResponse, error) {
 	if s.ragSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "rag"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "rag"})
 	}
 	resp, err := s.ragSvc.DeleteDocument(ctx, &service.DeleteRAGDocumentRequest{
 		DocumentID: req.GetDocumentId(),
@@ -112,7 +109,7 @@ func (s *qrdbServiceServer) RAGDeleteDocument(ctx context.Context, req *pb.RAGDe
 // RAGListDocuments returns metadata about ingested documents in a namespace.
 func (s *qrdbServiceServer) RAGListDocuments(ctx context.Context, req *pb.RAGListDocumentsRequest) (*pb.RAGListDocumentsResponse, error) {
 	if s.ragSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "rag"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "rag"})
 	}
 	resp, err := s.ragSvc.ListDocuments(ctx, &service.ListRAGDocumentsRequest{
 		Namespace: req.GetNamespace(),

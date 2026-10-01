@@ -16,7 +16,6 @@ package grpc
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"google.golang.org/grpc"
@@ -67,7 +66,7 @@ func (s *authFactorServer) EnrollFactor(ctx context.Context, req *pb.EnrollFacto
 
 	enrollment, err := s.svc.EnrollFactor(ctx, req.GetFactorName(), req.GetSubject(), params)
 	if err != nil {
-		return nil, mapAuthFactorGRPCError(err)
+		return nil, mapServiceError(err)
 	}
 
 	return &pb.EnrollFactorResponse{
@@ -88,7 +87,7 @@ func (s *authFactorServer) ChallengeFactor(ctx context.Context, req *pb.Challeng
 
 	challenge, err := s.svc.ChallengeFactor(ctx, req.GetEnrollmentId())
 	if err != nil {
-		return nil, mapAuthFactorGRPCError(err)
+		return nil, mapServiceError(err)
 	}
 
 	resp := &pb.ChallengeFactorResponse{
@@ -121,7 +120,7 @@ func (s *authFactorServer) VerifyFactor(ctx context.Context, req *pb.VerifyFacto
 	}
 
 	if err := s.svc.VerifyFactor(ctx, req.GetFactorName(), req.GetChallengeId(), response); err != nil {
-		return nil, mapAuthFactorGRPCError(err)
+		return nil, mapServiceError(err)
 	}
 	return &emptypb.Empty{}, nil
 }
@@ -130,7 +129,7 @@ func (s *authFactorServer) VerifyFactor(ctx context.Context, req *pb.VerifyFacto
 func (s *authFactorServer) ListFactors(ctx context.Context, req *pb.ListFactorsRequest) (*pb.ListFactorsResponse, error) {
 	enrollments, err := s.svc.ListFactors(ctx, req.GetSubject())
 	if err != nil {
-		return nil, mapAuthFactorGRPCError(err)
+		return nil, mapServiceError(err)
 	}
 
 	entries := make([]*pb.EnrollmentEntry, len(enrollments))
@@ -162,39 +161,7 @@ func (s *authFactorServer) RevokeFactor(ctx context.Context, req *pb.RevokeFacto
 	}
 
 	if err := s.svc.RevokeFactor(ctx, req.GetEnrollmentId()); err != nil {
-		return nil, mapAuthFactorGRPCError(err)
+		return nil, mapServiceError(err)
 	}
 	return &emptypb.Empty{}, nil
-}
-
-// mapAuthFactorGRPCError converts an auth factor error to a gRPC status error.
-func mapAuthFactorGRPCError(err error) error {
-	if err == nil {
-		return nil
-	}
-	var (
-		enrollmentNotFound  *authfactors.EnrollmentNotFoundError
-		factorNotFound      *authfactors.FactorNotFoundError
-		enrollmentInvalid   *authfactors.EnrollmentInvalidError
-		enrollmentRevoked   *authfactors.EnrollmentRevokedError
-		challengeExpired    *authfactors.ChallengeExpiredError
-		verificationFailed  *authfactors.VerificationFailedError
-		hardwareUnavailable *authfactors.HardwareUnavailableError
-	)
-	switch {
-	case errors.As(err, &enrollmentNotFound), errors.As(err, &factorNotFound):
-		return status.Error(codes.NotFound, err.Error())
-	case errors.As(err, &enrollmentInvalid):
-		return status.Error(codes.InvalidArgument, err.Error())
-	case errors.As(err, &enrollmentRevoked), errors.As(err, &challengeExpired):
-		return status.Error(codes.FailedPrecondition, err.Error())
-	case errors.As(err, &verificationFailed):
-		return status.Error(codes.Unauthenticated, err.Error())
-	case errors.As(err, &hardwareUnavailable):
-		return status.Error(codes.Unavailable, err.Error())
-	case errors.Is(err, authfactors.ErrFactorDisabled):
-		return status.Error(codes.Unimplemented, err.Error())
-	default:
-		return status.Error(codes.Internal, err.Error())
-	}
 }

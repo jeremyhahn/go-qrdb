@@ -43,7 +43,6 @@
 
   let username: string = $state("");
   let tenantId: string = $state("default");
-  let enabled: boolean = $state(true);
   let selectedRoleIds: string[] = $state([]);
   let existingUser: User | null = $state(null);
   let availableRoles: Role[] = $state([]);
@@ -103,7 +102,6 @@
         // Never allow tenantId to become undefined — TenantSelect's
         // $bindable has a fallback value which throws if bound to undefined.
         tenantId = user.tenantId ?? "default";
-        enabled = user.enabled;
         selectedRoleIds = [...user.roleIds];
       }
     } catch (err: unknown) {
@@ -220,25 +218,16 @@
                 size="sm"
               />
             </label>
-
-            <!-- Enabled toggle -->
-            <div class="form-control">
-              <label class="label cursor-pointer justify-start gap-3">
-                <input
-                  type="checkbox"
-                  class="toggle toggle-success toggle-sm"
-                  bind:checked={enabled}
-                  disabled={existingUser !== null && existingUser.system}
-                />
-                <span class="label-text">Enabled</span>
-              </label>
-            </div>
           </div>
 
           <!-- Metadata (existing users only) -->
           {#if existingUser !== null}
             <div class="divider text-xs">Metadata</div>
             <div class="grid grid-cols-2 gap-2 text-xs">
+              <div>
+                <span class="text-base-content/60 font-semibold">Lifecycle</span>
+                <p class="font-mono">{existingUser.lifecycle}</p>
+              </div>
               <div>
                 <span class="text-base-content/60 font-semibold">Created</span>
                 <p class="font-mono">{existingUser.createdAt}</p>

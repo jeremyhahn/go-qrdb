@@ -53,7 +53,6 @@ func newRowIDTable(t *testing.T, h *ddlHarness, name string) *RelationalTable {
 		WithTableService(h.tableSvc),
 		WithTransactionService(h.txnSvc),
 		WithSequenceService(h.seqSvc),
-		WithBatchService(h.batchSvc),
 	)
 	require.NoError(t, err)
 	return tbl
@@ -311,7 +310,7 @@ func TestRowIDAllocation_IsClusterSafe(t *testing.T) {
 	wg.Wait()
 
 	// Every insert must have produced its own storage key.
-	keys, err := h.kvSvc.List(context.Background(), nodeA.dataPrefix)
+	keys, err := h.kvSvc.List(context.Background(), nodeA.gen().dataPrefix)
 	require.NoError(t, err)
 	assert.Len(t, keys, 2*perNode,
 		"identical rows collided: some row id was handed out more than once")
@@ -321,7 +320,7 @@ func TestRowIDAllocation_IsClusterSafe(t *testing.T) {
 	for _, k := range keys {
 		raw, gerr := h.kvSvc.Get(context.Background(), k)
 		require.NoError(t, gerr)
-		row, derr := nodeA.decodeRow(k[len(nodeA.dataPrefix):], raw)
+		row, derr := nodeA.decodeRow(k[len(nodeA.gen().dataPrefix):], raw)
 		require.NoError(t, derr)
 		id, ok := row[2].(uint64)
 		require.True(t, ok, "row id slot is %T, want uint64", row[2])
@@ -471,25 +470,32 @@ func TestKeylessTable_WithAutoIncrementColumn(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // rowKeysOf returns the sorted physical row keys of the named table.
+// rowKeysOf lists the table's rows at its CURRENT generation (freshly
+// re-read from the catalog, not assumed to be 0): TRUNCATE (go-qrdb#547)
+// advances a table's generation without synchronously deleting the old
+// one's rows, so a helper that hardcoded generation 0 would keep finding a
+// truncated table's OLD rows -- still physically present until the
+// ReclaimSweeper runs -- and never observe the table as empty.
 func rowKeysOf(t *testing.T, h *ddlHarness, table string) []string {
 	t.Helper()
 	def, err := h.tableSvc.GetTable(context.Background(), "shop", table)
 	require.NoError(t, err)
-	keys, err := h.kvSvc.List(context.Background(), service.TableDataPrefix("shop", def.TableID))
+	keys, err := h.kvSvc.List(context.Background(), service.TableDataPrefix("shop", def.TableID, def.Generation))
 	require.NoError(t, err)
 	sort.Strings(keys)
 	return keys
 }
 
-// indexKeysOf returns the sorted physical entry keys of one secondary index.
+// indexKeysOf returns the sorted physical entry keys of one secondary index,
+// at the table's CURRENT generation -- see rowKeysOf.
 func indexKeysOf(t *testing.T, h *ddlHarness, table, index string) []string {
 	t.Helper()
 	def, err := h.tableSvc.GetTable(context.Background(), "shop", table)
 	require.NoError(t, err)
-	keys, err := h.kvSvc.List(context.Background(), service.TableIndexPrefix("shop", def.TableID, index))
+	keys, err := h.kvSvc.List(context.Background(), service.TableIndexPrefix("shop", def.TableID, def.Generation, incarnationOf(def, index)))
 	require.NoError(t, err)
 	for _, k := range keys {
-		require.True(t, strings.HasPrefix(k, service.TableIndexPrefix("shop", def.TableID, index)))
+		require.True(t, strings.HasPrefix(k, service.TableIndexPrefix("shop", def.TableID, def.Generation, incarnationOf(def, index))))
 	}
 	sort.Strings(keys)
 	return keys

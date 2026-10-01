@@ -16,10 +16,13 @@ package embedded
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/secure"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -184,10 +187,118 @@ func (t *Transport) BarrierRekey(ctx context.Context, req *transport.BarrierReke
 // BarrierGenerateRecoveryKeys generates recovery keys for disaster recovery
 // by delegating to the injected BarrierServicer. SO PIN verification is
 // enforced when a pin.PINBackend is injected and has a SO PIN set.
-// BarrierEnableEncryption is not supported on the embedded transport; enable
-// encryption via the REST or gRPC (unix) transports.
-func (t *Transport) BarrierEnableEncryption(_ context.Context, _ *transport.BarrierEnableEncryptionRequest) (*transport.BarrierEnableEncryptionResponse, error) {
-	return nil, &transport.NotImplementedError{Method: "BarrierEnableEncryption"}
+
+// embeddedMigrationAcceptWindow bounds how long BarrierEnableEncryption waits
+// for EncryptionMigrator.EnableEncryption to return before giving up on
+// delivering its outcome synchronously. Mirrors migrationAcceptWindow /
+// grpcMigrationAcceptWindow / quicMigrationAcceptWindow /
+// barrierEnableEncryptionMigrationAcceptWindow on the REST/gRPC/QUIC/MCP
+// transports -- see the REST doc comment (pkg/api/rest/handlers_barrier.go)
+// for the full rationale: every synchronously-knowable rejection returns
+// well within this window, before the destructive Quiesce phase (which for
+// a system-scope migration tears down and rebuilds this in-process node's
+// own data plane) ever runs.
+const embeddedMigrationAcceptWindow = 750 * time.Millisecond
+
+// BarrierEnableEncryption migrates a previously-unencrypted barrier to a
+// keyed strategy by delegating to the injected EncryptionMigrator (see
+// WithEncryptionMigrator). Like the REST/gRPC/Unix/QUIC/MCP handlers it
+// validates synchronously, then invokes the migrator and races its result
+// against embeddedMigrationAcceptWindow: a synchronous rejection is returned
+// to the caller as a real error, while a migration still running once the
+// window elapses is acknowledged with "migration_started"; the caller polls
+// BarrierStatus.
+//
+// When no EncryptionMigrator is configured (a composer that never wired one,
+// standalone mode) it refuses with the same service.ErrMigrationProviderUnavailable
+// every other transport uses for that state, rather than the transport-
+// specific NotImplementedError this method returned unconditionally before
+// sdk/go/node started wiring its own migrator through here.
+func (t *Transport) BarrierEnableEncryption(ctx context.Context, req *transport.BarrierEnableEncryptionRequest) (*transport.BarrierEnableEncryptionResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.encMigrator == nil {
+		return nil, service.ErrMigrationProviderUnavailable
+	}
+
+	scope := service.BarrierScope{Kind: service.ScopeSystem}
+	if req.TenantID != "" {
+		scope = service.BarrierScope{Kind: service.ScopeTenant, TenantID: req.TenantID}
+	}
+
+	mechanism := seal.MechanismSwap
+	if req.Mechanism == string(seal.MechanismInPlace) {
+		mechanism = seal.MechanismInPlace
+	}
+	availability := seal.AvailabilityQuiesced
+	if req.Availability == string(seal.AvailabilityOnline) {
+		availability = seal.AvailabilityOnline
+	}
+
+	// The request's passphrase is copied into protected memory and the
+	// decoded copy wiped at once -- the credential is what the migration
+	// reads from here on, so nothing needs the request's plaintext past this
+	// line.
+	creds, err := seal.CredentialsFor(req.Passphrase)
+	secure.Wipe(req.Passphrase)
+	if err != nil {
+		return nil, err
+	}
+	opts := seal.MigrationOptions{
+		TargetStrategy:  seal.StrategyID(req.Strategy),
+		Mechanism:       mechanism,
+		Availability:    availability,
+		Credentials:     creds,
+		ShamirThreshold: req.ShamirThreshold,
+		ShamirTotal:     req.ShamirTotal,
+	}
+	if err := opts.Validate(); err != nil {
+		creds.Secret.Destroy()
+		return nil, err
+	}
+
+	// A background context is used because ctx is cancelled once this call
+	// returns, and the migration must continue independent of this request's
+	// lifetime.
+	migrator := t.encMigrator
+	resultCh := make(chan error, 1)
+	go func() {
+		// The migration OWNS the credential from here: it outlives this
+		// call, so destroying it here would pull the passphrase out from
+		// under a running migration. The destroy belongs to the last
+		// reader, and that is this goroutine.
+		defer creds.Secret.Destroy()
+		resultCh <- migrator.EnableEncryption(context.Background(), scope, opts)
+	}()
+
+	select {
+	case err := <-resultCh:
+		if err != nil {
+			return nil, err
+		}
+		// Completed within the window with no error: an unusually fast
+		// migration (e.g. an empty barrier) already finished. Fall through
+		// and report "migration_started" -- BarrierStatus already reflects
+		// the committed strategy, so the wording is accurate either way.
+	case <-time.After(embeddedMigrationAcceptWindow):
+		// Still running past acceptance: no caller is left to deliver the
+		// eventual outcome to, so only log it.
+		go func() {
+			if err := <-resultCh; err != nil {
+				slog.Error("enable-encryption migration failed",
+					slog.String("scope", string(scope.Kind)),
+					slog.String("tenant", scope.TenantID),
+					slog.String("strategy", string(opts.TargetStrategy)),
+					slog.Any("error", err))
+			}
+		}()
+	}
+
+	return &transport.BarrierEnableEncryptionResponse{
+		Status: "migration_started",
+		Scope:  string(scope.Kind),
+	}, nil
 }
 
 func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transport.BarrierGenerateRecoveryKeysRequest) (*transport.BarrierRecoveryKeysResponse, error) {
@@ -617,6 +728,22 @@ func embeddedBarrierOfficerStatusesToTransport(officers []*service.BarrierOffice
 func WithBarrierService(svc service.BarrierServicer) Option {
 	return func(t *Transport) {
 		t.barrierSvc = svc
+	}
+}
+
+// WithEncryptionMigrator injects the EncryptionMigrator BarrierEnableEncryption
+// delegates to, mirroring server.WithEncryptionMigrator on the network
+// transports (REST/gRPC/Unix/QUIC/MCP). When nil (the default) or omitted,
+// BarrierEnableEncryption refuses with service.ErrMigrationProviderUnavailable.
+//
+// A composer (sdk/go/node) that wants EnableEncryption reachable through this
+// transport should pass an adapter that resolves to its OWN live migrator on
+// every call rather than a value captured once at construction time: a
+// system-scope migration recycles the data plane in process, and the
+// migrator backing it can be rebuilt across that recycle.
+func WithEncryptionMigrator(m service.EncryptionMigrator) Option {
+	return func(t *Transport) {
+		t.encMigrator = m
 	}
 }
 

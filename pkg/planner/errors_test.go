@@ -21,57 +21,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/planner"
 )
 
-// TestNoCatalogError verifies NoCatalogError implements error and formats
-// its message correctly.
-func TestNoCatalogError(t *testing.T) {
-	// Compile-time interface assertion: NoCatalogError implements error.
-	var _ error = (*planner.NoCatalogError)(nil)
-
-	err := &planner.NoCatalogError{}
-	want := "planner: no index catalog configured"
-	if err.Error() != want {
-		t.Errorf("NoCatalogError.Error() = %q, want %q", err.Error(), want)
-	}
-}
-
-func TestNoCatalogErrorIsError(t *testing.T) {
-	err := &planner.NoCatalogError{}
-	var target *planner.NoCatalogError
-	if !errors.As(err, &target) {
-		t.Error("errors.As should find NoCatalogError")
-	}
-}
-
-// TestInvalidPredicateError verifies the message includes field and reason.
-func TestInvalidPredicateError(t *testing.T) {
-	err := &planner.InvalidPredicateError{
-		Field:  "Age",
-		Reason: "value must be non-negative",
-	}
-
-	want := "planner: invalid predicate on field Age: value must be non-negative"
-	if err.Error() != want {
-		t.Errorf("InvalidPredicateError.Error() = %q, want %q", err.Error(), want)
-	}
-}
-
-func TestInvalidPredicateErrorIsError(t *testing.T) {
-	var err error = &planner.InvalidPredicateError{Field: "X", Reason: "bad"}
-	if err.Error() == "" {
-		t.Error("expected non-empty error message")
-	}
-	var target *planner.InvalidPredicateError
-	if !errors.As(err, &target) {
-		t.Error("errors.As should find InvalidPredicateError")
-	}
-	if target.Field != "X" {
-		t.Errorf("Field = %q, want X", target.Field)
-	}
-	if target.Reason != "bad" {
-		t.Errorf("Reason = %q, want bad", target.Reason)
-	}
-}
-
 // TestFieldNotFoundError verifies the message includes field and entity type.
 func TestFieldNotFoundError(t *testing.T) {
 	err := &planner.FieldNotFoundError{
@@ -99,23 +48,5 @@ func TestFieldNotFoundErrorIsError(t *testing.T) {
 	}
 	if target.EntityType != "T" {
 		t.Errorf("EntityType = %q, want T", target.EntityType)
-	}
-}
-
-// TestAllErrorsDistinct verifies that each error type is distinct and not
-// accidentally aliased to another.
-func TestAllErrorsDistinct(t *testing.T) {
-	noCatalog := &planner.NoCatalogError{}
-	invalidPred := &planner.InvalidPredicateError{Field: "F", Reason: "R"}
-	fieldNotFound := &planner.FieldNotFoundError{Field: "F", EntityType: "T"}
-
-	if noCatalog.Error() == invalidPred.Error() {
-		t.Error("NoCatalogError and InvalidPredicateError messages should differ")
-	}
-	if noCatalog.Error() == fieldNotFound.Error() {
-		t.Error("NoCatalogError and FieldNotFoundError messages should differ")
-	}
-	if invalidPred.Error() == fieldNotFound.Error() {
-		t.Error("InvalidPredicateError and FieldNotFoundError messages should differ")
 	}
 }

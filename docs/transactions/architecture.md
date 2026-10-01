@@ -41,7 +41,8 @@ Raft commit ordering.
 | Piece | Package | Owner |
 |---|---|---|
 | Transaction and batch semantics | `pkg/service`, `pkg/batch` | go-qrdb |
-| Compare evaluation against MVCC state | `pkg/mvcc` | go-qrdb |
+| Compare evaluation against MVCC state (`sm_type: mvcc`) | `pkg/mvcc`, `pkg/engine` | go-qrdb |
+| Compare evaluation against a state machine's own keyspace (every other `sm_type`) | `pkg/store` (`pebble`), `pkg/statemachine` (`native_txn.go`) | go-qrdb |
 | Import parsing (CSV/JSON/NDJSON/YAML/archive) | `pkg/service` (batch import), `pkg/codec` | go-qrdb, decoding via **go-codec** |
 | Single-proposal atomicity | — | **go-quicraft** |
 | SDK surface | `sdk/go` (`Client.Transaction()`, `Client.Batch()`) | go-qrdb |
@@ -52,8 +53,10 @@ Raft commit ordering.
    transport.
 2. Tenant and database are resolved server side; `transaction:execute` or
    `batch:execute` is checked.
-3. For a transaction, every `Compare` is evaluated against the current MVCC
-   state under the same snapshot.
+3. For a transaction, every `Compare` is evaluated inside apply, against the
+   state machine's current state: the revisioned MVCC state on `sm_type:
+   mvcc`, the state machine's own keyspace — the one plain `Put` and `Get`
+   use — on every other type.
 4. The chosen op list is encoded into **one** Raft proposal.
 5. On commit, all operations apply together and the response carries the
    resulting revision and per-op results.
@@ -61,6 +64,33 @@ Raft commit ordering.
 Batch import adds a parsing stage in front: the file is decoded into records,
 each record yields a key and a value, and the records are applied — either row
 by row (default) or as one all-or-nothing unit when `--transactional` is set.
+
+### Transactions on every state machine
+
+Every `raft.sm_type` executes transactions and batches. Only `mvcc` keeps
+revisions; every other type — `pebble` (the default), `memory`, `standard`,
+`concurrent`, `fast`, `disk`, `highperf`, `regular` — decides a transaction
+against its own keyspace with the same compare semantics:
+
+- **Value** compares against the stored value; an absent key compares as the
+  empty value.
+- **Version** is 0 when the key is absent and 1 when it is present — exactly
+  enough for "must be absent" (`version == 0`), the fence every guarded create
+  is built on.
+- **Create- and mod-revision compares are refused**, with the error
+  `transaction: create_revision/mod_revision compares require an MVCC state
+  machine`, before anything is evaluated. Answering "revision 0" for every
+  key would let two read-then-CAS writers both win and lose an update with no
+  signal.
+- **A write that carries a lease is refused** on the `pkg/statemachine` types,
+  which cannot attach a key to a lease; applying it without the lease would
+  make a key meant to expire live forever.
+- **An empty key is refused**, by the service layer before it is proposed and
+  by every state machine at apply.
+
+A separate MVCC keyspace beside those state machines was the rejected
+alternative: a compare there cannot see a plain `Put`, so a guarded batch
+fenced on a claim would fence on nothing.
 
 ## Trust boundaries
 

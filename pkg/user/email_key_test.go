@@ -1280,9 +1280,9 @@ func TestLandedCommitsAreStillAudited(t *testing.T) {
 			case "update":
 				landed = got.Email == "new@example.com"
 			case "enable":
-				landed = got.Enabled
+				landed = got.CanAuthenticate()
 			case "disable":
-				landed = !got.Enabled
+				landed = !got.CanAuthenticate()
 			}
 			// A hard precondition, not a Skip: committedThenFailedKV applies the
 			// write before reporting the error, so "did not land" means the

@@ -73,6 +73,18 @@ func ResolveApplyError(log *slog.Logger, entryIndex uint64, handlerResult sm.Res
 	if handlerErr == nil {
 		return handlerResult, false, nil
 	}
+	// A refusal on the request's merits (protocol.RefusalError) is encoded as
+	// an ordinary application error: every replica refuses the same entry
+	// identically, so it is a result, not a fault.
+	if refErr, refused := protocol.AsRefusalError(handlerErr); refused {
+		if log != nil {
+			log.Warn("statemachine: request refused, encoding as result",
+				slog.String("refusal", refErr.Refusal()),
+				slog.String("error", handlerErr.Error()),
+				slog.Uint64("entry_index", entryIndex))
+		}
+		return sm.Result{Data: protocol.EncodeAppError(protocol.AppErrorInvalid, handlerErr.Error())}, false, nil
+	}
 	capErr, ok := protocol.AsCapabilityError(handlerErr)
 	if !ok {
 		return sm.Result{}, true, handlerErr

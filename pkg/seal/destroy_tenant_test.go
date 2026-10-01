@@ -40,7 +40,7 @@ import (
 // remove records from the system barrier store, close a real Pebble and
 // unlink a real directory, so a double for any of the three would remove
 // exactly the thing under test.
-func newPooledTestRegistry(t *testing.T) (*BarrierRegistry, *StorageBarrier) {
+func newPooledTestRegistry(t *testing.T, extra ...Option) (*BarrierRegistry, *StorageBarrier) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
@@ -78,10 +78,11 @@ func newPooledTestRegistry(t *testing.T) (*BarrierRegistry, *StorageBarrier) {
 	perTenantReg := pebblestore.NewPerTenantRegistry()
 	t.Cleanup(func() { _ = perTenantReg.CloseAll(context.Background()) })
 
-	reg, err := NewBarrierRegistry(logger, system,
+	opts := append([]Option{
 		WithVolumePool(mgr, state, "default"),
 		WithPerTenantRegistry(perTenantReg),
-	)
+	}, extra...)
+	reg, err := NewBarrierRegistry(logger, system, opts...)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}

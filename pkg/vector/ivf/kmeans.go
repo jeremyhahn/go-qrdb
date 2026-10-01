@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api"
+	"github.com/jeremyhahn/go-qrdb/pkg/vector/kmeans"
 )
 
 // KMeans implements the k-means clustering algorithm.
@@ -76,6 +77,19 @@ func (km *KMeans) Cluster(vectors [][]float32) ([][]float32, []int, error) {
 
 	if len(vectors) < km.config.NumCentroids {
 		return nil, nil, api.NewKMeansInsufficientVectorsError("kmeans.Cluster", km.config.NumCentroids, len(vectors))
+	}
+
+	// Every vector must match the configured dimensionality. Feeding a
+	// mismatched vector through the distance funcs below does not panic --
+	// L2/Cosine/DotProduct treat a length mismatch as math.MaxFloat32 -- but
+	// k-means++ then squares that sentinel while accumulating totalWeight
+	// (initializeKMeansPlusPlus), overflowing float32 to +Inf and putting the
+	// weighted-sampling draw at the mercy of an Inf/NaN comparison instead of
+	// failing loudly here.
+	for i, vec := range vectors {
+		if len(vec) != km.config.Dimensions {
+			return nil, nil, api.NewKMeansDimensionMismatchError("kmeans.Cluster", i, len(vec), km.config.Dimensions)
+		}
 	}
 
 	// Initialize centroids
@@ -164,62 +178,162 @@ func (km *KMeans) initializeCentroids(vectors [][]float32) ([][]float32, error) 
 }
 
 // initializeKMeansPlusPlus implements k-means++ initialization for better initial centroids.
+//
+// minDist[i] tracks the RAW (unsquared) distance from vectors[i] to the
+// NEAREST centroid chosen so far -- "nearest" defined exactly as
+// findNearestCentroid defines it, by comparing distanceFunc's raw output, and
+// squared only once, when it is turned into a sampling weight. It is updated
+// with a single pass against just the newly-added centroid on every
+// iteration -- not recomputed from scratch against every previously-chosen
+// centroid. That distinction is the difference between O(n*k*d) and
+// O(n*k^2*d) total work: the earlier from-scratch form re-derived, at
+// k=255 (DefaultConfig's 256 centroids), the same minimums it had already
+// found for k=1..254, so choosing the LAST centroid did as much work as
+// choosing the first 255 combined. Reading go-qrdb#565's -race trace mid-run
+// confirmed the goroutine was making forward progress inside this loop (not
+// deadlocked), and an unmodified build did complete -- in 77s for one call,
+// under -race, against the exact TestIndex_Search_WrongDimensions inputs
+// (1000 vectors, 256 centroids, 128 dims). Three of those in one `-count=3`
+// invocation, alongside the rest of the package's tests, is what crossed
+// testing's 10-minute alarm and left the coverage profile unwritten. The
+// incremental form does the same initialization in O(n*k) distance
+// evaluations (256,000 here, versus ~32.6 million), which measures in
+// milliseconds under -race.
+//
+// Comparing RAW distances rather than their squares before picking the
+// minimum is required, not stylistic: for a signed metric such as
+// DotProductDistance (lower, more negative values are CLOSER -- see its doc
+// comment), -10 is nearer than 3, but (-10)^2=100 is not less than 3^2=9. A
+// version that tracked min(d^2) instead of min(d)^2 would therefore treat 3
+// as the nearer centroid and assign this point a k-means++ sampling weight
+// of 9 instead of the correct 100, silently changing the selection
+// distribution -- and thus the resulting clustering -- for every signed
+// metric. TestKMeans_InitializeKMeansPlusPlus_SignedMetricWeights pins the
+// two forms against each other over many seeds using DotProductDistance.
+//
+// minDist is sentinel-initialised to math.MaxFloat32 and only ever lowered
+// by "<", the same idiom findNearestCentroid uses, so a distanceFunc result
+// that overflows to +Inf (or is NaN) can never win the comparison and
+// propagate into the weight sum -- it is silently clamped to the sentinel
+// instead, exactly as the pre-optimisation from-scratch scan behaved.
 func (km *KMeans) initializeKMeansPlusPlus(vectors [][]float32) ([][]float32, error) {
 	centroids := make([][]float32, 0, km.config.NumCentroids)
 
-	// Choose first centroid randomly
+	// Choose first centroid randomly.
 	firstIdx := km.rng.Intn(len(vectors))
 	centroids = append(centroids, copyVector(vectors[firstIdx]))
 
-	// Choose remaining centroids with probability proportional to D(x)^2
-	distances := make([]float32, len(vectors))
+	minDist := make([]float32, len(vectors))
+	for i, vec := range vectors {
+		minDist[i] = clampedMin(float32(math.MaxFloat32), km.distanceFunc(vec, centroids[0]))
+	}
 
+	// Choose remaining centroids with probability proportional to D(x)^2.
+	//
+	// The weight and its running sum are computed in float64 even though
+	// minDist is float32: clampedMin only stops an already-overflowed
+	// DISTANCE from replacing a smaller one, it does nothing to stop the
+	// SQUARING of a large-but-finite value -- including its own sentinel,
+	// math.MaxFloat32 -- from overflowing float32's ~3.4e38 range. Squaring
+	// in float32 (math.MaxFloat32*math.MaxFloat32) is itself +Inf, which
+	// would put target and every cumulative comparison below back at the
+	// mercy of Inf/NaN arithmetic despite the clamp. float64 has headroom to
+	// spare for that square (up to ~1.16e77, against a ~1.8e308 ceiling),
+	// summed over every point. squaredWeight isolates this and
+	// TestSquaredWeight_LargeFiniteDistanceNoOverflow pins it directly: a
+	// distance that overflows when squared in float32 does not overflow
+	// squaredWeight.
+	weights := make([]float64, len(vectors))
 	for k := 1; k < km.config.NumCentroids; k++ {
-		// Compute distance to nearest centroid for each vector
-		var totalWeight float32
-		for i, vec := range vectors {
-			minDist := float32(math.MaxFloat32)
-			for _, centroid := range centroids {
-				dist := km.distanceFunc(vec, centroid)
-				if dist < minDist {
-					minDist = dist
-				}
-			}
-			distances[i] = minDist * minDist // D(x)^2
-			totalWeight += distances[i]
+		var totalWeight float64
+		for i, d := range minDist {
+			weights[i] = squaredWeight(d)
+			totalWeight += weights[i]
 		}
 
-		// Choose next centroid with weighted probability
+		var nextIdx int
 		if totalWeight == 0 {
-			// All remaining points are duplicates, choose randomly
-			for i := 0; i < len(vectors); i++ {
-				alreadyChosen := false
-				for _, c := range centroids {
-					if km.distanceFunc(vectors[i], c) == 0 {
-						alreadyChosen = true
-						break
-					}
-				}
-				if !alreadyChosen {
-					centroids = append(centroids, copyVector(vectors[i]))
+			// Every remaining vector coincides with an already-chosen
+			// centroid: duplicate/degenerate input, or fewer distinct points
+			// than NumCentroids. No point has a distance that would bias the
+			// draw, so choose UNIFORMLY at random rather than scanning for a
+			// point that is not "already chosen" -- with fewer distinct
+			// points than centroids that scan can find nothing, which used
+			// to leave this iteration's centroid unappended and return a
+			// short (and thus invariant-violating) centroid slice.
+			// handleEmptyClusters repairs the resulting duplicate centroid
+			// once real cluster sizes are known.
+			nextIdx = km.rng.Intn(len(vectors))
+		} else {
+			target := km.rng.Float64() * totalWeight
+			cumulative := float64(0)
+			nextIdx = len(vectors) - 1
+			for i, weight := range weights {
+				cumulative += weight
+				if cumulative >= target {
+					nextIdx = i
 					break
 				}
 			}
-			continue
 		}
 
-		target := km.rng.Float32() * totalWeight
-		cumulative := float32(0)
-		for i, weight := range distances {
-			cumulative += weight
-			if cumulative >= target {
-				centroids = append(centroids, copyVector(vectors[i]))
-				break
-			}
+		next := copyVector(vectors[nextIdx])
+		centroids = append(centroids, next)
+
+		// Fold the new centroid into the running minimum with one pass,
+		// instead of rescanning every previously-chosen centroid.
+		for i, vec := range vectors {
+			minDist[i] = clampedMin(minDist[i], km.distanceFunc(vec, next))
 		}
 	}
 
 	return centroids, nil
+}
+
+// clampedMin returns the smaller of current and candidate, but a candidate
+// that fails a plain "<" comparison against current -- because it is +Inf or
+// NaN -- can never replace it. Used above to track the minimum distance to
+// the nearest already-chosen k-means++ centroid, so a distanceFunc result
+// that overflows float32 to +Inf (or is NaN, from a NaN-producing input) is
+// clamped to whatever finite value was already found -- or to the sentinel
+// math.MaxFloat32 on the very first comparison -- rather than propagating
+// into the weighted-sampling sum in initializeKMeansPlusPlus.
+func clampedMin(current, candidate float32) float32 {
+	// A non-finite candidate is an OVERFLOW ARTIFACT, not a legitimate
+	// distance, and must be clamped to a finite bound before it is ever
+	// compared -- for every sign, not just +Inf. DotProductDistance's raw
+	// output is signed (see its doc comment), and its own float32
+	// accumulation can overflow to EITHER +Inf (very unaligned, very large
+	// vectors) or -Inf (very aligned, very large vectors); a bare "<"
+	// comparison lets -Inf through as if it were a genuinely, legitimately
+	// closer point than any real one, since -Inf compares less than every
+	// finite value including this function's own sentinel. squaredWeight
+	// then squares that -Inf into +Inf, exactly the failure clampedMin
+	// exists to prevent -- clamping only +Inf and leaving -Inf unclamped
+	// closes half the door. NaN (e.g. from 0 * Inf inside an accumulation)
+	// is clamped alongside +Inf rather than left to rely on "NaN compares
+	// false to everything" doing the right thing here implicitly.
+	switch {
+	case math.IsNaN(float64(candidate)):
+		candidate = math.MaxFloat32
+	case math.IsInf(float64(candidate), 1):
+		candidate = math.MaxFloat32
+	case math.IsInf(float64(candidate), -1):
+		candidate = -math.MaxFloat32
+	}
+
+	if candidate < current {
+		return candidate
+	}
+	return current
+}
+
+// squaredWeight returns d*d computed in float64, so a d at or beyond
+// float32's overflow threshold -- including the clampedMin sentinel,
+// math.MaxFloat32 itself -- squares to a large but FINITE float64 value
+// rather than overflowing the way squaring in float32 arithmetic would.
+func squaredWeight(d float32) float64 {
+	return float64(d) * float64(d)
 }
 
 // initializeRandom randomly selects initial centroids from the dataset.
@@ -296,45 +410,7 @@ func (km *KMeans) maxCentroidMovement(old, new [][]float32) float32 {
 
 // handleEmptyClusters fixes empty clusters by splitting large clusters.
 func (km *KMeans) handleEmptyClusters(vectors [][]float32, assignments []int, clusterSizes []int, centroids [][]float32) [][]float32 {
-	// Find empty and large clusters
-	for i, size := range clusterSizes {
-		if size == 0 {
-			// Find largest cluster
-			maxSize := 0
-			maxIdx := 0
-			for j, s := range clusterSizes {
-				if s > maxSize {
-					maxSize = s
-					maxIdx = j
-				}
-			}
-
-			if maxSize > 1 {
-				// Find farthest point in largest cluster
-				maxDist := float32(0)
-				farthestIdx := -1
-				for j, vec := range vectors {
-					if assignments[j] == maxIdx {
-						dist := km.distanceFunc(vec, centroids[maxIdx])
-						if dist > maxDist {
-							maxDist = dist
-							farthestIdx = j
-						}
-					}
-				}
-
-				if farthestIdx >= 0 {
-					// Move farthest point to empty cluster
-					centroids[i] = copyVector(vectors[farthestIdx])
-					assignments[farthestIdx] = i
-					clusterSizes[i] = 1
-					clusterSizes[maxIdx]--
-				}
-			}
-		}
-	}
-
-	return centroids
+	return kmeans.RepairEmptyClusters(vectors, assignments, clusterSizes, centroids, km.distanceFunc)
 }
 
 // copyVector creates a deep copy of a vector.

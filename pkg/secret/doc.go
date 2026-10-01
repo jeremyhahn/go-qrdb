@@ -47,6 +47,46 @@
 //     WithFailClosed() makes Process return ErrUnresolvedSecretURI if any
 //     reference could not be resolved — the secure default for production boots.
 //
+// # Requiredness is a property of the target's TYPE
+//
+// Nothing in this package carries a "required" tag, because the choice of
+// target type already says it. The walk reads requiredness off the declaration:
+//
+//   - A value-typed SecretValue field is REQUIRED, PROVIDED THE WALK REACHES
+//     IT. A target that decoded to nothing — `password: null`, a bare
+//     `password:`, or an absent key — is refused with UnresolvableTargetError,
+//     and under WithFailClosed the boot fails with ErrUnresolvedSecretURI.
+//     yaml.v3 zeroes a null destination without consulting the unmarshaler,
+//     so UnmarshalYAML never sees those three cases and cannot reject them
+//     itself; the walk closes that gap, so a required secret cannot be
+//     deleted or nulled into a successful boot BY EMPTYING THE LEAF ITSELF.
+//   - A *SecretValue field is OPTIONAL. An absent or null key leaves the
+//     pointer nil, and processValue passes over a nil pointer without
+//     descending into it. This is also the boundary of the guarantee above:
+//     a value-typed SecretValue nested inside a nil pointer or absent map
+//     entry is a leaf the walk never reaches at all, so deleting the WHOLE
+//     containing section — rather than emptying the leaf inside it — is not
+//     caught here, with or without WithFailClosed. This package walks the
+//     config VALUE it is handed, not the TYPE against a schema, so it cannot
+//     tell "this section is optional and was omitted" from "this section is
+//     required and was deleted"; that is the consumer's own Validate(), the
+//     same place it already checks that other required sections are present
+//     (see docs/credentials/secret-resolution.md, "The boundary: requiredness
+//     only for a leaf the walk reaches").
+//   - A plain string field carries NO requiredness signal AT ALL, and this is
+//     the one boundary worth stating out loud. An empty string is skipped
+//     silently, in both processString and the map path, because an empty
+//     string is indistinguishable from a field that was never meant to hold a
+//     secret in the first place: the walk cannot tell "required secret that
+//     went missing" from "ordinary string that is legitimately blank", and
+//     guessing either way is worse than declining to guess. Requiredness for a
+//     plain string target is therefore the CONSUMER's obligation, enforced in
+//     its own Validate(), not something this package can or will detect.
+//
+// The practical consequence: a field that must hold a secret should be declared
+// SecretValue rather than string. That is the secure target regardless, and it
+// is the only one whose absence is caught here instead of at first use.
+//
 // # Scheme ownership across the stack
 //
 // This package defines the contract; each layer registers the resolvers for the

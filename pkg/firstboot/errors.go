@@ -207,3 +207,75 @@ func (e *AdminCertRejectedError) Error() string {
 func (e *AdminCertRejectedError) Unwrap() error {
 	return e.Cause
 }
+
+// AdminCertBindingReason says why the bootstrap admin could not log in under
+// the "required" mTLS binding posture. Each value is a complete clause an
+// operator can act on.
+type AdminCertBindingReason string
+
+const (
+	// AdminBindingNoBinder: first-boot would create the admin with no
+	// CertBinder wired, so the admin would hold no binding.
+	AdminBindingNoBinder AdminCertBindingReason = "first boot has no CertBinder wired, so the admin it creates would hold no certificate binding"
+
+	// AdminBindingNoCertPath: a CertBinder is wired but there is no
+	// certificate to bind -- no CA, no Signer with an admin CSR, and no
+	// adopted admin certificate.
+	AdminBindingNoCertPath AdminCertBindingReason = "first boot has no admin certificate path wired (a CA, a Signer with an admin CSR, or an adopted admin certificate), so there is no certificate to bind"
+
+	// AdminBindingNone: the admin exists and has no certificate binding.
+	AdminBindingNone AdminCertBindingReason = "the admin account has no certificate binding"
+
+	// AdminBindingAllExpired: the admin's every binding has passed its
+	// NotAfter.
+	AdminBindingAllExpired AdminCertBindingReason = "every certificate binding on the admin account has expired"
+
+	// AdminBindingMissing: the admin account does not exist.
+	AdminBindingMissing AdminCertBindingReason = "the admin account does not exist"
+
+	// AdminBindingCannotAuthenticate: the admin's lifecycle state does not
+	// permit a login (suspended, locked, disabled, pending, deleting).
+	AdminBindingCannotAuthenticate AdminCertBindingReason = "the admin account's lifecycle state does not permit a login"
+
+	// AdminBindingMTLSNotPermitted: the admin's permitted-method policy
+	// excludes mTLS, so no certificate can log in as it.
+	AdminBindingMTLSNotPermitted AdminCertBindingReason = "the admin account's permitted authentication methods exclude mtls"
+
+	// AdminBindingUnverifiable: the user surface cannot look the admin up.
+	AdminBindingUnverifiable AdminCertBindingReason = "the user surface cannot look the admin up, so its certificate binding cannot be verified"
+)
+
+// AdminCertBindingRequiredError is the boot refusal under
+// auth.mtls_binding_policy "required" (go-qrdb#517): the bootstrap admin could
+// not log in by certificate, so a node that started would be locked out of
+// itself. It names the account, the reason, and the way out.
+type AdminCertBindingRequiredError struct {
+	TenantID string
+	Username string
+	Reason   AdminCertBindingReason
+}
+
+// Error implements error.
+func (e *AdminCertBindingRequiredError) Error() string {
+	return `firstboot: auth.mtls_binding_policy is "required" but the bootstrap admin ` +
+		e.Username + " in tenant " + e.TenantID + " could not log in under it: " + string(e.Reason) +
+		`; start with the policy "enrolled", enrol the admin's certificate (users:add_cert_binding), then set "required"`
+}
+
+// AdminLookupError wraps a failure to read the bootstrap admin while checking
+// the "required" binding posture. It refuses the boot: the posture cannot be
+// shown to hold, and starting anyway is the lockout the check exists to
+// prevent.
+type AdminLookupError struct {
+	Cause error
+}
+
+// Error implements error.
+func (e *AdminLookupError) Error() string {
+	return "firstboot: looking up the bootstrap admin to verify its certificate binding: " + e.Cause.Error()
+}
+
+// Unwrap returns the underlying cause.
+func (e *AdminLookupError) Unwrap() error {
+	return e.Cause
+}

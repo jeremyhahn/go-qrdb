@@ -35,6 +35,78 @@ Bootstrap runs: discover peers → validate addresses → add self → check quo
 start the shard. If discovery finds too few peers, bootstrap fails at the quorum
 check rather than starting a cluster that cannot commit.
 
+### Every node needs the other nodes' identities
+
+A replica accepts Raft traffic only from a member whose **identity** it was
+given. An identity is a hash of the public key in a node's transport
+certificate, so it is collected from the certificates, not from the network:
+
+1. Issue each node its certificate from the cluster CA.
+2. Print each node's identity: `qrdbd node-identity --cert node2-cert.pem`.
+3. Give every node the identities of the others, by replica ID:
+   `raft.member_identities: "2=spki:…,3=spki:…"` (or `--member-identities`).
+   A node's own entry can be left out; it is derived from its certificate.
+
+A founding node must list every member of the initial cluster; a node started
+with `raft.join: true` must list at least one existing member. Renewing a
+certificate on the same key keeps the identity; a new key changes it.
+
+A single-node cluster has no network transport and needs no identities.
+
+### Adding a node: joining through enrollment is unavailable in this release
+
+**A node started with bootstrap flags refuses to start** in this release:
+`--bootstrap-noise-key`, `--bootstrap-spki-pin`, `--bootstrap-dane-dns` and
+`--bootstrap-direct-url` all select the join path, and the join path now fails
+with `EnrollmentUnavailableError`. The error message tells you what to do
+instead. The refusal comes before the node dials anything, and nothing is
+written to its data directory.
+
+The reason is a security fix. Earlier releases enrolled a joining node by
+handing it the cluster CA **private key**, which it used to sign its own
+certificate. The key was served by `/v1/ca/bootstrap`, a route that needs no
+credential, so anyone who could reach a first node's admin port could read it.
+The key never leaves the node that holds it any more. The replacement,
+where the joining node generates its key locally and a running member signs
+its certificate request, ships in a following release.
+
+**To add a node now**, issue its certificate yourself on the node that holds
+the cluster CA (`ca.pem` and `ca-key.pem` in its data directory):
+
+1. Generate an ECDSA P-256 key and a certificate signed by the cluster CA,
+   with the node's SPIFFE identity as a URI SAN:
+   `spiffe://<trust-domain>/node/<raft-address>`. Give it both the
+   `serverAuth` and `clientAuth` extended key usages, and add the node's DNS
+   names and IP addresses as SANs.
+2. Copy `ca.pem`, the new certificate and the new key to the new node, and
+   **never `ca-key.pem`**.
+3. Start the new node with `--tls-ca-file`, `--tls-cert-file` and
+   `--tls-key-file` pointing at them, and without bootstrap flags.
+4. Add it to the Raft group as usual (`qrdb admin add-member`, or dynamic
+   membership).
+
+### If your cluster was formed by an earlier release, rotate its CA
+
+Treat the existing cluster CA key as **compromised**. It was readable without
+authentication from every first node's admin port, and every node that joined
+over SPKI, DANE or direct HTTPS holds a copy in `ca-key.pem`. Until the CA is
+rotated, restrict network access to every node's admin port.
+
+Rotate the cluster CA:
+
+1. On the node that will hold the new CA, generate a new CA key and
+   certificate. Keep the key on that node only.
+2. Issue a new node certificate for every member from the new CA, as in
+   [Adding a node](#adding-a-node-joining-through-enrollment-is-unavailable-in-this-release).
+3. Build a trust bundle holding **both** CA certificates. Restart each member,
+   one at a time, with `--tls-ca-file` set to that bundle and its new
+   certificate and key. Both old and new certificates verify during this step.
+4. Once every member presents a certificate from the new CA, restart each
+   member with `--tls-ca-file` set to the new CA alone.
+5. Delete `ca-key.pem` from every node except the one holding the new CA.
+6. Reissue every client and Security Officer certificate that chains to the
+   old CA.
+
 ### In FIPS 140-3 mode, do not use the Noise bootstrap method
 
 If you run the daemon with `GODEBUG=fips140=only` (or `fips140=on`), the Noise
@@ -74,9 +146,17 @@ balancer can probe a node without credentials.
 **By hand:**
 
 ```bash
-qrdb admin member add node4.example.com:63001 --shard-id 1 --replica-id 4
+qrdb admin member add node4.example.com:63001 --shard-id 1 --replica-id 4 \
+  --identity "$(qrdbd node-identity --cert node4-cert.pem)"
 qrdb admin member remove 4 --shard-id 1
 ```
+
+A brand-new node needs `--identity` once: the cluster has never committed its
+identity, and cannot learn it safely from the node itself. Start the new node
+with `raft.join: true` and the existing members in its
+`raft.member_identities`. Once it is a member, its identity is committed, and
+every later add of a replica on that node — rebalancing, dedicated databases,
+re-adding it — looks it up without you.
 
 **Automatically.** The membership manager reconciles the Raft group as nodes
 come and go, using leases and watches: each node holds a lease-backed member
@@ -150,6 +230,26 @@ including REST.
 Check the method's inputs: the `raft.peers` list, the DNS SRV record, the
 multicast secret matching on every node, or the token service.
 
+**A node refuses to start: `no node identity in Config.MemberIdentities`.** The
+node was not given the identity of the replica the message names. Add it to
+`raft.member_identities` — see
+[Every node needs the other nodes' identities](#every-node-needs-the-other-nodes-identities).
+
+**A node refuses to start: `member identity for local replica … is configured
+as … but its certificate presents …`.** The entry for the node itself names a
+different key than the certificate it was started with — usually a copy-paste
+from another node, or a certificate reissued on a new key. Remove the local
+entry or correct it.
+
+**`member add` says there is no committed member identity for the replica.**
+The node is new to the cluster. Print its identity with
+`qrdbd node-identity --cert <its certificate>` and pass it with `--identity`.
+
+**`member add` says the identity contradicts the committed identity.** The
+cluster already committed a different key for that replica or host — usually a
+copy-paste from another node, or a node reissued on a new key. Check the
+certificate; a node on a new key must be removed and re-added.
+
 **Multicast finds nothing.** Every node needs the *same* operator-chosen PSK,
 and there is no default. A mismatch looks exactly like "no peers on the
 network".
@@ -173,6 +273,13 @@ works over unary-only transports. It is not a streaming feed.
 **Rebalance execute failed some moves.** The result counts them and reports the
 final imbalance. Re-plan and re-run — the plan is computed from current state,
 so a second pass picks up where the first stopped.
+
+**A joining node refuses to start with "joining an existing cluster is
+unavailable in this release".** This is expected in this release: bootstrap
+flags select a join, and joins through enrollment are unavailable because the
+CA key is no longer distributed. Issue the node's certificate on the node that
+holds the cluster CA and start it with the explicit TLS file flags. See
+[Adding a node](#adding-a-node-joining-through-enrollment-is-unavailable-in-this-release).
 
 **A joining node reports that Noise NK is not FIPS 140-3 approved.** The daemon
 is running in FIPS mode, where that method cannot be used. Configure

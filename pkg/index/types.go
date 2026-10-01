@@ -102,6 +102,14 @@ type IndexConfig struct {
 	// reads it today. Skipping absent fields happens in the backfill and
 	// index-maintenance callers.
 	Sparse bool
+
+	// Owner is the object whose lifecycle created the index (go-qrdb#426):
+	// CollectionOwner for an index a collection declared, the empty string
+	// for the explicit index API. It is carried on the create command and
+	// recorded beside the index by the apply path, which refuses a create
+	// naming an index another owner holds (see CheckCreateOwner) and removes
+	// an index on an owner-checked drop only for its owner (CheckDropOwner).
+	Owner string
 }
 
 // IsCompound reports whether this is a compound (multi-field) index.
@@ -166,4 +174,58 @@ type CompoundIndexScanRequest struct {
 	PrefixValues [][]byte
 	RangeStart   []byte
 	RangeEnd     []byte
+}
+
+// ExplicitOwner is the owner recorded on an index created through the explicit
+// index API, and on every index created before owners were recorded. It is
+// also the owner the explicit API's drop claims, so that drop removes only
+// explicit indexes and refuses one a collection owns.
+const ExplicitOwner = ""
+
+// ownerKindCollection is the owner-kind prefix recorded for an index a
+// document collection created.
+const ownerKindCollection = "collection:"
+
+// CollectionOwner returns the owner recorded for an index that one
+// incarnation of the collection (database, collection) created
+// (go-qrdb#426). incarnation distinguishes a collection from a later one
+// created under the same name after a drop.
+//
+// The value names the collection unambiguously even where the index NAME does
+// not: an index name is a "."-joined triple with no escaping, so field
+// "v2.email" on collection "users" and field "email" on collection "users.v2"
+// derive the same name. Their owners differ, so the second create is refused
+// instead of adopting the first collection's index.
+func CollectionOwner(database, collection, incarnation string) string {
+	return ownerKindCollection + database + "/" + collection + "#" + incarnation
+}
+
+// OwnerLabel renders an owner for a message. The empty owner is the explicit
+// index API, which has no name of its own.
+func OwnerLabel(owner string) string {
+	if owner == "" {
+		return "the explicit index API"
+	}
+	return owner
+}
+
+// CheckCreateOwner decides a create that names an index which already exists
+// under the recorded owner existing. The same owner is the idempotent
+// re-create index creation has always been; a different owner is refused with
+// *OwnershipError rather than adopted.
+func CheckCreateOwner(name, existing, requested string) error {
+	if existing == requested {
+		return nil
+	}
+	return &OwnershipError{Name: name, Owner: existing, Requested: requested}
+}
+
+// CheckDropOwner decides a drop of an existing index recorded under owner
+// existing. An unconditional drop (checkOwner false) is always permitted; an
+// owner-checked drop is permitted only for the caller's own index.
+func CheckDropOwner(name, existing string, checkOwner bool, requested string) error {
+	if !checkOwner || existing == requested {
+		return nil
+	}
+	return &OwnershipError{Name: name, Owner: existing, Requested: requested}
 }

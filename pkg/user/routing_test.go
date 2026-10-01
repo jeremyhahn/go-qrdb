@@ -25,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -1037,5 +1038,235 @@ func TestRoutingUserService_NonComparableStoreDoesNotPanic(t *testing.T) {
 	}
 	if _, err := svc.GetUserByUsername(ctx, "weird", "anyone"); err == nil {
 		t.Fatal("expected a not-found on the second call too")
+	}
+}
+
+// TestRoutingUserService_SystemTenantGetsAtomicIdentityWhenCapable is the
+// go-qrdb#555 round-3 review's finding #1 regression: routingUserService
+// must offer WithAtomicIdentity to the SYSTEM tenant's own resolved store
+// when that store is capable, matching cmd/qrdbd's daemon composition
+// instead of leaving every embedded/SDK composer on the old claim-then-write
+// sequence. Proven by injecting a fault into PutAllIfAllUnchanged: the
+// sequential path never calls it at all, so the fault firing is direct
+// evidence the atomic path was actually taken.
+func TestRoutingUserService_SystemTenantGetsAtomicIdentityWhenCapable(t *testing.T) {
+	mem := newMemKVStore()
+	sentinel := errors.New("injected: atomic path was taken")
+	fkv := &faultyGuardedStore{memKVStore: mem, failNext: true, err: sentinel}
+	resolver := &fakeResolver{shared: fkv, tenants: map[string]kvstore.KVStore{}}
+	// This create's write never lands (failNext), so reconciliation's retry
+	// loop runs for its full window before giving up. A tiny window keeps
+	// the test fast without changing what it proves.
+	svc, err := NewRoutingService(resolver, newTestIDGen(t), WithReconcilePolling(time.Millisecond, 20*time.Millisecond))
+	if err != nil {
+		t.Fatalf("NewRoutingService: %v", err)
+	}
+
+	ctx := context.Background()
+	_, err = svc.CreateUser(ctx, &CreateUserRequest{
+		Username:             "admin",
+		TenantID:             tenant.SystemTenantID,
+		WithoutEmailLoginKey: true,
+	})
+	if err == nil {
+		t.Fatal("expected the injected PutAllIfAllUnchanged fault to surface — the atomic path was never reached")
+	}
+	if !errors.Is(err, sentinel) {
+		t.Errorf("err = %v, want it to wrap the injected sentinel (proves the atomic batch, not the sequential path, ran)", err)
+	}
+}
+
+// TestRoutingUserService_NonSystemTenantStaysSequential is
+// TestRoutingUserService_SystemTenantGetsAtomicIdentityWhenCapable's control:
+// a NON-system tenant's own resolved store is never offered
+// WithAtomicIdentity even when it is technically capable. The SAME
+// fault-injecting double is used as the tenant's OWN dedicated store; if the
+// router mistakenly went atomic here, PutAllIfAllUnchanged's injected fault
+// would fire and the create would fail. It must instead succeed via the
+// unaffected sequential path.
+func TestRoutingUserService_NonSystemTenantStaysSequential(t *testing.T) {
+	mem := newMemKVStore()
+	sentinel := errors.New("injected: atomic path was taken")
+	fkv := &faultyGuardedStore{memKVStore: mem, failNext: true, err: sentinel}
+	resolver := &fakeResolver{shared: newFakeKVStore(), tenants: map[string]kvstore.KVStore{"acme": fkv}}
+	svc, err := NewRoutingService(resolver, newTestIDGen(t))
+	if err != nil {
+		t.Fatalf("NewRoutingService: %v", err)
+	}
+
+	ctx := context.Background()
+	created, err := svc.CreateUser(ctx, &CreateUserRequest{
+		Username:             "alice",
+		TenantID:             "acme",
+		WithoutEmailLoginKey: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: expected the sequential path to succeed untouched by the atomic-only fault, got: %v", err)
+	}
+	if created.Username != "alice" {
+		t.Errorf("Username = %q, want %q", created.Username, "alice")
+	}
+}
+
+// rejectingGuardedStore satisfies kvstore.MultiGuardedBatchKVStore at the
+// TYPE level but ALWAYS refuses a real transaction — see pkg/role's
+// identical double for the full reasoning.
+type rejectingGuardedStore struct {
+	*memKVStore
+}
+
+func (rejectingGuardedStore) PutAllIfAllUnchanged(context.Context, []kvstore.Guard, []kvstore.KV) (bool, error) {
+	// The shape every guarded adapter reports a state machine without a
+	// transaction subsystem in: kvstore.GuardedBatchUnsupportedError.
+	return false, &kvstore.GuardedBatchUnsupportedError{Err: errors.New("service: statemachine: mvcc not configured")}
+}
+
+// TestRoutingUserService_SystemTenantProbeFailsStaysSequential is the
+// go-qrdb#555 round-4 review's finding #2 regression: a system-tenant store
+// that satisfies kvstore.MultiGuardedBatchKVStore's TYPE but genuinely
+// rejects transactions must be probed, not trusted, and the create must
+// still SUCCEED via the sequential fallback rather than hard-failing on the
+// first user create.
+func TestRoutingUserService_SystemTenantProbeFailsStaysSequential(t *testing.T) {
+	rejecting := rejectingGuardedStore{memKVStore: newMemKVStore()}
+	resolver := &fakeResolver{shared: rejecting, tenants: map[string]kvstore.KVStore{}}
+	svc, err := NewRoutingService(resolver, newTestIDGen(t))
+	if err != nil {
+		t.Fatalf("NewRoutingService: %v", err)
+	}
+
+	ctx := context.Background()
+	created, err := svc.CreateUser(ctx, &CreateUserRequest{
+		Username:             "admin2",
+		TenantID:             tenant.SystemTenantID,
+		WithoutEmailLoginKey: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: expected the sequential fallback to succeed after the probe fails, got: %v", err)
+	}
+	if created.Username != "admin2" {
+		t.Errorf("Username = %q, want %q", created.Username, "admin2")
+	}
+}
+
+// probeScriptedStore is a real guarded store whose capability PROBES (an
+// empty write set) answer from a script — see pkg/role's identical double.
+type probeScriptedStore struct {
+	*memKVStore
+	probeErrs []error // consumed one per probe; nil or exhausted means "capable"
+	probes    int
+}
+
+func (p *probeScriptedStore) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	if len(writes) == 0 {
+		p.probes++
+		if len(p.probeErrs) > 0 {
+			err := p.probeErrs[0]
+			p.probeErrs = p.probeErrs[1:]
+			if err != nil {
+				return false, err
+			}
+		}
+	}
+	return p.memKVStore.PutAllIfAllUnchanged(ctx, guards, writes)
+}
+
+// TestRoutingUserService_InconclusiveProbeFailsAndIsNotCached is pkg/role's
+// identical test for users: an inconclusive probe fails the operation and is
+// asked again, never cached as "incapable".
+func TestRoutingUserService_InconclusiveProbeFailsAndIsNotCached(t *testing.T) {
+	transient := errors.New("injected: no leader yet")
+	store := &probeScriptedStore{memKVStore: newMemKVStore(), probeErrs: []error{transient}}
+	resolver := &fakeResolver{shared: store, tenants: map[string]kvstore.KVStore{}}
+	svc, err := NewRoutingService(resolver, newTestIDGen(t))
+	if err != nil {
+		t.Fatalf("NewRoutingService: %v", err)
+	}
+	ctx := context.Background()
+	create := func(name string) error {
+		_, err := svc.CreateUser(ctx, &CreateUserRequest{Username: name, TenantID: tenant.SystemTenantID, WithoutEmailLoginKey: true})
+		return err
+	}
+
+	err = create("probe-a")
+	if !errors.Is(err, transient) {
+		t.Fatalf("CreateUser err = %v, want the inconclusive probe's error", err)
+	}
+	var se *StoreError
+	if !errors.As(err, &se) {
+		t.Errorf("CreateUser err = %T, want it typed as *StoreError", err)
+	}
+	if err := create("probe-b"); err != nil {
+		t.Fatalf("CreateUser after a conclusive probe: %v", err)
+	}
+	if err := create("probe-c"); err != nil {
+		t.Fatalf("CreateUser (third): %v", err)
+	}
+	if store.probes != 2 {
+		t.Errorf("probes = %d, want 2: one inconclusive (not cached), one conclusive (cached)", store.probes)
+	}
+}
+
+// TestRoutingUserService_DefinitiveAbsenceIsCached: a state machine that
+// answers "unsupported" is asked once, and later creates stay sequential.
+func TestRoutingUserService_DefinitiveAbsenceIsCached(t *testing.T) {
+	unsupported := &kvstore.GuardedBatchUnsupportedError{Err: errors.New("service: statemachine: mvcc not configured")}
+	store := &probeScriptedStore{memKVStore: newMemKVStore(), probeErrs: []error{unsupported, unsupported}}
+	resolver := &fakeResolver{shared: store, tenants: map[string]kvstore.KVStore{}}
+	svc, err := NewRoutingService(resolver, newTestIDGen(t))
+	if err != nil {
+		t.Fatalf("NewRoutingService: %v", err)
+	}
+	ctx := context.Background()
+
+	for _, name := range []string{"seq-a", "seq-b"} {
+		if _, err := svc.CreateUser(ctx, &CreateUserRequest{Username: name, TenantID: tenant.SystemTenantID, WithoutEmailLoginKey: true}); err != nil {
+			t.Fatalf("CreateUser(%s): %v", name, err)
+		}
+	}
+	if store.probes != 1 {
+		t.Errorf("probes = %d, want 1: a definitive answer is cached", store.probes)
+	}
+}
+
+// TestRoutingUserService_ReadsNeverProbe is pkg/role's identical test for
+// users: lookups and listing — the authentication path — never send the
+// capability probe; only CreateUser does.
+func TestRoutingUserService_ReadsNeverProbe(t *testing.T) {
+	noLeader := errors.New("injected: no leader")
+	store := &probeScriptedStore{memKVStore: newMemKVStore(), probeErrs: []error{noLeader, noLeader, noLeader}}
+	seed, err := NewStore(store, newTestIDGen(t))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	seeded, err := seed.CreateUser(context.Background(), &CreateUserRequest{
+		Username: "alice", TenantID: tenant.SystemTenantID, WithoutEmailLoginKey: true,
+	})
+	if err != nil {
+		t.Fatalf("seed CreateUser: %v", err)
+	}
+
+	svc, err := NewRoutingService(&fakeResolver{shared: store, tenants: map[string]kvstore.KVStore{}}, newTestIDGen(t))
+	if err != nil {
+		t.Fatalf("NewRoutingService: %v", err)
+	}
+	ctx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
+
+	if got, err := svc.GetUserByUsername(ctx, tenant.SystemTenantID, "alice"); err != nil || got.ID != seeded.ID {
+		t.Fatalf("GetUserByUsername = (%v, %v), want the seeded user", got, err)
+	}
+	if list, err := svc.ListUsers(ctx, &ListUsersRequest{TenantID: tenant.SystemTenantID}); err != nil || list.Total != 1 {
+		t.Fatalf("ListUsers = (%+v, %v), want the one seeded user", list, err)
+	}
+	if store.probes != 0 {
+		t.Fatalf("probes = %d after reads only, want 0", store.probes)
+	}
+
+	_, err = svc.CreateUser(ctx, &CreateUserRequest{Username: "bob", TenantID: tenant.SystemTenantID, WithoutEmailLoginKey: true})
+	if !errors.Is(err, noLeader) {
+		t.Fatalf("CreateUser err = %v, want the inconclusive probe's error", err)
+	}
+	if store.probes != 1 {
+		t.Errorf("probes = %d, want exactly the create's one", store.probes)
 	}
 }

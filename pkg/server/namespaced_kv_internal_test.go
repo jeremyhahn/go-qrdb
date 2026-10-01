@@ -154,3 +154,106 @@ func TestNamespacedKV_HidesNamespacesWithNoEnumeratingOwner(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// The guarded writes carry the namespace prefix
+//
+// CompareAndDelete and CompareAndSwap had no test. The property that matters
+// is not that they work, but that the PREFIX is applied before the guard is
+// evaluated -- the same property PutIfAbsent's doc comment spells out.
+//
+// A guarded write that forgot the prefix would reach across the namespace
+// boundary: tenant "acme" comparing against a key it does not own, and
+// deleting or overwriting it when the value happened to match. It would also
+// pass a test that only checked the boolean, because the operation would
+// genuinely succeed -- on the wrong key. These tests therefore assert the
+// effect on the INNER store, keyed by the fully-qualified name, and assert
+// that another tenant's identically-named key is untouched.
+// ---------------------------------------------------------------------------
+
+func TestNamespacedKV_CompareAndDelete_IsScopedToTheNamespace(t *testing.T) {
+	ctx := context.Background()
+	inner := newMockKVService()
+	if err := inner.Put(ctx, "acme/shared", []byte("v")); err != nil {
+		t.Fatalf("seed acme: %v", err)
+	}
+	if err := inner.Put(ctx, "globex/shared", []byte("v")); err != nil {
+		t.Fatalf("seed globex: %v", err)
+	}
+	kv := newNamespacedKVService(inner, "acme")
+
+	ok, err := kv.CompareAndDelete(ctx, "shared", []byte("v"))
+	if err != nil {
+		t.Fatalf("CompareAndDelete: %v", err)
+	}
+	if !ok {
+		t.Fatal("CompareAndDelete declined a matching value in its own namespace")
+	}
+	if _, err := inner.Get(ctx, "acme/shared"); err == nil {
+		t.Error("the caller's own key survived the delete: the prefix was not applied")
+	}
+	if _, err := inner.Get(ctx, "globex/shared"); err != nil {
+		t.Errorf("another tenant's identically-named key was deleted: %v", err)
+	}
+}
+
+func TestNamespacedKV_CompareAndSwap_IsScopedToTheNamespace(t *testing.T) {
+	ctx := context.Background()
+	inner := newMockKVService()
+	if err := inner.Put(ctx, "acme/shared", []byte("v")); err != nil {
+		t.Fatalf("seed acme: %v", err)
+	}
+	if err := inner.Put(ctx, "globex/shared", []byte("v")); err != nil {
+		t.Fatalf("seed globex: %v", err)
+	}
+	kv := newNamespacedKVService(inner, "acme")
+
+	ok, err := kv.CompareAndSwap(ctx, "shared", []byte("v"), []byte("next"))
+	if err != nil {
+		t.Fatalf("CompareAndSwap: %v", err)
+	}
+	if !ok {
+		t.Fatal("CompareAndSwap declined a matching value in its own namespace")
+	}
+	got, err := inner.Get(ctx, "acme/shared")
+	if err != nil {
+		t.Fatalf("Get acme/shared: %v", err)
+	}
+	if string(got) != "next" {
+		t.Errorf("acme/shared = %q, want %q: the prefix was not applied", got, "next")
+	}
+	other, err := inner.Get(ctx, "globex/shared")
+	if err != nil {
+		t.Fatalf("Get globex/shared: %v", err)
+	}
+	if string(other) != "v" {
+		t.Errorf("another tenant's identically-named key was overwritten: %q", other)
+	}
+}
+
+// TestNamespacedKV_GuardedWrites_DeclineAcrossTheBoundary is the negative
+// direction: a caller that supplies the value ANOTHER tenant's key holds must
+// still be declined, because the key it names does not exist in its own
+// namespace. A prefix-less implementation would succeed here.
+func TestNamespacedKV_GuardedWrites_DeclineAcrossTheBoundary(t *testing.T) {
+	ctx := context.Background()
+	inner := newMockKVService()
+	if err := inner.Put(ctx, "globex/only-theirs", []byte("theirs")); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	kv := newNamespacedKVService(inner, "acme")
+
+	if ok, err := kv.CompareAndDelete(ctx, "only-theirs", []byte("theirs")); err != nil || ok {
+		t.Errorf("CompareAndDelete reached across the namespace boundary: ok=%v err=%v", ok, err)
+	}
+	if ok, err := kv.CompareAndSwap(ctx, "only-theirs", []byte("theirs"), []byte("mine")); err != nil || ok {
+		t.Errorf("CompareAndSwap reached across the namespace boundary: ok=%v err=%v", ok, err)
+	}
+	got, err := inner.Get(ctx, "globex/only-theirs")
+	if err != nil {
+		t.Fatalf("the other tenant's key was destroyed: %v", err)
+	}
+	if string(got) != "theirs" {
+		t.Errorf("the other tenant's value changed to %q", got)
+	}
+}

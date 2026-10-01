@@ -412,7 +412,7 @@ func TestHandleAssignRole_Success(t *testing.T) {
 		Username:  "alice",
 		TenantID:  "tenant-1",
 		RoleIDs:   []string{"role-a"},
-		Enabled:   true,
+		Lifecycle: user.LifecycleActive,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -442,7 +442,7 @@ func TestHandleAssignRole_Success(t *testing.T) {
 				Username:  "alice",
 				TenantID:  "tenant-1",
 				RoleIDs:   req.RoleIDs,
-				Enabled:   true,
+				Lifecycle: user.LifecycleActive,
 				CreatedAt: now,
 				UpdatedAt: now,
 			}, nil
@@ -476,7 +476,7 @@ func TestHandleAssignRole_AlreadyAssigned(t *testing.T) {
 		Username:  "bob",
 		TenantID:  "tenant-1",
 		RoleIDs:   []string{"role-a"},
-		Enabled:   true,
+		Lifecycle: user.LifecycleActive,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -569,7 +569,7 @@ func TestHandleUnassignRole_Success(t *testing.T) {
 		Username:  "carol",
 		TenantID:  "tenant-1",
 		RoleIDs:   []string{"role-a", "role-b"},
-		Enabled:   true,
+		Lifecycle: user.LifecycleActive,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -594,7 +594,7 @@ func TestHandleUnassignRole_Success(t *testing.T) {
 				Username:  "carol",
 				TenantID:  "tenant-1",
 				RoleIDs:   req.RoleIDs,
-				Enabled:   true,
+				Lifecycle: user.LifecycleActive,
 				CreatedAt: now,
 				UpdatedAt: now,
 			}, nil

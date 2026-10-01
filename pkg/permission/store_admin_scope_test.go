@@ -24,7 +24,7 @@ import "testing"
 // reserved for the system tenant. This is the authz-layer half of the defense
 // paired with server.namespacedMVCCService.Compact.
 func TestMVCCCompact_IsCrossScope(t *testing.T) {
-	if got := LookupScope(MVCCCompact); got != ScopeCross {
+	if got := mustScope(t, MVCCCompact); got != ScopeCross {
 		t.Fatalf("LookupScope(MVCCCompact) = %v, want %v (ScopeCross)", got, ScopeCross)
 	}
 	if !IsCrossScope(MVCCCompact) {
@@ -48,7 +48,7 @@ func TestMVCCReads_RemainSelfScope(t *testing.T) {
 		MVCCCurrentRevision,
 	}
 	for _, p := range selfScoped {
-		if got := LookupScope(p); got != ScopeSelf {
+		if got := mustScope(t, p); got != ScopeSelf {
 			t.Errorf("LookupScope(%q) = %v, want %v (ScopeSelf)", p, got, ScopeSelf)
 		}
 	}

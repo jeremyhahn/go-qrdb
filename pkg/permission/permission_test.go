@@ -16,6 +16,7 @@ package permission
 
 import (
 	"errors"
+	"slices"
 	"sort"
 	"testing"
 )
@@ -537,9 +538,12 @@ func TestAll_TotalCount(t *testing.T) {
 	//   It is separate from users:add_cert_binding because enrolment only
 	//   narrows an account while withdrawing its last binding widens it back to
 	//   CN/OU admission (go-qrdb#518).
+	// + 4 key escrow perms (escrow:create/recover/list/revoke) = 368.
+	// + 2 cross-scope tenant retirement perms (tenants:list_deleted,
+	//   tenants:reconcile_deleted) = 370.
 	// + 6 tenant DEK keyring perms (dek:encrypt/decrypt/rewrap/rotate/retire/
-	//   status) = 370 total.
-	const expectedTotal = 370
+	//   status) = 376 total.
+	const expectedTotal = 376
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)
@@ -551,6 +555,7 @@ func TestAll_TotalCount(t *testing.T) {
 // unknown ones are, and input order is preserved.
 func TestUnregistered(t *testing.T) {
 	Register("unregtest:known", "unregtest:also")
+	t.Cleanup(func() { unregisterForTesting("unregtest:known", "unregtest:also") })
 
 	got := Unregistered([]Permission{
 		"unregtest:known",
@@ -584,7 +589,88 @@ func TestUnregistered_EmptyAndAllKnown(t *testing.T) {
 	}
 
 	Register("unregtest2:known")
+	t.Cleanup(func() { unregisterForTesting("unregtest2:known") })
 	if got := Unregistered([]Permission{"unregtest2:known", "keys:*"}); got != nil {
 		t.Errorf("Unregistered(all known) = %v, want nil", got)
+	}
+}
+
+func TestExpand_ConcreteIsItself(t *testing.T) {
+	got := Expand(KVGet)
+	if len(got) != 1 || got[0] != KVGet {
+		t.Fatalf("Expand(%s) = %v, want [%s]", KVGet, got, KVGet)
+	}
+	// A concrete permission expands to itself whether or not it is
+	// registered: Expand answers what a grant stands for, not whether the
+	// grant is valid — that is the scope lookup's job, and it refuses.
+	const unknown Permission = "fictitious:permission"
+	if got := Expand(unknown); len(got) != 1 || got[0] != unknown {
+		t.Fatalf("Expand(%s) = %v, want [%s]", unknown, got, unknown)
+	}
+}
+
+func TestExpand_ResourceWildcard(t *testing.T) {
+	got := Expand(ObjStoreAll)
+	want := ByResource("objstore")
+	sort.Slice(want, func(i, j int) bool { return want[i] < want[j] })
+	if len(want) == 0 {
+		t.Fatal("objstore family is empty; nothing to expand")
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("Expand(%s) = %v, want %v", ObjStoreAll, got, want)
+	}
+	for _, p := range got {
+		if IsWildcard(p) {
+			t.Fatalf("expansion must be concrete, got %s", p)
+		}
+	}
+}
+
+func TestExpand_ActionWildcard(t *testing.T) {
+	got := Expand("*:read")
+	if len(got) == 0 {
+		t.Fatal("*:read matched nothing")
+	}
+	for i, p := range got {
+		if Action(p) != "read" {
+			t.Fatalf("Expand(*:read) included %s", p)
+		}
+		if i > 0 && got[i-1] >= p {
+			t.Fatalf("expansion must be sorted: %s precedes %s", got[i-1], p)
+		}
+	}
+	// Every registered :read permission is present — not just some.
+	for _, p := range All() {
+		if Action(p) == "read" && !slices.Contains(got, p) {
+			t.Fatalf("Expand(*:read) omitted %s", p)
+		}
+	}
+}
+
+func TestExpand_FullWildcardIsTheRegistry(t *testing.T) {
+	if got, want := Expand("*:*"), All(); !slices.Equal(got, want) {
+		t.Fatalf("Expand(*:*) returned %d permissions, All() has %d", len(got), len(want))
+	}
+}
+
+func TestExpand_UnmatchedWildcardIsNil(t *testing.T) {
+	if got := Expand("no_such_resource:*"); got != nil {
+		t.Fatalf("Expand of an unmatched wildcard = %v, want nil", got)
+	}
+}
+
+func TestExpand_NeverReturnsARegisteredWildcard(t *testing.T) {
+	// Register does not refuse a wildcard, so an extension could put one in
+	// the registry. Expand must still answer with concrete members only.
+	const stray Permission = "objstore:*"
+	Register(stray)
+	t.Cleanup(func() { unregisterForTesting(stray) })
+
+	for _, wildcard := range []Permission{"*:*", "objstore:*"} {
+		for _, p := range Expand(wildcard) {
+			if IsWildcard(p) {
+				t.Fatalf("Expand(%s) returned wildcard %s", wildcard, p)
+			}
+		}
 	}
 }

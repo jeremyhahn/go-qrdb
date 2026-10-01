@@ -28,6 +28,8 @@ import (
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -167,8 +169,15 @@ func TestNewStandaloneNode_NoFactorRegistry_NilAuthFactorService(t *testing.T) {
 // AuthFactorService wired from WithFactorRegistry is reachable through the
 // embedded transport's AuthFactors() surface and that the full
 // Enroll → Challenge → Verify round-trip succeeds in-process.
+//
+// The context is bound to "tenant-1" — matching the request's TenantID field
+// below — because the routed service refuses a request whose TenantID names
+// a tenant other than the context's (go-qrdb#464): an unbound context resolves
+// to the system tenant, and a request naming a different tenant there is
+// exactly the spoof shape TestAuthFactorService_EnrollFactor_TenantIDMismatch
+// covers below.
 func TestAuthFactorService_EnrollChallengeVerify_EndToEnd(t *testing.T) {
-	ctx := context.Background()
+	ctx := tenant.WithTenantID(context.Background(), "tenant-1")
 
 	reg, _ := newPopulatedFactorRegistry(t, "piv")
 	n := newMemoryNodeWithServerOpts(t, server.WithFactorRegistry(reg))
@@ -232,4 +241,93 @@ func TestAuthFactorService_VerifyFactor_BadResponse(t *testing.T) {
 		Value:       []byte("WRONG"),
 	})
 	require.Error(t, err, "VerifyFactor must return an error for an incorrect response")
+}
+
+// ---------------------------------------------------------------------------
+// Tenant routing (#464)
+// ---------------------------------------------------------------------------
+
+// TestAuthFactorService_RoutedAcrossTenants proves the AuthFactorService
+// wired from WithFactorRegistry is tenant-routed rather than built over the
+// node's bare KV servicer: an enrollment made under one tenant's context must
+// not resolve a challenge issued under another's, and the enrolling tenant
+// must still resolve it. A wiring that reverted to the flat construction
+// would pass every other test in this file and fail only this one.
+func TestAuthFactorService_RoutedAcrossTenants(t *testing.T) {
+	reg, _ := newPopulatedFactorRegistry(t, "piv")
+	n := newMemoryNodeWithServerOpts(t, server.WithFactorRegistry(reg))
+	af := n.Client().AuthFactors()
+	require.NotNil(t, af)
+
+	acme := tenant.WithTenantID(context.Background(), "acme")
+	globex := tenant.WithTenantID(context.Background(), "globex")
+
+	enrollResp, err := af.EnrollFactor(acme, &transport.EnrollFactorRequest{
+		FactorName: "piv",
+		Subject:    "custodian-acme",
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, enrollResp.EnrollmentID)
+
+	_, err = af.ChallengeFactor(globex, &transport.ChallengeFactorRequest{
+		EnrollmentID: enrollResp.EnrollmentID,
+	})
+	require.Error(t, err, "globex resolved a challenge for acme's enrollment")
+
+	chalResp, err := af.ChallengeFactor(acme, &transport.ChallengeFactorRequest{
+		EnrollmentID: enrollResp.EnrollmentID,
+	})
+	require.NoError(t, err, "acme could not resolve its own enrollment")
+	require.NotEmpty(t, chalResp.ChallengeID)
+}
+
+// TestAuthFactorService_EnrollFactor_TenantIDMismatch proves the EMBEDDED
+// transport surfaces the routing layer's tenant mismatch refusal end to end:
+// a request whose context resolves to "acme" but whose TenantID field names
+// "globex" is refused with *service.AuthFactorTenantMismatchError, and
+// nothing is enrolled in either tenant. This is the exact spoof shape
+// TestAuthFactorService_EnrollChallengeVerify_EndToEnd above binds its
+// context tenant to match, rather than leaving mismatched.
+func TestAuthFactorService_EnrollFactor_TenantIDMismatch(t *testing.T) {
+	reg, _ := newPopulatedFactorRegistry(t, "piv")
+	n := newMemoryNodeWithServerOpts(t, server.WithFactorRegistry(reg))
+	af := n.Client().AuthFactors()
+	require.NotNil(t, af)
+
+	acme := tenant.WithTenantID(context.Background(), "acme")
+
+	_, err := af.EnrollFactor(acme, &transport.EnrollFactorRequest{
+		FactorName: "piv",
+		Subject:    "custodian-spoof",
+		TenantID:   "globex",
+	})
+	require.Error(t, err, "a request naming a tenant other than the context's must be refused")
+	var mismatch *service.AuthFactorTenantMismatchError
+	require.ErrorAs(t, err, &mismatch)
+	assert.Equal(t, "globex", mismatch.Requested)
+	assert.Equal(t, "acme", mismatch.Context)
+
+	// Nothing was enrolled in either tenant.
+	acmeFactors, err := af.ListFactors(acme, &transport.ListFactorsRequest{})
+	require.NoError(t, err)
+	assert.Empty(t, acmeFactors.Enrollments, "acme has an enrolment despite the refused request")
+	globex := tenant.WithTenantID(context.Background(), "globex")
+	globexFactors, err := af.ListFactors(globex, &transport.ListFactorsRequest{})
+	require.NoError(t, err)
+	assert.Empty(t, globexFactors.Enrollments, "globex has an enrolment despite the refused request")
+}
+
+// TestErrNoAuthFactorTenantRouting_WrappedByAuthFactorWiringError verifies
+// the typed error's Error() message and Unwrap() contract, matching
+// TestAuthFactorWiringError_ErrorAndUnwrap above. svcNode.StoreResolver is
+// non-nil in every lifecycle.BuildServices composition this SDK builds
+// today (barrier-backed or not), so this sentinel is not reachable through
+// NewStandaloneNode; it is pinned directly so a lifecycle composition that
+// stops wiring a resolver fails closed rather than silently reverting to a
+// flat AuthFactorService.
+func TestErrNoAuthFactorTenantRouting_WrappedByAuthFactorWiringError(t *testing.T) {
+	t.Parallel()
+	e := &AuthFactorWiringError{Err: ErrNoAuthFactorTenantRouting}
+	assert.Contains(t, e.Error(), "failed to wire AuthFactorService")
+	assert.ErrorIs(t, e, ErrNoAuthFactorTenantRouting)
 }

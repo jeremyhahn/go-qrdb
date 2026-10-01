@@ -110,9 +110,12 @@ Storage keys: `so-pin` and `user-pin`, each a JSON-encoded `PINRecord`.
 - **Concurrent reads on `SoftwareBackend` use atomic pointers, no locks.**
 - **Passing `nil` for `Storage` gives in-memory-only operation** — for tests.
 - **`Client.UserAuthFactors()` returns nil** on a transport without the
-  interface (the embedded transport exposes only the legacy `AuthFactorClient`).
-  `Factors()`, `Login()` and `Sessions()` likewise. **Nil-check them** — a nil
-  is not an error value.
+  interface. Every transport, including embedded, implements
+  `transport.UserAuthFactorClient` alongside the ceremony-time
+  `AuthFactorClient` surface. `Factors()`, `Login()` and `Sessions()`
+  likewise. **Nil-check them anyway** — a nil is not an error value, and the
+  two auth-factor surfaces are independent capabilities that a future
+  transport is not guaranteed to carry both of.
 - **Factor metadata keys under `auth.ReservedMetadataPrefix` (`attest_`) are
   server-owned and refused on `Add` and `Rotate`.** Enforced by
   `auth.ValidateMetadata`, called from the user auth-factor **service** so
@@ -196,6 +199,204 @@ choosing to another tenant's user id, leaving the boundary resting on the
 downstream user lookup refusing the same cross-tenant read — two components
 having to agree. The refusal holds it where the write is.
 
+### The custodian surface is routed too
+
+`service.AuthFactorServicer` (`Client.AuthFactors()`, the ceremony-time
+custodian surface `pkg/server` exposes at `/v1/authfactors/*` for consumers
+like xkms) used to be the one place left binding to a single flat KV after the
+user-side surface above was routed — `pkg/server/server.go`'s
+`ensureAuthFactorService` and `cmd/qrdbd/start.go` each built it directly over
+a bare `KVServicer`. This is closed the same way the flat construction was
+closed for the user-side service above:
+
+```go
+func NewAuthFactorService(cfg AuthFactorServiceConfig) (AuthFactorServicer, error)               // ONE tenant's store
+func NewRoutingAuthFactorService(cfg RoutingAuthFactorServiceConfig) (AuthFactorServicer, error) // tenant-routed
+```
+
+- **`AuthFactorServiceConfig.KV` is an `AuthFactorKV`**, the same three-verb
+  interface `UserAuthFactorServiceConfig.KV` uses (reused, not duplicated) —
+  `Put`, `Get`, `List` — satisfied verbatim by both `service.KVServicer` and
+  `kvstore.KVStore`.
+- **There is no owner index.** `Add` on the user-side service routes on the
+  tenant that owns a user id because a user id is a globally unique handle
+  that can be enrolled from a context other than the one it lives in.
+  `EnrollFactor`'s `subject` has no such registry — it is a caller-supplied
+  label — and `ChallengeFactor`, `VerifyFactor`, `ListFactors` and
+  `RevokeFactor` all key on an enrollment id issued by `EnrollFactor` itself,
+  inside the enrolling tenant. That is exactly the "factor id" shape the
+  table above documents for `Get`/`Remove`/`Rotate`/`Relabel`/`MarkUsed`: the
+  id only ever travels back to the tenant that issued it, so **every verb on
+  this service routes on the context tenant**, and a caller presenting
+  another tenant's enrollment id gets `authfactors.EnrollmentNotFoundError`
+  from its own store rather than a cross-tenant read.
+- **Composition roots build the ROUTED service, always** — mirroring the rule
+  above verbatim. `pkg/server`'s `ensureAuthFactorService` and
+  `cmd/qrdbd`'s `buildAuthFactorServiceOption` both construct nothing without
+  a `tenant.StoreResolver`; there is no unrouted fallback.
+- **`EnrollParams.TenantID` is checked against the context tenant, never
+  trusted as written.** It arrives as caller-supplied data — every transport
+  hands `EnrollFactorRequest.TenantID` through with no validation of its own —
+  and routing is decided entirely by the context tenant. An empty value is
+  filled in from the context; a value matching the context passes; anything
+  else is refused with `*service.AuthFactorTenantMismatchError`. An
+  acme-context caller who writes `globex` there is exactly the shape this
+  catches: silently correcting the field to `acme` was considered and
+  rejected, because it would place the enrolment in the context tenant while
+  leaving the caller's mistaken belief about where it went uncorrected —
+  hiding the caller's bug rather than surfacing it. Refusing is what a caller
+  bound to the wrong context, or one that mistyped the tenant, needs to find
+  out.
+- **No migration.** Records that a build before this change wrote at the flat
+  `__sys:authfactor/{id}` key are left exactly where they are, inert. A
+  resolved store confines every key under `{tenant}/` — the reserved
+  `__sys:` prefix included, no tenant exempt — so those records are not
+  reachable through the routed service for **any** tenant, the system tenant
+  included. go-qrdb is pre-release alpha and this cutover carries no
+  migration guarantee (owner ruling), the same posture
+  [../collections/engineering.md](../collections/engineering.md) recorded for
+  its own tenant-namespace cutover. An operator who needs a pre-cutover
+  custodian enrolment re-runs the enrolment ceremony.
+
+### The custodian surface's pending challenge is persisted, not cached
+
+`authFactorService` (the per-tenant implementation `NewAuthFactorService`
+returns, and what the routed service above builds fresh per call) holds no
+in-process state at all: a pending challenge between `ChallengeFactor` and
+`VerifyFactor` lives in the tenant's own store, under
+`__sys:authfactor:challenge/{bucket}/{factorChallengeID}`, a sibling of the
+enrollment namespace rather than a child of it so `ListFactors`'s enumeration
+never has to filter challenge records back out by type. `{bucket}` is the
+challenge's expiry time in whole minutes since the Unix epoch, as a
+twelve-digit zero-padded decimal, so key order is expiry order (see the sweep
+below).
+
+The challenge id a caller receives is `{bucket}.{factorChallengeID}`: it
+carries its own storage location, so `VerifyFactor` derives the exact key
+with no lookup. An id without that shape (twelve decimal digits, a `.`, a
+non-empty remainder) cannot name any record the service wrote and is refused
+as `*authfactors.EnrollmentNotFoundError` before the store is touched. The
+stored record keeps the factor's own `ChallengeID`, so `Factor.Verify`
+receives the challenge exactly as the factor issued it. A challenge issued
+already expired (a zero or negative TTL) is filed in the current bucket rather
+than a past one, so no record is ever written behind the sweep; `VerifyFactor`
+still refuses it on its own `ExpiresAt`.
+
+This replaced an earlier design that cached one `authFactorService` per
+tenant in the router, keyed first on the resolved store's identity, then on
+the tenant id, then a hybrid of both — and each scheme broke a case a
+production `tenant.StoreResolver` can legitimately produce: identity-keying
+loses track of a non-comparable resolved store or one a resolver rebuilds
+fresh on every call; tenant-ID keying misses a later isolation transition.
+Every version of that cache was solving the wrong problem — what actually
+broke when two calls landed on different service instances was the pending
+challenge sitting in ONE instance's memory, invisible to the other. Moving it
+into the store both calls already share removes the dependency on instance
+identity entirely: the router now builds a fresh `authFactorService` on every
+call, with no cache to keep coherent across resolver behavior.
+
+- **Single-use consumption is a guarded delete, not a tombstone.**
+  `VerifyFactor` reads the pending challenge and clears it with
+  `CompareAndDelete(key, dataJustRead)`, not an unconditional `Put`: a Get
+  followed by an unconditional Put lets two concurrent `VerifyFactor` calls
+  for the same challenge id both observe it before either clears it, and both
+  would then reach `Factor.Verify`, replaying the challenge. Of any number of
+  concurrent callers racing the same expected value, the store's atomicity
+  guarantees exactly one `CompareAndDelete` succeeds; every other caller
+  finds the key already gone and is refused as not-found — the same guard
+  `KVServicer.PutIfAbsent` / `kvstore.AtomicKVStore.PutIfAbsent` give the
+  create side of a single-use token. A store that cannot perform this
+  atomically fails the call with `service.ErrAuthFactorAtomicStoreRequired`
+  rather than degrade to the racy Get+Put; every store this service is
+  actually deployed over — `KVServicer` (which declares `CompareAndDelete` as
+  a required method) and a `kvstore.KVStore` backed by
+  `kvstore.AtomicKVStore` — supports it.
+- **An unclaimed, expired challenge is reclaimed by later `ChallengeFactor`
+  calls, at a cost independent of how many challenges are outstanding.**
+  Previously only an explicit `VerifyFactor` ever cleared a challenge record,
+  so one nobody ever answered occupied storage indefinitely. Each
+  `ChallengeFactor` call now runs a bounded sweep before issuing and
+  persisting its own challenge:
+  - A persisted cursor, `__sys:authfactor:challenge-sweep-cursor`, names the
+    last bucket whose records have all been reclaimed. The sweep walks forward
+    from it only through buckets strictly older than the current bucket minus
+    one bucket of grace: every record in such a bucket has expired by at least
+    a minute, and the grace absorbs clock skew between the node that filed a
+    record and the node sweeping it. A bucket that can still hold a live
+    challenge is never listed, so outstanding challenges add nothing to the
+    sweep's `List`, `Get` or `CompareAndDelete` count. That is also why the
+    sweep can never reclaim the challenge its own call is about to hand back.
+  - Each call makes at most one cursor read, 8 `List` calls, 32 record reads
+    and guarded deletes, and one cursor write. Because the bucket number is
+    fixed-width decimal, a key prefix names an aligned block of 10, 100,
+    1000… buckets; each `List` covers the largest such block that lies wholly
+    behind the horizon. An absent cursor (the walk starts at bucket zero) or
+    a long idle gap is therefore crossed in a handful of calls rather than one
+    `List` per minute.
+  - Records are processed in key order. When the record budget runs out, or
+    a record cannot be reclaimed on this pass (a read fails, or by this node's
+    clock it has not expired yet), the cursor stops just before that record's
+    bucket and a later call resumes there. Nothing is skipped. A record whose
+    bytes are not a challenge is reclaimed too, since nothing could verify it.
+  - Every delete is `CompareAndDelete` guarded on the bytes just read, so a
+    legitimate `VerifyFactor` racing the sweep for the same record wins or
+    loses exactly as a second `VerifyFactor` would. The cursor advances with
+    `PutIfAbsent` on the first sweep and `CompareAndSwap` from the exact
+    bytes read afterwards. Of two concurrent sweeps, the one writing a stale
+    cursor is refused, so the cursor never moves backwards. The work either
+    sweep did is idempotent, so the refused one loses nothing.
+  - The sweep never fails the caller's `ChallengeFactor`: its failures concern
+    records unrelated to the challenge being issued. A store without
+    `CompareAndDelete`, `PutIfAbsent` and `CompareAndSwap` is not swept at
+    all, rather than swept with unguarded deletes.
+  - It runs inline rather than from a background goroutine:
+    `authFactorService` has no lifecycle to hang a ticker from (a fresh
+    instance is built per call), and the composition roots that build it
+    directly do not all share one place to drive a periodic sweep.
+- **`Challenge.MethodData` values must be strings, enforced at persist time.**
+  The floor is `pkg/api/grpc/proto`'s `ChallengeFactorResponse.method_data`,
+  a fixed `map<string, string>` wire schema: a non-string value would arrive
+  over gRPC and Unix as whatever string `pkg/api/grpc.authFactorServer`
+  stringifies it to (`true`, not the JSON boolean `true`) while REST, QUIC,
+  MCP and embedded carried the native type — a six-transport contract
+  violation. `persistChallenge` refuses a non-string value with
+  `*authfactors.EnrollmentInvalidError` rather than let one ship silently
+  divergent; every factor in this repository and in go-xkms already only
+  puts strings in `MethodData`, so this closes an opening no shipped factor
+  actually uses. It is also the reason `MethodData` must survive the JSON
+  round trip `persistChallenge`/`consumeChallenge` perform between
+  `ChallengeFactor` and `VerifyFactor` (which may run against a different
+  service instance) unchanged — see the doc comment on
+  `authfactors.Challenge.MethodData`.
+- **A sealed tenant's barrier is classified the same way on every transport
+  that can reach it, under EITHER of the two sentinels the condition can
+  actually arrive as.** `tenant.ErrTenantSealed` is what
+  `TenantStoreResolver.Resolve` returns when a barrier-isolated tenant is
+  ALREADY sealed; `seal.ErrSealed` is the distinct sentinel the RESOLVED
+  store's own `Get`/`Put` return when the barrier seals AFTER `Resolve`
+  succeeds but BEFORE the store operation runs — a live per-call check inside
+  the barrier itself, not a cached decision, so a store obtained once and
+  used for more than one KV call within a single service-layer request (as
+  `ChallengeFactor`'s own `loadEnrollment` `Get` then `persistChallenge`
+  `Put` sequence does) can observe the seal on whichever call happens to run
+  after it. Both — passed through `AuthFactorListReadError` unchanged when
+  either surfaces during `ListFactors` — map to HTTP 503 (REST, matching
+  `pkg/api/rest/handlers.go`'s IAM mapping), `codes.Unavailable` (gRPC,
+  inherited by Unix, matching `pkg/api/grpc/errors.go`), and
+  `wire.StatusUnavailable` (QUIC, via the shared `mapServiceError` every
+  handler on that transport already routes through, which mirrors gRPC's
+  addition row for row). MCP needed no clause of its own — see the
+  "classified consistently" bullet above. Embedded preserves whichever typed
+  error it received unchanged, as it always does: `tenant.ErrTenantSealed` is
+  exported to the SDK as `sdk.ErrTenantStoreSealed` in
+  `sdk/go/types_tenant.go` (deliberately not reusing `sdk.ErrTenantSealed`,
+  which aliases the distinct `pkg/seal.ErrTenantSealed` raised by barrier
+  operations rather than store resolution — conflating the two would have let
+  `errors.Is(err, sdk.ErrTenantSealed)` silently never match this condition),
+  and `seal.ErrSealed` is separately exported as `sdk.ErrSealed` already, so
+  an embedded caller recognizes both forms through the SDK without importing
+  either internal package.
+
 ### `LastUsedAt` is detached with `context.WithoutCancel`
 
 `LoginResolver.Resolve` updates `LastUsedAt` in a goroutine so a returning
@@ -239,7 +440,8 @@ and it migrates ONCE, before it answers anything.
   to read it back off.
 - **A record that cannot be placed is REFUSED**, named in
   `*FactorMigrationRefusedError`, logged, and left exactly where it is. It is
-  never placed in a guessed tenant.
+  never placed in a guessed tenant. A caller that receives the error over a
+  transport sees 409 / `FAILED_PRECONDITION`: the run is not finished.
 - **A refusal is per record and the run completes.** One record must never
   decide the fate of the others, or of every other TENANT: a refused record
   resolves for nobody — the fail-closed outcome — while everything placeable is

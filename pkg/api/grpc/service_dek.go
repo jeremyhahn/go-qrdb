@@ -31,15 +31,6 @@ import (
 // the tenant scoping. The Unix transport serves the same handlers.
 // ---------------------------------------------------------------------------
 
-// mapDEKError converts a keyring error into a gRPC status error, using the
-// classification every transport shares. Anything unclassified is Internal.
-func mapDEKError(err error) error {
-	if code, ok := dekwire.Code(err); ok {
-		return status.Error(code, err.Error())
-	}
-	return status.Error(codes.Internal, err.Error())
-}
-
 // dekUnconfigured is the status for a server built without a DEK service.
 func dekUnconfigured() error {
 	return status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "dek"}).Error())
@@ -52,7 +43,7 @@ func (s *qrdbServiceServer) TenantDEKStatus(ctx context.Context, req *pb.TenantD
 	}
 	st, err := s.dekSvc.Status(ctx, req.GetTenantId())
 	if err != nil {
-		return nil, mapDEKError(err)
+		return nil, mapServiceError(err)
 	}
 	return dekwire.StatusProto(st), nil
 }
@@ -64,7 +55,7 @@ func (s *qrdbServiceServer) TenantDEKRotate(ctx context.Context, req *pb.TenantD
 	}
 	st, err := s.dekSvc.Rotate(ctx, req.GetTenantId())
 	if err != nil {
-		return nil, mapDEKError(err)
+		return nil, mapServiceError(err)
 	}
 	return dekwire.StatusProto(st), nil
 }
@@ -76,7 +67,7 @@ func (s *qrdbServiceServer) TenantDEKRetire(ctx context.Context, req *pb.TenantD
 	}
 	st, err := s.dekSvc.Retire(ctx, req.GetTenantId(), req.GetVersion())
 	if err != nil {
-		return nil, mapDEKError(err)
+		return nil, mapServiceError(err)
 	}
 	return dekwire.StatusProto(st), nil
 }
@@ -88,7 +79,7 @@ func (s *qrdbServiceServer) TenantDEKEncrypt(ctx context.Context, req *pb.Tenant
 	}
 	sealed, err := s.dekSvc.Encrypt(ctx, req.GetTenantId(), req.GetPlaintext(), req.GetAad())
 	if err != nil {
-		return nil, mapDEKError(err)
+		return nil, mapServiceError(err)
 	}
 	return &pb.TenantDEKEncryptResponse{Ciphertext: sealed.Ciphertext, Version: sealed.Version}, nil
 }
@@ -100,7 +91,7 @@ func (s *qrdbServiceServer) TenantDEKDecrypt(ctx context.Context, req *pb.Tenant
 	}
 	opened, err := s.dekSvc.Decrypt(ctx, req.GetTenantId(), req.GetCiphertext(), req.GetAad())
 	if err != nil {
-		return nil, mapDEKError(err)
+		return nil, mapServiceError(err)
 	}
 	return &pb.TenantDEKDecryptResponse{Plaintext: opened.Plaintext, Version: opened.Version}, nil
 }
@@ -112,7 +103,7 @@ func (s *qrdbServiceServer) TenantDEKRewrap(ctx context.Context, req *pb.TenantD
 	}
 	rw, err := s.dekSvc.Rewrap(ctx, req.GetTenantId(), req.GetCiphertext(), req.GetAad())
 	if err != nil {
-		return nil, mapDEKError(err)
+		return nil, mapServiceError(err)
 	}
 	return &pb.TenantDEKRewrapResponse{
 		Ciphertext:  rw.Ciphertext,

@@ -98,8 +98,8 @@ Six exist from the first boot and cannot be deleted:
 
 | Role | For |
 |---|---|
-| Security Officer | governance — barrier, certificates, roles, users. **Crypto operations are explicitly denied**, on purpose |
-| Admin | key lifecycle, tenants, backups |
+| Security Officer | governance — barrier, certificates, roles, users, key escrow. **Crypto operations are explicitly denied**, on purpose |
+| Admin | key lifecycle, tenants, backups, key escrow |
 | Operator | routine operations, including seal and unseal |
 | User | crypto operations only |
 | Auditor | read-only everywhere |
@@ -130,6 +130,50 @@ everything is already current and changes nothing.
 
 They add up. This is how somebody can be tenant-admin for one customer without
 being an admin of the whole system.
+
+## Moving a fleet to required certificate enrolment
+
+By default an account nobody has enrolled still logs in on its certificate's CN
+and OU. Once every account that logs in by certificate has an enrolled key, you
+can make that the rule for the whole fleet:
+
+```yaml
+auth:
+  mtls_binding_policy: required   # default: enrolled
+```
+
+1. **Pre-flight: find who would be refused.** List each tenant's users and look
+   for empty `cert_bindings`:
+
+   ```bash
+   qrdb users list --tenant-id acme --output json \
+     | jq -r '.users[] | select((.cert_bindings // []) | length == 0) | .username'
+   ```
+
+   Page through with `--page` until `has_more` is false. Every name printed
+   would be refused under `required`. Enrol each one's certificate
+   (`POST /users/{id}/cert-bindings`, or `AddCertBinding` on any other
+   transport — see [api.md](api.md)). **Start with `admin` in the `system`
+   tenant.**
+2. **Set `required` on every node** and restart them. A node checks at boot that
+   the bootstrap admin holds an unexpired binding and **refuses to start** if it
+   does not, with a message naming the reason.
+3. **Rolling back** is setting `enrolled` and restarting. Nothing else changes.
+4. **Watch the admin's key expiry.** Every boot check exports
+   `qrdb_auth_admin_cert_binding_not_after_timestamp_seconds` — when the
+   admin's last unexpired binding expires, as a Unix time — and logs a warning,
+   "the bootstrap admin's last live certificate binding expires soon", once that
+   is within 30 days. Enrol a replacement key before then: under `required` the
+   node will not boot once it has expired. Alert on the time remaining, with
+   your own lead time:
+
+   ```
+   qrdb_auth_admin_cert_binding_not_after_timestamp_seconds - time() < 30 * 86400
+   ```
+
+If you embed qrdb with the Go SDK, run first boot through `Node.FirstBoot`
+rather than `firstboot.Initialize` directly: it holds first boot to the node's
+policy and checks the result against the node's own user store.
 
 ## Troubleshooting
 
@@ -167,18 +211,51 @@ withdraw the compromised one.** Withdrawing is refused with a 404 if the
 thumbprint is not one this account holds — that is deliberate, so a typo cannot
 look like a successful withdrawal.
 
-**Careful: withdrawing an account's LAST binding opens it back up.** An account
-with no bindings accepts *any* certificate from your CA whose CN and OU name it
-— which is how every account behaved before anyone enrolled anything. So
-withdrawing the only binding on an account does not lock it down, it widens it.
-If your intent is "this account should not log in", disable the account
+**Careful: under the default `mtls_binding_policy: enrolled`, withdrawing an
+account's LAST binding opens it back up.** An account with no bindings accepts
+*any* certificate from your CA whose CN and OU name it — which is how every
+account behaved before anyone enrolled anything. So withdrawing the only
+binding on an account does not lock it down, it widens it. If your intent is
+"this account should not log in", disable the account
 (`POST /users/{id}/disable`); if your intent is "this key should not log in",
 make sure another key is enrolled first.
+
+**Under `mtls_binding_policy: required` it is the other way round.** An account
+with no live binding cannot log in by certificate at all, so withdrawing the
+last one locks it out rather than opening it. For the bootstrap `admin` in the
+`system` tenant the server refuses that withdrawal outright — **409** on REST,
+`FAILED_PRECONDITION` on gRPC and QUIC, a tool error on MCP — because a node
+whose admin cannot log in refuses to boot. Enrol the replacement key first; an
+expired binding does not count as one. For any other account the withdrawal is
+allowed and the account is locked out of certificate login until a key is
+enrolled again.
+
+The same goes for everything else that would lock the admin out under
+`required`: the server also refuses to delete, disable, suspend or rename the
+admin, or to take `mtls` out of its permitted methods, and the error names
+which. If the admin's last key expires anyway, the node will not start again
+under `required`; start it with `mtls_binding_policy: enrolled`, enrol a new
+key for the admin, then set `required` again.
+
+An enrolment whose expiry is already in the past is refused (400) for every
+account: it could never log in, and for a key that is already enrolled it would
+quietly replace the working binding with a dead one.
 
 Note that an **expired** binding is not the same as a withdrawn one. An expired
 binding stops working but still counts as an enrolment, so the account stays
 closed to everything except its other keys. Withdrawing the last binding is what
 empties the set.
+
+**"auth.mtls_binding_policy is "required" and … has no enrolled certificate
+binding" (401).** The account has no enrolled key, so under `required` its
+certificate cannot log in. Enrol the thumbprint the message quotes. The same
+message ending "names no account" means the certificate's CN and tenant match no
+user at all.
+
+**The node will not start: "the bootstrap admin … could not log in under it".**
+The policy is `required` and the admin has no live binding (or does not exist,
+or first boot has nothing to bind it with). Start the node with `enrolled`,
+enrol the admin's certificate, then set `required` again.
 
 **"presented certificate … is not bound to …" (401).** The account has enrolled
 certificate bindings and the one you presented matches none of them. The CN and

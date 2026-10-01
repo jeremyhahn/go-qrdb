@@ -103,3 +103,30 @@ type KeyPrefixMismatchError struct{}
 func (e *KeyPrefixMismatchError) Error() string {
 	return "index: key prefix does not match index"
 }
+
+// OwnershipError reports that an index create or an owner-checked index drop
+// named an index recorded under a different owner (go-qrdb#426).
+//
+// On create it is the refusal that replaced silent adoption: index creation is
+// idempotent by name, and before ownership was recorded a collection whose
+// derived index name matched an index the explicit API had created took that
+// index over -- with the existing definition, not its own -- and destroyed it
+// on drop. On an owner-checked drop it reports that the index is not the
+// caller's to remove, and nothing was removed.
+type OwnershipError struct {
+	// Name is the index name.
+	Name string
+
+	// Owner is the owner recorded on the index. The empty string is the
+	// explicit index API.
+	Owner string
+
+	// Requested is the owner the refused command claimed.
+	Requested string
+}
+
+// Error returns a human-readable description of the ownership conflict.
+func (e *OwnershipError) Error() string {
+	return "index: " + e.Name + " is owned by " + OwnerLabel(e.Owner) +
+		", not " + OwnerLabel(e.Requested)
+}

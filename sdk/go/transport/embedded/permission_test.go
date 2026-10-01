@@ -133,16 +133,40 @@ func TestPermissionClient_LookupScope_Cross(t *testing.T) {
 	}
 }
 
-func TestPermissionClient_LookupScope_SelfDefault(t *testing.T) {
+func TestPermissionClient_LookupScope_DeclaredSelf(t *testing.T) {
 	tr := newPermissionTestTransport(t)
 	pc := tr.PermissionClient()
 
-	// Unregistered names default to ScopeSelf without error.
-	scope, err := pc.LookupScope(context.Background(), "fictitious:permission")
+	// A permission declared ScopeSelf answers Self — because it was declared
+	// so, not because nothing else was said about it.
+	scope, err := pc.LookupScope(context.Background(), permission.KVGet.String())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if scope != transport.PermissionScopeSelf {
-		t.Errorf("expected ScopeSelf for unknown permission, got %q", scope)
+		t.Errorf("expected ScopeSelf for %s, got %q", permission.KVGet, scope)
+	}
+}
+
+func TestPermissionClient_LookupScope_UndeclaredIsAnError(t *testing.T) {
+	tr := newPermissionTestTransport(t)
+	pc := tr.PermissionClient()
+
+	// A name with no declared scope is an error, not PermissionScopeSelf. The
+	// previous contract — "unregistered names default to ScopeSelf without
+	// error" — was the fail-open that go-qrdb#504 removed.
+	scope, err := pc.LookupScope(context.Background(), "fictitious:permission")
+	if err == nil {
+		t.Fatalf("expected an error for an undeclared permission, got scope %q", scope)
+	}
+	var undeclared *permission.UndeclaredScopeError
+	if !errors.As(err, &undeclared) {
+		t.Fatalf("expected *permission.UndeclaredScopeError, got %T: %v", err, err)
+	}
+	if undeclared.Permission != "fictitious:permission" {
+		t.Errorf("error names %q, want fictitious:permission", undeclared.Permission)
+	}
+	if scope != "" {
+		t.Errorf("scope must be zero on error, got %q", scope)
 	}
 }

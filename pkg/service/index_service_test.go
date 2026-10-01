@@ -476,9 +476,8 @@ func TestIndexService_Scan_NotLeader(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestIndexService_translateProposeError_NotLeader(t *testing.T) {
-	svc := &IndexService{host: &mockHost{}, shardID: 1}
 
-	err := svc.translateProposeError(&quicraft.NotLeaderError{
+	err := translateProposeError(&quicraft.NotLeaderError{
 		ShardID:       10,
 		LeaderID:      2,
 		LeaderAddress: "192.168.0.2:9100",
@@ -494,10 +493,9 @@ func TestIndexService_translateProposeError_NotLeader(t *testing.T) {
 }
 
 func TestIndexService_translateProposeError_GenericError(t *testing.T) {
-	svc := &IndexService{host: &mockHost{}, shardID: 1}
 	sentinel := errors.New("generic failure")
 
-	err := svc.translateProposeError(sentinel)
+	err := translateProposeError(sentinel)
 
 	var pe *ProposeError
 	if !errors.As(err, &pe) {

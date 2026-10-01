@@ -41,6 +41,14 @@ func (m *mockTenantServicer) UpdateTenant(_ context.Context, _ string, _ tenant.
 func (m *mockTenantServicer) GetTenant(_ context.Context, _ string) (*tenant.TenantInfo, error) {
 	return nil, nil
 }
+func (m *mockTenantServicer) ListDeletedTenants(_ context.Context, _ string, _ int) (*tenant.DeletedTenantsPage, error) {
+	return &tenant.DeletedTenantsPage{}, nil
+}
+
+func (m *mockTenantServicer) ReconcileDeletedTenants(_ context.Context) (*tenant.ReconcileReport, error) {
+	return &tenant.ReconcileReport{}, nil
+}
+
 func (m *mockTenantServicer) ListTenants(_ context.Context) ([]tenant.TenantInfo, error) {
 	return nil, nil
 }

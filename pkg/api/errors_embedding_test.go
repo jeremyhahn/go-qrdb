@@ -304,16 +304,6 @@ func TestEmbeddingProviderAlreadyRegisteredError(t *testing.T) {
 func TestEmbeddingCloseErrors(t *testing.T) {
 	cause := errors.New("close failed")
 
-	t.Run("CloseProviderError", func(t *testing.T) {
-		e := &EmbeddingCloseProviderError{Name: "openai", Cause: cause}
-		if got := e.Error(); got != "failed to close provider openai: close failed" {
-			t.Errorf("got %q", got)
-		}
-		if e.Unwrap() != cause {
-			t.Error("Unwrap failed")
-		}
-	})
-
 	t.Run("CloseError", func(t *testing.T) {
 		errs := []error{cause}
 		e := &EmbeddingCloseError{Errors: errs}

@@ -101,27 +101,57 @@ Absent a database, the server's default (`system`) is used.
 
 ## Common status mapping
 
-| Condition | REST | gRPC / Unix | QUIC | MCP |
-|---|---|---|---|---|
-| Success | 200 | `OK` | `StatusOK` (0) | no error envelope |
-| Bad request | 400 | `INVALID_ARGUMENT` | `StatusInvalidArgument` (7) | `INVALID_ARGUMENT` (−32012) |
-| Unauthenticated | 401 | `UNAUTHENTICATED` | `StatusUnauthenticated` (3) | `UNAUTHENTICATED` (−32001) |
-| Missing permission | 403 | `PERMISSION_DENIED` | `StatusPermissionDenied` (4) | `PERMISSION_DENIED` (−32003) |
-| Known path, unregistered method | **405** + `Allow` | — (gRPC has no verb axis) | — (no verb axis) | — (no verb axis) |
-| Not found | 404 | `NOT_FOUND` | `StatusNotFound` (6) | `NOT_FOUND` (−32004) |
-| Conflict | 409 | `ALREADY_EXISTS` | `StatusAlreadyExists` (8) | `ALREADY_EXISTS` (−32013) |
-| Precondition | 409 | `FAILED_PRECONDITION` | `StatusFailedPrecondition` (9) | `FAILED_PRECONDITION` (−32009) |
-| Quota exceeded, rate limited | 429 | `RESOURCE_EXHAUSTED` | `StatusResourceExhausted` (10) | `RESOURCE_EXHAUSTED` (−32008) |
-| Concurrency conflict | 409 | `ABORTED` | `StatusAborted` (11) | `ABORTED` (−32015) |
-| Revision below the compaction floor | 400 | `OUT_OF_RANGE` | `StatusOutOfRange` (12) | `OUT_OF_RANGE` (−32016) |
-| Work stopped | 499 | `CANCELED` | `StatusCanceled` (13) | `CANCELED` (−32011) |
-| Persisted state corrupted | 500 | `DATA_LOSS` | `StatusDataLoss` (14) | `DATA_LOSS` (−32017) |
-| Barrier sealed, store closed, not leader, draining | 503 | `UNAVAILABLE` | `StatusUnavailable` (5) | `UNAVAILABLE` (−32006) |
-| Raft-only capability in standalone | 501 | `UNIMPLEMENTED` — `requires mode: raft` | `StatusUnimplemented` (2) | `UNIMPLEMENTED` (−32014) |
-| Capability not compiled in | 404 (route unregistered) | `UNIMPLEMENTED` | `StatusUnimplemented` (2) | `UNIMPLEMENTED` (−32014) |
-| Deadline exceeded at the origin | 504 | `DEADLINE_EXCEEDED` | `StatusDeadlineExceeded` (15) | `DEADLINE_EXCEEDED` (−32007) |
-| Origin could not classify | 500 | `UNKNOWN` | `StatusUnknown` (16) | `UNKNOWN` (−32018) |
-| Unclassified server fault | 500 | `INTERNAL` | `StatusError` (1) | `INTERNAL` (−32603) |
+**Every transport answers one error the same way**, because none of them
+decides what kind of failure an error is. That decision is made once, by the
+classification table in `pkg/api/errclass`, which maps each typed error to a
+**class**; each wire transport then owns one total table from class to its own
+code. The embedded transport returns the typed error itself.
+
+| Class | Condition | REST | gRPC / Unix | QUIC | MCP |
+|---|---|---|---|---|---|
+| — | Success | 200 | `OK` | `StatusOK` (0) | no error envelope |
+| `InvalidArgument` | Bad request | 400 | `INVALID_ARGUMENT` | `StatusInvalidArgument` (7) | `INVALID_ARGUMENT` (−32012) |
+| `Unauthenticated` | Credential missing or does not verify | 401 | `UNAUTHENTICATED` | `StatusUnauthenticated` (3) | `UNAUTHENTICATED` (−32001) |
+| `PermissionDenied` | Missing permission; an operation no caller may perform | 403 | `PERMISSION_DENIED` | `StatusPermissionDenied` (4) | `PERMISSION_DENIED` (−32003) |
+| — | Known path, unregistered method | **405** + `Allow` | — (gRPC has no verb axis) | — (no verb axis) | — (no verb axis) |
+| `NotFound` | Not found | 404 | `NOT_FOUND` | `StatusNotFound` (6) | `NOT_FOUND` (−32004) |
+| `AlreadyExists` | Name or identity taken | 409 | `ALREADY_EXISTS` | `StatusAlreadyExists` (8) | `ALREADY_EXISTS` (−32013) |
+| `Aborted` | Concurrency conflict, held lock | 409 | `ABORTED` | `StatusAborted` (11) | `ABORTED` (−32015) |
+| `FailedPrecondition` | Resource not in a state this operation starts from | 409 | `FAILED_PRECONDITION` | `StatusFailedPrecondition` (9) | `FAILED_PRECONDITION` (−32009) |
+| `Gone` | Revoked or expired factor or challenge | 410 | `FAILED_PRECONDITION` | `StatusFailedPrecondition` (9) | `FAILED_PRECONDITION` (−32009) |
+| `PreconditionFailed` | Consistency requirement unmet; PIN or strategy never set | 412 | `FAILED_PRECONDITION` | `StatusFailedPrecondition` (9) | `FAILED_PRECONDITION` (−32009) |
+| `Unprocessable` | Feature not enabled or ceremony not configured here | 422 | `FAILED_PRECONDITION` | `StatusFailedPrecondition` (9) | `FAILED_PRECONDITION` (−32009) |
+| `ResourceExhausted` | Quota exceeded, rate limited, PIN locked out | 429 | `RESOURCE_EXHAUSTED` | `StatusResourceExhausted` (10) | `RESOURCE_EXHAUSTED` (−32008) |
+| `TooLarge` | Body, payload, key or import over its bound | 413 | `RESOURCE_EXHAUSTED` | `StatusResourceExhausted` (10) | `RESOURCE_EXHAUSTED` (−32008) |
+| `OutOfRange` | Revision below the compaction floor | 416 | `OUT_OF_RANGE` | `StatusOutOfRange` (12) | `OUT_OF_RANGE` (−32016) |
+| `Canceled` | Work stopped (`context.Canceled`, a canceled watch) | 500 | `CANCELED` | `StatusCanceled` (13) | `CANCELED` (−32011) |
+| `DataLoss` | Persisted or secondary state corrupted | 500 | `DATA_LOSS` | `StatusDataLoss` (14) | `DATA_LOSS` (−32017) |
+| `Unavailable` | Barrier sealed, store closed, not leader, draining | 503 | `UNAVAILABLE` | `StatusUnavailable` (5) | `UNAVAILABLE` (−32006) |
+| `Unimplemented` | Raft-only capability in standalone | 501 | `UNIMPLEMENTED` — `requires mode: raft` | `StatusUnimplemented` (2) | `UNIMPLEMENTED` (−32014) |
+| — | Capability not compiled in | 404 (route unregistered) | `UNIMPLEMENTED` | `StatusUnimplemented` (2) | `UNIMPLEMENTED` (−32014) |
+| `DeadlineExceeded` | The caller's deadline passed before the operation completed (`context.DeadlineExceeded`), or a module's origin said so | 504 | `DEADLINE_EXCEEDED` | `StatusDeadlineExceeded` (15) | `DEADLINE_EXCEEDED` (−32007) |
+| — | A module's origin could not classify | — | `UNKNOWN` | `StatusUnknown` (16) | `UNKNOWN` (−32018) |
+| `Internal`, or unclassified | Server fault | 500 | `INTERNAL` | `StatusError` (1) | `INTERNAL` (−32603) |
+
+Four classes exist because HTTP draws a distinction a client acts on that gRPC
+does not: a body too large to send (413) is not a quota to wait out (429), and
+a revoked factor (410), an unmet precondition (412) and an unconfigured feature
+(422) each ask the caller to do something different. They share a gRPC code,
+and QUIC and MCP render that code. `Canceled` and `DataLoss` have no HTTP
+status of their own and answer 500. The row without a class is reachable
+only through a projected capability module, which answers in gRPC's vocabulary
+directly.
+
+**One table, and a test that drives every transport.** A typed error gets its
+class from exactly one row of `pkg/api/errclass`, and a transport's own refusal
+types (a REST body-size refusal, a "service not configured" refusal) declare
+their class beside the type. `TestEveryTransportAgreesOnEveryCondition` feeds
+every row of the table through the real REST, gRPC, QUIC and MCP mappings and
+fails when any two disagree in meaning, whichever side moved. Before this, REST
+and gRPC ran twelve and nine per-family ladders respectively and QUIC ran a
+third of its own: a backup checksum mismatch was 409 over REST and `INTERNAL`
+over gRPC, and QUIC answered `StatusError` for most of the identity, tenant,
+credential, ceremony and auth-factor families.
 
 ### The QUIC status vocabulary
 
@@ -156,6 +186,46 @@ unrecognised number and falls through to its generic request error — degraded
 to exactly the behaviour it had before, never a misclassification. The server
 and the Go SDK ship from one repository, so a mixed deployment loses precision
 on old clients and nothing else.
+
+### QUIC protocol version and response acknowledgement
+
+The QUIC listener speaks exactly one protocol, selected by TLS ALPN:
+**`qrdb-quic/2`**. A client that does not offer it fails the TLS handshake. The
+Go SDK offers only `qrdb-quic/2` and refuses a connection on which any other
+protocol was selected.
+
+**Breaking change.** The listener no longer accepts `qrdb-quic`, the identifier
+before it. The frames are unchanged; what changed is when the client closes
+its half of each request stream, and a server cannot tell an old client's
+close from the new one's. A Go SDK older than this change cannot connect to a
+current server, and a current Go SDK cannot connect to an older server.
+Upgrade both together.
+
+| | The client closes its side of the request stream | What the server does after writing a response |
+|---|---|---|
+| `qrdb-quic/2` | only after it has read the whole response | waits, up to 2 s, for that close before the request counts as finished |
+
+The client's close is an acknowledgement that the response arrived. The
+server needs one because QUIC gives it no other way to learn that a reply was
+delivered rather than merely queued, and closing a connection discards
+anything still queued. The case that matters is a server that is stopping: it
+waits for in-flight requests to finish before it closes their connections, and
+"finished" means "acknowledged". A system-scope `enable-encryption` restarts
+the listener that is answering the request, so this is how the caller of a
+fast migration receives `migration_started` rather than a connection closed
+with `server shutting down`.
+
+The server closes its own side of the stream in the same step as it writes the
+response, so a client that reads to the end of the stream rather than one frame
+is not held for the acknowledgement. Watch streams are the exception to
+"wait for in-flight requests": a watch never finishes on its own, so a stopping
+server ends every open watch at once instead of waiting for it. It ends each
+with a final frame — `Canceled`, reason `server shutting down` — which the
+client acknowledges by closing its side, exactly as it does a response, so the
+frame is delivered before the connection closes.
+
+The listener advertises only `qrdb-quic/2` even when its TLS configuration is
+shared with the REST listener, whose `h3` and `h2` it does not speak.
 
 ### Absence is typed over QUIC, and never read out of the message
 
@@ -229,10 +299,11 @@ Four things follow from the decision:
   meaning two things depending on which server answered.
 
 - **The server owns no classification clauses of its own.** A tool failure is
-  classified by the same per-family mappers the gRPC transport runs, and the
-  MCP layer only renders the resulting gRPC code through a seventeen-row
-  correspondence table. A condition cannot mean one thing over gRPC and another
-  over MCP, and a new condition needs one clause in one place.
+  classified by `pkg/api/errclass`, the table every transport renders, and
+  reaches the MCP layer as the gRPC code the gRPC transport gives that class;
+  the MCP layer only renders it through a seventeen-row correspondence table.
+  A condition cannot mean one thing over gRPC and another over MCP, and a new
+  condition needs one row in one table.
 
 **Argument refusals carry no code yet**, and that is a stated gap rather than
 an oversight. A tool that refuses before it reaches the service layer —
@@ -330,9 +401,18 @@ misconfiguration, not a client's wrong verb.
 
 ## Module registration order
 
-Modules register **before** built-ins. A built-in route whose method+pattern a
-module has claimed **yields** to the module and logs at debug level.
-**Module-vs-module duplicates fail construction loudly.**
+Modules register **before** built-ins, and a REST route has exactly one owner:
+a module claiming a built-in's route, or another module's, **fails
+construction** with a panic naming both claimants. Two patterns that differ
+only in a path parameter's name are the same route. A route a module registers
+directly on the embedded router that another registration also claims fails
+construction too, and so does registering after `RegisterHTTP` has returned.
+A module may not call `Mount`, `Route`, `NotFound`, `MethodNotAllowed` or `Use`
+on the registrar's router; it serves a subtree as
+`Handle(method, "/prefix/*", perm, h)`. Namespace module routes under the
+module's own prefix, and keep its first static segment clear of the embedded web
+UI's paths: an unmatched request under a module's route prefix gets 404 rather
+than the web UI, so an overlapping prefix hides those web-UI paths.
 
 ## Versioning
 

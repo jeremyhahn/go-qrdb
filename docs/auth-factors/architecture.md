@@ -33,9 +33,11 @@ The SDK deliberately exposes two, and they are not the same thing:
 | `Client.AuthFactors()` | ceremony-time custodian enrolment, challenge, verify, revoke | custodian unseal flows |
 | `Client.UserAuthFactors()` | the user-side N-factor model: one User → many AuthFactors, with Add / List / Get / Remove / Rotate / Relabel / Login | ordinary user authentication |
 
-`UserAuthFactors()` returns **nil** when the transport does not implement it —
-the embedded transport currently exposes only the legacy `AuthFactorClient`
-surface. Nil-check it.
+`UserAuthFactors()` returns **nil** when the transport does not implement it.
+Every transport, including embedded, implements `transport.UserAuthFactorClient`
+alongside the ceremony-time `AuthFactorClient` surface; nil-check it anyway —
+the two surfaces are independent capabilities, and a future transport is not
+guaranteed to carry both.
 
 ### PIN strategies
 
@@ -67,6 +69,16 @@ Enrolment routes on the tenant that owns the USER, not on the enrolling
 context, so a record lands where the login that follows will look for it. A
 caller that may not reach the owning tenant is refused rather than redirected
 into its own — see [engineering.md](engineering.md#which-id-a-call-routes-on).
+
+**The ceremony-time custodian surface (`Client.AuthFactors()`) is routed the
+same way.** Its records are per-tenant too — a custodian is
+enrolled for a specific tenant's barrier — but there is no user-id-shaped
+"owner" to look up: a subject is a caller-supplied label and an enrollment id
+is issued inside the enrolling tenant and only ever presented back to it. So
+every call — `EnrollFactor`, `ChallengeFactor`, `VerifyFactor`, `ListFactors`,
+`RevokeFactor` — routes on the **context** tenant, the same rule the user-side
+surface applies to its own by-id verbs. See
+[engineering.md](engineering.md#the-custodian-surface-is-routed-too).
 
 ### Alternatives rejected
 

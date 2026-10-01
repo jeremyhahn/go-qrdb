@@ -690,9 +690,8 @@ func TestTransactionService_Execute_RejectsUnknownOpType(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestTransactionService_translateProposeError_NotLeaderError(t *testing.T) {
-	svc := &TransactionService{host: &mockHost{}, shardID: 1}
 
-	err := svc.translateProposeError(&quicraft.NotLeaderError{
+	err := translateProposeError(&quicraft.NotLeaderError{
 		ShardID:       77,
 		LeaderID:      5,
 		LeaderAddress: "192.168.1.5:9100",
@@ -714,10 +713,9 @@ func TestTransactionService_translateProposeError_NotLeaderError(t *testing.T) {
 }
 
 func TestTransactionService_translateProposeError_GenericError(t *testing.T) {
-	svc := &TransactionService{host: &mockHost{}, shardID: 1}
 	sentinel := errors.New("timeout")
 
-	err := svc.translateProposeError(sentinel)
+	err := translateProposeError(sentinel)
 
 	var pe *ProposeError
 	if !errors.As(err, &pe) {
@@ -729,9 +727,8 @@ func TestTransactionService_translateProposeError_GenericError(t *testing.T) {
 }
 
 func TestTransactionService_translateProposeError_NotLeaderUnknownLeader(t *testing.T) {
-	svc := &TransactionService{host: &mockHost{}, shardID: 1}
 
-	err := svc.translateProposeError(&quicraft.NotLeaderError{
+	err := translateProposeError(&quicraft.NotLeaderError{
 		ShardID:       10,
 		LeaderID:      0,
 		LeaderAddress: "",
@@ -866,18 +863,23 @@ func TestEncodeServiceOp_WithLeaseAndRangeEnd(t *testing.T) {
 	}
 }
 
-func TestEncodeServiceOp_EmptyKeyAndValue(t *testing.T) {
-	op := Op{
-		Type: OpPut,
+// TestEncodeServiceOp_EmptyKeyRefusedEmptyValueEncoded: an empty KEY is refused
+// (no state machine can store one — go-qrdb#136 review), while an empty VALUE
+// is an ordinary value and still encodes.
+func TestEncodeServiceOp_EmptyKeyRefusedEmptyValueEncoded(t *testing.T) {
+	_, err := encodeServiceOp(Op{Type: OpPut})
+	var ik *InvalidKeyError
+	if !errors.As(err, &ik) {
+		t.Fatalf("empty key: err = %v; want InvalidKeyError", err)
 	}
 
-	encoded, err := encodeServiceOp(op)
+	encoded, err := encodeServiceOp(Op{Type: OpPut, Key: []byte("k")})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("empty value: unexpected error: %v", err)
 	}
-	expected := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, nil, nil, nil, 0))
+	expected := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("k"), nil, nil, 0))
 	if !bytes.Equal(encoded, expected) {
-		t.Fatalf("empty key/value encoding mismatch:\n  got:  %v\n  want: %v", encoded, expected)
+		t.Fatalf("empty value encoding mismatch:\n  got:  %v\n  want: %v", encoded, expected)
 	}
 }
 

@@ -27,7 +27,12 @@ import (
 // TestBatchValidationMatchesDispatch pins the two together over every opcode.
 func batchOpSupported(op byte) bool {
 	switch op {
-	case kv.OpPut, kv.OpDelete:
+	// The KV opcodes, and the MVCC opcodes pkg/service's batch and transaction
+	// encoders emit (encodeServiceOp). Both spellings mean a plain put or
+	// delete of the state machine's own keyspace here; refusing the MVCC pair
+	// refused every service batch on every sm_type but the default
+	// (go-qrdb#136).
+	case kv.OpPut, kv.OpDelete, protocol.OpMVCCPut, protocol.OpMVCCDelete:
 		return true
 	default:
 		return false

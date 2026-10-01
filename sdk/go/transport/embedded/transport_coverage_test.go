@@ -36,6 +36,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
@@ -110,6 +111,12 @@ func (m *mockCollectionService) UpdateDocument(ctx context.Context, req *service
 		return m.updateDocFn(ctx, req)
 	}
 	return &service.UpdateDocumentResponse{ID: req.ID}, nil
+}
+
+// UpsertDocument reports an insert: no test that uses this double drives
+// the guarded upsert, which is exercised against the real service.
+func (m *mockCollectionService) UpsertDocument(_ context.Context, req *service.UpsertDocumentRequest) (*service.UpsertDocumentResponse, error) {
+	return &service.UpsertDocumentResponse{ID: req.ID}, nil
 }
 
 func (m *mockCollectionService) DeleteDocument(ctx context.Context, req *service.DeleteDocumentRequest) (*service.DeleteDocumentResponse, error) {
@@ -542,6 +549,54 @@ func TestEmbeddedAuthFactor_Challenge_ServiceError(t *testing.T) {
 	_, err := tr.ChallengeFactor(context.Background(), &transport.ChallengeFactorRequest{EnrollmentID: "x"})
 	if !errors.Is(err, errSentinel) {
 		t.Fatalf("unexpected: %v", err)
+	}
+}
+
+// TestEmbeddedAuthFactor_SealedAfterResolve asserts the embedded transport
+// hands a caller the barrier's own sentinel, unchanged, on every verb when a
+// tenant seals between Resolve and the store operation — the error
+// pkg/service's real-barrier test proves the routed service returns. The SDK
+// exports it as sdk.ErrSealed (an alias of seal.ErrSealed), which is what the
+// auth-factors API documentation tells an embedded caller to match.
+func TestEmbeddedAuthFactor_SealedAfterResolve(t *testing.T) {
+	tr := newExtTransport(t, WithAuthFactorService(&mockAuthFactorService{
+		enrollFn: func(context.Context, string, string, authfactors.EnrollParams) (*authfactors.Enrollment, error) {
+			return nil, seal.ErrSealed
+		},
+		challengeFn: func(context.Context, string) (*authfactors.Challenge, error) { return nil, seal.ErrSealed },
+		verifyFn:    func(context.Context, string, string, *authfactors.Response) error { return seal.ErrSealed },
+		listFn: func(context.Context, string) ([]*authfactors.Enrollment, error) {
+			return nil, &service.AuthFactorListReadError{Key: "__sys:authfactor/e1", Err: seal.ErrSealed}
+		},
+		revokeFn: func(context.Context, string) error { return seal.ErrSealed },
+	}))
+	ctx := context.Background()
+	calls := map[string]func() error{
+		"EnrollFactor": func() error {
+			_, err := tr.EnrollFactor(ctx, &transport.EnrollFactorRequest{FactorName: "piv", Subject: "u1"})
+			return err
+		},
+		"ChallengeFactor": func() error {
+			_, err := tr.ChallengeFactor(ctx, &transport.ChallengeFactorRequest{EnrollmentID: "e1"})
+			return err
+		},
+		"VerifyFactor": func() error {
+			return tr.VerifyFactor(ctx, &transport.VerifyFactorRequest{ChallengeID: "000000000001.c"})
+		},
+		"ListFactors": func() error {
+			_, err := tr.ListFactors(ctx, &transport.ListFactorsRequest{})
+			return err
+		},
+		"RevokeFactor": func() error {
+			return tr.RevokeFactor(ctx, &transport.RevokeFactorRequest{EnrollmentID: "e1"})
+		},
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			if err := call(); !errors.Is(err, seal.ErrSealed) {
+				t.Errorf("%s = %v, want an error matching seal.ErrSealed", name, err)
+			}
+		})
 	}
 }
 
@@ -2562,14 +2617,6 @@ func TestEmbeddedTranslateBackupError(t *testing.T) {
 		inner := errors.New("inner")
 		got := translateBackupError(&service.BackupRestoreError{BackupID: "b1", Err: inner})
 		var want *transport.BackupRestoreError
-		if !errors.As(got, &want) {
-			t.Fatalf("got %T", got)
-		}
-	})
-	t.Run("VerifyError", func(t *testing.T) {
-		inner := errors.New("inner")
-		got := translateBackupError(&service.BackupVerifyError{BackupID: "b1", Err: inner})
-		var want *transport.BackupVerifyError
 		if !errors.As(got, &want) {
 			t.Fatalf("got %T", got)
 		}

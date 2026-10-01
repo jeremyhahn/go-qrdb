@@ -29,8 +29,7 @@ import (
 
 // TestBatchUpsertVector_EncodingError tests error handling in batch upsert encoding
 func TestBatchUpsertVector_EncodingError(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_encoding_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -59,8 +58,7 @@ func TestBatchUpsertVector_EncodingError(t *testing.T) {
 
 // TestBatchDeleteVector_WithMetadata tests deletion with complex metadata
 func TestBatchDeleteVector_WithMetadata(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_delete_metadata_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -102,8 +100,7 @@ func TestBatchDeleteVector_WithMetadata(t *testing.T) {
 
 // TestBatchDeleteVector_MultipleVersionsWithMetadata tests deletion with multiple versions
 func TestBatchDeleteVector_MultipleVersionsWithMetadata(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_delete_multi_version_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -145,8 +142,7 @@ func TestBatchDeleteVector_MultipleVersionsWithMetadata(t *testing.T) {
 
 // TestVectorIterator_CloseWithError tests iterator cleanup on error path
 func TestVectorIterator_CloseWithError(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "iterator_close_error_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -174,8 +170,7 @@ func TestVectorIterator_ErrWithNoIterator(t *testing.T) {
 
 // TestVectorIterator_NextAfterError tests Next() after an error has occurred
 func TestVectorIterator_NextAfterError(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "iterator_next_error_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -237,8 +232,7 @@ func TestMetadataIterator_ErrWithNoIterator(t *testing.T) {
 
 // TestMetadataIterator_NextAfterError tests Next() after an error
 func TestMetadataIterator_NextAfterError(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "metadata_iter_error_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -361,7 +355,10 @@ func TestAdapter_NewPebbleVectorStorage_InvalidDataDir(t *testing.T) {
 	log := &testLogger{}
 
 	// Use a path that's likely to fail (like a file instead of directory)
-	tmpFile := filepath.Join(os.TempDir(), "test_file.txt")
+	// A FILE, inside the per-test directory: the condition under test is
+	// "the data dir path is not a directory", so this must not become
+	// t.TempDir() itself (go-qrdb#416).
+	tmpFile := filepath.Join(t.TempDir(), "test_file.txt")
 	err := os.WriteFile(tmpFile, []byte("test"), 0o600)
 	require.NoError(t, err)
 	defer func() { _ = os.RemoveAll(tmpFile) }()
@@ -500,8 +497,7 @@ func TestAdapter_DeleteNamespace_WithVectors(t *testing.T) {
 
 // TestBatchCommit_MetricsUpdate tests that metrics are updated on commit
 func TestBatchCommit_MetricsUpdate(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_metrics_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -528,8 +524,7 @@ func TestBatchCommit_MetricsUpdate(t *testing.T) {
 
 // TestBatchUpsertVector_EmptyMetadata tests upsert with nil and empty metadata
 func TestBatchUpsertVector_EmptyMetadata(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_empty_metadata_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)

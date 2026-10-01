@@ -127,12 +127,8 @@ func decodeDEKBody(w http.ResponseWriter, r *http.Request, req any) bool {
 	return true
 }
 
-// writeDEKError answers a keyring error with the status every transport
-// shares, falling back to the generic service mapping.
+// writeDEKError answers a keyring error with the status its class renders
+// to on this transport.
 func writeDEKError(w http.ResponseWriter, err error) {
-	code, ok := dekwire.HTTPStatus(err)
-	if !ok {
-		code = mapHTTPError(err)
-	}
-	writeErrorJSON(w, code, err)
+	writeErrorJSON(w, mapHTTPError(err), err)
 }

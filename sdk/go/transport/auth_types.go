@@ -14,6 +14,8 @@
 
 package transport
 
+import "strconv"
+
 // ---------------------------------------------------------------------------
 // User management types
 // ---------------------------------------------------------------------------
@@ -36,24 +38,81 @@ type User struct {
 	Name     string   `json:"name,omitempty"`
 	TenantID string   `json:"tenant_id"`
 	RoleIDs  []string `json:"role_ids"`
-	Enabled  bool     `json:"enabled"`
 	System   bool     `json:"system"`
-	// Lifecycle is the canonical account state: pending, active, suspended,
-	// locked, disabled or deleting. Enabled is a derived projection of it
-	// (exactly lifecycle == "active") and collapses every non-active state into
-	// one false, so read this when the distinction matters.
+	// Lifecycle is the canonical and only account state: pending, active,
+	// suspended, locked, disabled or deleting. Only active can authenticate.
 	Lifecycle string `json:"lifecycle,omitempty"`
-	// GroupIDs are opaque group-membership identifiers. qrdb stores the
-	// membership edge and owns no Group entity.
-	GroupIDs []string `json:"group_ids,omitempty"`
 	// AuthMethods are the permitted authentication methods ("webauthn",
 	// "piv"). A policy statement, distinct from enrolled factors.
 	AuthMethods []string `json:"auth_methods,omitempty"`
 	// LastAuth is the last successful authentication, RFC 3339. Empty when the
 	// account has never authenticated.
-	LastAuth  string `json:"last_auth,omitempty"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	LastAuth string `json:"last_auth,omitempty"`
+	// CertBindings are the mTLS keys enrolled on the account, in the order
+	// they were enrolled. The set is what decides the account's mTLS
+	// admission: once it is non-empty, only a certificate matching one of
+	// them authenticates as the account. It is listed in full, EXPIRED
+	// bindings included — an expired binding no longer authenticates but
+	// still holds the account in that enforcing posture, so omitting it
+	// would misrepresent why the account refuses a certificate. A thumbprint
+	// read here is byte-identical to the one enrolled and can be passed
+	// straight to RemoveCertBinding. Empty when none are enrolled.
+	CertBindings []CertBinding `json:"cert_bindings,omitempty"`
+	CreatedAt    string        `json:"created_at"`
+	UpdatedAt    string        `json:"updated_at"`
+}
+
+// CertBinding is one mTLS key enrolled on a user: the hash the presented
+// certificate is matched by, what the hash is over, and when the binding stops
+// authenticating. The thumbprint is a hash of PUBLIC material, so listing it
+// discloses nothing; it is the handle the withdrawal verb takes.
+type CertBinding struct {
+	// Thumbprint is the base64url SHA-256 the certificate is matched by — of
+	// its SubjectPublicKeyInfo for the canonical kind, of the whole DER for
+	// a full-certificate pin.
+	Thumbprint string `json:"thumbprint"`
+	// Kind is what the thumbprint is over: one of the CertBindingKind*
+	// labels.
+	Kind string `json:"kind"`
+	// NotAfter is when the binding stops authenticating, RFC 3339. Empty
+	// when the binding does not expire on its own.
+	NotAfter string `json:"not_after,omitempty"`
+}
+
+// The labels a CertBinding.Kind carries. They are the wire form of
+// pkg/user's CertBindingKind and are ordered as that enumeration is, which
+// is what CertBindingKindLabel relies on.
+const (
+	// CertBindingKindSPKIThumbprint matches the certificate's
+	// SubjectPublicKeyInfo: the canonical kind, which survives a renewal for
+	// the same key.
+	CertBindingKindSPKIThumbprint = "spki_thumbprint"
+	// CertBindingKindFullCertFingerprint matches the whole certificate DER:
+	// exact-certificate pinning, which a renewal invalidates.
+	CertBindingKindFullCertFingerprint = "full_cert_fingerprint"
+	// CertBindingKindPIVAttested marks a binding established through PIV
+	// attestation.
+	CertBindingKindPIVAttested = "piv_attested"
+)
+
+// certBindingKindLabels is indexed by pkg/user.CertBindingKind's ordinal.
+var certBindingKindLabels = [...]string{
+	CertBindingKindSPKIThumbprint,
+	CertBindingKindFullCertFingerprint,
+	CertBindingKindPIVAttested,
+}
+
+// CertBindingKindLabel returns the wire label for a pkg/user.CertBindingKind
+// ordinal. An ordinal this build does not know — a newer server's kind
+// reaching an older client — is rendered "unknown(<ordinal>)" so it is
+// reported as unknown rather than as some other kind, and identically by
+// every transport: the server projections and the MCP client's decode of the
+// domain record both come here.
+func CertBindingKindLabel(ordinal int) string {
+	if ordinal < 0 || ordinal >= len(certBindingKindLabels) {
+		return "unknown(" + strconv.Itoa(ordinal) + ")"
+	}
+	return certBindingKindLabels[ordinal]
 }
 
 // CreateUserRequest holds parameters for creating a user.
@@ -69,8 +128,6 @@ type CreateUserRequest struct {
 	WithoutEmailLoginKey bool     `json:"without_email_login_key,omitempty"`
 	TenantID             string   `json:"tenant_id,omitempty"`
 	RoleIDs              []string `json:"role_ids,omitempty"`
-	// GroupIDs are the initial opaque group memberships.
-	GroupIDs []string `json:"group_ids,omitempty"`
 	// AuthMethods are the initial permitted authentication methods. Empty
 	// states no restriction.
 	AuthMethods []string `json:"auth_methods,omitempty"`
@@ -92,16 +149,14 @@ type UpdateUserRequest struct {
 	// Name replaces the display name when non-empty.
 	Name    string   `json:"name,omitempty"`
 	RoleIDs []string `json:"role_ids,omitempty"`
-	// GroupIDs and AuthMethods replace their sets when NON-NIL. Nil leaves them
-	// alone; an empty non-nil slice clears them, which is how a membership or a
-	// method restriction is revoked.
+	// AuthMethods replaces the set when NON-NIL. Nil leaves it alone; an empty
+	// non-nil slice clears it, which is how a method restriction is lifted.
 	//
-	// NO `omitempty` on these two, deliberately. omitempty drops an empty slice
-	// from the encoded body, which would make "clear" indistinguishable from
-	// "leave alone" on every JSON transport — a revocation that silently did
-	// nothing. Nil encodes as `null` and decodes back to nil, so the
-	// three-way distinction (absent / null / []) survives the wire intact.
-	GroupIDs    []string `json:"group_ids"`
+	// NO `omitempty`, deliberately. omitempty drops an empty slice from the
+	// encoded body, which would make "clear" indistinguishable from "leave
+	// alone" on every JSON transport — a clear that silently did nothing. Nil
+	// encodes as `null` and decodes back to nil, so the three-way distinction
+	// (absent / null / []) survives the wire intact.
 	AuthMethods []string `json:"auth_methods"`
 	// Lifecycle transitions the account when non-empty. Checked against the
 	// transition table; nothing moves out of "deleting".

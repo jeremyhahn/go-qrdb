@@ -33,8 +33,18 @@ type StrategyFactory func() (SealingStrategy, error)
 
 func NewDefaultStrategyRegistry() StrategyRegistry
 func NewSoftwareStrategy(passphrase []byte) (*SoftwareStrategy, error)
+func NewSoftwareStrategyWithParams(passphrase []byte, time, memory uint32, threads uint8) (*SoftwareStrategy, error) // Argon2id, refused under FIPS
+func NewSoftwareStrategyFIPS(passphrase []byte, iterations int) (*SoftwareStrategy, error)                        // PBKDF2-SHA256
 func NewDeferredSoftwareStrategy() *SoftwareStrategy
+func NewDeferredSoftwareStrategyWithParams(version KDFVersion, params KDFParams) (*SoftwareStrategy, error)
 func NewNoneStrategy() SealingStrategy
+
+type KDFVersion = quicraftseal.KDFVersion // KDFArgon2id, KDFPbkdf2SHA256
+type KDFParams  = quicraftseal.KDFParams  // read off a strategy with KDFVersion() / KDFParams()
+
+func NewCredentials(secret []byte) (Credentials, error)  // consumes (wipes) secret
+func CredentialsFor(secret []byte) (Credentials, error)  // borrows secret; empty -> zero Credentials
+func MustCredentials(secret []byte) Credentials           // fixtures
 
 func FIPSEnabled() bool // the stack's single FIPS 140 predicate
 ```
@@ -64,29 +74,42 @@ For field documentation and the complete struct definition, see `pkg/seal/barrie
 
 ## Invariants
 
-- **A barrier credential is a wipeable byte slice at every layer, and it is a
-  borrow.** The transport request field, the protobuf field, the service-layer
-  parameter and `seal.Credentials.Secret` are all `[]byte`, never `string`,
-  because a Go string is immutable and therefore cannot be zeroized.
+- **A barrier credential is a wipeable byte slice up to the service boundary,
+  and protected memory from there on.** The transport request field, the
+  protobuf field and the service-layer parameter are all `[]byte`, never
+  `string`, because a Go string is immutable and therefore cannot be zeroized.
+  `seal.Credentials.Secret` is a `*enclave.SealedEnclave` (go-enclave, as of
+  go-quicraft v0.11.0-alpha): the service copies the borrowed slice into a
+  sealed enclave with `seal.CredentialsFor`, and the strategy that needs the
+  passphrase opens that enclave itself for exactly as long as its KDF runs.
+  Nothing between the decoder and the KDF holds the plaintext as a `[]byte`.
 
-  The ownership rule that makes the type useful:
+  The ownership rule that makes the types useful:
 
-  - **The callee borrows and retains nothing.** `BarrierServicer`,
-    `TenantServicer` and the sealing strategies read the slice for the duration
-    of the call. `NewSoftwareStrategy` copies into its own enclave;
-    `InitializeShamir` hands the credential to `SealAndDistribute`, which wipes
-    it. Nothing keeps a reference past the call, which is what makes the caller
-    free to wipe.
-  - **The owner is whoever decoded it, and it wipes on every exit path.** Each
-    protocol handler `defer secure.Wipe`s the slice its decoder produced, so a
-    rejected unseal leaves no plaintext behind either.
+  - **The callee borrows the slice and retains nothing.** `BarrierServicer`
+    and `TenantServicer` read it for the duration of the call, build a
+    credential from a copy, and destroy that credential when the call returns.
+    `InitializeShamir` opens the credential into a working copy of its own
+    that `SealAndDistribute` wipes. Nothing keeps a reference past the call,
+    which is what makes the caller free to wipe.
+  - **The owner of the slice is whoever decoded it, and it wipes on every exit
+    path.** Each protocol handler `defer secure.Wipe`s the slice its decoder
+    produced, so a rejected unseal leaves no plaintext behind either.
+  - **The owner of a credential is whoever built it, and it destroys it.**
+    `creds.Secret.Destroy()` (nil-safe) once the seal or unseal it was built
+    for has returned. Nothing downstream destroys it, because a credential
+    passed through two layers would otherwise be released by the first to
+    finish with it.
   - **The exception is `enable-encryption`, and it is deliberate.** That
-    migration runs in a goroutine that OUTLIVES the request, so ownership
-    passes to the goroutine and the wipe is deferred there. A handler-level
-    `defer` would zero the credential out from under a running migration.
-  - **A test double must therefore deep-copy anything it records.** A double
-    that stores the slice header is holding a borrow, and it will read back as
-    zeros once the handler returns — correctly.
+    migration runs in a goroutine that OUTLIVES the request, so ownership of
+    the credential passes to the goroutine and it is destroyed there; the
+    decoded request slice is wiped by the handler the moment the credential
+    exists. A handler-level destroy would pull the credential out from under a
+    running migration.
+  - **A test double must therefore snapshot the plaintext DURING the call**
+    (`pkg/seal/sealtest.Snapshot`). A double that stores the credential is
+    holding a borrow, and it will find a destroyed enclave once the handler
+    returns — correctly.
   - **A wipe does not reach the encoders.** It destroys the slice and its
     aliases, not the transient copy serialization makes — base64 in a REST
     body, protobuf's out-of-place marshalling, the MCP JSON-RPC body. Those go
@@ -139,17 +162,27 @@ For field documentation and the complete struct definition, see `pkg/seal/barrie
     the opposite one: a test asserting only that the root key comes back passes
     with either constructor, which is how a whole suite stayed green over a
     barrier that checked nothing.
-- **A barrier's KDF work factor is not preserved across a strategy
-  replacement, because it cannot currently be expressed.** The deferred
-  constructor takes no KDF parameters, so a deferred strategy always derives
-  with the library defaults for the selected algorithm; the tunable
-  constructors upstream return **bound** strategies, which `ChangePassword`
-  must not install. Tunability and deferred binding are disjoint today, so no
-  deployment can hold a tuned work factor for a password change to discard.
-  This is a latent trap for whoever adds a KDF tuning surface, not a live
-  weakening: adding that surface owns adding the preservation with it, and
-  depends on upstream accepting a deferred constructor that takes explicit KDF
-  parameters plus an accessor for reading them back.
+- **A barrier's KDF work factor is preserved across a password change, and
+  that is correctness, not hardening.** A sealed root-key blob records the KDF
+  *version* byte and never the params, so a blob sealed at a non-default factor
+  can only be unsealed by a strategy carrying that same factor — the live
+  strategy object is the only place the number exists. `ChangePassword` reads
+  the version and params off the strategy it is replacing (`KDFVersion()`,
+  `KDFParams()`) and builds the replacement with
+  `NewDeferredSoftwareStrategyWithParams`, which is deferred (it still
+  authenticates the caller) and tuned (it still opens the blob). The
+  no-argument deferred constructor reset the factor to the library defaults on
+  every password change, silently: the blob it wrote could be opened only by a
+  default-factor strategy, so a restart that constructed the deployment's
+  tuned strategy from its configuration could not unseal it — whichever
+  direction the tuning went — and a deployment tuned above the defaults was
+  also weakened on the credential that wraps the root key. The version
+  travels with the params
+  so the FIPS leg cannot be got wrong: a PBKDF2 strategy stays PBKDF2 and an
+  Argon2id one stays Argon2id, and a version the build or runtime policy
+  refuses is refused by the constructor. A strategy of another type registered
+  under `StrategyPassphrase` has no parameters to preserve and is refused with
+  `ErrPassphraseStrategyNotSoftware` rather than re-sealed under defaults.
 - **Multiple registered strategies require an explicit choice.**
   `ErrNoStrategySpecified` otherwise. Exactly one registered is selected
   unconditionally.
@@ -169,8 +202,12 @@ For field documentation and the complete struct definition, see `pkg/seal/barrie
 - **Per-node key independence**: each node holds its own system barrier KEK; a
   tenant root key is re-wrapped under the *receiving* node's system barrier. A
   compromised node key does not expose tenant keys elsewhere.
-- **Key material lives in `memguard.LockedBuffer`** and is destroyed on seal.
-  After sealing, `GenerateClientCert()` returns `CAKeyNotAvailableError`.
+- **The CA key is a plain `[]byte` (DER-encoded), not a `secure.Buffer`.**
+  `DefaultCertProvider.caKey` is decrypted from its wrapped form on demand and
+  held only until the next `Seal()`, which zero-fills it with `secure.Wipe`
+  (a plain overwrite, not a go-enclave locked-memory enclave) and drops the
+  reference. After sealing, `GenerateClientCert()` returns
+  `CAKeyNotAvailableError`.
 - **Reads of protected key material hold the borrow across the read**, not just
   across the accessor. A tenant DEK served from cache and the recovery
   strategy's root key are both copied inside one coordinated borrow
@@ -178,11 +215,14 @@ For field documentation and the complete struct definition, see `pkg/seal/barrie
   rather than handing back zeros of the right length.
 - **A read whose material crosses into an injected interface is the exception,
   and is marked as one.** `EncryptionBarrier.Encrypt`, `SealingStrategy` unseal
-  and the ceremony's barrier unseal are supplied by consumers; any conforming
-  implementation may allocate protected memory, and a borrow held across one
-  would deadlock at boot. Those sites read without a borrow deliberately, each
-  with a comment saying so, and are covered by a regression test that fails if
-  a borrow is reintroduced.
+  and the ceremony's barrier unseal are supplied by consumers, and any
+  conforming implementation may allocate protected memory of its own. Under
+  go-enclave that allocation no longer deadlocks a borrow held across the call
+  (the go-enclave migration removed the process-wide lock that made it), but converting
+  these sites to a held borrow is a separate, not-yet-landed change.
+  Those sites read without a borrow deliberately, each with a
+  comment saying so, and are covered by a regression test that fails if a
+  borrow is reintroduced.
 - **The rule is checked, not just written down.** `secure.GuardBorrows`-armed
   tests drive each converted path and report a nested borrow as a test failure
   naming both sites, instead of a process that stops with no diagnostic.
@@ -222,6 +262,19 @@ A tenant on the **shared** system barrier cannot change its encryption; the
 server rejects the request. `system-barrier` and `none` are the two valid
 enable-encryption source strategies.
 
+The data-plane backend does not decide whether a node can migrate: the migrated
+root key is written to the node's **seal store**, a dedicated store the seal
+subsystem opens beside the data plane whatever that backend is, so a node on
+the memory backend migrates exactly as one on Pebble does. A node that cannot
+migrate at all — seal not enabled, not yet unsealed, no seal store, or (for
+the embedded node) boot parameters not retained — refuses **before** it tears
+anything down, with the same refusal every transport gives when no migrator is
+wired: `service.ErrMigrationProviderUnavailable`, `501` / `Unimplemented`. The
+embedded node's `MigrationNotSupportedError` carries the reason and matches
+that sentinel through `errors.Is`. A failure after the node has accepted the
+migration is a different error, `MigrationReopenError`, and is not reported as
+"not available".
+
 > **Correction to `seal/README.md`.** That document states the strategy is fixed
 > at initialization and that moving off `none` is "a planned backup/restore
 > migration into a freshly-keyed instance". `barrier enable-encryption` has
@@ -240,6 +293,9 @@ enable-encryption source strategies.
 | Any PIN with `--barrier-strategy=none` | `PINsNotAllowedError` | **yes** |
 | CA operation while sealed | `CAKeyNotAvailableError` | **yes** |
 | `enable-encryption` on a tenant using the shared system barrier | rejected | **yes** |
+| `enable-encryption` on a node that cannot migrate (see above) | refused before any teardown, `ErrMigrationProviderUnavailable` | **yes** |
+| tenant `enable-encryption` while a system migration is rebuilding the data plane | `DataPlaneRecyclingError`, `503` / `Unavailable`; retry | **yes** |
+| `enable-encryption` queued on an embedded node when `Close` begins | refused, not queued: `service.ErrNodeClosed`, `503` / `Unavailable` | **yes** |
 | Wrong passphrase on unseal | refused; barrier stays sealed | **yes** |
 
 ## Permission model
@@ -265,6 +321,7 @@ claimant proves possession of the registered key by signing a nonce over mTLS.
 
 ```yaml
 seal:
+  enabled: true          # false (the default) runs with no barrier at all
   strategy: passphrase   # passphrase | none | shamir  ("software" = deprecated alias)
 ```
 
@@ -297,17 +354,26 @@ that a node can bring a dedicated-isolation tenant back up after a restart:
 in-memory barrier and leaves both records in place, so a tenant "removed" that
 way is re-registered at the next boot, at the same `DataRoot`, over the same
 on-disk store. `BarrierRegistry.DestroyTenant` is the operation a tenant
-deletion needs: it closes the per-tenant Pebble, removes both records and
-removes the `DataRoot`, **in that order** — the files are released before the
-directory holding them is unlinked.
+deletion needs: it releases the barrier and closes the per-tenant Pebble
+(`ReleaseTenant`), removes the `DataRoot`, and only then removes both records
+(`DropTenantRecords`), **in that order** — the files are released before the
+directory holding them is unlinked, and a removal that fails leaves the
+records, so a re-issue still finds the directory. (This section previously
+listed the records before the directory; the code removes the directory
+first.)
 
-`DestroyTenant` is idempotent. An interrupted call leaves a directory nothing
-references, which a re-issue removes; a tenant that was never registered on
-this node returns `ErrTenantNotFound`, which the tenant teardown treats as
-success. Its failures are typed — `*TenantStoreCloseError`,
-`*TenantRecordDeleteError`, `*TenantDataRootRemoveError` — and each stops the
-sequence rather than being logged, because leaving either record behind
-resurrects the barrier.
+The `DataRoot` is removed by `RemoveDataRoot`, contents first and then the
+root. A dedicated `DataRoot` is often a mount point, whose rmdir fails with
+`EBUSY` or `EXDEV` however empty it is; an emptied root that fails that way
+counts as removed, and the mount is left to the operator. The filesystem is
+reached through `DirectoryRemover` (`WithDirectoryRemover`).
+
+`DestroyTenant` is idempotent; a tenant that was never registered on this node
+returns `ErrTenantNotFound`, which the tenant teardown treats as success. Its
+failures are typed — `*TenantStoreCloseError`, `*TenantRecordDeleteError`,
+`*TenantDataRootRemoveError` — and each stops the sequence rather than being
+logged, because leaving either record behind resurrects the barrier, and
+dropping them before the directory is gone would orphan it.
 
 See [../multi-tenancy/architecture.md](../multi-tenancy/architecture.md) for
 where it sits in the tenant teardown order.
@@ -322,7 +388,7 @@ under **every combination in the Makefile's `SUPPORTED_TAG_SETS`**.
 
 | # | Rule | Scope |
 |---|---|---|
-| 1 | No raw `memguard` import outside `pkg/secure` / `sdk/go/secure` | Every file, tests included |
+| 1 | No raw `memguard` import anywhere (go-enclave is the protected-memory library; `pkg/secure` is its facade) | Every file, tests included |
 | 2 | No `ssh.ParsePrivateKey`; use `ParsePrivateKeyWithPassphrase` on Buffer-backed bytes | Every file, tests included |
 | 3 | No struct field named `Passphrase`, `Password`, `PIN`, `Secret`, `PrivateKey`, `KeyMaterial` or `RecoveryShare` typed `string` or `[]byte` | Scoped — see below |
 
@@ -405,3 +471,61 @@ All barrier operations emit audit events when an `AuditLogger` is configured:
 With strategy `none`, every one of those events is marked `strategy: none`, so
 the absence of encryption is permanently visible in the trail rather than
 inferable.
+
+### `seal.enabled: false` startup warning
+
+`seal.enabled: false` is not a barrier operation — there is no barrier
+instance to audit — so it is not in the table above. `lifecycle.BuildServices`
+is the single construction path `cmd/qrdbd`, the embedded `sdk/go/node`
+composer, and the Wails GUI's `cmd/qrdb` composer all call on every
+successful boot, sealed or not, so it is where the warning is logged exactly
+once per node start:
+
+```
+qrdb/seal: seal disabled; at-rest data is stored in plaintext
+```
+
+The condition is `!infra.SealEnabled && infra.SealBarrier == nil`, not a bare
+nil check on `SealBarrier`: `SealEnabled` is the composer's own seal.enabled
+config decision, read and passed in BEFORE it attempted to build a barrier.
+A barrier that was *requested* but failed to construct (a bad passphrase, a
+corrupt seal store, an invalid strategy config) also leaves `SealBarrier` nil,
+and that is a distinct failure the composer is responsible for reporting
+through its own error path — not an operator's decision to run without
+encryption, and this warning must not misattribute it as one. The Wails GUI
+composer (`cmd/qrdb/bindings_server.go`) has no "no barrier at all" state of
+its own — even its default mode constructs a real `none`-strategy barrier —
+so it passes `SealEnabled: true` unconditionally and this warning never fires
+for it; a failed construction there is reported by its own "seal barrier
+unavailable" WARN instead. The warning is logged only after `BuildServices`'s
+own construction has fully succeeded, so it never fires for a node whose
+service graph failed to build there — it says nothing about a later failure
+elsewhere in boot (`server.New`, transport listen, etc.), which
+`BuildServices` cannot observe. Requiring `SealBarrier` to also be nil means
+an older call site that supplies a real barrier without yet setting
+`SealEnabled` is not wrongly accused of running one it doesn't have.
+
+The wording mirrors go-quicraft's own `StrategyNone` WARN
+(`quicraft/seal: barrier performs NO encryption; at-rest data is stored in
+plaintext`) so an operator sees the same fact whether a do-nothing barrier
+exists or none exists at all; it does not fire when a barrier of any kind is
+present, including under `StrategyNone`, whose own WARN is unchanged and
+owned by go-quicraft.
+
+**The `hint` deliberately does not name a procedure to run in place.**
+`enable-encryption` only migrates an *existing* barrier whose current
+strategy is credential-free (`none`, or a tenant's `system-barrier`-wrapped
+root key — see [../seal/enabling-encryption.md](../seal/enabling-encryption.md)),
+by re-encoding files that are already in qrdb's encrypted-file format
+(`pkg/seal/encfs`). A `seal.enabled: false` deployment's files were never
+written in that format, so `enable-encryption` does nothing for it, and
+simply setting `seal.enabled: true` and restarting does **not** encrypt
+existing data either: `encfs.FS.Open` passes a pre-existing plaintext file
+through unmodified (no magic header to decrypt), but `OpenReadWrite` on a
+non-empty file without the header returns `ErrInvalidHeader` — the first
+write-mode reopen of old data under the flipped config can wedge the boot,
+and nothing re-encodes the files that do stay readable. There is no
+supported in-place path here; the `hint` instead points at provisioning a new
+node/tenant with `seal.enabled: true` and moving data into it through
+backup/restore or an application-level re-seed (see
+[user.md](user.md#running-with-no-barrier-at-all)).

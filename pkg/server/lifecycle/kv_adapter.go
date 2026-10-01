@@ -17,7 +17,9 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"strings"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -71,6 +73,40 @@ func (b kvSealBackend) PutIfAbsent(ctx context.Context, key string, data []byte)
 			Key:   []byte(key),
 			Value: data,
 		}},
+		nil,
+	)
+	if err != nil {
+		return false, err
+	}
+	return resp.Succeeded, nil
+}
+
+// PutIfAllAbsent stores data under key only while key and every fence key are
+// absent, as ONE transaction on the consensus plane; see putIfAllAbsent.
+func (b kvSealBackend) PutIfAllAbsent(ctx context.Context, key string, data []byte, fences ...string) (bool, error) {
+	return putIfAllAbsent(ctx, b.tx, key, data, fences)
+}
+
+// putIfAllAbsent is kvstore.FencedCreator on the transaction plane: one
+// "version == 0" compare per key -- the created key and each fence -- guarding
+// a single put. Every compare and the put are evaluated inside the state
+// machine in one revision, so no writer on any node can land between the
+// absence checks and the write, and every replica decides identically.
+func putIfAllAbsent(ctx context.Context, tx service.TransactionServicer, key string, data []byte, fences []string) (bool, error) {
+	if tx == nil {
+		return false, ErrNoTransactionService
+	}
+	compares := make([]service.Compare, 0, len(fences)+1)
+	for _, k := range append([]string{key}, fences...) {
+		compares = append(compares, service.Compare{
+			Key:     []byte(k),
+			Target:  service.CompareVersion,
+			Result:  service.CompareEqual,
+			Version: 0, // version 0 ⇒ the key is absent
+		})
+	}
+	resp, err := tx.Execute(ctx, compares,
+		[]service.Op{{Type: service.OpPut, Key: []byte(key), Value: data}},
 		nil,
 	)
 	if err != nil {
@@ -205,6 +241,33 @@ type kvStoreAdapter struct {
 // would be a lie in the opposite direction.
 var _ kvstore.AtomicKVStore = (*kvStoreAdapter)(nil)
 
+// fencedKVStoreAdapter is kvStoreAdapter plus the transaction plane, which is
+// what lets it offer kvstore.FencedCreator. It is a DISTINCT type rather than
+// a field on kvStoreAdapter so a store built without a transaction servicer
+// does not satisfy the capability at all: a capability present in the method
+// set and absent in fact is the failure capability assertions exist to catch.
+//
+// The seal-disabled tenant service is built over it, so creating a tenant
+// commits its metadata only while the tenant's tombstone is also absent,
+// exactly as the seal-enabled service does through kvSealBackend.
+type fencedKVStoreAdapter struct {
+	*kvStoreAdapter
+	tx service.TransactionServicer
+}
+
+// Compile-time proofs of the capabilities the fenced adapter offers.
+var (
+	_ kvstore.AtomicKVStore = (*fencedKVStoreAdapter)(nil)
+	_ kvstore.FencedCreator = (*fencedKVStoreAdapter)(nil)
+	_ kvstore.FencedCreator = kvSealBackend{}
+)
+
+// PutIfAllAbsent stores value under key only while key and every fence key
+// are absent, as one transaction; see putIfAllAbsent.
+func (a *fencedKVStoreAdapter) PutIfAllAbsent(ctx context.Context, key string, value []byte, fences ...string) (bool, error) {
+	return putIfAllAbsent(ctx, a.tx, key, value, fences)
+}
+
 // PutIfAbsent atomically stores value under key only when key is absent,
 // delegating to the KV service's own primitive. Every engine implements that
 // natively — Raft evaluates the condition inside the state machine so
@@ -316,39 +379,43 @@ func (a *kvStoreAdapter) RegisterEntityIndexes(entityType string, indexes []kvst
 		// CaseSensitive is passed through explicitly rather than left zero:
 		// index.IndexConfig names the field for the DEFAULT, so its zero
 		// value is case-INSENSITIVE, which the engine now honours.
+		name := ei.ResolvedName(entityType)
+		// The engine maintains an index for exactly the keys under its SCOPE,
+		// which it composes as engine.IndexNamespace(name) followed by the
+		// key prefix declared at creation (engine.ComposeIndexScope). The
+		// store contract, on the other hand, declares the ABSOLUTE prefix the
+		// caller's keys carry (kvstore.EntityIndex.KeyPrefix): a namespaced
+		// tenant store declares "{tenant}/{entityType}/" and names the index
+		// "{tenant}/{entityType}.{Field}".
+		//
+		// So the prefix handed to the engine is the absolute one made
+		// RELATIVE to whatever namespace the name carries, and the scope the
+		// engine then maintains is precisely the absolute prefix -- for a
+		// shared-prefix tenant, a per-(tenant, database) name, a DAO built
+		// WithDatabase, and a bare entity type alike. Nothing about the
+		// tenant or database is assumed here; both are read off what the
+		// caller declared.
+		//
+		// A name whose namespace the keys do NOT live under is refused: the
+		// engine would maintain the index over a keyspace no write of this
+		// entity type reaches, create it successfully, and answer every query
+		// on it empty with a nil error -- the silent "no records" the store
+		// contract forbids.
+		absolute := ei.ResolvedPrefix(entityType)
+		ns := engine.IndexNamespace(name)
+		if !strings.HasPrefix(absolute, ns) {
+			return kvstore.ErrIndexUnsupported
+		}
 		cfg := index.IndexConfig{
 			Unique:        ei.Unique,
 			Sparse:        ei.Sparse,
 			CaseSensitive: ei.CaseSensitive,
-			// The key prefix this index covers, declared so the engine
-			// maintains it for THIS entity type's keys and nothing else. It
-			// is the same prefix kvstore.MemoryKVStore filters writes by, so
-			// both implementations of the store contract now scope index
-			// maintenance the same way (go-qrdb#410).
-			KeyPrefix: ei.ResolvedPrefix(entityType),
+			// The key prefix this index covers, relative to the name's
+			// namespace; see above (go-qrdb#410, go-qrdb#40).
+			KeyPrefix: absolute[len(ns):],
 		}
 		if ei.Unique {
 			cfg.Type = index.IndexTypeUnique
-		}
-		// The engine decides which indexes a write maintains by matching the
-		// index NAME against the key's entity type: KVEngine.filterIndexes
-		// accepts "{entityType}." and, when the engine has a database
-		// namespace, "{engineDatabase}.{entityType}.". Nothing else is ever
-		// updated.
-		//
-		// This adapter cannot see the engine's database setting, so it cannot
-		// verify that a caller-qualified name — what a DAO built with
-		// WithDatabase supplies — is one the engine will maintain. Creating
-		// it anyway would succeed, leave the index permanently un-updated,
-		// and answer every query on it empty with a nil error. That is the
-		// exact failure this change exists to remove, so a name this adapter
-		// cannot vouch for is refused and the DAO plans a correct full scan.
-		//
-		// Threading the engine's database scope through so the qualified form
-		// can be honoured is tracked as #38.
-		name := ei.ResolvedName(entityType)
-		if name != entityType+"."+ei.FieldName {
-			return kvstore.ErrIndexUnsupported
 		}
 		if err := a.idx.CreateIndex(ctx, name, ei.JSONFieldName, cfg); err != nil {
 			return &kvstore.IndexRegistrationError{EntityType: entityType, Err: err}
@@ -413,4 +480,172 @@ func existsGuard(key string) service.Compare {
 		Result:  service.CompareGreater,
 		Version: 0,
 	}
+}
+
+// ErrTransactionServiceRequired is returned by NewGuardedKVStoreAdapter when
+// asked to build a guarded store with no transaction plane to back it.
+//
+// It is a construction-time refusal, not a runtime fallback — see
+// cmd/qrdbd/kvstore_adapter.go's identical sentinel and reasoning, which
+// this package's guarded adapter exists to match: every composer that
+// builds role/user stores (cmd/qrdbd AND, through this package,
+// sdk/go/node) gets the SAME guarded-adapter capability, so a caller that
+// needs kvstore.GuardedBatchKVStore refuses at startup here exactly as it
+// does there, rather than discovering the gap silently.
+var ErrTransactionServiceRequired = errors.New("lifecycle: transaction service required for a guarded kvstore")
+
+// guardedKVStoreAdapter is kvStoreAdapter plus the transaction plane, which
+// is what lets the returned store satisfy kvstore.GuardedBatchKVStore.
+//
+// Separate type from kvStoreAdapter for the same reason
+// cmd/qrdbd/kvstore_adapter.go's guardedKVServiceAdapter is separate from
+// its plain sibling: the GuardedBatchKVStore assertion a caller performs
+// must answer honestly, which means the method exists on the type ONLY
+// when a transaction plane actually backs it.
+type guardedKVStoreAdapter struct {
+	*kvStoreAdapter
+	tx service.TransactionServicer
+}
+
+// Compile-time interface check.
+var _ kvstore.MultiGuardedBatchKVStore = (*guardedKVStoreAdapter)(nil)
+
+// NewGuardedKVStoreAdapter returns a kvstore.KVStore backed by svc (and idx,
+// for index operations — see newKVStoreAdapter), with the additional
+// PutAllIfUnchanged capability tx's transaction plane provides.
+//
+// Every node BuildServices constructs wires a TransactionServicer
+// unconditionally (n.Transaction, above), so tx is never unavailable for a
+// production caller — this exists so a store that DOES need atomic
+// multi-key commits (go-qrdb#555's atomic role/user creation, once an
+// embedding composer wires tenant.IdentityIndex + WithAtomicIdentity over
+// it) can get one, without every OTHER caller of newKVStoreAdapter paying
+// for a capability it has no use for.
+func NewGuardedKVStoreAdapter(svc service.KVServicer, idx service.IndexServicer, tx service.TransactionServicer) (kvstore.KVStore, error) {
+	if tx == nil {
+		return nil, ErrTransactionServiceRequired
+	}
+	return &guardedKVStoreAdapter{
+		kvStoreAdapter: &kvStoreAdapter{svc: svc, idx: idx},
+		tx:             tx,
+	}, nil
+}
+
+// PutAllIfUnchanged applies every write atomically, and only while guardKey
+// still holds guardValue: PutAllIfAllUnchanged with a single guard.
+func (a *guardedKVStoreAdapter) PutAllIfUnchanged(ctx context.Context, guardKey string, guardValue []byte, writes []kvstore.KV) (bool, error) {
+	return a.PutAllIfAllUnchanged(ctx, []kvstore.Guard{{Key: guardKey, Value: guardValue}}, writes)
+}
+
+// PutAllIfAllUnchanged applies every write atomically, and only while EVERY
+// guard's key still holds its expected value. See ExecuteGuardedBatch, which
+// this delegates to.
+func (a *guardedKVStoreAdapter) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	return ExecuteGuardedBatch(ctx, a.tx, guards, writes)
+}
+
+// ExecuteGuardedBatch is the one implementation of
+// kvstore.MultiGuardedBatchKVStore.PutAllIfAllUnchanged over a
+// service.TransactionServicer. Every guarded adapter in the tree delegates to
+// it — this package's guardedKVStoreAdapter and cmd/qrdbd's
+// guardedKVServiceAdapter — so the guard encoding and the error vocabulary
+// cannot drift between composers.
+//
+// It proposes ONE transaction: the compares guardCompares derives from
+// guards, with writes as its success operations. The compares and the writes
+// are evaluated together inside the state machine, in a single revision, which
+// is the whole point: a caller doing this with single-key verbs — check,
+// write, check, write — still loses if a guard changes between one check and
+// its write (go-qrdb#21, go-qrdb#555).
+//
+// A transaction whose compare fails is a RESULT, not an error: applied=false
+// with a nil error, and the store is unchanged. A non-nil error means the
+// outcome is unknown, except for the refusals that PROVE nothing was
+// written, which are translated into kvstore's vocabulary for callers that
+// cannot import the service layer:
+//
+//   - a nil tx (wrapping ErrTransactionServiceRequired) and a state machine
+//     built without a transaction subsystem become
+//     kvstore.GuardedBatchUnsupportedError, which kvstore.ProbeGuardedBatch
+//     reads as "this node cannot";
+//   - any other error the service layer marks service.ErrNotStored — a
+//     propose-time NotLeader, most commonly — becomes kvstore.NotAppliedError.
+//
+// Both match kvstore.ErrNotApplied, which is what lets an ambiguous-outcome
+// reconciler return at once instead of waiting for a write that cannot
+// appear.
+func ExecuteGuardedBatch(ctx context.Context, tx service.TransactionServicer, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	if tx == nil {
+		return false, &kvstore.GuardedBatchUnsupportedError{Err: ErrTransactionServiceRequired}
+	}
+	ops := make([]service.Op, 0, len(writes))
+	for _, w := range writes {
+		ops = append(ops, service.Op{
+			Type:  service.OpPut,
+			Key:   []byte(w.Key),
+			Value: w.Value,
+		})
+	}
+	resp, err := tx.Execute(ctx, guardCompares(guards), ops, nil)
+	if err != nil {
+		var unsupported *service.CapabilityUnsupportedError
+		if errors.As(err, &unsupported) {
+			return false, &kvstore.GuardedBatchUnsupportedError{Err: err}
+		}
+		if errors.Is(err, service.ErrNotStored) {
+			return false, &kvstore.NotAppliedError{Err: err}
+		}
+		return false, err
+	}
+	return resp.Succeeded, nil
+}
+
+// guardCompares translates each kvstore.Guard into the service.Compare the
+// state machine actually needs to enforce it.
+//
+// A nil Guard.Value ("must be absent") is deliberately NOT expressed as a
+// value compare against nil/empty. Every engine here degrades an absent
+// key's value to nil for a value comparison (pebbleEvaluateCompare: "Key
+// does not exist: only equal-to-zero-length succeeds"), which means
+// bytes.Compare(nil, nil) == 0 succeeds for an ABSENT key — but so does a
+// PRESENT key whose stored value happens to be an empty slice. That is a
+// real, reachable state for a malformed or pre-migration record, and a
+// value compare cannot tell the two apart. Version can: every engine here
+// reports version/revision 0 only for a key that has never been written
+// (pkg/mvcc's RaftCompare.evaluate: "missing key means version...0"; pebble
+// degrades the same way), so a nil guard is expressed as a version compare
+// instead, matching the existsGuard/PutIfAbsent pattern already used
+// elsewhere in this file.
+//
+// A non-nil Guard.Value carries the SAME hole in the opposite direction, and
+// it is not hypothetical: both engines' value compare treats an absent key's
+// value as equal to an empty slice, exactly as they do for a nil guard above.
+// Guard{Value: []byte{}} means "the key must be PRESENT and hold an empty
+// value" — but a value compare alone cannot refuse an absent key, because
+// bytes.Compare(nil, []byte{}) == 0 there too. So every non-nil-Value guard
+// gets existsGuard's version compare ADDED ahead of its value compare, not
+// substituted for it: the transaction only proposes when every compare in the
+// slice holds, so requiring both closes the gap for the empty-expected case
+// without changing anything for a guard expecting a non-empty value, which
+// existence already implied.
+func guardCompares(guards []kvstore.Guard) []service.Compare {
+	compares := make([]service.Compare, 0, len(guards)*2)
+	for _, g := range guards {
+		if g.Value == nil {
+			compares = append(compares, service.Compare{
+				Key:     []byte(g.Key),
+				Target:  service.CompareVersion,
+				Result:  service.CompareEqual,
+				Version: 0,
+			})
+			continue
+		}
+		compares = append(compares, existsGuard(g.Key), service.Compare{
+			Key:    []byte(g.Key),
+			Target: service.CompareValue,
+			Result: service.CompareEqual,
+			Value:  g.Value,
+		})
+	}
+	return compares
 }

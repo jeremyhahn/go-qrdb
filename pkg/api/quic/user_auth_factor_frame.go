@@ -246,7 +246,7 @@ func (s *Server) handleUserAuthFactorLogin(ctx context.Context, payload []byte) 
 			resp["username"] = u.Username
 			resp["tenant_id"] = u.TenantID
 			resp["roles"] = u.RoleIDs
-			resp["active"] = u.Enabled
+			resp["active"] = u.CanAuthenticate()
 		}
 	}
 	return json.Marshal(resp)

@@ -120,6 +120,7 @@ type Transport struct {
 	shareSvc          ceremony.ShareServicer
 	authFactorSvc     service.AuthFactorServicer
 	auditLogger       audit.AuditLogger
+	encMigrator       service.EncryptionMigrator
 
 	// sqlOnce/sqlSvcCache lazily construct the SQL query service from
 	// kvSvc/dbSvc on first Query call. See transport_sql.go (compiled
@@ -737,11 +738,11 @@ func (t *Transport) Peers(ctx context.Context) (*transport.PeersResponse, error)
 }
 
 // AddMember adds a new replica through the embedded admin service.
-func (t *Transport) AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr string) error {
+func (t *Transport) AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
-	return translateError(t.adminSvc.AddMember(ctx, shardID, replicaID, raftAddr))
+	return translateError(t.adminSvc.AddMember(ctx, shardID, replicaID, raftAddr, identity))
 }
 
 // RemoveMember removes a replica through the embedded admin service.
@@ -2809,7 +2810,7 @@ func handleAddMember(ctx context.Context, t *Transport, req, _ any) error {
 	if !ok {
 		return &InvalidRequestError{Method: "AddMember"}
 	}
-	return t.AddMember(ctx, r.ShardID, r.ReplicaID, r.Address)
+	return t.AddMember(ctx, r.ShardID, r.ReplicaID, r.Address, r.Identity)
 }
 
 func handleRemoveMember(ctx context.Context, t *Transport, req, _ any) error {

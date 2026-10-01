@@ -400,6 +400,16 @@ type userClients struct {
 
 	// realUserID names a user that EXISTS, for the inverse case.
 	realUserID uint64
+
+	// tenants is the tenant surface over the same transport, and node the
+	// node behind it, for suites that act on tenants rather than users.
+	tenants transport.TenantClient
+	node    *node.Node
+
+	// store is the node's own user service, behind every transport. It is for
+	// arranging state no transport can write -- a binding whose expiry has
+	// passed, which enrolment refuses -- never for the calls under test.
+	store user.UserServicer
 }
 
 // bootUserCell brings up a standalone node carrying exactly one listener and
@@ -411,16 +421,30 @@ type userClients struct {
 // without varying anything the assertions read.
 func bootUserCell(t *testing.T, tk transportKind) userClients {
 	t.Helper()
-	var roleID string
-	var realUserID uint64
+	return bootCell(t, tk)
+}
+
+// bootCell is bootUserCell with extra permissions granted to the acting
+// identity, for suites that exercise a surface beyond identity.
+func bootCell(t *testing.T, tk transportKind, extraPerms ...permission.Permission) userClients {
+	t.Helper()
+	var (
+		roleID     string
+		realUserID uint64
+		booted     *node.Node
+	)
 	c := bootAuthorizedCell(t, tk, func(n *node.Node) {
-		roleID, realUserID = seedIdentityFixtures(t, n)
+		booted = n
+		roleID, realUserID = seedIdentityFixtures(t, n, extraPerms...)
 	})
 	return userClients{
 		users:      c.Users(),
 		roles:      c.Roles(),
 		roleID:     roleID,
 		realUserID: realUserID,
+		tenants:    c.Tenants(),
+		node:       booted,
+		store:      booted.Services().User,
 	}
 }
 
@@ -510,7 +534,7 @@ func bootAuthorizedCell(t *testing.T, tk transportKind, seed func(*node.Node)) *
 // masking is real — the first run of this measurement reported
 // GetUserByCertThumbprint and DeleteUser as generic errors on four transports
 // purely because the seeded role could not call them.
-func seedIdentityFixtures(t *testing.T, n *node.Node) (roleID string, realUserID uint64) {
+func seedIdentityFixtures(t *testing.T, n *node.Node, extraPerms ...permission.Permission) (roleID string, realUserID uint64) {
 	t.Helper()
 	svc := n.Services()
 	ctx := boundedCtx(t)
@@ -518,7 +542,7 @@ func seedIdentityFixtures(t *testing.T, n *node.Node) (roleID string, realUserID
 	r, err := svc.Role.CreateRole(ctx, &role.CreateRoleRequest{
 		Name:     "notfound-matrix",
 		TenantID: tenant.SystemTenantID,
-		Permissions: []permission.Permission{
+		Permissions: append([]permission.Permission{
 			permission.UsersCreate, permission.UsersRead, permission.UsersUpdate,
 			permission.UsersDelete, permission.UsersList,
 			permission.UsersEnable, permission.UsersDisable,
@@ -527,7 +551,7 @@ func seedIdentityFixtures(t *testing.T, n *node.Node) (roleID string, realUserID
 			permission.RolesCreate, permission.RolesRead, permission.RolesList,
 			permission.RolesAssign, permission.RolesUnassign,
 			permission.AdminHealth, permission.AdminStatus,
-		},
+		}, extraPerms...),
 	})
 	if err != nil {
 		t.Fatalf("create role: %v", err)

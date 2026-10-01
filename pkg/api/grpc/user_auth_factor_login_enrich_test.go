@@ -29,11 +29,11 @@ func TestUserAuthFactorLogin_EnrichesFromUserService(t *testing.T) {
 	factorSvc := newMockUserAuthFactorSvc() // lookup returns UserID 42
 	userSvc := &mockUserService{
 		getResult: &user.User{
-			ID:       42,
-			Username: "alice",
-			TenantID: "acme",
-			RoleIDs:  []string{"admin", "editor"},
-			Enabled:  true,
+			ID:        42,
+			Username:  "alice",
+			TenantID:  "acme",
+			RoleIDs:   []string{"admin", "editor"},
+			Lifecycle: user.LifecycleActive,
 		},
 	}
 	srv := &userAuthFactorServer{svc: factorSvc, userSvc: userSvc}

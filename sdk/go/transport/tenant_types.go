@@ -14,7 +14,10 @@
 
 package transport
 
-import "time"
+import (
+	"strconv"
+	"time"
+)
 
 // TenantQuotas holds per-tenant resource limits. A value of -1 means
 // unlimited and 0 means use the system default.
@@ -129,6 +132,117 @@ type GetTenantResponse struct {
 // ListTenantsResponse contains a list of tenants.
 type ListTenantsResponse struct {
 	Tenants []TenantInfo `json:"tenants"`
+}
+
+// DeletedTenant is one retired tenant id and its deletion record. A deleted
+// tenant id is retired permanently: no tenant can ever be created under it
+// again.
+type DeletedTenant struct {
+	// ID is the retired tenant id.
+	ID string `json:"id"`
+	// Name is the deleted tenant's display name.
+	Name string `json:"name,omitempty"`
+	// IsolationType is the isolation the deleted tenant used.
+	IsolationType TenantIsolationType `json:"isolation_type,omitempty"`
+	// DataRoot is the dedicated filesystem root the deleted tenant occupied on
+	// the node that deleted it; empty for prefix and barrier isolation.
+	DataRoot string `json:"data_root,omitempty"`
+	// CreatedAt is when the deleted tenant was created; zero when unrecorded.
+	CreatedAt time.Time `json:"created_at,omitempty"`
+	// DeletedAt is when the id was retired; zero when the record could not be
+	// decoded, which does not change the retirement.
+	DeletedAt time.Time `json:"deleted_at"`
+}
+
+// ListDeletedTenantsRequest pages through retired tenant ids.
+type ListDeletedTenantsRequest struct {
+	// PageSize is the number of records per page. 0 uses the server default;
+	// a size above the server maximum is served at the maximum.
+	PageSize int32 `json:"page_size,omitempty"`
+	// PageToken is the previous response's NextPageToken; empty for the
+	// first page.
+	PageToken string `json:"page_token,omitempty"`
+}
+
+// ListDeletedTenantsResponse is one page of retired tenant ids, in ascending
+// id order.
+type ListDeletedTenantsResponse struct {
+	Tenants []DeletedTenant `json:"tombstones"`
+	// NextPageToken resumes the listing; empty on the last page.
+	NextPageToken string `json:"next_page_token,omitempty"`
+}
+
+// TenantResiduePath is one directory the deleted-tenant reconcile removed, or
+// left in place and why. Path is empty when a whole id was left alone.
+type TenantResiduePath struct {
+	TenantID string `json:"tenant_id"`
+	Path     string `json:"path,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+// ReconcileDeletedTenantsResponse reports one deleted-tenant reconcile pass on
+// the node that served the request.
+type ReconcileDeletedTenantsResponse struct {
+	// Inspected is the number of retired ids examined.
+	Inspected int `json:"inspected"`
+	// Reclaimed lists the directories removed from the node.
+	Reclaimed []TenantResiduePath `json:"reclaimed,omitempty"`
+	// Skipped lists what was left in place, with the reason.
+	Skipped []TenantResiduePath `json:"skipped,omitempty"`
+	// Failed lists the retired ids the pass could not fully reclaim. When it
+	// is non-empty the call also returns *ReconcileDeletedTenantsError.
+	Failed []TenantResidueFailure `json:"failed,omitempty"`
+}
+
+// TenantResidueFailure is one retired id the deleted-tenant reconcile could
+// not fully reclaim. The id keeps its records, so the next pass retries it.
+type TenantResidueFailure struct {
+	TenantID string `json:"tenant_id"`
+	// Op is the step that failed ("remove", "close-runtime", ...).
+	Op string `json:"op"`
+	// Path is empty when the step is not about one path.
+	Path string `json:"path,omitempty"`
+	// Error is the failure's message as the node reported it.
+	Error string `json:"error"`
+}
+
+// ReconcileDeletedTenantsError is returned by ReconcileDeletedTenants,
+// TOGETHER with the response, when the pass failed for some retired ids. The
+// response still describes what was reclaimed and skipped for the others;
+// Failed repeats the response's list of what was not.
+//
+// Err is the node's own typed error when the transport runs in-process (the
+// embedded transport: a *tenant.ResidueReconcileErrors, reachable through
+// errors.As); a network transport carries only the per-id messages, so Err is
+// nil there.
+type ReconcileDeletedTenantsError struct {
+	Failed []TenantResidueFailure
+	Err    error
+}
+
+func (e *ReconcileDeletedTenantsError) Error() string {
+	msg := "transport: reconcile deleted tenants: " + strconv.Itoa(len(e.Failed)) + " failed"
+	for _, f := range e.Failed {
+		msg += "; tenant " + f.TenantID + ": " + f.Op
+		if f.Path != "" {
+			msg += " " + f.Path
+		}
+		msg += ": " + f.Error
+	}
+	return msg
+}
+
+// Unwrap returns the node's own typed error, when the transport has one.
+func (e *ReconcileDeletedTenantsError) Unwrap() error { return e.Err }
+
+// ReconcileFailure is the error a transport returns beside a
+// ReconcileDeletedTenants response: nil when nothing failed, otherwise a
+// *ReconcileDeletedTenantsError naming every failed id and wrapping cause.
+func ReconcileFailure(resp *ReconcileDeletedTenantsResponse, cause error) error {
+	if resp == nil || len(resp.Failed) == 0 {
+		return nil
+	}
+	return &ReconcileDeletedTenantsError{Failed: resp.Failed, Err: cause}
 }
 
 // TenantBarrierInitRequest contains parameters for initializing a tenant barrier.

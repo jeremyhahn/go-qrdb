@@ -25,14 +25,14 @@ that treats `false` as "not compiled" will misdiagnose a mode gate.
 Every raft-only capability, called against a standalone server, refuses with a
 typed error whose text names the remedy: **`requires mode: raft`**.
 
-| Transport | Refusal (unary verbs: MVCC, lease, lock) | What the Go SDK client returns |
-|---|---|---|
-| REST | `501 Not Implemented` for MVCC; `404` for lease and lock, whose routes a standalone server does not register | an untyped `*transport.RequestError` |
-| gRPC | `UNIMPLEMENTED` | `*transport.CapabilityUnsupportedError` |
-| Unix (gRPC over UDS) | `UNIMPLEMENTED` | `*transport.CapabilityUnsupportedError` |
-| QUIC | `Unimplemented` | `*transport.CapabilityUnsupportedError` |
-| MCP | the raft-only tools are not registered: `tool not found` | an untyped `*transport.RequestError` |
-| Embedded | — | `*transport.CapabilityUnsupportedError` |
+| Transport | Refusal |
+|---|---|
+| REST | `501 Not Implemented` |
+| gRPC | `UNIMPLEMENTED` |
+| Unix (gRPC over UDS) | `UNIMPLEMENTED` |
+| QUIC | `Unimplemented` |
+| MCP | `UNIMPLEMENTED` (−32014), with the same message |
+| Embedded | typed Go error: `*service.CapabilityUnsupportedError` |
 
 Implemented by `pkg/server/standalone_gate.go` — nil singletons plus a gated
 per-database service registry — so the refusal is structural rather than a
@@ -43,17 +43,18 @@ type the gRPC, Unix and QUIC clients reconstitute; it keeps
 `*embedded.NilServiceError` for a service that should have been wired and was
 not.
 
-**Watch is the exception on the wire.** Opening a watch over gRPC, Unix, QUIC or
-MCP does not fail on a standalone node; the refusal arrives on the stream. The
-embedded transport refuses at open with `*transport.CapabilityUnsupportedError`.
-
-**REST and MCP are a stated gap.** A consumer cannot match one type across all
-six transports: REST answers lease and lock with a route-level `404` and MVCC
-with an untyped `501`, and MCP does not register the tools. Both follow from
-those servers' route and tool registration, so typing them is a change of its
-own. `sdk/go/conformance/standalone_refusal_test.go` pins the per-transport
-answer, so closing either gap flips its row there. Until then, check
-`Capabilities()` up front rather than matching the refusal.
+The refusal is a **service-layer** error, `*service.CapabilityUnsupportedError`,
+whose message names the refused service and the remedy
+(`mvcc: not implemented on this server: requires mode: raft`). That type is the
+one every transport's classifier already maps to "this node cannot do that",
+and the SDK rebuilds `CapabilityUnsupportedError` from each transport's
+rendering of it, so a client gets the same typed answer whichever transport it
+holds. It used to be a REST transport type that only REST classified: REST
+answered 501 while gRPC, unix, QUIC and MCP fell through to their unclassified
+default and reported the mode gate as an internal fault — "the server broke",
+retry — for a condition that is a deployment mode. The same type now also
+carries "not configured on this node" refusals from the per-database service
+registry, for the same reason.
 
 ## Capability families by mode
 

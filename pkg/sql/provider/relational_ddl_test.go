@@ -63,7 +63,7 @@ func TestDatabase_CreateTable_RoundTripsThroughCatalogAndIsQueryable(t *testing.
 	require.NoError(t, err)
 	encodedKey, err := keyCodec.EncodeValues([]any{uint64(1)})
 	require.NoError(t, err)
-	require.NoError(t, h.kvSvc.Put(context.Background(), service.TableDataPrefix("shop", def.TableID)+encodedKey, encodedRow))
+	require.NoError(t, h.kvSvc.Put(context.Background(), service.TableDataPrefix("shop", def.TableID, 0)+encodedKey, encodedRow))
 
 	_, rows = mustExecQuery(t, prov, "shop", "SELECT * FROM users")
 	require.Len(t, rows, 1)
@@ -148,7 +148,7 @@ func TestDatabase_DropTable_ReclaimsRowsAndIndexEntries(t *testing.T) {
 	require.NoError(t, err)
 
 	// Seed rows and a physical secondary-index entry directly.
-	dataPrefix := service.TableDataPrefix("shop", def.TableID)
+	dataPrefix := service.TableDataPrefix("shop", def.TableID, 0)
 	require.NoError(t, h.kvSvc.Put(context.Background(), dataPrefix+"row1", []byte("data1")))
 	require.NoError(t, h.kvSvc.Put(context.Background(), dataPrefix+"row2", []byte("data2")))
 
@@ -156,12 +156,23 @@ func TestDatabase_DropTable_ReclaimsRowsAndIndexEntries(t *testing.T) {
 		Database: "shop", Table: "users",
 		Index: service.TableIndex{Name: "idx_email", Columns: []service.IndexCol{{Name: "email"}}},
 	}))
-	indexPrefix := service.TableIndexPrefix("shop", def.TableID, "idx_email")
+	def, err = h.tableSvc.GetTable(context.Background(), "shop", "users")
+	require.NoError(t, err)
+	indexPrefix := service.TableIndexPrefix("shop", def.TableID, 0, incarnationOf(def, "idx_email"))
 	require.NoError(t, h.kvSvc.Put(context.Background(), indexPrefix+"entry1", []byte("row1")))
 
 	mustExecQuery(t, prov, "shop", "DROP TABLE users")
 
+	// The drop publishes the reclaim; it does not delete inline. A statement
+	// that resolved the table before the drop may still be reading it, so
+	// the data stays whole until the sweeper is past ReclaimQuiescence.
 	rows, err := h.kvSvc.Scan(context.Background(), dataPrefix)
+	require.NoError(t, err)
+	assert.Len(t, rows, 2, "no reader may see a partially-deleted table")
+
+	sweepPastQuiescence(t, h)
+
+	rows, err = h.kvSvc.Scan(context.Background(), dataPrefix)
 	require.NoError(t, err)
 	assert.Empty(t, rows, "DROP TABLE must reclaim every row")
 
@@ -189,21 +200,6 @@ func TestDatabase_DropTable_NotFound(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestDatabase_DropTable_BatchServiceError(t *testing.T) {
-	h := newDDLHarness()
-	db := h.newDDLDatabase("shop")
-
-	_, err := h.tableSvc.CreateTable(context.Background(), &service.CreateTableRequest{
-		Database: "shop", Name: "users", Columns: []service.ColumnDef{{Name: "id", Type: "BIGINT UNSIGNED"}},
-	})
-	require.NoError(t, err)
-
-	reg := h.registry.(*fakeRelationalRegistry)
-	reg.batchErr = assert.AnError
-	err = db.DropTable(newTestContext(), "users")
-	require.ErrorIs(t, err, assert.AnError)
-}
-
 // ---------------------------------------------------------------------------
 // RENAME TABLE
 // ---------------------------------------------------------------------------
@@ -216,7 +212,7 @@ func TestDatabase_RenameTable_DataStaysInPlace(t *testing.T) {
 	before, err := h.tableSvc.GetTable(context.Background(), "shop", "users")
 	require.NoError(t, err)
 
-	dataPrefix := service.TableDataPrefix("shop", before.TableID)
+	dataPrefix := service.TableDataPrefix("shop", before.TableID, 0)
 	require.NoError(t, h.kvSvc.Put(context.Background(), dataPrefix+"row1", []byte("data1")))
 
 	mustExecQuery(t, prov, "shop", "RENAME TABLE users TO accounts")
@@ -321,4 +317,198 @@ func TestDatabase_ImplementsDDLInterfaces(t *testing.T) {
 	assert.True(t, ok)
 	_, ok = d.(sqle.SchemaValidator)
 	assert.True(t, ok)
+}
+
+// TestDatabase_DropTable_ReclaimsSequenceCounters pins go-qrdb#444: the two
+// sequence counters keyed by the table's TableID must not outlive the table.
+//
+// The counters are the one part of a table's storage the data reclamation
+// never enumerated, because they live under "__seq:" rather than under the
+// table's own data or index prefixes. Left behind they were unreachable as
+// well as orphaned: both names are derived from the immutable TableID, and
+// dropping the catalog row destroys the only mapping from the table's name to
+// that id.
+func TestDatabase_DropTable_ReclaimsSequenceCounters(t *testing.T) {
+	h := newDDLHarness()
+	prov := h.newDDLProvider("shop")
+	ctx := context.Background()
+
+	// A keyless table so BOTH counters exist: the AUTO_INCREMENT column
+	// allocates from one, and the synthetic hidden row id from the other.
+	mustExecQuery(t, prov, "shop",
+		"CREATE TABLE tickets (seq BIGINT UNSIGNED AUTO_INCREMENT UNIQUE KEY, label VARCHAR(64))")
+	def, err := h.tableSvc.GetTable(ctx, "shop", "tickets")
+	require.NoError(t, err)
+
+	autoinc := service.TableAutoIncrementSequenceName(def.TableID)
+	rowid := service.TableRowIDSequenceName(def.TableID)
+
+	// Allocate on both so the counters are genuinely present: Delete on a
+	// never-written counter proposes nothing, so a test that skipped this
+	// would pass whether or not the fix exists.
+	_, err = h.seqSvc.Allocate(ctx, "shop", autoinc, 5)
+	require.NoError(t, err)
+	_, err = h.seqSvc.Allocate(ctx, "shop", rowid, 3)
+	require.NoError(t, err)
+
+	for _, name := range []string{autoinc, rowid} {
+		v, err := h.kvSvc.Get(ctx, "__seq:shop:"+name)
+		require.NoError(t, err, "counter %s must exist before the drop, or this test proves nothing", name)
+		require.NotEmpty(t, v)
+	}
+
+	mustExecQuery(t, prov, "shop", "DROP TABLE tickets")
+
+	for _, name := range []string{autoinc, rowid} {
+		_, err := h.kvSvc.Get(ctx, "__seq:shop:"+name)
+		var notFound *service.KeyNotFoundError
+		require.ErrorAs(t, err, &notFound,
+			"DROP TABLE must reclaim the %s counter; it is unreachable once the catalog row is gone", name)
+	}
+}
+
+// TestDatabase_DropTable_ReclaimsGenerationKey pins the fix for a permanent
+// leak: a table's TRUNCATE generation counter (go-qrdb#547) was never
+// deleted by DROP TABLE. TableID is never reused, so once the catalog row
+// naming this table is gone, nothing can ever again compute this key to
+// finish deleting it -- the record would otherwise persist for the life of
+// the store, one per table that was ever truncated then dropped.
+func TestDatabase_DropTable_ReclaimsGenerationKey(t *testing.T) {
+	h := newDDLHarness()
+	prov := h.newDDLProvider("shop")
+	ctx := context.Background()
+
+	mustExecQuery(t, prov, "shop", "CREATE TABLE widgets (id BIGINT UNSIGNED PRIMARY KEY)")
+	mustExecQuery(t, prov, "shop", "TRUNCATE TABLE widgets")
+
+	def, err := h.tableSvc.GetTable(ctx, "shop", "widgets")
+	require.NoError(t, err)
+	genKey := service.TableGenerationKey("shop", def.TableID)
+
+	_, err = h.kvSvc.Get(ctx, genKey)
+	require.NoError(t, err, "the generation key must exist after a TRUNCATE, or this test proves nothing")
+
+	mustExecQuery(t, prov, "shop", "DROP TABLE widgets")
+
+	_, err = h.kvSvc.Get(ctx, genKey)
+	var notFound *service.KeyNotFoundError
+	require.ErrorAs(t, err, &notFound,
+		"DROP TABLE must reclaim the generation key; it is unreachable once the catalog row is gone")
+}
+
+// TestDatabase_DropTable_FailedCatalogDropKeepsTheGeneration pins the DROP
+// ordering fix: the generation counter is deleted in the catalog's own
+// transaction, so a DROP whose catalog step fails leaves a table that still
+// resolves at its truncated generation -- never one silently back at
+// generation 0, writing into a keyspace an earlier TRUNCATE's reclaim job
+// may still be deleting.
+func TestDatabase_DropTable_FailedCatalogDropKeepsTheGeneration(t *testing.T) {
+	h := newDDLHarness()
+	prov := h.newDDLProvider("shop")
+	ctx := context.Background()
+
+	mustExecQuery(t, prov, "shop", "CREATE TABLE widgets (id BIGINT UNSIGNED PRIMARY KEY)")
+	mustExecQuery(t, prov, "shop", "TRUNCATE TABLE widgets")
+	before, err := h.tableSvc.GetTable(ctx, "shop", "widgets")
+	require.NoError(t, err)
+	genKey := service.TableGenerationKey("shop", before.TableID)
+
+	// Fail exactly the transaction that deletes the generation counter. It
+	// must be the catalog's own: a DROP that deleted the counter in any
+	// other step would get past this and leave the table at generation 0.
+	h.store.mu.Lock()
+	h.store.rejectTxn = func(ops []service.Op) bool {
+		for _, op := range ops {
+			if op.Type == service.OpDelete && string(op.Key) == genKey {
+				return true
+			}
+		}
+		return false
+	}
+	h.store.mu.Unlock()
+	_, _, err = execQuery(prov, "shop", "DROP TABLE widgets")
+	require.Error(t, err)
+	h.store.mu.Lock()
+	h.store.rejectTxn = nil
+	h.store.mu.Unlock()
+
+	def, err := h.tableSvc.GetTable(ctx, "shop", "widgets")
+	require.NoError(t, err, "the failed DROP must leave the table resolvable")
+	assert.Equal(t, uint64(1), def.Generation, "and still at its truncated generation")
+}
+
+// TestDatabase_DropTable_ReclaimsIndexEntriesTheCatalogDoesNotName proves
+// DROP TABLE reclaims the generation's whole index keyspace: entries of an
+// incarnation the catalog no longer lists (a dropped index whose reclaim job
+// has not run yet) go with the rest.
+func TestDatabase_DropTable_ReclaimsIndexEntriesTheCatalogDoesNotName(t *testing.T) {
+	h := newDDLHarness()
+	prov := h.newDDLProvider("shop")
+	ctx := context.Background()
+
+	mustExecQuery(t, prov, "shop", "CREATE TABLE widgets (id BIGINT UNSIGNED PRIMARY KEY)")
+	def, err := h.tableSvc.GetTable(ctx, "shop", "widgets")
+	require.NoError(t, err)
+	stray := service.TableIndexPrefix("shop", def.TableID, 0, 42) + "entry"
+	require.NoError(t, h.kvSvc.Put(ctx, stray, []byte{}))
+
+	mustExecQuery(t, prov, "shop", "DROP TABLE widgets")
+	sweepPastQuiescence(t, h)
+
+	_, err = h.kvSvc.Get(ctx, stray)
+	var notFound *service.KeyNotFoundError
+	require.ErrorAs(t, err, &notFound)
+}
+
+// TestDatabase_DropTable_ReclaimsSequenceCountersWhenNeverAllocated is the
+// other half: a table that allocated from neither counter still drops
+// cleanly. SequenceServicer.Delete is documented as idempotent and may not
+// report not-found, which is what lets the teardown delete both counters
+// unconditionally instead of inspecting the column definitions to guess which
+// exist.
+func TestDatabase_DropTable_ReclaimsSequenceCountersWhenNeverAllocated(t *testing.T) {
+	h := newDDLHarness()
+	prov := h.newDDLProvider("shop")
+
+	mustExecQuery(t, prov, "shop", "CREATE TABLE plain (id BIGINT UNSIGNED PRIMARY KEY)")
+	mustExecQuery(t, prov, "shop", "DROP TABLE plain")
+
+	_, err := h.tableSvc.GetTable(context.Background(), "shop", "plain")
+	var notFound *service.TableNotFoundError
+	require.ErrorAs(t, err, &notFound)
+}
+
+// racingTruncateTableService truncates the table between the provider's
+// resolution and its drop -- the window go-qrdb#547's N1 names.
+type racingTruncateTableService struct {
+	service.TableServicer
+}
+
+func (r *racingTruncateTableService) DropTable(ctx context.Context, req *service.DropTableRequest) error {
+	if _, err := r.TruncateTable(ctx, req.Database, req.Name, true); err != nil {
+		return err
+	}
+	return r.TableServicer.DropTable(ctx, req)
+}
+
+// TestDatabase_DropTable_RacingTruncateIsRefused proves DROP TABLE is fenced
+// on the generation it resolved. Unfenced, the drop named the old generation
+// in its reclaim job while the TRUNCATE's rows landed in a new one nobody
+// would ever reclaim. It is refused with the retryable serialization failure
+// instead, and the table survives for the retry.
+func TestDatabase_DropTable_RacingTruncateIsRefused(t *testing.T) {
+	h := newDDLHarness()
+	prov := h.newDDLProvider("shop")
+	mustExecQuery(t, prov, "shop", "CREATE TABLE widgets (id BIGINT UNSIGNED PRIMARY KEY)")
+
+	reg := h.registry.(*fakeRelationalRegistry)
+	reg.tableSvcFn = func(string, string) (service.TableServicer, error) {
+		return &racingTruncateTableService{TableServicer: h.tableSvc}, nil
+	}
+	err := h.newDDLDatabase("shop").DropTable(newTestContext(), "widgets")
+	requireLockDeadlockStale(t, err)
+
+	def, err := h.tableSvc.GetTable(context.Background(), "shop", "widgets")
+	require.NoError(t, err, "the refused drop leaves the table in place")
+	assert.Equal(t, uint64(1), def.Generation)
 }

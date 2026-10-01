@@ -303,7 +303,7 @@ func (m *mockAdminService) Peers(_ context.Context) (*service.PeersInfo, error) 
 	}, nil
 }
 
-func (m *mockAdminService) AddMember(_ context.Context, _, _ uint64, _ string) error {
+func (m *mockAdminService) AddMember(_ context.Context, _, _ uint64, _, _ string) error {
 	return nil
 }
 
@@ -362,7 +362,7 @@ func (e *errorAdminService) Peers(_ context.Context) (*service.PeersInfo, error)
 	return nil, errors.New("peers unavailable")
 }
 
-func (e *errorAdminService) AddMember(_ context.Context, _, _ uint64, _ string) error {
+func (e *errorAdminService) AddMember(_ context.Context, _, _ uint64, _, _ string) error {
 	return &service.MembershipError{Op: "add", Err: errors.New("not leader")}
 }
 

@@ -215,10 +215,14 @@ func TestUserByCertThumbprint_EnforcesExpiry(t *testing.T) {
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	tp := ComputeSPKIThumbprint(makeCertForKey(t, key, "admin", 1))
 
-	// Bind with an expiry one hour in the past.
-	expired := time.Now().Add(-time.Hour).Unix()
-	if _, err := s.AddCertBinding(ctx, u.ID, tp, expired); err != nil {
-		t.Fatalf("AddCertBinding: %v", err)
+	// A binding whose expiry has passed. AddCertBinding refuses to enrol one
+	// already expired, so it is written the way time produces it: a binding
+	// that was live when enrolled, as the record now holds it.
+	expired := time.Now().Add(-time.Hour).UTC()
+	if _, err := s.UpdateUser(ctx, &UpdateUserRequest{ID: u.ID, CertBindings: []CertBinding{
+		{Thumbprint: tp, Kind: CertBindingSPKIThumbprint, NotAfter: expired},
+	}}); err != nil {
+		t.Fatalf("UpdateUser(CertBindings): %v", err)
 	}
 	if _, err := s.UserByCertThumbprint(ctx, tp); err == nil {
 		t.Fatal("expired binding must not resolve a user")

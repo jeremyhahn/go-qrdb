@@ -102,6 +102,7 @@ func TestIsolationRaftDedicatedWAL_EndToEnd(t *testing.T) {
 				"--sm", "pebble",
 				"--discovery", "static",
 				"--peers", peersFlag,
+				"--member-identities", memberIdentitiesFlag(t, nodeCertPaths[:]),
 				"--shard-id", "1",
 				"--replica-id", fmt.Sprintf("%d", i+1),
 				"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
@@ -200,7 +201,7 @@ func TestIsolationRaftDedicatedWAL_EndToEnd(t *testing.T) {
 	_, uStatus := iraftAPIPost(t, sysClient,
 		fmt.Sprintf("https://127.0.0.1:%d/users", leaderPort),
 		map[string]interface{}{
-			"username": "admin", "tenant_id": dwTenantID,
+			"username": "admin", "email": "admin@" + dwTenantID + ".example.com", "tenant_id": dwTenantID,
 			"role_ids": []string{roleResp.ID},
 		})
 	if uStatus != http.StatusCreated && uStatus != http.StatusOK {

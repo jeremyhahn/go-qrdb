@@ -95,16 +95,6 @@ func TestProviderError_ErrorAndUnwrap(t *testing.T) {
 	}
 }
 
-// TestNotInitializedError_Error verifies the error string returned by
-// NotInitializedError contains a meaningful message.
-func TestNotInitializedError_Error(t *testing.T) {
-	e := &NotInitializedError{}
-	got := e.Error()
-	if !strings.Contains(got, "initialized") && !strings.Contains(got, "CatchInterrupt") {
-		t.Fatalf("NotInitializedError.Error() = %q: expected mention of initialized or CatchInterrupt", got)
-	}
-}
-
 // TestErrorTypes_Roundtrip exercises errors.As on each error type to ensure
 // the type system agrees with the implementations.
 func TestErrorTypes_Roundtrip(t *testing.T) {
@@ -129,13 +119,6 @@ func TestErrorTypes_Roundtrip(t *testing.T) {
 		}
 		_ = target.Error()
 	})
-	t.Run("NotInitializedError", func(t *testing.T) {
-		var target *NotInitializedError
-		if !errors.As(&NotInitializedError{}, &target) {
-			t.Fatal("errors.As failed")
-		}
-		_ = target.Error()
-	})
 }
 
 // NestedBorrowError's message must name the operation AND carry the outer
@@ -145,7 +128,7 @@ func TestErrorTypes_Roundtrip(t *testing.T) {
 func TestNestedBorrowError(t *testing.T) {
 	err := &NestedBorrowError{Op: "NewSecret", BorrowStack: "goroutine 7 [running]:\nsome.Frame()"}
 	msg := err.Error()
-	for _, want := range []string{"NewSecret", "purgeMu is not reentrant", "some.Frame()"} {
+	for _, want := range []string{"NewSecret", "nested calls into this package", "some.Frame()"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("Error() does not contain %q; got:\n%s", want, msg)
 		}

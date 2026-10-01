@@ -32,6 +32,7 @@ import (
 var (
 	_ KVStore       = (*MemoryKVStore)(nil)
 	_ AtomicKVStore = (*MemoryKVStore)(nil)
+	_ FencedCreator = (*MemoryKVStore)(nil)
 )
 
 // MemoryKVStore is a complete in-process KVStore: atomic conditional writes
@@ -177,6 +178,29 @@ func (s *MemoryKVStore) PutIfAbsent(ctx context.Context, key string, value []byt
 	defer s.mu.Unlock()
 	if _, exists := s.data[key]; exists {
 		return false, nil
+	}
+	if err := s.putLocked(key, value); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// PutIfAllAbsent stores value under key only when key and every fence key are
+// absent. The mutex makes every absence check and the write one indivisible
+// step; see FencedCreator.
+func (s *MemoryKVStore) PutIfAllAbsent(ctx context.Context, key string, value []byte, fences ...string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.data[key]; exists {
+		return false, nil
+	}
+	for _, f := range fences {
+		if _, exists := s.data[f]; exists {
+			return false, nil
+		}
 	}
 	if err := s.putLocked(key, value); err != nil {
 		return false, err

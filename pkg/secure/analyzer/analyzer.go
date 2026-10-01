@@ -17,7 +17,12 @@
 //
 // Rules enforced:
 //
-//  1. No `import "github.com/awnumar/memguard"` outside pkg/secure/.
+//  1. No `import "github.com/awnumar/memguard"` ANYWHERE, including
+//     pkg/secure itself. Locked memory comes only from pkg/secure or, for the
+//     small set of packages composing go-enclave primitives directly
+//     (pkg/seal, pkg/clusterkeys, pkg/keydelivery), go-enclave itself
+//     (go-qrdb#114, go-qrdb#553). memguard is retired from this repository;
+//     there is no longer an exempt package for it.
 //  2. No calls to `ssh.ParsePrivateKey`. Callers must use
 //     `ssh.ParsePrivateKeyWithPassphrase` on Buffer-backed bytes.
 //  3. Struct fields named Passphrase, Password, PIN, Secret, PrivateKey,
@@ -84,17 +89,12 @@ var Analyzer = &analysis.Analyzer{
 	Run:      run,
 }
 
-// bannedImport is the raw memguard import path. Only pkg/secure is
-// permitted to reference it directly.
+// bannedImport is the raw memguard import path. go-enclave's adoption
+// (go-qrdb#114, go-qrdb#553) retired memguard from this repository
+// entirely, so unlike the SSH and field rules below, this one has no
+// exempt package — not even pkg/secure, which used to be the one
+// permitted to reference it directly and no longer does.
 const bannedImport = "github.com/awnumar/memguard"
-
-// allowedImportPrefix is the exact pkg/secure import path for the qrdb
-// module. Source files whose package path contains this substring are
-// exempt from the memguard ban.
-var allowedImportSubstrings = []string{
-	"go-qrdb/pkg/secure",
-	"go-qrdb/sdk/go/secure",
-}
 
 // bannedSSHFunc is the unsafe SSH private-key parse function. Callers
 // must use ParsePrivateKeyWithPassphrase, which accepts Buffer-backed
@@ -126,22 +126,13 @@ var sensitiveFieldNames = map[string]struct{}{
 }
 
 func run(pass *analysis.Pass) (any, error) {
-	pkgPath := pass.Pkg.Path()
-	inPkgSecure := false
-	for _, sub := range allowedImportSubstrings {
-		if strings.Contains(pkgPath, sub) {
-			inPkgSecure = true
-			break
-		}
-	}
-
-	// Rule 1: ban raw memguard imports outside pkg/secure.
+	// Rule 1: ban raw memguard imports everywhere, no exempt package.
 	for _, file := range pass.Files {
 		for _, imp := range file.Imports {
 			path := strings.Trim(imp.Path.Value, `"`)
-			if path == bannedImport && !inPkgSecure {
+			if path == bannedImport {
 				pass.Reportf(imp.Pos(),
-					"import of %q is forbidden outside pkg/secure; use github.com/jeremyhahn/go-qrdb/pkg/secure instead",
+					"import of %q is forbidden; use github.com/jeremyhahn/go-qrdb/pkg/secure or github.com/jeremyhahn/go-enclave instead",
 					bannedImport)
 			}
 		}

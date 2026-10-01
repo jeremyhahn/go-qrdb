@@ -75,18 +75,6 @@ func (e *RetrievalError) Unwrap() error {
 	return e.Cause
 }
 
-// DocumentNotFoundError is returned when a document ID is not found in the
-// given namespace.
-type DocumentNotFoundError struct {
-	ID        string
-	Namespace string
-}
-
-// Error returns a human-readable description of the missing document.
-func (e *DocumentNotFoundError) Error() string {
-	return "rag: document not found: " + e.Namespace + "/" + e.ID
-}
-
 // EmptyQueryError is returned when a retrieve request contains an empty query
 // string.
 type EmptyQueryError struct{}

@@ -62,16 +62,52 @@ const (
 	AuthFailureUnauthorized
 
 	// AuthFailureUnavailable -- NEITHER the credential nor the grant failed.
-	// This node could not answer: it could not record the decision
-	// (*audit.GateError), could not read the user store (*StoreUnavailableError),
-	// or could not read revocation state (*auth.RevocationCheckError).
-	// RETRY IS THE HONEST INSTRUCTION. 503 / Unavailable.
+	// This node could not answer: it could not read the user store
+	// (*StoreUnavailableError -- which includes a sealed tenant barrier,
+	// tenant.ErrTenantSealed), could not read revocation state
+	// (*auth.RevocationCheckError), or could not resolve which tenant a
+	// revocation targets (*CertSerialUnresolvableError). RETRY IS THE HONEST
+	// INSTRUCTION. 503 / Unavailable.
+	//
+	// It does NOT cover a failure to RECORD a decision -- see
+	// AuthFailureAuditUnavailable, its sibling below. The two used to be one
+	// class, and every one of the transport statuses is identical between
+	// them; they are split because control-flow code -- "was this refusal an
+	// audit-sink outage, or the sealed-tenant signal a bootstrap fallback
+	// exists to act on?" -- could otherwise test the wide class and get the
+	// wrong answer for whichever member it did not mean (go-qrdb#460). A
+	// transport mapping the two identically is correct and intended; a
+	// control-flow branch conflating them is the bug this split exists to
+	// make impossible.
 	AuthFailureUnavailable
 
 	// AuthFailureRateLimited -- credential and grant are both fine and the
 	// caller is over its quota. Back off and retry.
 	// 429 / ResourceExhausted.
 	AuthFailureRateLimited
+
+	// AuthFailureAuditUnavailable -- the decision itself could not be
+	// RECORDED (*audit.GateError): the credential may be good, the grant may
+	// be good, or the SO PIN may be good, and this node refused anyway
+	// because it could not write the outcome to its audit sink. Every
+	// transport answers it exactly as AuthFailureUnavailable -- 503 /
+	// Unavailable, retryable -- so a caller deciding HOW TO ANSWER THE WIRE
+	// never needs to tell the two apart.
+	//
+	// A caller deciding CONTROL FLOW does. The tenant-barrier bootstrap
+	// fallbacks (barrier_bootstrap.go) and the SO-PIN gate (so_middleware.go)
+	// must refuse outright on THIS class -- an unrecorded decision is not a
+	// verdict the fallback may act on -- while a sealed tenant
+	// (AuthFailureUnavailable) is precisely the signal those fallbacks exist
+	// to admit. Before this class existed both cases were
+	// AuthFailureUnavailable, and the only thing keeping a control-flow
+	// branch from conflating them was a comment and a test at each call site
+	// (isAuditFailure); now the type itself says which is which, and a
+	// caller can safely switch on the class. See docs/audit/engineering.md
+	// ("The SO path specifically") for the worked example, and
+	// go-qrdb#335/#445 for why an audit-sink outage produces an error here
+	// at all.
+	AuthFailureAuditUnavailable
 )
 
 // String returns a short name for logs and test failure messages.
@@ -85,6 +121,8 @@ func (c AuthFailureClass) String() string {
 		return "unavailable"
 	case AuthFailureRateLimited:
 		return "rate-limited"
+	case AuthFailureAuditUnavailable:
+		return "audit-unavailable"
 	default:
 		return "unknown"
 	}
@@ -96,13 +134,15 @@ func (c AuthFailureClass) String() string {
 // results carry text -- still has to answer, so that its message does not tell
 // an operator "authorization denied" about a full audit disk.
 func (c AuthFailureClass) Retryable() bool {
-	return c == AuthFailureUnavailable || c == AuthFailureRateLimited
+	return c == AuthFailureUnavailable || c == AuthFailureRateLimited || c == AuthFailureAuditUnavailable
 }
 
-// authFailureRules is the ORDERED classification chain. Order is significant
-// and reproduces, exactly, the sequence mapHTTPAuthError and mapGRPCAuthError
-// each used to spell out separately -- so neither changes behaviour for any
-// error either already recognised.
+// authFailureRules is the ORDERED classification chain, first-match-wins.
+// Below the audit.GateError and PeerAttestationRefusedError rules (placed at
+// the front for reasons of their own, see their comments), the remaining
+// order reproduces, exactly, the sequence
+// mapHTTPAuthError and mapGRPCAuthError each used to spell out separately --
+// so neither changes behaviour for any error either already recognised.
 //
 // A slice rather than a map keyed by type: errors.As has to run against a
 // typed target, and the chain is first-match-wins, which a map cannot express.
@@ -111,6 +151,58 @@ var authFailureRules = []struct {
 	name  string
 	match func(error) (AuthFailureClass, bool)
 }{
+	// FIRST, ahead of auth.AuthError and StoreUnavailableError, and
+	// deliberately NOT in the order mapHTTPAuthError/mapGRPCAuthError used to
+	// spell out (that history is why every OTHER rule below keeps its
+	// relative position).
+	//
+	// errors.As walks err's ENTIRE unwrap chain, not just its outermost
+	// layer, and *audit.GateError.Err is the audit SINK's own failure -- a
+	// value this package does not control, because the sink is pluggable.
+	// If a sink implementation's write error happens to be, or itself wrap,
+	// an *auth.AuthError or *StoreUnavailableError, checking those rules
+	// first would find that INNER, coincidental match and classify the
+	// failure as a credential or store problem -- when the fact that
+	// actually matters, and is true regardless of what the sink's error
+	// looks like, is that this node could not RECORD the decision at all.
+	// isAuditFailure (barrier_bootstrap.go) and the SO-PIN gate
+	// (so_middleware.go) both depend on AuthFailureAuditUnavailable being
+	// exactly this reliable: checking it last would leave both fallbacks
+	// exposed to a sink whose error type this package cannot constrain.
+	//
+	// The credential is valid and the grant -- or the SO PIN -- may be too.
+	// ONE rule covers every gate, because go-qrdb#445 made them one type; a
+	// second error type for the SO factor would have meant a second rule
+	// here and a second mapping in each of the four transports.
+	//
+	// AuthFailureAuditUnavailable, NOT AuthFailureUnavailable -- see the two
+	// classes' doc comments (go-qrdb#460). Every transport maps both to the
+	// same status, so this line changes no transport's answer; it changes
+	// what a control-flow branch can safely test.
+	{"audit.GateError", func(err error) (AuthFailureClass, bool) {
+		var e *audit.GateError
+		return AuthFailureAuditUnavailable, errors.As(err, &e)
+	}},
+	// The peer is authenticated and authorized; its measured state is not
+	// acceptable, so the answer is "forbidden". The one exception is a
+	// verifier that could not decide: that is a statement about this node,
+	// not the peer, and retrying may succeed. It is still a refusal.
+	//
+	// This rule sits directly below the audit rule and ABOVE every rule that
+	// could match the wrapped Err: a verifier error is the verifier's own
+	// type -- an injected implementation this package does not control -- and
+	// errors.As walks the whole chain, so a later position would classify the
+	// refusal by whatever that type happens to be.
+	{"PeerAttestationRefusedError", func(err error) (AuthFailureClass, bool) {
+		var e *PeerAttestationRefusedError
+		if !errors.As(err, &e) {
+			return AuthFailureUnknown, false
+		}
+		if e.Reason == PeerAttestationVerifierError {
+			return AuthFailureUnavailable, true
+		}
+		return AuthFailureUnauthorized, true
+	}},
 	{"auth.AuthError", func(err error) (AuthFailureClass, bool) {
 		var authErr *auth.AuthError
 		if !errors.As(err, &authErr) {
@@ -128,15 +220,6 @@ var authFailureRules = []struct {
 	}},
 	{"StoreUnavailableError", func(err error) (AuthFailureClass, bool) {
 		var e *StoreUnavailableError
-		return AuthFailureUnavailable, errors.As(err, &e)
-	}},
-	// The audit plane failed, not the caller. See audit.GateError: the
-	// credential is valid and the grant -- or the SO PIN -- may be too. ONE
-	// rule covers every gate, because go-qrdb#445 made them one type; a second
-	// error type for the SO factor would have meant a second rule here and a
-	// second mapping in each of the four transports.
-	{"audit.GateError", func(err error) (AuthFailureClass, bool) {
-		var e *audit.GateError
 		return AuthFailureUnavailable, errors.As(err, &e)
 	}},
 	// The certificate may be perfectly good and this node could not read
@@ -163,6 +246,13 @@ var authFailureRules = []struct {
 	// the account actually enrolled works.
 	{"CertBindingNotPermittedError", func(err error) (AuthFailureClass, bool) {
 		var e *CertBindingNotPermittedError
+		return AuthFailureUnauthenticated, errors.As(err, &e)
+	}},
+	// Same reasoning as the rule above: under the "required" binding posture
+	// an account with no enrolled key cannot establish who it is by
+	// certificate, and enrolling the presented key is what makes it work.
+	{"CertBindingRequiredError", func(err error) (AuthFailureClass, bool) {
+		var e *CertBindingRequiredError
 		return AuthFailureUnauthenticated, errors.As(err, &e)
 	}},
 	{"AuthChainError", func(err error) (AuthFailureClass, bool) {
@@ -203,10 +293,11 @@ func ClassifyAuthError(err error) AuthFailureClass {
 
 // httpStatusByClass maps a classified failure onto its HTTP status.
 var httpStatusByClass = map[AuthFailureClass]int{
-	AuthFailureUnauthenticated: http.StatusUnauthorized,
-	AuthFailureUnauthorized:    http.StatusForbidden,
-	AuthFailureUnavailable:     http.StatusServiceUnavailable,
-	AuthFailureRateLimited:     http.StatusTooManyRequests,
+	AuthFailureUnauthenticated:  http.StatusUnauthorized,
+	AuthFailureUnauthorized:     http.StatusForbidden,
+	AuthFailureUnavailable:      http.StatusServiceUnavailable,
+	AuthFailureRateLimited:      http.StatusTooManyRequests,
+	AuthFailureAuditUnavailable: http.StatusServiceUnavailable,
 }
 
 // HTTPStatus returns the HTTP status err means, or fallback when this package
@@ -238,10 +329,11 @@ func HTTPStatus(err error, fallback int) int {
 // the standard signal a gRPC client library maps to "back off and retry"
 // rather than "re-authenticate" or "do not retry at all".
 var grpcCodeByClass = map[AuthFailureClass]codes.Code{
-	AuthFailureUnauthenticated: codes.Unauthenticated,
-	AuthFailureUnauthorized:    codes.PermissionDenied,
-	AuthFailureUnavailable:     codes.Unavailable,
-	AuthFailureRateLimited:     codes.ResourceExhausted,
+	AuthFailureUnauthenticated:  codes.Unauthenticated,
+	AuthFailureUnauthorized:     codes.PermissionDenied,
+	AuthFailureUnavailable:      codes.Unavailable,
+	AuthFailureRateLimited:      codes.ResourceExhausted,
+	AuthFailureAuditUnavailable: codes.Unavailable,
 }
 
 // GRPCError converts err to a gRPC status error, using fallback for anything

@@ -48,31 +48,31 @@ var _ user.UserServicer = (*fakeUserServicer)(nil)
 
 func (f *fakeUserServicer) CreateUser(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
 	f.lastCreate = req
-	return &user.User{ID: 1, Username: req.Username, Email: req.Email, Name: req.Name, TenantID: req.TenantID, RoleIDs: req.RoleIDs, Enabled: true, CreatedAt: time.Unix(1700000000, 0), UpdatedAt: time.Unix(1700000000, 0)}, nil
+	return &user.User{ID: 1, Username: req.Username, Email: req.Email, Name: req.Name, TenantID: req.TenantID, RoleIDs: req.RoleIDs, Lifecycle: user.LifecycleActive, CreatedAt: time.Unix(1700000000, 0), UpdatedAt: time.Unix(1700000000, 0)}, nil
 }
 
 func (f *fakeUserServicer) GetUser(_ context.Context, id uint64) (*user.User, error) {
-	return &user.User{ID: id, Username: "alice", Enabled: true, CreatedAt: time.Unix(1700000000, 0), UpdatedAt: time.Unix(1700000000, 0)}, nil
+	return &user.User{ID: id, Username: "alice", Lifecycle: user.LifecycleActive, CreatedAt: time.Unix(1700000000, 0), UpdatedAt: time.Unix(1700000000, 0)}, nil
 }
 
 func (f *fakeUserServicer) GetUserByUsername(_ context.Context, tenantID, username string) (*user.User, error) {
-	return &user.User{ID: 1, Username: username, TenantID: tenantID, Enabled: true, CreatedAt: time.Unix(1700000000, 0), UpdatedAt: time.Unix(1700000000, 0)}, nil
+	return &user.User{ID: 1, Username: username, TenantID: tenantID, Lifecycle: user.LifecycleActive, CreatedAt: time.Unix(1700000000, 0), UpdatedAt: time.Unix(1700000000, 0)}, nil
 }
 
 func (f *fakeUserServicer) GetUserByEmail(_ context.Context, tenantID, email string) (*user.User, error) {
 	normalized := user.NormalizeEmail(email)
-	return &user.User{ID: 1, Username: normalized, Email: normalized, TenantID: tenantID, Enabled: true, CreatedAt: time.Unix(1700000000, 0), UpdatedAt: time.Unix(1700000000, 0)}, nil
+	return &user.User{ID: 1, Username: normalized, Email: normalized, TenantID: tenantID, Lifecycle: user.LifecycleActive, CreatedAt: time.Unix(1700000000, 0), UpdatedAt: time.Unix(1700000000, 0)}, nil
 }
 
 func (f *fakeUserServicer) UpdateUser(_ context.Context, req *user.UpdateUserRequest) (*user.User, error) {
-	return &user.User{ID: req.ID, Username: req.Username, RoleIDs: req.RoleIDs, Enabled: true, CreatedAt: time.Unix(1700000000, 0), UpdatedAt: time.Unix(1700000000, 0)}, nil
+	return &user.User{ID: req.ID, Username: req.Username, RoleIDs: req.RoleIDs, Lifecycle: user.LifecycleActive, CreatedAt: time.Unix(1700000000, 0), UpdatedAt: time.Unix(1700000000, 0)}, nil
 }
 
 func (f *fakeUserServicer) DeleteUser(_ context.Context, _ uint64) error { return nil }
 
 func (f *fakeUserServicer) ListUsers(_ context.Context, _ *user.ListUsersRequest) (*user.ListUsersResponse, error) {
 	return &user.ListUsersResponse{
-		Users: []*user.User{{ID: 1, Username: "alice", Enabled: true, CreatedAt: time.Unix(1700000000, 0), UpdatedAt: time.Unix(1700000000, 0)}},
+		Users: []*user.User{{ID: 1, Username: "alice", Lifecycle: user.LifecycleActive, CreatedAt: time.Unix(1700000000, 0), UpdatedAt: time.Unix(1700000000, 0)}},
 		Total: 1,
 	}, nil
 }

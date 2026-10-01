@@ -130,6 +130,17 @@ Note the two spellings in this group: the hyphenated
 factor-verified** path; the nested `claim-share begin`/`complete` are the
 **officer, signature-verified** path. They are different flows, not aliases.
 
+The factor challenge/response here is verified through `pkg/ceremony`'s own
+`CeremonyExtension.FactorVerifier` seam (`CeremonyService.ClaimShareChallenge`
+/ `VerifyClaimAndDeliver`) — a **different** seam from the
+`service.AuthFactorServicer` the daemon exposes at `/v1/authfactors/*` and
+documents in
+[../auth-factors/engineering.md](../auth-factors/engineering.md#the-custodian-surface-is-routed-too).
+No composer in this repository calls `SetExtension` to supply that extension
+today, so `claim-share-begin` and `claim-share-complete` return
+`ErrNotImplemented` until one does; the tenant-routing described there applies
+to the separate `/v1/authfactors/*` surface, not to this one.
+
 ## Related groups
 
 - **Root `qrdb init`** — the one-call bootstrap. [../firstboot/cli.md](../firstboot/cli.md)

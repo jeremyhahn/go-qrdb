@@ -33,6 +33,11 @@ var _ Backend = (*DiskBackend)(nil)
 // All operations delegate to the underlying storage without any caching.
 type DiskBackend struct {
 	store storage.Storage
+
+	// stamp, when set, is the applied-index marker DiskAdapter keeps, and
+	// ApplyAtomic commits it in the same storage batch as the set. nil for a
+	// backend used outside a DiskAdapter.
+	stamp *appliedIndexStamp
 }
 
 // NewDiskBackend creates a new DiskBackend wrapping the given storage.
@@ -49,20 +54,17 @@ func (b *DiskBackend) Get(key []byte) ([]byte, error) {
 	return val, nil
 }
 
-// Put stores a key-value pair synchronously.
+// Put stores a key-value pair synchronously, as a one-mutation ApplyAtomic,
+// so the write and the applied-index marker of the entry that made it commit
+// together (see ApplyAtomic).
 func (b *DiskBackend) Put(key, value []byte) error {
-	if err := b.store.Set(key, value); err != nil {
-		return &StorageError{Op: "set", Inner: err}
-	}
-	return nil
+	return b.ApplyAtomic([]Mutation{{Key: key, Value: value}})
 }
 
-// Delete removes a key synchronously.
+// Delete removes a key synchronously, as a one-mutation ApplyAtomic, for the
+// reason Put gives.
 func (b *DiskBackend) Delete(key []byte) error {
-	if err := b.store.Delete(key); err != nil {
-		return &StorageError{Op: "delete", Inner: err}
-	}
-	return nil
+	return b.ApplyAtomic([]Mutation{{Key: key, Delete: true}})
 }
 
 // List returns all keys matching the given prefix.
@@ -294,13 +296,80 @@ func (b *DiskBackend) clearStorage() error {
 
 // PutDurable delegates to Put, and DeleteDurable to Delete.
 //
-// Every write on this backend already goes straight through to storage on the
-// CALLING goroutine and returns that storage's error, so an acknowledgement
-// means the write is durable, a failure is reported rather than logged, and
-// writes reach storage in the order the apply loop issued them. This is the
-// one backend that holds real storage and whose unguarded pair already answers
-// the guarded contract in full.
+// Every write on this backend already commits synchronously, on the calling
+// goroutine, through ApplyAtomic, and returns that storage's error: an
+// acknowledgement means the write is durable, a failure is reported rather
+// than logged, and writes reach storage in the order the apply loop issued
+// them. That is the guarded contract in full, and each write carries the
+// applied-index marker of the entry that made it.
 func (b *DiskBackend) PutDurable(key, value []byte) error { return b.Put(key, value) }
 
 // DeleteDurable delegates to Delete — see PutDurable.
 func (b *DiskBackend) DeleteDurable(key []byte) error { return b.Delete(key) }
+
+// ApplyAtomic commits the whole set as ONE storage.Batch, whose Commit is
+// atomic by the storage.Batch contract: a crash leaves storage holding all of
+// it or none of it, and a reader never observes a subset. storage.Batch.Commit
+// returns only once the batch has been applied, and returns its failure, which
+// is the guarded pair's durability and failure promises; ordering holds because
+// every write on this backend reaches storage synchronously, on the apply
+// goroutine, in apply order.
+//
+// When the backend serves a DiskAdapter, the applied-index marker for the
+// entry being applied is written in the SAME batch — for every write this
+// backend makes, single-key ones included, since Put, Delete and the durable
+// pair all commit through here. That is what keeps an entry from being
+// applied twice: without it a crash after the write and before the marker
+// replays the entry over its own result, and a guarded write can decide the
+// other way. A CompareAndSwap that failed against an absent key, followed by a
+// PutIfAbsent that created it, replays with the swap now SUCCEEDING and the
+// create now declining — a replica diverging from the log every other replica
+// applied once.
+func (b *DiskBackend) ApplyAtomic(muts []Mutation) error {
+	if len(muts) == 0 {
+		return nil
+	}
+	set := muts
+	if marker, ok := b.stamp.mutation(); ok {
+		set = append(append(make([]Mutation, 0, len(muts)+1), muts...), marker)
+	}
+	if err := commitMutations(b.store, set); err != nil {
+		return &StorageError{Op: "apply-atomic", Inner: err}
+	}
+	return nil
+}
+
+// appliedIndexStamp carries the log index of the entry a DiskAdapter is
+// applying down to DiskBackend.ApplyAtomic. It is written and read only on the
+// apply goroutine — go-quicraft never runs Update concurrently with itself —
+// so it needs no synchronisation.
+type appliedIndexStamp struct {
+	index uint64
+}
+
+// mutation returns the marker write for the entry being applied, and false
+// when there is none: no stamp, or no entry in flight.
+func (s *appliedIndexStamp) mutation() (Mutation, bool) {
+	if s == nil || s.index == 0 {
+		return Mutation{}, false
+	}
+	return Mutation{Key: []byte(diskMetaKeyLastApplied), Value: encodeAppliedIndex(s.index)}, true
+}
+
+// commitMutations writes set to store as one storage.Batch.
+func commitMutations(store storage.Storage, set []Mutation) error {
+	batch := store.Batch()
+	defer func() { _ = batch.Close() }()
+	for _, m := range set {
+		var err error
+		if m.Delete {
+			err = batch.Delete(m.Key)
+		} else {
+			err = batch.Set(m.Key, m.Value)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return batch.Commit()
+}

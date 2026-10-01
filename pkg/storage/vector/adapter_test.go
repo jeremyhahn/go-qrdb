@@ -15,7 +15,6 @@ package vector
 
 import (
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -44,8 +43,7 @@ func (l *testLogger) WithError(err error) interfaces.Logger                     
 // Returns the storage and a cleanup function.
 func setupStorage(t *testing.T) (*PebbleVectorStorage, func()) {
 	t.Helper()
-	tmpDir := filepath.Join(os.TempDir(), "vector_test_"+t.Name())
-	_ = os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	log := &testLogger{}

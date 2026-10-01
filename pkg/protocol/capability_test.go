@@ -90,3 +90,24 @@ func TestUnknownOpErrorDeclaresItsCapability(t *testing.T) {
 		t.Errorf("Capability() = %q, want %q", got, want)
 	}
 }
+
+// refusalStubError declares a refusal on the request's merits.
+type refusalStubError struct{}
+
+func (refusalStubError) Error() string   { return "stub: invalid request" }
+func (refusalStubError) Refusal() string { return "stub" }
+
+// TestAsRefusalError finds a RefusalError through wrapping, and does not
+// mistake a capability refusal or a plain error for one.
+func TestAsRefusalError(t *testing.T) {
+	wrapped := fmt.Errorf("apply: %w", refusalStubError{})
+	got, ok := AsRefusalError(wrapped)
+	if !ok || got.Refusal() != "stub" {
+		t.Fatalf("AsRefusalError(wrapped) = (%v, %v); want the stub", got, ok)
+	}
+	for _, err := range []error{errors.New("plain"), &subsystemStubError{name: "ts"}, nil} {
+		if _, ok := AsRefusalError(err); ok {
+			t.Errorf("AsRefusalError(%v) = true; want false", err)
+		}
+	}
+}

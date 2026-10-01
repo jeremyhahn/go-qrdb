@@ -40,7 +40,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	tenantpkg "github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -544,6 +543,14 @@ func (m *mockTenantServicer) GetTenant(_ context.Context, _ string) (*tenantpkg.
 	return nil, nil
 }
 
+func (m *mockTenantServicer) ListDeletedTenants(_ context.Context, _ string, _ int) (*tenantpkg.DeletedTenantsPage, error) {
+	return &tenantpkg.DeletedTenantsPage{}, nil
+}
+
+func (m *mockTenantServicer) ReconcileDeletedTenants(_ context.Context) (*tenantpkg.ReconcileReport, error) {
+	return &tenantpkg.ReconcileReport{}, nil
+}
+
 func (m *mockTenantServicer) ListTenants(_ context.Context) ([]tenantpkg.TenantInfo, error) {
 	return nil, nil
 }
@@ -679,14 +686,43 @@ func TestRunFirstBoot_RoleAlreadyExists(t *testing.T) {
 		createRoleFn: func(_ context.Context, req *role.CreateRoleRequest) (*role.Role, error) {
 			return nil, &role.RoleNameExistsError{Name: req.Name, TenantID: req.TenantID}
 		},
+		// The record read back must be field-for-field the canonical built-in
+		// definition (go-qrdb#555's provenance check), except its id — a
+		// name collision tolerates a differing id, modelling a cluster
+		// seeded under role.SystemRoleID's retired hash algorithm. Getting
+		// this wrong (as a plain {ID, Name, TenantID} literal with no
+		// Permissions or System) would make registerBuiltInRoles correctly
+		// refuse the collision as unverifiable.
 		getRoleByNameFn: func(_ context.Context, tenantID, name string) (*role.Role, error) {
-			return &role.Role{ID: "r-existing-" + name, Name: name, TenantID: tenantID}, nil
+			canonical := canonicalRoleForTest(tenantID, name)
+			canonical.ID = "r-existing-" + name
+			return canonical, nil
 		},
 	}
 
 	node := &mockRaftNode{} // default: leader ready
 	err := runFirstBoot(context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
 	require.NoError(t, err)
+}
+
+// canonicalRoleForTest returns the canonical built-in role definition for
+// name (Admin, Owner, or one of role.BuiltInRoles' other names), matching
+// what registerBuiltInRoles' provenance check (go-qrdb#555) requires a
+// resolver's answer to equal: TenantID, Name, System, and the exact
+// permission set. Callers that need to model a legacy or malformed record
+// mutate the returned copy's ID or other fields afterward.
+func canonicalRoleForTest(tenantID, name string) *role.Role {
+	for _, r := range role.BuiltInRoles(tenantID) {
+		if r.Name == name {
+			cp := *r
+			return &cp
+		}
+	}
+	if owner := role.OwnerRole(tenantID); owner.Name == name {
+		cp := *owner
+		return &cp
+	}
+	panic("canonicalRoleForTest: unknown built-in role name " + name)
 }
 
 // ---------------------------------------------------------------------------
@@ -755,8 +791,15 @@ func TestRunFirstBoot_AdminCreateError(t *testing.T) {
 
 func TestRunFirstBoot_AdminUsernameExists(t *testing.T) {
 	userSvc := &mockUserServicer{
-		getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
-			return nil, &user.UserNotFoundError{Lookup: "admin"}
+		// The resolver must agree with CreateUser that "admin" already
+		// exists — go-qrdb#555's provenance check (createAdminUser) now
+		// verifies a username collision by reading the record back, exactly
+		// as a real user.UserServicer would let it, rather than trusting
+		// UsernameExistsError alone. A resolver contradicting its own
+		// CreateUser (not-found here, already-exists there) models a store
+		// no real implementation is.
+		getUserByUsernameFn: func(_ context.Context, tenantID, username string) (*user.User, error) {
+			return &user.User{ID: 1, Username: username, TenantID: tenantID}, nil
 		},
 		createUserFn: func(_ context.Context, _ *user.CreateUserRequest) (*user.User, error) {
 			return nil, &user.UsernameExistsError{Username: "admin", TenantID: "system"}
@@ -883,6 +926,16 @@ func TestRunFirstBoot_RoleExistsUsesPersistedIDs(t *testing.T) {
 	roleSvc := &mockRoleServicer{
 		createRoleFn: func(_ context.Context, req *role.CreateRoleRequest) (*role.Role, error) {
 			return nil, &role.RoleNameExistsError{Name: req.Name, TenantID: req.TenantID}
+		},
+		// Persisted under "r-"+name, matching the assertions below, but
+		// otherwise the canonical definition: go-qrdb#555's provenance check
+		// requires the resolver's answer to carry the exact TenantID,
+		// System, and permission set the built-in role does, even though its
+		// id is deliberately NOT the freshly derived one.
+		getRoleByNameFn: func(_ context.Context, tenantID, name string) (*role.Role, error) {
+			canonical := canonicalRoleForTest(tenantID, name)
+			canonical.ID = "r-" + name
+			return canonical, nil
 		},
 	}
 	node := &mockRaftNode{} // default: leader ready
@@ -1037,13 +1090,14 @@ func TestBootstrapAuth_Success(t *testing.T) {
 
 	dataDir := t.TempDir()
 	node := &mockRaftNode{} // default: leader ready
-	mgmt, err := bootstrapUserRoleStores(context.Background(), mock, mock, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil)
+	tx := newMockTransactionServicer(store)
+	mgmt, err := bootstrapUserRoleStores(context.Background(), mock, mock, tx, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil)
 	require.NoError(t, err)
 	require.NotNil(t, mgmt)
 	require.NotNil(t, mgmt.userSvc)
 	require.NotNil(t, mgmt.roleSvc)
 
-	authResult, err := bootstrapAuthEnforcement(context.Background(), mgmt, mock, &mockTxServicer{}, dataDir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{}, nil, "", "")
+	authResult, err := bootstrapAuthEnforcement(context.Background(), mgmt, dataDir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{}, nil, "", "", "")
 	require.NoError(t, err)
 	require.NotNil(t, authResult)
 	require.NotNil(t, authResult.auditLogger)
@@ -1105,11 +1159,12 @@ func TestBootstrapAuth_NoSideFile_DecisionAuditRidesChain(t *testing.T) {
 	// middleware.
 	nonexistentDir := filepath.Join(t.TempDir(), "does", "not", "exist")
 	node := &mockRaftNode{} // default: leader ready
+	tx := newMockTransactionServicer(store)
 
-	mgmt, err := bootstrapUserRoleStores(context.Background(), mock, mock, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil)
+	mgmt, err := bootstrapUserRoleStores(context.Background(), mock, mock, tx, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil)
 	require.NoError(t, err)
 
-	result, err := bootstrapAuthEnforcement(context.Background(), mgmt, mock, &mockTxServicer{}, nonexistentDir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{}, nil, "", "")
+	result, err := bootstrapAuthEnforcement(context.Background(), mgmt, nonexistentDir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{}, nil, "", "", "")
 	require.NoError(t, err)
 	require.NotNil(t, result)
 }
@@ -1555,40 +1610,6 @@ func TestInitializeNode_UnknownSMType(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// defaultMVCCFastLogger: returns a valid logger
-// ---------------------------------------------------------------------------
-
-func TestDefaultMVCCFastLogger(t *testing.T) {
-	log := defaultMVCCFastLogger()
-	require.NotNil(t, log)
-}
-
-// ---------------------------------------------------------------------------
-// defaultMVCCFastStorageFactory: happy path
-// ---------------------------------------------------------------------------
-
-func TestDefaultMVCCFastStorageFactory(t *testing.T) {
-	factory := defaultMVCCFastStorageFactory()
-	require.NotNil(t, factory)
-
-	s := factory(1, 1)
-	require.NotNil(t, s)
-	t.Cleanup(func() { _ = s.Close() })
-}
-
-// ---------------------------------------------------------------------------
-// init(): mvcc-fast registry factory is callable
-// ---------------------------------------------------------------------------
-
-func TestInitMVCCFastRegistered(t *testing.T) {
-	// Resolving "mvcc-fast" from the registry invokes the closure
-	// registered in init(), covering the factory call at start.go:151-155.
-	createFn, err := statemachine.Resolve("mvcc-fast")
-	require.NoError(t, err)
-	require.NotNil(t, createFn)
-}
-
-// ---------------------------------------------------------------------------
 // applyConfigToFlags: bootstrap fields applied from config
 // ---------------------------------------------------------------------------
 
@@ -1965,27 +1986,6 @@ func TestRunStart_PebbleSMTypeExercisesSwitch(t *testing.T) {
 		assert.False(t, errors.As(err, &smErr),
 			"pebble SM should not trigger UnknownSMError: %v", err)
 	}
-}
-
-// ---------------------------------------------------------------------------
-// bootstrapTLS: SPKI configured but no bootstrapAddr skips SPKI method
-//
-// bootstrapSPKIPin is set but bootstrapAddr is empty, so the SPKI config
-// branch is not entered. With no other methods configured, AutoFetch
-// fails with BootstrapFetchError (no methods to try).
-// ---------------------------------------------------------------------------
-
-func TestBootstrapTLS_SPKIPinWithNoAddr(t *testing.T) {
-	f := &startFlags{
-		dataDir:          t.TempDir(),
-		bootstrapSPKIPin: "sha256//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-		// bootstrapAddr intentionally omitted — SPKI block not entered.
-	}
-
-	_, err := bootstrapTLS(f, testLogger())
-	require.Error(t, err)
-	var fetchErr *BootstrapFetchError
-	require.True(t, errors.As(err, &fetchErr))
 }
 
 // ---------------------------------------------------------------------------

@@ -63,6 +63,7 @@ yet. It is the server half of the `direct` mode, and it is real.
 |---|---|---|
 | Any `qrdb bootstrap <mode>` | `PendingBootstrapBackendError{Mode}` | **yes** — no partial or insecure fallback |
 | `/v1/ca/bootstrap` with no bootstrap certificate configured | route unregistered, 404 | **yes** |
+| `/v1/ca/bootstrap` configured with bytes that include key material | reduced to `CERTIFICATE` blocks (`clustertls.CertificatesOnly`); no key is ever served; input with no certificate registers no route | **yes** |
 
 ## Configuration
 
@@ -77,7 +78,9 @@ modes have no configuration here because they have no implementation here.
   That is the whole testable surface, and testing it is what keeps the shape
   from drifting away from the other binaries.
 - **Server side**: `/v1/ca/bootstrap` is registered when a bootstrap certificate
-  is configured and absent when it is not.
+  is configured and absent when it is not. The raw response body is asserted to
+  carry no `PRIVATE KEY` block, including when the key is handed in with the
+  certificate (`pkg/api/rest/ca_bootstrap_nokey_test.go`).
 
 ## Owner question
 

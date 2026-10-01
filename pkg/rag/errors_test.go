@@ -50,13 +50,6 @@ func TestRetrievalError_Error(t *testing.T) {
 	assert.Equal(t, cause, e.Unwrap())
 }
 
-func TestDocumentNotFoundError_Error(t *testing.T) {
-	e := &DocumentNotFoundError{ID: "doc1", Namespace: "ns"}
-	msg := e.Error()
-	assert.Contains(t, msg, "doc1")
-	assert.Contains(t, msg, "ns")
-}
-
 func TestEmptyQueryError_Error(t *testing.T) {
 	e := &EmptyQueryError{}
 	assert.Contains(t, e.Error(), "empty")

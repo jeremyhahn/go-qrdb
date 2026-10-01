@@ -19,6 +19,7 @@ import (
 	"errors"
 	"io"
 	"testing"
+	"time"
 
 	sqle "github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/types"
@@ -101,6 +102,9 @@ func testUsersDef() *service.TableDef {
 			{Name: "idx_email", Columns: []service.IndexCol{{Name: "email"}}, Unique: true},
 		},
 		SchemaVersion: 1,
+		// Resolved just now, as TableService.GetTable reports it: the
+		// generation pin is fresh (see confirmGenerationPin).
+		GenerationReadAt: time.Now(),
 	}
 }
 
@@ -275,7 +279,7 @@ func TestRelationalTable_Partitions(t *testing.T) {
 
 func TestRelationalTable_FullScan_Empty(t *testing.T) {
 	def := testUsersDef()
-	prefix := service.TableDataPrefix(def.Database, def.TableID)
+	prefix := service.TableDataPrefix(def.Database, def.TableID, 0)
 	kv := &mockKVService{
 		scanFn: func(_ context.Context, p string) (map[string][]byte, error) {
 			assert.Equal(t, prefix, p)
@@ -295,7 +299,7 @@ func TestRelationalTable_FullScan_Empty(t *testing.T) {
 
 func TestRelationalTable_FullScan_ReturnsPrimaryKeyOrder(t *testing.T) {
 	def := testUsersDef()
-	prefix := service.TableDataPrefix(def.Database, def.TableID)
+	prefix := service.TableDataPrefix(def.Database, def.TableID, 0)
 
 	// Insert rows out of numeric order; catalog.KeyCodec's big-endian
 	// numeric encoding means a lexicographic sort of the encoded keys is
@@ -346,7 +350,7 @@ func TestRelationalTable_FullScan_ScanError(t *testing.T) {
 
 func TestRelationalTable_FullScan_DecodeError(t *testing.T) {
 	def := testUsersDef()
-	prefix := service.TableDataPrefix(def.Database, def.TableID)
+	prefix := service.TableDataPrefix(def.Database, def.TableID, 0)
 	kv := &mockKVService{
 		scanFn: func(context.Context, string) (map[string][]byte, error) {
 			return map[string][]byte{prefix + "k": []byte("not a valid row")}, nil
@@ -389,7 +393,7 @@ func TestRelationalTable_FullScan_SchemaVersionSkew(t *testing.T) {
 		SchemaVersion: 2,
 	}
 
-	prefix := service.TableDataPrefix(newDef.Database, newDef.TableID)
+	prefix := service.TableDataPrefix(newDef.Database, newDef.TableID, 0)
 	key := encodeUserKey(t, &service.TableDef{Columns: newDef.Columns, PrimaryKey: newDef.PrimaryKey, Name: newDef.Name}, 1)
 
 	kv := &mockKVService{
@@ -419,7 +423,7 @@ func TestRelationalTable_FullScan_SchemaVersionSkew(t *testing.T) {
 
 func TestRelationalTable_IndexedPartitionRows_UsesGetNotScan(t *testing.T) {
 	def := testUsersDef()
-	prefix := service.TableDataPrefix(def.Database, def.TableID)
+	prefix := service.TableDataPrefix(def.Database, def.TableID, 0)
 	key := encodeUserKey(t, def, 1)
 	rowData := encodeUserRow(t, def, 1, "a@example.com", int32(30))
 
@@ -513,7 +517,7 @@ func TestRelationalTable_PrimaryKeySchema(t *testing.T) {
 
 func TestRelationalTable_RowCount_Success(t *testing.T) {
 	def := testUsersDef()
-	prefix := service.TableDataPrefix(def.Database, def.TableID)
+	prefix := service.TableDataPrefix(def.Database, def.TableID, 0)
 	mvcc := &fakeMVCCService{
 		rangeFn: func(_ context.Context, start, end []byte, opts ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
 			assert.Equal(t, []byte(prefix), start)
@@ -812,7 +816,7 @@ func TestRelationalTable_LookupPartitions_PKEquality_DedupsInList(t *testing.T) 
 
 func TestRelationalTable_LookupPartitions_PKRange_FallsBackToFilteredScan(t *testing.T) {
 	def := testUsersDef()
-	prefix := service.TableDataPrefix(def.Database, def.TableID)
+	prefix := service.TableDataPrefix(def.Database, def.TableID, 0)
 
 	data := map[string][]byte{
 		prefix + encodeUserKey(t, def, 10): encodeUserRow(t, def, 10, "a@example.com", int32(20)),
@@ -850,8 +854,8 @@ func TestRelationalTable_LookupPartitions_PKRange_FallsBackToFilteredScan(t *tes
 // the predicate is not a simple equality).
 func TestRelationalTable_LookupPartitions_SecondaryColumn_IndexAccelerated(t *testing.T) {
 	def := testUsersDef() // idx_email is UNIQUE.
-	prefix := service.TableDataPrefix(def.Database, def.TableID)
-	idxPrefix := service.TableIndexPrefix(def.Database, def.TableID, "idx_email")
+	prefix := service.TableDataPrefix(def.Database, def.TableID, 0)
+	idxPrefix := service.TableIndexPrefix(def.Database, def.TableID, 0, incarnationOf(def, "idx_email"))
 
 	schema, err := catalog.SchemaOf(def)
 	require.NoError(t, err)
@@ -916,7 +920,7 @@ func TestRelationalTable_LookupPartitions_SecondaryColumn_IndexAccelerated(t *te
 // bounds and is therefore still exact (see PreciseMatch).
 func TestRelationalTable_LookupPartitions_SecondaryColumn_RangePredicate_FilteredScan(t *testing.T) {
 	def := testUsersDef()
-	prefix := service.TableDataPrefix(def.Database, def.TableID)
+	prefix := service.TableDataPrefix(def.Database, def.TableID, 0)
 
 	data := map[string][]byte{
 		prefix + encodeUserKey(t, def, 1): encodeUserRow(t, def, 1, "a@example.com", int32(20)),
@@ -1224,3 +1228,15 @@ func (fakeRange) String() string                                   { return "fak
 func (fakeRange) DebugString(*sqle.Context) string                 { return "fake" }
 
 var _ sqle.Range = fakeRange{}
+
+// incarnationOf returns the incarnation def assigns the index named name --
+// its entries' keyspace (service.TableIndex.Incarnation). A def that does not
+// list the index is a test bug: refresh it from the catalog first.
+func incarnationOf(def *service.TableDef, name string) uint64 {
+	for _, idx := range def.Indexes {
+		if idx.Name == name {
+			return idx.Incarnation
+		}
+	}
+	panic("incarnationOf: " + def.Name + " has no index " + name)
+}

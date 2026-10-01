@@ -635,28 +635,24 @@ func (s *RaftStorage) Range(ctx context.Context, start, end []byte, revision int
 	iter := s.store.NewIterator(opts)
 	defer func() { _ = iter.Close() }()
 
-	for iter.SeekToFirst(); iter.Valid(); iter.Next() {
-		// Decode metadata key
-		userKey, err := DecodeMetaKey(iter.Key())
-		if err != nil {
-			continue // Skip invalid keys
-		}
-
-		// Check if key is in range [start, end)
-		if !IsInRange(userKey, start, end) {
-			continue
-		}
-
+	// Seeks once per key length rather than walking the namespace; see
+	// ForEachMetaKeyInRange.
+	var readErr error
+	scanErr := ForEachMetaKeyInRange(iter, start, end, func(userKey []byte) bool {
 		// Get the key-value at target revision (without acquiring lock again)
 		kv, err := s.getWithoutLock(ctx, userKey, targetRev)
 		if err != nil {
 			if errors.IsNotFound(err) {
-				continue // Skip keys that don't exist at this revision
+				return true // Skip keys that don't exist at this revision
 			}
-			return nil, err
+			readErr = err
+			return false
 		}
-
 		allMatches = append(allMatches, kv)
+		return true
+	})
+	if readErr != nil {
+		return nil, readErr
 	}
 
 	// Sort results by key (lexicographic order)
@@ -670,7 +666,7 @@ func (s *RaftStorage) Range(ctx context.Context, start, end []byte, revision int
 		results = allMatches[:limit]
 	}
 
-	if err := iter.Error(); err != nil {
+	if err := scanErr; err != nil {
 		return nil, errors.Wrapf(
 			err,
 			errors.ErrStorage,

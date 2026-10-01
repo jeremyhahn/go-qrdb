@@ -25,7 +25,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	qrdbErrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -72,7 +71,7 @@ func newVecSvcWithNamespace(t *testing.T, namespace string, dimension uint32) (V
 				UpdatedAt:      time.Now().UnixNano(),
 			}, nil
 		}
-		return nil, errors.New("namespace not found")
+		return nil, vector.ErrNamespaceNotFound
 	}
 
 	svc, err := NewVectorService(storage, logger)
@@ -227,9 +226,7 @@ func TestVecCreateNamespace_StorageCreateError(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrStorage, qrdbErr.Code)
+	requireErrorAs[*VectorOperationError](t, err)
 }
 
 // =============================================================================
@@ -424,9 +421,7 @@ func TestVecGetNamespaceInfo_NotFound(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
+	requireErrorAs[*NamespaceNotFoundError](t, err)
 }
 
 func TestVecGetNamespaceInfo_ServiceClosed(t *testing.T) {
@@ -501,9 +496,7 @@ func TestVecUpsert_NamespaceNotFound(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
+	requireErrorAs[*NamespaceNotFoundError](t, err)
 }
 
 func TestVecUpsert_DimensionMismatch(t *testing.T) {
@@ -517,9 +510,7 @@ func TestVecUpsert_DimensionMismatch(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
+	requireErrorAs[*DimensionMismatchError](t, err)
 }
 
 func TestVecUpsert_StorageError(t *testing.T) {
@@ -537,9 +528,7 @@ func TestVecUpsert_StorageError(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrStorage, qrdbErr.Code)
+	requireErrorAs[*VectorOperationError](t, err)
 }
 
 func TestVecUpsert_ServiceClosed(t *testing.T) {
@@ -574,9 +563,7 @@ func TestVecUpsert_OtherTenantGetsNotFound(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
+	requireErrorAs[*NamespaceNotFoundError](t, err)
 }
 
 // =============================================================================
@@ -634,9 +621,7 @@ func TestVecGetVector_OtherTenantGetsNotFound(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
+	requireErrorAs[*VectorNotFoundError](t, err)
 }
 
 // =============================================================================
@@ -657,9 +642,7 @@ func TestVecDeleteVector_StorageError(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrStorage, qrdbErr.Code)
+	requireErrorAs[*VectorOperationError](t, err)
 }
 
 func TestVecDeleteVector_ServiceClosed(t *testing.T) {
@@ -1089,9 +1072,7 @@ func TestVecListVectors_AttackerGetsNotFound(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
+	requireErrorAs[*NamespaceNotFoundError](t, err)
 }
 
 // =============================================================================
@@ -1219,9 +1200,7 @@ func TestVecSearchByID_OtherTenantGetsNotFound(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
+	requireErrorAs[*VectorNotFoundError](t, err)
 }
 
 // =============================================================================
@@ -1450,9 +1429,7 @@ func TestVecTenantAccess_ScopedNamespacesAreIsolated(t *testing.T) {
 	ctxC := tenant.WithTenantID(context.Background(), "tenant-c")
 	_, err = svc.GetNamespaceInfo(ctxC, &GetNamespaceInfoRequest{Namespace: "ns"})
 	require.Error(t, err)
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrNotFound, qrdbErr.Code)
+	requireErrorAs[*NamespaceNotFoundError](t, err)
 }
 
 func TestVecTenantAccess_MatchingTenant(t *testing.T) {
@@ -1529,30 +1506,30 @@ func TestVecClosedState_AllOperationsReturnProperError(t *testing.T) {
 		Namespace: "ns", Dimension: 128,
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "vector service not available")
+	requireErrorAs[*VectorServiceClosedError](t, err)
 
 	_, err = svc.UpsertVector(context.Background(), &UpsertVectorRequest{
 		Namespace: "ns", ID: 1, Vector: []float32{1.0},
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "vector service not available")
+	requireErrorAs[*VectorServiceClosedError](t, err)
 
 	_, err = svc.GetVector(context.Background(), &GetVectorRequest{
 		Namespace: "ns", ID: 1,
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "vector service not available")
+	requireErrorAs[*VectorServiceClosedError](t, err)
 
 	_, err = svc.DeleteVector(context.Background(), &DeleteVectorRequest{
 		Namespace: "ns", ID: 1,
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "vector service not available")
+	requireErrorAs[*VectorServiceClosedError](t, err)
 
 	_, err = svc.BatchUpsert(context.Background(), &BatchUpsertRequest{
 		Namespace: "ns",
 		Vectors:   []*VectorData{{ID: 1, Vector: []float32{1.0}}},
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "vector service not available")
+	requireErrorAs[*VectorServiceClosedError](t, err)
 }

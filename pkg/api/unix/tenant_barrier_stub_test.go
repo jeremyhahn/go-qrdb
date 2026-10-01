@@ -55,6 +55,14 @@ func (s *stubTenantBarrierSvc) GetTenant(_ context.Context, _ string) (*tenant.T
 	return nil, nil
 }
 
+func (s *stubTenantBarrierSvc) ListDeletedTenants(_ context.Context, _ string, _ int) (*tenant.DeletedTenantsPage, error) {
+	return &tenant.DeletedTenantsPage{}, nil
+}
+
+func (s *stubTenantBarrierSvc) ReconcileDeletedTenants(_ context.Context) (*tenant.ReconcileReport, error) {
+	return &tenant.ReconcileReport{}, nil
+}
+
 func (s *stubTenantBarrierSvc) ListTenants(_ context.Context) ([]tenant.TenantInfo, error) {
 	return nil, nil
 }

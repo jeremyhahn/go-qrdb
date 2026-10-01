@@ -22,6 +22,7 @@ import (
 
 	quicraftseal "github.com/jeremyhahn/go-quicraft/pkg/seal"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
@@ -90,7 +91,10 @@ func (b *StorageBarrier) loadInitializedAt(ctx context.Context) (time.Time, erro
 }
 
 // Compile-time interface check.
-var _ StorageBackend = (*StorageBarrier)(nil)
+var (
+	_ StorageBackend        = (*StorageBarrier)(nil)
+	_ kvstore.FencedCreator = (*StorageBarrier)(nil)
+)
 
 // Barrier is a backward-compatible alias for StorageBarrier.
 type Barrier = StorageBarrier
@@ -842,6 +846,32 @@ func (b *StorageBarrier) PutIfAbsent(ctx context.Context, key string, value []by
 	return b.base.PutIfAbsent(ctx, key, encrypted)
 }
 
+// ErrFencedCreateUnsupported is returned when a storage backend cannot create
+// a key conditioned on other keys' absence in one atomic step. There is no
+// safe fallback: checking the fences and then creating leaves open exactly the
+// window the operation exists to close (go-qrdb#484).
+var ErrFencedCreateUnsupported = errors.New("seal: storage backend has no fenced create")
+
+// PutIfAllAbsent encrypts the value and stores it under key only when key and
+// every fence key are absent, delegating the atomic decision to the base
+// backend. As with PutIfAbsent the condition is existence, so the
+// non-deterministic ciphertext does not affect the outcome. A base without the
+// capability refuses with ErrFencedCreateUnsupported.
+func (b *StorageBarrier) PutIfAllAbsent(ctx context.Context, key string, value []byte, fences ...string) (bool, error) {
+	if b.state.Load() != stateUnsealed {
+		return false, ErrSealed
+	}
+	fenced, ok := b.base.(kvstore.FencedCreator)
+	if !ok {
+		return false, ErrFencedCreateUnsupported
+	}
+	encrypted, err := b.barrier.Encrypt(nil, value)
+	if err != nil {
+		return false, &PutError{Key: key, Err: err}
+	}
+	return fenced.PutIfAllAbsent(ctx, key, encrypted, fences...)
+}
+
 // guardedDeleteBackend is the release half of the storage-backend contract:
 // a delete conditioned on the value the caller last observed.
 //
@@ -1080,7 +1110,10 @@ type MemoryBackend struct {
 }
 
 // Compile-time interface check.
-var _ StorageBackend = (*MemoryBackend)(nil)
+var (
+	_ StorageBackend        = (*MemoryBackend)(nil)
+	_ kvstore.FencedCreator = (*MemoryBackend)(nil)
+)
 
 // NewMemoryBackend returns a new in-memory StorageBackend.
 func NewMemoryBackend() *MemoryBackend {
@@ -1120,6 +1153,26 @@ func (m *MemoryBackend) PutIfAbsent(_ context.Context, key string, data []byte) 
 	defer m.mu.Unlock()
 	if _, ok := m.data[key]; ok {
 		return false, nil
+	}
+	stored := make([]byte, len(data))
+	copy(stored, data)
+	m.data[key] = stored
+	return true, nil
+}
+
+// PutIfAllAbsent stores the value under key only when key and every fence key
+// are absent, under the same lock that makes PutIfAbsent indivisible. See
+// kvstore.FencedCreator.
+func (m *MemoryBackend) PutIfAllAbsent(_ context.Context, key string, data []byte, fences ...string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.data[key]; ok {
+		return false, nil
+	}
+	for _, f := range fences {
+		if _, ok := m.data[f]; ok {
+			return false, nil
+		}
 	}
 	stored := make([]byte, len(data))
 	copy(stored, data)

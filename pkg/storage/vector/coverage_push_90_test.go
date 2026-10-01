@@ -15,8 +15,6 @@ package vector
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -27,8 +25,7 @@ import (
 
 // TestCleanupTombstones_SyncWrites tests cleanup with sync writes enabled
 func TestCleanupTombstones_SyncWrites(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "cleanup_sync_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	config.SyncWrites = true // Enable sync writes to test that path
@@ -72,8 +69,7 @@ func TestCleanupTombstones_SyncWrites(t *testing.T) {
 
 // TestBatch_UpsertVector_SetErrors tests Set error paths
 func TestBatch_UpsertVector_SetErrors(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_set_errors")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -104,8 +100,7 @@ func TestBatch_UpsertVector_SetErrors(t *testing.T) {
 
 // TestAdapter_UpsertVector_WithSyncWrites tests upsert with sync writes
 func TestAdapter_UpsertVector_WithSyncWrites(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "upsert_sync_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	config.SyncWrites = true
@@ -138,8 +133,7 @@ func TestAdapter_UpsertVector_WithSyncWrites(t *testing.T) {
 
 // TestAdapter_DeleteVector_WithSyncWrites tests delete with sync writes
 func TestAdapter_DeleteVector_WithSyncWrites(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "delete_sync_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	config.SyncWrites = true
@@ -173,8 +167,7 @@ func TestAdapter_DeleteVector_WithSyncWrites(t *testing.T) {
 
 // TestAdapter_GetVector_AfterClose tests get after storage is closed
 func TestAdapter_GetVector_AfterClose(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "get_after_close")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	storage, err := NewPebbleVectorStorage(config, &testLogger{})
@@ -200,8 +193,7 @@ func TestAdapter_GetVector_AfterClose(t *testing.T) {
 
 // TestAdapter_CreateNamespace_AfterClose tests create after storage is closed
 func TestAdapter_CreateNamespace_AfterClose(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "create_after_close")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	storage, err := NewPebbleVectorStorage(config, &testLogger{})
@@ -224,8 +216,7 @@ func TestAdapter_CreateNamespace_AfterClose(t *testing.T) {
 
 // TestAdapter_GetStats_AfterClose tests get stats after storage is closed
 func TestAdapter_GetStats_AfterClose(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "stats_after_close")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	storage, err := NewPebbleVectorStorage(config, &testLogger{})
@@ -244,8 +235,7 @@ func TestAdapter_GetStats_AfterClose(t *testing.T) {
 
 // TestAdapter_NextID_AfterClose tests ID allocation after storage is closed
 func TestAdapter_NextID_AfterClose(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "nextid_after_close")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	storage, err := NewPebbleVectorStorage(config, &testLogger{})
@@ -262,8 +252,7 @@ func TestAdapter_NextID_AfterClose(t *testing.T) {
 
 // TestAdapter_ScanNamespace_NilAndEmptyOptions tests scan with various options
 func TestAdapter_ScanNamespace_NilAndEmptyOptions(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "scan_options_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	storage, err := NewPebbleVectorStorage(config, &testLogger{})

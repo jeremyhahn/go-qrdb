@@ -109,14 +109,14 @@ func TestDEKToolErrorsCarryTheSharedClassification(t *testing.T) {
 	ctx := tenant.WithTenantID(context.Background(), "acme")
 	var st transport.TenantDEKStatusResponse
 	err := dekCall(t, ctx, handleDEKStatus(svc), map[string]any{"tenant_id": "globex"}, &st)
-	if code := classifyToolError(err); code != wire.CodePermissionDenied {
+	if code := ServiceErrorCode(err); code != wire.CodePermissionDenied {
 		t.Fatalf("cross-tenant: code %v (err %v), want PermissionDenied", code, err)
 	}
 	if err := dekCall(t, ctx, handleDEKRotate(svc), map[string]any{}, &st); err != nil {
 		t.Fatal(err)
 	}
 	err = dekCall(t, ctx, handleDEKRetire(svc), map[string]any{"version": float64(1)}, &st)
-	if code := classifyToolError(err); code != wire.CodeFailedPrecondition {
+	if code := ServiceErrorCode(err); code != wire.CodeFailedPrecondition {
 		t.Fatalf("retire current: code %v (err %v), want FailedPrecondition", code, err)
 	}
 }

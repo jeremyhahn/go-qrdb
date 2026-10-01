@@ -415,7 +415,7 @@ func TestHandleListEmbeddingModels_ServiceNotConfigured(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Tests: mapEmbeddingHTTPError
+// Tests: mapHTTPError
 // ---------------------------------------------------------------------------
 
 func TestMapEmbeddingHTTPError(t *testing.T) {
@@ -453,9 +453,9 @@ func TestMapEmbeddingHTTPError(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := mapEmbeddingHTTPError(tc.err)
+			got := mapHTTPError(tc.err)
 			if got != tc.wantCode {
-				t.Errorf("mapEmbeddingHTTPError(%T) = %d, want %d", tc.err, got, tc.wantCode)
+				t.Errorf("mapHTTPError(%T) = %d, want %d", tc.err, got, tc.wantCode)
 			}
 		})
 	}

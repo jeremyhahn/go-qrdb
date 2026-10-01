@@ -35,16 +35,6 @@ func (e *ExistsError) Error() string {
 	return "lease already exists: " + strconv.FormatInt(e.ID, 10)
 }
 
-// ExpiredError is returned when an operation is attempted on an
-// expired lease.
-type ExpiredError struct {
-	ID int64
-}
-
-func (e *ExpiredError) Error() string {
-	return "lease expired: " + strconv.FormatInt(e.ID, 10)
-}
-
 // InvalidTTLError is returned when a lease TTL is invalid.
 type InvalidTTLError struct {
 	TTL int64

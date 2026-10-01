@@ -66,7 +66,7 @@ func newTestBarrierManager(t *testing.T) *DatabaseBarrierManager {
 
 // testCreds returns standard test credentials.
 func testCreds() seal.Credentials {
-	return seal.Credentials{Secret: []byte("test-password")}
+	return seal.MustCredentials([]byte("test-password"))
 }
 
 // ---------- NewDatabaseBarrierManager tests ----------
@@ -292,7 +292,7 @@ func TestDatabaseBarrierManager_UnsealDatabase_WrongPassphraseRefused(t *testing
 		t.Fatalf("SealDatabase: %v", err)
 	}
 
-	wrong := seal.Credentials{Secret: []byte("not-the-test-password")}
+	wrong := seal.MustCredentials([]byte("not-the-test-password"))
 	if err := mgr.UnsealDatabase(ctx, "testdb", wrong); err == nil {
 		t.Fatal("go-qrdb#157: UnsealDatabase accepted a WRONG passphrase — " +
 			"the registered strategy is not checking credentials")

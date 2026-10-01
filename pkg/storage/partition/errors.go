@@ -28,16 +28,6 @@ func (e *PartitionNotFoundError) Error() string {
 	return "partition not found: " + strconv.FormatUint(uint64(e.PartitionID), 10)
 }
 
-// InvalidPartitionCountError is returned when the partition count is zero.
-type InvalidPartitionCountError struct {
-	Count uint32
-}
-
-// Error implements the error interface.
-func (e *InvalidPartitionCountError) Error() string {
-	return "invalid partition count: " + strconv.FormatUint(uint64(e.Count), 10)
-}
-
 // PartitionCreateError is returned when a partition storage fails to create.
 type PartitionCreateError struct {
 	PartitionID uint32

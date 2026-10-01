@@ -951,8 +951,25 @@ integration-image:
 # and never contend for host CPU. Each stage builds, runs, and tears down its
 # own stack. Fail-fast: a failing standalone stage stops before cluster.
 .PHONY: integration-test
-integration-test: integration-test-standalone integration-test-cluster
-	@echo "==> All integration stages passed (standalone + cluster)."
+integration-test: integration-test-auth integration-test-standalone integration-test-cluster
+	@echo "==> All integration stages passed (auth + standalone + cluster)."
+
+# test/integration/auth was named by no target and run by no workflow (#228),
+# so its two tests -- the M14 auth-factor lifecycle and revoked-factor lookup --
+# ran only when someone typed the package path by hand.
+#
+# Unlike the two stages below it needs no compose stack: it is in-memory and
+# self-contained, so it runs as a plain `go test` in about two seconds. That is
+# why it runs FIRST in the aggregate and first in the CI integration job: it is
+# the cheapest integration failure to report.
+#
+# $(MIN_TAGS),integration is a DECLARED rung in SUPPORTED_TAG_SETS, so the
+# combination this compiles under is one vet-tags already sweeps -- not a new,
+# unverified tag set introduced by a test target.
+.PHONY: integration-test-auth
+integration-test-auth:
+	@echo "==> Running AUTH integration tests (in-memory, no compose stack)..."
+	$(GO) test -tags "$(MIN_TAGS),integration" -count=1 ./test/integration/auth/...
 
 # Standalone stage: the multi-protocol CLI suites in ./test/integration/api
 # exercised against the single-node software + Shamir docker servers.
@@ -1091,7 +1108,7 @@ perf-docs: _kvcompare-build
 # check-coverage: extract percentage from coverage profile and fail if below threshold
 # Usage: $(call check-coverage,profile.out,package-name)
 define check-coverage
-	@COVERAGE=$$($(GO) tool cover -func=$(1) | grep total | awk '{print $$3}' | sed 's/%//'); \
+	@COVERAGE=$$($(GO) tool cover -func=$(1) | grep '^total:' | awk '{print $$3}' | sed 's/%//'); \
 	echo "$(2) coverage: $${COVERAGE}%"; \
 	if [ $$(echo "$${COVERAGE} < $(COVER_MIN)" | bc -l) -eq 1 ]; then \
 		echo "FAIL: $(2) coverage $${COVERAGE}% is below minimum $(COVER_MIN)%"; \
@@ -1099,10 +1116,115 @@ define check-coverage
 	fi
 endef
 
+# ----------------------------------------------------------------------------
+# The coverage GATE (#500, owner-ruled 2026-09-22): a repo-wide floor plus a
+# per-package ratchet, enforced by test/tools/coverratchet.
+#
+# AGENTS.md requires every package to reach COVER_MIN, and until this gate
+# nothing enforced it. Enforcing it outright would have failed 14 packages on
+# the day it arrived, so the ruling is the standard way to arm a gate on a
+# codebase that does not meet it yet: the repo-wide total must meet the floor,
+# no package may fall below the coverage it had when the baseline was taken,
+# and a package NOT in the baseline -- new code -- must meet the floor on its
+# own. The unit is each Go package on its own, not a coverage-* target: those
+# may combine a package with its subpackages and let a well-tested child
+# carry a weak parent (pkg/seal is 90.3% alone, 91.0% as ./pkg/seal/...).
+#
+# COVER_TOLERANCE IS MEASURED, not chosen. Two identical `make coverage` runs on
+# one tree (2026-09-22, main at ac0f91b) left 116 of 120 packages identical;
+# four moved: pkg/invite 0.70pp, pkg/kvstore 0.53pp, pkg/watch 0.14pp,
+# pkg/mvcc 0.06pp -- timing and retry paths their tests do not pin. A
+# zero-tolerance ratchet would fail pushes at random on those four. 1.0pp sits
+# above the observed maximum with margin, because two runs understate the true
+# range. The bound it buys is worth stating: a package can lose at most 1.0pp
+# against its baseline IN TOTAL -- the baseline never moves down on its own, so
+# the allowance does not compound per push. Fixing the jitter at its source
+# would let this tighten.
+#
+# COVER_EXCLUDE_PKGS are test helpers, which AGENTS.md excludes from coverage
+# reports. An explicit list, not a naming rule: "ends in test" would also exempt
+# a real package called `latest`, and a hole in a gate is invisible. The tool
+# prints every exclusion on every run.
+# Deliberately NOT under a directory named `coverage`: .gitignore's unanchored
+# `coverage/` rule ignores every such directory anywhere in the tree (it exists
+# for COVER_DIR and for JS coverage output), and an ignored baseline would leave
+# the gate with nothing to check against.
+COVER_BASELINE     := test/coverage-baseline.txt
+COVER_TOLERANCE    := 1.0
+COVER_EXCLUDE_PKGS := github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest,github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest,github.com/jeremyhahn/go-qrdb/pkg/auth/authtest,github.com/jeremyhahn/go-qrdb/pkg/api/grpc/grpctest
+COVER_RATCHET       = $(GO) run ./test/tools/coverratchet -profile $(COVER_DIR)/total.out -baseline $(COVER_BASELINE) -exclude "$(COVER_EXCLUDE_PKGS)"
+
+# COVERAGE_MERGE_SUBPROCESS builds the combined profile from two DISJOINT
+# package sets: the bulk `-coverprofile` run below, over every package EXCEPT
+# the ones scripts/coverage-merge-subprocess.sh --list discovers, and that
+# script's own run of exactly those packages. The two are concatenated
+# (keeping one "mode:" header) rather than merged, which is correct BECAUSE
+# they are disjoint -- see the script's header for why a subprocess test
+# needs this treatment at all and why concatenation, not `covdata merge`, is
+# the right operation here.
+#
+# `set -e`: without it, a `;`-joined recipe has NO fail-fast of its own -- a
+# failed bulk test run or a failed subprocess merge would leave `head`/`tail`
+# to run anyway over whatever partial output exists, and the recipe's exit
+# status is the LAST command's, which always succeeds. The ratchet would then
+# read a stale or truncated profile and could pass vacuously. Found in review
+# (round 2), confirmed with `make -n coverage` before this fix existed.
+#
+# COVERAGE_MERGE_TAGS is the RAW, unquoted tag list (Make's BUILD_TAGS is
+# already space-separated) -- not $(TAG_FLAG), which is the string
+# `-tags "..."` WITH LITERAL QUOTE CHARACTERS baked into the Make variable's
+# value. Exporting that string as an environment variable and later
+# interpolating it unquoted in the script does not re-parse those characters
+# as shell quoting; it hands the shell literal `"` bytes, which either land
+# inside a tag name or, as measured with `make -n coverage` before this fix,
+# terminate the assignment early and turn the next tag word (`raft`) into a
+# command the shell tries to execute. The script does its own quoting around
+# the raw list (scripts/coverage-merge-subprocess.sh), which is the only
+# place that can be correct, since only code that is ITSELF shell source can
+# emit shell quoting -- a value round-tripped through a Make variable and an
+# environment variable cannot.
+define COVERAGE_MERGE_SUBPROCESS
+	set -e; \
+	SUBPROCESS_PKGS=$$(./scripts/coverage-merge-subprocess.sh --list); \
+	EXCLUDE_PATTERN=$$(printf '%s\n' "$$SUBPROCESS_PKGS" | paste -sd '|' -); \
+	BULK_PKGS=$$($(GO) list ./pkg/... ./cmd/... | grep -v '/proto/' | grep -vE "^($$EXCLUDE_PATTERN)\$$"); \
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/bulk.out $$BULK_PKGS; \
+	COVERAGE_MERGE_TAGS="$(strip $(BUILD_TAGS))" COVERAGE_MERGE_TIMEOUT="$(GOTEST_TIMEOUT)" ./scripts/coverage-merge-subprocess.sh --run $(COVER_DIR)/subprocess.out; \
+	head -1 $(COVER_DIR)/bulk.out > $(COVER_DIR)/total.out; \
+	tail -n +2 $(COVER_DIR)/bulk.out >> $(COVER_DIR)/total.out; \
+	tail -n +2 $(COVER_DIR)/subprocess.out >> $(COVER_DIR)/total.out
+endef
+
+# The package set is the SAME one the baseline is generated from. If CI
+# measured a different set, a package present in one and not the other would
+# read as "missing" or "new". /proto/ is generated code with no tests.
 .PHONY: coverage
 coverage: | _cover-dir
-	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/total.out $$($(GO) list ./pkg/... ./cmd/... | grep -v '/proto/')
-	$(call check-coverage,$(COVER_DIR)/total.out,total)
+	$(COVERAGE_MERGE_SUBPROCESS)
+	$(COVER_RATCHET) -min $(COVER_MIN) -tolerance $(COVER_TOLERANCE)
+
+# Regenerate the baseline from a fresh `make coverage` profile. Run it after
+# RAISING a package's coverage, to lock the gain in. The file says, in its own
+# header, that a LOWERED number is the one thing a reviewer should question.
+.PHONY: coverage-baseline
+coverage-baseline: | _cover-dir
+	$(COVERAGE_MERGE_SUBPROCESS)
+	$(COVER_RATCHET) -write
+
+# The gate's own tests. It fails CI when it misreads a profile, so it has to be
+# tested more carefully than what it measures -- every failure path has a
+# negative control. No network, no Go build beyond this package.
+.PHONY: test-coverratchet
+test-coverratchet:
+	$(GOTEST) ./test/tools/coverratchet/...
+
+# scripts/coverage-merge-subprocess.sh's own tests: usage validation and that
+# --list names packages that actually resolve. Does NOT drive --run end to
+# end -- that path compiles and runs three packages under -race, which is
+# `make coverage`'s job, not a fast per-change regression test's.
+.PHONY: test-coverage-merge-subprocess
+test-coverage-merge-subprocess:
+	@GO="$(GO)" ./scripts/coverage-merge-subprocess_test.sh
 
 .PHONY: coverage-config
 coverage-config: | _cover-dir
@@ -1606,8 +1728,8 @@ test-publication-bound:
 # directions: a line-oriented pattern misses the spellings Actions accepts (a
 # flow mapping, a quoted key, an anchor + alias) and passes over them while the
 # floors stay satisfied -- and it also reports the word `uses:` in the 70 KB
-# agent prompt embedded in opencode-review.yml, which is prose in a block
-# scalar and not a step at all.
+# agent prompt that opencode-review.yml embedded while it existed, which is
+# prose in a block scalar and not a step at all.
 #
 # Its own floors and rejecting branches ship with it in the same package, for
 # the same reason every other guard here carries a self-test: this one fails by
@@ -1821,6 +1943,23 @@ check-iface-sweep-findings:
 test-iface-sweep-findings:
 	@./scripts/check-iface-sweep-findings_test.sh
 
+# go-qrdb#403. check-iface-sweep-findings closed the absolute-path leak for
+# exactly the two files that shipped one; this is the repo-wide
+# generalization, over every KNOWN committed generated artifact
+# (test/coverage-baseline.txt, test/tools/deadcode/baseline.txt, the two
+# ifacesweep findings files, lockstep-baseline). Add a new artifact to
+# scripts/check-artifact-paths.sh's ARTIFACTS list the day it is committed.
+.PHONY: check-artifact-paths
+check-artifact-paths:
+	@./scripts/check-artifact-paths.sh
+
+# Same reasoning as test-iface-sweep-findings: a healthy tree only exercises
+# the accepting branch, so the rejecting ones are proven against synthetic
+# fixtures. No network, no Go build.
+.PHONY: test-artifact-paths
+test-artifact-paths:
+	@./scripts/check-artifact-paths_test.sh
+
 .PHONY: vet
 vet:
 	$(GOVET) $(TAG_FLAG) ./...
@@ -1903,12 +2042,16 @@ vet:
 # are outside `minimal` entirely. Those nine are covered by the `default` rungs
 # and by nothing narrower, and that is the honest extent of the claim.
 #
-# OFF-BY-DEFAULT FEATURE TAGS ARE NOT RUNGS EITHER. qrdb_fts, gpu, qrdbd_webui
-# and desktop are WITH_*=0, so they appear in NEITHER rung and nothing in this
+# OFF-BY-DEFAULT FEATURE TAGS ARE NOT RUNGS BY DEFAULT. gpu, qrdbd_webui and
+# desktop are WITH_*=0, so they appear in NO rung and nothing in this
 # repository compiles them -- not `make test`, not `make lint`, not `make vet`.
-# That remains true, and it is the argument FOR declaring a qrdb_fts rung
-# eventually. gpu needs CUDA and desktop needs webkit2, so neither belongs in a
-# target every developer is told to run before pushing.
+# gpu needs CUDA and desktop needs webkit2, so neither belongs in a target every
+# developer is told to run before pushing.
+#
+# qrdb_fts WAS in that set and is now a declared rung (#300, owner-ruled
+# 2026-09-22). It is the one of the four with no exotic host requirement, so
+# the argument that kept it out -- cost, not capability -- was the only one,
+# and it is priced below.
 #
 # qrdb_fts WAS ALSO BROKEN. IT IS NOT ANY MORE -- corrected here because #279
 # is what made the sentence false. Measured 2026-09-03 while choosing these
@@ -1925,10 +2068,12 @@ vet:
 # ignore this target, which is how the blind spot got here -- no longer applies
 # to qrdb_fts on the evidence above.
 #
-# The rung is still NOT declared here. Adding one is a policy change carrying
-# the runtime price this block describes below, and #279 was a test-compile fix;
-# it corrected the stale measurement and left the declaration to the owner
-# rather than taking it on a lane's own judgment.
+# The rung IS declared now, and the 2026-09-03 figures above were re-measured
+# on main at 63f80a6 before declaring it rather than trusted: `go vet` under
+# both codec_json,raft,qrdb_fts and <LINT_TAGS>,qrdb_fts still exits 0 after
+# three weeks of tree movement. A rung declared on a stale measurement arrives
+# RED, which is the failure that teaches people to ignore this target -- and a
+# stale measurement is precisely what #279 had to correct here.
 #
 # UNTAGGED IS DELIBERATELY NOT A RUNG. Whole packages legitimately fail to
 # typecheck with no tags -- pkg/api/mcp's test mocks sit behind
@@ -1939,9 +2084,10 @@ vet:
 # ADDING OR REMOVING A RUNG IS A POLICY CHANGE WITH A RUNTIME PRICE, and both
 # belong in the commit that makes it.
 #
-# The structural half of the price is exact and load-independent: this change
-# took the tagged modules from 2 combinations to 4, and the whole-tree sweep
-# from 6 `go vet` invocations to 10.
+# The structural half of the price is exact and load-independent: the original
+# change took the tagged modules from 2 combinations to 4, and the whole-tree
+# sweep from 6 `go vet` invocations to 10. Declaring the qrdb_fts rung (#300)
+# took the sweep from 13 invocations to 15.
 #
 # THE WALL-CLOCK HALF IS DELIBERATELY NOT RECORDED HERE. Every window available
 # while this landed had four or five concurrent `-race` suites on the host
@@ -1952,6 +2098,15 @@ vet:
 # The one figure worth knowing is the shape of the measurement: run BOTH sweeps
 # back to back on the same cache in the same quiet window, and read the ratio,
 # never an absolute second count copied out of a comment.
+#
+# Measured that way for #300, on main at 63f80a6, both sweeps WARM and back to
+# back on one cache: 4 rungs 20.4s at load 6.94, 5 rungs 25.6s at load 5.73 --
+# a ratio of 1.25x. Read the RATIO. The seconds are this host on that evening
+# and will not reproduce elsewhere; they are recorded only so the ratio can be
+# checked against them. The figure is conservative in the one direction that
+# matters: the FIVE-rung run had the lower load, so contention did not inflate
+# it. Both sides are warm deliberately -- the first run of a new combination
+# pays a one-time cache population that a repeating gate does not.
 #
 # The alternative that was priced and rejected: a per-feature ladder, `minimal`
 # plus each optional tag on its own, which is what would make the in-between
@@ -1964,7 +2119,7 @@ vet:
 # finding -- so a union of runs hides exactly what the extra rungs were added
 # to expose. The sweep prints the tag set beside every invocation and beside
 # every failure for that reason; keep it that way.
-SUPPORTED_TAG_SETS := $(MIN_TAGS) $(MIN_TAGS),integration $(LINT_TAGS) $(LINT_TAGS),integration
+SUPPORTED_TAG_SETS := $(MIN_TAGS) $(MIN_TAGS),integration $(LINT_TAGS) $(LINT_TAGS),integration $(LINT_TAGS),qrdb_fts
 
 # vet-tags sweeps EVERY Go module in the tree, each with its own tag sets.
 #
@@ -2000,7 +2155,9 @@ SUPPORTED_TAG_SETS := $(MIN_TAGS) $(MIN_TAGS),integration $(LINT_TAGS) $(LINT_TA
 # is what `make vet` alone already said.
 .PHONY: vet-tags
 vet-tags:
-	@GOVET="$(GOVET)" GOLIST="$(GO) list" ./scripts/vet-modules.sh --vet "$(SUPPORTED_TAG_SETS)" "$(GORM_TAGS)"
+	@$(stage-gomodauth) \
+	eval "$${GOMODAUTH:-}"; \
+	GOVET="$(GOVET)" GOLIST="$(GO) list" ./scripts/vet-modules.sh --vet "$(SUPPORTED_TAG_SETS)" "$(GORM_TAGS)"
 
 # print-tag-sets prints the declared combinations, one per line, so that
 # anything needing them -- a CI matrix, a doc, a one-off sweep -- READS the
@@ -2009,6 +2166,14 @@ vet-tags:
 .PHONY: print-tag-sets
 print-tag-sets:
 	@printf '%s\n' $(SUPPORTED_TAG_SETS)
+
+# print-trivy-version prints TRIVY_VERSION for the same reason: ci.yml's
+# blocking trivy job installs the scanner PINNED to it, and a workflow that
+# restated "v0.74.0" would be a second copy of the pin that drifts the first
+# time someone bumps this one (#479). The workflow reads; this declares.
+.PHONY: print-trivy-version
+print-trivy-version:
+	@printf '%s\n' $(TRIVY_VERSION)
 
 # The guard's own regression suite. Same reasoning as test-require-tool: a
 # healthy sweep only exercises the accepting path, so every rejecting branch --
@@ -2412,6 +2577,8 @@ gosec:
 .PHONY: gosec-sdk
 gosec-sdk:
 	$(call require-scanner,$(GOSEC),$(GOSEC_INSTALL))
+	@$(stage-gomodauth) \
+	eval "$${GOMODAUTH:-}"; \
 	cd $(SDK_DIR) && $(GOSEC) -concurrency 4 -tags "$(LINT_TAGS)" -exclude=$(GOSEC_EXCLUDE) -severity=medium -confidence=medium ./...
 
 # SARIF for GitHub code scanning. Same exclusions as `gosec` above so the
@@ -2444,11 +2611,34 @@ gosec-sarif:
 # the other: govulncheck judges a call graph against a curated Go database,
 # trivy judges package versions against the GHSA stream. A clean govulncheck
 # is not evidence about anything trivy would report.
+#
+# A FRESHNESS FLOOR WAS RULED OUT (#480, 2026-09-22), and it was very nearly
+# built. The case for it sounded identical to the trivy guard's -- "a green
+# scan says a scan ran and nothing about what it knew" -- and it is not
+# identical. trivy's guard exists because trivy holds a CACHED artifact that it
+# never re-downloads while the artifact claims not to be expired. govulncheck
+# holds nothing: measured 2026-09-22, no vuln database anywhere under ~/.cache
+# or the module cache, GOVULNDB unset, `govulncheck -json` reporting
+# db=https://vuln.go.dev. There is no local copy to go stale.
+#
+# What a copied guard WOULD have done is fail for the wrong reason. The same
+# run reported db_last_modified=2026-09-16T18:00:43Z -- six days old, because
+# the Go vulnerability team had simply not published anything that week. A
+# 24-hour floor on that field would have been red with nothing a developer
+# could do about it: there is no "refresh" for a database you do not hold. A
+# guard that fires on a quiet upstream week and cannot be cleared by any change
+# to this tree is as useless as one that cannot fire.
+#
+# The real exposure is the coverage gap above, and it is closed by running
+# trivy BLOCKING on every push (ci.yml's `trivy` job, #479) rather than only
+# overnight. Revisit only if GOVULNDB is ever pointed at a local or mirrored
+# database, which is the one configuration where staleness becomes real.
 .PHONY: vuln
 vuln:
 	$(call require-scanner,$(GOVULNCHECK),$(GOVULNCHECK_INSTALL))
-	$(GOVULNCHECK) ./...
-	cd sdk/go && $(GOVULNCHECK) ./...
+	@$(stage-gomodauth) \
+	eval "$${GOMODAUTH:-}"; \
+	$(GOVULNCHECK) ./... && cd sdk/go && $(GOVULNCHECK) ./...
 
 # No `require-scanner` guard: this one runs the Go toolchain, not a separately
 # installed scanner. Every other target in this file needs `go` too, so its
@@ -2505,15 +2695,117 @@ TRIVY_DB_MAX_AGE_HOURS := 24
 # asks only for vuln.
 #
 # The check is deliberately NOT its own phony target. It has exactly one
-# correct call site -- between these two -- and a second entry point would be a
-# way to run it against a database no scan then uses, which is a report rather
-# than a gate.
+# correct call site -- ahead of every scan -- and a free-standing entry point
+# would be a way to run it against a database no scan then uses, which is a
+# report rather than a gate. It is a CANNED RECIPE rather than a target for
+# that reason: `trivy` and `trivy-report` below each open with it, and neither
+# can be invoked without it.
+define trivy-certified-db
+	trivy fs --scanners vuln --download-db-only .
+	@./scripts/check-trivy-db.sh $(TRIVY_DB_MAX_AGE_HOURS)
+endef
+
+# The BLOCKING severity floor. It does not move, and #522 is the occasion on
+# which it was asked to and did not: devops.md §8 sets the gate at
+# CRITICAL/HIGH deliberately, and a gate that blocks a merge on a MEDIUM is one
+# people learn to route around. What moves is the REPORTING floor, immediately
+# below.
+TRIVY_GATE_SEVERITY := CRITICAL,HIGH
+
+# The SCOPE of the scan, which is a separate question from its severity floor
+# and was never asked until #530. trivy's npm parser EXCLUDES a lockfile's
+# dev dependencies unless told otherwise, so with the flag below absent the
+# blocking gate was green on three HIGH advisories -- two in nanoid, one in
+# postcss, all fixed upstream -- that `npm audit` reported and that sat squarely
+# AT the blocking floor. A severity floor at least reports the band above it;
+# a scope gap reports nothing about a whole dependency tree.
+#
+# Dev dependencies are IN scope here, on the blocking leg, by owner ruling
+# (2026-09-16). "Dev dependencies do not ship" is the usual argument for
+# leaving them out and it is weaker than usual for this tree: vite and esbuild
+# PRODUCE the shipped bundle, and a compromised build tool is a supply-chain
+# path into the artifact -- the class of risk this scanner exists to name. The
+# flag applies to every language ecosystem trivy parses, not only npm; Go has
+# no dev-dependency notion, so for the Go modules it changes nothing.
+#
+# Both legs carry it so the reporting floor below covers the same tree the
+# blocking floor does. The three findings that made this visible were fixed in
+# the same change that added the flag, so it landed green; a finding this
+# surfaces later is fixed by bumping the dependency, not by removing the flag.
+# test/buildgates asserts every scan line carries it.
+TRIVY_SCOPE := --include-dev-deps
+
 .PHONY: trivy
 trivy:
 	$(call require-scanner,trivy,$(TRIVY_INSTALL))
-	trivy fs --scanners vuln --download-db-only .
-	@./scripts/check-trivy-db.sh $(TRIVY_DB_MAX_AGE_HOURS)
-	trivy fs --scanners vuln,secret --severity CRITICAL,HIGH --exit-code 1 --skip-db-update $(TRIVY_SKIP_DIRS) .
+	$(trivy-certified-db)
+	trivy fs --scanners vuln,secret $(TRIVY_SCOPE) --severity $(TRIVY_GATE_SEVERITY) --exit-code 1 --skip-db-update $(TRIVY_SKIP_DIRS) .
+
+# ----------------------------------------------------------------------------
+# The REPORTING floor (#522)
+#
+# THE DEFECT THIS CLOSES: with `CRITICAL,HIGH` the only severity list anywhere
+# in the repository, no leg of the pipeline could report a MEDIUM, so a green
+# Security signal could not distinguish "there are no MEDIUMs" from "nothing
+# looked". Two real advisories -- an authentication bypass in go-pkcs12's
+# Decode functions and an ECharts XSS -- sat under that floor for the whole of
+# the repository's history and surfaced only because someone widened the list
+# by hand for an unrelated demonstration. An advisory nobody has been shown is
+# not an accepted one.
+#
+# WHY IT EXITS NONZERO, given that #522 asks for reporting rather than gating.
+# "Reporting, not gating" is a statement about what blocks a MERGE, and this
+# blocks none: it runs in nightly.yml, in the Trivy job, which is not in
+# `ci-gate`'s `needs` while the repo is alpha (devops.md §8a). What it is not
+# is `--exit-code 0`, because an exit-0 step in a nightly is indistinguishable
+# from no step at all -- which is the status quo this exists to end. A signal
+# that can transition to red is the only kind anyone reads (#478).
+#
+# WHY IT LANDS GREEN. Measured on main at the time of writing, the entire
+# sub-threshold backlog was four findings and TWO distinct advisories -- the
+# go-pkcs12 one in all three go.mod files, and echarts in the frontend
+# lockfile. Both are fixed in the same change that adds this target, so the leg
+# is green on the day it arrives. That is deliberate and it is the same
+# reasoning scripts/check-publication-bound.sh records: a guard that is red on
+# the day it lands is a guard nobody arms.
+#
+# WHY LOW IS IN AND UNKNOWN IS NOT. LOW measured ZERO on this tree, so
+# including it costs nothing today and closes the band rather than leaving a
+# second invisible one. UNKNOWN is trivy's "no CVSS score was assigned", and on
+# this tree it is one finding -- golang.org/x/crypto/openpgp, deprecated
+# upstream, `Fixed Version` EMPTY because the fix is not to use the package.
+# There is no version to bump to, so a band that included it would be red from
+# the first run with nothing anyone could do, which is the failure mode the
+# paragraph above is about. It is not thereby invisible: the second invocation
+# below PRINTS the UNKNOWN band advisorily in the same run. Unreported and
+# non-blocking are different things, and the whole of #522 is that distinction.
+#
+# HOW A FINDING IS DISPOSITIONED, decided in advance rather than during the
+# first noisy week:
+#   1. A fix exists and the bump is not a major -- take it. The default.
+#   2. The vulnerable SYMBOL is measurably unreached -- record the measurement
+#      (the grep or the call graph, not the assertion) in the feature folder
+#      documenting that surface, and take the bump anyway when it is free.
+#      Reachability is argued per finding: govulncheck's silence is evidence
+#      only when the affected symbols are actually in its database (#451).
+#   3. Neither -- a .trivyignore entry with a written reason and a date
+#      (devops.md §8). Note that trivy applies .trivyignore to EVERY leg, so an
+#      entry added to quiet a MEDIUM also quiets that advisory in the blocking
+#      gate if it is later rescored. Say so in the entry.
+#
+# NOT in `security` and NOT in `_ci`, deliberately. `make security` is the
+# blocking contract and `make ci` claims to mirror the pull-request path; a
+# MEDIUM-red target in either would make MEDIUM blocking by the back door,
+# which is precisely what this must not do.
+TRIVY_REPORT_SEVERITY := MEDIUM,LOW
+
+.PHONY: trivy-report
+trivy-report: ## Report sub-threshold (MEDIUM/LOW) advisories; advisory in nightly, blocks no merge
+	$(call require-scanner,trivy,$(TRIVY_INSTALL))
+	$(trivy-certified-db)
+	trivy fs --scanners vuln,secret $(TRIVY_SCOPE) --severity $(TRIVY_REPORT_SEVERITY) --exit-code 1 --skip-db-update $(TRIVY_SKIP_DIRS) .
+	@echo "== UNKNOWN band (advisory; no score assigned, often no fix available) =="
+	trivy fs --scanners vuln $(TRIVY_SCOPE) --severity UNKNOWN --exit-code 0 --skip-db-update $(TRIVY_SKIP_DIRS) .
 
 # The rejecting branches of that check, which the target above never reaches
 # while the database is fresh -- and on any host where the suite is meant to
@@ -2809,6 +3101,24 @@ coverage-vector-quantization: | _cover-dir ## Generate quantization coverage rep
 	$(call check-coverage,$(COVER_DIR)/vector-quantization.out,vector-quantization)
 
 # ============================================================================
+# Shared k-means (pkg/vector/kmeans) -- consumed by pkg/vector/ivf and
+# pkg/vector/quantization; see docs/vectors/engineering.md.
+# ============================================================================
+
+.PHONY: test-vector-kmeans
+test-vector-kmeans: ## Run shared k-means unit tests
+	$(GOTEST) $(TAG_FLAG) ./pkg/vector/kmeans/...
+
+.PHONY: bench-vector-kmeans
+bench-vector-kmeans: ## Run shared k-means benchmarks
+	$(GO) test $(TAG_FLAG) -bench=. -benchmem -count=3 ./pkg/vector/kmeans/...
+
+.PHONY: coverage-vector-kmeans
+coverage-vector-kmeans: | _cover-dir ## Generate shared k-means coverage report
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/vector-kmeans.out ./pkg/vector/kmeans/...
+	$(call check-coverage,$(COVER_DIR)/vector-kmeans.out,vector-kmeans)
+
+# ============================================================================
 # Bloom Filter
 # ============================================================================
 
@@ -2994,8 +3304,11 @@ help:
 	@echo "  test-version-reconciled  Regression tests for the reconciliation check"
 	@echo ""
 	@echo "Security:"
+	@echo "  security               Blocking suite: gosec, govulncheck, go mod verify, trivy"
 	@echo "  gosec                  Run gosec security scanner"
 	@echo "  vuln                   Run govulncheck vulnerability scanner"
+	@echo "  trivy                  Blocking trivy leg (CRITICAL/HIGH)"
+	@echo "  trivy-report           Sub-threshold advisories (MEDIUM/LOW + UNKNOWN); blocks no merge"
 	@echo ""
 	@echo "Dev Cluster:"
 	@echo "  dev-cluster              Start a local 3-node cluster"

@@ -62,7 +62,7 @@ func newKeyedEncryptor(t *testing.T, rootKeyPath, passphrase string) *atrest.Enc
 	if err != nil {
 		t.Fatalf("NewStorageBarrier(keyed): %v", err)
 	}
-	creds := seal.Credentials{Secret: []byte(passphrase)}
+	creds := seal.MustCredentials([]byte(passphrase))
 	if err := b.Initialize(ctx, creds); err != nil {
 		t.Fatalf("Initialize(keyed): %v", err)
 	}

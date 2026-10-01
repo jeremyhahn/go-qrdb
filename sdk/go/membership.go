@@ -269,8 +269,11 @@ type sdkReconfigurer struct {
 	client *Client
 }
 
+// AddMember adds the replica with the identity the cluster has already
+// committed for its host: dynamic membership acts on nodes that registered
+// themselves, so it has no operator-supplied identity to offer.
 func (r *sdkReconfigurer) AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr string) error {
-	return r.client.Admin().AddMember(ctx, shardID, replicaID, raftAddr)
+	return r.client.Admin().AddMember(ctx, shardID, replicaID, raftAddr, "")
 }
 
 func (r *sdkReconfigurer) RemoveMember(ctx context.Context, shardID, replicaID uint64) error {

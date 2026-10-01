@@ -132,7 +132,7 @@ func TestServiceErrorCodeClassifiesKeyringErrors(t *testing.T) {
 	if got := ServiceErrorCode(&dek.CrossTenantError{CallerTenant: "a", RequestedTenant: "b"}); got != codes.PermissionDenied {
 		t.Fatalf("code = %v, want PermissionDenied", got)
 	}
-	if got := status.Code(mapDEKError(errors.New("foreign"))); got != codes.Internal {
+	if got := status.Code(mapServiceError(errors.New("foreign"))); got != codes.Internal {
 		t.Fatalf("foreign error code = %v, want Internal", got)
 	}
 }

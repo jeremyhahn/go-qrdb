@@ -47,7 +47,7 @@ package permission
 // scope carried by the broker's acme:read / acme:write, which model a tenant's
 // own ACME issuance settings and are denied to the platform operator by
 // design). Administering the ACME server and its CA hierarchy IS a platform
-// capability: they take the default ScopeSelf, so the system-tenant rule lifts
+// capability: they are declared ScopeSelf in self_scope.go, so the system-tenant rule lifts
 // them across tenants for a system-tenant Admin while a tenant-local Admin
 // stays confined to their own tenant.
 // ---------------------------------------------------------------------------

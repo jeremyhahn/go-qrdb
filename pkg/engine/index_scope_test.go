@@ -431,8 +431,8 @@ func TestKVEngine_IndexBackfillIsKeyScoped(t *testing.T) {
 
 // TestKVEngine_RegisterEntityTypeScopesToTheEntity states that a DAO entity
 // index registered directly on the engine covers that entity type's keyspace
-// on the APPLY path, which is where KVEngine.filterIndexes never reached: it
-// scopes PutWithIndexes/DeleteWithIndexes only.
+// on the APPLY path. PutWithIndexes/DeleteWithIndexes select by the same
+// scope; see kv_engine_namespaced_index_test.go.
 func TestKVEngine_RegisterEntityTypeScopesToTheEntity(t *testing.T) {
 	eng := newScopedKVEngine(t)
 

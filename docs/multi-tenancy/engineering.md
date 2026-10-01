@@ -1,6 +1,6 @@
 # Multi-Tenancy — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
 
 ## Exported surface
 
@@ -44,6 +44,16 @@ Server option: `WithTenantBarrierService(svc tenant.TenantServicer)`.
   Enrolment (`Add`) routes on the tenant owning the named user id and REFUSES a
   caller that may not reach it; `LookupByCredentialKey` routes on the context
   tenant, which is the tenant the login was begun under.
+- **The ceremony-time custodian auth-factor service is routed the same way:**
+  `service.NewRoutingAuthFactorService` over the same
+  `StoreResolver`, wired by `pkg/server`'s `ensureAuthFactorService` and
+  `cmd/qrdbd`'s `buildAuthFactorServiceOption`, with the same no-resolver-no-
+  surface refusal. It has no owner index, unlike `Add` above: a custodian
+  enrollment id is issued inside the enrolling tenant and only ever presented
+  back to it, so every verb routes on the context tenant. Pre-cutover records
+  at the flat `__sys:authfactor/` key are not migrated — go-qrdb is
+  pre-release alpha — and are unreachable through the routed service after
+  this change; see [../auth-factors/engineering.md](../auth-factors/engineering.md#the-custodian-surface-is-routed-too).
 - **The resolver-served store namespaces at `{tenant}/`, not
   `{tenant}/{db}/`.** It serves identity, and identity is tenant-wide — a user
   authenticates whichever database a request names. Per-database namespacing
@@ -146,11 +156,22 @@ Server option: `WithTenantBarrierService(svc tenant.TenantServicer)`.
   rather than inferring `{entityType}/`. The inference holds only while the
   entity type is the leading key segment, which namespacing breaks — and a
   store that infers wrongly indexes nothing while reporting success.
-- **Shared-prefix tenants have no engine-backed indexes** (#40 restores them).
-  The engine matches writes to indexes by the first path segment of the key,
-  which a namespace displaces. The store refuses index operations with
-  `kvstore.ErrIndexUnsupported`; `pkg/dao` plans a full scan, so results are
-  correct and only slower. Isolation was chosen over the index.
+- **Shared-prefix tenants have engine-backed, per-tenant indexes.** The
+  namespaced store registers `{tenant}/{entity}.{Field}` with the absolute key
+  prefix `{tenant}/{entity}/`; `lifecycle.kvStoreAdapter` hands the engine
+  that prefix made relative to `engine.IndexNamespace(name)`, so the scope
+  the engine maintains (`engine.ComposeIndexScope`) is exactly the prefix the
+  tenant's keys carry. The same translation serves a `{tenant}/{database}/`
+  namespace and a DAO built `WithDatabase`. A name whose namespace the keys do
+  not live under is refused with `kvstore.ErrIndexUnsupported`.
+- **Index maintenance selects by scope on every path.** The Raft apply path
+  and `KVEngine.PutWithIndexes`/`DeleteWithIndexes` both keep exactly the
+  indexes whose scope covers the key. Nothing parses a key for an entity type:
+  a tenant or database namespace displaces the first path segment, which is why
+  the name-prefix filter that did so was removed.
+- **Encrypted tenant stores still refuse index operations** (`barrier`,
+  `volume`, `raft`); `pkg/dao` plans a full scan. See the architecture
+  document for why this is an open design question rather than a gap.
 
 
 
@@ -183,6 +204,11 @@ Server option: `WithTenantBarrierService(svc tenant.TenantServicer)`.
 - **Entitlements are checked before quotas.** A plan that does not include a
   tier is refused without consulting counters.
 - **`Max*` semantics**: `-1` means unlimited, `0` means use the system default.
+- **`MaxStorageBytes` meters every data-plane write surface**, collection
+  documents included: the registry wraps the resolved KV, MVCC, batch,
+  transaction, time-series, vector and collection servicers on every resolve,
+  with the tenant's current limit. A collection document costs its body bytes
+  (see [../collections/engineering.md](../collections/engineering.md#tenant-scoping)).
 - **`MaxStorageBytes` for `volume` tenants is reconciled in the background** by
   a reconciler that walks each volume tenant's `DataRoot`, at
   `tenant.quota_reconcile_interval` (default `5m`), to correct drift.
@@ -333,6 +359,31 @@ create path, reachable on the delete path once the guard was hoisted there.
 - **An unreadable store fails the create.** Creating a tenant is the operation
   whose whole safety property is that the id was never used; an unanswerable
   "was it?" must not be read as "no".
+- **A create is atomic against a delete of the same id.** `CreateTenant`
+  commits its metadata record through `kvstore.FencedCreator.PutIfAllAbsent`:
+  the record is written only while the record **and** the tombstone are both
+  absent, decided in one step — a single transaction with a `version == 0`
+  compare per key on the replicated store. The earlier tombstone and duplicate
+  reads are fast refusals before anything is provisioned; they are not the
+  guarantee. Every interleaving of a create and a delete therefore ends in
+  exactly one outcome: the create lands before the tombstone (and the delete,
+  which removes whatever record it finds, removes it), or the create is refused.
+  A retired id never has a live record beside its tombstone.
+- **Two concurrent creates of one id have one winner.** The record key is its
+  own fence, so the loser is refused with `ErrTenantAlreadyExists` and the
+  winner's record is untouched.
+- **A create that loses to a retirement destroys what it provisioned.** A
+  `barrier`, `volume` or `raft` create provisions its barrier before the
+  commit. When the commit is refused with `*TenantDeletedError`, the create
+  calls `BarrierRegistry.DestroyTenant`, removing the durable tenant-root record
+  the boot path restores from — so the retired id's barrier does not return on
+  restart. A create that loses to another create, or whose outcome is unknown,
+  only unregisters its in-memory barrier: the durable records may belong to the
+  winner.
+- **A store without the capability is refused**, with
+  `ErrTenantStoreNotAtomic`, before anything is provisioned — never degraded to
+  a read followed by a write. Both production stores carry it: the replicated
+  seal backend and, on a seal-disabled node, the transaction-backed KV adapter.
 
 ### The three seams
 
@@ -380,10 +431,21 @@ durable records in place:
 | `__sys:volumepool/assign/{id}` | `resolveTenantPoolBase` on the next provision |
 
 So a deleted tenant's barrier came back on the next restart.
-`BarrierRegistry.DestroyTenant` closes the per-tenant Pebble, deletes both
-records and removes the `DataRoot`, in that order — the files are released
-before the directory holding them is unlinked, and an interrupted call leaves
-a directory nothing references, which the next call removes.
+`BarrierRegistry.DestroyTenant` releases the barrier and closes the
+per-tenant Pebble, removes the `DataRoot`, and only then deletes both records
+— the files are released before the directory holding them is unlinked, and a
+removal that fails leaves the records, so a retry still finds the directory.
+(An earlier revision of this section listed the records before the
+directory; the code removes the directory first.)
+
+The removal is `BarrierRegistry.RemoveDataRoot`: it removes everything
+**inside** the `DataRoot`, then the root itself. A dedicated `DataRoot` is
+often a mount point, and rmdir on a mount point fails with `EBUSY` (or
+`EXDEV`) however empty it is; a root that has been emptied and refuses its own
+removal that way counts as reclaimed and is left for the operator to unmount.
+Any other failure is returned as `*TenantDataRootRemoveError`. The filesystem
+is reached through `seal.DirectoryRemover`, which `seal.WithDirectoryRemover`
+replaces, so the failure paths are testable without a failing disk.
 
 It returns `ErrTenantNotFound` when the tenant was not registered here at all,
 which `DeleteTenant` treats as success so the delete stays re-issuable.
@@ -407,6 +469,144 @@ Re-issuing `DeleteTenant` on a tenant whose metadata is already gone but whose
 id is tombstoned resumes from the shred rather than reporting not-found. An
 id that was never used is still `ErrTenantNotFound`.
 
+## Retired tenant ids
+
+### Listing — `ListDeletedTenants`
+
+```go
+ListDeletedTenants(ctx context.Context, pageToken string, pageSize int) (*tenant.DeletedTenantsPage, error)
+
+type DeletedTenantsPage struct {
+    Tombstones    []tenant.Tombstone
+    NextPageToken string
+}
+```
+
+- **A paged range read over `__sys:tenants-deleted/`**, in ascending id
+  order. Both tenant services share one implementation.
+- **`pageSize`**: `0` means `DefaultDeletedTenantsPageSize` (100); above
+  `MaxDeletedTenantsPageSize` (1000) is served at the maximum; negative is
+  `*InvalidPageRequestError{Field: "page_size"}`.
+- **`pageToken`** is opaque (the last id of the previous page, base64url). A
+  token that does not decode is `*InvalidPageRequestError{Field:
+  "page_token"}`. A token that does decode is honoured whether or not this
+  service minted it: it is only a lower bound, and grants nothing. The next
+  page starts strictly after the id it names, so a retirement landing between
+  pages is never listed twice.
+- **Cost, stated.** Neither store interface the tenant services run on offers
+  an ordered range scan bounded by a start key and a limit, so each page lists
+  the KEYS of the whole tombstone prefix — O(retired ids) — and reads the
+  values of at most one page. The prefix is bounded by the number of deletions
+  ever made.
+- **The key is authoritative for the id.** A body that will not decode is
+  listed as `Tombstone{ID: id}` with a zero `DeletedAt` — the id is retired
+  either way.
+- Permission `tenants:list_deleted`, **cross-scope** (system tenant only).
+
+### Reclaiming — `ReconcileDeletedTenants`
+
+```go
+ReconcileDeletedTenants(ctx context.Context) (*tenant.ReconcileReport, error)
+
+type ReconcileReport struct {
+    Inspected int
+    Reclaimed []tenant.ReclaimedPath // {TenantID, Path}
+    Skipped   []tenant.SkippedPath   // {TenantID, Path, Reason}
+}
+```
+
+Node-local by nature. Once per pass it reads the **live set strictly**: every
+tenant record is decoded, and a record that will not decode **aborts the
+pass** — an unreadable live tenant has an unknown `DataRoot`, and that unknown
+could be any candidate below. (`ListTenants` skips such a record; that is right
+for a listing and wrong for the feed of a destructive operation.) Live claims
+are each live tenant's recorded `DataRoot` plus everything the registry
+attributes to it on this node. The pool bases and the reserved data roots are
+read once too. Then, for each retired id, in order:
+
+1. **Skip the id whole** if a record exists for it (`SkipLiveTenantRecord`) —
+   a direct existence read of the id's own key, so a record that exists but
+   will not decode still counts.
+2. **Collect the candidates** — `BarrierRegistry.TenantDataRootCandidates`:
+   the id's registered `DataRoot`, the one its local tenant-root record
+   names, and `{poolBase}/{id}` under every local pool base. Each is returned
+   **as recorded, never cleaned**, and de-duplicated on its cleaned form: a
+   recorded `/srv/qrdb/x/..` cleans to `/srv/qrdb`, a different directory, so
+   the path must be judged before anything cleans it.
+   **An id already fully reclaimed is skipped silently** — no candidate exists
+   on disk and `BarrierRegistry.HasTenantState` reports no barrier, record or
+   slot assignment — so a pass does not stop runtimes or touch records for
+   every retirement ever made.
+3. **Stop the runtime** through the `tenant.TenantRuntimeCloser` seam —
+   `server.NewTenantRuntimeCloser` closes the id's `TenantHostRegistry` host
+   and every dedicated shard `RaftBackendFactory` started for it. Close, never
+   purge: which directories go is this pass's decision.
+4. **Release the barrier** — `BarrierRegistry.ReleaseTenant` seals and forgets
+   it in memory and closes the per-tenant store. Nothing durable changes.
+5. **Remove each existing candidate** with `BarrierRegistry.RemoveDataRoot`
+   (contents first, so a mount-point root is reclaimed), except one that is
+   not an absolute, canonical path **as recorded** (`SkipNotCanonical` — a
+   relative or dotted recorded root is never resolved), that is, contains or
+   lies inside a directory a live tenant claims (`SkipOverlapsLiveTenant`),
+   that is or contains a pool base or a reserved data root, or that lies
+   inside a reserved data root without lying strictly inside a pool base
+   (`SkipOverlapsReservedRoot`). The pool-base exemption exists because a pool
+   may be carved out of a reserved root, and every tenant's pool directory
+   lies inside its pool base by construction. Every skipped path is logged at
+   `WARN` with `tenant_id`, `path` and `reason`. **The live set is re-read,
+   strictly, right before each removal**, so a tenant created on a peer since
+   the pass began keeps its directory.
+6. **Drop the durable records last** — `BarrierRegistry.DropTenantRecords`
+   deletes the tenant-root record and the slot assignment. An id whose
+   removal failed never reaches this step, so the record that names the
+   directory survives and the next pass finds it again; dropping the records
+   first would orphan an operator-supplied `DataRoot` that nothing named any
+   more.
+   `DestroyTenant` runs the same three steps in the same order —
+   `ReleaseTenant`, remove the `DataRoot`, `DropTenantRecords`.
+
+**The create side closes the window from the other end.** Registering a
+`volume` or `raft` tenant at a `DataRoot` another tenant's tenant-root record
+on this node still names — for instance a deleted tenant this node has not
+reclaimed yet — is refused (`seal.DataRootClaimedError`, surfaced by
+`CreateTenant` as `*DataRootOverlapError`, which every network transport maps
+to 409 / `FAILED_PRECONDITION` and the embedded transport returns as is), so a
+new tenant is never handed a directory the reconcile is entitled to remove. When the claimant is
+tombstoned the error names it as a **retired tenant** and carries a `Remedy`
+naming `qrdb tenant reconcile-deleted`. A registry that cannot list the
+records to check returns `*seal.ClaimedRootCheckError` rather than a bare
+storage error.
+
+Every step is idempotent. Failures split in two. A **guard** failure —
+listing the tombstones, reading the live set (including the re-read) — aborts
+the pass with `*ResidueReconcileError{TenantID, Op, Path}`, because nothing can
+be judged without it. A **per-id** failure — a removal, stopping the runtime,
+dropping the records — is collected and the pass continues with the next id;
+the pass then returns its report together with `*ResidueReconcileErrors`,
+whose `Unwrap() []error` exposes each `*ResidueReconcileError`; the report
+carries the same failures as `Failed []FailedReclaim`. Every transport asks
+`tenant.ReconcileResponseError(report, err)` what to answer: nil when the
+error only collects per-id failures the report already carries — the
+transport then answers success with the report — and the error otherwise.
+The Go SDK turns a non-empty `Failed` back into
+`*transport.ReconcileDeletedTenantsError`, returned beside the response.
+Re-running resumes. The seal-disabled service owns no directories and reports only
+`Inspected`.
+
+**Wiring.** `server.BuildTenantInfra` runs the pass **before**
+`RestoreVolumeTenants` — nothing is running yet — logging a failure without
+failing the boot (and still logging what a partly failed pass reclaimed), and then wires the runtime closer into the tenant service
+(`tenant.ResidueWiring`, via `server.WireTenantRuntimeCloser`). `sdk/go/node`
+re-wires it into the tenant service a system-scope recycle rebuilds.
+Permission `tenants:reconcile_deleted`, **cross-scope**.
+
+**Residual, stated.** The re-read right before each removal narrows the
+window to the removal itself: a tenant whose record commits on a peer between
+that read and the `RemoveAll` is not seen. Its `DataRoot` must be empty at
+creation, and a create on THIS node at a path a record still names is refused,
+so the exposure is an empty directory created on another node in that
+instant.
+
 ## Governance planes
 
 | Plane | Controls | Enforced at |
@@ -420,6 +620,57 @@ questions and are owned by different people.
 
 Provisioning-governance permissions: `tenants:set_isolation`,
 `tenants:set_entitlements`, `databases:create_raft`, `databases:create_volume`.
+
+### Tenant-administration authorization
+
+The per-route permission is checked against the CALLER's tenant, which says
+nothing about the tenant the request names. The second decision lives in one
+place, `pkg/auth/middleware/tenant_admin.go`, and every network transport calls
+it:
+
+| Operation | Decision |
+|---|---|
+| get / delete | `AuthorizeTenantTarget(ctx, id, tenants:read / tenants:delete)` |
+| update | `AuthorizeTenantUpdate(ctx, id, patch)` — `tenants:update`, plus `tenants:set_isolation` when `patch.IsolationType` is set |
+| quotas / entitlements | route permission `tenants:set_quotas` / `tenants:set_entitlements` (cross-scope), re-checked against `id` |
+| create | route permission `tenants:create` (cross-scope) |
+| list | `FilterTenantList` — every tenant with `tenants:list:cross` against `system`, else the caller's own; any refusal other than an RBAC denial is returned, not narrowed |
+
+The four plan permissions are `ScopeCross`
+(`pkg/permission/tenant_provisioning_scope.go`). The built-in Admin role carries
+them in every tenant; the scope rule makes them inert outside `system`.
+
+Each transport validates the id with `tenant.ValidateTenantIDShape` before it
+authorizes, and maps `*tenant.InvalidTenantIDCharError` to 400 /
+`INVALID_ARGUMENT` (MCP classifies through gRPC's mapper).
+
+`rbac.RBACAuthorizer` resolves an identity's role permissions under the
+IDENTITY's tenant, never the request's target: the role store refuses a role
+outside the context tenant, so a `system` operator's first decision against
+another tenant used to fail whenever the permission cache was cold.
+
+`tenants:delete` stays `ScopeSelf` (owner ruling 2026-09-29): a tenant's Admin
+may delete its own tenant.
+
+The list probe (`tenants:list:cross`) is a capability probe, not an access
+decision: it runs decide-only, charging no rate-limit token and writing no
+audit record, so an ordinary tenant-Admin list records no denial and does not
+fail when the audit sink cannot record one.
+
+The "tenant must be empty before an isolation change" precondition lives in
+the tenant service (`pkg/tenant/isolation_change.go`), so every transport
+reaches it. Both tenant services embed the check and ask a
+`tenant.TenantDataProbe` whether the tenant holds data; `service.TenantDataProbe`
+is the implementation (the unfiltered MVCC count where the shard has MVCC, the
+KV list where it does not), and `server.New` wires it over the node's service
+registry through `tenant.IsolationChangeWiring`. No probe, or a probe error,
+fails the change closed. A patch naming the current isolation type changes
+nothing and consults no probe.
+
+Both barrier bootstrap fallbacks (`AuthorizeTenantBarrierInit`,
+`AuthorizeTenantBarrierSealedOp`) return a `*RateLimitedError` immediately,
+next to the audit-failure check: the limiter refuses before RBAC is consulted,
+so its answer is not a denial the window may override.
 
 ### Quotas — `quota.Quotas`
 
@@ -521,6 +772,10 @@ isolation gap.
 | Creating a tenant under a DELETED id | `*TenantDeletedError`, 409 / `AlreadyExists` | **yes** |
 | Deleting a tenant that still owns databases | `*TenantHasDatabasesError`, 409 / `FailedPrecondition` | **yes** |
 | Tombstone store unreadable during create | `*StoreError{Op: "tombstone-check"}` | **yes** |
+| Deleted-tenant reconcile would touch a live tenant's directory | skipped and reported, never removed | **yes** |
+| Deleted-tenant reconcile fails at boot | logged; the boot continues and the verb retries on demand | **n/a** — disk only |
+| Id retired by a delete while the create was in flight | `*TenantDeletedError`; provisioned barrier destroyed, nothing committed | **yes** |
+| Metadata store has no atomic fenced create | `ErrTenantStoreNotAtomic`, before anything is provisioned | **yes** |
 | Database enumeration fails during delete | `*DatabaseListError`, nothing changed | **yes** |
 | Keyspace reclaim fails during delete | `*TeardownError` wrapping `*KeyspaceReclaimError`; id already retired | **yes** |
 | Resolving a DELETED tenant's keyspace | `*TenantDeletedError`, no fall-through | **yes** |
@@ -613,6 +868,13 @@ did not.
   leak information about counters to a plan with no access to the tier.
 - **The no-tenant-service path is tested explicitly** so the gap stays visible
   rather than becoming a surprise.
+- **Create/delete races are driven deterministically**
+  (`pkg/tenant/create_delete_race_test.go`): the store double applies the
+  concurrent operation's write through the real store at the moment of the
+  commit and delegates the commit itself, so the outcome is decided by the
+  store under test. A restart is simulated by `RestoreVolumeTenants` after the
+  losing create. Real-goroutine races assert one winner per id and no
+  tombstone beside a live record.
 - **Integration**: the multi-node tenant suites —
   `isolation_raft_cluster_test.go`, `isolation_raft_dedicated_wal_test.go`,
   `isolation_raft_rebalance_test.go`, `isolation_raft_scale_test.go` — live in

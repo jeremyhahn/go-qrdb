@@ -57,6 +57,14 @@ func (m *mockTenantSvc) GetTenant(ctx context.Context, id string) (*tenantpkg.Te
 	}
 	return &tenantpkg.TenantInfo{ID: id, Name: "stub"}, nil
 }
+func (m *mockTenantSvc) ListDeletedTenants(_ context.Context, _ string, _ int) (*tenantpkg.DeletedTenantsPage, error) {
+	return &tenantpkg.DeletedTenantsPage{}, nil
+}
+
+func (m *mockTenantSvc) ReconcileDeletedTenants(_ context.Context) (*tenantpkg.ReconcileReport, error) {
+	return &tenantpkg.ReconcileReport{}, nil
+}
+
 func (m *mockTenantSvc) ListTenants(ctx context.Context) ([]tenantpkg.TenantInfo, error) {
 	if m.listFn != nil {
 		return m.listFn(ctx)
@@ -299,6 +307,12 @@ func (m *mockCollectionSvc) UpdateDocument(ctx context.Context, req *service.Upd
 		return m.updateFn(ctx, req)
 	}
 	return &service.UpdateDocumentResponse{ID: req.ID}, nil
+}
+
+// UpsertDocument reports an insert: no test that uses this double drives
+// the guarded upsert, which is exercised against the real service.
+func (m *mockCollectionSvc) UpsertDocument(_ context.Context, req *service.UpsertDocumentRequest) (*service.UpsertDocumentResponse, error) {
+	return &service.UpsertDocumentResponse{ID: req.ID}, nil
 }
 func (m *mockCollectionSvc) DeleteDocument(ctx context.Context, req *service.DeleteDocumentRequest) (*service.DeleteDocumentResponse, error) {
 	if m.deleteFn != nil {

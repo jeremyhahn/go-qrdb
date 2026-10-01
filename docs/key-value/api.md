@@ -195,7 +195,12 @@ plus `dry_run` and `force`. The response carries the plan entries
 | Guarded request key and values, SUMMED, over what one proposal can carry | 413 | — | REST only; the precise limit, derived from the Raft entry ceiling |
 | Guarded request key over what the command encoding can frame (65535 bytes) | 413 | `INVALID_ARGUMENT` | the key length prefix is two bytes; REST reports it at the edge, the other transports at encode time |
 | Guarded request body carrying data after the first JSON value | 400 | — | REST only; refused rather than silently truncated |
-| State machine has no handler for the operation's opcode, or was built without the subsystem | 501 | `UNIMPLEMENTED` | QUIC answers `StatusUnimplemented`; every SDK transport reconstitutes it as `transport.CapabilityUnsupportedError` so a caller can degrade instead of retrying |
+| State machine has no handler for the operation's opcode, or was built without the subsystem (no lessor, no time-series store, create/mod-revision compares on a non-MVCC backend) | 501 | `UNIMPLEMENTED` | `service.CapabilityUnsupportedError`. QUIC answers `StatusUnimplemented`; every SDK transport reconstitutes it as `transport.CapabilityUnsupportedError` so a caller can degrade instead of retrying |
+| State machine refused the command on its merits (an invalid TTL, a malformed point) | 400 | `INVALID_ARGUMENT` | `service.CommandRejectedError` |
+| State machine refused the command because a unique value is taken | 409 | `ALREADY_EXISTS` | `service.CommandConflictError` |
+| The subsystem that would serve the command is closed on this replica | 503 | `UNAVAILABLE` | `service.SubsystemClosedError` |
+| A committed command no writer of this version produced (undecodable) | 500 | `DATA_LOSS` | `service.CommandCorruptError` |
+| The subsystem failed while applying the command | 500 | `INTERNAL` | `service.ApplyFaultError` |
 | Restore targets a reserved prefix or key | 403 | `PERMISSION_DENIED` | unconditional, no override |
 | Restore scope empty, ambiguous, or over `MaxRestoreKeys` | 400 | `INVALID_ARGUMENT` | refused whole |
 | Missing permission | 403 | `PERMISSION_DENIED` | |
@@ -204,6 +209,15 @@ plus `dry_run` and `force`. The response carries the plan entries
 
 Every condition in this table has a QUIC status; the whole vocabulary is in
 [the API server's status mapping](../api-server/api.md#common-status-mapping).
+
+**How a state machine's refusal keeps its kind.** A state machine must not
+fail an apply for a deterministic consequence of client input — that halts the
+Raft group — so it encodes the refusal into its result instead. The encoding
+carries a KIND (`protocol.AppErrorKind`: capability, invalid, conflict,
+unavailable, fault, corrupt), and the service layer turns each kind into its
+own typed error. Before, every refusal but the capability one shared a single
+type, so an invalid TTL and a missing lease subsystem reached a caller as the
+same condition: 501 over REST, `INTERNAL` over gRPC and QUIC.
 
 ## Versioning
 

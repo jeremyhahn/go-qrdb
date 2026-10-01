@@ -32,7 +32,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,7 +48,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
-	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
@@ -126,8 +124,8 @@ var transportKinds = []transportKind{
 
 // THE EXCLUSION THAT USED TO LIVE HERE IS GONE (go-qrdb#438).
 //
-// A predicate carriesTypedCapabilityRefusal gated the typedRefusal cells and
-// returned false for exactly one transport. MCP could not carry the refusal
+// A predicate carriesTypedCapabilityRefusal gated the (then) typedRefusal
+// cells and returned false for exactly one transport. MCP could not carry the refusal
 // the MULTI-KEY transaction plane owes on a state machine with no MVCC store:
 // a qrdb tool reported a service-layer failure as prose, go-qrdb had no
 // JSON-RPC error-code mapping (conventions/errors.md §5), and classifyRefusal
@@ -145,10 +143,12 @@ var transportKinds = []transportKind{
 // transport.CapabilityUnsupportedError from the CODE.
 //
 // So the predicate is DELETED rather than made to return true everywhere: a
-// gate with no false case is an invitation to add one. MCP's three typedRefusal
-// cells are in the matrix on the same terms as every other transport's, and
-// classifyRefusal is unchanged — not one clause of it was relaxed to admit
-// them, which is the only way admitting them is worth anything.
+// gate with no false case is an invitation to add one. MCP's cells are in the
+// matrix on the same terms as every other transport's, and classifyRefusal is
+// unchanged — not one clause of it was relaxed to admit them, which is the
+// only way admitting them is worth anything. Since go-qrdb#136 the capability
+// refusal it classifies is the leased write the non-default raft sm_types
+// cannot honour (assertLeasedWriteRefusedSafely).
 
 // remote reports whether this transport crosses a real listener and therefore
 // needs TLS material and a seeded RBAC identity. Only the embedded transport
@@ -165,36 +165,20 @@ const (
 	// every other fullPassage cell.
 	fullPassage outcome = iota
 
-	// typedRefusal: this cell's state machine carries the SINGLE-KEY guarded
-	// verbs but not the multi-key transaction plane, so the transaction must
-	// refuse with a typed error AND leave the node serving. Refusing safely is
-	// a real conformance promise, and it is what pins go-qrdb#129 permanently:
-	// before that fix these cells did not refuse, they killed the shard.
-	//
-	// The name is kept although what a cell refuses has narrowed twice —
-	// PutIfAbsent, then the guarded delete and swap in go-qrdb#175, as these
-	// state machines gained the dispatch entries they were always credited
-	// with. What the gate measures is unchanged: some verb here refuses, and
-	// refusing does not cost the shard.
-	typedRefusal
-
-	// A third outcome, guardedWriteRefusal, existed here between go-qrdb#175
-	// and go-qrdb#216 for the one cell whose BACKEND could not carry a guarded
-	// result: sm_type "fast" is a KVStateMachine over FastBackend, which
-	// acknowledged a write before it was durable. Backend now requires a
-	// durable write pair of every implementation (owner ruling 2026-09-03), so
-	// no cell refuses for that reason and the outcome is DELETED rather than
-	// left unused — an outcome no cell can select is an invitation to select
-	// it, and the selection would look like a fix.
+	// Two more outcomes existed here and are DELETED rather than left unused
+	// — an outcome no cell can select is an invitation to select it, and the
+	// selection would look like a fix. guardedWriteRefusal (go-qrdb#175 to
+	// #216) was for the one backend that could not carry a guarded result;
+	// typedRefusal (go-qrdb#121 to #136) was for the raft sm_types with no
+	// multi-key plane, which refused transactions with a typed error and had
+	// to keep serving afterwards. Since go-qrdb#136 every sm_type serves
+	// transactions natively, so every cell passes in full. The keep-serving
+	// half of typedRefusal still runs, on the refusal those cells DO make — a
+	// revision compare (assertRevisionCompareBehaviour).
 )
 
 func (o outcome) String() string {
-	switch o {
-	case fullPassage:
-		return "full-passage"
-	default:
-		return "typed-refusal"
-	}
+	return "full-passage"
 }
 
 // cell is one square of the matrix.
@@ -245,18 +229,12 @@ func (c cell) name() string {
 // outcome its siblings have and a transport that quietly weakened a verb shows
 // up as a difference from them.
 //
-// The expected outcome per cell follows the scope ruled for v0.12: the
-// guarded/transaction plane under raft is promised on the DEFAULT sm_type
-// only. The non-default state machines never had a working MVCC store —
-// WithKVMVCCStore has no production caller — so scoping removes no working
-// promise, and giving them one is tracked post-v0.12 as go-qrdb#136. When that
-// lands, those four cells flip from typedRefusal to fullPassage, and the flip
-// is that issue's acceptance test.
-//
-// go-qrdb#175 already moved half of that flip: the four typedRefusal cells now
-// pass the whole single-key guarded battery, because the guarded delete and
-// swap needed no MVCC store — only the dispatch entries these state machines
-// were missing. What remains for #136 is the multi-key transaction plane.
+// Every cell expects full passage. The raft row's non-default sm_types were
+// scoped to a typed refusal of the multi-key plane for v0.12; go-qrdb#136 gave
+// every state machine a native transaction plane over its own keyspace, and
+// flipping those cells to full passage is that issue's acceptance test here.
+// pkg/server/lifecycle's TestGuardedPlaneConformsOnEverySMType walks every
+// sm_type over every sm_storage; this matrix walks the transports.
 func matrix() []cell {
 	var cells []cell
 	for _, tk := range transportKinds {
@@ -272,27 +250,15 @@ func matrix() []cell {
 		)
 
 		cells = append(cells,
-			// Raft, non-default sm_types: no MVCC store, so the multi-key
-			// transaction plane must refuse cleanly and keep serving.
-			cell{backend: database.BackendMemory, mode: raft, transport: tk, want: typedRefusal,
+			// Raft, non-default sm_types: the native transaction plane over
+			// the state machine's own keyspace (go-qrdb#136), on a volatile
+			// map, on durable file storage, and on the sharded write-through
+			// cache.
+			cell{backend: database.BackendMemory, mode: raft, transport: tk, want: fullPassage,
 				smType: "memory"},
-			cell{backend: database.BackendFile, mode: raft, transport: tk, want: typedRefusal,
+			cell{backend: database.BackendFile, mode: raft, transport: tk, want: fullPassage,
 				smType: "disk", smStorage: "file"},
-
-			// Raft, sm_type "fast": a KVStateMachine over FastBackend. It
-			// was the one composition whose BACKEND could not carry a guarded
-			// result — the write was acknowledged before it was durable and
-			// its storage failure was logged rather than returned — so the
-			// guarded delete and swap refused here while PutIfAbsent kept
-			// executing with the same hole open.
-			//
-			// go-qrdb#216 put the durable write pair on Backend itself, so
-			// this cell now carries the single-key guarded plane like every
-			// other non-default sm_type, and refuses only the MULTI-KEY
-			// transaction plane it has no MVCC store for. This cell is what
-			// pins that through every transport that can carry a typed
-			// refusal rather than only at the state machine.
-			cell{backend: database.BackendPebble, mode: raft, transport: tk, want: typedRefusal,
+			cell{backend: database.BackendPebble, mode: raft, transport: tk, want: fullPassage,
 				smType: "fast", smStorage: "memory"},
 		)
 	}
@@ -397,9 +363,12 @@ func (c cell) config(t *testing.T) *qrdbconfig.Config {
 		cfg.Raft.SMStorage = c.smStorage
 		cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendPebble)}}
 		cfg.Storage.VolumePools = []qrdbconfig.VolumePoolConfig{{Name: "default", Paths: []string{t.TempDir()}}}
-		// A non-default sm_type is hard-refused while the seal barrier is
-		// enabled (sdk/go/node.clusteredCreateFunc), which is itself part of
-		// why scoping these cells to typed refusal costs so little in practice.
+		// The non-default cells run with the barrier off: the disk cell's
+		// file storage cannot be encrypted and is refused under it
+		// (sdk/go/node.clusteredCreateFunc), and one seal setting across the
+		// row's non-default cells keeps them comparable. What the barrier
+		// allows and refuses per sm_type is pinned in sdk/go/node's
+		// TestClusteredCreateFunc_UnderTheSealBarrier.
 		cfg.Seal.Enabled = c.smType == ""
 		if cfg.Seal.Enabled {
 			cfg.Seal.Strategy = "none"
@@ -408,21 +377,16 @@ func (c cell) config(t *testing.T) *qrdbconfig.Config {
 	return cfg
 }
 
-// applySMStorage installs the raft storage-backend selection, which
-// NewClusteredNode does not read from config — only the daemon calls these
-// setters. They are process-global and mutex-guarded, so cells that need them
-// must not run in parallel, and each restores the previous value.
-func applySMStorage(t *testing.T, cfg *qrdbconfig.Config) {
-	t.Helper()
-	if cfg.Raft.SMStorage == "" {
-		return
+// keepsRevisions reports whether the cell's engine keeps MVCC revisions and
+// so answers create_revision / mod_revision compares: the MVCC engine on a
+// standalone memory or pebble backend, and the default raft state machine.
+// The file engine and every other raft sm_type compare on value and version
+// only, and refuse revision compares.
+func (c cell) keepsRevisions() bool {
+	if c.mode == raft {
+		return c.smType == ""
 	}
-	statemachine.SetDataDirRoot(cfg.Raft.DataDir)
-	statemachine.SetSMStorage(cfg.Raft.SMStorage)
-	t.Cleanup(func() {
-		statemachine.SetDataDirRoot("")
-		statemachine.SetSMStorage("")
-	})
+	return c.backend != database.BackendFile
 }
 
 // clients is the guarded surface under test, however it was reached.
@@ -436,7 +400,6 @@ type clients struct {
 func (c cell) boot(t *testing.T) clients {
 	t.Helper()
 	cfg := c.config(t)
-	applySMStorage(t, cfg)
 
 	var serverOpts []server.ServerOption
 	var ca *qrdbdharness.CA
@@ -485,7 +448,7 @@ func (c cell) boot(t *testing.T) clients {
 // transport is TLS-only by design — the client certificate IS the identity the
 // auth middleware authenticates — so there is no insecure shortcut here, and
 // server.WithTLS feeds REST, gRPC, QUIC and unix from this one config (the
-// QUIC listener appends its own "qrdb-quic" ALPN on top).
+// QUIC listener replaces its ALPN list with its own "qrdb-quic/2").
 func remoteServerTLS(t *testing.T) (*qrdbdharness.CA, *qrdbdharness.KeyPair, []server.ServerOption) {
 	t.Helper()
 	certDir := t.TempDir()
@@ -669,6 +632,16 @@ func awaitWritable(t *testing.T, c cell, kv transport.KVClient) {
 			t.Logf("%s: writable after %s", c.name(), time.Since(start).Round(time.Millisecond))
 			return
 		}
+		if errors.Is(err, quicraft.ErrTimeout) {
+			// SLOW, not broken: a leader accepted the proposal (a group with
+			// no leader refuses it at once with NotLeader) and the commit did
+			// not finish inside callTimeout. Say so here rather than hand the
+			// battery a cell whose every later call would time out for a
+			// reason that has nothing to do with the guarded verbs
+			// (go-qrdb#418).
+			t.Fatalf("%s: SLOW, not broken: a leader accepted the first write but it did not "+
+				"commit within %s (host starvation of the commit path): %v", c.name(), callTimeout, err)
+		}
 		var notLeader *transport.NotLeaderError
 		if !errors.As(err, &notLeader) && !errors.Is(err, quicraft.ErrReadIndexNotReady) {
 			// Not a transient election error. For a typed-refusal cell the
@@ -700,65 +673,22 @@ func grpcStatusOf(err error) (*status.Status, bool) {
 	return nil, false
 }
 
-// assertCapabilityRefusal requires that err is specifically a refusal for lack
-// of the capability, and not merely some error.
-//
-// `err != nil` is not good enough here, and the reason is sharp: every call in
-// this suite carries a bounded context, so a cell whose shard WEDGED — the
-// exact go-qrdb#129 regression these cells exist to pin — returns
-// DeadlineExceeded. A test that accepted any non-nil error would score that as
-// "refused as required" and go green on the defect it was written to catch.
-// The same goes for an authorization failure, a lost connection, or a
-// not-leader error: all are non-nil, none is a refusal.
-//
-// So the wrong classes are rejected by type or status code, and the refusal
-// itself must carry the state machine's own account of what is missing. That
-// last check is a string match, which is worth being honest about: this
-// refusal has no distinct Go type and no distinct gRPC code today. It travels
-// as an application error encoded into sm.Result.Data, surfaces embedded as a
-// generic RequestError, and maps to codes.Internal over gRPC — a capability
-// refusal presented as an internal server fault, which a client cannot
-// distinguish from a real one. Matching the message is therefore matching the
-// only contract that currently exists; go-qrdb#141 tracks giving it a typed
-// one, and this helper is where that would be tightened.
 // classifyRefusal reports why err is NOT a capability refusal, or nil when it
 // is one. Split out from the assertion so the classification itself is
 // directly testable — an assertion helper that only ever calls t.Errorf cannot
 // be shown to reject anything, which is the same shape of gap it exists to
 // close.
+//
+// It holds EVERY transport to the typed refusal. REST used to be excused on
+// /tx (the go-qrdb#126 named exclusion): the server answered 501 both for an
+// absent capability and for a catch-all "refused on its merits" type, so a
+// REST client could not promote a 501 to transport.CapabilityUnsupportedError
+// without telling a caller that passed a bad TTL "this node cannot do leases".
+// go-qrdb#557 gave the merits refusals types of their own (400, 409), leaving
+// 501 meaning the capability refusal alone, and the REST client now types
+// every 501 — so the exclusion is retired rather than kept as a dormant
+// allowance.
 func classifyRefusal(err error) error {
-	return classifyRefusalWith(err, false)
-}
-
-// classifyRefusalWith is classifyRefusal with the go-qrdb#126 NAMED EXCLUSION
-// applied when untypedStatus501OK is set.
-//
-// REST cannot type this particular refusal today, and the reason is specific
-// rather than an oversight. The REST server maps BOTH
-// service.CapabilityUnsupportedError and its sibling
-// service.SMNotConfiguredError to 501 (pkg/api/rest.mapHTTPError), and that
-// sibling covers refusals decided on the REQUEST's merits — an invalid lease
-// TTL, a unique-index violation. So a REST client that promoted every 501 to
-// transport.CapabilityUnsupportedError would tell a caller "this node cannot
-// do leases" when the caller had simply passed a bad TTL, which is a worse
-// error than no type at all.
-//
-// The guarded verbs escape this because their endpoints are unambiguous: a 501
-// from /kv/put-if-absent, /kv/compare-and-delete or /kv/compare-and-swap can
-// only be the capability refusal, so the REST transport classifies it at the
-// call site — the same per-endpoint idiom REST already uses to type a lease
-// 404. /tx is not unambiguous in that way, and typing it needs either a
-// discriminator on the REST error body or a server-side split of the two
-// error families. Both are wider than go-qrdb#124/#125/#126 and belong with
-// the go-qrdb#169 error-typing sweep, which owns that surface.
-//
-// The exclusion is deliberately NARROW: it is granted per verb, not per
-// transport, so a REST guarded verb that stopped carrying its typed refusal
-// still fails this gate. And it keeps every property that makes the refusal
-// cells worth having — a wedged cell still returns DeadlineExceeded and an
-// authorization failure still returns 401/403, neither of which is 501 — so
-// the go-qrdb#129 regression these cells pin is still caught.
-func classifyRefusalWith(err error, untypedStatus501OK bool) error {
 	if err == nil {
 		return errors.New("no error at all; a silent success tells the caller it arbitrated " +
 			"a race that was never arbitrated")
@@ -801,26 +731,13 @@ func classifyRefusalWith(err error, untypedStatus501OK bool) error {
 	// transports, so the gate asserts identity rather than prose — which also
 	// means a refusal that changes its wording no longer silently stops being
 	// recognised.
-	message := ""
 	var unsupported *transport.CapabilityUnsupportedError
-	switch {
-	case errors.As(err, &unsupported):
-		message = unsupported.Message
-	case untypedStatus501OK:
-		// The named exclusion. Only a REST 501 qualifies, and it still has to
-		// name what is missing below.
-		var reqErr *transport.RequestError
-		if !errors.As(err, &reqErr) || reqErr.StatusCode != http.StatusNotImplemented {
-			return fmt.Errorf("%w is neither a transport.CapabilityUnsupportedError nor the "+
-				"501 this verb is excused to return; only one of those proves this cell "+
-				"lacks the verb rather than having hit an unrelated fault", err)
-		}
-		message = reqErr.Error()
-	default:
+	if !errors.As(err, &unsupported) {
 		return fmt.Errorf("%w is not a transport.CapabilityUnsupportedError; only a typed "+
 			"capability refusal proves this cell lacks the verb rather than having hit an "+
 			"unrelated fault", err)
 	}
+	message := unsupported.Message
 
 	// The message still has to say what is absent. A typed refusal carrying no
 	// account of WHICH capability is missing is not much better than an
@@ -834,18 +751,23 @@ func classifyRefusalWith(err error, untypedStatus501OK bool) error {
 	return nil
 }
 
-func assertCapabilityRefusal(t *testing.T, verb string, err error, untypedStatus501OK bool) {
+// assertCapabilityRefusal requires that err is specifically a refusal for lack
+// of the capability, and not merely some error.
+//
+// `err != nil` is not good enough here, and the reason is sharp: every call in
+// this suite carries a bounded context, so a cell whose shard WEDGED — the
+// exact go-qrdb#129 regression these cells exist to pin — returns
+// DeadlineExceeded. A test that accepted any non-nil error would score that as
+// "refused as required" and go green on the defect it was written to catch.
+// The same goes for an authorization failure, a lost connection, or a
+// not-leader error: all are non-nil, none is a refusal. classifyRefusal
+// rejects those, requires transport.CapabilityUnsupportedError on every
+// transport, and requires the refusal to name what is missing.
+func assertCapabilityRefusal(t *testing.T, verb string, err error) {
 	t.Helper()
-	if reason := classifyRefusalWith(err, untypedStatus501OK); reason != nil {
+	if reason := classifyRefusal(err); reason != nil {
 		t.Errorf("%s: %v", verb, reason)
 		return
-	}
-	if untypedStatus501OK {
-		var unsupported *transport.CapabilityUnsupportedError
-		if !errors.As(err, &unsupported) {
-			t.Logf("%s refused as required, UNTYPED under the go-qrdb#126 named exclusion: %v", verb, err)
-			return
-		}
 	}
 	t.Logf("%s refused as required: %v", verb, err)
 }

@@ -109,3 +109,34 @@ func (e *ReclaimVectorError) Error() string {
 
 // Unwrap returns the underlying error for use with errors.Is and errors.As.
 func (e *ReclaimVectorError) Unwrap() error { return e.Err }
+
+// ReclaimJobEncodeError is returned when a ReclaimJob record could not be
+// marshaled for persistence (see ReclaimJobOp).
+type ReclaimJobEncodeError struct {
+	ID  string
+	Err error
+}
+
+// Error returns a human-readable description of the encoding failure.
+func (e *ReclaimJobEncodeError) Error() string {
+	return "service: failed to encode reclaim job " + strconv.Quote(e.ID) + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error for use with errors.Is and errors.As.
+func (e *ReclaimJobEncodeError) Unwrap() error { return e.Err }
+
+// ReclaimStoreGoneError is returned by a ReclaimStoreResolver when the
+// (tenant, database) a pending reclaim job names definitively no longer
+// exists. The reclamation that removed the database or tenant owns
+// everything that was in its store -- the job's record and orphaned keys
+// included -- so the sweeper treats the job as finished.
+type ReclaimStoreGoneError struct {
+	TenantID string
+	Database string
+}
+
+// Error returns a human-readable description of the missing store.
+func (e *ReclaimStoreGoneError) Error() string {
+	return "service: the store of tenant " + strconv.Quote(e.TenantID) +
+		", database " + strconv.Quote(e.Database) + " no longer exists"
+}

@@ -39,7 +39,7 @@ func TestWireToUser_Valid(t *testing.T) {
 		Username:  "admin",
 		TenantID:  "tenant-1",
 		RoleIDs:   []string{"role-1", "role-2"},
-		Enabled:   true,
+		Lifecycle: "active",
 		System:    false,
 		CreatedAt: "2026-01-01T00:00:00Z",
 		UpdatedAt: "2026-01-15T12:00:00Z",
@@ -63,8 +63,8 @@ func TestWireToUser_Valid(t *testing.T) {
 	if result.RoleIDs[0] != "role-1" {
 		t.Errorf("RoleIDs[0] = %q, want %q", result.RoleIDs[0], "role-1")
 	}
-	if !result.Enabled {
-		t.Error("Enabled = false, want true")
+	if result.Lifecycle != "active" {
+		t.Errorf("Lifecycle = %q, want %q", result.Lifecycle, "active")
 	}
 	if result.System {
 		t.Error("System = true, want false")
@@ -83,8 +83,8 @@ func TestWireToUser_EmptyFields(t *testing.T) {
 	if result.ID != 0 {
 		t.Errorf("ID = %d, want 0", result.ID)
 	}
-	if result.Enabled {
-		t.Error("Enabled = true, want false")
+	if result.Lifecycle != "" {
+		t.Errorf("Lifecycle = %q, want empty", result.Lifecycle)
 	}
 }
 

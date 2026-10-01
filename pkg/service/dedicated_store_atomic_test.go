@@ -286,7 +286,7 @@ func TestDedicatedStoreCollection_SecondClaimInsideTheWindowIsRefused(t *testing
 	kv := NewNamedBackendKVService("mydb", database.NewStandaloneBackend(gated))
 	svc := NewCollectionService(kv)
 	createCollection(t, svc, "mydb", "users", IDStrategyIncrement, "")
-	gated.armedKey = collectionDataEntityType("mydb", "users") + "/7"
+	gated.armedKey = docKeyForTest(t, svc, "mydb", "users", 7)
 
 	claim := func(who string) error {
 		_, err := svc.InsertDocument(ctx, &InsertDocumentRequest{

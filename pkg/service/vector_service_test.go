@@ -27,7 +27,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	qrdbErrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -90,7 +89,7 @@ func (m *mockVectorStorage) CreateNamespace(ctx context.Context, info *vector.Na
 	defer m.mu.Unlock()
 
 	if _, exists := m.namespaces[info.Name]; exists {
-		return errors.New("namespace already exists")
+		return vector.ErrNamespaceExists
 	}
 
 	m.namespaces[info.Name] = &mockNamespaceData{
@@ -117,7 +116,7 @@ func (m *mockVectorStorage) DeleteNamespace(ctx context.Context, namespace strin
 	defer m.mu.Unlock()
 
 	if _, exists := m.namespaces[namespace]; !exists {
-		return errors.New("namespace not found")
+		return vector.ErrNamespaceNotFound
 	}
 
 	delete(m.namespaces, namespace)
@@ -157,7 +156,7 @@ func (m *mockVectorStorage) GetNamespaceInfo(ctx context.Context, namespace stri
 		return &info, nil
 	}
 
-	return nil, errors.New("namespace not found")
+	return nil, vector.ErrNamespaceNotFound
 }
 
 func (m *mockVectorStorage) UpsertVector(ctx context.Context, namespace string, vec *vector.VectorValue) error {
@@ -169,7 +168,7 @@ func (m *mockVectorStorage) UpsertVector(ctx context.Context, namespace string, 
 	defer m.mu.Unlock()
 
 	if _, exists := m.namespaces[namespace]; !exists {
-		return errors.New("namespace not found")
+		return vector.ErrNamespaceNotFound
 	}
 
 	m.vectors[namespace][vec.ID] = vec
@@ -188,14 +187,14 @@ func (m *mockVectorStorage) GetVector(ctx context.Context, namespace string, id 
 	defer m.mu.RUnlock()
 
 	if _, exists := m.namespaces[namespace]; !exists {
-		return nil, errors.New("namespace not found")
+		return nil, vector.ErrNamespaceNotFound
 	}
 
 	if vec, exists := m.vectors[namespace][id]; exists {
 		return vec, nil
 	}
 
-	return nil, errors.New("vector not found")
+	return nil, vector.ErrVectorNotFound
 }
 
 func (m *mockVectorStorage) DeleteVector(ctx context.Context, namespace string, id uint64) error {
@@ -207,11 +206,11 @@ func (m *mockVectorStorage) DeleteVector(ctx context.Context, namespace string, 
 	defer m.mu.Unlock()
 
 	if _, exists := m.namespaces[namespace]; !exists {
-		return errors.New("namespace not found")
+		return vector.ErrNamespaceNotFound
 	}
 
 	if _, exists := m.vectors[namespace][id]; !exists {
-		return errors.New("vector not found")
+		return vector.ErrVectorNotFound
 	}
 
 	delete(m.vectors[namespace], id)
@@ -230,7 +229,7 @@ func (m *mockVectorStorage) BatchUpsertVectors(ctx context.Context, namespace st
 	defer m.mu.Unlock()
 
 	if _, exists := m.namespaces[namespace]; !exists {
-		return errors.New("namespace not found")
+		return vector.ErrNamespaceNotFound
 	}
 
 	for _, vec := range vecs {
@@ -247,7 +246,7 @@ func (m *mockVectorStorage) BatchDeleteVectors(ctx context.Context, namespace st
 	defer m.mu.Unlock()
 
 	if _, exists := m.namespaces[namespace]; !exists {
-		return errors.New("namespace not found")
+		return vector.ErrNamespaceNotFound
 	}
 
 	for _, id := range ids {
@@ -266,7 +265,7 @@ func (m *mockVectorStorage) ScanByMetadata(ctx context.Context, namespace, field
 	defer m.mu.RUnlock()
 
 	if _, exists := m.namespaces[namespace]; !exists {
-		return nil, errors.New("namespace not found")
+		return nil, vector.ErrNamespaceNotFound
 	}
 
 	result := make([]*vector.VectorValue, 0)
@@ -288,7 +287,7 @@ func (m *mockVectorStorage) ScanByMultipleFilters(ctx context.Context, namespace
 	defer m.mu.RUnlock()
 
 	if _, exists := m.namespaces[namespace]; !exists {
-		return nil, errors.New("namespace not found")
+		return nil, vector.ErrNamespaceNotFound
 	}
 
 	result := make([]*vector.VectorValue, 0)
@@ -331,7 +330,7 @@ func (m *mockVectorStorage) ScanNamespace(ctx context.Context, namespace string,
 	defer m.mu.RUnlock()
 
 	if _, exists := m.namespaces[namespace]; !exists {
-		return nil, errors.New("namespace not found")
+		return nil, vector.ErrNamespaceNotFound
 	}
 
 	result := make([]*vector.VectorValue, 0, len(m.vectors[namespace]))
@@ -373,7 +372,7 @@ func (m *mockVectorStorage) GetStats(ctx context.Context, namespace string) (*ve
 		}, nil
 	}
 
-	return nil, errors.New("namespace not found")
+	return nil, vector.ErrNamespaceNotFound
 }
 
 func (m *mockVectorStorage) NextID(namespace string) (uint64, error) {
@@ -381,7 +380,7 @@ func (m *mockVectorStorage) NextID(namespace string) (uint64, error) {
 	defer m.mu.Unlock()
 
 	if _, exists := m.namespaces[namespace]; !exists {
-		return 0, errors.New("namespace not found")
+		return 0, vector.ErrNamespaceNotFound
 	}
 
 	m.idCounters[namespace]++
@@ -393,7 +392,7 @@ func (m *mockVectorStorage) BatchAllocateIDs(namespace string, count int) ([]uin
 	defer m.mu.Unlock()
 
 	if _, exists := m.namespaces[namespace]; !exists {
-		return nil, errors.New("namespace not found")
+		return nil, vector.ErrNamespaceNotFound
 	}
 
 	result := make([]uint64, count)
@@ -519,10 +518,7 @@ func TestVectorService_CreateNamespace_StorageError(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var dErr *qrdbErrors.QRDBError
-	if errors.As(err, &dErr) {
-		assert.Equal(t, qrdbErrors.ErrStorage, dErr.Code)
-	}
+	requireErrorAs[*VectorOperationError](t, err)
 }
 
 // =============================================================================
@@ -780,10 +776,7 @@ func TestVectorService_GetNamespaceInfo_NotFound(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var dErr *qrdbErrors.QRDBError
-	if errors.As(err, &dErr) {
-		assert.Equal(t, qrdbErrors.ErrNotFound, dErr.Code)
-	}
+	requireErrorAs[*NamespaceNotFoundError](t, err)
 }
 
 // =============================================================================
@@ -906,10 +899,7 @@ func TestVectorService_UpsertVector_NamespaceNotFound(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var dErr *qrdbErrors.QRDBError
-	if errors.As(err, &dErr) {
-		assert.Equal(t, qrdbErrors.ErrNotFound, dErr.Code)
-	}
+	requireErrorAs[*NamespaceNotFoundError](t, err)
 }
 
 // =============================================================================
@@ -1021,10 +1011,7 @@ func TestVectorService_GetVector_NotFound(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var dErr *qrdbErrors.QRDBError
-	if errors.As(err, &dErr) {
-		assert.Equal(t, qrdbErrors.ErrNotFound, dErr.Code)
-	}
+	requireErrorAs[*VectorNotFoundError](t, err)
 }
 
 // =============================================================================
@@ -1583,10 +1570,7 @@ func TestVectorService_RebuildIndex_NamespaceNotFound(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var dErr *qrdbErrors.QRDBError
-	if errors.As(err, &dErr) {
-		assert.Equal(t, qrdbErrors.ErrNotFound, dErr.Code)
-	}
+	requireErrorAs[*NamespaceNotFoundError](t, err)
 }
 
 // =============================================================================
@@ -1870,10 +1854,7 @@ func TestVectorService_GetIndexStats_NamespaceNotFound(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, resp)
-	var dErr *qrdbErrors.QRDBError
-	if errors.As(err, &dErr) {
-		assert.Equal(t, qrdbErrors.ErrNotFound, dErr.Code)
-	}
+	requireErrorAs[*NamespaceNotFoundError](t, err)
 }
 
 // =============================================================================

@@ -16,6 +16,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -46,15 +47,21 @@ func (r *recordingIndexService) CreateIndex(_ context.Context, name, _ string, c
 // measure.
 func (r *recordingIndexService) DropIndex(_ context.Context, _ string) error { return nil }
 
+// DropOwnedIndex answers as DropIndex does: this double records no
+// ownership, and no test that uses it exercises an owner-checked drop.
+func (r *recordingIndexService) DropOwnedIndex(ctx context.Context, name, _ string) error {
+	return r.DropIndex(ctx, name)
+}
+
 // TestBuildCompositeCollectionServiceRefusesABundleWithNoKV holds the fail
 // path: a bundle with no KV servicer has no document store, so there is
 // nothing to build a collection over and the builder must say so rather than
 // return a service that dereferences nil on first use.
 func TestBuildCompositeCollectionServiceRefusesABundleWithNoKV(t *testing.T) {
-	if svc := buildCompositeCollectionService(&DatabaseServices{}); svc != nil {
+	if svc := buildCompositeCollectionService(&DatabaseServices{}, nil); svc != nil {
 		t.Fatalf("expected nil for a bundle with no KV, got %T", svc)
 	}
-	if svc := buildCompositeCollectionService(&DatabaseServices{Index: &recordingIndexService{}}); svc != nil {
+	if svc := buildCompositeCollectionService(&DatabaseServices{Index: &recordingIndexService{}}, nil); svc != nil {
 		t.Fatalf("expected nil for an index-only bundle, got %T", svc)
 	}
 }
@@ -73,11 +80,19 @@ func TestBuildCompositeCollectionServiceBuildsOverWhatTheBundleHas(t *testing.T)
 	}
 
 	t.Run("kv only", func(t *testing.T) {
-		svc := buildCompositeCollectionService(&DatabaseServices{KV: newMockKVService()})
+		svc := buildCompositeCollectionService(&DatabaseServices{KV: newMockKVService()}, nil)
 		if svc == nil {
 			t.Fatal("expected a collection service")
 		}
-		if _, err := svc.CreateCollection(ctx, req); err != nil {
+		// Without an index servicer the declared index cannot be built, and
+		// the create refuses it rather than recording an index that would
+		// never exist; a collection without indexes is served.
+		var invalid *service.CollectionInvalidIndexError
+		if _, err := svc.CreateCollection(ctx, req); !errors.As(err, &invalid) {
+			t.Fatalf("CreateCollection with an index on a KV-only bundle: %v", err)
+		}
+		plain := &service.CreateCollectionRequest{Database: "appdb", Name: "users"}
+		if _, err := svc.CreateCollection(ctx, plain); err != nil {
 			t.Fatalf("CreateCollection: %v", err)
 		}
 		if _, err := svc.GetCollectionInfo(ctx, "appdb", "users"); err != nil {
@@ -87,7 +102,7 @@ func TestBuildCompositeCollectionServiceBuildsOverWhatTheBundleHas(t *testing.T)
 
 	t.Run("kv and index", func(t *testing.T) {
 		idx := &recordingIndexService{}
-		svc := buildCompositeCollectionService(&DatabaseServices{KV: newMockKVService(), Index: idx})
+		svc := buildCompositeCollectionService(&DatabaseServices{KV: newMockKVService(), Index: idx}, nil)
 		if svc == nil {
 			t.Fatal("expected a collection service")
 		}
@@ -111,8 +126,8 @@ func TestCompositeCollectionCacheReturnsTheSameServicePerScope(t *testing.T) {
 	kv := newMockKVService()
 	src := &DatabaseServices{KV: kv}
 
-	first := c.getOrBuild(src, src, tenant.ComposeNamespace("tenant-a", "appdb"))
-	second := c.getOrBuild(src, src, tenant.ComposeNamespace("tenant-a", "appdb"))
+	first := c.getOrBuild(src, src, "tenant-a", "appdb")
+	second := c.getOrBuild(src, src, "tenant-a", "appdb")
 	if first == nil {
 		t.Fatal("expected a collection service")
 	}
@@ -120,7 +135,7 @@ func TestCompositeCollectionCacheReturnsTheSameServicePerScope(t *testing.T) {
 		t.Fatal("cache returned a different service for the same (bundle, prefix)")
 	}
 
-	other := c.getOrBuild(src, src, tenant.ComposeNamespace("tenant-b", "appdb"))
+	other := c.getOrBuild(src, src, "tenant-b", "appdb")
 	if other == first {
 		t.Fatal("cache returned the same service for two different tenants")
 	}
@@ -132,16 +147,15 @@ func TestCompositeCollectionCacheReturnsTheSameServicePerScope(t *testing.T) {
 // service built over the previous, closed engines would be a use-after-close.
 func TestCompositeCollectionCacheRebuildsWhenTheBundleIsReplaced(t *testing.T) {
 	c := newCompositeCollectionCache()
-	prefix := tenant.ComposeNamespace("tenant-a", "appdb")
 
-	first := c.getOrBuild(&DatabaseServices{KV: newMockKVService()}, &DatabaseServices{KV: newMockKVService()}, prefix)
+	first := c.getOrBuild(&DatabaseServices{KV: newMockKVService()}, &DatabaseServices{KV: newMockKVService()}, "tenant-a", "appdb")
 	replacement := &DatabaseServices{KV: newMockKVService()}
-	second := c.getOrBuild(replacement, replacement, prefix)
+	second := c.getOrBuild(replacement, replacement, "tenant-a", "appdb")
 
 	if first == second {
 		t.Fatal("cache kept serving the collection service of a replaced bundle")
 	}
-	if third := c.getOrBuild(replacement, replacement, prefix); third != second {
+	if third := c.getOrBuild(replacement, replacement, "tenant-a", "appdb"); third != second {
 		t.Fatal("cache did not settle on the replacement")
 	}
 }
@@ -154,7 +168,7 @@ func TestCompositeCollectionCacheCachesTheAbsentCase(t *testing.T) {
 	src := &DatabaseServices{}
 	prefix := tenant.ComposeNamespace("tenant-a", "appdb")
 
-	if svc := c.getOrBuild(src, src, prefix); svc != nil {
+	if svc := c.getOrBuild(src, src, "tenant-a", "appdb"); svc != nil {
 		t.Fatalf("expected nil for a bundle with no KV, got %T", svc)
 	}
 	c.mu.RLock()
@@ -201,7 +215,7 @@ func TestCompositeCollectionCacheNilReceiverStillNamespaces(t *testing.T) {
 	kv := newMockKVService()
 	src := &DatabaseServices{KV: kv}
 
-	svc := c.getOrBuild(src, src, tenant.ComposeNamespace("tenant-a", "appdb"))
+	svc := c.getOrBuild(src, src, "tenant-a", "appdb")
 	if svc == nil {
 		t.Fatal("a nil cache must still build a collection service")
 	}
@@ -223,7 +237,7 @@ func TestApplyCompositeNamespacesWithoutTheConstructor(t *testing.T) {
 	kv, svcs := sharedCollectionStore()
 	reg := &restServiceRegistry{dbReg: NewDatabaseServiceRegistry("appdb")}
 
-	out := reg.applyComposite(svcs, tenant.ComposeNamespace("tenant-a", "appdb"))
+	out := reg.applyComposite(svcs, "tenant-a", "appdb")
 	if _, err := out.Collection.CreateCollection(context.Background(), &service.CreateCollectionRequest{
 		Database: "appdb", Name: "users",
 	}); err != nil {
@@ -243,7 +257,6 @@ func TestApplyCompositeNamespacesWithoutTheConstructor(t *testing.T) {
 func TestCompositeCollectionCacheIsSafeForConcurrentUse(t *testing.T) {
 	c := newCompositeCollectionCache()
 	src := &DatabaseServices{KV: newMockKVService()}
-	prefix := tenant.ComposeNamespace("tenant-a", "appdb")
 
 	const goroutines = 32
 	results := make(chan service.CollectionServicer, goroutines)
@@ -254,7 +267,7 @@ func TestCompositeCollectionCacheIsSafeForConcurrentUse(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			results <- c.getOrBuild(src, src, prefix)
+			results <- c.getOrBuild(src, src, "tenant-a", "appdb")
 		}()
 	}
 	close(start)

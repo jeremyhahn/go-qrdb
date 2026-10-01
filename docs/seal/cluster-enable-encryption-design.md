@@ -344,9 +344,9 @@ No shared key, no key delivery, no cross-node data dependency in either case.
    at-rest data keyed + plaintext format no longer readable." Proposed: a second
    replicated generation that each node runs after all owners are keyed.
 3. **Key-material lifetime during pre-distribution** — the delivered `ImportedKey`
-   carries the root key; it transits HPKE-sealed (good) and is held in a memguard
-   enclave on receipt (reuse existing `ImportRootKey` path). Confirm no plaintext
-   root key is persisted unsealed at any step.
+   carries the root key; it transits HPKE-sealed (good) and is held in a
+   go-enclave locked-memory enclave on receipt (reuse existing `ImportRootKey`
+   path). Confirm no plaintext root key is persisted unsealed at any step.
 4. **Interaction with concurrent rebalance** — a tenant being rebalanced (replica
    move) while migrating. Proposal: the migration `Generation` + placement
    `Watch` let a moved-in replica pick up the in-flight migration; but the

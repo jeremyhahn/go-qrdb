@@ -23,7 +23,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -260,6 +262,25 @@ func TestHandleAuthFactorChallenge_ServiceError(t *testing.T) {
 	var te *ToolError
 	if !errors.As(err, &te) {
 		t.Fatalf("expected *ToolError, got %T", err)
+	}
+}
+
+// TestHandleAuthFactorChallenge_SealedAfterResolve drives the tool handler
+// with the error a tenant sealing between Resolve and the store operation
+// actually produces (seal.ErrSealed, asserted end to end against a real
+// barrier in pkg/service) and asserts the tool result is coded Unavailable.
+func TestHandleAuthFactorChallenge_SealedAfterResolve(t *testing.T) {
+	svc := newMockAuthFactorService()
+	svc.challengeFn = func(_ context.Context, _ string) (*authfactors.Challenge, error) {
+		return nil, seal.ErrSealed
+	}
+	req := buildCallToolRequest(t, "qrdb_authfactor_challenge", map[string]any{"enrollment_id": "e-1"})
+	_, err := handleAuthFactorChallenge(svc)(context.Background(), req)
+	if !errors.Is(err, seal.ErrSealed) {
+		t.Fatalf("handler error = %v, want it to carry seal.ErrSealed", err)
+	}
+	if got := ServiceErrorCode(err); got != wire.CodeUnavailable {
+		t.Errorf("classified %s, want %s", got, wire.CodeUnavailable)
 	}
 }
 

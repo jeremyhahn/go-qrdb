@@ -71,7 +71,6 @@ func newAutoIncHarnessTable(t *testing.T, h *ddlHarness) (*RelationalTable, *spy
 		WithTableService(h.tableSvc),
 		WithTransactionService(h.txnSvc),
 		WithSequenceService(spy),
-		WithBatchService(h.batchSvc),
 	)
 	require.NoError(t, err)
 	return tbl, spy

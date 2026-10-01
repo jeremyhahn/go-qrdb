@@ -65,11 +65,6 @@ func TestQueryError_NilErr(t *testing.T) {
 	assert.Nil(t, err.Unwrap())
 }
 
-func TestTypeConversionError(t *testing.T) {
-	err := &TypeConversionError{GMS: "BINARY", PG: "bytea"}
-	assert.Equal(t, "sql/pgsql: type conversion: BINARY -> bytea", err.Error())
-}
-
 func TestTranslationError_WithErr(t *testing.T) {
 	cause := errors.New("unsupported syntax")
 	err := &TranslationError{Query: "SELECT $1::cidr", Err: cause}
@@ -104,14 +99,6 @@ func TestErrorTypes_As(t *testing.T) {
 		err := &QueryError{Query: "DROP TABLE", Err: errors.New("permission denied")}
 		assert.True(t, errors.As(err, &target))
 		assert.Equal(t, "DROP TABLE", target.Query)
-	})
-
-	t.Run("TypeConversionError", func(t *testing.T) {
-		var target *TypeConversionError
-		err := &TypeConversionError{GMS: "POINT", PG: "point"}
-		assert.True(t, errors.As(err, &target))
-		assert.Equal(t, "POINT", target.GMS)
-		assert.Equal(t, "point", target.PG)
 	})
 
 	t.Run("TranslationError", func(t *testing.T) {

@@ -17,9 +17,6 @@ package grpc
 import (
 	"context"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 )
@@ -28,7 +25,7 @@ import (
 // their Shamir share.
 func (s *qrdbServiceServer) CeremonyClaimShareBegin(ctx context.Context, req *pb.CeremonyClaimShareBeginRequest) (*pb.CeremonyClaimShareBeginResponse, error) {
 	if s.ceremonySvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "ceremony"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "ceremony"})
 	}
 	ch, err := s.ceremonySvc.CeremonyClaimShareBegin(ctx, req.GetCustodianId())
 	if err != nil {
@@ -45,7 +42,7 @@ func (s *qrdbServiceServer) CeremonyClaimShareBegin(ctx context.Context, req *pb
 // returns the custodian metadata confirming delivery.
 func (s *qrdbServiceServer) CeremonyClaimShareComplete(ctx context.Context, req *pb.CeremonyClaimShareCompleteRequest) (*pb.CeremonyCustodianResponse, error) {
 	if s.ceremonySvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "ceremony"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "ceremony"})
 	}
 	c, err := s.ceremonySvc.CeremonyClaimShareComplete(ctx, req.GetCustodianId(), req.GetChallengeId(), req.GetFactorResponse())
 	if err != nil {
@@ -58,7 +55,7 @@ func (s *qrdbServiceServer) CeremonyClaimShareComplete(ctx context.Context, req 
 // proof toward the unseal quorum.
 func (s *qrdbServiceServer) CeremonySubmitUnsealShare(ctx context.Context, req *pb.CeremonySubmitUnsealShareRequest) (*pb.CeremonySubmitUnsealShareResponse, error) {
 	if s.ceremonySvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "ceremony"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "ceremony"})
 	}
 	result, err := s.ceremonySvc.CeremonySubmitUnsealShare(ctx, req.GetCustodianId(), req.GetChallengeId(), req.GetFactorResponse(), req.GetShareBytes())
 	if err != nil {

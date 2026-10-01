@@ -214,6 +214,12 @@ func DatabaseIndexNamePrefixes(ns string) []string {
 // kept its shards running and its shard data dirs on disk on every replica --
 // which the local node's DataRoot removal cannot reach.
 //
+// It DOES return the tenant's collection work journal range,
+// "__sys:collection-work/{tenant}/" (CollectionWorkPrefix), for the same
+// reason: it is keyed by tenant outside the namespace, and an entry left
+// behind would wait for the collection sweeper to notice the tenant is gone
+// rather than going with the tenant.
+//
 // It DOES return the tenant's barrier-encrypted range in the shared store,
 // seal.TenantSharedNamespace. A dedicated-isolation tenant's identity records
 // and DEK keyring live there, outside "<tenant>/", so that the system shard
@@ -238,6 +244,7 @@ func TenantKeyPrefixes(tenantID string) []string {
 		timeseries.KeyPrefixRetention + ns,
 		placement.PlacementPrefix + ns,
 		seal.TenantSharedNamespace(tenantID),
+		CollectionWorkPrefix + ns,
 	}
 }
 

@@ -17,6 +17,7 @@ package user
 import (
 	"errors"
 	"strconv"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -46,6 +47,22 @@ type UsernameExistsError struct {
 // Error returns a human-readable description of the conflict.
 func (e *UsernameExistsError) Error() string {
 	return "user: username already exists: " + e.Username + " in tenant " + e.TenantID
+}
+
+// UserIDExistsError is returned when a store-generated user id collides with
+// an existing identity claim or primary record. A fresh Snowflake id
+// essentially never collides within one generator, but two independently
+// seeded nodes racing to create the same deterministic bootstrap account can
+// produce it (go-qrdb#555), and the atomic create path guards against it
+// explicitly rather than assuming it away.
+type UserIDExistsError struct {
+	ID       uint64
+	TenantID string
+}
+
+// Error returns a human-readable description of the conflict.
+func (e *UserIDExistsError) Error() string {
+	return "user: id already exists: " + strconv.FormatUint(e.ID, 10) + " in tenant " + e.TenantID
 }
 
 // EmailExistsError is returned when an email login key is already taken within
@@ -149,6 +166,21 @@ type CertBindingNotFoundError struct {
 // included to aid operators; it is a public-key hash, not a secret.
 func (e *CertBindingNotFoundError) Error() string {
 	return "user: cert thumbprint " + e.Thumbprint + " is not bound to user " + strconv.FormatUint(e.UserID, 10)
+}
+
+// CertBindingExpiredError is returned by AddCertBinding when the requested
+// expiry is not in the future. Such a binding could never authenticate, and
+// because enrolment de-duplicates by thumbprint, accepting one for a key that
+// is already bound would silently withdraw that key.
+type CertBindingExpiredError struct {
+	Thumbprint string
+	NotAfter   time.Time
+}
+
+// Error names the binding and the rejected expiry.
+func (e *CertBindingExpiredError) Error() string {
+	return "user: cert binding " + e.Thumbprint + " has an expiry that is not in the future (" +
+		e.NotAfter.Format(time.RFC3339) + "); enrol it with a future not-after, or none"
 }
 
 // IndexCompensationError reports that an operation failed AND its rollback of

@@ -91,8 +91,13 @@ func (b *HighPerfBackend) ShardCount() int {
 // shardFor returns the shard for the given key using xxhash64 with
 // bitmask selection for O(1) constant-time lookup.
 func (b *HighPerfBackend) shardFor(key string) *highPerfShard {
-	h := xxhash.Sum64String(key)
-	return &b.shards[h&b.shardMask]
+	return &b.shards[b.shardIndex(key)]
+}
+
+// shardIndex is the index of the shard key belongs to. shardFor and
+// ApplyAtomic both resolve through it, so they cannot disagree about a key.
+func (b *HighPerfBackend) shardIndex(key string) int {
+	return int(xxhash.Sum64String(key) & b.shardMask)
 }
 
 // Get retrieves the value for the given key from its shard. Returns a
@@ -139,22 +144,24 @@ func (b *HighPerfBackend) Delete(key []byte) error {
 	return nil
 }
 
-// List returns all keys matching the given prefix across all shards,
-// sorted lexicographically.
+// List returns all keys matching the given prefix across all shards, sorted.
+//
+// Every shard's read lock is held for the whole sweep, taken in ascending
+// order as SaveSnapshot takes them, so a List never sees part of a set
+// ApplyAtomic is committing across shards.
 func (b *HighPerfBackend) List(prefix []byte) ([][]byte, error) {
 	p := string(prefix)
 
+	b.rlockAll()
 	var keys [][]byte
 	for i := range b.shards {
-		s := &b.shards[i]
-		s.mu.RLock()
-		for k := range s.data {
+		for k := range b.shards[i].data {
 			if len(prefix) == 0 || strings.HasPrefix(k, p) {
 				keys = append(keys, []byte(k))
 			}
 		}
-		s.mu.RUnlock()
 	}
+	b.runlockAll()
 
 	sort.Slice(keys, func(i, j int) bool {
 		return string(keys[i]) < string(keys[j])
@@ -163,8 +170,10 @@ func (b *HighPerfBackend) List(prefix []byte) ([][]byte, error) {
 }
 
 // Scan returns all key-value pairs matching the given prefix across all
-// shards. When limit > 0, the scan stops after collecting that many
-// entries.
+// shards. When limit > 0, the scan stops after collecting that many entries.
+//
+// Every shard's read lock is held for the whole sweep, as List holds them, so
+// a Scan never sees part of a set ApplyAtomic is committing across shards.
 func (b *HighPerfBackend) Scan(prefix []byte, limit int) (map[string][]byte, error) {
 	p := string(prefix)
 	if limit <= 0 {
@@ -172,10 +181,10 @@ func (b *HighPerfBackend) Scan(prefix []byte, limit int) (map[string][]byte, err
 	}
 
 	result := make(map[string][]byte)
+	b.rlockAll()
+	defer b.runlockAll()
 	for i := range b.shards {
-		s := &b.shards[i]
-		s.mu.RLock()
-		for k, v := range s.data {
+		for k, v := range b.shards[i].data {
 			if !strings.HasPrefix(k, p) {
 				continue
 			}
@@ -183,14 +192,27 @@ func (b *HighPerfBackend) Scan(prefix []byte, limit int) (map[string][]byte, err
 			copy(cp, v)
 			result[k] = cp
 			if len(result) >= limit {
-				s.mu.RUnlock()
 				return result, nil
 			}
 		}
-		s.mu.RUnlock()
 	}
-
 	return result, nil
+}
+
+// rlockAll read-locks every shard in ascending order — the order
+// SaveSnapshot and ApplyAtomic take them in, so no two lockers wait on each
+// other.
+func (b *HighPerfBackend) rlockAll() {
+	for i := range b.shards {
+		b.shards[i].mu.RLock()
+	}
+}
+
+// runlockAll releases what rlockAll took.
+func (b *HighPerfBackend) runlockAll() {
+	for i := len(b.shards) - 1; i >= 0; i-- {
+		b.shards[i].mu.RUnlock()
+	}
 }
 
 // SaveSnapshot captures a consistent point-in-time deep copy of all
@@ -380,3 +402,14 @@ func (b *HighPerfBackend) PutDurable(key, value []byte) error { return b.Put(key
 
 // DeleteDurable delegates to Delete — see PutDurable.
 func (b *HighPerfBackend) DeleteDurable(key []byte) error { return b.Delete(key) }
+
+// ApplyAtomic holds every touched shard's write lock across the whole set;
+// see applyAcrossShards.
+func (b *HighPerfBackend) ApplyAtomic(muts []Mutation) error {
+	applyAcrossShards(muts, shardSet{
+		indexOf: b.shardIndex,
+		lock:    func(i int) *sync.RWMutex { return &b.shards[i].mu },
+		data:    func(i int) map[string][]byte { return b.shards[i].data },
+	})
+	return nil
+}

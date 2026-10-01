@@ -66,7 +66,7 @@ func newRaftReattachHost(t *testing.T) *quicraft.Host {
 		RaftAddress:   raftReattachRaftAddr,
 		ListenAddress: raftReattachRaftAddr,
 		DeploymentID:  1,
-	}, quicraft.WithoutTransport())
+	}, quicraft.WithoutTransport(), quicraft.WithoutEncryption())
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)
 	}

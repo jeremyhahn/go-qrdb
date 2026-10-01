@@ -14,7 +14,10 @@
 
 package service
 
-import "strconv"
+import (
+	"errors"
+	"strconv"
+)
 
 // ---------------------------------------------------------------------------
 // Table reference / identifier errors
@@ -295,6 +298,155 @@ func (e *TableStaleRevisionError) Error() string {
 	return "service: table " + e.Database + "/" + e.Name + " expected revision " +
 		strconv.FormatInt(e.Expected, 10) + " but current revision is " +
 		strconv.FormatInt(e.Actual, 10)
+}
+
+// TableGenerationStaleError is returned when a DML commit's generation guard
+// (see TableDataPrefix/TableIndexPrefix, TableService.TruncateTable) fails:
+// the statement was planned against a generation TRUNCATE has since
+// superseded. Unlike TableStaleRevisionError, this IS meant to be retried --
+// there is no caller precondition to re-supply, only a table to re-resolve --
+// so it belongs to the same serialization-failure class MySQL's
+// ER_LOCK_DEADLOCK (1213, "Deadlock found when trying to get lock; try
+// restarting transaction") and PostgreSQL's SQLSTATE 40001
+// (serialization_failure) already give client drivers a name for: re-issue
+// the statement (which re-resolves the table and observes the new
+// generation) rather than treat it as a permanent failure. See
+// pkg/sql/mysql and pkg/sql/pgsql for where this is mapped to each wire
+// protocol's own retryable-transaction-failure vocabulary.
+type TableGenerationStaleError struct {
+	Database string
+	Name     string
+	Expected uint64
+	Actual   uint64
+}
+
+// Error returns a human-readable description.
+func (e *TableGenerationStaleError) Error() string {
+	return "service: table " + e.Database + "/" + e.Name + " was truncated: planned against generation " +
+		strconv.FormatUint(e.Expected, 10) + " but current generation is " +
+		strconv.FormatUint(e.Actual, 10) + "; retry the statement"
+}
+
+// TableLayoutUnsupportedError is returned when a table's catalog record was
+// written under a physical key layout this build does not read
+// (TableDef.Layout other than TableLayoutCurrent) -- in practice, a table
+// created by v0.20.0 through v0.21.0, before rows and index entries carried
+// a generation and index incarnation. Its data is not reachable under the
+// current layout, and reading it anyway would return an empty table and
+// let every one of its indexes share one keyspace, so the table is refused.
+// The remedy is to DROP it (which reclaims its data) and re-create it. It is
+// not retryable.
+type TableLayoutUnsupportedError struct {
+	Database string
+	Name     string
+	TableID  uint64
+	Layout   uint32
+
+	// Definition is the refused record as decoded, so a caller that must
+	// still present the table -- the SQL layer resolves it so DROP TABLE can
+	// name it -- has its columns without reading it again. Nothing it
+	// describes may be read through.
+	Definition *TableDef
+}
+
+// Error returns a human-readable description naming the remedy.
+func (e *TableLayoutUnsupportedError) Error() string {
+	return "service: table " + e.Database + "/" + e.Name + " was created under key layout " +
+		strconv.FormatUint(uint64(e.Layout), 10) + ", which this version cannot read (tables created by v0.20.0 through v0.21.0 predate layout " +
+		strconv.FormatUint(uint64(TableLayoutCurrent), 10) + "); drop the table and re-create it"
+}
+
+// TableLayoutUnsupportedSQLCode is the MySQL error number the SQL engine
+// reports a TableLayoutUnsupportedError under: ER_TABLE_NEEDS_UPGRADE
+// (1459, SQLSTATE HY000), MySQL's own error for a table whose on-disk format
+// the server cannot use until it is rebuilt. The SQL engine can only forward
+// a MySQL error code in the engine's own error shape, which carries a
+// number and a message but not the typed error -- see
+// IsTableLayoutUnsupported.
+const TableLayoutUnsupportedSQLCode = 1459
+
+// IsTableLayoutUnsupported reports whether err is, or carries, the refusal
+// of a table whose key layout predates TableLayoutCurrent: either the typed
+// *TableLayoutUnsupportedError, or the SQL engine's rendering of it -- an
+// error in the chain reporting Number() == TableLayoutUnsupportedSQLCode.
+// Transport classifiers use it so a refusal raised through a SQL statement
+// is classified exactly like one raised by the catalog directly.
+func IsTableLayoutUnsupported(err error) bool {
+	var typed *TableLayoutUnsupportedError
+	if errors.As(err, &typed) {
+		return true
+	}
+	var numbered interface{ Number() int }
+	return errors.As(err, &numbered) && numbered.Number() == TableLayoutUnsupportedSQLCode
+}
+
+// TableDefinitionStaleError is returned when a statement that resolved a
+// table outlives the definition it resolved: an index it may read from was
+// renamed or dropped, or the table itself was replaced, since. Keys the
+// statement could still address under that definition may already be
+// reclaimed (go-qrdb#547), so it fails rather than return a short result.
+// Like TableGenerationStaleError it is retryable: re-issuing the statement
+// re-resolves the table.
+type TableDefinitionStaleError struct {
+	Database string
+	Name     string
+	Reason   string
+}
+
+// Error returns a human-readable description.
+func (e *TableDefinitionStaleError) Error() string {
+	return "service: table " + e.Database + "/" + e.Name + " changed while the statement was running (" +
+		e.Reason + "); retry the statement"
+}
+
+// IsTableResolutionStale reports whether err is, or carries, a retryable
+// refusal of a statement that outlived the table resolution it planned
+// against: *TableGenerationStaleError (the table was truncated) or
+// *TableDefinitionStaleError (the definition moved). Re-issuing the
+// statement re-resolves the table, so transport classifiers map it to their
+// retry-the-operation code rather than an internal error.
+//
+// The chain is walked through Cause() as well as Unwrap: the SQL engine
+// reports a stale resolution as a go-mysql-server serialization failure
+// (sql.ErrLockDeadlock), whose error type exposes its wrapped cause only
+// through Cause().
+func IsTableResolutionStale(err error) bool {
+	// The depth bound only guards against a Cause() cycle, which no error
+	// type in the stack builds.
+	for depth := 0; err != nil && depth < maxCauseDepth; depth++ {
+		var generation *TableGenerationStaleError
+		var definition *TableDefinitionStaleError
+		if errors.As(err, &generation) || errors.As(err, &definition) {
+			return true
+		}
+		var caused interface{ Cause() error }
+		if !errors.As(err, &caused) {
+			return false
+		}
+		err = caused.Cause()
+	}
+	return false
+}
+
+// maxCauseDepth bounds IsTableResolutionStale's walk down Cause() links.
+const maxCauseDepth = 32
+
+// ReclaimIndexUnconfiguredError is returned by an operation that orphans a
+// keyspace (TruncateTable, DropIndex, DropTable) when the TableService was
+// constructed without WithReclaimIndex. The operation refuses outright
+// rather than publish a ReclaimJob with no index entry pointing to it, which
+// ReclaimSweeper could never find -- a permanent leak. Every production
+// composer's registry wires WithReclaimIndex; seeing this error means one
+// did not.
+type ReclaimIndexUnconfiguredError struct {
+	Database string
+	Name     string
+}
+
+// Error returns a human-readable description.
+func (e *ReclaimIndexUnconfiguredError) Error() string {
+	return "service: table " + e.Database + "/" + e.Name +
+		": refused: TableService was constructed without WithReclaimIndex, so the reclaim job would have no index entry pointing to it"
 }
 
 // TableRewriteRequiredError is returned by AlterTable when a change (drop

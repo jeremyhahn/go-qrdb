@@ -17,9 +17,6 @@ package grpc
 import (
 	"context"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -32,14 +29,14 @@ import (
 // of JSON.
 func (s *qrdbServiceServer) SQLQuery(ctx context.Context, req *pb.SQLQueryRequest) (*pb.SQLQueryResponse, error) {
 	if s.sqlSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "sql"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "sql"})
 	}
 
 	if req.GetQuery() == "" {
-		return nil, status.Error(codes.InvalidArgument, (&service.SQLEmptyQueryError{}).Error())
+		return nil, mapServiceError(&service.SQLEmptyQueryError{})
 	}
 	if req.GetDatabase() == "" {
-		return nil, status.Error(codes.InvalidArgument, (&service.SQLEmptyDatabaseError{}).Error())
+		return nil, mapServiceError(&service.SQLEmptyDatabaseError{})
 	}
 
 	result, err := s.sqlSvc.Execute(ctx, req.GetDatabase(), req.GetQuery())

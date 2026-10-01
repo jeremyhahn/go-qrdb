@@ -101,8 +101,9 @@ func (e *StoreUnavailableError) Unwrap() error {
 //
 // *audit.GateError's Component field says WHICH gate refused ("authorize",
 // "so-auth", "so-dual-factor"); ClassifyAuthError maps every one of them to
-// AuthFailureUnavailable, so REST answers 503 and gRPC codes.Unavailable
-// whichever gate produced it.
+// AuthFailureAuditUnavailable, so REST answers 503 and gRPC codes.Unavailable
+// whichever gate produced it -- the same statuses AuthFailureUnavailable
+// carries, though the two are no longer one class (go-qrdb#460).
 
 // InvalidPublicGRPCMethodError is returned by RegisterPublicGRPCMethods when
 // a declared method name does not have the full gRPC method name shape
@@ -181,6 +182,99 @@ func (e *CertBindingNotPermittedError) Error() string {
 	}
 	return "auth/middleware: presented certificate " + presented +
 		" is not bound to " + e.Username + " in tenant " + e.TenantID
+}
+
+// CertBindingRequiredError is returned under auth.mtls_binding_policy
+// "required" (go-qrdb#517) when a certificate login names an account that has
+// enrolled NO certificate binding, or names no account at all.
+//
+// Like CertBindingNotPermittedError it is an AUTHENTICATION failure: the
+// posture says possession of an enrolled key is the only way a certificate
+// establishes who the caller is, and this caller has no enrolled key to have
+// possessed. Enrolling PresentedThumbprint on the account — or switching the
+// fleet back to "enrolled" — is what turns the refusal into an admission, and
+// the error says so, because the most likely cause is a missed enrolment during
+// a migration rather than an attack.
+type CertBindingRequiredError struct {
+	Username string
+	TenantID string
+
+	// AccountResolved is true when the account exists and has no bindings,
+	// false when the certificate names no account in the user store.
+	AccountResolved bool
+
+	// PresentedThumbprint is the canonical SPKI thumbprint of the refused
+	// certificate, or empty when no peer certificate could be read.
+	PresentedThumbprint string
+}
+
+// Error names the account, why it was refused, and what to enrol.
+func (e *CertBindingRequiredError) Error() string {
+	presented := e.PresentedThumbprint
+	if presented == "" {
+		presented = "<no peer certificate>"
+	}
+	why := " names no account"
+	if e.AccountResolved {
+		why = " has no enrolled certificate binding"
+	}
+	return "auth/middleware: auth.mtls_binding_policy is \"required\" and " + e.Username +
+		" in tenant " + e.TenantID + why + " (presented " + presented +
+		"; enrol it with users:add_cert_binding, or set the policy to \"enrolled\")"
+}
+
+// PeerAttestationConfigError is returned by NewPeerAttestationGate for a
+// policy that does not describe a gate (go-qrdb#278).
+type PeerAttestationConfigError struct {
+	Reason string
+}
+
+// Error names what is missing.
+func (e *PeerAttestationConfigError) Error() string {
+	return "auth/middleware: invalid peer attestation gate: " + e.Reason
+}
+
+// PeerAttestationRefusedError is returned by authorize when the
+// attested-caller gate refuses a request (go-qrdb#278): the peer is who it
+// claims to be and RBAC granted the operation, but its measured state is not
+// currently acceptable -- or could not be shown to be.
+//
+// It is not an authentication failure and must not read as one. Reason is the
+// stable refusal class; SecurityRelevant is true only when the evidence was
+// present and wrong (or presented for a different peer, or dated in the
+// future), never for absent or stale evidence. A verifier error classifies as
+// unavailable (retryable, 503); every other refusal as forbidden (403).
+type PeerAttestationRefusedError struct {
+	Subject          string
+	TenantID         string
+	Permission       permission.Permission
+	Reason           PeerAttestationReason
+	SecurityRelevant bool
+
+	// Detail is the verifier's own account of the failed checks, when it gave
+	// one.
+	Detail string
+
+	// Err is the underlying failure, when there was one.
+	Err error
+}
+
+// Error names the caller, the operation and the reason.
+func (e *PeerAttestationRefusedError) Error() string {
+	msg := "auth/middleware: peer " + e.Subject + " in tenant " + e.TenantID +
+		" is not attested for " + e.Permission.String() + ": " + string(e.Reason)
+	if e.Detail != "" {
+		msg += " (" + e.Detail + ")"
+	}
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Unwrap returns the underlying failure.
+func (e *PeerAttestationRefusedError) Unwrap() error {
+	return e.Err
 }
 
 // RateLimitedError is returned by authorize (go-qrdb#201) when the caller has

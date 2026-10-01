@@ -366,8 +366,8 @@ func TestCreateUser_Success(t *testing.T) {
 	if len(user.RoleIDs) != 2 {
 		t.Errorf("RoleIDs: got %d, want 2", len(user.RoleIDs))
 	}
-	if !user.Enabled {
-		t.Error("expected Enabled=true")
+	if !user.CanAuthenticate() {
+		t.Error("expected an active user to be able to authenticate")
 	}
 	if user.System {
 		t.Error("expected System=false")
@@ -399,8 +399,8 @@ func TestCreateUser_PendingCreatesDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	if created.Enabled {
-		t.Error("pending user created with Enabled=true, want disabled until activation")
+	if created.CanAuthenticate() {
+		t.Error("pending user can authenticate, want refused until activation")
 	}
 
 	// Activation is the ordinary EnableUser path.
@@ -411,7 +411,7 @@ func TestCreateUser_PendingCreatesDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUser: %v", err)
 	}
-	if !got.Enabled {
+	if !got.CanAuthenticate() {
 		t.Error("EnableUser did not activate the pending user")
 	}
 }
@@ -1136,8 +1136,8 @@ func TestEnableUser_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUser: %v", err)
 	}
-	if !fetched.Enabled {
-		t.Error("expected Enabled=true after EnableUser")
+	if !fetched.CanAuthenticate() {
+		t.Error("expected user to authenticate after EnableUser")
 	}
 }
 
@@ -1187,8 +1187,8 @@ func TestDisableUser_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUser: %v", err)
 	}
-	if fetched.Enabled {
-		t.Error("expected Enabled=false after DisableUser")
+	if fetched.CanAuthenticate() {
+		t.Error("expected user to be refused after DisableUser")
 	}
 }
 
@@ -1797,7 +1797,7 @@ func TestUserLifecycle(t *testing.T) {
 		t.Fatalf("DisableUser: %v", err)
 	}
 	disabled, _ := svc.GetUser(ctx, user.ID)
-	if disabled.Enabled {
+	if disabled.CanAuthenticate() {
 		t.Error("expected disabled")
 	}
 
@@ -1806,7 +1806,7 @@ func TestUserLifecycle(t *testing.T) {
 		t.Fatalf("EnableUser: %v", err)
 	}
 	enabled, _ := svc.GetUser(ctx, user.ID)
-	if !enabled.Enabled {
+	if !enabled.CanAuthenticate() {
 		t.Error("expected enabled")
 	}
 

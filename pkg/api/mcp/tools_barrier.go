@@ -44,9 +44,14 @@ import (
 // verify the SO PIN. When nil the PIN-related arguments are ignored,
 // preserving dev-mode and unconfigured-deployment flows.
 //
-// encMigrator is optional: when supplied, the qrdb_barrier_enable_encryption
-// tool is available to migrate a previously-unencrypted barrier to a keyed
-// strategy, mirroring the REST/gRPC/QUIC BarrierEnableEncryption handlers.
+// encMigrator is optional: qrdb_barrier_enable_encryption is registered
+// unconditionally (its own availability does not depend on svc being
+// non-nil -- see the caller in server.go, which also registers it when
+// barrierSvc is nil but encMigrator is not); handleBarrierEnableEncryption
+// itself refuses with a typed error when encMigrator is nil, mirroring the
+// REST/gRPC/QUIC BarrierEnableEncryption handlers rather than omitting the
+// tool the way this function omits the rest of the group when svc is nil
+// (go-qrdb#558).
 func barrierTools(svc service.BarrierServicer, pinBackend pin.PINBackend, encMigrator service.EncryptionMigrator) []serverTool {
 	tools := []serverTool{
 		{Tool: toolBarrierInitialize(), Perm: permission.SealBootstrap, Handler: handleBarrierInitialize(svc, pinBackend)},
@@ -72,13 +77,13 @@ func barrierTools(svc service.BarrierServicer, pinBackend pin.PINBackend, encMig
 		{Tool: toolBarrierRecoveryOfficerRegister(), Perm: permission.SealOfficerRegister, Handler: handleBarrierRecoveryOfficerRegister(svc)},
 		{Tool: toolBarrierRecoveryShareClaimBegin(), Perm: permission.IdentityGated, Handler: handleBarrierRecoveryShareClaimBegin(svc)},
 		{Tool: toolBarrierRecoveryShareClaimComplete(), Perm: permission.IdentityGated, Handler: handleBarrierRecoveryShareClaimComplete(svc)},
-	}
-	if encMigrator != nil {
-		tools = append(tools, serverTool{
-			Tool:    toolBarrierEnableEncryption(),
-			Perm:    permission.SealEnableEncryption,
-			Handler: handleBarrierEnableEncryption(encMigrator),
-		})
+		// Registered unconditionally -- go-qrdb#558. This tool's own
+		// availability depends on encMigrator, not svc; gating it on
+		// encMigrator != nil here would omit it entirely in standalone mode
+		// (encMigrator nil, svc non-nil) instead of letting the handler
+		// answer with the typed refusal every other transport gives for
+		// that state.
+		{Tool: toolBarrierEnableEncryption(), Perm: permission.SealEnableEncryption, Handler: handleBarrierEnableEncryption(encMigrator)},
 	}
 	return tools
 }
@@ -133,6 +138,13 @@ func toolBarrierEnableEncryption() mcp.Tool {
 // acknowledged with "migration_started"; clients poll qrdb_barrier_status.
 func handleBarrierEnableEncryption(migrator service.EncryptionMigrator) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if migrator == nil {
+			// Tool is registered unconditionally (go-qrdb#558); this is the
+			// same typed refusal REST/gRPC/Unix/QUIC give when no
+			// EncryptionMigrator is configured (standalone mode, or a
+			// composer that never wired one).
+			return nil, &ToolError{Tool: "qrdb_barrier_enable_encryption", Err: service.ErrMigrationProviderUnavailable}
+		}
 		strategy := mcp.ParseString(req, "strategy", "")
 		if strategy == "" {
 			return mcp.NewToolResultError("strategy is required"), nil
@@ -152,18 +164,26 @@ func handleBarrierEnableEncryption(migrator service.EncryptionMigrator) mcpserve
 			availability = seal.AvailabilityOnline
 		}
 
+		// The passphrase argument is copied into protected memory and the
+		// decoded copy wiped at once — the credential is what the migration
+		// reads from here on.
 		passphrase := secretArg(req, "passphrase")
+		creds, err := seal.CredentialsFor(passphrase)
+		secure.Wipe(passphrase)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_enable_encryption", Err: err}
+		}
 
 		opts := seal.MigrationOptions{
 			TargetStrategy:  seal.StrategyID(strategy),
 			Mechanism:       mechanism,
 			Availability:    availability,
-			Credentials:     seal.Credentials{Secret: passphrase},
+			Credentials:     creds,
 			ShamirThreshold: mcp.ParseInt(req, "shamir_threshold", 0),
 			ShamirTotal:     mcp.ParseInt(req, "shamir_total", 0),
 		}
 		if err := opts.Validate(); err != nil {
-			secure.Wipe(passphrase)
+			creds.Secret.Destroy()
 			return nil, &ToolError{Tool: "qrdb_barrier_enable_encryption", Err: err}
 		}
 
@@ -175,10 +195,11 @@ func handleBarrierEnableEncryption(migrator service.EncryptionMigrator) mcpserve
 		// migration must survive the tool result returning.
 		go func() {
 			// The migration OWNS the credential from here: it outlives this
-			// tool call, so wiping in the handler would zero the passphrase
-			// out from under a running migration. The wipe belongs to
-			// whoever the last reader is, and that is this goroutine.
-			defer secure.Wipe(passphrase)
+			// tool call, so destroying it in the handler would pull the
+			// passphrase out from under a running migration. The destroy
+			// belongs to whoever the last reader is, and that is this
+			// goroutine.
+			defer creds.Secret.Destroy()
 			resultCh <- migrator.EnableEncryption(context.Background(), scope, opts)
 		}()
 

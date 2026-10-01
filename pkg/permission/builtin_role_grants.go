@@ -76,6 +76,9 @@ func registerSOGrants() {
 		KeysCreate, KeysDelete, KeysList, KeysGet,
 		// Key material import/export (privileged lifecycle — NOT sign/encrypt/decrypt)
 		KeysImport, KeysExport,
+		// Key escrow — full lifecycle (external custody is a key-management
+		// duty; parallels keys:import/export above).
+		EscrowCreate, EscrowRecover, EscrowList, EscrowRevoke,
 		// Hardware crypto backend inventory
 		BackendsList, BackendsRead,
 		// PKCS#11 PIN management and PIV slot administration (governance, no crypto use)
@@ -124,6 +127,9 @@ func registerAdminGrants() {
 		DEKRotate, DEKRewrap, DEKRetire, DEKStatus,
 		// Key material import/export (privileged lifecycle)
 		KeysImport, KeysExport,
+		// Key escrow — full lifecycle (parallels keys:import/export above; a
+		// tenant Admin escrows and recovers their OWN tenant's keys).
+		EscrowCreate, EscrowRecover, EscrowList, EscrowRevoke,
 		// Certificate management
 		CertsGenerate, CertsExport, CertsRevoke,
 		CertsList, CertsRead,
@@ -145,10 +151,8 @@ func registerAdminGrants() {
 		// Ceremony (status only)
 		CeremonyStatus,
 		// Tenant management (self-scope: act on own tenant)
-		TenantsCreate, TenantsRead, TenantsUpdate,
+		TenantsRead, TenantsUpdate,
 		TenantsDelete, TenantsList,
-		// Tenant provisioning controls: isolation tier and plan entitlements.
-		TenantsSetIsolation, TenantsSetEntitlements,
 		// Per-tenant barrier management (tenant-only scope: a tenant admin
 		// may init/unseal/seal their OWN tenant's barrier; the system tenant
 		// is structurally denied these by the ScopeTenantOnly rule even
@@ -181,6 +185,12 @@ func registerAdminGrants() {
 		AuditRead, AuditQuery,
 		// Cross-scope tenant management — only effective for system-tenant Admin.
 		TenantsListCross, TenantsCreateCross, TenantsApprove,
+		// Tenant provisioning — creating a tenant and setting its plan (quotas,
+		// entitlements, isolation tier). Platform-operator operations,
+		// ScopeCross (tenant_provisioning_scope.go): only effective for
+		// system-tenant Admin, so a tenant Admin cannot raise its own limits.
+		TenantsCreate, TenantsSetQuotas, TenantsSetEntitlements, TenantsSetIsolation,
+		TenantsListDeleted, TenantsReconcileDeleted,
 		// Cross-scope volume pool management — only effective for system-tenant Admin.
 		VolumePoolCreate, VolumePoolList, VolumePoolRead,
 		VolumePoolUpdate, VolumePoolDelete,
@@ -193,12 +203,17 @@ func registerAdminGrants() {
 		// Admin. The self-scope CertsRevoke above still covers every
 		// revocation of the tenant's own issued certificates.
 		CertsRevokeCross,
-		// Broker-domain tenant security surfaces (ScopeTenantOnly: a tenant
-		// admin manages their OWN tenant's secret vault, trust pool, and ACME
-		// issuance; the system tenant is structurally denied by the
-		// ScopeTenantOnly rule). Parallels the Admin role already holding
-		// certs:* and passwords:*. mcp/agent scopes are intentionally NOT
-		// granted here — they are wired by the broker's role->scope mapping.
+		// Broker-domain tenant security surfaces. Trust pool and ACME
+		// issuance are ScopeTenantOnly: a tenant admin manages their OWN
+		// tenant's trust pool and ACME issuance, and the system tenant is
+		// structurally denied. secrets:* is ScopeSelfStrict instead
+		// (go-qrdb#372): a tenant admin still manages only their OWN vault,
+		// but the system tenant is confined to its own vault rather than
+		// denied outright, since the system tenant needs a private vault
+		// over its own namespace exactly as every other tenant does.
+		// Parallels the Admin role already holding certs:* and passwords:*.
+		// mcp/agent scopes are intentionally NOT granted here — they are
+		// wired by the broker's role->scope mapping.
 		SecretsRead, SecretsWrite, SecretsDelete,
 		SecretsList,
 		TrustRead, TrustWrite,
@@ -475,6 +490,10 @@ func registerAuditorGrants() {
 		TenantsList, TenantsRead,
 		// Key metadata (public fields only — no cryptographic operations)
 		KeysList, KeysGet,
+		// Key escrow inventory (metadata only — escrow ID, purpose, timestamps;
+		// never key material). Recovering or revoking an escrow is not
+		// visibility and stays off the Auditor role.
+		EscrowList,
 		// Ceremony status
 		CeremonyStatus,
 		// Auth factor listing

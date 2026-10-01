@@ -20,8 +20,6 @@ import (
 	"fmt"
 	"strconv"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -236,7 +234,7 @@ func (s *qrdbServiceServer) VectorCreateNamespace(ctx context.Context, req *pb.V
 	if req.GetIndexParamsJson() != "" {
 		params, err := unmarshalMetadata(req.GetIndexParamsJson())
 		if err != nil {
-			return nil, status.Error(codes.InvalidArgument, err.Error())
+			return nil, mapServiceError(err)
 		}
 		indexConfig = indexParamsToStringMap(params)
 	}
@@ -338,12 +336,12 @@ func (s *qrdbServiceServer) VectorUpsert(ctx context.Context, req *pb.VectorUpse
 
 	metadata, err := unmarshalMetadata(req.GetMetadataJson())
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, mapServiceError(err)
 	}
 
 	id, err := parseVectorID(req.GetId())
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, mapServiceError(err)
 	}
 
 	resp, err := vectorSvc.UpsertVector(ctx, &service.UpsertVectorRequest{
@@ -372,7 +370,7 @@ func (s *qrdbServiceServer) VectorGet(ctx context.Context, req *pb.VectorGetRequ
 
 	id, err := parseVectorID(req.GetId())
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, mapServiceError(err)
 	}
 
 	data, err := vectorSvc.GetVector(ctx, &service.GetVectorRequest{
@@ -389,7 +387,7 @@ func (s *qrdbServiceServer) VectorGet(ctx context.Context, req *pb.VectorGetRequ
 
 	pbData, err := getVectorResponseToProto(data)
 	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, mapServiceError(err)
 	}
 	return pbData, nil
 }
@@ -403,7 +401,7 @@ func (s *qrdbServiceServer) VectorDelete(ctx context.Context, req *pb.VectorDele
 
 	id, err := parseVectorID(req.GetId())
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, mapServiceError(err)
 	}
 
 	_, err = vectorSvc.DeleteVector(ctx, &service.DeleteVectorRequest{
@@ -428,7 +426,7 @@ func (s *qrdbServiceServer) VectorBatchUpsert(ctx context.Context, req *pb.Vecto
 	for i, v := range req.GetVectors() {
 		vd, err := protoToVectorData(v)
 		if err != nil {
-			return nil, status.Error(codes.InvalidArgument, err.Error())
+			return nil, mapServiceError(err)
 		}
 		vectors[i] = vd
 	}
@@ -457,7 +455,7 @@ func (s *qrdbServiceServer) VectorBatchDelete(ctx context.Context, req *pb.Vecto
 
 	ids, err := parseStringIDs(req.GetIds())
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, mapServiceError(err)
 	}
 
 	resp, err := vectorSvc.BatchDeleteVectors(ctx, &service.BatchDeleteVectorsRequest{
@@ -504,7 +502,7 @@ func (s *qrdbServiceServer) VectorList(ctx context.Context, req *pb.VectorListRe
 	for i, v := range resp.Vectors {
 		pbV, err := vectorDataToProto(v)
 		if err != nil {
-			return nil, status.Error(codes.Internal, err.Error())
+			return nil, mapServiceError(err)
 		}
 		pbVectors[i] = pbV
 	}
@@ -526,12 +524,12 @@ func (s *qrdbServiceServer) VectorUpdateMetadata(ctx context.Context, req *pb.Ve
 
 	metadata, err := unmarshalMetadata(req.GetMetadataJson())
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, mapServiceError(err)
 	}
 
 	id, err := parseVectorID(req.GetId())
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, mapServiceError(err)
 	}
 
 	_, err = vectorSvc.UpdateMetadata(ctx, &service.UpdateVectorMetadataRequest{
@@ -572,7 +570,7 @@ func (s *qrdbServiceServer) VectorSearchSimilar(ctx context.Context, req *pb.Vec
 
 	pbResults, err := searchResultsToProto(resp.Results)
 	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, mapServiceError(err)
 	}
 
 	return &pb.VectorSearchSimilarResponse{
@@ -590,7 +588,7 @@ func (s *qrdbServiceServer) VectorSearchByMetadata(ctx context.Context, req *pb.
 
 	filters, err := unmarshalMetadata(req.GetFiltersJson())
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, mapServiceError(err)
 	}
 
 	resp, err := vectorSvc.SearchByMetadata(ctx, &service.SearchByMetadataRequest{
@@ -609,7 +607,7 @@ func (s *qrdbServiceServer) VectorSearchByMetadata(ctx context.Context, req *pb.
 	for i, v := range resp.Results {
 		pbV, err := vectorDataToProto(v)
 		if err != nil {
-			return nil, status.Error(codes.Internal, err.Error())
+			return nil, mapServiceError(err)
 		}
 		pbResults[i] = pbV
 	}
@@ -630,7 +628,7 @@ func (s *qrdbServiceServer) VectorHybridSearch(ctx context.Context, req *pb.Vect
 
 	metadataFilter, err := unmarshalMetadata(req.GetMetadataFiltersJson())
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, mapServiceError(err)
 	}
 
 	resp, err := vectorSvc.HybridSearch(ctx, &service.HybridSearchRequest{
@@ -647,7 +645,7 @@ func (s *qrdbServiceServer) VectorHybridSearch(ctx context.Context, req *pb.Vect
 
 	pbResults, err := searchResultsToProto(resp.Results)
 	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, mapServiceError(err)
 	}
 
 	return &pb.VectorHybridSearchResponse{
@@ -666,7 +664,7 @@ func (s *qrdbServiceServer) VectorSearchByID(ctx context.Context, req *pb.Vector
 
 	id, err := parseVectorID(req.GetId())
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, mapServiceError(err)
 	}
 
 	resp, err := vectorSvc.SearchByID(ctx, &service.SearchByIDRequest{
@@ -682,7 +680,7 @@ func (s *qrdbServiceServer) VectorSearchByID(ctx context.Context, req *pb.Vector
 
 	pbResults, err := searchResultsToProto(resp.Results)
 	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, mapServiceError(err)
 	}
 
 	return &pb.VectorSearchSimilarResponse{

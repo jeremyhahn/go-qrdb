@@ -130,7 +130,7 @@ func TestNodeStoreMigration_RollbackOnCopyFailure(t *testing.T) {
 	mig := &NodeStoreMigration{Source: source, Target: target, StoreDirs: []string{badDir}, Logger: reencTestLogger()}
 	err := mig.Run(ctx, seal.MigrationOptions{
 		TargetStrategy: seal.StrategyPassphrase, Mechanism: seal.MechanismSwap,
-		Availability: seal.AvailabilityQuiesced, Credentials: seal.Credentials{Secret: []byte("pw")},
+		Availability: seal.AvailabilityQuiesced, Credentials: seal.MustCredentials([]byte("pw")),
 	})
 	if err == nil {
 		t.Fatal("migration must fail when a store dir is not a valid Pebble store")

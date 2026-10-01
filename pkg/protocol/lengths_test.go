@@ -294,7 +294,7 @@ func TestVectorEncoders_RefuseUnencodableFields(t *testing.T) {
 // than an oversight someone later "fixes".
 func TestEncodeAppError_HasNoLengthFieldToGuard(t *testing.T) {
 	msg := strings.Repeat("m", MaxUint16Field+2)
-	out := EncodeAppError(msg)
+	out := EncodeAppError(AppErrorInvalid, msg)
 
 	got, ok := DecodeAppError(out)
 	if !ok {

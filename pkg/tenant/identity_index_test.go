@@ -525,3 +525,105 @@ func (s *guardFaultStore) CompareAndDelete(ctx context.Context, key string, expe
 func (s *guardFaultStore) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
 	return false, nil
 }
+
+// TestIdentityIndex_PrepareClaimMatchesRecordsOwnKey covers go-qrdb#555's
+// PrepareClaim: it must derive the EXACT key Record itself writes, or a
+// caller folding it into an external guarded batch would silently claim a
+// DIFFERENT entry than Record would have. Writing PrepareClaim's own output
+// by hand and reading it back through Lookup is the same round trip
+// Record's normal path takes, so agreement here is agreement on the wire.
+func TestIdentityIndex_PrepareClaimMatchesRecordsOwnKey(t *testing.T) {
+	kv := newMemKVStore()
+	index, err := NewIdentityIndex(kv)
+	if err != nil {
+		t.Fatalf("NewIdentityIndex: %v", err)
+	}
+	ctx := context.Background()
+
+	claimKV, token, err := index.PrepareClaim(IdentityRole, "role-1", "acme")
+	if err != nil {
+		t.Fatalf("PrepareClaim: %v", err)
+	}
+	if token == "" {
+		t.Fatal("PrepareClaim returned an empty token")
+	}
+	if claimKV.Key == "" {
+		t.Fatal("PrepareClaim returned an empty key")
+	}
+	if string(claimKV.Value) != token {
+		t.Errorf("claimKV.Value = %q, want the same bytes as token %q", claimKV.Value, token)
+	}
+
+	// Write the prepared claim BY HAND, exactly as an external guarded batch
+	// would, then confirm the ordinary Lookup path resolves it.
+	if err := kv.Put(ctx, claimKV.Key, claimKV.Value); err != nil {
+		t.Fatalf("Put(claimKV): %v", err)
+	}
+	claim, held, err := index.Lookup(ctx, IdentityRole, "role-1")
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	if !held || claim.Tenant != "acme" || claim.Token != token {
+		t.Fatalf("Lookup = (%+v, %v), want a held claim for acme with token %q", claim, held, token)
+	}
+
+	// Record itself must refuse now: PrepareClaim performed no write of its
+	// own, so the key it named was free until the Put above, and Record over
+	// the SAME id must see it exactly as if Record had claimed it directly.
+	if _, err := index.Record(ctx, IdentityRole, "role-1", "acme"); err == nil {
+		t.Fatal("expected Record to refuse a key PrepareClaim's output already occupies")
+	}
+}
+
+// TestIdentityIndex_PrepareClaimTokensAreDistinct covers the nonce half of
+// PrepareClaim: two calls for the same id must never mint the same token,
+// or two concurrent callers folding a claim into two different external
+// batches could not be told apart by Forget later.
+func TestIdentityIndex_PrepareClaimTokensAreDistinct(t *testing.T) {
+	index, err := NewIdentityIndex(newMemKVStore())
+	if err != nil {
+		t.Fatalf("NewIdentityIndex: %v", err)
+	}
+	_, tokenA, err := index.PrepareClaim(IdentityRole, "role-1", "acme")
+	if err != nil {
+		t.Fatalf("PrepareClaim (a): %v", err)
+	}
+	_, tokenB, err := index.PrepareClaim(IdentityRole, "role-1", "acme")
+	if err != nil {
+		t.Fatalf("PrepareClaim (b): %v", err)
+	}
+	if tokenA == tokenB {
+		t.Errorf("two PrepareClaim calls minted the same token %q", tokenA)
+	}
+}
+
+// TestIdentityIndex_PrepareClaimCanonicalizesSystemTenant covers the same
+// system-tenant canonicalization Record applies, so a claim PrepareClaim
+// prepares for the system tenant resolves to the same tenant Record would
+// have recorded regardless of which spelling the caller used.
+func TestIdentityIndex_PrepareClaimCanonicalizesSystemTenant(t *testing.T) {
+	index, err := NewIdentityIndex(newMemKVStore())
+	if err != nil {
+		t.Fatalf("NewIdentityIndex: %v", err)
+	}
+	_, token, err := index.PrepareClaim(IdentityRole, "role-1", "system")
+	if err != nil {
+		t.Fatalf("PrepareClaim: %v", err)
+	}
+	if got := tenantFromClaimToken(token); got != SystemTenantID {
+		t.Errorf("tenant encoded in token = %q, want %q", got, SystemTenantID)
+	}
+}
+
+// TestIdentityIndex_PrepareClaimRefusesEmptyID matches Record's own refusal
+// for an empty id.
+func TestIdentityIndex_PrepareClaimRefusesEmptyID(t *testing.T) {
+	index, err := NewIdentityIndex(newMemKVStore())
+	if err != nil {
+		t.Fatalf("NewIdentityIndex: %v", err)
+	}
+	_, _, err = index.PrepareClaim(IdentityRole, "", "acme")
+	if !errors.Is(err, ErrEmptyIdentityID) {
+		t.Fatalf("PrepareClaim(\"\") err = %v, want ErrEmptyIdentityID", err)
+	}
+}

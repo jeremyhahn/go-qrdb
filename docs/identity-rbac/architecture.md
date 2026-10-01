@@ -33,8 +33,16 @@ mTLS certificate  →  identity (CN=username, OU=tenant, SPKI thumbprint)
 | Certificate field | User field | Role |
 |---|---|---|
 | Subject CN | `Username` | unique identity within a tenant |
-| Subject OU | `TenantID` | tenant isolation boundary |
+| SPIFFE tenant SAN, trust domain pinned | `TenantID` | tenant isolation boundary, when present |
+| Subject OU | `TenantID` | tenant isolation boundary, when no SAN is present |
 | SHA-256(SubjectPublicKeyInfo), base64url | `CertBindings[].Thumbprint` | **the authoritative mTLS identity** — `User.MatchesCert(cert)` |
+
+**Which tenant derivation a certificate from the built-in CA uses** depends on
+`auth.spiffe_trust_domain`: with a trust domain configured the CA emits the
+tenant-scoped SPIFFE SAN and the pinned derivation resolves it; without one it
+emits no SAN and the OU does. The CA refuses to mint a certificate whose SAN
+would disagree with its OU. See
+[../certificate-authority/](../certificate-authority/architecture.md#which-derivation-a-generated-certificate-uses).
 
 **The thumbprint is computed over the public key, not the certificate.** A
 renewed certificate for the same key produces the same thumbprint, so bindings
@@ -88,13 +96,140 @@ account stays closed and authenticates on its other keys. Withdrawal removes
 the entry, and when it was the last one the set becomes empty and the account
 reopens. Both are correct; they are not interchangeable.
 
-This is deliberately **fail-closed per account rather than per fleet**. The
-alternative — requiring a binding of everyone — locks out every account nobody
-has enrolled, including the bootstrap admin on a node whose first boot wired no
-`CertBinder` (there is then no certificate in existence to have enrolled), and
-the way back in needs a permission that needs a login. Refusing to admit an
-unenrolled account is therefore a migration event; admitting it is not, and the
-cost of admitting it is stated above rather than hidden.
+By default this is **fail-closed per account rather than per fleet**
+(`auth.mtls_binding_policy: enrolled`). Requiring a binding of everyone locks
+out every account nobody has enrolled, including the bootstrap admin on a node
+whose first boot wired no `CertBinder` (there is then no certificate in
+existence to have enrolled), and the way back in needs a permission that needs a
+login. Refusing to admit an unenrolled account is therefore a migration event;
+admitting it is not, and the cost of admitting it is stated above rather than
+hidden.
+
+### The fleet-wide posture: `auth.mtls_binding_policy`
+
+A deployment that has enrolled everybody can say so, and have the server
+enforce it:
+
+| `auth.mtls_binding_policy` | An account with bindings | An account with none | A certificate naming no account |
+|---|---|---|---|
+| `enrolled` (default) | admits only a matching, unexpired key | admits on the CA's assertion | admits, unenriched — no roles, so RBAC denies |
+| `required` | admits only a matching, unexpired key | **refused** — `*CertBindingRequiredError`, 401 | **refused** — `*CertBindingRequiredError`, 401 |
+
+Under `required` **possession is the only way a certificate identifies anyone**,
+so the residual hole above closes: an unguarded issuance path can no longer
+mint an identity for an unenrolled account, because no unenrolled account
+admits a certificate. An unrecognised value fails the boot rather than
+resolving to either posture.
+
+**`required` refuses to boot when it would lock the admin out.** The bootstrap
+admin (`admin` in the `system` tenant) must exist and hold at least one
+unexpired binding, or the node stops with a diagnostic
+(`*firstboot.AdminCertBindingRequiredError`) naming the reason and the way
+back. This is checked in two places, because two different layers create the
+admin:
+
+- **`firstboot.Initialize`**, given the policy, refuses **before writing
+  anything** when it would create an admin it cannot bind (no `CertBinder`, or
+  no admin certificate path), and refuses an existing admin with no live
+  binding. It then verifies the **outcome** by reading the admin back: a CA that
+  returned an empty certificate, a user surface that returned no admin, or a
+  binder that reported success without binding all fail first boot.
+- **The composer**, after first boot, calls `firstboot.VerifyAdminCertBinding`
+  and refuses to start on its error. The daemon does this on every boot,
+  reading the admin through the **linearizable** store: a follower's
+  StaleRead copy may not yet hold a binding the leader enrolled, and judging it
+  would refuse a boot that should succeed. A read that cannot be served yet is
+  retried for up to 30 seconds (`firstboot.VerifyAdminCertBindingWithin`), then
+  refuses. The daemon's own first boot wires no `CertBinder`, so a fresh daemon
+  under `required` stops here — the posture is reached by migration, never by
+  default.
+- **The SDK node** checks at start: it refuses to boot when an existing admin
+  holds no live binding (with the same bounded wait), and defers a missing
+  admin to first boot. `Node.FirstBoot` runs first-boot under the node's own
+  policy — raising, never lowering, what the embedder passed — and verifies the
+  result against the store the node authenticates with.
+
+**Only `Node.FirstBoot` guarantees the admin is never locked out on an
+embedded node.** An embedder that calls `firstboot.Initialize` (or the SDK's
+`FirstBootInitialize`) directly, without passing the policy, can create an
+admin with no binding inside a node that is already serving; that node admits
+nobody by certificate until it is restarted, when its start check refuses to
+boot. Embedders must bootstrap through `Node.FirstBoot`.
+
+**The same posture guards the admin at runtime.** Under `required`, every user
+store the daemon and the SDK node build (`user.WithBootstrapAdminBindingRequired`,
+applied through `lifecycle.UserStoreOptions`) refuses every change that would
+leave the bootstrap admin unable to log in by certificate: deleting it,
+renaming it, moving it to a lifecycle state that cannot authenticate, dropping
+`mtls` from its permitted methods, or leaving it with no live binding —
+whichever verb makes the change. The refusal is
+`user.BootstrapAdminLockoutError`, on every transport, so a running node
+cannot be talked into the state its next boot would refuse.
+
+The guard is judged on the whole resulting record inside the store's
+conditional write (`updateUserAt` for every update, the binding verbs among
+them; `DisableUser`; `DeleteUser` before it marks the record), against the
+version the write is conditioned on, so two changes that are each safe alone
+cannot both commit. It refuses a change only when it breaks a requirement the
+admin currently meets. That keeps repair possible, and it means an admin
+already locked out by the clock — its last key expired — is not rescued by the
+store: the recovery path is to set `auth.mtls_binding_policy: enrolled`,
+restart, enrol a key, and return to `required`.
+
+The admin is identified the way the boot check finds it — `admin` in the
+`system` tenant — evaluated on the record as committed, before the change. A
+rename is therefore itself refused, so under `required` the admin cannot stop
+being the admin, and the username index keeps any other account from taking
+the name. (It is not a `System` user; first boot creates it with
+`System == false`.)
+
+**A live binding is not the whole check.** The boot check also refuses an admin
+whose lifecycle state does not permit a login (`AdminBindingCannotAuthenticate`)
+and one whose permitted-method policy excludes `mtls`
+(`AdminBindingMTLSNotPermitted`): either locks the admin out as surely as a
+missing key.
+
+Every successful check also records the admin's deadline:
+`qrdb_auth_admin_cert_binding_not_after_timestamp_seconds` — the Unix time at
+which the admin's last live binding expires, `+Inf` when one never expires —
+and a `WARN` naming the remedy once it is under 30 days away. Under `required`,
+that moment is when the node stops being able to boot. It is refreshed by every
+boot check and by every committed change to the admin (it drops to `0` when the
+admin is deleted, which only `enrolled` allows), and it is a timestamp rather
+than a countdown so it stays true in between. The warning is the `required`
+posture's: a store built without the option refreshes the metric but does not
+warn, and a store logs it through its own logger (`user.WithLogger`). Alert on
+the metric against the current time:
+
+```
+qrdb_auth_admin_cert_binding_not_after_timestamp_seconds - time() < 30 * 86400
+```
+
+A failure to *read* the admin while checking also refuses the boot: the posture
+cannot be shown to hold, and starting anyway is the lockout the check prevents.
+
+**What `required` does not reach**, stated rather than implied:
+
+- **Forwarded on-behalf assertions and a capability module's session-token
+  plane.** They present no certificate of the subject's — the certificate on
+  those connections belongs to the forwarding node or the module — so there is
+  nothing to compare. The origin node enforces the posture where the subject's
+  certificate was presented; a fleet must therefore set the same value on every
+  node.
+- **A sealed tenant's IAM window.** While a dedicated-isolation tenant's barrier
+  is sealed its user records are unreadable, so no binding can be checked; the
+  identity proceeds unenriched to the `IdentityGated` barrier surface exactly as
+  under `enrolled`. Refusing it would make the tenant's own unseal unreachable
+  by certificate.
+- **Non-certificate methods.** The posture is about certificate logins; other
+  methods are governed by the account's permitted-method policy.
+
+**Migration and rollback.** Enrol every account's certificate under `enrolled`
+first — the pre-flight is listing the accounts whose `cert_bindings` are empty
+(see [user.md](user.md#moving-a-fleet-to-required-certificate-enrolment)) — then
+set `required` on every node. Rolling back is setting `enrolled` and restarting;
+nothing is migrated in either direction, because the policy is read at boot and
+stored nowhere.
 
 **The consequence for certificate issuance** is that every path that mints a
 certificate remains security-relevant for unenrolled accounts — an unguarded
@@ -212,7 +347,7 @@ handle, so a global index would forbid that while buying nothing.
 
 | Piece | Package | Owner |
 |---|---|---|
-| User model, lifecycle state, cert bindings, role bindings, group membership, attributes | `pkg/user` | go-qrdb |
+| User model, lifecycle state, cert bindings, role bindings, attributes | `pkg/user` | go-qrdb |
 | Roles | `pkg/role` | go-qrdb |
 | Permission vocabulary and registry | `pkg/permission` | go-qrdb |
 | The RBAC PDP, ABAC, middleware, authenticators | `pkg/auth` | go-qrdb |
@@ -228,18 +363,19 @@ handle, so a global index would forbid that while buying nothing.
 - **Enrolment bindings are SPKI thumbprints**, so possession of the private key
   is what authenticates. An account holding at least one binding is refused any
   certificate that matches none of them, whatever its CN, OU or SPIFFE SAN say;
-  an account holding none states no restriction. See
+  an account holding none states no restriction under the default posture and
+  is refused under `auth.mtls_binding_policy: required`. See
   [What a certificate actually claims](#what-a-certificate-actually-claims).
 - **A binding can be withdrawn, and withdrawal is the only unenrolment.**
   `users:remove_cert_binding` removes the record entry and both index entries.
   It is a distinct grant from enrolment because it is the direction that can
   widen an account, and it is distinct from `certs:revoke` because a binding
   outlives the certificates issued for its key.
-- **`Lifecycle` is the single source of truth for whether an account may
-  authenticate** — `pending` · `active` · `suspended` · `locked` · `disabled` ·
-  `deleting`, with `Enabled` a derived projection (`Lifecycle == active`)
-  maintained by the store. `User.CanAuthenticate()` is the check, and it fails
-  closed on a state this build does not recognize.
+- **`Lifecycle` is the only account-state field and the single source of truth
+  for whether an account may authenticate** — `pending` · `active` ·
+  `suspended` · `locked` · `disabled` · `deleting`. `User.CanAuthenticate()` is
+  the check, and it fails closed on an absent state and on a state this build
+  does not recognize.
 - **`deleting` is terminal.** A deletion writes it before its first mutation,
   and from that instant no concurrent enable, and no credential ceremony
   finishing late, can make the account authenticable again. `DeleteUser` marks
@@ -250,10 +386,10 @@ handle, so a global index would forbid that while buying nothing.
   An empty policy states no restriction. Where the method is not observable to
   qrdb — a forwarded assertion, a capability module's own session token — the
   layer that ran the ceremony enforces it.
-- **Group membership is stored, the Group entity is not owned.** `GroupIDs`
-  holds opaque identifiers; a group's name and the roles it confers belong to
-  the layer performing the authorization that consumes them — the same division
-  qrdb already applies to `Attributes`.
+- **Group membership is not a qrdb field.** qrdb authorization resolves
+  user → role bindings → roles → permissions, and nothing in it reads a group.
+  A layer that needs group membership stores it itself; the former `GroupIDs`
+  field, which influenced no decision, has been removed.
 - **`System: true` users and the built-in roles cannot be deleted.**
 - **Factor data is opaque.** qrdb never parses it, so a factor implementation
   cannot smuggle a decision past the PDP through its blob.
@@ -267,11 +403,11 @@ handle, so a global index would forbid that while buying nothing.
   go-auth's, composed above.
 - **No permission invention at runtime.** The vocabulary is a registry populated
   at `init()`; `Parse` validates against it.
-- **No Group entity.** qrdb stores a user's `GroupIDs` — the membership edge —
-  but owns no group catalog, no group CRUD and no group→role resolution. Roles
-  live here because qrdb's own PDP evaluates them; a group is an indirection for
-  assigning roles to many users, and the layer that owns the mapping is the one
-  that resolves it. Adding a Group entity later would not change this field.
+- **No groups.** qrdb stores no group membership, owns no group catalog, no
+  group CRUD and no group→role resolution. Roles live here because qrdb's own
+  PDP evaluates them; a group is an indirection for assigning roles to many
+  users, and the layer that owns the mapping stores the membership and resolves
+  it.
 
 ## Companion documents
 

@@ -214,14 +214,19 @@ func (a *SOAuthenticator) SetSOPIN(ctx context.Context, tenantID string, newPIN 
 		return ErrSOPINAlreadySet
 	}
 
-	// The borrow spans the KDF, not just the slice-header read: Bytes() left
-	// the PIN's pages unmapped-able by a memguard failure elsewhere in the
-	// process while the hash was still running over them (go-qrdb#74).
+	// The borrow spans the KDF, not just the slice-header read: Bytes() would
+	// leave the PIN's pages unmapped-able by a concurrent Destroy (or, before
+	// the go-enclave adoption, a memguard failure anywhere in the process)
+	// while the hash was still running over them (go-qrdb#74).
 	//
-	// Safe to hold because hashPIN and verifyPIN are pure KDFs in this file —
-	// PBKDF2 or Argon2 over ordinary heap slices, with cryptoRandRead for the
-	// salt. Neither allocates protected memory, which is the condition for
-	// holding purgeMu shared across a call.
+	// Safe to hold across the whole call because hashPIN and verifyPIN are
+	// pure KDFs in this file — PBKDF2 or Argon2 over ordinary heap slices,
+	// with cryptoRandRead for the salt. Neither allocates or reads protected
+	// memory of its own, so nothing here can reenter this SAME buffer's
+	// go-enclave lock (which would deadlock) or need a lock any other
+	// enclave holds — go-enclave gives every enclave its own independent
+	// lock, so there is no cross-enclave contention to avoid in the first
+	// place.
 	var record string
 	err = pinBuf.WithBytes(func(pin []byte) error {
 		var herr error
@@ -302,14 +307,19 @@ func (a *SOAuthenticator) VerifySOPIN(ctx context.Context, tenantID string, pres
 		return ErrSOPINNotSet
 	}
 
-	// The borrow spans the KDF, not just the slice-header read: Bytes() left
-	// the PIN's pages unmapped-able by a memguard failure elsewhere in the
-	// process while the hash was still running over them (go-qrdb#74).
+	// The borrow spans the KDF, not just the slice-header read: Bytes() would
+	// leave the PIN's pages unmapped-able by a concurrent Destroy (or, before
+	// the go-enclave adoption, a memguard failure anywhere in the process)
+	// while the hash was still running over them (go-qrdb#74).
 	//
-	// Safe to hold because hashPIN and verifyPIN are pure KDFs in this file —
-	// PBKDF2 or Argon2 over ordinary heap slices, with cryptoRandRead for the
-	// salt. Neither allocates protected memory, which is the condition for
-	// holding purgeMu shared across a call.
+	// Safe to hold across the whole call because hashPIN and verifyPIN are
+	// pure KDFs in this file — PBKDF2 or Argon2 over ordinary heap slices,
+	// with cryptoRandRead for the salt. Neither allocates or reads protected
+	// memory of its own, so nothing here can reenter this SAME buffer's
+	// go-enclave lock (which would deadlock) or need a lock any other
+	// enclave holds — go-enclave gives every enclave its own independent
+	// lock, so there is no cross-enclave contention to avoid in the first
+	// place.
 	if err := pinBuf.WithBytes(func(pin []byte) error {
 		return verifyPIN(pin, string(record))
 	}); err != nil {
@@ -383,14 +393,19 @@ func (a *SOAuthenticator) RotateSOPIN(ctx context.Context, tenantID string, oldP
 	}
 	defer newBuf.Destroy()
 
-	// The borrow spans the KDF, not just the slice-header read: Bytes() left
-	// the PIN's pages unmapped-able by a memguard failure elsewhere in the
-	// process while the hash was still running over them (go-qrdb#74).
+	// The borrow spans the KDF, not just the slice-header read: Bytes() would
+	// leave the PIN's pages unmapped-able by a concurrent Destroy (or, before
+	// the go-enclave adoption, a memguard failure anywhere in the process)
+	// while the hash was still running over them (go-qrdb#74).
 	//
-	// Safe to hold because hashPIN and verifyPIN are pure KDFs in this file —
-	// PBKDF2 or Argon2 over ordinary heap slices, with cryptoRandRead for the
-	// salt. Neither allocates protected memory, which is the condition for
-	// holding purgeMu shared across a call.
+	// Safe to hold across the whole call because hashPIN and verifyPIN are
+	// pure KDFs in this file — PBKDF2 or Argon2 over ordinary heap slices,
+	// with cryptoRandRead for the salt. Neither allocates or reads protected
+	// memory of its own, so nothing here can reenter this SAME buffer's
+	// go-enclave lock (which would deadlock) or need a lock any other
+	// enclave holds — go-enclave gives every enclave its own independent
+	// lock, so there is no cross-enclave contention to avoid in the first
+	// place.
 	var record string
 	err = newBuf.WithBytes(func(pin []byte) error {
 		var herr error

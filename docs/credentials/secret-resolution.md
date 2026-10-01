@@ -33,11 +33,15 @@ place. A value with no recognized scheme is left untouched.
 - **`SecretValue`** — a resolved secret plus its `ResolvedStrategy` tag, and the
   processor's protected resolution target.
 
-## Secrets live in a memguard enclave
+## Secrets live in a sealed enclave
 
-A resolved `SecretValue` seals its plaintext in a memguard enclave (`secure.Secret`),
-not in a garbage-collected byte slice. The plaintext sits in mlocked, guard-paged
-memory and is decrypted only for the moment an accessor needs it.
+A resolved `SecretValue` seals its plaintext in a go-enclave sealed enclave
+(`secure.Secret`), not in a garbage-collected byte slice. AT REST the value is
+AES-256-GCM ciphertext plus a wrapped data key — ordinary (unlocked) heap
+bytes by design, since there is no plaintext there to protect with a page
+lock. Only the moment an accessor calls `Open` or `WithBytes` does the
+plaintext exist at all, and only then is it mlocked, guard-paged memory; it is
+wiped and unmapped the instant that call returns.
 
 Read a secret through `WithBytes` (or `Open`), which keeps the plaintext in
 mlocked memory and wipes the working copy when the callback returns:
@@ -150,6 +154,16 @@ secret it declared protected is missing or unverified. The deprecated `string`
 path keeps its old contract: there, a failure is a diagnostic you opt into with
 `WithFailClosed()`.
 
+**A plain `string` field whose value resolved but cannot be read back fails
+closed too.** The resolver's result is sealed on the way in; if it cannot be
+opened again to write into the field — the process Sealer was wiped, the kernel
+refused to lock the transient buffer — the field keeps its reference, the path
+lands in `Unresolved`, and a `ResolvedReadError` wrapping the cause is recorded
+in `Errors`. The field is never overwritten with `""` and never counted in
+`Resolved`, so an unreadable secret cannot pass for one that is legitimately
+empty. Whether that fails the call follows the plain-string contract: with
+`WithFailClosed()` it does.
+
 **A failed re-resolution never leaves the previous secret usable.** `Process`
 destroys a target's existing enclave before refilling it, so a second walk over
 an already-resolved config — a refresh after a rotation, a re-read after a
@@ -160,8 +174,17 @@ stays down.
 An **empty** target is refused for the same reason a missing password should
 stop a boot: declaring a field as a `SecretValue` says a secret belongs there.
 A secret that is genuinely optional is spelled as a `*SecretValue`, where an
-absent or null key leaves the pointer nil and the walk passes over it — the one
-silent case.
+absent or null key leaves the pointer nil and the walk passes over it.
+
+**A plain `string` target carries no requiredness signal at all**, and that is
+the second silent case. An empty string is skipped without comment, because the
+walk cannot tell a required secret that went missing from an ordinary string
+that is legitimately blank — the type says nothing either way, and guessing is
+worse than declining to guess. Requiredness for a plain `string` field is
+therefore the **consumer's** obligation, enforced in its own `Validate()`; this
+package neither detects nor reports it. A field that must hold a secret belongs
+in a `SecretValue`, which is the secure target regardless and the only one
+whose absence is caught here rather than at first use.
 
 This is what closes the gap YAML would otherwise leave. `yaml.v3` zeroes a null
 destination before the unmarshaler is consulted, so `password:` and
@@ -172,6 +195,32 @@ into a successful boot.
 
 Boxed targets the walk *can* write to (an `any` struct field, an `any` map
 value) are resolved through an addressable copy and assigned back.
+
+### The boundary: requiredness only for a leaf the walk reaches
+
+Everything above guarantees requiredness for a protected leaf the walk
+**reaches**. It does not, and is not meant to, guarantee that the walk reaches
+every leaf a config's author intended to be there.
+
+A `SecretValue` nested inside a `nil` pointer or absent map entry is never
+examined: the walk descends a pointer only `if !v.IsNil()`, so deleting an
+entire config section — `database:` removed from the YAML rather than left
+with an empty `password:` — skips the required field inside it along with the
+rest of the section, and `Process` returns success under `WithFailClosed()`.
+The field-type contract above (`SecretValue` means required, `*SecretValue`
+means optional) says nothing about the container the field lives in, because
+`pkg/secret` walks the config **value** it is handed, not the config **type**
+against a schema — deciding that a section must be present at all is a
+decision about the shape of the config, not about one field's secret, and
+`pkg/secret` is deliberately not a config-validation framework.
+
+**That is the consumer's job, in its own `Validate()`, the same place it
+already checks that required non-secret fields are present.** A `Database`
+struct whose absence should fail startup is validated the same way a
+`Database.Host` of `""` would be — by the caller who knows the section is
+required — not by `pkg/secret`, which cannot distinguish "this section is
+optional and was omitted" from "this section is required and was deleted"
+without a schema neither its input type nor its call carries.
 
 ### Migrating off `string` fields
 

@@ -15,6 +15,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -46,7 +47,7 @@ func newBarrierDBOwnedByTenant(t *testing.T, tenantID, dbName string) (*Database
 	cfg := testDBConfig(dbName)
 	cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}
 	ownerCtx := tenant.WithTenantID(context.Background(), tenantID)
-	if _, err := svc.CreateForTenantWithCredentials(ownerCtx, cfg, seal.Credentials{Secret: secret}); err != nil {
+	if _, err := svc.CreateForTenantWithCredentials(ownerCtx, cfg, seal.MustCredentials(bytes.Clone(secret))); err != nil {
 		t.Fatalf("setup CreateForTenantWithCredentials(%q) error: %v", tenantID, err)
 	}
 	return svc, secret
@@ -74,7 +75,7 @@ func TestDatabaseService_BarrierOps_CrossTenantDenied(t *testing.T) {
 	})
 
 	t.Run("Unseal", func(t *testing.T) {
-		err := svc.UnsealDatabase(attackerCtx, dbName, seal.Credentials{Secret: []byte("s3cret-passphrase")})
+		err := svc.UnsealDatabase(attackerCtx, dbName, seal.MustCredentials([]byte("s3cret-passphrase")))
 		if !errors.As(err, &tade) {
 			t.Fatalf("UnsealDatabase cross-tenant = %v, want *database.TenantAccessDeniedError", err)
 		}
@@ -110,7 +111,7 @@ func TestDatabaseService_BarrierOps_OwnerAllowed(t *testing.T) {
 	if err := svc.SealDatabase(ownerCtx, dbName); err != nil {
 		t.Fatalf("owner SealDatabase error: %v", err)
 	}
-	if err := svc.UnsealDatabase(ownerCtx, dbName, seal.Credentials{Secret: secret}); err != nil {
+	if err := svc.UnsealDatabase(ownerCtx, dbName, seal.MustCredentials(bytes.Clone(secret))); err != nil {
 		t.Fatalf("owner UnsealDatabase error: %v", err)
 	}
 }
@@ -128,7 +129,7 @@ func TestDatabaseService_BarrierOps_SystemAllowed(t *testing.T) {
 	if err := svc.SealDatabase(sysCtx, dbName); err != nil {
 		t.Fatalf("system SealDatabase error: %v", err)
 	}
-	if err := svc.UnsealDatabase(sysCtx, dbName, seal.Credentials{Secret: secret}); err != nil {
+	if err := svc.UnsealDatabase(sysCtx, dbName, seal.MustCredentials(bytes.Clone(secret))); err != nil {
 		t.Fatalf("system UnsealDatabase error: %v", err)
 	}
 }
@@ -145,7 +146,7 @@ func TestDatabaseService_BarrierOps_UnownedDatabaseSystemOnly(t *testing.T) {
 	cfg := testDBConfig(dbName)
 	cfg.DataDir = t.TempDir()
 	cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}
-	if _, err := svc.CreateWithCredentials(context.Background(), cfg, seal.Credentials{Secret: []byte("s3cret")}); err != nil {
+	if _, err := svc.CreateWithCredentials(context.Background(), cfg, seal.MustCredentials([]byte("s3cret"))); err != nil {
 		t.Fatalf("setup CreateWithCredentials error: %v", err)
 	}
 

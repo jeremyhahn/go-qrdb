@@ -74,10 +74,10 @@ var _ ScopeResolver = (*TenantScopeStore)(nil)
 // Resolution precedence (see ResolveScope) is:
 //
 //  1. the tenant's own scope definition (this store), then
-//  2. the built-in process-global default layer (LookupScope), then
-//  3. ScopeSelf — the safe, tenant-confined default.
+//  2. the built-in process-global layer (LookupScope), which refuses a
+//     permission nobody declared — there is no ScopeSelf default after it.
 //
-// TenantScopeStore holds no mutable state of its own; the global default
+// TenantScopeStore holds no mutable state of its own; the global built-in
 // layer it consults via LookupScope is lock-free for readers (RWMutex
 // read-locked). All persistence is routed through the StoreResolver, so it
 // honors the tenant's isolation mode and fails closed (ErrTenantSealed)
@@ -100,12 +100,19 @@ func NewTenantScopeStore(resolver tenant.StoreResolver) (*TenantScopeStore, erro
 // lands in the tenant's barrier when the tenant is barrier-isolated and in
 // the shared store otherwise. A sealed barrier tenant fails closed
 // (tenant.ErrTenantSealed). The scope must be a defined constant.
+//
+// A permission with a built-in scope registration is refused with
+// *BuiltInScopeOverrideError: per-tenant scopes define caller-defined
+// permissions, they never re-scope the platform's own.
 func (s *TenantScopeStore) SetScope(ctx context.Context, tenantID string, p Permission, scope Scope) error {
 	if p == "" {
 		return &EmptyPermissionError{}
 	}
 	if !scope.Valid() {
 		return &InvalidScopeError{Value: scope.String()}
+	}
+	if hasBuiltInScope(p) {
+		return &BuiltInScopeOverrideError{Permission: p, TenantID: tenantID}
 	}
 	store, err := s.resolver.Resolve(ctx, tenantID)
 	if err != nil {
@@ -116,8 +123,9 @@ func (s *TenantScopeStore) SetScope(ctx context.Context, tenantID string, p Perm
 
 // GetScope returns the per-tenant scope definition for permission p in the
 // given tenant. The bool reports whether a definition exists for that
-// tenant; when false, the returned Scope is the safe default ScopeSelf and
-// the error is nil. The read is routed through the StoreResolver and fails
+// tenant; when false, the returned Scope is the zero value ScopeSelf, which
+// callers must not read as a decision, and the error is nil. The read is
+// routed through the StoreResolver and fails
 // closed (tenant.ErrTenantSealed) for a sealed barrier tenant. A stored
 // value that cannot be decoded yields (ScopeSelf, false, *ScopeDecodeError)
 // — failing closed rather than widening reach.
@@ -179,8 +187,8 @@ func (s *TenantScopeStore) ListScopes(ctx context.Context, tenantID string) (map
 // tenant, applying the precedence:
 //
 //  1. the tenant's own scope definition (GetScope), then
-//  2. the built-in process-global default layer (LookupScope), then
-//  3. ScopeSelf — the safe, tenant-confined default.
+//  2. the built-in process-global layer (LookupScope), which returns
+//     *UndeclaredScopeError for a permission nobody declared.
 //
 // SECURITY: ResolveScope fails closed. If the tenant store cannot be
 // reached — most importantly when a barrier tenant is sealed
@@ -189,6 +197,11 @@ func (s *TenantScopeStore) ListScopes(ctx context.Context, tenantID string) (map
 // because doing so could leak a built-in scope onto a tenant whose own
 // (possibly narrower) definition is currently unreadable.
 //
+// A stored definition of a permission that has a built-in scope -- written
+// before SetScope refused them -- is never applied: it fails closed with
+// *BuiltInScopeOverrideError, so the caller denies, rather than either
+// honouring the tenant's re-scope or silently discarding it.
+//
 // Implements ScopeResolver.
 func (s *TenantScopeStore) ResolveScope(ctx context.Context, tenantID string, p Permission) (Scope, error) {
 	scope, ok, err := s.GetScope(ctx, tenantID, p)
@@ -196,9 +209,20 @@ func (s *TenantScopeStore) ResolveScope(ctx context.Context, tenantID string, p 
 		return ScopeSelf, err
 	}
 	if ok {
+		if hasBuiltInScope(p) {
+			return ScopeSelf, &BuiltInScopeOverrideError{Permission: p, TenantID: tenantID}
+		}
 		return scope, nil
 	}
-	// No per-tenant override: fall back to the built-in default layer,
-	// which itself defaults to ScopeSelf for unregistered permissions.
-	return LookupScope(p), nil
+	// No per-tenant override: fall back to the built-in layer. A permission
+	// registered nowhere is an *UndeclaredScopeError, and the authorizer
+	// denies on it — there is no ScopeSelf default to fall through to.
+	return LookupScope(p)
+}
+
+// hasBuiltInScope reports whether p carries a built-in (process-global) scope
+// registration.
+func hasBuiltInScope(p Permission) bool {
+	_, err := LookupScope(p)
+	return err == nil
 }

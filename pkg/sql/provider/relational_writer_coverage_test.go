@@ -25,7 +25,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
 // ---------------------------------------------------------------------------
@@ -77,7 +76,7 @@ func TestRelationalWriter_Update_NonUniqueValueRemoved_DeletesEntry(t *testing.T
 	newRow := orderRow(1, "SKU-1", nil, int32(10))
 	require.NoError(t, upd.Update(newTestContext(), old, newRow))
 
-	entries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix(def.Database, def.TableID, "idx_warehouse"))
+	entries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix(def.Database, def.TableID, 0, incarnationOf(def, "idx_warehouse")))
 	require.NoError(t, err)
 	assert.Empty(t, entries)
 }
@@ -93,10 +92,10 @@ func TestRelationalWriter_Update_NeitherValueExists_NoIndexChange(t *testing.T) 
 	newRow := orderRow(1, nil, nil, int32(20))
 	require.NoError(t, upd.Update(newTestContext(), old, newRow))
 
-	skuEntries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix(def.Database, def.TableID, "idx_sku"))
+	skuEntries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix(def.Database, def.TableID, 0, incarnationOf(def, "idx_sku")))
 	require.NoError(t, err)
 	assert.Empty(t, skuEntries)
-	whEntries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix(def.Database, def.TableID, "idx_warehouse"))
+	whEntries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix(def.Database, def.TableID, 0, incarnationOf(def, "idx_warehouse")))
 	require.NoError(t, err)
 	assert.Empty(t, whEntries)
 }
@@ -234,7 +233,7 @@ func TestRelationalTable_ResolveDuplicate_PropagatesNonNotFoundError(t *testing.
 	tbl, err := NewRelationalTable(def, kv, nil)
 	require.NoError(t, err)
 
-	_, _, rerr := tbl.resolveDuplicate(newTestContext(), []uniqueCandidate{{key: "k", isPK: true}})
+	_, _, rerr := tbl.resolveDuplicate(newTestContext(), tbl.gen(), []uniqueCandidate{{key: "k", isPK: true}})
 	assert.ErrorIs(t, rerr, getErr)
 }
 
@@ -251,7 +250,7 @@ func TestRelationalTable_ResolveDuplicate_SecondGetNotFound_SkipsCandidate(t *te
 	tbl, err := NewRelationalTable(def, kv, nil)
 	require.NoError(t, err)
 
-	dupErr, transient, rerr := tbl.resolveDuplicate(newTestContext(), []uniqueCandidate{{key: "idxkey", indexName: "idx_sku"}})
+	dupErr, transient, rerr := tbl.resolveDuplicate(newTestContext(), tbl.gen(), []uniqueCandidate{{key: "idxkey", indexName: "idx_sku"}})
 	require.NoError(t, rerr)
 	assert.Nil(t, dupErr)
 	assert.True(t, transient, "a candidate whose row has since vanished must be treated as a transient race")
@@ -271,7 +270,7 @@ func TestRelationalTable_ResolveDuplicate_SecondGetOtherError_Propagates(t *test
 	tbl, err := NewRelationalTable(def, kv, nil)
 	require.NoError(t, err)
 
-	_, _, rerr := tbl.resolveDuplicate(newTestContext(), []uniqueCandidate{{key: "idxkey", indexName: "idx_sku"}})
+	_, _, rerr := tbl.resolveDuplicate(newTestContext(), tbl.gen(), []uniqueCandidate{{key: "idxkey", indexName: "idx_sku"}})
 	assert.ErrorIs(t, rerr, getErr)
 }
 
@@ -303,58 +302,102 @@ func TestRelationalWriter_Insert_IndexKeyTooLarge_Rejected(t *testing.T) {
 	// transaction is proposed.
 	tbl, terr := NewRelationalTable(def, &mockKVService{}, nil)
 	require.NoError(t, terr)
-	_, _, werr := tbl.buildInsertIndexWrites(row, "pk")
+	_, _, werr := tbl.buildInsertIndexWrites(tbl.gen(), row, "pk")
 	var e *RowKeyTooLargeError
 	require.ErrorAs(t, werr, &e)
 }
 
 // ---------------------------------------------------------------------------
-// Truncate error propagation.
+// Truncate (go-qrdb#547): TableServicer delegation and error propagation.
+//
+// Truncate no longer scans or deletes anything itself -- it delegates the
+// entire operation to TableServicer.TruncateTable (see that method's doc
+// comment in relational_writer.go) -- so these tests exercise the
+// delegation boundary: an unavailable TableServicer, a propagated
+// TruncateTable error, and a successful call's effect on the table's own
+// in-memory state (Generation, dataPrefix).
 // ---------------------------------------------------------------------------
 
-// mockBatchService implements service.BatchServicer for Truncate error-path
-// testing, following the same "embed nil, implement only what's used"
-// convention as ddl_harness_test.go's memBatch.
-type mockBatchService struct {
-	service.BatchServicer
-	executeFn func(ctx context.Context, ops []service.Op) ([]service.OpResponse, error)
-}
-
-func (m *mockBatchService) Execute(ctx context.Context, ops []service.Op) ([]service.OpResponse, error) {
-	return m.executeFn(ctx, ops)
-}
-
-func (m *mockBatchService) ExecuteWithMode(ctx context.Context, ops []service.Op, _ writemode.Mode) ([]service.OpResponse, error) {
-	return m.Execute(ctx, ops)
-}
-
-func TestRelationalWriter_Truncate_ListError(t *testing.T) {
-	listErr := errors.New("list failed")
+// TestRelationalWriter_Truncate_TableServiceUnavailable verifies a table
+// resolved without a TableServicer (e.g. a legacy composition path) fails
+// closed rather than silently doing nothing.
+func TestRelationalWriter_Truncate_TableServiceUnavailable(t *testing.T) {
 	def := ordersDefWithID(t)
-	kv := &mockKVService{listFn: func(context.Context, string) ([]string, error) {
-		return nil, listErr
-	}}
-	tbl, err := NewRelationalTable(def, kv, nil, WithBatchService(&mockBatchService{}))
+	tbl, err := NewRelationalTable(def, &mockKVService{}, nil)
 	require.NoError(t, err)
 
 	_, terr := tbl.Truncate(newTestContext())
-	assert.ErrorIs(t, terr, listErr)
+	var e *TableServiceUnavailableError
+	require.ErrorAs(t, terr, &e)
 }
 
-func TestRelationalWriter_Truncate_ReclaimError(t *testing.T) {
-	reclaimErr := errors.New("reclaim failed")
+// TestRelationalWriter_Truncate_TableServiceError verifies a TruncateTable
+// failure (e.g. the catalog CAS lost a race after exhausting its retries, or
+// a rewrite is in progress) propagates to the caller rather than being
+// swallowed.
+func TestRelationalWriter_Truncate_TableServiceError(t *testing.T) {
+	truncErr := errors.New("truncate failed")
 	def := ordersDefWithID(t)
-	kv := &mockKVService{
-		listFn: func(context.Context, string) ([]string, error) { return []string{"a"}, nil },
+	fake := &fakeTableService{
+		truncateTableFn: func(context.Context, string, string, bool) (*service.TableDef, error) {
+			return nil, truncErr
+		},
 	}
-	batch := &mockBatchService{executeFn: func(context.Context, []service.Op) ([]service.OpResponse, error) {
-		return nil, reclaimErr
-	}}
-	tbl, err := NewRelationalTable(def, kv, nil, WithBatchService(batch))
+	tbl, err := NewRelationalTable(def, &mockKVService{}, nil, WithTableService(fake))
 	require.NoError(t, err)
 
 	_, terr := tbl.Truncate(newTestContext())
-	assert.ErrorIs(t, terr, reclaimErr)
+	assert.ErrorIs(t, terr, truncErr)
+}
+
+// TestRelationalWriter_Truncate_AdvancesGenerationAndResetsSequence verifies
+// a successful TRUNCATE on the default (MySQL) dialect asks TruncateTable to
+// reset the sequence, and updates the table's own Generation and dataPrefix
+// to match what TruncateTable reports -- the two fields every subsequent
+// Insert/Update/Delete's generationCompare and rowKey derive from.
+func TestRelationalWriter_Truncate_AdvancesGenerationAndResetsSequence(t *testing.T) {
+	def := ordersDefWithID(t)
+	oldGeneration := def.Generation
+	var gotResetSequence bool
+	fake := &fakeTableService{
+		truncateTableFn: func(_ context.Context, database, name string, resetSequence bool) (*service.TableDef, error) {
+			gotResetSequence = resetSequence
+			next := *def
+			next.Generation = oldGeneration + 1
+			return &next, nil
+		},
+	}
+	tbl, err := NewRelationalTable(def, &mockKVService{}, nil, WithTableService(fake))
+	require.NoError(t, err)
+
+	_, terr := tbl.Truncate(newTestContext())
+	require.NoError(t, terr)
+	assert.True(t, gotResetSequence, "MySQL dialect (the default) must reset AUTO_INCREMENT")
+	assert.Equal(t, oldGeneration+1, tbl.gen().generation)
+	assert.Equal(t, service.TableDataPrefix(def.Database, def.TableID, oldGeneration+1), tbl.gen().dataPrefix)
+}
+
+// TestRelationalWriter_Truncate_PostgreSQLKeepsSequence verifies a table
+// resolved with WithPostgreSQLDialect asks TruncateTable NOT to reset the
+// sequence, matching plain PostgreSQL TRUNCATE (without RESTART IDENTITY)
+// leaving a sequence the table owns untouched.
+func TestRelationalWriter_Truncate_PostgreSQLKeepsSequence(t *testing.T) {
+	def := ordersDefWithID(t)
+	var gotResetSequence bool
+	fake := &fakeTableService{
+		truncateTableFn: func(_ context.Context, database, name string, resetSequence bool) (*service.TableDef, error) {
+			gotResetSequence = resetSequence
+			next := *def
+			next.Generation = def.Generation + 1
+			return &next, nil
+		},
+	}
+	tbl, err := NewRelationalTable(def, &mockKVService{}, nil, WithTableService(fake), WithPostgreSQLDialect())
+	require.NoError(t, err)
+
+	_, terr := tbl.Truncate(newTestContext())
+	require.NoError(t, terr)
+	assert.False(t, gotResetSequence, "PostgreSQL dialect must NOT reset its sequence")
 }
 
 // ---------------------------------------------------------------------------

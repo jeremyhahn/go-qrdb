@@ -126,6 +126,12 @@ func (f *fakeCollectionServicer) UpdateDocument(_ context.Context, req *service.
 	return &service.UpdateDocumentResponse{ID: req.ID}, nil
 }
 
+// UpsertDocument reports an insert: no test that uses this double drives
+// the guarded upsert, which is exercised against the real service.
+func (f *fakeCollectionServicer) UpsertDocument(_ context.Context, req *service.UpsertDocumentRequest) (*service.UpsertDocumentResponse, error) {
+	return &service.UpsertDocumentResponse{ID: req.ID}, nil
+}
+
 func (f *fakeCollectionServicer) DeleteDocument(_ context.Context, _ *service.DeleteDocumentRequest) (*service.DeleteDocumentResponse, error) {
 	return &service.DeleteDocumentResponse{Deleted: true}, nil
 }

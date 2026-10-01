@@ -43,10 +43,10 @@ var typedToolErrors = map[wire.Code]func(msg string) error{
 	// of matching message text (go-qrdb#141).
 	//
 	// It does NOT collect the refusals decided on a REQUEST's merits — an
-	// invalid lease TTL, a unique-index violation. Those are
-	// service.SMNotConfiguredError, which the server's classifier sends to
-	// CodeInternal and not here, so the conflation that forced REST's named
-	// exclusion (go-qrdb#126) does not arise on this transport.
+	// invalid lease TTL, a unique-index violation. Since go-qrdb#557 those
+	// have types of their own that the server classifies as InvalidArgument
+	// and AlreadyExists, so on every transport CodeUnimplemented means the
+	// capability refusal and nothing else.
 	wire.CodeUnimplemented: func(msg string) error {
 		return &transport.CapabilityUnsupportedError{Message: msg}
 	},

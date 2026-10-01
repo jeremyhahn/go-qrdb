@@ -133,6 +133,7 @@ func TestRaftSMOverFileStorage_ThreeNodeCluster(t *testing.T) {
 	adminPorts := allocateTCPPorts(t, 3)
 	grpcPorts := allocateTCPPorts(t, 3)
 	peersFlag := buildPeersFlag(raftPorts)
+	nodeTLS, memberIDs := ca.clusterNodeTLS(t, len(raftPorts))
 
 	for i := range 3 {
 		args := []string{
@@ -142,6 +143,7 @@ func TestRaftSMOverFileStorage_ThreeNodeCluster(t *testing.T) {
 			"--data-dir", t.TempDir(),
 			"--discovery", "static",
 			"--peers", peersFlag,
+			"--member-identities", memberIDs,
 			"--shard-id", "1",
 			"--replica-id", fmt.Sprintf("%d", i+1),
 			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
@@ -151,7 +153,7 @@ func TestRaftSMOverFileStorage_ThreeNodeCluster(t *testing.T) {
 			"--sm", "disk",
 			"--sm-storage", "file",
 		}
-		args = append(args, ca.tlsFlags(t)...)
+		args = append(args, nodeTLS[i]...)
 		startNode(t, bin, args, fmt.Sprintf("[sm-file node%d] ", i+1))
 	}
 	for i := range 3 {

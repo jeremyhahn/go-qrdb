@@ -130,7 +130,7 @@ significant** — the first field is the leading prefix field.
   [architecture.md](architecture.md#index-key-scope--a-name-is-not-a-predicate).
 - **The declared prefix is relative, and the engine composes it.** A caller
   below the namespacing registry declares the prefix it knows
-  (`__col:{database}:{collection}/`, `{entityType}/`) and the registry does not
+  (`__col:{database}:{collection}#{incarnation}/`, `{entityType}/`) and the registry does not
   touch it; prefixing it there as well would apply the namespace twice.
 - **Index updates are atomic with the entity write.** There is no window in
   which the entity is visible and its index entry is not, which is what makes a
@@ -165,34 +165,58 @@ significant** — the first field is the leading prefix field.
 - **Only `ErrIndexUnsupported` degrades.** Any other registration error fails
   DAO construction. Treating a transient index-subsystem failure as a
   capability statement would permanently downgrade the DAO to full scans.
-- **Index creation is idempotent BY NAME, and the EXISTING definition wins.**
-  Re-creating a name that already exists succeeds without reconciling the
-  definition — it cannot fail, because returning an error from the apply path
-  would stall consensus. A divergent re-create must therefore be refused, or
-  the previous index dropped, *before* the proposal. This is why an index left
-  behind by a teardown is a correctness problem and not a space leak: the
-  survivor silently overrides the definition the next creator asked for, and a
-  `unique` constraint that creator requested is never enforced.
+- **Every index records its OWNER, and creation is idempotent only for it.**
+  `index.IndexConfig.Owner` names the object whose lifecycle created the index
+  — `index.CollectionOwner(database, collection, incarnation)` for a
+  collection's, the empty string for the explicit API and for every index
+  created before owners existed. It travels as a trailing extension of the
+  index-create command, and every state machine that applies index commands
+  keeps it beside the index. Re-creating a name under the SAME owner succeeds
+  without reconciling the definition — the existing definition wins. Creating
+  a name another owner holds is **refused** (`index.OwnershipError`, reported
+  as an application error so the apply advances; 409 / `ALREADY_EXISTS` on the
+  wire) instead of silently adopting an index somebody else made. A divergent
+  same-owner re-create must still be refused, or the previous index dropped,
+  *before* the proposal. This is why an index left behind by a teardown is a
+  correctness problem and not a space leak: the survivor silently overrides
+  the definition the next creator asked for, and a `unique` constraint that
+  creator requested is never enforced.
 - **Index drop is idempotent.** Dropping a name that is not registered
   succeeds, so a teardown that is retried after an interruption costs nothing
   where it has already run.
+- **Every transport's drop is owner-checked.** `IndexServicer.DropOwnedIndex`
+  removes an index only when the recorded owner matches, decided on the apply
+  path in the same step as the removal, and otherwise leaves it and returns
+  `index.OwnershipError`. The explicit index API drops with the explicit owner
+  (`index.ExplicitOwner`), so it removes explicit and pre-ownership indexes and
+  refuses one a collection owns — 409 / `FAILED_PRECONDITION` — rather than
+  remove a collection's `unique` constraint out from under it.
+  `IndexServicer.DropIndex` removes an index whoever owns it; it is the drop
+  whole-scope teardowns (`DROP DATABASE`, deleting a tenant) issue, since a
+  scope owns everything in it, and no transport reaches it. The owner-checked drop is a trailing extension of the
+  index-drop command; a drop command without it is the unconditional drop every
+  existing log entry already is. An embedder-supplied
+  `statemachine.IndexManager` receives the owner on `CreateIndex` (in its
+  options) and the drop options on `DropIndex`, and must enforce both.
 - **An index created as part of another object's lifecycle is dropped by that
   object's teardown.** A collection's indexes are named
   `{database}.{collection}.{field}` and are dropped by `DropCollection`, after
   its documents and before its metadata (see
   [../collections/architecture.md](../collections/architecture.md)); a
   relational table's index data is reclaimed by `DROP TABLE` before its catalog
-  entry.
-- **Lifecycle ownership is derived from the index NAME; nothing is persisted.**
-  There is no owner field on an index and no registry of which object created
-  which name. An index created through the explicit API under a name a
-  collection would derive is adopted by that collection on create (creation is
-  a name-idempotent no-op) and destroyed by its drop. Two consequences follow
-  and both are current behaviour, not aspiration: the explicit API does **not**
-  retain ownership against a colliding name, and a caller choosing an index
-  name should avoid the `{database}.{collection}.{field}` shape for anything it
-  intends to outlive that collection. Real ownership tracking is a separate
-  capability.
+  entry. `DROP INDEX` on a relational table hands the index's entries to the
+  reclaim sweeper instead of deleting them inline, and `RENAME INDEX` moves no
+  entries at all (see `docs/sql/engineering.md`, "Index entries are keyed by
+  incarnation, not name").
+- **Lifecycle ownership is persisted, not derived from the name.** An index
+  created through the explicit API under a name a collection would derive
+  refuses the collection's create rather than being adopted, and survives the
+  collection's drop; a collection's own indexes are removed by its drop and by
+  nothing that does not own them, except a whole-scope teardown or an explicit
+  unconditional drop. The owner names a collection's *incarnation*, so a
+  collection dropped and created again under the same name cannot adopt or
+  remove its predecessor's leftovers either. See
+  [../collections/architecture.md](../collections/architecture.md#index-ownership).
 
 ## Query security
 
@@ -290,7 +314,18 @@ settings are API-only. Storage backend selection follows
 
 ## Persistence
 
-- Index entries live under `__idx:{db}:{tableID}:{index}/`.
+- A relational table's index entries live under
+  `__idx:{db}:{tableID}:{generation}:{incarnation}/`. The generation segment is
+  the table's current TRUNCATE generation (see `docs/sql/engineering.md`'s
+  TRUNCATE TABLE section): it advances on every TRUNCATE, which is what lets a
+  truncated table's old index entries be reclaimed as an ordinary
+  orphaned-keyspace prefix instead of requiring a synchronous per-entry delete.
+  The incarnation segment identifies the index itself: it is allocated when the
+  index is created and never handed out twice within the table -- index DDL
+  refuses while an `ALTER` rewrite is open, and the rewrite's write-back
+  refuses a definition that moved under it, so the counter cannot go back --
+  so renaming an index moves nothing and a dropped index's keyspace --
+  reclaimed in the background -- can never become a newer index's.
 - Compound entries store the concatenated order-preserving encoded field values
   plus the entity key — slightly larger than single-field entries.
 - **Compatibility**: the key encoding is part of the on-disk format. Changing it

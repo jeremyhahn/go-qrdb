@@ -48,9 +48,35 @@ and `WatchMembership`. **It adds no wire RPCs** — every method is a compositio
 of the rows above. `WatchMembership` polls at `DefaultMembershipPollInterval`
 rather than streaming, so it works over unary-only REST.
 
+## Forming a cluster from the SDK node
+
+`node.NewClusteredNode(ctx, cfg, members, serverOpts, node.WithRaftMTLS(mtls))`
+takes the other replicas' Raft identities in `cfg.Raft.MemberIdentities`
+(`sdk.DaemonRaftConfig.MemberIdentities`), a comma-separated
+`replicaID=spki:<hex>` list; the local entry is derived from `mtls.Cert`.
+`node.MemberIdentityFromPEM(certPEM)` computes a peer's identity from its
+certificate. Every refusal is a `*node.HostCreateError`: it wraps a
+`*node.ConfigError` for `raft.member_identities` (itself unwrapping to the
+`pkg/cluster` error) when the configuration is malformed or contradicts the
+certificate, and `*quicraft.InvalidMemberError` when a member is left out.
+
+## Adding a replica
+
+`AdminClient.AddMember(ctx, shardID, replicaID, raftAddr, identity)` and
+`Cluster().AddReplica(ctx, shardID, replicaID, raftAddr, identity)` take the
+replica's member identity, or `""` to use the one go-quicraft already committed
+for the replica or its host. Every transport carries it: the gRPC, Unix and
+QUIC `AddMemberRequest.member_identity` field, the REST body's `identity`, the
+MCP `qrdb_add_member` tool's `identity` argument, and the embedded transport's
+`AddMemberRequest.Identity`. The refusals are typed and coded alike on every
+transport; see [engineering.md](engineering.md#error-semantics). Start shard
+takes no identities: it resolves every other member's from the committed
+memberships, as a dedicated database's founders do, and answers the same typed
+refusals with the same codes (REST no longer answers them `500`).
+
 ## Schemas
 
-`POST /membership/add`: shard ID, replica ID, Raft address.
+`POST /membership/add`: shard ID, replica ID, Raft address, optional `identity`.
 `POST /membership/remove`: shard ID, replica ID.
 
 `ShardStatsResponse`:

@@ -9,6 +9,7 @@
 package encfs_test
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -60,7 +61,7 @@ func bootBarrier(t *testing.T, sealDir string) (*seal.StorageBarrier, *pebblesto
 	}
 
 	ctx := context.Background()
-	creds := seal.Credentials{Secret: restartTestPassphrase}
+	creds := seal.MustCredentials(bytes.Clone(restartTestPassphrase)) // MustCredentials wipes its argument
 
 	// Mirror attemptAutoUnseal: try Initialize first (first boot), fall back
 	// to Unseal when the root key is already persisted (every later boot).

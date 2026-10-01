@@ -470,3 +470,102 @@ func TestBarrierBackend_Close(t *testing.T) {
 		t.Fatalf("Close: unexpected error: %v", err)
 	}
 }
+
+// TestBarrierBackend_CompareAndDelete covers the guarded delete through the
+// barrier, which had no test.
+//
+// The comparison it performs is on PLAINTEXT: the caller supplies the value it
+// believes is stored, and the backend decrypts what is there before comparing.
+// A backend that compared ciphertext instead would be wrong in a way nothing
+// else would catch -- under a nondeterministic AEAD the same plaintext encrypts
+// to a different ciphertext every time, so every guarded delete would decline
+// even when the caller's expectation was exactly right.
+func TestBarrierBackend_CompareAndDelete(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("deletes when the plaintext matches", func(t *testing.T) {
+		b := newBarrierTestBackend(t, &xorBarrier{mask: 0xAA})
+		key, value := []byte("k"), []byte("v1")
+		if err := b.Put(ctx, key, value); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		ok, err := b.CompareAndDelete(ctx, key, value)
+		if err != nil {
+			t.Fatalf("CompareAndDelete: %v", err)
+		}
+		if !ok {
+			t.Fatal("CompareAndDelete declined a matching plaintext")
+		}
+		got, err := b.Get(ctx, key)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if got != nil {
+			t.Errorf("key survived the delete: %q", got)
+		}
+	})
+
+	t.Run("declines when the plaintext differs, leaving the value intact", func(t *testing.T) {
+		b := newBarrierTestBackend(t, &xorBarrier{mask: 0xAA})
+		key := []byte("k")
+		if err := b.Put(ctx, key, []byte("actual")); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		ok, err := b.CompareAndDelete(ctx, key, []byte("stale"))
+		if err != nil {
+			t.Fatalf("CompareAndDelete: %v", err)
+		}
+		if ok {
+			t.Fatal("CompareAndDelete deleted on a stale expected value")
+		}
+		got, err := b.Get(ctx, key)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if string(got) != "actual" {
+			t.Errorf("a declined delete must not write: value = %q, want %q", got, "actual")
+		}
+	})
+
+	t.Run("reports false for an absent key rather than an error", func(t *testing.T) {
+		b := newBarrierTestBackend(t, &xorBarrier{mask: 0xAA})
+		ok, err := b.CompareAndDelete(ctx, []byte("missing"), []byte("v"))
+		if err != nil {
+			t.Fatalf("CompareAndDelete on an absent key: %v", err)
+		}
+		if ok {
+			t.Fatal("CompareAndDelete reported a delete of an absent key")
+		}
+	})
+
+	// A sealed barrier must refuse BEFORE touching storage: the guarded delete
+	// cannot compare plaintext it is unable to decrypt, and answering "false"
+	// would be indistinguishable from "your expected value was stale".
+	t.Run("refuses while sealed", func(t *testing.T) {
+		barrier := &xorBarrier{mask: 0xAA}
+		b := newBarrierTestBackend(t, barrier)
+		key, value := []byte("k"), []byte("v1")
+		if err := b.Put(ctx, key, value); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		barrier.sealed = true
+
+		ok, err := b.CompareAndDelete(ctx, key, value)
+		if ok {
+			t.Fatal("CompareAndDelete succeeded while sealed")
+		}
+		var sealed *SealedError
+		if !errors.As(err, &sealed) {
+			t.Fatalf("error = %v, want *SealedError", err)
+		}
+
+		barrier.sealed = false
+		got, err := b.Get(ctx, key)
+		if err != nil {
+			t.Fatalf("Get after unseal: %v", err)
+		}
+		if string(got) != "v1" {
+			t.Errorf("a refusal while sealed must not delete: value = %q, want %q", got, "v1")
+		}
+	})
+}

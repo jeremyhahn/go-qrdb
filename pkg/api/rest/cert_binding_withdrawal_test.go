@@ -25,7 +25,9 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -150,4 +152,100 @@ func TestHandleRemoveCertBinding_ConcurrentUpdateIs409(t *testing.T) {
 	srv.dispatch(rec, req)
 
 	assertStatus(t, rec, http.StatusConflict)
+}
+
+// TestHandleAddCertBinding_HijackAttemptIs409 pins the status of the store's
+// most security-relevant refusal: a thumbprint already bound to ANOTHER user
+// in the tenant is a 409, not a 500. Before go-qrdb#536 it fell through to the
+// StoreError arm, so an operator investigating a failed enrolment read "the
+// server broke" instead of the one fact that matters — which user holds the
+// thumbprint — and the body must carry that fact.
+func TestHandleAddCertBinding_HijackAttemptIs409(t *testing.T) {
+	svc := &mockUserService{
+		addCertBindingFn: func(_ context.Context, userID uint64, tp string, _ int64) (*user.User, error) {
+			return nil, &user.CertBindingConflictError{Thumbprint: tp, BoundUserID: 7, TargetUserID: userID}
+		},
+	}
+	srv := newAuthServer(svc, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/users/1001/cert-bindings",
+		strings.NewReader(`{"thumbprint":"AAAA"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusConflict)
+	if body := rec.Body.String(); !strings.Contains(body, "already bound to user 7") {
+		t.Fatalf("body must name the user that holds the thumbprint, got %q", body)
+	}
+}
+
+// TestUserVerbs_BootstrapAdminLockoutIs409 (go-qrdb#517): the store's refusal
+// of a change that would lock the bootstrap admin out is a 409 carrying its
+// message on every user verb that can make one, never a success or a 500.
+func TestUserVerbs_BootstrapAdminLockoutIs409(t *testing.T) {
+	lockout := func(reason user.AdminLockoutReason) error {
+		return &user.BootstrapAdminLockoutError{UserID: 1001, Reason: reason}
+	}
+	cases := []struct {
+		name   string
+		svc    *mockUserService
+		method string
+		path   string
+		body   string
+		want   string
+	}{
+		{"withdraw the last binding", &mockUserService{
+			removeCertBindingFn: func(context.Context, uint64, string) (*user.User, error) {
+				return nil, lockout(user.AdminLockoutNoLiveBinding)
+			},
+		}, http.MethodDelete, "/users/1001/cert-bindings/AAAA", "", "enrol a replacement key first"},
+		{"delete the admin", &mockUserService{
+			deleteUserFn: func(context.Context, uint64) error { return lockout(user.AdminLockoutDelete) },
+		}, http.MethodDelete, "/users/1001", "", "cannot be deleted"},
+		{"disable the admin", &mockUserService{
+			disableUserFn: func(context.Context, uint64) error { return lockout(user.AdminLockoutLifecycle) },
+		}, http.MethodPost, "/users/1001/disable", "", "state that can log in"},
+		{"rename the admin", &mockUserService{
+			updateUserFn: func(context.Context, *user.UpdateUserRequest) (*user.User, error) {
+				return nil, lockout(user.AdminLockoutRename)
+			},
+		}, http.MethodPut, "/users/1001", `{"username":"root"}`, "cannot be renamed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newAuthServer(tc.svc, nil, nil)
+			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+			if tc.body != "" {
+				req.Header.Set("Content-Type", "application/json")
+			}
+			rec := httptest.NewRecorder()
+			srv.dispatch(rec, req)
+			assertStatus(t, rec, http.StatusConflict)
+			if !strings.Contains(rec.Body.String(), tc.want) {
+				t.Fatalf("body %q does not carry the refusal %q", rec.Body.String(), tc.want)
+			}
+		})
+	}
+}
+
+// TestHandleAddCertBinding_PastExpiryIs400 (go-qrdb#517): an enrolment whose
+// expiry has already passed is the caller's bad field value, not a server
+// fault.
+func TestHandleAddCertBinding_PastExpiryIs400(t *testing.T) {
+	svc := &mockUserService{
+		addCertBindingFn: func(_ context.Context, _ uint64, tp string, notAfter int64) (*user.User, error) {
+			return nil, &user.CertBindingExpiredError{Thumbprint: tp, NotAfter: time.Unix(notAfter, 0).UTC()}
+		},
+	}
+	srv := newAuthServer(svc, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/users/1001/cert-bindings",
+		strings.NewReader(`{"thumbprint":"AAAA","not_after_unix":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+	assertStatus(t, rec, http.StatusBadRequest)
+	if !strings.Contains(rec.Body.String(), "not in the future") {
+		t.Fatalf("body %q does not carry the refusal", rec.Body.String())
+	}
 }

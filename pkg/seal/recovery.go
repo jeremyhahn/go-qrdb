@@ -314,11 +314,12 @@ func (r *recoveryStrategy) UnsealRootKey(_ context.Context, _ *SealedRootKey, _ 
 	// re-sealed the instant the buffer is destroyed.
 	//
 	// The copy runs inside a COORDINATED borrow (go-qrdb#74): the earlier
-	// Size-then-Bytes pair took the purge lock twice with a gap between, and a
-	// process-wide memguard purge landing in that gap would have handed
-	// Barrier.Unseal a correctly sized run of zeros. secure.CopyOut holds one
-	// borrow across the copy and refuses an empty source, so a purged enclave
-	// fails the unseal instead of silently unsealing with nothing.
+	// Size-then-Bytes pair took two separate borrows with a gap between, and a
+	// concurrent destroy (a shutdown enclave.WipeAll) landing in that gap would
+	// have handed Barrier.Unseal a correctly sized run of zeros. secure.CopyOut
+	// holds one borrow across the copy and refuses an empty source, so a
+	// destroyed enclave fails the unseal instead of silently unsealing with
+	// nothing.
 	//
 	// Traced callees: CopyOut's callback is make + copy. Nothing here reaches a
 	// SealingStrategy or the store, which is what makes THIS site convertible

@@ -17,6 +17,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -197,34 +198,74 @@ func TestAuthFactorService_ChallengeFactor_ChallengeFails(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// authfactor_service.go – VerifyFactor: expired challenge (line 157-159)
-// We need a challenge that's expired. authfactors.Challenge.Expired() checks
-// ExpiresAt. Let's store an expired challenge in the svc.challenges map.
+// authfactor_service.go – VerifyFactor: expired challenge
+//
+// A skip used to sit here claiming the path "requires manipulating internal
+// state". It does not: a factor decides its own challenge TTL, the signing
+// mock's is a field, and a negative TTL issues a challenge that is already
+// past its deadline — the ordinary public flow reaches the branch
+// (go-qrdb#529).
 // ---------------------------------------------------------------------------
 
-func TestAuthFactorService_VerifyFactor_ExpiredChallenge_v2(t *testing.T) {
-	svc, _ := newPIVAuthFactorService(t)
+// acceptingFactor is a factor whose Verify accepts ANY response — the factor
+// that forgot to check the deadline. It exists so the test below discriminates
+// the SERVICE's expiry check from the factor's: the signing mock refuses an
+// expired challenge itself, so against it the service's branch is
+// indistinguishable from the factor's and a test could pass with the branch
+// deleted. The service checks first precisely so a factor like this one is
+// still safe.
+type acceptingFactor struct{ *signingMockFactor }
+
+func (f *acceptingFactor) Verify(_ context.Context, _ *authfactors.Challenge, _ *authfactors.Response) error {
+	return nil
+}
+
+// A response to a challenge past its deadline is refused by the SERVICE with
+// ChallengeExpiredError — before the factor sees it, and even when the factor
+// would accept it — and the challenge is consumed by the refusal so it cannot
+// be retried.
+func TestAuthFactorService_VerifyFactor_ExpiredChallenge(t *testing.T) {
+	mock := newSigningMockFactor(t, "piv")
+	mock.ttl = -1 // every challenge this factor issues expired a second ago
+	f := &acceptingFactor{signingMockFactor: mock}
+	svc, err := NewAuthFactorService(AuthFactorServiceConfig{
+		Factors: []authfactors.Factor{f},
+		KV:      newAFMockKV(),
+	})
+	if err != nil {
+		t.Fatalf("NewAuthFactorService: %v", err)
+	}
 	ctx := context.Background()
 
-	// Directly inject an expired challenge into the service's challenges map.
-	// Since challenges is an unexported field, we need to do it through the
-	// normal flow: enroll, challenge, then wait for expiry — or use a past time.
-	// Since we can't modify the Challenge directly, we'll use reflection
-	// or just accept this as not coverable via normal API.
-	//
-	// Actually — if challenge.ExpiresAt is in the past, Expired() returns true.
-	// But we can't easily set ExpiresAt to the past without modifying the
-	// authfactors.Challenge struct directly.
-	//
-	// Best approach: check the svc.challenges map is accessible.
-	// It is: svc.(*authFactorService).challenges — but that requires type assertion.
+	enrollment, err := svc.EnrollFactor(ctx, "piv", "custodian_expired", authfactors.EnrollParams{})
+	if err != nil {
+		t.Fatalf("EnrollFactor: %v", err)
+	}
+	challenge, err := svc.ChallengeFactor(ctx, enrollment.EnrollmentID)
+	if err != nil {
+		t.Fatalf("ChallengeFactor: %v", err)
+	}
+	if !challenge.Expired() {
+		t.Fatalf("fixture: the challenge is not expired (ExpiresAt %v); the test would prove nothing", challenge.ExpiresAt)
+	}
 
-	// Alternative: make a factor whose Challenge TTL is very short (0 duration).
-	// The signingMockFactor doesn't support configuring TTL.
-	// Just verify the path is exercisable conceptually.
-	_ = svc
-	_ = ctx
-	t.Skip("expired challenge path requires manipulating internal state")
+	// The factor would accept this, so the refusal can only be the service's.
+	response := &authfactors.Response{Value: []byte("anything")}
+	err = svc.VerifyFactor(ctx, "piv", challenge.ChallengeID, response)
+	var expired *authfactors.ChallengeExpiredError
+	if !errors.As(err, &expired) {
+		t.Fatalf("VerifyFactor = %v, want *authfactors.ChallengeExpiredError from the service", err)
+	}
+	if expired.ChallengeID != challenge.ChallengeID {
+		t.Errorf("error names challenge %q, want %q", expired.ChallengeID, challenge.ChallengeID)
+	}
+
+	// Consumed: a second attempt no longer finds the challenge at all.
+	err = svc.VerifyFactor(ctx, "piv", challenge.ChallengeID, response)
+	var notFound *authfactors.EnrollmentNotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("second VerifyFactor = %v, want *authfactors.EnrollmentNotFoundError (challenge consumed)", err)
+	}
 }
 
 // ---------------------------------------------------------------------------

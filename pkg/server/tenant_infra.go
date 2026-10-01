@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"time"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
@@ -37,22 +36,9 @@ import (
 // other error — and the transient persisting past the deadline — is
 // returned to abort boot, preserving fail-closed behavior.
 func listTenantsWhenReady(ctx context.Context, tenantSvc tenant.TenantServicer) ([]tenant.TenantInfo, error) {
-	const (
-		readyDeadline = 15 * time.Second
-		retryInterval = 100 * time.Millisecond
-	)
-	deadline := time.Now().Add(readyDeadline)
-	for {
-		tenants, err := tenantSvc.ListTenants(ctx)
-		if err == nil || !errors.Is(err, quicraft.ErrReadIndexNotReady) || time.Now().After(deadline) {
-			return tenants, err
-		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(retryInterval):
-		}
-	}
+	return whenReadIndexReady(ctx, func() ([]tenant.TenantInfo, error) {
+		return tenantSvc.ListTenants(ctx)
+	})
 }
 
 // TenantInfra is the assembled per-tenant isolation stack for one node. All
@@ -90,6 +76,19 @@ type TenantInfraConfig struct {
 	// isolation type, auto-unseal flag). Its presence AND BarrierReg AND
 	// VolumePool gate the IsolationVolume host registry build.
 	TenantSvc tenant.TenantServicer
+
+	// TenantLookup is the tenant-metadata lookup the LONG-LIVED registries
+	// consult at use time. TenantSvc is read only by the one-shot boot passes
+	// inside BuildTenantInfra; the TenantHostRegistry built here holds its
+	// lookup for the life of the node, which in a composition that rebuilds
+	// its service graph in place (sdk/go/node's system-scope encryption
+	// migration) is longer than any one tenant service lives. Such a
+	// composition passes a lookup that resolves the CURRENT service on every
+	// call; one whose tenant service is never swapped (the daemon) passes the
+	// service itself. Required whenever the IsolationVolume registry is built;
+	// omitting it returns TenantInfraConfigError rather than silently capturing
+	// TenantSvc (go-qrdb#383).
+	TenantLookup TenantLookup
 
 	// VolumePool is the per-tenant storage subsystem. Its presence (non-nil)
 	// gates the entire IsolationVolume + IsolationRaft build.
@@ -150,6 +149,15 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 		logger = slog.Default()
 	}
 
+	// Validate the configuration contract before any side effect: the barrier
+	// restore below is not undone by an error return.
+	if cfg.BarrierReg != nil && cfg.TenantSvc != nil && cfg.VolumePool != nil && cfg.TenantLookup == nil {
+		return nil, &TenantInfraConfigError{
+			Field:   "TenantLookup",
+			Message: "required when the IsolationVolume registry is built; the registry outlives a single tenant service",
+		}
+	}
+
 	// Wire the tenant-barrier crash recoverer BEFORE any barrier is restored:
 	// RegisterVolumeTenant runs it over the tenant's freshly-opened backend so
 	// a migration interrupted in the swap→adopt commit window is rolled
@@ -172,6 +180,17 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 	// tenants) unseals each barrier using the node-local DataRoot recorded by
 	// RegisterVolumeTenant on a prior run. Failures are logged and deferred to
 	// the reconciler rather than aborting.
+	//
+	// Retired tenants are reclaimed FIRST: RestoreVolumeTenants restores a
+	// barrier from any tenant-root record it finds, and a node that missed a
+	// delete still holds the retired tenant's record and directories. The
+	// reconcile releases the barrier, removes the directories and then drops
+	// the record -- judged by the tombstone alone, never a missing
+	// placement or tenant record, and never touching a directory a live
+	// tenant claims. Nothing is running yet, so there is no runtime to stop.
+	if cfg.BarrierReg != nil && cfg.TenantSvc != nil {
+		reconcileDeletedTenantsAtBoot(cfg.Ctx, cfg.TenantSvc, logger)
+	}
 	if cfg.BarrierReg != nil && cfg.VolumePool != nil {
 		if err := cfg.BarrierReg.RestoreVolumeTenants(cfg.Ctx); err != nil {
 			logger.Warn("start: RestoreVolumeTenants failed; some tenant barriers may be deferred",
@@ -185,7 +204,7 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 	// whose barrier is locally available so persisted data is reachable after
 	// a restart; tenants with no local barrier are deferred to lazy attach.
 	if cfg.BarrierReg != nil && cfg.TenantSvc != nil && cfg.VolumePool != nil {
-		ti.Hosts = NewTenantHostRegistryFromServicer(cfg.BarrierReg, cfg.TenantSvc, logger)
+		ti.Hosts = NewTenantHostRegistryFromLookup(cfg.BarrierReg, cfg.TenantLookup, logger)
 		if err := reattachVolumeTenants(cfg.Ctx, cfg.TenantSvc, cfg.BarrierReg, ti.Hosts, logger); err != nil {
 			_ = ti.Hosts.CloseAll()
 			return nil, err
@@ -245,6 +264,12 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 				WithPromoter(newRaftPromoter(cfg.Host)),
 			)
 		}
+	}
+
+	// The on-demand reconcile must stop a retired tenant's runtimes before it
+	// removes their directories; the runtimes exist from here on.
+	if cfg.TenantSvc != nil && (ti.Hosts != nil || ti.Raft != nil) {
+		WireTenantRuntimeCloser(cfg.TenantSvc, ti.Hosts, ti.Raft)
 	}
 
 	return ti, nil

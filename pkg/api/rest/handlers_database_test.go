@@ -25,6 +25,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -227,7 +228,7 @@ type credentialedMockDatabaseService struct {
 	*mockDatabaseService
 
 	gotCfg     database.DatabaseConfig
-	gotCreds   seal.Credentials
+	gotSecret  []byte // snapshot taken during the call; the handler destroys the credential after
 	calledWith string
 	err        error
 }
@@ -240,7 +241,7 @@ func newCredentialedMockDatabaseService() *credentialedMockDatabaseService {
 var _ service.DatabaseCredentialCreator = (*credentialedMockDatabaseService)(nil)
 
 func (m *credentialedMockDatabaseService) CreateWithCredentials(_ context.Context, cfg database.DatabaseConfig, creds seal.Credentials) (*database.DatabaseInfo, error) {
-	m.gotCfg, m.gotCreds, m.calledWith = cfg, creds, "createWithCredentials"
+	m.gotCfg, m.gotSecret, m.calledWith = cfg, sealtest.Snapshot(creds), "createWithCredentials"
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -280,8 +281,8 @@ func TestHandleCreateDatabase_BarrierSecretReachesCredentialedCreator(t *testing
 	if dbSvc.gotCfg.Barrier == nil || !dbSvc.gotCfg.Barrier.Enabled {
 		t.Fatal("Barrier.Enabled = false, want true")
 	}
-	if string(dbSvc.gotCreds.Secret) != "correct-horse-battery-staple" {
-		t.Errorf("Credentials.Secret = %q, want %q", dbSvc.gotCreds.Secret, "correct-horse-battery-staple")
+	if string(dbSvc.gotSecret) != "correct-horse-battery-staple" {
+		t.Errorf("Credentials.Secret = %q, want %q", dbSvc.gotSecret, "correct-horse-battery-staple")
 	}
 
 	// The response body must never echo the secret back to the caller.
@@ -314,8 +315,8 @@ func TestHandleCreateDatabase_NoBarrier_EmptyCredentials(t *testing.T) {
 	if dbSvc.gotCfg.Barrier != nil {
 		t.Errorf("Barrier = %+v, want nil", dbSvc.gotCfg.Barrier)
 	}
-	if len(dbSvc.gotCreds.Secret) != 0 {
-		t.Errorf("Credentials.Secret = %q, want empty", dbSvc.gotCreds.Secret)
+	if len(dbSvc.gotSecret) != 0 {
+		t.Errorf("Credentials.Secret = %q, want empty", dbSvc.gotSecret)
 	}
 }
 

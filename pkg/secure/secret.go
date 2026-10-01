@@ -17,12 +17,13 @@ package secure
 import (
 	"sync/atomic"
 
-	"github.com/awnumar/memguard"
+	"github.com/jeremyhahn/go-enclave"
 )
 
 // Secret holds long-lived sensitive material at rest, encrypted inside a
-// memguard.Enclave. The plaintext is only materialized transiently via
-// Open, which returns a Buffer the caller is responsible for destroying.
+// go-enclave SealedEnclave (AES-256-GCM under the process Sealer). The
+// plaintext is only materialized transiently via Open, which returns a
+// Buffer the caller is responsible for destroying.
 //
 // Secret is safe to pass between goroutines — the underlying enclave
 // pointer is mutated only through atomic swap on Destroy, which is
@@ -31,103 +32,140 @@ import (
 //
 // The zero value is unusable; callers must use NewSecret or
 // NewSecretFromBuffer.
+//
+// # Why this is not raw memguard (go-qrdb#114, go-qrdb#553)
+//
+// This type used to wrap memguard.Enclave, sealed with NaCl secretbox and
+// opened through a process-wide purge lock. It now wraps
+// enclave.SealedEnclave: sealing is AES-256-GCM, opening is admitted against
+// the same process-wide locked-memory budget every Buffer uses
+// (enclave.ProcessAllocator), and a failed admission or a failed mlock
+// returns a typed error instead of purging the process.
 type Secret struct {
-	// enclave is an atomic.Pointer[memguard.Enclave]. Using atomic.Pointer
-	// rather than atomic.Value gives lock-free, type-safe swap + load
-	// without boxing. Destroy atomically swaps in nil.
-	enclave atomic.Pointer[memguard.Enclave]
+	// enclave is an atomic.Pointer[enclave.SealedEnclave]. Using
+	// atomic.Pointer rather than atomic.Value gives lock-free, type-safe swap
+	// + load without boxing. Destroy atomically swaps in nil.
+	enclave atomic.Pointer[enclave.SealedEnclave]
 }
 
-// NewSecret seals src into a memguard enclave and returns a new Secret.
-// On return, src is wiped — the caller must not reuse it. A nil or empty
-// src returns (nil, *InvalidSizeError).
+// newSealed indirects enclave.NewSealed so a test can wrap it with an
+// injected delay: enclave.NewSealed itself completes in low microseconds, far
+// too fast to reliably race enclave.WipeAll against without instrumentation,
+// so a test proving NewSecretFromBuffer's borrow is actually load-bearing
+// (rather than merely absent on a path too fast to hit) needs a seam here.
+// Production behavior is unchanged — this is a direct copy of the function
+// value.
+var newSealed = enclave.NewSealed
+
+// NewSecret seals src into a go-enclave sealed enclave and returns a new
+// Secret. On return, src is wiped — the caller must not reuse it, on every
+// return path including failure. A nil or empty src returns
+// (nil, *InvalidSizeError).
 func NewSecret(src []byte) (*Secret, error) {
 	if len(src) == 0 {
 		return nil, &InvalidSizeError{Size: len(src)}
 	}
-	// Purge-class: sealing allocates, and a memguard allocation failure purges
-	// every live enclave in the process. See purgeMu.
-	lockPurge("NewSecret")
-	defer unlockPurge()
+	checkNoBorrow("NewSecret")
+	// enclave.NewSealed takes ownership of src and wipes it on every path,
+	// including failure.
+	sealed, err := newSealed(src)
+	if err != nil {
+		return nil, err
+	}
 	s := &Secret{}
-	// memguard.NewEnclave copies src into an enclave and wipes the source.
-	enc := memguard.NewEnclave(src)
-	s.enclave.Store(enc)
+	s.enclave.Store(sealed)
 	return s, nil
 }
 
-// NewSecretFromBuffer seals buf into a new Secret, consuming buf. On
-// success, buf is destroyed. Returns (nil, *NilBufferError) if buf is
-// nil or already destroyed.
+// NewSecretFromBuffer seals buf into a new Secret, consuming buf: buf is
+// destroyed on every return path once it has passed the nil / destroyed /
+// zero-value checks, which return (nil, *NilBufferError) and leave it alone.
+//
+// The plaintext is sealed straight out of buf's own locked pages. There is no
+// intermediate plaintext copy: enclave.NewSealed reads buf's pages inside
+// buf's own go-enclave borrow and wipes them as it takes ownership, and buf is
+// then destroyed. Because nothing here is admitted against the process
+// locked-memory budget (sealing is not, as of go-enclave v0.6.0-alpha), an
+// exhausted budget cannot make this fail.
+//
+// The borrow is held for the whole sealing call, not released after a bare
+// read: buf is on go-enclave's shutdown ledger, so a concurrent
+// enclave.WipeAll needs no reference to it to unmap its pages, and an
+// unguarded alias handed to NewSealed could fault mid-read. Held, a racing
+// WipeAll skips buf instead. NewSealed allocates its own, different enclave
+// for the key it seals under; go-enclave gives every enclave an independent
+// lock, so that nesting cannot deadlock.
+//
+// A sealing failure (enclave.ErrSealerWiped, enclave.ErrLockedMemoryUnavailable
+// for the key's pages, …) is returned unwrapped, and buf is consumed all the
+// same: NewSealed has already wiped the pages it was handed.
 func NewSecretFromBuffer(buf *Buffer) (*Secret, error) {
 	if buf == nil {
 		return nil, &NilBufferError{}
 	}
-	// Purge-class: Seal both allocates the enclave and DESTROYS the buffer, and
-	// both halves can purge. Takes purgeMu directly rather than going through
-	// Buffer.Destroy, which would re-enter the lock. See purgeMu.
-	lockPurge("NewSecretFromBuffer")
-	defer unlockPurge()
-	if buf.destroyed.Load() || buf.buf == nil {
+	checkNoBorrow("NewSecretFromBuffer")
+	if buf.destroyed.Load() || buf.enc.Size() == 0 {
 		return nil, &NilBufferError{}
 	}
-	// memguard.LockedBuffer.Seal consumes the buffer and produces an
-	// enclave; the LockedBuffer is destroyed as part of the seal.
-	enc := buf.buf.Seal()
-	// Mark our wrapper destroyed so repeated Destroy is a no-op and
-	// Bytes/Size return zero.
-	buf.destroyed.Store(true)
-	buf.buf = nil
+	defer buf.Destroy()
+
+	var sealed *enclave.SealedEnclave
+	var opened bool
+	withErr := buf.enc.WithBytes(func(plaintext []byte) error {
+		opened = true
+		var sealErr error
+		sealed, sealErr = newSealed(plaintext)
+		return sealErr
+	})
+	if withErr != nil {
+		if !opened {
+			// buf.enc.WithBytes refused before invoking fn: buf was destroyed
+			// or emptied (a racing Destroy or WipeAll) after the checks above.
+			return nil, &NilBufferError{}
+		}
+		return nil, withErr
+	}
 	s := &Secret{}
-	s.enclave.Store(enc)
+	s.enclave.Store(sealed)
 	return s, nil
 }
 
 // Open decrypts the sealed material into a new Buffer that the caller is
-// responsible for destroying. Returns (nil, *NilSecretError) if the
-// Secret has been destroyed or is a zero value. Wraps any underlying
-// memguard failure in *OpenError.
+// responsible for destroying, admitted against the process-wide
+// locked-memory budget. Returns (nil, *NilSecretError) if the Secret has
+// been destroyed or is a zero value. Wraps any underlying go-enclave failure
+// in *OpenError.
 func (s *Secret) Open() (*Buffer, error) {
 	if s == nil {
 		return nil, &NilSecretError{}
 	}
-	// Purge-class: Open ALLOCATES the LockedBuffer it returns, so it can purge
-	// on failure like any other allocation. See purgeMu.
-	lockPurge("Secret.Open")
-	defer unlockPurge()
-	enc := s.enclave.Load()
-	if enc == nil {
+	checkNoBorrow("Secret.Open")
+	sealed := s.enclave.Load()
+	if sealed == nil {
 		return nil, &NilSecretError{}
 	}
-	lb, err := enc.Open()
+	a, err := processAllocator()
 	if err != nil {
 		return nil, &OpenError{Err: err}
 	}
-	return &Buffer{buf: lb}, nil
+	enc, err := sealed.OpenWith(a)
+	if err != nil {
+		return nil, &OpenError{Err: err}
+	}
+	return &Buffer{enc: enc}, nil
 }
 
-// Destroy wipes the enclave and releases its resources. Safe to call
+// Destroy wipes the sealed enclave and releases its resources. Safe to call
 // multiple times — subsequent calls are no-ops. Safe to call on a nil
 // receiver. Concurrent Destroy calls are serialized via the atomic swap.
 func (s *Secret) Destroy() {
 	if s == nil {
 		return
 	}
-	// Purge-class on both halves: the Open allocates and the Destroy releases,
-	// and either can reach core.Panic. Raw memguard calls rather than
-	// Buffer.Destroy, so the lock is not re-entered. See purgeMu.
-	lockPurge("Secret.Destroy")
-	defer unlockPurge()
-	enc := s.enclave.Swap(nil)
-	if enc == nil {
+	checkNoBorrow("Secret.Destroy")
+	sealed := s.enclave.Swap(nil)
+	if sealed == nil {
 		return
 	}
-	// memguard.Enclave has no direct Destroy — the canonical way to
-	// actively zero it is to Open into a LockedBuffer and destroy that
-	// buffer. If Open fails (e.g., the enclave was already reaped),
-	// we silently drop; the Swap above already cleared our reference.
-	lb, err := enc.Open()
-	if err == nil && lb != nil {
-		lb.Destroy()
-	}
+	sealed.Destroy()
 }

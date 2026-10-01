@@ -16,7 +16,6 @@ package service
 
 import (
 	"context"
-	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -35,7 +34,7 @@ import (
 func TestCollectionService_CreateCollection_DeclaresDocumentKeyScope(t *testing.T) {
 	svc, idxSvc := newTestCollectionServiceWithIndex()
 
-	_, err := svc.CreateCollection(context.Background(), &CreateCollectionRequest{
+	info, err := svc.CreateCollection(context.Background(), &CreateCollectionRequest{
 		Name:     "users",
 		Database: "mydb",
 		Indexes: []IndexDefinition{
@@ -44,6 +43,7 @@ func TestCollectionService_CreateCollection_DeclaresDocumentKeyScope(t *testing.
 		},
 	})
 	require.NoError(t, err)
+	require.NotEmpty(t, info.Incarnation)
 
 	idxSvc.mu.Lock()
 	defer idxSvc.mu.Unlock()
@@ -51,7 +51,7 @@ func TestCollectionService_CreateCollection_DeclaresDocumentKeyScope(t *testing.
 	for _, name := range []string{"mydb.users.email", "mydb.users.city"} {
 		cfg, ok := idxSvc.indexes[name]
 		require.Truef(t, ok, "index %q was not created", name)
-		assert.Equal(t, "__col:mydb:users/", cfg.KeyPrefix,
+		assert.Equal(t, "__col:mydb:users#"+info.Incarnation+"/", cfg.KeyPrefix,
 			"index %q must be scoped to the collection's document keyspace", name)
 	}
 }
@@ -83,7 +83,7 @@ func TestCollectionService_CreateCollection_KeyScopeMatchesDocumentKeys(t *testi
 	cfg := idxSvc.indexes["mydb.users.email"]
 	idxSvc.mu.Unlock()
 
-	docKey := collectionDataEntityType("mydb", "users") + "/" + strconv.FormatUint(resp.ID, 10)
+	docKey := docKeyForTest(t, svc, "mydb", "users", resp.ID)
 	assert.Truef(t, len(cfg.KeyPrefix) > 0 && len(docKey) >= len(cfg.KeyPrefix) &&
 		docKey[:len(cfg.KeyPrefix)] == cfg.KeyPrefix,
 		"document key %q is not inside the declared index scope %q", docKey, cfg.KeyPrefix)

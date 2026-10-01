@@ -123,20 +123,6 @@ func generateCATLS(nodeURI ...string) (*TLSBundle, error) {
 	return tlsBundleFromMaterial(m)
 }
 
-// generateLeafFromCA parses concatenated CA certificate + CA private key
-// PEM bytes (e.g., from a bootstrap endpoint) and generates a node leaf
-// certificate signed by the CA. The returned TLSBundle is fully populated
-// including TLSConfig and CACertPool. nodeURI is an optional SPIFFE node URI
-// SAN (see generateNodeCert); callers that do not need the SAN omit the
-// argument.
-func generateLeafFromCA(bundlePEM []byte, nodeURI ...string) (*TLSBundle, error) {
-	m, err := clustertls.GenerateLeafFromCA(bundlePEM, nodeURI...)
-	if err != nil {
-		return nil, err
-	}
-	return tlsBundleFromMaterial(m)
-}
-
 // loadTLSFromDir attempts to load TLS certificate material from the
 // standard file names in dataDir: ca.pem, node-cert.pem, node-key.pem.
 // If all three files exist they are loaded via loadTLSFromFiles. If the

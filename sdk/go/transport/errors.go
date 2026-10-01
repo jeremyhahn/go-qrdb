@@ -583,22 +583,6 @@ func (e *BackupRestoreError) Unwrap() error {
 	return e.Err
 }
 
-// BackupVerifyError is returned when backup verification fails.
-type BackupVerifyError struct {
-	BackupID string
-	Err      error
-}
-
-// Error returns a human-readable description.
-func (e *BackupVerifyError) Error() string {
-	return "transport: backup verification failed for " + e.BackupID + ": " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *BackupVerifyError) Unwrap() error {
-	return e.Err
-}
-
 // BackupEmptyDestinationError is returned when a backup request has
 // an empty destination.
 type BackupEmptyDestinationError struct{}
@@ -676,21 +660,6 @@ func (e *RebalanceExecuteError) Error() string {
 
 // Unwrap returns the underlying error.
 func (e *RebalanceExecuteError) Unwrap() error {
-	return e.Err
-}
-
-// ImbalanceReportError is returned when generating an imbalance report fails.
-type ImbalanceReportError struct {
-	Err error
-}
-
-// Error returns a human-readable description.
-func (e *ImbalanceReportError) Error() string {
-	return "transport: get imbalance report failed: " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *ImbalanceReportError) Unwrap() error {
 	return e.Err
 }
 

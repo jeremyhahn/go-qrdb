@@ -345,8 +345,10 @@ func (s *Server) buildHandlers() {
 	s.handle("tenant.List", permission.TenantsList, s.handleTenantList)
 	s.handle("tenant.Update", permission.TenantsUpdate, s.handleTenantUpdate)
 	s.handle("tenant.Delete", permission.TenantsDelete, s.handleTenantDelete)
-	s.handle("tenant.UpdateQuotas", permission.TenantsUpdate, s.handleTenantUpdateQuotas)
+	s.handle("tenant.UpdateQuotas", permission.TenantsSetQuotas, s.handleTenantUpdateQuotas)
 	s.handle("tenant.UpdateEntitlements", permission.TenantsSetEntitlements, s.handleTenantUpdateEntitlements)
+	s.handle("tenant.ListDeleted", permission.TenantsListDeleted, s.handleTenantListDeleted)
+	s.handle("tenant.ReconcileDeleted", permission.TenantsReconcileDeleted, s.handleTenantReconcileDeleted)
 
 	// Credential management
 	credOn := s.credentialSvc != nil

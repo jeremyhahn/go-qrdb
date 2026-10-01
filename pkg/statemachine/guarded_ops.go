@@ -34,7 +34,7 @@ import (
 // both pkg/engine engines dispatch 66 and 67; none of the four state machines
 // in this package did, so a node on any sm_type served by this package —
 // memory, standard, concurrent, fast, disk, highperf, regular, and the
-// mvcc-fast type cmd/qrdbd registers over FastStateMachine — refused an
+// since-removed mvcc-fast type over FastStateMachine — refused an
 // ordinary authorized CompareAndDelete with "statemachine: unknown opcode: 66"
 // and CompareAndSwap with 67. Measured on this branch before the fix, on both
 // FastStateMachine and KVStateMachine.
@@ -153,6 +153,9 @@ func (k *KVStateMachine) handleCompareAndDelete(payload []byte, revision uint64)
 	if err != nil {
 		return sm.Result{}, &IncompleteDataError{Reason: "compare_and_delete: " + err.Error()}
 	}
+	if kerr := validateClientKey("compare_and_delete", key); kerr != nil {
+		return sm.Result{}, kerr
+	}
 
 	current, gerr := k.backend.Get(key)
 	if gerr != nil {
@@ -186,6 +189,9 @@ func (k *KVStateMachine) handleCompareAndSwap(payload []byte, revision uint64) (
 	key, expected, next, err := protocol.DecodeCompareAndSwap(payload)
 	if err != nil {
 		return sm.Result{}, &IncompleteDataError{Reason: "compare_and_swap: " + err.Error()}
+	}
+	if kerr := validateClientKey("compare_and_swap", key); kerr != nil {
+		return sm.Result{}, kerr
 	}
 
 	current, gerr := k.backend.Get(key)
@@ -222,6 +228,9 @@ func (r *RegularStateMachine) handleCompareAndDelete(payload []byte, revision ui
 	if err != nil {
 		return sm.Result{}, &IncompleteDataError{Reason: "compare_and_delete: " + err.Error()}
 	}
+	if kerr := validateClientKey("compare_and_delete", key); kerr != nil {
+		return sm.Result{}, kerr
+	}
 	k := string(key)
 
 	r.mu.Lock()
@@ -249,6 +258,9 @@ func (r *RegularStateMachine) handleCompareAndSwap(payload []byte, revision uint
 	key, expected, next, err := protocol.DecodeCompareAndSwap(payload)
 	if err != nil {
 		return sm.Result{}, &IncompleteDataError{Reason: "compare_and_swap: " + err.Error()}
+	}
+	if kerr := validateClientKey("compare_and_swap", key); kerr != nil {
+		return sm.Result{}, kerr
 	}
 	k := string(key)
 

@@ -20,8 +20,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -914,6 +917,64 @@ func TestStartEmbedded_PebbleRestart_NoLockConflict(t *testing.T) {
 	}
 	if err := esb.StopEmbedded(); err != nil {
 		t.Fatalf("second StopEmbedded: %v", err)
+	}
+}
+
+// TestStartEmbedded_FailedBarrierInit_DoesNotLogSealDisabled reproduces the
+// go-qrdb#550 review finding: a seal barrier that was REQUESTED (SealConfig
+// names a real strategy) but fails to CONSTRUCT (here, an invalid Shamir
+// threshold) must not be reported by lifecycle.BuildServices as an operator's
+// "seal.enabled: false" decision. StartEmbedded tolerates the construction
+// failure and continues with tenant/ceremony services disabled, logging its
+// own "seal barrier unavailable" WARN through b.logger; this test proves that
+// continuation does NOT also emit the disabled-at-rest warning, which is
+// reserved for a deployment that never asked for a barrier at all (this
+// composer, per initEmbeddedBarrier's doc comment, has no such state -- it
+// always constructs at least a none-strategy barrier on success).
+//
+// b.logger and lifecycle.BuildServices' Logger: slog.Default() are two
+// independent loggers in production (bindings_server.go does not thread one
+// through the other), so the test points BOTH at the same handler: b.logger
+// via logger.NewWithHandler, and the process-wide slog default via
+// slog.SetDefault (restored on cleanup). Swapping the global default is safe
+// here because this test is not parallel and Go runs every non-parallel
+// top-level test to completion before any parallel batch in the package
+// begins.
+func TestStartEmbedded_FailedBarrierInit_DoesNotLogSealDisabled(t *testing.T) {
+	var buf bytes.Buffer
+	handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})
+
+	prevDefault := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	t.Cleanup(func() { slog.SetDefault(prevDefault) })
+
+	log, err := logger.NewWithHandler(handler, logger.LogConfig{Level: "warn", Component: "test"})
+	if err != nil {
+		t.Fatalf("logger.NewWithHandler: %v", err)
+	}
+	conn := NewConnectionBinding(log)
+	esb := NewEmbeddedServerBinding(log, conn, NewSQLBinding(log, conn))
+
+	cfg := &EmbeddedConfig{
+		StorageBackend: "memory",
+		DataDir:        t.TempDir(),
+		RaftEnabled:    false,
+		// Threshold (1) < 2 fails seal.NewShamirStrategy's validation inside
+		// initEmbeddedBarrier, so embeddedBarrier comes back nil with a
+		// non-nil error -- a construction failure, not a disable decision.
+		SealConfig: &SealConfig{Mode: "shamir", SharesRequired: 1, SharesTotal: 1},
+	}
+	if err := esb.StartEmbedded(cfg); err != nil {
+		t.Fatalf("StartEmbedded: %v", err)
+	}
+	defer func() { _ = esb.StopEmbedded() }()
+
+	out := buf.String()
+	if !strings.Contains(out, "embedded: seal barrier unavailable") {
+		t.Errorf("expected the barrier-construction-failure WARN, got: %s", out)
+	}
+	if strings.Contains(out, "qrdb/seal: seal disabled") {
+		t.Errorf("a failed barrier construction must not be reported as seal.enabled: false: %s", out)
 	}
 }
 

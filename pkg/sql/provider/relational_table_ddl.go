@@ -21,6 +21,7 @@ import (
 	sqle "github.com/dolthub/go-mysql-server/sql"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // Compile-time interface assertions.
@@ -211,8 +212,11 @@ func (t *RelationalTable) createIndex(ctx *sqle.Context, indexDef sqle.IndexDef,
 	})
 }
 
-// DropIndex removes a secondary index from the table's catalog entry and
-// deletes its physical entries under service.TableIndexPrefix.
+// DropIndex removes a secondary index from the table's catalog entry. Its
+// physical entries are not deleted inline: TableServicer.DropIndex publishes
+// a reclaim job for them in the same transaction, and the reclaim sweeper
+// deletes them once no statement that resolved the index can still be
+// reading them (go-qrdb#547).
 func (t *RelationalTable) DropIndex(ctx *sqle.Context, indexName string) error {
 	if t.tableSvc == nil {
 		return &TableServiceUnavailableError{Table: t.def.Name}
@@ -220,17 +224,16 @@ func (t *RelationalTable) DropIndex(ctx *sqle.Context, indexName string) error {
 	if err := flushPendingWriteSet(ctx); err != nil {
 		return err
 	}
-	if err := t.tableSvc.DropIndex(ctx, t.def.Database, t.def.Name, indexName); err != nil {
-		return err
-	}
-	prefix := service.TableIndexPrefix(t.def.Database, t.def.TableID, indexName)
-	return deleteAllByPrefix(ctx, t.kvSvc, prefix)
+	return t.tableSvc.DropIndex(tenant.WithTenantID(ctx, sessionTenantIDOf(ctx)), t.def.Database, t.def.Name, indexName)
 }
 
-// RenameIndex renames a secondary index, both in the catalog (as a
-// create-under-new-name-then-drop-old-name pair, since TableServicer has no
-// dedicated rename-index operation) and in its physical entries, which are
-// moved rather than rebuilt.
+// RenameIndex renames a secondary index. Its entries are keyed by the
+// index's incarnation (service.TableIndex.Incarnation), not its name, so
+// this is a single catalog compare-and-swap (TableServicer.RenameIndex): no
+// entry moves, nothing is copied or reclaimed, and DML running concurrently
+// keeps maintaining the same keyspace under either name. A later index
+// created under the old name gets an incarnation, and a keyspace, of its
+// own.
 func (t *RelationalTable) RenameIndex(ctx *sqle.Context, fromIndexName, toIndexName string) error {
 	if t.tableSvc == nil {
 		return &TableServiceUnavailableError{Table: t.def.Name}
@@ -238,35 +241,9 @@ func (t *RelationalTable) RenameIndex(ctx *sqle.Context, fromIndexName, toIndexN
 	if err := flushPendingWriteSet(ctx); err != nil {
 		return err
 	}
-	existing := findTableIndex(t.def, fromIndexName)
-	if existing == nil {
-		return &service.TableIndexNotFoundError{Database: t.def.Database, Table: t.def.Name, Index: fromIndexName}
-	}
-
-	renamed := *existing
-	renamed.Name = toIndexName
-	if err := t.tableSvc.CreateIndex(ctx, &service.CreateTableIndexRequest{
-		Database: t.def.Database, Table: t.def.Name, Index: renamed,
-	}); err != nil {
-		return err
-	}
-	if err := t.tableSvc.DropIndex(ctx, t.def.Database, t.def.Name, fromIndexName); err != nil {
-		return err
-	}
-
-	fromPrefix := service.TableIndexPrefix(t.def.Database, t.def.TableID, fromIndexName)
-	toPrefix := service.TableIndexPrefix(t.def.Database, t.def.TableID, toIndexName)
-	data, err := t.kvSvc.Scan(ctx, fromPrefix)
-	if err != nil {
-		return err
-	}
-	for key, value := range data {
-		suffix := key[len(fromPrefix):]
-		if err := t.kvSvc.Put(ctx, toPrefix+suffix, value); err != nil {
-			return err
-		}
-	}
-	return deleteAllByPrefix(ctx, t.kvSvc, fromPrefix)
+	return t.tableSvc.RenameIndex(ctx, &service.RenameTableIndexRequest{
+		Database: t.def.Database, Table: t.def.Name, From: fromIndexName, To: toIndexName,
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -289,7 +266,7 @@ func (t *RelationalTable) ShouldBuildIndex(_ *sqle.Context, _ sqle.IndexDef) (bo
 // buildIndexSpec pair the catalog and the DML writer use, so an index built
 // here covers every one of its declared columns and lands in byte-identical
 // physical entries to the ones a subsequent INSERT would write.
-func (t *RelationalTable) BuildIndex(_ *sqle.Context, indexDef sqle.IndexDef) (sqle.RowInserter, error) {
+func (t *RelationalTable) BuildIndex(ctx *sqle.Context, indexDef sqle.IndexDef) (sqle.RowInserter, error) {
 	tableIndex, err := tableIndexFromDef(indexDef)
 	if err != nil {
 		return nil, err
@@ -298,7 +275,32 @@ func (t *RelationalTable) BuildIndex(_ *sqle.Context, indexDef sqle.IndexDef) (s
 	if err != nil {
 		return nil, err
 	}
-	return &indexBuildInserter{table: t, spec: spec}, nil
+	incarnation, metadataRevision, err := t.catalogIncarnation(ctx, indexDef.Name)
+	if err != nil {
+		return nil, err
+	}
+	spec.incarnation = incarnation
+	return &indexBuildInserter{table: t, spec: spec, metadataRevision: metadataRevision}, nil
+}
+
+// catalogIncarnation returns the incarnation the catalog assigned the index
+// named name -- which only the catalog knows: it is allocated in the same
+// compare-and-swap that added the index (TableService.CreateIndex), after
+// this handle resolved the table -- and the revision of the definition
+// listing it, which the build is fenced on.
+func (t *RelationalTable) catalogIncarnation(ctx *sqle.Context, name string) (incarnation uint64, metadataRevision int64, err error) {
+	if t.tableSvc == nil {
+		return 0, 0, &TableServiceUnavailableError{Table: t.def.Name}
+	}
+	live, err := t.tableSvc.GetTable(ctx, t.def.Database, t.def.Name)
+	if err != nil {
+		return 0, 0, err
+	}
+	idx := findTableIndex(live, name)
+	if idx == nil {
+		return 0, 0, &service.TableIndexNotFoundError{Database: t.def.Database, Table: t.def.Name, Index: name}
+	}
+	return idx.Incarnation, live.MetadataRevision, nil
 }
 
 // indexBuildInserter is the sql.RowInserter BuildIndex returns. Each Insert
@@ -316,6 +318,21 @@ func (t *RelationalTable) BuildIndex(_ *sqle.Context, indexDef sqle.IndexDef) (s
 type indexBuildInserter struct {
 	table *RelationalTable
 	spec  indexSpec
+
+	// metadataRevision is the revision of the definition that lists the
+	// index being built. Every chunk is fenced on it as well as on the
+	// generation: a DROP INDEX (or any other DDL) landing mid-build has
+	// published a reclaim of this incarnation, and a later chunk writing
+	// into it would outlive that reclaim as orphaned entries.
+	metadataRevision int64
+
+	// pending buffers entries between flushes: Insert is called once per
+	// existing row by go-mysql-server's own streaming loop, with no
+	// control over batching from this side, so accumulating here is what
+	// lets the build still fence its writes on the table's generation in
+	// bounded chunks (see flush) rather than either buffering the entire
+	// index in memory or writing each entry unguarded one at a time.
+	pending []service.Op
 }
 
 var _ sqle.RowInserter = (*indexBuildInserter)(nil)
@@ -333,10 +350,14 @@ func (ib *indexBuildInserter) DiscardChanges(_ *sqle.Context, _ error) error { r
 // StatementComplete marks the end of the build. No-op.
 func (ib *indexBuildInserter) StatementComplete(_ *sqle.Context) error { return nil }
 
-// Insert writes one physical index entry for row. A NULL in any indexed
+// Insert buffers one physical index entry for row. A NULL in any indexed
 // column contributes no entry, matching ordinary SQL index semantics (NULL
 // never matches an equality lookup) and matching what the DML writer does
-// for the same row.
+// for the same row. The buffer is flushed -- as a generation-fenced
+// compare-and-swap, see RelationalTable.writeChunkedWithResolutionFence --
+// once it reaches generationFencedChunkSize, so a build over a large table
+// still commits in bounded chunks rather than accumulating the whole index
+// in memory.
 func (ib *indexBuildInserter) Insert(ctx *sqle.Context, row sqle.Row) error {
 	encodedVal, ok, err := ib.spec.encode(row)
 	if err != nil {
@@ -350,14 +371,31 @@ func (ib *indexBuildInserter) Insert(ctx *sqle.Context, row sqle.Row) error {
 		return err
 	}
 
-	idxKey := indexEntryKey(ib.table.def.Database, ib.table.def.TableID, ib.spec.name, ib.spec.unique, encodedVal, pkKey)
-	return ib.table.kvSvc.Put(ctx, idxKey, []byte(pkKey))
+	idxKey := indexEntryKey(ib.table.def.Database, ib.table.def.TableID, ib.table.gen().generation, ib.spec.incarnation, ib.spec.unique, encodedVal, pkKey)
+	ib.pending = append(ib.pending, service.Op{Type: service.OpPut, Key: []byte(idxKey), Value: []byte(pkKey)})
+	if len(ib.pending) < generationFencedChunkSize {
+		return nil
+	}
+	return ib.flush(ctx)
 }
 
-// Close finalizes the build. No-op: every entry is written durably as
-// Insert is called, through the same KVServicer every other write in this
-// package uses.
-func (ib *indexBuildInserter) Close(_ *sqle.Context) error { return nil }
+// flush proposes every buffered entry as one generation-fenced
+// compare-and-swap and clears the buffer, win or lose -- a failed flush
+// aborts the whole build (CREATE INDEX fails), so there is nothing left to
+// retry it against.
+func (ib *indexBuildInserter) flush(ctx *sqle.Context) error {
+	if len(ib.pending) == 0 {
+		return nil
+	}
+	ops := ib.pending
+	ib.pending = nil
+	return ib.table.writeChunkedWithResolutionFence(ctx, ops, ib.metadataRevision)
+}
+
+// Close flushes any entries still buffered below generationFencedChunkSize.
+func (ib *indexBuildInserter) Close(ctx *sqle.Context) error {
+	return ib.flush(ctx)
+}
 
 // ---------------------------------------------------------------------------
 // RewritableTable
@@ -465,6 +503,7 @@ func (t *RelationalTable) RewriteInserter(
 
 	return &rewriteRowInserter{
 		kvSvc:    t.kvSvc,
+		txnSvc:   t.txnSvc,
 		tableSvc: t.tableSvc,
 		database: t.def.Database,
 		name:     t.def.Name,

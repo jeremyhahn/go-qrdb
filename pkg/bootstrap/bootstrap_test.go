@@ -30,13 +30,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-enclave"
 	"github.com/jeremyhahn/go-objstore/pkg/common"
 	"github.com/jeremyhahn/go-objstore/pkg/local"
 	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
@@ -201,7 +204,17 @@ func (f *fakeUsers) CreateUser(_ context.Context, req *user.CreateUserRequest) (
 		return nil, f.createErr
 	}
 	f.nextID++
-	return &user.User{ID: f.nextID, Username: req.Username, TenantID: req.TenantID, RoleIDs: req.RoleIDs}, nil
+	// Resolve the initial state the way the real store does, so a record the
+	// double returns carries the lifecycle a real create would have written.
+	lc := req.Lifecycle
+	switch {
+	case lc != "":
+	case req.Pending:
+		lc = user.LifecyclePending
+	default:
+		lc = user.LifecycleActive
+	}
+	return &user.User{ID: f.nextID, Username: req.Username, TenantID: req.TenantID, RoleIDs: req.RoleIDs, Lifecycle: lc}, nil
 }
 
 type fakeRoles struct {
@@ -215,6 +228,17 @@ type fakeRoles struct {
 func (f *fakeRoles) CreateRole(_ context.Context, req *role.CreateRoleRequest) (*role.Role, error) {
 	f.createCalls = append(f.createCalls, *req)
 	if f.existsByName[req.Name] {
+		// Record what is "already persisted" as field-for-field identical to
+		// this request — a restart or another node's own successful attempt
+		// — so GetRoleByName below can find it. go-qrdb#555's provenance
+		// check (registerBuiltInRoles) reads this back and refuses the
+		// collision as unverifiable if it cannot: a fakeRoles that reported
+		// "already exists" without ever remembering a matching record would
+		// make every idempotent re-run fail, not merely fail to prove.
+		f.seeded = append(f.seeded, role.Role{
+			ID: req.ID, Name: req.Name, TenantID: req.TenantID,
+			Permissions: req.Permissions, System: role.IsSystemRoleName(req.Name),
+		})
 		return nil, &role.RoleNameExistsError{Name: req.Name, TenantID: req.TenantID}
 	}
 	if f.createErr != nil {
@@ -364,7 +388,7 @@ func TestBootstrapSystem_PassphraseEmptyButAlreadyUnsealed(t *testing.T) {
 	// Simulate awaitUnseal: the admin initialized+unsealed the barrier with
 	// their passphrase out-of-band before daemon first-boot is reachable.
 	if err := reg.SystemBarrier().Initialize(context.Background(),
-		seal.Credentials{Secret: []byte("operator-passphrase")}); err != nil {
+		seal.MustCredentials([]byte("operator-passphrase"))); err != nil {
 		t.Fatalf("pre-initialize passphrase barrier: %v", err)
 	}
 	if reg.SystemBarrier().IsSealed() {
@@ -490,10 +514,21 @@ func TestBootstrapSystem_AlreadyInitializedIsIdempotent(t *testing.T) {
 		t.Fatalf("first BootstrapSystem: %v", err)
 	}
 
-	// Second run: barrier already initialized, first-boot idempotent.
+	// Second run: barrier already initialized, first-boot idempotent. Users
+	// is a fakeUsersWithLookup, not plain fakeUsers: go-qrdb#555's
+	// provenance check (createAdminUser) now verifies a username collision
+	// by reading the record back, exactly as a real user.UserServicer would
+	// let it, rather than trusting UsernameExistsError alone.
 	result, err := BootstrapSystem(context.Background(), SystemConfig{Strategy: StrategyNone}, Dependencies{
 		Tenants: &fakeTenants{createAlreadyErr: true},
-		Users:   &fakeUsers{exists: true},
+		Users: &fakeUsersWithLookup{
+			fakeUsers: fakeUsers{exists: true},
+			lookupUser: &user.User{
+				ID: 1, Username: "admin", TenantID: tenant.SystemTenantID,
+				RoleIDs:   []string{role.SystemRoleID(tenant.SystemTenantID, role.RoleNameAdmin)},
+				Lifecycle: user.LifecycleActive,
+			},
+		},
 		Roles: &fakeRoles{existsByName: map[string]bool{
 			role.RoleNameSO: true, role.RoleNameAdmin: true, role.RoleNameOperator: true,
 			role.RoleNameUser: true, role.RoleNameAuditor: true, role.RoleNameCustodian: true,
@@ -814,8 +849,8 @@ func TestProvisionTenant_DeferredModeRejectedForSystemTenant(t *testing.T) {
 }
 
 // TestProvisionTenant_DeferredReRunRecoversAdminID asserts an idempotent
-// deferred re-run resolves a TRULY PENDING preexisting admin (disabled, no
-// credential bound) so the consumer still receives the user id an
+// deferred re-run resolves a TRULY PENDING preexisting admin (lifecycle
+// pending, no credential bound) so the consumer still receives the user id an
 // invitation attaches to.
 func TestProvisionTenant_DeferredReRunRecoversAdminID(t *testing.T) {
 	wantRoleID := role.SystemRoleID("acme", role.RoleNameAdmin)
@@ -823,7 +858,7 @@ func TestProvisionTenant_DeferredReRunRecoversAdminID(t *testing.T) {
 		fakeUsers: fakeUsers{exists: true},
 		lookupUser: &user.User{
 			ID: 42, Username: "admin", TenantID: "acme",
-			RoleIDs: []string{wantRoleID}, Enabled: false,
+			RoleIDs: []string{wantRoleID}, Lifecycle: user.LifecyclePending,
 		},
 	}
 	result, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
@@ -847,9 +882,11 @@ func TestProvisionTenant_DeferredReRunRecoversAdminID(t *testing.T) {
 
 // TestProvisionTenant_DeferredReRunFailsClosedOnNonPendingAdmin asserts a
 // deferred re-run refuses to convert any non-pending preexisting admin into
-// an invitation target: activated admins, and disabled admins that still
-// hold a bound certificate or enrolled factors (e.g. disabled for incident
-// response), all fail with PendingAdminUnresolvableError.
+// an invitation target: activated admins, disabled admins that still hold a
+// bound certificate or enrolled factors (e.g. disabled for incident
+// response), and credentialless admins in any lifecycle other than pending —
+// absent and unrecognized included — all fail with
+// PendingAdminUnresolvableError.
 func TestProvisionTenant_DeferredReRunFailsClosedOnNonPendingAdmin(t *testing.T) {
 	wantRoleID := role.SystemRoleID("acme", role.RoleNameAdmin)
 	for _, tc := range []struct {
@@ -858,17 +895,44 @@ func TestProvisionTenant_DeferredReRunFailsClosedOnNonPendingAdmin(t *testing.T)
 	}{
 		{"already activated", &user.User{
 			ID: 42, Username: "admin", TenantID: "acme",
-			RoleIDs: []string{wantRoleID}, Enabled: true,
+			RoleIDs: []string{wantRoleID}, Lifecycle: user.LifecycleActive,
 		}},
 		{"disabled with bound certificate", &user.User{
 			ID: 42, Username: "admin", TenantID: "acme",
-			RoleIDs: []string{wantRoleID}, Enabled: false,
+			RoleIDs: []string{wantRoleID}, Lifecycle: user.LifecycleDisabled,
 			CertBindings: []user.CertBinding{{Thumbprint: "aa"}},
 		}},
 		{"disabled with enrolled factors", &user.User{
 			ID: 42, Username: "admin", TenantID: "acme",
-			RoleIDs: []string{wantRoleID}, Enabled: false,
+			RoleIDs: []string{wantRoleID}, Lifecycle: user.LifecycleDisabled,
 			Factors: []user.FactorEnrollment{{FactorName: "webauthn"}},
+		}},
+		// Credentialless records that are NOT pending: only an explicit
+		// pending lifecycle is an invitation target. An absent or unknown
+		// state fails closed like every other non-pending one.
+		{"absent lifecycle", &user.User{
+			ID: 42, Username: "admin", TenantID: "acme",
+			RoleIDs: []string{wantRoleID},
+		}},
+		{"unrecognized lifecycle", &user.User{
+			ID: 42, Username: "admin", TenantID: "acme",
+			RoleIDs: []string{wantRoleID}, Lifecycle: "quarantined",
+		}},
+		{"disabled without credentials", &user.User{
+			ID: 42, Username: "admin", TenantID: "acme",
+			RoleIDs: []string{wantRoleID}, Lifecycle: user.LifecycleDisabled,
+		}},
+		{"suspended without credentials", &user.User{
+			ID: 42, Username: "admin", TenantID: "acme",
+			RoleIDs: []string{wantRoleID}, Lifecycle: user.LifecycleSuspended,
+		}},
+		{"locked without credentials", &user.User{
+			ID: 42, Username: "admin", TenantID: "acme",
+			RoleIDs: []string{wantRoleID}, Lifecycle: user.LifecycleLocked,
+		}},
+		{"deleting without credentials", &user.User{
+			ID: 42, Username: "admin", TenantID: "acme",
+			RoleIDs: []string{wantRoleID}, Lifecycle: user.LifecycleDeleting,
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -976,7 +1040,7 @@ func TestProvisionTenant_DeferredCreateFailsClosedOnNonPendingRecord(t *testing.
 	}{
 		{"enabled record (Pending ignored)", &user.User{
 			ID: 7, Username: "admin", TenantID: "acme",
-			RoleIDs: []string{wantRoleID}, Enabled: true,
+			RoleIDs: []string{wantRoleID}, Lifecycle: user.LifecycleActive,
 		}},
 		{"zero user id", &user.User{
 			Username: "admin", TenantID: "acme", RoleIDs: []string{wantRoleID},
@@ -1214,7 +1278,7 @@ func TestInitializeTenantBarrier_Passphrase(t *testing.T) {
 	reg, perTenantReg := newPooledRegistry(t)
 
 	err := InitializeTenantBarrier(context.Background(), "acme", StrategyPassphrase,
-		seal.Credentials{Secret: []byte("tenant-passphrase")}, Dependencies{
+		seal.MustCredentials([]byte("tenant-passphrase")), Dependencies{
 			Barriers: reg, Logger: discardLogger(),
 		})
 	if err != nil {
@@ -1236,7 +1300,7 @@ func TestInitializeTenantBarrier_Passphrase(t *testing.T) {
 	if err := reg.SealTenant("acme"); err != nil {
 		t.Fatalf("SealTenant: %v", err)
 	}
-	if err := reg.UnsealTenant(context.Background(), "acme", seal.Credentials{Secret: []byte("tenant-passphrase")}); err != nil {
+	if err := reg.UnsealTenant(context.Background(), "acme", seal.MustCredentials([]byte("tenant-passphrase"))); err != nil {
 		t.Fatalf("UnsealTenant with correct passphrase: %v", err)
 	}
 }
@@ -1630,55 +1694,58 @@ func TestCredentialsForStrategy_InvalidStrategyReturnsError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// The copy-out is wiped (go-qrdb#429)
+// The credential is destroyed when its lifetime ends (go-qrdb#429)
 //
-// credentialsForStrategy copies the passphrase out of the *secure.Buffer into
-// seal.Credentials.Secret, an ORDINARY, PAGEABLE HEAP SLICE. mlocking the
-// source and then leaving an unrecoverable plaintext copy behind would be a
-// net LOSS on the exact measure the conversion exists to improve, so
-// BootstrapSystem destroys it when its lifetime ends.
+// credentialsForStrategy copies the passphrase out of the *secure.Buffer and
+// moves it straight into a sealed enclave; the credential BootstrapSystem
+// builds is the only holder of that material, and BootstrapSystem destroys it
+// when its lifetime ends. Before go-quicraft#41 the secret was an ORDINARY,
+// PAGEABLE HEAP SLICE and this section asserted it was zeroized; the
+// property is the same — nothing of the passphrase survives BootstrapSystem —
+// and the observation is now "the enclave is dead" rather than "the bytes are
+// zero".
 //
 // retainingStrategy is what makes that observable. It embeds a REAL strategy —
 // so the barrier genuinely initializes and the test exercises the production
-// flow — and overrides SealRootKey to keep an ALIAS of creds.Secret rather
-// than a copy. SoftwareStrategy copies the passphrase into its own enclave, so
-// only a deliberate aliasing double can see the caller's backing array. After
-// BootstrapSystem returns, that array must read as zeros.
+// flow — and overrides SealRootKey to keep the credential's enclave rather
+// than open it. After BootstrapSystem returns, that enclave must be destroyed.
 //
-// Delete the `defer secure.Wipe(creds.Secret)` and this fails.
+// Delete the `defer creds.Secret.Destroy()` and this fails.
 // ---------------------------------------------------------------------------
 
 type retainingStrategy struct {
 	seal.SealingStrategy
-	retained []byte
+	tb       testing.TB
+	retained *enclave.SealedEnclave
+	sawBytes int
 }
 
 func (r *retainingStrategy) SealRootKey(ctx context.Context, rootKey []byte, creds seal.Credentials) (*seal.SealedRootKey, error) {
-	// ALIAS, deliberately not a copy. The whole mechanism is that the barrier
-	// borrows the credential and the caller wipes the backing array after.
+	// The enclave itself, deliberately not a copy of its content. The whole
+	// mechanism is that the barrier borrows the credential and the caller
+	// destroys it after.
 	r.retained = creds.Secret
+	r.sawBytes = len(sealtest.Plaintext(r.tb, creds))
 	return r.SealingStrategy.SealRootKey(ctx, rootKey, creds)
 }
 
-// assertWiped fails unless every byte of b is zero. A zero-length slice is a
-// failure too: it means the strategy was never handed a credential, so the
-// test would be proving nothing.
-func assertWiped(t *testing.T, what string, b []byte) {
+// assertDestroyed fails unless the retained credential enclave is dead. A nil
+// enclave is a failure too: it means the strategy was never handed a
+// credential, so the test would be proving nothing.
+func assertDestroyed(t *testing.T, what string, e *enclave.SealedEnclave) {
 	t.Helper()
-	if len(b) == 0 {
+	if e == nil {
 		t.Fatalf("%s: the strategy was never handed a credential; this test proves nothing", what)
 	}
-	for i, c := range b {
-		if c != 0 {
-			t.Fatalf("%s: byte %d survived at %q — the passphrase copy was not zeroized", what, i, b)
-		}
+	if e.IsAlive() {
+		t.Fatalf("%s: the credential enclave is still alive — the passphrase was not destroyed", what)
 	}
 }
 
 // TestBootstrapSystem_WipesTheCredentialCopy asserts the SUCCESS path.
 func TestBootstrapSystem_WipesTheCredentialCopy(t *testing.T) {
 	const passphrase = "correct horse battery staple"
-	strategy := &retainingStrategy{SealingStrategy: seal.NewDeferredSoftwareStrategy()}
+	strategy := &retainingStrategy{SealingStrategy: seal.NewDeferredSoftwareStrategy(), tb: t}
 	reg := newRegistry(t, strategy)
 
 	_, err := BootstrapSystem(context.Background(), SystemConfig{
@@ -1692,11 +1759,11 @@ func TestBootstrapSystem_WipesTheCredentialCopy(t *testing.T) {
 		t.Fatalf("BootstrapSystem: %v", err)
 	}
 
-	if len(strategy.retained) != len(passphrase) {
-		t.Fatalf("the strategy saw a %d-byte credential, want %d — the alias is not "+
-			"the copy credentialsForStrategy made", len(strategy.retained), len(passphrase))
+	if strategy.sawBytes != len(passphrase) {
+		t.Fatalf("the strategy saw a %d-byte credential, want %d — the enclave is not "+
+			"the one credentialsForStrategy made", strategy.sawBytes, len(passphrase))
 	}
-	assertWiped(t, "BootstrapSystem credential copy", strategy.retained)
+	assertDestroyed(t, "BootstrapSystem credential", strategy.retained)
 }
 
 // TestBootstrapSystem_WipesTheCredentialCopyOnInitFailure covers the path a
@@ -1706,7 +1773,7 @@ func TestBootstrapSystem_WipesTheCredentialCopy(t *testing.T) {
 func TestBootstrapSystem_WipesTheCredentialCopyOnInitFailure(t *testing.T) {
 	const passphrase = "a passphrase the barrier will refuse"
 	strategy := &failingRetainingStrategy{
-		retainingStrategy: retainingStrategy{SealingStrategy: seal.NewDeferredSoftwareStrategy()},
+		retainingStrategy: retainingStrategy{SealingStrategy: seal.NewDeferredSoftwareStrategy(), tb: t},
 	}
 	reg := newRegistry(t, strategy)
 
@@ -1721,7 +1788,7 @@ func TestBootstrapSystem_WipesTheCredentialCopyOnInitFailure(t *testing.T) {
 		t.Fatal("expected BootstrapSystem to fail when the strategy refuses the seal")
 	}
 
-	assertWiped(t, "BootstrapSystem credential copy on the error path", strategy.retained)
+	assertDestroyed(t, "BootstrapSystem credential on the error path", strategy.retained)
 }
 
 // failingRetainingStrategy retains the credential and then refuses to seal, so
@@ -1768,12 +1835,13 @@ func TestCredentialsForStrategy_CopiesOutOfTheBuffer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("credentialsForStrategy: %v", err)
 	}
-	if string(creds.Secret) != "correct horse battery staple" {
-		t.Fatalf("Secret = %q, want the supplied passphrase", creds.Secret)
+	defer creds.Secret.Destroy()
+	if got := string(sealtest.Plaintext(t, creds)); got != "correct horse battery staple" {
+		t.Fatalf("Secret = %q, want the supplied passphrase", got)
 	}
 	buf.Destroy()
-	if string(creds.Secret) != "correct horse battery staple" {
-		t.Errorf("Secret aliased the enclave: destroying the buffer changed it to %q", creds.Secret)
+	if got := string(sealtest.Plaintext(t, creds)); got != "correct horse battery staple" {
+		t.Errorf("Secret aliased the enclave: destroying the buffer changed it to %q", got)
 	}
 }
 
@@ -1786,7 +1854,7 @@ func TestCredentialsForStrategy_NonPassphraseStrategyNeedsNoBuffer(t *testing.T)
 		if err != nil {
 			t.Fatalf("credentialsForStrategy(%q, nil): %v", strategy, err)
 		}
-		if len(creds.Secret) != 0 {
+		if creds.Secret != nil {
 			t.Errorf("credentialsForStrategy(%q, nil) returned a secret", strategy)
 		}
 	}
@@ -1801,5 +1869,35 @@ func TestBuildTenantStrategy_DefaultCaseReturnsError(t *testing.T) {
 	var want *UnsupportedStrategyError
 	if !errors.As(err, &want) {
 		t.Fatalf("err = %v, want *UnsupportedStrategyError", err)
+	}
+}
+
+// TestBootstrapSystem_ForwardsMTLSBindingPolicy pins that the system bootstrap
+// hands auth.mtls_binding_policy to first-boot: under "required" with no
+// CertBinder, first-boot refuses before creating the system tenant, and the
+// refusal reaches the caller wrapped as a FirstBootError.
+func TestBootstrapSystem_ForwardsMTLSBindingPolicy(t *testing.T) {
+	reg := newRegistry(t, seal.NewNoneStrategy())
+	tenants := &fakeTenants{}
+	users := &fakeUsersWithLookup{lookupErr: &user.UserNotFoundError{Lookup: "admin"}}
+
+	_, err := BootstrapSystem(context.Background(), SystemConfig{
+		Strategy:          StrategyNone,
+		MTLSBindingPolicy: auth.MTLSBindingRequired,
+	}, Dependencies{
+		Tenants: tenants, Users: users, Roles: &fakeRoles{},
+		CA:       &fakeCA{cert: realCertPEM(t), key: []byte("KEY")},
+		Barriers: reg, Logger: discardLogger(),
+	})
+	var fbErr *FirstBootError
+	var refusal *firstboot.AdminCertBindingRequiredError
+	if !errors.As(err, &fbErr) || !errors.As(err, &refusal) {
+		t.Fatalf("err = %v, want a FirstBootError wrapping *firstboot.AdminCertBindingRequiredError", err)
+	}
+	if refusal.Reason != firstboot.AdminBindingNoBinder {
+		t.Fatalf("reason = %q, want %q", refusal.Reason, firstboot.AdminBindingNoBinder)
+	}
+	if len(tenants.createCalls) != 0 || len(users.createCalls) != 0 {
+		t.Fatalf("refused first boot wrote: tenants=%d users=%d", len(tenants.createCalls), len(users.createCalls))
 	}
 }

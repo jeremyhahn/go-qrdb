@@ -73,22 +73,6 @@ func (e *GPUMemoryError) Error() string {
 		strconv.FormatInt(e.AvailableBytes, 10) + " bytes"
 }
 
-// GPUKernelError represents a GPU kernel execution failure.
-type GPUKernelError struct {
-	Kernel string
-	Err    error
-}
-
-// Error implements the error interface.
-func (e *GPUKernelError) Error() string {
-	return "GPU kernel " + e.Kernel + " failed: " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error for errors.Is and errors.As support.
-func (e *GPUKernelError) Unwrap() error {
-	return e.Err
-}
-
 // FactoryError wraps a failure constructing a GPU vector index, preserving the
 // underlying cause for errors.Is/errors.As. It replaces the
 // inline "<factory>: %w" error-wrapping idiom.

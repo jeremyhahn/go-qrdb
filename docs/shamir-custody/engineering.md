@@ -95,7 +95,7 @@ progress, _ = barrier.UnsealWithShare(ctx, shareC)
 
 Duplicate shares are rejected (`ErrShamirDuplicateShare`). The accumulator resets after TTL expiry (`ErrShamirQuorumExpired`).
 
-**Share custody:** submitted shares are held only inside **memguard secure
+**Share custody:** submitted shares are held only inside **go-enclave sealed
 enclaves** (never as raw, garbage-collected strings) — deduplication is done
 against a SHA-256 digest so the raw share is never retained as a map key, and
 plaintext is materialized only transiently during reconstruction. The instant
@@ -271,7 +271,7 @@ Threshold and total are per operation (`init-shamir`, `rekey`,
   Raft-replicated, **no share material**.
 - **Wrapped root key**: `<RootKeyPath>.wrapped`, AEAD-bound to the root-key
   path through associated data.
-- **Officer enclaves**: memguard, in memory only, destroyed on claim or rekey.
+- **Officer enclaves**: go-enclave sealed enclaves, in memory only, destroyed on claim or rekey.
 - **Recovery shares**: nowhere on the server.
 
 **Compatibility**: barriers predating unseal-key indirection have no wrapped

@@ -29,6 +29,7 @@ import (
 
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 )
@@ -529,7 +530,7 @@ func TestStartDynamicMembership_EmbeddedNewError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestResolveCreateFunc_UnknownType_WithBackend_IncludesBoth(t *testing.T) {
-	_, err := resolveCreateFunc("unknown-sm-type", "mybackend")
+	_, err := resolveCreateFunc("unknown-sm-type", "mybackend", statemachine.StorageConfig{})
 	require.Error(t, err)
 	var smErr *UnknownSMError
 	require.True(t, errors.As(err, &smErr))
@@ -537,7 +538,7 @@ func TestResolveCreateFunc_UnknownType_WithBackend_IncludesBoth(t *testing.T) {
 }
 
 func TestResolveCreateFunc_UnknownType_NoBackend_IncludesType(t *testing.T) {
-	_, err := resolveCreateFunc("totally-unknown-sm", "")
+	_, err := resolveCreateFunc("totally-unknown-sm", "", statemachine.StorageConfig{})
 	require.Error(t, err)
 	var smErr *UnknownSMError
 	require.True(t, errors.As(err, &smErr))
@@ -550,19 +551,13 @@ func TestResolveCreateFunc_UnknownType_NoBackend_IncludesType(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestInit_PebbleStateMachineRegisteredByInit(t *testing.T) {
-	fn, err := resolveCreateFunc("pebble", "")
+	fn, err := resolveCreateFunc("pebble", "", statemachine.StorageConfig{})
 	require.NoError(t, err)
 	require.NotNil(t, fn, "pebble SM factory must be registered by init()")
 }
 
 func TestInit_MVCCStateMachineRegisteredByInit(t *testing.T) {
-	fn, err := resolveCreateFunc("mvcc", "")
+	fn, err := resolveCreateFunc("mvcc", "", statemachine.StorageConfig{})
 	require.NoError(t, err)
 	require.NotNil(t, fn, "mvcc SM factory must be registered by init()")
-}
-
-func TestInit_MVCCFastStateMachineRegisteredByInit(t *testing.T) {
-	fn, err := resolveCreateFunc("mvcc-fast", "")
-	require.NoError(t, err)
-	require.NotNil(t, fn, "mvcc-fast SM factory must be registered by init()")
 }

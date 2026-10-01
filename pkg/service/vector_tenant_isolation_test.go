@@ -18,13 +18,11 @@ package service
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	qrdbErrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -189,13 +187,8 @@ func TestStrictTenantIsolation_RejectsEmptyTenant(t *testing.T) {
 	})
 	require.Error(t, err, "strict mode must reject system-tenant creates")
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrForbidden, qrdbErr.Code)
-
-	// Underlying error is TenantRequiredError.
-	var tenantErr *TenantRequiredError
-	require.True(t, errors.As(qrdbErr.Err, &tenantErr))
+	tenantErr := requireErrorAs[*TenantRequiredError](t, err)
+	assert.Equal(t, "CreateNamespace", tenantErr.Op)
 }
 
 // TestStrictTenantIsolation_AllowsExplicitTenant verifies that strict mode

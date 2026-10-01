@@ -55,8 +55,9 @@ qrdb ships only `NoopThresholdInitializer`
 
 ## Invariants
 
-- **Shares are never persisted to disk** and never leave a memguard
-  `LockedBuffer` except into the claiming officer's hands.
+- **Shares are never persisted to disk** and never leave a `secure.Secret`
+  (go-enclave sealed enclave) except into the claiming officer's
+  hands.
 - **`Store` consumes the caller's slice, wiping it.** Pinned by tests in
   `pkg/ceremony/share_store_test.go`. A heap copy would survive a core dump or
   a swapped page.
@@ -119,7 +120,7 @@ the first successful PIN backend write**.
 - Officer records: `ceremony/officers/<name>` — thumbprint or public key, share
   index, auth factor, timestamps.
 - Custodian metadata: `__sys:custodian/<id>`, Raft-replicated, public only.
-- Shares: **memguard only**, never on disk.
+- Shares: **go-enclave sealed enclave only** (`secure.Secret`), never on disk.
 
 ## Test strategy
 

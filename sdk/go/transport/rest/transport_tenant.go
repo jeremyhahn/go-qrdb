@@ -21,6 +21,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -204,6 +205,73 @@ func (t *Transport) ListTenants(ctx context.Context) (*transport.ListTenantsResp
 		out.Tenants = append(out.Tenants, rt.toTenantInfo())
 	}
 	return out, nil
+}
+
+// ListDeletedTenants returns one page of retired tenant ids. Maps to
+// GET /v1/tenants/deleted/list?page_size=&page_token=.
+func (t *Transport) ListDeletedTenants(ctx context.Context, req *transport.ListDeletedTenantsRequest) (*transport.ListDeletedTenantsResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		req = &transport.ListDeletedTenantsRequest{}
+	}
+	q := url.Values{}
+	if req.PageSize != 0 {
+		q.Set("page_size", strconv.FormatInt(int64(req.PageSize), 10))
+	}
+	if req.PageToken != "" {
+		q.Set("page_token", req.PageToken)
+	}
+	reqURL := t.baseURL + "/v1/tenants/deleted/list"
+	if len(q) > 0 {
+		reqURL += "?" + q.Encode()
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ListDeletedTenants", Err: err}
+	}
+	resp, err := t.client.Do(httpReq)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ListDeletedTenants", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, t.decodeErrorResponse("ListDeletedTenants", resp)
+	}
+	out := &transport.ListDeletedTenantsResponse{}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return nil, &transport.RequestError{Method: "ListDeletedTenants", Err: &jsonDecodeError{Err: err}}
+	}
+	if out.Tenants == nil {
+		out.Tenants = []transport.DeletedTenant{}
+	}
+	return out, nil
+}
+
+// ReconcileDeletedTenants runs the deleted-tenant reconcile on the node serving
+// the request. Maps to POST /v1/tenants/deleted/reconcile.
+func (t *Transport) ReconcileDeletedTenants(ctx context.Context) (*transport.ReconcileDeletedTenantsResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+"/v1/tenants/deleted/reconcile", nil)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ReconcileDeletedTenants", Err: err}
+	}
+	resp, err := t.client.Do(httpReq)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ReconcileDeletedTenants", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, t.decodeErrorResponse("ReconcileDeletedTenants", resp)
+	}
+	out := &transport.ReconcileDeletedTenantsResponse{}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return nil, &transport.RequestError{Method: "ReconcileDeletedTenants", Err: &jsonDecodeError{Err: err}}
+	}
+	return out, transport.ReconcileFailure(out, nil)
 }
 
 // DeleteTenant deletes a tenant by ID. Maps to DELETE /v1/tenants/{id}.

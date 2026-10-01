@@ -302,9 +302,11 @@ func (cc *ClusterClient) Leader(ctx context.Context, shardID uint64) (replicaID 
 }
 
 // AddReplica adds a replica to the shard. It delegates to the already-wired
-// AddMember control-plane operation.
-func (cc *ClusterClient) AddReplica(ctx context.Context, shardID, replicaID uint64, raftAddr string) error {
-	return cc.admin.AddMember(ctx, shardID, replicaID, raftAddr)
+// AddMember control-plane operation. identity is the replica's Raft member
+// identity, or "" to use the one the cluster already committed for it; see
+// transport.AdminClient.AddMember.
+func (cc *ClusterClient) AddReplica(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error {
+	return cc.admin.AddMember(ctx, shardID, replicaID, raftAddr, identity)
 }
 
 // RemoveReplica removes a replica from the shard. It delegates to the

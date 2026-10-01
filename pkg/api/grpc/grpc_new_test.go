@@ -344,6 +344,12 @@ func (m *mockIndexService) DropIndex(_ context.Context, _ string) error {
 	return m.dropErr
 }
 
+// DropOwnedIndex answers as DropIndex does: this double records no
+// ownership, and no test that uses it exercises an owner-checked drop.
+func (m *mockIndexService) DropOwnedIndex(ctx context.Context, name, _ string) error {
+	return m.DropIndex(ctx, name)
+}
+
 func (m *mockIndexService) Query(_ context.Context, _ string, _ []byte) ([][]byte, error) {
 	if m.queryErr != nil {
 		return nil, m.queryErr
@@ -1138,6 +1144,24 @@ func TestMapServiceError_LeaseNotFoundError(t *testing.T) {
 	}
 	if st.Code() != codes.NotFound {
 		t.Fatalf("expected NotFound, got %s", st.Code())
+	}
+}
+
+// TestMapServiceError_ReadErrorWrappedLeaseNotFound pins the exact shape a
+// pre-fix LeaseService.TimeToLive produced: *service.ReadError wrapping
+// *service.LeaseNotFoundError. mapServiceError's ReadError arm must not win
+// this race — the LeaseNotFoundError arm has to be checked first — or every
+// caller of gRPC (and Unix, which shares this classifier) sees Internal
+// instead of NotFound for a missing lease (go-qrdb#387).
+func TestMapServiceError_ReadErrorWrappedLeaseNotFound(t *testing.T) {
+	wrapped := &service.ReadError{Err: &service.LeaseNotFoundError{LeaseID: 42}}
+	err := mapServiceError(wrapped)
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatal("expected gRPC status error")
+	}
+	if st.Code() != codes.NotFound {
+		t.Fatalf("expected NotFound for a ReadError-wrapped LeaseNotFoundError, got %s", st.Code())
 	}
 }
 

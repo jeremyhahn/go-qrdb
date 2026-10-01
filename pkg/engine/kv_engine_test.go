@@ -1138,9 +1138,13 @@ func TestKVEngine_Update_UndecodableByBothProtocols(t *testing.T) {
 	if results[0].Value == 1 {
 		t.Fatal("undecodable command must not be reported as success (Value:1)")
 	}
-	msg, ok := protocol.DecodeAppError(results[0].Data)
+	msg, kind, ok := protocol.DecodeAppErrorKind(results[0].Data)
 	if !ok {
 		t.Fatalf("expected an application-error result, got %+v", results[0])
+	}
+	if kind != protocol.AppErrorCorrupt {
+		t.Errorf("kind = %d, want AppErrorCorrupt: the committed bytes are not what any "+
+			"writer of this version produced (go-qrdb#557)", kind)
 	}
 	if msg == "" {
 		t.Error("expected a non-empty application-error message")
@@ -2898,94 +2902,6 @@ func TestKVEngine_DeleteWithIndexes_NonExistentKey(t *testing.T) {
 	// Deleting a key that does not exist should not error.
 	if err := eng.DeleteWithIndexes([]byte("ghost/99")); err != nil {
 		t.Fatalf("DeleteWithIndexes on non-existent key: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// entityTypeFromKey
-// ---------------------------------------------------------------------------
-
-func TestEntityTypeFromKey(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		key  string
-		want string
-	}{
-		{"users/1", "users"},
-		{"messages/thread/42", "messages"},
-		{"noprefix", "noprefix"},
-		{"a/b", "a"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.key, func(t *testing.T) {
-			t.Parallel()
-			got := entityTypeFromKey([]byte(tc.key))
-			if got != tc.want {
-				t.Errorf("entityTypeFromKey(%q) = %q, want %q", tc.key, got, tc.want)
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// filterIndexes / filterCompoundIndexes
-// ---------------------------------------------------------------------------
-
-func TestKVEngine_FilterIndexes_MatchesEntityPrefix(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-
-	log := testLogger(t)
-	eng := NewKVEngine(stg, WithKVLogger(log))
-
-	if err := eng.RegisterEntityType("users", []EntityIndex{
-		{FieldName: "Name", JSONFieldName: "name"},
-	}); err != nil {
-		t.Fatalf("RegisterEntityType users: %v", err)
-	}
-	if err := eng.RegisterEntityType("orders", []EntityIndex{
-		{FieldName: "Status", JSONFieldName: "status"},
-	}); err != nil {
-		t.Fatalf("RegisterEntityType orders: %v", err)
-	}
-
-	filtered, filteredFields := eng.filterIndexes("users")
-	if len(filtered) != 1 {
-		t.Errorf("expected 1 filtered index for users, got %d", len(filtered))
-	}
-	for name := range filtered {
-		if filteredFields[name] == "" {
-			t.Errorf("filteredFields missing entry for %q", name)
-		}
-	}
-}
-
-func TestKVEngine_FilterCompoundIndexes_MatchesEntityPrefix(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-
-	log := testLogger(t)
-	eng := NewKVEngine(stg, WithKVLogger(log))
-
-	if err := eng.RegisterEntityType("events", []EntityIndex{
-		{FieldNames: []string{"UserID", "Type"}, JSONFieldNames: []string{"user_id", "type"}},
-	}); err != nil {
-		t.Fatalf("RegisterEntityType events: %v", err)
-	}
-	if err := eng.RegisterEntityType("logs", []EntityIndex{
-		{FieldNames: []string{"Level", "Source"}, JSONFieldNames: []string{"level", "source"}},
-	}); err != nil {
-		t.Fatalf("RegisterEntityType logs: %v", err)
-	}
-
-	filtered, filteredFields := eng.filterCompoundIndexes("events")
-	if len(filtered) != 1 {
-		t.Errorf("expected 1 compound index for events, got %d", len(filtered))
-	}
-	for name := range filtered {
-		if len(filteredFields[name]) == 0 {
-			t.Errorf("filteredCompoundFields missing entry for %q", name)
-		}
 	}
 }
 

@@ -112,12 +112,12 @@ func reservedTenantIDReason(id string) error {
 	return nil
 }
 
-// validateTenantIDShape rejects an id whose SHAPE is unusable, independently
+// ValidateTenantIDShape rejects an id whose SHAPE is unusable, independently
 // of whether it is reserved: one that would corrupt a scoped storage key, or
 // that names a relative path segment. It binds every caller, internal ones
 // included — bootstrap may create the system tenant, but nothing may create a
 // tenant whose id escapes its volume-pool directory.
-func validateTenantIDShape(id string) error {
+func ValidateTenantIDShape(id string) error {
 	if err := validateTenantIDCharset(id); err != nil {
 		return err
 	}
@@ -138,7 +138,7 @@ func validateTenantIDShape(id string) error {
 // system tenant. The shape check above is NOT bypassed. Returns a typed error
 // when the id is rejected.
 func validateReservedTenantID(ctx context.Context, id string) error {
-	if err := validateTenantIDShape(id); err != nil {
+	if err := ValidateTenantIDShape(id); err != nil {
 		return err
 	}
 	if isInternalCall(ctx) {
@@ -169,7 +169,7 @@ func validateReservedTenantID(ctx context.Context, id string) error {
 // happens to own the default "system" database. A guard that depends on a
 // database existing is not a guard.
 func validateDeletableTenantID(id string) error {
-	if err := validateTenantIDShape(id); err != nil {
+	if err := ValidateTenantIDShape(id); err != nil {
 		return err
 	}
 	return reservedTenantIDReason(id)

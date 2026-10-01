@@ -57,3 +57,32 @@ func AsCapabilityError(err error) (CapabilityError, bool) {
 	}
 	return nil, false
 }
+
+// RefusalError is implemented by an error that REFUSES a committed request on
+// its merits — the request is malformed in a way every replica detects
+// identically, such as a transaction naming an empty key — rather than
+// reporting a fault. Like CapabilityError it is a declaration the Apply
+// classifier reads: the refusal is encoded into the entry's result with
+// EncodeAppError and consensus advances, instead of the error halting Apply on
+// every replica.
+//
+// It is a separate declaration from CapabilityError because the two mean
+// different things to a caller: "this node cannot do that" versus "that
+// request is invalid anywhere".
+type RefusalError interface {
+	error
+
+	// Refusal names what about the request was refused, for the log line the
+	// classifier writes. It is diagnostic, not dispatch.
+	Refusal() string
+}
+
+// AsRefusalError reports whether err, or any error it wraps, declares itself a
+// refusal of the request on its merits, returning it when so.
+func AsRefusalError(err error) (RefusalError, bool) {
+	var refErr RefusalError
+	if errors.As(err, &refErr) {
+		return refErr, true
+	}
+	return nil, false
+}

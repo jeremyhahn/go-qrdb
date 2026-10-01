@@ -16,9 +16,7 @@ package vector
 import (
 	"context"
 	"encoding/binary"
-	"fmt"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -32,7 +30,7 @@ import (
 // setupSyncStorage creates a PebbleVectorStorage with SyncWrites enabled.
 func setupSyncStorage(t *testing.T) (*PebbleVectorStorage, func()) {
 	t.Helper()
-	tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("vector_sync_test_%d", time.Now().UnixNano()))
+	tmpDir := t.TempDir()
 	require.NoError(t, os.MkdirAll(tmpDir, 0o750))
 
 	config := DefaultConfig(tmpDir)

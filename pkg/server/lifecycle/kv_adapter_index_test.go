@@ -20,6 +20,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
@@ -56,6 +57,12 @@ func (m *mockIndexServicer) CreateIndex(_ context.Context, name, fieldName strin
 }
 
 func (m *mockIndexServicer) DropIndex(context.Context, string) error { return nil }
+
+// DropOwnedIndex answers as DropIndex does: this double records no
+// ownership, and no test that uses it exercises an owner-checked drop.
+func (m *mockIndexServicer) DropOwnedIndex(ctx context.Context, name, _ string) error {
+	return m.DropIndex(ctx, name)
+}
 
 func (m *mockIndexServicer) Query(_ context.Context, indexName string, _ []byte) ([][]byte, error) {
 	m.queried = append(m.queried, indexName)
@@ -174,17 +181,11 @@ func TestKVStoreAdapter_CompoundDefinitionsAreRefusedNotSkipped(t *testing.T) {
 	}
 }
 
-// The former TestKVStoreAdapter_RegisterHonoursAnExplicitIndexName asserted
-// that a database-qualified name was passed to the engine verbatim. That is
-// the behaviour review identified as defective: the engine would create the
-// index and then never maintain it, because KVEngine.filterIndexes matches
-// writes against the entity type and this adapter cannot see the engine's
-// database setting. It is replaced by
-// TestKVStoreAdapter_RefusesANameTheEngineWillNotMaintain below.
-//
-// EntityIndex.ResolvedName remains correct and load-bearing for stores that
-// maintain their own indexes and can honour any name — kvstore.MemoryKVStore
-// does, and its test asserts the qualified name works there.
+// A qualified name was once refused here, because the engine selected the
+// indexes a write maintains by matching the index NAME against the key's
+// first path segment. The engine now selects by key SCOPE on every path, and
+// the adapter declares the scope explicitly; see
+// TestKVStoreAdapter_EngineScopeIsTheDeclaredKeyPrefix below.
 
 func TestKVStoreAdapter_QueryIndexReturnsEngineKeys(t *testing.T) {
 	want := [][]byte{[]byte("member/1"), []byte("member/2")}
@@ -451,37 +452,94 @@ func TestKVStoreAdapter_CaseSensitiveDefinitionStaysSensitive(t *testing.T) {
 	}
 }
 
-// TestKVStoreAdapter_RefusesANameTheEngineWillNotMaintain covers a review
-// finding, and one this change itself introduced.
-//
-// Passing the caller's resolved index name fixed a DAO built with
-// WithDatabase registering "member.Team" and querying "tenantdb.member.Team".
-// But the engine decides which indexes a WRITE maintains by matching the
-// index name against the key's entity type — KVEngine.filterIndexes accepts
-// "{entityType}." and, when the engine has a database namespace,
-// "{engineDatabase}.{entityType}." — and this adapter cannot see that
-// setting.
-//
-// So a qualified name could be CREATED successfully, never updated by any
-// write, and answer every query empty with a nil error: registration
-// succeeding is precisely what makes it invisible. A name the adapter cannot
-// vouch for is therefore refused, and pkg/dao plans a correct full scan.
-func TestKVStoreAdapter_RefusesANameTheEngineWillNotMaintain(t *testing.T) {
+// TestKVStoreAdapter_EngineScopeIsTheDeclaredKeyPrefix is go-qrdb#40's
+// adapter half. The engine maintains an index for exactly the keys under
+// engine.ComposeIndexScope(name, declared prefix), so the adapter hands it the
+// caller's ABSOLUTE key prefix made relative to the namespace the name
+// carries. Whatever the caller's layout -- a bare entity, a DAO built
+// WithDatabase, a shared-prefix tenant's "{tenant}/" store, a transport's
+// "{tenant}/{database}/" namespace -- the scope the engine ends up maintaining
+// must be precisely the prefix the caller's keys carry. Before this, every
+// qualified name was refused and a shared-prefix tenant had no index at all.
+func TestKVStoreAdapter_EngineScopeIsTheDeclaredKeyPrefix(t *testing.T) {
+	tests := []struct {
+		name       string
+		entityType string
+		def        kvstore.EntityIndex
+		wantPrefix string // the scope the engine must end up maintaining
+	}{
+		{
+			name:       "bare entity",
+			entityType: "member",
+			def:        kvstore.EntityIndex{FieldName: "Team", JSONFieldName: "team"},
+			wantPrefix: "member/",
+		},
+		{
+			name:       "DAO built WithDatabase",
+			entityType: "member",
+			def:        kvstore.EntityIndex{IndexName: "tenantdb.member.Team", FieldName: "Team", JSONFieldName: "team"},
+			wantPrefix: "member/",
+		},
+		{
+			name:       "shared-prefix tenant store",
+			entityType: "workitem",
+			def: kvstore.EntityIndex{
+				IndexName: "acme/workitem.State", KeyPrefix: "acme/workitem/",
+				FieldName: "State", JSONFieldName: "state",
+			},
+			wantPrefix: "acme/workitem/",
+		},
+		{
+			name:       "per-(tenant, database) namespace",
+			entityType: "workitem",
+			def: kvstore.EntityIndex{
+				IndexName: "acme/sales/workitem.State", KeyPrefix: "acme/sales/workitem/",
+				FieldName: "State", JSONFieldName: "state",
+			},
+			wantPrefix: "acme/sales/workitem/",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			idx := &mockIndexServicer{}
+			store := newKVStoreAdapter(&mockKVServicer{}, idx)
+			if err := store.RegisterEntityIndexes(tc.entityType, []kvstore.EntityIndex{tc.def}); err != nil {
+				t.Fatalf("RegisterEntityIndexes: %v", err)
+			}
+			if len(idx.created) != 1 {
+				t.Fatalf("created %d indexes; want 1", len(idx.created))
+			}
+			got := idx.created[0]
+			if want := tc.def.ResolvedName(tc.entityType); got.name != want {
+				t.Errorf("created under %q; want the name the caller queries, %q", got.name, want)
+			}
+			if scope := string(engine.ComposeIndexScope(got.name, got.config.KeyPrefix)); scope != tc.wantPrefix {
+				t.Errorf("engine will maintain scope %q; want %q", scope, tc.wantPrefix)
+			}
+		})
+	}
+}
+
+// TestKVStoreAdapter_RefusesANameOutsideItsKeys covers the case the
+// translation cannot make true: a name whose namespace the caller's keys do
+// not live under. The engine would create it, maintain it over a keyspace no
+// write of this entity reaches, and answer every query empty with a nil error.
+// Registration is the one point that can be refused honestly.
+func TestKVStoreAdapter_RefusesANameOutsideItsKeys(t *testing.T) {
 	idx := &mockIndexServicer{}
 	store := newKVStoreAdapter(&mockKVServicer{}, idx)
 
-	err := store.RegisterEntityIndexes("member", []kvstore.EntityIndex{{
-		IndexName:     "tenantdb.member.Team",
-		FieldName:     "Team",
-		JSONFieldName: "team",
-		CaseSensitive: true,
+	err := store.RegisterEntityIndexes("workitem", []kvstore.EntityIndex{{
+		IndexName:     "globex/sales/workitem.State",
+		KeyPrefix:     "acme/sales/workitem/",
+		FieldName:     "State",
+		JSONFieldName: "state",
 	}})
 	if !errors.Is(err, kvstore.ErrIndexUnsupported) {
 		t.Fatalf("RegisterEntityIndexes = %v; want kvstore.ErrIndexUnsupported", err)
 	}
 	if len(idx.created) != 0 {
-		t.Errorf("created %+v; an index the engine will never maintain must not "+
-			"be created — registration succeeding is what hides it", idx.created)
+		t.Errorf("created %+v; an index over another namespace must not be created", idx.created)
 	}
 }
 

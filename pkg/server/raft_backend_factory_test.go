@@ -58,7 +58,7 @@ func newSharedTestHost(t *testing.T) (*quicraft.Host, string) {
 		ListenAddress: sharedHostRaftAddr,
 		DeploymentID:  1,
 	}
-	host, err := quicraft.NewHost(cfg, quicraft.WithoutTransport())
+	host, err := quicraft.NewHost(cfg, quicraft.WithoutTransport(), quicraft.WithoutEncryption())
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)
 	}
@@ -74,6 +74,9 @@ type fakeRaftInfoSource struct {
 		dataDir string
 	}
 	dedicated map[raftShardKey]bool
+	// placements, when set for a key, is the placement entry placementInfo
+	// reports — a multi-replica placement for the founding tests.
+	placements map[raftShardKey]*placement.Placement
 }
 
 func newFakeRaftInfoSource() *fakeRaftInfoSource {
@@ -108,8 +111,9 @@ func (s *fakeRaftInfoSource) databaseInfo(tenantID, db string) (uint64, string, 
 
 // placementInfo always returns false: the fake source is meta-derived and does
 // not carry a replicated placement table (same semantics as managerRaftInfoSource).
-func (s *fakeRaftInfoSource) placementInfo(_ string, _ string) (*placement.Placement, bool) {
-	return nil, false
+func (s *fakeRaftInfoSource) placementInfo(tenantID, db string) (*placement.Placement, bool) {
+	p, ok := s.placements[raftShardKey{tenantID: tenantID, database: db}]
+	return p, ok
 }
 
 func (s *fakeRaftInfoSource) dedicatedWAL(tenantID, db string) bool {
@@ -814,7 +818,7 @@ func newSharedTestHostWithMux(t *testing.T) (*quicraft.Host, *database.Multiplex
 		t.Fatalf("NewStorageBarrier: %v", err)
 	}
 	if err := sysBarrier.Initialize(context.Background(),
-		seal.Credentials{Secret: []byte("mux-shared-wal-test")}); err != nil {
+		seal.MustCredentials([]byte("mux-shared-wal-test"))); err != nil {
 		t.Fatalf("Initialize system barrier: %v", err)
 	}
 	sharedWAL, err := waldb.Open(filepath.Join(hostDir, "wal"),
@@ -1038,6 +1042,7 @@ func (fakeLogDBForServer) GetSnapshot(uint64, uint64) (logdblib.Snapshot, error)
 	return logdblib.Snapshot{}, nil
 }
 func (fakeLogDBForServer) RemoveNodeData(uint64, uint64) error                    { return nil }
+func (fakeLogDBForServer) NodeRemoved(uint64, uint64) (bool, error)               { return false, nil }
 func (fakeLogDBForServer) SaveBootstrap(uint64, uint64, logdblib.Bootstrap) error { return nil }
 func (fakeLogDBForServer) GetBootstrap(uint64, uint64) (logdblib.Bootstrap, bool, error) {
 	return logdblib.Bootstrap{}, false, nil

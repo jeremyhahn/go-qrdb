@@ -43,12 +43,12 @@ func assertRefusedNotHalted(t *testing.T, updateErr error, result sm.Result, wan
 	if updateErr != nil {
 		t.Fatalf("Update returned %v; a refusal must not halt Apply (go-qrdb#520)", updateErr)
 	}
-	msg, capability, ok := protocol.DecodeAppErrorKind(result.Data)
+	msg, kind, ok := protocol.DecodeAppErrorKind(result.Data)
 	if !ok {
 		t.Fatalf("result payload %q carries no encoded application error; the "+
 			"proposer would read the refusal as an ordinary result", result.Data)
 	}
-	if !capability {
+	if kind != protocol.AppErrorCapability {
 		t.Errorf("refusal %q encoded WITHOUT the capability marker; the service "+
 			"layer cannot tell it from a constraint violation (go-qrdb#141)", msg)
 	}

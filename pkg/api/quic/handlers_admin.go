@@ -128,7 +128,7 @@ func (s *Server) handleAddMember(ctx context.Context, payload []byte) ([]byte, e
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	if err := s.adminSvc.AddMember(ctx, req.GetShardId(), req.GetReplicaId(), req.GetRaftAddress()); err != nil {
+	if err := s.adminSvc.AddMember(ctx, req.GetShardId(), req.GetReplicaId(), req.GetRaftAddress(), req.GetMemberIdentity()); err != nil {
 		return nil, err
 	}
 

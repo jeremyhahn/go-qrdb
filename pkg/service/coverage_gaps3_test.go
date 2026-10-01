@@ -143,7 +143,7 @@ func TestVectorService_UpsertVector_StorageError(t *testing.T) {
 func TestVectorService_GetVector_StorageError(t *testing.T) {
 	svc, store := newVecSvcPreloaded(t, "gv-err-ns", 3)
 	store.getVectorFn = func(_ context.Context, _ string, _ uint64) (*vector.VectorValue, error) {
-		return nil, errors.New("vector not found")
+		return nil, vector.ErrVectorNotFound
 	}
 	ctx := context.Background()
 
@@ -380,7 +380,7 @@ func TestVectorService_CreateNamespace_NonRaft(t *testing.T) {
 		return nil, nil
 	}
 	store.getNamespaceInfoFn = func(_ context.Context, _ string) (*vector.NamespaceInfo, error) {
-		return nil, errors.New("not found")
+		return nil, vector.ErrNamespaceNotFound
 	}
 	store.createNamespaceFn = func(_ context.Context, _ *vector.NamespaceInfo) error {
 		return nil

@@ -8,7 +8,9 @@ name: CI
 #
 # This is the PUSH path, and it holds only jobs that can pass and do gate.
 # ci-template v1.9 moved the known-red and long-horizon jobs — fips and trivy —
-# to nightly.yml (owner ruling 2026-08-20, go-qrdb#48).
+# to nightly.yml (owner ruling 2026-08-20, go-qrdb#48). trivy's CRITICAL/HIGH
+# gate returned here once it was green (#479, 2026-09-22); its MEDIUM/LOW
+# report and its scheduled run on a quiet tree stay in nightly.yml.
 
 on:
   push:
@@ -39,8 +41,8 @@ on:
 #   - The group is per-REF: a PR's runs and main's push runs never cancel each
 #     other, and two PRs never cancel each other.
 #   - release-lockstep.yml deliberately does NOT get this — cancelling a
-#     release mid-publish risks a partial tag or publish — nor do nightly.yml,
-#     claude-review.yml or opencode-review.yml.
+#     release mid-publish risks a partial tag or publish — nor does
+#     nightly.yml.
 #   - ADOPTION BOUNDARY, expect it exactly once: Gitea groups a run using the
 #     workflow file OF THAT RUN, so the first push after this lands cannot
 #     supersede a run created before it. Check with
@@ -55,19 +57,20 @@ permissions:
   security-events: write
 
 env:
-  # Latest 1.26 patch (owner ruling 2026-08-20). setup-go 'stable' is prohibited
-  # as a spec — it flipped to 1.27.0 mid-campaign and broke every repo riding it.
+  # Go 1.27.0, forced by a Layer 0 dependency rather than chosen (#540):
+  # go-enclave v0.5.0-alpha's own `go` directive is 1.27.0, go-quicraft
+  # v0.11.0-alpha consumes it and moved with it, and this module cannot
+  # consume either and stay behind. The `go` directive is 1.27.0 in the root
+  # and every nested module (Go evaluates the language version from the MAIN
+  # module, so a nested one left behind fails with "requires go >= 1.27.0"
+  # rather than upgrading). setup-go 'stable' is prohibited as a spec — it
+  # flipped to 1.27.0 mid-campaign and broke every repo riding it; an exact
+  # version is pinned here for the same reason it always was.
   #
-  # The swiss BLOCKER THAT USED TO BE RECORDED HERE IS GONE (#177, 2026-09-02):
-  # cockroachdb/swiss widened its build tag to `!go1.28` and this module's pin
-  # moved, so both modules now compile clean under 1.27.0 — measured on this
-  # tree, `GOTOOLCHAIN=go1.27.0 go build ./...` exits 0 in the root and in
-  # sdk/go. What remains is not technical: raising the directive is the
-  # portfolio toolchain wave (#39), which is still `task:blocked` on the owner's
-  # ruling and is dispatched centrally, not per repo. So this stays at 1.26.7
-  # and #39 moves it — but nobody should re-derive a blocker from this comment,
-  # because there isn't one.
-  GO_VERSION: "1.26.7"
+  # The swiss blocker that used to be recorded here was gone before this
+  # move (#177, 2026-09-02): cockroachdb/swiss widened its build tag to
+  # `!go1.28`, and both modules had been measured clean under 1.27.0 since.
+  GO_VERSION: "1.27.0"
 
   # ANALYSIS TOOL PINS (#179, #195). These are the versions BAKED into the
   # self-hosted runner image; the steps below ASSERT the binary they got matches
@@ -248,9 +251,10 @@ jobs:
         run: make test-compose-targets
 
       # #367. Every `uses:` in every workflow must resolve to a 40-hex commit.
-      # A tag is a ref its owner can move, and opencode-review.yml's job holds a
-      # WRITE-SCOPED token -- where auto-merge is armed, a moved tag runs
-      # attacker-controlled code with credentials that can merge. go-quicraft
+      # A tag is a ref its owner can move, and the review workflow's job held a
+      # WRITE-SCOPED token while it existed -- where auto-merge was armed, a
+      # moved tag ran attacker-controlled code with credentials that could
+      # merge. The release and security jobs are the same shape. go-quicraft
       # has the sibling of this gate and it caught the identical line THREE
       # times, every time as an unnoticed template propagation whose real
       # payload was a model bump. Until now this repository had no gate, which
@@ -283,6 +287,31 @@ jobs:
       # No network, no token, no scanner.
       - name: The nightly signal watches every job nightly.yml declares
         run: make test-nightly-signal
+
+      # The coverage gate's own tests (#500). The Test job runs the gate; this
+      # runs every way the gate could misread a profile -- a truncated profile,
+      # conflicting duplicate blocks, a missing baseline, a package that stops
+      # being measured -- each with a negative control. It is here and not in
+      # Test so a broken gate is reported in minutes, before the full race
+      # suite, and so it cannot be mistaken for a coverage regression.
+      #
+      # No network, no Go build beyond this one package.
+      - name: The coverage gate's own tests
+        run: make test-coverratchet
+
+      # scripts/coverage-merge-subprocess.sh's own tests (go-qrdb#114 review,
+      # round 3): it was written, and had a round-2 bug fixed, without ever
+      # being reached by `make test` or this workflow -- its own exact
+      # five-package discovery assertions, and the discovery-floor guard that
+      # exists so the pattern going stale reports LOUDLY, could regress with
+      # nothing here to catch it. Same reasoning as the coverage gate's own
+      # tests just above: reported in minutes, before the Test job's `make
+      # coverage` run depends on this script producing a correct merged
+      # profile.
+      #
+      # No network, no Go build beyond the small binaries `go list` needs.
+      - name: The coverage-merge-subprocess script's own tests
+        run: make test-coverage-merge-subprocess
 
       # AGENTS.md: a feature folder is publication-bound. This is a whole-TREE
       # property, so it is checked here rather than left to review: a reviewer
@@ -325,6 +354,17 @@ jobs:
 
       - name: Test the iface-sweep findings guard
         run: make test-iface-sweep-findings
+
+      # go-qrdb#403. The generalization of the leg above: every committed
+      # generated artifact (test/coverage-baseline.txt,
+      # test/tools/deadcode/baseline.txt, lockstep-baseline, and the two
+      # ifacesweep findings files again) is scanned for an absolute
+      # workstation path, not just the two files #271 already fixed.
+      - name: Generated artifacts carry no absolute paths
+        run: make check-artifact-paths
+
+      - name: Test the artifact-paths guard
+        run: make test-artifact-paths
 
       # Same reasoning, for the module sweep's guard. A healthy tree exercises
       # only vet-modules.sh's ACCEPTING path, so its rejecting branches — an
@@ -484,8 +524,19 @@ jobs:
       # program (#367). The Lint job runs them too, and sooner; they are in the
       # unit target as well so that the entrypoint a developer actually runs
       # reports the same defects CI would.
-      - name: Unit tests (race)
-        run: make test
+      # `make coverage` runs the SAME race suite as `make test` over the same
+      # packages, plus a coverage profile, and then the coverage gate (#500).
+      # It replaces `make test` rather than running beside it, so the gate
+      # costs instrumentation overhead and not a second full test run. Nothing
+      # `make test` covered is lost: the only differences are
+      # ./test/buildgates/... (run in full by the Lint job's
+      # check-action-pins) and pkg/api/grpc/proto/qrdbv1 (generated code with
+      # no test files, so no tests to run).
+      #
+      # A failure here names every package that regressed, is new and under
+      # the floor, or stopped being measured -- all of them, in one pass.
+      - name: Unit tests (race) + coverage gate
+        run: make coverage
 
   test-sdk:
     name: Test (sdk/go module)
@@ -565,6 +616,12 @@ jobs:
       # Read from the shell rather than through a ${{ }} expression: that
       # context has resolved empty before and would hand compose a bare
       # "qrdb-int-" shared by every job, which is the collision this avoids.
+      # test/integration/auth, run by no workflow until #228. It is in-memory
+      # and needs no compose stack, so it runs FIRST: about two seconds, and
+      # the cheapest integration failure this job can report.
+      - name: Integration tests (auth, in-memory)
+        run: make integration-test-auth
+
       - name: Integration tests (standalone stack)
         run: |
           export INT_PROJECT="qrdb-int-${GITHUB_RUN_ID:-local}"
@@ -718,6 +775,57 @@ jobs:
       - name: go mod verify
         run: make mod-verify
 
+  # Trivy, BLOCKING (go-qrdb#479, owner-ruled 2026-09-22). This reverses the
+  # half of #48 that concerned trivy: it left this file because it was
+  # known-red (#42), and a required job that cannot pass is "a gate nobody can
+  # read". It has been green since 2026-09-20 (87682ea, 1889f2e), so that
+  # reason no longer applies.
+  #
+  # Why it has to be HERE and not only in nightly: trivy is the leg that
+  # actually caught CVE-2026-84445. govulncheck was clean on the affected grpc
+  # because that advisory has no Go-curated entry in vuln.go.dev -- a COVERAGE
+  # gap, not staleness, and no govulncheck setting closes it (see the `vuln`
+  # target and #480). A trivy that only runs overnight lets a newly introduced
+  # HIGH merge and be found the next morning.
+  #
+  # Only the CRITICAL/HIGH gate runs per push. The MEDIUM/LOW report stays in
+  # nightly.yml, where it "blocks no merge" by design, and so does the
+  # scheduled run -- which is what catches advisories published against a
+  # QUIET tree that nobody pushes to.
+  #
+  # Same DAG position as `security` (needs lint + build) under the staged
+  # fail-fast ruling, though trivy itself needs neither.
+  trivy:
+    name: Trivy
+    runs-on: ubuntu-latest
+    needs: [lint, build]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      # PINNED, both the install script and the binary, to the Makefile's
+      # TRIVY_VERSION. nightly.yml fetches install.sh from trivy's `main`
+      # branch with no version argument, so it runs whatever trivy is newest
+      # that night -- a moving ref, in a repository that SHA-pins every action
+      # because refs move (#367). A blocking gate cannot be allowed to change
+      # its own scanner between two pushes of the same tree.
+      - name: Install Trivy CLI (pinned)
+        run: |
+          v=$(make -s print-trivy-version)
+          for i in 1 2 3 4 5; do
+            curl -sfL "https://raw.githubusercontent.com/aquasecurity/trivy/${v}/contrib/install.sh" \
+              | sh -s -- -b /usr/local/bin "${v}" && exit 0
+            echo "trivy install attempt $i failed; retrying in $((i*10))s"
+            sleep $((i*10))
+          done
+          echo "trivy ${v} install failed after 5 attempts" >&2
+          exit 1
+
+      # `make trivy` refreshes the database and refuses to certify one older
+      # than TRIVY_DB_MAX_AGE_HOURS before scanning (#451), so a green result
+      # means a current database found nothing -- not merely that a scan ran.
+      - name: Trivy gate (fail on CRITICAL/HIGH)
+        run: make trivy
+
   ci-gate:
     name: CI Gate
     runs-on: ubuntu-latest
@@ -728,16 +836,17 @@ jobs:
     # success while jobs fail. Adding a job means adding it to `needs` AND to
     # the env block and the loop below.
     #
-    # `fips` and `trivy` are not here because they are not in this workflow at
-    # all any more: ci-template v1.9 moved both to nightly.yml (owner ruling
-    # 2026-08-20, go-qrdb#48). Both are known-red with tracked issues — fips on
-    # #18 and #20, trivy on #42 — so running them per push produced information
-    # we already had while holding a runner for up to 90 minutes.
+    # `fips` is not here because it is not in this workflow: ci-template v1.9
+    # moved it to nightly.yml (owner ruling 2026-08-20, go-qrdb#48), and it is
+    # waiting on a stability record of fourteen consecutive green scheduled
+    # runs before it is armed (#20, docs/seal/fips140-mode.md).
     #
-    # `trivy` was previously REQUIRED here, which meant the gate was red on
-    # every push from a known-red job. That is not a gate; it is a gate nobody
-    # can read. Removing it is the point of #48, not an incidental side effect
-    # of the move.
+    # `trivy` WAS removed under the same ruling and is back (#479, 2026-09-22).
+    # It had been REQUIRED here while known-red (#42), which meant the gate was
+    # red on every push from a job nobody could fix in that push -- "not a gate;
+    # a gate nobody can read." Removing it was the point of #48. It came back
+    # only once it was green, and only because the one advisory govulncheck
+    # structurally cannot see (a coverage gap, #480) is one trivy caught.
     #
     # ARMING EITHER ONE AGAIN is a deliberate act, and the whole act: move the
     # job back into this file, add it to `needs`, add its RESULT_ env var, and
@@ -745,7 +854,7 @@ jobs:
     # fail-open gate; a job that is required and cannot pass freezes the
     # repository without closing a single finding. Neither is acceptable, which
     # is why the two halves must move together.
-    needs: [lint, build, test, test-sdk, integration-standalone, security]
+    needs: [lint, build, test, test-sdk, integration-standalone, security, trivy]
     steps:
       - name: Verify every job succeeded
         env:
@@ -755,6 +864,7 @@ jobs:
           RESULT_TEST_SDK: ${{ needs.test-sdk.result }}
           RESULT_INTEGRATION_STANDALONE: ${{ needs.integration-standalone.result }}
           RESULT_SECURITY: ${{ needs.security.result }}
+          RESULT_TRIVY: ${{ needs.trivy.result }}
         run: |
           status=0
           # skipped is not the same as failed, and BOTH fail the gate. A
@@ -778,4 +888,5 @@ jobs:
           check test-sdk "$RESULT_TEST_SDK"
           check integration-standalone "$RESULT_INTEGRATION_STANDALONE"
           check security "$RESULT_SECURITY"
+          check trivy "$RESULT_TRIVY"
           exit $status

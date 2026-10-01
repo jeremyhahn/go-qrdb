@@ -49,6 +49,12 @@ func (r *recordingIndexServicer) CreateIndex(_ context.Context, _, _ string, cfg
 	return nil
 }
 func (r *recordingIndexServicer) DropIndex(context.Context, string) error { return nil }
+
+// DropOwnedIndex answers as DropIndex does: this double records no
+// ownership, and no test that uses it exercises an owner-checked drop.
+func (r *recordingIndexServicer) DropOwnedIndex(ctx context.Context, name, _ string) error {
+	return r.DropIndex(ctx, name)
+}
 func (r *recordingIndexServicer) Query(context.Context, string, []byte) ([][]byte, error) {
 	return nil, nil
 }

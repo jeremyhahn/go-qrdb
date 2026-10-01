@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
@@ -44,10 +45,6 @@ type systemMigrationRequest struct {
 	done chan error
 }
 
-// ErrSystemMigrationInProgress is returned when a system migration is requested
-// while one is already pending in the boot loop.
-var ErrSystemMigrationInProgress = errors.New("qrdbd: a system encryption migration is already in progress")
-
 // daemonSystemMigrator implements service.EncryptionMigrator for the standalone
 // daemon's SYSTEM scope. It does not perform the migration itself: it enqueues
 // the request onto the boot loop's channel, where the data plane is recycled
@@ -56,12 +53,49 @@ var ErrSystemMigrationInProgress = errors.New("qrdbd: a system encryption migrat
 // type only ever receives ScopeSystem.
 type daemonSystemMigrator struct {
 	ch chan *systemMigrationRequest
+	// sealEnabled mirrors f.sealConfig.Enabled at construction time. This
+	// migrator is wired into gRPC/Unix unconditionally in clustered mode
+	// (server.WithEncryptionMigrator does not itself gate on seal state, unlike
+	// REST's barrierOn-gated route), so a seal-disabled daemon has no seal
+	// subsystem (sealSub is nil in the boot loop) but can still receive an
+	// EnableEncryption request over those transports. Rejecting it here, before
+	// the request is ever enqueued, keeps handleSystemMigration's sealSub
+	// dereference from ever running against a nil subsystem instead of
+	// tearing the data plane down first and panicking on it (go-qrdb#550
+	// review).
+	sealEnabled bool
+	// inProgress guards the ENTIRE lifetime of an accepted migration request,
+	// from acceptance here to its terminal outcome inside the boot loop --
+	// not channel occupancy, which only reflects whether a request is
+	// sitting unread in the buffer. The boot loop removes a request from ch
+	// the instant its select case fires, before handleSystemMigration does
+	// any work, so a channel-occupancy check alone leaves the entire
+	// migration (quiesce, re-encrypt, reboot) unguarded: a second request
+	// could enqueue during that window and, after the reboot into the newly
+	// keyed (but sealed) barrier, tear the barely-booted data plane down
+	// again. CompareAndSwap makes acceptance atomic and exclusive; it is
+	// cleared only when the accepted request's terminal outcome is known
+	// (see EnableEncryption), never merely because a caller stopped waiting
+	// on it (go-qrdb#550 review).
+	inProgress atomic.Bool
 }
 
 // newDaemonSystemMigrator constructs the daemon system migrator over the boot
-// loop's request channel.
-func newDaemonSystemMigrator(ch chan *systemMigrationRequest) *daemonSystemMigrator {
-	return &daemonSystemMigrator{ch: ch}
+// loop's request channel. sealEnabled is f.sealConfig.Enabled: when false,
+// EnableEncryption is rejected before enqueueing, since there is no seal
+// subsystem for the boot loop to migrate.
+func newDaemonSystemMigrator(ch chan *systemMigrationRequest, sealEnabled bool) *daemonSystemMigrator {
+	return &daemonSystemMigrator{ch: ch, sealEnabled: sealEnabled}
+}
+
+// buildSysMigrator wires the daemon's seal.enabled config decision into the
+// system migrator. It exists as a named, directly-testable seam between
+// runStart's flags and newDaemonSystemMigrator specifically so a future edit
+// to runStart that hardcodes sealEnabled (instead of reading it from f) fails
+// a fast unit test instead of surfacing only as the go-qrdb#550 panic under
+// gRPC/Unix load on a live seal-disabled daemon.
+func buildSysMigrator(f *startFlags, ch chan *systemMigrationRequest) *daemonSystemMigrator {
+	return newDaemonSystemMigrator(ch, f.sealConfig.Enabled)
 }
 
 // Compile-time check.
@@ -70,33 +104,66 @@ var _ service.EncryptionMigrator = (*daemonSystemMigrator)(nil)
 // EnableEncryption enqueues a system-scope migration onto the boot loop and
 // blocks until the recycle reports its outcome. A non-system scope is a routing
 // error (the scoped composite should never deliver one here). A second request
-// while one is pending returns ErrSystemMigrationInProgress.
+// while one is pending returns seal.ErrMigrationInProgress. A seal-disabled
+// node (no seal subsystem to migrate) returns ErrMigrationProviderUnavailable.
 func (m *daemonSystemMigrator) EnableEncryption(ctx context.Context, scope service.BarrierScope, opts seal.MigrationOptions) error {
-	// On every path that does NOT hand the request off to the boot loop, wipe the
-	// plaintext unlock credential here — the recycler copied it for the async
-	// system path and only handleSystemMigration (the enqueued path) wipes it.
+	// On every path that does NOT hand the request off to the boot loop, destroy
+	// the unlock credential here — the recycler built it for the async system
+	// path and only handleSystemMigration (the enqueued path) destroys it.
+	if !m.sealEnabled {
+		opts.Credentials.Secret.Destroy()
+		return service.ErrMigrationProviderUnavailable
+	}
 	if scope.Kind != service.ScopeSystem {
-		wipe(opts.Credentials.Secret)
+		opts.Credentials.Secret.Destroy()
 		return service.ErrMigrationProviderUnavailable
 	}
 	if err := opts.Validate(); err != nil {
-		wipe(opts.Credentials.Secret)
+		opts.Credentials.Secret.Destroy()
 		return err
+	}
+	if !m.inProgress.CompareAndSwap(false, true) {
+		// seal.ErrMigrationInProgress, not a command-local sentinel: REST
+		// (pkg/api/rest/handlers_barrier.go) and gRPC/Unix
+		// (pkg/api/grpc/service_barrier.go) already map it to 409/
+		// FailedPrecondition for the tenant-scope path, and a private
+		// errors.New here would fall through both mappers' defaults to a
+		// misleading 500/Internal for an entirely routine, expected
+		// condition (go-qrdb#550 review).
+		opts.Credentials.Secret.Destroy()
+		return seal.ErrMigrationInProgress
 	}
 	req := &systemMigrationRequest{opts: opts, done: make(chan error, 1)}
 	select {
 	case m.ch <- req:
-		// Enqueued; the boot loop (handleSystemMigration) owns + wipes the
+		// Enqueued; the boot loop (handleSystemMigration) owns + destroys the
 		// credential. Wait for the recycle outcome.
 		select {
 		case err := <-req.done:
+			m.inProgress.Store(false)
 			return err
 		case <-ctx.Done():
+			// The migration keeps running server-side after this caller stops
+			// waiting on it -- releasing inProgress here (instead of on the
+			// migration's own terminal outcome) would let a second request
+			// enqueue while the first is still tearing down and re-encrypting
+			// the data plane. Hand the release off to a goroutine that waits
+			// for the SAME terminal signal a non-cancelled caller would have.
+			go func() {
+				<-req.done
+				m.inProgress.Store(false)
+			}()
 			return ctx.Err()
 		}
 	default:
-		wipe(opts.Credentials.Secret)
-		return ErrSystemMigrationInProgress
+		// Unreachable in practice: inProgress already serializes entry, and
+		// ch has capacity for exactly the one request CompareAndSwap just
+		// admitted. Kept as defense in depth against a CAS/channel desync
+		// rather than blocking forever on a full buffered channel; release
+		// the slot this call reserved since nothing was actually enqueued.
+		m.inProgress.Store(false)
+		opts.Credentials.Secret.Destroy()
+		return seal.ErrMigrationInProgress
 	}
 }
 
@@ -126,6 +193,19 @@ func handleSystemMigration(
 	bootCancel context.CancelFunc,
 	sealSub *sealSubsystem,
 ) (reboot bool, err error) {
+	// Defensive: daemonSystemMigrator.EnableEncryption already rejects a
+	// seal-disabled node with ErrMigrationProviderUnavailable before ever
+	// enqueueing a request, so sealSub should never be nil here. This guard
+	// exists so a future caller of handleSystemMigration that bypasses that
+	// check gets a typed error instead of the nil-pointer panic this function
+	// used to hit at sealSub.SealBarrier below (go-qrdb#550 review).
+	if sealSub == nil {
+		req.opts.Credentials.Secret.Destroy()
+		rerr := &SystemMigrationSealDisabledError{}
+		req.done <- rerr
+		return false, rerr
+	}
+
 	slog.Info("system encryption migration requested; quiescing data plane in-process",
 		slog.String("strategy", string(req.opts.TargetStrategy)))
 
@@ -182,10 +262,10 @@ func handleSystemMigration(
 	walDir := filepath.Join(f.dataDir, "wal")
 
 	rerr := recodeSystemBarrier(context.Background(), sealSub.SealBarrier, pebbleDirs, walDir, req.opts)
-	// The recycle has consumed the unlock credential; wipe the plaintext copy the
+	// The recycle has consumed the unlock credential; destroy the credential the
 	// reconciler handed off (the system-scope path owns it — the reconciler can't
-	// wipe it because this recycle runs async across the in-process reboot).
-	wipe(req.opts.Credentials.Secret)
+	// destroy it because this recycle runs async across the in-process reboot).
+	req.opts.Credentials.Secret.Destroy()
 	req.done <- rerr
 	if rerr != nil {
 		// Do NOT reboot into a half-migrated state. The crash-safe journal plus

@@ -30,6 +30,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // ---------------------------------------------------------------------------
@@ -46,6 +47,7 @@ type mockUserService struct {
 	listUsersFn         func(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error)
 	enableUserFn        func(ctx context.Context, id uint64) error
 	disableUserFn       func(ctx context.Context, id uint64) error
+	addCertBindingFn    func(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*user.User, error)
 	removeCertBindingFn func(ctx context.Context, userID uint64, thumbprint string) (*user.User, error)
 }
 
@@ -116,7 +118,10 @@ func (m *mockUserService) UserByCertThumbprint(_ context.Context, _ string) (*us
 	return nil, nil
 }
 
-func (m *mockUserService) AddCertBinding(_ context.Context, _ uint64, _ string, _ int64) (*user.User, error) {
+func (m *mockUserService) AddCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*user.User, error) {
+	if m.addCertBindingFn != nil {
+		return m.addCertBindingFn(ctx, userID, thumbprint, notAfterUnix)
+	}
 	return nil, nil
 }
 
@@ -260,7 +265,7 @@ func testUser() *user.User {
 		Username:  "alice",
 		TenantID:  "tenant-1",
 		RoleIDs:   []string{"role-admin"},
-		Enabled:   true,
+		Lifecycle: user.LifecycleActive,
 		System:    false,
 		CreatedAt: testTime,
 		UpdatedAt: testTime.Add(time.Hour),
@@ -339,8 +344,8 @@ func TestHandleCreateUser_Success(t *testing.T) {
 	if resp.TenantID != "tenant-1" {
 		t.Fatalf("tenantID = %q, want %q", resp.TenantID, "tenant-1")
 	}
-	if !resp.Enabled {
-		t.Fatal("enabled should be true")
+	if resp.Lifecycle != string(user.LifecycleActive) {
+		t.Fatalf("lifecycle = %q, want %q", resp.Lifecycle, user.LifecycleActive)
 	}
 }
 
@@ -604,7 +609,7 @@ func TestHandleGetUser_Uint64IDRoundTrip(t *testing.T) {
 	svc := &mockUserService{
 		getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
 			got = id
-			return &user.User{ID: id, Username: "snowflake", Enabled: true}, nil
+			return &user.User{ID: id, Username: "snowflake", Lifecycle: user.LifecycleActive}, nil
 		},
 	}
 	srv := newAuthServer(svc, nil, nil)
@@ -2358,11 +2363,28 @@ func TestMapUserError_AllTypes(t *testing.T) {
 			wantCode: http.StatusConflict,
 		},
 		{
+			// A store-generated user id collided with an existing identity
+			// claim or primary record (go-qrdb#555's atomic create path) — a
+			// client-correctable conflict exactly as a taken username is, not
+			// a server fault.
+			name:     "UserIDExistsError",
+			err:      &user.UserIDExistsError{ID: 42, TenantID: "t1"},
+			wantCode: http.StatusConflict,
+		},
+		{
 			// A taken email is a client-correctable conflict, not a server
 			// fault. Before this case it fell through to the StoreError arm
 			// and surfaced as 500 (Codex review, PR #191).
 			name:     "EmailExistsError",
 			err:      &user.EmailExistsError{Email: "alice@example.com", TenantID: "t1"},
+			wantCode: http.StatusConflict,
+		},
+		{
+			// A thumbprint already bound to another user: the store's refusal
+			// of an mTLS identity takeover, a client-visible conflict and not
+			// a server fault. Fell through to 500 before go-qrdb#536.
+			name:     "CertBindingConflictError",
+			err:      &user.CertBindingConflictError{Thumbprint: "AAAA", BoundUserID: 7, TargetUserID: 9},
 			wantCode: http.StatusConflict,
 		},
 		{
@@ -2434,6 +2456,19 @@ func TestMapUserError_AllTypes(t *testing.T) {
 			wantCode: http.StatusInternalServerError,
 		},
 		{
+			// The atomic-create sibling (go-qrdb#555): a generated id
+			// collision as the wrapper's cause must outrank the plain 409
+			// the cause alone would produce, the same way the username and
+			// email causes above do.
+			name: "IndexCompensationError wrapping UserIDExistsError",
+			err: &user.IndexCompensationError{
+				Op: "create", UserID: 7,
+				Cause:    &user.UserIDExistsError{ID: 7},
+				Failures: []error{errors.New("release failed")},
+			},
+			wantCode: http.StatusInternalServerError,
+		},
+		{
 			name:     "SystemUserImmutableError",
 			err:      &user.SystemUserImmutableError{ID: 9001},
 			wantCode: http.StatusForbidden,
@@ -2452,9 +2487,9 @@ func TestMapUserError_AllTypes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := mapUserError(tt.err)
+			got := mapHTTPError(tt.err)
 			if got != tt.wantCode {
-				t.Fatalf("mapUserError(%T) = %d, want %d", tt.err, got, tt.wantCode)
+				t.Fatalf("mapHTTPError(%T) = %d, want %d", tt.err, got, tt.wantCode)
 			}
 		})
 	}
@@ -2520,9 +2555,9 @@ func TestMapRoleError_AllTypes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := mapRoleError(tt.err)
+			got := mapHTTPError(tt.err)
 			if got != tt.wantCode {
-				t.Fatalf("mapRoleError(%T) = %d, want %d", tt.err, got, tt.wantCode)
+				t.Fatalf("mapHTTPError(%T) = %d, want %d", tt.err, got, tt.wantCode)
 			}
 		})
 	}
@@ -2583,9 +2618,9 @@ func TestMapCertError_AllTypes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := mapCertError(tt.err)
+			got := mapHTTPError(tt.err)
 			if got != tt.wantCode {
-				t.Fatalf("mapCertError(%T) = %d, want %d", tt.err, got, tt.wantCode)
+				t.Fatalf("mapHTTPError(%T) = %d, want %d", tt.err, got, tt.wantCode)
 			}
 		})
 	}
@@ -2778,7 +2813,7 @@ func TestUserResponse_WireFormat_SnakeCaseStringID(t *testing.T) {
 	if got := string(wire["id"]); got != `"58370771029856256"` {
 		t.Fatalf("id on the wire = %s, want string \"58370771029856256\"", got)
 	}
-	for _, key := range []string{"username", "tenant_id", "role_ids", "enabled", "system", "created_at", "updated_at"} {
+	for _, key := range []string{"username", "tenant_id", "role_ids", "lifecycle", "system", "created_at", "updated_at"} {
 		if _, ok := wire[key]; !ok {
 			t.Fatalf("wire key %q missing; got keys %v", key, wireKeys(wire))
 		}
@@ -2787,6 +2822,12 @@ func TestUserResponse_WireFormat_SnakeCaseStringID(t *testing.T) {
 		if _, ok := wire[stale]; ok {
 			t.Fatalf("stale camelCase wire key %q present", stale)
 		}
+	}
+	if _, ok := wire["enabled"]; ok {
+		t.Fatal("removed wire key \"enabled\" present; lifecycle is the only account state")
+	}
+	if _, ok := wire["group_ids"]; ok {
+		t.Fatal("removed wire key \"group_ids\" present")
 	}
 }
 
@@ -2983,20 +3024,26 @@ func TestHandleGetUserByEmail_PathFormIsGone(t *testing.T) {
 	}
 }
 
-// `enabled` collapses pending, suspended, locked, disabled and deleting into a
-// single false, so the canonical state travels beside it. A REST client that
-// needs to tell an operator hold from an automated lockout reads `lifecycle`.
+// Lifecycle is the only account state a REST client reads: it travels
+// verbatim, and the removed `enabled` projection does not reappear beside it.
 func TestUserToResponse_CarriesLifecycle(t *testing.T) {
 	u := testUser()
 	u.Lifecycle = user.LifecycleSuspended
-	u.Enabled = false
 
 	resp := userToResponse(u)
 	if resp.Lifecycle != string(user.LifecycleSuspended) {
 		t.Fatalf("lifecycle = %q, want %q", resp.Lifecycle, user.LifecycleSuspended)
 	}
-	if resp.Enabled {
-		t.Fatal("enabled should project false for a suspended account")
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := raw["enabled"]; ok {
+		t.Fatalf("response carries the removed \"enabled\" key: %s", data)
 	}
 }
 
@@ -3007,19 +3054,40 @@ func TestUserToResponse_CarriesEveryIdentityField(t *testing.T) {
 	at := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	u := testUser()
 	u.Lifecycle = user.LifecycleActive
-	u.GroupIDs = []string{"platform", "sre"}
 	u.AuthMethods = []string{"webauthn", "piv"}
 	u.LastAuth = &at
 
 	resp := userToResponse(u)
-	if len(resp.GroupIDs) != 2 || resp.GroupIDs[0] != "platform" {
-		t.Errorf("group_ids: got %v", resp.GroupIDs)
-	}
 	if len(resp.AuthMethods) != 2 || resp.AuthMethods[1] != "piv" {
 		t.Errorf("auth_methods: got %v", resp.AuthMethods)
 	}
 	if resp.LastAuth != at.Format(time.RFC3339) {
 		t.Errorf("last_auth: got %q, want %q", resp.LastAuth, at.Format(time.RFC3339))
+	}
+}
+
+// The binding set crosses the wire in full, expired ones included, with the
+// thumbprint byte-identical to the enrolled one (go-qrdb#535).
+func TestUserToResponse_CarriesCertBindingsIncludingExpired(t *testing.T) {
+	expired := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	u := testUser()
+	u.CertBindings = []user.CertBinding{
+		{Thumbprint: "AAAA", Kind: user.CertBindingSPKIThumbprint},
+		{Thumbprint: "BBBB", Kind: user.CertBindingSPKIThumbprint, NotAfter: expired},
+	}
+	resp := userToResponse(u)
+	if len(resp.CertBindings) != 2 {
+		t.Fatalf("cert_bindings: got %+v, want both bindings", resp.CertBindings)
+	}
+	if resp.CertBindings[0] != (transport.CertBinding{Thumbprint: "AAAA", Kind: "spki_thumbprint"}) {
+		t.Errorf("cert_bindings[0] = %+v", resp.CertBindings[0])
+	}
+	if resp.CertBindings[1] != (transport.CertBinding{Thumbprint: "BBBB", Kind: "spki_thumbprint", NotAfter: "2020-01-01T00:00:00Z"}) {
+		t.Errorf("cert_bindings[1] = %+v; the expired binding must be listed with its expiry", resp.CertBindings[1])
+	}
+	u.CertBindings = nil
+	if got := userToResponse(u).CertBindings; got != nil {
+		t.Errorf("no bindings must render as absent, got %+v", got)
 	}
 }
 
@@ -3038,10 +3106,9 @@ func TestFormatLastAuth_NeverAuthenticatedIsAbsentNotEpoch(t *testing.T) {
 // The three-way distinction the domain request depends on must survive the
 // wire: an ABSENT key leaves the set alone, an EMPTY array clears it. JSON
 // carries that for free — absent and `null` both decode to nil, `[]` decodes to
-// a non-nil empty slice — and getting it wrong makes a revocation silently do
-// nothing, which is the worst possible failure mode for removing an access
-// grant.
-func TestHandleUpdateUser_GroupIDsAbsentVersusEmptyVersusSet(t *testing.T) {
+// a non-nil empty slice — and getting it wrong makes a clear silently do
+// nothing.
+func TestHandleUpdateUser_AuthMethodsAbsentVersusEmptyVersusSet(t *testing.T) {
 	cases := []struct {
 		name        string
 		body        string
@@ -3050,9 +3117,9 @@ func TestHandleUpdateUser_GroupIDsAbsentVersusEmptyVersusSet(t *testing.T) {
 		wantSet     []string
 	}{
 		{name: "absent leaves alone", body: `{"username":"bob"}`, wantNil: true},
-		{name: "null leaves alone", body: `{"group_ids":null}`, wantNil: true},
-		{name: "empty array clears", body: `{"group_ids":[]}`, wantCleared: true},
-		{name: "set replaces", body: `{"group_ids":["platform","sre"]}`, wantSet: []string{"platform", "sre"}},
+		{name: "null leaves alone", body: `{"auth_methods":null}`, wantNil: true},
+		{name: "empty array clears", body: `{"auth_methods":[]}`, wantCleared: true},
+		{name: "set replaces", body: `{"auth_methods":["webauthn","piv"]}`, wantSet: []string{"webauthn", "piv"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3072,16 +3139,16 @@ func TestHandleUpdateUser_GroupIDsAbsentVersusEmptyVersusSet(t *testing.T) {
 			}
 			switch {
 			case tc.wantNil:
-				if got.GroupIDs != nil {
-					t.Fatalf("GroupIDs = %#v, want nil (leave alone)", got.GroupIDs)
+				if got.AuthMethods != nil {
+					t.Fatalf("AuthMethods = %#v, want nil (leave alone)", got.AuthMethods)
 				}
 			case tc.wantCleared:
-				if got.GroupIDs == nil || len(got.GroupIDs) != 0 {
-					t.Fatalf("GroupIDs = %#v, want a non-nil empty slice (clear)", got.GroupIDs)
+				if got.AuthMethods == nil || len(got.AuthMethods) != 0 {
+					t.Fatalf("AuthMethods = %#v, want a non-nil empty slice (clear)", got.AuthMethods)
 				}
 			default:
-				if len(got.GroupIDs) != len(tc.wantSet) {
-					t.Fatalf("GroupIDs = %#v, want %v", got.GroupIDs, tc.wantSet)
+				if len(got.AuthMethods) != len(tc.wantSet) {
+					t.Fatalf("AuthMethods = %#v, want %v", got.AuthMethods, tc.wantSet)
 				}
 			}
 		})
@@ -3121,16 +3188,13 @@ func TestHandleCreateUser_CarriesIdentityFields(t *testing.T) {
 	}
 	srv := newAuthServer(svc, nil, nil)
 
-	body := `{"username":"bob","email":"bob@example.com","group_ids":["platform"],` +
+	body := `{"username":"bob","email":"bob@example.com",` +
 		`"auth_methods":["webauthn"],"lifecycle":"pending"}`
 	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(body))
 	srv.dispatch(httptest.NewRecorder(), r)
 
 	if got == nil {
 		t.Fatal("the service was never called")
-	}
-	if len(got.GroupIDs) != 1 || got.GroupIDs[0] != "platform" {
-		t.Errorf("GroupIDs = %v", got.GroupIDs)
 	}
 	if len(got.AuthMethods) != 1 || got.AuthMethods[0] != "webauthn" {
 		t.Errorf("AuthMethods = %v", got.AuthMethods)

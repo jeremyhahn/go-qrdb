@@ -130,15 +130,26 @@ func (s *Server) bearerChallengeHandler(next http.Handler) http.Handler {
 //
 // The CODE comes from authmw.GRPCError -- the shared classifier REST and gRPC
 // already answer from -- and not from the retryable/not split the prose uses,
-// so the four auth failure classes keep four distinct codes instead of
-// collapsing into two. A THROTTLED caller in particular reaches an MCP client
-// as RESOURCE_EXHAUSTED, the same answer gRPC gives and the sibling of REST's
+// so the five auth failure classes keep their own codes instead of collapsing
+// into two. A THROTTLED caller in particular reaches an MCP client as
+// RESOURCE_EXHAUSTED, the same answer gRPC gives and the sibling of REST's
 // 429; the coarser split would have said UNAVAILABLE and lost the reason.
+//
+// Two of the five DO share a code, deliberately: AuthFailureUnavailable (the
+// node could not evaluate the request -- a sealed tenant, an unreadable user
+// store) and AuthFailureAuditUnavailable (it evaluated but could not RECORD
+// the decision) both carry CodeUnavailable, because go-qrdb#460 split that
+// pair for CONTROL FLOW inside pkg/auth/middleware, not for the wire: every
+// transport, MCP included, is meant to answer both identically. What must
+// never collapse is the retryable/not distinction between classes that mean
+// different things to a caller -- Unauthenticated, Unauthorized,
+// RateLimited, and the (Audit)Unavailable pair -- not the count of classes
+// itself.
 func authzToolError(err error) *mcpgo.CallToolResult {
 	// PermissionDenied is the fallback for a failure the classifier does not
 	// recognise, matching the wording below and the fallback gRPC's
 	// authorization interceptor passes.
-	code := classifyToolError(authmw.GRPCError(err, codes.PermissionDenied))
+	code := ServiceErrorCode(authmw.GRPCError(err, codes.PermissionDenied))
 
 	if authmw.ClassifyAuthError(err).Retryable() {
 		return toolErrorResult("", code, "authorization unavailable, retry: "+err.Error())

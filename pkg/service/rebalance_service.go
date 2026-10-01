@@ -24,7 +24,9 @@ import (
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
+	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 )
 
@@ -167,7 +169,7 @@ const hotspotThreshold = 1.5
 // optional raftHost field enables the observer-first membership change and
 // live-leader routing moveTenantGroupShard performs for that MOVE -- see
 // SetRaftHost. When placementStore is nil, ExecuteRebalance falls back to
-// the generic system-shard path (RequestAddNode only), leaving existing
+// the generic path (moveGenericShard), leaving existing
 // non-IsolationRaft behavior intact.
 type RebalanceService struct {
 	host           Host
@@ -407,8 +409,13 @@ func (s *RebalanceService) CreateRebalancePlan(ctx context.Context, opts *Rebala
 //     source node via TenantShardReconciler. See moveTenantGroupShard's doc
 //     comment for the full step sequence.
 //
-//   - Generic (system) shard: unchanged path — calls RequestAddNode only, as
-//     system shards share the cluster-wide barrier key and need no key delivery.
+//   - Generic (non-dedicated) shard: moveGenericShard adds a replica on the
+//     destination with RequestAddNodeWithIdentity, committing the identity the
+//     system shard committed for the destination host. Generic shards share
+//     the cluster-wide barrier key and need no key delivery. The system shard
+//     itself, a destination already hosting the shard, and a destination with
+//     no committed identity are refused with a typed error, which is logged
+//     and counted as a failed move.
 //
 // When placementStore is nil all moves are treated as generic shards, so
 // existing deployments without Phase 4c-2 wiring are unaffected.
@@ -458,33 +465,13 @@ func (s *RebalanceService) ExecuteRebalance(ctx context.Context, plan *Rebalance
 			continue
 		}
 
-		// Generic (system-shard) path: RequestAddNode only.
-		var shardInfo *quicraft.ShardInfo
-		for i, si := range info.ShardInfoList {
-			if si.ShardID == move.ShardID {
-				shardInfo = &info.ShardInfoList[i]
-				break
-			}
-		}
-		if shardInfo == nil {
-			failed++
-			continue
-		}
-
-		var maxID uint64
-		for rid := range shardInfo.Nodes {
-			if rid > maxID {
-				maxID = rid
-			}
-		}
-		newReplicaID := maxID + 1
-
-		rs, err := s.host.RequestAddNode(ctx, move.ShardID, newReplicaID, move.ToNode, 0)
-		if err != nil {
-			failed++
-			continue
-		}
-		if _, err := rs.Result(); err != nil {
+		// Generic (non-dedicated) path: RequestAddNodeWithIdentity only.
+		if err := s.moveGenericShard(ctx, info, move); err != nil {
+			s.logger.Warn("rebalance: move refused",
+				slog.Uint64("shard_id", move.ShardID),
+				slog.String("from_node", move.FromNode),
+				slog.String("to_node", move.ToNode),
+				slog.Any("error", err))
 			failed++
 			continue
 		}
@@ -509,6 +496,64 @@ func (s *RebalanceService) ExecuteRebalance(ctx context.Context, plan *Rebalance
 		Duration:       duration,
 		FinalImbalance: finalImbalance,
 	}, nil
+}
+
+// moveGenericShard adds a replica of a non-dedicated shard on move.ToNode.
+// The system shard is refused (*RebalanceSystemShardMoveError), as is a
+// destination the shard's committed membership already names as a voter,
+// observer or witness (*RebalanceTargetHostsReplicaError). The new replica ID
+// is past every ID the membership has used, removed ones included. Its
+// identity is the one the system shard committed for the destination host,
+// found by its address; a destination no committed membership names is
+// refused with the *MemberIdentityError ResolveMemberIdentity returns, since a
+// rebalance has no operator to supply one.
+func (s *RebalanceService) moveGenericShard(ctx context.Context, info *quicraft.NodeHostInfo, move RebalanceMovePlan) error {
+	if move.ShardID == shard.ShardKV {
+		return &RebalanceSystemShardMoveError{ShardID: move.ShardID, ToNode: move.ToNode}
+	}
+	var shardInfo *quicraft.ShardInfo
+	for i, si := range info.ShardInfoList {
+		if si.ShardID == move.ShardID {
+			shardInfo = &info.ShardInfoList[i]
+			break
+		}
+	}
+	if shardInfo == nil {
+		return quicraft.ErrShardNotFound
+	}
+
+	// The committed membership, not this host's view of its voters, is what
+	// says whether the destination already holds a replica — as a voter, an
+	// observer or a witness — and which replica IDs are spent: a removed ID
+	// is never reused.
+	m, err := s.host.SyncGetShardMembership(ctx, move.ShardID)
+	if err != nil {
+		return &cluster.MembershipReadError{ShardID: move.ShardID, Err: err}
+	}
+	var maxID uint64
+	for _, roster := range []map[uint64]string{m.Nodes, m.Observers, m.Witnesses} {
+		for rid, addr := range roster {
+			if addr == move.ToNode {
+				return &RebalanceTargetHostsReplicaError{ShardID: move.ShardID, ToNode: move.ToNode}
+			}
+			maxID = max(maxID, rid)
+		}
+	}
+	for rid := range m.Removed {
+		maxID = max(maxID, rid)
+	}
+	newReplicaID := maxID + 1
+
+	identity, err := ResolveMemberIdentity(ctx, s.host, move.ShardID, newReplicaID, move.ToNode, "")
+	if err != nil {
+		return err
+	}
+	rs, err := s.host.RequestAddNodeWithIdentity(ctx, move.ShardID, newReplicaID, move.ToNode, identity, 0)
+	if err != nil {
+		return err
+	}
+	_, err = rs.Result()
+	return err
 }
 
 // buildShardPlacementIndex lists all placements from the store and returns a

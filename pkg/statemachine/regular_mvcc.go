@@ -104,9 +104,18 @@ func (r *RegularStateMachine) handleMVCCCompact(payload []byte, revision uint64)
 // wire types to statemachine-level types, and delegates to the configured
 // MVCCStore. Returns the transaction revision as the result value and
 // encodes the succeeded flag into Result.Data.
-func (r *RegularStateMachine) handleTransaction(payload []byte, _ uint64) (sm.Result, error) {
+//
+// Without an MVCCStore it runs on the NATIVE plane against the map itself,
+// with the same compare semantics as the default pebble state machine; see
+// native_txn.go.
+func (r *RegularStateMachine) handleTransaction(payload []byte, revision uint64) (sm.Result, error) {
 	if r.mvccStore == nil {
-		return sm.Result{}, &ServiceNotConfiguredError{Service: "mvcc"}
+		out, err := applyNativeTransaction(regularKeyspace{r}, payload)
+		if err != nil {
+			return sm.Result{}, err
+		}
+		notifyMutations(r.watchManager, out.applied, revision)
+		return transactionResult(out, revision), nil
 	}
 
 	txn, err := protocol.DecodeTransaction(payload)

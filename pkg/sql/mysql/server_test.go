@@ -117,10 +117,10 @@ func (m *mockAdminService) Status(_ context.Context) (*service.StatusInfo, error
 func (m *mockAdminService) Peers(_ context.Context) (*service.PeersInfo, error) {
 	return &service.PeersInfo{}, nil
 }
-func (m *mockAdminService) AddMember(_ context.Context, _, _ uint64, _ string) error { return nil }
-func (m *mockAdminService) RemoveMember(_ context.Context, _, _ uint64) error        { return nil }
-func (m *mockAdminService) RequestSnapshot(_ context.Context, _ uint64) error        { return nil }
-func (m *mockAdminService) Drain(_ context.Context) error                            { return nil }
+func (m *mockAdminService) AddMember(_ context.Context, _, _ uint64, _, _ string) error { return nil }
+func (m *mockAdminService) RemoveMember(_ context.Context, _, _ uint64) error           { return nil }
+func (m *mockAdminService) RequestSnapshot(_ context.Context, _ uint64) error           { return nil }
+func (m *mockAdminService) Drain(_ context.Context) error                               { return nil }
 func (m *mockAdminService) Capabilities(_ context.Context) (*capabilities.Capabilities, error) {
 	caps := capabilities.Get()
 	return &caps, nil

@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/internal/collectionpb"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -273,7 +274,7 @@ func TestCollectionInfoToProto_Fields(t *testing.T) {
 		DocumentCount: 42,
 		CreatedAt:     now,
 	}
-	got := collectionInfoToProto(info)
+	got := collectionpb.InfoToProto(info)
 	if got.GetName() != "col1" {
 		t.Errorf("expected 'col1', got %q", got.GetName())
 	}

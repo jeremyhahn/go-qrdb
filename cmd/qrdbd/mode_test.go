@@ -27,6 +27,7 @@ import (
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
+	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 )
 
@@ -106,22 +107,26 @@ func TestLocalDataPlaneCloser_ClosesBackendThenStorage(t *testing.T) {
 	assert.Error(t, err, "storage must be closed by the closer")
 }
 
-// TestValidateSMStorageFlags mirrors the config-level sm_storage rules on
-// the flags-only boot path.
-func TestValidateSMStorageFlags(t *testing.T) {
+// TestResolveCreateFunc_SMStorage pins the --sm-storage rules on the
+// flags-only boot path. Which state machines are storage-generic is the
+// registry's answer (Descriptor.StorageGeneric), so a new storage-generic type
+// needs no change here.
+func TestResolveCreateFunc_SMStorage(t *testing.T) {
 	t.Parallel()
+	root := t.TempDir()
 
-	if err := validateSMStorageFlags("pebble", "", ""); err != nil {
-		t.Fatalf("empty sm-storage must validate: %v", err)
-	}
-	if err := validateSMStorageFlags("disk", "", "file"); err != nil {
-		t.Fatalf("disk+file must validate: %v", err)
-	}
-	if err := validateSMStorageFlags("standard", "fast", "memory"); err != nil {
-		t.Fatalf("composite fast backend must validate: %v", err)
+	for _, ok := range []struct{ smType, smBackend, kind string }{
+		{"pebble", "", ""},
+		{"disk", "", "file"},
+		{"fast", "", "memory"},
+		{"standard", "fast", "memory"},
+	} {
+		if _, err := resolveCreateFunc(ok.smType, ok.smBackend, statemachine.StorageConfig{Root: root, Kind: ok.kind}); err != nil {
+			t.Fatalf("%s/%s over %q must resolve: %v", ok.smType, ok.smBackend, ok.kind, err)
+		}
 	}
 
-	err := validateSMStorageFlags("disk", "", "objstore")
+	_, err := resolveCreateFunc("disk", "", statemachine.StorageConfig{Root: root, Kind: "objstore"})
 	var unknown *UnknownSMStorageError
 	if !errors.As(err, &unknown) {
 		t.Fatalf("objstore: got %v, want *UnknownSMStorageError", err)
@@ -130,9 +135,24 @@ func TestValidateSMStorageFlags(t *testing.T) {
 		t.Errorf("objstore refusal %q must explain the tier positioning", err.Error())
 	}
 
-	err = validateSMStorageFlags("mvcc", "", "file")
-	var mismatch *SMStorageTypeMismatchError
-	if !errors.As(err, &mismatch) {
-		t.Fatalf("pebble-native mismatch: got %v, want *SMStorageTypeMismatchError", err)
+	for _, own := range []string{"mvcc", "pebble", "memory", "highperf"} {
+		_, err = resolveCreateFunc(own, "", statemachine.StorageConfig{Root: root, Kind: "file"})
+		var mismatch *SMStorageTypeMismatchError
+		if !errors.As(err, &mismatch) {
+			t.Fatalf("%s over file storage: got %v, want *SMStorageTypeMismatchError", own, err)
+		}
+	}
+}
+
+// TestMVCCFastIsNotRegistered pins the removal of the mvcc-fast sm_type
+// (go-qrdb#136). It composed its MVCC store in a keyspace separate from the
+// KV plane — a transaction could not see a plain Put — and kept that store in
+// a temporary directory; every state machine now serves transactions natively.
+func TestMVCCFastIsNotRegistered(t *testing.T) {
+	t.Parallel()
+	_, err := resolveCreateFunc("mvcc-fast", "", statemachine.StorageConfig{})
+	var smErr *UnknownSMError
+	if !errors.As(err, &smErr) {
+		t.Fatalf("mvcc-fast resolved (%v); it must be unknown", err)
 	}
 }

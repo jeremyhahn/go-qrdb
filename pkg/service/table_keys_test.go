@@ -15,6 +15,7 @@
 package service
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -26,8 +27,8 @@ import (
 // writes to.
 func TestTableDataPrefix_MatchesTheInternalLayout(t *testing.T) {
 	for _, tableID := range []uint64{1, 42, 1 << 40} {
-		if got, want := TableDataPrefix("shop", tableID), tableDataPrefixFor("shop", tableID); got != want {
-			t.Errorf("TableDataPrefix(shop, %d) = %q, want %q", tableID, got, want)
+		if got, want := TableDataPrefix("shop", tableID, 0), tableDataPrefixFor("shop", tableID, 0); got != want {
+			t.Errorf("TableDataPrefix(shop, %d, 0) = %q, want %q", tableID, got, want)
 		}
 	}
 }
@@ -35,9 +36,9 @@ func TestTableDataPrefix_MatchesTheInternalLayout(t *testing.T) {
 // TestTableDataPrefix_IsDistinctPerTableAndDatabase verifies two tables can
 // never scan into each other's rows.
 func TestTableDataPrefix_IsDistinctPerTableAndDatabase(t *testing.T) {
-	a := TableDataPrefix("shop", 1)
-	b := TableDataPrefix("shop", 2)
-	c := TableDataPrefix("other", 1)
+	a := TableDataPrefix("shop", 1, 0)
+	b := TableDataPrefix("shop", 2, 0)
+	c := TableDataPrefix("other", 1, 0)
 
 	if a == b || a == c || b == c {
 		t.Fatalf("prefixes collide: %q, %q, %q", a, b, c)
@@ -47,12 +48,29 @@ func TestTableDataPrefix_IsDistinctPerTableAndDatabase(t *testing.T) {
 	}
 }
 
+// TestTableDataPrefix_IsDistinctPerGeneration verifies go-qrdb#547's
+// generation fencing at the key layer itself: TRUNCATE's old and new
+// generations of the same table must never scan into each other, which is
+// what lets the reclaim sweeper delete the old generation's keyspace while
+// statements planned against the new one keep reading and writing normally.
+func TestTableDataPrefix_IsDistinctPerGeneration(t *testing.T) {
+	a := TableDataPrefix("shop", 1, 0)
+	b := TableDataPrefix("shop", 1, 1)
+
+	if a == b {
+		t.Fatalf("generations 0 and 1 produced the same prefix: %q", a)
+	}
+	if strings.HasPrefix(b, a) || strings.HasPrefix(a, b) {
+		t.Fatalf("one generation's prefix is a prefix of the other's: %q, %q", a, b)
+	}
+}
+
 // TestTableIndexPrefix_MatchesTheInternalLayout is TableDataPrefix's
 // counterpart for one secondary index's entries.
 func TestTableIndexPrefix_MatchesTheInternalLayout(t *testing.T) {
-	for _, index := range []string{"PRIMARY", "idx_email", "uq_code"} {
-		if got, want := TableIndexPrefix("shop", 7, index), tableIndexPrefixFor("shop", 7, index); got != want {
-			t.Errorf("TableIndexPrefix(shop, 7, %q) = %q, want %q", index, got, want)
+	for _, incarnation := range []uint64{1, 2, 10} {
+		if got, want := TableIndexPrefix("shop", 7, 0, incarnation), tableIndexPrefixFor("shop", 7, 0, incarnation); got != want {
+			t.Errorf("TableIndexPrefix(shop, 7, 0, %d) = %q, want %q", incarnation, got, want)
 		}
 	}
 }
@@ -60,14 +78,43 @@ func TestTableIndexPrefix_MatchesTheInternalLayout(t *testing.T) {
 // TestTableIndexPrefix_IsDistinctFromRowData verifies an index scan can
 // never pick up rows, and a row scan can never pick up index entries.
 func TestTableIndexPrefix_IsDistinctFromRowData(t *testing.T) {
-	data := TableDataPrefix("shop", 7)
-	index := TableIndexPrefix("shop", 7, "idx_email")
+	data := TableDataPrefix("shop", 7, 0)
+	index := TableIndexPrefix("shop", 7, 0, 1)
 
 	if strings.HasPrefix(index, data) || strings.HasPrefix(data, index) {
 		t.Fatalf("index prefix %q and data prefix %q overlap", index, data)
 	}
-	if index == TableIndexPrefix("shop", 7, "idx_other") {
+	if index == TableIndexPrefix("shop", 7, 0, 2) {
 		t.Fatal("two indexes on the same table share a prefix")
+	}
+}
+
+// TestTableIndexPrefix_NoIncarnationPrefixesAnother is the "a" vs "a/b"
+// overlap an index NAME segment would have: incarnation 1's prefix must not
+// be a prefix of incarnation 10's (or 1's of 11's), or reclaiming one index
+// would delete another's entries.
+func TestTableIndexPrefix_NoIncarnationPrefixesAnother(t *testing.T) {
+	for _, pair := range [][2]uint64{{1, 10}, {1, 11}, {2, 21}, {1, 2}} {
+		a, b := TableIndexPrefix("shop", 7, 0, pair[0]), TableIndexPrefix("shop", 7, 0, pair[1])
+		if strings.HasPrefix(b, a) || strings.HasPrefix(a, b) {
+			t.Fatalf("incarnation prefixes overlap: %q, %q", a, b)
+		}
+	}
+}
+
+// TestTableIndexPrefix_IsDistinctPerGeneration is
+// TestTableDataPrefix_IsDistinctPerGeneration's counterpart for secondary
+// index entries: the reclaim sweeper must be able to delete an old
+// generation's index entries without touching the new generation's.
+func TestTableIndexPrefix_IsDistinctPerGeneration(t *testing.T) {
+	a := TableIndexPrefix("shop", 7, 0, 1)
+	b := TableIndexPrefix("shop", 7, 1, 1)
+
+	if a == b {
+		t.Fatalf("generations 0 and 1 produced the same index prefix: %q", a)
+	}
+	if strings.HasPrefix(b, a) || strings.HasPrefix(a, b) {
+		t.Fatalf("one generation's index prefix is a prefix of the other's: %q, %q", a, b)
 	}
 }
 
@@ -115,5 +162,77 @@ func TestTableSequenceNames_AreKeyedByTableID(t *testing.T) {
 				seen[name] = true
 			}
 		})
+	}
+}
+
+// TestEncodeDecodeTableGeneration_RoundTrips verifies the exported
+// encode/decode pair (used by both TableService's own CAS and the SQL data
+// plane's generation-fencing Compares, see relational_writer.go and
+// writeset.go) agree with each other byte for byte.
+func TestEncodeDecodeTableGeneration_RoundTrips(t *testing.T) {
+	for _, generation := range []uint64{0, 1, 42, 1 << 40} {
+		encoded := EncodeTableGeneration(generation)
+		if got := DecodeTableGeneration(encoded); got != generation {
+			t.Errorf("DecodeTableGeneration(EncodeTableGeneration(%d)) = %d", generation, got)
+		}
+	}
+}
+
+// TestDecodeTableGeneration_AbsentIsZero verifies a nil/short value -- what a
+// generation key that has never been written reads back as -- decodes as
+// generation 0, the same "absent means never truncated" contract
+// TableGeneration and TableService.readGeneration use.
+func TestDecodeTableGeneration_AbsentIsZero(t *testing.T) {
+	for _, data := range [][]byte{nil, {}, {1, 2, 3}} {
+		if got := DecodeTableGeneration(data); got != 0 {
+			t.Errorf("DecodeTableGeneration(%v) = %d, want 0", data, got)
+		}
+	}
+}
+
+// singleKeyKV is a KVServicer double that implements only Get (backed by an
+// in-memory map), embedding the nil interface for every other method --
+// following the same "embed nil, implement only what's used" convention as
+// ddl_harness_test.go's memBatch. TableGeneration's only KVServicer call is
+// Get, so this is sufficient without pulling in a full KVServicer fake.
+type singleKeyKV struct {
+	KVServicer
+	data map[string][]byte
+}
+
+func (s *singleKeyKV) Get(_ context.Context, key string) ([]byte, error) {
+	v, ok := s.data[key]
+	if !ok {
+		return nil, &KeyNotFoundError{Key: key}
+	}
+	return v, nil
+}
+
+// TestTableGeneration_AbsentKeyIsZero verifies a table that has never been
+// truncated reads generation 0 through the exported accessor, matching
+// TableDef.Generation's zero value for a freshly created table.
+func TestTableGeneration_AbsentKeyIsZero(t *testing.T) {
+	kv := &singleKeyKV{data: map[string][]byte{}}
+	got, err := TableGeneration(context.Background(), kv, "shop", 7)
+	if err != nil {
+		t.Fatalf("TableGeneration: %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("TableGeneration on a never-truncated table = %d, want 0", got)
+	}
+}
+
+// TestTableGeneration_ReadsWhatWasWritten verifies TableGeneration reads
+// back exactly what was written at TableGenerationKey, using
+// EncodeTableGeneration's own encoding -- the same key and encoding
+// TableService.TruncateTable writes at commit time.
+func TestTableGeneration_ReadsWhatWasWritten(t *testing.T) {
+	kv := &singleKeyKV{data: map[string][]byte{TableGenerationKey("shop", 7): EncodeTableGeneration(3)}}
+	got, err := TableGeneration(context.Background(), kv, "shop", 7)
+	if err != nil {
+		t.Fatalf("TableGeneration: %v", err)
+	}
+	if got != 3 {
+		t.Fatalf("TableGeneration = %d, want 3", got)
 	}
 }

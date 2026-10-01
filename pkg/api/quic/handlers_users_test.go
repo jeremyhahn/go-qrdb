@@ -51,7 +51,7 @@ func TestHandleCreateUser_Success(t *testing.T) {
 				Username:  req.Username,
 				TenantID:  req.TenantID,
 				RoleIDs:   req.RoleIDs,
-				Enabled:   true,
+				Lifecycle: user.LifecycleActive,
 				CreatedAt: now,
 				UpdatedAt: now,
 			}, nil
@@ -83,8 +83,8 @@ func TestHandleCreateUser_Success(t *testing.T) {
 	if out.TenantID != "tenant-1" {
 		t.Fatalf("expected tenant 'tenant-1', got %q", out.TenantID)
 	}
-	if !out.Enabled {
-		t.Fatal("expected enabled=true")
+	if out.Lifecycle != string(user.LifecycleActive) {
+		t.Fatalf("expected lifecycle active, got %q", out.Lifecycle)
 	}
 	if len(out.RoleIDs) != 1 || out.RoleIDs[0] != "role-a" {
 		t.Fatalf("unexpected roleIDs: %v", out.RoleIDs)
@@ -241,7 +241,7 @@ func TestHandleUpdateUser_Success(t *testing.T) {
 				Username:  req.Username,
 				TenantID:  "tenant-1",
 				RoleIDs:   req.RoleIDs,
-				Enabled:   true,
+				Lifecycle: user.LifecycleActive,
 				CreatedAt: now,
 				UpdatedAt: now,
 			}, nil
@@ -373,8 +373,8 @@ func TestHandleListUsers_Success(t *testing.T) {
 			}
 			return &user.ListUsersResponse{
 				Users: []*user.User{
-					{ID: 1, Username: "alice", TenantID: "tenant-1", RoleIDs: []string{}, Enabled: true, CreatedAt: now, UpdatedAt: now},
-					{ID: 2, Username: "bob", TenantID: "tenant-1", RoleIDs: []string{}, Enabled: true, CreatedAt: now, UpdatedAt: now},
+					{ID: 1, Username: "alice", TenantID: "tenant-1", RoleIDs: []string{}, Lifecycle: user.LifecycleActive, CreatedAt: now, UpdatedAt: now},
+					{ID: 2, Username: "bob", TenantID: "tenant-1", RoleIDs: []string{}, Lifecycle: user.LifecycleActive, CreatedAt: now, UpdatedAt: now},
 				},
 				Total:   2,
 				HasMore: false,
@@ -570,7 +570,7 @@ func TestUserToWireResponse_NilRoleIDs(t *testing.T) {
 		Username:  "alice",
 		TenantID:  "tenant-1",
 		RoleIDs:   nil,
-		Enabled:   true,
+		Lifecycle: user.LifecycleActive,
 		System:    false,
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -597,7 +597,7 @@ func TestUserToWireResponse_WithRoleIDs(t *testing.T) {
 		Username:  "bob",
 		TenantID:  "tenant-2",
 		RoleIDs:   []string{"role-a", "role-b"},
-		Enabled:   false,
+		Lifecycle: user.LifecycleDisabled,
 		System:    true,
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -612,8 +612,8 @@ func TestUserToWireResponse_WithRoleIDs(t *testing.T) {
 	if !result.System {
 		t.Fatal("expected system to be true")
 	}
-	if result.Enabled {
-		t.Fatal("expected enabled to be false")
+	if result.Lifecycle != string(user.LifecycleDisabled) {
+		t.Fatalf("expected lifecycle disabled, got %q", result.Lifecycle)
 	}
 	expectedCreatedAt := now.Format(time.RFC3339)
 	if result.CreatedAt != expectedCreatedAt {
@@ -693,35 +693,39 @@ func TestHandleDisableUser_InvalidJSON(t *testing.T) {
 	}
 }
 
-// A QUIC client that could only read `enabled` would see a suspended, locked
-// and pending account as identically "false". The canonical state is carried
-// alongside it so the distinction survives the wire.
+// Lifecycle is the only account state a QUIC client reads: every state
+// survives the wire verbatim, and the removed `enabled` projection does not
+// reappear beside it.
 func TestUserToWireResponse_CarriesLifecycle(t *testing.T) {
 	now := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
-	for _, tc := range []struct {
-		lifecycle user.Lifecycle
-		enabled   bool
-	}{
-		{user.LifecycleActive, true},
-		{user.LifecycleSuspended, false},
-		{user.LifecycleLocked, false},
-		{user.LifecycleDeleting, false},
+	for _, lc := range []user.Lifecycle{
+		user.LifecycleActive,
+		user.LifecycleSuspended,
+		user.LifecycleLocked,
+		user.LifecycleDeleting,
 	} {
 		u := &user.User{
 			ID:        3,
 			Username:  "carol",
 			TenantID:  "tenant-3",
-			Lifecycle: tc.lifecycle,
-			Enabled:   tc.enabled,
+			Lifecycle: lc,
 			CreatedAt: now,
 			UpdatedAt: now,
 		}
 		result := userToWireResponse(u)
-		if result.Lifecycle != string(tc.lifecycle) {
-			t.Errorf("Lifecycle: got %q, want %q", result.Lifecycle, tc.lifecycle)
+		if result.Lifecycle != string(lc) {
+			t.Errorf("Lifecycle: got %q, want %q", result.Lifecycle, lc)
 		}
-		if result.Enabled != tc.enabled {
-			t.Errorf("Enabled: got %v, want %v", result.Enabled, tc.enabled)
+		data, err := json.Marshal(result)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(data, &raw); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if _, ok := raw["enabled"]; ok {
+			t.Errorf("wire response carries the removed \"enabled\" key: %s", data)
 		}
 	}
 }
@@ -735,17 +739,12 @@ func TestUserToWireResponse_CarriesEveryIdentityField(t *testing.T) {
 		Username:    "dave",
 		TenantID:    "tenant-4",
 		Lifecycle:   user.LifecycleActive,
-		Enabled:     true,
-		GroupIDs:    []string{"platform"},
 		AuthMethods: []string{"piv"},
 		LastAuth:    &at,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
 	got := userToWireResponse(u)
-	if len(got.GroupIDs) != 1 || got.GroupIDs[0] != "platform" {
-		t.Errorf("groupIDs: got %v", got.GroupIDs)
-	}
 	if len(got.AuthMethods) != 1 || got.AuthMethods[0] != "piv" {
 		t.Errorf("authMethods: got %v", got.AuthMethods)
 	}
@@ -756,5 +755,30 @@ func TestUserToWireResponse_CarriesEveryIdentityField(t *testing.T) {
 	u.LastAuth = nil
 	if got := userToWireResponse(u).LastAuth; got != "" {
 		t.Errorf("never-authenticated lastAuth: got %q, want empty", got)
+	}
+}
+
+// The binding set crosses this wire in full, expired ones included, in the
+// same field-for-field shape the SDK's transport.CertBinding decodes
+// (go-qrdb#535).
+func TestUserToWireResponse_CarriesCertBindingsIncludingExpired(t *testing.T) {
+	expired := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	u := &user.User{ID: 4, Username: "dave", TenantID: "tenant-4", CertBindings: []user.CertBinding{
+		{Thumbprint: "AAAA", Kind: user.CertBindingSPKIThumbprint},
+		{Thumbprint: "BBBB", Kind: user.CertBindingFullCertFingerprint, NotAfter: expired},
+	}}
+	got := userToWireResponse(u).CertBindings
+	if len(got) != 2 {
+		t.Fatalf("certBindings: got %+v, want both bindings", got)
+	}
+	if got[0] != (certBindingWire{Thumbprint: "AAAA", Kind: "spki_thumbprint"}) {
+		t.Errorf("certBindings[0] = %+v", got[0])
+	}
+	if got[1] != (certBindingWire{Thumbprint: "BBBB", Kind: "full_cert_fingerprint", NotAfter: "2020-01-01T00:00:00Z"}) {
+		t.Errorf("certBindings[1] = %+v; the expired binding must be listed with its expiry", got[1])
+	}
+	u.CertBindings = nil
+	if got := userToWireResponse(u).CertBindings; got != nil {
+		t.Errorf("no bindings must render as absent, got %+v", got)
 	}
 }

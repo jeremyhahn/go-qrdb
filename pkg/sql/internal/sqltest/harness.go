@@ -244,6 +244,7 @@ func (s *MemStore) Range(_ context.Context, start, end []byte, opts ...service.R
 func (s *MemStore) evalCompareLocked(c service.Compare) bool {
 	rec, ok := s.data[string(c.Key)]
 	var actual int64
+	var actualValue []byte
 	if ok {
 		switch c.Target {
 		case service.CompareModRevision:
@@ -252,6 +253,8 @@ func (s *MemStore) evalCompareLocked(c service.Compare) bool {
 			actual = rec.createRevision
 		case service.CompareVersion:
 			actual = rec.version
+		case service.CompareValue:
+			actualValue = rec.value
 		}
 	}
 	if c.Result != service.CompareEqual {
@@ -264,6 +267,14 @@ func (s *MemStore) evalCompareLocked(c service.Compare) bool {
 		return actual == c.CreateRevision
 	case service.CompareVersion:
 		return actual == c.Version
+	case service.CompareValue:
+		// An absent key's value reads as nil (bytes.Equal(nil, []byte{}) is
+		// true), matching pkg/mvcc.Evaluate/pebbleEvaluateCompare -- see
+		// RelationalTable.generationCompare's doc comment (pkg/sql/provider)
+		// for why this distinction matters for go-qrdb#547's generation
+		// fencing, which this harness's tables participate in like any
+		// other relational table.
+		return bytes.Equal(actualValue, c.Value)
 	}
 	return false
 }
@@ -396,7 +407,12 @@ func NewHarness() *Harness {
 	store := NewMemStore()
 	txn := &Txn{store: store}
 	seq := service.NewSequenceService(store, txn)
-	tableSvc := service.NewTableService(store, store, txn, seq)
+	// This harness's single MemStore backs every service (see the package
+	// doc comment), so it is also the system store reclaim-publishing DDL
+	// writes its index entries to -- without WithReclaimIndex, TRUNCATE
+	// TABLE and RENAME INDEX refuse outright (go-qrdb#547).
+	tableSvc := service.NewTableService(store, store, txn, seq,
+		service.WithReclaimIndex(txn, service.StorePlacementShared, "harness"))
 	privSvc := service.NewPrivilegeService(store, store, txn)
 	batch := &Batch{store: store}
 

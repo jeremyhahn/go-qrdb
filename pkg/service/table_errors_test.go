@@ -179,3 +179,55 @@ func TestSequenceConflictError(t *testing.T) {
 	err := &SequenceConflictError{Database: "db", Name: "__tableid"}
 	assert.Equal(t, "service: sequence db/__tableid: too many concurrent modifications", err.Error())
 }
+
+// causeOnlyError exposes its wrapped error through Cause() alone, as
+// go-mysql-server's error kinds (sql.ErrLockDeadlock) do.
+type causeOnlyError struct{ cause error }
+
+func (e *causeOnlyError) Error() string { return "wrapped: " + e.cause.Error() }
+func (e *causeOnlyError) Cause() error  { return e.cause }
+
+// wrappingError exposes its wrapped error through Unwrap.
+type wrappingError struct{ err error }
+
+func (e *wrappingError) Error() string { return e.err.Error() }
+func (e *wrappingError) Unwrap() error { return e.err }
+
+// TestIsTableResolutionStale recognizes both stale-resolution errors
+// however they arrive: bare, behind Unwrap, behind Cause() (the SQL
+// engine's serialization failure), or behind a mix of both.
+func TestIsTableResolutionStale(t *testing.T) {
+	generation := &TableGenerationStaleError{Database: "db", Name: "t", Expected: 0, Actual: 1}
+	definition := &TableDefinitionStaleError{Database: "db", Name: "t", Reason: "index idx was dropped"}
+	cases := map[string]struct {
+		err  error
+		want bool
+	}{
+		"nil":                              {nil, false},
+		"unrelated":                        {errors.New("boom"), false},
+		"unrelated behind a cause":         {&causeOnlyError{cause: errors.New("boom")}, false},
+		"generation":                       {generation, true},
+		"definition":                       {definition, true},
+		"generation behind unwrap":         {&wrappingError{err: generation}, true},
+		"definition behind a cause":        {&causeOnlyError{cause: definition}, true},
+		"cause behind unwrap":              {&wrappingError{err: &causeOnlyError{cause: generation}}, true},
+		"unwrap behind a cause":            {&causeOnlyError{cause: &wrappingError{err: definition}}, true},
+		"layout refusal is not stale":      {&TableLayoutUnsupportedError{Database: "db", Name: "t"}, false},
+		"rewrite in progress is not stale": {&TableRewriteInProgressError{Database: "db", Name: "t"}, false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.want, IsTableResolutionStale(tc.err))
+		})
+	}
+}
+
+// selfCausingError is a Cause() cycle, which the walk must survive.
+type selfCausingError struct{}
+
+func (e *selfCausingError) Error() string { return "cycle" }
+func (e *selfCausingError) Cause() error  { return e }
+
+func TestIsTableResolutionStale_CauseCycleTerminates(t *testing.T) {
+	assert.False(t, IsTableResolutionStale(&selfCausingError{}))
+}

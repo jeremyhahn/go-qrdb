@@ -388,32 +388,6 @@ func TestCheckUniqueViolationsBatch_NonJSONSkipped(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// KVEngine.filterIndexes – entity type matching
-// ---------------------------------------------------------------------------
-
-func TestKVEngine_FilterIndexes_EntityType(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-	log, _ := logger.New(logger.LogConfig{Level: "error", Format: "json", Output: "stderr"})
-	eng := NewKVEngine(stg, WithKVLogger(log))
-
-	_ = eng.RegisterEntityType("product", []EntityIndex{
-		{FieldName: "by_pname", JSONFieldName: "name"},
-	})
-	_ = eng.RegisterEntityType("order", []EntityIndex{
-		{FieldName: "by_status", JSONFieldName: "status"},
-	})
-
-	// filterIndexes on "product" should only return product indexes.
-	filtered, _ := eng.filterIndexes("product")
-	for name := range filtered {
-		if len(name) < len("product") || name[:len("product")] != "product" {
-			t.Errorf("unexpected index %q for entity type product", name)
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
 // KVEngine.scanAllKVs coverage path
 // ---------------------------------------------------------------------------
 
@@ -511,9 +485,9 @@ func TestMVCCEngine_HandleBatch_UniqueViolation(t *testing.T) {
 	if err := eng.Update(context.Background(), []sm.Entry{{Index: 3, Cmd: batch2}}, r2); err != nil {
 		t.Fatalf("batch unique violation: %v", err)
 	}
-	// Violation encoded as app error (non-fatal).
-	if len(r2[0].Data) == 0 {
-		t.Log("batch unique violation resulted in zero-length Data (no app-error encoding)")
+	// Violation encoded as a non-fatal conflict refusal (go-qrdb#557).
+	if _, kind, ok := protocol.DecodeAppErrorKind(r2[0].Data); !ok || kind != protocol.AppErrorConflict {
+		t.Fatalf("batch unique violation: ok=%v kind=%d; want an AppErrorConflict refusal", ok, kind)
 	}
 }
 

@@ -36,6 +36,7 @@ import (
 	qrdbkv "github.com/jeremyhahn/go-qrdb/pkg/kv"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
@@ -84,6 +85,11 @@ type PebbleStateMachine struct {
 	// indexes holds registered secondary indexes by name.
 	indexes map[string]index.Index
 
+	// indexOwners holds the owner recorded for each index by name
+	// (index.IndexConfig.Owner, go-qrdb#426). An absent entry is the empty
+	// owner, the explicit index API.
+	indexOwners map[string]string
+
 	// ts is the time-series storage engine. Nil if not configured.
 	ts *timeseries.Storage
 
@@ -103,8 +109,9 @@ func NewPebbleStateMachine(opts *pebble.Options) *PebbleStateMachine {
 		opts = &pebble.Options{}
 	}
 	s := &PebbleStateMachine{
-		opts:    opts,
-		indexes: make(map[string]index.Index),
+		opts:        opts,
+		indexes:     make(map[string]index.Index),
+		indexOwners: make(map[string]string),
 	}
 	s.updateHandlers = s.buildUpdateHandlers()
 	return s
@@ -396,9 +403,16 @@ func (s *PebbleStateMachine) Lookup(_ context.Context, query interface{}) (inter
 		if s.lessor == nil {
 			return nil, &InvalidQueryError{Reason: "lessor not configured"}
 		}
-		l := s.lessor.Lookup(q.ID)
-		if l == nil {
-			return nil, &ReadError{Key: "lease", Err: &InvalidQueryError{Reason: "lease not found"}}
+		// See pkg/engine's MVCCEngine.Lookup (the "mvcc" raft.sm_type's
+		// answer to this same query type, against the same Lessor type) for
+		// why a miss here is reported as *service.LeaseNotFoundError rather
+		// than the generic query error this used to return (go-qrdb#387):
+		// no transport's error mapping recognized the latter as a
+		// lease-not-found condition, so it never reached a caller as
+		// anything but an internal fault.
+		l, err := s.lessor.LookupOrNotFound(q.ID)
+		if err != nil {
+			return nil, &service.LeaseNotFoundError{LeaseID: q.ID}
 		}
 		return l, nil
 
@@ -861,17 +875,14 @@ func (s *PebbleStateMachine) GetHash() (uint64, error) {
 // Base KV update handlers
 // ---------------------------------------------------------------------------
 
-// pebbleAppErrResult builds a non-fatal application-error result payload. A
-// Raft state machine must not return a Go error from Update() for a
+// A Raft state machine must not return a Go error from Update() for a
 // deterministic consequence of valid client input (an invalid lease TTL, a
 // time-series validation failure, or an operation against a subsystem not
 // configured on this SM): that halts lastApplied and stalls the group. Such
-// outcomes are encoded into sm.Result.Data and surfaced to the client by the
-// service layer (service.checkResultError); only genuine non-deterministic
-// faults (decode/IO) are returned as Go errors.
-func pebbleAppErrResult(msg string) sm.Result {
-	return sm.Result{Data: protocol.EncodeAppError(msg)}
-}
+// outcomes are encoded into sm.Result.Data with their kind —
+// statemachine.CapabilityResult for an absent subsystem,
+// statemachine.RefusalResult for a subsystem's own refusal — and surfaced to
+// the client as a typed error by service.checkResultError.
 
 // pebbleHandlePut processes a base KV Put command (OpPut=1). The payload
 // is the full encoded command including the op byte.
@@ -1268,7 +1279,7 @@ func pebbleHandleTransaction(s *PebbleStateMachine, batch *pebble.Batch, payload
 	// from Update() would stall the Raft apply loop for every client.
 	for _, dc := range txn.Compares {
 		if dc.Target == compareTargetCreateRevision || dc.Target == compareTargetModRevision {
-			return pebbleAppErrResult("transaction: create_revision/mod_revision compares require " +
+			return statemachine.CapabilityResult("transaction: create_revision/mod_revision compares require " +
 				"an MVCC state machine; this node runs a non-MVCC backend (set raft.sm_type: mvcc). " +
 				"Compare on value or version instead."), nil, nil
 		}
@@ -1505,7 +1516,7 @@ func pebbleHandleLeaseGrant(s *PebbleStateMachine, _ *pebble.Batch, payload []by
 	}
 
 	if s.lessor == nil {
-		return pebbleAppErrResult((&NotOpenError{}).Error()), nil, nil
+		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "lease"}), nil, nil
 	}
 
 	info, grantErr := s.lessor.Grant(ttl)
@@ -1513,7 +1524,7 @@ func pebbleHandleLeaseGrant(s *PebbleStateMachine, _ *pebble.Batch, payload []by
 		// Invalid TTL (and similar input-shaped grant failures) are
 		// deterministic application errors: surface via the result payload
 		// rather than stalling consensus.
-		return pebbleAppErrResult(grantErr.Error()), nil, nil
+		return statemachine.RefusalResult(grantErr), nil, nil
 	}
 
 	return sm.Result{Value: uint64(info.ID)}, nil, nil
@@ -1527,7 +1538,7 @@ func pebbleHandleLeaseRevoke(s *PebbleStateMachine, batch *pebble.Batch, payload
 	}
 
 	if s.lessor == nil {
-		return pebbleAppErrResult((&NotOpenError{}).Error()), nil, nil
+		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "lease"}), nil, nil
 	}
 
 	keys, revokeErr := s.lessor.Revoke(leaseID)
@@ -1577,7 +1588,7 @@ func pebbleHandleLeaseKeepAlive(s *PebbleStateMachine, _ *pebble.Batch, payload 
 	}
 
 	if s.lessor == nil {
-		return pebbleAppErrResult((&NotOpenError{}).Error()), nil, nil
+		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "lease"}), nil, nil
 	}
 
 	_, kaErr := s.lessor.KeepAlive(leaseID)
@@ -1607,10 +1618,17 @@ func (s *PebbleStateMachine) pebbleHandleIndexCreate(_ *PebbleStateMachine, _ *p
 	}
 
 	if _, exists := s.indexes[name]; exists {
-		// Index already present — idempotent success so Raft Apply does not
-		// stall on duplicate create proposals. Existence is keyed by name only;
-		// a re-create with a divergent definition is a no-op (original wins) and
-		// must be rejected at the service layer before the proposal if desired.
+		// A create naming an index ANOTHER owner holds is refused rather than
+		// adopted (go-qrdb#426), as an application error so consensus advances.
+		owner := s.indexOwners[name]
+		if index.CheckCreateOwner(name, owner, opts.Owner) != nil {
+			return sm.Result{Data: protocol.EncodeIndexOwnershipError(name, owner)}, nil, nil
+		}
+		// Index already present under the same owner — idempotent success so
+		// Raft Apply does not stall on duplicate create proposals. Existence
+		// is keyed by name only; a same-owner re-create with a divergent
+		// definition is a no-op (original wins) and must be rejected at the
+		// service layer before the proposal if desired.
 		return sm.Result{Value: 1}, nil, nil
 	}
 
@@ -1633,11 +1651,13 @@ func (s *PebbleStateMachine) pebbleHandleIndexCreate(_ *PebbleStateMachine, _ *p
 		Sparse:        opts.Sparse,
 		ValueType:     valueType,
 		CaseSensitive: !opts.CaseInsensitive,
+		Owner:         opts.Owner,
 	})
 	if idxErr != nil {
 		return sm.Result{}, nil, idxErr
 	}
 	s.indexes[name] = idx
+	s.indexOwners[name] = opts.Owner
 
 	return sm.Result{Value: 1}, nil, nil
 }
@@ -1647,7 +1667,7 @@ func (s *PebbleStateMachine) pebbleHandleIndexCreate(_ *PebbleStateMachine, _ *p
 // handlers must be idempotent so that cleanup proposals (e.g. deferred test
 // teardown) do not return a fatal Apply error that would stall consensus.
 func (s *PebbleStateMachine) pebbleHandleIndexDrop(_ *PebbleStateMachine, _ *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
-	name, err := protocol.DecodeIndexDrop(payload)
+	name, dropOpts, err := protocol.DecodeIndexDropOpts(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
@@ -1657,6 +1677,10 @@ func (s *PebbleStateMachine) pebbleHandleIndexDrop(_ *PebbleStateMachine, _ *peb
 		// Index already gone — idempotent success.
 		return sm.Result{Value: 1}, nil, nil
 	}
+	// An owner-checked drop removes only its caller's index (go-qrdb#426).
+	if owner := s.indexOwners[name]; index.CheckDropOwner(name, owner, dropOpts.CheckOwner, dropOpts.Owner) != nil {
+		return sm.Result{Data: protocol.EncodeIndexOwnershipError(name, owner)}, nil, nil
+	}
 
 	if err := idx.Clear(); err != nil {
 		return sm.Result{}, nil, err
@@ -1665,6 +1689,7 @@ func (s *PebbleStateMachine) pebbleHandleIndexDrop(_ *PebbleStateMachine, _ *peb
 		return sm.Result{}, nil, err
 	}
 	delete(s.indexes, name)
+	delete(s.indexOwners, name)
 
 	return sm.Result{Value: 1}, nil, nil
 }
@@ -1676,7 +1701,7 @@ func (s *PebbleStateMachine) pebbleHandleIndexDrop(_ *PebbleStateMachine, _ *peb
 // pebbleHandleTSWrite stores a single time-series data point.
 func (s *PebbleStateMachine) pebbleHandleTSWrite(_ *PebbleStateMachine, _ *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
 	if s.ts == nil {
-		return pebbleAppErrResult((&NotOpenError{}).Error()), nil, nil
+		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "timeseries"}), nil, nil
 	}
 
 	params, err := protocol.DecodeTSWrite(payload)
@@ -1685,7 +1710,7 @@ func (s *PebbleStateMachine) pebbleHandleTSWrite(_ *PebbleStateMachine, _ *pebbl
 	}
 
 	if err := s.ts.Write(params.Metric, params.Value, time.Unix(0, params.Timestamp), params.Tags); err != nil {
-		return pebbleAppErrResult(err.Error()), nil, nil
+		return statemachine.RefusalResult(err), nil, nil
 	}
 
 	return sm.Result{Value: 1}, nil, nil
@@ -1694,7 +1719,7 @@ func (s *PebbleStateMachine) pebbleHandleTSWrite(_ *PebbleStateMachine, _ *pebbl
 // pebbleHandleTSWriteBatch stores multiple time-series data points.
 func (s *PebbleStateMachine) pebbleHandleTSWriteBatch(_ *PebbleStateMachine, _ *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
 	if s.ts == nil {
-		return pebbleAppErrResult((&NotOpenError{}).Error()), nil, nil
+		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "timeseries"}), nil, nil
 	}
 
 	params, err := protocol.DecodeTSWriteBatch(payload)
@@ -1713,7 +1738,7 @@ func (s *PebbleStateMachine) pebbleHandleTSWriteBatch(_ *PebbleStateMachine, _ *
 	}
 
 	if err := s.ts.WriteBatch(points); err != nil {
-		return pebbleAppErrResult(err.Error()), nil, nil
+		return statemachine.RefusalResult(err), nil, nil
 	}
 
 	return sm.Result{Value: uint64(len(points))}, nil, nil
@@ -1722,7 +1747,7 @@ func (s *PebbleStateMachine) pebbleHandleTSWriteBatch(_ *PebbleStateMachine, _ *
 // pebbleHandleTSWritePoint stores a single validated time-series data point.
 func (s *PebbleStateMachine) pebbleHandleTSWritePoint(_ *PebbleStateMachine, _ *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
 	if s.ts == nil {
-		return pebbleAppErrResult((&NotOpenError{}).Error()), nil, nil
+		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "timeseries"}), nil, nil
 	}
 
 	params, err := protocol.DecodeTSWrite(payload)
@@ -1737,7 +1762,7 @@ func (s *PebbleStateMachine) pebbleHandleTSWritePoint(_ *PebbleStateMachine, _ *
 		Tags:      params.Tags,
 	}
 	if err := s.ts.WritePoint(context.Background(), dp); err != nil {
-		return pebbleAppErrResult(err.Error()), nil, nil
+		return statemachine.RefusalResult(err), nil, nil
 	}
 
 	return sm.Result{Value: 1}, nil, nil
@@ -1746,7 +1771,7 @@ func (s *PebbleStateMachine) pebbleHandleTSWritePoint(_ *PebbleStateMachine, _ *
 // pebbleHandleTSDeleteSeries deletes time-series data matching criteria.
 func (s *PebbleStateMachine) pebbleHandleTSDeleteSeries(_ *PebbleStateMachine, _ *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
 	if s.ts == nil {
-		return pebbleAppErrResult((&NotOpenError{}).Error()), nil, nil
+		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "timeseries"}), nil, nil
 	}
 
 	params, err := protocol.DecodeTSDeleteSeries(payload)
@@ -1766,7 +1791,7 @@ func (s *PebbleStateMachine) pebbleHandleTSDeleteSeries(_ *PebbleStateMachine, _
 	}
 
 	if err := s.ts.DeleteSeries(context.Background(), req); err != nil {
-		return pebbleAppErrResult(err.Error()), nil, nil
+		return statemachine.RefusalResult(err), nil, nil
 	}
 
 	return sm.Result{Value: 1}, nil, nil
@@ -1775,7 +1800,7 @@ func (s *PebbleStateMachine) pebbleHandleTSDeleteSeries(_ *PebbleStateMachine, _
 // pebbleHandleTSSetRetention sets the retention policy for a metric.
 func (s *PebbleStateMachine) pebbleHandleTSSetRetention(_ *PebbleStateMachine, _ *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
 	if s.ts == nil {
-		return pebbleAppErrResult((&NotOpenError{}).Error()), nil, nil
+		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "timeseries"}), nil, nil
 	}
 
 	params, err := protocol.DecodeTSSetRetention(payload)
@@ -1790,7 +1815,7 @@ func (s *PebbleStateMachine) pebbleHandleTSSetRetention(_ *PebbleStateMachine, _
 	}
 
 	if err := s.ts.SetRetentionPolicy(params.Metric, policy); err != nil {
-		return pebbleAppErrResult(err.Error()), nil, nil
+		return statemachine.RefusalResult(err), nil, nil
 	}
 
 	return sm.Result{Value: 1}, nil, nil

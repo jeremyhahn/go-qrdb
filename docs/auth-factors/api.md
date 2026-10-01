@@ -11,30 +11,115 @@ The Unix socket transport serves the same gRPC wire over a UDS.
 
 ## Capability matrix — user-side N-factor (`Client.UserAuthFactors()`)
 
-| Capability | REST | gRPC / Unix (`UserAuthFactorService/`) | QUIC | MCP tool | `scp` permission |
-|---|---|---|---|---|---|
-| Add | `POST /v1/users/factors` | `Add` | `userauthfactor.Add` | `qrdb_user_authfactor_add` | `userauthfactors:add` |
-| List | `GET /v1/users/factors` | `List` | `userauthfactor.List` | `qrdb_user_authfactor_list` | `userauthfactors:list` |
-| Get | `GET /v1/users/factors/{id}` | `Get` | `userauthfactor.Get` | `qrdb_user_authfactor_get` | `userauthfactors:get` |
-| Remove | `DELETE /v1/users/factors/{id}` | `Remove` | `userauthfactor.Remove` | `qrdb_user_authfactor_remove` | `userauthfactors:remove` |
-| Rotate | `POST /v1/users/factors/{id}/rotate` | `Rotate` | `userauthfactor.Rotate` | `qrdb_user_authfactor_rotate` | `userauthfactors:rotate` |
-| Relabel | `POST /v1/users/factors/{id}/relabel` | `Relabel` | `userauthfactor.Relabel` | `qrdb_user_authfactor_relabel` | `userauthfactors:relabel` |
-| Login | `POST /v1/users/factors/login` | `Login` | `userauthfactor.Login` | `qrdb_user_authfactor_login` | `userauthfactors:login` |
+| Capability | REST | gRPC / Unix (`UserAuthFactorService/`) | QUIC | MCP tool | Embedded | `scp` permission |
+|---|---|---|---|---|---|---|
+| Add | `POST /v1/users/factors` | `Add` | `userauthfactor.Add` | `qrdb_user_authfactor_add` | `Client.UserAuthFactors().Add` | `userauthfactors:add` |
+| List | `GET /v1/users/factors` | `List` | `userauthfactor.List` | `qrdb_user_authfactor_list` | `Client.UserAuthFactors().List` | `userauthfactors:list` |
+| Get | `GET /v1/users/factors/{id}` | `Get` | `userauthfactor.Get` | `qrdb_user_authfactor_get` | `Client.UserAuthFactors().Get` | `userauthfactors:get` |
+| Remove | `DELETE /v1/users/factors/{id}` | `Remove` | `userauthfactor.Remove` | `qrdb_user_authfactor_remove` | `Client.UserAuthFactors().Remove` | `userauthfactors:remove` |
+| Rotate | `POST /v1/users/factors/{id}/rotate` | `Rotate` | `userauthfactor.Rotate` | `qrdb_user_authfactor_rotate` | `Client.UserAuthFactors().Rotate` | `userauthfactors:rotate` |
+| Relabel | `POST /v1/users/factors/{id}/relabel` | `Relabel` | `userauthfactor.Relabel` | `qrdb_user_authfactor_relabel` | `Client.UserAuthFactors().Relabel` | `userauthfactors:relabel` |
+| Login | `POST /v1/users/factors/login` | `Login` | `userauthfactor.Login` | `qrdb_user_authfactor_login` | `Client.UserAuthFactors().Login` | `userauthfactors:login` |
 
 ## Capability matrix — ceremony custodian factors (`Client.AuthFactors()`)
 
-| Capability | REST | gRPC / Unix (`AuthFactorService/`) | QUIC | MCP tool | `scp` permission |
-|---|---|---|---|---|---|
-| Enroll | `POST /v1/authfactors` | `EnrollFactor` | `authfactor.Enroll` | `qrdb_authfactor_enroll` | `authfactors:enroll` |
-| Challenge | `POST /v1/authfactors/challenge` | `ChallengeFactor` | `authfactor.Challenge` | `qrdb_authfactor_challenge` | `authfactors:challenge` |
-| Verify | `POST /v1/authfactors/verify` | `VerifyFactor` | `authfactor.Verify` | `qrdb_authfactor_verify` | `authfactors:verify` |
-| List | `GET /v1/authfactors` | `ListFactors` | `authfactor.List` | `qrdb_authfactor_list` | `authfactors:list` |
-| Revoke | `DELETE /v1/authfactors/{factor}` | `RevokeFactor` | `authfactor.Revoke` | `qrdb_authfactor_revoke` | `authfactors:revoke` |
+The REST paths below name an identifier as a URL segment (`{id}`) even though
+the server's route pattern spells it `{factor}` for every one of them:
+`handleAuthFactorEnroll` reads the segment as the factor name, and
+`handleAuthFactorChallenge` reads the identical position as the enrollment
+ID. `handleAuthFactorVerify`'s segment is checked for presence only and
+otherwise unused — the challenge it verifies comes from `challenge_id` in the
+request body, not the path. One path shape, three different meanings
+depending on which verb it is under — grep `pkg/api/rest/server.go`'s route
+registration and `handlers_authfactor.go`'s handlers before assuming any of
+them.
+
+| Capability | REST | gRPC / Unix (`AuthFactorService/`) | QUIC | MCP tool | Embedded | `scp` permission |
+|---|---|---|---|---|---|---|
+| Enroll | `POST /v1/authfactors/{factor}/enroll` | `EnrollFactor` | `authfactor.Enroll` | `qrdb_authfactor_enroll` | `Client.AuthFactors().EnrollFactor` | `authfactors:enroll` |
+| Challenge | `POST /v1/authfactors/{id}/challenge` | `ChallengeFactor` | `authfactor.Challenge` | `qrdb_authfactor_challenge` | `Client.AuthFactors().ChallengeFactor` | `authfactors:challenge` |
+| Verify | `POST /v1/authfactors/{id}/verify` | `VerifyFactor` | `authfactor.Verify` | `qrdb_authfactor_verify` | `Client.AuthFactors().VerifyFactor` | `authfactors:verify` |
+| List | `GET /v1/authfactors/list` | `ListFactors` | `authfactor.List` | `qrdb_authfactor_list` | `Client.AuthFactors().ListFactors` | `authfactors:list` |
+| Revoke | `DELETE /v1/authfactors/{id}` | `RevokeFactor` | `authfactor.Revoke` | `qrdb_authfactor_revoke` | `Client.AuthFactors().RevokeFactor` | `authfactors:revoke` |
+
+### The challenge id is opaque, and carries its own storage location
+
+The `challenge_id` `Challenge` returns is `{bucket}.{factorChallengeID}`:
+twelve decimal digits naming the challenge's expiry minute, a `.`, then the
+identifier the factor itself issued. Treat it as opaque and pass it back to
+`Verify` verbatim. The server derives the challenge's storage key from it
+directly, so an id that does not have this shape is refused as not-found
+without a lookup, on every transport, exactly like an id that names no
+pending challenge:
+
+| Condition | REST | gRPC / Unix | QUIC | MCP tool |
+|---|---|---|---|---|
+| `challenge_id` is malformed, unknown, already consumed, or reclaimed after expiry | 404 | `NOT_FOUND` | `StatusNotFound` | `CodeNotFound` |
+
+The embedded transport returns the typed `*authfactors.EnrollmentNotFoundError`.
+A challenge nobody verifies is reclaimed some minutes after it expires, by the
+server itself; there is no call to cancel one.
+
+### Enrolment is scoped to the caller's tenant, and `tenant_id` is checked, not chosen
+
+Every one of these five verbs routes on the caller's authenticated context
+tenant, exactly like the user-side surface above — a custodian enrolled under
+one tenant's context is invisible to `Challenge` / `Verify` / `List` / `Revoke`
+calls made under another's, and there is no cross-tenant form of any of them.
+
+`Enroll`'s `tenant_id` field does not select the tenant; it is checked
+against the one the call's context already resolved to:
+
+- **Empty** — filled in from the context tenant.
+- **Equal to the context tenant** — passes unchanged.
+- **Anything else** — refused. The record would otherwise physically land in
+  the context tenant while the field claimed a different one, and correcting
+  it silently would hide that the caller's belief about its own tenant was
+  wrong rather than surface it.
+
+| Condition | REST | gRPC / Unix | QUIC | MCP tool |
+|---|---|---|---|---|
+| `tenant_id` names a tenant other than the caller's context | 400 | `INVALID_ARGUMENT` | `StatusInvalidArgument` | `CodeInvalidArgument` — `AuthFactorTenantMismatchError` |
+
+The embedded transport returns the typed `AuthFactorTenantMismatchError`
+(`sdk.AuthFactorTenantMismatchError`) directly. Every wire transport
+classifies it through the one classification table every transport renders
+(`pkg/api/errclass`), which classes it `InvalidArgument`; each transport's
+row above is that class in its own vocabulary, so no transport carries a
+clause of its own for it (see
+[engineering.md](engineering.md#the-custodian-surface-is-routed-too)).
+
+A resolved tenant that is sealed classifies the same way, on every verb that
+can reach it — including `List`, where a seal between the store's `List` call
+and one of its per-record `Get`s surfaces wrapped in `AuthFactorListReadError`
+rather than as a silently short result. The condition can arrive as either of
+two distinct sentinels, and both classify identically: `tenant.ErrTenantSealed`
+is what `Resolve` returns when the tenant is ALREADY sealed; `seal.ErrSealed`
+is what the resolved store's own `Get`/`Put` return when the barrier seals
+AFTER `Resolve` succeeds but before the store operation runs (a live,
+per-call check, not a cached one).
+
+| Condition | REST | gRPC / Unix | QUIC | MCP tool |
+|---|---|---|---|---|
+| The caller's tenant is sealed (`tenant.ErrTenantSealed` or `seal.ErrSealed`) | 503 | `UNAVAILABLE` | `StatusUnavailable` | `CodeUnavailable` |
+
+The embedded transport returns whichever of the two typed errors it received
+unchanged. `tenant.ErrTenantSealed` is exported to the SDK as
+`sdk.ErrTenantStoreSealed` — not `sdk.ErrTenantSealed`, which aliases the
+distinct `pkg/seal.ErrTenantSealed` raised by barrier operations rather than
+by store resolution. `seal.ErrSealed` is separately exported as
+`sdk.ErrSealed`. The two read alike but are checked with `errors.Is` against
+different values; a consumer must recognize both to catch this condition on
+every path that can produce it.
 
 **`Client.UserAuthFactors()` returns nil on transports that do not implement
-it** — notably the embedded transport, which currently exposes only the legacy
-`AuthFactorClient` surface. Nil-check it; the nil is not an error value. The
-same applies to `Factors()`, `Login()` and `Sessions()`.
+it.** Every transport this SDK ships — REST, gRPC, QUIC, MCP, Unix, and
+embedded — implements `transport.UserAuthFactorClient`, including embedded,
+which also implements the ceremony-time `AuthFactorClient` surface above; a
+caller reaching nil here is using a transport built outside this repository.
+Nil-check it anyway; the nil is not an error value. The same nil-check
+applies to `Factors()`, `Login()` and `Sessions()`, whose transport coverage
+is not this feature's claim to make.
 
 > **Known gap.** The auth-factor and audit handlers across REST, QUIC, MCP,
 > Unix and the SDK transports currently carry **hardcoded permission strings**

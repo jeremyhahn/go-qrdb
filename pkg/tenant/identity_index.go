@@ -152,6 +152,45 @@ type IdentityIndex interface {
 
 	// Lookup returns the claim on an id, and false when it has none.
 	Lookup(ctx context.Context, kind IdentityKind, id string) (Claim, bool, error)
+
+	// PrepareClaim returns the write Record would itself perform for a FRESH
+	// claim on id in tenantID — the key and a newly minted token — WITHOUT
+	// performing it and without touching any store. It exists so a caller
+	// that also writes its own record can fold both into ONE atomic
+	// operation instead of Record's own check-then-write:
+	//
+	//	claimKV, token, err := index.PrepareClaim(kind, id, tenantID)
+	//	// ... build the caller's own writes ...
+	//	applied, err := guarded.PutAllIfUnchanged(ctx, claimKV.Key, nil,
+	//		append([]kvstore.KV{claimKV}, ownWrites...))
+	//
+	// closing the exact window Record's own doc warns about: "a create which
+	// dies after claiming leaves the id claimed with no record behind it."
+	// That window cannot open here, because the claim key and the caller's
+	// own keys commit in the SAME proposal — either all of them land, or
+	// none do (go-qrdb#555).
+	//
+	// PrepareClaim performs NO uniqueness check itself: it is pure key and
+	// token synthesis, so two concurrent callers can each prepare a claim
+	// for the same id, and only the GUARD in each one's own
+	// PutAllIfUnchanged call decides which — if either — actually commits.
+	// The caller is entirely responsible for guarding on this write's key
+	// being absent.
+	//
+	// It is meaningful ONLY when the caller's batch targets the EXACT store
+	// this index would itself resolve to. That holds for an index built with
+	// NewIdentityIndex, whose store is fixed at construction — which is
+	// exactly the shape a boot-time composer confined to the system
+	// identity namespace has. It does NOT hold for NewResolvedIdentityIndex,
+	// which resolves the system tenant's store fresh on every call and may
+	// legitimately differ from a per-tenant caller's own store (a
+	// barrier-isolated tenant's, for one) — folding a claim prepared there
+	// into a DIFFERENT store's batch would silently write it to the wrong
+	// place. Nothing in this method can detect that misuse; it is the
+	// caller's obligation, exactly as WithIdentityIndex's own doc already
+	// requires ("one function writes the record and its entry, so the two
+	// cannot disagree").
+	PrepareClaim(kind IdentityKind, id, tenantID string) (kvstore.KV, string, error)
 }
 
 // Claim is a recorded identity claim: which tenant holds the id, and the
@@ -475,6 +514,24 @@ func (i *kvIdentityIndex) Lookup(ctx context.Context, kind IdentityKind, id stri
 	}
 	token := string(value)
 	return Claim{Tenant: tenantFromClaimToken(token), Token: token}, true, nil
+}
+
+// PrepareClaim implements IdentityIndex. See the interface doc: this touches
+// no store at all, so canonicalizing tenantID is the only work — the same
+// canonicalization Record applies, so a claim prepared here and one Record
+// would have written are byte-for-byte identical.
+func (i *kvIdentityIndex) PrepareClaim(kind IdentityKind, id, tenantID string) (kvstore.KV, string, error) {
+	if id == "" {
+		return kvstore.KV{}, "", &IdentityIndexError{Op: "prepare_claim", Kind: kind, ID: id, Err: ErrEmptyIdentityID}
+	}
+	if IsSystemTenant(tenantID) {
+		tenantID = SystemTenantID
+	}
+	token, err := newClaimToken(tenantID)
+	if err != nil {
+		return kvstore.KV{}, "", &IdentityIndexError{Op: "prepare_claim", Kind: kind, ID: id, Err: err}
+	}
+	return kvstore.KV{Key: identityIndexKey(kind, id), Value: []byte(token)}, token, nil
 }
 
 // ReconcileDeletedIdentity releases a claim an interrupted delete left behind:

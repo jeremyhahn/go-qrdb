@@ -1244,22 +1244,32 @@ func TestRegularStateMachine_MVCCCompact_NotConfigured(t *testing.T) {
 	}
 }
 
-func TestRegularStateMachine_Transaction_NotConfigured(t *testing.T) {
+// TestRegularStateMachine_Transaction_RunsNativelyWithoutMVCCStore pins
+// go-qrdb#136: with no MVCCStore injected — the "regular" sm_type as the
+// registry builds it — a transaction is decided against the map itself rather
+// than refused, and its writes are visible to a plain read.
+func TestRegularStateMachine_Transaction_RunsNativelyWithoutMVCCStore(t *testing.T) {
 	rsm := newTestRegularFSM()
+	ctx := context.Background()
 
-	cmd := []byte{protocol.OpTransaction, 0x00}
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
+	seed := mustEncode(kv.EncodePut([]byte("guard"), []byte("held")))
+	cmp := mustEncode(protocol.EncodeCompare([]byte("guard"), txnTargetValue, txnResultEqual, []byte("held"), 0, 0, 0))
+	op := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("written"), []byte("yes"), nil, 0))
+	txn := mustEncode(protocol.EncodeTransaction([][]byte{cmp}, [][]byte{op}, nil))
 
-	err := rsm.Update(context.Background(), entries, results)
-	if err != nil {
-		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
+	results := make([]sm.Result, 2)
+	if err := rsm.Update(ctx, []sm.Entry{{Index: 1, Cmd: seed}, {Index: 2, Cmd: txn}}, results); err != nil {
+		t.Fatalf("Update: %v", err)
 	}
-	if len(results[0].Data) == 0 {
-		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
+	if msg, refused := protocol.DecodeAppError(results[1].Data); refused {
+		t.Fatalf("transaction refused on a state machine with no MVCC store: %s", msg)
 	}
-	if !bytes.Contains(results[0].Data, []byte("mvcc")) {
-		t.Fatalf("expected Data to mention %q, got %q", "mvcc", results[0].Data)
+	if len(results[1].Data) != 1 || results[1].Data[0] != 1 {
+		t.Fatalf("transaction whose compare holds reported Data=%v; want [1]", results[1].Data)
+	}
+	got, err := rsm.Lookup(ctx, []byte("written"))
+	if err != nil || string(got.([]byte)) != "yes" {
+		t.Fatalf("transaction write not visible to a plain read: %v, %v", got, err)
 	}
 }
 

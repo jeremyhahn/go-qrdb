@@ -224,6 +224,14 @@ func (m *covMockTenantSvc) GetTenant(ctx context.Context, id string) (*tenant.Te
 func (m *covMockTenantSvc) CheckBarrierMode(_ context.Context, _ string, _ seal.StrategyID) error {
 	return nil
 }
+func (m *covMockTenantSvc) ListDeletedTenants(_ context.Context, _ string, _ int) (*tenant.DeletedTenantsPage, error) {
+	return &tenant.DeletedTenantsPage{}, nil
+}
+
+func (m *covMockTenantSvc) ReconcileDeletedTenants(_ context.Context) (*tenant.ReconcileReport, error) {
+	return &tenant.ReconcileReport{}, nil
+}
+
 func (m *covMockTenantSvc) ListTenants(ctx context.Context) ([]tenant.TenantInfo, error) {
 	if m.listFn != nil {
 		return m.listFn(ctx)
@@ -478,8 +486,8 @@ func (m *covMockAuditLogger) Close() error { return nil }
 func TestCovBarrierTools_Registration(t *testing.T) {
 	svc := newCovMockBarrierSvc()
 	tools := barrierTools(svc, nil, nil)
-	if len(tools) != 22 {
-		t.Fatalf("expected 22 tools, got %d", len(tools))
+	if len(tools) != 23 {
+		t.Fatalf("expected 23 tools, got %d", len(tools))
 	}
 	names := []string{
 		"qrdb_barrier_initialize",
@@ -504,6 +512,10 @@ func TestCovBarrierTools_Registration(t *testing.T) {
 		"qrdb_barrier_recovery_officer_register",
 		"qrdb_barrier_recovery_share_claim_begin",
 		"qrdb_barrier_recovery_share_claim_complete",
+		// Registered even with a nil encMigrator (go-qrdb#558): the handler
+		// itself refuses with a typed error rather than the tool being
+		// omitted.
+		"qrdb_barrier_enable_encryption",
 	}
 	for i, n := range names {
 		if tools[i].Tool.Name != n {
@@ -1289,9 +1301,9 @@ func TestCovCeremonyCANotConfiguredError_Error(t *testing.T) {
 
 func TestCovTenantTools_Registration(t *testing.T) {
 	svc := newCovMockTenantSvc()
-	tools := tenantTools(svc)
-	if len(tools) != 7 {
-		t.Fatalf("expected 7 tools, got %d", len(tools))
+	tools := tenantTools(svc, nil)
+	if len(tools) != 9 {
+		t.Fatalf("expected 9 tools, got %d", len(tools))
 	}
 }
 
@@ -1353,7 +1365,7 @@ func TestCovHandleTenantCreate_ServiceError(t *testing.T) {
 }
 
 func TestCovHandleTenantGet_Success(t *testing.T) {
-	handler := handleTenantGet(newCovMockTenantSvc())
+	handler := handleTenantGet(newCovMockTenantSvc(), nil)
 	req := buildCallToolRequest(t, "qrdb_tenant_get", map[string]any{"id": "acme"})
 	result, err := handler(context.Background(), req)
 	if err != nil {
@@ -1369,7 +1381,7 @@ func TestCovHandleTenantGet_Success(t *testing.T) {
 }
 
 func TestCovHandleTenantGet_MissingID(t *testing.T) {
-	handler := handleTenantGet(newCovMockTenantSvc())
+	handler := handleTenantGet(newCovMockTenantSvc(), nil)
 	req := buildCallToolRequest(t, "qrdb_tenant_get", map[string]any{})
 	result, err := handler(context.Background(), req)
 	if err != nil || !result.IsError {
@@ -1382,7 +1394,7 @@ func TestCovHandleTenantGet_ServiceError(t *testing.T) {
 	svc.getFn = func(_ context.Context, _ string) (*tenant.TenantInfo, error) {
 		return nil, tenant.ErrTenantNotFound
 	}
-	handler := handleTenantGet(svc)
+	handler := handleTenantGet(svc, nil)
 	req := buildCallToolRequest(t, "qrdb_tenant_get", map[string]any{"id": "missing"})
 	_, err := handler(context.Background(), req)
 	if err == nil {
@@ -1391,7 +1403,7 @@ func TestCovHandleTenantGet_ServiceError(t *testing.T) {
 }
 
 func TestCovHandleTenantList_Success(t *testing.T) {
-	handler := handleTenantList(newCovMockTenantSvc())
+	handler := handleTenantList(newCovMockTenantSvc(), nil)
 	req := buildCallToolRequest(t, "qrdb_tenant_list", map[string]any{})
 	result, err := handler(context.Background(), req)
 	if err != nil {
@@ -1411,7 +1423,7 @@ func TestCovHandleTenantList_ServiceError(t *testing.T) {
 	svc.listFn = func(_ context.Context) ([]tenant.TenantInfo, error) {
 		return nil, errors.New("store err")
 	}
-	handler := handleTenantList(svc)
+	handler := handleTenantList(svc, nil)
 	req := buildCallToolRequest(t, "qrdb_tenant_list", map[string]any{})
 	_, err := handler(context.Background(), req)
 	if err == nil {
@@ -1420,7 +1432,7 @@ func TestCovHandleTenantList_ServiceError(t *testing.T) {
 }
 
 func TestCovHandleTenantUpdate_Success(t *testing.T) {
-	handler := handleTenantUpdate(newCovMockTenantSvc())
+	handler := handleTenantUpdate(newCovMockTenantSvc(), nil)
 	req := buildCallToolRequest(t, "qrdb_tenant_update", map[string]any{"id": "acme", "name": "New Name"})
 	result, err := handler(context.Background(), req)
 	if err != nil {
@@ -1432,7 +1444,7 @@ func TestCovHandleTenantUpdate_Success(t *testing.T) {
 }
 
 func TestCovHandleTenantUpdate_MissingID(t *testing.T) {
-	handler := handleTenantUpdate(newCovMockTenantSvc())
+	handler := handleTenantUpdate(newCovMockTenantSvc(), nil)
 	req := buildCallToolRequest(t, "qrdb_tenant_update", map[string]any{"name": "X"})
 	result, err := handler(context.Background(), req)
 	if err != nil || !result.IsError {
@@ -1445,7 +1457,7 @@ func TestCovHandleTenantUpdate_ServiceError(t *testing.T) {
 	svc.updateFn = func(_ context.Context, _ string, _ tenant.TenantPatch) (*tenant.TenantInfo, error) {
 		return nil, tenant.ErrTenantNotFound
 	}
-	handler := handleTenantUpdate(svc)
+	handler := handleTenantUpdate(svc, nil)
 	req := buildCallToolRequest(t, "qrdb_tenant_update", map[string]any{"id": "x", "name": "y"})
 	_, err := handler(context.Background(), req)
 	if err == nil {
@@ -1454,7 +1466,7 @@ func TestCovHandleTenantUpdate_ServiceError(t *testing.T) {
 }
 
 func TestCovHandleTenantDelete_Success(t *testing.T) {
-	handler := handleTenantDelete(newCovMockTenantSvc())
+	handler := handleTenantDelete(newCovMockTenantSvc(), nil)
 	req := buildCallToolRequest(t, "qrdb_tenant_delete", map[string]any{"id": "acme"})
 	result, err := handler(context.Background(), req)
 	if err != nil {
@@ -1466,7 +1478,7 @@ func TestCovHandleTenantDelete_Success(t *testing.T) {
 }
 
 func TestCovHandleTenantDelete_MissingID(t *testing.T) {
-	handler := handleTenantDelete(newCovMockTenantSvc())
+	handler := handleTenantDelete(newCovMockTenantSvc(), nil)
 	req := buildCallToolRequest(t, "qrdb_tenant_delete", map[string]any{})
 	result, err := handler(context.Background(), req)
 	if err != nil || !result.IsError {
@@ -1477,7 +1489,7 @@ func TestCovHandleTenantDelete_MissingID(t *testing.T) {
 func TestCovHandleTenantDelete_ServiceError(t *testing.T) {
 	svc := newCovMockTenantSvc()
 	svc.deleteFn = func(_ context.Context, _ string) error { return tenant.ErrTenantNotFound }
-	handler := handleTenantDelete(svc)
+	handler := handleTenantDelete(svc, nil)
 	req := buildCallToolRequest(t, "qrdb_tenant_delete", map[string]any{"id": "missing"})
 	_, err := handler(context.Background(), req)
 	if err == nil {
@@ -1486,7 +1498,7 @@ func TestCovHandleTenantDelete_ServiceError(t *testing.T) {
 }
 
 func TestCovHandleTenantUpdateQuotas_Success(t *testing.T) {
-	handler := handleTenantUpdateQuotas(newCovMockTenantSvc())
+	handler := handleTenantUpdateQuotas(newCovMockTenantSvc(), nil)
 	req := buildCallToolRequest(t, "qrdb_tenant_update_quotas", map[string]any{
 		"id": "acme", "max_databases": float64(10), "max_keys": float64(1000),
 	})
@@ -1500,7 +1512,7 @@ func TestCovHandleTenantUpdateQuotas_Success(t *testing.T) {
 }
 
 func TestCovHandleTenantUpdateQuotas_MissingID(t *testing.T) {
-	handler := handleTenantUpdateQuotas(newCovMockTenantSvc())
+	handler := handleTenantUpdateQuotas(newCovMockTenantSvc(), nil)
 	req := buildCallToolRequest(t, "qrdb_tenant_update_quotas", map[string]any{"max_databases": float64(5)})
 	result, err := handler(context.Background(), req)
 	if err != nil || !result.IsError {
@@ -1513,7 +1525,7 @@ func TestCovHandleTenantUpdateQuotas_ServiceError(t *testing.T) {
 	svc.updateQuotasFn = func(_ context.Context, _ string, _ *quota.Quotas) (*tenant.TenantInfo, error) {
 		return nil, tenant.ErrTenantNotFound
 	}
-	handler := handleTenantUpdateQuotas(svc)
+	handler := handleTenantUpdateQuotas(svc, nil)
 	req := buildCallToolRequest(t, "qrdb_tenant_update_quotas", map[string]any{"id": "x"})
 	_, err := handler(context.Background(), req)
 	if err == nil {
@@ -2591,7 +2603,7 @@ func TestCovHandleUserGetByCertThumbprint_ServiceError(t *testing.T) {
 func TestCovHandleUserGetByCertThumbprint_Success(t *testing.T) {
 	mock := &mockUserService{
 		getUserByCertThumbprintFn: func(_ context.Context, _ string) (*user.User, error) {
-			return &user.User{ID: 1, Username: "alice", Enabled: true}, nil
+			return &user.User{ID: 1, Username: "alice", Lifecycle: user.LifecycleActive}, nil
 		},
 	}
 	handler := handleUserGetByCertThumbprint(mock)

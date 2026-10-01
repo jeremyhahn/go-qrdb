@@ -14,8 +14,8 @@ conversation comes from mixing them. The four load-bearing distinctions:
 2. **Storage backend** — WHERE bytes physically live on one node
    (`storage.backend`: memory / file / pebble / objstore).
 3. **State machine (SM) type** — WHICH Raft state machine applies committed
-   log entries on each replica (`raft.sm_type`: pebble / memory /
-   concurrent / mvcc).
+   log entries on each replica (`raft.sm_type`: pebble / mvcc / memory /
+   standard / concurrent / fast / disk / highperf / regular).
 4. **Database engine** — WHAT data model a database speaks
    (`engine`: kv / timeseries / vector).
 
@@ -104,9 +104,15 @@ committed entries. Deterministic across replicas by contract.
 | Value | Meaning |
 |---|---|
 | `pebble` | `PebbleStateMachine` — the production on-disk SM (default). |
-| `mvcc` | MVCC-capable SM over `MVCCEngine`. **Required for every MVCC feature** (revisions, `--at-revision` reads, watch replay, `kv restore`/PITR-lite, transactions with revision semantics). |
-| `memory` | In-memory SM. Fast, volatile; tests. |
-| `concurrent` | Concurrent in-memory SM variant. |
+| `mvcc` | MVCC-capable SM over `MVCCEngine`. **Required for every MVCC feature** (revisions, `--at-revision` reads, watch replay, `kv restore`/PITR-lite, revision compares). |
+| `memory`, `standard` | In-memory SM. Fast, volatile; tests. |
+| `concurrent` | Concurrent (sharded) in-memory SM. |
+| `highperf` | In-memory SM with configurable sharding, for data-plane state. |
+| `regular` | Legacy in-memory SM. |
+| `fast` | Sharded cache SM writing through to `raft.sm_storage`. |
+| `disk` | Synchronous SM over `raft.sm_storage`. |
+
+Every type serves KV, batches, the guarded verbs and transactions.
 
 `raft.sm_backend` further selects a variant when `sm_type` names a logical
 engine: `standard`, `concurrent`, `fast`, `disk`. `raft.sm_storage`
@@ -153,10 +159,10 @@ part of the approved run-modes plan):
 
 **Raft mode × state machine (`raft.sm_type`)**:
 
-| | `pebble` | `mvcc` | `memory` | `concurrent` |
-|---|---|---|---|---|
-| Raft single-node | ✅ (default) | ✅ | ✅ | ✅ |
-| Raft clustered (3+ nodes) | ✅ | ✅ | ⚠ volatile¹ | ⚠ volatile¹ |
+| | `pebble` | `mvcc` | `disk` | `fast` | `memory`/`standard`/`concurrent`/`highperf`/`regular` |
+|---|---|---|---|---|---|
+| Raft single-node | ✅ (default) | ✅ | ✅ | ✅ | ✅ |
+| Raft clustered (3+ nodes) | ✅ | ✅ | ✅ | ✅ | ⚠ volatile¹ |
 
 ¹ Valid (used in tests), but a restarted replica has no local state and
 must be re-fed by snapshot; never production. `raft.sm_storage` selects
@@ -167,12 +173,15 @@ path.
 
 **State machine × capability:**
 
-| Capability | `pebble` | `mvcc` | `memory`/`concurrent` |
-|---|---|---|---|
-| Durable across restart | ✅ | ✅ | ❌ |
-| MVCC (revisions, `--at-revision`, watch replay, PITR-lite restore) | ❌ | ✅ | ❌ |
-| SQL / relational (needs `node://` or daemon) | ✅ | ✅ | ✅ (volatile) |
-| Encryption at rest (barrier encfs) | ✅ | ✅ | n/a |
+| Capability | `pebble` | `mvcc` | `disk`/`fast` | `memory`/`standard`/`concurrent`/`highperf`/`regular` |
+|---|---|---|---|---|
+| Durable across restart | ✅ | ✅ | ✅ (`disk` from its storage; `fast` rebuilt from the Raft log and snapshots) | ❌ |
+| Transactions, batches, guarded verbs (value and version compares) | ✅ | ✅ | ✅ | ✅ |
+| Revision compares | ❌ refused | ✅ | ❌ refused | ❌ refused |
+| MVCC (revisions, `--at-revision`, watch replay, PITR-lite restore) | ❌ | ✅ | ❌ | ❌ |
+| Lease, watch, lock, index, time series | ✅ | ✅ | ❌ | ❌ |
+| SQL / relational (needs `node://` or daemon) | ✅ | ✅ | ✅ | ✅ (volatile) |
+| Encryption at rest (barrier encfs) | ✅ | ✅ | ✅ over `pebble` `sm_storage`; `file` refused under the seal barrier (no encrypting seam); `memory` persists nothing | n/a |
 
 **Run mode × storage backend (`storage.backend`):** all four backends load
 in every run mode; production is `pebble` everywhere, `memory` for tests,

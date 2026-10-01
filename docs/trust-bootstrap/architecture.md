@@ -74,6 +74,10 @@ certificate.
 - **`GET /v1/ca/bootstrap` is unauthenticated by necessity** — a client in the
   bootstrap window has no credentials. It is registered only when the deployment
   configures a bootstrap certificate, so it does not exist by default.
+- **Because it is unauthenticated, it serves certificates only.** No CA
+  private key is ever served, by this route or by the Noise advertiser. Earlier
+  releases served the cluster CA key here, and every multi-node cluster formed
+  by them must treat that key as compromised and rotate it.
 - **`auto` picking a weaker mode is a security-relevant outcome**, not a
   convenience. A deployment with a policy floor should name the mode.
 

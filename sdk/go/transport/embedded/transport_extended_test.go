@@ -1380,6 +1380,14 @@ func (m *mockTenantService) GetTenant(ctx context.Context, id string) (*tenant.T
 	return &tenant.TenantInfo{ID: id, Name: "t-" + id}, nil
 }
 
+func (m *mockTenantService) ListDeletedTenants(_ context.Context, _ string, _ int) (*tenant.DeletedTenantsPage, error) {
+	return &tenant.DeletedTenantsPage{}, nil
+}
+
+func (m *mockTenantService) ReconcileDeletedTenants(_ context.Context) (*tenant.ReconcileReport, error) {
+	return &tenant.ReconcileReport{}, nil
+}
+
 func (m *mockTenantService) ListTenants(ctx context.Context) ([]tenant.TenantInfo, error) {
 	if m.listFn != nil {
 		return m.listFn(ctx)
@@ -2554,6 +2562,12 @@ func (m *mockIndexService) DropIndex(ctx context.Context, name string) error {
 		return m.dropFn(ctx, name)
 	}
 	return nil
+}
+
+// DropOwnedIndex answers as DropIndex does: this double records no
+// ownership, and no test that uses it exercises an owner-checked drop.
+func (m *mockIndexService) DropOwnedIndex(ctx context.Context, name, _ string) error {
+	return m.DropIndex(ctx, name)
 }
 func (m *mockIndexService) Query(ctx context.Context, name string, value []byte) ([][]byte, error) {
 	if m.queryFn != nil {

@@ -366,9 +366,9 @@ func (s *Store) rangeFrom(r storage.Reader, start, end []byte, opts ...service.R
 	// whatever order the storage iterator produces.
 	sorting := ro.SortOrder != service.SortNone || ro.SortTarget != service.SortByKey
 
-	// Range scan over all metadata keys, filtering by user key in [start, end).
-	// With length-prefixed meta keys, we must scan the entire meta namespace
-	// because keys of different lengths sort by length prefix first.
+	// Range scan over the metadata keys in [start, end). Length-prefixed meta
+	// keys sort by length first, so the scan seeks once per key length rather
+	// than walking the namespace; see ForEachMetaKeyInRange.
 	iter := r.NewIterator(&storage.IteratorOptions{
 		LowerBound: MetaLowerBound(),
 		UpperBound: MetaUpperBound(),
@@ -378,25 +378,15 @@ func (s *Store) rangeFrom(r storage.Reader, start, end []byte, opts ...service.R
 	var results []*service.KeyValue
 	var count int64
 
-	for iter.SeekToFirst(); iter.Valid(); iter.Next() {
-		userKey, err := DecodeMetaKey(iter.Key())
-		if err != nil {
-			continue
-		}
-
-		// Filter by user key range [start, end).
-		if !IsInRange(userKey, start, end) {
-			continue
-		}
-
+	scanErr := ForEachMetaKeyInRange(iter, start, end, func(userKey []byte) bool {
 		if ro.CountOnly {
 			count++
-			continue
+			return true
 		}
 
 		kv, err := s.findAtRevisionFrom(r, userKey, targetRev)
 		if err != nil {
-			continue // Key might not exist at this revision.
+			return true // Key might not exist at this revision.
 		}
 
 		if ro.KeysOnly {
@@ -406,12 +396,10 @@ func (s *Store) rangeFrom(r storage.Reader, start, end []byte, opts ...service.R
 		results = append(results, kv)
 		count++
 
-		if !sorting && ro.Limit > 0 && count >= ro.Limit {
-			break
-		}
-	}
+		return sorting || ro.Limit <= 0 || count < ro.Limit
+	})
 
-	if err := iter.Error(); err != nil {
+	if err := scanErr; err != nil {
 		return nil, 0, 0, &StoreError{Op: "range scan", Err: err}
 	}
 

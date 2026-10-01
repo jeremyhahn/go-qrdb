@@ -16,7 +16,6 @@ package middleware
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -157,8 +156,8 @@ func SOMiddleware(
 		// Verify the PIN.
 		if err := verifier.VerifySOPIN(ctx, identity.TenantID, []byte(pinStr)); err != nil {
 			// THE VERIFIER'S OWN AUDIT GATE, distinguished from a bad PIN by
-			// the CONCRETE TYPE and not by the AuthFailureUnavailable class it
-			// belongs to.
+			// the narrow AuthFailureAuditUnavailable class (isAuditFailure),
+			// never the wider AuthFailureUnavailable it used to be part of.
 			//
 			// auth.SOAuthenticator.VerifySOPIN now fails closed on its own
 			// unrecordable outcome (go-qrdb#445) and returns *audit.GateError
@@ -168,13 +167,15 @@ func SOMiddleware(
 			// disk was full -- terminal in every client, and the exact
 			// misdiagnosis the 503 mapping exists to prevent.
 			//
-			// Guarding on the class instead would sweep in
+			// Guarding on AuthFailureUnavailable instead would sweep in
 			// *StoreUnavailableError, which on this surface carries
 			// tenant.ErrTenantSealed -- a signal the sealed-window fallbacks
-			// exist to act on, not one to reinterpret here (go-qrdb#460).
-			var gateErr *audit.GateError
-			if errors.As(err, &gateErr) {
-				writeGateError(w, gateErr)
+			// exist to act on, not one to reinterpret here. go-qrdb#460 split
+			// that class in two for exactly this reason, so this site now
+			// shares barrier_bootstrap.go's isAuditFailure instead of
+			// repeating its own errors.As(*audit.GateError) check.
+			if isAuditFailure(err) {
+				writeGateError(w, err)
 				return
 			}
 			if emitErr := emit(audit.OutcomeFailure + ":invalid-so-pin"); emitErr != nil {
@@ -221,10 +222,11 @@ func SOMiddleware(
 //
 // The status comes from HTTPStatus, not from a literal, so this surface cannot
 // drift from the three other transports' answer to the same class: an
-// *audit.GateError is AuthFailureUnavailable, which is 503 -- a retryable
-// node-side fault. The fallback is never reached for a *audit.GateError and is
-// 503 rather than 401 anyway, because by the time this middleware runs the
-// caller has already authenticated.
+// *audit.GateError is AuthFailureAuditUnavailable, which maps to 503 exactly
+// as AuthFailureUnavailable does -- a retryable node-side fault. The fallback
+// is never reached for a *audit.GateError and is 503 rather than 401 anyway,
+// because by the time this middleware runs the caller has already
+// authenticated.
 //
 // The refusal is NOT itself audited. The only sink is the one that just
 // failed; audit.EmitGated has already counted it on

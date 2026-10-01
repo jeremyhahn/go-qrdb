@@ -44,6 +44,7 @@ type mockUserServicer struct {
 	enableUserFn        func(ctx context.Context, id uint64) error
 	disableUserFn       func(ctx context.Context, id uint64) error
 	userByCertThumbFn   func(ctx context.Context, thumbprint string) (*user.User, error)
+	addCertBindingFn    func(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*user.User, error)
 	removeCertBindingFn func(ctx context.Context, userID uint64, thumbprint string) (*user.User, error)
 }
 
@@ -90,7 +91,10 @@ func (m *mockUserServicer) UserByCertThumbprint(ctx context.Context, thumbprint 
 	return nil, nil
 }
 
-func (m *mockUserServicer) AddCertBinding(_ context.Context, _ uint64, _ string, _ int64) (*user.User, error) {
+func (m *mockUserServicer) AddCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*user.User, error) {
+	if m.addCertBindingFn != nil {
+		return m.addCertBindingFn(ctx, userID, thumbprint, notAfterUnix)
+	}
 	return nil, nil
 }
 
@@ -192,7 +196,7 @@ func testUser() *user.User {
 		Username:  "alice",
 		TenantID:  "tenant-a",
 		RoleIDs:   []string{"role-admin"},
-		Enabled:   true,
+		Lifecycle: user.LifecycleActive,
 		System:    false,
 		CreatedAt: testTime(),
 		UpdatedAt: testTime(),
@@ -270,8 +274,8 @@ func TestCreateUser_Success(t *testing.T) {
 	if u.Username != "alice" {
 		t.Errorf("expected username 'alice', got %q", u.Username)
 	}
-	if !u.Enabled {
-		t.Error("expected enabled to be true")
+	if u.Lifecycle != "active" {
+		t.Errorf("expected lifecycle active, got %q", u.Lifecycle)
 	}
 }
 
@@ -313,7 +317,7 @@ func TestGetUser_Uint64IDRoundTrip(t *testing.T) {
 	mock := &mockUserServicer{
 		getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
 			got = id
-			return &user.User{ID: id, Username: "snowflake", Enabled: true}, nil
+			return &user.User{ID: id, Username: "snowflake", Lifecycle: user.LifecycleActive}, nil
 		},
 	}
 	tr := newAuthTransport(t, WithUserService(mock))
@@ -1795,8 +1799,8 @@ func TestUserToTransport_FullConversion(t *testing.T) {
 	if len(result.RoleIDs) != len(u.RoleIDs) {
 		t.Errorf("expected %d roleIDs, got %d", len(u.RoleIDs), len(result.RoleIDs))
 	}
-	if result.Enabled != u.Enabled {
-		t.Errorf("expected Enabled %v, got %v", u.Enabled, result.Enabled)
+	if result.Lifecycle != string(u.Lifecycle) {
+		t.Errorf("expected Lifecycle %q, got %q", u.Lifecycle, result.Lifecycle)
 	}
 	if result.System != u.System {
 		t.Errorf("expected System %v, got %v", u.System, result.System)
@@ -2005,5 +2009,60 @@ func TestEmbedded_RemoveCertBinding_PropagatesTheServiceRefusal(t *testing.T) {
 	var nf *user.CertBindingNotFoundError
 	if !errors.As(err, &nf) {
 		t.Fatalf("err = %T(%v), want *user.CertBindingNotFoundError", err, err)
+	}
+}
+
+// TestEmbedded_UserVerbs_BootstrapAdminLockoutRefused (go-qrdb#517): in
+// process, each verb that can lock the bootstrap admin out hands the store's
+// typed refusal to the caller unchanged.
+func TestEmbedded_UserVerbs_BootstrapAdminLockoutRefused(t *testing.T) {
+	lockout := func(reason user.AdminLockoutReason) error {
+		return &user.BootstrapAdminLockoutError{UserID: 7, Reason: reason}
+	}
+	mock := &mockUserServicer{
+		removeCertBindingFn: func(context.Context, uint64, string) (*user.User, error) {
+			return nil, lockout(user.AdminLockoutNoLiveBinding)
+		},
+		deleteUserFn:  func(context.Context, uint64) error { return lockout(user.AdminLockoutDelete) },
+		disableUserFn: func(context.Context, uint64) error { return lockout(user.AdminLockoutLifecycle) },
+		updateUserFn: func(context.Context, *user.UpdateUserRequest) (*user.User, error) {
+			return nil, lockout(user.AdminLockoutRename)
+		},
+	}
+	tr := newAuthTransport(t, WithUserService(mock))
+	ctx := context.Background()
+	cases := map[string]func() error{
+		"withdraw the last binding": func() error { _, err := tr.RemoveCertBinding(ctx, 7, "AABBCC"); return err },
+		"delete the admin":          func() error { return tr.DeleteUser(ctx, 7) },
+		"disable the admin":         func() error { return tr.DisableUser(ctx, 7) },
+		"rename the admin": func() error {
+			_, err := tr.UpdateUser(ctx, &transport.UpdateUserRequest{ID: 7, Username: "root"})
+			return err
+		},
+	}
+	for name, call := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := call()
+			var refused *user.BootstrapAdminLockoutError
+			if !errors.As(err, &refused) {
+				t.Fatalf("err = %T(%v), want *user.BootstrapAdminLockoutError", err, err)
+			}
+		})
+	}
+}
+
+// TestEmbedded_AddCertBinding_PastExpiryRefused (go-qrdb#517): the store's
+// typed refusal of an already-expired enrolment reaches the caller unchanged.
+func TestEmbedded_AddCertBinding_PastExpiryRefused(t *testing.T) {
+	mock := &mockUserServicer{
+		addCertBindingFn: func(_ context.Context, _ uint64, tp string, notAfter int64) (*user.User, error) {
+			return nil, &user.CertBindingExpiredError{Thumbprint: tp, NotAfter: time.Unix(notAfter, 0).UTC()}
+		},
+	}
+	tr := newAuthTransport(t, WithUserService(mock))
+	_, err := tr.AddCertBinding(context.Background(), 7, "AABBCC", 1)
+	var expired *user.CertBindingExpiredError
+	if !errors.As(err, &expired) {
+		t.Fatalf("err = %T(%v), want *user.CertBindingExpiredError", err, err)
 	}
 }

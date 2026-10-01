@@ -18,8 +18,6 @@ import (
 	"context"
 	"time"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -81,7 +79,7 @@ func protoToRebalancePlan(p *pb.RebalancePlan) *service.RebalancePlanResult {
 // RebalanceGetShardStats returns statistics for a single shard.
 func (s *qrdbServiceServer) RebalanceGetShardStats(ctx context.Context, req *pb.RebalanceShardStatsRequest) (*pb.ShardStats, error) {
 	if s.rebalanceSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "rebalance"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "rebalance"})
 	}
 	stats, err := s.rebalanceSvc.GetShardStats(ctx, req.GetShardId())
 	if err != nil {
@@ -99,7 +97,7 @@ func (s *qrdbServiceServer) RebalanceGetShardStats(ctx context.Context, req *pb.
 // RebalanceCreatePlan generates a shard move plan to balance the cluster.
 func (s *qrdbServiceServer) RebalanceCreatePlan(ctx context.Context, req *pb.RebalancePlanRequest) (*pb.RebalancePlan, error) {
 	if s.rebalanceSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "rebalance"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "rebalance"})
 	}
 	plan, err := s.rebalanceSvc.CreateRebalancePlan(ctx, &service.RebalancePlanOptions{
 		MaxMoves:      int(req.GetMaxMoves()),
@@ -115,7 +113,7 @@ func (s *qrdbServiceServer) RebalanceCreatePlan(ctx context.Context, req *pb.Reb
 // RebalanceExecute executes a previously generated rebalance plan.
 func (s *qrdbServiceServer) RebalanceExecute(ctx context.Context, req *pb.RebalancePlan) (*pb.RebalanceExecutionResponse, error) {
 	if s.rebalanceSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "rebalance"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "rebalance"})
 	}
 	result, err := s.rebalanceSvc.ExecuteRebalance(ctx, protoToRebalancePlan(req))
 	if err != nil {
@@ -132,7 +130,7 @@ func (s *qrdbServiceServer) RebalanceExecute(ctx context.Context, req *pb.Rebala
 // RebalanceGetImbalanceReport returns the cluster's current load distribution.
 func (s *qrdbServiceServer) RebalanceGetImbalanceReport(ctx context.Context, _ *emptypb.Empty) (*pb.ImbalanceReport, error) {
 	if s.rebalanceSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "rebalance"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "rebalance"})
 	}
 	report, err := s.rebalanceSvc.GetImbalanceReport(ctx)
 	if err != nil {

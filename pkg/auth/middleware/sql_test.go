@@ -92,10 +92,10 @@ func TestAuthenticateSQL_UserEnrichment(t *testing.T) {
 	authz := &mockAuthorizer{}
 	users := &mockUserServicer{
 		user: &user.User{
-			Username: "charlie",
-			TenantID: "t1",
-			RoleIDs:  []string{"admin", "operator"},
-			Enabled:  true,
+			Username:  "charlie",
+			TenantID:  "t1",
+			RoleIDs:   []string{"admin", "operator"},
+			Lifecycle: user.LifecycleActive,
 		},
 	}
 
@@ -120,9 +120,9 @@ func TestAuthenticateSQL_UserDisabled(t *testing.T) {
 	authz := &mockAuthorizer{}
 	users := &mockUserServicer{
 		user: &user.User{
-			Username: "disabled-user",
-			TenantID: "t1",
-			Enabled:  false,
+			Username:  "disabled-user",
+			TenantID:  "t1",
+			Lifecycle: user.LifecycleDisabled,
 		},
 	}
 

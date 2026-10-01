@@ -24,34 +24,23 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// mapRAGHTTPError
+// RAG errors through the one REST mapping
 // ---------------------------------------------------------------------------
+//
+// These used to exercise a build-tagged mapRAGHTTPError hook. The RAG error
+// types are untagged and classified by pkg/api/errclass like every other
+// family, so the hook is gone and the RAG handlers' statuses come from
+// mapHTTPError.
 
-func TestMapRAGHTTPError_DocNotFound(t *testing.T) {
+func TestMapHTTPError_RAGDocNotFound(t *testing.T) {
 	err := &service.RAGDocumentNotFoundError{ID: "doc1", Namespace: "ns"}
-	code, ok := mapRAGHTTPError(err)
-	if !ok {
-		t.Fatal("expected ok=true for RAGDocumentNotFoundError")
-	}
-	if code != http.StatusNotFound {
+	if code := mapHTTPError(err); code != http.StatusNotFound {
 		t.Errorf("code = %d, want 404", code)
 	}
 }
 
-func TestMapRAGHTTPError_ServiceClosed(t *testing.T) {
-	err := &service.RAGServiceClosedError{}
-	code, ok := mapRAGHTTPError(err)
-	if !ok {
-		t.Fatal("expected ok=true for RAGServiceClosedError")
-	}
-	if code != http.StatusServiceUnavailable {
+func TestMapHTTPError_RAGServiceClosed(t *testing.T) {
+	if code := mapHTTPError(&service.RAGServiceClosedError{}); code != http.StatusServiceUnavailable {
 		t.Errorf("code = %d, want 503", code)
-	}
-}
-
-func TestMapRAGHTTPError_Unknown(t *testing.T) {
-	_, ok := mapRAGHTTPError(&service.KeyNotFoundError{Key: "k"})
-	if ok {
-		t.Error("expected ok=false for unknown error")
 	}
 }

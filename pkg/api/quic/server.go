@@ -22,6 +22,7 @@ import (
 	"context"
 	"crypto/tls"
 	"log/slog"
+	"net"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
@@ -105,6 +106,16 @@ type Server struct {
 	listener  *quicgo.Listener
 	handlers  map[string]methodHandler
 
+	// udpConn and transport are the socket and the quic-go Transport the
+	// listener runs on. Start creates them itself rather than through
+	// quicgo.ListenAddr so that Stop can release the port deterministically:
+	// a ListenAddr socket stays bound until quic-go retires the IDs of every
+	// connection Stop closed (about three probe timeouts), and the server that
+	// replaces this one on the same address -- a system-scope encryption
+	// migration's recycle -- failed to bind in that window.
+	udpConn   *net.UDPConn
+	transport *quicgo.Transport
+
 	// methodPerms is the single source of truth for per-method authorization.
 	// buildHandlers populates it through the s.handle/s.handleIf registration
 	// helpers, so every dispatched method declares its permission at the
@@ -114,6 +125,56 @@ type Server struct {
 
 	closed atomic.Bool
 	wg     sync.WaitGroup
+
+	// streamWG tracks in-flight handleStream calls ONLY -- not the long-lived
+	// acceptLoop/handleConnection goroutines wg also carries. Stop waits on it,
+	// bounded by quicStopGracePeriod, BEFORE actively closing any connection
+	// (see Stop's doc comment): a handler that has not yet returned still owns
+	// its connection, and closing out from under it is what let a fast
+	// system-scope encryption migration's Quiesce phase -- which recycles this
+	// very server from within the migration goroutine the enable-encryption
+	// handler is waiting on -- sever the connection before the handler could
+	// write its "migration_started" response, which the caller then saw as
+	// "server shutting down" instead of its answer (go-qrdb#550). Waiting first
+	// is the same discipline grpc.Server.GracefulStop and http.Server.Shutdown
+	// give their own in-flight requests; it does not need to be unbounded to
+	// get that property, because every handler in this package answers within
+	// its own bounded accept window (750ms) plus the time to write the reply.
+	streamWG sync.WaitGroup
+
+	// acceptClosingMu guards acceptClosing. handleConnection checks
+	// acceptClosing and, if false, calls streamWG.Add(1) -- ALL under this one
+	// mutex -- before spawning handleStream; Stop takes the same mutex to set
+	// acceptClosing to true before it ever calls streamWG.Wait. This is not
+	// optional bookkeeping: sync.WaitGroup requires that every Add happen
+	// before the Wait call it is meant to be counted by, and an atomic flag
+	// checked separately from the Add would leave a window where a goroutine
+	// reads "not yet closing", Stop observes the counter at zero and returns
+	// from Wait, and only THEN does the goroutine call Add -- a stream Stop
+	// never waited for, whose connection the very next line force-closes out
+	// from under it, and a WaitGroup Add-after-Wait besides. The mutex removes
+	// that window: Stop cannot proceed past setting acceptClosing until any
+	// handleConnection currently inside the check-then-Add section has left
+	// it, and every handleConnection call afterward reads acceptClosing as
+	// true and refuses the stream instead of admitting it uncounted.
+	acceptClosingMu sync.Mutex
+	acceptClosing   bool
+
+	// stopping is closed when Stop begins (once, via stopOnce), and ends every
+	// watch stream then in progress. A watch is the one handler that does not
+	// finish on its own -- it runs until its client goes away -- so without
+	// this each open watch held Stop for the whole quicStopGracePeriod before
+	// the connection-close pass ended it anyway. Created by Start; nil on a
+	// server that was never started, where it never fires.
+	stopping chan struct{}
+	stopOnce sync.Once
+
+	// testHookAccepted and testHookConnsClosed are nil outside tests. They
+	// let a test hold acceptLoop between Accept and storing the connection
+	// until Stop's close pass over s.conns has finished -- the interleaving
+	// that left a connection nobody closed.
+	testHookAccepted    func()
+	testHookConnsClosed func()
 
 	// conns tracks every live *quicgo.Conn (key) accepted by acceptLoop,
 	// mapped to struct{}{}, so Stop can actively close them instead of
@@ -393,7 +454,11 @@ func (s *Server) Start() error {
 	}
 
 	tlsCfg := s.tlsConfig.Clone()
-	tlsCfg.NextProtos = append(tlsCfg.NextProtos, "qrdb-quic")
+	// Only wire.ProtocolV2, and nothing a TLS config shared with the REST
+	// listener carries ("h3", "h2"): this listener speaks one protocol, so a
+	// client that does not offer it fails the handshake here rather than
+	// connecting under a label it will not be served by.
+	tlsCfg.NextProtos = []string{wire.ProtocolV2}
 
 	quicCfg := &quicgo.Config{
 		MaxIdleTimeout:        30 * time.Second,
@@ -403,11 +468,25 @@ func (s *Server) Start() error {
 		Allow0RTT:             true,
 	}
 
-	ln, err := quicgo.ListenAddr(s.addr, tlsCfg, quicCfg)
+	udpAddr, err := net.ResolveUDPAddr("udp", s.addr)
 	if err != nil {
 		return &StartError{Addr: s.addr, Err: err}
 	}
+	udpConn, err := net.ListenUDP("udp", udpAddr)
+	if err != nil {
+		return &StartError{Addr: s.addr, Err: err}
+	}
+	tr := &quicgo.Transport{Conn: udpConn}
+	ln, err := tr.Listen(tlsCfg, quicCfg)
+	if err != nil {
+		_ = tr.Close()
+		_ = udpConn.Close()
+		return &StartError{Addr: s.addr, Err: err}
+	}
+	s.udpConn = udpConn
+	s.transport = tr
 	s.listener = ln
+	s.stopping = make(chan struct{})
 
 	slog.Info("QUIC server started", "addr", ln.Addr().String())
 
@@ -417,26 +496,158 @@ func (s *Server) Start() error {
 	return nil
 }
 
-// Stop gracefully shuts down the QUIC server: it closes the listener (so
-// no new connections are accepted), actively closes every currently-live
-// connection tracked in s.conns, then waits for their handler goroutines to
-// drain. Actively closing live connections -- rather than merely closing
-// the listener and waiting -- is required because QUIC rides UDP: an idle
-// connection whose client never sent an explicit CONNECTION_CLOSE frame
-// (e.g. a CLI process that exited without calling the SDK transport's
-// Close()) would otherwise sit in AcceptStream until the server's own
-// MaxIdleTimeout (30s) elapses, stalling Stop for up to that long.
+// quicStopGracePeriod bounds how long Stop waits for in-flight handleStream
+// calls to finish naturally before it force-closes their connections. It is
+// deliberately the same order of magnitude as REST's Shutdown(ctx) timeout
+// (pkg/api/rest/server.go) rather than tied to any one handler's own accept
+// window (750ms for the enable-encryption family): Stop is generic across
+// every method this server dispatches, and the grace period only needs to
+// comfortably outlast the slowest of them plus the time to write a reply, not
+// match any single one exactly.
+const quicStopGracePeriod = 5 * time.Second
+
+// quicResponseAckTimeout bounds how long a handler waits, after writing its
+// response, for the client's acknowledgement before giving up and returning
+// anyway. See awaitStreamAck.
+const quicResponseAckTimeout = 2 * time.Second
+
+// awaitStreamAck blocks, up to quicResponseAckTimeout, until the client closes
+// its write side of stream -- io.EOF on Read -- or the stream fails.
+//
+// quic-go v0.62 has no public API for "has the peer received this data":
+// SendStream.Close only schedules the FIN for the next outgoing packet, and
+// Stream.Context is canceled on LOCAL close, not on peer acknowledgement
+// (quic-go issue #3291 tracks the absence of a send-completion primitive). A
+// handler returning therefore proves its response was queued, not that it
+// reached the wire, which is what let CloseWithError abort a connection
+// carrying an already-computed "migration_started" reply before the client
+// ever saw it (go-qrdb#550): the caller saw "server shutting down" instead of
+// its answer.
+//
+// The acknowledgement is the client's FIN (see wire.ProtocolV2): the client
+// closes its write side only after it has read the response, so the EOF this
+// function waits for cannot arrive before the response did.
+//
+// Any bytes the client sends after its request frame are not part of the
+// protocol and are discarded; only end-of-stream or a stream error ends the
+// wait. Bounded rather than indefinite: a client that never closes its stream
+// (a hung process, or a hostile one) must not be able to stall a handler, and
+// by extension Stop's streamWG drain, forever.
+func awaitStreamAck(stream *quicgo.Stream) {
+	_ = stream.SetReadDeadline(time.Now().Add(quicResponseAckTimeout))
+	var buf [16]byte
+	for {
+		if _, err := stream.Read(buf[:]); err != nil {
+			return
+		}
+	}
+}
+
+// writeResponse writes a response frame, closes this side of the stream, and
+// waits for the client's acknowledgement (awaitStreamAck) before returning.
+// Every exit path out of handleStream answers through here, so every reply --
+// not only the successful-dispatch one -- is confirmed delivered before
+// Stop's connection-close pass can run.
+//
+// The stream is closed BEFORE the wait so the response's FIN travels with it:
+// a client that reads until end-of-stream rather than one frame sees that end
+// immediately instead of after the wait. The handler's deferred Close is then
+// a no-op. A write failure is returned unchanged and skips the wait, since
+// nothing was sent for a peer to acknowledge.
+func (s *Server) writeResponse(stream *quicgo.Stream, requestID uint64, status uint16, payload []byte) error {
+	if err := wire.WriteResponse(stream, requestID, status, payload); err != nil {
+		return err
+	}
+	_ = stream.Close()
+	awaitStreamAck(stream)
+	return nil
+}
+
+// Stop gracefully shuts down the QUIC server. It closes the listener (so no
+// new connections are accepted), then gives in-flight handleStream calls up
+// to quicStopGracePeriod to finish -- which includes each one's own
+// awaitStreamAck wait for its response to be confirmed delivered, not merely
+// written -- before actively closing every still-live connection tracked in
+// s.conns. It then waits for every tracked goroutine to drain and closes the
+// transport and the UDP socket, so the address can be bound again the moment
+// Stop returns.
+//
+// Waiting on in-flight handlers BEFORE closing their connections -- rather
+// than closing every connection immediately and letting handlers fail out --
+// is required for the same reason grpc.Server.GracefulStop and
+// http.Server.Shutdown(ctx) give their own in-flight requests this treatment:
+// a system-scope encryption migration's Quiesce phase recycles this very
+// server from within the migration goroutine the enable-encryption handler is
+// waiting on (pkg/api/quic/handlers_barrier.go's accept-window doc), and a
+// migration whose synchronous phase (mint the keyed target) finishes faster
+// than the handler's own 750ms accept window reaches Quiesce -> this Stop
+// call WHILE that handler is still waiting to hear back. Before this fix,
+// closing every connection first -- including the one the still-pending
+// handler owned -- severed it out from under the handler: by the time the
+// handler's accept window elapsed and it tried to write "migration_started",
+// the connection was already gone, and the caller saw "server shutting down"
+// instead of its answer (go-qrdb#550). Waiting first gives that handler the
+// SAME chance to finish and reply that grpc.Server.GracefulStop already gives
+// the identical request on the gRPC transport (confirmed: gRPC's handler
+// reaches this exact interleaving and its GracefulStop call blocks until the
+// pending RPC completes, rather than aborting it).
+//
+// The wait is bounded rather than indefinite so this cannot reintroduce the
+// up-to-30s stall active-closing was written to avoid (see conns' doc
+// comment): a connection with no in-flight handler contributes nothing to
+// streamWG and is force-closed immediately once the grace period -- which
+// elapses at once when streamWG is already empty -- is reached. New stream
+// admission is closed atomically with this wait (see acceptClosingMu and
+// handleConnection) so a stream accepted after draining has begun can never
+// escape both streamWG AND the close pass that follows it.
 func (s *Server) Stop() {
 	if s.listener == nil {
 		return
 	}
 	s.closed.Store(true)
 	_ = s.listener.Close()
+
+	// Close stream admission BEFORE waiting: handleConnection's Add-then-spawn
+	// for a new stream must not be able to happen after streamWG.Wait has
+	// already observed zero, which would let that stream's connection be
+	// force-closed out from under a handler streamWG never counted. Both this
+	// flag's read (in handleConnection, before Add) and its write here take
+	// acceptClosingMu, so there is no window where a stream is admitted
+	// without being counted first.
+	s.acceptClosingMu.Lock()
+	s.acceptClosing = true
+	s.acceptClosingMu.Unlock()
+
+	// End watch streams now rather than letting each one run out the grace
+	// period below: they are waiting on events, not finishing a reply.
+	s.stopOnce.Do(func() { close(s.stopping) })
+
+	drained := make(chan struct{})
+	go func() {
+		s.streamWG.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-time.After(quicStopGracePeriod):
+	}
+
 	s.conns.Range(func(key, _ any) bool {
 		_ = key.(*quicgo.Conn).CloseWithError(0, "server shutting down") //nolint:errcheck // type assertion on a value this container only ever holds
 		return true
 	})
+	if s.testHookConnsClosed != nil {
+		s.testHookConnsClosed()
+	}
 	s.wg.Wait()
+
+	// Every connection has been closed above, each CONNECTION_CLOSE already
+	// sent (CloseWithError returns once the connection has shut down), so
+	// nothing is lost by dropping the IDs quic-go would otherwise keep
+	// registered to repeat it. Closing the transport and then the socket this
+	// server owns is what frees the port before Stop returns (see udpConn).
+	_ = s.transport.Close()
+	_ = s.udpConn.Close()
 	slog.Info("QUIC server stopped")
 }
 
@@ -462,7 +673,21 @@ func (s *Server) acceptLoop() {
 			continue
 		}
 
+		if s.testHookAccepted != nil {
+			s.testHookAccepted()
+		}
 		s.conns.Store(conn, struct{}{})
+		// Accept keeps handing out connections already queued when the
+		// listener closed, so one can be stored after Stop's close pass has
+		// ranged over s.conns. Nothing would ever close it, its
+		// handleConnection would sit in AcceptStream, and Stop's wg.Wait would
+		// hang behind it. Stop sets s.closed before that pass, so a connection
+		// stored after it always sees s.closed here and is closed on the spot.
+		if s.closed.Load() {
+			s.conns.Delete(conn)
+			_ = conn.CloseWithError(0, "server shutting down")
+			continue
+		}
 		s.wg.Add(1)
 		go s.handleConnection(conn)
 	}
@@ -486,7 +711,25 @@ func (s *Server) handleConnection(conn *quicgo.Conn) {
 			return
 		}
 
+		// Checking acceptClosing and adding to streamWG happen under the same
+		// lock Stop takes before it ever calls streamWG.Wait -- see
+		// acceptClosingMu's doc comment for why that atomicity, not just the
+		// ordering, is what closes the race.
+		s.acceptClosingMu.Lock()
+		if s.acceptClosing {
+			s.acceptClosingMu.Unlock()
+			// Refuse rather than admit: Stop has already started draining and
+			// will never wait for this stream. Resetting both directions tells
+			// a well-behaved client to retry rather than hang reading a
+			// response that will never come.
+			stream.CancelWrite(0)
+			stream.CancelRead(0)
+			continue
+		}
 		s.wg.Add(1)
+		s.streamWG.Add(1)
+		s.acceptClosingMu.Unlock()
+
 		go s.handleStream(conn, stream)
 	}
 }
@@ -495,6 +738,7 @@ func (s *Server) handleConnection(conn *quicgo.Conn) {
 // handler, writes the response frame, and closes the stream.
 func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 	defer s.wg.Done()
+	defer s.streamWG.Done()
 	defer func() { _ = stream.Close() }()
 
 	// Recover from panics in handlers.
@@ -504,7 +748,7 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 				"panic", r,
 				"stack", string(debug.Stack()),
 			)
-			_ = wire.WriteResponse(stream, 0, wire.StatusError, []byte("internal server error"))
+			_ = s.writeResponse(stream, 0, wire.StatusError, []byte("internal server error"))
 		}
 	}()
 
@@ -529,7 +773,7 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 	if s.authMW != nil {
 		ctx, err = s.authenticate(ctx, conn)
 		if err != nil {
-			_ = wire.WriteResponse(stream, requestID, wire.StatusUnauthenticated, []byte(err.Error()))
+			_ = s.writeResponse(stream, requestID, wire.StatusUnauthenticated, []byte(err.Error()))
 			s.logRequest(method, requestID, wire.StatusUnauthenticated, start)
 			return
 		}
@@ -540,7 +784,7 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 			// node merely could not RECORD that it was not permitted, and
 			// permission-denied is terminal in every client.
 			authStatus := authzStatus(authErr)
-			_ = wire.WriteResponse(stream, requestID, authStatus, []byte(authErr.Error()))
+			_ = s.writeResponse(stream, requestID, authStatus, []byte(authErr.Error()))
 			s.logRequest(method, requestID, authStatus, start)
 			return
 		}
@@ -552,7 +796,7 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 	// admin.Status) over the native QUIC transport. Mirrors the REST/gRPC
 	// sealed-window middleware/interceptors.
 	if s.sealedWindowProbe != nil && s.sealedWindowProbe.IsSealed() && !sealedWindowAllowed(method) {
-		_ = wire.WriteResponse(stream, requestID, wire.StatusUnavailable, []byte("barrier sealed"))
+		_ = s.writeResponse(stream, requestID, wire.StatusUnavailable, []byte("barrier sealed"))
 		s.logRequest(method, requestID, wire.StatusUnavailable, start)
 		return
 	}
@@ -569,7 +813,7 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 	// Dispatch to handler.
 	handler, ok := s.handlers[method]
 	if !ok {
-		_ = wire.WriteResponse(stream, requestID, wire.StatusUnimplemented, []byte((&DispatchError{Method: method}).Error()))
+		_ = s.writeResponse(stream, requestID, wire.StatusUnimplemented, []byte((&DispatchError{Method: method}).Error()))
 		s.logRequest(method, requestID, wire.StatusUnimplemented, start)
 		return
 	}
@@ -577,12 +821,12 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 	resp, handlerErr := handler(ctx, payload)
 	if handlerErr != nil {
 		statusCode, errPayload := mapServiceError(handlerErr)
-		_ = wire.WriteResponse(stream, requestID, statusCode, errPayload)
+		_ = s.writeResponse(stream, requestID, statusCode, errPayload)
 		s.logRequest(method, requestID, statusCode, start)
 		return
 	}
 
-	_ = wire.WriteResponse(stream, requestID, wire.StatusOK, resp)
+	_ = s.writeResponse(stream, requestID, wire.StatusOK, resp)
 	s.logRequest(method, requestID, wire.StatusOK, start)
 }
 

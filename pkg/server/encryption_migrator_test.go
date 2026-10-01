@@ -110,3 +110,54 @@ func TestEnableEncryption_TenantUnavailableWhenNoHandlers(t *testing.T) {
 		t.Fatalf("EnableEncryption(no handlers) = %v, want ErrMigrationProviderUnavailable", err)
 	}
 }
+
+// TestScopedEncryptionMigrator_TenantAdmission pins the admission hook: a
+// refusing admission stops a tenant-scope migration before anything runs, an
+// admitting one is released when the migration returns, and system scope
+// never consults it. Both constructions — NewScopedEncryptionMigrator's option
+// and the server's WithTenantMigrationAdmission — carry it.
+func TestScopedEncryptionMigrator_TenantAdmission(t *testing.T) {
+	refused := errors.New("closing")
+	var systemCalls int
+	system := encMigratorFunc(func(context.Context, service.BarrierScope, seal.MigrationOptions) error {
+		systemCalls++
+		return nil
+	})
+	tenantScope := service.BarrierScope{Kind: service.ScopeTenant, TenantID: "acme"}
+
+	t.Run("refusal stops the migration", func(t *testing.T) {
+		m := NewScopedEncryptionMigrator(system, nil, &RaftBackendFactory{}, nil, nil,
+			WithTenantAdmission(func(context.Context) (func(), error) { return nil, refused }))
+		if err := m.EnableEncryption(context.Background(), tenantScope, seal.MigrationOptions{}); !errors.Is(err, refused) {
+			t.Fatalf("EnableEncryption = %v, want the admission's refusal", err)
+		}
+	})
+
+	t.Run("admitted migration is released", func(t *testing.T) {
+		released := 0
+		s := &Server{opts: serverOptions{
+			encMigrator: system,
+			raftBackend: &RaftBackendFactory{},
+			tenantMigrationAdmission: func(context.Context) (func(), error) {
+				return func() { released++ }, nil
+			},
+		}}
+		// The unconfigured factory refuses the recycle itself; the release
+		// must follow whatever the migration returns.
+		_ = s.effectiveEncryptionMigrator().EnableEncryption(context.Background(), tenantScope, seal.MigrationOptions{})
+		if released != 1 {
+			t.Fatalf("admission released %d times, want 1", released)
+		}
+	})
+
+	t.Run("system scope is not admitted by it", func(t *testing.T) {
+		m := NewScopedEncryptionMigrator(system, nil, &RaftBackendFactory{}, nil, nil,
+			WithTenantAdmission(func(context.Context) (func(), error) { return nil, refused }))
+		if err := m.EnableEncryption(context.Background(), service.BarrierScope{Kind: service.ScopeSystem}, seal.MigrationOptions{}); err != nil {
+			t.Fatalf("system scope = %v, want it to bypass the tenant admission", err)
+		}
+		if systemCalls == 0 {
+			t.Fatal("the system migrator was not called")
+		}
+	})
+}

@@ -17,8 +17,6 @@ package grpc
 import (
 	"context"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -67,7 +65,7 @@ func shardErrorToProto(e service.ShardError) *pb.ShardError {
 // BackupCreate captures a snapshot of the selected shards as a named backup.
 func (s *qrdbServiceServer) BackupCreate(ctx context.Context, req *pb.BackupCreateRequest) (*pb.BackupInfo, error) {
 	if s.backupSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "backup"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "backup"})
 	}
 	info, err := s.backupSvc.CreateBackup(ctx, service.BackupOptions{
 		Destination:   req.GetDestination(),
@@ -86,7 +84,7 @@ func (s *qrdbServiceServer) BackupCreate(ctx context.Context, req *pb.BackupCrea
 // BackupList returns metadata for every stored backup.
 func (s *qrdbServiceServer) BackupList(ctx context.Context, _ *emptypb.Empty) (*pb.BackupListResponse, error) {
 	if s.backupSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "backup"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "backup"})
 	}
 	backups, err := s.backupSvc.ListBackups(ctx)
 	if err != nil {
@@ -102,7 +100,7 @@ func (s *qrdbServiceServer) BackupList(ctx context.Context, _ *emptypb.Empty) (*
 // BackupGet returns metadata for a single backup by ID.
 func (s *qrdbServiceServer) BackupGet(ctx context.Context, req *pb.BackupGetRequest) (*pb.BackupInfo, error) {
 	if s.backupSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "backup"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "backup"})
 	}
 	info, err := s.backupSvc.GetBackup(ctx, req.GetId())
 	if err != nil {
@@ -114,7 +112,7 @@ func (s *qrdbServiceServer) BackupGet(ctx context.Context, req *pb.BackupGetRequ
 // BackupDelete removes a stored backup and its artifact.
 func (s *qrdbServiceServer) BackupDelete(ctx context.Context, req *pb.BackupDeleteRequest) (*emptypb.Empty, error) {
 	if s.backupSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "backup"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "backup"})
 	}
 	if err := s.backupSvc.DeleteBackup(ctx, req.GetId()); err != nil {
 		return nil, mapServiceError(err)
@@ -125,7 +123,7 @@ func (s *qrdbServiceServer) BackupDelete(ctx context.Context, req *pb.BackupDele
 // BackupRestore restores shards from a previously created backup.
 func (s *qrdbServiceServer) BackupRestore(ctx context.Context, req *pb.BackupRestoreRequest) (*pb.BackupRestoreResponse, error) {
 	if s.backupSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "backup"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "backup"})
 	}
 	result, err := s.backupSvc.RestoreBackup(ctx, service.RestoreOptions{
 		BackupID:      req.GetBackupId(),
@@ -151,7 +149,7 @@ func (s *qrdbServiceServer) BackupRestore(ctx context.Context, req *pb.BackupRes
 // BackupVerify validates the integrity of a stored backup.
 func (s *qrdbServiceServer) BackupVerify(ctx context.Context, req *pb.BackupVerifyRequest) (*pb.BackupVerifyResponse, error) {
 	if s.backupSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "backup"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "backup"})
 	}
 	result, err := s.backupSvc.VerifyBackup(ctx, req.GetId())
 	if err != nil {

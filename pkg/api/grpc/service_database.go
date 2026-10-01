@@ -17,8 +17,6 @@ package grpc
 import (
 	"context"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -38,14 +36,18 @@ import (
 // supports it), mirroring the REST POST /v1/databases handler.
 func (s *qrdbServiceServer) DatabaseCreate(ctx context.Context, req *pb.DatabaseCreateRequest) (*pb.DatabaseInfoResponse, error) {
 	if s.databaseSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "database"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "database"})
 	}
 
 	cfg := protoDatabaseCreateToConfig(req)
 
 	var creds seal.Credentials
 	if b := req.GetBarrier(); b != nil {
-		creds = seal.Credentials{Secret: []byte(b.GetSecret())}
+		var err error
+		if creds, err = seal.CredentialsFor([]byte(b.GetSecret())); err != nil {
+			return nil, mapServiceError(err)
+		}
+		defer creds.Secret.Destroy()
 	}
 
 	info, err := service.CreateDatabaseForTenantWithCredentials(ctx, s.databaseSvc, cfg, creds)
@@ -59,7 +61,7 @@ func (s *qrdbServiceServer) DatabaseCreate(ctx context.Context, req *pb.Database
 // DatabaseGet returns information about a specific database.
 func (s *qrdbServiceServer) DatabaseGet(ctx context.Context, req *pb.DatabaseGetRequest) (*pb.DatabaseInfoResponse, error) {
 	if s.databaseSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "database"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "database"})
 	}
 
 	info, err := s.databaseSvc.GetForTenant(ctx, req.GetName())
@@ -73,7 +75,7 @@ func (s *qrdbServiceServer) DatabaseGet(ctx context.Context, req *pb.DatabaseGet
 // DatabaseList returns information about all open databases.
 func (s *qrdbServiceServer) DatabaseList(ctx context.Context, _ *emptypb.Empty) (*pb.DatabaseListResponse, error) {
 	if s.databaseSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "database"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "database"})
 	}
 
 	databases, err := s.databaseSvc.ListForTenant(ctx)
@@ -93,7 +95,7 @@ func (s *qrdbServiceServer) DatabaseList(ctx context.Context, _ *emptypb.Empty) 
 // DatabaseDrop closes and removes a database.
 func (s *qrdbServiceServer) DatabaseDrop(ctx context.Context, req *pb.DatabaseDropRequest) (*emptypb.Empty, error) {
 	if s.databaseSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "database"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "database"})
 	}
 
 	if err := s.databaseSvc.DropForTenant(ctx, req.GetName()); err != nil {
@@ -106,7 +108,7 @@ func (s *qrdbServiceServer) DatabaseDrop(ctx context.Context, req *pb.DatabaseDr
 // DatabaseUpdateProtocol updates the wire protocol configuration.
 func (s *qrdbServiceServer) DatabaseUpdateProtocol(ctx context.Context, req *pb.DatabaseUpdateProtocolRequest) (*pb.DatabaseInfoResponse, error) {
 	if s.databaseSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "database"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "database"})
 	}
 
 	protocol := database.ProtocolConfig{
@@ -125,7 +127,7 @@ func (s *qrdbServiceServer) DatabaseUpdateProtocol(ctx context.Context, req *pb.
 // DatabaseUpdateEtcd updates the etcd wire protocol configuration.
 func (s *qrdbServiceServer) DatabaseUpdateEtcd(ctx context.Context, req *pb.DatabaseUpdateEtcdRequest) (*pb.DatabaseInfoResponse, error) {
 	if s.databaseSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "database"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "database"})
 	}
 
 	etcd := &database.EtcdConfig{
@@ -145,7 +147,7 @@ func (s *qrdbServiceServer) DatabaseUpdateEtcd(ctx context.Context, req *pb.Data
 // DatabaseUpdateRaft updates the Raft consensus configuration.
 func (s *qrdbServiceServer) DatabaseUpdateRaft(ctx context.Context, req *pb.DatabaseUpdateRaftRequest) (*pb.DatabaseInfoResponse, error) {
 	if s.databaseSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "database"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "database"})
 	}
 
 	raft := protoRaftConfigToDomain(req.GetRaft())
@@ -162,7 +164,7 @@ func (s *qrdbServiceServer) DatabaseUpdateRaft(ctx context.Context, req *pb.Data
 // database.
 func (s *qrdbServiceServer) DatabaseScale(ctx context.Context, req *pb.DatabaseScaleRequest) (*pb.DatabaseInfoResponse, error) {
 	if s.databaseSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "database"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "database"})
 	}
 
 	info, err := s.databaseSvc.ScaleForTenant(ctx, req.GetName(), int(req.GetTargetReplicas()))
@@ -176,7 +178,7 @@ func (s *qrdbServiceServer) DatabaseScale(ctx context.Context, req *pb.DatabaseS
 // DatabaseUpdateBarrier updates the encryption barrier configuration.
 func (s *qrdbServiceServer) DatabaseUpdateBarrier(ctx context.Context, req *pb.DatabaseUpdateBarrierRequest) (*pb.DatabaseInfoResponse, error) {
 	if s.databaseSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "database"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "database"})
 	}
 
 	barrier := protoBarrierConfigToDomain(req.GetBarrier())
@@ -192,7 +194,7 @@ func (s *qrdbServiceServer) DatabaseUpdateBarrier(ctx context.Context, req *pb.D
 // DatabaseUpdateConnection updates the remote connection configuration.
 func (s *qrdbServiceServer) DatabaseUpdateConnection(ctx context.Context, req *pb.DatabaseUpdateConnectionRequest) (*pb.DatabaseInfoResponse, error) {
 	if s.databaseSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "database"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "database"})
 	}
 
 	conn := protoConnectionConfigToDomain(req.GetConnection())
@@ -208,7 +210,7 @@ func (s *qrdbServiceServer) DatabaseUpdateConnection(ctx context.Context, req *p
 // DatabaseSeal seals the encryption barrier for a database.
 func (s *qrdbServiceServer) DatabaseSeal(ctx context.Context, req *pb.DatabaseSealRequest) (*emptypb.Empty, error) {
 	if s.databaseSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "database"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "database"})
 	}
 	if err := s.databaseSvc.SealDatabase(ctx, req.GetName()); err != nil {
 		return nil, mapServiceError(err)
@@ -219,9 +221,14 @@ func (s *qrdbServiceServer) DatabaseSeal(ctx context.Context, req *pb.DatabaseSe
 // DatabaseUnseal unseals the encryption barrier for a database.
 func (s *qrdbServiceServer) DatabaseUnseal(ctx context.Context, req *pb.DatabaseUnsealRequest) (*emptypb.Empty, error) {
 	if s.databaseSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "database"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "database"})
 	}
-	if err := s.databaseSvc.UnsealDatabase(ctx, req.GetName(), seal.Credentials{Secret: []byte(req.GetSecret())}); err != nil {
+	creds, err := seal.CredentialsFor([]byte(req.GetSecret()))
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	defer creds.Secret.Destroy()
+	if err := s.databaseSvc.UnsealDatabase(ctx, req.GetName(), creds); err != nil {
 		return nil, mapServiceError(err)
 	}
 	return &emptypb.Empty{}, nil
@@ -230,7 +237,7 @@ func (s *qrdbServiceServer) DatabaseUnseal(ctx context.Context, req *pb.Database
 // DatabaseBarrierStatus returns the encryption-barrier status for a database.
 func (s *qrdbServiceServer) DatabaseBarrierStatus(ctx context.Context, req *pb.DatabaseBarrierStatusRequest) (*pb.DatabaseBarrierStatusResponse, error) {
 	if s.databaseSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "database"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "database"})
 	}
 	st, err := s.databaseSvc.DatabaseBarrierStatus(ctx, req.GetName())
 	if err != nil {

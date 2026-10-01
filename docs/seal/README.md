@@ -30,7 +30,7 @@ The first two ship inside qrdb. The third ships in go-xkms and is **registered i
 ## Three-Layer Architecture
 
 ```
-go-quicraft/pkg/seal/          Interfaces + memguard + minimal Barrier + Software/None/Shamir primitives
+go-quicraft/pkg/seal/          Interfaces + go-enclave + minimal Barrier + Software/None/Shamir primitives
         ↑
 go-qrdb/pkg/seal/              StorageBarrier: multi-tenant, storage wrapping, recovery, root tokens,
                                share exchange, StrategyRegistry (Software + None pre-registered)
@@ -41,7 +41,7 @@ go-xkms/pkg/seal/              Hardware strategies (TPM2, PKCS#11, AWS KMS, GCP 
                                registered into a qrdb StrategyRegistry at composition time
 ```
 
-- **go-quicraft** defines the barrier interfaces (`Barrier`, `SnapshotBarrier`, `EpochTracker`) and a minimal default implementation with AES-256-GCM, epoch rotation, deployment ID isolation, brute-force protection, and memguard memory protection. It also owns the baseline software-shape strategies: `SoftwareStrategy` (passphrase-based) and `NoneStrategy` (no encryption).
+- **go-quicraft** defines the barrier interfaces (`Barrier`, `SnapshotBarrier`, `EpochTracker`) and a minimal default implementation with AES-256-GCM, epoch rotation, deployment ID isolation, brute-force protection, and go-enclave locked-memory protection. It also owns the baseline software-shape strategies: `SoftwareStrategy` (passphrase-based) and `NoneStrategy` (no encryption).
 - **go-qrdb** wraps go-quicraft's barrier in `StorageBarrier`, adding all database-layer features. The `pkg/dek/` package is the per-tenant data encryption keyring: versioned application keys stored in each tenant's own store, wrapped by the tenant's barrier — see [tenant-dek](../tenant-dek/architecture.md).
 - **go-xkms** ships hardware `SealingStrategy` implementations and registers them into a qrdb `StrategyRegistry` so qrdb can resolve `--barrier-strategy <name>` at init time without importing any HSM SDK.
 
@@ -242,7 +242,12 @@ type ShareTransport interface {
 
 ## CA Key Lifecycle
 
-The `DefaultCertProvider` (`pkg/cert/default_provider.go`) stores its ECDSA P-256 CA private key using the encryption barrier for at-rest protection and `memguard.LockedBuffer` for in-memory protection.
+The `DefaultCertProvider` (`pkg/cert/default_provider.go`) stores its ECDSA
+P-256 CA private key encrypted at rest via the `EncryptionBarrier`. While
+unsealed, the decrypted key is held as a plain `[]byte` (`p.caKey`) — not a
+`secure.Buffer` or any other locked-memory enclave — and is zero-filled with
+`secure.Wipe` (a plain, compiler-optimization-resistant overwrite, not an
+mlock'd page) whenever it is replaced or on `Seal()`.
 
 ### Bootstrap
 
@@ -250,19 +255,20 @@ The `DefaultCertProvider` (`pkg/cert/default_provider.go`) stores its ECDSA P-25
 2. Encrypt private key via `EncryptionBarrier.Encrypt()`
 3. Store wrapped blob in KVStore at `__sys:cert_ca/{tenantID}/wrapped_key`
 4. Store CA cert PEM in KVStore at `__sys:cert_ca/{tenantID}/cert_pem`
-5. Zero plaintext key (`memguard.WipeBytes`)
+5. Zero plaintext key (`secure.Wipe`)
 
 ### Unseal to Operational
 
 1. Load wrapped blob from KVStore
 2. Decrypt via `EncryptionBarrier.Decrypt()`
-3. Store plaintext key in `memguard.NewLockedBuffer()` (secure enclave)
-4. Parse ECDSA private key from LockedBuffer bytes
-5. Cache parsed signer (`crypto.Signer`) for signing operations
+3. Hold the decrypted DER bytes in `p.caKey` (`[]byte`), wiping any previous
+   value first
+4. Parse the ECDSA private key from those bytes
+5. Cache the parsed signer (`crypto.Signer`) for signing operations
 
 ### Seal
 
-1. `LockedBuffer.Destroy()` (securely zeroes and destroys memory)
+1. `secure.Wipe(p.caKey)`, then `p.caKey = nil`
 2. Nil the cached signer
 3. All `GenerateClientCert()` calls return `CAKeyNotAvailableError`
 
@@ -345,7 +351,7 @@ There is no `BarrierInitialize` call required for `none`; the daemon transitions
 #### Initialize with Shamir M-of-N
 
 Initialize with Shamir secret sharing. Shares are **never returned in the
-response** — each share is sealed into a server-side memguard enclave bound to
+response** — each share is sealed into a server-side go-enclave locked-memory enclave bound to
 an enrolled Security Officer, who claims it exactly once over mTLS (see
 [so-share-distribution-design.md](so-share-distribution-design.md) and
 [shamir.md](shamir.md)). Register the officers (CSR-based) before
@@ -586,7 +592,7 @@ The Tenants admin view lets the **tenant admin choose the barrier strategy** —
 
 ## See Also
 
-- [go-quicraft docs/06-crypto.md](https://github.com/jeremyhahn/go-quicraft/blob/main/docs/06-crypto.md) — Minimal barrier, memguard, epoch rotation, software/none/shamir primitives
+- [go-quicraft docs/06-crypto.md](https://github.com/jeremyhahn/go-quicraft/blob/main/docs/06-crypto.md) — Minimal barrier, go-enclave, epoch rotation, software/none/shamir primitives
 - [go-xkms docs/seal/README.md](https://github.com/jeremyhahn/go-xkms/blob/main/docs/seal/README.md) — Hardware sealing strategies that register into qrdb's `StrategyRegistry`
 - [../pin/README.md](../auth-factors/architecture.md) — PIN backend interface (canonical PIN contract for the stack)
 - [../credentials/README.md](../credentials/architecture.md) — Versioned credential rotation backed by the barrier

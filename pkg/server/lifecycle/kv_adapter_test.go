@@ -19,11 +19,14 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
@@ -38,6 +41,14 @@ type mockKVServicer struct {
 	deleteFn      func(ctx context.Context, key string) error
 	scanFn        func(ctx context.Context, prefix string) (map[string][]byte, error)
 	listFn        func(ctx context.Context, prefix string) ([]string, error)
+
+	// The two guarded writes are injectable for the same reason every other
+	// verb here is. They used to be hardcoded `return false, nil`, which let a
+	// double express only the DECLINED outcome -- so a test could never tell a
+	// correctly-forwarding adapter from one that dropped the call and returned
+	// false on its own.
+	compareAndDeleteFn func(ctx context.Context, key string, expected []byte) (bool, error)
+	compareAndSwapFn   func(ctx context.Context, key string, expected, next []byte) (bool, error)
 }
 
 func (m *mockKVServicer) Put(ctx context.Context, key string, value []byte) error {
@@ -60,10 +71,16 @@ func (m *mockKVServicer) PutIfAbsent(ctx context.Context, key string, value []by
 // CompareAndDelete mirrors PutIfAbsent's guard on the release side:
 // it removes the key only when the stored value still equals expected.
 func (m *mockKVServicer) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	if m.compareAndDeleteFn != nil {
+		return m.compareAndDeleteFn(ctx, key, expected)
+	}
 	return false, nil
 }
 
 func (m *mockKVServicer) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	if m.compareAndSwapFn != nil {
+		return m.compareAndSwapFn(ctx, key, expected, next)
+	}
 	return false, nil
 }
 
@@ -652,4 +669,204 @@ func TestResolveReplicaID_NonZeroPassesThrough(t *testing.T) {
 // so the filtered and unfiltered enumerations are the same call.
 func (m *mockKVServicer) ListAll(ctx context.Context, prefix string) ([]string, error) {
 	return m.List(ctx, prefix)
+}
+
+// TestKVStoreAdapter_CompareAndDelete and its CompareAndSwap sibling cover the
+// adapter's two guarded writes, which had no test at all.
+//
+// The adapter is pure delegation, so "it works" is not the property worth
+// asserting -- "it forwards every argument unchanged and returns the service's
+// answer verbatim" is. A delegating method that silently swapped `expected`
+// and `next`, or that returned its own false, would satisfy a weaker test and
+// break every caller that uses these to fence a concurrent mutation.
+func TestKVStoreAdapter_CompareAndDelete(t *testing.T) {
+	ctx := context.Background()
+	sentinel := errors.New("service refused")
+
+	for _, tc := range []struct {
+		name    string
+		ok      bool
+		err     error
+		wantErr error
+	}{
+		{"deleted", true, nil, nil},
+		{"declined", false, nil, nil},
+		{"service error", false, sentinel, sentinel},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotKey string
+			var gotExpected []byte
+			svc := &mockKVServicer{
+				compareAndDeleteFn: func(_ context.Context, key string, expected []byte) (bool, error) {
+					gotKey, gotExpected = key, expected
+					return tc.ok, tc.err
+				},
+			}
+			a := &kvStoreAdapter{svc: svc}
+
+			ok, err := a.CompareAndDelete(ctx, "k", []byte("expected"))
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tc.wantErr)
+			}
+			if ok != tc.ok {
+				t.Errorf("ok = %v, want %v -- the service's answer must be returned verbatim", ok, tc.ok)
+			}
+			if gotKey != "k" {
+				t.Errorf("key forwarded as %q, want %q", gotKey, "k")
+			}
+			if string(gotExpected) != "expected" {
+				t.Errorf("expected forwarded as %q, want %q", gotExpected, "expected")
+			}
+		})
+	}
+}
+
+func TestKVStoreAdapter_CompareAndSwap(t *testing.T) {
+	ctx := context.Background()
+	sentinel := errors.New("service refused")
+
+	for _, tc := range []struct {
+		name    string
+		ok      bool
+		err     error
+		wantErr error
+	}{
+		{"swapped", true, nil, nil},
+		{"declined", false, nil, nil},
+		{"service error", false, sentinel, sentinel},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotKey string
+			var gotExpected, gotNext []byte
+			svc := &mockKVServicer{
+				compareAndSwapFn: func(_ context.Context, key string, expected, next []byte) (bool, error) {
+					gotKey, gotExpected, gotNext = key, expected, next
+					return tc.ok, tc.err
+				},
+			}
+			a := &kvStoreAdapter{svc: svc}
+
+			ok, err := a.CompareAndSwap(ctx, "k", []byte("expected"), []byte("next"))
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tc.wantErr)
+			}
+			if ok != tc.ok {
+				t.Errorf("ok = %v, want %v -- the service's answer must be returned verbatim", ok, tc.ok)
+			}
+			if gotKey != "k" {
+				t.Errorf("key forwarded as %q, want %q", gotKey, "k")
+			}
+			// Distinct values, asserted separately: a transposition here is the
+			// defect that a single combined check would not see.
+			if string(gotExpected) != "expected" {
+				t.Errorf("expected forwarded as %q, want %q", gotExpected, "expected")
+			}
+			if string(gotNext) != "next" {
+				t.Errorf("next forwarded as %q, want %q", gotNext, "next")
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// buildDatabaseQuotaOpts: which options a tenant service earns
+//
+// Every option past the first is gated on an OPTIONAL interface, so the
+// function's whole job is deciding what the supplied tenant service is capable
+// of. Each branch silently contributes nothing when unsatisfied, which is the
+// right behaviour and also the reason it needs a test: a tenant service that
+// stopped satisfying one of these would quietly lose a quota control rather
+// than fail to build.
+// ---------------------------------------------------------------------------
+
+// plainTenantSvc satisfies tenant.TenantServicer and nothing else. The
+// embedded nil interface panics if an un-overridden method is called, so a
+// test that accidentally exercises one is loud rather than silently passing.
+type plainTenantSvc struct{ tenant.TenantServicer }
+
+// quotaTenantSvc adds quota.QuotaProvider -- the gate on everything the
+// function does -- and nothing further.
+type quotaTenantSvc struct{ tenant.TenantServicer }
+
+func (quotaTenantSvc) Quotas(context.Context, string) (*quota.Quotas, error) {
+	return &quota.Quotas{}, nil
+}
+
+// TestBuildDatabaseQuotaOpts_WithoutAQuotaProviderContributesNothing: a tenant
+// service that cannot report quotas earns no quota options at all, rather than
+// an option set that would check against nothing.
+func TestBuildDatabaseQuotaOpts_WithoutAQuotaProviderContributesNothing(t *testing.T) {
+	if opts := buildDatabaseQuotaOpts(plainTenantSvc{}, slog.Default()); opts != nil {
+		t.Errorf("opts = %d, want nil: a non-QuotaProvider earns no quota options", len(opts))
+	}
+}
+
+// entitledTenantSvc adds the one optional interface a TenantServicer does not
+// already satisfy.
+type entitledTenantSvc struct{ quotaTenantSvc }
+
+func (entitledTenantSvc) CheckIsolation(context.Context, string, string) error { return nil }
+func (entitledTenantSvc) CheckFeature(context.Context, string, string) error   { return nil }
+
+// TestBuildDatabaseQuotaOpts_OptionalInterfacesAreNotAllOptionalInPractice
+// records something worth knowing before anyone refactors this function.
+//
+// Three of the four options are gated on a type assertion that reads as
+// optional. TWO OF THEM ARE NOT, in practice: service.TenantInfoLookup and
+// service.QuotaUsageRecorder are both satisfied by tenant.TenantServicer's own
+// method set, so every real tenant service earns them automatically and those
+// two assertions are always true. Only quota.EntitlementChecker actually
+// discriminates -- measured, not assumed, by asserting each interface against
+// a bare TenantServicer embedding.
+//
+// The consequence for a reader: the "if this service can also do X" shape
+// suggests four independent capabilities, and there are really two. Anyone
+// narrowing TenantServicer should expect to newly lose two options here,
+// silently, because an unsatisfied assertion contributes nothing rather than
+// failing.
+func TestBuildDatabaseQuotaOpts_OptionalInterfacesAreNotAllOptionalInPractice(t *testing.T) {
+	// A QuotaProvider that is otherwise a bare TenantServicer: the checker,
+	// plus the two its method set earns for free.
+	if got := len(buildDatabaseQuotaOpts(quotaTenantSvc{}, slog.Default())); got != 3 {
+		t.Errorf("a bare QuotaProvider earned %d options, want 3 "+
+			"(checker + TenantInfoLookup + QuotaUsageRecorder)", got)
+	}
+
+	// Adding the one interface that genuinely discriminates earns the fourth.
+	if got := len(buildDatabaseQuotaOpts(entitledTenantSvc{}, slog.Default())); got != 4 {
+		t.Errorf("an EntitlementChecker earned %d options, want 4", got)
+	}
+}
+
+// TestKVSealBackend_GuardedWritesRequireATransactionService: without a
+// transaction service these verbs REFUSE rather than degrade.
+//
+// The wrapped KV is the replicated store, so an in-process lock cannot make a
+// check-then-write atomic across nodes -- only the transaction plane can.
+// Falling back to a read-then-write would look like it worked and silently
+// stop being a guarded write, which is precisely the guarantee callers reach
+// for these to get. Refusing is the only honest answer.
+func TestKVSealBackend_GuardedWritesRequireATransactionService(t *testing.T) {
+	ctx := context.Background()
+	b := kvSealBackend{} // no transaction service
+
+	t.Run("CompareAndDelete", func(t *testing.T) {
+		ok, err := b.CompareAndDelete(ctx, "k", []byte("v"))
+		if !errors.Is(err, ErrNoTransactionService) {
+			t.Errorf("error = %v, want ErrNoTransactionService", err)
+		}
+		if ok {
+			t.Error("a refused guarded delete must not report success")
+		}
+	})
+
+	t.Run("CompareAndSwap", func(t *testing.T) {
+		ok, err := b.CompareAndSwap(ctx, "k", []byte("v"), []byte("next"))
+		if !errors.Is(err, ErrNoTransactionService) {
+			t.Errorf("error = %v, want ErrNoTransactionService", err)
+		}
+		if ok {
+			t.Error("a refused guarded swap must not report success")
+		}
+	})
 }

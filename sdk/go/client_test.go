@@ -224,7 +224,7 @@ func (m *mockAdminService) Peers(_ context.Context) (*service.PeersInfo, error) 
 	}, nil
 }
 
-func (m *mockAdminService) AddMember(_ context.Context, _, _ uint64, _ string) error {
+func (m *mockAdminService) AddMember(_ context.Context, _, _ uint64, _, _ string) error {
 	return nil
 }
 
@@ -481,7 +481,7 @@ func TestClient_Admin_AddMember(t *testing.T) {
 	client, _ := sdk.NewClient(tr)
 	defer client.Close()
 
-	err := client.Admin().AddMember(context.Background(), 0, 2, "10.0.0.2:63001")
+	err := client.Admin().AddMember(context.Background(), 0, 2, "10.0.0.2:63001", "")
 	if err != nil {
 		t.Fatalf("AddMember failed: %v", err)
 	}

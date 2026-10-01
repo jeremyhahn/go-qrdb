@@ -39,7 +39,7 @@ func TestMCPServerUserToTransport(t *testing.T) {
 		Username:  "alice",
 		TenantID:  "t1",
 		RoleIDs:   []string{"r1", "r2"},
-		Enabled:   true,
+		Lifecycle: "active",
 		System:    false,
 		CreatedAt: "2026-01-01T00:00:00Z",
 		UpdatedAt: "2026-02-01T00:00:00Z",
@@ -51,7 +51,7 @@ func TestMCPServerUserToTransport(t *testing.T) {
 	if out.ID != 1 || out.Username != "alice" || out.TenantID != "t1" {
 		t.Errorf("identity: %+v", out)
 	}
-	if len(out.RoleIDs) != 2 || !out.Enabled || out.System {
+	if len(out.RoleIDs) != 2 || out.Lifecycle != "active" || out.System {
 		t.Errorf("flags: %+v", out)
 	}
 }

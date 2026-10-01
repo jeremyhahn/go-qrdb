@@ -15,7 +15,7 @@
 # --------------------------------------------------------------------------
 # Stage 1: Build
 # --------------------------------------------------------------------------
-FROM golang:1.26.6-bookworm AS builder
+FROM golang:1.27.0-bookworm AS builder
 
 WORKDIR /build
 
@@ -57,8 +57,8 @@ COPY sdk/go/go.mod sdk/go/go.sum* sdk/go/
 RUN --mount=type=secret,id=gomodauth \
     set -eu; \
     mkdir -p /tmp/stubs/go-quicraft /tmp/stubs/go-truststrap; \
-    printf 'module github.com/jeremyhahn/go-quicraft\n\ngo 1.26.1\n' > /tmp/stubs/go-quicraft/go.mod; \
-    printf 'module github.com/jeremyhahn/go-truststrap\n\ngo 1.26.1\n' > /tmp/stubs/go-truststrap/go.mod; \
+    printf 'module github.com/jeremyhahn/go-quicraft\n\ngo 1.27.0\n' > /tmp/stubs/go-quicraft/go.mod; \
+    printf 'module github.com/jeremyhahn/go-truststrap\n\ngo 1.27.0\n' > /tmp/stubs/go-truststrap/go.mod; \
     cp go.mod go.mod.orig; \
     sed -i 's|=> \.\./go-quicraft|=> /tmp/stubs/go-quicraft|' go.mod; \
     sed -i 's|=> \.\./go-truststrap|=> /tmp/stubs/go-truststrap|' go.mod; \
@@ -98,6 +98,20 @@ COPY --from=builder /build/configs/qrdb.yaml /etc/qrdb/qrdb.yaml
 
 # Raft transport, REST admin, gRPC, QUIC
 EXPOSE 63001 63002 63003 63004
+
+# Locked memory. qrdbd keeps cluster keys, credentials and PINs in mlock'd
+# pages, admitted against a process-wide secure-memory budget. An image cannot
+# grant itself the capability or the ulimit that needs; they are RUN-time
+# settings, so run this image with both:
+#
+#   docker run --cap-add IPC_LOCK --ulimit memlock=-1:-1 ...
+#
+# (compose: `cap_add: [IPC_LOCK]` and `ulimits: {memlock: {soft: -1, hard: -1}}`).
+# Without them an unconfigured node derives a smaller budget from Docker's
+# default RLIMIT_MEMLOCK and logs it at startup, and an explicitly configured
+# budget above that limit refuses to start. See docs/deployment/.
+LABEL io.qrdb.requires.cap-add="IPC_LOCK" \
+      io.qrdb.requires.ulimit="memlock=-1:-1"
 
 ENTRYPOINT ["/app/qrdbd"]
 CMD ["start", "--config", "/etc/qrdb/qrdb.yaml"]

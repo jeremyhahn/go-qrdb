@@ -1704,8 +1704,7 @@ func TestMVCCKVService_RestoreToRevision_RejectsUnexpectedChangeScanResultType(t
 }
 
 // noChangeIndexError satisfies the changeIndexUnsupportedErr interface the way
-// mvccadapter.ScanChangesUnsupportedError does, without importing it (the
-// dependency runs the other way).
+// an injected MVCCStore without a revision index refuses ScanChanges.
 type noChangeIndexError struct{}
 
 func (e *noChangeIndexError) Error() string           { return "no revision index" }

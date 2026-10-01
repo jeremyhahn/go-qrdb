@@ -43,10 +43,11 @@
 // Scope resolution is tenant-aware when a permission.ScopeResolver is
 // installed via WithScopeResolver: a caller-defined permission's scope is
 // resolved in the identity's own tenant (per-tenant store -> built-in
-// default -> ScopeSelf), so two tenants may use the same permission name
-// with different scopes without colliding. When no resolver is installed,
-// the authorizer falls back to the built-in process-global scope layer
-// (permission.LookupScope), preserving the prior behavior.
+// declaration), so two tenants may use the same permission name with
+// different scopes without colliding. When no resolver is installed, the
+// authorizer consults the built-in process-global scope layer
+// (permission.LookupScope) directly. There is no default at the end of
+// either chain: a permission with no declared scope is denied.
 package rbac
 
 import (
@@ -210,10 +211,10 @@ type RBACAuthorizer struct {
 
 	// scopes is an optional tenant-aware scope resolver. When non-nil, the
 	// authorizer resolves a permission's scope in the identity's own tenant
-	// (per-tenant store -> built-in default -> ScopeSelf) so that two
-	// tenants may use the same permission name with different scopes without
-	// colliding. When nil, the authorizer consults only the built-in
-	// process-global scope layer via permission.LookupScope (back-compat).
+	// (per-tenant store -> built-in declaration) so that two tenants may use
+	// the same permission name with different scopes without colliding. When
+	// nil, the authorizer consults only the built-in process-global scope
+	// layer via permission.LookupScope. Neither chain ends in a default.
 	//
 	// SECURITY: when scopes is set and ResolveScope returns an error — most
 	// importantly tenant.ErrTenantSealed for a sealed barrier tenant — the
@@ -518,7 +519,7 @@ func IsSystemTenant(identity *auth.Identity) bool {
 // fails — in which case the caller MUST deny.
 func (a *RBACAuthorizer) resolveScope(ctx context.Context, identity *auth.Identity, p permission.Permission) (permission.Scope, error) {
 	if a.scopes == nil {
-		return permission.LookupScope(p), nil
+		return permission.LookupScope(p)
 	}
 	return a.scopes.ResolveScope(ctx, identity.TenantID, p)
 }
@@ -586,10 +587,22 @@ func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 		// only cost of the short budget is a marginally-staler read on a blip,
 		// which is safe for replicated role data. Mirrors the auth user-lookup
 		// guard and is the companion to the error-triggered fallback below.
-		primaryCtx := ctx
+		//
+		// Resolved under the IDENTITY's own tenant, never the request's
+		// target -- the same tenant-scoping holdsSystemRole and
+		// effectiveRoles apply, and the only one consistent with the cache
+		// above, which is keyed by the identity's tenant because an
+		// identity's permissions do not depend on what it targets. The
+		// target is bound into ctx by AuthorizeTenant, and the role store
+		// refuses a role outside the context tenant, so a system-tenant
+		// operator's roles resolved under a target tenant's context came
+		// back not-found: its first decision against another tenant failed
+		// whenever the cache was cold.
+		ownCtx := tenant.WithTenantID(ctx, identity.TenantID)
+		primaryCtx := ownCtx
 		var cancel context.CancelFunc
 		if a.rolesFallback != nil {
-			primaryCtx, cancel = context.WithTimeout(ctx, resolveSyncTimeout)
+			primaryCtx, cancel = context.WithTimeout(ownCtx, resolveSyncTimeout)
 		}
 		perms, err := a.roles.ResolvePermissions(primaryCtx, effRoles)
 		if cancel != nil {
@@ -605,7 +618,7 @@ func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 			if a.rolesFallback == nil {
 				return &ResolveError{Err: err}
 			}
-			fperms, ferr := a.rolesFallback.ResolvePermissions(ctx, effRoles)
+			fperms, ferr := a.rolesFallback.ResolvePermissions(ownCtx, effRoles)
 			if ferr != nil {
 				return &ResolveError{Err: err}
 			}
@@ -702,6 +715,20 @@ func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 			}
 		}
 		return nil
+	case permission.ScopeSelfStrict:
+		// Own tenant only, for EVERY identity. Unlike ScopeSelf the
+		// system-tenant rule does not lift this, and unlike ScopeTenantOnly
+		// the system tenant is not denied outright: it is confined to its own
+		// tenant exactly as every other tenant is.
+		if identity.TenantID == targetTenantID {
+			return nil
+		}
+		return &PermissionDeniedError{
+			Resource: resource,
+			Action:   action,
+			Subject:  identity.Subject,
+			Reason:   "self-strict permission: identity not in target tenant (the system tenant is not lifted)",
+		}
 	default:
 		return &PermissionDeniedError{
 			Resource: resource,

@@ -23,7 +23,7 @@ import (
 
 func TestSecretValue_BytesReturnsBacking(t *testing.T) {
 	src := []byte("hunter2")
-	sv := secret.NewSecretValue("raw://x", src, secret.StrategyLiteral)
+	sv := mustSecretValue(t, "raw://x", src, secret.StrategyLiteral)
 
 	got := sv.Bytes()
 	if string(got) != "hunter2" {
@@ -37,7 +37,7 @@ func TestSecretValue_BytesReturnsBacking(t *testing.T) {
 }
 
 func TestSecretValue_StringReturnsCopy(t *testing.T) {
-	sv := secret.NewSecretValue("raw://x", []byte("s3cr3t"), secret.StrategyCredential)
+	sv := mustSecretValue(t, "raw://x", []byte("s3cr3t"), secret.StrategyCredential)
 
 	s1 := sv.String()
 	s2 := sv.String()
@@ -48,7 +48,7 @@ func TestSecretValue_StringReturnsCopy(t *testing.T) {
 }
 
 func TestSecretValue_Clear_DestroysSecret(t *testing.T) {
-	sv := secret.NewSecretValue("raw://x", []byte{1, 2, 3, 4}, secret.StrategyLiteral)
+	sv := mustSecretValue(t, "raw://x", []byte{1, 2, 3, 4}, secret.StrategyLiteral)
 
 	sv.Clear()
 
@@ -65,7 +65,7 @@ func TestSecretValue_Clear_DestroysSecret(t *testing.T) {
 }
 
 func TestSecretValue_WithBytes(t *testing.T) {
-	sv := secret.NewSecretValue("raw://x", []byte("hunter2"), secret.StrategyCredential)
+	sv := mustSecretValue(t, "raw://x", []byte("hunter2"), secret.StrategyCredential)
 	defer sv.Clear()
 
 	var seen string
@@ -81,7 +81,7 @@ func TestSecretValue_WithBytes(t *testing.T) {
 }
 
 func TestSecretValue_WithBytes_EmptyValue(t *testing.T) {
-	sv := secret.NewSecretValue("raw://x", nil, secret.StrategyLiteral)
+	sv := mustSecretValue(t, "raw://x", nil, secret.StrategyLiteral)
 
 	called := false
 	if err := sv.WithBytes(func(b []byte) error {
@@ -99,7 +99,7 @@ func TestSecretValue_WithBytes_EmptyValue(t *testing.T) {
 }
 
 func TestSecretValue_Open(t *testing.T) {
-	sv := secret.NewSecretValue("raw://x", []byte("s3cr3t"), secret.StrategyCredential)
+	sv := mustSecretValue(t, "raw://x", []byte("s3cr3t"), secret.StrategyCredential)
 	defer sv.Clear()
 
 	buf, err := sv.Open()
@@ -115,7 +115,7 @@ func TestSecretValue_Open(t *testing.T) {
 	}
 
 	// An empty value opens to a nil buffer with no error.
-	empty := secret.NewSecretValue("raw://y", nil, secret.StrategyLiteral)
+	empty := mustSecretValue(t, "raw://y", nil, secret.StrategyLiteral)
 	eb, err := empty.Open()
 	if err != nil {
 		t.Fatalf("Open empty: %v", err)
@@ -127,7 +127,7 @@ func TestSecretValue_Open(t *testing.T) {
 }
 
 func TestSecretValue_Expired_ZeroTime(t *testing.T) {
-	sv := secret.NewSecretValue("raw://x", []byte("v"), secret.StrategyLiteral)
+	sv := mustSecretValue(t, "raw://x", []byte("v"), secret.StrategyLiteral)
 	// Default ExpiresAt is zero — secret does not expire.
 	if sv.Expired() {
 		t.Error("Expired() must return false when ExpiresAt is zero")
@@ -135,7 +135,7 @@ func TestSecretValue_Expired_ZeroTime(t *testing.T) {
 }
 
 func TestSecretValue_Expired_PastTime(t *testing.T) {
-	sv := secret.NewSecretValue("raw://x", []byte("v"), secret.StrategyLiteral)
+	sv := mustSecretValue(t, "raw://x", []byte("v"), secret.StrategyLiteral)
 	sv.ExpiresAt = time.Now().Add(-time.Second) // expired one second ago
 
 	if !sv.Expired() {
@@ -144,7 +144,7 @@ func TestSecretValue_Expired_PastTime(t *testing.T) {
 }
 
 func TestSecretValue_Expired_FutureTime(t *testing.T) {
-	sv := secret.NewSecretValue("raw://x", []byte("v"), secret.StrategyLiteral)
+	sv := mustSecretValue(t, "raw://x", []byte("v"), secret.StrategyLiteral)
 	sv.ExpiresAt = time.Now().Add(time.Hour)
 
 	if sv.Expired() {
@@ -162,7 +162,7 @@ func TestSecretValue_Strategy(t *testing.T) {
 		{secret.StrategyRemoteKMS},
 		{secret.StrategyAutoGen},
 	} {
-		sv := secret.NewSecretValue("raw", []byte("v"), tc.strategy)
+		sv := mustSecretValue(t, "raw", []byte("v"), tc.strategy)
 		if sv.Strategy != tc.strategy {
 			t.Errorf("Strategy = %q, want %q", sv.Strategy, tc.strategy)
 		}

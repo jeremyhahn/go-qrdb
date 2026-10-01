@@ -52,7 +52,7 @@ backend is the production default.
 |---|---|---|
 | Request semantics, permissions, scope | `pkg/service` | go-qrdb |
 | KV operations | `pkg/kv` | go-qrdb |
-| MVCC engine, revision encoding, compaction | `pkg/mvcc`, `pkg/mvccadapter` | go-qrdb |
+| MVCC engine, revision encoding, compaction | `pkg/mvcc` | go-qrdb |
 | Storage engines (file / memory / pebble / namespace) | `pkg/storage` | go-qrdb |
 | Consistency levels and read routing | `pkg/consistency`, `pkg/routing` | go-qrdb |
 | Write durability modes | `pkg/writemode` | go-qrdb (re-exports go-quicraft's) |

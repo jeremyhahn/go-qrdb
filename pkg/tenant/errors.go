@@ -31,9 +31,22 @@ var (
 	// before changing the isolation type.
 	ErrTenantHasData = errors.New("tenant: has data, isolation type cannot be changed")
 
+	// ErrTenantDataUnverifiable is returned when an isolation type change is
+	// requested and no TenantDataProbe is wired to confirm the tenant holds
+	// no data. The precondition fails closed rather than risk orphaning data.
+	ErrTenantDataUnverifiable = errors.New("tenant: cannot verify the tenant holds no data, isolation type cannot be changed")
+
 	// ErrTenantAlreadyExists is returned when attempting to create a tenant
 	// that already has metadata stored.
 	ErrTenantAlreadyExists = errors.New("tenant: already exists")
+
+	// ErrTenantStoreNotAtomic is returned by CreateTenant when the tenant
+	// metadata store cannot commit a record conditioned on the tenant's
+	// tombstone being absent in one atomic step (kvstore.FencedCreator). It
+	// is refused before any side effect rather than degraded to a check
+	// followed by a write: that window is how a create racing a delete
+	// committed a live record for a permanently retired id.
+	ErrTenantStoreNotAtomic = errors.New("tenant: metadata store cannot commit a create atomically against the tombstone")
 
 	// ErrEmptyTenantID is returned when an empty tenant ID is provided.
 	ErrEmptyTenantID = errors.New("tenant: empty tenant ID")
@@ -261,12 +274,18 @@ type DataRootOverlapError struct {
 	// Conflict is the reserved path it overlaps.
 	Conflict string
 	// Kind describes the reserved path (e.g. "volume pool", "system data dir",
-	// or "tenant <id>").
+	// "tenant <id>", or "retired tenant <id>").
 	Kind string
+	// Remedy, when set, tells the operator how to clear the conflict.
+	Remedy string
 }
 
 func (e *DataRootOverlapError) Error() string {
-	return "tenant: data root " + e.DataRoot + " overlaps " + e.Kind + " path " + e.Conflict
+	msg := "tenant: data root " + e.DataRoot + " overlaps " + e.Kind + " path " + e.Conflict
+	if e.Remedy != "" {
+		msg += "; " + e.Remedy
+	}
+	return msg
 }
 
 // DataRootIsolationTypeError is returned when CreateTenant's WithDataRoot
@@ -422,3 +441,86 @@ func (e *DatabaseListError) Error() string {
 }
 
 func (e *DatabaseListError) Unwrap() error { return e.Err }
+
+// TenantDataProbeError reports that the data probe could not answer whether a
+// tenant holds data, so an isolation type change was refused.
+type TenantDataProbeError struct {
+	TenantID string
+	Err      error
+}
+
+// Error names the tenant and the cause.
+func (e *TenantDataProbeError) Error() string {
+	return "tenant: cannot verify tenant " + e.TenantID + " holds no data: " + e.Err.Error()
+}
+
+// Unwrap returns the probe's error.
+func (e *TenantDataProbeError) Unwrap() error { return e.Err }
+
+// InvalidPageRequestError is returned by ListDeletedTenants for a page size or
+// page token the caller supplied that cannot be honoured. It is the caller's
+// error, and maps to 400 / InvalidArgument.
+type InvalidPageRequestError struct {
+	// Field names the offending request field: "page_size" or "page_token".
+	Field string
+	// Reason says what is wrong with it.
+	Reason string
+}
+
+func (e *InvalidPageRequestError) Error() string {
+	return "tenant: invalid " + e.Field + ": " + e.Reason
+}
+
+// ResidueReconcileError is returned by ReconcileDeletedTenants when one step
+// of reclaiming a retired tenant's residue on this node failed. Every step is
+// idempotent, so re-issuing the reconcile resumes it; the error names the
+// tenant and the step so an operator can see where it stopped.
+type ResidueReconcileError struct {
+	TenantID string
+	// Op is the step that failed: "list-tombstones", "list-tenants",
+	// "candidates", "close-runtime", "forget-barrier" or "remove".
+	Op string
+	// Path is the directory involved, when the step concerned one.
+	Path string
+	Err  error
+}
+
+func (e *ResidueReconcileError) Error() string {
+	msg := "tenant: reconcile deleted tenant"
+	if e.TenantID != "" {
+		msg += " " + e.TenantID
+	}
+	msg += ": " + e.Op
+	if e.Path != "" {
+		msg += " " + e.Path
+	}
+	return msg + ": " + e.Err.Error()
+}
+
+func (e *ResidueReconcileError) Unwrap() error { return e.Err }
+
+// ResidueReconcileErrors is returned by ReconcileDeletedTenants when one or
+// more retired ids could not be fully reclaimed. A per-id failure does not
+// stop the pass: the other ids are still reclaimed, the report describes what
+// was done, and this error collects what was not. Each entry is a
+// *ResidueReconcileError; errors.Is and errors.As reach every one of them.
+type ResidueReconcileErrors struct {
+	Errors []*ResidueReconcileError
+}
+
+func (e *ResidueReconcileErrors) Error() string {
+	msg := "tenant: reconcile deleted tenants: " + strconv.Itoa(len(e.Errors)) + " failed"
+	for _, err := range e.Errors {
+		msg += "; " + err.Error()
+	}
+	return msg
+}
+
+// Unwrap returns every collected failure.
+func (e *ResidueReconcileErrors) Unwrap() []error {
+	out := make([]error, len(e.Errors))
+	for i, err := range e.Errors {
+		out[i] = err
+	}
+	return out
+}

@@ -30,16 +30,20 @@ import "sync"
 // holding a cross-scope permission cannot exercise it outside its own
 // tenant.
 //
-// Permissions default to ScopeSelf. New cross-tenant permissions
-// (tenant:list:cross, tenant:approve, volumepool:*, etc.) explicitly
-// register as ScopeCross.
+// Every permission declares its scope; there is no default. Self-scoped
+// permissions are named in self_scope.go, tenant-only ones in
+// tenant_scope.go, and cross-tenant ones (tenant:list:cross,
+// tenant:approve, volumepool:*, etc.) in cross_scope.go. LookupScope refuses
+// a permission that appears in none of them.
 type Scope int
 
 const (
-	// ScopeSelf is the default — the permission acts on the identity's own
-	// tenant unless the identity belongs to the system tenant, in which
-	// case the system-tenant rule allows the permission to act on any
-	// tenant.
+	// ScopeSelf — the permission acts on the identity's own tenant unless
+	// the identity belongs to the system tenant, in which case the
+	// system-tenant rule allows the permission to act on any tenant.
+	//
+	// It is the zero value of Scope but NOT a default: LookupScope refuses an
+	// unregistered permission rather than answering this (go-qrdb#504).
 	ScopeSelf Scope = iota
 
 	// ScopeCross is a cross-tenant permission. Only identities whose
@@ -55,6 +59,24 @@ const (
 	// (for example, per-tenant barrier key custody, which the platform
 	// operator must not hold).
 	ScopeTenantOnly
+
+	// ScopeSelfStrict is a permission confined to the identity's OWN tenant,
+	// for every identity -- the system tenant included. It is ScopeSelf
+	// without the system-tenant lift.
+	//
+	// It is distinct from both of its neighbours, and the difference is the
+	// system tenant's treatment. ScopeSelf lifts the system tenant across
+	// ALL tenants; ScopeTenantOnly denies the system tenant outright, which
+	// is right for material a platform operator must never hold. Neither
+	// expresses "every tenant is its own boundary, the system tenant
+	// included" -- a permission the system tenant may exercise on its own
+	// data and on nobody else's.
+	//
+	// Key escrow is the case that called for it: the system tenant escrows
+	// and recovers its own keys, but a platform admin reaching another
+	// tenant's escrowed key material would be a cross-tenant escalation
+	// wearing an admin role.
+	ScopeSelfStrict
 )
 
 // String returns a stable, human-readable label for the scope. The label
@@ -69,6 +91,8 @@ func (s Scope) String() string {
 		return "cross"
 	case ScopeTenantOnly:
 		return "tenant-only"
+	case ScopeSelfStrict:
+		return "self-strict"
 	default:
 		return "unknown"
 	}
@@ -79,7 +103,7 @@ func (s Scope) String() string {
 // valid.
 func (s Scope) Valid() bool {
 	switch s {
-	case ScopeSelf, ScopeCross, ScopeTenantOnly:
+	case ScopeSelf, ScopeCross, ScopeTenantOnly, ScopeSelfStrict:
 		return true
 	default:
 		return false
@@ -99,6 +123,8 @@ func ParseScope(label string) (Scope, error) {
 		return ScopeCross, nil
 	case "tenant-only":
 		return ScopeTenantOnly, nil
+	case "self-strict":
+		return ScopeSelfStrict, nil
 	default:
 		return ScopeSelf, &InvalidScopeError{Value: label}
 	}
@@ -108,8 +134,9 @@ func ParseScope(label string) (Scope, error) {
 // These are the uniform platform permissions registered by qrdb's own
 // init() functions (cross_scope.go, tenant_scope.go); they are correctly
 // global because a built-in permission means the same thing in every
-// tenant. Permissions absent from the registry default to ScopeSelf via
-// LookupScope. Per-tenant, caller-defined scope overrides do NOT live here
+// tenant. A permission absent from the registry has no scope: LookupScope
+// returns *UndeclaredScopeError for it, and the authorizer denies.
+// Per-tenant, caller-defined scope overrides do NOT live here
 // — they live in the tenant's own store via TenantScopeStore and take
 // precedence over this layer (see ResolveScope). The registry is guarded
 // by scopeMu.
@@ -134,35 +161,45 @@ func RegisterScope(scope Scope, perms ...Permission) {
 }
 
 // LookupScope returns the built-in (process-global) scope for the given
-// permission. When the permission has not been explicitly registered, it
-// returns ScopeSelf — the safe default that confines a permission to the
-// identity's own tenant unless lifted by the system-tenant rule.
+// permission, or an *UndeclaredScopeError if no scope has been registered
+// for it.
+//
+// There is no default. Until go-qrdb#504 an unregistered permission answered
+// ScopeSelf, the weakest check in the vocabulary, so a permission whose
+// tenancy reach nobody had decided was admitted on the same terms as one
+// deliberately confined to its own tenant. That is how certs:revoke reached
+// every tenant (go-qrdb#474). Every built-in permission is now declared in
+// self_scope.go, tenant_scope.go or cross_scope.go, the gate
+// TestEveryPermissionDeclaresItsScope refuses a build that adds one without
+// a scope, and the RBAC authorizer denies on the error this returns — so the
+// undeclared case fails closed at every layer rather than open at the first.
 //
 // LookupScope consults ONLY the built-in default layer; it is the
 // back-compat / built-in-only path. Tenant-correct callers (RBAC
 // Authorize) must use ResolveScope so a caller-defined permission resolves
 // in its own tenant.
-func LookupScope(p Permission) Scope {
+func LookupScope(p Permission) (Scope, error) {
 	scopeMu.RLock()
 	defer scopeMu.RUnlock()
 	if s, ok := scopeRegistry[p]; ok {
-		return s
+		return s, nil
 	}
-	return ScopeSelf
+	return ScopeSelf, &UndeclaredScopeError{Permission: p}
 }
 
 // LookupScopeByName is a convenience wrapper around LookupScope that
 // accepts a raw permission string. It is equivalent to
 // LookupScope(Permission(name)).
-func LookupScopeByName(name string) Scope {
+func LookupScopeByName(name string) (Scope, error) {
 	return LookupScope(Permission(name))
 }
 
 // IsCrossScope reports whether the given permission has been registered as
-// ScopeCross in the built-in default layer. Equivalent to
-// LookupScope(p) == ScopeCross.
+// ScopeCross in the built-in default layer. An undeclared permission is not
+// cross-scoped — it is not anything — so this reports false for it.
 func IsCrossScope(p Permission) bool {
-	return LookupScope(p) == ScopeCross
+	s, err := LookupScope(p)
+	return err == nil && s == ScopeCross
 }
 
 // resetScopeRegistryForTesting clears the scope registry. It is intended

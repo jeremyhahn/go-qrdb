@@ -417,8 +417,8 @@ func TestCredentialRetrieveVersion_Expired_Proto(t *testing.T) {
 	s := &qrdbServiceServer{credentialSvc: svc}
 
 	_, err := s.CredentialRetrieveVersion(context.Background(), &pb.CredentialRetrieveVersionRequest{Name: "n", Version: 1})
-	if codeOf(err) != codes.FailedPrecondition {
-		t.Fatalf("expected FailedPrecondition, got %s", codeOf(err))
+	if codeOf(err) != codes.NotFound {
+		t.Fatalf("expected NotFound, got %s", codeOf(err))
 	}
 }
 
@@ -524,24 +524,24 @@ func TestCredentialGCExpired_InvalidStrategy_Proto(t *testing.T) {
 	s := &qrdbServiceServer{credentialSvc: svc}
 
 	_, err := s.CredentialGCExpired(context.Background(), &pb.CredentialGCRequest{Name: "n"})
-	if codeOf(err) != codes.FailedPrecondition {
-		t.Fatalf("expected FailedPrecondition, got %s", codeOf(err))
+	if codeOf(err) != codes.Internal {
+		t.Fatalf("expected Internal, got %s", codeOf(err))
 	}
 }
 
 // ---------------------------------------------------------------------------
-// mapCredentialError fallback
+// mapServiceError fallback
 // ---------------------------------------------------------------------------
 
 func TestMapCredentialError_UnknownMapsToInternal_Proto(t *testing.T) {
-	err := mapCredentialError(errors.New("unexpected"))
+	err := mapServiceError(errors.New("unexpected"))
 	if codeOf(err) != codes.Internal {
 		t.Fatalf("expected Internal, got %s", codeOf(err))
 	}
 }
 
 func TestMapCredentialError_NilReturnsNil_Proto(t *testing.T) {
-	if err := mapCredentialError(nil); err != nil {
+	if err := mapServiceError(nil); err != nil {
 		t.Fatalf("expected nil, got %v", err)
 	}
 }

@@ -16,8 +16,12 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,11 +59,51 @@ type CollectionServicer interface {
 	// UpdateDocument updates an existing document in a collection.
 	UpdateDocument(ctx context.Context, req *UpdateDocumentRequest) (*UpdateDocumentResponse, error)
 
+	// UpsertDocument inserts a document under an explicit ID, or replaces the
+	// one stored there, deciding which in the same guarded write that stores
+	// it (go-qrdb#497).
+	UpsertDocument(ctx context.Context, req *UpsertDocumentRequest) (*UpsertDocumentResponse, error)
+
 	// DeleteDocument removes a document from a collection.
 	DeleteDocument(ctx context.Context, req *DeleteDocumentRequest) (*DeleteDocumentResponse, error)
 
 	// ListDocuments lists documents in a collection with pagination.
 	ListDocuments(ctx context.Context, req *ListDocumentsRequest) (*ListDocumentsResponse, error)
+}
+
+// CollectionSweeper finishes collections an interrupted operation left in a
+// transitional state. It is implemented by CollectionService and driven
+// periodically by the server's collection sweeper, so an operator never has
+// to find and re-issue a stuck drop by hand (go-qrdb#425).
+type CollectionSweeper interface {
+	// SweepStuckCollections finishes every collection in database that has
+	// been CREATING or DROPPING for at least staleAfter, and reports how many
+	// it finished and the document body bytes it removed doing so. The
+	// result is meaningful when an error is also returned: it counts what was
+	// finished and removed before and around the failures.
+	SweepStuckCollections(ctx context.Context, database string, staleAfter time.Duration) (CollectionSweepResult, error)
+}
+
+// CollectionSweepResult is what one SweepStuckCollections call finished.
+type CollectionSweepResult struct {
+	// Swept is how many collections and orphaned index sets were finished.
+	Swept int
+	// FreedBytes is the document body bytes (DocumentBodyBytes) the sweep's
+	// teardowns removed -- exactly the documents each removed itself, so a
+	// storage quota can release them without releasing anything twice.
+	FreedBytes int64
+}
+
+// CollectionDropMeter is a collection surface whose drop reports what it
+// removed. A storage quota drops through it so it releases exactly the bytes
+// the drop freed (go-qrdb#456): a measurement taken before the drop would
+// also count documents a concurrent delete had already released.
+type CollectionDropMeter interface {
+	// DropCollectionMetered is DropCollection, returning the document body
+	// bytes (DocumentBodyBytes) of every document the drop itself removed.
+	// A drop that fails part-way still returns what it removed before it
+	// failed.
+	DropCollectionMetered(ctx context.Context, req *DropCollectionRequest) (int64, error)
 }
 
 // CollectionService implements CollectionServicer using the KV service
@@ -68,10 +112,12 @@ type CollectionServicer interface {
 type CollectionService struct {
 	kvSvc         kvService
 	indexSvc      indexService                 // optional; nil when indexes are not available
-	idGens        sync.Map                     // map[string]dao.IDGenerator keyed by "db:collection"
+	idGens        sync.Map                     // map[string]dao.IDGenerator keyed by collectionIDGenKey
 	dbCodecLookup func(database string) string // optional; returns per-database default codec name
 	quotaChecker  quota.Checker                // optional; nil skips quota enforcement
 	seqSvc        SequenceServicer             // optional; see WithSequenceService
+	journal       CollectionWorkJournal        // optional; see WithWorkJournal
+	now           func() time.Time             // lifecycle-state clock; time.Now outside tests
 }
 
 // kvService is the minimal KV interface needed by CollectionService.
@@ -84,9 +130,17 @@ type CollectionService struct {
 // methods (go-qrdb#271: a prior ListWithConsistency here had zero callers,
 // confirmed by tracing every kvSvc.* call site in this file -- ListDocuments
 // always calls Scan/ScanWithConsistency for the values, never List).
+//
+// The guarded pair CompareAndSwap / CompareAndDelete is what the lifecycle
+// state is written with: every metadata transition is a swap of the exact
+// bytes the transition was decided from, so a create's activation cannot
+// resurrect a collection a drop has marked, and a schema update cannot revert
+// a drop's DROPPING mark (go-qrdb#415, go-qrdb#425).
 type kvService interface {
 	Put(ctx context.Context, key string, value []byte) error
 	PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error)
+	CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error)
+	CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error)
 	Get(ctx context.Context, key string) ([]byte, error)
 	Delete(ctx context.Context, key string) error
 	List(ctx context.Context, prefix string) ([]string, error)
@@ -100,31 +154,64 @@ type kvService interface {
 // indexService is the minimal index interface needed by CollectionService
 // to create and drop secondary indexes on collection fields.
 //
-// DropIndex is called during teardown, where "the index is not there" is the
+// CreateIndex carries the collection as the index's recorded owner, and the
+// apply path refuses the create when another owner already holds the name
+// (index.OwnershipError), so a collection never adopts an index it did not
+// create. DropOwnedIndex removes an index only when the claimed owner holds
+// it (go-qrdb#426); a collection whose metadata predates ownership claims
+// index.ExplicitOwner, the owner its ownerless indexes were created with
+// (CollectionInfo.IndexOwner). No collection drop is unconditional.
+//
+// A drop is issued during teardown, where "the index is not there" is the
 // outcome being asked for. The canonical index.IndexServicer contract permits
 // an implementation to report that as IndexNotFoundError -- the shipped
 // IndexService does not, because the state machine's drop handler is
-// idempotent so a cleanup proposal cannot stall Raft -- so DropCollection
+// idempotent so a cleanup proposal cannot stall Raft -- so the teardown
 // accepts EITHER answer as success. Any other error fails the drop.
 type indexService interface {
 	CreateIndex(ctx context.Context, name, fieldName string, config index.IndexConfig) error
-	DropIndex(ctx context.Context, name string) error
+	DropOwnedIndex(ctx context.Context, name, owner string) error
 }
 
-// indexAlreadyGone reports whether an error from indexService.DropIndex means
-// the index was not there to drop, which is success for a teardown.
+// indexAlreadyGone reports whether an error from an index drop means the index
+// was not there to drop, which is success for a teardown.
 func indexAlreadyGone(err error) bool {
 	var notFound *IndexNotFoundError
 	return errors.As(err, &notFound)
 }
 
-// Compile-time interface check.
-var _ CollectionServicer = (*CollectionService)(nil)
+// indexOwnedElsewhere reports whether an error from an owner-checked index
+// drop means the index under that name belongs to somebody else. A teardown
+// leaves such an index alone: it is not the collection's to remove.
+func indexOwnedElsewhere(err error) bool {
+	var own *index.OwnershipError
+	return errors.As(err, &own)
+}
+
+// Compile-time interface checks.
+var (
+	_ CollectionServicer  = (*CollectionService)(nil)
+	_ CollectionSweeper   = (*CollectionService)(nil)
+	_ CollectionDropMeter = (*CollectionService)(nil)
+)
+
+// metadataCASMaxAttempts bounds the read-and-swap loops that write collection
+// metadata. A swap fails only when another writer changed the record between
+// the read and the write -- a schema merge from a concurrent insert, a
+// lifecycle transition -- so a handful of re-reads converges; running out is
+// reported rather than looped on forever.
+const metadataCASMaxAttempts = 8
+
+// upsertMaxAttempts bounds the guarded upsert's decide-and-write loop. Each
+// retry means a concurrent writer changed the document between this call's
+// read and its guarded write; the bound turns sustained contention into
+// CollectionDocumentConflictError instead of an unbounded spin.
+const upsertMaxAttempts = 8
 
 // NewCollectionService creates a new CollectionService backed by the
 // given KV service for storage.
 func NewCollectionService(kvSvc kvService) *CollectionService {
-	return &CollectionService{kvSvc: kvSvc}
+	return &CollectionService{kvSvc: kvSvc, now: time.Now}
 }
 
 // NewCollectionServiceWithIndex creates a new CollectionService backed
@@ -134,6 +221,7 @@ func NewCollectionServiceWithIndex(kvSvc kvService, indexSvc indexService) *Coll
 	return &CollectionService{
 		kvSvc:    kvSvc,
 		indexSvc: indexSvc,
+		now:      time.Now,
 	}
 }
 
@@ -172,12 +260,105 @@ func (s *CollectionService) WithSequenceService(seq SequenceServicer) *Collectio
 	return s
 }
 
+// CollectionWorkJournal records, somewhere a sweeper can enumerate without
+// knowing which databases exist, that a collection is about to enter a
+// transitional state (creating or dropping) and may need finishing.
+//
+// A collection's own metadata cannot serve: it is keyed inside its
+// database's keyspace, and the set of databases is not replicated for every
+// isolation mode -- a prefix tenant's named database is in the shared,
+// replicated store while its catalog entry is on one node only. The journal
+// is written into the replicated store the collection lives in, outside any
+// database's keyspace, so the node that leads that store finds the work
+// whichever node started it.
+//
+// Record is called before the transition is written, so a crash after the
+// transition always leaves an entry. An entry outliving its collection's
+// transition is harmless: the sweeper removes an entry once the collection
+// it names is active or gone.
+type CollectionWorkJournal interface {
+	Record(ctx context.Context, database, name string) error
+}
+
+// WithWorkJournal sets the journal a transition into creating or dropping is
+// recorded in (see CollectionWorkJournal). Without one, nothing is recorded,
+// and the collection's database must be enumerable by the sweeper some other
+// way.
+func (s *CollectionService) WithWorkJournal(j CollectionWorkJournal) *CollectionService {
+	s.journal = j
+	return s
+}
+
+// recordWork records that database/name is about to enter a transitional
+// state. A journal that cannot be written fails the operation: a transition
+// the sweeper cannot find is one nobody finishes.
+func (s *CollectionService) recordWork(ctx context.Context, database, name string) error {
+	if s.journal == nil {
+		return nil
+	}
+	if err := s.journal.Record(ctx, database, name); err != nil {
+		return &CollectionMetadataError{Op: "journal", Err: err}
+	}
+	return nil
+}
+
+// clock returns the lifecycle-state clock.
+func (s *CollectionService) clock() time.Time {
+	if s.now == nil {
+		return time.Now()
+	}
+	return s.now()
+}
+
 // CreateCollection creates a new collection with the specified
 // configuration. The collection metadata is stored under
 // __sys:collections/{database}/{name} and documents are stored under
-// __col:{database}:{collection}/{id}.
+// __col:{database}:{collection}#{incarnation}/{id}.
+//
+// The metadata is written FIRST, in the CREATING state, and made ACTIVE LAST,
+// once every declared secondary index exists (go-qrdb#415). The first write is
+// a PutIfAbsent, so it is also the claim on the name: two concurrent creates
+// of one name give one winner and one CollectionAlreadyExistsError, and the
+// loser builds nothing. While the collection is CREATING it is reported by
+// GetCollectionInfo and ListCollections with its state and serves no
+// documents, so no caller can write a document its declared indexes -- and
+// their unique constraints -- do not see.
+//
+// Every create is a new INCARNATION of the name (CollectionInfo.Incarnation),
+// and every piece of per-incarnation state lives in a keyspace named by it:
+// the documents (CollectionInfo.documentPrefix), the ID sequence
+// (collectionSequenceName), the process-local ID generator
+// (collectionIDGenKey) and the secondary indexes, whose owner and key prefix
+// both name it. Only the metadata key is shared by every incarnation of a
+// name. A writer, create or teardown still working on an incarnation that has
+// since been dropped and created again therefore reaches only the dead
+// incarnation's keyspace: nothing it does can touch the live one, and the new
+// incarnation starts from a keyspace no earlier one ever wrote.
+//
+// A create whose indexes cannot all be built unwinds what it built: it marks
+// the collection DROPPING and tears it down through the same teardown a drop
+// uses, so a failed create has created nothing and the name is free for a
+// retry. A create interrupted before it can unwind -- a crash, or an unwind
+// that itself fails -- leaves the collection CREATING or DROPPING, and the
+// sweeper (SweepStuckCollections) finishes it once it is stale.
+//
+// Every index is created with this incarnation as its recorded owner
+// (index.CollectionOwner). A name another owner already holds -- an index made
+// through the explicit index API, or another collection's under a colliding
+// "{database}.{collection}.{field}" name -- is refused by the apply path
+// instead of being silently adopted (go-qrdb#426), and the create fails.
+// Before building any index the create records the owner and the names it is
+// about to build in an index ledger (collectionIndexLedgerPrefix), so an index
+// orphaned by a creator that dies mid-way can still be found and removed by
+// the sweeper once no metadata names its incarnation.
 func (s *CollectionService) CreateCollection(ctx context.Context, req *CreateCollectionRequest) (*CollectionInfo, error) {
 	if err := validateCollectionRequest(req.Database, req.Name); err != nil {
+		return nil, err
+	}
+	if strings.Contains(req.Name, incarnationSeparator) {
+		return nil, &CollectionInvalidNameError{Name: req.Name, Reason: "must not contain " + strconv.Quote(incarnationSeparator)}
+	}
+	if err := s.validateIndexDefinitions(req.Indexes); err != nil {
 		return nil, err
 	}
 
@@ -204,16 +385,11 @@ func (s *CollectionService) CreateCollection(ctx context.Context, req *CreateCol
 		}
 	}
 
-	// Check if collection already exists.
-	metaKey := collectionMetadataKey(req.Database, req.Name)
-	existing, err := s.kvSvc.Get(ctx, metaKey)
-	if err == nil && existing != nil {
-		return nil, &CollectionAlreadyExistsError{
-			Database:   req.Database,
-			Collection: req.Name,
-		}
+	incarnation, err := newCollectionIncarnation()
+	if err != nil {
+		return nil, &CollectionMetadataError{Op: "incarnation", Err: err}
 	}
-
+	now := s.clock()
 	info := &CollectionInfo{
 		Name:         req.Name,
 		Database:     req.Database,
@@ -222,7 +398,13 @@ func (s *CollectionService) CreateCollection(ctx context.Context, req *CreateCol
 		Schema:       make(map[string]string),
 		Indexes:      req.Indexes,
 		StorageCodec: req.StorageCodec,
-		CreatedAt:    time.Now(),
+		CreatedAt:    now,
+		State:        CollectionStateCreating,
+		StateSince:   now,
+		Incarnation:  incarnation,
+	}
+	if len(req.Indexes) > 0 {
+		info.IndexOwner = index.CollectionOwner(req.Database, req.Name, incarnation)
 	}
 
 	data, err := json.Marshal(info)
@@ -230,36 +412,53 @@ func (s *CollectionService) CreateCollection(ctx context.Context, req *CreateCol
 		return nil, &CollectionMetadataError{Op: "marshal", Err: err}
 	}
 
-	if err := s.kvSvc.Put(ctx, metaKey, data); err != nil {
+	if err := s.recordWork(ctx, req.Database, req.Name); err != nil {
+		return nil, err
+	}
+	metaKey := collectionMetadataKey(req.Database, req.Name)
+	stored, err := s.kvSvc.PutIfAbsent(ctx, metaKey, data)
+	if err != nil {
 		return nil, &CollectionMetadataError{Op: "save", Err: err}
 	}
-
-	// Create secondary indexes when an index service is available.
-	if s.indexSvc != nil && len(req.Indexes) > 0 {
-		for _, def := range req.Indexes {
-			idxName := collectionIndexName(req.Database, req.Name, def.FieldName)
-			cfg := index.IndexConfig{
-				Name:   idxName,
-				Unique: def.Unique,
-				Sparse: def.Sparse,
-				// The collection's own document keyspace, and the only thing
-				// this index may index. The index NAME says "{database}.
-				// {collection}.{field}" but a name is a routing label, not a
-				// key predicate: without this the apply path indexed every
-				// JSON value in the state machine, another database's and
-				// another tenant's included (go-qrdb#410).
-				KeyPrefix: collectionDataEntityType(req.Database, req.Name) + "/",
-				// A collection index definition has no case-sensitivity
-				// field, so it keeps the behaviour it has always had. Stated
-				// explicitly because index.IndexConfig names the field for the
-				// DEFAULT and its zero value is case-INSENSITIVE, which the
-				// engine now honours instead of hardcoding true (go-qrdb#34).
-				CaseSensitive: true,
-			}
-			if err := s.indexSvc.CreateIndex(ctx, idxName, def.FieldName, cfg); err != nil {
-				return nil, &CollectionMetadataError{Op: "create-index", Err: err}
-			}
+	if !stored {
+		return nil, &CollectionAlreadyExistsError{
+			Database:   req.Database,
+			Collection: req.Name,
 		}
+	}
+
+	if err := s.writeIndexLedger(ctx, info); err != nil {
+		return nil, s.abandonCreate(ctx, info, data, err)
+	}
+	if err := s.createCollectionIndexes(ctx, info); err != nil {
+		return nil, s.abandonCreate(ctx, info, data, err)
+	}
+
+	active := *info
+	active.State = CollectionStateActive
+	active.StateSince = s.clock()
+	activeData, err := json.Marshal(&active)
+	if err != nil {
+		return nil, &CollectionMetadataError{Op: "marshal", Err: err}
+	}
+	// A swap, not a Put: if the collection was marked DROPPING while its
+	// indexes were being built -- by a user's drop, or by the sweeper finding
+	// it stale -- this activation must not resurrect it.
+	swapped, err := s.kvSvc.CompareAndSwap(ctx, metaKey, data, activeData)
+	if err != nil {
+		return nil, &CollectionMetadataError{Op: "activate", Err: err}
+	}
+	if !swapped {
+		// The record was marked DROPPING -- and possibly already torn down
+		// -- while the indexes were being built, so the teardown may have
+		// run before some of them existed. This incarnation removes what it
+		// built; the owner-checked drop cannot touch anything a later
+		// incarnation of the name builds.
+		conflict := &CollectionStateConflictError{Database: req.Database, Collection: req.Name, Op: "activate"}
+		if err := s.releaseOwnIndexes(ctx, info); err != nil {
+			return nil, errors.Join(conflict, err)
+		}
+		return nil, conflict
 	}
 
 	// Initialize the process-local ID generator for this collection, unless
@@ -267,10 +466,130 @@ func (s *CollectionService) CreateCollection(ctx context.Context, req *CreateCol
 	// nextDocumentID), in which case there is nothing to prime: the
 	// sequence's state lives in the replicated store, not in this process.
 	if strategy != IDStrategyIncrement || s.seqSvc == nil {
-		s.getOrCreateIDGen(info)
+		s.getOrCreateIDGen(&active)
 	}
 
-	return info, nil
+	return &active, nil
+}
+
+// validateIndexDefinitions refuses index definitions the collection cannot
+// build: one naming no field, two naming the same field -- they derive one
+// index name, so the second would silently be the first -- or any at all when
+// this service has no index service to build them with. The last used to be
+// skipped silently, which left a collection whose metadata declared indexes --
+// and unique constraints -- that did not exist.
+func (s *CollectionService) validateIndexDefinitions(defs []IndexDefinition) error {
+	if len(defs) == 0 {
+		return nil
+	}
+	if s.indexSvc == nil {
+		return &CollectionInvalidIndexError{Reason: "secondary indexes are not available on this database"}
+	}
+	seen := make(map[string]bool, len(defs))
+	for _, def := range defs {
+		if def.FieldName == "" {
+			return &CollectionInvalidIndexError{Reason: "field_name is required"}
+		}
+		if seen[def.FieldName] {
+			return &CollectionInvalidIndexError{Reason: "field " + strconv.Quote(def.FieldName) + " is declared more than once"}
+		}
+		seen[def.FieldName] = true
+	}
+	return nil
+}
+
+// createCollectionIndexes builds every secondary index info declares, each
+// recorded as owned by the collection's incarnation.
+func (s *CollectionService) createCollectionIndexes(ctx context.Context, info *CollectionInfo) error {
+	if s.indexSvc == nil {
+		return nil
+	}
+	for _, def := range info.Indexes {
+		idxName := collectionIndexName(info.Database, info.Name, def.FieldName)
+		cfg := index.IndexConfig{
+			Name:   idxName,
+			Unique: def.Unique,
+			Sparse: def.Sparse,
+			// This incarnation's own document keyspace, and the only thing
+			// this index may index. The index NAME says "{database}.
+			// {collection}.{field}" but a name is a routing label, not a
+			// key predicate: without this the apply path indexed every
+			// JSON value in the state machine, another database's and
+			// another tenant's included (go-qrdb#410).
+			KeyPrefix: info.documentPrefix(),
+			// A collection index definition has no case-sensitivity
+			// field, so it keeps the behaviour it has always had. Stated
+			// explicitly because index.IndexConfig names the field for the
+			// DEFAULT and its zero value is case-INSENSITIVE, which the
+			// engine now honours instead of hardcoding true (go-qrdb#34).
+			CaseSensitive: true,
+			// This incarnation of the collection is the index's recorded
+			// owner, so a name some other owner holds is refused instead of
+			// adopted (go-qrdb#426).
+			Owner: info.IndexOwner,
+		}
+		if err := s.indexSvc.CreateIndex(ctx, idxName, def.FieldName, cfg); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// abandonCreate unwinds a create whose setup failed, and returns the error the
+// create reports.
+//
+// The unwind is the drop's own teardown, entered by marking the collection
+// DROPPING: the indexes built so far are removed (owner-checked, so an index
+// the refusal was ABOUT -- somebody else's -- is left alone), then the
+// metadata. A failed create has then created nothing and a retry succeeds.
+//
+// When the mark loses its swap, somebody else -- a drop, or the sweeper --
+// already moved the record on, and its teardown may have run before this
+// create built some of its indexes; this incarnation removes its own. If the
+// unwind cannot finish, the collection is left CREATING or DROPPING for the
+// sweeper; the create still reports the original failure, joined with the
+// unwind's.
+func (s *CollectionService) abandonCreate(ctx context.Context, info *CollectionInfo, raw []byte, cause error) error {
+	fail := func(err error) error {
+		return &CollectionMetadataError{Op: "create-index", Err: errors.Join(cause, &CollectionMetadataError{Op: "rollback", Err: err})}
+	}
+	dropping := *info
+	dropping.State = CollectionStateDropping
+	dropping.StateSince = s.clock()
+	data, err := json.Marshal(&dropping)
+	if err != nil {
+		return fail(err)
+	}
+	metaKey := collectionMetadataKey(info.Database, info.Name)
+	swapped, err := s.kvSvc.CompareAndSwap(ctx, metaKey, raw, data)
+	if err != nil {
+		return fail(err)
+	}
+	if !swapped {
+		if err := s.releaseOwnIndexes(ctx, info); err != nil {
+			return fail(err)
+		}
+		return &CollectionMetadataError{Op: "create-index", Err: cause}
+	}
+	// A create's keyspace never had a writer -- the collection never served
+	// -- so there is nothing for its teardown to free.
+	if _, err := s.teardownCollection(ctx, &dropping, data); err != nil {
+		return fail(err)
+	}
+	return &CollectionMetadataError{Op: "create-index", Err: cause}
+}
+
+// releaseOwnIndexes removes the indexes this incarnation created, and its
+// ledger entry, when the record naming them is no longer this create's to
+// tear down.
+func (s *CollectionService) releaseOwnIndexes(ctx context.Context, info *CollectionInfo) error {
+	if info.IndexOwner == "" {
+		return nil
+	}
+	if err := s.dropCollectionIndexes(ctx, info); err != nil {
+		return err
+	}
+	return s.deleteIndexLedger(ctx, info)
 }
 
 // DropCollection removes a collection: every document in it, every secondary
@@ -278,122 +597,535 @@ func (s *CollectionService) CreateCollection(ctx context.Context, req *CreateCol
 // IDStrategyIncrement, the process-local ID generator cache entry, and finally
 // the metadata that makes the collection resolvable.
 //
-// The order -- documents, indexes, sequence, metadata -- is deliberate and
-// mirrors Database.DropTable in pkg/sql/provider: dependent structures are
-// reclaimed FIRST and the metadata key is deleted LAST. The metadata key is
-// therefore the drop's own commit record, and every intermediate state is one
-// a re-issued DropCollection completes.
+// It first marks the collection DROPPING -- a guarded swap of the metadata --
+// and only then tears anything down (go-qrdb#425). From that write on, every
+// document verb refuses the collection with CollectionNotActiveError, so no
+// write can land in a collection whose indexes, and therefore whose unique
+// constraints, are being removed. GetCollectionInfo and ListCollections
+// report it with its DROPPING state: a crashed drop is visibly incomplete
+// rather than silently degraded, and the sweeper (SweepStuckCollections)
+// finishes it without an operator having to re-issue it. Re-issuing it by
+// hand also works; every step is idempotent.
 //
-// Documents go first because each delete retracts that document's entries from
-// every index maintained over it, so the indexes are already empty by the time
-// they are dropped.
+// The teardown order -- documents, indexes, sequence, metadata -- is
+// deliberate and mirrors Database.DropTable in pkg/sql/provider: dependent
+// structures are reclaimed FIRST and the metadata key is deleted LAST, so the
+// metadata key is the drop's own commit record and every intermediate state is
+// one a re-issued or swept drop completes. Documents go first because each
+// delete retracts that document's entries from every index maintained over it.
 //
-// Sequence before documents would leave a LIVE, fully populated collection
-// whose counter had restarted at 1 for as long as the document deletion ran,
-// so a concurrent insert would reissue an ID an existing document already holds
-// and silently overwrite it. That is the one ordering that turns a storage leak
-// into data loss. Metadata before either would strand the dependents with
-// nothing naming them: the retry that would have reclaimed them fails with
-// CollectionNotFoundError first. The chosen order leaves at worst a live but
-// EMPTY collection -- nothing remains for a restarted counter to collide with
-// -- and the window is one metadata delete wide, closed by a retry.
-//
-// The cost is stated rather than hidden: interrupted between the indexes and
-// the metadata, the collection still resolves and still accepts writes with its
-// declared indexes -- and therefore its unique constraints -- no longer
-// maintained. READS in that state fail rather than mislead (a query naming a
-// dropped index returns "index not found"); writes are the unguarded side. It
-// is still the SMALLEST window available, because every ordering has one.
-// Closing it entirely needs a persisted "dropping" state that other verbs
-// refuse, which changes the metadata format and is a design decision
-// (go-qrdb#425), not an implementation one.
+// Everything the teardown reclaims lives in the dropped incarnation's own
+// keyspace (see CreateCollection), so a teardown that resumes after the name
+// was dropped by someone else and created again reclaims only what the dead
+// incarnation owned, and the new incarnation's documents, counter and indexes
+// are out of its reach by construction.
 //
 // A dependent that cannot be reclaimed FAILS the whole drop rather than being
-// skipped, and for the same reason in both cases: the surviving metadata is
-// what makes the drop retryable, and reporting success over an unreclaimed
-// dependent is what produced go-qrdb#399 and go-qrdb#411. For indexes the
-// engine's index-create handler is idempotent by NAME and the original
-// definition wins, so an index left behind silently overrides the definition a
-// later CreateCollection asks for on the same (database, collection, field) --
-// a unique constraint the new collection requested then goes unenforced. A
-// dependent reported as already absent is success: SequenceServicer.Delete
-// requires that of implementations (see its doc comment), and indexAlreadyGone
-// gives the index drop the same property, which is what lets a retry reach the
-// metadata delete.
+// skipped: reporting success over an unreclaimed dependent is what produced
+// go-qrdb#399 and go-qrdb#411. A dependent reported as already absent is
+// success, which is what lets a retry reach the metadata delete.
 //
-// Index ownership is derived from the NAME, not tracked. If an index called
-// {database}.{collection}.{field} already existed when the collection was
-// created -- through the explicit index API, or by a DAO -- then
-// CreateCollection adopted it silently (its create was a name-idempotent
-// no-op) and this drop destroys it. That is a real collision and it is
-// deliberate rather than overlooked: the metadata declares the index as the
-// collection's, and refusing to drop what the collection believes it owns
-// re-opens the orphan. Distinguishing the two needs persisted ownership
-// (go-qrdb#426), which is a separate capability.
+// Only the indexes the collection OWNS are removed (go-qrdb#426). They are
+// dropped with an owner-checked drop, so an index under one of the
+// collection's derived names that belongs to somebody else is left in place.
+// Metadata written before ownership existed (IndexOwner empty) names indexes
+// that were created ownerless, and those are dropped claiming the explicit
+// owner they were created with.
 func (s *CollectionService) DropCollection(ctx context.Context, req *DropCollectionRequest) error {
+	_, err := s.DropCollectionMetered(ctx, req)
+	return err
+}
+
+// DropCollectionMetered is DropCollection, reporting the document body bytes
+// the drop removed. See CollectionDropMeter.
+func (s *CollectionService) DropCollectionMetered(ctx context.Context, req *DropCollectionRequest) (int64, error) {
 	if err := validateCollectionRequest(req.Database, req.Name); err != nil {
-		return err
+		return 0, err
 	}
 
 	// The metadata carries the collection's index definitions, so the drop
 	// reads it rather than merely probing for its existence: a drop that
 	// cannot enumerate what the collection owns cannot finish correctly.
 	// Unparseable metadata therefore fails the drop with a typed error
-	// instead of half-dropping the collection -- every other verb on this
-	// type already refuses a collection in that state.
-	info, err := s.loadCollectionInfo(ctx, req.Database, req.Name)
+	// instead of half-dropping the collection.
+	info, raw, err := s.markDropping(ctx, req.Database, req.Name)
 	if err != nil {
-		return err
+		return 0, err
+	}
+	return s.teardownCollection(ctx, info, raw)
+}
+
+// markDropping moves a collection into the DROPPING state and returns its
+// metadata as marked, with the exact stored bytes of the mark. A collection
+// already DROPPING is returned as it is, so a re-issued drop resumes the
+// teardown.
+func (s *CollectionService) markDropping(ctx context.Context, database, name string) (*CollectionInfo, []byte, error) {
+	metaKey := collectionMetadataKey(database, name)
+	recorded := false
+	for attempt := 0; attempt < metadataCASMaxAttempts; attempt++ {
+		info, raw, err := s.loadCollectionRecord(ctx, database, name)
+		if err != nil {
+			return nil, nil, err
+		}
+		if info.State == CollectionStateDropping {
+			return info, raw, nil
+		}
+		if !recorded {
+			if err := s.recordWork(ctx, database, name); err != nil {
+				return nil, nil, err
+			}
+			recorded = true
+		}
+		info.State = CollectionStateDropping
+		info.StateSince = s.clock()
+		data, err := json.Marshal(info)
+		if err != nil {
+			return nil, nil, &CollectionMetadataError{Op: "marshal", Err: err}
+		}
+		swapped, err := s.kvSvc.CompareAndSwap(ctx, metaKey, raw, data)
+		if err != nil {
+			return nil, nil, &CollectionMetadataError{Op: "mark-dropping", Err: err}
+		}
+		if swapped {
+			return info, data, nil
+		}
+	}
+	return nil, nil, &CollectionStateConflictError{Database: database, Collection: name, Op: "mark-dropping"}
+}
+
+// teardownMaxPasses bounds how many times a teardown re-scans its keyspace for
+// documents written into it after its scan. Only a writer that passed its
+// ACTIVE check before the DROPPING mark can still write there, and its own
+// fence retracts what it wrote, so a second pass is already rare.
+const teardownMaxPasses = 4
+
+// teardownCollection reclaims everything one DROPPING incarnation of a
+// collection owns, and returns the document body bytes it removed.
+//
+// Every piece of that state is scoped to the incarnation -- its document
+// prefix, its ID sequence, its indexes' owner -- so the teardown can never
+// reach another incarnation's data, however late it runs: a teardown that
+// resumes after the name was dropped by someone else and created again
+// reclaims only the dead incarnation's keyspace, which nothing live shares.
+// That is why the reclamation needs no guard against another incarnation: no
+// re-read of the metadata between batches, no check that the record is still
+// the one it started from, and no ordering of the keys.
+//
+// The metadata key is the one thing incarnations share -- it is keyed by the
+// name -- so it alone is deleted with a compare-and-delete of raw, the exact
+// DROPPING record the teardown started from. A newer incarnation's record is
+// never removed; the teardown then reports CollectionStateConflictError, which
+// the sweeper treats as a drop somebody else finished.
+func (s *CollectionService) teardownCollection(ctx context.Context, info *CollectionInfo, raw []byte) (int64, error) {
+	freed, err := s.reclaimDocuments(ctx, info)
+	if err != nil {
+		return freed, err
+	}
+	if err := s.dropCollectionIndexes(ctx, info); err != nil {
+		return freed, err
+	}
+	if err := s.deleteIndexLedger(ctx, info); err != nil {
+		return freed, err
 	}
 
-	// Delete all documents. Each delete retracts that document's entries
-	// from every index maintained over it, so by the time the indexes are
-	// dropped below they are already empty.
-	dataPrefix := collectionDataEntityType(req.Database, req.Name) + "/"
-	keys, err := s.kvSvc.List(ctx, dataPrefix)
-	if err != nil {
-		return &CollectionMetadataError{Op: "list-documents", Err: err}
-	}
-	for _, key := range keys {
-		if err := s.kvSvc.Delete(ctx, key); err != nil {
-			return &CollectionMetadataError{Op: "delete-document", Err: err}
+	// Reclaim the incarnation's replicated ID sequence. Issued
+	// unconditionally rather than only for IDStrategyIncrement: the name is
+	// derived from the incarnation alone, and a collection with no counter
+	// costs one read and proposes nothing.
+	if s.seqSvc != nil {
+		if err := s.seqSvc.Delete(ctx, info.Database, collectionSequenceName(info)); err != nil {
+			return freed, &CollectionMetadataError{Op: "delete-sequence", Err: err}
 		}
 	}
 
-	// Drop the secondary indexes CreateCollection built for this collection.
-	if s.indexSvc != nil {
-		for _, def := range info.Indexes {
-			idxName := collectionIndexName(req.Database, req.Name, def.FieldName)
-			if err := s.indexSvc.DropIndex(ctx, idxName); err != nil && !indexAlreadyGone(err) {
-				return &CollectionMetadataError{Op: "drop-index", Err: err}
+	metaKey := collectionMetadataKey(info.Database, info.Name)
+	deleted, err := s.kvSvc.CompareAndDelete(ctx, metaKey, raw)
+	if err != nil {
+		return freed, &CollectionMetadataError{Op: "delete-metadata", Err: err}
+	}
+	if !deleted {
+		return freed, &CollectionStateConflictError{Database: info.Database, Collection: info.Name, Op: "teardown"}
+	}
+
+	s.idGens.Delete(collectionIDGenKey(info))
+	return freed, nil
+}
+
+// reclaimDocuments deletes every document under a DROPPING incarnation's
+// prefix and returns the body bytes of exactly the documents it removed. It
+// visits the scanned keys in whatever order the scan produced -- the keyspace
+// is the dead incarnation's alone, so no order is needed for safety -- and
+// checks its context before every delete, so a caller bounded by a deadline
+// -- the sweeper gives each database a bounded share of a pass -- stops
+// before its next proposal and a later teardown resumes from what is left.
+//
+// Each delete is a CompareAndDelete of the value scanned. That is not a guard
+// against another incarnation -- none shares the keyspace -- but the only way
+// to know that THIS delete removed the document: a guarded DeleteDocument
+// decided while the collection was still ACTIVE may remove the same document
+// first, and it releases the document's bytes itself. Counting only the
+// deletes that removed something is what keeps a storage quota from releasing
+// one document twice. It costs the same single proposal a plain delete does.
+// A document that changed after the scan is left for the next pass.
+func (s *CollectionService) reclaimDocuments(ctx context.Context, info *CollectionInfo) (int64, error) {
+	prefix := info.documentPrefix()
+	c := s.resolveCodec(info)
+	var freed int64
+	for pass := 0; pass < teardownMaxPasses; pass++ {
+		docs, err := s.kvSvc.Scan(ctx, prefix)
+		if err != nil {
+			return freed, &CollectionMetadataError{Op: "list-documents", Err: err}
+		}
+		if len(docs) == 0 {
+			return freed, nil
+		}
+		for key, value := range docs {
+			if err := ctx.Err(); err != nil {
+				return freed, &CollectionMetadataError{Op: "delete-document", Err: err}
+			}
+			deleted, err := s.kvSvc.CompareAndDelete(ctx, key, value)
+			if err != nil {
+				return freed, &CollectionMetadataError{Op: "delete-document", Err: err}
+			}
+			if deleted {
+				freed += storedDocumentBodyBytes(value, c)
 			}
 		}
 	}
+	return freed, &CollectionMetadataError{Op: "delete-document", Err: &CollectionDocumentsChangingError{Database: info.Database, Collection: info.Name}}
+}
 
-	// Reclaim the replicated ID sequence. Issued unconditionally rather than
-	// only for IDStrategyIncrement: the name is derived from (database,
-	// collection) alone, so this does not depend on parsing the metadata,
-	// and a collection with no counter costs one read and proposes nothing.
-	if s.seqSvc != nil {
-		if err := s.seqSvc.Delete(ctx, req.Database, collectionSequenceName(req.Name)); err != nil {
-			return &CollectionMetadataError{Op: "delete-sequence", Err: err}
+// storedDocumentBodyBytes measures a stored document the way a write is
+// charged: the JSON encoding of its fields (see DocumentBodyBytes). A document
+// that cannot be decoded is measured as its stored size.
+func storedDocumentBodyBytes(stored []byte, c codec.Codec) int64 {
+	var entity dao.DynamicEntity
+	if err := unmarshalDocument(stored, &entity, c); err != nil {
+		return int64(len(stored))
+	}
+	return DocumentBodyBytes(entity.Fields)
+}
+
+// DocumentBodyBytes is the byte cost of a document for storage quota: the
+// JSON encoding of its fields, the "_id" identity key excluded. Writes are
+// charged, and reclamations released, by this one measure.
+func DocumentBodyBytes(doc map[string]interface{}) int64 {
+	if len(doc) == 0 {
+		return 0
+	}
+	data, err := json.Marshal(documentFields(doc))
+	if err != nil {
+		return 0
+	}
+	return int64(len(data))
+}
+
+// dropCollectionIndexes removes the secondary indexes the collection's
+// metadata declares. Every drop is owner-checked: an incarnation that records
+// an owner drops as that owner; metadata written before ownership existed
+// names indexes that were created ownerless, so it drops as the explicit
+// owner. Either way an index somebody else now holds under one of the names
+// is left in place.
+func (s *CollectionService) dropCollectionIndexes(ctx context.Context, info *CollectionInfo) error {
+	if s.indexSvc == nil {
+		return nil
+	}
+	owner := info.IndexOwner
+	if owner == "" {
+		owner = index.ExplicitOwner
+	}
+	for _, def := range info.Indexes {
+		idxName := collectionIndexName(info.Database, info.Name, def.FieldName)
+		err := s.indexSvc.DropOwnedIndex(ctx, idxName, owner)
+		if err == nil || indexAlreadyGone(err) || indexOwnedElsewhere(err) {
+			continue
 		}
+		return &CollectionMetadataError{Op: "drop-index", Err: err}
 	}
-
-	// Delete metadata.
-	metaKey := collectionMetadataKey(req.Database, req.Name)
-	if err := s.kvSvc.Delete(ctx, metaKey); err != nil {
-		return &CollectionMetadataError{Op: "delete-metadata", Err: err}
-	}
-
-	// Remove cached ID generator.
-	cacheKey := req.Database + ":" + req.Name
-	s.idGens.Delete(cacheKey)
-
 	return nil
 }
 
-// ListCollections returns all collections in the specified database.
+// newCollectionIncarnation returns a fresh identifier for one incarnation of
+// a collection (see CollectionInfo.Incarnation).
+func newCollectionIncarnation() (string, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
+// collectionIndexLedger is the durable record of the indexes one collection
+// incarnation is about to create, written before the first of them. It is what
+// lets the sweeper find an index whose creator died after building it and
+// after its metadata was removed: nothing else names such an index's owner.
+type collectionIndexLedger struct {
+	Database    string    `json:"database"`
+	Name        string    `json:"name"`
+	Incarnation string    `json:"incarnation"`
+	Owner       string    `json:"owner"`
+	Indexes     []string  `json:"indexes"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// collectionIndexLedgerKey returns the ledger key of one incarnation's
+// indexes.
+func collectionIndexLedgerKey(database, incarnation string) string {
+	return collectionIndexLedgerPrefix + database + "/" + incarnation
+}
+
+// writeIndexLedger records the owner and the index names a create is about to
+// build. A collection with no indexes has nothing to record.
+func (s *CollectionService) writeIndexLedger(ctx context.Context, info *CollectionInfo) error {
+	if info.IndexOwner == "" || s.indexSvc == nil {
+		return nil
+	}
+	entry := collectionIndexLedger{
+		Database:    info.Database,
+		Name:        info.Name,
+		Incarnation: info.Incarnation,
+		Owner:       info.IndexOwner,
+		CreatedAt:   s.clock(),
+	}
+	for _, def := range info.Indexes {
+		entry.Indexes = append(entry.Indexes, collectionIndexName(info.Database, info.Name, def.FieldName))
+	}
+	data, err := json.Marshal(&entry)
+	if err != nil {
+		return &CollectionMetadataError{Op: "index-ledger", Err: err}
+	}
+	if err := s.kvSvc.Put(ctx, collectionIndexLedgerKey(info.Database, info.Incarnation), data); err != nil {
+		return &CollectionMetadataError{Op: "index-ledger", Err: err}
+	}
+	return nil
+}
+
+// deleteIndexLedger removes an incarnation's ledger entry once its indexes are
+// gone. Deleting an absent entry is success.
+func (s *CollectionService) deleteIndexLedger(ctx context.Context, info *CollectionInfo) error {
+	if info.IndexOwner == "" || info.Incarnation == "" {
+		return nil
+	}
+	if err := s.kvSvc.Delete(ctx, collectionIndexLedgerKey(info.Database, info.Incarnation)); err != nil {
+		return &CollectionMetadataError{Op: "index-ledger", Err: err}
+	}
+	return nil
+}
+
+// SweepStuckCollections finishes every collection in database that an
+// interrupted operation left in a transitional state for at least staleAfter,
+// and removes indexes an interrupted create orphaned (go-qrdb#415,
+// go-qrdb#425). It reports how many collections and orphaned index sets it
+// finished and the document body bytes its teardowns removed.
+//
+// A DROPPING collection is torn down exactly as a re-issued DropCollection
+// would. A CREATING collection is first marked DROPPING -- a guarded swap, so
+// a create that is still running loses its activation rather than racing the
+// sweeper -- and then torn down: a create that never finished is unwound, not
+// completed, because the caller that issued it was never told it succeeded.
+// A teardown that finds its record replaced has been finished by somebody
+// else, which is not a failure.
+//
+// An index-ledger entry whose incarnation no metadata names any more is the
+// trace of a creator that died after its collection was removed; its indexes
+// are dropped, owner-checked against the incarnation, and the entry deleted.
+//
+// The sweeper acts on a stored record's word alone, with nobody having asked,
+// so it first checks that the record is self-consistent: that its key, its
+// database and name, its incarnation and the index owner it claims all derive
+// from one another (collectionRecordConsistent, ledgerEntryConsistent). A
+// record that does not is refused with CollectionInconsistentRecordError and
+// left in place for an operator -- it is never torn down, and none of the
+// indexes it names is dropped.
+//
+// staleAfter is what keeps the sweeper off an operation that is merely still
+// in progress. Every step it takes is idempotent or guarded, so reaching one
+// that is still running costs repeated work, never a wrong result.
+//
+// A collection that fails to sweep does not stop the others; the failures
+// are returned together and the collection is tried again on the next pass.
+func (s *CollectionService) SweepStuckCollections(ctx context.Context, database string, staleAfter time.Duration) (CollectionSweepResult, error) {
+	var result CollectionSweepResult
+	if database == "" {
+		return result, &CollectionEmptyDatabaseError{}
+	}
+	prefix := collectionMetadataPrefix + database + "/"
+	records, err := s.kvSvc.Scan(ctx, prefix)
+	if err != nil {
+		return result, &CollectionMetadataError{Op: "list", Err: err}
+	}
+
+	now := s.clock()
+	var failures []error
+	for key, raw := range records {
+		if ctx.Err() != nil {
+			failures = append(failures, ctx.Err())
+			break
+		}
+		var info CollectionInfo
+		if err := json.Unmarshal(raw, &info); err != nil {
+			continue
+		}
+		normalizeCollectionState(&info)
+		if info.State == CollectionStateActive || now.Sub(info.StateSince) < staleAfter {
+			continue
+		}
+		if err := collectionRecordConsistent(key, database, &info); err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		record := raw
+		if info.State == CollectionStateCreating {
+			info.State = CollectionStateDropping
+			info.StateSince = now
+			data, err := json.Marshal(&info)
+			if err != nil {
+				failures = append(failures, &CollectionMetadataError{Op: "marshal", Err: err})
+				continue
+			}
+			swapped, err := s.kvSvc.CompareAndSwap(ctx, key, raw, data)
+			if err != nil {
+				failures = append(failures, &CollectionMetadataError{Op: "mark-dropping", Err: err})
+				continue
+			}
+			if !swapped {
+				// The record moved on since the scan; the next pass
+				// sees its current state.
+				continue
+			}
+			record = data
+		}
+		freed, err := s.teardownCollection(ctx, &info, record)
+		result.FreedBytes += freed
+		if err != nil {
+			var moved *CollectionStateConflictError
+			if !errors.As(err, &moved) {
+				failures = append(failures, err)
+			}
+			continue
+		}
+		result.Swept++
+	}
+
+	orphans, err := s.sweepOrphanedIndexes(ctx, database, now, staleAfter)
+	result.Swept += orphans
+	if err != nil {
+		failures = append(failures, err)
+	}
+	return result, errors.Join(failures...)
+}
+
+// collectionRecordConsistent reports whether a stored collection record may
+// be acted on by the sweeper: it must be stored under the key its own
+// database and name derive, in the database being swept, and the index owner
+// it claims must be the one its incarnation derives -- none for a record
+// without an incarnation or without indexes. A teardown drops indexes as that
+// owner, so a record claiming someone else's would have the sweeper remove
+// indexes the collection never built.
+func collectionRecordConsistent(key, database string, info *CollectionInfo) error {
+	inconsistent := func(reason string) error {
+		return &CollectionInconsistentRecordError{Database: database, Collection: info.Name, Reason: reason}
+	}
+	if info.Database != database || info.Name == "" || key != collectionMetadataKey(info.Database, info.Name) {
+		return inconsistent("the record is not stored under the key its database and name derive")
+	}
+	if info.IndexOwner != expectedIndexOwner(info) {
+		return inconsistent("the index owner does not derive from the record's incarnation")
+	}
+	return nil
+}
+
+// expectedIndexOwner is the index owner a collection record must carry: the
+// owner its incarnation derives when it has both an incarnation and indexes,
+// and none otherwise.
+func expectedIndexOwner(info *CollectionInfo) string {
+	if info.Incarnation == "" || len(info.Indexes) == 0 {
+		return ""
+	}
+	return index.CollectionOwner(info.Database, info.Name, info.Incarnation)
+}
+
+// ledgerEntryConsistent reports whether an index-ledger entry may be acted on
+// by the sweeper: it must be stored under the key its own database and
+// incarnation derive, in the database being swept, it must claim the owner
+// its (database, name, incarnation) derives, and every index it names must be
+// one of that collection's derived index names. The owner-checked drop would
+// refuse any index the derived owner does not hold, so this is a second,
+// independent refusal of an entry that was not written by CreateCollection.
+func ledgerEntryConsistent(key, database string, entry *collectionIndexLedger) error {
+	inconsistent := func(reason string) error {
+		return &CollectionInconsistentRecordError{Database: database, Collection: entry.Name, Reason: reason}
+	}
+	if entry.Database != database || entry.Name == "" || entry.Incarnation == "" ||
+		key != collectionIndexLedgerKey(entry.Database, entry.Incarnation) {
+		return inconsistent("the index ledger entry is not stored under the key its database and incarnation derive")
+	}
+	if entry.Owner != index.CollectionOwner(entry.Database, entry.Name, entry.Incarnation) {
+		return inconsistent("the index ledger entry's owner does not derive from its incarnation")
+	}
+	namePrefix := collectionIndexName(entry.Database, entry.Name, "")
+	for _, name := range entry.Indexes {
+		if len(name) <= len(namePrefix) || !strings.HasPrefix(name, namePrefix) {
+			return inconsistent("the index ledger entry names an index that is not the collection's")
+		}
+	}
+	return nil
+}
+
+// sweepOrphanedIndexes removes the indexes of every stale index-ledger entry
+// in database whose incarnation no collection metadata names.
+func (s *CollectionService) sweepOrphanedIndexes(ctx context.Context, database string, now time.Time, staleAfter time.Duration) (int, error) {
+	if s.indexSvc == nil {
+		return 0, nil
+	}
+	entries, err := s.kvSvc.Scan(ctx, collectionIndexLedgerPrefix+database+"/")
+	if err != nil {
+		return 0, &CollectionMetadataError{Op: "index-ledger", Err: err}
+	}
+	cleaned := 0
+	var failures []error
+	for key, raw := range entries {
+		var entry collectionIndexLedger
+		if err := json.Unmarshal(raw, &entry); err != nil || now.Sub(entry.CreatedAt) < staleAfter {
+			continue
+		}
+		if err := ledgerEntryConsistent(key, database, &entry); err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		info, _, err := s.loadCollectionRecord(ctx, entry.Database, entry.Name)
+		if err == nil && info.Incarnation == entry.Incarnation {
+			continue // live: its own teardown removes it
+		}
+		var notFound *CollectionNotFoundError
+		if err != nil && !errors.As(err, &notFound) {
+			failures = append(failures, err)
+			continue
+		}
+		failed := false
+		for _, name := range entry.Indexes {
+			if err := s.indexSvc.DropOwnedIndex(ctx, name, entry.Owner); err != nil && !indexAlreadyGone(err) && !indexOwnedElsewhere(err) {
+				failures = append(failures, &CollectionMetadataError{Op: "drop-index", Err: err})
+				failed = true
+				break
+			}
+		}
+		if failed {
+			continue
+		}
+		if _, err := s.kvSvc.CompareAndDelete(ctx, key, raw); err != nil {
+			failures = append(failures, &CollectionMetadataError{Op: "index-ledger", Err: err})
+			continue
+		}
+		cleaned++
+	}
+	return cleaned, errors.Join(failures...)
+}
+
+// ListCollections returns all collections in the specified database, each
+// with its lifecycle state. A collection that is CREATING or DROPPING is
+// listed and marked, never omitted: an omitted crashed drop would be
+// invisible.
 func (s *CollectionService) ListCollections(ctx context.Context, req *ListCollectionsRequest) (*ListCollectionsResponse, error) {
 	if req.Database == "" {
 		return nil, &CollectionEmptyDatabaseError{}
@@ -411,15 +1143,17 @@ func (s *CollectionService) ListCollections(ctx context.Context, req *ListCollec
 		if err := json.Unmarshal(v, &info); err != nil {
 			continue
 		}
+		normalizeCollectionState(&info)
 		// Refresh document count.
-		info.DocumentCount = s.countDocuments(ctx, info.Database, info.Name)
+		info.DocumentCount = s.countDocuments(ctx, &info)
 		collections = append(collections, info)
 	}
 
 	return &ListCollectionsResponse{Collections: collections}, nil
 }
 
-// GetCollectionInfo returns metadata for a specific collection.
+// GetCollectionInfo returns metadata for a specific collection, in whatever
+// lifecycle state it is in.
 func (s *CollectionService) GetCollectionInfo(ctx context.Context, database, name string) (*CollectionInfo, error) {
 	if err := validateCollectionRequest(database, name); err != nil {
 		return nil, err
@@ -430,7 +1164,7 @@ func (s *CollectionService) GetCollectionInfo(ctx context.Context, database, nam
 		return nil, err
 	}
 
-	info.DocumentCount = s.countDocuments(ctx, database, name)
+	info.DocumentCount = s.countDocuments(ctx, info)
 	return info, nil
 }
 
@@ -466,11 +1200,15 @@ func (s *CollectionService) GetCollectionInfo(ctx context.Context, database, nam
 // -- the Raft KVService, MVCCKVService, the namespace and quota wrappers --
 // already had the verb, so the guard is now the write itself.
 //
-// req.WriteMode is deliberately NOT honoured for a guarded insert. The guarded
-// write is synchronous by construction because its whole purpose is to report
-// which caller won; an asynchronous proposal has no answer to report, so there
-// is nothing for a weaker durability mode to mean here. An overwriting insert
-// (see generatedIDMayOverwrite) has no claim to report and still honours it.
+// req.WriteMode is deliberately NOT honoured. Every insert is a guarded write,
+// synchronous by construction because its whole purpose is to report an
+// outcome: which caller won the claim, or -- for an overwriting insert (see
+// generatedIDMayOverwrite) -- exactly which document it displaced, which the
+// response carries in Previous. An asynchronous proposal has no answer to
+// report, so there is nothing for a weaker durability mode to mean here.
+//
+// Only an ACTIVE collection accepts the insert, and the write is fenced
+// against a concurrent drop (see fenceWrite).
 func (s *CollectionService) InsertDocument(ctx context.Context, req *InsertDocumentRequest) (*InsertDocumentResponse, error) {
 	if err := validateCollectionRequest(req.Database, req.Collection); err != nil {
 		return nil, err
@@ -479,7 +1217,7 @@ func (s *CollectionService) InsertDocument(ctx context.Context, req *InsertDocum
 		return nil, &CollectionEmptyDocumentError{}
 	}
 
-	info, err := s.loadCollectionInfo(ctx, req.Database, req.Collection)
+	info, err := s.loadActiveCollection(ctx, req.Database, req.Collection)
 	if err != nil {
 		return nil, err
 	}
@@ -489,6 +1227,9 @@ func (s *CollectionService) InsertDocument(ctx context.Context, req *InsertDocum
 	// Either way the "_id" key is consumed into the identity rather than
 	// stored alongside the data -- see documentFields.
 	fields := documentFields(req.Document)
+	if err := validateStoredFields(fields); err != nil {
+		return nil, err
+	}
 	entity := &dao.DynamicEntity{Fields: fields}
 	id := extractExplicitID(req.Document)
 	explicit := id != 0
@@ -504,7 +1245,7 @@ func (s *CollectionService) InsertDocument(ctx context.Context, req *InsertDocum
 	}
 	entity.SetEntityID(id)
 
-	docKey := collectionDataEntityType(req.Database, req.Collection) + "/" + strconv.FormatUint(id, 10)
+	docKey := collectionDocumentKey(info, id)
 
 	// Serialize and store document using the resolved codec.
 	c := s.resolveCodec(info)
@@ -513,17 +1254,24 @@ func (s *CollectionService) InsertDocument(ctx context.Context, req *InsertDocum
 		return nil, &CollectionMetadataError{Op: "marshal-document", Err: err}
 	}
 
-	if err := s.storeNewDocument(ctx, info, req, docKey, docData, id, explicit); err != nil {
+	resp, err := s.storeNewDocument(ctx, info, req, docKey, docData, id, explicit, c)
+	if err != nil {
+		return nil, err
+	}
+
+	current, raw, err := s.fenceWrite(ctx, info, docKey, docData)
+	if err != nil {
 		return nil, err
 	}
 
 	// Update schema from document fields.
-	s.updateSchema(ctx, info, fields)
+	s.updateSchema(ctx, current, raw, fields)
 
-	return &InsertDocumentResponse{ID: id}, nil
+	resp.ID = id
+	return resp, nil
 }
 
-// GetDocument retrieves a document by ID.
+// GetDocument retrieves a document by ID from an ACTIVE collection.
 func (s *CollectionService) GetDocument(ctx context.Context, req *GetDocumentRequest) (*GetDocumentResponse, error) {
 	if err := validateCollectionRequest(req.Database, req.Collection); err != nil {
 		return nil, err
@@ -532,12 +1280,14 @@ func (s *CollectionService) GetDocument(ctx context.Context, req *GetDocumentReq
 		return nil, &CollectionInvalidDocumentIDError{}
 	}
 
-	docKey := collectionDataEntityType(req.Database, req.Collection) + "/" + strconv.FormatUint(req.ID, 10)
+	info, err := s.loadActiveCollection(ctx, req.Database, req.Collection)
+	if err != nil {
+		return nil, err
+	}
 
-	var (
-		data []byte
-		err  error
-	)
+	docKey := collectionDocumentKey(info, req.ID)
+
+	var data []byte
 	if req.Consistency != 0 {
 		opts := consistency.ReadOptions{Consistency: req.Consistency}
 		data, err = s.kvSvc.GetWithConsistency(ctx, docKey, opts)
@@ -552,11 +1302,6 @@ func (s *CollectionService) GetDocument(ctx context.Context, req *GetDocumentReq
 		}
 	}
 
-	info, err := s.loadCollectionInfo(ctx, req.Database, req.Collection)
-	if err != nil {
-		return nil, err
-	}
-
 	var entity dao.DynamicEntity
 	if err := unmarshalDocument(data, &entity, s.resolveCodec(info)); err != nil {
 		return nil, &CollectionMetadataError{Op: "unmarshal-document", Err: err}
@@ -565,10 +1310,12 @@ func (s *CollectionService) GetDocument(ctx context.Context, req *GetDocumentReq
 	return &GetDocumentResponse{
 		ID:       entity.ID,
 		Document: entity.Fields,
+		Revision: documentRevision(data),
 	}, nil
 }
 
-// UpdateDocument updates an existing document in a collection.
+// UpdateDocument updates an existing document in an ACTIVE collection. The
+// write is fenced against a concurrent drop (see fenceWrite).
 func (s *CollectionService) UpdateDocument(ctx context.Context, req *UpdateDocumentRequest) (*UpdateDocumentResponse, error) {
 	if err := validateCollectionRequest(req.Database, req.Collection); err != nil {
 		return nil, err
@@ -580,8 +1327,13 @@ func (s *CollectionService) UpdateDocument(ctx context.Context, req *UpdateDocum
 		return nil, &CollectionEmptyDocumentError{}
 	}
 
+	info, err := s.loadActiveCollection(ctx, req.Database, req.Collection)
+	if err != nil {
+		return nil, err
+	}
+
 	// Verify document exists.
-	docKey := collectionDataEntityType(req.Database, req.Collection) + "/" + strconv.FormatUint(req.ID, 10)
+	docKey := collectionDocumentKey(info, req.ID)
 	existing, err := s.kvSvc.Get(ctx, docKey)
 	if err != nil || existing == nil {
 		return nil, &CollectionDocumentNotFoundError{
@@ -591,17 +1343,15 @@ func (s *CollectionService) UpdateDocument(ctx context.Context, req *UpdateDocum
 		}
 	}
 
-	info, loadErr := s.loadCollectionInfo(ctx, req.Database, req.Collection)
-	if loadErr != nil {
-		return nil, loadErr
-	}
-
 	// The document's identity comes from the request, never from the body:
 	// UpdateDocument addresses a document that already exists. A body that
 	// also carries "_id" is carrying the identity key, not a field, so it is
 	// consumed here for the same reason InsertDocument consumes it -- an
 	// updated document must have the same shape as an inserted one.
 	fields := documentFields(req.Document)
+	if err := validateStoredFields(fields); err != nil {
+		return nil, err
+	}
 	entity := &dao.DynamicEntity{
 		ID:     req.ID,
 		Fields: fields,
@@ -623,13 +1373,147 @@ func (s *CollectionService) UpdateDocument(ctx context.Context, req *UpdateDocum
 		}
 	}
 
+	current, raw, err := s.fenceWrite(ctx, info, docKey, docData)
+	if err != nil {
+		return nil, err
+	}
+
 	// Update schema from new fields.
-	s.updateSchema(ctx, info, fields)
+	s.updateSchema(ctx, current, raw, fields)
 
 	return &UpdateDocumentResponse{ID: req.ID}, nil
 }
 
-// DeleteDocument removes a document from a collection.
+// UpsertDocument stores a document under an explicit ID whether or not one is
+// already stored there, and reports which happened (go-qrdb#497).
+//
+// It is the statement-level primitive behind SQL's REPLACE INTO and
+// INSERT ... ON DUPLICATE KEY UPDATE on a collection table. Those were each an
+// insert, a refusal and a second statement-level write with no lock across the
+// three, so two concurrent statements on one `_id` could interleave and the
+// loser's value could be lost with nobody told. Here the presence decision and
+// the write are one guarded write: an absent document is stored with
+// PutIfAbsent, a present one is replaced with CompareAndSwap against the exact
+// bytes that were read, and a guard that loses to a concurrent writer is
+// re-decided from the new state. The document the write displaced is returned
+// in Previous, and it is exactly the one displaced -- not a separate read a
+// concurrent writer could have changed.
+//
+// With IfRevision set it is instead a guarded REPLACE of the one document the
+// caller read: it succeeds only while that document is still stored, and is
+// refused with CollectionDocumentConflictError otherwise. That is what makes a
+// read-compute-write -- ON DUPLICATE KEY UPDATE evaluating its expressions
+// over the existing row, or an UPDATE -- lose loudly instead of overwriting a
+// value it never saw.
+//
+// The ID is an explicit claim: on an increment collection it reserves the
+// counter exactly as an insert's explicit `_id` does. The write is synchronous
+// (the guard is its point) and fenced against a concurrent drop.
+func (s *CollectionService) UpsertDocument(ctx context.Context, req *UpsertDocumentRequest) (*UpsertDocumentResponse, error) {
+	if err := validateCollectionRequest(req.Database, req.Collection); err != nil {
+		return nil, err
+	}
+	if req.ID == 0 {
+		return nil, &CollectionInvalidDocumentIDError{}
+	}
+	if len(req.Document) == 0 {
+		return nil, &CollectionEmptyDocumentError{}
+	}
+	if err := validateStoredFields(documentFields(req.Document)); err != nil {
+		return nil, err
+	}
+
+	info, err := s.loadActiveCollection(ctx, req.Database, req.Collection)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.reserveExplicitDocumentID(ctx, info, req.ID); err != nil {
+		return nil, err
+	}
+
+	fields := documentFields(req.Document)
+	entity := &dao.DynamicEntity{ID: req.ID, Fields: fields}
+	c := s.resolveCodec(info)
+	docData, err := marshalDocument(entity, c)
+	if err != nil {
+		return nil, &CollectionMetadataError{Op: "marshal-document", Err: err}
+	}
+
+	docKey := collectionDocumentKey(info, req.ID)
+	conflict := &CollectionDocumentConflictError{Database: req.Database, Collection: req.Collection, ID: req.ID}
+	resp, err := s.guardedUpsert(ctx, docKey, docData, req.IfRevision, c, conflict)
+	if err != nil {
+		return nil, err
+	}
+	resp.ID = req.ID
+
+	current, raw, err := s.fenceWrite(ctx, info, docKey, docData)
+	if err != nil {
+		return nil, err
+	}
+	s.updateSchema(ctx, current, raw, fields)
+	return resp, nil
+}
+
+// guardedUpsert decides presence and writes in one guarded write, re-deciding
+// when a concurrent writer wins the guard. See UpsertDocument.
+func (s *CollectionService) guardedUpsert(ctx context.Context, docKey string, docData []byte, ifRevision string, c codec.Codec, conflict error) (*UpsertDocumentResponse, error) {
+	for attempt := 0; attempt < upsertMaxAttempts; attempt++ {
+		current, err := s.kvSvc.Get(ctx, docKey)
+		absent := current == nil && (err == nil || isKeyNotFound(err))
+		if err != nil && !absent {
+			return nil, &CollectionMetadataError{Op: "check-document", Err: err}
+		}
+
+		if absent {
+			if ifRevision != "" {
+				return nil, conflict
+			}
+			stored, err := s.kvSvc.PutIfAbsent(ctx, docKey, docData)
+			if err != nil {
+				return nil, &CollectionMetadataError{Op: "upsert-document", Err: err}
+			}
+			if stored {
+				return &UpsertDocumentResponse{Revision: documentRevision(docData)}, nil
+			}
+			continue
+		}
+
+		if ifRevision != "" && documentRevision(current) != ifRevision {
+			return nil, conflict
+		}
+		swapped, err := s.kvSvc.CompareAndSwap(ctx, docKey, current, docData)
+		if err != nil {
+			return nil, &CollectionMetadataError{Op: "upsert-document", Err: err}
+		}
+		if !swapped {
+			if ifRevision != "" {
+				return nil, conflict
+			}
+			continue
+		}
+		var previous dao.DynamicEntity
+		if err := unmarshalDocument(current, &previous, c); err != nil {
+			return nil, &CollectionMetadataError{Op: "unmarshal-document", Err: err}
+		}
+		return &UpsertDocumentResponse{
+			Replaced: true,
+			Previous: previous.Fields,
+			Revision: documentRevision(docData),
+		}, nil
+	}
+	return nil, conflict
+}
+
+// DeleteDocument removes a document from an ACTIVE collection. With
+// IfRevision set it removes the document only while it still carries that
+// revision (go-qrdb#497).
+//
+// A collection being dropped refuses it like every other document verb: the
+// document's key lives in the incarnation's own keyspace, which only the
+// metadata names, and the drop's teardown removes every document in it
+// anyway -- counting exactly the ones it removed, so a delete that raced it
+// and a teardown never both account for one document.
 func (s *CollectionService) DeleteDocument(ctx context.Context, req *DeleteDocumentRequest) (*DeleteDocumentResponse, error) {
 	if err := validateCollectionRequest(req.Database, req.Collection); err != nil {
 		return nil, err
@@ -638,7 +1522,11 @@ func (s *CollectionService) DeleteDocument(ctx context.Context, req *DeleteDocum
 		return nil, &CollectionInvalidDocumentIDError{}
 	}
 
-	docKey := collectionDataEntityType(req.Database, req.Collection) + "/" + strconv.FormatUint(req.ID, 10)
+	info, err := s.loadActiveCollection(ctx, req.Database, req.Collection)
+	if err != nil {
+		return nil, err
+	}
+	docKey := collectionDocumentKey(info, req.ID)
 	existing, err := s.kvSvc.Get(ctx, docKey)
 	if err != nil || existing == nil {
 		return nil, &CollectionDocumentNotFoundError{
@@ -646,6 +1534,21 @@ func (s *CollectionService) DeleteDocument(ctx context.Context, req *DeleteDocum
 			Collection: req.Collection,
 			ID:         req.ID,
 		}
+	}
+
+	if req.IfRevision != "" {
+		conflict := &CollectionDocumentConflictError{Database: req.Database, Collection: req.Collection, ID: req.ID}
+		if documentRevision(existing) != req.IfRevision {
+			return nil, conflict
+		}
+		deleted, err := s.kvSvc.CompareAndDelete(ctx, docKey, existing)
+		if err != nil {
+			return nil, &CollectionMetadataError{Op: "delete-document", Err: err}
+		}
+		if !deleted {
+			return nil, conflict
+		}
+		return &DeleteDocumentResponse{Deleted: true}, nil
 	}
 
 	if req.WriteMode != 0 {
@@ -661,19 +1564,19 @@ func (s *CollectionService) DeleteDocument(ctx context.Context, req *DeleteDocum
 	return &DeleteDocumentResponse{Deleted: true}, nil
 }
 
-// ListDocuments lists documents in a collection with pagination.
+// ListDocuments lists documents in an ACTIVE collection with pagination.
 func (s *CollectionService) ListDocuments(ctx context.Context, req *ListDocumentsRequest) (*ListDocumentsResponse, error) {
 	if err := validateCollectionRequest(req.Database, req.Collection); err != nil {
 		return nil, err
 	}
 
-	info, infoErr := s.loadCollectionInfo(ctx, req.Database, req.Collection)
+	info, infoErr := s.loadActiveCollection(ctx, req.Database, req.Collection)
 	if infoErr != nil {
 		return nil, infoErr
 	}
 
 	c := s.resolveCodec(info)
-	dataPrefix := collectionDataEntityType(req.Database, req.Collection) + "/"
+	dataPrefix := info.documentPrefix()
 
 	var (
 		data map[string][]byte
@@ -709,7 +1612,7 @@ func (s *CollectionService) ListDocuments(ctx context.Context, req *ListDocument
 	for k := range data {
 		keys = append(keys, k)
 	}
-	sortStrings(keys)
+	slices.Sort(keys)
 
 	totalCount := int64(len(keys))
 
@@ -728,6 +1631,7 @@ func (s *CollectionService) ListDocuments(ctx context.Context, req *ListDocument
 		docs = append(docs, GetDocumentResponse{
 			ID:       entity.ID,
 			Document: entity.Fields,
+			Revision: documentRevision(data[keys[i]]),
 		})
 	}
 
@@ -745,6 +1649,108 @@ func (s *CollectionService) ListDocuments(ctx context.Context, req *ListDocument
 		NextPageToken: nextToken,
 		TotalCount:    totalCount,
 	}, nil
+}
+
+// fenceWrite refuses a document write whose collection stopped being the
+// ACTIVE incarnation it was decided against while the write was in flight
+// (go-qrdb#425). It re-reads the collection's metadata AFTER the write; if the
+// collection is no longer ACTIVE, no longer exists, or is no longer the
+// INCARNATION the write was decided from, the caller is refused and the write
+// is retracted.
+//
+// Neither the refusal nor the retraction is what keeps a stale write away
+// from a live collection: the write went to the key its decided incarnation
+// derives (collectionDocumentKey), which no other incarnation shares, so it
+// could only ever land in a keyspace that is being or has been reclaimed.
+// The fence is what makes such a write fail LOUDLY -- no write into a dropping
+// or replaced collection is reported as a success -- and the retraction is
+// what keeps it from outliving its incarnation's teardown: a write that
+// committed after the teardown scanned the keyspace would otherwise be left
+// there, unreachable, for good.
+//
+// The ordering is what makes the refusal sound. A drop's DROPPING mark is
+// appended to the log before the teardown scans the documents to delete. A
+// write appended AFTER that scan is therefore appended after the mark, so this
+// re-read -- linearizable, and issued after the write committed -- observes
+// the mark (or the metadata's absence, or a newer incarnation). A write
+// appended BEFORE the scan is found by it and removed by the teardown.
+//
+// It returns the metadata it read and its raw bytes, which the schema merge
+// swaps against. A re-read that fails for any reason other than absence is
+// reported as CollectionMetadataError{Op: "fence"} and the write stands:
+// retracting on an unknown answer would undo a write into a live collection.
+func (s *CollectionService) fenceWrite(ctx context.Context, decided *CollectionInfo, docKey string, written []byte) (*CollectionInfo, []byte, error) {
+	database, collection := decided.Database, decided.Name
+	info, raw, err := s.loadCollectionRecord(ctx, database, collection)
+	if err != nil {
+		var notFound *CollectionNotFoundError
+		if !errors.As(err, &notFound) {
+			return nil, nil, &CollectionMetadataError{Op: "fence", Err: err}
+		}
+		return nil, nil, s.retractWrite(ctx, decided, docKey, written, err)
+	}
+	if info.Incarnation != decided.Incarnation {
+		return nil, nil, s.retractWrite(ctx, decided, docKey, written, &CollectionStateConflictError{
+			Database:   database,
+			Collection: collection,
+			Op:         "write",
+		})
+	}
+	if info.State != CollectionStateActive {
+		return nil, nil, s.retractWrite(ctx, decided, docKey, written, &CollectionNotActiveError{
+			Database:   database,
+			Collection: collection,
+			State:      info.State,
+		})
+	}
+	return info, raw, nil
+}
+
+// retractWrite removes a fenced-out write from its dead incarnation's
+// keyspace and returns the refusal the caller reports.
+//
+// The retraction is a CompareAndDelete of the bytes this call wrote. When it
+// removes nothing, somebody else already removed or replaced the document --
+// the teardown reclaiming the keyspace, or a concurrent writer to the same
+// key -- and accounted for it; the refusal is then reported as
+// CollectionWriteSupersededError, which tells a storage quota that the write
+// did store a document it must not release a second time.
+//
+// The write may also have recreated the dead incarnation's ID sequence -- an
+// allocation or a reservation made after its teardown deleted it -- so that
+// is reclaimed too, with the process-local generator cached for it. Both are
+// the dead incarnation's alone. A retraction or reclamation that fails is
+// reported with the refusal.
+func (s *CollectionService) retractWrite(ctx context.Context, decided *CollectionInfo, docKey string, written []byte, refusal error) error {
+	deleted, err := s.kvSvc.CompareAndDelete(ctx, docKey, written)
+	if err != nil {
+		return &CollectionMetadataError{Op: "retract-write", Err: errors.Join(refusal, err)}
+	}
+	if !deleted {
+		refusal = &CollectionWriteSupersededError{Err: refusal}
+	}
+	s.idGens.Delete(collectionIDGenKey(decided))
+	if idStrategyDrawsFromACounter[decided.IDStrategy] && s.seqSvc != nil {
+		if err := s.seqSvc.Delete(ctx, decided.Database, collectionSequenceName(decided)); err != nil {
+			return &CollectionMetadataError{Op: "retract-sequence", Err: errors.Join(refusal, err)}
+		}
+	}
+	return refusal
+}
+
+// collectionDocumentKey returns the storage key of one document of one
+// incarnation of a collection (see CollectionInfo.documentPrefix).
+func collectionDocumentKey(info *CollectionInfo, id uint64) string {
+	return info.documentPrefix() + strconv.FormatUint(id, 10)
+}
+
+// documentRevision identifies a stored document's exact bytes. It is the
+// token GetDocumentResponse.Revision carries and the guarded writes compare
+// against; the guarded write itself swaps against the bytes, so the digest
+// only has to tell two different encodings apart.
+func documentRevision(stored []byte) string {
+	sum := sha256.Sum256(stored)
+	return hex.EncodeToString(sum[:16])
 }
 
 // DocumentIDField is the document key a caller uses to name a document's
@@ -789,6 +1795,37 @@ func documentFields(doc map[string]interface{}) map[string]interface{} {
 		fields[k] = v
 	}
 	return fields
+}
+
+// storedIdentityField is the key a stored document carries its own identity
+// under (dao.DynamicEntity's flat layout); a document field of that name
+// cannot be stored beside it.
+const storedIdentityField = "id"
+
+// legacyFieldsWrapper is the key of the legacy {"id", "fields"} layout: a
+// stored object whose only key besides the identity is an object under this
+// name is read as that wrapper and unwrapped.
+const legacyFieldsWrapper = "fields"
+
+// validateStoredFields refuses a document whose fields the stored layout
+// cannot hold as sent (see CollectionReservedFieldError). fields is the
+// document without its "_id" identity key (documentFields).
+func validateStoredFields(fields map[string]interface{}) error {
+	if _, ok := fields[storedIdentityField]; ok {
+		return &CollectionReservedFieldError{
+			Field:  storedIdentityField,
+			Reason: "it is the key a stored document keeps its identity under; name the identity with " + strconv.Quote(DocumentIDField) + ", or rename the field",
+		}
+	}
+	if len(fields) == 1 {
+		if _, isObject := fields[legacyFieldsWrapper].(map[string]interface{}); isObject {
+			return &CollectionReservedFieldError{
+				Field:  legacyFieldsWrapper,
+				Reason: "an object under it as a document's only field reads back as the legacy wrapper and would be unwrapped; add another field or rename it",
+			}
+		}
+	}
+	return nil
 }
 
 // extractExplicitID returns the document's own "_id" field when it carries a
@@ -901,29 +1938,69 @@ func unmarshalDocument(data []byte, entity *dao.DynamicEntity, c codec.Codec) er
 	return nil
 }
 
-// loadCollectionInfo loads collection metadata from storage.
+// loadCollectionInfo loads collection metadata from storage, in whatever
+// lifecycle state it is in.
 func (s *CollectionService) loadCollectionInfo(ctx context.Context, database, name string) (*CollectionInfo, error) {
+	info, _, err := s.loadCollectionRecord(ctx, database, name)
+	return info, err
+}
+
+// loadActiveCollection loads collection metadata and refuses a collection
+// that is not ACTIVE: one still CREATING has not finished building its
+// indexes, and one DROPPING is losing them (go-qrdb#415, go-qrdb#425).
+func (s *CollectionService) loadActiveCollection(ctx context.Context, database, name string) (*CollectionInfo, error) {
+	info, err := s.loadCollectionInfo(ctx, database, name)
+	if err != nil {
+		return nil, err
+	}
+	if info.State != CollectionStateActive {
+		return nil, &CollectionNotActiveError{Database: database, Collection: name, State: info.State}
+	}
+	return info, nil
+}
+
+// loadCollectionRecord loads collection metadata together with the exact
+// stored bytes it was decoded from, which a guarded metadata write swaps
+// against.
+//
+// Only an ABSENT key is CollectionNotFoundError. A read that fails for any
+// other reason is reported as the failure it is: the drop fence
+// (fenceWrite) retracts a write when the collection is gone, and a transient
+// read error mistaken for "gone" would undo a write into a live collection.
+func (s *CollectionService) loadCollectionRecord(ctx context.Context, database, name string) (*CollectionInfo, []byte, error) {
 	metaKey := collectionMetadataKey(database, name)
 	data, err := s.kvSvc.Get(ctx, metaKey)
-	if err != nil || data == nil {
-		return nil, &CollectionNotFoundError{
+	if (err == nil && data == nil) || (err != nil && isKeyNotFound(err)) {
+		return nil, nil, &CollectionNotFoundError{
 			Database:   database,
 			Collection: name,
 		}
 	}
+	if err != nil {
+		return nil, nil, &CollectionMetadataError{Op: "load-metadata", Err: err}
+	}
 
 	var info CollectionInfo
 	if err := json.Unmarshal(data, &info); err != nil {
-		return nil, &CollectionMetadataError{Op: "unmarshal-metadata", Err: err}
+		return nil, nil, &CollectionMetadataError{Op: "unmarshal-metadata", Err: err}
 	}
+	normalizeCollectionState(&info)
 
-	return &info, nil
+	return &info, data, nil
 }
 
-// countDocuments returns the number of documents in a collection.
-func (s *CollectionService) countDocuments(ctx context.Context, database, collection string) int64 {
-	dataPrefix := collectionDataEntityType(database, collection) + "/"
-	keys, err := s.kvSvc.List(ctx, dataPrefix)
+// normalizeCollectionState reads metadata written before the lifecycle state
+// existed as ACTIVE, which is what such a collection was.
+func normalizeCollectionState(info *CollectionInfo) {
+	if info.State == "" {
+		info.State = CollectionStateActive
+	}
+}
+
+// countDocuments returns the number of documents in one incarnation of a
+// collection.
+func (s *CollectionService) countDocuments(ctx context.Context, info *CollectionInfo) int64 {
+	keys, err := s.kvSvc.List(ctx, info.documentPrefix())
 	if err != nil {
 		return 0
 	}
@@ -1007,7 +2084,7 @@ func (s *CollectionService) reserveExplicitDocumentID(ctx context.Context, info 
 	}
 
 	if s.seqSvc != nil {
-		if err := s.seqSvc.Advance(ctx, info.Database, collectionSequenceName(info.Name), id); err != nil {
+		if err := s.seqSvc.Advance(ctx, info.Database, collectionSequenceName(info), id); err != nil {
 			return &CollectionMetadataError{Op: "reserve-id", Err: err}
 		}
 		return nil
@@ -1023,7 +2100,8 @@ func (s *CollectionService) reserveExplicitDocumentID(ctx context.Context, info 
 }
 
 // storeNewDocument writes an insert's document, choosing the write by whether
-// the insert is allowed to overwrite.
+// the insert is allowed to overwrite, and returns the insert's response less
+// its ID.
 //
 // Where it is not, the write is KVServicer.PutIfAbsent and the refusal is the
 // backend declining to store, not a check this service performed first. That
@@ -1035,45 +2113,56 @@ func (s *CollectionService) reserveExplicitDocumentID(ctx context.Context, info 
 // insert that cannot promise the ID is the caller's fails, which is the whole
 // point of the promise.
 //
+// Where it is -- a field_hash re-insert of an existing natural key -- the
+// write is the guarded upsert (see UpsertDocument), so the response reports
+// whether a document was displaced and exactly which one. A storage quota
+// charges the new body and releases that one; an unguarded overwrite could
+// only charge every re-insert again.
+//
 // A write that FAILS is never read as an absent document: the error is
 // returned and the insert fails. This is deliberately stricter than
 // GetDocument, which treats any read failure as not-found because on a read
 // path there is nothing to destroy.
-func (s *CollectionService) storeNewDocument(ctx context.Context, info *CollectionInfo, req *InsertDocumentRequest, docKey string, docData []byte, id uint64, explicit bool) error {
+func (s *CollectionService) storeNewDocument(ctx context.Context, info *CollectionInfo, req *InsertDocumentRequest, docKey string, docData []byte, id uint64, explicit bool, c codec.Codec) (*InsertDocumentResponse, error) {
 	if !mayOverwrite(info.IDStrategy, explicit) {
 		stored, err := s.kvSvc.PutIfAbsent(ctx, docKey, docData)
 		if err != nil {
-			return &CollectionMetadataError{Op: "insert-document", Err: err}
+			return nil, &CollectionMetadataError{Op: "insert-document", Err: err}
 		}
 		if !stored {
-			return &CollectionDocumentExistsError{
+			return nil, &CollectionDocumentExistsError{
 				Database:   req.Database,
 				Collection: req.Collection,
 				ID:         id,
 				Explicit:   explicit,
 			}
 		}
-		return nil
+		return &InsertDocumentResponse{Revision: documentRevision(docData)}, nil
 	}
 
-	if req.WriteMode != 0 {
-		if err := s.kvSvc.PutWithMode(ctx, docKey, docData, req.WriteMode); err != nil {
-			return &CollectionMetadataError{Op: "insert-document", Err: err}
-		}
-		return nil
+	conflict := &CollectionDocumentConflictError{Database: req.Database, Collection: req.Collection, ID: id}
+	up, err := s.guardedUpsert(ctx, docKey, docData, "", c, conflict)
+	if err != nil {
+		return nil, err
 	}
-	if err := s.kvSvc.Put(ctx, docKey, docData); err != nil {
-		return &CollectionMetadataError{Op: "insert-document", Err: err}
-	}
-	return nil
+	return &InsertDocumentResponse{Revision: up.Revision, Replaced: up.Replaced, Previous: up.Previous}, nil
 }
 
 // collectionSequenceName returns the SequenceServicer sequence name backing
-// a collection's IDStrategyIncrement document IDs, namespaced by collection
-// so multiple collections in the same database maintain independent
-// counters.
-func collectionSequenceName(collection string) string {
-	return "__collection:" + collection
+// one incarnation's IDStrategyIncrement document IDs,
+// "__collection:{name}#{incarnation}". Scoping it by incarnation is what keeps
+// a stale writer's allocation, and a resumed teardown's delete, off the
+// counter of the incarnation that replaced it. A record that predates
+// incarnations keeps the unsuffixed "__collection:{name}" its counter already
+// has, so a legacy collection needs no migration.
+func collectionSequenceName(info *CollectionInfo) string {
+	return "__collection:" + info.Name + incarnationSuffix(info.Incarnation)
+}
+
+// collectionIDGenKey is the idGens cache key of one incarnation's
+// process-local ID generator, "{database}:{name}#{incarnation}".
+func collectionIDGenKey(info *CollectionInfo) string {
+	return info.Database + ":" + info.Name + incarnationSuffix(info.Incarnation)
 }
 
 // nextDocumentID generates the next document ID for a collection using its
@@ -1088,7 +2177,7 @@ func collectionSequenceName(collection string) string {
 // function's doc comment for why that fallback can produce duplicate IDs.
 func (s *CollectionService) nextDocumentID(ctx context.Context, info *CollectionInfo, entity dao.Entity) (uint64, error) {
 	if info.IDStrategy == IDStrategyIncrement && s.seqSvc != nil {
-		id, err := s.seqSvc.Allocate(ctx, info.Database, collectionSequenceName(info.Name), 1)
+		id, err := s.seqSvc.Allocate(ctx, info.Database, collectionSequenceName(info), 1)
 		if err != nil {
 			return 0, &CollectionMetadataError{Op: "allocate-id", Err: err}
 		}
@@ -1108,7 +2197,7 @@ func (s *CollectionService) nextDocumentID(ctx context.Context, info *Collection
 // across a restart or across replicas of the same collection. Wire
 // WithSequenceService to eliminate this.
 func (s *CollectionService) getOrCreateIDGen(info *CollectionInfo) dao.IDGenerator {
-	cacheKey := info.Database + ":" + info.Name
+	cacheKey := collectionIDGenKey(info)
 	if gen, ok := s.idGens.Load(cacheKey); ok {
 		return gen.(dao.IDGenerator) //nolint:errcheck // type assertion on a value this container only ever holds
 	}
@@ -1129,11 +2218,43 @@ func (s *CollectionService) getOrCreateIDGen(info *CollectionInfo) dao.IDGenerat
 
 // updateSchema discovers field types from the document and merges them
 // into the collection's schema metadata.
-func (s *CollectionService) updateSchema(ctx context.Context, info *CollectionInfo, doc map[string]interface{}) {
+//
+// The merge is a guarded swap of the metadata bytes it was computed from
+// (raw), re-read and re-merged when a concurrent writer changed them. It used
+// to be a plain Put of a copy read at the start of the insert, which could
+// write back a record a drop had since marked DROPPING -- reverting the mark --
+// or deleted -- resurrecting a dropped collection's metadata. A collection
+// that is no longer ACTIVE is not merged into at all.
+//
+// It is best effort by design: the schema is descriptive, and a merge that
+// cannot be written never fails the document write it describes.
+func (s *CollectionService) updateSchema(ctx context.Context, info *CollectionInfo, raw []byte, doc map[string]interface{}) {
+	metaKey := collectionMetadataKey(info.Database, info.Name)
+	for attempt := 0; attempt < metadataCASMaxAttempts; attempt++ {
+		if info.State != CollectionStateActive || !mergeSchema(info, doc) {
+			return
+		}
+		data, err := json.Marshal(info)
+		if err != nil {
+			return
+		}
+		swapped, err := s.kvSvc.CompareAndSwap(ctx, metaKey, raw, data)
+		if err != nil || swapped {
+			return
+		}
+		info, raw, err = s.loadCollectionRecord(ctx, info.Database, info.Name)
+		if err != nil {
+			return
+		}
+	}
+}
+
+// mergeSchema records a type for every field of doc the schema does not yet
+// name, and reports whether it recorded any.
+func mergeSchema(info *CollectionInfo, doc map[string]interface{}) bool {
 	if info.Schema == nil {
 		info.Schema = make(map[string]string)
 	}
-
 	changed := false
 	for k, v := range doc {
 		if _, exists := info.Schema[k]; !exists {
@@ -1141,18 +2262,7 @@ func (s *CollectionService) updateSchema(ctx context.Context, info *CollectionIn
 			changed = true
 		}
 	}
-
-	if !changed {
-		return
-	}
-
-	data, err := json.Marshal(info)
-	if err != nil {
-		return
-	}
-
-	metaKey := collectionMetadataKey(info.Database, info.Name)
-	_ = s.kvSvc.Put(ctx, metaKey, data)
+	return changed
 }
 
 // inferSQLType returns a SQL type string for a Go value.
@@ -1195,15 +2305,5 @@ func validateIDStrategy(strategy, fieldHash string) error {
 		return nil
 	default:
 		return &CollectionInvalidIDStrategyError{Strategy: strategy}
-	}
-}
-
-// sortStrings sorts a string slice in place. Inlined to avoid importing
-// the sort package for a single call site.
-func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && strings.Compare(s[j-1], s[j]) > 0; j-- {
-			s[j-1], s[j] = s[j], s[j-1]
-		}
 	}
 }

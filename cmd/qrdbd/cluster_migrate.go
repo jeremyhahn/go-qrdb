@@ -28,7 +28,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
-	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -246,19 +245,24 @@ func (r *daemonLocalRecycler) Recycle(ctx context.Context, m *clustermig.Cluster
 	if r.alreadyAtTarget(m) {
 		return nil
 	}
-	// Hand the recycle its OWN copy of the credential. The SYSTEM-scope recycle is
-	// async across an in-process reboot: EnableEncryption returns early (the boot
+	// Hand the recycle its OWN credential. The SYSTEM-scope recycle is async
+	// across an in-process reboot: EnableEncryption returns early (the boot
 	// loop cancels its context) while handleSystemMigration keeps reading the
 	// credential to seal the keyed root key. The caller (reconciler) wipes the
-	// opened plaintext as soon as Recycle returns, so a shared buffer would be
-	// zeroed out from under the still-running recycle — sealing the root key under
-	// a zeroed passphrase. The copy decouples the two.
-	credCopy := append([]byte(nil), credential...)
+	// opened plaintext as soon as Recycle returns, so a credential aliasing that
+	// buffer would be zeroed out from under the still-running recycle — sealing
+	// the root key under a zeroed passphrase. CredentialsFor decouples the two:
+	// it seals its own copy of the material and leaves the reconciler's buffer
+	// alone.
+	creds, err := seal.CredentialsFor(credential)
+	if err != nil {
+		return err
+	}
 	opts := seal.MigrationOptions{
 		TargetStrategy:  m.Target,
 		Mechanism:       m.Mechanism,
 		Availability:    seal.AvailabilityQuiesced,
-		Credentials:     seal.Credentials{Secret: credCopy},
+		Credentials:     creds,
 		ShamirThreshold: m.ShamirThreshold,
 		ShamirTotal:     m.ShamirTotal,
 	}
@@ -269,19 +273,32 @@ func (r *daemonLocalRecycler) Recycle(ctx context.Context, m *clustermig.Cluster
 	if m.TenantID != "" || m.Database != "" {
 		scope = service.BarrierScope{Kind: service.ScopeTenant, TenantID: m.TenantID}
 		// Tenant-scope recycle is SYNCHRONOUS (online, no reboot): EnableEncryption
-		// fully consumes credCopy before returning, so wipe it here. The system
-		// scope is async across the in-process reboot — its credCopy is consumed by
-		// the boot loop (handleSystemMigration), which owns wiping it; wiping here
-		// would zero it out from under the still-running recycle.
-		defer wipe(credCopy)
+		// fully consumes the credential before returning, so destroy it here. The
+		// system scope is async across the in-process reboot — its credential is
+		// consumed by the boot loop (handleSystemMigration), which owns destroying
+		// it; destroying here would pull it out from under the still-running
+		// recycle.
+		defer creds.Secret.Destroy()
 	}
 	return r.migrator.EnableEncryption(ctx, scope, opts)
 }
 
-// wipe zeroes a plaintext credential buffer using the project's
-// compiler-elision-resistant primitive (a naive zero loop on a buffer never read
-// afterward can be optimized away, leaving the secret resident in the heap).
-func wipe(b []byte) { secure.Wipe(b) }
+// withCredentialBytes opens a credential's protected secret and calls fn with
+// a read-only view of the plaintext, valid only for the call; fn must not
+// retain or write through it (the pages are frozen). A credential with no
+// secret yields fn(nil). The opened enclave is destroyed on return, so the
+// plaintext exists only in locked memory and only for the width of fn.
+func withCredentialBytes(creds seal.Credentials, fn func([]byte) error) error {
+	if creds.Secret == nil {
+		return fn(nil)
+	}
+	opened, err := creds.Secret.Open()
+	if err != nil {
+		return err
+	}
+	defer opened.Destroy()
+	return opened.WithBytes(fn)
+}
 
 // clusterCoordinatorMigrator implements service.EncryptionMigrator for the
 // transports: an enable-encryption request becomes a replicated migration intent
@@ -337,6 +354,9 @@ func (m *clusterCoordinatorMigrator) EnableEncryption(ctx context.Context, scope
 	}
 	// The plaintext unlock credential (passphrase / Shamir secret) is sealed per
 	// owner by the coordinator's CredentialSealer and never persisted in clear.
-	_, err := m.coord.Request(ctx, tenantID, "", opts, opts.Credentials.Secret)
-	return err
+	// It is opened out of protected memory only for the Request call itself.
+	return withCredentialBytes(opts.Credentials, func(credential []byte) error {
+		_, err := m.coord.Request(ctx, tenantID, "", opts, credential)
+		return err
+	})
 }

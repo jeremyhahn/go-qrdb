@@ -213,29 +213,6 @@ func TestCompactionError_Unwrap_MatchesAs(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// TransactionConflictError
-// ---------------------------------------------------------------------------
-
-func TestTransactionConflictError_Error_ContainsKey(t *testing.T) {
-	e := &TransactionConflictError{Key: "conflict-key"}
-	got := e.Error()
-	if !strings.Contains(got, "conflict-key") {
-		t.Errorf("Error: expected key, got %q", got)
-	}
-	if !strings.Contains(got, "transaction conflict") {
-		t.Errorf("Error: expected prefix, got %q", got)
-	}
-}
-
-func TestTransactionConflictError_Error_EmptyKey(t *testing.T) {
-	e := &TransactionConflictError{Key: ""}
-	got := e.Error()
-	if !strings.Contains(got, "mvcc: transaction conflict on key:") {
-		t.Errorf("Error: expected prefix for empty key, got %q", got)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Cross-package error interface methods
 // ---------------------------------------------------------------------------
 

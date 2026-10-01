@@ -59,9 +59,10 @@ func TestBuildTenantInfra_HostWithoutManager_AllOtherFieldsNonNil_ReturnsConfigE
 	svc, _ := newRaftReattachFixture(t)
 
 	_, err := BuildTenantInfra(TenantInfraConfig{
-		Ctx:        context.Background(),
-		BarrierReg: reg,
-		TenantSvc:  svc,
+		Ctx:          context.Background(),
+		BarrierReg:   reg,
+		TenantSvc:    svc,
+		TenantLookup: svc,
 		// Non-nil VolumePool so the IsolationVolume block is entered and
 		// ti.Hosts is built — verifying that it is cleaned up before the
 		// TenantInfraConfigError is returned.

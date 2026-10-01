@@ -86,9 +86,11 @@ module whose surface is entirely streaming leaves this hook a no-op.
 **The MCP transport carries a module's tools too**, through `RegisterMCP`, and
 a module typically implements them over the code that serves its gRPC surface —
 so it answers in gRPC's vocabulary there as well. That is why the MCP error
-vocabulary is also one code per gRPC status code, and why the MCP server takes
-a module's gRPC status verbatim instead of running it through a classifier that
-knows only qrdb's own error types.
+vocabulary is also one code per gRPC status code. The MCP server consults the
+shared classification table first and honours a module's gRPC status only for
+an error the table leaves unclassified — the same order the QUIC server uses —
+so the two projections of a module's answer cannot disagree, and a module can
+never shadow qrdb's own classification of one of its errors.
 
 **This projection is what decided the QUIC status vocabulary.** A projected
 method's handler is the module's own generated gRPC code, so it answers with a
@@ -208,12 +210,26 @@ neither owns a verb neither registered. See
   nil `data` field and gives a handler no way to influence either, so the
   spec-correct channel is the only channel.
 - **A third ~80-clause error classifier, in `pkg/api/mcp`.** Rejected. Two such
-  ladders already exist and must agree with nothing forcing them to; a third
-  compounds that. The MCP server instead consults the gRPC transport's
-  per-family classifiers and renders the code they return, so it owns no
-  condition clauses and has nothing to drift. Whether the classification
-  eventually moves to a transport-neutral home is a separate, open question;
-  this keeps that move cheap rather than pre-empting it.
+  ladders already existed and had to agree with nothing forcing them to; a
+  third would have compounded that. The MCP server renders the gRPC code
+  instead, so it owns no condition clauses and has nothing to drift.
+- **One classifier per transport, kept in agreement by tests.** Rejected, and
+  replaced by a transport-neutral table. REST ran twelve per-family status
+  ladders, gRPC nine, QUIC one of its own, and they had drifted: the same
+  error meant different things on different transports, and QUIC had no
+  clause at all for most families. `pkg/api/errclass` now owns what kind of
+  failure every typed error is, as an ordered table of one-line rows; each
+  transport owns only a total map from that class to its own code. This is the
+  shape the authentication classifier (`middleware.ClassifyAuthError`) had
+  already proved, and that classifier stays the owner of the auth failures:
+  the table delegates to it, because its classes also drive control flow a wire
+  class cannot express.
+- **Classes that are exactly gRPC's seventeen codes.** Rejected: HTTP draws
+  distinctions a client acts on that gRPC does not (413 against 429; 410, 412
+  and 422 against 409), and collapsing them would have changed REST answers
+  that were chosen deliberately. A class is a meaning; each transport's
+  projection is a function of the class alone, which is what makes "one error,
+  one meaning" a property of the table.
 - **Stamping a code on every MCP tool error, including the argument refusals.**
   Rejected for now. Those refusals are built from string literals at some four
   hundred call sites, and the only way to code them centrally is to infer a
@@ -258,6 +274,55 @@ decision honoured on one transport and silently discarded on the other.
 HTTP/3 starts whenever TLS is configured; making it opt-in or independently
 addressable is an open architecture question, not a decided one.
 
+### Pre-bound sockets
+
+An embedder that needs a kernel-assigned port — a test process booting many
+nodes, typically — must not reserve one by listening on `:0`, closing, and
+passing the number: another process can take the port in between, on TCP or
+on the HTTP/3 UDP side. It binds the socket itself and hands the socket over:
+
+| Option | Replaces the bind of |
+|---|---|
+| `server.WithRESTListener(net.Listener)` | `server.admin_port` (TCP) |
+| `server.WithRESTPacketConn(net.PacketConn)` | the HTTP/3 socket beside it (UDP); requires `WithRESTListener` |
+| `server.WithGRPCListener(net.Listener)` | `server.grpc_port` (TCP) |
+
+A handed-over socket **outlives any one server**. An embedded node rebuilds its
+server in process — a system encryption migration tears the data plane down and
+builds a new server from the same options — so each server lifetime serves on a
+wrapper whose close ends that lifetime's use of the socket without closing the
+socket: it wakes the lifetime's blocked `Accept` or datagram read with a past
+deadline, waits for every such call to leave the socket, then clears the
+deadline. The wait matters on the HTTP/3 side: the QUIC stack stops reading a
+socket it did not open by moving the read deadline into the past and never
+moving it back, so without the clear the next lifetime's HTTP/3 server would
+read nothing, and without the wait the ended lifetime's reader could still be
+taking the next lifetime's datagrams. Nor does the ended QUIC stack stop at
+close: a connection it closed keeps a timer that moves the read deadline into
+the past again roughly three probe timeouts later, when the socket already
+belongs to the next lifetime. So once a lifetime has ended, its wrapper's
+deadline setters no longer reach the socket. The next lifetime serves on the
+same port. The socket is really closed by whoever builds the servers once
+it is done with them — the SDK node in `Node.Close`, anyone else through
+`server.PreboundSockets(opts...)` — and by a `Start` that refuses to serve at
+all. `node.NewStandaloneNode` and `node.NewClusteredNode` likewise close the
+sockets when they return an error: the caller has handed them over, and no
+node exists whose `Close` would. `Start` refuses a pre-bound socket for a protocol that is disabled, and a
+listener that cannot take a deadline, with `*server.PreboundSocketError`.
+
+A pre-bound HTTP/3 socket is held to the same containment rule as a bound one,
+and additionally to the TCP listener's port, which is the one Alt-Svc
+advertises (`*rest.ListenerPortMismatchError`).
+
+Where pre-binding is impossible, port 0 is refused instead: the multi-node Raft
+transport is bound by go-quicraft itself and advertised to peers, so
+`raft.raft_address` / `raft.listen_address` with port 0 on a multi-member node
+is refused with `*cluster.RaftPortZeroError` — wrapped in a `*node.ConfigError`
+by the SDK node, and returned directly by `qrdbd start` for `--raft-address` /
+`--listen`, before any directory is created. Without a pre-bound listener, a **zero** admin or gRPC
+port on the SDK node still selects the fixed default (63001 / 63002), not a
+kernel-assigned port.
+
 ## Trust boundaries
 
 - **A bind address holds on every transport or on none.** REST and HTTP/3 serve
@@ -265,6 +330,16 @@ addressable is an open architecture question, not a decided one.
   rather than reported in a log line an operator would have to notice.
 - **Default deny.** A route, RPC or tool with no permission declaration fails the
   startup assertion rather than serving unauthenticated.
+- **The route that is authorized is the route that is served.** Authorization,
+  the sealed-window allowlist, the SO gate and every handler resolve the
+  request's decoded path; chi on its own would route on the raw, still-encoded
+  path whenever the request carried an escape such as `%2F`, so one request
+  could be authorized as one route and served by another. The outermost layer
+  of the REST handler — which the HTTP/3 listener shares — therefore
+  canonicalises every request to its decoded path before anything else sees
+  it. A name containing `/` is not addressable through a single-segment route
+  (`/v1/databases/{name}` and the like); a wildcard route (`/kv/*`) receives
+  the decoded key as it always did.
 - **Public routes are explicit and few** — `GET /health`,
   `GET /v1/config/initialized`, and `GET /v1/ca/bootstrap` when configured.
   `GET /metrics` requires authentication but no specific permission.
@@ -272,9 +347,31 @@ addressable is an open architecture question, not a decided one.
   the host enriches and authorizes it.
 - **A malformed public gRPC method name is rejected at registration**, so a typo
   fails startup loudly instead of silently leaving a method auth-gated.
-- **Modules register before built-ins yield**: a built-in route whose
-  method+pattern a module has claimed yields to the module; module-vs-module
-  duplicates fail construction loudly.
+- **A REST route has exactly one owner.** Modules register before the
+  built-ins, and a second claim on a route — a module over a built-in, a module
+  over another module — **fails construction** with `rest.RouteCollisionError`
+  naming both parties. Nothing yields: a built-in used to give way silently to a
+  module that claimed its path, which let any module a host mounted take over a
+  core endpoint unnoticed. "The same route" is chi's notion, not the string's:
+  `/a/{id}` and `/a/{deviceID}` are one route (chi serves whichever registered
+  last), `/a/{id:[0-9]+}` and `/a/{id}` are two.
+- **A module cannot route around its own permission declaration.** A route it
+  registers straight on the embedded `chi.Router` (bypassing `Handle` /
+  `HandlePublic`) is recorded; one that is the same route as a
+  permission-recorded registration fails construction with
+  `rest.DirectRouteCollisionError`, because chi would serve the direct handler
+  under the other registration's permission — a case the default-deny assertion
+  cannot see, since the pattern IS covered. One nothing covers stays the
+  default-deny assertion's refusal. The router methods that serve requests no
+  registration describes — `Mount`, `Route`, `NotFound`, `MethodNotAllowed`,
+  `Use` — are refused outright; a module serves a subtree as
+  `Handle(method, "/prefix/*", perm, h)`, and an unmatched request under a
+  module's route prefix is refused rather than passed to the router's
+  fallback.
+  Registration closes when `RegisterHTTP` returns: a module that keeps the
+  registrar, or any router it handed out, and registers later panics with
+  `apimodule.RegistrationClosedError` instead of presenting a surface nobody
+  validated.
 
 ## What this feature deliberately does not do
 

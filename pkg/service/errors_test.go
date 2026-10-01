@@ -336,24 +336,37 @@ func TestCheckResultError_EmptyData(t *testing.T) {
 	}
 }
 
-// TestCheckResultError_WithData returns SMNotConfiguredError when the SM
-// encodes an error string in result.Data. This is the signal used when a
-// subsystem (e.g. lease) is not wired into the SM.
-func TestCheckResultError_WithData(t *testing.T) {
-	// Only an application-error payload carrying the discriminated prefix is
-	// treated as an error.
-	result := sm.Result{Data: protocol.EncodeAppError("lease not configured")}
-	err := checkResultError(result)
-	if err == nil {
-		t.Fatal("expected non-nil error, got nil")
+// TestCheckResultError_EveryKind: each refusal kind the state machine encodes
+// decodes to its own typed error, carrying the state machine's message, and
+// every one reports that nothing was stored (go-qrdb#557). A kind added to
+// protocol without a row in refusalErrors fails here rather than panicking on
+// a nil map entry in production.
+func TestCheckResultError_EveryKind(t *testing.T) {
+	for _, tc := range []struct {
+		kind  protocol.AppErrorKind
+		check func(error) bool
+	}{
+		{protocol.AppErrorCapability, func(err error) bool { var e *CapabilityUnsupportedError; return errors.As(err, &e) }},
+		{protocol.AppErrorInvalid, func(err error) bool { var e *CommandRejectedError; return errors.As(err, &e) }},
+		{protocol.AppErrorConflict, func(err error) bool { var e *CommandConflictError; return errors.As(err, &e) }},
+		{protocol.AppErrorUnavailable, func(err error) bool { var e *SubsystemClosedError; return errors.As(err, &e) }},
+		{protocol.AppErrorFault, func(err error) bool { var e *ApplyFaultError; return errors.As(err, &e) }},
+		{protocol.AppErrorCorrupt, func(err error) bool { var e *CommandCorruptError; return errors.As(err, &e) }},
+	} {
+		err := checkResultError(sm.Result{Data: protocol.EncodeAppError(tc.kind, "refused: reason")})
+		if err == nil || !tc.check(err) {
+			t.Errorf("kind %d decoded as %T (%v)", tc.kind, err, err)
+			continue
+		}
+		if err.Error() != "service: refused: reason" {
+			t.Errorf("kind %d: Error() = %q, want the state machine's message", tc.kind, err.Error())
+		}
+		if !errors.Is(err, ErrNotStored) {
+			t.Errorf("kind %d: a refused command stored nothing and must say so", tc.kind)
+		}
 	}
-
-	var target *SMNotConfiguredError
-	if !errors.As(err, &target) {
-		t.Fatalf("expected *SMNotConfiguredError, got %T: %v", err, err)
-	}
-	if target.Message != "lease not configured" {
-		t.Fatalf("decoded message: got %q, want %q", target.Message, "lease not configured")
+	if len(refusalErrors) != 6 {
+		t.Errorf("refusalErrors has %d rows; this test covers 6", len(refusalErrors))
 	}
 }
 
@@ -365,15 +378,5 @@ func TestCheckResultError_NonAppErrorData(t *testing.T) {
 		if err := checkResultError(sm.Result{Data: data}); err != nil {
 			t.Fatalf("Data %v must not be an error, got %v", data, err)
 		}
-	}
-}
-
-// TestSMNotConfiguredError_Message verifies the error message includes
-// the original SM error string so callers receive a useful diagnostic.
-func TestSMNotConfiguredError_Message(t *testing.T) {
-	e := &SMNotConfiguredError{Message: "statemachine: lease not configured"}
-	want := "service: statemachine: lease not configured"
-	if e.Error() != want {
-		t.Fatalf("Error() = %q, want %q", e.Error(), want)
 	}
 }

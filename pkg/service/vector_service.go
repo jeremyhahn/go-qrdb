@@ -24,6 +24,29 @@ import (
 // =============================================================================
 
 // VectorService defines vector embedding and similarity search operations.
+//
+// # Error contract
+//
+// Every error a VectorService method returns is one of the service layer's
+// typed errors, which every transport classifies (pkg/api/errclass), so a
+// caller branches with errors.As and never on a code or a message
+// (go-qrdb#331):
+//
+//   - *InvalidVectorError, *DimensionMismatchError, *InvalidNamespaceNameError:
+//     the request is malformed (400 / InvalidArgument).
+//   - *NamespaceNotFoundError, *VectorNotFoundError, *VectorJobNotFoundError:
+//     the named namespace, vector, or rebuild/compaction job does not exist
+//     (404 / NotFound).
+//   - *NamespaceExistsError: the namespace name is taken (409 / AlreadyExists).
+//   - *TenantRequiredError: strict tenant isolation refused a request bound to
+//     no tenant (403 / PermissionDenied).
+//   - *VectorServiceClosedError, *NotLeaderError: this node cannot serve the
+//     request now; retry (503 / Unavailable).
+//   - *EncodeRequestError: the command could not be encoded and was never
+//     proposed (400 / InvalidArgument).
+//   - *CapabilityUnsupportedError, *CommandRejectedError: the vector state
+//     machine refused the command (see their docs).
+//   - *ProposeError, *VectorOperationError: a server fault (500 / Internal).
 type VectorService interface {
 	// Namespace Management
 
@@ -33,7 +56,7 @@ type VectorService interface {
 	//   - req: Create namespace request with name, dimension, index config
 	// Returns:
 	//   - CreateNamespaceResponse: Contains namespace info and timestamp
-	//   - error: ErrAlreadyExists, ErrInvalidInput, ErrTimeout, ErrRaft
+	//   - error: one of the typed errors in the error contract above
 	CreateNamespace(ctx context.Context, req *CreateNamespaceRequest) (*CreateNamespaceResponse, error)
 
 	// DeleteNamespace removes a vector namespace and all its vectors.
@@ -42,7 +65,7 @@ type VectorService interface {
 	//   - req: Delete namespace request with namespace name
 	// Returns:
 	//   - DeleteNamespaceResponse: Contains deletion status and timestamp
-	//   - error: ErrNotFound, ErrTimeout, ErrRaft
+	//   - error: one of the typed errors in the error contract above
 	DeleteNamespace(ctx context.Context, req *DeleteNamespaceRequest) (*DeleteNamespaceResponse, error)
 
 	// ListNamespaces returns all available vector namespaces.
@@ -51,7 +74,7 @@ type VectorService interface {
 	//   - req: List namespaces request with optional filters
 	// Returns:
 	//   - ListNamespacesResponse: Contains namespace list and metadata
-	//   - error: ErrTimeout, ErrRaft
+	//   - error: one of the typed errors in the error contract above
 	ListNamespaces(ctx context.Context, req *ListNamespacesRequest) (*ListNamespacesResponse, error)
 
 	// GetNamespaceInfo retrieves metadata about a specific namespace.
@@ -60,7 +83,7 @@ type VectorService interface {
 	//   - req: Get namespace info request with namespace name
 	// Returns:
 	//   - GetNamespaceInfoResponse: Contains namespace details and statistics
-	//   - error: ErrNotFound, ErrTimeout, ErrRaft
+	//   - error: one of the typed errors in the error contract above
 	GetNamespaceInfo(ctx context.Context, req *GetNamespaceInfoRequest) (*GetNamespaceInfoResponse, error)
 
 	// Vector CRUD Operations
@@ -71,7 +94,7 @@ type VectorService interface {
 	//   - req: Upsert request with namespace, ID, vector, metadata
 	// Returns:
 	//   - UpsertVectorResponse: Contains vector ID, version, timestamp
-	//   - error: ErrInvalidInput, ErrNotFound, ErrTimeout, ErrRaft
+	//   - error: one of the typed errors in the error contract above
 	UpsertVector(ctx context.Context, req *UpsertVectorRequest) (*UpsertVectorResponse, error)
 
 	// GetVector retrieves a vector by ID with optional metadata.
@@ -80,7 +103,7 @@ type VectorService interface {
 	//   - req: Get vector request with namespace and ID
 	// Returns:
 	//   - GetVectorResponse: Contains vector data, metadata, version
-	//   - error: ErrNotFound, ErrTimeout, ErrRaft
+	//   - error: one of the typed errors in the error contract above
 	GetVector(ctx context.Context, req *GetVectorRequest) (*GetVectorResponse, error)
 
 	// DeleteVector removes a vector from the namespace.
@@ -89,7 +112,7 @@ type VectorService interface {
 	//   - req: Delete vector request with namespace and ID
 	// Returns:
 	//   - DeleteVectorResponse: Contains deletion status and timestamp
-	//   - error: ErrNotFound, ErrTimeout, ErrRaft
+	//   - error: one of the typed errors in the error contract above
 	DeleteVector(ctx context.Context, req *DeleteVectorRequest) (*DeleteVectorResponse, error)
 
 	// BatchUpsert inserts or updates multiple vectors atomically.
@@ -98,7 +121,7 @@ type VectorService interface {
 	//   - req: Batch upsert request with namespace and vector list
 	// Returns:
 	//   - BatchUpsertResponse: Contains inserted IDs, versions, timestamp
-	//   - error: ErrInvalidInput, ErrNotFound, ErrTimeout, ErrRaft
+	//   - error: one of the typed errors in the error contract above
 	BatchUpsert(ctx context.Context, req *BatchUpsertRequest) (*BatchUpsertResponse, error)
 
 	// BatchDelete removes multiple vectors from the namespace.
@@ -107,7 +130,7 @@ type VectorService interface {
 	//   - req: Batch delete request with namespace and vector IDs
 	// Returns:
 	//   - BatchDeleteVectorsResponse: Contains deleted count and status
-	//   - error: ErrNotFound, ErrTimeout, ErrRaft
+	//   - error: one of the typed errors in the error contract above
 	BatchDeleteVectors(ctx context.Context, req *BatchDeleteVectorsRequest) (*BatchDeleteVectorsResponse, error)
 
 	// ListVectors returns vectors in a namespace with pagination.
@@ -116,7 +139,7 @@ type VectorService interface {
 	//   - req: List vectors request with namespace and pagination options
 	// Returns:
 	//   - ListVectorsResponse: Contains vector list and pagination cursor
-	//   - error: ErrNotFound, ErrTimeout, ErrRaft
+	//   - error: one of the typed errors in the error contract above
 	ListVectors(ctx context.Context, req *ListVectorsRequest) (*ListVectorsResponse, error)
 
 	// UpdateMetadata updates only the metadata of a vector without modifying the vector values.
@@ -125,7 +148,7 @@ type VectorService interface {
 	//   - req: Update metadata request with namespace, ID, and new metadata
 	// Returns:
 	//   - UpdateMetadataResponse: Contains updated version and timestamp
-	//   - error: ErrNotFound, ErrInvalidInput, ErrTimeout, ErrRaft
+	//   - error: one of the typed errors in the error contract above
 	UpdateMetadata(ctx context.Context, req *UpdateVectorMetadataRequest) (*UpdateVectorMetadataResponse, error)
 
 	// Search Operations
@@ -136,7 +159,7 @@ type VectorService interface {
 	//   - req: Search request with query vector, k, filters
 	// Returns:
 	//   - SearchSimilarResponse: Contains matching vectors with scores
-	//   - error: ErrInvalidInput, ErrNotFound, ErrTimeout, ErrRaft
+	//   - error: one of the typed errors in the error contract above
 	SearchSimilar(ctx context.Context, req *SearchSimilarRequest) (*SearchSimilarResponse, error)
 
 	// SearchByMetadata performs metadata-based vector search.
@@ -145,7 +168,7 @@ type VectorService interface {
 	//   - req: Metadata search request with filters
 	// Returns:
 	//   - SearchByMetadataResponse: Contains matching vectors
-	//   - error: ErrInvalidInput, ErrNotFound, ErrTimeout, ErrRaft
+	//   - error: one of the typed errors in the error contract above
 	SearchByMetadata(ctx context.Context, req *SearchByMetadataRequest) (*SearchByMetadataResponse, error)
 
 	// HybridSearch combines similarity and metadata filtering.
@@ -154,7 +177,7 @@ type VectorService interface {
 	//   - req: Hybrid search request with query vector and filters
 	// Returns:
 	//   - HybridSearchResponse: Contains filtered similarity results
-	//   - error: ErrInvalidInput, ErrNotFound, ErrTimeout, ErrRaft
+	//   - error: one of the typed errors in the error contract above
 	HybridSearch(ctx context.Context, req *HybridSearchRequest) (*HybridSearchResponse, error)
 
 	// SearchByID finds similar vectors using an existing vector's ID as the query.
@@ -163,7 +186,7 @@ type VectorService interface {
 	//   - req: Search by ID request with namespace, source ID, and k
 	// Returns:
 	//   - SearchByIDResponse: Contains matching vectors with scores
-	//   - error: ErrNotFound, ErrInvalidInput, ErrTimeout, ErrRaft
+	//   - error: one of the typed errors in the error contract above
 	SearchByID(ctx context.Context, req *SearchByIDRequest) (*SearchByIDResponse, error)
 
 	// Index Management
@@ -174,7 +197,7 @@ type VectorService interface {
 	//   - req: Rebuild index request with namespace name
 	// Returns:
 	//   - RebuildIndexResponse: Contains job ID and status
-	//   - error: ErrNotFound, ErrTimeout, ErrRaft
+	//   - error: one of the typed errors in the error contract above
 	RebuildIndex(ctx context.Context, req *RebuildIndexRequest) (*RebuildIndexResponse, error)
 
 	// GetRebuildProgress retrieves the progress of an index rebuild operation.
@@ -183,7 +206,7 @@ type VectorService interface {
 	//   - req: Get rebuild progress request with job ID or namespace
 	// Returns:
 	//   - GetRebuildProgressResponse: Contains progress, estimated time remaining
-	//   - error: ErrNotFound if no rebuild job exists
+	//   - error: one of the typed errors in the error contract above
 	GetRebuildProgress(ctx context.Context, req *GetRebuildProgressRequest) (*GetRebuildProgressResponse, error)
 
 	// GetIndexStats retrieves statistics about the vector index.
@@ -192,7 +215,7 @@ type VectorService interface {
 	//   - req: Get index stats request with namespace name
 	// Returns:
 	//   - GetIndexStatsResponse: Contains index size, vector count, metrics
-	//   - error: ErrNotFound, ErrTimeout, ErrRaft
+	//   - error: one of the typed errors in the error contract above
 	GetIndexStats(ctx context.Context, req *GetIndexStatsRequest) (*GetIndexStatsResponse, error)
 
 	// Compaction Operations
@@ -204,7 +227,7 @@ type VectorService interface {
 	//   - req: Compact namespace request with namespace name and options
 	// Returns:
 	//   - CompactNamespaceResponse: Contains operation ID and status
-	//   - error: ErrNotFound, ErrTimeout, ErrInternal
+	//   - error: one of the typed errors in the error contract above
 	CompactNamespace(ctx context.Context, req *CompactNamespaceRequest) (*CompactNamespaceResponse, error)
 
 	// GetCompactionProgress retrieves the progress of a compaction operation.
@@ -213,7 +236,7 @@ type VectorService interface {
 	//   - req: Get compaction progress request with namespace and optional operation ID
 	// Returns:
 	//   - GetCompactionProgressResponse: Contains progress information
-	//   - error: ErrNotFound, ErrTimeout
+	//   - error: one of the typed errors in the error contract above
 	GetCompactionProgress(ctx context.Context, req *GetCompactionProgressRequest) (*GetCompactionProgressResponse, error)
 }
 

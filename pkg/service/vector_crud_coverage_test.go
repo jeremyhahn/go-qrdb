@@ -24,7 +24,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	qrdbErrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -52,7 +51,7 @@ func TestVectorCRUD_CreateNamespace_RaftSuccess(t *testing.T) {
 
 	// Namespace does not exist yet (GetNamespaceInfo returns error)
 	storage.getNamespaceInfoFn = func(ctx context.Context, namespace string) (*vector.NamespaceInfo, error) {
-		return nil, errors.New("namespace not found")
+		return nil, vector.ErrNamespaceNotFound
 	}
 
 	resp, err := svc.CreateNamespace(context.Background(), &CreateNamespaceRequest{
@@ -87,7 +86,7 @@ func TestVectorCRUD_CreateNamespace_RaftDefaultMetricAndType(t *testing.T) {
 	require.NoError(t, err)
 
 	storage.getNamespaceInfoFn = func(ctx context.Context, namespace string) (*vector.NamespaceInfo, error) {
-		return nil, errors.New("namespace not found")
+		return nil, vector.ErrNamespaceNotFound
 	}
 
 	// Empty DistanceMetric and IndexType should use defaults
@@ -117,7 +116,7 @@ func TestVectorCRUD_CreateNamespace_RaftProposalError(t *testing.T) {
 	require.NoError(t, err)
 
 	storage.getNamespaceInfoFn = func(ctx context.Context, namespace string) (*vector.NamespaceInfo, error) {
-		return nil, errors.New("namespace not found")
+		return nil, vector.ErrNamespaceNotFound
 	}
 
 	resp, err := svc.CreateNamespace(context.Background(), &CreateNamespaceRequest{
@@ -127,9 +126,7 @@ func TestVectorCRUD_CreateNamespace_RaftProposalError(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrRaft, qrdbErr.Code)
+	requireErrorAs[*ProposeError](t, err)
 }
 
 func TestVectorCRUD_CreateNamespace_AlreadyExistsReturnsError(t *testing.T) {
@@ -150,9 +147,7 @@ func TestVectorCRUD_CreateNamespace_AlreadyExistsReturnsError(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrAlreadyExists, qrdbErr.Code)
+	requireErrorAs[*NamespaceExistsError](t, err)
 }
 
 func TestVectorCRUD_CreateNamespace_RaftWithNilMetadata(t *testing.T) {
@@ -173,7 +168,7 @@ func TestVectorCRUD_CreateNamespace_RaftWithNilMetadata(t *testing.T) {
 	require.NoError(t, err)
 
 	storage.getNamespaceInfoFn = func(ctx context.Context, namespace string) (*vector.NamespaceInfo, error) {
-		return nil, errors.New("namespace not found")
+		return nil, vector.ErrNamespaceNotFound
 	}
 
 	// Nil metadata should not panic
@@ -210,7 +205,7 @@ func TestVectorCRUD_DeleteNamespace_RaftSuccess(t *testing.T) {
 				VectorCount: 10,
 			}, nil
 		}
-		return nil, errors.New("namespace not found")
+		return nil, vector.ErrNamespaceNotFound
 	}
 
 	mockRaft := &mockRaftNode{
@@ -258,9 +253,7 @@ func TestVectorCRUD_DeleteNamespace_RaftProposalError(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrRaft, qrdbErr.Code)
+	requireErrorAs[*ProposeError](t, err)
 }
 
 func TestVectorCRUD_DeleteNamespace_GetNamespaceInfoFails(t *testing.T) {
@@ -300,9 +293,7 @@ func TestVectorCRUD_DeleteNamespace_StorageDeleteError(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrStorage, qrdbErr.Code)
+	requireErrorAs[*VectorOperationError](t, err)
 }
 
 // =============================================================================
@@ -325,7 +316,7 @@ func TestVectorCRUD_UpsertVector_RaftSuccess(t *testing.T) {
 		if namespace == scopedUpsert {
 			return &vector.NamespaceInfo{Name: scopedUpsert, Dimension: 3}, nil
 		}
-		return nil, errors.New("namespace not found")
+		return nil, vector.ErrNamespaceNotFound
 	}
 
 	mockRaft := &mockRaftNode{
@@ -378,9 +369,7 @@ func TestVectorCRUD_UpsertVector_RaftProposalError(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrRaft, qrdbErr.Code)
+	requireErrorAs[*ProposeError](t, err)
 }
 
 func TestVectorCRUD_UpsertVector_HNSWInsertErrorNonRaft(t *testing.T) {
@@ -494,9 +483,7 @@ func TestVectorCRUD_DeleteVector_RaftProposalError(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrRaft, qrdbErr.Code)
+	requireErrorAs[*ProposeError](t, err)
 }
 
 func TestVectorCRUD_DeleteVector_RaftWithHNSWDeleteError(t *testing.T) {
@@ -656,9 +643,7 @@ func TestVectorCRUD_BatchUpsert_RaftProposalError(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrRaft, qrdbErr.Code)
+	requireErrorAs[*ProposeError](t, err)
 }
 
 func TestVectorCRUD_BatchUpsert_RaftWithHNSWInsertError(t *testing.T) {
@@ -795,9 +780,7 @@ func TestVectorCRUD_LoadNamespaces_ListNamespacesError(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, svc)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInternal, qrdbErr.Code)
+	requireErrorAs[*VectorOperationError](t, err)
 }
 
 func TestVectorCRUD_LoadNamespaces_EmptyNamespaceList(t *testing.T) {
@@ -828,9 +811,7 @@ func TestVectorCRUD_ValidateCreateNamespaceRequest_NilRequest(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
+	requireErrorAs[*InvalidVectorError](t, err)
 }
 
 func TestVectorCRUD_ValidateCreateNamespaceRequest_EmptyNamespace(t *testing.T) {
@@ -843,9 +824,7 @@ func TestVectorCRUD_ValidateCreateNamespaceRequest_EmptyNamespace(t *testing.T) 
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
+	requireErrorAs[*InvalidVectorError](t, err)
 }
 
 func TestVectorCRUD_ValidateCreateNamespaceRequest_ZeroDimension(t *testing.T) {
@@ -858,9 +837,7 @@ func TestVectorCRUD_ValidateCreateNamespaceRequest_ZeroDimension(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
+	requireErrorAs[*InvalidVectorError](t, err)
 }
 
 func TestVectorCRUD_ValidateUpsertVectorRequest_NilRequest(t *testing.T) {
@@ -870,9 +847,7 @@ func TestVectorCRUD_ValidateUpsertVectorRequest_NilRequest(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
+	requireErrorAs[*InvalidVectorError](t, err)
 }
 
 func TestVectorCRUD_ValidateUpsertVectorRequest_EmptyNamespace(t *testing.T) {
@@ -886,9 +861,7 @@ func TestVectorCRUD_ValidateUpsertVectorRequest_EmptyNamespace(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
+	requireErrorAs[*InvalidVectorError](t, err)
 }
 
 func TestVectorCRUD_ValidateUpsertVectorRequest_ZeroID(t *testing.T) {
@@ -902,9 +875,7 @@ func TestVectorCRUD_ValidateUpsertVectorRequest_ZeroID(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
+	requireErrorAs[*InvalidVectorError](t, err)
 }
 
 func TestVectorCRUD_ValidateUpsertVectorRequest_EmptyVector(t *testing.T) {
@@ -918,9 +889,7 @@ func TestVectorCRUD_ValidateUpsertVectorRequest_EmptyVector(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
+	requireErrorAs[*InvalidVectorError](t, err)
 }
 
 func TestVectorCRUD_ValidateGetVectorRequest_NilRequest(t *testing.T) {
@@ -930,9 +899,7 @@ func TestVectorCRUD_ValidateGetVectorRequest_NilRequest(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
+	requireErrorAs[*InvalidVectorError](t, err)
 }
 
 func TestVectorCRUD_ValidateGetVectorRequest_EmptyNamespace(t *testing.T) {
@@ -945,9 +912,7 @@ func TestVectorCRUD_ValidateGetVectorRequest_EmptyNamespace(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
+	requireErrorAs[*InvalidVectorError](t, err)
 }
 
 func TestVectorCRUD_ValidateGetVectorRequest_ZeroID(t *testing.T) {
@@ -960,9 +925,7 @@ func TestVectorCRUD_ValidateGetVectorRequest_ZeroID(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
+	requireErrorAs[*InvalidVectorError](t, err)
 }
 
 func TestVectorCRUD_ValidateDeleteVectorRequest_NilRequest(t *testing.T) {
@@ -972,9 +935,7 @@ func TestVectorCRUD_ValidateDeleteVectorRequest_NilRequest(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
+	requireErrorAs[*InvalidVectorError](t, err)
 }
 
 func TestVectorCRUD_ValidateDeleteVectorRequest_EmptyNamespace(t *testing.T) {
@@ -987,9 +948,7 @@ func TestVectorCRUD_ValidateDeleteVectorRequest_EmptyNamespace(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
+	requireErrorAs[*InvalidVectorError](t, err)
 }
 
 func TestVectorCRUD_ValidateDeleteVectorRequest_ZeroID(t *testing.T) {
@@ -1002,9 +961,7 @@ func TestVectorCRUD_ValidateDeleteVectorRequest_ZeroID(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
+	requireErrorAs[*InvalidVectorError](t, err)
 }
 
 func TestVectorCRUD_ValidateBatchUpsertRequest_NilRequest(t *testing.T) {
@@ -1014,9 +971,7 @@ func TestVectorCRUD_ValidateBatchUpsertRequest_NilRequest(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
+	requireErrorAs[*InvalidVectorError](t, err)
 }
 
 func TestVectorCRUD_ValidateBatchUpsertRequest_EmptyNamespace(t *testing.T) {
@@ -1029,9 +984,7 @@ func TestVectorCRUD_ValidateBatchUpsertRequest_EmptyNamespace(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
+	requireErrorAs[*InvalidVectorError](t, err)
 }
 
 func TestVectorCRUD_ValidateBatchUpsertRequest_EmptyVectors(t *testing.T) {
@@ -1044,9 +997,7 @@ func TestVectorCRUD_ValidateBatchUpsertRequest_EmptyVectors(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
+	requireErrorAs[*InvalidVectorError](t, err)
 }
 
 func TestVectorCRUD_ValidateCompactNamespaceRequest_NilRequest(t *testing.T) {
@@ -1056,9 +1007,7 @@ func TestVectorCRUD_ValidateCompactNamespaceRequest_NilRequest(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
+	requireErrorAs[*InvalidVectorError](t, err)
 }
 
 func TestVectorCRUD_ValidateCompactNamespaceRequest_EmptyNamespace(t *testing.T) {
@@ -1070,9 +1019,7 @@ func TestVectorCRUD_ValidateCompactNamespaceRequest_EmptyNamespace(t *testing.T)
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
+	requireErrorAs[*InvalidVectorError](t, err)
 }
 
 // =============================================================================
@@ -1086,9 +1033,7 @@ func TestVectorCRUD_ValidateDeleteNamespaceRequest_NilRequest(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
+	requireErrorAs[*InvalidVectorError](t, err)
 }
 
 func TestVectorCRUD_ValidateDeleteNamespaceRequest_EmptyNamespace(t *testing.T) {
@@ -1100,9 +1045,7 @@ func TestVectorCRUD_ValidateDeleteNamespaceRequest_EmptyNamespace(t *testing.T) 
 	require.Error(t, err)
 	assert.Nil(t, resp)
 
-	var qrdbErr *qrdbErrors.QRDBError
-	require.True(t, errors.As(err, &qrdbErr))
-	assert.Equal(t, qrdbErrors.ErrInvalidInput, qrdbErr.Code)
+	requireErrorAs[*InvalidVectorError](t, err)
 }
 
 // =============================================================================
@@ -1191,7 +1134,7 @@ func TestVectorCRUD_CreateNamespace_TenantAccessAllowed(t *testing.T) {
 	svc, storage := newBasicVecSvc(t)
 
 	storage.getNamespaceInfoFn = func(ctx context.Context, namespace string) (*vector.NamespaceInfo, error) {
-		return nil, errors.New("namespace not found")
+		return nil, vector.ErrNamespaceNotFound
 	}
 
 	storage.createNamespaceFn = func(ctx context.Context, info *vector.NamespaceInfo) error {
@@ -1235,7 +1178,7 @@ func TestVectorCRUD_CreateNamespace_NonRaftNilMetadata(t *testing.T) {
 	svc, storage := newBasicVecSvc(t)
 
 	storage.getNamespaceInfoFn = func(ctx context.Context, namespace string) (*vector.NamespaceInfo, error) {
-		return nil, errors.New("namespace not found")
+		return nil, vector.ErrNamespaceNotFound
 	}
 
 	storage.createNamespaceFn = func(ctx context.Context, info *vector.NamespaceInfo) error {
@@ -1255,7 +1198,7 @@ func TestVectorCRUD_CreateNamespace_NonRaftWithMetadata(t *testing.T) {
 	svc, storage := newBasicVecSvc(t)
 
 	storage.getNamespaceInfoFn = func(ctx context.Context, namespace string) (*vector.NamespaceInfo, error) {
-		return nil, errors.New("namespace not found")
+		return nil, vector.ErrNamespaceNotFound
 	}
 
 	var capturedInfo *vector.NamespaceInfo

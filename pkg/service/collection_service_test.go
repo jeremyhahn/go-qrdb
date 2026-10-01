@@ -15,6 +15,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"sort"
@@ -71,6 +72,33 @@ func (m *memoryKVSvc) PutIfAbsent(_ context.Context, key string, value []byte) (
 	cp := make([]byte, len(value))
 	copy(cp, value)
 	m.data[key] = cp
+	return true, nil
+}
+
+// CompareAndSwap replaces key's value only while it still equals expected,
+// and leaves an absent key absent -- the KVServicer contract.
+func (m *memoryKVSvc) CompareAndSwap(_ context.Context, key string, expected, next []byte) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.data[key]
+	if !ok || !bytes.Equal(cur, expected) {
+		return false, nil
+	}
+	cp := make([]byte, len(next))
+	copy(cp, next)
+	m.data[key] = cp
+	return true, nil
+}
+
+// CompareAndDelete removes key only while its value still equals expected.
+func (m *memoryKVSvc) CompareAndDelete(_ context.Context, key string, expected []byte) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.data[key]
+	if !ok || !bytes.Equal(cur, expected) {
+		return false, nil
+	}
+	delete(m.data, key)
 	return true, nil
 }
 
@@ -184,9 +212,15 @@ func newMemoryIndexSvc() *memoryIndexSvc {
 	return &memoryIndexSvc{indexes: make(map[string]index.IndexConfig)}
 }
 
+// CreateIndex mirrors the apply path: a name that already exists is an
+// idempotent no-op for its own owner (the existing definition wins) and an
+// ownership refusal for anybody else (go-qrdb#426).
 func (m *memoryIndexSvc) CreateIndex(_ context.Context, name, _ string, config index.IndexConfig) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if existing, ok := m.indexes[name]; ok {
+		return index.CheckCreateOwner(name, existing.Owner, config.Owner)
+	}
 	m.indexes[name] = config
 	return nil
 }
@@ -195,6 +229,23 @@ func (m *memoryIndexSvc) DropIndex(_ context.Context, name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.dropped = append(m.dropped, name)
+	delete(m.indexes, name)
+	return nil
+}
+
+// DropOwnedIndex mirrors the apply path's owner-checked drop: an absent index
+// is success, another owner's is refused and left in place.
+func (m *memoryIndexSvc) DropOwnedIndex(_ context.Context, name, owner string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.dropped = append(m.dropped, name)
+	existing, ok := m.indexes[name]
+	if !ok {
+		return nil
+	}
+	if err := index.CheckDropOwner(name, existing.Owner, true, owner); err != nil {
+		return err
+	}
 	delete(m.indexes, name)
 	return nil
 }
@@ -960,23 +1011,6 @@ func TestInferSQLType(t *testing.T) {
 	assert.Equal(t, "VARCHAR", inferSQLType(42)) // int falls through to default
 }
 
-func TestSortStrings(t *testing.T) {
-	s := []string{"c", "a", "b"}
-	sortStrings(s)
-	assert.Equal(t, []string{"a", "b", "c"}, s)
-}
-
-func TestSortStrings_Empty(t *testing.T) {
-	var s []string
-	sortStrings(s) // should not panic
-}
-
-func TestSortStrings_Single(t *testing.T) {
-	s := []string{"only"}
-	sortStrings(s)
-	assert.Equal(t, []string{"only"}, s)
-}
-
 // ---------------------------------------------------------------------------
 // WriteMode dispatch tests
 // ---------------------------------------------------------------------------
@@ -1137,19 +1171,45 @@ func TestCollectionService_CreateCollection_WithIndexes(t *testing.T) {
 		"collection index created case-INSENSITIVE")
 }
 
+// TestCollectionService_CreateCollection_WithIndexes_NoIndexSvc pins the
+// refusal of index definitions on a service with no index service. They used
+// to be recorded in the metadata and silently not built, so the collection
+// declared indexes -- and unique constraints -- that did not exist
+// (go-qrdb#415: a create never exposes a collection whose indexes are not
+// built).
 func TestCollectionService_CreateCollection_WithIndexes_NoIndexSvc(t *testing.T) {
-	// When indexSvc is nil, indexes in the request are stored in CollectionInfo
-	// but no index service calls are made.
 	svc := newTestCollectionService()
 	ctx := context.Background()
 
-	info, err := svc.CreateCollection(ctx, &CreateCollectionRequest{
+	_, err := svc.CreateCollection(ctx, &CreateCollectionRequest{
 		Name:     "users",
 		Database: "mydb",
 		Indexes:  []IndexDefinition{{FieldName: "email", Unique: true}},
 	})
-	require.NoError(t, err)
-	assert.Len(t, info.Indexes, 1)
+	var invalid *CollectionInvalidIndexError
+	require.ErrorAs(t, err, &invalid)
+
+	_, err = svc.GetCollectionInfo(ctx, "mydb", "users")
+	var notFound *CollectionNotFoundError
+	require.ErrorAs(t, err, &notFound, "a refused create must store nothing")
+}
+
+// TestCollectionService_CreateCollection_IndexWithoutField refuses a
+// definition that names no field before anything is stored.
+func TestCollectionService_CreateCollection_IndexWithoutField(t *testing.T) {
+	svc, idxSvc := newTestCollectionServiceWithIndex()
+	ctx := context.Background()
+
+	_, err := svc.CreateCollection(ctx, &CreateCollectionRequest{
+		Name:     "users",
+		Database: "mydb",
+		Indexes:  []IndexDefinition{{FieldName: ""}},
+	})
+	var invalid *CollectionInvalidIndexError
+	require.ErrorAs(t, err, &invalid)
+	assert.Empty(t, idxSvc.names())
+	_, err = svc.GetCollectionInfo(ctx, "mydb", "users")
+	require.Error(t, err)
 }
 
 func TestCollectionService_CreateCollection_NoIndexes(t *testing.T) {

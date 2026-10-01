@@ -42,21 +42,6 @@ func TestDatabase_DropTable_TableServiceResolutionError(t *testing.T) {
 	assert.ErrorIs(t, err, assert.AnError)
 }
 
-func TestDatabase_DropTable_KVServiceResolutionError(t *testing.T) {
-	h := newDDLHarness()
-	_, err := h.tableSvc.CreateTable(context.Background(), &service.CreateTableRequest{
-		Database: "shop", Name: "users", Columns: []service.ColumnDef{{Name: "id", Type: "BIGINT UNSIGNED"}},
-	})
-	require.NoError(t, err)
-
-	reg := h.registry.(*fakeRelationalRegistry)
-	reg.kvErr = assert.AnError
-	db := h.newDDLDatabase("shop")
-
-	err = db.DropTable(newTestContext(), "users")
-	assert.ErrorIs(t, err, assert.AnError)
-}
-
 func TestDatabase_RenameTable_TableServiceResolutionError(t *testing.T) {
 	reg := &fakeRelationalRegistry{
 		tableSvcFn: func(string, string) (service.TableServicer, error) { return nil, assert.AnError },
@@ -102,95 +87,6 @@ func TestPrefixLengthOf(t *testing.T) {
 	assert.Equal(t, uint16(10), prefixLengthOf(10))
 	assert.Equal(t, uint16(65535), prefixLengthOf(65535))
 	assert.Equal(t, uint16(65535), prefixLengthOf(100000))
-}
-
-// ---------------------------------------------------------------------------
-// buildDDLChunks / executeDDLChunks / deleteByPrefix / deleteAllByPrefix
-// ---------------------------------------------------------------------------
-
-func TestBuildDDLChunks_Empty(t *testing.T) {
-	assert.Nil(t, buildDDLChunks(nil))
-}
-
-func TestBuildDDLChunks_SplitsOnOpCount(t *testing.T) {
-	ops := make([]service.Op, ddlChunkMaxOps+10)
-	for i := range ops {
-		ops[i] = service.Op{Type: service.OpDelete, Key: []byte("k")}
-	}
-	chunks := buildDDLChunks(ops)
-	require.Len(t, chunks, 2)
-	assert.Len(t, chunks[0], ddlChunkMaxOps)
-	assert.Len(t, chunks[1], 10)
-}
-
-func TestBuildDDLChunks_SplitsOnByteSize(t *testing.T) {
-	big := make([]byte, ddlChunkMaxBytes/2)
-	ops := []service.Op{
-		{Type: service.OpPut, Key: []byte("k1"), Value: big},
-		{Type: service.OpPut, Key: []byte("k2"), Value: big},
-		{Type: service.OpPut, Key: []byte("k3"), Value: big},
-	}
-	chunks := buildDDLChunks(ops)
-	assert.GreaterOrEqual(t, len(chunks), 2, "oversized ops must be split across proposals")
-	var total int
-	for _, c := range chunks {
-		total += len(c)
-	}
-	assert.Equal(t, 3, total)
-}
-
-func TestDeleteByPrefix_ListError(t *testing.T) {
-	kv := &mockKVService{listFn: func(context.Context, string) ([]string, error) { return nil, assert.AnError }}
-	err := deleteByPrefix(context.Background(), kv, &memBatch{store: newMemStore()}, "prefix")
-	assert.ErrorIs(t, err, assert.AnError)
-}
-
-func TestDeleteByPrefix_NoKeys(t *testing.T) {
-	kv := &mockKVService{listFn: func(context.Context, string) ([]string, error) { return nil, nil }}
-	err := deleteByPrefix(context.Background(), kv, &memBatch{store: newMemStore()}, "prefix")
-	assert.NoError(t, err)
-}
-
-func TestDeleteByPrefix_BatchExecuteError(t *testing.T) {
-	kv := &mockKVService{listFn: func(context.Context, string) ([]string, error) { return []string{"a"}, nil }}
-	batch := &erroringBatchServicer{err: assert.AnError}
-	err := deleteByPrefix(context.Background(), kv, batch, "prefix")
-	assert.ErrorIs(t, err, assert.AnError)
-}
-
-type erroringBatchServicer struct {
-	service.BatchServicer
-	err error
-}
-
-func (e *erroringBatchServicer) Execute(context.Context, []service.Op) ([]service.OpResponse, error) {
-	return nil, e.err
-}
-
-func TestDeleteAllByPrefix_ListError(t *testing.T) {
-	kv := &mockKVService{listFn: func(context.Context, string) ([]string, error) { return nil, assert.AnError }}
-	err := deleteAllByPrefix(context.Background(), kv, "prefix")
-	assert.ErrorIs(t, err, assert.AnError)
-}
-
-func TestDeleteAllByPrefix_DeleteError(t *testing.T) {
-	kv := &mockKVService{
-		listFn:   func(context.Context, string) ([]string, error) { return []string{"a"}, nil },
-		deleteFn: func(context.Context, string) error { return assert.AnError },
-	}
-	err := deleteAllByPrefix(context.Background(), kv, "prefix")
-	assert.ErrorIs(t, err, assert.AnError)
-}
-
-func TestReclaimTableData_IndexPrefixError(t *testing.T) {
-	def := &service.TableDef{
-		Database: "shop", TableID: 1,
-		Indexes: []service.TableIndex{{Name: "idx_a", Columns: []service.IndexCol{{Name: "a"}}}},
-	}
-	kv := &mockKVService{listFn: func(context.Context, string) ([]string, error) { return []string{"k"}, nil }}
-	batch := &erroringBatchServicer{err: assert.AnError}
-	err := reclaimTableData(context.Background(), kv, batch, "shop", def)
-	assert.ErrorIs(t, err, assert.AnError)
 }
 
 // ---------------------------------------------------------------------------

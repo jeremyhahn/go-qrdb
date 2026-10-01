@@ -154,12 +154,12 @@ func TestNoiseFIPSUnavailableError_NamesFIPSRatherThanAKeySize(t *testing.T) {
 	}
 }
 
-// TestJoin_RefusesANoiseOnlyConfigurationBeforeTouchingTheDataDirectory is the
+// TestFetchAnchor_RefusesANoiseOnlyConfigurationBeforeTouchingTheDataDirectory is the
 // "at configuration time" half of the ruling. The refusal is worth little if it
 // arrives after the node has written a role file or a certificate: the next
 // boot would then take the cached path and the operator would be correcting a
 // configuration whose consequences are already on disk.
-func TestJoin_RefusesANoiseOnlyConfigurationBeforeTouchingTheDataDirectory(t *testing.T) {
+func TestFetchAnchor_RefusesANoiseOnlyConfigurationBeforeTouchingTheDataDirectory(t *testing.T) {
 	forceNoiseAvailable(t, false)
 	dir := t.TempDir()
 
@@ -173,9 +173,9 @@ func TestJoin_RefusesANoiseOnlyConfigurationBeforeTouchingTheDataDirectory(t *te
 		},
 	}
 
-	mat, err := Join(context.Background(), opts, discardLogger())
+	anchor, err := FetchAnchor(context.Background(), opts, discardLogger())
 	if err == nil {
-		t.Fatalf("Join must refuse a Noise-only configuration in FIPS 140-3 mode; got material %+v", mat)
+		t.Fatalf("FetchAnchor must refuse a Noise-only configuration in FIPS 140-3 mode; got %q", anchor)
 	}
 	var fipsErr *NoiseFIPSUnavailableError
 	if !errors.As(err, &fipsErr) {
@@ -453,7 +453,7 @@ func TestResolveCA_UnderFIPSFirstNodeStillAdvertises(t *testing.T) {
 
 // TestStartAnchorAdvertiser_UnderFIPSAdvertisesWithoutNoise covers the
 // attestation-mode advertiser, which shares startNoiseAdvertiser with the
-// shared-CA-key one. The anchor bundle is still validated first: FIPS mode
+// cluster-CA one. The anchor bundle is still validated first: FIPS mode
 // removes a transport, not a safety check.
 func TestStartAnchorAdvertiser_UnderFIPSAdvertisesWithoutNoise(t *testing.T) {
 	forceNoiseAvailable(t, false)

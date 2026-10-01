@@ -24,6 +24,7 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -34,12 +35,16 @@ type captureGRPCMigrator struct {
 }
 
 type grpcMigrateCall struct {
-	scope service.BarrierScope
-	opts  seal.MigrationOptions
+	scope  service.BarrierScope
+	opts   seal.MigrationOptions
+	secret []byte // snapshot taken DURING the call; the handler destroys the credential after
 }
 
 func (m *captureGRPCMigrator) EnableEncryption(_ context.Context, scope service.BarrierScope, opts seal.MigrationOptions) error {
-	m.ch <- grpcMigrateCall{scope: scope, opts: opts}
+	// The credential is a borrow valid for this call only: the handler's
+	// goroutine destroys it when this returns, so an early destroy would
+	// surface here as a panic from Snapshot rather than pass unnoticed.
+	m.ch <- grpcMigrateCall{scope: scope, opts: opts, secret: sealtest.Snapshot(opts.Credentials)}
 	return m.err
 }
 
@@ -102,6 +107,9 @@ func TestBarrierEnableEncryption_SystemStarts(t *testing.T) {
 		}
 		if call.opts.TargetStrategy != "passphrase" {
 			t.Fatalf("TargetStrategy = %v, want passphrase", call.opts.TargetStrategy)
+		}
+		if string(call.secret) != "pw" {
+			t.Fatalf("passphrase not threaded to credentials: %q", call.secret)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("migrator was never invoked")

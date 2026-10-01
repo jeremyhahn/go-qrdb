@@ -16,7 +16,6 @@ package vector
 import (
 	"context"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -29,8 +28,7 @@ import (
 
 // TestBatch_UpsertVector_WithMultipleMetadata tests batch upsert with multiple metadata fields
 func TestBatch_UpsertVector_WithMultipleMetadata(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_multi_meta_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -64,8 +62,7 @@ func TestBatch_UpsertVector_WithMultipleMetadata(t *testing.T) {
 
 // TestBatch_DeleteVector_AllVersionPaths tests deletion with all version iteration paths
 func TestBatch_DeleteVector_AllVersionPaths(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_delete_all_versions_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -110,8 +107,7 @@ func TestBatch_DeleteVector_AllVersionPaths(t *testing.T) {
 
 // TestIterator_DecodeErrors tests iterator decode error paths
 func TestIterator_DecodeErrors(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "iterator_decode_error_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -161,8 +157,7 @@ func TestIterator_DecodeErrors(t *testing.T) {
 
 // TestAdapter_CleanupTombstones_Coverage tests cleanup paths
 func TestAdapter_CleanupTombstones_Coverage(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "cleanup_coverage_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	storage, err := NewPebbleVectorStorage(config, &testLogger{})
@@ -207,8 +202,7 @@ func TestAdapter_CleanupTombstones_Coverage(t *testing.T) {
 
 // TestAdapter_Compact_Coverage tests compaction paths
 func TestAdapter_Compact_Coverage(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "compact_coverage_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	storage, err := NewPebbleVectorStorage(config, &testLogger{})
@@ -243,8 +237,7 @@ func TestAdapter_Compact_Coverage(t *testing.T) {
 
 // TestIterator_NextCoverage tests all Next() path combinations
 func TestIterator_NextCoverage(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "iterator_next_coverage")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -323,8 +316,7 @@ func TestIterator_NextCoverage(t *testing.T) {
 
 // TestAdapter_ScanNamespace_NilOptions tests scan with nil options
 func TestAdapter_ScanNamespace_NilOptions(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "scan_nil_opts_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	storage, err := NewPebbleVectorStorage(config, &testLogger{})
@@ -360,8 +352,7 @@ func TestAdapter_ScanNamespace_NilOptions(t *testing.T) {
 
 // TestAdapter_Close_Coverage tests close with cleanup
 func TestAdapter_Close_Coverage(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "close_coverage_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	storage, err := NewPebbleVectorStorage(config, &testLogger{})

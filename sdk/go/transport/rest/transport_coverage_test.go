@@ -765,7 +765,10 @@ func TestRESTListCerts_Closed(t *testing.T) {
 
 func TestRESTEnrollFactor_Success(t *testing.T) {
 	rt, rs, _ := newExtTransport(t)
+	// The real server responds 201 Created (pkg/api/rest's handleAuthFactorEnroll),
+	// not 200: WriteHeader must precede writeJSON's own Write.
 	rs.handle(exactPath(http.MethodPost, "/v1/authfactors/pkcs11/enroll"), func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
 		writeJSON(w, &transport.EnrollFactorResponse{EnrollmentID: "enr-1"})
 	})
 	resp, err := rt.EnrollFactor(context.Background(), &transport.EnrollFactorRequest{FactorName: "pkcs11"})
@@ -867,8 +870,9 @@ func TestRESTListFactors_Closed(t *testing.T) {
 
 func TestRESTRevokeFactor_Success(t *testing.T) {
 	rt, rs, _ := newExtTransport(t)
+	// The real server responds 204 No Content (pkg/api/rest's handleAuthFactorRevoke).
 	rs.handle(pathPrefix(http.MethodDelete, "/v1/authfactors/"), func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
+		w.WriteHeader(http.StatusNoContent)
 	})
 	if err := rt.RevokeFactor(context.Background(), &transport.RevokeFactorRequest{EnrollmentID: "enr-1"}); err != nil {
 		t.Fatalf("RevokeFactor: %v", err)

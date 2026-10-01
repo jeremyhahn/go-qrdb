@@ -161,6 +161,7 @@ func TestClusterEnableEncryption_SystemScope_RF3(t *testing.T) {
 			"--sm", "pebble",
 			"--discovery", "static",
 			"--peers", peersFlag,
+			"--member-identities", memberIdentitiesFlag(t, nodeCertPaths[:]),
 			"--shard-id", "1",
 			"--replica-id", fmt.Sprintf("%d", i+1),
 			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
@@ -325,6 +326,7 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 			"--sm", "pebble",
 			"--discovery", "static",
 			"--peers", peersFlag,
+			"--member-identities", memberIdentitiesFlag(t, nodeCertPaths[:]),
 			"--shard-id", "1",
 			"--replica-id", fmt.Sprintf("%d", i+1),
 			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
@@ -405,7 +407,7 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 	}
 	if _, s := iraftAPIPost(t, sysClient,
 		fmt.Sprintf("https://127.0.0.1:%d/users", leaderPort),
-		map[string]interface{}{"username": "admin", "tenant_id": tenantID, "role_ids": []string{roleResp.ID}},
+		map[string]interface{}{"username": "admin", "email": "admin@" + tenantID + ".example.com", "tenant_id": tenantID, "role_ids": []string{roleResp.ID}},
 	); s != http.StatusCreated && s != http.StatusOK {
 		t.Fatalf("create user: status %d", s)
 	}

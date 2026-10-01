@@ -615,11 +615,11 @@ func TestRouting_StoreForKV_Caching(t *testing.T) {
 	}
 	r := svc.(*routingUserService)
 
-	s1, err := r.storeForKV(shared)
+	s1, err := r.storeForKV(shared, &r.stores, r.opts)
 	if err != nil {
 		t.Fatalf("storeForKV: %v", err)
 	}
-	s2, err := r.storeForKV(shared)
+	s2, err := r.storeForKV(shared, &r.stores, r.opts)
 	if err != nil {
 		t.Fatalf("storeForKV (2nd call): %v", err)
 	}

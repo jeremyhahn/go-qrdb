@@ -98,6 +98,83 @@ same from their own configuration. Helpers `BuildDiscovery`, `ParsePeers`, and
 Configuration lives under the `discovery` block — see
 [12-configuration.md](../12-configuration.md#discovery).
 
+## Member identities
+
+A replica with a Raft transport admits a member by its **node identity** and by
+nothing else. The identity is `spki:` followed by the hex SHA-256 of the
+member's transport-certificate public key, so it survives a certificate renewal
+on the same keypair and changes only with the keypair. An address is routing
+metadata; a certificate from the cluster CA is not, on its own, a claim to any
+replica ID. This is go-quicraft's rule, and go-qrdb supplies the identities it
+needs.
+
+Where each identity comes from:
+
+| Identity | Source |
+|---|---|
+| This replica's own | derived from the certificate it presents (`WithRaftMTLS` for the SDK node, `--tls-cert-file` for `qrdbd`) |
+| Every other replica's | `raft.member_identities` (`--member-identities`), `replicaID=identity` specs the operator collects out of band |
+
+A peer's identity is **never learned from the peer's own connection**: that
+would let any holder of a cluster certificate register itself as any replica,
+which is the attack identities close. The operator reads each node's identity
+from the certificate the CA issued (`qrdbd node-identity --cert FILE`, or
+`node.MemberIdentityFromPEM` in the SDK) before any node starts.
+
+A founding replica must name every member of the initial membership; a joining
+replica must name at least one existing member it will accept its bootstrap
+from. The discovery method is irrelevant: `raft.member_identities` is keyed by
+replica ID and applies to whatever membership discovery produces. A configured
+entry for the local replica that disagrees with its certificate is refused
+before the host is built. A single-node cluster has no transport and needs none.
+
+### Adding replicas: identities come from the committed membership
+
+**go-quicraft commits every member's identity in the shard's membership**
+(`Membership.Identities`, read with `SyncGetShardMembership`) — seeded at
+bootstrap from the founders' `MemberIdentities`, and changed only by committed
+`*WithIdentity` config changes. go-qrdb keeps no identity store of its own; it
+reads identities from there. Every add path — `member add` / `AddReplica` on
+all six transports, rebalance, dynamic membership, the placement reconciler
+admitting and promoting followers, founding a multi-replica dedicated
+(IsolationRaft) database, and the admin shard start (`StartShard`, whose
+members' identities are built exactly as a dedicated database's founders'
+are) — resolves the identity it commits the same way:
+
+| The replica being added | Identity committed |
+|---|---|
+| already a member of the target shard (a promotion, a re-add) | the one that shard committed for it |
+| on a host that is a member of the system shard (every dedicated-shard replica, every rebalance target, a new system-shard replica ID at a member's address) | the one the system shard committed for that host, found by its Raft address |
+| on a brand-new node no committed membership names | **none available — refused** unless the operator supplies it |
+
+The operator may always supply the identity (the optional identity on
+`member add`); if it contradicts one the cluster already committed for that
+replica or host, the add is refused — for any shard, the system shard
+included. Every replica the system shard places at the address is consulted:
+if they carry different identities, the address does not name one host the
+cluster agrees on and the add is refused as ambiguous (a conflict: `409` /
+`FailedPrecondition`). An add naming a replica ID the membership already places
+at a different address is refused the same way: the committed identity belongs
+to that other host. A target shard this node has not loaded (a dedicated
+shard being founded) contributes nothing; one that exists but cannot be read is
+refused as unavailable (`503` / `Unavailable`) rather than resolved from the
+host alone.
+
+**Rebalance never moves the system shard.** Every host is a member of it — its
+membership is where each host's identity is committed — so any destination the
+cluster can vouch for already hosts a replica, and one that does not is a
+brand-new node, which joins through `member add` with its identity. A planned
+system-shard move is refused with `*service.RebalanceSystemShardMoveError`, a
+move to a host that already hosts the shard with
+`*service.RebalanceTargetHostsReplicaError`, and a destination without a
+committed identity with `*service.MemberIdentityError`; each is logged and
+counted as a failed move. A brand-new node's identity has to come
+from outside the cluster for the reason above: the new node's own connection is
+exactly what cannot be trusted to say which replica it is. So adding a
+brand-new node to a running cluster is two steps — print its identity with
+`qrdbd node-identity --cert`, and pass it to `member add`; every later add of a
+replica on that host is automatic.
+
 ## Dynamic membership (opt-in)
 
 `cluster.MembershipManager` reconciles the Raft group as nodes join and leave,
@@ -155,7 +232,7 @@ members, _ := cc.Members(ctx, shardID)          // filtered from Peers()
 
 ## SDK `Cluster()` client
 
-_ = cc.AddReplica(ctx, shardID, id, raftAddr)    // delegates to AddMember
+_ = cc.AddReplica(ctx, shardID, id, raftAddr, "") // delegates to AddMember; "" = committed identity
 _ = cc.RemoveReplica(ctx, shardID, id)           // delegates to RemoveMember
 ch, _ := cc.WatchMembership(ctx, shardID)        // polls + emits deltas
 for ev := range ch {
@@ -224,6 +301,10 @@ cadence is `DefaultMembershipPollInterval`.
 
 ## Trust boundaries
 
+- **A Raft member is admitted by its node identity.** Holding a certificate
+  from the cluster CA is not enough to speak for a replica ID; the identity for
+  that ID must have been supplied by the operator (see
+  [Member identities](#member-identities)).
 - **Multicast discovery requires an operator PSK** and authenticates
   announcements with HMAC-SHA256. Without a secret the method does not run.
 - **Membership entries live under `__sys:cluster/members/{nodeID}`**, inside the

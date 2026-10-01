@@ -35,7 +35,7 @@ import (
 	"net/http"
 	"sync/atomic"
 
-	"github.com/jeremyhahn/go-quicraft/pkg/enclave"
+	"github.com/jeremyhahn/go-enclave"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
@@ -265,7 +265,7 @@ func (r *Receiver) Handler() http.HandlerFunc {
 				slog.Int("status", code))
 			return
 		}
-		defer enclave.WipeBytes(plaintext)
+		defer enclave.Wipe(plaintext)
 
 		// --- e: mode dispatch (map-based) --------------------------------
 		handler, known := modeHandlers[env.Mode]
@@ -391,7 +391,7 @@ func importSystemManaged(ctx context.Context, r *Receiver, meta keydelivery.Meta
 	if err != nil {
 		return errors.Join(ErrMalformedBody, err)
 	}
-	defer enclave.WipeBytes(imported.RootKey)
+	defer enclave.Wipe(imported.RootKey)
 	_, err = r.registry.ImportTenant(ctx, meta.TenantID, dataRoot, true, imported, nil)
 	return err
 }

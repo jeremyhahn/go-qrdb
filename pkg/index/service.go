@@ -25,9 +25,22 @@ type IndexServicer interface {
 	// index with the same name already exists.
 	CreateIndex(ctx context.Context, name, fieldName string, config IndexConfig) error
 
-	// DropIndex removes a secondary index by name. Returns
-	// IndexNotFoundError if the index does not exist.
+	// DropIndex removes a secondary index by name, WHOEVER owns it. Returns
+	// IndexNotFoundError if the index does not exist. It is the drop a
+	// whole-scope teardown issues (DROP DATABASE, tenant deletion), which owns
+	// everything in its scope; no transport reaches it. The explicit index
+	// API drops with DropOwnedIndex(name, ExplicitOwner), which refuses an
+	// index a collection owns.
 	DropIndex(ctx context.Context, name string) error
+
+	// DropOwnedIndex removes a secondary index by name only when the owner
+	// recorded on it is owner (see IndexConfig.Owner). An index recorded under
+	// a different owner is left in place and the call returns an error
+	// satisfying errors.As(*OwnershipError); an absent index is success, as
+	// for DropIndex. It is the drop an object's teardown issues for the
+	// indexes it created, so it cannot remove an index somebody else holds
+	// under the same name (go-qrdb#426).
+	DropOwnedIndex(ctx context.Context, name, owner string) error
 
 	// Query returns the keys of all entries matching the exact value
 	// in the specified index. Returns IndexNotFoundError if the index

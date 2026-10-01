@@ -240,7 +240,7 @@ func (s *Server) handleCeremonyBeginClaimShare(w http.ResponseWriter, r *http.Re
 
 	thumbprint, err := restCertThumbprint(r)
 	if err != nil {
-		writeErrorJSON(w, http.StatusUnauthorized, err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -275,7 +275,7 @@ func (s *Server) handleCeremonyCompleteClaimShare(w http.ResponseWriter, r *http
 
 	thumbprint, err := restCertThumbprint(r)
 	if err != nil {
-		writeErrorJSON(w, http.StatusUnauthorized, err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 

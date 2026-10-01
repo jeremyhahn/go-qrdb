@@ -20,6 +20,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
@@ -58,6 +59,25 @@ const (
 	// so it needs a deadline of its own: without one a wedged store would hang a
 	// caller that has already given up.
 	compensationTimeout = 5 * time.Second
+
+	// reconcileTimeout bounds reconcileAmbiguousCreate's read-back after a
+	// PutAllIfAllUnchanged call whose outcome is unknown. Same reasoning as
+	// compensationTimeout: the read-back deliberately outlives the request's
+	// own context (a done ctx is the common reason the outcome went
+	// unknown in the first place), so it needs a deadline of its own. It is
+	// also the default RETRY window: cmd/qrdbd's boot-time stores read via
+	// StaleRead (local applied state, not linearizable ReadIndex), so a
+	// proposal that committed but lost its response may not be locally
+	// visible for a brief window while apply catches up — see
+	// reconcileAmbiguousCreate's doc.
+	reconcileTimeout = 5 * time.Second
+
+	// defaultReconcilePollInterval is the default spacing between
+	// reconcileAmbiguousCreate's retries. Short relative to reconcileTimeout:
+	// a real local-apply catch-up is expected to resolve in single-digit
+	// milliseconds, so this trades a few wasted reads for not adding
+	// meaningful latency to the (rare) ambiguous-outcome path.
+	defaultReconcilePollInterval = 10 * time.Millisecond
 )
 
 // Compile-time interface check.
@@ -89,11 +109,26 @@ var _ UserServicer = (*kvUserStore)(nil)
 // outside its tenant. It is still maintained by the same functions that
 // maintain the keys above, which is what keeps it in step with them.
 type kvUserStore struct {
-	store        kvstore.KVStore
-	idgen        dao.IDGenerator
-	quotaChecker quota.Checker        // optional; nil skips quota enforcement
-	audit        audit.AuditLogger    // optional; nil disables audit emission
-	identity     tenant.IdentityIndex // optional; nil skips identity-index maintenance
+	store          kvstore.KVStore
+	idgen          dao.IDGenerator
+	quotaChecker   quota.Checker        // optional; nil skips quota enforcement
+	audit          audit.AuditLogger    // optional; nil disables audit emission
+	identity       tenant.IdentityIndex // optional; nil skips identity-index maintenance
+	atomicIdentity bool                 // set by WithAtomicIdentity; see that option's doc
+
+	// requireAdminBinding is set by WithBootstrapAdminBindingRequired: no
+	// change may leave the bootstrap admin unable to log in by certificate.
+	requireAdminBinding bool
+
+	// logger receives the store's operational warnings. Nil means
+	// slog.Default(); see WithLogger.
+	logger *slog.Logger
+
+	// reconcilePollInterval/reconcileWindow bound reconcileAmbiguousCreate's
+	// retry loop. Zero means "use the production default"; see that
+	// function's doc and WithReconcilePolling for why a test overrides them.
+	reconcilePollInterval time.Duration
+	reconcileWindow       time.Duration
 }
 
 // NewStore creates a new KVStore-backed UserServicer. The provided kvstore
@@ -101,6 +136,12 @@ type kvUserStore struct {
 // source of uint64 user identifiers (a dao.SnowflakeGenerator seeded with the
 // node's Raft ReplicaID); there is no default because a node-unique seed is
 // required to keep IDs globally unique across a cluster.
+//
+// Refuses construction — rather than silently degrading — when
+// WithAtomicIdentity is set without WithIdentityIndex, or over a store that
+// does not implement kvstore.GuardedBatchKVStore. See pkg/role's NewStore
+// for the identical reasoning: both are caller configuration errors fixed
+// at construction, not runtime conditions to defer.
 func NewStore(store kvstore.KVStore, idgen dao.IDGenerator, opts ...Option) (UserServicer, error) {
 	if store == nil {
 		return nil, &StoreError{Op: "new", Detail: "kvstore must not be nil"}
@@ -112,7 +153,42 @@ func NewStore(store kvstore.KVStore, idgen dao.IDGenerator, opts ...Option) (Use
 	for _, opt := range opts {
 		opt(s)
 	}
+	if s.atomicIdentity {
+		if s.identity == nil {
+			return nil, &StoreError{Op: "new", Detail: "WithAtomicIdentity requires WithIdentityIndex"}
+		}
+		// A multi-guard capable store is required, not merely a
+		// GuardedBatchKVStore: createUserAtomic guards the identity claim,
+		// the username index, and (when present) the email index together,
+		// which a single-guard store cannot honour for every request shape.
+		if _, ok := store.(kvstore.MultiGuardedBatchKVStore); !ok {
+			return nil, &StoreError{Op: "new", Detail: "WithAtomicIdentity requires a kvstore.MultiGuardedBatchKVStore-capable store"}
+		}
+	}
+	if s.reconcilePollInterval <= 0 {
+		s.reconcilePollInterval = defaultReconcilePollInterval
+	}
+	if s.reconcileWindow <= 0 {
+		s.reconcileWindow = reconcileTimeout
+	}
 	return s, nil
+}
+
+// WithLogger sets the logger the store writes its operational warnings to --
+// today, the bootstrap admin's near-expiry warning under
+// WithBootstrapAdminBindingRequired. A nil logger means slog.Default().
+func WithLogger(logger *slog.Logger) Option {
+	return func(s *kvUserStore) {
+		s.logger = logger
+	}
+}
+
+// log returns the store's logger, slog.Default() when none was set.
+func (s *kvUserStore) log() *slog.Logger {
+	if s.logger == nil {
+		return slog.Default()
+	}
+	return s.logger
 }
 
 // WithQuotaChecker returns a new kvUserStore with the given quota.Checker
@@ -133,17 +209,13 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (c
 		return nil, &ValidationError{Field: "username", Reason: "must not be empty"}
 	}
 
-	// The account's initial state, its memberships and its permitted methods are
-	// all resolved BEFORE any id is generated or any key claimed: they are pure
-	// validation of the request, and a request that cannot produce a valid
-	// record must leave the store completely untouched.
+	// The account's initial state and its permitted methods are both resolved
+	// BEFORE any id is generated or any key claimed: they are pure validation of
+	// the request, and a request that cannot produce a valid record must leave
+	// the store completely untouched.
 	initial, lerr := initialLifecycle(req)
 	if lerr != nil {
 		return nil, lerr
-	}
-	groupIDs, gerr := NormalizeGroupIDs(req.GroupIDs)
-	if gerr != nil {
-		return nil, gerr
 	}
 	authMethods, aerr := NormalizeAuthMethods(req.AuthMethods)
 	if aerr != nil {
@@ -182,6 +254,10 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (c
 	emailKey := ""
 	if email != "" {
 		emailKey = emailIndexKey(tenantID, email)
+	}
+
+	if s.atomicIdentity {
+		return s.createUserAtomic(ctx, req, tenantID, userID, idBytes, usernameKey, emailKey, email, initial, authMethods)
 	}
 
 	// The handle claims below WRITE index entries, so the id claim must settle
@@ -266,9 +342,9 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (c
 		Name:     req.Name,
 		TenantID: tenantID,
 		RoleIDs:  req.RoleIDs,
-		// Lifecycle is the canonical state; Enabled is derived from it by
-		// normalize below rather than set here, so there is exactly one place in
-		// this function that decides whether the account can authenticate.
+		// Lifecycle is the canonical and only account-state field, so this
+		// is the one place in this function that decides whether the account
+		// can authenticate.
 		//
 		// Pending arrived on main in the deferred tenant-admin enrollment seam
 		// (#193) while this branch was rewriting the surrounding create path to
@@ -278,12 +354,10 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (c
 		// back ENABLED. It now folds into Lifecycle via initialLifecycle.
 		Lifecycle:   initial,
 		System:      false,
-		GroupIDs:    groupIDs,
 		AuthMethods: authMethods,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
-	user.normalize()
 	if user.RoleIDs == nil {
 		user.RoleIDs = []string{}
 	}
@@ -320,10 +394,227 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (c
 		"tenantID":  tenantID,
 		"role_ids":  user.RoleIDs,
 		"lifecycle": string(user.Lifecycle),
-		"group_ids": user.GroupIDs,
 	})
 
 	return user, nil
+}
+
+// createUserAtomic commits the identity claim, the primary record, the
+// tenant index, the username index, and — when the request has one — the
+// email index as ONE guarded batch, so a leadership change anywhere in the
+// sequence leaves either everything or nothing. It is reached for every
+// create once the store is built WithAtomicIdentity; see that option's doc
+// for why the batch must guard more than one key.
+//
+// The batch guards on the identity claim key (fencing a repeated generated
+// id), the username index key (fencing a taken username), and the email
+// index key when present (fencing a taken email) — all evaluated together by
+// kvstore.MultiGuardedBatchKVStore, so no window exists between any two of
+// those checks for a concurrent create to land in.
+//
+// On a guard failure this reads back the occupied key and returns the SAME
+// typed error CreateUser has always returned for that conflict
+// (UsernameExistsError, EmailExistsError) or the new UserIDExistsError for
+// an id collision.
+func (s *kvUserStore) createUserAtomic(ctx context.Context, req *CreateUserRequest, tenantID string, userID uint64, idBytes []byte, usernameKey, emailKey, email string, initial Lifecycle, authMethods []string) (*User, error) {
+	guarded, ok := s.store.(kvstore.MultiGuardedBatchKVStore)
+	if !ok {
+		// Unreachable: NewStore refuses WithAtomicIdentity construction over a
+		// store that does not implement this. Defensive rather than a panic if
+		// that check is ever bypassed.
+		return nil, &StoreError{Op: "create", Detail: "atomic identity requires a kvstore.MultiGuardedBatchKVStore"}
+	}
+	claimKV, _, err := s.identity.PrepareClaim(tenant.IdentityUser, identityID(userID), tenantID)
+	if err != nil {
+		return nil, &StoreError{Op: "create", Detail: "prepare claim", Err: err}
+	}
+
+	now := time.Now().UTC()
+	u := &User{
+		ID:          userID,
+		Username:    req.Username,
+		Email:       email,
+		Name:        req.Name,
+		TenantID:    tenantID,
+		RoleIDs:     req.RoleIDs,
+		Lifecycle:   initial,
+		System:      false,
+		AuthMethods: authMethods,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if u.RoleIDs == nil {
+		u.RoleIDs = []string{}
+	}
+
+	data, err := json.Marshal(u)
+	if err != nil {
+		return nil, &StoreError{Op: "create", Detail: "marshal", Err: err}
+	}
+	pk := primaryKey(u.ID)
+	tk := tenantIndexKey(tenantID, u.ID)
+	guards := []kvstore.Guard{
+		{Key: claimKV.Key},
+		{Key: usernameKey},
+	}
+	writes := []kvstore.KV{
+		claimKV,
+		{Key: usernameKey, Value: idBytes},
+		{Key: pk, Value: data},
+		{Key: tk, Value: idBytes},
+	}
+	if emailKey != "" {
+		guards = append(guards, kvstore.Guard{Key: emailKey})
+		writes = append(writes, kvstore.KV{Key: emailKey, Value: idBytes})
+	}
+
+	applied, err := guarded.PutAllIfAllUnchanged(ctx, guards, writes)
+	if err != nil {
+		if errors.Is(err, kvstore.ErrNotApplied) {
+			// A definite refusal — no leader to propose it, no transaction
+			// subsystem — wrote nothing. Reconciling would only poll for a
+			// write that cannot appear.
+			return nil, &StoreError{Op: "create", Detail: "atomic create", Err: err}
+		}
+		return s.reconcileAmbiguousCreate(ctx, u, writes, err)
+	}
+	if !applied {
+		return nil, s.diagnoseAtomicGuardFailure(ctx, req, tenantID, userID, claimKV.Key, usernameKey, emailKey, email)
+	}
+
+	s.emitAudit(ctx, "create", u.ID, map[string]any{
+		"username":  u.Username,
+		"email":     u.Email,
+		"tenantID":  tenantID,
+		"role_ids":  u.RoleIDs,
+		"lifecycle": string(u.Lifecycle),
+	})
+	return u, nil
+}
+
+// diagnoseAtomicGuardFailure reads back each key createUserAtomic guarded to
+// report the SAME typed conflict error CreateUser has always returned for
+// that condition. PutAllIfAllUnchanged reports only that at least one guard
+// did not hold, not which one, so this issues plain reads — outside the
+// failed transaction, causing no new ambiguity — to find the occupied key.
+//
+// The identity claim is checked first: a caller-supplied or generator-repeated
+// id is the condition go-qrdb#555's review added this guard for, and it is
+// checked ahead of the pre-existing username/email conflicts so a fix to one
+// class of collision does not change which error a caller already handling
+// UsernameExistsError/EmailExistsError sees for that unrelated class.
+//
+// The read-back is POLLED within s.reconcileWindow, for the reason pkg/role's
+// identical function gives: under cmd/qrdbd's boot-time StaleRead the losing
+// node may not have applied the winner's keys yet.
+func (s *kvUserStore) diagnoseAtomicGuardFailure(ctx context.Context, req *CreateUserRequest, tenantID string, userID uint64, claimKey, usernameKey, emailKey, email string) error {
+	dctx, cancel := context.WithTimeout(ctx, s.reconcileWindow)
+	defer cancel()
+	var occupied error
+	s.pollVisible(dctx, func() bool {
+		switch {
+		case s.keyPresent(dctx, claimKey):
+			occupied = &UserIDExistsError{ID: userID, TenantID: tenantID}
+		case s.keyPresent(dctx, usernameKey):
+			occupied = &UsernameExistsError{Username: req.Username, TenantID: tenantID}
+		case emailKey != "" && s.keyPresent(dctx, emailKey):
+			occupied = &EmailExistsError{Email: email, TenantID: tenantID}
+		}
+		return occupied != nil
+	})
+	if occupied != nil {
+		return occupied
+	}
+	// Defensive: the guard reported failure but every guarded key stayed
+	// absent for the whole window — most plausibly a concurrent release
+	// racing these reads. Report the generic conflict rather than fabricating
+	// a more specific one no read could confirm.
+	return &StoreError{Op: "create", Detail: "atomic create guard failed"}
+}
+
+// keyPresent reports whether key currently holds a value on this node.
+func (s *kvUserStore) keyPresent(ctx context.Context, key string) bool {
+	v, err := s.store.Get(ctx, key)
+	return err == nil && v != nil
+}
+
+// reconcileAmbiguousCreate handles a PutAllIfAllUnchanged error whose outcome
+// is UNKNOWN per that method's own contract: the proposal may have
+// committed and only the response been lost. An error marked
+// kvstore.ErrNotApplied never reaches here; createUserAtomic returns it at
+// once. See pkg/role's identical
+// function for the full reasoning; this is its pkg/user sibling.
+//
+// A successful reconciliation emits the SAME create audit event the normal
+// success path does: the batch committed durably either way, and skipping
+// the event here would let a privileged bootstrap user exist with no audit
+// trail whenever a proposal's response — not the proposal itself — was lost.
+//
+// The read-back and the audit emission run on a context DERIVED from ctx via
+// context.WithoutCancel plus its own bound (s.reconcileWindow), not on ctx
+// itself. The ambiguous outcome this function exists to resolve very often
+// IS ctx already being done — a deadline exceeded or a cancellation is
+// exactly the shape of "the response never arrived" — and reusing that same
+// ctx for the reads would then fail EVERY read immediately, always
+// reporting the create as failed and never emitting the audit event this
+// function was added to guarantee. context.WithoutCancel preserves ctx's
+// VALUES (tenant, auth, tracing) while dropping its cancellation, matching
+// the compensation contexts CreateUser's own rollback paths already use.
+//
+// The read-back RETRIES on s.reconcilePollInterval until s.reconcileWindow
+// elapses, rather than reading once (go-qrdb#555 review, round 4): see
+// pkg/role's identical reconcileAmbiguousCreate for the full reasoning —
+// cmd/qrdbd's boot-time stores read via StaleRead, so a proposal that
+// committed but lost its response may not be locally visible for a brief
+// window while apply catches up, and a single immediate read would report a
+// false failure (and skip the audit event) for a create that in fact just
+// committed.
+func (s *kvUserStore) reconcileAmbiguousCreate(ctx context.Context, u *User, writes []kvstore.KV, cause error) (*User, error) {
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.reconcileWindow)
+	defer cancel()
+	if !s.pollVisible(rctx, func() bool { return s.reconcileWritesMatch(rctx, writes) }) {
+		return nil, &StoreError{Op: "create", Detail: "atomic create", Err: cause}
+	}
+	s.emitAudit(rctx, "create", u.ID, map[string]any{
+		"username":       u.Username,
+		"email":          u.Email,
+		"tenantID":       u.TenantID,
+		"role_ids":       u.RoleIDs,
+		"lifecycle":      string(u.Lifecycle),
+		"reconciliation": "ambiguous_response",
+	})
+	return u, nil
+}
+
+// pollVisible calls visible every s.reconcilePollInterval until it reports
+// true or ctx is done, and reports whether it did. See pkg/role's identical
+// helper: both read-backs after an atomic create read THIS node's applied
+// state, which under cmd/qrdbd's boot-time StaleRead can lag the commit.
+func (s *kvUserStore) pollVisible(ctx context.Context, visible func() bool) bool {
+	ticker := time.NewTicker(s.reconcilePollInterval)
+	defer ticker.Stop()
+	for {
+		if visible() {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-ticker.C:
+		}
+	}
+}
+
+// reconcileWritesMatch reports whether every write's key currently holds
+// exactly the bytes that write would have stored.
+func (s *kvUserStore) reconcileWritesMatch(ctx context.Context, writes []kvstore.KV) bool {
+	for _, w := range writes {
+		got, err := s.store.Get(ctx, w.Key)
+		if err != nil || !bytes.Equal(got, w.Value) {
+			return false
+		}
+	}
+	return true
 }
 
 // GetUser retrieves a user by its globally unique ID.
@@ -344,10 +635,6 @@ func (s *kvUserStore) GetUser(ctx context.Context, id uint64) (*User, error) {
 	if err := json.Unmarshal(data, &user); err != nil {
 		return nil, &StoreError{Op: "get", Detail: "unmarshal", Err: err}
 	}
-	// Fill in the lifecycle state for a record written before the field
-	// existed, and re-derive Enabled from it. Every decode goes through this,
-	// so no caller downstream has to know the field can be absent.
-	user.normalize()
 	return &user, nil
 }
 
@@ -538,7 +825,6 @@ func (s *kvUserStore) mutateCertBindings(ctx context.Context, op string, userID 
 		if uerr := json.Unmarshal(base, existing); uerr != nil {
 			return nil, &StoreError{Op: op, Detail: "unmarshal", Err: uerr}
 		}
-		existing.normalize()
 
 		// A record whose deletion has BEGUN accepts no binding write in either
 		// direction. Enrolment is the obvious one — a certificate bound after
@@ -565,6 +851,9 @@ func (s *kvUserStore) mutateCertBindings(ctx context.Context, op string, userID 
 			return existing, nil
 		}
 
+		// updateUserAt judges the bootstrap-admin guard against base, the same
+		// record this mutator saw, and refreshes the admin's deadline metric
+		// once the change commits.
 		updated, uerr := s.updateUserAt(ctx, &UpdateUserRequest{ID: userID, CertBindings: bindings}, base)
 		if uerr == nil {
 			return updated, nil
@@ -595,6 +884,16 @@ func (s *kvUserStore) AddCertBinding(ctx context.Context, userID uint64, thumbpr
 	// strings that a canonical-encoding lookup would never match.
 	if !IsValidSPKIThumbprint(thumbprint) {
 		return nil, &ValidationError{Field: "thumbprint", Reason: "must be a base64url-encoded SHA-256 SPKI thumbprint"}
+	}
+	// A binding that has already expired can never authenticate, so enrolling
+	// one is always a mistake. It is also not harmless: AddCertBinding
+	// de-duplicates by thumbprint, so re-binding a LIVE key with a past expiry
+	// silently withdraws it -- a withdrawal that would bypass everything
+	// RemoveCertBinding reports.
+	if notAfterUnix > 0 {
+		if notAfter := time.Unix(notAfterUnix, 0).UTC(); !time.Now().Before(notAfter) {
+			return nil, &CertBindingExpiredError{Thumbprint: thumbprint, NotAfter: notAfter}
+		}
 	}
 
 	return s.mutateCertBindings(ctx, "add_cert_binding", userID, func(u *User) ([]CertBinding, bool, error) {
@@ -648,7 +947,10 @@ func (s *kvUserStore) AddCertBinding(ctx context.Context, userID uint64, thumbpr
 // restriction, so the account returns to admitting any certificate whose CN and
 // OU name it (see pkg/auth/middleware.checkCertBinding). That is a real posture
 // change, which is why it is audited with last_binding_removed rather than
-// being left to be discovered.
+// being left to be discovered. (That is the "enrolled" posture. Under
+// "required" an account with no live binding cannot log in at all, and a store
+// built WithBootstrapAdminBindingRequired refuses to leave the bootstrap admin
+// in that state.)
 //
 // It deliberately does NOT validate the thumbprint's shape. IsValidSPKIThumbprint
 // is a write-side gate added after the field existed, so a record written before
@@ -676,6 +978,10 @@ func (s *kvUserStore) RemoveCertBinding(ctx context.Context, userID uint64, thum
 			// mistyped the thumbprint, while the real binding stays live.
 			return nil, false, &CertBindingNotFoundError{UserID: u.ID, Thumbprint: thumbprint}
 		}
+		// Under "required" the bootstrap admin keeps at least one live
+		// binding. updateUserAt enforces it against the record this mutator
+		// saw, so two concurrent withdrawals of the admin's last two keys
+		// cannot both pass: the loser re-reads and is refused.
 		return next, true, nil
 	})
 	if err != nil {
@@ -771,10 +1077,6 @@ func (s *kvUserStore) updateUserAt(ctx context.Context, req *UpdateUserRequest, 
 	// construction (it is itself a write that can fail, and reports
 	// IndexCompensationError when it does). Trading a guaranteed no-op for a
 	// probable undo is a bad trade when the check costs nothing.
-	groupIDs, gerr := NormalizeGroupIDs(req.GroupIDs)
-	if gerr != nil {
-		return nil, gerr
-	}
 	authMethods, aerr := NormalizeAuthMethods(req.AuthMethods)
 	if aerr != nil {
 		return nil, aerr
@@ -784,10 +1086,10 @@ func (s *kvUserStore) updateUserAt(ctx context.Context, req *UpdateUserRequest, 
 	if uerr := json.Unmarshal(base, existing); uerr != nil {
 		return nil, &StoreError{Op: "update", Detail: "unmarshal", Err: uerr}
 	}
-	// Fill in the lifecycle state for a record written before the field
-	// existed, and re-derive Enabled from it. Every decode goes through this,
-	// so no caller downstream has to know the field can be absent.
-	existing.normalize()
+	// The record as committed, before this request touches it. The fields
+	// below are replaced rather than edited in place, so a shallow copy stays
+	// the committed view.
+	prior := *existing
 
 	// The lifecycle transition is checked here, immediately after the decode and
 	// still before the first index mutation, so a refused transition is also a
@@ -821,6 +1123,27 @@ func (s *kvUserStore) updateUserAt(ctx context.Context, req *UpdateUserRequest, 
 			ID:   existing.ID,
 			From: existing.Lifecycle,
 			To:   existing.Lifecycle,
+		}
+	}
+
+	// The bootstrap-admin guard, judged on the whole resulting record rather
+	// than per verb: a lifecycle move, a rename, a method-policy change and a
+	// binding change all arrive here, whichever entry point sent them. Like
+	// the checks above it runs before the first index mutation, and against
+	// prior -- the base of the swap below -- so it cannot be raced.
+	if s.requireAdminBinding {
+		next := *existing
+		if req.Username != "" {
+			next.Username = req.Username
+		}
+		if req.AuthMethods != nil {
+			next.AuthMethods = authMethods
+		}
+		if req.CertBindings != nil {
+			next.CertBindings = req.CertBindings
+		}
+		if gerr := s.guardBootstrapAdmin(&prior, &next); gerr != nil {
+			return nil, gerr
 		}
 	}
 
@@ -1067,9 +1390,6 @@ func (s *kvUserStore) updateUserAt(ctx context.Context, req *UpdateUserRequest, 
 	if req.Factors != nil {
 		existing.Factors = req.Factors
 	}
-	if req.GroupIDs != nil {
-		existing.GroupIDs = groupIDs
-	}
 	if req.AuthMethods != nil {
 		existing.AuthMethods = authMethods
 	}
@@ -1263,8 +1583,19 @@ func (s *kvUserStore) updateUserAt(ctx context.Context, req *UpdateUserRequest, 
 		"role_ids":          existing.RoleIDs,
 		"lifecycle":         string(existing.Lifecycle),
 		"lifecycle_changed": lifecycleChanged,
-		"groups_changed":    req.GroupIDs != nil,
 	})
+
+	// The bootstrap admin's deadline metric follows every committed change to
+	// the admin, not only the boot check, so an operator who enrols a
+	// replacement -- or withdraws a key -- sees the new deadline at once. A
+	// rename away from the admin (possible only under "enrolled") leaves no
+	// admin to measure.
+	switch {
+	case IsBootstrapAdmin(existing):
+		s.observeBootstrapAdmin(existing)
+	case IsBootstrapAdmin(&prior):
+		s.observeBootstrapAdmin(nil)
+	}
 
 	return existing, nil
 }
@@ -1292,12 +1623,14 @@ func (s *kvUserStore) DeleteUser(ctx context.Context, id uint64) (retErr error) 
 	if uerr := json.Unmarshal(base, existing); uerr != nil {
 		return &StoreError{Op: "delete", Detail: "unmarshal", Err: uerr}
 	}
-	// Fill in the lifecycle state for a record written before the field
-	// existed, and re-derive Enabled from it. Every decode goes through this,
-	// so no caller downstream has to know the field can be absent.
-	existing.normalize()
 	if existing.System {
 		return &SystemUserImmutableError{ID: id}
+	}
+	// Under "required" a node without its bootstrap admin refuses to boot,
+	// so the admin is not deleted. Checked before markDeleting, which commits
+	// against the version read here: a concurrent change cannot slip past it.
+	if err := s.guardBootstrapAdmin(existing, nil); err != nil {
+		return err
 	}
 
 	// CLAIM the record by marking it deleting, conditionally on the version just
@@ -1507,6 +1840,10 @@ func (s *kvUserStore) DeleteUser(ctx context.Context, id uint64) (retErr error) 
 		"username": existing.Username,
 		"tenantID": existing.TenantID,
 	})
+	// Deleting the admin (possible only under "enrolled") leaves no deadline.
+	if IsBootstrapAdmin(existing) {
+		s.observeBootstrapAdmin(nil)
+	}
 
 	return nil
 }
@@ -1582,7 +1919,7 @@ func (s *kvUserStore) ListUsers(ctx context.Context, req *ListUsersRequest) (*Li
 	}, nil
 }
 
-// EnableUser activates a user account by setting Enabled to true.
+// EnableUser activates a user account: the lifecycle transition to active.
 func (s *kvUserStore) EnableUser(ctx context.Context, id uint64) error {
 	if id == 0 {
 		return &ValidationError{Field: "id", Reason: "must not be zero"}
@@ -1603,15 +1940,11 @@ func (s *kvUserStore) EnableUser(ctx context.Context, id uint64) error {
 	if uerr := json.Unmarshal(base, user); uerr != nil {
 		return &StoreError{Op: "enable", Detail: "unmarshal", Err: uerr}
 	}
-	// Fill in the lifecycle state for a record written before the field
-	// existed, and re-derive Enabled from it. Every decode goes through this,
-	// so no caller downstream has to know the field can be absent.
-	user.normalize()
 
 	// EnableUser is the lifecycle transition to active, not a boolean set. That
 	// matters for the one case a boolean cannot express: an account already
 	// marked deleting must not be re-enabled by a request that raced the
-	// deletion, and a plain `Enabled = true` would do exactly that.
+	// deletion, and a plain boolean set would do exactly that.
 	if err := applyLifecycle(user, LifecycleActive); err != nil {
 		return err
 	}
@@ -1659,7 +1992,7 @@ func (s *kvUserStore) EnableUser(ctx context.Context, id uint64) error {
 	return nil
 }
 
-// DisableUser deactivates a user account by setting Enabled to false.
+// DisableUser deactivates a user account: the lifecycle transition to disabled.
 func (s *kvUserStore) DisableUser(ctx context.Context, id uint64) error {
 	if id == 0 {
 		return &ValidationError{Field: "id", Reason: "must not be zero"}
@@ -1680,17 +2013,20 @@ func (s *kvUserStore) DisableUser(ctx context.Context, id uint64) error {
 	if uerr := json.Unmarshal(base, user); uerr != nil {
 		return &StoreError{Op: "disable", Detail: "unmarshal", Err: uerr}
 	}
-	// Fill in the lifecycle state for a record written before the field
-	// existed, and re-derive Enabled from it. Every decode goes through this,
-	// so no caller downstream has to know the field can be absent.
-	user.normalize()
 
 	// The transition to disabled, for the same reason EnableUser transitions:
 	// the state, not the boolean, is what the record is. Disabling an account
 	// already marked deleting is refused — the deletion is further along than
 	// the disable, and letting a disable land on top of it would report a
 	// success that changed nothing about the account's fate.
+	prior := *user
 	if err := applyLifecycle(user, LifecycleDisabled); err != nil {
+		return err
+	}
+	// A disabled bootstrap admin cannot log in, so under "required" the
+	// disable is refused -- judged against the version the swap below is
+	// conditioned on.
+	if err := s.guardBootstrapAdmin(&prior, user); err != nil {
 		return err
 	}
 	user.UpdatedAt = time.Now().UTC()
@@ -1756,7 +2092,6 @@ func onlyReassertsLifecycle(req *UpdateUserRequest) bool {
 		req.Attributes == nil &&
 		req.CertBindings == nil &&
 		req.Factors == nil &&
-		req.GroupIDs == nil &&
 		req.AuthMethods == nil
 }
 
@@ -1835,7 +2170,6 @@ func lastAuthOnly(req *UpdateUserRequest) bool {
 		req.Attributes == nil &&
 		req.CertBindings == nil &&
 		req.Factors == nil &&
-		req.GroupIDs == nil &&
 		req.AuthMethods == nil
 }
 
@@ -1879,7 +2213,6 @@ func (s *kvUserStore) mergeLastAuth(ctx context.Context, id uint64, at time.Time
 		if uerr := json.Unmarshal(base, existing); uerr != nil {
 			return nil, &StoreError{Op: "record_auth", Detail: "unmarshal", Err: uerr}
 		}
-		existing.normalize()
 
 		// The terminal guard applies HERE TOO. This path runs before
 		// UpdateUser's own check — that is the point of it being a fast path —
@@ -2258,31 +2591,13 @@ func NormalizeEmail(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
 }
 
-// NormalizeGroupIDs canonicalises a group-membership set: surrounding space is
-// trimmed and duplicates are dropped, preserving first-seen order so a caller's
-// list reads back the way it was written.
-//
-// Case is deliberately PRESERVED, unlike an email. A group identifier is an
-// opaque token minted by whatever layer owns the group catalog — frequently a
-// UUID or a base64 handle where case is significant — so lowercasing it would
-// silently merge two distinct groups into one membership, quietly widening or
-// narrowing what the holder can reach.
-//
-// An entry that is empty after trimming is refused rather than dropped: a blank
-// membership is a caller bug, and silently discarding it hides a list that was
-// built wrong.
-func NormalizeGroupIDs(ids []string) ([]string, error) {
-	return dedupeTokens(ids, "groupIDs", false)
-}
-
 // NormalizeAuthMethods canonicalises a permitted-method set: trimmed,
 // lowercased, de-duplicated, first-seen order preserved.
 //
-// Case IS folded here, in contrast to a group id, because these are protocol
-// names from a small closed vocabulary ("webauthn", "piv") rather than minted
-// identifiers — and a policy list in which "WebAuthn" and "webauthn" are two
-// different permissions is a list that will eventually deny a method it meant
-// to allow.
+// Case IS folded because these are protocol names from a small closed
+// vocabulary ("webauthn", "piv") rather than minted identifiers — and a policy
+// list in which "WebAuthn" and "webauthn" are two different permissions is a
+// list that will eventually deny a method it meant to allow.
 func NormalizeAuthMethods(methods []string) ([]string, error) {
 	return dedupeTokens(methods, "authMethods", true)
 }

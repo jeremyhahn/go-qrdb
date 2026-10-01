@@ -27,6 +27,21 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
 )
 
+// authSourceMetadataKey / authSourceOnBehalf mark an identity that arrived as
+// a forwarded on-behalf assertion rather than from a credential presented on
+// this connection. The attested-caller gate reads the mark: the certificate on
+// such a connection is the forwarding node's, not the subject's.
+const (
+	authSourceMetadataKey = "auth_source"
+	authSourceOnBehalf    = "on_behalf"
+)
+
+// isOnBehalfIdentity reports whether identity was built from a forwarded
+// on-behalf assertion.
+func isOnBehalfIdentity(identity *auth.Identity) bool {
+	return identity != nil && identity.Metadata[authSourceMetadataKey] == authSourceOnBehalf
+}
+
 // hasOnBehalfAssertion reports whether the request carries both on-behalf
 // headers (assertion + signature). A request carrying only one is treated as
 // not present; verification of the pair fails closed if it is malformed.
@@ -104,8 +119,8 @@ func (m *AuthMiddleware) authenticateOnBehalf(ctx context.Context, r *http.Reque
 		Subject:  assertion.Subject,
 		TenantID: assertion.TenantID,
 		Metadata: map[string]string{
-			"auth_source":      "on_behalf",
-			"forwarder_nodeid": assertion.ForwarderNodeID,
+			authSourceMetadataKey: authSourceOnBehalf,
+			"forwarder_nodeid":    assertion.ForwarderNodeID,
 		},
 	}
 

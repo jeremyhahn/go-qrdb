@@ -1,6 +1,6 @@
 # Identity and RBAC — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-02
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-30
 
 ## Exported surface
 
@@ -62,9 +62,7 @@ type User struct {
 	TenantID     string             `json:"tenantID"`     // maps to cert OU
 	RoleIDs      []string           `json:"roleIDs"`      // system-scoped role identifiers
 	Lifecycle    Lifecycle          `json:"lifecycle"`    // CANONICAL account state
-	Enabled      bool               `json:"enabled"`      // DERIVED: Lifecycle == active
 	System       bool               `json:"system"`       // built-in, cannot be deleted
-	GroupIDs     []string           `json:"groupIDs"`     // opaque membership ids; qrdb owns no Group entity
 	AuthMethods  []string           `json:"authMethods"`  // permitted methods (policy), lowercased
 	LastAuth     *time.Time         `json:"lastAuth"`     // high-water mark; never moves backwards
 	RoleBindings []RoleBinding      `json:"roleBindings"` // {RoleID, TenantID} — tenant-scoped RBAC
@@ -77,7 +75,8 @@ type User struct {
 ```
 
 `User.CanAuthenticate()` is the check a login or credential-registration
-ceremony makes. It is `Lifecycle == active` and nothing else.
+ceremony makes. It is `Lifecycle == active` and nothing else: an absent
+state fails closed exactly like an unrecognized one.
 
 ### Lifecycle — `pkg/user/lifecycle.go`
 
@@ -123,14 +122,16 @@ decides a login with it:
 
 ```go
 // pkg/auth/middleware/cert_binding.go
-func checkCertBinding(ctx context.Context, u *user.User, method authMethod) error
+func checkCertBinding(ctx context.Context, u *user.User, method authMethod, policy auth.MTLSBindingPolicy) error
+func checkUnresolvedCertLogin(ctx context.Context, identity *auth.Identity, method authMethod, policy auth.MTLSBindingPolicy) error
 ```
 
 It admits in exactly three cases and refuses otherwise:
 
 | Case | Result | Why |
 |---|---|---|
-| `len(u.CertBindings) == 0` | admit | an empty set states no restriction, the same statement an empty `AuthMethods` makes; requiring a binding of every account locks out every account nobody enrolled |
+| `len(u.CertBindings) == 0`, policy `enrolled` | admit | an empty set states no restriction, the same statement an empty `AuthMethods` makes; requiring a binding of every account locks out every account nobody enrolled |
+| `len(u.CertBindings) == 0`, policy `required`, cert-bound method | **refuse** | `*CertBindingRequiredError{AccountResolved: true}` — the fleet said every certificate login proves possession |
 | method is not cert-bound (`certBoundMethods`) | admit | a forwarded on-behalf assertion and a capability module's session token present no certificate of the SUBJECT's — the connection's certificate is the forwarder's |
 | `u.MatchesCert(cert)` | admit | possession proved by the handshake |
 | enrolled, cert-bound method, no readable peer certificate | **refuse** | the account has enrolled certificates and this request produced none to compare |
@@ -179,6 +180,30 @@ nobody can remove. A withdrawal that matches nothing returns
 `*CertBindingNotFoundError` (404 / `codes.NotFound`) rather than succeeding
 vacuously, and a withdrawal that empties the set emits an audit event carrying
 `last_binding_removed: true`, because that is the moment the account widens.
+
+`checkUnresolvedCertLogin` covers the subject that resolves to **no account**
+(user store answered not-found, or no user store is wired): it admits under
+`enrolled`, as before, and refuses a cert-bound method under `required` with
+`*CertBindingRequiredError{AccountResolved: false}`. The sealed-tenant branch of
+`finalizeIdentity` returns before either check, deliberately — see the
+architecture's list of what `required` does not reach.
+
+The policy is `auth.MTLSBindingPolicy` (`pkg/auth/binding_policy.go`), zero value
+`MTLSBindingEnrolled`, resolved from configuration by
+`auth.ParseMTLSBindingPolicy` (an unknown spelling is
+`*InvalidMTLSBindingPolicyError`, never a guess) and threaded
+`wiring.AuthMiddlewareConfig.MTLSBindingPolicy` →
+`middleware.WithMTLSBindingPolicy`. The boot refusal is
+`firstboot.VerifyAdminCertBinding(ctx, AdminLookup, now)` →
+`*firstboot.AdminCertBindingRequiredError{Reason}` or `*firstboot.AdminLookupError`;
+`firstboot.Initialize` runs the same predicate before its first write when
+`Dependencies.MTLSBindingPolicy` is `required`, and `bootstrap.SystemConfig`
+forwards the value to it.
+
+`*CertBindingRequiredError` classifies as `AuthFailureUnauthenticated` for the
+same reason as the rule it sits beside: the caller has no enrolled key to have
+possessed, and enrolling the `PresentedThumbprint` it carries is what makes the
+same certificate work.
 
 `*CertBindingNotPermittedError` classifies as `AuthFailureUnauthenticated`
 (401), not `AuthFailureUnauthorized` (403). The contrast with
@@ -229,9 +254,10 @@ the identity fails.
 
 | scope | tenant-local identity | system-tenant identity |
 |---|---|---|
-| `ScopeSelf` (**the default**) | own tenant only | **lifted across all tenants** |
+| `ScopeSelf` | own tenant only | **lifted across all tenants** |
 | `ScopeCross` | denied | any tenant |
 | `ScopeTenantOnly` | own tenant only | **denied, structurally** |
+| `ScopeSelfStrict` | own tenant only | **own tenant only** (not lifted) |
 
 **Choose by asking whose material the permission acts on, not who usually calls
 it.** `ScopeTenantOnly` means *"tenant-admin-only, system-admin-denied, no
@@ -240,9 +266,26 @@ canonical case is per-tenant barrier key custody, which the platform operator
 must not hold. A permission that reads the **daemon's own** state is not that,
 even when it lives in a tenant-facing family.
 
-**A permission takes `ScopeSelf` by not being registered with a scope**, so the
-hazard is the opposite of the usual one: the mistake is not forgetting to
-classify, it is classifying a whole family in one call. Measured:
+**There is no default scope.** Every permission in `All()` declares its scope,
+`LookupScope` returns `*UndeclaredScopeError` for one that does not, and the
+authorizer denies on that error. `TestEveryPermissionDeclaresItsScope` in
+`pkg/permission/scope_gate_test.go` walks the registry and fails the build on
+the first undeclared member, so a permission added without a scope is a red
+test rather than a quiet admit. `ScopeSelf` is the zero value of `Scope`, and
+it is declared like the other two — `pkg/permission/self_scope.go` names each
+self-scoped permission individually.
+
+It used to be otherwise: `LookupScope` answered `ScopeSelf` for any permission
+nobody had tagged, and 221 of 362 permissions — not one of them registered
+`ScopeSelf` explicitly — took their scope by omission. An unconsidered
+permission was indistinguishable from one deliberately confined to its own
+tenant, and the unconsidered one is the one that admits. `certs:revoke` was the
+instance that surfaced it: no registry entry, defaulted to `ScopeSelf`, and a
+check that was vacuous on the ordinary REST path.
+
+The remaining hazard is the family call. **Declare each member of a family by
+name, never the family through a helper**: a helper that later gains a member
+tags that member silently. Measured:
 `RegisterScope(ScopeTenantOnly, brokerDataPlaneScopePermissions()...)` tagged
 the entire broker data-plane family, and `orchestrator:health` rode along. The
 result was that the operator persona — the one that exists to watch the node —
@@ -255,8 +298,32 @@ GET /api/v1/orchestrator/health
     tenant-only permission denied to system tenant
 ```
 
-It now sits in `nodeStateScopePermissions()`, registered but deliberately
-untagged.
+It now sits in `nodeStateScopePermissions()` and is declared `ScopeSelf` by
+name in `self_scope.go`.
+
+**A tenant cannot re-scope a built-in permission.** Per-tenant scope
+definitions (`permission.TenantScopeStore`) exist for caller-defined
+permissions only. `SetScope` refuses any permission that has a built-in scope
+registration with `*BuiltInScopeOverrideError`, and `ResolveScope` fails closed
+with the same error -- so the authorizer denies -- if it finds a stored
+definition of one written before the refusal existed. Otherwise a tenant could
+undo a platform decision such as the cross-scope tenant plan permissions
+(`tenant_provisioning_scope.go`) and widen its own Admin back onto the platform
+operator's surface.
+
+**`secrets:*` is the family-call hazard's mirror image: one member of a
+`ScopeTenantOnly` family that needed a DIFFERENT scope, not a wider one.**
+`pkg/permission/broker_scope.go` registers the broker-domain family --
+`secrets`, `trust`, `acme`, `mcp`, `agent:runtime` -- and every member except
+`secrets:*` is correctly `ScopeTenantOnly`: those surfaces are held on a
+tenant's behalf, so the platform operator must not exercise them.
+`secrets:read/write/delete/list` name a per-tenant VAULT instead, and a vault
+is exactly the case `ScopeSelfStrict` exists for: the system tenant needs one
+over its own namespace as much as any other tenant does, and `ScopeTenantOnly`
+would deny it that outright. `init()` tags the two groups with separate
+`RegisterScope` calls, each naming its members explicitly, so `secrets:*`
+cannot silently drift back onto the family's default the next time someone
+edits the list.
 
 **The counter-example is in the same family, and it is the more instructive
 one.** `orchestrator:status` looks like the same case and is not: it is
@@ -380,9 +447,11 @@ wrong fails a test rather than passing a typed-in column.
   `users:remove_cert_binding` is not folded into `users:add_cert_binding`
   because enrolment only narrows an account while withdrawal of the LAST
   binding widens it back to CN/OU admission. Both permissions declare
-  `ScopeSelf` explicitly: `LookupScope` returns `ScopeSelf` for anything nobody
-  tagged, so an omission and a decision are indistinguishable in the registry,
-  and these two decide which certificates authenticate as an account.
+  `ScopeSelf` beside their definitions rather than in `self_scope.go`: they
+  were the first pair declared deliberately, back when `LookupScope` still
+  answered `ScopeSelf` for anything nobody tagged and an omission was
+  indistinguishable from a decision, and these two decide which certificates
+  authenticate as an account.
 - **Withdrawal and revocation are independent.** Revocation refuses a
   certificate; a binding is over the key and outlives every certificate issued
   for it, so a re-issue for the same key authenticates until the binding is
@@ -397,16 +466,15 @@ wrong fails a test rather than passing a typed-in column.
   extended at runtime by a caller.
 - **`FactorEnrollment.Data` is opaque.** qrdb stores it and never interprets it;
   verification is the registered `authfactors.Factor`'s job.
-- **`Lifecycle` is the single writable source of truth for account state.**
-  `Enabled` is re-derived from it on every write and every decode, and no
-  request field sets `Enabled` directly — two writable sources are how a record
-  ends up claiming to be locked and active at once.
-- **`normalize()` runs after every decode.** A record written before the field
-  existed has its state derived from `Enabled` (`true → active`,
-  `false → disabled`), so no migration pass is needed and no pre-upgrade account
-  is locked out by an empty state. A state that is present but UNRECOGNIZED is
-  left exactly as written — it came from a newer node, and `CanAuthenticate`
-  already fails closed on it.
+- **`Lifecycle` is the only account-state field.** The former `Enabled`
+  boolean — a derived projection of it — has been removed from the domain type
+  and from every transport; a second field describing the same state is how a
+  record ends up claiming to be locked and active at once.
+- **An absent state fails closed.** The store writes `Lifecycle` on every
+  create, so a persisted record always carries one. A record without it, or with
+  a state this build does not recognize, cannot authenticate and cannot be
+  transitioned. There is no decode-time fallback and no migration: a record
+  written before the field existed must be recreated.
 - **`deleting` is terminal and closes the registration-during-deletion window.**
   A deletion writes it before its first mutation; from that instant
   `CanAuthenticate` is false and neither `EnableUser`, `DisableUser` nor
@@ -441,11 +509,12 @@ wrong fails a test rather than passing a typed-in column.
   chain. An observed method whose name does not normalize fails closed.
 - **`EnableUser` / `DisableUser` are transitions, not boolean sets** — to
   `active` and `disabled` respectively. Both are refused on a `deleting` record.
-- **`GroupIDs` are opaque and case-PRESERVING**; `AuthMethods` are opaque and
-  case-FOLDED. Both are trimmed and de-duplicated by `NormalizeGroupIDs` /
-  `NormalizeAuthMethods`, and a blank entry is refused rather than dropped.
-  On an update, `nil` means "leave alone" and an empty non-nil slice means
-  "clear".
+- **`AuthMethods` are opaque and case-FOLDED.** They are trimmed and
+  de-duplicated by `NormalizeAuthMethods`, and a blank entry is refused rather
+  than dropped. On an update, `nil` means "leave alone" and an empty non-nil
+  slice means "clear".
+- **There is no group-membership field.** The former `GroupIDs` (and the SDK's
+  `NormalizeGroupIDs`) is removed: no qrdb authorization path read it.
 - **`LastAuth` only moves forward.** A value at or before the stored one is
   ignored, so overlapping logins written out of order cannot roll an account's
   last-seen time backwards. It is stored in UTC.
@@ -493,7 +562,7 @@ wrong fails a test rather than passing a typed-in column.
 | Lifecycle state unrecognized by this build | authentication fails | **yes** |
 | Transition the table does not connect (incl. out of `deleting`) | `LifecycleTransitionError` | **yes** |
 | Undefined or not-creatable lifecycle state | `InvalidLifecycleError` naming the allowed set | **yes** |
-| Blank `groupIDs` / `authMethods` entry | `ValidationError`, nothing written | **yes** |
+| Blank `authMethods` entry | `ValidationError`, nothing written | **yes** |
 | Unregistered permission string | `Parse` error | **yes** |
 | Missing permission for the operation | permission denied | **yes** |
 | Deleting a `System: true` user or a built-in role | refused | **yes** |

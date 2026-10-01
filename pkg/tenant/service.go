@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
@@ -195,6 +196,18 @@ type TenantServicer interface {
 	// DeleteTenant removes a tenant from the barrier registry and
 	// deletes its metadata from storage.
 	DeleteTenant(ctx context.Context, tenantID string) error
+
+	// ListDeletedTenants returns one page of retired tenant ids with their
+	// deletion records, in ascending id order: a paged range read over the
+	// tombstone prefix. pageSize 0 means DefaultDeletedTenantsPageSize and
+	// is capped at MaxDeletedTenantsPageSize; pageToken is the previous
+	// page's NextPageToken, or empty for the first page.
+	ListDeletedTenants(ctx context.Context, pageToken string, pageSize int) (*DeletedTenantsPage, error)
+
+	// ReconcileDeletedTenants removes, from THIS node, the on-disk residue of
+	// every retired tenant id, never touching a directory a live tenant
+	// claims. It is node-local by nature: each replica reclaims its own disk.
+	ReconcileDeletedTenants(ctx context.Context) (*ReconcileReport, error)
 
 	// UpdateTenant applies a partial update to an existing tenant.
 	// Changing the IsolationType on a tenant that has data returns
@@ -414,6 +427,19 @@ type TenantService struct {
 	// which is the security half of a delete.
 	teardownSeams
 
+	// isolationChangeGuard carries UpdateTenant's data probe; see
+	// isolation_change.go.
+	isolationChangeGuard
+	// runtimeCloser stops what this node runs for a tenant before
+	// ReconcileDeletedTenants removes its directories; see ResidueWiring.
+	runtimeCloser atomic.Pointer[runtimeCloserBox]
+
+	// removeAll removes one reclaimed directory; the registry's
+	// RemoveDataRoot in every composition, which empties a mount point rather
+	// than failing on it. It is a field so a test can make a removal fail and
+	// prove a second pass still finds the directory.
+	removeAll func(path string) error
+
 	logger *slog.Logger
 }
 
@@ -509,6 +535,7 @@ func NewTenantService(
 		store:            store,
 		registry:         registry,
 		tenantCeremonies: ceremony.NewTenantCeremonyRegistry(),
+		removeAll:        registry.RemoveDataRoot,
 		logger:           logger,
 	}
 	for _, o := range opts {
@@ -533,9 +560,16 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 	if err := validateReservedTenantID(ctx, id); err != nil {
 		return nil, err
 	}
+	// The metadata commit below must be atomic against the tombstone; a store
+	// that cannot do that is refused before anything is provisioned.
+	fenced, err := fencedCreatorOf(s.store)
+	if err != nil {
+		return nil, err
+	}
 	// A deleted id is retired, not released. This runs BEFORE every other
 	// check and before any registration side effect, so a resurrection
-	// attempt costs one read and changes nothing. See tombstone.go.
+	// attempt costs one read and changes nothing. It is a fast refusal only:
+	// the guarantee is the fenced commit at the end. See tombstone.go.
 	if err := checkTombstone(ctx, s.store.Get, id); err != nil {
 		return nil, err
 	}
@@ -580,9 +614,10 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 		}
 	}
 
-	// Check for existing tenant metadata.
+	// Check for existing tenant metadata. Like the tombstone check this is a
+	// fast refusal before provisioning; the fenced commit decides.
 	key := metadataPrefix + id
-	_, err := s.store.Get(ctx, key)
+	_, err = s.store.Get(ctx, key)
 	if err == nil {
 		return nil, ErrTenantAlreadyExists
 	}
@@ -634,10 +669,7 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 		// RegisterVolumeTenant reuses it instead of allocating from the pool.
 		root, _, regErr := s.registry.RegisterVolumeTenant(ctx, id, explicitDataRoot, cfg.barrierAutoUnseal)
 		if regErr != nil {
-			if errors.Is(regErr, seal.ErrTenantAlreadyExists) {
-				return nil, ErrTenantAlreadyExists
-			}
-			return nil, &BarrierError{TenantID: id, Op: "register-volume", Err: regErr}
+			return nil, s.volumeRegisterError(ctx, id, "register-volume", regErr)
 		}
 		dataRoot = root
 		if cfg.barrierAutoUnseal {
@@ -668,10 +700,7 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 		// allocating from the pool.
 		root, _, regErr := s.registry.RegisterVolumeTenant(ctx, id, explicitDataRoot, cfg.barrierAutoUnseal)
 		if regErr != nil {
-			if errors.Is(regErr, seal.ErrTenantAlreadyExists) {
-				return nil, ErrTenantAlreadyExists
-			}
-			return nil, &BarrierError{TenantID: id, Op: "register-raft", Err: regErr}
+			return nil, s.volumeRegisterError(ctx, id, "register-raft", regErr)
 		}
 		dataRoot = root
 		if cfg.barrierAutoUnseal {
@@ -707,10 +736,12 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 		return nil, &StoreError{Op: "marshal", Err: err}
 	}
 
-	if err := s.store.Put(ctx, key, data); err != nil {
-		// Roll back barrier registration on storage failure.
-		_ = s.registry.UnregisterTenant(id)
-		return nil, &StoreError{Op: "put", Err: err}
+	// Commit the record only while it AND the tombstone are absent, in one
+	// atomic step. This, not the reads above, is what keeps a create racing a
+	// delete of the same id from committing a live tenant under a retired id.
+	if err := commitCreate(ctx, fenced, s.store.Get, id, data); err != nil {
+		s.rollbackRegistration(ctx, id, isolationType, err)
+		return nil, err
 	}
 
 	s.logger.Info("tenant created",
@@ -719,6 +750,68 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 		slog.String("isolation_type", string(isolationType)))
 
 	return info, nil
+}
+
+// volumeRegisterError maps a volume/raft barrier registration failure onto
+// the tenant package's errors. A DataRoot another tenant's record on this node
+// still names is the caller's conflict, reported like any other DataRoot
+// overlap. When that claimant is a RETIRED tenant -- deleted, its residue not
+// yet reclaimed on this node -- the error says so and names the verb that
+// reclaims it, because the operator's remedy is then to reconcile, not to
+// pick another path.
+func (s *TenantService) volumeRegisterError(ctx context.Context, id, op string, regErr error) error {
+	if errors.Is(regErr, seal.ErrTenantAlreadyExists) {
+		return ErrTenantAlreadyExists
+	}
+	var claimed *seal.DataRootClaimedError
+	if !errors.As(regErr, &claimed) {
+		return &BarrierError{TenantID: id, Op: op, Err: regErr}
+	}
+	overlap := &DataRootOverlapError{DataRoot: claimed.DataRoot, Conflict: claimed.DataRoot, Kind: "tenant " + claimed.ClaimedBy}
+	_, retired, err := s.deletedAt(ctx, claimed.ClaimedBy)
+	if err != nil {
+		return err
+	}
+	if retired {
+		overlap.Kind = "retired tenant " + claimed.ClaimedBy
+		overlap.Remedy = retiredResidueRemedy
+	}
+	return overlap
+}
+
+// retiredResidueRemedy is the remedy a DataRootOverlapError names when the
+// conflicting path is a retired tenant's unreclaimed residue.
+const retiredResidueRemedy = "it is retired-tenant residue on this node; run `qrdb tenant reconcile-deleted` on this node to reclaim it"
+
+// rollbackRegistration undoes the barrier this create provisioned when its
+// metadata commit did not land. A prefix tenant provisioned nothing.
+//
+// What "undo" means depends on why the commit failed, and getting it wrong in
+// either direction is a defect:
+//
+//   - The id was RETIRED under this create (*TenantDeletedError). Everything
+//     provisioned for it is destroyed, durable records included: the boot path
+//     restores a volume or raft tenant's barrier from its tenant-root record,
+//     so merely unregistering would bring a retired id's barrier back on every
+//     restart. Destroying is safe because a retired id has no rightful owner.
+//   - Any other failure -- another create won the id, or the outcome is
+//     unknown -- only forgets the in-memory registration. The durable records
+//     may now belong to the create that won, and destroying them would take
+//     that tenant's barrier with them.
+func (s *TenantService) rollbackRegistration(ctx context.Context, id string, isolationType IsolationType, cause error) {
+	if isolationType != IsolationBarrier && isolationType != IsolationVolume && isolationType != IsolationRaft {
+		return
+	}
+	var retired *TenantDeletedError
+	if errors.As(cause, &retired) {
+		if err := s.registry.DestroyTenant(ctx, id); err != nil && !errors.Is(err, seal.ErrTenantNotFound) {
+			s.logger.Warn("tenant create lost to a delete; retired id's barrier residue not fully destroyed",
+				slog.String("tenant_id", id),
+				slog.String("error", err.Error()))
+		}
+		return
+	}
+	_ = s.registry.UnregisterTenant(id)
 }
 
 // checkDataRootOverlap rejects an operator-supplied dedicated DataRoot that
@@ -808,6 +901,9 @@ func (s *TenantService) UpdateTenant(ctx context.Context, tenantID string, patch
 
 	info, err := s.GetTenant(ctx, tenantID)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.checkIsolationChange(ctx, info, patch); err != nil {
 		return nil, err
 	}
 
@@ -1537,7 +1633,9 @@ func (s *TenantService) TenantBarrierInit(ctx context.Context, tenantID string, 
 // is used for the software-only strategies (passphrase, none).
 //
 // The passphrase field is required for the passphrase strategy; for all other
-// strategies (none, hardware/cloud KMS) it is ignored. The tenant must exist.
+// strategies (none, hardware/cloud KMS) it is ignored. It is BORROWED for the
+// duration of the call — copied into protected memory and left as it was for
+// the caller to wipe. The tenant must exist.
 //
 // Authorization — who may call this — is enforced at the API/transport
 // layer, not here.
@@ -1594,11 +1692,17 @@ func (s *TenantService) TenantBarrierInitWithStrategy(
 	}
 
 	// Build credentials. For the passphrase strategy the Secret carries
-	// the tenant admin's passphrase; for all other strategies the
-	// Credentials struct is empty (the strategy's KEK handles wrapping).
+	// the tenant admin's passphrase, copied into protected memory (the
+	// caller's slice is borrowed, not consumed) and destroyed once the
+	// initialization has used it. For all other strategies the Credentials
+	// struct is empty (the strategy's KEK handles wrapping).
 	creds := seal.Credentials{}
 	if seal.IsPassphraseStrategy(strategyID) {
-		creds.Secret = passphrase
+		var err error
+		if creds, err = seal.CredentialsFor(passphrase); err != nil {
+			return nil, &BarrierError{TenantID: tenantID, Op: "credentials", Err: err}
+		}
+		defer creds.Secret.Destroy()
 	}
 
 	// Register a sealed shell when the tenant barrier is not yet
@@ -1777,7 +1881,14 @@ func (s *TenantService) TenantBarrierUnseal(ctx context.Context, tenantID string
 		return err
 	}
 
-	creds := seal.Credentials{Secret: key}
+	// key is BORROWED: it is copied into protected memory and left for the
+	// caller to wipe, and the credential is destroyed once the unseal has
+	// used it.
+	creds, err := seal.CredentialsFor(key)
+	if err != nil {
+		return &BarrierError{TenantID: tenantID, Op: "credentials", Err: err}
+	}
+	defer creds.Secret.Destroy()
 
 	if err := s.registry.UnsealTenant(ctx, tenantID, creds); err != nil {
 		return &BarrierError{TenantID: tenantID, Op: "unseal", Err: err}

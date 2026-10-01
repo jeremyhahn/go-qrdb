@@ -16,12 +16,9 @@ package dekwire
 
 import (
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 	"time"
-
-	"google.golang.org/grpc/codes"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
 )
@@ -67,44 +64,6 @@ func TestResultConversions(t *testing.T) {
 	}
 	if r := Rewrap(&dek.Rewrapped{Ciphertext: []byte("n"), FromVersion: 1, ToVersion: 4}); string(r.Ciphertext) != "n" || r.FromVersion != 1 || r.ToVersion != 4 {
 		t.Fatalf("Rewrap = %+v", r)
-	}
-}
-
-// TestCodeCoversEveryClass: each keyring error class maps to exactly the
-// documented code and HTTP status, and a foreign error is left to the caller.
-func TestCodeCoversEveryClass(t *testing.T) {
-	cases := []struct {
-		err  error
-		code codes.Code
-		http int
-	}{
-		{&dek.InvalidInputError{Op: "x", Field: "y"}, codes.InvalidArgument, 400},
-		{&dek.CrossTenantError{}, codes.PermissionDenied, 403},
-		{&dek.MalformedCiphertextError{Reason: "r"}, codes.InvalidArgument, 400},
-		{&dek.AuthenticationFailedError{}, codes.InvalidArgument, 400},
-		{&dek.UnknownVersionError{}, codes.NotFound, 404},
-		{&dek.VersionRetiredError{}, codes.FailedPrecondition, 409},
-		{&dek.RetireCurrentVersionError{}, codes.FailedPrecondition, 409},
-		{&dek.KeyringUnavailableError{Err: errors.New("sealed")}, codes.Unavailable, 503},
-		{&dek.CorruptKeyringError{}, codes.DataLoss, 500},
-		{&dek.ConcurrentUpdateError{}, codes.Aborted, 409},
-		{&dek.CryptoError{Op: "x", Err: errors.New("y")}, codes.Internal, 500},
-	}
-	for _, c := range cases {
-		code, ok := Code(c.err)
-		if !ok || code != c.code {
-			t.Errorf("Code(%T) = %v, %v; want %v", c.err, code, ok, c.code)
-		}
-		status, ok := HTTPStatus(c.err)
-		if !ok || status != c.http {
-			t.Errorf("HTTPStatus(%T) = %d, %v; want %d", c.err, status, ok, c.http)
-		}
-	}
-	if _, ok := Code(errors.New("foreign")); ok {
-		t.Error("a foreign error must not be classified")
-	}
-	if _, ok := HTTPStatus(errors.New("foreign")); ok {
-		t.Error("a foreign error must not get an HTTP status")
 	}
 }
 

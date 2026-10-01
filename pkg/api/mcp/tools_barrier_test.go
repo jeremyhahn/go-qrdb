@@ -226,6 +226,10 @@ func TestBarrierTools_Registration(t *testing.T) {
 		"qrdb_barrier_recovery_officer_register",
 		"qrdb_barrier_recovery_share_claim_begin",
 		"qrdb_barrier_recovery_share_claim_complete",
+		// Registered even with a nil encMigrator (go-qrdb#558): the handler
+		// itself refuses with a typed error rather than the tool being
+		// omitted.
+		"qrdb_barrier_enable_encryption",
 	}
 
 	if len(tools) != len(expectedNames) {

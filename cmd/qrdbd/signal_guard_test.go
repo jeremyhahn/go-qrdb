@@ -22,6 +22,9 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-enclave"
+	secure "github.com/jeremyhahn/go-qrdb/sdk/go/secure"
 )
 
 // Many tests in this package drive runStart's shutdown path by sending a
@@ -53,11 +56,34 @@ func armSignalGuard() {
 	signal.Notify(signalGuard, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 }
 
-// resetSignalHandlers drops the handlers a test installed -- including any the
-// code under test left behind -- and then restores the guard. Use it in place
-// of signal.Reset, which would leave the default disposition armed.
+// resetSignalHandlers re-arms the guard for sigs. Use it in place of a bare
+// signal.Reset, which would leave the default disposition armed with nothing
+// to restore it.
+//
+// It used to also call signal.Reset(sigs...) first, to drop a handler a test
+// or the code under test left behind. signal.Reset(sig...) removes EVERY
+// channel registered for the named signals, guard included, and
+// unconditionally disables the OS-level handler for them before the
+// following armSignalGuard() call re-enables it -- a real window, between
+// those two calls, in which a signal has no handler at all and the OS
+// default disposition kills the whole test binary. signalAfterReady and
+// stopDaemon's own retry loops make that window reachable: a SIGTERM they
+// already sent can still be in flight when a test's cleanup calls this
+// function, and landing in the window is what "signal: terminated" with no
+// failing assertion looked like (go-qrdb#442).
+//
+// Dropping the Reset call removes the window rather than narrowing it: this
+// function no longer calls anything that can disable a signal for every
+// registered channel, so there is no instant at which none is registered.
+// It is also not a loss of the old behaviour's purpose. Every production
+// signal.Notify call site pairs itself with its own signal.Stop
+// (signal.NotifyContext's stop function, or a deferred signal.Stop next to a
+// raw Notify -- see start.go), so a leaked handler from the code under test
+// is not this function's problem to clean up; and signal.Notify's delivery
+// to a channel nobody is reading from any more is a non-blocking send that
+// is silently dropped, so a stale test channel some earlier revision left
+// registered was always inert, never a correctness hazard.
 func resetSignalHandlers(sigs ...os.Signal) {
-	signal.Reset(sigs...)
 	armSignalGuard()
 }
 
@@ -392,5 +418,57 @@ func listenerReady(addr string) func() bool {
 
 func TestMain(m *testing.M) {
 	armSignalGuard()
+	restoreSecureLifecycle := installTestSecureLifecycle()
+	defer restoreSecureLifecycle()
 	os.Exit(m.Run())
+}
+
+// installTestSecureLifecycle replaces runStart's three go-enclave lifecycle
+// seams (newSecureAllocator, setSecureAllocator, wipeSecureMemory) with
+// doubles safe to call an unbounded number of times in one process, and
+// returns a restore function.
+//
+// Why the real functions cannot be left wired for this binary: this package
+// calls runStart directly, and drives it through cmd.Execute(), FAR more than
+// once per run (every TestRunStart_*, every *_FullStartup test, every test
+// exercising newStartCmdWithFlags's RunE). secure.SetAllocator can be
+// satisfied only once per process, and secure.WipeAll permanently destroys
+// the process Sealer's keys the moment ANY test's runStart reaches shutdown —
+// so the second test to call SetAllocator, or the first to reach WipeAll,
+// would fail or poison every seal-using test after it. Measured, not
+// theorized: wiring the real functions here produced exactly that cascade.
+//
+// newSecureAllocator still returns a REAL, functioning *secure.Allocator
+// (via enclave.NewAllocator, so a test asserting on a bad budget still gets a
+// real rejection) — only the process-wide INSTALLATION and the destructive
+// SWEEP are doubled, since those are the two operations this binary cannot
+// repeat safely.
+//
+// enclave.NewAllocator, not secure.NewAllocatorWithinRLimit: the RLimit-aware
+// constructor refuses a budget above the HOST's discovered RLIMIT_MEMLOCK
+// ceiling, which makes this test binary's default 64 MiB budget fail on any
+// runner whose ceiling is lower — common in a constrained or sandboxed CI
+// worker — before a single test under it even runs (go-qrdb#114 review,
+// round 2: this doubling was host-dependent for exactly that reason).
+// enclave.NewAllocator validates only that the requested size is positive, so
+// it is a real allocator with a real rejection path, without making every
+// test in this binary depend on the host's memlock limit.
+// TestRunStart_SecureMemoryBudgetRejected, which specifically wants the
+// RLIMIT-aware rejection, overrides newSecureAllocator itself via
+// swapSecureLifecycle and does not rely on this default.
+func installTestSecureLifecycle() (restore func()) {
+	prevNew, prevSet, prevWipe, prevDiscover := newSecureAllocator, setSecureAllocator, wipeSecureMemory, discoverLockedMemoryLimit
+	newSecureAllocator = enclave.NewAllocator
+	setSecureAllocator = func(*secure.Allocator) error { return nil }
+	wipeSecureMemory = func() (int, error) { return 0, nil }
+	// An unconfigured budget is derived from RLIMIT_MEMLOCK; reporting it
+	// unlimited keeps every runStart test in this binary off the host's own
+	// limit, for the same reason newSecureAllocator is not the RLIMIT-aware
+	// constructor. secure_budget_test.go presents specific limits itself.
+	discoverLockedMemoryLimit = func() (secure.LockedMemoryLimit, error) {
+		return secure.LockedMemoryLimit{Source: secure.LimitUnlimited}, nil
+	}
+	return func() {
+		newSecureAllocator, setSecureAllocator, wipeSecureMemory, discoverLockedMemoryLimit = prevNew, prevSet, prevWipe, prevDiscover
+	}
 }

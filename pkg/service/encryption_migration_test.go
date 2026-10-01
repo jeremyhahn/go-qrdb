@@ -41,10 +41,10 @@ func (p *fakeMigrationProvider) StoreDirs(_ context.Context, _ BarrierScope) ([]
 }
 
 func (p *fakeMigrationProvider) MintKeyedTarget(ctx context.Context, _ BarrierScope, opts seal.MigrationOptions) (*seal.StorageBarrier, error) {
-	strategy, err := seal.NewSoftwareStrategy(opts.Credentials.Secret)
-	if err != nil {
-		return nil, err
-	}
+	// Deferred, as the production provider mints it (sdk/go/node
+	// keyedStrategyForStrategy): the passphrase is read from the credential
+	// at each seal and unseal, so the fake never materializes it.
+	strategy := seal.NewDeferredSoftwareStrategy()
 	b, err := seal.NewStorageBarrier(testLogger(), p.sealBackend,
 		seal.BarrierConfig{RootKeyPath: "root-key.migrating", DeploymentID: 1}, strategy)
 	if err != nil {
@@ -120,7 +120,7 @@ func validSwapOpts() seal.MigrationOptions {
 		TargetStrategy: seal.StrategyPassphrase,
 		Mechanism:      seal.MechanismSwap,
 		Availability:   seal.AvailabilityQuiesced,
-		Credentials:    seal.Credentials{Secret: []byte("migrate-pass")},
+		Credentials:    seal.MustCredentials([]byte("migrate-pass")),
 	}
 }
 
@@ -232,7 +232,7 @@ func initReopenKeyedService(t *testing.T, backend seal.StorageBackend, rootKeyPa
 	if err != nil {
 		t.Fatalf("barrier: %v", err)
 	}
-	if err := b.Unseal(context.Background(), seal.Credentials{Secret: []byte(passphrase)}); err != nil {
+	if err := b.Unseal(context.Background(), seal.MustCredentials([]byte(passphrase))); err != nil {
 		t.Fatalf("unseal: %v", err)
 	}
 	return b
@@ -257,4 +257,23 @@ func readStore(t *testing.T, dir string, enc *atrest.Encryptor) map[string]strin
 		out[string(it.Key())] = string(it.Value())
 	}
 	return out
+}
+
+func TestDataPlaneRecyclingError_NamesTheService(t *testing.T) {
+	tests := []struct {
+		service string
+		want    string
+	}{
+		{service: "tenant", want: "service: tenant service unavailable during data-plane recycle"},
+		{service: "kv", want: "service: kv service unavailable during data-plane recycle"},
+	}
+	for _, tt := range tests {
+		err := error(&DataPlaneRecyclingError{Service: tt.service})
+		if got := err.Error(); got != tt.want {
+			t.Errorf("Error() = %q, want %q", got, tt.want)
+		}
+		if errors.Is(err, ErrMigrationProviderUnavailable) {
+			t.Errorf("a recycling error must not match ErrMigrationProviderUnavailable")
+		}
+	}
 }

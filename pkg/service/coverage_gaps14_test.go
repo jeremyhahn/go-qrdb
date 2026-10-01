@@ -261,21 +261,101 @@ func TestBatchService_Import_JSON_EmptyArray(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// backup_service.go – verifyEntry error paths (87.5% → higher)
+// backup_service.go – verifyEntry refusals
+//
+// A skip used to sit here claiming these paths "require real storage". They
+// do not: the backup registry is an in-memory map on the service, in this
+// package, so a corrupted entry is one write to it, and a failed backup is
+// what the mock provider's snapshotErr produces (go-qrdb#529).
 // ---------------------------------------------------------------------------
 
+// A backup whose captured shard bytes no longer hash to the recorded checksum
+// is reported invalid with the mismatch named, and a restore that asks to
+// validate first refuses it rather than restoring corrupt data.
 func TestBackupService_VerifyBackup_CorruptedEntry(t *testing.T) {
-	// This tests the verifyEntry path when data verification fails.
-	// We exercise via VerifyBackup which calls verifyEntry.
-	// Existing tests already cover VerifyBackup success — we need the
-	// error path where checksum doesn't match.
-	// Since this requires constructing a malformed backup, we rely on
-	// the existing test infrastructure from backup_service_test.go.
-	// The verifyEntry error at line 492 is about checksum mismatch
-	// and line 496 is about entry storage failure.
-	// These are hard to trigger without a real storage backend.
-	// Noting that the existing 87.5% coverage indicates 1 branch is missing.
-	t.Skip("backup verifyEntry error paths require real storage — documented as known gap")
+	provider := newMockSnapshotProvider()
+	svc, ok := NewBackupService(provider).(*BackupService)
+	if !ok {
+		t.Fatal("NewBackupService did not return *BackupService")
+	}
+	ctx := context.Background()
+
+	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/corrupt"})
+	if err != nil {
+		t.Fatalf("CreateBackup: %v", err)
+	}
+
+	// Corrupt one shard's captured bytes behind the service's back. The
+	// checksum recorded at creation covers the original bytes.
+	svc.mu.Lock()
+	entry := svc.backups[created.ID]
+	entry.shards[1] = append([]byte("tampered-"), entry.shards[1]...)
+	svc.mu.Unlock()
+
+	result, err := svc.VerifyBackup(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("VerifyBackup: %v", err)
+	}
+	if result.Valid || result.ChecksumMatch {
+		t.Fatalf("a corrupted backup verified as valid: %+v", result)
+	}
+	if result.ExpectedChecksum != created.Checksum {
+		t.Errorf("ExpectedChecksum = %s, want the recorded %s", result.ExpectedChecksum, created.Checksum)
+	}
+	if result.ActualChecksum == result.ExpectedChecksum {
+		t.Error("ActualChecksum must differ from the recorded one for corrupted bytes")
+	}
+	if len(result.Errors) != 1 || !strings.Contains(result.Errors[0], "checksum mismatch: expected "+created.Checksum) {
+		t.Errorf("Errors = %v, want exactly one naming the checksum mismatch", result.Errors)
+	}
+
+	// ValidateFirst refuses to restore it, with the two checksums.
+	_, err = svc.RestoreBackup(ctx, RestoreOptions{BackupID: created.ID, ValidateFirst: true})
+	var mismatch *BackupChecksumMismatchError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("RestoreBackup(ValidateFirst) = %v, want *BackupChecksumMismatchError", err)
+	}
+	if mismatch.Expected != created.Checksum || mismatch.Actual != result.ActualChecksum {
+		t.Errorf("mismatch error = %+v, want expected %s / actual %s", mismatch, created.Checksum, result.ActualChecksum)
+	}
+	if provider.restoreCalls.Load() != 0 {
+		t.Error("a refused restore must not have touched any shard")
+	}
+}
+
+// A backup that FAILED at creation is reported invalid even when its (empty)
+// checksum happens to match: the status is the second thing verifyEntry
+// checks, and the error message it recorded is surfaced.
+func TestBackupService_VerifyBackup_FailedBackupIsInvalid(t *testing.T) {
+	provider := newMockSnapshotProvider()
+	provider.snapshotErr = errors.New("snapshot unavailable")
+	svc := NewBackupService(provider)
+	ctx := context.Background()
+
+	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/failed"})
+	if err == nil {
+		t.Fatal("CreateBackup succeeded against a failing provider")
+	}
+	if created.Status != BackupStatusFailed {
+		t.Fatalf("status = %s, want failed", created.Status)
+	}
+
+	result, err := svc.VerifyBackup(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("VerifyBackup: %v", err)
+	}
+	if result.Valid {
+		t.Fatalf("a failed backup verified as valid: %+v", result)
+	}
+	var sawStatus bool
+	for _, e := range result.Errors {
+		if strings.Contains(e, "backup status is failed: snapshot unavailable") {
+			sawStatus = true
+		}
+	}
+	if !sawStatus {
+		t.Errorf("Errors = %v, want the failed status with its recorded message", result.Errors)
+	}
 }
 
 // ---------------------------------------------------------------------------

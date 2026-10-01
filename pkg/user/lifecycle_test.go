@@ -15,6 +15,7 @@
 package user
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -160,18 +161,6 @@ func TestLifecycle_CanTransitionToRejectsUnknownOnEitherSide(t *testing.T) {
 	}
 }
 
-func TestLifecycleFromEnabled(t *testing.T) {
-	if got := lifecycleFromEnabled(true); got != LifecycleActive {
-		t.Errorf("lifecycleFromEnabled(true): got %q, want %q", got, LifecycleActive)
-	}
-	// Deliberately lossy: pending was stored as Enabled=false and is
-	// indistinguishable on disk from disabled, so it reads back as disabled —
-	// preserving the only property the old encoding actually carried.
-	if got := lifecycleFromEnabled(false); got != LifecycleDisabled {
-		t.Errorf("lifecycleFromEnabled(false): got %q, want %q", got, LifecycleDisabled)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // initialLifecycle
 // ---------------------------------------------------------------------------
@@ -248,19 +237,19 @@ func TestInitialLifecycle_RejectsPendingConflictingWithLifecycle(t *testing.T) {
 // applyLifecycle
 // ---------------------------------------------------------------------------
 
-func TestApplyLifecycle_MovesStateAndRederivesEnabled(t *testing.T) {
+func TestApplyLifecycle_MovesState(t *testing.T) {
 	u := &User{ID: 7, Lifecycle: LifecyclePending}
 	if err := applyLifecycle(u, LifecycleActive); err != nil {
 		t.Fatalf("applyLifecycle: %v", err)
 	}
-	if u.Lifecycle != LifecycleActive || !u.Enabled {
-		t.Fatalf("got lifecycle=%q enabled=%v, want active/true", u.Lifecycle, u.Enabled)
+	if u.Lifecycle != LifecycleActive || !u.CanAuthenticate() {
+		t.Fatalf("got lifecycle=%q canAuthenticate=%v, want active/true", u.Lifecycle, u.CanAuthenticate())
 	}
 	if err := applyLifecycle(u, LifecycleSuspended); err != nil {
 		t.Fatalf("applyLifecycle(suspend): %v", err)
 	}
-	if u.Enabled {
-		t.Error("Enabled stayed true after suspension; it must be derived, not remembered")
+	if u.CanAuthenticate() {
+		t.Error("a suspended account may still authenticate")
 	}
 }
 
@@ -272,13 +261,13 @@ func TestApplyLifecycle_IsIdempotentIncludingFromTerminal(t *testing.T) {
 	if err := applyLifecycle(u, LifecycleDeleting); err != nil {
 		t.Fatalf("re-asserting deleting must be a no-op, got: %v", err)
 	}
-	if u.Lifecycle != LifecycleDeleting || u.Enabled {
-		t.Fatalf("got lifecycle=%q enabled=%v", u.Lifecycle, u.Enabled)
+	if u.Lifecycle != LifecycleDeleting || u.CanAuthenticate() {
+		t.Fatalf("got lifecycle=%q canAuthenticate=%v", u.Lifecycle, u.CanAuthenticate())
 	}
 }
 
 func TestApplyLifecycle_RefusesUnconnectedTransitionAndLeavesRecordUntouched(t *testing.T) {
-	u := &User{ID: 9, Lifecycle: LifecycleDeleting, Enabled: false}
+	u := &User{ID: 9, Lifecycle: LifecycleDeleting}
 	err := applyLifecycle(u, LifecycleActive)
 	var te *LifecycleTransitionError
 	if !errors.As(err, &te) {
@@ -290,13 +279,13 @@ func TestApplyLifecycle_RefusesUnconnectedTransitionAndLeavesRecordUntouched(t *
 	if !strings.Contains(te.Error(), "terminal") {
 		t.Errorf("Error(): %q should say deleting is terminal", te.Error())
 	}
-	if u.Lifecycle != LifecycleDeleting || u.Enabled {
+	if u.Lifecycle != LifecycleDeleting {
 		t.Error("a refused transition mutated the record")
 	}
 }
 
 func TestApplyLifecycle_RefusesUnknownTargetState(t *testing.T) {
-	u := &User{ID: 10, Lifecycle: LifecycleActive, Enabled: true}
+	u := &User{ID: 10, Lifecycle: LifecycleActive}
 	err := applyLifecycle(u, "quarantined")
 	var invalid *InvalidLifecycleError
 	if !errors.As(err, &invalid) {
@@ -305,13 +294,13 @@ func TestApplyLifecycle_RefusesUnknownTargetState(t *testing.T) {
 	if invalid.Op != "update" {
 		t.Errorf("Op: got %q, want %q", invalid.Op, "update")
 	}
-	if u.Lifecycle != LifecycleActive || !u.Enabled {
+	if u.Lifecycle != LifecycleActive {
 		t.Error("a refused transition mutated the record")
 	}
 }
 
 // ---------------------------------------------------------------------------
-// User.CanAuthenticate / normalize
+// User.CanAuthenticate
 // ---------------------------------------------------------------------------
 
 func TestUserCanAuthenticate(t *testing.T) {
@@ -323,22 +312,6 @@ func TestUserCanAuthenticate(t *testing.T) {
 			t.Errorf("user in %q may authenticate", l)
 		}
 	}
-
-	// A value with NO state at all is a pre-lifecycle record — one an older
-	// node wrote, or a caller assembled by hand for a fallback store or a test
-	// double. Enabled is its state; reading the absence as "cannot
-	// authenticate" would lock out every such account.
-	if !(&User{Enabled: true}).CanAuthenticate() {
-		t.Error("a stateless record with Enabled=true cannot authenticate")
-	}
-	if (&User{Enabled: false}).CanAuthenticate() {
-		t.Error("a stateless record with Enabled=false may authenticate")
-	}
-	// An UNRECOGNIZED state has no honest fallback — the newer node that wrote
-	// it meant something specific — so it fails closed regardless of Enabled.
-	if (&User{Lifecycle: "quarantined", Enabled: true}).CanAuthenticate() {
-		t.Error("an unrecognized state was waved through on a stale Enabled")
-	}
 	// A nil record is not an authenticated one. Callers resolve a user and then
 	// ask; a nil dereference here would be a panic on the login path.
 	var nilUser *User
@@ -347,48 +320,23 @@ func TestUserCanAuthenticate(t *testing.T) {
 	}
 }
 
-func TestUserNormalize_DerivesStateForLegacyRecords(t *testing.T) {
-	cases := []struct {
-		name          string
-		in            User
-		wantLifecycle Lifecycle
-		wantEnabled   bool
-	}{
-		{"legacy enabled", User{Enabled: true}, LifecycleActive, true},
-		{"legacy disabled", User{Enabled: false}, LifecycleDisabled, false},
-		{"explicit state wins over stale bool", User{Lifecycle: LifecycleSuspended, Enabled: true}, LifecycleSuspended, false},
-		{"explicit active re-derives true", User{Lifecycle: LifecycleActive, Enabled: false}, LifecycleActive, true},
+// An ABSENT state fails closed exactly like an unrecognized one. Lifecycle is
+// the only account-state field; there is no older encoding to fall back to, so
+// a record that carries no state is a record that cannot authenticate.
+func TestUserCanAuthenticate_EmptyLifecycleFailsClosed(t *testing.T) {
+	if (&User{ID: 1, Username: "alice"}).CanAuthenticate() {
+		t.Error("a record with no lifecycle state may authenticate")
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			u := tc.in
-			u.normalize()
-			if u.Lifecycle != tc.wantLifecycle {
-				t.Errorf("Lifecycle: got %q, want %q", u.Lifecycle, tc.wantLifecycle)
-			}
-			if u.Enabled != tc.wantEnabled {
-				t.Errorf("Enabled: got %v, want %v", u.Enabled, tc.wantEnabled)
-			}
-		})
+	// The same record decoded from JSON — including one carrying the removed
+	// "enabled" key — still has no state and must still be refused.
+	var decoded User
+	if err := json.Unmarshal([]byte(`{"id":1,"username":"alice","enabled":true}`), &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
 	}
-}
-
-// A state written by a NEWER node must survive this node reading the record.
-// Overwriting it would destroy the other node's data on the next write while
-// telling this one a story it made up; CanAuthenticate already fails closed on
-// it, so leaving it costs only a coarser Enabled.
-func TestUserNormalize_PreservesUnrecognizedState(t *testing.T) {
-	u := User{Lifecycle: "quarantined", Enabled: true}
-	u.normalize()
-	if u.Lifecycle != "quarantined" {
-		t.Errorf("Lifecycle: got %q, want the value as written", u.Lifecycle)
+	if decoded.Lifecycle != "" {
+		t.Fatalf("Lifecycle: got %q, want empty", decoded.Lifecycle)
 	}
-	if u.Enabled {
-		t.Error("Enabled: got true; an unrecognized state must project to false")
+	if decoded.CanAuthenticate() {
+		t.Error("a decoded record with no lifecycle state may authenticate")
 	}
-}
-
-func TestUserNormalize_NilIsSafe(t *testing.T) {
-	var u *User
-	u.normalize() // must not panic
 }

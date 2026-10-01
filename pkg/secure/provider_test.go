@@ -363,3 +363,50 @@ func TestStdinProvider_ReadsRawIOEOF(t *testing.T) {
 		t.Fatalf("got %q, want %q", buf.Bytes(), data)
 	}
 }
+
+// TestStdinProvider_TakesNoNestedBorrow pins the single, sequential ownership
+// in StdinProvider.Passphrase: the line is read under scratch's borrow, and the
+// returned Buffer is allocated only after that borrow ends. An earlier form
+// allocated the result from inside scratch's borrow, handing scratch's own
+// pages to a constructor that wipes its source — a nested borrow the guard
+// reports.
+func TestStdinProvider_TakesNoNestedBorrow(t *testing.T) {
+	defer GuardBorrows(t.Fatalf)()
+
+	buf, err := NewStdinProviderFromReader(strings.NewReader("correct horse\r\nleftover")).
+		Passphrase(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Passphrase: %v", err)
+	}
+	defer buf.Destroy()
+	out, err := CopyOut(buf)
+	if err != nil {
+		t.Fatalf("CopyOut: %v", err)
+	}
+	if string(out) != "correct horse" {
+		t.Errorf("passphrase = %q, want %q", out, "correct horse")
+	}
+}
+
+// TestCopyPrefix_RefusesADestroyedSource pins copyPrefix's failure mapping: a
+// source destroyed before the copy is a *NilBufferError, and dst is untouched.
+func TestCopyPrefix_RefusesADestroyedSource(t *testing.T) {
+	dst, err := NewBuffer(4)
+	if err != nil {
+		t.Fatalf("NewBuffer(dst): %v", err)
+	}
+	defer dst.Destroy()
+	src, err := NewBufferFromBytes([]byte("abcd"))
+	if err != nil {
+		t.Fatalf("NewBufferFromBytes(src): %v", err)
+	}
+	src.enc.Destroy() // gone underneath the wrapper, as after a WipeAll
+
+	var nilBuf *NilBufferError
+	if err := copyPrefix(dst, src, 4); !errors.As(err, &nilBuf) {
+		t.Fatalf("copyPrefix from a destroyed source: %v, want *NilBufferError", err)
+	}
+	if got := dst.Bytes(); !bytes.Equal(got, make([]byte, 4)) {
+		t.Errorf("dst = %q after a refused copy, want zeros", got)
+	}
+}

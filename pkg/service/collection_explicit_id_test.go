@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
@@ -241,7 +242,7 @@ func TestCollectionService_InsertDocument_GeneratedIDCollisionIsRefused(t *testi
 	svc, kv, _ := newIncrementCollectionService()
 	createCollection(t, svc, "mydb", "users", IDStrategyIncrement, "")
 
-	docKey := collectionDataEntityType("mydb", "users") + "/1"
+	docKey := docKeyForTest(t, svc, "mydb", "users", 1)
 	require.NoError(t, kv.Put(ctx, docKey, []byte(`{"id":"1","who":"planted"}`)))
 
 	_, err := svc.InsertDocument(ctx, &InsertDocumentRequest{
@@ -321,14 +322,14 @@ func TestCollectionService_ReserveExplicitDocumentID_RaisesTheReplicatedCounter(
 	info := &CollectionInfo{Database: "mydb", Name: "users", IDStrategy: IDStrategyIncrement}
 	require.NoError(t, svc.reserveExplicitDocumentID(ctx, info, 40))
 
-	current, err := seq.Peek(ctx, "mydb", collectionSequenceName("users"))
+	current, err := seq.Peek(ctx, "mydb", collectionSequenceName(info))
 	require.NoError(t, err)
 	assert.Equal(t, uint64(40), current)
 
 	// Advance is defined to be a no-op once the counter is at or past the
 	// target, so a lower explicit id must not lower the watermark.
 	require.NoError(t, svc.reserveExplicitDocumentID(ctx, info, 7))
-	current, err = seq.Peek(ctx, "mydb", collectionSequenceName("users"))
+	current, err = seq.Peek(ctx, "mydb", collectionSequenceName(info))
 	require.NoError(t, err)
 	assert.Equal(t, uint64(40), current, "an explicit id below the watermark must not lower it")
 }
@@ -348,7 +349,7 @@ func TestCollectionService_ReserveExplicitDocumentID_NoCounterToReserve(t *testi
 			info := &CollectionInfo{Database: "mydb", Name: "c", IDStrategy: strategy, FieldHash: "name"}
 			require.NoError(t, svc.reserveExplicitDocumentID(ctx, info, 500))
 
-			_, err := seqStore.Get(ctx, tableSequenceKey("mydb", collectionSequenceName("c")))
+			_, err := seqStore.Get(ctx, tableSequenceKey("mydb", collectionSequenceName(info)))
 			var notFound *KeyNotFoundError
 			assert.ErrorAs(t, err, &notFound, "a strategy with no counter must not create a sequence key")
 		})
@@ -409,15 +410,18 @@ func TestCollectionService_StoreNewDocument_GuardedWhenOverwriteRefused(t *testi
 	ctx := context.Background()
 	kv := newMemoryKVSvc()
 	svc := NewCollectionService(kv)
-	docKey := collectionDataEntityType("mydb", "users") + "/1"
 	createCollection(t, svc, "mydb", "users", IDStrategyIncrement, "")
 	info, err := svc.loadCollectionInfo(ctx, "mydb", "users")
 	require.NoError(t, err)
+	docKey := collectionDocumentKey(info, 1)
 	req := &InsertDocumentRequest{Database: "mydb", Collection: "users"}
+	c := svc.resolveCodec(info)
 
-	require.NoError(t, svc.storeNewDocument(ctx, info, req, docKey, []byte(`{"id":"1","who":"first"}`), 1, true))
+	resp, err := svc.storeNewDocument(ctx, info, req, docKey, []byte(`{"id":"1","who":"first"}`), 1, true, c)
+	require.NoError(t, err)
+	assert.False(t, resp.Replaced)
 
-	err = svc.storeNewDocument(ctx, info, req, docKey, []byte(`{"id":"1","who":"second"}`), 1, true)
+	_, err = svc.storeNewDocument(ctx, info, req, docKey, []byte(`{"id":"1","who":"second"}`), 1, true, c)
 	var exists *CollectionDocumentExistsError
 	require.ErrorAs(t, err, &exists)
 	assert.Equal(t, uint64(1), exists.ID)
@@ -428,82 +432,67 @@ func TestCollectionService_StoreNewDocument_GuardedWhenOverwriteRefused(t *testi
 	assert.Contains(t, string(stored), "first", "the refused claim must not have replaced the stored document")
 }
 
-// TestCollectionService_StoreNewDocument_OverwriteAllowedUsesPlainWrite covers
-// the other branch: a field_hash re-insert is the documented idempotent update,
-// so it takes the unguarded write and honours req.WriteMode.
-func TestCollectionService_StoreNewDocument_OverwriteAllowedUsesPlainWrite(t *testing.T) {
+// TestCollectionService_StoreNewDocument_OverwriteAllowedIsGuardedUpsert
+// covers the other branch: a field_hash re-insert is the documented
+// idempotent update, written with the guarded upsert so the insert reports
+// exactly the document it displaced (go-qrdb#456 B-4). It is synchronous, so a
+// requested WriteMode changes nothing about it.
+func TestCollectionService_StoreNewDocument_OverwriteAllowedIsGuardedUpsert(t *testing.T) {
 	ctx := context.Background()
 	kv := newMemoryKVSvc()
 	svc := NewCollectionService(kv)
-	docKey := collectionDataEntityType("mydb", "hashed") + "/1"
 	createCollection(t, svc, "mydb", "hashed", IDStrategyFieldHash, "email")
 	info, err := svc.loadCollectionInfo(ctx, "mydb", "hashed")
 	require.NoError(t, err)
+	docKey := collectionDocumentKey(info, 1)
+	c := svc.resolveCodec(info)
+	encode := func(who string) []byte {
+		data, merr := marshalDocument(&dao.DynamicEntity{ID: 1, Fields: map[string]interface{}{"who": who}}, c)
+		require.NoError(t, merr)
+		return data
+	}
 
 	req := &InsertDocumentRequest{Database: "mydb", Collection: "hashed"}
-	require.NoError(t, svc.storeNewDocument(ctx, info, req, docKey, []byte(`{"who":"first"}`), 1, false))
-	require.NoError(t, svc.storeNewDocument(ctx, info, req, docKey, []byte(`{"who":"second"}`), 1, false))
+	first, err := svc.storeNewDocument(ctx, info, req, docKey, encode("first"), 1, false, c)
+	require.NoError(t, err)
+	assert.False(t, first.Replaced, "the first insert of a natural key stores a new document")
+	assert.Nil(t, first.Previous)
+
+	second, err := svc.storeNewDocument(ctx, info, req, docKey, encode("second"), 1, false, c)
+	require.NoError(t, err)
+	assert.True(t, second.Replaced)
+	assert.Equal(t, "first", second.Previous["who"], "the displaced document is reported exactly")
 
 	modeReq := &InsertDocumentRequest{Database: "mydb", Collection: "hashed", WriteMode: writemode.WALDurable}
-	require.NoError(t, svc.storeNewDocument(ctx, info, modeReq, docKey, []byte(`{"who":"third"}`), 1, false))
+	third, err := svc.storeNewDocument(ctx, info, modeReq, docKey, encode("third"), 1, false, c)
+	require.NoError(t, err)
+	assert.Equal(t, "second", third.Previous["who"])
 
 	stored, err := kv.Get(ctx, docKey)
 	require.NoError(t, err)
 	assert.Contains(t, string(stored), "third")
 }
 
-// failingPutKVSvc is the in-memory KV service whose unguarded writes fail. It
-// covers the overwrite-allowed branch, where the write is a plain Put or a
-// PutWithMode rather than the guarded verb.
-type failingPutKVSvc struct {
-	*memoryKVSvc
-	failKey string
-	err     error
-}
-
-func (f *failingPutKVSvc) Put(ctx context.Context, key string, value []byte) error {
-	if key == f.failKey {
-		return f.err
-	}
-	return f.memoryKVSvc.Put(ctx, key, value)
-}
-
-func (f *failingPutKVSvc) PutWithMode(ctx context.Context, key string, value []byte, mode writemode.Mode) error {
-	if key == f.failKey {
-		return f.err
-	}
-	return f.memoryKVSvc.PutWithMode(ctx, key, value, mode)
-}
-
-// TestCollectionService_StoreNewDocument_OverwriteWriteFailuresAreTyped covers
-// the other two write failures: an idempotent re-insert whose plain write
-// fails, with and without an explicit WriteMode. Both must surface as a typed
-// insert failure rather than a partially applied insert reporting success.
+// TestCollectionService_StoreNewDocument_OverwriteWriteFailuresAreTyped: an
+// idempotent re-insert whose guarded write fails surfaces as a typed upsert
+// failure -- one whose outcome is unknown, so a quota keeps its reservation --
+// rather than a partially applied insert reporting success.
 func TestCollectionService_StoreNewDocument_OverwriteWriteFailuresAreTyped(t *testing.T) {
 	ctx := context.Background()
-	docKey := collectionDataEntityType("mydb", "hashed") + "/1"
+	kv := newMemoryKVSvc()
+	failing := &failingGuardedKVSvc{memoryKVSvc: kv, err: assert.AnError}
+	svc := NewCollectionService(failing)
+	createCollection(t, svc, "mydb", "hashed", IDStrategyFieldHash, "email")
+	info, err := svc.loadCollectionInfo(ctx, "mydb", "hashed")
+	require.NoError(t, err)
+	docKey := collectionDocumentKey(info, 1)
+	failing.failKey = docKey
 
-	tests := []struct {
-		name string
-		req  *InsertDocumentRequest
-	}{
-		{"default write mode", &InsertDocumentRequest{Database: "mydb", Collection: "hashed"}},
-		{"explicit write mode", &InsertDocumentRequest{Database: "mydb", Collection: "hashed", WriteMode: writemode.WALDurable}},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			kv := newMemoryKVSvc()
-			svc := NewCollectionService(&failingPutKVSvc{memoryKVSvc: kv, failKey: docKey, err: assert.AnError})
-			createCollection(t, svc, "mydb", "hashed", IDStrategyFieldHash, "email")
-			info, err := svc.loadCollectionInfo(ctx, "mydb", "hashed")
-			require.NoError(t, err)
-
-			err = svc.storeNewDocument(ctx, info, tc.req, docKey, []byte(`{"who":"first"}`), 1, false)
-			var metaErr *CollectionMetadataError
-			require.ErrorAs(t, err, &metaErr)
-			assert.Equal(t, "insert-document", metaErr.Op)
-		})
-	}
+	_, err = svc.storeNewDocument(ctx, info, &InsertDocumentRequest{Database: "mydb", Collection: "hashed"}, docKey, []byte(`{"who":"first"}`), 1, false, svc.resolveCodec(info))
+	var metaErr *CollectionMetadataError
+	require.ErrorAs(t, err, &metaErr)
+	assert.Equal(t, "upsert-document", metaErr.Op)
+	assert.True(t, metaErr.OutcomeUnknown())
 }
 
 // TestCollectionService_StoreNewDocument_WriteFailureIsNotAbsence is the
@@ -513,10 +502,12 @@ func TestCollectionService_StoreNewDocument_OverwriteWriteFailuresAreTyped(t *te
 func TestCollectionService_StoreNewDocument_WriteFailureIsNotAbsence(t *testing.T) {
 	ctx := context.Background()
 	kv := newMemoryKVSvc()
-	docKey := collectionDataEntityType("mydb", "users") + "/1"
-	svc := NewCollectionService(&failingGuardedKVSvc{memoryKVSvc: kv, failKey: docKey, err: assert.AnError})
+	failing := &failingGuardedKVSvc{memoryKVSvc: kv, err: assert.AnError}
+	svc := NewCollectionService(failing)
 
 	createCollection(t, svc, "mydb", "users", IDStrategyIncrement, "")
+	docKey := docKeyForTest(t, svc, "mydb", "users", 1)
+	failing.failKey = docKey
 	require.NoError(t, kv.Put(ctx, docKey, []byte(`{"id":"1","who":"stored"}`)))
 
 	_, insertErr := svc.InsertDocument(ctx, &InsertDocumentRequest{

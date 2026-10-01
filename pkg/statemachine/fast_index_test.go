@@ -38,6 +38,7 @@ type mockIndexManager struct {
 	createErr   error
 
 	dropCalls []string
+	dropOpts  []protocol.IndexDropOptions
 	dropErr   error
 
 	queryResult [][]byte
@@ -67,10 +68,11 @@ func (m *mockIndexManager) CreateIndex(name, fieldName string, opts protocol.Ind
 	return m.createErr
 }
 
-func (m *mockIndexManager) DropIndex(name string) error {
+func (m *mockIndexManager) DropIndex(name string, opts protocol.IndexDropOptions) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.dropCalls = append(m.dropCalls, name)
+	m.dropOpts = append(m.dropOpts, opts)
 	return m.dropErr
 }
 

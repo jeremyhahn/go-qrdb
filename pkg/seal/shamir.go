@@ -16,8 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jeremyhahn/go-enclave"
 	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
-	"github.com/jeremyhahn/go-quicraft/pkg/enclave"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
@@ -62,13 +62,26 @@ func (b *StorageBarrier) InitializeShamir(ctx context.Context, creds Credentials
 		return nil, err
 	}
 
-	// NOTE: []byte(creds.Secret) does NOT copy when Secret is already a []byte —
-	// secret aliases the caller's credential buffer. SealAndDistribute wipes it
-	// on return, so creds.Secret is zeroed as a side effect; callers must not
-	// read creds.Secret after InitializeShamir returns.
-	secret := []byte(creds.Secret)
+	// The credential secret is protected memory; open it into a fresh locked
+	// enclave and hand SealAndDistribute a working copy it owns and wipes on
+	// return. The caller's credential is untouched — it still owns and
+	// destroys it — so the []byte aliasing this used to rely on (and warn
+	// about) no longer exists.
+	if creds.Secret == nil {
+		return nil, ErrInvalidPassphrase
+	}
+	secretEnclave, err := creds.Secret.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer secretEnclave.Destroy()
+	secretBuf, err := copyEnclaveToBuffer(secretEnclave)
+	if err != nil {
+		return nil, err
+	}
+	defer secretBuf.Destroy()
 
-	shareCount, err := b.distributor.SealAndDistribute(ctx, secret, threshold, total)
+	shareCount, err := b.distributor.SealAndDistribute(ctx, secretBuf.Bytes(), threshold, total)
 	if err != nil {
 		return nil, err
 	}
@@ -189,52 +202,59 @@ func (b *StorageBarrier) updateSealedShamirParams(ctx context.Context, threshold
 	return nil
 }
 
+// copyEnclaveToBufferHook runs, still inside both enclaves' held borrows,
+// immediately after the copy lands and before either WithBytes call returns.
+// It is a no-op in production — this is a direct assignment, not a
+// conditional, so there is no branch to skip — and exists purely so a test
+// can inject a delay: the copy itself completes in nanoseconds, far too fast
+// to reliably race enclave.WipeAll against without instrumentation, which
+// would otherwise leave a regression that reverted this function back to an
+// unguarded dst.Bytes() read passing every existing test right up until a
+// real WipeAll actually landed in the (now unguarded) gap in production.
+var copyEnclaveToBufferHook = func() {}
+
 // copyEnclaveToBuffer copies the reconstructed secret out of enc into a freshly
 // allocated PROTECTED (mlock'd, guard-paged) buffer the caller MUST Destroy. The
 // secret therefore never lands in an ordinary garbage-collected heap allocation
 // — the layered protected-memory rule holds across the whole downstream
 // operation, not just until a wipe.
 //
-// The destination and its view are obtained BEFORE the source is borrowed, and
-// the copy happens inside the source borrow, so no protected ALLOCATION runs
-// while any enclave borrow is held. That ordering matters because the barrier's
-// unseal/verify — which the caller runs next, on buf.Bytes() — allocate
-// protected memory of their own, and go-quicraft v0.9's MemoryEnclave.WithBytes
-// holds the enclave package's purgeMu as a READ lock across its callback; taking
-// that lock EXCLUSIVELY for an allocation while already holding it as a reader
-// self-deadlocks. The caller reads the secret via buf.Bytes() with no borrow
-// held and Destroys the buffer when the downstream operation returns.
+// The destination is allocated BEFORE the source is borrowed, so no protected
+// ALLOCATION runs while any enclave borrow is held. Historically (go-quicraft
+// pre-v0.11.0-alpha, before it consumed github.com/jeremyhahn/go-enclave
+// directly) that ordering was load-bearing for a real deadlock:
+// MemoryEnclave.WithBytes held that package's OWN internal purgeMu as a READ
+// lock across its callback, and taking it EXCLUSIVELY for an allocation from
+// inside an already-held read self-deadlocked. go-enclave has no such
+// package-wide lock — every enclave, in pkg/secure and in go-quicraft's
+// pkg/crypto/shamir alike, carries its own per-instance lock (see
+// pkg/secure/doc.go and pkg/secure/borrowguard.go's own "go-enclave, not
+// memguard" sections) — so allocating dst while enc's borrow is held could no
+// longer deadlock against it. The ordering is kept anyway as allocation
+// hygiene, and because it costs nothing to keep.
 //
-// pkg/secure and go-quicraft's enclave package have SEPARATE purgeMu mutexes, so
-// allocating this secure.Buffer does not contend with the source enclave's
-// borrow.
-//
-// # Why dst is read with Bytes and not borrowed across the copy
-//
-// UNBORROWED, and not for the injected-interface reason the other surviving
-// Bytes readers give (go-qrdb#74). Holding dst's borrow across enc.WithBytes
-// would nest a SECOND protected-memory borrow inside the first, which
-// go-quicraft's MemoryEnclave.WithBytes forbids in terms — "Reading a DIFFERENT
-// enclave from inside fn is ALSO forbidden" — because the two packages hold
-// separate process-wide purge locks and Go's RWMutex admits no new reader once
-// a writer is queued. Taking them in one order here would also fix a
-// cross-package lock order for the whole process, which is not a decision this
-// function gets to make on its own.
-//
-// So the window on view is real and open: a purge landing during the copy
-// unmaps the destination. It closes when the underlying primitive stops having
-// a process-wide purge (go-qrdb#145 and the go-enclave adoption), not before.
-// TestCopyEnclaveToBuffer_AllocatesOutsideEveryBorrow pins what IS true today:
-// nothing purge-class runs under either borrow.
+// The copy itself holds BOTH enclaves' borrows for its whole duration — dst's
+// via its own WithBytes, not dst.Bytes(), which would release go-enclave's
+// lock on dst the instant it returned. Doing that here would leave the exact
+// gap SecretValue.WithBytes's own round-3 fix closed (go-qrdb#114 review):
+// dst is freshly allocated and already registered on go-enclave's shutdown
+// ledger the moment secure.NewBuffer returns, so a concurrent enclave.WipeAll
+// needs no external reference to dst to destroy it mid-copy — an unguarded
+// dst.Bytes() write could fault against pages WipeAll had already unmapped.
+// Nesting the two borrows is safe: go-enclave gives every enclave its own
+// independent lock, so holding dst's and enc's at once cannot deadlock either
+// against the other or against anything else in the process.
 func copyEnclaveToBuffer(enc *enclave.MemoryEnclave) (*secure.Buffer, error) {
 	dst, err := secure.NewBuffer(enc.Size())
 	if err != nil {
 		return nil, err
 	}
-	view := dst.Bytes()
-	if err := enc.WithBytes(func(src []byte) error {
-		copy(view, src)
-		return nil
+	if err := dst.WithBytes(func(view []byte) error {
+		return enc.WithBytes(func(src []byte) error {
+			copy(view, src)
+			copyEnclaveToBufferHook()
+			return nil
+		})
 	}); err != nil {
 		dst.Destroy()
 		return nil, err
@@ -273,6 +293,27 @@ func (b *StorageBarrier) UnsealWithShare(ctx context.Context, shareValue string)
 	// quorum completes (and the accumulator resets) at threshold <= total. The
 	// caller's string itself cannot be wiped; that residue is the transport
 	// boundary go-quicraft #35 names.
+	//
+	// BOUNDED EXCEPTION to server.secure_memory_budget_mib (go-qrdb#114
+	// review, round 3): NewProtectedShare builds its enclave.MemoryEnclave via
+	// go-enclave's unbudgeted NewMemoryEnclaveSized, not through
+	// enclave.ProcessAllocator — go-quicraft's pkg/crypto/shamir exposes no
+	// allocator-aware variant as of the version this repository pins. Tracked
+	// upstream as go-quicraft#204: an Allocator-accepting overload of
+	// NewProtectedShare/SplitProtected/CombineProtected, or a package-level
+	// SetAllocator the existing functions consult. The same is true of
+	// CombineProtected below and in ReconstructProtected.
+	// This is reachable only from a permission-gated caller
+	// (barrier:unseal-share on every transport), one page-rounded enclave per
+	// share. The count is bounded less tightly than the M-of-N suggests: the
+	// accumulator normally holds at most threshold shares, but a failed
+	// reconstruction does not reset it, so it keeps accepting distinct shares
+	// until its TTL; and an expired accumulator is released on the NEXT
+	// submission (loadOrCreateAccumulator), not by a timer. Not the
+	// unauthenticated surface go-qrdb#114 closed elsewhere, but a real gap in
+	// this budget's promise, stated precisely in docs/configuration/cli.md
+	// ("Locked memory outside the budget") and tracked for a fix in
+	// go-quicraft rather than papered over here.
 	raw := []byte(shareValue)
 	share, err := shamir.NewProtectedShare(acc.GetProgress().Submitted+1, threshold, total, raw)
 	// NewProtectedShare wipes raw on success but, by contract, leaves it
@@ -319,12 +360,26 @@ func (b *StorageBarrier) UnsealWithShare(ctx context.Context, shareValue string)
 		if err := b.unsealDirect(ctx, secretBuf.Bytes()); err != nil {
 			return nil, err
 		}
-	} else if err := b.Unseal(ctx, Credentials{Secret: secretBuf.Bytes()}); err != nil {
+	} else if err := b.unsealWithSecret(ctx, secretBuf.Bytes()); err != nil {
 		// Credential mode: the reconstructed secret is the password.
 		return nil, err
 	}
 
 	return prog, nil
+}
+
+// unsealWithSecret runs a credential-mode Unseal with secret as the
+// passphrase. NewCredentials moves the secret into protected memory and wipes
+// the source — which is the caller's protected buffer, destroyed on its own
+// return in any case — and the credential is destroyed as soon as the unseal
+// has consumed it.
+func (b *StorageBarrier) unsealWithSecret(ctx context.Context, secret []byte) error {
+	creds, err := NewCredentials(secret)
+	if err != nil {
+		return err
+	}
+	defer creds.Secret.Destroy()
+	return b.Unseal(ctx, creds)
 }
 
 // loadOrCreateAccumulator returns the current ShareAccumulator or creates a
@@ -383,6 +438,13 @@ func (b *StorageBarrier) UnsealWithShares(ctx context.Context, shareValues []str
 		// go-quicraft#35 names (the string-mandating interface was removed in
 		// go-quicraft v0.9.0-alpha).
 		raw := []byte(val)
+		// BOUNDED EXCEPTION to server.secure_memory_budget_mib: see the fuller
+		// comment on UnsealWithShare's own NewProtectedShare call, above. Here
+		// the bound is one page-rounded enclave per element of shareValues,
+		// held for this call only, from a permission-gated caller, and at most
+		// TotalShares of them: element i is built with index i+1, which
+		// NewProtectedShare rejects above total BEFORE allocating, and the
+		// deferred loop above destroys the ones already built.
 		share, err := shamir.NewProtectedShare(i+1, threshold, b.config.Shamir.TotalShares, raw)
 		secure.Wipe(raw)
 		if err != nil {
@@ -391,6 +453,9 @@ func (b *StorageBarrier) UnsealWithShares(ctx context.Context, shareValues []str
 		shares = append(shares, share)
 	}
 
+	// Same BOUNDED EXCEPTION as above: CombineProtected's result enclave is
+	// also built via go-enclave's unbudgeted constructors, not
+	// enclave.ProcessAllocator.
 	secretEnclave, err := shamir.CombineProtected(shares)
 	if err != nil {
 		return &ShamirError{Sentinel: ErrShamirCombineFailed, Cause: err}
@@ -414,7 +479,7 @@ func (b *StorageBarrier) UnsealWithShares(ctx context.Context, shareValues []str
 	if shamirStrategy := b.ShamirStrategy(); shamirStrategy != nil {
 		return b.unsealDirect(ctx, secretBuf.Bytes())
 	}
-	return b.Unseal(ctx, Credentials{Secret: secretBuf.Bytes()})
+	return b.unsealWithSecret(ctx, secretBuf.Bytes())
 }
 
 // Compile-time interface checks.
@@ -426,8 +491,8 @@ var (
 // shamirShareAccumulator implements ShareAccumulator using go-quicraft's
 // Shamir secret-sharing library.
 //
-// Security model: submitted share material is held only inside memguard
-// secure enclaves (never as raw, garbage-collected strings/bytes), and is
+// Security model: submitted share material is held only inside go-enclave
+// MemoryEnclaves (never as raw, garbage-collected strings/bytes), and is
 // destroyed the instant the quorum is reset — which the unseal path triggers
 // immediately after a successful reconstruction. Deduplication uses a SHA-256
 // digest of each share, so the raw share value is never retained as a map
@@ -510,6 +575,10 @@ func (a *shamirShareAccumulator) ReconstructProtected(_ context.Context) (*encla
 		return nil, ErrShamirQuorumIncomplete
 	}
 
+	// Same BOUNDED EXCEPTION to server.secure_memory_budget_mib documented on
+	// UnsealWithShare's NewProtectedShare call: CombineProtected's result
+	// enclave is built via go-enclave's unbudgeted constructors, not
+	// enclave.ProcessAllocator.
 	secretEnclave, err := shamir.CombineProtected(a.shares)
 	if err != nil {
 		return nil, &ShamirError{Sentinel: ErrShamirCombineFailed, Op: "combine shares", Cause: err}
@@ -568,7 +637,12 @@ func NewShamirShareSplitter() ShareSplitter {
 // SplitProtected divides the secret into threshold-of-total Shamir shares whose
 // values live in protected memory. The caller owns the returned shares and MUST
 // Destroy every one of them, including on its own error paths — each is one
-// mlock'd allocation charged against RLIMIT_MEMLOCK.
+// mlock'd allocation charged against the kernel's RLIMIT_MEMLOCK ceiling, but
+// NOT against server.secure_memory_budget_mib: the same BOUNDED EXCEPTION
+// documented on UnsealWithShare's NewProtectedShare call applies here, and
+// this call site is reached only from barrier initialization, an SO/operator-
+// driven, one-time-per-ceremony path with total bounded by the M-of-N the
+// operator configures.
 //
 // go-quicraft v0.9.0-alpha removed the string-returning Split interface this
 // once had to satisfy: splitting into locked memory only to copy each value

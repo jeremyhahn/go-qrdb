@@ -180,6 +180,10 @@ func toolAddMember() mcp.Tool {
 			mcp.Required(),
 			mcp.Description("The Raft network address of the new member."),
 		),
+		mcp.WithString("identity",
+			mcp.Description("The member's Raft identity (spki:<sha256-hex>, from `qrdbd node-identity --cert`). "+
+				"Omit it to use the identity the cluster already committed for the node; required for a node no committed membership names."),
+		),
 	)
 }
 
@@ -189,6 +193,7 @@ func handleAddMember(adminSvc service.AdminServicer) mcpserver.ToolHandlerFunc {
 		shardID := mcp.ParseUInt64(req, "shard_id", 0)
 		replicaID := mcp.ParseUInt64(req, "replica_id", 0)
 		raftAddr := mcp.ParseString(req, "raft_addr", "")
+		identity := mcp.ParseString(req, "identity", "")
 
 		if shardID == 0 {
 			return mcp.NewToolResultError("shard_id is required"), nil
@@ -200,7 +205,7 @@ func handleAddMember(adminSvc service.AdminServicer) mcpserver.ToolHandlerFunc {
 			return mcp.NewToolResultError("raft_addr is required"), nil
 		}
 
-		if err := adminSvc.AddMember(ctx, shardID, replicaID, raftAddr); err != nil {
+		if err := adminSvc.AddMember(ctx, shardID, replicaID, raftAddr, identity); err != nil {
 			return nil, &ToolError{Tool: "qrdb_add_member", Err: err}
 		}
 

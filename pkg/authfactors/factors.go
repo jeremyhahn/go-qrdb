@@ -118,6 +118,24 @@ type Challenge struct {
 	// PKCS#11: {"mechanism": "CKM_ECDSA_SHA256"}
 	// PIV:     {"slot": "9a", "algorithm": "ecdsap256"}
 	// FIDO2:   {"challenge_base64": "...", "rp_id": "..."}
+	//
+	// Values MUST be strings. The type is map[string]any, not map[string]string,
+	// only because it is built with the same composite-literal shape as
+	// EnrollParams.MethodParams and Response.Metadata; it carries no wider
+	// contract than they do. The floor is set by the LEAST expressive
+	// transport this crosses, not the most: pkg/api/grpc/proto's
+	// ChallengeFactorResponse.method_data is `map<string, string>`, fixed
+	// wire schema, so a non-string value would arrive over gRPC and Unix as
+	// whatever string pkg/api/grpc.authFactorServer stringifies it to (e.g.
+	// `true`, not the JSON boolean true) while arriving over REST, QUIC, MCP
+	// and embedded as the native type -- a six-transport contract violation
+	// the service now refuses at write time (see persistChallenge) rather
+	// than let ship silently. This is also the reason it must round-trip
+	// through the KV store between ChallengeFactor and VerifyFactor
+	// (go-qrdb#464): a factor that needs a non-string value -- bytes, an
+	// exact integer -- must encode it itself (e.g. base64, decimal string),
+	// exactly as every factor in this repository and in go-xkms already
+	// does.
 	MethodData map[string]any
 }
 

@@ -112,6 +112,51 @@ The cluster enrollment listener (Noise) follows `server.host` too. Give it its
 own address with `bootstrap.noise_host` when enrollment should be reachable
 somewhere the APIs are not.
 
+## Locked-memory budget
+
+Most of what `qrdbd` holds in protected memory — cluster keys, credentials,
+PINs — comes out of one process-wide budget of locked (mlock'd) pages, sized
+by `server.secure_memory_budget_mib`. It is set up once, when `start` runs,
+before anything else in the process can allocate protected memory.
+
+Leave it unset and `start` sizes it from the host: the smaller of 64 MiB and
+your locked-memory limit (`ulimit -l` / `RLIMIT_MEMLOCK`) less 2 MiB of
+headroom. With no limit, or with the `IPC_LOCK` capability, you get 64 MiB;
+under a stock 8 MiB container limit you get 6 MiB. The startup log says which
+figure was chosen and why:
+
+```text
+level=INFO msg="secure memory budget installed" budget_bytes=6291456 source="derived from RLIMIT_MEMLOCK" rlimit_memlock_source=RLIMIT_MEMLOCK rlimit_memlock_bytes=8388608
+```
+
+To get the full budget in a container or under systemd, grant the capability or
+lift the limit — see [../deployment/](../deployment/). A limit too small to
+leave at least 1 MiB after the headroom stops `start` with an error naming the
+limit and how to raise it.
+
+To choose the figure yourself:
+
+```yaml
+server:
+  secure_memory_budget_mib: 128
+```
+
+or `--secure-memory-budget-mib 128`. `QRDB_SERVER_SECURE_MEMORY_BUDGET_MIB=128`
+also works, but only alongside `--config`: environment variables override the
+loaded config file and are not read without one. A value your host's limit cannot satisfy makes `start` fail immediately,
+naming the limit and how to raise it, rather than starting with less
+protection than configured. A negative number is refused before the server
+starts: at config load when it comes from the file or the environment, and by
+`start` itself when it comes from the flag.
+
+**Not covered by the budget:** a few things lock memory outside it — sealing a
+secret, Shamir shares submitted during a barrier unseal, and the Noise
+enrollment key, which still uses memguard through go-truststrap. See
+[cli.md](cli.md#locked-memory-outside-the-budget) for the exact scope and how
+tightly each is bounded. `secure_memory_budget_mib` is therefore not yet a hard
+ceiling on every page this daemon locks, which is why the derived budget leaves
+headroom under the host limit.
+
 ## Ports
 
 | Service | Default | Where to change it |

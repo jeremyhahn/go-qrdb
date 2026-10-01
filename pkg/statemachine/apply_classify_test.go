@@ -43,8 +43,8 @@ func TestResolveApplyErrorForgivesAnUndeclaredFutureRefusal(t *testing.T) {
 		t.Fatalf("ResolveApplyError returned stop=%v err=%v; a declared refusal must "+
 			"never halt Apply, whatever package declared it", stop, err)
 	}
-	msg, capability, ok := protocol.DecodeAppErrorKind(res.Data)
-	if !ok || !capability {
+	msg, kind, ok := protocol.DecodeAppErrorKind(res.Data)
+	if !ok || kind != protocol.AppErrorCapability {
 		t.Fatalf("result payload %q is not an encoded CAPABILITY error", res.Data)
 	}
 	if msg != "widgets support not compiled" {
@@ -60,7 +60,7 @@ func TestResolveApplyErrorForgivesAWrappedRefusal(t *testing.T) {
 	if stop || err != nil {
 		t.Fatalf("ResolveApplyError returned stop=%v err=%v for a wrapped refusal", stop, err)
 	}
-	if _, capability, ok := protocol.DecodeAppErrorKind(res.Data); !ok || !capability {
+	if _, kind, ok := protocol.DecodeAppErrorKind(res.Data); !ok || kind != protocol.AppErrorCapability {
 		t.Fatalf("result payload %q is not an encoded capability error", res.Data)
 	}
 }

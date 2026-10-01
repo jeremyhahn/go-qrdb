@@ -31,7 +31,14 @@ type EnrollFactorRequest struct {
 	// Subject is the user or custodian being enrolled.
 	Subject string `json:"subject"`
 
-	// TenantID scopes the enrollment to a specific tenant (optional).
+	// TenantID does NOT select which tenant the enrollment lands in — the
+	// call's authenticated context does that, and every transport routes on
+	// it alone. This field is checked against that context tenant: leave it
+	// empty and the server fills it in; set it to the context tenant and it
+	// passes; set it to anything else and the server refuses the request
+	// with a tenant-mismatch error rather than honoring it or silently
+	// correcting it. It exists so a caller can assert which tenant it
+	// believes it is enrolling into and be told when that belief is wrong.
 	TenantID string `json:"tenant_id,omitempty"`
 
 	// MethodParams are factor-specific enrollment parameters.

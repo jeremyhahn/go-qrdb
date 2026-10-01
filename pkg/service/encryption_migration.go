@@ -44,6 +44,20 @@ var (
 	ErrTenantBarrierNotFound = errors.New("service: tenant has no dedicated barrier")
 )
 
+// DataPlaneRecyclingError is returned when an operation needs a service that a
+// system-scope encryption migration has torn down and not yet rebuilt. It is
+// temporary -- the recycle is finishing -- so every transport answers it as
+// retryable: 503 on REST, Unavailable on gRPC, unix, QUIC and MCP. It is not
+// ErrMigrationProviderUnavailable, which says the node cannot migrate at all.
+type DataPlaneRecyclingError struct {
+	// Service names the service that is not there yet (e.g. "tenant").
+	Service string
+}
+
+func (e *DataPlaneRecyclingError) Error() string {
+	return "service: " + e.Service + " service unavailable during data-plane recycle"
+}
+
 // ---------------------------------------------------------------------------
 // Scope
 // ---------------------------------------------------------------------------

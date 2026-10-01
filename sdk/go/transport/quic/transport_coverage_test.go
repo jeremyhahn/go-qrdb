@@ -28,6 +28,7 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/collectionconv"
 )
 
 // ===========================================================================
@@ -109,7 +110,7 @@ func TestQUICProtoToCollectionInfo_Valid(t *testing.T) {
 		DocumentCount: 42,
 		CreatedAt:     "2026-01-01T00:00:00Z",
 	}
-	out := protoToCollectionInfo(in)
+	out := collectionconv.ToCollectionInfo(in)
 	if out == nil {
 		t.Fatal("nil result")
 	}

@@ -23,12 +23,14 @@ import (
 	"github.com/cockroachdb/apd/v3"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/types"
+	"github.com/dolthub/vitess/go/mysql"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jeroenrinzema/psql-wire/codes"
 	psqlerr "github.com/jeroenrinzema/psql-wire/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/provider"
 )
 
@@ -46,13 +48,15 @@ func TestSQLStateFor(t *testing.T) {
 		{"unique key violation", sql.ErrUniqueKeyViolation.New(), codes.UniqueViolation, true},
 		{"primary key violation", sql.ErrPrimaryKeyViolation.New(), codes.UniqueViolation, true},
 		{"duplicate entry", sql.ErrDuplicateEntry.New("uni_cities_name"), codes.UniqueViolation, true},
-		{"provider duplicate key", &provider.DuplicateKeyError{Key: "k"}, codes.UniqueViolation, true},
 		{"fk child violation", sql.ErrForeignKeyChildViolation.New("fk", "t", "p", "k"), codes.ForeignKeyViolation, true},
 		{"fk parent violation", sql.ErrForeignKeyParentViolation.New("fk", "t", "p", "k"), codes.ForeignKeyViolation, true},
 		{"check violation", sql.ErrCheckConstraintViolated.New("chk"), codes.CheckViolation, true},
 		{"table not found", sql.ErrTableNotFound.New("t"), codes.UndefinedTable, true},
 		{"column not found", sql.ErrColumnNotFound.New("c"), codes.UndefinedColumn, true},
 		{"null into not null", sql.ErrInsertIntoNonNullableProvidedNull.New("c"), codes.NotNullViolation, true},
+		{"lock deadlock / serialization failure", sql.ErrLockDeadlock.Wrap(errors.New("conflict"), "detail"), codes.SerializationFailure, true},
+		{"table layout unsupported", mysql.NewSQLError(provider.ErrCodeTableLayoutUnsupported, "HY000", "re-create"), codes.ObjectNotInPrerequisiteState, true},
+		{"other mysql error keeps default", mysql.NewSQLError(1105, "HY000", "boom"), "", false},
 		{"unmapped error keeps default", errors.New("boom"), "", false},
 	}
 	for _, tt := range tests {
@@ -98,6 +102,30 @@ func TestWireQueryError(t *testing.T) {
 	// An unmapped error keeps psql-wire's internal-error default.
 	plain := wireQueryError("SELECT 1", errors.New("boom"))
 	assert.Equal(t, "XXUUU", psqlErrorCode(plain))
+}
+
+// TestWireQueryError_GenerationStaleMapsTo40001 exercises the REAL
+// production error shape a TRUNCATE race produces (go-qrdb#547) --
+// *service.TableGenerationStaleError wrapped in sql.ErrLockDeadlock, exactly
+// as RelationalTable.checkGenerationStale and WriteSet.staleResolution both
+// return it -- through wireQueryError end to end, and asserts the actual
+// SQLSTATE psql-wire would put on the wire: 40001 (serialization_failure).
+// TestSQLStateFor above pins sqlStateFor's classification of a synthetic
+// sql.ErrLockDeadlock value; this test is what actually runs PostgreSQL's
+// translator against the wrapped error the provider hands it, so a
+// regression that reintroduced the generic XXUUU default for this exact
+// shape would be caught here even if the classification unit test above
+// still passed.
+func TestWireQueryError_GenerationStaleMapsTo40001(t *testing.T) {
+	stale := &service.TableGenerationStaleError{
+		Database: "shop", Name: "widgets", Expected: 0, Actual: 1,
+	}
+	err := wireQueryError("TRUNCATE TABLE widgets", sql.ErrLockDeadlock.Wrap(stale, stale.Error()))
+
+	assert.Equal(t, "40001", psqlErrorCode(err))
+
+	var qerr *QueryError
+	require.ErrorAs(t, err, &qerr)
 }
 
 // psqlErrorCode digs the SQLSTATE psql-wire would serialize out of err's

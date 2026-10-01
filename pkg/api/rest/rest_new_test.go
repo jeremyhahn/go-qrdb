@@ -282,6 +282,12 @@ func (m *mockIndexService) DropIndex(ctx context.Context, name string) error {
 	return nil
 }
 
+// DropOwnedIndex answers as DropIndex does: this double records no
+// ownership, and no test that uses it exercises an owner-checked drop.
+func (m *mockIndexService) DropOwnedIndex(ctx context.Context, name, _ string) error {
+	return m.DropIndex(ctx, name)
+}
+
 func (m *mockIndexService) Query(ctx context.Context, indexName string, value []byte) ([][]byte, error) {
 	if m.queryFn != nil {
 		return m.queryFn(ctx, indexName, value)
@@ -2591,6 +2597,10 @@ func TestMapHTTPError_AllTypes(t *testing.T) {
 		{"TransactionConflict", &service.TransactionConflictError{Key: "k"}, http.StatusConflict},
 		{"WatchCanceled", &service.WatchCanceledError{Reason: "compact"}, http.StatusInternalServerError},
 		{"LeaseNotFound", &service.LeaseNotFoundError{LeaseID: 1}, http.StatusNotFound},
+		// The shape a pre-fix LeaseService.TimeToLive actually produced --
+		// LeaseNotFoundError wrapped in ReadError -- not the bare sentinel
+		// above (go-qrdb#387).
+		{"LeaseNotFound under a read", &service.ReadError{Err: &service.LeaseNotFoundError{LeaseID: 1}}, http.StatusNotFound},
 		{"LeaseExpired", &service.LeaseExpiredError{LeaseID: 1}, http.StatusNotFound},
 		{"LeaseExists", &service.LeaseExistsError{LeaseID: 1}, http.StatusConflict},
 		{"BatchError", &service.BatchError{Index: 0, Err: errors.New("fail")}, http.StatusInternalServerError},

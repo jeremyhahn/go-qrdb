@@ -15,8 +15,6 @@
 
 package chunker
 
-import "strconv"
-
 // EmptyTextError is returned when an empty string is passed to Chunk.
 type EmptyTextError struct{}
 
@@ -33,17 +31,4 @@ type InvalidConfigError struct {
 // Error returns a human-readable description of the invalid configuration.
 func (e *InvalidConfigError) Error() string {
 	return "chunker: invalid config: " + e.Reason
-}
-
-// ChunkTooSmallError is returned when a resulting chunk is smaller than MinSize
-// and cannot be merged because there is no previous chunk.
-type ChunkTooSmallError struct {
-	Size    int
-	MinSize int
-}
-
-// Error returns a human-readable description of the size violation.
-func (e *ChunkTooSmallError) Error() string {
-	return "chunker: chunk size " + strconv.Itoa(e.Size) +
-		" is below minimum " + strconv.Itoa(e.MinSize)
 }

@@ -15,7 +15,6 @@
 package server
 
 import (
-	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -23,6 +22,29 @@ import (
 // StandaloneModeHint is the remedy text carried by every raft-only API
 // refusal under mode "standalone".
 const StandaloneModeHint = capabilities.RaftOnlyHint
+
+// notImplemented is the refusal a registry resolution answers when this node
+// cannot serve the named service — because it was composed without it, or
+// because the mode gates it (hint names the remedy, e.g. StandaloneModeHint).
+//
+// It is a SERVICE-layer error, deliberately. This registry is handed to every
+// transport, and the refusal used to be *rest.ServiceNotImplementedError — a
+// type only the REST transport classified, so REST answered 501 while gRPC,
+// unix, QUIC and MCP fell through to their unclassified default and told a
+// caller its server had BROKEN for a condition that is a deployment mode
+// (go-qrdb#473). service.CapabilityUnsupportedError is the vocabulary every
+// transport's classifier already maps to "this node cannot do that": 501,
+// codes.Unimplemented, wire.StatusUnimplemented, CodeUnimplemented — and the
+// SDK rebuilds transport.CapabilityUnsupportedError from each. Returning it
+// here fixes all five transports at once, and removes the server package's
+// reach into a transport's error vocabulary.
+func notImplemented(svc, hint string) error {
+	msg := svc + ": not implemented on this server"
+	if hint != "" {
+		msg += ": " + hint
+	}
+	return &service.CapabilityUnsupportedError{Message: msg}
+}
 
 // WithStandaloneMode marks the server as running the raft-free standalone
 // composition. The transports' per-(tenant, db) service registry is
@@ -70,15 +92,15 @@ func (r *raftOnlyGatedRegistry) KVService(tenant, db string) (service.KVServicer
 }
 
 func (r *raftOnlyGatedRegistry) MVCCService(tenant, db string) (service.MVCCKVServicer, error) {
-	return nil, &rest.ServiceNotImplementedError{Service: "mvcc", Hint: StandaloneModeHint}
+	return nil, notImplemented("mvcc", StandaloneModeHint)
 }
 
 func (r *raftOnlyGatedRegistry) WatchService(tenant, db string) (service.WatchServicer, error) {
-	return nil, &rest.ServiceNotImplementedError{Service: "watch", Hint: StandaloneModeHint}
+	return nil, notImplemented("watch", StandaloneModeHint)
 }
 
 func (r *raftOnlyGatedRegistry) LeaseService(tenant, db string) (service.LeaseServicer, error) {
-	return nil, &rest.ServiceNotImplementedError{Service: "lease", Hint: StandaloneModeHint}
+	return nil, notImplemented("lease", StandaloneModeHint)
 }
 
 // TransactionService passes through: compare-and-swap is a standard
@@ -130,7 +152,7 @@ func (r *raftOnlyGatedRegistry) CollectionService(tenant, db string) (service.Co
 // acquisition. It refuses with the same remedy text rather than failing later
 // and less legibly inside the composed servicer.
 func (r *raftOnlyGatedRegistry) LockService(tenant, db string) (service.LockServicer, error) {
-	return nil, &rest.ServiceNotImplementedError{Service: "lock", Hint: StandaloneModeHint}
+	return nil, notImplemented("lock", StandaloneModeHint)
 }
 
 // compile-time interface check.

@@ -71,6 +71,14 @@ func (m *mockTenantService) GetTenant(ctx context.Context, id string) (*tenant.T
 	return &tenant.TenantInfo{ID: id, Name: "test-tenant", IsolationType: tenant.IsolationBarrier, CreatedAt: time.Now(), UpdatedAt: time.Now()}, nil
 }
 
+func (m *mockTenantService) ListDeletedTenants(_ context.Context, _ string, _ int) (*tenant.DeletedTenantsPage, error) {
+	return &tenant.DeletedTenantsPage{}, nil
+}
+
+func (m *mockTenantService) ReconcileDeletedTenants(_ context.Context) (*tenant.ReconcileReport, error) {
+	return &tenant.ReconcileReport{}, nil
+}
+
 func (m *mockTenantService) ListTenants(ctx context.Context) ([]tenant.TenantInfo, error) {
 	if m.listFn != nil {
 		return m.listFn(ctx)
@@ -623,7 +631,7 @@ func TestGRPC_TenantUpdateQuotas_NotFound(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// mapTenantError
+// mapServiceError
 // ---------------------------------------------------------------------------
 
 func TestMapTenantError_SentinelErrors(t *testing.T) {
@@ -651,7 +659,7 @@ func TestMapTenantError_SentinelErrors(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := mapTenantError(tc.err)
+			got := mapServiceError(tc.err)
 			st, ok := status.FromError(got)
 			if !ok {
 				t.Fatalf("expected gRPC status error, got %T", got)

@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,7 +31,6 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	api "github.com/jeremyhahn/go-qrdb/pkg/api"
-	qrdbErrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
@@ -218,19 +218,11 @@ func NewVectorService(
 	opts ...VectorServiceOption,
 ) (VectorService, error) {
 	if storage == nil {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "service.NewVectorService",
-			Err:  &api.RequiredFieldError{Field: "storage"},
-		}
+		return nil, &api.RequiredFieldError{Field: "storage"}
 	}
 
 	if logger == nil {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "service.NewVectorService",
-			Err:  &api.RequiredFieldError{Field: "logger"},
-		}
+		return nil, &api.RequiredFieldError{Field: "logger"}
 	}
 
 	svc := &vectorService{
@@ -252,11 +244,7 @@ func NewVectorService(
 
 	// Load existing namespaces and initialize indexes
 	if err := svc.loadNamespaces(); err != nil {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInternal,
-			Op:   "service.NewVectorService",
-			Err:  &api.OperationFailedError{Operation: "load namespaces", Cause: err},
-		}
+		return nil, &VectorOperationError{Op: "load namespaces", Err: err}
 	}
 
 	svc.logger.WithFields(map[string]interface{}{
@@ -473,11 +461,7 @@ func (v *vectorService) validateTenantCreate(ctx context.Context) error {
 		return nil
 	}
 	if tenant.IsSystemTenant(tenant.FromContext(ctx)) {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrForbidden,
-			Op:   "vector.validateTenantCreate",
-			Err:  &TenantRequiredError{Op: "CreateNamespace"},
-		}
+		return &TenantRequiredError{Op: "CreateNamespace"}
 	}
 	return nil
 }
@@ -503,6 +487,66 @@ func (v *vectorService) filterNamespacesByTenant(ctx context.Context, namespaces
 }
 
 // =============================================================================
+// Error Translation
+// =============================================================================
+
+// vectorStorageTranslation is one row of vectorStorageErrors: a storage
+// sentinel and the typed error it becomes.
+type vectorStorageTranslation struct {
+	sentinel error
+	typed    func(namespace string, id uint64, err error) error
+}
+
+// vectorStorageErrors maps each vector-storage sentinel onto the service's
+// typed error for it, first match wins. An ORDERED slice, not a map: storage
+// wraps its sentinels, a wrapped error can carry more than one, and the answer
+// must not depend on map iteration order. The closed store comes first — a
+// closed store makes every other refusal moot — then the absences, then the
+// input refusals.
+var vectorStorageErrors = []vectorStorageTranslation{
+	{vector.ErrStorageClosed, func(string, uint64, error) error {
+		return &VectorServiceClosedError{}
+	}},
+	{vector.ErrNamespaceNotFound, func(namespace string, _ uint64, _ error) error {
+		return &NamespaceNotFoundError{Namespace: namespace}
+	}},
+	{vector.ErrVectorNotFound, func(namespace string, id uint64, _ error) error {
+		return &VectorNotFoundError{Namespace: namespace, ID: strconv.FormatUint(id, 10)}
+	}},
+	{vector.ErrNamespaceExists, func(namespace string, _ uint64, _ error) error {
+		return &NamespaceExistsError{Namespace: namespace}
+	}},
+	{vector.ErrInvalidNamespace, invalidVectorFromStorage},
+	{vector.ErrInvalidID, invalidVectorFromStorage},
+	{vector.ErrInvalidVector, invalidVectorFromStorage},
+	{vector.ErrEmptyBatch, invalidVectorFromStorage},
+	{vector.ErrBatchTooLarge, invalidVectorFromStorage},
+}
+
+// invalidVectorFromStorage reports a request the storage layer refused on its
+// merits as the caller's error.
+func invalidVectorFromStorage(_ string, _ uint64, err error) error {
+	return &InvalidVectorError{Reason: err.Error()}
+}
+
+// vectorStorageError translates a vector-storage failure into the service's
+// typed vocabulary, so every transport can classify it (go-qrdb#331). A
+// missing namespace or vector, a duplicate namespace, a closed store and a
+// refused input each get their own type; anything else is the server's fault
+// and is reported as a VectorOperationError naming op.
+//
+// namespace is the caller's LOGICAL namespace, never the tenant-scoped storage
+// key, so an error message cannot leak another tenant's key layout.
+func vectorStorageError(op, namespace string, id uint64, err error) error {
+	for _, row := range vectorStorageErrors {
+		if errors.Is(err, row.sentinel) {
+			return row.typed(namespace, id, err)
+		}
+	}
+	return &VectorOperationError{Op: op, Err: err}
+}
+
+// =============================================================================
 // Raft Proposal Helpers
 // =============================================================================
 
@@ -514,20 +558,12 @@ func (v *vectorService) proposeToRaft(ctx context.Context, cmd *statemachine.Vec
 
 	cmdBytes, err := cmd.Encode()
 	if err != nil {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInternal,
-			Op:   "vector.proposeToRaft",
-			Err:  &api.OperationFailedError{Operation: "encode vector command", Cause: err},
-		}
+		return &EncodeRequestError{Err: err}
 	}
 
 	result, err := v.raftNode.SyncPropose(ctx, v.shardID, cmdBytes)
 	if err != nil {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrRaft,
-			Op:   "vector.proposeToRaft",
-			Err:  &api.OperationFailedError{Operation: "raft proposal", Cause: err},
-		}
+		return translateProposeError(err)
 	}
 
 	// A proposal that Raft accepted can still have been REFUSED by the state
@@ -549,20 +585,10 @@ func (v *vectorService) proposeToRaft(ctx context.Context, cmd *statemachine.Vec
 	// outcome is not evidence that the outcome was good.
 	smResult, ok := result.(sm.Result)
 	if !ok {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInternal,
-			Op:   "vector.proposeToRaft",
-			Err: &api.OperationFailedError{
-				Operation: fmt.Sprintf("raft proposal returned %T, which carries no readable state-machine outcome", result),
-			},
-		}
+		return &VectorOperationError{Op: fmt.Sprintf("raft proposal (result type %T carries no readable state-machine outcome)", result)}
 	}
 	if resultErr := checkResultError(smResult); resultErr != nil {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInternal,
-			Op:   "vector.proposeToRaft",
-			Err:  &api.OperationFailedError{Operation: "vector state machine refused the command", Cause: resultErr},
-		}
+		return resultErr
 	}
 
 	return nil
@@ -605,11 +631,7 @@ func (v *vectorService) CreateNamespace(ctx context.Context, req *CreateNamespac
 	defer v.mu.Unlock()
 
 	if v.closed {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInternal,
-			Op:   "vector.CreateNamespace",
-			Err:  &api.ServiceUnavailableError{Service: "vector"},
-		}
+		return nil, &VectorServiceClosedError{}
 	}
 
 	// Check if namespace already exists under this tenant's scoped key.
@@ -618,11 +640,7 @@ func (v *vectorService) CreateNamespace(ctx context.Context, req *CreateNamespac
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("create_namespace", "already_exists").Inc()
 		}
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrAlreadyExists,
-			Op:   "vector.CreateNamespace",
-			Err:  &api.InvalidInputError{Message: "namespace " + req.Namespace + " already exists"},
-		}
+		return nil, &NamespaceExistsError{Namespace: req.Namespace}
 	}
 
 	v.logger.WithFields(map[string]interface{}{
@@ -726,11 +744,7 @@ func (v *vectorService) CreateNamespace(ctx context.Context, req *CreateNamespac
 			"scoped":    scoped,
 			"error":     err,
 		}).Error("failed to create namespace")
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrStorage,
-			Op:   "vector.CreateNamespace",
-			Err:  &api.OperationFailedError{Operation: "create namespace", Cause: err},
-		}
+		return nil, vectorStorageError("create namespace", req.Namespace, 0, err)
 	}
 
 	// Initialize HNSW index for namespace keyed by the scoped name.
@@ -777,11 +791,7 @@ func (v *vectorService) CreateNamespace(ctx context.Context, req *CreateNamespac
 	index, err := hnsw.NewHNSWIndex(config)
 	if err != nil {
 		_ = v.storage.DeleteNamespace(ctx, scoped)
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInternal,
-			Op:   "vector.CreateNamespace",
-			Err:  &api.OperationFailedError{Operation: "create HNSW index", Cause: err},
-		}
+		return nil, &VectorOperationError{Op: "create HNSW index", Err: err}
 	}
 
 	v.indexMu.Lock()
@@ -828,11 +838,7 @@ func (v *vectorService) DeleteNamespace(ctx context.Context, req *DeleteNamespac
 	defer v.mu.Unlock()
 
 	if v.closed {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInternal,
-			Op:   "vector.DeleteNamespace",
-			Err:  &api.ServiceUnavailableError{Service: "vector"},
-		}
+		return nil, &VectorServiceClosedError{}
 	}
 
 	v.logger.WithField("namespace", req.Namespace).Debug("deleting namespace")
@@ -874,11 +880,7 @@ func (v *vectorService) DeleteNamespace(ctx context.Context, req *DeleteNamespac
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("delete_namespace", "storage_error").Inc()
 		}
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrStorage,
-			Op:   "vector.DeleteNamespace",
-			Err:  &api.OperationFailedError{Operation: "delete namespace", Cause: err},
-		}
+		return nil, vectorStorageError("delete namespace", req.Namespace, 0, err)
 	}
 
 	v.indexMu.Lock()
@@ -912,11 +914,7 @@ func (v *vectorService) ListNamespaces(ctx context.Context, req *ListNamespacesR
 	defer v.mu.RUnlock()
 
 	if v.closed {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInternal,
-			Op:   "vector.ListNamespaces",
-			Err:  &api.ServiceUnavailableError{Service: "vector"},
-		}
+		return nil, &VectorServiceClosedError{}
 	}
 
 	namespaces, err := v.storage.ListNamespaces(ctx)
@@ -924,11 +922,7 @@ func (v *vectorService) ListNamespaces(ctx context.Context, req *ListNamespacesR
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("list_namespaces", "storage_error").Inc()
 		}
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrStorage,
-			Op:   "vector.ListNamespaces",
-			Err:  &api.OperationFailedError{Operation: "list namespaces", Cause: err},
-		}
+		return nil, vectorStorageError("list namespaces", "", 0, err)
 	}
 
 	// filterNamespacesByTenant returns only the caller's namespaces with
@@ -1005,11 +999,7 @@ func (v *vectorService) GetNamespaceInfo(ctx context.Context, req *GetNamespaceI
 	defer v.mu.RUnlock()
 
 	if v.closed {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInternal,
-			Op:   "vector.GetNamespaceInfo",
-			Err:  &api.ServiceUnavailableError{Service: "vector"},
-		}
+		return nil, &VectorServiceClosedError{}
 	}
 
 	info, err := v.storage.GetNamespaceInfo(ctx, scoped)
@@ -1017,11 +1007,7 @@ func (v *vectorService) GetNamespaceInfo(ctx context.Context, req *GetNamespaceI
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("get_namespace_info", "not_found").Inc()
 		}
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrNotFound,
-			Op:   "vector.GetNamespaceInfo",
-			Err:  &api.OperationFailedError{Operation: "find namespace", Cause: err},
-		}
+		return nil, vectorStorageError("find namespace", req.Namespace, 0, err)
 	}
 
 	metadata := make(map[string]interface{})
@@ -1085,11 +1071,7 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 	defer v.mu.RUnlock()
 
 	if v.closed {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInternal,
-			Op:   "vector.UpsertVector",
-			Err:  &api.ServiceUnavailableError{Service: "vector"},
-		}
+		return nil, &VectorServiceClosedError{}
 	}
 
 	nsInfo, err := v.storage.GetNamespaceInfo(ctx, scoped)
@@ -1097,11 +1079,7 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("upsert_vector", "namespace_not_found").Inc()
 		}
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrNotFound,
-			Op:   "vector.UpsertVector",
-			Err:  &api.OperationFailedError{Operation: "find namespace", Cause: err},
-		}
+		return nil, vectorStorageError("find namespace", req.Namespace, 0, err)
 	}
 
 	// #nosec G115 -- vector dimension bounded by practical limits
@@ -1109,11 +1087,7 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("upsert_vector", "invalid_dimension").Inc()
 		}
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.UpsertVector",
-			Err:  &api.InvalidInputError{Message: fmt.Sprintf("vector dimension %d does not match namespace dimension %d", len(req.Vector), nsInfo.Dimension)},
-		}
+		return nil, &DimensionMismatchError{Expected: int(nsInfo.Dimension), Actual: len(req.Vector)}
 	}
 
 	now := time.Now().UnixNano()
@@ -1174,11 +1148,7 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("upsert_vector", "storage_error").Inc()
 		}
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrStorage,
-			Op:   "vector.UpsertVector",
-			Err:  &api.OperationFailedError{Operation: "upsert vector", Cause: err},
-		}
+		return nil, vectorStorageError("upsert vector", req.Namespace, req.ID, err)
 	}
 
 	v.indexMu.RLock()
@@ -1235,11 +1205,7 @@ func (v *vectorService) GetVector(ctx context.Context, req *GetVectorRequest) (*
 	defer v.mu.RUnlock()
 
 	if v.closed {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInternal,
-			Op:   "vector.GetVector",
-			Err:  &api.ServiceUnavailableError{Service: "vector"},
-		}
+		return nil, &VectorServiceClosedError{}
 	}
 
 	vecValue, err := v.storage.GetVector(ctx, scoped, req.ID)
@@ -1247,11 +1213,7 @@ func (v *vectorService) GetVector(ctx context.Context, req *GetVectorRequest) (*
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("get_vector", "not_found").Inc()
 		}
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrNotFound,
-			Op:   "vector.GetVector",
-			Err:  &api.OperationFailedError{Operation: "find vector", Cause: err},
-		}
+		return nil, vectorStorageError("find vector", req.Namespace, req.ID, err)
 	}
 
 	resp := &GetVectorResponse{
@@ -1295,11 +1257,7 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 	defer v.mu.RUnlock()
 
 	if v.closed {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInternal,
-			Op:   "vector.DeleteVector",
-			Err:  &api.ServiceUnavailableError{Service: "vector"},
-		}
+		return nil, &VectorServiceClosedError{}
 	}
 
 	if v.raftNode != nil {
@@ -1344,11 +1302,7 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("delete_vector", "storage_error").Inc()
 		}
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrStorage,
-			Op:   "vector.DeleteVector",
-			Err:  &api.OperationFailedError{Operation: "delete vector", Cause: err},
-		}
+		return nil, vectorStorageError("delete vector", req.Namespace, req.ID, err)
 	}
 
 	v.indexMu.RLock()
@@ -1403,11 +1357,7 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 	defer v.mu.RUnlock()
 
 	if v.closed {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInternal,
-			Op:   "vector.BatchUpsert",
-			Err:  &api.ServiceUnavailableError{Service: "vector"},
-		}
+		return nil, &VectorServiceClosedError{}
 	}
 
 	now := time.Now().UnixNano()
@@ -1488,11 +1438,7 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("batch_upsert", "storage_error").Inc()
 		}
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrStorage,
-			Op:   "vector.BatchUpsert",
-			Err:  &api.OperationFailedError{Operation: "batch upsert vectors", Cause: err},
-		}
+		return nil, vectorStorageError("batch upsert vectors", req.Namespace, 0, err)
 	}
 
 	v.indexMu.RLock()
@@ -1557,11 +1503,7 @@ func (v *vectorService) SearchSimilar(ctx context.Context, req *SearchSimilarReq
 	defer v.mu.RUnlock()
 
 	if v.closed {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInternal,
-			Op:   "vector.SearchSimilar",
-			Err:  &api.ServiceUnavailableError{Service: "vector"},
-		}
+		return nil, &VectorServiceClosedError{}
 	}
 
 	index, err := v.ensureHNSWIndex(ctx, scoped)
@@ -1590,11 +1532,7 @@ func (v *vectorService) SearchSimilar(ctx context.Context, req *SearchSimilarReq
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("search_similar", "search_failed").Inc()
 		}
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInternal,
-			Op:   "vector.SearchSimilar",
-			Err:  &api.OperationFailedError{Operation: "HNSW search", Cause: err},
-		}
+		return nil, &VectorOperationError{Op: "HNSW search", Err: err}
 	}
 	queryDuration := time.Since(searchStart).Nanoseconds()
 
@@ -1659,11 +1597,7 @@ func (v *vectorService) SearchByMetadata(ctx context.Context, req *SearchByMetad
 	defer v.mu.RUnlock()
 
 	if v.closed {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInternal,
-			Op:   "vector.SearchByMetadata",
-			Err:  &api.ServiceUnavailableError{Service: "vector"},
-		}
+		return nil, &VectorServiceClosedError{}
 	}
 
 	filters := make([]vector.MetadataFilter, 0, len(req.Filters))
@@ -1693,11 +1627,7 @@ func (v *vectorService) SearchByMetadata(ctx context.Context, req *SearchByMetad
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("search_by_metadata", "scan_failed").Inc()
 		}
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInternal,
-			Op:   "vector.SearchByMetadata",
-			Err:  &api.OperationFailedError{Operation: "metadata scan", Cause: err},
-		}
+		return nil, vectorStorageError("metadata scan", req.Namespace, 0, err)
 	}
 
 	results := make([]*VectorData, len(vecs))
@@ -1796,11 +1726,7 @@ func (v *vectorService) RebuildIndex(ctx context.Context, req *RebuildIndexReque
 
 	info, err := v.storage.GetNamespaceInfo(ctx, scoped)
 	if err != nil {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrNotFound,
-			Op:   "vector.RebuildIndex",
-			Err:  &api.OperationFailedError{Operation: "find namespace", Cause: err},
-		}
+		return nil, vectorStorageError("find namespace", req.Namespace, 0, err)
 	}
 
 	job := &RebuildJobState{
@@ -1891,11 +1817,11 @@ func (v *vectorService) GetRebuildProgress(ctx context.Context, req *GetRebuildP
 	v.jobMu.RUnlock()
 
 	if !found {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrNotFound,
-			Op:   "vector.GetRebuildProgress",
-			Err:  &api.NotFoundError{Resource: "rebuild job", ID: ""},
+		id := req.JobID
+		if id == "" {
+			id = req.Namespace
 		}
+		return nil, &VectorJobNotFoundError{Job: "rebuild", ID: id}
 	}
 
 	job.mu.RLock()
@@ -1964,11 +1890,7 @@ func (v *vectorService) performIndexRebuild(ctx context.Context, jobID, namespac
 	v.jobMu.RUnlock()
 
 	if !exists {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrNotFound,
-			Op:   "vector.performIndexRebuild",
-			Err:  &api.NotFoundError{Resource: "rebuild job", ID: jobID},
-		}
+		return &VectorJobNotFoundError{Job: "rebuild", ID: jobID}
 	}
 
 	defer func() {
@@ -2024,11 +1946,7 @@ func (v *vectorService) performIndexRebuild(ctx context.Context, jobID, namespac
 		job.mu.Lock()
 		job.Error = err
 		job.mu.Unlock()
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInternal,
-			Op:   "vector.performIndexRebuild",
-			Err:  &api.OperationFailedError{Operation: "create new index", Cause: err},
-		}
+		return &VectorOperationError{Op: "create new index", Err: err}
 	}
 
 	opts := &vector.ScanOptions{
@@ -2043,11 +1961,7 @@ func (v *vectorService) performIndexRebuild(ctx context.Context, jobID, namespac
 			job.mu.Lock()
 			job.Error = err
 			job.mu.Unlock()
-			return &qrdbErrors.QRDBError{
-				Code: qrdbErrors.ErrInternal,
-				Op:   "vector.performIndexRebuild",
-				Err:  &api.OperationFailedError{Operation: "scan vectors", Cause: err},
-			}
+			return &VectorOperationError{Op: "scan vectors", Err: err}
 		}
 
 		if len(vecs) == 0 {
@@ -2107,22 +2021,14 @@ func (v *vectorService) GetIndexStats(ctx context.Context, req *GetIndexStatsReq
 	defer v.mu.RUnlock()
 
 	if v.closed {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInternal,
-			Op:   "vector.GetIndexStats",
-			Err:  &api.ServiceUnavailableError{Service: "vector"},
-		}
+		return nil, &VectorServiceClosedError{}
 	}
 
 	scoped := scopedFromContext(ctx, req.Namespace)
 
 	info, err := v.storage.GetNamespaceInfo(ctx, scoped)
 	if err != nil {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrNotFound,
-			Op:   "vector.GetIndexStats",
-			Err:  &api.OperationFailedError{Operation: "find namespace", Cause: err},
-		}
+		return nil, vectorStorageError("find namespace", req.Namespace, 0, err)
 	}
 
 	v.indexMu.RLock()
@@ -2233,279 +2139,147 @@ func validateNamespaceName(name string) error {
 
 func (v *vectorService) validateCreateNamespaceRequest(req *CreateNamespaceRequest) error {
 	if req == nil {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateCreateNamespaceRequest",
-			Err:  &api.NilInputError{Name: "request"},
-		}
+		return &InvalidVectorError{Reason: "request cannot be nil"}
 	}
 	if req.Namespace == "" {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateCreateNamespaceRequest",
-			Err:  &api.RequiredFieldError{Field: "namespace"},
-		}
+		return &InvalidVectorError{Reason: "namespace is required"}
 	}
 	if err := validateNamespaceName(req.Namespace); err != nil {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateCreateNamespaceRequest",
-			Err:  err,
-		}
+		return err
 	}
 	if req.Dimension == 0 {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateCreateNamespaceRequest",
-			Err:  &api.InvalidInputError{Message: "dimension must be greater than 0"},
-		}
+		return &InvalidVectorError{Reason: "dimension must be greater than 0"}
 	}
 	return nil
 }
 
 func (v *vectorService) validateDeleteNamespaceRequest(req *DeleteNamespaceRequest) error {
 	if req == nil {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateDeleteNamespaceRequest",
-			Err:  &api.NilInputError{Name: "request"},
-		}
+		return &InvalidVectorError{Reason: "request cannot be nil"}
 	}
 	if req.Namespace == "" {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateDeleteNamespaceRequest",
-			Err:  &api.RequiredFieldError{Field: "namespace"},
-		}
+		return &InvalidVectorError{Reason: "namespace is required"}
 	}
 	return nil
 }
 
 func (v *vectorService) validateGetNamespaceInfoRequest(req *GetNamespaceInfoRequest) error {
 	if req == nil {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateGetNamespaceInfoRequest",
-			Err:  &api.NilInputError{Name: "request"},
-		}
+		return &InvalidVectorError{Reason: "request cannot be nil"}
 	}
 	if req.Namespace == "" {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateGetNamespaceInfoRequest",
-			Err:  &api.RequiredFieldError{Field: "namespace"},
-		}
+		return &InvalidVectorError{Reason: "namespace is required"}
 	}
 	return nil
 }
 
 func (v *vectorService) validateUpsertVectorRequest(req *UpsertVectorRequest) error {
 	if req == nil {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateUpsertVectorRequest",
-			Err:  &api.NilInputError{Name: "request"},
-		}
+		return &InvalidVectorError{Reason: "request cannot be nil"}
 	}
 	if req.Namespace == "" {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateUpsertVectorRequest",
-			Err:  &api.RequiredFieldError{Field: "namespace"},
-		}
+		return &InvalidVectorError{Reason: "namespace is required"}
 	}
 	if req.ID == 0 {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateUpsertVectorRequest",
-			Err:  &api.InvalidInputError{Message: "ID must be greater than 0"},
-		}
+		return &InvalidVectorError{Reason: "ID must be greater than 0"}
 	}
 	if len(req.Vector) == 0 {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateUpsertVectorRequest",
-			Err:  &api.RequiredFieldError{Field: "vector"},
-		}
+		return &InvalidVectorError{Reason: "vector is required"}
 	}
 	return nil
 }
 
 func (v *vectorService) validateGetVectorRequest(req *GetVectorRequest) error {
 	if req == nil {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateGetVectorRequest",
-			Err:  &api.NilInputError{Name: "request"},
-		}
+		return &InvalidVectorError{Reason: "request cannot be nil"}
 	}
 	if req.Namespace == "" {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateGetVectorRequest",
-			Err:  &api.RequiredFieldError{Field: "namespace"},
-		}
+		return &InvalidVectorError{Reason: "namespace is required"}
 	}
 	if req.ID == 0 {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateGetVectorRequest",
-			Err:  &api.InvalidInputError{Message: "ID must be greater than 0"},
-		}
+		return &InvalidVectorError{Reason: "ID must be greater than 0"}
 	}
 	return nil
 }
 
 func (v *vectorService) validateDeleteVectorRequest(req *DeleteVectorRequest) error {
 	if req == nil {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateDeleteVectorRequest",
-			Err:  &api.NilInputError{Name: "request"},
-		}
+		return &InvalidVectorError{Reason: "request cannot be nil"}
 	}
 	if req.Namespace == "" {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateDeleteVectorRequest",
-			Err:  &api.RequiredFieldError{Field: "namespace"},
-		}
+		return &InvalidVectorError{Reason: "namespace is required"}
 	}
 	if req.ID == 0 {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateDeleteVectorRequest",
-			Err:  &api.InvalidInputError{Message: "ID must be greater than 0"},
-		}
+		return &InvalidVectorError{Reason: "ID must be greater than 0"}
 	}
 	return nil
 }
 
 func (v *vectorService) validateBatchUpsertRequest(req *BatchUpsertRequest) error {
 	if req == nil {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateBatchUpsertRequest",
-			Err:  &api.NilInputError{Name: "request"},
-		}
+		return &InvalidVectorError{Reason: "request cannot be nil"}
 	}
 	if req.Namespace == "" {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateBatchUpsertRequest",
-			Err:  &api.RequiredFieldError{Field: "namespace"},
-		}
+		return &InvalidVectorError{Reason: "namespace is required"}
 	}
 	if len(req.Vectors) == 0 {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateBatchUpsertRequest",
-			Err:  &api.RequiredFieldError{Field: "vectors"},
-		}
+		return &InvalidVectorError{Reason: "vectors is required"}
 	}
 	return nil
 }
 
 func (v *vectorService) validateSearchSimilarRequest(req *SearchSimilarRequest) error {
 	if req == nil {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateSearchSimilarRequest",
-			Err:  &api.NilInputError{Name: "request"},
-		}
+		return &InvalidVectorError{Reason: "request cannot be nil"}
 	}
 	if req.Namespace == "" {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateSearchSimilarRequest",
-			Err:  &api.RequiredFieldError{Field: "namespace"},
-		}
+		return &InvalidVectorError{Reason: "namespace is required"}
 	}
 	if len(req.QueryVector) == 0 {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateSearchSimilarRequest",
-			Err:  &api.RequiredFieldError{Field: "query vector"},
-		}
+		return &InvalidVectorError{Reason: "query vector is required"}
 	}
 	if req.K <= 0 {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateSearchSimilarRequest",
-			Err:  &api.InvalidInputError{Message: "k must be greater than 0"},
-		}
+		return &InvalidVectorError{Reason: "k must be greater than 0"}
 	}
 	return nil
 }
 
 func (v *vectorService) validateSearchByMetadataRequest(req *SearchByMetadataRequest) error {
 	if req == nil {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateSearchByMetadataRequest",
-			Err:  &api.NilInputError{Name: "request"},
-		}
+		return &InvalidVectorError{Reason: "request cannot be nil"}
 	}
 	if req.Namespace == "" {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateSearchByMetadataRequest",
-			Err:  &api.RequiredFieldError{Field: "namespace"},
-		}
+		return &InvalidVectorError{Reason: "namespace is required"}
 	}
 	return nil
 }
 
 func (v *vectorService) validateRebuildIndexRequest(req *RebuildIndexRequest) error {
 	if req == nil {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateRebuildIndexRequest",
-			Err:  &api.NilInputError{Name: "request"},
-		}
+		return &InvalidVectorError{Reason: "request cannot be nil"}
 	}
 	if req.Namespace == "" {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateRebuildIndexRequest",
-			Err:  &api.RequiredFieldError{Field: "namespace"},
-		}
+		return &InvalidVectorError{Reason: "namespace is required"}
 	}
 	return nil
 }
 
 func (v *vectorService) validateGetRebuildProgressRequest(req *GetRebuildProgressRequest) error {
 	if req == nil {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateGetRebuildProgressRequest",
-			Err:  &api.NilInputError{Name: "request"},
-		}
+		return &InvalidVectorError{Reason: "request cannot be nil"}
 	}
 	if req.JobID == "" && req.Namespace == "" {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateGetRebuildProgressRequest",
-			Err:  &api.InvalidInputError{Message: "job_id or namespace is required"},
-		}
+		return &InvalidVectorError{Reason: "job_id or namespace is required"}
 	}
 	return nil
 }
 
 func (v *vectorService) validateGetIndexStatsRequest(req *GetIndexStatsRequest) error {
 	if req == nil {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateGetIndexStatsRequest",
-			Err:  &api.NilInputError{Name: "request"},
-		}
+		return &InvalidVectorError{Reason: "request cannot be nil"}
 	}
 	if req.Namespace == "" {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateGetIndexStatsRequest",
-			Err:  &api.RequiredFieldError{Field: "namespace"},
-		}
+		return &InvalidVectorError{Reason: "namespace is required"}
 	}
 	return nil
 }
@@ -2580,11 +2354,7 @@ func (v *vectorService) CompactNamespace(ctx context.Context, req *CompactNamesp
 	v.mu.RLock()
 	if v.closed {
 		v.mu.RUnlock()
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInternal,
-			Op:   "vector.CompactNamespace",
-			Err:  &api.ServiceUnavailableError{Service: "vector"},
-		}
+		return nil, &VectorServiceClosedError{}
 	}
 	v.mu.RUnlock()
 
@@ -2593,11 +2363,7 @@ func (v *vectorService) CompactNamespace(ctx context.Context, req *CompactNamesp
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("compact_namespace", "not_found").Inc()
 		}
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrNotFound,
-			Op:   "vector.CompactNamespace",
-			Err:  &api.OperationFailedError{Operation: "find namespace", Cause: err},
-		}
+		return nil, vectorStorageError("find namespace", req.Namespace, 0, err)
 	}
 
 	operationID := uuid.New().String()
@@ -2669,11 +2435,7 @@ func (v *vectorService) performCompaction(ctx context.Context, operationID, name
 	v.jobMu.RUnlock()
 
 	if !exists {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrNotFound,
-			Op:   "vector.performCompaction",
-			Err:  &api.NotFoundError{Resource: "compaction job", ID: operationID},
-		}
+		return &VectorJobNotFoundError{Job: "compaction", ID: operationID}
 	}
 
 	defer func() {
@@ -2694,11 +2456,7 @@ func (v *vectorService) performCompaction(ctx context.Context, operationID, name
 		job.mu.Lock()
 		job.Error = err
 		job.mu.Unlock()
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrStorage,
-			Op:   "vector.performCompaction",
-			Err:  &api.OperationFailedError{Operation: "compaction", Cause: err},
-		}
+		return &VectorOperationError{Op: "compaction", Err: err}
 	}
 
 	postStats, _ := v.storage.GetStats(ctx, namespace)
@@ -2744,11 +2502,7 @@ func (v *vectorService) GetCompactionProgress(ctx context.Context, req *GetCompa
 	v.mu.RLock()
 	if v.closed {
 		v.mu.RUnlock()
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInternal,
-			Op:   "vector.GetCompactionProgress",
-			Err:  &api.ServiceUnavailableError{Service: "vector"},
-		}
+		return nil, &VectorServiceClosedError{}
 	}
 	v.mu.RUnlock()
 
@@ -2758,11 +2512,7 @@ func (v *vectorService) GetCompactionProgress(ctx context.Context, req *GetCompa
 	if req.OperationID != "" {
 		job, exists := v.compactionJobs[req.OperationID]
 		if !exists {
-			return nil, &qrdbErrors.QRDBError{
-				Code: qrdbErrors.ErrNotFound,
-				Op:   "vector.GetCompactionProgress",
-				Err:  &api.NotFoundError{Resource: "compaction operation", ID: req.OperationID},
-			}
+			return nil, &VectorJobNotFoundError{Job: "compaction", ID: req.OperationID}
 		}
 
 		job.mu.RLock()
@@ -2810,11 +2560,7 @@ func (v *vectorService) GetCompactionProgress(ctx context.Context, req *GetCompa
 	}
 
 	if latestJob == nil {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrNotFound,
-			Op:   "vector.GetCompactionProgress",
-			Err:  &api.NotFoundError{Resource: "compaction operations for namespace", ID: req.Namespace},
-		}
+		return nil, &VectorJobNotFoundError{Job: "compaction", ID: req.Namespace}
 	}
 
 	latestJob.mu.RLock()
@@ -2855,18 +2601,10 @@ func (v *vectorService) GetCompactionProgress(ctx context.Context, req *GetCompa
 // validateCompactNamespaceRequest validates the compact namespace request.
 func (v *vectorService) validateCompactNamespaceRequest(req *CompactNamespaceRequest) error {
 	if req == nil {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateCompactNamespaceRequest",
-			Err:  &api.NilInputError{Name: "request"},
-		}
+		return &InvalidVectorError{Reason: "request cannot be nil"}
 	}
 	if req.Namespace == "" {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateCompactNamespaceRequest",
-			Err:  &api.RequiredFieldError{Field: "namespace"},
-		}
+		return &InvalidVectorError{Reason: "namespace is required"}
 	}
 	return nil
 }
@@ -2874,18 +2612,10 @@ func (v *vectorService) validateCompactNamespaceRequest(req *CompactNamespaceReq
 // validateGetCompactionProgressRequest validates the get compaction progress request.
 func (v *vectorService) validateGetCompactionProgressRequest(req *GetCompactionProgressRequest) error {
 	if req == nil {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateGetCompactionProgressRequest",
-			Err:  &api.NilInputError{Name: "request"},
-		}
+		return &InvalidVectorError{Reason: "request cannot be nil"}
 	}
 	if req.OperationID == "" && req.Namespace == "" {
-		return &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.validateGetCompactionProgressRequest",
-			Err:  &api.InvalidInputError{Message: "either operation_id or namespace is required"},
-		}
+		return &InvalidVectorError{Reason: "either operation_id or namespace is required"}
 	}
 	return nil
 }
@@ -2899,25 +2629,13 @@ func (v *vectorService) BatchDeleteVectors(ctx context.Context, req *BatchDelete
 	start := time.Now()
 
 	if req == nil {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.BatchDelete",
-			Err:  &api.NilInputError{Name: "request"},
-		}
+		return nil, &InvalidVectorError{Reason: "request cannot be nil"}
 	}
 	if req.Namespace == "" {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.BatchDelete",
-			Err:  &api.RequiredFieldError{Field: "namespace"},
-		}
+		return nil, &InvalidVectorError{Reason: "namespace is required"}
 	}
 	if len(req.IDs) == 0 {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.BatchDelete",
-			Err:  &api.EmptyCollectionError{Field: "vector IDs"},
-		}
+		return nil, &InvalidVectorError{Reason: "vector IDs must not be empty"}
 	}
 
 	scoped := scopedFromContext(ctx, req.Namespace)
@@ -2971,29 +2689,17 @@ func (v *vectorService) ListVectors(ctx context.Context, req *ListVectorsRequest
 	start := time.Now()
 
 	if req == nil {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.ListVectors",
-			Err:  &api.NilInputError{Name: "request"},
-		}
+		return nil, &InvalidVectorError{Reason: "request cannot be nil"}
 	}
 	if req.Namespace == "" {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.ListVectors",
-			Err:  &api.RequiredFieldError{Field: "namespace"},
-		}
+		return nil, &InvalidVectorError{Reason: "namespace is required"}
 	}
 
 	scoped := scopedFromContext(ctx, req.Namespace)
 
 	namespaceInfo, err := v.storage.GetNamespaceInfo(ctx, scoped)
 	if err != nil {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrNotFound,
-			Op:   "vector.ListVectors",
-			Err:  &api.OperationFailedError{Operation: "find namespace " + req.Namespace, Cause: err},
-		}
+		return nil, vectorStorageError("find namespace", req.Namespace, 0, err)
 	}
 
 	limit := req.Limit
@@ -3017,11 +2723,7 @@ func (v *vectorService) ListVectors(ctx context.Context, req *ListVectorsRequest
 	}
 	vectors, err := v.storage.ScanNamespace(ctx, scoped, scanOpts)
 	if err != nil {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInternal,
-			Op:   "vector.ListVectors",
-			Err:  &api.OperationFailedError{Operation: "list vectors", Cause: err},
-		}
+		return nil, vectorStorageError("list vectors", req.Namespace, 0, err)
 	}
 
 	var nextCursor string
@@ -3072,36 +2774,20 @@ func (v *vectorService) UpdateMetadata(ctx context.Context, req *UpdateVectorMet
 	start := time.Now()
 
 	if req == nil {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.UpdateMetadata",
-			Err:  &api.NilInputError{Name: "request"},
-		}
+		return nil, &InvalidVectorError{Reason: "request cannot be nil"}
 	}
 	if req.Namespace == "" {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.UpdateMetadata",
-			Err:  &api.RequiredFieldError{Field: "namespace"},
-		}
+		return nil, &InvalidVectorError{Reason: "namespace is required"}
 	}
 	if req.ID == 0 {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.UpdateMetadata",
-			Err:  &api.RequiredFieldError{Field: "vector ID"},
-		}
+		return nil, &InvalidVectorError{Reason: "vector ID is required"}
 	}
 
 	scoped := scopedFromContext(ctx, req.Namespace)
 
 	existingVector, err := v.storage.GetVector(ctx, scoped, req.ID)
 	if err != nil {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrNotFound,
-			Op:   "vector.UpdateMetadata",
-			Err:  &api.OperationFailedError{Operation: fmt.Sprintf("find vector %d in namespace %s", req.ID, req.Namespace), Cause: err},
-		}
+		return nil, vectorStorageError("find vector", req.Namespace, req.ID, err)
 	}
 
 	var newMetadata map[string]interface{}
@@ -3132,11 +2818,7 @@ func (v *vectorService) UpdateMetadata(ctx context.Context, req *UpdateVectorMet
 
 	resp, err := v.UpsertVector(ctx, upsertReq)
 	if err != nil {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInternal,
-			Op:   "vector.UpdateMetadata",
-			Err:  &api.OperationFailedError{Operation: "update metadata", Cause: err},
-		}
+		return nil, err
 	}
 
 	if v.metrics != nil {
@@ -3156,43 +2838,23 @@ func (v *vectorService) SearchByID(ctx context.Context, req *SearchByIDRequest) 
 	start := time.Now()
 
 	if req == nil {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.SearchByID",
-			Err:  &api.NilInputError{Name: "request"},
-		}
+		return nil, &InvalidVectorError{Reason: "request cannot be nil"}
 	}
 	if req.Namespace == "" {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.SearchByID",
-			Err:  &api.RequiredFieldError{Field: "namespace"},
-		}
+		return nil, &InvalidVectorError{Reason: "namespace is required"}
 	}
 	if req.ID == 0 {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.SearchByID",
-			Err:  &api.RequiredFieldError{Field: "source vector ID"},
-		}
+		return nil, &InvalidVectorError{Reason: "source vector ID is required"}
 	}
 	if req.K <= 0 {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrInvalidInput,
-			Op:   "vector.SearchByID",
-			Err:  &api.InvalidInputError{Message: "k must be positive"},
-		}
+		return nil, &InvalidVectorError{Reason: "k must be positive"}
 	}
 
 	scoped := scopedFromContext(ctx, req.Namespace)
 
 	sourceVector, err := v.storage.GetVector(ctx, scoped, req.ID)
 	if err != nil {
-		return nil, &qrdbErrors.QRDBError{
-			Code: qrdbErrors.ErrNotFound,
-			Op:   "vector.SearchByID",
-			Err:  &api.OperationFailedError{Operation: fmt.Sprintf("find source vector %d in namespace %s", req.ID, req.Namespace), Cause: err},
-		}
+		return nil, vectorStorageError("find source vector", req.Namespace, req.ID, err)
 	}
 
 	k := req.K

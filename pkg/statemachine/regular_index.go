@@ -34,7 +34,7 @@ func (r *RegularStateMachine) handleIndexCreate(payload []byte, revision uint64)
 	}
 
 	if err := r.indexManager.CreateIndex(name, fieldName, opts); err != nil {
-		return sm.Result{}, &StorageError{Op: "index-create", Inner: err}
+		return indexManagerFailure("index-create", err)
 	}
 
 	return sm.Result{Value: revision}, nil
@@ -47,13 +47,13 @@ func (r *RegularStateMachine) handleIndexDrop(payload []byte, revision uint64) (
 		return sm.Result{}, &ServiceNotConfiguredError{Service: "index"}
 	}
 
-	name, err := protocol.DecodeIndexDrop(payload)
+	name, dropOpts, err := protocol.DecodeIndexDropOpts(payload)
 	if err != nil {
 		return sm.Result{}, &IncompleteDataError{Reason: "index drop: " + err.Error()}
 	}
 
-	if err := r.indexManager.DropIndex(name); err != nil {
-		return sm.Result{}, &StorageError{Op: "index-drop", Inner: err}
+	if err := r.indexManager.DropIndex(name, dropOpts); err != nil {
+		return indexManagerFailure("index-drop", err)
 	}
 
 	return sm.Result{Value: revision}, nil

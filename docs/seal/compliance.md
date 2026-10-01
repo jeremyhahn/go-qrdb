@@ -16,7 +16,7 @@ go-qrdb implements the core compliance posture for FIPS 140-3 Level 2:
 - **Separation of Duties** (AS10.03): Six-role model with SO governance-only constraint
 - **Split Knowledge** (AS10.05): Shamir M-of-N unseal with quorum threshold
 - **Dual Authorization** (AS10.06): mTLS + SO PIN for SO operations; challenge-response for Custodians
-- **Key Zeroization** (AS10.09): Memguard buffers with secure wipe on barrier operations
+- **Key Zeroization** (AS10.09): go-enclave locked-memory buffers with secure wipe on barrier operations
 - **Audit Logging** (AS10.10): Append-only hash-chained audit trail with tamper-evidence
 - **Cryptographic Integrity** (AS10.11): SHA-256 hash-chain validation on audit entries
 
@@ -29,7 +29,7 @@ go-qrdb satisfies baseline access control, audit, and key lifecycle requirements
 - **AC-6**: Least Privilege — Role-based access with explicit deny-lists
 - **AU-2**: Audit Events — All barrier, ceremony, RBAC, key operations logged
 - **AU-12**: Audit Generation — Structured audit events with actor, resource, action, outcome
-- **SI-12**: Information Handling — Key zeroization in memguard; recovery keys offline
+- **SI-12**: Information Handling — Key zeroization via go-enclave; recovery keys offline
 - **CA-6**: Security Planning — Architecture documentation (this document)
 
 FedRAMP High adds continuous monitoring, incident response, and SIEM integration (addressed via audit API export).
@@ -60,14 +60,14 @@ go-qrdb addresses encryption, access control, and breach notification requiremen
 | **AS10.03** | Roles, Services, and Authentication | Six-role model (SO, Admin, Operator, User, Auditor, Custodian); SO governance-only; RBAC with explicit deny-lists | 2 | `docs/auth/roles.md`, `pkg/role/`, `pkg/auth/rbac/` |
 | **AS10.05** | Split Knowledge Procedure | Shamir M-of-N threshold unsealing; no single Custodian holds complete root key | 4 | `docs/seal/custodians.md`, `pkg/seal/shamir.go` |
 | **AS10.06** | Dual Authorization Procedure | SO: mTLS + PIN; Custodian: mTLS + challenge-response (signature with private key in HSM) | 4 | `pkg/auth/so_auth.go`, `pkg/ceremony/challenge.go` |
-| **AS10.09** | Key Zeroization | Memguard locked buffers; byte-by-byte wipe on barrier seal; `defer buffer.Destroy()` on all secret operations | 1 (inherited from go-quicraft) | `go-quicraft/pkg/enclave/`, `pkg/seal/` |
+| **AS10.09** | Key Zeroization | go-enclave locked pages for material in use and sealed enclaves for material at rest in memory; byte-by-byte wipe on barrier seal; `defer Destroy()` on all secret operations | 1 (inherited from go-quicraft) | `go-enclave`, `pkg/seal/`, `pkg/secure/` |
 | **AS10.10** | Integrity of Key Information | SHA-256 hash-chain on audit entries; every audit event includes hash of previous entry; tamper-evident verification | 6 | `pkg/audit/file_logger.go` |
 | **AS10.11** | Secret Information Integrity | Encrypted audit entries (via barrier); integrity validation via hash-chain; ACL on audit read (Auditor only) | 6 | `pkg/audit/` |
 | **AS10.14** | Cryptographic Parameters | Approved algorithms: AES-256-GCM (FIPS 197), HKDF-SHA256 (NIST SP 800-56A), Argon2id/PBKDF2-SHA256 (FIPS-aware KDF mode), ECDSA P-256 (FIPS 186-4), HMAC-SHA256 | 1, 5 | `pkg/seal/strategy_software.go` |
 | **AS10.19** | Delivery of Key Information | Shamir share delivery via ECDH + AES-256-GCM envelope; share plaintext zeroed server-side; custodian decrypts locally | 4 | `docs/seal/custodians.md`, `pkg/seal/shamir.go` |
 | **AS10.23** | Access Control | RBAC with six roles; permission-based enforcement at middleware; explicit deny-lists for SO crypto ops | 2 | `docs/auth/roles.md`, `pkg/auth/rbac/rbac.go` |
 | **AS10.27** | Identification and Authentication | mTLS certificates (X.509); SO PIN (via `pkg/pin.PINBackend`); challenge-response via auth factors (PIV, PKCS#11, FIDO2 implementations in go-xkms; software mTLS in qrdb) | 3, 4 | `pkg/cert/`, `pkg/authfactors/` (Factor framework + registry), `pkg/pin/` |
-| **AS10.31** | User Zeroization | User PIN held in memguard during verification; zeroed after use; barrier barrier rekey wipes old DEK | 1, 5 | `pkg/seal/`, `go-quicraft/pkg/enclave/` |
+| **AS10.31** | User Zeroization | User PIN held in locked memory during verification; zeroed after use; barrier rekey wipes old DEK | 1, 5 | `pkg/seal/`, `pkg/secure/`, `go-enclave` |
 
 ## FedRAMP Moderate/High Requirement Matrix
 
@@ -90,7 +90,7 @@ go-qrdb addresses encryption, access control, and breach notification requiremen
 | **3.2.1** | Key Generation | Cryptographically secure random (crypto/rand); FIPS 140-3 approved algorithms (AES, ECDSA, HMAC) | 1 | `pkg/seal/barrier.go`, `pkg/cert/` |
 | **3.4.1** | Strong Cryptography | AES-256-GCM (at rest), TLS 1.3 (in flight), ECDSA P-256 / RSA-4096 (certificates) | 1 | `pkg/seal/`, `pkg/cert/` |
 | **3.6.1** | Key Rotation | Root key rotation via rekey (generates new Shamir shares); DEK rotation (configurable); certificate rotation | 5 | `pkg/seal/rekey.go`, `pkg/dek/` |
-| **3.6.2** | Cryptographic Key Destruction | Secure wipe via memguard; byte-by-byte overwrite for operational keys; recovery keys in offline escrow | 1 | `go-quicraft/pkg/enclave/` |
+| **3.6.2** | Cryptographic Key Destruction | Secure wipe via go-enclave (unmapped locked pages) and `pkg/secure`; byte-by-byte overwrite for operational keys; recovery keys in offline escrow | 1 | `go-enclave`, `pkg/secure/` |
 | **7.1** | Limit User Access | Role-based access control; six-role model; explicit deny-lists; permission matrix documented | 2 | `docs/auth/roles.md`, `pkg/auth/rbac/` |
 | **10.2.1** | User Access to Cardholder Data | Audit events for all access attempts (successful and failed) | 6 | `pkg/audit/` |
 | **10.2.2** | User Access to Audit Trail | Auditor role with read-only access; permission enforcement | 6 | `pkg/audit/`, `docs/auth/roles.md` |
@@ -159,7 +159,7 @@ Each phase includes compliance verification:
 
 ## See Also
 
-- [fips140-mode.md](fips140-mode.md) — The `GODEBUG=fips140=only` CI job, the approved-algorithm remediation, the exemption register, and the findings still open
+- [fips140-mode.md](fips140-mode.md) — The `GODEBUG=fips140=only` CI job, the approved-algorithm remediation, the exemption register, what remains permanently unavailable under strict enforcement, and why the job is measured-clean but not yet a required check
 - [roles.md](../auth/roles.md) — Canonical six-role definitions and SoD constraints
 - [enabling-encryption.md](enabling-encryption.md) — Encryption-at-rest lifecycle: why disabling encryption is not a casual toggle, enabling it on an existing `none` deployment, and encrypted-backup recovery
 - [custodians.md](../seal/custodians.md) — Custodian lifecycle and share-delivery protocol

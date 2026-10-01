@@ -95,38 +95,6 @@ func (e *BackupRestoreError) Unwrap() error {
 	return e.Err
 }
 
-// BackupVerifyError is returned when backup verification fails.
-type BackupVerifyError struct {
-	BackupID string
-	Err      error
-}
-
-// Error returns a human-readable description.
-func (e *BackupVerifyError) Error() string {
-	return "service: backup verification failed for " + e.BackupID + ": " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *BackupVerifyError) Unwrap() error {
-	return e.Err
-}
-
-// BackupDeleteError is returned when backup deletion fails.
-type BackupDeleteError struct {
-	BackupID string
-	Err      error
-}
-
-// Error returns a human-readable description.
-func (e *BackupDeleteError) Error() string {
-	return "service: backup deletion failed for " + e.BackupID + ": " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *BackupDeleteError) Unwrap() error {
-	return e.Err
-}
-
 // BackupChecksumMismatchError is returned when a backup's checksum
 // does not match the computed checksum.
 type BackupChecksumMismatchError struct {

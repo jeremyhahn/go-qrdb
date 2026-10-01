@@ -21,7 +21,7 @@ One interface, one service, **two strategies**:
 
 | Strategy | Description |
 |----------|-------------|
-| `manual` | Credentials held in-memory inside **memguard secure enclaves** (`secure.Secret`) — never as raw, garbage-collected heap bytes. Retrieval blocks until an operator submits the credential (used during ceremony for non-resident secrets). Plaintext is materialized only transiently (`Open → copy → Destroy`) on read; on delete/rotation the backing enclave is destroyed. |
+| `manual` | Credentials held in-memory inside **go-enclave sealed enclaves** (`secure.Secret`) — never as raw, garbage-collected heap bytes. Retrieval blocks until an operator submits the credential (used during ceremony for non-resident secrets). Plaintext is materialized only transiently (`Open → copy → Destroy`) on read; on delete/rotation the backing enclave is destroyed. |
 | `barrier` | Credentials encrypted and stored via `seal.StorageBarrier` (encrypt-then-store on the at-rest storage backend) — the production default. |
 
 Future HSM-only strategies will surface `ErrEnumerationNotSupported` from
@@ -43,7 +43,7 @@ These are deliberately **not** the same thing and do **not** overlap:
 |---|---|---|
 | **Purpose** | Minimal, self-contained custody of the handful of **operational/boot secrets** the engine itself needs — chiefly the **ceremony `manual` strategy** (security officers submit non-resident secrets that block retrieval until provided). | Full **product secrets-management & KMS** for application/tenant secrets: rich key lifecycle, per-key authz, key-use audit, operator-settable rotation policy. |
 | **Layer** | Runs in **standalone qrdb** with no quicbaas present (xkms/quicbaas embed qrdb). | Built **on top of** qrdb's engine; absent in standalone qrdb. |
-| **Backing** | `manual` = in-memory memguard enclave; `barrier` = qrdb seal `StorageBarrier` (encrypted-at-rest). | qrdb engine (KV/barrier) via the SDK, plus xkms hardware seal injection. |
+| **Backing** | `manual` = in-memory go-enclave sealed enclave; `barrier` = qrdb seal `StorageBarrier` (encrypted-at-rest). | qrdb engine (KV/barrier) via the SDK, plus xkms hardware seal injection. |
 | **Scope** | A small set of named engine secrets + versioned rotation. | Arbitrary tenant/app secret trees, large scale. |
 
 ### Alternatives rejected
@@ -80,14 +80,14 @@ the SPI.
 | Credential store, strategies, versioned rotation | `pkg/credentials` | go-qrdb |
 | `CredentialServicer` — the transport-facing entry point | `pkg/service` | go-qrdb |
 | Secret-reference resolver SPI, `SecretValue`, `ConfigProcessor` | `pkg/secret` | go-qrdb |
-| Protected memory primitives | `pkg/secure` over **memguard** | go-qrdb |
+| Protected memory primitives | `pkg/secure` over **go-enclave** | go-qrdb |
 | At-rest encryption for the `barrier` strategy | `pkg/seal` — see [../barrier-seal/](../barrier-seal/) | go-qrdb |
 | PIN custody | `pkg/pin` — see [../auth-factors/](../auth-factors/) | go-qrdb |
 | Product secrets management and KMS | — | **go-quicbaas**, above this layer |
 
 ## Trust boundaries
 
-- **`manual` credentials live only in memguard enclaves** — never as raw,
+- **`manual` credentials live only in go-enclave sealed enclaves** — never as raw,
   garbage-collected heap bytes. Plaintext is materialized transiently
   (`Open → copy → Destroy`) on read; the enclave is destroyed on delete or
   rotation.

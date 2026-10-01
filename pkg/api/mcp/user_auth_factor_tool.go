@@ -289,7 +289,7 @@ func handleUserAuthFactorLoginTool(svc service.UserAuthFactorServicer, userSvc u
 				result["username"] = u.Username
 				result["tenant_id"] = u.TenantID
 				result["roles"] = u.RoleIDs
-				result["active"] = u.Enabled
+				result["active"] = u.CanAuthenticate()
 			}
 		}
 		body, _ := json.Marshal(result)

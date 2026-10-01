@@ -17,7 +17,6 @@ package rest
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -52,7 +51,7 @@ func (s *Server) handleUserAuthFactorAdd(w http.ResponseWriter, r *http.Request)
 	}
 	factor := userAuthFactorFromRequest(&req)
 	if err := s.userAuthFactorSvc.Add(r.Context(), req.UserID, factor); err != nil {
-		writeErrorJSON(w, mapUserAuthFactorError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 	writeJSON(w, transport.AuthFactorAddResponse{Factor: userAuthFactorToRecord(factor)})
@@ -71,7 +70,7 @@ func (s *Server) handleUserAuthFactorList(w http.ResponseWriter, r *http.Request
 	}
 	factors, err := s.userAuthFactorSvc.List(r.Context(), uid)
 	if err != nil {
-		writeErrorJSON(w, mapUserAuthFactorError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 	resp := transport.AuthFactorListResponse{
@@ -97,7 +96,7 @@ func (s *Server) handleUserAuthFactorRotate(w http.ResponseWriter, r *http.Reque
 	}
 	newFactor := userAuthFactorFromRequest(&req.NewFactor)
 	if err := s.userAuthFactorSvc.Rotate(r.Context(), req.OldFactorID, newFactor); err != nil {
-		writeErrorJSON(w, mapUserAuthFactorError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 	writeJSON(w, transport.AuthFactorRotateResponse{NewFactor: userAuthFactorToRecord(newFactor)})
@@ -116,7 +115,7 @@ func (s *Server) handleUserAuthFactorLogin(w http.ResponseWriter, r *http.Reques
 	}
 	resp, err := s.resolveUserAuthFactorLogin(r.Context(), &req)
 	if err != nil {
-		writeErrorJSON(w, mapUserAuthFactorError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 	writeJSON(w, resp)
@@ -142,14 +141,14 @@ func (s *Server) handleUserAuthFactorByPath(w http.ResponseWriter, r *http.Reque
 	case http.MethodGet:
 		factor, err := s.userAuthFactorSvc.Get(r.Context(), factorID)
 		if err != nil {
-			writeErrorJSON(w, mapUserAuthFactorError(err), err)
+			writeErrorJSON(w, mapHTTPError(err), err)
 			return
 		}
 		writeJSON(w, transport.AuthFactorGetResponse{Factor: userAuthFactorToRecord(factor)})
 	case http.MethodDelete:
 		force := r.URL.Query().Get("force") == "true"
 		if err := s.userAuthFactorSvc.Remove(r.Context(), factorID, force); err != nil {
-			writeErrorJSON(w, mapUserAuthFactorError(err), err)
+			writeErrorJSON(w, mapHTTPError(err), err)
 			return
 		}
 		writeJSON(w, transport.AuthFactorRemoveResponse{Status: "revoked"})
@@ -164,12 +163,12 @@ func (s *Server) handleUserAuthFactorByPath(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		if err := s.userAuthFactorSvc.Relabel(r.Context(), factorID, req.Label); err != nil {
-			writeErrorJSON(w, mapUserAuthFactorError(err), err)
+			writeErrorJSON(w, mapHTTPError(err), err)
 			return
 		}
 		factor, err := s.userAuthFactorSvc.Get(r.Context(), factorID)
 		if err != nil {
-			writeErrorJSON(w, mapUserAuthFactorError(err), err)
+			writeErrorJSON(w, mapHTTPError(err), err)
 			return
 		}
 		writeJSON(w, transport.AuthFactorRelabelResponse{Factor: userAuthFactorToRecord(factor)})
@@ -194,7 +193,7 @@ func (s *Server) resolveUserAuthFactorLogin(ctx context.Context, req *transport.
 	}
 	// Enrich the response from the user service, when wired. The factor login
 	// yields only the user ID; the wire contract also carries the username,
-	// tenant, role set, and enabled state. Resolve the user record by ID
+	// tenant, role set, and whether the account can authenticate. Resolve the user record by ID
 	// (pkg/user keys users by the same uint64 as AuthFactor.UserID) and
 	// populate those fields. Enrichment is best-effort: a lookup failure
 	// leaves the base identifiers intact rather than failing an otherwise
@@ -204,7 +203,7 @@ func (s *Server) resolveUserAuthFactorLogin(ctx context.Context, req *transport.
 			resp.Username = u.Username
 			resp.TenantID = u.TenantID
 			resp.Roles = u.RoleIDs
-			resp.Active = u.Enabled
+			resp.Active = u.CanAuthenticate()
 		}
 	}
 	return resp, nil
@@ -240,32 +239,5 @@ func userAuthFactorToRecord(f *auth.AuthFactor) transport.AuthFactorRecord {
 		LastUsedAt:     f.LastUsedAt,
 		RevokedAt:      f.RevokedAt,
 		CreatedBy:      f.CreatedBy,
-	}
-}
-
-// mapUserAuthFactorError translates an auth-package error into an HTTP status.
-func mapUserAuthFactorError(err error) int {
-	switch {
-	case err == nil:
-		return http.StatusOK
-	case errors.Is(err, auth.ErrFactorNotFound):
-		return http.StatusNotFound
-	case errors.Is(err, auth.ErrFactorRevoked):
-		return http.StatusGone
-	case errors.Is(err, auth.ErrLastFactor):
-		return http.StatusConflict
-	case errors.Is(err, auth.ErrFactorAlreadyExists):
-		return http.StatusConflict
-	case errors.Is(err, auth.ErrFactorTypeUnsupported), errors.Is(err, auth.ErrInvalidFactor),
-		errors.Is(err, auth.ErrReservedMetadata):
-		// 400 rather than 403: no caller may write the server-owned metadata
-		// namespace over any transport, so this is a malformed request rather
-		// than an authorization decision about this principal. The response
-		// body carries the offending key and the reserved prefix.
-		return http.StatusBadRequest
-	case errors.Is(err, auth.ErrUserHasNoFactors):
-		return http.StatusNotFound
-	default:
-		return http.StatusInternalServerError
 	}
 }

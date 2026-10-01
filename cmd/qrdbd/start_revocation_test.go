@@ -35,17 +35,18 @@ import (
 func TestBootstrapAuthEnforcement_InvalidRevocationTTLFailsBoot(t *testing.T) {
 	store := make(map[string][]byte)
 	mock := newMockKVStore(store)
+	tx := newMockTransactionServicer(store)
 	node := &mockRaftNode{}
 	mgmt, err := bootstrapUserRoleStores(
-		context.Background(), mock, mock, node,
+		context.Background(), mock, mock, tx, node,
 		1, 1, &mockTenantServicer{}, false, nil, "", nil,
 	)
 	require.NoError(t, err)
 
 	_, err = bootstrapAuthEnforcement(
-		context.Background(), mgmt, mock, &mockTxServicer{}, t.TempDir(), node,
+		context.Background(), mgmt, t.TempDir(), node,
 		audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{},
-		nil, "not-a-duration", "",
+		nil, "not-a-duration", "", "",
 	)
 	require.Error(t, err)
 	var abe *AuthBootstrapError

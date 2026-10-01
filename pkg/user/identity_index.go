@@ -42,6 +42,61 @@ func WithIdentityIndex(index tenant.IdentityIndex) Option {
 	return func(s *kvUserStore) { s.identity = index }
 }
 
+// WithAtomicIdentity asserts that the store this option is applied to and
+// the store the configured tenant.IdentityIndex resolves to are the EXACT
+// SAME physical store, and switches CreateUser to commit the identity
+// claim, the primary record, and every secondary index (tenant, username,
+// and email when present) as one guarded batch (see createUserAtomic)
+// instead of the default claim-then-write sequence a Raft leadership change
+// can interrupt between any two steps of it (go-qrdb#555's user/pkg/role
+// sibling: the SAME class of bug in pkg/role's CreateRole).
+//
+// The batch guards on EVERY uniqueness key the create touches — the
+// identity claim (keyed by the generated id), the username index, and the
+// email index when the request has one — using
+// kvstore.MultiGuardedBatchKVStore, the SAME capability pkg/role's atomic
+// create uses to guard its own two keys (claim and name). A single guard is
+// not enough here: an earlier version of this option guarded on the username
+// key alone, reasoning that a fresh Snowflake id essentially never collides. A
+// review of go-qrdb#555 found the gap that reasoning left open — two
+// independently seeded nodes racing to create the SAME deterministic
+// bootstrap account, which is exactly the scenario #555 exists to close, can
+// repeat an id under a different, unused username, and a username-only guard
+// would let the batch overwrite the existing primary record and claim.
+// Guarding the id claim key too closes that window without giving up the
+// email-path atomicity a single guard could never have offered anyway.
+//
+// It applies to EVERY create this store makes, email-bearing or not: an
+// email-bearing create simply adds one more guard and one more write to the
+// same batch, rather than falling back to a non-atomic sequence for that one
+// case. On a guard failure, CreateUser reads back the occupied key to report
+// the SAME typed error a caller would have seen from the non-atomic path
+// (UsernameExistsError, EmailExistsError, or the new UserIDExistsError for
+// an id collision).
+//
+// See pkg/role's WithAtomicIdentity for the same-store precondition this
+// cannot verify on its own, and for which composers may safely set it: a
+// boot-time composer's system-tenant store, or — since go-qrdb#555's round-3
+// review — routingUserService's own per-tenant store, but ONLY when the
+// resolved tenant is the system tenant specifically (see
+// routingUserService.storeForKV). Every other tenant keeps the sequential
+// path unconditionally.
+func WithAtomicIdentity() Option {
+	return func(s *kvUserStore) { s.atomicIdentity = true }
+}
+
+// WithReconcilePolling overrides reconcileAmbiguousCreate's poll interval
+// and total retry window (both default from defaultReconcilePollInterval and
+// reconcileTimeout when left zero). See pkg/role's identical option for the
+// full reasoning; this is its pkg/user sibling. Production callers have no
+// reason to set this.
+func WithReconcilePolling(interval, window time.Duration) Option {
+	return func(s *kvUserStore) {
+		s.reconcilePollInterval = interval
+		s.reconcileWindow = window
+	}
+}
+
 // identityID renders a user id as the identity index's key segment.
 //
 // It delegates to tenant.IdentityID rather than re-deriving the rendering:

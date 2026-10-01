@@ -767,17 +767,17 @@ func TestTenantBarrier_Status_NotFoundError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// credentials_server.go: mapCredentialError missing branches
+// credentials_server.go: mapServiceError missing branches
 // ---------------------------------------------------------------------------
 
 func TestMapCredentialError_AllBranches(t *testing.T) {
-	// mapCredentialError is already 81.8% covered; test remaining branches.
+	// mapServiceError is already 81.8% covered; test remaining branches.
 	// Check that nil returns nil.
-	if got := mapCredentialError(nil); got != nil {
+	if got := mapServiceError(nil); got != nil {
 		t.Fatalf("expected nil for nil input, got %v", got)
 	}
 	// Unknown error → Internal.
-	got := mapCredentialError(errors.New("unknown cred error"))
+	got := mapServiceError(errors.New("unknown cred error"))
 	st, _ := status.FromError(got)
 	if st.Code() != codes.Internal {
 		t.Fatalf("expected Internal for unknown error, got %s", st.Code())
@@ -974,7 +974,7 @@ func TestQuotaToProto_MiniNil(t *testing.T) {
 }
 
 func TestMapTenantError_MiniUnknown(t *testing.T) {
-	got := mapTenantError(errors.New("unknown tenant error"))
+	got := mapServiceError(errors.New("unknown tenant error"))
 	st, _ := status.FromError(got)
 	if st.Code() != codes.Internal {
 		t.Fatalf("expected Internal for unknown error, got %s", st.Code())

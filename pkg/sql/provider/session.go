@@ -278,12 +278,17 @@ func (s *QRDBSession) StartTransaction(ctx *sqle.Context, tCharacteristic sqle.T
 // leaves the write-set in place, uncommitted, so a caller may safely retry
 // CommitTransaction without losing buffered work. A compare-and-swap
 // conflict, by contrast, is unrecoverable for this transaction -- another
-// transaction already committed over one of the same keys -- so the
+// transaction already committed over one of the same keys, or (go-qrdb#547)
+// a TRUNCATE advanced a table's generation out from under it -- so the
 // write-set is cleared (matching MySQL/InnoDB automatically rolling back a
-// transaction that hits ER_LOCK_DEADLOCK) and a *TransactionConflictError,
+// transaction that hits ER_LOCK_DEADLOCK) and a typed conflict error,
 // wrapped in sql.ErrLockDeadlock, is returned; see that error type's doc
 // comment for exactly how this becomes MySQL error 1213 / SQLSTATE 40001
-// over the wire.
+// over the wire. WriteSet.staleResolution distinguishes the causes so a
+// TRUNCATE or DDL race is reported as its own typed error rather
+// than the generic *TransactionConflictError -- both are wrapped the same
+// way, so the wire mapping is identical either way, but a caller inspecting
+// the cause (errors.As through Cause()) sees which one actually happened.
 func (s *QRDBSession) CommitTransaction(ctx *sqle.Context, _ sqle.Transaction) error {
 	ws := s.ws.Load()
 	if ws == nil {
@@ -297,6 +302,10 @@ func (s *QRDBSession) CommitTransaction(ctx *sqle.Context, _ sqle.Transaction) e
 	s.ws.CompareAndSwap(ws, nil)
 
 	if !resp.Succeeded {
+		if stale, serr := ws.staleResolution(ctx); serr == nil && stale != nil {
+			return sqle.ErrLockDeadlock.Wrap(stale, stale.Error())
+		}
+
 		key := ""
 		if len(ws.order) > 0 {
 			key = ws.order[0]

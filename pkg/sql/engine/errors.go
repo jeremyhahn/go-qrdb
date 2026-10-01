@@ -14,35 +14,6 @@
 
 package engine
 
-// TranslationError is returned when a PostgreSQL query cannot be translated
-// into go-mysql-server compatible SQL.
-type TranslationError struct {
-	Query  string
-	Reason string
-}
-
-// Error returns a human-readable description of the translation failure.
-func (e *TranslationError) Error() string {
-	return "sql/engine: translation failed for query: " + e.Query + ": " + e.Reason
-}
-
-// QueryExecutionError is returned when a SQL query fails during execution.
-// It wraps the underlying error from go-mysql-server.
-type QueryExecutionError struct {
-	Query string
-	Err   error
-}
-
-// Error returns a human-readable description of the query execution failure.
-func (e *QueryExecutionError) Error() string {
-	return "sql/engine: query execution failed: " + e.Query + ": " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error for use with errors.Is and errors.As.
-func (e *QueryExecutionError) Unwrap() error {
-	return e.Err
-}
-
 // UnsupportedSyntaxError is returned when a PostgreSQL syntax feature has
 // no equivalent translation in go-mysql-server.
 type UnsupportedSyntaxError struct {

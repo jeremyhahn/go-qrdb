@@ -53,6 +53,16 @@ type AuthMiddleware struct {
 	// operator lever, auth.audit_failure_policy, governs both assertions.
 	auditFailure audit.FailurePolicy
 
+	// peerAttestation, when non-nil, is the attested-caller gate
+	// (go-qrdb#278): for its gated permissions, a request RBAC granted is
+	// admitted only when the peer's measured state is currently acceptable.
+	peerAttestation *PeerAttestationGate
+
+	// bindingPolicy is the fleet-wide mTLS enrolment posture
+	// (auth.mtls_binding_policy, go-qrdb#517). Its zero value is
+	// auth.MTLSBindingEnrolled -- the behaviour before the setting existed.
+	bindingPolicy auth.MTLSBindingPolicy
+
 	// revocation gates the ON-BEHALF forwarding path, which bypasses the
 	// authenticator chain entirely and therefore does not inherit the mTLS
 	// authenticator's own revocation check. Nil means revocation is not
@@ -130,6 +140,31 @@ func WithUserServiceFallback(u user.UserServicer) Option {
 	return func(m *AuthMiddleware) {
 		m.usersFallback = u
 	}
+}
+
+// WithMTLSBindingPolicy selects the fleet-wide mTLS enrolment posture
+// (auth.mtls_binding_policy). Under auth.MTLSBindingRequired a certificate
+// login is admitted only by presenting a certificate enrolled on the account it
+// names; an account with no bindings, and a certificate naming no account, are
+// refused with *CertBindingRequiredError. The default, auth.MTLSBindingEnrolled,
+// enforces a binding only on accounts that have one.
+//
+// Selecting "required" is a lockout risk. The composer that selects it must
+// also refuse to boot when the bootstrap admin could not log in under it —
+// firstboot.VerifyAdminCertBinding is that check.
+func WithMTLSBindingPolicy(p auth.MTLSBindingPolicy) Option {
+	return func(m *AuthMiddleware) {
+		m.bindingPolicy = p
+	}
+}
+
+// MTLSBindingPolicy returns the enrolment posture this middleware enforces.
+// A nil middleware (auth disabled) enforces none and answers the default.
+func (m *AuthMiddleware) MTLSBindingPolicy() auth.MTLSBindingPolicy {
+	if m == nil {
+		return auth.MTLSBindingEnrolled
+	}
+	return m.bindingPolicy
 }
 
 // WithRevocationChecker gates the on-behalf forwarding path on certificate
@@ -307,9 +342,15 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 				ctx = auth.WithIdentity(ctx, identity)
 				return tenant.WithTenantID(ctx, identity.TenantID), identity, nil
 			}
-			// If user not found, proceed with base identity (no enrichment).
+			// If user not found, proceed with base identity (no enrichment) --
+			// unless the binding posture is "required", under which a
+			// certificate naming no account is refused.
 			var unf *user.UserNotFoundError
-			if !errors.As(err, &unf) {
+			if errors.As(err, &unf) {
+				if rerr := checkUnresolvedCertLogin(ctx, identity, method, m.bindingPolicy); rerr != nil {
+					return ctx, nil, rerr
+				}
+			} else {
 				// Transient store error (Raft not ready, timeout, etc).
 				// Return 503/UNAVAILABLE so clients retry rather than
 				// proceeding without roles (which would cause false 403).
@@ -322,14 +363,7 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 			}
 		} else {
 			// User found; check that its lifecycle state permits a login.
-			//
-			// CanAuthenticate rather than the derived Enabled boolean: this is
-			// the authentication gate, and it must ask the canonical question.
-			// The two agree for any record the store decoded — normalize keeps
-			// Enabled in step — but a record reaching here by another route
-			// (a fallback store, a hand-built value) could carry a stale true
-			// beside a suspended, locked or deleting state, and this is the one
-			// place where believing the stale copy lets someone in.
+			// CanAuthenticate fails closed on an absent or unrecognized state.
 			if !u.CanAuthenticate() {
 				return ctx, nil, &UserDisabledError{
 					Username:  u.Username,
@@ -353,7 +387,7 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 			// for what it does and does not enforce -- in particular that an
 			// account with no enrolled bindings authenticates exactly as
 			// before.
-			if cerr := checkCertBinding(ctx, u, method); cerr != nil {
+			if cerr := checkCertBinding(ctx, u, method, m.bindingPolicy); cerr != nil {
 				return ctx, nil, cerr
 			}
 
@@ -386,6 +420,10 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 			// Enrich identity with persistent role assignments.
 			identity.Roles = u.RoleIDs
 		}
+	} else if rerr := checkUnresolvedCertLogin(ctx, identity, method, m.bindingPolicy); rerr != nil {
+		// No user store: no account can be resolved, so under the
+		// "required" posture no certificate login can show an enrolment.
+		return ctx, nil, rerr
 	}
 
 	ctx = auth.WithIdentity(ctx, identity)
@@ -490,11 +528,49 @@ func (m *AuthMiddleware) authorize(ctx context.Context, identity *auth.Identity,
 		}
 	}
 
+	err := m.decide(ctx, identity, perm)
+	if errors.Is(err, errUnauditedUnauthenticated) {
+		return auth.ErrUnauthenticated
+	}
+	if err == nil {
+		// The attested-caller gate runs only on a request the decision
+		// GRANTED -- through RBAC, the IdentityGated sentinel or the sealed
+		// tenant's admin:health allowance: it is a second condition on
+		// admission, never a substitute for the first, and a request already
+		// refused costs no verification. It is not part of decide because it
+		// has side effects on a refusal (its own log line and audit record),
+		// and it is a property of the caller's connection, not of the tenant a
+		// request names, so AuthorizeTenantTarget's re-check does not repeat it.
+		err = m.checkPeerAttestation(ctx, identity, perm)
+	}
+	if auditErr := m.auditDecision(ctx, identity, perm, err); auditErr != nil {
+		return auditErr
+	}
+	return err
+}
+
+// errUnauditedUnauthenticated marks decide's one outcome authorize() does not
+// record: an IdentityGated request with no identity at all, refused before
+// there is anything to attribute (the long-standing behaviour of that branch).
+var errUnauditedUnauthenticated = errors.New("auth/middleware: unaudited unauthenticated")
+
+// decide is the authorization decision itself -- the IdentityGated sentinel,
+// the sealed-tenant-IAM answer, and the RBAC/ABAC authorizer -- with NO side
+// effects: it charges no rate-limit token and writes no audit record.
+// authorize() wraps it with both; AuthorizeTenantTarget wraps it with
+// neither on a grant.
+//
+// The permission.IdentityGated sentinel short-circuits the RBAC check:
+// possession of an authenticated identity is the only middleware
+// requirement, and the binding authorization (officer/custodian registry
+// lookup, certificate-thumbprint match, nonce-signature or factor
+// verification) is enforced at the handler layer.
+func (m *AuthMiddleware) decide(ctx context.Context, identity *auth.Identity, perm permission.Permission) error {
 	if perm == permission.IdentityGated {
 		if identity == nil {
-			return auth.ErrUnauthenticated
+			return errUnauditedUnauthenticated
 		}
-		return m.auditDecision(ctx, identity, perm, nil)
+		return nil
 	}
 
 	// An identity whose tenant IAM was unreachable because the tenant's
@@ -516,19 +592,45 @@ func (m *AuthMiddleware) authorize(ctx context.Context, identity *auth.Identity,
 	// node liveness only — no tenant data crosses the seal boundary.
 	if identity != nil && identity.Metadata[tenantIAMSealedMetadataKey] == "true" {
 		if perm == permission.AdminHealth {
-			return m.auditDecision(ctx, identity, perm, nil)
+			return nil
 		}
-		err := &StoreUnavailableError{Err: tenant.ErrTenantSealed}
-		if auditErr := m.auditDecision(ctx, identity, perm, err); auditErr != nil {
-			return auditErr
-		}
-		return err
+		return &StoreUnavailableError{Err: tenant.ErrTenantSealed}
 	}
 
-	resource := permission.Resource(perm)
-	action := permission.Action(perm)
+	return m.authorizer.Authorize(ctx, identity, permission.Resource(perm), permission.Action(perm))
+}
 
-	err := m.authorizer.Authorize(ctx, identity, resource, action)
+// AuthorizeTenantTarget is the handler-level check for an operation whose
+// request names the tenant it reads or changes -- a tenant's own record (get,
+// update, quotas, entitlements, delete) -- or, against the system tenant, the
+// platform-wide tenant operations (AuthorizeTenantCreate, FilterTenantList).
+//
+// The transport's entry check (the gRPC interceptor, the REST route
+// middleware, the QUIC dispatch check, the MCP tool check) authorized the
+// route's permission against the caller's OWN tenant, which says nothing about
+// the tenant the request names: a tenant-local Admin passed it against itself
+// and could then read, change or delete ANY tenant. This re-runs the decision
+// against the named tenant, so ScopeSelf admits a tenant acting on itself and
+// the system-tenant rule admits the platform operator, and nothing else.
+//
+// PRECONDITION: the entry check has already run for this request, which
+// charged its rate-limit token and recorded its grant. This re-check therefore
+// charges no token and records no grant -- doing either again would bill one
+// request twice and write two records for it. A REFUSAL is recorded, because
+// it is new information the entry check's grant did not carry, under the same
+// audit-failure policy authorize() applies.
+//
+// Returns auth.ErrUnauthenticated when no identity is present in ctx.
+func (m *AuthMiddleware) AuthorizeTenantTarget(ctx context.Context, tenantID string, perm permission.Permission) error {
+	identity := auth.IdentityFromContext(ctx)
+	if identity == nil {
+		return auth.ErrUnauthenticated
+	}
+	ctx = tenant.WithTenantID(ctx, tenantID)
+	err := m.decide(ctx, identity, perm)
+	if err == nil {
+		return nil
+	}
 	if auditErr := m.auditDecision(ctx, identity, perm, err); auditErr != nil {
 		return auditErr
 	}

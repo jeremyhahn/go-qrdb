@@ -434,45 +434,28 @@ func GenerateCABundle(nodeURI ...string) (*Material, error) {
 	}, nil
 }
 
-// GenerateLeafFromCA parses concatenated CA certificate + CA private key PEM
-// bytes (e.g., from a bootstrap endpoint) and generates a node leaf certificate
-// signed by the CA. The returned Material includes the CA cert (re-encoded from
-// the parsed block), the CA key, and the fresh leaf cert and key. nodeURI is an
-// optional SPIFFE node URI SAN (see GenerateNodeCert).
-func GenerateLeafFromCA(bundlePEM []byte, nodeURI ...string) (*Material, error) {
-	// Parse CA certificate.
-	caBlock, rest := pem.Decode(bundlePEM)
-	if caBlock == nil || caBlock.Type != "CERTIFICATE" {
-		return nil, &KeyError{Kind: "CA certificate", Err: errors.New("no CERTIFICATE block found in PEM data")}
+// CertificatesOnly returns the CERTIFICATE blocks of pemData, re-encoded, and
+// nothing else. Every other block -- private keys above all -- and any bytes
+// between blocks are dropped. It returns nil when pemData holds no
+// certificate.
+//
+// It is the filter every path that hands CA material to another node applies
+// to its bytes. The cluster CA private key never leaves the node that holds
+// it, and a caller that concatenates the key onto the certificate by mistake
+// (the bundle shape earlier releases served) must not be able to undo that.
+func CertificatesOnly(pemData []byte) []byte {
+	var out []byte
+	rest := pemData
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			return out
+		}
+		if block.Type == "CERTIFICATE" {
+			out = append(out, pem.EncodeToMemory(&pem.Block{Type: block.Type, Bytes: block.Bytes})...)
+		}
 	}
-	caCert, err := x509.ParseCertificate(caBlock.Bytes)
-	if err != nil {
-		return nil, &KeyError{Kind: "CA certificate", Err: err}
-	}
-	caCertPEM := pem.EncodeToMemory(caBlock)
-
-	// Parse CA private key.
-	keyBlock, _ := pem.Decode(rest)
-	if keyBlock == nil || keyBlock.Type != "EC PRIVATE KEY" {
-		return nil, &KeyError{Kind: "CA private key", Err: errors.New("no EC PRIVATE KEY block found in PEM data")}
-	}
-	caKey, err := x509.ParseECPrivateKey(keyBlock.Bytes)
-	if err != nil {
-		return nil, &KeyError{Kind: "CA private key", Err: err}
-	}
-	caKeyPEM := pem.EncodeToMemory(keyBlock)
-
-	certPEM, keyPEM, err := GenerateNodeCert(caCert, caKey, NodeValidity, nodeURI...)
-	if err != nil {
-		return nil, err
-	}
-
-	return &Material{
-		CACertPEM: caCertPEM,
-		CAKeyPEM:  caKeyPEM,
-		CertPEM:   certPEM,
-		KeyPEM:    keyPEM,
-	}, nil
 }
 
 // LoadFromFiles reads TLS certificate material from the given explicit file

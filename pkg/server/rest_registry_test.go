@@ -16,9 +16,11 @@ package server
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -114,8 +116,8 @@ func isError(err error, target interface{}) bool {
 			*t = e
 			return true
 		}
-	case **rest.ServiceNotImplementedError:
-		if e, ok := err.(*rest.ServiceNotImplementedError); ok {
+	case **service.CapabilityUnsupportedError:
+		if e, ok := err.(*service.CapabilityUnsupportedError); ok {
 			*t = e
 			return true
 		}
@@ -210,9 +212,9 @@ func TestRESTServiceRegistry_VectorService_ReturnsNotImplemented(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected ServiceNotImplementedError, got nil")
 	}
-	var nie *rest.ServiceNotImplementedError
-	if !isError(err, &nie) {
-		t.Errorf("expected *rest.ServiceNotImplementedError, got %T: %v", err, err)
+	var cue *service.CapabilityUnsupportedError
+	if !isError(err, &cue) {
+		t.Errorf("expected *service.CapabilityUnsupportedError, got %T: %v", err, err)
 	}
 }
 
@@ -230,12 +232,12 @@ func TestRESTServiceRegistry_NilService_ReturnsServiceNotImplementedError(t *tes
 	if err == nil {
 		t.Fatal("expected ServiceNotImplementedError, got nil")
 	}
-	var nie *rest.ServiceNotImplementedError
-	if !isError(err, &nie) {
-		t.Errorf("expected *rest.ServiceNotImplementedError, got %T: %v", err, err)
+	var cue *service.CapabilityUnsupportedError
+	if !isError(err, &cue) {
+		t.Errorf("expected *service.CapabilityUnsupportedError, got %T: %v", err, err)
 	}
-	if nie.Service != "kv" {
-		t.Errorf("Service field: got %q, want %q", nie.Service, "kv")
+	if !strings.HasPrefix(cue.Message, "kv: ") {
+		t.Errorf("message %q must name the refused service kv", cue.Message)
 	}
 }
 
@@ -354,12 +356,12 @@ func TestRESTServiceRegistry_VectorService_NilVector_NotImplemented(t *testing.T
 	if err == nil {
 		t.Fatal("expected ServiceNotImplementedError when Vector is nil, got nil")
 	}
-	var nie *rest.ServiceNotImplementedError
-	if !isError(err, &nie) {
-		t.Errorf("expected ServiceNotImplementedError, got %T: %v", err, err)
+	var cue *service.CapabilityUnsupportedError
+	if !isError(err, &cue) {
+		t.Errorf("expected *service.CapabilityUnsupportedError, got %T: %v", err, err)
 	}
-	if nie.Service != "vector" {
-		t.Errorf("Service field = %q, want %q", nie.Service, "vector")
+	if !strings.HasPrefix(cue.Message, "vector: ") {
+		t.Errorf("message %q must name the refused service vector", cue.Message)
 	}
 }
 
@@ -416,7 +418,7 @@ func TestRESTServiceRegistry_ApplyNamespace_NilKV(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected ServiceNotImplementedError when KV is nil, got nil")
 	}
-	var nie *rest.ServiceNotImplementedError
+	var nie *service.CapabilityUnsupportedError
 	if !isError(err, &nie) {
 		t.Errorf("expected ServiceNotImplementedError, got %T: %v", err, err)
 	}

@@ -42,6 +42,7 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
@@ -152,6 +153,14 @@ type Server struct {
 	server        *http.Server
 	listener      net.Listener
 
+	// preboundListener and preboundPacketConn are sockets the embedder bound
+	// and handed over (WithListener / WithPacketConn, go-qrdb#374). When set,
+	// Start serves on them instead of binding addr, so a caller that reserved
+	// a kernel-assigned port never releases it before the server holds it.
+	// The server owns them from Start on and closes them in Stop.
+	preboundListener   net.Listener
+	preboundPacketConn net.PacketConn
+
 	// routes is a legacy introspection map of the STATIC (non-templated)
 	// built-in routes, populated as a byproduct of route registration. Routing
 	// is performed natively by the chi router; this map exists only so tests
@@ -164,6 +173,14 @@ type Server struct {
 	// registration site. RESTMiddleware and SOMiddleware consult it, and the
 	// default-deny startup assertion walks the router against it.
 	routePerms *authmw.RESTRouteRegistry
+
+	// routeOwners maps every claimed route (authmw.RESTRouteKey) to who
+	// claimed it -- "built-in" or "module <name>" -- so a collision names
+	// both parties. registeringModule is the module whose RegisterHTTP is
+	// running, empty while the built-in routes register. Both are
+	// construction-time only.
+	routeOwners       map[string]string
+	registeringModule string
 
 	// router is the top-level chi router carrying every route natively:
 	// capability-module routes (ServiceModule.RegisterHTTP) are registered
@@ -182,8 +199,7 @@ type Server struct {
 	// by Start so the bind is checked synchronously, and closed by Stop.
 	http3Conn       net.PacketConn
 	host            Host
-	caBootstrapCert []byte // PEM-encoded CA cert for bootstrap endpoint
-	caBootstrapKey  []byte // PEM-encoded CA private key for bootstrap endpoint
+	caBootstrapCert []byte // PEM-encoded CA certificate(s) for the bootstrap endpoint; never a key
 	onEtcdUpdated   func(dbName string, cfg *database.EtcdConfig) error
 	webUI           http.Handler      // optional embedded web UI file server
 	auditLogger     audit.AuditLogger // optional compliance-grade audit logger
@@ -238,8 +254,10 @@ func WithGatherer(g prometheus.Gatherer) ServerOption {
 }
 
 // WithServiceModules registers capability modules whose HTTP routes are attached
-// to the chi router at construction. Module routes take precedence over the
-// built-in dispatch fallback.
+// to the chi router at construction. A module route that is the same route as
+// a built-in or another module's -- including one that differs only in a path
+// parameter's name -- fails construction with *RouteCollisionError; nothing
+// shadows anything silently (go-qrdb#194).
 func WithServiceModules(mods []apimodule.ServiceModule) ServerOption {
 	return func(s *Server) {
 		s.modules = mods
@@ -254,6 +272,29 @@ func WithLeaderForwarding(resolver LeaderAdminResolver) ServerOption {
 	return func(s *Server) {
 		s.resolver = resolver
 	}
+}
+
+// WithListener makes Start serve HTTPS on ln instead of binding the server's
+// address. The caller binds it — typically on port 0, reading the
+// kernel-assigned port back from ln.Addr() — and hands it over; the port is
+// never released between reservation and serving, which a "listen on :0,
+// close, pass the number" reservation cannot promise (go-qrdb#374). ln must be
+// a plain TCP listener: Start wraps it in TLS. The server owns ln from Start
+// on and closes it in Stop.
+//
+// Without WithPacketConn, the HTTP/3 socket is still bound by Start on the
+// same host and port ln holds. Pass WithPacketConn to pre-bind that too.
+func WithListener(ln net.Listener) ServerOption {
+	return func(s *Server) { s.preboundListener = ln }
+}
+
+// WithPacketConn makes Start serve HTTP/3 on pc instead of binding a UDP
+// socket beside the TCP listener. It requires WithListener, and pc must be
+// bound on the same host and port as that listener, because the Alt-Svc
+// header the TCP side sends advertises HTTP/3 on the TCP listener's port.
+// The server owns pc from Start on and closes it in Stop.
+func WithPacketConn(pc net.PacketConn) ServerOption {
+	return func(s *Server) { s.preboundPacketConn = pc }
 }
 
 // WithTLS configures the server with TLS for HTTP/2 (via ALPN "h2")
@@ -562,13 +603,15 @@ func WithCORS(cfg CORSConfig) ServerOption {
 }
 
 // WithCABootstrap enables the /v1/ca/bootstrap endpoint that serves the
-// cluster CA certificate bundle for joining nodes. The endpoint is public
-// (no authentication required) so that nodes without TLS credentials can
-// bootstrap their trust store.
-func WithCABootstrap(certPEM, keyPEM []byte) ServerOption {
+// cluster CA certificate to joining nodes. The endpoint is public (no
+// authentication required) so that nodes without TLS credentials can
+// bootstrap their trust store -- which is exactly why it serves certificates
+// and nothing else. certPEM is reduced to its CERTIFICATE blocks here, so a
+// caller that concatenates the CA key onto it cannot publish the key; input
+// with no certificate leaves the route unregistered.
+func WithCABootstrap(certPEM []byte) ServerOption {
 	return func(s *Server) {
-		s.caBootstrapCert = certPEM
-		s.caBootstrapKey = keyPEM
+		s.caBootstrapCert = clustertls.CertificatesOnly(certPEM)
 	}
 }
 
@@ -709,6 +752,8 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	// identity for a request on that module's routes (the module's
 	// session-token plane), and the resulting identity flows through the SAME
 	// enrichment and authorizer as an mTLS identity.
+	s.routeOwners = map[string]string{}
+	directRoutes := make(map[string][]apimodule.RouteClaim, len(s.modules))
 	for _, m := range s.modules {
 		routeFn := s.route
 		if fb, ok := m.(apimodule.ModuleAuthFallback); ok {
@@ -717,9 +762,17 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 				s.routePerms.SetFallback(method, pattern, fb)
 			}
 		}
-		m.RegisterHTTP(apimodule.NewHTTPRegistrar(r, routeFn, s.public))
+		s.registeringModule = m.Name()
+		reg := apimodule.NewHTTPRegistrar(r, routeFn, s.public)
+		m.RegisterHTTP(reg)
+		// Registration is validated once, below; nothing registered later
+		// would be, so later registration is refused outright.
+		reg.Freeze()
+		directRoutes[m.Name()] = reg.DirectRoutes()
 	}
+	s.registeringModule = ""
 	s.registerRoutes()
+	s.assertNoDirectRouteCollisions(directRoutes)
 
 	// Requests matching no route fall through to the embedded web UI when
 	// configured (SPA fallback), otherwise 404.
@@ -773,6 +826,11 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	if s.corsConfig != nil {
 		handler = corsMiddleware(*s.corsConfig, handler)
 	}
+	// OUTERMOST: every layer below -- sealed window, authentication and
+	// authorization, SO dual factor, and chi's routing -- must see the SAME
+	// path. See canonicalPathMiddleware. The HTTP/3 server serves this same
+	// handler, so both listeners get it.
+	handler = canonicalPathMiddleware(handler)
 
 	s.server = &http.Server{
 		Handler:      handler,
@@ -791,6 +849,7 @@ func (s *Server) Start() error {
 	// A WithTLS config with an explicitly weak MinVersion was rejected at
 	// option-application time; surface it now.
 	if s.tlsErr != nil {
+		s.closePrebound()
 		return s.tlsErr
 	}
 	// TLS-only: fail closed rather than bind a plaintext listener. The
@@ -798,12 +857,20 @@ func (s *Server) Start() error {
 	// auto-provisioned from the node CA); a nil here means a direct caller
 	// tried to start the raw server without TLS.
 	if s.tlsConfig == nil {
+		s.closePrebound()
 		return &TLSNotConfiguredError{}
 	}
 
-	ln, err := net.Listen("tcp", s.addr)
-	if err != nil {
-		return &StartError{Addr: s.addr, Err: err}
+	if s.preboundPacketConn != nil && s.preboundListener == nil {
+		s.closePrebound()
+		return &PacketConnWithoutListenerError{}
+	}
+	ln := s.preboundListener
+	if ln == nil {
+		var err error
+		if ln, err = net.Listen("tcp", s.addr); err != nil {
+			return &StartError{Addr: s.addr, Err: err}
+		}
 	}
 
 	// Wrap listener with TLS (always configured; guarded above).
@@ -841,19 +908,28 @@ func (s *Server) Start() error {
 	// REST server unstarted rather than half-started.
 	var h3Conn net.PacketConn
 	if s.tlsConfig != nil {
-		h3Addr := net.JoinHostPort(hostOfAddr(ln.Addr()), portOfAddr(ln.Addr()))
-		pc, h3Err := net.ListenPacket("udp", h3Addr)
-		if h3Err != nil {
-			_ = ln.Close()
-			s.listener = nil
-			return &HTTP3StartError{Addr: h3Addr, Err: h3Err}
+		pc := s.preboundPacketConn
+		if pc == nil {
+			h3Addr := net.JoinHostPort(hostOfAddr(ln.Addr()), portOfAddr(ln.Addr()))
+			var h3Err error
+			if pc, h3Err = net.ListenPacket("udp", h3Addr); h3Err != nil {
+				_ = ln.Close()
+				s.listener = nil
+				return &HTTP3StartError{Addr: h3Addr, Err: h3Err}
+			}
 		}
 		// The kernel, not this process, decides what a bind string
 		// resolves to: a dual-stack or resolver difference between the
 		// TCP and UDP stacks would widen the QUIC surface past what the
 		// TCP listener accepted, which is exactly the #165 exposure and
-		// is invisible from configuration. Refuse to serve it.
-		if mismatch := sameBindHost(ln.Addr(), pc.LocalAddr()); mismatch != nil {
+		// is invisible from configuration. Refuse to serve it. A
+		// pre-bound socket is held to the same rule, and to the same
+		// port, which is the one Alt-Svc advertises.
+		mismatch := sameBindHost(ln.Addr(), pc.LocalAddr())
+		if mismatch == nil && portOfAddr(pc.LocalAddr()) != portOfAddr(ln.Addr()) {
+			mismatch = &ListenerPortMismatchError{TCPPort: portOfAddr(ln.Addr()), UDPPort: portOfAddr(pc.LocalAddr())}
+		}
+		if mismatch != nil {
 			_ = pc.Close()
 			_ = ln.Close()
 			s.listener = nil
@@ -890,6 +966,19 @@ func (s *Server) Start() error {
 	}
 
 	return nil
+}
+
+// closePrebound closes the sockets handed over by WithListener and
+// WithPacketConn when Start refuses before serving on them: the server owns
+// them from Start on, so a refusal must not leak them to a caller that has
+// already given them up.
+func (s *Server) closePrebound() {
+	if s.preboundListener != nil {
+		_ = s.preboundListener.Close()
+	}
+	if s.preboundPacketConn != nil {
+		_ = s.preboundPacketConn.Close()
+	}
 }
 
 // hostOfAddr returns the host portion of a bound listener address. Reading it
@@ -1006,15 +1095,7 @@ func (s *Server) route(method, pattern string, perm permission.Permission, h htt
 // router, and SO dual-factor gating recognizes SO-permissioned paths even on
 // servers that do not serve them.
 func (s *Server) routeIf(enabled bool, method, pattern string, perm permission.Permission, h http.HandlerFunc) {
-	// Modules register FIRST and take precedence (the documented contract):
-	// a built-in route whose method+pattern a module already claimed yields
-	// to the module rather than colliding. Module-vs-module duplicates
-	// still fail construction loudly inside the registry.
-	if s.routePerms.Covered(method, pattern) {
-		slog.Debug("rest: built-in route yielded to a module registration",
-			"method", method, "pattern", pattern)
-		return
-	}
+	s.claimRoute(method, pattern)
 	s.routePerms.Register(method, pattern, perm)
 	if !enabled {
 		return
@@ -1034,12 +1115,7 @@ func (s *Server) public(method, pattern string, h http.HandlerFunc) {
 // publicIf mirrors routeIf for public routes: the public marker is recorded
 // unconditionally, the router registration is gated on enabled.
 func (s *Server) publicIf(enabled bool, method, pattern string, h http.HandlerFunc) {
-	// Built-ins yield to module registrations (see routeIf).
-	if s.routePerms.Covered(method, pattern) {
-		slog.Debug("rest: built-in route yielded to a module registration",
-			"method", method, "pattern", pattern)
-		return
-	}
+	s.claimRoute(method, pattern)
 	s.routePerms.RegisterPublic(method, pattern)
 	if !enabled {
 		return
@@ -1053,18 +1129,124 @@ func (s *Server) publicIf(enabled bool, method, pattern string, h http.HandlerFu
 // marker is recorded unconditionally, the router registration is gated on
 // enabled.
 func (s *Server) authenticatedIf(enabled bool, method, pattern string, h http.HandlerFunc) {
-	// Built-ins yield to module registrations (see routeIf).
-	if s.routePerms.Covered(method, pattern) {
-		slog.Debug("rest: built-in route yielded to a module registration",
-			"method", method, "pattern", pattern)
-		return
-	}
+	s.claimRoute(method, pattern)
 	s.routePerms.RegisterAuthenticated(method, pattern)
 	if !enabled {
 		return
 	}
 	s.router.Method(method, pattern, h)
 	s.recordStaticRoute(method, pattern, h)
+}
+
+// builtinRouteOwner is the routeOwners value of a route qrdb itself serves.
+const builtinRouteOwner = "built-in"
+
+// routeClaimant names who is registering right now: a module while its
+// RegisterHTTP runs, the built-in surface otherwise.
+func (s *Server) routeClaimant() string {
+	if s.registeringModule == "" {
+		return builtinRouteOwner
+	}
+	return "module " + s.registeringModule
+}
+
+// claimRoute records who owns (method, pattern) and refuses a second claim on
+// the same route with *RouteCollisionError (go-qrdb#194).
+//
+// Modules register first, then the built-ins. A module route that is the same
+// route as a built-in USED to be skipped on the built-in side, which let any
+// module -- including one a downstream host mounts -- silently take over a
+// core endpoint; a second module claiming the first one's route was skipped
+// the same way, contrary to the guard the registry documents. Both now fail
+// construction, naming the two claimants. "The same route" is decided by
+// authmw.RESTRouteKey, so a renamed path parameter is caught as the duplicate
+// chi treats it as.
+//
+// The registry keeps its own duplicate check as a backstop; this one exists
+// to say WHO collided.
+func (s *Server) claimRoute(method, pattern string) {
+	if s.routeOwners == nil {
+		s.routeOwners = map[string]string{}
+	}
+	key := authmw.RESTRouteKey(method, pattern)
+	claimant := s.routeClaimant()
+	if holder, taken := s.routeOwners[key]; taken {
+		panic(&RouteCollisionError{Method: method, Pattern: pattern, Claimant: claimant, Holder: holder})
+	}
+	s.routeOwners[key] = claimant
+	if s.registeringModule != "" {
+		s.routePerms.RegisterModulePrefix(moduleRoutePrefix(pattern))
+	}
+}
+
+// moduleRoutePrefix is the subtree a module route claims: the static segments
+// before its first parameter or wildcard, as "/a/b/". A fully static route
+// claims no subtree (""), and neither does one whose first segment is already
+// dynamic, which would claim the whole server.
+//
+// The REST middleware refuses an unmatched request under a claimed prefix
+// instead of passing it to the router's fallback (go-qrdb#194): a path under a
+// module's subtree that no registration matches is not the web UI's, and
+// nothing else may answer it.
+func moduleRoutePrefix(pattern string) string {
+	segments := strings.Split(strings.TrimPrefix(pattern, "/"), "/")
+	static := make([]string, 0, len(segments))
+	for _, seg := range segments {
+		if strings.ContainsAny(seg, "{*") {
+			if len(static) == 0 {
+				return ""
+			}
+			return "/" + strings.Join(static, "/") + "/"
+		}
+		static = append(static, seg)
+	}
+	return ""
+}
+
+// restCollisionMethods are the methods an AnyMethod direct registration is
+// checked under: chi's Handle claims every one of them.
+var restCollisionMethods = [...]string{
+	http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut,
+	http.MethodPatch, http.MethodDelete, http.MethodConnect,
+	http.MethodOptions, http.MethodTrace,
+}
+
+// assertNoDirectRouteCollisions refuses a route a module registered straight
+// on the router when the same route was also registered through the
+// permission-recording path -- by a module's Handle/HandlePublic or by a
+// built-in (go-qrdb#194).
+//
+// chi resolves such a pair by silently keeping whichever handler registered
+// last, while the registry covers the pattern with the permission-recorded
+// registration. The default-deny assertion cannot see it -- it asks only
+// whether a pattern is covered, and this one is. The result would be a handler
+// nobody authorized served under a permission somebody else declared, so it
+// fails construction instead. A direct route that NO registration covers is
+// left to the default-deny assertion, which refuses it by name.
+func (s *Server) assertNoDirectRouteCollisions(direct map[string][]apimodule.RouteClaim) {
+	modules := make([]string, 0, len(direct))
+	for name := range direct {
+		modules = append(modules, name)
+	}
+	sort.Strings(modules)
+	for _, name := range modules {
+		for _, claim := range direct[name] {
+			methods := []string{claim.Method}
+			if claim.Method == apimodule.AnyMethod {
+				methods = restCollisionMethods[:]
+			}
+			for _, method := range methods {
+				if s.routePerms.Covered(method, claim.Pattern) {
+					panic(&DirectRouteCollisionError{
+						Module:  name,
+						Method:  method,
+						Pattern: claim.Pattern,
+						Holder:  s.routeOwners[authmw.RESTRouteKey(method, claim.Pattern)],
+					})
+				}
+			}
+		}
+	}
 }
 
 // recordStaticRoute mirrors static registrations into the legacy routes map.
@@ -1415,6 +1597,11 @@ func (s *Server) registerRoutes() {
 	// Handlers return 501 when tenantSvc is nil (seal barrier not configured).
 	s.route(http.MethodPost, "/v1/tenants", permission.TenantsCreate, s.handleCreateTenant)
 	s.route(http.MethodGet, "/v1/tenants/list", permission.TenantsList, s.handleListTenants)
+	// Retired tenant ids. Both are two static segments below /v1/tenants/, so
+	// they shadow no {id} route: /v1/tenants/deleted still reads the tenant
+	// named "deleted", and no /v1/tenants/{id}/list or /reconcile exists.
+	s.route(http.MethodGet, "/v1/tenants/deleted/list", permission.TenantsListDeleted, s.handleListDeletedTenants)
+	s.route(http.MethodPost, "/v1/tenants/deleted/reconcile", permission.TenantsReconcileDeleted, s.handleReconcileDeletedTenants)
 
 	// Tenant path-param routes, including the per-tenant barrier plane. The
 	// barrier sub-routes carry tenant-scoped (ScopeTenantOnly) permissions;
@@ -1425,7 +1612,9 @@ func (s *Server) registerRoutes() {
 	s.route(http.MethodGet, "/v1/tenants/{id}", permission.TenantsRead, s.handleTenantByID)
 	s.route(http.MethodPut, "/v1/tenants/{id}", permission.TenantsUpdate, s.handleTenantByID)
 	s.route(http.MethodDelete, "/v1/tenants/{id}", permission.TenantsDelete, s.handleTenantByID)
-	s.route(http.MethodPost, "/v1/tenants/{id}/quotas", permission.TenantsUpdate, s.handleTenantByID)
+	// Quotas and entitlements are the tenant's plan: platform-operator
+	// permissions (ScopeCross), so a tenant Admin cannot raise its own limits.
+	s.route(http.MethodPost, "/v1/tenants/{id}/quotas", permission.TenantsSetQuotas, s.handleTenantByID)
 	s.route(http.MethodPatch, "/v1/tenants/{id}/entitlements", permission.TenantsSetEntitlements, s.handleTenantByID)
 	// barrier/status, like barrier/init and barrier/unseal below, is
 	// IdentityGated at the ROUTE level: a self-managed dedicated-isolation
@@ -1533,7 +1722,14 @@ func (s *Server) registerRoutes() {
 	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/shamir/unseal-shares", permission.BarrierUnsealShare, s.handleBarrierShamirUnsealShares)
 	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/shamir/seal-vote", permission.SealSubmitSealVote, s.handleBarrierShamirSealVote)
 	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/rekey", permission.SealRekey, s.handleBarrierRekey)
-	s.routeIf(barrierOn && s.encMigrator != nil, http.MethodPost, "/v1/barrier/enable-encryption", permission.SealEnableEncryption, s.handleBarrierEnableEncryption)
+	// Registered unconditionally, not gated on barrierOn or s.encMigrator
+	// (go-qrdb#558): the handler's own encMigrator nil-check already answers
+	// with a typed 501 when unavailable (no barrier / standalone), and gating
+	// the ROUTE itself made this transport alone 404 for that condition
+	// instead of returning it -- gRPC/Unix/QUIC/MCP always expose the
+	// method/tool and let the same nil-check decide, never depending on
+	// barrierOn.
+	s.routeIf(true, http.MethodPost, "/v1/barrier/enable-encryption", permission.SealEnableEncryption, s.handleBarrierEnableEncryption)
 	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/recovery/generate", permission.SealGenerateRecovery, s.handleBarrierRecoveryGenerate)
 	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/recovery/recover", permission.SealRecoverWithKeys, s.handleBarrierRecoveryRecover)
 	s.routeIf(barrierOn, http.MethodDelete, "/v1/barrier/recovery", permission.SealGenerateRecovery, s.handleBarrierRecoveryDelete)
@@ -1621,9 +1817,10 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request) {
 	s.router.ServeHTTP(w, r)
 }
 
-// handleCABootstrap serves the cluster CA certificate bundle for joining
-// nodes. The response contains PEM-encoded CA cert + CA key concatenated,
-// with content type "application/pem-certificate-chain". This endpoint is
+// handleCABootstrap serves the cluster CA certificate for joining nodes, as
+// PEM with content type "application/pem-certificate-chain". It never serves
+// key material: the cluster CA private key does not leave the node holding
+// it. This endpoint is
 // public (exempted from authentication in the middleware) because joining
 // nodes do not yet have TLS credentials.
 func (s *Server) handleCABootstrap(w http.ResponseWriter, r *http.Request) {
@@ -1634,9 +1831,6 @@ func (s *Server) handleCABootstrap(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/pem-certificate-chain")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(s.caBootstrapCert)
-	if len(s.caBootstrapKey) > 0 {
-		_, _ = w.Write(s.caBootstrapKey)
-	}
 }
 
 // peerAdminRegistry is a thread-safe registry that maps Raft addresses to

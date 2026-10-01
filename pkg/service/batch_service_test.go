@@ -399,9 +399,8 @@ func TestBatchService_Execute_ResponseCountMatchesOpsCount(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBatchService_translateProposeError_NotLeaderError(t *testing.T) {
-	svc := &BatchService{host: &mockHost{}, shardID: 1}
 
-	err := svc.translateProposeError(&quicraft.NotLeaderError{
+	err := translateProposeError(&quicraft.NotLeaderError{
 		ShardID:       33,
 		LeaderID:      7,
 		LeaderAddress: "192.168.0.7:9100",
@@ -423,10 +422,9 @@ func TestBatchService_translateProposeError_NotLeaderError(t *testing.T) {
 }
 
 func TestBatchService_translateProposeError_GenericError(t *testing.T) {
-	svc := &BatchService{host: &mockHost{}, shardID: 1}
 	sentinel := errors.New("connection reset")
 
-	err := svc.translateProposeError(sentinel)
+	err := translateProposeError(sentinel)
 
 	var pe *ProposeError
 	if !errors.As(err, &pe) {
@@ -438,9 +436,8 @@ func TestBatchService_translateProposeError_GenericError(t *testing.T) {
 }
 
 func TestBatchService_translateProposeError_NotLeaderUnknownLeader(t *testing.T) {
-	svc := &BatchService{host: &mockHost{}, shardID: 1}
 
-	err := svc.translateProposeError(&quicraft.NotLeaderError{
+	err := translateProposeError(&quicraft.NotLeaderError{
 		ShardID:       20,
 		LeaderID:      0,
 		LeaderAddress: "",
@@ -462,7 +459,6 @@ func TestBatchService_translateProposeError_NotLeaderUnknownLeader(t *testing.T)
 }
 
 func TestBatchService_translateProposeError_WrappedNotLeaderError(t *testing.T) {
-	svc := &BatchService{host: &mockHost{}, shardID: 1}
 
 	// errors.As traverses the chain, so wrapping should still match.
 	inner := &quicraft.NotLeaderError{
@@ -480,7 +476,7 @@ func TestBatchService_translateProposeError_WrappedNotLeaderError(t *testing.T) 
 
 	// Direct NotLeaderError (not wrapped) since the implementation uses
 	// errors.As which handles pointer chains.
-	err := svc.translateProposeError(inner)
+	err := translateProposeError(inner)
 
 	var nle *NotLeaderError
 	if !errors.As(err, &nle) {

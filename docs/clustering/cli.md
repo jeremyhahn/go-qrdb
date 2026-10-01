@@ -49,13 +49,21 @@ qrdb admin topology --output json
 
 Add a replica to a shard.
 
+The replica is committed with its Raft member identity. A node the cluster
+already knows needs nothing more: its identity is read from the committed
+membership. A brand-new node needs `--identity`, printed from its certificate
+by `qrdbd node-identity --cert`; without it the add is refused with a message
+saying so. An `--identity` that contradicts the committed one is refused.
+
 | Flag | Type | Meaning |
 |---|---|---|
 | `--shard-id` | uint | shard ID |
 | `--replica-id` | uint | replica ID |
+| `--identity` | string | the replica's member identity (`spki:<hex>`); required only for a node no committed membership names |
 
 ```bash
-qrdb admin member add node4.example.com:63001 --shard-id 1 --replica-id 4
+qrdb admin member add node4.example.com:63001 --shard-id 1 --replica-id 4 \
+  --identity "$(qrdbd node-identity --cert node4-cert.pem)"
 ```
 
 ## `qrdb admin member remove <replica-id>`
@@ -145,12 +153,45 @@ Discovery and bootstrap are `qrdbd` configuration, not client verbs:
 
 | Setting | Flag |
 |---|---|
+| `raft.member_identities` | `--member-identities` |
 | `discovery.dynamic_membership` | `--dynamic-membership` |
 | `discovery.min_peers` | `--cluster-min-peers` |
 
+### `qrdbd node-identity --cert <file>`
+
+Prints the Raft member identity of a node's transport certificate
+(`spki:<sha256-hex>` of its public key). It reads only the certificate, so the
+identities of every node can be collected from the CA's issued certificates
+before any node starts.
+
+| Flag | Type | Meaning |
+|---|---|---|
+| `--cert` | path | the node's PEM certificate (its `--tls-cert-file`); required |
+
+```bash
+qrdbd node-identity --cert /etc/qrdb/node2-cert.pem
+# spki:3f9a...
+```
+
+Every other replica lists it as `2=spki:3f9a...` in `--member-identities`
+(`raft.member_identities`). A node's own entry may be omitted — it is derived
+from its certificate — and a node also logs its identity at start
+(`raft member identity`).
+
+```bash
+qrdbd start --replica-id 1 --peers 1=node1.db.example.com:63001,2=node2.db.example.com:63001,3=node3.db.example.com:63001 \
+  --member-identities 2=spki:3f9a...,3=spki:c01d... \
+  --tls-ca-file ca.pem --tls-cert-file node1-cert.pem --tls-key-file node1-key.pem
+```
+
 Dynamic membership is **off by default**, leader-only, and quorum-guarded.
 
-Peer enrollment is configured on the joining node:
+Peer enrollment is configured on the joining node. **In this release, every
+flag in the table below selects a join path that refuses to start** with
+`EnrollmentUnavailableError`, before any dial or write, because the cluster CA
+private key is no longer distributed. Add a node with `--tls-ca-file`,
+`--tls-cert-file` and `--tls-key-file` instead. See
+[user.md](user.md#adding-a-node-joining-through-enrollment-is-unavailable-in-this-release).
 
 | Flag | Method |
 |---|---|

@@ -21,6 +21,7 @@ import (
 	sqle "github.com/dolthub/go-mysql-server/sql"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // relationalTable resolves name as a user-defined relational table created
@@ -35,16 +36,16 @@ import (
 // handled specially rather than simply propagated: see
 // getTableResumingRewrite.
 //
-// TableServicer, MVCCKVServicer, KVServicer, TransactionServicer,
-// SequenceServicer, and BatchServicer are all resolved fresh on every call
-// rather than cached on Database, because GetTableInsensitive is the first
-// point in the request path that has a session -- and therefore a tenant --
-// available; see the doc comment on WithRegistry for why resolving any
-// earlier would risk binding the wrong tenant on a long-lived,
-// connection-multiplexing Provider/Database. TransactionServicer backs
-// every DML write's atomic row+index compare-and-swap, SequenceServicer
-// backs AUTO_INCREMENT, and BatchServicer backs TRUNCATE (see
-// relational_writer.go).
+// TableServicer, MVCCKVServicer, KVServicer, TransactionServicer, and
+// SequenceServicer are all resolved fresh on every call rather than cached
+// on Database, because GetTableInsensitive is the first point in the
+// request path that has a session -- and therefore a tenant -- available;
+// see the doc comment on WithRegistry for why resolving any earlier would
+// risk binding the wrong tenant on a long-lived, connection-multiplexing
+// Provider/Database. TransactionServicer backs every DML write's atomic
+// row+index compare-and-swap, and SequenceServicer backs AUTO_INCREMENT.
+// TRUNCATE goes through TableServicer.TruncateTable instead of a KV-level
+// scan (see relational_writer.go's Truncate), so it needs no BatchServicer.
 func (d *Database) relationalTable(ctx *sqle.Context, name string) (sqle.Table, bool, error) {
 	tenantID := d.sessionTenantID(ctx)
 
@@ -56,12 +57,28 @@ func (d *Database) relationalTable(ctx *sqle.Context, name string) (sqle.Table, 
 	if err != nil {
 		return nil, false, err
 	}
+	// Resolved here, ahead of getTableResumingRewrite, because a resumed
+	// rewrite's own write-back (runRewrite, relational_rewrite.go) commits
+	// through a compare-and-swap fenced on the table's generation, not a
+	// plain KV Put -- see go-qrdb#547.
+	txnSvc, err := d.registry.TransactionService(tenantID, d.name)
+	if err != nil {
+		return nil, false, err
+	}
 
-	def, err := d.getTableResumingRewrite(ctx, tableSvc, kvSvc, name)
+	// Bound to the tenant: completing an interrupted rewrite may publish a
+	// ReclaimJob for the index incarnations it retires.
+	def, err := d.getTableResumingRewrite(tenant.WithTenantID(ctx, tenantID), tableSvc, kvSvc, txnSvc, name)
 	if err != nil {
 		var notFound *service.TableNotFoundError
 		if errors.As(err, &notFound) {
 			return nil, false, nil
+		}
+		// A table created by v0.20.0 through v0.21.0 resolves -- so DROP
+		// TABLE can remove it -- but refuses every read and write.
+		var legacy *service.TableLayoutUnsupportedError
+		if errors.As(err, &legacy) {
+			return newLegacyLayoutTable(name, tableSvc, legacy), true, nil
 		}
 		return nil, false, err
 	}
@@ -70,25 +87,21 @@ func (d *Database) relationalTable(ctx *sqle.Context, name string) (sqle.Table, 
 	if err != nil {
 		return nil, false, err
 	}
-	txnSvc, err := d.registry.TransactionService(tenantID, d.name)
-	if err != nil {
-		return nil, false, err
-	}
 	seqSvc, err := d.registry.SequenceService(tenantID, d.name)
 	if err != nil {
 		return nil, false, err
 	}
-	batchSvc, err := d.registry.BatchService(tenantID, d.name)
-	if err != nil {
-		return nil, false, err
-	}
 
-	tbl, err := NewRelationalTable(def, kvSvc, mvccSvc,
+	opts := []RelationalTableOption{
 		WithTableService(tableSvc),
 		WithTransactionService(txnSvc),
 		WithSequenceService(seqSvc),
-		WithBatchService(batchSvc),
-	)
+	}
+	if d.postgres {
+		opts = append(opts, WithPostgreSQLDialect())
+	}
+
+	tbl, err := NewRelationalTable(def, kvSvc, mvccSvc, opts...)
 	if err != nil {
 		return nil, false, err
 	}
@@ -107,14 +120,14 @@ func (d *Database) relationalTable(ctx *sqle.Context, name string) (sqle.Table, 
 // resumeRewrite reports as success) is returned as-is: the caller has no
 // better option than surfacing it, since the table cannot be served with
 // rows in a mixed encoding regardless.
-func (d *Database) getTableResumingRewrite(ctx context.Context, tableSvc service.TableServicer, kvSvc service.KVServicer, name string) (*service.TableDef, error) {
+func (d *Database) getTableResumingRewrite(ctx context.Context, tableSvc service.TableServicer, kvSvc service.KVServicer, txnSvc service.TransactionServicer, name string) (*service.TableDef, error) {
 	def, err := tableSvc.GetTable(ctx, d.name, name)
 	var inProgress *service.TableRewriteInProgressError
 	if !errors.As(err, &inProgress) {
 		return def, err
 	}
 
-	if rerr := resumeRewrite(ctx, tableSvc, kvSvc, d.name, name); rerr != nil {
+	if rerr := resumeRewrite(ctx, tableSvc, kvSvc, txnSvc, d.name, name); rerr != nil {
 		return nil, rerr
 	}
 	return tableSvc.GetTable(ctx, d.name, name)

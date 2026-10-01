@@ -202,8 +202,13 @@ type AdminServicer interface {
 	// Peers returns the peer membership for all loaded shards.
 	Peers(ctx context.Context) (*PeersInfo, error)
 
-	// AddMember adds a new replica to the specified shard.
-	AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr string) error
+	// AddMember adds a new replica to the specified shard. identity is the
+	// replica's Raft member identity (spki:<sha256-hex>) or "": empty means
+	// the identity go-quicraft has already committed for the replica or its
+	// host, and is refused with a *MemberIdentityError for a node no
+	// committed membership names. A non-empty identity that contradicts a
+	// committed one is refused the same way.
+	AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error
 
 	// RemoveMember removes a replica from the specified shard.
 	RemoveMember(ctx context.Context, shardID, replicaID uint64) error
@@ -344,8 +349,18 @@ type Host interface {
 	// SyncRead performs a linearizable read against the state machine.
 	SyncRead(ctx context.Context, shardID uint64, query interface{}) (interface{}, error)
 
-	// RequestAddNode requests adding a new replica to a shard.
-	RequestAddNode(ctx context.Context, shardID, replicaID uint64, addr string, configChangeIndex uint64) (*quicraft.RequestState, error)
+	// RequestAddNodeWithIdentity requests adding a replica to a shard
+	// together with the node identity go-quicraft commits for it. A host
+	// with a transport refuses an empty identity for a new member.
+	RequestAddNodeWithIdentity(ctx context.Context, shardID, replicaID uint64, addr, identity string, configChangeIndex uint64) (*quicraft.RequestState, error)
+
+	// SyncGetShardMembership returns a shard's committed membership,
+	// including the member identities go-quicraft committed.
+	SyncGetShardMembership(ctx context.Context, shardID uint64) (*quicraft.Membership, error)
+
+	// NodeIdentity returns this host's own Raft member identity, or "" for
+	// a host without a transport, which admits members without one.
+	NodeIdentity() string
 
 	// RequestRemoveNode requests removing a replica from a shard.
 	RequestRemoveNode(ctx context.Context, shardID, replicaID uint64, configChangeIndex uint64) (*quicraft.RequestState, error)
@@ -434,7 +449,7 @@ func (s *KVService) Put(ctx context.Context, key string, value []byte) error {
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
-		return s.translateProposeError(err)
+		return translateProposeError(err)
 	}
 	// Surface a state-machine-encoded application error (e.g. a unique-index
 	// violation that rejected the write without stalling consensus).
@@ -463,7 +478,7 @@ func (s *KVService) PutIfAbsent(ctx context.Context, key string, value []byte) (
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
-		return false, s.translateProposeError(err)
+		return false, translateProposeError(err)
 	}
 	if resultErr := checkResultError(result); resultErr != nil {
 		return false, resultErr
@@ -491,7 +506,7 @@ func (s *KVService) CompareAndDelete(ctx context.Context, key string, expected [
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
-		return false, s.translateProposeError(err)
+		return false, translateProposeError(err)
 	}
 	if resultErr := checkResultError(result); resultErr != nil {
 		return false, resultErr
@@ -509,7 +524,7 @@ func (s *KVService) CompareAndSwap(ctx context.Context, key string, expected, ne
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
-		return false, s.translateProposeError(err)
+		return false, translateProposeError(err)
 	}
 	if resultErr := checkResultError(result); resultErr != nil {
 		return false, resultErr
@@ -548,7 +563,7 @@ func (s *KVService) Delete(ctx context.Context, key string) error {
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
-		return s.translateProposeError(err)
+		return translateProposeError(err)
 	}
 	// The state machine encodes a not-configured subsystem into the RESULT
 	// rather than returning it to Raft, so discarding the result reports a
@@ -702,7 +717,7 @@ func (s *KVService) PutWithMode(ctx context.Context, key string, value []byte, m
 	}
 	result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
 	if err != nil {
-		return s.translateProposeError(err)
+		return translateProposeError(err)
 	}
 	// The state machine encodes a not-configured subsystem into the RESULT
 	// rather than returning it to Raft, so discarding the result reports a
@@ -723,7 +738,7 @@ func (s *KVService) DeleteWithMode(ctx context.Context, key string, mode writemo
 	}
 	result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
 	if err != nil {
-		return s.translateProposeError(err)
+		return translateProposeError(err)
 	}
 	// The state machine encodes a not-configured subsystem into the RESULT
 	// rather than returning it to Raft, so discarding the result reports a
@@ -986,21 +1001,6 @@ func validateEntityWrite(entityType EntityType, id string, data []byte) error {
 // Error translation
 // ---------------------------------------------------------------------------
 
-// translateProposeError converts QuicRaft proposal errors to service-level
-// typed errors. NotLeaderError is mapped to service.NotLeaderError so
-// callers can inspect leader routing information.
-func (s *KVService) translateProposeError(err error) error {
-	var nle *quicraft.NotLeaderError
-	if errors.As(err, &nle) {
-		return &NotLeaderError{
-			ShardID:       nle.ShardID,
-			LeaderID:      nle.LeaderID,
-			LeaderAddress: nle.LeaderAddress,
-		}
-	}
-	return &ProposeError{Err: err}
-}
-
 // translateReadError converts QuicRaft read errors to service-level typed
 // errors. KeyNotFoundError and NotLeaderError are mapped to their service
 // equivalents.
@@ -1195,8 +1195,16 @@ func (s *AdminService) Peers(_ context.Context) (*PeersInfo, error) {
 // AddMember adds a new replica to the specified shard. The request is
 // proposed through Raft and completes when the membership change is
 // committed.
-func (s *AdminService) AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr string) error {
-	rs, err := s.host.RequestAddNode(ctx, shardID, replicaID, raftAddr, 0)
+//
+// The identity committed with the replica is identity when given, otherwise
+// the one go-quicraft already committed for the replica or its host (see
+// ResolveMemberIdentity).
+func (s *AdminService) AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error {
+	resolved, err := ResolveMemberIdentity(ctx, s.host, shardID, replicaID, raftAddr, identity)
+	if err != nil {
+		return err
+	}
+	rs, err := s.host.RequestAddNodeWithIdentity(ctx, shardID, replicaID, raftAddr, resolved, 0)
 	if err != nil {
 		return s.translateMembershipError("add", err)
 	}
@@ -1282,13 +1290,18 @@ func (s *AdminService) Capabilities(_ context.Context) (*capabilities.Capabiliti
 // StartShard initializes and starts a Raft group for the given shard.
 // A state machine factory must be registered via WithStateMachineFactory
 // before calling this method.
-func (s *AdminService) StartShard(_ context.Context, req *StartShardRequest) error {
+func (s *AdminService) StartShard(ctx context.Context, req *StartShardRequest) error {
 	if s.smFactory == nil {
 		return &NoStateMachineFactoryError{}
 	}
 	cfg := s.defaultCfg
 	cfg.ShardID = req.ShardID
 	cfg.ReplicaID = req.ReplicaID
+	identities, err := MemberIdentities(ctx, s.host, req.ShardID, req.ReplicaID, req.Join, req.Members)
+	if err != nil {
+		return err
+	}
+	cfg.MemberIdentities = identities
 
 	if err := s.host.StartShard(req.Members, req.Join, s.smFactory, cfg); err != nil {
 		return &ShardStartError{ShardID: req.ShardID, Err: err}

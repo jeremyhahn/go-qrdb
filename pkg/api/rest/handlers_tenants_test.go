@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
@@ -67,6 +68,14 @@ func (m *mockTenantService) GetTenant(ctx context.Context, tenantID string) (*te
 		return m.getTenantFn(ctx, tenantID)
 	}
 	return nil, nil
+}
+
+func (m *mockTenantService) ListDeletedTenants(_ context.Context, _ string, _ int) (*tenant.DeletedTenantsPage, error) {
+	return &tenant.DeletedTenantsPage{}, nil
+}
+
+func (m *mockTenantService) ReconcileDeletedTenants(_ context.Context) (*tenant.ReconcileReport, error) {
+	return &tenant.ReconcileReport{}, nil
 }
 
 func (m *mockTenantService) ListTenants(ctx context.Context) ([]tenant.TenantInfo, error) {
@@ -240,20 +249,44 @@ func newTenantServerWithRegistry(svc tenant.TenantServicer, reg ServiceRegistry)
 		WithTenantService(svc), WithServiceRegistry(reg))
 }
 
-// raftTenantSvc returns a mockTenantService whose stored tenant uses raft
-// isolation; updateTenantFn fails the test if invoked, so the data-probe
-// precondition is proven to block the update.
-func raftTenantSvc(t *testing.T) *mockTenantService {
+// probedTenantSvc returns a REAL tenant service holding tenant "acme" on
+// prefix isolation, with its isolation-change precondition wired to the
+// service.TenantDataProbe over reg -- the probe the node wires. The
+// precondition lives in the tenant service, so these REST tests exercise the
+// same check every transport reaches.
+func probedTenantSvc(t *testing.T, reg ServiceRegistry) *authtest.Tenants {
 	t.Helper()
-	return &mockTenantService{
-		getTenantFn: func(_ context.Context, id string) (*tenant.TenantInfo, error) {
-			return &tenant.TenantInfo{ID: id, IsolationType: tenant.IsolationRaft}, nil
-		},
-		updateTenantFn: func(_ context.Context, _ string, _ tenant.TenantPatch) (*tenant.TenantInfo, error) {
-			t.Error("UpdateTenant must not run: the no-data precondition was not satisfied")
-			return nil, nil
-		},
+	svc := authtest.NewTenants(t, "acme")
+	w, ok := svc.TenantServicer.(tenant.IsolationChangeWiring)
+	if !ok {
+		t.Fatal("the tenant service does not accept a data probe")
 	}
+	w.SetTenantDataProbe(service.NewTenantDataProbe(reg))
+	return svc
+}
+
+// assertIsolation fails unless acme's effective isolation is want.
+func assertIsolation(t *testing.T, svc tenant.TenantServicer, want tenant.IsolationType) {
+	t.Helper()
+	info, err := svc.GetTenant(context.Background(), "acme")
+	if err != nil {
+		t.Fatalf("GetTenant: %v", err)
+	}
+	if got := info.EffectiveIsolationType(); got != want {
+		t.Fatalf("acme isolation = %s, want %s", got, want)
+	}
+}
+
+// isolationChange drives PUT /v1/tenants/acme to volume isolation against a
+// real tenant service probing reg, and returns the recorder and the service.
+func isolationChange(t *testing.T, reg *mockServiceRegistry) (*httptest.ResponseRecorder, *authtest.Tenants) {
+	t.Helper()
+	svc := probedTenantSvc(t, reg)
+	srv := newTenantServerWithRegistry(svc, reg)
+	req := httptest.NewRequest(http.MethodPut, "/v1/tenants/acme", strings.NewReader(`{"isolation_type":"volume"}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+	return rec, svc
 }
 
 // TestHandleUpdateTenant_IsolationChange_FailsClosedOnResolveError proves the
@@ -262,13 +295,9 @@ func raftTenantSvc(t *testing.T) *mockTenantService {
 // the change on an unverified tenant.
 func TestHandleUpdateTenant_IsolationChange_FailsClosedOnResolveError(t *testing.T) {
 	reg := &mockServiceRegistry{kvErr: errors.New("leader unavailable")}
-	srv := newTenantServerWithRegistry(raftTenantSvc(t), reg)
-
-	req := httptest.NewRequest(http.MethodPut, "/v1/tenants/acme", strings.NewReader(`{"isolation_type":"volume"}`))
-	rec := httptest.NewRecorder()
-	srv.dispatch(rec, req)
-
+	rec, svc := isolationChange(t, reg)
 	assertStatus(t, rec, http.StatusServiceUnavailable)
+	assertIsolation(t, svc, tenant.IsolationPrefix)
 }
 
 // TestHandleUpdateTenant_IsolationChange_FailsClosedOnListError proves the change
@@ -277,13 +306,9 @@ func TestHandleUpdateTenant_IsolationChange_FailsClosedOnListError(t *testing.T)
 	reg := &mockServiceRegistry{kvSvc: &mockKVService{
 		listFn: func(_ context.Context, _ string) ([]string, error) { return nil, errors.New("list timeout") },
 	}}
-	srv := newTenantServerWithRegistry(raftTenantSvc(t), reg)
-
-	req := httptest.NewRequest(http.MethodPut, "/v1/tenants/acme", strings.NewReader(`{"isolation_type":"volume"}`))
-	rec := httptest.NewRecorder()
-	srv.dispatch(rec, req)
-
+	rec, svc := isolationChange(t, reg)
 	assertStatus(t, rec, http.StatusServiceUnavailable)
+	assertIsolation(t, svc, tenant.IsolationPrefix)
 }
 
 // TestHandleUpdateTenant_IsolationChange_ConflictWhenTenantHasOnlyRelationalData
@@ -305,13 +330,9 @@ func TestHandleUpdateTenant_IsolationChange_ConflictWhenTenantHasOnlyRelationalD
 			},
 		},
 	}
-	srv := newTenantServerWithRegistry(raftTenantSvc(t), reg)
-
-	req := httptest.NewRequest(http.MethodPut, "/v1/tenants/acme", strings.NewReader(`{"isolation_type":"volume"}`))
-	rec := httptest.NewRecorder()
-	srv.dispatch(rec, req)
-
+	rec, svc := isolationChange(t, reg)
 	assertStatus(t, rec, http.StatusConflict)
+	assertIsolation(t, svc, tenant.IsolationPrefix)
 }
 
 // TestHandleUpdateTenant_IsolationChange_FailsClosedOnRangeError proves an
@@ -329,13 +350,9 @@ func TestHandleUpdateTenant_IsolationChange_FailsClosedOnRangeError(t *testing.T
 			},
 		},
 	}
-	srv := newTenantServerWithRegistry(raftTenantSvc(t), reg)
-
-	req := httptest.NewRequest(http.MethodPut, "/v1/tenants/acme", strings.NewReader(`{"isolation_type":"volume"}`))
-	rec := httptest.NewRecorder()
-	srv.dispatch(rec, req)
-
+	rec, svc := isolationChange(t, reg)
 	assertStatus(t, rec, http.StatusServiceUnavailable)
+	assertIsolation(t, svc, tenant.IsolationPrefix)
 }
 
 // TestHandleUpdateTenant_IsolationChange_NonMVCCShardUsesKVList proves that a
@@ -354,13 +371,9 @@ func TestHandleUpdateTenant_IsolationChange_NonMVCCShardUsesKVList(t *testing.T)
 			},
 		},
 	}
-	srv := newTenantServerWithRegistry(raftTenantSvc(t), reg)
-
-	req := httptest.NewRequest(http.MethodPut, "/v1/tenants/acme", strings.NewReader(`{"isolation_type":"volume"}`))
-	rec := httptest.NewRecorder()
-	srv.dispatch(rec, req)
-
+	rec, svc := isolationChange(t, reg)
 	assertStatus(t, rec, http.StatusConflict)
+	assertIsolation(t, svc, tenant.IsolationPrefix)
 }
 
 // TestHandleUpdateTenant_IsolationChange_ConflictWhenTenantHasData proves the
@@ -369,41 +382,32 @@ func TestHandleUpdateTenant_IsolationChange_ConflictWhenTenantHasData(t *testing
 	reg := &mockServiceRegistry{kvSvc: &mockKVService{
 		listFn: func(_ context.Context, _ string) ([]string, error) { return []string{"existing-key"}, nil },
 	}}
-	srv := newTenantServerWithRegistry(raftTenantSvc(t), reg)
-
-	req := httptest.NewRequest(http.MethodPut, "/v1/tenants/acme", strings.NewReader(`{"isolation_type":"volume"}`))
-	rec := httptest.NewRecorder()
-	srv.dispatch(rec, req)
-
+	rec, svc := isolationChange(t, reg)
 	assertStatus(t, rec, http.StatusConflict)
+	assertIsolation(t, svc, tenant.IsolationPrefix)
 }
 
 // TestHandleUpdateTenant_IsolationChange_AllowedWhenNoData proves the change
-// proceeds (200, UpdateTenant invoked) once the tenant is verified data-free.
+// proceeds (200) once the tenant is verified data-free.
 func TestHandleUpdateTenant_IsolationChange_AllowedWhenNoData(t *testing.T) {
-	var updated bool
-	svc := &mockTenantService{
-		getTenantFn: func(_ context.Context, id string) (*tenant.TenantInfo, error) {
-			return &tenant.TenantInfo{ID: id, IsolationType: tenant.IsolationRaft}, nil
-		},
-		updateTenantFn: func(_ context.Context, id string, patch tenant.TenantPatch) (*tenant.TenantInfo, error) {
-			updated = true
-			return &tenant.TenantInfo{ID: id, IsolationType: patch.IsolationType}, nil
-		},
-	}
 	reg := &mockServiceRegistry{kvSvc: &mockKVService{
 		listFn: func(_ context.Context, _ string) ([]string, error) { return nil, nil },
 	}}
-	srv := newTenantServerWithRegistry(svc, reg)
+	rec, svc := isolationChange(t, reg)
+	assertStatus(t, rec, http.StatusOK)
+	assertIsolation(t, svc, tenant.IsolationVolume)
+}
 
-	req := httptest.NewRequest(http.MethodPut, "/v1/tenants/acme", strings.NewReader(`{"isolation_type":"volume"}`))
+// A patch naming the tenant's CURRENT isolation type changes nothing, so it
+// consults no probe: it succeeds even when the data plane is unreachable.
+func TestHandleUpdateTenant_SameIsolationIsANoOp(t *testing.T) {
+	reg := &mockServiceRegistry{kvErr: errors.New("leader unavailable")}
+	svc := probedTenantSvc(t, reg)
+	srv := newTenantServerWithRegistry(svc, reg)
+	req := httptest.NewRequest(http.MethodPut, "/v1/tenants/acme", strings.NewReader(`{"isolation_type":"prefix"}`))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
-
 	assertStatus(t, rec, http.StatusOK)
-	if !updated {
-		t.Fatal("UpdateTenant should run once the no-data precondition is verified")
-	}
 }
 
 // TestHandleSetTenantQuotas_BoundsRequestContext proves the quotas handler
@@ -913,7 +917,7 @@ func TestHandleTenantByID_MissingID(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// mapTenantError coverage
+// mapHTTPError coverage
 // ---------------------------------------------------------------------------
 
 func TestMapTenantError_AllCodes(t *testing.T) {
@@ -941,9 +945,9 @@ func TestMapTenantError_AllCodes(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := mapTenantError(tc.err)
+			got := mapHTTPError(tc.err)
 			if got != tc.want {
-				t.Fatalf("mapTenantError(%v) = %d, want %d", tc.err, got, tc.want)
+				t.Fatalf("mapHTTPError(%v) = %d, want %d", tc.err, got, tc.want)
 			}
 		})
 	}
@@ -1029,9 +1033,9 @@ func TestHandleUpdateTenant_ServiceNil(t *testing.T) {
 }
 
 func TestMapTenantError_HasData(t *testing.T) {
-	got := mapTenantError(tenant.ErrTenantHasData)
+	got := mapHTTPError(tenant.ErrTenantHasData)
 	if got != http.StatusConflict {
-		t.Fatalf("mapTenantError(ErrTenantHasData) = %d, want %d", got, http.StatusConflict)
+		t.Fatalf("mapHTTPError(ErrTenantHasData) = %d, want %d", got, http.StatusConflict)
 	}
 }
 
@@ -1535,6 +1539,14 @@ func (e *extMockTenantService) CreateTenant(ctx context.Context, id, name string
 func (e *extMockTenantService) GetTenant(ctx context.Context, tenantID string) (*tenant.TenantInfo, error) {
 	return e.mockTenantService.GetTenant(ctx, tenantID)
 }
+func (e *extMockTenantService) ListDeletedTenants(_ context.Context, _ string, _ int) (*tenant.DeletedTenantsPage, error) {
+	return &tenant.DeletedTenantsPage{}, nil
+}
+
+func (e *extMockTenantService) ReconcileDeletedTenants(_ context.Context) (*tenant.ReconcileReport, error) {
+	return &tenant.ReconcileReport{}, nil
+}
+
 func (e *extMockTenantService) ListTenants(ctx context.Context) ([]tenant.TenantInfo, error) {
 	return e.mockTenantService.ListTenants(ctx)
 }
@@ -1973,7 +1985,7 @@ func TestHandleTenantBarrierSealVote_ServiceError(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
-	// SealVote service errors route through mapTenantError (non-standard errors → 500).
+	// SealVote service errors route through mapHTTPError (non-standard errors → 500).
 	if rec.Code == http.StatusOK {
 		t.Fatalf("expected non-200 status on seal vote service error, got %d", rec.Code)
 	}
@@ -2019,8 +2031,8 @@ func TestMapTenantError_TeardownRefusals(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := mapTenantError(tc.err); got != tc.want {
-				t.Errorf("mapTenantError(%v) = %d, want %d", tc.err, got, tc.want)
+			if got := mapHTTPError(tc.err); got != tc.want {
+				t.Errorf("mapHTTPError(%v) = %d, want %d", tc.err, got, tc.want)
 			}
 		})
 	}

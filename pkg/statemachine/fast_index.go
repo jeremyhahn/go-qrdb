@@ -34,7 +34,7 @@ func (f *FastStateMachine) handleIndexCreate(payload []byte, revision uint64) (s
 	}
 
 	if err := f.indexManager.CreateIndex(name, fieldName, opts); err != nil {
-		return sm.Result{}, &StorageError{Op: "index-create", Inner: err}
+		return indexManagerFailure("index-create", err)
 	}
 
 	return sm.Result{Value: revision}, nil
@@ -47,13 +47,13 @@ func (f *FastStateMachine) handleIndexDrop(payload []byte, revision uint64) (sm.
 		return sm.Result{}, &ServiceNotConfiguredError{Service: "index"}
 	}
 
-	name, err := protocol.DecodeIndexDrop(payload)
+	name, dropOpts, err := protocol.DecodeIndexDropOpts(payload)
 	if err != nil {
 		return sm.Result{}, &IncompleteDataError{Reason: "index drop: " + err.Error()}
 	}
 
-	if err := f.indexManager.DropIndex(name); err != nil {
-		return sm.Result{}, &StorageError{Op: "index-drop", Inner: err}
+	if err := f.indexManager.DropIndex(name, dropOpts); err != nil {
+		return indexManagerFailure("index-drop", err)
 	}
 
 	return sm.Result{Value: revision}, nil

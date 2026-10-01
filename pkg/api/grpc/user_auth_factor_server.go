@@ -16,12 +16,9 @@ package grpc
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -55,7 +52,7 @@ func RegisterUserAuthFactorService(srv *grpc.Server, svc service.UserAuthFactorS
 func (s *userAuthFactorServer) Add(ctx context.Context, req *pb.UserAuthFactorAddRequest) (*pb.UserAuthFactorAddResponse, error) {
 	factor := userFactorFromAddProto(req)
 	if err := s.svc.Add(ctx, req.GetUserId(), factor); err != nil {
-		return nil, mapUserAuthFactorGRPCError(err)
+		return nil, mapServiceError(err)
 	}
 	return &pb.UserAuthFactorAddResponse{Factor: userFactorToProto(factor)}, nil
 }
@@ -64,7 +61,7 @@ func (s *userAuthFactorServer) Add(ctx context.Context, req *pb.UserAuthFactorAd
 func (s *userAuthFactorServer) List(ctx context.Context, req *pb.UserAuthFactorListRequest) (*pb.UserAuthFactorListResponse, error) {
 	factors, err := s.svc.List(ctx, req.GetUserId())
 	if err != nil {
-		return nil, mapUserAuthFactorGRPCError(err)
+		return nil, mapServiceError(err)
 	}
 	resp := &pb.UserAuthFactorListResponse{
 		Factors: make([]*pb.UserAuthFactorRecord, len(factors)),
@@ -80,7 +77,7 @@ func (s *userAuthFactorServer) List(ctx context.Context, req *pb.UserAuthFactorL
 func (s *userAuthFactorServer) Get(ctx context.Context, req *pb.UserAuthFactorGetRequest) (*pb.UserAuthFactorGetResponse, error) {
 	factor, err := s.svc.Get(ctx, req.GetFactorId())
 	if err != nil {
-		return nil, mapUserAuthFactorGRPCError(err)
+		return nil, mapServiceError(err)
 	}
 	return &pb.UserAuthFactorGetResponse{Factor: userFactorToProto(factor)}, nil
 }
@@ -88,7 +85,7 @@ func (s *userAuthFactorServer) Get(ctx context.Context, req *pb.UserAuthFactorGe
 // Remove handles the UserAuthFactorService.Remove RPC.
 func (s *userAuthFactorServer) Remove(ctx context.Context, req *pb.UserAuthFactorRemoveRequest) (*pb.UserAuthFactorRemoveResponse, error) {
 	if err := s.svc.Remove(ctx, req.GetFactorId(), req.GetForce()); err != nil {
-		return nil, mapUserAuthFactorGRPCError(err)
+		return nil, mapServiceError(err)
 	}
 	return &pb.UserAuthFactorRemoveResponse{Status: "revoked"}, nil
 }
@@ -97,7 +94,7 @@ func (s *userAuthFactorServer) Remove(ctx context.Context, req *pb.UserAuthFacto
 func (s *userAuthFactorServer) Rotate(ctx context.Context, req *pb.UserAuthFactorRotateRequest) (*pb.UserAuthFactorRotateResponse, error) {
 	newFactor := userFactorFromNewFactorProto(req.GetNewFactor())
 	if err := s.svc.Rotate(ctx, req.GetOldFactorId(), newFactor); err != nil {
-		return nil, mapUserAuthFactorGRPCError(err)
+		return nil, mapServiceError(err)
 	}
 	return &pb.UserAuthFactorRotateResponse{NewFactor: userFactorToProto(newFactor)}, nil
 }
@@ -105,11 +102,11 @@ func (s *userAuthFactorServer) Rotate(ctx context.Context, req *pb.UserAuthFacto
 // Relabel handles the UserAuthFactorService.Relabel RPC.
 func (s *userAuthFactorServer) Relabel(ctx context.Context, req *pb.UserAuthFactorRelabelRequest) (*pb.UserAuthFactorRelabelResponse, error) {
 	if err := s.svc.Relabel(ctx, req.GetFactorId(), req.GetLabel()); err != nil {
-		return nil, mapUserAuthFactorGRPCError(err)
+		return nil, mapServiceError(err)
 	}
 	factor, err := s.svc.Get(ctx, req.GetFactorId())
 	if err != nil {
-		return nil, mapUserAuthFactorGRPCError(err)
+		return nil, mapServiceError(err)
 	}
 	return &pb.UserAuthFactorRelabelResponse{Factor: userFactorToProto(factor)}, nil
 }
@@ -118,7 +115,7 @@ func (s *userAuthFactorServer) Relabel(ctx context.Context, req *pb.UserAuthFact
 func (s *userAuthFactorServer) Login(ctx context.Context, req *pb.UserAuthFactorLoginRequest) (*pb.UserAuthFactorLoginResponse, error) {
 	factor, err := s.svc.LookupByCredentialKey(ctx, auth.AuthFactorType(req.GetType()), req.GetLookupKey())
 	if err != nil {
-		return nil, mapUserAuthFactorGRPCError(err)
+		return nil, mapServiceError(err)
 	}
 	resp := &pb.UserAuthFactorLoginResponse{
 		UserId: factor.UserID,
@@ -134,7 +131,7 @@ func (s *userAuthFactorServer) Login(ctx context.Context, req *pb.UserAuthFactor
 			resp.Username = u.Username
 			resp.TenantId = u.TenantID
 			resp.Roles = u.RoleIDs
-			resp.Active = u.Enabled
+			resp.Active = u.CanAuthenticate()
 		}
 	}
 	return resp, nil
@@ -196,29 +193,5 @@ func userFactorFromNewFactorProto(req *pb.UserAuthFactorNewFactor) *auth.AuthFac
 		SPKICredential: req.GetSpkiCredential(),
 		Metadata:       req.GetMetadata(),
 		CreatedBy:      req.GetCreatedBy(),
-	}
-}
-
-// mapUserAuthFactorGRPCError maps an auth-package error into a gRPC status.
-func mapUserAuthFactorGRPCError(err error) error {
-	if err == nil {
-		return nil
-	}
-	switch {
-	case errors.Is(err, auth.ErrFactorNotFound), errors.Is(err, auth.ErrUserHasNoFactors):
-		return status.Error(codes.NotFound, err.Error())
-	case errors.Is(err, auth.ErrFactorRevoked):
-		return status.Error(codes.FailedPrecondition, err.Error())
-	case errors.Is(err, auth.ErrLastFactor), errors.Is(err, auth.ErrFactorAlreadyExists):
-		return status.Error(codes.AlreadyExists, err.Error())
-	case errors.Is(err, auth.ErrFactorTypeUnsupported), errors.Is(err, auth.ErrInvalidFactor),
-		errors.Is(err, auth.ErrReservedMetadata):
-		// InvalidArgument, not PermissionDenied: no caller may write the
-		// server-owned metadata namespace over any transport, so this is a
-		// malformed request rather than an authorization decision about this
-		// principal. err.Error() names the offending key and the prefix.
-		return status.Error(codes.InvalidArgument, err.Error())
-	default:
-		return status.Error(codes.Internal, err.Error())
 	}
 }

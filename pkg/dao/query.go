@@ -700,19 +700,3 @@ func filterOpToPlanner(op FilterOp) planner.Op {
 	}
 	return planner.OpEq
 }
-
-// QueryError is returned when a query execution fails.
-type QueryError struct {
-	Op  string
-	Err error
-}
-
-// Error returns a human-readable description.
-func (e *QueryError) Error() string {
-	return fmt.Sprintf("dao: query %s failed: %v", e.Op, e.Err)
-}
-
-// Unwrap returns the underlying error.
-func (e *QueryError) Unwrap() error {
-	return e.Err
-}

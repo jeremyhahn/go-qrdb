@@ -281,11 +281,11 @@ func e2eTLS(t *testing.T) (*tls.Config, *tls.Config) {
 		Certificates: []tls.Certificate{tlsCert},
 		ClientAuth:   tls.NoClientCert,
 		MinVersion:   tls.VersionTLS13,
-		NextProtos:   []string{"qrdb-quic"},
+		NextProtos:   []string{wire.ProtocolV2},
 	}
 	clientCfg := &tls.Config{
 		RootCAs:    caPool,
-		NextProtos: []string{"qrdb-quic"},
+		NextProtos: []string{wire.ProtocolV2},
 		MinVersion: tls.VersionTLS13,
 	}
 	return serverCfg, clientCfg

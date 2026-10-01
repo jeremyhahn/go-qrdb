@@ -327,42 +327,6 @@ func TestIssueLeafForKeyRejectsMalformedCAMaterial(t *testing.T) {
 	}
 }
 
-// TestGenerateLeafFromCARejectsMalformedBundles covers the bundle-parsing
-// branches, which are what a joining node hits when a bootstrap endpoint
-// serves something other than cert-then-key.
-func TestGenerateLeafFromCARejectsMalformedBundles(t *testing.T) {
-	caCertPEM, caKeyPEM, _, _, err := clustertls.GenerateCA(clustertls.CAValidity)
-	if err != nil {
-		t.Fatalf("GenerateCA: %v", err)
-	}
-
-	tests := []struct {
-		name   string
-		bundle []byte
-	}{
-		{"empty", nil},
-		{"not PEM", []byte("definitely not pem")},
-		{"certificate only", caCertPEM},
-		{"key first", append(append([]byte{}, caKeyPEM...), caCertPEM...)},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			mat, err := clustertls.GenerateLeafFromCA(tc.bundle)
-			if err == nil {
-				t.Fatal("expected a rejection")
-			}
-			if mat != nil {
-				t.Error("a rejected bundle must yield no material")
-			}
-			var want *clustertls.KeyError
-			if !errors.As(err, &want) {
-				t.Fatalf("error = %v (%T), want *clustertls.KeyError", err, err)
-			}
-		})
-	}
-}
-
 // TestLocalSANsAlwaysIncludesLoopback pins the invariant the doc comment
 // promises. A certificate missing loopback SANs breaks every in-process and
 // same-host client, which is how most of the test suite talks to a node.

@@ -55,6 +55,7 @@ empty body on REST.
 |---|---|---|
 | Success | 200 | `OK` |
 | Index already exists on create | 409 | `ALREADY_EXISTS` — `service.IndexExistsError` |
+| Name held by another owner (a collection's index) on create or drop | 409 | `FAILED_PRECONDITION` — `index.OwnershipError`; drop a collection's index by dropping the collection |
 | Unknown index on query, scan or drop | 404 | `NOT_FOUND` — never a silent full scan |
 | Unique constraint violated (on the entity write) | 409 | `ALREADY_EXISTS` |
 | Malformed request | 400 | `INVALID_ARGUMENT` |

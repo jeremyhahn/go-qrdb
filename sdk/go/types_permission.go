@@ -41,6 +41,19 @@ type InvalidPermissionError = permission.InvalidPermissionError
 // permission that has not been registered in the global registry.
 type UnregisteredPermissionError = permission.UnregisteredPermissionError
 
+// PermissionUndeclaredScopeError is returned by the permission and RBAC
+// clients when a permission has no declared scope. There is no default: a
+// contributed permission that was registered but never passed to
+// RegisterPermissionScope is refused rather than treated as
+// PermissionScopeSelf, and the RBAC authorizer denies it. The error names
+// the permission.
+type PermissionUndeclaredScopeError = permission.UndeclaredScopeError
+
+// PermissionInvalidScopeError is returned when a scope label — persisted per
+// tenant, or crossing the SDK boundary — is not one of the defined scopes.
+// It fails closed: an unrecognised label never widens a permission's reach.
+type PermissionInvalidScopeError = permission.InvalidScopeError
+
 // PermissionSoDViolationError is the panic value raised by
 // RegisterPermissionRoleGrant when a caller attempts to grant a permission that
 // performs a cryptographic operation with key material to the Security Officer
@@ -152,9 +165,10 @@ const PermissionAdminPeers = permission.AdminPeers
 type PermissionScope = permission.Scope
 
 const (
-	// PermissionScopeSelf is the default — the permission acts on the
-	// identity's own tenant, lifted across tenants for a system-tenant
-	// identity by the system-tenant rule.
+	// PermissionScopeSelf — the permission acts on the identity's own
+	// tenant, lifted across tenants for a system-tenant identity by the
+	// system-tenant rule. It is not a default: a permission with no declared
+	// scope is refused, not treated as PermissionScopeSelf.
 	PermissionScopeSelf = permission.ScopeSelf
 
 	// PermissionScopeCross is a cross-tenant permission, exercisable only
@@ -166,11 +180,20 @@ const (
 	PermissionScopeTenantOnly = permission.ScopeTenantOnly
 )
 
-// RegisterPermissionScope tags one or more built-in permissions with the
-// given scope in the process-global default layer. A higher layer
-// contributing a permission to qrdb's registry (see RegisterPermissions)
-// calls this to declare the permission's tenancy reach; omitting the call
-// leaves the permission at the default PermissionScopeSelf.
+// RegisterPermissionScope tags one or more permissions with the given scope
+// in the process-global layer. A higher layer contributing a permission to
+// qrdb's registry (see RegisterPermissions) MUST also call this to declare
+// the permission's tenancy reach: there is no default. A contributed
+// permission with no declared scope is refused by the authorizer on every
+// call — "scope resolution failed: no scope declared for <name>" — rather
+// than admitted as PermissionScopeSelf.
+//
+// That used to be the behaviour, and it was a fail-open: a permission whose
+// tenancy reach nobody had decided was admitted on the same terms as one
+// deliberately confined to its own tenant, and the undecided one is the one
+// that admits. Declare the scope you mean, even when it is
+// PermissionScopeSelf — a one-line call beside RegisterPermissions turns an
+// omission into a decision the next reader can see.
 var RegisterPermissionScope = permission.RegisterScope
 
 // ---------------------------------------------------------------------------

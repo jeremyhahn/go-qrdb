@@ -9,9 +9,11 @@ This document records how go-qrdb is verified against the Go Cryptographic
 Module, what had to change on the way to approved-algorithm clean, the
 exemption register for anything that is deliberately not clean, and — in
 [Open blockers](#open-blockers) — exactly how far from clean the module still
-is. **The root module's suite passes under `fips140=only`; the SDK module's
-status is unknown and the gate is not armed**, so do not read this document as
-a compliance claim.
+is. **Both modules' suites now pass under `fips140=only`, and the gate is still
+not armed**, so do not read this document as a compliance claim: an unarmed
+job's result is a measurement, not an enforceable property. What arming now
+waits on, and why it is no longer the list of findings this document used to
+name, is in [Arming the gate](#arming-the-gate).
 
 ## The job
 
@@ -23,6 +25,12 @@ GOFIPS140=latest GODEBUG=fips140=only go build ./...
 GOFIPS140=latest GODEBUG=fips140=only make test
 GOFIPS140=latest GODEBUG=fips140=only make test-sdk
 ```
+
+The `go build ./...` line runs in the **root module only**: the job has no
+build step for `sdk/go`. The SDK is compiled under the FIPS module only as far
+as `make test-sdk` compiles it — `go test ./...` in `sdk/go`, which builds every
+package it visits, with the test build tags. Whatever is claimed about the SDK
+below is a claim about that step, not about a `go build`.
 
 `GOFIPS140` selects the module at build time. `GODEBUG` selects the enforcement
 level at run time, and the level is `only`, not `on`:
@@ -45,20 +53,23 @@ over a subset of the suite does not tell you the product is FIPS-clean.
 module, so `make test` (`./pkg/... ./cmd/...`) does not reach a single line of
 it. The job ran `make test` alone until 2026-09-02, which means the entire SDK —
 every transport, `sdk/go/node`, the driver, the DAO layer and the conformance
-matrix — **had never executed under `fips140=only` at all**. Nothing in this
-document has ever asserted a FIPS property about the SDK, and until this job has
-had a clean run over both modules, nothing should.
+matrix — **had never executed under `fips140=only` at all**. It does now, and
+the SDK's first clean run is recorded in [Measured status](#measured-status);
+read any older revision of this document as asserting nothing about the SDK.
 
-The sdk step runs even when the root suite fails, deliberately. This job is
-known-red on the root module (see [Open blockers](#open-blockers)), so a step
-that only ran after a green `make test` would never run at all, and the SDK
-would stay unmeasured while the workflow appeared to cover it. Either module
-failing fails the job.
+The sdk step runs even when the root suite fails, deliberately. The job was
+known-red on the root module for the whole of its history until 2026-09-12, so
+a step that only ran after a green `make test` would never have run at all, and
+the SDK would have stayed unmeasured while the workflow appeared to cover it.
+Either module failing fails the job. Keep the arrangement now that both are
+green: it is what makes the next regression on the root module cost one
+measurement rather than two.
 
 The job is **not** in `ci-gate`'s `needs` and is therefore not a required
-check — see [Open blockers](#open-blockers) for the two findings that keep it
-red and [Arming the gate](#arming-the-gate) for the exact change that makes it
-required.
+check. No finding keeps it red any more — see [Measured
+status](#measured-status) — so what is left is a decision rather than a
+blocker, and [Arming the gate](#arming-the-gate) states it, what it now waits
+on, and the exact change that makes the job required.
 
 To reproduce a CI failure locally, prefix the same commands:
 
@@ -334,13 +345,12 @@ it is reachable from the code as well as from here.
 
 ## Open blockers
 
-**Read this before describing go-qrdb as FIPS 140-3 clean.** The root module's
-`make test` now passes under `fips140=only`; the `sdk/go` module's status is
-still **unknown rather than clean** (see [Measured status](#measured-status)),
-and the job is **not yet a required check**. Do not present it as an enforceable
-compliance gate until both halves have had a clean run and the gate is armed —
-see [Arming the gate](#arming-the-gate). Its purpose until then is to measure
-the remaining distance under the enforcement level the policy requires,
+**Read this before describing go-qrdb as FIPS 140-3 clean.** Both modules'
+suites now pass under `fips140=only` (see [Measured
+status](#measured-status)), and the job is **still not a required check**. Do
+not present it as an enforceable compliance gate until it is armed — see
+[Arming the gate](#arming-the-gate), which is now a decision about a stability
+record rather than a list of findings. Its purpose until then is to measure,
 nightly, where the number cannot be quietly lost. (It ran on
 every pull request until the known-red and long-horizon jobs moved off the push
 path; a known-red job burning a runner slot per pull request produced a number
@@ -369,9 +379,11 @@ finding.
 
 So the measurement on this page is only as current as the last time somebody
 looked. **Re-measure before quoting it**, and treat "the job should now be
-green" as a prediction to check rather than a property to state — at the time
-of writing this job has never had a green run in its retained history, so there
-is no green to compare against yet.
+green" as a prediction to check rather than a property to state. That
+prediction has since been checked and held — the figures in [Measured
+status](#measured-status) are a run, not an expectation — which changes nothing
+about the rule: the next fixture that reintroduces a prohibited primitive will
+turn this page false again in exactly the same silence.
 
 | Finding | Call sites | Status |
 |---|---|---|
@@ -433,54 +445,90 @@ accurate gap list is worth more than a claim of completeness:
 | PKCS#12 export | refused under `Enforced()` | see the [exemption register](#exemption-register) |
 
 Everything else in `pkg/` and `cmd/` is approved-algorithm clean as measured
-below. **The `sdk/go` module's status is a separate question** and is still
-open — see [Measured status](#measured-status).
+below, and so, now, is `sdk/go` — see [Measured status](#measured-status).
 
 ### Measured status
 
-Go 1.26.6, linux/amd64, `GOFIPS140=latest GODEBUG=fips140=only make test`:
-**124 packages pass, 2 fail**, and NEITHER failure is the Noise finding.
-`go build ./...` against the module is clean.
+**Measured 2026-09-12, Go 1.26.7, linux/amd64, commit `133fa56`, scheduled
+nightly run 17302 on `main`.** The same tree had been dispatched half an hour
+earlier as run 17271 and both agree exactly; the figures below are from the
+scheduled run because that is the one that runs without anyone asking.
 
-**These figures are the ROOT MODULE ONLY.** `make test` is
-`./pkg/... ./cmd/...`; the `sdk/go` module has no measurement here because
-until 2026-09-02 nothing had ever run it under `fips140=only` — the job did not
-invoke `make test-sdk`. It does now, and the first nightly run after that
-change is what produces the SDK's numbers. Until they appear in this table, the
-count above is a statement about `pkg/` and `cmd/` and about nothing else, and
-the SDK's status is **unknown rather than clean**. When the numbers arrive,
-record them; if the SDK turns out not to be FIPS-clean, that is a finding to add
-to [Open blockers](#open-blockers) — not a reason to narrow the job's scope,
-which is forbidden here for the reason stated at the top of this section.
+**These figures describe commit `133fa56` and no other.** The tree has moved
+since, and the movement includes test files — the class of change that has
+turned this page false twice, which is why [Reproducing this
+measurement](#reproducing-this-measurement) says to re-measure after the last
+commit that touches test code. They have not been re-taken against a later
+commit. Read them as the last measurement, not as the current state: the
+current state is whatever the most recent scheduled nightly reports, and
+nothing on this page can report it for you.
 
-| Failing package | Cause | FIPS finding? |
+What run 17302 ran, step by step, and therefore what this table can claim:
+
+| Module | Step | Result on run 17302 |
 |---|---|---|
-| `pkg/tenant` | `teardown_fence_test.go` builds its AEAD with `cipher.NewGCM` | **yes**, and it is a TEST FIXTURE — case 3 of [Handling a failure](#handling-a-failure). Tracked separately. |
-| `pkg/service` | the test binary does not compile: `*namespacedKV` no longer satisfies `kvService` | **no.** It fails identically with FIPS off. Tracked separately. |
+| root | `GOFIPS140=latest GODEBUG=fips140=only go build ./...` | clean |
+| root | `GOFIPS140=latest GODEBUG=fips140=only make test` | **126 packages pass, 0 fail** |
+| `sdk/go` | `GOFIPS140=latest GODEBUG=fips140=only make test-sdk` | **18 packages pass, 0 fail**; 3 more have no test files, and no package reported `[build failed]` |
 
-`pkg/clusterenroll` and `cmd/qrdbd`, the two packages this table named until
-now, both pass.
+There is no `go build ./...` row for `sdk/go` because the job has no such step
+(see [The job](#the-job)). The only compilation the SDK received under the FIPS
+module is the one `go test ./...` performs on its way to running the tests, and
+that is the whole of what the third row says. An earlier revision of this table
+had a `go build ./...` column reading "clean" for `sdk/go`; that was a claim
+about a step the job does not run, and it is withdrawn.
 
-Rejection counts on the same run: **4** `use of GCM with arbitrary IVs`, all
-four in `pkg/tenant/teardown_fence_test.go`, and **0**
-`use of X25519 is not allowed`.
+Rejection counts on that run, all four classes this document has ever recorded:
 
-Previously **120 pass / 2 fail** with 0 GCM and 15 X25519 rejections, and
-**106 pass / 16 fail** with 699 GCM rejections before that. The X25519 count
-went to zero when `pkg/clusterenroll` stopped calling the Noise handshake in
-FIPS mode; the GCM count went from 0 back to 4 because a test fixture
-introduced after the previous measurement reintroduced `cipher.NewGCM`, which
-is the second time that has happened and is why
-[Reproducing this measurement](#reproducing-this-measurement) says to re-measure
-after the last commit that touches test code.
+| Rejection | Count |
+|---|---|
+| `crypto/cipher: use of GCM with arbitrary IVs` | **0** |
+| `crypto/ecdh: use of X25519 is not allowed` | **0** |
+| `crypto/sha1` panics | **0** |
+| `crypto/hmac: use of keys shorter than 112 bits` | **0** |
 
-Four tests report `--- SKIP` on this run: `TestHelperProcess_Boot1Kill`,
-`TestTSEncoders_RefuseATagBlockThatOverflowsWithTheFixedFields`, and **the two
-caller-nonce tests** registered under [Skipped tests under
+**This is the SDK's first measurement and it is clean.** Until 2026-09-02 the
+job did not invoke `make test-sdk` at all, so the entire SDK — every transport,
+`sdk/go/node`, the driver, the DAO layer and the conformance matrix — had never
+executed under `fips140=only`. It has now, over 18 packages, with zero
+failures and zero rejections. Any statement about the SDK in a revision of this
+document older than this section was about nothing.
+
+Both remaining root-module failures are gone. The trajectory, so the next
+person can tell a real movement from a re-run:
+
+| When | Root | Notes |
+|---|---|---|
+| earlier | 106 pass / 16 fail | 699 GCM rejections, almost all inside a dependency |
+| after the dependency bump | 120 pass / 2 fail | 0 GCM, 15 X25519 |
+| after `pkg/clusterenroll` stopped calling Noise in FIPS mode | 124 pass / 2 fail | 0 X25519; GCM back to **4** from a test fixture added in between |
+| **2026-09-12, run 17302** | **126 pass / 0 fail** | the fixture now uses `cipher.NewGCMWithRandomNonce`; `pkg/service` compiles again |
+
+The GCM count going from 0 back to 4 midway is why [Reproducing this
+measurement](#reproducing-this-measurement) says to re-measure after the last
+commit that touches test code. It has happened twice.
+
+**Seven tests report `--- SKIP` on this run, and the number went up while the
+suite got better — read it before reacting to it.** Four were already
+registered: `TestHelperProcess_Boot1Kill`,
+`TestTSEncoders_RefuseATagBlockThatOverflowsWithTheFixedFields`, and the two
+caller-nonce tests under [Skipped tests under
 `fips140=only`](#skipped-tests-under-fips140only), which are unreachable code
-rather than hidden red. A skip count is not a failure count, and neither is it
-self-explanatory — check a `--- SKIP` against that register before reading it
-either way.
+rather than hidden red. `TestHelperProcess_StandaloneNodeBoot1Kill` is the same
+shape as the other helper-process entry point. The remaining two —
+`TestBackupService_VerifyBackup_CorruptedEntry` and
+`TestAuthFactorService_VerifyFactor_ExpiredChallenge_v2`, both in `pkg/service`
+— are **unconditional `t.Skip` calls with nothing to do with FIPS**. They did
+not appear; they became *visible*, because `pkg/service`'s test binary now
+compiles and its skips are printed rather than swallowed by a build failure.
+They are tracked separately as ordinary skip guards, which this project does
+not permit.
+
+That is the general lesson and not a footnote: a package that fails to build
+reports one `FAIL` line and hides everything else it would have said. A skip
+count is not a failure count, it is not self-explanatory, and a change in it
+after a build failure is fixed is a change in *visibility*. Check each
+`--- SKIP` against the register before reading it either way.
 
 **No test was skipped to close the Noise finding**, and the two packages it
 affected acquired no skip guards. Where a live Noise listener became unreachable
@@ -510,13 +558,12 @@ ways of getting them wrong have already been hit in this repository:
 Check the log is complete before counting it — a suite killed midway produces a
 short count that looks like an improvement.
 
-**Zero** occurrences of `crypto/ecdh: use of X25519 is not allowed` remain: the
-Noise handshake is no longer reached in FIPS mode. The **four** remaining
-rejections are all `crypto/cipher: use of GCM with arbitrary IVs`, all four in
-`pkg/tenant/teardown_fence_test.go`, a test fixture added after the previous
-measurement. There are zero `crypto/sha1` panics, which is what the UUIDv8 migration was for, and
-zero `crypto/hmac: use of keys shorter than 112 bits`, which is what the
-shared-secret minimum was for. Re-derive the attribution with:
+All four rejection classes now read **zero** — X25519 because the Noise
+handshake is no longer reached in FIPS mode, GCM because the last fixture was
+rewritten onto `cipher.NewGCMWithRandomNonce`, `crypto/sha1` because of the
+UUIDv8 migration, and short-key HMAC because of the shared-secret minimum.
+**Zero is the value a broken grep also returns**, so re-derive each one rather
+than accepting the table:
 
 ```
 GOFIPS140=latest GODEBUG=fips140=only make test 2>&1 | grep -c 'crypto/cipher: use of GCM with arbitrary IVs'
@@ -529,27 +576,70 @@ error and none of them a qrdb call site. That whole class is gone; the sentence
 is kept as history because the attribution is the evidence the remediation
 worked, not because the number is current.
 
-**Attribute every failing test before counting it, because one of the two
-failing packages is not a FIPS failure at all.** `pkg/service` reports
-`[build failed]`, which prints as a single `FAIL` line among 124 `ok` lines and
-looks exactly like a rejection until you read it; it fails identically with FIPS
-off. Only `pkg/tenant` carries a FIPS rejection, and it carries it in a test
-fixture rather than on a product path. A count taken without that distinction
-would say "two FIPS failures" and be wrong by half.
+**Attribute every failing test before counting it.** When this page last
+recorded two failures, only one of them was a FIPS failure at all: `pkg/service`
+reported `[build failed]`, which prints as a single `FAIL` line among the `ok`
+lines and looks exactly like a rejection until you read it, and it failed
+identically with FIPS off. A count taken without that distinction would have
+said "two FIPS failures" and been wrong by half. There are no failures to
+attribute today; the habit is what carries forward.
 
 ### Arming the gate
 
-Once the remaining test-fixture failure is fixed, `pkg/service` compiles again,
-**and the SDK has had a clean run** (see [Measured
-status](#measured-status) — its status is currently unknown, not clean), `fips`
-becomes a required check. The dependency findings that used to head this list
-are closed; what is left is two defects of this repository's own, both tracked. The job lives in `.github/workflows/nightly.yml`, so
-arming it is four moves and they are one act: move the job into
-`.github/workflows/ci.yml`, add `fips` to `ci-gate`'s `needs`, add
-`RESULT_FIPS` to its `env` block, and add a `check fips` call to its loop. Do
-that in the change that closes the last finding, not later — a FIPS job that can
-pass and is not required is the fail-open gate this document exists to argue
-against.
+**Every precondition this section used to name is met, and the job is
+deliberately still not armed.** That is a decision, taken 2026-09-12, and it
+replaces a blocked state with a waiting one. What it waits on is a **stability
+record**, and the two reasons are worth more than the preconditions were.
+
+**One green run is not a track record.** The retained history of this workflow
+is 27 runs. Twenty-two of them are scheduled runs on `main` between 2026-08-22
+and 2026-09-11 and **every one failed**. Run 17302 on 2026-09-12 is the first
+scheduled run on `main` ever to pass, and at the time of writing it is the only
+one. A check made required on the strength of its first pass is a check that
+starts being bypassed the first time it fails for a reason nobody can
+attribute, and a bypassed gate is worth less than no gate because it also
+reports.
+
+**It is structurally the wrong shape for a required check, and the cost is
+measured.** Required checks gate pull requests; this is a *nightly* job. Arming
+it as written either requires a check that does not run per pull request — a
+gate that can never go green on a PR — or moves it onto the push path, where it
+is paid on every push. Its five green runs took 17m54s, 22m52s, 23m47s, 24m04s
+and 34m57s. A required check is paid at the worst of those, not the mean, so
+the honest figure is **about 35 minutes added to every pull request**, on a
+runner pool that already contends with local work. The original reason for
+moving it off the push path was that it took roughly 50 minutes per pull
+request *and then failed*. Exactly half of that reason has gone away.
+
+**The number, and why it is that number: fourteen consecutive green SCHEDULED
+runs on `main`.** Not dispatched runs on a branch — the record has to count the
+thing being required. Three arguments fix it at fourteen rather than at five or
+at thirty:
+
+- **What the record must exclude is a flake, and this suite is where one would
+  hide.** It runs the race detector under `fips140=only` over packages that
+  take minutes (`pkg/vector/quantization` 168s, `pkg/vector/ivf` 66s,
+  `sdk/go/node` 93s). A defect that fails one run in ten survives five
+  consecutive runs unseen about 59% of the time and fourteen about 23% — still
+  not proof, but the difference between "we have not looked" and "we looked".
+- **Five green runs today are not five independent measurements.** They cover
+  three distinct commits, and two of those three differ only in the change
+  being demonstrated at the time. Fourteen scheduled runs span two weeks of a
+  moving tree, which is what actually tests whether the job survives other
+  people's merges rather than one tree's determinism.
+- **Waiting is free.** The nightly runs whether or not anyone is waiting for
+  it, so the record accumulates at no cost, while arming early costs ~35
+  minutes on every pull request in the interim.
+
+Arming remains **four moves and one act** when the record is in: move the job
+from `.github/workflows/nightly.yml` into `.github/workflows/ci.yml`, add
+`fips` to `ci-gate`'s `needs`, add `RESULT_FIPS` to its `env` block, and add a
+`check fips` call to its loop. The old instruction to do that "in the change
+that closes the last finding, not later" was right about the hazard and wrong
+about the trigger: a FIPS job that can pass and is not required **is** a
+fail-open gate, and that is the cost being carried deliberately for the length
+of the record rather than a reason to arm today. Record the count when it is
+reached, in this section, with the run that completed it.
 
 ## See Also
 

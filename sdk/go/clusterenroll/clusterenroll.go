@@ -111,9 +111,11 @@ type MissingRoleError = clusterenroll.MissingRoleError
 // fails.
 type FetchError = clusterenroll.FetchError
 
-// JoinError is returned when the overall bootstrap join process fails after
-// a successful CA-bundle fetch.
-type JoinError = clusterenroll.JoinError
+// EnrollmentUnavailableError is returned by Join, and by Resolve and
+// ResolveCA when bootstrap flags are set: joining an existing cluster is
+// unavailable because the cluster CA private key is no longer distributed and
+// member-side CSR issuance has not shipped.
+type EnrollmentUnavailableError = clusterenroll.EnrollmentUnavailableError
 
 // ServerError is returned when starting or operating a bootstrap server fails.
 type ServerError = clusterenroll.ServerError
@@ -143,15 +145,16 @@ var Resolve = clusterenroll.Resolve
 // ResolveCA resolves the cluster CA material (cert + key PEM) WITHOUT
 // generating a node leaf — for consumers that supply their own node key (e.g.
 // hardware-resident) and issue their own leaf via clustertls.IssueLeafForKey.
+// Its join branch (bootstrap flags set) is refused with
+// *EnrollmentUnavailableError: a joining node never holds the CA key.
 // The returned Advertiser is non-nil for a node whose recorded enrollment role
 // is RoleFirstNode, on the boot that generates the cluster CA and on every
 // later boot that loads it from cache, and must be stopped during graceful
 // shutdown.
 var ResolveCA = clusterenroll.ResolveCA
 
-// Join fetches the cluster CA bundle from an existing node via truststrap,
-// generates a leaf certificate signed by that CA, and persists everything to
-// opts.DataDir.
+// Join enrolls this node into an existing cluster. It is refused with
+// *EnrollmentUnavailableError in this release, before any dial or write.
 var Join = clusterenroll.Join
 
 // NodeURI builds the SPIFFE node identity URI

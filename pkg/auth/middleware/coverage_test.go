@@ -112,10 +112,10 @@ func TestWithUserServiceFallback_SetsField(t *testing.T) {
 	authz := &mockAuthorizer{}
 	fallback := &mockUserServicer{
 		user: &user.User{
-			Username: "alice",
-			TenantID: "t1",
-			RoleIDs:  []string{"admin"},
-			Enabled:  true,
+			Username:  "alice",
+			TenantID:  "t1",
+			RoleIDs:   []string{"admin"},
+			Lifecycle: user.LifecycleActive,
 		},
 	}
 
@@ -136,10 +136,10 @@ func TestWithUserServiceFallback_PrimaryFails_FallbackSucceeds(t *testing.T) {
 	primary := &mockUserServicer{err: errors.New("raft not ready")}
 	fallback := &mockUserServicer{
 		user: &user.User{
-			Username: "alice",
-			TenantID: "t1",
-			RoleIDs:  []string{"admin", "operator"},
-			Enabled:  true,
+			Username:  "alice",
+			TenantID:  "t1",
+			RoleIDs:   []string{"admin", "operator"},
+			Lifecycle: user.LifecycleActive,
 		},
 	}
 
@@ -178,9 +178,9 @@ func TestWithUserServiceFallback_PrimaryFails_FallbackSucceeds(t *testing.T) {
 func TestLookupUser_PrimarySucceeds(t *testing.T) {
 	primary := &mockUserServicer{
 		user: &user.User{
-			Username: "alice",
-			TenantID: "t1",
-			Enabled:  true,
+			Username:  "alice",
+			TenantID:  "t1",
+			Lifecycle: user.LifecycleActive,
 		},
 	}
 
@@ -220,9 +220,9 @@ func TestLookupUser_PrimaryTransient_FallbackSucceeds(t *testing.T) {
 	primary := &mockUserServicer{err: errors.New("raft timeout")}
 	fallback := &mockUserServicer{
 		user: &user.User{
-			Username: "bob",
-			TenantID: "t2",
-			Enabled:  true,
+			Username:  "bob",
+			TenantID:  "t2",
+			Lifecycle: user.LifecycleActive,
 		},
 	}
 
@@ -360,10 +360,10 @@ func TestAuthenticateQUIC_UserEnrichment(t *testing.T) {
 	authz := &mockAuthorizer{}
 	users := &mockUserServicer{
 		user: &user.User{
-			Username: "charlie",
-			TenantID: "t1",
-			RoleIDs:  []string{"admin"},
-			Enabled:  true,
+			Username:  "charlie",
+			TenantID:  "t1",
+			RoleIDs:   []string{"admin"},
+			Lifecycle: user.LifecycleActive,
 		},
 	}
 
@@ -583,9 +583,9 @@ func TestStreamInterceptor_UserDisabled(t *testing.T) {
 	authz := &mockAuthorizer{}
 	users := &mockUserServicer{
 		user: &user.User{
-			Username: "disabled-user",
-			TenantID: "t1",
-			Enabled:  false,
+			Username:  "disabled-user",
+			TenantID:  "t1",
+			Lifecycle: user.LifecycleDisabled,
 		},
 	}
 
@@ -857,10 +857,10 @@ func TestAuthenticateQUIC_FallbackUsed(t *testing.T) {
 	primary := &mockUserServicer{err: errors.New("raft timeout")}
 	fallback := &mockUserServicer{
 		user: &user.User{
-			Username: "alice",
-			TenantID: "t1",
-			RoleIDs:  []string{"operator"},
-			Enabled:  true,
+			Username:  "alice",
+			TenantID:  "t1",
+			RoleIDs:   []string{"operator"},
+			Lifecycle: user.LifecycleActive,
 		},
 	}
 
@@ -890,9 +890,9 @@ func TestAuthenticateQUIC_UserDisabled(t *testing.T) {
 	authz := &mockAuthorizer{}
 	users := &mockUserServicer{
 		user: &user.User{
-			Username: "disabled",
-			TenantID: "t1",
-			Enabled:  false,
+			Username:  "disabled",
+			TenantID:  "t1",
+			Lifecycle: user.LifecycleDisabled,
 		},
 	}
 

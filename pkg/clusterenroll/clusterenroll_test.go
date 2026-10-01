@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // White-box tests for pkg/clusterenroll. The package declaration gives access
-// to unexported types (clusterBundleProvider, Advertiser fields) for thorough
+// to unexported types (Advertiser fields) for thorough
 // coverage of the internal implementation.
 package clusterenroll
 
@@ -24,6 +24,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,79 +36,6 @@ import (
 // discardLogger returns an slog.Logger that silently discards all output.
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
-}
-
-// ---------------------------------------------------------------------------
-// clusterBundleProvider tests
-// ---------------------------------------------------------------------------
-
-func TestClusterBundleProvider_CABundle(t *testing.T) {
-	certPEM := []byte("-----BEGIN CERTIFICATE-----\ntest-cert\n-----END CERTIFICATE-----\n")
-	keyPEM := []byte("-----BEGIN EC PRIVATE KEY-----\ntest-key\n-----END EC PRIVATE KEY-----\n")
-
-	provider := &clusterBundleProvider{
-		caCertPEM: certPEM,
-		caKeyPEM:  keyPEM,
-	}
-
-	got, err := provider.CABundle()
-	if err != nil {
-		t.Fatalf("CABundle: %v", err)
-	}
-
-	want := append(append([]byte{}, certPEM...), keyPEM...)
-	if string(got) != string(want) {
-		t.Errorf("CABundle returned unexpected data\ngot:  %q\nwant: %q", got, want)
-	}
-}
-
-func TestClusterBundleProvider_CABundle_EmptyCert(t *testing.T) {
-	provider := &clusterBundleProvider{
-		caCertPEM: nil,
-		caKeyPEM:  []byte("key-data"),
-	}
-
-	got, err := provider.CABundle()
-	if err != nil {
-		t.Fatalf("CABundle: %v", err)
-	}
-	if string(got) != "key-data" {
-		t.Errorf("expected just key data, got %q", got)
-	}
-}
-
-func TestClusterBundleProvider_CABundle_EmptyKey(t *testing.T) {
-	provider := &clusterBundleProvider{
-		caCertPEM: []byte("cert-data"),
-		caKeyPEM:  nil,
-	}
-
-	got, err := provider.CABundle()
-	if err != nil {
-		t.Fatalf("CABundle: %v", err)
-	}
-	if string(got) != "cert-data" {
-		t.Errorf("expected just cert data, got %q", got)
-	}
-}
-
-func TestClusterBundleProvider_CABundle_DoesNotMutateInputs(t *testing.T) {
-	certPEM := []byte("cert")
-	keyPEM := []byte("key")
-	origCert := append([]byte{}, certPEM...)
-	origKey := append([]byte{}, keyPEM...)
-
-	provider := &clusterBundleProvider{caCertPEM: certPEM, caKeyPEM: keyPEM}
-	if _, err := provider.CABundle(); err != nil {
-		t.Fatalf("CABundle: %v", err)
-	}
-
-	if string(certPEM) != string(origCert) {
-		t.Error("caCertPEM was mutated")
-	}
-	if string(keyPEM) != string(origKey) {
-		t.Error("caKeyPEM was mutated")
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -674,6 +602,88 @@ func TestStartAdvertiser_WriteKeyFileFails(t *testing.T) {
 	}
 }
 
+// TestStartAdvertiser_DataDirUnusableIsAServerError covers the generate path's
+// MkdirAll failure, which no test in this package reached.
+//
+// It used to be exercised only indirectly, by cmd/qrdbd's tests of the thin
+// startBootstrapServers wrapper around this function. Those never counted
+// toward this package's coverage -- `go test -coverprofile` without -coverpkg
+// credits a test binary only with its own package -- so when the dead wrapper
+// was deleted (go-qrdb#509) the branch would have silently stopped being tested
+// anywhere, with no number moving to say so. Moved here, to the package that
+// owns the behaviour.
+//
+// The branch matters beyond the error type: it destroys the freshly generated
+// key before returning, so a failed start does not leave key material behind.
+// A regular file where the data directory should be makes fileExists report
+// the key absent, takes the generate path, and fails at MkdirAll.
+func TestStartAdvertiser_DataDirUnusableIsAServerError(t *testing.T) {
+	mat, err := clustertls.GenerateCABundle()
+	if err != nil {
+		t.Fatalf("GenerateCABundle: %v", err)
+	}
+	blocked := filepath.Join(t.TempDir(), "blocked")
+	if err := os.WriteFile(blocked, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	opts := AdvertiseOptions{NoisePort: freePort(t), NoiseHost: testBindHost}
+	if !noiseAvailable() {
+		assertNoiseFaultUnreachable(t, mat, opts, blocked)
+		return
+	}
+
+	_, err = StartAdvertiser(mat, opts, blocked, discardLogger())
+	var serverErr *ServerError
+	if !errors.As(err, &serverErr) {
+		t.Fatalf("expected *ServerError for an unusable data directory, got %T: %v", err, err)
+	}
+	if serverErr.Protocol != "noise" {
+		t.Errorf("ServerError.Protocol = %q, want %q", serverErr.Protocol, "noise")
+	}
+}
+
+// TestStartAdvertiser_PortInUseIsAServerErrorNamingNoise: when the enrollment
+// port is taken, the start fails with a typed error that NAMES the listener,
+// which is what lets an operator tell a Noise bind failure from any other
+// startup fault. Moved from cmd/qrdbd for the same reason as the test above.
+//
+// The port is occupied on testBindHost itself, the exact address the
+// advertiser binds, so the collision is deterministic rather than depending on
+// how the platform resolves a wildcard listener against a specific one.
+func TestStartAdvertiser_PortInUseIsAServerErrorNamingNoise(t *testing.T) {
+	mat, err := clustertls.GenerateCABundle()
+	if err != nil {
+		t.Fatalf("GenerateCABundle: %v", err)
+	}
+	occupier, err := net.Listen("tcp", net.JoinHostPort(testBindHost, "0"))
+	if err != nil {
+		t.Fatalf("reserving a port to occupy: %v", err)
+	}
+	t.Cleanup(func() { _ = occupier.Close() })
+	port := occupier.Addr().(*net.TCPAddr).Port
+
+	opts := AdvertiseOptions{NoisePort: port, NoiseHost: testBindHost}
+	dir := t.TempDir()
+	if !noiseAvailable() {
+		assertNoiseFaultUnreachable(t, mat, opts, dir)
+		return
+	}
+
+	adv, err := StartAdvertiser(mat, opts, dir, discardLogger())
+	if err == nil {
+		adv.Stop()
+		t.Fatal("StartAdvertiser bound a port that was already in use")
+	}
+	var serverErr *ServerError
+	if !errors.As(err, &serverErr) {
+		t.Fatalf("expected *ServerError for a bind failure, got %T: %v", err, err)
+	}
+	if serverErr.Protocol != "noise" {
+		t.Errorf("ServerError.Protocol = %q, want %q: the error must name the listener that failed", serverErr.Protocol, "noise")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Error types
 // ---------------------------------------------------------------------------
@@ -682,18 +692,6 @@ func TestFetchError_ErrorAndUnwrap(t *testing.T) {
 	inner := textError("connection refused")
 	e := &FetchError{Method: "Noise", Err: inner}
 	want := "clusterenroll: bootstrap fetch failed via Noise: connection refused"
-	if e.Error() != want {
-		t.Errorf("got %q, want %q", e.Error(), want)
-	}
-	if e.Unwrap() != inner {
-		t.Error("Unwrap did not return inner error")
-	}
-}
-
-func TestJoinError_ErrorAndUnwrap(t *testing.T) {
-	inner := textError("key parse failed")
-	e := &JoinError{Err: inner}
-	want := "clusterenroll: TLS bootstrap failed: key parse failed"
 	if e.Error() != want {
 		t.Errorf("got %q, want %q", e.Error(), want)
 	}

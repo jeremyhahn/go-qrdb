@@ -64,10 +64,56 @@ func BootstrapShard(ctx context.Context, node ..., opts Options, shardID uint64,
 func BuildDiscovery(...) (...)
 func ParsePeers(...)   (...)
 func IsSingleNode(...) bool
+
+// Raft member identities (see "Member identities" below):
+func MemberIdentityFromCertificate(leaf *x509.Certificate) string
+func MemberIdentityFromPEM(certPEM []byte) (string, error)
+func ValidateMemberIdentity(s string) error
+func ParseMemberIdentities(specs []string) (map[uint64]string, error)
+func ResolveMemberIdentities(specs []string, selfID uint64, selfCertPEM []byte) (map[uint64]string, error)
 ```
 
 `BootstrapShard` runs, in order: **discover → validate addresses → add self →
 check quorum → build member map → `StartShard`.**
+
+### Member identities
+
+Adding a replica is `cluster.IdentityResolver` over go-quicraft's committed
+memberships (`service.ResolveMemberIdentity` for a host): the target shard's
+`Membership.Identities` for a replica it already names, else the system shard's
+identity for the host at the replica's Raft address, else the operator's
+override, else a typed refusal. An override is validated and checked against
+any committed identity. A transport-less host reads nothing and commits none.
+Every add then goes through go-quicraft's `*WithIdentity` API
+(`service.Host.RequestAddNodeWithIdentity`, `RequestAddObserverWithIdentity`);
+the identity-less forms are no longer called anywhere. The dedicated-shard
+factory builds a founder's `MemberIdentities` for every placement replica the
+same way (a joiner keeps whichever anchors resolve).
+
+go-quicraft (0.13 and later) admits a member of a shard on a host with a
+transport by its node identity alone, and refuses a founding `StartShard` whose
+`Config.MemberIdentities` omits a member, or a joining one that names no anchor.
+Both composers — `sdk/go/node.buildClusteredRaftConfigs` and `qrdbd`'s
+`initializeNode` — build that map with `ResolveMemberIdentities` from
+`raft.member_identities` and the local transport certificate, before the host is
+built.
+
+- The identity is `"spki:" + hex(sha256(leaf.RawSubjectPublicKeyInfo))`, byte
+  for byte what `quicraft.Host.NodeIdentity` reports. go-quicraft does not
+  export its derivation, so `MemberIdentityFromCertificate` restates it; the
+  SDK and daemon formation tests assert the two agree against a live host, so a
+  change on either side fails a test rather than a cluster.
+- The local entry is derived, never trusted from configuration: a configured
+  local entry that differs is `*MemberIdentityMismatchError`.
+- A malformed spec is `*MemberIdentityParseError` (not `id=identity`, replica
+  ID 0, or a replica named twice) or `*MemberIdentityFormatError` (not
+  `spki:` + 64 lower-case hex digits). Both are raised before any directory is
+  created.
+- Coverage — every founder named, an anchor for a joiner — is go-quicraft's
+  rule and is left to `StartShard`, which returns `*quicraft.InvalidMemberError`.
+  Restating it here would be a second copy of the rule to drift.
+- The SDK node wraps each refusal in `*node.ConfigError{Field:
+  "raft.member_identities"}`, which unwraps to the typed cause.
 
 ### Enrollment role — `pkg/clusterenroll`
 
@@ -128,10 +174,13 @@ cluster-wide enrollment decision from it at read time would be a guess wearing
 the clothes of a recovery.
 
 Nor is it derived from the material, which was measured rather than assumed.
-Multi-node enrollment is the shared-CA-key mode, so a **joining** node receives
-the CA certificate *and the CA private key* — that is how it mints its own leaf
-— and persists both: `[ca-key.pem ca.pem enrollment-role node-cert.pem
-node-key.pem]`. "Holds the CA key and is not single-node" therefore does not
+Releases before the CA key stopped being distributed enrolled a **joining**
+node by handing it the CA certificate *and the CA private key* — that is how it
+minted its own leaf — and it persisted both: `[ca-key.pem ca.pem
+enrollment-role node-cert.pem node-key.pem]`. This release never hands out the
+key and refuses joins through enrollment (`*EnrollmentUnavailableError`, before
+any dial or write), but data directories written that way still exist. "Holds
+the CA key and is not single-node" therefore does not
 mean "generated the CA", and acting on it would give every joined node in the
 cluster the first node's role, each opening an enrollment listener nobody asked
 for. The other candidate signal, `noise-key.hex`, does discriminate but is
@@ -292,7 +341,7 @@ type AdminClient interface {
 	Health(ctx context.Context) (*HealthResponse, error)
 	Status(ctx context.Context) (*StatusResponse, error)
 	Peers(ctx context.Context) (*PeersResponse, error)
-	AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr string) error
+	AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error
 	RemoveMember(ctx context.Context, shardID, replicaID uint64) error
 	RequestSnapshot(ctx context.Context, shardID uint64) error
 	Drain(ctx context.Context) error
@@ -313,7 +362,7 @@ wire RPCs**:
 cc := client.Cluster()
 members, _ := cc.Members(ctx, shardID)        // filtered from Peers()
 leader, ok, _ := cc.Leader(ctx, shardID)      // from GetShardState()
-_ = cc.AddReplica(ctx, shardID, id, raftAddr) // delegates to AddMember
+_ = cc.AddReplica(ctx, shardID, id, raftAddr, identity) // delegates to AddMember
 _ = cc.RemoveReplica(ctx, shardID, id)        // delegates to RemoveMember
 ch, _ := cc.WatchMembership(ctx, shardID)     // polls, emits deltas
 // ev.Members, ev.Added, ev.Removed, ev.LeaderChanged
@@ -447,10 +496,25 @@ type ImbalanceReport struct {
 |---|---|---|
 | Standalone mode | `requires mode: raft` | **yes** |
 | Discovery finds no peers | `BootstrapShard` fails at the quorum check | **yes** |
+| Multi-node start with no identity for a member (founder) or no anchor (joiner) | `StartShard` refuses with `*quicraft.InvalidMemberError`; the node does not start | **yes** |
+| Malformed `raft.member_identities`, or a local entry that is not the certificate's | `*MemberIdentityParseError` / `*MemberIdentityFormatError` / `*MemberIdentityMismatchError` before the host is built | **yes** |
+| Adding a replica on a brand-new node (no committed membership names it) with no identity supplied | `*service.MemberIdentityError` wrapping `*cluster.MemberIdentityUnknownError`, which names the replica and `qrdbd node-identity --cert`; gRPC/MCP `FAILED_PRECONDITION`, QUIC `StatusFailedPrecondition`, REST 412 | **yes** |
+| A supplied identity contradicting the one committed for that replica or host | `*service.MemberIdentityError` wrapping `*cluster.MemberIdentityConflictError`; `FAILED_PRECONDITION` / REST 409 | **yes** |
+| A malformed supplied identity | `*cluster.MemberIdentityFormatError`; `INVALID_ARGUMENT` / REST 400 | **yes** |
+| The committed membership cannot be read (no leader) — the system shard's, or a target shard that exists but is not readable yet | `*cluster.MembershipReadError`; `UNAVAILABLE` / REST 503. Only a target shard this node has not loaded (`quicraft.ErrShardNotFound`) falls through to the host's system-shard identity | **yes** (retry) |
+| An add naming a replica ID the shard's committed membership places at a different address | `*cluster.MemberAddressMismatchError`, naming both addresses; `FAILED_PRECONDITION` / REST 409 | **yes** |
+| An address the system shard binds to replicas with different identities | `*cluster.MemberIdentityAmbiguousError`, naming the identities; `FAILED_PRECONDITION` / REST 409 | **yes** |
+| Admin `StartShard` naming a member no committed membership names (founder) | `*service.MemberIdentityError`, coded as for member add; the shard does not start. A joiner leaves the member out and keeps the anchors it can resolve | **yes** |
+| Rebalance move of the system shard | `*service.RebalanceSystemShardMoveError`, logged; the move counts as failed | **yes** |
+| Rebalance move to a host the shard's committed membership already names (voter, observer or witness) | `*service.RebalanceTargetHostsReplicaError`, logged; the move counts as failed. The new replica ID is past every ID the membership has used, removed ones included | **yes** |
+| Rebalance move to a host with no committed identity | `*service.MemberIdentityError`, logged; the move counts as failed | **yes** |
+| Founding a dedicated database whose placement names a host the system shard never committed | `*service.MemberIdentityError` from the factory; the shard does not start | **yes** |
 | Multicast configured without a secret | method does not run | **yes** |
 | `RemoveMember` would drop below `MinQuorum` | refused by the quorum guard | **yes** |
-| FIPS 140-3 mode, bootstrap join configured with Noise as its only method | `*NoiseFIPSUnavailableError` before the first dial; nothing is written to the data directory | **yes** |
-| FIPS 140-3 mode, bootstrap join configured with Noise plus an approved method | Noise dropped from `MethodOrder` with a WARN naming FIPS; the approved methods carry the join | n/a |
+| Any bootstrap join (bootstrap flags set), this release | `*EnrollmentUnavailableError` before the first dial; nothing is written to the data directory. The FIPS rows below apply to `FetchAnchor`, the one fetch that still dials. | **yes** |
+| `/v1/ca/bootstrap` or the Noise advertiser handed key material | filtered to `CERTIFICATE` blocks (`clustertls.CertificatesOnly`, `ValidateAnchorBundle`); the CA private key is never served | **yes** |
+| FIPS 140-3 mode, anchor fetch configured with Noise as its only method | `*NoiseFIPSUnavailableError` before the first dial; nothing is written to the data directory | **yes** |
+| FIPS 140-3 mode, anchor fetch configured with Noise plus an approved method | Noise dropped from `MethodOrder` with a WARN naming FIPS; the approved methods carry the fetch | n/a |
 | FIPS 140-3 mode, first node | advertises the approved methods with a WARN naming FIPS; no Noise listener, no `noise-key.hex` | n/a |
 | `AddMember` for an existing replica | skipped (idempotent) | n/a |
 | `RemoveMember` for an absent replica | skipped (idempotent) | n/a |
@@ -468,6 +532,7 @@ Discovery lives under the `discovery` block — see
 | `discovery.dynamic_membership` | `--dynamic-membership` | enable the membership manager |
 | `discovery.min_peers` | `--cluster-min-peers` | auto-removal quorum floor (`MinQuorum`) |
 | `raft.peers` | — | `id=address` specs for the `static` method |
+| `raft.member_identities` | `--member-identities` | `id=spki:<hex>` identities of the other replicas; required for a multi-node cluster |
 | DNS SRV target | — | `{service}.{proto}.{domain}`, default `_raft._udp` |
 | `bootstrap.noise_port` | `--bootstrap-noise-port` | TCP port of the first node's enrollment listener; **zero means the fixed default 63006, not an ephemeral port** |
 | `bootstrap.noise_host` | `--bootstrap-noise-host` | bind host for that listener; falls back to `server.host` so a node confined to one interface does not expose enrollment on all of them |
@@ -482,6 +547,12 @@ and neither opens a listener there — see
   `BootstrapShard`'s six steps including the quorum refusal, and
   `MembershipManager` against the two narrow interfaces (that is what they are
   for).
+- **Formation with member identities is a unit test, not only an integration
+  one.** `TestNewClusteredNode_ThreeReplicasFormAndReplicate` builds three
+  replicas in one process through `NewClusteredNode`, each with its own leaf
+  from one test CA, and asserts they agree on a leader and replicate a write;
+  `TestInitializeNode_MemberIdentitiesFormTheShard` does the daemon's half. Both
+  fail if the resolved identities are not placed on the shard config.
 - **The quorum guard and the idempotence checks are the important tests** —
   they are what stops automatic reconfiguration destroying a cluster.
 - **No `time.Sleep`**: lease expiry and the keepalive are driven through the

@@ -485,7 +485,7 @@ func TestBackupToResponse_Fields(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// mapBackupError
+// mapHTTPError
 // ---------------------------------------------------------------------------
 
 func TestMapBackupError_AllCases(t *testing.T) {
@@ -510,9 +510,9 @@ func TestMapBackupError_AllCases(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := mapBackupError(tc.err)
+			got := mapHTTPError(tc.err)
 			if got != tc.want {
-				t.Errorf("mapBackupError(%T) = %d, want %d", tc.err, got, tc.want)
+				t.Errorf("mapHTTPError(%T) = %d, want %d", tc.err, got, tc.want)
 			}
 		})
 	}

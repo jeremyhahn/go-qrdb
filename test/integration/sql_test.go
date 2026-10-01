@@ -36,9 +36,16 @@ import (
 // startSingleNodeWithSQL starts a single-node QRDB instance with MySQL and
 // PostgreSQL wire protocol servers enabled. It returns the admin, MySQL, and
 // PostgreSQL ports along with the test CA used for mTLS.
+//
+// The state machine is "mvcc", not "memory": qrdbd's boot-time role/user
+// stores now require a kvstore.GuardedBatchKVStore-capable state machine
+// (go-qrdb#555), which "memory" does not implement, so a node started with it
+// refuses at first boot and never reaches healthy — before the relational
+// stack's own "memory" incompatibility (see startSingleNodeWithSQLMVCC) would
+// even become visible.
 func startSingleNodeWithSQL(t *testing.T) (adminPort, mysqlPort, pgsqlPort int, ca *testCA) {
 	t.Helper()
-	return startSingleNodeSQL(t, "memory")
+	return startSingleNodeSQL(t, "mvcc")
 }
 
 // startSingleNodeSQL boots the single-node SQL fixture over the named state
@@ -84,16 +91,14 @@ func startSingleNodeSQL(t *testing.T, stateMachine string) (adminPort, mysqlPort
 	return adminPorts[0], mysqlPorts[0], pgsqlPorts[0], ca
 }
 
-// startSingleNodeWithSQLMVCC is startSingleNodeWithSQL over the "mvcc" state
-// machine rather than "memory".
-//
-// The distinction is load-bearing, not incidental: the relational stack is
-// built on MVCC revisions -- the table catalog is a compare-and-swap keyed off
-// a revision, an interactive transaction commits its buffered write-set as one
-// revision-guarded compare-and-swap, and AUTO_INCREMENT allocates from a
-// Raft-committed sequence the same way. Under the "memory" SM the very first
-// CREATE TABLE fails with `statemachine: mvcc not configured`, so any test
-// that needs a relational table needs this variant.
+// startSingleNodeWithSQLMVCC is now identical to startSingleNodeWithSQL: both
+// boot over "mvcc", since go-qrdb#555's boot-time capability probe made
+// "memory" unable to complete first boot at all, not merely unable to run
+// CREATE TABLE. The name is kept as a distinct, explicit call for tests that
+// specifically depend on the MVCC state machine's relational guarantees —
+// the table catalog compare-and-swap, interactive-transaction commit, and
+// Raft-committed AUTO_INCREMENT sequence described below — so that intent
+// survives even though the underlying call is now the same.
 func startSingleNodeWithSQLMVCC(t *testing.T) (adminPort, mysqlPort, pgsqlPort int, ca *testCA) {
 	t.Helper()
 	return startSingleNodeSQL(t, "mvcc")
@@ -148,9 +153,12 @@ type sqlCluster struct {
 // table catalog is a compare-and-swap keyed off a revision, an interactive
 // transaction commits its buffered write-set as one revision-guarded
 // compare-and-swap, and AUTO_INCREMENT allocates from a Raft-committed
-// sequence the same way. Booted with the default "pebble" SM, or with the
-// "memory" SM startSingleNodeWithSQL uses, the very first CREATE TABLE fails
-// with `statemachine: mvcc not configured`.
+// sequence the same way. Booted with the default "pebble" SM, the very first
+// CREATE TABLE fails with `statemachine: mvcc not configured`. Booted with
+// "memory" or "concurrent", the node never gets that far: go-qrdb#555's
+// boot-time capability probe refuses first boot outright, since neither
+// implements the transaction plane atomic role/user creation requires —
+// which is why startSingleNodeWithSQL no longer uses "memory" either.
 func startThreeNodeClusterWithSQL(t *testing.T) *sqlCluster {
 	t.Helper()
 
@@ -161,6 +169,7 @@ func startThreeNodeClusterWithSQL(t *testing.T) *sqlCluster {
 	grpcPorts := allocateTCPPorts(t, 3)
 	mysqlPorts := allocateTCPPorts(t, 3)
 	peersFlag := buildPeersFlag(raftPorts)
+	nodeTLS, memberIDs := ca.clusterNodeTLS(t, len(raftPorts))
 
 	c := &sqlCluster{ca: ca}
 	for i := range 3 {
@@ -173,6 +182,7 @@ func startThreeNodeClusterWithSQL(t *testing.T) *sqlCluster {
 			"--sm", "mvcc",
 			"--discovery", "static",
 			"--peers", peersFlag,
+			"--member-identities", memberIDs,
 			"--shard-id", "1",
 			"--replica-id", fmt.Sprintf("%d", i+1),
 			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
@@ -181,7 +191,7 @@ func startThreeNodeClusterWithSQL(t *testing.T) *sqlCluster {
 			"--mysql-port", fmt.Sprintf("%d", mysqlPorts[i]),
 			"--sql-database", sqlClusterDatabase,
 		}
-		args = append(args, ca.tlsFlags(t)...)
+		args = append(args, nodeTLS[i]...)
 
 		cmd := startNode(t, bin, args, fmt.Sprintf("[sqlcluster-node%d] ", i+1))
 		c.nodes = append(c.nodes, &sqlClusterNode{
@@ -714,6 +724,7 @@ func TestSQL_MultiTenant_Isolation(t *testing.T) {
 			fmt.Sprintf("https://127.0.0.1:%d/users", adminPort),
 			map[string]interface{}{
 				"username":  tc.username,
+				"email":     tc.username + "@" + tc.tenantID + ".example.com",
 				"tenant_id": tc.tenantID,
 				"role_ids":  []string{roleResp.ID},
 			},

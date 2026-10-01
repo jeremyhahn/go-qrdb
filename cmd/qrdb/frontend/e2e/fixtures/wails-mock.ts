@@ -393,7 +393,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
       id: string;
       username: string;
       tenant: string;
-      enabled: boolean;
+      lifecycle: string;
       createdAt: string;
       updatedAt: string;
     }>();
@@ -1296,7 +1296,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           GetCompactionProgress: async () => ({}),
         },
         UserBinding: {
-          Create: async (req: { username: string; tenant?: string; enabled?: boolean }) => {
+          Create: async (req: { username: string; tenant?: string }) => {
             maybeReject("UserBinding.Create");
             const id = fakeUUID();
             const now = new Date().toISOString();
@@ -1304,7 +1304,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               id,
               username: req.username,
               tenant: req.tenant ?? "default",
-              enabled: req.enabled !== undefined ? req.enabled : true,
+              lifecycle: "active",
               createdAt: now,
               updatedAt: now,
             };
@@ -1317,13 +1317,12 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             if (!user) throw new Error(`user "${id}" not found`);
             return { ...user };
           },
-          Update: async (req: { id: string; username?: string; tenant?: string; enabled?: boolean }) => {
+          Update: async (req: { id: string; username?: string; tenant?: string }) => {
             maybeReject("UserBinding.Update");
             const user = userStore.get(req.id);
             if (!user) throw new Error(`user "${req.id}" not found`);
             if (req.username !== undefined) user.username = req.username;
             if (req.tenant !== undefined) user.tenant = req.tenant;
-            if (req.enabled !== undefined) user.enabled = req.enabled;
             user.updatedAt = new Date().toISOString();
             return { ...user };
           },
@@ -1340,7 +1339,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             maybeReject("UserBinding.Enable");
             const user = userStore.get(id);
             if (user) {
-              user.enabled = true;
+              user.lifecycle = "active";
               user.updatedAt = new Date().toISOString();
             }
           },
@@ -1348,7 +1347,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             maybeReject("UserBinding.Disable");
             const user = userStore.get(id);
             if (user) {
-              user.enabled = false;
+              user.lifecycle = "disabled";
               user.updatedAt = new Date().toISOString();
             }
           },

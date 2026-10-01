@@ -35,6 +35,10 @@ import (
 
 type memKVStore struct {
 	data sync.Map
+	// mu guards PutAllIfUnchanged (see mem_kvstore_atomic_test.go): sync.Map
+	// gives per-key atomicity, not the check-many-then-write-many atomicity a
+	// guarded batch needs, so that one operation takes this lock instead.
+	mu sync.Mutex
 }
 
 func newMemKVStore() *memKVStore {
@@ -1434,7 +1438,11 @@ func TestBrokerDataPlaneConcretePermsAreTenantOnly(t *testing.T) {
 		permission.ProjectRead, permission.OllamaEmbed,
 	}
 	for _, p := range concrete {
-		if got := permission.LookupScope(p); got != permission.ScopeTenantOnly {
+		got, err := permission.LookupScope(p)
+		if err != nil {
+			t.Fatalf("scope for %q: %v", p, err)
+		}
+		if got != permission.ScopeTenantOnly {
 			t.Errorf("scope for %q: got %v, want ScopeTenantOnly", p, got)
 		}
 	}

@@ -11,73 +11,1369 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.23.0-alpha] - 2026-09-30
+
+Tracks go-quicraft v0.15.0-alpha. BREAKING: wipe each node's Raft WAL directory and re-sync from peers when upgrading.
+
+### Changed — BREAKING
+
+- **go-quicraft v0.14.1-alpha → v0.15.0-alpha** (and go-enclave v0.6.0-alpha →
+  v0.6.1-alpha) in all three modules. go-quicraft 0.15 changes its WAL
+  format in place (hard-state record `0x02` → `0x0d`; the remove-node record
+  `0x06` is retired): **before upgrading a node, wipe its Raft WAL directory
+  and let it re-sync from its peers** (or restore from a snapshot). A replica
+  removed with `RemoveData` is retired for good; rejoining needs a new replica
+  ID. Snapshot artifacts exported by earlier builds carry no integrity trailer
+  and are refused on import; export them again after upgrading. The release
+  also hardens snapshot integrity end to end and keeps lease reads safe across
+  follower restarts.
+- `database.MultiplexLogDB` implements the new `logdb.LogDB.NodeRemoved`,
+  dispatching to the WAL that owns the shard.
+
+## [0.22.0-alpha] - 2026-09-30
+
+Merge train 2: transactions and guarded batches on every state machine type, O(1) TRUNCATE, one error-classification table, node lifecycle and go-quicraft 0.14 member identities, tenancy reconcile and atomic tenant create, certificate/auth posture (SPIFFE SAN, mTLS binding policy, single-owner REST routes, attested-caller gate), and collection lifecycle states.
+
 ### Added
 
-- **Per-tenant data encryption keyring, served on every transport.** A tenant
-  can now encrypt and decrypt its own data under a versioned AES-256-GCM key
-  that never leaves the server — `TenantDEKEncrypt`, `TenantDEKDecrypt`,
-  `TenantDEKRewrap`, `TenantDEKRotate`, `TenantDEKRetire` and
-  `TenantDEKStatus` on REST (`/v1/dek/*`), gRPC and Unix, QUIC (`dek.*`), MCP
-  (`qrdb_dek_*`), the embedded transport and `Client.DEK()`, plus a
-  `qrdb dek` command group. See `docs/tenant-dek/`.
+- **Pre-bound listeners for the embedded server** (#374).
+  `server.WithRESTListener`, `server.WithRESTPacketConn` and
+  `server.WithGRPCListener` (re-exported as `sdk.WithRESTListener`,
+  `sdk.WithRESTPacketConn`, `sdk.WithGRPCListener`) hand the server sockets the
+  embedder already bound, so a kernel-assigned port is never released between
+  reservation and serving — on TCP or on the HTTP/3 UDP side. A handed-over
+  socket outlives any one server, so REST, HTTP/3 and gRPC keep answering on
+  the same port after an in-process encryption migration rebuilds the server;
+  the SDK node closes the sockets in `Node.Close` and when
+  `NewStandaloneNode` / `NewClusteredNode` return an error, and a `Start` that
+  refuses (including for a disabled protocol, `*server.PreboundSocketError`)
+  closes them. A
+  pre-bound HTTP/3 socket is held to the TCP listener's host and port. Where
+  pre-binding is impossible — the multi-node Raft transport, which go-quicraft
+  binds and advertises itself — port 0 is refused with a
+  `*cluster.RaftPortZeroError`, by the SDK node and by `qrdbd start` alike.
+  A zero admin or gRPC port on the SDK node still selects the fixed default.
+- **Shared-prefix tenants have real per-tenant secondary indexes** (#40,
+  priority 1). A DAO over a `StoreResolver`-served store for a `prefix`
+  tenant now answers `QueryByIndex` from an engine-maintained index confined to
+  that tenant, instead of refusing with `kvstore.ErrIndexUnsupported` and
+  planning a full scan. `lifecycle.kvStoreAdapter` hands the engine the
+  caller's absolute key prefix made relative to the namespace the index name
+  carries, so the maintained scope is exactly the prefix the keys carry for a
+  `{tenant}/` store, a `{tenant}/{database}/` namespace and a DAO built
+  `WithDatabase` alike; a name outside its keys' namespace is still refused.
+  `KVEngine.PutWithIndexes`/`DeleteWithIndexes` select indexes by scope, like
+  the Raft apply path, instead of by the key's first path segment. Encrypted
+  tenant stores (`barrier`, `volume`, `raft`) still refuse index operations.
+  **Behaviour change for direct engine users:** an UNSCOPED index — created
+  with neither a namespace in its name nor a declared key prefix — is now
+  maintained by `PutWithIndexes`/`DeleteWithIndexes` for every key, exactly
+  as the Raft apply path has always maintained it. Before, those two helpers
+  updated an index only when its name began with the key's first path segment
+  (`{entityType}.`), so an unscoped index missed writes the Raft path indexed.
+  Indexes registered through `RegisterEntityType` are scoped to
+  `{entityType}/` and are unaffected. To keep an index to one keyspace,
+  declare its key prefix.
+- **Retired tenant ids are enumerable** (#470). `ListDeletedTenants` returns a
+  page of deleted tenant ids with their deletion records, in ascending id
+  order — a paged range read over the tombstone prefix, with an opaque page
+  token. It is on every transport: REST `GET /v1/tenants/deleted/list`, gRPC
+  and Unix `TenantListDeleted`, QUIC `tenant.ListDeleted`, MCP
+  `qrdb_tenant_list_deleted`, the embedded client, and
+  `qrdb tenant list-deleted`. New cross-scope permission
+  `tenants:list_deleted`.
+- **Every node reclaims a deleted tenant's directories** (#469). A node that
+  was down during a tenant delete, or held the tenant without hosting a shard,
+  kept its directories and the record that restored its barrier at the next
+  boot. A reconcile pass now runs at boot, before any tenant barrier is
+  restored, and on demand as `ReconcileDeletedTenants` on every transport (REST
+  `POST /v1/tenants/deleted/reconcile`, gRPC and Unix `TenantReconcileDeleted`,
+  QUIC `tenant.ReconcileDeleted`, MCP `qrdb_tenant_reconcile_deleted`, the
+  embedded client) and as `qrdb tenant reconcile-deleted`. The tombstone is its
+  only predicate, and it never removes a directory a live tenant claims; what
+  it leaves is reported with the reason. New cross-scope permission
+  `tenants:reconcile_deleted`, and `seal.BarrierRegistry.ReleaseTenant` /
+  `DropTenantRecords` / `TenantDataRootCandidates`. The live set it guards
+  with is read strictly (an unreadable tenant record aborts the pass) and
+  re-read before each removal; a non-canonical recorded path is never removed;
+  and the records naming a directory are dropped only after it is removed, so
+  a failed removal is finished by the next pass. `DestroyTenant` now removes
+  the `DataRoot` before dropping those records, for the same reason, and
+  registering a `volume`/`raft` tenant at a `DataRoot` another tenant's record
+  on the node still names is refused (`seal.DataRootClaimedError`, surfaced as
+  `tenant.DataRootOverlapError`; when the claimant is a retired tenant the
+  error says so and its new `Remedy` names `qrdb tenant reconcile-deleted`; a
+  failure to read the records to check is `seal.ClaimedRootCheckError`).
+  Recorded paths are judged **as recorded**: `TenantDataRootCandidates` returns
+  them uncleaned (de-duplicated on the cleaned form), so a dotted record such
+  as `/srv/qrdb/x/..` is skipped as `not-canonical` instead of being cleaned
+  into its parent and removed. A directory inside a reserved root is refused
+  unless it lies strictly inside a volume-pool base, so a pool carved out of
+  the data directory stays reclaimable. A `DataRoot` that is a **mount point**
+  is reclaimed: the new `seal.BarrierRegistry.RemoveDataRoot` empties the
+  directory and treats an emptied root refusing rmdir with `EBUSY`/`EXDEV` as
+  reclaimed, instead of failing forever (`DestroyTenant` and the reconcile both
+  use it; the filesystem is injectable through `seal.DirectoryRemover` /
+  `seal.WithDirectoryRemover`). A failure for one retired id no longer stops
+  the pass: per-id failures are collected and returned as
+  `tenant.ResidueReconcileErrors` alongside the report, and only a failure to
+  read the tombstones or the live set aborts. Every skipped path is logged at
+  `WARN`, and an id already fully reclaimed on the node (no directory, and no
+  state per the new `seal.BarrierRegistry.HasTenantState`) is passed over
+  untouched. On the wire, a partly failed pass answers success with its
+  report, whose new `failed` list (`tenant.FailedReclaim`; protobuf
+  `TenantResidueFailure`, field 4 of `TenantReconcileDeletedResponse`) names
+  each failed id; `tenant.ReconcileResponseError` is the one rule every
+  transport applies. The Go SDK returns the response and a
+  `transport.ReconcileDeletedTenantsError` together, and
+  `qrdb tenant reconcile-deleted` prints the report with a `failed` row per id
+  before exiting non-zero.
+- **`tenant.DataRootOverlapError` is a caller error on every transport.** A
+  create whose `DataRoot` overlaps a volume pool, a reserved data root or
+  another tenant's `DataRoot` -- a retired tenant's unreclaimed one included,
+  whose message carries the remedy -- was unmapped and reported as 500 /
+  `INTERNAL`. It is now 409 on REST and `FAILED_PRECONDITION` on gRPC, the
+  Unix socket, QUIC and MCP; the embedded transport returns the typed error.
+- **Client certificates carry the SPIFFE tenant SAN when a trust domain is
+  configured.** With `auth.spiffe_trust_domain` set, the built-in CA mints
+  `spiffe://<trust-domain>/tenant/<tenant>/user/<username>` into every client
+  certificate, so the authenticator's trust-domain pin is exercised by the
+  deployment's own certificates: they resolve through the pinned SAN, and a node
+  pinned to a different domain refuses them. With no trust domain the
+  certificate is unchanged and carries no SubjectAltName. A certificate whose
+  SAN would not parse back to its Subject's tenant and username is refused with
+  `cert.SPIFFEIdentityError` and nothing is minted, and the ceremony CA's
+  `SignCSR` refuses a CSR whose tenant SPIFFE SAN disagrees with its OU
+  (`ceremony.CSRTenantSANError`). `auth.spiffe_trust_domain` is validated at
+  config load with the same round trip. New: `cert.WithTrustDomain`,
+  `lifecycle.Infra.SPIFFETrustDomain`, `spiffe.ValidateTrustDomain`,
+  `spiffe.TrustDomainError` (carries the rejected value).
+- **`auth.mtls_binding_policy: enrolled | required`.** `enrolled` (the default)
+  is today's behaviour: an account's certificate bindings are enforced once it
+  has one. `required` refuses every certificate login that does not present a
+  key enrolled on the account it names — an account with no bindings, and a
+  certificate naming no account, get 401 with
+  `middleware.CertBindingRequiredError`, which quotes the thumbprint to enrol.
+  Because it is a lockout risk, a node under `required` **refuses to boot**
+  when the bootstrap admin holds no unexpired binding
+  (`firstboot.AdminCertBindingRequiredError`), and `firstboot.Initialize`
+  refuses before writing anything when it could not bind the admin it would
+  create, and verifies the admin it produced. The SDK node refuses to start with
+  an existing unbound admin and runs first boot under its own policy through
+  `Node.FirstBoot` (only that path guarantees no lockout on an embedded node).
+  Every user store under `required` refuses every change that would leave the
+  bootstrap admin unable to log in by certificate -- deleting, renaming,
+  disabling or suspending it, dropping mtls from its methods, or leaving it
+  with no live binding, whichever verb makes it -- with
+  `user.BootstrapAdminLockoutError{Reason}` (409 on REST, FAILED_PRECONDITION
+  on gRPC and QUIC, CodeFailedPrecondition on MCP), judged inside the store's
+  conditional write. The recovery path for an admin locked out by expiry is to
+  switch to `enrolled` and restart. The boot check also refuses an admin whose
+  lifecycle forbids login or whose method policy excludes mtls, through the
+  same predicate (`user.AdminLoginBlocker`). `AddCertBinding` now refuses an
+  expiry that is not in the future, for every account
+  (`user.CertBindingExpiredError`: 400 / INVALID_ARGUMENT). New:
+  `user.WithLogger`; `lifecycle.UserStoreOptions` takes the store's logger.
+  The daemon judges the admin through the linearizable store with a bounded
+  wait, so a follower that has not yet replicated the admin's binding does not
+  refuse to boot. The admin's deadline is exported as
+  `qrdb_auth_admin_cert_binding_not_after_timestamp_seconds`, refreshed on
+  every boot check and every committed change to the admin, with a warning
+  inside 30 days under `required`. An unrecognised value fails configuration validation and the
+  boot. Forwarded on-behalf requests,
+  module session tokens and a sealed tenant's IAM window are not gated, as
+  documented. New: `auth.MTLSBindingPolicy`, `auth.ParseMTLSBindingPolicy`,
+  `middleware.WithMTLSBindingPolicy`, `wiring.AuthMiddlewareConfig.MTLSBindingPolicy`,
+  `firstboot.Dependencies.MTLSBindingPolicy`, `firstboot.VerifyAdminCertBinding`,
+  `firstboot.VerifyAdminCertBindingWithin`, `node.(*Node).FirstBoot`,
+  `bootstrap.SystemConfig.MTLSBindingPolicy`, and their `sdk/go` re-exports.
+- **Attested-caller gate.** For the permissions a composer names, a request
+  that authenticated and that RBAC granted is admitted only when the injected
+  `auth.PeerAttestationVerifier` reports the peer on the connection as
+  currently attested: fresh evidence (the gate enforces its own
+  `MaxEvidenceAge`), for that peer's certificate, that passed. Every other
+  outcome — no evidence, stale or future-dated evidence, evidence for another
+  peer, a rejected state, a verifier error, no peer certificate, a forwarded
+  (on-behalf) identity — refuses,
+  and a refusal is audited as its own `auth.peer_attestation` record with the
+  reason and whether it is a security event. One option gates REST, gRPC,
+  unix, QUIC and MCP, and the tenant-barrier bootstrap windows are gated too;
+  the embedded transport has no peer and is not gated.
+  qrdb owns only the seam: the verifier is go-xkms's. New:
+  `auth.PeerAttestationVerifier`, `middleware.NewPeerAttestationGate`,
+  `middleware.WithPeerAttestationGate`,
+  `wiring.AuthMiddlewareConfig.PeerAttestation`,
+  `node.WithPeerAttestationGate`, and `sdk/go` re-exports. Docs:
+  `docs/attested-caller/`.
+- **Collection lifecycle states.** A collection is `creating` until every
+  declared index exists, `active` while it serves documents, and `dropping`
+  from the moment a drop starts. Every state is reported by info and list; only
+  an `active` collection serves document reads and writes
+  (`service.CollectionNotActiveError`, 409 / `FAILED_PRECONDITION`).
+- **Collection sweeper.** The server finishes collections an interrupted create
+  or drop left `creating` or `dropping` for more than five minutes — a stuck
+  drop is completed, a stuck create is unwound — so nobody has to re-issue them
+  (`server.WithCollectionSweep` tunes it). The shared store's databases are
+  found from a replicated collection work journal and swept by the system
+  shard's leader (`server.WithCollectionSweepLeader`, wired by the daemon), so
+  a database only another node has catalogued is still finished after a
+  leadership change; a raft tenant's shard is swept by its leader, and volume
+  hosts and node-local dedicated stores on every node that holds them. A
+  record whose fields do not derive from one another is reported and left
+  alone rather than acted on, and a database with stuck work that stays
+  unresolvable is logged as a warning. Deleting a tenant removes its journal
+  entries (`__sys:collection-work/{tenant}/`) with the rest of its keyspace.
+- **Persisted secondary-index ownership.** Index-create commands carry the
+  creating object's owner and index-drop commands can be owner-checked
+  (`IndexServicer.DropOwnedIndex`), both as trailing wire extensions that
+  existing log entries decode unchanged.
+- `CollectionServicer.UpsertDocument`, a guarded insert-or-replace that
+  reports what it displaced.
+- **Collection index definitions and lifecycle state on every transport.**
+  `CreateCollectionRequest` carries `indexes` (and `storage_codec`, which only
+  the embedded transport carried before) on REST, gRPC, Unix, QUIC, MCP and
+  embedded, and `CollectionInfo` reports `indexes`, `state` and `state_since`.
+  The protobuf messages gain `CollectionIndexDefinition`,
+  `CreateCollectionRequest.storage_codec`/`indexes` and
+  `CollectionInfoResponse.storage_codec`/`indexes`/`state`/`state_since`.
+  `qrdb collection create` takes a repeatable `--index FIELD[,unique][,sparse]`,
+  and `info`/`list` show the state.
 
-  The keyring is one record in the tenant's own resolved store, so it is
-  wrapped by the tenant's barrier (a dedicated-isolation tenant) or the system
-  barrier (a prefix tenant), replicated through the system shard, durable
-  across restarts, unreachable while the tenant is sealed and gone with the
-  tenant. Rotation keeps old versions decrypting; rewrap moves a ciphertext to
-  the current version without returning its plaintext; retire destroys an old
-  version and refuses the current one. Ciphertext carries its key version in
-  an internal header and binds the header, the tenant and caller-supplied
-  associated data into the AEAD.
+### Changed — BREAKING
 
-  Every call acts on the caller's own tenant. A request naming another tenant
-  is refused with PermissionDenied / 403, from the system tenant too.
+- **Relational tables created by v0.20.0 through v0.21.0 must be dropped and
+  re-created; there is no migration.** Those releases wrote rows and index entries under
+  a key layout that carried neither a table generation nor an index incarnation, which
+  `TRUNCATE TABLE` in O(1) and background reclamation both require. Such a table is now
+  refused, never read as empty: every read, write and `TRUNCATE` fails with MySQL error
+  1459 (`ER_TABLE_NEEDS_UPGRADE`; PostgreSQL SQLSTATE 55000), gRPC/Unix/MCP
+  `FAILED_PRECONDITION`, QUIC `StatusFailedPrecondition` or REST 412, naming the table
+  and the remedy. `DROP TABLE` still works and reclaims the old data; then `CREATE
+  TABLE` it again and reload its rows. A legacy table whose v0.20.x `ALTER` rewrite was
+  interrupted is droppable too; `information_schema` lists it with the refusal as its
+  comment.
+- **DDL on a table refuses while its `ALTER TABLE ... DROP/MODIFY COLUMN` rewrite is
+  unfinished.** `CREATE`/`DROP`/`RENAME INDEX`, `ADD`/`DROP`/`UPDATE FOREIGN KEY` and
+  `RENAME TABLE` now fail with the rewrite-in-progress error, as `ALTER` and `TRUNCATE`
+  already did, instead of committing a change the rewrite's completion would undo. `DROP
+  TABLE` still works.
+- **Every `--sm` / `raft.sm_type` serves transactions and guarded batches, and
+  starts (go-qrdb#136).** `memory`, `standard`, `concurrent`, `fast`, `disk`,
+  `highperf` and `regular` now decide `OpTransaction` and `OpBatch` against
+  their own keyspace — the one `Put`, `Get` and the guarded verbs use — with the
+  default pebble state machine's compare semantics (value and version compares;
+  create/mod-revision compares refused with the same error). The start-time
+  refusal 0.21.0-alpha added for these types no longer fires, so a deployment
+  that stayed on an earlier release to keep one of them can upgrade.
+  `configs/qrdb-dev.yaml` is back on `sm_type: memory`.
+- **The `mvcc-fast` sm_type is removed, with `pkg/mvccadapter`.** Its MVCC
+  store lived in a keyspace separate from the KV plane — a transaction compare
+  could not see a plain `Put`, and the transaction service's opcodes were
+  refused outright — and it kept that store in a temporary directory. A config
+  naming it is refused at load. Use `mvcc` for revisions, or any other type
+  for transactions.
+- **`statemachine.Backend` gains a required `ApplyAtomic(muts []Mutation)
+  error`.** A transaction or batch commits all or nothing through it: one
+  `storage.Batch` on `DiskBackend`, one acquisition of every touched shard's
+  lock on `FastBackend` and the in-memory backends (`FastBackend` writes
+  through to storage asynchronously, in apply order, as `Put` does — its
+  durability is the Raft log's, since each replica is rebuilt from the log and
+  snapshots at start). A `Backend` implemented outside this repository must
+  add it.
+- **Under the seal barrier, `--sm disk`/`fast` storage is encrypted at rest or
+  refused.** That storage was never wrapped by the barrier, so a replica's data
+  sat on disk in plaintext beside a barrier the operator enabled. Over
+  `--sm-storage pebble` it is now opened on the barrier's encfs, like the
+  `pebble` and `mvcc` state machines. `--sm-storage file` cannot be encrypted
+  and is refused at start (`SealedSMStoragePlaintextError`; registry:
+  `statemachine.SMStorageUnencryptedError`); `memory` persists nothing and is
+  allowed. `sdk/go/node.NewClusteredNode` applies the same rule and no longer
+  refuses every non-default `sm_type` under the barrier.
+- **Empty keys are refused on every write path, and the disk state machine's
+  applied-index key is reserved.** `TransactionService` and `BatchService`
+  refuse an empty key before proposing it (`service.InvalidKeyError` inside
+  `EncodeRequestError`, invalid-argument on every transport); a state machine
+  that receives one anyway refuses it as an application result
+  (`statemachine.InvalidKeyError`, a new `protocol.RefusalError` declaration
+  the Apply classifier encodes) instead of halting Apply on every replica. A
+  client write to `"\x00__qrdb_sm_last_applied__"` is refused on every
+  registry state machine.
+- **`statemachine.SetDataDirRoot` and `SetSMStorage` are removed.** Storage is
+  passed per resolution: `statemachine.ResolveTypedWithStorage(smType,
+  smBackend, StorageConfig{Root, Kind})`, and storage-generic state machines
+  register through `RegisterStorageGeneric`. `sdk/go/node.NewClusteredNode`
+  now honours `raft.sm_storage` (it ignored it), and refuses a non-pebble
+  `sm_storage` for a state machine that carries its own storage.
+- **The node capability report names the real sm_type.** A raft node's profile
+  is narrowed by its state machine's descriptor
+  (`statemachine.NarrowCapabilities`): a node on `memory` no longer reports
+  MVCC, watch, lease, lock, index or time series, and the default `pebble`
+  node no longer reports MVCC, which it never served. Every descriptor —
+  the registry's and `store.PebbleDescriptor`/`MVCCDescriptor` — is held to
+  what its state machine does by a behaviour test.
+- **`server.NewTenantHostRegistryFromServicer` is renamed
+  `server.NewTenantHostRegistryFromLookup`** and takes a `server.TenantLookup`
+  (any value with `GetTenant(ctx, id) (*tenant.TenantInfo, error)`) instead of
+  a `tenant.TenantServicer` (#383). *Migration:* rename the call. A
+  `tenant.TenantServicer` still satisfies `TenantLookup`, so an argument that
+  is never swapped passes unchanged; a composition that rebuilds its tenant
+  service in place passes a lookup that resolves the current one on each call.
+- **`server.TenantInfraConfig.TenantLookup` is required** whenever
+  `BuildTenantInfra` builds the `IsolationVolume` host registry (`BarrierReg`,
+  `TenantSvc` and `VolumePool` all set) (#383). Without it `BuildTenantInfra`
+  returns `*server.TenantInfraConfigError{Field: "TenantLookup"}` before any
+  side effect. *Migration:* set `TenantLookup` — to the same value as
+  `TenantSvc` if that service is never replaced for the life of the process,
+  otherwise to a lookup that resolves the current service.
+- **`tenant.TenantServicer` gains two methods**, `ListDeletedTenants(ctx,
+  pageToken string, pageSize int) (*tenant.DeletedTenantsPage, error)` and
+  `ReconcileDeletedTenants(ctx) (*tenant.ReconcileReport, error)` (#470,
+  #469), and `transport.TenantClient` gains `ListDeletedTenants` and
+  `ReconcileDeletedTenants`. *Migration:* a type that implements either
+  interface outside this module must add both methods. A wrapper that embeds
+  the interface inherits them. A test double that models no retirements
+  returns an empty `DeletedTenantsPage` and a zero `ReconcileReport`.
 
-  Six new `ScopeSelf` permissions: `dek:encrypt`, `dek:decrypt`, `dek:rewrap`
-  (crypto-use, denied to the Security Officer), `dek:rotate`, `dek:retire`,
-  `dek:status`. Built-in grants: User — encrypt, decrypt; Operator — encrypt,
-  decrypt, rewrap, status; Admin — rotate, rewrap, retire, status.
+### Changed
 
-  A tenant on barrier protection `none` keeps its keyring record without
-  at-rest encryption, exactly as it keeps the rest of its data; encrypt and
-  decrypt still work.
+- **`TRUNCATE TABLE` is O(1) regardless of table size.** Relational row and index keys
+  carry a generation number; `TRUNCATE` advances it in one transaction and publishes a
+  durable reclaim job for the old generation instead of scanning and deleting every row.
+  A statement or transaction that raced it fails with MySQL error 1213 / SQLSTATE 40001
+  (retry the statement), never with rows from the wrong generation.
+- **Index entries are keyed by an index incarnation, not the index name.** An incarnation
+  is allocated when the index is created and never handed out twice within a table, so `ALTER TABLE ... RENAME
+  INDEX` is a catalog-only change that moves no data, and a new index created under an
+  old name never shares a keyspace with the entries being reclaimed for the old one.
+- **`DROP INDEX` reclaims its entries in the background.** They are no longer deleted
+  inline, so a statement still reading the index is never cut short; one that outlives
+  the drop fails with 1213 / 40001.
+- **Orphaned keyspace is reclaimed in the background, never under a live reader.** A
+  sweeper on every node deletes a truncated generation or a dropped index's entries only
+  after every statement that could still be reading them has finished or been failed with
+  the retryable error above. Each job is swept by the one node that can reach its store --
+  the system leader for the shared store, the publishing node for a node-local store, a
+  dedicated Raft group's own leader -- through the same tenant and database view it was
+  written through, with bounded work per sweep that resumes where the last one stopped.
+- **`DROP TABLE` reclaims its rows in the background.** The catalog entry, generation
+  counter and sequences go in one transaction that publishes a reclaim job for the rows
+  and index entries, so a statement still reading the table is never cut short, and a
+  crash can leave only the whole table or the job that reclaims it. A `DROP TABLE` that
+  races a `TRUNCATE` or DDL fails with 1213 / 40001 instead of leaking the new
+  generation's rows.
+- **The sweeper deletes each page of orphaned keys in one transaction**, one Raft
+  proposal per page rather than one per key.
+- **A stale table resolution is retryable on every transport.** A statement whose table
+  was truncated or whose definition changed while it ran now reaches gRPC, Unix-socket
+  and MCP clients as `ABORTED`, QUIC clients as `StatusAborted` and REST clients as 409,
+  matching MySQL 1213 / SQLSTATE 40001, instead of an internal error.
+- **DML is fenced on the table definition it was planned against.** An `INSERT`,
+  `UPDATE` or `DELETE` whose statement resolved the table before a concurrent DDL
+  committed fails with 1213 / 40001 instead of maintaining the wrong set of indexes, so a
+  new index can no longer miss rows written while it was created.
+- **One error classification for every transport.** `pkg/api/errclass` decides what kind of
+  failure a typed error is; REST, gRPC (and through it Unix and MCP) and QUIC each render that
+  class through one total table of their own. The twelve REST and nine gRPC per-family
+  mappers and QUIC's own ladder are deleted, and `TestEveryTransportAgreesOnEveryCondition`
+  drives every row of the table through every transport's real mapping. New exported views:
+  `rest.ServiceErrorStatus`, `quic.ServiceErrorStatus`, `mcp.ServiceErrorCode`, alongside the
+  existing `grpc.ServiceErrorCode`.
+- Rows where the transports disagreed now have one answer everywhere (breaking):
+  - a system user or role's immutability is 403 / `PERMISSION_DENIED` (gRPC said
+    `FAILED_PRECONDITION`), as the identity contract documents;
+  - a credential version that is expired or never existed is 404 / `NOT_FOUND` (REST said
+    410, gRPC said `FAILED_PRECONDITION` for expired), as the credentials contract documents;
+  - removing the last auth factor is 409 / `FAILED_PRECONDITION` (gRPC said
+    `ALREADY_EXISTS`), as the auth-factors contract documents;
+  - a share claim with no verified client certificate is 401 / `UNAUTHENTICATED` on every
+    transport (gRPC said `INVALID_ARGUMENT` from the barrier and tenant-barrier handlers and
+    `INTERNAL` from its mapper, QUIC said `PERMISSION_DENIED`);
+  - `credentials.ErrInvalidStrategy` and `ErrNilBarrier` are internal faults (gRPC said
+    `FAILED_PRECONDITION`).
+- Conditions no transport classified, and every transport therefore answered as an internal
+  fault, now have a class: a duplicate embedding provider is 409 / `ALREADY_EXISTS`; a
+  database barrier operation with no barrier manager is 501 / `UNIMPLEMENTED`; an
+  unresolvable reclaim store (reported over whatever its resolver said), a leader transfer
+  that did not finish and a shard snapshot export that timed out are 503 / `UNAVAILABLE`; a
+  factor migration that left records behind is 409 / `FAILED_PRECONDITION`.
+- The REST status, peers, capabilities, shard start/stop/state, topology and rebalance
+  handlers answer a service error with its class's status rather than a fixed 500, and a
+  malformed `POST /users/lookup` body is a `ReadBodyError` like every other handler's. A
+  build gate now fails a REST handler that pairs a fixed status with an error it received.
+- **A state machine's refusal keeps its kind** (breaking). `service.SMNotConfiguredError`, the
+  one type every non-capability refusal shared, is removed: REST answered it 501 and gRPC and
+  QUIC `INTERNAL`, and neither was true of all of it. The encoded result now carries a
+  `protocol.AppErrorKind`, and each kind has its own type: an absent subsystem (no lessor, no
+  time-series store, create/mod-revision compares on a non-MVCC backend, a transaction on a
+  server with no transaction servicer) is `CapabilityUnsupportedError` (501 /
+  `UNIMPLEMENTED`), whose message names the missing subsystem (`statemachine: lease not
+  configured`, `statemachine: timeseries not configured`) where it said `engine: not open` or
+  `pebbledb: store not open` of a store that was open (`engine.NotOpenError`, whose only
+  producers those refusals were, is removed); an invalid TTL or time-series point is `CommandRejectedError` (400 /
+  `INVALID_ARGUMENT`); a unique-index or lease-ID collision is `CommandConflictError` (409 /
+  `ALREADY_EXISTS`); a closed lessor or time-series store is `SubsystemClosedError` (503 /
+  `UNAVAILABLE`); an undecodable committed command is `CommandCorruptError` (500 /
+  `DATA_LOSS`); any other subsystem failure is `ApplyFaultError` (500 / `INTERNAL`).
+  `protocol.EncodeAppError` takes the kind.
+- A caller's own deadline or cancellation (`context.DeadlineExceeded`, `context.Canceled`) is
+  classified as such on every transport — 504 / `DEADLINE_EXCEEDED` and `CANCELED` — rather than
+  as an internal fault of whatever wrapper carried it.
+- **The Go SDK's REST client types every 501** as `transport.CapabilityUnsupportedError`
+  (inside the `RequestError` that keeps the status), not only the guarded verbs', so the
+  go-qrdb#126 exclusion in the conformance matrix is retired: every transport is held to the
+  typed capability refusal.
+- MCP consults a projected module's own gRPC status only for an error the table does not
+  classify, the same order QUIC uses, so a module status can no longer shadow qrdb's own
+  classification.
+- **go-quicraft v0.11.0-alpha → v0.14.1-alpha** (quic-go v0.62.0 → v0.63.0 with
+  it). Two of its breaking changes reach go-qrdb: a Raft member is admitted by
+  its node identity alone (below), and every `NewHost` must state its at-rest
+  encryption. Every host go-qrdb builds now does — `WithBarrier` where the seal
+  barrier encrypts the Raft log as before, `WithoutEncryption` where it did not
+  (a seal-disabled daemon, the embedded SDK node, the desktop binding), so no
+  node changes what it writes. **Wipe dev data directories before upgrading**:
+  go-quicraft changed its WAL chunk and snapshot frame formats in place.
+- **A failed `CreateCollection` leaves nothing behind.** It used to publish the
+  collection before building its indexes, so a failed index build left a live,
+  partially indexed collection that could not be re-created. The create now
+  builds the indexes first and unwinds on failure; a retry succeeds.
+- **A collection never adopts an index it did not create**, and its drop
+  removes only the indexes it owns. A declared index whose name is already
+  held by another index refuses the create (409 / `FAILED_PRECONDITION`). Index
+  definitions on a service without an index service are refused instead of
+  being recorded and silently not built.
+- **Collection document writes count against `MaxStorageBytes`**, by body
+  bytes, on every transport including SQL. Enforcement is immediate: a tenant
+  already over its limit through documents has its next document write
+  refused. Every release is of exactly what its own guarded write removed, so
+  concurrent updates and deletes never leak or double-release bytes; a drop —
+  a caller's or the sweeper's — releases exactly the bytes its teardown
+  removed, and a `field_hash` re-insert of an existing natural key is charged
+  once, not once per insert. The remaining drift is an over-count from writes
+  that race a drop or have an unknown outcome; it is permanent for prefix and
+  raft tenants (docs/collections/engineering.md).
+- **Each create of a collection keeps its documents and its `increment`
+  counter in a keyspace of its own**
+  (`__col:{database}:{collection}#{incarnation}/`,
+  `__collection:{collection}#{incarnation}`). A collection created before this
+  release keeps the unsuffixed keys it already has; no migration is needed.
+  A new collection's name may no longer contain `#`
+  (`service.CollectionInvalidNameError`, 400 / `INVALID_ARGUMENT`); an existing
+  collection with such a name keeps working.
+- **A document field named `id`, or an object-valued `fields` as a
+  document's only field, is refused** (`service.CollectionReservedFieldError`,
+  400 / `INVALID_ARGUMENT`) instead of being accepted, charged against quota,
+  and stored as something else -- the `id` field silently dropped, the
+  `fields` object unwrapped into the document.
+- **`DeleteDocument` refuses a collection that is being created or dropped**,
+  like every other document verb (409 / `FAILED_PRECONDITION`); the drop
+  removes every document itself.
+- **`REPLACE INTO`, `INSERT … ON DUPLICATE KEY UPDATE` and `UPDATE` on a
+  collection table are guarded writes.** A concurrent writer's value is never
+  lost silently; the losing statement fails with MySQL 1213 / `SQLSTATE 40001`
+  and can be retried. An `UPDATE` that changes `_id` and cannot tell whether
+  its release of the old `_id` took effect leaves both documents and says so
+  (`provider.DocumentMoveOutcomeUnknownError`) instead of withdrawing the new
+  copy.
+- **Breaking (embedders):** `statemachine.IndexManager.DropIndex` takes
+  `protocol.IndexDropOptions`, and an `IndexManager` must enforce the owner
+  carried in `IndexCreateOptions.Owner`; `index.IndexServicer` gains
+  `DropOwnedIndex`; `service.CollectionServicer` gains `UpsertDocument`, so
+  every implementation or test double of it must add the method.
+- **The explicit index API can no longer drop an index a collection owns**;
+  it is refused with 409 / `FAILED_PRECONDITION`. Drop the collection instead.
+  Explicit and pre-ownership indexes drop as before.
+- **Upgrade every node before issuing collection creates or drops.** The
+  collection lifecycle, index ownership and the owner-checked index drop are
+  decided on every replica's apply path; a node still running an earlier
+  release ignores the owner on an index command and would apply an
+  owner-checked drop unconditionally. Rolling upgrades are safe while no
+  collection is created or dropped.
+- **A module can no longer silently take over a REST route.** Built-in routes
+  used to yield to a module that claimed the same method and pattern — and so
+  did a second module claiming the first one's route. Every REST route now has
+  exactly one owner: a second claim fails server construction with
+  `rest.RouteCollisionError` naming both claimants. The guard lives in qrdb,
+  where the live router is, so a host mounting a module needs no copy of the
+  built-in route table. **Breaking** for a module that relied on overriding a
+  built-in: move its routes under its own prefix. A host that re-registers
+  qrdb's built-in routes from its own modules — one known downstream host
+  re-registers 22 of them — now fails construction with
+  `RouteCollisionError` on upgrade and must drop those registrations.
+- **Route identity follows chi.** `middleware.RESTRouteKey` erases path-parameter
+  names and keeps regexp constraints, so `/a/{id}` and `/a/{deviceID}` are one
+  route to the registry as they are to chi.
+- **Direct router registrations are recorded.** A module route registered on
+  `HTTPRegistrar`'s embedded router that collides with a permission-recorded
+  route fails construction with `rest.DirectRouteCollisionError`, and
+  registering after `RegisterHTTP` returns panics with
+  `apimodule.RegistrationClosedError`. **Breaking**: a module may no longer
+  call `Mount`, `Route`, `NotFound`, `MethodNotAllowed` or `Use` on the
+  registrar's router — each serves requests no registration describes — and
+  gets `apimodule.UnsupportedRouterMethodError`; serve a subtree as
+  `Handle(method, "/prefix/*", perm, h)`. An unmatched request under a module's
+  route prefix is refused with 404 instead of reaching the router's fallback.
+  New: `apimodule.RouteClaim`, `apimodule.UnsupportedRouterMethodError`,
+  `HTTPRegistrar.DirectRoutes`, `HTTPRegistrar.Freeze`,
+  `RESTRouteRegistry.RegisterModulePrefix`/`UnderModulePrefix`.
 
-- **A cert binding can be withdrawn** (#518). `AddCertBinding` shipped on all
-  six transports and nothing removed a binding on any of them, so a binding
-  written today could not be withdrawn through any API. Since #505 made the
-  binding set what decides an account's mTLS admission, an enrolled key was an
-  irrevocable *credential* rather than a stale record — and revocation is not
-  the remedy, because a binding is over the `SubjectPublicKeyInfo` and outlives
-  every certificate issued for that key, so a re-issue for the same key
-  authenticates again. The exploitability is bounded (re-issuance needs
-  `certs:generate`, gated on the target tenant by #506); what it cost was an
-  operator who could not clean up after a key compromise.
+### Removed
 
-  `RemoveCertBinding(userID, thumbprint)` is now on all six transports —
-  `DELETE /users/{id}/cert-bindings/{thumbprint}`, the `RemoveCertBinding` RPC
-  (gRPC and unix), `user.RemoveCertBinding` (QUIC),
-  `qrdb_user_remove_cert_binding` (MCP) and `Client.Users()` (embedded) — and in
-  the TypeScript SDK. It removes the record entry, the tenant-scoped SPKI index
-  entry and the legacy un-scoped one.
+- 46 exported error types that no code path returned, each with a passing test that could
+  only observe its own `Error()` string (go-qrdb#243), across `pkg/api`, `pkg/api/etcd`,
+  `pkg/api/quic`, `pkg/audit`, `pkg/dao`, `pkg/entity`, `pkg/lease`, `pkg/mvcc`,
+  `pkg/planner`, `pkg/rag`, `pkg/routing`, `pkg/service`, `pkg/sql/*`,
+  `pkg/storage/partition` and `pkg/vector/*`, plus two SDK types nothing produced:
+  `transport.BackupVerifyError`, which only an unreachable embedded-transport arm returned
+  (backup verification reports a failed check in its result, never as an error), and
+  `transport.ImbalanceReportError`, which no transport constructed. A caller matching one with `errors.As` had
+  written a branch that could never be taken.
 
-  **A narrow verb, not a whole-set replacement.** `UpdateUserRequest.CertBindings`
-  already replaced the set and maintained the index; exposing *that* over a
-  transport would make a caller's snapshot of the rest of the set part of every
-  withdrawal, and committing a snapshot is how a concurrent enrolment
-  resurrects a binding that was just withdrawn.
+### Fixed
 
-  **`users:remove_cert_binding` is a separate permission**, not folded into
-  `users:add_cert_binding`. Enrolment only narrows an account; withdrawing its
-  LAST binding widens it back to admitting any certificate whose CN and OU name
-  it. Both permissions now declare `ScopeSelf` explicitly rather than inheriting
-  it, because `LookupScope` returns `ScopeSelf` for anything nobody tagged and
-  these two decide which certificates authenticate as an account.
+- `DROP TABLE` deletes a table's `TRUNCATE` generation counter in the same transaction as
+  its catalog entry, and refuses to commit over a `TRUNCATE` that raced it, so a failed or
+  interrupted drop can no longer leave a resolvable table reading generation 0 or a counter
+  nothing will ever delete.
+- A read-only transaction that first touches a table after a `TRUNCATE` or DDL committed
+  since its snapshot fails with 1213 / 40001 instead of returning no rows -- including
+  through a table handle resolved before a `TRUNCATE` its snapshot already includes.
+- A dropped index can no longer be resurrected, and its incarnation handed out again, by
+  an `ALTER` rewrite completing over a definition that changed after the rewrite began.
+- A long statement that re-proves its table mid-rewrite checks the index incarnations it
+  reads, not only the generation.
+- `CREATE INDEX`'s build is fenced on the definition listing the new index, so a `DROP
+  INDEX` landing mid-build fails the build instead of leaving orphaned entries.
+- `ALTER TABLE ... DROP COLUMN` and a type-changing `MODIFY COLUMN` rebuild every index on
+  the column under a new index incarnation. The old entries, which were encoded for the old
+  column set, are reclaimed in the background, and so are the entries of an index the drop
+  leaves with no columns. Before, the index kept those stale entries or leaked them. A
+  `UNIQUE` index narrowed onto repeating values now fails the `ALTER` and leaves the table
+  unchanged.
+- QUIC answers precisely for every family its ladder never listed — identity, tenants,
+  credentials, PINs outside the barrier handlers, auth factors, ceremonies, migrations,
+  backup, collections, embedding, RAG, SQL, databases, quotas and placement — instead of
+  `StatusError`. Because the Go SDK's QUIC transport rebuilds `transport.KeyNotFoundError`
+  from `StatusNotFound`, a missing tenant, credential, factor, officer or backup now surfaces
+  to an SDK-over-QUIC caller as `KeyNotFoundError` where it used to be a generic request
+  error.
+- The relational catalog (tables, views, sequences), typed-entity, paging and SQL-privilege
+  errors are classified on every transport: their request guards answer 400 /
+  `INVALID_ARGUMENT`, missing objects 404, taken names 409 / `ALREADY_EXISTS`, lost
+  compare-and-swaps 409 / `ABORTED`, a table mid-rewrite 503, and catalog corruption 500 /
+  `DATA_LOSS`; `service.SubsystemNotConfiguredError` is 501 / `UNIMPLEMENTED`. All of them
+  answered 500 / `INTERNAL`.
+- gRPC, Unix and MCP classify the backup, embedding, RAG, SQL, database, quota and placement
+  families, `seal`'s already-initialized/not-initialized/already-unsealed/invalid-credential
+  refusals and `authfactors.ErrHardwareUnavailable`, which fell to `INTERNAL`; REST
+  classifies credential re-submission (409), a disabled user record (409), a draining node
+  (503) and an invalid ceremony authenticator type (400), which fell to 500. Authentication
+  and authorization refusals that reach a service mapper answer 401/403/429/503 on every
+  transport, as QUIC's already did.
+- gRPC handlers no longer build a status from an error's own text: 161 inline
+  `status.Error(code, err.Error())` sites render through the one mapper, and a build gate
+  (`test/buildgates/error_mapping_test.go`) fails the next one. The gRPC transport's own
+  decode refusals (metadata, vector ID, TTL, document, signature, timestamp) declare their
+  class.
+- **The vector service's errors reach callers as what they are.** `VectorService` reported
+  every failure through the untyped `pkg/errors.QRDBError` code vocabulary, which no transport
+  mapped, so 68 of its 100 error sites answered 500: a missing namespace, a dimension mismatch,
+  a duplicate namespace and a strict-isolation refusal were all "internal server error". It now
+  returns the service's typed errors — `NamespaceNotFoundError`, `VectorNotFoundError`,
+  `NamespaceExistsError`, `DimensionMismatchError`, `InvalidVectorError` (all five declared,
+  mapped and never constructed until now), plus the new `VectorJobNotFoundError`,
+  `VectorServiceClosedError` and `VectorOperationError` — and a storage error is typed by the
+  sentinel storage raised rather than by the call site, so a storage fault during a lookup is
+  no longer reported as "not found". Breaking for any caller that matched `QRDBError.Code` on a
+  vector call; match the types with `errors.As`.
+- **Batches on the non-default state machines are all or nothing.** They were
+  applied key by key: a concurrent read could see part of one, a crash could
+  leave part of one on disk, and the service layer's batch opcodes were
+  refused.
+- **The `disk` state machine closes its storage when it closes.** It left the
+  Pebble store open, holding its directory lock, so a replica restarted in the
+  same process could not reopen its own data.
+- **The `disk` state machine commits each entry's log index with its writes**
+  — single-key guarded verbs as well as transactions — and the `fast` state
+  machine starts each replica from an empty keyspace (one storage batch), so
+  neither can replay an entry over its own result after a restart and decide
+  it the other way.
+- **`List` and `Scan` on the `concurrent` and `highperf` state machines never
+  see part of a transaction or batch**: they hold every shard's read lock for
+  the whole sweep.
+- **Clustered nodes form again on go-quicraft ≥ 0.13** (#556). A node with a
+  Raft transport admits a member by its node identity (`spki:` + SHA-256 of the
+  certificate public key) and by nothing else, and `NewClusteredNode` and
+  `qrdbd start` never supplied one, so a multi-node cluster was refused at
+  `StartShard`. The other replicas' identities are now configured in
+  `raft.member_identities` / `--member-identities` (`replicaID=spki:<hex>`),
+  the node's own is derived from its transport certificate, and a local entry
+  that contradicts the certificate is refused before anything is written.
+  `qrdbd node-identity --cert FILE` and `node.MemberIdentityFromPEM` print a
+  node's identity from its certificate; each node also logs its own at start.
+  A dedicated per-database Raft shard founded on a clustered host states the
+  local replica's identity too.
+- **Every add path commits the replica's member identity** (#556). go-quicraft
+  commits identities in the shard membership; go-qrdb now reads them from
+  there (`SyncGetShardMembership`) and calls the `*WithIdentity` APIs: member
+  add, rebalance, dynamic membership, the placement reconciler's followers and
+  promotions, founding a multi-replica dedicated database, and the admin
+  `StartShard` (which builds `MemberIdentities` as the founders do). **Breaking
+  (SDK):** `AdminClient.AddMember`, `AdminServicer.AddMember` and
+  `ClusterClient.AddReplica` take an optional identity, carried on all six
+  transports and by `qrdb admin member add --identity`; `service.Host` swaps
+  `RequestAddNode` for `RequestAddNodeWithIdentity` and gains
+  `SyncGetShardMembership` and `NodeIdentity`. A brand-new node needs the
+  identity supplied once (a typed refusal says how); one that contradicts a
+  committed identity is refused, for the system shard too, and an address the
+  committed membership binds to two identities is refused as ambiguous, as is
+  a replica ID the membership already places at another address. A
+  target shard that exists but cannot be read is a retryable refusal rather
+  than a fallback to the host's identity. Rebalance refuses to move the system
+  shard (`*service.RebalanceSystemShardMoveError` — every host already hosts
+  it) or to add a shard to a host its committed membership already names as a
+  voter, observer or witness, picks a replica ID past every one the membership
+  has used, and logs every refused move with its typed cause.
+- **`node.Node.Close` is ordered against `Unseal` and `EnableEncryption`** (#226).
+  Per the owner's ruling, `Close` now blocks on an in-flight boot or
+  system-scope migration and then tears down what it built, so a boot can no
+  longer republish the data plane after `Close` returned and a migration can
+  no longer run against a barrier `Close` retracted. A boot or migration still
+  waiting when `Close` begins is refused rather than queued, so a graceful
+  server stop inside `Close` cannot wait on a transport-delivered
+  `EnableEncryption` that is waiting on `Close`. A tenant-scope migration is
+  admitted shared (`server.TenantMigrationAdmission`), so `Close` waits for it
+  too and refuses a late one; this supersedes the 0.21.0 `migrateMu`, which
+  covered system-scope migrations only. `Close` is idempotent;
+  `Unseal` and `EnableEncryption` on a closed node return the new sentinel
+  `node.ErrNodeClosed` (previously `EnableEncryption` answered a closed node
+  with `*MigrationNotSupportedError`). It is `service.ErrNodeClosed`, which
+  every transport answers as retryable — 503 on REST, Unavailable on gRPC,
+  unix, QUIC and MCP — where a transport-delivered refusal previously read as
+  an internal error.
+- **Raft-backed SDK tests no longer charge node boot to the calls under test**
+  (#418). Each `sdk/go` raft coordination test took its 60s call budget before
+  booting its node, so on a starved host the election consumed it and a lease
+  call failed with `quicraft: timeout` — reproduced under load exactly as the
+  docs-only PR saw it. The budget (`raftCallBudget`) now starts once the node is
+  writable; readiness waits log how long they took and fail as "SLOW, not
+  broken" when a leader accepted the write but the commit starved, apart from
+  "no leader". The placement-reconciler tests wait for the watch subscription
+  and for convergence instead of sleeping 10–30ms and allowing 500ms.
+- **A tenant-scope `enable-encryption` works after a system-scope one** on an
+  embedded node (#383). `TenantHostRegistry` resolved each tenant's `DataRoot`
+  through the first boot's tenant service, which a system-scope migration stops
+  and replaces, so every later tenant-scope migration failed with "storage is
+  closed". The registry now takes a `server.TenantLookup` consulted at use
+  time, and `server.TenantInfraConfig.TenantLookup` is required whenever the
+  `IsolationVolume` registry is built. `NewTenantHostRegistryFromServicer` is
+  renamed `NewTenantHostRegistryFromLookup` and accepts any `TenantLookup`.
+- **`node.Client().Tenants()` works.** The embedded client of an
+  `sdk/go/node` node was never given the tenant service, so every
+  `TenantClient` verb answered "TenantServicer must not be nil" while the same
+  verbs worked on every network transport of the same node.
+- **Creating a tenant is atomic against deleting it** (#484). `CreateTenant`'s
+  tombstone check was a read and its metadata write a plain put, so a delete
+  landing between them left a live tenant record, and for `volume`/`raft` a
+  barrier restored on every restart, under a permanently retired id. The
+  record is now committed through the new `kvstore.FencedCreator`
+  capability (`PutIfAllAbsent`): written only while the record and the
+  tombstone are both absent, in one transaction on the replicated store. A
+  create that loses to a retirement destroys the barrier it provisioned; two
+  concurrent creates of one id have exactly one winner. A metadata store
+  without the capability is refused with `tenant.ErrTenantStoreNotAtomic`
+  before anything is provisioned. `seal.MemoryBackend`, `seal.StorageAdapter`,
+  `seal.StorageBarrier` and `kvstore.MemoryKVStore` implement it; the
+  seal-disabled tenant service now runs over a transaction-backed adapter.
+- A write into a collection that was being dropped could land after the drop
+  had listed its documents and outlive it; document writes are now fenced
+  against a concurrent drop and retracted if they lose.
+- The schema discovery an insert performs could write a dropped collection's
+  metadata back into existence, or revert a drop in progress; metadata writes
+  are now guarded swaps.
+- A drop that resumed after the collection had been dropped by someone else and
+  created again could delete the new collection's documents, restart its
+  counter and remove its metadata, and a write decided against the old
+  collection could overwrite and then delete a document of the new one. Every
+  create now has its own document keyspace and counter, so nothing working on
+  an earlier incarnation of a name can reach a later one.
+- Listing a collection's documents sorted every key with an insertion sort,
+  quadratic in the collection's size; it now uses the standard library's sort.
 
-  **Revocation still does not drop a binding, on purpose.** Revoking during a
-  routine rotation would otherwise unenrol the key being rotated. The two are
-  separate operations answering separate questions, and an operator cleaning up
-  after a key compromise performs both.
+## [0.21.3-alpha] - 2026-09-30
+
+Security hotfix: tenant isolation on the tenant-administration surface of every network transport (REST, gRPC, Unix socket, QUIC, MCP).
+
+### Changed — BREAKING
+
+- **A tenant's plan is set by the platform operator only (owner ruling
+  2026-09-29).** `tenants:create`, `tenants:set_quotas`,
+  `tenants:set_entitlements` and `tenants:set_isolation` are now cross-scope
+  (`ScopeCross`, `pkg/permission/tenant_provisioning_scope.go`) instead of
+  self-scoped: only an identity in the `system` tenant can exercise them. A
+  tenant's own Admin keeps managing everything inside its tenant, but can no
+  longer create tenants, raise its own quotas, grant itself entitlements or
+  change its own isolation tier. The built-in Admin role carries all four in
+  every tenant, like its other cross-scope grants, and gains
+  `tenants:set_quotas`; outside `system` they are inert. The SO role's
+  `tenants:create`, `tenants:set_isolation` and `tenants:set_entitlements`
+  grants are cross-scope for the same reason.
+- **The quotas operation checks `tenants:set_quotas`, not `tenants:update`**,
+  on every transport: `POST /v1/tenants/{id}/quotas`, gRPC/Unix
+  `TenantUpdateQuotas` (the `qrdb.v1.permission` proto option), QUIC
+  `tenant.UpdateQuotas` and MCP `qrdb_tenant_update_quotas`. A custom role that
+  granted quotas through `tenants:update` must grant `tenants:set_quotas`.
+- **`tenants:update` covers only the display name.** An update that changes
+  `isolation_type` also needs `tenants:set_isolation` and is refused whole
+  without it.
+- **`tenants:list` returns only the caller's own tenant** unless the caller
+  holds `tenants:list:cross` against the `system` tenant. The
+  `tenants:list:cross` check is a capability probe: it charges no rate-limit
+  token and writes no audit record.
+- **`tenants:delete` stays self-scoped (owner ruling 2026-09-29):** a tenant's
+  Admin may delete its own tenant, and no other.
+- **A tenant can no longer re-scope a built-in permission.**
+  `permission.TenantScopeStore.SetScope` refuses a permission that has a
+  built-in scope with `*BuiltInScopeOverrideError`, and `ResolveScope` fails
+  closed on a stored definition of one. Per-tenant scopes remain available for
+  caller-defined permissions.
+- **Changing a tenant's isolation type is refused unless the tenant is
+  verifiably empty, on every transport.** The check moved from the REST handler
+  into the tenant service (`tenant.IsolationChangeWiring`,
+  `service.TenantDataProbe`, wired by `server.New`). With no data probe wired,
+  or when the probe fails, the change is refused (`ErrTenantDataUnverifiable`,
+  `*TenantDataProbeError`: 503 / `UNAVAILABLE`); an embedder constructing a
+  tenant service directly must wire one with `tenant.WithTenantDataProbe` or
+  `SetTenantDataProbe` to change isolation types. QUIC now answers
+  `ErrTenantHasData` with `StatusFailedPrecondition` instead of the generic
+  error status.
+
+### Security
+
+- **A tenant's Admin could read, change and delete ANY tenant.** Every network
+  transport authorized `tenants:read`, `tenants:update`, `tenants:delete` and
+  the quotas and entitlements operations against the CALLER's tenant, where a
+  tenant-local Admin holds them, and then acted on the tenant the request
+  named. Proven on v0.21.1-alpha with the built-in roles: an `acme` Admin
+  answered 200/204 reading, renaming, re-quota-ing, re-entitling and deleting
+  `globex`. Each handler now re-decides against the tenant the request names
+  (`AuthMiddleware.AuthorizeTenantTarget`, `AuthorizeTenantUpdate`); the
+  re-check charges no second rate-limit token and records only a refusal.
+- **A tenant's Admin could create tenants and raise its own plan.** An `acme`
+  Admin created tenants (201) and set `acme`'s own quotas and entitlements
+  (200). Closed by the cross-scope plan permissions above.
+- **`tenants:list` disclosed every tenant, `data_root` included, to any tenant
+  Admin.** It is narrowed to the caller's own tenant
+  (`AuthMiddleware.FilterTenantList`); a refusal the audit policy could not
+  record still refuses the request rather than answering it.
+- **The barrier bootstrap windows overrode the rate limiter.** The
+  trust-on-first-init and sealed-window fallbacks read a `*RateLimitedError` as
+  an RBAC denial they could override, so a rate-limit policy on
+  `tenant_barrier:init` or `tenant_barrier:unseal` was never enforced for the
+  callers those windows admit (a `Burst: 1` unseal policy admitted every
+  unseal). Both now return the rate-limit refusal immediately, beside the
+  audit-failure check: 429 / `RESOURCE_EXHAUSTED`.
+- **A tenant id containing `/` (or `\`, a control byte, `.` or `..`) is a 400 /
+  `INVALID_ARGUMENT` on every transport**, checked before authorization on
+  every by-id operation. On create it was a 500 / `INTERNAL`
+  (`*tenant.InvalidTenantIDCharError` was unmapped); `tenant.ValidateTenantIDShape`
+  is now exported for the transports.
+- **gRPC, the Unix socket, QUIC, MCP and the embedded transport changed the
+  isolation type of a tenant that held data.** Only REST checked that the
+  tenant was empty first, so a change through any other transport orphaned
+  the tenant's data in its old namespace. The tenant service now enforces it
+  for every transport (see above).
+- **A tenant could re-scope a built-in permission** through its per-tenant
+  scope definitions -- for example back to self-scope for the tenant plan
+  permissions. Refused (see above).
+- **RBAC resolved an identity's permissions under the request's target
+  tenant.** The role store refuses a role outside the context tenant, so a
+  `system` operator's first decision against another tenant failed whenever
+  the permission cache was cold. The network transports masked it only because
+  their entry check, made against the caller's own tenant, warmed the cache
+  first. Permissions are now resolved under the identity's own tenant, as the
+  SO and Owner role checks already were.
+
+### Fixed
+
+- **Integration fixtures that created users without an email.** Since email
+  became the tenant-unique login key, `POST /users` without one is a 400, and
+  the raft-isolation, enable-encryption, tenant CLI, SQL and user/role
+  integration tests failed at fixture setup before reaching what they test.
+  They now pass an email.
+
+## [0.21.2-alpha] - 2026-09-30
+
+Security hotfix: the cluster CA private key never leaves the node that holds it (/v1/ca/bootstrap and every enrollment method serve the certificate only). Treat existing cluster CA keys as compromised; joining new nodes is unavailable until member-side issuance lands.
+
+### Security
+
+- **The cluster CA private key no longer leaves the node that holds it, in
+  any form.** Before this release, `GET /v1/ca/bootstrap` served the cluster
+  CA certificate and **the CA private key** on every first node of a
+  multi-node cluster. The route is public (it is reached before the caller
+  holds a credential), so anyone who could reach a first node's admin port
+  could read the key and mint any cluster node identity. Every node that
+  joined over SPKI-pinned TLS, DANE or direct HTTPS also received the key and
+  wrote it to its data directory as `ca-key.pem`. The Noise NK advertiser
+  handed the same key-bearing bundle to go-truststrap, whose handler stripped
+  the key before it reached the wire. Now `/v1/ca/bootstrap` and the Noise
+  advertiser serve the CA certificate only. Any key material handed to them
+  is filtered out (`clustertls.CertificatesOnly`), and a joining node never
+  writes `ca-key.pem`.
+
+  **Treat the cluster CA key of every existing multi-node cluster as
+  compromised.** It was readable without authentication from every first
+  node's admin port, and it sits on disk on every joined node. Rotate the
+  cluster CA:
+  1. Generate a new cluster CA on one node, the one that will hold it.
+  2. Issue a new node certificate for every member from the new CA.
+  3. Restart the members with a trust bundle holding both CAs, so old and new
+     certificates keep verifying during the change.
+  4. Once every member presents a certificate from the new CA, remove the old
+     CA from the bundle.
+  5. Delete `ca-key.pem` from every node except the one holding the new CA.
+  6. Reissue client and officer certificates that chain to the old CA.
+
+  Until the cluster CA has been rotated, restrict network access to every
+  node's admin port. See `docs/clustering/user.md`, "Adding a node".
+
+### Changed — BREAKING
+
+- **Joining an existing cluster through enrollment is unavailable in this
+  release.** A node started with bootstrap flags (`--bootstrap-noise-key`,
+  `--bootstrap-spki-pin`, `--bootstrap-dane-dns`, `--bootstrap-direct-url`)
+  refuses to start with `*clusterenroll.EnrollmentUnavailableError`
+  (`EnrollmentUnavailableError` in `cmd/qrdbd` and `sdk/go/clusterenroll`).
+  The refusal comes before any network dial and before anything is written
+  to the data directory. Earlier releases enrolled a node by giving it the CA
+  private key. Member-side issuance, where the joining node submits a CSR
+  that a running member signs, lands in a following release. Until then, add
+  a node by issuing its certificate on the node that holds the cluster CA and
+  starting it with `--tls-ca-file`, `--tls-cert-file` and `--tls-key-file`.
+  This affects `clusterenroll.Join` and the join paths of `Resolve` and
+  `ResolveCA`. `ResolveCA`'s join branch no longer returns a CA key, because a
+  joining node has none. `FetchAnchor` and the first-node and single-node
+  paths are unchanged.
+- **`WithCABootstrap` takes the CA certificate only**, in `pkg/api/rest`
+  and `pkg/server`: `WithCABootstrap(certPEM []byte)`. The key parameter is
+  gone. Input with no `CERTIFICATE` block registers no route.
+- **Removed:** `clustertls.GenerateLeafFromCA` and its `sdk/go/clustertls`
+  re-export, which minted a leaf from a CA key received over the network.
+  Also removed: `clusterenroll.JoinError` (`sdk/go/clusterenroll.JoinError`,
+  `cmd/qrdbd.BootstrapError`), which only that path returned.
+  `clustertls.CertificatesOnly` is added.
+
+## [0.21.1-alpha] - 2026-09-29
+
+Security hotfix: REST percent-encoded path authorization bypass (authorize and route on the same decoded path).
+
+### Security
+
+- **REST authorization and routing no longer disagree on percent-encoded
+  paths.** Authorization resolved the decoded `r.URL.Path`, but chi routed on
+  `r.URL.RawPath` whenever the request carried an escape such as `%2F`, so a
+  request could be authorized as one route and served by another. Proven on
+  v0.21.0-alpha: `DELETE /v1/databases/prod%2Fx` dropped database `prod` for
+  any authenticated caller under a deny-all authorizer (the same shape reached
+  `/admin/shards/{id}`, `/ts/series/{metric}` and `/users/{id}`); a module route
+  authorized under a weak permission could be served by a stronger route's
+  handler; and a public route's decoded path could open a protected handler
+  with no authentication. The REST handler chain (shared by the HTTP/3
+  listener) now canonicalises every request to its decoded path before the
+  sealed-window, authentication, SO and routing layers, so all of them resolve
+  the same route. Wildcard routes such as `/kv/*` still receive keys with
+  encoded characters, decoded, as before; a name containing `/` is not
+  addressable through a single-segment route. Upgrade immediately.
+
+## [0.21.0-alpha] - 2026-09-29
+
+Merge train 1: go-enclave protected memory, atomic boot-time identity claims, QUIC qrdb-quic/2, per-tenant auth-factor challenges, PQ k-means empty-cluster repair.
+
+### Added
+
+- **`sdk/go/secret.SealFailedError`** re-exports `pkg/secret.SealFailedError`
+  (go-qrdb#114 review), so an SDK-only consumer can `errors.As` against a
+  `NewSecretValue` sealing failure without importing the internal `pkg/secret`
+  path.
+- **`sdk/go/secure.ErrBudgetExhausted`, `ErrLockedMemoryUnavailable`,
+  `ErrReleasedWithoutWipe`, `ErrSealerWiped`, `ErrSealFailed`,
+  `ErrMaterialTooLarge`, `ErrSealedAuthentication`, `ErrPlaintextEscaped`,
+  `ErrInvalidBudget`, `ErrNilAllocator`, `ErrBudgetExceedsRLimit`,
+  `ErrLimitDiscoveryFailed`**, and the **`RLimitError`/`LimitDiscoveryError`**
+  types, re-export the go-enclave errors this package's own public API can
+  actually return (go-qrdb#114 review), so an SDK-only consumer can
+  `errors.Is`/`errors.As` against them without importing raw `go-enclave`.
+
+### Changed — BREAKING
+
+- **`pkg/secure`/`sdk/go/secure` no longer wrap memguard; they wrap
+  `github.com/jeremyhahn/go-enclave` v0.6.0-alpha (go-qrdb#114, go-qrdb#553).**
+  `Buffer` and `Secret`'s own public API (`NewBuffer`, `NewBufferFromBytes`,
+  `Bytes`, `WithBytes`, `Size`, `Destroy`, `Wipe`, `NewSecret`,
+  `NewSecretFromBuffer`, `Open`) is UNCHANGED — a failed allocation now
+  returns a typed, recoverable error (`errors.Is` against
+  `enclave.ErrBudgetExhausted` / `enclave.ErrLockedMemoryUnavailable`, or
+  `*InvalidSizeError`) instead of memguard's process-wide purge-then-panic.
+  `Buffer` gains `DestroyErr() error`, the checked form of `Destroy()` that
+  surfaces `enclave.ErrReleasedWithoutWipe` (a denied mprotect during
+  release) instead of discarding it — `Destroy()` itself is unchanged and
+  still discards it, for the many existing `defer buf.Destroy()` call sites.
+  What IS removed, with no replacement in `pkg/secure`:
+  - `secure.CatchInterrupt()`, `secure.EnablePurge()`, `secure.Purge() error`,
+    `secure.PurgeOrPanic()`, `secure.NotInitializedError` — these belonged to
+    memguard's process-signal-driven purge lifecycle, which go-enclave does
+    not have. **Migration:** a binary that owned this lifecycle now installs
+    a process-wide locked-memory budget once at startup with
+    `sdk/go/secure.SetAllocator` (built via
+    `sdk/go/secure.NewAllocatorWithinRLimit`) and sweeps it on orderly
+    shutdown with `sdk/go/secure.WipeAll() (int, error)` — see
+    `cmd/qrdbd/start.go`'s `runStart` for the reference wiring, including
+    treating `sdk/go/secure.ErrAllocatorInstalled` as non-fatal and checking
+    `WipeAll`'s remaining-enclave count. Neither call installs a signal
+    handler; the owning binary keeps driving its own graceful shutdown.
+  - `pkg/secure/analyzer`'s rule 1 (no raw `memguard` import) no longer
+    exempts `pkg/secure` itself — the import is banned everywhere in this
+    repository now, with no carve-out, since `pkg/secure` no longer needs it.
+- **`SecretValue.WithBytes` (`pkg/secret`, re-exported by `sdk/go/secret`)
+  now holds the transient buffer's borrow for the callback's entire call
+  (go-qrdb#114 review).** Previously the callback received an alias whose
+  borrow had already been released, so a concurrent `WipeAll` could unmap the
+  pages while it was reading them. Now a `WipeAll` during the callback skips
+  that buffer and counts it in its remaining total, and, with the borrow guard
+  armed (`GuardBorrows` / `EnableBorrowGuard`), a callback that calls back into
+  `pkg/secure` / `sdk/go/secure` is reported as a nested borrow. **Migration:**
+  a callback must not retain the slice (unchanged), should not call back into
+  the secure-memory package, and should not block longer than a shutdown
+  sweep can wait for it.
+- **`ConfigProcessor.Process` fails closed when a resolved plain-string value
+  cannot be read back (go-qrdb#114 review).** It used to write `""` into the
+  field and count it resolved; the field now keeps its reference, the path is
+  reported `Unresolved`, and the new `secret.ResolvedReadError` (re-exported by
+  `sdk/go/secret`) is recorded in `Errors`.
+- **An unconfigured `server.secure_memory_budget_mib` is derived from the
+  host (go-qrdb#114 review; owner ruling 2026-09-25).** The default is now `0`,
+  meaning `qrdbd start` installs the smaller of 64 MiB and `RLIMIT_MEMLOCK`
+  less 2 MiB of headroom, and logs the figure and its source. A stock 8 MiB
+  container limit therefore starts with a 6 MiB budget instead of failing. A
+  limit that leaves less than 1 MiB fails `start` with
+  `SecureMemoryLimitTooSmallError`. An explicit budget above the limit still
+  fails `start`, and the error now says how to raise the limit. The compose
+  files, the devcontainer and the runtime image now ship or document
+  `IPC_LOCK` and an unlimited memlock ulimit; see `docs/deployment/`.
+  `sdk/go/secure` re-exports `DiscoverLockedMemoryLimit`,
+  `LockedMemoryLimit` and `LimitSource`.
+- **`secure.NewSecretFromBuffer` seals straight from the input buffer's
+  pages** — no intermediate plaintext copy, and no admitted allocation, so an
+  exhausted budget no longer makes it fail. The input is consumed on every
+  path past the nil/destroyed checks, including a sealing failure.
+- **`pkg/secret.NewSecretValue` returns `(*SecretValue, error)`, not
+  `*SecretValue` (go-qrdb#114 review).** It used to swallow a
+  `secure.NewSecret` sealing failure and return a `SecretValue` whose
+  accessors silently reported empty — indistinguishable from a reference that
+  legitimately resolves to nothing, so a credential could vanish from
+  configuration with no error anywhere. A sealing failure is now
+  `*secret.SealFailedError`. `sdk/go/secret.NewSecretValue` is a function-value
+  alias and inherits the new signature automatically; every caller — in this
+  repository and downstream (go-xkms's `NewLiteralSecretValue` wraps this
+  function) — must be updated to check the error.
+- **BREAKING: `qrdbd start` refuses every `--sm` / `raft.sm_type` other than `pebble`, `mvcc`
+  and `mvcc-fast`, on EVERY start, not only the first.** `memory`, `standard`, `concurrent`,
+  `fast`, `disk`, `highperf` and `regular` have no transaction subsystem, and role and user
+  creation now commits atomically through one. The check runs right after leader election and
+  exits with `auth bootstrap failed at "atomic role/user creation requires an --sm state
+  machine with transaction support"`. **An already-bootstrapped deployment on one of those
+  types stops starting after this upgrade**, and cannot switch type because its data belongs to
+  that state machine: stay on the previous release until that state machine gains transaction
+  support. `configs/qrdb-dev.yaml` moves from `sm_type: memory` to `pebble` so it still starts;
+  it returns to memory once every state machine supports guarded batches. A follower defers to the
+  leader's probe (only the leader can propose); any other inconclusive probe also stops the
+  start.
+- **BREAKING: the QUIC listener accepts only the ALPN protocol `qrdb-quic/2`.**
+  The frames are unchanged; under `qrdb-quic/2` the client closes its side of
+  each request stream only after it has read the response, and the server
+  waits (bounded) for that close before it counts a request as finished. The
+  listener no longer accepts `qrdb-quic`, and the Go SDK offers only
+  `qrdb-quic/2` and refuses a connection on which anything else was selected.
+  A Go SDK older than this release cannot connect to a current server, and a
+  current Go SDK cannot connect to an older server: upgrade both together.
+
+### Fixed
+
+- **Multi-node first boot no longer races on built-in roles and the admin user.** A role or
+  user create commits its identity claim, primary record and every secondary index as ONE
+  guarded proposal (`kvstore.MultiGuardedBatchKVStore.PutAllIfAllUnchanged`), so a leadership
+  change can no longer leave a claim without its record. A role guards its id claim and its
+  name together; a user guards its id claim, username and optional email together. First boot
+  verifies that a built-in role or admin already created by another node matches the canonical
+  definition instead of trusting the collision.
+- A lost response on that proposal is reconciled by polling the written keys (every 10 ms, up
+  to 5 s) rather than one read, so a create that committed on the cluster but was not yet
+  applied locally is not reported as failed and still emits its audit event. A losing create's
+  conflict diagnosis polls the same way, so a node reading stale local state still gets the
+  typed already-exists error first boot resolves.
+- A guard expecting a present, empty value (`kvstore.Guard{Value: []byte{}}`) no longer matches
+  an absent key.
+- `user.UserIDExistsError` (re-exported as `sdk.UserIDExistsError`) is a conflict on every
+  transport: REST 409, gRPC / Unix `ALREADY_EXISTS`, QUIC `StatusAlreadyExists`, MCP
+  `CodeAlreadyExists`. It previously fell through to an internal error.
+- QUIC answers a taken username (`user.UsernameExistsError`) or email
+  (`user.EmailExistsError`) with `StatusAlreadyExists`, as REST and gRPC already did, instead
+  of the generic `StatusError`. A failed rollback wrapping any of the three stays
+  `StatusDataLoss`.
+- **Four production faults in the enable-encryption migration path are fixed.**
+  `sdk/go/node`'s `Node.Close` could segfault when it ran concurrently with a
+  still-in-flight system-scope encryption migration; it now blocks on the
+  same lock the migration holds for its entire recycle, so Close always
+  waits for an in-flight migration to finish before tearing anything down.
+  The QUIC server could sever a request's connection before it delivered an
+  already-decided `"migration_started"` response, reporting "server shutting
+  down" instead of the real answer when a migration's synchronous phase
+  finished faster than the accept window; it now waits for in-flight
+  requests, each confirmed delivered by the `qrdb-quic/2` acknowledgement,
+  before closing connections, and ends open watch streams at once instead of
+  waiting out its grace period behind them. The recycle could then fail to
+  restart the QUIC listener with "address already in use", leaving a
+  migrated node without one; the listener now releases its UDP port before
+  its stop returns. A node with no seal store could segfault the same way
+  on a nil concrete storage handle passed through an interface parameter;
+  the seal store is now held as `seal.LegacyStorage` end to end, and a node
+  without one refuses before tearing anything down.
+- **Enable-encryption errors are classified the same way on every transport.**
+  `sdk/go/node`'s `MigrationNotSupportedError` matches
+  `service.ErrMigrationProviderUnavailable` through `errors.Is`, so REST
+  answers `501` and gRPC, unix, QUIC and MCP `Unimplemented`; REST and gRPC
+  previously answered it as an internal error. QUIC now answers every
+  migration error (invalid target or option, source not `none`, migration
+  in progress, shared-barrier tenant) with the status gRPC gives it instead
+  of its generic `StatusError`. A tenant-scope request arriving while a
+  system-scope migration is rebuilding the data plane gets the new
+  `service.DataPlaneRecyclingError`, `503` / `Unavailable` (retry),
+  instead of a refusal, and a failure inside a migration the node accepted is
+  the new `MigrationReopenError`, not a refusal.
+
+### Changed
+
+- The routed role/user services an embedded node exposes ask the state machine whether it
+  supports guarded batches (`kvstore.ProbeGuardedBatch`) instead of trusting the store's type,
+  and only when a role or user is CREATED in the system tenant; reads, lookups and permission
+  resolution never send the probe. A definitive "unsupported"
+  (`kvstore.GuardedBatchUnsupportedError`, matching `kvstore.ErrAtomicWriteUnsupported`) keeps
+  the system tenant on the sequential path; an inconclusive probe fails that one create and is
+  asked again.
+- A create refused in a way that proves nothing was written (`kvstore.ErrNotApplied`: a
+  propose-time `NotLeader`, an unsupported capability) returns at once instead of waiting out
+  the 5 s lost-response reconciliation.
+- First boot verifies an existing admin by its role, `System` flag and lifecycle, not only its
+  username, and retries a generated-id collision with some other user using a fresh id
+  instead of aborting.
+
+## [0.20.6-alpha] - 2026-09-25
+
+### Fixed
+
+- A node started with `seal.enabled: false` logs one explicit warning that data at rest is
+  plaintext. The warning keys on the configuration decision, not on a missing barrier.
+- `enable-encryption` on a seal-disabled node no longer panics the daemon; a concurrent
+  second migration request is refused with `seal.ErrMigrationInProgress` (409 /
+  `FAILED_PRECONDITION`) instead of tearing down the data plane.
+- `enable-encryption` is registered on every transport (REST, gRPC, QUIC, MCP, Unix,
+  embedded) and refuses with one typed error where it is unavailable. The embedded, QUIC
+  and MCP SDK clients now forward it instead of returning `NotImplementedError`.
+
+### Fixed
+
+- **Enable-encryption reaches the node on every SDK transport.** The embedded
+  Go SDK transport now carries real `EncryptionMigrator` wiring from
+  `sdk/go/node` (mirroring how the network transports receive theirs), so it
+  migrates when a migrator is configured and refuses with the typed
+  `service.ErrMigrationProviderUnavailable` only when one truly isn't. The
+  QUIC and MCP Go SDK clients now forward `BarrierEnableEncryption` to their
+  already-working server handlers instead of returning an unconditional
+  `NotImplementedError` stub. The MCP server also registers
+  `qrdb_barrier_enable_encryption` unconditionally, closing a gap where a
+  standalone node with seal disabled (no barrier service and no migrator)
+  returned tool-not-found instead of the typed refusal every other transport
+  gives in that state.
+
+## [0.20.5-alpha] - 2026-09-24
+
+### Fixed
+
+- The CI coverage gate no longer fails at random on `pkg/vector/flat`. The insertion-sort
+  swap branch in `sortAllResults` was covered only when `sync.Map`'s randomized iteration
+  happened to produce an unsorted order (a 1.9-point swing under CPU contention); a
+  deterministic test now covers it on every run.
+
+## [0.20.4-alpha] - 2026-09-24
+
+### Fixed
+
+- **k-means++ initialisation no longer hangs.** `pkg/vector/ivf` and `pkg/vector/quantization`
+  recomputed every chosen centroid's distance on each selection (O(n·k²·d)); they now keep a
+  running minimum (O(n·k·d)). One `DefaultConfig` training call under `-race` drops from ~77s
+  to under a second, and the IVF coverage profile is produced again.
+- Degenerate training data (fewer distinct points than centroids) always yields exactly k
+  initial centroids. Distance overflow (±Inf, NaN) is clamped before weighting, so selection
+  never degenerates into Inf/NaN arithmetic. Signed metrics weight by the raw minimum distance.
+- `KMeans.Cluster` refuses mismatched vector dimensions with a typed
+  `KMeansDimensionMismatchError`.
+
+### Fixed
+
+- **k-means++ initialisation in `pkg/vector/ivf` and `pkg/vector/quantization`
+  is O(n·k·d), not O(n·k²·d).** Both implementations picked each centroid by
+  rescanning every previously-chosen centroid from scratch; at the shipped
+  defaults (256 centroids) that quadratic term, amplified by the race
+  detector's per-access instrumentation, drove a k-means test past testing's
+  10-minute alarm and killed the test binary before it could write
+  `pkg/vector/ivf`'s coverage profile — surfacing in CI as the package
+  reporting **missing** coverage rather than a normal test failure. Both now
+  track a running minimum distance, updated incrementally against only the
+  newly-added centroid.
+- **Degenerate k-means++ input (fewer distinct points than the requested
+  centroid count) could silently return fewer centroids than requested,**
+  violating an invariant every caller downstream assumes. The fallback now
+  draws uniformly at random instead of scanning for an "unchosen" point that
+  may not exist.
+- **The k-means++ running-minimum comparison now uses the metric's raw
+  (unsquared) distance, not its square, before taking a minimum** — required
+  for signed metrics such as `DotProductDistance`, where comparing squares
+  first can pick the wrong centroid as nearest and silently change the
+  weighted-sampling distribution.
+- **The k-means++ running minimum is clamped against float32 overflow and
+  NaN** instead of being assigned directly, so a distance computation that
+  overflows to `+Inf` cannot propagate into the weighted-sampling sum. In
+  `pkg/vector/ivf`, the sampling weight itself (the clamped minimum squared)
+  is now computed in float64, since squaring a large-but-finite clamped
+  value — including the clamp's own sentinel, `math.MaxFloat32` — can still
+  overflow float32 on its own.
+- `ivf.KMeans.Cluster` now validates every vector's dimensionality itself and
+  returns the typed `api.KMeansDimensionMismatchError`, rather than letting a
+  caller who invokes `Cluster` directly (bypassing `Index.Train`'s own check)
+  feed a mismatched vector into the distance functions' overflow-prone
+  length-mismatch sentinel.
+
+## [0.20.3-alpha] - 2026-09-24
+
+### Changed
+
+- CI guards every committed generated artifact (coverage baseline, deadcode baseline,
+  ifacesweep findings, lockstep baseline) with a per-artifact allowlist. Each
+  path-bearing column must be a go-qrdb import path or a repo-relative path. Absolute
+  workstation paths, `..` traversal, header-only artifacts and unknown artifacts all
+  fail the Lint job.
+
+## [0.20.2-alpha] - 2026-09-23
+
+### Fixed
+
+- **Prefix and range scans no longer walk the whole store.** Metadata keys sort by length
+  first, so the keys of one prefix are not one contiguous run, and `List`, `Scan` and `Range`
+  read every metadata key in the store and filtered. They now seek once per key length
+  (`mvcc.ForEachMetaKeyInRange`) and read only the matching keys. Output order and `Limit`
+  are unchanged. go-quicbaas measured ~3.6 s to list 3,648 records before this (#560).
+
+## [0.20.1-alpha] - 2026-09-23
+
+### Fixed
+
+- **`secrets:*` permissions are own-tenant only.** They now use `ScopeSelfStrict`: a tenant's
+  principal can reach only its own vault, and the system tenant is confined to its own vault
+  rather than lifted over every tenant.
+- **Auth failures that could not be recorded are distinguishable from a sealed tenant.**
+  `AuthFailureUnavailable` is split into two classes, "could not evaluate" and "could not
+  record the decision". They map to the same transport status but can no longer be conflated
+  in control flow, and an outer audit-gate failure wins over its inner cause.
+- `qrdbd` no longer has a window during signal-handler reset in which a SIGTERM kills the
+  process without cleanup.
+
+### Documentation
+
+- `pkg/secret` states its requiredness boundary. A required secret is guaranteed only for a
+  leaf the walk reaches; whether a containing section is present is the consumer's `Validate()`.
+
+## [0.20.0-alpha] - 2026-09-23
+
+### Changed — BREAKING
+
+- **`User.Enabled` is removed; `Lifecycle` is the only account-state field.**
+  The derived `enabled` boolean is gone from the domain type and from every
+  transport — REST, gRPC (`UserResponse` field 5 and the name `enabled` are now
+  reserved), QUIC, MCP, the Unix socket and the embedded SDK — and from the
+  `qrdb users` output, which shows `Lifecycle` / `LIFECYCLE` in its place. Read
+  `lifecycle` instead. A record with no lifecycle state now FAILS CLOSED: it
+  cannot authenticate and cannot be transitioned. The decode-time fallback that
+  derived a state from `enabled` is removed with no migration; a record written
+  before the lifecycle field existed must be recreated.
+- **`User.GroupIDs` is removed from qrdb entirely.** It is gone from the
+  domain type, `CreateUserRequest` and `UpdateUserRequest`, every transport
+  (REST/QUIC `group_ids`/`groupIDs`; gRPC `group_ids` on `CreateUserRequest`,
+  `UpdateUserProtoRequest` and `UserResponse` plus `has_group_ids`, all now
+  reserved; MCP `group_ids` and `clear_group_ids`), the Go SDK
+  (`transport.User`, the request types, and `NormalizeGroupIDs`) and the store's
+  audit details. qrdb authorization resolves user → role bindings → roles →
+  permissions and no path read the field; a layer that needs group membership
+  stores it itself.
+
+### Removed — BREAKING
+
+- **`database.StandaloneBackend.Storage()` is removed** (and with it from the
+  SDK's `StandaloneBackend` alias). Writes through the raw store bypassed the
+  backend's write mutex, which is what makes its guarded verbs atomic; nothing
+  in production called it.
+
+### Fixed
+
+- **A missing lease is reported as not-found on every transport.** Lease
+  time-to-live for an absent lease now returns the typed `LeaseNotFoundError`
+  from both lessor-backed state machines (`mvcc` and the default `pebble`)
+  instead of a generic invalid-query error, and every transport maps it to its
+  not-found status. An expired lease is indistinguishable from an absent one.
+- `DROP TABLE` reclaims the table's sequence counters.
+
+### Changed
+
+- CI enforces a blocking coverage gate: a repo-wide floor plus a per-package
+  ratchet against `test/coverage-baseline.txt`.
+- Trivy blocks on every push; the auth integration suite runs per push and the
+  cluster integration suite nightly.
+
+## [0.19.0-alpha] - 2026-09-17
+
+MINOR, not PATCH. The release adds a scope to the permission vocabulary and
+moves an existing permission family onto it, which changes who may exercise
+those permissions — additive for the vocabulary, but a tenancy-reach change for
+`escrow:*`, and pre-1.0 MINOR is where surface changes live (release-versioning
+convention §1).
+
+This release exists to carry `ScopeSelfStrict` and the `KDFDescriber` seam to
+go-xkms: the first closes a cross-tenant escalation on escrowed key material,
+and the second unblocks every password-change path in that project.
+
+### Added
+
+
+- **`permission.ScopeSelfStrict` — a permission confined to the identity's own
+  tenant for EVERY identity, the system tenant included.** `ScopeSelf` lifts the
+  system tenant across all tenants and `ScopeTenantOnly` denies it outright;
+  neither expresses "every tenant is its own boundary, the system tenant
+  included" — a permission the system tenant may exercise on its own data and
+  on nobody else's. The authorizer gains the matching arm (own tenant admits,
+  anything else denies, with no lift), `Scope.String`/`Valid`/`ParseScope` learn
+  the `self-strict` label, and the SDK gains
+  `transport.PermissionScopeSelfStrict` carrying that same label — the wire form
+  is identical whichever layer wrote it, so a persisted per-tenant override
+  decodes.
+
+### Changed
+
+- **`escrow:create/list/recover/revoke` move from `ScopeSelf` to
+  `ScopeSelfStrict`.** They were liftable, so an identity in the system tenant
+  could escrow, list, recover or revoke **any** tenant's key material — a
+  cross-tenant escalation wearing an admin role. Each tenant, the system tenant
+  included, now reaches its own escrowed material and no other's. The duty
+  classification (`DutyGovernance`, never `DutyCryptoUse`) and the built-in role
+  grants are unchanged.
+
+- `seal.ChangePassword` identifies the strategy it replaces through the new
+  exported `seal.KDFDescriber` interface (`KDFVersion()` + `KDFParams()`)
+  instead of asserting the concrete `*seal.SoftwareStrategy`. A strategy that
+  composes a software one — the shape a consumer reaches for to add auditing or
+  metrics around sealing — carries the very KDF parameters the re-seal needs,
+  and was being refused for its type rather than its behaviour. Extending the
+  seam is what this repo prescribes when an interface proves insufficient,
+  rather than having consumers keep a duplicate strategy of their own.
+- `seal.ErrPassphraseStrategyNotSoftware` now states the real condition
+  ("does not report its KDF parameters"). The sentinel's name and identity are
+  unchanged, so `errors.Is` callers are unaffected; only the message differs.
+
+- **The embedding manager's default provider may be one the embedder
+  registers.** `NewManager` validated `Config.Provider` against a literal list
+  of the four built-ins, so a config naming an out-of-tree provider — an NPU
+  backend, an OpenVINO sidecar through the existing provider bridge — was
+  refused with `ErrProviderInvalid` before any provider could be registered.
+  The asymmetry was the tell: `RegisterProvider` applies no allowlist, so a
+  consumer could register a provider it could not then select as the default.
+  The list is gone; an unknown name is answered where it is first used, by
+  `*ProviderNotFoundError`. The built-ins' own rules are untouched.
+
+### Fixed
+
+- **The standalone gate refuses with a service-layer error every transport
+  classifies.** Under mode `standalone` the raft-only gate refused MVCC, watch,
+  lease and lock with `*rest.ServiceNotImplementedError` — a REST transport type
+  only the REST transport classified. REST answered 501; gRPC, unix, QUIC and
+  MCP fell through to their unclassified default and reported the refusal as an
+  internal fault. Those tell a client library opposite things: "the server
+  broke, retry" versus "this node cannot do that, fall back". A consumer running
+  standalone and calling an MVCC verb was told its server was broken, for a
+  deployment mode. The gate, and the per-database registry's "not configured"
+  refusals beside it, now return `*service.CapabilityUnsupportedError`, which
+  every transport's classifier already maps to "unsupported".
+
+- **Two `pkg/service` skip guards were coverage gaps wearing a green tick.**
+  Both claimed the path they abandoned needed real storage; neither claim held —
+  the backup registry is an in-memory map in the same package. The tests now
+  corrupt a captured shard and assert `VerifyBackup` reports the mismatch with
+  both checksums, and that `RestoreBackup(ValidateFirst)` refuses with
+  `BackupChecksumMismatchError` before touching a shard.
+
+### Security
+
+- **trivy scans the frontend's dev dependencies; nanoid and postcss bumped past
+  three HIGHs.** trivy's npm parser excludes a lockfile's dev dependencies
+  unless `--include-dev-deps` is passed, so the blocking Security gate was green
+  on three HIGH advisories — CVE-2026-67213 and CVE-2026-67214 in nanoid 3.3.12,
+  CVE-2026-73646 in postcss 8.5.15 — that `npm audit` reported and that sat
+  squarely at the CRITICAL,HIGH floor. A scope gap, reporting nothing about a
+  whole dependency tree. Owner ruling (2026-09-16): dev dependencies are in
+  scope on the blocking leg, because vite and esbuild produce the shipped
+  bundle and a compromised build tool is a supply-chain path into the artifact.
+
+## [0.18.0-alpha] - 2026-09-16
+
+MINOR, not PATCH. The release adds a permission family to the registry:
+new vocabulary is additive for existing callers, but pre-1.0 MINOR is where
+surface changes live (release-versioning convention §1), and a consumer that
+gates escrow routes on these permissions cannot resolve them from an earlier
+tag at all.
+
+This release exists to carry `escrow:create`, `escrow:recover`, `escrow:list`
+and `escrow:revoke` to go-xkms, whose escrow subsystem is implemented and
+wired but cannot be exposed on any network transport until the permissions it
+gates those routes with exist here.
+
+### Added
+
+- **A key-escrow permission family** (`escrow:create`, `escrow:recover`,
+  `escrow:list`, `escrow:revoke`). go-xkms's escrow subsystem sends wrapped
+  key material to an external custodian (KMIP or a federation agent) and
+  reconstructs it back, and every key-material route it exposes is gated by a
+  permission pair drawn from this registry — there was no escrow family for
+  it to use. Classified `DutyGovernance` (key entry/output, the same duty as
+  `keys:import`/`keys:export`, not a cryptographic primitive), scoped
+  `ScopeSelf`, and granted in full to the Security Officer and Admin roles,
+  with `escrow:list` (metadata only — never key material) also granted to
+  Auditor. qrdb owns the vocabulary; it ships no escrow implementation of its
+  own, matching the existing PIV/SSH/Passwords split.
+
+## [0.17.0-alpha] - 2026-09-13
+
+MINOR, not PATCH. Of the 99 commits on `main` between `v0.16.3-alpha` and this
+release, 20 carry a breaking marker in their subject, and three more (#402,
+#429, #485) change an exported interface or contract without one. Pre-1.0,
+MINOR is where breakage lives (release-versioning convention §1).
+
+This release exists to carry `pkg/secure/analyzer/scope.go` to consumers. At
+`0.16.3-alpha` the analyzer's only non-test source file is `analyzer.go`, so
+without the four scoping clauses it reports generated protobuf, `_test.go`
+files and wire DTOs as rule-3 findings — a gate wired against the pinned
+release is red for reasons no change in the consuming repository can fix.
+`scope.go` landed in `6d0c17b` (#429, #450) and has been unreachable to
+consumers ever since.
+
+### Added
 
 - **The MCP transport carries the guarded write verbs** (#127).
   `sdk/go/transport/mcp` now implements `transport.GuardedKVClient`, so a
@@ -115,35 +1411,79 @@ are not reconstructed here — their history is in the git log.
   (`transportKind.carriesTypedCapabilityRefusal`) rather than papered over;
   #169's error-typing sweep owns that surface.
 
+- **Rate limiting is centralized in the auth middleware** (#201, #394), one
+  limiter rather than a decision each handler made for itself.
+- **Typed lease not-found and lease-expired across gRPC, unix, MCP and QUIC**
+  (#385), so the condition is carried rather than reconstructed from prose.
+- **`pkg/secure/analyzer` is armed as a build gate, with rule 3 scoped to
+  where it can be satisfied** (#429, #450) — `scope.go`'s four clauses exempt
+  generated protobuf, `_test.go` files, flag targets and wire DTOs, which are
+  not holders of key material and cannot satisfy the rule. **This is the change
+  this release exists to publish.**
+- **A Trivy reporting floor below the blocking one** (#522). `make trivy`
+  gated on `CRITICAL,HIGH` and that was the only severity list in the
+  repository, so no leg could report a MEDIUM and a green Security signal
+  could not distinguish "no MEDIUMs" from "nothing looked". Two real
+  advisories, both fixed upstream, sat under that floor for the whole of the
+  repository's history. The blocking floor does not move; `make trivy-report`
+  scans `MEDIUM,LOW` as its own nightly step after the gate, exits nonzero on
+  a finding so the signal can go red, gates nothing, and prints `UNKNOWN`
+  without failing on it. `test/buildgates/trivy_severity_test.go` pins the
+  split by parsing the Makefile and nightly workflow: every severity band is
+  named by some leg, the gate names nothing below HIGH, the report leg is
+  unreachable from `security`/`ci`/`_ci` transitively, and nightly runs the
+  gate then the report. A local review of the first cut found the gate passed
+  with the report leg commented out, made transitively blocking, or unplugged
+  from nightly, and fixing those found a fourth: a column-0 make comment
+  between recipe lines truncated the parse. All four are watched reds.
+- **The FIPS document claims only what was measured** (#523). Nightly run
+  17302 on `133fa56` is the first *scheduled* `fips140=only` run on `main`
+  ever to pass, after twenty-two consecutive failures: root `make test` 126
+  packages pass / 0 fail, `sdk/go` `make test-sdk` 18 / 0, with zero
+  GCM-arbitrary-IV, X25519, `crypto/sha1` and short-key HMAC rejections.
+  `docs/seal/fips140-mode.md` states step by step what that run executed,
+  pins the figures to that commit with a statement that the tree has moved
+  since, and **withdraws** the earlier claim that `go build ./...` was clean
+  for `sdk/go`: the job does not run that step, so the SDK is compiled only
+  as far as `go test` compiles it. Arming the job as a required check now
+  waits on a stability record, fourteen consecutive green scheduled runs,
+  rather than on preconditions that are met.
+
+- **A red nightly opens a tracking issue, a still-red one rewrites it in place,
+  and a green one closes it** (#478, #525).
+- **`docs/coordination/`** (#173, #404) — the five-document feature folder the
+  coordination surface never had.
+
 ### Changed — BREAKING
 
-- **`transport.DEKClient` is the tenant keyring and nothing else.** The
-  cluster-DEK verbs (`DEKInitialize`, `DEKGetStatus`, `DEKRotate`,
-  `DEKGetCurrent`, `DEKSyncToNode`) and `TenantDEKGetOrCreate`,
-  `TenantDEKDelete`, `TenantDEKList` and `TenantDEKGetStatus` are removed with
-  their request/response types; `TenantDEKRotate` now returns the keyring
-  status. None of them worked against a server: no transport served them, the
-  gRPC, QUIC and Unix clients were stubs, and the REST and MCP clients called
-  routes and tools that did not exist. `service.DEKServicer` is rewritten to
-  match.
+- **A refusal travels in the result payload, and no longer halts the shard**
+  (#520, #527). Raft treats any non-nil error out of `Update` as a fatal apply
+  failure: `lastApplied` stops advancing, and every subsequent linearizable
+  read on that shard — on any engine sharing it, on keys written and read
+  successfully microseconds earlier — waits out the caller's deadline and
+  reports a consensus timeout. The MVCC engine had **no** apply classification
+  at all, and the time-series stub could not say a refusal was a refusal, so
+  one refused time-series write cost the shard its reads. Measured, not
+  theorised, on both engines (#129 on KV, #520 on MVCC).
 
-- **The old tenant-DEK hierarchy is deleted.** `dek.ClusterDEKManager` held its
-  key in process memory only, was never initialised by the daemon, was never
-  persisted and discarded the old key on rotation; `dek.TenantDEKManager`
-  stored keys wrapped by it in a node-local Pebble directory, so a restart or a
-  second node could read none of them. Removed with them:
-  `seal.TenantKeyManager` (no production caller) and `sdk.TenantKeyManager`,
-  the `sdk/go/dek` package, `server.WithTenantDEKManager`,
-  `lifecycle.Infra.TenantDEKManager`, and `qrdbd`'s `<data-dir>/dek` store,
-  which is no longer opened and may be deleted.
+  `statemachine.ResolveApplyError` is now THE classification seam for the
+  repository, and every `Update` in the tree routes through it. **The error
+  declares which it is**: an error implementing `protocol.CapabilityError` —
+  an `error` with a `Capability() string` method naming the absent verb or
+  subsystem — is a refusal and is encoded into `Result.Data` with a capability
+  marker, which the service layer turns into a typed
+  `CapabilityUnsupportedError` for the caller. Everything else is a fault and
+  still halts Apply. Silence means fatal; only a declaration means benign, so a
+  forgotten marker costs availability on one shard loudly rather than
+  swallowing a storage fault and serving diverged state silently.
 
-- **Tenant teardown has no DEK-shred step.** `tenant.DEKShredder`,
-  `TeardownWiring.SetDEKShredder`, `tenant.WithDEKShredder`,
-  `tenant.DEKShredError` and their `sdk` re-exports are removed. The keyring is
-  a record in the tenant's own store, so it is unusable from the fence on and
-  is removed by the barrier destroy and the keyspace reclaim. The order is now
-  fence, destroy barrier, reclaim keyspace; persisting the retirement before
-  anything irreversible (#483) is unchanged.
+  `test/buildgates` finds every method in `pkg/` taking `[]sm.Entry` and
+  requires it to route through `ResolveApplyError` or to be listed, with a
+  reason, as a delegator — default-deny, because the absence of a call is not
+  something a reviewer reading one diff can see. A refused batch or transaction
+  now stages nothing: opcodes are validated before any operation in the set is
+  applied. **Reachable by any client able to propose an opcode this state
+  machine does not implement.**
 
 - **The MCP transport carries seventeen JSON-RPC error codes, and the
   substring classification is deleted** (#438). `pkg/api/mcp` had **no**
@@ -188,6 +1528,11 @@ are not reconstructed here — their history is in the git log.
   transport's per-family classifiers through the new
   `grpc.ServiceErrorCode` and renders the result, so a condition cannot mean
   one thing over gRPC and another over MCP.
+
+  One message test remains, behind a code gate: the lease expired/absent
+  split, which no transport in this repository can separate by code because
+  gRPC maps both to `NOT_FOUND`. It fires only once the code has already said
+  not-found; it is not the ungated classification this change deleted.
 
 - **Two barrier-passphrase config fields are `*secure.Buffer`, and an unusable
   one is now an error rather than a downgrade** (#429). Arming
@@ -351,45 +1696,85 @@ are not reconstructed here — their history is in the git log.
   `RevokeCert` is an unrelated API, not a consumer of this one. Zero verified
   external consumers at the time of this change.
 
-### Fixed
+- **`/certs/*` is gated on the tenant the REQUEST names, not the caller's**
+  (#474, #506). `certs:generate` took its `tenantID` from the request body
+  unchecked and wrote it into the certificate's Subject OU, which the mTLS
+  authenticator reads as the identity's tenant — so a caller could mint a
+  CA-signed certificate that authenticates as another tenant. Reachable on four
+  transports.
+- **The QUIC wire carries gRPC's seventeen conditions, not six** (#437, #461),
+  by meaning rather than by message text; four lanes were blocked on the
+  missing vocabulary.
+- **`LockServicer` resolves per (tenant, database)** (#455, #487). It was a
+  process singleton over pre-namespace engines, so two tenants sharing a shard
+  under `prefix` isolation took the same lock, and `List`/`Status` enumerated
+  each other's keys and holder ids.
+- **Collection documents are (tenant, database)-namespaced** (#441, #454), so
+  the collection service resolves like its twelve siblings.
+- **Auth factors are per-tenant** (#393, #463), routed through
+  `tenant.StoreResolver`.
+- **The SO-PIN gate fails closed** on the same lever as the authorisation gate
+  (#445, #471).
+- **A deleted tenant id is retired, not released** (#413, #468).
+- **`DROP DATABASE` reclaims the keyspace**, not just the directory (#412,
+  #458).
+- **`DropCollection` reclaims the collection's ID sequence** (#411, #449) —
+  `SequenceServicer` gains a delete verb.
+- **An explicit `_id` reserves the counter, and an insert never overwrites
+  silently** (#447, #465).
+- **A collection table honours the `_id` it declares as its primary key**
+  (#467, #475). `REPLACE INTO` never replaced, `ON DUPLICATE KEY UPDATE` never
+  updated, and `UPDATE ... SET _id` destroyed the document.
+- **`Emit` reports whether the record landed, and an unrecordable
+  authorisation decision is refused** (#335, #443).
+- **An evicted entity watch says why** (#496, #501) — a terminal variant on
+  `WatchEntityEvent`, and the one consumer that would have dropped it.
+- **A revoked peer certificate no longer authorizes on the cluster key plane**
+  (#285, #390).
+- **`gosec`'s `-tags` is comma-separated** (#295, #397); the gate had been
+  scanning the untagged tree.
 
-- **The embedded transport refuses a standalone node's raft-only families with
-  the typed error.** In process, `Coordinator.AcquireLease` and the lease,
-  lock, MVCC and watch clients answered `*embedded.NilServiceError` — the
-  error reserved for a wiring defect — where gRPC, Unix and QUIC answer
-  `*transport.CapabilityUnsupportedError` naming `requires mode: raft`. A new
-  `embedded.WithStandaloneMode` option, set by `node.NewStandaloneNode`, makes
-  the embedded transport answer the same type; `NilServiceError` stays for a
-  service that should have been wired and was not. REST and MCP still return
-  untyped errors for these families (lease and lock routes are not registered
-  on a standalone REST server, and the MCP tools are not registered at all);
-  `docs/run-modes/api.md` records the gap and
-  `sdk/go/conformance/standalone_refusal_test.go` pins every transport's
-  answer.
+- **A cert binding can be withdrawn** (#518). `AddCertBinding` shipped on all
+  six transports and nothing removed a binding on any of them, so a binding
+  written today could not be withdrawn through any API. Since #505 made the
+  binding set what decides an account's mTLS admission, an enrolled key was an
+  irrevocable *credential* rather than a stale record — and revocation is not
+  the remedy, because a binding is over the `SubjectPublicKeyInfo` and outlives
+  every certificate issued for that key, so a re-issue for the same key
+  authenticates again. The exploitability is bounded (re-issuance needs
+  `certs:generate`, gated on the target tenant by #506); what it cost was an
+  operator who could not clean up after a key compromise.
 
-- **`node.Client().Lock()` works on a raft node.** The lock service was never
-  passed to the in-process transport, so the lock family answered a
-  wiring-defect error in the one mode that serves it.
+  `RemoveCertBinding(userID, thumbprint)` is now on all six transports —
+  `DELETE /users/{id}/cert-bindings/{thumbprint}`, the `RemoveCertBinding` RPC
+  (gRPC and unix), `user.RemoveCertBinding` (QUIC),
+  `qrdb_user_remove_cert_binding` (MCP) and `Client.Users()` (embedded) — and in
+  the TypeScript SDK. It removes the record entry, the tenant-scoped SPKI index
+  entry and the legacy un-scoped one.
 
-- **Deleting a dedicated-isolation tenant now reclaims its records in the
-  shared store.** Its identity records live under
-  `seal.TenantSharedNamespace(tenant)` (`__tiam:<tenant>/`), which
-  `service.TenantKeyPrefixes` did not cover, so they survived the delete —
-  as ciphertext under a destroyed barrier, or as plaintext under barrier
-  protection `none`. The reclaim now covers the range.
+  **A narrow verb, not a whole-set replacement.** `UpdateUserRequest.CertBindings`
+  already replaced the set and maintained the index; exposing *that* over a
+  transport would make a caller's snapshot of the rest of the set part of every
+  withdrawal, and committing a snapshot is how a concurrent enrolment
+  resurrects a binding that was just withdrawn.
 
-- **A cert-binding write no longer commits a stale set** (#518).
-  `AddCertBinding` read the record and then called `UpdateUser`, which read it
-  again and guarded on ITS read — so the window between the two reads was
-  unguarded, and an enrolment that read the set before a concurrent withdrawal
-  committed would swap its stale set in cleanly afterwards, putting the
-  withdrawn credential back. Both binding verbs now commit against the bytes
-  they computed from (`updateUserAt`), which makes that a LOST swap, and retry
-  the lost swap against whatever won — correct because "add T" and "remove T"
-  say what to do to a set without depending on what the caller last saw it
-  contain. Exhausting the bound reports `*ConcurrentUpdateError`, because an
-  operator withdrawing a compromised key must never read a success that did not
-  happen.
+  **`users:remove_cert_binding` is a separate permission**, not folded into
+  `users:add_cert_binding`. Enrolment only narrows an account; withdrawing its
+  LAST binding widens it back to admitting any certificate whose CN and OU name
+  it. Both permissions now declare `ScopeSelf` explicitly rather than inheriting
+  it, because `LookupScope` returns `ScopeSelf` for anything nobody tagged and
+  these two decide which certificates authenticate as an account.
+
+  **Revocation still does not drop a binding, on purpose.** Revoking during a
+  routine rotation would otherwise unenrol the key being rotated. The two are
+  separate operations answering separate questions, and an operator cleaning up
+  after a key compromise performs both.
+
+- **`ServiceModule` gains `RegisterQUIC`** (#402). A fourth registration hook
+  beside `RegisterGRPC` (which serves gRPC and unix), `RegisterHTTP` and
+  `RegisterMCP`, so a module registered once reaches every network transport
+  instead of every one but QUIC. A type that implements the interface directly
+  rather than embedding `BaseModule` must add the method.
 
 - **A first node can advertise cluster enrollment under `GODEBUG=fips140=only`**
   (#485). Noise_NK_25519_ChaChaPoly_SHA256 performs an X25519 handshake, which
@@ -451,7 +1836,50 @@ are not reconstructed here — their history is in the git log.
   separate pre-existing defects, both filed: `pkg/tenant` has a `cipher.NewGCM`
   test fixture, and `pkg/service`'s test binary does not compile at all (which
   is not a FIPS failure — it fails with FIPS off too). See
-  `docs/seal/fips140-mode.md` and `docs/clustering/`.
+  `docs/seal/fips140-mode.md` and `docs/clustering/`. **Both survivors were
+  closed later in this release**: the `pkg/tenant` fixture now uses an AEAD
+  FIPS admits (#511), and `pkg/service`'s test double gained the `PutIfAbsent`
+  its interface requires (#502).
+
+### Changed
+
+- `AGENTS.md` holds the rules and `CLAUDE.md` is the symlink (#376) — a
+  symlink is a mode-120000 blob in git, so every plumbing reader of the old
+  arrangement got a nine-byte path instead of the rules, silently and with exit
+  status 0.
+- `vet-tags` is armed in CI (#386). The recorded blocker was an untidy
+  `go.mod`; the measured blocker was a missing tag on the
+  `sdk/go/gorm/conformance` leg.
+- `sdk/go` is under the linter it had never been under (#364).
+- **A project's workflows run CI and nothing else.** The label-triggered
+  review and auto-merge workflows this range added and iterated (`v7` through
+  `v26`) are removed again: QuicBaaS is the sole orchestrator, and a review
+  engine duplicated into every repository was the defect, since a fix reached
+  one copy and silently missed the rest. Known gap, accepted by the owner:
+  until QuicBaaS can post a verdict, no automated review runs here and merges
+  need a human.
+- **Exported interface methods with no non-test caller are enumerated and
+  gated** (#271, #401): `test/tools/ifacesweep` records the findings per tag
+  set, and CI refuses a new one.
+- Build hygiene: module credentials point at the forge's new address and are
+  written once, not three times (#363); `Dockerfile.gpu` names its final
+  stage so the GPU integration lane can build (#365); the devcontainer stops
+  rebuilding its 6.5GB image on every source edit (#294, #389).
+
+### Fixed
+
+- **A cert-binding write no longer commits a stale set** (#518).
+  `AddCertBinding` read the record and then called `UpdateUser`, which read it
+  again and guarded on ITS read — so the window between the two reads was
+  unguarded, and an enrolment that read the set before a concurrent withdrawal
+  committed would swap its stale set in cleanly afterwards, putting the
+  withdrawn credential back. Both binding verbs now commit against the bytes
+  they computed from (`updateUserAt`), which makes that a LOST swap, and retry
+  the lost swap against whatever won — correct because "add T" and "remove T"
+  say what to do to a set without depending on what the caller last saw it
+  contain. Exhausting the bound reports `*ConcurrentUpdateError`, because an
+  operator withdrawing a compromised key must never read a success that did not
+  happen.
 
 - **`secure.StdinProvider` no longer leaves the passphrase in an unwipeable
   heap buffer** (#184). It read through a `bufio.Reader`, which staged the
@@ -478,6 +1906,79 @@ are not reconstructed here — their history is in the git log.
   cluster. Gives `cert.CertRevokedError` its first producer: both REST (409)
   and gRPC (`FAILED_PRECONDITION`) mappings were previously unreachable
   except through a mock.
+
+- **Teardown is fenced** (#483, #488). `DeleteTenant` makes the retirement
+  durable before the irreversible shred, so a failed tombstone write no longer
+  leaves a live tenant whose data is permanently undecryptable. `DROP DATABASE`
+  stops deleting other tenants' unattributable collection records (#481). The
+  fixture uses an AEAD FIPS admits (#511).
+- **`StandaloneBackend` is an `AtomicBackend`** (#466, #490), so the collection
+  insert is a guarded write and `PutIfAbsent` works on the dedicated-store
+  path.
+- **The audit chain spans a rotation, and the verifier knows it** (#452, #476).
+- **A cancelled watch releases its goroutine, and a watch that ended for a
+  reason says so** (#405, #406, #494) — on the embedded transport and the
+  namespaced wrapper. The last two sites of the same pattern closed in #515: a
+  refused start revision keeps its type (#495), and a cancelled namespaced
+  watch releases its goroutines (#499).
+- **Secondary-index maintenance is scoped to the keys an index owns** (#410,
+  #448).
+- **A closed PebbleDB store returns `ErrStorageClosed` instead of panicking
+  `pebble: closed`** (#371, #435).
+- **`DropCollection` drops the indexes `CreateCollection` built** (#399, #439).
+- **`qrdb_watch` stops crediting its cursor from a replay it never delivered**
+  (#388).
+- **`pkg/discovery` compiles on darwin** (#359) — the `socket(2)` flags move
+  behind a platform seam.
+- **`secure` holds the borrow across seven traced reads, and the deadlock is
+  loud** (#74, #427).
+- **`sdk/go/node` resolves the scoped encryption router's tenant leg lazily**
+  (#384).
+
+### Security
+
+- **Cross-tenant certificate issuance is closed** (#474, #506) — see
+  `/certs/*` above. A caller could mint a CA-signed certificate that
+  authenticates as another tenant, on four transports.
+- **An enrolled account's mTLS login is decided by its SPKI binding**, not by
+  the certificate's CN and OU (#505, #516). Fail-closed per account: an account
+  that has enrolled a binding is refused a certificate that does not match it;
+  an account with none authenticates as before.
+- **`FinishLogin` resolves the factor on the login session's tenant, not the
+  caller's `ctx`** (#303, #392).
+- **Every request body is bounded** on the REST plane (#378), and a comment
+  claiming a bound six handlers lacked is gone.
+- **Every workflow action is pinned by commit digest, and it is gated** (#367,
+  #407). A tag is a ref its owner can move, and at the time the review job
+  held a write-scoped token; that job is gone (see Changed), the pin gate
+  stays.
+- **Volume-pool paths are validated before they are created** (#292, #366),
+  from one shared guard: absolute and canonical, no symlink, and no overlap
+  with another candidate in the same request. The request type is
+  wire-shaped, so the guard lands before the change that makes it reachable
+  from a transport. `gosec` cannot see this sink: G304 covers opens, not
+  directory creation.
+- **The module-fetch token never touches disk** (#326, #368). The docker
+  build's Gitea credentials reach `go mod download` as a BuildKit secret
+  sourced from the environment, not from a temp file an EXIT trap was
+  supposed to remove and did not on SIGKILL.
+- **`gosec` scans the tag-gated files and the `sdk` module** (#377), and the
+  91 test-file findings are triaged with the two measured reasons `-tests`
+  still cannot go on recorded (#395, #423).
+- **`software.sslmate.com/src/go-pkcs12` moves to v0.7.3 in all three
+  modules** (#522) for GHSA-mpwr-8vm7-h73f, an authentication bypass in the
+  package's decode functions. Measured rather than assumed: this repository
+  calls exactly one symbol from it, the `Modern2023` encoder behind
+  `ExportPKCS12`, and never decodes a `.p12`, so the bump is hygiene, not
+  exposure; the grep is recorded in `docs/certificate-authority/architecture.md`
+  beside the dependency.
+- **`echarts` moves to 6.1.0 in the frontend** (#522) for CVE-2026-45249, an
+  XSS. The major bump was blocked only by `svelte-echarts`, which nothing
+  imported; it is removed. The production build, `svelte-check` and the 31
+  time-series Playwright tests were run against the new major.
+- **`google.golang.org/grpc` moves to v1.83.2 for CVE-2026-84445, and a stale
+  trivy database now refuses to certify rather than certifying blindly**
+  (#451, #477).
 
 ## [0.16.3-alpha] - 2026-09-06
 
@@ -2238,7 +3739,8 @@ ProtoBuf codecs are unaffected.
 - Playwright's generated `playwright-report/` and `test-results/` output no
   longer ships in the repository.
 
-[Unreleased]: https://github.com/jeremyhahn/go-qrdb/compare/v0.6.0-alpha...HEAD
+[Unreleased]: https://github.com/jeremyhahn/go-qrdb/compare/v0.17.0-alpha...HEAD
+[0.17.0-alpha]: https://github.com/jeremyhahn/go-qrdb/compare/v0.16.3-alpha...v0.17.0-alpha
 [0.6.0-alpha]: https://github.com/jeremyhahn/go-qrdb/compare/v0.5.9-alpha...v0.6.0-alpha
 [0.3.0-alpha]: https://github.com/jeremyhahn/go-qrdb/compare/v0.2.1-alpha...v0.3.0-alpha
 [0.2.1-alpha]: https://github.com/jeremyhahn/go-qrdb/compare/v0.2.0-alpha...v0.2.1-alpha

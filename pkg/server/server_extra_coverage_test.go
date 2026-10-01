@@ -21,6 +21,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -1204,12 +1205,12 @@ func TestRESTServiceRegistry_NilServices_AllServiceMethods(t *testing.T) {
 			if err == nil {
 				t.Fatalf("expected ServiceNotImplementedError for nil %s service", tc.name)
 			}
-			var nie *rest.ServiceNotImplementedError
-			if !errors.As(err, &nie) {
-				t.Errorf("expected *rest.ServiceNotImplementedError, got %T: %v", err, err)
+			var cue *service.CapabilityUnsupportedError
+			if !errors.As(err, &cue) {
+				t.Fatalf("expected *service.CapabilityUnsupportedError, got %T: %v", err, err)
 			}
-			if nie.Service != tc.svcName {
-				t.Errorf("Service field = %q, want %q", nie.Service, tc.svcName)
+			if !strings.HasPrefix(cue.Message, tc.svcName+": ") {
+				t.Errorf("message %q must name the refused service %q", cue.Message, tc.svcName)
 			}
 		})
 	}

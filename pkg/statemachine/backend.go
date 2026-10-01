@@ -14,7 +14,11 @@
 
 package statemachine
 
-import "io"
+import (
+	"io"
+	"sort"
+	"sync"
+)
 
 // Backend abstracts the underlying key-value storage for state machines.
 // Implementations handle get/put/delete/list/scan operations with their
@@ -77,6 +81,24 @@ type Backend interface {
 	// contract note above the interface.
 	DeleteDurable(key []byte) error
 
+	// ApplyAtomic applies every mutation in muts, or none of them. It is the
+	// write a multi-key transaction or batch commits through.
+	//
+	//   - ALL OR NOTHING TO READERS. A concurrent Lookup, List, Scan or
+	//     snapshot never observes a subset of the set.
+	//   - DURABLE AS THE STATE MACHINE RECOVERS. Where recovery reads this
+	//     backend's storage (DiskBackend), the set is one storage batch that is
+	//     durable on return, all or nothing after a crash, with a failure
+	//     returned. Where recovery rebuilds the keyspace from the Raft log and
+	//     snapshots instead (the fast state machine resets its storage at every
+	//     start), the log entry is the durable copy and storage is written
+	//     through asynchronously, in apply order, as Put writes it.
+	//
+	// Mutations are applied in order, so a later mutation of a key wins over
+	// an earlier one in the same set. An empty set is a no-op. A failure
+	// leaves the backend as it was before the call.
+	ApplyAtomic(muts []Mutation) error
+
 	// List returns all keys matching the given prefix. An empty prefix
 	// returns all keys.
 	List(prefix []byte) ([][]byte, error)
@@ -101,4 +123,100 @@ type Backend interface {
 	// Close releases all resources held by the backend. It must wait
 	// for any in-flight asynchronous operations to complete.
 	Close() error
+}
+
+// Mutation is one write in a set Backend.ApplyAtomic applies all or nothing:
+// a put of Value under Key, or, when Delete is set, the removal of Key.
+type Mutation struct {
+	Key    []byte
+	Value  []byte
+	Delete bool
+}
+
+// lastWritePerKey returns muts with every mutation that a later one of the
+// same key supersedes removed, keeping the survivors in their original order.
+//
+// Backend.ApplyAtomic promises that the later mutation of a key wins. The map
+// backends get that for free by applying in order, but the sharded caches
+// record an in-flight claim per key, and two claims on one key in one set
+// would make a rollback restore the first write's value instead of what the
+// cache held before the set — so they apply the collapsed set instead.
+func lastWritePerKey(muts []Mutation) []Mutation {
+	last := make(map[string]int, len(muts))
+	for i, m := range muts {
+		last[string(m.Key)] = i
+	}
+	if len(last) == len(muts) {
+		return muts
+	}
+	out := make([]Mutation, 0, len(last))
+	for i, m := range muts {
+		if last[string(m.Key)] == i {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// ownMutations returns a deep copy of muts. Apply payloads are recycled
+// buffers, so a backend that retains a mutation's key or value must copy it
+// first; copying before any lock is taken keeps the copy out of the critical
+// section.
+func ownMutations(muts []Mutation) []Mutation {
+	out := make([]Mutation, len(muts))
+	for i, m := range muts {
+		out[i] = Mutation{Key: append([]byte(nil), m.Key...), Delete: m.Delete}
+		if !m.Delete {
+			out[i].Value = append(make([]byte, 0, len(m.Value)), m.Value...)
+		}
+	}
+	return out
+}
+
+// shardSet describes the mutex-guarded map shards of a sharded in-memory
+// backend to applyAcrossShards: which shard a key belongs to, that shard's
+// lock, and — read only while the lock is held, because RecoverSnapshot and
+// Close replace it — that shard's map.
+type shardSet struct {
+	indexOf func(key string) int
+	lock    func(i int) *sync.RWMutex
+	data    func(i int) map[string][]byte
+}
+
+// applyAcrossShards is Backend.ApplyAtomic for the sharded in-memory backends.
+//
+// Every shard the set touches is write-locked BEFORE any of it is applied and
+// released only after all of it is, so a concurrent Lookup — which takes one
+// shard's read lock at a time — sees each key either before the set or after
+// it, and a snapshot, which read-locks every shard, sees none of it or all of
+// it. The locks are taken in ascending shard order, the order SaveSnapshot
+// takes them in, so two lockers can never wait on each other.
+func applyAcrossShards(muts []Mutation, s shardSet) {
+	owned := ownMutations(muts)
+
+	idx := make([]int, 0, len(owned))
+	seen := make(map[int]struct{}, len(owned))
+	for _, m := range owned {
+		i := s.indexOf(string(m.Key))
+		if _, dup := seen[i]; !dup {
+			seen[i] = struct{}{}
+			idx = append(idx, i)
+		}
+	}
+	sort.Ints(idx)
+
+	for _, i := range idx {
+		s.lock(i).Lock()
+	}
+	for _, m := range owned {
+		data := s.data(s.indexOf(string(m.Key)))
+		if m.Delete {
+			delete(data, string(m.Key))
+			continue
+		}
+		data[string(m.Key)] = m.Value
+	}
+	for j := len(idx) - 1; j >= 0; j-- {
+		s.lock(idx[j]).Unlock()
+	}
 }

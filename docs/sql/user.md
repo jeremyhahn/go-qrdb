@@ -76,9 +76,17 @@ COMMIT;
 
 `ROLLBACK` is free — nothing was sent until `COMMIT`.
 
+**Re-create tables from v0.20.0 through v0.21.0.** A relational table created
+by one of those releases is refused with **MySQL error 1459** (SQLSTATE 55000
+on the PostgreSQL wire): its data was written under a key layout this version
+does not read, and there is no migration. `DROP TABLE` it, `CREATE TABLE` it
+again, and reload its rows from your own source of truth.
+
 **Retry a conflicted transaction.** Concurrent writers to the same row make one
 of them lose at `COMMIT` with **MySQL error 1213**, which is exactly the code
-your driver or ORM already treats as "retry". Retry by **re-running the
+your driver or ORM already treats as "retry". A statement whose table was
+truncated, dropped or altered while it ran fails the same way, as do the REST
+(409), gRPC (`ABORTED`) and QUIC (`StatusAborted`) endpoints. Retry by **re-running the
 statements**, not by re-issuing `COMMIT`: the server buffered operations, not
 your SQL, so replaying `SET n = n + 1` would re-apply a stale value.
 
@@ -171,10 +179,12 @@ before assuming the new error is wrong.
 
 **A collection table's `PRIMARY KEY` under two concurrent writers.** It holds:
 the insert behind it is a guarded write, so one writer is told it stored and
-the other gets the duplicate-key error. `REPLACE` and `ON DUPLICATE KEY UPDATE`
-are still each an insert, a refusal and a second write with no lock across the
-three, so two of *those* racing can interleave — use a relational table inside
-a transaction if you need a read-modify-write that holds end to end.
+the other gets the duplicate-key error. `REPLACE`, `ON DUPLICATE KEY UPDATE` and
+`UPDATE` are guarded writes too: two of them racing on one `_id` never lose a
+write silently — the loser fails with **1213** (serialization failure) and
+should retry. A read-modify-write spread over several statements is still not
+held together, because a collection table has no transactions; use a relational
+table inside a transaction for that.
 
 **A write inside `BEGIN` failed with "non-transactional table".** The `kv`,
 entity and collection tables are autocommit-only — they have no write buffer.

@@ -28,76 +28,169 @@ import "bytes"
 // against a subsystem that is not configured on this state machine. Those
 // outcomes are encoded into Data via EncodeAppError and surfaced to the client
 // by the service layer (see service.checkResultError); only genuine
-// non-deterministic corruption (failed decode of a committed entry, storage IO
-// failure) is returned as a Go error.
+// non-deterministic corruption (storage IO failure) is returned as a Go error.
 //
 // The prefix is multi-byte and NUL-led so it cannot collide with the single
 // flag bytes other handlers place in Data (e.g. the transaction success flag,
 // which is a one-byte 0x00/0x01).
 var appErrorPrefix = []byte("\x00qrdb.apperr\x00")
 
-// capabilityMarker distinguishes the subset of application errors that mean
-// "this state machine was not built to do that" from the rest, which mean
-// "your request was understood and refused on its merits" — a unique-index
-// violation, an invalid lease TTL, a closed engine.
+// AppErrorKind is WHAT KIND of refusal an encoded application error is.
 //
-// The distinction has to be carried, not inferred. Both kinds arrive as the
-// same encoded message, so without a marker the only way to tell a capability
-// refusal from a constraint violation is to match on message text, and callers
-// end up doing that (go-qrdb#141). It sits AFTER appErrorPrefix rather than
-// replacing it so every existing DecodeAppError caller keeps working and keeps
-// seeing the same message.
+// The kind has to be carried, not inferred. Every kind arrives as an encoded
+// message, and without a marker the only way to tell "this state machine was
+// not built to do that" from "your TTL is invalid" from "that key is taken" is
+// to match on message text — which is what go-qrdb#141 split capability
+// refusals out to stop, and what go-qrdb#557 finished by giving every other
+// refusal a kind of its own.
 //
 // sm.Result.Data never crosses a node boundary — each replica decodes the
 // result its own state machine produced — so extending this encoding is
 // internal, not a wire change.
-var capabilityMarker = []byte("\x00cap\x00")
+type AppErrorKind uint8
 
-// EncodeAppError encodes an application-level error message into a state-machine
-// result payload. The returned bytes are placed in sm.Result.Data with a nil
-// Go error so consensus continues to advance; the service layer decodes them
-// with DecodeAppError and returns a typed error to the client.
-func EncodeAppError(msg string) []byte {
-	out := make([]byte, 0, len(appErrorPrefix)+len(msg))
+const (
+	// AppErrorCorrupt — the committed command could not be decoded, or a
+	// payload carries the error prefix with no kind this code writes. Either
+	// way the bytes are not what a writer of this version produced.
+	AppErrorCorrupt AppErrorKind = iota
+
+	// AppErrorCapability — this state machine was not built to do that: an
+	// opcode it has no handler for, or a subsystem it was constructed without.
+	AppErrorCapability
+
+	// AppErrorInvalid — the command was understood and refused on its merits:
+	// an invalid lease TTL, a malformed time-series point.
+	AppErrorInvalid
+
+	// AppErrorConflict — the command would violate a uniqueness constraint.
+	AppErrorConflict
+
+	// AppErrorUnavailable — the subsystem that would serve the command is
+	// closed on this replica.
+	AppErrorUnavailable
+
+	// AppErrorFault — the subsystem failed while applying the command.
+	AppErrorFault
+)
+
+// appErrorMarkers is each kind's marker, written after appErrorPrefix. A map
+// rather than a switch: the kinds are values, the encoding is a lookup, and a
+// kind added without a marker is a missing key the tests catch.
+var appErrorMarkers = map[AppErrorKind][]byte{
+	AppErrorCorrupt:     []byte("\x00corrupt\x00"),
+	AppErrorCapability:  []byte("\x00cap\x00"),
+	AppErrorInvalid:     []byte("\x00invalid\x00"),
+	AppErrorConflict:    []byte("\x00conflict\x00"),
+	AppErrorUnavailable: []byte("\x00unavail\x00"),
+	AppErrorFault:       []byte("\x00fault\x00"),
+}
+
+// EncodeAppError encodes an application error of the given kind into a
+// state-machine result payload. The returned bytes are placed in
+// sm.Result.Data with a nil Go error so consensus continues to advance; the
+// service layer decodes them with DecodeAppErrorKind and returns the typed
+// error for the kind.
+func EncodeAppError(kind AppErrorKind, msg string) []byte {
+	marker := appErrorMarkers[kind]
+	out := make([]byte, 0, len(appErrorPrefix)+len(marker)+len(msg))
 	out = append(out, appErrorPrefix...)
+	out = append(out, marker...)
 	out = append(out, msg...)
 	return out
 }
 
-// EncodeCapabilityError encodes an application error that specifically reports
-// an ABSENT CAPABILITY: an opcode this state machine has no handler for, or a
-// subsystem it was not constructed with. The service layer turns it into a
-// distinct typed error so a caller can tell "this node cannot do that" from
-// "this node broke", which the generic encoding cannot express.
+// EncodeCapabilityError encodes an AppErrorCapability refusal. It is the
+// encoder statemachine.ResolveApplyError reaches for, kept as a named entry
+// point because an absent capability is the refusal most call sites raise.
 func EncodeCapabilityError(msg string) []byte {
-	out := make([]byte, 0, len(appErrorPrefix)+len(capabilityMarker)+len(msg))
+	return EncodeAppError(AppErrorCapability, msg)
+}
+
+// ownershipMarker distinguishes an index-ownership refusal (go-qrdb#426) from
+// the other application errors. Like capabilityMarker it has to be carried
+// rather than inferred from message text: the service layer turns it into a
+// typed error that a collection teardown acts on -- an index it does not own
+// is left alone -- and a caller branching on prose is the defect #141 removed.
+//
+// The body after the marker is "<name>\x00<recorded owner>", neither of which
+// can contain NUL on the paths that reach it (both are length-prefixed
+// strings decoded from a command, and the names the service layer builds are
+// printable).
+var ownershipMarker = []byte("\x00own\x00")
+
+// EncodeIndexOwnershipError encodes the refusal of an index create or an
+// owner-checked index drop whose named index is recorded under a different
+// owner than the command claims. owner is the RECORDED owner, which the empty
+// string spells for the explicit index API.
+func EncodeIndexOwnershipError(name, owner string) []byte {
+	out := make([]byte, 0, len(appErrorPrefix)+len(ownershipMarker)+len(name)+1+len(owner))
 	out = append(out, appErrorPrefix...)
-	out = append(out, capabilityMarker...)
-	out = append(out, msg...)
+	out = append(out, ownershipMarker...)
+	out = append(out, name...)
+	out = append(out, 0)
+	out = append(out, owner...)
 	return out
+}
+
+// DecodeIndexOwnershipError reports whether data carries an index-ownership
+// refusal and, if so, the index name and its recorded owner.
+func DecodeIndexOwnershipError(data []byte) (name, owner string, ok bool) {
+	if !bytes.HasPrefix(data, appErrorPrefix) {
+		return "", "", false
+	}
+	body := data[len(appErrorPrefix):]
+	if !bytes.HasPrefix(body, ownershipMarker) {
+		return "", "", false
+	}
+	body = body[len(ownershipMarker):]
+	sep := bytes.IndexByte(body, 0)
+	if sep < 0 {
+		return string(body), "", true
+	}
+	return string(body[:sep]), string(body[sep+1:]), true
+}
+
+// indexOwnershipMessage renders an ownership refusal as the message a
+// generic DecodeAppError caller reads.
+func indexOwnershipMessage(name, owner string) string {
+	if owner == "" {
+		return "index " + name + " is owned by the explicit index API"
+	}
+	return "index " + name + " is owned by " + owner
 }
 
 // DecodeAppError reports whether data carries an encoded application error and,
-// if so, returns the error message. Ordinary result payloads (including the
-// one-byte transaction success flag) do not carry the prefix and return ok
-// false.
-//
-// The capability marker is stripped, so a caller that only wants the message
-// reads the same text whichever encoder produced it.
+// if so, returns the error message with its kind marker stripped. Ordinary
+// result payloads (including the one-byte transaction success flag) do not
+// carry the prefix and return ok false.
 func DecodeAppError(data []byte) (msg string, ok bool) {
 	msg, _, ok = DecodeAppErrorKind(data)
 	return msg, ok
 }
 
-// DecodeAppErrorKind decodes an application error and additionally reports
-// whether it is a capability refusal.
-func DecodeAppErrorKind(data []byte) (msg string, capability bool, ok bool) {
+// DecodeAppErrorKind decodes an application error and its kind.
+//
+// A payload that carries the prefix but no marker this code writes decodes
+// as AppErrorCorrupt with the whole body as its message: it is an error —
+// reading it as a result would report a refusal as a success — and it is not
+// one this version produced.
+func DecodeAppErrorKind(data []byte) (msg string, kind AppErrorKind, ok bool) {
 	if !bytes.HasPrefix(data, appErrorPrefix) {
-		return "", false, false
+		return "", AppErrorCorrupt, false
 	}
 	body := data[len(appErrorPrefix):]
-	if bytes.HasPrefix(body, capabilityMarker) {
-		return string(body[len(capabilityMarker):]), true, true
+	for k, marker := range appErrorMarkers {
+		if bytes.HasPrefix(body, marker) {
+			return string(body[len(marker):]), k, true
+		}
 	}
-	return string(body), false, true
+	// An index-ownership refusal carries its own marker and payload (see
+	// EncodeIndexOwnershipError). The index service decodes it into
+	// *index.OwnershipError before it gets here; a generic reader gets its
+	// message and the conflict kind -- the name is held by another owner.
+	if name, owner, own := DecodeIndexOwnershipError(data); own {
+		return indexOwnershipMessage(name, owner), AppErrorConflict, true
+	}
+	return string(body), AppErrorCorrupt, true
 }

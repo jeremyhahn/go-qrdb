@@ -16,7 +16,6 @@ package rest
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -66,7 +65,7 @@ func (s *Server) handleCredentialSubmit(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := s.credentialSvc.CredentialSubmit(r.Context(), req.Name, req.Value); err != nil {
-		writeErrorJSON(w, mapCredentialHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -101,7 +100,7 @@ func (s *Server) handleCredentialDelete(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := s.credentialSvc.CredentialDelete(r.Context(), name); err != nil {
-		writeErrorJSON(w, mapCredentialHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -118,7 +117,7 @@ func (s *Server) handleCredentialList(w http.ResponseWriter, r *http.Request) {
 
 	names, err := s.credentialSvc.CredentialList(r.Context())
 	if err != nil {
-		writeErrorJSON(w, mapCredentialHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 	if names == nil {
@@ -158,7 +157,7 @@ func (s *Server) handleCredentialRotate(w http.ResponseWriter, r *http.Request, 
 
 	result, err := s.credentialSvc.CredentialRotate(r.Context(), name, opts)
 	if err != nil {
-		writeErrorJSON(w, mapCredentialHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -193,7 +192,7 @@ func (s *Server) handleCredentialRetrieveVersion(w http.ResponseWriter, r *http.
 
 	value, err := s.credentialSvc.CredentialRetrieveVersion(r.Context(), name, version)
 	if err != nil {
-		writeErrorJSON(w, mapCredentialHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -215,7 +214,7 @@ func (s *Server) handleCredentialListVersions(w http.ResponseWriter, r *http.Req
 
 	versions, err := s.credentialSvc.CredentialListVersions(r.Context(), name)
 	if err != nil {
-		writeErrorJSON(w, mapCredentialHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -254,7 +253,7 @@ func (s *Server) handleCredentialGCExpired(w http.ResponseWriter, r *http.Reques
 
 	reaped, err := s.credentialSvc.CredentialGCExpired(r.Context(), name)
 	if err != nil {
-		writeErrorJSON(w, mapCredentialHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -360,29 +359,6 @@ func (s *Server) handleCredentialByPath(w http.ResponseWriter, r *http.Request) 
 // Credential error mapping
 // ---------------------------------------------------------------------------
 
-// mapCredentialHTTPError maps credential-package errors to HTTP status
-// codes, falling back to the generic mapHTTPError for non-credential
-// errors so existing semantics (KeyNotFound -> 404, etc.) are preserved.
-func mapCredentialHTTPError(err error) int {
-	switch {
-	case errors.Is(err, credentials.ErrCredentialNotFound):
-		return http.StatusNotFound
-	case errors.Is(err, credentials.ErrEnumerationNotSupported):
-		return http.StatusNotImplemented
-	case errors.Is(err, credentials.ErrVersionNotFound),
-		errors.Is(err, credentials.ErrVersionExpired):
-		return http.StatusGone
-	case errors.Is(err, credentials.ErrInvalidGracePeriod),
-		errors.Is(err, credentials.ErrEmptyCredentialName),
-		errors.Is(err, credentials.ErrEmptyCredentialValue):
-		return http.StatusBadRequest
-	case errors.Is(err, credentials.ErrInvalidStrategy):
-		return http.StatusInternalServerError
-	default:
-		return mapHTTPError(err)
-	}
-}
-
 // credentialStoreRequest is the JSON payload for POST /v1/credentials/store.
 // Value is a []byte so encoding/json decodes it from base64 (RFC 4648),
 // preserving arbitrary binary credential material byte-for-byte.
@@ -413,7 +389,7 @@ func (s *Server) handleCredentialStore(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.credentialSvc.CredentialStore(r.Context(), req.Name, req.Value); err != nil {
-		writeErrorJSON(w, mapCredentialHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -425,7 +401,7 @@ func (s *Server) handleCredentialStore(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCredentialRetrieve(w http.ResponseWriter, r *http.Request, name string) {
 	value, err := s.credentialSvc.CredentialRetrieve(r.Context(), name)
 	if err != nil {
-		writeErrorJSON(w, mapCredentialHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 	writeJSON(w, credentialValueResponse{Value: value})

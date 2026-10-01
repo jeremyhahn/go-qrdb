@@ -54,8 +54,8 @@ func ordersCreateRequest() *service.CreateTableRequest {
 
 // newWriterHarnessTable creates a table through h's real TableServicer and
 // returns a RelationalTable wired with every DML dependency
-// (TransactionServicer, SequenceServicer, BatchServicer), ready to drive
-// direct Insert/Update/Delete/Replace calls against.
+// (TransactionServicer, SequenceServicer), ready to drive direct
+// Insert/Update/Delete/Replace calls against.
 func newWriterHarnessTable(t *testing.T, h *ddlHarness, req *service.CreateTableRequest) (*RelationalTable, *service.TableDef) {
 	t.Helper()
 	def, err := h.tableSvc.CreateTable(context.Background(), req)
@@ -64,7 +64,6 @@ func newWriterHarnessTable(t *testing.T, h *ddlHarness, req *service.CreateTable
 		WithTableService(h.tableSvc),
 		WithTransactionService(h.txnSvc),
 		WithSequenceService(h.seqSvc),
-		WithBatchService(h.batchSvc),
 	)
 	require.NoError(t, err)
 	return tbl, def
@@ -86,7 +85,7 @@ func skuIndexKey(t *testing.T, def *service.TableDef, sku string) string {
 		if s.name == "idx_sku" {
 			encoded, eerr := s.valueCodec().EncodeValues([]any{sku})
 			require.NoError(t, eerr)
-			return service.TableIndexPrefix(def.Database, def.TableID, "idx_sku") + encoded
+			return service.TableIndexPrefix(def.Database, def.TableID, 0, incarnationOf(def, "idx_sku")) + encoded
 		}
 	}
 	t.Fatal("idx_sku not found")
@@ -107,7 +106,7 @@ func TestRelationalWriter_Insert_WritesRowAndUniqueIndexEntry(t *testing.T) {
 	require.NoError(t, ins.Insert(newTestContext(), row))
 	require.NoError(t, ins.Close(newTestContext()))
 
-	rowKey := service.TableDataPrefix(def.Database, def.TableID) + encodeUserKeyGeneric(t, tbl, row)
+	rowKey := service.TableDataPrefix(def.Database, def.TableID, 0) + encodeUserKeyGeneric(t, tbl, row)
 	raw, err := h.kvSvc.Get(context.Background(), rowKey)
 	require.NoError(t, err)
 	decoded, err := tbl.rowCodec.Decode(raw)
@@ -132,7 +131,7 @@ func TestRelationalWriter_Insert_NonUniqueIndex_KeyCarriesPrimaryKeySuffix(t *te
 	require.NoError(t, ins.Insert(newTestContext(), row1))
 	require.NoError(t, ins.Insert(newTestContext(), row2))
 
-	entries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix(def.Database, def.TableID, "idx_warehouse"))
+	entries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix(def.Database, def.TableID, 0, incarnationOf(def, "idx_warehouse")))
 	require.NoError(t, err)
 	assert.Len(t, entries, 2, "two rows sharing the same non-unique indexed value must get two distinct physical entries")
 }
@@ -145,11 +144,11 @@ func TestRelationalWriter_Insert_NullIndexedColumn_NoIndexEntry(t *testing.T) {
 	row := orderRow(1, nil, nil, int32(1))
 	require.NoError(t, ins.Insert(newTestContext(), row))
 
-	skuEntries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix(def.Database, def.TableID, "idx_sku"))
+	skuEntries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix(def.Database, def.TableID, 0, incarnationOf(def, "idx_sku")))
 	require.NoError(t, err)
 	assert.Empty(t, skuEntries, "a NULL indexed value must not contribute a physical index entry")
 
-	whEntries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix(def.Database, def.TableID, "idx_warehouse"))
+	whEntries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix(def.Database, def.TableID, 0, incarnationOf(def, "idx_warehouse")))
 	require.NoError(t, err)
 	assert.Empty(t, whEntries)
 }
@@ -164,7 +163,7 @@ func TestRelationalWriter_Insert_MultiRow(t *testing.T) {
 		require.NoError(t, ins.Insert(newTestContext(), row))
 	}
 
-	rows, err := h.kvSvc.Scan(context.Background(), service.TableDataPrefix(def.Database, def.TableID))
+	rows, err := h.kvSvc.Scan(context.Background(), service.TableDataPrefix(def.Database, def.TableID, 0))
 	require.NoError(t, err)
 	assert.Len(t, rows, 5)
 }
@@ -180,7 +179,7 @@ func TestRelationalWriter_Insert_DuplicatePrimaryKey_Rejected(t *testing.T) {
 	assert.True(t, sqle.ErrPrimaryKeyViolation.Is(err) || sqle.ErrUniqueKeyViolation.Is(err))
 
 	// The original row must be untouched.
-	rowKey := service.TableDataPrefix(def.Database, def.TableID) + encodeUserKeyGeneric(t, tbl, orderRow(1, nil, nil, nil))
+	rowKey := service.TableDataPrefix(def.Database, def.TableID, 0) + encodeUserKeyGeneric(t, tbl, orderRow(1, nil, nil, nil))
 	raw, gerr := h.kvSvc.Get(context.Background(), rowKey)
 	require.NoError(t, gerr)
 	decoded, derr := tbl.rowCodec.Decode(raw)
@@ -200,11 +199,11 @@ func TestRelationalWriter_Insert_UniqueIndexViolation_RejectsWholeTransaction(t 
 
 	// The colliding row must never have been written -- not the row itself,
 	// and not any of its index entries (the "whole transaction" guarantee).
-	rowKey := service.TableDataPrefix(def.Database, def.TableID) + encodeUserKeyGeneric(t, tbl, orderRow(2, nil, nil, nil))
+	rowKey := service.TableDataPrefix(def.Database, def.TableID, 0) + encodeUserKeyGeneric(t, tbl, orderRow(2, nil, nil, nil))
 	_, gerr := h.kvSvc.Get(context.Background(), rowKey)
 	assert.Error(t, gerr, "the rejected row must not have been written")
 
-	whEntries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix(def.Database, def.TableID, "idx_warehouse"))
+	whEntries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix(def.Database, def.TableID, 0, incarnationOf(def, "idx_warehouse")))
 	require.NoError(t, err)
 	assert.Len(t, whEntries, 1, "the rejected row's non-unique index entry must not have been written either")
 
@@ -259,7 +258,7 @@ func TestRelationalWriter_Update_UnchangedIndexedValue_LeavesIndexEntryAlone(t *
 	require.NoError(t, err)
 	assert.Equal(t, pk, string(idxVal))
 
-	rowKey := service.TableDataPrefix(def.Database, def.TableID) + pk
+	rowKey := service.TableDataPrefix(def.Database, def.TableID, 0) + pk
 	raw, err := h.kvSvc.Get(context.Background(), rowKey)
 	require.NoError(t, err)
 	decoded, err := tbl.rowCodec.Decode(raw)
@@ -278,11 +277,11 @@ func TestRelationalWriter_Update_PrimaryKeyChange_MovesRowAndAllIndexEntries(t *
 	newRow := orderRow(2, "SKU-1", "east", int32(10))
 	require.NoError(t, upd.Update(newTestContext(), old, newRow))
 
-	oldRowKey := service.TableDataPrefix(def.Database, def.TableID) + encodeUserKeyGeneric(t, tbl, old)
+	oldRowKey := service.TableDataPrefix(def.Database, def.TableID, 0) + encodeUserKeyGeneric(t, tbl, old)
 	_, err := h.kvSvc.Get(context.Background(), oldRowKey)
 	assert.Error(t, err, "the row's old primary-key storage key must be gone")
 
-	newRowKey := service.TableDataPrefix(def.Database, def.TableID) + encodeUserKeyGeneric(t, tbl, newRow)
+	newRowKey := service.TableDataPrefix(def.Database, def.TableID, 0) + encodeUserKeyGeneric(t, tbl, newRow)
 	raw, err := h.kvSvc.Get(context.Background(), newRowKey)
 	require.NoError(t, err)
 	decoded, err := tbl.rowCodec.Decode(raw)
@@ -299,7 +298,7 @@ func TestRelationalWriter_Update_PrimaryKeyChange_MovesRowAndAllIndexEntries(t *
 
 	// The non-unique index's entry key IS suffixed with the primary key, so
 	// it must have moved to a brand-new physical key.
-	whEntries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix(def.Database, def.TableID, "idx_warehouse"))
+	whEntries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix(def.Database, def.TableID, 0, incarnationOf(def, "idx_warehouse")))
 	require.NoError(t, err)
 	require.Len(t, whEntries, 1)
 	for _, v := range whEntries {
@@ -322,7 +321,7 @@ func TestRelationalWriter_Update_PrimaryKeyCollision_Rejected(t *testing.T) {
 	assert.True(t, sqle.ErrPrimaryKeyViolation.Is(err) || sqle.ErrUniqueKeyViolation.Is(err))
 
 	// Row 1 must be untouched.
-	rowKey := service.TableDataPrefix(def.Database, def.TableID) + encodeUserKeyGeneric(t, tbl, old)
+	rowKey := service.TableDataPrefix(def.Database, def.TableID, 0) + encodeUserKeyGeneric(t, tbl, old)
 	raw, gerr := h.kvSvc.Get(context.Background(), rowKey)
 	require.NoError(t, gerr)
 	decoded, derr := tbl.rowCodec.Decode(raw)
@@ -345,7 +344,7 @@ func TestRelationalWriter_Update_UniqueIndexCollision_Rejected(t *testing.T) {
 	assert.True(t, sqle.ErrUniqueKeyViolation.Is(err) || sqle.ErrPrimaryKeyViolation.Is(err))
 
 	// Row 2 must be untouched -- still SKU-2.
-	rowKey := service.TableDataPrefix(def.Database, def.TableID) + encodeUserKeyGeneric(t, tbl, old)
+	rowKey := service.TableDataPrefix(def.Database, def.TableID, 0) + encodeUserKeyGeneric(t, tbl, old)
 	raw, gerr := h.kvSvc.Get(context.Background(), rowKey)
 	require.NoError(t, gerr)
 	decoded, derr := tbl.rowCodec.Decode(raw)
@@ -374,14 +373,14 @@ func TestRelationalWriter_Delete_RemovesRowAndIndexEntries(t *testing.T) {
 	del := tbl.Deleter(newTestContext())
 	require.NoError(t, del.Delete(newTestContext(), row))
 
-	rowKey := service.TableDataPrefix(def.Database, def.TableID) + encodeUserKeyGeneric(t, tbl, row)
+	rowKey := service.TableDataPrefix(def.Database, def.TableID, 0) + encodeUserKeyGeneric(t, tbl, row)
 	_, err := h.kvSvc.Get(context.Background(), rowKey)
 	assert.Error(t, err)
 
 	_, err = h.kvSvc.Get(context.Background(), skuIndexKey(t, def, "SKU-1"))
 	assert.Error(t, err)
 
-	whEntries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix(def.Database, def.TableID, "idx_warehouse"))
+	whEntries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix(def.Database, def.TableID, 0, incarnationOf(def, "idx_warehouse")))
 	require.NoError(t, err)
 	assert.Empty(t, whEntries)
 }
@@ -398,38 +397,37 @@ func TestRelationalWriter_Delete_NonExistentRow_NoOp(t *testing.T) {
 // Truncate
 // ---------------------------------------------------------------------------
 
-func TestRelationalWriter_Truncate_ClearsRowsAndIndexEntries(t *testing.T) {
+// TestRelationalWriter_Truncate_AdvancesGenerationLeavingOldRowsUntouched
+// verifies go-qrdb#547's O(1) TRUNCATE: the table's rows and index entries
+// are never scanned or deleted synchronously -- the OLD generation's data is
+// still physically present in storage immediately after TRUNCATE returns
+// (the ReclaimSweeper deletes it later, see reclaim_job.go) -- while the
+// table itself immediately reads as empty because its resolved Generation
+// (and therefore dataPrefix) has advanced past it.
+func TestRelationalWriter_Truncate_AdvancesGenerationLeavingOldRowsUntouched(t *testing.T) {
 	h := newDDLHarness()
 	tbl, def := newWriterHarnessTable(t, h, ordersCreateRequest())
 	ins := tbl.Inserter(newTestContext())
 	require.NoError(t, ins.Insert(newTestContext(), orderRow(1, "SKU-1", "east", int32(10))))
 	require.NoError(t, ins.Insert(newTestContext(), orderRow(2, "SKU-2", "east", int32(20))))
 
+	oldGeneration := tbl.gen().generation
 	n, err := tbl.Truncate(newTestContext())
 	require.NoError(t, err)
-	assert.Equal(t, 2, n)
+	assert.Equal(t, 0, n, "TRUNCATE reports no affected-row count, matching real MySQL")
+	assert.Equal(t, oldGeneration+1, tbl.gen().generation)
 
-	rows, err := h.kvSvc.Scan(context.Background(), service.TableDataPrefix(def.Database, def.TableID))
+	// The OLD generation's rows and index entries are untouched -- TRUNCATE
+	// itself never deletes them; only the ReclaimSweeper does, later.
+	oldRows, err := h.kvSvc.Scan(context.Background(), service.TableDataPrefix(def.Database, def.TableID, oldGeneration))
 	require.NoError(t, err)
-	assert.Empty(t, rows)
+	assert.Len(t, oldRows, 2, "TRUNCATE must not touch the old generation's rows synchronously")
 
-	skuEntries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix(def.Database, def.TableID, "idx_sku"))
+	// The table's own dataPrefix has moved to the new generation, which has
+	// no rows: a scan resolved through the table's current state reads empty.
+	newRows, err := h.kvSvc.Scan(context.Background(), tbl.gen().dataPrefix)
 	require.NoError(t, err)
-	assert.Empty(t, skuEntries)
-
-	whEntries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix(def.Database, def.TableID, "idx_warehouse"))
-	require.NoError(t, err)
-	assert.Empty(t, whEntries)
-}
-
-func TestRelationalWriter_Truncate_NoBatchService(t *testing.T) {
-	def := testUsersDef()
-	tbl, err := NewRelationalTable(def, &mockKVService{}, nil)
-	require.NoError(t, err)
-
-	_, err = tbl.Truncate(newTestContext())
-	var e *BatchServiceUnavailableError
-	require.ErrorAs(t, err, &e)
+	assert.Empty(t, newRows, "the new generation must start empty")
 }
 
 // ---------------------------------------------------------------------------

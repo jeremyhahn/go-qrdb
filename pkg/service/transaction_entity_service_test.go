@@ -370,7 +370,7 @@ func TestTransactionService_ExecuteEntity_ProposeError(t *testing.T) {
 func TestTransactionService_ExecuteEntity_AppError(t *testing.T) {
 	host := &mockHost{
 		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
-			return sm.Result{Data: protocol.EncodeAppError("unique index violation: email")}, nil
+			return sm.Result{Data: protocol.EncodeAppError(protocol.AppErrorConflict, "unique index violation: email")}, nil
 		},
 	}
 
@@ -387,9 +387,9 @@ func TestTransactionService_ExecuteEntity_AppError(t *testing.T) {
 		t.Fatalf("expected nil response on app error, got %+v", resp)
 	}
 
-	var smErr *SMNotConfiguredError
+	var smErr *CommandConflictError
 	if !errors.As(err, &smErr) {
-		t.Fatalf("expected *SMNotConfiguredError, got %T: %v", err, err)
+		t.Fatalf("expected *CommandConflictError, got %T: %v", err, err)
 	}
 	if smErr.Message != "unique index violation: email" {
 		t.Fatalf("expected message %q, got %q", "unique index violation: email", smErr.Message)

@@ -14,7 +14,11 @@
 
 package quic
 
-import "strconv"
+import (
+	"strconv"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
+)
 
 // dialError is returned when the QUIC dial operation fails.
 type dialError struct {
@@ -29,6 +33,18 @@ func (e *dialError) Error() string {
 // Unwrap returns the underlying error.
 func (e *dialError) Unwrap() error {
 	return e.Err
+}
+
+// alpnMismatchError is returned by Connect when the TLS handshake selected a
+// protocol other than wire.ProtocolV2 -- possible only when a caller-supplied
+// TLS config offers others and the peer is not a qrdb QUIC listener.
+type alpnMismatchError struct {
+	Negotiated string
+}
+
+// Error returns a human-readable description.
+func (e *alpnMismatchError) Error() string {
+	return "quic transport: server selected ALPN protocol " + strconv.Quote(e.Negotiated) + ", want " + strconv.Quote(wire.ProtocolV2)
 }
 
 // streamError is returned when opening a QUIC stream fails.

@@ -15,8 +15,6 @@ package vector
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -277,8 +275,7 @@ func TestAdapter_Compact_WithData(t *testing.T) {
 
 // TestAdapter_CleanupTombstones_WithOldTombstones tests tombstone cleanup with old data
 func TestAdapter_CleanupTombstones_WithOldTombstones(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "tombstone_cleanup_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	config.SyncWrites = false
@@ -364,8 +361,7 @@ func TestAdapter_ScanNamespace_WithLimit(t *testing.T) {
 
 // TestBatch_DeleteVector_ErrorPaths tests error paths in batch delete
 func TestBatch_DeleteVector_ErrorPaths(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_delete_error_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -466,8 +462,7 @@ func TestAdapter_Close_AlreadyClosed(t *testing.T) {
 
 // TestBatch_UpsertVector_WithSetError tests batch upsert error handling
 func TestBatch_UpsertVector_WithSetError(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_upsert_error_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -491,8 +486,7 @@ func TestBatch_UpsertVector_WithSetError(t *testing.T) {
 
 // TestMetadataIterator_CloseError tests metadata iterator close error path
 func TestMetadataIterator_CloseError(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "metadata_close_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)

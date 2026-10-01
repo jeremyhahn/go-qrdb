@@ -536,8 +536,8 @@ func TestUserAuthFactor_Remove_Error(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 	st, _ := status.FromError(err)
-	if st.Code() != codes.AlreadyExists {
-		t.Fatalf("expected AlreadyExists, got %s", st.Code())
+	if st.Code() != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition, got %s", st.Code())
 	}
 }
 
@@ -646,17 +646,17 @@ func TestUserAuthFactor_Login_Error(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// mapUserAuthFactorGRPCError
+// mapServiceError
 // ---------------------------------------------------------------------------
 
 func TestMapUserAuthFactorGRPCError_Nil(t *testing.T) {
-	if mapUserAuthFactorGRPCError(nil) != nil {
+	if mapServiceError(nil) != nil {
 		t.Error("expected nil for nil error")
 	}
 }
 
 func TestMapUserAuthFactorGRPCError_NotFound(t *testing.T) {
-	err := mapUserAuthFactorGRPCError(auth.ErrFactorNotFound)
+	err := mapServiceError(auth.ErrFactorNotFound)
 	st, _ := status.FromError(err)
 	if st.Code() != codes.NotFound {
 		t.Fatalf("expected NotFound, got %s", st.Code())
@@ -664,7 +664,7 @@ func TestMapUserAuthFactorGRPCError_NotFound(t *testing.T) {
 }
 
 func TestMapUserAuthFactorGRPCError_UserHasNoFactors(t *testing.T) {
-	err := mapUserAuthFactorGRPCError(auth.ErrUserHasNoFactors)
+	err := mapServiceError(auth.ErrUserHasNoFactors)
 	st, _ := status.FromError(err)
 	if st.Code() != codes.NotFound {
 		t.Fatalf("expected NotFound, got %s", st.Code())
@@ -672,7 +672,7 @@ func TestMapUserAuthFactorGRPCError_UserHasNoFactors(t *testing.T) {
 }
 
 func TestMapUserAuthFactorGRPCError_FactorRevoked(t *testing.T) {
-	err := mapUserAuthFactorGRPCError(auth.ErrFactorRevoked)
+	err := mapServiceError(auth.ErrFactorRevoked)
 	st, _ := status.FromError(err)
 	if st.Code() != codes.FailedPrecondition {
 		t.Fatalf("expected FailedPrecondition, got %s", st.Code())
@@ -680,15 +680,15 @@ func TestMapUserAuthFactorGRPCError_FactorRevoked(t *testing.T) {
 }
 
 func TestMapUserAuthFactorGRPCError_LastFactor(t *testing.T) {
-	err := mapUserAuthFactorGRPCError(auth.ErrLastFactor)
+	err := mapServiceError(auth.ErrLastFactor)
 	st, _ := status.FromError(err)
-	if st.Code() != codes.AlreadyExists {
-		t.Fatalf("expected AlreadyExists, got %s", st.Code())
+	if st.Code() != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition, got %s", st.Code())
 	}
 }
 
 func TestMapUserAuthFactorGRPCError_AlreadyExists(t *testing.T) {
-	err := mapUserAuthFactorGRPCError(auth.ErrFactorAlreadyExists)
+	err := mapServiceError(auth.ErrFactorAlreadyExists)
 	st, _ := status.FromError(err)
 	if st.Code() != codes.AlreadyExists {
 		t.Fatalf("expected AlreadyExists, got %s", st.Code())
@@ -696,7 +696,7 @@ func TestMapUserAuthFactorGRPCError_AlreadyExists(t *testing.T) {
 }
 
 func TestMapUserAuthFactorGRPCError_TypeUnsupported(t *testing.T) {
-	err := mapUserAuthFactorGRPCError(auth.ErrFactorTypeUnsupported)
+	err := mapServiceError(auth.ErrFactorTypeUnsupported)
 	st, _ := status.FromError(err)
 	if st.Code() != codes.InvalidArgument {
 		t.Fatalf("expected InvalidArgument, got %s", st.Code())
@@ -704,7 +704,7 @@ func TestMapUserAuthFactorGRPCError_TypeUnsupported(t *testing.T) {
 }
 
 func TestMapUserAuthFactorGRPCError_InvalidFactor(t *testing.T) {
-	err := mapUserAuthFactorGRPCError(auth.ErrInvalidFactor)
+	err := mapServiceError(auth.ErrInvalidFactor)
 	st, _ := status.FromError(err)
 	if st.Code() != codes.InvalidArgument {
 		t.Fatalf("expected InvalidArgument, got %s", st.Code())
@@ -712,7 +712,7 @@ func TestMapUserAuthFactorGRPCError_InvalidFactor(t *testing.T) {
 }
 
 func TestMapUserAuthFactorGRPCError_Internal(t *testing.T) {
-	err := mapUserAuthFactorGRPCError(errors.New("unknown error"))
+	err := mapServiceError(errors.New("unknown error"))
 	st, _ := status.FromError(err)
 	if st.Code() != codes.Internal {
 		t.Fatalf("expected Internal, got %s", st.Code())

@@ -213,7 +213,7 @@ func (m *mockAdminService) Peers(_ context.Context) (*service.PeersInfo, error) 
 	}}, nil
 }
 
-func (m *mockAdminService) AddMember(_ context.Context, _, _ uint64, _ string) error {
+func (m *mockAdminService) AddMember(_ context.Context, _, _ uint64, _, _ string) error {
 	return nil
 }
 
@@ -1242,6 +1242,12 @@ func (s *stubCollectionSvc) GetDocument(_ context.Context, _ *service.GetDocumen
 func (s *stubCollectionSvc) UpdateDocument(_ context.Context, _ *service.UpdateDocumentRequest) (*service.UpdateDocumentResponse, error) {
 	return nil, nil
 }
+
+// UpsertDocument reports an insert: no test that uses this double drives
+// the guarded upsert, which is exercised against the real service.
+func (s *stubCollectionSvc) UpsertDocument(_ context.Context, req *service.UpsertDocumentRequest) (*service.UpsertDocumentResponse, error) {
+	return &service.UpsertDocumentResponse{ID: req.ID}, nil
+}
 func (s *stubCollectionSvc) DeleteDocument(_ context.Context, _ *service.DeleteDocumentRequest) (*service.DeleteDocumentResponse, error) {
 	return nil, nil
 }
@@ -1312,6 +1318,12 @@ func (s *stubIndexSvc) CreateIndex(_ context.Context, _, _ string, _ index.Index
 	return nil
 }
 func (s *stubIndexSvc) DropIndex(_ context.Context, _ string) error { return nil }
+
+// DropOwnedIndex answers as DropIndex does: this double records no
+// ownership, and no test that uses it exercises an owner-checked drop.
+func (s *stubIndexSvc) DropOwnedIndex(ctx context.Context, name, _ string) error {
+	return s.DropIndex(ctx, name)
+}
 func (s *stubIndexSvc) Query(_ context.Context, _ string, _ []byte) ([][]byte, error) {
 	return nil, nil
 }

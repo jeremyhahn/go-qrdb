@@ -516,16 +516,20 @@ func (t *Transport) Peers(ctx context.Context) (*transport.PeersResponse, error)
 
 // AddMember adds a new replica to the specified shard. Calls the
 // qrdb_add_member MCP tool.
-func (t *Transport) AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr string) error {
+func (t *Transport) AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
 
-	_, err := t.callTool(ctx, "qrdb_add_member", map[string]any{
+	args := map[string]any{
 		"shard_id":   shardID,
 		"replica_id": replicaID,
 		"raft_addr":  raftAddr,
-	})
+	}
+	if identity != "" {
+		args["identity"] = identity
+	}
+	_, err := t.callTool(ctx, "qrdb_add_member", args)
 	return err
 }
 

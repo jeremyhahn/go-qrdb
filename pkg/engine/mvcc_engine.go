@@ -84,6 +84,11 @@ type MVCCEngine struct {
 	// state machine. Guarded by indexMu with indexes and indexFields.
 	indexScopes map[string][]byte
 
+	// indexOwners holds the owner recorded for each index by name
+	// (index.IndexConfig.Owner, go-qrdb#426). The empty string is the
+	// explicit index API. Guarded by indexMu with the maps above.
+	indexOwners map[string]string
+
 	lessor   *lease.Lessor
 	hub      *watch.Hub
 	ts       *timeseries.Storage
@@ -139,6 +144,7 @@ func NewMVCCEngine(stg storage.Storage, opts ...MVCCOption) (*MVCCEngine, error)
 		indexes:     make(map[string]index.Index),
 		indexFields: make(map[string]string),
 		indexScopes: make(map[string][]byte),
+		indexOwners: make(map[string]string),
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -327,9 +333,18 @@ func (e *MVCCEngine) Lookup(_ context.Context, query interface{}) (interface{}, 
 		if e.lessor == nil {
 			return nil, &InvalidQueryError{Reason: "lessor not configured"}
 		}
-		l := e.lessor.Lookup(q.ID)
-		if l == nil {
-			return nil, &InvalidQueryError{Reason: "lease not found"}
+		// A lease absent from the Lessor's table is indistinguishable from
+		// one that expired and was swept: the expiry sweeper
+		// (pkg/lease/expiry.go) deletes an expired lease's entry outright
+		// rather than tombstoning it, so by the time LookupOrNotFound
+		// observes a miss the two cases carry no distinguishing state to
+		// report separately (go-qrdb#387). pkg/store's PebbleStateMachine
+		// answers the same query type against the same Lessor type for the
+		// "pebble" raft.sm_type, and translates the identical
+		// *lease.NotFoundError the identical way -- see its Lookup.
+		l, err := e.lessor.LookupOrNotFound(q.ID)
+		if err != nil {
+			return nil, &service.LeaseNotFoundError{LeaseID: q.ID}
 		}
 		return l, nil
 
@@ -444,21 +459,17 @@ func (e *MVCCEngine) listKeys(prefix string) ([]string, error) {
 	// records.
 	skipFilter := skipInternalKeyFilter(prefix)
 
+	// Seeks per key length rather than walking the whole namespace; see
+	// mvcc.ForEachMetaKeyInRange.
 	var keys []string
-	for iter.SeekToFirst(); iter.Valid(); iter.Next() {
-		userKey, decErr := mvcc.DecodeMetaKey(iter.Key())
-		if decErr != nil {
-			continue
-		}
+	err := mvcc.ForEachMetaKeyWithPrefix(iter, []byte(prefix), func(userKey []byte) bool {
 		userKeyStr := string(userKey)
-		if !skipFilter && isInternalKey(userKeyStr) {
-			continue
-		}
-		if prefix == "" || strings.HasPrefix(userKeyStr, prefix) {
+		if skipFilter || !isInternalKey(userKeyStr) {
 			keys = append(keys, userKeyStr)
 		}
-	}
-	if err := iter.Error(); err != nil {
+		return true
+	})
+	if err != nil {
 		return nil, err
 	}
 
@@ -484,28 +495,19 @@ func (e *MVCCEngine) lookupPrefix(q *statemachine.PrefixQuery) (map[string][]byt
 
 	result := make(map[string][]byte)
 	count := 0
-	for iter.SeekToFirst(); iter.Valid(); iter.Next() {
-		userKey, decErr := mvcc.DecodeMetaKey(iter.Key())
-		if decErr != nil {
-			continue
-		}
-		if !strings.HasPrefix(string(userKey), prefix) {
-			continue
-		}
+	err := mvcc.ForEachMetaKeyWithPrefix(iter, q.Prefix, func(userKey []byte) bool {
 		if !skipFilter && isInternalKey(string(userKey)) {
-			continue
+			return true
 		}
-		kvResult, err := e.store.Get(userKey)
-		if err != nil || kvResult == nil {
-			continue
+		kvResult, getErr := e.store.Get(userKey)
+		if getErr != nil || kvResult == nil {
+			return true
 		}
 		result[string(userKey)] = kvResult.Value
 		count++
-		if q.Limit > 0 && count >= q.Limit {
-			break
-		}
-	}
-	if err := iter.Error(); err != nil {
+		return q.Limit <= 0 || count < q.Limit
+	})
+	if err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -558,23 +560,14 @@ func (e *MVCCEngine) buildUpdateHandlers() map[byte]mvccHandler {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Application-error helpers
-//
 // A Raft state machine must never return a Go error from Update() for an
 // outcome that is a deterministic consequence of valid client input (e.g. a
 // unique-index violation, an invalid lease TTL, or an operation against a
 // subsystem not configured on this SM): doing so halts lastApplied and stalls
-// the whole group. Such outcomes are encoded into sm.Result.Data via
-// protocol.EncodeAppError and surfaced to the client by the service layer
-// (service.checkResultError). Only genuine non-deterministic faults (decode of
-// a committed entry, storage IO) are returned as Go errors.
-// ---------------------------------------------------------------------------
-
-// appErrResult builds a non-fatal application-error result payload.
-func appErrResult(msg string) sm.Result {
-	return sm.Result{Data: protocol.EncodeAppError(msg)}
-}
+// the whole group. Such outcomes are encoded into sm.Result.Data with their
+// KIND (protocol.AppErrorKind) — statemachine.CapabilityResult for an absent
+// subsystem, statemachine.RefusalResult for a subsystem's own refusal — and
+// surfaced to the client as a typed error by service.checkResultError.
 
 // decodedOpSupported reports whether executeDecodedOpWithNotify can execute
 // op. It is the single definition of that set, so the pre-flight check below
@@ -619,7 +612,7 @@ func validateDecodedOps(ops []protocol.DecodedOp) error {
 func asAppErrResult(err error) (sm.Result, bool, error) {
 	var uce *UniqueConstraintError
 	if errors.As(err, &uce) {
-		return appErrResult(uce.Error()), true, nil
+		return sm.Result{Data: protocol.EncodeAppError(protocol.AppErrorConflict, uce.Error())}, true, nil
 	}
 	return sm.Result{}, false, err
 }
@@ -1305,7 +1298,7 @@ func handleLeaseGrant(_ *mvcc.Store, lr *lease.Lessor, _ storage.Batch, payload 
 	if lr == nil {
 		// Lease subsystem not configured on this SM: surface as a non-fatal
 		// application error so the apply loop keeps advancing.
-		return appErrResult((&NotOpenError{}).Error()), nil, nil
+		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "lease"}), nil, nil
 	}
 
 	info, err := lr.Grant(ttl)
@@ -1313,7 +1306,7 @@ func handleLeaseGrant(_ *mvcc.Store, lr *lease.Lessor, _ storage.Batch, payload 
 		// Invalid TTL (and similar input-shaped grant failures) are
 		// deterministic application errors, not corruption: surface via the
 		// result payload rather than stalling consensus.
-		return appErrResult(err.Error()), nil, nil
+		return statemachine.RefusalResult(err), nil, nil
 	}
 
 	return sm.Result{Value: uint64(info.ID)}, nil, nil
@@ -1331,7 +1324,7 @@ func handleLeaseRevoke(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, pay
 	}
 
 	if lr == nil {
-		return appErrResult((&NotOpenError{}).Error()), nil, nil
+		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "lease"}), nil, nil
 	}
 
 	keys, err := lr.Revoke(leaseID)
@@ -1385,7 +1378,7 @@ func handleLeaseKeepAlive(_ *mvcc.Store, lr *lease.Lessor, _ storage.Batch, payl
 	}
 
 	if lr == nil {
-		return appErrResult((&NotOpenError{}).Error()), nil, nil
+		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "lease"}), nil, nil
 	}
 
 	_, err = lr.KeepAlive(leaseID)
@@ -1416,14 +1409,21 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 
 	e.indexMu.Lock()
 	if _, exists := e.indexes[name]; exists {
-		// Index already present — idempotent success so Raft Apply does not
-		// stall on duplicate create proposals. NOTE: existence is keyed by name
-		// only; a re-create that reuses the name with a DIVERGENT definition
-		// (different field/uniqueness) is a no-op and the original definition
-		// wins. Reconciling a divergent re-create must be rejected at the
-		// service layer before the proposal (returning an error here would
-		// stall consensus).
+		owner := e.indexOwners[name]
 		e.indexMu.Unlock()
+		// A create naming an index ANOTHER owner holds is refused rather than
+		// adopted (go-qrdb#426). It is an application error, not a Go error:
+		// the outcome is a deterministic consequence of committed input, and
+		// returning an error here would stall consensus.
+		if index.CheckCreateOwner(name, owner, opts.Owner) != nil {
+			return sm.Result{Data: protocol.EncodeIndexOwnershipError(name, owner)}, nil, nil
+		}
+		// Index already present under the same owner — idempotent success so
+		// Raft Apply does not stall on duplicate create proposals. NOTE:
+		// existence is keyed by name only; a re-create by the SAME owner with
+		// a DIVERGENT definition (different field/uniqueness) is a no-op and
+		// the original definition wins. Reconciling a divergent re-create must
+		// be rejected at the service layer before the proposal.
 		return sm.Result{Value: 1}, nil, nil
 	}
 
@@ -1445,6 +1445,7 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 		// complete; the apply path reads the composed scope out of
 		// e.indexScopes (go-qrdb#410).
 		KeyPrefix: opts.KeyPrefix,
+		Owner:     opts.Owner,
 		// Derived from the command instead of left at its zero value. This
 		// engine used to discard the flag, so an index:"case_insensitive"
 		// definition became a case-SENSITIVE index and a lookup for "Alpha"
@@ -1497,6 +1498,7 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 	e.indexes[name] = idx
 	e.indexFields[name] = fieldName
 	e.indexScopes[name] = scope
+	e.indexOwners[name] = opts.Owner
 	e.indexMu.Unlock()
 
 	return sm.Result{Value: 1}, nil, nil
@@ -1507,7 +1509,7 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 // handlers must be idempotent so that cleanup proposals (e.g. deferred test
 // teardown) do not return a fatal Apply error that would stall consensus.
 func (e *MVCCEngine) handleIndexDrop(_ *mvcc.Store, _ *lease.Lessor, _ storage.Batch, payload []byte) (sm.Result, []Notification, error) {
-	name, err := protocol.DecodeIndexDrop(payload)
+	name, dropOpts, err := protocol.DecodeIndexDropOpts(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
@@ -1519,9 +1521,15 @@ func (e *MVCCEngine) handleIndexDrop(_ *mvcc.Store, _ *lease.Lessor, _ storage.B
 		e.indexMu.Unlock()
 		return sm.Result{Value: 1}, nil, nil
 	}
+	// An owner-checked drop removes only its caller's index (go-qrdb#426).
+	if owner := e.indexOwners[name]; index.CheckDropOwner(name, owner, dropOpts.CheckOwner, dropOpts.Owner) != nil {
+		e.indexMu.Unlock()
+		return sm.Result{Data: protocol.EncodeIndexOwnershipError(name, owner)}, nil, nil
+	}
 	delete(e.indexes, name)
 	delete(e.indexFields, name)
 	delete(e.indexScopes, name)
+	delete(e.indexOwners, name)
 	e.indexMu.Unlock()
 
 	if err := idx.Clear(); err != nil {
@@ -1543,7 +1551,7 @@ func (e *MVCCEngine) handleTSWrite(_ *mvcc.Store, _ *lease.Lessor, _ storage.Bat
 	if e.ts == nil {
 		// Time-series subsystem not configured on this SM: non-fatal
 		// application error so the apply loop keeps advancing.
-		return appErrResult((&NotOpenError{}).Error()), nil, nil
+		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "timeseries"}), nil, nil
 	}
 
 	params, err := protocol.DecodeTSWrite(payload)
@@ -1563,7 +1571,7 @@ func (e *MVCCEngine) handleTSWriteBatch(_ *mvcc.Store, _ *lease.Lessor, _ storag
 	if e.ts == nil {
 		// Time-series subsystem not configured on this SM: non-fatal
 		// application error so the apply loop keeps advancing.
-		return appErrResult((&NotOpenError{}).Error()), nil, nil
+		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "timeseries"}), nil, nil
 	}
 
 	params, err := protocol.DecodeTSWriteBatch(payload)
@@ -1593,7 +1601,7 @@ func (e *MVCCEngine) handleTSWritePoint(_ *mvcc.Store, _ *lease.Lessor, _ storag
 	if e.ts == nil {
 		// Time-series subsystem not configured on this SM: non-fatal
 		// application error so the apply loop keeps advancing.
-		return appErrResult((&NotOpenError{}).Error()), nil, nil
+		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "timeseries"}), nil, nil
 	}
 
 	params, err := protocol.DecodeTSWrite(payload)
@@ -1619,7 +1627,7 @@ func (e *MVCCEngine) handleTSDeleteSeries(_ *mvcc.Store, _ *lease.Lessor, _ stor
 	if e.ts == nil {
 		// Time-series subsystem not configured on this SM: non-fatal
 		// application error so the apply loop keeps advancing.
-		return appErrResult((&NotOpenError{}).Error()), nil, nil
+		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "timeseries"}), nil, nil
 	}
 
 	params, err := protocol.DecodeTSDeleteSeries(payload)
@@ -1650,7 +1658,7 @@ func (e *MVCCEngine) handleTSSetRetention(_ *mvcc.Store, _ *lease.Lessor, _ stor
 	if e.ts == nil {
 		// Time-series subsystem not configured on this SM: non-fatal
 		// application error so the apply loop keeps advancing.
-		return appErrResult((&NotOpenError{}).Error()), nil, nil
+		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "timeseries"}), nil, nil
 	}
 
 	params, err := protocol.DecodeTSSetRetention(payload)

@@ -18,8 +18,6 @@ import (
 	"context"
 	"time"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -32,7 +30,7 @@ import (
 // All eight handlers are 1:1 wrappers around service.CredentialServicer.
 // They validate that the credential service was wired into the server,
 // translate proto request types into service inputs, and rely on the shared
-// mapCredentialError (declared in credentials_server.go) to translate
+// mapServiceError (error_status.go) to translate
 // service-layer errors back into appropriate gRPC status codes.
 // ---------------------------------------------------------------------------
 
@@ -40,10 +38,10 @@ import (
 // credential management strategy.
 func (s *qrdbServiceServer) CredentialSubmit(ctx context.Context, req *pb.CredentialSubmitRequest) (*emptypb.Empty, error) {
 	if s.credentialSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "credential"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "credential"})
 	}
 	if err := s.credentialSvc.CredentialSubmit(ctx, req.GetName(), req.GetValue()); err != nil {
-		return nil, mapCredentialError(err)
+		return nil, mapServiceError(err)
 	}
 	return &emptypb.Empty{}, nil
 }
@@ -51,7 +49,7 @@ func (s *qrdbServiceServer) CredentialSubmit(ctx context.Context, req *pb.Creden
 // CredentialStrategy returns the active credential management strategy name.
 func (s *qrdbServiceServer) CredentialStrategy(ctx context.Context, _ *emptypb.Empty) (*pb.CredentialStrategyResponse, error) {
 	if s.credentialSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "credential"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "credential"})
 	}
 	return &pb.CredentialStrategyResponse{
 		Strategy: s.credentialSvc.CredentialStrategy(),
@@ -62,10 +60,10 @@ func (s *qrdbServiceServer) CredentialStrategy(ctx context.Context, _ *emptypb.E
 // historical versions.
 func (s *qrdbServiceServer) CredentialDelete(ctx context.Context, req *pb.CredentialDeleteRequest) (*emptypb.Empty, error) {
 	if s.credentialSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "credential"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "credential"})
 	}
 	if err := s.credentialSvc.CredentialDelete(ctx, req.GetName()); err != nil {
-		return nil, mapCredentialError(err)
+		return nil, mapServiceError(err)
 	}
 	return &emptypb.Empty{}, nil
 }
@@ -74,11 +72,11 @@ func (s *qrdbServiceServer) CredentialDelete(ctx context.Context, req *pb.Creden
 // are never returned by enumeration.
 func (s *qrdbServiceServer) CredentialList(ctx context.Context, _ *pb.CredentialListRequest) (*pb.CredentialListResponse, error) {
 	if s.credentialSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "credential"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "credential"})
 	}
 	names, err := s.credentialSvc.CredentialList(ctx)
 	if err != nil {
-		return nil, mapCredentialError(err)
+		return nil, mapServiceError(err)
 	}
 	return &pb.CredentialListResponse{
 		Names: names,
@@ -90,14 +88,14 @@ func (s *qrdbServiceServer) CredentialList(ctx context.Context, _ *pb.Credential
 // version number until the grace period elapses.
 func (s *qrdbServiceServer) CredentialRotate(ctx context.Context, req *pb.CredentialRotateRequest) (*pb.CredentialRotateResponse, error) {
 	if s.credentialSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "credential"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "credential"})
 	}
 	result, err := s.credentialSvc.CredentialRotate(ctx, req.GetName(), credentials.RotateOptions{
 		NewValue:    req.GetNewValue(),
 		GracePeriod: time.Duration(req.GetGracePeriodSeconds()) * time.Second,
 	})
 	if err != nil {
-		return nil, mapCredentialError(err)
+		return nil, mapServiceError(err)
 	}
 	var graceUntilUnix int64
 	if !result.GraceUntil.IsZero() {
@@ -115,11 +113,11 @@ func (s *qrdbServiceServer) CredentialRotate(ctx context.Context, req *pb.Creden
 // specific version. version == 0 selects the current version.
 func (s *qrdbServiceServer) CredentialRetrieveVersion(ctx context.Context, req *pb.CredentialRetrieveVersionRequest) (*pb.CredentialRetrieveVersionResponse, error) {
 	if s.credentialSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "credential"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "credential"})
 	}
 	value, err := s.credentialSvc.CredentialRetrieveVersion(ctx, req.GetName(), req.GetVersion())
 	if err != nil {
-		return nil, mapCredentialError(err)
+		return nil, mapServiceError(err)
 	}
 	return &pb.CredentialRetrieveVersionResponse{
 		Value: value,
@@ -130,11 +128,11 @@ func (s *qrdbServiceServer) CredentialRetrieveVersion(ctx context.Context, req *
 // non-expired grace versions) for a credential. Values are never returned.
 func (s *qrdbServiceServer) CredentialListVersions(ctx context.Context, req *pb.CredentialListVersionsRequest) (*pb.CredentialListVersionsResponse, error) {
 	if s.credentialSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "credential"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "credential"})
 	}
 	versions, err := s.credentialSvc.CredentialListVersions(ctx, req.GetName())
 	if err != nil {
-		return nil, mapCredentialError(err)
+		return nil, mapServiceError(err)
 	}
 	pbVersions := make([]*pb.CredentialVersionInfo, 0, len(versions))
 	for _, v := range versions {
@@ -163,11 +161,11 @@ func (s *qrdbServiceServer) CredentialListVersions(ctx context.Context, req *pb.
 // elapsed and returns the count reaped.
 func (s *qrdbServiceServer) CredentialGCExpired(ctx context.Context, req *pb.CredentialGCRequest) (*pb.CredentialGCResponse, error) {
 	if s.credentialSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "credential"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "credential"})
 	}
 	reaped, err := s.credentialSvc.CredentialGCExpired(ctx, req.GetName())
 	if err != nil {
-		return nil, mapCredentialError(err)
+		return nil, mapServiceError(err)
 	}
 	return &pb.CredentialGCResponse{
 		Reaped: int32(reaped),
@@ -177,10 +175,10 @@ func (s *qrdbServiceServer) CredentialGCExpired(ctx context.Context, req *pb.Cre
 // CredentialStore persists a credential value under the given name.
 func (s *qrdbServiceServer) CredentialStore(ctx context.Context, req *pb.CredentialStoreRequest) (*emptypb.Empty, error) {
 	if s.credentialSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "credential"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "credential"})
 	}
 	if err := s.credentialSvc.CredentialStore(ctx, req.GetName(), req.GetValue()); err != nil {
-		return nil, mapCredentialError(err)
+		return nil, mapServiceError(err)
 	}
 	return &emptypb.Empty{}, nil
 }
@@ -188,11 +186,11 @@ func (s *qrdbServiceServer) CredentialStore(ctx context.Context, req *pb.Credent
 // CredentialRetrieve returns the credential value for the given name.
 func (s *qrdbServiceServer) CredentialRetrieve(ctx context.Context, req *pb.CredentialRetrieveRequest) (*pb.CredentialRetrieveResponse, error) {
 	if s.credentialSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "credential"}).Error())
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "credential"})
 	}
 	value, err := s.credentialSvc.CredentialRetrieve(ctx, req.GetName())
 	if err != nil {
-		return nil, mapCredentialError(err)
+		return nil, mapServiceError(err)
 	}
 	return &pb.CredentialRetrieveResponse{Value: value}, nil
 }

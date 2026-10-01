@@ -77,6 +77,17 @@ func (n *namespacedKV) PutIfAbsent(ctx context.Context, key string, value []byte
 	return n.inner.PutIfAbsent(ctx, n.ns+key, value)
 }
 
+// CompareAndSwap namespaces the key and delegates, for the reason
+// PutIfAbsent does: the guard is decided against the key actually read.
+func (n *namespacedKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return n.inner.CompareAndSwap(ctx, n.ns+key, expected, next)
+}
+
+// CompareAndDelete namespaces the key and delegates.
+func (n *namespacedKV) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	return n.inner.CompareAndDelete(ctx, n.ns+key, expected)
+}
+
 func (n *namespacedKV) Get(ctx context.Context, key string) ([]byte, error) {
 	return n.inner.Get(ctx, n.ns+key)
 }

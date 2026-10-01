@@ -219,14 +219,53 @@ func (t *Transport) BarrierRekey(ctx context.Context, req *transport.BarrierReke
 	return &resp, nil
 }
 
-// BarrierGenerateRecoveryKeys generates recovery keys for disaster recovery
-// scenarios by calling the qrdb_barrier_recovery_generate MCP tool.
-// BarrierEnableEncryption is not supported on the mcp transport; enable
-// encryption via the REST or gRPC (unix) transports.
-func (t *Transport) BarrierEnableEncryption(_ context.Context, _ *transport.BarrierEnableEncryptionRequest) (*transport.BarrierEnableEncryptionResponse, error) {
-	return nil, &transport.NotImplementedError{Method: "BarrierEnableEncryption"}
+// BarrierEnableEncryption migrates a previously-unencrypted barrier to a
+// keyed strategy by calling the qrdb_barrier_enable_encryption MCP tool,
+// which (pkg/api/mcp/tools_barrier.go) has always had a full server-side
+// implementation mirroring REST/gRPC/QUIC; only this client stub forwarded
+// nothing (go-qrdb#558).
+func (t *Transport) BarrierEnableEncryption(ctx context.Context, req *transport.BarrierEnableEncryptionRequest) (*transport.BarrierEnableEncryptionResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	args := map[string]any{
+		"strategy": req.Strategy,
+	}
+	if req.TenantID != "" {
+		args["tenant_id"] = req.TenantID
+	}
+	if req.Mechanism != "" {
+		args["mechanism"] = req.Mechanism
+	}
+	if req.Availability != "" {
+		args["availability"] = req.Availability
+	}
+	if len(req.Passphrase) > 0 {
+		args["passphrase"] = secretArg(req.Passphrase)
+	}
+	if req.ShamirThreshold != 0 {
+		args["shamir_threshold"] = req.ShamirThreshold
+	}
+	if req.ShamirTotal != 0 {
+		args["shamir_total"] = req.ShamirTotal
+	}
+
+	text, err := t.callTool(ctx, "qrdb_barrier_enable_encryption", args)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "BarrierEnableEncryption", Err: err}
+	}
+
+	var resp transport.BarrierEnableEncryptionResponse
+	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "BarrierEnableEncryption", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return &resp, nil
 }
 
+// BarrierGenerateRecoveryKeys generates recovery keys for disaster recovery
+// scenarios by calling the qrdb_barrier_recovery_generate MCP tool.
 func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transport.BarrierGenerateRecoveryKeysRequest) (*transport.BarrierRecoveryKeysResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}

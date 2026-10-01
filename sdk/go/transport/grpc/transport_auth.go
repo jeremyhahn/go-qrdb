@@ -83,7 +83,6 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 		Name:                 req.Name,
 		WithoutEmailLoginKey: req.WithoutEmailLoginKey,
 		RoleIds:              req.RoleIDs,
-		GroupIds:             req.GroupIDs,
 		AuthMethods:          req.AuthMethods,
 		Lifecycle:            req.Lifecycle,
 		Pending:              req.Pending,
@@ -213,13 +212,9 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 		Lifecycle: req.Lifecycle,
 	}
 	// proto3 cannot tell an absent repeated field from an empty one, so the
-	// has_* flags carry the nil-vs-empty distinction that decides between
-	// "leave alone" and "clear". Without them a membership could never be
-	// revoked over gRPC.
-	if req.GroupIDs != nil {
-		pbReq.GroupIds = req.GroupIDs
-		pbReq.HasGroupIds = true
-	}
+	// has_* flag carries the nil-vs-empty distinction that decides between
+	// "leave alone" and "clear". Without it a method restriction could never
+	// be lifted over gRPC.
 	if req.AuthMethods != nil {
 		pbReq.AuthMethods = req.AuthMethods
 		pbReq.HasAuthMethods = true
@@ -552,21 +547,38 @@ func protoToUser(resp *pb.UserResponse) *transport.User {
 		return nil
 	}
 	return &transport.User{
-		ID:          resp.GetId(),
-		TenantID:    resp.GetTenantId(),
-		Username:    resp.GetUsername(),
-		Email:       resp.GetEmail(),
-		Name:        resp.GetName(),
-		RoleIDs:     resp.GetRoleIds(),
-		Enabled:     resp.GetEnabled(),
-		System:      resp.GetSystem(),
-		Lifecycle:   resp.GetLifecycle(),
-		GroupIDs:    resp.GetGroupIds(),
-		AuthMethods: resp.GetAuthMethods(),
-		LastAuth:    unixToRFC3339(resp.GetLastAuthUnix()),
-		CreatedAt:   resp.GetCreatedAt(),
-		UpdatedAt:   resp.GetUpdatedAt(),
+		ID:           resp.GetId(),
+		TenantID:     resp.GetTenantId(),
+		Username:     resp.GetUsername(),
+		Email:        resp.GetEmail(),
+		Name:         resp.GetName(),
+		RoleIDs:      resp.GetRoleIds(),
+		System:       resp.GetSystem(),
+		Lifecycle:    resp.GetLifecycle(),
+		AuthMethods:  resp.GetAuthMethods(),
+		LastAuth:     unixToRFC3339(resp.GetLastAuthUnix()),
+		CertBindings: protoToCertBindings(resp.GetCertBindings()),
+		CreatedAt:    resp.GetCreatedAt(),
+		UpdatedAt:    resp.GetUpdatedAt(),
 	}
+}
+
+// protoToCertBindings converts the proto binding list to the transport form.
+// Nil for an empty list, so an account with no bindings reads the same on
+// every transport.
+func protoToCertBindings(in []*pb.CertBinding) []transport.CertBinding {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]transport.CertBinding, len(in))
+	for i, b := range in {
+		out[i] = transport.CertBinding{
+			Thumbprint: b.GetThumbprint(),
+			Kind:       b.GetKind(),
+			NotAfter:   unixToRFC3339(b.GetNotAfterUnix()),
+		}
+	}
+	return out
 }
 
 // protoToRole converts a proto RoleResponse to a transport Role.

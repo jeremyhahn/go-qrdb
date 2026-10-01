@@ -42,7 +42,7 @@ interface UserResponse {
   username: string;
   tenant_id: string;
   role_ids: string[];
-  enabled: boolean;
+  lifecycle: string;
   created_at: string;
   updated_at: string;
 }
@@ -236,7 +236,7 @@ test.describe("Bootstrap idempotency (restart safety)", () => {
     expect(admin.created_at).toBe(firstBootAdmin.created_at);
     expect(admin.tenant_id).toBe(firstBootAdmin.tenant_id);
     expect(admin.role_ids).toEqual(firstBootAdmin.role_ids);
-    expect(admin.enabled).toBe(true);
+    expect(admin.lifecycle).toBe("active");
   });
 
   test("committed KV state survives the restart", async () => {

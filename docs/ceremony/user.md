@@ -109,10 +109,11 @@ To give a new officer a *share*, you rekey — see
 This fails closed rather than initializing a quorum arrangement with nobody in
 it. Pass `--officers user=path/to/csr.pem` for each.
 
-**The server restarted mid-enrolment and the shares are gone.** They are. Shares
-live only in locked memory and are never written to disk, so an abandoned
-ceremony must be re-run. That is deliberate: shares belong to custodians, not
-to the system.
+**The server restarted mid-enrolment and the shares are gone.** They are. A
+pending share lives only in memory and is never written to disk — sealed as
+ciphertext (`secure.Secret`) until the moment a custodian claims it, and
+mlocked only for that instant — so an abandoned ceremony must be re-run. That
+is deliberate: shares belong to custodians, not to the system.
 
 **A claim was refused with "already claimed".** Delivery is once. If the share
 was lost between the response and your storage, the recovery is a rekey.

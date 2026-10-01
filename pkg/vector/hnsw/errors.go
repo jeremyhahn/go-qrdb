@@ -167,21 +167,6 @@ func (e *DimensionMismatchError) Unwrap() error {
 	return ErrDimensionMismatch
 }
 
-// UnsupportedMetricError is returned when an unknown distance metric is requested.
-type UnsupportedMetricError struct {
-	Metric DistanceMetric
-}
-
-// Error implements the error interface.
-func (e *UnsupportedMetricError) Error() string {
-	return fmt.Sprintf("unsupported distance metric: %d", e.Metric)
-}
-
-// Unwrap returns the sentinel ErrUnsupportedMetric error.
-func (e *UnsupportedMetricError) Unwrap() error {
-	return ErrUnsupportedMetric
-}
-
 // BatchError represents an error that occurred during batch distance computation.
 type BatchError struct {
 	Op  string

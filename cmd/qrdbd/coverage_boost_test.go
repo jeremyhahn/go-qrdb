@@ -40,6 +40,7 @@ import (
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
@@ -189,55 +190,21 @@ func TestKVServiceAdapter_Exists_ServiceError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// start.go: defaultMVCCFastStorageFactory, defaultMVCCFastLogger —
-//           exercise the happy paths (panic branches cannot be unit-tested
-//           without mocking os.MkdirTemp/logger.New)
-// ---------------------------------------------------------------------------
-
-func TestDefaultMVCCFastStorageFactory_ReturnsNonNilFactory(t *testing.T) {
-	factory := defaultMVCCFastStorageFactory()
-	require.NotNil(t, factory, "defaultMVCCFastStorageFactory must return a non-nil factory function")
-}
-
-func TestDefaultMVCCFastStorageFactory_InvokeCreatesStorage(t *testing.T) {
-	factory := defaultMVCCFastStorageFactory()
-	// Invoke the factory with shard 1, replica 1 to cover the inner closure.
-	s := factory(1, 1)
-	require.NotNil(t, s, "factory invocation must return a non-nil Storage")
-	// Close if the Storage implements io.Closer to avoid resource leaks.
-	if closer, ok := s.(interface{ Close() error }); ok {
-		_ = closer.Close()
-	}
-}
-
-func TestDefaultMVCCFastLogger_ReturnsNonNilLogger(t *testing.T) {
-	log := defaultMVCCFastLogger()
-	require.NotNil(t, log, "defaultMVCCFastLogger must return a non-nil Logger")
-}
-
-// ---------------------------------------------------------------------------
 // start.go: init — exercises the registered state machine types
 // ---------------------------------------------------------------------------
 
 func TestInit_PebbleStateMachineRegistered(t *testing.T) {
 	// "pebble" must be resolvable after init() runs.
-	fn, err := resolveCreateFunc("pebble", "")
+	fn, err := resolveCreateFunc("pebble", "", statemachine.StorageConfig{})
 	require.NoError(t, err)
 	require.NotNil(t, fn, "pebble state machine factory must be registered by init()")
 }
 
 func TestInit_MVCCStateMachineRegistered(t *testing.T) {
 	// "mvcc" must be resolvable after init() runs.
-	fn, err := resolveCreateFunc("mvcc", "")
+	fn, err := resolveCreateFunc("mvcc", "", statemachine.StorageConfig{})
 	require.NoError(t, err)
 	require.NotNil(t, fn, "mvcc state machine factory must be registered by init()")
-}
-
-func TestInit_MVCCFastStateMachineRegistered(t *testing.T) {
-	// "mvcc-fast" must be resolvable after init() runs.
-	fn, err := resolveCreateFunc("mvcc-fast", "")
-	require.NoError(t, err)
-	require.NotNil(t, fn, "mvcc-fast state machine factory must be registered by init()")
 }
 
 // ---------------------------------------------------------------------------
@@ -245,7 +212,7 @@ func TestInit_MVCCFastStateMachineRegistered(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestResolveCreateFunc_UnknownTypeWithBackend_ErrorIncludesBoth(t *testing.T) {
-	_, err := resolveCreateFunc("unknown-sm", "mybackend")
+	_, err := resolveCreateFunc("unknown-sm", "mybackend", statemachine.StorageConfig{})
 	require.Error(t, err)
 	var smErr *UnknownSMError
 	require.True(t, errors.As(err, &smErr))
@@ -253,7 +220,7 @@ func TestResolveCreateFunc_UnknownTypeWithBackend_ErrorIncludesBoth(t *testing.T
 }
 
 func TestResolveCreateFunc_UnknownTypeNoBackend_ErrorIncludesType(t *testing.T) {
-	_, err := resolveCreateFunc("totally-unknown", "")
+	_, err := resolveCreateFunc("totally-unknown", "", statemachine.StorageConfig{})
 	require.Error(t, err)
 	var smErr *UnknownSMError
 	require.True(t, errors.As(err, &smErr))
@@ -583,32 +550,6 @@ func TestLoadTLSFromDir_WithoutCAKey_ReturnsBundle(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, bundle)
 	assert.Empty(t, bundle.CAKeyPEM, "CAKeyPEM must be empty when ca-key.pem is absent")
-}
-
-// ---------------------------------------------------------------------------
-// tls.go: generateLeafFromCA error branches
-// ---------------------------------------------------------------------------
-
-func TestGenerateLeafFromCA_NoCertBlock(t *testing.T) {
-	_, err := generateLeafFromCA([]byte("no-pem-blocks-here"))
-	require.Error(t, err)
-	var bke *BootstrapKeyError
-	require.True(t, errors.As(err, &bke))
-	assert.Equal(t, "CA certificate", bke.Kind)
-}
-
-func TestGenerateLeafFromCA_NoKeyBlock(t *testing.T) {
-	// Provide a valid CERTIFICATE block but no key block.
-	_, _, caCert, _, err := generateCA(caValidity)
-	require.NoError(t, err)
-
-	pemData := pemEncodeCertificate(caCert.Raw)
-
-	_, err = generateLeafFromCA(pemData)
-	require.Error(t, err)
-	var bke *BootstrapKeyError
-	require.True(t, errors.As(err, &bke))
-	assert.Equal(t, "CA private key", bke.Kind)
 }
 
 // ---------------------------------------------------------------------------
@@ -1009,12 +950,15 @@ func TestBootstrapAuth_UserStoreCreationError(t *testing.T) {
 
 	// bootstrapUserRoleStores requires both boot and runtime KV services.
 	// We use the same mock for both to trigger the error on boot user store.
-	mgmt, err := bootstrapUserRoleStores(context.Background(), mock, mock, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil)
+	// A throwaway map backs the guarded-batch mock: this test targets the
+	// List/Scan failure path, not the atomic-identity plane.
+	tx := newMockTransactionServicer(make(map[string][]byte))
+	mgmt, err := bootstrapUserRoleStores(context.Background(), mock, mock, tx, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil)
 	// The error should be from bootstrap, though user/role stores may
 	// succeed if they don't require initial List; just verify it completes.
 	// If no error, also try auth enforcement (audit logger won't fail on valid dir).
 	if err == nil && mgmt != nil {
-		_, _ = bootstrapAuthEnforcement(context.Background(), mgmt, mock, &mockTxServicer{}, dir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{}, nil, "", "")
+		_, _ = bootstrapAuthEnforcement(context.Background(), mgmt, dir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{}, nil, "", "", "")
 	}
 }
 
@@ -1034,7 +978,8 @@ func TestBootstrapAuth_ContextCanceledSkipsBootstrap(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	_, err := bootstrapUserRoleStores(ctx, mock, mock, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil)
+	tx := newMockTransactionServicer(make(map[string][]byte))
+	_, err := bootstrapUserRoleStores(ctx, mock, mock, tx, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil)
 	require.Error(t, err)
 	var abe *AuthBootstrapError
 	require.True(t, errors.As(err, &abe))
@@ -1091,7 +1036,7 @@ func TestRunStart_AuthDisabled_FullStartup_ThenSIGINT(t *testing.T) {
 
 	f := &startFlags{
 		dataDir:         dir,
-		smType:          "memory",
+		smType:          "pebble",
 		discoveryMethod: "static",
 		peers:           []string{fmt.Sprintf("1=%s", raftAddr)},
 		listen:          fmt.Sprintf("0.0.0.0:%d", raftPort),
@@ -1150,7 +1095,7 @@ func TestRunStart_AuthDisabled_SIGHUP_ThenSIGTERM(t *testing.T) {
 
 	f := &startFlags{
 		dataDir:         dir,
-		smType:          "memory",
+		smType:          "pebble",
 		discoveryMethod: "static",
 		peers:           []string{fmt.Sprintf("1=%s", raftAddr)},
 		listen:          fmt.Sprintf("0.0.0.0:%d", raftPort),
@@ -1281,7 +1226,7 @@ func TestRunStart_WithCodecConfig_FullStartup(t *testing.T) {
 
 	f := &startFlags{
 		dataDir:         dir,
-		smType:          "memory",
+		smType:          "pebble",
 		discoveryMethod: "static",
 		peers:           []string{fmt.Sprintf("1=%s", raftAddr)},
 		listen:          fmt.Sprintf("0.0.0.0:%d", raftPort),
@@ -1513,7 +1458,7 @@ func TestRunStart_AuthEnabled_FullStartup_ThenSIGTERM(t *testing.T) {
 
 	f := &startFlags{
 		dataDir:         dir,
-		smType:          "memory",
+		smType:          "pebble",
 		discoveryMethod: "static",
 		peers:           []string{fmt.Sprintf("1=%s", raftAddr)},
 		listen:          fmt.Sprintf("0.0.0.0:%d", raftPort),

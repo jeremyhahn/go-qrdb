@@ -91,6 +91,14 @@ mint a second one from its CA and bind that instead.
 them you would end up with a quorum arrangement nobody holds a share in, so it
 fails closed.
 
+**"auth.mtls_binding_policy is "required" but the bootstrap admin … could not
+log in under it".** The fleet requires every certificate login to present an
+enrolled key, and the admin would have none — because first boot has nothing to
+bind it with, or because the admin already exists without a binding. Start with
+`mtls_binding_policy: enrolled`, enrol the admin's certificate
+(`POST /users/{id}/cert-bindings`), then set `required`. See
+[../identity-rbac/user.md](../identity-rbac/user.md#moving-a-fleet-to-required-certificate-enrolment).
+
 **"conflicting admin cert inputs".** You gave both a CSR and a certificate.
 Signing the CSR would leave your certificate unbound; adopting the certificate
 would discard your CSR. Pick one.
@@ -113,6 +121,12 @@ wait for the writes to replicate. Nothing to do.
 **A node reports something other than "not leader" during first boot.** That is
 this node's own failure and it is reported as itself — read the error. It is
 not a replication delay and waiting will not clear it.
+
+**"atomic role/user creation requires an --sm state machine with transaction
+support".** The shard's state machine did not answer a guarded batch. Every
+registered `--sm` type answers one, so this means the daemon was built with a
+state machine registered without a transaction plane. See
+[cli.md](cli.md#daemon-side-mode-selection).
 
 **The system started but the barrier is sealed.** Bootstrap does not unseal for
 you. See [../barrier-seal/user.md](../barrier-seal/user.md).

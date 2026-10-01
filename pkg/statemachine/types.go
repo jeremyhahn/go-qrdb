@@ -80,8 +80,18 @@ type IndexManager interface {
 	// lookups with an empty result and a nil error (go-qrdb#34, #32).
 	CreateIndex(name, fieldName string, opts protocol.IndexCreateOptions) error
 
-	// DropIndex removes a secondary index by name.
-	DropIndex(name string) error
+	// CreateIndex must record opts.Owner beside the index and refuse a create
+	// naming an existing index recorded under a DIFFERENT owner by returning
+	// an error satisfying errors.As(*index.OwnershipError); the same owner is
+	// the idempotent re-create (see index.CheckCreateOwner, go-qrdb#426).
+
+	// DropIndex removes a secondary index by name. When opts.CheckOwner is
+	// set the drop is conditional: an index recorded under an owner other than
+	// opts.Owner is left in place and the call returns an error satisfying
+	// errors.As(*index.OwnershipError) (see index.CheckDropOwner). Dropping an
+	// absent index is success. The FSM reports an ownership refusal to the
+	// client as an application error rather than failing the apply.
+	DropIndex(name string, opts protocol.IndexDropOptions) error
 
 	// Query returns the entity keys whose indexed value matches exactly.
 	Query(indexName string, value []byte) ([][]byte, error)

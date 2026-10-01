@@ -652,14 +652,14 @@ func TestE2E_Auth_GetUserByCertThumbprint_Success(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("user.GetByCertThumbprint", func(_ []byte) (uint16, []byte) {
 		return wire.StatusOK, mustMarshalJSON(map[string]any{
-			"id": uint64(99), "username": "cert-user", "enabled": true,
+			"id": uint64(99), "username": "cert-user", "lifecycle": "active",
 		})
 	})
 	user, err := tr.GetUserByCertThumbprint(context.Background(), "abc:def:123")
 	if err != nil {
 		t.Fatalf("GetUserByCertThumbprint: %v", err)
 	}
-	if user == nil || user.ID != 99 {
+	if user == nil || user.ID != 99 || user.Lifecycle != "active" {
 		t.Fatalf("unexpected user: %+v", user)
 	}
 }
@@ -682,14 +682,14 @@ func TestE2E_Auth_AddCertBinding_Success(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("user.AddCertBinding", func(_ []byte) (uint16, []byte) {
 		return wire.StatusOK, mustMarshalJSON(map[string]any{
-			"id": uint64(42), "username": "cert-user", "enabled": true,
+			"id": uint64(42), "username": "cert-user", "lifecycle": "active",
 		})
 	})
 	user, err := tr.AddCertBinding(context.Background(), 42, "fp:12:34", time.Now().Add(365*24*time.Hour).Unix())
 	if err != nil {
 		t.Fatalf("AddCertBinding: %v", err)
 	}
-	if user == nil || user.ID != 42 {
+	if user == nil || user.ID != 42 || user.Lifecycle != "active" {
 		t.Fatalf("unexpected user: %+v", user)
 	}
 }
@@ -716,14 +716,14 @@ func TestE2E_Auth_RemoveCertBinding_Success(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("user.RemoveCertBinding", func(_ []byte) (uint16, []byte) {
 		return wire.StatusOK, mustMarshalJSON(map[string]any{
-			"id": uint64(42), "username": "cert-user", "enabled": true,
+			"id": uint64(42), "username": "cert-user", "lifecycle": "active",
 		})
 	})
 	user, err := tr.RemoveCertBinding(context.Background(), 42, "fp:12:34")
 	if err != nil {
 		t.Fatalf("RemoveCertBinding: %v", err)
 	}
-	if user == nil || user.ID != 42 {
+	if user == nil || user.ID != 42 || user.Lifecycle != "active" {
 		t.Fatalf("unexpected user: %+v", user)
 	}
 }

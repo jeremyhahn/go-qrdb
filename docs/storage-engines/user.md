@@ -85,8 +85,14 @@ documented invariant rather than an unfinished feature.
 
 **The daemon refused `raft.sm_storage`.** Objstore is a snapshot and backup
 tier and is refused as a hot apply path. Use `pebble`, `file` or `memory`. Note
-also that the pebble-native state machines (`sm_type: pebble` or `mvcc`) carry
-their own Pebble store and reject a non-pebble `sm_storage`.
+also that `sm_storage` applies only to `sm_type: disk` and `fast`: every other
+state machine carries its own storage and rejects a non-pebble `sm_storage`.
+
+**The daemon refused `sm_type: disk` or `fast` "while the seal barrier is
+enabled".** Their `sm_storage` is `file`, which the barrier cannot encrypt, so
+the replica's data would sit on disk in plaintext beside a barrier you enabled
+to prevent that. Use `sm_storage: pebble`, which the barrier encrypts, or
+`memory`.
 
 **Everything vanished after a restart.** The engine is `memory`. That is what it
 does.

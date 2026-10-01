@@ -313,6 +313,12 @@ func (m *mockIndexService) DropIndex(ctx context.Context, name string) error {
 	return nil
 }
 
+// DropOwnedIndex answers as DropIndex does: this double records no
+// ownership, and no test that uses it exercises an owner-checked drop.
+func (m *mockIndexService) DropOwnedIndex(ctx context.Context, name, _ string) error {
+	return m.DropIndex(ctx, name)
+}
+
 func (m *mockIndexService) Query(ctx context.Context, indexName string, value []byte) ([][]byte, error) {
 	if m.queryFn != nil {
 		return m.queryFn(ctx, indexName, value)
@@ -2991,8 +2997,15 @@ func TestNewServer_AllOptions(t *testing.T) {
 	// write verbs (go-qrdb#127), so they are covered here without being listed
 	// again — a second list would be a second definition to keep in step.
 	groups := map[string][]serverTool{
-		"kv (base)":            kvTools(kvSvc),
-		"admin (base)":         adminTools(adminSvc),
+		"kv (base)":    kvTools(kvSvc),
+		"admin (base)": adminTools(adminSvc),
+		// Registered unconditionally like kv/admin, not gated behind a With*
+		// option or a barrier service (go-qrdb#558): its own availability is
+		// decided by the handler at call time (typed refusal when no
+		// EncryptionMigrator is configured), not by whether the tool exists.
+		"barrier enable-encryption (base)": {
+			{Tool: toolBarrierEnableEncryption()},
+		},
 		"mvcc (WithMVCC)":      mvccTools(mvccSvc),
 		"tx (WithTransaction)": transactionTools(txSvc),
 		"batch (WithBatch)":    batchTools(batchSvc),

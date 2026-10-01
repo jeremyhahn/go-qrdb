@@ -659,12 +659,16 @@ func (s *Server) setupBarrier(
 	// present, is supplied to the deferred software strategy at init/unseal and
 	// run through the KDF.
 	effStrategy := strategy
-	// A LOCAL, not a field. The material has to become a []byte before it
-	// reaches seal.Credentials, whose Secret is a []byte that go-quicraft
-	// owns; what rule 3 asks is that the long-lived DECLARATION be the
-	// wipeable type, which BarrierConfig.Passphrase now is. The copy-out
-	// happens once, here, inside the borrow.
+	// A LOCAL, not a field. The material has to cross pageable memory for
+	// the width of one statement — the copy-out happens inside the borrow,
+	// and seal.NewCredentials moves it into a sealed enclave outside the
+	// borrow (it allocates locked memory of its own, which rule 6 forbids
+	// under a borrow) and WIPES the copy as it goes. What rule 3 asks is
+	// that the long-lived DECLARATION be the wipeable type, which
+	// BarrierConfig.Passphrase is; the credential the barrier sees is
+	// protected memory end to end.
 	var softwareSecret []byte
+	var softwareCreds seal.Credentials
 	if effStrategy == seal.StrategyPassphrase || effStrategy == "" {
 		// NIL IS "NOT CONFIGURED". NON-NIL-BUT-UNREADABLE IS AN ERROR.
 		//
@@ -719,29 +723,32 @@ func (s *Server) setupBarrier(
 			// the codec boundary ("every handler that reads one wipes it
 			// before returning"), and this site reads one (go-qrdb#429).
 			//
-			// OWNERSHIP ENDS WHEN runAutoUnseal RETURNS — verified, not
-			// assumed, because a defer here would otherwise wipe the slice
-			// out from under a live reader:
+			// The heap copy's lifetime is ONE statement: seal.NewCredentials
+			// below moves it into a sealed enclave and wipes it. The deferred
+			// wipe is kept as this package's own guarantee — it is what the
+			// test hook observes, it runs on every path including the error
+			// return NewCredentials can take, and a second pass over zeroed
+			// bytes costs nothing.
 			//
-			//   runAutoUnseal        stores nothing on s; wraps the slice in
-			//                        a seal.Credentials VALUE and passes it
-			//                        down.
+			// OWNERSHIP OF THE CREDENTIAL ENDS WHEN runAutoUnseal RETURNS —
+			// verified, not assumed, because destroying it here would
+			// otherwise pull it out from under a live reader:
+			//
+			//   runAutoUnseal        stores nothing on s; passes the
+			//                        seal.Credentials VALUE down.
 			//   StorageBarrier       Initialize/Unseal forward creds to the
 			//                        EpochBarrier and retain nothing.
 			//   quicraft Barrier     Initialize/Unseal hand creds to the
 			//                        strategy and retain nothing.
-			//   SoftwareStrategy     newSoftwareStrategy COPIES the
-			//                        passphrase into its own slice and stores
-			//                        that in a ProtectedKey enclave; the
-			//                        deferred path additionally Closes the
-			//                        inner strategy.
+			//   SoftwareStrategy     the deferred path opens creds.Secret for
+			//                        the KDF and retains nothing; the caller
+			//                        owns the credential (go-quicraft#41).
 			//   NoneStrategy         never references creds at all.
 			//   Shamir               initializeShamirDirect ignores creds;
-			//                        the credential-mode branch already wipes
-			//                        the caller's slice via SealAndDistribute,
-			//                        so this wipe is a no-op there.
+			//                        the credential-mode branch opens the
+			//                        secret into its own working copy.
 			//
-			// setupBarrier outlives runAutoUnseal, so the defer fires after
+			// setupBarrier outlives runAutoUnseal, so both defers fire after
 			// the last read on every path, including every error path.
 			defer wipeFn(softwareSecret)
 			if len(softwareSecret) == 0 {
@@ -753,6 +760,13 @@ func (s *Server) setupBarrier(
 				s.sealStore = nil
 				return nil, nil, &BarrierPassphraseError{}
 			}
+			var credErr error
+			if softwareCreds, credErr = seal.NewCredentials(softwareSecret); credErr != nil {
+				_ = sealStore.Close()
+				s.sealStore = nil
+				return nil, nil, &BarrierPassphraseError{Err: credErr}
+			}
+			defer softwareCreds.Secret.Destroy()
 			effStrategy = seal.StrategyPassphrase
 		}
 	}
@@ -820,7 +834,7 @@ func (s *Server) setupBarrier(
 	// unsealed state is required and a sealed barrier surfaces
 	// BarrierSealedError to the caller.
 	if config.Barrier.AutoUnseal {
-		if err := s.runAutoUnseal(ctx, barrier, effStrategy, config.Barrier, softwareSecret); err != nil {
+		if err := s.runAutoUnseal(ctx, barrier, effStrategy, config.Barrier, softwareCreds); err != nil {
 			_ = sealStore.Close()
 			s.sealStore = nil
 			s.barrier = nil
@@ -858,14 +872,14 @@ func (s *Server) setupBarrier(
 
 // runAutoUnseal initializes (on a fresh seal sub-store) or unseals (on
 // an existing one) the barrier using the configured credentials. The
-// software strategy uses the shared softwareSecret; the Shamir strategy
-// reconstructs from the configured share set.
+// software strategy uses softwareCreds, which the caller owns and destroys;
+// the Shamir strategy reconstructs from the configured share set.
 func (s *Server) runAutoUnseal(
 	ctx context.Context,
 	barrier *seal.StorageBarrier,
 	strategy seal.StrategyID,
 	cfg *BarrierConfig,
-	softwareSecret []byte,
+	softwareCreds seal.Credentials,
 ) error {
 	switch strategy {
 	case seal.StrategyShamir:
@@ -891,7 +905,7 @@ func (s *Server) runAutoUnseal(
 		// Fresh barrier: initialize Shamir, then unseal with the
 		// supplied shares. The seed credential is the bootstrap
 		// passphrase to keep parity with the embedded software path.
-		if _, initErr := barrier.InitializeShamir(ctx, seal.Credentials{Secret: softwareSecret}); initErr != nil {
+		if _, initErr := barrier.InitializeShamir(ctx, softwareCreds); initErr != nil {
 			return &BarrierUnsealError{Err: initErr}
 		}
 		if unsealErr := barrier.UnsealWithShares(ctx, cfg.ShamirShares); unsealErr != nil {
@@ -901,7 +915,7 @@ func (s *Server) runAutoUnseal(
 
 	default:
 		// StrategyPassphrase (or zero value).
-		creds := seal.Credentials{Secret: softwareSecret}
+		creds := softwareCreds
 		// Initialize on the very first boot; subsequent boots Unseal.
 		err := barrier.Initialize(ctx, creds)
 		if err == nil {

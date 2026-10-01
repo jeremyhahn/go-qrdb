@@ -41,7 +41,9 @@ import (
 	"errors"
 	"log/slog"
 	"slices"
+	"strconv"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -91,6 +93,15 @@ type Dependencies struct {
 	// nothing can resolve them, provisioning fails rather than binding the
 	// tenant admin to a guessed identifier; see that field for why.
 	RoleResolver role.NameResolver
+
+	// UserResolver looks the admin user up by username so createAdminUser can
+	// verify a create-time collision — on either the admin's generated id or
+	// its fixed username — actually names the admin before treating it as
+	// this run's own idempotent re-attempt (firstboot.Dependencies.UserResolver,
+	// go-qrdb#555). Leaving it nil is safe when Users itself implements
+	// firstboot.UserResolver — qrdb's own user.UserServicer does, and it is
+	// then used automatically.
+	UserResolver firstboot.UserResolver
 
 	// CA issues certificates via the generate-and-distribute path (Path A).
 	// Optional: used when no CSR PEM is supplied.
@@ -148,6 +159,10 @@ type SystemConfig struct {
 	// SeparationOfDuties selects the first-boot RBAC posture. See
 	// firstboot.Dependencies.SeparationOfDuties.
 	SeparationOfDuties bool
+
+	// MTLSBindingPolicy is the fleet's auth.mtls_binding_policy, forwarded to
+	// first-boot. See firstboot.Dependencies.MTLSBindingPolicy.
+	MTLSBindingPolicy auth.MTLSBindingPolicy
 
 	// AdminCSRPEM, when non-empty, selects the admin-mTLS CSR-sign path
 	// (Path B) for the system admin: the admin's CSR is signed via the
@@ -227,32 +242,22 @@ func BootstrapSystem(ctx context.Context, cfg SystemConfig, deps Dependencies) (
 		if credErr != nil {
 			return nil, credErr
 		}
-		// creds.Secret is an ORDINARY HEAP COPY of the passphrase and this is
-		// where its lifetime ends, so this is where it is destroyed.
+		// creds.Secret is protected memory that this function owns — the
+		// credential is built here and its lifetime ends here, so this is
+		// where it is destroyed. It used to be an ORDINARY HEAP COPY of the
+		// passphrase, wiped at this same point (go-qrdb#429); the copy no
+		// longer exists, because credentialsForStrategy moves the material
+		// straight from the mlocked source into a sealed enclave, and the
+		// strategy opens that enclave itself for exactly as long as it needs
+		// the passphrase.
 		//
-		// The copy is not new — `[]byte(passphrase)` allocated one just the
-		// same when the field was a string — but the *secure.Buffer
-		// conversion is what makes leaving it unwiped indefensible: mlocking
-		// the source and then dropping an unrecoverable plaintext copy in
-		// pageable memory is a net LOSS, not a gain (go-qrdb#429). The same
-		// omission at the embedded transport's copy-out was the finding that
-		// prompted this one; both sites are fixed rather than only the one
-		// that was reported.
-		//
-		// Safe here for the same reason it is safe there: system.Initialize
-		// forwards creds to the EpochBarrier, which hands it to the strategy,
-		// and SoftwareStrategy COPIES the passphrase into its own
-		// ProtectedKey enclave rather than aliasing the caller's slice.
-		// Nothing downstream holds it past the call.
-		//
-		// DEFERRED TO FUNCTION EXIT RATHER THAN WIPED INLINE AFTER
-		// Initialize. That holds the plaintext for the remainder of
-		// BootstrapSystem — bounded, in-process, and the price of the wipe
-		// running on EVERY path, including the early return that a failed
-		// Initialize takes. A guaranteed wipe a few hundred microseconds late
-		// beats a tighter one with a return around it. secure.Wipe is a no-op
-		// on an empty slice, so the none strategy's empty Credentials is fine.
-		defer secure.Wipe(creds.Secret)
+		// DEFERRED TO FUNCTION EXIT RATHER THAN DESTROYED INLINE AFTER
+		// Initialize, for the same reason the wipe was: it then runs on EVERY
+		// path, including the early return that a failed Initialize takes,
+		// and a ciphertext held a few hundred microseconds longer costs
+		// nothing. Destroy is nil-safe, so the none strategy's empty
+		// Credentials is fine.
+		defer creds.Secret.Destroy()
 		if initErr := system.Initialize(ctx, creds); initErr != nil {
 			if errors.Is(initErr, seal.ErrAlreadyInitialized) {
 				result.BarrierAlreadyInitialized = true
@@ -272,12 +277,14 @@ func BootstrapSystem(ctx context.Context, cfg SystemConfig, deps Dependencies) (
 		Users:              deps.Users,
 		Roles:              deps.Roles,
 		RoleResolver:       deps.RoleResolver,
+		UserResolver:       deps.UserResolver,
 		CA:                 deps.CA,
 		Signer:             deps.Signer,
 		AdminCSRPEM:        cfg.AdminCSRPEM,
 		Binder:             deps.Binder,
 		Logger:             deps.Logger,
 		SeparationOfDuties: cfg.SeparationOfDuties,
+		MTLSBindingPolicy:  cfg.MTLSBindingPolicy,
 	})
 	if fbErr != nil {
 		return nil, &FirstBootError{Cause: fbErr}
@@ -614,9 +621,10 @@ func InitializeTenantBarrier(ctx context.Context, tenantID string, strategy seal
 	if strategy == "" {
 		strategy = StrategyNone
 	}
-	// Passphrase strategy requires a non-empty secret. There is no derived
-	// default.
-	if seal.IsPassphraseStrategy(strategy) && len(creds.Secret) == 0 {
+	// Passphrase strategy requires a secret. There is no derived default. A
+	// destroyed credential is one the caller has already released, and it is
+	// refused the same way — nothing below could open it.
+	if seal.IsPassphraseStrategy(strategy) && (creds.Secret == nil || !creds.Secret.IsAlive()) {
 		return &MissingPassphraseError{}
 	}
 	if err := validateStrategy(strategy); err != nil {
@@ -678,14 +686,17 @@ func credentialsForStrategy(strategy seal.StrategyID, passphrase *secure.Buffer)
 	if !seal.IsPassphraseStrategy(strategy) {
 		return seal.Credentials{}, nil
 	}
-	// The copy-out is held INSIDE the borrow. seal.Credentials.Secret is a
-	// []byte because go-quicraft owns that type and this repository does not
-	// get to change it, so the material does leave the enclave here — but it
-	// leaves under the purge lock rather than through a bare Bytes() whose
-	// slice outlives the call (pkg/secure rule 6).
-	var creds seal.Credentials
+	// The copy-out is held INSIDE the borrow, and the copy lives only until
+	// seal.NewCredentials has moved it into a sealed enclave — that call
+	// WIPES its source, and it runs OUTSIDE the borrow because it allocates
+	// locked memory of its own (pkg/secure rule 6: no allocation under a
+	// borrow). So the material crosses pageable memory for the width of one
+	// statement, under the passphrase's own borrow going in and wiped coming
+	// out, rather than living there as a []byte for the rest of the bootstrap
+	// as it did when go-quicraft's Credentials.Secret was a plain slice.
+	var plain []byte
 	if err := passphrase.WithBytes(func(b []byte) error {
-		creds.Secret = append([]byte(nil), b...)
+		plain = append([]byte(nil), b...)
 		return nil
 	}); err != nil {
 		// WithBytes fails for exactly three shapes — nil, destroyed, and the
@@ -708,7 +719,7 @@ func credentialsForStrategy(strategy seal.StrategyID, passphrase *secure.Buffer)
 		// without re-reading which one can lose a barrier.
 		return seal.Credentials{}, &MissingPassphraseError{}
 	}
-	return creds, nil
+	return seal.NewCredentials(plain)
 }
 
 // validateStrategy rejects strategies the bootstrap orchestrator does not
@@ -778,12 +789,13 @@ type AdminUserLookup interface {
 // validatePendingAdmin guards every user record deferred mode would hand
 // back as an invitation target. It fails closed unless the record is TRULY
 // the pending admin an invitation may attach to: a persisted id, the exact
-// tenant and username requested, the tenant-scoped Admin role, still
-// disabled, and no bound credential (no cert bindings, no enrolled
+// tenant and username requested, the tenant-scoped Admin role, a lifecycle
+// of exactly pending, and no bound credential (no cert bindings, no enrolled
 // factors). Anything else — an unrelated squatter under the admin username,
-// an admin already activated, an admin disabled for incident response with
-// live credentials, or an adapter that ignored CreateUserRequest.Pending —
-// is refused rather than converted into an invitation target.
+// an admin already activated, suspended, locked, disabled or being deleted,
+// a record with an absent or unrecognized lifecycle, or an adapter that
+// ignored CreateUserRequest.Pending — is refused rather than converted into
+// an invitation target.
 func validatePendingAdmin(u *user.User, tenantID, username, adminRoleID string) error {
 	var reason string
 	switch {
@@ -795,8 +807,8 @@ func validatePendingAdmin(u *user.User, tenantID, username, adminRoleID string) 
 		reason = "record names a different user"
 	case !slices.Contains(u.RoleIDs, adminRoleID):
 		reason = "record does not hold the tenant-scoped admin role"
-	case u.Enabled:
-		reason = "admin is already activated"
+	case u.Lifecycle != user.LifecyclePending:
+		reason = "admin lifecycle is " + strconv.Quote(string(u.Lifecycle)) + ", not pending"
 	case len(u.CertBindings) > 0:
 		reason = "admin already holds a bound certificate"
 	case len(u.Factors) > 0:

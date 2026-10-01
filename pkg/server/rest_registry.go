@@ -91,6 +91,11 @@ type restServiceRegistry struct {
 	// Backend()) case. Always non-nil; unused when dbManager is nil.
 	dedicatedStore *dedicatedStoreServiceCache
 
+	// reclaimOrigin identifies this node on the reclaim-job index entries
+	// its TableServices publish (service.ReclaimIndexEntry.Origin), so a job
+	// in a store local to this node is swept here. See withReclaimOrigin.
+	reclaimOrigin string
+
 	// collections caches the (tenant, db)-namespaced collection services
 	// applyComposite builds over the wrapped engines. Always non-nil. Like
 	// dedicatedStore, its entries carry process-local increment ID
@@ -117,6 +122,18 @@ func NewRESTServiceRegistry(
 	systemTenant string,
 	opts ...RESTRegistryOption,
 ) rest.ServiceRegistry {
+	return newRESTRegistry(dbReg, barrierReg, systemTenant, opts...)
+}
+
+// newRESTRegistry is NewRESTServiceRegistry returning the concrete type, for
+// in-package callers that need more than the rest.ServiceRegistry surface
+// (the reclaim-store resolver).
+func newRESTRegistry(
+	dbReg *DatabaseServiceRegistry,
+	barrierReg *seal.BarrierRegistry,
+	systemTenant string,
+	opts ...RESTRegistryOption,
+) *restServiceRegistry {
 	r := &restServiceRegistry{
 		dbReg:          dbReg,
 		barrierReg:     barrierReg,
@@ -194,6 +211,16 @@ func withDatabaseManager(mgr *database.Manager) RESTRegistryOption {
 	}
 }
 
+// withReclaimOrigin sets this node's identity as recorded on the reclaim-job
+// index entries its TableServices publish (go-qrdb#547). It must equal the
+// origin the node's reclaim-store resolver compares against, which is why
+// both are derived from the same Server (see Server.reclaimOrigin).
+func withReclaimOrigin(origin string) RESTRegistryOption {
+	return func(r *restServiceRegistry) {
+		r.reclaimOrigin = origin
+	}
+}
+
 // WithDatabaseCatalog sets the catalog used to check whether a database exists
 // for a tenant. When configured, any database that exists resolves to a
 // namespaced view of the shared service set, even when it is not pre-registered
@@ -235,8 +262,9 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 		if err != nil {
 			return nil, err
 		}
-		prefix := tenant.ComposeNamespace(tenantID, db)
-		return r.applyQuota(r.applyComposite(base, prefix), tenantID, info), nil
+		svcs := r.applyQuota(r.applyComposite(base, tenantID, db), tenantID, info)
+		svcs.Placement = service.StorePlacementNode
+		return svcs, nil
 	}
 
 	// IsolationRaft tenants back each database with its OWN dedicated Raft group
@@ -270,7 +298,9 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 			}
 			return nil, err
 		}
-		return r.applyQuota(base, tenantID, info), nil
+		svcs := r.applyQuota(base, tenantID, info)
+		svcs.Placement = service.StorePlacementShard
+		return svcs, nil
 	}
 
 	// A specific database may carry its OWN encryption barrier over its OWN
@@ -283,6 +313,9 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 	// falling through to dbReg.Default() below (which would silently serve a
 	// different, unencrypted keyspace under the same database name).
 	if svcs, err := r.resolveDedicatedDatabaseBarrier(tenantID, db, info); !errors.Is(err, errNotDedicatedDatabaseBarrier) {
+		if svcs != nil {
+			svcs.Placement = service.StorePlacementNode
+		}
 		return svcs, err
 	}
 
@@ -291,11 +324,22 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 	// the named database is used when present (e.g. the default database);
 	// otherwise any database that exists for the tenant resolves to a
 	// namespaced view of the default service set.
+	if r.dbReg.GetOrDefault(db) == nil && !r.databaseExists(tenantID, db) {
+		return nil, &rest.DatabaseNotFoundError{TenantID: tenantID, Database: db}
+	}
+	return r.resolveShared(tenantID, db, info)
+}
+
+// resolveShared returns (tenant, db)'s composite-namespaced, quota-wrapped
+// view of the shared service set: resolve's final branch, without the
+// existence check that precedes it there. The reclaim-store resolver uses it
+// directly for a job published under service.StorePlacementShared, because
+// the existence check reads this NODE's catalog, which a node other than the
+// one that created the database does not hold -- while the shared store
+// itself is replicated and reachable from every node.
+func (r *restServiceRegistry) resolveShared(tenantID, db string, info *tenant.TenantInfo) (*DatabaseServices, error) {
 	svcs := r.dbReg.GetOrDefault(db)
 	if svcs == nil {
-		if !r.databaseExists(tenantID, db) {
-			return nil, &rest.DatabaseNotFoundError{TenantID: tenantID, Database: db}
-		}
 		svcs = r.dbReg.Default()
 		if svcs == nil {
 			return nil, &rest.DatabaseNotFoundError{TenantID: tenantID, Database: db}
@@ -307,8 +351,9 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 	// which yields "system/system/". Every engine is wrapped so that keys are
 	// transparently scoped, which keeps each database's keyspace disjoint from
 	// every other database and every other tenant.
-	prefix := tenant.ComposeNamespace(tenantID, db)
-	return r.applyQuota(r.applyComposite(svcs, prefix), tenantID, info), nil
+	out := r.applyQuota(r.applyComposite(svcs, tenantID, db), tenantID, info)
+	out.Placement = service.StorePlacementShared
+	return out, nil
 }
 
 // resolveDedicatedDatabaseBarrier resolves a database that carries its OWN
@@ -354,19 +399,22 @@ func (r *restServiceRegistry) resolveDedicatedDatabaseBarrier(tenantID, db strin
 	}
 
 	cfg := dbase.Config()
-	if cfg.Barrier == nil || !cfg.Barrier.Enabled || !cfg.HasDedicatedStore() {
-		return nil, errNotDedicatedDatabaseBarrier
-	}
-
-	// Raft-backed isolation is never resolved here: it comes exclusively from
-	// an IsolationRaft tenant's dedicated shard (handled above by the
-	// tenant.IsolationRaft branch in resolve), never from a per-database
-	// barrier layered onto a shared/prefix tenant's database.
-	if cfg.Backend == database.BackendRaft {
+	if !servesFromNodeLocalStore(&cfg) {
 		return nil, errNotDedicatedDatabaseBarrier
 	}
 
 	return r.applyQuota(r.dedicatedStore.getOrBuild(dbase), tenantID, info), nil
+}
+
+// servesFromNodeLocalStore reports whether a catalogued database is served
+// from its own encrypting store on this node (resolveDedicatedDatabaseBarrier)
+// rather than from the shared replicated store: a barrier-enabled database
+// with a dedicated store that is not raft-backed. Raft-backed isolation is
+// never served that way: it comes exclusively from an IsolationRaft tenant's
+// dedicated shard, never from a per-database barrier layered onto a
+// shared/prefix tenant's database.
+func servesFromNodeLocalStore(cfg *database.DatabaseConfig) bool {
+	return cfg.Barrier != nil && cfg.Barrier.Enabled && cfg.HasDedicatedStore() && cfg.Backend != database.BackendRaft
 }
 
 // applyQuota wraps the resolved KV and MVCC servicers with storage-byte quota
@@ -408,6 +456,14 @@ func (r *restServiceRegistry) applyQuota(svcs *DatabaseServices, tenantID string
 	}
 	if out.Vector != nil {
 		out.Vector = newQuotaVectorService(out.Vector, r.accountant, tenantID, limit)
+	}
+	// Collection documents are tenant payload too, and the collection service
+	// writes them through the KV servicer it was BUILT over -- which, for the
+	// cached composite service, is the pre-quota one -- so the KV wrapper above
+	// never sees them. Wrapping the collection surface here, per resolve, is
+	// what counts them against the CURRENT limit (go-qrdb#456).
+	if out.Collection != nil {
+		out.Collection = newQuotaCollectionService(out.Collection, r.accountant, tenantID, limit)
 	}
 	return &out
 }
@@ -546,7 +602,8 @@ func (r *restServiceRegistry) checkTenantBarrier(tenantID string) error {
 // wrote the same "__col:{database}:{collection}/{id}" keys. A service inherits
 // isolation from the engines it HOLDS, never from the engines its neighbours
 // in the struct hold. See buildCompositeCollectionService.
-func (r *restServiceRegistry) applyComposite(svcs *DatabaseServices, prefix string) *DatabaseServices {
+func (r *restServiceRegistry) applyComposite(svcs *DatabaseServices, tenantID, db string) *DatabaseServices {
+	prefix := tenant.ComposeNamespace(tenantID, db)
 	out := *svcs
 	if svcs.KV != nil {
 		out.KV = &namespacedKVService{inner: svcs.KV, prefix: prefix}
@@ -575,7 +632,7 @@ func (r *restServiceRegistry) applyComposite(svcs *DatabaseServices, prefix stri
 	if svcs.Vector != nil {
 		out.Vector = newNamespacedVectorService(svcs.Vector, prefix)
 	}
-	out.Collection = r.collections.getOrBuild(svcs, &out, prefix)
+	out.Collection = r.collections.getOrBuild(svcs, &out, tenantID, db)
 	return &out
 }
 
@@ -586,7 +643,7 @@ func (r *restServiceRegistry) KVService(tenantID, db string) (service.KVServicer
 		return nil, err
 	}
 	if svcs.KV == nil {
-		return nil, &rest.ServiceNotImplementedError{Service: "kv"}
+		return nil, notImplemented("kv", "")
 	}
 	return svcs.KV, nil
 }
@@ -598,7 +655,7 @@ func (r *restServiceRegistry) MVCCService(tenantID, db string) (service.MVCCKVSe
 		return nil, err
 	}
 	if svcs.MVCC == nil {
-		return nil, &rest.ServiceNotImplementedError{Service: "mvcc"}
+		return nil, notImplemented("mvcc", "")
 	}
 	return svcs.MVCC, nil
 }
@@ -610,7 +667,7 @@ func (r *restServiceRegistry) WatchService(tenantID, db string) (service.WatchSe
 		return nil, err
 	}
 	if svcs.Watch == nil {
-		return nil, &rest.ServiceNotImplementedError{Service: "watch"}
+		return nil, notImplemented("watch", "")
 	}
 	return svcs.Watch, nil
 }
@@ -622,7 +679,7 @@ func (r *restServiceRegistry) LeaseService(tenantID, db string) (service.LeaseSe
 		return nil, err
 	}
 	if svcs.Lease == nil {
-		return nil, &rest.ServiceNotImplementedError{Service: "lease"}
+		return nil, notImplemented("lease", "")
 	}
 	return svcs.Lease, nil
 }
@@ -634,7 +691,7 @@ func (r *restServiceRegistry) IndexService(tenantID, db string) (service.IndexSe
 		return nil, err
 	}
 	if svcs.Index == nil {
-		return nil, &rest.ServiceNotImplementedError{Service: "index"}
+		return nil, notImplemented("index", "")
 	}
 	return svcs.Index, nil
 }
@@ -646,7 +703,7 @@ func (r *restServiceRegistry) TimeSeriesService(tenantID, db string) (service.Ti
 		return nil, err
 	}
 	if svcs.TimeSeries == nil {
-		return nil, &rest.ServiceNotImplementedError{Service: "timeseries"}
+		return nil, notImplemented("timeseries", "")
 	}
 	return svcs.TimeSeries, nil
 }
@@ -662,7 +719,7 @@ func (r *restServiceRegistry) VectorService(tenantID, db string) (service.Vector
 		return nil, err
 	}
 	if svcs.Vector == nil {
-		return nil, &rest.ServiceNotImplementedError{Service: "vector"}
+		return nil, notImplemented("vector", "")
 	}
 	return svcs.Vector, nil
 }
@@ -674,7 +731,7 @@ func (r *restServiceRegistry) TransactionService(tenantID, db string) (service.T
 		return nil, err
 	}
 	if svcs.Transaction == nil {
-		return nil, &rest.ServiceNotImplementedError{Service: "transaction"}
+		return nil, notImplemented("transaction", "")
 	}
 	return svcs.Transaction, nil
 }
@@ -686,7 +743,7 @@ func (r *restServiceRegistry) BatchService(tenantID, db string) (service.BatchSe
 		return nil, err
 	}
 	if svcs.Batch == nil {
-		return nil, &rest.ServiceNotImplementedError{Service: "batch"}
+		return nil, notImplemented("batch", "")
 	}
 	return svcs.Batch, nil
 }
@@ -705,10 +762,21 @@ func (r *restServiceRegistry) TableService(tenantID, db string) (service.TableSe
 		return nil, err
 	}
 	if svcs.KV == nil || svcs.MVCC == nil || svcs.Transaction == nil {
-		return nil, &rest.ServiceNotImplementedError{Service: "table"}
+		return nil, notImplemented("table", "")
 	}
 	seq := service.NewSequenceService(svcs.MVCC, svcs.Transaction)
-	return service.NewTableService(svcs.KV, svcs.MVCC, svcs.Transaction, seq), nil
+
+	// Reclaim-publishing DDL (TRUNCATE TABLE, DROP INDEX, DROP TABLE) writes its index
+	// entry through the SYSTEM store's own, un-namespaced transaction -- the
+	// one place the sweeper lists -- never svcs.Transaction, which is
+	// namespaced or a different store altogether (go-qrdb#547). Without a
+	// system store no option is passed, and those operations refuse rather
+	// than publish a job nothing could find.
+	var opts []service.TableServiceOption
+	if sys := r.dbReg.Default(); sys != nil && sys.Transaction != nil {
+		opts = append(opts, service.WithReclaimIndex(sys.Transaction, svcs.Placement, r.reclaimOrigin))
+	}
+	return service.NewTableService(svcs.KV, svcs.MVCC, svcs.Transaction, seq, opts...), nil
 }
 
 // SequenceService returns the SequenceServicer for the given (tenant, db)
@@ -719,7 +787,7 @@ func (r *restServiceRegistry) SequenceService(tenantID, db string) (service.Sequ
 		return nil, err
 	}
 	if svcs.MVCC == nil || svcs.Transaction == nil {
-		return nil, &rest.ServiceNotImplementedError{Service: "sequence"}
+		return nil, notImplemented("sequence", "")
 	}
 	return service.NewSequenceService(svcs.MVCC, svcs.Transaction), nil
 }
@@ -736,7 +804,7 @@ func (r *restServiceRegistry) PrivilegeService(tenantID, db string) (service.Pri
 		return nil, err
 	}
 	if svcs.KV == nil || svcs.MVCC == nil || svcs.Transaction == nil {
-		return nil, &rest.ServiceNotImplementedError{Service: "privilege"}
+		return nil, notImplemented("privilege", "")
 	}
 	return service.NewPrivilegeService(svcs.KV, svcs.MVCC, svcs.Transaction), nil
 }
@@ -785,7 +853,7 @@ func (r *restServiceRegistry) LockService(tenantID, db string) (service.LockServ
 		return nil, err
 	}
 	if svcs.Transaction == nil || svcs.Lease == nil || svcs.Watch == nil || svcs.MVCC == nil {
-		return nil, &rest.ServiceNotImplementedError{Service: "lock"}
+		return nil, notImplemented("lock", "")
 	}
 	return service.NewLockService(svcs.Transaction, svcs.Lease, svcs.Watch, svcs.MVCC, nil)
 }
@@ -807,7 +875,7 @@ func (r *restServiceRegistry) CollectionService(tenantID, db string) (service.Co
 		return nil, err
 	}
 	if svcs.Collection == nil {
-		return nil, &rest.ServiceNotImplementedError{Service: "collection"}
+		return nil, notImplemented("collection", "")
 	}
 	return svcs.Collection, nil
 }

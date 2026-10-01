@@ -80,6 +80,14 @@ alone. See [architecture.md](architecture.md#what-a-certificate-actually-claims)
 write, not bookkeeping. It is **additive** — enrol a new key alongside the old
 one and both work, which is how a key rotation happens without an interruption.
 
+A thumbprint already bound to a **different** user in the same tenant is
+refused with 409 / `ALREADY_EXISTS`: a thumbprint resolves to exactly one
+identity, and silently rebinding it would let the caller take over that user's
+mTLS identity. The message names the user that holds the thumbprint, which is
+the fact an operator investigating a failed enrolment needs; QUIC and MCP
+answer with their `AlreadyExists` equivalents. Enrolling a thumbprint the
+**same** account already holds is not a conflict.
+
 ### Withdrawing a binding
 
 `DELETE /users/{id}/cert-bindings/{thumbprint}` withdraws one binding. It
@@ -102,11 +110,42 @@ rotation must not silently unenrol the key being rotated, which is why revoking
 does not drop a matching binding. **Withdrawing the binding is the remediation
 for a compromised key; revoking the certificate is not.**
 
-**Withdrawing an account's LAST binding WIDENS it.** An empty binding set
-states no restriction, so the account returns to admitting any certificate
-whose CN and OU name it — the state every account was in before enrolment. That
-is a real posture change and it is audited as `remove_cert_binding` with
+**Withdrawing an account's LAST binding WIDENS it** under the default
+`auth.mtls_binding_policy: enrolled`. An empty binding set states no
+restriction, so the account returns to admitting any certificate whose CN and
+OU name it — the state every account was in before enrolment. That is a real
+posture change and it is audited as `remove_cert_binding` with
 `last_binding_removed: true`. **Enrol the replacement first, then withdraw.**
+
+Under `required` the store refuses **every change that would leave the
+bootstrap admin (`admin` in the `system` tenant) unable to log in by
+certificate**, with `user.BootstrapAdminLockoutError` naming the `Reason`:
+
+| Change | `Reason` |
+|---|---|
+| Withdrawing its last live binding — through `DELETE …/cert-bindings/{thumbprint}`, or a `PUT /users/{id}` that replaces its bindings with none live | `no_live_binding` |
+| `DELETE /users/{id}` | `delete` |
+| `POST /users/{id}/disable`, or a lifecycle change to `suspended`, `locked`, `disabled` or `deleting` | `lifecycle` |
+| A permitted-method list that omits `mtls` | `mtls_not_permitted` |
+| A new `username` | `rename` |
+
+It is **409** on REST, `FAILED_PRECONDITION` on gRPC (and the Unix socket) and
+QUIC, `CodeFailedPrecondition` on MCP, and the typed error itself on the
+embedded transport. Each is refused only when it would break a requirement the
+admin currently meets, so a change that leaves an already-broken one broken —
+or repairs it — goes through. The check runs inside the guarded write, so two
+concurrent changes that are each safe alone (withdrawing the admin's last two
+keys, one each) cannot both succeed. If the admin is locked out anyway — its
+last key expired — the way back is operational: set
+`auth.mtls_binding_policy: enrolled`, restart, enrol a key, then return to
+`required`.
+
+`POST /users/{id}/cert-bindings` refuses a `not_after_unix` that is not in the
+future with `user.CertBindingExpiredError` — **400** on REST,
+`INVALID_ARGUMENT` on gRPC and QUIC, `CodeInvalidArgument` on MCP — for every
+account and under either policy. Such a binding could never authenticate, and
+because enrolment replaces a binding with the same thumbprint, accepting one
+for a key already bound would silently withdraw that key.
 
 A withdrawal naming a thumbprint the account does not hold is **404**, not a
 vacuous success: an operator who mistypes a thumbprint must not be told a live
@@ -168,24 +207,39 @@ tenant; naming another returns the cross-tenant refusal.
 
 ```json
 { "id": "…", "username": "alice", "email": "alice@acme.example",
-  "tenantID": "acme", "roleIDs": ["…"], "groupIDs": ["platform"],
-  "lifecycle": "active", "enabled": true, "system": false,
+  "tenantID": "acme", "roleIDs": ["…"],
+  "lifecycle": "active", "system": false,
   "authMethods": ["webauthn", "piv"], "lastAuth": "…",
   "roleBindings": [ { "roleID": "…", "tenantID": "acme" } ],
   "attributes": { "department": "eng" },
-  "certBindings": [ { "thumbprint": "…", "kind": 0 } ],
+  "certBindings": [ { "thumbprint": "…", "kind": "spki_thumbprint", "notAfter": "…" } ],
   "factors": [ { "…": "opaque" } ],
   "createdAt": "…", "updatedAt": "…" }
 ```
 
-`lifecycle` is the **canonical account state**: `pending` · `active` ·
-`suspended` · `locked` · `disabled` · `deleting`. `enabled` is a **derived
-projection** of it — exactly `lifecycle == "active"` — kept because it is the
-field existing clients read. It never lies, but it collapses every non-active
-state into one `false`, so a client that needs to tell an operator hold from an
-automated lockout reads `lifecycle`. There is no request field that writes
-`enabled`: a second writable source of truth is how a record ends up claiming to
-be locked and active at once.
+`certBindings` lists the account's enrolled mTLS keys on **every transport**
+(`cert_bindings` in the REST/SDK spelling), in enrolment order and **in full —
+an expired binding is listed with its `notAfter`** rather than hidden. It is
+listed because it still holds the account in the enforcing posture: an account
+with any binding admits only a matching certificate, so a reader who could not
+see the expired one could not explain why the account refuses a certificate.
+`kind` is `spki_thumbprint` (canonical), `full_cert_fingerprint` or
+`piv_attested`; `notAfter` is absent for a binding that does not expire on its
+own. The thumbprint is a hash of public material — listing it discloses
+nothing — and is read back byte-identical to the one enrolled, so it can be
+passed straight to the withdrawal verb. It is part of the record, so reading
+it needs what reading the record needs: `users:read` on a single user,
+`users:list` on a listing.
+
+`lifecycle` is the **canonical and only account state**: `pending` · `active` ·
+`suspended` · `locked` · `disabled` · `deleting`. Only `active` authenticates;
+an absent or unrecognized state fails closed.
+
+> **Breaking change.** The `enabled` boolean has been removed from the `User`
+> schema on every transport (REST, gRPC, QUIC, MCP, Unix socket and the
+> embedded SDK). It was a derived projection of `lifecycle`
+> (`lifecycle == "active"`); read `lifecycle` instead. In the gRPC
+> `UserResponse`, field number 5 and the name `enabled` are reserved.
 
 Transitions are checked against a fixed table. `pending → active` is the only
 activation; `disabled` and `deleting` are reachable from every non-terminal
@@ -199,10 +253,16 @@ allowed. Only `pending`, `active` and `disabled` may be created directly.
 `EnableUser` and `DisableUser` are the transitions to `active` and `disabled`;
 they are refused on an account already marked `deleting`.
 
-`groupIDs` are **opaque membership identifiers** — qrdb stores the membership
-edge and does not own a Group entity, exactly as `roleIDs` holds identifiers
-without the user record owning the roles. Trimmed and de-duplicated,
-**case-preserving**, because a group id is a minted token.
+> **Breaking change.** `groupIDs` (`group_ids` on REST, gRPC and MCP) has been
+> removed from the `User` schema and from the create and update requests on
+> every transport, together with gRPC's `has_group_ids` flag and MCP's
+> `clear_group_ids` argument. No qrdb authorization path read it: access
+> resolves user → role bindings → roles → permissions. A layer that needs group
+> membership stores it itself. In gRPC the removed field numbers and names are
+> reserved (`CreateUserRequest` 7; `UpdateUserProtoRequest` 6 and 7;
+> `UserResponse` 12). On REST and QUIC an unknown key in a request body is
+> ignored, so a client still sending `group_ids` is not refused — the value is
+> simply not stored.
 
 `authMethods` is a **policy** statement of what the account may present
 (`webauthn`, `piv`, …), distinct from `factors`, which records what it has
@@ -227,27 +287,26 @@ again.
 
 ### Setting the identity fields
 
-`groupIDs` and `authMethods` distinguish three states on an update, and every
-transport carries the distinction in its own idiom:
+`authMethods` distinguishes three states on an update, and every transport
+carries the distinction in its own idiom:
 
 | Intent | REST / QUIC / MCP-response JSON | gRPC | MCP tool arguments |
 |---|---|---|---|
-| Leave alone | key absent, or `null` | `has_group_ids` unset | argument absent |
-| Clear | `[]` | `has_group_ids: true` with no values | `clear_group_ids: true` |
-| Replace | `["a","b"]` | `has_group_ids: true` + values | `group_ids: "[\"a\",\"b\"]"` |
+| Leave alone | key absent, or `null` | `has_auth_methods` unset | argument absent |
+| Clear | `[]` | `has_auth_methods: true` with no values | `clear_auth_methods: true` |
+| Replace | `["a","b"]` | `has_auth_methods: true` + values | `auth_methods: "[\"a\",\"b\"]"` |
 
-The flags and the clear-argument exist because proto3 cannot distinguish an
+The flag and the clear-argument exist because proto3 cannot distinguish an
 absent repeated field from an empty one, and a flat tool argument cannot either.
-Without them a membership could be granted but never **revoked** — an empty list
-would read as "no change" and the revocation would report success while doing
+Without them a restriction could be set but never **lifted** — an empty list
+would read as "no change" and the clear would report success while doing
 nothing.
 
-The MCP list arguments are **JSON arrays**, never comma-separated. A group id is
-an opaque minted token, so a comma is a character it may legitimately contain: a
-CSV encoding splits such an id into two memberships and drops blank elements the
-store would have refused, writing a different authorization graph than the
-caller asked for while reporting success. A malformed list is an error, not a
-silent "leave alone".
+The MCP list argument is a **JSON array**, never comma-separated: a CSV
+encoding splits a value containing a comma in two and drops blank elements the
+store would have refused, writing something other than what the caller asked
+for while reporting success. A malformed list is an error, not a silent "leave
+alone".
 
 `lastAuth` is RFC 3339 on the JSON transports and MCP, and
 `last_auth_unix` (seconds since the epoch, UTC) on gRPC, where `0` means the
@@ -267,6 +326,15 @@ strings, each validated against the registry.
 `ListPermissions` returns the registry, grouped into categories with display
 names for UI rendering.
 
+The embedded SDK's `RBAC().ListPermissions(identity)` is the per-identity
+view: the union of what the identity's roles grant, each entry carrying its
+declared scope (`self`, `cross` or `tenant-only`) so a UI can filter to what
+the caller can do where it is. A whole-segment wildcard grant (`objstore:*`,
+`*:read`, `*:*`) is expanded to the registered permissions it matches, each
+with its own scope, and the result is deduplicated and sorted by name — a
+wildcard is how the authorizer matches a name, not a permission with a scope
+of its own, and the listing never contains one.
+
 ## Status and error mapping
 
 | Condition | REST | gRPC / Unix |
@@ -275,6 +343,8 @@ names for UI rendering.
 | User or role not found | 404 | `NOT_FOUND` |
 | Duplicate username within a tenant | 409 | `ALREADY_EXISTS` |
 | Duplicate email within a tenant | 409 | `ALREADY_EXISTS` |
+| Thumbprint already bound to another user in the tenant (the message names that user) | 409 | `ALREADY_EXISTS` |
+| Withdrawing a binding the account does not hold | 404 | `NOT_FOUND` |
 | Empty email without `without_email_login_key` | 400 | `INVALID_ARGUMENT` |
 | Lost a concurrent update (re-read and retry) | 409 | `ABORTED` |
 | Commit outcome unknown (reconcile, then retry) | 503 | `UNAVAILABLE` |
@@ -292,7 +362,9 @@ names for UI rendering.
 ## Versioning
 
 Identity REST paths are unversioned (`/users/...`, `/roles/...`,
-`/permissions/...`). Nothing here is deprecated.
+`/permissions/...`). Nothing here is deprecated; removed fields are removed
+outright rather than deprecated (see the breaking-change notes under
+[Schemas](#schemas)).
 
 ## The email login key
 

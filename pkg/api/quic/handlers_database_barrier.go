@@ -52,7 +52,12 @@ func (s *Server) handleDatabaseUnseal(ctx context.Context, payload []byte) ([]by
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
 	}
-	if err := s.databaseSvc.UnsealDatabase(ctx, req.GetName(), seal.Credentials{Secret: []byte(req.GetSecret())}); err != nil {
+	creds, err := seal.CredentialsFor([]byte(req.GetSecret()))
+	if err != nil {
+		return nil, err
+	}
+	defer creds.Secret.Destroy()
+	if err := s.databaseSvc.UnsealDatabase(ctx, req.GetName(), creds); err != nil {
 		return nil, err
 	}
 	out, err := proto.Marshal(&emptypb.Empty{})

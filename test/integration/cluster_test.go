@@ -31,7 +31,7 @@ import (
 )
 
 func TestCluster_HealthEndpoint(t *testing.T) {
-	adminPorts, _, ca := startThreeNodeCluster(t, "memory")
+	adminPorts, _, ca := startThreeNodeCluster(t, "pebble")
 
 	for i, port := range adminPorts {
 		code := httpHealth(t, ca.Pool, port)
@@ -42,7 +42,7 @@ func TestCluster_HealthEndpoint(t *testing.T) {
 }
 
 func TestCluster_StatusEndpoint(t *testing.T) {
-	adminPorts, _, ca := startThreeNodeCluster(t, "memory")
+	adminPorts, _, ca := startThreeNodeCluster(t, "pebble")
 
 	for i, port := range adminPorts {
 		status := httpStatus(t, ca, port)
@@ -60,7 +60,7 @@ func TestCluster_StatusEndpoint(t *testing.T) {
 }
 
 func TestCluster_LeaderElection(t *testing.T) {
-	adminPorts, _, ca := startThreeNodeCluster(t, "memory")
+	adminPorts, _, ca := startThreeNodeCluster(t, "pebble")
 
 	// Verify exactly one leader is present.
 	client := mtlsHTTPClient(t, ca, 5*time.Second)
@@ -146,12 +146,22 @@ func startThreeNodeClusterSPIFFE(t *testing.T, smType string) ([]int, *testCA) {
 	}
 	cfgPath := writePeerAdminURLConfig(t, peerAdminURLs)
 
+	// Every certificate is issued before any node starts: each node needs
+	// every peer's member identity (#556).
+	nodeCertPaths := make([]string, 3)
+	nodeKeyPaths := make([]string, 3)
+	for i := range 3 {
+		raftAddr := fmt.Sprintf("127.0.0.1:%d", ports[i])
+		nodeCertPaths[i], nodeKeyPaths[i] = ca.generateNodeCertWithSPIFFE(t, raftAddr, clusterTestTrustDomain)
+	}
+	memberIDs := memberIdentitiesFlag(t, nodeCertPaths)
+
 	for i := range 3 {
 		dataDir := t.TempDir()
 		dataDirs[i] = dataDir
 
 		raftAddr := fmt.Sprintf("127.0.0.1:%d", ports[i])
-		nodeCertPath, nodeKeyPath := ca.generateNodeCertWithSPIFFE(t, raftAddr, clusterTestTrustDomain)
+		nodeCertPath, nodeKeyPath := nodeCertPaths[i], nodeKeyPaths[i]
 
 		args := []string{
 			"start",
@@ -162,6 +172,7 @@ func startThreeNodeClusterSPIFFE(t *testing.T, smType string) ([]int, *testCA) {
 			"--sm", smType,
 			"--discovery", "static",
 			"--peers", peersFlag,
+			"--member-identities", memberIDs,
 			"--shard-id", "1",
 			"--replica-id", fmt.Sprintf("%d", i+1),
 			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
@@ -236,7 +247,7 @@ func waitForSettledFollowerView(t *testing.T, ca *testCA, port int, timeout time
 // committed there -- so the follower-originated request succeeds end to
 // end, exactly as if it had been issued directly to the leader.
 func TestCluster_MembershipAdd_ForwardsToLeader(t *testing.T) {
-	adminPorts, ca := startThreeNodeClusterSPIFFE(t, "memory")
+	adminPorts, ca := startThreeNodeClusterSPIFFE(t, "pebble")
 	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
 
 	var followerPort int
@@ -355,7 +366,7 @@ func TestCluster_MembershipAdd_ForwardsToLeader(t *testing.T) {
 // the leader commits the removal -- so the follower-originated remove
 // succeeds end to end and the replica disappears from the leader's /peers.
 func TestCluster_MembershipRemove_ForwardsToLeader(t *testing.T) {
-	adminPorts, ca := startThreeNodeClusterSPIFFE(t, "memory")
+	adminPorts, ca := startThreeNodeClusterSPIFFE(t, "pebble")
 	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
 
 	var followerPort int
@@ -476,7 +487,7 @@ func membershipPeersContainsReplica(peers map[string]interface{}, shardID, repli
 }
 
 func TestCluster_SnapshotTriggered(t *testing.T) {
-	adminPorts, _, ca := startThreeNodeCluster(t, "memory",
+	adminPorts, _, ca := startThreeNodeCluster(t, "pebble",
 		"--snapshot-entries", "100",
 		"--compaction-overhead", "10")
 	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
@@ -510,7 +521,7 @@ func TestCluster_SnapshotTriggered(t *testing.T) {
 }
 
 func TestCluster_SnapshotDataIntegrity(t *testing.T) {
-	adminPorts, _, ca := startThreeNodeCluster(t, "memory",
+	adminPorts, _, ca := startThreeNodeCluster(t, "pebble",
 		"--snapshot-entries", "50",
 		"--compaction-overhead", "5")
 	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
@@ -571,6 +582,7 @@ func TestCluster_FullRestart_DataSurvives(t *testing.T) {
 			"--sm", "pebble",
 			"--discovery", "static",
 			"--peers", peersFlag,
+			"--member-identities", memberIdentitiesFlag(t, nodeCertPaths[:]),
 			"--shard-id", "1",
 			"--replica-id", fmt.Sprintf("%d", i+1),
 			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
@@ -649,6 +661,7 @@ func TestCluster_FullRestart_DataSurvives(t *testing.T) {
 			"--sm", "pebble",
 			"--discovery", "static",
 			"--peers", peersFlag,
+			"--member-identities", memberIdentitiesFlag(t, nodeCertPaths[:]),
 			"--shard-id", "1",
 			"--replica-id", fmt.Sprintf("%d", i+1),
 			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
@@ -775,6 +788,7 @@ func TestCluster_WriteAfterRestart(t *testing.T) {
 			"--sm", "pebble",
 			"--discovery", "static",
 			"--peers", peersFlag,
+			"--member-identities", memberIdentitiesFlag(t, nodeCertPaths[:]),
 			"--shard-id", "1",
 			"--replica-id", fmt.Sprintf("%d", i+1),
 			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
@@ -830,6 +844,7 @@ func TestCluster_WriteAfterRestart(t *testing.T) {
 			"--sm", "pebble",
 			"--discovery", "static",
 			"--peers", peersFlag,
+			"--member-identities", memberIdentitiesFlag(t, nodeCertPaths[:]),
 			"--shard-id", "1",
 			"--replica-id", fmt.Sprintf("%d", i+1),
 			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
@@ -893,19 +908,26 @@ func TestCluster_PebbleSingleNode(t *testing.T) {
 	}
 }
 
-func TestCluster_ConcurrentSingleNode(t *testing.T) {
-	adminPort, ca := startSingleNode(t, "concurrent")
+// TestCluster_MVCCSingleNode replaces what was TestCluster_ConcurrentSingleNode:
+// "concurrent" has no MVCC/transaction subsystem, so go-qrdb#555's boot-time
+// capability probe now refuses it at first boot before any CRUD could run at
+// all (see TestCLI_Start_UnsupportedStateMachineFailsClosed in admin_test.go
+// for that behavior). Giving "concurrent" a real transaction plane is tracked
+// separately as #136; until then, "mvcc" is this matrix's third working SM
+// alongside "pebble" above.
+func TestCluster_MVCCSingleNode(t *testing.T) {
+	adminPort, ca := startSingleNode(t, "mvcc")
 
-	// Basic CRUD with concurrent SM.
-	httpPut(t, ca, adminPort, "conc/key1", []byte("value1"))
-	val := httpGet(t, ca, adminPort, "conc/key1")
+	// Basic CRUD with the mvcc SM.
+	httpPut(t, ca, adminPort, "mvcc/key1", []byte("value1"))
+	val := httpGet(t, ca, adminPort, "mvcc/key1")
 	if !bytes.Equal(val, []byte("value1")) {
-		t.Fatalf("concurrent GET: got %q, want %q", val, "value1")
+		t.Fatalf("mvcc GET: got %q, want %q", val, "value1")
 	}
 
-	httpPut(t, ca, adminPort, "conc/key2", []byte("value2"))
-	keys := httpList(t, ca, adminPort, "conc/")
+	httpPut(t, ca, adminPort, "mvcc/key2", []byte("value2"))
+	keys := httpList(t, ca, adminPort, "mvcc/")
 	if len(keys) != 2 {
-		t.Fatalf("concurrent list: got %d keys, want 2: %v", len(keys), keys)
+		t.Fatalf("mvcc list: got %d keys, want 2: %v", len(keys), keys)
 	}
 }

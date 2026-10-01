@@ -27,6 +27,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
@@ -76,6 +77,39 @@ type fakeCatalogStore struct {
 	injectScanErr        error
 	injectPutIfAbsentErr error
 	injectExecuteErr     error
+
+	// raceAfterGetRevision, keyed by key, fires once (then deletes itself)
+	// immediately after GetRevision returns that key's observed value --
+	// simulating a concurrent writer's CAS landing in the window between a
+	// caller's read and its own later Execute, which a fake that only
+	// serializes at Execute cannot otherwise reproduce.
+	raceAfterGetRevision map[string]func(*fakeCatalogStore)
+
+	// injectRangeErr and injectDeleteErr are one-shot, like the injectors
+	// above. rangeLimits records the Limit every Range call asked for and
+	// rangeReturned the number of keys each returned, so a test can prove a
+	// caller never listed an unbounded page (go-qrdb#547's bounded sweep).
+	injectRangeErr  error
+	injectDeleteErr error
+	rangeLimits     []int64
+	rangeReturned   []int
+	rangeStarts     []string
+
+	// afterGet, keyed by key, fires once (then deletes itself) after Get
+	// has read that key -- a concurrent writer landing between a caller's
+	// read and whatever it does next.
+	afterGet map[string]func(*fakeCatalogStore)
+
+	// failDeleteAfter and failRangeAfter, when positive, count down on each
+	// call and fail the call on which they reach zero -- "let n-1 through,
+	// fail the nth".
+	failDeleteAfter int
+	failRangeAfter  int
+
+	// beforeExecute, when non-nil, runs (without the lock held) at the start
+	// of every Execute call that carries compares -- i.e. a catalog
+	// compare-and-swap rather than an unconditional index publish.
+	beforeExecute func()
 }
 
 func newFakeCatalogStore() *fakeCatalogStore {
@@ -154,10 +188,20 @@ func (f *fakeCatalogStore) Get(_ context.Context, key string) ([]byte, error) {
 	}
 
 	rec, ok := f.data[key]
+	var value []byte
+	if ok {
+		value = cloneBytes(rec.value)
+	}
+	if hook, hooked := f.afterGet[key]; hooked {
+		delete(f.afterGet, key)
+		f.mu.Unlock()
+		hook(f)
+		f.mu.Lock()
+	}
 	if !ok {
 		return nil, &KeyNotFoundError{Key: key}
 	}
-	return cloneBytes(rec.value), nil
+	return value, nil
 }
 
 func (f *fakeCatalogStore) List(_ context.Context, prefix string) ([]string, error) {
@@ -210,19 +254,134 @@ func (f *fakeCatalogStore) GetRevision(_ context.Context, key string) (*KeyValue
 	}
 
 	rec, ok := f.data[key]
+	var result *KeyValue
 	if !ok {
+		result = nil
+	} else {
+		result = &KeyValue{
+			Key:            []byte(key),
+			Value:          cloneBytes(rec.value),
+			ModRevision:    rec.modRevision,
+			CreateRevision: rec.createRevision,
+			Version:        rec.version,
+		}
+	}
+	if race, ok := f.raceAfterGetRevision[key]; ok {
+		delete(f.raceAfterGetRevision, key)
+		race(f)
+	}
+	if result == nil {
 		return nil, &KeyNotFoundError{Key: key}
 	}
-	return &KeyValue{
-		Key:            []byte(key),
-		Value:          cloneBytes(rec.value),
-		ModRevision:    rec.modRevision,
-		CreateRevision: rec.createRevision,
-		Version:        rec.version,
-	}, nil
+	return result, nil
+}
+
+// Range returns the keys in [start, end) in sorted order, honoring
+// WithLimit and WithKeysOnly the way the MVCC store machine does.
+func (f *fakeCatalogStore) Range(_ context.Context, start, end []byte, opts ...RangeOption) ([]*KeyValue, int64, int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	var ro RangeOptions
+	for _, o := range opts {
+		o(&ro)
+	}
+	f.rangeLimits = append(f.rangeLimits, ro.Limit)
+	f.rangeStarts = append(f.rangeStarts, string(start))
+	if f.failRangeAfter > 0 {
+		f.failRangeAfter--
+		if f.failRangeAfter == 0 {
+			return nil, 0, 0, errors.New("fakeCatalogStore: injected range failure")
+		}
+	}
+	if f.injectRangeErr != nil {
+		err := f.injectRangeErr
+		f.injectRangeErr = nil
+		return nil, 0, 0, err
+	}
+
+	keys := make([]string, 0, len(f.data))
+	for k := range f.data {
+		if k >= string(start) && (end == nil || k < string(end)) {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	if ro.Limit > 0 && int64(len(keys)) > ro.Limit {
+		keys = keys[:ro.Limit]
+	}
+	out := make([]*KeyValue, 0, len(keys))
+	for _, k := range keys {
+		rec := f.data[k]
+		kv := &KeyValue{Key: []byte(k), ModRevision: rec.modRevision, CreateRevision: rec.createRevision, Version: rec.version}
+		if !ro.KeysOnly {
+			kv.Value = cloneBytes(rec.value)
+		}
+		out = append(out, kv)
+	}
+	f.rangeReturned = append(f.rangeReturned, len(out))
+	return out, int64(len(out)), f.rev, nil
+}
+
+// Delete removes key, advancing the store revision like any other write.
+func (f *fakeCatalogStore) Delete(_ context.Context, key string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failDeleteAfter > 0 {
+		f.failDeleteAfter--
+		if f.failDeleteAfter == 0 {
+			return errors.New("fakeCatalogStore: injected delete failure")
+		}
+	}
+	if f.injectDeleteErr != nil {
+		err := f.injectDeleteErr
+		f.injectDeleteErr = nil
+		return err
+	}
+	f.rev++
+	delete(f.data, key)
+	return nil
+}
+
+// put writes key directly, advancing the store revision -- the fixture
+// equivalent of a committed single-key write.
+func (f *fakeCatalogStore) put(key string, value []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rev++
+	cr, ver := f.rev, int64(1)
+	if existing, had := f.data[key]; had {
+		cr, ver = existing.createRevision, existing.version+1
+	}
+	f.data[key] = &fakeCatalogRecord{value: cloneBytes(value), modRevision: f.rev, createRevision: cr, version: ver}
+}
+
+// has reports whether key is present.
+func (f *fakeCatalogStore) has(key string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.data[key]
+	return ok
+}
+
+// keysWithPrefix returns every present key under prefix, sorted.
+func (f *fakeCatalogStore) keysWithPrefix(prefix string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for k := range f.data {
+		if strings.HasPrefix(k, prefix) {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (f *fakeCatalogStore) Execute(_ context.Context, compares []Compare, successOps, failureOps []Op) (*TransactionResponse, error) {
+	if hook := f.beforeExecute; hook != nil && len(compares) > 0 {
+		hook()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -320,10 +479,15 @@ func (f *fakeCatalogStore) executeCallsSnapshot() int {
 // so table creation and its TableID allocation observe a single consistent
 // view of state, exactly as they do in production (both are proposed
 // through the same Raft group).
+// newTestTableService returns a TableService whose reclaim index is
+// published into the same fake store as the catalog -- the system store and
+// the table's store coincide, as they do for the system tenant's shared
+// database. Tests about a separate system store build their own.
 func newTestTableService() (*TableService, *fakeCatalogStore) {
 	store := newFakeCatalogStore()
 	seq := NewSequenceService(store, store)
-	return NewTableService(store, store, store, seq), store
+	return NewTableService(store, store, store, seq,
+		WithReclaimIndex(store, StorePlacementShared, "node-1")), store
 }
 
 func testColumns() []ColumnDef {
@@ -781,7 +945,9 @@ func TestTableService_DropTable_RetryThenSucceed(t *testing.T) {
 	store.forceConflicts = 3 // fewer than catalogCASMaxAttempts
 
 	require.NoError(t, svc.DropTable(ctx, &DropTableRequest{Database: "db", Name: "t"}))
-	assert.Equal(t, 4, store.executeCallsSnapshot()-before, "3 forced conflicts + 1 successful attempt")
+	// A drop publishes its reclaim-index entry before its own transaction:
+	// 3 forced conflicts, then the entry, then the drop itself.
+	assert.Equal(t, 5, store.executeCallsSnapshot()-before, "3 forced conflicts + the index entry + the drop")
 }
 
 func TestTableService_DropTable_RetryExhausted(t *testing.T) {
@@ -844,7 +1010,7 @@ func TestTableService_RenameTable_DataKeysUnaffected(t *testing.T) {
 	def, err := svc.CreateTable(ctx, &CreateTableRequest{Database: "db", Name: "old_name", Columns: testColumns()})
 	require.NoError(t, err)
 
-	dataKey := tableDataPrefixFor("db", def.TableID) + "1"
+	dataKey := tableDataPrefixFor("db", def.TableID, 0) + "1"
 	_, err = store.PutIfAbsent(ctx, dataKey, []byte("row-1"))
 	require.NoError(t, err)
 
@@ -933,6 +1099,735 @@ func TestTableService_RenameTable_RetryExhausted(t *testing.T) {
 	err = svc.RenameTable(ctx, &RenameTableRequest{Database: "db", From: "t", To: "t2"})
 	var ddlConflict *TableDDLConflictError
 	require.ErrorAs(t, err, &ddlConflict)
+}
+
+// ---------------------------------------------------------------------------
+// TruncateTable (go-qrdb#547)
+// ---------------------------------------------------------------------------
+
+// TestTableService_TruncateTable_FirstTruncateEver verifies a table that has
+// never been truncated -- whose generation key does not exist yet --
+// truncates successfully rather than erroring on the absent key
+// (revisionOrAbsent's whole reason to exist), advancing generation 0 to 1
+// and resetting the AUTO_INCREMENT sequence (MySQL semantics, the default).
+func TestTableService_TruncateTable_FirstTruncateEver(t *testing.T) {
+	svc, store := newTestTableService()
+	ctx := context.Background()
+
+	def, err := svc.CreateTable(ctx, &CreateTableRequest{Database: "db", Name: "t", Columns: testColumns()})
+	require.NoError(t, err)
+	assert.Equal(t, uint64(0), def.Generation)
+
+	// Allocate an AUTO_INCREMENT value so the sequence key exists and is
+	// nonzero before truncating -- otherwise the reset branch (which skips
+	// proposing a no-op Put when the sequence is already 0) never runs.
+	_, err = svc.seq.Allocate(ctx, "db", TableAutoIncrementSequenceName(def.TableID), 1)
+	require.NoError(t, err)
+
+	got, err := svc.TruncateTable(ctx, "db", "t", true)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(1), got.Generation)
+
+	live, err := svc.readGeneration(ctx, "db", def.TableID)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(1), live)
+
+	seqData, err := store.Get(ctx, tableSequenceKey("db", TableAutoIncrementSequenceName(def.TableID)))
+	require.NoError(t, err)
+	assert.Equal(t, uint64(0), decodeSequenceCounter(seqData), "AUTO_INCREMENT must reset to 0")
+}
+
+// TestTableService_TruncateTable_PostgreSQLKeepsSequence verifies
+// resetSequence=false (PostgreSQL's plain TRUNCATE, without RESTART
+// IDENTITY) leaves an already-nonzero sequence untouched.
+func TestTableService_TruncateTable_PostgreSQLKeepsSequence(t *testing.T) {
+	svc, store := newTestTableService()
+	ctx := context.Background()
+
+	def, err := svc.CreateTable(ctx, &CreateTableRequest{Database: "db", Name: "t", Columns: testColumns()})
+	require.NoError(t, err)
+	_, err = svc.seq.Allocate(ctx, "db", TableAutoIncrementSequenceName(def.TableID), 5)
+	require.NoError(t, err)
+
+	_, err = svc.TruncateTable(ctx, "db", "t", false)
+	require.NoError(t, err)
+
+	seqData, err := store.Get(ctx, tableSequenceKey("db", TableAutoIncrementSequenceName(def.TableID)))
+	require.NoError(t, err)
+	assert.Equal(t, uint64(5), decodeSequenceCounter(seqData), "PostgreSQL TRUNCATE must not reset the sequence")
+}
+
+// TestTableService_TruncateTable_PublishesReclaimJobNamingTheOldGeneration
+// verifies the reclaim job TruncateTable publishes names the OLD
+// generation's data prefix and that generation's WHOLE index keyspace (so
+// entries under a name the catalog no longer lists go too), and nothing from
+// the new generation; and that its index entry carries what the sweeper
+// needs to route and settle it.
+func TestTableService_TruncateTable_PublishesReclaimJobNamingTheOldGeneration(t *testing.T) {
+	svc, store := newTestTableService()
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+
+	def, err := svc.CreateTable(ctx, &CreateTableRequest{
+		Database: "db", Name: "t", Columns: testColumns(),
+		Indexes: []TableIndex{{Name: "idx_email", Columns: []IndexCol{{Name: "email"}}}},
+	})
+	require.NoError(t, err)
+	metaBefore, err := store.GetRevision(ctx, tableMetadataKey("db", "t"))
+	require.NoError(t, err)
+
+	_, err = svc.TruncateTable(ctx, "db", "t", true)
+	require.NoError(t, err)
+
+	jobKeys := store.keysWithPrefix(reclaimJobPrefix)
+	require.Len(t, jobKeys, 1)
+	data, err := store.Get(ctx, jobKeys[0])
+	require.NoError(t, err)
+	var job ReclaimJob
+	require.NoError(t, json.Unmarshal(data, &job))
+	assert.Equal(t, "acme", job.TenantID)
+	assert.Equal(t, "db", job.Database)
+	assert.True(t, strings.HasPrefix(job.ID, "acme:table:db:1:0:"), "job ID %q", job.ID)
+	assert.ElementsMatch(t, []string{
+		tableDataPrefixFor("db", def.TableID, 0),
+		tableIndexGenerationPrefixFor("db", def.TableID, 0),
+	}, job.KeyPrefixes)
+
+	entryData, err := store.Get(ctx, reclaimIndexKey(job.ID))
+	require.NoError(t, err)
+	var entry ReclaimIndexEntry
+	require.NoError(t, json.Unmarshal(entryData, &entry))
+	assert.Equal(t, ReclaimIndexEntry{
+		JobID: job.ID, TenantID: "acme", Database: "db",
+		Placement: StorePlacementShared, Origin: "node-1",
+		Fences: []ReclaimFence{
+			{Key: tableMetadataKey("db", "t"), ModRevision: metaBefore.ModRevision},
+			{Key: tableGenerationKey("db", def.TableID), ModRevision: 0},
+		},
+		CreatedAt: entry.CreatedAt,
+	}, entry)
+}
+
+// newSplitTableService builds a TableService whose reclaim index lives in a
+// SEPARATE system store -- a dedicated store's shape, where the entry and the
+// job cannot share one transaction.
+func newSplitTableService(placement StorePlacement) (*TableService, *fakeCatalogStore, *fakeCatalogStore) {
+	store := newFakeCatalogStore()
+	system := newFakeCatalogStore()
+	seq := NewSequenceService(store, store)
+	return NewTableService(store, store, store, seq, WithReclaimIndex(system, placement, "node-7")), store, system
+}
+
+// TestTableService_TruncateTable_IndexEntryIsPublishedBeforeTheJob pins the
+// crash-safe order: at the instant the job's transaction runs, the entry
+// naming it is already durable in the system store.
+func TestTableService_TruncateTable_IndexEntryIsPublishedBeforeTheJob(t *testing.T) {
+	svc, store, system := newSplitTableService(StorePlacementNode)
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	_, err := svc.CreateTable(ctx, &CreateTableRequest{Database: "db", Name: "t", Columns: testColumns()})
+	require.NoError(t, err)
+
+	var entriesAtJobCommit []string
+	store.beforeExecute = func() { entriesAtJobCommit = system.keysWithPrefix(reclaimIndexPrefix) }
+
+	_, err = svc.TruncateTable(ctx, "db", "t", true)
+	require.NoError(t, err)
+	require.Len(t, entriesAtJobCommit, 1, "the entry must exist before the job's transaction runs")
+	jobs := store.keysWithPrefix(reclaimJobPrefix)
+	require.Len(t, jobs, 1)
+	assert.Equal(t, reclaimIndexKey(strings.TrimPrefix(jobs[0], reclaimJobPrefix)), entriesAtJobCommit[0])
+	assert.Empty(t, store.keysWithPrefix(reclaimIndexPrefix), "the entry lives only in the system store")
+}
+
+// TestTableService_TruncateTable_LostAttemptWithdrawsItsOwnEntry proves an
+// attempt whose compare-and-swap definitely lost removes the entry it
+// published, and the retry that wins leaves exactly one entry -- naming the
+// job that actually committed.
+func TestTableService_TruncateTable_LostAttemptWithdrawsItsOwnEntry(t *testing.T) {
+	svc, store, system := newSplitTableService(StorePlacementNode)
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	_, err := svc.CreateTable(ctx, &CreateTableRequest{Database: "db", Name: "t", Columns: testColumns()})
+	require.NoError(t, err)
+
+	lost := 0
+	store.beforeExecute = func() {
+		if lost == 0 {
+			lost++
+			store.forceConflicts = 1
+		}
+	}
+	_, err = svc.TruncateTable(ctx, "db", "t", true)
+	require.NoError(t, err)
+	require.Equal(t, 1, lost)
+
+	entries := system.keysWithPrefix(reclaimIndexPrefix)
+	jobs := store.keysWithPrefix(reclaimJobPrefix)
+	require.Len(t, entries, 1, "the lost attempt's entry must be withdrawn")
+	require.Len(t, jobs, 1)
+	assert.Equal(t, strings.TrimPrefix(jobs[0], reclaimJobPrefix), strings.TrimPrefix(entries[0], reclaimIndexPrefix))
+}
+
+// TestTableService_TruncateTable_UnknownOutcomeLeavesItsEntry proves an
+// attempt whose outcome is unknown does NOT withdraw its entry: the job may
+// have committed, and only the sweeper's fence check may settle it.
+func TestTableService_TruncateTable_UnknownOutcomeLeavesItsEntry(t *testing.T) {
+	svc, store, system := newSplitTableService(StorePlacementNode)
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	_, err := svc.CreateTable(ctx, &CreateTableRequest{Database: "db", Name: "t", Columns: testColumns()})
+	require.NoError(t, err)
+
+	store.beforeExecute = func() { store.injectExecuteErr = errors.New("proposal timed out") }
+	_, err = svc.TruncateTable(ctx, "db", "t", true)
+	require.Error(t, err)
+	assert.Len(t, system.keysWithPrefix(reclaimIndexPrefix), 1)
+}
+
+// TestTableService_TruncateTable_IndexPublishFailureStopsBeforeTheJob proves
+// a failed entry publish never lets the job's transaction run at all.
+func TestTableService_TruncateTable_IndexPublishFailureStopsBeforeTheJob(t *testing.T) {
+	svc, store, system := newSplitTableService(StorePlacementNode)
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	def, err := svc.CreateTable(ctx, &CreateTableRequest{Database: "db", Name: "t", Columns: testColumns()})
+	require.NoError(t, err)
+
+	system.injectExecuteErr = errors.New("system store unavailable")
+	_, err = svc.TruncateTable(ctx, "db", "t", true)
+	require.Error(t, err)
+	assert.Empty(t, store.keysWithPrefix(reclaimJobPrefix))
+	gen, err := svc.readGeneration(ctx, "db", def.TableID)
+	require.NoError(t, err)
+	assert.Zero(t, gen)
+}
+
+// TestTableService_TruncateTable_TwoTenantsSameTableIDNeverCollide is the
+// dedicated-store collision: two tenants' stores both allocate TableID 1,
+// and their entries share ONE system store.
+func TestTableService_TruncateTable_TwoTenantsSameTableIDNeverCollide(t *testing.T) {
+	system := newFakeCatalogStore()
+	for _, tenantID := range []string{"acme", "globex"} {
+		store := newFakeCatalogStore()
+		svc := NewTableService(store, store, store, NewSequenceService(store, store),
+			WithReclaimIndex(system, StorePlacementNode, "node-7"))
+		ctx := tenant.WithTenantID(context.Background(), tenantID)
+		def, err := svc.CreateTable(ctx, &CreateTableRequest{Database: "db", Name: "t", Columns: testColumns()})
+		require.NoError(t, err)
+		require.Equal(t, uint64(1), def.TableID)
+		_, err = svc.TruncateTable(ctx, "db", "t", true)
+		require.NoError(t, err)
+	}
+	assert.Len(t, system.keysWithPrefix(reclaimIndexPrefix), 2)
+}
+
+// TestTableService_TruncateTable_RefusesWithoutAReclaimIndex pins the
+// fail-closed composition requirement.
+func TestTableService_TruncateTable_RefusesWithoutAReclaimIndex(t *testing.T) {
+	store := newFakeCatalogStore()
+	svc := NewTableService(store, store, store, NewSequenceService(store, store))
+	_, err := svc.CreateTable(context.Background(), &CreateTableRequest{Database: "db", Name: "t", Columns: testColumns()})
+	require.NoError(t, err)
+	_, err = svc.TruncateTable(context.Background(), "db", "t", true)
+	var unconfigured *ReclaimIndexUnconfiguredError
+	require.ErrorAs(t, err, &unconfigured)
+	assert.Contains(t, unconfigured.Error(), "WithReclaimIndex")
+}
+
+// TestTableService_TruncateTable_SecondTruncateAdvancesAgain verifies
+// truncating an already-truncated table advances generation 1 to 2, and
+// publishes a SECOND reclaim job naming generation 1 (not 0, already
+// reclaimed or at least already a separate job).
+func TestTableService_TruncateTable_SecondTruncateAdvancesAgain(t *testing.T) {
+	svc, store := newTestTableService()
+	ctx := context.Background()
+	def, err := svc.CreateTable(ctx, &CreateTableRequest{Database: "db", Name: "t", Columns: testColumns()})
+	require.NoError(t, err)
+
+	_, err = svc.TruncateTable(ctx, "db", "t", true)
+	require.NoError(t, err)
+	got, err := svc.TruncateTable(ctx, "db", "t", true)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(2), got.Generation)
+
+	keys, err := store.List(ctx, reclaimJobPrefix)
+	require.NoError(t, err)
+	assert.Len(t, keys, 2, "each TRUNCATE publishes its own reclaim job")
+
+	_ = def
+}
+
+// TestTableService_TruncateTable_NotFound verifies truncating a table that
+// does not exist reports TableNotFoundError rather than silently succeeding.
+func TestTableService_TruncateTable_NotFound(t *testing.T) {
+	svc, _ := newTestTableService()
+	_, err := svc.TruncateTable(context.Background(), "db", "missing", true)
+	var notFound *TableNotFoundError
+	require.ErrorAs(t, err, &notFound)
+}
+
+// TestTableService_TruncateTable_RejectsWhileRewriteInProgress verifies
+// TRUNCATE is refused while an ALTER TABLE DROP/MODIFY COLUMN rewrite is
+// mid-flight, the same as RenameTable/AlterTable: letting it proceed would
+// race the rewrite's own generation check (relational_rewrite.go's
+// checkGenerationCurrent) rather than fail it cleanly up front.
+func TestTableService_TruncateTable_RejectsWhileRewriteInProgress(t *testing.T) {
+	svc, _ := newTestTableService()
+	ctx := context.Background()
+	_, err := svc.CreateTable(ctx, &CreateTableRequest{Database: "db", Name: "t", Columns: testColumns()})
+	require.NoError(t, err)
+
+	_, err = svc.AlterTable(ctx, &AlterTableRequest{
+		Database: "db", Name: "t",
+		Changes: []AlterTableChange{{Action: AlterDropColumn, Name: "email"}},
+	})
+	var rewriteRequired *TableRewriteRequiredError
+	require.ErrorAs(t, err, &rewriteRequired)
+
+	_, err = svc.TruncateTable(ctx, "db", "t", true)
+	var inProgress *TableRewriteInProgressError
+	require.ErrorAs(t, err, &inProgress)
+}
+
+// TestTableService_TruncateTable_RetryExhausted mirrors
+// TestTableService_RenameTable_RetryExhausted: a catalog CAS that loses
+// every race reports TableDDLConflictError rather than looping forever.
+func TestTableService_TruncateTable_RetryExhausted(t *testing.T) {
+	svc, store := newTestTableService()
+	ctx := context.Background()
+	_, err := svc.CreateTable(ctx, &CreateTableRequest{Database: "db", Name: "t", Columns: testColumns()})
+	require.NoError(t, err)
+
+	store.forceConflicts = 1000
+	_, err = svc.TruncateTable(ctx, "db", "t", true)
+	var ddlConflict *TableDDLConflictError
+	require.ErrorAs(t, err, &ddlConflict)
+}
+
+// TestTableService_TruncateTable_InvalidTableRef verifies the same
+// validateTableRef guard every other DDL entry point applies.
+func TestTableService_TruncateTable_InvalidTableRef(t *testing.T) {
+	svc, _ := newTestTableService()
+	_, err := svc.TruncateTable(context.Background(), "", "t", true)
+	require.Error(t, err)
+}
+
+// TestTableService_TruncateTable_ConcurrentAllocateAfterSequenceReadIsRetried
+// pins the fix for the sequence-reset CAS gap: a concurrent
+// SequenceServicer.Allocate landing between TruncateTable's read of the
+// AUTO_INCREMENT counter and its own commit must fail THAT attempt (the
+// compare on the counter's ModRevision is now unconditional, even when the
+// observed value is already 0) rather than let the allocation survive
+// unguarded. The retry then observes the raced-in value and correctly
+// resets it, so the counter ends at 0 either way -- what changes is that the
+// race is CAUGHT, not that TRUNCATE ultimately fails.
+func TestTableService_TruncateTable_ConcurrentAllocateAfterSequenceReadIsRetried(t *testing.T) {
+	svc, store := newTestTableService()
+	ctx := context.Background()
+
+	def, err := svc.CreateTable(ctx, &CreateTableRequest{Database: "db", Name: "t", Columns: testColumns()})
+	require.NoError(t, err)
+	seqKey := tableSequenceKey("db", TableAutoIncrementSequenceName(def.TableID))
+
+	raced := false
+	store.mu.Lock()
+	if store.raceAfterGetRevision == nil {
+		store.raceAfterGetRevision = make(map[string]func(*fakeCatalogStore))
+	}
+	store.raceAfterGetRevision[seqKey] = func(f *fakeCatalogStore) {
+		if raced {
+			return
+		}
+		raced = true
+		// A concurrent Allocate landing in the window between
+		// TruncateTable's read and its own commit: write a nonzero counter
+		// directly, bypassing TruncateTable's own transaction entirely.
+		f.data[seqKey] = &fakeCatalogRecord{value: encodeSequenceCounter(7), modRevision: f.rev + 1000, version: 1}
+	}
+	store.mu.Unlock()
+
+	got, err := svc.TruncateTable(ctx, "db", "t", true)
+	require.NoError(t, err, "the race must be retried, not surfaced as a failure")
+	assert.Equal(t, uint64(1), got.Generation)
+	assert.True(t, raced, "the race hook must have fired for this test to prove anything")
+
+	seqData, err := store.Get(ctx, seqKey)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(0), decodeSequenceCounter(seqData),
+		"the counter must end at 0 -- the raced-in allocation must not survive TRUNCATE")
+}
+
+// TestTableService_TruncateTable_ConcurrentRenameAfterMetadataReadIsCaught
+// pins the fix for TRUNCATE's missing metadata compare: a concurrent RENAME
+// landing between TruncateTable's read of the table definition and its own
+// commit must fail this attempt (the metadata ModRevision compare), and the
+// retry -- which re-reads under the ORIGINAL name TruncateTable was called
+// with -- correctly reports TableNotFoundError rather than silently
+// committing a generation bump computed from column/index data that is no
+// longer the table's.
+func TestTableService_TruncateTable_ConcurrentRenameAfterMetadataReadIsCaught(t *testing.T) {
+	svc, store := newTestTableService()
+	ctx := context.Background()
+
+	_, err := svc.CreateTable(ctx, &CreateTableRequest{Database: "db", Name: "t", Columns: testColumns()})
+	require.NoError(t, err)
+	metaKey := tableMetadataKey("db", "t")
+
+	raced := false
+	store.mu.Lock()
+	if store.raceAfterGetRevision == nil {
+		store.raceAfterGetRevision = make(map[string]func(*fakeCatalogStore))
+	}
+	store.raceAfterGetRevision[metaKey] = func(f *fakeCatalogStore) {
+		if raced {
+			return
+		}
+		raced = true
+		delete(f.data, metaKey)
+	}
+	store.mu.Unlock()
+
+	_, err = svc.TruncateTable(ctx, "db", "t", true)
+	var notFound *TableNotFoundError
+	require.ErrorAs(t, err, &notFound, "err = %v", err)
+	assert.True(t, raced, "the race hook must have fired for this test to prove anything")
+}
+
+// TestTableService_TruncateTable_ConcurrentRewriteJournalAfterCheckIsCaught
+// pins the fix that adds an explicit journal-absence compare to TRUNCATE's
+// own CAS: a rewrite journal created in the window between TruncateTable's
+// absence check and its own commit must fail that attempt, and the retry
+// correctly reports TableRewriteInProgressError.
+func TestTableService_TruncateTable_ConcurrentRewriteJournalAfterCheckIsCaught(t *testing.T) {
+	svc, store := newTestTableService()
+	ctx := context.Background()
+
+	_, err := svc.CreateTable(ctx, &CreateTableRequest{Database: "db", Name: "t", Columns: testColumns()})
+	require.NoError(t, err)
+	journalKey := tableDDLJournalKey("db", "t")
+
+	raced := false
+	store.mu.Lock()
+	if store.raceAfterGetRevision == nil {
+		store.raceAfterGetRevision = make(map[string]func(*fakeCatalogStore))
+	}
+	store.raceAfterGetRevision[journalKey] = func(f *fakeCatalogStore) {
+		if raced {
+			return
+		}
+		raced = true
+		journal := &TableDDLJournal{State: DDLStateRewriting}
+		data, jerr := json.Marshal(journal)
+		require.NoError(t, jerr)
+		f.data[journalKey] = &fakeCatalogRecord{value: data, modRevision: f.rev + 1000, version: 1}
+	}
+	store.mu.Unlock()
+
+	_, err = svc.TruncateTable(ctx, "db", "t", true)
+	var inProgress *TableRewriteInProgressError
+	require.ErrorAs(t, err, &inProgress, "err = %v", err)
+	assert.True(t, raced, "the race hook must have fired for this test to prove anything")
+}
+
+// ---------------------------------------------------------------------------
+// RenameIndex (go-qrdb#547)
+// ---------------------------------------------------------------------------
+
+func createIndexedTable(t *testing.T, svc *TableService, ctx context.Context) *TableDef {
+	t.Helper()
+	def, err := svc.CreateTable(ctx, &CreateTableRequest{
+		Database: "db", Name: "t", Columns: testColumns(),
+		Indexes: []TableIndex{
+			{Name: "idx_email", Columns: []IndexCol{{Name: "email"}}},
+			{Name: "idx_created", Columns: []IndexCol{{Name: "created_at"}}},
+		},
+	})
+	require.NoError(t, err)
+	return def
+}
+
+// TestTableService_Incarnations_AreAssignedAndNeverReused pins the property
+// the index keyspace rests on: CreateTable and CreateIndex assign every index
+// an incarnation from the table's own counter, ignore any value the caller
+// supplies, and never hand one out twice -- not even to a later index
+// created under a dropped or renamed index's name.
+func TestTableService_Incarnations_AreAssignedAndNeverReused(t *testing.T) {
+	svc, _ := newTestTableService()
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	def := createIndexedTable(t, svc, ctx)
+	assert.Equal(t, uint64(1), def.Indexes[0].Incarnation)
+	assert.Equal(t, uint64(2), def.Indexes[1].Incarnation)
+	assert.Equal(t, uint64(2), def.IndexIncarnations)
+
+	require.NoError(t, svc.DropIndex(ctx, "db", "t", "idx_email"))
+	require.NoError(t, svc.CreateIndex(ctx, &CreateTableIndexRequest{
+		Database: "db", Table: "t",
+		Index: TableIndex{Name: "idx_email", Columns: []IndexCol{{Name: "email"}}, Incarnation: 1},
+	}))
+	require.NoError(t, svc.RenameIndex(ctx, &RenameTableIndexRequest{Database: "db", Table: "t", From: "idx_created", To: "idx_old"}))
+	require.NoError(t, svc.CreateIndex(ctx, &CreateTableIndexRequest{
+		Database: "db", Table: "t", Index: TableIndex{Name: "idx_created", Columns: []IndexCol{{Name: "created_at"}}},
+	}))
+
+	got, err := svc.GetTable(ctx, "db", "t")
+	require.NoError(t, err)
+	byName := map[string]uint64{}
+	for _, idx := range got.Indexes {
+		byName[idx.Name] = idx.Incarnation
+	}
+	assert.Equal(t, map[string]uint64{"idx_old": 2, "idx_email": 3, "idx_created": 4}, byName,
+		"a reused name gets a new incarnation; a renamed index keeps its own")
+	assert.Equal(t, uint64(4), got.IndexIncarnations)
+}
+
+// TestTableService_RenameIndex_IsAPureCatalogChange proves a rename is one
+// catalog compare-and-swap that publishes nothing: the entries are keyed by
+// incarnation, which the renamed index keeps.
+func TestTableService_RenameIndex_IsAPureCatalogChange(t *testing.T) {
+	svc, store := newTestTableService()
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	def := createIndexedTable(t, svc, ctx)
+	before := store.executeCallsSnapshot()
+
+	require.NoError(t, svc.RenameIndex(ctx, &RenameTableIndexRequest{Database: "db", Table: "t", From: "idx_email", To: "idx_mail"}))
+	assert.Equal(t, 1, store.executeCallsSnapshot()-before, "ONE catalog transaction")
+	assert.Empty(t, store.keysWithPrefix(reclaimJobPrefix))
+	assert.Empty(t, store.keysWithPrefix(reclaimIndexPrefix))
+
+	got, err := svc.GetTable(ctx, "db", "t")
+	require.NoError(t, err)
+	require.Len(t, got.Indexes, 2)
+	assert.Equal(t, "idx_mail", got.Indexes[0].Name, "the renamed index keeps its position")
+	assert.Equal(t, def.Indexes[0].Incarnation, got.Indexes[0].Incarnation, "and its incarnation")
+	assert.Equal(t, def.Indexes[0].Columns, got.Indexes[0].Columns)
+}
+
+// TestTableService_DropIndex_PublishesAJobForItsIncarnation proves DROP INDEX
+// hands the dropped incarnation's entries to the sweeper, in the catalog's
+// own transaction, fenced so the sweeper can settle it -- and deletes none of
+// them inline.
+func TestTableService_DropIndex_PublishesAJobForItsIncarnation(t *testing.T) {
+	svc, store := newTestTableService()
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	def := createIndexedTable(t, svc, ctx)
+	entryKey := tableIndexPrefixFor("db", def.TableID, 0, def.Indexes[0].Incarnation) + "k"
+	store.put(entryKey, nil)
+	metaBefore, err := store.GetRevision(ctx, tableMetadataKey("db", "t"))
+	require.NoError(t, err)
+
+	require.NoError(t, svc.DropIndex(ctx, "db", "t", "idx_email"))
+	assert.True(t, store.has(entryKey), "entries are reclaimed by the sweeper, never inline")
+
+	jobs := store.keysWithPrefix(reclaimJobPrefix)
+	require.Len(t, jobs, 1)
+	data, err := store.Get(ctx, jobs[0])
+	require.NoError(t, err)
+	var job ReclaimJob
+	require.NoError(t, json.Unmarshal(data, &job))
+	assert.Equal(t, []string{tableIndexPrefixFor("db", def.TableID, 0, def.Indexes[0].Incarnation)}, job.KeyPrefixes)
+
+	entryData, err := store.Get(ctx, reclaimIndexKey(job.ID))
+	require.NoError(t, err)
+	var entry ReclaimIndexEntry
+	require.NoError(t, json.Unmarshal(entryData, &entry))
+	assert.Equal(t, []ReclaimFence{
+		{Key: tableMetadataKey("db", "t"), ModRevision: metaBefore.ModRevision},
+		{Key: tableGenerationKey("db", def.TableID), ModRevision: 0},
+	}, entry.Fences)
+}
+
+// TestTableService_DropIndex_ConcurrentTruncateIsCaught drives a TRUNCATE
+// into the window between DROP INDEX's generation read and its commit: the
+// attempt must fail and the retry must name the generation the entries are
+// actually under.
+func TestTableService_DropIndex_ConcurrentTruncateIsCaught(t *testing.T) {
+	svc, store := newTestTableService()
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	def := createIndexedTable(t, svc, ctx)
+	genKey := tableGenerationKey("db", def.TableID)
+
+	raced := false
+	store.beforeExecute = func() {
+		if !raced {
+			raced = true
+			store.put(genKey, encodeSequenceCounter(1))
+		}
+	}
+	require.NoError(t, svc.DropIndex(ctx, "db", "t", "idx_email"))
+	require.True(t, raced)
+
+	jobs := store.keysWithPrefix(reclaimJobPrefix)
+	require.Len(t, jobs, 1, "the lost attempt published nothing")
+	data, err := store.Get(ctx, jobs[0])
+	require.NoError(t, err)
+	var job ReclaimJob
+	require.NoError(t, json.Unmarshal(data, &job))
+	assert.Equal(t, []string{tableIndexPrefixFor("db", def.TableID, 1, def.Indexes[0].Incarnation)}, job.KeyPrefixes)
+	assert.Len(t, store.keysWithPrefix(reclaimIndexPrefix), 1, "the lost attempt withdrew its entry")
+}
+
+func TestTableService_DropIndex_Rejections(t *testing.T) {
+	svc, _ := newTestTableService()
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	createIndexedTable(t, svc, ctx)
+
+	var notFound *TableIndexNotFoundError
+	require.ErrorAs(t, svc.DropIndex(ctx, "db", "t", "nope"), &notFound)
+	var tableNotFound *TableNotFoundError
+	require.ErrorAs(t, svc.DropIndex(ctx, "db", "gone", "idx_email"), &tableNotFound)
+	var invalid *TableInvalidNameError
+	require.ErrorAs(t, svc.DropIndex(ctx, "db", "t", ""), &invalid)
+
+	store := newFakeCatalogStore()
+	bare := NewTableService(store, store, store, NewSequenceService(store, store))
+	createIndexedTable(t, bare, context.Background())
+	var unconfigured *ReclaimIndexUnconfiguredError
+	require.ErrorAs(t, bare.DropIndex(context.Background(), "db", "t", "idx_email"), &unconfigured)
+}
+
+// TestTableService_GetTable_ReportsTheRevisionsItRead proves GetTable carries
+// the metadata and generation revisions it decoded, which DML fences and
+// snapshot checks compare against.
+func TestTableService_GetTable_ReportsTheRevisionsItRead(t *testing.T) {
+	svc, store := newTestTableService()
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	def := createIndexedTable(t, svc, ctx)
+	_, err := svc.TruncateTable(ctx, "db", "t", true)
+	require.NoError(t, err)
+
+	got, err := svc.GetTable(ctx, "db", "t")
+	require.NoError(t, err)
+	meta, err := store.GetRevision(ctx, tableMetadataKey("db", "t"))
+	require.NoError(t, err)
+	gen, err := store.GetRevision(ctx, tableGenerationKey("db", def.TableID))
+	require.NoError(t, err)
+	assert.Equal(t, meta.ModRevision, got.MetadataRevision)
+	assert.Equal(t, gen.ModRevision, got.GenerationRevision)
+	assert.Equal(t, uint64(1), got.Generation)
+}
+
+func TestTableService_RenameIndex_Rejections(t *testing.T) {
+	cases := []struct {
+		name     string
+		req      RenameTableIndexRequest
+		want     any
+		badName  string
+		checkBad bool
+	}{
+		{name: "missing source", req: RenameTableIndexRequest{Database: "db", Table: "t", From: "nope", To: "x"}, want: new(*TableIndexNotFoundError)},
+		{name: "target exists", req: RenameTableIndexRequest{Database: "db", Table: "t", From: "idx_email", To: "idx_created"}, want: new(*TableIndexAlreadyExistsError)},
+		{name: "missing table", req: RenameTableIndexRequest{Database: "db", Table: "gone", From: "idx_email", To: "x"}, want: new(*TableNotFoundError)},
+		{name: "empty target", req: RenameTableIndexRequest{Database: "db", Table: "t", From: "idx_email", To: ""}, want: new(*TableInvalidNameError), checkBad: true},
+		{name: "empty source", req: RenameTableIndexRequest{Database: "db", Table: "t", From: "", To: "idx_x"}, want: new(*TableInvalidNameError), checkBad: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _ := newTestTableService()
+			ctx := tenant.WithTenantID(context.Background(), "acme")
+			createIndexedTable(t, svc, ctx)
+			err := svc.RenameIndex(ctx, &tc.req)
+			require.Error(t, err)
+			require.ErrorAs(t, err, tc.want)
+			if tc.checkBad {
+				var invalid *TableInvalidNameError
+				require.ErrorAs(t, err, &invalid)
+				assert.Empty(t, invalid.Name, "the empty name is the one reported")
+			}
+		})
+	}
+}
+
+// TestTableService_DropIndex_GenerationReadErrorIsReported proves a failed
+// generation read aborts the drop rather than being read as generation 0.
+func TestTableService_DropIndex_GenerationReadErrorIsReported(t *testing.T) {
+	svc, store := newTestTableService()
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	createIndexedTable(t, svc, ctx)
+	store.mu.Lock()
+	store.raceAfterGetRevision = map[string]func(*fakeCatalogStore){
+		tableMetadataKey("db", "t"): func(f *fakeCatalogStore) { f.injectGetRevisionErr = errors.New("read failed") },
+	}
+	store.mu.Unlock()
+
+	require.Error(t, svc.DropIndex(ctx, "db", "t", "idx_email"))
+	assert.Empty(t, store.keysWithPrefix(reclaimJobPrefix))
+	got, err := svc.GetTable(ctx, "db", "t")
+	require.NoError(t, err)
+	assert.Len(t, got.Indexes, 2)
+}
+
+func TestTableService_RenameIndex_InvalidTableRef(t *testing.T) {
+	svc, _ := newTestTableService()
+	require.Error(t, svc.RenameIndex(context.Background(), &RenameTableIndexRequest{Table: "t", From: "a", To: "b"}))
+}
+
+// ---------------------------------------------------------------------------
+// DropTable and the generation counter (go-qrdb#547)
+// ---------------------------------------------------------------------------
+
+// TestTableService_DropTable_DeletesTheGenerationCounterAtomically proves the
+// counter and the definition naming its TableID go in one transaction.
+func TestTableService_DropTable_DeletesTheGenerationCounterAtomically(t *testing.T) {
+	svc, store := newTestTableService()
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	def, err := svc.CreateTable(ctx, &CreateTableRequest{Database: "db", Name: "t", Columns: testColumns()})
+	require.NoError(t, err)
+	_, err = svc.TruncateTable(ctx, "db", "t", true)
+	require.NoError(t, err)
+	before := store.executeCallsSnapshot()
+
+	require.NoError(t, svc.DropTable(ctx, &DropTableRequest{Database: "db", Name: "t"}))
+	assert.Equal(t, 2, store.executeCallsSnapshot()-before, "the reclaim-index entry, then ONE transaction for the rest")
+	assert.False(t, store.has(tableGenerationKey("db", def.TableID)))
+	assert.False(t, store.has(tableMetadataKey("db", "t")))
+}
+
+// TestTableService_DropTable_ConcurrentTruncateIsCaught drives a TRUNCATE
+// between DROP TABLE's reads and its commit: the drop's compare on the
+// generation key must fail that attempt, and the retry drops the table at
+// the generation it actually has.
+func TestTableService_DropTable_ConcurrentTruncateIsCaught(t *testing.T) {
+	svc, store := newTestTableService()
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	def, err := svc.CreateTable(ctx, &CreateTableRequest{Database: "db", Name: "t", Columns: testColumns()})
+	require.NoError(t, err)
+	genKey := tableGenerationKey("db", def.TableID)
+
+	attempts := 0
+	store.beforeExecute = func() {
+		attempts++
+		if attempts == 1 {
+			store.put(genKey, encodeSequenceCounter(1))
+		}
+	}
+	require.NoError(t, svc.DropTable(ctx, &DropTableRequest{Database: "db", Name: "t"}))
+	assert.Equal(t, 2, attempts, "the first attempt must lose to the TRUNCATE")
+	assert.False(t, store.has(genKey))
+}
+
+// TestTableService_DropTable_FailedDropKeepsTheGenerationCounter proves a
+// drop that does not commit leaves the table exactly as it was -- still at
+// its truncated generation, never silently back to generation 0.
+func TestTableService_DropTable_FailedDropKeepsTheGenerationCounter(t *testing.T) {
+	svc, store := newTestTableService()
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	def, err := svc.CreateTable(ctx, &CreateTableRequest{Database: "db", Name: "t", Columns: testColumns()})
+	require.NoError(t, err)
+	_, err = svc.TruncateTable(ctx, "db", "t", true)
+	require.NoError(t, err)
+
+	store.forceConflicts = 1000
+	require.Error(t, svc.DropTable(ctx, &DropTableRequest{Database: "db", Name: "t"}))
+	store.forceConflicts = 0
+
+	got, err := svc.GetTable(ctx, "db", "t")
+	require.NoError(t, err)
+	assert.Equal(t, uint64(1), got.Generation)
+	assert.True(t, store.has(tableGenerationKey("db", def.TableID)))
+}
+
+func TestTableService_DropTable_CorruptDefinitionIsReported(t *testing.T) {
+	svc, store := newTestTableService()
+	store.put(tableMetadataKey("db", "t"), []byte("{not json"))
+	err := svc.DropTable(context.Background(), &DropTableRequest{Database: "db", Name: "t"})
+	var meta *TableMetadataError
+	require.ErrorAs(t, err, &meta)
 }
 
 // ---------------------------------------------------------------------------
@@ -1783,4 +2678,129 @@ func TestValidateIdentifier(t *testing.T) {
 	assert.Error(t, validateIdentifier("table", "__reserved"))
 	assert.Error(t, validateIdentifier("table", "1abc"))
 	assert.Error(t, validateIdentifier("table", "bad name"))
+}
+
+// ---------------------------------------------------------------------------
+// Key layout (go-qrdb#547): tables created by v0.20.0 through v0.21.0
+// ---------------------------------------------------------------------------
+
+// putLegacyTable writes a catalog record shaped exactly as v0.20.0 through
+// v0.21.0 wrote one: no layout, no index incarnations, indexes identified
+// only by name.
+func putLegacyTable(t *testing.T, store *fakeCatalogStore) {
+	t.Helper()
+	legacy := `{"table_id":7,"name":"users","database":"shop",` +
+		`"columns":[{"name":"id","type":"BIGINT UNSIGNED","nullable":false},` +
+		`{"name":"email","type":"VARCHAR(255)","nullable":true},{"name":"created_at","type":"DATETIME","nullable":true}],` +
+		`"primary_key":[{"name":"id"}],` +
+		`"indexes":[{"name":"idx_email","columns":[{"name":"email"}]},{"name":"idx_created","columns":[{"name":"created_at"}]}],` +
+		`"schema_version":1}`
+	store.put(tableMetadataKey("shop", "users"), []byte(legacy))
+}
+
+func requireLayoutUnsupported(t *testing.T, err error) {
+	t.Helper()
+	var unsupported *TableLayoutUnsupportedError
+	require.ErrorAs(t, err, &unsupported)
+	assert.Equal(t, "users", unsupported.Name)
+	assert.Equal(t, uint64(7), unsupported.TableID)
+	assert.Equal(t, uint32(0), unsupported.Layout)
+	assert.Contains(t, unsupported.Error(), "re-create")
+}
+
+// TestTableService_LegacyLayout_IsRefusedNeverRead proves a table whose
+// record predates the generation and incarnation layout is refused by every
+// operation that would address its keys -- never opened as an empty table,
+// and never with its two indexes sharing incarnation 0's keyspace.
+func TestTableService_LegacyLayout_IsRefusedNeverRead(t *testing.T) {
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	ops := map[string]func(svc *TableService) error{
+		"GetTable": func(svc *TableService) error { _, err := svc.GetTable(ctx, "shop", "users"); return err },
+		"TruncateTable": func(svc *TableService) error {
+			_, err := svc.TruncateTable(ctx, "shop", "users", true)
+			return err
+		},
+		"CreateIndex": func(svc *TableService) error {
+			return svc.CreateIndex(ctx, &CreateTableIndexRequest{Database: "shop", Table: "users",
+				Index: TableIndex{Name: "idx_x", Columns: []IndexCol{{Name: "email"}}}})
+		},
+		"DropIndex": func(svc *TableService) error { return svc.DropIndex(ctx, "shop", "users", "idx_email") },
+		"RenameIndex": func(svc *TableService) error {
+			return svc.RenameIndex(ctx, &RenameTableIndexRequest{Database: "shop", Table: "users", From: "idx_email", To: "idx_x"})
+		},
+		"AlterTable": func(svc *TableService) error {
+			_, err := svc.AlterTable(ctx, &AlterTableRequest{Database: "shop", Name: "users",
+				Changes: []AlterTableChange{{Action: AlterAddColumn, Column: ColumnDef{Name: "extra", Type: "INT", Nullable: true}}}})
+			return err
+		},
+	}
+	for name, op := range ops {
+		t.Run(name, func(t *testing.T) {
+			svc, store := newTestTableService()
+			putLegacyTable(t, store)
+			before := store.executeCallsSnapshot()
+			requireLayoutUnsupported(t, op(svc))
+			assert.Equal(t, before, store.executeCallsSnapshot(), "a refused operation proposes nothing")
+		})
+	}
+}
+
+// TestTableService_LegacyLayout_CanBeDroppedAndRecreated proves the remedy
+// the error names works: the legacy table drops, and the name is then free
+// for a table created under the current layout.
+func TestTableService_LegacyLayout_CanBeDroppedAndRecreated(t *testing.T) {
+	svc, store := newTestTableService()
+	putLegacyTable(t, store)
+	ctx := context.Background()
+
+	require.NoError(t, svc.DropTable(ctx, &DropTableRequest{Database: "shop", Name: "users"}))
+	def, err := svc.CreateTable(ctx, &CreateTableRequest{Database: "shop", Name: "users", Columns: testColumns()})
+	require.NoError(t, err)
+	assert.Equal(t, TableLayoutCurrent, def.Layout)
+	got, err := svc.GetTable(ctx, "shop", "users")
+	require.NoError(t, err)
+	assert.Equal(t, TableLayoutCurrent, got.Layout)
+}
+
+// TestLegacyTableKeyPrefixes_CoverTheOldLayoutOnly pins the prefixes DROP
+// TABLE reclaims for a legacy table: its old rows and index entries, and
+// nothing of another table or of the current layout.
+func TestLegacyTableKeyPrefixes_CoverTheOldLayoutOnly(t *testing.T) {
+	prefixes := LegacyTableKeyPrefixes("shop", 1)
+	require.Equal(t, []string{"__tbl:shop:1/", "__idx:shop:1:"}, prefixes)
+	covered := func(key string) bool {
+		for _, p := range prefixes {
+			if strings.HasPrefix(key, p) {
+				return true
+			}
+		}
+		return false
+	}
+	assert.True(t, covered("__tbl:shop:1/row"))
+	assert.True(t, covered("__idx:shop:1:idx_email/entry"))
+	assert.False(t, covered(TableDataPrefix("shop", 10, 0)+"row"), "table 10")
+	assert.False(t, covered("__tbl:shop:10/row"), "table 10, legacy")
+	assert.False(t, covered("__idx:shop:10:idx/entry"), "table 10, legacy")
+	assert.False(t, covered(TableDataPrefix("shop", 1, 0)+"row"), "current-layout rows are not legacy")
+}
+
+// numberedSQLError is an engine error carrying a MySQL error number, the
+// shape the SQL engine renders a refusal in.
+type numberedSQLError struct{ n int }
+
+func (e numberedSQLError) Error() string { return "sql error" }
+func (e numberedSQLError) Number() int   { return e.n }
+
+// TestIsTableLayoutUnsupported recognizes the refusal in both shapes it
+// reaches a transport in -- typed from the catalog, numbered from the SQL
+// engine, wrapped or not -- and nothing else.
+func TestIsTableLayoutUnsupported(t *testing.T) {
+	typed := &TableLayoutUnsupportedError{Database: "shop", Name: "users"}
+	assert.True(t, IsTableLayoutUnsupported(typed))
+	assert.True(t, IsTableLayoutUnsupported(&ReadError{Err: typed}))
+	assert.True(t, IsTableLayoutUnsupported(numberedSQLError{n: TableLayoutUnsupportedSQLCode}))
+	assert.True(t, IsTableLayoutUnsupported(&SQLExecutionError{Err: numberedSQLError{n: TableLayoutUnsupportedSQLCode}}))
+	assert.False(t, IsTableLayoutUnsupported(numberedSQLError{n: 1105}))
+	assert.False(t, IsTableLayoutUnsupported(errors.New("boom")))
+	assert.False(t, IsTableLayoutUnsupported(nil))
 }

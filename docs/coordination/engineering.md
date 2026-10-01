@@ -585,6 +585,13 @@ Two rules that apply to anyone adding tests here:
   overrun and attributing the cost to the sleep or to the round trips **only
   when the split forces it**. It does not skip: a measured precondition is not
   an exemption from "never use skip guards".
+- **A test's call budget starts after the node is writable.** Every raft test
+  boots its node, waits for the first commit (`awaitWritable`, which logs how
+  long that took), and only then takes its `raftCallBudget` context. A budget
+  taken before boot charges the election to the calls under test, so a host
+  starved enough to slow the boot fails a lease call with `quicraft: timeout`
+  that has nothing to do with leases. Budgets are named failure bounds, never
+  pacing intervals: waits return the moment their condition holds.
 
 ## Observability
 

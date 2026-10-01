@@ -362,6 +362,12 @@ func (m *collectionSvcMini) GetDocument(_ context.Context, _ *service.GetDocumen
 func (m *collectionSvcMini) UpdateDocument(_ context.Context, _ *service.UpdateDocumentRequest) (*service.UpdateDocumentResponse, error) {
 	return &service.UpdateDocumentResponse{}, m.updateDocErr
 }
+
+// UpsertDocument reports an insert: no test that uses this double drives
+// the guarded upsert, which is exercised against the real service.
+func (m *collectionSvcMini) UpsertDocument(_ context.Context, req *service.UpsertDocumentRequest) (*service.UpsertDocumentResponse, error) {
+	return &service.UpsertDocumentResponse{ID: req.ID}, nil
+}
 func (m *collectionSvcMini) DeleteDocument(_ context.Context, _ *service.DeleteDocumentRequest) (*service.DeleteDocumentResponse, error) {
 	return &service.DeleteDocumentResponse{}, m.deleteDocErr
 }
@@ -951,7 +957,7 @@ func TestBarrier_RootToken_NilService(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMapPINError_Nil(t *testing.T) {
-	if mapPINError(nil) != nil {
+	if mapServiceError(nil) != nil {
 		t.Fatal("expected nil for nil input")
 	}
 }
@@ -973,13 +979,13 @@ func TestMapPINError_AllSentinels(t *testing.T) {
 		{errors.New("unknown PIN error"), codes.Internal},
 	}
 	for _, tc := range tests {
-		got := mapPINError(tc.err)
+		got := mapServiceError(tc.err)
 		st, ok := status.FromError(got)
 		if !ok {
-			t.Fatalf("mapPINError(%v) not a gRPC status", tc.err)
+			t.Fatalf("mapServiceError(%v) not a gRPC status", tc.err)
 		}
 		if st.Code() != tc.want {
-			t.Errorf("mapPINError(%v) = %s, want %s", tc.err, st.Code(), tc.want)
+			t.Errorf("mapServiceError(%v) = %s, want %s", tc.err, st.Code(), tc.want)
 		}
 	}
 }

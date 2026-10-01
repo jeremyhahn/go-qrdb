@@ -816,11 +816,17 @@ func tenantPopulatedStore() *memoryKVSvc {
 	// the tenant's namespace. Removing it is what stops the shard on every
 	// node holding a replica.
 	put(placement.PlacementPrefix + "acme/reports")
+	// Collection work journal entries: keyed by tenant, outside the tenant's
+	// namespace, in the shared store.
+	put(CollectionWorkPrefix + "acme/reports/events")
+	put(CollectionWorkPrefix + "acme/ledger/a/b")
 
 	// Must survive.
 	put(tenant.IdentityNamespace("other") + "user/bob")
 	put(tenant.ComposeNamespace("other", "reports") + "keep")
 	put(placement.PlacementPrefix + "other/reports")
+	put(CollectionWorkPrefix + "other/reports/events")
+	put(CollectionWorkPrefix + "acme2/reports/events")
 	put("__sys:roles/admin")
 	put(timeseries.KeyPrefixTagIndex + "host:web1")
 	return kv
@@ -831,6 +837,8 @@ func tenantPopulatedStore() *memoryKVSvc {
 func tenantSurvivors() []string {
 	keep := []string{
 		"__sys:roles/admin",
+		CollectionWorkPrefix + "acme2/reports/events",
+		CollectionWorkPrefix + "other/reports/events",
 		placement.PlacementPrefix + "other/reports",
 		tenant.ComposeNamespace("other", "reports") + "keep",
 		tenant.IdentityNamespace("other") + "user/bob",
@@ -998,6 +1006,7 @@ func TestTenantKeyPrefixes_CoverEveryOwnedShape(t *testing.T) {
 		timeseries.KeyPrefixRetention + tenant.ComposeNamespace("acme", "reports") + "cpu",
 		placement.PlacementPrefix + "acme/reports",
 		seal.TenantSharedNamespace("acme") + "__sys:dek/keyring",
+		CollectionWorkPrefix + "acme/reports/events",
 	}
 	for _, key := range owned {
 		assert.True(t, hasAnyPrefix(key, prefixes), "no tenant prefix covers %q", key)
@@ -1010,6 +1019,8 @@ func TestTenantKeyPrefixes_CoverEveryOwnedShape(t *testing.T) {
 		placement.PlacementPrefix + "other/reports",
 		seal.TenantSharedNamespace("other") + "__sys:dek/keyring",
 		seal.TenantSharedNamespace("acmecorp") + "__sys:dek/keyring",
+		CollectionWorkPrefix + "other/reports/events",
+		CollectionWorkPrefix + "acme2/reports/events",
 	}
 	for _, key := range notOwned {
 		assert.False(t, hasAnyPrefix(key, prefixes), "a tenant prefix wrongly covers %q", key)

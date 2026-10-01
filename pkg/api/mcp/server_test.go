@@ -274,7 +274,7 @@ func (m *mockAdminService) Peers(ctx context.Context) (*service.PeersInfo, error
 	}, nil
 }
 
-func (m *mockAdminService) AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr string) error {
+func (m *mockAdminService) AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr, _ string) error {
 	if m.addMemberFn != nil {
 		return m.addMemberFn(ctx, shardID, replicaID, raftAddr)
 	}
@@ -630,6 +630,12 @@ func TestServer_ToolRegistration(t *testing.T) {
 		"qrdb_stop_shard",
 		"qrdb_shard_state",
 		"qrdb_topology",
+		// Registered unconditionally, like the kv/admin tools above, not
+		// gated behind a barrier service or migrator (go-qrdb#558): the
+		// handler itself refuses with a typed error when no
+		// EncryptionMigrator is configured, rather than the tool being
+		// absent.
+		"qrdb_barrier_enable_encryption",
 	}
 
 	registeredTools := s.MCPServer().ListTools()

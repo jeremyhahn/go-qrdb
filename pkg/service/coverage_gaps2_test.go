@@ -62,14 +62,6 @@ func TestImportMissingValueFieldError_Error(t *testing.T) {
 	}
 }
 
-func TestImportRowError_Error(t *testing.T) {
-	e := &ImportRowError{Row: 3, Key: "mykey", Message: "value missing"}
-	want := "service: import row 3 failed: value missing"
-	if e.Error() != want {
-		t.Fatalf("got %q, want %q", e.Error(), want)
-	}
-}
-
 func TestImportParseError_ErrorAndUnwrap(t *testing.T) {
 	cause := errors.New("unexpected EOF")
 	e := &ImportParseError{Err: cause}

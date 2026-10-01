@@ -651,8 +651,7 @@ func (s *CeremonyService) reconstructAndUnseal(ctx context.Context, rawShares []
 	// memory that must be destroyed, so the slice is built with its cleanup
 	// already deferred rather than after the loop succeeds. A share that
 	// decodes and then meets an error two iterations later must still be
-	// released — locked memory is charged against RLIMIT_MEMLOCK, whose
-	// exhaustion memguard answers by terminating the process.
+	// released — locked memory is charged against RLIMIT_MEMLOCK.
 	//
 	// The set size is bounded upstream by enrollment: rawShares is assembled
 	// by the accumulator from enrolled custodians' submissions (see the caller
@@ -683,33 +682,47 @@ func (s *CeremonyService) reconstructAndUnseal(ctx context.Context, rawShares []
 	defer rootEnclave.Destroy()
 
 	// Copy the reconstructed root key into a PROTECTED buffer and unseal OUTSIDE
-	// the enclave borrow. UnsealWithKey allocates protected memory of its own,
-	// and go-quicraft v0.9's MemoryEnclave.WithBytes holds the enclave package's
-	// purgeMu as a READ lock for the whole callback — so an allocation inside
-	// the callback deadlocks trying to take that same lock EXCLUSIVELY. The
-	// destination buffer and its view are obtained BEFORE the source borrow, so
-	// no protected allocation runs under it; pkg/secure has its own purgeMu,
-	// distinct from the enclave package's, so allocating the buffer does not
-	// contend with the source borrow. The key never lands in ordinary heap
-	// memory, and the buffer is destroyed the moment UnsealWithKey returns.
+	// the enclave borrow. The destination buffer is allocated BEFORE the source
+	// borrow, so no protected allocation runs under it — historically
+	// (go-quicraft pre-v0.11.0-alpha, before it consumed
+	// github.com/jeremyhahn/go-enclave directly) that ordering avoided a real
+	// deadlock against that package's own internal purgeMu, which
+	// MemoryEnclave.WithBytes held as a READ lock across its callback; taking
+	// it EXCLUSIVELY for an allocation from inside an already-held read
+	// self-deadlocked. go-enclave has no such package-wide lock — every
+	// enclave carries its own per-instance lock (pkg/secure/doc.go and
+	// pkg/secure/borrowguard.go's "go-enclave, not memguard" sections) — so
+	// the ordering is kept as allocation hygiene rather than deadlock
+	// avoidance. The key never lands in ordinary heap memory, and the buffer
+	// is destroyed the moment UnsealWithKey returns.
 	//
-	// Both Bytes reads below are UNBORROWED and stay that way, for the two
-	// different reasons go-qrdb#74 distinguishes. `view` cannot be borrowed
-	// because the copy runs inside a go-quicraft enclave borrow and nesting a
-	// second protected-memory borrow inside one is forbidden by that package
-	// (see copyEnclaveToBuffer in pkg/seal, which is the same shape).
-	// UnsealWithKey cannot be borrowed across because BarrierUnseal is an
-	// injected interface that allocates protected memory. Neither is an
-	// unconverted leftover.
+	// The copy holds BOTH enclaves' borrows for its whole duration — the
+	// destination's via its own WithBytes, not Bytes(), which would release
+	// go-enclave's lock on it the instant it returned and leave the exact gap
+	// SecretValue.WithBytes's own round-3 fix closed (go-qrdb#114 review):
+	// the destination is freshly allocated and already registered on
+	// go-enclave's shutdown ledger the moment secure.NewBuffer returns, so a
+	// concurrent enclave.WipeAll needs no external reference to it to destroy
+	// it mid-copy. Nesting the two borrows is safe under go-enclave — every
+	// enclave has its own independent lock — and matches copyEnclaveToBuffer
+	// in pkg/seal, fixed the same way for the same reason.
+	//
+	// UnsealWithKey's own read, below, stays UNBORROWED for a different, still
+	// current reason (go-qrdb#74): BarrierUnseal is an injected interface that
+	// allocates protected memory of its own, so holding a borrow across the
+	// call would make "the implementation must not allocate protected memory"
+	// an implicit condition of an interface this package does not control the
+	// implementations of.
 	rootBuf, err := secure.NewBuffer(rootEnclave.Size())
 	if err != nil {
 		return err
 	}
 	defer rootBuf.Destroy()
-	view := rootBuf.Bytes()
-	if err := rootEnclave.WithBytes(func(b []byte) error {
-		copy(view, b)
-		return nil
+	if err := rootBuf.WithBytes(func(view []byte) error {
+		return rootEnclave.WithBytes(func(b []byte) error {
+			copy(view, b)
+			return nil
+		})
 	}); err != nil {
 		return err
 	}

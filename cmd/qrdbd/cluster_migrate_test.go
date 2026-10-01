@@ -30,6 +30,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -170,7 +171,7 @@ type recordingMigrator struct {
 
 func (m *recordingMigrator) EnableEncryption(_ context.Context, scope service.BarrierScope, opts seal.MigrationOptions) error {
 	m.scope = scope
-	m.cred = append([]byte(nil), opts.Credentials.Secret...)
+	m.cred = sealtest.Snapshot(opts.Credentials)
 	m.opts = opts
 	return m.err
 }
@@ -194,7 +195,12 @@ func TestDaemonLocalRecycler_RoutesAndCopies(t *testing.T) {
 	if string(mig.cred) != "sys-secret" {
 		t.Fatalf("migrator cred = %q", mig.cred)
 	}
-	// The recycler must pass a COPY: wiping the caller's buffer must not affect it.
+	// The recycler must seal its OWN copy: the caller's buffer is left intact
+	// for the caller to wipe, and wiping it must not affect what the migrator
+	// was given.
+	if string(cred) != "sys-secret" {
+		t.Fatalf("recycler wiped the caller's buffer: %q", cred)
+	}
 	for i := range cred {
 		cred[i] = 0
 	}
@@ -268,7 +274,7 @@ func TestDaemonLocalRecycler_AlreadyAtTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStorageBarrier: %v", err)
 	}
-	if err := sb.Initialize(ctx, seal.Credentials{Secret: []byte("pw")}); err != nil {
+	if err := sb.Initialize(ctx, seal.MustCredentials([]byte("pw"))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	reg, err := seal.NewBarrierRegistry(logger, sb)
@@ -325,7 +331,7 @@ func TestClusterCoordinatorMigrator(t *testing.T) {
 
 	opts := seal.MigrationOptions{
 		TargetStrategy: seal.StrategyPassphrase, Mechanism: seal.MechanismSwap,
-		Availability: seal.AvailabilityQuiesced, Credentials: seal.Credentials{Secret: []byte("pw")},
+		Availability: seal.AvailabilityQuiesced, Credentials: seal.MustCredentials([]byte("pw")),
 	}
 	if err := m.EnableEncryption(ctx, service.BarrierScope{Kind: service.ScopeSystem}, opts); err != nil {
 		t.Fatalf("EnableEncryption(system): %v", err)
@@ -432,6 +438,6 @@ func TestRunClusterMigReconciler_Tick(t *testing.T) {
 func validMigOpts() seal.MigrationOptions {
 	return seal.MigrationOptions{
 		TargetStrategy: seal.StrategyPassphrase, Mechanism: seal.MechanismSwap,
-		Availability: seal.AvailabilityQuiesced, Credentials: seal.Credentials{Secret: []byte("pw")},
+		Availability: seal.AvailabilityQuiesced, Credentials: seal.MustCredentials([]byte("pw")),
 	}
 }

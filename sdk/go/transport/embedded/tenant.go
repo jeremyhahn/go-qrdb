@@ -152,6 +152,67 @@ func (t *Transport) ListTenants(ctx context.Context) (*transport.ListTenantsResp
 	}, nil
 }
 
+// ListDeletedTenants returns one page of retired tenant ids by delegating to
+// the TenantServicer.
+func (t *Transport) ListDeletedTenants(ctx context.Context, req *transport.ListDeletedTenantsRequest) (*transport.ListDeletedTenantsResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.tenantSvc == nil {
+		return nil, &NilServiceError{Service: "TenantServicer"}
+	}
+	if req == nil {
+		req = &transport.ListDeletedTenantsRequest{}
+	}
+	page, err := t.tenantSvc.ListDeletedTenants(ctx, req.PageToken, int(req.PageSize))
+	if err != nil {
+		return nil, err
+	}
+	out := &transport.ListDeletedTenantsResponse{
+		Tenants:       make([]transport.DeletedTenant, 0, len(page.Tombstones)),
+		NextPageToken: page.NextPageToken,
+	}
+	for _, ts := range page.Tombstones {
+		out.Tenants = append(out.Tenants, transport.DeletedTenant{
+			ID:            ts.ID,
+			Name:          ts.Name,
+			IsolationType: transport.TenantIsolationType(ts.IsolationType),
+			DataRoot:      ts.DataRoot,
+			CreatedAt:     ts.CreatedAt,
+			DeletedAt:     ts.DeletedAt,
+		})
+	}
+	return out, nil
+}
+
+// ReconcileDeletedTenants runs the deleted-tenant reconcile on this node by
+// delegating to the TenantServicer.
+func (t *Transport) ReconcileDeletedTenants(ctx context.Context) (*transport.ReconcileDeletedTenantsResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.tenantSvc == nil {
+		return nil, &NilServiceError{Service: "TenantServicer"}
+	}
+	report, err := t.tenantSvc.ReconcileDeletedTenants(ctx)
+	if rerr := tenant.ReconcileResponseError(report, err); rerr != nil {
+		return nil, rerr
+	}
+	out := &transport.ReconcileDeletedTenantsResponse{Inspected: report.Inspected}
+	for _, r := range report.Reclaimed {
+		out.Reclaimed = append(out.Reclaimed, transport.TenantResiduePath{TenantID: r.TenantID, Path: r.Path})
+	}
+	for _, s := range report.Skipped {
+		out.Skipped = append(out.Skipped, transport.TenantResiduePath{TenantID: s.TenantID, Path: s.Path, Reason: s.Reason})
+	}
+	for _, f := range report.Failed {
+		out.Failed = append(out.Failed, transport.TenantResidueFailure{TenantID: f.TenantID, Op: f.Op, Path: f.Path, Error: f.Error})
+	}
+	// In-process, the node's own *tenant.ResidueReconcileErrors is kept
+	// reachable through errors.As.
+	return out, transport.ReconcileFailure(out, err)
+}
+
 // UpdateTenant applies a partial update to an existing tenant by delegating
 // to the TenantServicer. Non-empty patch fields replace the stored value.
 func (t *Transport) UpdateTenant(ctx context.Context, req *transport.UpdateTenantRequest) (*transport.UpdateTenantResponse, error) {

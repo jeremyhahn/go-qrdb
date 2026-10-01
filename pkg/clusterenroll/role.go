@@ -134,8 +134,9 @@ func (e *UnknownRoleError) Error() string {
 // error. It was written for an operator investigating a failed join long after
 // the upgrade, so it names the remedy rather than the state: the file to
 // write, the three values it accepts, and that a restart is needed. The
-// caution is not boilerplate -- multi-node enrollment is the shared-CA-key
-// mode, so a JOINED node holds ca-key.pem too, and an operator reaching for
+// caution is not boilerplate -- releases before the CA key stopped being
+// distributed enrolled joiners by handing them the key, so a JOINED node from
+// such a cluster holds ca-key.pem too, and an operator reaching for
 // the obvious evidence would record a joined node as first-node and stand up
 // an enrollment listener serving the CA bundle on a node that should never
 // have one. That is by hand the exact mistake the rejected derivation would
@@ -160,11 +161,11 @@ func (e *MissingRoleError) Error() string {
 // RoleFirstNode has cached material that cannot back an enrollment listener.
 //
 // It names THIS node's data directory and the missing files on purpose. The
-// failure it prevents lands on somebody else's machine: an advertiser started
-// without a CA private key answers, serves a cert-only bundle, and the JOINING
-// node fails inside splitCABundle or leaf issuance -- in a different process,
-// about a bundle it did not create. An operator debugging that join would be
-// looking at the joiner, which is the one place the fault is not.
+// first node is the cluster CA's holder: the advertiser serves its CA
+// certificate, and the CA private key is what makes it the node that can
+// vouch for members at all. A first node missing either would answer
+// enrollment while unable to stand behind it, and the failure would surface
+// on some other machine, about material it did not create.
 type IncompleteFirstNodeMaterialError struct {
 	// Dir is the first node's data directory.
 	Dir string
@@ -178,7 +179,7 @@ func (e *IncompleteFirstNodeMaterialError) Error() string {
 	return "clusterenroll: this node is recorded as the cluster's first node but its " +
 		"cached material cannot serve enrollment: " + strings.Join(e.Missing, ", ") +
 		" missing or empty in " + e.Dir +
-		"; joining nodes would receive an unusable CA bundle. Restore the file(s) from " +
+		"; the node that holds the cluster CA cannot serve enrollment without them. Restore the file(s) from " +
 		"backup, or re-bootstrap this node"
 }
 
@@ -319,9 +320,8 @@ func ResumeAdvertiser(opts *Options, mat *clustertls.Material, logger *slog.Logg
 	// treats ca-key.pem as optional (it early-returns "no cache" only when all
 	// three of the others are absent). So a process that stopped after
 	// node-key.pem leaves a cache that loads cleanly with CAKeyPEM == nil,
-	// and a first node would then advertise an enrollment endpoint backed by
-	// no CA private key: it answers, serves a cert-only bundle, and every
-	// joining node fails in splitCABundle.
+	// and a first node would then advertise an enrollment endpoint while no
+	// longer holding the CA key that makes it the cluster's CA holder.
 	//
 	// This is the same defect as the non-atomic role write, one level out. The
 	// ordering invariant treated PersistMaterial as a single transition
@@ -329,10 +329,10 @@ func ResumeAdvertiser(opts *Options, mat *clustertls.Material, logger *slog.Logg
 	// the hard part was the ordering, so the granularity of each operand went
 	// unexamined.
 	//
-	// The check is derived from what the advertiser SERVES rather than from
-	// the write order, so reordering PersistMaterial moves nothing here:
-	// clusterBundleProvider.CABundle concatenates CACertPEM and CAKeyPEM, and
-	// those are the two the listener cannot do without. The node's own leaf
+	// The check is derived from what a first node MUST HOLD rather than from
+	// the write order, so reordering PersistMaterial moves nothing here: the
+	// CA certificate it serves and the CA key it keeps (and never serves) are
+	// the two a first node cannot do without. The node's own leaf
 	// (node-cert.pem, node-key.pem) is not served by the advertiser and is
 	// already required by LoadFromDir, which fails closed with
 	// *PartialMaterialError when any of its three are missing.

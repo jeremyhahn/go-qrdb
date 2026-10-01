@@ -1017,8 +1017,9 @@ func TestMVCCEngine_LeaseGrantNoLessor(t *testing.T) {
 	if err := eng.Update(context.Background(), entries, results); err != nil {
 		t.Fatalf("Update must not return a fatal error with no lessor: %v", err)
 	}
-	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
-		t.Fatal("expected app-error payload in result with no lessor")
+	if _, kind, ok := protocol.DecodeAppErrorKind(results[0].Data); !ok || kind != protocol.AppErrorCapability {
+		t.Fatalf("grant with no lessor: ok=%v kind=%d; want AppErrorCapability — the state "+
+			"machine was built without leases (go-qrdb#557)", ok, kind)
 	}
 }
 
@@ -1663,6 +1664,11 @@ func TestMVCCEngine_ImplementsEngine(t *testing.T) {
 // Lookup: LeaseTimeToLive not found
 // ---------------------------------------------------------------------------
 
+// TestMVCCEngine_Lookup_LeaseTimeToLiveNotFound pins go-qrdb#387: a lease ID
+// absent from the Lessor must surface as *service.LeaseNotFoundError, the
+// typed error every transport's error mapping (REST, gRPC, QUIC, MCP)
+// recognizes, rather than the generic *InvalidQueryError this used to
+// return, which no transport mapped to anything but an internal error.
 func TestMVCCEngine_Lookup_LeaseTimeToLiveNotFound(t *testing.T) {
 	stg := memory.NewStorage()
 	defer func() { _ = stg.Close() }()
@@ -1678,9 +1684,12 @@ func TestMVCCEngine_Lookup_LeaseTimeToLiveNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for non-existent lease")
 	}
-	var iqe *InvalidQueryError
-	if !errors.As(err, &iqe) {
-		t.Errorf("expected *InvalidQueryError, got %T", err)
+	var lnf *service.LeaseNotFoundError
+	if !errors.As(err, &lnf) {
+		t.Fatalf("expected *service.LeaseNotFoundError, got %T: %v", err, err)
+	}
+	if lnf.LeaseID != 99999 {
+		t.Errorf("LeaseID = %d, want 99999", lnf.LeaseID)
 	}
 }
 
@@ -1930,8 +1939,8 @@ func TestMVCCEngine_Update_TSWriteNoTS(t *testing.T) {
 	if err := eng.Update(context.Background(), entries, results); err != nil {
 		t.Fatalf("Update must not return a fatal error without TS configured: %v", err)
 	}
-	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
-		t.Fatal("expected app-error payload for TS write without TS configured")
+	if _, kind, ok := protocol.DecodeAppErrorKind(results[0].Data); !ok || kind != protocol.AppErrorCapability {
+		t.Fatalf("TS write without TS: ok=%v kind=%d; want AppErrorCapability", ok, kind)
 	}
 }
 

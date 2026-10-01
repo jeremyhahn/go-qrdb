@@ -15,11 +15,17 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 )
 
 // ---------------------------------------------------------------------------
@@ -266,7 +272,7 @@ func TestRebalanceService_CreateRebalancePlan_MaxMoves(t *testing.T) {
 // CreateRebalancePlan: error cases
 // ---------------------------------------------------------------------------
 
-func TestRebalanceService_CreateRebalancePlan_ImbalanceReportError(t *testing.T) {
+func TestRebalanceService_CreateRebalancePlan_SkipsAShardWhoseStaleReadIsNotAMap(t *testing.T) {
 	host := &mockHost{
 		getNodeHostInfoFn: func(_ quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo {
 			return &quicraft.NodeHostInfo{
@@ -327,7 +333,7 @@ func TestRebalanceService_ExecuteRebalance_SuccessfulMove(t *testing.T) {
 			return &quicraft.NodeHostInfo{
 				ShardInfoList: []quicraft.ShardInfo{
 					{
-						ShardID: 1,
+						ShardID: testGenericShard,
 						Nodes: map[uint64]string{
 							1: "node1:9100",
 						},
@@ -347,7 +353,7 @@ func TestRebalanceService_ExecuteRebalance_SuccessfulMove(t *testing.T) {
 	plan := &RebalancePlanResult{
 		Moves: []RebalanceMovePlan{
 			{
-				ShardID:        1,
+				ShardID:        testGenericShard,
 				FromNode:       "node1:9100",
 				ToNode:         "node2:9100",
 				EstimatedBytes: 1024,
@@ -401,7 +407,7 @@ func TestRebalanceService_ExecuteRebalance_ShardNotFound(t *testing.T) {
 	svc := NewRebalanceService(host)
 	plan := &RebalancePlanResult{
 		Moves: []RebalanceMovePlan{
-			{ShardID: 1, FromNode: "a", ToNode: "b"},
+			{ShardID: testGenericShard, FromNode: "a", ToNode: "b"},
 		},
 	}
 
@@ -419,7 +425,7 @@ func TestRebalanceService_ExecuteRebalance_AddNodeError(t *testing.T) {
 		getNodeHostInfoFn: func(_ quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo {
 			return &quicraft.NodeHostInfo{
 				ShardInfoList: []quicraft.ShardInfo{
-					{ShardID: 1, Nodes: map[uint64]string{1: "addr"}},
+					{ShardID: testGenericShard, Nodes: map[uint64]string{1: "addr"}},
 				},
 			}
 		},
@@ -434,7 +440,7 @@ func TestRebalanceService_ExecuteRebalance_AddNodeError(t *testing.T) {
 	svc := NewRebalanceService(host)
 	plan := &RebalancePlanResult{
 		Moves: []RebalanceMovePlan{
-			{ShardID: 1, FromNode: "a", ToNode: "b"},
+			{ShardID: testGenericShard, FromNode: "a", ToNode: "b"},
 		},
 	}
 
@@ -698,16 +704,6 @@ func TestRebalanceErrors_RebalanceExecuteError(t *testing.T) {
 	}
 }
 
-func TestRebalanceErrors_ImbalanceReportError(t *testing.T) {
-	err := &ImbalanceReportError{Err: errors.New("report failed")}
-	if err.Error() != "service: get imbalance report failed: report failed" {
-		t.Fatalf("unexpected error message: %s", err.Error())
-	}
-	if err.Unwrap().Error() != "report failed" {
-		t.Fatal("Unwrap did not return underlying error")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // formatUint64 helper
 // ---------------------------------------------------------------------------
@@ -757,5 +753,154 @@ func newMultiNodeHost() *mockHost {
 				"key2": []byte("another-value-data-here"),
 			}, nil
 		},
+	}
+}
+
+// testGenericShard is a non-dedicated shard other than the system shard: the
+// kind a generic rebalance move adds a replica of.
+const testGenericShard = 2
+
+// rebalanceLog captures a RebalanceService's log output.
+func rebalanceLog(svc RebalanceServicer) *bytes.Buffer {
+	var buf bytes.Buffer
+	svc.(*RebalanceService).logger = slog.New(slog.NewTextHandler(&buf, nil))
+	return &buf
+}
+
+// genericMoveHost is a clustered host (it has a transport, so identities are
+// required) whose system shard names node1, node2 and node3 with committed
+// identities, and whose generic shard has a voter on node1, an observer on
+// node3, a witness on node4 and a removed replica 7.
+func genericMoveHost() *mockHost {
+	return &mockHost{
+		nodeIdentity: identityOne,
+		memberships: map[uint64]*quicraft.Membership{
+			shard.ShardKV: {
+				Nodes:      map[uint64]string{1: "node1:9100", 2: "node2:9100"},
+				Identities: map[uint64]string{1: identityOne, 2: identityTwo},
+			},
+			testGenericShard: {
+				Nodes:     map[uint64]string{1: "node1:9100"},
+				Observers: map[uint64]string{2: "node3:9100"},
+				Witnesses: map[uint64]string{3: "node4:9100"},
+				Removed:   map[uint64]struct{}{7: {}},
+			},
+		},
+		getNodeHostInfoFn: func(_ quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo {
+			return &quicraft.NodeHostInfo{ShardInfoList: []quicraft.ShardInfo{
+				{ShardID: shard.ShardKV, Nodes: map[uint64]string{1: "node1:9100", 2: "node2:9100"}},
+				{ShardID: testGenericShard, Nodes: map[uint64]string{1: "node1:9100"}},
+			}}
+		},
+		requestAddNodeFn: func(context.Context, uint64, uint64, string) (*quicraft.RequestState, error) {
+			return newCompletedRequestState(quicraft.RequestResult{}), nil
+		},
+		staleReadFn: func(context.Context, uint64, interface{}) (interface{}, error) {
+			return map[string][]byte{}, nil
+		},
+	}
+}
+
+// TestRebalanceService_ExecuteRebalance_GenericMoveCommitsHostIdentity pins
+// that on a clustered host a generic move commits the identity the system
+// shard committed for the destination host, found by its address.
+func TestRebalanceService_ExecuteRebalance_GenericMoveCommitsHostIdentity(t *testing.T) {
+	host := genericMoveHost()
+	svc := NewRebalanceService(host)
+	result, err := svc.ExecuteRebalance(context.Background(), &RebalancePlanResult{Moves: []RebalanceMovePlan{
+		{ShardID: testGenericShard, FromNode: "node1:9100", ToNode: "node2:9100"},
+	}})
+	if err != nil || result.MovesCompleted != 1 || result.MovesFailed != 0 {
+		t.Fatalf("ExecuteRebalance = (%+v, %v), want one completed move", result, err)
+	}
+	if len(host.addedIdentities) != 1 || host.addedIdentities[0] != identityTwo {
+		t.Fatalf("committed identities %v, want [%q] (node2's)", host.addedIdentities, identityTwo)
+	}
+	if len(host.addedReplicaIDs) != 1 || host.addedReplicaIDs[0] != 8 {
+		t.Fatalf("added replica IDs %v, want [8]: past every voter, observer, witness and removed ID", host.addedReplicaIDs)
+	}
+}
+
+// TestRebalanceService_ExecuteRebalance_RefusalsAreTypedAndLogged pins every
+// refusal of the generic path: nothing is proposed, the move counts as
+// failed, and the typed refusal is logged.
+func TestRebalanceService_ExecuteRebalance_RefusalsAreTypedAndLogged(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		move    RebalanceMovePlan
+		wantErr any
+		inLog   string
+	}{
+		{
+			name:    "system shard",
+			move:    RebalanceMovePlan{ShardID: shard.ShardKV, FromNode: "node1:9100", ToNode: "node2:9100"},
+			wantErr: new(*RebalanceSystemShardMoveError),
+			inLog:   "every cluster host already hosts it",
+		},
+		{
+			name:    "destination already hosts the shard",
+			move:    RebalanceMovePlan{ShardID: testGenericShard, FromNode: "node2:9100", ToNode: "node1:9100"},
+			wantErr: new(*RebalanceTargetHostsReplicaError),
+			inLog:   "already hosts a replica",
+		},
+		{
+			name:    "destination already hosts the shard as an observer",
+			move:    RebalanceMovePlan{ShardID: testGenericShard, FromNode: "node1:9100", ToNode: "node3:9100"},
+			wantErr: new(*RebalanceTargetHostsReplicaError),
+			inLog:   "already hosts a replica",
+		},
+		{
+			name:    "destination already hosts the shard as a witness",
+			move:    RebalanceMovePlan{ShardID: testGenericShard, FromNode: "node1:9100", ToNode: "node4:9100"},
+			wantErr: new(*RebalanceTargetHostsReplicaError),
+			inLog:   "already hosts a replica",
+		},
+		{
+			name:    "destination with no committed identity",
+			move:    RebalanceMovePlan{ShardID: testGenericShard, FromNode: "node1:9100", ToNode: "node5:9100"},
+			wantErr: new(*MemberIdentityError),
+			inLog:   "qrdbd node-identity --cert",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host := genericMoveHost()
+			svc := NewRebalanceService(host)
+			logs := rebalanceLog(svc)
+
+			err := svc.(*RebalanceService).moveGenericShard(context.Background(),
+				host.GetNodeHostInfo(quicraft.NodeHostInfoOption{}), tc.move)
+			if !errors.As(err, tc.wantErr) {
+				t.Fatalf("moveGenericShard = %v, want %T", err, tc.wantErr)
+			}
+
+			result, err := svc.ExecuteRebalance(context.Background(), &RebalancePlanResult{Moves: []RebalanceMovePlan{tc.move}})
+			if err != nil || result.MovesFailed != 1 || result.MovesCompleted != 0 {
+				t.Fatalf("ExecuteRebalance = (%+v, %v), want one failed move", result, err)
+			}
+			if len(host.addedIdentities) != 0 {
+				t.Fatalf("a refused move must propose nothing, proposed %v", host.addedIdentities)
+			}
+			if !strings.Contains(logs.String(), "rebalance: move refused") || !strings.Contains(logs.String(), tc.inLog) {
+				t.Fatalf("the refusal must be logged with its cause, log = %q", logs.String())
+			}
+		})
+	}
+}
+
+// TestRebalanceService_MoveGenericShard_UnreadableMembership pins that a
+// membership that cannot be read refuses the move instead of guessing which
+// replica IDs are free.
+func TestRebalanceService_MoveGenericShard_UnreadableMembership(t *testing.T) {
+	host := genericMoveHost()
+	host.membershipErr = errors.New("no leader")
+	svc := NewRebalanceService(host).(*RebalanceService)
+	err := svc.moveGenericShard(context.Background(), host.GetNodeHostInfo(quicraft.NodeHostInfoOption{}),
+		RebalanceMovePlan{ShardID: testGenericShard, FromNode: "node1:9100", ToNode: "node2:9100"})
+	var readErr *cluster.MembershipReadError
+	if !errors.As(err, &readErr) || readErr.ShardID != testGenericShard {
+		t.Fatalf("moveGenericShard = %v, want *cluster.MembershipReadError for shard %d", err, testGenericShard)
+	}
+	if len(host.addedIdentities) != 0 {
+		t.Fatalf("an unreadable membership must propose nothing, proposed %v", host.addedIdentities)
 	}
 }

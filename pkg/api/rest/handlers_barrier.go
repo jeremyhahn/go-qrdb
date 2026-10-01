@@ -18,7 +18,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -165,12 +164,12 @@ func (s *Server) handleBarrierInitialize(w http.ResponseWriter, r *http.Request)
 	// initializing the barrier. When the backend is nil the call is a
 	// no-op so dev-mode flows continue to work.
 	if err := applyBarrierInitializePINs(s.pinBackend, req.SOPin, req.UserPin); err != nil {
-		writeErrorJSON(w, mapPINHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
 	if err := s.barrierSvc.BarrierInitialize(r.Context(), req.Secret); err != nil {
-		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -194,7 +193,7 @@ func (s *Server) handleBarrierUnseal(w http.ResponseWriter, r *http.Request) {
 	defer secure.Wipe(req.Secret)
 
 	if err := s.barrierSvc.BarrierUnseal(r.Context(), req.Secret); err != nil {
-		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -223,12 +222,12 @@ func (s *Server) handleBarrierSeal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := verifyBarrierSOPIN(s.pinBackend, req.SOPin); err != nil {
-		writeErrorJSON(w, mapPINHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
 	if err := s.barrierSvc.BarrierSeal(r.Context()); err != nil {
-		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -246,7 +245,7 @@ func (s *Server) handleBarrierStatus(w http.ResponseWriter, r *http.Request) {
 
 	info, err := s.barrierSvc.BarrierStatus(r.Context())
 	if err != nil {
-		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -273,13 +272,13 @@ func (s *Server) handleBarrierShamirInitialize(w http.ResponseWriter, r *http.Re
 	// Apply optional SO PIN / User PIN to the pin.PINBackend before
 	// initializing the barrier (no-op when no backend is configured).
 	if err := applyBarrierInitializePINs(s.pinBackend, req.SOPin, req.UserPin); err != nil {
-		writeErrorJSON(w, mapPINHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
 	result, err := s.barrierSvc.BarrierInitializeShamir(r.Context(), req.Secret, req.Threshold, req.TotalShares)
 	if err != nil {
-		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -303,7 +302,7 @@ func (s *Server) handleBarrierShamirUnsealShare(w http.ResponseWriter, r *http.R
 
 	progress, err := s.barrierSvc.BarrierUnsealWithShare(r.Context(), req.Share)
 	if err != nil {
-		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -326,7 +325,7 @@ func (s *Server) handleBarrierShamirUnsealShares(w http.ResponseWriter, r *http.
 	}
 
 	if err := s.barrierSvc.BarrierUnsealWithShares(r.Context(), req.Shares); err != nil {
-		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -351,13 +350,13 @@ func (s *Server) handleBarrierRekey(w http.ResponseWriter, r *http.Request) {
 	// Verify SO PIN before performing the rekey administrative operation.
 	// Enforced only when a PINBackend is configured AND has a SO PIN set.
 	if err := verifyBarrierSOPIN(s.pinBackend, req.SOPin); err != nil {
-		writeErrorJSON(w, mapPINHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
 	result, err := s.barrierSvc.BarrierRekey(r.Context(), req.Threshold, req.Total)
 	if err != nil {
-		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -431,19 +430,28 @@ func (s *Server) handleBarrierEnableEncryption(w http.ResponseWriter, r *http.Re
 		scope = service.BarrierScope{Kind: service.ScopeTenant, TenantID: req.TenantID}
 	}
 
+	// The request's passphrase is copied into protected memory and the
+	// decoded copy wiped at once — the credential is what the migration reads
+	// from here on, so nothing needs the request's plaintext past this line.
+	creds, err := seal.CredentialsFor(req.Passphrase)
+	secure.Wipe(req.Passphrase)
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
 	opts := seal.MigrationOptions{
 		TargetStrategy:  seal.StrategyID(req.Strategy),
 		Mechanism:       migrationMechanism(req.Mechanism),
 		Availability:    migrationAvailability(req.Availability),
-		Credentials:     seal.Credentials{Secret: req.Passphrase},
+		Credentials:     creds,
 		ShamirThreshold: req.ShamirThreshold,
 		ShamirTotal:     req.ShamirTotal,
 	}
 	// Validate synchronously so the caller gets immediate feedback on bad input
 	// (the async path can no longer surface a structured error to this client).
 	if err := opts.Validate(); err != nil {
-		secure.Wipe(req.Passphrase)
-		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		creds.Secret.Destroy()
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -453,17 +461,17 @@ func (s *Server) handleBarrierEnableEncryption(w http.ResponseWriter, r *http.Re
 	resultCh := make(chan error, 1)
 	go func() {
 		// The migration OWNS the credential from here: it outlives this
-		// request, so a deferred wipe in the handler would zero the
-		// passphrase out from under a running migration. The wipe belongs
-		// to the last reader, and that is this goroutine.
-		defer secure.Wipe(req.Passphrase)
+		// request, so destroying it in the handler would pull the
+		// passphrase out from under a running migration. The destroy
+		// belongs to the last reader, and that is this goroutine.
+		defer creds.Secret.Destroy()
 		resultCh <- s.encMigrator.EnableEncryption(context.Background(), scope, opts)
 	}()
 
 	select {
 	case err := <-resultCh:
 		if err != nil {
-			writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+			writeErrorJSON(w, mapHTTPError(err), err)
 			return
 		}
 		// Completed within the window with no error: an unusually fast
@@ -527,13 +535,13 @@ func (s *Server) handleBarrierRecoveryGenerate(w http.ResponseWriter, r *http.Re
 	// Verify SO PIN before generating recovery keys (no-op when no
 	// PINBackend is configured or no SO PIN has been set).
 	if err := verifyBarrierSOPIN(s.pinBackend, req.SOPin); err != nil {
-		writeErrorJSON(w, mapPINHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
 	result, err := s.barrierSvc.BarrierGenerateRecoveryKeys(r.Context(), req.Threshold, req.Total)
 	if err != nil {
-		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -556,7 +564,7 @@ func (s *Server) handleBarrierRecoveryRecover(w http.ResponseWriter, r *http.Req
 	}
 
 	if err := s.barrierSvc.BarrierRecoverWithKeys(r.Context(), req.Keys); err != nil {
-		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -573,7 +581,7 @@ func (s *Server) handleBarrierRecoveryDelete(w http.ResponseWriter, r *http.Requ
 	}
 
 	if err := s.barrierSvc.BarrierDeleteRecoveryKeys(r.Context()); err != nil {
-		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -591,7 +599,7 @@ func (s *Server) handleBarrierRecoveryStatus(w http.ResponseWriter, r *http.Requ
 
 	hasKeys, err := s.barrierSvc.BarrierHasRecoveryKeys(r.Context())
 	if err != nil {
-		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -621,7 +629,7 @@ func (s *Server) handleBarrierRootToken(w http.ResponseWriter, r *http.Request) 
 
 	token, err := s.barrierSvc.BarrierGenerateRootToken(r.Context(), req.Shares)
 	if err != nil {
-		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -737,7 +745,7 @@ func (s *Server) handleBarrierOfficerRegister(w http.ResponseWriter, r *http.Req
 		AuthenticatorRef:  req.AuthenticatorRef,
 	})
 	if err != nil {
-		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -758,7 +766,7 @@ func (s *Server) handleBarrierOfficerList(w http.ResponseWriter, r *http.Request
 
 	officers, err := s.barrierSvc.BarrierOfficerList(r.Context())
 	if err != nil {
-		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -778,7 +786,7 @@ func (s *Server) handleBarrierOfficerClaimStatus(w http.ResponseWriter, r *http.
 
 	officers, err := s.barrierSvc.BarrierOfficerClaimStatus(r.Context())
 	if err != nil {
-		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -801,13 +809,13 @@ func (s *Server) handleBarrierShareClaimBegin(w http.ResponseWriter, r *http.Req
 
 	thumbprint, err := restCertThumbprint(r)
 	if err != nil {
-		writeErrorJSON(w, http.StatusUnauthorized, err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
 	challenge, err := s.barrierSvc.BarrierShareClaimBegin(r.Context(), username, thumbprint)
 	if err != nil {
-		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -832,7 +840,7 @@ func (s *Server) handleBarrierShareClaimComplete(w http.ResponseWriter, r *http.
 
 	thumbprint, err := restCertThumbprint(r)
 	if err != nil {
-		writeErrorJSON(w, http.StatusUnauthorized, err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -858,7 +866,7 @@ func (s *Server) handleBarrierShareClaimComplete(w http.ResponseWriter, r *http.
 
 	result, err := s.barrierSvc.BarrierShareClaimComplete(r.Context(), username, req.NonceHex, sigBytes, thumbprint)
 	if err != nil {
-		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -891,7 +899,7 @@ func (s *Server) handleBarrierShamirSealVote(w http.ResponseWriter, r *http.Requ
 
 	progress, err := s.barrierSvc.BarrierShamirSealVote(r.Context(), req.Share)
 	if err != nil {
-		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -932,7 +940,7 @@ func (s *Server) handleBarrierRecoveryOfficerRegister(w http.ResponseWriter, r *
 		AuthenticatorRef:  req.AuthenticatorRef,
 	})
 	if err != nil {
-		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -957,13 +965,13 @@ func (s *Server) handleBarrierRecoveryShareClaimBegin(w http.ResponseWriter, r *
 
 	thumbprint, err := restCertThumbprint(r)
 	if err != nil {
-		writeErrorJSON(w, http.StatusUnauthorized, err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
 	challenge, err := s.barrierSvc.BarrierRecoveryShareClaimBegin(r.Context(), username, thumbprint)
 	if err != nil {
-		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -989,7 +997,7 @@ func (s *Server) handleBarrierRecoveryShareClaimComplete(w http.ResponseWriter, 
 
 	thumbprint, err := restCertThumbprint(r)
 	if err != nil {
-		writeErrorJSON(w, http.StatusUnauthorized, err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -1015,7 +1023,7 @@ func (s *Server) handleBarrierRecoveryShareClaimComplete(w http.ResponseWriter, 
 
 	result, err := s.barrierSvc.BarrierRecoveryShareClaimComplete(r.Context(), username, req.NonceHex, sigBytes, thumbprint)
 	if err != nil {
-		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -1097,59 +1105,6 @@ func (s *Server) dispatchOfficerClaimPath(w http.ResponseWriter, r *http.Request
 // ---------------------------------------------------------------------------
 // Barrier ceremony error mapping
 // ---------------------------------------------------------------------------
-
-// mapBarrierCeremonyHTTPError maps ceremony and seal errors to HTTP status
-// codes. Errors not recognized here fall through to the generic service
-// mapper, which returns 500 Internal Server Error for unknown errors.
-func mapBarrierCeremonyHTTPError(err error) int {
-	switch {
-	case errors.Is(err, ceremony.ErrCertThumbprintMismatch):
-		return http.StatusForbidden
-	case errors.Is(err, ceremony.ErrOfficerNotFound):
-		return http.StatusNotFound
-	case errors.Is(err, ceremony.ErrShareAlreadyClaimed):
-		return http.StatusConflict
-	case errors.Is(err, ceremony.ErrNoPendingShare):
-		return http.StatusNotFound
-	case errors.Is(err, ceremony.ErrInsufficientOfficers):
-		return http.StatusUnprocessableEntity
-	case errors.Is(err, seal.ErrShamirBarrierRequiresQuorum):
-		return http.StatusUnprocessableEntity
-	case errors.Is(err, seal.ErrSealVoteVerificationFailed):
-		return http.StatusForbidden
-	case errors.Is(err, seal.ErrUnsealKeyMismatch):
-		return http.StatusForbidden
-	case errors.Is(err, seal.ErrWrappedRootKeyCorrupt):
-		return http.StatusInternalServerError
-	case errors.Is(err, seal.ErrAlreadyUnsealed):
-		return http.StatusConflict
-	case errors.Is(err, seal.ErrAlreadyInitialized):
-		return http.StatusConflict
-	case errors.Is(err, seal.ErrNotInitialized):
-		return http.StatusConflict
-	case errors.Is(err, seal.ErrInvalidCredentials):
-		return http.StatusForbidden
-	case errors.Is(err, seal.ErrDecryptionFailed):
-		return http.StatusForbidden
-	case errors.Is(err, service.ErrCeremonyNotConfigured):
-		return http.StatusUnprocessableEntity
-	// Enable-encryption migration validation + scoping errors.
-	case errors.Is(err, seal.ErrMigrationInvalidTarget),
-		errors.Is(err, seal.ErrMigrationInvalidMechanism),
-		errors.Is(err, seal.ErrMigrationInvalidAvailability),
-		errors.Is(err, seal.ErrShamirThresholdInvalid):
-		return http.StatusBadRequest
-	case errors.Is(err, seal.ErrMigrationSourceNotNone),
-		errors.Is(err, seal.ErrMigrationInProgress):
-		return http.StatusConflict
-	case errors.Is(err, service.ErrSharedBarrierImmutable):
-		return http.StatusForbidden
-	case errors.Is(err, service.ErrMigrationProviderUnavailable):
-		return http.StatusNotImplemented
-	default:
-		return mapHTTPError(err)
-	}
-}
 
 // barrierOfficerStatusesToResponse converts a slice of BarrierOfficerStatus to
 // a JSON-serializable representation.

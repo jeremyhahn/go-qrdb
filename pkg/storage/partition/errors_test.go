@@ -27,14 +27,6 @@ func TestPartitionNotFoundError(t *testing.T) {
 	}
 }
 
-func TestInvalidPartitionCountError(t *testing.T) {
-	err := &InvalidPartitionCountError{Count: 0}
-	expected := "invalid partition count: 0"
-	if err.Error() != expected {
-		t.Errorf("got %q, want %q", err.Error(), expected)
-	}
-}
-
 func TestPartitionCreateError(t *testing.T) {
 	inner := errors.New("disk full")
 	err := &PartitionCreateError{PartitionID: 3, Err: inner}

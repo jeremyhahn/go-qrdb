@@ -25,8 +25,10 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -132,13 +134,20 @@ func TestClassifyToolError_Conditions(t *testing.T) {
 			why:  "go-qrdb#127's condition, and what the SDK rebuilds CapabilityUnsupportedError from",
 		},
 		{
+			name: "raft-only capability under standalone",
+			err:  &service.CapabilityUnsupportedError{Message: "lease: not implemented on this server: requires mode: raft"},
+			want: wire.CodeUnimplemented,
+			why: "the standalone gate's refusal was a REST-only type that no classifier " +
+				"recognised, so this transport coded it INTERNAL — 'the server broke' for " +
+				"a deployment mode (go-qrdb#473). It is a service-layer refusal now",
+		},
+		{
 			name: "refusal on the request's merits",
-			err:  &service.SMNotConfiguredError{Message: "lease ttl must be positive"},
-			want: wire.CodeInternal,
-			why: "NOT CodeUnimplemented. This family also covers an invalid TTL and a " +
-				"unique-index violation, so typing it as a capability refusal would " +
-				"tell a caller this node cannot do leases when it had passed a bad TTL " +
-				"— the conflation that forced REST's named exclusion in go-qrdb#126",
+			err:  &service.CommandRejectedError{Message: "lease ttl must be positive"},
+			want: wire.CodeInvalidArgument,
+			why: "NOT CodeUnimplemented: the node can do leases, the caller passed a " +
+				"bad TTL. Before go-qrdb#557 this shared one type with the capability " +
+				"refusal's siblings, which forced REST's named exclusion in go-qrdb#126",
 		},
 		{
 			name: "not leader",
@@ -161,6 +170,58 @@ func TestClassifyToolError_Conditions(t *testing.T) {
 			want: wire.CodeAlreadyExists,
 		},
 		{
+			name: "missing lease, wrapped as LeaseService.TimeToLive actually produces it",
+			err:  &service.ReadError{Err: &service.LeaseNotFoundError{LeaseID: 42}},
+			want: wire.CodeNotFound,
+			why: "go-qrdb#387: the pre-fix production shape. This transport has no " +
+				"classifier of its own -- it renders whatever grpcapi.ServiceErrorCode " +
+				"says -- so this case pins that the delegate does not regress",
+		},
+		{
+			name: "generated user id collided",
+			err:  &user.UserIDExistsError{ID: 42, TenantID: "t1"},
+			want: wire.CodeAlreadyExists,
+			why: "the atomic identity create's id guard refused; a conflict exactly " +
+				"as a taken username is, never CodeInternal",
+		},
+		{
+			name: "cert thumbprint bound to another user",
+			err:  &user.CertBindingConflictError{Thumbprint: "AAAA", BoundUserID: 7, TargetUserID: 9},
+			want: wire.CodeAlreadyExists,
+			why: "a hijack attempt the store refused on purpose; it was CodeInternal " +
+				"because the gRPC mapper this renders had no arm for it (go-qrdb#536)",
+		},
+		{
+			name: "auth-factor enrollment tenant mismatch",
+			err:  &service.AuthFactorTenantMismatchError{Requested: "globex", Context: "acme"},
+			want: wire.CodeInvalidArgument,
+			why: "the ceremony-time auth-factor tenant refusal (go-qrdb#464): a request " +
+				"naming a tenant other than the caller's context is the caller's input " +
+				"being wrong, not a tool execution fault, and this transport takes the " +
+				"classification from pkg/api/errclass's auth-factor rows rather than " +
+				"owning a clause of its own",
+		},
+		{
+			name: "auth-factor tenant already sealed at Resolve",
+			err:  tenant.ErrTenantSealed,
+			want: wire.CodeUnavailable,
+			why:  "a sealed barrier-isolated tenant is retryable after unseal, on every transport",
+		},
+		{
+			name: "auth-factor tenant sealed between Resolve and the store op",
+			err:  &ToolError{Tool: "qrdb_authfactor_challenge", Err: seal.ErrSealed},
+			want: wire.CodeUnavailable,
+			why: "the resolved store's own read meets the barrier's live seal check and " +
+				"returns seal.ErrSealed, not tenant.ErrTenantSealed; both are the same " +
+				"condition to a caller, and a handler's ToolError must not hide it",
+		},
+		{
+			name: "auth-factor list read sealed mid-list",
+			err:  &service.AuthFactorListReadError{Key: "__sys:authfactor/e1", Err: seal.ErrSealed},
+			want: wire.CodeUnavailable,
+			why:  "ListFactors wraps a per-record read failure; the seal beneath it still classifies",
+		},
+		{
 			name: "unclassified",
 			err:  errors.New("something nobody typed"),
 			want: wire.CodeInternal,
@@ -177,7 +238,7 @@ func TestClassifyToolError_Conditions(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := classifyToolError(tc.err); got != tc.want {
+			if got := ServiceErrorCode(tc.err); got != tc.want {
 				t.Errorf("classified %s, want %s. %s", got, tc.want, tc.why)
 			}
 		})
@@ -201,7 +262,7 @@ func TestClassifyToolError_ModuleStatusIsTakenVerbatim(t *testing.T) {
 	} {
 		t.Run(tc.code.String(), func(t *testing.T) {
 			err := status.Error(tc.code, "from a module")
-			if got := classifyToolError(err); got != tc.want {
+			if got := ServiceErrorCode(err); got != tc.want {
 				t.Errorf("a module's %s classified %s, want %s", tc.code, got, tc.want)
 			}
 		})
@@ -215,7 +276,7 @@ func TestClassifyToolError_ModuleStatusIsTakenVerbatim(t *testing.T) {
 // answer for "nothing here can classify this".
 func TestClassifyToolError_ModuleCodeOutsideTheSetFallsThrough(t *testing.T) {
 	err := status.Error(codes.Code(99), "a code gRPC does not define")
-	if got := classifyToolError(err); got != wire.CodeInternal {
+	if got := ServiceErrorCode(err); got != wire.CodeInternal {
 		t.Errorf("classified %s, want INTERNAL", got)
 	}
 }

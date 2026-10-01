@@ -21,6 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 )
 
 // credentialedDatabaseService wraps fnDatabaseService and additionally
@@ -34,7 +35,7 @@ type credentialedDatabaseService struct {
 	*fnDatabaseService
 
 	gotCfg     database.DatabaseConfig
-	gotCreds   seal.Credentials
+	gotSecret  []byte // snapshot taken during the call; the CLI destroys the credential after
 	calledWith string // "create", "createWithCredentials", or "" if never called
 	createErr  error
 	createInfo *database.DatabaseInfo
@@ -46,7 +47,7 @@ func newCredentialedDatabaseService() *credentialedDatabaseService {
 
 func (m *credentialedDatabaseService) Create(cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
 	m.gotCfg = cfg
-	m.gotCreds = seal.Credentials{}
+	m.gotSecret = nil
 	m.calledWith = "create"
 	if m.createErr != nil {
 		return nil, m.createErr
@@ -59,7 +60,7 @@ func (m *credentialedDatabaseService) Create(cfg database.DatabaseConfig) (*data
 
 func (m *credentialedDatabaseService) CreateWithCredentials(_ context.Context, cfg database.DatabaseConfig, creds seal.Credentials) (*database.DatabaseInfo, error) {
 	m.gotCfg = cfg
-	m.gotCreds = creds
+	m.gotSecret = sealtest.Snapshot(creds)
 	m.calledWith = "createWithCredentials"
 	if m.createErr != nil {
 		return nil, m.createErr
@@ -123,8 +124,8 @@ func TestDatabaseCreateCmd_BarrierEnabled_PassphraseFlowsToCredentials(t *testin
 	if dbSvc.gotCfg.Barrier.Mode != "passphrase" {
 		t.Errorf("Barrier.Mode = %q, want %q", dbSvc.gotCfg.Barrier.Mode, "passphrase")
 	}
-	if string(dbSvc.gotCreds.Secret) != "correct-horse-battery-staple" {
-		t.Errorf("Credentials.Secret = %q, want %q", dbSvc.gotCreds.Secret, "correct-horse-battery-staple")
+	if string(dbSvc.gotSecret) != "correct-horse-battery-staple" {
+		t.Errorf("Credentials.Secret = %q, want %q", dbSvc.gotSecret, "correct-horse-battery-staple")
 	}
 }
 

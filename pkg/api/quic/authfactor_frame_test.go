@@ -23,7 +23,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -248,6 +250,56 @@ func TestHandleAuthFactorChallenge_ServiceError(t *testing.T) {
 	_, err := srv.handleAuthFactorChallenge(context.Background(), payload)
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+// TestAuthFactorHandlers_SealedAfterResolve drives every QUIC auth-factor
+// frame handler with the error a tenant sealing between Resolve and the store
+// operation actually produces — seal.ErrSealed, asserted end to end against a
+// real barrier in pkg/service — and asserts the status the dispatcher sends
+// for it (mapServiceError) is StatusUnavailable.
+func TestAuthFactorHandlers_SealedAfterResolve(t *testing.T) {
+	svc := newMockAuthFactorService()
+	svc.enrollFn = func(context.Context, string, string, authfactors.EnrollParams) (*authfactors.Enrollment, error) {
+		return nil, seal.ErrSealed
+	}
+	svc.challengeFn = func(context.Context, string) (*authfactors.Challenge, error) { return nil, seal.ErrSealed }
+	svc.verifyFn = func(context.Context, string, string, *authfactors.Response) error { return seal.ErrSealed }
+	svc.listFn = func(context.Context, string) ([]*authfactors.Enrollment, error) {
+		return nil, &service.AuthFactorListReadError{Key: "__sys:authfactor/e1", Err: seal.ErrSealed}
+	}
+	svc.revokeFn = func(context.Context, string) error { return seal.ErrSealed }
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithAuthFactorService(svc))
+	ctx := context.Background()
+
+	mustJSON := func(v any) []byte {
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		return b
+	}
+	tests := []struct {
+		name    string
+		handler func(context.Context, []byte) ([]byte, error)
+		payload []byte
+	}{
+		{"enroll", srv.handleAuthFactorEnroll, mustJSON(quicEnrollFactorRequest{FactorName: "piv", Subject: "u1"})},
+		{"challenge", srv.handleAuthFactorChallenge, mustJSON(quicChallengeFactorRequest{EnrollmentID: "e1"})},
+		{"verify", srv.handleAuthFactorVerify, mustJSON(quicVerifyFactorRequest{ChallengeID: "000000000001.c", Value: []byte("sig")})},
+		{"list", srv.handleAuthFactorList, mustJSON(quicListFactorsRequest{})},
+		{"revoke", srv.handleAuthFactorRevoke, mustJSON(quicRevokeFactorRequest{EnrollmentID: "e1"})},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := tc.handler(ctx, tc.payload)
+			if !errors.Is(err, seal.ErrSealed) {
+				t.Fatalf("handler error = %v, want it to carry seal.ErrSealed", err)
+			}
+			if got, _ := mapServiceError(err); got != wire.StatusUnavailable {
+				t.Errorf("status = %s, want %s", wire.StatusName(got), wire.StatusName(wire.StatusUnavailable))
+			}
+		})
 	}
 }
 

@@ -1,6 +1,6 @@
 # Document Collections — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-25
 
 A collection is a named box for JSON documents inside a database. You create the
 box, decide how document IDs are generated, then put documents in.
@@ -71,6 +71,12 @@ deliberate, and it is why small explicit IDs are the ones worth supplying.
 `{"_id": 42, "kind": "deploy"}` back and you get ID `42` with a document of
 `{"kind": "deploy"}` — the same shape you would get had you let the collection
 allocate the ID.
+
+Two field shapes are refused with a 400, because the stored document could not
+hold them as sent: a field named `id` (a stored document keeps its own
+identity under that key — name the identity with `_id`, or rename the field),
+and a document whose only field is an object named `fields` (it would read
+back as that object's contents — add another field or rename it).
 
 ## Doing the same thing over SQL
 
@@ -155,10 +161,24 @@ qrdb collection info users --database app --output json | jq .document_count
 qrdb collection list --database app
 ```
 
-**Delete a collection.** This removes every document in it, along with any
-secondary index the collection declared, and cannot be undone. If the command
-fails partway through, the collection is still listed — run it again and it
-finishes.
+**Index a field.** Declare it when you create the collection; the collection
+builds the index, keeps it maintained, and drops it with itself.
+
+```bash
+qrdb collection create accounts --database app --index email,unique
+```
+
+Every transport takes the same declaration — `"indexes":
+[{"field_name":"email","unique":true}]` in a REST or MCP body, the `indexes`
+field on gRPC, QUIC and the SDK. The collection only starts accepting documents
+once every declared index exists, so no document can slip in unindexed or past
+a `unique` constraint.
+
+**Delete a collection.** This removes every document in it, along with every
+secondary index the collection created, and cannot be undone. The collection
+stops accepting documents the moment the drop starts. If the command fails
+partway through, the collection is listed as `dropping` — run it again and it
+finishes, or leave it: the server finishes it within a few minutes.
 
 ```bash
 qrdb collection drop scratch --database app
@@ -168,7 +188,11 @@ A drop also discards the collection's `increment` counter, so creating a
 collection with the same name afterwards starts its IDs at 1 again rather than
 continuing where the old one left off. If a drop reports an error, nothing is
 half-deleted in a way you have to clean up by hand — run the same command again
-and it finishes.
+and it finishes, or let the server finish it.
+
+**Know what state a collection is in.** `collection info` and `collection list`
+report `active`, `creating` (its indexes are being built) or `dropping` (it is
+being deleted). Only an `active` collection serves documents.
 
 ## Collections belong to your tenant
 
@@ -186,6 +210,33 @@ after the upgrade, and nothing moves them for you. Export them with the older
 binary and re-import them as the tenant that should own them.
 
 ## Troubleshooting
+
+**"collection ... is creating, not active" or "... is dropping, not active".**
+The collection is mid-create or mid-drop. A create finishes in moments; retry.
+A collection that stays `creating` or `dropping` was interrupted — the server
+finishes it within a few minutes (a stuck create is undone, not completed, so
+create it again afterwards). You do not need to intervene.
+
+**A create with `--index` was refused because the index name is taken.** An
+index named `{database}.{collection}.{field}` already exists and belongs to
+something else — usually one made with `qrdb index create`. The collection will
+not share it: it would inherit that index's definition rather than yours, and a
+drop would then delete it. Drop the other index or rename the field.
+
+**A document write was refused for quota.** Collection documents count against
+the tenant's storage limit like any other data — the size of each document's
+body. Delete documents, or ask for a higher limit.
+
+**A `REPLACE INTO` or `UPDATE` on a collection table failed with 1213
+(serialization failure).** Another writer changed the same document between
+your statement reading it and writing it. Nothing was written; retry the
+statement.
+
+**An `UPDATE ... SET _id = ...` failed saying both ids are left.** The document
+was stored under its new `_id`, and removing it from the old one failed in a
+way that does not say whether the removal happened. Nothing was withdrawn, so
+the document is under the new `_id` and possibly still under the old one too:
+read both, and delete the old one if it is still there.
 
 **"collection not found" on an insert.** Collections are never created
 implicitly. Check the spelling and the `--database` — a typo would otherwise

@@ -50,6 +50,27 @@ type NoopAuthorizer = auth.NoopAuthorizer
 // SPKI thumbprint matches one of them.
 const MethodMTLS = auth.MethodMTLS
 
+// MTLSBindingPolicy is the fleet-wide mTLS enrolment posture
+// (auth.mtls_binding_policy, go-qrdb#517). The zero value is
+// MTLSBindingEnrolled.
+type MTLSBindingPolicy = auth.MTLSBindingPolicy
+
+// The MTLSBindingPolicy values.
+const (
+	// MTLSBindingEnrolled enforces a binding only on accounts that have one.
+	MTLSBindingEnrolled = auth.MTLSBindingEnrolled
+	// MTLSBindingRequired requires every certificate login to present a
+	// certificate enrolled on the account it names.
+	MTLSBindingRequired = auth.MTLSBindingRequired
+)
+
+// ParseMTLSBindingPolicy resolves "enrolled", "required" or empty; anything
+// else is an *InvalidMTLSBindingPolicyError.
+var ParseMTLSBindingPolicy = auth.ParseMTLSBindingPolicy
+
+// InvalidMTLSBindingPolicyError reports an unrecognised policy spelling.
+type InvalidMTLSBindingPolicyError = auth.InvalidMTLSBindingPolicyError
+
 // ---------------------------------------------------------------------------
 // Auth context helpers
 // ---------------------------------------------------------------------------

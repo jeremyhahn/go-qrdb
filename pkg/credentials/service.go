@@ -32,9 +32,9 @@ type CredentialService struct {
 	logger   *slog.Logger
 	mu       sync.RWMutex
 	// manualCreds holds manual-strategy credential values at rest inside
-	// memguard enclaves — never as raw, garbage-collected heap bytes. The
-	// plaintext is only materialized transiently (Open → copy → Destroy)
-	// when a value is read.
+	// go-enclave sealed enclaves (secure.Secret) — never as raw,
+	// garbage-collected heap bytes. The plaintext is only materialized
+	// transiently (Open → copy → Destroy) when a value is read.
 	manualCreds map[string]*secure.Secret
 	waitersMu   sync.Mutex
 	waiters     map[string][]chan []byte
@@ -260,8 +260,8 @@ func (s *CredentialService) AutoUnsealAvailable() bool {
 	return s.strategy != StrategyManual
 }
 
-// newSecretCopy seals a copy of value into a memguard enclave. The caller's
-// value is left intact (a throwaway copy is what NewSecret wipes).
+// newSecretCopy seals a copy of value into a go-enclave sealed enclave. The
+// caller's value is left intact (a throwaway copy is what NewSecret wipes).
 func newSecretCopy(value []byte) (*secure.Secret, error) {
 	tmp := make([]byte, len(value))
 	copy(tmp, value)
@@ -273,13 +273,13 @@ func newSecretCopy(value []byte) (*secure.Secret, error) {
 //
 // The copy runs inside a COORDINATED borrow (go-qrdb#74). It used to size the
 // destination from buf.Size() and then read buf.Bytes(), which is two separate
-// acquisitions of the purge lock with a gap between them: a process-wide
-// memguard purge landing in that gap unmaps the pages, and the caller receives
-// a correctly sized run of zeros with nothing reporting a fault. secure.CopyOut
-// holds one borrow across both and refuses an empty source.
+// borrows with a gap between them: a concurrent destroy (a shutdown
+// enclave.WipeAll) landing in that gap unmaps the pages, and the caller
+// receives a correctly sized run of zeros with nothing reporting a fault.
+// secure.CopyOut holds one borrow across both and refuses an empty source.
 //
 // Destroy stays OUTSIDE the borrow, and that placement is load-bearing: Destroy
-// is purge-class and takes the lock exclusively, so calling it from inside the
+// takes this same buffer's lock exclusively, so calling it from inside the
 // shared hold would deadlock the caller against itself.
 //
 // Traced callees: secure.CopyOut's callback is make + copy and reaches nothing
@@ -294,8 +294,8 @@ func openSecretCopy(sec *secure.Secret) ([]byte, error) {
 	return secure.CopyOut(buf)
 }
 
-// storeManual seals a credential into an in-memory memguard enclave. Any prior
-// enclave for the same name is destroyed first.
+// storeManual seals a credential into an in-memory go-enclave sealed enclave.
+// Any prior enclave for the same name is destroyed first.
 func (s *CredentialService) storeManual(name string, value []byte) error {
 	sec, err := newSecretCopy(value)
 	if err != nil {
@@ -430,7 +430,7 @@ func (s *CredentialService) submitManual(name string, value []byte) error {
 }
 
 // deleteManual removes a credential and all of its non-current grace versions,
-// destroying every backing memguard enclave.
+// destroying every backing go-enclave sealed enclave.
 func (s *CredentialService) deleteManual(name string) error {
 	s.mu.Lock()
 	sec, ok := s.manualCreds[name]

@@ -64,6 +64,10 @@ func (guardEncMigrator) EnableEncryption(context.Context, service.BarrierScope, 
 	return nil
 }
 
+// guardCACertPEM is a CERTIFICATE block: WithCABootstrap keeps certificate
+// blocks only, so anything else would leave /v1/ca/bootstrap unregistered.
+const guardCACertPEM = "-----BEGIN CERTIFICATE-----\nZ3VhcmQ=\n-----END CERTIFICATE-----\n"
+
 // newFullyWiredGuardServer builds a *Server with every optional service and
 // ServerOption wired so every conditional route registration in
 // registerRoutes fires. It reuses the package's existing test doubles so the
@@ -97,12 +101,12 @@ func newFullyWiredGuardServer(t *testing.T) *Server {
 		WithRebalanceService(&stubRebalanceService{}), // gates /v1/rebalance/*
 		WithAuthFactorService(&stubAuthFactorSvc{}),
 		WithUserAuthFactorService(&mockUserAuthFactorService{}),
-		WithCertProvider(&mockCertProvider{}),                            // gates /certs/*
-		WithCABootstrap([]byte("guard-ca-cert"), []byte("guard-ca-key")), // gates /v1/ca/bootstrap
-		WithClusterKeyReceiver(&fakeClusterKeyReceiver{}),                // gates /v1/cluster/*
-		WithBarrierService(newExtBarrierSvc()),                           // gates /v1/barrier/*
-		WithEncryptionMigrator(guardEncMigrator{}),                       // gates /v1/barrier/enable-encryption
-		WithCeremonyService(newCoverageCeremonyService()),                // gates /v1/ceremony/*
+		WithCertProvider(&mockCertProvider{}),             // gates /certs/*
+		WithCABootstrap([]byte(guardCACertPEM)),           // gates /v1/ca/bootstrap
+		WithClusterKeyReceiver(&fakeClusterKeyReceiver{}), // gates /v1/cluster/*
+		WithBarrierService(newExtBarrierSvc()),            // gates /v1/barrier/*
+		WithEncryptionMigrator(guardEncMigrator{}),        // gates /v1/barrier/enable-encryption
+		WithCeremonyService(newCoverageCeremonyService()), // gates /v1/ceremony/*
 		WithCeremonyCA(&coverageCeremonyCA{}),
 		WithCustodianService(&stubCustodianSvc{}),             // gates /v1/ceremony/enroll-custodian etc.
 		WithCredentialService(newCoverageCredentialService()), // gates /v1/credentials*
@@ -328,10 +332,14 @@ func TestRouteMappingGuard_RoutePermissions(t *testing.T) {
 		// Tenants, including the per-tenant barrier plane.
 		{"POST", "/v1/tenants", permission.TenantsCreate},
 		{"GET", "/v1/tenants/list", permission.TenantsList},
+		{"GET", "/v1/tenants/deleted/list", permission.TenantsListDeleted},
+		{"POST", "/v1/tenants/deleted/reconcile", permission.TenantsReconcileDeleted},
+		// A tenant NAMED "deleted" still resolves through the {id} route.
+		{"GET", "/v1/tenants/deleted", permission.TenantsRead},
 		{"GET", "/v1/tenants/t-1", permission.TenantsRead},
 		{"PUT", "/v1/tenants/t-1", permission.TenantsUpdate},
 		{"DELETE", "/v1/tenants/t-1", permission.TenantsDelete},
-		{"POST", "/v1/tenants/t-1/quotas", permission.TenantsUpdate},
+		{"POST", "/v1/tenants/t-1/quotas", permission.TenantsSetQuotas},
 		{"PATCH", "/v1/tenants/t-1/entitlements", permission.TenantsSetEntitlements},
 		// status/init/unseal are IdentityGated at the route: a self-managed
 		// tenant's IAM is encrypted behind the very barrier these operate

@@ -399,22 +399,6 @@ func NewEmbeddingProviderAlreadyRegisteredError(op, name string) *dberrors.QRDBE
 	}
 }
 
-// EmbeddingCloseProviderError indicates failure to close a specific provider.
-type EmbeddingCloseProviderError struct {
-	Name  string
-	Cause error
-}
-
-// Error implements the error interface.
-func (e *EmbeddingCloseProviderError) Error() string {
-	return "failed to close provider " + e.Name + ": " + e.Cause.Error()
-}
-
-// Unwrap returns the underlying cause for errors.Is and errors.As support.
-func (e *EmbeddingCloseProviderError) Unwrap() error {
-	return e.Cause
-}
-
 // EmbeddingCloseError indicates errors occurred while closing multiple providers.
 type EmbeddingCloseError struct {
 	Errors []error

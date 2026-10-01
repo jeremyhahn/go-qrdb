@@ -42,7 +42,7 @@ func seedRow(t *testing.T, kvSvc service.KVServicer, database string, def *servi
 	encodedKey, err := keyCodec.Encode(row)
 	require.NoError(t, err)
 
-	require.NoError(t, kvSvc.Put(context.Background(), service.TableDataPrefix(database, def.TableID)+encodedKey, encodedRow))
+	require.NoError(t, kvSvc.Put(context.Background(), service.TableDataPrefix(database, def.TableID, 0)+encodedKey, encodedRow))
 }
 
 // ---------------------------------------------------------------------------
@@ -74,7 +74,7 @@ func TestRelationalTable_AddColumn_MetadataOnly_OldRowsDecodeViaDefaults(t *test
 
 	// The row's raw bytes were never touched: still exactly 2 encoded
 	// columns.
-	raw, err := h.kvSvc.Scan(context.Background(), service.TableDataPrefix("shop", def.TableID))
+	raw, err := h.kvSvc.Scan(context.Background(), service.TableDataPrefix("shop", def.TableID, 0))
 	require.NoError(t, err)
 	require.Len(t, raw, 1)
 	for _, data := range raw {
@@ -134,7 +134,7 @@ func TestRelationalTable_DropColumn_Rewrites(t *testing.T) {
 	assert.Equal(t, "bob@example.com", rows[1][1])
 
 	// Every row is now encoded at the new schema version.
-	raw, err := h.kvSvc.Scan(context.Background(), service.TableDataPrefix("shop", before.TableID))
+	raw, err := h.kvSvc.Scan(context.Background(), service.TableDataPrefix("shop", before.TableID, 0))
 	require.NoError(t, err)
 	require.Len(t, raw, 2)
 	for _, data := range raw {
@@ -257,7 +257,7 @@ func TestRelationalTable_Rewrite_ResumeIsIdempotentOnAlreadyMigratedRows(t *test
 	// not an error -- covers a second, racing resumer (or a second query
 	// arriving after the first already finished).
 	tableSvc := h.tableSvc
-	err = resumeRewrite(context.Background(), tableSvc, h.kvSvc, "shop", "users")
+	err = resumeRewrite(context.Background(), tableSvc, h.kvSvc, h.txnSvc, "shop", "users")
 	require.NoError(t, err)
 
 	_, rows := mustExecQuery(t, prov, "shop", "SELECT id FROM users")
@@ -285,7 +285,7 @@ func TestRelationalTable_CreateIndex_OnNonEmptyTable_BuildsPhysicalEntries(t *te
 	require.Len(t, after.Indexes, 1)
 	assert.Equal(t, "idx_email", after.Indexes[0].Name)
 
-	entries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix("shop", def.TableID, "idx_email"))
+	entries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix("shop", def.TableID, 0, incarnationOf(after, "idx_email")))
 	require.NoError(t, err)
 	assert.Len(t, entries, 2, "BuildIndex must populate one physical entry per existing row")
 
@@ -306,7 +306,10 @@ func TestRelationalTable_DropIndex_RemovesCatalogAndPhysicalEntries(t *testing.T
 	seedRow(t, h.kvSvc, "shop", def, sqle.Row{uint64(1), "alice@example.com"})
 
 	mustExecQuery(t, prov, "shop", "CREATE INDEX idx_email ON users (email)")
-	entries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix("shop", def.TableID, "idx_email"))
+	def, err = h.tableSvc.GetTable(context.Background(), "shop", "users")
+	require.NoError(t, err)
+	prefix := service.TableIndexPrefix("shop", def.TableID, 0, incarnationOf(def, "idx_email"))
+	entries, err := h.kvSvc.Scan(context.Background(), prefix)
 	require.NoError(t, err)
 	require.NotEmpty(t, entries)
 
@@ -316,53 +319,58 @@ func TestRelationalTable_DropIndex_RemovesCatalogAndPhysicalEntries(t *testing.T
 	require.NoError(t, err)
 	assert.Empty(t, after.Indexes)
 
-	entries, err = h.kvSvc.Scan(context.Background(), service.TableIndexPrefix("shop", def.TableID, "idx_email"))
+	// Not deleted inline: a statement that resolved the index may still be
+	// reading it. The reclaim job the drop published deletes the entries
+	// once that can no longer be true.
+	entries, err = h.kvSvc.Scan(context.Background(), prefix)
+	require.NoError(t, err)
+	assert.NotEmpty(t, entries)
+
+	sweepPastQuiescence(t, h)
+	entries, err = h.kvSvc.Scan(context.Background(), prefix)
 	require.NoError(t, err)
 	assert.Empty(t, entries)
 }
 
-func TestRelationalTable_RenameIndex_MovesPhysicalEntries(t *testing.T) {
+// TestRelationalTable_RenameIndex_KeepsPhysicalEntries proves RENAME INDEX
+// moves nothing: the entries stay under the index's incarnation, which the
+// renamed index keeps, and no reclaim job is published.
+func TestRelationalTable_RenameIndex_KeepsPhysicalEntries(t *testing.T) {
 	h := newDDLHarness()
-	def, err := h.tableSvc.CreateTable(context.Background(), &service.CreateTableRequest{
-		Database: "shop", Name: "users",
-		Columns:    []service.ColumnDef{{Name: "id", Type: "BIGINT UNSIGNED"}, {Name: "email", Type: "VARCHAR(255)"}},
-		PrimaryKey: []service.PKColumn{{Name: "id"}},
-	})
-	require.NoError(t, err)
-	seedRow(t, h.kvSvc, "shop", def, sqle.Row{uint64(1), "alice@example.com"})
-
-	tbl, err := NewRelationalTable(def, h.kvSvc, h.mvccSvc, WithTableService(h.tableSvc))
+	prov := h.newDDLProvider("shop")
+	mustExecQuery(t, prov, "shop", "CREATE TABLE users (id BIGINT UNSIGNED PRIMARY KEY, email VARCHAR(255))")
+	mustExecQuery(t, prov, "shop", "CREATE INDEX idx_email ON users (email)")
+	mustExecQuery(t, prov, "shop", "INSERT INTO users VALUES (1, 'alice@example.com')")
+	before, err := h.tableSvc.GetTable(context.Background(), "shop", "users")
 	require.NoError(t, err)
 
-	require.NoError(t, h.tableSvc.CreateIndex(context.Background(), &service.CreateTableIndexRequest{
-		Database: "shop", Table: "users",
-		Index: service.TableIndex{Name: "idx_email", Columns: []service.IndexCol{{Name: "email"}}},
-	}))
-	inserter, err := tbl.BuildIndex(newTestContext(), sqle.IndexDef{Name: "idx_email", Columns: []sqle.IndexColumn{{Name: "email"}}})
-	require.NoError(t, err)
-	require.NoError(t, inserter.Insert(newTestContext(), sqle.Row{uint64(1), "alice@example.com"}))
-	require.NoError(t, inserter.Close(newTestContext()))
+	mustExecQuery(t, prov, "shop", "ALTER TABLE users RENAME INDEX idx_email TO idx_email_v2")
 
-	// Refresh tbl's def to see the index just created.
-	def, err = h.tableSvc.GetTable(context.Background(), "shop", "users")
+	renamed, err := h.tableSvc.GetTable(context.Background(), "shop", "users")
 	require.NoError(t, err)
-	tbl, err = NewRelationalTable(def, h.kvSvc, h.mvccSvc, WithTableService(h.tableSvc))
-	require.NoError(t, err)
+	require.Len(t, renamed.Indexes, 1)
+	assert.Equal(t, "idx_email_v2", renamed.Indexes[0].Name)
+	assert.Equal(t, incarnationOf(before, "idx_email"), renamed.Indexes[0].Incarnation)
 
-	require.NoError(t, tbl.RenameIndex(newTestContext(), "idx_email", "idx_email_v2"))
-
-	oldEntries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix("shop", def.TableID, "idx_email"))
+	entries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix("shop", renamed.TableID, 0, renamed.Indexes[0].Incarnation))
 	require.NoError(t, err)
-	assert.Empty(t, oldEntries)
-
-	newEntries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix("shop", def.TableID, "idx_email_v2"))
+	assert.Len(t, entries, 1)
+	jobs, err := h.kvSvc.Scan(context.Background(), "__reclaim:job/")
 	require.NoError(t, err)
-	assert.Len(t, newEntries, 1)
+	assert.Empty(t, jobs)
+
+	_, rows := mustExecQuery(t, prov, "shop", "SELECT id FROM users WHERE email = 'alice@example.com'")
+	require.Len(t, rows, 1)
 }
 
 func TestRelationalTable_RenameIndex_NotFound(t *testing.T) {
 	h := newDDLHarness()
-	def := testUsersDef()
+	def, err := h.tableSvc.CreateTable(context.Background(), &service.CreateTableRequest{
+		Database: "shop", Name: "users",
+		Columns:    []service.ColumnDef{{Name: "id", Type: "BIGINT UNSIGNED"}},
+		PrimaryKey: []service.PKColumn{{Name: "id"}},
+	})
+	require.NoError(t, err)
 	tbl, err := NewRelationalTable(def, h.kvSvc, h.mvccSvc, WithTableService(h.tableSvc))
 	require.NoError(t, err)
 

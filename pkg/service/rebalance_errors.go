@@ -62,21 +62,6 @@ func (e *RebalanceExecuteError) Unwrap() error {
 	return e.Err
 }
 
-// ImbalanceReportError is returned when generating an imbalance report fails.
-type ImbalanceReportError struct {
-	Err error
-}
-
-// Error returns a human-readable description of the imbalance report failure.
-func (e *ImbalanceReportError) Error() string {
-	return "service: get imbalance report failed: " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error for use with errors.Is and errors.As.
-func (e *ImbalanceReportError) Unwrap() error {
-	return e.Err
-}
-
 // RebalanceMoveError is returned when a single dedicated-tenant shard MOVE
 // fails during ExecuteRebalance. It carries the shard, the tenant whose group
 // was being moved, the name of the step that failed, and the underlying cause.
@@ -118,4 +103,38 @@ type sourceReplicaNotFoundError struct {
 func (e *sourceReplicaNotFoundError) Error() string {
 	return "rebalance: source replica not found for shard " +
 		strconv.FormatUint(e.ShardID, 10) + " node " + e.FromNode
+}
+
+// RebalanceSystemShardMoveError is returned (and logged) for a planned move of
+// the system shard, which ExecuteRebalance refuses. Every host of a cluster is
+// a member of the system shard — its membership is where each host's identity
+// is committed — so a destination the cluster can vouch for already hosts a
+// replica of it, and adding a second one on that host is not a move. A
+// destination that is not a member is a brand-new node, whose identity no
+// committed membership holds: it joins through AddMember with an
+// operator-supplied identity, never through a rebalance.
+type RebalanceSystemShardMoveError struct {
+	ShardID uint64
+	ToNode  string
+}
+
+// Error returns a human-readable description.
+func (e *RebalanceSystemShardMoveError) Error() string {
+	return "service: rebalance refuses to move system shard " + strconv.FormatUint(e.ShardID, 10) +
+		" to " + e.ToNode + ": every cluster host already hosts it; a new host joins through AddMember with its identity"
+}
+
+// RebalanceTargetHostsReplicaError is returned (and logged) for a planned move
+// whose destination already hosts a replica of the shard: a host holds at
+// most one replica of a shard, so the add would bind a second replica ID to
+// the same host and identity.
+type RebalanceTargetHostsReplicaError struct {
+	ShardID uint64
+	ToNode  string
+}
+
+// Error returns a human-readable description.
+func (e *RebalanceTargetHostsReplicaError) Error() string {
+	return "service: rebalance refuses to add shard " + strconv.FormatUint(e.ShardID, 10) +
+		" to " + e.ToNode + ": it already hosts a replica of that shard"
 }

@@ -17,6 +17,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	sqle "github.com/dolthub/go-mysql-server/sql"
@@ -39,6 +40,7 @@ type fakeTableService struct {
 	listTablesFn      func(ctx context.Context, database string) ([]string, error)
 	rewriteJournalFn  func(ctx context.Context, database, name string) (*service.TableDDLJournal, *service.TableDef, error)
 	completeRewriteFn func(ctx context.Context, database, name string) (*service.TableDef, error)
+	truncateTableFn   func(ctx context.Context, database, name string, resetSequence bool) (*service.TableDef, error)
 
 	referencingForeignKeysFn func(ctx context.Context, database, parent string) ([]service.TableForeignKey, error)
 }
@@ -81,6 +83,9 @@ func (f *fakeTableService) CreateIndex(context.Context, *service.CreateTableInde
 	return nil
 }
 func (f *fakeTableService) DropIndex(context.Context, string, string, string) error { return nil }
+func (f *fakeTableService) RenameIndex(context.Context, *service.RenameTableIndexRequest) error {
+	return nil
+}
 func (f *fakeTableService) AddForeignKey(context.Context, *service.CreateTableForeignKeyRequest) error {
 	return nil
 }
@@ -105,6 +110,12 @@ func (f *fakeTableService) CompleteRewrite(ctx context.Context, database, name s
 		return f.completeRewriteFn(ctx, database, name)
 	}
 	return nil, &service.TableNoRewriteInProgressError{Database: database, Name: name}
+}
+func (f *fakeTableService) TruncateTable(ctx context.Context, database, name string, resetSequence bool) (*service.TableDef, error) {
+	if f.truncateTableFn != nil {
+		return f.truncateTableFn(ctx, database, name, resetSequence)
+	}
+	return nil, &service.TableNotFoundError{Database: database, Name: name}
 }
 
 // ---------------------------------------------------------------------------
@@ -134,16 +145,23 @@ type fakeRelationalRegistry struct {
 	batchErr   error
 	txnSvc     service.TransactionServicer
 	seqSvc     service.SequenceServicer
+	seqErr     error
 
 	collectionSvc service.CollectionServicer
 	collectionErr error
 
+	// mu guards calls: a registry is resolved from every concurrent
+	// statement a SQL engine runs, and this double must be as safe for that
+	// as the production registry.
+	mu    sync.Mutex
 	calls []relationalScopeCall
 }
 
 var _ service.Registry = (*fakeRelationalRegistry)(nil)
 
 func (r *fakeRelationalRegistry) record(svc, tenantID, db string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.calls = append(r.calls, relationalScopeCall{service: svc, tenant: tenantID, db: db})
 }
 
@@ -198,6 +216,9 @@ func (r *fakeRelationalRegistry) TableService(tenantID, db string) (service.Tabl
 }
 
 func (r *fakeRelationalRegistry) SequenceService(string, string) (service.SequenceServicer, error) {
+	if r.seqErr != nil {
+		return nil, r.seqErr
+	}
 	return r.seqSvc, nil
 }
 

@@ -58,6 +58,14 @@ type DatabaseServices struct {
 
 	// Vector provides vector database operations for this database.
 	Vector service.VectorServicer
+
+	// Placement reports where this bundle's store lives -- the replicated
+	// shared store (composite-namespaced), a store local to this node, or a
+	// database's own Raft group. restServiceRegistry.resolve sets it at each
+	// of its return points. TableService records it on every reclaim job it
+	// publishes (service.WithReclaimIndex) so the sweeper routes the job to
+	// the one node that can reach it (go-qrdb#547).
+	Placement service.StorePlacement
 }
 
 // DatabaseServiceRegistry manages per-database service instances.

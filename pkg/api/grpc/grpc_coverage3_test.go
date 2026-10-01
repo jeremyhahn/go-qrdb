@@ -474,7 +474,7 @@ func TestAuthFactor_RevokeFactor_ServiceError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// mapAuthFactorGRPCError - all branches
+// mapServiceError - all branches
 // ---------------------------------------------------------------------------
 
 func TestMapAuthFactorGRPCError_AllBranches(t *testing.T) {
@@ -496,7 +496,7 @@ func TestMapAuthFactorGRPCError_AllBranches(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := mapAuthFactorGRPCError(tc.err)
+			got := mapServiceError(tc.err)
 			if tc.err == nil {
 				if got != nil {
 					t.Fatalf("expected nil, got %v", got)
@@ -508,7 +508,7 @@ func TestMapAuthFactorGRPCError_AllBranches(t *testing.T) {
 				t.Fatalf("not a gRPC status: %v", got)
 			}
 			if st.Code() != tc.want {
-				t.Errorf("mapAuthFactorGRPCError(%T) = %s, want %s", tc.err, st.Code(), tc.want)
+				t.Errorf("mapServiceError(%T) = %s, want %s", tc.err, st.Code(), tc.want)
 			}
 		})
 	}

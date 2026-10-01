@@ -22,6 +22,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
 	grpcapi "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 )
@@ -57,23 +58,27 @@ var codeByGRPCCode = map[codes.Code]wire.Code{
 	codes.Unauthenticated:    wire.CodeUnauthenticated,
 }
 
-// classifyToolError decides which JSON-RPC code a failed tool call carries.
+// ServiceErrorCode decides which JSON-RPC code a failed tool call carries. It
+// is exported so the cross-transport parity test (pkg/api/errclass) can drive
+// this transport's real answer.
 //
-// It owns NO clauses about qrdb's conditions. The classification comes from
-// pkg/api/grpc's ServiceErrorCode — the classifier the gRPC transport itself
-// runs on every RPC — and this function only renders the result. A condition
-// therefore cannot mean one thing over gRPC and another over MCP, and adding a
-// condition to the service layer needs one clause in one place rather than
-// one per transport (go-qrdb#462).
+// It owns NO clauses about qrdb's conditions. The class comes from
+// pkg/api/errclass, the one table every transport renders (go-qrdb#557), and
+// reaches this function as the gRPC code pkg/api/grpc's ServiceErrorCode gives
+// it; this function only renders that code. A condition therefore cannot mean
+// one thing over gRPC and another over MCP, and adding a condition needs one
+// row in one table rather than one clause per transport.
 //
-// A module's error is taken first and verbatim. pkg/apimodule modules register
-// their own MCP tools (RegisterMCP) and typically implement them over the same
-// code that serves their gRPC surface, so a module handler answers in gRPC's
-// vocabulary by construction — it has never seen this envelope and cannot be
-// asked to. Running such an error through ServiceErrorCode would classify a
-// module's NotFound as CodeInternal, because none of qrdb's own typed errors
-// match it. This mirrors pkg/api/quic's moduleStatus exactly.
-func classifyToolError(err error) wire.Code {
+// A module's gRPC status is honoured, but only for an error the table leaves
+// unclassified — the same order pkg/api/quic's ServiceErrorStatus uses, so the
+// two projections of a module's answer cannot disagree. pkg/apimodule modules
+// register their own MCP tools (RegisterMCP) and typically implement them over
+// the same code that serves their gRPC surface, so a module handler answers in
+// gRPC's vocabulary by construction; running such an error through the table
+// alone would classify a module's NotFound as CodeInternal. Consulting it only
+// when the table has no answer means a module can never shadow qrdb's own
+// classification.
+func ServiceErrorCode(err error) wire.Code {
 	if err == nil {
 		return wire.CodeOK
 	}
@@ -82,9 +87,11 @@ func classifyToolError(err error) wire.Code {
 	// synthesises a codes.Unknown one; using that would classify every
 	// unclassified error in the process as CodeUnknown, so the second return
 	// is load-bearing.
-	if st, ok := status.FromError(err); ok {
-		if c, known := codeByGRPCCode[st.Code()]; known {
-			return c
+	if errclass.Classify(err) == errclass.Unclassified {
+		if st, ok := status.FromError(err); ok {
+			if c, known := codeByGRPCCode[st.Code()]; known {
+				return c
+			}
 		}
 	}
 
@@ -93,12 +100,20 @@ func classifyToolError(err error) wire.Code {
 	}
 
 	// Defensive floor, and TestCodeByGRPCCode_IsABijection is what makes it
-	// unreachable: ServiceErrorCode answers one of gRPC's seventeen codes and
+	// unreachable: grpcapi.ServiceErrorCode answers one of gRPC's seventeen codes and
 	// the table covers all seventeen. It is here rather than collapsed into an
 	// unguarded map read because a missing row would otherwise yield CodeOK —
 	// the zero value — and report a failure as a success.
 	return wire.CodeInternal
 }
+
+// mcpClientCertRequiredError declares its class here, beside the rendering,
+// because pkg/api/errclass cannot import this package: a share claim with no
+// verified client certificate is an authentication failure on every transport.
+var _ errclass.Classed = (*mcpClientCertRequiredError)(nil)
+
+// ErrorClass reports an authentication failure.
+func (e *mcpClientCertRequiredError) ErrorClass() errclass.Class { return errclass.Unauthenticated }
 
 // toolErrorResult renders a failed tool call as an MCP tool result carrying
 // both the prose a human reads and the code a client branches on.
@@ -115,7 +130,7 @@ func toolErrorResult(tool string, code wire.Code, message string) *mcpgo.CallToo
 
 // classifiedToolError renders err as a coded tool result.
 func classifiedToolError(tool string, err error) *mcpgo.CallToolResult {
-	return toolErrorResult(tool, classifyToolError(err), err.Error())
+	return toolErrorResult(tool, ServiceErrorCode(err), err.Error())
 }
 
 // errorCodeMiddleware is the ONE place a tool failure acquires its code.

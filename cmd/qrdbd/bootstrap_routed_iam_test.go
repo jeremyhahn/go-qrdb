@@ -121,9 +121,10 @@ func TestBootstrapUserRoleStores_ServedIAMFailsClosedForSealedBarrierTenant(t *t
 
 	store := make(map[string][]byte)
 	mock := newMockKVStore(store)
+	tx := newMockTransactionServicer(store)
 	node := &mockRaftNode{} // default: leader ready
 
-	mgmt, err := bootstrapUserRoleStores(ctx, mock, mock, node, 1, 1, svc, false, reg, seal.StrategyPassphrase, nil)
+	mgmt, err := bootstrapUserRoleStores(ctx, mock, mock, tx, node, 1, 1, svc, false, reg, seal.StrategyPassphrase, nil)
 	if err != nil {
 		t.Fatalf("bootstrapUserRoleStores: %v", err)
 	}

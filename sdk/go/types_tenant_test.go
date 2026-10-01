@@ -105,3 +105,45 @@ func TestErrTenantBarrierNotEnabledWrapped(t *testing.T) {
 		t.Error("errors.Is matched an unrelated error")
 	}
 }
+
+// TestErrTenantStoreSealedAlias verifies the SDK re-export is the same
+// sentinel value as pkg/tenant.ErrTenantSealed, the error
+// TenantStoreResolver.Resolve (and every service built over a routed store,
+// including the ceremony-time auth-factor surface) actually returns for a
+// sealed barrier-isolated tenant. Before this alias existed, an SDK consumer
+// had no way to recognize that condition through errors.Is without importing
+// pkg/tenant directly, crossing the SDK boundary this package exists to hold
+// (go-qrdb#464 round 5).
+func TestErrTenantStoreSealedAlias(t *testing.T) {
+	if ErrTenantStoreSealed == nil {
+		t.Fatal("ErrTenantStoreSealed is nil")
+	}
+	if !errors.Is(ErrTenantStoreSealed, tenant.ErrTenantSealed) {
+		t.Error("ErrTenantStoreSealed does not alias pkg/tenant.ErrTenantSealed")
+	}
+}
+
+// TestErrTenantStoreSealedDistinctFromSealErrTenantSealed pins the reason
+// this alias has its own name rather than reusing ErrTenantSealed: the two
+// are DIFFERENT sentinels from different packages that happen to describe
+// similar-sounding conditions (a store resolution failure vs. a barrier
+// operation failure), and a consumer checking the wrong one silently never
+// matches.
+func TestErrTenantStoreSealedDistinctFromSealErrTenantSealed(t *testing.T) {
+	if errors.Is(ErrTenantStoreSealed, ErrTenantSealed) {
+		t.Fatal("ErrTenantStoreSealed and ErrTenantSealed are the same sentinel; this test's premise is stale")
+	}
+}
+
+// TestErrTenantStoreSealedWrapped verifies errors.Is traversal through a
+// wrapped chain, matching how the sentinel arrives at a composing service's
+// transport layer in practice — e.g. AuthFactorListReadError.Unwrap().
+func TestErrTenantStoreSealedWrapped(t *testing.T) {
+	wrapped := fmt.Errorf("resolve store: %w", ErrTenantStoreSealed)
+	if !errors.Is(wrapped, ErrTenantStoreSealed) {
+		t.Error("errors.Is failed to match the wrapped sentinel")
+	}
+	if errors.Is(errors.New("unrelated"), ErrTenantStoreSealed) {
+		t.Error("errors.Is matched an unrelated error")
+	}
+}

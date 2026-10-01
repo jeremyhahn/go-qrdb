@@ -60,6 +60,19 @@ func NewKVFastCreateFunc(storageFactory func(shardID, replicaID uint64) storage.
 		logger = probe.logger
 
 		backend := NewFastBackend(shardID, replicaID, store, logger)
+		// The replica starts from an EMPTY keyspace, whatever its storage
+		// holds from a previous run. This state machine is an in-memory one to
+		// Raft: on every start Raft rebuilds it from the latest snapshot
+		// (RecoverSnapshot clears and repopulates storage) or, with none, by
+		// replaying the log from the beginning. Left in place, the old
+		// contents are the state AFTER entries that are about to be replayed,
+		// and a cache miss reads through to them: a transaction replayed over
+		// its own result can decide its compares the other way and apply the
+		// other branch, so this replica diverges from the log every other
+		// replica applied once.
+		if err := backend.clearStorage(); err != nil {
+			panic("statemachine: failed to reset fast state machine storage: " + err.Error())
+		}
 		kvsm := NewKVStateMachine(backend, opts...)
 		return &StandardAdapter{KVStateMachine: kvsm}
 	})
@@ -75,9 +88,6 @@ func NewKVDiskCreateFunc(storageFactory func(shardID, replicaID uint64) storage.
 		// reopen the SAME path (DiskAdapter.Open resumes from the persisted
 		// applied index there). The previous hardcoded (0, 0) gave every
 		// shard on a node one shared, unreusable location.
-		store := storageFactory(shardID, replicaID)
-		backend := NewDiskBackend(store)
-		kvsm := NewKVStateMachine(backend, opts...)
-		return &DiskAdapter{KVStateMachine: kvsm, store: store}
+		return newDiskAdapter(storageFactory(shardID, replicaID), opts...)
 	})
 }

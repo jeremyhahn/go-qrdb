@@ -11,8 +11,11 @@ package secure
 import (
 	"bytes"
 	"errors"
+	"runtime"
 	"sync"
 	"testing"
+
+	"github.com/jeremyhahn/go-enclave"
 )
 
 func TestNewBuffer(t *testing.T) {
@@ -83,6 +86,36 @@ func TestNewBufferFromBytes_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestNewBufferFromBytes_ResultIsWritable pins that a Buffer built by
+// NewBufferFromBytes can be written to through WithBytes exactly like one
+// built by NewBuffer. go-enclave's own move constructor (enclave.NewSealed,
+// enclave.Allocator.New) FREEZES pages built from existing bytes read-only,
+// and this package deliberately does not use that path directly for this
+// reason: Buffer has always been uniformly writable regardless of which
+// constructor built it, and a write faulting the process only for buffers
+// built one particular way would be exactly the kind of landmine a caller has
+// no way to see coming. If this regresses, the process crashes rather than
+// this test merely failing.
+func TestNewBufferFromBytes_ResultIsWritable(t *testing.T) {
+	buf, err := NewBufferFromBytes([]byte("mutate me"))
+	if err != nil {
+		t.Fatalf("NewBufferFromBytes: %v", err)
+	}
+	defer buf.Destroy()
+
+	if err := buf.WithBytes(func(b []byte) error {
+		for i := range b {
+			b[i] = 'x'
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("WithBytes: %v", err)
+	}
+	if got := string(buf.Bytes()); got != "xxxxxxxxx" {
+		t.Fatalf("Bytes() after mutation = %q, want all 'x'", got)
+	}
+}
+
 func TestNewBufferFromBytes_Empty(t *testing.T) {
 	buf, err := NewBufferFromBytes(nil)
 	if err == nil || buf != nil {
@@ -102,6 +135,43 @@ func TestBuffer_DoubleDestroyIsSafe(t *testing.T) {
 	buf.Destroy()
 	buf.Destroy() // must not panic
 	buf.Destroy()
+}
+
+// TestBuffer_DestroyErr pins the observable half of Destroy's contract: a
+// normal release reports nil, it is idempotent (a second call is a no-op that
+// also reports nil, not "already destroyed"), and it is safe on a nil
+// receiver. Forcing the ErrReleasedWithoutWipe branch itself needs an
+// environment that denies mprotect, which is go-enclave's own concern to
+// test — this pins that pkg/secure does not swallow whatever DestroyErr
+// reports, which TestBuffer_BytesAndWithBytesSurviveTheUnderlyingEnclaveBeingDestroyed's
+// sibling tests exercise from the other direction (reaching into buf.enc
+// directly).
+func TestBuffer_DestroyErr(t *testing.T) {
+	buf, err := NewBuffer(16)
+	if err != nil {
+		t.Fatalf("NewBuffer: %v", err)
+	}
+	if err := buf.DestroyErr(); err != nil {
+		t.Fatalf("DestroyErr() on a live buffer = %v, want nil", err)
+	}
+	if err := buf.DestroyErr(); err != nil {
+		t.Fatalf("second DestroyErr() = %v, want nil (idempotent)", err)
+	}
+
+	var nilBuf *Buffer
+	if err := nilBuf.DestroyErr(); err != nil {
+		t.Fatalf("DestroyErr() on a nil Buffer = %v, want nil", err)
+	}
+}
+
+// Destroy itself must still discard whatever DestroyErr reports, for the
+// existing `defer buf.Destroy()` call sites this package has everywhere.
+func TestBuffer_DestroyDiscardsTheReportForTheDeferredCallers(t *testing.T) {
+	buf, err := NewBuffer(16)
+	if err != nil {
+		t.Fatalf("NewBuffer: %v", err)
+	}
+	buf.Destroy() // must not panic and returns nothing to check
 }
 
 func TestBuffer_NilReceiverIsSafe(t *testing.T) {
@@ -167,6 +237,60 @@ func TestBuffer_MemoryInaccessibleAfterDestroy(t *testing.T) {
 	}
 }
 
+// TestWrapAllocError exercises wrapAllocError's two branches directly: it
+// translates go-enclave's ErrInvalidSize into this package's typed
+// *InvalidSizeError, and passes every other error (chiefly
+// enclave.ErrBudgetExhausted and enclave.ErrLockedMemoryUnavailable, which
+// callers match with errors.Is) through unchanged.
+func TestWrapAllocError(t *testing.T) {
+	if got := wrapAllocError(16, nil); got != nil {
+		t.Fatalf("wrapAllocError(nil) = %v, want nil", got)
+	}
+
+	err := wrapAllocError(16, enclave.ErrInvalidSize)
+	var ise *InvalidSizeError
+	if !errors.As(err, &ise) {
+		t.Fatalf("wrapAllocError(ErrInvalidSize) = %T, want *InvalidSizeError", err)
+	}
+	if ise.Size != 16 {
+		t.Fatalf("InvalidSizeError.Size = %d, want 16", ise.Size)
+	}
+
+	if got := wrapAllocError(16, enclave.ErrBudgetExhausted); !errors.Is(got, enclave.ErrBudgetExhausted) {
+		t.Fatalf("wrapAllocError(ErrBudgetExhausted) = %v, want it unwrapped to the same sentinel", got)
+	}
+}
+
+// TestBuffer_BytesAndWithBytesSurviveTheUnderlyingEnclaveBeingDestroyed drives
+// Bytes and WithBytes against a Buffer whose go-enclave MemoryEnclave was
+// destroyed WITHOUT going through this package's own Destroy — the one way
+// b.destroyed can read false while b.enc no longer holds anything. Both
+// accessors must report empty/refused rather than propagate go-enclave's
+// ErrEnclaveDestroyed as a foreign error type.
+func TestBuffer_BytesAndWithBytesSurviveTheUnderlyingEnclaveBeingDestroyed(t *testing.T) {
+	buf, err := NewBuffer(16)
+	if err != nil {
+		t.Fatalf("NewBuffer: %v", err)
+	}
+	// Reach past this package's own Destroy so buf.destroyed stays false while
+	// the underlying enclave is actually gone.
+	buf.enc.Destroy()
+
+	if got := buf.Bytes(); got != nil {
+		t.Fatalf("Bytes() on a Buffer whose enclave was destroyed = %v, want nil", got)
+	}
+
+	called := false
+	werr := buf.WithBytes(func([]byte) error { called = true; return nil })
+	var nb *NilBufferError
+	if !errors.As(werr, &nb) {
+		t.Fatalf("WithBytes on a Buffer whose enclave was destroyed = %T (%v), want *NilBufferError", werr, werr)
+	}
+	if called {
+		t.Fatal("WithBytes invoked the callback against a destroyed enclave")
+	}
+}
+
 func TestWipe(t *testing.T) {
 	tests := []struct {
 		name string
@@ -187,6 +311,88 @@ func TestWipe(t *testing.T) {
 				if b != 0 {
 					t.Fatalf("byte %d non-zero after Wipe: %x", i, b)
 				}
+			}
+		})
+	}
+}
+
+// TestBuffer_DestroyErr_AbandonedAttemptDoesNotLatchDestroyed pins that a
+// DestroyErr attempt which never reaches the end of the release leaves the
+// Buffer retryable rather than falsely marked destroyed (go-qrdb#114 review,
+// round 4). The abandonment is driven through the one exit this package
+// controls end to end: an armed borrow guard whose violation handler ends the
+// call from inside checkNoBorrow, AFTER the destroyed CAS has already fired.
+// The two ways a handler can end it — panic (EnableBorrowGuard's default) and
+// runtime.Goexit (GuardBorrows') — are both covered, because a reset keyed on
+// recover() alone would miss the second.
+//
+// A latched flag is observable without reaching into go-enclave: Size reports
+// 0 for a Buffer marked destroyed, and the live enclave underneath would then
+// stay mapped and registered until a process-wide WipeAll.
+func TestBuffer_DestroyErr_AbandonedAttemptDoesNotLatchDestroyed(t *testing.T) {
+	const size = 32
+	tests := []struct {
+		name    string
+		handler BorrowViolationFunc
+		// attempt runs victim.DestroyErr inside outer's borrow and returns once
+		// the attempt has been abandoned.
+		attempt func(outer, victim *Buffer)
+	}{
+		{
+			name:    "handler panics",
+			handler: nil, // EnableBorrowGuard's default: panic
+			attempt: func(outer, victim *Buffer) {
+				_ = outer.WithBytes(func([]byte) error {
+					func() {
+						defer func() { _ = recover() }()
+						_ = victim.DestroyErr()
+					}()
+					return nil
+				})
+			},
+		},
+		{
+			name:    "handler calls runtime.Goexit",
+			handler: func(*NestedBorrowError) { runtime.Goexit() },
+			attempt: func(outer, victim *Buffer) {
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					_ = outer.WithBytes(func([]byte) error {
+						_ = victim.DestroyErr()
+						return nil
+					})
+				}()
+				<-done
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			outer, err := NewBuffer(size)
+			if err != nil {
+				t.Fatalf("NewBuffer(outer): %v", err)
+			}
+			defer outer.Destroy()
+			victim, err := NewBuffer(size)
+			if err != nil {
+				t.Fatalf("NewBuffer(victim): %v", err)
+			}
+			defer victim.Destroy()
+
+			restore := EnableBorrowGuard(tc.handler)
+			tc.attempt(outer, victim)
+			restore()
+
+			if got := victim.Size(); got != size {
+				t.Fatalf("Size after an abandoned DestroyErr = %d, want %d: "+
+					"the Buffer was latched destroyed while its enclave is still live", got, size)
+			}
+			if err := victim.DestroyErr(); err != nil {
+				t.Fatalf("retried DestroyErr: %v", err)
+			}
+			if got := victim.Size(); got != 0 {
+				t.Fatalf("Size after the retried DestroyErr = %d, want 0", got)
 			}
 		})
 	}

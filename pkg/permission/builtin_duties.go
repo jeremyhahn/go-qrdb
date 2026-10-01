@@ -102,6 +102,10 @@ func registerCryptoUseDuties() {
 //   - keys:import / keys:export are key entry and key output, the Crypto
 //     Officer's key-management duty. They confer no ability to compute with a
 //     key inside the module.
+//   - escrow:create / escrow:recover / escrow:list / escrow:revoke move
+//     wrapped key material to and from an external custodian (KMIP, a
+//     federation agent) — key entry/output again, just across a trust
+//     boundary rather than to a local file.
 func registerGovernanceDuties() {
 	RegisterDuty(DutyGovernance,
 		// Barrier / seal lifecycle (SO-exclusive).
@@ -139,6 +143,11 @@ func registerGovernanceDuties() {
 		// TestBuiltInDuties_KeyFamiliesFullyClassified).
 		KeysCreate, KeysRotate, KeysDelete, KeysList, KeysGet,
 		KeysImport, KeysExport,
+		// Key escrow: entrusting wrapped key material to an external KMIP
+		// server or federation agent, and reconstructing it back. Key entry
+		// and key output by another name, so it sits with keys:import /
+		// keys:export rather than with the cryptographic primitives above.
+		EscrowCreate, EscrowRecover, EscrowList, EscrowRevoke,
 		// Hardware crypto backend inventory.
 		BackendsList, BackendsRead,
 		// PKCS#11 PIN management and PIV slot administration. Governance of

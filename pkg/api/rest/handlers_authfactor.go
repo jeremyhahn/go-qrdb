@@ -16,7 +16,6 @@ package rest
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -118,7 +117,7 @@ func (s *Server) handleAuthFactorEnroll(w http.ResponseWriter, r *http.Request) 
 
 	enrollment, err := s.authFactorSvc.EnrollFactor(r.Context(), factor, req.UserID, params)
 	if err != nil {
-		writeErrorJSON(w, mapAuthFactorError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -144,7 +143,7 @@ func (s *Server) handleAuthFactorChallenge(w http.ResponseWriter, r *http.Reques
 
 	challenge, err := s.authFactorSvc.ChallengeFactor(r.Context(), enrollmentID)
 	if err != nil {
-		writeErrorJSON(w, mapAuthFactorError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -191,7 +190,7 @@ func (s *Server) handleAuthFactorVerify(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := s.authFactorSvc.VerifyFactor(r.Context(), "", req.ChallengeID, resp); err != nil {
-		writeErrorJSON(w, mapAuthFactorError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -214,7 +213,7 @@ func (s *Server) handleAuthFactorList(w http.ResponseWriter, r *http.Request) {
 
 	enrollments, err := s.authFactorSvc.ListFactors(r.Context(), subject)
 	if err != nil {
-		writeErrorJSON(w, http.StatusInternalServerError, err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -246,7 +245,7 @@ func (s *Server) handleAuthFactorRevoke(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := s.authFactorSvc.RevokeFactor(r.Context(), id); err != nil {
-		writeErrorJSON(w, mapAuthFactorError(err), err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -297,38 +296,6 @@ func enrollmentToEntry(e *authfactors.Enrollment) *enrollmentEntry {
 		entry.RevokedAt = e.RevokedAt.Format(time.RFC3339)
 	}
 	return entry
-}
-
-// mapAuthFactorError maps auth factor errors to HTTP status codes.
-func mapAuthFactorError(err error) int {
-	if err == nil {
-		return http.StatusOK
-	}
-	var (
-		enrollmentNotFound  *authfactors.EnrollmentNotFoundError
-		enrollmentRevoked   *authfactors.EnrollmentRevokedError
-		enrollmentInvalid   *authfactors.EnrollmentInvalidError
-		challengeExpired    *authfactors.ChallengeExpiredError
-		verificationFailed  *authfactors.VerificationFailedError
-		factorNotFound      *authfactors.FactorNotFoundError
-		hardwareUnavailable *authfactors.HardwareUnavailableError
-	)
-	switch {
-	case errors.As(err, &enrollmentNotFound), errors.As(err, &factorNotFound):
-		return http.StatusNotFound
-	case errors.As(err, &enrollmentRevoked), errors.As(err, &challengeExpired):
-		return http.StatusGone
-	case errors.As(err, &enrollmentInvalid):
-		return http.StatusBadRequest
-	case errors.As(err, &verificationFailed):
-		return http.StatusUnauthorized
-	case errors.As(err, &hardwareUnavailable), errors.Is(err, authfactors.ErrHardwareUnavailable):
-		return http.StatusServiceUnavailable
-	case errors.Is(err, authfactors.ErrFactorDisabled):
-		return http.StatusNotImplemented
-	default:
-		return http.StatusInternalServerError
-	}
 }
 
 // handleAuthFactorByPath dispatches auth factor requests that carry a path

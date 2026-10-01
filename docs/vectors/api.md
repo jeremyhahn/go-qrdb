@@ -88,19 +88,30 @@ progress state.
 
 ## Status and error mapping
 
-| Condition | REST | gRPC / Unix |
-|---|---|---|
-| Success | 200 | `OK` |
-| Namespace exists | 409 | `ALREADY_EXISTS` — `service.NamespaceExistsError` |
-| Unknown namespace | 404 | `NOT_FOUND` |
-| Vector length ≠ dimension | 400 | `INVALID_ARGUMENT` |
-| Unknown metric or index type | 400 | `INVALID_ARGUMENT` |
-| Unknown vector ID | 404 | `NOT_FOUND` |
-| Malformed metadata filter | 400 | `INVALID_ARGUMENT` |
-| Unknown job/operation ID on a progress call | 404 | `NOT_FOUND` |
-| Missing permission | 403 | `PERMISSION_DENIED` |
-| Barrier sealed | 503 | `UNAVAILABLE` |
-| Built without `qrdb_vector` | 404 (route not registered) | `UNIMPLEMENTED` |
+Every vector error is one of the service layer's typed errors, and every
+transport classifies it through the one table in `pkg/api/errclass`, so the
+answer below is the same on REST, gRPC, the unix socket, QUIC and MCP; the
+embedded transport returns the typed error itself. The service used to report
+these conditions through an untyped error code that no transport mapped, so
+all but the internal ones answered 500.
+
+| Condition | REST | gRPC / Unix | Typed error |
+|---|---|---|---|
+| Success | 200 | `OK` | — |
+| Namespace exists | 409 | `ALREADY_EXISTS` | `service.NamespaceExistsError` |
+| Unknown namespace | 404 | `NOT_FOUND` | `service.NamespaceNotFoundError` |
+| Vector length ≠ dimension | 400 | `INVALID_ARGUMENT` | `service.DimensionMismatchError` |
+| Missing field, non-positive `k`, zero ID or dimension, storage-refused input | 400 | `INVALID_ARGUMENT` | `service.InvalidVectorError` |
+| Invalid namespace name | 400 | `INVALID_ARGUMENT` | `service.InvalidNamespaceNameError` |
+| Unknown vector ID | 404 | `NOT_FOUND` | `service.VectorNotFoundError` |
+| Malformed request body or query parameter (transport decode) | 400 | `INVALID_ARGUMENT` | — |
+| Unknown job/operation ID on a progress call | 404 | `NOT_FOUND` | `service.VectorJobNotFoundError` |
+| Strict tenant isolation, no tenant bound | 403 | `PERMISSION_DENIED` | `service.TenantRequiredError` |
+| Missing permission | 403 | `PERMISSION_DENIED` | — |
+| Vector service closed | 503 | `UNAVAILABLE` | `service.VectorServiceClosedError` |
+| Barrier sealed | 503 | `UNAVAILABLE` | `service.BarrierSealedError` |
+| Storage or index fault | 500 | `INTERNAL` | `service.VectorOperationError` |
+| Built without `qrdb_vector` | 404 (route not registered) | `UNIMPLEMENTED` | — |
 
 ## Versioning
 

@@ -85,7 +85,7 @@ func TestTenantBarrier_Lifecycle_InitUnsealSeal(t *testing.T) {
 	config := BarrierConfig{}
 	strategy := testSoftwareStrategy(t)
 	ctx := context.Background()
-	creds := Credentials{Secret: []byte("tenant-password")}
+	creds := MustCredentials([]byte("tenant-password"))
 
 	tb, err := NewTenantBarrier("tenant-A", testLogger(), base, config, strategy)
 	if err != nil {
@@ -136,7 +136,7 @@ func TestTenantBarrier_Status(t *testing.T) {
 		t.Error("expected status.Sealed=true before init")
 	}
 
-	if err := tb.Initialize(context.Background(), Credentials{Secret: []byte("pw")}); err != nil {
+	if err := tb.Initialize(context.Background(), MustCredentials([]byte("pw"))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 
@@ -155,7 +155,7 @@ func TestTenantBarrier_DataRoundTrip(t *testing.T) {
 	base := NewMemoryBackend()
 	strategy := testSoftwareStrategy(t)
 	ctx := context.Background()
-	creds := Credentials{Secret: []byte("pw")}
+	creds := MustCredentials([]byte("pw"))
 
 	tb, err := NewTenantBarrier("tenant-C", testLogger(), base, BarrierConfig{}, strategy)
 	if err != nil {
@@ -249,7 +249,7 @@ func TestTenantBarrier_Close(t *testing.T) {
 		t.Fatalf("NewTenantBarrier: %v", err)
 	}
 
-	if err := tb.Initialize(ctx, Credentials{Secret: []byte("pw")}); err != nil {
+	if err := tb.Initialize(ctx, MustCredentials([]byte("pw"))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 
@@ -268,7 +268,7 @@ func TestTenantBarrier_CrossTenantIsolation(t *testing.T) {
 	base := NewMemoryBackend()
 	strategy := testSoftwareStrategy(t)
 	ctx := context.Background()
-	creds := Credentials{Secret: []byte("pw")}
+	creds := MustCredentials([]byte("pw"))
 
 	tbA, err := NewTenantBarrier("tenant-A", testLogger(), base, BarrierConfig{}, strategy)
 	if err != nil {
@@ -526,7 +526,7 @@ func TestTenantBarrier_PutIfAbsent_Success(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if err := tb.Initialize(ctx, Credentials{Secret: []byte("pw")}); err != nil {
+	if err := tb.Initialize(ctx, MustCredentials([]byte("pw"))); err != nil {
 		t.Fatal(err)
 	}
 

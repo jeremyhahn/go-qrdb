@@ -170,6 +170,90 @@ func newMockKVStore(store map[string][]byte) *mockKVServicer {
 	}
 }
 
+// mockTransactionServicer implements service.TransactionServicer over the
+// SAME store map a mockKVServicer wraps (newMockKVStore's own store
+// parameter), so a guarded write via PutAllIfUnchanged and a plain Get/Put
+// through the KVServicer mock observe one consistent view — exactly as the
+// real guardedKVServiceAdapter and kvServiceAdapter do over one
+// Raft-applied state machine. Without this, go-qrdb#555's atomic
+// role/user creation path would write into a transaction plane the rest of
+// the mock stack never sees.
+func newMockTransactionServicer(store map[string][]byte) *mockTransactionServicer {
+	return &mockTransactionServicer{store: store}
+}
+
+type mockTransactionServicer struct {
+	store map[string][]byte
+}
+
+// Execute evaluates every compare against the shared store and applies
+// successOps when all pass, failureOps otherwise. Value-equality and
+// version compares — what go-qrdb#555's guarded batch actually uses, since
+// a nil Guard is expressed as a version-0 compare rather than a value
+// compare against nil/empty (go-qrdb#555 review round 3), and a non-nil
+// Guard now ADDS a version-greater-than-zero existence compare ahead of its
+// value compare (go-qrdb#555 review round 4) — are implemented; anything
+// else is unreachable through this package's tests.
+func (m *mockTransactionServicer) Execute(_ context.Context, compares []service.Compare, successOps, failureOps []service.Op) (*service.TransactionResponse, error) {
+	ok := true
+	for _, c := range compares {
+		switch c.Target {
+		case service.CompareValue:
+			if c.Result != service.CompareEqual || !bytes.Equal(m.store[string(c.Key)], c.Value) {
+				ok = false
+			}
+		case service.CompareVersion:
+			// This mock keeps no real version counter, only presence — which
+			// is all a version-0 ("absent") or version->0 ("present") compare
+			// needs. A present key with an EMPTY value must still count as
+			// version 1, matching every real engine (pkg/mvcc's
+			// RaftCompare.evaluate, pkg/store's pebbleEvaluateCompare): a
+			// value-based mock here would make this exact defect (an empty
+			// value satisfying a nil guard) invisible again.
+			_, exists := m.store[string(c.Key)]
+			version := int64(0)
+			if exists {
+				version = 1
+			}
+			switch c.Result {
+			case service.CompareEqual:
+				ok = version == c.Version
+			case service.CompareGreater:
+				// existsGuard: the key must be present, i.e. version > 0.
+				ok = version > c.Version
+			default:
+				ok = false
+			}
+		default:
+			ok = false
+		}
+		if !ok {
+			break
+		}
+	}
+	ops := failureOps
+	if ok {
+		ops = successOps
+	}
+	for _, op := range ops {
+		switch op.Type {
+		case service.OpPut:
+			m.store[string(op.Key)] = op.Value
+		case service.OpDelete:
+			delete(m.store, string(op.Key))
+		}
+	}
+	return &service.TransactionResponse{Succeeded: ok}, nil
+}
+
+func (m *mockTransactionServicer) ExecuteWithMode(ctx context.Context, compares []service.Compare, successOps, failureOps []service.Op, _ writemode.Mode) (*service.TransactionResponse, error) {
+	return m.Execute(ctx, compares, successOps, failureOps)
+}
+
+func (m *mockTransactionServicer) ExecuteEntity(_ context.Context, _ *service.TransactionEntityRequest) (*service.TransactionEntityResponse, error) {
+	return nil, errors.New("mockTransactionServicer: ExecuteEntity not implemented")
+}
+
 type mockKVServicer struct {
 	putFn              func(ctx context.Context, key string, value []byte) error
 	putIfAbsentFn      func(ctx context.Context, key string, value []byte) (bool, error)

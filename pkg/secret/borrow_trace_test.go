@@ -31,7 +31,7 @@ import (
 func TestSecretValueBytes_TakesNoNestedBorrow(t *testing.T) {
 	defer secure.GuardBorrows(t.Fatalf)()
 
-	sv := secret.NewSecretValue("raw://x", []byte("s3cr3t"), secret.StrategyLiteral)
+	sv := mustSecretValue(t, "raw://x", []byte("s3cr3t"), secret.StrategyLiteral)
 	defer sv.Clear()
 
 	if got := string(sv.Bytes()); got != "s3cr3t" {
@@ -49,7 +49,7 @@ func TestSecretValueBytes_TakesNoNestedBorrow(t *testing.T) {
 func TestSecretValueString_TakesNoNestedBorrow(t *testing.T) {
 	defer secure.GuardBorrows(t.Fatalf)()
 
-	sv := secret.NewSecretValue("raw://x", []byte("s3cr3t"), secret.StrategyCredential)
+	sv := mustSecretValue(t, "raw://x", []byte("s3cr3t"), secret.StrategyCredential)
 	defer sv.Clear()
 
 	if got := sv.String(); got != "s3cr3t" {
@@ -68,7 +68,7 @@ func TestSecretValueString_TakesNoNestedBorrow(t *testing.T) {
 func TestSecretValue_EmptyAndClearedTakeNoNestedBorrow(t *testing.T) {
 	defer secure.GuardBorrows(t.Fatalf)()
 
-	empty := secret.NewSecretValue("raw://y", nil, secret.StrategyLiteral)
+	empty := mustSecretValue(t, "raw://y", nil, secret.StrategyLiteral)
 	if got := empty.Bytes(); got != nil {
 		t.Errorf("Bytes on an empty value = %v, want nil", got)
 	}
@@ -76,7 +76,7 @@ func TestSecretValue_EmptyAndClearedTakeNoNestedBorrow(t *testing.T) {
 		t.Errorf("String on an empty value = %q, want empty", got)
 	}
 
-	cleared := secret.NewSecretValue("raw://z", []byte("gone"), secret.StrategyLiteral)
+	cleared := mustSecretValue(t, "raw://z", []byte("gone"), secret.StrategyLiteral)
 	cleared.Clear()
 	if got := cleared.Bytes(); got != nil {
 		t.Errorf("Bytes after Clear = %v, want nil", got)

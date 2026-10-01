@@ -23,12 +23,14 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -132,6 +134,10 @@ type Server struct {
 	wg          sync.WaitGroup
 	logger      *slog.Logger
 	opts        serverOptions
+
+	// sweeperCancel stops the collection sweeper (see collection_sweeper.go);
+	// nil when none is running.
+	sweeperCancel context.CancelFunc
 }
 
 // serverOptions holds optional dependencies injected via ServerOption.
@@ -140,6 +146,10 @@ type serverOptions struct {
 	// service registry gates the raft-only resolutions (see
 	// standalone_gate.go).
 	standaloneMode bool
+
+	// tenantMigrationAdmission gates tenant-scope migrations through the
+	// transports; see WithTenantMigrationAdmission.
+	tenantMigrationAdmission TenantMigrationAdmission
 
 	tlsConfig  *tls.Config
 	caCertPool *x509.CertPool
@@ -161,7 +171,6 @@ type serverOptions struct {
 	certProv           cert.CertProvider
 	authMW             *authmw.AuthMiddleware
 	caBootstrapCert    []byte
-	caBootstrapKey     []byte
 	batchSvc           service.BatchServicer
 	txSvc              service.TransactionServicer
 	mvccSvc            service.MVCCKVServicer
@@ -189,16 +198,25 @@ type serverOptions struct {
 	backupSvc          service.BackupServicer
 	rebalanceSvc       service.RebalanceServicer
 	dbRegistry         *DatabaseServiceRegistry
-	keyspaceReclaim    *service.KeyspaceReclaimService
-	tenantHosts        *TenantHostRegistry
-	raftBackend        *RaftBackendFactory
-	quotaAccountant    *quota.Accountant
-	webUI              http.Handler
-	auditLogger        audit.AuditLogger
-	authFactorSvc      service.AuthFactorServicer
-	userAuthFactorSvc  service.UserAuthFactorServicer
-	custodianSvc       custodian.Servicer
-	soAuthenticator    *auth.SOAuthenticator
+
+	// collectionSweepInterval and collectionStaleAfter tune the collection
+	// sweeper; zero keeps the defaults. See WithCollectionSweep.
+	collectionSweepInterval time.Duration
+	collectionStaleAfter    time.Duration
+	// collectionSweepLeader reports whether this node leads the system
+	// shard; see WithCollectionSweepLeader. Nil means a single node.
+	collectionSweepLeader func() bool
+	keyspaceReclaim       *service.KeyspaceReclaimService
+	reclaimSweeper        *service.ReclaimSweeper
+	tenantHosts           *TenantHostRegistry
+	raftBackend           *RaftBackendFactory
+	quotaAccountant       *quota.Accountant
+	webUI                 http.Handler
+	auditLogger           audit.AuditLogger
+	authFactorSvc         service.AuthFactorServicer
+	userAuthFactorSvc     service.UserAuthFactorServicer
+	custodianSvc          custodian.Servicer
+	soAuthenticator       *auth.SOAuthenticator
 
 	// sealStrategy overrides the default seal strategy used when no
 	// strategyRegistry is configured. When both are nil the daemon
@@ -232,6 +250,14 @@ type serverOptions struct {
 	// clusterKeyReceiver handles the /v1/cluster/keydelivery and
 	// /v1/cluster/nodekey endpoints. When nil the routes are not registered.
 	clusterKeyReceiver rest.ClusterKeyReceiver
+
+	// restListener, restPacketConn and grpcListener are sockets the embedder
+	// pre-bound (WithRESTListener, WithRESTPacketConn, WithGRPCListener,
+	// go-qrdb#374). Each replaces the bind of the corresponding configured
+	// port.
+	restListener   net.Listener
+	restPacketConn net.PacketConn
+	grpcListener   net.Listener
 }
 
 // SealedWindowProbe is the abstraction the sealed-window middleware /
@@ -299,6 +325,49 @@ func WithLeaderForwarding(resolver rest.LeaderAdminResolver) ServerOption {
 	}
 }
 
+// WithRESTListener makes the REST server serve HTTPS on ln, a TCP listener
+// the embedder has already bound, instead of binding server.admin_port. A
+// caller that needs a kernel-assigned port binds ":0", reads the port back
+// from ln.Addr(), and hands the listener over, so the port is never released
+// between reservation and serving (go-qrdb#374).
+//
+// The listener outlives any one Server: Stop ends this Server's use of it
+// without closing it, so successive Servers built from the same options — an
+// embedded node rebuilding its data plane, or a sealed-window server followed
+// by the node's own — serve on the same socket. Whoever builds the Servers
+// closes it when done (see PreboundSockets; the SDK node does so in Close).
+// Start closes it when it refuses to serve, as do the SDK node's
+// constructors when they return an error, and Start refuses it with a
+// *PreboundSocketError when REST is disabled. ln must support SetDeadline,
+// as a *net.TCPListener does.
+//
+// The HTTP/3 socket is still bound by the server, on ln's host and port,
+// unless WithRESTPacketConn supplies it too.
+func WithRESTListener(ln net.Listener) ServerOption {
+	return func(o *serverOptions) {
+		o.restListener = ln
+	}
+}
+
+// WithRESTPacketConn makes the REST server serve HTTP/3 on pc instead of
+// binding a UDP socket beside its TCP listener. It requires WithRESTListener,
+// and pc must be bound on that listener's host and port — the port Alt-Svc
+// advertises — or Start fails. Ownership is WithRESTListener's.
+func WithRESTPacketConn(pc net.PacketConn) ServerOption {
+	return func(o *serverOptions) {
+		o.restPacketConn = pc
+	}
+}
+
+// WithGRPCListener makes the gRPC server serve on ln, a TCP listener the
+// embedder has already bound, instead of binding server.grpc_port. See
+// WithRESTListener for why and for ownership.
+func WithGRPCListener(ln net.Listener) ServerOption {
+	return func(o *serverOptions) {
+		o.grpcListener = ln
+	}
+}
+
 // WithCACertPool sets the CA certificate pool for TLS peer verification
 // in the REST server's forwarding client.
 func WithCACertPool(pool *x509.CertPool) ServerOption {
@@ -350,11 +419,11 @@ func WithSealedWindowProbe(probe SealedWindowProbe) ServerOption {
 }
 
 // WithCABootstrap enables the /v1/ca/bootstrap endpoint on the REST
-// server for cluster TLS bootstrapping.
-func WithCABootstrap(certPEM, keyPEM []byte) ServerOption {
+// server for cluster TLS bootstrapping. It takes the CA certificate only;
+// the endpoint is public and never serves key material.
+func WithCABootstrap(certPEM []byte) ServerOption {
 	return func(o *serverOptions) {
 		o.caBootstrapCert = certPEM
-		o.caBootstrapKey = keyPEM
 	}
 }
 
@@ -455,6 +524,13 @@ func WithEncryptionMigrator(m service.EncryptionMigrator) ServerOption {
 	return func(o *serverOptions) { o.encMigrator = m }
 }
 
+// WithTenantMigrationAdmission sets the admission the transports' scoped
+// router consults before a tenant-scope migration; see
+// TenantMigrationAdmission.
+func WithTenantMigrationAdmission(a TenantMigrationAdmission) ServerOption {
+	return func(o *serverOptions) { o.tenantMigrationAdmission = a }
+}
+
 // WithClusterEncryptionMigrator configures the cluster-coordination migrator the
 // transports use INSTEAD of the local scoped router: it writes the replicated
 // migration intent and seals per-node credentials, and the per-node reconcilers
@@ -546,6 +622,21 @@ func WithRebalanceService(svc service.RebalanceServicer) ServerOption {
 func WithKeyspaceReclaimService(svc *service.KeyspaceReclaimService) ServerOption {
 	return func(o *serverOptions) {
 		o.keyspaceReclaim = svc
+	}
+}
+
+// WithReclaimSweeper supplies the sweeper that drains pending reclaim jobs
+// (lifecycle.Node.ReclaimSweeper, go-qrdb#547). The composer that built it
+// also starts it (see sdk/go/node's startReclaimSweep and cmd/qrdbd's
+// startReclaimSweeper); the server's part is the resolver that routes each
+// job to the node that sweeps it and to its store, which only the server can
+// build -- it resolves through the same registry the transports use (see
+// wireReclaimStoreResolver). Without a DatabaseServiceRegistry the server
+// serves no relational DDL, so no job can be published and none is
+// installed.
+func WithReclaimSweeper(sweeper *service.ReclaimSweeper) ServerOption {
+	return func(o *serverOptions) {
+		o.reclaimSweeper = sweeper
 	}
 }
 
@@ -768,8 +859,26 @@ func New(cfg *config.Config, kvSvc service.KVServicer, adminSvc service.AdminSer
 	}
 
 	s.wireVolumeStoreResolver()
+	s.wireTenantDataProbe()
+	s.wireReclaimStoreResolver()
 
 	return s
+}
+
+// wireTenantDataProbe gives the tenant service the data probe its
+// isolation-change precondition consults (tenant.IsolationChangeWiring), over
+// the same service registry the transports resolve tenant data through. It is
+// wired here, once, so every transport -- including the embedded one, which
+// shares this constructor -- reaches the same check. With no registry the
+// probe stays unset and an isolation change fails closed.
+func (s *Server) wireTenantDataProbe() {
+	w, ok := s.opts.tenantSvc.(tenant.IsolationChangeWiring)
+	if !ok {
+		return
+	}
+	if reg := s.transportServiceRegistry(); reg != nil {
+		w.SetTenantDataProbe(service.NewTenantDataProbe(reg))
+	}
 }
 
 // wireVolumeStoreResolver completes the DROP DATABASE reclamation seam for
@@ -797,20 +906,82 @@ func (s *Server) wireVolumeStoreResolver() {
 	})
 }
 
+// ErrAuthFactorTenantRoutingRequired is returned by Start when a caller
+// supplied WithFactorRegistry but no WithTenantStoreResolver.
+//
+// WithFactorRegistry's own contract promises that the server "automatically"
+// exposes the enrollment/challenge/verify surface on every transport once a
+// registry is supplied. Building the auth-factor service requires a
+// tenant.StoreResolver — there is no unrouted construction to fall back to —
+// so a composition that made that promise but supplied no way to keep it
+// fails Start() outright rather than booting successfully with every
+// transport silently answering Unimplemented for a capability
+// WithFactorRegistry said would be there.
+var ErrAuthFactorTenantRoutingRequired = errors.New("server: WithFactorRegistry requires WithTenantStoreResolver")
+
+// wireReclaimStoreResolver installs the resolver that routes each pending
+// reclaim job (go-qrdb#547) to the node that sweeps it and to its store.
+// It resolves through a registry built from the SAME options the transports'
+// registries are (restRegistryOptions), so a job is swept through exactly
+// the (tenant, database) view it was published through. The registry is
+// held for the server's lifetime rather than rebuilt per sweep: the
+// per-request construction buildServiceRegistry documents exists to keep
+// collection ID generators from being shared across transports, and the
+// sweeper touches no collection. It is a no-op without a sweeper.
+func (s *Server) wireReclaimStoreResolver() {
+	if s.opts.reclaimSweeper == nil || s.opts.dbRegistry == nil {
+		return
+	}
+	reg := newRESTRegistry(s.opts.dbRegistry, s.opts.barrierRegistry, tenant.SystemTenantID, s.restRegistryOptions()...)
+	var shards reclaimShardLeader
+	if s.opts.raftBackend != nil {
+		shards = s.opts.raftBackend
+	}
+	s.opts.reclaimSweeper.SetStoreResolver(newReclaimStoreResolver(reg, shards, s.reclaimOrigin()))
+}
+
+// reclaimOrigin is this node's identity on reclaim-job index entries: its
+// system-shard replica ID, unique within a cluster and stable across
+// restarts. The registry that publishes entries and the resolver that
+// matches them both take it from here, so they cannot disagree.
+func (s *Server) reclaimOrigin() string {
+	if s.config == nil {
+		return ""
+	}
+	return strconv.FormatUint(s.config.Raft.ReplicaID, 10)
+}
+
 // ensureAuthFactorService completes the WithFactorRegistry contract: when
 // a caller injected a FactorRegistry via WithFactorRegistry but did not
 // supply an explicit WithAuthFactorService, this method constructs the
-// unified AuthFactorService from the registry and the KV service and
-// assigns it so every transport that checks s.opts.authFactorSvc sees a
-// valid instance. It is a no-op when authFactorSvc is already set or when
-// factorRegistry is nil (no factors to serve).
+// tenant-routed AuthFactorService from the registry and assigns it so every
+// transport that checks s.opts.authFactorSvc sees a valid instance.
+//
+// The service it constructs is the TENANT-ROUTED one
+// (service.NewRoutingAuthFactorService), built over the resolver supplied by
+// WithTenantStoreResolver — mirroring ensureUserAuthFactorService immediately
+// below, for the same reason (go-qrdb#464): this ceremony-time custodian
+// surface used to be built over the bare KV servicer, one flat keyspace, so a
+// custodian factor enrolled under one tenant resolved a call made under
+// another.
+//
+// It is a no-op when authFactorSvc is already set or when factorRegistry is
+// nil (no factors to serve, so WithFactorRegistry was never called and there
+// is no promise to keep). It is a hard failure — ErrAuthFactorTenantRoutingRequired
+// — when factorRegistry is set but NO tenant store resolver was supplied:
+// there is no unrouted fallback, and a composition that cannot say which
+// tenant a request belongs to must not silently omit the surface it
+// advertised.
 func (s *Server) ensureAuthFactorService() error {
 	if s.opts.authFactorSvc != nil || s.opts.factorRegistry == nil {
 		return nil
 	}
-	svc, err := service.NewAuthFactorService(service.AuthFactorServiceConfig{
-		Factors: s.opts.factorRegistry.All(),
-		KV:      s.kvSvc,
+	if s.opts.tenantStoreRes == nil {
+		return ErrAuthFactorTenantRoutingRequired
+	}
+	svc, err := service.NewRoutingAuthFactorService(service.RoutingAuthFactorServiceConfig{
+		Factors:  s.opts.factorRegistry.All(),
+		Resolver: s.opts.tenantStoreRes,
 	})
 	if err != nil {
 		return err
@@ -862,6 +1033,21 @@ func (s *Server) ensureUserAuthFactorService() error {
 // fails to start, all previously started servers are rolled back and the
 // error is returned.
 func (s *Server) Start() error {
+	if err := s.start(); err != nil {
+		// A server that refuses to serve does not hand its pre-bound
+		// sockets back half-used: they are closed, as a caller that gave
+		// them up would otherwise leak them.
+		s.closePreboundSockets()
+		return err
+	}
+	return nil
+}
+
+// start is Start without the pre-bound socket cleanup.
+func (s *Server) start() error {
+	if err := s.checkPreboundSockets(); err != nil {
+		return err
+	}
 	if err := s.ensureAuthFactorService(); err != nil {
 		return err
 	}
@@ -947,6 +1133,10 @@ func (s *Server) Start() error {
 		return err
 	}
 
+	// Collections an interrupted create or drop left CREATING or DROPPING
+	// are finished in the background, so nobody has to re-issue them.
+	s.startCollectionSweeper()
+
 	return nil
 }
 
@@ -978,6 +1168,7 @@ func (s *Server) stopModules() {
 // order (etcd, PostgreSQL, MySQL, MCP, Unix, QUIC, gRPC, REST) and waits
 // for all background goroutines to complete.
 func (s *Server) Stop() {
+	s.stopCollectionSweeper()
 	s.stopAllEtcd()
 	s.stopPgSQL()
 	s.stopMySQL()
@@ -1047,6 +1238,16 @@ func (s *Server) startREST() error {
 		return err
 	}
 	restOpts = append(restOpts, rest.WithTLS(tlsCfg))
+	if s.opts.restListener != nil {
+		ln, err := newLifetimeListener("rest", s.opts.restListener)
+		if err != nil {
+			return err
+		}
+		restOpts = append(restOpts, rest.WithListener(ln))
+	}
+	if s.opts.restPacketConn != nil {
+		restOpts = append(restOpts, rest.WithPacketConn(newLifetimePacketConn(s.opts.restPacketConn)))
+	}
 	if s.opts.caCertPool != nil {
 		restOpts = append(restOpts, rest.WithCACertPool(s.opts.caCertPool))
 	}
@@ -1147,7 +1348,7 @@ func (s *Server) startREST() error {
 		restOpts = append(restOpts, rest.WithRebalanceService(s.opts.rebalanceSvc))
 	}
 	if len(s.opts.caBootstrapCert) > 0 {
-		restOpts = append(restOpts, rest.WithCABootstrap(s.opts.caBootstrapCert, s.opts.caBootstrapKey))
+		restOpts = append(restOpts, rest.WithCABootstrap(s.opts.caBootstrapCert))
 	}
 	restOpts = append(restOpts, rest.WithOnEtcdUpdated(func(dbName string, cfg *database.EtcdConfig) error {
 		return s.StartEtcd(dbName, cfg)
@@ -1247,7 +1448,14 @@ func (s *Server) buildServiceRegistry() service.Registry {
 	if s.opts.dbRegistry == nil {
 		return nil
 	}
-	regOpts := []RESTRegistryOption{}
+	return NewRESTServiceRegistry(s.opts.dbRegistry, s.opts.barrierRegistry, tenant.SystemTenantID, s.restRegistryOptions()...)
+}
+
+// restRegistryOptions is the one option list every restServiceRegistry this
+// server builds is configured with -- the transports' per-call registries
+// and the reclaim-store resolver's long-lived one alike.
+func (s *Server) restRegistryOptions() []RESTRegistryOption {
+	regOpts := []RESTRegistryOption{withReclaimOrigin(s.reclaimOrigin())}
 	if s.opts.tenantSvc != nil {
 		regOpts = append(regOpts, WithTenantServicer(s.opts.tenantSvc))
 	}
@@ -1267,7 +1475,7 @@ func (s *Server) buildServiceRegistry() service.Registry {
 	if s.config.SQL.DefaultDatabase != "" {
 		regOpts = append(regOpts, WithSharedSQLDefaultDatabase(s.config.SQL.DefaultDatabase))
 	}
-	return NewRESTServiceRegistry(s.opts.dbRegistry, s.opts.barrierRegistry, tenant.SystemTenantID, regOpts...)
+	return regOpts
 }
 
 // startGRPC creates and starts the gRPC server with configured options.
@@ -1281,6 +1489,13 @@ func (s *Server) startGRPC() error {
 		return err
 	}
 	grpcOpts = append(grpcOpts, grpcapi.WithTLS(tlsCfg))
+	if s.opts.grpcListener != nil {
+		ln, err := newLifetimeListener("grpc", s.opts.grpcListener)
+		if err != nil {
+			return err
+		}
+		grpcOpts = append(grpcOpts, grpcapi.WithListener(ln))
+	}
 	if s.opts.userSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithUserService(s.opts.userSvc))
 	}

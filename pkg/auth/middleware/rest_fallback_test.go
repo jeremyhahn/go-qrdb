@@ -169,9 +169,9 @@ func TestRESTRouteRegistry_DuplicateRegistrationPanics(t *testing.T) {
 		if r == nil {
 			t.Fatal("duplicate registration must panic")
 		}
-		msg, ok := r.(string)
-		if !ok || msg == "" {
-			t.Fatalf("panic value: %v", r)
+		collision, ok := r.(*RESTRouteCollisionError)
+		if !ok || collision.Method != http.MethodPost || collision.Pattern != "/api/v1/auth/login/piv" {
+			t.Fatalf("panic value: %#v, want *RESTRouteCollisionError naming the route", r)
 		}
 	}()
 	rr.RegisterPublic(http.MethodPost, "/api/v1/auth/login/piv")

@@ -35,6 +35,18 @@ const (
 	// provisioning a new customer tenant). Reserved for the system tenant.
 	TenantsCreateCross Permission = "tenants:create:cross"
 
+	// TenantsListDeleted grants access to enumerate retired tenant ids and
+	// their deletion records. A retirement is a platform-wide record naming
+	// ids no tenant may ever use again, so it is reserved for the system
+	// tenant: a tenant-local caller has no claim on another tenant's history.
+	TenantsListDeleted Permission = "tenants:list_deleted"
+
+	// TenantsReconcileDeleted grants access to run the deleted-tenant
+	// reconcile on a node: remove, from that node's disk, the directories of
+	// retired tenant ids. It acts on the node's storage across every tenant,
+	// so it is a platform-operator act reserved for the system tenant.
+	TenantsReconcileDeleted Permission = "tenants:reconcile_deleted"
+
 	// TenantsApprove grants access to approve a pending tenant
 	// registration. Reserved for the system tenant — tenant-local admins
 	// cannot approve other tenants' registrations.
@@ -131,6 +143,8 @@ func crossScopePermissions() []Permission {
 	return []Permission{
 		TenantsListCross,
 		TenantsCreateCross,
+		TenantsListDeleted,
+		TenantsReconcileDeleted,
 		TenantsApprove,
 		AuditReadCross,
 		CertsRevokeCross,

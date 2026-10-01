@@ -60,11 +60,12 @@ Shares are **never persisted to disk.**
 Shares are **never persisted to disk**. During M-of-N enrollment:
 
 1. `Initialize()` calls `shamir.Split()` on the user PIN
-2. Each share is stored in a `memguard.LockedBuffer` (mlock'd, guard-paged memory)
+2. Each share is sealed into a `*secure.Secret` (go-enclave sealed enclave,
+   sealed enclave)
 3. Officer connects via mTLS, calls `BeginClaimCert()` to get a challenge nonce
 4. Officer signs nonce with CSR private key, calls `CompleteClaimCert()` to receive certificate
 5. Officer calls `ClaimShare()` to retrieve their share bytes
-6. The `LockedBuffer` is `Destroy()`'d (secure wipe) immediately upon claim
+6. The `Secret` is `Destroy()`'d (secure wipe) immediately upon claim
 7. When all claims complete, the state transitions to `operational`
 
 If the ceremony is abandoned (e.g., server restart), all shares are lost and the ceremony must be re-run. This is intentional: shares are secrets that belong to custodians, not the system.
@@ -189,8 +190,8 @@ it through thin adapters.**
 
 ## Trust boundaries
 
-- **Shares live only in memguard enclaves**, mlock'd and guard-paged, destroyed
-  on claim.
+- **Shares live only in `secure.Secret` enclaves** (go-enclave sealed
+  enclaves), destroyed on claim.
 - **`Store` consumes the caller's slice, wiping it** — a copy left on the heap
   would survive in a core dump or a swapped page.
 - **What persists is the officer record** (`ceremony/officers/<name>`):

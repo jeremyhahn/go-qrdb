@@ -15,8 +15,6 @@ package vector
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -27,8 +25,7 @@ import (
 
 // TestAdapter_UpsertVector_FullCodePath tests the complete upsert path including sync writes
 func TestAdapter_UpsertVector_FullCodePath(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "upsert_full_path_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	config.SyncWrites = true
@@ -76,8 +73,7 @@ func TestAdapter_UpsertVector_FullCodePath(t *testing.T) {
 
 // TestAdapter_BatchUpsertVectors_FullPath tests batch upsert with full code paths
 func TestAdapter_BatchUpsertVectors_FullPath(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_upsert_full_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	config.SyncWrites = true
@@ -126,8 +122,7 @@ func TestAdapter_BatchUpsertVectors_FullPath(t *testing.T) {
 
 // TestAdapter_BatchDeleteVectors_FullPath tests batch delete with full code paths
 func TestAdapter_BatchDeleteVectors_FullPath(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_delete_full_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	config.SyncWrites = true
@@ -182,8 +177,7 @@ func TestAdapter_BatchDeleteVectors_FullPath(t *testing.T) {
 
 // TestAdapter_CreateNamespace_AllPaths tests namespace creation edge cases
 func TestAdapter_CreateNamespace_AllPaths(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "create_namespace_full_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	config.SyncWrites = true
@@ -217,8 +211,7 @@ func TestAdapter_CreateNamespace_AllPaths(t *testing.T) {
 
 // TestAdapter_GetVector_AllPaths tests GetVector with various scenarios
 func TestAdapter_GetVector_AllPaths(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "get_vector_full_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	log := &testLogger{}
@@ -269,8 +262,7 @@ func TestAdapter_GetVector_AllPaths(t *testing.T) {
 
 // TestAdapter_CleanupTombstones_IteratorError tests cleanup with edge cases
 func TestAdapter_CleanupTombstones_IteratorError(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "cleanup_iterator_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	log := &testLogger{}
@@ -300,8 +292,7 @@ func TestAdapter_CleanupTombstones_IteratorError(t *testing.T) {
 
 // TestAdapter_NewPebbleVectorStorage_LoadNamespaces tests loading existing namespaces
 func TestAdapter_NewPebbleVectorStorage_LoadNamespaces(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "load_namespaces_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	log := &testLogger{}
@@ -347,8 +338,7 @@ func TestAdapter_NewPebbleVectorStorage_LoadNamespaces(t *testing.T) {
 
 // TestBatch_UpsertAndDeleteCombined tests combined batch operations
 func TestBatch_UpsertAndDeleteCombined(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_combined_test")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)

@@ -17,6 +17,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -74,9 +75,9 @@ func createIncrementCollection(t *testing.T, svc *CollectionService, database, n
 func TestCollectionService_DropCollection_ReclaimsTheIncrementSequence(t *testing.T) {
 	ctx := context.Background()
 	svc, _, seqStore := newIncrementCollectionService()
-	seqKey := tableSequenceKey("mydb", collectionSequenceName("users"))
 
 	createIncrementCollection(t, svc, "mydb", "users", 3)
+	seqKey := tableSequenceKey("mydb", seqNameForTest(t, svc, "mydb", "users"))
 	_, err := seqStore.Get(ctx, seqKey)
 	require.NoError(t, err, "inserting with IDStrategyIncrement must have created the counter key")
 
@@ -143,10 +144,11 @@ func TestCollectionService_DropCollection_DocumentsGoBeforeTheSequence(t *testin
 	kv := newMemoryKVSvc()
 	seqStore := newFakeCatalogStore()
 
+	var docPrefix string
 	rec := &recordingSequenceService{
 		SequenceServicer: NewSequenceService(seqStore, seqStore),
 		onDelete: func() {
-			keys, err := kv.List(ctx, collectionDataEntityType("mydb", "users")+"/")
+			keys, err := kv.List(ctx, docPrefix)
 			require.NoError(t, err)
 			assert.Empty(t, keys, "every document must be deleted before the sequence is, or a restarted counter can collide with a live document")
 		},
@@ -154,6 +156,7 @@ func TestCollectionService_DropCollection_DocumentsGoBeforeTheSequence(t *testin
 	svc := NewCollectionService(kv).WithSequenceService(rec)
 
 	createIncrementCollection(t, svc, "mydb", "users", 4)
+	docPrefix = docPrefixForTest(t, svc, "mydb", "users")
 	require.NoError(t, svc.DropCollection(ctx, &DropCollectionRequest{Database: "mydb", Name: "users"}))
 	assert.Equal(t, 1, rec.deletes())
 }
@@ -229,6 +232,7 @@ func TestCollectionService_DropCollection_RetryAfterSequenceFailureCompletes(t *
 	svc := NewCollectionService(kv).WithSequenceService(rec)
 
 	createIncrementCollection(t, svc, "mydb", "users", 2)
+	seqName := seqNameForTest(t, svc, "mydb", "users")
 	require.Error(t, svc.DropCollection(ctx, &DropCollectionRequest{Database: "mydb", Name: "users"}))
 	require.NoError(t, svc.DropCollection(ctx, &DropCollectionRequest{Database: "mydb", Name: "users"}))
 
@@ -236,7 +240,7 @@ func TestCollectionService_DropCollection_RetryAfterSequenceFailureCompletes(t *
 	var notFound *KeyNotFoundError
 	require.ErrorAs(t, err, &notFound)
 
-	_, err = seqStore.Get(ctx, tableSequenceKey("mydb", collectionSequenceName("users")))
+	_, err = seqStore.Get(ctx, tableSequenceKey("mydb", seqName))
 	require.ErrorAs(t, err, &notFound)
 }
 
@@ -254,11 +258,11 @@ func TestCollectionService_DropCollection_SiblingCollectionSequencesSurvive(t *t
 
 	require.NoError(t, svc.DropCollection(ctx, &DropCollectionRequest{Database: "mydb", Name: "users"}))
 
-	orders, err := seq.Peek(ctx, "mydb", collectionSequenceName("orders"))
+	orders, err := seq.Peek(ctx, "mydb", seqNameForTest(t, svc, "mydb", "orders"))
 	require.NoError(t, err)
 	assert.Equal(t, uint64(5), orders)
 
-	otherUsers, err := seq.Peek(ctx, "otherdb", collectionSequenceName("users"))
+	otherUsers, err := seq.Peek(ctx, "otherdb", seqNameForTest(t, svc, "otherdb", "users"))
 	require.NoError(t, err)
 	assert.Equal(t, uint64(7), otherUsers)
 }
@@ -335,7 +339,7 @@ func TestCollectionService_DropCollection_DocumentFailureLeavesTheSequence(t *te
 	assert.Equal(t, "delete-document", metaErr.Op)
 	assert.Zero(t, rec.deletes(), "the sequence must not be reclaimed while documents survive")
 
-	current, err := NewSequenceService(seqStore, seqStore).Peek(ctx, "mydb", collectionSequenceName("users"))
+	current, err := NewSequenceService(seqStore, seqStore).Peek(ctx, "mydb", seqNameForTest(t, svc, "mydb", "users"))
 	require.NoError(t, err)
 	assert.Equal(t, uint64(3), current, "the counter must still be past every surviving document's ID")
 }
@@ -378,7 +382,7 @@ func TestCollectionService_DropCollection_MetadataFailureIsTyped(t *testing.T) {
 	require.ErrorAs(t, err, &metaErr)
 	assert.Equal(t, "delete-metadata", metaErr.Op)
 
-	keys, err := kv.List(ctx, collectionDataEntityType("mydb", "users")+"/")
+	keys, err := kv.List(ctx, docPrefixForTest(t, svc, "mydb", "users"))
 	require.NoError(t, err)
 	assert.Empty(t, keys, "the collection the retry will finish dropping is empty, so a restarted counter collides with nothing")
 }
@@ -413,6 +417,25 @@ func (f *failingKVSvc) List(ctx context.Context, prefix string) ([]string, error
 		return nil, f.listErr
 	}
 	return f.memoryKVSvc.List(ctx, prefix)
+}
+
+// Scan fails like List for a document prefix -- the teardown enumerates
+// documents with it -- and passes through for the metadata scans the sweeper
+// and ListCollections issue.
+func (f *failingKVSvc) Scan(ctx context.Context, prefix string) (map[string][]byte, error) {
+	if f.listErr != nil && strings.HasPrefix(prefix, collectionDataPrefix) {
+		return nil, f.listErr
+	}
+	return f.memoryKVSvc.Scan(ctx, prefix)
+}
+
+// CompareAndDelete fails like Delete: the teardown removes documents and the
+// metadata with it.
+func (f *failingKVSvc) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	if f.deleteErr != nil {
+		return false, f.deleteErr
+	}
+	return f.memoryKVSvc.CompareAndDelete(ctx, key, expected)
 }
 
 // ---------------------------------------------------------------------------

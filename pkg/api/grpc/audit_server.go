@@ -63,21 +63,21 @@ func (s *auditServer) Query(ctx context.Context, req *pb.AuditQueryRequest) (*pb
 	if raw := req.GetFromRfc3339(); raw != "" {
 		t, err := time.Parse(time.RFC3339, raw)
 		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "invalid from_rfc3339: %v", err)
+			return nil, mapServiceError(&TimestampParseError{Field: "from_rfc3339", Value: raw, Err: err})
 		}
 		f.From = t
 	}
 	if raw := req.GetToRfc3339(); raw != "" {
 		t, err := time.Parse(time.RFC3339, raw)
 		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "invalid to_rfc3339: %v", err)
+			return nil, mapServiceError(&TimestampParseError{Field: "to_rfc3339", Value: raw, Err: err})
 		}
 		f.To = t
 	}
 
 	page, err := s.auditLogger.Query(ctx, f)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "audit query: %v", err)
+		return nil, mapServiceError(err)
 	}
 
 	resp := &pb.AuditQueryResponse{

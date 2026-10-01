@@ -79,6 +79,7 @@ func TestUpdateTenant_TenantNotFound(t *testing.T) {
 // TestUpdateTenant_IsolationTypePatch verifies that IsolationType is updated.
 func TestUpdateTenant_IsolationTypePatch(t *testing.T) {
 	svc, _ := newTestService(t)
+	svc.SetTenantDataProbe(&fakeDataProbe{})
 	ctx := context.Background()
 
 	_, err := svc.CreateTenant(ctx, "t-iso", "ISO Tenant", "")

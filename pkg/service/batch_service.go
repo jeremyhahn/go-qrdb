@@ -300,7 +300,7 @@ func (s *BatchService) Execute(ctx context.Context, ops []Op) ([]OpResponse, err
 		}
 		result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 		if err != nil {
-			return nil, s.translateProposeError(err)
+			return nil, translateProposeError(err)
 		}
 		// Surface a state-machine-encoded application error (e.g. a unique-index
 		// violation that rejected the batch without stalling consensus) instead
@@ -367,7 +367,7 @@ func (s *BatchService) ExecuteWithMode(ctx context.Context, ops []Op, mode write
 		}
 		result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
 		if err != nil {
-			return nil, s.translateProposeError(err)
+			return nil, translateProposeError(err)
 		}
 		if resultErr := checkResultError(result); resultErr != nil {
 			return nil, resultErr
@@ -495,7 +495,7 @@ func (s *BatchService) ExecuteEntity(ctx context.Context, req *BatchEntityReques
 
 	result, err := s.host.SyncPropose(ctx, shardID, cmd)
 	if err != nil {
-		return nil, s.translateProposeError(err)
+		return nil, translateProposeError(err)
 	}
 	// Surface a state-machine-encoded application error (e.g. a unique-index
 	// violation that rejected the batch without stalling consensus) instead
@@ -511,20 +511,6 @@ func (s *BatchService) ExecuteEntity(ctx context.Context, req *BatchEntityReques
 	}
 
 	return &BatchEntityResponse{Results: results}, nil
-}
-
-// translateProposeError converts QuicRaft proposal errors to service-level
-// typed errors.
-func (s *BatchService) translateProposeError(err error) error {
-	var nle *quicraft.NotLeaderError
-	if errors.As(err, &nle) {
-		return &NotLeaderError{
-			ShardID:       nle.ShardID,
-			LeaderID:      nle.LeaderID,
-			LeaderAddress: nle.LeaderAddress,
-		}
-	}
-	return &ProposeError{Err: err}
 }
 
 // ---------------------------------------------------------------------------
@@ -1208,7 +1194,7 @@ func (s *BatchService) proposeImportOps(ctx context.Context, result *ImportResul
 		if err != nil {
 			if transactional {
 				// For transactional mode, return the error directly.
-				return nil, s.translateProposeError(err)
+				return nil, translateProposeError(err)
 			}
 			// For non-transactional mode, mark this chunk's rows as failed
 			// and continue with the remaining chunks.

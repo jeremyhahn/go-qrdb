@@ -2091,9 +2091,9 @@ func TestVectorStateMachine_Update_InvalidCommand(t *testing.T) {
 		results := make([]sm.Result, 1)
 		require.NoError(t, vsm.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: data}}, results))
 
-		msg, capability, ok := protocol.DecodeAppErrorKind(results[0].Data)
+		msg, kind, ok := protocol.DecodeAppErrorKind(results[0].Data)
 		require.True(t, ok, "refusal carries no encoded application error")
-		assert.True(t, capability, "refusal %q lost the capability marker", msg)
+		assert.Equal(t, protocol.AppErrorCapability, kind, "refusal %q lost the capability marker", msg)
 		assert.Contains(t, msg, "unknown operation")
 	})
 

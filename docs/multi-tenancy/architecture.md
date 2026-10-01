@@ -1,6 +1,6 @@
 # Multi-Tenancy — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
 
 Tenant isolation, from a logical key prefix up to a dedicated Raft group per
 database, plus the three governance planes that decide who may have which.
@@ -213,7 +213,7 @@ leave a tenant's data behind with nothing left to name it.
 
 ### What a tenant owns
 
-`service.TenantKeyPrefixes` is the declaration. Five ranges, not one:
+`service.TenantKeyPrefixes` is the declaration. Six ranges, not one:
 
 | Range | Why it is separate |
 |---|---|
@@ -222,6 +222,7 @@ leave a tenant's data behind with nothing left to name it.
 | `idx:metric:{tenant}/` | Time-series metric index, same reason. |
 | `retention:{tenant}/` | Time-series retention policies, same reason. |
 | `__sys:placement/{tenant}/` | A dedicated-raft database's replica assignment: keyed by tenant, OUTSIDE the namespace. The per-node reconciler watches this range, so removing an entry is what stops the shard and purges its data dir on **every** node holding a replica — which the local node's `DataRoot` removal cannot reach. |
+| `__sys:collection-work/{tenant}/` | The collection work journal: one entry per collection in a transitional state, keyed by tenant OUTSIDE the namespace so the collection sweeper can find work without a database catalog. Removing the range means a deleted tenant's entries go with it instead of waiting for the sweeper. |
 
 Plus the secondary-index catalog and the vector namespaces, which are
 namespaces of their own rather than ranges of keys and are enumerated
@@ -240,6 +241,72 @@ raft tenant's barrier was re-registered on the next restart at the same
 directory over the same store. `BarrierRegistry.DestroyTenant` is the
 operation a deletion needs: it removes both records, closes the per-tenant
 store and removes the `DataRoot`.
+
+### Every node reclaims a deleted tenant's directories
+
+A delete destroys the `DataRoot` on the node that ran it, and the placement
+removal purges dedicated shards on the nodes hosting them at that moment. A
+node that was **down** during the delete, or that held the tenant's barrier
+without hosting a shard, keeps the tenant's directories — and, worse, its
+tenant-root record, from which the next boot would restore the retired
+barrier.
+
+**The reclaim predicate is the tombstone, and nothing else.** A missing
+placement entry or a missing tenant record also describes a tenant that has
+not been placed yet; reclaiming on that signal would destroy a live tenant's
+data. A tombstone describes nothing but a deletion, it is replicated, and it is
+permanent.
+
+The same pass runs in two places:
+
+- **At boot**, before any tenant barrier is restored. For each retired id the
+  node releases the barrier, removes every local directory the registry
+  attributes to the id — its registered `DataRoot`, the one its local record
+  names, and `{poolBase}/{id}` under each local pool base — and then drops the
+  durable records that would have restored the barrier. A failure is logged and does
+  not fail the boot: what is reclaimed is disk, never correctness, because a
+  retired id resolves for nobody whether or not its bytes remain.
+- **On demand**, as the operator verb (`ReconcileDeletedTenants`, on every
+  transport and `qrdb tenant reconcile-deleted`), which additionally stops
+  anything the node still runs for the id — its volume host and dedicated
+  shards — before removing directories. It acts on the node serving the
+  request, never forwarded: each replica reclaims its own disk.
+
+**It never removes a directory a live tenant claims.** The live set is read
+strictly — an unreadable tenant record aborts the pass, because its directory
+is unknown — and re-read right before each removal. A retired id that still
+has a record is skipped whole. A directory that is, contains or lies
+inside one a live tenant claims — on its record or in this node's registry —
+is skipped and reported: an operator-supplied `DataRoot` can be reused by a
+later tenant, and a stale record on a node that missed the delete would
+otherwise name the new tenant's data. A directory that is, or contains, a
+volume-pool base or a reserved root is skipped the same way, as is one inside
+a reserved root that is not also inside a pool base, and so is a recorded
+path that is not absolute and canonical — judged as recorded, before any
+cleaning could turn `x/..` into its parent. Every skip is logged at `WARN`.
+
+**One id's failure does not stop the others.** A removal that fails for one
+retired id is collected and the pass goes on; the pass reports every failure
+together at the end. Only a failure to read the guards themselves — the
+tombstones or the live set — stops it. An id already fully reclaimed on the
+node is passed over without touching anything.
+
+**A mount-point directory is reclaimed.** A dedicated `DataRoot` is often a
+mount point, which cannot itself be removed. The directory is emptied first,
+and an emptied root that refuses its own removal because it is a mount counts
+as reclaimed; the mount is left for the operator.
+
+**The records go last.** The directories are removed before the records that
+name them, so a removal that fails leaves the record and the next pass finds
+the directory again. And a new tenant may not take a directory another
+tenant's record on the node still names, which closes the window from the
+create side; when that record belongs to a retired tenant the refusal says so
+and names the reconcile verb.
+
+Retired ids are also **enumerable** (`ListDeletedTenants`): a paged range read
+over the tombstone prefix, so an operator can ask which ids can never be used
+again, and when each was retired, instead of discovering it by a refused
+create.
 
 ### The identity plane fails closed too
 
@@ -260,6 +327,13 @@ consults the tombstone and refuses.
 - **Releasing the id after a retention period.** Rejected: "enough time has
   passed" is not evidence that the second `acme` is the same principal as the
   first.
+- **Reclaiming a directory whose tenant has no placement entry.** Rejected: an
+  unplaced live tenant looks the same, and the reclaim would destroy its data.
+  The tombstone is the only predicate.
+- **Reclaiming by the `DataRoot` the tombstone records.** Rejected: it is the
+  deleting node's path, and an operator-supplied path may since belong to a
+  live tenant. The reclaim uses what this node's registry attributes to the id
+  and still checks every path against live tenants.
 
 ## The three governance planes
 
@@ -362,10 +436,11 @@ pre-existing unnamespaced documents are left in place rather than migrated.
 ### The resolver-served store is confined by construction
 
 `tenant.StoreResolver.Resolve` returns the `kvstore.KVStore` backing a tenant's
-resolver-served records (IAM — users, roles and the user-side **auth factors**
-that authenticate them — invitations, permission scopes, and any
-`dao.GenericDAO` a consumer builds). For a shared-prefix tenant it returns the
-system store **confined to `{tenant}/`** — the tenant alone.
+resolver-served records (IAM — users, roles, the user-side **auth factors**
+that authenticate them, and the ceremony-time **custodian auth factors** —
+invitations, permission scopes, and any `dao.GenericDAO` a consumer builds).
+For a shared-prefix tenant it returns the system store **confined to
+`{tenant}/`** — the tenant alone.
 
 The confinement is a property of the store, not of the caller. That distinction
 is the whole point: a `dao.GenericDAO` keys entities `{entityType}/{id}` and has
@@ -486,22 +561,37 @@ the same duplicate-encoding class as two scoping functions — and is a
 follow-on cleanup, not a correctness issue: the namespace is what enforces
 isolation, the embedded segment merely repeats it.
 
-**Consequence for indexes, and it is a real trade.** The identity store still
-refuses a namespace-qualified index with `kvstore.ErrIndexUnsupported` rather
-than serving an index nobody updates; `pkg/dao` detects the refusal and plans a
-full scan, so **results stay correct and only the access path is slower**.
-Isolation was chosen over the index.
+**Shared-prefix tenants have real, per-tenant, engine-maintained indexes.** A
+DAO over a resolver-served store registers its indexes under
+namespace-qualified names (`acme/workitem.State`) with the absolute key prefix
+the tenant's records carry (`acme/workitem/`). The engine maintains an index
+for exactly the keys under its scope, so one tenant's index can never hold —
+or answer with — another tenant's rows, and a query is answered from the index
+rather than a full scan.
 
-The reason has changed, and only half of it is left. The engine used to decide
-which indexes a write maintains by inferring an entity type from the key's FIRST
-path segment, which under a namespaced key `acme/system/workitem/1` reads as
-`acme` — so a namespace-qualified index could not be maintained at all. The
-engine no longer infers anything: an index carries the key prefix it covers and
-maintenance compares the key against it (#410, see
-[../secondary-indexes/architecture.md](../secondary-indexes/architecture.md#index-key-scope--a-name-is-not-a-predicate)),
-which is what #40 asked for. What still refuses is `lifecycle.kvStoreAdapter`,
-whose own check accepts only the unqualified name — lifting that is #38/#40 and
-is a change to the identity plane's access paths, not to this boundary.
+It used to be the other way round, and isolation was chosen over the index. The
+engine decided which indexes a write maintains by inferring an entity type from
+the key's FIRST path segment, which under a namespaced key `acme/workitem/1`
+reads as `acme`, so a namespace-qualified index could not be maintained, and
+`lifecycle.kvStoreAdapter` refused every qualified name with
+`kvstore.ErrIndexUnsupported` rather than serve an index nobody updated. Two
+changes removed the reason. The engine no longer infers anything: an index
+carries the key prefix it covers and maintenance compares the key against it,
+on the Raft apply path and on `KVEngine.PutWithIndexes`/`DeleteWithIndexes`
+alike (see
+[../secondary-indexes/architecture.md](../secondary-indexes/architecture.md#index-key-scope--a-name-is-not-a-predicate)).
+And the adapter translates the caller's absolute key prefix into the scope the
+engine composes — `engine.IndexNamespace(name)` followed by the declared prefix
+— so the scope maintained is exactly the prefix the keys carry, whether the
+store is namespaced at `{tenant}/`, at `{tenant}/{database}/`, or not at all.
+Nothing about the tenant or database is assumed; both are read off what the
+caller declared. A name whose namespace the keys do **not** live under is still
+refused, because the engine would maintain it over a keyspace no write reaches.
+
+This covers the tenants whose resolver-served store is the plaintext shared
+store. The store served to `barrier`, `volume` and `raft` tenants encrypts
+every value under the tenant's DEK and still refuses index operations; see
+"Indexes on encrypted tenant stores" below.
 
 Note the same "entity type is the leading key segment" assumption existed in
 `kvstore.MemoryKVStore` and is why `EntityIndex.KeyPrefix` exists: a store must
@@ -509,6 +599,22 @@ be told which keys an index covers rather than inferring it from the entity
 type. `index.IndexConfig.KeyPrefix` is that same statement one layer down, so
 the Raft-backed engine and the in-memory store now scope index maintenance the
 same way.
+
+### Indexes on encrypted tenant stores
+
+**Not built, and not decided here.** The resolver serves `barrier`, `volume`
+and `raft` tenants a store that encrypts every value under the tenant DEK
+before it reaches the shared system store, and that store refuses every index
+operation with `kvstore.ErrIndexUnsupported`; `pkg/dao` plans a full scan. An
+index over those records would have to put indexed values into index keys in
+the shared store, outside the tenant's barrier.
+
+The tenancy model states that an isolated tenant has everything isolated — its
+own barrier, its own storage location and its own engine configuration — so
+the intended shape is that an isolated tenant's records, and therefore its
+indexes, live in the tenant's own store rather than the shared one. Converging
+the resolver-served records onto that store, and whether any index is offered
+before it happens, are open design questions for the owner.
 
 ## Per-node-independent key design
 
@@ -558,6 +664,19 @@ restarts through the persistent placement table and per-node replica re-attach.
 - **Provisioning-governance permissions are distinct**:
   `tenants:set_isolation`, `tenants:set_entitlements`,
   `databases:create_raft`, `databases:create_volume`.
+- **A tenant's plan belongs to the platform operator.** `tenants:create`,
+  `tenants:set_quotas`, `tenants:set_entitlements` and `tenants:set_isolation`
+  are cross-scope (`pkg/permission/tenant_provisioning_scope.go`): only a
+  `system`-tenant identity can exercise them, so a tenant's Admin cannot mint
+  tenants or raise its own limits. `tenants:update` stays self-scoped and covers
+  only the display name.
+- **The tenant a request names is authorized, not only the caller's.** Every
+  network transport's entry check authorizes the route's permission against
+  the caller's own tenant; the handler then re-decides against the tenant the
+  request names (`AuthMiddleware.AuthorizeTenantTarget`, `AuthorizeTenantUpdate`)
+  and narrows a list to the caller's own tenant unless it holds
+  `tenants:list:cross` (`AuthMiddleware.FilterTenantList`). The re-check charges
+  no second rate-limit token and records only a refusal.
 - **`AllowedBarrierModes` restricts which seal strategies a tenant may pick**,
   with the built-in default being software strategies plus fail-close on
   hardware.

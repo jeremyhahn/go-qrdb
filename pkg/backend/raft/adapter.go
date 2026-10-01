@@ -166,6 +166,21 @@ func (a *HostAdapter) GetShardRaftState(shardID uint64) (configChangeIndex uint6
 	return membership.ConfigChangeID, 0, nil
 }
 
+// SyncGetShardMembership returns the shard's committed membership through
+// inner, so a test double answers it too.
+func (a *HostAdapter) SyncGetShardMembership(ctx context.Context, shardID uint64) (*quicraft.Membership, error) {
+	return a.inner.SyncGetShardMembership(ctx, shardID)
+}
+
+// NodeIdentity returns the host's own Raft member identity, or "" when no
+// concrete host backs the adapter (a test double) or it has no transport.
+func (a *HostAdapter) NodeIdentity() string {
+	if a.Host == nil {
+		return ""
+	}
+	return a.Host.NodeIdentity()
+}
+
 // IsShardJoining reports whether shardID is still in its join bootstrap
 // window on this host: started locally with join=true and not yet given its
 // first snapshot. Satisfies server.JoinObserver.

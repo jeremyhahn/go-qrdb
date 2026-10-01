@@ -121,10 +121,11 @@ func (e *AuthorizationError) Unwrap() error { return e.Err }
 // clause -- it would have kept mapping quota to Unavailable, correct-looking
 // and wrong, with its own comment explaining why.
 var quicStatusByClass = map[authmw.AuthFailureClass]uint16{
-	authmw.AuthFailureUnauthenticated: wire.StatusUnauthenticated,
-	authmw.AuthFailureUnauthorized:    wire.StatusPermissionDenied,
-	authmw.AuthFailureUnavailable:     wire.StatusUnavailable,
-	authmw.AuthFailureRateLimited:     wire.StatusResourceExhausted,
+	authmw.AuthFailureUnauthenticated:  wire.StatusUnauthenticated,
+	authmw.AuthFailureUnauthorized:     wire.StatusPermissionDenied,
+	authmw.AuthFailureUnavailable:      wire.StatusUnavailable,
+	authmw.AuthFailureRateLimited:      wire.StatusResourceExhausted,
+	authmw.AuthFailureAuditUnavailable: wire.StatusUnavailable,
 }
 
 // authzStatus returns the wire status for a failed authorization gate.

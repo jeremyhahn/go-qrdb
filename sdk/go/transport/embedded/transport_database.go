@@ -56,7 +56,11 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 	var info *database.DatabaseInfo
 	var err error
 	if req.Barrier != nil {
-		creds := seal.Credentials{Secret: []byte(req.Barrier.Secret)}
+		creds, credErr := seal.CredentialsFor([]byte(req.Barrier.Secret))
+		if credErr != nil {
+			return nil, credErr
+		}
+		defer creds.Secret.Destroy()
 		if cc, ok := t.dbSvc.(service.DatabaseCredentialCreator); ok {
 			info, err = cc.CreateWithCredentials(ctx, cfg, creds)
 		} else {

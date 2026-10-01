@@ -301,24 +301,40 @@ For in-process SQL, see [gorm.md](gorm.md) — it covers the two in-process DSN 
 - **Privileges are enforced for non-system tenants only.** A deployment running
   everything as the system tenant is unrestricted by design.
 - **No cross-database transaction.** One CAS commit targets one Raft shard.
+- **`TRUNCATE TABLE` does not scan or delete rows synchronously.** Row and
+  index-entry keys carry a generation number; `TRUNCATE` bumps that number in
+  one CAS and hands the orphaned old generation to a background sweeper
+  (`service.ReclaimSweeper`) rather than paying an O(table size)
+  scan-and-delete inline. The sweeper deletes nothing until every statement
+  that could still be reading the old generation has finished or been failed
+  with a retryable error, and each job is swept by the one node that can reach
+  its store. `DROP TABLE` hands its rows to the same sweeper. Index entries
+  are keyed by an index incarnation that is never handed out twice within a
+  table — no catalog change can land while an `ALTER` rewrite is open and be
+  undone by its write-back — so `RENAME INDEX` moves no data and a dropped
+  index's keyspace can never become a live one's. **Tables created by v0.20.0 through v0.21.0 must
+  be dropped and re-created**: they were written under the previous key layout
+  and there is no migration. Such a table is refused (MySQL 1459 /
+  SQLSTATE 55000) rather than read as empty; `DROP TABLE` still works.
+  See [engineering.md](engineering.md#truncate-table-generation-scoped-keys-o1-regardless-of-table-size).
 - **No read-set conflict detection by default** — see the isolation model in
   [engineering.md](engineering.md).
 - **Isolation levels are accepted, not differentiated.** MySQL's
   `transaction_isolation` names lock-engine behaviour; QRDB's transactions are
   optimistic and the two do not correspond.
-- **A collection table's `PRIMARY KEY` holds under concurrent claims, but
-  `REPLACE`/`ON DUPLICATE KEY UPDATE` are still not atomic.** The `_id` column
-  of a document-collection table is enforced by
-  `CollectionService.InsertDocument`'s guarded write, so two concurrent claims
-  on the same `_id` produce one success and one **1062** — the same strength a
-  *relational* table's uniqueness gets from a compare in the same proposal as
-  the row, reached by a different mechanism. What the two kinds still do not
-  share is the statement-level upsert: `REPLACE INTO` and
-  `INSERT … ON DUPLICATE KEY UPDATE` on a collection table are an insert, a
-  refusal and a second write with no lock across the three, and the table is
-  autocommit-only so neither can be widened into a transaction. See
+- **A collection table's `PRIMARY KEY`, `REPLACE` and `ON DUPLICATE KEY UPDATE`
+  hold under concurrency.** The `_id` column of a document-collection table is
+  enforced by `CollectionService.InsertDocument`'s guarded write, so two
+  concurrent claims on the same `_id` produce one success and one **1062** —
+  the same strength a *relational* table's uniqueness gets from a compare in
+  the same proposal as the row, reached by a different mechanism. `REPLACE
+  INTO` is one guarded upsert per row, and every write computed from a row —
+  `UPDATE`, the update half of `ON DUPLICATE KEY UPDATE` — is guarded by the
+  revision it read, so a lost race is a **1213** rather than an overwrite. The
+  table is still autocommit-only: a guarded statement holds end to end, a
+  multi-statement read-modify-write does not. See
   [engineering.md](engineering.md#collection-table-schema) and
-  [../collections/architecture.md](../collections/architecture.md#what-this-still-does-not-close).
+  [../collections/architecture.md](../collections/architecture.md#replace-into-and-on-duplicate-key-update).
 
 ## Companion documents
 

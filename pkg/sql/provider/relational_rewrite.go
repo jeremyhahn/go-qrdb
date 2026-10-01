@@ -17,6 +17,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 
 	sqle "github.com/dolthub/go-mysql-server/sql"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/catalog"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // ---------------------------------------------------------------------------
@@ -45,6 +47,7 @@ import (
 
 type rewriteRowInserter struct {
 	kvSvc    service.KVServicer
+	txnSvc   service.TransactionServicer
 	tableSvc service.TableServicer
 	database string
 	name     string
@@ -76,7 +79,10 @@ func (r *rewriteRowInserter) Insert(_ *sqle.Context, _ sqle.Row) error { return 
 // Close performs the actual rewrite: re-encodes every row against
 // r.journal.Target and finishes with TableServicer.CompleteRewrite.
 func (r *rewriteRowInserter) Close(ctx *sqle.Context) error {
-	if err := runRewrite(ctx, r.kvSvc, r.database, r.current, r.journal.Target, r.journal.Changes); err != nil {
+	// The tenant travels on the context to the ReclaimJob CompleteRewrite or
+	// AbortRewrite may publish, exactly as TruncateTable's does.
+	ctx = ctx.WithContext(tenant.WithTenantID(ctx, sessionTenantIDOf(ctx)))
+	if err := runRewrite(ctx, r.kvSvc, r.txnSvc, r.database, r.current, r.journal); err != nil {
 		// A RowRewriteError is the DETERMINISTIC class: the data cannot
 		// satisfy the new definition, and every retry fails identically.
 		// Abort the journal so the table stays servable under its pre-ALTER
@@ -85,8 +91,17 @@ func (r *rewriteRowInserter) Close(ctx *sqle.Context) error {
 		// holds: the statement failed, the table did not change. Any other
 		// error is treated as transient and keeps the journal, which is
 		// what makes a crash-interrupted write phase resumable.
+		// A stale generation (go-qrdb#547: a TRUNCATE committed while this
+		// rewrite was in flight) belongs to the same DETERMINISTIC class as
+		// RowRewriteError: the generation runRewrite was reading from is
+		// gone, about to be reclaimed, and re-running the SAME journal
+		// against it can never succeed -- resuming would just rediscover
+		// the identical staleness forever. Abort so the table is servable
+		// again under its pre-ALTER definition; TRUNCATE already made the
+		// data moot regardless.
 		var rowErr *RowRewriteError
-		if errors.As(err, &rowErr) {
+		var staleErr *service.TableGenerationStaleError
+		if errors.As(err, &rowErr) || errors.As(err, &staleErr) {
 			if aborter, ok := r.tableSvc.(interface {
 				AbortRewrite(ctx context.Context, database, name string) error
 			}); ok {
@@ -124,12 +139,20 @@ func (r *rewriteRowInserter) Close(ctx *sqle.Context) error {
 // rewrite calling it again after a partial pass) is safe and only does the
 // remaining work.
 //
-// changes is the single AlterTableChange (a drop or a modify) that produced
-// target from current; it is what lets column remapping be exact even when
-// a modify also renames a column, rather than inferred by diffing two
-// column lists.
-func runRewrite(ctx context.Context, kvSvc service.KVServicer, database string, current, target *service.TableDef, changes []service.AlterTableChange) error {
-	computedColumns, remap, err := columnRemap(current, changes)
+// journal.Changes is the single AlterTableChange (a drop or a modify) that
+// produced journal.Target from current; it is what lets column remapping be
+// exact even when a modify also renames a column, rather than inferred by
+// diffing two column lists.
+//
+// Every index of the target that current does not list -- one the ALTER
+// narrowed or re-encoded, which the catalog re-incarnated -- is rebuilt from
+// the re-encoded rows before the rewrite completes (rebuildIndexes). Every
+// write is fenced on the generation and on the metadata record the journal
+// was derived from, so nothing is written after a DROP TABLE has published
+// the table's reclaim.
+func runRewrite(ctx context.Context, kvSvc service.KVServicer, txnSvc service.TransactionServicer, database string, current *service.TableDef, journal *service.TableDDLJournal) error {
+	target := journal.Target
+	computedColumns, remap, err := columnRemap(current, journal.Changes)
 	if err != nil {
 		return err
 	}
@@ -155,7 +178,7 @@ func runRewrite(ctx context.Context, kvSvc service.KVServicer, database string, 
 		newTypes[i] = t
 	}
 
-	prefix := service.TableDataPrefix(database, current.TableID)
+	prefix := service.TableDataPrefix(database, current.TableID, current.Generation)
 	data, err := kvSvc.Scan(ctx, prefix)
 	if err != nil {
 		return err
@@ -173,12 +196,20 @@ func runRewrite(ctx context.Context, kvSvc service.KVServicer, database string, 
 	// journal and resumes, exactly as before -- already-migrated rows are
 	// recognized and skipped.)
 	converted := make(map[string][]byte, len(data))
+	// newRows holds every row in the target encoding, migrated by an
+	// earlier pass or by this one, for the index rebuild.
+	newRows := make(map[string]sqle.Row, len(data))
 	for key, raw := range data {
 		alreadyMigrated, verr := catalog.RowSchemaVersionAtLeast(target.Name, raw, target.SchemaVersion)
 		if verr != nil {
 			return &RowRewriteError{Key: key, Err: verr}
 		}
 		if alreadyMigrated {
+			row, derr := newCodec.Decode(raw)
+			if derr != nil {
+				return &RowRewriteError{Key: key, Err: derr}
+			}
+			newRows[key] = row
 			continue
 		}
 
@@ -209,11 +240,166 @@ func runRewrite(ctx context.Context, kvSvc service.KVServicer, database string, 
 			return &RowRewriteError{Key: key, Err: eerr}
 		}
 		converted[key] = encoded
+		newRows[key] = newRow
 	}
 
-	for key, encoded := range converted {
-		if perr := kvSvc.Put(ctx, key, encoded); perr != nil {
-			return perr
+	// Build the rebuilt indexes' entries before writing anything, for the
+	// same reason every row is converted first: a UNIQUE index narrowed
+	// onto values that repeat can never be built, and must fail the ALTER
+	// with the table untouched.
+	entries, err := rebuildIndexes(database, current, target, prefix, newRows)
+	if err != nil {
+		return err
+	}
+
+	// Write back in chunks, each proposed as ONE compare-and-swap guarded by
+	// the SAME generation Compare relational_writer.go's DML paths use
+	// (generationCompare): absent (generation 0, the common case) compares
+	// against an empty value, matching CompareValue's absent-key semantics,
+	// rather than current.Generation compared unconditionally with a plain
+	// read up front and an unguarded write loop after it. A TRUNCATE that
+	// commits in the window between chunks fails the NEXT chunk's CAS
+	// immediately -- stopping further writes into the generation the
+	// reclaim sweeper is already draining -- rather than being detected
+	// once, before any row was written, and then racing every subsequent
+	// Put unconditionally.
+	//
+	// Chunking, not one CAS for the whole table, is what keeps this within
+	// go-quicraft's per-proposal size ceiling regardless of table size --
+	// the same reason relational_writer.go's own DML paths cap a single
+	// proposal's estimated size (checkProposalSize/maxRowProposalBytes).
+	// This is still affordable here specifically because ALTER TABLE DROP/
+	// MODIFY COLUMN rewrites are rare and already pay one full table scan
+	// (see the package doc comment), unlike the DML insert path go-qrdb#547
+	// rules a per-row read out for.
+	keys := make([]string, 0, len(converted))
+	for key := range converted {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	genCompare := service.Compare{
+		Key:    []byte(service.TableGenerationKey(database, current.TableID)),
+		Target: service.CompareValue,
+		Result: service.CompareEqual,
+	}
+	if current.Generation > 0 {
+		genCompare.Value = service.EncodeTableGeneration(current.Generation)
+	}
+	compares := []service.Compare{genCompare}
+	if journal.MetadataRevision != 0 {
+		compares = append(compares, service.Compare{
+			Key:         []byte(service.TableMetadataKey(database, current.Name)),
+			Target:      service.CompareModRevision,
+			Result:      service.CompareEqual,
+			ModRevision: journal.MetadataRevision,
+		})
+	}
+
+	ops := make([]service.Op, 0, len(keys)+len(entries))
+	for _, key := range keys {
+		ops = append(ops, service.Op{Type: service.OpPut, Key: []byte(key), Value: converted[key]})
+	}
+	ops = append(ops, entries...)
+
+	for start := 0; start < len(ops); start += rewriteChunkOps {
+		end := min(start+rewriteChunkOps, len(ops))
+		resp, err := txnSvc.Execute(ctx, compares, ops[start:end], nil)
+		if err != nil {
+			return err
+		}
+		if !resp.Succeeded {
+			// checkGenerationCurrent re-reads the live generation to build a
+			// precisely detailed error (Expected/Actual); the CAS failure
+			// itself already proves it moved.
+			if gerr := checkGenerationCurrent(ctx, kvSvc, database, current); gerr != nil {
+				return gerr
+			}
+			// Not a stale generation: the metadata record moved (the
+			// table was dropped under the rewrite), or something
+			// unexpected; report it rather than silently treating it as
+			// success.
+			return &RewriteChunkConflictError{Database: database, Name: current.Name}
+		}
+	}
+	return nil
+}
+
+// rebuildIndexes returns the entry Puts of every index target lists and
+// current does not, built from newRows (every row of the table, keyed by its
+// storage key under dataPrefix, in the target encoding). A UNIQUE index two
+// rows collide in is a RowRewriteError carrying go-mysql-server's own
+// unique-key error.
+func rebuildIndexes(database string, current, target *service.TableDef, dataPrefix string, newRows map[string]sqle.Row) ([]service.Op, error) {
+	var rebuilt []service.TableIndex
+	for _, idx := range target.Indexes {
+		if !hasIncarnation(current, idx.Incarnation) {
+			rebuilt = append(rebuilt, idx)
+		}
+	}
+	if len(rebuilt) == 0 {
+		return nil, nil
+	}
+	schema, err := catalog.SchemaOf(target)
+	if err != nil {
+		return nil, err
+	}
+
+	keys := make([]string, 0, len(newRows))
+	for key := range newRows {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	var ops []service.Op
+	for _, idx := range rebuilt {
+		spec, err := buildIndexSpec(target, schema, idx)
+		if err != nil {
+			return nil, err
+		}
+		seen := make(map[string]string, len(keys))
+		for _, key := range keys {
+			encodedVal, ok, err := spec.encode(newRows[key])
+			if err != nil {
+				return nil, &RowRewriteError{Key: key, Err: err}
+			}
+			if !ok {
+				continue
+			}
+			pk := strings.TrimPrefix(key, dataPrefix)
+			entryKey := indexEntryKey(database, current.TableID, current.Generation, spec.incarnation, spec.unique, encodedVal, pk)
+			if other, dup := seen[entryKey]; dup && other != pk {
+				return nil, &RowRewriteError{Key: key, Err: sqle.NewUniqueKeyErr(idx.Name, false, nil)}
+			}
+			seen[entryKey] = pk
+			ops = append(ops, service.Op{Type: service.OpPut, Key: []byte(entryKey), Value: []byte(pk)})
+		}
+	}
+	return ops, nil
+}
+
+// rewriteChunkOps bounds how many row Puts one write-back transaction
+// carries, keeping each chunk's proposal well under go-quicraft's
+// per-entry size ceiling regardless of table size. It is deliberately far
+// below relational_writer.go's own per-statement ceilings: a rewrite chunk
+// carries no index-entry compares to budget against, only row Puts, so a
+// smaller, simpler constant is adequate without needing that file's
+// byte-estimating checkProposalSize.
+const rewriteChunkOps = 500
+
+// checkGenerationCurrent reports a *service.TableGenerationStaleError when
+// current's Generation no longer matches the table's live generation --
+// i.e. a TRUNCATE committed since current was read. See runRewrite's use of
+// it for why this specific caller can afford the read.
+func checkGenerationCurrent(ctx context.Context, kvSvc service.KVServicer, database string, current *service.TableDef) error {
+	live, err := service.TableGeneration(ctx, kvSvc, database, current.TableID)
+	if err != nil {
+		return err
+	}
+	if live != current.Generation {
+		return &service.TableGenerationStaleError{
+			Database: database, Name: current.Name,
+			Expected: current.Generation, Actual: live,
 		}
 	}
 	return nil
@@ -409,7 +595,7 @@ func isKeyStringFamily(t sqle.Type) bool {
 // the rewrite. Returns nil, not an error, when no journal is present:
 // either nothing was ever in progress, or a racing resumer already
 // finished it, and either way there is nothing left for this caller to do.
-func resumeRewrite(ctx context.Context, tableSvc service.TableServicer, kvSvc service.KVServicer, database, name string) error {
+func resumeRewrite(ctx context.Context, tableSvc service.TableServicer, kvSvc service.KVServicer, txnSvc service.TransactionServicer, database, name string) error {
 	journal, current, err := tableSvc.RewriteJournal(ctx, database, name)
 	if err != nil {
 		var none *service.TableNoRewriteInProgressError
@@ -425,7 +611,7 @@ func resumeRewrite(ctx context.Context, tableSvc service.TableServicer, kvSvc se
 		return err
 	}
 
-	if err := runRewrite(ctx, kvSvc, database, current, journal.Target, journal.Changes); err != nil {
+	if err := runRewrite(ctx, kvSvc, txnSvc, database, current, journal); err != nil {
 		return err
 	}
 

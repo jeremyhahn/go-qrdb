@@ -199,13 +199,43 @@ func (t *Transport) BarrierRekey(ctx context.Context, req *transport.BarrierReke
 	}, nil
 }
 
+// BarrierEnableEncryption migrates a previously-unencrypted barrier to a
+// keyed strategy. Maps to the barrier.EnableEncryption dispatch verb, which
+// (pkg/api/quic/handlers_barrier.go) has always had a full server-side
+// implementation mirroring REST/gRPC; only this client stub forwarded
+// nothing (go-qrdb#558).
+func (t *Transport) BarrierEnableEncryption(ctx context.Context, req *transport.BarrierEnableEncryptionRequest) (*transport.BarrierEnableEncryptionResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	payload, err := proto.Marshal(&pb.BarrierEnableEncryptionRequest{
+		TenantId:        req.TenantID,
+		Strategy:        req.Strategy,
+		Mechanism:       req.Mechanism,
+		Availability:    req.Availability,
+		Passphrase:      req.Passphrase,
+		ShamirThreshold: int32(req.ShamirThreshold),
+		ShamirTotal:     int32(req.ShamirTotal),
+	})
+	if err != nil {
+		return nil, &marshalError{Err: err}
+	}
+	respBytes, err := t.call(ctx, "barrier.EnableEncryption", payload)
+	if err != nil {
+		return nil, err
+	}
+	var resp pb.BarrierEnableEncryptionResponse
+	if err := proto.Unmarshal(respBytes, &resp); err != nil {
+		return nil, &unmarshalError{Err: err}
+	}
+	return &transport.BarrierEnableEncryptionResponse{
+		Status: resp.GetStatus(),
+		Scope:  resp.GetScope(),
+	}, nil
+}
+
 // BarrierGenerateRecoveryKeys generates recovery keys for disaster recovery
 // scenarios.
-// BarrierEnableEncryption is not supported on the quic transport; enable
-// encryption via the REST or gRPC (unix) transports.
-func (t *Transport) BarrierEnableEncryption(_ context.Context, _ *transport.BarrierEnableEncryptionRequest) (*transport.BarrierEnableEncryptionResponse, error) {
-	return nil, &transport.NotImplementedError{Method: "BarrierEnableEncryption"}
-}
 
 func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transport.BarrierGenerateRecoveryKeysRequest) (*transport.BarrierRecoveryKeysResponse, error) {
 	if t.closed.Load() {

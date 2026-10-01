@@ -16,12 +16,14 @@
 // (go-qrdb#437).
 //
 // No build constraint: these name only mapServiceError, moduleStatus,
-// wireStatusByGRPCCode and the service-layer error types, all unconstrained.
+// wireStatusByGRPCCode, pkg/api/grpc's ServiceErrorCode and the service-layer
+// error types, all unconstrained.
 
 package quic
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -29,17 +31,21 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	grpcapi "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -189,18 +195,52 @@ func TestModuleStatus_ExplicitUnknownIsNotStatusError(t *testing.T) {
 // mapServiceError(err) == wireStatusByGRPCCode[grpcCode], so the wire status
 // is never written twice and can never be "corrected" on one side alone.
 //
-// GAP, stated rather than hidden: this table cannot CALL pkg/api/grpc's
-// mapServiceError, which is unexported and in another package, so it verifies
-// that quic agrees with a recorded gRPC answer rather than with the live one.
-// A change to the gRPC mapper that this table is not updated alongside would
-// go unnoticed here. Closing that needs the two mappers to share one
-// classifier, which is an architecture change and is not this change's to
-// make — see the pull request for go-qrdb#437.
+// The gap this comment used to state is closed (go-qrdb#462). It said the
+// table could not CALL pkg/api/grpc's mapServiceError because it was
+// unexported and in another package, so a change to the gRPC mapper that this
+// table was not updated alongside would go unnoticed. pkg/api/grpc now exports
+// ServiceErrorCode for exactly this purpose, and the row asserts against it
+// LIVE: grpcCode is no longer a recorded answer that can drift from the mapper
+// it claims to mirror, it is an assertion about what that mapper returns
+// today. pkg/api/grpc does not import pkg/api/quic, so there is no cycle, and
+// pkg/api/mcp already reaches the classifier the same way.
+//
+// Since go-qrdb#557 both transports render one shared classification
+// (pkg/api/errclass), so every row here — this package's own refusal types
+// included — is checked live; pkg/api/errclass's parity test drives every row
+// of that table through every transport.
 type conditionRow struct {
 	name     string
 	err      error
 	want     uint16
 	grpcCode codes.Code
+}
+
+// grpcAnswer reports the code the gRPC stack answers for err, resolved in the
+// ORDER the gRPC stack resolves it. Getting the order wrong is how this check
+// manufactures failures: pkg/api/grpc's ServiceErrorCode is the classifier for
+// SERVICE-layer conditions only, and its default branch is codes.Internal, so
+// feeding it an error from another family reports a divergence that does not
+// exist.
+//
+//   - A module answers in gRPC's own vocabulary — it implements its gRPC and
+//     QUIC surfaces over the same code and has never seen this envelope — so a
+//     carried status is taken first and verbatim. pkg/api/mcp's
+//     classifyToolError says the same thing for the same reason.
+//   - An auth-middleware failure is converted by authmw.GRPCError, through
+//     grpcCodeByClass. Rate limiting is the live example: pkg/api/grpc
+//     contains no RateLimited clause at all, and answers ResourceExhausted
+//     entirely through that table.
+//   - Everything else is a service-layer condition, which is what
+//     ServiceErrorCode exists to classify.
+func grpcAnswer(err error) codes.Code {
+	if st, ok := status.FromError(err); ok {
+		return st.Code()
+	}
+	if c := status.Code(authmw.GRPCError(err, codes.Internal)); c != codes.Internal {
+		return c
+	}
+	return grpcapi.ServiceErrorCode(err)
 }
 
 // conditions covers every wire status at least twice, and every condition the
@@ -211,10 +251,26 @@ var conditions = []conditionRow{
 	{"user missing by lookup", &transport.UserNotFoundError{Lookup: "system/nope"}, wire.StatusNotFound, codes.NotFound},
 	{"role missing", &role.RoleNotFoundError{ID: "no-such-role"}, wire.StatusNotFound, codes.NotFound},
 
+	// --- go-qrdb#518 / #536: the cert-binding pair ----------------------
+	{"cert binding not held", &user.CertBindingNotFoundError{UserID: 7, Thumbprint: "AAAA"}, wire.StatusNotFound, codes.NotFound},
+	{"cert binding held by another user", &user.CertBindingConflictError{Thumbprint: "AAAA", BoundUserID: 7, TargetUserID: 9}, wire.StatusAlreadyExists, codes.AlreadyExists},
+	// The wrapper outranks its cause: a conflict whose rollback FAILED is a
+	// data-loss condition, not a conflict, and must not be downgraded by the
+	// arm above matching first.
+	{"cert binding conflict whose rollback failed", &user.IndexCompensationError{
+		Op: "update", Cause: &user.CertBindingConflictError{Thumbprint: "AAAA", BoundUserID: 7, TargetUserID: 9},
+	}, wire.StatusDataLoss, codes.DataLoss},
+
 	// --- go-qrdb#169: the lease family ---------------------------------
 	{"lease missing", &service.LeaseNotFoundError{LeaseID: 42}, wire.StatusNotFound, codes.NotFound},
 	{"lease expired", &service.LeaseExpiredError{LeaseID: 42}, wire.StatusNotFound, codes.NotFound},
 	{"lease exists", &service.LeaseExistsError{LeaseID: 42}, wire.StatusAlreadyExists, codes.AlreadyExists},
+
+	// --- go-qrdb#387: the shape a pre-fix LeaseService.TimeToLive actually
+	// produced -- LeaseNotFoundError wrapped in ReadError, not the bare
+	// sentinel above. The ReadError arm must not win this race, matching
+	// the closed-store pair's own reasoning two rows down.
+	{"lease missing under a read", &service.ReadError{Err: &service.LeaseNotFoundError{LeaseID: 42}}, wire.StatusNotFound, codes.NotFound},
 
 	// --- go-qrdb#371 / PR #435: the closed store -----------------------
 	{"store closed", storage.ErrStorageClosed, wire.StatusUnavailable, codes.Unavailable},
@@ -259,6 +315,8 @@ var conditions = []conditionRow{
 	{"request will not encode", &service.EncodeRequestError{Err: errors.New("key too long")}, wire.StatusInvalidArgument, codes.InvalidArgument},
 	{"vector dimension mismatch", &service.DimensionMismatchError{Expected: 3, Actual: 4}, wire.StatusInvalidArgument, codes.InvalidArgument},
 	{"collection name empty", &service.CollectionEmptyNameError{}, wire.StatusInvalidArgument, codes.InvalidArgument},
+	{"collection name invalid", &service.CollectionInvalidNameError{Name: "a#b", Reason: "x"}, wire.StatusInvalidArgument, codes.InvalidArgument},
+	{"document field reserved", &service.CollectionReservedFieldError{Field: "id", Reason: "x"}, wire.StatusInvalidArgument, codes.InvalidArgument},
 	{"restore request nil", &service.RestoreNilRequestError{}, wire.StatusInvalidArgument, codes.InvalidArgument},
 	{"frame payload malformed", &InvalidArgumentError{Reason: "missing id"}, wire.StatusInvalidArgument, codes.InvalidArgument},
 	{"PIN too short", pin.ErrPINTooShort, wire.StatusInvalidArgument, codes.InvalidArgument},
@@ -287,6 +345,7 @@ var conditions = []conditionRow{
 	{"not the leader", &service.NotLeaderError{ShardID: 1, LeaderID: 2}, wire.StatusUnavailable, codes.Unavailable},
 	{"barrier sealed", &service.BarrierSealedError{TenantID: "t"}, wire.StatusUnavailable, codes.Unavailable},
 	{"tenant barrier sealed", tenant.ErrTenantSealed, wire.StatusUnavailable, codes.Unavailable},
+	{"barrier sealed mid-request (real seal.ErrSealed)", seal.ErrSealed, wire.StatusUnavailable, codes.Unavailable},
 	{"cluster has no free node", &placement.InsufficientNodesError{}, wire.StatusUnavailable, codes.Unavailable},
 
 	// --- authority --------------------------------------------------------
@@ -301,9 +360,30 @@ var conditions = []conditionRow{
 
 	// --- the node does not carry the verb ----------------------------------
 	{"capability unsupported", &service.CapabilityUnsupportedError{Message: "no opcode"}, wire.StatusUnimplemented, codes.Unimplemented},
+	// The standalone gate's refusal (go-qrdb#473). It used to be a REST-only
+	// type and fell through to StatusError here.
+	{"raft-only capability under standalone", &service.CapabilityUnsupportedError{Message: "watch: not implemented on this server: requires mode: raft"}, wire.StatusUnimplemented, codes.Unimplemented},
 	{"service not configured", &ServiceNotConfiguredError{Service: "lease"}, wire.StatusUnimplemented, codes.Unimplemented},
 	{"MVCC backend required", &service.MVCCBackendRequiredError{Err: errors.New("pebble")}, wire.StatusUnimplemented, codes.Unimplemented},
 	{"watch replay unsupported", watch.ErrStartRevisionUnsupported, wire.StatusUnimplemented, codes.Unimplemented},
+
+	// --- the enable-encryption migration family (go-qrdb#550) ---------------
+	// QUIC answered every one of these StatusError while gRPC classified
+	// them; the rows check the live gRPC answer, so the two cannot drift.
+	{"migration target invalid", seal.ErrMigrationInvalidTarget, wire.StatusInvalidArgument, codes.InvalidArgument},
+	{"migration mechanism invalid", seal.ErrMigrationInvalidMechanism, wire.StatusInvalidArgument, codes.InvalidArgument},
+	{"migration availability invalid", seal.ErrMigrationInvalidAvailability, wire.StatusInvalidArgument, codes.InvalidArgument},
+	{"shamir threshold invalid", seal.ErrShamirThresholdInvalid, wire.StatusInvalidArgument, codes.InvalidArgument},
+	{"migration source is not none", seal.ErrMigrationSourceNotNone, wire.StatusFailedPrecondition, codes.FailedPrecondition},
+	{"migration already in progress", seal.ErrMigrationInProgress, wire.StatusFailedPrecondition, codes.FailedPrecondition},
+	{"shared-barrier tenant cannot migrate", service.ErrSharedBarrierImmutable, wire.StatusPermissionDenied, codes.PermissionDenied},
+	{"node cannot migrate", service.ErrMigrationProviderUnavailable, wire.StatusUnimplemented, codes.Unimplemented},
+	{"data plane recycling", &service.DataPlaneRecyclingError{Service: "tenant"}, wire.StatusUnavailable, codes.Unavailable},
+	// Not a barrier condition: an unrelated error that merely carries a
+	// migration sentinel's text. The table matches by identity (errors.Is),
+	// so it must not claim this -- it stays the generic fault on both
+	// transports.
+	{"look-alike of a migration error", errors.New(seal.ErrMigrationInProgress.Error()), wire.StatusError, codes.Internal},
 
 	// --- the rest of the ported table -------------------------------------
 	//
@@ -343,11 +423,27 @@ var conditions = []conditionRow{
 	{"restore scope too large", &service.RestoreScopeTooLargeError{Limit: 10, Scope: "prefix"}, wire.StatusInvalidArgument, codes.InvalidArgument},
 	{"restore prefix unbounded", &service.RestoreUnboundedPrefixError{Prefix: ""}, wire.StatusInvalidArgument, codes.InvalidArgument},
 	{"ceremony CA not configured", &CeremonyCANotConfiguredError{}, wire.StatusUnimplemented, codes.Unimplemented},
-	{"share claim needs a client cert", &ClientCertRequiredError{}, wire.StatusPermissionDenied, codes.PermissionDenied},
+	{"share claim needs a client cert", &ClientCertRequiredError{}, wire.StatusUnauthenticated, codes.Unauthenticated},
 	{"request payload will not decode", &UnmarshalError{Err: errors.New("proto")}, wire.StatusInvalidArgument, codes.InvalidArgument},
 	{"tenant supplied is not the caller's", &tenant.CrossTenantDeniedError{
 		IdentityTenantID: "a", RequestedTenantID: "b", Op: "users.list",
 	}, wire.StatusPermissionDenied, codes.PermissionDenied},
+
+	// --- the ceremony-time auth-factor surface (pkg/authfactors) ---------
+	// Each row is one of pkg/api/errclass's auth-factor rows; the live
+	// parity check below holds QUIC to the class gRPC actually answers. A
+	// malformed, unknown, consumed or reclaimed challenge id all surface as
+	// EnrollmentNotFoundError.
+	{"auth-factor enrollment or challenge missing", &authfactors.EnrollmentNotFoundError{EnrollmentID: "000000000001.c"}, wire.StatusNotFound, codes.NotFound},
+	{"auth-factor factor not registered", &authfactors.FactorNotFoundError{Name: "totp"}, wire.StatusNotFound, codes.NotFound},
+	{"auth-factor record invalid", &authfactors.EnrollmentInvalidError{EnrollmentID: "e1", Reason: "unmarshal failed"}, wire.StatusInvalidArgument, codes.InvalidArgument},
+	{"auth-factor tenant mismatch", &service.AuthFactorTenantMismatchError{Requested: "globex", Context: "acme"}, wire.StatusInvalidArgument, codes.InvalidArgument},
+	{"auth-factor enrollment revoked", &authfactors.EnrollmentRevokedError{EnrollmentID: "e1"}, wire.StatusFailedPrecondition, codes.FailedPrecondition},
+	{"auth-factor challenge expired", &authfactors.ChallengeExpiredError{ChallengeID: "000000000001.c"}, wire.StatusFailedPrecondition, codes.FailedPrecondition},
+	{"auth-factor verification failed", &authfactors.VerificationFailedError{FactorName: "piv", Reason: "bad signature"}, wire.StatusUnauthenticated, codes.Unauthenticated},
+	{"auth-factor hardware unavailable", &authfactors.HardwareUnavailableError{Factor: "piv", Reason: "no reader"}, wire.StatusUnavailable, codes.Unavailable},
+	{"auth-factor factor disabled", authfactors.ErrFactorDisabled, wire.StatusUnimplemented, codes.Unimplemented},
+	{"auth-factor list read sealed mid-list", &service.AuthFactorListReadError{Key: "__sys:authfactor/e1", Err: seal.ErrSealed}, wire.StatusUnavailable, codes.Unavailable},
 
 	// A PROJECTED capability module's answer, which arrives in gRPC's
 	// vocabulary and reaches the wire through the bridge in status.go. This is
@@ -375,6 +471,16 @@ func TestMapServiceError_EveryCondition(t *testing.T) {
 					"answers on the gRPC transport (%s). One event must not reach two "+
 					"callers as two different conditions",
 					wire.StatusName(got), row.grpcCode, wire.StatusName(want))
+			}
+			// The parity claim, made against the live gRPC stack rather than
+			// against the code recorded beside the row. Without this, a change
+			// to pkg/api/grpc's mapper leaves this table asserting agreement
+			// with an answer that transport no longer gives.
+			if live := grpcAnswer(row.err); live != row.grpcCode {
+				t.Errorf("the gRPC stack answers codes.%s for this condition, but the "+
+					"row records codes.%s. gRPC moved and this table did not: either "+
+					"the row is stale or the transports have genuinely diverged",
+					live, row.grpcCode)
 			}
 			if len(payload) == 0 {
 				t.Error("the payload must carry the server's reason")
@@ -430,7 +536,7 @@ func TestMapServiceError_UnclassifiedStaysStatusError(t *testing.T) {
 	for _, err := range []error{
 		errors.New("some service failure"),
 		&MarshalError{Err: errors.New("proto")},
-		&HandlerError{Method: "kv.Put", Err: errors.New("boom")},
+		fmt.Errorf("kv.Put: %w", errors.New("boom")),
 	} {
 		st, payload := mapServiceError(err)
 		if st != wire.StatusError {
@@ -438,88 +544,6 @@ func TestMapServiceError_UnclassifiedStaysStatusError(t *testing.T) {
 		}
 		if len(payload) == 0 {
 			t.Errorf("%T: the payload must carry the reason", err)
-		}
-	}
-}
-
-// TestPinStatus_CoversEverySentinel: a PIN error pkg/pin adds without a row in
-// pinStatusBySentinel falls through to StatusError, which is the state QUIC's
-// barrier-PIN handlers were in before go-qrdb#437 — a locked-out PIN and a
-// disk fault as the same frame.
-func TestPinStatus_CoversEverySentinel(t *testing.T) {
-	sentinels := []error{
-		pin.ErrPINNotSet, pin.ErrPINLocked, pin.ErrPINInvalid,
-		pin.ErrSOPINRequired, pin.ErrPINTooShort, pin.ErrPINAlreadySet,
-		pin.ErrInvalidCurrentPIN, pin.ErrStateCorrupted, pin.ErrStrategyNotSet,
-	}
-	if len(pinStatusBySentinel) != len(sentinels) {
-		t.Errorf("pinStatusBySentinel has %d rows for %d sentinels",
-			len(pinStatusBySentinel), len(sentinels))
-	}
-	for _, sentinel := range sentinels {
-		st, ok := pinStatus(sentinel)
-		if !ok {
-			t.Errorf("%v has no status", sentinel)
-			continue
-		}
-		if st == wire.StatusError {
-			t.Errorf("%v classified as the generic StatusError", sentinel)
-		}
-	}
-}
-
-// TestPinStatus_ClassifiesThroughAWrapper: the handlers return the backend's
-// error wrapped, so a mapping that only matched a bare sentinel would be inert
-// in production.
-func TestPinStatus_ClassifiesThroughAWrapper(t *testing.T) {
-	wrapped := &HandlerError{Method: "barrier.Unseal", Err: pin.ErrPINLocked}
-	st, payload := mapServiceError(wrapped)
-	if st != wire.StatusResourceExhausted {
-		t.Fatalf("status = %s, want StatusResourceExhausted", wire.StatusName(st))
-	}
-	if len(payload) == 0 {
-		t.Error("the payload must carry the reason")
-	}
-}
-
-// TestPinStatus_IgnoresUnrelatedErrors.
-func TestPinStatus_IgnoresUnrelatedErrors(t *testing.T) {
-	if st, ok := pinStatus(errors.New("not a PIN error")); ok {
-		t.Fatalf("classified as %s", wire.StatusName(st))
-	}
-	if st, ok := pinStatus(nil); ok {
-		t.Fatalf("nil classified as %s", wire.StatusName(st))
-	}
-}
-
-// TestRestoreGuardStatus_IgnoresUnrelatedErrors keeps the split-out family
-// from claiming errors it does not own.
-func TestRestoreGuardStatus_IgnoresUnrelatedErrors(t *testing.T) {
-	if st, ok := restoreGuardStatus(errors.New("unrelated")); ok {
-		t.Fatalf("classified as %s", wire.StatusName(st))
-	}
-	if st, ok := restoreGuardStatus(&service.KeyNotFoundError{Key: "k"}); ok {
-		t.Fatalf("a key-not-found was claimed by the restore guards as %s", wire.StatusName(st))
-	}
-}
-
-// TestRestoreGuardStatus_ClassifiesItsFamily.
-func TestRestoreGuardStatus_ClassifiesItsFamily(t *testing.T) {
-	for _, tc := range []struct {
-		err  error
-		want uint16
-	}{
-		{&service.RestoreNilRequestError{}, wire.StatusInvalidArgument},
-		{&service.RestoreScopeEmptyError{}, wire.StatusInvalidArgument},
-		{&service.RestoreApplyError{Key: "k", Err: errors.New("disk")}, wire.StatusError},
-	} {
-		st, ok := restoreGuardStatus(tc.err)
-		if !ok {
-			t.Errorf("%T was not classified", tc.err)
-			continue
-		}
-		if st != tc.want {
-			t.Errorf("%T: status = %s, want %s", tc.err, wire.StatusName(st), wire.StatusName(tc.want))
 		}
 	}
 }

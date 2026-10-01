@@ -100,6 +100,70 @@ func (e *ResolutionFailedError) Error() string {
 // Unwrap returns the underlying error for errors.As / errors.Is traversal.
 func (e *ResolutionFailedError) Unwrap() error { return e.Err }
 
+// SealFailedError is returned by NewSecretValue when sealing the resolved
+// plaintext into protected memory fails.
+//
+// A resolved secret that cannot be sealed must not silently become an empty
+// SecretValue: every accessor on an empty value reports "" / nil, which is
+// indistinguishable from "this reference legitimately resolves to nothing"
+// and would let a credential vanish from configuration rather than fail the
+// resolution that produced it.
+type SealFailedError struct {
+	// Ref identifies the reference that failed to seal, already redacted by
+	// the same provenance rule SecretValue.Redacted uses: for a
+	// StrategyLiteral value, or any raw reference the "literal://" scheme
+	// forced a fallback for, the ORIGINAL raw reference IS the plaintext
+	// secret rather than a pointer to one -- NewSecretValue only reaches the
+	// sealing step it can fail at AFTER resolving that value (go-qrdb#114
+	// review). Ref is therefore the redacted marker in that case, never the
+	// plaintext.
+	//
+	// The plaintext itself is NOT stored on this error under any field, by
+	// design: an earlier revision kept the raw reference in an exported Raw
+	// field and redacted only inside Error(), which meant JSON encoding,
+	// %#v, or plain reflection over the struct still recovered the secret
+	// even though the error string never printed it (go-qrdb#114 review,
+	// round 3). Redacting at construction, once, and keeping only the safe
+	// result removes that whole class of leak rather than adding another
+	// display path to remember to redact.
+	Ref string
+
+	// Err is the underlying secure.NewSecret failure.
+	Err error
+}
+
+// Error implements the error interface. Ref is already redacted at
+// construction (see the Ref field), so this never needs to inspect a raw
+// reference or a strategy of its own.
+func (e *SealFailedError) Error() string {
+	return "secret: failed to seal resolved value for " + e.Ref + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error for errors.As / errors.Is traversal.
+func (e *SealFailedError) Unwrap() error { return e.Err }
+
+// ResolvedReadError is recorded by ConfigProcessor.Process when a plain
+// string field's reference resolved, but the resolved value could not be read
+// back out of protected memory to write into the field — the process Sealer
+// was wiped, the kernel refused to lock the transient buffer, or the buffer
+// was destroyed mid-copy. The field keeps its reference and is reported as
+// Unresolved; it is never overwritten with "" and never counted as resolved.
+type ResolvedReadError struct {
+	// Path is the dot-notation field path of the target.
+	Path string
+
+	// Err is the underlying open or copy failure.
+	Err error
+}
+
+// Error implements the error interface.
+func (e *ResolvedReadError) Error() string {
+	return "secret: processor: resolved value could not be read at " + e.Path + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error for errors.As / errors.Is traversal.
+func (e *ResolvedReadError) Unwrap() error { return e.Err }
+
 // ProcessorInputError is returned by ConfigProcessor.Process when the cfg
 // argument is nil, not a pointer, or points to a non-struct value.
 type ProcessorInputError struct {

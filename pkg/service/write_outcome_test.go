@@ -202,7 +202,7 @@ func TestKVService_NotLeaderProvesEveryWriteNotStored(t *testing.T) {
 func TestKVService_StateMachineRefusalProvesNotStored(t *testing.T) {
 	refusing := &mockHost{
 		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
-			return sm.Result{Data: protocol.EncodeAppError("timeseries subsystem not configured")}, nil
+			return sm.Result{Data: protocol.EncodeCapabilityError("timeseries subsystem not configured")}, nil
 		},
 	}
 	svc := NewKVService(refusing, 1)

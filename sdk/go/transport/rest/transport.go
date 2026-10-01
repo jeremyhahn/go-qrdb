@@ -546,7 +546,7 @@ func (t *Transport) Peers(ctx context.Context) (*transport.PeersResponse, error)
 
 // AddMember adds a new replica to the specified shard. Maps to
 // POST /membership/add.
-func (t *Transport) AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr string) error {
+func (t *Transport) AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -555,6 +555,7 @@ func (t *Transport) AddMember(ctx context.Context, shardID, replicaID uint64, ra
 		ShardID:   shardID,
 		ReplicaID: replicaID,
 		Address:   raftAddr,
+		Identity:  identity,
 	}
 
 	return t.postJSON(ctx, "AddMember", "/membership/add", payload)
@@ -832,25 +833,37 @@ func (t *Transport) postJSON(ctx context.Context, method, path string, payload a
 func (t *Transport) decodeErrorResponse(method string, resp *http.Response) error {
 	body, _ := io.ReadAll(resp.Body)
 
+	var msg string
 	var errResp transport.ErrorResponse
 	if json.Unmarshal(body, &errResp) == nil && errResp.Error != "" {
-		return &transport.RequestError{
-			Method:     method,
-			StatusCode: resp.StatusCode,
-			Err:        &serverError{Message: errResp.Error},
-		}
-	}
-
-	msg := strings.TrimSpace(string(body))
-	if msg == "" {
+		msg = errResp.Error
+	} else if msg = strings.TrimSpace(string(body)); msg == "" {
 		msg = resp.Status
 	}
 
 	return &transport.RequestError{
 		Method:     method,
 		StatusCode: resp.StatusCode,
-		Err:        &serverError{Message: msg},
+		Err:        serverErrorFor(resp.StatusCode, msg),
 	}
+}
+
+// serverErrorFor types the server's refusal where its status is unambiguous.
+//
+// A 501 is the capability refusal and nothing else: since go-qrdb#557 the
+// server classifies every error through pkg/api/errclass, and the only class it
+// renders as 501 is Unimplemented — a state machine without the opcode or
+// subsystem, a service this server was built without. The refusals decided on
+// a request's merits, which used to share that status and forced the
+// go-qrdb#126 exclusion, now answer 400 and 409. So every REST method hands a
+// caller transport.CapabilityUnsupportedError for a 501, exactly as the
+// embedded, gRPC, unix, QUIC and MCP transports do, and the RequestError
+// around it keeps the method and status.
+func serverErrorFor(status int, msg string) error {
+	if status == http.StatusNotImplemented {
+		return &transport.CapabilityUnsupportedError{Message: msg}
+	}
+	return &serverError{Message: msg}
 }
 
 // applyReadQueryParams resolves read options and appends the corresponding

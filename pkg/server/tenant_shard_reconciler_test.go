@@ -42,6 +42,9 @@ type fakeShardLifecycle struct {
 	closed    []raftShardKey
 	purged    []raftShardKey
 	attachFn  func(tenantID, db string) error
+	// passes counts ListStarted calls: ReconcileOnce makes exactly one per
+	// pass, so this counts reconcile passes.
+	passes int
 }
 
 func newFakeShardLifecycle() *fakeShardLifecycle {
@@ -90,6 +93,7 @@ func (f *fakeShardLifecycle) CloseAndPurge(tenantID, db string) error {
 func (f *fakeShardLifecycle) ListStarted() []StartedShard {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.passes++
 	out := make([]StartedShard, 0, len(f.started))
 	for k := range f.started {
 		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database})
@@ -249,10 +253,18 @@ type watchablePlacementKV struct {
 	mu       sync.Mutex
 	watchers []chan placement.WatchEvent
 	watching bool
+
+	// subscribed is closed by the first Watch call. A test that sends an
+	// event must wait on it first: send delivers only to REGISTERED
+	// watchers, so an event sent before the reconciler has subscribed is
+	// dropped, and a fixed sleep "long enough for Run to call Watch" is
+	// exactly the wait a loaded machine overruns (go-qrdb#418).
+	subscribed     chan struct{}
+	subscribedOnce sync.Once
 }
 
 func newWatchablePlacementKV() *watchablePlacementKV {
-	return &watchablePlacementKV{memKV: newMemKV()}
+	return &watchablePlacementKV{memKV: newMemKV(), subscribed: make(chan struct{})}
 }
 
 func (w *watchablePlacementKV) Watch(_ context.Context, _ string) (<-chan placement.WatchEvent, error) {
@@ -261,6 +273,7 @@ func (w *watchablePlacementKV) Watch(_ context.Context, _ string) (<-chan placem
 	ch := make(chan placement.WatchEvent, 4)
 	w.watchers = append(w.watchers, ch)
 	w.watching = true
+	w.subscribedOnce.Do(func() { close(w.subscribed) })
 	return ch, nil
 }
 
@@ -286,6 +299,60 @@ func (w *watchablePlacementKV) closeAll() {
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+// reconcileConvergeBound bounds how long a reconciler test waits for the
+// reconciler to act. It is a FAILURE bound, not a pacing interval: every wait
+// below returns as soon as its condition holds, so an idle machine never
+// spends it. It is generous because the one thing a loaded CI host reliably
+// does is starve goroutines — the 500ms these waits used to allow reddened a
+// pull request that touched no file in this package (go-qrdb#418).
+const reconcileConvergeBound = 30 * time.Second
+
+// awaitSubscribed blocks until the reconciler has registered its watch on kv.
+func awaitSubscribed(t *testing.T, kv *watchablePlacementKV) {
+	t.Helper()
+	select {
+	case <-kv.subscribed:
+	case <-time.After(reconcileConvergeBound):
+		t.Fatalf("reconciler did not subscribe to the placement watch within %s", reconcileConvergeBound)
+	}
+}
+
+// awaitCondition polls cond until it holds or reconcileConvergeBound passes,
+// and reports which.
+func awaitCondition(cond func() bool) bool {
+	deadline := time.Now().Add(reconcileConvergeBound)
+	for !cond() {
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return true
+}
+
+// reconcilePasses reports how many reconcile passes factory has observed.
+func (f *fakeShardLifecycle) reconcilePasses() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.passes
+}
+
+// assertConfiguredIntervalDrove proves that a convergence which only a
+// periodic pass could produce came from the CONFIGURED interval, not the
+// default: it took extra passes beyond the one counted in before, and it
+// arrived sooner than defaultReconcilerPollInterval, before a default-paced
+// ticker would have fired even once. The bound is the default itself, so it
+// fails only if the configured option were ignored.
+func assertConfiguredIntervalDrove(t *testing.T, factory *fakeShardLifecycle, passesBefore int, took time.Duration) {
+	t.Helper()
+	if got := factory.reconcilePasses(); got <= passesBefore {
+		t.Fatalf("converged with no reconcile pass after the change (passes %d, before %d): the periodic path was not exercised", got, passesBefore)
+	}
+	if took >= defaultReconcilerPollInterval {
+		t.Fatalf("converged after %s, not below the %s default: the configured poll interval was not honoured", took, defaultReconcilerPollInterval)
+	}
+}
 
 // placement1 is a test placement with a single replica on "local:1".
 func placement1(tenantID, db string, shardID uint64) *placement.Placement {
@@ -488,8 +555,7 @@ func TestTenantShardReconciler_WatchPath_Put(t *testing.T) {
 		r.Run(ctx)
 	}()
 
-	// Give Run time to call Watch.
-	time.Sleep(20 * time.Millisecond)
+	awaitSubscribed(t, kv)
 
 	p := placement1("acme", "orders", 1001)
 	if err := store.Put(ctx, p); err != nil {
@@ -499,18 +565,11 @@ func TestTenantShardReconciler_WatchPath_Put(t *testing.T) {
 	val, _ := marshalPlacement(p)
 	kv.send(placement.WatchEvent{Key: "__sys:placement/acme/orders", Value: val})
 
-	// Wait briefly for event processing.
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if factory.isStarted("acme", "orders") {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	started := awaitCondition(func() bool { return factory.isStarted("acme", "orders") })
 	cancel()
 	<-done
 
-	if !factory.isStarted("acme", "orders") {
+	if !started {
 		t.Error("watch EventPut should have triggered shard start for local replica")
 	}
 }
@@ -543,7 +602,7 @@ func TestTenantShardReconciler_WatchPath_Delete(t *testing.T) {
 		r.Run(ctx)
 	}()
 
-	time.Sleep(20 * time.Millisecond)
+	awaitSubscribed(t, kv)
 
 	// Delete from the backing KV BEFORE sending the watch event so that the
 	// safety ticker's ReconcileOnce (M1) does not see the placement and restart
@@ -559,17 +618,11 @@ func TestTenantShardReconciler_WatchPath_Delete(t *testing.T) {
 		PrevValue: val,
 	})
 
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if !factory.isStarted("acme", "orders") {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	closed := awaitCondition(func() bool { return !factory.isStarted("acme", "orders") })
 	cancel()
 	<-done
 
-	if factory.isStarted("acme", "orders") {
+	if !closed {
 		t.Error("watch EventDelete should have caused shard close")
 	}
 }
@@ -594,29 +647,27 @@ func TestTenantShardReconciler_WatchChannelClose_FallsBackToPoll(t *testing.T) {
 		r.Run(ctx)
 	}()
 
-	time.Sleep(30 * time.Millisecond)
+	awaitSubscribed(t, kv)
 
 	// Add a placement and close the watch channel to trigger fallback to poll.
 	p := placement1("acme", "orders", 1001)
 	if err := store.Put(ctx, p); err != nil {
 		t.Fatalf("store.Put: %v", err)
 	}
+	before := factory.reconcilePasses()
+	start := time.Now()
 	kv.closeAll()
 
 	// Poll should pick it up within a few ticks.
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if factory.isStarted("acme", "orders") {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	started := awaitCondition(func() bool { return factory.isStarted("acme", "orders") })
+	took := time.Since(start)
 	cancel()
 	<-done
 
-	if !factory.isStarted("acme", "orders") {
-		t.Error("after watch channel close, poll path should have started the shard")
+	if !started {
+		t.Fatal("after watch channel close, poll path should have started the shard")
 	}
+	assertConfiguredIntervalDrove(t, factory, before, took)
 }
 
 // TestTenantShardReconciler_PollPath proves the poll path runs ReconcileOnce
@@ -633,31 +684,35 @@ func TestTenantShardReconciler_PollPath(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
+	// Measured from before Run starts, so a ticker Run creates at the default
+	// interval could not fire inside the window however late the change
+	// lands.
+	runStart := time.Now()
 	go func() {
 		defer close(done)
 		r.Run(ctx)
 	}()
 
-	// The reconciler has started; add a placement after a short delay.
-	time.Sleep(10 * time.Millisecond)
+	// Added only after Run's initial pass has finished, so only a later,
+	// periodic pass can converge on it.
+	if !awaitCondition(func() bool { return factory.reconcilePasses() >= 1 }) {
+		t.Fatal("Run never completed its initial reconcile pass")
+	}
+	before := factory.reconcilePasses()
 	p := placement1("acme", "orders", 1001)
 	if err := store.Put(ctx, p); err != nil {
 		t.Fatalf("store.Put: %v", err)
 	}
 
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if factory.isStarted("acme", "orders") {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	started := awaitCondition(func() bool { return factory.isStarted("acme", "orders") })
+	took := time.Since(runStart)
 	cancel()
 	<-done
 
-	if !factory.isStarted("acme", "orders") {
-		t.Error("poll path should have started the shard after placement was added")
+	if !started {
+		t.Fatal("poll path should have started the shard after placement was added")
 	}
+	assertConfiguredIntervalDrove(t, factory, before, took)
 }
 
 // TestTenantShardReconciler_CtxCancelStopsCleanly proves Run returns promptly
@@ -834,34 +889,35 @@ func TestTenantShardReconciler_WatchPath_SafetyTick(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
+	// Measured from before Run starts, so a ticker Run creates at the default
+	// interval could not fire inside the window however late the change
+	// lands.
+	runStart := time.Now()
 	go func() {
 		defer close(done)
 		r.Run(ctx)
 	}()
 
-	// Give Run time to register the watch.
-	time.Sleep(10 * time.Millisecond)
+	awaitSubscribed(t, kv)
 
-	// Add a placement to the store WITHOUT sending a watch event.
+	// Add a placement to the store WITHOUT sending a watch event. Run's
+	// initial pass precedes its Watch, so it is already counted.
+	before := factory.reconcilePasses()
 	p := placement1("acme", "safetydb", 2001)
 	if err := store.Put(ctx, p); err != nil {
 		t.Fatalf("store.Put: %v", err)
 	}
 
-	// Wait for the safety tick (2× tick duration should be enough).
-	deadline := time.Now().Add(10 * tick)
-	for time.Now().Before(deadline) {
-		if factory.isStarted("acme", "safetydb") {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	// No event is sent, so only the safety tick can start it.
+	started := awaitCondition(func() bool { return factory.isStarted("acme", "safetydb") })
+	took := time.Since(runStart)
 	cancel()
 	<-done
 
-	if !factory.isStarted("acme", "safetydb") {
-		t.Error("safety tick in watch mode must fire ReconcileOnce and start the shard")
+	if !started {
+		t.Fatal("safety tick in watch mode must fire ReconcileOnce and start the shard")
 	}
+	assertConfiguredIntervalDrove(t, factory, before, took)
 }
 
 // ---------------------------------------------------------------------------

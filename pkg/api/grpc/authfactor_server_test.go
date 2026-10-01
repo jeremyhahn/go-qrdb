@@ -27,7 +27,9 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // ---------------------------------------------------------------------------
@@ -97,11 +99,11 @@ func (m *mockAuthFactorService) RevokeFactor(ctx context.Context, enrollmentID s
 }
 
 // ---------------------------------------------------------------------------
-// mapAuthFactorGRPCError
+// mapServiceError
 // ---------------------------------------------------------------------------
 
 func TestMapAuthFactorGRPCError_Nil(t *testing.T) {
-	if got := mapAuthFactorGRPCError(nil); got != nil {
+	if got := mapServiceError(nil); got != nil {
 		t.Fatalf("expected nil, got %v", got)
 	}
 }
@@ -125,6 +127,11 @@ func TestMapAuthFactorGRPCError_AllTypes(t *testing.T) {
 		{
 			name: "EnrollmentInvalidError",
 			err:  &authfactors.EnrollmentInvalidError{EnrollmentID: "e1", Reason: "bad key"},
+			want: codes.InvalidArgument,
+		},
+		{
+			name: "AuthFactorTenantMismatchError",
+			err:  &service.AuthFactorTenantMismatchError{Requested: "globex", Context: "acme"},
 			want: codes.InvalidArgument,
 		},
 		{
@@ -153,6 +160,26 @@ func TestMapAuthFactorGRPCError_AllTypes(t *testing.T) {
 			want: codes.Unimplemented,
 		},
 		{
+			name: "ErrTenantSealed",
+			err:  tenant.ErrTenantSealed,
+			want: codes.Unavailable,
+		},
+		{
+			name: "AuthFactorListReadError wrapping ErrTenantSealed",
+			err:  &service.AuthFactorListReadError{Key: "__sys:authfactor/e1", Err: tenant.ErrTenantSealed},
+			want: codes.Unavailable,
+		},
+		{
+			name: "seal.ErrSealed (barrier sealed mid-request, distinct from tenant.ErrTenantSealed)",
+			err:  seal.ErrSealed,
+			want: codes.Unavailable,
+		},
+		{
+			name: "AuthFactorListReadError wrapping seal.ErrSealed",
+			err:  &service.AuthFactorListReadError{Key: "__sys:authfactor/e1", Err: seal.ErrSealed},
+			want: codes.Unavailable,
+		},
+		{
 			name: "generic error",
 			err:  errors.New("something went wrong"),
 			want: codes.Internal,
@@ -160,7 +187,7 @@ func TestMapAuthFactorGRPCError_AllTypes(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := mapAuthFactorGRPCError(tc.err)
+			got := mapServiceError(tc.err)
 			st, ok := status.FromError(got)
 			if !ok {
 				t.Fatalf("expected gRPC status error, got %T", got)
@@ -280,6 +307,56 @@ func TestChallengeFactorHandler_NotFound(t *testing.T) {
 	st, _ := status.FromError(err)
 	if st.Code() != codes.NotFound {
 		t.Fatalf("expected NotFound, got %s", st.Code())
+	}
+}
+
+// TestAuthFactorServer_SealedAfterResolve drives every gRPC (and therefore
+// Unix, which registers this same service) auth-factor RPC with the error a
+// tenant sealing between Resolve and the store operation actually produces —
+// seal.ErrSealed, asserted end to end against a real barrier in pkg/service —
+// and asserts codes.Unavailable rather than codes.Internal.
+func TestAuthFactorServer_SealedAfterResolve(t *testing.T) {
+	svc := newMockAuthFactorService()
+	svc.enrollFn = func(context.Context, string, string, authfactors.EnrollParams) (*authfactors.Enrollment, error) {
+		return nil, seal.ErrSealed
+	}
+	svc.challengeFn = func(context.Context, string) (*authfactors.Challenge, error) { return nil, seal.ErrSealed }
+	svc.verifyFn = func(context.Context, string, string, *authfactors.Response) error { return seal.ErrSealed }
+	svc.listFn = func(context.Context, string) ([]*authfactors.Enrollment, error) {
+		return nil, &service.AuthFactorListReadError{Key: "__sys:authfactor/e1", Err: seal.ErrSealed}
+	}
+	svc.revokeFn = func(context.Context, string) error { return seal.ErrSealed }
+	srv := &authFactorServer{svc: svc}
+	ctx := context.Background()
+
+	calls := map[string]func() error{
+		"EnrollFactor": func() error {
+			_, err := srv.EnrollFactor(ctx, &pb.EnrollFactorRequest{FactorName: "piv", Subject: "u1"})
+			return err
+		},
+		"ChallengeFactor": func() error {
+			_, err := srv.ChallengeFactor(ctx, &pb.ChallengeFactorRequest{EnrollmentId: "e1"})
+			return err
+		},
+		"VerifyFactor": func() error {
+			_, err := srv.VerifyFactor(ctx, &pb.VerifyFactorRequest{ChallengeId: "000000000001.c"})
+			return err
+		},
+		"ListFactors": func() error {
+			_, err := srv.ListFactors(ctx, &pb.ListFactorsRequest{})
+			return err
+		},
+		"RevokeFactor": func() error {
+			_, err := srv.RevokeFactor(ctx, &pb.RevokeFactorRequest{EnrollmentId: "e1"})
+			return err
+		},
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			if got := status.Code(call()); got != codes.Unavailable {
+				t.Errorf("%s with a tenant sealed after Resolve = %s, want %s", name, got, codes.Unavailable)
+			}
+		})
 	}
 }
 

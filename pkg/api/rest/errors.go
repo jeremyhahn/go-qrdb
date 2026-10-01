@@ -21,6 +21,50 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
+// RouteCollisionError is the construction-time panic value of two
+// registrations of the same REST route (go-qrdb#194): a module route that is a
+// built-in route, or another module's, including one whose pattern differs
+// only in a path parameter's name. Nothing yields to anything: before this, a
+// built-in silently gave way to a module that claimed its route, so a module
+// mounted by a downstream host could take over a core endpoint unnoticed.
+type RouteCollisionError struct {
+	Method  string
+	Pattern string
+
+	// Claimant is the registration that was refused and Holder the one that
+	// already owned the route: "built-in" or "module <name>".
+	Claimant string
+	Holder   string
+}
+
+// Error names the route and both parties.
+func (e *RouteCollisionError) Error() string {
+	return "rest: " + e.Claimant + " registers " + e.Method + " " + e.Pattern +
+		", which " + e.Holder + " already registered; a REST route has exactly one owner" +
+		" -- namespace the module's routes"
+}
+
+// DirectRouteCollisionError is the construction-time panic value of a module
+// route registered straight on the router (bypassing Handle/HandlePublic) that
+// is the same route as one whose permission was recorded (go-qrdb#194). chi
+// would serve the direct handler under the other registration's permission.
+type DirectRouteCollisionError struct {
+	Module  string
+	Method  string
+	Pattern string
+
+	// Holder is the permission-recorded registration it collides with:
+	// "built-in" or "module <name>".
+	Holder string
+}
+
+// Error names the module, the route and the registration it would shadow.
+func (e *DirectRouteCollisionError) Error() string {
+	return "rest: module " + e.Module + " registered " + e.Method + " " + e.Pattern +
+		" directly on the router, and " + e.Holder + " registered the same route with a permission;" +
+		" register module routes through HTTPRegistrar.Handle or HandlePublic"
+}
+
 // StartError is returned when the REST HTTP server fails to start
 // listening on the configured address.
 type StartError struct {
@@ -115,6 +159,35 @@ func (e *ListenerHostMismatchError) Error() string {
 	return "rest: HTTP/3 bind host " + e.UDPHost +
 		" does not match REST bind host " + e.TCPHost +
 		"; the two transports serve the same handler and must share a bind host"
+}
+
+// ListenerPortMismatchError is returned by Start when a pre-bound HTTP/3
+// socket (WithPacketConn) is not on the TCP listener's port. The TCP side
+// advertises HTTP/3 through Alt-Svc on its own port, so a QUIC socket on any
+// other port would be one no client is told about.
+type ListenerPortMismatchError struct {
+	// TCPPort is the port the TCP listener holds.
+	TCPPort string
+	// UDPPort is the port the pre-bound QUIC socket holds.
+	UDPPort string
+}
+
+// Error returns a human-readable description.
+func (e *ListenerPortMismatchError) Error() string {
+	return "rest: HTTP/3 socket port " + e.UDPPort +
+		" does not match REST listener port " + e.TCPPort +
+		"; Alt-Svc advertises HTTP/3 on the listener's port"
+}
+
+// PacketConnWithoutListenerError is returned by Start when WithPacketConn was
+// given without WithListener: the HTTP/3 socket must sit on the TCP
+// listener's host and port, which a server that binds its own listener
+// cannot promise for a socket bound beforehand.
+type PacketConnWithoutListenerError struct{}
+
+// Error returns a human-readable description.
+func (e *PacketConnWithoutListenerError) Error() string {
+	return "rest: WithPacketConn requires WithListener"
 }
 
 // FetchError is returned when an HTTP request to a REST server endpoint

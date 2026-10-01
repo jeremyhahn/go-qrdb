@@ -24,6 +24,7 @@ import (
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	filestore "github.com/jeremyhahn/go-qrdb/pkg/storage/file"
 	memstore "github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
@@ -76,18 +77,103 @@ const (
 )
 
 // Descriptor provides metadata about a registered state machine type.
+//
+// Capabilities is not documentation. It is what a node reports as available
+// (NarrowCapabilities narrows the node's capability profile by it), and
+// TestRegistryDescriptorsMatchBehaviour holds every declaration to what the
+// state machine actually does.
 type Descriptor struct {
 	Name         string          `json:"name"`
 	Description  string          `json:"description"`
 	Persistence  PersistenceType `json:"persistence"`
 	Kind         SMKind          `json:"kind"`
 	Capabilities []Capability    `json:"capabilities"`
+
+	// StorageGeneric reports that the state machine composes whichever
+	// storage raft.sm_storage selects (RegisterStorageGeneric).
+	StorageGeneric bool `json:"storage_generic"`
+}
+
+// Has reports whether the descriptor declares c.
+func (d Descriptor) Has(c Capability) bool {
+	for _, have := range d.Capabilities {
+		if have == c {
+			return true
+		}
+	}
+	return false
 }
 
 // entry pairs a factory with its descriptor.
 type entry struct {
 	factory    Factory
 	descriptor Descriptor
+
+	// generic is set for a STORAGE-GENERIC state machine — one that composes
+	// whichever storage.Storage raft.sm_storage selects — and is what
+	// ResolveTypedWithStorage builds it from. factory is then the same
+	// construction over the zero StorageConfig.
+	generic StorageGenericFactory
+}
+
+// StorageFactory creates the storage.Storage one replica of a storage-generic
+// state machine composes. It is called once per (shard, replica).
+type StorageFactory func(shardID, replicaID uint64) storage.Storage
+
+// StorageGenericFactory builds a storage-generic state machine's create
+// function over the storage newStorage returns for each replica.
+type StorageGenericFactory func(newStorage StorageFactory) sm.CreateFunc
+
+// StorageConfig is where a storage-generic state machine keeps its
+// per-replica storage: raft.data_dir and raft.sm_storage.
+//
+// It is passed to ResolveTypedWithStorage per resolution, never held in
+// package state, so two nodes in one process — the SDK supports that — each
+// get their own storage under their own data directory.
+type StorageConfig struct {
+	// Root anchors each replica's storage at {Root}/sm/shard-S-replica-R,
+	// stable across restarts. Empty means a fresh temporary directory per
+	// replica, which is acceptable only in tests: a production replica
+	// started that way loses its state on every restart.
+	Root string
+
+	// Kind is raft.sm_storage: "pebble" (the default when empty), "file" or
+	// "memory". Objstore is a snapshot/backup tier and is never a hot apply
+	// path.
+	Kind string
+
+	// Encryptor is the node's at-rest encryptor. When it is enabled — the
+	// seal barrier is on — every byte a replica's storage persists must be
+	// encrypted: pebble storage is opened on the encryptor's barrier-driven
+	// encfs, exactly as the pebble and mvcc state machines are, and a storage
+	// that cannot be encrypted is refused at resolution
+	// (SMStorageUnencryptedError) rather than opened. nil means the barrier
+	// is off.
+	Encryptor *atrest.Encryptor
+}
+
+// persistsPlaintext reports whether a replica's storage under this config
+// would write unencrypted bytes to disk while the seal barrier is on. Pebble
+// storage is encrypted through the encryptor's FS and "memory" persists
+// nothing; "file" storage writes through the OS directly and has no
+// encrypting seam.
+func (c StorageConfig) persistsPlaintext() bool {
+	return c.Encryptor.Enabled() && c.Kind == "file"
+}
+
+// storageKinds are the raft.sm_storage values a storage-generic state
+// machine can compose.
+var storageKinds = map[string]struct{}{
+	"":       {},
+	"pebble": {},
+	"file":   {},
+	"memory": {},
+}
+
+// selectsNonDefaultStorage reports whether the config names a storage other
+// than the pebble default.
+func (c StorageConfig) selectsNonDefaultStorage() bool {
+	return c.Kind != "" && c.Kind != "pebble"
 }
 
 // Registry maps state machine type names to their Factory functions and
@@ -125,17 +211,55 @@ func (r *Registry) RegisterWithDescriptor(name string, factory Factory, desc Des
 	r.mu.Unlock()
 }
 
+// RegisterStorageGeneric adds or replaces a STORAGE-GENERIC state machine: one
+// that composes whichever storage raft.sm_storage selects, built per
+// resolution by ResolveTypedWithStorage.
+func (r *Registry) RegisterStorageGeneric(name string, factory StorageGenericFactory, desc Descriptor) {
+	desc.Name = name
+	desc.StorageGeneric = true
+	r.mu.Lock()
+	r.entries[name] = entry{
+		factory:    func() sm.CreateFunc { return factory(newStorageFactory(StorageConfig{})) },
+		descriptor: desc,
+		generic:    factory,
+	}
+	r.mu.Unlock()
+}
+
 // Resolve looks up the factory for the given name and returns a fresh
 // sm.CreateFunc. Returns an UnknownSMTypeError if the name is not
-// registered.
+// registered. A storage-generic state machine resolved this way composes
+// the zero StorageConfig; see ResolveTypedWithStorage.
 func (r *Registry) Resolve(name string) (sm.CreateFunc, error) {
+	e, err := r.lookup(name)
+	if err != nil {
+		return nil, err
+	}
+	return e.factory(), nil
+}
+
+// lookup returns the entry registered under name.
+func (r *Registry) lookup(name string) (entry, error) {
 	r.mu.RLock()
 	e, ok := r.entries[name]
 	r.mu.RUnlock()
 	if !ok {
-		return nil, &UnknownSMTypeError{Name: name}
+		return entry{}, &UnknownSMTypeError{Name: name}
 	}
-	return e.factory(), nil
+	return e, nil
+}
+
+// typedName is the registry name a (type, backend) pair resolves to: the type
+// alone when backend is empty, otherwise the composite key "type:backend"
+// when registered, otherwise the backend name.
+func (r *Registry) typedName(smType, smBackend string) string {
+	if smBackend == "" {
+		return smType
+	}
+	if compositeKey := smType + ":" + smBackend; r.Has(compositeKey) {
+		return compositeKey
+	}
+	return smBackend
 }
 
 // ResolveTyped looks up the factory for the given SM type and backend
@@ -143,16 +267,34 @@ func (r *Registry) Resolve(name string) (sm.CreateFunc, error) {
 // type name directly. When both are provided, it looks up the
 // composite key "type:backend" first, then falls back to just backend.
 func (r *Registry) ResolveTyped(smType, smBackend string) (sm.CreateFunc, error) {
-	if smBackend == "" {
-		return r.Resolve(smType)
+	return r.Resolve(r.typedName(smType, smBackend))
+}
+
+// ResolveTypedWithStorage is ResolveTyped for a composition root that knows
+// where its state machine's storage lives. A storage-generic state machine is
+// built over sc; any other state machine carries its own storage, so a
+// non-pebble sc.Kind is refused for it with SMStorageNotApplicableError rather
+// than silently ignored. An unknown sc.Kind is refused with
+// UnknownSMStorageError.
+func (r *Registry) ResolveTypedWithStorage(smType, smBackend string, sc StorageConfig) (sm.CreateFunc, error) {
+	if _, ok := storageKinds[sc.Kind]; !ok {
+		return nil, &UnknownSMStorageError{Kind: sc.Kind}
 	}
-	// Try composite key first (e.g., "kv:standard").
-	compositeKey := smType + ":" + smBackend
-	if r.Has(compositeKey) {
-		return r.Resolve(compositeKey)
+	name := r.typedName(smType, smBackend)
+	e, err := r.lookup(name)
+	if err != nil {
+		return nil, err
 	}
-	// Fall back to just the backend name.
-	return r.Resolve(smBackend)
+	if e.generic == nil {
+		if sc.selectsNonDefaultStorage() {
+			return nil, &SMStorageNotApplicableError{SMType: name, Kind: sc.Kind}
+		}
+		return e.factory(), nil
+	}
+	if sc.persistsPlaintext() {
+		return nil, &SMStorageUnencryptedError{SMType: name, Kind: sc.Kind}
+	}
+	return e.generic(newStorageFactory(sc)), nil
 }
 
 // Describe returns the Descriptor for the given name. Returns
@@ -214,6 +356,49 @@ func (r *Registry) Len() int {
 // Typed error
 // ---------------------------------------------------------------------------
 
+// UnknownSMStorageError is returned when a StorageConfig names a storage
+// kind no storage-generic state machine can compose.
+type UnknownSMStorageError struct {
+	Kind string
+}
+
+// Error returns a human-readable description of the unknown kind.
+func (e *UnknownSMStorageError) Error() string {
+	return "statemachine: unknown sm_storage " + strconv.Quote(e.Kind) + "; use pebble, file or memory"
+}
+
+// SMStorageNotApplicableError is returned when a non-pebble sm_storage is
+// asked of a state machine that carries its own storage.
+type SMStorageNotApplicableError struct {
+	SMType string
+	Kind   string
+}
+
+// Error returns a human-readable description of the mismatch.
+func (e *SMStorageNotApplicableError) Error() string {
+	return "statemachine: sm_storage " + strconv.Quote(e.Kind) + " does not apply to sm_type " +
+		strconv.Quote(e.SMType) + ", which carries its own storage; use a storage-generic sm_type (disk or fast)"
+}
+
+// SMStorageUnencryptedError is returned when the seal barrier is enabled and
+// the storage a storage-generic state machine would compose cannot be
+// encrypted at rest — "file" storage, which writes through the OS directly: the replica's data would sit on disk in plaintext beside
+// a barrier the operator enabled to prevent exactly that.
+type SMStorageUnencryptedError struct {
+	SMType string
+	Kind   string
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *SMStorageUnencryptedError) Error() string {
+	kind := e.Kind
+	if kind == "" {
+		kind = "pebble"
+	}
+	return "statemachine: sm_type " + strconv.Quote(e.SMType) + " over sm_storage " + strconv.Quote(kind) +
+		" would store plaintext while the seal barrier is enabled; use sm_storage pebble (encrypted at rest) or memory"
+}
+
 // UnknownSMTypeError is returned when a state machine type name cannot
 // be resolved in the registry.
 type UnknownSMTypeError struct {
@@ -248,6 +433,17 @@ const SMKindConcurrent SMKind = "concurrent"
 func newDefaultRegistry() *Registry {
 	r := NewRegistry()
 
+	// Every state machine this package registers serves the same plane: KV,
+	// the guarded single-key verbs, all-or-nothing batches, and transactions
+	// decided against its own keyspace (native_txn.go, go-qrdb#136). None is
+	// constructed with a lease manager, index manager, time-series store,
+	// watch manager or MVCC store, so none declares those; declaring one
+	// requires wiring it AND the behaviour test in descriptor_truth_test.go
+	// passing for it (go-qrdb#135).
+	caps := func() []Capability {
+		return []Capability{CapabilityKV, CapabilityBatch, CapabilityTransaction}
+	}
+
 	// ---------------------------------------------------------------
 	// Unified KV state machines (Backend-based architecture)
 	// ---------------------------------------------------------------
@@ -258,17 +454,10 @@ func newDefaultRegistry() *Registry {
 		return NewKVStandardCreateFunc()
 	}
 	standardDesc := Descriptor{
-		Description: "Pure in-memory KV state machine with no persistence",
-		Persistence: PersistenceMemory,
-		Kind:        SMKindRegular,
-		// KV and batch only. These factories construct their state machine
-		// with no options, so the MVCC store, lease manager, index manager and
-		// time-series store are all nil and every operation in those families
-		// refuses with ServiceNotConfiguredError. The five capabilities that
-		// used to be listed here were never implemented on this state machine
-		// (go-qrdb#135); adding one back requires wiring it AND a test that
-		// exercises it, per go-qrdb#136.
-		Capabilities: []Capability{CapabilityKV, CapabilityBatch},
+		Description:  "Pure in-memory KV state machine with no persistence",
+		Persistence:  PersistenceMemory,
+		Kind:         SMKindRegular,
+		Capabilities: caps(),
 	}
 	r.RegisterWithDescriptor("memory", standardFactory, standardDesc)
 	r.RegisterWithDescriptor("standard", standardFactory, standardDesc)
@@ -278,53 +467,33 @@ func newDefaultRegistry() *Registry {
 	r.RegisterWithDescriptor("concurrent", func() sm.CreateFunc {
 		return NewKVConcurrentCreateFunc()
 	}, Descriptor{
-		Description: "Sharded in-memory KV SM with concurrent reads",
-		Persistence: PersistenceMemory,
-		Kind:        SMKindConcurrent,
-		// KV and batch only. These factories construct their state machine
-		// with no options, so the MVCC store, lease manager, index manager and
-		// time-series store are all nil and every operation in those families
-		// refuses with ServiceNotConfiguredError. The five capabilities that
-		// used to be listed here were never implemented on this state machine
-		// (go-qrdb#135); adding one back requires wiring it AND a test that
-		// exercises it, per go-qrdb#136.
-		Capabilities: []Capability{CapabilityKV, CapabilityBatch},
+		Description:  "Sharded in-memory KV SM with concurrent reads",
+		Persistence:  PersistenceMemory,
+		Kind:         SMKindConcurrent,
+		Capabilities: caps(),
 	})
 
-	// "fast" is the high-performance 256-shard cache SM with async
-	// PebbleDB write-through, backed by FastBackend.
-	r.RegisterWithDescriptor("fast", func() sm.CreateFunc {
-		return NewKVFastCreateFunc(defaultStorageFactory())
+	// "fast" is the 256-shard cache SM with ordered asynchronous
+	// write-through to the storage raft.sm_storage selects, backed by
+	// FastBackend.
+	r.RegisterStorageGeneric("fast", func(newStorage StorageFactory) sm.CreateFunc {
+		return NewKVFastCreateFunc(newStorage)
 	}, Descriptor{
-		Description: "High-performance 256-shard cache SM with PebbleDB write-through",
-		Persistence: PersistenceHybrid,
-		Kind:        SMKindRegular,
-		// KV and batch only. These factories construct their state machine
-		// with no options, so the MVCC store, lease manager, index manager and
-		// time-series store are all nil and every operation in those families
-		// refuses with ServiceNotConfiguredError. The five capabilities that
-		// used to be listed here were never implemented on this state machine
-		// (go-qrdb#135); adding one back requires wiring it AND a test that
-		// exercises it, per go-qrdb#136.
-		Capabilities: []Capability{CapabilityKV, CapabilityBatch},
+		Description:  "High-performance 256-shard cache SM with write-through to raft.sm_storage",
+		Persistence:  PersistenceHybrid,
+		Kind:         SMKindRegular,
+		Capabilities: caps(),
 	})
 
 	// "disk" is a synchronous disk-backed KV state machine using
-	// DiskBackend with direct PebbleDB I/O.
-	r.RegisterWithDescriptor("disk", func() sm.CreateFunc {
-		return NewKVDiskCreateFunc(defaultStorageFactory())
+	// DiskBackend over the storage raft.sm_storage selects.
+	r.RegisterStorageGeneric("disk", func(newStorage StorageFactory) sm.CreateFunc {
+		return NewKVDiskCreateFunc(newStorage)
 	}, Descriptor{
-		Description: "Synchronous disk-backed KV SM with direct PebbleDB I/O",
-		Persistence: PersistenceDisk,
-		Kind:        SMKindDisk,
-		// KV and batch only. These factories construct their state machine
-		// with no options, so the MVCC store, lease manager, index manager and
-		// time-series store are all nil and every operation in those families
-		// refuses with ServiceNotConfiguredError. The five capabilities that
-		// used to be listed here were never implemented on this state machine
-		// (go-qrdb#135); adding one back requires wiring it AND a test that
-		// exercises it, per go-qrdb#136.
-		Capabilities: []Capability{CapabilityKV, CapabilityBatch},
+		Description:  "Synchronous disk-backed KV SM over raft.sm_storage",
+		Persistence:  PersistenceDisk,
+		Kind:         SMKindDisk,
+		Capabilities: caps(),
 	})
 
 	// "highperf" is a high-performance in-memory concurrent SM with
@@ -333,17 +502,10 @@ func newDefaultRegistry() *Registry {
 	r.RegisterWithDescriptor("highperf", func() sm.CreateFunc {
 		return NewKVHighPerfCreateFunc(nil)
 	}, Descriptor{
-		Description: "High-performance in-memory concurrent state machine with configurable sharding",
-		Persistence: PersistenceMemory,
-		Kind:        SMKindConcurrent,
-		// KV and batch only. These factories construct their state machine
-		// with no options, so the MVCC store, lease manager, index manager and
-		// time-series store are all nil and every operation in those families
-		// refuses with ServiceNotConfiguredError. The five capabilities that
-		// used to be listed here were never implemented on this state machine
-		// (go-qrdb#135); adding one back requires wiring it AND a test that
-		// exercises it, per go-qrdb#136.
-		Capabilities: []Capability{CapabilityKV, CapabilityBatch},
+		Description:  "High-performance in-memory concurrent state machine with configurable sharding",
+		Persistence:  PersistenceMemory,
+		Kind:         SMKindConcurrent,
+		Capabilities: caps(),
 	})
 
 	// ---------------------------------------------------------------
@@ -354,78 +516,35 @@ func newDefaultRegistry() *Registry {
 	r.RegisterWithDescriptor("regular", func() sm.CreateFunc {
 		return NewRegularCreateFunc()
 	}, Descriptor{
-		Description: "Legacy pure in-memory state machine (prefer 'standard')",
-		Persistence: PersistenceMemory,
-		Kind:        SMKindRegular,
-		// Batch is real here: RegularStateMachine dispatches protocol.OpBatch
-		// against its own map, so it was UNDER-declared (go-qrdb#135).
-		Capabilities: []Capability{CapabilityKV, CapabilityBatch},
+		Description:  "Legacy pure in-memory state machine (prefer 'standard')",
+		Persistence:  PersistenceMemory,
+		Kind:         SMKindRegular,
+		Capabilities: caps(),
 	})
 
 	return r
 }
 
-// dataDirRoot, when set via SetDataDirRoot, anchors the default storage
-// factory's per-replica directories under the deployment's real data
-// directory so they are DURABLE and REUSED across restarts.
-var (
-	dataDirMu   sync.RWMutex
-	dataDirRoot string
-	smStorage   string
-)
-
-// SetDataDirRoot anchors the default registry storage factory under dir
-// (typically the daemon's --data-dir). Composition roots MUST call this
-// before resolving a disk-persistent state machine from the registry;
-// without it the factory falls back to a fresh temp directory per process,
-// which is acceptable only for tests — a production replica started that
-// way loses its state on every restart.
-func SetDataDirRoot(dir string) {
-	dataDirMu.Lock()
-	dataDirRoot = dir
-	dataDirMu.Unlock()
-}
-
-// SetSMStorage selects the storage backend the default registry factory
-// composes under storage-generic state machines (raft.sm_storage):
-// "pebble" (the default when empty), "file", or "memory". Objstore is
-// deliberately NOT accepted here — it is a snapshot/backup tier, never
-// the hot apply path — and config validation refuses it before boot.
-// Composition roots call this alongside SetDataDirRoot before resolving
-// state machines from the registry.
-func SetSMStorage(kind string) {
-	dataDirMu.Lock()
-	smStorage = kind
-	dataDirMu.Unlock()
-}
-
-// defaultStorageFactory returns a storage factory that creates storage
-// instances in per-(shard, replica) directories on the backend selected
-// via SetSMStorage (pebble when unset). When
-// SetDataDirRoot has anchored a real data directory, paths are stable
-// across restarts ({root}/sm/shard-S-replica-R) and opened with the
-// production Pebble configuration; otherwise it falls back to a fresh
-// temp directory with the test configuration (tests only — see
-// SetDataDirRoot).
-func defaultStorageFactory() func(shardID, replicaID uint64) storage.Storage {
+// newStorageFactory returns the StorageFactory for sc: storage on the backend
+// sc.Kind selects (pebble when empty), in per-(shard, replica) directories.
+// When sc.Root anchors a real data directory, paths are stable across
+// restarts ({root}/sm/shard-S-replica-R) and opened with the production
+// Pebble configuration; otherwise each replica gets a fresh temp directory
+// with the test configuration (tests only — see StorageConfig.Root).
+//
+// sc.Kind has been validated by the caller. A storage that cannot be created
+// panics: sm.CreateFunc has no error return, and a replica without its
+// storage cannot start.
+func newStorageFactory(sc StorageConfig) StorageFactory {
 	return func(shardID, replicaID uint64) storage.Storage {
-		dataDirMu.RLock()
-		root := dataDirRoot
-		kind := smStorage
-		dataDirMu.RUnlock()
-
-		if kind == "memory" {
+		if sc.Kind == "memory" {
 			return memstore.NewStorage()
 		}
 
-		// Resolve the per-replica directory: stable under the data dir
-		// when anchored, a fresh temp dir otherwise (tests only — a
-		// production replica started that way loses its state on every
-		// restart).
 		var dir string
 		test := false
-		if root != "" {
-			dir = filepath.Join(root, "sm", fmt.Sprintf("shard-%d-replica-%d", shardID, replicaID))
+		if sc.Root != "" {
+			dir = filepath.Join(sc.Root, "sm", fmt.Sprintf("shard-%d-replica-%d", shardID, replicaID))
 			if err := os.MkdirAll(dir, 0o750); err != nil {
 				panic("statemachine: failed to create sm storage dir: " + err.Error())
 			}
@@ -438,7 +557,7 @@ func defaultStorageFactory() func(shardID, replicaID uint64) storage.Storage {
 			test = true
 		}
 
-		if kind == "file" {
+		if sc.Kind == "file" {
 			s, err := filestore.New(dir)
 			if err != nil {
 				panic("statemachine: failed to create file storage: " + err.Error())
@@ -451,6 +570,14 @@ func defaultStorageFactory() func(shardID, replicaID uint64) storage.Storage {
 			cfg = pebblestore.TestConfig(dir)
 		} else {
 			cfg = pebblestore.DefaultConfig(dir)
+		}
+		// Under the seal barrier every file Pebble writes — sstables, WAL,
+		// manifest — goes through the barrier-driven encfs, as it does for
+		// the pebble and mvcc state machines (store.WithEncryptor). The
+		// factory runs when the replica starts, after the barrier is
+		// unsealed.
+		if sc.Encryptor.Enabled() {
+			cfg.FS = sc.Encryptor.FS()
 		}
 		s, err := pebblestore.New(cfg)
 		if err != nil {
@@ -480,6 +607,18 @@ func Resolve(name string) (sm.CreateFunc, error) {
 // a type and backend combination.
 func ResolveTyped(smType, smBackend string) (sm.CreateFunc, error) {
 	return defaultRegistry.ResolveTyped(smType, smBackend)
+}
+
+// ResolveTypedWithStorage looks up a state machine from the default registry
+// and builds it over sc; see Registry.ResolveTypedWithStorage.
+func ResolveTypedWithStorage(smType, smBackend string, sc StorageConfig) (sm.CreateFunc, error) {
+	return defaultRegistry.ResolveTypedWithStorage(smType, smBackend, sc)
+}
+
+// RegisterStorageGeneric adds a storage-generic state machine to the default
+// registry; see Registry.RegisterStorageGeneric.
+func RegisterStorageGeneric(name string, factory StorageGenericFactory, desc Descriptor) {
+	defaultRegistry.RegisterStorageGeneric(name, factory, desc)
 }
 
 // Describe returns the Descriptor for a name from the default registry.

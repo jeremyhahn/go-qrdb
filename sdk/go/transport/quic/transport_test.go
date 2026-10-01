@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -341,7 +342,7 @@ func TestTransport_AddMember_Closed(t *testing.T) {
 	}
 	_ = tr.Close()
 	ctx := context.Background()
-	err = tr.AddMember(ctx, 1, 2, "10.0.0.1:63001")
+	err = tr.AddMember(ctx, 1, 2, "10.0.0.1:63001", "")
 	if err == nil {
 		t.Fatal("AddMember() on closed transport should return error")
 	}
@@ -609,16 +610,9 @@ func TestBuildTLSConfig_WithCustomConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildTLSConfig() returned unexpected error: %v", err)
 	}
-	// Verify ALPN is appended.
-	found := false
-	for _, p := range tlsCfg.NextProtos {
-		if p == "qrdb-quic" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("buildTLSConfig() should append qrdb-quic to NextProtos")
+	// Verify the wire protocol is appended.
+	if !slices.Contains(tlsCfg.NextProtos, wire.ProtocolV2) {
+		t.Errorf("buildTLSConfig() should append %q to NextProtos, got %v", wire.ProtocolV2, tlsCfg.NextProtos)
 	}
 	// Verify original "h3" is preserved.
 	foundH3 := false
@@ -636,7 +630,7 @@ func TestBuildTLSConfig_WithCustomConfig(t *testing.T) {
 func TestBuildTLSConfig_WithCustomConfigAlreadyHasALPN(t *testing.T) {
 	customCfg := &tls.Config{
 		MinVersion: tls.VersionTLS13,
-		NextProtos: []string{"qrdb-quic"},
+		NextProtos: []string{wire.ProtocolV2},
 	}
 	tr, err := New(
 		transport.WithAddress("localhost:63002"),
@@ -650,8 +644,9 @@ func TestBuildTLSConfig_WithCustomConfigAlreadyHasALPN(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildTLSConfig() returned unexpected error: %v", err)
 	}
-	if len(tlsCfg.NextProtos) != 1 {
-		t.Errorf("expected 1 NextProto, got %d", len(tlsCfg.NextProtos))
+	// The protocol the caller already listed is not duplicated.
+	if want := []string{wire.ProtocolV2}; !slices.Equal(tlsCfg.NextProtos, want) {
+		t.Errorf("NextProtos = %v, want %v", tlsCfg.NextProtos, want)
 	}
 }
 
@@ -668,8 +663,8 @@ func TestBuildTLSConfig_NoCustomConfig(t *testing.T) {
 	if tlsCfg.MinVersion != tls.VersionTLS13 {
 		t.Errorf("expected MinVersion TLS 1.3, got %d", tlsCfg.MinVersion)
 	}
-	if len(tlsCfg.NextProtos) != 1 || tlsCfg.NextProtos[0] != "qrdb-quic" {
-		t.Errorf("expected NextProtos [qrdb-quic], got %v", tlsCfg.NextProtos)
+	if want := []string{wire.ProtocolV2}; !slices.Equal(tlsCfg.NextProtos, want) {
+		t.Errorf("NextProtos = %v, want %v", tlsCfg.NextProtos, want)
 	}
 }
 

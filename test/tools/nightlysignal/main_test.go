@@ -18,6 +18,7 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -183,8 +184,15 @@ func TestRunRefusesAnIncompleteJobList(t *testing.T) {
 	if !errors.As(err, &coverage) {
 		t.Fatalf("error = %v, want *JobCoverageError", err)
 	}
-	if len(coverage.Missing) != 1 || coverage.Missing[0] != "trivy" {
-		t.Errorf("Missing = %v", coverage.Missing)
+	// Only fips was passed, so EVERY other declared job must be reported, not
+	// just one of them: a coverage check that named the first gap and stopped
+	// would let a second missing job through on the retry. Sorted, because the
+	// set is declared order-independent.
+	want := []string{"integration-cluster", "trivy"}
+	got := append([]string(nil), coverage.Missing...)
+	slices.Sort(got)
+	if !slices.Equal(got, want) {
+		t.Errorf("Missing = %v, want %v", coverage.Missing, want)
 	}
 }
 
@@ -200,6 +208,7 @@ func TestRunRefusesAnUnknownJobResult(t *testing.T) {
 		"-self", "signal",
 		"-job", "fips=" + fipsName + "=neutral",
 		"-job", "trivy=" + trivyName + "=" + resultSuccess,
+		"-job", "integration-cluster=" + integrationClusterName + "=" + resultSuccess,
 	}, io.Discard)
 
 	var unknown *UnknownResultError
@@ -224,6 +233,7 @@ func TestOneUndecidableJobDoesNotStopTheRest(t *testing.T) {
 		"-self", "signal",
 		"-job", "fips=" + fipsName + "=neutral",
 		"-job", "trivy=" + trivyName + "=" + resultFailure,
+		"-job", "integration-cluster=" + integrationClusterName + "=" + resultSuccess,
 	}, io.Discard)
 
 	if err == nil {

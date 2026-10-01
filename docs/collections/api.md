@@ -1,6 +1,6 @@
 # Document Collections — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-25
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column.
@@ -50,12 +50,24 @@ not-found, rather than silently operating in a database nothing created.
 ```json
 { "database": "app", "name": "products",
   "id_strategy": "field_hash", "field_hash": "sku",
-  "storage_codec": "json" }
+  "storage_codec": "json",
+  "indexes": [ { "field_name": "category" },
+               { "field_name": "barcode", "unique": true, "sparse": true } ] }
 ```
 
 `id_strategy` is `unix_nano` (default), `increment`, or `field_hash`.
 `field_hash` is required when the strategy is `field_hash` and ignored
 otherwise. The strategy is immutable after creation.
+
+`indexes` declares the collection's secondary indexes. Each is named
+`{database}.{collection}.{field_name}`, created and owned by the collection, and
+dropped with it. A definition with no `field_name` is refused with 400. The
+create returns only once every index exists; a create whose index cannot be
+built fails and leaves nothing behind. A name already held by another index is
+refused with 409 rather than shared, and two definitions of one field are
+refused with 400. On MCP, `indexes` is a JSON-encoded string
+holding this array, like every array-valued MCP argument; on gRPC, Unix and QUIC
+it is `repeated CollectionIndexDefinition indexes`.
 
 `CollectionInfo`:
 
@@ -63,11 +75,22 @@ otherwise. The strategy is immutable after creation.
 { "name": "products", "database": "app",
   "id_strategy": "field_hash", "field_hash": "sku",
   "schema": {}, "document_count": 421,
-  "storage_codec": "json", "created_at": "2026-08-19T10:00:00Z" }
+  "indexes": [ { "field_name": "category" } ],
+  "storage_codec": "json", "created_at": "2026-08-19T10:00:00Z",
+  "state": "active", "state_since": "2026-08-19T10:00:00Z" }
 ```
 
 `schema` is descriptive metadata. **It is not enforced on write** — documents
 are free-form.
+
+`state` is the collection's lifecycle state: `active`, `creating` (its indexes
+are being built) or `dropping` (it is being torn down); `state_since` is when it
+entered it. Every state is reported by info and list. **Only an `active`
+collection serves documents**: insert, get, update, delete-document and
+list-documents on a `creating` or `dropping` collection are refused with 409 /
+`FAILED_PRECONDITION` — a drop removes every document itself. A collection left
+`creating` or `dropping` by an interrupted operation is finished by the server
+within minutes.
 
 `DocumentResponse`:
 
@@ -132,6 +155,14 @@ bounded by an operator action.
 | Collection already exists | 409 | `ALREADY_EXISTS` — `service.CollectionAlreadyExistsError` |
 | Unknown collection | 404 | `NOT_FOUND` — never auto-created |
 | Unknown document ID | 404 | `NOT_FOUND` |
+| Document verb on a `creating` or `dropping` collection | 409 | `FAILED_PRECONDITION` — `service.CollectionNotActiveError` |
+| Index definition with no `field_name` | 400 | `INVALID_ARGUMENT` — `service.CollectionInvalidIndexError` |
+| A declared index's name is held by another index | 409 | `FAILED_PRECONDITION` — `index.OwnershipError`; the create leaves nothing behind |
+| Two index definitions naming the same field | 400 | `INVALID_ARGUMENT` — `service.CollectionInvalidIndexError` |
+| A write decided against a collection since dropped and created again | 409 | `ABORTED` — retry writes into the new collection |
+| A write whose outcome is unknown (its fence or retraction failed) | 500 | `INTERNAL` — the document may be stored |
+| A create or drop lost a race to a concurrent one | 409 | `ABORTED` — `service.CollectionStateConflictError` |
+| Document write exceeds the tenant's storage quota | 429 | `RESOURCE_EXHAUSTED` — `quota.ExceededError` |
 | `field_hash` strategy without `field_hash`, or unknown strategy | 400 | `INVALID_ARGUMENT` |
 | Malformed document JSON | 400 | `INVALID_ARGUMENT` |
 | Missing permission | 403 | `PERMISSION_DENIED` |

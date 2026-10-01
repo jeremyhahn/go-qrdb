@@ -13,74 +13,16 @@
 // limitations under the License.
 
 // Package dekwire converts tenant DEK keyring results to their transport
-// wire shapes. It is the one conversion every JSON transport (REST, QUIC,
-// MCP) and the embedded transport share, so they cannot drift apart.
+// wire shapes. It is the one conversion every transport shares, so they
+// cannot drift apart. Error classification is not here: keyring errors are
+// rows in pkg/api/errclass, like every other condition.
 package dekwire
 
 import (
-	"errors"
-
-	"google.golang.org/grpc/codes"
-
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
-
-// codeByClass maps each keyring error class to its canonical status code.
-// Every transport renders that code in its own vocabulary — gRPC directly,
-// QUIC and MCP through their gRPC-code correspondence tables, REST through
-// HTTPStatus — so a condition means the same thing on every wire.
-var codeByClass = []struct {
-	class error
-	code  codes.Code
-}{
-	{dek.ErrInvalidInput, codes.InvalidArgument},
-	{dek.ErrCrossTenant, codes.PermissionDenied},
-	{dek.ErrMalformedCiphertext, codes.InvalidArgument},
-	{dek.ErrAuthenticationFailed, codes.InvalidArgument},
-	{dek.ErrUnknownVersion, codes.NotFound},
-	{dek.ErrVersionRetired, codes.FailedPrecondition},
-	{dek.ErrRetireCurrentVersion, codes.FailedPrecondition},
-	{dek.ErrKeyringUnavailable, codes.Unavailable},
-	{dek.ErrCorruptKeyring, codes.DataLoss},
-	{dek.ErrConcurrentUpdate, codes.Aborted},
-	{dek.ErrCrypto, codes.Internal},
-}
-
-// Code classifies a keyring error. ok is false for an error that is not
-// from the keyring, leaving the caller's own classification in charge. The
-// classes are mutually exclusive, so the table order does not matter.
-func Code(err error) (code codes.Code, ok bool) {
-	for _, m := range codeByClass {
-		if errors.Is(err, m.class) {
-			return m.code, true
-		}
-	}
-	return codes.Unknown, false
-}
-
-// httpStatusByCode renders the codes Code produces as HTTP statuses.
-var httpStatusByCode = map[codes.Code]int{
-	codes.InvalidArgument:    400,
-	codes.PermissionDenied:   403,
-	codes.NotFound:           404,
-	codes.FailedPrecondition: 409,
-	codes.Aborted:            409,
-	codes.Unavailable:        503,
-	codes.DataLoss:           500,
-	codes.Internal:           500,
-}
-
-// HTTPStatus classifies a keyring error as an HTTP status. ok is false for an
-// error that is not from the keyring.
-func HTTPStatus(err error) (int, bool) {
-	code, ok := Code(err)
-	if !ok {
-		return 0, false
-	}
-	return httpStatusByCode[code], true
-}
 
 // Status converts keyring status to its wire form. Versions is never nil, so
 // a tenant with no keyring encodes as an empty list rather than null.

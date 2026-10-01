@@ -55,6 +55,8 @@
 package integration_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -90,6 +92,7 @@ func start3NodeMultiProtocolCluster(t *testing.T) (nodes [3]*multiProtoNode, lea
 	grpcPorts := allocateTCPPorts(t, 3)
 	mcpPorts := allocateTCPPorts(t, 3)
 	peersFlag := buildPeersFlag(raftPorts)
+	nodeTLS, memberIDs := ca.clusterNodeTLS(t, len(raftPorts))
 
 	dataDirs := make([]string, 3)
 	unixSockets := make([]string, 3)
@@ -116,6 +119,7 @@ func start3NodeMultiProtocolCluster(t *testing.T) (nodes [3]*multiProtoNode, lea
 			"--sm", "mvcc",
 			"--discovery", "static",
 			"--peers", peersFlag,
+			"--member-identities", memberIDs,
 			"--shard-id", "1",
 			"--replica-id", fmt.Sprintf("%d", i+1),
 			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
@@ -127,7 +131,7 @@ func start3NodeMultiProtocolCluster(t *testing.T) (nodes [3]*multiProtoNode, lea
 			"--enable-mcp", "--mcp-port", fmt.Sprintf("%d", mcpPorts[i]),
 			"--enable-unix", "--unix-socket-path", unixSockets[i],
 		}
-		args = append(args, ca.tlsFlags(t)...)
+		args = append(args, nodeTLS[i]...)
 
 		startNode(t, bin, args, fmt.Sprintf("[admincluster-node%d] ", i+1))
 	}
@@ -410,8 +414,15 @@ func testAdminMemberLifecycleOverProtocol(t *testing.T, leader *multiProtoNode, 
 
 	placeholderAddr := "127.0.0.1:1"
 
+	// The throwaway replica is on no real node, so no committed membership
+	// names it: its member identity is supplied, as an operator does for a
+	// brand-new node. It is unique per replica ID because go-quicraft refuses
+	// one identity bound to two replicas.
+	sum := sha256.Sum256([]byte(fmt.Sprintf("throwaway-replica-%d", newReplicaID)))
+	identity := "spki:" + hex.EncodeToString(sum[:])
+
 	out, err := runCLIProto(t, leader, proto, "admin", "member", "add", placeholderAddr,
-		"--shard-id", "1", "--replica-id", fmt.Sprintf("%d", newReplicaID))
+		"--shard-id", "1", "--replica-id", fmt.Sprintf("%d", newReplicaID), "--identity", identity)
 	if err != nil {
 		t.Fatalf("[%s] admin member add (replica %d): %v\noutput: %s", proto.name, newReplicaID, err, out)
 	}

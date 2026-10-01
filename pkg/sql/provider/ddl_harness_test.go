@@ -63,6 +63,11 @@ type memStore struct {
 	mu   sync.Mutex
 	data map[string]*memRecord
 	rev  int64
+
+	// rejectTxn, when non-nil, makes every transaction whose success ops it
+	// matches lose its compare-and-swap without applying anything -- the
+	// way a test forces one specific catalog transaction to fail.
+	rejectTxn func(ops []service.Op) bool
 }
 
 func newMemStore() *memStore {
@@ -296,6 +301,7 @@ func (s *memStore) Range(_ context.Context, start, end []byte, opts ...service.R
 func (s *memStore) evalCompareLocked(c service.Compare) bool {
 	rec, ok := s.data[string(c.Key)]
 	var actual int64
+	var actualValue []byte
 	if ok {
 		switch c.Target {
 		case service.CompareModRevision:
@@ -304,6 +310,8 @@ func (s *memStore) evalCompareLocked(c service.Compare) bool {
 			actual = rec.createRevision
 		case service.CompareVersion:
 			actual = rec.version
+		case service.CompareValue:
+			actualValue = rec.value
 		}
 	}
 	if c.Result != service.CompareEqual {
@@ -316,6 +324,12 @@ func (s *memStore) evalCompareLocked(c service.Compare) bool {
 		return actual == c.CreateRevision
 	case service.CompareVersion:
 		return actual == c.Version
+	case service.CompareValue:
+		// An absent key's value reads as nil (bytes.Equal(nil, []byte{}) is
+		// true), matching pkg/mvcc.Evaluate/pebbleEvaluateCompare -- see
+		// RelationalTable.generationCompare's doc comment for why this
+		// distinction matters for go-qrdb#547's generation fencing.
+		return bytes.Equal(actualValue, c.Value)
 	}
 	return false
 }
@@ -343,6 +357,9 @@ func (s *memStore) txnExecute(compares []service.Compare, successOps, failureOps
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.rejectTxn != nil && s.rejectTxn(successOps) {
+		return &service.TransactionResponse{Succeeded: false}, nil
+	}
 	ok := true
 	for _, c := range compares {
 		if !s.evalCompareLocked(c) {
@@ -428,7 +445,11 @@ func newDDLHarness() *ddlHarness {
 	store := newMemStore()
 	txn := &memTxn{store: store}
 	seq := service.NewSequenceService(store, txn)
-	tableSvc := service.NewTableService(store, store, txn, seq)
+	// The harness's one store is also the system store reclaim-publishing
+	// DDL writes its index entries to; without WithReclaimIndex, TRUNCATE
+	// TABLE and RENAME INDEX refuse outright (go-qrdb#547).
+	tableSvc := service.NewTableService(store, store, txn, seq,
+		service.WithReclaimIndex(txn, service.StorePlacementShared, "harness"))
 	batchSvc := &memBatch{store: store}
 
 	return &ddlHarness{

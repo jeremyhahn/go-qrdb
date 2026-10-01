@@ -38,81 +38,6 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// tls.go: generateLeafFromCA — bad CA certificate DER (line 629-631)
-// ---------------------------------------------------------------------------
-
-// TestGenerateLeafFromCA_InvalidCACertDER exercises the error path where the
-// PEM block with type CERTIFICATE contains bytes that cannot be parsed as a
-// valid x509.Certificate.
-func TestGenerateLeafFromCA_InvalidCACertDER(t *testing.T) {
-	// Encode a CERTIFICATE block whose DER bytes are garbage so
-	// x509.ParseCertificate returns an error.
-	badCertPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: []byte("not-a-real-der-certificate"),
-	})
-
-	_, err := generateLeafFromCA(badCertPEM)
-	require.Error(t, err)
-	var keyErr *BootstrapKeyError
-	require.True(t, errors.As(err, &keyErr),
-		"expected BootstrapKeyError, got %T: %v", err, err)
-	assert.Equal(t, "CA certificate", keyErr.Kind)
-}
-
-// TestGenerateLeafFromCA_WrongPEMType exercises the early-return when
-// the input PEM contains no CERTIFICATE block at all.
-func TestGenerateLeafFromCA_WrongPEMType(t *testing.T) {
-	// PEM block with a different type — no CERTIFICATE present.
-	notCertPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "PRIVATE KEY",
-		Bytes: []byte("some-bytes"),
-	})
-
-	_, err := generateLeafFromCA(notCertPEM)
-	require.Error(t, err)
-	var keyErr *BootstrapKeyError
-	require.True(t, errors.As(err, &keyErr))
-	assert.Equal(t, "CA certificate", keyErr.Kind)
-}
-
-// TestGenerateLeafFromCA_InvalidCAKeyDER exercises the error path where the EC
-// PRIVATE KEY block contains bytes that cannot be parsed as an ECDSA private key.
-func TestGenerateLeafFromCA_InvalidCAKeyDER(t *testing.T) {
-	// Build a valid CA so we have a parseable CA certificate PEM block.
-	caCertPEM, _, _, _, err := generateCA(time.Hour)
-	require.NoError(t, err)
-
-	// Append a EC PRIVATE KEY block with corrupt DER so x509.ParseECPrivateKey
-	// fails (covers lines 634-636 in tls.go).
-	badKeyPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "EC PRIVATE KEY",
-		Bytes: []byte("not-a-real-ec-key"),
-	})
-
-	combined := append(caCertPEM, badKeyPEM...)
-	_, err = generateLeafFromCA(combined)
-	require.Error(t, err)
-	var keyErr *BootstrapKeyError
-	require.True(t, errors.As(err, &keyErr))
-	assert.Equal(t, "CA private key", keyErr.Kind)
-}
-
-// TestGenerateLeafFromCA_MissingKeyBlock exercises the early-return where the PEM
-// remainder after the CA cert contains no EC PRIVATE KEY block.
-func TestGenerateLeafFromCA_MissingKeyBlock(t *testing.T) {
-	// Valid CA cert PEM with no key block following it.
-	caCertPEM, _, _, _, err := generateCA(time.Hour)
-	require.NoError(t, err)
-
-	_, err = generateLeafFromCA(caCertPEM)
-	require.Error(t, err)
-	var keyErr *BootstrapKeyError
-	require.True(t, errors.As(err, &keyErr))
-	assert.Equal(t, "CA private key", keyErr.Kind)
-}
-
-// ---------------------------------------------------------------------------
 // tls.go: canonicalizePath — EvalSymlinks returns non-ErrNotExist error
 // ---------------------------------------------------------------------------
 
@@ -144,11 +69,12 @@ func TestCanonicalizePath_SymlinkLoopReturnsError(t *testing.T) {
 func TestBootstrapUserRoleStores_ZeroReplicaID(t *testing.T) {
 	store := make(map[string][]byte)
 	mock := newMockKVStore(store)
+	tx := newMockTransactionServicer(store)
 
 	node := &mockRaftNode{}
 	// replicaID = 0 triggers idNode = 1 inside bootstrapUserRoleStores.
 	mgmt, err := bootstrapUserRoleStores(
-		context.Background(), mock, mock, node,
+		context.Background(), mock, mock, tx, node,
 		1, 0, // shardID=1, replicaID=0
 		&mockTenantServicer{}, false, nil, "", nil,
 	)
@@ -163,11 +89,12 @@ func TestBootstrapUserRoleStores_ZeroReplicaID(t *testing.T) {
 func TestBootstrapUserRoleStores_OversizedReplicaID(t *testing.T) {
 	store := make(map[string][]byte)
 	mock := newMockKVStore(store)
+	tx := newMockTransactionServicer(store)
 
 	node := &mockRaftNode{}
 	// 1024 > snowflakeMaxNode (1023) → NewSnowflakeGenerator returns error.
 	_, err := bootstrapUserRoleStores(
-		context.Background(), mock, mock, node,
+		context.Background(), mock, mock, tx, node,
 		1, 1024,
 		&mockTenantServicer{}, false, nil, "", nil,
 	)
@@ -187,17 +114,18 @@ func TestBootstrapUserRoleStores_OversizedReplicaID(t *testing.T) {
 func TestBootstrapAuthEnforcement_WithSPIFFETrustDomain(t *testing.T) {
 	store := make(map[string][]byte)
 	mock := newMockKVStore(store)
+	tx := newMockTransactionServicer(store)
 
 	node := &mockRaftNode{}
 	mgmt, err := bootstrapUserRoleStores(
-		context.Background(), mock, mock, node,
+		context.Background(), mock, mock, tx, node,
 		1, 1, &mockTenantServicer{}, false, nil, "", nil,
 	)
 	require.NoError(t, err)
 
 	dataDir := t.TempDir()
 	authResult, err := bootstrapAuthEnforcement(
-		context.Background(), mgmt, mock, &mockTxServicer{}, dataDir, node,
+		context.Background(), mgmt, dataDir, node,
 		audit.NewNoopLogger(),
 		false,
 		"spiffe://example.org", // non-empty trust domain triggers line 1907-1909
@@ -205,6 +133,7 @@ func TestBootstrapAuthEnforcement_WithSPIFFETrustDomain(t *testing.T) {
 		nil, // no cert provider: revocation not enforced
 		"",  // revocation cache TTL: default
 		"",  // audit failure policy: default (fail-closed)
+		"",  // mtls binding policy: default (enrolled)
 	)
 	require.NoError(t, err)
 	require.NotNil(t, authResult)
@@ -222,10 +151,11 @@ func TestBootstrapAuthEnforcement_WithSPIFFETrustDomain(t *testing.T) {
 func TestBootstrapAuthEnforcement_NilComplianceAudit(t *testing.T) {
 	store := make(map[string][]byte)
 	mock := newMockKVStore(store)
+	tx := newMockTransactionServicer(store)
 
 	node := &mockRaftNode{}
 	mgmt, err := bootstrapUserRoleStores(
-		context.Background(), mock, mock, node,
+		context.Background(), mock, mock, tx, node,
 		1, 1, &mockTenantServicer{}, false, nil, "", nil,
 	)
 	require.NoError(t, err)
@@ -233,13 +163,14 @@ func TestBootstrapAuthEnforcement_NilComplianceAudit(t *testing.T) {
 	dataDir := t.TempDir()
 	// nil complianceAudit → custodian.NewService returns ErrNilAuditLogger.
 	_, err = bootstrapAuthEnforcement(
-		context.Background(), mgmt, mock, &mockTxServicer{}, dataDir, node,
+		context.Background(), mgmt, dataDir, node,
 		nil, // nil complianceAudit
 		false, "",
 		qrdbconfig.AuthABACConfig{},
 		nil, // no cert provider: revocation not enforced
 		"",  // revocation cache TTL: default
 		"",  // audit failure policy: default (fail-closed)
+		"",  // mtls binding policy: default (enrolled)
 	)
 	require.Error(t, err)
 	var abe *AuthBootstrapError
@@ -522,7 +453,7 @@ func TestRunStart_AuthDisabled_ServerStartFails(t *testing.T) {
 
 	f := &startFlags{
 		dataDir:         dir,
-		smType:          "memory",
+		smType:          "pebble",
 		discoveryMethod: "static",
 		peers:           []string{fmt.Sprintf("1=%s", raftAddr)},
 		listen:          fmt.Sprintf("0.0.0.0:%d", raftPort),
@@ -568,7 +499,7 @@ func TestRunStart_VectorStorageFails(t *testing.T) {
 
 	f := &startFlags{
 		dataDir:         dir,
-		smType:          "memory",
+		smType:          "pebble",
 		discoveryMethod: "static",
 		peers:           []string{fmt.Sprintf("1=%s", raftAddr)},
 		listen:          fmt.Sprintf("0.0.0.0:%d", raftPort),
@@ -608,7 +539,7 @@ func TestRunStart_SealEnabled_AwaitUnsealFails(t *testing.T) {
 
 	f := &startFlags{
 		dataDir:         dir,
-		smType:          "memory",
+		smType:          "pebble",
 		discoveryMethod: "static",
 		peers:           []string{fmt.Sprintf("1=%s", raftAddr)},
 		listen:          fmt.Sprintf("0.0.0.0:%d", raftPort),
@@ -700,7 +631,7 @@ func TestRunStart_AuditFileLoggerFails(t *testing.T) {
 
 	f := &startFlags{
 		dataDir:         dir,
-		smType:          "memory",
+		smType:          "pebble",
 		discoveryMethod: "static",
 		peers:           []string{fmt.Sprintf("1=%s", raftAddr)},
 		listen:          fmt.Sprintf("0.0.0.0:%d", raftPort),
@@ -727,9 +658,21 @@ func TestRunStart_AuditFileLoggerFails(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestRunStart_DynamicMembership_FailsAndReturns covers the dynamic membership
-// conditional (lines 1373-1379) by using dynamicMembership=true with a memory
-// SM (which has no lease service), causing startDynamicMembership to fail.
-// The function returns an error deterministically without needing SIGTERM.
+// conditional (lines 1373-1379) by using dynamicMembership=true with the
+// "pebble" SM, causing startDynamicMembership to fail.
+//
+// "pebble" is used deliberately rather than "memory": go-qrdb#555's boot-time
+// capability probe now refuses "memory" (and "concurrent") before first boot
+// completes at all, which would make this test fail at an earlier, unrelated
+// point and never reach the dynamic-membership code path under test.
+// "pebble" gets past first boot (it supports the guarded-batch capability
+// atomic role/user creation needs) but still has no MVCC revision history —
+// membership registration grants a lease, which requires one — so
+// startDynamicMembership fails for the SAME reason "memory" used to,
+// verified below by asserting on the actual error text rather than merely
+// its presence, so a future change that gives "pebble" real MVCC support
+// (unlike this test's premise) turns this red instead of silently
+// vacuous.
 func TestRunStart_DynamicMembership_FailsAndReturns(t *testing.T) {
 	dir := t.TempDir()
 
@@ -744,7 +687,7 @@ func TestRunStart_DynamicMembership_FailsAndReturns(t *testing.T) {
 
 	f := &startFlags{
 		dataDir:           dir,
-		smType:            "memory", // no lease/watch service → startDynamicMembership fails
+		smType:            "pebble", // guarded-batch capable, but no MVCC/lease support
 		discoveryMethod:   "static",
 		peers:             []string{fmt.Sprintf("1=%s", raftAddr)},
 		listen:            fmt.Sprintf("0.0.0.0:%d", raftPort),
@@ -763,7 +706,9 @@ func TestRunStart_DynamicMembership_FailsAndReturns(t *testing.T) {
 
 	err = runStart(f)
 	require.Error(t, err,
-		"runStart must fail when startDynamicMembership fails due to missing lease service")
+		"runStart must fail when startDynamicMembership fails due to the state machine lacking MVCC/lease support")
+	require.Contains(t, err.Error(), "MVCC",
+		"expected the failure to name the missing MVCC/lease capability, not some unrelated error")
 }
 
 // ---------------------------------------------------------------------------
@@ -788,7 +733,7 @@ func TestRunStart_WithVolumePool_ThenSIGTERM(t *testing.T) {
 
 	f := &startFlags{
 		dataDir:         dir,
-		smType:          "memory",
+		smType:          "pebble",
 		discoveryMethod: "static",
 		peers:           []string{fmt.Sprintf("1=%s", raftAddr)},
 		listen:          fmt.Sprintf("0.0.0.0:%d", raftPort),
@@ -972,75 +917,9 @@ func TestLoadTLSFromFilesWithExtra_AdditionalCASymlinkLoopError(t *testing.T) {
 // bootstrap.go: startBootstrapServers — WriteFile failure on key path (line 349-351)
 // ---------------------------------------------------------------------------
 
-// TestStartBootstrapServers_WriteKeyFileFails verifies that a failure to write
-// the Noise static key file (because keyPath is a directory) returns a
-// BootstrapServerError (covers bootstrap.go:349-351).
-func TestStartBootstrapServers_WriteKeyFileFails(t *testing.T) {
-	dir := t.TempDir()
-
-	bundle, err := generateCATLS()
-	require.NoError(t, err)
-
-	// Create a directory at the noise-key.hex path so os.WriteFile fails.
-	keyFilePath := filepath.Join(dir, noiseKeyFile)
-	require.NoError(t, os.MkdirAll(keyFilePath, 0o700))
-
-	f := &startFlags{
-		dataDir: dir,
-		host:    testBindHost,
-	}
-	// The key write fails before the listener opens; reserved anyway, for the
-	// reason given in TestStartBootstrapServers_InvalidExistingKey
-	// (go-qrdb#313).
-	reserveNoisePort(t, f)
-
-	if !noiseServed() {
-		// No key is generated, so the blocking directory is never opened.
-		assertAdvertisesWithoutNoise(t, bundle, f)
-		return
-	}
-
-	_, err = startBootstrapServers(bundle, f, newDiscardLogger())
-	require.Error(t, err)
-	var bsErr *BootstrapServerError
-	require.True(t, errors.As(err, &bsErr),
-		"expected BootstrapServerError, got %T: %v", err, err)
-	assert.Equal(t, "noise", bsErr.Protocol)
-}
-
 // ---------------------------------------------------------------------------
 // bootstrap.go: startBootstrapServers — srv.Start() failure (line 376-378)
 // ---------------------------------------------------------------------------
-
-// TestStartBootstrapServers_StartFails verifies that when the Noise server
-// cannot bind to the requested port (one that is already taken),
-// startBootstrapServers returns a BootstrapServerError wrapping the bind error
-// (covers bootstrap.go:376-378).
-func TestStartBootstrapServers_StartFails(t *testing.T) {
-	dir := t.TempDir()
-
-	bundle, err := generateCATLS()
-	require.NoError(t, err)
-
-	f := &startFlags{
-		dataDir:            dir,
-		bootstrapNoisePort: occupiedTCPPort(t),
-		host:               testBindHost,
-	}
-
-	if !noiseServed() {
-		// No listener is opened, so there is no address to collide with.
-		assertAdvertisesWithoutNoise(t, bundle, f)
-		return
-	}
-
-	_, err = startBootstrapServers(bundle, f, newDiscardLogger())
-	require.Error(t, err)
-	var bsErr *BootstrapServerError
-	require.True(t, errors.As(err, &bsErr),
-		"expected BootstrapServerError for bind failure, got %T: %v", err, err)
-	assert.Equal(t, "noise", bsErr.Protocol)
-}
 
 // ---------------------------------------------------------------------------
 // Helpers shared by tests in this file
@@ -1084,7 +963,7 @@ func (m *minimalAdminServicer) Status(_ context.Context) (*service.StatusInfo, e
 func (m *minimalAdminServicer) Peers(_ context.Context) (*service.PeersInfo, error) {
 	return &service.PeersInfo{}, nil
 }
-func (m *minimalAdminServicer) AddMember(_ context.Context, _, _ uint64, _ string) error {
+func (m *minimalAdminServicer) AddMember(_ context.Context, _, _ uint64, _, _ string) error {
 	return nil
 }
 func (m *minimalAdminServicer) RemoveMember(_ context.Context, _, _ uint64) error { return nil }

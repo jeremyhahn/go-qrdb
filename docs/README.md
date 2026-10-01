@@ -73,6 +73,7 @@ the code, the document is wrong and gets fixed — never the reverse.
 | [clustering](clustering/) | peer discovery, cluster formation, membership, node admin, rebalance |
 | [run-modes](run-modes/) | standalone vs raft, the three capability gates |
 | [configuration](configuration/) | load order, validation, the flag/YAML mapping |
+| [deployment](deployment/) | host requirements — locked memory, container and systemd caps |
 | [api-server](api-server/) | the unified multi-protocol server and the `ServiceModule` seam |
 
 ### Security and identity
@@ -91,6 +92,7 @@ the code, the document is wrong and gets fixed — never the reverse.
 | [auth-factors](auth-factors/) | the `Factor` framework, the N-factor model, PIN custody |
 | [audit](audit/) | compliance-grade audit logging and query |
 | [rate-limit](rate-limit/) | per-permission request throttling, enforced identically across every transport |
+| [attested-caller](attested-caller/) | the attested-caller gate: admit a gated operation only from a peer whose measured state is currently acceptable |
 | [multi-tenancy](multi-tenancy/) | the isolation ladder, quotas, entitlements, per-tenant barriers |
 
 ### Interfaces
@@ -101,9 +103,10 @@ the code, the document is wrong and gets fixed — never the reverse.
 
 ## Migration state
 
-**All 37 currently-implemented features have a `docs/<feature>/` folder with all
+**All 39 currently-implemented features have a `docs/<feature>/` folder with all
 five files** (migrated 2026-08-19; [rate-limit](rate-limit/) and
-[coordination](coordination/) added 2026-09-10; [tenant-dek](tenant-dek/) added
+[coordination](coordination/) added 2026-09-10;
+[attested-caller](attested-caller/) added 2026-09-25; [tenant-dek](tenant-dek/) added
 2026-10-01). The portfolio view is derived,
 not maintained — count `docs/*/architecture.md`.
 

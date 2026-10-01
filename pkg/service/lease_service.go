@@ -54,7 +54,7 @@ func (s *LeaseService) Grant(ctx context.Context, ttl int64) (*Lease, error) {
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
-		return nil, s.translateProposeError(err)
+		return nil, translateProposeError(err)
 	}
 
 	// Check for an SM-encoded application error (e.g. lease subsystem not
@@ -81,7 +81,7 @@ func (s *LeaseService) Revoke(ctx context.Context, leaseID int64) error {
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
-		return s.translateProposeError(err)
+		return translateProposeError(err)
 	}
 	if resultErr := checkResultError(result); resultErr != nil {
 		return &ProposeError{Err: resultErr}
@@ -98,7 +98,7 @@ func (s *LeaseService) KeepAlive(ctx context.Context, leaseID int64) (*Lease, er
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
-		return nil, s.translateProposeError(err)
+		return nil, translateProposeError(err)
 	}
 	if resultErr := checkResultError(result); resultErr != nil {
 		return nil, &ProposeError{Err: resultErr}
@@ -137,20 +137,6 @@ func (s *LeaseService) Leases(ctx context.Context) ([]*Lease, error) {
 	return leases, nil
 }
 
-// translateProposeError converts QuicRaft proposal errors to service-level
-// typed errors.
-func (s *LeaseService) translateProposeError(err error) error {
-	var nle *quicraft.NotLeaderError
-	if errors.As(err, &nle) {
-		return &NotLeaderError{
-			ShardID:       nle.ShardID,
-			LeaderID:      nle.LeaderID,
-			LeaderAddress: nle.LeaderAddress,
-		}
-	}
-	return &ProposeError{Err: err}
-}
-
 // translateReadError converts QuicRaft read errors to service-level
 // typed errors.
 func (s *LeaseService) translateReadError(err error) error {
@@ -161,6 +147,18 @@ func (s *LeaseService) translateReadError(err error) error {
 			LeaderID:      nle.LeaderID,
 			LeaderAddress: nle.LeaderAddress,
 		}
+	}
+
+	// A missing lease is a typed, actionable condition -- returned as-is,
+	// the same way MVCCKVService.translateReadError returns KeyNotFoundError
+	// unwrapped rather than folding it into the generic ReadError. Every
+	// transport's classifier already has a *LeaseNotFoundError arm; wrapping
+	// it in ReadError here would bury it behind that family's catch-all,
+	// which is exactly the ordering bug those classifiers guard against for
+	// every other typed cause.
+	var lnf *LeaseNotFoundError
+	if errors.As(err, &lnf) {
+		return lnf
 	}
 	return &ReadError{Err: err}
 }

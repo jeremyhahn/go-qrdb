@@ -96,7 +96,7 @@ func TestClient_Cluster_AddRemoveReplica(t *testing.T) {
 	defer client.Close()
 
 	cc := client.Cluster()
-	if err := cc.AddReplica(context.Background(), 0, 4, "127.0.0.1:63004"); err != nil {
+	if err := cc.AddReplica(context.Background(), 0, 4, "127.0.0.1:63004", ""); err != nil {
 		t.Fatalf("AddReplica: %v", err)
 	}
 	if err := cc.RemoveReplica(context.Background(), 0, 4); err != nil {

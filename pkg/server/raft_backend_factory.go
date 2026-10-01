@@ -110,11 +110,14 @@ type raftShard struct {
 	tenantID string
 	database string
 	shardID  uint64
-	dataDir  string // absolute shard DataDir (absDir); SM Pebble at {dataDir}/shard-{shardID}
-	hub      *watch.Hub
-	lessor   *lease.Lessor
-	services *DatabaseServices
-	cancel   context.CancelFunc
+	// replicaID is this node's replica ID in the shard -- the
+	// placement-assigned one, not necessarily the factory's localReplicaID.
+	replicaID uint64
+	dataDir   string // absolute shard DataDir (absDir); SM Pebble at {dataDir}/shard-{shardID}
+	hub       *watch.Hub
+	lessor    *lease.Lessor
+	services  *DatabaseServices
+	cancel    context.CancelFunc
 
 	// dedicatedWAL is the per-tenant-KEY WAL store registered in the shared
 	// host's multiplex for this shard (4d Option C), or nil when the shard uses
@@ -168,7 +171,10 @@ type raftDatabaseInfoSource interface {
 //
 // RaftBackendFactory is safe for concurrent use.
 type RaftBackendFactory struct {
-	host           *quicraft.Host
+	host *quicraft.Host
+	// leaderOf reads a shard's current leader replica. It is the host's
+	// GetLeaderID; LeadsShard reads leadership through it alone.
+	leaderOf       func(shardID uint64) (replicaID uint64, known bool, err error)
 	adapter        *raftbackend.HostAdapter
 	localReplicaID uint64
 	localRaftAddr  string
@@ -276,12 +282,17 @@ func NewRaftBackendFactory(
 	if logger == nil {
 		logger = slog.Default()
 	}
-	var adapter *raftbackend.HostAdapter
+	var (
+		adapter  *raftbackend.HostAdapter
+		leaderOf func(uint64) (uint64, bool, error)
+	)
 	if host != nil {
 		adapter = raftbackend.New(host)
+		leaderOf = host.GetLeaderID
 	}
 	f := &RaftBackendFactory{
 		host:           host,
+		leaderOf:       leaderOf,
 		adapter:        adapter,
 		localReplicaID: localReplicaID,
 		localRaftAddr:  localRaftAddr,
@@ -439,6 +450,10 @@ func (f *RaftBackendFactory) Services(ctx context.Context, tenantID, db string) 
 		localReplica, rOK := pInfo.ReplicaForNode(f.localRaftAddr)
 		if rOK {
 			members := pInfo.Members()
+			// Every replica the placement names, kept apart from members
+			// (which the join path clears): it is who the founding
+			// identities cover and who a joiner accepts its bootstrap from.
+			peers := pInfo.Members()
 			join := localReplica.State == placement.ReplicaStateObserver
 			// The LOCAL role must agree with the replicated membership for
 			// the whole observer window (go-quicraft checkSelfRole latches a
@@ -457,8 +472,8 @@ func (f *RaftBackendFactory) Services(ctx context.Context, tenantID, db string) 
 			if join {
 				members = nil
 			}
-			rs, merr := f.startShardAsMember(tenantID, db, shardID, dataDir, tb,
-				localReplica.ReplicaID, join, isObserver, members, dedicatedWAL)
+			rs, merr := f.startShardAsMember(ctx, tenantID, db, shardID, dataDir, tb,
+				localReplica.ReplicaID, join, isObserver, members, peers, dedicatedWAL)
 			if merr != nil && isObserver && !join && errors.Is(merr, quicraft.ErrNonVotingRoleInMembers) {
 				// An ObserverReady replica with NO persisted shard state: its
 				// prior join bootstrap was wiped (demotion purge racing a
@@ -474,8 +489,8 @@ func (f *RaftBackendFactory) Services(ctx context.Context, tenantID, db string) 
 					slog.String("database", db),
 					slog.Uint64("shard_id", shardID),
 					slog.Uint64("replica_id", localReplica.ReplicaID))
-				rs, merr = f.startShardAsMember(tenantID, db, shardID, dataDir, tb,
-					localReplica.ReplicaID, true, true, nil, dedicatedWAL)
+				rs, merr = f.startShardAsMember(ctx, tenantID, db, shardID, dataDir, tb,
+					localReplica.ReplicaID, true, true, nil, peers, dedicatedWAL)
 			}
 			if merr != nil {
 				return nil, merr
@@ -485,12 +500,32 @@ func (f *RaftBackendFactory) Services(ctx context.Context, tenantID, db string) 
 		}
 	}
 
-	rs, err := f.startShard(tenantID, db, shardID, dataDir, tb, dedicatedWAL)
+	rs, err := f.startShard(ctx, tenantID, db, shardID, dataDir, tb, dedicatedWAL)
 	if err != nil {
 		return nil, err
 	}
 	f.shards[key] = rs
 	return rs.services, nil
+}
+
+// LeadsDatabase reports whether this node's replica currently leads the
+// dedicated Raft group of (tenantID, db). It consults only shards this node
+// has already started -- it never attaches one -- so asking about a database
+// this node is not a member of is free of side effects and answers false.
+// The reclaim sweeper uses it to decide which node sweeps a dedicated-group
+// database's reclaim jobs (go-qrdb#547).
+func (f *RaftBackendFactory) LeadsDatabase(tenantID, db string) bool {
+	if f == nil || f.host == nil {
+		return false
+	}
+	f.mu.Lock()
+	rs, ok := f.shards[raftShardKey{tenantID: tenantID, database: db}]
+	f.mu.Unlock()
+	if !ok {
+		return false
+	}
+	info, err := f.host.GetShardInfo(rs.shardID)
+	return err == nil && info != nil && info.IsLeader
 }
 
 // Attach starts (and caches) a dedicated raft shard eagerly. It is used at boot
@@ -523,6 +558,23 @@ func (f *RaftBackendFactory) ListStarted() []StartedShard {
 	return out
 }
 
+// LeadsShard reports whether this node's replica currently leads the started
+// dedicated shard for (tenantID, db). False for a shard that is not started
+// here, and whenever leadership cannot be read. A background task that must
+// run once per shard rather than once per replica -- the collection sweeper --
+// asks this first, so its proposals come from the replica that would serve
+// them anyway.
+func (f *RaftBackendFactory) LeadsShard(tenantID, db string) bool {
+	f.mu.Lock()
+	rs, ok := f.shards[raftShardKey{tenantID: tenantID, database: db}]
+	f.mu.Unlock()
+	if !ok || f.leaderOf == nil {
+		return false
+	}
+	id, known, err := f.leaderOf(rs.shardID)
+	return err == nil && known && id == rs.replicaID
+}
+
 // StartedAsObserver reports whether the locally running shard for
 // (tenantID, db) was started with the observer role latched into its local
 // go-quicraft configuration. False for a shard that is not started. The
@@ -540,9 +592,9 @@ func (f *RaftBackendFactory) StartedAsObserver(tenantID, db string) bool {
 // startShard starts a single-node dedicated shard using the factory's local
 // replica ID and address. It is the Phase-4b compatibility path: a single local
 // replica bootstrapped with join=false. Caller holds f.mu.
-func (f *RaftBackendFactory) startShard(tenantID, db string, shardID uint64, dataDir string, tb *seal.TenantBarrier, dedicatedWAL bool) (*raftShard, error) {
+func (f *RaftBackendFactory) startShard(ctx context.Context, tenantID, db string, shardID uint64, dataDir string, tb *seal.TenantBarrier, dedicatedWAL bool) (*raftShard, error) {
 	members := map[uint64]string{f.localReplicaID: f.localRaftAddr}
-	return f.startShardAsMember(tenantID, db, shardID, dataDir, tb, f.localReplicaID, false, false, members, dedicatedWAL)
+	return f.startShardAsMember(ctx, tenantID, db, shardID, dataDir, tb, f.localReplicaID, false, false, members, members, dedicatedWAL)
 }
 
 // startShardAsMember builds the per-shard subsystems and starts the shard on
@@ -555,6 +607,7 @@ func (f *RaftBackendFactory) startShard(tenantID, db string, shardID uint64, dat
 // Leader shards wait for leadership election before binding services. Joining
 // followers do not wait for leadership — they are not the leader.
 func (f *RaftBackendFactory) startShardAsMember(
+	ctx context.Context,
 	tenantID, db string,
 	shardID uint64,
 	dataDir string,
@@ -563,6 +616,7 @@ func (f *RaftBackendFactory) startShardAsMember(
 	join bool,
 	isObserver bool,
 	members map[uint64]string,
+	peers map[uint64]string,
 	dedicatedWAL bool,
 ) (*raftShard, error) {
 	// quicraftconfig.Config.DataDir must be an absolute path; the volume-pool
@@ -594,6 +648,18 @@ func (f *RaftBackendFactory) startShardAsMember(
 		DataDir:    absDir,
 		IsObserver: isObserver,
 	}
+	// Every peer is placed on an existing cluster node, whose identity the
+	// system shard has already committed.
+	identities, err := service.MemberIdentities(ctx, f.host, shardID, replicaID, join, peers)
+	if err != nil {
+		if registeredWAL != nil {
+			if detached, ok := f.walMux.Unregister(shardID); ok && detached != nil {
+				_ = detached.Close()
+			}
+		}
+		return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "member-identities", Err: err}
+	}
+	shardCfg.MemberIdentities = identities
 	if err := f.host.StartShard(members, join, createFn, shardCfg); err != nil {
 		if registeredWAL != nil {
 			if detached, ok := f.walMux.Unregister(shardID); ok && detached != nil {
@@ -623,6 +689,7 @@ func (f *RaftBackendFactory) startShardAsMember(
 		tenantID:     tenantID,
 		database:     db,
 		shardID:      shardID,
+		replicaID:    replicaID,
 		dataDir:      absDir,
 		hub:          hub,
 		lessor:       lessor,

@@ -29,6 +29,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -53,6 +54,11 @@ var (
 
 	// ErrNoTenantSPIFFEID indicates no tenant-scoped SPIFFE SAN was found.
 	ErrNoTenantSPIFFEID = errors.New("spiffe: no tenant spiffe identity present")
+
+	// ErrTrustDomainInvalid indicates a trust domain that does not survive
+	// being written into a SPIFFE ID and parsed back -- a path separator, a
+	// port, or anything else url.URL will not carry as a bare host.
+	ErrTrustDomainInvalid = errors.New("spiffe: trust domain does not round-trip through a spiffe id")
 )
 
 // Workload kinds.
@@ -156,4 +162,53 @@ func TenantFromCert(cert *x509.Certificate, pinnedTrustDomain string) (ID, error
 		return id, nil
 	}
 	return ID{}, ErrNoTenantSPIFFEID
+}
+
+// ValidateTrustDomain reports whether trustDomain can be pinned and minted
+// under: it must be non-empty and survive being written into a tenant SPIFFE ID
+// and parsed back unchanged by ParseID -- the same round trip the certificate
+// authority applies before it mints a SAN, and the one the authenticator
+// applies to a presented certificate. A trust domain that fails it would make
+// the CA refuse every certificate, so configuration validates it at load.
+//
+// A refusal is a *TrustDomainError carrying the rejected value; it unwraps to
+// ErrTrustDomainEmpty or ErrTrustDomainInvalid.
+func ValidateTrustDomain(trustDomain string) error {
+	if strings.TrimSpace(trustDomain) == "" {
+		return &TrustDomainError{Value: trustDomain, Err: ErrTrustDomainEmpty}
+	}
+	// The probe is valid by construction once the trust domain is non-blank,
+	// so String cannot come back empty here.
+	probe := ID{TrustDomain: trustDomain, TenantID: "tenant", Kind: KindUser, Name: "name"}
+	// Both halves of the round trip must hold: the URI parses, and it parses
+	// back to exactly the probe. url.URL either reproduces a host verbatim or
+	// refuses to parse it, so in practice the first half is the one that
+	// fails; the second is kept because it is the property that matters.
+	if u, err := url.Parse(probe.String()); err == nil {
+		if got, ok, err := ParseID(u); err == nil && ok && got == probe {
+			return nil
+		}
+	}
+	return &TrustDomainError{Value: trustDomain, Err: ErrTrustDomainInvalid}
+}
+
+// TrustDomainError reports a trust domain ValidateTrustDomain refused, and
+// carries the rejected value so the operator sees exactly what was
+// configured -- including leading or trailing whitespace, which is quoted.
+type TrustDomainError struct {
+	// Value is the trust domain as configured.
+	Value string
+
+	// Err is ErrTrustDomainEmpty or ErrTrustDomainInvalid.
+	Err error
+}
+
+// Error names the rejected value and why.
+func (e *TrustDomainError) Error() string {
+	return "spiffe: trust domain " + strconv.Quote(e.Value) + " refused: " + e.Err.Error()
+}
+
+// Unwrap returns the sentinel classifying the refusal.
+func (e *TrustDomainError) Unwrap() error {
+	return e.Err
 }

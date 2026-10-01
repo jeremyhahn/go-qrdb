@@ -202,6 +202,24 @@ func (lr *Lessor) Lookup(id int64) *Lease {
 	return lr.toLease(l)
 }
 
+// LookupOrNotFound is Lookup with the miss turned into a *NotFoundError
+// instead of a nil result. It exists because every LeaseTimeToLiveQuery
+// dispatcher (pkg/engine's MVCCEngine and pkg/store's PebbleStateMachine --
+// each backs a different raft.sm_type, and both hold a live Lessor in a
+// clustered deployment) needs to answer a missing lease identically, and
+// this is the single place that decision is made, so the two callers
+// cannot drift apart on what "not found" means. Callers translate the
+// returned *NotFoundError into their own layer's typed not-found error
+// (e.g. service.LeaseNotFoundError) at the boundary, the same way
+// Revoke/KeepAlive's callers already do.
+func (lr *Lessor) LookupOrNotFound(id int64) (*Lease, error) {
+	l := lr.Lookup(id)
+	if l == nil {
+		return nil, &NotFoundError{ID: id}
+	}
+	return l, nil
+}
+
 // Leases returns info for all active (non-expired) leases.
 func (lr *Lessor) Leases() []*Lease {
 	lr.mu.RLock()

@@ -633,7 +633,7 @@ func TestChangePasswordRefusesBeforeItTouchesKeyMaterial(t *testing.T) {
 
 	t.Run("sealed barrier", func(t *testing.T) {
 		b := newSwapBarrier(t, "sys/root")
-		if err := b.ChangePassword(ctx, Credentials{Secret: []byte("new-passphrase")}); !errors.Is(err, ErrSealed) {
+		if err := b.ChangePassword(ctx, MustCredentials([]byte("new-passphrase"))); !errors.Is(err, ErrSealed) {
 			t.Fatalf("error = %v, want ErrSealed", err)
 		}
 	})
@@ -643,7 +643,7 @@ func TestChangePasswordRefusesBeforeItTouchesKeyMaterial(t *testing.T) {
 		if err := b.Initialize(ctx, Credentials{}); err != nil {
 			t.Fatalf("Initialize: %v", err)
 		}
-		if err := b.ChangePassword(ctx, Credentials{Secret: nil}); !errors.Is(err, ErrInvalidPassphrase) {
+		if err := b.ChangePassword(ctx, Credentials{}); !errors.Is(err, ErrInvalidPassphrase) {
 			t.Fatalf("error = %v, want ErrInvalidPassphrase", err)
 		}
 	})

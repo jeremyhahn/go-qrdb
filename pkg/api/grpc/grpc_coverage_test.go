@@ -31,6 +31,7 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/internal/collectionpb"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
@@ -477,6 +478,12 @@ func (m *mockCollectionService) UpdateDocument(_ context.Context, _ *service.Upd
 		return nil, m.updateDocErr
 	}
 	return &service.UpdateDocumentResponse{}, nil
+}
+
+// UpsertDocument reports an insert: no test that uses this double drives
+// the guarded upsert, which is exercised against the real service.
+func (m *mockCollectionService) UpsertDocument(_ context.Context, req *service.UpsertDocumentRequest) (*service.UpsertDocumentResponse, error) {
+	return &service.UpsertDocumentResponse{ID: req.ID}, nil
 }
 func (m *mockCollectionService) DeleteDocument(_ context.Context, _ *service.DeleteDocumentRequest) (*service.DeleteDocumentResponse, error) {
 	if m.deleteDocErr != nil {
@@ -2644,7 +2651,7 @@ func TestCollectionInfoToProto(t *testing.T) {
 		DocumentCount: 42,
 		CreatedAt:     ts,
 	}
-	result := collectionInfoToProto(info)
+	result := collectionpb.InfoToProto(info)
 	if result.GetName() != "docs" {
 		t.Fatalf("expected name 'docs', got %q", result.GetName())
 	}

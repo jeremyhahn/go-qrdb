@@ -76,26 +76,26 @@ func TestWithRaftBackendFactory_RESTOption_NonNil(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// TenantHostRegistry — NewTenantHostRegistryFromServicer, Attach, Close
+// TenantHostRegistry — NewTenantHostRegistryFromLookup, Attach, Close
 // ---------------------------------------------------------------------------
 
-// TestNewTenantHostRegistryFromServicer verifies that the factory wraps the
+// TestNewTenantHostRegistryFromLookup verifies that the factory wraps the
 // servicer correctly and returns a non-nil registry.
-func TestNewTenantHostRegistryFromServicer(t *testing.T) {
+func TestNewTenantHostRegistryFromLookup(t *testing.T) {
 	t.Parallel()
 	svc := &mockTenantServicer{}
-	reg := NewTenantHostRegistryFromServicer(nil, svc, nil)
+	reg := NewTenantHostRegistryFromLookup(nil, svc, nil)
 	if reg == nil {
 		t.Fatal("expected non-nil TenantHostRegistry")
 	}
 }
 
-// TestNewTenantHostRegistryFromServicer_NilLogger verifies nil logger is accepted
+// TestNewTenantHostRegistryFromLookup_NilLogger verifies nil logger is accepted
 // (slog.Default() is used as fallback).
-func TestNewTenantHostRegistryFromServicer_NilLogger(t *testing.T) {
+func TestNewTenantHostRegistryFromLookup_NilLogger(t *testing.T) {
 	t.Parallel()
 	svc := &mockTenantServicer{}
-	reg := NewTenantHostRegistryFromServicer(nil, svc, nil)
+	reg := NewTenantHostRegistryFromLookup(nil, svc, nil)
 	if reg == nil {
 		t.Fatal("expected non-nil TenantHostRegistry with nil logger")
 	}

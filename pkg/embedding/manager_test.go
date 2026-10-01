@@ -167,11 +167,6 @@ func TestValidateManagerConfig_AllErrorBranches(t *testing.T) {
 			wantErr: ErrProviderRequired,
 		},
 		{
-			name:    "unknown provider",
-			mutate:  func(c *Config) { c.Provider = "unknown" },
-			wantErr: ErrProviderInvalid,
-		},
-		{
 			name:    "empty APIURL",
 			mutate:  func(c *Config) { c.APIURL = "" },
 			wantErr: ErrAPIURLRequired,
@@ -1023,5 +1018,75 @@ func TestManagerCache_PutAndGet_WithCompression(t *testing.T) {
 	}
 	if len(got) != len(vec) {
 		t.Errorf("expected %d floats, got %d", len(vec), len(got))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The provider name is not an allowlist (go-qrdb#528)
+// ---------------------------------------------------------------------------
+
+// A Config may name a provider go-qrdb does not implement: an embedder
+// registers its own after construction and Embed routes to it. This is the
+// case the old literal allowlist refused — a name RegisterProvider would then
+// have accepted — which left an out-of-tree provider registrable but never
+// selectable as the default.
+func TestNewManager_OutOfTreeProviderCanBeTheDefault(t *testing.T) {
+	cfg := validManagerConfig()
+	cfg.Provider = "npu"
+	m, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager refused an out-of-tree provider name: %v", err)
+	}
+	p := &fakeProvider{name: "npu", dims: 4}
+	if err := m.RegisterProvider("npu", p); err != nil {
+		t.Fatalf("RegisterProvider(npu): %v", err)
+	}
+	vec, err := m.Embed(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("Embed via the out-of-tree default: %v", err)
+	}
+	if len(vec) != 4 {
+		t.Fatalf("Embed returned %d dimensions, want the npu provider's 4 — the request did not route to it", len(vec))
+	}
+	got, err := m.GetProvider("npu")
+	if err != nil || got != p {
+		t.Fatalf("GetProvider(npu) = %v, %v; want the registered provider", got, err)
+	}
+}
+
+// A default that is named but never registered still fails, with the typed
+// not-found error naming it — at first use, where the fact is known, rather
+// than at construction, where it is not.
+func TestNewManager_UnregisteredDefaultIsNotFoundAtFirstUse(t *testing.T) {
+	cfg := validManagerConfig()
+	cfg.Provider = "olama" // a typo in a built-in's name gets the same answer
+	m, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	_, err = m.Embed(context.Background(), "hello")
+	var nf *ProviderNotFoundError
+	if !errors.As(err, &nf) {
+		t.Fatalf("Embed = %v, want *ProviderNotFoundError", err)
+	}
+	if nf.Name != "olama" {
+		t.Fatalf("error names %q, want the configured default", nf.Name)
+	}
+	if _, err := m.Dimensions(); !errors.As(err, &nf) {
+		t.Fatalf("Dimensions = %v, want *ProviderNotFoundError", err)
+	}
+}
+
+// The built-ins' own validation is unchanged: voyage still needs an API key.
+func TestValidateManagerConfig_BuiltInRulesSurviveTheAllowlistRemoval(t *testing.T) {
+	cfg := validManagerConfig()
+	cfg.Provider = "voyage"
+	cfg.APIKey = ""
+	if err := validateManagerConfig(cfg); !errors.Is(err, ErrAPIKeyRequired) {
+		t.Fatalf("voyage without an API key = %v, want ErrAPIKeyRequired", err)
+	}
+	cfg.Provider = ""
+	if err := validateManagerConfig(cfg); !errors.Is(err, ErrProviderRequired) {
+		t.Fatalf("empty provider = %v, want ErrProviderRequired", err)
 	}
 }

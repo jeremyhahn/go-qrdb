@@ -38,8 +38,71 @@ type SymmetricEncrypter = quicraftseal.SymmetricEncrypter
 // string keys. All methods accept context.Context and use string keys.
 type StorageBackend = quicraftseal.StorageBackend
 
-// Credentials holds authentication material for seal/unseal operations.
+// Credentials holds authentication material for seal/unseal operations. The
+// secret is protected memory — a *enclave.SealedEnclave, not a []byte — so a
+// caller cannot hand the barrier a passphrase that also lives on the heap.
+// Build one with NewCredentials; the zero value means "no credentials
+// supplied", which is what strategies that ignore credentials take.
+//
+// The caller OWNS the credential: destroy it (creds.Secret.Destroy(), nil-safe)
+// once the seal or unseal it was built for has returned. Nothing downstream
+// destroys it, because a credential that is passed through two layers would
+// otherwise be released by the first to finish with it.
 type Credentials = quicraftseal.Credentials
+
+// NewCredentials moves a secret into protected memory and returns the
+// Credentials holding it. The source slice is WIPED on return, success or
+// failure — that is the point of the constructor: material that reaches here
+// already existed unprotected, and the only thing left worth doing about it is
+// not leaving it there. An empty secret is refused with go-quicraft's own
+// seal.ErrInvalidPassphrase — a different sentinel from this package's
+// ErrInvalidPassphrase, which ChangePassword returns for the same fault.
+//
+// It allocates locked pages the kernel can refuse
+// (enclave.ErrLockedMemoryUnavailable), and on a GOEXPERIMENT=boringcrypto
+// build it ALWAYS fails with enclave.ErrSealFailed: go-enclave seals through
+// cipher.NewGCMWithRandomNonce, which requires the standard library's AES
+// block, and boringcrypto's is a different type. FIPS-certified crypto is
+// GOFIPS140=latest, which is unaffected.
+var NewCredentials = quicraftseal.NewCredentials
+
+// MustCredentials is NewCredentials for fixtures: a test's passphrase, a
+// constant a program cannot run without. It panics on the error NewCredentials
+// would return, which at such a site is a programming error or a host that
+// cannot lock memory at all — not a condition the caller has a way to recover
+// from. Production code takes secrets from callers and uses NewCredentials.
+func MustCredentials(secret []byte) Credentials {
+	creds, err := NewCredentials(secret)
+	if err != nil {
+		panic("qrdb/seal: MustCredentials: " + err.Error())
+	}
+	return creds
+}
+
+// CredentialsFor builds Credentials from a secret the caller has BORROWED — a
+// request field, a config value, an SDK argument the documented contract says
+// the caller owns. The secret is copied into protected memory and left exactly
+// as it was: whoever handed it over keeps what they had and stays responsible
+// for wiping it, and a transport that treats its request as a borrow (every
+// one of them does; see sdk/go/transport BarrierInitRequest) is not turned into
+// one that consumes it by the service beneath it. NewCredentials is the
+// consuming form, for material the caller made and will not read again.
+//
+// A secret that MAY be absent is the other reason this exists: zero-length
+// material yields the zero Credentials — "no credentials supplied", which is
+// what the none strategy takes and what a passphrase strategy refuses with its
+// own error — so the empty case is decided in one place rather than at every
+// site that turns an optional secret into a credential, and no such site can
+// seal an empty slice and turn "absent" into an error naming the wrong fault.
+//
+// The caller owns the result: destroy it when the operation it was built for
+// returns.
+func CredentialsFor(secret []byte) (Credentials, error) {
+	if len(secret) == 0 {
+		return Credentials{}, nil
+	}
+	return NewCredentials(append([]byte(nil), secret...))
+}
 
 // SealedRootKey is the persisted form of an encrypted root key.
 type SealedRootKey = quicraftseal.SealedRootKey
@@ -81,9 +144,13 @@ type ShamirConfig = quicraftseal.ShamirConfig
 // The software strategy auto-selects the KDF at construction time via
 // DefaultKDFVersion(): PBKDF2-SHA256 (600,000 iterations, NIST SP 800-132)
 // in FIPS 140 mode (see FIPSEnabled), Argon2id (OWASP defaults) otherwise.
-// Both KDF adapters are always registered so a FIPS binary can unseal a key
-// that was originally sealed by a non-FIPS binary, and vice-versa. The KDF
-// version is stored in SealedRootKey.Metadata[0] for cross-version routing.
+// The KDF version is stored in SealedRootKey.Metadata[0] for cross-version
+// routing, and the routing is one-way: a PBKDF2 blob unseals identically in
+// either mode, but a blob wrapped under Argon2id is REFUSED while FIPS is
+// active (ErrKDFNotFIPSApproved — unsealing re-derives the wrapping key with a
+// KDF the mode forbids) and cannot be derived at all in a -tags fips build,
+// which carries no Argon2id deriver. Migrate by unsealing once with FIPS off
+// and re-sealing with NewSoftwareStrategyFIPS.
 //
 // Strategy preference order (highest to lowest):
 //
@@ -129,6 +196,37 @@ type SoftwareStrategy = quicraftseal.SoftwareStrategy
 // fixture it was built on accepted the wrong passphrase (#162).
 var NewSoftwareStrategy = quicraftseal.NewSoftwareStrategy
 
+// NewSoftwareStrategyWithParams is NewSoftwareStrategy with explicit Argon2id
+// work factors (time, memory in KiB, threads). It selects Argon2id explicitly
+// and is therefore refused under FIPS 140 (ErrKDFNotFIPSApproved at runtime,
+// ErrKDFUnsupportedVersion in a -tags fips build); NewSoftwareStrategyFIPS is
+// the tunable PBKDF2 constructor for that leg.
+var NewSoftwareStrategyWithParams = quicraftseal.NewSoftwareStrategyWithParams
+
+// NewSoftwareStrategyFIPS is NewSoftwareStrategy with an explicit PBKDF2-SHA256
+// iteration count; accepted under every FIPS policy.
+var NewSoftwareStrategyFIPS = quicraftseal.NewSoftwareStrategyFIPS
+
+// KDFVersion identifies the passphrase KDF a software strategy derives with
+// (KDFArgon2id or KDFPbkdf2SHA256). It is recorded in the sealed root-key blob
+// so an unseal routes to the KDF that sealed it — subject to policy: an
+// Argon2id blob is refused while FIPS is active, and a PBKDF2 blob opens in
+// either mode (see SoftwareStrategy).
+type KDFVersion = quicraftseal.KDFVersion
+
+// KDFParams carries a software strategy's work factor. It is NOT recorded in
+// the sealed blob: a blob sealed at a non-default factor can only be unsealed
+// by a strategy carrying the same one, which is why ChangePassword reads it
+// off the strategy being replaced.
+type KDFParams = quicraftseal.KDFParams
+
+const (
+	// KDFArgon2id is the standard (non-FIPS) passphrase KDF.
+	KDFArgon2id = quicraftseal.KDFArgon2id
+	// KDFPbkdf2SHA256 is the FIPS 140 passphrase KDF.
+	KDFPbkdf2SHA256 = quicraftseal.KDFPbkdf2SHA256
+)
+
 // FIPSEnabled is the single FIPS 140 mode predicate for the stack,
 // re-exported from go-quicraft/pkg/seal. Detection keys off the Go runtime's
 // FIPS 140-3 module state (crypto/fips140.Enabled) first and falls back to
@@ -153,10 +251,22 @@ var FIPSEnabled = quicraftseal.FIPSEnabled
 // it, and in any test asserting that it does.
 //
 // It takes no KDF parameters, so a deferred strategy always carries the library
-// defaults for the selected algorithm. A tuned work factor cannot be expressed
-// through this constructor and therefore cannot survive a strategy replacement
-// — see #156 and go-quicraft#72.
+// defaults for the selected algorithm. A tuned work factor is carried across a
+// strategy replacement by NewDeferredSoftwareStrategyWithParams instead.
 var NewDeferredSoftwareStrategy = quicraftseal.NewDeferredSoftwareStrategy
+
+// NewDeferredSoftwareStrategyWithParams is NewDeferredSoftwareStrategy carrying
+// an explicit KDF version and work factor, read off the strategy being
+// replaced with KDFVersion() and KDFParams(). It exists for the replacement
+// case (go-quicraft#72, requested by #156): a sealed root-key blob records the
+// KDF VERSION byte and never the params, so a blob sealed at a non-default work
+// factor can only be unsealed by a strategy carrying that same factor — the
+// live strategy object is the only place the number exists, and a replacement
+// built with the no-argument constructor silently resets a hardened deployment
+// to the defaults. FIPS behaviour matches the bound constructors: a -tags fips
+// build has no Argon2id deriver and answers ErrKDFUnsupportedVersion; runtime
+// FIPS answers ErrKDFNotFIPSApproved.
+var NewDeferredSoftwareStrategyWithParams = quicraftseal.NewDeferredSoftwareStrategyWithParams
 
 // EpochBarrier is a type alias for go-quicraft's Barrier. The EpochBarrier
 // provides algorithm-agile authenticated encryption with epoch-based key

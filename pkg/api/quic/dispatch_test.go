@@ -228,6 +228,8 @@ var expectedMethods = []string{
 	"tenant.Delete",
 	"tenant.UpdateQuotas",
 	"tenant.UpdateEntitlements",
+	"tenant.ListDeleted",
+	"tenant.ReconcileDeleted",
 }
 
 func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
@@ -245,7 +247,10 @@ func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
 func TestBuildHandlers_MethodCount(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 
-	// 166 = 165 prior unary handlers + user.RemoveCertBinding, the withdrawal
+	// 168 = 166 + tenant.ListDeleted and tenant.ReconcileDeleted, the retired
+	// tenant id listing and the node-local residue reconcile (go-qrdb#470,
+	// go-qrdb#469).
+	// The 166 was 165 prior unary handlers + user.RemoveCertBinding, the withdrawal
 	// counterpart of user.AddCertBinding and the only way to unenroll a key
 	// (go-qrdb#518).
 	// The 165 was 164 plus role.ReconcileBuiltIn, the one
@@ -254,7 +259,7 @@ func TestBuildHandlers_MethodCount(t *testing.T) {
 	// kv.CompareAndDelete, kv.CompareAndSwap — go-qrdb#124), and the 161 was
 	// 160 plus user.GetByEmail, the canonical login-key lookup (go-qrdb#190).
 	// The 2 watch methods remain on the streaming path, not the unary table.
-	const wantCount = 166
+	const wantCount = 168
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}
@@ -359,7 +364,7 @@ func TestBuildHandlers_CategoryCounts(t *testing.T) {
 		"cert":     4,
 		"barrier":  23,
 		"ceremony": 10,
-		"tenant":   7,
+		"tenant":   9,
 		"sql":      1,
 	}
 

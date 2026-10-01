@@ -15,8 +15,6 @@ package vector
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -103,8 +101,7 @@ func Test90Plus_CleanupTombstones(t *testing.T) {
 
 // Test90Plus_BatchUpsertMetadata tests batch operations with metadata
 func Test90Plus_BatchUpsertMetadata(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "test_90plus_batch_meta")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -134,8 +131,7 @@ func Test90Plus_BatchUpsertMetadata(t *testing.T) {
 
 // Test90Plus_DeleteVectorPaths tests delete vector code paths
 func Test90Plus_DeleteVectorPaths(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "test_90plus_delete")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -210,8 +206,7 @@ func Test90Plus_CompactPath(t *testing.T) {
 
 // Test90Plus_ClosePath tests Close function edge cases
 func Test90Plus_ClosePath(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "test_90plus_close")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	config := DefaultConfig(tmpDir)
 	config.SyncWrites = false

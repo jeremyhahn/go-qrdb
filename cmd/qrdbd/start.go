@@ -71,8 +71,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
-	"github.com/jeremyhahn/go-qrdb/pkg/mvccadapter"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -85,12 +83,12 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
-	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/store"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	sdkgo "github.com/jeremyhahn/go-qrdb/sdk/go"
+	secure "github.com/jeremyhahn/go-qrdb/sdk/go/secure"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
 )
 
@@ -107,6 +105,9 @@ type startFlags struct {
 	smStorage       string
 	discoveryMethod string
 	peers           []string
+	// memberIdentities are the "replicaID=spki:<hex>" Raft member identities
+	// of the other replicas (go-qrdb#556). See config.RaftConfig.MemberIdentities.
+	memberIdentities []string
 	// shardID is deprecated. System services always use shard.ShardKV (1).
 	// Kept for backward compatibility with existing YAML configs and CLI scripts.
 	shardID              uint64
@@ -128,33 +129,40 @@ type startFlags struct {
 	// -> qrdbconfig.Config.Server.Host -> server.New. Sourced from --host,
 	// QRDB_SERVER_HOST or server.host under the documented precedence; its
 	// flag default is qrdbconfig.DefaultServerHost, the defaults layer.
-	host                 string
-	adminPort            int
-	grpcPort             int
-	maxInMemLogSize      uint64
-	maxTotalInMemLogSize uint64
-	snapshotEntries      uint64
-	compactionOverhead   uint64
-	join                 bool
-	logFormat            string
-	logLevel             string
-	debugRaft            bool
-	enableREST           bool
-	enableGRPC           bool
-	enableQUIC           bool
-	quicPort             int
-	enableUnix           bool
-	unixSocketPath       string
-	enableMCP            bool
-	mcpPort              int
-	mcpEndpoint          string
-	enableMySQL          bool
-	mysqlPort            int
-	enablePgSQL          bool
-	pgsqlPort            int
-	authEnabled          bool
-	separationOfDuties   bool
-	spiffeTrustDomain    string
+	host      string
+	adminPort int
+	grpcPort  int
+	// secureMemoryBudgetMiB bounds the process-wide locked-memory budget every
+	// secure.Buffer/Secret this node allocates admits against (installed in
+	// runStart via secure.NewAllocatorWithinRLimit + secure.SetAllocator,
+	// go-qrdb#114). Sourced from --secure-memory-budget-mib,
+	// QRDB_SERVER_SECURE_MEMORY_BUDGET_MIB or server.secure_memory_budget_mib;
+	// 0, the default, means "derive from the host" (resolveSecureMemoryBudget).
+	secureMemoryBudgetMiB int64
+	maxInMemLogSize       uint64
+	maxTotalInMemLogSize  uint64
+	snapshotEntries       uint64
+	compactionOverhead    uint64
+	join                  bool
+	logFormat             string
+	logLevel              string
+	debugRaft             bool
+	enableREST            bool
+	enableGRPC            bool
+	enableQUIC            bool
+	quicPort              int
+	enableUnix            bool
+	unixSocketPath        string
+	enableMCP             bool
+	mcpPort               int
+	mcpEndpoint           string
+	enableMySQL           bool
+	mysqlPort             int
+	enablePgSQL           bool
+	pgsqlPort             int
+	authEnabled           bool
+	separationOfDuties    bool
+	spiffeTrustDomain     string
 	// revocationCacheTTL is the auth.revocation_cache_ttl duration string.
 	// Empty means the default. See qrdbconfig.AuthConfig.RevocationCacheTTL —
 	// it is the window during which a revoked certificate still authenticates.
@@ -164,8 +172,12 @@ type startFlags struct {
 	// — it decides whether a decision whose audit record could not be written
 	// is refused or permitted.
 	auditFailurePolicy string
-	abacEnabled        bool
-	abacPolicyDir      string
+
+	// mtlsBindingPolicy is the auth.mtls_binding_policy string. Empty means
+	// the default, "enrolled". See qrdbconfig.AuthConfig.MTLSBindingPolicy.
+	mtlsBindingPolicy string
+	abacEnabled       bool
+	abacPolicyDir     string
 	// clusterTrustDomain is the cluster-wide SPIFFE trust domain used for
 	// node identity. It is encoded into auto-generated node certificates as
 	// a URI SAN (spiffe://<clusterTrustDomain>/node/<raftAddress>) and must
@@ -278,93 +290,9 @@ type raftNode interface {
 }
 
 func init() {
-	// Register "pebble" and "mvcc" state machine types in the centralized
-	// registry. These live in the store package which cannot be imported
-	// from statemachine (circular dependency), so they are registered here
-	// at program startup.
-	statemachine.RegisterWithDescriptor("pebble", func() sm.CreateFunc {
-		return sm.NewDiskCreateFunc(func(_, _ uint64) sm.DiskStateMachine {
-			return store.NewPebbleStateMachine(nil)
-		})
-	}, statemachine.Descriptor{
-		Description: "PebbleDB-backed on-disk state machine",
-		Persistence: statemachine.PersistenceDisk,
-		Kind:        statemachine.SMKindDisk,
-		Capabilities: []statemachine.Capability{
-			statemachine.CapabilityKV,
-		},
-	})
-	statemachine.RegisterWithDescriptor("mvcc", func() sm.CreateFunc {
-		return store.NewMVCCCreateFunc()
-	}, statemachine.Descriptor{
-		Description: "MVCC state machine with transactions, leases, indexes, and time-series",
-		Persistence: statemachine.PersistenceDisk,
-		Kind:        statemachine.SMKindDisk,
-		Capabilities: []statemachine.Capability{
-			statemachine.CapabilityKV,
-			statemachine.CapabilityMVCC,
-			statemachine.CapabilityTransaction,
-			statemachine.CapabilityBatch,
-			statemachine.CapabilityLease,
-			statemachine.CapabilityIndex,
-			statemachine.CapabilityTimeSeries,
-			statemachine.CapabilityWatch,
-		},
-	})
-
-	// Register "mvcc-fast" state machine type. This uses the
-	// mvccadapter package to bridge the statemachine.MVCCStore
-	// interface to mvcc.RaftStorage, avoiding the import cycle
-	// that prevents placing this in the statemachine package.
-	statemachine.RegisterWithDescriptor("mvcc-fast", func() sm.CreateFunc {
-		return mvccadapter.NewMVCCFastCreateFunc(
-			defaultMVCCFastStorageFactory(),
-			defaultMVCCFastLogger(),
-		)
-	}, statemachine.Descriptor{
-		Description: "High-performance fast SM with MVCC support, PebbleDB backing",
-		Persistence: statemachine.PersistenceHybrid,
-		Kind:        statemachine.SMKindRegular,
-		Capabilities: []statemachine.Capability{
-			statemachine.CapabilityKV,
-			statemachine.CapabilityMVCC,
-			statemachine.CapabilityTransaction,
-		},
-	})
-}
-
-// defaultMVCCFastStorageFactory returns a storage factory that creates
-// PebbleDB storage instances using per-shard temp directories. This
-// is suitable for development and testing. Production deployments
-// should provide a factory with a configured data directory.
-func defaultMVCCFastStorageFactory() func(shardID, replicaID uint64) storage.Storage {
-	return func(shardID, replicaID uint64) storage.Storage {
-		dir, err := os.MkdirTemp("", fmt.Sprintf("qrdb-mvcc-fast-%d-%d-*", shardID, replicaID))
-		if err != nil {
-			panic("qrdbd: failed to create temp dir for mvcc-fast storage: " + err.Error())
-		}
-		cfg := pebblestore.TestConfig(filepath.Join(dir, "data"))
-		s, err := pebblestore.New(cfg)
-		if err != nil {
-			panic("qrdbd: failed to create pebble storage for mvcc-fast: " + err.Error())
-		}
-		return s
-	}
-}
-
-// defaultMVCCFastLogger creates a minimal logger for the mvcc-fast
-// state machine in the default registry. Production deployments
-// should provide a properly configured logger.
-func defaultMVCCFastLogger() *logger.Logger {
-	log, err := logger.New(logger.LogConfig{
-		Level:  "warn",
-		Format: "json",
-		Output: "stderr",
-	})
-	if err != nil {
-		panic("qrdbd: failed to create default mvcc-fast logger: " + err.Error())
-	}
-	return log
+	// "pebble" and "mvcc" live in pkg/store, which pkg/statemachine cannot
+	// import, so they join the registry here at program startup.
+	store.RegisterStateMachines()
 }
 
 // clusterOptions translates the parsed start flags into the transport-neutral
@@ -480,11 +408,12 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 	cmd.Flags().StringVar(&f.raftAddress, "raft-address", "127.0.0.1:63001", "Raft address visible to peers")
 	cmd.Flags().StringVar(&f.dataDir, "data-dir", "./data", "Data directory for WAL and metadata")
 	cmd.Flags().Uint64Var(&f.deploymentID, "deployment-id", 1, "Deployment ID for cluster isolation")
-	cmd.Flags().StringVar(&f.smType, "sm", "pebble", "State machine type: pebble, memory, concurrent")
+	cmd.Flags().StringVar(&f.smType, "sm", "pebble", "State machine type: pebble (default), mvcc, memory, standard, concurrent, fast, disk, highperf or regular. Every type serves KV, batches, the guarded verbs and transactions; only mvcc keeps revisions")
 	cmd.Flags().StringVar(&f.smBackend, "sm-backend", "", "State machine backend: standard, concurrent, fast, disk")
 	cmd.Flags().StringVar(&f.smStorage, "sm-storage", "", "Storage backend for the storage-generic state machines (sm type disk/fast): pebble (default), file, memory")
 	cmd.Flags().StringVar(&f.discoveryMethod, "discovery", "static", "Discovery method: static (default, single-node), multicast, dns, token")
 	cmd.Flags().StringSliceVar(&f.peers, "peers", nil, "Static peers, format id=address (e.g., 1=127.0.0.1:63001)")
+	cmd.Flags().StringSliceVar(&f.memberIdentities, "member-identities", nil, "Raft member identities of the other replicas, format id=spki:<hex> (print one with qrdbd node-identity); required for a multi-node cluster")
 	cmd.Flags().Uint64Var(&f.shardID, "shard-id", shard.ShardKV, "Shard ID (deprecated: system services always use the system shard)")
 	cmd.Flags().Uint64Var(&f.replicaID, "replica-id", 1, "Replica ID")
 	cmd.Flags().StringVar(&f.multicastSecret, "multicast-secret", "", "Shared secret (PSK) for multicast authentication; required when --discovery=multicast (no default — the protocol is authenticated-only)")
@@ -501,6 +430,11 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 	cmd.Flags().StringVar(&f.advertiseHost, "advertise-host", "", "Host or IP peers/clients use to reach this node's APIs (default: host portion of --raft-address)")
 	cmd.Flags().IntVar(&f.adminPort, "admin-port", 63002, "Admin HTTP server port")
 	cmd.Flags().IntVar(&f.grpcPort, "grpc-port", 63003, "gRPC server port")
+	cmd.Flags().Int64Var(&f.secureMemoryBudgetMiB, "secure-memory-budget-mib", qrdbconfig.DefaultConfig().Server.SecureMemoryBudgetMiB,
+		"Process-wide locked-memory (mlock) budget in MiB for cluster DEKs, credentials and PINs "+
+			"(0 = derive from RLIMIT_MEMLOCK: the smaller of "+strconv.FormatInt(qrdbconfig.DefaultSecureMemoryBudgetMiB, 10)+
+			" MiB and the limit less "+strconv.FormatInt(secureMemoryHeadroomBytes>>20, 10)+" MiB headroom); "+
+			"an explicit value above the host's RLIMIT_MEMLOCK is refused at startup; maps to server.secure_memory_budget_mib / QRDB_SERVER_SECURE_MEMORY_BUDGET_MIB")
 	cmd.Flags().Uint64Var(&f.maxInMemLogSize, "max-in-mem-log-size", 0,
 		"Per-shard in-memory log size limit in bytes before rate limiting (0=disabled)")
 	cmd.Flags().Uint64Var(&f.maxTotalInMemLogSize, "max-total-in-mem-log-size", 0,
@@ -599,6 +533,9 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	if !cmd.Flags().Changed("peers") && cfg.Raft.Peers != "" {
 		f.peers = strings.Split(cfg.Raft.Peers, ",")
 	}
+	if !cmd.Flags().Changed("member-identities") && cfg.Raft.MemberIdentities != "" {
+		f.memberIdentities = strings.Split(cfg.Raft.MemberIdentities, ",")
+	}
 	if !cmd.Flags().Changed("shard-id") {
 		f.shardID = cfg.Raft.ShardID
 	}
@@ -649,6 +586,9 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	}
 	if !cmd.Flags().Changed("grpc-port") {
 		f.grpcPort = cfg.Server.GRPCPort
+	}
+	if !cmd.Flags().Changed("secure-memory-budget-mib") {
+		f.secureMemoryBudgetMiB = cfg.Server.SecureMemoryBudgetMiB
 	}
 	if !cmd.Flags().Changed("max-in-mem-log-size") {
 		f.maxInMemLogSize = cfg.Raft.MaxInMemLogSize
@@ -707,6 +647,7 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	f.spiffeTrustDomain = cfg.Auth.SPIFFETrustDomain
 	f.revocationCacheTTL = cfg.Auth.RevocationCacheTTL
 	f.auditFailurePolicy = cfg.Auth.AuditFailurePolicy
+	f.mtlsBindingPolicy = cfg.Auth.MTLSBindingPolicy
 	// ABAC decorator: config-only (no CLI flag), mirroring the SPIFFE
 	// trust domain above.
 	f.abacEnabled = cfg.Auth.ABAC.Enabled
@@ -947,11 +888,129 @@ func applyTLSClientAuth(f *startFlags, bundle *TLSBundle) {
 	}
 }
 
+// newSecureAllocator, setSecureAllocator, processSecureAllocator and
+// wipeSecureMemory indirect the process-wide, one-shot go-enclave lifecycle
+// calls runStart makes, purely for testability.
+//
+// SetAllocator can be satisfied only once per process, and WipeAll destroys
+// the process Sealer's keys PERMANENTLY (enclave.WipeAll's documentation) —
+// neither is something a test can undo. This package's own test suite calls
+// runStart directly, many times, in one shared test binary (TestRunStart_*,
+// the *_FullStartup tests, and every test driving newStartCmdWithFlags's
+// RunE through cmd.Execute()), which is many more times than the real
+// go-enclave lifecycle can be exercised before the SECOND call fails closed
+// on SetAllocator and the FIRST WipeAll poisons sealing for every later test
+// in the binary — measured, not theorized: that is exactly what happened
+// when these were wired to secure.NewAllocatorWithinRLimit / secure.SetAllocator
+// / secure.WipeAll directly. TestMain (signal_guard_test.go) installs
+// no-op-safe doubles over newSecureAllocator, setSecureAllocator and
+// wipeSecureMemory for the whole test binary (and over
+// discoverLockedMemoryLimit, so no test depends on the host's RLIMIT_MEMLOCK);
+// production main()/RunE never touches them and gets the real go-enclave
+// calls.
+//
+// processSecureAllocator is NOT read-only in general: when no process
+// allocator exists yet, ProcessAllocator installs go-enclave's lazy default.
+// runStart calls it only after setSecureAllocator has reported
+// ErrAllocatorInstalled — when an allocator already exists — so on that one
+// path it reads and installs nothing, which is why TestMain leaves it real.
+// It is indirected for the test double the ErrAllocatorInstalled mismatch
+// check needs (go-qrdb#114 review, round 3).
+var (
+	newSecureAllocator     = secure.NewAllocatorWithinRLimit
+	setSecureAllocator     = secure.SetAllocator
+	processSecureAllocator = secure.ProcessAllocator
+	wipeSecureMemory       = secure.WipeAll
+)
+
+// recordSecureMemoryWipe sweeps mlocked memory via wipeSecureMemory and
+// reports what it found. Split out of runStart, rather than inlined in its
+// defer, so it is unit-testable against a synthetic *error without driving
+// runStart to a real clean return — which needs a fully started node and
+// belongs to the *_FullStartup tests, not to a test of this function alone.
+//
+// A non-nil *err (an earlier failure already in flight) is never overwritten:
+// a wipe problem discovered on the way out of an already-failing runStart is
+// still logged, but the ORIGINAL failure is what the caller needs to see and
+// act on. Only a clean run (err == nil) is turned into the wipe failure, so a
+// caller checking runStart's return value cannot mistake an incomplete wipe
+// for success.
+func recordSecureMemoryWipe(err *error) {
+	remaining, werr := wipeSecureMemory()
+	if remaining == 0 && werr == nil {
+		return
+	}
+	wipeErr := &SecureMemoryWipeError{Remaining: remaining, Err: werr}
+	slog.Error("secure memory wipe incomplete at shutdown", "error", wipeErr)
+	if *err == nil {
+		*err = wipeErr
+	}
+}
+
 // runStart executes the start command logic: load or generate TLS, build
 // config, create the host, start the shard, build service layer, create
 // the multi-protocol server, and block until a termination signal is
 // received.
-func runStart(f *startFlags) error {
+//
+// It is the ONE subcommand that installs the process-wide locked-memory
+// budget (setSecureAllocator) and sweeps it on the way out (wipeSecureMemory):
+// `start` is the only qrdbd invocation that allocates protected memory —
+// cluster DEKs, credentials, PINs — so `status`/`peers`/
+// `version` are not made to satisfy an mlock budget they never use
+// (go-qrdb#114 review). Both run first/last respectively: the budget install
+// is the first statement in this function, before anything else can
+// allocate, and its defer is registered first so it is the LAST to run,
+// after every other cleanup in this function has released whatever
+// protected memory it held. The budget itself comes from
+// resolveSecureMemoryBudget: the configured figure when one is set, and
+// otherwise one derived from the host's RLIMIT_MEMLOCK; the chosen figure and
+// its source are logged once it is installed.
+//
+// ErrAllocatorInstalled from setSecureAllocator is NOT unconditionally
+// treated as a failure: it means a budget already exists — installed by an
+// earlier call in this same process, or by a library's lazy default — and
+// refusing to start over that would make qrdbd unable to run a second time in
+// a process that already has one for an unrelated, entirely benign reason.
+// But it is only benign when the ALREADY-installed allocator's own limit
+// equals what --secure-memory-budget-mib configured; otherwise the operator's
+// configured figure was silently discarded in favor of whatever installed it
+// first (typically the RLIMIT-sized lazy default), which is exactly the
+// silent-budget-loss go-qrdb#114's review flagged (round 3) — so a mismatch
+// is fatal precisely because a MATCH is what makes the non-fatal case safe.
+func runStart(f *startFlags) (err error) {
+	budgetMiB := f.secureMemoryBudgetMiB
+	resolved, rerr := resolveSecureMemoryBudget(budgetMiB)
+	if rerr != nil {
+		return rerr
+	}
+	budgetBytes := resolved.bytes
+	budget, berr := newSecureAllocator(budgetBytes)
+	if berr != nil {
+		return &SecureMemoryBudgetError{BudgetMiB: budgetMiB, Err: berr}
+	}
+	if serr := setSecureAllocator(budget); serr != nil {
+		if !errors.Is(serr, secure.ErrAllocatorInstalled) {
+			return &SecureMemoryBudgetError{BudgetMiB: budgetMiB, Err: serr}
+		}
+		installed, paerr := processSecureAllocator()
+		if paerr != nil {
+			return &SecureMemoryBudgetError{BudgetMiB: budgetMiB, Err: paerr}
+		}
+		if installedBytes := installed.Limit(); installedBytes != budgetBytes {
+			return &SecureMemoryBudgetError{BudgetMiB: budgetMiB, Err: &SecureMemoryBudgetMismatchError{
+				ConfiguredBytes: budgetBytes,
+				InstalledBytes:  installedBytes,
+			}}
+		}
+	}
+	slog.Info("secure memory budget installed",
+		"budget_bytes", budgetBytes,
+		"source", string(resolved.source),
+		"rlimit_memlock_source", resolved.limit.Source.String(),
+		"rlimit_memlock_bytes", resolved.limit.Bytes,
+	)
+	defer recordSecureMemoryWipe(&err)
+
 	// Resolve TLS: explicit files -> cached certs -> generate/bootstrap.
 	bundle, bootServers, err := resolveTLS(f, slog.Default())
 	if err != nil {
@@ -1141,7 +1200,7 @@ func runStart(f *startFlags) error {
 	// the now-keyed root key). The OS process never exits. Tenant-scope migration
 	// is handled separately by the per-tenant Host registry.
 	migrateCh := make(chan *systemMigrationRequest, 1)
-	sysMigrator := newDaemonSystemMigrator(migrateCh)
+	sysMigrator := buildSysMigrator(f, migrateCh)
 	for {
 		var rebootForMigration bool
 		bootErr := func() error {
@@ -1224,27 +1283,14 @@ func runStart(f *startFlags) error {
 				f.walBarrier = f.walSystemBarrier
 			}
 
-			// Build a subsystem-aware state machine factory for "mvcc" and
-			// "pebble" SM types. Other types fall back to the registry default.
-			// When the seal subsystem is enabled, store.WithEncryptor wraps every
-			// Pebble file the SM creates (sstables, WAL, manifest, snapshots) with
-			// the barrier-driven encfs via the shared Encryptor above.
-			pebbleOpts := []store.Option{store.WithEncryptor(enc)}
-			switch f.smType {
-			case "mvcc":
-				f.createFn = store.NewMVCCCreateFuncWith(pebbleOpts,
-					store.WithLessor(lr),
-					store.WithWatchHub(watchHub),
-					store.WithTimeSeriesEnabled(),
-				)
-			case "pebble":
-				f.createFn = store.NewPebbleCreateFuncWith(pebbleOpts,
-					func(s *store.PebbleStateMachine) {
-						s.SetLessor(lr)
-						s.SetWatchHub(watchHub)
-						s.SetTimeSeriesEnabled(true)
-					},
-				)
+			// Build the state machine factory with this node's subsystems and
+			// its at-rest encryptor; see buildSMCreateFunc.
+			if f.mode != capabilities.ModeStandalone {
+				createFn, err := buildSMCreateFunc(f, enc, lr, watchHub)
+				if err != nil {
+					return err
+				}
+				f.createFn = createFn
 			}
 
 			// The ceremony CA signs Security Officer client-certificate CSRs so
@@ -1425,6 +1471,15 @@ func runStart(f *startFlags) error {
 				return err
 			}
 			profile := capCfg.EffectiveCapabilities()
+			if !standalone {
+				// A raft node serves what its state machine serves: the
+				// report names the real --sm, not every feature the binary
+				// could serve on some other one.
+				profile, err = statemachine.NarrowCapabilities(profile, f.smType, f.smBackend)
+				if err != nil {
+					return &UnknownSMError{Name: f.smType}
+				}
+			}
 			capabilities.Seal(profile)
 
 			svcNode, err := lifecycle.BuildServices(sigCtx, lifecycle.Infra{
@@ -1436,11 +1491,14 @@ func runStart(f *startFlags) error {
 				DatabaseManager:           dbManager,
 				KVOptions:                 nil,
 				SealBarrier:               sealBarrier,
+				SealEnabled:               f.sealConfig.Enabled,
 				BarrierRegistry:           barrierRegistry,
 				CredentialCoreSvc:         credCoreSvc,
 				CeremonyDataDir:           filepath.Join(f.dataDir, "seal"),
 				CeremonyCA:                ceremonyCA,
 				CeremonyCoreSvc:           ceremonyCoreSvc,
+				SPIFFETrustDomain:         f.spiffeTrustDomain,
+				MTLSBindingPolicy:         f.mtlsBindingPolicy,
 				Logger:                    slog.Default(),
 				EmbeddingConfig:           f.embeddingConfig,
 				RAGConfig:                 f.ragConfig,
@@ -1548,7 +1606,20 @@ func runStart(f *startFlags) error {
 			defer func() { _ = complianceAudit.Close() }()
 			_ = runtimeKVAdapter // used below when auth is enabled
 
-			mgmtResult, err := bootstrapUserRoleStores(sigCtx, bootKVSvc, authKVSvc, rnode, shard.ShardKV, f.replicaID, tenantSvcInst, strictSoD, bootBarriers, bootStrategy, complianceAudit)
+			// Under auth.mtls_binding_policy "required" every user store
+			// refuses any change that would lock the bootstrap admin out of
+			// certificate login (lifecycle.UserStoreOptions).
+			// An unrecognised value aborts here, before any store exists.
+			var userOpts []user.Option
+			if f.authEnabled {
+				opts, perr := lifecycle.UserStoreOptions(f.mtlsBindingPolicy, slog.Default())
+				if perr != nil {
+					_ = shutdownNode(nodeCloser)
+					return &AuthBootstrapError{Step: "auth.mtls_binding_policy", Err: perr}
+				}
+				userOpts = opts
+			}
+			mgmtResult, err := bootstrapUserRoleStores(sigCtx, bootKVSvc, authKVSvc, txSvc, rnode, shard.ShardKV, f.replicaID, tenantSvcInst, strictSoD, bootBarriers, bootStrategy, complianceAudit, userOpts...)
 			if err != nil {
 				_ = shutdownNode(nodeCloser)
 				if sigCtx.Err() != nil {
@@ -1571,7 +1642,7 @@ func runStart(f *startFlags) error {
 			// already initialized above and reused here.
 			var authResult *authBootstrapResult
 			if f.authEnabled {
-				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, authKVSvc, txSvc, f.dataDir, rnode, complianceAudit, strictSoD, f.spiffeTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir}, svcNode.CertProv, f.revocationCacheTTL, f.auditFailurePolicy)
+				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, f.dataDir, rnode, complianceAudit, strictSoD, f.spiffeTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir}, svcNode.CertProv, f.revocationCacheTTL, f.auditFailurePolicy, f.mtlsBindingPolicy)
 				if err != nil {
 					_ = shutdownNode(nodeCloser)
 					// Context cancellation from signal is a clean shutdown, not an error.
@@ -1619,9 +1690,12 @@ func runStart(f *startFlags) error {
 			// registries opened by the composer are closed on error before it
 			// returns, so only shutdownNode is needed here on failure.
 			ti, err := server.BuildTenantInfra(server.TenantInfraConfig{
-				Ctx:            sigCtx,
-				BarrierReg:     barrierRegistry,
-				TenantSvc:      tenantSvcInst,
+				Ctx:        sigCtx,
+				BarrierReg: barrierRegistry,
+				TenantSvc:  tenantSvcInst,
+				// The daemon builds its tenant service once and never swaps it,
+				// so the service itself is the use-time lookup.
+				TenantLookup:   tenantSvcInst,
 				VolumePool:     volumePool,
 				Logger:         slog.Default(),
 				Host:           host,
@@ -1843,7 +1917,7 @@ func runStart(f *startFlags) error {
 			// (RaftHost.RemoveFollowerNode) -- see RebalanceService.moveTenantGroupShard.
 			// raftBackendReg being non-nil implies the shared host is configured for
 			// IsolationRaft tenants. The raftFollowerAdder adapter wraps
-			// host.RequestAddNode/RequestAddObserver/RequestRemoveNode + rs.Result()
+			// host.RequestAddNodeWithIdentity/RequestAddObserverWithIdentity/RequestRemoveNode + rs.Result()
 			// into the narrow service.RaftHost interface; the SAME instance is shared
 			// by both services since it is stateless beyond the host reference.
 			if raftBackendReg != nil {
@@ -1946,6 +2020,12 @@ func runStart(f *startFlags) error {
 				// lifecycle.BuildServices; only the tenant routing is the
 				// server's to supply.
 				server.WithKeyspaceReclaimService(svcNode.KeyspaceReclaim),
+				// The reclaim sweeper (go-qrdb#547), built by
+				// lifecycle.BuildServices and started below: the server
+				// installs the resolver that routes each pending job to
+				// the node that sweeps it and to its store, through the
+				// same registry the transports resolve requests with.
+				server.WithReclaimSweeper(svcNode.ReclaimSweeper),
 			}
 			// The transaction/CAS family is served in BOTH modes (owner
 			// ruling 2026-08-23, go-qrdb#62): a standalone node is
@@ -1972,6 +2052,17 @@ func runStart(f *startFlags) error {
 					server.WithLockService(lockSvc),
 					server.WithWatch(watchSvc),
 				)
+				// The collection sweeper finishes interrupted creates and
+				// drops in the shared system store from the system shard's
+				// leader only, so a cluster sweeps each database once per pass
+				// rather than once per replica.
+				if host != nil {
+					sweepReplicaID := f.replicaID
+					serverOpts = append(serverOpts, server.WithCollectionSweepLeader(func() bool {
+						id, ok, lerr := host.GetLeaderID(shard.ShardKV)
+						return lerr == nil && ok && id == sweepReplicaID
+					}))
+				}
 			}
 			// User and role management services are always wired — they are
 			// organizational primitives independent of auth enforcement. The
@@ -1989,15 +2080,19 @@ func runStart(f *startFlags) error {
 			// endpoint is available regardless of auth-enabled state.
 			serverOpts = append(serverOpts, server.WithAuditLogger(complianceAudit))
 
-			// Auth factor service is always constructed (factor implementations
-			// return ErrFactorDisabled for absent hardware, which handlers map to
-			// HTTP 501 -- the correct response for "feature not available in this
-			// deployment"). Exposed via /v1/authfactors/* for consumers like xkms.
-			if svc, err := service.NewAuthFactorService(service.AuthFactorServiceConfig{
-				Factors: defaultAuthFactors(),
-				KV:      authKVSvc,
-			}); err == nil {
-				serverOpts = append(serverOpts, server.WithAuthFactorService(svc))
+			// Auth factor service is constructed tenant-routed (factor
+			// implementations return ErrFactorDisabled for absent hardware,
+			// which handlers map to HTTP 501 -- the correct response for
+			// "feature not available in this deployment"). Exposed via
+			// /v1/authfactors/* for consumers like xkms. See
+			// buildAuthFactorServiceOption for why this is the routed
+			// service rather than the flat one authKVSvc would give it
+			// (go-qrdb#464), and why there is no migration for records a
+			// previous build wrote flat.
+			if opt, err := buildAuthFactorServiceOption(mgmtResult.storeResolver, defaultAuthFactors()); err == nil {
+				serverOpts = append(serverOpts, opt)
+			} else {
+				slog.Error("auth factor service disabled", slog.Any("error", err))
 			}
 
 			// User-side N-factor service (M14) is always constructed, giving
@@ -2099,7 +2194,7 @@ func runStart(f *startFlags) error {
 			// surface, so it has to be registered on exactly this condition
 			// rather than on the presence of a Noise server.
 			if bootServers != nil {
-				serverOpts = append(serverOpts, server.WithCABootstrap(bundle.CACertPEM, bundle.CAKeyPEM))
+				serverOpts = append(serverOpts, server.WithCABootstrap(bundle.CACertPEM))
 			}
 			if svcNode.Embedding != nil {
 				serverOpts = append(serverOpts, server.WithEmbedding(svcNode.Embedding))
@@ -2158,6 +2253,16 @@ func runStart(f *startFlags) error {
 					slog.Default(),
 				)
 			}
+
+			// Reclaim-job sweeper (go-qrdb#547). It runs on every daemon --
+			// standalone included, where host is nil and there is no leader
+			// to ask -- and decides per job which node sweeps it; see
+			// startReclaimSweeper.
+			var isSystemLeader func() bool
+			if host != nil {
+				isSystemLeader = systemShardLeader(host, f.replicaID)
+			}
+			startReclaimSweeper(bootCtx, svcNode.ReclaimSweeper, service.DefaultReclaimInterval, isSystemLeader, slog.Default())
 
 			// Storage-quota reconciler (Phase 3). Periodically flushes the in-memory
 			// byte accumulator to the persisted CurrentStorageBytes counters and, for
@@ -2492,13 +2597,9 @@ func initializeNode(ctx context.Context, f *startFlags, bundle *TLSBundle) (*qui
 	// restart-stable per-replica paths instead of fresh temp directories.
 	createFn := f.createFn
 	if createFn == nil {
-		if err := validateSMStorageFlags(f.smType, f.smBackend, f.smStorage); err != nil {
-			return nil, err
-		}
-		statemachine.SetDataDirRoot(f.dataDir)
-		statemachine.SetSMStorage(f.smStorage)
 		var err error
-		createFn, err = resolveCreateFunc(f.smType, f.smBackend)
+		createFn, err = resolveCreateFunc(f.smType, f.smBackend,
+			statemachine.StorageConfig{Root: f.dataDir, Kind: f.smStorage})
 		if err != nil {
 			return nil, err
 		}
@@ -2512,6 +2613,16 @@ func initializeNode(ctx context.Context, f *startFlags, bundle *TLSBundle) (*qui
 			return nil, err
 		}
 	}
+	// A multi-node Raft transport cannot use a kernel-assigned port: it is
+	// advertised to peers as configured (go-qrdb#374).
+	if !isSingleNode(f) {
+		if err := cluster.CheckRaftTransportPort("--raft-address", f.raftAddress); err != nil {
+			return nil, err
+		}
+		if err := cluster.CheckRaftTransportPort("--listen", f.listen); err != nil {
+			return nil, err
+		}
+	}
 
 	// Build mTLS config for transport (nil for single-node).
 	var mtlsCfg *quicraftconfig.MTLSConfig
@@ -2521,6 +2632,23 @@ func initializeNode(ctx context.Context, f *startFlags, bundle *TLSBundle) (*qui
 			Cert:   bundle.CertPEM,
 			Key:    bundle.KeyPEM,
 		}
+	}
+
+	// Resolve the Raft member identities before anything touches the disk: a
+	// host with a transport admits a member by its identity and by nothing
+	// else (go-qrdb#556), and the local entry comes from this node's own
+	// certificate.
+	var memberIdentities map[uint64]string
+	if !isSingleNode(f) {
+		var selfCert []byte
+		if mtlsCfg != nil {
+			selfCert = mtlsCfg.Cert
+		}
+		ids, err := cluster.ResolveMemberIdentities(f.memberIdentities, f.replicaID, selfCert)
+		if err != nil {
+			return nil, err
+		}
+		memberIdentities = ids
 	}
 
 	// Build host configuration.
@@ -2578,6 +2706,11 @@ func initializeNode(ctx context.Context, f *startFlags, bundle *TLSBundle) (*qui
 			hostOpts = append(hostOpts, quicraft.WithBarrier(f.walBarrier))
 			slog.Info("raft WAL at-rest encryption enabled (system barrier)")
 		}
+	} else {
+		// Seal disabled: the Raft log is stored in plaintext, as every other
+		// byte on this node is. go-quicraft >= 0.14 requires the choice to be
+		// stated rather than defaulted.
+		hostOpts = append(hostOpts, quicraft.WithoutEncryption())
 	}
 
 	// Create the host.
@@ -2585,9 +2718,15 @@ func initializeNode(ctx context.Context, f *startFlags, bundle *TLSBundle) (*qui
 	if err != nil {
 		return nil, err
 	}
+	if identity := host.NodeIdentity(); identity != "" {
+		// Safe to log: a hash of a public key. It is the value every other
+		// replica needs in its --member-identities for this one.
+		slog.Info("raft member identity", "replica_id", f.replicaID, "identity", identity)
+	}
 
 	// Build shard configuration.
 	shardCfg := buildShardConfig(f)
+	shardCfg.MemberIdentities = memberIdentities
 
 	// A one-shot offline restore takes over shard startup entirely: it
 	// bootstraps the shard, stops it, imports the backup artifact, and
@@ -2716,6 +2855,7 @@ func startDynamicMembership(
 func waitForSignal() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
 	sig := <-sigCh
 	slog.Info("received signal, shutting down", "signal", sig.String())
 }
@@ -2748,39 +2888,69 @@ func shutdownNode(node io.Closer) error {
 	return nil
 }
 
-// resolveCreateFunc looks up the state machine factory by type and
-// optional backend in the centralized statemachine.Registry and returns
-// the CreateFunc, or a local UnknownSMError if the combination is not
-// registered.
-// validateSMStorageFlags mirrors config.validateSMStorage for flags-only
-// boots: --sm-storage must name a supported hot-apply backend (objstore
-// is a snapshot/backup tier) and a non-pebble selection only combines
-// with the storage-generic state machine families (disk, fast).
-func validateSMStorageFlags(smType, smBackend, smStorage string) error {
-	switch smStorage {
-	case "", "pebble", "file", "memory":
+// buildSMCreateFunc builds the raft state machine factory for --sm with the
+// node's subsystems and at-rest encryptor. "mvcc" and "pebble" are composed
+// here with the lessor, watch hub and time-series storage, and with
+// store.WithEncryptor, which wraps every Pebble file the state machine creates
+// (sstables, WAL, manifest, snapshots) in the barrier-driven encfs. Every other
+// type resolves from the registry over the data dir and --sm-storage, carrying
+// the same encryptor: pebble storage is opened on that encfs too, and storage
+// that cannot be encrypted (file) is refused here, at start, while the seal
+// barrier is enabled (SealedSMStoragePlaintextError), rather than opened.
+func buildSMCreateFunc(f *startFlags, enc *atrest.Encryptor, lr *lease.Lessor, hub *watch.Hub) (sm.CreateFunc, error) {
+	pebbleOpts := []store.Option{store.WithEncryptor(enc)}
+	switch f.smType {
+	case "mvcc":
+		return store.NewMVCCCreateFuncWith(pebbleOpts,
+			store.WithLessor(lr),
+			store.WithWatchHub(hub),
+			store.WithTimeSeriesEnabled(),
+		), nil
+	case "pebble":
+		return store.NewPebbleCreateFuncWith(pebbleOpts,
+			func(s *store.PebbleStateMachine) {
+				s.SetLessor(lr)
+				s.SetWatchHub(hub)
+				s.SetTimeSeriesEnabled(true)
+			},
+		), nil
 	default:
-		return &UnknownSMStorageError{Name: smStorage}
+		return resolveCreateFunc(f.smType, f.smBackend,
+			statemachine.StorageConfig{Root: f.dataDir, Kind: f.smStorage, Encryptor: enc})
 	}
-	if smStorage == "" || smStorage == "pebble" {
-		return nil
-	}
-	if smType != "disk" && smType != "fast" && smBackend != "disk" && smBackend != "fast" {
-		return &SMStorageTypeMismatchError{Storage: smStorage, SMType: smType}
-	}
-	return nil
 }
 
-func resolveCreateFunc(smType, smBackend string) (sm.CreateFunc, error) {
-	createFn, err := statemachine.ResolveTyped(smType, smBackend)
-	if err != nil {
-		name := smType
-		if smBackend != "" {
-			name = smType + ":" + smBackend
-		}
-		return nil, &UnknownSMError{Name: name}
+// resolveCreateFunc looks up the state machine factory by type and optional
+// backend in the centralized statemachine.Registry, building a
+// storage-generic state machine over sc (the data dir and --sm-storage), and
+// translates the registry's refusals into this command's errors: an
+// unregistered combination is UnknownSMError, an unknown --sm-storage is
+// UnknownSMStorageError, and a non-pebble --sm-storage for a state machine
+// that carries its own storage is SMStorageTypeMismatchError. Which types are
+// storage-generic is the registry's answer (Descriptor.StorageGeneric), not a
+// list kept here.
+func resolveCreateFunc(smType, smBackend string, sc statemachine.StorageConfig) (sm.CreateFunc, error) {
+	createFn, err := statemachine.ResolveTypedWithStorage(smType, smBackend, sc)
+	if err == nil {
+		return createFn, nil
 	}
-	return createFn, nil
+	var unknownStorage *statemachine.UnknownSMStorageError
+	if errors.As(err, &unknownStorage) {
+		return nil, &UnknownSMStorageError{Name: sc.Kind}
+	}
+	var notApplicable *statemachine.SMStorageNotApplicableError
+	if errors.As(err, &notApplicable) {
+		return nil, &SMStorageTypeMismatchError{Storage: sc.Kind, SMType: smType}
+	}
+	var unencrypted *statemachine.SMStorageUnencryptedError
+	if errors.As(err, &unencrypted) {
+		return nil, &SealedSMStoragePlaintextError{SMType: smType, Storage: sc.Kind, Err: err}
+	}
+	name := smType
+	if smBackend != "" {
+		name = smType + ":" + smBackend
+	}
+	return nil, &UnknownSMError{Name: name}
 }
 
 // buildHostConfig constructs a HostConfig from the parsed start flags.
@@ -2993,7 +3163,13 @@ type authBootstrapResult struct {
 // the structurally-privileged system tenant. Required (non-nil): tests
 // supply a small in-memory tenant servicer; production startup wires
 // the real one from svcNode.Tenant.
-func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc service.KVServicer, node raftNode, shardID, replicaID uint64, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID, auditLogger audit.AuditLogger) (*mgmtBootstrapResult, error) {
+//
+// userOpts are applied to every user store it builds -- under
+// auth.mtls_binding_policy "required", user.WithBootstrapAdminBindingRequired,
+// so no transport can make a change that leaves the bootstrap admin unable to
+// log in by certificate (delete, rename, disable or suspend it, drop mtls from
+// its methods, or withdraw its last live binding).
+func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc service.KVServicer, txSvc service.TransactionServicer, node raftNode, shardID, replicaID uint64, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID, auditLogger audit.AuditLogger, userOpts ...user.Option) (*mgmtBootstrapResult, error) {
 	// User IDs are Snowflake-assigned by the user store; map the Raft
 	// ReplicaID onto the Snowflake node field (zero maps to node 1 per the
 	// standalone convention).
@@ -3004,6 +3180,18 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	userIDGen, err := dao.NewSnowflakeGenerator(idNode)
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "user id generator", Err: err}
+	}
+
+	// A leader must be known before the capability probe below can mean
+	// anything: PutAllIfUnchanged proposes through Raft, and a probe run
+	// before any leader is elected would see NotLeader and could not tell
+	// "no leader yet" apart from "this state machine cannot do this at
+	// all". runFirstBoot waits again once it starts its own sequence; that
+	// second wait is cheap (GetLeaderID is a local, already-known answer
+	// once a leader exists) and keeps this function independently correct
+	// rather than relying on ordering against its caller.
+	if err := waitForLeaderElection(ctx, node, shardID); err != nil {
+		return nil, &AuthBootstrapError{Step: "wait for leader", Err: err}
 	}
 
 	// Create bootstrap stores backed by StaleRead for initial setup.
@@ -3019,8 +3207,46 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	// tenant.IdentityNamespace is the single formula both sides call. Building
 	// the prefix by hand here is what the whole class of write-path/read-path
 	// divergences has come from.
+	//
+	// GUARDED: the boot store is where firstboot creates the built-in roles
+	// and the platform admin, and go-qrdb#555 found that a Raft leadership
+	// change between the identity claim and the record's own first write —
+	// or between any two of the record's own several writes — left a
+	// permanently unrecoverable partial state, because completing OR rolling
+	// back the remainder needs the very leadership that was just lost. The
+	// guarded adapter is what lets role.WithAtomicIdentity /
+	// user.WithAtomicIdentity below commit the claim and every write as ONE
+	// proposal instead. txSvc is threaded in for exactly this; every raft
+	// node this daemon builds constructs one unconditionally
+	// (pkg/server/lifecycle.BuildServices), so this does not newly require
+	// anything a production node does not already have.
+	guardedBootAdapter, gerr := newGuardedKVServiceAdapter(bootKVSvc, txSvc, nil, nil)
+	if gerr != nil {
+		return nil, &AuthBootstrapError{Step: "boot store adapter", Err: gerr}
+	}
+	// FAIL CLOSED here, not at the first CreateRole/CreateUser call: a
+	// non-nil txSvc makes guardedBootAdapter satisfy
+	// kvstore.MultiGuardedBatchKVStore at the TYPE level unconditionally, but
+	// only a state machine with the MVCC/transaction subsystem can evaluate
+	// the batch. kvstore.ProbeGuardedBatch asks the shard this daemon
+	// actually started, with a genuine no-op proposal. The leader wait above
+	// has already run, so an inconclusive probe is a failure here too, not
+	// something to start past — except NotLeader; see requireGuardedBatch.
+	//
+	// This runs on EVERY start, not only the first: the runtime stores below
+	// use the same atomic create path for every role and user created after
+	// first boot, so a node that cannot honour it must not serve.
+	guardedBatch, ok := guardedBootAdapter.(kvstore.MultiGuardedBatchKVStore)
+	if !ok {
+		// Unreachable: newGuardedKVServiceAdapter's success return always
+		// implements this. Defensive rather than a panic if that changes.
+		return nil, &AuthBootstrapError{Step: "boot store adapter", Err: ErrTransactionServiceRequired}
+	}
+	if err := requireGuardedBatch(ctx, guardedBatch); err != nil {
+		return nil, err
+	}
 	bootStore, err := kvstore.NewNamespacedKVStore(
-		newKVServiceAdapter(bootKVSvc, nil, nil),
+		guardedBootAdapter,
 		tenant.IdentityNamespace(tenant.SystemTenantID),
 	)
 	if err != nil {
@@ -3037,13 +3263,18 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "boot placement index", Err: err}
 	}
-	bootUserSvc, err := user.NewStore(bootStore, userIDGen,
-		user.WithAuditLogger(auditLogger), user.WithIdentityIndex(bootIdentityIndex))
+	// WithAtomicIdentity is safe here — and ONLY here, never on a routed
+	// store — because bootIdentityIndex is built with tenant.NewIdentityIndex
+	// over bootStore itself: the claim and every record write this store
+	// makes land in the SAME physical store, by construction, not by
+	// assumption. See role.WithAtomicIdentity / user.WithAtomicIdentity.
+	bootUserSvc, err := user.NewStore(bootStore, userIDGen, append([]user.Option{
+		user.WithAuditLogger(auditLogger), user.WithIdentityIndex(bootIdentityIndex), user.WithAtomicIdentity()}, userOpts...)...)
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "boot user store", Err: err}
 	}
 	bootRoleSvc, err := role.NewStore(bootStore,
-		role.WithAuditLogger(auditLogger), role.WithIdentityIndex(bootIdentityIndex))
+		role.WithAuditLogger(auditLogger), role.WithIdentityIndex(bootIdentityIndex), role.WithAtomicIdentity())
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "boot role store", Err: err}
 	}
@@ -3065,7 +3296,22 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	// services so they address the same keys the routed services do for the
 	// system tenant — the invariant the comment on mgmtBootstrapResult
 	// describes and that authorization depends on.
-	runtimeStore := newKVServiceAdapter(runtimeKVSvc, nil, nil)
+	//
+	// GUARDED, for the same go-qrdb#555 reason bootStore is above: userSvc
+	// and roleSvc are reached by the admin API for every role/user create
+	// AFTER first-boot too, not only during it, and this is the one
+	// canonical construction bootstrapAuthEnforcement's own runtime store
+	// reuses (mgmtBootstrapResult.legacyFactorStore) rather than building a
+	// second guarded adapter over the same underlying KVServicer.
+	// Not re-probed: runtimeKVSvc and bootKVSvc read the SAME shard through
+	// the SAME txSvc, so the capability kvstore.ProbeGuardedBatch already
+	// ran against bootStore above answers identically here — the state
+	// machine's transaction support is a property of the shard, not of
+	// which KVServicer consistency mode wraps it.
+	runtimeStore, gerr := newGuardedKVServiceAdapter(runtimeKVSvc, txSvc, nil, nil)
+	if gerr != nil {
+		return nil, &AuthBootstrapError{Step: "runtime store adapter", Err: gerr}
+	}
 	systemStore, err := kvstore.NewNamespacedKVStore(
 		runtimeStore, tenant.IdentityNamespace(tenant.SystemTenantID))
 	if err != nil {
@@ -3079,13 +3325,13 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "system placement index", Err: err}
 	}
-	userSvc, err := user.NewStore(systemStore, userIDGen,
-		user.WithAuditLogger(auditLogger), user.WithIdentityIndex(systemIdentityIndex))
+	userSvc, err := user.NewStore(systemStore, userIDGen, append([]user.Option{
+		user.WithAuditLogger(auditLogger), user.WithIdentityIndex(systemIdentityIndex), user.WithAtomicIdentity()}, userOpts...)...)
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "user store", Err: err}
 	}
 	roleSvc, err := role.NewStore(systemStore,
-		role.WithAuditLogger(auditLogger), role.WithIdentityIndex(systemIdentityIndex))
+		role.WithAuditLogger(auditLogger), role.WithIdentityIndex(systemIdentityIndex), role.WithAtomicIdentity())
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "role store", Err: err}
 	}
@@ -3120,7 +3366,7 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 		if resErr != nil {
 			return nil, &AuthBootstrapError{Step: "store resolver", Err: resErr}
 		}
-		routedUsers, ruErr := user.NewRoutingService(resolver, userIDGen, user.WithAuditLogger(auditLogger))
+		routedUsers, ruErr := user.NewRoutingService(resolver, userIDGen, append([]user.Option{user.WithAuditLogger(auditLogger)}, userOpts...)...)
 		if ruErr != nil {
 			return nil, &AuthBootstrapError{Step: "routed user store", Err: ruErr}
 		}
@@ -3157,18 +3403,19 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 // sdk/go/node.Node calls when wiring an embedded unified server — so a
 // daemon-run node and an embedded node (go-xkms xkmsd, go-quicbaas
 // quicbaasd) enforce authn/authz identically.
-func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, runtimeKVSvc service.KVServicer, runtimeTxSvc service.TransactionServicer, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, spiffeTrustDomain string, abacCfg qrdbconfig.AuthABACConfig, certProv cert.CertProvider, revocationCacheTTL string, auditFailurePolicy string) (*authBootstrapResult, error) {
+func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, spiffeTrustDomain string, abacCfg qrdbconfig.AuthABACConfig, certProv cert.CertProvider, revocationCacheTTL string, auditFailurePolicy string, mtlsBindingPolicy string) (*authBootstrapResult, error) {
 	_ = ctx
 	_ = node
 
-	// Create a runtime KV adapter for the custodian service store.
-	// The GUARDED adapter: the custodian service writes an enrolment's three
-	// keys as one transaction fenced on the username claim, and refuses to
-	// construct without that capability (go-qrdb#21). Handing it the plain
-	// adapter would fail the daemon at startup, which is the intended failure
-	// mode for a store that cannot fence an enrolment — but here the
-	// capability exists and simply has to be wired.
-	runtimeStore := newGuardedKVServiceAdapter(runtimeKVSvc, runtimeTxSvc, nil, nil)
+	// The custodian service store, reused from mgmt.legacyFactorStore rather
+	// than built again here: bootstrapUserRoleStores already constructed it
+	// as the ONE guarded adapter over this daemon's runtime KVServicer, and
+	// a second adapter instance over the identical underlying service would
+	// be the exact duplication the guarded-adapter wiring is meant to avoid
+	// (go-qrdb#555 owner ruling: "one canonical construction; nothing
+	// duplicated"). It already satisfies kvstore.GuardedBatchKVStore
+	// (go-qrdb#21) for the same reason it does there.
+	runtimeStore := mgmt.legacyFactorStore
 
 	// Per-decision audit rides the SAME tamper-evident chained event log as
 	// every other audited operation, via the decision bridge — one audit
@@ -3223,6 +3470,30 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, ru
 		return nil, &AuthBootstrapError{Step: "auth.audit_failure_policy", Err: err}
 	}
 
+	// The mTLS enrolment posture (go-qrdb#517). An unrecognised value aborts
+	// the boot. Under "required" the boot ALSO aborts when the bootstrap admin
+	// could not log in by certificate -- the owner's ruling on the lockout the
+	// posture creates: a node that started would admit nobody able to repair
+	// it. This daemon's first boot wires no CertBinder, so a fresh node under
+	// "required" stops here; the documented migration enrols the admin under
+	// "enrolled" first.
+	//
+	// The admin is read through the LINEARIZABLE runtime store, not the
+	// StaleRead boot store: first-boot waited for the admin RECORD to
+	// replicate, but a binding enrolled on the leader afterwards may not have
+	// reached this follower yet, and judging the stale record would refuse a
+	// boot that should succeed. A read that cannot be served yet is retried
+	// for a bounded time before it refuses.
+	bindingPolicy, err := auth.ParseMTLSBindingPolicy(mtlsBindingPolicy)
+	if err != nil {
+		return nil, &AuthBootstrapError{Step: "auth.mtls_binding_policy", Err: err}
+	}
+	if bindingPolicy == auth.MTLSBindingRequired {
+		if err := firstboot.VerifyAdminCertBindingWithin(ctx, mgmt.userSvc, adminBindingWait); err != nil {
+			return nil, &AuthBootstrapError{Step: "auth.mtls_binding_policy", Err: err}
+		}
+	}
+
 	authMW, err := wiring.BuildAuthMiddleware(wiring.AuthMiddlewareConfig{
 		Enabled:             true,
 		RoleService:         mgmt.servedRoleSvc,
@@ -3242,6 +3513,7 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, ru
 		// authenticating until it expires.
 		CertProvider:       certProv,
 		RevocationCacheTTL: revocationTTL,
+		MTLSBindingPolicy:  bindingPolicy,
 	})
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "auth middleware", Err: err}
@@ -3275,6 +3547,11 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, ru
 		soAuthenticator: soAuthenticator,
 	}, nil
 }
+
+// adminBindingWait bounds the boot-time wait for the bootstrap admin's
+// certificate bindings to be readable (firstboot.VerifyAdminCertBindingWithin).
+// A variable so tests can shorten it; production uses the shared default.
+var adminBindingWait = firstboot.AdminBindingLookupTimeout
 
 // decorateWithABAC wraps the given authorizer with the ABAC policy
 // decorator when ABAC is enabled in the configuration. When disabled it
@@ -3451,6 +3728,34 @@ func isNotLeader(err error) bool {
 	return errors.As(err, &raftErr)
 }
 
+// requireGuardedBatch refuses to start a node whose state machine cannot
+// evaluate a guarded batch, asking it with kvstore.ProbeGuardedBatch.
+//
+// Three answers end the start: "unsupported" (the --sm type has no
+// MVCC/transaction subsystem), and any inconclusive failure other than
+// NotLeader — the caller has already waited for a leader, so a missing one
+// is not the explanation.
+//
+// NotLeader is the exception because it is not inconclusive about THIS
+// question so much as unanswerable here: only the leader can propose, so a
+// follower's probe always returns it, exactly as runFirstBoot's own writes
+// do. Every replica of the shard runs the same state machine, so the
+// leader's probe answers for all of them; a follower refusing on NotLeader
+// would stop every multi-node cluster from starting.
+func requireGuardedBatch(ctx context.Context, guarded kvstore.MultiGuardedBatchKVStore) error {
+	capable, err := kvstore.ProbeGuardedBatch(ctx, guarded)
+	switch {
+	case err != nil && isNotLeader(err):
+		slog.Info("guarded batch capability probe: not the leader; the leader's probe decides")
+		return nil
+	case err != nil:
+		return &AuthBootstrapError{Step: "guarded batch capability probe", Err: err}
+	case !capable:
+		return &AuthBootstrapError{Step: "atomic role/user creation requires an --sm state machine with transaction support", Err: kvstore.ErrAtomicWriteUnsupported}
+	}
+	return nil
+}
+
 // waitForLeaderElection polls GetLeaderID until a leader is known.
 func waitForLeaderElection(ctx context.Context, node raftNode, shardID uint64) error {
 	backoff := 50 * time.Millisecond
@@ -3617,19 +3922,26 @@ func handleSIGHUP(reloader *CertReloader, logger *slog.Logger) {
 }
 
 // raftFollowerAdder adapts *quicraft.Host to the service.RaftHost interface.
-// It wraps RequestAddNode + rs.Result() into a single blocking call that
+// It wraps RequestAddNodeWithIdentity + rs.Result() into a single blocking call that
 // returns only an error, shielding DatabaseService from the quicraft import
 // and from RequestState lifecycle management.
 type raftFollowerAdder struct {
 	host *quicraft.Host
 }
 
-// AddFollowerNode calls RequestAddNode on the shared Raft host and blocks
+// AddFollowerNode calls RequestAddNodeWithIdentity on the shared Raft host and blocks
 // until the config change commits or ctx is cancelled. Used ONLY for
 // founding members at create time (service.DatabaseService.CreateForTenant);
 // see AddObserver for scale-up.
+//
+// The replica's host is an existing cluster node, so the identity committed
+// with it is the one go-quicraft already committed for that host.
 func (a *raftFollowerAdder) AddFollowerNode(ctx context.Context, shardID, replicaID uint64, raftAddr string) error {
-	rs, err := a.host.RequestAddNode(ctx, shardID, replicaID, raftAddr, 0)
+	identity, err := service.ResolveMemberIdentity(ctx, a.host, shardID, replicaID, raftAddr, "")
+	if err != nil {
+		return err
+	}
+	rs, err := a.host.RequestAddNodeWithIdentity(ctx, shardID, replicaID, raftAddr, identity, 0)
 	if err != nil {
 		return err
 	}
@@ -3642,7 +3954,7 @@ func (a *raftFollowerAdder) AddFollowerNode(ctx context.Context, shardID, replic
 	}
 }
 
-// AddObserver calls RequestAddObserver on the shared Raft host and blocks
+// AddObserver calls RequestAddObserverWithIdentity on the shared Raft host and blocks
 // until the config change commits or ctx is cancelled. Used exclusively by
 // DatabaseService.ScaleForTenant's scale-up path (scaleUp) to admit a
 // dynamically added replica as a NON-VOTING observer, so scale-up never
@@ -3650,10 +3962,14 @@ func (a *raftFollowerAdder) AddFollowerNode(ctx context.Context, shardID, replic
 // voting quorum (see the elastic-scaling design doc §B.2/§D.4). The
 // observer is later promoted to a full voting member asynchronously by
 // server.TenantShardReconciler's Promoter (see raftPromoter), which reuses
-// RequestAddNode against this same, already-admitted replica ID -- go-quicraft
+// RequestAddNodeWithIdentity against this same, already-admitted replica ID -- go-quicraft
 // treats that as an observer -> voter promotion rather than a fresh add.
 func (a *raftFollowerAdder) AddObserver(ctx context.Context, shardID, replicaID uint64, raftAddr string) error {
-	rs, err := a.host.RequestAddObserver(ctx, shardID, replicaID, raftAddr, 0)
+	identity, err := service.ResolveMemberIdentity(ctx, a.host, shardID, replicaID, raftAddr, "")
+	if err != nil {
+		return err
+	}
+	rs, err := a.host.RequestAddObserverWithIdentity(ctx, shardID, replicaID, raftAddr, identity, 0)
 	if err != nil {
 		return err
 	}

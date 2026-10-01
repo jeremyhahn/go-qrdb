@@ -18,6 +18,7 @@ import (
 	"sync"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // buildCompositeCollectionService builds a CollectionServicer over the
@@ -45,9 +46,14 @@ import (
 // builder about it, and the compile-time nil return below is what keeps the
 // omission loud rather than silent.
 //
+// journal, when non-nil, is where the service records a collection entering
+// a transitional state (service.CollectionWorkJournal): the raw store the
+// namespaced engines wrap, outside every database's keyspace, so the
+// collection sweeper can find the work without a catalog of databases.
+//
 // It returns nil when the namespaced bundle has no KV servicer, which the
 // registry accessor reports as ServiceNotImplementedError.
-func buildCompositeCollectionService(namespaced *DatabaseServices) service.CollectionServicer {
+func buildCompositeCollectionService(namespaced *DatabaseServices, journal service.CollectionWorkJournal) service.CollectionServicer {
 	if namespaced.KV == nil {
 		return nil
 	}
@@ -60,7 +66,19 @@ func buildCompositeCollectionService(namespaced *DatabaseServices) service.Colle
 	if namespaced.MVCC != nil && namespaced.Transaction != nil {
 		svc = svc.WithSequenceService(service.NewSequenceService(namespaced.MVCC, namespaced.Transaction))
 	}
+	if journal != nil {
+		svc = svc.WithWorkJournal(journal)
+	}
 	return svc
+}
+
+// collectionJournalFor returns the work journal for tenantID's collections in
+// the store src's raw KV holds, or nil when src has no KV.
+func collectionJournalFor(src *DatabaseServices, tenantID string) service.CollectionWorkJournal {
+	if src == nil || src.KV == nil {
+		return nil
+	}
+	return &collectionWorkJournal{kv: src.KV, tenant: tenantID}
 }
 
 // compositeCollectionCache caches the namespaced collection service built for
@@ -111,9 +129,10 @@ func newCompositeCollectionCache() *compositeCollectionCache {
 // applyComposite must not depend on NewRESTServiceRegistry having run. The
 // uncached path is correct, only slower, and it keeps the composite collection
 // service namespaced in every construction shape.
-func (c *compositeCollectionCache) getOrBuild(src, namespaced *DatabaseServices, prefix string) service.CollectionServicer {
+func (c *compositeCollectionCache) getOrBuild(src, namespaced *DatabaseServices, tenantID, db string) service.CollectionServicer {
+	prefix := tenant.ComposeNamespace(tenantID, db)
 	if c == nil {
-		return buildCompositeCollectionService(namespaced)
+		return buildCompositeCollectionService(namespaced, collectionJournalFor(src, tenantID))
 	}
 	c.mu.RLock()
 	if e, ok := c.entries[prefix]; ok && e.src == src {
@@ -127,7 +146,7 @@ func (c *compositeCollectionCache) getOrBuild(src, namespaced *DatabaseServices,
 	if e, ok := c.entries[prefix]; ok && e.src == src {
 		return e.svc
 	}
-	svc := buildCompositeCollectionService(namespaced)
+	svc := buildCompositeCollectionService(namespaced, collectionJournalFor(src, tenantID))
 	c.entries[prefix] = &compositeCollectionEntry{src: src, svc: svc}
 	return svc
 }

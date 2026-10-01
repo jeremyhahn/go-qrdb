@@ -81,15 +81,14 @@ decisions := audit.NewDecisionLogger(sink)   // -> middleware.WithAuditLogger
 **Auditing is always constructed**, regardless of `auth.enabled`: FedRAMP,
 PCI DSS and HIPAA require a trail even where RBAC is off.
 
-> **Correction.** Earlier revisions of this document described a
-> `New(cfg, kvStore)` factory selecting between `kvLogger`, `fileLogger`,
-> `multiLogger` and `noopLogger` on `audit.enabled` / `kv_backend` /
-> `file_backend` / `file_path`. **None of those identifiers exists.** The
-> canonical names are the ones above. The KV-backed sink and its
-> `__sys:audit/{tenantID}/{timestamp_nano}` key layout, referenced throughout
-> the rest of this document, are likewise not implemented — the durable sink is
-> the NDJSON chain file. Recorded here rather than left in place; correcting
-> the remaining references is tracked separately.
+> **Correction (now applied throughout).** Earlier revisions of this document
+> described a `New(cfg, kvStore)` factory selecting between `kvLogger`,
+> `fileLogger`, `multiLogger` and `noopLogger` on `audit.enabled` /
+> `kv_backend` / `file_backend` / `file_path`. **None of those identifiers has
+> ever existed.** The canonical names are the ones above. The KV-backed sink
+> and its `__sys:audit/{tenantID}/{timestamp_nano}` key layout were likewise
+> never implemented — the durable sink is the NDJSON chain file. The remaining
+> references have now been corrected rather than flagged.
 
 ## The Emit error contract
 
@@ -285,12 +284,30 @@ the split this design exists to remove.
 ### The SO path specifically
 
 `SOMiddleware` distinguishes *a bad PIN* from *an unrecordable verification* by
-the **concrete type** `*audit.GateError`, not by the
-`AuthFailureUnavailable` class it belongs to. Guarding on the class would sweep
-in `*StoreUnavailableError` wrapping `tenant.ErrTenantSealed`, which is the
-signal the sealed-window fallbacks exist to act on. A wrong PIN on a healthy
-node is still `401 SO PIN verification failed`; the same wrong PIN on a node
-that cannot write its trail is `503`.
+the `AuthFailureAuditUnavailable` class, not by the wider
+`AuthFailureUnavailable` it used to be part of. Guarding on
+`AuthFailureUnavailable` would sweep in `*StoreUnavailableError` wrapping
+`tenant.ErrTenantSealed`, which is the signal the sealed-window fallbacks exist
+to act on. A wrong PIN on a healthy node is still `401 SO PIN verification
+failed`; the same wrong PIN on a node that cannot write its trail is `503`.
+
+**Why two classes, both mapped to 503.** `AuthFailureUnavailable` and
+`AuthFailureAuditUnavailable` answer the wire identically -- 503 / gRPC
+`Unavailable`, retryable, in every transport -- so this split changes no
+response any caller sees. It exists for the CONTROL-FLOW code inside this
+package, which reads one of these errors to decide what to do next rather than
+what status to answer: the tenant-barrier bootstrap fallbacks
+(`barrier_bootstrap.go`) and this SO-PIN gate must refuse outright on "could
+not record the decision" (`AuthFailureAuditUnavailable`, from `*audit.GateError`),
+while "the tenant's barrier is sealed" (`AuthFailureUnavailable`, from
+`*StoreUnavailableError` wrapping `tenant.ErrTenantSealed`) is exactly the
+signal those same fallbacks exist to admit. Before the split both conditions
+were one class, and the only thing keeping a control-flow branch from
+conflating opposite instructions was a comment and a test at each call site
+(`isAuditFailure`) -- narrower than the class, but not enforced by it. Now the
+type itself carries the distinction, so a future fallback written anywhere in
+this package inherits it by construction rather than by re-deriving the
+concrete-type check from scratch.
 
 **`SetSOPIN` and `RotateSOPIN` keep `EmitBestEffort` for their own mutation
 records, deliberately.** Their success record is written *after* `store.Put`
@@ -409,13 +426,17 @@ Target compliance schema (`pkg/audit/types.go`):
 ## Invariants
 
 - **`Timestamp` zero means now.** An entry never carries a zero time.
-- **KV keys are `__sys:audit/{tenantID}/{timestamp_nano}`.** The nanosecond
-  component makes a prefix scan chronologically ordered, which is what makes
-  range queries work without a secondary index.
-- **The audit prefix is inside the internal-key guard** and is not enumerable
-  through the user KV surface.
-- **The file backend opens with `O_CREATE|O_APPEND|O_WRONLY`, mode `0600`**, and
-  a mutex serializes concurrent writes.
+- **The trail is not in the key-value store.** There is no audit key space and
+  no audit state-machine record; durability is the append-only chain file, and
+  recency is the in-memory ring.
+- **`ChainFileLogger` opens with `O_CREATE|O_APPEND|O_WRONLY`, mode `0600`**,
+  and a mutex serializes concurrent writes.
+- **`Query` scans the ACTIVE file only.** Rotated archives are not searched, so
+  a query window older than the current file returns nothing even though the
+  events occurred. Ordering comes from append order, not from a key encoding.
+- **A sink that keeps nothing answers `Query` with `Total: -1`**, never `0`.
+  `-1` means "not answerable here" and `0` means "no matching events"; an
+  aggregate skips the first and returns the first genuine page.
 - **`aggregateLogger` is a complete fan-out**: the first error is returned, but
   every remaining sink is still attempted, for both `Emit()` and `Close()`. A
   single sink failure must not suppress the trail in the healthy ones.
@@ -429,8 +450,8 @@ Target compliance schema (`pkg/audit/types.go`):
   `EmitGated` writes exactly once whatever the posture; a second write would be
   a retry on a sink that just said no, and would double-count the gap the
   counter is meant to measure exactly.
-- **`kvLogger.Close()` is a no-op** — the KVStore lifecycle is managed
-  externally.
+- **`NoopLogger.Close()` and `SlogSink.Close()` are no-ops** — neither owns a
+  resource. `ChainFileLogger.Close()` closes the file it opened.
 - **Permission denials are audited** as `auth.denied` with the `ResultDenied`
   result value.
 - **`PrevHash` chains entries**, so an edit or deletion is detectable.
@@ -521,9 +542,15 @@ the same gap affects the auth-factor handlers, see
 
 ## Persistence
 
-KV entries live under `__sys:audit/{tenantID}/{timestamp_nano}` and are
-Raft-replicated like any other state-machine record. **Nothing prunes them** —
-there is no retention policy in this feature.
+The durable trail is `audit-events.ndjson` in the data directory: one JSON
+object per line, each carrying the hash of its predecessor. It is **node-local
+and not Raft-replicated** — each node records what it did, so reconstructing a
+cluster-wide trail means collecting from every node.
+
+`ChainFileLogger` rotates at its size bound and, when it opens, deletes
+archives older than its retention window (90 days by default). Retention is
+therefore a **deletion deadline, not a backup**: nothing copies an archive
+anywhere before it is removed.
 
 ## Test strategy
 

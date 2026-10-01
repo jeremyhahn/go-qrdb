@@ -117,6 +117,19 @@ type CeremonyUnsealShareResult = service.CeremonyUnsealShareResult
 // management.
 type AuthFactorServicer = service.AuthFactorServicer
 
+// AuthFactorTenantMismatchError is returned when EnrollFactor is called with
+// an EnrollParams.TenantID that names a different tenant from the one the
+// call's context resolves to (aliases service.AuthFactorTenantMismatchError).
+// An empty TenantID is filled in from the context, and one that matches the
+// context passes; anything else is refused with this error rather than
+// forwarded unchecked or silently corrected — see docs/auth-factors/engineering.md.
+//
+// Exported here, in the same change that introduced the condition, per this
+// seam's own error contract (docs/auth-factors/architecture.md#the-seams-error-contract):
+// a condition with no SDK alias is a handler arm an out-of-repo caller can
+// never construct or catch.
+type AuthFactorTenantMismatchError = service.AuthFactorTenantMismatchError
+
 // UserAuthFactorServicer is the service-layer interface for per-user auth
 // factor management.
 type UserAuthFactorServicer = service.UserAuthFactorServicer

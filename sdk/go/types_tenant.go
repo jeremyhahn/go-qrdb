@@ -117,6 +117,20 @@ var ErrTenantMissing = tenant.ErrTenantNotFound
 // codes.FailedPrecondition on gRPC, matching qrdb's own transport canon.)
 var ErrTenantBarrierNotEnabled = tenant.ErrBarrierNotEnabled
 
+// ErrTenantStoreSealed is returned by TenantStoreResolver.Resolve, and by
+// every service built over a routed store, when a barrier-isolated tenant's
+// barrier is sealed: IAM and the ceremony-time auth-factor surface both fail
+// closed on this rather than ever serving that tenant from the shared system
+// store. (Aliases pkg/tenant.ErrTenantSealed; named ErrTenantStoreSealed,
+// matching TenantStoreResolver above, to avoid colliding with the seal
+// package's ErrTenantSealed, which is a distinct sentinel raised by barrier
+// operations rather than store resolution — the two conditions read alike
+// but are checked with errors.Is against different values, and a consumer
+// that only recognizes one will not recognize the other. A composing service
+// should map it to 503 Service Unavailable / codes.Unavailable, matching
+// qrdb's own transport canon.)
+var ErrTenantStoreSealed = tenant.ErrTenantSealed
+
 // ---------------------------------------------------------------------------
 // Tenant teardown (go-qrdb#413)
 //

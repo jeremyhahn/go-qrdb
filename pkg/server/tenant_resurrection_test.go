@@ -447,7 +447,7 @@ func TestTenantDelete_VolumeIdIsRetiredAndTheDataRootIsGone(t *testing.T) {
 	ctx := context.Background()
 	svc, breg := newAllIsolationTenantService(t)
 
-	hostReg := NewTenantHostRegistryFromServicer(breg, svc, reattachTestLogger())
+	hostReg := NewTenantHostRegistryFromLookup(breg, svc, reattachTestLogger())
 	t.Cleanup(func() { _ = hostReg.CloseAll() })
 
 	info, err := svc.CreateTenant(ctx, "acme", "Acme", tenant.IsolationVolume,

@@ -108,6 +108,12 @@ func (m *mockCollectionServiceForBinding) UpdateDocument(_ context.Context, req 
 	return &service.UpdateDocumentResponse{}, nil
 }
 
+// UpsertDocument reports an insert: no test that uses this double drives
+// the guarded upsert, which is exercised against the real service.
+func (m *mockCollectionServiceForBinding) UpsertDocument(_ context.Context, req *service.UpsertDocumentRequest) (*service.UpsertDocumentResponse, error) {
+	return &service.UpsertDocumentResponse{ID: req.ID}, nil
+}
+
 func (m *mockCollectionServiceForBinding) DeleteDocument(_ context.Context, req *service.DeleteDocumentRequest) (*service.DeleteDocumentResponse, error) {
 	if _, exists := m.documents[req.ID]; !exists {
 		return nil, errors.New("document not found")

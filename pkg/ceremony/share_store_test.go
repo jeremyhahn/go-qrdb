@@ -15,15 +15,18 @@
 package ceremony
 
 import (
+	"fmt"
+	"os"
+	"os/exec"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+	"github.com/jeremyhahn/go-enclave"
 )
 
-func TestMemguardShareStore_StoreAndClaim(t *testing.T) {
+func TestSealedShareStore_StoreAndClaim(t *testing.T) {
 	store := newSealedShareStore()
 
 	shareData := []byte(`{"index":1,"value":"abc123"}`)
@@ -42,14 +45,14 @@ func TestMemguardShareStore_StoreAndClaim(t *testing.T) {
 	assert.True(t, store.Claimed("alice"))
 }
 
-func TestMemguardShareStore_ClaimNonexistent(t *testing.T) {
+func TestSealedShareStore_ClaimNonexistent(t *testing.T) {
 	store := newSealedShareStore()
 
 	_, err := store.Claim("nobody")
 	assert.ErrorIs(t, err, ErrShareNotFound)
 }
 
-func TestMemguardShareStore_DoubleClaim(t *testing.T) {
+func TestSealedShareStore_DoubleClaim(t *testing.T) {
 	store := newSealedShareStore()
 
 	err := store.Store("bob", []byte(`{"index":2,"value":"def456"}`))
@@ -62,7 +65,7 @@ func TestMemguardShareStore_DoubleClaim(t *testing.T) {
 	assert.ErrorIs(t, err, ErrShareAlreadyClaimed)
 }
 
-func TestMemguardShareStore_ExistsAndClaimed(t *testing.T) {
+func TestSealedShareStore_ExistsAndClaimed(t *testing.T) {
 	store := newSealedShareStore()
 
 	// Before storing: not exists, not claimed.
@@ -82,7 +85,7 @@ func TestMemguardShareStore_ExistsAndClaimed(t *testing.T) {
 	assert.True(t, store.Claimed("charlie"))
 }
 
-func TestMemguardShareStore_DestroyAll(t *testing.T) {
+func TestSealedShareStore_DestroyAll(t *testing.T) {
 	store := newSealedShareStore()
 
 	err := store.Store("alice", []byte(`share-a`))
@@ -103,7 +106,7 @@ func TestMemguardShareStore_DestroyAll(t *testing.T) {
 	assert.False(t, store.Exists("charlie"))
 }
 
-func TestMemguardShareStore_Reset_ClearsClaimHistory(t *testing.T) {
+func TestSealedShareStore_Reset_ClearsClaimHistory(t *testing.T) {
 	store := newSealedShareStore()
 
 	err := store.Store("alice", []byte(`share-round-1`))
@@ -128,7 +131,7 @@ func TestMemguardShareStore_Reset_ClearsClaimHistory(t *testing.T) {
 	assert.Equal(t, []byte(`share-round-2`), got)
 }
 
-func TestMemguardShareStore_Reset_DestroysUnclaimedShares(t *testing.T) {
+func TestSealedShareStore_Reset_DestroysUnclaimedShares(t *testing.T) {
 	store := newSealedShareStore()
 
 	err := store.Store("alice", []byte(`share-a`))
@@ -147,7 +150,7 @@ func TestMemguardShareStore_Reset_DestroysUnclaimedShares(t *testing.T) {
 	assert.ErrorIs(t, err, ErrShareNotFound)
 }
 
-func TestMemguardShareStore_DestroyAll_PreservesClaimHistory(t *testing.T) {
+func TestSealedShareStore_DestroyAll_PreservesClaimHistory(t *testing.T) {
 	store := newSealedShareStore()
 
 	err := store.Store("alice", []byte(`share-a`))
@@ -161,7 +164,7 @@ func TestMemguardShareStore_DestroyAll_PreservesClaimHistory(t *testing.T) {
 	assert.True(t, store.Claimed("alice"))
 }
 
-func TestMemguardShareStore_StoreMultipleClaimOne(t *testing.T) {
+func TestSealedShareStore_StoreMultipleClaimOne(t *testing.T) {
 	store := newSealedShareStore()
 
 	err := store.Store("alice", []byte(`share-alice`))
@@ -184,7 +187,7 @@ func TestMemguardShareStore_StoreMultipleClaimOne(t *testing.T) {
 	assert.False(t, store.Claimed("charlie"))
 }
 
-func TestMemguardShareStore_StoreOverwrite(t *testing.T) {
+func TestSealedShareStore_StoreOverwrite(t *testing.T) {
 	store := newSealedShareStore()
 
 	err := store.Store("alice", []byte(`share-v1`))
@@ -201,16 +204,16 @@ func TestMemguardShareStore_StoreOverwrite(t *testing.T) {
 	assert.NotEmpty(t, claimed)
 }
 
-// TestMemguardShareStore_ConsumesTheCallerSlice pins the wiping contract that
+// TestSealedShareStore_ConsumesTheCallerSlice pins the wiping contract that
 // makes "shares are never stored" true in memory as well as on disk.
 //
 // Store documents that the input slice is consumed. If it merely copied the
 // bytes and left the caller's slice intact, the plaintext share would survive
 // on the heap after the ceremony believed it had been enclaved -- readable in a
-// core dump or a swapped page, which is exactly what the memguard enclave
+// core dump or a swapped page, which is exactly what the enclave
 // exists to prevent. The share bytes are the root key: anything that lets a
 // threshold of them be recovered from a crashed process defeats the scheme.
-func TestMemguardShareStore_ConsumesTheCallerSlice(t *testing.T) {
+func TestSealedShareStore_ConsumesTheCallerSlice(t *testing.T) {
 	store := newSealedShareStore()
 	defer store.DestroyAll()
 
@@ -232,7 +235,7 @@ func TestMemguardShareStore_ConsumesTheCallerSlice(t *testing.T) {
 		"the claimed share must equal what the caller supplied")
 }
 
-// TestMemguardShareStore_ClaimDestroysTheEnclave pins the other half of the
+// TestSealedShareStore_ClaimDestroysTheEnclave pins the other half of the
 // invariant: a share is claimable exactly once, and nothing is retained
 // afterwards for a second reader.
 //
@@ -241,7 +244,7 @@ func TestMemguardShareStore_ConsumesTheCallerSlice(t *testing.T) {
 // fiction and the server would hold enough material to rebuild the root key on
 // its own -- which is the precise property an M-of-N ceremony is chosen to
 // avoid.
-func TestMemguardShareStore_ClaimDestroysTheEnclave(t *testing.T) {
+func TestSealedShareStore_ClaimDestroysTheEnclave(t *testing.T) {
 	store := newSealedShareStore()
 	defer store.DestroyAll()
 
@@ -268,46 +271,86 @@ func TestMemguardShareStore_ClaimDestroysTheEnclave(t *testing.T) {
 // marked consumed by a claim that returned an error is unrecoverable: the
 // custodian holds nothing and the store will refuse to hand it over again.
 //
-// The failure is provoked with a real purge rather than a stub, because the
-// purge IS the condition — it is what a memguard allocation failure anywhere
-// in the process does to every live enclave, including this share's
-// (go-qrdb#74). A test that faked the error would prove the error path
-// returns; only the purge proves the store survives the thing that causes it.
+// The failure is provoked with a real process-wide sweep rather than a stub,
+// because the sweep IS the condition this pins: go-enclave's WipeAll (which
+// replaced memguard's process-wide purge, go-qrdb#114) destroys every live
+// enclave in the process, including this share's, on the same shutdown path
+// a binary's main() drives.
 //
-// It is driven through secure.Purge, NOT memguard.Purge. Importing memguard
-// here was a live rule-1 violation — the containment boundary the whole
-// pkg/secure design rests on, unreported for as long as it was because
-// nothing ran the analyzer (go-qrdb#429). secure.Purge reaches the same
-// memguard.Purge and additionally takes the package's purge lock
-// exclusively, so it waits for any in-flight borrow instead of unmapping
-// pages underneath one — which is what this package's callers are entitled
-// to assume happens. EnablePurge is the arming half of the lifecycle a
-// binary's main() performs; Purge refuses to run without it.
-func TestMemguardShareStore_FailedClaimDoesNotConsumeTheShare(t *testing.T) {
+// It runs in a SUBPROCESS, unlike the rest of this file. WipeAll additionally
+// destroys the process Sealer's own keys (per its documentation, "sweeps the
+// process SEALING KEY instead"), which is a ONE-SHOT, TERMINAL event: nothing
+// in this package can install a fresh Sealer afterward, so every OTHER test in
+// this binary that seals a share would start failing with "this sealer's keys
+// were destroyed by a shutdown sweep" if this one ran WipeAll in-process. A
+// binary calls WipeAll exactly once, on its way out — this test plays that
+// binary's role in a process of its own, which is the only place doing so is
+// safe.
+func TestShareStore_FailedClaimDoesNotConsumeTheShare(t *testing.T) {
+	const childEnv = "QRDB_CEREMONY_SHARESTORE_WIPEALL_CHILD"
+	if os.Getenv(childEnv) != "" {
+		runShareStoreWipeAllChild()
+		return
+	}
+
+	args := []string{"-test.run=^TestShareStore_FailedClaimDoesNotConsumeTheShare$", "-test.timeout=20s"}
+	if dir := os.Getenv("GOCOVERDIR"); dir != "" {
+		// Forward the coverage directory so this subprocess's execution —
+		// otherwise invisible to `go tool cover` — is merged into the gate's
+		// profile by `make coverage`'s `go tool covdata textfmt` step.
+		args = append(args, "-test.gocoverdir="+dir)
+	}
+	cmd := exec.Command(os.Args[0], args...)
+	cmd.Env = append(os.Environ(), childEnv+"=1")
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "subprocess failed: %s", out)
+	require.Contains(t, string(out), "PASS: claim after WipeAll refused and did not consume the share")
+}
+
+// runShareStoreWipeAllChild is the subprocess body for
+// TestShareStore_FailedClaimDoesNotConsumeTheShare. Assertion failures exit
+// the process nonzero after printing why, rather than using *testing.T: this
+// runs as a plain function in a subprocess whose one dispatched test is the
+// caller above, so a t.Fatal here would only end that same single goroutine,
+// not signal failure to the parent the way a nonzero exit does.
+func runShareStoreWipeAllChild() {
+	fail := func(format string, args ...any) {
+		fmt.Fprintf(os.Stderr, format+"\n", args...)
+		os.Exit(1)
+	}
+
 	store := newSealedShareStore()
+	if err := store.Store("alice", []byte(`{"index":1,"value":"abc123"}`)); err != nil {
+		fail("Store: %v", err)
+	}
+	if !store.Exists("alice") {
+		fail("share does not exist after Store")
+	}
 
-	require.NoError(t, store.Store("alice", []byte(`{"index":1,"value":"abc123"}`)))
-	require.True(t, store.Exists("alice"))
+	// Destroys every live enclave in the process, this share's included, and
+	// the process Sealer's keys along with it — terminal for this process,
+	// which is exactly why it runs here rather than in the parent binary.
+	if _, err := enclave.WipeAll(); err != nil {
+		fail("enclave.WipeAll: %v", err)
+	}
 
-	// Destroys every live enclave in the process, this share's included.
-	secure.EnablePurge()
-	require.NoError(t, secure.Purge())
-
-	_, err := store.Claim("alice")
-	require.Error(t, err, "a claim on purged material must not report success")
-
-	assert.False(t, store.Claimed("alice"),
-		"a failed claim marked the share consumed — the custodian holds nothing "+
-			"and the store will never hand it over again")
+	if _, err := store.Claim("alice"); err == nil {
+		fail("a claim on swept material must not report success")
+	}
+	if store.Claimed("alice") {
+		fail("a failed claim marked the share consumed — the custodian holds " +
+			"nothing and the store will never hand it over again")
+	}
+	fmt.Println("PASS: claim after WipeAll refused and did not consume the share")
 }
 
 // emptyBorrow is a borrow that yields no bytes — the shape a process-wide
-// memguard purge leaves a live buffer in.
+// enclave.WipeAll sweep leaves a live buffer in.
 //
 // A fake is used because the condition cannot be built from a real
 // *secure.Buffer: both constructors reject a zero length, and WithBytes
 // refuses a destroyed buffer without calling the callback. The branch guards a
-// state only a purge produces, mid-Claim, between Open and the borrow.
+// state only a sweep produces, mid-Claim, between Open and the borrow.
 type emptyBorrow struct{ called bool }
 
 func (b *emptyBorrow) WithBytes(fn func([]byte) error) error {

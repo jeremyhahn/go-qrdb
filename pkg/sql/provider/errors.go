@@ -37,29 +37,6 @@ func (e *DatabaseNotFoundError) Error() string {
 	return "provider: database not found: " + e.Name
 }
 
-// TableNotFoundError is returned when a requested table does not exist
-// within the specified database.
-type TableNotFoundError struct {
-	Database string
-	Table    string
-}
-
-// Error returns a human-readable description.
-func (e *TableNotFoundError) Error() string {
-	return "provider: table not found: " + e.Database + "." + e.Table
-}
-
-// DuplicateKeyError is returned when an insert would violate a primary
-// key uniqueness constraint.
-type DuplicateKeyError struct {
-	Key string
-}
-
-// Error returns a human-readable description.
-func (e *DuplicateKeyError) Error() string {
-	return "provider: duplicate key: " + e.Key
-}
-
 // InvalidKeyError is returned when a key value cannot be used as a KV
 // store key (e.g., empty string or wrong type).
 type InvalidKeyError struct {
@@ -340,6 +317,21 @@ func (e *RowRewriteError) Unwrap() error {
 	return e.Err
 }
 
+// RewriteChunkConflictError is returned when a rewrite write-back chunk's
+// compare-and-swap fails for a reason other than a stale generation (see
+// runRewrite in relational_rewrite.go) -- unexpected, since the generation
+// Compare is the only precondition a chunk's proposal carries, but reported
+// explicitly rather than silently treated as success.
+type RewriteChunkConflictError struct {
+	Database string
+	Name     string
+}
+
+// Error returns a human-readable description.
+func (e *RewriteChunkConflictError) Error() string {
+	return "provider: table " + e.Database + "." + e.Name + ": rewrite write-back chunk lost its compare-and-swap for an unexplained reason"
+}
+
 // PrimaryKeyRewriteUnsupportedError is returned when a DROP COLUMN or
 // MODIFY COLUMN would change the physical encoding of the table's primary
 // key -- a different column set or order, a different prefix length, or a
@@ -461,17 +453,6 @@ type TransactionServiceUnavailableError struct {
 // Error returns a human-readable description.
 func (e *TransactionServiceUnavailableError) Error() string {
 	return "provider: transaction service unavailable for relational table: " + e.Table
-}
-
-// BatchServiceUnavailableError is returned by RelationalTable.Truncate when
-// the table was constructed without WithBatchService.
-type BatchServiceUnavailableError struct {
-	Table string
-}
-
-// Error returns a human-readable description.
-func (e *BatchServiceUnavailableError) Error() string {
-	return "provider: batch service unavailable for relational table: " + e.Table
 }
 
 // SequenceServiceUnavailableError is returned by a RelationalTable
@@ -776,4 +757,35 @@ type SequencesUnavailableError struct {
 // Error returns a human-readable description.
 func (e *SequencesUnavailableError) Error() string {
 	return "provider: database " + e.Database + " does not support sequences"
+}
+
+// DocumentMoveOutcomeUnknownError is returned when an UPDATE that changes a
+// collection document's `_id` stored the document under its new ID and then
+// could not tell whether releasing the old ID removed the old document: the
+// release failed with an error that is not a lost race. The old document may
+// or may not still exist, so the copy under the new ID is deliberately LEFT --
+// withdrawing it could leave the document nowhere -- and the caller must read
+// both IDs to learn which the collection now holds. It matches
+// service.ErrOutcomeUnknown.
+type DocumentMoveOutcomeUnknownError struct {
+	Collection string
+	OldID      uint64
+	NewID      uint64
+	Err        error
+}
+
+// Error returns a human-readable description.
+func (e *DocumentMoveOutcomeUnknownError) Error() string {
+	return "provider: moving document " + strconv.FormatUint(e.OldID, 10) + " to " + strconv.FormatUint(e.NewID, 10) +
+		" in collection " + e.Collection + ": releasing the old id failed with an unknown outcome, and both ids are left: " + e.Err.Error()
+}
+
+// Unwrap returns the release's error.
+func (e *DocumentMoveOutcomeUnknownError) Unwrap() error {
+	return e.Err
+}
+
+// Is reports the service.ErrOutcomeUnknown marker.
+func (e *DocumentMoveOutcomeUnknownError) Is(target error) bool {
+	return target == service.ErrOutcomeUnknown
 }

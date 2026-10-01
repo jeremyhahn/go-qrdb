@@ -111,6 +111,7 @@ func TestIsolationRaft_Scale_Foundation(t *testing.T) {
 			"--sm", "pebble",
 			"--discovery", "static",
 			"--peers", peersFlag,
+			"--member-identities", memberIdentitiesFlag(t, nodeCertPaths[:]),
 			"--shard-id", "1",
 			"--replica-id", fmt.Sprintf("%d", i+1),
 			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
@@ -205,6 +206,7 @@ func TestIsolationRaft_Scale_Foundation(t *testing.T) {
 		fmt.Sprintf("https://127.0.0.1:%d/users", leaderPort),
 		map[string]interface{}{
 			"username":  "admin",
+			"email":     "admin@" + scaleFoundationTenantID + ".example.com",
 			"tenant_id": scaleFoundationTenantID,
 			"role_ids":  []string{roleResp.ID},
 		},
@@ -772,6 +774,7 @@ func TestIsolationRaft_Scale_RestartSurvival(t *testing.T) {
 				"--sm", "pebble",
 				"--discovery", "static",
 				"--peers", peersFlag,
+				"--member-identities", memberIdentitiesFlag(t, nodeCertPaths[:]),
 				"--shard-id", "1",
 				"--replica-id", fmt.Sprintf("%d", i+1),
 				"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
@@ -871,7 +874,7 @@ func TestIsolationRaft_Scale_RestartSurvival(t *testing.T) {
 	_, uStatus := iraftAPIPost(t, sysClient,
 		fmt.Sprintf("https://127.0.0.1:%d/users", leaderPort),
 		map[string]interface{}{
-			"username": "admin", "tenant_id": restartSurvivalTenantID,
+			"username": "admin", "email": "admin@" + restartSurvivalTenantID + ".example.com", "tenant_id": restartSurvivalTenantID,
 			"role_ids": []string{roleResp.ID},
 		})
 	if uStatus != http.StatusCreated && uStatus != http.StatusOK {

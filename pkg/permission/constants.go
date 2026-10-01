@@ -63,7 +63,7 @@ const (
 	//
 	// Unlike mvcc:compact this is NOT store-global: a restore names the keys
 	// it writes and is confined to the caller's tenant and database namespace
-	// by server.namespacedMVCCService, so it keeps the default ScopeSelf.
+	// by server.namespacedMVCCService, so it is declared ScopeSelf.
 	MVCCRestore Permission = "mvcc:restore"
 )
 
@@ -716,7 +716,7 @@ const (
 // Tenant DEK keyring permissions. The keyring holds a tenant's versioned
 // data encryption keys; the keys never leave the server. Every verb acts on
 // the caller's OWN tenant only — the service refuses another tenant even for
-// a system-tenant caller — so all six are ScopeSelf (registered in init).
+// a system-tenant caller — so all six are ScopeSelf (self_scope.go).
 const (
 	// DEKEncrypt seals caller data under the tenant's current key version.
 	DEKEncrypt Permission = "dek:encrypt"
@@ -769,6 +769,23 @@ const (
 	RAGQuery          Permission = "rag:query"
 	RAGListDocuments  Permission = "rag:list_documents"
 	RAGDeleteDocument Permission = "rag:delete_document"
+)
+
+// Key escrow permissions. Escrow hands wrapped key material to an external
+// custodian (a KMIP server or a federation agent) so it can be reconstructed
+// outside the module that created it — the same key-entry/key-output duty as
+// keys:import/keys:export, not a cryptographic primitive on caller-supplied
+// input. escrow:recover and escrow:revoke are correspondingly privileged;
+// escrow:list is metadata only (escrow ID, purpose, timestamps) and never
+// returns key material. Consumed by go-xkms, which gates its KMIP and
+// federation-agent escrow transports on this family — qrdb owns the
+// vocabulary but ships no escrow implementation of its own (see the
+// PIV/SSH/Passwords families for the same split).
+const (
+	EscrowCreate  Permission = "escrow:create"
+	EscrowRecover Permission = "escrow:recover"
+	EscrowList    Permission = "escrow:list"
+	EscrowRevoke  Permission = "escrow:revoke"
 )
 
 // ---------------------------------------------------------------------------
@@ -974,6 +991,7 @@ var categories = []Category{
 			TenantsCreate, TenantsRead, TenantsUpdate, TenantsDelete, TenantsList,
 			TenantsSetIsolation, TenantsSetEntitlements, TenantsSetQuotas,
 			TenantsListCross, TenantsCreateCross, TenantsApprove,
+			TenantsListDeleted, TenantsReconcileDeleted,
 			TenantBarrierInit, TenantBarrierUnseal, TenantBarrierSeal, TenantBarrierStatus,
 			TenantBarrierOfficerRegister, TenantBarrierOfficerList,
 			TenantBarrierClaimShare, TenantBarrierSealVote,
@@ -1099,6 +1117,13 @@ var categories = []Category{
 			RAGIngest, RAGQuery, RAGListDocuments, RAGDeleteDocument,
 		},
 	},
+	{
+		Name:  "Key Escrow",
+		Group: "Cryptographic Services",
+		Permissions: []Permission{
+			EscrowCreate, EscrowRecover, EscrowList, EscrowRevoke,
+		},
+	},
 }
 
 // credentialPermissions returns every named-credential permission. The
@@ -1125,22 +1150,14 @@ func init() {
 	// permission to the system tenant so a tenant-scoped role can never satisfy
 	// it (latent cross-tenant hole — no built-in tenant role grants these).
 	RegisterScope(ScopeCross, credentialPermissions()...)
-	// The cert-binding PAIR declares its scope explicitly rather than taking
-	// the ScopeSelf default. Both resolve to ScopeSelf either way, so this
-	// changes no decision today — it states one.
-	//
-	// LookupScope returns ScopeSelf for any permission nobody tagged, so an
-	// omission and a decision are indistinguishable in the registry, and the
-	// omission is the one that admits. These two decide which certificates
-	// authenticate as an account, so "nobody has thought about this yet" is not
-	// an acceptable reading of their scope. The declaration is deliberately
-	// narrow: it says these two were considered, and says nothing about any
-	// other untagged permission in this package.
+	// The cert-binding PAIR is declared ScopeSelf here, beside its
+	// definitions, rather than in self_scope.go with the rest: it was the
+	// first pair declared deliberately, back when LookupScope still answered
+	// ScopeSelf for any permission nobody had tagged and an omission was
+	// indistinguishable from a decision. These two decide which certificates
+	// authenticate as an account, so "nobody has thought about this yet" was
+	// never an acceptable reading of their scope. That default is gone
+	// (go-qrdb#504) and every permission now declares; the rationale stays
+	// with the pair.
 	RegisterScope(ScopeSelf, UsersAddCertBinding, UsersRemoveCertBinding)
-	// The DEK keyring verbs declare ScopeSelf explicitly, for the reason the
-	// cert-binding pair does: they gate key custody, so their scope is a
-	// decision, not a default. ScopeSelf lets a system-tenant identity pass
-	// the authorizer for another tenant; the DEK service closes that by
-	// acting on the caller's own tenant only.
-	RegisterScope(ScopeSelf, DEKEncrypt, DEKDecrypt, DEKRewrap, DEKRotate, DEKRetire, DEKStatus)
 }

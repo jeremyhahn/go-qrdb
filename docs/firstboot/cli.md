@@ -71,6 +71,25 @@ In M-of-N the daemon stays in `enrolling` after start; officers claim their
 certificates and shares through the ceremony verbs before the system becomes
 `operational`. See [../ceremony/cli.md](../ceremony/cli.md).
 
+**Every `--sm` state machine type can run first boot.** Role and user
+creation commits each identity claim and its records as one guarded batch, and
+every type — `pebble` (the default), `mvcc`, `memory`, `standard`,
+`concurrent`, `fast`, `disk`, `highperf`, `regular` — serves guarded batches.
+`qrdbd start` still confirms it on **every start**, right after leader election
+and before any role or user is created, by asking the running shard for a
+real no-op guarded batch. A state machine that could not answer it would stop
+the start with:
+
+```text
+cli: auth bootstrap failed at "atomic role/user creation requires an --sm state machine with transaction support": kvstore: store does not support atomic conditional writes
+```
+
+No registered type does. On a follower the check cannot be asked — only the
+leader proposes — so a follower defers to the leader's answer; every replica of
+a shard runs the same state machine. A probe that fails for any other reason
+after the leader wait also stops the start, at step
+`"guarded batch capability probe"`.
+
 ## Checking the result
 
 ```bash

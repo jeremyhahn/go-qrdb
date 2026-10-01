@@ -55,13 +55,14 @@ The daemon selects the mode with `mode: standalone | raft` in YAML or
   stays mandatory.
 - **Every no-argument `*Node` accessor performs a race-free read** from any
   goroutine at any point — a fully constructed value or nil, never a torn one.
-  **`Close` itself is not synchronised against `Unseal` or `EnableEncryption`**;
-  callers must not overlap them. See *Node accessor concurrency* below.
+  **`Close` blocks on an in-flight `Unseal` boot or system `EnableEncryption`**
+  and then tears down what it built; a boot or migration that arrives after it
+  is refused with `node.ErrNodeClosed`. See *Node accessor concurrency* below.
 
 ## Node accessor concurrency
 
-Two things are true, and only the first is a guarantee. Keeping them apart is
-the point of this section.
+Two guarantees, with different mechanisms: accessor reads are race-free, and
+`Close` is ordered against the boot and migration that publish what they read.
 
 ### Guaranteed: accessor reads are race-free
 
@@ -82,24 +83,42 @@ Those documented nils are an invitation to hold the node in one goroutine and
 poll it while a second drives `Unseal` — the sealed-window shape every embedder
 uses (`ServeSealedWindow` on one goroutine, the operator's unseal on another).
 
-### NOT guaranteed: `Close` is not synchronised against boot or migration
+### Guaranteed: `Close` blocks on an in-flight boot or migration
 
-`Node` has no lifecycle state. Two interleavings are therefore **undefined**,
-and callers must not create them:
+The owner's ruling is that **`Close` blocks**. Every data-plane transition runs
+under one lifecycle gate (`Node.lifeGate`, a one-slot semaphore plus a
+closing signal that the first `Close` raises before it waits):
 
-- **`Close` concurrent with `Unseal`.** `Close` retracts the handles, then the
-  in-flight boot's `Store` calls republish them, and the node looks open again
-  after `Close` returned.
-- **`Close` concurrent with `EnableEncryption`.** The migration reloads
-  `barrier` and `barrierRegistry` after `Close` has nilled them, and `Reopen`
-  can rebuild the data plane after shutdown.
+| Writer | Holds the gate for | After `Close` |
+|---|---|---|
+| `Unseal` | the barrier unseal and the whole boot it completes | returns `node.ErrNodeClosed` |
+| system-scope `EnableEncryption` | tear down, re-key and rebuild | returns `node.ErrNodeClosed` |
+| tenant-scope `EnableEncryption` | the tenant's recycle — held **shared**, alongside other tenant migrations and a system migration | returns `node.ErrNodeClosed` |
+| `Close` | the whole teardown | returns nil (idempotent) |
 
-Neither is a torn read — the reads are still atomic — so this is an **ordering**
-gap, not the publication defect the accessors fixed. Closing it needs an
-explicit lifecycle state plus a ruling on what `Close` means for an embedded
-`Node` (block on an in-flight `Unseal`, or start failing it and with which
-typed error). That ruling is the owner's, and the gap is deliberately left
-open until it is made.
+So `Close` is serialised with `Unseal`, with a system-scope migration, and
+with a tenant-scope migration: concurrent with any of them it either waits for
+it and tears down what it built, or runs first and the late call is refused.
+A tenant-scope migration is admitted through `server.TenantMigrationAdmission`
+on the router every transport uses and on the direct `Node.EnableEncryption`
+call; it keeps its per-tenant guard and still runs concurrently with other
+tenants' migrations. The migration can no longer
+reload a barrier `Close` retracted, and nothing is republished after `Close`
+returns. `ErrNodeClosed` is a sentinel so a composer can tell "closed" apart
+from a wrong credential (`*UnsealError`) or an unsupported migration
+(`*MigrationNotSupportedError`). It is `service.ErrNodeClosed`, so a refusal
+delivered over a transport is classified there as retryable against another
+node: 503 on REST, Unavailable on gRPC, unix, QUIC and MCP, and the sentinel
+itself on the embedded transport.
+
+A boot or migration still **waiting** for the gate when `Close` begins is
+refused, not queued: waiters select on the slot, the closing signal and their
+own context. That is not a courtesy. `Close` stops the servers while it holds
+the slot, a graceful stop waits for in-flight requests, and a transport-borne
+`EnableEncryption` is one — a plain mutex let the two wait on each other.
+
+`Close` can take as long as what it waits for — a KMS-backed unseal included.
+Accessors never take the gate.
 
 ### Mechanism
 
@@ -113,15 +132,15 @@ pointer holds `*Iface`.
 single-word publication with no invariant spanning two of them, and reads
 outnumber the single write by orders of magnitude — the same reasoning
 `pkg/database`, `pkg/secure` and `pkg/storage/pool` apply to their swappable
-handles. A mutex is what the **lifecycle** gap above will need; it is not what a
-per-handle publication needs.
+handles. The lifecycle lock orders the WRITERS; a per-handle publication needs
+no mutex.
 
-### Retraction, within those limits
+### Retraction
 
-For a caller that does not overlap `Close` with a boot, `Close` retracts every
-handle it published before stopping what backs them, so every accessor reads
-nil afterwards rather than handing out a live-looking handle onto a stopped
-service graph.
+`Close` retracts every handle it published before stopping what backs them, so
+every accessor reads nil afterwards — including after a `Close` that overlapped
+a boot or migration — rather than handing out a live-looking handle onto a
+stopped service graph.
 
 The in-process encryption-migration recycle (`EnableEncryption` →
 `teardownDataPlane`) retracts the handles owned by the service graph it stops —
@@ -135,7 +154,8 @@ The scoped encryption router (`Node.encMigrator`, reached through
 `EnableEncryption`) is the deliberate exception: it is **not** retracted by
 `teardownDataPlane`. Its tenant leg reaches `TenantHostRegistry` and
 `RaftBackendFactory`, which survive a system-scope recycle by design — tenant
-migrations use a per-tenant guard and do not contend on `migrateMu`. Clearing
+migrations hold the lifecycle gate only shared, so they do not wait for a system
+migration. Clearing
 it mid-recycle would turn a concurrent tenant-scope migration, which today
 proceeds independently, into a typed "not yet fully booted" refusal. `Close`
 clears it directly instead, where no rebuild follows.
@@ -148,20 +168,28 @@ currently live — including the seal-window-only service `Reopen`'s
 Shamir-committed branch builds while waiting on the Security Officer quorum —
 rather than the one that existed when the router was constructed.
 
-A DIFFERENT, still-open instance of the same capture-once shape lives one
-layer over: `TenantHostRegistry` (`n.tenantHosts`), built once by
-`BuildTenantInfra` inside `completeStandaloneBoot` and guarded by
-`n.tenantHosts == nil` so it is never rebuilt on a later system-scope
-recycle, also captures a `*tenant.Service` at that first-boot call — and that
-one is NOT resolved lazily. A tenant-scope migration issued after ANY
-system-scope recycle has completed (not only the Shamir-sealed window above)
-therefore fails `TenantHostRegistry.MigrateEncryption`'s `dataRootOf` lookup
-against the pre-recycle, stopped instance — the identical "storage is
-closed" symptom the router's lazy resolution fixes. This was found, not
-theorized, while writing that fix's regression test
-(`sdk/go/node/migrate_tenant_concurrent_test.go`), and is out of scope
-there: it is a `BuildTenantInfra`/`TenantHostRegistry` defect, not a
-`server.NewScopedEncryptionMigrator` one, and is tracked separately.
+The same rule holds one layer over, for `TenantHostRegistry`
+(`n.tenantHosts`). It is built once by `BuildTenantInfra` inside
+`completeStandaloneBoot`, guarded by `n.tenantHosts == nil` so a later
+system-scope recycle never rebuilds it, and it resolves each tenant's
+`DataRoot` through the `server.TenantLookup` it was built with. The node
+passes the same `nodeTenantResolver`, never `svcNode.Tenant`, so a
+tenant-scope migration issued after a completed system-scope recycle reads the
+live tenant service. It previously captured the first boot's
+`*tenant.Service`, and every such migration failed its `DataRoot` lookup with
+"storage is closed" against the stopped pre-recycle backend.
+
+`server.TenantInfraConfig.TenantLookup` is **required** whenever the
+`IsolationVolume` registry is built; `BuildTenantInfra` refuses a
+configuration without one (`*TenantInfraConfigError`, field `TenantLookup`)
+before any side effect, rather than defaulting to the one-shot `TenantSvc`.
+`TenantSvc` is read only by the boot-time passes inside `BuildTenantInfra`.
+The daemon, whose tenant service is never swapped, passes the service itself as
+the lookup.
+
+`RaftBackendFactory` has no counterpart: it resolves databases through the
+database manager and the replicated placement table, and the clustered boot
+path that builds it performs no in-process system recycle.
 
 ### What none of this promises
 
@@ -245,14 +273,35 @@ security posture or breaks a dependency of everything else:
 `raft.sm_storage` selects the backend the storage-generic state machines
 (`sm_type: disk` or `fast`) compose: `pebble` (default), `file`, or `memory`.
 
+- **Storage is passed per resolution, never held in package state.**
+  `statemachine.ResolveTypedWithStorage` takes a `StorageConfig` carrying
+  `raft.data_dir` and `raft.sm_storage`; `qrdbd` and
+  `sdk/go/node.NewClusteredNode` both pass it, so two nodes in one process each
+  keep their storage under their own data directory. Which types are
+  storage-generic is the registry's answer (`Descriptor.StorageGeneric`), and a
+  non-pebble `sm_storage` for any other type is refused at resolution
+  (`SMStorageNotApplicableError`) rather than ignored.
+- **Under the seal barrier, storage-generic state machines are encrypted at
+  rest or refused.** `StorageConfig.Encryptor` carries the node's at-rest
+  encryptor. When it is enabled, `pebble` storage is opened on the barrier's
+  encfs — the same wrapping the `pebble` and `mvcc` state machines get — and
+  `file` storage, which has no encrypting seam, is refused at resolution
+  (`SMStorageUnencryptedError`), at `qrdbd start` and in the SDK alike.
+  `memory` storage persists nothing and is allowed. The factory opens storage
+  when the replica starts, after the barrier is unsealed.
+- **Every `sm_type` passes the start-time guarded-batch probe**
+  (`requireGuardedBatch` in `cmd/qrdbd/start.go` over
+  `kvstore.ProbeGuardedBatch`). The probe stays: it is what refuses a state
+  machine registered without a transaction plane, and none in this tree is.
+
 - **The file backend earned the hot-apply role with real durability**: atomic
   temp-file + rename + fsync writes and an all-or-nothing commit journal
   replayed at open (`pkg/storage/file/journal.go`), plus the `storage.Syncer`
   seam.
 - **Objstore is a snapshot/backup tier** and is **refused as a hot apply path**
   with a pointed validation error.
-- **The pebble-native state machines (`pebble`, `mvcc`) carry their own
-  dedicated Pebble store** and reject a non-pebble `sm_storage`.
+- **Every state machine other than `disk` and `fast` carries its own
+  storage** and rejects a non-pebble `sm_storage`.
 
 ## Configuration
 

@@ -37,18 +37,6 @@ func TestDimensionMismatchError_ErrorMethod(t *testing.T) {
 	}
 }
 
-// TestUnsupportedMetricError_ErrorMethod verifies Error() and Unwrap().
-func TestUnsupportedMetricError_ErrorMethod(t *testing.T) {
-	err := &UnsupportedMetricError{Metric: DistanceMetric(99)}
-	msg := err.Error()
-	if msg == "" {
-		t.Fatal("Error() returned empty string")
-	}
-	if !errors.Is(err, ErrUnsupportedMetric) {
-		t.Errorf("expected errors.Is(err, ErrUnsupportedMetric), got %v", err)
-	}
-}
-
 // TestBatchError_ErrorMethod verifies BatchError.Error() format.
 func TestBatchError_ErrorMethod(t *testing.T) {
 	inner := errors.New("inner error")

@@ -16,9 +16,7 @@ package service
 
 import (
 	"context"
-	"errors"
 
-	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
@@ -77,7 +75,7 @@ func (s *TransactionService) Execute(ctx context.Context, compares []Compare, su
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
-		return nil, s.translateProposeError(err)
+		return nil, translateProposeError(err)
 	}
 	// A state-machine-encoded application error (e.g. a unique-index violation
 	// that rejected the transaction without stalling consensus) must be
@@ -100,7 +98,7 @@ func (s *TransactionService) ExecuteWithMode(ctx context.Context, compares []Com
 	}
 	result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
 	if err != nil {
-		return nil, s.translateProposeError(err)
+		return nil, translateProposeError(err)
 	}
 	if resultErr := checkResultError(result); resultErr != nil {
 		return nil, resultErr
@@ -117,6 +115,9 @@ func (s *TransactionService) encodeTransactionCommand(compares []Compare, succes
 	// Encode compares.
 	encodedCompares := make([][]byte, len(compares))
 	for i, c := range compares {
+		if len(c.Key) == 0 {
+			return nil, &InvalidKeyError{Field: "compare", Index: i}
+		}
 		encoded, err := protocol.EncodeCompare(
 			c.Key,
 			byte(c.Target),
@@ -239,7 +240,7 @@ func (s *TransactionService) ExecuteEntity(ctx context.Context, req *Transaction
 
 	result, proposeErr := s.host.SyncPropose(ctx, shardID, cmd)
 	if proposeErr != nil {
-		return nil, s.translateProposeError(proposeErr)
+		return nil, translateProposeError(proposeErr)
 	}
 	// A state-machine-encoded application error (e.g. a unique-index violation
 	// that rejected the transaction without stalling consensus) must be
@@ -294,20 +295,6 @@ func encodeEntityOps(ops []TransactionEntityOp) ([][]byte, error) {
 	return encoded, nil
 }
 
-// translateProposeError converts QuicRaft proposal errors to service-level
-// typed errors.
-func (s *TransactionService) translateProposeError(err error) error {
-	var nle *quicraft.NotLeaderError
-	if errors.As(err, &nle) {
-		return &NotLeaderError{
-			ShardID:       nle.ShardID,
-			LeaderID:      nle.LeaderID,
-			LeaderAddress: nle.LeaderAddress,
-		}
-	}
-	return &ProposeError{Err: err}
-}
-
 // ---------------------------------------------------------------------------
 // Op encoding helpers
 // ---------------------------------------------------------------------------
@@ -327,10 +314,17 @@ var opTypeMap = map[OpType]byte{
 // value — fails closed with UnsupportedTransactionOpError rather than
 // silently defaulting to a write, which would otherwise let a caller's
 // read request corrupt the target key with an empty-value put.
+//
+// An empty key is refused here, before anything is proposed: no state machine
+// can store one, and refusing at the proposer is the early answer to the
+// refusal every state machine also makes at apply.
 func encodeServiceOp(op Op) ([]byte, error) {
 	protocolOp, ok := opTypeMap[op.Type]
 	if !ok {
 		return nil, &UnsupportedTransactionOpError{OpType: op.Type}
+	}
+	if len(op.Key) == 0 {
+		return nil, &InvalidKeyError{Field: "op"}
 	}
 	return protocol.EncodeOp(protocolOp, op.Key, op.Value, op.RangeEnd, op.LeaseID)
 }

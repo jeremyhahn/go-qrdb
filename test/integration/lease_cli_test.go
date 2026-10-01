@@ -29,6 +29,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // leaseInfoDisplay mirrors cmd/qrdb/lease.go's printLeaseInfo JSON shape
@@ -138,10 +140,29 @@ func testLeaseLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 		t.Fatalf("[%s] lease ttl not-a-number succeeded, want error (output: %s)", proto.name, out)
 	}
 
-	// ttl on a never-granted lease ID must fail closed.
-	out, err = runCLIProto(t, node, proto, "lease", "ttl", "999999999")
+	// ttl on a never-granted lease ID must fail closed with the specific
+	// not-found classification, not merely "some error" and not merely
+	// text containing the words "lease not found" -- the pre-fix generic
+	// engine error ("engine: invalid query: lease not found") contains
+	// that same substring, so a Contains check here would pass on both the
+	// correct classification and the go-qrdb#387 regression it exists to
+	// catch. Every transport's client reconstructs *transport.LeaseNotFoundError
+	// from its own not-found status/code (see sdk/go/transport/*), and
+	// ONLY that reconstruction; any other status renders the raw wire
+	// error instead, whose text differs from this exactly. cmd/qrdb prints
+	// err.Error() verbatim to stderr (SilenceErrors is set; see
+	// cmd/qrdb/main.go), so asserting an exact match on
+	// transport.LeaseNotFoundError.Error() pins the classification itself,
+	// not just a word that happens to appear in it.
+	const neverGrantedID = 999999999
+	out, err = runCLIProto(t, node, proto, "lease", "ttl", strconv.FormatInt(neverGrantedID, 10))
 	if err == nil {
 		t.Fatalf("[%s] lease ttl 999999999 (never granted) succeeded, want error (output: %s)", proto.name, out)
+	}
+	wantNotFound := (&transport.LeaseNotFoundError{LeaseID: neverGrantedID}).Error()
+	if got := strings.TrimSpace(out); got != wantNotFound {
+		t.Fatalf("[%s] lease ttl 999999999 (never granted): output = %q, want exactly %q (the typed not-found classification, not just matching text)",
+			proto.name, got, wantNotFound)
 	}
 
 	// --- list ------------------------------------------------------------
@@ -208,10 +229,21 @@ func testLeaseLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 			proto.name, key, out, err, "false")
 	}
 
-	// ttl on a revoked lease must fail closed.
+	// ttl on a revoked lease must fail closed with the same not-found
+	// classification a never-granted ID gets -- a revoked lease and one
+	// that never existed are deliberately indistinguishable from the read
+	// path up (see docs/leases/engineering.md), so this assertion is the
+	// one place that equivalence is actually exercised end to end. As
+	// above, this is an exact match on the typed classification, not a
+	// substring the pre-fix generic error would also satisfy.
 	out, err = runCLIProto(t, node, proto, "lease", "ttl", leaseID)
 	if err == nil {
 		t.Fatalf("[%s] lease ttl %s (revoked) succeeded, want error (output: %s)", proto.name, leaseID, out)
+	}
+	wantRevokedNotFound := (&transport.LeaseNotFoundError{LeaseID: granted.ID}).Error()
+	if got := strings.TrimSpace(out); got != wantRevokedNotFound {
+		t.Fatalf("[%s] lease ttl %s (revoked): output = %q, want exactly %q (the typed not-found classification, not just matching text)",
+			proto.name, leaseID, got, wantRevokedNotFound)
 	}
 
 	// revoke with a non-numeric lease ID must fail closed.

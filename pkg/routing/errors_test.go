@@ -13,39 +13,3 @@
 // limitations under the License.
 
 package routing
-
-import (
-	"errors"
-	"strings"
-	"testing"
-)
-
-func TestEmptyShardListError_Error_ReturnsExpectedMessage(t *testing.T) {
-	err := &EmptyShardListError{}
-	want := "routing: shard list is empty"
-	if got := err.Error(); got != want {
-		t.Fatalf("EmptyShardListError.Error() = %q, want %q", got, want)
-	}
-}
-
-func TestEmptyShardListError_Error_ContainsRoutingPrefix(t *testing.T) {
-	err := &EmptyShardListError{}
-	if !strings.Contains(err.Error(), "routing:") {
-		t.Fatalf("EmptyShardListError.Error() = %q, want it to contain %q", err.Error(), "routing:")
-	}
-}
-
-func TestEmptyShardListError_ImplementsErrorInterface(t *testing.T) {
-	var err error = &EmptyShardListError{}
-	if err.Error() == "" {
-		t.Fatal("expected non-empty error message")
-	}
-}
-
-func TestEmptyShardListError_ErrorsAs(t *testing.T) {
-	err := &EmptyShardListError{}
-	var target *EmptyShardListError
-	if !errors.As(err, &target) {
-		t.Fatal("expected errors.As to match *EmptyShardListError")
-	}
-}

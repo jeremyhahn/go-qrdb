@@ -14,8 +14,6 @@
 package vector
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -25,8 +23,7 @@ import (
 )
 
 func TestVectorBatch_UpsertVector(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_test_upsert")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -116,8 +113,7 @@ func TestVectorBatch_UpsertVector(t *testing.T) {
 }
 
 func TestVectorBatch_DeleteVector(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_test_delete")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -179,8 +175,7 @@ func TestVectorBatch_DeleteVector(t *testing.T) {
 }
 
 func TestVectorBatch_Commit(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_test_commit")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -237,8 +232,7 @@ func TestVectorBatch_Commit(t *testing.T) {
 }
 
 func TestVectorBatch_Reset(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_test_reset")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -271,8 +265,7 @@ func TestVectorBatch_Reset(t *testing.T) {
 }
 
 func TestVectorBatch_Close(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_test_close")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -296,8 +289,7 @@ func TestVectorBatch_Close(t *testing.T) {
 }
 
 func TestVectorBatch_MultipleVersions(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_test_versions")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -338,8 +330,7 @@ func TestVectorBatch_MultipleVersions(t *testing.T) {
 }
 
 func TestVectorBatch_ConcurrentOperations(t *testing.T) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_test_concurrent")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := t.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(t, err)
@@ -381,8 +372,7 @@ func TestVectorBatch_ConcurrentOperations(t *testing.T) {
 }
 
 func BenchmarkVectorBatch_UpsertVector(b *testing.B) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_bench_upsert")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := b.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(b, err)
@@ -415,8 +405,7 @@ func BenchmarkVectorBatch_UpsertVector(b *testing.B) {
 }
 
 func BenchmarkVectorBatch_Commit(b *testing.B) {
-	tmpDir := filepath.Join(os.TempDir(), "batch_bench_commit")
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	tmpDir := b.TempDir()
 
 	db, err := pebble.Open(tmpDir, &pebble.Options{})
 	require.NoError(b, err)

@@ -69,31 +69,6 @@ func TestExistsErrorImplementsError(t *testing.T) {
 	var _ error = err
 }
 
-func TestExpiredErrorMessage(t *testing.T) {
-	err := &ExpiredError{ID: 77}
-	got := err.Error()
-	if !strings.Contains(got, "lease expired") {
-		t.Errorf("ExpiredError.Error() = %q, want it to contain %q", got, "lease expired")
-	}
-	if !strings.Contains(got, "77") {
-		t.Errorf("ExpiredError.Error() = %q, want it to contain %q", got, "77")
-	}
-}
-
-func TestExpiredErrorWithZeroID(t *testing.T) {
-	err := &ExpiredError{ID: 0}
-	got := err.Error()
-	if !strings.Contains(got, "0") {
-		t.Errorf("ExpiredError.Error() = %q, want it to contain %q", got, "0")
-	}
-}
-
-func TestExpiredErrorImplementsError(t *testing.T) {
-	err := &ExpiredError{ID: 1}
-	// Verify the concrete type satisfies the error interface.
-	var _ error = err
-}
-
 func TestInvalidTTLErrorMessage(t *testing.T) {
 	err := &InvalidTTLError{TTL: -10}
 	got := err.Error()

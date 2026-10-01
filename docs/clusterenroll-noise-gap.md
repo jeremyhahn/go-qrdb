@@ -1,7 +1,12 @@
 # Shared-CA-key enrollment does not work over the Noise transport
 
-**Status:** open defect, found 2026-08-15. Needs an owner decision (see
-[Options](#options)) before it is fixed.
+**Status:** superseded. The owner ruled that the cluster CA private key is
+never distributed, on any transport. The Noise handler's behaviour described
+below was the correct one. SPKI, DANE and Direct now match it, because the
+advertiser and `/v1/ca/bootstrap` serve the certificate only. Joining through
+enrollment is refused (`EnrollmentUnavailableError`) until member-side CSR
+issuance ships; see [clustering/user.md](clustering/user.md). The rest of this
+document is kept as the record of the defect.
 
 ## Symptom
 

@@ -39,8 +39,78 @@ import (
 // would outlive the request that needed it.
 const rollbackTimeout = 10 * time.Second
 
+// reconcileTimeout bounds reconcileAmbiguousCreate's read-back after a
+// PutAllIfAllUnchanged call whose outcome is unknown. Same reasoning as
+// rollbackTimeout: the read-back deliberately outlives the request's own
+// context (a done ctx is the common reason the outcome went unknown in the
+// first place), so it needs a deadline of its own. It is also the default
+// RETRY window: cmd/qrdbd's boot-time stores read via StaleRead (local
+// applied state, not linearizable ReadIndex), so a proposal that committed
+// but lost its response may not be locally visible for a brief window while
+// apply catches up — see reconcileAmbiguousCreate's doc.
+const reconcileTimeout = 5 * time.Second
+
+// defaultReconcilePollInterval is the default spacing between
+// reconcileAmbiguousCreate's retries. Short relative to reconcileTimeout: a
+// real local-apply catch-up is expected to resolve in single-digit
+// milliseconds, so this trades a few wasted reads for not adding meaningful
+// latency to the (rare) ambiguous-outcome path.
+const defaultReconcilePollInterval = 10 * time.Millisecond
+
 func WithIdentityIndex(index tenant.IdentityIndex) Option {
 	return func(s *kvRoleStore) { s.identity = index }
+}
+
+// WithReconcilePolling overrides reconcileAmbiguousCreate's poll interval
+// and total retry window (both default from defaultReconcilePollInterval and
+// reconcileTimeout when left zero). Exists for tests that deliberately model
+// a write that will NEVER appear (a genuinely failed proposal, not a
+// StaleRead visibility lag) and would otherwise have to wait out the full
+// production window to observe the failure path. Production callers have no
+// reason to set this.
+func WithReconcilePolling(interval, window time.Duration) Option {
+	return func(s *kvRoleStore) {
+		s.reconcilePollInterval = interval
+		s.reconcileWindow = window
+	}
+}
+
+// WithAtomicIdentity asserts that the store this option is applied to and
+// the store the configured tenant.IdentityIndex resolves to are the EXACT
+// SAME physical store, and switches CreateRole to commit the identity
+// claim and its remaining writes as one guarded batch (see createRoleAtomic)
+// instead of the default claim-then-write sequence a Raft leadership change
+// can interrupt between any two steps of (go-qrdb#555).
+//
+// This is an assertion, not something NewStore can verify on its own: an
+// IdentityIndex built with tenant.NewIdentityIndex is confined to a store
+// fixed at ITS OWN construction, which this package cannot compare against
+// the store passed here for identity. Two composers are positioned to know
+// the assertion holds and set this option themselves:
+//
+//   - A boot-time composer wiring firstboot's system-tenant stores from one
+//     shared, namespaced KVStore.
+//   - routingRoleService, but ONLY for the SYSTEM tenant's own resolved
+//     store: tenant.NewResolvedIdentityIndex always resolves its backing
+//     store via resolver.Resolve(ctx, tenant.SystemTenantID)
+//     (go-qrdb#555 review, round 3), which is the EXACT SAME call — and,
+//     through the resolver's own namespace cache, the exact same physical
+//     object — that resolving the system tenant for an ordinary role
+//     operation produces. It is NOT set for any other tenant: a
+//     barrier-isolated or prefix tenant's own resolved store is a DIFFERENT
+//     physical object than the system tenant's, and folding a claim
+//     prepared against the wrong store into a batch addressed to this one
+//     would silently misroute the claim through the wrong namespace
+//     confinement instead of raising an error.
+//
+// No other caller should set this. NewStore has no way to detect the misuse
+// of setting it over a mismatched store, which is why the precondition is
+// documented rather than checked.
+//
+// NewStore refuses construction unless WithIdentityIndex is also set and
+// the store implements kvstore.MultiGuardedBatchKVStore — see NewStore's doc.
+func WithAtomicIdentity() Option {
+	return func(s *kvRoleStore) { s.atomicIdentity = true }
 }
 
 // recordIdentity places a role id in its tenant. It is a no-op when no

@@ -87,8 +87,11 @@ suppress the trail in the healthy ones.
 - **Failing fast in the fan-out.** Rejected: stopping at the first failed sink
   would let a broken file destination silently blank the ring buffer and the
   operational log stream that were both perfectly healthy.
-- **Storing audit entries in the user keyspace.** Rejected — they live under
-  `__sys:audit/`, inside the internal namespace, invisible to user enumeration.
+- **Storing audit entries in the KV store at all.** Rejected. The trail is a
+  hash-chained append-only file plus an in-memory ring; it is not in the
+  keyspace, user or internal, so no KV surface can enumerate, rewrite or
+  compact it. A tamper-evident chain wants an append-only medium, and a
+  replicated mutable store is the opposite of one.
 - **A world-readable audit file.** Rejected: mode 0600.
 
 ## Fail-closed on audit write failure
@@ -289,9 +292,9 @@ must not rewrite what the actor was allowed to do then.
 
 ## Trust boundaries
 
-- **Audit entries live under `__sys:audit/`**, inside the internal-key guard,
-  so they are not enumerable through the user KV surface.
-- **The file backend is mode 0600.**
+- **Audit entries are not in the key-value store**, so no KV verb reaches
+  them: the trail is `audit-events.ndjson` plus the in-memory ring.
+- **The audit file is mode 0600.**
 - **`PrevHash` chains entries** so a deletion or edit is detectable rather than
   silent.
 - **Permission-denied events are themselves audited** (`auth.denied`, result
@@ -305,14 +308,19 @@ must not rewrite what the actor was allowed to do then.
 
 ## Correction notice
 
-The *Event schema* section below and the factory table in
-[engineering.md](engineering.md) describe a `kvLogger` / `fileLogger` /
-`multiLogger` / `noopLogger` factory selected by an `audit.Config` with
-`kv_backend` / `file_backend` keys. **No such factory, config struct or KV
-backend exists in the code.** The canonical names are the ones in the table
-above, composed at the node's wiring site rather than by a factory. The stale
-description is older than the sink rework and is being corrected
-document-by-document; it is recorded here rather than silently left in place.
+Earlier revisions of this folder described a `kvLogger` / `fileLogger` /
+`multiLogger` / `noopLogger` factory selected by an `audit.Config` carrying
+`kv_backend` / `file_backend` keys, writing to `__sys:audit/{tenantID}/
+{timestamp_nano}`. **No such factory, config struct, config block or KV
+backend has ever existed**, and `pkg/audit`'s own package comment repeated the
+claim until it was corrected alongside this folder.
+
+The canonical names are the ones in the table above, composed at the node's
+wiring site rather than selected by a factory. The correction is now applied
+throughout the folder rather than flagged in place, and the one consequence
+worth restating is that the old text was not merely stale but misleading in the
+operator's direction: it said querying required a backend that does not exist,
+when `audit query` in fact works with no configuration at all.
 
 ## Known limits of chain verification
 
@@ -346,9 +354,10 @@ check**, not as a control the system enforces.
 
 - **No log shipping.** There is no syslog, no remote sink, no agent. The file
   backend produces line-delimited JSON; shipping it is somebody else's job.
-- **No retention policy for the KV backend.** Nothing prunes `__sys:audit/`.
-  The *file* sink does prune: rotated archives older than its retention window
-  (90 days by default) are deleted when the sink opens.
+- **No archiving off the node.** The file sink prunes -- rotated archives older
+  than its retention window (90 days by default) are deleted when the sink
+  opens -- so retention is a deletion deadline, not a backup. Moving archives
+  somewhere durable before that deadline is the operator's job.
 - **No alerting.**
 - **No redaction.** Callers must not put secret material in `Attributes` —
   values are never included by the subsystems that emit, and nothing strips them

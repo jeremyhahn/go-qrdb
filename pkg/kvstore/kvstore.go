@@ -228,10 +228,12 @@ type KV struct {
 // (go-qrdb#21, and the Codex finding on PR #111). Checking more often narrows
 // the window; only evaluating the guard and the writes together closes it.
 //
-// The guard is deliberately ONE key rather than a general compare set. Every
-// caller in this repository fences a multi-key write on a single ownership
-// token, and a narrow capability is one every backend can implement without
-// exposing a transaction API through the storage abstraction.
+// The guard is deliberately ONE key for the common case, where every write in
+// the batch is fenced by a single ownership token. MultiGuardedBatchKVStore
+// below generalizes this to more than one independent guard, for the batches
+// that must fence on two or more uniqueness indexes at once (go-qrdb#555: a
+// user create claims BOTH a generated id and a caller-chosen username, and
+// neither guard alone is sufficient — see that interface's doc).
 type GuardedBatchKVStore interface {
 	KVStore
 
@@ -244,6 +246,46 @@ type GuardedBatchKVStore interface {
 	// An empty writes slice is applied as a no-op that still reports whether
 	// the guard held, which is a cheap ownership test with the same atomicity.
 	PutAllIfUnchanged(ctx context.Context, guardKey string, guardValue []byte, writes []KV) (applied bool, err error)
+}
+
+// Guard is one absent/expected-value condition evaluated as part of a
+// PutAllIfAllUnchanged batch. A nil Value means the key must be absent,
+// exactly as PutAllIfUnchanged's guardValue does. A non-nil Value means the
+// key must be PRESENT and hold exactly Value — so a non-nil empty Value is
+// refused by an absent key, never treated as equal to it.
+type Guard struct {
+	Key   string
+	Value []byte
+}
+
+// MultiGuardedBatchKVStore generalizes GuardedBatchKVStore to more than one
+// independent guard key, evaluated and applied in ONE atomic proposal.
+//
+// It exists because a single guard cannot express two uniqueness fences at
+// once: go-qrdb#555's review found that a boot-time user create guarded only
+// on the username key, so a Snowflake id repeated by an independently seeded
+// node (the exact failure #555 evidenced for role ids) could overwrite an
+// existing primary record and identity claim, since nothing guarded the id
+// itself. Sequencing two single-key guarded batches would reopen the same
+// window this whole design exists to close (the leadership-change race
+// between two separate proposals), so the primitive is extended instead of
+// working around it with a non-atomic fallback.
+//
+// Every production GuardedBatchKVStore in this repository also implements
+// this interface: the underlying transaction plane already accepts a slice of
+// compares, so PutAllIfUnchanged is implemented in terms of
+// PutAllIfAllUnchanged with a single-element guard list wherever both are
+// provided.
+type MultiGuardedBatchKVStore interface {
+	GuardedBatchKVStore
+
+	// PutAllIfAllUnchanged applies every write atomically, and only while
+	// EVERY guard's key still holds its expected value. The applied/err
+	// contract matches PutAllIfUnchanged: applied=true when the writes were
+	// made, applied=false with a nil error when at least one guard did not
+	// hold (the store is unchanged), and a non-nil error means the outcome is
+	// unknown.
+	PutAllIfAllUnchanged(ctx context.Context, guards []Guard, writes []KV) (applied bool, err error)
 }
 
 // AtomicKVStore is the optional capability of performing a write whose outcome
@@ -329,4 +371,37 @@ type AtomicKVStore interface {
 	// replicated store must evaluate it inside its state machine so every
 	// replica decides identically from the same log position.
 	CompareAndSwap(ctx context.Context, key string, expected, next []byte) (swapped bool, err error)
+}
+
+// FencedCreator is the optional capability of creating a key only while it
+// AND a set of other keys -- its fences -- are all absent, decided as one
+// atomic step.
+//
+// It exists for a create that another operation retires through a DIFFERENT
+// key. A tenant id is retired by a tombstone written beside, not over, the
+// tenant's metadata record; PutIfAbsent on the metadata key alone cannot see
+// the tombstone, and checking the tombstone first and then PutIfAbsent-ing
+// leaves the window between the two open: a delete that writes the tombstone
+// and removes the metadata inside it lets the create commit a live record for
+// an id retired forever (go-qrdb#484). Evaluating every absence and the write
+// together is the only thing that closes it.
+//
+// It is a separate interface, discovered by type assertion like AtomicKVStore
+// and GuardedBatchKVStore, and deliberately NOT embedding KVStore: both
+// kvstore.KVStore and seal.StorageBackend implementations carry it, and a
+// caller that needs it asserts for it and fails closed when it is absent. A
+// store that offered it by reading each fence and then writing would be
+// reporting an atomicity it does not have.
+type FencedCreator interface {
+	// PutIfAllAbsent stores value under key only when key and every key in
+	// fences are absent. It reports created=true when this call wrote the
+	// key, and created=false with a nil error when any of them was present
+	// -- in which case the store is unchanged. A non-nil error means the
+	// outcome is unknown and the caller must not assume either way.
+	//
+	// Atomicity is per consistency domain, exactly as for PutIfAbsent: a
+	// single-process store evaluates every absence and the write under one
+	// lock, and a replicated store evaluates them inside its state machine so
+	// every replica decides identically from the same log position.
+	PutIfAllAbsent(ctx context.Context, key string, value []byte, fences ...string) (created bool, err error)
 }

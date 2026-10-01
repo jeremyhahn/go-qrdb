@@ -111,7 +111,7 @@ func TestNode_EnableEncryption_TenantScope_DuringSystemShamirSealedWindow(t *tes
 		TargetStrategy: seal.StrategyPassphrase,
 		Mechanism:      seal.MechanismSwap,
 		Availability:   seal.AvailabilityQuiesced,
-		Credentials:    seal.Credentials{Secret: []byte("acme-pass")},
+		Credentials:    seal.MustCredentials([]byte("acme-pass")),
 	}
 	err = n.EnableEncryption(ctx,
 		service.BarrierScope{Kind: service.ScopeTenant, TenantID: "acme"}, tenOpts)
@@ -147,20 +147,10 @@ func TestNode_EnableEncryption_TenantScope_DuringSystemShamirSealedWindow(t *tes
 	// --- Complete the system-scope Shamir quorum so the node finishes
 	// booting cleanly (avoids racing a half-open host in t.Cleanup's Close).
 	//
-	// NOTE: this test deliberately stops here rather than retrying the
-	// tenant-scope migration post-reboot. Doing so surfaces a SEPARATE,
-	// pre-existing staleness bug: BuildTenantInfra (called from
-	// completeStandaloneBoot, guarded by `n.tenantHosts == nil` so it runs
-	// only on the very first boot) wires TenantHostRegistry's own
-	// tenantInfoSource from THAT FIRST svcNode.Tenant and never re-wires it on
-	// a later system-scope rebuild, so TenantHostRegistry.MigrateEncryption's
-	// dataRootOf lookup fails with the same "storage is closed" symptom this
-	// issue's fix eliminates from scopedEncryptionMigrator -- confirmed by
-	// running that call here and observing the identical failure signature.
-	// That defect is in BuildTenantInfra/TenantHostRegistry, not in
-	// server.NewScopedEncryptionMigrator, so it is out of go-qrdb#222's
-	// stated scope; tracked separately as go-qrdb#383 rather than folded in
-	// here.
+	// A tenant-scope migration AFTER a completed system recycle is covered by
+	// TestNode_EnableEncryption_TenantScope_AfterSystemRecycle (go-qrdb#383):
+	// TenantHostRegistry's DataRoot lookup used to capture the first boot's
+	// tenant service, the same shape this test pins for the router.
 	shares := dist.Shares()
 	require.Len(t, shares, 3, "migration must distribute real Shamir shares")
 	_, uerr := n.barrier.Load().UnsealWithShare(ctx, shares[0])

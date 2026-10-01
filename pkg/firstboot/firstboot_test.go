@@ -134,11 +134,19 @@ type fakeUsers struct {
 	createCalls []user.CreateUserRequest
 	createErr   error
 	exists      bool
-	nextID      uint64
+	// idExists models the OTHER guard a boot-time atomic create can lose on:
+	// a concurrent attempt whose generated id ALSO collided, reported as
+	// user.UserIDExistsError rather than UsernameExistsError (go-qrdb#555's
+	// own failure shape — see TestInitialize_AdminIDCollisionIsIdempotent).
+	idExists bool
+	nextID   uint64
 }
 
 func (f *fakeUsers) CreateUser(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
 	f.createCalls = append(f.createCalls, *req)
+	if f.idExists {
+		return nil, &user.UserIDExistsError{ID: 4242, TenantID: req.TenantID}
+	}
 	if f.exists {
 		return nil, &user.UsernameExistsError{Username: req.Username, TenantID: req.TenantID}
 	}
@@ -146,11 +154,25 @@ func (f *fakeUsers) CreateUser(_ context.Context, req *user.CreateUserRequest) (
 		return nil, f.createErr
 	}
 	f.nextID++
-	return &user.User{ID: f.nextID, Username: req.Username, TenantID: req.TenantID, RoleIDs: req.RoleIDs}, nil
+	return &user.User{ID: f.nextID, Username: req.Username, TenantID: req.TenantID, RoleIDs: req.RoleIDs, Lifecycle: user.LifecycleActive}, nil
 }
 
 func (f *fakeUsers) GetUser(_ context.Context, _ uint64) (*user.User, error) { return nil, nil }
-func (f *fakeUsers) GetUserByUsername(_ context.Context, _ string, _ string) (*user.User, error) {
+
+// GetUserByUsername makes fakeUsers a firstboot.UserResolver, as qrdb's own
+// user.UserServicer is. Whenever f.exists or f.idExists models an admin that
+// is already persisted — or after a successful CreateUser in THIS test run —
+// it answers with the record first boot itself writes: the requested roles,
+// System false, lifecycle active. A lookup that answered with a bare record
+// would contradict its own CreateUser, and first boot's provenance check
+// rightly refuses such a record. Never (nil, nil) for a name it should know,
+// which is the contract violation the resolution seam deliberately refuses.
+func (f *fakeUsers) GetUserByUsername(_ context.Context, tenantID, username string) (*user.User, error) {
+	for i := len(f.createCalls) - 1; i >= 0; i-- {
+		if r := f.createCalls[i]; r.Username == username && r.TenantID == tenantID {
+			return &user.User{ID: f.nextID, Username: username, TenantID: tenantID, RoleIDs: r.RoleIDs, Lifecycle: user.LifecycleActive}, nil
+		}
+	}
 	return nil, nil
 }
 func (f *fakeUsers) GetUserByEmail(_ context.Context, _ string, _ string) (*user.User, error) {
@@ -182,18 +204,49 @@ type fakeRoles struct {
 	createCount  atomic.Int32
 	createErr    error
 	existsByName map[string]bool
-	createCalls  []role.CreateRoleRequest
-	seeded       []role.Role
+	// existsByID maps a role id to the record ALREADY persisted under it —
+	// modelling go-qrdb#555's atomic-guard collision, where CreateRole
+	// refuses with RoleIDExistsError before ever comparing names. The test
+	// controls what that persisted record actually looks like, so it can
+	// be identical to what the caller requested (the legitimate concurrent
+	// first-boot case) or deliberately different (the genuine-conflict
+	// case registerBuiltInRoles must still refuse).
+	existsByID  map[string]role.Role
+	createCalls []role.CreateRoleRequest
+	seeded      []role.Role
+	// existsByNameRecord, keyed like existsByName, models what is ACTUALLY
+	// persisted under a name collision when it must differ from the incoming
+	// request — the genuine-conflict case registerBuiltInRoles must refuse.
+	// A name present in existsByName with no entry here is assumed identical
+	// to the request, matching the legitimate "another attempt already
+	// created this exact role" case.
+	existsByNameRecord map[string]role.Role
 }
 
 func (f *fakeRoles) CreateRole(_ context.Context, req *role.CreateRoleRequest) (*role.Role, error) {
 	f.createCalls = append(f.createCalls, *req)
 	if f.existsByName[req.Name] {
-		// Already present under the identifier the request carries, which is
-		// what a restart of the same release looks like. The record is still
-		// in the store, so GetRoleByName must find it.
-		f.remember(role.Role{ID: req.ID, Name: req.Name, TenantID: req.TenantID})
+		// Already present. The record is still in the store, so
+		// GetRoleByName must find it. Absent an explicit override, model it
+		// as field-for-field identical to what this request would have
+		// created, which is what a restart of the same release or another
+		// node's own successful attempt looks like.
+		if existing, ok := f.existsByNameRecord[req.Name]; ok {
+			f.remember(existing)
+		} else {
+			f.remember(role.Role{
+				ID:          req.ID,
+				Name:        req.Name,
+				TenantID:    req.TenantID,
+				Permissions: req.Permissions,
+				System:      role.IsSystemRoleName(req.Name),
+			})
+		}
 		return nil, &role.RoleNameExistsError{Name: req.Name, TenantID: req.TenantID}
+	}
+	if existing, ok := f.existsByID[req.ID]; ok {
+		f.remember(existing)
+		return nil, &role.RoleIDExistsError{ID: req.ID, TenantID: req.TenantID}
 	}
 	if f.createErr != nil {
 		return nil, f.createErr
@@ -526,6 +579,367 @@ func TestInitialize_AllPresentReturnsIdempotent(t *testing.T) {
 	}
 }
 
+// TestInitialize_AdminIDCollisionIsIdempotent reproduces go-qrdb#555's actual
+// bootstrap failure shape: a concurrent first-boot attempt races
+// createAdminUser for the SAME fixed admin username, and the LOSING batch's
+// generated id ALSO collides — the realistic case for independently seeded
+// nodes, not merely a coincidental username clash — so CreateUser reports
+// user.UserIDExistsError rather than UsernameExistsError. Before this fix,
+// only UsernameExistsError was tolerated, so this exact race aborted the
+// whole first-boot run even though the identical admin had already
+// committed.
+func TestInitialize_AdminIDCollisionIsIdempotent(t *testing.T) {
+	tenants := &fakeTenants{createAlreadyErr: true}
+	users := &fakeUsers{idExists: true}
+	roles := &fakeRoles{existsByName: map[string]bool{
+		role.RoleNameSO:        true,
+		role.RoleNameAdmin:     true,
+		role.RoleNameOperator:  true,
+		role.RoleNameUser:      true,
+		role.RoleNameAuditor:   true,
+		role.RoleNameCustodian: true,
+		role.RoleNameOwner:     true,
+	}}
+	ca := &fakeCA{cert: []byte("CERT"), key: []byte("KEY")}
+
+	result, err := Initialize(context.Background(), Dependencies{
+		Tenants: tenants,
+		Users:   users,
+		Roles:   roles,
+		CA:      ca,
+		Logger:  discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if result.AdminCreated {
+		t.Errorf("AdminCreated = true, want false (admin already existed under a colliding id)")
+	}
+	if ca.called.Load() != 0 {
+		t.Errorf("CA called = %d, want 0: an id-collision loser must not re-issue the platform admin cert", ca.called.Load())
+	}
+}
+
+// TestInitialize_AdminIDCollisionUnverifiableRefused is the control: an
+// id-collision error with NO way to verify it names the admin (no
+// UserResolver, and Users does not implement one either) must refuse the
+// run rather than silently accept an unverifiable collision.
+func TestInitialize_AdminIDCollisionUnverifiableRefused(t *testing.T) {
+	tenants := &fakeTenants{createAlreadyErr: true}
+	users := &unresolvableIDCollisionUsers{}
+	roles := &fakeRoles{existsByName: map[string]bool{
+		role.RoleNameSO:        true,
+		role.RoleNameAdmin:     true,
+		role.RoleNameOperator:  true,
+		role.RoleNameUser:      true,
+		role.RoleNameAuditor:   true,
+		role.RoleNameCustodian: true,
+		role.RoleNameOwner:     true,
+	}}
+
+	_, err := Initialize(context.Background(), Dependencies{
+		Tenants: tenants,
+		Users:   users,
+		Roles:   roles,
+		Logger:  discardLogger(),
+	})
+	var target *AdminUserCreationError
+	if !errors.As(err, &target) {
+		t.Fatalf("Initialize err = %v, want *AdminUserCreationError", err)
+	}
+}
+
+// unresolvableIDCollisionUsers is a UserCreator (deliberately NOT a
+// UserResolver) whose CreateUser always reports an id collision, modelling a
+// consumer's adapter that has no username-lookup seam at all.
+type unresolvableIDCollisionUsers struct{}
+
+func (unresolvableIDCollisionUsers) CreateUser(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
+	return nil, &user.UserIDExistsError{ID: 4242, TenantID: req.TenantID}
+}
+
+// TestInitialize_IDCollisionVerifiedIdenticalIsIdempotent reproduces
+// go-qrdb#555's actual failure mode: a concurrent first-boot attempt (this
+// run's own retry, or another node's) already won CreateRole's atomic
+// guard for a built-in role's deterministic id, so CreateRole refuses with
+// RoleIDExistsError rather than RoleNameExistsError. registerBuiltInRoles
+// must read the persisted record back, confirm it is field-for-field the
+// same built-in role this run would have created, and proceed exactly as
+// it does for a name collision.
+func TestInitialize_IDCollisionVerifiedIdenticalIsIdempotent(t *testing.T) {
+	tenants := &fakeTenants{createAlreadyErr: true}
+	users := &fakeUsers{exists: true}
+	roles := &fakeRoles{existsByID: map[string]role.Role{
+		role.SystemRoleID(tenant.SystemTenantID, role.RoleNameSO): {
+			ID:          role.SystemRoleID(tenant.SystemTenantID, role.RoleNameSO),
+			Name:        role.RoleNameSO,
+			TenantID:    tenant.SystemTenantID,
+			Permissions: role.BuiltInRoles(tenant.SystemTenantID)[0].Permissions,
+			System:      true,
+		},
+	}}
+	ca := &fakeCA{cert: []byte("CERT"), key: []byte("KEY")}
+
+	result, err := Initialize(context.Background(), Dependencies{
+		Tenants: tenants,
+		Users:   users,
+		Roles:   roles,
+		CA:      ca,
+		Logger:  discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	// The SO role's id collision is tolerated as idempotent; every OTHER
+	// built-in role has no existsByID/existsByName entry and is genuinely
+	// created for the first time by this call, so RolesCreated is still
+	// true overall — the assertion that matters is that Initialize did not
+	// refuse the whole run over the SO collision.
+	if !result.RolesCreated {
+		t.Errorf("RolesCreated = false, want true (every role but SO is newly created)")
+	}
+	soCalls := 0
+	for _, call := range roles.createCalls {
+		if call.Name == role.RoleNameSO {
+			soCalls++
+		}
+	}
+	if soCalls != 1 {
+		t.Errorf("CreateRole(so) calls = %d, want exactly 1 (no retry loop)", soCalls)
+	}
+}
+
+// TestInitialize_IDCollisionDifferentDefinitionRefused is the control: an id
+// collision whose persisted record does NOT match the built-in definition —
+// wrong permissions here — is a genuine, unexplained conflict and must be
+// refused, never silently accepted as "close enough". This is the
+// provenance concern an earlier version of this fix got wrong: matching on
+// name and tenant alone is not enough to prove the existing record is the
+// canonical role rather than something else that happens to share its id.
+func TestInitialize_IDCollisionDifferentDefinitionRefused(t *testing.T) {
+	tenants := &fakeTenants{createAlreadyErr: true}
+	users := &fakeUsers{exists: true}
+	soID := role.SystemRoleID(tenant.SystemTenantID, role.RoleNameSO)
+	roles := &fakeRoles{existsByID: map[string]role.Role{
+		soID: {
+			ID:       soID,
+			Name:     role.RoleNameSO,
+			TenantID: tenant.SystemTenantID,
+			// Deliberately wrong: not the SO role's canonical permission set.
+			Permissions: []permission.Permission{permission.KVGet},
+		},
+	}}
+	ca := &fakeCA{cert: []byte("CERT"), key: []byte("KEY")}
+
+	_, err := Initialize(context.Background(), Dependencies{
+		Tenants: tenants,
+		Users:   users,
+		Roles:   roles,
+		CA:      ca,
+		Logger:  discardLogger(),
+	})
+	var target *RolesRegistrationError
+	if !errors.As(err, &target) {
+		t.Fatalf("Initialize err = %v, want *RolesRegistrationError", err)
+	}
+	if target.Role != role.RoleNameSO {
+		t.Errorf("Role = %q, want %q", target.Role, role.RoleNameSO)
+	}
+}
+
+// TestInitialize_NameCollisionVerifiedIdenticalIsIdempotent covers the OTHER
+// tolerated collision registerBuiltInRoles handles: RoleNameExistsError, now
+// verified with the same provenance check as the id-collision branch rather
+// than accepted on the error type alone.
+func TestInitialize_NameCollisionVerifiedIdenticalIsIdempotent(t *testing.T) {
+	tenants := &fakeTenants{createAlreadyErr: true}
+	users := &fakeUsers{exists: true}
+	roles := &fakeRoles{existsByName: map[string]bool{role.RoleNameSO: true}}
+	ca := &fakeCA{cert: []byte("CERT"), key: []byte("KEY")}
+
+	result, err := Initialize(context.Background(), Dependencies{
+		Tenants: tenants,
+		Users:   users,
+		Roles:   roles,
+		CA:      ca,
+		Logger:  discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if !result.RolesCreated {
+		t.Errorf("RolesCreated = false, want true (every role but SO is newly created)")
+	}
+}
+
+// TestInitialize_NameCollisionDifferentDefinitionRefused is the name-collision
+// control for TestInitialize_IDCollisionDifferentDefinitionRefused: a name
+// collision whose persisted record does not match the built-in definition —
+// here, a System flag of false — is a genuine conflict and must be refused
+// rather than accepted because the error was RoleNameExistsError.
+func TestInitialize_NameCollisionDifferentDefinitionRefused(t *testing.T) {
+	tenants := &fakeTenants{createAlreadyErr: true}
+	users := &fakeUsers{exists: true}
+	roles := &fakeRoles{
+		existsByName: map[string]bool{role.RoleNameSO: true},
+		existsByNameRecord: map[string]role.Role{
+			role.RoleNameSO: {
+				ID:          role.SystemRoleID(tenant.SystemTenantID, role.RoleNameSO),
+				Name:        role.RoleNameSO,
+				TenantID:    tenant.SystemTenantID,
+				Permissions: role.BuiltInRoles(tenant.SystemTenantID)[0].Permissions,
+				// Deliberately wrong: a "SO" role that is not marked System
+				// would be mutable and deletable through the ordinary APIs.
+				System: false,
+			},
+		},
+	}
+	ca := &fakeCA{cert: []byte("CERT"), key: []byte("KEY")}
+
+	_, err := Initialize(context.Background(), Dependencies{
+		Tenants: tenants,
+		Users:   users,
+		Roles:   roles,
+		CA:      ca,
+		Logger:  discardLogger(),
+	})
+	var target *RolesRegistrationError
+	if !errors.As(err, &target) {
+		t.Fatalf("Initialize err = %v, want *RolesRegistrationError", err)
+	}
+	if target.Role != role.RoleNameSO {
+		t.Errorf("Role = %q, want %q", target.Role, role.RoleNameSO)
+	}
+}
+
+// TestBuiltInRoleAlreadySeeded covers builtInRoleAlreadySeeded's fail-closed
+// branches directly: a nil resolver, a resolver that cannot find the role,
+// and a resolver that finds one under a DIFFERENT id or tenant than the
+// canonical definition names. Every one of these must answer false, since
+// registerBuiltInRoles' only alternative on true is refusing the whole
+// first-boot run.
+func TestBuiltInRoleAlreadySeeded(t *testing.T) {
+	want := &role.Role{
+		ID:          role.SystemRoleID(tenant.SystemTenantID, role.RoleNameSO),
+		Name:        role.RoleNameSO,
+		TenantID:    tenant.SystemTenantID,
+		Permissions: role.BuiltInRoles(tenant.SystemTenantID)[0].Permissions,
+		System:      true,
+	}
+
+	t.Run("nil resolver", func(t *testing.T) {
+		if builtInRoleAlreadySeeded(context.Background(), nil, tenant.SystemTenantID, want, true) {
+			t.Error("expected false with a nil resolver")
+		}
+	})
+
+	t.Run("resolver cannot find the role", func(t *testing.T) {
+		roles := &fakeRoles{}
+		if builtInRoleAlreadySeeded(context.Background(), roles, tenant.SystemTenantID, want, true) {
+			t.Error("expected false when GetRoleByName reports not-found")
+		}
+	})
+
+	t.Run("resolver returns nil, nil", func(t *testing.T) {
+		// A resolver that violates the (record, nil) / (nil, typed-error)
+		// contract must not crash this function: it fails closed instead of
+		// dereferencing a nil *role.Role.
+		if builtInRoleAlreadySeeded(context.Background(), nilResultResolver{}, tenant.SystemTenantID, want, true) {
+			t.Error("expected false when the resolver returns (nil, nil)")
+		}
+	})
+
+	t.Run("persisted id differs, checkID=true", func(t *testing.T) {
+		roles := &fakeRoles{}
+		roles.remember(role.Role{ID: "a-different-id", Name: want.Name, TenantID: want.TenantID, Permissions: want.Permissions, System: want.System})
+		if builtInRoleAlreadySeeded(context.Background(), roles, tenant.SystemTenantID, want, true) {
+			t.Error("expected false when the persisted id differs from the canonical one and checkID is true")
+		}
+	})
+
+	t.Run("persisted id differs, checkID=false", func(t *testing.T) {
+		// The RoleNameExistsError path's tolerance: a cluster seeded before
+		// role.SystemRoleID's hash algorithm changed (UUIDv5 to UUIDv8, FIPS
+		// 140-3) keeps its roles under their legacy identifiers, and a name
+		// collision alone already proves this record is the one blocking the
+		// create — so an id mismatch here is expected, not a conflict.
+		roles := &fakeRoles{}
+		roles.remember(role.Role{ID: "a-legacy-id", Name: want.Name, TenantID: want.TenantID, Permissions: want.Permissions, System: want.System})
+		if !builtInRoleAlreadySeeded(context.Background(), roles, tenant.SystemTenantID, want, false) {
+			t.Error("expected true when only the id differs and checkID is false")
+		}
+	})
+
+	t.Run("persisted tenant differs", func(t *testing.T) {
+		const otherTenant = "acme"
+		roles := &fakeRoles{}
+		roles.remember(role.Role{ID: want.ID, Name: want.Name, TenantID: otherTenant, Permissions: want.Permissions, System: want.System})
+		// Looked up under otherTenant so the resolver finds it — the check
+		// under test is the comparison against want.TenantID afterward, not
+		// GetRoleByName's own tenant-scoped lookup.
+		if builtInRoleAlreadySeeded(context.Background(), roles, otherTenant, want, true) {
+			t.Error("expected false when the persisted tenant differs from the canonical one")
+		}
+	})
+
+	t.Run("persisted name differs", func(t *testing.T) {
+		// fakeRoles' own GetRoleByName can never answer with a mismatched
+		// Name — it filters on name equality — so this uses a resolver that
+		// can, modelling one that resolved the query to the wrong record by
+		// some other means. The comparison this function makes must catch it
+		// independently of GetRoleByName's own behavior.
+		resolver := mismatchedRoleResolver{role: &role.Role{
+			ID: want.ID, Name: "a-different-name", TenantID: want.TenantID, Permissions: want.Permissions, System: want.System,
+		}}
+		if builtInRoleAlreadySeeded(context.Background(), resolver, tenant.SystemTenantID, want, true) {
+			t.Error("expected false when the persisted name differs from the canonical one")
+		}
+	})
+
+	t.Run("persisted System flag differs", func(t *testing.T) {
+		// Same id, tenant, and permissions, but NOT marked System: true — a
+		// record like this passes every other check while remaining
+		// mutable and deletable through the ordinary role APIs, which
+		// defeats a built-in role's immutability. Must be refused,
+		// regardless of checkID.
+		roles := &fakeRoles{}
+		roles.remember(role.Role{ID: want.ID, Name: want.Name, TenantID: want.TenantID, Permissions: want.Permissions, System: false})
+		if builtInRoleAlreadySeeded(context.Background(), roles, tenant.SystemTenantID, want, true) {
+			t.Error("expected false when the persisted System flag differs from the canonical one (checkID=true)")
+		}
+		if builtInRoleAlreadySeeded(context.Background(), roles, tenant.SystemTenantID, want, false) {
+			t.Error("expected false when the persisted System flag differs from the canonical one (checkID=false)")
+		}
+	})
+
+	t.Run("identical", func(t *testing.T) {
+		roles := &fakeRoles{}
+		roles.remember(*want)
+		if !builtInRoleAlreadySeeded(context.Background(), roles, tenant.SystemTenantID, want, true) {
+			t.Error("expected true when every field matches")
+		}
+	})
+}
+
+// nilResultResolver implements role.NameResolver by returning (nil, nil),
+// modelling a resolver that violates the "record or typed not-found" contract
+// fakeRoles otherwise upholds. builtInRoleAlreadySeeded must survive it.
+type nilResultResolver struct{}
+
+func (nilResultResolver) GetRoleByName(_ context.Context, _, _ string) (*role.Role, error) {
+	return nil, nil
+}
+
+// mismatchedRoleResolver implements role.NameResolver by always returning the
+// same fixed record regardless of the name queried, modelling a resolver that
+// answered the wrong record. Used only where the scenario needs a Name field
+// that fakeRoles' own name-filtered lookup could never produce.
+type mismatchedRoleResolver struct{ role *role.Role }
+
+func (m mismatchedRoleResolver) GetRoleByName(_ context.Context, _, _ string) (*role.Role, error) {
+	return m.role, nil
+}
+
 // ---------------------------------------------------------------------------
 // Missing dependencies
 // ---------------------------------------------------------------------------
@@ -730,7 +1144,7 @@ func TestInitialize_TenantExistsAdminMissingCreatesAdmin(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestInitialize_RealTenantServicerAcceptsSystemTenantID(t *testing.T) {
-	store := newMemKVStore()
+	store := kvstore.NewMemoryKVStore()
 	tenantSvc, err := tenant.NewKVTenantService(store, slog.Default())
 	if err != nil {
 		t.Fatalf("NewKVTenantService: %v", err)
@@ -761,78 +1175,6 @@ func TestInitialize_RealTenantServicerAcceptsSystemTenantID(t *testing.T) {
 		t.Errorf("got.ID = %q, want %q", got.ID, tenant.SystemTenantID)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Integration helper: in-memory kvstore.KVStore
-// ---------------------------------------------------------------------------
-
-type memKVStore struct {
-	data map[string][]byte
-}
-
-func newMemKVStore() *memKVStore { return &memKVStore{data: make(map[string][]byte)} }
-
-func (m *memKVStore) Put(_ context.Context, key string, value []byte) error {
-	cp := make([]byte, len(value))
-	copy(cp, value)
-	m.data[key] = cp
-	return nil
-}
-
-func (m *memKVStore) Get(_ context.Context, key string) ([]byte, error) {
-	v, ok := m.data[key]
-	if !ok {
-		return nil, nil
-	}
-	cp := make([]byte, len(v))
-	copy(cp, v)
-	return cp, nil
-}
-
-func (m *memKVStore) Delete(_ context.Context, key string) error { delete(m.data, key); return nil }
-
-func (m *memKVStore) List(_ context.Context, prefix string) ([]string, error) {
-	var keys []string
-	for k := range m.data {
-		if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
-			keys = append(keys, k)
-		}
-	}
-	return keys, nil
-}
-
-func (m *memKVStore) Exists(_ context.Context, key string) (bool, error) {
-	_, ok := m.data[key]
-	return ok, nil
-}
-
-func (m *memKVStore) Scan(_ context.Context, prefix string, fn func(string, []byte) error) error {
-	for k, v := range m.data {
-		if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
-			if err := fn(k, v); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func (m *memKVStore) RegisterEntityIndexes(_ string, _ []kvstore.EntityIndex) error { return nil }
-func (m *memKVStore) QueryIndex(_ context.Context, _ string, _ []byte) ([][]byte, error) {
-	return nil, nil
-}
-func (m *memKVStore) ScanIndex(_ context.Context, _ string, _, _ []byte) (map[string][][]byte, error) {
-	return nil, nil
-}
-func (m *memKVStore) QueryCompoundIndex(_ context.Context, _ string, _ [][]byte) ([][]byte, error) {
-	return nil, nil
-}
-func (m *memKVStore) ScanCompoundIndex(_ context.Context, _ string, _ [][]byte, _, _ []byte) (map[string][][]byte, error) {
-	return nil, nil
-}
-
-// Compile-time interface assertion.
-var _ kvstore.KVStore = (*memKVStore)(nil)
 
 // ---------------------------------------------------------------------------
 // Error type string methods

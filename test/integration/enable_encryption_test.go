@@ -384,7 +384,7 @@ func TestEnableEncryption_TenantScope_OnlineRecycleNoServerRestart(t *testing.T)
 	}
 	if _, uStatus := iraftAPIPost(t, sysClient,
 		fmt.Sprintf("https://127.0.0.1:%d/users", adminPort),
-		map[string]interface{}{"username": "admin", "tenant_id": tenantID, "role_ids": []string{roleResp.ID}},
+		map[string]interface{}{"username": "admin", "email": "admin@" + tenantID + ".example.com", "tenant_id": tenantID, "role_ids": []string{roleResp.ID}},
 	); uStatus != http.StatusCreated && uStatus != http.StatusOK {
 		t.Fatalf("create user: status %d", uStatus)
 	}

@@ -64,6 +64,7 @@ var goldenSOPermissions = []permission.Permission{
 	permission.TenantsSetIsolation, permission.TenantsSetEntitlements,
 	permission.KeysCreate, permission.KeysDelete, permission.KeysList, permission.KeysGet,
 	permission.KeysImport, permission.KeysExport,
+	permission.EscrowCreate, permission.EscrowRecover, permission.EscrowList, permission.EscrowRevoke,
 	permission.BackendsList, permission.BackendsRead,
 	permission.PINRead, permission.PINWrite,
 	permission.PIVRead, permission.PIVWrite, permission.PIVDelete,
@@ -85,6 +86,7 @@ var goldenAdminPermissions = []permission.Permission{
 	permission.KeysWrap, permission.KeysUnwrap,
 	permission.DEKRotate, permission.DEKRewrap, permission.DEKRetire, permission.DEKStatus,
 	permission.KeysImport, permission.KeysExport,
+	permission.EscrowCreate, permission.EscrowRecover, permission.EscrowList, permission.EscrowRevoke,
 	permission.CertsGenerate, permission.CertsExport, permission.CertsRevoke,
 	permission.CertsList, permission.CertsRead,
 	permission.BackendsList, permission.BackendsRead,
@@ -96,9 +98,8 @@ var goldenAdminPermissions = []permission.Permission{
 	permission.SealUnseal, permission.SealSeal, permission.SealStatus,
 	permission.SealRecoverWithKeys,
 	permission.CeremonyStatus,
-	permission.TenantsCreate, permission.TenantsRead, permission.TenantsUpdate,
+	permission.TenantsRead, permission.TenantsUpdate,
 	permission.TenantsDelete, permission.TenantsList,
-	permission.TenantsSetIsolation, permission.TenantsSetEntitlements,
 	permission.TenantBarrierInit, permission.TenantBarrierUnseal,
 	permission.TenantBarrierSeal,
 	permission.TenantBarrierOfficerRegister, permission.TenantBarrierOfficerList,
@@ -113,6 +114,14 @@ var goldenAdminPermissions = []permission.Permission{
 	permission.MVCCRestore,
 	permission.AuditRead, permission.AuditQuery,
 	permission.TenantsListCross, permission.TenantsCreateCross, permission.TenantsApprove,
+	// Tenant provisioning, ScopeCross: effective only for system-tenant Admin.
+	// tenants:set_quotas is new to Admin: the quotas routes now check it
+	// rather than tenants:update, and the platform operator must hold it.
+	permission.TenantsCreate, permission.TenantsSetQuotas,
+	permission.TenantsSetEntitlements, permission.TenantsSetIsolation,
+	// Retired-tenant listing and reconcile, cross-scope: effective only for
+	// system-tenant Admin.
+	permission.TenantsListDeleted, permission.TenantsReconcileDeleted,
 	permission.VolumePoolCreate, permission.VolumePoolList, permission.VolumePoolRead,
 	permission.VolumePoolUpdate, permission.VolumePoolDelete,
 	permission.RegistrationConfigRead, permission.RegistrationConfigUpdate,
@@ -256,6 +265,7 @@ var goldenAuditorPermissions = []permission.Permission{
 	permission.PINRead, permission.PIVRead, permission.PasswordsRead,
 	permission.TenantsList, permission.TenantsRead,
 	permission.KeysList, permission.KeysGet,
+	permission.EscrowList,
 	permission.CeremonyStatus,
 	permission.AuthFactorList,
 	permission.OrchestratorStatus, permission.OrchestratorList,

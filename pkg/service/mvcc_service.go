@@ -138,7 +138,9 @@ type revisionNotFoundErr interface {
 
 // changeIndexUnsupportedErr matches the refusal a backend returns when it
 // maintains no durable revision index and therefore cannot report which keys
-// changed in a revision window (see mvccadapter.ScanChangesUnsupportedError).
+// changed in a revision window. It is the contract an MVCCStore injected into
+// a state machine (statemachine.WithKVMVCCStore) answers ScanChanges with when
+// it keeps no such index.
 type changeIndexUnsupportedErr interface {
 	error
 	// ScanChangesUnsupported marks the error as that refusal.
@@ -177,7 +179,7 @@ func (s *MVCCKVService) Put(ctx context.Context, key string, value []byte) error
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
-		return s.translateProposeError(err)
+		return translateProposeError(err)
 	}
 	// Surface a state-machine-encoded application error (e.g. a unique-index
 	// violation that rejected the write without stalling consensus).
@@ -203,7 +205,7 @@ func (s *MVCCKVService) PutIfAbsent(ctx context.Context, key string, value []byt
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
-		return false, s.translateProposeError(err)
+		return false, translateProposeError(err)
 	}
 	if resultErr := checkResultError(result); resultErr != nil {
 		return false, resultErr
@@ -220,7 +222,7 @@ func (s *MVCCKVService) CompareAndDelete(ctx context.Context, key string, expect
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
-		return false, s.translateProposeError(err)
+		return false, translateProposeError(err)
 	}
 	if resultErr := checkResultError(result); resultErr != nil {
 		return false, resultErr
@@ -238,7 +240,7 @@ func (s *MVCCKVService) CompareAndSwap(ctx context.Context, key string, expected
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
-		return false, s.translateProposeError(err)
+		return false, translateProposeError(err)
 	}
 	if resultErr := checkResultError(result); resultErr != nil {
 		return false, resultErr
@@ -270,7 +272,7 @@ func (s *MVCCKVService) Delete(ctx context.Context, key string) error {
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
-		return s.translateProposeError(err)
+		return translateProposeError(err)
 	}
 	// The state machine encodes a not-configured subsystem into the RESULT
 	// rather than returning it to Raft, so discarding the result reports a
@@ -453,7 +455,7 @@ func (s *MVCCKVService) PutWithMode(ctx context.Context, key string, value []byt
 	}
 	result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
 	if err != nil {
-		return s.translateProposeError(err)
+		return translateProposeError(err)
 	}
 	if resultErr := checkResultError(result); resultErr != nil {
 		return resultErr
@@ -470,7 +472,7 @@ func (s *MVCCKVService) DeleteWithMode(ctx context.Context, key string, mode wri
 	}
 	result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
 	if err != nil {
-		return s.translateProposeError(err)
+		return translateProposeError(err)
 	}
 	// The state machine encodes a not-configured subsystem into the RESULT
 	// rather than returning it to Raft, so discarding the result reports a
@@ -583,7 +585,7 @@ func (s *MVCCKVService) PutWithLease(ctx context.Context, key string, value []by
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
-		return nil, s.translateProposeError(err)
+		return nil, translateProposeError(err)
 	}
 	if resultErr := checkResultError(result); resultErr != nil {
 		return nil, resultErr
@@ -619,7 +621,7 @@ func (s *MVCCKVService) PutWithLeaseAndMode(ctx context.Context, key string, val
 	}
 	result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
 	if err != nil {
-		return nil, s.translateProposeError(err)
+		return nil, translateProposeError(err)
 	}
 	if resultErr := checkResultError(result); resultErr != nil {
 		return nil, resultErr
@@ -787,7 +789,7 @@ func (s *MVCCKVService) Compact(ctx context.Context, revision int64) error {
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
-		return s.translateProposeError(err)
+		return translateProposeError(err)
 	}
 	// The state machine encodes a not-configured subsystem into the RESULT
 	// rather than returning it to Raft, so discarding the result reports a
@@ -960,20 +962,6 @@ func rangeResultKeysUnfiltered(rr *MVCCRangeResult) []string {
 		keys = append(keys, string(kv.Key))
 	}
 	return keys
-}
-
-// translateProposeError converts QuicRaft proposal errors to service-level
-// typed errors.
-func (s *MVCCKVService) translateProposeError(err error) error {
-	var nle *quicraft.NotLeaderError
-	if errors.As(err, &nle) {
-		return &NotLeaderError{
-			ShardID:       nle.ShardID,
-			LeaderID:      nle.LeaderID,
-			LeaderAddress: nle.LeaderAddress,
-		}
-	}
-	return &ProposeError{Err: err}
 }
 
 // translateReadError converts QuicRaft read errors and MVCC store errors

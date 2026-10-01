@@ -314,3 +314,249 @@ func TestApplyQuota_TimeSeriesVectorGating(t *testing.T) {
 		t.Fatal("unlimited tenant must not wrap TimeSeries/Vector")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Reserved quota is RELEASED when the inner write fails
+//
+// Every one of these wrappers reserves before forwarding, which is the only
+// order that can enforce a limit: admitting after the write has already landed
+// enforces nothing. The consequence is that a failed inner write leaves a
+// reservation behind unless the wrapper gives it back.
+//
+// The drift is upward, and upward is the expensive direction. Over-counting
+// eventually refuses a tenant whose data was never written -- a tenant whose
+// backend is having a bad day gets locked out by phantom usage, and stays
+// locked out after the backend recovers, because nothing ever reconciles the
+// accountant against what is actually stored.
+//
+// Each test asserts acct.Usage returns to zero, not merely that the error
+// propagated: the error path was already reached by the existing tests, and
+// the accounting is the half that was uncovered.
+// ---------------------------------------------------------------------------
+
+func TestQuotaTimeSeriesService_ReleasesOnInnerFailure(t *testing.T) {
+	ctx := context.Background()
+	boom := errors.New("backend refused the write")
+
+	t.Run("WriteBatch", func(t *testing.T) {
+		inner := &countingTS{err: boom}
+		acct, _ := newTestAccountant(t, nil)
+		q := newQuotaTimeSeriesService(inner, acct, "t1", 1000)
+
+		err := q.WriteBatch(ctx, []timeseries.DataPoint{
+			{Metric: "cpu", Tags: map[string]string{"host": "a"}},
+			{Metric: "mem", Tags: map[string]string{"host": "b"}},
+		})
+		if !errors.Is(err, boom) {
+			t.Fatalf("error = %v, want %v", err, boom)
+		}
+		if got := acct.Usage("t1"); got != 0 {
+			t.Errorf("usage after a failed WriteBatch = %d, want 0: the reservation was not released", got)
+		}
+	})
+
+	t.Run("WritePoint", func(t *testing.T) {
+		inner := &countingTS{err: boom}
+		acct, _ := newTestAccountant(t, nil)
+		q := newQuotaTimeSeriesService(inner, acct, "t1", 1000)
+
+		err := q.WritePoint(ctx, &timeseries.DataPoint{
+			Metric: "cpu", Tags: map[string]string{"host": "a"},
+		})
+		if !errors.Is(err, boom) {
+			t.Fatalf("error = %v, want %v", err, boom)
+		}
+		if got := acct.Usage("t1"); got != 0 {
+			t.Errorf("usage after a failed WritePoint = %d, want 0: the reservation was not released", got)
+		}
+	})
+}
+
+// TestQuotaTimeSeriesService_WritePointNilForwardsWithoutReserving: a nil
+// point has no bytes to account, and the wrapper forwards it rather than
+// reserving zero. The inner service owns whatever a nil point means; the
+// quota wrapper must not invent an answer or charge for it.
+func TestQuotaTimeSeriesService_WritePointNilForwardsWithoutReserving(t *testing.T) {
+	inner := &countingTS{}
+	acct, _ := newTestAccountant(t, nil)
+	q := newQuotaTimeSeriesService(inner, acct, "t1", 1000)
+
+	if err := q.WritePoint(context.Background(), nil); err != nil {
+		t.Fatalf("WritePoint(nil): %v", err)
+	}
+	if inner.writes != 1 {
+		t.Errorf("inner writes = %d, want 1: a nil point must still be forwarded", inner.writes)
+	}
+	if got := acct.Usage("t1"); got != 0 {
+		t.Errorf("usage after a nil point = %d, want 0", got)
+	}
+}
+
+// TestQuotaTimeSeriesService_WriteBatchEnforcesTheSum: the batch is admitted
+// as one reservation of the SUM, not point by point. A per-point check would
+// let a batch whose total exceeds the limit through whenever each individual
+// point fits.
+func TestQuotaTimeSeriesService_WriteBatchEnforcesTheSum(t *testing.T) {
+	inner := &countingTS{}
+	acct, _ := newTestAccountant(t, nil)
+
+	one := tsPointBytes("cpu", map[string]string{"host": "a"})
+	// A limit that admits a single point but not two.
+	q := newQuotaTimeSeriesService(inner, acct, "t1", int64(one)+1)
+
+	err := q.WriteBatch(context.Background(), []timeseries.DataPoint{
+		{Metric: "cpu", Tags: map[string]string{"host": "a"}},
+		{Metric: "cpu", Tags: map[string]string{"host": "a"}},
+	})
+	if err == nil {
+		t.Fatal("WriteBatch admitted a batch whose SUM exceeds the limit")
+	}
+	if inner.writes != 0 {
+		t.Errorf("inner writes = %d, want 0: a refused batch must short-circuit "+
+			"before the inner call", inner.writes)
+	}
+	if got := acct.Usage("t1"); got != 0 {
+		t.Errorf("usage after a refused batch = %d, want 0", got)
+	}
+}
+
+func TestQuotaVectorService_ReleasesOnInnerFailure(t *testing.T) {
+	ctx := context.Background()
+	boom := errors.New("backend refused the upsert")
+
+	t.Run("BatchUpsert", func(t *testing.T) {
+		inner := &countingVec{err: boom}
+		acct, _ := newTestAccountant(t, nil)
+		q := newQuotaVectorService(inner, acct, "t1", 100000)
+
+		_, err := q.BatchUpsert(ctx, &service.BatchUpsertRequest{
+			Namespace: "ns",
+			Vectors: []*service.VectorData{
+				{ID: 1, Vector: []float32{1, 2, 3}, Metadata: map[string]any{"k": "v"}},
+				{ID: 2, Vector: []float32{4, 5, 6}},
+			},
+		})
+		if !errors.Is(err, boom) {
+			t.Fatalf("error = %v, want %v", err, boom)
+		}
+		if got := acct.Usage("t1"); got != 0 {
+			t.Errorf("usage after a failed BatchUpsert = %d, want 0: the reservation was not released", got)
+		}
+	})
+
+	t.Run("UpdateMetadata", func(t *testing.T) {
+		inner := &countingVec{err: boom}
+		acct, _ := newTestAccountant(t, nil)
+		q := newQuotaVectorService(inner, acct, "t1", 100000)
+
+		_, err := q.UpdateMetadata(ctx, &service.UpdateVectorMetadataRequest{
+			Namespace: "ns", ID: 1, Metadata: map[string]any{"k": "v"},
+		})
+		if !errors.Is(err, boom) {
+			t.Fatalf("error = %v, want %v", err, boom)
+		}
+		if got := acct.Usage("t1"); got != 0 {
+			t.Errorf("usage after a failed UpdateMetadata = %d, want 0: the reservation was not released", got)
+		}
+	})
+}
+
+// TestQuotaVectorService_NilRequestsAccountNothing: a nil request and a batch
+// holding nil entries have no payload to charge for. The wrapper must forward
+// rather than panic on the nil dereference, and must not reserve bytes that do
+// not exist -- the inner service owns what a nil request means.
+func TestQuotaVectorService_NilRequestsAccountNothing(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("nil BatchUpsert request", func(t *testing.T) {
+		inner := &countingVec{}
+		acct, _ := newTestAccountant(t, nil)
+		q := newQuotaVectorService(inner, acct, "t1", 1000)
+
+		if _, err := q.BatchUpsert(ctx, nil); err != nil {
+			t.Fatalf("BatchUpsert(nil): %v", err)
+		}
+		if got := acct.Usage("t1"); got != 0 {
+			t.Errorf("usage = %d, want 0", got)
+		}
+	})
+
+	t.Run("batch containing nil entries", func(t *testing.T) {
+		inner := &countingVec{}
+		acct, _ := newTestAccountant(t, nil)
+		q := newQuotaVectorService(inner, acct, "t1", 1000)
+
+		_, err := q.BatchUpsert(ctx, &service.BatchUpsertRequest{
+			Namespace: "ns",
+			Vectors:   []*service.VectorData{nil, nil},
+		})
+		if err != nil {
+			t.Fatalf("BatchUpsert with nil entries: %v", err)
+		}
+		if got := acct.Usage("t1"); got != 0 {
+			t.Errorf("usage = %d, want 0: nil entries carry no payload", got)
+		}
+	})
+
+	t.Run("nil UpdateMetadata request", func(t *testing.T) {
+		inner := &countingVec{}
+		acct, _ := newTestAccountant(t, nil)
+		q := newQuotaVectorService(inner, acct, "t1", 1000)
+
+		if _, err := q.UpdateMetadata(ctx, nil); err != nil {
+			t.Fatalf("UpdateMetadata(nil): %v", err)
+		}
+		if got := acct.Usage("t1"); got != 0 {
+			t.Errorf("usage = %d, want 0", got)
+		}
+	})
+}
+
+// TestMetadataValueBytes_AccountsEachKind: the accounted size of a metadata
+// value depends on its dynamic type, and the default arm charges a flat scalar
+// size for everything that is not a string or []byte.
+//
+// The arms matter for fairness rather than correctness: a tenant storing long
+// strings is charged for their length, while numbers and booleans cost a fixed
+// amount regardless of magnitude. A missing []byte arm, for instance, would
+// charge 8 bytes for an arbitrarily large blob -- which is the direction that
+// lets a tenant store far more than its limit.
+func TestMetadataValueBytes_AccountsEachKind(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		v    any
+		want int
+	}{
+		{"string is charged its length", "hello", 5},
+		{"empty string costs nothing", "", 0},
+		{"bytes are charged their length", []byte{1, 2, 3, 4, 5, 6, 7, 8, 9}, 9},
+		{"empty bytes cost nothing", []byte{}, 0},
+		{"int is a flat scalar", 42, metadataScalarBytes},
+		{"large int is still a flat scalar", int64(1) << 62, metadataScalarBytes},
+		{"float is a flat scalar", 3.14159, metadataScalarBytes},
+		{"bool is a flat scalar", true, metadataScalarBytes},
+		{"nil is a flat scalar", nil, metadataScalarBytes},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := metadataValueBytes(tc.v); got != tc.want {
+				t.Errorf("metadataValueBytes(%#v) = %d, want %d", tc.v, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestMetadataBytes_ChargesKeysAndValues: the key is accounted as well as the
+// value, so a tenant cannot store unbounded data in map KEYS for free.
+func TestMetadataBytes_ChargesKeysAndValues(t *testing.T) {
+	meta := map[string]any{
+		"ab":  "xyz", // 2 + 3
+		"cde": 7,     // 3 + scalar
+	}
+	want := 2 + 3 + 3 + metadataScalarBytes
+	if got := metadataBytes(meta); got != want {
+		t.Errorf("metadataBytes = %d, want %d", got, want)
+	}
+	if got := metadataBytes(nil); got != 0 {
+		t.Errorf("metadataBytes(nil) = %d, want 0", got)
+	}
+}

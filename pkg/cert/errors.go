@@ -14,6 +14,8 @@
 
 package cert
 
+import "strconv"
+
 // CertNotFoundError is returned when a certificate serial does not exist
 // in the store.
 type CertNotFoundError struct {
@@ -137,6 +139,28 @@ func (e *StoreError) Error() string {
 // Unwrap returns the underlying error for use with errors.Is and errors.As.
 func (e *StoreError) Unwrap() error {
 	return e.Err
+}
+
+// SPIFFEIdentityError is returned by GenerateClientCert when the provider has
+// a trust domain configured and the tenant-scoped SPIFFE SAN it would emit
+// does not parse back to the same trust domain, tenant and username the
+// certificate's Subject names (go-qrdb#519).
+//
+// No certificate is minted. One that were would authenticate as the SAN's
+// tenant on a node with a trust-domain pin and as the OU's tenant on a node
+// without one, which is worse than carrying no SAN at all.
+type SPIFFEIdentityError struct {
+	TrustDomain string
+	TenantID    string
+	Username    string
+	Reason      string
+}
+
+// Error returns a human-readable description naming the refused identity.
+func (e *SPIFFEIdentityError) Error() string {
+	return "qrdb/cert: refusing to mint a client certificate for " + strconv.Quote(e.Username) +
+		" in tenant " + strconv.Quote(e.TenantID) + " under SPIFFE trust domain " +
+		strconv.Quote(e.TrustDomain) + ": " + e.Reason
 }
 
 // ValidationError is returned when a request field fails validation.

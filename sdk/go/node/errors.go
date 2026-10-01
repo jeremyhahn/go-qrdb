@@ -14,7 +14,11 @@
 
 package node
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+)
 
 // StorageCreateError indicates that the storage backend could not be created.
 type StorageCreateError struct {
@@ -90,12 +94,17 @@ func (e *HostCreateError) Unwrap() error { return e.Err }
 type ConfigError struct {
 	Field   string
 	Message string
+	// Err is the typed cause, when the refusal came from a lower layer.
+	Err error
 }
 
 // Error returns a human-readable description.
 func (e *ConfigError) Error() string {
 	return "node: config error: " + e.Field + " " + e.Message
 }
+
+// Unwrap returns the typed cause, if any.
+func (e *ConfigError) Unwrap() error { return e.Err }
 
 // ClientCreateError indicates that the embedded SDK client could not be
 // created.
@@ -136,6 +145,13 @@ func (e *UnsealError) Unwrap() error { return e.Err }
 // rather than an unrouted one.
 var ErrNoTenantRouting = errors.New("node: no tenant-routed user auth-factor service")
 
+// ErrNodeClosed is returned by Unseal and EnableEncryption on a node that
+// Close has begun or finished tearing down. It lets a caller tell "this node
+// is closed" apart from a credential or migration failure (go-qrdb#226). It is
+// service.ErrNodeClosed itself, so a refusal delivered over a transport is
+// classified as retryable (503 / Unavailable) there too.
+var ErrNodeClosed = service.ErrNodeClosed
+
 // LoginWiringError indicates that the unified-login ceremony could not be
 // wired into the embedded transport — typically because the node lifecycle
 // produced no tenant-routed UserAuthFactor service to back the LoginResolver.
@@ -150,6 +166,20 @@ func (e *LoginWiringError) Error() string {
 
 // Unwrap returns the underlying error.
 func (e *LoginWiringError) Unwrap() error { return e.Err }
+
+// ErrNoAuthFactorTenantRouting indicates the node lifecycle produced no
+// tenant-routed store resolver, so there is nothing to route the
+// ceremony-time custodian AuthFactorService through.
+//
+// It is a refusal rather than a fallback, for the same reason
+// ErrNoTenantRouting is: an AuthFactorService built over the node's bare KV
+// servicer (svcNode.KV) resolves every tenant's custodian enrollments out of
+// one keyspace, which is the defect (#464) closing this one for the
+// user-side service (#393) left behind. In practice svcNode.StoreResolver is
+// always non-nil — lifecycle.BuildServices constructs one whether or not a
+// barrier is configured — so this is reached only by a lifecycle composition
+// that has not wired a resolver at all.
+var ErrNoAuthFactorTenantRouting = errors.New("node: no tenant-routed store resolver for the auth-factor service")
 
 // AuthFactorWiringError indicates that the AuthFactorService could not be
 // constructed from the caller-supplied FactorRegistry. This prevents a

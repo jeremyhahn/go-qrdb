@@ -46,3 +46,42 @@ type (
 // FirstBootInitialize runs the canonical first-boot path (idempotent): system
 // tenant + built-in roles + admin user + admin-mTLS (Path A or B) + SPKI binding.
 var FirstBootInitialize = firstboot.Initialize
+
+// The auth.mtls_binding_policy "required" boot check (go-qrdb#517).
+type (
+	// FirstBootAdminLookup is the read surface VerifyAdminCertBinding needs,
+	// and what FirstBootDependencies.Users must also implement for first-boot
+	// to verify an existing admin under the "required" posture.
+	FirstBootAdminLookup = firstboot.AdminLookup
+	// AdminCertBindingRequiredError is the boot refusal under "required":
+	// the bootstrap admin could not log in by certificate.
+	AdminCertBindingRequiredError = firstboot.AdminCertBindingRequiredError
+	// AdminCertBindingReason says why.
+	AdminCertBindingReason = firstboot.AdminCertBindingReason
+	// AdminLookupError reports that the admin could not be read to decide.
+	AdminLookupError = firstboot.AdminLookupError
+)
+
+// The AdminCertBindingReason values.
+const (
+	AdminBindingNoBinder     = firstboot.AdminBindingNoBinder
+	AdminBindingNoCertPath   = firstboot.AdminBindingNoCertPath
+	AdminBindingNone         = firstboot.AdminBindingNone
+	AdminBindingAllExpired   = firstboot.AdminBindingAllExpired
+	AdminBindingMissing      = firstboot.AdminBindingMissing
+	AdminBindingUnverifiable = firstboot.AdminBindingUnverifiable
+)
+
+// VerifyAdminCertBinding is the check a composer that selects
+// auth.mtls_binding_policy "required" runs at boot, after first-boot, and on
+// whose error it refuses to boot.
+var VerifyAdminCertBinding = firstboot.VerifyAdminCertBinding
+
+// VerifyAdminCertBindingWithin is the boot-time form: it retries a lookup
+// that fails until timeout (use AdminBindingLookupTimeout) and returns any
+// verdict at once. Call it with a linearizable user store.
+var VerifyAdminCertBindingWithin = firstboot.VerifyAdminCertBindingWithin
+
+// AdminBindingLookupTimeout is the bounded boot-time wait the daemon and the
+// SDK node use.
+const AdminBindingLookupTimeout = firstboot.AdminBindingLookupTimeout

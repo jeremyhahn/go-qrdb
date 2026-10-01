@@ -41,6 +41,7 @@ func (t *Transport) CreateCollection(ctx context.Context, req transport.CreateCo
 		IDStrategy:   req.IDStrategy,
 		FieldHash:    req.FieldHash,
 		StorageCodec: req.StorageCodec,
+		Indexes:      toServiceIndexDefinitions(req.Indexes),
 	})
 	if err != nil {
 		return nil, err
@@ -200,7 +201,7 @@ func (t *Transport) ListDocuments(ctx context.Context, req transport.ListDocumen
 // toTransportCollectionInfo converts a service.CollectionInfo to a
 // transport.CollectionInfo, formatting CreatedAt as an RFC3339 string.
 func toTransportCollectionInfo(info *service.CollectionInfo) *transport.CollectionInfo {
-	return &transport.CollectionInfo{
+	out := &transport.CollectionInfo{
 		Name:          info.Name,
 		Database:      info.Database,
 		IDStrategy:    info.IDStrategy,
@@ -209,7 +210,28 @@ func toTransportCollectionInfo(info *service.CollectionInfo) *transport.Collecti
 		DocumentCount: info.DocumentCount,
 		StorageCodec:  info.StorageCodec,
 		CreatedAt:     info.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		State:         info.State,
 	}
+	if !info.StateSince.IsZero() {
+		out.StateSince = info.StateSince.Format("2006-01-02T15:04:05Z07:00")
+	}
+	for _, d := range info.Indexes {
+		out.Indexes = append(out.Indexes, transport.CollectionIndexDefinition{FieldName: d.FieldName, Unique: d.Unique, Sparse: d.Sparse})
+	}
+	return out
+}
+
+// toServiceIndexDefinitions converts transport index definitions to the
+// service's.
+func toServiceIndexDefinitions(defs []transport.CollectionIndexDefinition) []service.IndexDefinition {
+	if len(defs) == 0 {
+		return nil
+	}
+	out := make([]service.IndexDefinition, len(defs))
+	for i, d := range defs {
+		out[i] = service.IndexDefinition{FieldName: d.FieldName, Unique: d.Unique, Sparse: d.Sparse}
+	}
+	return out
 }
 
 // toTransportDocumentResponse converts a service.GetDocumentResponse to a

@@ -242,11 +242,11 @@ test.describe("Admin - User Management", () => {
     });
   });
 
-  test.describe("User enabled/disabled display", () => {
-    test("shows enabled status for enabled users", async ({ page }) => {
+  test.describe("User lifecycle display", () => {
+    test("shows the lifecycle state for active users", async ({ page }) => {
       await navigateToUsers(page);
 
-      // Seed an enabled user
+      // Seed an active user
       await seedUser(page, "frank");
 
       // Refresh
@@ -257,8 +257,8 @@ test.describe("Admin - User Management", () => {
         timeout: LOAD_TIMEOUT,
       });
 
-      // The Enabled column should show "Yes"
-      await expect(page.getByText("Yes")).toBeVisible();
+      // The Lifecycle column should show "active"
+      await expect(page.getByRole("cell", { name: "active", exact: true })).toBeVisible();
     });
   });
 
@@ -367,7 +367,7 @@ webTest.describe("Admin - User Management (web mode / auth-disabled regression)"
               username: "auth-disabled-test",
               tenantID: "default",
               roleIDs: [],
-              enabled: true,
+              lifecycle: "active",
               system: false,
               createdAt: "2026-01-01T00:00:00Z",
               updatedAt: "2026-01-01T00:00:00Z",
@@ -390,7 +390,7 @@ webTest.describe("Admin - User Management (web mode / auth-disabled regression)"
                 username: "auth-disabled-test",
                 tenantID: "default",
                 roleIDs: [],
-                enabled: true,
+                lifecycle: "active",
                 system: false,
                 createdAt: "2026-01-01T00:00:00Z",
                 updatedAt: "2026-01-01T00:00:00Z",

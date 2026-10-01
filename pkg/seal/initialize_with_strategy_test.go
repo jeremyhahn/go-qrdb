@@ -90,7 +90,7 @@ func TestInitializeTenantWithStrategy_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStorageBarrier(system): %v", err)
 	}
-	if err := system.Initialize(ctx, Credentials{Secret: []byte("test-master-password")}); err != nil {
+	if err := system.Initialize(ctx, MustCredentials([]byte("test-master-password"))); err != nil {
 		t.Fatalf("system Initialize: %v", err)
 	}
 	reg, err := NewBarrierRegistry(testLogger(), system)

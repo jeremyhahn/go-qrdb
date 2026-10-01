@@ -61,25 +61,28 @@ func (s *stubScopeResolver) ResolveScope(_ context.Context, tenantID string, p p
 			return scope, nil
 		}
 	}
-	return permission.LookupScope(p), nil
+	return permission.LookupScope(p)
 }
 
 var _ permission.ScopeResolver = (*stubScopeResolver)(nil)
 
 // (d) RBAC Authorize uses the tenant-resolved scope. The custom permission
-// "billing:export" is registered ScopeCross in the SYSTEM tenant's store
-// only. A system identity holding the grant passes (system-tenant rule for
-// ScopeCross). A tenant-local identity in "acme" — which has NO override for
-// the same name — resolves the scope in its OWN store, defaults to ScopeSelf,
-// and is admitted only against its own tenant. Same name, different scope per
-// tenant, no collision.
+// "billing:export" is declared ScopeSelf in the global layer — every
+// permission declares its scope; there is no default (go-qrdb#504) — and
+// overridden to ScopeCross in the SYSTEM tenant's store only. A system
+// identity holding the grant passes (system-tenant rule for ScopeCross). A
+// tenant-local identity in "acme" — which has NO override for the same name —
+// resolves the scope in its OWN store, falls through to the global ScopeSelf
+// declaration, and is admitted only against its own tenant. Same name,
+// different scope per tenant, no collision.
 func TestAuthorize_TenantResolvedScope_PerTenantCross(t *testing.T) {
 	const perm permission.Permission = "billing:export"
+	permission.RegisterScope(permission.ScopeSelf, perm)
 	svc := newMockRoleService(map[string][]permission.Permission{
 		"admin": {perm},
 	})
 	resolver := newStubScopeResolver()
-	// Only the system tenant defines this name as cross-scope.
+	// Only the system tenant overrides this name to cross-scope.
 	resolver.set(tenant.SystemTenantID, perm, permission.ScopeCross)
 
 	authz := New(svc, WithScopeResolver(resolver))
@@ -95,21 +98,22 @@ func TestAuthorize_TenantResolvedScope_PerTenantCross(t *testing.T) {
 	}
 
 	// A tenant-local identity in acme has NO override -> resolves in its own
-	// store -> defaults ScopeSelf. It is admitted against its OWN tenant...
+	// store -> falls through to the global ScopeSelf declaration. It is
+	// admitted against its OWN tenant...
 	acmeIdentity := &auth.Identity{
 		Subject:  "acme-admin",
 		TenantID: "acme",
 		Roles:    []string{"admin"},
 	}
 	if err := authz.Authorize(ctxFor("acme"), acmeIdentity, "billing", "export"); err != nil {
-		t.Fatalf("acme identity (ScopeSelf default) should pass for own tenant: %v", err)
+		t.Fatalf("acme identity (global ScopeSelf) should pass for own tenant: %v", err)
 	}
 
 	// ...but NOT against another tenant (ScopeSelf, not the system tenant's
 	// cross scope — proving no collision on the shared name).
 	err := authz.Authorize(ctxFor("other"), acmeIdentity, "billing", "export")
 	if err == nil {
-		t.Fatal("acme identity must NOT cross into another tenant on a self-scope default")
+		t.Fatal("acme identity must NOT cross into another tenant on a self-scope declaration")
 	}
 	var denied *PermissionDeniedError
 	if !errors.As(err, &denied) {
@@ -121,9 +125,10 @@ func TestAuthorize_TenantResolvedScope_PerTenantCross(t *testing.T) {
 // tenant store denies that identity even when it is the SYSTEM tenant — the
 // genuine tenant-only-denies-system property, resolved from the per-tenant
 // store rather than a global table. The same name carries a different scope
-// (the global default ScopeSelf) for a tenant with no override.
+// (the global ScopeSelf declaration) for a tenant with no override.
 func TestAuthorize_TenantResolvedScope_PerTenantTenantOnly(t *testing.T) {
 	const perm permission.Permission = "billing:export"
+	permission.RegisterScope(permission.ScopeSelf, perm)
 	svc := newMockRoleService(map[string][]permission.Permission{
 		"admin": {perm},
 	})
@@ -144,15 +149,16 @@ func TestAuthorize_TenantResolvedScope_PerTenantTenantOnly(t *testing.T) {
 		t.Fatal("system identity must be denied a tenant-only permission resolved in its own store")
 	}
 
-	// The acme identity has NO override -> resolves ScopeSelf in its own store
-	// -> admitted against its own tenant. Same name, different effective scope.
+	// The acme identity has NO override -> falls through to the global
+	// ScopeSelf declaration -> admitted against its own tenant. Same name,
+	// different effective scope.
 	acmeIdentity := &auth.Identity{
 		Subject:  "acme-admin",
 		TenantID: "acme",
 		Roles:    []string{"admin"},
 	}
 	if err := authz.Authorize(ctxFor("acme"), acmeIdentity, "billing", "export"); err != nil {
-		t.Fatalf("acme admin should pass self-scope default for own tenant: %v", err)
+		t.Fatalf("acme admin should pass global self-scope declaration for own tenant: %v", err)
 	}
 }
 

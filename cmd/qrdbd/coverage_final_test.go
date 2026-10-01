@@ -31,6 +31,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -270,7 +271,8 @@ func TestBootstrapUserRoleStores_FirstBootFails_NoLeader(t *testing.T) {
 		},
 	}
 
-	_, err := bootstrapUserRoleStores(ctx, mock, mock, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil)
+	tx := newMockTransactionServicer(store)
+	_, err := bootstrapUserRoleStores(ctx, mock, mock, tx, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil)
 	require.Error(t, err)
 	var abe *AuthBootstrapError
 	require.True(t, errors.As(err, &abe))
@@ -352,37 +354,6 @@ func TestCanonicalizePath_ExistingFile(t *testing.T) {
 // bootstrap.go: startBootstrapServers — invalid Noise key file triggers error
 // ---------------------------------------------------------------------------
 
-func TestStartBootstrapServers_InvalidNoiseKeyFile(t *testing.T) {
-	dir := t.TempDir()
-	bundle, err := generateCATLS()
-	require.NoError(t, err)
-
-	// Write garbage to the noise key file so DecodeStaticKey fails.
-	keyPath := filepath.Join(dir, "noise-key.hex")
-	require.NoError(t, os.WriteFile(keyPath, []byte("this-is-not-a-valid-hex-noise-key"), 0o600))
-
-	f := &startFlags{
-		dataDir: dir,
-		host:    testBindHost,
-	}
-	// DecodeStaticKey refuses the garbage key before the listener opens;
-	// reserved anyway, for the reason given in
-	// TestStartBootstrapServers_InvalidExistingKey (go-qrdb#313).
-	reserveNoisePort(t, f)
-
-	if !noiseServed() {
-		// The garbage key is never read, so DecodeStaticKey is never called.
-		assertAdvertisesWithoutNoise(t, bundle, f)
-		return
-	}
-
-	_, err = startBootstrapServers(bundle, f, newDiscardLogger())
-	require.Error(t, err)
-	var bsErr *BootstrapServerError
-	require.True(t, errors.As(err, &bsErr))
-	assert.Equal(t, "noise", bsErr.Protocol)
-}
-
 // ---------------------------------------------------------------------------
 // start.go: init — invoke pebble factory closure body (line 194)
 // ---------------------------------------------------------------------------
@@ -391,7 +362,7 @@ func TestInit_PebbleFactoryClosure_InvokedWhenResolved(t *testing.T) {
 	// Resolving "pebble" calls the outer factory func() → sm.CreateFunc.
 	// Then calling the returned CreateFunc with shard/replica IDs invokes
 	// the inner closure (store.NewPebbleStateMachine(nil)).
-	fn, err := resolveCreateFunc("pebble", "")
+	fn, err := resolveCreateFunc("pebble", "", statemachine.StorageConfig{})
 	require.NoError(t, err)
 	require.NotNil(t, fn)
 
@@ -401,7 +372,7 @@ func TestInit_PebbleFactoryClosure_InvokedWhenResolved(t *testing.T) {
 }
 
 func TestInit_MVCCFactoryClosure_InvokedWhenResolved(t *testing.T) {
-	fn, err := resolveCreateFunc("mvcc", "")
+	fn, err := resolveCreateFunc("mvcc", "", statemachine.StorageConfig{})
 	require.NoError(t, err)
 	require.NotNil(t, fn)
 
@@ -655,80 +626,12 @@ func TestRunStart_DuplicateDatabaseName_AlreadyExistsPath(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// bootstrap.go: bootstrapTLS — coverage for the SPKI + direct-URL branches
-// ---------------------------------------------------------------------------
-
-func TestBootstrapTLS_DirectURL_Fails(t *testing.T) {
-	f := &startFlags{
-		dataDir:            t.TempDir(),
-		bootstrapDirectURL: "https://127.0.0.1:19999/bootstrap",
-		// no SPKI pin — direct URL method only
-	}
-
-	_, err := bootstrapTLS(f, newDiscardLogger())
-	// Connection to 127.0.0.1:19999 will fail (nothing listening).
-	require.Error(t, err)
-	var fetchErr *BootstrapFetchError
-	require.True(t, errors.As(err, &fetchErr))
-}
-
-func TestBootstrapTLS_SPKIPinWithAddr_ConnectionFails(t *testing.T) {
-	f := &startFlags{
-		dataDir:          t.TempDir(),
-		bootstrapAddr:    "127.0.0.1:19998",
-		bootstrapSPKIPin: "sha256//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-	}
-
-	_, err := bootstrapTLS(f, newDiscardLogger())
-	require.Error(t, err)
-	// Either BootstrapFetchError or BootstrapError depending on which layer rejects
-	t.Logf("bootstrapTLS error (expected): %v", err)
-}
-
-// ---------------------------------------------------------------------------
-// bootstrap.go: resolveTLS — bootstrap TLS path with noise addr set
-// ---------------------------------------------------------------------------
-
-func TestBootstrapTLS_DANEConfigured_Fails(t *testing.T) {
-	dir := t.TempDir()
-
-	// Configure DANE with a DNS server and bootstrap address so the DANE
-	// method block (lines 220-231) is entered.
-	f := &startFlags{
-		dataDir:          dir,
-		bootstrapDANEDNS: "127.0.0.1:5353",
-		bootstrapAddr:    "127.0.0.1:19995",
-	}
-
-	_, err := bootstrapTLS(f, newDiscardLogger())
-	// DNS connection to 127.0.0.1:5353 will fail (nothing listening).
-	require.Error(t, err)
-	var fetchErr *BootstrapFetchError
-	require.True(t, errors.As(err, &fetchErr))
-}
-
-func TestResolveTLS_NoiseAddr_Set_BootstrapAttempts(t *testing.T) {
-	f := &startFlags{
-		dataDir:            t.TempDir(),
-		bootstrapNoiseAddr: "127.0.0.1:19997",
-		bootstrapNoiseKey:  "deadbeefdeadbeef",
-		host:               testBindHost,
-	}
-
-	_, _, err := resolveTLS(f, newDiscardLogger())
-	// Connection to noise addr will fail; we just verify it doesn't panic.
-	if err != nil {
-		t.Logf("resolveTLS returned (acceptable): %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // start.go: init — covers the "memory" and "concurrent" SM types registered
 // by init()
 // ---------------------------------------------------------------------------
 
 func TestResolveCreateFunc_MemoryType(t *testing.T) {
-	fn, err := resolveCreateFunc("memory", "")
+	fn, err := resolveCreateFunc("memory", "", statemachine.StorageConfig{})
 	require.NoError(t, err)
 	require.NotNil(t, fn, "memory state machine factory must be resolvable")
 }

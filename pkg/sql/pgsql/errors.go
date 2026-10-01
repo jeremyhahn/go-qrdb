@@ -82,18 +82,6 @@ func (e *QueryError) Unwrap() error {
 	return e.Err
 }
 
-// TypeConversionError is returned when converting between go-mysql-server
-// and PostgreSQL types fails.
-type TypeConversionError struct {
-	GMS string
-	PG  string
-}
-
-// Error returns a human-readable description.
-func (e *TypeConversionError) Error() string {
-	return "sql/pgsql: type conversion: " + e.GMS + " -> " + e.PG
-}
-
 // ParameterBindingError is returned when a PostgreSQL wire protocol
 // parameter cannot be converted to a GMS binding expression.
 type ParameterBindingError struct {

@@ -27,8 +27,18 @@ raft:
 ```
 
 Objstore is a snapshot and backup tier and is **refused** as a hot apply path.
-The pebble-native state machines (`sm_type: pebble` or `mvcc`) carry their own
-Pebble store and reject a non-pebble `sm_storage`.
+
+`sm_storage` is read by the storage-generic state machines (`sm_type: disk` or
+`fast`), which keep their per-replica storage under
+`<data-dir>/sm/shard-<S>-replica-<R>`. Every other state machine carries its
+own storage and rejects a non-pebble `sm_storage`. With the seal barrier
+enabled, `disk` and `fast` over `pebble` storage are encrypted at rest by the
+barrier, like the `pebble` and `mvcc` state machines; `file` storage cannot be
+encrypted, so `qrdbd start` (and the SDK) refuse it under the barrier rather
+than keep the replica's data in plaintext. `sm_storage: memory` persists
+nothing and is allowed. On every combination the
+state machine serves KV, batches, the guarded verbs and transactions; see
+[../run-modes/architecture.md](../run-modes/architecture.md#raft--single--or-multi-node).
 
 ## Per-database storage — `qrdb database`
 

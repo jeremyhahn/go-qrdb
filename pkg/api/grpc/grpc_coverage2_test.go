@@ -688,7 +688,7 @@ func TestGRPC_GetUserByUsername_Success(t *testing.T) {
 			ID:        1,
 			Username:  "alice",
 			TenantID:  "t1",
-			Enabled:   true,
+			Lifecycle: user.LifecycleActive,
 			CreatedAt: testTime,
 			UpdatedAt: testTime,
 		},
@@ -1158,6 +1158,14 @@ func (m *mockTenantBarrierOnlySvc) CreateTenant(_ context.Context, id, name stri
 func (m *mockTenantBarrierOnlySvc) GetTenant(_ context.Context, id string) (*tenantpkg.TenantInfo, error) {
 	return &tenantpkg.TenantInfo{ID: id}, nil
 }
+func (m *mockTenantBarrierOnlySvc) ListDeletedTenants(_ context.Context, _ string, _ int) (*tenantpkg.DeletedTenantsPage, error) {
+	return &tenantpkg.DeletedTenantsPage{}, nil
+}
+
+func (m *mockTenantBarrierOnlySvc) ReconcileDeletedTenants(_ context.Context) (*tenantpkg.ReconcileReport, error) {
+	return &tenantpkg.ReconcileReport{}, nil
+}
+
 func (m *mockTenantBarrierOnlySvc) ListTenants(_ context.Context) ([]tenantpkg.TenantInfo, error) {
 	return nil, nil
 }
@@ -1376,8 +1384,8 @@ func TestUserAuthFactor_Remove_Error(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 	st, _ := status.FromError(err)
-	if st.Code() != codes.AlreadyExists {
-		t.Fatalf("expected AlreadyExists, got %s", st.Code())
+	if st.Code() != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition, got %s", st.Code())
 	}
 }
 
@@ -1493,11 +1501,11 @@ func TestUserAuthFactor_Login_Error(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// mapUserAuthFactorGRPCError tests (0% coverage)
+// mapServiceError tests (0% coverage)
 // ---------------------------------------------------------------------------
 
 func TestMapUserAuthFactorGRPCError_Nil(t *testing.T) {
-	if mapUserAuthFactorGRPCError(nil) != nil {
+	if mapServiceError(nil) != nil {
 		t.Fatal("expected nil for nil input")
 	}
 }
@@ -1510,20 +1518,20 @@ func TestMapUserAuthFactorGRPCError_AllCases(t *testing.T) {
 		{auth.ErrFactorNotFound, codes.NotFound},
 		{auth.ErrUserHasNoFactors, codes.NotFound},
 		{auth.ErrFactorRevoked, codes.FailedPrecondition},
-		{auth.ErrLastFactor, codes.AlreadyExists},
+		{auth.ErrLastFactor, codes.FailedPrecondition},
 		{auth.ErrFactorAlreadyExists, codes.AlreadyExists},
 		{auth.ErrFactorTypeUnsupported, codes.InvalidArgument},
 		{auth.ErrInvalidFactor, codes.InvalidArgument},
 		{errors.New("unexpected"), codes.Internal},
 	}
 	for _, tc := range tests {
-		got := mapUserAuthFactorGRPCError(tc.err)
+		got := mapServiceError(tc.err)
 		st, ok := status.FromError(got)
 		if !ok {
-			t.Fatalf("mapUserAuthFactorGRPCError(%v) not a gRPC status", tc.err)
+			t.Fatalf("mapServiceError(%v) not a gRPC status", tc.err)
 		}
 		if st.Code() != tc.want {
-			t.Errorf("mapUserAuthFactorGRPCError(%v) = %s, want %s", tc.err, st.Code(), tc.want)
+			t.Errorf("mapServiceError(%v) = %s, want %s", tc.err, st.Code(), tc.want)
 		}
 	}
 }
@@ -1568,7 +1576,7 @@ func (m *relabelGetErrSvc) Get(_ context.Context, _ string) (*auth.AuthFactor, e
 }
 
 // ---------------------------------------------------------------------------
-// mapAuthFactorGRPCError (authfactor_server.go) - 0% coverage
+// mapServiceError (authfactor_server.go) - 0% coverage
 // Test the existing function from authfactor_server.go.
 // ---------------------------------------------------------------------------
 
@@ -1583,7 +1591,7 @@ func TestMapAuthFactorGRPCError_AllCases(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := mapAuthFactorGRPCError(tc.err)
+			got := mapServiceError(tc.err)
 			if tc.err == nil {
 				if got != nil {
 					t.Fatalf("expected nil, got %v", got)

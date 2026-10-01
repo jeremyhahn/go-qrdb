@@ -40,7 +40,6 @@ type createUserWireRequest struct {
 	WithoutEmailLoginKey bool     `json:"withoutEmailLoginKey,omitempty"`
 	TenantID             string   `json:"tenantID"`
 	RoleIDs              []string `json:"roleIDs"`
-	GroupIDs             []string `json:"groupIDs,omitempty"`
 	AuthMethods          []string `json:"authMethods,omitempty"`
 	Lifecycle            string   `json:"lifecycle,omitempty"`
 	Pending              bool     `json:"pending,omitempty"`
@@ -92,11 +91,10 @@ type updateUserWireRequest struct {
 	Email    string   `json:"email,omitempty"`
 	Name     string   `json:"name,omitempty"`
 	RoleIDs  []string `json:"roleIDs"`
-	// NO `omitempty` on GroupIDs/AuthMethods: it would drop an empty slice from
-	// the payload, making "clear" indistinguishable from "leave alone" and a
-	// revocation silently do nothing. Nil encodes as `null` and decodes back to
-	// nil, so absent / null / [] all survive the wire.
-	GroupIDs    []string `json:"groupIDs"`
+	// NO `omitempty` on AuthMethods: it would drop an empty slice from the
+	// payload, making "clear" indistinguishable from "leave alone" and a clear
+	// silently do nothing. Nil encodes as `null` and decodes back to nil, so
+	// absent / null / [] all survive the wire.
 	AuthMethods []string `json:"authMethods"`
 	Lifecycle   string   `json:"lifecycle,omitempty"`
 	LastAuth    string   `json:"lastAuth,omitempty"`
@@ -135,16 +133,24 @@ type userWireResponse struct {
 	Name     string   `json:"name,omitempty"`
 	TenantID string   `json:"tenantID"`
 	RoleIDs  []string `json:"roleIDs"`
-	Enabled  bool     `json:"enabled"`
 	System   bool     `json:"system"`
-	// Lifecycle is the canonical account state (pending, active, suspended,
-	// locked, disabled, deleting). Enabled is a derived projection of it.
+	// Lifecycle is the canonical and only account state (pending, active,
+	// suspended, locked, disabled, deleting).
 	Lifecycle   string   `json:"lifecycle,omitempty"`
-	GroupIDs    []string `json:"groupIDs,omitempty"`
 	AuthMethods []string `json:"authMethods,omitempty"`
 	LastAuth    string   `json:"lastAuth,omitempty"`
-	CreatedAt   string   `json:"createdAt"`
-	UpdatedAt   string   `json:"updatedAt"`
+	// CertBindings are the account's enrolled mTLS keys, expired ones
+	// included; the server renders {thumbprint, kind, notAfter}.
+	CertBindings []certBindingWire `json:"certBindings,omitempty"`
+	CreatedAt    string            `json:"createdAt"`
+	UpdatedAt    string            `json:"updatedAt"`
+}
+
+// certBindingWire mirrors the server's JSON form of one enrolled mTLS key.
+type certBindingWire struct {
+	Thumbprint string `json:"thumbprint"`
+	Kind       string `json:"kind"`
+	NotAfter   string `json:"notAfter,omitempty"`
 }
 
 // listUsersWireResponse is the JSON wire payload returned by user.List.
@@ -310,7 +316,6 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 		WithoutEmailLoginKey: req.WithoutEmailLoginKey,
 		TenantID:             req.TenantID,
 		RoleIDs:              req.RoleIDs,
-		GroupIDs:             req.GroupIDs,
 		AuthMethods:          req.AuthMethods,
 		Lifecycle:            req.Lifecycle,
 		Pending:              req.Pending,
@@ -532,7 +537,6 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 		Email:       req.Email,
 		Name:        req.Name,
 		RoleIDs:     req.RoleIDs,
-		GroupIDs:    req.GroupIDs,
 		AuthMethods: req.AuthMethods,
 		Lifecycle:   req.Lifecycle,
 		LastAuth:    req.LastAuth,
@@ -1012,21 +1016,33 @@ func wireToUser(w *userWireResponse) *transport.User {
 		return nil
 	}
 	return &transport.User{
-		ID:          w.ID,
-		Username:    w.Username,
-		Email:       w.Email,
-		Name:        w.Name,
-		TenantID:    w.TenantID,
-		RoleIDs:     w.RoleIDs,
-		Enabled:     w.Enabled,
-		System:      w.System,
-		Lifecycle:   w.Lifecycle,
-		GroupIDs:    w.GroupIDs,
-		AuthMethods: w.AuthMethods,
-		LastAuth:    w.LastAuth,
-		CreatedAt:   w.CreatedAt,
-		UpdatedAt:   w.UpdatedAt,
+		ID:           w.ID,
+		Username:     w.Username,
+		Email:        w.Email,
+		Name:         w.Name,
+		TenantID:     w.TenantID,
+		RoleIDs:      w.RoleIDs,
+		System:       w.System,
+		Lifecycle:    w.Lifecycle,
+		AuthMethods:  w.AuthMethods,
+		LastAuth:     w.LastAuth,
+		CertBindings: wireToCertBindings(w.CertBindings),
+		CreatedAt:    w.CreatedAt,
+		UpdatedAt:    w.UpdatedAt,
 	}
+}
+
+// wireToCertBindings converts the wire binding list to the transport form;
+// nil for an empty list.
+func wireToCertBindings(in []certBindingWire) []transport.CertBinding {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]transport.CertBinding, len(in))
+	for i, b := range in {
+		out[i] = transport.CertBinding{Thumbprint: b.Thumbprint, Kind: b.Kind, NotAfter: b.NotAfter}
+	}
+	return out
 }
 
 // wireToRole converts a role wire response to the transport Role type.

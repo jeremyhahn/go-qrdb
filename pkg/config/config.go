@@ -20,6 +20,7 @@ package config
 
 import (
 	"crypto/tls"
+	"math"
 	"strings"
 	"time"
 
@@ -27,6 +28,8 @@ import (
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 )
 
@@ -255,7 +258,35 @@ type ServerConfig struct {
 	// where the API and Raft planes are reached over different addresses (NAT,
 	// split networking) must set it explicitly.
 	AdvertiseHost string `yaml:"advertise_host"`
+
+	// SecureMemoryBudgetMiB bounds the process-wide locked-memory (mlock)
+	// budget every secure.Buffer allocation and Secret.Open this node makes —
+	// cluster DEKs, credentials, PINs — admits against
+	// (enclave.NewAllocatorWithinRLimit + enclave.SetAllocator, installed by
+	// `qrdbd start` before anything allocates, go-qrdb#114).
+	//
+	// Zero, the default, means "not configured": `qrdbd start` derives the
+	// budget from the host's RLIMIT_MEMLOCK as the smaller of
+	// DefaultSecureMemoryBudgetMiB and the limit less a fixed headroom for
+	// locked memory outside the budget, and logs the figure and its source.
+	// A positive value is used as given, and one that exceeds the host's
+	// discovered RLIMIT_MEMLOCK ceiling is refused at startup, naming the
+	// limit and how to raise it, rather than failing an allocation later under
+	// load. Sourced from --secure-memory-budget-mib,
+	// QRDB_SERVER_SECURE_MEMORY_BUDGET_MIB or server.secure_memory_budget_mib.
+	SecureMemoryBudgetMiB int64 `yaml:"secure_memory_budget_mib"`
 }
+
+// DefaultSecureMemoryBudgetMiB is the locked-memory budget an unconfigured
+// node gets when the host's RLIMIT_MEMLOCK leaves room for it, and the ceiling
+// of the budget derived from a smaller limit: generous enough for cluster
+// DEKs, credentials and PINs (all KB-scale) with headroom for concurrent
+// unseal/rotation traffic, while still bounding what an authenticated caller
+// can drive this process to mlock. Like DefaultServerHost, this is the ONLY
+// place the literal appears. DefaultConfig leaves SecureMemoryBudgetMiB at
+// zero ("derive from the host"), so a configured value is always
+// distinguishable from this default.
+const DefaultSecureMemoryBudgetMiB int64 = 64
 
 // DefaultServerHost is the defaults-layer bind host for every API listener.
 // The wildcard preserves the historical out-of-the-box behaviour (a node
@@ -313,6 +344,21 @@ type RaftConfig struct {
 	// Peers is a comma-separated list of initial cluster members in
 	// the format "replicaID=address" (e.g., "1=10.0.0.1:63001,2=10.0.0.2:63001").
 	Peers string `yaml:"peers"`
+
+	// MemberIdentities is a comma-separated list of the Raft member
+	// identities of the OTHER replicas, in the format "replicaID=identity"
+	// (e.g., "2=spki:3f9a…,3=spki:c01d…"). An identity is "spki:" plus the
+	// hex SHA-256 of the replica's certificate SubjectPublicKeyInfo — what
+	// `qrdbd node-identity` prints for a certificate file.
+	//
+	// It is required on every multi-node replica: go-quicraft admits a
+	// member by its identity and by nothing else. A founding replica must
+	// name every member of the initial membership; a joining replica must
+	// name at least one existing member it will accept its bootstrap from.
+	// The local replica's own entry is derived from its certificate and may
+	// be omitted; if present it must match. Ignored for a single-node
+	// cluster, which has no Raft transport.
+	MemberIdentities string `yaml:"member_identities"`
 
 	// Join indicates this node is joining an existing cluster rather
 	// than forming a new one.
@@ -785,7 +831,13 @@ type AuthConfig struct {
 	// (spiffe://<trust-domain>/tenant/<tenantID>/<kind>/<name>) and PINS this
 	// trust domain: a SPIFFE SAN under a different trust domain is rejected
 	// (fail-closed). When empty, only the legacy OU-based tenant derivation is
-	// used. Default: "".
+	// used.
+	//
+	// The same value reaches the built-in certificate authority
+	// (cert.WithTrustDomain): when set, every client certificate it mints
+	// carries spiffe://<trust-domain>/tenant/<tenantID>/user/<username>, so the
+	// pin is exercised by this deployment's own certificates rather than only
+	// by externally issued ones (go-qrdb#519). Default: "".
 	SPIFFETrustDomain string `yaml:"spiffe_trust_domain"`
 
 	// ClusterTrustDomain is the operator-pinned trust domain used for
@@ -843,6 +895,28 @@ type AuthConfig struct {
 	// An unrecognised value FAILS THE BOOT rather than resolving to either
 	// posture. Default: "fail-closed".
 	AuditFailurePolicy string `yaml:"audit_failure_policy"`
+
+	// MTLSBindingPolicy selects whether a certificate login must present a
+	// certificate enrolled on the account it names (go-qrdb#517).
+	//
+	//   "enrolled" (default, and what an empty value means)
+	//       An account's bindings are enforced only once it has one. An
+	//       account with no bindings authenticates on the certificate's CN and
+	//       tenant alone.
+	//
+	//   "required"
+	//       EVERY certificate login must present a certificate enrolled on the
+	//       account it names. An account with no bindings, and a certificate
+	//       naming no account, are refused (401 / UNAUTHENTICATED).
+	//
+	// "required" is a lockout risk, so the node REFUSES TO BOOT under it when
+	// the bootstrap admin could not log in: it must exist and hold at least
+	// one unexpired certificate binding. Migrate by enrolling every account's
+	// certificate under "enrolled" first; roll back by setting "enrolled".
+	//
+	// An unrecognised value FAILS THE BOOT rather than resolving to either
+	// posture. Default: "enrolled".
+	MTLSBindingPolicy string `yaml:"mtls_binding_policy"`
 
 	// ABAC configures the optional attribute-based access control decorator
 	// layered over the RBAC authorizer. When enabled, YAML policies from
@@ -1083,12 +1157,13 @@ var validCredentialStrategies = map[string]struct{}{
 func DefaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
-			AdminPort: 63002,
-			GRPCPort:  63003,
-			QUICPort:  63004,
-			MySQLPort: 3306,
-			PgSQLPort: 5432,
-			Host:      DefaultServerHost,
+			AdminPort:             63002,
+			GRPCPort:              63003,
+			QUICPort:              63004,
+			MySQLPort:             3306,
+			PgSQLPort:             5432,
+			Host:                  DefaultServerHost,
+			SecureMemoryBudgetMiB: 0, // derive from RLIMIT_MEMLOCK at start
 		},
 		Protocols: ProtocolsConfig{
 			REST: true,
@@ -1323,7 +1398,7 @@ var validLogFormats = map[string]struct{}{
 
 // validSMTypes contains the accepted state machine type strings. This list
 // mirrors what the state machine registry actually provides (the registry's
-// built-ins plus the daemon-registered "pebble"/"mvcc"/"mvcc-fast") — a
+// built-ins plus the daemon-registered "pebble"/"mvcc") — a
 // value accepted here but absent from the registry would pass validation
 // and then fail at startup with UnknownSMError, which is exactly the
 // phantom-entry trap ("kv", "timeseries", "vector", "cached-disk") this
@@ -1332,7 +1407,6 @@ var validSMTypes = map[string]struct{}{
 	"pebble":     {},
 	"memory":     {},
 	"mvcc":       {},
-	"mvcc-fast":  {},
 	"standard":   {},
 	"concurrent": {},
 	"fast":       {},
@@ -1505,6 +1579,22 @@ func (c *Config) Validate() error {
 	if c.Server.Host == "" {
 		return &ValidationError{Field: "server.host", Reason: "must not be empty"}
 	}
+	if c.Server.SecureMemoryBudgetMiB < 0 {
+		// Zero means "unconfigured, derive from RLIMIT_MEMLOCK" (cmd/qrdbd
+		// resolveSecureMemoryBudget); a negative value is a
+		// configuration mistake with no meaning of its own and must fail
+		// closed here, at config load, rather than reach runStart and either
+		// silently default or, worse, be shifted into bytes (go-qrdb#114
+		// review, round 2).
+		return &ValidationError{Field: "server.secure_memory_budget_mib", Reason: "must not be negative"}
+	}
+	if c.Server.SecureMemoryBudgetMiB > math.MaxInt64>>20 {
+		// cmd/qrdbd converts this value to bytes via a left shift by 20; a
+		// value this large would overflow int64 and silently install a much
+		// SMALLER effective budget than configured instead of failing
+		// (go-qrdb#114 review, round 2).
+		return &ValidationError{Field: "server.secure_memory_budget_mib", Reason: "too large: converting to bytes would overflow"}
+	}
 
 	if c.Raft.DataDir == "" {
 		return &ValidationError{Field: "raft.data_dir", Reason: "must not be empty"}
@@ -1524,7 +1614,7 @@ func (c *Config) Validate() error {
 		if _, ok := validSMTypes[c.Raft.SMType]; !ok {
 			return &ValidationError{
 				Field:  "raft.sm_type",
-				Reason: "must be one of: pebble, memory, mvcc, mvcc-fast, standard, concurrent, fast, disk, highperf, regular",
+				Reason: "must be one of: pebble, memory, mvcc, standard, concurrent, fast, disk, highperf, regular",
 			}
 		}
 	}
@@ -1688,6 +1778,20 @@ func (c *Config) Validate() error {
 	}
 	if c.Auth.ABAC.Enabled && strings.TrimSpace(c.Auth.ABAC.PolicyDir) == "" {
 		return &ValidationError{Field: "auth.abac.policy_dir", Reason: "must not be empty when abac is enabled"}
+	}
+	// An unrecognised binding posture must not reach a boot that could guess
+	// at it; reject it with the rest of the configuration.
+	if _, err := auth.ParseMTLSBindingPolicy(c.Auth.MTLSBindingPolicy); err != nil {
+		return &ValidationError{Field: "auth.mtls_binding_policy", Reason: `must be "enrolled", "required" or empty`}
+	}
+	// The trust domain is minted into certificate SANs and pinned by the
+	// authenticator, so it must survive the SPIFFE round trip both apply
+	// (go-qrdb#519). A value that does not would make the CA refuse every
+	// certificate at issue time; refuse it at load instead.
+	if c.Auth.SPIFFETrustDomain != "" {
+		if err := spiffe.ValidateTrustDomain(c.Auth.SPIFFETrustDomain); err != nil {
+			return &ValidationError{Field: "auth.spiffe_trust_domain", Reason: "must be a bare host name that round-trips through a SPIFFE ID (" + err.Error() + ")"}
+		}
 	}
 
 	// CORS validation.

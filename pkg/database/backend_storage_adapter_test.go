@@ -361,3 +361,80 @@ func TestBackendStorageAdapter_GuardedOpsExcludeConcurrentWrites(t *testing.T) {
 			"value it never compared against (deleted=%v)", current, "globex", deleted)
 	}
 }
+
+// TestBackendStorageAdapter_CompareAndSwap covers the adapter's guarded swap,
+// which had no test at all. Every arm matters to a caller: the swap that wins,
+// the one that declines because the value moved, and the one that declines
+// because the key is absent.
+//
+// The absent case is the one worth naming. CompareAndSwap leaves an absent key
+// ABSENT rather than creating it with next, even when expected is nil or
+// empty (go-qrdb#56). A swap that created the key would make this verb a
+// second PutIfAbsent with no way to express "replace only what is already
+// there", and a caller using it to fence a rotation would install a value over
+// a key another writer had just reclaimed.
+func TestBackendStorageAdapter_CompareAndSwap(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("swaps when the value still matches", func(t *testing.T) {
+		a, _ := newTestAdapter(t)
+		if err := a.Put(ctx, "k", []byte("v1")); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		ok, err := a.CompareAndSwap(ctx, "k", []byte("v1"), []byte("v2"))
+		if err != nil {
+			t.Fatalf("CompareAndSwap: %v", err)
+		}
+		if !ok {
+			t.Fatal("CompareAndSwap declined a matching value")
+		}
+		got, err := a.Get(ctx, "k")
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if string(got) != "v2" {
+			t.Errorf("value = %q, want %q", got, "v2")
+		}
+	})
+
+	t.Run("declines when the value moved, leaving it untouched", func(t *testing.T) {
+		a, _ := newTestAdapter(t)
+		if err := a.Put(ctx, "k", []byte("actual")); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		ok, err := a.CompareAndSwap(ctx, "k", []byte("stale"), []byte("next"))
+		if err != nil {
+			t.Fatalf("CompareAndSwap: %v", err)
+		}
+		if ok {
+			t.Fatal("CompareAndSwap swapped on a stale expected value")
+		}
+		got, err := a.Get(ctx, "k")
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if string(got) != "actual" {
+			t.Errorf("a declined swap must not write: value = %q, want %q", got, "actual")
+		}
+	})
+
+	t.Run("leaves an absent key absent", func(t *testing.T) {
+		for _, expected := range [][]byte{nil, {}, []byte("anything")} {
+			a, _ := newTestAdapter(t)
+			ok, err := a.CompareAndSwap(ctx, "missing", expected, []byte("next"))
+			if err != nil {
+				t.Fatalf("CompareAndSwap: %v", err)
+			}
+			if ok {
+				t.Fatalf("CompareAndSwap reported a swap on an absent key (expected=%q)", expected)
+			}
+			got, err := a.Get(ctx, "missing")
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if got != nil {
+				t.Errorf("CompareAndSwap created an absent key (expected=%q): got %q", expected, got)
+			}
+		}
+	})
+}

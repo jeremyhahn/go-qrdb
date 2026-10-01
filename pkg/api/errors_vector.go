@@ -299,6 +299,27 @@ func NewKMeansInsufficientVectorsError(op string, clusters, vectors int) *dberro
 	}
 }
 
+// KMeansDimensionMismatchError indicates a vector has the wrong number of dimensions.
+type KMeansDimensionMismatchError struct {
+	Index    int
+	Got      int
+	Expected int
+}
+
+// Error implements the error interface.
+func (e *KMeansDimensionMismatchError) Error() string {
+	return fmt.Sprintf("vector %d has %d dimensions, expected %d", e.Index, e.Got, e.Expected)
+}
+
+// NewKMeansDimensionMismatchError creates a QRDBError for a vector dimension mismatch.
+func NewKMeansDimensionMismatchError(op string, index, got, expected int) *dberrors.QRDBError {
+	return &dberrors.QRDBError{
+		Code: dberrors.ErrInvalidInput,
+		Op:   op,
+		Err:  &KMeansDimensionMismatchError{Index: index, Got: got, Expected: expected},
+	}
+}
+
 // KMeansInitError indicates failure to initialize centroids.
 type KMeansInitError struct {
 	Cause error

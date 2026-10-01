@@ -317,16 +317,16 @@ func TestSOMiddleware_WrongPINRecordable_Returns401(t *testing.T) {
 }
 
 // TestSOMiddleware_VerifierGateErrorIsNotFlattenedIntoInvalidPIN is the
-// CONCRETE-TYPE guard, tested as behaviour.
+// isAuditFailure guard, tested as behaviour.
 //
 // auth.SOAuthenticator.VerifySOPIN now returns *audit.GateError instead of
 // ErrSOPINInvalid when it cannot record its own outcome, and this middleware's
 // verify branch used to answer 401 for EVERY error the verifier returned. The
-// guard is on the concrete *audit.GateError and NOT on the
-// AuthFailureUnavailable class it belongs to: that class also contains
+// guard is on the narrow AuthFailureAuditUnavailable class (isAuditFailure)
+// and NOT on AuthFailureUnavailable: that class carries
 // *StoreUnavailableError wrapping tenant.ErrTenantSealed, which is a signal
-// the sealed-window fallbacks act on rather than one to reinterpret here
-// (go-qrdb#460).
+// the sealed-window fallbacks act on rather than one to reinterpret here.
+// go-qrdb#460 split the two classes apart for exactly this reason.
 func TestSOMiddleware_VerifierGateErrorIsNotFlattenedIntoInvalidPIN(t *testing.T) {
 	// The sink the MIDDLEWARE writes through is healthy; only the VERIFIER's
 	// sink is faulted. So the 503 can only come from the verifier's own gate

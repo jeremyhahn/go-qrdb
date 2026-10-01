@@ -31,12 +31,12 @@ import (
 //
 // The two halves cannot be asserted against each other in one test —
 // pkg/service imports pkg/statemachine, so a test in pkg/statemachine cannot
-// import back — and protocol.EncodeAppError is the contract between them. Each
+// import back — and protocol.EncodeCapabilityError is the contract between them. Each
 // side is therefore pinned against protocol, which is the thing they actually
 // share (go-qrdb#62).
 func TestCheckResultError_DecodesANotConfiguredResult(t *testing.T) {
 	notConfigured := &statemachine.ServiceNotConfiguredError{Service: "transaction"}
-	result := sm.Result{Data: protocol.EncodeAppError(notConfigured.Error())}
+	result := sm.Result{Data: protocol.EncodeCapabilityError(notConfigured.Error())}
 
 	err := checkResultError(result)
 	if err == nil {
@@ -44,9 +44,9 @@ func TestCheckResultError_DecodesANotConfiguredResult(t *testing.T) {
 			"caller sees Succeeded=false with a nil error, which reads as a failed " +
 			"compare rather than a misconfiguration")
 	}
-	var smErr *SMNotConfiguredError
+	var smErr *CapabilityUnsupportedError
 	if !errors.As(err, &smErr) {
-		t.Fatalf("error = %T (%v), want *SMNotConfiguredError", err, err)
+		t.Fatalf("error = %T (%v), want *CapabilityUnsupportedError", err, err)
 	}
 }
 
@@ -75,7 +75,7 @@ func TestCheckResultError_APlainResultIsNotAnError(t *testing.T) {
 // notConfiguredHost answers every proposal the way a state machine missing a
 // subsystem does: a nil Raft error, with the failure encoded in the result.
 func notConfiguredHost(service string) *mockHost {
-	payload := protocol.EncodeAppError((&statemachine.ServiceNotConfiguredError{Service: service}).Error())
+	payload := protocol.EncodeCapabilityError((&statemachine.ServiceNotConfiguredError{Service: service}).Error())
 	return &mockHost{
 		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
 			return sm.Result{Data: payload}, nil
@@ -134,9 +134,9 @@ func TestServices_ANotConfiguredSubsystemIsNotReportedAsSuccess(t *testing.T) {
 				t.Fatal("a proposal against a missing subsystem returned nil; the " +
 					"caller is told the write succeeded when nothing was applied")
 			}
-			var smErr *SMNotConfiguredError
+			var smErr *CapabilityUnsupportedError
 			if !errors.As(err, &smErr) {
-				t.Fatalf("error = %T (%v), want *SMNotConfiguredError", err, err)
+				t.Fatalf("error = %T (%v), want *CapabilityUnsupportedError", err, err)
 			}
 		})
 	}
@@ -174,9 +174,9 @@ func TestBatchService_ImportDoesNotCountAnUnappliedChunkAsImported(t *testing.T)
 			t.Fatal("a transactional import against a missing subsystem returned nil; " +
 				"the caller is told every row imported")
 		}
-		var smErr *SMNotConfiguredError
+		var smErr *CapabilityUnsupportedError
 		if !errors.As(err, &smErr) {
-			t.Fatalf("error = %T (%v), want *SMNotConfiguredError", err, err)
+			t.Fatalf("error = %T (%v), want *CapabilityUnsupportedError", err, err)
 		}
 		if res != nil && res.Succeeded != 0 {
 			t.Fatalf("Succeeded = %d, want 0 — nothing was applied", res.Succeeded)

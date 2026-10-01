@@ -16,11 +16,13 @@ package quic
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -64,75 +66,6 @@ func TestStartError_ErrorsAs(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// AcceptError
-// ---------------------------------------------------------------------------
-
-func TestAcceptError_Error(t *testing.T) {
-	inner := errors.New("connection reset by peer")
-	ae := &AcceptError{Err: inner}
-	msg := ae.Error()
-	if !strings.Contains(msg, "quic: failed to accept connection") {
-		t.Fatalf("expected prefix in message, got %q", msg)
-	}
-	if !strings.Contains(msg, "connection reset by peer") {
-		t.Fatalf("expected inner error in message, got %q", msg)
-	}
-}
-
-func TestAcceptError_Unwrap(t *testing.T) {
-	inner := errors.New("timeout")
-	ae := &AcceptError{Err: inner}
-	if ae.Unwrap() != inner {
-		t.Fatal("Unwrap did not return the underlying error")
-	}
-}
-
-func TestAcceptError_ErrorsAs(t *testing.T) {
-	inner := errors.New("closed")
-	ae := &AcceptError{Err: inner}
-	var target *AcceptError
-	if !errors.As(ae, &target) {
-		t.Fatal("errors.As failed to match *AcceptError")
-	}
-	if errors.Unwrap(ae) != inner {
-		t.Fatal("errors.Unwrap did not return the underlying error")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// StreamError
-// ---------------------------------------------------------------------------
-
-func TestStreamError_Error(t *testing.T) {
-	inner := errors.New("stream closed")
-	se := &StreamError{Err: inner}
-	msg := se.Error()
-	if !strings.Contains(msg, "quic: stream error") {
-		t.Fatalf("expected prefix in message, got %q", msg)
-	}
-	if !strings.Contains(msg, "stream closed") {
-		t.Fatalf("expected inner error in message, got %q", msg)
-	}
-}
-
-func TestStreamError_Unwrap(t *testing.T) {
-	inner := errors.New("read deadline exceeded")
-	se := &StreamError{Err: inner}
-	if se.Unwrap() != inner {
-		t.Fatal("Unwrap did not return the underlying error")
-	}
-}
-
-func TestStreamError_ErrorsAs(t *testing.T) {
-	inner := errors.New("reset")
-	se := &StreamError{Err: inner}
-	var target *StreamError
-	if !errors.As(se, &target) {
-		t.Fatal("errors.As failed to match *StreamError")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // DispatchError
 // ---------------------------------------------------------------------------
 
@@ -162,45 +95,6 @@ func TestDispatchError_NoUnwrap(t *testing.T) {
 	var unwrapper interface{ Unwrap() error }
 	if errors.As(de, &unwrapper) {
 		t.Fatal("DispatchError should not implement Unwrap")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// HandlerError
-// ---------------------------------------------------------------------------
-
-func TestHandlerError_Error_ContainsMethod(t *testing.T) {
-	inner := errors.New("service unavailable")
-	he := &HandlerError{Method: "kv.Put", Err: inner}
-	msg := he.Error()
-	if !strings.Contains(msg, "kv.Put") {
-		t.Fatalf("expected method name in message, got %q", msg)
-	}
-	if !strings.Contains(msg, "service unavailable") {
-		t.Fatalf("expected inner error in message, got %q", msg)
-	}
-	if !strings.Contains(msg, "quic: handler error for") {
-		t.Fatalf("expected prefix in message, got %q", msg)
-	}
-}
-
-func TestHandlerError_Unwrap(t *testing.T) {
-	inner := errors.New("not leader")
-	he := &HandlerError{Method: "admin.Status", Err: inner}
-	if he.Unwrap() != inner {
-		t.Fatal("Unwrap did not return the underlying error")
-	}
-}
-
-func TestHandlerError_ErrorsAs(t *testing.T) {
-	inner := errors.New("timeout")
-	he := &HandlerError{Method: "kv.Get", Err: inner}
-	var target *HandlerError
-	if !errors.As(he, &target) {
-		t.Fatal("errors.As failed to match *HandlerError")
-	}
-	if target.Method != "kv.Get" {
-		t.Fatalf("expected method 'kv.Get', got %q", target.Method)
 	}
 }
 
@@ -469,6 +363,34 @@ func TestMapServiceError_KeyNotFoundError(t *testing.T) {
 	}
 }
 
+// TestMapServiceError_AuthFactorTenantMismatch asserts the ceremony-time
+// auth-factor tenant refusal (go-qrdb#464) classifies as StatusInvalidArgument
+// rather than falling through to the generic StatusError: a request naming a
+// tenant other than the caller's context is the caller's input being wrong,
+// not a server fault, matching REST's 400 and gRPC's InvalidArgument.
+func TestMapServiceError_AuthFactorTenantMismatch(t *testing.T) {
+	err := &service.AuthFactorTenantMismatchError{Requested: "globex", Context: "acme"}
+	statusCode, payload := mapServiceError(err)
+	if statusCode != wire.StatusInvalidArgument {
+		t.Fatalf("expected StatusInvalidArgument (%d), got %d", wire.StatusInvalidArgument, statusCode)
+	}
+	if !strings.Contains(string(payload), "globex") || !strings.Contains(string(payload), "acme") {
+		t.Fatalf("expected payload to name both tenants, got %q", string(payload))
+	}
+}
+
+// TestMapServiceError_WrappedAuthFactorTenantMismatch asserts the
+// classification survives being wrapped, matching how every other clause in
+// this ladder is tested against a wrapped instance.
+func TestMapServiceError_WrappedAuthFactorTenantMismatch(t *testing.T) {
+	inner := &service.AuthFactorTenantMismatchError{Requested: "globex", Context: "acme"}
+	wrapped := fmt.Errorf("authfactor.Enroll: %w", inner)
+	statusCode, _ := mapServiceError(wrapped)
+	if statusCode != wire.StatusInvalidArgument {
+		t.Fatalf("expected StatusInvalidArgument (%d), got %d", wire.StatusInvalidArgument, statusCode)
+	}
+}
+
 func TestMapServiceError_NotLeaderError(t *testing.T) {
 	err := &service.NotLeaderError{
 		ShardID:       1,
@@ -485,6 +407,60 @@ func TestMapServiceError_NotLeaderError(t *testing.T) {
 	}
 	if !strings.Contains(string(payload), "not leader") {
 		t.Fatalf("expected payload to contain 'not leader', got %q", string(payload))
+	}
+}
+
+// TestMapServiceError_TakenIdentity pins the taken-identity family —
+// username, email, and go-qrdb#555's generated user id — to
+// StatusAlreadyExists, the answer REST (409) and gRPC give each, rather than
+// the generic StatusError. The payload must carry the conflicting handle.
+func TestMapServiceError_TakenIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		err    error
+		needle string
+	}{
+		{name: "username", err: &user.UsernameExistsError{Username: "alice", TenantID: "t1"}, needle: "alice"},
+		{name: "email", err: &user.EmailExistsError{Email: "a@example.com", TenantID: "t1"}, needle: "a@example.com"},
+		{name: "generated user id", err: &user.UserIDExistsError{ID: 42, TenantID: "t1"}, needle: "42"},
+		{name: "wrapped by the store", err: &user.StoreError{Op: "create", Err: &user.UsernameExistsError{Username: "bob"}}, needle: "bob"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			statusCode, payload := mapServiceError(tc.err)
+			if statusCode != wire.StatusAlreadyExists {
+				t.Fatalf("status = %d, want StatusAlreadyExists (%d)", statusCode, wire.StatusAlreadyExists)
+			}
+			if !strings.Contains(string(payload), tc.needle) {
+				t.Errorf("payload %q does not name %q", payload, tc.needle)
+			}
+		})
+	}
+}
+
+// TestMapServiceError_IndexCompensationOutranksTakenIdentity pins the arm
+// order: a create whose rollback FAILED after a taken-identity collision is
+// DataLoss, not the AlreadyExists the collision alone would produce, exactly
+// as REST (500) and gRPC (DataLoss) report it.
+func TestMapServiceError_IndexCompensationOutranksTakenIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		cause error
+	}{
+		{name: "username", cause: &user.UsernameExistsError{Username: "alice"}},
+		{name: "email", cause: &user.EmailExistsError{Email: "a@example.com"}},
+		{name: "generated user id", cause: &user.UserIDExistsError{ID: 7}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := &user.IndexCompensationError{
+				Op:       "create",
+				UserID:   7,
+				Cause:    tc.cause,
+				Failures: []error{errors.New("release failed")},
+			}
+			if statusCode, _ := mapServiceError(err); statusCode != wire.StatusDataLoss {
+				t.Fatalf("status = %d, want StatusDataLoss (%d)", statusCode, wire.StatusDataLoss)
+			}
+		})
 	}
 }
 
@@ -512,7 +488,7 @@ func TestMapServiceError_UnknownError(t *testing.T) {
 
 func TestMapServiceError_WrappedKeyNotFoundError(t *testing.T) {
 	inner := &service.KeyNotFoundError{Key: "wrapped-key"}
-	err := &HandlerError{Method: "kv.Get", Err: inner}
+	err := fmt.Errorf("kv.Get: %w", inner)
 	// mapServiceError uses errors.As which follows the Unwrap chain.
 	statusCode, payload := mapServiceError(err)
 	if statusCode != wire.StatusNotFound {
@@ -525,7 +501,7 @@ func TestMapServiceError_WrappedKeyNotFoundError(t *testing.T) {
 
 func TestMapServiceError_WrappedNotLeaderError(t *testing.T) {
 	inner := &service.NotLeaderError{ShardID: 5, LeaderID: 3, LeaderAddress: "10.0.0.3:6000"}
-	err := &HandlerError{Method: "kv.Put", Err: inner}
+	err := fmt.Errorf("kv.Put: %w", inner)
 	statusCode, payload := mapServiceError(err)
 	if statusCode != wire.StatusUnavailable {
 		t.Fatalf("expected StatusUnavailable (%d), got %d", wire.StatusUnavailable, statusCode)
@@ -564,7 +540,7 @@ func TestMapServiceError_BarrierSealedError(t *testing.T) {
 // for the other wrapped-error test cases in this file.
 func TestMapServiceError_WrappedBarrierSealedError(t *testing.T) {
 	inner := &service.BarrierSealedError{TenantID: "tenant-2"}
-	err := &HandlerError{Method: "kv.Get", Err: inner}
+	err := fmt.Errorf("kv.Get: %w", inner)
 	statusCode, payload := mapServiceError(err)
 	if statusCode != wire.StatusUnavailable {
 		t.Fatalf("expected StatusUnavailable (%d), got %d", wire.StatusUnavailable, statusCode)

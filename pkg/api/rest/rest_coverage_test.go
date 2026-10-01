@@ -32,7 +32,9 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // ---------------------------------------------------------------------------
@@ -1036,6 +1038,8 @@ func TestMapHTTPError_CollectionErrors(t *testing.T) {
 		{&service.CollectionAlreadyExistsError{Database: "db", Collection: "c"}, http.StatusConflict},
 		{&service.CollectionNotFoundError{Database: "db", Collection: "c"}, http.StatusNotFound},
 		{&service.CollectionEmptyNameError{}, http.StatusBadRequest},
+		{&service.CollectionInvalidNameError{Name: "a#b", Reason: "x"}, http.StatusBadRequest},
+		{&service.CollectionReservedFieldError{Field: "id", Reason: "x"}, http.StatusBadRequest},
 		{&service.CollectionEmptyDatabaseError{}, http.StatusBadRequest},
 		{&service.CollectionInvalidIDStrategyError{}, http.StatusBadRequest},
 		{&service.CollectionMissingFieldHashError{}, http.StatusBadRequest},
@@ -1054,6 +1058,31 @@ func TestMapHTTPError_CollectionErrors(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("mapHTTPError(%T) = %d, want %d", tc.err, got, tc.want)
 		}
+	}
+}
+
+// TestMapHTTPError_SealedTenant covers a review finding: mapHTTPError (the
+// general classifier every IAM-touching handler shares) recognized
+// tenant.ErrTenantSealed -- what StoreResolver.Resolve returns when a
+// barrier-isolated tenant is ALREADY sealed -- but not seal.ErrSealed, the
+// distinct sentinel a resolved store's own Get/Put return when the barrier
+// seals AFTER Resolve succeeded but before the store operation runs. Both
+// must classify identically: both are the same "retry after unseal"
+// condition from the caller's point of view (go-qrdb#464 round 6).
+func TestMapHTTPError_SealedTenant(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{"tenant.ErrTenantSealed", tenant.ErrTenantSealed},
+		{"seal.ErrSealed", seal.ErrSealed},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := mapHTTPError(tc.err); got != http.StatusServiceUnavailable {
+				t.Errorf("mapHTTPError(%v) = %d, want %d", tc.err, got, http.StatusServiceUnavailable)
+			}
+		})
 	}
 }
 

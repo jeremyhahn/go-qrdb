@@ -27,6 +27,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 )
 
 // ---------------------------------------------------------------------------
@@ -100,7 +101,7 @@ func TestDatabaseUnsealCmd_Success(t *testing.T) {
 		fnDatabaseService: dbSvc,
 		unsealFn: func(_ context.Context, name string, creds seal.Credentials) error {
 			unsealedName = name
-			unsealedSecret = string(creds.Secret)
+			unsealedSecret = string(sealtest.Plaintext(t, creds))
 			return nil
 		},
 	}

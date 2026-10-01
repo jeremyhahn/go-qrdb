@@ -261,6 +261,7 @@ func (s *memStore) Range(_ context.Context, start, end []byte, opts ...service.R
 func (s *memStore) evalCompareLocked(c service.Compare) bool {
 	rec, ok := s.data[string(c.Key)]
 	var actual int64
+	var actualValue []byte
 	if ok {
 		switch c.Target {
 		case service.CompareModRevision:
@@ -269,6 +270,8 @@ func (s *memStore) evalCompareLocked(c service.Compare) bool {
 			actual = rec.createRevision
 		case service.CompareVersion:
 			actual = rec.version
+		case service.CompareValue:
+			actualValue = rec.value
 		}
 	}
 	if c.Result != service.CompareEqual {
@@ -281,6 +284,12 @@ func (s *memStore) evalCompareLocked(c service.Compare) bool {
 		return actual == c.CreateRevision
 	case service.CompareVersion:
 		return actual == c.Version
+	case service.CompareValue:
+		// An absent key's value reads as nil, equal to an empty expected
+		// value, matching pkg/mvcc.Evaluate -- the table generation fence
+		// (go-qrdb#547) compares a never-truncated table's absent counter
+		// this way on every DML commit.
+		return bytes.Equal(actualValue, c.Value)
 	}
 	return false
 }
@@ -423,7 +432,11 @@ func newRelationalRegistry() *memRegistry {
 	store := newMemStore()
 	txn := &memTxn{store: store}
 	seq := service.NewSequenceService(store, txn)
-	tableSvc := service.NewTableService(store, store, txn, seq)
+	// The one store is also the system store reclaim-publishing DDL writes
+	// its index entries to; without WithReclaimIndex, TRUNCATE TABLE and
+	// RENAME INDEX refuse (go-qrdb#547).
+	tableSvc := service.NewTableService(store, store, txn, seq,
+		service.WithReclaimIndex(txn, service.StorePlacementShared, "driver-test"))
 	batch := &memBatch{store: store}
 
 	return &memRegistry{

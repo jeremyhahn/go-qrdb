@@ -135,18 +135,18 @@ SO (xkmsd init)                 Daemon (qrdbd start)
     |                         Share 1: [...]
     |                         Share 2: [...]
     |                         Share 3: [...]
-    |                         (all in memguard)
+    |                         (all in go-enclave locked-memory buffers)
     |                                    |
     |------ EnrollCustodian(A) ------->|
     |   {Username, Method, PubKey}       |
     |                         1. Verify enrollment request
-    |                         2. Select Share 1 from memguard
+    |                         2. Select Share 1 from its enclave
     |                         3. Encrypt Share 1 → envelope (ECDH+AES-GCM)
     |                         4. Create custodian metadata record
     |                         5. Persist record: __sys:custodian/A
     |                         6. Return envelope over TLS
     |<--- envelope (ciphertext) <------|
-    |   (SO receives sealed share)       7. Zero Share 1 in memguard
+    |   (SO receives sealed share)       7. Zero Share 1 in its enclave
     |                                    |
     |------ EnrollCustodian(B) ------->|
     |                         (repeat for Share 2)
@@ -168,19 +168,19 @@ SO (xkmsd init)                 Daemon (qrdbd start)
 
 1. **SO Initializes Ceremony**
    - Specifies Members (Custodian identities) and Threshold M
-   - Server generates Shamir split: M-of-N shares in memguard
+   - Server generates Shamir split: M-of-N shares in go-enclave locked-memory buffers
    - Ceremony state transitions to `enrolling`
 
 2. **SO Enrolls Each Custodian**
    - Provides custodian's **identity** (username, UUID)
    - Provides custodian's **auth factor enrollment** (public key, credential metadata)
-   - Server selects next unencrypted share from memguard
+   - Server selects next unencrypted share from its enclave
    - Server performs ECDH key agreement with custodian's public key → shared secret
    - Server encrypts share via AES-256-GCM (shared secret + random nonce)
    - Server creates custodian metadata record (public: no share material)
    - Server persists metadata at `__sys:custodian/<id>` via Raft
    - Server returns sealed envelope to SO over authenticated TLS
-   - Server **immediately zeros the plaintext share in memguard** (step critical for security)
+   - Server **immediately zeros the plaintext share in its enclave** (step critical for security)
 
 3. **SO Distributes Envelopes Offline**
    - SO delivers each envelope to the corresponding Custodian through a secure out-of-band channel
@@ -226,7 +226,7 @@ Custodian A (PIV card)           Daemon (sealed, listening)
     |                         9. Reconstruct root key via shamir.Combine()
     |                         10. Unseal barrier with root key
     |                         11. Transition to unsealed
-    |                         12. Zero all memguard buffers
+    |                         12. Zero all go-enclave locked-memory buffers
     |                         |
 ```
 
@@ -257,7 +257,7 @@ Custodian A (PIV card)           Daemon (sealed, listening)
    - Server reconstructs root key via `shamir.Combine(shares[:M])`
    - Server unseals barrier with root key
    - Server transitions to `unsealed` state
-   - **Server zeros all plaintext shares and the reconstructed root key in memguard** (memguard reuse for next cycle)
+   - **Server zeros all plaintext shares and the reconstructed root key in their enclaves** (enclaves are reused for the next cycle)
 
 ## Share-Delivery Protocol Details
 
@@ -326,22 +326,24 @@ Nonce TTL: configurable (default 5 minutes). If custodian takes too long to sign
 
 ## Zeroization Guarantees
 
-All secret material is protected via `go-quicraft/pkg/enclave/ProtectedKey` (memguard wrapper):
+All secret material is protected via `go-enclave` (`MemoryEnclave` for
+material in use, `SealedEnclave` for material at rest in memory), consumed
+directly — go-quicraft's `pkg/enclave` wrapper is gone as of v0.11.0-alpha:
 
 ```go
 // Enrollment
 for each custodian {
-    share := shamir.Split()[custodian_index]  // Share in ProtectedKey (mlock'd memory)
+    share := shamir.SplitProtected()[custodian_index]  // Share in a MemoryEnclave (mlock'd memory)
     envelope := encryptShare(share, custodian_pubkey)
-    share.Zero()  // Secure wipe via memguard
+    share.Destroy()  // Secure wipe; the pages are unmapped
 }
 
 // Unseal
-custodian_shares := make([]*enclave.ProtectedKey, threshold)
+custodian_shares := make([]*shamir.ProtectedShare, threshold)
 for i := 0; i < threshold; i++ {
     custodian_shares[i] = decryptEnvelope(envelope)
 }
-root_key := shamir.Combine(custodian_shares)  // Reconstructed root key in ProtectedKey
+root_key := shamir.CombineProtected(custodian_shares)  // Reconstructed root key in a MemoryEnclave
 unseal(root_key)
 for i := range custodian_shares {
     custodian_shares[i].Destroy()  // Secure wipe
@@ -350,10 +352,20 @@ for i := range custodian_shares {
 
 **Guarantees**:
 - Plaintext shares **never stored** on disk (except via barrier encryption, which is a different operation)
-- Memguard buffers are **mlock'd** (prevent swapping to disk)
-- Buffers are **guard-paged** (detect buffer overflows)
-- Wipe is **byte-by-byte** with random data (not just zero; prevents forensics)
-- All wipes use `memguard.LockedBuffer.Destroy()` which is guaranteed to zero before returning memory
+- go-enclave enclaves are **mlock'd** (prevent swapping to disk)
+- Enclaves are **guard-paged** (detect buffer overflows) and canary-guarded (detect underflows)
+- Wipe is **byte-by-byte with zeroes**, compiler-optimization-resistant
+  (`runtime.KeepAlive` prevents the store from being elided as dead code) —
+  not random data; go-enclave's wipe does not claim a forensic-erasure
+  property beyond zeroing
+- Destroy zeroes and unmaps the pages, but the zero is **not unconditionally
+  guaranteed**: if the environment denies the mprotect needed to make a
+  frozen region writable again, the pages are still unmapped —
+  `secure.Buffer.DestroyErr()` reports `enclave.ErrReleasedWithoutWipe` for
+  that case rather than silently treating it as a normal release. Nothing
+  leaks to another process either way, since the kernel zeroes an anonymous
+  page before reuse; what is not guaranteed is this package's own
+  defense-in-depth wipe running first.
 
 ## Failure Modes & Recovery
 
@@ -393,7 +405,7 @@ If a Custodian's private key is compromised (HSM theft, card cloned, etc.):
 
 If the daemon restarts during enrollment or unseal:
 
-**Enrollment restart**: All in-flight ceremony state is lost (shares in memguard are zeroed on process exit). SO must restart the ceremony from `Initialize()`. **This is intentional**: ceremony state is transient, not persisted.
+**Enrollment restart**: All in-flight ceremony state is lost (shares held in go-enclave locked-memory buffers are zeroed on process exit). SO must restart the ceremony from `Initialize()`. **This is intentional**: ceremony state is transient, not persisted.
 
 **Unseal restart**: Accumulated shares are lost. Custodians must resubmit shares from the beginning. No state pollution or race conditions because accumulator is in-memory only.
 

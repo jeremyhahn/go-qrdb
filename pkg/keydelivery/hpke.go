@@ -23,7 +23,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/jeremyhahn/go-quicraft/pkg/enclave"
+	"github.com/jeremyhahn/go-enclave"
 )
 
 // infoDomain is the HPKE info domain-separation prefix. Bumping it breaks
@@ -246,7 +246,7 @@ func (r *Receiver) Open(env *Envelope) ([]byte, error) {
 	// legitimate replay still decrypts identically here and then trips the
 	// guard; its re-decrypted plaintext is wiped before returning.
 	if r.guard != nil && r.guard.observe(env.Nonce) {
-		enclave.WipeBytes(plaintext)
+		enclave.Wipe(plaintext)
 		return nil, ErrReplay
 	}
 	return plaintext, nil

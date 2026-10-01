@@ -26,7 +26,15 @@ var (
 	// ErrProviderRequired is returned when the provider field is empty.
 	ErrProviderRequired = errors.New("embedding: provider is required")
 
-	// ErrProviderInvalid is returned when the provider name is not supported.
+	// ErrProviderInvalid is NO LONGER RETURNED. NewManager used to refuse a
+	// Config naming a provider outside a literal list of the four built-ins,
+	// which blocked an out-of-tree provider from being the configured default
+	// even though RegisterProvider accepted it (go-qrdb#528). A provider that is
+	// named but never registered now surfaces as *ProviderNotFoundError at
+	// first use. The sentinel is kept so a consumer that matches on it still
+	// compiles; nothing produces it, and it goes at the next breaking release.
+	//
+	// Deprecated: match *ProviderNotFoundError instead.
 	ErrProviderInvalid = errors.New("embedding: provider must be one of: openai, ollama, lmstudio, voyage")
 
 	// ErrAPIURLRequired is returned when the API URL is empty.

@@ -128,7 +128,7 @@ test.describe("Bootstrap artifacts (first-start)", () => {
     expect(resp.ok()).toBe(true);
 
     const body = await resp.json() as {
-      users: { username: string; roleIDs?: string[]; enabled: boolean }[];
+      users: { username: string; roleIDs?: string[]; lifecycle: string }[];
       total: number;
     };
     expect(Array.isArray(body.users)).toBe(true);
@@ -137,7 +137,7 @@ test.describe("Bootstrap artifacts (first-start)", () => {
     const adminUser = body.users.find((u) => u.username === "admin");
     expect(adminUser).toBeDefined();
     if (adminUser) {
-      expect(adminUser.enabled).toBe(true);
+      expect(adminUser.lifecycle).toBe("active");
     }
   });
 
