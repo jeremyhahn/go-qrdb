@@ -698,6 +698,55 @@ func WithClusterKeyReceiver(rcv ClusterKeyReceiver) ServerOption {
 	return func(s *Server) { s.clusterKeyReceiver = rcv }
 }
 
+// NewSealedWindowServer builds the REST server for a sealed window: the
+// barrier, ceremony and credential surfaces only, behind the sealed-window
+// listener gate backed by probe. It serves exactly the sealed allowlist
+// (pkg/api/sealedwindow) -- barrier status, initialize and unseal, Shamir and
+// recovery unseal, officer registration and share claims, the ceremony
+// verbs, the root token -- anonymously while the barrier is sealed, closes
+// officer enrollment once the ceremony is operational, answers every other
+// request (GET /health included) with the sealed 503 envelope, and refuses
+// everything once the barrier is unsealed.
+//
+// It is THE sealed REST surface: qrdb's own boot-time listener
+// (server.ServeSealedWindow) is built with it, and a host that runs its own
+// listener mounts NewSealedWindowHandler instead of copying handlers. Any of
+// the three services may be nil; their routes then answer as they do on any
+// server without them. opts add composition (TLS, a ceremony CA, the tenant
+// barrier registry) and are applied before the services and the gate, which
+// therefore cannot be overridden by them. Build probe with
+// server.NewSealedWindowListenerProbe and share it with every other
+// transport serving the same window.
+func NewSealedWindowServer(addr string, barrier service.BarrierServicer, ceremonySvc service.CeremonyServicer, credential service.CredentialServicer, probe sealedwindow.ListenerProbe, opts ...ServerOption) *Server {
+	all := make([]ServerOption, 0, len(opts)+4)
+	all = append(all, opts...)
+	if barrier != nil {
+		all = append(all, WithBarrierService(barrier))
+	}
+	if ceremonySvc != nil {
+		all = append(all, WithCeremonyService(ceremonySvc))
+	}
+	if credential != nil {
+		all = append(all, WithCredentialService(credential))
+	}
+	all = append(all, WithSealedWindowListener(probe))
+	return NewServer(nil, nil, addr, all...)
+}
+
+// NewSealedWindowHandler returns the sealed REST surface (see
+// NewSealedWindowServer) as an http.Handler for a host to mount on its own
+// listener, HTTP/3 included. It is the same handler qrdb's sealed listener
+// serves, so a host never copies a sealed-window handler.
+func NewSealedWindowHandler(barrier service.BarrierServicer, ceremonySvc service.CeremonyServicer, credential service.CredentialServicer, probe sealedwindow.ListenerProbe, opts ...ServerOption) http.Handler {
+	return NewSealedWindowServer("", barrier, ceremonySvc, credential, probe, opts...).Handler()
+}
+
+// Handler returns the server's complete handler -- routing wrapped in its
+// middleware chain -- for serving on a listener the caller owns.
+func (s *Server) Handler() http.Handler {
+	return s.server.Handler
+}
+
 // NewServer creates a new REST server that listens on the given address
 // and delegates to the provided service implementations. kvSvc and adminSvc
 // may be nil when only non-KV services (barrier, cert, auth) are needed;

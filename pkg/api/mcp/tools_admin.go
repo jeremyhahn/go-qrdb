@@ -99,6 +99,24 @@ func toolHealth() mcp.Tool {
 	)
 }
 
+// sealedHealthTool is qrdb_health on a sealed window, which has no admin
+// service: it answers the canonical sealed verdict, as the gRPC Health RPC
+// does there, so a client polling health learns the node is sealed rather
+// than that the tool does not exist.
+func sealedHealthTool() serverTool {
+	return serverTool{
+		Tool: toolHealth(),
+		Perm: permission.AdminHealth,
+		Handler: func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			data, err := json.Marshal(&service.HealthStatus{Status: service.HealthStatusSealed})
+			if err != nil {
+				return nil, &ToolError{Tool: "qrdb_health", Err: err}
+			}
+			return mcp.NewToolResultText(string(data)), nil
+		},
+	}
+}
+
 // handleHealth returns a tool handler that delegates to adminSvc.Health.
 func handleHealth(adminSvc service.AdminServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {

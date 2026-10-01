@@ -378,3 +378,48 @@ restructures the boot sequence as follows:
 
 When `barrier.enabled: false` (no encfs), the boot skips steps 1-4
 entirely and behaves as before.
+
+## Mounting the sealed surface in a host
+
+A host that runs its own listeners while qrdb's barrier is sealed (go-quicbaas,
+for one) mounts qrdb's sealed surface instead of reimplementing it. There is
+one implementation: qrdb's own boot-time listener is built from the same
+constructors (`rest.NewSealedWindowServer`, `mcp.NewSealedWindowServer`).
+
+```go
+probe := sdk.NewSealedWindowListenerProbe(barrier, ceremonySvc)
+
+// REST, and HTTP/3 on the same handler.
+sealed := sdk.NewSealedWindowHandler(barrierSvc, ceremonySvc, credentialSvc, probe)
+mux.Handle("/v1/barrier/", sealed)
+mux.Handle("/v1/ceremony/", sealed)
+mux.Handle("/health", sealed)
+
+// MCP.
+mcpServer.AddTools(sdk.SealedWindowMCPTools(barrierSvc, ceremonySvc, credentialSvc, probe)...)
+```
+
+- **The whole allowlist.** Barrier status, initialize and unseal, Shamir and
+  recovery unseal, officer registration, officer and recovery share claims,
+  claim status, the ceremony verbs and the root token. The MCP set is exactly
+  the allowlisted tools the given services can serve.
+- **Health.** On REST, `GET /health` answers the sealed envelope, 503
+  `{"code":"SEALED"}`. The `qrdb_health` tool answers a health status of
+  `sealed`, as the gRPC `Health` RPC does.
+- **One probe for every transport.** Build it once and pass it to the REST
+  handler, the MCP tools and the gRPC listener interceptors
+  (`sdk.SealedWindowListenerUnaryInterceptor` and
+  `sdk.SealedWindowListenerStreamInterceptor`). They then share one
+  `Admission`, so a request that unseals the barrier waits for requests already
+  admitted on any transport. No request admitted afterwards runs anonymously
+  against the unsealed barrier.
+- **The gate travels with the handlers.** It allowlists anonymously while
+  sealed and closes officer enrollment once the ceremony is operational. Once
+  the barrier is unsealed, every mounted route and tool refuses: REST with 503
+  `SEALED_WINDOW_CLOSED`, MCP with `UNAVAILABLE`.
+- **The CA for officer CSRs comes from the ceremony core.** It is set with
+  `CeremonyService.SetCA`, which qrdbd does at boot through
+  `lifecycle.Infra.CeremonyCA`. Without a CA, officer registration answers
+  `ceremony: CA not initialized`.
+- **Pinned by tests.** `sdk/go/node/sealed_window_mount_test.go` mounts both
+  surfaces in a host-style mux and MCP server.

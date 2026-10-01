@@ -121,9 +121,10 @@ var newSQLServiceFn buildSQLServiceFn
 // based on the protocol configuration and manages their lifecycles with
 // rollback on startup failure.
 type Server struct {
-	// sealedWindowAdmission is the boot-time sealed-window listener's
-	// Admission, shared by all of its transports (see listenerProbe).
-	sealedWindowAdmission sealedwindow.Admission
+	// sealedListener is the boot-time sealed-window listener's probe, built
+	// once in New so its Admission is shared by all of the listener's
+	// transports. Nil on any other server.
+	sealedListener sealedwindow.ListenerProbe
 
 	config      *config.Config
 	kvSvc       service.KVServicer
@@ -445,9 +446,10 @@ func withSealedWindowListener(probe SealedWindowProbe) ServerOption {
 	}
 }
 
-// sealedWindowListenerProbe is the boot-time sealed-window listener's probe:
-// the barrier's sealed state, and whether officer enrollment is still open to
-// an unauthenticated caller, read from the ceremony core the listener serves
+// sealedWindowListenerProbe is a sealed-window listener's probe: the
+// barrier's sealed state, one Admission shared by every transport that serves
+// the window, and whether officer enrollment is still open to an
+// unauthenticated caller, read from the ceremony core the window serves
 // (ceremony.CeremonyService.EnrollmentOpen). With no ceremony core there is
 // no enrollment to keep open, so it reports closed.
 type sealedWindowListenerProbe struct {
@@ -465,16 +467,34 @@ func (p sealedWindowListenerProbe) EnrollmentOpen(ctx context.Context) bool {
 
 var _ sealedwindow.ListenerProbe = sealedWindowListenerProbe{}
 
-// listenerProbe returns the boot-time sealed-window listener's probe over
-// this server's barrier probe and ceremony service.
-func (s *Server) listenerProbe() sealedwindow.ListenerProbe {
-	p := sealedWindowListenerProbe{SealedWindowProbe: s.opts.sealedWindowProbe, Admission: &s.sealedWindowAdmission}
-	if s.opts.ceremonySvc != nil {
-		if core, ok := service.CeremonyServiceCore(s.opts.ceremonySvc); ok {
+// NewSealedWindowListenerProbe returns the probe that gates a sealed-window
+// surface: sealed reports the barrier's state, and ceremonySvc (which may be
+// nil) decides whether anonymous officer enrollment is still open.
+//
+// Build ONE per sealed window and pass it to every transport that serves the
+// window -- the REST handler (rest.NewSealedWindowHandler), the MCP tool set
+// (mcp.SealedWindowTools) and the gRPC listener interceptors -- so they share
+// one Admission: a request that unseals the barrier then waits for requests
+// already admitted on any transport, and none admitted after it runs
+// anonymously against the unsealed barrier. qrdb's own boot-time listener
+// builds its probe here too. A nil sealed probe yields a probe that refuses
+// everything.
+func NewSealedWindowListenerProbe(sealed SealedWindowProbe, ceremonySvc service.CeremonyServicer) sealedwindow.ListenerProbe {
+	if sealed == nil {
+		return sealedwindow.OrFailClosed(nil)
+	}
+	p := sealedWindowListenerProbe{SealedWindowProbe: sealed, Admission: &sealedwindow.Admission{}}
+	if ceremonySvc != nil {
+		if core, ok := service.CeremonyServiceCore(ceremonySvc); ok {
 			p.ceremony = core
 		}
 	}
 	return p
+}
+
+// listenerProbe returns the boot-time sealed-window listener's probe.
+func (s *Server) listenerProbe() sealedwindow.ListenerProbe {
+	return s.sealedListener
 }
 
 // WithCABootstrap enables the /v1/ca/bootstrap endpoint on the REST
@@ -915,6 +935,10 @@ func New(cfg *config.Config, kvSvc service.KVServicer, adminSvc service.AdminSer
 	}
 	if s.opts.adminSvc != nil {
 		s.adminSvc = s.opts.adminSvc
+	}
+
+	if s.opts.sealedWindowListener {
+		s.sealedListener = NewSealedWindowListenerProbe(s.opts.sealedWindowProbe, s.opts.ceremonySvc)
 	}
 
 	s.wireVolumeStoreResolver()
@@ -1400,12 +1424,10 @@ func (s *Server) startREST() error {
 	if s.opts.authMW != nil {
 		restOpts = append(restOpts, rest.WithAuthMiddleware(s.opts.authMW))
 	}
-	if s.opts.sealedWindowProbe != nil {
-		if s.opts.sealedWindowListener {
-			restOpts = append(restOpts, rest.WithSealedWindowListener(s.listenerProbe()))
-		} else {
-			restOpts = append(restOpts, rest.WithSealedWindowProbe(s.opts.sealedWindowProbe))
-		}
+	if s.opts.sealedWindowProbe != nil && !s.opts.sealedWindowListener {
+		// The boot-time listener's gate is installed by
+		// rest.NewSealedWindowServer below.
+		restOpts = append(restOpts, rest.WithSealedWindowProbe(s.opts.sealedWindowProbe))
 	}
 	if s.opts.batchSvc != nil {
 		restOpts = append(restOpts, rest.WithBatch(s.opts.batchSvc))
@@ -1530,7 +1552,13 @@ func (s *Server) startREST() error {
 		restOpts = append(restOpts, rest.WithServiceModules(s.opts.modules))
 	}
 
-	s.restSrv = rest.NewServer(s.kvSvc, s.adminSvc, addr, restOpts...)
+	if s.opts.sealedWindowListener {
+		// One sealed REST surface: the listener serves exactly what a host
+		// mounts through rest.NewSealedWindowHandler.
+		s.restSrv = rest.NewSealedWindowServer(addr, s.opts.barrierSvc, s.opts.ceremonySvc, s.opts.credentialSvc, s.listenerProbe(), restOpts...)
+	} else {
+		s.restSrv = rest.NewServer(s.kvSvc, s.adminSvc, addr, restOpts...)
+	}
 
 	if err := s.restSrv.Start(); err != nil {
 		return err
@@ -2051,12 +2079,10 @@ func (s *Server) startMCP() error {
 	if s.opts.certProv != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithCertProvider(s.opts.certProv))
 	}
-	if s.opts.sealedWindowProbe != nil {
-		if s.opts.sealedWindowListener {
-			mcpOpts = append(mcpOpts, mcpapi.WithSealedWindowListener(s.listenerProbe()))
-		} else {
-			mcpOpts = append(mcpOpts, mcpapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
-		}
+	if s.opts.sealedWindowProbe != nil && !s.opts.sealedWindowListener {
+		// The boot-time listener's gate is installed by
+		// mcpapi.NewSealedWindowServer below.
+		mcpOpts = append(mcpOpts, mcpapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
 	}
 	if s.opts.barrierSvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithBarrierService(s.opts.barrierSvc))
@@ -2148,7 +2174,13 @@ func (s *Server) startMCP() error {
 	}
 	mcpOpts = append(mcpOpts, s.opts.mcpServerOpts...)
 
-	s.mcpSrv = mcpapi.NewServer(s.kvSvc, s.adminSvc, addr, mcpOpts...)
+	if s.opts.sealedWindowListener {
+		// One sealed MCP surface: the listener serves exactly the tools a
+		// host adds through mcpapi.SealedWindowTools.
+		s.mcpSrv = mcpapi.NewSealedWindowServer(addr, s.opts.barrierSvc, s.opts.ceremonySvc, s.opts.credentialSvc, s.listenerProbe(), mcpOpts...)
+	} else {
+		s.mcpSrv = mcpapi.NewServer(s.kvSvc, s.adminSvc, addr, mcpOpts...)
+	}
 
 	if err := s.mcpSrv.Start(); err != nil {
 		return err

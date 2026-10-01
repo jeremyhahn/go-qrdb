@@ -102,6 +102,11 @@ type Server struct {
 	// with DEFAULT-DENY semantics.
 	toolPerms *authmw.MCPToolRegistry
 
+	// toolMiddlewares is the tool handler middleware chain, outermost first,
+	// installed on mcpSrv and applied by SealedWindowTools to the tools it
+	// exports.
+	toolMiddlewares []mcpserver.ToolHandlerMiddleware
+
 	// modules are ServiceModule instances (see pkg/apimodule) whose MCP tools
 	// are registered on the shared mcpSrv after the built-in tool sets, giving
 	// higher layers (e.g. go-xkms) the same MCP transport reach as REST, gRPC,
@@ -520,29 +525,32 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	// Create the underlying MCP server with tool capabilities. When auth is
 	// configured, install the per-tool authorization middleware so EVERY tool
 	// call is authorized (default-deny) before its handler runs.
-	mcpOpts := []mcpserver.ServerOption{
-		mcpserver.WithToolCapabilities(false),
-
-		// FIRST, and therefore OUTERMOST: mcp-go wraps middlewares in reverse
-		// index order, so this one sees the errors every middleware below it
-		// and every tool handler returns, and is what gives each of them a
-		// JSON-RPC code (go-qrdb#438). It is registered unconditionally —
-		// unlike the three gates below it, whose registration depends on what
-		// the server was configured with — because a failure classified on one
-		// deployment and opaque on another is the inconsistency this transport
-		// has just stopped having.
-		mcpserver.WithToolHandlerMiddleware(errorCodeMiddleware()),
-	}
+	// The tool middlewares, outermost first. mcp-go applies them in reverse
+	// index order, so index 0 is the outermost. They are kept on the server
+	// so SealedWindowTools can hand a host the same chain with each tool.
+	//
+	// FIRST, and therefore OUTERMOST: errorCodeMiddleware sees the errors
+	// every middleware below it and every tool handler returns, and is what
+	// gives each of them a JSON-RPC code (go-qrdb#438). It is registered
+	// unconditionally — unlike the three gates below it, whose registration
+	// depends on what the server was configured with — because a failure
+	// classified on one deployment and opaque on another is the
+	// inconsistency this transport has just stopped having.
+	s.toolMiddlewares = []mcpserver.ToolHandlerMiddleware{errorCodeMiddleware()}
 	if s.authMW != nil || s.soGate != nil {
-		mcpOpts = append(mcpOpts, mcpserver.WithToolHandlerMiddleware(s.toolAuthzMiddleware()))
+		s.toolMiddlewares = append(s.toolMiddlewares, s.toolAuthzMiddleware())
 	}
 	if s.sealedWindowProbe != nil {
-		mcpOpts = append(mcpOpts, mcpserver.WithToolHandlerMiddleware(s.sealedWindowMiddleware()))
+		s.toolMiddlewares = append(s.toolMiddlewares, s.sealedWindowMiddleware())
 	}
 	if s.registry != nil {
 		// Bind the registry and the request's database scope into the per-call
 		// context so data-plane tool handlers resolve per (tenant, database).
-		mcpOpts = append(mcpOpts, mcpserver.WithToolHandlerMiddleware(s.databaseScopeMiddleware()))
+		s.toolMiddlewares = append(s.toolMiddlewares, s.databaseScopeMiddleware())
+	}
+	mcpOpts := []mcpserver.ServerOption{mcpserver.WithToolCapabilities(false)}
+	for _, mw := range s.toolMiddlewares {
+		mcpOpts = append(mcpOpts, mcpserver.WithToolHandlerMiddleware(mw))
 	}
 	s.mcpSrv = mcpserver.NewMCPServer(
 		"qrdb",
@@ -561,6 +569,10 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	}
 	if s.adminSvc != nil {
 		s.addTools(adminTools(s.adminSvc)...)
+	} else if s.sealedWindowProbe != nil {
+		// A sealed window has no admin service, but health is on its
+		// allowlist: answer "sealed", as the gRPC Health RPC does.
+		s.addTools(sealedHealthTool())
 	}
 
 	// The raft-only families (MVCC, watch, lease, lock) are registered

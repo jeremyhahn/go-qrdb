@@ -15,6 +15,10 @@
 package sdk
 
 import (
+	"net/http"
+
+	mcpserver "github.com/mark3labs/mcp-go/server"
+
 	grpcapi "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	mcpapi "github.com/jeremyhahn/go-qrdb/pkg/api/mcp"
 	quicapi "github.com/jeremyhahn/go-qrdb/pkg/api/quic"
@@ -147,3 +151,36 @@ type LifecycleNode = lifecycle.Node
 // (when a BarrierRegistry is supplied) Tenant. Intended for the pre-host
 // sealed-window boot phase.
 var BuildSealServicesOnly = lifecycle.BuildSealServicesOnly
+
+// NewSealedWindowListenerProbe returns the probe that gates a sealed-window
+// surface: sealed reports the barrier's state and ceremony (which may be nil)
+// decides whether anonymous officer enrollment is still open. Build ONE per
+// sealed window and pass it to NewSealedWindowHandler, SealedWindowMCPTools
+// and the gRPC listener interceptors, so every transport shares one
+// admission and none serves a request anonymously against a barrier another
+// transport has just unsealed.
+var NewSealedWindowListenerProbe = qrdbserver.NewSealedWindowListenerProbe
+
+// NewSealedWindowHandler returns qrdb's sealed REST surface as an
+// http.Handler for a host to mount on its own listener (HTTP/3 included):
+// the whole sealed allowlist -- barrier status, initialize and unseal,
+// Shamir and recovery unseal, officer registration and share claims, the
+// ceremony verbs, the root token -- served anonymously while the barrier is
+// sealed and behind qrdb's sealed gate, GET /health answering the sealed
+// envelope, and everything refused once the barrier is unsealed. It is the
+// handler qrdb's own sealed listener serves, so a host mounts it instead of
+// copying sealed-window handlers. Any service may be nil; its routes then
+// answer as they do on a server without it. Build probe with
+// NewSealedWindowListenerProbe.
+func NewSealedWindowHandler(barrier BarrierServicer, ceremony ServiceCeremonyServicer, credential ServiceCredentialServicer, probe SealedWindowListenerProbe) http.Handler {
+	return restapi.NewSealedWindowHandler(barrier, ceremony, credential, probe)
+}
+
+// SealedWindowMCPTools returns qrdb's sealed MCP tools -- every tool on the
+// sealed allowlist the services can serve, qrdb_health included -- for a
+// host to add to its own MCP server with AddTools. Each handler carries the
+// sealed gate and qrdb's error coding, so the tools answer exactly as on
+// qrdb's own sealed listener. Pass the same probe as NewSealedWindowHandler.
+func SealedWindowMCPTools(barrier BarrierServicer, ceremony ServiceCeremonyServicer, credential ServiceCredentialServicer, probe SealedWindowListenerProbe) []mcpserver.ServerTool {
+	return mcpapi.SealedWindowTools(barrier, ceremony, credential, probe)
+}
