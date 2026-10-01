@@ -221,7 +221,7 @@ func TestClusterEnableEncryption_SystemScope_RF3(t *testing.T) {
 	sysClient := mtlsHTTPClient(t, ca, 15*time.Second)
 	body, status := iraftAPIPost(t, sysClient,
 		fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/enable-encryption", leaderPort),
-		map[string]interface{}{"strategy": "passphrase", "passphrase": newPassphrase},
+		map[string]interface{}{"strategy": "passphrase", "passphrase": []byte(newPassphrase)},
 	)
 	if status != http.StatusOK && status != http.StatusAccepted {
 		t.Fatalf("enable-encryption: status %d, body: %s", status, body)
@@ -485,7 +485,7 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 	// Trigger the cluster-wide TENANT enable-encryption on the leader.
 	if b, s := iraftAPIPost(t, sysClient,
 		fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/enable-encryption", leaderPort),
-		map[string]interface{}{"tenant_id": tenantID, "strategy": "passphrase", "passphrase": tenantPass},
+		map[string]interface{}{"tenant_id": tenantID, "strategy": "passphrase", "passphrase": []byte(tenantPass)},
 	); s != http.StatusOK && s != http.StatusAccepted {
 		t.Fatalf("tenant enable-encryption: status %d, body: %s", s, b)
 	}
