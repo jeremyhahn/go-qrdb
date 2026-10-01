@@ -52,6 +52,7 @@ func newDatabaseCmd() *cobra.Command {
 		newDatabaseUnsealCmd(),
 		newDatabaseBarrierStatusCmd(),
 	)
+	cmd.AddCommand(newDatabaseBarrierHolderCmds()...)
 
 	return cmd
 }

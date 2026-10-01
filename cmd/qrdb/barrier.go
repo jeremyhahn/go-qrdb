@@ -94,11 +94,11 @@ CLI binary in the stack (qrdb, xkmsctl, quicbaasctl, platformctl):
 		newBarrierInitShamirCmd(),
 		newBarrierUnsealCmd(),
 		newBarrierSealCmd(),
-		newHolderRekeyCmd("rekey", false),
+		newHolderRekeyCmd("rekey", holderSystem),
 		newBarrierEnableEncryptionCmd(),
 		newBarrierRecoveryCmd(),
-		newHolderOfficerCmd("officer", "Manage the system barrier's share holders", false),
-		newHolderQuorumCmd("quorum", false),
+		newHolderOfficerCmd("officer", "Manage the system barrier's share holders", holderSystem),
+		newHolderQuorumCmd("quorum", holderSystem),
 	)
 
 	return cmd

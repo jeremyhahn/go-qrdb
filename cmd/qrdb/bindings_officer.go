@@ -24,11 +24,29 @@ import (
 )
 
 // HolderScope selects the barrier a desktop holder operation acts on: the
-// system barrier in Domain ("unseal" when empty), or the tenant barrier of
-// TenantID when it is set.
+// system barrier in Domain ("unseal" when empty), the tenant barrier of
+// TenantID, or the barrier of Database in the connection's tenant. At most
+// one of TenantID and Database is set.
 type HolderScope struct {
 	TenantID string `json:"tenant_id,omitempty"`
+	Database string `json:"database,omitempty"`
 	Domain   string `json:"domain,omitempty"`
+}
+
+// kind returns the barrier kind scope names and the value that selects it.
+func (s HolderScope) kind() (holderKind, string, error) {
+	switch {
+	case s.TenantID != "" && s.Database != "":
+		return 0, "", &InvalidArgError{Arg: "scope", Reason: "names both a tenant and a database"}
+	case s.Database != "":
+		return holderDatabase, s.Database, nil
+	case s.TenantID != "":
+		return holderTenant, s.TenantID, nil
+	case s.Domain == "":
+		return holderSystem, transport.DomainUnseal, nil
+	default:
+		return holderSystem, s.Domain, nil
+	}
 }
 
 // HolderClaimParams claims a holder's sealed envelope in the desktop app.
@@ -64,8 +82,9 @@ type HolderRekeyParams struct {
 }
 
 // OfficerBinding exposes share-holder enrolment, the envelope claim, and
-// quorum submission to the Wails frontend for the system barrier and for
-// tenant barriers. It drives the same holderTarget the CLI does.
+// quorum submission to the Wails frontend for the system barrier, tenant
+// barriers and database barriers. It drives the same holderTarget the CLI
+// does.
 type OfficerBinding struct {
 	logger *logger.Logger
 	conn   *ConnectionBinding
@@ -83,17 +102,11 @@ func (b *OfficerBinding) target(scope HolderScope) (holderTarget, error) {
 	if err != nil {
 		return nil, err
 	}
-	if scope.TenantID != "" {
-		return tenantHolders{cl: cl, tenantID: scope.TenantID}, nil
+	kind, value, err := scope.kind()
+	if err != nil {
+		return nil, err
 	}
-	domain := scope.Domain
-	if domain == "" {
-		domain = transport.DomainUnseal
-	}
-	if domain != transport.DomainUnseal && domain != transport.DomainRecovery {
-		return nil, &InvalidArgError{Arg: "domain", Reason: "must be unseal or recovery"}
-	}
-	return systemHolders{cl: cl, domain: domain}, nil
+	return holderTargets[kind](cl, value)
 }
 
 // logged runs op, logging its outcome under name.
@@ -191,6 +204,18 @@ func (b *OfficerBinding) StartRekey(req *HolderRekeyParams) (*transport.QuorumRo
 			return nil, err
 		}
 		return target.rekey(context.Background(), req.Threshold, req.Policy, req.SOPin)
+	})
+}
+
+// InitializeDatabaseShamir splits a Shamir database's root key to its
+// enrolled holders, at the M-of-N the database was created with.
+func (b *OfficerBinding) InitializeDatabaseShamir(database, policy string) (*transport.BarrierInitializeShamirResponse, error) {
+	return logged(b, "InitializeDatabaseShamir", func() (*transport.BarrierInitializeShamirResponse, error) {
+		cl, err := b.conn.loadClient()
+		if err != nil {
+			return nil, err
+		}
+		return databaseHolders{cl: cl, database: database}.initialize(context.Background(), policy)
 	})
 }
 

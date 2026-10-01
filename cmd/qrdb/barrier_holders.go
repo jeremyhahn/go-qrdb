@@ -35,9 +35,10 @@ import (
 
 // Share holders — Security Officers and key custodians — are enrolled, claim
 // their sealed share envelopes, and submit to quorum rounds through the same
-// verbs on the system barrier (`barrier officer|quorum|rekey`) and on a
-// tenant barrier (`tenant barrier-officer|barrier-quorum|barrier-rekey`).
-// holderTarget is the one seam between the two: every verb is written once
+// verbs on the system barrier (`barrier officer|quorum|rekey`), on a tenant
+// barrier (`tenant barrier-officer|barrier-quorum|barrier-rekey`) and on a
+// database barrier (`database barrier-officer|barrier-quorum|barrier-rekey`).
+// holderTarget is the one seam between them: every verb is written once
 // against it.
 
 // holderTarget is the barrier a holder verb acts on.
@@ -164,32 +165,123 @@ func (s tenantHolders) revoke(ctx context.Context, username string, threshold in
 	return s.cl.Tenants().TenantBarrierOfficerRevoke(ctx, &transport.TenantOfficerRevokeRequest{TenantID: s.tenantID, Username: username, Threshold: threshold})
 }
 
-// holderScope binds the flags that select a holderTarget: --domain for the
-// system barrier, --tenant-id for a tenant barrier.
+// databaseHolders is a database's barrier, resolved in the caller's tenant.
+// Like a tenant barrier it has one quorum domain, and its rekey and
+// revocation are authorized by RBAC alone.
+type databaseHolders struct {
+	cl       *sdk.Client
+	database string
+}
+
+func (s databaseHolders) register(ctx context.Context, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
+	return s.cl.Database().DatabaseBarrierOfficerRegister(ctx, &transport.DatabaseOfficerRegisterRequest{Database: s.database, OfficerRegisterRequest: *req})
+}
+
+func (s databaseHolders) list(ctx context.Context) ([]*transport.OfficerStatus, error) {
+	return s.cl.Database().DatabaseBarrierOfficerList(ctx, s.database)
+}
+
+func (s databaseHolders) claimBegin(ctx context.Context, username string) (*transport.ShareClaimBeginResponse, error) {
+	return s.cl.Database().DatabaseBarrierShareClaimBegin(ctx, &transport.DatabaseShareClaimBeginRequest{
+		Database: s.database, ShareClaimBeginRequest: transport.ShareClaimBeginRequest{Username: username},
+	})
+}
+
+func (s databaseHolders) claimComplete(ctx context.Context, username, nonceHex string, signature []byte) (*transport.ShareClaimCompleteResponse, error) {
+	return s.cl.Database().DatabaseBarrierShareClaimComplete(ctx, &transport.DatabaseShareClaimCompleteRequest{
+		Database:                  s.database,
+		ShareClaimCompleteRequest: transport.ShareClaimCompleteRequest{Username: username, NonceHex: nonceHex, Signature: signature},
+	})
+}
+
+func (s databaseHolders) quorumBegin(ctx context.Context, op, username, factor string) (*transport.QuorumChallenge, error) {
+	return s.cl.Database().DatabaseBarrierQuorumBegin(ctx, &transport.DatabaseQuorumBeginRequest{
+		Database: s.database, QuorumBeginRequest: transport.QuorumBeginRequest{Op: op, Username: username, Factor: factor},
+	})
+}
+
+func (s databaseHolders) quorumSubmit(ctx context.Context, req *transport.QuorumSubmitRequest) (*transport.QuorumOutcome, error) {
+	return s.cl.Database().DatabaseBarrierQuorumSubmit(ctx, &transport.DatabaseQuorumSubmitRequest{Database: s.database, QuorumSubmitRequest: *req})
+}
+
+func (s databaseHolders) rekey(ctx context.Context, threshold int, policy, _ string) (*transport.QuorumRound, error) {
+	return s.cl.Database().DatabaseBarrierRekeyStart(ctx, &transport.DatabaseRekeyStartRequest{Database: s.database, Threshold: threshold, Policy: policy})
+}
+
+func (s databaseHolders) revoke(ctx context.Context, username string, threshold int, _ string) (*transport.QuorumRound, error) {
+	return s.cl.Database().DatabaseBarrierOfficerRevoke(ctx, &transport.DatabaseOfficerRevokeRequest{Database: s.database, Username: username, Threshold: threshold})
+}
+
+// initialize splits the database's root key to its enrolled holders at the
+// M-of-N the database was created with.
+func (s databaseHolders) initialize(ctx context.Context, policy string) (*transport.BarrierInitializeShamirResponse, error) {
+	return s.cl.Database().DatabaseBarrierShamirInitialize(ctx, &transport.DatabaseShamirInitializeRequest{Database: s.database, Policy: policy})
+}
+
+// holderKind is the kind of barrier a holder verb acts on.
+type holderKind int
+
+const (
+	// holderSystem is the system barrier, in a quorum domain.
+	holderSystem holderKind = iota
+	// holderTenant is a tenant's barrier.
+	holderTenant
+	// holderDatabase is a database's barrier.
+	holderDatabase
+)
+
+// soPinGated reports whether the kind's rekey and revocation take the SO
+// PIN. Only the system barrier's do; a tenant's or a database's are
+// authorized by RBAC alone.
+func (k holderKind) soPinGated() bool { return k == holderSystem }
+
+// holderScope binds the flag that selects a holderTarget of its kind:
+// --domain for the system barrier, --tenant-id for a tenant barrier,
+// --database for a database barrier.
 type holderScope struct {
-	tenant bool
-	value  string
+	kind  holderKind
+	value string
+}
+
+// holderScopeFlags registers each kind's scope flag.
+var holderScopeFlags = map[holderKind]func(s *holderScope, cmd *cobra.Command){
+	holderSystem: func(s *holderScope, cmd *cobra.Command) {
+		cmd.Flags().StringVar(&s.value, "domain", transport.DomainUnseal, "Quorum domain: unseal or recovery")
+	},
+	holderTenant: func(s *holderScope, cmd *cobra.Command) {
+		cmd.Flags().StringVar(&s.value, "tenant-id", "", "Tenant whose barrier the holder belongs to")
+		_ = cmd.MarkFlagRequired("tenant-id")
+	},
+	holderDatabase: func(s *holderScope, cmd *cobra.Command) {
+		cmd.Flags().StringVar(&s.value, "database", "", "Database whose barrier the holder belongs to")
+		_ = cmd.MarkFlagRequired("database")
+	},
+}
+
+// holderTargets resolves each kind's holderTarget over cl.
+var holderTargets = map[holderKind]func(cl *sdk.Client, value string) (holderTarget, error){
+	holderSystem: func(cl *sdk.Client, domain string) (holderTarget, error) {
+		if domain != transport.DomainUnseal && domain != transport.DomainRecovery {
+			return nil, &InvalidArgError{Arg: "--domain", Reason: "must be unseal or recovery"}
+		}
+		return systemHolders{cl: cl, domain: domain}, nil
+	},
+	holderTenant: func(cl *sdk.Client, tenantID string) (holderTarget, error) {
+		return tenantHolders{cl: cl, tenantID: tenantID}, nil
+	},
+	holderDatabase: func(cl *sdk.Client, database string) (holderTarget, error) {
+		return databaseHolders{cl: cl, database: database}, nil
+	},
 }
 
 // bind registers the scope flag on cmd.
 func (s *holderScope) bind(cmd *cobra.Command) {
-	if s.tenant {
-		cmd.Flags().StringVar(&s.value, "tenant-id", "", "Tenant whose barrier the holder belongs to")
-		_ = cmd.MarkFlagRequired("tenant-id")
-		return
-	}
-	cmd.Flags().StringVar(&s.value, "domain", transport.DomainUnseal, "Quorum domain: unseal or recovery")
+	holderScopeFlags[s.kind](s, cmd)
 }
 
 // target resolves the selected holderTarget.
 func (s *holderScope) target() (holderTarget, error) {
-	if s.tenant {
-		return tenantHolders{cl: client, tenantID: s.value}, nil
-	}
-	if s.value != transport.DomainUnseal && s.value != transport.DomainRecovery {
-		return nil, &InvalidArgError{Arg: "--domain", Reason: "must be unseal or recovery"}
-	}
-	return systemHolders{cl: client, domain: s.value}, nil
+	return holderTargets[s.kind](client, s.value)
 }
 
 // ---------------------------------------------------------------------------
@@ -321,7 +413,7 @@ func (f *holderRegisterFlags) request() (*transport.OfficerRegisterRequest, erro
 // ---------------------------------------------------------------------------
 
 // newHolderOfficerCmd builds the officer group for a scope.
-func newHolderOfficerCmd(use, short string, tenant bool) *cobra.Command {
+func newHolderOfficerCmd(use, short string, kind holderKind) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   use,
 		Short: short,
@@ -332,19 +424,19 @@ holder claims its HPKE-sealed share envelope once, with its certificate, and
 opens it offline with its own key.`,
 	}
 	cmd.AddCommand(
-		newHolderRegisterCmd(tenant),
-		newHolderListCmd(tenant),
-		newHolderClaimCmd(tenant),
-		newHolderClaimBeginCmd(tenant),
-		newHolderClaimCompleteCmd(tenant),
-		newHolderRevokeCmd(tenant),
+		newHolderRegisterCmd(kind),
+		newHolderListCmd(kind),
+		newHolderClaimCmd(kind),
+		newHolderClaimBeginCmd(kind),
+		newHolderClaimCompleteCmd(kind),
+		newHolderRevokeCmd(kind),
 	)
 	return cmd
 }
 
 // newHolderRegisterCmd returns `register`.
-func newHolderRegisterCmd(tenant bool) *cobra.Command {
-	scope := &holderScope{tenant: tenant}
+func newHolderRegisterCmd(kind holderKind) *cobra.Command {
+	scope := &holderScope{kind: kind}
 	f := &holderRegisterFlags{}
 	cmd := &cobra.Command{
 		Use:   "register",
@@ -378,8 +470,8 @@ func newHolderRegisterCmd(tenant bool) *cobra.Command {
 }
 
 // newHolderListCmd returns `list`.
-func newHolderListCmd(tenant bool) *cobra.Command {
-	scope := &holderScope{tenant: tenant}
+func newHolderListCmd(kind holderKind) *cobra.Command {
+	scope := &holderScope{kind: kind}
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List share holders and their claim state",
@@ -422,8 +514,8 @@ func writeEnvelope(path string, resp *transport.ShareClaimCompleteResponse) erro
 
 // newHolderClaimCmd returns `claim`: the whole handshake, signed with the
 // holder's certificate key.
-func newHolderClaimCmd(tenant bool) *cobra.Command {
-	scope := &holderScope{tenant: tenant}
+func newHolderClaimCmd(kind holderKind) *cobra.Command {
+	scope := &holderScope{kind: kind}
 	var username, keyFile, out string
 	cmd := &cobra.Command{
 		Use:   "claim",
@@ -468,8 +560,8 @@ certificate. The node keeps no copy of the envelope.`,
 
 // newHolderClaimBeginCmd returns `claim-begin`, for holders whose key signs
 // outside this CLI.
-func newHolderClaimBeginCmd(tenant bool) *cobra.Command {
-	scope := &holderScope{tenant: tenant}
+func newHolderClaimBeginCmd(kind holderKind) *cobra.Command {
+	scope := &holderScope{kind: kind}
 	var username string
 	cmd := &cobra.Command{
 		Use:   "claim-begin",
@@ -497,8 +589,8 @@ func newHolderClaimBeginCmd(tenant bool) *cobra.Command {
 }
 
 // newHolderClaimCompleteCmd returns `claim-complete`.
-func newHolderClaimCompleteCmd(tenant bool) *cobra.Command {
-	scope := &holderScope{tenant: tenant}
+func newHolderClaimCompleteCmd(kind holderKind) *cobra.Command {
+	scope := &holderScope{kind: kind}
 	var username, nonceHex, sigFile, out string
 	cmd := &cobra.Command{
 		Use:   "claim-complete",
@@ -532,8 +624,8 @@ func newHolderClaimCompleteCmd(tenant bool) *cobra.Command {
 }
 
 // newHolderRevokeCmd returns `revoke`.
-func newHolderRevokeCmd(tenant bool) *cobra.Command {
-	scope := &holderScope{tenant: tenant}
+func newHolderRevokeCmd(kind holderKind) *cobra.Command {
+	scope := &holderScope{kind: kind}
 	var username, soPin string
 	var threshold int
 	cmd := &cobra.Command{
@@ -559,7 +651,7 @@ refused when the threshold would exceed the number of remaining holders.`,
 	scope.bind(cmd)
 	cmd.Flags().StringVar(&username, "username", "", "Holder to revoke")
 	cmd.Flags().IntVar(&threshold, "threshold", 0, "Threshold of the remaining share set (0 keeps the current one)")
-	if !tenant {
+	if kind.soPinGated() {
 		cmd.Flags().StringVar(&soPin, "so-pin", "", "Security Officer PIN")
 	}
 	_ = cmd.MarkFlagRequired("username")
@@ -567,8 +659,8 @@ refused when the threshold would exceed the number of remaining holders.`,
 }
 
 // newHolderRekeyCmd returns the rekey verb.
-func newHolderRekeyCmd(use string, tenant bool) *cobra.Command {
-	scope := &holderScope{tenant: tenant}
+func newHolderRekeyCmd(use string, kind holderKind) *cobra.Command {
+	scope := &holderScope{kind: kind}
 	var policy, soPin string
 	var threshold int
 	cmd := &cobra.Command{
@@ -593,7 +685,7 @@ redistributed to every holder then enrolled at --threshold under --policy.`,
 	scope.bind(cmd)
 	cmd.Flags().IntVar(&threshold, "threshold", 0, "Threshold of the new share set")
 	cmd.Flags().StringVar(&policy, "policy", "", "Factor policy: designated (default) or any-enrolled")
-	if !tenant {
+	if kind.soPinGated() {
 		cmd.Flags().StringVar(&soPin, "so-pin", "", "Security Officer PIN")
 	}
 	_ = cmd.MarkFlagRequired("threshold")
@@ -601,7 +693,7 @@ redistributed to every holder then enrolled at --threshold under --policy.`,
 }
 
 // newHolderQuorumCmd builds the quorum group for a scope.
-func newHolderQuorumCmd(use string, tenant bool) *cobra.Command {
+func newHolderQuorumCmd(use string, kind holderKind) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   use,
 		Short: "Authenticated share-holder quorum rounds",
@@ -610,14 +702,14 @@ its envelope. The node counts each holder once per round; when M holders have
 submitted, the round's operation runs: unseal, seal, root-token, rekey or
 recover (the recovery domain).`,
 	}
-	cmd.AddCommand(newHolderQuorumBeginCmd(tenant), newHolderQuorumSubmitCmd(tenant))
+	cmd.AddCommand(newHolderQuorumBeginCmd(kind), newHolderQuorumSubmitCmd(kind))
 	return cmd
 }
 
 // newHolderQuorumBeginCmd returns `begin`, for factors answered outside this
 // CLI (FIDO2, PIV, ...).
-func newHolderQuorumBeginCmd(tenant bool) *cobra.Command {
-	scope := &holderScope{tenant: tenant}
+func newHolderQuorumBeginCmd(kind holderKind) *cobra.Command {
+	scope := &holderScope{kind: kind}
 	var op, username, factor string
 	cmd := &cobra.Command{
 		Use:   "begin",
@@ -663,8 +755,8 @@ type quorumSubmitFlags struct {
 }
 
 // newHolderQuorumSubmitCmd returns `submit`.
-func newHolderQuorumSubmitCmd(tenant bool) *cobra.Command {
-	scope := &holderScope{tenant: tenant}
+func newHolderQuorumSubmitCmd(kind holderKind) *cobra.Command {
+	scope := &holderScope{kind: kind}
 	f := &quorumSubmitFlags{}
 	cmd := &cobra.Command{
 		Use:   "submit",
@@ -839,8 +931,47 @@ func renderHolder(v any, table func()) error {
 // newTenantBarrierHolderCmds returns the tenant-scoped holder verbs.
 func newTenantBarrierHolderCmds() []*cobra.Command {
 	return []*cobra.Command{
-		newHolderOfficerCmd("barrier-officer", "Manage a tenant barrier's share holders", true),
-		newHolderQuorumCmd("barrier-quorum", true),
-		newHolderRekeyCmd("barrier-rekey", true),
+		newHolderOfficerCmd("barrier-officer", "Manage a tenant barrier's share holders", holderTenant),
+		newHolderQuorumCmd("barrier-quorum", holderTenant),
+		newHolderRekeyCmd("barrier-rekey", holderTenant),
 	}
+}
+
+// newDatabaseBarrierHolderCmds returns the database-scoped holder verbs: the
+// tenant forms taking --database, plus the custody initialization a tenant
+// barrier performs at init.
+func newDatabaseBarrierHolderCmds() []*cobra.Command {
+	return []*cobra.Command{
+		newHolderOfficerCmd("barrier-officer", "Manage a database barrier's share holders", holderDatabase),
+		newDatabaseInitShamirCmd(),
+		newHolderQuorumCmd("barrier-quorum", holderDatabase),
+		newHolderRekeyCmd("barrier-rekey", holderDatabase),
+	}
+}
+
+// newDatabaseInitShamirCmd returns `barrier-init-shamir`.
+func newDatabaseInitShamirCmd() *cobra.Command {
+	var database, policy string
+	cmd := &cobra.Command{
+		Use:   "barrier-init-shamir",
+		Short: "Initialize a Shamir database barrier's custody",
+		Long: `Split the database's root key to its enrolled holders, at the M-of-N the
+database was created with (--barrier-shamir-threshold of --barrier-shamir-total);
+exactly that many holders must be enrolled. Each holder then claims its sealed
+envelope once with 'barrier-officer claim'.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resp, err := databaseHolders{cl: client, database: database}.initialize(cmd.Context(), policy)
+			if err != nil {
+				return err
+			}
+			return renderHolder(resp, func() {
+				_, _ = fmt.Fprintf(outputWriter, "Split:      %d-of-%d (%d envelopes to claim)\n", resp.Threshold, resp.TotalShares, resp.ShareCount)
+			})
+		},
+	}
+	cmd.Flags().StringVar(&database, "database", "", "Database whose barrier to initialize")
+	cmd.Flags().StringVar(&policy, "policy", "", "Factor policy: designated (default) or any-enrolled")
+	_ = cmd.MarkFlagRequired("database")
+	return cmd
 }

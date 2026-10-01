@@ -775,26 +775,31 @@ func TestDatabaseCmd_HasAlias(t *testing.T) {
 func TestDatabaseCmd_SubcommandCount(t *testing.T) {
 	cmd := newDatabaseCmd()
 	subs := cmd.Commands()
-	if len(subs) != 15 {
-		t.Errorf("expected 15 subcommands, got %d", len(subs))
+	// 15 database verbs + the 4 share-holder verbs of a Shamir barrier.
+	if len(subs) != 19 {
+		t.Errorf("expected 19 subcommands, got %d", len(subs))
 	}
 
 	wantNames := map[string]bool{
-		"create":            false,
-		"list":              false,
-		"info":              false,
-		"drop":              false,
-		"update-etcd":       false,
-		"update-protocol":   false,
-		"update-raft":       false,
-		"scale":             false,
-		"update-barrier":    false,
-		"update-connection": false,
-		"update-sql":        false,
-		"update-compaction": false,
-		"seal":              false,
-		"unseal":            false,
-		"barrier-status":    false,
+		"create":              false,
+		"list":                false,
+		"info":                false,
+		"drop":                false,
+		"update-etcd":         false,
+		"update-protocol":     false,
+		"update-raft":         false,
+		"scale":               false,
+		"update-barrier":      false,
+		"update-connection":   false,
+		"update-sql":          false,
+		"update-compaction":   false,
+		"seal":                false,
+		"unseal":              false,
+		"barrier-status":      false,
+		"barrier-officer":     false,
+		"barrier-init-shamir": false,
+		"barrier-quorum":      false,
+		"barrier-rekey":       false,
 	}
 	for _, sub := range subs {
 		if _, ok := wantNames[sub.Name()]; ok {
