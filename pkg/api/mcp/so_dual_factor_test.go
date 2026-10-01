@@ -193,3 +193,49 @@ func TestBarrierSeal_TenantAdminRefused(t *testing.T) {
 		t.Fatalf("system Admin seal: %+v, seals=%d", res.Content, barrier.Seals())
 	}
 }
+
+// TestSODualFactor_GateWithoutAuthFailsClosed: with nothing to authenticate
+// the caller there is no SO to admit, so the gate refuses rather than being
+// skipped (go-qrdb#569 N5).
+func TestSODualFactor_GateWithoutAuthFailsClosed(t *testing.T) {
+	roles := authtest.BuiltInRoles(t, soTestTenant)
+	gate := authmw.NewSOGate(roles, authtest.SOVerifier(t, soTestPIN, soTestTenant), audit.NewRingBuffer(64), audit.FailClosed, nil)
+	barrier := &authtest.Barrier{}
+	tlsCfg := testTLSConfig(t)
+	srv := NewServer(nil, nil, "127.0.0.1:0", WithTLS(tlsCfg), WithBarrierService(barrier), WithSOGate(gate))
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(srv.Stop)
+	httpClient := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
+		RootCAs: tlsCfg.RootCAs, ServerName: "localhost", MinVersion: tls.VersionTLS13,
+	}}}
+	client, err := mcpclient.NewStreamableHttpClient("https://"+srv.Addr()+"/mcp",
+		transport.WithHTTPBasicClient(httpClient),
+		transport.WithHTTPHeaders(map[string]string{authmw.SOPINHeader: soTestPIN}))
+	if err != nil {
+		t.Fatalf("client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	ctx := callCtx(t)
+	if err := client.Start(ctx); err != nil {
+		t.Fatalf("client start: %v", err)
+	}
+	init := mcpgo.InitializeRequest{}
+	init.Params.ProtocolVersion = mcpgo.LATEST_PROTOCOL_VERSION
+	init.Params.ClientInfo = mcpgo.Implementation{Name: "so-gate-no-auth", Version: "1"}
+	if _, err := client.Initialize(ctx, init); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	req := mcpgo.CallToolRequest{}
+	req.Params.Name = "qrdb_barrier_rekey"
+	req.Params.Arguments = map[string]any{"threshold": 2, "total": 3}
+	res, err := client.CallTool(callCtx(t), req)
+	if err != nil {
+		t.Fatalf("qrdb_barrier_rekey: %v", err)
+	}
+	if barrier.Rekeys() != 0 {
+		t.Fatal("the gate was skipped for want of an auth middleware")
+	}
+	wantToolCode(t, "rekey through a gate with no auth", res, wire.CodePermissionDenied)
+}

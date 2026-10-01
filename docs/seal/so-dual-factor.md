@@ -24,6 +24,11 @@ Two conditions must both hold for the gate to be installed:
    `rest.WithSOAuthenticator`), backed by the Argon2id PIN commit
    stored at SO bootstrap (`auth.SOAuthenticator.SetSOPIN`).
 
+These two conditions are the only ones, and every network transport follows
+them. The gate does not depend on authentication being configured. With the
+gate on and no authentication, there is no Security Officer to admit, so
+every SO-gated operation is refused on every transport. It is never skipped.
+
 If the flag is set without a verifier the gate is not installed,
 so a misconfigured deployment cannot lock out the SO surface behind an
 unverifiable check. When disabled (default) every transport's chain is

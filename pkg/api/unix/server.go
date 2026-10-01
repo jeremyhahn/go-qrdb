@@ -512,7 +512,10 @@ func (s *Server) Start() error {
 		}
 		unaryInterceptors = append(unaryInterceptors, s.authMW.UnaryInterceptor())
 	}
-	if s.authMW != nil && s.soGate != nil {
+	// The SO gate installs whenever there is one, auth middleware or not:
+	// with nothing to authenticate the caller there is no SO to admit, so it
+	// fails closed rather than being skipped.
+	if s.soGate != nil {
 		unaryInterceptors = append(unaryInterceptors, authmw.SOGateUnaryInterceptor(s.soGate))
 	}
 	var sealedUnary grpc.UnaryServerInterceptor
@@ -536,7 +539,7 @@ func (s *Server) Start() error {
 	if s.authMW != nil {
 		streamInterceptors = append(streamInterceptors, s.authMW.StreamInterceptor())
 	}
-	if s.authMW != nil && s.soGate != nil {
+	if s.soGate != nil {
 		streamInterceptors = append(streamInterceptors, authmw.SOGateStreamInterceptor(s.soGate))
 	}
 	if sealedStream != nil {

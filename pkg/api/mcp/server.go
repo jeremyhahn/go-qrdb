@@ -524,7 +524,7 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		// has just stopped having.
 		mcpserver.WithToolHandlerMiddleware(errorCodeMiddleware()),
 	}
-	if s.authMW != nil {
+	if s.authMW != nil || s.soGate != nil {
 		mcpOpts = append(mcpOpts, mcpserver.WithToolHandlerMiddleware(s.toolAuthzMiddleware()))
 	}
 	if s.sealedWindowProbe != nil {
@@ -727,7 +727,7 @@ func (s *Server) Start() error {
 	// peer and injects the resulting identity into the per-request context so
 	// the tool-handler authorization middleware can enforce permissions.
 	var streamOpts []mcpserver.StreamableHTTPOption
-	if s.authMW != nil {
+	if s.authMW != nil || s.soGate != nil {
 		streamOpts = append(streamOpts, mcpserver.WithHTTPContextFunc(s.authHTTPContext))
 	}
 	streamHandler := mcpserver.NewStreamableHTTPServer(s.mcpSrv, streamOpts...)

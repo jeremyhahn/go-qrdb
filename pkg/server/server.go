@@ -1330,16 +1330,23 @@ func (s *Server) MCPAddr() string {
 }
 
 // startREST creates and starts the REST server with configured options.
+// soDualFactorEnabled is the ONE predicate for whether the SO dual-factor
+// gate is on: auth.so_dual_factor set and an SO authenticator wired. REST's
+// SOMiddleware and the gate the gRPC, Unix, QUIC and MCP transports install
+// both follow it, so the transports cannot disagree about whether the SO
+// surface needs the second factor. It does not depend on an auth middleware:
+// a gate with nothing to authenticate the caller fails closed on every
+// transport, which is what REST always did.
+func (s *Server) soDualFactorEnabled() bool {
+	return s.config.Auth.SODualFactor && s.opts.soAuthenticator != nil
+}
+
 // soGate returns the SO dual-factor gate the gRPC, Unix, QUIC and MCP
-// transports install, or nil when it is off. It is on under exactly the
-// conditions the REST transport's SOMiddleware is -- auth.so_dual_factor set,
-// an SO authenticator wired -- plus an auth middleware to bind the identity
-// it checks, so the six transports cannot disagree about whether the SO
-// surface needs the second factor. It is built over the same role service,
+// transports install, or nil when soDualFactorEnabled is false. It is built over the same role service,
 // audit logger and audit failure policy REST uses. An unrecognised policy
 // fails the start, as it does for REST.
 func (s *Server) soGate() (*authmw.SOGate, error) {
-	if !s.config.Auth.SODualFactor || s.opts.soAuthenticator == nil || s.opts.authMW == nil {
+	if !s.soDualFactorEnabled() {
 		return nil, nil
 	}
 	policy, err := audit.ParseFailurePolicy(s.config.Auth.AuditFailurePolicy)
@@ -1497,7 +1504,7 @@ func (s *Server) startREST() error {
 	if s.opts.soAuthenticator != nil {
 		restOpts = append(restOpts, rest.WithSOAuthenticator(s.opts.soAuthenticator))
 	}
-	if s.config.Auth.SODualFactor {
+	if s.soDualFactorEnabled() {
 		restOpts = append(restOpts, rest.WithSODualFactor())
 	}
 	// The SO dual-factor gate reads the operator's audit failure posture from

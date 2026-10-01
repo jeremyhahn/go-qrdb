@@ -261,3 +261,20 @@ func TestBarrierSeal_TenantAdminRefused(t *testing.T) {
 		}
 	}
 }
+
+// TestSODualFactor_GateWithoutAuthFailsClosed: with the gate on and no auth
+// middleware there is no SO to admit; the gate refuses, as on the other four
+// transports (go-qrdb#569 N5).
+func TestSODualFactor_GateWithoutAuthFailsClosed(t *testing.T) {
+	roles := authtest.BuiltInRoles(t, soRESTTenant)
+	srv := NewServer(nil, nil, "127.0.0.1:0", WithRoleService(roles), WithBarrierService(newExtBarrierSvc()),
+		WithSOAuthenticator(authtest.SOVerifier(t, soRESTPIN, soRESTTenant)), WithSODualFactor())
+	req := httptest.NewRequest(http.MethodPost, soRESTRoute, strings.NewReader("{}"))
+	req.TLS = &tls.ConnectionState{}
+	req.Header.Set(authmw.SOPINHeader, soRESTPIN)
+	rec := httptest.NewRecorder()
+	srv.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d body=%q, want 403", rec.Code, rec.Body.String())
+	}
+}

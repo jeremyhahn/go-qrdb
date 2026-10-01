@@ -25,7 +25,8 @@ import (
 // TestSOGate_OnUnderExactlyTheRESTConditions: the orchestrator builds the gate
 // the gRPC, Unix, QUIC and MCP transports install under the same conditions
 // the REST transport installs SOMiddleware -- auth.so_dual_factor set and an SO
-// authenticator wired -- plus the auth middleware that binds the identity.
+// authenticator wired (soDualFactorEnabled). An auth middleware is not one of
+// them: without one the gate is still on, and refuses every SO-gated request.
 func TestSOGate_OnUnderExactlyTheRESTConditions(t *testing.T) {
 	roles := authtest.BuiltInRoles(t, "t1")
 	mw := authmw.New(rbac.New(roles))
@@ -39,7 +40,7 @@ func TestSOGate_OnUnderExactlyTheRESTConditions(t *testing.T) {
 		{"flag, verifier and middleware", true, []ServerOption{WithSOAuthenticator(verifier), WithAuthMiddleware(mw), WithRoleService(roles)}, true},
 		{"flag off", false, []ServerOption{WithSOAuthenticator(verifier), WithAuthMiddleware(mw)}, false},
 		{"no verifier", true, []ServerOption{WithAuthMiddleware(mw)}, false},
-		{"no auth middleware", true, []ServerOption{WithSOAuthenticator(verifier)}, false},
+		{"no auth middleware: on, and fails closed", true, []ServerOption{WithSOAuthenticator(verifier)}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

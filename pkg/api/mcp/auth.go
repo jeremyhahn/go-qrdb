@@ -45,6 +45,11 @@ func (s *Server) authHTTPContext(ctx context.Context, r *http.Request) context.C
 	// below so a request authenticateHandler already authenticated carries
 	// it too.
 	ctx = withSOFactor(ctx, r)
+	// With an SO gate but no auth middleware there is no one to
+	// authenticate; the gate then refuses every SO-gated tool.
+	if s.authMW == nil {
+		return ctx
+	}
 	// authenticateHandler has already authenticated this request and bound
 	// the identity into the request context; a second pass would only
 	// repeat the same chain walk.
@@ -274,10 +279,12 @@ func (s *Server) toolAuthzMiddleware() mcpserver.ToolHandlerMiddleware {
 			// The SO PIN bound for this request is wiped once the call is
 			// done, whether or not the tool was SO-gated.
 			defer authmw.WipeSOFactor(ctx)
-			if err := s.authMW.AuthorizeMCP(ctx, s.toolPerms, req.Params.Name, req.GetArguments()); err != nil {
-				slog.Warn("mcp: tool call denied",
-					"tool", req.Params.Name, "error", err)
-				return authzToolError(err), nil
+			if s.authMW != nil {
+				if err := s.authMW.AuthorizeMCP(ctx, s.toolPerms, req.Params.Name, req.GetArguments()); err != nil {
+					slog.Warn("mcp: tool call denied",
+						"tool", req.Params.Name, "error", err)
+					return authzToolError(err), nil
+				}
 			}
 			if s.soGate != nil {
 				if perm, ok := s.toolPerms.Lookup(req.Params.Name); ok {

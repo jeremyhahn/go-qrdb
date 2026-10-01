@@ -124,6 +124,20 @@ func SODualFactor(t *testing.T, start SOStartFunc) {
 			t.Fatal("a tenant SO rekeyed the node barrier")
 		}
 	})
+	t.Run("a gate with no auth middleware fails closed", func(t *testing.T) {
+		// With nothing to authenticate the caller there is no SO to admit:
+		// the gate refuses, it is not skipped (go-qrdb#569 N5).
+		roles := authtest.BuiltInRoles(t, soTenant)
+		gate := authmw.NewSOGate(roles, authtest.SOVerifier(t, soPIN, soTenant), audit.NewRingBuffer(64), audit.FailClosed, nil)
+		barrier := &authtest.Barrier{}
+		client := pb.NewQRDBServiceClient(start(t, nil, gate, barrier))
+		ctx := metadata.AppendToOutgoingContext(callCtx(t), authmw.SOPINMetadataKey, soPIN)
+		_, err := client.BarrierRekey(ctx, &pb.BarrierRekeyRequest{Threshold: 2, Total: 3})
+		if barrier.Rekeys() != 0 {
+			t.Fatal("the gate was skipped for want of an auth middleware")
+		}
+		wantCode(t, "rekey through a gate with no auth", err, codes.PermissionDenied)
+	})
 	t.Run("gate off serves the same non-SO caller", func(t *testing.T) {
 		f := newSOFixture(t, start, false)
 		id := authtest.GrantedNonSOIdentity(soTenant, "token", permission.SealRekey)

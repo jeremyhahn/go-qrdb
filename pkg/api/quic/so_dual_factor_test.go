@@ -200,3 +200,31 @@ func TestSOPINFromPayload(t *testing.T) {
 		t.Fatal("an empty so_pin yielded a PIN")
 	}
 }
+
+// TestSODualFactor_GateWithoutAuthFailsClosed: with nothing to authenticate
+// the caller there is no SO to admit, so the gate refuses rather than being
+// skipped (go-qrdb#569 N5).
+func TestSODualFactor_GateWithoutAuthFailsClosed(t *testing.T) {
+	roles := authtest.BuiltInRoles(t, soTestTenant)
+	gate := authmw.NewSOGate(roles, authtest.SOVerifier(t, soTestPIN, soTestTenant), audit.NewRingBuffer(64), audit.FailClosed, nil)
+	barrier := &authtest.Barrier{}
+	serverCfg, clientCfg := generateCredentialE2ETLS(t)
+	serverCfg.ClientAuth = tls.RequireAnyClientCert
+	clientCfg.Certificates = serverCfg.Certificates
+	srv := NewServer(nil, nil, "127.0.0.1:0", WithTLS(serverCfg), WithBarrierService(barrier), WithSOGate(gate))
+	if err := srv.Start(); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	t.Cleanup(srv.Stop)
+	payload, err := proto.Marshal(&pb.BarrierRekeyRequest{Threshold: 2, Total: 3, SoPin: soTestPIN})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	status, _ := credentialE2ERoundTrip(t, srv.Addr(), clientCfg, "barrier.Rekey", payload)
+	if barrier.Rekeys() != 0 {
+		t.Fatal("the gate was skipped for want of an auth middleware")
+	}
+	if status != wire.StatusPermissionDenied {
+		t.Fatalf("status = %s, want %s", wire.StatusName(status), wire.StatusName(wire.StatusPermissionDenied))
+	}
+}

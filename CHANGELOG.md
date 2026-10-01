@@ -848,6 +848,13 @@ are not reconstructed here — their history is in the git log.
   names no tenant, ScopeSelf passes vacuously, so another tenant's Admin or
   Operator could seal the node barrier and stop every tenant's data plane. It
   is now `ScopeCross`, like the other node-barrier verbs.
+- **The SO dual-factor gate fails closed without authentication on every
+  transport.** The orchestrator installed the gate on gRPC, Unix, QUIC and MCP
+  only when an auth middleware was configured, so with `auth.so_dual_factor`
+  on and authentication off, those four transports skipped the gate. REST
+  already refused in that case. One predicate (`so_dual_factor` set and an SO
+  authenticator wired) now governs all five transports. With no one to
+  authenticate, the gate refuses every SO-gated operation.
 
 ### Known limits
 

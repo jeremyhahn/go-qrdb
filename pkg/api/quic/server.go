@@ -831,16 +831,19 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 			s.logRequest(method, requestID, authStatus, start)
 			return
 		}
+	}
 
-		// The SO dual-factor gate, after authorization and before any
-		// handler, exactly where the REST and gRPC transports apply it.
-		if s.soGate != nil {
-			if soErr := s.enforceSOGate(ctx, conn, method, payload); soErr != nil {
-				soStatus := authzStatus(soErr)
-				_ = s.writeResponse(stream, requestID, soStatus, []byte(soErr.Error()))
-				s.logRequest(method, requestID, soStatus, start)
-				return
-			}
+	// The SO dual-factor gate, after authorization and before any handler,
+	// exactly where the REST and gRPC transports apply it. It runs whenever
+	// there is a gate, auth middleware or not: with nothing to authenticate
+	// the caller there is no SO to admit, so it fails closed rather than
+	// being skipped.
+	if s.soGate != nil {
+		if soErr := s.enforceSOGate(ctx, conn, method, payload); soErr != nil {
+			soStatus := authzStatus(soErr)
+			_ = s.writeResponse(stream, requestID, soStatus, []byte(soErr.Error()))
+			s.logRequest(method, requestID, soStatus, start)
+			return
 		}
 	}
 
