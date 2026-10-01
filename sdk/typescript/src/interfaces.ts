@@ -140,6 +140,7 @@ import type {
     // Database
     DatabaseInfo,
     CreateDatabaseRequest,
+    DatabaseProtocolConfig,
     DatabaseSQLConfig,
     DatabaseRaftConfig,
     DatabaseBarrierConfig,
@@ -1237,13 +1238,23 @@ export interface DatabaseClient {
     drop(name: string): Promise<void>;
 
     /**
-     * Updates the SQL wire protocol configuration for a database.
+     * Updates which SQL wire protocols (MySQL, PostgreSQL) serve a database.
      *
      * @param name - Database name.
-     * @param sql - SQL protocol configuration.
+     * @param protocol - Wire protocol configuration.
      * @returns The updated database information.
      */
-    updateSQL(name: string, sql: DatabaseSQLConfig): Promise<DatabaseInfo>;
+    updateProtocol(name: string, protocol: DatabaseProtocolConfig): Promise<DatabaseInfo>;
+
+    /**
+     * Updates a database's SQL settings: its default concurrency mode.
+     * Omitting `sql` clears the settings, restoring the defaults.
+     *
+     * @param name - Database name.
+     * @param sql - SQL settings.
+     * @returns The updated database information.
+     */
+    updateSQL(name: string, sql?: DatabaseSQLConfig): Promise<DatabaseInfo>;
 
     /**
      * Updates the Raft consensus configuration for a database.

@@ -11,6 +11,23 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Changed — BREAKING
+
+- **TypeScript SDK (`@qrdb/sdk`): the wire-protocol names now match the Go
+  SDK, and the old names carry the SQL settings.** `DatabaseClient.updateSQL`
+  is renamed `updateProtocol`, `DatabaseSQLConfig` (`{mysql, postgresql}`) is
+  renamed `DatabaseProtocolConfig` — including the type of
+  `DatabaseInfo.protocol` and `CreateDatabaseRequest.protocol` — and the old
+  `UpdateDatabaseSQLRequest` is `UpdateDatabaseProtocolRequest`. The freed names
+  are the per-database SQL settings: `updateSQL(name, {concurrency})`
+  (`PATCH /v1/databases/{name}/sql`; omit the settings to restore the
+  defaults), `DatabaseSQLConfig {concurrency?: 'optimistic' | 'pessimistic'}`
+  and an `sql` field on `DatabaseInfo` and `CreateDatabaseRequest`. A caller
+  passing `{mysql, postgresql}` to `updateSQL` no longer type-checks; rename the
+  call to `updateProtocol`. The desktop client's binding call is fixed with it:
+  the protocol toggle invoked a `DatabaseBinding.UpdateSQL` the binding did not
+  have.
+
 ### Added
 
 - `rest.SealedWindowListenerMiddleware`,

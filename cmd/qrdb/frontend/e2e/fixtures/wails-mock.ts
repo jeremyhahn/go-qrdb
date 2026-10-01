@@ -1617,13 +1617,30 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             const s = getState();
             s.databases = s.databases.filter((d: { name: string }) => d.name !== name);
           },
-          UpdateSQL: async (name: string, sql: { mysql: boolean; postgresql: boolean }) => {
-            maybeReject("DatabaseBinding.UpdateSQL");
+          // UpdateProtocol mirrors DatabaseBinding.UpdateProtocol: the Go
+          // UpdateDatabaseProtocolRequest is {mysql, postgresql}.
+          UpdateProtocol: async (name: string, protocol: { mysql: boolean; postgresql: boolean }) => {
+            maybeReject("DatabaseBinding.UpdateProtocol");
             const s = getState();
             const db = s.databases.find((d: { name: string }) => d.name === name) as Record<string, unknown> | undefined;
             if (!db) throw new Error(`database "${name}" not found`);
             // Store under `protocol` to match SDK DatabaseInfo.protocol field.
-            db.protocol = { ...sql };
+            db.protocol = { ...protocol };
+            return db;
+          },
+          // UpdateSQL mirrors DatabaseBinding.UpdateSQL: the Go
+          // UpdateDatabaseSQLRequest is {sql: {concurrency}}; an absent sql
+          // restores the defaults.
+          UpdateSQL: async (name: string, req: { sql?: { concurrency?: string } }) => {
+            maybeReject("DatabaseBinding.UpdateSQL");
+            const s = getState();
+            const db = s.databases.find((d: { name: string }) => d.name === name) as Record<string, unknown> | undefined;
+            if (!db) throw new Error(`database "${name}" not found`);
+            if (req.sql === undefined) {
+              delete db.sql;
+            } else {
+              db.sql = { ...req.sql };
+            }
             return db;
           },
           UpdateRaft: async (name: string, raft: unknown) => {

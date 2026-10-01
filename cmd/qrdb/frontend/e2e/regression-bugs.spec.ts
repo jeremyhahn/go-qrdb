@@ -444,7 +444,7 @@ test.describe("Bug 5 - SQL protocol field persists correctly", () => {
     await expect(page.getByText("MySQL on")).toBeVisible({ timeout: TIMEOUT });
   });
 
-  test("UpdateSQL stores result under protocol field visible to view", async ({
+  test("UpdateProtocol stores result under protocol field visible to view", async ({
     page,
   }) => {
     await page.goto("/");

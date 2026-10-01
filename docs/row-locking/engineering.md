@@ -129,6 +129,24 @@ type UpdateDatabaseSQLRequest struct {
 //	SQL *DatabaseSQLConfig `json:"sql,omitempty"`
 ```
 
+`sdk/typescript` (`@qrdb/sdk`) — the same names as the Go SDK:
+
+```ts
+type SQLConcurrency = 'optimistic' | 'pessimistic';
+interface DatabaseSQLConfig { readonly concurrency?: SQLConcurrency }
+interface DatabaseProtocolConfig { readonly mysql: boolean; readonly postgresql: boolean }
+
+// DatabaseClient:
+updateSQL(name: string, sql?: DatabaseSQLConfig): Promise<DatabaseInfo>          // PATCH /v1/databases/{name}/sql
+updateProtocol(name: string, protocol: DatabaseProtocolConfig): Promise<DatabaseInfo> // PATCH /v1/databases/{name}/protocol
+// DatabaseInfo and CreateDatabaseRequest: protocol?: DatabaseProtocolConfig; sql?: DatabaseSQLConfig
+```
+
+Until this feature the TypeScript `updateSQL` / `DatabaseSQLConfig` named the
+wire-protocol switches; they are now `updateProtocol` /
+`DatabaseProtocolConfig`, matching the Go SDK's `UpdateDatabaseProtocol` /
+`ProtocolConfig`, and the old names carry the SQL settings.
+
 ## The lock record
 
 Every lock request — granted or waiting — is exactly one record in the

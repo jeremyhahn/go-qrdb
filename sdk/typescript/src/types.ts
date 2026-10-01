@@ -1975,12 +1975,25 @@ export interface EmbeddedSealConfig {
 // Database management types
 // ---------------------------------------------------------------------------
 
-/** SQL wire protocol configuration for a database. */
-export interface DatabaseSQLConfig {
+/** SQL wire protocol configuration for a database: which wire protocols
+ * serve it. The Go SDK's `ProtocolConfig`. */
+export interface DatabaseProtocolConfig {
     /** Whether MySQL wire protocol is enabled. */
     readonly mysql: boolean;
     /** Whether PostgreSQL wire protocol is enabled. */
     readonly postgresql: boolean;
+}
+
+/** A database's SQL concurrency mode: whether its SQL statements serialise
+ * on row locks (`pessimistic`) or settle conflicts at commit (`optimistic`,
+ * the default). */
+export type SQLConcurrency = 'optimistic' | 'pessimistic';
+
+/** SQL settings for a database. The Go SDK's `DatabaseSQLConfig`. */
+export interface DatabaseSQLConfig {
+    /** The database's default SQL concurrency mode. Absent means
+     * `optimistic`. */
+    readonly concurrency?: SQLConcurrency;
 }
 
 /** Raft consensus configuration for a database. */
@@ -2065,8 +2078,10 @@ export interface DatabaseInfo {
     readonly status: string;
     /** Wire protocol configuration (mysql/postgresql/etc). Wire field name
      * is `protocol` to match the Go transport type; this is the canonical
-     * field. The legacy `sql` alias is no longer accepted. */
-    readonly protocol?: DatabaseSQLConfig;
+     * field. */
+    readonly protocol?: DatabaseProtocolConfig;
+    /** SQL settings (concurrency mode). Absent means the defaults. */
+    readonly sql?: DatabaseSQLConfig;
     /** Data directory path, if applicable. */
     readonly data_dir?: string;
     /** Shard ID, if applicable. */
@@ -2096,7 +2111,9 @@ export interface CreateDatabaseRequest {
     readonly backend: string;
     /** Wire protocol configuration (mysql/postgresql). The wire field name
      * is `protocol` to match the Go transport type. */
-    readonly protocol?: DatabaseSQLConfig;
+    readonly protocol?: DatabaseProtocolConfig;
+    /** SQL settings (concurrency mode). Absent means the defaults. */
+    readonly sql?: DatabaseSQLConfig;
     /** Custom data directory for file/pebble backends. */
     readonly dataDir?: string;
     /** Database mode (e.g. "embedded", "remote"). */
@@ -2118,11 +2135,18 @@ export interface CreateDatabaseRequest {
 }
 
 /** Request to update SQL wire protocol configuration for a database. */
-export interface UpdateDatabaseSQLRequest {
+export interface UpdateDatabaseProtocolRequest {
     /** Whether MySQL wire protocol is enabled. */
     readonly mysql: boolean;
     /** Whether PostgreSQL wire protocol is enabled. */
     readonly postgresql: boolean;
+}
+
+/** Request to update a database's SQL settings. An absent `sql` restores
+ * the defaults. */
+export interface UpdateDatabaseSQLRequest {
+    /** The SQL settings to apply. */
+    readonly sql?: DatabaseSQLConfig;
 }
 
 /** Response containing a list of databases. */
