@@ -92,13 +92,14 @@ func registerCryptoUseDuties() {
 // from the action verb:
 //
 //   - seal:unseal / seal:seal / seal:rotate_root_key / seal:rekey /
-//     seal:recover_with_keys / seal:generate_recovery reconstruct or re-derive
-//     the barrier root key. That is module lifecycle — the operation FIPS
-//     140-3 assigns to the Security Officer — not the module performing a
-//     primitive on a requester's data.
-//   - ceremony:sign_csr signs a custodian enrollment CSR and certs:generate
-//     signs a certificate: issuance is a governance decision about identity,
-//     and the Security Officer is the identity authority.
+//     seal:generate_recovery / seal:initialize_shamir reconstruct, re-derive
+//     or re-split the barrier key. That is module lifecycle — the operation
+//     FIPS 140-3 assigns to the Security Officer — not the module performing
+//     a primitive on a requester's data.
+//   - ceremony:sign_csr signs a Security Officer's login-certificate CSR with
+//     the cluster CA, and certs:generate signs a certificate: issuance is a
+//     governance decision about identity, and the Security Officer is the
+//     identity authority.
 //   - keys:import / keys:export are key entry and key output, the Crypto
 //     Officer's key-management duty. They confer no ability to compute with a
 //     key inside the module.

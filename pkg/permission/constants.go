@@ -428,7 +428,10 @@ const (
 // Every seal:* permission except seal:status changes the NODE barrier, a
 // platform singleton no tenant owns, or decides who holds a share of its key,
 // and is ScopeCross (node_barrier_scope.go): only a system-tenant identity
-// exercises it, as is barrier:unseal-share. seal:status is ScopeSelf.
+// exercises it, as it does ceremony:initialize and ceremony:sign_csr.
+// seal:status is ScopeSelf. A share holder's quorum submission (unseal,
+// seal, root-token, rekey, recover) is authorized by the holder's enrolled
+// factor, not by a permission.
 const (
 	// SealBootstrap grants access to bootstrap the seal subsystem.
 	SealBootstrap Permission = "seal:bootstrap"
