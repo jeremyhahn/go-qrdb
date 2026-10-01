@@ -64,8 +64,9 @@ func TestNodeBarrierPermissions_DeclaredOnce(t *testing.T) {
 	}
 	node := append(nodeBarrierSOPermissions(), nodeBarrierShareHolderPermissions()...)
 	node = append(node, clusterAdminPermissions()...)
-	if len(node) < 29 {
-		t.Fatalf("node-barrier and cluster-admin lists hold %d permissions, want at least 29", len(node))
+	node = append(node, clusterBackupPermissions()...)
+	if len(node) < 35 {
+		t.Fatalf("node-barrier and cluster lists hold %d permissions, want at least 35", len(node))
 	}
 	for _, p := range node {
 		if _, dup := self[p]; dup {

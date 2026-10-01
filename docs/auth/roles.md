@@ -404,7 +404,9 @@ cross-scope for the same reason: `rebalance:execute` physically moves shards
 between nodes, and the plan, report and stats reads describe every shard. No
 built-in role below Owner carries `rebalance:*` or the shard-lifecycle and
 topology permissions, but a tenant's SO holds `roles:create` and
-`roles:assign` and could grant them to itself.
+`roles:assign` and could grant them to itself. `backup:*` is cross-scope for
+the same reason: a backup is of shards, holding every tenant's data on them,
+and a restore overwrites every tenant's state.
 
 The topology reads go with them because they enumerate every tenant's raft
 group and node address, and no built-in tenant role carries them; the web

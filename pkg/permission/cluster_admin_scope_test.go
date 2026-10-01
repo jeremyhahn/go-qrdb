@@ -25,6 +25,7 @@ func TestClusterAdminPermissions_AreCrossScope(t *testing.T) {
 		AdminAddMember, AdminRemoveMember, AdminDrain, AdminSnapshot,
 		AdminStartShard, AdminStopShard, AdminShardState, AdminTopology,
 		RebalanceExecute, RebalancePlan, RebalanceReport, RebalanceStats,
+		BackupCreate, BackupDelete, BackupList, BackupRead, BackupRestore, BackupVerify,
 	} {
 		if got, err := LookupScope(p); err != nil || got != ScopeCross {
 			t.Errorf("%s: scope = %v (err %v), want ScopeCross", p, got, err)

@@ -123,6 +123,17 @@ type VerifyResult struct {
 | `backup:delete` | deleting a backup |
 | `backup:restore` | **restoring** — separate because it overwrites shard state |
 
+Every `backup:*` permission is **cross-scope** (`ScopeCross`, declared in
+`pkg/permission/cluster_admin_scope.go`): only an identity of the `system`
+tenant may exercise it. A backup is taken of shards by id, not of a tenant --
+the backup service has no tenant model -- so one backup holds every tenant's
+data on those shards, and a restore overwrites every tenant's state. The
+routes name no tenant, so as `ScopeSelf` they admitted any holder in any
+tenant; no built-in role below Owner carries `backup:*`, but a tenant's SO
+holds `roles:create` and `roles:assign` and could grant them to itself.
+`TestClusterAdmin_TenantGrantedPermissionsAreDenied` in `pkg/auth/rbac`
+proves the refusal.
+
 ## Error semantics
 
 | Error type | Condition | Fails closed? |

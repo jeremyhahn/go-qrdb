@@ -108,6 +108,9 @@ func TestClusterAdmin_TenantGrantedPermissionsAreDenied(t *testing.T) {
 		permission.AdminShardState, permission.AdminTopology,
 		permission.RebalanceExecute, permission.RebalancePlan,
 		permission.RebalanceReport, permission.RebalanceStats,
+		// Shard backups hold every tenant's data on the shard.
+		permission.BackupCreate, permission.BackupDelete, permission.BackupList,
+		permission.BackupRead, permission.BackupRestore, permission.BackupVerify,
 	}
 	roles := authtest.BuiltInRoles(t, tenant.SystemTenantID, other)
 	authz := rbac.New(roles)

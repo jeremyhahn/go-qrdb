@@ -103,12 +103,9 @@ func selfScopedPermissions() []Permission {
 		BackendsRead,
 
 		// backup
-		BackupCreate,
-		BackupDelete,
-		BackupList,
-		BackupRead,
-		BackupRestore,
-		BackupVerify,
+		//
+		// backup:* is ScopeCross (cluster_admin_scope.go): a backup is of
+		// shards, holding every tenant's data on them.
 
 		// barrier
 		//

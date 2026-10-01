@@ -59,6 +59,27 @@ func clusterAdminPermissions() []Permission {
 	}
 }
 
+// clusterBackupPermissions are the shard backup and restore verbs. A backup
+// is taken of shards by id, not of a tenant: BackupService has no tenant
+// model, so one backup holds every tenant's data on those shards, the caller
+// picks its destination on the node, and a restore overwrites shard state for
+// every tenant on it. These were ScopeSelf with routes that name no tenant.
+// No built-in role below Owner carries them, but a tenant's SO holds
+// roles:create and roles:assign, so under ScopeSelf it could grant itself
+// backup:create and backup:read to take every tenant's data, or
+// backup:restore to roll every tenant back.
+func clusterBackupPermissions() []Permission {
+	return []Permission{
+		BackupCreate,
+		BackupDelete,
+		BackupList,
+		BackupRead,
+		BackupRestore,
+		BackupVerify,
+	}
+}
+
 func init() {
 	RegisterScope(ScopeCross, clusterAdminPermissions()...)
+	RegisterScope(ScopeCross, clusterBackupPermissions()...)
 }

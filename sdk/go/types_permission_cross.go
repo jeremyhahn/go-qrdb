@@ -266,3 +266,27 @@ const (
 	// statistics.
 	PermissionRebalanceStats = permission.RebalanceStats
 )
+
+// The shard backup permissions are cross-scope because a backup is of shards,
+// not of a tenant: it holds every tenant's data on them, and a restore
+// overwrites every tenant's state.
+const (
+	// PermissionBackupCreate ("backup:create") takes a shard backup.
+	PermissionBackupCreate = permission.BackupCreate
+
+	// PermissionBackupDelete ("backup:delete") deletes a backup.
+	PermissionBackupDelete = permission.BackupDelete
+
+	// PermissionBackupList ("backup:list") lists backups.
+	PermissionBackupList = permission.BackupList
+
+	// PermissionBackupRead ("backup:read") reads a backup's metadata.
+	PermissionBackupRead = permission.BackupRead
+
+	// PermissionBackupRestore ("backup:restore") restores shards from a
+	// backup.
+	PermissionBackupRestore = permission.BackupRestore
+
+	// PermissionBackupVerify ("backup:verify") verifies a backup's integrity.
+	PermissionBackupVerify = permission.BackupVerify
+)

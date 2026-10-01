@@ -31,6 +31,14 @@ are not reconstructed here — their history is in the git log.
   `Cluster.MemberList` is authorized with `admin:peers` against the
   database's owning tenant. A tenant tool that drove these operations must run
   as the `system` tenant.
+- **BREAKING: shard backup and restore are system-tenant only.** `backup:*`
+  was ScopeSelf on routes that name no tenant. A backup is of shards, not of
+  a tenant -- the backup service has no tenant model -- so it holds every
+  tenant's data on them, and a restore overwrites every tenant's state. No
+  built-in role below Owner carries `backup:*`, but a tenant's SO could grant
+  it to itself through a custom role and take, or roll back, every tenant's
+  data. Every `backup:*` permission is now `ScopeCross`, re-exported as
+  `sdk.PermissionBackup{Create,Delete,List,Read,Restore,Verify}`.
 - **BREAKING: a tenant's Custodian can no longer submit shares to the node
   barrier.** `barrier:unseal-share` was ScopeSelf and every tenant's built-in
   Custodian role grants it, so a tenant custodian could submit a wrong share
