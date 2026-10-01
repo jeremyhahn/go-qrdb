@@ -47,6 +47,10 @@ type embeddedRows struct {
 	schema gmssql.Schema
 	iter   gmssql.RowIter
 	closed atomic.Bool
+
+	// end ends the statement's command on the connection's session; nil
+	// for rows not opened as a command.
+	end func()
 }
 
 // Columns returns the names of the columns in the result set.
@@ -62,6 +66,9 @@ func (r *embeddedRows) Columns() []string {
 func (r *embeddedRows) Close() error {
 	if !r.closed.CompareAndSwap(false, true) {
 		return nil
+	}
+	if r.end != nil {
+		defer r.end()
 	}
 	return r.iter.Close(r.ctx)
 }

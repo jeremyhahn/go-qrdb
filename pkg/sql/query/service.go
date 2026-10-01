@@ -284,6 +284,13 @@ func run(ctx context.Context, eng *sqle.Engine, dbName, query string) (*service.
 	// rides on the context because the SQL layer reads a statement's lock
 	// clauses from it.
 	defer sess.SessionEnd()
+	// The request is one command, bracketed as go-mysql-server's MySQL
+	// handler brackets each of its own: the session resolves each table and
+	// servicer once for the statement (see provider's statement scope).
+	if err := sql.SessionCommandBegin(sess); err != nil {
+		return nil, err
+	}
+	defer sql.SessionCommandEnd(sess)
 	sqlCtx := sql.NewContext(ctx, sql.WithSession(sess), sql.WithQuery(query))
 	sqlCtx.SetCurrentDatabase(dbName)
 

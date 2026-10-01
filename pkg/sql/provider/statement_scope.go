@@ -39,10 +39,11 @@ import (
 // statement resolves each servicer and each definition once and reuses it.
 //
 // The scope is opened by QRDBSession.CommandBegin and closed by CommandEnd,
-// which go-mysql-server's MySQL handler calls around every command; a
-// surface that does not deliver command boundaries simply resolves fresh,
-// exactly as before. Nothing outlives the statement, so DDL committed by
-// another session is seen by this session's next statement.
+// which every SQL surface calls around every statement: go-mysql-server's
+// MySQL handler, the PostgreSQL wire, the ad-hoc query service and the
+// embedded driver. A caller that brackets nothing simply resolves fresh.
+// Nothing outlives the statement, so DDL committed by another session is
+// seen by this session's next statement.
 //
 // Only statements that cannot change a definition are memoized: a SELECT,
 // INSERT, UPDATE, DELETE or REPLACE (and the read-only SHOW, DESCRIBE,

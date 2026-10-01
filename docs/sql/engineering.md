@@ -448,7 +448,7 @@ resolved. So the provider memoizes, for the duration of one statement:
 
 | Rule | Why |
 |---|---|
-| The scope is opened by `QRDBSession.CommandBegin` and closed by `CommandEnd` | go-mysql-server's MySQL handler calls both around every command. A surface that does not (the in-process driver, the PostgreSQL wire, the ad-hoc query service) resolves on every lookup, exactly as before |
+| The scope is opened by `QRDBSession.CommandBegin` and closed by `CommandEnd` | every SQL surface brackets every statement with them: go-mysql-server's MySQL handler, the PostgreSQL wire (each executed statement, simple or extended), the ad-hoc query service (each request) and the embedded driver (`Exec`, `Prepare`, and a `Query` until its rows are closed). A caller that brackets nothing resolves on every lookup |
 | Only `SELECT`, `WITH`, `INSERT`, `UPDATE`, `DELETE`, `REPLACE`, `SHOW`, `DESCRIBE`/`DESC`, `EXPLAIN`, `TABLE` and `VALUES` statements are memoized — by their first keyword, after whitespace, comments and parentheses | none of them can change a definition. `CREATE`, `ALTER`, `DROP`, `RENAME`, `TRUNCATE`, `CALL` and `EXECUTE` re-resolve on every lookup, so a DDL statement sees its own changes; a statement opening with an executable comment (`/*! ... */`) is not memoized either |
 | The scope serves only the statement text it was first used with | a statement the engine runs on the same session while the command is open is not served another statement's answers |
 | A failed resolution is never memoized | the next lookup reports its own outcome |

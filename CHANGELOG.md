@@ -13,6 +13,12 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- **Every SQL surface resolves each table, view and servicer once per
+  statement.** In 0.27.0-alpha only the MySQL wire delivered the statement
+  boundaries this memoization needs; the PostgreSQL wire (each executed statement),
+  the ad-hoc query service (each request) and the embedded driver (`Exec`,
+  `Prepare`, and a `Query` until its rows are closed) now bracket each
+  statement as a command too.
 - **The SQL point-latency benchmark target is `make bench-sqlpk`** (was
   `make bench-sql-pk` in 0.27.0-alpha), matching its package,
   `test/performance/sqlpk`.

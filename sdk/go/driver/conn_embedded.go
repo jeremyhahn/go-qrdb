@@ -71,7 +71,13 @@ func (c *embeddedConn) PrepareContext(ctx context.Context, query string) (sqld.S
 	}
 
 	sqlCtx := c.newSQLContext(ctx, query)
-	if _, err := c.engine.PrepareQuery(sqlCtx, query); err != nil {
+	end, err := c.beginCommand()
+	if err != nil {
+		return nil, err
+	}
+	_, err = c.engine.PrepareQuery(sqlCtx, query)
+	end()
+	if err != nil {
 		return nil, &PrepareError{Query: query, Err: asSQLStateError(err, query)}
 	}
 
@@ -201,15 +207,23 @@ func (c *embeddedConn) QueryContext(ctx context.Context, query string, args []sq
 		return nil, &ConnClosedError{}
 	}
 
-	sqlCtx, schema, iter, err := c.run(ctx, query, args)
+	end, err := c.beginCommand()
 	if err != nil {
 		return nil, err
 	}
+	sqlCtx, schema, iter, err := c.run(ctx, query, args)
+	if err != nil {
+		end()
+		return nil, err
+	}
 
+	// The command lasts until the caller closes the rows: that is when the
+	// statement has finished running.
 	return &embeddedRows{
 		ctx:    sqlCtx,
 		schema: schema,
 		iter:   iter,
+		end:    end,
 	}, nil
 }
 
@@ -219,6 +233,11 @@ func (c *embeddedConn) ExecContext(ctx context.Context, query string, args []sql
 		return nil, &ConnClosedError{}
 	}
 
+	end, err := c.beginCommand()
+	if err != nil {
+		return nil, err
+	}
+	defer end()
 	sqlCtx, schema, iter, err := c.run(ctx, query, args)
 	if err != nil {
 		return nil, err
@@ -263,6 +282,11 @@ func (c *embeddedConn) run(ctx context.Context, query string, args []sqld.NamedV
 // execInternal runs a driver-issued statement (transaction control, ping) that
 // takes no arguments and returns no rows of interest.
 func (c *embeddedConn) execInternal(ctx context.Context, query string) (sqld.Result, error) {
+	end, err := c.beginCommand()
+	if err != nil {
+		return nil, err
+	}
+	defer end()
 	sqlCtx, schema, iter, err := c.run(ctx, query, nil)
 	if err != nil {
 		return nil, err
@@ -271,4 +295,19 @@ func (c *embeddedConn) execInternal(ctx context.Context, query string) (sqld.Res
 		return nil, &QueryExecError{Query: query, Err: asSQLStateError(drainErr, query)}
 	}
 	return &result{}, nil
+}
+
+// beginCommand brackets one statement as a command on the connection's
+// session, as go-mysql-server's MySQL handler brackets each of its own, and
+// returns the call that ends it. The session resolves each table and
+// servicer once for the statement in between (see the SQL provider's
+// statement scope).
+func (c *embeddedConn) beginCommand() (end func(), err error) {
+	if c.session == nil {
+		return func() {}, nil
+	}
+	if err := gmssql.SessionCommandBegin(c.session); err != nil {
+		return nil, err
+	}
+	return func() { gmssql.SessionCommandEnd(c.session) }, nil
 }

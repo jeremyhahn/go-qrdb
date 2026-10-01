@@ -298,6 +298,11 @@ func (h *ParseHandler) executeEager(ctx context.Context, trimmed, translated str
 	// the statement text the engine runs: the SQL layer reads a
 	// statement's row-lock intent from it (see docs/row-locking/).
 	sqlCtx := h.buildSQLContext(ctx, sql.WithQuery(translated))
+	end, err := beginCommand(sqlCtx)
+	if err != nil {
+		return nil, wireQueryError(trimmed, err)
+	}
+	defer end()
 
 	warningBaseline := len(sqlCtx.Warnings())
 
@@ -483,6 +488,11 @@ func (h *ParseHandler) executeDeferredCallback(
 	// Build a fresh sql.Context for execution, carrying the statement text
 	// (see executeEager).
 	sqlCtx := h.buildSQLContext(ctx, sql.WithQuery(translated))
+	end, err := beginCommand(sqlCtx)
+	if err != nil {
+		return wireQueryError(trimmed, err)
+	}
+	defer end()
 
 	warningBaseline := len(sqlCtx.Warnings())
 
@@ -994,6 +1004,18 @@ func (h *ParseHandler) emptyResult() (wire.PreparedStatements, error) {
 // package-level function to enable direct unit testing.
 func emptyResultFn(_ context.Context, writer wire.DataWriter, _ []wire.Parameter) error {
 	return writer.Complete("OK")
+}
+
+// beginCommand brackets one executed statement as a command on its
+// session, as go-mysql-server's MySQL handler brackets each of its own, and
+// returns the call that ends it. The session resolves each table and
+// servicer once for the statement in between (see provider's statement
+// scope).
+func beginCommand(sqlCtx *sql.Context) (end func(), err error) {
+	if err := sql.SessionCommandBegin(sqlCtx.Session); err != nil {
+		return nil, err
+	}
+	return func() { sql.SessionCommandEnd(sqlCtx.Session) }, nil
 }
 
 // buildSQLContext creates a go-mysql-server sql.Context from the connection
