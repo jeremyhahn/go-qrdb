@@ -89,7 +89,11 @@ ROLLBACK TO SAVEPOINT sp1;
 COMMIT;
 ```
 
-`ROLLBACK` is free — nothing was sent until `COMMIT`.
+`ROLLBACK` is free — nothing was sent until `COMMIT`. A statement that fails
+inside a transaction — a duplicate key on its third row, say — is undone whole
+and the transaction carries on with its earlier statements intact. Outside a
+transaction a multi-row statement is not all-or-nothing: the rows written before
+the failure stay committed.
 
 **Re-create tables from v0.20.0 through v0.21.0.** A relational table created
 by one of those releases is refused with **MySQL error 1459** (SQLSTATE 55000

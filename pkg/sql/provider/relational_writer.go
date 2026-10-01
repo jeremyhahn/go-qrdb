@@ -681,20 +681,42 @@ type relationalWriter struct {
 	table *RelationalTable
 }
 
-// StatementBegin marks the start of a statement. No-op: every write below
-// is applied immediately via its own Execute call; there is no in-flight
-// state to check-point.
-func (w *relationalWriter) StatementBegin(_ *sqle.Context) {}
+// StatementBegin marks the start of a statement. Inside an interactive
+// transaction it opens an implicit statement savepoint on the transaction's
+// WriteSet, so a statement that fails part way can be undone whole (see
+// writeset_statement.go). Outside one it does nothing: each autocommit row
+// write is its own compare-and-swap, committed before the next row is
+// written, and there is nothing in flight to check-point.
+func (w *relationalWriter) StatementBegin(ctx *sqle.Context) {
+	if ws := statementWriteSet(ctx); ws != nil {
+		ws.beginStatement()
+	}
+}
 
-// DiscardChanges discards changes made since StatementBegin. No-op: nothing
-// is buffered that could be discarded (see StatementBegin).
-func (w *relationalWriter) DiscardChanges(_ *sqle.Context, _ error) error { return nil }
+// DiscardChanges undoes everything the failed statement buffered into the
+// interactive transaction's WriteSet since StatementBegin, across every
+// table the statement edited. The transaction's earlier statements, its
+// row locks and its reads are kept. Outside a transaction it does nothing:
+// the rows the statement already wrote are committed (see StatementBegin).
+func (w *relationalWriter) DiscardChanges(ctx *sqle.Context, _ error) error {
+	if ws := statementWriteSet(ctx); ws != nil {
+		ws.discardStatement()
+	}
+	return nil
+}
 
-// StatementComplete marks the end of a statement. No-op.
-func (w *relationalWriter) StatementComplete(_ *sqle.Context) error { return nil }
+// StatementComplete marks the successful end of a statement, keeping what
+// it buffered.
+func (w *relationalWriter) StatementComplete(ctx *sqle.Context) error {
+	if ws := statementWriteSet(ctx); ws != nil {
+		ws.completeStatement()
+	}
+	return nil
+}
 
-// Close finalizes the writer. No-op: every write is durable as soon as its
-// Execute call returns.
+// Close finalizes the writer. No-op: an autocommit write is durable as soon
+// as its Execute call returns, and a buffered one is the transaction's to
+// commit.
 func (w *relationalWriter) Close(_ *sqle.Context) error { return nil }
 
 // Insert inserts row, together with one physical entry per secondary index

@@ -262,6 +262,10 @@ type WriteSet struct {
 
 	savepoints map[string]int // name -> undoLog length at the time of the mark
 
+	// statements is the stack of implicit statement savepoints: the undoLog
+	// length at each open StatementBegin. See writeset_statement.go.
+	statements []int
+
 	totalBytes int
 
 	// resolutions holds one resolutionGuard per relational table this
@@ -813,7 +817,25 @@ func (ws *WriteSet) RollbackTo(name string) error {
 	if !ok {
 		return &SavepointNotFoundError{Name: name}
 	}
+	ws.undoTo(mark)
 
+	for n, m := range ws.savepoints {
+		if m > mark {
+			delete(ws.savepoints, n)
+		}
+	}
+	return nil
+}
+
+// undoTo undoes every buffered mutation recorded at or after position mark
+// of the undo log, in reverse order, restoring each affected key to its
+// state before the mark (or removing it entirely if the mark predates its
+// first touch). A mark beyond the end of the log -- one taken before the
+// write-set was emptied by abortWith -- has nothing left to undo.
+func (ws *WriteSet) undoTo(mark int) {
+	if mark >= len(ws.undoLog) {
+		return
+	}
 	for i := len(ws.undoLog) - 1; i >= mark; i-- {
 		rec := ws.undoLog[i]
 		if !rec.existed {
@@ -832,13 +854,6 @@ func (ws *WriteSet) RollbackTo(name string) error {
 	}
 	ws.undoLog = ws.undoLog[:mark]
 	ws.rebuildOrder()
-
-	for n, m := range ws.savepoints {
-		if m > mark {
-			delete(ws.savepoints, n)
-		}
-	}
-	return nil
 }
 
 // Release discards name from the set of active savepoints without

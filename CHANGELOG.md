@@ -473,6 +473,13 @@ are not reconstructed here — their history is in the git log.
   given the same value and both commit; a value a committed row held failed
   only at `COMMIT`. Such an `UPDATE` now fails with 1062 at the statement, as it
   does in autocommit.
+- **A statement that failed part way inside a transaction kept its partial
+  effects.** `INSERT ... VALUES (1), (2), (5)` failing on a duplicate `5` left
+  rows 1 and 2 to be committed; a foreign-key cascade that timed out on a
+  locked child row left its parent deleted. A failed DML statement is now undone
+  whole — across every table it edited — while the transaction's earlier
+  statements are kept, as in InnoDB. Outside a transaction a multi-row statement
+  is still not atomic: each row is its own commit.
 
 ### Security
 

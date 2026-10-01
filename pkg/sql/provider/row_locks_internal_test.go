@@ -333,10 +333,9 @@ func TestPessimistic_ForeignKeyCascade_LocksTheChildRow(t *testing.T) {
 	deleter.must("BEGIN")
 	_, err := deleter.exec("DELETE FROM parents WHERE id = 1")
 	requireSQLError(t, err, mysql.ERLockWaitTimeout)
-	// The timeout fails the statement without undoing it: the parent row the
-	// cascade had already deleted stays in the write-set (see the Timeouts
-	// section of docs/row-locking/architecture.md). ROLLBACK discards it.
-	assert.Empty(t, deleter.must("SELECT * FROM parents"))
+	// The timed-out statement is undone whole, parent delete included (see
+	// statement_atomicity_test.go).
+	require.Len(t, deleter.must("SELECT * FROM parents"), 1)
 	deleter.must("ROLLBACK")
 	require.Len(t, admin.must("SELECT * FROM parents"), 1, "the rolled-back delete left the parent")
 

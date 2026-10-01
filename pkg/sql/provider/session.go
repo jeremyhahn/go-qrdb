@@ -382,9 +382,15 @@ func (s *QRDBSession) Rollback(ctx *sqle.Context, _ sqle.Transaction) error {
 // transaction's row locks must be released rather than left to expire.
 var _ sqle.LifecycleAwareSession = (*QRDBSession)(nil)
 
-// CommandBegin implements sql.LifecycleAwareSession; a command needs no
-// preparation.
-func (s *QRDBSession) CommandBegin() error { return nil }
+// CommandBegin implements sql.LifecycleAwareSession. No statement is in
+// flight at a command boundary, so any statement savepoint still open is a
+// leftover and is dropped (see WriteSet.resetStatements).
+func (s *QRDBSession) CommandBegin() error {
+	if ws := s.ws.Load(); ws != nil {
+		ws.resetStatements()
+	}
+	return nil
+}
 
 // CommandEnd implements sql.LifecycleAwareSession; a command's row locks
 // belong to its transaction, not to the command.

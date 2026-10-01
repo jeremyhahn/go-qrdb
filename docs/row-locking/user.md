@@ -83,10 +83,11 @@ SET lock_timeout = '5s';            -- PostgreSQL
 The default is 50 seconds on both wires. A timeout fails only the statement
 that waited; your transaction is still open and still holds the locks it had.
 
-A statement that changed several rows before it timed out is failed, not
-undone: the rows it already changed stay in your transaction (or, outside a
-transaction, are already committed). If that partial change must not be kept,
-`ROLLBACK` — or `ROLLBACK TO SAVEPOINT` a savepoint taken before the statement.
+Inside a transaction, a statement that changed several rows before it timed
+out is undone whole — none of its changes stay — and your earlier statements
+are kept. Outside a transaction it is not: each row it wrote before the timeout
+is already committed. Put a multi-row statement inside a transaction when it
+must be all-or-nothing.
 
 ## Troubleshooting
 

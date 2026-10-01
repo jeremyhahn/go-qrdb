@@ -350,7 +350,10 @@ listed to SQL clients or through ordinary key enumeration.
 - `pkg/sql/provider`: FOR UPDATE / FOR SHARE serialisation with current reads,
   lock-wait timeout, NOWAIT, deadlock victim and aborted state, pessimistic
   increments / inserts / deletes / autocommit DML, the database default and the
-  session override, release at ROLLBACK, DDL and session end.
+  session override, release at ROLLBACK, DDL and session end. Statement
+  atomicity inside a transaction: a cascade that times out on a locked child
+  row leaves its parent in place, and a duplicate key on a statement's last
+  row undoes the statement's other rows.
 - Wire: `pkg/sql/mysql` over a real MySQL wire connection (NOWAIT 3572, timeout
   1205, deadlock 1213, SKIP LOCKED 1235, `SET qrdb_concurrency`, a dropped
   connection releasing its locks); `pkg/sql/pgsql` through the parse handler
