@@ -13,7 +13,7 @@ are not reconstructed here — their history is in the git log.
 
 ## [0.25.1-alpha] - 2026-10-01
 
-Fixes clustered qrdbd under system barrier protection `none`, which could not start on go-quicraft 0.15, and encrypts the SDK clustered node's Raft WAL. BREAKING (on disk): a sealed SDK clustered node refuses a WAL written by an earlier release; start it from an empty WAL directory.
+Fixes clustered qrdbd under system barrier protection `none`, which could not start on go-quicraft 0.15; encrypts the SDK clustered node's Raft WAL; and lets a host supply the `/v1/ca/bootstrap` bundle instead of colliding with the route. BREAKING (on disk): a sealed SDK clustered node refuses a WAL written by an earlier release; start it from an empty WAL directory.
 
 ### Changed — BREAKING
 
@@ -37,8 +37,21 @@ Fixes clustered qrdbd under system barrier protection `none`, which could not st
   peers. qrdbd's own unmarked WALs are adopted, because its format did not
   change.
 
+### Added
+
+- **`sdk.WithBootstrapCABundle` (`server.WithBootstrapCABundle`): a host
+  supplies the `/v1/ca/bootstrap` bundle and qrdb serves the one route.** The
+  provider, `func(ctx) ([]byte, error)`, is read per request, and only its
+  CERTIFICATE blocks are served. Configuring it together with qrdb's cluster
+  CA (`WithCABootstrap`) refuses startup with `*sdk.CABootstrapConflictError`.
+
 ### Fixed
 
+- **`/v1/ca/bootstrap` is no longer claimed when nothing is served there.**
+  The REST server reserved the path whether or not a bundle was configured, so
+  a host serving its own first-contact bundle there (go-xkms's xkmsd)
+  panicked at boot with a route collision. With no source configured the path
+  is not registered at all.
 - **A cluster booting under system protection `none` starts again.**
   go-quicraft 0.15 accepts a caller-supplied LogDB beside `WithBarrier` only
   if it declares itself encrypted at rest. The multiplex's shared waldb
