@@ -36,10 +36,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 /** A holder's role. */
 export type HolderRole = "so" | "custodian";
 
-/** Where a holder belongs: a system-barrier domain or a tenant barrier. */
+/** Where a holder belongs: a system-barrier domain, a tenant barrier or a database barrier. */
 export interface HolderScope {
   domain?: "unseal" | "recovery";
   tenantId?: string;
+  database?: string;
 }
 
 /** A holder's key material and files on disk. */
@@ -119,6 +120,7 @@ export function newHolder(username: string, role: HolderRole = "so"): Holder {
 
 /** The REST route that enrols a holder in scope. */
 export function enrolRoute(adminUrl: string, scope: HolderScope = {}): string {
+  if (scope.database) return `${adminUrl}/v1/databases/${encodeURIComponent(scope.database)}/barrier/officers`;
   if (scope.tenantId) return `${adminUrl}/v1/tenants/${encodeURIComponent(scope.tenantId)}/barrier/officers`;
   if (scope.domain === "recovery") return `${adminUrl}/v1/barrier/recovery/officers`;
   return `${adminUrl}/v1/barrier/officers`;
@@ -177,6 +179,9 @@ export function qrdbAs(daemon: HolderDaemon, holder: Holder, args: string[]): Cl
 
 /** The CLI verbs and scope flags for a holder scope. */
 function scoped(scope: HolderScope, verb: "officer" | "quorum"): string[] {
+  if (scope.database) {
+    return ["database", verb === "officer" ? "barrier-officer" : "barrier-quorum", "--database", scope.database];
+  }
   if (scope.tenantId) {
     return ["tenant", verb === "officer" ? "barrier-officer" : "barrier-quorum", "--tenant-id", scope.tenantId];
   }

@@ -216,4 +216,59 @@ test.describe("Per-tenant barrier (passphrase, volume-pool backed)", () => {
     expect(submitShare(daemon, holders[2]!, "rekey", scope).status).not.toBe(0);
     expect(quorum(daemon, holders, 2, "rekey", scope)).toMatchObject({ complete: true, share_count: 2 });
   });
+
+  test("per-database Shamir: created sealed with no secret, share-free init, CLI claims, quorum seal and unseal, rekey", async () => {
+    const database = "vault";
+    const scope = { database };
+    // The create the web UI's wizard sends for a Shamir barrier.
+    const create = await https("POST", `${daemon.adminUrl}/v1/databases`, {
+      name: database,
+      engine: "kv",
+      backend: "file",
+      dataDir: join(daemon.dataDir, "databases-e2e", database),
+      barrier: { enabled: true, mode: "shamir", sharesRequired: 2, sharesTotal: 2 },
+    });
+    expect(create.status).toBe(201);
+    expect(create.json).toMatchObject({ name: database, status: "sealed", barrier: { enabled: true, mode: "shamir" } });
+
+    // A Shamir barrier takes no secret.
+    const withSecret = await https("POST", `${daemon.adminUrl}/v1/databases`, {
+      name: "vault-secret",
+      engine: "kv",
+      backend: "file",
+      dataDir: join(daemon.dataDir, "databases-e2e", "vault-secret"),
+      barrier: { enabled: true, mode: "shamir", sharesRequired: 2, sharesTotal: 2, secret: "x" },
+    });
+    expect(withSecret.status).toBe(400);
+
+    const holders = ["d-a", "d-b"].map((n, i) => newHolder(n, i === 0 ? "so" : "custodian"));
+    const { request: apiRequest } = await import("@playwright/test");
+    const req = await apiRequest.newContext({ ignoreHTTPSErrors: true });
+    try {
+      await enrolHolders(req, daemon.adminUrl, holders, scope);
+    } finally {
+      await req.dispose();
+    }
+    const listed = await https("GET", `${daemon.adminUrl}/v1/databases/${database}/barrier/officers`);
+    expect(listed.status).toBe(200);
+    expect(listed.json.officers.map((o: { username: string }) => o.username).sort()).toEqual(["d-a", "d-b"]);
+
+    const init = await https("POST", `${daemon.adminUrl}/v1/databases/${database}/barrier/shamir/initialize`, {});
+    expect(init.status).toBe(200);
+    expect(init.json).toEqual({ threshold: 2, total_shares: 2, share_count: 2 });
+
+    for (const h of holders) mustClaim(daemon, h, scope);
+
+    // A single caller cannot seal it; a quorum of its holders does.
+    const single = await https("POST", `${daemon.adminUrl}/v1/databases/${database}/seal`, {});
+    expect(single.status).toBe(422);
+    expect(quorum(daemon, holders, 2, "seal", scope)).toMatchObject({ complete: true });
+    expect((await https("GET", `${daemon.adminUrl}/v1/databases/${database}/barrier/status`)).json.sealed).toBe(true);
+    expect(quorum(daemon, holders, 2, "unseal", scope)).toMatchObject({ complete: true });
+    expect((await https("GET", `${daemon.adminUrl}/v1/databases/${database}/barrier/status`)).json.sealed).toBe(false);
+
+    const rekey = await https("POST", `${daemon.adminUrl}/v1/databases/${database}/barrier/rekey/start`, { threshold: 2 });
+    expect(rekey.status).toBe(200);
+    expect(quorum(daemon, holders, 2, "rekey", scope)).toMatchObject({ complete: true, share_count: 2 });
+  });
 });
