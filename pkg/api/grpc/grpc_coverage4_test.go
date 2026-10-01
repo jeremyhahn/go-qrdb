@@ -298,6 +298,14 @@ func (m *databaseSvcMini) UpdateBarrierForTenant(_ context.Context, _ string, _ 
 func (m *databaseSvcMini) UpdateConnectionForTenant(_ context.Context, _ string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
 	return m.updateResult, m.updateErr
 }
+
+func (m *databaseSvcMini) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
+	return &database.DatabaseInfo{Name: name, SQL: sqlCfg}, nil
+}
+
+func (m *databaseSvcMini) UpdateSQLForTenant(_ context.Context, name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
+	return m.UpdateSQL(name, sqlCfg)
+}
 func (m *databaseSvcMini) ScaleForTenant(_ context.Context, _ string, _ int) (*database.DatabaseInfo, error) {
 	return m.updateResult, m.updateErr
 }

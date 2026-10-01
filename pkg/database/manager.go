@@ -360,6 +360,7 @@ func (m *Manager) Open(name string) (*Database, error) {
 		Raft:         meta.Raft,
 		Barrier:      meta.Barrier,
 		Connection:   meta.Connection,
+		SQL:          meta.SQL,
 	}
 	if meta.Barrier != nil && meta.Barrier.Enabled && !cfg.HasDedicatedStore() {
 		return nil, &SharedStoreBarrierUnsupportedError{Name: name, Backend: cfg.Backend}
@@ -551,6 +552,7 @@ func (m *Manager) UpdateProtocol(name string, protocol ProtocolConfig) error {
 		Raft:         cfg.Raft,
 		Barrier:      cfg.Barrier,
 		Connection:   cfg.Connection,
+		SQL:          cfg.SQL,
 	}
 	dbDir := m.dbDir(name)
 	if err := m.writeMeta(dbDir, meta); err != nil {
@@ -687,6 +689,30 @@ func (m *Manager) UpdateConnection(name string, conn *DatabaseConnectionConfig) 
 	return m.rewriteMeta(name, db)
 }
 
+// UpdateSQL replaces the SQL settings of a database, in memory and in its
+// meta.json. A nil sqlCfg restores the defaults.
+func (m *Manager) UpdateSQL(name string, sqlCfg *SQLConfig) error {
+	if sqlCfg != nil {
+		if err := sqlCfg.Validate(); err != nil {
+			return err
+		}
+	}
+	val, ok := m.databases.Load(name)
+	if !ok {
+		return &NotFoundError{Name: name}
+	}
+	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
+	db.updateSQL(sqlCfg)
+
+	if err := m.rewriteMeta(name, db); err != nil {
+		return err
+	}
+	m.logger.Info("database sql config updated",
+		slog.String("name", name),
+		slog.String("concurrency", string(sqlCfg.EffectiveConcurrency())))
+	return nil
+}
+
 // rewriteMeta rebuilds and rewrites the meta.json for a database from its
 // current in-memory configuration.
 func (m *Manager) rewriteMeta(name string, db *Database) error {
@@ -704,6 +730,7 @@ func (m *Manager) rewriteMeta(name string, db *Database) error {
 		Raft:         cfg.Raft,
 		Barrier:      cfg.Barrier,
 		Connection:   cfg.Connection,
+		SQL:          cfg.SQL,
 	}
 	dbDir := m.dbDir(name)
 	return m.writeMeta(dbDir, meta)

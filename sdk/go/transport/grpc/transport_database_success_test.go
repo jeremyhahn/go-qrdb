@@ -92,6 +92,14 @@ func (f *fakeDatabaseServicer) UpdateBarrierForTenant(_ context.Context, _ strin
 func (f *fakeDatabaseServicer) UpdateConnectionForTenant(_ context.Context, _ string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
 	return &database.DatabaseInfo{Name: "testdb"}, nil
 }
+
+func (f *fakeDatabaseServicer) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
+	return &database.DatabaseInfo{Name: name, SQL: sqlCfg}, nil
+}
+
+func (f *fakeDatabaseServicer) UpdateSQLForTenant(_ context.Context, name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
+	return f.UpdateSQL(name, sqlCfg)
+}
 func (f *fakeDatabaseServicer) ScaleForTenant(_ context.Context, name string, targetReplicas int) (*database.DatabaseInfo, error) {
 	return &database.DatabaseInfo{Name: name, Replicas: targetReplicas}, nil
 }

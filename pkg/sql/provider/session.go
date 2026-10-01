@@ -15,6 +15,7 @@
 package provider
 
 import (
+	"context"
 	"strings"
 	"sync/atomic"
 
@@ -266,7 +267,14 @@ func (s *QRDBSession) writeSet() *WriteSet {
 // once per statement in autocommit.
 func (s *QRDBSession) StartTransaction(ctx *sqle.Context, tCharacteristic sqle.TransactionCharacteristic) (sqle.Transaction, error) {
 	readOnly := tCharacteristic == sqle.ReadOnly
-	s.ws.Store(newWriteSet(readOnly, s.isolationLevel(ctx)))
+	ws := newWriteSet(readOnly, s.isolationLevel(ctx))
+	ws.concurrency = s.concurrencyChoice(ctx)
+	if prev := s.ws.Swap(ws); prev != nil {
+		// A transaction is only ever replaced after it was committed or
+		// rolled back, which already released its row locks; this is the
+		// backstop for a statement that failed before either ran.
+		_ = prev.releaseLocks(ctx)
+	}
 	return &transactionToken{readOnly: readOnly}, nil
 }
 
@@ -294,14 +302,38 @@ func (s *QRDBSession) CommitTransaction(ctx *sqle.Context, _ sqle.Transaction) e
 	if ws == nil {
 		return nil
 	}
+	if ws.aborted != nil {
+		// The transaction was already rolled back as a deadlock victim.
+		// Ending it is what the client must do next; an explicit COMMIT
+		// is told once more that nothing was committed.
+		s.ws.CompareAndSwap(ws, nil)
+		explicit := ctx.GetIgnoreAutoCommit()
+		s.endTransaction()
+		if explicit {
+			return abortedError(ws.aborted)
+		}
+		return nil
+	}
 
 	resp, err := ws.commit(ctx)
 	if err != nil {
+		// The write set stays for a retry, and so do the locks that
+		// protect it.
 		return err
 	}
 	s.ws.CompareAndSwap(ws, nil)
+	// The commit is decided -- applied, or lost to a conflict -- so the
+	// transaction's row locks have done their job.
+	_ = ws.releaseLocks(ctx)
 
 	if !resp.Succeeded {
+		// The transaction is over -- rolled back, as InnoDB rolls back a
+		// transaction that hits ER_LOCK_DEADLOCK -- so the session leaves
+		// it too. go-mysql-server ends its own transaction only when COMMIT
+		// succeeds; left to it, the session would stay "in" a transaction
+		// that no longer exists, and the next statement would run in
+		// neither autocommit nor a transaction anyone can commit.
+		s.endTransaction()
 		if stale, serr := ws.staleResolution(ctx); serr == nil && stale != nil {
 			return sqle.ErrLockDeadlock.Wrap(stale, stale.Error())
 		}
@@ -327,12 +359,45 @@ func (s *QRDBSession) CommitTransaction(ctx *sqle.Context, _ sqle.Transaction) e
 	return nil
 }
 
+// endTransaction ends go-mysql-server's view of the session's transaction,
+// exactly as its own COMMIT and ROLLBACK do on success, so the next
+// statement starts a new one.
+func (s *QRDBSession) endTransaction() {
+	s.SetIgnoreAutoCommit(false)
+	s.SetTransaction(nil)
+}
+
 // Rollback discards the session's buffered write-set unconditionally. There
 // is nothing to undo against the store itself: nothing in the write-set was
 // ever proposed, so discarding the buffer is the entire rollback.
-func (s *QRDBSession) Rollback(_ *sqle.Context, _ sqle.Transaction) error {
-	s.ws.Store(nil)
+func (s *QRDBSession) Rollback(ctx *sqle.Context, _ sqle.Transaction) error {
+	if ws := s.ws.Swap(nil); ws != nil {
+		_ = ws.releaseLocks(ctx)
+	}
 	return nil
+}
+
+// Compile-time interface assertion: go-mysql-server tells a
+// LifecycleAwareSession when its connection ends, which is when an open
+// transaction's row locks must be released rather than left to expire.
+var _ sqle.LifecycleAwareSession = (*QRDBSession)(nil)
+
+// CommandBegin implements sql.LifecycleAwareSession; a command needs no
+// preparation.
+func (s *QRDBSession) CommandBegin() error { return nil }
+
+// CommandEnd implements sql.LifecycleAwareSession; a command's row locks
+// belong to its transaction, not to the command.
+func (s *QRDBSession) CommandEnd() {}
+
+// SessionEnd implements sql.LifecycleAwareSession: the connection is gone,
+// so its open transaction is abandoned and every row lock it holds is
+// released now. A connection that dies without this call is covered by the
+// locks' lease expiring.
+func (s *QRDBSession) SessionEnd() {
+	if ws := s.ws.Swap(nil); ws != nil {
+		_ = ws.releaseLocks(context.Background())
+	}
 }
 
 // CreateSavepoint marks the current position of the session's write-set
@@ -408,6 +473,13 @@ func requireAutocommit(ctx *sqle.Context, table string) error {
 func flushPendingWriteSet(ctx *sqle.Context) error {
 	sess, ok := ctx.Session.(*QRDBSession)
 	if !ok {
+		return nil
+	}
+	if ws := sess.writeSet(); ws != nil && ws.aborted != nil {
+		// A transaction already rolled back as a deadlock victim has
+		// nothing to commit; the DDL simply ends it, as MySQL's implicit
+		// commit ends any transaction.
+		sess.ws.CompareAndSwap(ws, nil)
 		return nil
 	}
 	return sess.CommitTransaction(ctx, ctx.GetTransaction())

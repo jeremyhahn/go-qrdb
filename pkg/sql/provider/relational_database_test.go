@@ -150,6 +150,13 @@ type fakeRelationalRegistry struct {
 	collectionSvc service.CollectionServicer
 	collectionErr error
 
+	// leaseSvc and watchSvc back the row-lock table; nil (the default)
+	// leaves a relational table without one.
+	leaseSvc service.LeaseServicer
+	leaseErr error
+	watchSvc service.WatchServicer
+	watchErr error
+
 	// mu guards calls: a registry is resolved from every concurrent
 	// statement a SQL engine runs, and this double must be as safe for that
 	// as the production registry.
@@ -182,10 +189,10 @@ func (r *fakeRelationalRegistry) MVCCService(tenantID, db string) (service.MVCCK
 }
 
 func (r *fakeRelationalRegistry) WatchService(string, string) (service.WatchServicer, error) {
-	return nil, nil
+	return r.watchSvc, r.watchErr
 }
 func (r *fakeRelationalRegistry) LeaseService(string, string) (service.LeaseServicer, error) {
-	return nil, nil
+	return r.leaseSvc, r.leaseErr
 }
 func (r *fakeRelationalRegistry) IndexService(string, string) (service.IndexServicer, error) {
 	return nil, nil

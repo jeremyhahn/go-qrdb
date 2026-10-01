@@ -428,6 +428,57 @@ func (e *EtcdConfig) Validate() error {
 }
 
 // ---------------------------------------------------------------------------
+// SQL configuration
+// ---------------------------------------------------------------------------
+
+// Concurrency is a database's default SQL concurrency mode: whether DML in
+// an SQL transaction takes row locks (pessimistic) or relies on the
+// commit-time compare-and-swap alone (optimistic). SELECT ... FOR UPDATE and
+// FOR SHARE take row locks in either mode. See docs/row-locking/.
+type Concurrency string
+
+const (
+	// ConcurrencyOptimistic is the default: DML takes no locks, and a
+	// conflicting commit fails with MySQL 1213.
+	ConcurrencyOptimistic Concurrency = "optimistic"
+
+	// ConcurrencyPessimistic makes DML take exclusive row locks, with current
+	// reads, so concurrent writers of a row wait instead of failing at commit.
+	ConcurrencyPessimistic Concurrency = "pessimistic"
+)
+
+// concurrencies is the set of accepted modes.
+var concurrencies = map[Concurrency]bool{
+	ConcurrencyOptimistic:  true,
+	ConcurrencyPessimistic: true,
+}
+
+// SQLConfig holds a database's SQL settings.
+type SQLConfig struct {
+	// Concurrency is the database's default concurrency mode. Empty means
+	// ConcurrencyOptimistic.
+	Concurrency Concurrency `yaml:"concurrency" json:"concurrency,omitempty"`
+}
+
+// Validate refuses a concurrency mode that is neither empty nor one of the
+// defined modes.
+func (c *SQLConfig) Validate() error {
+	if c.Concurrency == "" || concurrencies[c.Concurrency] {
+		return nil
+	}
+	return &InvalidConcurrencyError{Concurrency: string(c.Concurrency)}
+}
+
+// EffectiveConcurrency returns the mode c selects: ConcurrencyOptimistic for
+// a nil config or an empty mode.
+func (c *SQLConfig) EffectiveConcurrency() Concurrency {
+	if c == nil || c.Concurrency == "" {
+		return ConcurrencyOptimistic
+	}
+	return c.Concurrency
+}
+
+// ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 
@@ -459,6 +510,7 @@ type DatabaseConfig struct {
 	Raft         *DatabaseRaftConfig       `yaml:"raft"                    json:"raft,omitempty"`
 	Barrier      *DatabaseBarrierConfig    `yaml:"barrier"                 json:"barrier,omitempty"`
 	Connection   *DatabaseConnectionConfig `yaml:"connection"              json:"connection,omitempty"`
+	SQL          *SQLConfig                `yaml:"sql"                     json:"sql,omitempty"`
 }
 
 // Directory names a volume-isolated tenant's own Raft host keeps under
@@ -539,6 +591,12 @@ func (c *DatabaseConfig) Validate() error {
 		}
 	}
 
+	if c.SQL != nil {
+		if err := c.SQL.Validate(); err != nil {
+			return err
+		}
+	}
+
 	// Validate per-database storage codec when specified.
 	if c.StorageCodec != "" {
 		available := codec.AvailableCodecs()
@@ -614,6 +672,7 @@ type DatabaseMeta struct {
 	Raft         *DatabaseRaftConfig       `json:"raft,omitempty"`
 	Barrier      *DatabaseBarrierConfig    `json:"barrier,omitempty"`
 	Connection   *DatabaseConnectionConfig `json:"connection,omitempty"`
+	SQL          *SQLConfig                `json:"sql,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -637,4 +696,5 @@ type DatabaseInfo struct {
 	Raft         *DatabaseRaftConfig       `json:"raft,omitempty"`
 	Barrier      *DatabaseBarrierConfig    `json:"barrier,omitempty"`
 	Connection   *DatabaseConnectionConfig `json:"connection,omitempty"`
+	SQL          *SQLConfig                `json:"sql,omitempty"`
 }

@@ -50,6 +50,14 @@ var (
 		`\?` + // placeholder from $N replacement
 		`)::([A-Za-z_][A-Za-z0-9_]*)`) // type name: single word, no spaces
 
+	// noKeyUpdateRe and keyShareRe match PostgreSQL's two weaker row-lock
+	// strengths, which have no MySQL spelling. QRDB's lock table has two
+	// modes (see docs/row-locking), so FOR NO KEY UPDATE locks as FOR UPDATE
+	// and FOR KEY SHARE as FOR SHARE -- each the next-stronger mode, never a
+	// weaker one.
+	noKeyUpdateRe = regexp.MustCompile(`(?i)\bFOR\s+NO\s+KEY\s+UPDATE\b`)
+	keyShareRe    = regexp.MustCompile(`(?i)\bFOR\s+KEY\s+SHARE\b`)
+
 	// limitAllRe matches LIMIT ALL (case-insensitive) and removes it.
 	limitAllRe = regexp.MustCompile(`(?i)\bLIMIT\s+ALL\b`)
 
@@ -270,6 +278,12 @@ func (t *Translator) Translate(query string) (string, error) {
 	// after step 3 so one spelling -- backticked or bare -- covers every
 	// input quoting.
 	result = StripPublicSchemaQualifier(result)
+
+	// 3c. Map PostgreSQL's FOR NO KEY UPDATE / FOR KEY SHARE onto the two
+	// lock strengths the engine knows. Runs before reserved-word quoting
+	// (step 4), which would otherwise quote the bare KEY inside them.
+	result = applyOutsideRegions(result, noKeyUpdateRe, "FOR UPDATE")
+	result = applyOutsideRegions(result, keyShareRe, "FOR SHARE")
 
 	// 4. Backtick-quote MySQL/GMS reserved words that appear as bare
 	// identifiers. This must run after double-quote conversion (step 3)

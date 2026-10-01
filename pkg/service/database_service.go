@@ -78,6 +78,9 @@ type DatabaseServicer interface {
 	// UpdateConnection updates the remote connection configuration for a database.
 	UpdateConnection(name string, conn *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error)
 
+	// UpdateSQL updates a database's SQL settings -- its sql.concurrency.
+	UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error)
+
 	// SealDatabase seals the encryption barrier for a database after verifying
 	// the caller's tenant owns it (system tenant may target any database).
 	SealDatabase(ctx context.Context, name string) error
@@ -120,6 +123,9 @@ type DatabaseServicer interface {
 
 	// UpdateConnectionForTenant updates connection config with tenant enforcement.
 	UpdateConnectionForTenant(ctx context.Context, name string, conn *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error)
+
+	// UpdateSQLForTenant updates SQL settings with tenant enforcement.
+	UpdateSQLForTenant(ctx context.Context, name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error)
 
 	// ScaleForTenant changes the replication factor of a dedicated-raft
 	// database after verifying tenant ownership and quota.
@@ -880,6 +886,21 @@ func (s *DatabaseService) UpdateConnection(name string, conn *database.DatabaseC
 	return &info, nil
 }
 
+// UpdateSQL updates the SQL settings of the named database -- its
+// sql.concurrency, see docs/row-locking/ -- and returns the updated runtime
+// information.
+func (s *DatabaseService) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
+	if err := s.manager.UpdateSQL(name, sqlCfg); err != nil {
+		return nil, err
+	}
+	db, err := s.manager.Get(name)
+	if err != nil {
+		return nil, err
+	}
+	info := db.Info()
+	return &info, nil
+}
+
 // authorizeDatabaseTenant verifies that the caller bound to ctx is permitted
 // to perform a per-database control operation on the named database. Database
 // names are a single global namespace, so a per-database barrier operation
@@ -1530,6 +1551,18 @@ func (s *DatabaseService) UpdateConnectionForTenant(ctx context.Context, name st
 		return s.UpdateConnection(name, conn)
 	}
 	if err := s.manager.UpdateConnectionForTenant(ctx, name, conn); err != nil {
+		return nil, err
+	}
+	return s.GetForTenant(ctx, name)
+}
+
+// UpdateSQLForTenant updates the SQL settings of the named database with
+// tenant enforcement and returns the updated runtime information.
+func (s *DatabaseService) UpdateSQLForTenant(ctx context.Context, name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
+	if tenant.IsSystemTenant(tenant.FromContext(ctx)) {
+		return s.UpdateSQL(name, sqlCfg)
+	}
+	if err := s.manager.UpdateSQLForTenant(ctx, name, sqlCfg); err != nil {
 		return nil, err
 	}
 	return s.GetForTenant(ctx, name)

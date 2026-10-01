@@ -246,6 +246,24 @@ func (d *Database) updateBarrier(barrier *DatabaseBarrierConfig) {
 	}
 }
 
+// SQLConfig returns the database's SQL settings, nil when none were ever
+// set (which means the defaults).
+func (d *Database) SQLConfig() *SQLConfig {
+	return d.config.Load().SQL
+}
+
+// updateSQL atomically replaces the SQL settings.
+func (d *Database) updateSQL(sqlCfg *SQLConfig) {
+	for {
+		old := d.config.Load()
+		updated := *old
+		updated.SQL = sqlCfg
+		if d.config.CompareAndSwap(old, &updated) {
+			return
+		}
+	}
+}
+
 // updateConnection atomically replaces the connection configuration.
 func (d *Database) updateConnection(conn *DatabaseConnectionConfig) {
 	for {
@@ -276,6 +294,7 @@ func (d *Database) Info() DatabaseInfo {
 		Raft:         cfg.Raft,
 		Barrier:      cfg.Barrier,
 		Connection:   cfg.Connection,
+		SQL:          cfg.SQL,
 	}
 	if cfg.Raft != nil {
 		info.ShardID = cfg.Raft.ShardID

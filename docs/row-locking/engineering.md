@@ -26,25 +26,71 @@ type Deps struct {
 	Watch service.WatchServicer
 }
 
-func New(deps Deps, scope string) (*Table, error)
+// New returns the lock table of one store; scope is "<tenant>/<database>".
+func New(deps Deps, scope string, opts ...Option) (*Table, error)
+func WithLeaseTTL(seconds int64) Option
+func (t *Table) Scope() string
 
 // Owner is one transaction's lock holder. Its zero value is not usable;
 // NewOwner allocates its identity.
 func NewOwner() *Owner
 func (o *Owner) Acquire(ctx context.Context, t *Table, keys []string, mode Mode, wait time.Duration) error
 func (o *Owner) Holds(key string, mode Mode) bool
+func (o *Owner) Active() bool
 func (o *Owner) Release(ctx context.Context) error
 func (o *Owner) ID() string
+
+const Prefix = "__sys:rowlock/"
+const DefaultLeaseTTL int64 = 10
+const MaxDetectionRecords = 10_000
+const SQLCodeLockWaitTimeout = 1205
+const SQLCodeLockNowait = 3572
+
+// Errors: LockWaitTimeoutError, LockNotAvailableError, DeadlockError,
+// LockLostError, ScopeMismatchError, OwnerReleasedError, InvalidModeError,
+// MissingDependencyError, CorruptRecordError.
 ```
 
 `pkg/sql/provider`:
 
 ```go
 const ConcurrencyVariable = "qrdb_concurrency"           // database | optimistic | pessimistic
+const ConcurrencyDatabase = "database"
 const LockWaitTimeoutVariable = "innodb_lock_wait_timeout" // seconds, 1..1073741824, default 50
+const SQLCodeSkipLockedUnsupported = 1235
+
+// SQLConfigResolver resolves a database's SQL settings; a provider built
+// over a database.Manager uses the manager's catalog.
+type SQLConfigResolver func(tenantID, name string) *database.SQLConfig
+func WithSQLConfig(resolve SQLConfigResolver) func(*Provider)
+
+// WithRowLocks supplies a relational table's lock table, resolved lazily --
+// a statement that takes no lock never resolves the lease and watch services.
+func WithRowLocks(resolve func() (*rowlock.Table, error), dbDefault database.Concurrency) RelationalTableOption
 
 type SkipLockedUnsupportedError struct{}
 type TransactionAbortedError struct{ Cause error }
+type RowLockingUnavailableError struct{ Table string }
+
+// QRDBSession implements sql.LifecycleAwareSession: SessionEnd releases an
+// abandoned transaction's row locks.
+func (s *QRDBSession) SessionEnd()
+```
+
+`pkg/sql/lockclause` — reads a statement's lock intent from its text:
+
+```go
+func Normalize(query string) Normalized          // FOR SHARE -> LOCK IN SHARE MODE
+func Analyze(ctx context.Context, query string, opts ast.ParserOptions) *Intent
+func (in *Intent) Locking(table string) Strength // None | Shared | Exclusive
+func (in *Intent) Targets(table string) bool     // UPDATE/DELETE target
+```
+
+`pkg/service`:
+
+```go
+// AsCause is errors.As that also follows go-mysql-server's Cause() links.
+func AsCause(err error, target any) bool
 ```
 
 `pkg/database`:
@@ -198,8 +244,15 @@ databases:
 ```
 
 An empty or absent value means `optimistic`. Any other value is refused with
-`database.InvalidConcurrencyError`. Like every other per-database setting, it is
-recorded in the database catalog of the node that applied it.
+`database.InvalidConcurrencyError` (and, in YAML, with
+`config.DatabaseConfigError` at load time). Like every other per-database
+setting, it is recorded in the database catalog of the node that applied it. A
+database declared in YAML with an `sql` section takes that setting at every
+start; one without it keeps whatever `UpdateDatabaseSQL` last set.
+
+The in-process `node://` driver serves a database registered with its node
+rather than created through the database API, so it has no catalog entry to
+read the mode from; use the DSN parameter below there.
 
 Per session:
 
@@ -219,7 +272,10 @@ SET lock_timeout = '5s';                -- PostgreSQL wire
   therefore 50 seconds, not unlimited.
 - The PostgreSQL wire passes `SET [SESSION] qrdb_* {=|TO} value` through to the
   engine instead of treating it as a no-op, which is also what makes
-  `SET qrdb_isolation` work there.
+  `SET qrdb_isolation` work there. A bare identifier value is quoted. `SET
+  LOCAL` stays a no-op: a transaction-scoped setting has no counterpart, and
+  approximating it as a session setting would let it outlive its transaction.
+  An unparseable `lock_timeout` is refused with SQLSTATE 22023.
 
 The driver DSN parameter `concurrency=optimistic|pessimistic` sets
 `qrdb_concurrency` on every connection it opens.
@@ -248,7 +304,13 @@ The driver DSN parameter `concurrency=optimistic|pessimistic` sets
   statement that touches a relational table fails with
   `TransactionAbortedError`. This is PostgreSQL's behaviour and is stricter
   than MySQL, which would let the following statements autocommit outside the
-  block the client opened.
+  block the client opened. DDL, which implicitly commits, simply ends it.
+- A `COMMIT` that fails -- a lost compare-and-swap, or the abort above -- ends
+  the session's transaction, as InnoDB's rollback on ER_LOCK_DEADLOCK does.
+  go-mysql-server ends its own transaction state only on a successful
+  `COMMIT`; the session now ends it on these failures too, so the next
+  statement starts a fresh transaction (and takes and releases its own locks)
+  instead of running in a transaction that no longer exists.
 
 ## Observability
 
@@ -258,8 +320,8 @@ The driver DSN parameter `concurrency=optimistic|pessimistic` sets
 | `qrdb_sql_row_lock_wait_seconds` | histogram | `mode` | time a request spent waiting, for requests that waited |
 | `qrdb_sql_row_lock_waiters` | gauge | — | requests currently waiting on this node |
 
-Lock records are visible to an operator with `qrdb kv` tooling against the
-database's internal prefix only; they are never listed to SQL clients.
+Lock records live under the internal `__sys:` prefix, so they are never
+listed to SQL clients or through ordinary key enumeration.
 
 ## Limits
 
@@ -276,18 +338,30 @@ database's internal prefix only; they are never listed to SQL clients.
 - `pkg/rowlock`: grant rule and FIFO (table-driven over queues), shared
   compatibility, upgrade, re-entry, wait and wake-up on release, lock-wait
   timeout and `NOWAIT` cleaning up their waiting records, deadlock cycle
-  detection (two- and three-party), the detection bound, lease expiry releasing
-  locks, lost-lock detection, release idempotence, metrics. Run against a real
-  in-memory MVCC store, lessor and watch manager, not against doubles that
-  re-state the grant rule.
-- Leader failover preserving locks: a three-node cluster where the leader is
-  stopped while a lock is held and a second session is waiting; the waiter
-  stays blocked until the holder commits on the new leader.
-- `pkg/sql/provider`: lock-clause analysis, current reads, pessimistic DML,
-  victim rollback and aborted state, release points, cross-database refusal.
-- Wire: `FOR UPDATE` / `FOR SHARE` / `NOWAIT` / `SKIP LOCKED` and the `SET`
-  overrides on both MySQL and PostgreSQL, with the error codes above.
-- `test/integration`: two sessions serialising on `FOR UPDATE` across replicas,
-  and a deadlock victim.
-- `sdk/go/gorm/conformance`: `TestConcurrentMany2ManyAssociation` passes in
-  pessimistic mode.
+  detection (two-party, three-party, upgrade), the detection bound, lease
+  expiry releasing a crashed holder's locks, keepalive keeping a live holder's,
+  lost-lock detection, release idempotence, fault injection on every servicer.
+  Run against a real in-memory MVCC engine, lessor and watch hub behind the
+  local backend, not against doubles that re-state the grant rule; two
+  independent table handles over one store stand in for two nodes.
+- `pkg/sql/lockclause`: the FOR SHARE rewrite and its offset mapping, lock
+  clauses per query block, `OF` lists, subqueries and derived tables, DML
+  targets, the bounded cache.
+- `pkg/sql/provider`: FOR UPDATE / FOR SHARE serialisation with current reads,
+  lock-wait timeout, NOWAIT, deadlock victim and aborted state, pessimistic
+  increments / inserts / deletes / autocommit DML, the database default and the
+  session override, release at ROLLBACK, DDL and session end.
+- Wire: `pkg/sql/mysql` over a real MySQL wire connection (NOWAIT 3572, timeout
+  1205, deadlock 1213, SKIP LOCKED 1235, `SET qrdb_concurrency`, a dropped
+  connection releasing its locks); `pkg/sql/pgsql` through the parse handler
+  (`FOR KEY SHARE` / `FOR NO KEY UPDATE`, `lock_timeout` 55P03, deadlock
+  40P01 then 25P02, SKIP LOCKED 0A000, invalid setting 22023, routed `SET`).
+- Per-database configuration on REST, gRPC, QUIC, MCP, the Unix socket and the
+  embedded transport, server and client side, plus the CLI.
+- `test/integration`: on a three-node cluster, two sessions on different
+  replicas serialising on `FOR UPDATE`, a deadlock victim, and a lock held
+  across a leader kill that is still held on the new leader until its holder
+  commits.
+- `sdk/go/gorm`: GORM's `TestConcurrentMany2ManyAssociation` scenario (one user,
+  concurrent many-to-many `Append`s) passes in pessimistic mode, where the
+  optimistic default loses appends to 1213.

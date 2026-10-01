@@ -140,6 +140,14 @@ func (t *TenantDatabaseClient) UpdateDatabaseConnection(ctx context.Context, req
 	return t.inner.UpdateDatabaseConnection(ctx, req)
 }
 
+// UpdateDatabaseSQL updates SQL settings for a tenant-owned database.
+func (t *TenantDatabaseClient) UpdateDatabaseSQL(ctx context.Context, req UpdateDatabaseSQLRequest) (*DatabaseInfo, error) {
+	if err := t.verifyOwnership(ctx, req.Name); err != nil {
+		return nil, err
+	}
+	return t.inner.UpdateDatabaseSQL(ctx, req)
+}
+
 // SealDatabase seals the barrier for a tenant-owned database.
 func (t *TenantDatabaseClient) SealDatabase(ctx context.Context, name string) error {
 	if err := t.verifyOwnership(ctx, name); err != nil {

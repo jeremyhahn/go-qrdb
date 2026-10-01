@@ -147,6 +147,37 @@ are not reconstructed here — their history is in the git log.
   `sdk/go/v*` and `sdk/go/gorm/conformance/v*`, plus the
   `RELEASE_BOT_TOKEN` / `RELEASE_BOT_SIGNING_KEY` secrets and
   `RELEASE_BOT_NAME` / `RELEASE_BOT_EMAIL` variables).
+- **SQL row locking and pessimistic concurrency** (docs/row-locking).
+  `SELECT ... FOR UPDATE`, `FOR SHARE` and `LOCK IN SHARE MODE` (and
+  PostgreSQL's `FOR NO KEY UPDATE` / `FOR KEY SHARE`) now take real row locks
+  in every mode, with `NOWAIT`; go-mysql-server discarded the clause. A
+  database's new `sql.concurrency` (`optimistic`, the default, or
+  `pessimistic`) and the session override `SET qrdb_concurrency` make DML in
+  pessimistic mode lock the rows it touches and read them at their latest
+  committed version, so concurrent writers of a row wait instead of failing at
+  `COMMIT` with 1213. The commit-time compare-and-swap stays in both modes.
+  - The lock table (`pkg/rowlock`) is lease-bound records in the database's own
+    store over the existing transaction, lease and watch operations -- no new
+    Raft command. Waiters queue FIFO by create revision; a crashed holder's
+    locks expire with its lease; a leader change loses nothing.
+  - Lock-wait timeout per session: `innodb_lock_wait_timeout` (now accepting
+    MySQL's 1..1073741824 seconds, default 50; go-mysql-server allowed only 1)
+    and PostgreSQL `lock_timeout`, failing the statement with MySQL 1205 /
+    SQLSTATE 55P03. `NOWAIT` is 3572 / 55P03.
+  - Deadlocks are detected at enqueue; the victim's whole transaction is rolled
+    back with 1213 / 40P01, and its later statements fail (25P02 on PostgreSQL)
+    until the client ends it. `SKIP LOCKED` is refused (1235 / 0A000).
+  - Lock errors are classified on every transport through `pkg/api/errclass`
+    (Aborted; SKIP LOCKED Unimplemented).
+  - Metrics: `qrdb_sql_row_lock_requests_total{mode,outcome}`,
+    `qrdb_sql_row_lock_wait_seconds{mode}`, `qrdb_sql_row_lock_waiters`.
+- **Per-database SQL settings** on all six transports, the CLI and YAML:
+  `UpdateDatabaseSQL` (`PATCH /v1/databases/{name}/sql`, gRPC/Unix
+  `DatabaseUpdateSQL`, QUIC `db.UpdateSQL`, MCP `qrdb_database_update_sql`,
+  embedded `UpdateDatabaseSQL`), an `sql` field on create and on database info,
+  `qrdb database update-sql --concurrency` and `qrdb database create
+  --sql-concurrency`, and `databases[].sql.concurrency` in the configuration
+  file. The in-process driver takes a `concurrency=` DSN parameter.
 
 ### Changed — BREAKING
 
@@ -431,6 +462,12 @@ are not reconstructed here — their history is in the git log.
   `pg_catalog` relations did not resolve. `pgsql.Server.Start` now
   applies `WithProtocol(ProtocolPostgreSQL)` on both paths. MySQL `TRUNCATE
   TABLE` resets `AUTO_INCREMENT` to 1, matching MySQL.
+- **`SET qrdb_isolation` over the PostgreSQL wire took no effect.** Every `SET`
+  was a no-op there; `SET [SESSION] qrdb_*` now reaches the engine and
+  `lock_timeout` is translated.
+- A `COMMIT` that loses its compare-and-swap now ends the session's
+  transaction, as InnoDB's rollback on ER_LOCK_DEADLOCK does, instead of
+  leaving go-mysql-server in a transaction that no longer exists.
 
 ### Security
 

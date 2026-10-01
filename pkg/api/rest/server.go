@@ -1545,6 +1545,7 @@ func (s *Server) registerRoutes() {
 	s.route(http.MethodDelete, "/v1/databases/{name}", permission.DatabasesDelete, s.handleDatabaseByName)
 	s.route(http.MethodPatch, "/v1/databases/{name}/barrier", permission.DatabasesUpdate, s.handleDatabaseByName)
 	s.route(http.MethodPatch, "/v1/databases/{name}/connection", permission.DatabasesUpdate, s.handleDatabaseByName)
+	s.route(http.MethodPatch, "/v1/databases/{name}/sql", permission.DatabasesUpdate, s.handleDatabaseByName)
 	s.route(http.MethodPatch, "/v1/databases/{name}/etcd", permission.DatabasesUpdate, s.handleDatabaseByName)
 	s.route(http.MethodPatch, "/v1/databases/{name}/protocol", permission.DatabasesUpdate, s.handleDatabaseByName)
 	s.route(http.MethodPatch, "/v1/databases/{name}/raft", permission.DatabasesUpdate, s.handleDatabaseByName)

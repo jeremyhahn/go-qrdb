@@ -183,6 +183,14 @@ func (m *mockDatabaseService) UpdateConnectionForTenant(_ context.Context, name 
 	return m.UpdateConnection(name, cfg)
 }
 
+func (m *mockDatabaseService) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
+	return &database.DatabaseInfo{Name: name, SQL: sqlCfg}, nil
+}
+
+func (m *mockDatabaseService) UpdateSQLForTenant(_ context.Context, name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
+	return m.UpdateSQL(name, sqlCfg)
+}
+
 func (m *mockDatabaseService) ScaleForTenant(_ context.Context, name string, targetReplicas int) (*database.DatabaseInfo, error) {
 	if m.scaleFn != nil {
 		return m.scaleFn(name, targetReplicas)
@@ -209,6 +217,7 @@ func TestDatabaseTools_Registration(t *testing.T) {
 		"qrdb_database_scale",
 		"qrdb_database_update_barrier",
 		"qrdb_database_update_connection",
+		"qrdb_database_update_sql",
 		"qrdb_database_seal",
 		"qrdb_database_unseal",
 		"qrdb_database_barrier_status",

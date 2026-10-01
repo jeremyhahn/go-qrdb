@@ -473,6 +473,8 @@ type FakeRegistry struct {
 	PrivilegeServiceFn   func(tenant, db string) (service.PrivilegeServicer, error)
 	CollectionServiceFn  func(tenant, db string) (service.CollectionServicer, error)
 	LockServiceFn        func(tenant, db string) (service.LockServicer, error)
+	LeaseServiceFn       func(tenant, db string) (service.LeaseServicer, error)
+	WatchServiceFn       func(tenant, db string) (service.WatchServicer, error)
 }
 
 // KVService implements service.Registry.
@@ -520,6 +522,25 @@ func (r *FakeRegistry) CollectionService(tenant, db string) (service.CollectionS
 		return nil, nil
 	}
 	return r.CollectionServiceFn(tenant, db)
+}
+
+// LeaseService implements service.Registry. Like CollectionService it
+// tolerates an unset function field -- reporting no lease service -- because
+// the SQL provider resolves it for every relational statement that takes a
+// row lock, and most tests take none.
+func (r *FakeRegistry) LeaseService(tenant, db string) (service.LeaseServicer, error) {
+	if r.LeaseServiceFn == nil {
+		return nil, nil
+	}
+	return r.LeaseServiceFn(tenant, db)
+}
+
+// WatchService implements service.Registry; see LeaseService.
+func (r *FakeRegistry) WatchService(tenant, db string) (service.WatchServicer, error) {
+	if r.WatchServiceFn == nil {
+		return nil, nil
+	}
+	return r.WatchServiceFn(tenant, db)
 }
 
 // LockService returns the configured LockServicer for the (tenant, db) scope.

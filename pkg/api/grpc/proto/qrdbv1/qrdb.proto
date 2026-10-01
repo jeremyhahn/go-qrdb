@@ -730,6 +730,12 @@ service QRDBService {
         option (qrdb.v1.permission) = "databases:update";
     }
 
+    // DatabaseUpdateSQL updates a database's SQL settings -- its
+    // sql.concurrency (optimistic or pessimistic). See docs/row-locking/.
+    rpc DatabaseUpdateSQL(DatabaseUpdateSQLRequest) returns (DatabaseInfoResponse) {
+        option (qrdb.v1.permission) = "databases:update";
+    }
+
     // -----------------------------------------------------------------------
     // Barrier operations
     // -----------------------------------------------------------------------
@@ -2965,6 +2971,8 @@ message DatabaseCreateRequest {
     // encryption barrier at creation time using the embedded secret /
     // strategy / threshold / total. See DatabaseBarrierConfig.
     DatabaseBarrierConfig barrier = 8;
+    // sql holds the database's SQL settings; unset means the defaults.
+    DatabaseSQLConfig sql = 9;
 }
 
 // DatabaseGetRequest retrieves information about a specific database.
@@ -2999,6 +3007,14 @@ message DatabaseInfoResponse {
     // replicas is the replication factor of a dedicated-raft database. Zero for
     // non-raft databases.
     uint32 replicas = 13;
+    // sql holds the database's SQL settings; unset means the defaults.
+    DatabaseSQLConfig sql = 14;
+}
+
+// DatabaseSQLConfig holds a database's SQL settings.
+message DatabaseSQLConfig {
+    // concurrency is "optimistic" (the default when empty) or "pessimistic".
+    string concurrency = 1;
 }
 
 // DatabaseProtocolConfig holds wire protocol settings for a database.
@@ -3129,6 +3145,13 @@ message DatabaseUpdateBarrierRequest {
 message DatabaseUpdateConnectionRequest {
     string name = 1;
     DatabaseConnectionConfig connection = 2;
+}
+
+// DatabaseUpdateSQLRequest updates a database's SQL settings. An unset sql
+// restores the defaults.
+message DatabaseUpdateSQLRequest {
+    string name = 1;
+    DatabaseSQLConfig sql = 2;
 }
 
 // ===========================================================================

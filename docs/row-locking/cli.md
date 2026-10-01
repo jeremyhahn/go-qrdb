@@ -41,7 +41,7 @@ nothing.
 ## `qrdbd` configuration
 
 There is no `qrdbd` flag. A database declared in the YAML file carries the
-setting under its own `sql` section:
+setting under its own `sql` section, and takes it at every start:
 
 ```yaml
 databases:
@@ -76,5 +76,7 @@ inside a transaction, over a wire protocol or the in-process driver.
 
 ## Parity
 
-`qrdb database update-sql` and `--sql-concurrency` have `CommandDefinition`s in
-the integration parity suite alongside the other `qrdb database` verbs.
+`qrdb database update-sql` and `--sql-concurrency` are exercised on every
+protocol by the multi-protocol CLI integration suite
+(`TestCLIMultiProtocolDatabaseUpdateSQL`), alongside the other `qrdb database`
+verbs.

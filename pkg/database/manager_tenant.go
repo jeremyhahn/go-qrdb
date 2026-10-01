@@ -164,6 +164,21 @@ func (m *Manager) UpdateConnectionForTenant(ctx context.Context, name string, co
 	return m.UpdateConnection(name, conn)
 }
 
+// UpdateSQLForTenant updates the SQL settings after verifying tenant
+// ownership.
+func (m *Manager) UpdateSQLForTenant(ctx context.Context, name string, sqlCfg *SQLConfig) error {
+	tenantID := tenant.FromContext(ctx)
+	if tenant.IsSystemTenant(tenantID) {
+		return &TenantIDRequiredError{Operation: "UpdateSQLForTenant"}
+	}
+
+	if _, err := m.getOwned(name, tenantID); err != nil {
+		return err
+	}
+
+	return m.UpdateSQL(name, sqlCfg)
+}
+
 // getOwned returns the named database when tenantID owns it, and
 // NotFoundError otherwise -- for a database that does not exist and for one
 // another tenant owns alike. Database names are one node-wide namespace, so

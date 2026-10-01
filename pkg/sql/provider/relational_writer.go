@@ -745,6 +745,14 @@ func (w *relationalWriter) Insert(ctx *sqle.Context, row sqle.Row) error {
 	}
 	candidates = append([]uniqueCandidate{{key: rowKey, isPK: true}}, candidates...)
 
+	// Pessimistic mode locks the keys the row is about to occupy and reads
+	// them at their latest committed version, so the duplicate check below
+	// sees a concurrent inserter's committed row instead of failing on it at
+	// COMMIT.
+	if err := t.lockForWrite(ctx, candidateKeys(candidates)); err != nil {
+		return err
+	}
+
 	ws, err := t.activeWriteSet(ctx)
 	if err != nil {
 		return err
@@ -934,6 +942,12 @@ func (w *relationalWriter) Delete(ctx *sqle.Context, row sqle.Row) error {
 		actions = append(actions, indexAction{key: key, delete: true})
 	}
 
+	// A row the statement read under its lock is already held; one that
+	// reached Delete another way (a foreign-key cascade) is locked here.
+	if err := t.lockForWrite(ctx, []string{rowKey}); err != nil {
+		return err
+	}
+
 	ws, err := t.activeWriteSet(ctx)
 	if err != nil {
 		return err
@@ -1032,6 +1046,17 @@ func (w *relationalWriter) Update(ctx *sqle.Context, old, newRow sqle.Row) error
 		candidates = append([]uniqueCandidate{{key: newRowKey, isPK: true}}, candidates...)
 	}
 
+	// Pessimistic mode holds the row being rewritten and the keys it moves
+	// to; see lockRowForUpdate for a row that was not read under its lock.
+	if _, pessimistic := t.writeLock(ctx); pessimistic {
+		if err := t.lockRowForUpdate(ctx, oldRowKey, old); err != nil {
+			return err
+		}
+		if err := t.lockForWrite(ctx, candidateKeys(candidates)); err != nil {
+			return err
+		}
+	}
+
 	ws, err := t.activeWriteSet(ctx)
 	if err != nil {
 		return err
@@ -1040,10 +1065,18 @@ func (w *relationalWriter) Update(ctx *sqle.Context, old, newRow sqle.Row) error
 		return t.bufferUpdate(ctx, ws, g, candidates, oldRowKey, newRowKey, encodedNewRow, pkChanged, actions)
 	}
 
+	// A row this statement read under a lock was read at a known revision;
+	// the autocommit write is guarded on it, so a writer that took no lock
+	// cannot have its change overwritten (go-qrdb row-locking's commit CAS).
+	rowGuard, guarded := t.lockedRowGuard(ctx, oldRowKey)
+
 	for attempt := 0; attempt < writeMaxAttempts; attempt++ {
 		idxOps, idxCompares := actionsToOpsAndCompares(actions)
 		var compares []service.Compare
 		var ops []service.Op
+		if guarded {
+			compares = append(compares, rowGuard)
+		}
 
 		if pkChanged {
 			compares = append(compares, service.Compare{
@@ -1073,6 +1106,14 @@ func (w *relationalWriter) Update(ctx *sqle.Context, old, newRow sqle.Row) error
 		if staleErr := t.checkResolutionStale(ctx, g); staleErr != nil {
 			return staleErr
 		}
+		if guarded {
+			if moved, gerr := t.rowGuardFailed(ctx, rowGuard); gerr != nil || moved {
+				if gerr != nil {
+					return gerr
+				}
+				return rowChangedError(oldRowKey)
+			}
+		}
 
 		dupErr, transient, rerr := t.resolveDuplicate(ctx, g, candidates)
 		if rerr != nil {
@@ -1083,6 +1124,45 @@ func (w *relationalWriter) Update(ctx *sqle.Context, old, newRow sqle.Row) error
 		}
 	}
 	return &TransactionConflictRetriesExhaustedError{Table: t.def.Name}
+}
+
+// candidateKeys returns the keys of candidates, in order.
+func candidateKeys(candidates []uniqueCandidate) []string {
+	keys := make([]string, len(candidates))
+	for i, c := range candidates {
+		keys[i] = c.key
+	}
+	return keys
+}
+
+// lockedRowGuard returns the commit precondition of a row the statement's
+// transaction read under a lock, and whether there is one.
+func (t *RelationalTable) lockedRowGuard(ctx *sqle.Context, key string) (service.Compare, bool) {
+	_, ws := lockState(ctx)
+	if ws == nil {
+		return service.Compare{}, false
+	}
+	c, ok := ws.currentState(key)
+	if !ok {
+		return service.Compare{}, false
+	}
+	return c.compare(key), true
+}
+
+// rowGuardFailed reports whether the row a lockedRowGuard guards no longer
+// holds the state it was read in.
+func (t *RelationalTable) rowGuardFailed(ctx *sqle.Context, guard service.Compare) (bool, error) {
+	kv, err := t.mvccSvc.GetRevision(ctx, string(guard.Key))
+	switch {
+	case err != nil && isNotFound(err):
+		return guard.Target != service.CompareVersion, nil
+	case err != nil:
+		return false, err
+	case guard.Target == service.CompareVersion:
+		return true, nil
+	default:
+		return kv.ModRevision != guard.ModRevision, nil
+	}
 }
 
 // bufferUpdate is Update's interactive-transaction path. A pkChanged update

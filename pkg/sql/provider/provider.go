@@ -93,6 +93,7 @@ type Provider struct {
 	// sees its own tenant's "<tenant>/<db>/" namespace of it, exactly as the
 	// service registry resolves it. Empty shares nothing.
 	sharedDefaultDB string
+	sqlConfigOf     SQLConfigResolver // nil means every database runs the default (optimistic)
 }
 
 // WithSharedDefaultDatabase marks name, the configured default SQL
@@ -130,6 +131,19 @@ func WithDatabaseService(svc service.DatabaseServicer) func(*Provider) {
 func WithLifecycleAuthorizer(a DatabaseLifecycleAuthorizer) func(*Provider) {
 	return func(prov *Provider) {
 		prov.lifecycleAuthz = a
+	}
+}
+
+// SQLConfigResolver returns the SQL settings of database name owned by
+// tenantID, nil when it has none (the defaults).
+type SQLConfigResolver func(tenantID, name string) *database.SQLConfig
+
+// WithSQLConfig returns a functional option that supplies how a database's
+// SQL settings -- its sql.concurrency -- are resolved. A provider built with
+// NewManagerProvider resolves them from its manager without this option.
+func WithSQLConfig(resolve SQLConfigResolver) func(*Provider) {
+	return func(prov *Provider) {
+		prov.sqlConfigOf = resolve
 	}
 }
 
@@ -222,13 +236,26 @@ func NewProvider(dbName string, kvSvc service.KVServicer) *Provider {
 // protocol-level filtering.
 func NewManagerProvider(manager *database.Manager, kvSvc service.KVServicer, opts ...func(*Provider)) *Provider {
 	p := &Provider{
-		manager: manager,
-		kvSvc:   kvSvc,
+		manager:     manager,
+		kvSvc:       kvSvc,
+		sqlConfigOf: managerSQLConfig(manager),
 	}
 	for _, opt := range opts {
 		opt(p)
 	}
 	return p
+}
+
+// managerSQLConfig resolves a database's SQL settings from manager's
+// catalog.
+func managerSQLConfig(manager *database.Manager) SQLConfigResolver {
+	return func(_, name string) *database.SQLConfig {
+		db, err := manager.Get(name)
+		if err != nil {
+			return nil
+		}
+		return db.SQLConfig()
+	}
 }
 
 // NewProviderWithEngine creates a single-database Provider with engine
@@ -280,6 +307,7 @@ func (p *Provider) newDatabase(name string, engine database.EngineType) sqle.Dat
 		readOnly:      p.readOnly,
 		prescopedKV:   p.prescopedKV,
 		registry:      p.registry,
+		sqlConfigOf:   p.sqlConfigOf,
 		postgres:      p.servesPGCatalog(),
 	}
 	if p.readOnly {
@@ -591,6 +619,7 @@ type Database struct {
 	readOnly      bool                       // true strips write capability from served tables
 	prescopedKV   bool                       // true when kvSvc is already scoped to the caller's namespace
 	registry      service.Registry           // nil when relational tables are not available
+	sqlConfigOf   SQLConfigResolver          // nil means the default SQL settings
 
 	// postgres is true when this database is served over the PostgreSQL
 	// wire protocol (provider.protocol == ProtocolPostgreSQL). It drives

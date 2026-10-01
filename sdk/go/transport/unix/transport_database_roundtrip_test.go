@@ -185,6 +185,14 @@ func (m *mockDatabaseSvc) UpdateConnectionForTenant(_ context.Context, name stri
 	return m.UpdateConnection(name, c)
 }
 
+func (m *mockDatabaseSvc) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
+	return &database.DatabaseInfo{Name: name, SQL: sqlCfg}, nil
+}
+
+func (m *mockDatabaseSvc) UpdateSQLForTenant(_ context.Context, name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
+	return m.UpdateSQL(name, sqlCfg)
+}
+
 func (m *mockDatabaseSvc) ScaleForTenant(_ context.Context, name string, targetReplicas int) (*database.DatabaseInfo, error) {
 	return &database.DatabaseInfo{Name: name, Replicas: targetReplicas}, nil
 }

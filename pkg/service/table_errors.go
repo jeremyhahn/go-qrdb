@@ -411,12 +411,20 @@ func (e *TableDefinitionStaleError) Error() string {
 // (sql.ErrLockDeadlock), whose error type exposes its wrapped cause only
 // through Cause().
 func IsTableResolutionStale(err error) bool {
+	var generation *TableGenerationStaleError
+	var definition *TableDefinitionStaleError
+	return AsCause(err, &generation) || AsCause(err, &definition)
+}
+
+// AsCause is errors.As that also follows Cause() links. go-mysql-server
+// wraps a typed cause in its error kinds (sql.ErrLockDeadlock.Wrap, for
+// one), whose errors expose the cause through Cause() and not through
+// Unwrap, so errors.As alone stops at the wrapper.
+func AsCause(err error, target any) bool {
 	// The depth bound only guards against a Cause() cycle, which no error
 	// type in the stack builds.
 	for depth := 0; err != nil && depth < maxCauseDepth; depth++ {
-		var generation *TableGenerationStaleError
-		var definition *TableDefinitionStaleError
-		if errors.As(err, &generation) || errors.As(err, &definition) {
+		if errors.As(err, target) {
 			return true
 		}
 		var caused interface{ Cause() error }
@@ -428,7 +436,7 @@ func IsTableResolutionStale(err error) bool {
 	return false
 }
 
-// maxCauseDepth bounds IsTableResolutionStale's walk down Cause() links.
+// maxCauseDepth bounds AsCause's walk down Cause() links.
 const maxCauseDepth = 32
 
 // ReclaimIndexUnconfiguredError is returned by an operation that orphans a

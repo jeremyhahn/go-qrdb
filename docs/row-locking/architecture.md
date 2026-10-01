@@ -194,6 +194,16 @@ seconds on both wires. A timeout fails **only the statement** (MySQL
 it already holds, matching InnoDB's default. `NOWAIT` is a wait of zero
 (MySQL **3572**, PostgreSQL **55P03**). `SKIP LOCKED` is refused by name.
 
+The statement is failed, not undone. The SQL layer has no implicit
+statement-level savepoint, so a multi-row statement that times out after
+changing some rows — including a foreign-key cascade that blocks on a child row
+after its parent was deleted — leaves those changes in the transaction's
+write-set, exactly as any statement that fails part way through (a duplicate
+key on its third row, say) already does. Outside a transaction those earlier
+rows are already committed, because each autocommit row write is its own
+commit. Pessimistic mode adds no new kind of partial effect, but it does add a
+new way for a statement to stop part way: a wait.
+
 ## Component boundaries
 
 | Piece | Package | Owner |

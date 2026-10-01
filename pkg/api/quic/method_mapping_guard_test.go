@@ -242,6 +242,7 @@ var expectedMethodPerms = map[string]permission.Permission{
 	"db.Drop":                          permission.DatabasesDelete,
 	"db.UpdateBarrier":                 permission.DatabasesUpdate,
 	"db.UpdateConnection":              permission.DatabasesUpdate,
+	"db.UpdateSQL":                     permission.DatabasesUpdate,
 	"db.UpdateEtcd":                    permission.DatabasesUpdate,
 	"db.UpdateProtocol":                permission.DatabasesUpdate,
 	"db.UpdateRaft":                    permission.DatabasesUpdate,

@@ -51,6 +51,7 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 		Raft:       fromTransportRaftConfig(req.Raft),
 		Barrier:    fromTransportBarrierConfig(req.Barrier),
 		Connection: fromTransportConnectionConfig(req.Connection),
+		SQL:        fromTransportSQLConfig(req.SQL),
 	}
 
 	var info *database.DatabaseInfo
@@ -207,9 +208,31 @@ func (t *Transport) UpdateDatabaseConnection(_ context.Context, req transport.Up
 	return toTransportDatabaseInfo(info), nil
 }
 
+// UpdateDatabaseSQL updates a database's SQL settings by delegating to the
+// injected DatabaseServicer.
+func (t *Transport) UpdateDatabaseSQL(_ context.Context, req transport.UpdateDatabaseSQLRequest) (*transport.DatabaseInfo, error) {
+	if t.dbSvc == nil {
+		return nil, &NilServiceError{Service: "DatabaseServicer"}
+	}
+	info, err := t.dbSvc.UpdateSQL(req.Name, fromTransportSQLConfig(req.SQL))
+	if err != nil {
+		return nil, err
+	}
+	return toTransportDatabaseInfo(info), nil
+}
+
 // ---------------------------------------------------------------------------
 // Type conversion helpers
 // ---------------------------------------------------------------------------
+
+// fromTransportSQLConfig converts transport SQL settings to the domain type;
+// nil stays nil (the defaults).
+func fromTransportSQLConfig(c *transport.DatabaseSQLConfig) *database.SQLConfig {
+	if c == nil {
+		return nil
+	}
+	return &database.SQLConfig{Concurrency: database.Concurrency(c.Concurrency)}
+}
 
 // toTransportDatabaseInfo converts a database.DatabaseInfo to a
 // transport.DatabaseInfo.
@@ -261,6 +284,9 @@ func toTransportDatabaseInfo(info *database.DatabaseInfo) *transport.DatabaseInf
 			CertFile:  info.Connection.CertFile,
 			KeyFile:   info.Connection.KeyFile,
 		}
+	}
+	if info.SQL != nil {
+		ti.SQL = &transport.DatabaseSQLConfig{Concurrency: string(info.SQL.Concurrency)}
 	}
 	return ti
 }

@@ -419,6 +419,18 @@ func (e *InvalidStorageCodecError) Error() string {
 	return "database: invalid or unsupported storage codec: " + strconv.Quote(e.Codec)
 }
 
+// InvalidConcurrencyError is returned when a database's SQL concurrency mode
+// is neither optimistic nor pessimistic.
+type InvalidConcurrencyError struct {
+	Concurrency string
+}
+
+// Error returns a human-readable description of the invalid mode.
+func (e *InvalidConcurrencyError) Error() string {
+	return "database: invalid SQL concurrency mode " + strconv.Quote(e.Concurrency) +
+		" (want optimistic or pessimistic)"
+}
+
 // SharedStoreBarrierUnsupportedError is returned when a caller attempts to
 // enable a per-database encryption barrier on a database that has no
 // dedicated store of its own (see DatabaseConfig.HasDedicatedStore) -- i.e.

@@ -25,6 +25,8 @@ import (
 	sqle "github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/vitess/go/sqltypes"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/rowlock"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/catalog"
 )
@@ -144,6 +146,14 @@ type RelationalTable struct {
 	// only Truncate's AUTO_INCREMENT/sequence behavior; every other
 	// capability in this file is dialect-agnostic. See Truncate for why.
 	postgres bool
+
+	// rowLocks resolves the lock table this table's rows are locked in --
+	// only when a statement first needs a lock, so a statement that takes
+	// none never resolves the lease and watch services behind it -- and
+	// defaultConcurrency is the database's configured concurrency mode. See
+	// WithRowLocks and row_locks.go.
+	rowLocks           func() (*rowlock.Table, error)
+	defaultConcurrency database.Concurrency
 }
 
 // RelationalTableOption configures optional RelationalTable dependencies
@@ -309,9 +319,22 @@ func (t *RelationalTable) PartitionRows(ctx *sqle.Context, part sqle.Partition) 
 // own (see kv_table.go's fullScanRows), so the scanned keys are sorted
 // client-side before decoding; because catalog.KeyCodec is order-preserving,
 // that lexicographic sort is exactly primary key order.
+//
+// A locking read (see readLock) locks every row the scan returns -- the
+// engine filters above the table, so the table cannot tell which rows the
+// predicate keeps -- and returns them at their latest committed version.
 func (t *RelationalTable) fullScanRows(ctx *sqle.Context) (sqle.RowIter, error) {
 	g := t.gen()
-	data, err := t.txScan(ctx, g.dataPrefix)
+	req, err := t.readLock(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var data map[string][]byte
+	if req.mode != 0 {
+		data, err = t.lockingScan(ctx, g.dataPrefix, req)
+	} else {
+		data, err = t.txScan(ctx, g.dataPrefix)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -339,6 +362,13 @@ func (t *RelationalTable) fullScanRows(ctx *sqle.Context) (sqle.RowIter, error) 
 // predicate.
 func (t *RelationalTable) indexedPartitionRows(ctx *sqle.Context, ip *indexedPartition) (sqle.RowIter, error) {
 	g := t.gen()
+	req, err := t.readLock(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if req.mode != 0 {
+		return t.lockedPartitionRows(ctx, g, ip, req)
+	}
 	rows := make([]sqle.Row, 0, len(ip.keys))
 	for _, key := range ip.keys {
 		raw, err := t.txGet(ctx, g.dataPrefix+string(key))
@@ -354,6 +384,32 @@ func (t *RelationalTable) indexedPartitionRows(ctx *sqle.Context, ip *indexedPar
 		row, err := t.decodeRow(string(key), raw)
 		if err != nil {
 			return nil, err
+		}
+		rows = append(rows, row)
+	}
+	return &indexedRowIter{rows: rows}, nil
+}
+
+// lockedPartitionRows is indexedPartitionRows for a locking read: every
+// looked-up key is locked, then read at its latest committed version.
+func (t *RelationalTable) lockedPartitionRows(ctx *sqle.Context, g *tableGeneration, ip *indexedPartition, req lockRequest) (sqle.RowIter, error) {
+	keys := make([]string, len(ip.keys))
+	for i, k := range ip.keys {
+		keys[i] = g.dataPrefix + string(k)
+	}
+	values, err := t.lockAndRead(ctx, keys, req)
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]sqle.Row, 0, len(keys))
+	for i, k := range keys {
+		raw, ok := values[k]
+		if !ok {
+			continue
+		}
+		row, derr := t.decodeRow(string(ip.keys[i]), raw)
+		if derr != nil {
+			return nil, derr
 		}
 		rows = append(rows, row)
 	}
@@ -846,21 +902,53 @@ func (t *RelationalTable) filteredScanRows(ctx *sqle.Context, ordinals []int, ra
 		colTypes[i] = t.schema[ordinal].Type
 	}
 
-	var rows []sqle.Row
+	rows, matched, err := t.matchingRows(ctx, g, keys, data, colTypes, ordinals, ranges)
+	if err != nil {
+		return nil, err
+	}
+
+	// A locking read locks the rows the range selects, then re-reads them
+	// at their latest committed version and applies the range again: a row
+	// that changed out of it while the lock was awaited is not returned.
+	req, err := t.readLock(ctx)
+	if err != nil || req.mode == 0 {
+		return rows, err
+	}
+	current, err := t.lockAndRead(ctx, matched, req)
+	if err != nil {
+		return nil, err
+	}
+	rows, _, err = t.matchingRows(ctx, g, matched, current, colTypes, ordinals, ranges)
+	return rows, err
+}
+
+// matchingRows decodes data's rows at keys, in order, and keeps those whose
+// columns at ordinals satisfy ranges, returning them and their keys. A key
+// absent from data is skipped.
+func (t *RelationalTable) matchingRows(ctx *sqle.Context, g *tableGeneration, keys []string, data map[string][]byte, colTypes []sqle.Type, ordinals []int, ranges []sqle.Range) ([]sqle.Row, []string, error) {
+	var (
+		rows    []sqle.Row
+		matched []string
+	)
 	for _, k := range keys {
-		row, derr := t.decodeRow(k[len(g.dataPrefix):], data[k])
+		raw, ok := data[k]
+		if !ok {
+			continue
+		}
+		row, derr := t.decodeRow(k[len(g.dataPrefix):], raw)
 		if derr != nil {
-			return nil, derr
+			return nil, nil, derr
 		}
 		match, merr := rowMatchesRanges(ctx, colTypes, ordinals, row, ranges)
 		if merr != nil {
-			return nil, merr
+			return nil, nil, merr
 		}
 		if match {
 			rows = append(rows, row)
+			matched = append(matched, k)
 		}
 	}
-	return rows, nil
+	return rows, matched, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -908,6 +996,12 @@ func (t *RelationalTable) activeWriteSet(ctx *sqle.Context) (*WriteSet, error) {
 	ws := sess.writeSet()
 	if ws == nil {
 		return nil, nil
+	}
+	if ws.aborted != nil {
+		// Rolled back as a deadlock victim: nothing the transaction does
+		// any longer can be made durable, so nothing it reads may be
+		// served either, until the client ends it (see abortWith).
+		return nil, abortedError(ws.aborted)
 	}
 
 	if t.mvccSvc == nil {

@@ -147,6 +147,11 @@ func (s *sqlService) Execute(ctx context.Context, dbName, query string) (*servic
 	if s.readOnly {
 		provOpts = append(provOpts, provider.WithReadOnly())
 	}
+	if s.dbSvc != nil {
+		// Resolved at each statement, not now: the engine built here is
+		// cached, and a database's sql.concurrency can change under it.
+		provOpts = append(provOpts, provider.WithSQLConfig(s.databaseSQLConfig))
+	}
 	if s.registry != nil {
 		// Fail closed: the typed error the registry returns (tenant not
 		// found, database not found, barrier sealed, or the isolation
@@ -274,7 +279,12 @@ func (s *sqlService) engineFor(key engineKey, prov *provider.Provider) *sqle.Eng
 func run(ctx context.Context, eng *sqle.Engine, dbName, query string) (*service.SQLQueryResult, error) {
 	identity := auth.IdentityFromContext(ctx)
 	sess := provider.NewSession(sql.NewBaseSession(), identity)
-	sqlCtx := sql.NewContext(ctx, sql.WithSession(sess))
+	// The session lives for this one request; ending it releases any row
+	// lock the statement took (see docs/row-locking/). The statement text
+	// rides on the context because the SQL layer reads a statement's lock
+	// clauses from it.
+	defer sess.SessionEnd()
+	sqlCtx := sql.NewContext(ctx, sql.WithSession(sess), sql.WithQuery(query))
 	sqlCtx.SetCurrentDatabase(dbName)
 
 	schema, iter, _, err := eng.Query(sqlCtx, query)
@@ -334,4 +344,15 @@ func formatValue(v any) string {
 	default:
 		return fmt.Sprintf("%v", val)
 	}
+}
+
+// databaseSQLConfig resolves a database's SQL settings for the provider
+// (see provider.WithSQLConfig); a database that cannot be resolved has the
+// defaults.
+func (s *sqlService) databaseSQLConfig(_, name string) *database.SQLConfig {
+	info, err := s.dbSvc.Get(name)
+	if err != nil {
+		return nil
+	}
+	return info.SQL
 }

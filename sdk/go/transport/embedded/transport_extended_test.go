@@ -2130,6 +2130,14 @@ func (m *mockDatabaseService) UpdateBarrierForTenant(_ context.Context, name str
 func (m *mockDatabaseService) UpdateConnectionForTenant(_ context.Context, name string, c *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
 	return m.UpdateConnection(name, c)
 }
+
+func (m *mockDatabaseService) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
+	return &database.DatabaseInfo{Name: name, SQL: sqlCfg}, nil
+}
+
+func (m *mockDatabaseService) UpdateSQLForTenant(_ context.Context, name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
+	return m.UpdateSQL(name, sqlCfg)
+}
 func (m *mockDatabaseService) ScaleForTenant(_ context.Context, name string, targetReplicas int) (*database.DatabaseInfo, error) {
 	return &database.DatabaseInfo{Name: name, Replicas: targetReplicas}, nil
 }

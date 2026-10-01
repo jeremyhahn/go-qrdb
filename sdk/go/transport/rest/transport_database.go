@@ -210,6 +210,20 @@ func (t *Transport) UpdateDatabaseBarrier(ctx context.Context, req transport.Upd
 	return &info, nil
 }
 
+// UpdateDatabaseSQL updates a database's SQL settings. Maps to
+// PATCH /v1/databases/{name}/sql.
+func (t *Transport) UpdateDatabaseSQL(ctx context.Context, req transport.UpdateDatabaseSQLRequest) (*transport.DatabaseInfo, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	var info transport.DatabaseInfo
+	if err := t.patchJSONDecode(ctx, "UpdateDatabaseSQL", "/v1/databases/"+url.PathEscape(req.Name)+"/sql", req, &info); err != nil {
+		return nil, err
+	}
+	return &info, nil
+}
+
 // UpdateDatabaseConnection updates the remote connection configuration for a
 // database. Maps to PATCH /v1/databases/{name}/connection.
 func (t *Transport) UpdateDatabaseConnection(ctx context.Context, req transport.UpdateDatabaseConnectionRequest) (*transport.DatabaseInfo, error) {

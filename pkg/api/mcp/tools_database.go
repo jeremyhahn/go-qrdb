@@ -82,6 +82,11 @@ func databaseTools(dbSvc service.DatabaseServicer) []serverTool {
 			Handler: handleDatabaseUpdateConnection(dbSvc),
 		},
 		{
+			Tool:    toolDatabaseUpdateSQL(),
+			Perm:    permission.DatabasesUpdate,
+			Handler: handleDatabaseUpdateSQL(dbSvc),
+		},
+		{
 			Tool:    toolDatabaseSeal(),
 			Perm:    permission.DatabasesSeal,
 			Handler: handleDatabaseSeal(dbSvc),
@@ -191,6 +196,9 @@ func toolDatabaseCreate() mcp.Tool {
 		mcp.WithString("barrier_secret",
 			mcp.Description("Barrier passphrase/credential for the initial Initialize call. Never persisted or echoed back."),
 		),
+		mcp.WithString("sql_concurrency",
+			mcp.Description("The database's SQL concurrency mode: \"optimistic\" (the default) or \"pessimistic\"."),
+		),
 	)
 }
 
@@ -223,6 +231,10 @@ func handleDatabaseCreate(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerF
 				MySQL:      mcp.ParseBoolean(req, "mysql", false),
 				PostgreSQL: mcp.ParseBoolean(req, "postgresql", false),
 			},
+		}
+
+		if concurrency := mcp.ParseString(req, "sql_concurrency", ""); concurrency != "" {
+			cfg.SQL = &database.SQLConfig{Concurrency: database.Concurrency(concurrency)}
 		}
 
 		// Build raft config if cluster mode is specified.
@@ -674,6 +686,48 @@ func handleDatabaseUpdateConnection(dbSvc service.DatabaseServicer) mcpserver.To
 		data, jsonErr := json.Marshal(info)
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_database_update_connection", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolDatabaseUpdateSQL defines the qrdb_database_update_sql tool schema.
+func toolDatabaseUpdateSQL() mcp.Tool {
+	return mcp.NewTool("qrdb_database_update_sql",
+		mcp.WithDescription("Update a database's SQL settings: its concurrency mode."),
+		mcp.WithString("name",
+			mcp.Required(),
+			mcp.Description("The database name to update."),
+		),
+		mcp.WithString("concurrency",
+			mcp.Required(),
+			mcp.Description("The SQL concurrency mode: \"optimistic\" or \"pessimistic\"."),
+		),
+	)
+}
+
+// handleDatabaseUpdateSQL returns a tool handler that delegates to
+// dbSvc.UpdateSQLForTenant.
+func handleDatabaseUpdateSQL(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		name := mcp.ParseString(req, "name", "")
+		if name == "" {
+			return mcp.NewToolResultError("name is required"), nil
+		}
+		concurrency := mcp.ParseString(req, "concurrency", "")
+		if concurrency == "" {
+			return mcp.NewToolResultError("concurrency is required"), nil
+		}
+
+		info, err := dbSvc.UpdateSQLForTenant(ctx, name, &database.SQLConfig{Concurrency: database.Concurrency(concurrency)})
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_database_update_sql", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(info)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_database_update_sql", Err: jsonErr}
 		}
 
 		return mcp.NewToolResultText(string(data)), nil

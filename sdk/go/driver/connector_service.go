@@ -25,6 +25,7 @@ import (
 	"time"
 
 	sqle "github.com/dolthub/go-mysql-server"
+	gmssql "github.com/dolthub/go-mysql-server/sql"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -154,11 +155,17 @@ func (c *serviceConnector) Connect(_ context.Context) (driver.Conn, error) {
 	}
 
 	identity := resolveIdentity(&c.opts, c.cfg)
+	session := newEmbeddedSession(identity, c.cfg.Database)
+	if c.cfg.Concurrency != "" {
+		if err := session.SetSessionVariable(gmssql.NewEmptyContext(), provider.ConcurrencyVariable, c.cfg.Concurrency); err != nil {
+			return nil, err
+		}
+	}
 
 	return &embeddedConn{
 		engine:   eng,
 		database: c.cfg.Database,
-		session:  newEmbeddedSession(identity, c.cfg.Database),
+		session:  session,
 		loc:      loc,
 	}, nil
 }

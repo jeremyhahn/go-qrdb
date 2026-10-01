@@ -382,6 +382,14 @@ func (m *mockDbSvc) UpdateBarrierForTenant(_ context.Context, name string, _ *da
 func (m *mockDbSvc) UpdateConnectionForTenant(_ context.Context, name string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
 	return &database.DatabaseInfo{Name: name}, nil
 }
+
+func (m *mockDbSvc) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
+	return &database.DatabaseInfo{Name: name, SQL: sqlCfg}, nil
+}
+
+func (m *mockDbSvc) UpdateSQLForTenant(_ context.Context, name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
+	return m.UpdateSQL(name, sqlCfg)
+}
 func (m *mockDbSvc) ScaleForTenant(_ context.Context, name string, targetReplicas int) (*database.DatabaseInfo, error) {
 	if m.scaleFn != nil {
 		return m.scaleFn(name, targetReplicas)

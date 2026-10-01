@@ -18,6 +18,8 @@ import (
 	"context"
 	"errors"
 
+	"github.com/dolthub/vitess/go/mysql"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
@@ -33,6 +35,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/rowlock"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
@@ -78,6 +81,16 @@ var dominantRules = []rule{
 	// Re-issuing it re-resolves the table, so it is a lost race, not a fault.
 	// Dominant for the same reason as the layout refusal.
 	tableResolutionStaleRule,
+
+	// A row-lock request that lost: a lock-wait timeout, NOWAIT on a held
+	// row, a deadlock victim, a lost lock -- typed, or in the SQL engine's
+	// numbered rendering. Each is a lost race the client retries, never a
+	// fault. Dominant for the same reason as the two rules above: the
+	// refusal reaches a transport inside SQLExecutionError.
+	rowLockRule,
+
+	// SKIP LOCKED, refused by name.
+	rowLockUnsupportedRule,
 
 	// A closed store is the node going away underneath the request (go-qrdb#371).
 	// It arrives wrapped in ProposeError, ReadError, BatchError, TimeSeriesError
@@ -275,6 +288,7 @@ var databaseRules = []rule{
 	// database is served from: the request is refused, not failed.
 	as(&database.SharedStoreBarrierUnsupportedError{}, FailedPrecondition),
 	as(&database.BarrierOffDataPathError{}, FailedPrecondition),
+	as(&database.InvalidConcurrencyError{}, InvalidArgument),
 	// A per-database barrier operation on a node with no barrier manager.
 	as(&service.BarrierManagerNotConfiguredError{}, Unimplemented),
 }
@@ -754,6 +768,60 @@ var tableResolutionStaleRule = rule{
 		&service.TableGenerationStaleError{Database: "shop", Name: "orders", Expected: 0, Actual: 1},
 		&service.TableDefinitionStaleError{Database: "shop", Name: "orders", Reason: "index idx_sku was dropped"},
 		&service.ReadError{Err: &service.TableGenerationStaleError{Database: "shop", Name: "orders", Expected: 0, Actual: 1}},
+	},
+}
+
+// rowLockConflicts are the row-lock refusals rowLockRule recognises by type,
+// anywhere in the chain including through Cause() links.
+var rowLockConflicts = []func(error) bool{
+	func(err error) bool { var e *rowlock.LockWaitTimeoutError; return service.AsCause(err, &e) },
+	func(err error) bool { var e *rowlock.LockNotAvailableError; return service.AsCause(err, &e) },
+	func(err error) bool { var e *rowlock.DeadlockError; return service.AsCause(err, &e) },
+	func(err error) bool { var e *rowlock.LockLostError; return service.AsCause(err, &e) },
+}
+
+// rowLockNumbers are the MySQL numbers the SQL layer renders a lock-wait
+// timeout and a NOWAIT refusal as.
+var rowLockNumbers = map[int]bool{
+	rowlock.SQLCodeLockWaitTimeout: true,
+	rowlock.SQLCodeLockNowait:      true,
+}
+
+// rowLockRule classifies a lost row-lock request as Aborted.
+var rowLockRule = rule{
+	name: "rowlock conflict",
+	classify: func(err error) (Class, bool) {
+		for _, match := range rowLockConflicts {
+			if match(err) {
+				return Aborted, true
+			}
+		}
+		var numbered interface{ Number() int }
+		return Aborted, errors.As(err, &numbered) && rowLockNumbers[numbered.Number()]
+	},
+	samples: []error{
+		&rowlock.LockWaitTimeoutError{Key: "k", Mode: rowlock.ModeExclusive},
+		&rowlock.LockNotAvailableError{Key: "k", Mode: rowlock.ModeShared},
+		&rowlock.DeadlockError{Key: "k", Mode: rowlock.ModeExclusive},
+		&rowlock.LockLostError{Key: "k"},
+		mysql.NewSQLError(rowlock.SQLCodeLockWaitTimeout, "HY000", "%s", "Lock wait timeout exceeded"),
+		mysql.NewSQLError(rowlock.SQLCodeLockNowait, "HY000", "%s", "NOWAIT"),
+	},
+}
+
+// sqlCodeNotSupportedYet is MySQL's ER_NOT_SUPPORTED_YET, which the SQL
+// layer refuses SKIP LOCKED with.
+const sqlCodeNotSupportedYet = 1235
+
+// rowLockUnsupportedRule classifies ER_NOT_SUPPORTED_YET as Unimplemented.
+var rowLockUnsupportedRule = rule{
+	name: "ER_NOT_SUPPORTED_YET",
+	classify: func(err error) (Class, bool) {
+		var numbered interface{ Number() int }
+		return Unimplemented, errors.As(err, &numbered) && numbered.Number() == sqlCodeNotSupportedYet
+	},
+	samples: []error{
+		mysql.NewSQLError(sqlCodeNotSupportedYet, "42000", "%s", "SKIP LOCKED is not supported"),
 	},
 }
 

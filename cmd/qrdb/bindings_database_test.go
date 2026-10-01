@@ -147,6 +147,14 @@ func (m *bindingDatabaseService) UpdateConnectionForTenant(_ context.Context, _ 
 	return nil, nil
 }
 
+func (m *bindingDatabaseService) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
+	return &database.DatabaseInfo{Name: name, SQL: sqlCfg}, nil
+}
+
+func (m *bindingDatabaseService) UpdateSQLForTenant(_ context.Context, name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
+	return m.UpdateSQL(name, sqlCfg)
+}
+
 func (m *bindingDatabaseService) ScaleForTenant(_ context.Context, name string, targetReplicas int) (*database.DatabaseInfo, error) {
 	if m.scaleFn != nil {
 		return m.scaleFn(name, targetReplicas)

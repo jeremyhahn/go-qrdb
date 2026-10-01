@@ -349,9 +349,14 @@ func (s *Server) Start() error {
 	if authenticator != nil {
 		wireOpts = append(wireOpts,
 			wire.SessionMiddleware(sessionHandler(authenticator)),
-			wire.CloseConn(closeHandler(authenticator)),
 		)
 	}
+
+	// psql-wire runs ONE close handler, after the session middleware, with
+	// the connection's context; it ends the connection's SQL session --
+	// releasing any row locks an abandoned transaction still holds -- and
+	// clears authentication state.
+	wireOpts = append(wireOpts, wire.CloseConn(closeHandler(authenticator)))
 
 	// Register the per-connection QRDBSession handler LAST (after any auth
 	// middleware above), so it sees whatever identity authentication
@@ -498,10 +503,19 @@ func sealedWireError(severity psqlerr.Severity) error {
 	return psqlerr.WithSeverity(psqlerr.WithCode(&BarrierSealedError{}, codes.CannotConnectNow), severity)
 }
 
-// closeHandler returns a psql-wire CloseFn that cleans up TLS state
-// for the connection identified by its remote address.
+// closeHandler returns a psql-wire CloseFn that ends the connection's SQL
+// session -- so an open transaction's row locks are released now rather
+// than left to expire with their lease -- and, when authentication is on,
+// cleans up the TLS state of the connection identified by its remote
+// address.
 func closeHandler(authenticator *Authenticator) wire.CloseFn {
 	return func(ctx context.Context) error {
+		if session := connectionSessionFromContext(ctx); session != nil {
+			session.SessionEnd()
+		}
+		if authenticator == nil {
+			return nil
+		}
 		remoteAddr := wire.RemoteAddress(ctx)
 		if remoteAddr != nil {
 			authenticator.ClearTLSState(remoteAddr.String())

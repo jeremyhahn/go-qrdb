@@ -207,6 +207,21 @@ func (s *qrdbServiceServer) DatabaseUpdateConnection(ctx context.Context, req *p
 	return databaseInfoToProto(info), nil
 }
 
+// DatabaseUpdateSQL updates a database's SQL settings -- its
+// sql.concurrency. An unset sql restores the defaults.
+func (s *qrdbServiceServer) DatabaseUpdateSQL(ctx context.Context, req *pb.DatabaseUpdateSQLRequest) (*pb.DatabaseInfoResponse, error) {
+	if s.databaseSvc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "database"})
+	}
+
+	info, err := s.databaseSvc.UpdateSQLForTenant(ctx, req.GetName(), protoSQLConfigToDomain(req.GetSql()))
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+
+	return databaseInfoToProto(info), nil
+}
+
 // DatabaseSeal seals the encryption barrier for a database.
 func (s *qrdbServiceServer) DatabaseSeal(ctx context.Context, req *pb.DatabaseSealRequest) (*emptypb.Empty, error) {
 	if s.databaseSvc == nil {
@@ -286,7 +301,18 @@ func protoDatabaseCreateToConfig(req *pb.DatabaseCreateRequest) database.Databas
 		cfg.Barrier = protoBarrierConfigToDomain(b)
 	}
 
+	cfg.SQL = protoSQLConfigToDomain(req.GetSql())
+
 	return cfg
+}
+
+// protoSQLConfigToDomain converts a DatabaseSQLConfig proto to the domain
+// SQLConfig; nil stays nil (the defaults).
+func protoSQLConfigToDomain(c *pb.DatabaseSQLConfig) *database.SQLConfig {
+	if c == nil {
+		return nil
+	}
+	return &database.SQLConfig{Concurrency: database.Concurrency(c.GetConcurrency())}
 }
 
 // protoProtocolConfigToDomain converts a DatabaseProtocolConfig proto to a
@@ -431,6 +457,10 @@ func databaseInfoToProto(info *database.DatabaseInfo) *pb.DatabaseInfoResponse {
 			CertFile:      info.Connection.CertFile,
 			KeyFile:       info.Connection.KeyFile,
 		}
+	}
+
+	if info.SQL != nil {
+		resp.Sql = &pb.DatabaseSQLConfig{Concurrency: string(info.SQL.Concurrency)}
 	}
 
 	return resp

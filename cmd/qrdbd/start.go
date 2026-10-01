@@ -1160,6 +1160,7 @@ func runStart(f *startFlags) (err error) {
 			Name:    dbCfg.Name,
 			Engine:  database.EngineType(dbCfg.Engine),
 			Backend: database.BackendType(dbCfg.Backend),
+			SQL:     databaseSQLConfig(dbCfg.SQL),
 		}
 		if _, err := dbManager.Create(dCfg); err != nil {
 			// Try opening if it already exists (idempotent startup).
@@ -1167,6 +1168,13 @@ func runStart(f *startFlags) (err error) {
 			if errors.As(err, &ae) {
 				if _, err := dbManager.Open(dbCfg.Name); err != nil {
 					return err
+				}
+				// The file declares the database's SQL settings: a
+				// database that already existed takes them too.
+				if dCfg.SQL != nil {
+					if err := dbManager.UpdateSQL(dbCfg.Name, dCfg.SQL); err != nil {
+						return err
+					}
 				}
 				continue
 			}
@@ -4112,4 +4120,13 @@ func (a *raftFollowerAdder) LeaderReplicaID(_ context.Context, shardID uint64) (
 // removal rather than the replica being removed.
 func (a *raftFollowerAdder) RequestLeaderTransfer(ctx context.Context, shardID, targetReplicaID uint64) error {
 	return a.host.RequestLeaderTransfer(ctx, shardID, targetReplicaID)
+}
+
+// databaseSQLConfig converts a configuration file's database SQL settings to
+// the database package's; nil stays nil (the defaults).
+func databaseSQLConfig(c *qrdbconfig.DatabaseSQLConfig) *database.SQLConfig {
+	if c == nil {
+		return nil
+	}
+	return &database.SQLConfig{Concurrency: database.Concurrency(c.Concurrency)}
 }

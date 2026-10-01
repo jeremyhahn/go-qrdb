@@ -19,6 +19,8 @@ package driver
 import (
 	"net/url"
 	"strings"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 )
 
 // DSN schemes built into this package. Additional schemes are contributed by
@@ -72,6 +74,11 @@ type DSNConfig struct {
 	// Location names the time zone used to render time.Time arguments as SQL
 	// datetime literals (an IANA name, or "Local"). Empty means UTC.
 	Location string
+
+	// Concurrency, when set, is the qrdb_concurrency every connection's
+	// session starts with: "optimistic" or "pessimistic" (see
+	// docs/row-locking/). Empty leaves the database's own setting in force.
+	Concurrency string
 }
 
 // ParseDSN parses a DSN string into a DSNConfig, dispatching to the parser
@@ -126,6 +133,10 @@ func ParseEmbeddedDSN(u *url.URL, cfg *DSNConfig) error {
 	cfg.Tenant = q.Get("tenant")
 	cfg.User = q.Get("user")
 	cfg.Location = q.Get("loc")
+	cfg.Concurrency = q.Get("concurrency")
+	if err := (&database.SQLConfig{Concurrency: database.Concurrency(cfg.Concurrency)}).Validate(); err != nil {
+		return &DSNParseError{DSN: u.String(), Reason: err.Error()}
+	}
 
 	// The host component determines the backend when it is a known name
 	// (e.g., "memory"). Otherwise, the path is the data directory.
