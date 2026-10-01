@@ -588,6 +588,15 @@ are not reconstructed here — their history is in the git log.
   `HandleReclaimedError`. Together these turned a lost concurrent withdrawal
   of the bootstrap admin's keys into an `IndexCompensationError` rather than
   the expected lockout refusal.
+- **`qrdbdharness` handed the same port to concurrent test processes.** The
+  port reservation table was per process and every process walked the same
+  window from the same base, so two `go test` package processes each
+  bind-verified a port the other had just released and both used it: a
+  listener failed with `bind: address already in use`, or two in-test Raft
+  clusters dialled each other and never elected a leader. Every reserved port
+  is now also locked across processes by an abstract Unix socket held for the
+  life of the process, so callers of `ReserveTCPPorts`/`ReserveUDPPorts` need
+  no change.
 
 ### Security
 

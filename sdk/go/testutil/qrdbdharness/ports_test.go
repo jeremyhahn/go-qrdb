@@ -19,8 +19,10 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -39,6 +41,174 @@ func fixedRangeFile(t *testing.T, contents string) string {
 type closerFunc func() error
 
 func (f closerFunc) Close() error { return f() }
+
+// unlocked is a portLocker that always grants the lock. Fixture allocators use
+// it so their exact candidate sequences do not depend on which real ports the
+// default allocator -- or another test process -- has locked.
+func unlocked(int) (io.Closer, error) { return closerFunc(func() error { return nil }), nil }
+
+// reservePortsHelperMode turns this test binary into a second harness process
+// that reserves reservePortsHelperCount UDP ports and prints them.
+const (
+	reservePortsHelperMode  = "reserve-udp"
+	reservePortsHelperCount = 4
+)
+
+// TestReservePortsAreDisjointAcrossProcesses is the cross-process race `go
+// test` hits by running packages concurrently. Every harness process walks
+// the same window from the same base; before the cross-process lock, a second
+// process bind-verified the ports this one had already handed out (their
+// probes long closed) and handed them out again.
+func TestReservePortsAreDisjointAcrossProcesses(t *testing.T) {
+	if _, err := ReserveUDPPorts(reservePortsHelperCount); err != nil {
+		t.Fatalf("ReserveUDPPorts: %v", err)
+	}
+
+	cmd := exec.Command(os.Args[0])
+	cmd.Env = append(os.Environ(), helperEnv+"="+reservePortsHelperMode)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("second harness process: %v: %s", err, stderr.String())
+	}
+	child := strings.Fields(string(out))
+	if len(child) != reservePortsHelperCount {
+		t.Fatalf("second process reserved %v, want %d ports", child, reservePortsHelperCount)
+	}
+
+	defaultAllocator.mu.Lock()
+	defer defaultAllocator.mu.Unlock()
+	for _, s := range child {
+		port, err := strconv.Atoi(s)
+		if err != nil {
+			t.Fatalf("second process printed %q: %v", s, err)
+		}
+		if _, ours := defaultAllocator.reserved[port]; ours {
+			t.Errorf("port %d was handed out by this process AND by a concurrent one", port)
+		}
+	}
+}
+
+func TestLockPortAcrossProcessesAdmitsOneHolder(t *testing.T) {
+	port, err := ReserveTCPPort()
+	if err != nil {
+		t.Fatalf("ReserveTCPPort: %v", err)
+	}
+	// This process already holds port's lock, so a second take must fail.
+	if l, err := lockPortAcrossProcesses(port); err == nil {
+		_ = l.Close()
+		t.Fatalf("locked port %d a second time", port)
+	}
+
+	// A lock that is released can be taken again. A number far above any
+	// window base is used so no reservation in this process holds it.
+	const free = 65000
+	first, err := lockPortAcrossProcesses(free)
+	if err != nil {
+		t.Fatalf("lock %d: %v", free, err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("release %d: %v", free, err)
+	}
+	again, err := lockPortAcrossProcesses(free)
+	if err != nil {
+		t.Fatalf("relock %d after release: %v", free, err)
+	}
+	_ = again.Close()
+}
+
+func TestAllocatorReserveSkipsPortsLockedElsewhere(t *testing.T) {
+	base := 32768 - portWindow
+	a := newAllocator(fixedRangeFile(t, "32768 60999"), func(port int) (io.Closer, error) {
+		if port == base {
+			return nil, errors.New("address already in use")
+		}
+		return unlocked(port)
+	})
+	var probed []string
+	ports, err := a.reserve("UDP", 1, func(addr string) (io.Closer, error) {
+		probed = append(probed, addr)
+		return closerFunc(func() error { return nil }), nil
+	})
+	if err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	if len(ports) != 1 || ports[0] != base+1 {
+		t.Fatalf("ports = %v, want [%d] after skipping the port locked elsewhere", ports, base+1)
+	}
+	if len(probed) != 1 {
+		t.Fatalf("probed %v; a port locked elsewhere must not even be probed", probed)
+	}
+}
+
+// TestAllocatorReserveLockLifetimes: a handed-out port's lock is kept for the
+// life of the process; the lock of a port that failed its bind, or of every
+// port in a batch that fell short, is released for others to take.
+func TestAllocatorReserveLockLifetimes(t *testing.T) {
+	base := 32768 - portWindow
+	released := map[int]bool{}
+	var mu sync.Mutex
+	tracking := func(port int) (io.Closer, error) {
+		return closerFunc(func() error {
+			mu.Lock()
+			released[port] = true
+			mu.Unlock()
+			return nil
+		}), nil
+	}
+
+	a := newAllocator(fixedRangeFile(t, "32768 60999"), tracking)
+	ports, err := a.reserve("TCP", 1, func(addr string) (io.Closer, error) {
+		if addr == net.JoinHostPort(loopbackHost, strconv.Itoa(base)) {
+			return nil, errors.New("address already in use")
+		}
+		return closerFunc(func() error { return nil }), nil
+	})
+	if err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	if !released[base] {
+		t.Errorf("the lock of unbindable port %d was kept", base)
+	}
+	if released[ports[0]] || len(a.locks) != 1 {
+		t.Errorf("handed-out port %d: released=%v, held locks=%d; want kept", ports[0], released[ports[0]], len(a.locks))
+	}
+
+	short := newAllocator(fixedRangeFile(t, "32768 60999"), tracking)
+	clear(released)
+	bound := 0
+	_, err = short.reserve("TCP", maxReservationAttempts+1, func(string) (io.Closer, error) {
+		bound++
+		return closerFunc(func() error { return nil }), nil
+	})
+	var reservationErr *PortReservationError
+	if !errors.As(err, &reservationErr) {
+		t.Fatalf("err = %v, want *PortReservationError", err)
+	}
+	if len(released) != bound || len(short.locks) != 0 {
+		t.Errorf("short batch: released %d of %d locks, still holding %d; want all released", len(released), bound, len(short.locks))
+	}
+}
+
+func TestAllocatorReserveReleasesLocksOnWindowError(t *testing.T) {
+	released := 0
+	a := newAllocator(fixedRangeFile(t, "32768 60999"), func(int) (io.Closer, error) {
+		return closerFunc(func() error { released++; return nil }), nil
+	})
+	// Exhaust all but one candidate so the second draw of the batch fails.
+	a.next = 32768 - 1
+	_, err := a.reserve("TCP", 2, func(string) (io.Closer, error) {
+		return closerFunc(func() error { return nil }), nil
+	})
+	var exhausted *PortExhaustedError
+	if !errors.As(err, &exhausted) {
+		t.Fatalf("err = %v, want *PortExhaustedError", err)
+	}
+	if released != 1 || len(a.locks) != 0 {
+		t.Errorf("released %d locks, holding %d; want the one taken lock released", released, len(a.locks))
+	}
+}
 
 func TestReadEphemeralLow(t *testing.T) {
 	tests := []struct {
@@ -104,7 +274,7 @@ func TestReadEphemeralLowFromKernel(t *testing.T) {
 
 func TestAllocatorEphemeralLowIsReadOnce(t *testing.T) {
 	path := fixedRangeFile(t, "32768 60999")
-	a := newAllocator(path)
+	a := newAllocator(path, unlocked)
 
 	low, err := a.ephemeralLow()
 	if err != nil {
@@ -124,7 +294,7 @@ func TestAllocatorEphemeralLowIsReadOnce(t *testing.T) {
 
 func TestAllocatorNextPortDrawsBelowEphemeralRange(t *testing.T) {
 	const low = 32768
-	a := newAllocator(fixedRangeFile(t, "32768 60999"))
+	a := newAllocator(fixedRangeFile(t, "32768 60999"), unlocked)
 
 	first, err := a.nextPort()
 	if err != nil {
@@ -154,7 +324,7 @@ func TestAllocatorNextPortDrawsBelowEphemeralRange(t *testing.T) {
 }
 
 func TestAllocatorNextPortSkipsAlreadyReserved(t *testing.T) {
-	a := newAllocator(fixedRangeFile(t, "32768 60999"))
+	a := newAllocator(fixedRangeFile(t, "32768 60999"), unlocked)
 	base := 32768 - portWindow
 	a.reserved[base] = struct{}{}
 	a.reserved[base+1] = struct{}{}
@@ -169,7 +339,7 @@ func TestAllocatorNextPortSkipsAlreadyReserved(t *testing.T) {
 }
 
 func TestAllocatorNextPortWindowTooLow(t *testing.T) {
-	a := newAllocator(fixedRangeFile(t, strconv.Itoa(lowestReservablePort+portWindow-1)+" 60999"))
+	a := newAllocator(fixedRangeFile(t, strconv.Itoa(lowestReservablePort+portWindow-1)+" 60999"), unlocked)
 	_, err := a.nextPort()
 	var windowErr *PortWindowError
 	if !errors.As(err, &windowErr) {
@@ -182,7 +352,7 @@ func TestAllocatorNextPortWindowTooLow(t *testing.T) {
 
 func TestAllocatorNextPortExhausted(t *testing.T) {
 	const low = 32768
-	a := newAllocator(fixedRangeFile(t, "32768 60999"))
+	a := newAllocator(fixedRangeFile(t, "32768 60999"), unlocked)
 	a.next = low // the window has already been walked end to end
 
 	_, err := a.nextPort()
@@ -196,14 +366,14 @@ func TestAllocatorNextPortExhausted(t *testing.T) {
 }
 
 func TestAllocatorNextPortPropagatesRangeError(t *testing.T) {
-	a := newAllocator(filepath.Join(t.TempDir(), "absent"))
+	a := newAllocator(filepath.Join(t.TempDir(), "absent"), unlocked)
 	if _, err := a.nextPort(); err == nil {
 		t.Fatal("nextPort succeeded without a readable ephemeral range")
 	}
 }
 
 func TestAllocatorReserveBindVerifies(t *testing.T) {
-	a := newAllocator(fixedRangeFile(t, "32768 60999"))
+	a := newAllocator(fixedRangeFile(t, "32768 60999"), unlocked)
 	var probed []string
 	ports, err := a.reserve("TCP", 3, func(addr string) (io.Closer, error) {
 		probed = append(probed, addr)
@@ -233,7 +403,7 @@ func TestAllocatorReserveBindVerifies(t *testing.T) {
 }
 
 func TestAllocatorReserveHoldsProbesUntilBatchComplete(t *testing.T) {
-	a := newAllocator(fixedRangeFile(t, "32768 60999"))
+	a := newAllocator(fixedRangeFile(t, "32768 60999"), unlocked)
 	var mu sync.Mutex
 	open := 0
 	maxOpen := 0
@@ -262,7 +432,7 @@ func TestAllocatorReserveHoldsProbesUntilBatchComplete(t *testing.T) {
 }
 
 func TestAllocatorReserveSkipsBusyPorts(t *testing.T) {
-	a := newAllocator(fixedRangeFile(t, "32768 60999"))
+	a := newAllocator(fixedRangeFile(t, "32768 60999"), unlocked)
 	base := 32768 - portWindow
 	ports, err := a.reserve("TCP", 1, func(addr string) (io.Closer, error) {
 		_, port, _ := net.SplitHostPort(addr)
@@ -280,7 +450,7 @@ func TestAllocatorReserveSkipsBusyPorts(t *testing.T) {
 }
 
 func TestAllocatorReserveFailsWhenNothingBinds(t *testing.T) {
-	a := newAllocator(fixedRangeFile(t, "32768 60999"))
+	a := newAllocator(fixedRangeFile(t, "32768 60999"), unlocked)
 	bindErr := errors.New("address already in use")
 	_, err := a.reserve("UDP", 2, func(string) (io.Closer, error) { return nil, bindErr })
 	var reservationErr *PortReservationError
@@ -296,7 +466,7 @@ func TestAllocatorReserveFailsWhenNothingBinds(t *testing.T) {
 }
 
 func TestAllocatorReserveZeroPorts(t *testing.T) {
-	a := newAllocator(fixedRangeFile(t, "32768 60999"))
+	a := newAllocator(fixedRangeFile(t, "32768 60999"), unlocked)
 	ports, err := a.reserve("TCP", 0, func(string) (io.Closer, error) {
 		t.Fatal("reserve(0) must not probe any port")
 		return nil, nil
@@ -310,7 +480,7 @@ func TestAllocatorReserveZeroPorts(t *testing.T) {
 }
 
 func TestAllocatorReservePropagatesWindowError(t *testing.T) {
-	a := newAllocator(fixedRangeFile(t, "1024 60999"))
+	a := newAllocator(fixedRangeFile(t, "1024 60999"), unlocked)
 	_, err := a.reserve("TCP", 1, func(string) (io.Closer, error) {
 		t.Fatal("reserve must not probe when the window is unusable")
 		return nil, nil
