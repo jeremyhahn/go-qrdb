@@ -183,6 +183,78 @@ func TestNamespacedVectorService_StaleHandleRefusedAfterDropAndRecreate(t *testi
 	}
 }
 
+// TestNamespacedVectorService_StaleHandleRefusedAfterCompletedDrop is the
+// blocker from the re-review of the first incarnation fix: refuseIfDropping
+// treated a database.Manager.Get failure OTHER than DroppingError --
+// typically NotFoundError -- as "allow", on the theory that a name the
+// catalog has no record for is simply unmanaged. That theory holds for a
+// caller with nothing pinned, but not for the vector fence: a COMPLETED drop
+// (no recreate at all, unlike the test above) removes the catalog entry
+// entirely, so Get returns NotFoundError, not DroppingError -- and a stale
+// handle's write sailed through as "allow", orphaning vectors that the
+// name's NEXT incarnation would silently inherit. The fix is that a PINNED
+// caller (sharedStoreFence always pins the record it resolved its handle
+// against) treats ANY lookup failure as a refusal, not only DroppingError.
+func TestNamespacedVectorService_StaleHandleRefusedAfterCompletedDrop(t *testing.T) {
+	f := newSharedStoreFixture(t)
+	f.raw.Vector = workingVec{}
+
+	stale, err := f.reg.VectorService("system", "orders")
+	if err != nil {
+		t.Fatalf("VectorService (stale resolution): %v", err)
+	}
+
+	if err := f.mgr.Drop(context.Background(), "orders"); err != nil {
+		t.Fatalf("Drop() error = %v", err)
+	}
+	// No re-Create: the catalog entry for "orders" is simply gone now.
+
+	req := &service.UpsertVectorRequest{Namespace: "ns", Vector: []float32{1, 2, 3, 4}}
+	_, err = stale.UpsertVector(context.Background(), req)
+	var dropping *database.DroppingError
+	if !errors.As(err, &dropping) {
+		t.Fatalf("stale handle UpsertVector after a completed drop = %v (%T), want *database.DroppingError", err, err)
+	}
+}
+
+// TestNamespacedVectorService_StaleHandleRefusedAfterCompletedDrop_EmptyIncarnation
+// is the same completed-drop scenario, but the database.Manager has no
+// reclaimer wired in, so every database -- including "orders" -- shares the
+// empty incarnation by design (see Manager.Create). With an empty incarnation
+// there is nothing for refuseIfDropping's incarnation compare to catch, so
+// this proves the pinned/any-lookup-failure check that covers a completed
+// drop works independently of incarnation tracking: a legacy or provisioned
+// database needs the same protection a reclaimer-tracked one does.
+func TestNamespacedVectorService_StaleHandleRefusedAfterCompletedDrop_EmptyIncarnation(t *testing.T) {
+	dbMgr := database.NewManager(nil, t.TempDir())
+	if _, err := dbMgr.Create(database.DatabaseConfig{Name: "orders", Engine: database.EngineKV, Backend: database.BackendMemory}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	reg := NewDatabaseServiceRegistry("default")
+	svcs := newFilledServices("orders")
+	svcs.Vector = workingVec{}
+	reg.Register("orders", svcs)
+
+	r := NewRESTServiceRegistry(reg, nil, "system", withDatabaseManager(dbMgr))
+
+	stale, err := r.VectorService("system", "orders")
+	if err != nil {
+		t.Fatalf("VectorService (stale resolution): %v", err)
+	}
+
+	if err := dbMgr.Drop(context.Background(), "orders"); err != nil {
+		t.Fatalf("Drop() error = %v", err)
+	}
+
+	req := &service.UpsertVectorRequest{Namespace: "ns", Vector: []float32{1, 2, 3, 4}}
+	_, err = stale.UpsertVector(context.Background(), req)
+	var dropping *database.DroppingError
+	if !errors.As(err, &dropping) {
+		t.Fatalf("stale handle (empty incarnation) UpsertVector after a completed drop = %v (%T), want *database.DroppingError", err, err)
+	}
+}
+
 // TestRESTServiceRegistry_UnmanagedDatabaseUnaffectedByDropFence pins the
 // no-op cases refuseIfDropping documents: a database.Manager with no entry
 // for the requested name (a pre-registered database an embedding manages

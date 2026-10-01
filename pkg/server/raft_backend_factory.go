@@ -393,28 +393,27 @@ func NewRaftBackendFactoryFromManager(
 // cached on rs, because the whole point is to observe a fence set (or an
 // entry deleted) AFTER rs was populated (go-qrdb#482).
 //
-// A shard ID mismatch is refused the same as Dropping: the shard IS the
-// incarnation (see the comment where the vector fence is built), so
-// placement naming a DIFFERENT shard than rs means the name was dropped and
-// created again after rs was resolved. cachedServicesLocked's caller already
-// filters this case out before reaching here -- it evicts the stale entry
-// and resolves the current shard instead, so the check below never fires on
-// that path -- but RefuseIfDropping, the vector view's check-before-write
-// fence, calls straight in with the shard it cached at resolution time and
-// has no such pre-filter. Without this, a vector write made through a
-// handle resolved before the drop would check a CURRENT placement record
-// that is healthy -- it belongs to the new incarnation, not Dropping at all
-// -- and never refuse, so the stale handle would keep writing into a
-// namespace a database create-again now owns.
+// A shard ID mismatch (the stale-incarnation case cachedServicesLocked
+// evicts on) is deliberately NOT checked here. RefuseIfDropping, this
+// function's other caller, re-reads f.shards fresh on every call (see its
+// own comment), so rs by the time it gets here is already whatever the
+// cache currently holds -- not a shard pinned once when some earlier handle
+// was built. Comparing rs.shardID against the current placement would then
+// only ever compare the cache's latest entry against itself, which can
+// never observe a mismatch no matter how stale the ORIGINAL caller's
+// resolution was. The comparison was briefly added for this reason before
+// the review that caught it, and the real reason it is unneeded is simpler:
+// a dedicated-raft database's DatabaseServices never carries a Vector field
+// (RaftBackendFactory.services builds none), so the stale-vector-handle
+// scenario RefuseIfDropping was written to guard against cannot occur on
+// this path at all. See the analogous, and reachable, fix on the
+// shared-store side instead (restServiceRegistry.refuseIfDropping).
 func (f *RaftBackendFactory) refuseIfDroppingLocked(tenantID, db string, rs *raftShard) error {
 	pInfo, infoOK, err := f.dbInfo.placementInfo(tenantID, db)
 	if err != nil {
 		return &RaftBackendError{TenantID: tenantID, Database: db, Op: "placement-lookup", Err: err}
 	}
 	if infoOK {
-		if pInfo.ShardID != rs.shardID {
-			return &database.DroppingError{Name: db}
-		}
 		return refusalFromPlacement(db, pInfo)
 	}
 	if rs.hadPlacement {
@@ -503,14 +502,19 @@ func (f *RaftBackendFactory) retireShard(rs *raftShard) {
 }
 
 // RefuseIfDropping re-checks the replicated placement fence for (tenantID,
-// db) against whatever shard bundle is currently cached for it, WITHOUT
-// resolving or caching a new one.
+// db) against whatever shard bundle is CURRENTLY cached for it -- read fresh
+// from f.shards on every call, not a specific shard pinned once at some
+// earlier resolution -- WITHOUT resolving or caching a new one.
 //
 // Writes to a dedicated-raft database do not need it: they carry the drop
 // fence guard into the database's own shard, which refuses them at apply
-// time. Its one caller is the vector view of such a database, whose writes
-// are node-local rather than Raft proposals and so can only be checked
-// before they are made (see databaseFence).
+// time. It exists for the vector view's check-before-write fence
+// (databaseFence), built unconditionally by resolve's IsolationRaft branch
+// for symmetry with every other branch -- but RaftBackendFactory.services
+// never populates DatabaseServices.Vector, so no dedicated-raft database
+// ever actually resolves a vector handle for this check to run against.
+// This function is kept for that symmetry and because a future Vector field
+// on this path is plausible, not because it is reachable today.
 //
 // A database this factory has never resolved at all reports no refusal:
 // there is nothing cached to check staleness against, and the NEXT

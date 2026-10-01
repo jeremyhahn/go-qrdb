@@ -562,48 +562,47 @@ func (r *restServiceRegistry) databaseExists(tenantID, db string) bool {
 	return r.dbReg.Get(db) != nil
 }
 
-// refuseIfDropping fails closed when db has a Manager.Drop fence set,
-// closing a window every isolation branch below does NOT otherwise cover:
-// resolve's dbReg.GetOrDefault short-circuit returns a pre-registered
-// service bundle (e.g. the default database, or an embedding's own
-// registrations) WITHOUT ever calling databaseExists/Manager.Get, so a
-// database fenced mid-drop but still pre-registered would otherwise resolve
-// successfully for the rest of that database's teardown (go-qrdb#482).
+// refuseIfDropping is the vector view's check-before-write fence: vector
+// writes are not Raft proposals (see dropFence's doc comment), so they carry
+// no write guard and are refused here instead, re-invoked on every write
+// through the one closure sharedStoreFence builds around it.
 //
-// It is a no-op for the unscoped ("") database name and when no
-// database.Manager is wired in (an embedding with no local catalog to
-// race against). A database.Manager.Get error OTHER than DroppingError --
-// typically NotFoundError -- is deliberately NOT surfaced here: this check
-// exists only to enforce the fence, not to duplicate the not-found handling
-// every isolation branch below already owns. That distinction matters most
-// for IsolationRaft: a dedicated-raft database's local catalog entry is
-// authoritatively absent on every node except the one that created it (see
-// the IsolationRaft branch's own comment), so NotFoundError here has to
-// mean "no local fence information available" and fall through, never
-// "refuse". A dedicated-raft database's cluster-wide refusal comes from its
-// replicated placement marker (RaftBackendFactory.Services) instead.
+// pinned reports whether the caller resolved a specific catalog record to
+// build its handle against. sharedStoreFence sets it whenever managed.db was
+// non-nil, regardless of whether that record's incarnation happens to be
+// empty -- a legacy or provisioned database with no reclaimer always has an
+// empty incarnation (see Manager.Create), and it needs this check exactly as
+// much as one that carries a real incarnation. For an UNPINNED caller --
+// there is no caller like that today, but the zero value must still mean
+// "nothing to check" -- a database.Manager.Get error is not surfaced: there
+// is no specific record to have gone stale.
 //
-// This is a RESOLUTION-time refusal: it keeps new handles from being handed
-// out. Handles already in hand are refused by the store fence their writes
-// carry (see databaseFence) -- except the vector view, whose writes are not
-// Raft proposals and so carry no such fence; its handle is this function's
-// one caller, re-invoked on every write, and incarnation is how it is
-// refused too. A live record for db that is not dropping is not enough: a
-// handle resolved before a drop+recreate cycle names the OLD incarnation,
-// and the CURRENT record -- a different, healthy database under the same
-// name -- would otherwise answer "not dropping" and let the stale write
-// land in the namespace the new database now owns. incarnation is empty for
-// a caller with no incarnation to pin (there is none to compare against).
-func (r *restServiceRegistry) refuseIfDropping(db, incarnation string) error {
+// For a PINNED caller, by contrast, ANY lookup failure is a refusal, not
+// only DroppingError. A completed drop removes the catalog entry entirely
+// (database.Manager.Drop), so Get returns NotFoundError once reclamation
+// finishes -- not DroppingError, which only covers the WINDOW while the
+// fence is still set. Treating that NotFoundError as "allow" let a handle
+// resolved before the drop keep writing into the vector store after the
+// drop completed; those orphaned vectors were then silently inherited by
+// the name's next incarnation. incarnation is compared only when the pinned
+// record found one still live: an empty incarnation has nothing to compare,
+// but a pinned caller whose database is simply gone is refused regardless.
+func (r *restServiceRegistry) refuseIfDropping(db string, pinned bool, incarnation string) error {
 	if db == "" || r.dbManager == nil {
 		return nil
 	}
 	current, err := r.dbManager.Get(db)
-	var dropping *database.DroppingError
-	if errors.As(err, &dropping) {
-		return dropping
+	if err != nil {
+		var dropping *database.DroppingError
+		if errors.As(err, &dropping) {
+			return dropping
+		}
+		if pinned {
+			return &database.DroppingError{Name: db}
+		}
+		return nil
 	}
-	if err == nil && incarnation != "" && current.Incarnation() != incarnation {
+	if pinned && incarnation != "" && current.Incarnation() != incarnation {
 		return &database.DroppingError{Name: db}
 	}
 	return nil
@@ -781,7 +780,7 @@ func (r *restServiceRegistry) sharedStoreFence(tenantID, db string, managed mana
 		return databaseFence{}, nil
 	}
 	incarnation := managed.db.Incarnation()
-	return newDatabaseFence(tenantID, db, incarnation, func() error { return r.refuseIfDropping(db, incarnation) })
+	return newDatabaseFence(tenantID, db, incarnation, func() error { return r.refuseIfDropping(db, true, incarnation) })
 }
 
 // managedDatabase returns db's catalog record when tenantID owns it, or the
