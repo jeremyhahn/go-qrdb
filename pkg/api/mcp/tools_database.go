@@ -695,32 +695,33 @@ func handleDatabaseUpdateConnection(dbSvc service.DatabaseServicer) mcpserver.To
 // toolDatabaseUpdateSQL defines the qrdb_database_update_sql tool schema.
 func toolDatabaseUpdateSQL() mcp.Tool {
 	return mcp.NewTool("qrdb_database_update_sql",
-		mcp.WithDescription("Update a database's SQL settings: its concurrency mode."),
+		mcp.WithDescription("Update a database's SQL settings: its concurrency mode. Omitting concurrency restores the defaults (optimistic)."),
 		mcp.WithString("name",
 			mcp.Required(),
 			mcp.Description("The database name to update."),
 		),
 		mcp.WithString("concurrency",
-			mcp.Required(),
-			mcp.Description("The SQL concurrency mode: \"optimistic\" or \"pessimistic\"."),
+			mcp.Description("The SQL concurrency mode: \"optimistic\" or \"pessimistic\". Omit it to restore the defaults."),
 		),
 	)
 }
 
 // handleDatabaseUpdateSQL returns a tool handler that delegates to
-// dbSvc.UpdateSQLForTenant.
+// dbSvc.UpdateSQLForTenant. An omitted concurrency clears the database's
+// SQL settings, restoring the defaults -- the same as an absent sql on
+// REST, gRPC, QUIC and the Unix socket.
 func handleDatabaseUpdateSQL(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		name := mcp.ParseString(req, "name", "")
 		if name == "" {
 			return mcp.NewToolResultError("name is required"), nil
 		}
-		concurrency := mcp.ParseString(req, "concurrency", "")
-		if concurrency == "" {
-			return mcp.NewToolResultError("concurrency is required"), nil
+		var sqlCfg *database.SQLConfig
+		if concurrency := mcp.ParseString(req, "concurrency", ""); concurrency != "" {
+			sqlCfg = &database.SQLConfig{Concurrency: database.Concurrency(concurrency)}
 		}
 
-		info, err := dbSvc.UpdateSQLForTenant(ctx, name, &database.SQLConfig{Concurrency: database.Concurrency(concurrency)})
+		info, err := dbSvc.UpdateSQLForTenant(ctx, name, sqlCfg)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_database_update_sql", Err: err}
 		}

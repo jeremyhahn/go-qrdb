@@ -38,7 +38,11 @@ PATCH /v1/databases/shop/sql
 }
 ```
 
-An absent `sql` object, or an empty `concurrency`, means `optimistic`.
+An absent `sql` object, or an empty `concurrency`, means `optimistic`. An
+update with an absent `sql` clears the database's SQL settings, restoring the
+defaults; on MCP that is `qrdb_database_update_sql` with `concurrency` omitted
+(it is optional), on the Go SDK an `UpdateDatabaseSQLRequest` with a nil
+`SQL`.
 
 ### Status and error mapping
 

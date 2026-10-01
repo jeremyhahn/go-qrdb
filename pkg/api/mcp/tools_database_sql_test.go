@@ -67,6 +67,45 @@ func TestDatabaseSQLTools_CreateAndUpdate(t *testing.T) {
 	}
 }
 
+// An update without a concurrency restores the defaults, as an absent sql
+// does on REST, gRPC, QUIC and the Unix socket: there must be a way back to
+// "unset" on every transport.
+func TestDatabaseSQLTools_UpdateWithoutConcurrencyRestoresDefaults(t *testing.T) {
+	svc := newRealDatabaseService(t)
+	ctx := context.Background()
+	if _, err := handleDatabaseCreate(svc)(ctx, buildCallToolRequest(t, "qrdb_database_create", map[string]any{
+		"name": "shop", "engine": "kv", "backend": "memory", "sql_concurrency": "pessimistic",
+	})); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	for _, required := range toolDatabaseUpdateSQL().InputSchema.Required {
+		if required == "concurrency" {
+			t.Fatal("concurrency is still a required argument")
+		}
+	}
+
+	result, err := handleDatabaseUpdateSQL(svc)(ctx, buildCallToolRequest(t, "qrdb_database_update_sql", map[string]any{
+		"name": "shop",
+	}))
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("update without concurrency refused: %s", resultText(t, result))
+	}
+	var info database.DatabaseInfo
+	if err := json.Unmarshal([]byte(resultText(t, result)), &info); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if info.SQL != nil {
+		t.Fatalf("sql = %+v, want the defaults (unset)", info.SQL)
+	}
+	if got := info.SQL.EffectiveConcurrency(); got != database.ConcurrencyOptimistic {
+		t.Fatalf("effective concurrency = %s, want optimistic", got)
+	}
+}
+
 func TestDatabaseSQLTools_Refusals(t *testing.T) {
 	svc := newRealDatabaseService(t)
 	ctx := context.Background()
@@ -74,7 +113,6 @@ func TestDatabaseSQLTools_Refusals(t *testing.T) {
 
 	for _, args := range []map[string]any{
 		{"concurrency": "pessimistic"},
-		{"name": "shop"},
 	} {
 		result, err := handler(ctx, buildCallToolRequest(t, "qrdb_database_update_sql", args))
 		if err != nil {

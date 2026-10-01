@@ -35,13 +35,14 @@ func TestMCP_Database_UpdateDatabaseSQL(t *testing.T) {
 		t.Fatalf("SQL = %+v, want pessimistic", info.SQL)
 	}
 
-	// A nil SQL restores the default, which the tool spells explicitly.
+	// A nil SQL restores the defaults: the settings are cleared, as on every
+	// other transport, not pinned to an explicit "optimistic".
 	info, err = tr.UpdateDatabaseSQL(context.Background(), transport.UpdateDatabaseSQLRequest{Name: "mydb"})
 	if err != nil {
 		t.Fatalf("UpdateDatabaseSQL(default): %v", err)
 	}
-	if info.SQL == nil || info.SQL.Concurrency != "optimistic" {
-		t.Fatalf("SQL = %+v, want optimistic", info.SQL)
+	if info.SQL != nil {
+		t.Fatalf("SQL = %+v, want cleared", info.SQL)
 	}
 
 	if _, err := tr.CreateDatabase(context.Background(), transport.CreateDatabaseRequest{
