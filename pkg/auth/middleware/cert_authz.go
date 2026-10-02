@@ -19,6 +19,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // The certificate-authority tenancy rule, in one place for every transport.
@@ -91,18 +92,39 @@ func (m *AuthMiddleware) AuthorizeCertRevoke(ctx context.Context, serial string,
 	if identity == nil {
 		return auth.ErrUnauthenticated
 	}
-	if resolver == nil {
-		return &CertSerialUnresolvableError{Serial: serial}
-	}
-
-	owner, found, err := resolver.TenantForSerial(ctx, serial)
+	target, perm, err := CertRevokeTarget(ctx, serial, resolver)
 	if err != nil {
 		return err
 	}
-	if !found {
+	if perm == permission.CertsRevokeCross {
 		// No owning tenant: the CA-operator authority, evaluated against the
 		// caller's own tenant because ScopeCross ignores the target anyway.
-		return m.authorize(ctx, identity, permission.CertsRevokeCross)
+		return m.authorize(ctx, identity, perm)
 	}
-	return m.AuthorizeTenant(ctx, owner, permission.CertsRevoke)
+	return m.AuthorizeTenant(ctx, target, perm)
+}
+
+// CertRevokeTarget establishes what a revocation of serial is authorized as,
+// for every transport: the tenant that owns the serial and
+// permission.CertsRevoke when resolver holds an issued record for it, or the
+// system tenant and permission.CertsRevokeCross -- the deny-by-serial
+// CA-operator act -- when it holds none. AuthorizeCertRevoke decides the
+// network transports' revocations on it, and the embedded transport, which
+// has no middleware, confines its caller to the same target.
+//
+// A nil resolver is a *CertSerialUnresolvableError and a resolver error is
+// returned as-is: an unknown target is not an absent one, so the caller must
+// refuse.
+func CertRevokeTarget(ctx context.Context, serial string, resolver CertSerialResolver) (tenantID string, perm permission.Permission, err error) {
+	if resolver == nil {
+		return "", "", &CertSerialUnresolvableError{Serial: serial}
+	}
+	owner, found, err := resolver.TenantForSerial(ctx, serial)
+	if err != nil {
+		return "", "", err
+	}
+	if !found {
+		return tenant.SystemTenantID, permission.CertsRevokeCross, nil
+	}
+	return owner, permission.CertsRevoke, nil
 }

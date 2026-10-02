@@ -460,14 +460,11 @@ func (t *Transport) RevokeCert(ctx context.Context, serial string) (*transport.R
 	if t.certProv == nil {
 		return nil, &transport.NotImplementedError{Method: "RevokeCert"}
 	}
-	owner, found, err := t.certProv.TenantForSerial(ctx, serial)
+	target, _, err := authmw.CertRevokeTarget(ctx, serial, t.certProv)
 	if err != nil {
 		return nil, err
 	}
-	if !found {
-		owner = tenant.SystemTenantID
-	}
-	if _, err := tenant.Confine(ctx, owner, "revoke a certificate"); err != nil {
+	if _, err := tenant.Confine(ctx, target, "revoke a certificate"); err != nil {
 		return nil, err
 	}
 	result, err := t.certProv.RevokeCert(ctx, serial)

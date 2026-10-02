@@ -274,6 +274,12 @@ Standalone parity (#582) and durable leases. Highlights:
 
 ### Fixed
 
+- **One revocation target for every transport.** `middleware.CertRevokeTarget`
+  states what a revocation is authorized as -- the serial's owner with
+  `certs:revoke`, or the system tenant with `certs:revoke:cross` for a serial no
+  tenant owns -- and both `AuthorizeCertRevoke` and the embedded transport use
+  it.
+
 - **The REST, QUIC and MCP SDK clients speak the audit query's wire shape.**
   The server's wire types are `audit.Filter` and `audit.Page`, whose JSON names
   (`tenant_id`, `client_ip`, `request_id`, `prev_hash`) differ from the SDK's

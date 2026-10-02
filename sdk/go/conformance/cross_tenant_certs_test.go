@@ -63,6 +63,16 @@ func TestCerts_SystemAdminCannotActOnAnotherTenant(t *testing.T) {
 			acmeSerial := issueThroughNode(t, c.node, "bob", confineAcme)
 			_, err = certs.RevokeCert(c.ctx, acmeSerial)
 			assertCrossTenantRefused(t, tk, "RevokeCert of acme's certificate", err)
+
+			// The deny-by-serial revocation of a serial no tenant owns is the
+			// system tenant's CA-operator act, and survives the confinement.
+			denied, err := certs.RevokeCert(c.ctx, "0a0b0c0d0e0f")
+			if err != nil {
+				t.Fatalf("%s: the system Admin's deny-by-serial revocation: %v", tk, err)
+			}
+			if denied.RecordFound {
+				t.Errorf("%s: a serial no tenant owns reported a record", tk)
+			}
 		})
 	}
 }
@@ -81,16 +91,45 @@ func TestCerts_TenantAdminCannotActOnAnotherTenant(t *testing.T) {
 				t.Fatalf("%s: no cert client", tk)
 			}
 
-			if _, err := certs.GenerateCert(c.ctx, &transport.GenerateCertRequest{
+			own, err := certs.GenerateCert(c.ctx, &transport.GenerateCertRequest{
 				Username: "alice", TenantID: confineAcme,
-			}); err != nil {
+			})
+			if err != nil {
 				t.Fatalf("%s: GenerateCert for the caller's own tenant: %v", tk, err)
 			}
 
-			_, err := certs.GenerateCert(c.ctx, &transport.GenerateCertRequest{
+			// acme lists and revokes its own certificates.
+			listed, err := certs.ListCerts(c.ctx, confineAcme)
+			if err != nil {
+				t.Fatalf("%s: ListCerts for the caller's own tenant: %v", tk, err)
+			}
+			found := false
+			for _, rec := range listed.Certs {
+				found = found || rec.Serial == own.Serial
+			}
+			if !found {
+				t.Fatalf("%s: acme's listing %+v lacks the certificate it just issued (%s)", tk, listed.Certs, own.Serial)
+			}
+			revoked, err := certs.RevokeCert(c.ctx, own.Serial)
+			if err != nil {
+				t.Fatalf("%s: RevokeCert of the caller's own certificate: %v", tk, err)
+			}
+			if !revoked.RecordFound {
+				t.Errorf("%s: revoking acme's own certificate reported no record", tk)
+			}
+
+			_, err = certs.GenerateCert(c.ctx, &transport.GenerateCertRequest{
 				Username: "carol", TenantID: confineGlobex,
 			})
 			assertCrossTenantRefused(t, tk, "GenerateCert for globex's user", err)
+
+			_, err = certs.ListCerts(c.ctx, confineGlobex)
+			assertCrossTenantRefused(t, tk, "ListCerts for globex", err)
+
+			// A serial no tenant owns is the deny-by-serial CA-operator act,
+			// and a tenant Admin may not write it.
+			_, err = certs.RevokeCert(c.ctx, "0a0b0c0d0e0f")
+			assertCrossTenantRefused(t, tk, "deny-by-serial revocation from a tenant", err)
 
 			globexSerial := issueThroughNode(t, c.node, "dave", confineGlobex)
 			_, err = certs.RevokeCert(c.ctx, globexSerial)
