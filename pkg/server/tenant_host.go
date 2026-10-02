@@ -16,6 +16,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"path/filepath"
 	"time"
@@ -137,7 +138,7 @@ func newTenantHost(tenantID, dataRoot string, tb *seal.TenantBarrier, logger *sl
 	// Wait for the single-node shard to elect itself leader before binding
 	// services; until then proposals fail with "not leader". StartShard only
 	// registers the replica — leadership is established asynchronously.
-	if err := waitForTenantShardLeader(host); err != nil {
+	if err := WaitForShardServing(context.Background(), host, tenantHostShardID); err != nil {
 		_ = host.StopShard(tenantHostShardID)
 		_ = host.Close()
 		return nil, &TenantHostError{TenantID: tenantID, Op: "await-leader", Err: err}
@@ -190,7 +191,7 @@ func newTenantHost(tenantID, dataRoot string, tb *seal.TenantBarrier, logger *sl
 // elected, and only the second is a reason to change anything here.
 const tenantShardLeaderTimeout = 15 * time.Second
 
-// shardLeaderPollInterval is how long waitForShardLeader sleeps between polls.
+// shardLeaderPollInterval is how long waitForShardServingWithin sleeps between polls.
 // It is also the yardstick the starvation discriminator measures against: on an
 // unloaded host a sleep of this length overruns by microseconds, so a gap of
 // many multiples means the goroutine lost the CPU rather than the shard losing
@@ -208,7 +209,7 @@ const shardLeaderPollInterval = 20 * time.Millisecond
 // together, which is the whole thing this discriminator exists to separate.
 const shardLeaderStarvationFactor = 10
 
-// shardLeaderSource is the one thing waitForShardLeader needs from a Host: the
+// shardLeaderSource is the one thing waitForShardServingWithin needs from a Host: the
 // current leader of a shard. *quicraft.Host satisfies it.
 //
 // It exists so the wait's own failure paths are testable without booting a raft
@@ -217,9 +218,53 @@ const shardLeaderStarvationFactor = 10
 // pkg/service.RaftHost is the same narrowing for the same reason.
 type shardLeaderSource interface {
 	GetLeaderID(shardID uint64) (uint64, bool, error)
+	// ReadReady makes one linearizable read probe on shardID: nil once the
+	// leader can serve a read, quicraft.ErrReadIndexNotReady while it has
+	// not yet committed an entry in its term.
+	ReadReady(ctx context.Context, shardID uint64) error
 }
 
-// shardLeaderClock is the time source waitForShardLeaderWithin reads. It is
+// shardReadProbeTimeout bounds one ReadIndex probe. It is far below the
+// readiness budget, so a probe that hangs costs one poll, not the wait.
+const shardReadProbeTimeout = 500 * time.Millisecond
+
+// quicraftShardSource adapts *quicraft.Host to shardLeaderSource.
+type quicraftShardSource struct{ host *quicraft.Host }
+
+var _ shardLeaderSource = quicraftShardSource{}
+
+// GetLeaderID reports the shard's leader.
+func (s quicraftShardSource) GetLeaderID(shardID uint64) (uint64, bool, error) {
+	return s.host.GetLeaderID(shardID)
+}
+
+// ReadReady issues one ReadIndex on shardID and waits for its outcome.
+func (s quicraftShardSource) ReadReady(ctx context.Context, shardID uint64) error {
+	ctx, cancel := context.WithTimeout(ctx, shardReadProbeTimeout)
+	defer cancel()
+	rs, err := s.host.ReadIndex(ctx, shardID)
+	if err != nil {
+		return err
+	}
+	defer rs.Release()
+	_, err = rs.Result()
+	return err
+}
+
+// WaitForShardServing blocks until shardID on host has a leader that can serve
+// a linearizable read -- the leader is known AND has committed an entry in its
+// term -- within the readiness budget every host-open path shares. A leader
+// known is not enough: until its term's first commit, quicraft answers every
+// ReadIndex with ErrReadIndexNotReady, so a caller handed the shard any earlier
+// fails its first read. It returns *ShardLeaderWaitError when no leader is
+// elected, *ShardReadWaitError when the leader never becomes read-ready, or
+// ctx's error.
+func WaitForShardServing(ctx context.Context, host *quicraft.Host, shardID uint64) error {
+	return waitForShardServingWithin(ctx, quicraftShardSource{host: host}, shardID,
+		tenantShardLeaderTimeout, shardLeaderPollInterval, realShardLeaderClock{})
+}
+
+// shardLeaderClock is the time source waitForShardServingWithin reads. It is
 // exactly the two operations the poll loop performs on time and no more:
 // reading the instant, and pausing between polls.
 //
@@ -234,7 +279,7 @@ type shardLeaderSource interface {
 // moves that flake to a busier host rather than removing it; making the loop's
 // clock injectable removes the wall clock from the test's premises entirely.
 //
-// Production is unchanged: waitForShardLeader passes realShardLeaderClock, so
+// Production is unchanged: waitForShardServingWithin passes realShardLeaderClock, so
 // every number the error reports -- elapsed, longest gap -- is still measured
 // against real wall time, which is the whole point of the starvation verdict.
 // A fake clock that reported starvation in production would destroy the one
@@ -257,113 +302,150 @@ func (realShardLeaderClock) Now() time.Time { return time.Now() }
 // Sleep blocks the calling goroutine for d.
 func (realShardLeaderClock) Sleep(d time.Duration) { time.Sleep(d) }
 
-// waitForTenantShardLeader polls the host until the tenant shard reports a
-// valid leader (the single local replica), or the timeout elapses.
-func waitForTenantShardLeader(host shardLeaderSource) error {
-	return waitForShardLeader(host, tenantHostShardID)
-}
-
-// waitForShardLeader polls the host until the given shard reports a valid
-// leader (the single local replica), or the timeout elapses. It is shared by
-// the per-tenant volume Host and the dedicated per-database raft shards.
+// waitForShardServingWithin waits, within one budget, first for shardID to
+// have a leader and then for that leader to serve a linearizable read. A
+// leader elected a moment ago refuses ReadIndex until it has committed an
+// entry in its term; a host-open path that returned on "leader known" handed
+// its caller a shard whose first read failed with ErrReadIndexNotReady. Every
+// host-open path waits through it: the per-tenant volume Host and the
+// dedicated per-database raft shards here, and the system shard in the
+// composers (WaitForShardServing).
 //
-// On timeout it returns a *ShardLeaderWaitError describing what it OBSERVED
-// while waiting, not merely that it gave up. The bare sentinel this replaced
-// (ErrTenantShardNoLeader, still wrapped for errors.Is) sent every reader to
-// the job logs to answer the only question that matters: was the shard broken,
-// or was the host too busy to let the poller ask? Five CI incidents were
-// diagnosed by hand for want of that one line (go-qrdb#139).
+// On timeout it returns what it OBSERVED while waiting, not merely that it gave
+// up: *ShardLeaderWaitError when no leader was elected (it wraps
+// ErrTenantShardNoLeader for errors.Is), *ShardReadWaitError when a leader was
+// but never served a read. The bare sentinel this replaced sent every reader
+// to the job logs to answer the only question that matters: was the shard
+// broken, or was the host too busy to let the poller ask? Five CI incidents
+// were diagnosed by hand for want of that one line (go-qrdb#139).
 //
 // Three causes are distinguished, and the error says which one was measured:
 //
-//   - GetLeaderID ERRORED on one or more polls. Then the timeout is a symptom
-//     and that error is the finding. This loop previously discarded the error
-//     entirely (`err == nil && ok`), so a shard that answered "no such shard"
-//     750 times was reported as one that failed to elect -- an error collapsed
-//     into a plausible-looking benign answer. The error COUNT is carried too,
-//     because "could not be asked on 3 of 47 polls" and "on 47 of 47" are
-//     different problems with different investigations.
+//   - The poll ERRORED on one or more attempts. Then the timeout is a symptom
+//     and that error is the finding. The error COUNT is carried too, because
+//     "could not be asked on 3 of 47 polls" and "on 47 of 47" are different
+//     problems with different investigations.
 //   - The poller was STARVED: some gap between consecutive polls exceeded
 //     shardLeaderStarvationFactor intervals, so the wall-clock budget was never
-//     really spent asking. The election may have been fine.
+//     really spent asking. The shard may have been fine.
 //   - Neither: the poller ran attentively for the whole budget and the shard
-//     never elected. THAT is a real defect, and it is the case this wait exists
-//     to catch. Do not widen the budget to make it go away.
-func waitForShardLeader(host shardLeaderSource, shardID uint64) error {
-	return waitForShardLeaderWithin(host, shardID, tenantShardLeaderTimeout, shardLeaderPollInterval, realShardLeaderClock{})
+//     never elected, or its leader never committed in its term. THAT is a real
+//     defect, and it is the case this wait exists to catch. Do not widen the
+//     budget to make it go away.
+//
+// The budget, poll interval and clock are parameters so the timeout and
+// starvation paths are exercised in milliseconds instead of fifteen seconds.
+// The clock is a parameter rather than a package-level variable ON PURPOSE: a
+// mutable package global shared by every test in pkg/server is a data race the
+// moment two of them run concurrently -- see shardLeaderClock.
+func waitForShardServingWithin(ctx context.Context, host shardLeaderSource, shardID uint64, timeout, interval time.Duration, clock shardLeaderClock) error {
+	start := clock.Now()
+	deadline := start.Add(timeout)
+
+	leader, ok := pollShard(ctx, clock, start, deadline, interval, func() (bool, error) {
+		_, ok, err := host.GetLeaderID(shardID)
+		return err == nil && ok, err
+	})
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !ok {
+		return &ShardLeaderWaitError{
+			ShardID:  shardID,
+			Timeout:  timeout,
+			Interval: interval,
+			Elapsed:  leader.elapsed,
+			Polls:    leader.polls,
+			MaxGap:   leader.maxGap,
+			ErrCount: leader.errCount,
+			FirstErr: leader.firstErr,
+			LastErr:  leader.lastErr,
+		}
+	}
+
+	read, ok := pollShard(ctx, clock, start, deadline, interval, func() (bool, error) {
+		err := host.ReadReady(ctx, shardID)
+		if err == nil {
+			return true, nil
+		}
+		// The expected "not yet": the leader has not committed in its term.
+		if errors.Is(err, quicraft.ErrReadIndexNotReady) {
+			return false, nil
+		}
+		return false, err
+	})
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !ok {
+		return &ShardReadWaitError{
+			ShardID:  shardID,
+			Timeout:  timeout,
+			Interval: interval,
+			Elapsed:  read.elapsed,
+			Polls:    read.polls,
+			MaxGap:   read.maxGap,
+			ErrCount: read.errCount,
+			FirstErr: read.firstErr,
+			LastErr:  read.lastErr,
+		}
+	}
+	return nil
 }
 
-// waitForShardLeaderWithin is waitForShardLeader with the budget, poll interval
-// and clock supplied, mirroring pkg/service.waitForShardLeaderKnown's shape.
-// Production callers go through waitForShardLeader and get the constants above
-// plus realShardLeaderClock; taking them as parameters is what lets the timeout
-// and starvation paths be exercised in milliseconds instead of fifteen seconds.
-//
-// The clock is a parameter rather than a package-level variable ON PURPOSE. A
-// mutable package global shared by every test in pkg/server is a data race the
-// moment two of them run concurrently, and this function's tests are the ones
-// that must survive -race -count=50 under load -- see shardLeaderClock.
-func waitForShardLeaderWithin(host shardLeaderSource, shardID uint64, timeout, interval time.Duration, clock shardLeaderClock) error {
-	var (
-		start    = clock.Now()
-		last     = start
-		polls    int
-		maxGap   time.Duration
-		errCount int
-		firstErr error
-		lastErr  error
-	)
-	deadline := start.Add(timeout)
+// pollStats is what pollShard observed: the measurement the readiness errors
+// report.
+type pollStats struct {
+	elapsed  time.Duration
+	polls    int
+	maxGap   time.Duration
+	errCount int
+	firstErr error
+	lastErr  error
+}
+
+// pollShard calls poll every interval until it reports done, ctx ends, or the
+// clock passes deadline, and reports whether it finished and what it saw.
+// Elapsed is measured from start, the beginning of the whole readiness wait.
+func pollShard(ctx context.Context, clock shardLeaderClock, start, deadline time.Time, interval time.Duration, poll func() (bool, error)) (pollStats, bool) {
+	var st pollStats
+	last := clock.Now()
 	for {
 		now := clock.Now()
-		if gap := now.Sub(last); gap > maxGap {
-			maxGap = gap
+		if gap := now.Sub(last); gap > st.maxGap {
+			st.maxGap = gap
 		}
 		last = now
 
-		polls++
-		_, ok, err := host.GetLeaderID(shardID)
-		if err == nil && ok {
-			return nil
+		st.polls++
+		done, err := poll()
+		if done {
+			return st, true
 		}
 		// Kept rather than discarded: it is the difference between "the shard
-		// did not elect" and "the shard could not be asked".
+		// did not get there" and "the shard could not be asked".
 		//
 		// GUARDED ON err != nil, and that guard is load-bearing. An
 		// unconditional `lastErr = err` is ERASED by the very next poll that
-		// returns (ok=false, err=nil) -- so on the INTERMITTENT sequence
-		// (error, no-leader, no-leader, ... timeout) the query failure is lost
-		// and this wait reports "the shard genuinely did not elect", which is
-		// the exact class of wrong-cause reporting it exists to prevent. A
-		// fixture whose source errors on EVERY poll cannot catch that, because
-		// it keeps the field non-nil by luck.
+		// answers cleanly -- so on the INTERMITTENT sequence (error, not-yet,
+		// not-yet, ... timeout) the failure is lost and the wait reports the
+		// wrong cause, which is the class of mistake it exists to prevent.
 		if err != nil {
-			errCount++
-			if firstErr == nil {
-				firstErr = err
+			st.errCount++
+			if st.firstErr == nil {
+				st.firstErr = err
 			}
-			lastErr = err
+			st.lastErr = err
 		}
 
 		// Deliberately a FRESH read rather than the `now` taken above the
-		// poll: GetLeaderID is a call into raft and can itself consume the
-		// budget, so a loop that judged the deadline on a pre-poll timestamp
-		// would run one extra poll past it and under-report Elapsed by the
-		// duration of the call that overran. Reading the same clock the
-		// deadline came from is what keeps that honest under a fake one.
+		// poll: a poll is a call into raft and can itself consume the budget,
+		// so a loop that judged the deadline on a pre-poll timestamp would run
+		// one extra poll past it and under-report Elapsed.
 		end := clock.Now()
-		if end.After(deadline) {
-			return &ShardLeaderWaitError{
-				ShardID:  shardID,
-				Timeout:  timeout,
-				Interval: interval,
-				Elapsed:  end.Sub(start),
-				Polls:    polls,
-				MaxGap:   maxGap,
-				ErrCount: errCount,
-				FirstErr: firstErr,
-				LastErr:  lastErr,
-			}
+		st.elapsed = end.Sub(start)
+		if end.After(deadline) || ctx.Err() != nil {
+			return st, false
 		}
 		clock.Sleep(interval)
 	}

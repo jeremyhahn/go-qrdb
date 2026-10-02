@@ -11,6 +11,25 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A shard is handed out only once it can serve a linearizable read.** Every
+  path that opens or reopens a shard -- the per-tenant volume host, the
+  dedicated per-database raft shards (including an encryption migration's
+  reopen), the system shard before `qrdbd` serves and in `sdk/go/node`'s
+  clustered boot, and the desktop embedded server -- waited only until a leader
+  was known. A leader elected a moment ago refuses every ReadIndex until it
+  commits in its term, so the first read after an open could fail with
+  `quicraft: read index not ready` (seen as intermittent failures after a
+  tenant encryption migration and right after cluster formation). They now
+  wait through `server.WaitForShardServing` for both, in one 15s budget, and
+  time out with `*server.ShardLeaderWaitError` or the new
+  `*server.ShardReadWaitError`. `qrdbd`'s best-effort ReadIndex warm-up is
+  replaced by the wait, and a node that cannot serve refuses to start with
+  `SystemShardServingError`. The desktop bindings' `LeaderElectionTimeoutError` is
+  removed; a shard that cannot serve reports `ShardStartError` wrapping the
+  wait's error.
+
 ## [0.30.0-alpha] - 2026-10-02
 
 Database response hardening. This release contains BREAKING changes; see the entries below. Highlights:

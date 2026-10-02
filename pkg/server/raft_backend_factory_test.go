@@ -498,7 +498,7 @@ func TestRaftBackendFactory_OnlineBackupRestore_RF1Success(t *testing.T) {
 	// immediately after the replacement replica's leader election — the same
 	// warm-up window getWhenReadable tolerates for KV reads elsewhere in this
 	// file. Poll rather than assume the very first attempt lands after
-	// waitForShardLeader merely observes a leader ID.
+	// waitForShardServingWithin merely observes a leader ID.
 	restoreDeadline := time.Now().Add(15 * time.Second)
 	for {
 		err = online.RestoreShardOnline(ctx, shardID, data)

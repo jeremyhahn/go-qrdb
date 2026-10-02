@@ -1703,12 +1703,23 @@ func runStart(f *startFlags) (err error) {
 				slog.Warn("authentication disabled: all endpoints accessible without credentials")
 			}
 
-			// Warm up the ReadIndex pipeline by performing a SyncRead. After
-			// a leader election (including restart), Raft requires a committed
-			// no-op entry before ReadIndex is operational. Without this warmup,
-			// the auth middleware's SyncRead-backed user store lookups would
-			// fail until the pipeline is ready, returning 503 to early clients.
-			warmupReadIndex(sigCtx, kvSvc)
+			// The system shard serves only once it can answer a linearizable
+			// read: its leader is known AND has committed an entry in its term.
+			// Until then every ReadIndex is refused with
+			// quicraft.ErrReadIndexNotReady, so a listener started earlier
+			// would answer its first requests -- the auth middleware's user
+			// store lookups first among them -- with that error. This is the
+			// wait every host-open path shares (server.WaitForShardServing).
+			if host != nil {
+				if err := server.WaitForShardServing(sigCtx, host, shard.ShardKV); err != nil {
+					_ = shutdownNode(nodeCloser)
+					if sigCtx.Err() != nil {
+						slog.Info("system shard readiness wait canceled by shutdown signal")
+						return nil
+					}
+					return &SystemShardServingError{Err: err}
+				}
+			}
 
 			// Phase 2: make the volume pool a cluster-wide replicated concept. Bind the
 			// pool's round-robin cursor to the replicated system KV (so the cursor is a
@@ -3857,45 +3868,6 @@ func awaitLeader(ctx context.Context, node leaderReporter, shardID uint64) error
 		}
 	}
 	return nil
-}
-
-// warmupReadIndex is a best-effort attempt to warm up the Raft ReadIndex
-// pipeline by performing a SyncRead. After leader election (including
-// restart), the leader must commit a no-op entry before ReadIndex is
-// operational. This reduces the window where the auth middleware returns
-// 503. If it doesn't succeed within a few quick attempts, the function
-// returns without blocking — the auth middleware's 503 response and
-// client retry logic handle the remaining warm-up period.
-func warmupReadIndex(ctx context.Context, kvSvc service.KVServicer) {
-	const maxAttempts = 5
-	backoff := 200 * time.Millisecond
-	for attempt := range maxAttempts {
-		readCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		_, err := kvSvc.Get(readCtx, "__sys:warmup")
-		cancel()
-		if err == nil {
-			return
-		}
-		// KeyNotFoundError means SyncRead succeeded (ReadIndex pipeline
-		// is operational) — the key just doesn't exist.
-		var knf *service.KeyNotFoundError
-		if errors.As(err, &knf) {
-			return
-		}
-		if ctx.Err() != nil {
-			return
-		}
-		if attempt == maxAttempts-1 {
-			slog.Debug("warmup ReadIndex: best-effort attempts exhausted, proceeding",
-				"attempts", maxAttempts, "last_error", err)
-			return
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(backoff):
-		}
-	}
 }
 
 // adminExists checks whether the admin user already exists using a local

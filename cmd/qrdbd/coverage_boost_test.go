@@ -1016,7 +1016,7 @@ func TestWaitForLeaderElection_BackoffCapAt500ms(t *testing.T) {
 // runStart: full startup with auth disabled
 //
 // With authEnabled=false the code skips bootstrapAuth and proceeds to
-// warmupReadIndex, server construction, and the signal wait. Sending
+// the system shard readiness wait, server construction, and the signal wait. Sending
 // SIGINT after the server starts covers lines 968-1076 (the "else" branch
 // for auth, warmup, registry setup, server build/start, cleanup).
 // ---------------------------------------------------------------------------

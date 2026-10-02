@@ -511,6 +511,25 @@ type ImbalanceReport struct {
 
 ## Invariants
 
+- **A host is handed out only when its shard can serve a linearizable read.**
+  A leader elected a moment ago refuses every ReadIndex
+  (`quicraft.ErrReadIndexNotReady`, logged as
+  `batched ReadIndex failed (commitPending)`) until it has committed an entry in
+  its own term, so "a leader is known" is not "the shard can be read". Every
+  path that opens or reopens a shard and then serves it waits for both, through
+  one wait with one budget (15s) and the starvation diagnostics of the leader wait:
+  `server.WaitForShardServing`. The paths are the per-tenant volume Host and the
+  dedicated per-database raft shards (`pkg/server`, which also covers an
+  encryption migration's reopen), the system shard before `qrdbd` starts its
+  listeners, the system shard in `sdk/go/node`'s clustered boot (before
+  `BuildTenantInfra` reads the replicated tenant store, and so before any
+  committed-membership read such as a replica add), and the desktop embedded
+  server. A timeout names its phase: `*server.ShardLeaderWaitError` when no
+  leader was elected, `*server.ShardReadWaitError` (wraps
+  `server.ErrShardNotReadReady`) when a leader was but never served a read --
+  each reporting probe errors, a starved poller, or the genuine failure. Do not
+  widen the budget to make either go away. `qrdbd`'s earlier best-effort
+  ReadIndex warm-up is gone: the wait replaces it.
 - **Dynamic membership is off by default.** Raft reconfiguration occurs only
   when a `Reconfigurer` is supplied **and the local node is the leader**.
 - **A first node serves enrollment on every boot, not only its first.** The
@@ -597,6 +616,7 @@ database's owning tenant.
 | Adding a replica on a brand-new node (no committed membership names it) with no identity supplied | `*service.MemberIdentityError` wrapping `*cluster.MemberIdentityUnknownError`, which names the replica and `qrdbd node-identity --cert`; gRPC/MCP `FAILED_PRECONDITION`, QUIC `StatusFailedPrecondition`, REST 412 | **yes** |
 | A supplied identity contradicting the one committed for that replica or host | `*service.MemberIdentityError` wrapping `*cluster.MemberIdentityConflictError`; `FAILED_PRECONDITION` / REST 409 | **yes** |
 | A malformed supplied identity | `*cluster.MemberIdentityFormatError`; `INVALID_ARGUMENT` / REST 400 | **yes** |
+| A shard opened or reopened whose leader is elected but never commits in its term within 15s | `*server.ShardReadWaitError` (wraps `server.ErrShardNotReadReady`); the host is not handed out. `qrdbd` refuses to start with `*SystemShardServingError` | **yes** |
 | The committed membership cannot be read (no leader) — the system shard's, or a target shard that exists but is not readable yet | `*cluster.MembershipReadError`; `UNAVAILABLE` / REST 503. Only a target shard this node has not loaded (`quicraft.ErrShardNotFound`) falls through to the host's system-shard identity | **yes** (retry) |
 | An add naming a replica ID the shard's committed membership places at a different address | `*cluster.MemberAddressMismatchError`, naming both addresses; `FAILED_PRECONDITION` / REST 409 | **yes** |
 | An address the system shard binds to replicas with different identities | `*cluster.MemberIdentityAmbiguousError`, naming the identities; `FAILED_PRECONDITION` / REST 409 | **yes** |

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/server"
 )
 
 func TestLegacyDataDirError_Message(t *testing.T) {
@@ -74,5 +75,19 @@ func TestSealedListenerStartupError_Roundtrip(t *testing.T) {
 	}
 	if !errors.Is(e, root) {
 		t.Error("errors.Is failed to unwrap")
+	}
+}
+
+// TestSystemShardServingError carries the readiness wait's typed error: the
+// message names the failure, and errors.As reaches the wait's own error.
+func TestSystemShardServingError(t *testing.T) {
+	inner := &server.ShardReadWaitError{ShardID: 1, Timeout: time.Second, Polls: 3}
+	err := error(&SystemShardServingError{Err: inner})
+	if !strings.Contains(err.Error(), "system shard not ready to serve") || !strings.Contains(err.Error(), "shard 1") {
+		t.Fatalf("message %q", err.Error())
+	}
+	var got *server.ShardReadWaitError
+	if !errors.As(err, &got) || got != inner {
+		t.Fatal("SystemShardServingError does not unwrap to the wait's error")
 	}
 }

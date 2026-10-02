@@ -169,6 +169,22 @@ func (e *DatabaseProvisionError) Error() string {
 // Unwrap returns the underlying cause.
 func (e *DatabaseProvisionError) Unwrap() error { return e.Err }
 
+// SystemShardServingError reports that the system shard could not serve a
+// linearizable read before the node started serving: no leader was elected,
+// or its leader never committed in its term. Err is the readiness wait's
+// typed error (*server.ShardLeaderWaitError or *server.ShardReadWaitError).
+type SystemShardServingError struct {
+	Err error
+}
+
+// Error returns a human-readable description of the readiness failure.
+func (e *SystemShardServingError) Error() string {
+	return "qrdbd: system shard not ready to serve: " + e.Err.Error()
+}
+
+// Unwrap returns the readiness wait's error.
+func (e *SystemShardServingError) Unwrap() error { return e.Err }
+
 // LeaderElectionTimeoutError is the cause recorded when no Raft leader is
 // elected within the bounded number of attempts.
 type LeaderElectionTimeoutError struct {

@@ -88,7 +88,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"log/slog"
 
@@ -3086,28 +3085,19 @@ func createNodeEngine(backendType database.BackendType, stg storage.Storage, pdb
 	return lifecycle.NewLocalEngine(backendType, stg, pdb, hub, lr)
 }
 
-// systemShardReadyTimeout is the maximum duration completeClusteredBoot waits
-// for the system shard to elect a leader before building tenant infrastructure.
-// Mirrors tenantShardLeaderTimeout in pkg/server/tenant_host.go.
-const systemShardReadyTimeout = 15 * time.Second
-
-// waitSystemShardReady blocks until the system shard has a leader or the
-// deadline elapses. It is called inside completeClusteredBoot before
-// BuildTenantInfra so that reattachRaftTenants can safely issue a linearizable
-// read against the replicated tenant store. The daemon relies on other
-// initialization steps (REST/gRPC/QUIC setup) to provide this window; the
-// embedded node must wait explicitly because boot completes without those.
+// waitSystemShardReady blocks until the system shard can serve a linearizable
+// read: it has a leader AND that leader has committed an entry in its term.
+// It is called inside completeClusteredBoot before BuildTenantInfra, whose
+// reattachRaftTenants issues a linearizable read against the replicated
+// tenant store. A leader known is not enough -- until its term's first commit
+// every ReadIndex is refused with quicraft.ErrReadIndexNotReady. The wait and
+// its budget are server.WaitForShardServing, the one every host-open path
+// shares.
 func waitSystemShardReady(host *quicraft.Host, shardID uint64) error {
-	deadline := time.Now().Add(systemShardReadyTimeout)
-	for {
-		if _, ok, err := host.GetLeaderID(shardID); err == nil && ok {
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return &HostCreateError{Err: errors.New("system shard leader election timeout")}
-		}
-		time.Sleep(20 * time.Millisecond)
+	if err := server.WaitForShardServing(context.Background(), host, shardID); err != nil {
+		return &HostCreateError{Err: err}
 	}
+	return nil
 }
 
 // buildClusteredHost creates the quicraft.Host and starts the KV shard.

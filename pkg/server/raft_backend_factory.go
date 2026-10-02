@@ -935,7 +935,7 @@ func (f *RaftBackendFactory) startShardAsMember(
 	// A joining follower is never the initial leader; waiting on it would block
 	// indefinitely until the leader is elected on another node.
 	if !join {
-		if err := waitForShardLeader(f.host, shardID); err != nil {
+		if err := WaitForShardServing(context.Background(), f.host, shardID); err != nil {
 			_ = f.host.StopShard(shardID)
 			if registeredWAL != nil {
 				if detached, ok := f.walMux.Unregister(shardID); ok && detached != nil {

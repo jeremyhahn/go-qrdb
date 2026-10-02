@@ -781,6 +781,7 @@ isolation gap.
 | Resolving a DELETED tenant's keyspace | `*TenantDeletedError`, no fall-through | **yes** |
 | Reclaiming the SYSTEM tenant's keyspace | `*service.ReclaimScopeError`, nothing deleted | **yes** |
 | Tenant shard elects no leader in 15s | `*ShardLeaderWaitError` (wraps `ErrTenantShardNoLeader`), host build refused | **yes** |
+| Tenant shard's leader elected but cannot serve a linearizable read within the same 15s (it never committed in its term) | `*ShardReadWaitError` (wraps `ErrShardNotReadReady`), host build refused. A host is never handed out before its first read can succeed -- see clustering/engineering.md | **yes** |
 
 ### Why the no-leader error carries a measurement
 

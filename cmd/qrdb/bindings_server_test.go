@@ -866,20 +866,6 @@ func TestSMOpenError_Unwrap(t *testing.T) {
 	}
 }
 
-func TestLeaderElectionTimeoutError_Message(t *testing.T) {
-	err := &LeaderElectionTimeoutError{ShardID: 1}
-	if err.Error() == "" {
-		t.Fatal("expected non-empty error")
-	}
-}
-
-func TestLeaderElectionTimeoutError_ContainsShard(t *testing.T) {
-	err := &LeaderElectionTimeoutError{ShardID: 42}
-	if !bytes.Contains([]byte(err.Error()), []byte("42")) {
-		t.Fatalf("expected error to contain shard ID, got %q", err.Error())
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Regression: stop/restart cycle must release pebble file locks
 // ---------------------------------------------------------------------------

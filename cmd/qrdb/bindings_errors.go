@@ -16,7 +16,6 @@ package main
 
 import (
 	"strconv"
-	"time"
 )
 
 // NotConnectedError is returned when a binding method is called
@@ -204,18 +203,6 @@ func (e *SMOpenError) Error() string {
 // Unwrap returns the underlying error.
 func (e *SMOpenError) Unwrap() error {
 	return e.Err
-}
-
-// LeaderElectionTimeoutError is returned when Raft leader election does
-// not complete within the specified timeout.
-type LeaderElectionTimeoutError struct {
-	ShardID uint64
-	Timeout time.Duration
-}
-
-// Error returns a human-readable description.
-func (e *LeaderElectionTimeoutError) Error() string {
-	return "qrdb: leader election timeout for shard " + strconv.FormatUint(e.ShardID, 10) + " after " + e.Timeout.String()
 }
 
 // SQLExecutionError is returned when a SQL query fails to execute.

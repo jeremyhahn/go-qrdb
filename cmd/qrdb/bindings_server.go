@@ -25,7 +25,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/cockroachdb/pebble/v2"
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
@@ -38,6 +37,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
@@ -63,13 +63,6 @@ const (
 	defaultShardID   uint64 = 1
 	defaultReplicaID uint64 = 1
 	defaultRaftAddr         = "127.0.0.1:0"
-
-	// leaderElectionTimeout is the maximum duration to wait for Raft
-	// leader election to complete in single-node embedded mode.
-	leaderElectionTimeout = 5 * time.Second
-
-	// leaderPollInterval is the interval between leader election polls.
-	leaderPollInterval = 10 * time.Millisecond
 )
 
 // EmbeddedServerBinding manages the lifecycle of an in-process qrdbd
@@ -667,11 +660,14 @@ func (b *EmbeddedServerBinding) startRaftNode(cfg *EmbeddedConfig) (*quicraft.Ho
 		return nil, &ShardStartError{ShardID: shardID, Err: err}
 	}
 
-	// Wait for leader election before returning so that the first
-	// SyncPropose/SyncRead call succeeds without the "not leader" error.
-	if err := waitForLeader(context.Background(), host, shardID, leaderElectionTimeout); err != nil {
+	// Wait until the shard can serve a linearizable read before returning:
+	// its leader is known AND has committed an entry in its term. Until then
+	// the first SyncPropose fails "not leader" and the first SyncRead fails
+	// quicraft.ErrReadIndexNotReady. This is the wait every host-open path
+	// shares (server.WaitForShardServing).
+	if err := server.WaitForShardServing(context.Background(), host, shardID); err != nil {
 		_ = host.Close()
-		return nil, err
+		return nil, &ShardStartError{ShardID: shardID, Err: err}
 	}
 
 	return host, nil
@@ -691,23 +687,6 @@ func (b *EmbeddedServerBinding) resolveDataDir(cfg *EmbeddedConfig) (string, err
 		return "", &DataDirCreateError{Path: dataDir, Err: err}
 	}
 	return dataDir, nil
-}
-
-// waitForLeader polls the host until a leader is elected for the given
-// shard. Returns LeaderElectionTimeoutError if the timeout expires.
-func waitForLeader(ctx context.Context, host *quicraft.Host, shardID uint64, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if ctx.Err() != nil {
-			return &LeaderElectionTimeoutError{ShardID: shardID, Timeout: timeout}
-		}
-		leaderID, ok, err := host.GetLeaderID(shardID)
-		if err == nil && ok && leaderID != 0 {
-			return nil
-		}
-		time.Sleep(leaderPollInterval)
-	}
-	return &LeaderElectionTimeoutError{ShardID: shardID, Timeout: timeout}
 }
 
 // buildClient creates the embedded transport and SDK client from the

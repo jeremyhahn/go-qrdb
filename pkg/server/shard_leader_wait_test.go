@@ -15,11 +15,14 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 )
 
 // The point of these tests is the DISCRIMINATOR, not the wait. go-qrdb#139 is
@@ -62,6 +65,27 @@ type fakeLeaderSource struct {
 	// caught the lastErr erasure -- see
 	// TestShardLeaderWaitError_IntermittentPollErrorIsNotErased.
 	errOn map[int64]error
+
+	// reads counts ReadReady probes. readyAt is the probe on which a
+	// linearizable read first succeeds -- the new leader has committed in
+	// its term; every probe before it answers quicraft.ErrReadIndexNotReady,
+	// exactly what a leader elected a moment ago answers. 0 means the first
+	// probe succeeds. readErr, when set, is returned by every probe instead.
+	reads   atomic.Int64
+	readyAt int64
+	readErr error
+}
+
+// ReadReady probes a linearizable read on shardID.
+func (f *fakeLeaderSource) ReadReady(_ context.Context, _ uint64) error {
+	n := f.reads.Add(1)
+	if f.readErr != nil {
+		return f.readErr
+	}
+	if n < f.readyAt {
+		return quicraft.ErrReadIndexNotReady
+	}
+	return nil
 }
 
 func (f *fakeLeaderSource) GetLeaderID(shardID uint64) (uint64, bool, error) {
@@ -94,7 +118,7 @@ func (f *fakeLeaderSource) GetLeaderID(shardID uint64) (uint64, bool, error) {
 // the direct answer to go-qrdb#312, where the real clock ran out after two
 // polls of a thirty-two-poll budget.
 //
-// It needs no lock: waitForShardLeaderWithin polls from the calling goroutine
+// It needs no lock: waitForShardServingWithin polls from the calling goroutine
 // only, so Now and Sleep are called in sequence by that one goroutine. Each
 // test constructs its own, so nothing is shared between tests either -- which
 // is why this is a value passed in rather than a package-level clock variable.
@@ -122,7 +146,7 @@ func (c *virtualClock) Now() time.Time { return c.now }
 // wall time at all, so these budgets stay honest on any host at any load.
 func (c *virtualClock) Sleep(d time.Duration) { c.now = c.now.Add(d) }
 
-// pollBudget returns the timeout that makes waitForShardLeaderWithin perform
+// pollBudget returns the timeout that makes waitForShardServingWithin perform
 // exactly polls polls before it gives up, when it reads time through a
 // virtualClock. polls must be at least 2.
 //
@@ -166,8 +190,8 @@ func TestWaitForShardLeader_ReturnsOnceLeaderElected(t *testing.T) {
 	// Budgeted for ten polls: a wait that ignored the elected leader would run
 	// all ten and return a timeout error, so the early return is what is being
 	// asserted rather than the budget running out at the right moment.
-	if err := waitForShardLeaderWithin(f, 7, pollBudget(10, virtualInterval), virtualInterval, newVirtualClock()); err != nil {
-		t.Fatalf("waitForShardLeaderWithin: %v", err)
+	if err := waitForShardServingWithin(context.Background(), f, 7, pollBudget(10, virtualInterval), virtualInterval, newVirtualClock()); err != nil {
+		t.Fatalf("waitForShardServingWithin: %v", err)
 	}
 	if got := f.polls.Load(); got != 3 {
 		t.Errorf("polls = %d, want 3 (it must stop at the first success, not keep polling)", got)
@@ -178,7 +202,7 @@ func TestWaitForShardLeader_ReturnsOnceLeaderElected(t *testing.T) {
 // on it, and this change must not break them while adding detail.
 func TestShardLeaderWaitError_StillMatchesTheSentinel(t *testing.T) {
 	f := &fakeLeaderSource{}
-	err := waitForShardLeaderWithin(f, 7, pollBudget(4, virtualInterval), virtualInterval, newVirtualClock())
+	err := waitForShardServingWithin(context.Background(), f, 7, pollBudget(4, virtualInterval), virtualInterval, newVirtualClock())
 	if err == nil {
 		t.Fatal("want a timeout error, got nil")
 	}
@@ -205,7 +229,7 @@ func TestShardLeaderWaitError_ReportsTheSwallowedPollError(t *testing.T) {
 	boom := errors.New("shard 7 not found")
 	f := &fakeLeaderSource{err: boom}
 
-	err := waitForShardLeaderWithin(f, 7, pollBudget(4, virtualInterval), virtualInterval, newVirtualClock())
+	err := waitForShardServingWithin(context.Background(), f, 7, pollBudget(4, virtualInterval), virtualInterval, newVirtualClock())
 	var we *ShardLeaderWaitError
 	if !errors.As(err, &we) {
 		t.Fatalf("want *ShardLeaderWaitError, got %v", err)
@@ -355,7 +379,7 @@ func TestShardLeaderWaitError_IntermittentPollErrorIsNotErased(t *testing.T) {
 	// is the sequence that erases lastErr when the assignment is unguarded. It
 	// is an exact count under virtualClock, so the clean polls after the
 	// failing one are guaranteed rather than hoped for.
-	err := waitForShardLeaderWithin(f, 7, pollBudget(5, virtualInterval), virtualInterval, newVirtualClock())
+	err := waitForShardServingWithin(context.Background(), f, 7, pollBudget(5, virtualInterval), virtualInterval, newVirtualClock())
 	var we *ShardLeaderWaitError
 	if !errors.As(err, &we) {
 		t.Fatalf("want *ShardLeaderWaitError, got %v", err)
@@ -392,7 +416,7 @@ func TestShardLeaderWaitError_IntermittentPollErrorIsNotErased(t *testing.T) {
 // differently, or the count adds nothing.
 func TestShardLeaderWaitError_PersistentPollErrorReadsAsPersistent(t *testing.T) {
 	f := &fakeLeaderSource{err: errors.New("shard 7 not found")}
-	err := waitForShardLeaderWithin(f, 7, pollBudget(5, virtualInterval), virtualInterval, newVirtualClock())
+	err := waitForShardServingWithin(context.Background(), f, 7, pollBudget(5, virtualInterval), virtualInterval, newVirtualClock())
 	var we *ShardLeaderWaitError
 	if !errors.As(err, &we) {
 		t.Fatalf("want *ShardLeaderWaitError, got %v", err)
@@ -420,7 +444,7 @@ func TestShardLeaderWaitError_ReportsFirstAndLastWhenTheyDiffer(t *testing.T) {
 	// THE go-qrdb#312 CASE. The fixture scripts poll 3, so the wait must reach
 	// poll 3. Under the wall clock that was a bet on the scheduler and CI lost
 	// it: 30ms bought two polls. Under virtualClock five polls is arithmetic.
-	err := waitForShardLeaderWithin(f, 7, pollBudget(5, virtualInterval), virtualInterval, newVirtualClock())
+	err := waitForShardServingWithin(context.Background(), f, 7, pollBudget(5, virtualInterval), virtualInterval, newVirtualClock())
 	var we *ShardLeaderWaitError
 	if !errors.As(err, &we) {
 		t.Fatalf("want *ShardLeaderWaitError, got %v", err)
@@ -436,5 +460,92 @@ func TestShardLeaderWaitError_ReportsFirstAndLastWhenTheyDiffer(t *testing.T) {
 	}
 	if !strings.Contains(msg, first.Error()) {
 		t.Errorf("message must carry the differing FIRST failure too.\ngot: %s", msg)
+	}
+}
+
+// TestWaitForShardLeader_WaitsForTheTermsFirstCommit reproduces the race the
+// host-open paths lost under load, deterministically: the shard elects a leader
+// at once, but a linearizable read is refused (ErrReadIndexNotReady,
+// "commitPending") until that leader has committed an entry in its term --
+// here, until the third probe. A wait that returns on "leader known" hands
+// the caller a shard whose first read fails; the wait must instead return
+// only once a read succeeds.
+func TestWaitForShardLeader_WaitsForTheTermsFirstCommit(t *testing.T) {
+	f := &fakeLeaderSource{leader: true, readyAt: 3}
+	if err := waitForShardServingWithin(context.Background(), f, 7, pollBudget(10, virtualInterval), virtualInterval, newVirtualClock()); err != nil {
+		t.Fatalf("waitForShardServingWithin: %v", err)
+	}
+	if got := f.reads.Load(); got != 3 {
+		t.Fatalf("read probes = %d, want 3: the wait returned before the shard could serve a linearizable read", got)
+	}
+	if err := f.ReadReady(context.Background(), 7); err != nil {
+		t.Fatalf("the first read after the wait failed: %v", err)
+	}
+}
+
+// A leader that never commits in its term times out with *ShardReadWaitError:
+// the probes are counted within the one budget, every one answered
+// not-ready, and the verdict is the genuine one -- no probe error, no
+// starvation.
+func TestShardReadWaitError_LeaderThatNeverCommits(t *testing.T) {
+	f := &fakeLeaderSource{leader: true, readyAt: 1 << 62}
+	err := waitForShardServingWithin(context.Background(), f, 7, pollBudget(6, virtualInterval), virtualInterval, newVirtualClock())
+	var we *ShardReadWaitError
+	if !errors.As(err, &we) {
+		t.Fatalf("err = %v, want *ShardReadWaitError", err)
+	}
+	if !errors.Is(err, ErrShardNotReadReady) {
+		t.Fatal("ShardReadWaitError does not unwrap to ErrShardNotReadReady")
+	}
+	// The first probe runs at the instant the leader poll succeeded -- no sleep
+	// between the phases -- so the probes get the budget's six slots.
+	if f.polls.Load() != 1 || we.Polls != 6 || we.ErrCount != 0 || we.LastErr != nil {
+		t.Fatalf("leader polls %d, read probes %d, errors %d (%v); want 1, 6, 0",
+			f.polls.Load(), we.Polls, we.ErrCount, we.LastErr)
+	}
+	if msg := we.Error(); !strings.Contains(msg, "GENUINELY DID NOT COMMIT") || !strings.Contains(msg, "shard 7") {
+		t.Fatalf("message %q lacks the verdict", msg)
+	}
+}
+
+// A probe that fails for another reason is the finding, and is reported.
+func TestShardReadWaitError_ReportsTheProbeError(t *testing.T) {
+	boom := errors.New("shard failed")
+	f := &fakeLeaderSource{leader: true, readErr: boom}
+	err := waitForShardServingWithin(context.Background(), f, 7, pollBudget(4, virtualInterval), virtualInterval, newVirtualClock())
+	var we *ShardReadWaitError
+	if !errors.As(err, &we) || !errors.Is(we.LastErr, boom) || we.ErrCount != we.Polls {
+		t.Fatalf("err = %v, want every probe's error reported", err)
+	}
+	if msg := we.Error(); !strings.Contains(msg, "read probe FAILED") || !strings.Contains(msg, "shard failed") {
+		t.Fatalf("message %q lacks the probe error", msg)
+	}
+}
+
+// The verdicts are asserted on constructed observations, as for the leader
+// wait: starvation outranks the genuine verdict, and differing first and last
+// errors are both reported.
+func TestShardReadWaitError_Verdicts(t *testing.T) {
+	starved := &ShardReadWaitError{ShardID: 3, Timeout: time.Second, Interval: 20 * time.Millisecond, Polls: 2, MaxGap: time.Second}
+	if !starved.Starved() || !strings.Contains(starved.Error(), "POLLER WAS STARVED") {
+		t.Fatalf("starved observation read as %q", starved.Error())
+	}
+	both := &ShardReadWaitError{ShardID: 3, Polls: 3, ErrCount: 2, FirstErr: errors.New("first"), LastErr: errors.New("last")}
+	if msg := both.Error(); !strings.Contains(msg, "first failure differed: first") {
+		t.Fatalf("message %q drops the first error", msg)
+	}
+}
+
+// A cancelled context ends the wait with the context's error in either phase.
+func TestWaitForShardServing_HonoursCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for name, f := range map[string]*fakeLeaderSource{
+		"no leader yet":  {},
+		"not read-ready": {leader: true, readyAt: 1 << 62},
+	} {
+		if err := waitForShardServingWithin(ctx, f, 7, pollBudget(10, virtualInterval), virtualInterval, newVirtualClock()); !errors.Is(err, context.Canceled) {
+			t.Fatalf("%s: err = %v, want context.Canceled", name, err)
+		}
 	}
 }

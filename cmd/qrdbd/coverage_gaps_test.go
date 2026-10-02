@@ -191,24 +191,6 @@ func TestWaitForLeaderElection_ImmediateSuccess(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// warmupReadIndex: success on nil error from Get (key exists)
-// ---------------------------------------------------------------------------
-
-func TestWarmupReadIndex_GetReturnsNilError(t *testing.T) {
-	var callCount atomic.Int32
-	mock := &mockKVServicer{
-		getFn: func(_ context.Context, key string) ([]byte, error) {
-			callCount.Add(1)
-			assert.Equal(t, "__sys:warmup", key)
-			return nil, nil
-		},
-	}
-
-	warmupReadIndex(context.Background(), mock)
-	assert.Equal(t, int32(1), callCount.Load())
-}
-
-// ---------------------------------------------------------------------------
 // runStart: unknown SM type after TLS generation succeeds
 //
 // Exercises the initializeNode error return path inside runStart

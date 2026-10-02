@@ -41,7 +41,7 @@ var ErrTenantMigrationInProgress = errors.New("server: tenant encryption migrati
 // to elect a leader within the readiness timeout.
 var ErrTenantShardNoLeader = errors.New("server: tenant shard did not elect a leader")
 
-// ShardLeaderWaitError reports that waitForShardLeader gave up, and -- unlike
+// ShardLeaderWaitError reports that waitForShardServingWithin gave up, and -- unlike
 // the bare ErrTenantShardNoLeader sentinel it wraps -- what it observed while
 // waiting. It exists because five CI incidents (go-qrdb#139) each cost a manual
 // diagnosis to answer one question the error itself should have answered: was
@@ -154,6 +154,83 @@ func (e *ShardLeaderWaitError) Starved() bool {
 // Unwrap returns ErrTenantShardNoLeader so errors.Is(err, ErrTenantShardNoLeader)
 // continues to hold for every existing caller.
 func (e *ShardLeaderWaitError) Unwrap() error { return ErrTenantShardNoLeader }
+
+// ErrShardNotReadReady is returned when a shard elected a leader but no
+// linearizable read succeeded on it within the readiness budget: the leader
+// never committed an entry in its term.
+var ErrShardNotReadReady = errors.New("server: shard leader cannot serve a linearizable read")
+
+// ShardReadWaitError reports that the readiness wait found a leader but gave
+// up waiting for the shard to serve a linearizable read. A leader elected a
+// moment ago refuses ReadIndex (quicraft.ErrReadIndexNotReady,
+// "commitPending") until it has committed an entry in its own term; a host
+// handed to callers before then fails their first read. The fields are the
+// same measurement ShardLeaderWaitError carries, for the read probes alone:
+// Polls and ErrCount count ReadIndex probes, and an ErrReadIndexNotReady
+// answer is the expected "not yet", not a probe error.
+type ShardReadWaitError struct {
+	ShardID  uint64
+	Timeout  time.Duration
+	Interval time.Duration
+	Elapsed  time.Duration
+	Polls    int
+	MaxGap   time.Duration
+	ErrCount int
+	FirstErr error
+	LastErr  error
+}
+
+// Error returns the observation and the cause it supports, with the same
+// precedence as ShardLeaderWaitError: a probe that could not be made at all,
+// then a starved poller, then a leader that genuinely never committed.
+func (e *ShardReadWaitError) Error() string {
+	var b strings.Builder
+	b.WriteString("server: shard ")
+	b.WriteString(strconv.FormatUint(e.ShardID, 10))
+	b.WriteString(": a leader was elected but no linearizable read succeeded after ")
+	b.WriteString(e.Elapsed.Round(time.Millisecond).String())
+	b.WriteString(" (budget ")
+	b.WriteString(e.Timeout.String())
+	b.WriteString(", ")
+	b.WriteString(strconv.Itoa(e.Polls))
+	b.WriteString(" read probes, longest gap ")
+	b.WriteString(e.MaxGap.Round(time.Millisecond).String())
+	b.WriteString("): ")
+	switch {
+	case e.LastErr != nil:
+		b.WriteString("the read probe FAILED on ")
+		b.WriteString(strconv.Itoa(e.ErrCount))
+		b.WriteString(" of ")
+		b.WriteString(strconv.Itoa(e.Polls))
+		b.WriteString(" probes -- ReadIndex last failed with: ")
+		b.WriteString(e.LastErr.Error())
+		if e.FirstErr != nil && e.FirstErr.Error() != e.LastErr.Error() {
+			b.WriteString("; first failure differed: ")
+			b.WriteString(e.FirstErr.Error())
+		}
+		b.WriteString(". Fix that before reading anything into the timing")
+	case e.Starved():
+		b.WriteString("the POLLER WAS STARVED -- ")
+		b.WriteString(e.MaxGap.Round(time.Millisecond).String())
+		b.WriteString(" elapsed between two consecutive probes against a ")
+		b.WriteString(e.Interval.String())
+		b.WriteString(" interval, so the scheduler, not the shard, consumed the budget. ")
+		b.WriteString("This is host contention, not a commit defect; do NOT widen the budget")
+	default:
+		b.WriteString("the leader GENUINELY DID NOT COMMIT in its term -- every probe answered ")
+		b.WriteString("read-index-not-ready while the poller ran on time for the whole budget. ")
+		b.WriteString("Investigate the shard's log commit, not the runner")
+	}
+	return b.String()
+}
+
+// Starved applies ShardLeaderWaitError's threshold to the read probes.
+func (e *ShardReadWaitError) Starved() bool {
+	return e.Interval > 0 && e.MaxGap >= shardLeaderStarvationFactor*e.Interval
+}
+
+// Unwrap returns ErrShardNotReadReady.
+func (e *ShardReadWaitError) Unwrap() error { return ErrShardNotReadReady }
 
 // TenantHostError wraps a failure building, resolving, or closing a per-tenant
 // volume Raft Host. It identifies the tenant and the operation that failed.

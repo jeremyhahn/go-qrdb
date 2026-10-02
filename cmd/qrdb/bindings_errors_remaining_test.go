@@ -22,7 +22,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
-	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -186,32 +185,6 @@ func TestUnknownBackendError_ErrorsAs(t *testing.T) {
 	}
 	if target.Backend != "baddb" {
 		t.Errorf("expected Backend=%q, got %q", "baddb", target.Backend)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// LeaderElectionTimeoutError (additional tests)
-// ---------------------------------------------------------------------------
-
-func TestLeaderElectionTimeoutError_Error_Duration(t *testing.T) {
-	e := &LeaderElectionTimeoutError{ShardID: 1, Timeout: 5 * time.Second}
-	msg := e.Error()
-	if msg == "" {
-		t.Fatal("expected non-empty error message")
-	}
-	if !containsStr(msg, "5s") {
-		t.Errorf("expected timeout duration in message, got: %q", msg)
-	}
-}
-
-func TestLeaderElectionTimeoutError_ErrorsAs(t *testing.T) {
-	var target *LeaderElectionTimeoutError
-	e := &LeaderElectionTimeoutError{ShardID: 99}
-	if !errors.As(e, &target) {
-		t.Fatal("expected errors.As to match *LeaderElectionTimeoutError")
-	}
-	if target.ShardID != 99 {
-		t.Errorf("expected ShardID=99, got %d", target.ShardID)
 	}
 }
 
