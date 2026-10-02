@@ -21,21 +21,34 @@ are not reconstructed here — their history is in the git log.
   service (REST, gRPC, Unix, QUIC, MCP, embedded) and the embedded driver.
   Reads, commit preconditions and duplicate reporting (1062, including a key
   taken concurrently before the commit) are unchanged; `qrdb_isolation` does
-  not apply to an autocommit statement. An autocommit statement is now
-  bounded like a transaction (8 MiB, 100,000 keys), and a statement that
-  writes two databases is refused. The statement's row-lock release is
-  folded into its commit, so a pessimistic single-row `UPDATE`/`DELETE` is
-  two Raft proposals instead of three. The query service and the PostgreSQL
-  wire now report an error raised when a result is closed -- the commit --
-  instead of dropping it.
+  not apply to an autocommit statement. A statement that writes two
+  databases is refused. The statement's row-lock release is folded into its
+  commit, so a pessimistic single-row `UPDATE`/`DELETE` is two Raft
+  proposals instead of three. The query service and the PostgreSQL wire now
+  report an error raised when a result is closed -- the commit -- instead of
+  dropping it.
+- **BREAKING (behaviour): an autocommit SQL statement is bounded like a
+  transaction -- 8 MiB and 100,000 buffered operations.** A bulk
+  `INSERT`, `UPDATE` or `DELETE` outside a transaction previously
+  committed row by row and had no statement-wide limit; one that exceeds
+  either bound now fails with `provider.WriteSetLimitError` and writes
+  nothing. Split such a statement into batches below the bounds.
 - **BREAKING (behaviour): a SQL statement writing a relational table and a
   `kv`, entity or collection table is refused**
   (`provider.MixedTransactionalWriteError`) before it writes either. The
   relational half is now atomic and the other applies at once, so such a
   statement could fail with its non-transactional half already committed.
+- **A SQL statement begun while another is still open on the same session is
+  refused** (`provider.CommandInProgressError`). Only a caller driving the
+  embedded driver's `driver.Conn` directly can do this, by running a
+  statement while a query's rows are still open, and the second statement
+  would discard the first's pending writes; close the rows first.
+  `database/sql` and the wire protocols never overlap statements on a
+  connection.
 - **Every SQL surface resolves each table, view and servicer once per
   statement.** In 0.27.0-alpha only the MySQL wire delivered the statement
-  boundaries this memoization needs; the PostgreSQL wire (each executed statement),
+  boundaries this memoization needs; the PostgreSQL wire (each executed
+  statement, and the describe of each parameterized statement at Parse),
   the ad-hoc query service (each request) and the embedded driver (`Exec`,
   `Prepare`, and a `Query` until its rows are closed) now bracket each
   statement as a command too.

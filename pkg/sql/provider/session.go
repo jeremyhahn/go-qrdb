@@ -78,6 +78,10 @@ type QRDBSession struct {
 	// CommandBegin and closed by CommandEnd (see statementScope).
 	stmt atomic.Pointer[statementScope]
 
+	// commandOpen is true between CommandBegin and CommandEnd; a command
+	// cannot begin inside another (see CommandBegin).
+	commandOpen atomic.Bool
+
 	// locks is the connection's row-lock lease, shared by the lock owners
 	// of its successive transactions -- every autocommit statement is one
 	// -- so a locking statement does not grant and revoke a lease of its
@@ -412,11 +416,22 @@ func (s *QRDBSession) Rollback(ctx *sqle.Context, _ sqle.Transaction) error {
 // transaction's row locks must be released rather than left to expire.
 var _ sqle.LifecycleAwareSession = (*QRDBSession)(nil)
 
-// CommandBegin implements sql.LifecycleAwareSession. No statement is in
-// flight at a command boundary, so any statement savepoint still open is a
-// leftover and is dropped (see WriteSet.resetStatements), and the command
-// gets a fresh resolution scope (see statementScope).
+// CommandBegin implements sql.LifecycleAwareSession. It refuses, with
+// *CommandInProgressError, while the session's previous command is still
+// open: the leftover handling below assumes no statement is in flight, and
+// a command begun inside another would drop that statement's pending writes
+// and be served its resolution. Every SQL surface ends each command before
+// beginning the next; a caller that drives the embedded driver directly and
+// opens a statement while a query's rows are still open is told so.
+//
+// No statement is in flight at a command boundary, so any statement
+// savepoint still open is a leftover and is dropped (see
+// WriteSet.resetStatements), and the command gets a fresh resolution scope
+// (see statementScope).
 func (s *QRDBSession) CommandBegin() error {
+	if !s.commandOpen.CompareAndSwap(false, true) {
+		return &CommandInProgressError{}
+	}
 	if ws := s.ws.Load(); ws != nil {
 		ws.resetStatements()
 		if ws.implicit {
@@ -440,6 +455,7 @@ func (s *QRDBSession) CommandBegin() error {
 // the command.
 func (s *QRDBSession) CommandEnd() {
 	s.stmt.Store(nil)
+	s.commandOpen.Store(false)
 }
 
 // SessionEnd implements sql.LifecycleAwareSession: the connection is gone,

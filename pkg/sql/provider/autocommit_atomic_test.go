@@ -243,6 +243,7 @@ func TestCommandBegin_DiscardsALeftoverImplicitTransaction(t *testing.T) {
 	require.NotNil(t, fresh)
 	assert.NotSame(t, leftover, fresh)
 	assert.False(t, fresh.Implicit(), "the next statement starts clean")
+	sess.CommandEnd()
 
 	require.NoError(t, sess.CommandBegin())
 	assert.Same(t, fresh, sess.writeSet(), "a write-set that is not a leftover statement's is kept")

@@ -145,6 +145,7 @@ func TestSessionCommandBegin_ResetsStatementMarks(t *testing.T) {
 	sess := NewSession(sqle.NewBaseSession(), nil)
 	ctx := sqle.NewContext(context.Background(), sqle.WithSession(sess))
 	require.NoError(t, sess.CommandBegin(), "no transaction yet")
+	sess.CommandEnd()
 
 	_, err := sess.StartTransaction(ctx, sqle.ReadWrite)
 	require.NoError(t, err)
@@ -153,4 +154,30 @@ func TestSessionCommandBegin_ResetsStatementMarks(t *testing.T) {
 	ws.beginStatement()
 	require.NoError(t, sess.CommandBegin())
 	assert.Empty(t, ws.statements)
+}
+
+// TestSessionCommandBegin_RefusesWhileACommandIsOpen: a command cannot begin
+// inside another -- it would drop the open statement's savepoint and serve
+// the open command's resolutions -- and the session accepts the next command
+// once the open one ends.
+func TestSessionCommandBegin_RefusesWhileACommandIsOpen(t *testing.T) {
+	sess := NewSession(sqle.NewBaseSession(), nil)
+	ctx := sqle.NewContext(context.Background(), sqle.WithSession(sess))
+	_, err := sess.StartTransaction(ctx, sqle.ReadWrite)
+	require.NoError(t, err)
+
+	require.NoError(t, sess.CommandBegin())
+	ws := sess.writeSet()
+	ws.beginStatement()
+	scope := sess.stmt.Load()
+
+	var inProgress *CommandInProgressError
+	require.ErrorAs(t, sess.CommandBegin(), &inProgress)
+	assert.NotEmpty(t, ws.statements, "the open statement keeps its savepoint")
+	assert.Same(t, scope, sess.stmt.Load(), "the open command keeps its resolution scope")
+	assert.NotEmpty(t, inProgress.Error())
+
+	sess.CommandEnd()
+	require.NoError(t, sess.CommandBegin(), "the next command begins once the open one ends")
+	sess.CommandEnd()
 }

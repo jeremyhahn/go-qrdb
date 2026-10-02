@@ -472,6 +472,17 @@ func (e *TransactionServiceUnavailableError) Error() string {
 	return "provider: transaction service unavailable for relational table: " + e.Table
 }
 
+// CommandInProgressError is returned by QRDBSession.CommandBegin when the
+// session's previous command has not ended: a statement was begun on a
+// connection while another statement -- typically a query whose rows are
+// still open -- is in flight. Close the open rows first.
+type CommandInProgressError struct{}
+
+// Error returns a human-readable description.
+func (e *CommandInProgressError) Error() string {
+	return "provider: another statement is still in progress on this connection; close its rows first"
+}
+
 // MixedTransactionalWriteError refuses a statement that writes both a
 // relational table and a non-transactional one (the kv, entity or
 // collection tables). A statement is atomic -- its own transaction outside

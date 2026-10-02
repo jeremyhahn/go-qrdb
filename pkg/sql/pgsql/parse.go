@@ -356,7 +356,15 @@ func (h *ParseHandler) executeEager(ctx context.Context, trimmed, translated str
 // the already-parsed statement straight into QueryWithBindings at EXECUTE
 // time instead of asking go-mysql-server to parse the same text again.
 func (h *ParseHandler) executeDeferred(ctx context.Context, trimmed, translated string, paramOIDs []uint32, preparsed sqlparser.Statement) (wire.PreparedStatements, error) {
-	sqlCtx := h.buildSQLContext(ctx)
+	// Describing the statement -- resolving its parameter types and result
+	// columns -- is a command of its own, carrying the statement's text, so
+	// it resolves each table once (see beginCommand).
+	sqlCtx := h.buildSQLContext(ctx, sql.WithQuery(translated))
+	end, err := beginCommand(sqlCtx)
+	if err != nil {
+		return nil, wireQueryError(trimmed, err)
+	}
+	defer end()
 
 	parsedStmt := preparsed
 	var parseErr error

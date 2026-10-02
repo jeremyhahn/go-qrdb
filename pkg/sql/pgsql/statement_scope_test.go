@@ -59,6 +59,27 @@ func TestPGWire_StatementResolvesEachTableOnce(t *testing.T) {
 	run("UPDATE notes SET extra = 1 WHERE id = 1")
 }
 
+// TestPGWire_PrepareResolvesEachTableOnce: describing a parameterized
+// statement (PrepareQuery, at Parse) is a command too, so it resolves each
+// table definition once, like the statement's execution.
+func TestPGWire_PrepareResolvesEachTableOnce(t *testing.T) {
+	hs := sqltest.NewHarness()
+	counting := hs.CountTableReads()
+	prov := provider.NewProviderWithEngine("qrdb", hs.KVSvc, "", provider.WithRegistry(hs.Registry))
+	eng := engine.New(engine.Config{Provider: prov, Dialect: engine.DialectPostgreSQL})
+	t.Cleanup(func() { _ = eng.Close() })
+	h := NewParseHandler(eng, engine.NewTranslator(), "qrdb")
+	ctx, err := newConnectionSessionHandler()(context.Background())
+	require.NoError(t, err)
+
+	_, err = h.HandleParse(ctx, "CREATE TABLE notes (id BIGINT PRIMARY KEY, body VARCHAR(64))")
+	require.NoError(t, err)
+	counting.Reset()
+	_, err = h.HandleParse(ctx, "SELECT body FROM notes WHERE id = $1")
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), counting.Gets(), "describing a statement reads its table's definition once")
+}
+
 // refusingSession is a session whose commands cannot begin.
 type refusingSession struct {
 	*sql.BaseSession
@@ -80,4 +101,83 @@ func TestBeginCommand(t *testing.T) {
 	end, err := beginCommand(plain)
 	require.NoError(t, err)
 	end()
+}
+
+// newScopeHandler builds a PostgreSQL parse handler over a relational
+// harness, and a connection context carrying its session.
+func newScopeHandler(t *testing.T) (*ParseHandler, context.Context, *provider.QRDBSession) {
+	t.Helper()
+	hs := sqltest.NewHarness()
+	prov := provider.NewProviderWithEngine("qrdb", hs.KVSvc, "", provider.WithRegistry(hs.Registry))
+	eng := engine.New(engine.Config{Provider: prov, Dialect: engine.DialectPostgreSQL})
+	t.Cleanup(func() { _ = eng.Close() })
+	h := NewParseHandler(eng, engine.NewTranslator(), "qrdb")
+	ctx, err := newConnectionSessionHandler()(context.Background())
+	require.NoError(t, err)
+	sess := connectionSessionFromContext(ctx)
+	require.NotNil(t, sess)
+	return h, ctx, sess
+}
+
+// TestPGWire_StatementWhileACommandIsOpenIsRefused: each place the
+// PostgreSQL wire begins a command -- executing a statement at Parse,
+// describing a parameterized one, and executing it at Execute -- fails the
+// statement when its session's previous command has not ended, and the
+// statement writes nothing.
+func TestPGWire_StatementWhileACommandIsOpenIsRefused(t *testing.T) {
+	h, ctx, sess := newScopeHandler(t)
+	_, err := h.HandleParse(ctx, "CREATE TABLE notes (id BIGINT PRIMARY KEY, body VARCHAR(64))")
+	require.NoError(t, err)
+
+	require.NoError(t, sess.CommandBegin())
+	var inProgress *provider.CommandInProgressError
+
+	_, err = h.HandleParse(ctx, "INSERT INTO notes (id, body) VALUES (1, 'a')")
+	require.ErrorAs(t, err, &inProgress, "a statement executed at Parse")
+
+	const query = "SELECT body FROM notes WHERE id = $1"
+	_, err = h.HandleParse(ctx, query)
+	require.ErrorAs(t, err, &inProgress, "a parameterized statement's describe")
+
+	translated, err := h.translator.Translate(query)
+	require.NoError(t, err)
+	err = h.executeDeferredCallback(ctx, &mockDataWriter{}, nil, query, translated, nil, nil, nil)
+	require.ErrorAs(t, err, &inProgress, "a parameterized statement's execution")
+	sess.CommandEnd()
+
+	rows := &mockDataWriter{}
+	require.NoError(t, h.executeDeferredCallback(ctx, rows, nil, "SELECT * FROM notes", "SELECT * FROM notes", nil, nil, nil))
+	assert.Zero(t, rows.rowCount, "the refused INSERT wrote nothing")
+}
+
+// TestPGWire_SequenceDDL: CREATE and ALTER SEQUENCE are accepted as no-ops
+// and DROP SEQUENCE resets the counter, so a re-created sequence starts at 1
+// again, as PostgreSQL's drop-and-recreate does.
+func TestPGWire_SequenceDDL(t *testing.T) {
+	h, ctx, _ := newScopeHandler(t)
+	nextval := func() any {
+		t.Helper()
+		sqlCtx := h.buildSQLContext(ctx)
+		_, iter, _, err := h.sqlEngine.Query(sqlCtx, "SELECT NEXTVAL('orders_seq')")
+		require.NoError(t, err)
+		row, err := iter.Next(sqlCtx)
+		require.NoError(t, err)
+		require.NoError(t, iter.Close(sqlCtx))
+		return row[0]
+	}
+
+	for _, q := range []string{"CREATE SEQUENCE orders_seq", "ALTER SEQUENCE orders_seq AS bigint"} {
+		_, err := h.HandleParse(ctx, q)
+		require.NoError(t, err, q)
+	}
+	assert.EqualValues(t, 1, nextval())
+	assert.EqualValues(t, 2, nextval())
+
+	_, err := h.HandleParse(ctx, "DROP SEQUENCE IF EXISTS orders_seq")
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, nextval(), "a dropped sequence starts again at 1")
+
+	handled, err := h.handleSequenceDDL(h.buildSQLContext(ctx), "no_such_db", "DROP SEQUENCE orders_seq")
+	assert.True(t, handled)
+	require.Error(t, err, "DROP SEQUENCE in a database that does not exist")
 }

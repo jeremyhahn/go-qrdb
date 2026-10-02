@@ -18,10 +18,12 @@ package driver
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/sql/provider"
 )
 
 // countingTableService counts the table definitions read through it.
@@ -33,6 +35,50 @@ type countingTableService struct {
 func (c *countingTableService) GetTable(ctx context.Context, database, name string) (*service.TableDef, error) {
 	c.gets.Add(1)
 	return c.TableServicer.GetTable(ctx, database, name)
+}
+
+// TestEmbedded_OverlappingStatementsAreRefused: a Query's statement lasts
+// until its rows are closed, and a second statement on the same connection
+// meanwhile is refused rather than run inside the first's command, where it
+// could drop the first statement's pending writes or be served the first's
+// resolution. database/sql never overlaps statements on one connection; a
+// caller driving the driver directly can, so the connection itself refuses.
+func TestEmbedded_OverlappingStatementsAreRefused(t *testing.T) {
+	ctx := context.Background()
+	cfg := &DSNConfig{Scheme: SchemeEmbedded, Database: "overlap", Backend: "memory", Engine: "kv"}
+	dc, err := NewEmbeddedConnector(cfg, WithRegistry(newRelationalRegistry())).Connect(ctx)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { _ = dc.Close() })
+	c, ok := dc.(*embeddedConn)
+	if !ok {
+		t.Fatalf("connection is %T", dc)
+	}
+	for _, q := range []string{"CREATE TABLE widgets (id BIGINT PRIMARY KEY)", "INSERT INTO widgets (id) VALUES (1), (2)"} {
+		if _, err := c.ExecContext(ctx, q, nil); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+
+	rows, err := c.QueryContext(ctx, "SELECT id FROM widgets", nil)
+	if err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+	_, err = c.ExecContext(ctx, "INSERT INTO widgets (id) VALUES (3)", nil)
+	var inProgress *provider.CommandInProgressError
+	if !errors.As(err, &inProgress) {
+		t.Fatalf("a statement while another's rows are open = %v, want CommandInProgressError", err)
+	}
+	if _, err := c.QueryContext(ctx, "SELECT 1", nil); !errors.As(err, &inProgress) {
+		t.Fatalf("a query while another's rows are open = %v, want CommandInProgressError", err)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if _, err := c.ExecContext(ctx, "INSERT INTO widgets (id) VALUES (3)", nil); err != nil {
+		t.Fatalf("the next statement after the rows close runs normally: %v", err)
+	}
 }
 
 // TestEmbedded_StatementResolvesEachTableOnce: the embedded driver runs
