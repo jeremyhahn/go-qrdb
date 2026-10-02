@@ -16,11 +16,14 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"sync"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // The SO PIN lockout: the one implementation of the attempt counting every SO
@@ -28,20 +31,36 @@ import (
 // backend (pkg/pin's lockout decorator) and each tenant's SO PIN behind
 // SOAuthenticator.
 //
-// Each key (the node, or a tenant) has TWO counters:
+// Each key (the node, or a tenant) counts:
 //
-//   - the anonymous counter, for checks made by a caller that is neither
+//   - one anonymous counter, for checks made by a caller that is neither
 //     authenticated nor presenting a TLS-verified certificate -- the
 //     sealed-window caller;
-//   - the authenticated counter, for checks made by an authenticated
-//     identity or over a TLS-verified certificate (AuthenticatedCaller).
+//   - one counter PER AUTHENTICATED PRINCIPAL (CallerPrincipal): the
+//     authenticated identity, or else the verified client certificate;
+//   - one aggregate cap over every authenticated principal together.
 //
-// They are separate so anonymous traffic can never lock an authenticated
-// Security Officer out: wrong PINs guessed anonymously engage only the
-// anonymous counter. Only a wrong PIN counts. The first SOPINFreeFailures
-// failures in a row on a counter cost nothing; every failure from then on
-// locks that counter for a backoff that doubles from SOPINBaseBackoff up to
-// SOPINMaxBackoff. A correct PIN resets the counter it was checked against.
+// Only a wrong PIN counts. The first SOPINFreeFailures failures in a row on a
+// counter cost nothing; every failure from then on locks that counter for a
+// backoff that doubles from SOPINBaseBackoff up to SOPINMaxBackoff. A correct
+// PIN resets the counter it was checked against.
+//
+// The counters are separate so that no caller can lock another out: wrong PINs
+// guessed anonymously engage only the anonymous counter, and wrong PINs
+// guessed by a tenant user, a share holder or any other holder of a
+// certificate the client CA issued engage only that principal's own counter
+// -- never the Security Officer's.
+//
+// The aggregate cap bounds how fast MANY principals together can guess: at
+// most SOPINAggregateFailures wrong PINs from authenticated principals in any
+// SOPINAggregateWindow, after which every authenticated check of the key --
+// the Security Officer's included -- is refused until the window ends. One
+// principal's own backoff holds it far below the cap (about 15 failures in a
+// window), so reaching it takes several principals guessing together: that is
+// the residual, by design, because the alternative is unbounded distributed
+// guessing. The number of principals tracked per key is capped at
+// SOPINMaxTrackedPrincipals; principals beyond it share one overflow counter.
+//
 // Recovery is to wait the backoff out (RetryAfter) and present the right PIN;
 // an officer locked out anonymously recovers at once by authenticating.
 //
@@ -57,7 +76,20 @@ const (
 	SOPINBaseBackoff = time.Second
 	// SOPINMaxBackoff caps the doubling backoff.
 	SOPINMaxBackoff = 15 * time.Minute
+	// SOPINAggregateFailures is the most wrong SO PINs all authenticated
+	// principals of one key together may present in one aggregate window.
+	SOPINAggregateFailures = 64
+	// SOPINAggregateWindow is the aggregate cap's window.
+	SOPINAggregateWindow = 15 * time.Minute
+	// SOPINMaxTrackedPrincipals caps the per-principal counters kept for one
+	// key; further principals share one overflow counter.
+	SOPINMaxTrackedPrincipals = 4096
 )
+
+// overflowPrincipal is the counter principals beyond SOPINMaxTrackedPrincipals
+// share. It cannot collide with a real principal, which always carries an
+// "id:" or "cert:" prefix.
+const overflowPrincipal = "overflow"
 
 // ErrSOPINLocked is the condition SOPINLockedError unwraps to.
 var ErrSOPINLocked = errors.New("auth: SO PIN locked after repeated failures")
@@ -77,41 +109,92 @@ func (e *SOPINLockedError) Error() string {
 // Unwrap returns ErrSOPINLocked.
 func (e *SOPINLockedError) Unwrap() error { return ErrSOPINLocked }
 
-// AuthenticatedCaller reports whether ctx carries an authenticated identity
-// the sealed window did not admit anonymously, or a TLS connection whose
-// certificate the TLS stack verified. Its answer picks the SO PIN lockout
-// counter a check counts against.
-func AuthenticatedCaller(ctx context.Context) bool {
+// CallerPrincipal names the principal an SO PIN check made under ctx counts
+// against, and "" for an anonymous caller. An authenticated identity the
+// sealed window did not admit anonymously is "id:<tenant>/<subject>";
+// otherwise a TLS connection whose certificate the TLS stack verified is
+// "cert:<SHA-256 of the leaf certificate>". Each distinct principal has its
+// own lockout counter, so one principal's wrong PINs never lock another out.
+func CallerPrincipal(ctx context.Context) string {
 	if ctx == nil {
-		return false
+		return ""
 	}
 	if id := IdentityFromContext(ctx); id != nil && id.Subject != "" && !sealedwindow.Anonymous(ctx) {
-		return true
+		return "id:" + tenantid.Normalize(id.TenantID) + "/" + id.Subject
 	}
-	st := TLSStateFromContext(ctx)
-	return st != nil && len(st.VerifiedChains) > 0
+	if st := TLSStateFromContext(ctx); st != nil && len(st.VerifiedChains) > 0 && len(st.VerifiedChains[0]) > 0 {
+		sum := sha256.Sum256(st.VerifiedChains[0][0].Raw)
+		return "cert:" + hex.EncodeToString(sum[:])
+	}
+	return ""
 }
 
-// soPINCounter counts one class of caller's failed SO PIN checks for a key.
+// soPINCounter counts one caller's failed SO PIN checks for a key.
 type soPINCounter struct {
 	failures    int
 	lockedUntil time.Time
 }
 
-// soPINCounters are one key's two counters.
-type soPINCounters struct {
-	anonymous     soPINCounter
-	authenticated soPINCounter
+// locked reports how long c stays locked at now, and whether it is.
+func (c *soPINCounter) locked(now time.Time) (time.Duration, bool) {
+	if now.Before(c.lockedUntil) {
+		return c.lockedUntil.Sub(now), true
+	}
+	return 0, false
 }
 
-// SOPINLockout counts failed SO PIN checks per key, in the two counters
-// described above. Checks of one lockout run one at a time and a failure is
-// counted before the next check starts, so guesses fired concurrently are no
-// cheaper than guesses fired in turn. The zero value is not usable; use
+// fail counts one wrong PIN at now.
+func (c *soPINCounter) fail(now time.Time) {
+	c.failures++
+	if c.failures >= SOPINFreeFailures {
+		c.lockedUntil = now.Add(soPINBackoff(c.failures - SOPINFreeFailures))
+	}
+}
+
+// soPINAggregate is the fixed-window cap over a key's authenticated failures.
+type soPINAggregate struct {
+	windowStart time.Time
+	failures    int
+}
+
+// locked reports how long the cap holds at now, and whether it does.
+func (a *soPINAggregate) locked(now time.Time) (time.Duration, bool) {
+	end := a.windowStart.Add(SOPINAggregateWindow)
+	if a.failures >= SOPINAggregateFailures && now.Before(end) {
+		return end.Sub(now), true
+	}
+	return 0, false
+}
+
+// fail counts one authenticated wrong PIN at now, opening a new window when
+// the last has ended.
+func (a *soPINAggregate) fail(now time.Time) {
+	if !now.Before(a.windowStart.Add(SOPINAggregateWindow)) {
+		a.windowStart, a.failures = now, 0
+	}
+	a.failures++
+}
+
+// soPINKeyState is one key's counters.
+type soPINKeyState struct {
+	anonymous  soPINCounter
+	principals map[string]*soPINCounter
+	aggregate  soPINAggregate
+}
+
+// empty reports whether the state holds nothing worth keeping.
+func (k *soPINKeyState) empty() bool {
+	return k.anonymous == (soPINCounter{}) && len(k.principals) == 0 && k.aggregate.failures == 0
+}
+
+// SOPINLockout counts failed SO PIN checks per key, in the counters described
+// above. Checks of one lockout run one at a time and a failure is counted
+// before the next check starts, so guesses fired concurrently are no cheaper
+// than guesses fired in turn. The zero value is not usable; use
 // NewSOPINLockout.
 type SOPINLockout struct {
 	mu   sync.Mutex
-	keys map[string]*soPINCounters
+	keys map[string]*soPINKeyState
 	now  func() time.Time
 }
 
@@ -121,34 +204,70 @@ func NewSOPINLockout(clock func() time.Time) *SOPINLockout {
 	if clock == nil {
 		clock = time.Now
 	}
-	return &SOPINLockout{keys: make(map[string]*soPINCounters), now: clock}
+	return &SOPINLockout{keys: make(map[string]*soPINKeyState), now: clock}
 }
 
-// Check runs verify -- the SO PIN comparison -- for key unless the counter of
-// the caller's class (authenticated or anonymous) is locked out, in which
-// case it returns *SOPINLockedError without running verify. It returns
-// verify's error unchanged otherwise. Only an error mismatch reports as a
-// wrong PIN counts as a failure: a store that cannot answer is not a guess.
-func (l *SOPINLockout) Check(key string, authenticated bool, verify func() error, mismatch func(error) bool) error {
+// principalCounter returns principal's counter in k, creating it -- or, past
+// SOPINMaxTrackedPrincipals, the shared overflow counter -- when asked to.
+func (k *soPINKeyState) principalCounter(principal string, create bool) *soPINCounter {
+	if c, ok := k.principals[principal]; ok {
+		return c
+	}
+	if !create {
+		return nil
+	}
+	if k.principals == nil {
+		k.principals = make(map[string]*soPINCounter)
+	}
+	if len(k.principals) >= SOPINMaxTrackedPrincipals {
+		principal = overflowPrincipal
+		if c, ok := k.principals[principal]; ok {
+			return c
+		}
+	}
+	c := &soPINCounter{}
+	k.principals[principal] = c
+	return c
+}
+
+// Check runs verify -- the SO PIN comparison -- for key on behalf of
+// principal (CallerPrincipal; "" is the anonymous caller) unless the
+// principal's counter, or for an authenticated principal the aggregate cap,
+// is locked out, in which case it returns *SOPINLockedError without running
+// verify. It returns verify's error unchanged otherwise. Only an error
+// mismatch reports as a wrong PIN counts as a failure: a store that cannot
+// answer is not a guess.
+func (l *SOPINLockout) Check(key, principal string, verify func() error, mismatch func(error) bool) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	counters, ok := l.keys[key]
+	state, ok := l.keys[key]
 	if !ok {
-		counters = &soPINCounters{}
-		l.keys[key] = counters
-	}
-	c := &counters.anonymous
-	if authenticated {
-		c = &counters.authenticated
+		state = &soPINKeyState{}
+		l.keys[key] = state
 	}
 	now := l.now()
-	if now.Before(c.lockedUntil) {
-		return &SOPINLockedError{RetryAfter: c.lockedUntil.Sub(now)}
+	c := &state.anonymous
+	if principal != "" {
+		c = state.principalCounter(principal, true)
+		if wait, held := state.aggregate.locked(now); held {
+			return &SOPINLockedError{RetryAfter: wait}
+		}
+	}
+	if wait, held := c.locked(now); held {
+		return &SOPINLockedError{RetryAfter: wait}
 	}
 	err := verify()
 	if err == nil {
 		*c = soPINCounter{}
-		if counters.anonymous == (soPINCounter{}) && counters.authenticated == (soPINCounter{}) {
+		for name, pc := range state.principals {
+			if *pc == (soPINCounter{}) {
+				delete(state.principals, name)
+			}
+		}
+		if principal != "" {
+			state.aggregate = soPINAggregate{}
+		}
+		if state.empty() {
 			delete(l.keys, key)
 		}
 		return nil
@@ -156,30 +275,37 @@ func (l *SOPINLockout) Check(key string, authenticated bool, verify func() error
 	if !mismatch(err) {
 		return err
 	}
-	c.failures++
-	if c.failures >= SOPINFreeFailures {
-		c.lockedUntil = now.Add(soPINBackoff(c.failures - SOPINFreeFailures))
+	c.fail(now)
+	if principal != "" {
+		state.aggregate.fail(now)
 	}
 	return err
 }
 
-// Status reports key's counter for the caller's class: its consecutive
-// failures and, while locked, the time the lockout ends.
-func (l *SOPINLockout) Status(key string, authenticated bool) (failures int, lockedUntil time.Time) {
+// Status reports key's counter for principal ("" is the anonymous caller):
+// its consecutive failures and, while it -- or for an authenticated
+// principal the aggregate cap -- is locked, the time the lockout ends.
+func (l *SOPINLockout) Status(key, principal string) (failures int, lockedUntil time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	counters, ok := l.keys[key]
+	state, ok := l.keys[key]
 	if !ok {
 		return 0, time.Time{}
 	}
-	c := counters.anonymous
-	if authenticated {
-		c = counters.authenticated
+	now := l.now()
+	c := &state.anonymous
+	if principal != "" {
+		if wait, held := state.aggregate.locked(now); held {
+			lockedUntil = now.Add(wait)
+		}
+		if c = state.principalCounter(principal, false); c == nil {
+			return 0, lockedUntil
+		}
 	}
-	if !l.now().Before(c.lockedUntil) {
-		return c.failures, time.Time{}
+	if wait, held := c.locked(now); held && now.Add(wait).After(lockedUntil) {
+		lockedUntil = now.Add(wait)
 	}
-	return c.failures, c.lockedUntil
+	return c.failures, lockedUntil
 }
 
 // Now returns the lockout's clock.

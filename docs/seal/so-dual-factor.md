@@ -143,9 +143,13 @@ transports' checks for seal, recovery-key generation and initialization, and
 `CeremonySignCSR` -- runs through the PIN backend's SO PIN lockout
 (`pin.NewLockoutBackend`), installed once where the node's backend is chosen,
 so a guess costs the same on every operation and every transport. The
-lockout keeps two counters -- anonymous sealed-window checks and checks by an
-authenticated or TLS-verified caller -- so anonymous guesses can never lock
-the officer's authenticated rekey or revocation out. The tenant SO PIN this
+lockout counts each caller separately -- the anonymous sealed-window caller,
+and each authenticated identity or verified client certificate
+(`auth.CallerPrincipal`) -- so neither anonymous guesses nor a tenant user's
+or share holder's certificate can lock the officer's rekey or revocation out.
+An aggregate cap (64 authenticated failures per 15 minutes) bounds guessing
+by many principals together; reaching it delays every authenticated check
+for the rest of the window, which is the residual. The tenant SO PIN this
 gate verifies (`auth.SOAuthenticator`) is held to the same lockout, per
 tenant (`auth.SOPINLockout`); a locked tenant PIN answers `429` with the
 delay rather than "invalid PIN". Rekey and revocation refuse while no SO PIN has been

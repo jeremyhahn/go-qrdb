@@ -197,11 +197,15 @@ are not reconstructed here — their history is in the git log.
   `ResetLockout` now verifies the SO PIN itself, because the software
   backend's no-op answered nil for any PIN.
 - **Anonymous SO PIN guesses could lock the Security Officer out, and the
-  tenant SO PIN had no lockout.** The SO PIN lockout now keeps two counters:
-  anonymous sealed-window checks, and checks by an authenticated identity or
-  a TLS-verified certificate. Anonymous wrong PINs lock only the anonymous
-  counter, so an authenticated officer's rekey or revocation is still
-  admitted. The counting is one implementation, `auth.SOPINLockout`, behind
+  tenant SO PIN had no lockout.** The SO PIN lockout now counts each caller
+  separately (`auth.CallerPrincipal`): the anonymous sealed-window caller,
+  and each authenticated identity or verified client certificate (by its
+  leaf digest), under an aggregate cap of 64 authenticated failures per
+  15-minute window and at most 4096 tracked principals per key. Neither
+  anonymous wrong PINs nor a tenant user's or share holder's certificate can
+  lock out the officer's rekey or revocation; several principals guessing
+  together can engage the cap for one window, which is the documented
+  residual. The counting is one implementation, `auth.SOPINLockout`, behind
   both the node SO PIN (`pin.NewLockoutBackend`) and each tenant's SO PIN
   (`auth.SOAuthenticator.VerifySOPIN`, previously unlimited); a locked
   tenant PIN answers 429 with its retry delay. `embedded.WithPINBackend` and

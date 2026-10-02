@@ -110,11 +110,14 @@ Storage keys: `so-pin` and `user-pin`, each a JSON-encoded `PINRecord`.
   idempotent and is installed where a node chooses its backend
   (`lifecycle.NewSealStorePINBackend`, `server.WithPINBackend`), and again by
   `embedded.WithPINBackend` and `CeremonyService.SetPINBackend`, so the
-  ceremony and every transport share it. It keeps **two counters**: checks by
-  an authenticated identity or over a TLS-verified certificate
-  (`auth.AuthenticatedCaller`) count against one, anonymous sealed-window
-  checks against the other, so anonymous guesses cannot lock an authenticated
-  officer out. `pin.ForCaller(ctx, backend)` selects the counter; the
+  ceremony and every transport share it. It keeps **a counter per caller**
+  (`auth.CallerPrincipal`): one for anonymous sealed-window checks, and one
+  per authenticated principal -- the identity, or else the verified client
+  certificate's leaf digest -- under an aggregate cap of 64 authenticated
+  failures per 15-minute window. No caller can lock another out: neither
+  anonymous guesses nor a tenant user's certificate lock out the officer;
+  only several principals guessing together can engage the cap, for one
+  window. `pin.ForCaller(ctx, backend)` selects the counter; the
   helpers `RequireSOPIN`, `RequireProvisionedSOPIN` and `Provision` take a
   context and apply it, and a backend reached without one is held to the
   anonymous counter. The counting itself is `auth.SOPINLockout`, which also
@@ -573,9 +576,11 @@ storage.
   CTAP2 hash caching and wipe on `Close`, and state reload at construction.
 - **The lockout no-ops are explicitly tested** so their absence stays visible.
 - **The SO PIN lockout decorator is tested** for the doubling backoff and
-  reset, every SO-PIN-comparing method sharing a counter, the anonymous and
-  authenticated counters kept apart (anonymous guesses never lock an
-  authenticated officer), concurrent guesses counted one at a time,
+  reset, every SO-PIN-comparing method sharing a counter, the anonymous
+  caller and each authenticated principal kept apart (neither anonymous
+  guesses nor a tenant user's verified certificate lock out the officer),
+  the aggregate cap and the bound on tracked principals, concurrent guesses
+  counted one at a time,
   idempotent installation (including by `embedded.WithPINBackend` and
   `SetPINBackend`), the per-tenant SO PIN lockout, and -- at the composition
   seams -- that wrong SO PINs spent on a seal lock out a rekey on the same

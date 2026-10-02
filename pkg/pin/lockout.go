@@ -30,10 +30,11 @@ import (
 // is counted whichever operation and transport made it.
 //
 // The counting itself is auth.SOPINLockout, the one implementation shared
-// with the per-tenant SO PIN (auth.SOAuthenticator): two counters, one for
-// anonymous sealed-window checks and one for checks by an authenticated or
-// TLS-verified caller, so anonymous traffic can never lock an authenticated
-// Security Officer out. See auth.SOPINLockout for the policy, the backoff and
+// with the per-tenant SO PIN (auth.SOAuthenticator): a counter for anonymous
+// sealed-window checks and one per authenticated principal (an identity, or
+// a verified client certificate), under an aggregate cap, so no caller --
+// anonymous or holding another certificate -- can lock the Security Officer
+// out. See auth.SOPINLockout for the policy, the backoff and
 // the recovery path.
 
 // SOPINLockedError is returned by every SO PIN check of a lockout backend
@@ -64,15 +65,17 @@ type lockoutShared struct {
 const nodeSOPINKey = "node"
 
 // lockoutBackend decorates a PINBackend with the SO PIN lockout. It is a view
-// of the decoration bound to one counter: NewLockoutBackend returns the
-// anonymous view, and ForCaller the view the caller's class selects. Every
+// of the decoration bound to one caller: NewLockoutBackend returns the
+// anonymous view, and ForCaller the view of the caller in a context. Every
 // method that compares a presented SO PIN -- VerifySOPIN, SetSOPIN with a
 // current PIN, ChangeSOPIN, SetUserPIN, ResetLockout -- runs through check on
 // the view's counter; the rest pass straight through.
 type lockoutBackend struct {
 	PINBackend
-	shared        *lockoutShared
-	authenticated bool
+	shared *lockoutShared
+	// principal is the caller this view counts against (auth.CallerPrincipal);
+	// "" is the anonymous caller.
+	principal string
 }
 
 var (
@@ -86,13 +89,13 @@ var (
 // SO. Callers that know who is asking select the counter with ForCaller.
 //
 // It is idempotent: a backend that is already decorated is returned as it
-// is, so a backend that crosses more than one composition seam keeps ONE pair
+// is, so a backend that crosses more than one composition seam keeps ONE set
 // of counters. A nil backend is returned as nil, so the PIN-gated operations
 // still fail closed with ErrBackendNotConfigured.
 //
 // Install it where the node's backend is chosen, before the backend is handed
 // to more than one consumer: two decorations of the same backend are two
-// pairs of counters, and each would admit its own free failures.
+// sets of counters, and each would admit its own free failures.
 func NewLockoutBackend(backend PINBackend) PINBackend {
 	if backend == nil {
 		return nil
@@ -110,16 +113,16 @@ func newLockoutBackend(backend PINBackend, clock func() time.Time) *lockoutBacke
 }
 
 // ForCaller returns the view of backend whose SO PIN checks count against the
-// counter of the caller in ctx: the authenticated counter for an
+// caller in ctx (auth.CallerPrincipal): that principal's own counter for an
 // authenticated identity (not admitted anonymously by the sealed window) or a
-// TLS-verified certificate, the anonymous counter otherwise. A backend that
-// is not decorated is returned as it is.
+// TLS-verified certificate, bounded by the aggregate cap, and the anonymous
+// counter otherwise. A backend that is not decorated is returned as it is.
 func ForCaller(ctx context.Context, backend PINBackend) PINBackend {
 	b, ok := backend.(*lockoutBackend)
 	if !ok {
 		return backend
 	}
-	return &lockoutBackend{PINBackend: b.PINBackend, shared: b.shared, authenticated: auth.AuthenticatedCaller(ctx)}
+	return &lockoutBackend{PINBackend: b.PINBackend, shared: b.shared, principal: auth.CallerPrincipal(ctx)}
 }
 
 // VerifySOPIN verifies the SO PIN under the lockout.
@@ -167,7 +170,7 @@ func (b *lockoutBackend) GetLockoutStatus() *LockoutStatus {
 	if status := b.PINBackend.GetLockoutStatus(); status != nil {
 		return status
 	}
-	failures, lockedUntil := b.shared.lockout.Status(nodeSOPINKey, b.authenticated)
+	failures, lockedUntil := b.shared.lockout.Status(nodeSOPINKey, b.principal)
 	status := &LockoutStatus{FailedAttempts: failures, MaxAttempts: auth.SOPINFreeFailures}
 	if !lockedUntil.IsZero() {
 		status.IsLocked = true
@@ -191,7 +194,7 @@ func (b *lockoutBackend) VerifyFIDO2Hash(hash []byte) bool {
 // *SOPINLockedError, and verify did not run. Only a wrong PIN counts (see
 // isSOPINMismatch): a backend that cannot answer is not a guess.
 func (b *lockoutBackend) check(verify func() error) error {
-	err := b.shared.lockout.Check(nodeSOPINKey, b.authenticated, verify, isSOPINMismatch)
+	err := b.shared.lockout.Check(nodeSOPINKey, b.principal, verify, isSOPINMismatch)
 	var locked *auth.SOPINLockedError
 	if errors.As(err, &locked) {
 		return &SOPINLockedError{RetryAfter: locked.RetryAfter}

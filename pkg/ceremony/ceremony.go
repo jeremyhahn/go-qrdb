@@ -179,7 +179,7 @@ func (s *CeremonyService) SetQuorumLimiter(l QuorumLimitFunc) {
 
 // SetPINBackend installs the PIN backend, decorated with the SO PIN lockout
 // (pin.NewLockoutBackend, idempotent: a backend the composer already
-// decorated keeps its one pair of counters). Without one, every PIN-gated
+// decorated keeps its one set of counters). Without one, every PIN-gated
 // ceremony operation fails closed with pin.ErrBackendNotConfigured.
 func (s *CeremonyService) SetPINBackend(b pin.PINBackend) {
 	s.mu.Lock()

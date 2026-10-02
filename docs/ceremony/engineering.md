@@ -106,7 +106,7 @@ the last initial holder claims.
 - **No PIN backend, no PIN operation**: SO-PIN-gated operations fail closed
   with `pin.ErrBackendNotConfigured`.
 - **Every SO PIN check on the node is held to one lockout, in the PIN
-  backend, with two counters.** sign-csr, seal and both initialize paths are
+  backend, with a counter per caller.** sign-csr, seal and both initialize paths are
   reachable without authentication on the boot-time sealed-window listener,
   and the SO PIN is their only authorization, so each such call is an online
   guess. The lockout is a `pin.PINBackend` decorator (`pin.NewLockoutBackend`)
@@ -114,16 +114,27 @@ the last initial holder claims.
   current PIN, `ChangeSOPIN`, `SetUserPIN` and `ResetLockout`. The counting
   is `auth.SOPINLockout`, the one implementation also behind each tenant's SO
   PIN (`auth.SOAuthenticator`). The ceremony keeps no counter of its own.
-  - **Two counters.** A check by an authenticated identity (not admitted
-    anonymously by the sealed window) or over a TLS-verified certificate
-    (`auth.AuthenticatedCaller`) counts against the *authenticated* counter;
-    every other check against the *anonymous* one. The transports and the
-    service select the counter from the request (`pin.ForCaller`, applied
-    inside `pin.RequireSOPIN`, `pin.RequireProvisionedSOPIN` and
-    `pin.Provision`). Wrong PINs guessed anonymously therefore lock only the
-    anonymous counter: an authenticated Security Officer's rekey or
-    revocation is still admitted. An officer's own wrong PINs lock only the
-    authenticated counter.
+  - **A counter per caller.** Every check names its caller
+    (`auth.CallerPrincipal`): an authenticated identity (not admitted
+    anonymously by the sealed window) is its tenant and subject; otherwise a
+    TLS-verified client certificate is the digest of its leaf; anything else
+    is the one *anonymous* caller. Each authenticated principal has its own
+    counter. The transports and the service select it from the request
+    (`pin.ForCaller`, applied inside `pin.RequireSOPIN`,
+    `pin.RequireProvisionedSOPIN` and `pin.Provision`). Wrong PINs guessed
+    anonymously, or by a tenant user, a share holder or anyone else holding a
+    certificate the client CA issued, therefore lock out only that caller: the
+    Security Officer's rekey or revocation is still admitted. An officer's own
+    wrong PINs lock only the officer.
+  - **An aggregate cap.** All authenticated principals of one key together may
+    present at most 64 wrong PINs in a 15-minute window; past that, every
+    authenticated check of the key -- the officer's included -- is refused
+    until the window ends. One principal's own backoff holds it to about 15
+    failures in a window, so the cap is reached only by several principals
+    guessing together. That is the residual, by design: a handful of
+    colluding certificate holders can delay the officer for one window, and
+    without the cap they could guess without bound. At most 4096 principals
+    are tracked per key; any beyond that share one overflow counter.
   - It is installed once, where the node's backend is chosen:
     `lifecycle.NewSealStorePINBackend` returns the seal-store backend already
     decorated, and `server.WithPINBackend` decorates an injected backend when
@@ -144,12 +155,13 @@ the last initial holder claims.
     `pin.ErrPINInvalidWithStatus`). Successful checks, requests that fail
     before the PIN is looked at, and a backend that cannot answer consume
     nothing. Anonymous wrong PINs CAN lock the anonymous counter and so delay
-    an anonymous officer's sign-csr or seal; they cannot touch the
-    authenticated counter.
+    an anonymous officer's sign-csr or seal; they cannot touch any
+    authenticated principal's counter.
   - **Recovery.** Wait the backoff out (`RetryAfter`, also sent as
     `Retry-After` / `RetryInfo` / `retry_after_seconds`) and present the right
-    PIN, which resets the counter. An officer locked out anonymously recovers
-    at once by authenticating, since that is a different counter.
+    PIN, which resets the counter (and, for an authenticated principal, the
+    aggregate cap). An officer locked out anonymously recovers at once by
+    authenticating, since that is a different counter.
   - The counters are in memory, so a process restart clears them. A deployment
     that needs a lockout that survives restarts injects a hardware PIN backend
     with native dictionary-attack protection; the decorator then sits in front

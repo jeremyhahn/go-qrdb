@@ -93,12 +93,15 @@ Minimum length is **6 characters**, enforced server side.
 | PKCS#11 token | the token's own policy |
 
 The software backend has **no attempt counter** of its own. A node fronts its
-PIN backend with an SO PIN lockout that keeps two counters: one for
-anonymous sealed-window callers and one for authenticated (or TLS-verified)
-callers. After 5 wrong SO PINs in a row on a counter, every SO PIN check on
-that counter -- the right PIN included -- is refused for a backoff that
-doubles from 1 s up to 15 min, on every operation and transport. Anonymous
-guesses never lock an authenticated Security Officer out. Wait the backoff
+PIN backend with an SO PIN lockout that counts each caller separately: one
+counter for anonymous sealed-window callers, and one for each authenticated
+identity or verified client certificate. After 5 wrong SO PINs in a row on a
+counter, every SO PIN check by that caller -- the right PIN included -- is
+refused for a backoff that doubles from 1 s up to 15 min, on every operation
+and transport. Neither anonymous guesses nor another certificate holder's
+guesses lock the Security Officer out. Authenticated callers together may
+present at most 64 wrong PINs in 15 minutes; past that every authenticated
+SO PIN check waits for the window to end. Wait the backoff
 out and present the right PIN to recover. The counters are in memory, so a
 restart clears them. If you need a lockout that survives restarts,
 the deployment must inject a hardware PIN backend.

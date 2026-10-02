@@ -326,10 +326,10 @@ func (a *SOAuthenticator) VerifySOPIN(ctx context.Context, tenantID string, pres
 	// place.
 	//
 	// The comparison runs under the tenant's SO PIN lockout, on the counter
-	// of the caller's class (AuthenticatedCaller): once the free failures are
+	// of the caller (CallerPrincipal): once the free failures are
 	// spent, even the right PIN is refused, uncompared, until the backoff
 	// passes.
-	err = a.lockout.Check(tenantID, AuthenticatedCaller(ctx), func() error {
+	err = a.lockout.Check(tenantID, CallerPrincipal(ctx), func() error {
 		if verr := pinBuf.WithBytes(func(pin []byte) error {
 			return verifyPIN(pin, string(record))
 		}); verr != nil {
