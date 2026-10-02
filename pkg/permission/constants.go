@@ -529,7 +529,8 @@ const (
 	// there is no per-tenant chain to filter it down to -- so a tenant-local
 	// grant would let that tenant trigger a full-trail scan and receive
 	// global record counts, file paths, and chain digests belonging to every
-	// other tenant. Reserved for the system tenant, matching AuditReadCross.
+	// other tenant. Reserved for the system tenant, like every cross-scope
+	// permission (the tenants:*:cross set, certs:revoke:cross).
 	AuditVerify Permission = "audit:verify"
 )
 

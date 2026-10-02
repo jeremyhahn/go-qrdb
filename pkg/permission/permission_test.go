@@ -541,21 +541,14 @@ func TestAll_TotalCount(t *testing.T) {
 	//   CN/OU admission (go-qrdb#518).
 	// + 4 key escrow perms (escrow:create/recover/list/revoke) = 368.
 	// + 2 cross-scope tenant retirement perms (tenants:list_deleted,
-	//   tenants:reconcile_deleted) = 370, - 6 raw-share perms retired by the
-	//   unified share holders (seal:recover_with_keys, seal:submit_seal_vote,
-	//   barrier:unseal-share, ceremony:claim_cert, tenant_barrier:claim_share,
-	//   tenant_barrier:seal_vote) + 3 holder revocation/rekey perms
-	//   (seal:officer_revoke, tenant_barrier:rekey,
-	//   tenant_barrier:officer_revoke) = 367, - 4 custodian-group ceremony
-	//   perms retired with the custodian group (ceremony:enroll_custodian,
-	//   ceremony:revoke_custodian, ceremony:claim_share_begin,
-	//   ceremony:claim_share_complete) = 363.
+	//   tenants:reconcile_deleted) = 370.
 	// + 6 tenant DEK keyring perms (dek:encrypt/decrypt/rewrap/rotate/retire/
 	//   status) = 376 total.
 	// - 1 audit:read:cross, removed: no caller reads another tenant's audit
-	//   events, so a permission claiming to grant it may not exist = 375.
+	//   events, so a permission claiming to grant it may not exist = 375
+	//   (v0.29.0-alpha).
 	// + 1 admin:node_compaction, the platform's node-keyspace compaction
-	//   policy = 376.
+	//   policy = 376 (v0.33.0-alpha).
 	// The unified share-holder model then retires 10 (barrier:unseal-share,
 	//   ceremony:claim_cert, ceremony:claim_share_begin,
 	//   ceremony:claim_share_complete, ceremony:enroll_custodian,
