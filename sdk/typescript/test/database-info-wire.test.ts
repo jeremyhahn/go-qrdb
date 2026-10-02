@@ -54,6 +54,7 @@ const databaseInfoKeys = {
     dataDir: true,
     shardId: true,
     mode: true,
+    storageCodec: true,
     replicas: true,
     dedicatedWal: true,
     raft: true,

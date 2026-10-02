@@ -33,6 +33,14 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **Every transport reports a database's storage codec.** `storageCodec` is
+  in `DatabaseInfo` on the wire (protobuf `storage_codec = 16`), in the Go SDK
+  (`DatabaseInfo.StorageCodec`) and in the TypeScript SDK. QUIC and MCP had
+  reported it only while they sent the internal record, and no transport did
+  once every response came from one converter. **BREAKING:** the Raft block of
+  a response no longer repeats the shard ID -- the database's is
+  `DatabaseInfo.shardId`; protobuf reserves field 2 of `DatabaseRaftInfo`, and
+  the Go SDK's `DatabaseRaftInfo.ShardID` is removed.
 - **The user shard range belongs to databases.** Shard IDs from
   `shard.UserMin` (1000) up are issued by the cluster to databases. A node's
   `raft.shard_id` in that range is a configuration validation error, and an

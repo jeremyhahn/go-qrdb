@@ -35,6 +35,7 @@ func Info(resp *pb.DatabaseInfoResponse) *transport.DatabaseInfo {
 		DataDir:      resp.GetDataDir(),
 		ShardID:      resp.GetShardId(),
 		Mode:         resp.GetMode(),
+		StorageCodec: resp.GetStorageCodec(),
 		Replicas:     int(resp.GetReplicas()),
 		DedicatedWAL: resp.GetDedicatedWal(),
 		Raft:         raftInfo(resp.GetRaft()),

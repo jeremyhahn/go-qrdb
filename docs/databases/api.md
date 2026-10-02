@@ -69,8 +69,13 @@ Shipped:
   "connection": { "transport": "tcp", "address": "db2.example.com:63003" } }
 ```
 
-Response — `DatabaseInfo`, which adds `tenantId`, `status`, `shardId` and
-`dedicatedWal`. Every transport sends the same shape: REST, QUIC, MCP, the
+Response — `DatabaseInfo`, which adds `tenantId`, `status`, `shardId`,
+`storageCodec` (absent for the node's default codec) and `dedicatedWal`. A
+Raft block reports no shard ID of its own: the database's is `shardId`.
+*(Changed: `storageCodec` was reported only on QUIC and MCP, under the
+internal record's `storage_codec`, and on no transport once responses were
+unified; `raft.shardId` repeated the top-level field.)* Every transport sends
+the same shape: REST, QUIC, MCP, the
 embedded transport and the desktop bindings emit the JSON form, gRPC and the
 Unix socket the protobuf `DatabaseInfoResponse`, both produced by one converter
 (`pkg/api/dbwire`). Its keys are pinned by a recorded REST response that the Go

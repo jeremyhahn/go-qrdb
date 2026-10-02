@@ -30,6 +30,7 @@ func TestInfo_FullPayload(t *testing.T) {
 		DataDir:      "/data",
 		ShardId:      17,
 		Mode:         "embedded",
+		StorageCodec: "msgpack",
 		Replicas:     3,
 		DedicatedWal: true,
 		Protocol: &pb.DatabaseProtocolConfig{
@@ -59,7 +60,7 @@ func TestInfo_FullPayload(t *testing.T) {
 		Connection: &pb.DatabaseConnectionConfig{Transport: "grpc", RemoteAddress: "db.example.com:63000"},
 		Sql:        &pb.DatabaseSQLConfig{Concurrency: "pessimistic"},
 	})
-	if out.TenantID != "t1" || out.Name != "db1" || out.ShardID != 17 || out.Replicas != 3 || !out.DedicatedWAL {
+	if out.TenantID != "t1" || out.Name != "db1" || out.ShardID != 17 || out.StorageCodec != "msgpack" || out.Replicas != 3 || !out.DedicatedWAL {
 		t.Errorf("identity mismatch: %+v", out)
 	}
 	if !out.Protocol.MySQL || out.Protocol.Etcd == nil || out.Protocol.Etcd.ListenAddr != ":2379" {

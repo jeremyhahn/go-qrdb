@@ -50,6 +50,7 @@ type DatabaseInfo struct {
 	DataDir      string                    `json:"dataDir,omitempty"`
 	ShardID      uint64                    `json:"shardId,omitempty"`
 	Mode         string                    `json:"mode,omitempty"`
+	StorageCodec string                    `json:"storageCodec,omitempty"`
 	Replicas     int                       `json:"replicas,omitempty"`
 	DedicatedWAL bool                      `json:"dedicatedWal,omitempty"`
 	Raft         *DatabaseRaftInfo         `json:"raft,omitempty"`

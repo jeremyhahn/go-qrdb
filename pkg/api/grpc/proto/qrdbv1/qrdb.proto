@@ -3058,6 +3058,9 @@ message DatabaseInfoResponse {
     // dedicated_wal reports that a dedicated-raft database's Raft log is
     // encrypted under the tenant's own key.
     bool dedicated_wal = 15;
+    // storage_codec is the codec the database's values are stored in; empty
+    // means the node's default.
+    string storage_codec = 16;
 }
 
 // DatabaseRaftInfo is a database's Raft configuration as a response reports

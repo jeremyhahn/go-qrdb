@@ -2176,6 +2176,9 @@ export interface DatabaseInfo {
     readonly shardId?: number;
     /** Database mode (e.g. "embedded", "remote"). */
     readonly mode?: string;
+    /** The codec the database's values are stored in; absent means the
+     * node's default. */
+    readonly storageCodec?: string;
     /** Replication factor of a dedicated-raft database. Zero for non-raft. */
     readonly replicas?: number;
     /** Whether this dedicated-raft database's Raft log is encrypted under the

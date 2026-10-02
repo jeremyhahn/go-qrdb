@@ -55,6 +55,7 @@ func fullDatabaseInfo() *database.DatabaseInfo {
 		DataDir:      "/var/lib/qrdb/databases/orders",
 		ShardID:      1007,
 		Mode:         database.DatabaseMode("embedded"),
+		StorageCodec: "json",
 		Replicas:     3,
 		DedicatedWAL: true,
 		Raft: &database.DatabaseRaftConfig{

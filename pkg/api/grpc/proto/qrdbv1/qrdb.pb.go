@@ -13547,7 +13547,10 @@ type DatabaseInfoResponse struct {
 	Sql *DatabaseSQLConfig `protobuf:"bytes,14,opt,name=sql,proto3" json:"sql,omitempty"`
 	// dedicated_wal reports that a dedicated-raft database's Raft log is
 	// encrypted under the tenant's own key.
-	DedicatedWal  bool `protobuf:"varint,15,opt,name=dedicated_wal,json=dedicatedWal,proto3" json:"dedicated_wal,omitempty"`
+	DedicatedWal bool `protobuf:"varint,15,opt,name=dedicated_wal,json=dedicatedWal,proto3" json:"dedicated_wal,omitempty"`
+	// storage_codec is the codec the database's values are stored in; empty
+	// means the node's default.
+	StorageCodec  string `protobuf:"bytes,16,opt,name=storage_codec,json=storageCodec,proto3" json:"storage_codec,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -13685,6 +13688,13 @@ func (x *DatabaseInfoResponse) GetDedicatedWal() bool {
 		return x.DedicatedWal
 	}
 	return false
+}
+
+func (x *DatabaseInfoResponse) GetStorageCodec() string {
+	if x != nil {
+		return x.StorageCodec
+	}
+	return ""
 }
 
 // DatabaseRaftInfo is a database's Raft configuration as a response reports
@@ -27881,7 +27891,7 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x13DatabaseDropRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"S\n" +
 	"\x14DatabaseListResponse\x12;\n" +
-	"\tdatabases\x18\x01 \x03(\v2\x1d.qrdb.v1.DatabaseInfoResponseR\tdatabases\"\xb1\x04\n" +
+	"\tdatabases\x18\x01 \x03(\v2\x1d.qrdb.v1.DatabaseInfoResponseR\tdatabases\"\xd6\x04\n" +
 	"\x14DatabaseInfoResponse\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
 	"\x06engine\x18\x02 \x01(\tR\x06engine\x12\x18\n" +
@@ -27900,7 +27910,8 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\ttenant_id\x18\f \x01(\tR\btenantId\x12\x1a\n" +
 	"\breplicas\x18\r \x01(\rR\breplicas\x12,\n" +
 	"\x03sql\x18\x0e \x01(\v2\x1a.qrdb.v1.DatabaseSQLConfigR\x03sql\x12#\n" +
-	"\rdedicated_wal\x18\x0f \x01(\bR\fdedicatedWal\"\xd6\x03\n" +
+	"\rdedicated_wal\x18\x0f \x01(\bR\fdedicatedWal\x12#\n" +
+	"\rstorage_codec\x18\x10 \x01(\tR\fstorageCodec\"\xd6\x03\n" +
 	"\x10DatabaseRaftInfo\x12!\n" +
 	"\fcluster_mode\x18\x01 \x01(\tR\vclusterMode\x12\x1d\n" +
 	"\n" +

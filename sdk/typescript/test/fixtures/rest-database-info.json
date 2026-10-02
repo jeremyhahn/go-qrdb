@@ -18,6 +18,7 @@
   "dataDir": "/var/lib/qrdb/databases/orders",
   "shardId": 1007,
   "mode": "embedded",
+  "storageCodec": "json",
   "replicas": 3,
   "dedicatedWal": true,
   "raft": {
