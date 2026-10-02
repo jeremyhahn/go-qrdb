@@ -216,10 +216,13 @@ type AuthMiddlewareConfig struct {
 - **`CACertPEM()` has no barrier check** — the CA certificate is public data and
   is served from cache even while sealed. That is deliberate: a client needs it
   to connect at all.
-- **`getCAMaterial()` returns a copy** of the cached key, never the cached key
-  itself, so no caller can alias it.
-- **Client private key DER is wiped immediately after PEM encoding**; CA key DER
-  is wiped on seal and on every error path.
+- **`getCAMaterial()` resolves a `cakey.Provider` and returns its
+  `crypto.Signer`**, never raw key bytes: it signs in place, inside the
+  provider, so no caller holds CA key material to alias in the first place.
+  The built-in per-tenant `cakey.SoftwareProvider` wipes its own decrypted
+  key on seal; an injected provider (`WithKeyProvider`) manages its own key
+  custody entirely.
+- **Client private key DER is wiped immediately after PEM encoding.**
 - **Revocation is enforced from replicated state, not a CRL.** Nothing generates
   a CRL and nothing answers OCSP; that is deliberate — see
   [architecture.md](architecture.md).
@@ -400,8 +403,10 @@ key patterns are the on-disk contract for this feature.
   persisted; and a key enrolled without the SAN still matches its binding after
   re-issue with it.
 - **`CACertPEM()` while sealed is its own test** — it must still work.
-- **Memory tests**: `getCAMaterial()` returning a copy, client key DER wiped
-  after encoding.
+- **Memory tests**: client key DER wiped after encoding. CA key wiping is
+  `pkg/cakey/software_test.go`'s responsibility now that the key lives there;
+  `pkg/cert/key_provider_test.go` proves the injected-provider path signs
+  through the provider and never writes software key material at all.
 - **Error tests** per function, including `Unwrap()` behaviour on the three
   wrapping error types.
 - **Revocation ENFORCEMENT is tested end to end**, through the production

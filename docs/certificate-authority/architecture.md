@@ -774,29 +774,39 @@ thin adapters, which is what lets the ceremony run against any of them.
 
 ## Key B trust on the client-facing listeners
 
-**Normative target; lands incrementally.** Before this change, a Key
-B-issued certificate could never authenticate to this node's own mTLS
-listener on any transport: `ClientCACertPool` was built once, at TLS setup,
-from Key A plus operator-configured client CA files only, and Key B's CA
-certificate (generated lazily, inside a sealed barrier, per tenant) had no
-path into it. `test/integration/api/cli_tenant_identity_ca_test.go` pinned
-this as a documented parity gap.
+Before this, a Key B-issued certificate could never authenticate to this
+node's own mTLS listener on any transport: `ClientCACertPool` was built once,
+at TLS setup, from Key A plus operator-configured client CA files only, and
+Key B's CA certificate (generated lazily, inside a sealed barrier, per
+tenant) had no path into it. `test/integration/api/cli_tenant_identity_ca_test.go`
+pinned this as a documented parity gap.
 
 The fix is a dynamic trust pool, not a static one seeded at boot:
 
 - **Client-facing listeners (REST, gRPC, Unix, QUIC, MCP)** verify a
   presented client certificate against Key A **and** every tenant's Key B CA
-  certificate, read from the replicated store after unseal. This is wired
-  through `tls.Config.GetConfigForClient` (or an equivalent
-  `VerifyPeerCertificate`/`VerifyConnection` hook on transports that are not
-  `crypto/tls`-shaped), so a Key B CA created — or rotated to an
-  HSM-backed one — after the listener started is picked up on the next
-  connection, not only at boot.
-- **The peer/Raft/enrollment transport trusts Key A only, never Key B.** A
-  Key B leaf (a tenant login certificate) presented on the peer transport is
-  refused: Key B is a login credential, and must never be able to act as a
-  cluster node. This is the enforcement of the "separate trust domains"
-  ruling at the transport layer, not only at the issuance layer.
+  certificate, read fresh on every connection via
+  `DefaultCertProvider.CACertPEMs`. In the qrdbd daemon composer this is
+  `TLSBundle.wireClientTrustPool` (`cmd/qrdbd/tls.go`), which installs
+  `tls.Config.GetConfigForClient` on the single `*tls.Config` all five
+  transports share (`server.WithTLS`); `TLSBundle.SetKeyBProvider` installs
+  the live `cert.CertProvider` once it exists (after the first unseal), so a
+  Key B CA created — or rotated to an HSM-backed one via `WithCertKeyProvider`
+  — after the listener started is picked up on the next connection, not only
+  at boot. `GetConfigForClient` returning `(nil, nil)` keeps the original,
+  static (Key A-only) config, which is what happens before the first
+  `SetKeyBProvider` call, and on every call where `CACertPEMs` fails — the
+  ordinary outcome while sealed in Raft mode, where the replicated store
+  cannot be opened at all. **Normative target for the SDK node builders and
+  the `qrdb_embedded` composer; not yet wired there** — they still rely on
+  each listener's static `ClientCAs` pool (Key A only).
+- **The peer/Raft/enrollment transport trusts Key A only, never Key B.** It
+  never shares the client-facing listeners' `*tls.Config`: `buildHostConfig`
+  constructs `quicraftconfig.MTLSConfig` directly from `bundle.CACertPEM`
+  (Key A), so a Key B leaf (a tenant login certificate) presented there is
+  refused without any extra code -- this is the enforcement of the "separate
+  trust domains" ruling at the transport layer, not only at the issuance
+  layer.
 
 ## Trust boundaries
 

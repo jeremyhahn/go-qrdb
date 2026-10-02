@@ -431,6 +431,32 @@ The CA key provider seam and replicated cluster CA. This release contains BREAKI
   would both burn a legitimately minted single-use token for nothing and
   leak "this token was valid" to a prober.
 
+- `cert.WithKeyProvider` and `server.WithCertKeyProvider`: the login CA (Key
+  B) now signs through a `cakey.Provider` the same way. The built-in default
+  is a `cakey.SoftwareProvider` per tenant at `__sys:cert_ca/{tenantID}/`,
+  constructed lazily; an injected provider (`WithCertKeyProvider`, forwarded
+  into `lifecycle.Infra.CertKeyProvider` by `sdk/go/node`'s standalone and
+  clustered builders and the `qrdb_embedded` Wails binding via the new
+  `EmbeddedServerBinding.SetCertKeyProvider`) replaces it entirely: no
+  software key is ever generated or stored for that deployment. `cmd/qrdbd`
+  leaves it unset, as a pure-software composition with no hardware injection
+  surface of its own. `DefaultCertProvider.getCAMaterial` no longer returns
+  raw key bytes; every client certificate is signed through the resolved
+  provider's `crypto.Signer`.
+- `DefaultCertProvider.CACertPEMs` enumerates every tenant's Key B CA
+  certificate (or the single injected provider's), the seam the dynamic
+  client-auth trust pool reads from.
+- `cmd/qrdbd`: the client-facing listeners' trust pool is dynamic.
+  `TLSBundle.wireClientTrustPool` installs `tls.Config.GetConfigForClient`
+  on the `*tls.Config` shared by REST, gRPC, Unix, QUIC, and MCP, verifying a
+  presented client certificate against Key A plus every tenant's Key B CA
+  certificate (`TLSBundle.SetKeyBProvider`, installed once the CertProvider
+  exists post-unseal). A Key B CA created, or rotated to an HSM-backed one,
+  after the listener started is picked up on the next connection, with no
+  restart. The peer/Raft/enrollment transport is unaffected: it already built
+  its own trust pool directly from Key A's certificate PEM, never from this
+  shared config, so a Key B leaf continues to be refused there.
+
 ### Changed
 
 - **The cluster CA key (Key A) is stored like every other replicated system
@@ -464,6 +490,10 @@ The CA key provider seam and replicated cluster CA. This release contains BREAKI
   (Key B) dynamically, loaded from the replicated store after unseal, in
   addition to the cluster CA; the peer/Raft/enrollment transport continues
   to trust the cluster CA only.
+
+- The cluster CA key (Key A) is barrier-encrypted and persisted through
+  `kvstore.KVStore` (`__sys:cluster_ca/`) instead of `{dataDir}/ca-key.pem`.
+  No node ever writes a CA private key to a local file again.
 - `ceremony-sign-csr` is `PreOperationalOnly`, matching `officer-register`:
   minting a new CSR-signed certificate requires the barrier to be unsealed
   once the init ceremony is operational. The ceremony CA now goes through
@@ -2742,6 +2772,15 @@ Fix release. Highlights:
   `SystemShardServingError`. The desktop bindings' `LeaderElectionTimeoutError` is
   removed; a shard that cannot serve reports `ShardStartError` wrapping the
   wait's error.
+
+### Fixed
+
+- **The documented Key B authentication parity gap is closed for the qrdbd
+  daemon composer.** A Key B-issued login certificate can now authenticate to
+  the daemon's own client-facing listeners. The SDK node builders
+  (`sdk/go/node`) and the `qrdb_embedded` composer still rely on each
+  listener's static, Key-A-only `ClientCAs` pool; wiring the same dynamic
+  pool there is tracked as follow-up work.
 
 ## [0.30.0-alpha] - 2026-10-02
 
