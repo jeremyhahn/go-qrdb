@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // handleAuditQuery handles the "audit.Query" QUIC frame method.
@@ -26,8 +27,9 @@ import (
 // The payload is a JSON-encoded audit.Filter. The response is a JSON-encoded
 // audit.Page.
 //
-// Authorization: requires "audit:query" permission.
-// TODO: switch to permission.AuditQuery constant once Phase 2 lands.
+// Authorization: requires "audit:query" (permission.AuditQuery), and the query
+// is confined to the caller's own tenant (tenant.ConfineAuditFilter); a filter
+// naming another tenant is refused with StatusPermissionDenied.
 func (s *Server) handleAuditQuery(ctx context.Context, payload []byte) ([]byte, error) {
 	if s.auditLogger == nil {
 		return nil, &ServiceNotConfiguredError{Service: "audit"}
@@ -38,6 +40,11 @@ func (s *Server) handleAuditQuery(ctx context.Context, payload []byte) ([]byte, 
 		if err := json.Unmarshal(payload, &f); err != nil {
 			return nil, &UnmarshalError{Err: err}
 		}
+	}
+
+	f, err := tenant.ConfineAuditFilter(ctx, f)
+	if err != nil {
+		return nil, err
 	}
 
 	page, err := s.auditLogger.Query(ctx, f)

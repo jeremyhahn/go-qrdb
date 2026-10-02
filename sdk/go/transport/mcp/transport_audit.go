@@ -26,7 +26,9 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/auditconv"
 )
 
 // Compile-time interface assertions.
@@ -93,9 +95,12 @@ func (t *Transport) QueryAudit(ctx context.Context, f transport.AuditFilter) (*t
 		return nil, err
 	}
 
-	var page transport.AuditPage
+	// The tool result is an audit.Page; decoding it as transport.AuditPage,
+	// whose field names differ, dropped each event's tenant, client IP,
+	// request id and chain hash.
+	var page audit.Page
 	if jsonErr := json.Unmarshal([]byte(text), &page); jsonErr != nil {
 		return nil, &transport.RequestError{Method: "QueryAudit", Err: &jsonDecodeError{Err: jsonErr}}
 	}
-	return &page, nil
+	return auditconv.PageToTransport(&page), nil
 }

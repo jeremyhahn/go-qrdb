@@ -105,7 +105,7 @@ func (c cell) bootClient(t *testing.T) *sdk.Client {
 	var ca *qrdbdharness.CA
 	var clientKP *qrdbdharness.KeyPair
 	if c.transport.remote() {
-		ca, clientKP, serverOpts = remoteServerTLS(t)
+		ca, clientKP, serverOpts = remoteServerTLS(t, tenant.SystemTenantID)
 	}
 
 	var n *node.Node

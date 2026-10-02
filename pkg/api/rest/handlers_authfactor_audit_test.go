@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -76,11 +77,13 @@ func (s *stubAuthFactorSvc) RevokeFactor(_ context.Context, _ string) error {
 type stubAuditLogger struct {
 	queryErr error
 	page     *audit.Page
+	queried  []audit.Filter
 }
 
 func (s *stubAuditLogger) Emit(_ context.Context, _ audit.AuditEvent) error { return nil }
 
-func (s *stubAuditLogger) Query(_ context.Context, _ audit.Filter) (*audit.Page, error) {
+func (s *stubAuditLogger) Query(_ context.Context, f audit.Filter) (*audit.Page, error) {
+	s.queried = append(s.queried, f)
 	if s.queryErr != nil {
 		return nil, s.queryErr
 	}
@@ -889,11 +892,56 @@ func TestHandleAuditQuery_WithQueryParams(t *testing.T) {
 	srv := NewServer(nil, nil, "127.0.0.1:0", WithAuditLogger(al))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/audit/events?actor=alice&resource=kv&action=put&outcome=success&tenant_id=t1&limit=50&cursor=tok", nil)
+	req = req.WithContext(auth.WithIdentity(req.Context(), &auth.Identity{Subject: "alice", TenantID: "t1"}))
 	rec := httptest.NewRecorder()
 	srv.handleAuditQuery(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", rec.Code)
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	want := audit.Filter{Actor: "alice", Resource: "kv", Action: "put", Outcome: "success", TenantID: "t1", Limit: 50, Cursor: "tok"}
+	if len(al.queried) != 1 || al.queried[0] != want {
+		t.Fatalf("logger queried with %+v, want %+v", al.queried, want)
+	}
+}
+
+// TestHandleAuditQuery_ForeignTenantIsForbidden: tenant_id is the caller's own
+// tenant or nothing. Another tenant's is refused with 403 before the logger --
+// node-local and shared by every tenant -- is reached.
+func TestHandleAuditQuery_ForeignTenantIsForbidden(t *testing.T) {
+	al := &stubAuditLogger{}
+	srv := NewServer(nil, nil, "127.0.0.1:0", WithAuditLogger(al))
+
+	for _, foreign := range []string{"globex", tenant.SystemTenantID} {
+		req := httptest.NewRequest(http.MethodGet, "/v1/audit/events?tenant_id="+foreign, nil)
+		req = req.WithContext(auth.WithIdentity(req.Context(), &auth.Identity{Subject: "a", TenantID: "acme"}))
+		rec := httptest.NewRecorder()
+		srv.handleAuditQuery(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("tenant_id=%s: status = %d, want 403 (body %q)", foreign, rec.Code, rec.Body.String())
+		}
+	}
+	if len(al.queried) != 0 {
+		t.Fatalf("a refused query reached the logger with %+v", al.queried)
+	}
+}
+
+// TestHandleAuditQuery_UnfilteredIsTheCallersTenant: an absent tenant_id reads
+// the caller's own events, not every tenant's.
+func TestHandleAuditQuery_UnfilteredIsTheCallersTenant(t *testing.T) {
+	al := &stubAuditLogger{}
+	srv := NewServer(nil, nil, "127.0.0.1:0", WithAuditLogger(al))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/audit/events", nil)
+	req = req.WithContext(auth.WithIdentity(req.Context(), &auth.Identity{Subject: "a", TenantID: "acme"}))
+	rec := httptest.NewRecorder()
+	srv.handleAuditQuery(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if len(al.queried) != 1 || al.queried[0].TenantID != "acme" || al.queried[0].Untenanted {
+		t.Fatalf("logger queried with %+v; want the query confined to acme", al.queried)
 	}
 }
 

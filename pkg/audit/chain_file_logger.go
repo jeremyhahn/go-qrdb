@@ -908,7 +908,7 @@ func matchesFilter(ev AuditEvent, f Filter) bool {
 	if f.Outcome != "" && !strings.HasPrefix(ev.Outcome, f.Outcome) {
 		return false
 	}
-	if f.TenantID != "" && ev.TenantID != f.TenantID {
+	if f.TenantID != "" && ev.TenantID != f.TenantID && (!f.Untenanted || ev.TenantID != "") {
 		return false
 	}
 	return true

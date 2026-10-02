@@ -403,7 +403,7 @@ func (c cell) boot(t *testing.T) clients {
 	var ca *qrdbdharness.CA
 	var clientKP *qrdbdharness.KeyPair
 	if c.transport.remote() {
-		ca, clientKP, serverOpts = remoteServerTLS(t)
+		ca, clientKP, serverOpts = remoteServerTLS(t, tenant.SystemTenantID)
 	}
 
 	var n *node.Node
@@ -447,7 +447,10 @@ func (c cell) boot(t *testing.T) clients {
 // auth middleware authenticates — so there is no insecure shortcut here, and
 // server.WithTLS feeds REST, gRPC, QUIC and unix from this one config (the
 // QUIC listener replaces its ALPN list with its own "qrdb-quic/2").
-func remoteServerTLS(t *testing.T) (*qrdbdharness.CA, *qrdbdharness.KeyPair, []server.ServerOption) {
+//
+// The client certificate is issued to "matrix" in clientTenant, which is the
+// identity every remote cell authenticates as.
+func remoteServerTLS(t *testing.T, clientTenant string) (*qrdbdharness.CA, *qrdbdharness.KeyPair, []server.ServerOption) {
 	t.Helper()
 	certDir := t.TempDir()
 
@@ -463,7 +466,7 @@ func remoteServerTLS(t *testing.T) (*qrdbdharness.CA, *qrdbdharness.KeyPair, []s
 	if err != nil {
 		t.Fatalf("server TLS cert: %v", err)
 	}
-	clientKP, err := ca.Issue(certDir, qrdbdharness.WithSubject("matrix", tenant.SystemTenantID))
+	clientKP, err := ca.Issue(certDir, qrdbdharness.WithSubject("matrix", clientTenant))
 	if err != nil {
 		t.Fatalf("issue client cert: %v", err)
 	}

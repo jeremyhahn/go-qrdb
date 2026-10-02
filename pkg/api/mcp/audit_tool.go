@@ -25,6 +25,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // auditTools returns the MCP tool registrations for audit event retrieval.
@@ -59,7 +60,7 @@ func toolAuditQuery() mcp.Tool {
 			mcp.Description("Filter by outcome prefix: 'success' or 'failure'."),
 		),
 		mcp.WithString("tenant_id",
-			mcp.Description("Filter events by tenant ID."),
+			mcp.Description("The caller's own tenant ID. Events are always confined to the caller's tenant; naming another tenant is refused."),
 		),
 		mcp.WithString("limit",
 			mcp.Description("Maximum events per page (default 100, max 1000)."),
@@ -70,7 +71,8 @@ func toolAuditQuery() mcp.Tool {
 	)
 }
 
-// handleAuditQuery returns a tool handler that queries the audit logger.
+// handleAuditQuery returns a tool handler that queries the audit logger,
+// confined to the caller's own tenant (tenant.ConfineAuditFilter).
 func handleAuditQuery(l audit.AuditLogger) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		f := audit.Filter{
@@ -102,6 +104,11 @@ func handleAuditQuery(l audit.AuditLogger) mcpserver.ToolHandlerFunc {
 				return mcp.NewToolResultError("invalid limit: " + v), nil
 			}
 			f.Limit = n
+		}
+
+		f, err := tenant.ConfineAuditFilter(ctx, f)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_audit_query", Err: err}
 		}
 
 		page, err := l.Query(ctx, f)

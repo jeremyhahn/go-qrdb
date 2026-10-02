@@ -156,7 +156,7 @@ func TestAuditQuery_JSON(t *testing.T) {
 	t.Cleanup(func() { outputFormat = oldFormat })
 
 	output, err := executeAuditCmd(t, logger, "query",
-		"--tenant-id", "acme",
+		"--tenant-id", "system",
 		"--resource", "kv",
 		"--action", "put",
 		"--outcome", "success",
@@ -176,7 +176,7 @@ func TestAuditQuery_JSON(t *testing.T) {
 	if page.Next != "cursor-2" {
 		t.Errorf("Next = %q, want cursor-2", page.Next)
 	}
-	if captured.TenantID != "acme" || captured.Resource != "kv" || captured.Action != "put" {
+	if captured.TenantID != "system" || captured.Resource != "kv" || captured.Action != "put" {
 		t.Errorf("captured filter = %+v", captured)
 	}
 	if captured.Limit != 50 || captured.Cursor != "cursor-1" {

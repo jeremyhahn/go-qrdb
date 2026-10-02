@@ -25,6 +25,7 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // auditServer implements the generated pb.AuditServiceServer.
@@ -44,7 +45,9 @@ func RegisterAuditService(srv *grpc.Server, auditLogger audit.AuditLogger) {
 	pb.RegisterAuditServiceServer(srv, &auditServer{auditLogger: auditLogger})
 }
 
-// Query handles the AuditService.Query RPC.
+// Query handles the AuditService.Query RPC. The query is confined to the
+// caller's own tenant (tenant.ConfineAuditFilter); a request naming another
+// tenant is refused with PERMISSION_DENIED.
 func (s *auditServer) Query(ctx context.Context, req *pb.AuditQueryRequest) (*pb.AuditQueryResponse, error) {
 	if s.auditLogger == nil {
 		return nil, status.Error(codes.Unimplemented, "audit service not configured")
@@ -73,6 +76,11 @@ func (s *auditServer) Query(ctx context.Context, req *pb.AuditQueryRequest) (*pb
 			return nil, mapServiceError(&TimestampParseError{Field: "to_rfc3339", Value: raw, Err: err})
 		}
 		f.To = t
+	}
+
+	f, err := tenant.ConfineAuditFilter(ctx, f)
+	if err != nil {
+		return nil, mapServiceError(err)
 	}
 
 	page, err := s.auditLogger.Query(ctx, f)

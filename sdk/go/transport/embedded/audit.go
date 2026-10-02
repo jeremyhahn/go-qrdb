@@ -18,7 +18,9 @@ import (
 	"context"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/auditconv"
 )
 
 // MissingAuditLoggerError is returned by the embedded AuditClient when it is
@@ -43,91 +45,6 @@ type auditClient struct {
 // Compile-time interface assertion.
 var _ transport.AuditClient = (*auditClient)(nil)
 
-// auditEventToDomain converts an SDK transport.AuditEvent to the internal
-// audit.AuditEvent. The Attributes map is copied so the caller's map is
-// independent of the logger's internal state.
-func auditEventToDomain(ev transport.AuditEvent) audit.AuditEvent {
-	var attrs map[string]any
-	if len(ev.Attributes) > 0 {
-		attrs = make(map[string]any, len(ev.Attributes))
-		for k, v := range ev.Attributes {
-			attrs[k] = v
-		}
-	}
-	return audit.AuditEvent{
-		Timestamp:  ev.Timestamp,
-		Actor:      ev.Actor,
-		TenantID:   ev.TenantID,
-		Role:       ev.Role,
-		Resource:   ev.Resource,
-		Action:     ev.Action,
-		Outcome:    ev.Outcome,
-		Attributes: attrs,
-		ClientIP:   ev.ClientIP,
-		RequestID:  ev.RequestID,
-		PrevHash:   ev.PrevHash,
-	}
-}
-
-// auditEventToTransport converts an internal audit.AuditEvent to the SDK
-// transport.AuditEvent. The Attributes map is copied for the same isolation
-// reason as auditEventToDomain.
-func auditEventToTransport(ev audit.AuditEvent) transport.AuditEvent {
-	var attrs map[string]any
-	if len(ev.Attributes) > 0 {
-		attrs = make(map[string]any, len(ev.Attributes))
-		for k, v := range ev.Attributes {
-			attrs[k] = v
-		}
-	}
-	return transport.AuditEvent{
-		Timestamp:  ev.Timestamp,
-		Actor:      ev.Actor,
-		TenantID:   ev.TenantID,
-		Role:       ev.Role,
-		Resource:   ev.Resource,
-		Action:     ev.Action,
-		Outcome:    ev.Outcome,
-		Attributes: attrs,
-		ClientIP:   ev.ClientIP,
-		RequestID:  ev.RequestID,
-		PrevHash:   ev.PrevHash,
-	}
-}
-
-// auditFilterToDomain converts an SDK transport.AuditFilter to the internal
-// audit.Filter.
-func auditFilterToDomain(f transport.AuditFilter) audit.Filter {
-	return audit.Filter{
-		From:     f.From,
-		To:       f.To,
-		Actor:    f.Actor,
-		Resource: f.Resource,
-		Action:   f.Action,
-		Outcome:  f.Outcome,
-		TenantID: f.TenantID,
-		Limit:    f.Limit,
-		Cursor:   f.Cursor,
-	}
-}
-
-// auditPageToTransport converts an internal *audit.Page to an SDK
-// *transport.AuditPage. A nil page yields a nil result.
-func auditPageToTransport(p *audit.Page) *transport.AuditPage {
-	if p == nil {
-		return nil
-	}
-	events := make([]transport.AuditEvent, len(p.Events))
-	for i, ev := range p.Events {
-		events[i] = auditEventToTransport(ev)
-	}
-	return &transport.AuditPage{
-		Events: events,
-		Next:   p.Next,
-		Total:  p.Total,
-	}
-}
-
 // EmitAudit records a compliance-grade audit event through the wrapped
 // AuditLogger and returns whether it was recorded.
 //
@@ -144,11 +61,14 @@ func (c *auditClient) EmitAudit(ctx context.Context, ev transport.AuditEvent) er
 	if c.transport.auditLogger == nil {
 		return &MissingAuditLoggerError{}
 	}
-	return c.transport.auditLogger.Emit(ctx, auditEventToDomain(ev))
+	return c.transport.auditLogger.Emit(ctx, auditconv.EventToDomain(ev))
 }
 
 // QueryAudit returns a paginated page of audit events matching the filter
-// through the wrapped AuditLogger.
+// through the wrapped AuditLogger, confined to the caller's own tenant
+// (tenant.ConfineAuditFilter) exactly as on the network transports: the
+// identity in ctx when there is one, otherwise the tenant bound to ctx. A
+// filter naming another tenant is refused with *tenant.CrossTenantDeniedError.
 func (c *auditClient) QueryAudit(ctx context.Context, f transport.AuditFilter) (*transport.AuditPage, error) {
 	if c.transport.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -156,11 +76,15 @@ func (c *auditClient) QueryAudit(ctx context.Context, f transport.AuditFilter) (
 	if c.transport.auditLogger == nil {
 		return nil, &MissingAuditLoggerError{}
 	}
-	page, err := c.transport.auditLogger.Query(ctx, auditFilterToDomain(f))
+	confined, err := tenant.ConfineAuditFilter(ctx, auditconv.FilterToDomain(f))
+	if err != nil {
+		return nil, err
+	}
+	page, err := c.transport.auditLogger.Query(ctx, confined)
 	if err != nil {
 		return nil, translateError(err)
 	}
-	return auditPageToTransport(page), nil
+	return auditconv.PageToTransport(page), nil
 }
 
 // AuditClient returns the embedded audit client projection. Implements

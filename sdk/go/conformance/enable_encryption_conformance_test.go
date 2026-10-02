@@ -83,7 +83,7 @@ func bootBarrierNode(t *testing.T, tk transportKind, backend database.BackendTyp
 	var ca *qrdbdharness.CA
 	var clientKP *qrdbdharness.KeyPair
 	if tk.remote() {
-		ca, clientKP, serverOpts = remoteServerTLS(t)
+		ca, clientKP, serverOpts = remoteServerTLS(t, tenant.SystemTenantID)
 	}
 
 	n, err := node.NewStandaloneNode(context.Background(), cfg, serverOpts)

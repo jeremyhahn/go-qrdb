@@ -18,6 +18,11 @@ no endpoint to create, edit or delete one.
 `Client.Audit()` returns **nil** when the transport does not implement
 `AuditProvider`. Nil-check it.
 
+The same refusal on QUIC is `StatusPermissionDenied`, on MCP the
+permission-denied tool code, and on the embedded client
+`*tenant.CrossTenantDeniedError`. Every transport returns each event with its
+`tenant_id`, `client_ip`, `request_id` and `prev_hash`.
+
 > **Known gap.** The audit query handlers on REST, QUIC, MCP, Unix and the SDK
 > transports carry a **hardcoded permission string** pending a
 > `permission.AuditQuery` constant. `audit:query` is the intended permission;
@@ -34,12 +39,19 @@ no endpoint to create, edit or delete one.
 | `action` | string | action |
 | `resource` | string | resource |
 | `outcome` | string | `success`, or a `failure` / `denied` **prefix** |
-| `tenant_id` | string | tenant |
+| `tenant_id` | string | the caller's own tenant, or omitted; any other tenant is refused |
 | `limit` | int | default **100**, **maximum 1000** |
 | `cursor` | string | pagination cursor from a previous response |
 
 Outcomes carry a reason (`denied:missing permission`), so `outcome` matches
 `success` exactly and matches `failure` / `denied` by prefix.
+
+**Every query is confined to the caller's own tenant**, on all six transports.
+An omitted `tenant_id` reads the caller's own events, never every tenant's; a
+`tenant_id` naming another tenant is refused before anything is read. A
+system-tenant caller reads the system tenant's events plus the platform events
+that carry no tenant, and is refused every other tenant's. See
+[architecture.md](architecture.md#who-may-read-which-events).
 
 ## Event schema
 
@@ -107,6 +119,7 @@ Cursor-based: pass `limit` (default 100, **hard maximum 1000**) and follow
 | Malformed `from` / `to` | 400 | `INVALID_ARGUMENT` |
 | No composed sink can answer | 200 with an empty result | `OK`, empty |
 | Missing `audit:query` | 403 | `PERMISSION_DENIED` |
+| `tenant_id` names a tenant other than the caller's — for every caller, the system tenant included | 403 | `PERMISSION_DENIED` |
 | Barrier sealed | 503 | `UNAVAILABLE` |
 
 ## Versioning

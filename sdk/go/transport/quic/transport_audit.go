@@ -27,7 +27,9 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/auditconv"
 )
 
 // Compile-time interface assertions.
@@ -60,7 +62,10 @@ func (t *Transport) QueryAudit(ctx context.Context, f transport.AuditFilter) (*t
 		return nil, &transport.ClosedError{}
 	}
 
-	payload, err := json.Marshal(f)
+	// The frame's payload is an audit.Filter: transport.AuditFilter names its
+	// tenant "tenantID" where the server reads "tenant_id", so marshaling it
+	// directly dropped the tenant from every query.
+	payload, err := json.Marshal(auditconv.FilterToDomain(f))
 	if err != nil {
 		return nil, &transport.RequestError{Method: "QueryAudit", Err: &MarshalError{Err: err}}
 	}
@@ -70,9 +75,9 @@ func (t *Transport) QueryAudit(ctx context.Context, f transport.AuditFilter) (*t
 		return nil, &transport.RequestError{Method: "QueryAudit", Err: err}
 	}
 
-	var page transport.AuditPage
+	var page audit.Page
 	if err := json.Unmarshal(data, &page); err != nil {
 		return nil, &transport.RequestError{Method: "QueryAudit", Err: &UnmarshalError{Err: err}}
 	}
-	return &page, nil
+	return auditconv.PageToTransport(&page), nil
 }

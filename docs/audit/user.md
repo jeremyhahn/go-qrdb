@@ -58,7 +58,11 @@ qrdb audit query --actor admin --from 2026-08-01T00:00:00Z --output json
 qrdb audit query --resource barrier --output json
 ```
 
-**One tenant's activity.**
+**Your tenant's activity.** Every query reads only your own tenant's events —
+`--tenant-id` can name your own tenant and nothing else. An Admin of `acme`
+sees `acme`'s trail; an operator in the `system` tenant sees the `system`
+tenant's events and the platform events that belong to no tenant, and not a
+customer tenant's.
 
 ```bash
 qrdb audit query --tenant-id acme --from 2026-08-01T00:00:00Z
@@ -98,6 +102,11 @@ tail -F /var/lib/qrdb/audit.log | your-shipper
 **There is no built-in shipping**, no syslog output and no remote sink.
 
 ## Troubleshooting
+
+**`audit query --tenant-id <t>` is refused with a permission error.** `<t>` is
+not the tenant your credential is in. Nobody reads another tenant's audit
+events — the `system` tenant included. Drop `--tenant-id` to read your own, or
+ask that tenant's own auditor.
 
 **`audit query` returns nothing and you know things happened.** Querying needs
 no configuration and is never "off", so the cause is the filter rather than the

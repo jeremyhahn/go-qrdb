@@ -20,6 +20,10 @@ type AuditLogger interface {
 	Close() error
 }
 
+// Filter.Untenanted, with TenantID set, also matches events carrying no
+// tenant (platform events). Never decoded from a request (json:"-").
+type Filter struct{ /* ... */ TenantID string; Untenanted bool /* ... */ }
+
 func NewFileLogger(path string, opts ...ChainFileOption) (*ChainFileLogger, error)
 func NewRingBuffer(capacity int) *RingBuffer
 func NewSlogSink() *SlogSink
@@ -431,6 +435,14 @@ Target compliance schema (`pkg/audit/types.go`):
   recency is the in-memory ring.
 - **`ChainFileLogger` opens with `O_CREATE|O_APPEND|O_WRONLY`, mode `0600`**,
   and a mutex serializes concurrent writes.
+- **A query reaches a sink already confined to the caller's tenant.** Every
+  transport passes its filter through `tenant.ConfineAuditFilter` before
+  `Query`: an empty tenant becomes the caller's, another tenant is a
+  `*tenant.CrossTenantDeniedError`, and `Filter.Untenanted` (also match events
+  with no tenant) is set for a system-tenant caller only. `Untenanted` is
+  `json:"-"`, so the QUIC frame, which decodes its payload straight into a
+  `Filter`, cannot carry it. The sinks match the tenant BEFORE paginating, so no
+  other field — time range, cursor, limit — widens the result.
 - **`Query` scans the ACTIVE file only.** Rotated archives are not searched, so
   a query window older than the current file returns nothing even though the
   events occurred. Ordering comes from append order, not from a key encoding.
@@ -530,6 +542,23 @@ Three constraints on the setting, all enforced rather than documented:
 Auditing itself has **no master switch** — the chain file sink is always
 constructed, because the compliance regimes require a trail even where RBAC is
 off.
+
+`pkg/tenant` holds the confinement every transport applies:
+
+```go
+func CallerTenant(ctx context.Context) string                        // identity's tenant, else the bound one, normalized
+func Confine(ctx context.Context, requested, op string) (string, error) // "" or own -> own; other -> *CrossTenantDeniedError
+func ConfineAuditFilter(ctx context.Context, f audit.Filter) (audit.Filter, error)
+```
+
+**The SDK speaks the server's wire shape.** The audit query's wire types are
+`audit.Filter` and `audit.Page`, whose JSON names (`tenant_id`, `client_ip`,
+`request_id`, `prev_hash`) differ from `transport.AuditFilter` and
+`transport.AuditEvent` (`tenantID`, `clientIP`, ...). The REST, QUIC and MCP SDK
+clients convert through `sdk/go/transport/internal/auditconv`, as the embedded
+client does. Before that the QUIC client sent `tenantID`, which the server
+never read, and the REST, QUIC and MCP clients decoded every event without its
+tenant, client IP, request id and chain hash.
 
 ## Known gap
 

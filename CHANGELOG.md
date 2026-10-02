@@ -234,6 +234,38 @@ Standalone parity (#582) and durable leases. Highlights:
   `CorruptTableError`. A state machine opening over a corrupt lease table
   fails with `CorruptTableError` rather than guessing which keys a lease owns.
 
+### Security
+
+- **BREAKING: an audit query reads only the caller's own tenant's events, on
+  every transport.** The query took `tenant_id` from the request unchecked on
+  REST (`GET /v1/audit/events`), gRPC and the unix socket
+  (`AuditService/Query`), QUIC (`audit.Query`), MCP (`qrdb_audit_query`) and
+  the embedded client, and an omitted `tenant_id` read every tenant's events.
+  The audit sinks are node-local and shared by every tenant, so a tenant Admin
+  holding `audit:query` read the whole node's trail. Every transport now
+  confines the filter with `tenant.ConfineAuditFilter` before a logger is read:
+  an omitted `tenant_id` reads the caller's own tenant, and one naming any other
+  tenant is refused (REST 403, gRPC and unix `PERMISSION_DENIED`, QUIC
+  `StatusPermissionDenied`, the MCP permission-denied tool code, and
+  `*tenant.CrossTenantDeniedError` on embedded). There is no system-tenant
+  exception: a system-tenant caller reads the system tenant's events plus the
+  platform events that carry no tenant (`audit.Filter.Untenanted`, never decoded
+  from a request), and is refused every other tenant's. The tenant match runs
+  before pagination, so no time range, filter or cursor widens it. New:
+  `tenant.CallerTenant`, `tenant.Confine` and `tenant.ConfineAuditFilter`.
+
+### Fixed
+
+- **The REST, QUIC and MCP SDK clients speak the audit query's wire shape.**
+  The server's wire types are `audit.Filter` and `audit.Page`, whose JSON names
+  (`tenant_id`, `client_ip`, `request_id`, `prev_hash`) differ from the SDK's
+  `transport.AuditFilter` and `transport.AuditEvent`. The QUIC client sent the
+  filter's tenant as `tenantID`, which the server never read, so a QUIC query
+  silently ignored its tenant; and the REST, QUIC and MCP clients decoded every
+  event without its tenant, client IP, request id and chain hash. They now
+  convert through `sdk/go/transport/internal/auditconv`, which the embedded
+  client shares.
+
 ## [0.26.0-alpha] - 2026-10-01
 
 Merge train 5. Highlights:

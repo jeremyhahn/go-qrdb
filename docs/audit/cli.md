@@ -20,7 +20,7 @@ one — which is the point.
 | `--action` | string | — | filter by action |
 | `--resource` | string | — | filter by resource |
 | `--outcome` | string | — | `success`, or a `failure`/`denied` **prefix** |
-| `--tenant-id` | string | — | filter by tenant |
+| `--tenant-id` | string | — | your own tenant; any other is refused. Omitted, the query reads your own tenant |
 | `--limit` | int | server default **100**, max **1000** | maximum events |
 | `--cursor` | string | — | pagination cursor from a previous response |
 

@@ -24,6 +24,8 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // ---------------------------------------------------------------------------
@@ -107,7 +109,8 @@ func TestHandleAuditQuery_WithFilterFields(t *testing.T) {
 		"limit":     "50",
 		"cursor":    "abc",
 	})
-	result, err := handler(context.Background(), req)
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "bob", TenantID: "tenant-1"})
+	result, err := handler(ctx, req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -128,6 +131,37 @@ func TestHandleAuditQuery_WithFilterFields(t *testing.T) {
 	}
 	if capturedFilter.Limit != 50 {
 		t.Errorf("expected limit 50, got %d", capturedFilter.Limit)
+	}
+}
+
+// TestHandleAuditQuery_ForeignTenantIsRefused: a tenant_id other than the
+// caller's own is refused before the logger is reached, and an absent one is
+// filled in with the caller's tenant rather than read as "every tenant".
+func TestHandleAuditQuery_ForeignTenantIsRefused(t *testing.T) {
+	var queried []audit.Filter
+	logger := &mockAuditLogger{
+		queryFn: func(_ context.Context, f audit.Filter) (*audit.Page, error) {
+			queried = append(queried, f)
+			return &audit.Page{Events: []audit.AuditEvent{}}, nil
+		},
+	}
+	handler := handleAuditQuery(logger)
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "bob", TenantID: "acme"})
+
+	_, err := handler(ctx, buildCallToolRequest(t, "qrdb_audit_query", map[string]any{"tenant_id": "globex"}))
+	var denied *tenant.CrossTenantDeniedError
+	if !errors.As(err, &denied) {
+		t.Fatalf("err = %v; want *tenant.CrossTenantDeniedError", err)
+	}
+	if len(queried) != 0 {
+		t.Fatalf("a refused query reached the logger with %+v", queried)
+	}
+
+	if _, err := handler(ctx, buildCallToolRequest(t, "qrdb_audit_query", map[string]any{})); err != nil {
+		t.Fatalf("unfiltered query: %v", err)
+	}
+	if len(queried) != 1 || queried[0].TenantID != "acme" || queried[0].Untenanted {
+		t.Fatalf("unfiltered query reached the logger as %+v; want it confined to acme", queried)
 	}
 }
 

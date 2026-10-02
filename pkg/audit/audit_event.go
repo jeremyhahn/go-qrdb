@@ -76,6 +76,14 @@ type Filter struct {
 	// TenantID filters to events for a specific tenant.
 	TenantID string `json:"tenant_id,omitempty"`
 
+	// Untenanted, with TenantID set, also matches events that carry no
+	// tenant at all: platform events, which belong to the system tenant.
+	//
+	// It is never decoded from a request (json:"-"). Only
+	// tenant.ConfineAuditFilter sets it, and only for a system-tenant caller,
+	// so no wire filter can widen a query beyond the caller's own tenant.
+	Untenanted bool `json:"-"`
+
 	// Limit caps the number of events returned. Default 100, max 1000.
 	Limit int `json:"limit,omitempty"`
 

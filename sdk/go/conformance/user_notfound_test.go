@@ -494,6 +494,15 @@ func bootCell(t *testing.T, tk transportKind, extraPerms ...permission.Permissio
 // cell.
 func bootAuthorizedCell(t *testing.T, tk transportKind, seed func(*node.Node)) *sdk.Client {
 	t.Helper()
+	return bootCellAs(t, tk, tenant.SystemTenantID, nil, seed)
+}
+
+// bootCellAs is bootAuthorizedCell for a remote identity in callerTenant: the
+// client certificate the remote cells present is issued to "matrix" in that
+// tenant. extraOpts are appended to the node's server options, which is how a
+// cell composes an audit logger.
+func bootCellAs(t *testing.T, tk transportKind, callerTenant string, extraOpts []server.ServerOption, seed func(*node.Node)) *sdk.Client {
+	t.Helper()
 
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.DataDir = t.TempDir()
@@ -526,8 +535,9 @@ func bootAuthorizedCell(t *testing.T, tk transportKind, seed func(*node.Node)) *
 	var ca *qrdbdharness.CA
 	var clientKP *qrdbdharness.KeyPair
 	if tk.remote() {
-		ca, clientKP, serverOpts = remoteServerTLS(t)
+		ca, clientKP, serverOpts = remoteServerTLS(t, callerTenant)
 	}
+	serverOpts = append(serverOpts, extraOpts...)
 
 	n, err := node.NewStandaloneNode(context.Background(), cfg, serverOpts)
 	if err != nil {

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // auditQueryTimeout bounds audit scans which may span large time ranges.
@@ -45,12 +46,12 @@ type auditQueryResponse struct {
 //	resource  filter by resource
 //	action    filter by action
 //	outcome   filter by outcome prefix ("success" or "failure")
-//	tenant_id filter by tenant
+//	tenant_id the caller's own tenant; any other is refused with 403
 //	limit     max events per page (default 100, max 1000)
 //	cursor    opaque pagination cursor from previous response
 //
-// Authorization: requires "audit:query" permission.
-// TODO: switch to permission.AuditQuery constant once Phase 2 lands.
+// Authorization: requires "audit:query" (permission.AuditQuery), and the query
+// is confined to the caller's own tenant (tenant.ConfineAuditFilter).
 func (s *Server) handleAuditQuery(w http.ResponseWriter, r *http.Request) {
 	if s.auditLogger == nil {
 		http.Error(w, `{"error":"audit not configured"}`, http.StatusNotImplemented)
@@ -90,6 +91,12 @@ func (s *Server) handleAuditQuery(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		f.Limit = n
+	}
+
+	f, err := tenant.ConfineAuditFilter(r.Context(), f)
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), auditQueryTimeout)

@@ -290,6 +290,46 @@ must not rewrite what the actor was allowed to do then.
 > schema as the contract and verify field-by-field against `pkg/audit/types.go`
 > before depending on any single field.
 
+## Who may read which events
+
+The query sinks are **node-local and shared by every tenant**: one chain file
+and one ring hold the events of every tenant on the node. A query therefore
+never reaches a sink with a tenant the caller chose. Before a logger is read,
+every transport — REST, gRPC, the unix socket, QUIC, MCP and the embedded
+client — confines the filter to the **caller's own tenant**
+(`tenant.ConfineAuditFilter`):
+
+| The request names | The query reads |
+|---|---|
+| no tenant | the caller's own tenant's events |
+| the caller's own tenant | the caller's own tenant's events |
+| any other tenant | nothing: refused (403, `PERMISSION_DENIED`, `StatusPermissionDenied`, the permission-denied MCP tool code, `*tenant.CrossTenantDeniedError` on embedded) |
+
+**The rule has no exception for the system tenant.** An identity in the system
+tenant holding `audit:query` reads the system tenant's events and the
+**platform events** — those that carry no tenant at all, such as custodian and
+ceremony steps and the node's own inspection opt-out. It is refused every other
+tenant's events, exactly as a tenant Admin is refused the system tenant's and
+its neighbours'.
+
+**Nothing else in the filter can widen it.** The tenant match is applied to
+every event before the page is cut, so the time range, the actor, resource,
+action and outcome filters, the page size and the cursor only narrow the
+result: a cursor is a position in the caller's own matching events and cannot
+step into anyone else's. The flag that admits platform events
+(`audit.Filter.Untenanted`) is never decoded from a request; only the
+confinement sets it, and only for a system-tenant caller.
+
+**The caller is who authenticated.** On the network transports that is the
+identity the authentication middleware bound from the client certificate or
+token. The embedded transport has no middleware, so it reads the identity in
+the call's context, or the tenant bound to it when there is no identity, and an
+unbound context is the system tenant — the in-process host.
+
+**BREAKING:** before this rule the query honoured whatever `tenant_id` the
+request carried, and an empty one read every tenant's events, so a tenant Admin
+holding `audit:query` read the whole node's trail.
+
 ## Trust boundaries
 
 - **Audit entries are not in the key-value store**, so no KV verb reaches
@@ -304,7 +344,8 @@ must not rewrite what the actor was allowed to do then.
 - **The same is true of the SO second factor.** The two gates share one posture
   value; there is no separate SO setting.
 - **Querying the trail requires `audit:query`**, distinct from any operational
-  permission.
+  permission, **and reads only the caller's own tenant's events** — see
+  [Who may read which events](#who-may-read-which-events).
 
 ## Correction notice
 
