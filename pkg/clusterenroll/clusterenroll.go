@@ -22,8 +22,10 @@
 //  1. Explicit files: TLSCAFile, TLSCertFile, TLSKeyFile all set.
 //  2. Cached certs: data-dir already contains ca.pem, node-cert.pem, node-key.pem.
 //  3. Single node: opts.SingleNode true — generates a self-signed CA.
-//  4. Joining node: Bootstrap.HasFlags() true — refused with
-//     *EnrollmentUnavailableError until member-side CSR issuance ships.
+//  4. Joining node: Bootstrap.HasFlags() true — fetches the anchor and
+//     submits a CSR to an admitted member's join listener (JoinServer) when
+//     BootstrapOptions.JoinConfigured(); otherwise refused with
+//     *EnrollmentUnavailableError.
 //  5. First node: multi-node cluster without bootstrap flags — generates CA and
 //     starts the Noise NK advertiser for peer enrollment.
 package clusterenroll
@@ -31,9 +33,16 @@ package clusterenroll
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
+	"encoding/pem"
 	"log/slog"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -152,6 +161,30 @@ type BootstrapOptions struct {
 	// absent value, not a default: ResolveServerURL returns
 	// *MissingAdminPortError rather than dialing a guessed port.
 	AdminPort int
+
+	// JoinAddr is the host:port of an admitted member's member-side
+	// CSR-sign listener (JoinServer). Required for member-side join; see
+	// JoinConfigured.
+	JoinAddr string
+
+	// JoinKey is the hex Curve25519 public key of that listener
+	// (JoinServer.PublicKey, hex-encoded). Required for member-side join.
+	JoinKey string
+
+	// JoinToken is the join-admission secret. Required for member-side
+	// join; there is no default.
+	JoinToken string
+}
+
+// JoinConfigured reports whether member-side CSR join is configured: an
+// admitted member's join listener address and public key, plus the
+// admission token. Unlike HasFlags (which selects path 4 at all), this is
+// checked INSIDE Join to decide whether the join can proceed with a signed
+// leaf or must refuse -- a node joining via explicit TLS files, or one whose
+// operator has not yet stood up a join listener anywhere, takes the same
+// path 4 selection without this being set.
+func (b BootstrapOptions) JoinConfigured() bool {
+	return b.JoinAddr != "" && b.JoinKey != "" && b.JoinToken != ""
 }
 
 // HasFlags returns true when at least one bootstrap method is configured,
@@ -591,16 +624,114 @@ func ResolveCA(ctx context.Context, opts *Options, logger *slog.Logger) (caCertP
 	return caCertPEM, caKeyPEM, adv, nil
 }
 
-// Join enrolls this node into an existing cluster (path 4).
+// Join enrolls this node into an existing cluster (path 4): it fetches the
+// trust anchor (the CA certificate only), generates its own key pair, and
+// submits a CSR to an admitted member's join listener for signing. The
+// cluster CA private key never reaches this node -- it is never read, only
+// used to sign, on whichever member answers the join request.
 //
-// It is refused with *EnrollmentUnavailableError in this release: the
-// cluster CA private key is no longer distributed to joining nodes, and
-// member-side CSR issuance has not shipped. The refusal comes before any
-// bootstrap fetch and before anything is written to opts.DataDir, so a
-// refused join leaves no role file and, above all, no ca-key.pem.
-func Join(_ context.Context, _ *Options, _ *slog.Logger) (*clustertls.Material, error) {
-	return nil, &EnrollmentUnavailableError{}
+// Refused with *EnrollmentUnavailableError before any network dial and
+// before anything is written to opts.DataDir when member-side join is not
+// configured (BootstrapOptions.JoinConfigured reports false) -- e.g. a node
+// started with only an anchor-fetch method and no join listener address, or
+// one meant to be enrolled via explicit TLS files instead. A refused join
+// leaves no role file and no local key material.
+func Join(ctx context.Context, opts *Options, logger *slog.Logger) (*clustertls.Material, error) {
+	if !opts.Bootstrap.JoinConfigured() {
+		return nil, &EnrollmentUnavailableError{}
+	}
+
+	anchorPEM, err := FetchAnchor(ctx, opts, logger)
+	if err != nil {
+		return nil, err
+	}
+
+	nodeKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, &clustertls.GenerateError{Err: err}
+	}
+	nodeURI := spiffe.NodeURI(opts.TrustDomain, opts.RaftAddress)
+	csrDER, err := buildJoinCSR(nodeKey, nodeURI)
+	if err != nil {
+		return nil, err
+	}
+
+	joinKey, err := hex.DecodeString(opts.Bootstrap.JoinKey)
+	if err != nil {
+		return nil, &JoinKeyDecodeError{Err: err}
+	}
+
+	logger.Info("joining existing cluster via member-side CSR",
+		"join_addr", opts.Bootstrap.JoinAddr)
+	certPEM, err := JoinCSR(ctx, &JoinClientOptions{
+		ServerAddr: opts.Bootstrap.JoinAddr,
+		ServerKey:  joinKey,
+		Token:      opts.Bootstrap.JoinToken,
+	}, csrDER, nodeURI)
+	if err != nil {
+		return nil, err
+	}
+
+	keyDER, err := x509.MarshalECPrivateKey(nodeKey)
+	if err != nil {
+		return nil, &clustertls.GenerateError{Err: err}
+	}
+	mat := &clustertls.Material{
+		CACertPEM: anchorPEM,
+		CertPEM:   certPEM,
+		KeyPEM:    pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}),
+	}
+
+	// Recorded before the material, same ordering invariant persistRole
+	// documents: a crash between the two leaves a role file this boot will
+	// not reach (RoleJoined serves no enrollment listener, so there is
+	// nothing go-qrdb#241 would miss), never material with no role beside it.
+	if err := persistRole(opts.DataDir, RoleJoined); err != nil {
+		return nil, err
+	}
+	if err := clustertls.PersistMaterial(mat, opts.DataDir); err != nil {
+		return nil, err
+	}
+	logger.Info("joined existing cluster", "dir", opts.DataDir)
+	return mat, nil
 }
+
+// buildJoinCSR creates a PKCS#10 CertificateRequest for key, self-signed to
+// prove possession. Its Subject and SANs are informational only -- the
+// signing member's IssueLeafForKey builds the issued leaf's actual template
+// (clustertls.NodeLeafTemplate) from scratch and takes nothing from the CSR
+// but its public key, exactly as every CeremonyCA in this codebase does.
+func buildJoinCSR(key *ecdsa.PrivateKey, nodeURI string) ([]byte, error) {
+	template := &x509.CertificateRequest{
+		Subject: pkix.Name{CommonName: "qrdb-node"},
+	}
+	if nodeURI != "" {
+		u, err := url.Parse(nodeURI)
+		if err != nil {
+			return nil, &clustertls.GenerateError{Err: err}
+		}
+		template.URIs = []*url.URL{u}
+	}
+	der, err := x509.CreateCertificateRequest(rand.Reader, template, key)
+	if err != nil {
+		return nil, &clustertls.GenerateError{Err: err}
+	}
+	return der, nil
+}
+
+// JoinKeyDecodeError is returned when BootstrapOptions.JoinKey is not valid
+// hex.
+type JoinKeyDecodeError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *JoinKeyDecodeError) Error() string {
+	return "clusterenroll: join key is not valid hex: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *JoinKeyDecodeError) Unwrap() error { return e.Err }
 
 // StartAdvertiser starts the Noise NK bootstrap server so that joining nodes
 // can securely fetch the cluster CA CERTIFICATE. It serves mat.CACertPEM and

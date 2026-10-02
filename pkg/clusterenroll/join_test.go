@@ -19,10 +19,19 @@ package clusterenroll
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/hex"
+	"encoding/pem"
 	"errors"
+	"net"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterca"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
@@ -179,4 +188,139 @@ func TestLogAdvertiserInfoDefaultsTheAdminPort(t *testing.T) {
 
 	logAdvertiserInfo(adv, AdvertiseOptions{AdminPort: 0})
 	logAdvertiserInfo(adv, AdvertiseOptions{AdminPort: 9443})
+}
+
+// clusterMember is one admitted node in TestJoin_SurvivesFirstNodeLoss's
+// simulated cluster: an anchor advertiser (for FetchAnchor) plus a join
+// listener (for member-side CSR signing), both backed by the SAME Key A
+// cakey.Provider every admitted member shares once Key A is replicated.
+type clusterMember struct {
+	adv *Advertiser
+	js  *JoinServer
+}
+
+func (m *clusterMember) stop() {
+	m.adv.Stop()
+	m.js.Stop()
+}
+
+func (m *clusterMember) bootstrap(token string) BootstrapOptions {
+	return BootstrapOptions{
+		NoiseKey:  hex.EncodeToString(m.adv.NoisePublicKey()),
+		NoiseAddr: m.adv.Addr(),
+		JoinAddr:  m.js.Addr(),
+		JoinKey:   hex.EncodeToString(m.js.PublicKey()),
+		JoinToken: token,
+	}
+}
+
+// startClusterMember starts one admitted member's enrollment surface over
+// the shared cluster CA provider. caCertPEM is the anchor it advertises --
+// every member advertises the SAME certificate, exactly as every member of a
+// real cluster does.
+func startClusterMember(t *testing.T, provider cakey.Provider, caCertPEM []byte, token string) *clusterMember {
+	t.Helper()
+
+	anchorPort := freePort(t)
+	adv, err := StartAnchorAdvertiser(caCertPEM, AdvertiseOptions{NoisePort: anchorPort, NoiseHost: testBindHost}, t.TempDir(), discardLogger())
+	if err != nil {
+		t.Fatalf("StartAnchorAdvertiser: %v", err)
+	}
+
+	joinPort := freePort(t)
+	js, err := StartJoinServer(provider, JoinServerOptions{Host: testBindHost, Port: joinPort, Token: token}, t.TempDir(), discardLogger())
+	if err != nil {
+		adv.Stop()
+		t.Fatalf("StartJoinServer: %v", err)
+	}
+
+	m := &clusterMember{adv: adv, js: js}
+	t.Cleanup(m.stop)
+	return m
+}
+
+// TestJoin_SurvivesFirstNodeLoss is the required end-to-end proof that
+// member-side CSR join does not depend on the first node specifically: kill
+// it, and a NEW node still joins through a SURVIVING member, receiving a
+// leaf that chains to the SAME cluster CA the (now dead) first node
+// originally generated.
+func TestJoin_SurvivesFirstNodeLoss(t *testing.T) {
+	const joinToken = "cluster-join-secret"
+
+	// The replicated store every admitted member reads Key A through.
+	// Standing in for Raft consensus across real nodes, as the rest of this
+	// package's tests already do for "the replicated store" (see
+	// pkg/cakey and pkg/clusterca's own mode-agnostic coverage) -- the
+	// property under test is that ANY member holding this provider can
+	// serve a join, not that Raft replication itself works, which is
+	// go-quicraft's own test surface.
+	store := kvstore.NewMemoryKVStore()
+	barrier := newMockBarrier()
+	provider := clusterca.NewProvider(store, barrier)
+	if err := provider.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize cluster CA: %v", err)
+	}
+	caCert, err := provider.Certificate(context.Background())
+	if err != nil {
+		t.Fatalf("Certificate: %v", err)
+	}
+	caCertPEM, err := clusterca.CACertPEM(context.Background(), provider)
+	if err != nil {
+		t.Fatalf("CACertPEM: %v", err)
+	}
+
+	// Two already-admitted members: the first node, and a second member
+	// that joined it at some point in the past (that join is not
+	// re-exercised here; what matters is that it is ALSO backed by the
+	// shared provider, exactly as a real second member reading the
+	// replicated store would be).
+	firstNode := startClusterMember(t, provider, caCertPEM, joinToken)
+	secondMember := startClusterMember(t, provider, caCertPEM, joinToken)
+
+	// Kill the first node.
+	firstNode.stop()
+	if _, err := net.DialTimeout("tcp", firstNode.js.Addr(), 200*time.Millisecond); err == nil {
+		t.Fatal("first node's join listener is still reachable after Stop; the kill was not real")
+	}
+
+	// A brand-new, third node joins through the SURVIVING member only.
+	opts := &Options{
+		RaftAddress: "127.0.0.1:63099",
+		TrustDomain: "test.cluster",
+		DataDir:     t.TempDir(),
+		Bootstrap:   secondMember.bootstrap(joinToken),
+	}
+	mat, err := Join(context.Background(), opts, discardLogger())
+	if err != nil {
+		t.Fatalf("Join through the surviving member failed: %v", err)
+	}
+	if len(mat.CAKeyPEM) != 0 {
+		t.Fatal("joined material must never carry the cluster CA private key")
+	}
+
+	leafBlock, _ := pem.Decode(mat.CertPEM)
+	if leafBlock == nil {
+		t.Fatal("joined material has no leaf certificate PEM")
+	}
+	leaf, err := x509.ParseCertificate(leafBlock.Bytes)
+	if err != nil {
+		t.Fatalf("ParseCertificate: %v", err)
+	}
+	if err := leaf.CheckSignatureFrom(caCert); err != nil {
+		t.Fatalf("the new node's leaf does not chain to the original cluster CA: %v", err)
+	}
+
+	// Local state: the joined node's own cert material is cached, with no
+	// CA key file anywhere -- consistent with every other path in this
+	// package.
+	if _, err := os.Stat(filepath.Join(opts.DataDir, "ca-key.pem")); !os.IsNotExist(err) {
+		t.Fatalf("a joined node must never cache a CA key file (stat err = %v)", err)
+	}
+	role, found, err := loadRole(opts.DataDir)
+	if err != nil {
+		t.Fatalf("loadRole: %v", err)
+	}
+	if !found || role != RoleJoined {
+		t.Fatalf("role = %q (found=%v), want %q", role, found, RoleJoined)
+	}
 }

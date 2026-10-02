@@ -177,10 +177,9 @@ replica on that host is automatic.
 
 ## Member-side CSR join (Key A, cluster CA)
 
-**Normative target; lands incrementally.** This replaces
-`docs/clusterenroll-noise-gap.md`'s unresolved options with an owner
-ruling: the cluster CA private key (Key A) is **never** distributed to a
-joiner, on any transport — that part of the prior ruling stands — but a
+This replaces `docs/clusterenroll-noise-gap.md`'s unresolved options with an
+owner ruling: the cluster CA private key (Key A) is **never** distributed to
+a joiner, on any transport — that part of the prior ruling stands — but a
 joiner can still get a leaf certificate without it, because Key A is now
 reachable (barrier-encrypted, replicated — see
 [../certificate-authority/architecture.md](../certificate-authority/architecture.md#the-ca-key-provider-seam-pkgcakey))
@@ -190,37 +189,56 @@ from **any** admitted, unsealed member, not only the first node.
    as today — `clusterenroll.FetchAnchor` over Noise/SPKI/DANE/Direct,
    unchanged.
 2. The joiner generates its own node key pair (the private key never leaves
-   it) and sends a CSR for that key.
-3. After admission — a shared join token today, matching the operator-PSK
-   pattern multicast discovery already uses; a stronger per-node approval
-   workflow is a future extension of the same admission point — an existing
-   member signs the CSR with Key A (`cakey.Provider.Signer`, loaded from the
-   replicated store) and returns the leaf.
+   it) and builds a self-signed PKCS#10 CSR for that key.
+3. It submits the CSR to an admitted member's dedicated join listener
+   (`clusterenroll.JoinServer`). After admission — a shared join token
+   today, matching the operator-PSK pattern multicast discovery already
+   uses; a stronger per-node approval workflow is a future extension of the
+   same admission point — the member signs the CSR with Key A
+   (`clusterca.IssueLeafForKey`, reading the cluster CA through whichever
+   `cakey.Provider` that member was built with: the built-in
+   `SoftwareProvider` over the replicated store, or an injected HSM/TPM/KMS
+   one) and returns the leaf.
 4. The joiner now holds a Key-A-chained leaf and can present it for Raft
    peer TLS like any other member.
 
 This removes `clusterenroll.Join`'s hard `*EnrollmentUnavailableError`
-refusal: the CSR-sign exchange is what "member-side CSR issuance" (named but
-not implemented in earlier releases) turns out to be.
+refusal, for a node configured with a join listener address, public key and
+token (`BootstrapOptions.JoinConfigured`) — the CSR-sign exchange is what
+"member-side CSR issuance" (named but not implemented in earlier releases)
+turns out to be. A node that is not configured with a join listener (e.g.
+one meant to be enrolled via explicit TLS files) still refuses with
+`*EnrollmentUnavailableError`, unchanged.
 
-**Wire transport.** The one-shot `get_ca_bundle` request/response the
-Noise bootstrap `Handler` in go-truststrap dispatches cannot carry a second
-method — the handler is a fixed map built once in `NewServer`, and the
-connection closes after one round trip. The CSR exchange therefore runs as
-qrdb's **own** protocol, framed with `bootstrap.WriteFrame`/`ReadFrame`
-(already exported, used unmodified) over a session built with
-go-truststrap's lower-level `noiseproto.Session` (handshake + `Encrypt`/
-`Decrypt` of arbitrary bytes) — a generic Noise\_NK/XX primitive that is not
-specific to the bundle-fetch protocol. go-truststrap is not modified; this
-package only calls primitives it already exports. SPKI and Direct carry the
-CSR exchange as an ordinary request/response over the connection those
-methods already establish.
+**Wire transport (Noise, shipped).** The one-shot `get_ca_bundle`
+request/response the Noise bootstrap `Handler` in go-truststrap dispatches
+cannot carry a second method — the handler is a fixed map built once in
+`NewServer`, and the connection closes after one round trip. The CSR
+exchange therefore runs as qrdb's **own** protocol
+(`clusterenroll.JoinServer` / `clusterenroll.JoinCSR`), on its **own
+dedicated port** with its **own persisted static key**
+(`{dataDir}/join-key.hex`, independent of the anchor advertiser's
+`noise-key.hex` so the two listeners have independent lifecycles — a member
+that is not the first node still runs a join listener, but never an anchor
+advertiser). It is framed with `bootstrap.WriteFrame`/`ReadFrame` (already
+exported, used unmodified) over a session built with go-truststrap's
+lower-level `noiseproto.Session` (handshake + `Encrypt`/`Decrypt` of
+arbitrary bytes) — a generic Noise\_NK primitive that is not specific to the
+bundle-fetch protocol. go-truststrap is not modified; this package only
+calls primitives it already exports.
+
+**Wire transport (SPKI, Direct): not yet implemented.** The same
+transport-agnostic core (`handleJoinRequest`) is ready for them — a
+plain-HTTPS binding over the existing admin listener, pinned the same way
+`/v1/ca/bootstrap` already is, is the natural shape — but only the Noise
+binding ships today. A node whose only configured anchor-fetch method is
+SPKI or Direct cannot yet complete a member-side join; it still has the
+explicit-TLS-files path available.
 
 **Admission is a separate concern from signing.** Reaching an existing
-member and completing the Noise/SPKI/Direct handshake proves nothing about
-whether this joiner should be issued a certificate — that is what the join
-token (or a future approval workflow) decides, before the CSR is signed, not
-after.
+member and completing the Noise handshake proves nothing about whether this
+joiner should be issued a certificate — that is what the join token (or a
+future approval workflow) decides, before the CSR is signed, not after.
 
 ### Why this does not reopen the shared-CA-key defect
 
