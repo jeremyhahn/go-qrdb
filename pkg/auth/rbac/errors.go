@@ -76,3 +76,34 @@ type InvalidRoleLookupError struct {
 func (e *InvalidRoleLookupError) Error() string {
 	return "qrdb/auth/rbac: role store returned neither a role nor an error for " + e.RoleID
 }
+
+// CrossTenantFallbackError is returned when a decision would have consulted
+// the StaleRead role fallback for a tenant it does not hold. The fallback is
+// confined to the system tenant's identity namespace (see rolesFallback's
+// doc comment), so for any other tenant it cannot answer at all — not "no
+// such role", which systemRoleIDs and staleMayDenote would otherwise read as
+// permission to void or strip a grant. This error is wrapped in a
+// *ResolveError, but it is NOT one of resolveErrorIsTransient's allow-listed
+// causes (pkg/auth/middleware/failure_class.go): it classifies as
+// AuthFailureUnknown, fail closed to whichever class the caller's own
+// fallback chooses (401 on an authentication gate, 403 on an authorization
+// one), the same as any other contract violation this package reports. It
+// is deliberately NOT retryable: reaching this path at all means a gate this
+// package already believes should have refused the fallback (see
+// systemRoleIDs) somehow did not, which is a defect worth surfacing
+// distinctly rather than asking the caller to retry it.
+//
+// It is reachable only as defense in depth: systemRoleIDs already refuses to
+// consult the fallback for a non-system tenant, so staleMayDenote — which
+// shares the same fallback — should never be called for one either. See
+// resolvePermissionSet, systemRoleIDs and staleMayDenote.
+type CrossTenantFallbackError struct {
+	// TenantID is the non-system tenant the fallback was about to be asked
+	// about.
+	TenantID string
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *CrossTenantFallbackError) Error() string {
+	return "qrdb/auth/rbac: StaleRead role fallback is confined to the system tenant; it cannot answer for tenant " + e.TenantID
+}

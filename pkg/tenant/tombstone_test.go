@@ -502,6 +502,13 @@ func TestDeletedAt_StoreFailureIsReported(t *testing.T) {
 	if se.Op != "tombstone-get" {
 		t.Errorf("StoreError.Op = %q, want tombstone-get", se.Op)
 	}
+	// N2: this read failure must classify as retryable, which only holds if
+	// deletedAt built its StoreError through newStoreError rather than a bare
+	// composite literal (whose transient field would default to false).
+	if !se.ReadTransient() {
+		t.Error("StoreError.ReadTransient() = false, want true: a tombstone read failure " +
+			"(not a decrypt refusal) must classify as transient")
+	}
 }
 
 // TestDeletedAt_CorruptRecordReportsExistence: the record exists even when it

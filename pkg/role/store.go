@@ -532,7 +532,7 @@ func (s *kvRoleStore) GetRole(ctx context.Context, id string) (*Role, error) {
 
 	data, err := s.store.Get(ctx, primaryKey(id))
 	if err != nil {
-		return nil, &StoreError{Op: "get", Detail: "primary lookup", Err: err}
+		return nil, newStoreError("get", "primary lookup", err)
 	}
 	if data == nil {
 		return nil, &RoleNotFoundError{ID: id}
@@ -572,7 +572,7 @@ func (s *kvRoleStore) GetRoleByName(ctx context.Context, tenantID, name string) 
 
 	idBytes, err := s.store.Get(ctx, nameIndexKey(tenantID, name))
 	if err != nil {
-		return nil, &StoreError{Op: "get_by_name", Detail: "index lookup", Err: err}
+		return nil, newStoreError("get_by_name", "index lookup", err)
 	}
 	if idBytes == nil {
 		return nil, &RoleNotFoundError{ID: tenantID + "/" + name}

@@ -68,9 +68,11 @@ const (
 	defaultCacheTTL = 30 * time.Second
 
 	// resolveSyncTimeout bounds the primary linearizable permission resolve
-	// when a StaleRead fallback is configured, so a transient ReadIndex
-	// slowdown fails over in well under a second rather than blocking the
-	// request. A healthy ReadIndex answers far faster.
+	// on EVERY tenant, so a transient ReadIndex slowdown fails over to the
+	// StaleRead fallback (when one is configured for the tenant) in well
+	// under a second, or otherwise still turns into a prompt, retryable
+	// *ResolveError instead of blocking the request on its own outer
+	// deadline. A healthy ReadIndex answers far faster.
 	resolveSyncTimeout = 500 * time.Millisecond
 )
 
@@ -202,6 +204,15 @@ type RBACAuthorizer struct {
 	// pkg/auth/middleware and keeps control-plane operations (such as Drain)
 	// authorizable on a draining node. Nil disables the fallback.
 	//
+	// The fallback serves the SYSTEM tenant only. qrdbd builds it over a
+	// store confined to the system tenant's identity namespace (see
+	// cmd/qrdbd's bootRoleSvc), so it cannot hold any other tenant's roles —
+	// and resolvePermissionSet, systemRoleIDs and staleMayDenote never
+	// consult it for another tenant: a resolve that misses the primary's
+	// budget there is reported as the transient failure it is, not read as
+	// "this role grants nothing" or "this identifier may be the system
+	// role". Mirrors lookupUser's rule for the user-store fallback.
+	//
 	// "Safe for authorization" holds for resolving what a role GRANTS. It
 	// does not extend to deciding whether an identifier denotes a system
 	// role, because the replica can be behind a role that was deleted and
@@ -317,6 +328,18 @@ func New(roles role.RoleServicer, opts ...Option) *RBACAuthorizer {
 // identifier would then match nothing in this set and the control would
 // silently stop applying. Callers must not treat a stale "not in the set" as
 // "does not denote the role" — see staleMayDenote.
+//
+// The fallback is consulted only when tenantID is the system tenant (see
+// rolesFallback's doc comment). For any other tenant the fallback cannot
+// hold tenantID's roles at all, and SystemRoleIDs' contract reads "no
+// persisted record" as "no legacy override, use the canonical identifier" —
+// an answer that is correct for a store with full visibility into the
+// tenant and WRONG for one that is simply blind to it: every one of the
+// tenant's role ids would then fail to match the stale set and fall to
+// staleMayDenote, which treats "no record" as "may denote the role",
+// wrongly tripping the SO deny-list or the strict-SoD Owner strip for an
+// ordinary tenant user. The primary's transient error is returned instead,
+// exactly as when no fallback is configured.
 func (a *RBACAuthorizer) systemRoleIDs(ctx context.Context, tenantID, roleName string) ([]string, bool, error) {
 	ids, err := role.SystemRoleIDs(ctx, a.roles, tenantID, roleName)
 	if err == nil {
@@ -332,7 +355,7 @@ func (a *RBACAuthorizer) systemRoleIDs(ctx context.Context, tenantID, roleName s
 	if errors.As(err, &invalid) {
 		return nil, false, &ResolveError{Err: err}
 	}
-	if a.rolesFallback == nil {
+	if a.rolesFallback == nil || !tenant.IsSystemTenant(tenantID) {
 		return nil, false, &ResolveError{Err: err}
 	}
 	// Same StaleRead fallback rationale as permission resolution: role data
@@ -366,7 +389,18 @@ func (a *RBACAuthorizer) systemRoleIDs(ctx context.Context, tenantID, roleName s
 //     UUID that names a different role, and identifiers are not reused.
 //
 // A read failure is not an answer, so it denies rather than clearing.
+//
+// Guarded by the same system-tenant rule as systemRoleIDs — the fallback
+// cannot hold a non-system tenant's roles, so asking it "may this identifier
+// denote the role" there would answer from a store that never saw the
+// identifier at all. This is defense in depth rather than a reachable path:
+// systemRoleIDs already refuses to produce a stale (non-authoritative) answer
+// for a non-system tenant, and staleMayDenote's only callers invoke it
+// exclusively off of that stale answer.
 func (a *RBACAuthorizer) staleMayDenote(ctx context.Context, roleID, roleName string) (bool, error) {
+	if tid := tenant.FromContext(ctx); !tenant.IsSystemTenant(tid) {
+		return false, &ResolveError{Err: &CrossTenantFallbackError{TenantID: tid}}
+	}
 	r, err := a.rolesFallback.GetRole(ctx, roleID)
 	if err != nil {
 		var notFound *role.RoleNotFoundError
@@ -608,31 +642,53 @@ func (a *RBACAuthorizer) resolvePermissionSet(resolveCtx context.Context, cacheT
 	if permSet, ok := a.cache.get(cacheTenantID, subject, roleIDs); ok {
 		return permSet, nil
 	}
-	// Bound the primary linearizable resolve when a StaleRead fallback is
-	// available, so a SLOW (not just failed) ReadIndex — cold pipeline,
-	// draining host, transient consensus latency — fails over within
-	// resolveSyncTimeout instead of blocking the whole request until its
-	// outer deadline. A healthy ReadIndex answers in microseconds; the
-	// only cost of the short budget is a marginally-staler read on a blip,
-	// which is safe for replicated role data. Mirrors the auth user-lookup
-	// guard and is the companion to the error-triggered fallback below.
-	primaryCtx := resolveCtx
-	var cancel context.CancelFunc
-	if a.rolesFallback != nil {
-		primaryCtx, cancel = context.WithTimeout(resolveCtx, resolveSyncTimeout)
-	}
+	// The fallback is confined to the system tenant (see rolesFallback's doc
+	// comment): consulting it for any other tenant's role ids would treat its
+	// "not found" as "this role grants nothing", the same bug the user-store
+	// fallback had (see lookupUser). useFallback gates both the timeout
+	// bound below and the fallback consult after a primary failure.
+	useFallback := a.rolesFallback != nil && tenant.IsSystemTenant(cacheTenantID)
+	// Bound the primary linearizable resolve on EVERY tenant, not only when a
+	// StaleRead fallback is available for it. A SLOW (not just failed)
+	// ReadIndex — cold pipeline, draining host, transient consensus latency —
+	// must fail over within resolveSyncTimeout rather than block the whole
+	// request until an outer deadline the caller may not have set at all. For
+	// a tenant with no fallback (useFallback false) this still turns a stall
+	// into a prompt *ResolveError wrapping context.DeadlineExceeded — a
+	// retryable 503 — instead of a hang. A healthy ReadIndex answers in
+	// microseconds; the only cost of the short budget is a marginally-staler
+	// read on a blip for the system tenant, which is safe for replicated role
+	// data. Mirrors the auth user-lookup guard, lookupUser, which bounds its
+	// primary read the same way regardless of fallback availability (go-qrdb
+	// strict-isolation phase 0 review finding BL2, N4).
+	primaryCtx, cancel := context.WithTimeout(resolveCtx, resolveSyncTimeout)
 	perms, err := a.roles.ResolvePermissions(primaryCtx, roleIDs)
-	if cancel != nil {
-		cancel()
-	}
+	cancel()
 	if err != nil {
-		// Primary (linearizable) resolution failed or timed out. Retry
-		// against the StaleRead-backed fallback when available — this keeps
-		// authorization working when the ReadIndex pipeline is not yet
-		// warm or the host is draining (which rejects linearizable
-		// reads). Role data is replicated before servers start, so the
-		// stale read is safe. Mirrors the user-store fallback.
-		if a.rolesFallback == nil {
+		// A DEFINITIVE answer from the primary (linearizable) store: the role
+		// was deleted (or never existed; also the id-space RoleNotFoundError
+		// the tenant-ownership check in kvRoleStore.GetRole answers with for a
+		// cross-tenant id), or the request was malformed (an empty role id).
+		// Neither is the transient condition the fallback exists for, and
+		// retrying it there -- even for the system tenant -- could resurrect
+		// a just-revoked grant from a StaleRead replica that has not caught
+		// up to the deletion yet. Mirrors lookupUser's treatment of
+		// UserNotFoundError: never fall back on a definitive answer, for any
+		// tenant.
+		var notFound *role.RoleNotFoundError
+		var invalidReq *role.ValidationError
+		if errors.As(err, &notFound) || errors.As(err, &invalidReq) {
+			return nil, &ResolveError{Err: err}
+		}
+		// Primary resolution failed or timed out for some OTHER (transient)
+		// reason. Retry against the StaleRead-backed fallback when available
+		// for THIS tenant — this keeps authorization working when the
+		// ReadIndex pipeline is not yet warm or the host is draining (which
+		// rejects linearizable reads). Role data is replicated before
+		// servers start, so the stale read is safe. Mirrors the user-store
+		// fallback. For any other tenant the primary's transient error
+		// stands, and the caller gets the retryable failure it describes.
+		if !useFallback {
 			return nil, &ResolveError{Err: err}
 		}
 		fperms, ferr := a.rolesFallback.ResolvePermissions(resolveCtx, roleIDs)

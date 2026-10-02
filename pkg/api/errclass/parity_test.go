@@ -27,6 +27,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 )
 
 // wrapped hides a sample behind one layer of wrapping, as every handler does,
@@ -141,6 +143,14 @@ func TestTransportLocalErrorsAgree(t *testing.T) {
 		{"quic.CeremonyCANotConfiguredError", &quic.CeremonyCANotConfiguredError{}, errclass.Unimplemented},
 		{"quic.InvalidArgumentError", &quic.InvalidArgumentError{Reason: "x"}, errclass.InvalidArgument},
 		{"quic.UnmarshalError", &quic.UnmarshalError{Err: http.ErrBodyNotAllowed}, errclass.InvalidArgument},
+		// BL2/N5: a *rbac.ResolveError wrapping a DEFINITIVE cause must render
+		// the cause's own class on every transport, never the retryable
+		// Unavailable a transient *rbac.ResolveError gets (authSamples,
+		// pkg/api/errclass/table.go) -- see
+		// TestClassify_ResolveErrorDefinitiveCausesAreNotUnavailable's doc
+		// comment for why this case cannot live in authSamples itself.
+		{"rbac.ResolveError wrapping a deleted or never-existent role", &rbac.ResolveError{Err: &role.RoleNotFoundError{ID: "deleted-role"}}, errclass.NotFound},
+		{"rbac.ResolveError wrapping a malformed request", &rbac.ResolveError{Err: &role.ValidationError{Field: "id", Reason: "must not be empty"}}, errclass.InvalidArgument},
 	} {
 		if got := errclass.Classify(tc.err); got != tc.want {
 			t.Errorf("%s declares class %s, want %s", tc.name, got, tc.want)

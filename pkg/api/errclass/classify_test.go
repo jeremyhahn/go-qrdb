@@ -21,7 +21,9 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -171,6 +173,44 @@ func TestClassify_RoleBindingTenantIsInvalidArgument(t *testing.T) {
 		if got := Classify(e); got != InvalidArgument {
 			t.Errorf("%s: got %s, want %s", name, got, InvalidArgument)
 		}
+	}
+}
+
+// TestClassify_ResolveErrorDefinitiveCausesAreNotUnavailable is the re-review
+// companion to the parity sample authRule carries for a TRANSIENT
+// *rbac.ResolveError (authSamples, context.DeadlineExceeded): a DEFINITIVE
+// cause must not become a retryable 503 just because it happens to be
+// wrapped the same way.
+//
+// This cannot live in authSamples: authRule's own classifier
+// (pkg/auth/middleware.ClassifyAuthError) reports these as Unknown, so
+// Conditions() would record "Want: Unclassified" for them, and the generic
+// chain actually classifies them further down -- identityRules' own
+// RoleNotFoundError/ValidationError rows -- giving a REAL answer that
+// disagrees with another row sharing the same (wrong) "Want" bucket. Tried
+// first; TestEveryTransportAgreesOnEveryCondition caught it immediately. The
+// direct Classify() call below is the correct proof: it exercises the exact
+// same full chain every transport's ServiceErrorStatus/Code calls, without
+// forcing these two samples through authRule's narrower "is this an auth
+// class" lens.
+func TestClassify_ResolveErrorDefinitiveCausesAreNotUnavailable(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want Class
+	}{
+		{"a deleted or never-existent role", &rbac.ResolveError{Err: &role.RoleNotFoundError{ID: "deleted-role"}}, NotFound},
+		{"a malformed request", &rbac.ResolveError{Err: &role.ValidationError{Field: "id", Reason: "must not be empty"}}, InvalidArgument},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// tc.want is never Unavailable for these cases, so pinning the
+			// exact class below already proves the cause did not become a
+			// retryable 503 -- a second call asserting only "!= Unavailable"
+			// checked nothing the line above had not already checked (BL2, N6).
+			if got := Classify(wrapped{tc.err}); got != tc.want {
+				t.Errorf("got %s, want %s", got, tc.want)
+			}
+		})
 	}
 }
 

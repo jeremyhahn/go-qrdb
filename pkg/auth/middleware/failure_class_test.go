@@ -21,6 +21,7 @@
 package middleware
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"testing"
@@ -33,6 +34,9 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // classCases is the one table every assertion below reads, so the HTTP code,
@@ -95,7 +99,68 @@ var classCases = []struct {
 		err:   &RateLimitedError{Permission: permission.KVPut, Subject: "a", TenantID: "t", RetryAfter: time.Second},
 		class: AuthFailureRateLimited, http: http.StatusTooManyRequests, grpc: codes.ResourceExhausted, retry: true,
 	},
+	{
+		// go-qrdb strict-isolation phase 0 review finding B1: the RBAC
+		// role-resolution failure -- the primary store failed or timed out,
+		// and the StaleRead fallback either is not configured or (not the
+		// system tenant it is confined to) was never consulted -- must be
+		// retryable, not a silent 401/403 for a correctly enrolled user.
+		name:  "rbac.ResolveError -- a transient role-resolution failure",
+		err:   &rbac.ResolveError{Err: context.DeadlineExceeded},
+		class: AuthFailureUnavailable, http: http.StatusServiceUnavailable, grpc: codes.Unavailable, retry: true,
+	},
+	{
+		// Review finding BL1: context.Canceled -- the caller's own context
+		// ending mid-resolve -- is the other context-based transient cause
+		// resolveErrorIsTransient recognises, alongside DeadlineExceeded.
+		name:  "rbac.ResolveError -- the caller's context was canceled mid-resolve",
+		err:   &rbac.ResolveError{Err: context.Canceled},
+		class: AuthFailureUnavailable, http: http.StatusServiceUnavailable, grpc: codes.Unavailable, retry: true,
+	},
+	{
+		// Review finding BL2: resolveErrorIsTransient no longer matches
+		// role.StoreError/tenant.StoreError by type or by Op/Detail string --
+		// it asks the cause chain whether it declares itself transient
+		// (transientMarker), a capability only the PRODUCER can set (its
+		// field is unexported). fakeTransientCause pins that interface check
+		// in isolation, decoupled from either producer package; the real
+		// producers are pinned end-to-end by
+		// TestResolveErrorIsTransient_ProducerDeclaresTransience below, built
+		// over the real role.NewStore and the real tenant service/resolver.
+		name:  "rbac.ResolveError -- the cause declares itself transient",
+		err:   &rbac.ResolveError{Err: &fakeTransientCause{msg: "read index not ready", transient: true}},
+		class: AuthFailureUnavailable, http: http.StatusServiceUnavailable, grpc: codes.Unavailable, retry: true,
+	},
+	{
+		// Review finding X1's re-review item 5: a barrier-isolated tenant's
+		// role store resolved to a SEALED barrier (routingRoleService.storeFor
+		// -> resolver.Resolve). Retryable once the tenant is unsealed, exactly
+		// as the equivalent condition is for every other data-plane read
+		// (pkg/api/errclass's dominant tenant.ErrTenantSealed rule).
+		name:  "rbac.ResolveError -- the tenant's role store barrier is sealed",
+		err:   &rbac.ResolveError{Err: tenant.ErrTenantSealed},
+		class: AuthFailureUnavailable, http: http.StatusServiceUnavailable, grpc: codes.Unavailable, retry: true,
+	},
+	{
+		// The same seal met one step later: the barrier sealed AFTER Resolve
+		// returned a store and BEFORE that store's own Get/Put ran.
+		name:  "rbac.ResolveError -- the barrier sealed between resolve and use",
+		err:   &rbac.ResolveError{Err: seal.ErrSealed},
+		class: AuthFailureUnavailable, http: http.StatusServiceUnavailable, grpc: codes.Unavailable, retry: true,
+	},
 }
+
+// fakeTransientCause is a minimal error implementing the same ReadTransient()
+// bool capability role.StoreError and tenant.StoreError do (transientMarker),
+// so resolveErrorIsTransient's interface check can be pinned directly
+// without needing either producer package's real, unexported field.
+type fakeTransientCause struct {
+	msg       string
+	transient bool
+}
+
+func (f *fakeTransientCause) Error() string       { return f.msg }
+func (f *fakeTransientCause) ReadTransient() bool { return f.transient }
 
 func TestClassifyAuthError(t *testing.T) {
 	for _, tc := range classCases {
@@ -256,6 +321,70 @@ func TestAuthErrorWithUnknownCodeFallsThrough(t *testing.T) {
 	}
 	if got := HTTPStatus(err, http.StatusForbidden); got != http.StatusForbidden {
 		t.Errorf("HTTPStatus = %d, want the caller's fallback 403", got)
+	}
+}
+
+// TestClassifyAuthError_ResolveErrorDefinitiveCausesStayUnknown pins every
+// exclusion the B1/X1 allow-list carries: an *rbac.ResolveError wrapping a
+// DEFINITIVE cause from the primary store -- a deleted or never-existent
+// role, a malformed request, or a resolver contract violation -- is not the
+// cold-node condition resolveErrorIsTransient exists to make retryable, so
+// each must keep falling through unclassified exactly as it did before the
+// B1 rule was added. Checked against every mapper this package exposes, not
+// just ClassifyAuthError: a classCases row cannot carry these, because
+// mapHTTPAuthError/mapGRPCAuthError's OWN pre-refactor defaults (401,
+// Unauthenticated) differ from the generic HTTPStatus/GRPCError callers'
+// chosen fallback, and classCases assumes one answer serves every mapper.
+func TestClassifyAuthError_ResolveErrorDefinitiveCausesStayUnknown(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{
+			name: "RoleNotFoundError -- a deleted or never-existent role",
+			err:  &rbac.ResolveError{Err: &role.RoleNotFoundError{ID: "deleted-role"}},
+		},
+		{
+			name: "ValidationError -- a malformed request",
+			err:  &rbac.ResolveError{Err: &role.ValidationError{Field: "id", Reason: "must not be empty"}},
+		},
+		{
+			name: "role.InvalidResolverResultError -- a resolver contract violation",
+			err:  &rbac.ResolveError{Err: &role.InvalidResolverResultError{Name: "so", TenantID: "acme"}},
+		},
+		{
+			name: "rbac.InvalidRoleLookupError -- a resolver contract violation",
+			err:  &rbac.ResolveError{Err: &rbac.InvalidRoleLookupError{RoleID: "x"}},
+		},
+		{
+			// Review finding BL2: the cause chain can implement transientMarker
+			// and still answer false -- a corrupt stored record or a decrypt/
+			// authentication refusal, which role.newStoreError and
+			// tenant.newStoreError both decide at construction (see
+			// TestResolveErrorIsTransient_ProducerDeclaresTransience for the
+			// real producers). This pins the interface check's false branch in
+			// isolation.
+			name: "the cause declares itself NOT transient",
+			err:  &rbac.ResolveError{Err: &fakeTransientCause{msg: "invalid character", transient: false}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ClassifyAuthError(tc.err); got != AuthFailureUnknown {
+				t.Fatalf("classified as %v, want AuthFailureUnknown", got)
+			}
+			if got := HTTPStatus(tc.err, http.StatusTeapot); got != http.StatusTeapot {
+				t.Errorf("HTTPStatus = %d, want the caller's fallback 418 (unrecognised)", got)
+			}
+			if got := status.Code(GRPCError(tc.err, codes.Aborted)); got != codes.Aborted {
+				t.Errorf("GRPCError = %v, want the caller's fallback Aborted (unrecognised)", got)
+			}
+			if got := mapHTTPAuthError(tc.err); got != http.StatusUnauthorized {
+				t.Errorf("mapHTTPAuthError = %d, want 401 (the pre-refactor default for an unrecognised error)", got)
+			}
+			if got := status.Code(mapGRPCAuthError(tc.err)); got != codes.Unauthenticated {
+				t.Errorf("mapGRPCAuthError = %v, want Unauthenticated (the pre-refactor default)", got)
+			}
+		})
 	}
 }
 

@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"strconv"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
 var (
@@ -206,9 +208,15 @@ func (e *QuotaExceededError) Error() string {
 
 // StoreError is returned when a storage operation fails within the
 // tenant service.
+//
+// transient is set at construction (see newStoreError), by the code that
+// actually saw the underlying failure -- never inferred later from Op, which
+// names WHERE the failure happened, not WHAT KIND it is.
 type StoreError struct {
 	Op  string
 	Err error
+
+	transient bool
 }
 
 func (e *StoreError) Error() string {
@@ -217,6 +225,39 @@ func (e *StoreError) Error() string {
 
 func (e *StoreError) Unwrap() error {
 	return e.Err
+}
+
+// ReadTransient reports whether retrying the operation that produced this
+// error might succeed: the store read itself failed, as opposed to a
+// definitive answer -- corrupt stored data, or a cryptographic refusal from a
+// sealed-barrier-backed store -- that no retry changes. See newStoreError.
+//
+// Named ReadTransient rather than the shorter Transient to avoid a
+// structural collision with *service.FactorMigrationRefusedError's own
+// Transient() bool, an unrelated capability ("does a later migration run
+// still have work to do").
+func (e *StoreError) ReadTransient() bool { return e.transient }
+
+// newStoreError builds a *StoreError and decides transience from cause
+// ITSELF, not from op: a cryptographic refusal (decrypt, authentication) is
+// never transient, because no retry decrypts a tampered ciphertext or
+// authenticates with the wrong key. Everything else is presumed to be the
+// read itself failing, which retrying can fix.
+func newStoreError(op string, cause error) *StoreError {
+	return &StoreError{Op: op, Err: cause, transient: isTransientCause(cause)}
+}
+
+// isTransientCause reports whether cause, the error a store's own Get/List
+// returned, describes a failure worth retrying. See role.isTransientCause,
+// which makes the identical decision for the role store's own StoreError;
+// the two packages duplicate this rather than share a leaf package, because
+// each is two lines and a shared dependency for them would outweigh the
+// duplication.
+func isTransientCause(cause error) bool {
+	if errors.Is(cause, seal.ErrDecryptionFailed) {
+		return false
+	}
+	return true
 }
 
 // BarrierError is returned when a barrier registry operation fails

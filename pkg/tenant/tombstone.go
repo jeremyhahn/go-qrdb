@@ -231,7 +231,7 @@ func (s *TenantService) deletedAt(ctx context.Context, tenantID string) (time.Ti
 		if isAbsent(err) {
 			return time.Time{}, false, nil
 		}
-		return time.Time{}, false, &StoreError{Op: "tombstone-get", Err: err}
+		return time.Time{}, false, newStoreError("tombstone-get", err)
 	}
 	return decodeDeletedAt(data)
 }
@@ -244,7 +244,7 @@ func (s *kvTenantService) deletedAt(ctx context.Context, tenantID string) (time.
 	}
 	data, err := s.store.Get(ctx, tombstoneKey(tenantID))
 	if err != nil {
-		return time.Time{}, false, &StoreError{Op: "tombstone-get", Err: err}
+		return time.Time{}, false, newStoreError("tombstone-get", err)
 	}
 	return decodeDeletedAt(data)
 }

@@ -210,7 +210,7 @@ func (s *kvTenantService) GetTenant(ctx context.Context, tenantID string) (*Tena
 	key := metadataPrefix + tenantID
 	data, err := s.store.Get(ctx, key)
 	if err != nil {
-		return nil, &StoreError{Op: "get", Err: err}
+		return nil, newStoreError("get", err)
 	}
 	if data == nil {
 		return nil, ErrTenantNotFound

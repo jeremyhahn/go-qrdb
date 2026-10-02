@@ -16,8 +16,11 @@ package role
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
 // ---------------------------------------------------------------------------
@@ -167,6 +170,82 @@ func TestStoreError_As(t *testing.T) {
 	}
 	if target.Op != "delete" {
 		t.Fatalf("Op: got %q, want %q", target.Op, "delete")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// StoreError.ReadTransient / newStoreError / isTransientCause (BL2's
+// producer-declares-transience marker -- see the doc comments on StoreError,
+// newStoreError and isTransientCause).
+// ---------------------------------------------------------------------------
+
+// TestStoreError_ReadTransient_DefaultsFalse pins the zero value: a
+// composite literal built outside newStoreError -- the only shape anything
+// outside this package can construct, since transient is unexported -- can
+// never assert its own transience.
+func TestStoreError_ReadTransient_DefaultsFalse(t *testing.T) {
+	err := &StoreError{Op: "get", Detail: "unmarshal", Err: io.EOF}
+	if err.ReadTransient() {
+		t.Fatal("a bare composite literal must read ReadTransient() = false; only newStoreError sets it true")
+	}
+}
+
+// TestStoreError_ReadTransient_TrueWhenSetByNewStoreError proves the method
+// reports exactly the field newStoreError computed, not a hardcoded value.
+func TestStoreError_ReadTransient_TrueWhenSetByNewStoreError(t *testing.T) {
+	err := newStoreError("get", "primary lookup", io.ErrUnexpectedEOF)
+	if !err.ReadTransient() {
+		t.Fatal("newStoreError on a non-decrypt cause must produce ReadTransient() = true")
+	}
+}
+
+// TestNewStoreError_NonDecryptCauseIsTransient covers an ordinary read
+// failure (ReadIndex not ready, leader lost, timeout) -- not a decrypt
+// refusal -- which newStoreError must mark transient.
+func TestNewStoreError_NonDecryptCauseIsTransient(t *testing.T) {
+	cause := errors.New("read index not ready")
+	err := newStoreError("get", "primary lookup", cause)
+	if !err.ReadTransient() {
+		t.Fatal("a non-decrypt cause must classify as transient")
+	}
+	if !errors.Is(err, cause) {
+		t.Fatal("newStoreError must still wrap cause for errors.Is")
+	}
+}
+
+// TestNewStoreError_DecryptCauseIsNotTransient is N1: a sealed-barrier-backed
+// store's decrypt/authentication refusal is definitive, because no retry
+// decrypts a tampered ciphertext or authenticates with the wrong key.
+func TestNewStoreError_DecryptCauseIsNotTransient(t *testing.T) {
+	err := newStoreError("get", "primary lookup", seal.ErrDecryptionFailed)
+	if err.ReadTransient() {
+		t.Fatal("a decrypt-failure cause must classify as definitive (ReadTransient() = false)")
+	}
+}
+
+// TestNewStoreError_WrappedDecryptCauseIsNotTransient: isTransientCause must
+// find seal.ErrDecryptionFailed through a wrapper, not only when it is the
+// cause verbatim -- errors.Is, not ==.
+func TestNewStoreError_WrappedDecryptCauseIsNotTransient(t *testing.T) {
+	wrapped := fmt.Errorf("decrypt tenant record: %w", seal.ErrDecryptionFailed)
+	err := newStoreError("get", "primary lookup", wrapped)
+	if err.ReadTransient() {
+		t.Fatal("a wrapped decrypt-failure cause must still classify as definitive")
+	}
+}
+
+// TestIsTransientCause_NonDecryptCause and TestIsTransientCause_DecryptCause
+// exercise isTransientCause directly, independent of newStoreError, so a
+// future caller of it is held to the same two-cause contract.
+func TestIsTransientCause_NonDecryptCause(t *testing.T) {
+	if !isTransientCause(errors.New("leader lost")) {
+		t.Fatal("isTransientCause(a generic read failure) must be true")
+	}
+}
+
+func TestIsTransientCause_DecryptCause(t *testing.T) {
+	if isTransientCause(seal.ErrDecryptionFailed) {
+		t.Fatal("isTransientCause(seal.ErrDecryptionFailed) must be false")
 	}
 }
 

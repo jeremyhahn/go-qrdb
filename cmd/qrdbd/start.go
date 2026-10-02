@@ -3613,9 +3613,14 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, da
 	// against the plain shared-store services would miss every such
 	// tenant's users and roles — authenticating their certificates to an
 	// identity with no roles and denying every request. The StaleRead
-	// fallbacks stay on the shared-store boot services: they exist for the
-	// system tenant's boot window, and for a barrier tenant a shared-store
-	// fallback answers not-found (deny), which is the fail-closed answer.
+	// fallbacks (user and role) stay on the shared-store boot services: they
+	// serve the SYSTEM TENANT ONLY — bootUserSvc/bootRoleSvc are confined to
+	// its identity namespace — for the boot window in which the ReadIndex
+	// pipeline is not yet warm. For any other tenant, barrier-isolated or
+	// not, the fallback is never consulted: the auth middleware and the RBAC
+	// authorizer both gate on tenant.IsSystemTenant before reaching it, so
+	// that tenant's caller gets the primary's transient error as a retryable
+	// 503, not the fallback's "not found" read as a definitive denial.
 	// The revocation cache TTL is the window during which a revoked
 	// certificate still authenticates, so an unparseable value aborts the boot
 	// rather than quietly reverting to a default the operator did not choose.

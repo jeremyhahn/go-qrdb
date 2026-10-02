@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
@@ -1109,4 +1110,39 @@ var authSamples = []error{
 	// is refused, and a verifier that could not decide is a retryable refusal.
 	&authmw.PeerAttestationRefusedError{Reason: authmw.PeerAttestationStateRejected},
 	&authmw.PeerAttestationRefusedError{Reason: authmw.PeerAttestationVerifierError},
+	// The RBAC role-resolution failure: the primary role store failed or
+	// timed out and the StaleRead fallback -- confined to the system tenant
+	// -- either is not configured or was not consulted for the caller's
+	// tenant. Every transport must answer 503/Unavailable, not the 401/403
+	// an unclassified failure would have fallen back to.
+	&rbac.ResolveError{Err: context.DeadlineExceeded},
+	// Every OTHER cause resolveErrorIsTransient allow-lists, so cross-transport
+	// parity covers all of them, not just the one above. Each of these shares
+	// the SAME real answer (503/Unavailable) as the sample above, so adding
+	// them does not create the "one Want, two real answers" conflict a
+	// DEFINITIVE cause would (see TestClassify_ResolveErrorDefinitiveCausesAreNotUnavailable
+	// in classify_test.go for why those live there instead).
+	&rbac.ResolveError{Err: context.Canceled},
+	// The two role.StoreError samples and the tenant.StoreError sample below
+	// are NOT exercising transientMarker/ReadTransient: a composite literal
+	// built outside pkg/role/pkg/tenant cannot set either type's unexported
+	// transient field (only role.newStoreError/tenant.newStoreError can), so
+	// each one's ReadTransient() reads its zero value, false. They classify
+	// Unavailable here because resolveErrorIsTransient's EARLIER
+	// context.DeadlineExceeded check unwraps straight through the StoreError
+	// wrapper via errors.Is -- these samples prove that unwrap, i.e. that a
+	// real role.newStoreError("get", "primary lookup",
+	// context.DeadlineExceeded) (what the bounded primary resolve actually
+	// produces when resolveSyncTimeout fires) still classifies correctly
+	// once wrapped, not that the marker mechanism itself works. The marker
+	// is proven end-to-end, through the real producers, by
+	// pkg/auth/middleware's own TestResolveErrorIsTransient_ProducerDeclaresTransience
+	// and the in-package newStoreError/ReadTransient unit tests in
+	// pkg/role/errors_test.go and pkg/tenant/errors_test.go -- a composite
+	// literal cannot reach that field, so no sample built here ever could.
+	&rbac.ResolveError{Err: &role.StoreError{Op: "get", Detail: "primary lookup", Err: context.DeadlineExceeded}},
+	&rbac.ResolveError{Err: &role.StoreError{Op: "get_by_name", Detail: "index lookup", Err: context.DeadlineExceeded}},
+	&rbac.ResolveError{Err: tenant.ErrTenantSealed},
+	&rbac.ResolveError{Err: seal.ErrSealed},
+	&rbac.ResolveError{Err: &tenant.StoreError{Op: "get", Err: context.DeadlineExceeded}},
 }

@@ -1392,6 +1392,12 @@ func TestRoutingRoleService_InconclusiveProbeFailsAndIsNotCached(t *testing.T) {
 	var se *StoreError
 	if !errors.As(err, &se) {
 		t.Errorf("CreateRole err = %T, want it typed as *StoreError", err)
+	} else if !se.ReadTransient() {
+		// An inconclusive probe (no leader yet, a transport failure) is
+		// exactly the condition newStoreError exists to mark retryable; a
+		// bare composite literal here would silently read as definitive.
+		t.Error("StoreError.ReadTransient() = false, want true: an inconclusive capability probe " +
+			"must classify as transient")
 	}
 
 	if _, err := svc.CreateRole(ctx, &CreateRoleRequest{Name: "probe-b", TenantID: tenantid.System}); err != nil {

@@ -891,6 +891,8 @@ authenticated value — whether or not the authenticator set one.
 | Reconciling another tenant's built-ins as a normal tenant caller | `tenant.CrossTenantDeniedError` | **yes** |
 | Reconciling a sealed barrier tenant | `tenant.ErrTenantSealed`, no fallback to the shared store | **yes** |
 | The linearizable user lookup misses its 500 ms budget for a NON-system tenant | `StoreUnavailableError` (503, retryable): the StaleRead fallback holds the system tenant only and is not consulted, because its "no such user" says nothing about another tenant | **yes** |
+| The linearizable role resolution misses its 500 ms budget for a NON-system tenant (permission resolution, the SO deny-list, or the strict-SoD Owner strip) | `*rbac.ResolveError` wrapping `context.DeadlineExceeded` (503, retryable): the StaleRead role fallback holds the system tenant only and is not consulted | **yes** |
+| A role a user still holds was deleted (`DeleteRole` does not cascade), on ANY tenant including the system tenant | `*rbac.ResolveError` wrapping `*role.RoleNotFoundError` (**not** retried against the fallback — a stale replica could still grant the deleted role's permissions — and **not** reclassified as retryable) | **yes** |
 | Stored role carries a permission this build does not define | reported on read via `RetiredPermissions`; **no read fails** | — |
 | Duplicate username within a tenant | refused | yes |
 | `Permissions()` / `RBAC()` on an unsupporting transport | returns **nil** — callers must nil-check | — |
@@ -904,6 +906,112 @@ and RBAC refused a correctly enrolled tenant user with a definitive 403. Under
 load this reddened the multi-node tenant suites about once in ten runs. For a
 non-system tenant the primary's transient error now stands, and the caller gets
 a retryable 503.
+
+**The StaleRead role fallback (`rbac.WithRoleServiceFallback`, qrdbd's
+`bootRoleSvc`) has the same confinement, for the same reason, and the fix is
+the same rule applied in three places.** `resolvePermissionSet`, `systemRoleIDs`
+and `staleMayDenote` each consult `rolesFallback` only when
+`tenant.IsSystemTenant` holds for the tenant the resolve is scoped to;
+otherwise the primary's transient error stands.
+
+**The 500 ms budget itself is unconditional, for both lookups, on every
+tenant — only the FALLBACK CONSULT is conditioned on the tenant.**
+`lookupUser` bounds the primary (linearizable) read to
+`authLookupSyncTimeout` (500 ms) for every tenant, and `resolvePermissionSet`
+bounds the primary resolve to `resolveSyncTimeout` (500 ms) the same way,
+regardless of whether `useFallback` holds for the tenant the resolve is
+scoped to. The reason is not that a fallback is always there to catch the
+result — for a non-system tenant neither fallback is ever consulted, exactly
+as the rows above describe — it is that a bare 500 ms timeout alone turns a
+stalled ReadIndex into a prompt, retryable answer instead of a hang on
+the caller's own outer context, which a request that set no deadline at all
+would never resolve. For the system tenant the budget additionally buys a
+fast failover to the StaleRead fallback within that same window; for every
+other tenant it still bounds the wait, and the primary's own error —
+`context.DeadlineExceeded` on a miss — comes back as the retryable
+`*rbac.ResolveError`/503 the row above describes. The externally visible
+effect is the same for both paths: a correctly enrolled non-system tenant
+user gets the retryable error, never a silent deny, and it now arrives within
+the same 500 ms budget either way, for both the user and the role lookup.
+
+**The role fallback's defect ran deeper than the user fallback's**:
+`role.SystemRoleIDs`/`ResolveSystemRoleID`
+read "no persisted record" from the fallback as "no legacy override — use the
+freshly derived canonical identifier", which is correct for a store with full
+visibility into the tenant and wrong for one simply blind to it. Every one of
+a tenant's role ids then missed that canonical-only set and fell to
+`staleMayDenote`, which treats an identifier the replica has no record of as
+one that MAY denote the system role being checked (the replica could be behind
+a role recreated under a generated identifier) — so an ordinary tenant role
+was wrongly recognised as SO (a false 403 under FIPS 140-3 AS10.03) or wrongly
+stripped by the strict-separation-of-duties Owner strip. Gating the fallback by
+tenant closes this the same way it closes the user-lookup case: the primary's
+transient error is reported instead of a verdict the fallback was never in a
+position to make.
+
+**A ResolveError's class depends on WHAT the primary returned, not just THAT
+it returned an error.** `resolvePermissionSet` wraps whatever the primary
+returns in `*rbac.ResolveError`, and the primary can fail two different ways:
+TRANSIENTLY (a timeout, the store itself unreachable, or — for a
+barrier-routed tenant — its role store resolved to a sealed barrier) or
+DEFINITIVELY (the role was deleted or never existed — `*role.RoleNotFoundError`,
+which `kvRoleStore.GetRole`'s tenant-ownership check also answers with for a
+cross-tenant id — the request was malformed — `*role.ValidationError` — or a
+resolver broke its contract). Only the transient case is retried against the
+fallback, and only the transient case classifies as a retryable
+503/Unavailable. `pkg/auth/middleware`'s `resolveErrorIsTransient` is an
+explicit ALLOW-list of safe-to-retry causes, not a list of exclusions, so a
+future definitive error type this package does not yet recognise falls
+through unclassified instead of silently becoming retryable:
+
+- `context.DeadlineExceeded` / `context.Canceled`.
+- `tenant.ErrTenantSealed` / `seal.ErrSealed` — a barrier-isolated tenant's
+  role store (`routingRoleService.storeFor` → `resolver.Resolve`) resolved to
+  a sealed barrier, or sealed one step later; retryable once unsealed, the
+  same class every other data-plane read gives this condition.
+- A cause implementing a small, unexported `transientMarker` interface
+  (`ReadTransient() bool`), consulted via `errors.As`. `*role.StoreError`
+  (fields `Op`, `Detail`, `Err`) and `*tenant.StoreError` (fields `Op`,
+  `Err` — it carries no `Detail` or `TenantID`) both implement it: an
+  unexported `transient` field, set ONLY by each package's own
+  `newStoreError` constructor at the point the underlying store failure is
+  first observed, backs the method. This is deliberately NOT a match on
+  `Op`/`Detail` — those are free-text labels naming WHERE a failure happened
+  (`GetRole`'s own key read vs `GetRoleByName`'s name-index read vs the
+  tenant-metadata read `storeFor`'s resolve depends on), not WHAT KIND of
+  failure it is, and a future rename of one would have silently changed what
+  classified as retryable with no compiler or test signal. `newStoreError`
+  decides transience from the cause it is actually given: a cryptographic
+  refusal from a sealed-barrier-backed store's Decrypt
+  (`seal.ErrDecryptionFailed` — a tampered ciphertext, or the wrong key) is
+  marked definitive, never transient, because no retry decrypts a tampered
+  ciphertext; every other observed cause (ReadIndex not ready, leader lost,
+  timeout) is marked transient. One consequence of that rule is worth
+  stating plainly: a follower that has not yet applied a tenant barrier
+  rekey, asked to decrypt a record sealed under the new epoch's key with its
+  still-stale key material, gets exactly this cryptographic refusal — and so
+  reads it as a DEFINITIVE deny (fail-closed), not a retryable 503, until
+  that follower catches up to the rekey. A corrupt stored record (an unmarshal
+  failure) is definitive for a different reason: it is built as a bare
+  `&StoreError{...}` composite literal that never calls `newStoreError` at
+  all, so its `transient` field keeps the zero value, `false` — the decoder
+  that found the corruption has no "cause" to hand `newStoreError` in the
+  first place. A hand-built `*role.StoreError`/`*tenant.StoreError` from
+  outside its producing package cannot set the `transient` field at all —
+  neither type exports it, and neither's exported fields include it — so the
+  only way to assert a `StoreError` is transient is to actually produce one
+  through the real store code, which is what
+  `pkg/auth/middleware/resolve_producer_test.go` does.
+
+`DeleteRole` does not cascade to the users who still hold the deleted role,
+so a classifier that marked every `ResolveError` retryable turned that
+permanent 401/403 into a permanent retryable 503 for every request those
+users made. The fallback-consult rule has the same split: even for the
+system tenant, a DEFINITIVE `RoleNotFoundError` or `ValidationError` is never
+retried against the fallback, because a StaleRead replica that has not
+caught up to the deletion yet could still answer with the just-deleted
+role's permissions — resurrecting a revoked grant rather than reporting the
+deletion.
 
 The nil returns are the sharp edge here: they are not error values, so an
 unchecked call panics rather than failing cleanly.

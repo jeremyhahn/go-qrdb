@@ -37,6 +37,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -266,8 +267,33 @@ func TestLookupUser_PrimaryTransient_FallbackNotFound(t *testing.T) {
 }
 
 func TestLookupUser_PrimaryTransient_FallbackTransient(t *testing.T) {
-	// Both primary and fallback fail with transient errors. The primary
-	// error should be returned.
+	// Both primary and fallback fail with transient errors, for the SYSTEM
+	// tenant the fallback actually holds -- so the fallback is consulted
+	// (calls == 1) and, failing too, the primary error should be returned.
+	primaryErr := errors.New("raft not ready")
+	primary := &mockUserServicer{err: primaryErr}
+	fallback := &mockUserServicer{err: errors.New("fallback also broken")}
+
+	m := &AuthMiddleware{users: primary, usersFallback: fallback}
+
+	_, err := m.lookupUser(context.Background(), tenant.SystemTenantID, "alice")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if err.Error() != primaryErr.Error() {
+		t.Errorf("expected primary error %q, got %q", primaryErr.Error(), err.Error())
+	}
+	if got := fallback.calls.Load(); got != 1 {
+		t.Errorf("fallback.calls = %d, want 1: the system tenant is the one the fallback holds", got)
+	}
+}
+
+// TestLookupUser_PrimaryTransient_FallbackNeverConsultedForAnotherTenant is
+// the regression the fix above guards: for any tenant other than the system
+// tenant, the fallback is confined to an identity namespace that cannot hold
+// it, so lookupUser must not consult it at all -- see lookupUser's own doc
+// comment and WithUserServiceFallback.
+func TestLookupUser_PrimaryTransient_FallbackNeverConsultedForAnotherTenant(t *testing.T) {
 	primaryErr := errors.New("raft not ready")
 	primary := &mockUserServicer{err: primaryErr}
 	fallback := &mockUserServicer{err: errors.New("fallback also broken")}
@@ -280,6 +306,10 @@ func TestLookupUser_PrimaryTransient_FallbackTransient(t *testing.T) {
 	}
 	if err.Error() != primaryErr.Error() {
 		t.Errorf("expected primary error %q, got %q", primaryErr.Error(), err.Error())
+	}
+	if got := fallback.calls.Load(); got != 0 {
+		t.Errorf("fallback.calls = %d, want 0: the fallback is confined to the system tenant and must "+
+			"not be consulted for tenant t1", got)
 	}
 }
 

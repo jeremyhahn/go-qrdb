@@ -14,6 +14,12 @@
 
 package role
 
+import (
+	"errors"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+)
+
 // RoleNotFoundError is returned when a role ID does not exist.
 type RoleNotFoundError struct {
 	ID string
@@ -147,10 +153,19 @@ func (e *ReservedRoleNameError) Error() string {
 }
 
 // StoreError is returned for store-level operation failures.
+//
+// transient is set at the construction site (see newStoreError), by the code
+// that actually saw the underlying failure -- not inferred later from Op or
+// Detail strings, which name WHERE the failure happened, not WHAT KIND it is.
+// A caller deciding whether to retry reads it through the ReadTransient
+// method rather than matching on Op/Detail: those are free text for a log
+// message, and a renamed one must not silently change what is retryable.
 type StoreError struct {
 	Op     string
 	Detail string
 	Err    error
+
+	transient bool
 }
 
 // Error returns a human-readable description of the store failure.
@@ -167,6 +182,45 @@ func (e *StoreError) Error() string {
 
 // Unwrap returns the underlying error for use with errors.Is and errors.As.
 func (e *StoreError) Unwrap() error { return e.Err }
+
+// ReadTransient reports whether retrying the operation that produced this
+// error might succeed: the store read itself failed (ReadIndex not ready,
+// leader lost), as opposed to a definitive answer -- corrupt stored data, or
+// a cryptographic refusal (decrypt, authentication) from a
+// sealed-barrier-backed store -- that no retry changes. See newStoreError.
+//
+// Named ReadTransient rather than the shorter Transient to avoid a
+// structural collision with *service.FactorMigrationRefusedError's own
+// Transient() bool, which answers an unrelated question ("does a later
+// migration run still have work to do") and would otherwise satisfy the
+// same single-method interface a classifier type-switches on.
+func (e *StoreError) ReadTransient() bool { return e.transient }
+
+// newStoreError builds a *StoreError and decides transience from cause ITSELF
+// (the underlying store's own failure), not from op or detail: those are
+// free-text labels a future refactor can rename without anyone noticing the
+// retry semantics moved with them. A cryptographic refusal -- the one failure
+// shape a successful read can still produce, via a sealed-barrier-backed
+// store's Decrypt -- is never transient, because no retry decrypts a
+// tampered ciphertext or authenticates with the wrong key; isTransientCause
+// is the one place that distinction is made.
+func newStoreError(op, detail string, cause error) *StoreError {
+	return &StoreError{Op: op, Detail: detail, Err: cause, transient: isTransientCause(cause)}
+}
+
+// isTransientCause reports whether cause, the error a store's own Get/List/
+// Scan returned, describes a failure worth retrying. A cryptographic refusal
+// from a sealed-barrier-backed store's Decrypt -- a tampered ciphertext, or
+// the wrong key -- is excluded explicitly: it is a successful READ of
+// definitively bad data, not a failure to read, and retrying never decrypts
+// it. Everything else reaching here is presumed to be the read itself
+// failing (ReadIndex not ready, leader lost, timeout), which retrying can fix.
+func isTransientCause(cause error) bool {
+	if errors.Is(cause, seal.ErrDecryptionFailed) {
+		return false
+	}
+	return true
+}
 
 // ValidationError is returned when request validation fails.
 type ValidationError struct {

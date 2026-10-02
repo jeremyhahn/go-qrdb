@@ -164,7 +164,7 @@ func (r *routingRoleService) createStoreFor(ctx context.Context, tenantID string
 	}
 	capable, err := r.atomicCapable(ctx, multi)
 	if err != nil {
-		return nil, &StoreError{Op: "resolve", Detail: "guarded batch capability probe", Err: err}
+		return nil, newStoreError("resolve", "guarded batch capability probe", err)
 	}
 	if !capable {
 		return r.storeForKV(kv, &r.stores, r.opts)

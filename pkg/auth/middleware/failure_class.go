@@ -15,6 +15,7 @@
 package middleware
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -25,6 +26,9 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // AuthFailureClass is WHAT KIND of failure an authentication or authorization
@@ -139,6 +143,72 @@ func (c AuthFailureClass) Retryable() bool {
 	return c == AuthFailureUnavailable || c == AuthFailureRateLimited || c == AuthFailureAuditUnavailable
 }
 
+// transientMarker is the capability role.StoreError and tenant.StoreError
+// both implement: the PRODUCER -- the code that actually saw the underlying
+// store failure -- declares whether it is worth retrying, at the point the
+// error is constructed (role.newStoreError, tenant.newStoreError).
+//
+// This replaces matching on Op/Detail strings: those name WHERE a failure
+// happened for a log message, not WHAT KIND it is, and nothing tied the two
+// together. A producer renaming "primary lookup" to something else left a
+// string set matching nothing and silently reopened a false-denial class --
+// a mutation that survived the whole suite. Checking a method the producer
+// implements instead means a renamed label cannot desync from the
+// classification it used to carry, because there is no longer a second copy
+// of the label to desync from.
+//
+// The method is named ReadTransient, not the shorter Transient, because
+// *service.FactorMigrationRefusedError already has its own Transient() bool
+// answering an unrelated question ("does a later migration run still have
+// work to do"); errors.As below matches on the METHOD SET, so that type
+// would otherwise satisfy this interface by accident and have its retry
+// signal misread as "safe to retry now".
+type transientMarker interface {
+	ReadTransient() bool
+}
+
+// resolveErrorIsTransient reports whether cause -- the error a
+// *rbac.ResolveError wraps -- is one this package recognises as a transient
+// failure of the role or tenant store, safe to report as retryable (go-qrdb
+// strict-isolation phase 0 review findings X1, BL1 and BL2).
+//
+// Deliberately an ALLOW-list:
+//
+//   - context.DeadlineExceeded/Canceled is the primary's own bounded resolve
+//     (resolveSyncTimeout) timing out, or the caller's outer context ending.
+//   - tenant.ErrTenantSealed / seal.ErrSealed: a barrier-isolated tenant's
+//     role store resolved to a sealed barrier (routingRoleService.storeFor ->
+//     resolver.Resolve), retryable once the tenant is unsealed -- the same
+//     condition pkg/api/errclass's dominant rules give the same class for
+//     every other data-plane read.
+//   - anything in the cause chain implementing transientMarker, asked
+//     directly rather than matched by type or label: role.StoreError and
+//     tenant.StoreError both decide at construction (not here) whether the
+//     read that produced them is worth retrying -- "unmarshal" (corrupt
+//     stored data) and a sealed-barrier-backed store's decrypt/authentication
+//     refusal (seal.ErrDecryptionFailed) are never transient, because no
+//     retry un-corrupts a record or decrypts a tampered ciphertext.
+//
+// *role.RoleNotFoundError (the key is simply absent, including the
+// cross-tenant case kvRoleStore.GetRole's ownership check answers with) and
+// *role.ValidationError (a malformed request) are different types entirely
+// that implement no such method, so errors.As below never matches them. See
+// the "rbac.ResolveError" rule below for why this is an allow-list rather
+// than naming every definitive type instead.
+func resolveErrorIsTransient(cause error) bool {
+	if errors.Is(cause, context.DeadlineExceeded) || errors.Is(cause, context.Canceled) {
+		return true
+	}
+	if errors.Is(cause, tenant.ErrTenantSealed) || errors.Is(cause, seal.ErrSealed) {
+		return true
+	}
+	var marker transientMarker
+	if errors.As(cause, &marker) {
+		return marker.ReadTransient()
+	}
+	return false
+}
+
 // authFailureRules is the ORDERED classification chain, first-match-wins.
 // Below the audit.GateError and PeerAttestationRefusedError rules (placed at
 // the front for reasons of their own, see their comments), the remaining
@@ -243,6 +313,41 @@ var authFailureRules = []struct {
 	{"StoreUnavailableError", func(err error) (AuthFailureClass, bool) {
 		var e *StoreUnavailableError
 		return AuthFailureUnavailable, errors.As(err, &e)
+	}},
+	// The RBAC authorizer's role-resolution failure (rbac.resolvePermissionSet,
+	// systemRoleIDs, staleMayDenote): the primary (linearizable) role store
+	// failed or timed out, and either no StaleRead fallback is configured or
+	// -- go-qrdb strict-isolation phase 0 review finding B1 -- the caller's
+	// tenant is not the system tenant the fallback is confined to, so it was
+	// never consulted. That is not a verdict about the identity's roles: the
+	// node could not resolve them, and the caller gets the retryable 503 that
+	// describes, exactly as the user-lookup fallback's *StoreUnavailableError
+	// does above.
+	//
+	// This is an ALLOW-list (resolveErrorIsTransient), not an exclude-list --
+	// review finding X1. *rbac.ResolveError wraps whatever the primary
+	// returned VERBATIM, and that includes DEFINITIVE answers: a deleted (or
+	// never-existent) role is *role.RoleNotFoundError, a malformed request is
+	// *role.ValidationError, and a resolver contract violation is
+	// *role.InvalidResolverResultError or rbac's own
+	// *rbac.InvalidRoleLookupError. None of those is retryable -- retrying a
+	// RoleNotFoundError never finds the role, and a ValidationError's request
+	// never becomes valid -- so classifying every ResolveError as Unavailable
+	// turned a deleted role (401/403 on dev/main) into a PERMANENT retryable
+	// 503 on every request its holders made. An exclude-list would need to
+	// name every definitive type this package will ever meet; an allow-list
+	// instead names only what IS safe to retry, so a future definitive error
+	// type this rule does not yet recognise falls through unclassified
+	// (the caller's own fallback) rather than silently becoming retryable.
+	{"rbac.ResolveError", func(err error) (AuthFailureClass, bool) {
+		var re *rbac.ResolveError
+		if !errors.As(err, &re) {
+			return AuthFailureUnknown, false
+		}
+		if !resolveErrorIsTransient(re.Err) {
+			return AuthFailureUnknown, false
+		}
+		return AuthFailureUnavailable, true
 	}},
 	// The certificate may be perfectly good and this node could not read
 	// revocation state. Telling a legitimate caller its credential is bad

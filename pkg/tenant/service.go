@@ -921,7 +921,7 @@ func (s *TenantService) GetTenant(ctx context.Context, tenantID string) (*Tenant
 		if errors.Is(err, seal.ErrSecretNotFound) {
 			return nil, ErrTenantNotFound
 		}
-		return nil, &StoreError{Op: "get", Err: err}
+		return nil, newStoreError("get", err)
 	}
 
 	var info TenantInfo
@@ -1008,7 +1008,7 @@ func (s *TenantService) ListTenants(ctx context.Context) ([]TenantInfo, error) {
 			if errors.Is(err, seal.ErrSecretNotFound) {
 				continue
 			}
-			return nil, &StoreError{Op: "get", Err: err}
+			return nil, newStoreError("get", err)
 		}
 
 		var info TenantInfo
