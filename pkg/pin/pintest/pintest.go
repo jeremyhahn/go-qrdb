@@ -21,6 +21,7 @@ package pintest
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -72,4 +73,35 @@ func NewBackend(tb testing.TB) *pin.SoftwareBackend {
 		tb.Fatalf("pintest: new software backend: %v", err)
 	}
 	return b
+}
+
+// ThrottledSOPIN is the SO PIN NewSOPINBackend provisions.
+const ThrottledSOPIN = "so-pin-1234"
+
+// NewSOPINBackend is a raw (undecorated) backend with ThrottledSOPIN set: what
+// a composer that forgot the lockout would hand a transport.
+func NewSOPINBackend(tb testing.TB) *pin.SoftwareBackend {
+	tb.Helper()
+	b := NewBackend(tb)
+	if err := b.SetSOPIN("", ThrottledSOPIN); err != nil {
+		tb.Fatalf("pintest: set SO PIN: %v", err)
+	}
+	return b
+}
+
+// RequireThrottled fails the test unless SO PIN checks through backend -- the
+// backend a transport holds after being handed NewSOPINBackend's raw backend
+// -- are held to the SO PIN lockout: after the free wrong PINs, even
+// ThrottledSOPIN is refused with pin.ErrPINLocked.
+func RequireThrottled(tb testing.TB, backend pin.PINBackend) {
+	tb.Helper()
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		if err := pin.RequireSOPIN(ctx, backend, "wrong-pin-0000"); !errors.Is(err, pin.ErrPINInvalid) {
+			tb.Fatalf("pintest: wrong PIN %d = %v, want pin.ErrPINInvalid", i+1, err)
+		}
+	}
+	if err := pin.RequireSOPIN(ctx, backend, ThrottledSOPIN); !errors.Is(err, pin.ErrPINLocked) {
+		tb.Fatalf("pintest: the right PIN after the free failures = %v, want pin.ErrPINLocked: the backend is not throttled", err)
+	}
 }

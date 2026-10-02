@@ -208,9 +208,11 @@ are not reconstructed here — their history is in the git log.
   residual. The counting is one implementation, `auth.SOPINLockout`, behind
   both the node SO PIN (`pin.NewLockoutBackend`) and each tenant's SO PIN
   (`auth.SOAuthenticator.VerifySOPIN`, previously unlimited); a locked
-  tenant PIN answers 429 with its retry delay. `embedded.WithPINBackend` and
-  `ceremony.CeremonyService.SetPINBackend` now install the lockout too
-  (idempotently).
+  tenant PIN answers 429 with its retry delay. Every transport's
+  `WithPINBackend` (REST, gRPC, Unix, QUIC, MCP, embedded), gRPC's
+  `WithRegisterPINBackend` and `ceremony.CeremonyService.SetPINBackend` now
+  install the lockout too (idempotently), so a raw backend handed straight to
+  a transport is still throttled.
 - **Initializing an initialized barrier was an anonymous SO PIN oracle.**
   Present in v0.25.2-alpha. Both initialize paths verified a supplied SO PIN
   before the barrier refused the call as already initialized, so a right PIN

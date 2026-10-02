@@ -486,7 +486,13 @@ func WithEncryptionMigrator(m service.EncryptionMigrator) ServerOption {
 // SO-PIN-gated operations (seal, recovery generation, rekey start, holder
 // revocation) verify against it. Without one those operations fail closed
 // with pin.ErrBackendNotConfigured.
+//
+// The backend is decorated with the SO PIN lockout (pin.NewLockoutBackend,
+// idempotent: a backend the composer already decorated keeps its one set of
+// counters), so a raw backend handed straight to this transport is still
+// throttled.
 func WithPINBackend(backend pin.PINBackend) ServerOption {
+	backend = pin.NewLockoutBackend(backend)
 	return func(s *Server) { s.pinBackend = backend }
 }
 

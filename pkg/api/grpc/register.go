@@ -134,7 +134,13 @@ func WithRegisterEncryptionMigrator(m service.EncryptionMigrator) RegisterOption
 // WithRegisterPINBackend attaches the canonical pin.PINBackend used for
 // the SO PIN / User PIN compliance-gating layer on barrier administrative
 // operations.
+//
+// The backend is decorated with the SO PIN lockout (pin.NewLockoutBackend,
+// idempotent: a backend the composer already decorated keeps its one set of
+// counters), so a raw backend handed straight to this transport is still
+// throttled.
 func WithRegisterPINBackend(backend pin.PINBackend) RegisterOption {
+	backend = pin.NewLockoutBackend(backend)
 	return func(s *qrdbServiceServer) { s.pinBackend = backend }
 }
 

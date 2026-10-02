@@ -44,14 +44,23 @@ func (b *stubPINBackend) ResetLockout(_ string) error          { return nil }
 var _ pin.PINBackend = (*stubPINBackend)(nil)
 
 // TestWithPINBackend_Applied verifies the WithPINBackend option populates
-// the pinBackend field on the unix Server struct.
+// the pinBackend field on the unix Server struct with the injected backend
+// behind the SO PIN lockout, and keeps a backend that is already decorated
+// as it is.
 func TestWithPINBackend_Applied(t *testing.T) {
 	backend := &stubPINBackend{}
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-pinbackend.sock",
 		WithPINBackend(backend),
 		WithTLS(selfSignedTLSConfig(t)))
-	if srv.pinBackend != backend {
-		t.Fatalf("pinBackend = %v, want injected backend", srv.pinBackend)
+	if srv.pinBackend == nil || srv.pinBackend == pin.PINBackend(backend) {
+		t.Fatalf("pinBackend = %v, want the injected backend behind the lockout", srv.pinBackend)
+	}
+	decorated := pin.NewLockoutBackend(backend)
+	srv = NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-pinbackend.sock",
+		WithPINBackend(decorated),
+		WithTLS(selfSignedTLSConfig(t)))
+	if srv.pinBackend != decorated {
+		t.Fatalf("pinBackend = %v, want the already-decorated backend kept as it is", srv.pinBackend)
 	}
 }
 

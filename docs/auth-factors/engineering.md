@@ -109,7 +109,10 @@ Storage keys: `so-pin` and `user-pin`, each a JSON-encoded `PINRecord`.
   locked: 5 free failures, then a backoff doubling from 1 s to 15 min. It is
   idempotent and is installed where a node chooses its backend
   (`lifecycle.NewSealStorePINBackend`, `server.WithPINBackend`), and again by
-  `embedded.WithPINBackend` and `CeremonyService.SetPINBackend`, so the
+  every transport's own option -- `WithPINBackend` on the REST, gRPC, Unix,
+  QUIC and MCP servers, gRPC's `WithRegisterPINBackend`, and
+  `embedded.WithPINBackend` -- and by `CeremonyService.SetPINBackend`, so a
+  raw backend handed straight to any of them is still throttled, and the
   ceremony and every transport share it. It keeps **a counter per caller**
   (`auth.CallerPrincipal`): one for anonymous sealed-window checks, and one
   per authenticated principal -- the identity, or else the verified client

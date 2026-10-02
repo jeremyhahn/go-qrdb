@@ -369,7 +369,13 @@ func WithSQLService(svc service.SQLServicer) ServerOption {
 // WithPINBackend attaches the canonical pin.PINBackend used for the
 // optional SO PIN / User PIN compliance-gating layer on barrier
 // administrative operations.
+//
+// The backend is decorated with the SO PIN lockout (pin.NewLockoutBackend,
+// idempotent: a backend the composer already decorated keeps its one set of
+// counters), so a raw backend handed straight to this transport is still
+// throttled.
 func WithPINBackend(backend pin.PINBackend) ServerOption {
+	backend = pin.NewLockoutBackend(backend)
 	return func(s *Server) {
 		s.pinBackend = backend
 	}
