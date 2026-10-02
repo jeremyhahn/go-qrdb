@@ -538,9 +538,11 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// Cluster-wide shard IDs. Every node's allocator starts at shard.UserMin
 	// and is unique on that node only, so two nodes creating raft databases
 	// issued the same shard ID. Every API create now claims its ID from one
-	// replicated high-water mark in the system store. The mark's first claim
-	// starts past every shard ID placement already records, so a cluster
-	// whose nodes allocated locally before this never re-issues one of them.
+	// replicated high-water mark in the system store. Claims share the ID
+	// space with IDs issued outside them -- a provisioned database takes its
+	// ID from each node's allocator -- so the mark's first claim starts past
+	// every shard ID placement records, and every claim starts at or above
+	// the claiming node's own allocator.
 	claimStore, ok := authStore.(shard.ClaimStore)
 	if !ok {
 		return nil, &ShardClaimerError{Err: kvstore.ErrAtomicWriteUnsupported}

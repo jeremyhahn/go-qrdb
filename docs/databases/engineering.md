@@ -756,11 +756,13 @@ drop fence relies on never happening.
   race (`shard.ClaimContentionError` after 64 lost races in a row). An ID is
   recorded as issued before it is returned, so a create that fails afterwards
   leaves a gap, never a reuse.
-- **Floors.** The claim never issues below the node's own allocator, which it
-  then moves past the claimed ID, nor below `shard.UserMin`. The claim that
-  creates the record starts past the highest shard ID any placement records,
-  so a cluster whose nodes allocated per node before this keeps every ID it
-  issued.
+- **Floors, and why they are a correctness requirement.** Claims share the
+  shard ID space with IDs issued outside them: a provisioned database takes
+  its ID from each node's allocator (below). So a claim never issues below the
+  claiming node's own allocator, which it then moves past the claimed ID, nor
+  below `shard.UserMin`, and the claim that creates the record starts past the
+  highest shard ID any placement records. Without them a claim could issue an
+  ID a provisioned database already holds.
 - **No fallback.** A create that cannot claim refuses with
   `*database.ShardIDClaimError` and leaves nothing behind. It never takes a
   per-node ID that another node may already hold.
@@ -770,10 +772,17 @@ drop fence relies on never happening.
   claim would give every node a different ID for the same group.
 - **Feature gate.** `featuregate.ClusterShardIDs` adds no Raft command. Its
   activation makes a binary that allocates per node unable to start or be
-  admitted, so the guarantee cannot be undone by a rollback. Until every node
-  of a cluster being upgraded runs a claiming binary, a database created
-  through an older node can still take a per-node ID: create raft databases
-  through upgraded nodes during a rolling upgrade.
+  admitted, so the guarantee cannot be undone by a rollback.
+- **Rolling upgrade.** Until every node of a cluster being upgraded runs a
+  claiming binary, a database created through an older node takes a per-node
+  ID. Create raft databases through upgraded nodes while an upgrade is in
+  progress. Nothing refuses it: a binary without claims is not supported once
+  the upgrade completes, and the gate keeps it out from then on.
+- **Proof.** `TestShardIDs_*` (unit, two managers over one replicated store)
+  and `TestIsolationRaft_ShardIDs_*` (three real nodes, in the per-push cluster
+  tenancy job) assert distinct IDs for databases created through different
+  nodes, and no reuse of a dropped database's ID when its name is created
+  again through another node.
 
 ## Error semantics
 

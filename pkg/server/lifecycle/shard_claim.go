@@ -29,8 +29,10 @@ type placementLister interface {
 // placementShardSeed returns the seed the cluster shard-ID claimer consults
 // when it creates the replicated high-water mark: the highest shard ID any
 // placement records. Placement is the one cluster-wide record of which shard
-// IDs are in use, so a cluster whose nodes issued IDs locally before claims
-// existed starts claiming past every one of them.
+// IDs are in use. The seed is required for correctness: claims share the ID
+// space with IDs issued outside them (a provisioned database takes its ID
+// from each node's allocator), and the first claim must start past all of
+// them.
 //
 // A nil store yields a nil seed: a composition with no placement table has no
 // dedicated-raft database another node could be serving.

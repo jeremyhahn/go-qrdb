@@ -44,8 +44,10 @@ type ClaimStore interface {
 
 // SeedFunc reports the highest shard ID already in use anywhere in the
 // cluster, or zero when there is none. It is consulted once, when the
-// high-water mark does not exist yet, so a cluster whose nodes allocated
-// locally before claims existed never re-issues one of their IDs.
+// high-water mark does not exist yet. It is a correctness requirement, not a
+// migration aid: claims share the shard ID space with IDs issued outside them
+// -- a provisioned database takes its ID from each node's allocator -- and the
+// first claim must start past every one of those already in use.
 type SeedFunc func(ctx context.Context) (uint64, error)
 
 // Claimer issues shard IDs that are unique across a cluster.
