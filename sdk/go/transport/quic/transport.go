@@ -903,11 +903,15 @@ func mapWireError(method string, statusCode uint16, payload []byte) error {
 		return build(msg)
 	}
 
-	return &transport.RequestError{
+	reqErr := &transport.RequestError{
 		Method:     method,
 		StatusCode: int(statusCode),
 		Err:        errors.New(wireStatusPrefixes[statusCode] + msg),
 	}
+	if decoded.HasRetryAfter {
+		reqErr.RetryAfter = decoded.RetryAfter
+	}
+	return reqErr
 }
 
 // isWireNotFound reports whether err is the not-found the shared mapper

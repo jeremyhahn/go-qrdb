@@ -212,7 +212,9 @@ Upgrade both together.
 | `message` | the server's account of the failure. Bytes that are not valid UTF-8 are replaced with U+FFFD |
 | `details` | a `google.rpc.RetryInfo` when the failure names how long to wait before a retry can succeed -- a throttled request, an SO PIN lockout, a rate-limited caller -- with the exact delay. It is REST's `Retry-After`, gRPC's `RetryInfo` and MCP's `retry_after_seconds` on this transport. A reader ignores details it does not know |
 
-The Go SDK decodes it with `wire.DecodeErrorPayload`. A body that does not
+The Go SDK decodes it with `wire.DecodeErrorPayload`, and hands the delay to
+the caller as `RequestError.RetryAfter` (`sdk.RequestError`), as it does on
+every other transport. A body that does not
 decode is reported as `*wire.PayloadDecodeError` on the request error --
 never shown as the server's message, and never classified as a typed
 condition such as absence.

@@ -13,6 +13,16 @@ are not reconstructed here — their history is in the git log.
 
 ### Added
 
+- **`transport.RequestError.RetryAfter`, re-exported as `sdk.RequestError`.**
+  A refusal that names how long to wait before a retry can succeed -- a
+  throttled quorum request or sign-csr, an SO PIN lockout, a rate-limited
+  caller -- now gives that delay to the SDK caller on every transport. REST
+  reads `Retry-After`, gRPC and the Unix socket read the `google.rpc.RetryInfo`
+  detail, QUIC reads the error frame's `RetryInfo`, and MCP reads
+  `retry_after_seconds`. The embedded transport wraps such a refusal in a
+  `RequestError` carrying its own delay; it still unwraps to the refusal's
+  type. A failure that names no delay has `RetryAfter` zero.
+
 - **Shamir custody of a database barrier.** A database on a dedicated store
   can be created with `barrier: {enabled: true, mode: "shamir",
   sharesRequired: M, sharesTotal: N}` and no secret; it is created sealed and

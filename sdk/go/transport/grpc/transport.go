@@ -37,6 +37,7 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/retryinfo"
 )
 
 // Compile-time interface assertions.
@@ -759,10 +760,8 @@ func mapGRPCError(method string, err error) error {
 		// lets a consumer degrade gracefully over the wire exactly as it can
 		// embedded, instead of matching message text (go-qrdb#141).
 		return &transport.CapabilityUnsupportedError{Message: st.Message()}
-	case codes.Unavailable:
-		return &transport.RequestError{Method: method, StatusCode: int(st.Code()), Err: err}
 	default:
-		return &transport.RequestError{Method: method, StatusCode: int(st.Code()), Err: err}
+		return &transport.RequestError{Method: method, StatusCode: int(st.Code()), Err: err, RetryAfter: retryinfo.Delay(st)}
 	}
 }
 

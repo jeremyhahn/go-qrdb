@@ -51,7 +51,7 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 	}
 	result, err := t.ceremonySvc.CeremonyInitialize(ctx, t.ceremonyCA, holderwire.CeremonyInitFrom(req))
 	if err != nil {
-		return nil, err
+		return nil, delayed("CeremonyInitialize", err)
 	}
 	return holderwire.CeremonyInitTo(result), nil
 }
@@ -67,7 +67,7 @@ func (t *Transport) CeremonyStatus(ctx context.Context) (*transport.CeremonyStat
 	}
 	info, err := t.ceremonySvc.CeremonyStatus(ctx)
 	if err != nil {
-		return nil, err
+		return nil, delayed("CeremonyStatus", err)
 	}
 	return &transport.CeremonyStatusResponse{
 		State:   info.State,
@@ -117,7 +117,7 @@ func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRI
 	}
 	result, err := t.ceremonySvc.CeremonySignCSR(ctx, req.Username, req.SOPin, req.CSRPEM, req.Role)
 	if err != nil {
-		return nil, err
+		return nil, delayed("CeremonySignCSR", err)
 	}
 	return &transport.SignCSRInitResponse{
 		CertPEM: string(result.CertPEM),

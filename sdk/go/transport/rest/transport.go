@@ -855,7 +855,28 @@ func (t *Transport) decodeErrorResponse(method string, resp *http.Response) erro
 		Method:     method,
 		StatusCode: resp.StatusCode,
 		Err:        serverErrorFor(resp.StatusCode, msg),
+		RetryAfter: retryAfterHeader(resp.Header.Get("Retry-After")),
 	}
+}
+
+// retryAfterHeader reads a Retry-After header (RFC 9110 section 10.2.3):
+// delay-seconds, which is what the server sends, or an HTTP-date, read as
+// the time remaining until it. A header that is absent, malformed or in the
+// past names no delay.
+func retryAfterHeader(v string) time.Duration {
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.ParseInt(v, 10, 64); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		return time.Duration(secs) * time.Second
+	}
+	if at, err := http.ParseTime(v); err == nil {
+		return max(time.Until(at), 0)
+	}
+	return 0
 }
 
 // serverErrorFor types the server's refusal where its status is unambiguous.

@@ -14,7 +14,10 @@
 
 package transport
 
-import "strconv"
+import (
+	"strconv"
+	"time"
+)
 
 // ConfigError is returned when the transport configuration is invalid.
 type ConfigError struct {
@@ -64,6 +67,15 @@ type RequestError struct {
 	Method     string
 	StatusCode int
 	Err        error
+
+	// RetryAfter is how long the server said the caller must wait before a
+	// retry can succeed -- a throttled request, an SO PIN lockout, a
+	// rate-limited caller -- and zero when it named no delay. Every transport
+	// fills it from what the server sent: REST's Retry-After header (whole
+	// seconds), gRPC's and the Unix socket's google.rpc.RetryInfo detail,
+	// QUIC's error-frame RetryInfo, MCP's retry_after_seconds, and, in
+	// process, the refusal's own delay.
+	RetryAfter time.Duration
 }
 
 // Error returns a human-readable description.

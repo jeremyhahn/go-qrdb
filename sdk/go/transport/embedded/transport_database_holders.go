@@ -51,11 +51,11 @@ func (t *Transport) DatabaseBarrierOfficerRegister(ctx context.Context, req *tra
 	}
 	hs, err := t.databaseHolders("DatabaseBarrierOfficerRegister", req.Database)
 	if err != nil {
-		return nil, err
+		return nil, delayed("DatabaseBarrierOfficerRegister", err)
 	}
 	result, err := hs.DatabaseBarrierOfficerRegister(ctx, req.Database, holderwire.RegisterFrom(&req.OfficerRegisterRequest))
 	if err != nil {
-		return nil, err
+		return nil, delayed("DatabaseBarrierOfficerRegister", err)
 	}
 	return holderwire.RegisterTo(result), nil
 }
@@ -64,11 +64,11 @@ func (t *Transport) DatabaseBarrierOfficerRegister(ctx context.Context, req *tra
 func (t *Transport) DatabaseBarrierOfficerList(ctx context.Context, name string) ([]*transport.OfficerStatus, error) {
 	hs, err := t.databaseHolders("DatabaseBarrierOfficerList", name)
 	if err != nil {
-		return nil, err
+		return nil, delayed("DatabaseBarrierOfficerList", err)
 	}
 	officers, err := hs.DatabaseBarrierOfficerList(ctx, name)
 	if err != nil {
-		return nil, err
+		return nil, delayed("DatabaseBarrierOfficerList", err)
 	}
 	return holderwire.StatusesTo(officers), nil
 }
@@ -80,11 +80,11 @@ func (t *Transport) DatabaseBarrierShamirInitialize(ctx context.Context, req *tr
 	}
 	hs, err := t.databaseHolders("DatabaseBarrierShamirInitialize", req.Database)
 	if err != nil {
-		return nil, err
+		return nil, delayed("DatabaseBarrierShamirInitialize", err)
 	}
 	info, err := hs.DatabaseBarrierShamirInitialize(ctx, req.Database, seal.FactorPolicy(req.Policy))
 	if err != nil {
-		return nil, err
+		return nil, delayed("DatabaseBarrierShamirInitialize", err)
 	}
 	return &transport.BarrierInitializeShamirResponse{Threshold: info.Threshold, TotalShares: info.TotalShares, ShareCount: info.ShareCount}, nil
 }
@@ -98,12 +98,12 @@ func (t *Transport) DatabaseBarrierShareClaimBegin(ctx context.Context, req *tra
 	}
 	hs, err := t.databaseHolders("DatabaseBarrierShareClaimBegin", req.Database)
 	if err != nil {
-		return nil, err
+		return nil, delayed("DatabaseBarrierShareClaimBegin", err)
 	}
 	ctx, thumbprint := claimContext(ctx)
 	challenge, err := hs.DatabaseBarrierShareClaimBegin(ctx, req.Database, req.Username, thumbprint)
 	if err != nil {
-		return nil, err
+		return nil, delayed("DatabaseBarrierShareClaimBegin", err)
 	}
 	return &transport.ShareClaimBeginResponse{NonceHex: challenge.NonceHex, ExpiresAt: challenge.ExpiresAt}, nil
 }
@@ -116,12 +116,12 @@ func (t *Transport) DatabaseBarrierShareClaimComplete(ctx context.Context, req *
 	}
 	hs, err := t.databaseHolders("DatabaseBarrierShareClaimComplete", req.Database)
 	if err != nil {
-		return nil, err
+		return nil, delayed("DatabaseBarrierShareClaimComplete", err)
 	}
 	ctx, thumbprint := claimContext(ctx)
 	result, err := hs.DatabaseBarrierShareClaimComplete(ctx, req.Database, req.Username, req.NonceHex, req.Signature, thumbprint)
 	if err != nil {
-		return nil, err
+		return nil, delayed("DatabaseBarrierShareClaimComplete", err)
 	}
 	return &transport.ShareClaimCompleteResponse{ShareIndex: result.ShareIndex, Envelope: result.Envelope}, nil
 }
@@ -133,11 +133,11 @@ func (t *Transport) DatabaseBarrierQuorumBegin(ctx context.Context, req *transpo
 	}
 	hs, err := t.databaseHolders("DatabaseBarrierQuorumBegin", req.Database)
 	if err != nil {
-		return nil, err
+		return nil, delayed("DatabaseBarrierQuorumBegin", err)
 	}
 	challenge, err := hs.DatabaseBarrierQuorumBegin(ctx, req.Database, holderwire.BeginFrom(&req.QuorumBeginRequest))
 	if err != nil {
-		return nil, err
+		return nil, delayed("DatabaseBarrierQuorumBegin", err)
 	}
 	return holderwire.ChallengeTo(challenge), nil
 }
@@ -149,13 +149,13 @@ func (t *Transport) DatabaseBarrierQuorumSubmit(ctx context.Context, req *transp
 	}
 	hs, err := t.databaseHolders("DatabaseBarrierQuorumSubmit", req.Database)
 	if err != nil {
-		return nil, err
+		return nil, delayed("DatabaseBarrierQuorumSubmit", err)
 	}
 	sub := holderwire.SubmitFrom(&req.QuorumSubmitRequest, contextOptionalThumbprint(ctx))
 	defer secure.Wipe(sub.Share)
 	out, err := hs.DatabaseBarrierQuorumSubmit(ctx, req.Database, sub)
 	if err != nil {
-		return nil, err
+		return nil, delayed("DatabaseBarrierQuorumSubmit", err)
 	}
 	return holderwire.OutcomeTo(out), nil
 }
@@ -167,11 +167,11 @@ func (t *Transport) DatabaseBarrierRekeyStart(ctx context.Context, req *transpor
 	}
 	hs, err := t.databaseHolders("DatabaseBarrierRekeyStart", req.Database)
 	if err != nil {
-		return nil, err
+		return nil, delayed("DatabaseBarrierRekeyStart", err)
 	}
 	round, err := hs.DatabaseBarrierRekeyStart(ctx, req.Database, req.Threshold, seal.FactorPolicy(req.Policy))
 	if err != nil {
-		return nil, err
+		return nil, delayed("DatabaseBarrierRekeyStart", err)
 	}
 	return holderwire.RoundTo(round), nil
 }
@@ -183,11 +183,11 @@ func (t *Transport) DatabaseBarrierOfficerRevoke(ctx context.Context, req *trans
 	}
 	hs, err := t.databaseHolders("DatabaseBarrierOfficerRevoke", req.Database)
 	if err != nil {
-		return nil, err
+		return nil, delayed("DatabaseBarrierOfficerRevoke", err)
 	}
 	round, err := hs.DatabaseBarrierOfficerRevoke(ctx, req.Database, req.Username, req.Threshold)
 	if err != nil {
-		return nil, err
+		return nil, delayed("DatabaseBarrierOfficerRevoke", err)
 	}
 	return holderwire.RoundTo(round), nil
 }

@@ -16,6 +16,7 @@ package mcp
 
 import (
 	"errors"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -103,6 +104,7 @@ func mapToolError(tool string, payload *wire.ErrorPayload) error {
 			Tool:    tool,
 			Message: toolCodePrefixes[payload.Code] + payload.Message,
 		},
+		RetryAfter: time.Duration(payload.RetryAfterSeconds) * time.Second,
 	}
 }
 

@@ -47,7 +47,7 @@ func (t *Transport) BarrierInitialize(ctx context.Context, req *transport.Barrie
 		return &NilServiceError{Service: "BarrierServicer"}
 	}
 	if err := service.ProvisionInitializePINs(ctx, t.barrierSvc, t.pinBackend, req.SOPin, req.UserPin); err != nil {
-		return err
+		return delayed("BarrierInitialize", err)
 	}
 	return t.barrierSvc.BarrierInitialize(ctx, req.Secret)
 }
@@ -87,7 +87,7 @@ func (t *Transport) BarrierStatus(ctx context.Context) (*transport.BarrierStatus
 	}
 	info, err := t.barrierSvc.BarrierStatus(ctx)
 	if err != nil {
-		return nil, err
+		return nil, delayed("BarrierStatus", err)
 	}
 	resp := &transport.BarrierStatusResponse{
 		Sealed:          info.Sealed,
@@ -115,11 +115,11 @@ func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.
 		return nil, &NilServiceError{Service: "BarrierServicer"}
 	}
 	if err := service.ProvisionInitializePINs(ctx, t.barrierSvc, t.pinBackend, req.SOPin, req.UserPin); err != nil {
-		return nil, err
+		return nil, delayed("BarrierInitializeShamir", err)
 	}
 	info, err := t.barrierSvc.BarrierInitializeShamir(ctx, req.Threshold, req.TotalShares, seal.FactorPolicy(req.Policy))
 	if err != nil {
-		return nil, err
+		return nil, delayed("BarrierInitializeShamir", err)
 	}
 	return &transport.BarrierInitializeShamirResponse{
 		ShareCount:  info.ShareCount,
@@ -187,7 +187,7 @@ func (t *Transport) BarrierEnableEncryption(ctx context.Context, req *transport.
 	creds, err := seal.CredentialsFor(req.Passphrase)
 	secure.Wipe(req.Passphrase)
 	if err != nil {
-		return nil, err
+		return nil, delayed("BarrierEnableEncryption", err)
 	}
 	opts := seal.MigrationOptions{
 		TargetStrategy:  seal.StrategyID(req.Strategy),
@@ -199,7 +199,7 @@ func (t *Transport) BarrierEnableEncryption(ctx context.Context, req *transport.
 	}
 	if err := opts.Validate(); err != nil {
 		creds.Secret.Destroy()
-		return nil, err
+		return nil, delayed("BarrierEnableEncryption", err)
 	}
 
 	// A background context is used because ctx is cancelled once this call
@@ -221,7 +221,7 @@ func (t *Transport) BarrierEnableEncryption(ctx context.Context, req *transport.
 	select {
 	case err := <-resultCh:
 		if err != nil {
-			return nil, err
+			return nil, delayed("BarrierEnableEncryption", err)
 		}
 		// Completed within the window with no error: an unusually fast
 		// migration (e.g. an empty barrier) already finished. Fall through
@@ -255,11 +255,11 @@ func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transp
 		return nil, &NilServiceError{Service: "BarrierServicer"}
 	}
 	if err := pin.RequireSOPIN(ctx, t.pinBackend, req.SOPin); err != nil {
-		return nil, err
+		return nil, delayed("BarrierGenerateRecoveryKeys", err)
 	}
 	info, err := t.barrierSvc.BarrierGenerateRecoveryKeys(ctx, req.Threshold, seal.FactorPolicy(req.Policy))
 	if err != nil {
-		return nil, err
+		return nil, delayed("BarrierGenerateRecoveryKeys", err)
 	}
 	return &transport.BarrierRecoveryKeysResponse{
 		ShareCount: info.ShareCount,
@@ -291,7 +291,7 @@ func (t *Transport) BarrierHasRecoveryKeys(ctx context.Context) (*transport.Barr
 	}
 	hasKeys, err := t.barrierSvc.BarrierHasRecoveryKeys(ctx)
 	if err != nil {
-		return nil, err
+		return nil, delayed("BarrierHasRecoveryKeys", err)
 	}
 	return &transport.BarrierHasRecoveryKeysResponse{HasKeys: hasKeys}, nil
 }
@@ -410,11 +410,11 @@ func contextOptionalThumbprint(ctx context.Context) string {
 func (t *Transport) registerHolder(ctx context.Context, domain seal.QuorumDomain, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
 	svc, err := t.barrierService()
 	if err != nil {
-		return nil, err
+		return nil, delayed("registerHolder", err)
 	}
 	result, err := svc.BarrierOfficerRegister(ctx, domain, holderwire.RegisterFrom(req))
 	if err != nil {
-		return nil, err
+		return nil, delayed("registerHolder", err)
 	}
 	return holderwire.RegisterTo(result), nil
 }
@@ -433,11 +433,11 @@ func (t *Transport) RecoveryOfficerRegister(ctx context.Context, req *transport.
 func (t *Transport) OfficerList(ctx context.Context) ([]*transport.OfficerStatus, error) {
 	svc, err := t.barrierService()
 	if err != nil {
-		return nil, err
+		return nil, delayed("OfficerList", err)
 	}
 	officers, err := svc.BarrierOfficerList(ctx, seal.DomainUnseal)
 	if err != nil {
-		return nil, err
+		return nil, delayed("OfficerList", err)
 	}
 	return holderwire.StatusesTo(officers), nil
 }
@@ -447,12 +447,12 @@ func (t *Transport) OfficerList(ctx context.Context) ([]*transport.OfficerStatus
 func (t *Transport) claimBegin(ctx context.Context, domain seal.QuorumDomain, req *transport.ShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
 	svc, err := t.barrierService()
 	if err != nil {
-		return nil, err
+		return nil, delayed("claimBegin", err)
 	}
 	ctx, thumbprint := claimContext(ctx)
 	challenge, err := svc.BarrierShareClaimBegin(ctx, domain, req.Username, thumbprint)
 	if err != nil {
-		return nil, err
+		return nil, delayed("claimBegin", err)
 	}
 	return &transport.ShareClaimBeginResponse{NonceHex: challenge.NonceHex, ExpiresAt: challenge.ExpiresAt}, nil
 }
@@ -461,12 +461,12 @@ func (t *Transport) claimBegin(ctx context.Context, domain seal.QuorumDomain, re
 func (t *Transport) claimComplete(ctx context.Context, domain seal.QuorumDomain, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
 	svc, err := t.barrierService()
 	if err != nil {
-		return nil, err
+		return nil, delayed("claimComplete", err)
 	}
 	ctx, thumbprint := claimContext(ctx)
 	result, err := svc.BarrierShareClaimComplete(ctx, domain, req.Username, req.NonceHex, req.Signature, thumbprint)
 	if err != nil {
-		return nil, err
+		return nil, delayed("claimComplete", err)
 	}
 	return &transport.ShareClaimCompleteResponse{ShareIndex: result.ShareIndex, Envelope: result.Envelope}, nil
 }
@@ -495,11 +495,11 @@ func (t *Transport) RecoveryShareClaimComplete(ctx context.Context, req *transpo
 func (t *Transport) BarrierQuorumBegin(ctx context.Context, req *transport.QuorumBeginRequest) (*transport.QuorumChallenge, error) {
 	svc, err := t.barrierService()
 	if err != nil {
-		return nil, err
+		return nil, delayed("BarrierQuorumBegin", err)
 	}
 	challenge, err := svc.BarrierQuorumBegin(ctx, holderwire.BeginFrom(req))
 	if err != nil {
-		return nil, err
+		return nil, delayed("BarrierQuorumBegin", err)
 	}
 	return holderwire.ChallengeTo(challenge), nil
 }
@@ -508,11 +508,11 @@ func (t *Transport) BarrierQuorumBegin(ctx context.Context, req *transport.Quoru
 func (t *Transport) BarrierQuorumSubmit(ctx context.Context, req *transport.QuorumSubmitRequest) (*transport.QuorumOutcome, error) {
 	svc, err := t.barrierService()
 	if err != nil {
-		return nil, err
+		return nil, delayed("BarrierQuorumSubmit", err)
 	}
 	out, err := svc.BarrierQuorumSubmit(ctx, holderwire.SubmitFrom(req, contextOptionalThumbprint(ctx)))
 	if err != nil {
-		return nil, err
+		return nil, delayed("BarrierQuorumSubmit", err)
 	}
 	return holderwire.OutcomeTo(out), nil
 }
@@ -521,11 +521,11 @@ func (t *Transport) BarrierQuorumSubmit(ctx context.Context, req *transport.Quor
 func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyStartRequest) (*transport.QuorumRound, error) {
 	svc, err := t.barrierService()
 	if err != nil {
-		return nil, err
+		return nil, delayed("BarrierRekeyStart", err)
 	}
 	round, err := svc.BarrierRekeyStart(ctx, seal.QuorumDomain(req.Domain), req.Threshold, seal.FactorPolicy(req.Policy), req.SOPin)
 	if err != nil {
-		return nil, err
+		return nil, delayed("BarrierRekeyStart", err)
 	}
 	return holderwire.RoundTo(round), nil
 }
@@ -535,11 +535,11 @@ func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyS
 func (t *Transport) BarrierOfficerRevoke(ctx context.Context, req *transport.OfficerRevokeRequest) (*transport.QuorumRound, error) {
 	svc, err := t.barrierService()
 	if err != nil {
-		return nil, err
+		return nil, delayed("BarrierOfficerRevoke", err)
 	}
 	round, err := svc.BarrierOfficerRevoke(ctx, seal.QuorumDomain(req.Domain), req.Username, req.Threshold, req.SOPin)
 	if err != nil {
-		return nil, err
+		return nil, delayed("BarrierOfficerRevoke", err)
 	}
 	return holderwire.RoundTo(round), nil
 }

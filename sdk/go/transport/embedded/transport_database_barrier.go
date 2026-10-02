@@ -36,7 +36,7 @@ func (t *Transport) UnsealDatabase(ctx context.Context, name, secret string) err
 	}
 	creds, err := seal.CredentialsFor([]byte(secret))
 	if err != nil {
-		return err
+		return delayed("UnsealDatabase", err)
 	}
 	defer creds.Secret.Destroy()
 	return t.dbSvc.UnsealDatabase(ctx, name, creds)
@@ -49,7 +49,7 @@ func (t *Transport) DatabaseBarrierStatus(ctx context.Context, name string) (*tr
 	}
 	st, err := t.dbSvc.DatabaseBarrierStatus(ctx, name)
 	if err != nil {
-		return nil, err
+		return nil, delayed("DatabaseBarrierStatus", err)
 	}
 	return &transport.DatabaseBarrierStatus{
 		Sealed:         st.Sealed,
