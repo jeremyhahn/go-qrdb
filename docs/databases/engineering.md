@@ -734,6 +734,47 @@ Unchanged by the target design. A create that takes `backend: raft` from the
 node defaults (OD-3 A) is checked for `databases:create_raft` exactly as an
 explicit one is: the check is on the resolved record, not on the request.
 
+
+### Cluster-wide shard IDs
+
+A shard ID names one Raft group on a host every tenant shares, so it must be
+unique across the cluster, not only on the node that issued it. Every node's
+`shard.Allocator` starts at `shard.UserMin` and moves past the IDs that node
+issued, so before this two nodes creating raft databases each issued the same
+ID -- two groups under one ID -- and a database dropped on one node and created
+again through another could be handed the dropped incarnation's ID, which the
+drop fence relies on never happening.
+
+- **A database created through the API claims its ID.** `Manager.create` asks
+  the `ShardIDClaimer` set with `Manager.SetShardIDClaimer`.
+  `lifecycle.BuildServices` wires a `shard.Claimer` over the replicated
+  system store, so every composition (`qrdbd`, `sdk/go/node`, an embedding)
+  that builds the data plane claims.
+- **The claim is a compare-and-swap on one record**,
+  `__sys:shard/high-water`: the next ID no node has issued, in decimal. A
+  claim reads it, swaps it to one past the ID it takes, and re-reads on a lost
+  race (`shard.ClaimContentionError` after 64 lost races in a row). An ID is
+  recorded as issued before it is returned, so a create that fails afterwards
+  leaves a gap, never a reuse.
+- **Floors.** The claim never issues below the node's own allocator, which it
+  then moves past the claimed ID, nor below `shard.UserMin`. The claim that
+  creates the record starts past the highest shard ID any placement records,
+  so a cluster whose nodes allocated per node before this keeps every ID it
+  issued.
+- **No fallback.** A create that cannot claim refuses with
+  `*database.ShardIDClaimError` and leaves nothing behind. It never takes a
+  per-node ID that another node may already hold.
+- **Provisioned databases keep the node-local allocator.** Every node
+  provisions the configured databases independently, and they agree on such
+  a database's shard ID only because each allocates it deterministically; a
+  claim would give every node a different ID for the same group.
+- **Feature gate.** `featuregate.ClusterShardIDs` adds no Raft command. Its
+  activation makes a binary that allocates per node unable to start or be
+  admitted, so the guarantee cannot be undone by a rollback. Until every node
+  of a cluster being upgraded runs a claiming binary, a database created
+  through an older node can still take a per-node ID: create raft databases
+  through upgraded nodes during a rolling upgrade.
+
 ## Error semantics
 
 | Condition | Behavior | Fails closed? |

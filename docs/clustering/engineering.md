@@ -339,6 +339,7 @@ lower-level `client.NewMembershipStore()` / `client.NewMembershipReconfigurer()`
 ```go
 type Feature string
 const GuardedWrites Feature = "guarded-writes"
+const ClusterShardIDs Feature = "cluster-shard-ids"
 func Supported() []Feature
 func SupportedNames() []string
 
@@ -402,6 +403,14 @@ func HostMembership(h ShardMembershipReader) MembershipSource
   is bounded by one refresh and is safe because of admission.
 - Adding a feature: add the constant to `supported`, and gate its emission
   point on `Enabled`. Nothing else in the package changes.
+- **`cluster-shard-ids`** is behaviour, not a command. A database created
+  through the API claims its shard ID from one replicated high-water mark
+  (`shard.Claimer`, see [../databases/engineering.md](../databases/engineering.md#cluster-wide-shard-ids)),
+  using the KV engine's existing compare-and-set, so nothing is gated on
+  `Enabled` before activation. Its activation applies the downgrade rule: once
+  every node claims, a binary that allocates shard IDs per node can neither
+  start nor be admitted as a replica, so no node can issue an ID another node
+  holds.
 - Invariants: an undecidable group (membership unreadable, empty) is not
   enabled; an unknown feature is never enabled; activation counts witnesses and
   is recorded with `PutIfAbsent` -- only the node whose claim created the record

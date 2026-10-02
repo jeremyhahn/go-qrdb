@@ -15,6 +15,7 @@
 package database
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -48,6 +49,54 @@ const (
 	// shardHighWaterFile holds the highest shard ID this node ever issued.
 	shardHighWaterFile = "shard-high-water"
 )
+
+// ShardIDClaimer issues shard IDs that are unique across a cluster.
+// *shard.Claimer is the implementation; the interface keeps this package
+// independent of the store the claims are made in.
+type ShardIDClaimer interface {
+	ClaimShardID(ctx context.Context, floor uint64) (uint64, error)
+}
+
+// SetShardIDClaimer makes every database created through the API take its
+// shard ID from c rather than from this node's allocator alone.
+//
+// It exists for the same ordering reason SetKeyspaceReclaimer does: the
+// Manager is built before the replicated system store the claims are made in.
+// A composition with more than one node wires it once that store exists; a
+// single-node composition has no other node to collide with and may leave it
+// unset.
+//
+// Thread-safety: call it before serving create requests.
+func (m *Manager) SetShardIDClaimer(c ShardIDClaimer) {
+	m.claimer = c
+}
+
+// issueShardID returns the shard ID for a database being created with none.
+//
+// A database created through the API takes a cluster-wide claim when a
+// claimer is wired: per-node allocators all start at shard.UserMin, so two
+// nodes creating raft databases would otherwise issue the same ID, and a
+// database dropped on one node and created again through another could be
+// handed the dropped incarnation's ID. The node's own allocator is the claim's
+// floor and is moved past the claimed ID, so this node never issues an ID it
+// has issued before either way.
+//
+// A provisioned database (shared) keeps the node-local allocator. Every node
+// provisions the same configured names independently, and they agree on such
+// a database's shard ID only because each allocates it deterministically from
+// the same starting point; a cluster claim would hand every node a different
+// ID for the same group.
+func (m *Manager) issueShardID(ctx context.Context, shared bool) (uint64, error) {
+	if m.claimer == nil || shared {
+		return m.allocator.Allocate(), nil
+	}
+	id, err := m.claimer.ClaimShardID(ctx, m.allocator.Next())
+	if err != nil {
+		return 0, &ShardIDClaimError{Err: err}
+	}
+	m.allocator.AdvanceTo(id + 1)
+	return id, nil
+}
 
 // recordDrop remembers that name was dropped on this node.
 func (m *Manager) recordDrop(name string) error {

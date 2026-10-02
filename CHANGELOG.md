@@ -11,6 +11,25 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Shard IDs are unique across the cluster, not only per node.** Every
+  node's allocator started at 1000 and moved past only the IDs that node had
+  issued, so two nodes creating raft databases were handed the same shard ID:
+  two Raft groups under one ID. A database dropped on one node and created
+  again through another could also be handed the dropped incarnation's ID,
+  which the drop fence relies on never happening. A database created through
+  the API now claims its ID from one replicated high-water mark in the system
+  store (`__sys:shard/high-water`, `shard.Claimer`) with a compare-and-swap.
+  The first claim starts past every shard ID placement records. A create that
+  cannot claim refuses with `database.ShardIDClaimError` instead of falling
+  back to a per-node ID. Provisioned databases keep the per-node allocator,
+  because every node must give them the same ID. The new cluster feature
+  `cluster-shard-ids` makes the guarantee rollback-proof: once every node
+  claims, a binary that allocates per node can neither start nor be admitted
+  as a replica. During a rolling upgrade, create raft databases through
+  upgraded nodes. This is phase 2 of the strict tenant isolation plan.
+
 ## [0.31.0-alpha] - 2026-10-02
 
 Dependency release. This release contains BREAKING changes; see the entries below. Highlights:

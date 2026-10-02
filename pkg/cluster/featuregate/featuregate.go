@@ -79,9 +79,18 @@ type Feature string
 // state machine evaluates at the write's own log position.
 const GuardedWrites Feature = "guarded-writes"
 
+// ClusterShardIDs is cluster-wide shard ID allocation: every database created
+// through the API claims its shard ID from one replicated high-water mark
+// (shard.Claimer) instead of a per-node counter. It adds no Raft command --
+// the claim is the KV engine's existing compare-and-set -- so it gates nothing
+// before activation. What activation buys is the gate's downgrade rule: once
+// every node claims, a binary that allocates locally can neither start nor be
+// admitted as a replica, so no node can re-issue a shard ID another holds.
+const ClusterShardIDs Feature = "cluster-shard-ids"
+
 // supported lists the features this binary implements. A new feature is
 // added here, and to nothing else in this package.
-var supported = []Feature{GuardedWrites}
+var supported = []Feature{GuardedWrites, ClusterShardIDs}
 
 // Supported returns the features this binary implements.
 func Supported() []Feature {

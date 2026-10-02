@@ -313,6 +313,19 @@ func (e *LocalEngineError) Unwrap() error {
 	return e.Err
 }
 
+// ShardClaimerError reports that the cluster-wide shard ID claimer could not
+// be built over the replicated system store. A node without it would issue
+// shard IDs another node may already hold, so the build refuses.
+type ShardClaimerError struct {
+	Err error
+}
+
+func (e *ShardClaimerError) Error() string {
+	return "lifecycle: build shard ID claimer: " + e.Err.Error()
+}
+
+func (e *ShardClaimerError) Unwrap() error { return e.Err }
+
 // DEKServiceError is returned when the tenant DEK keyring service cannot be
 // constructed.
 type DEKServiceError struct {

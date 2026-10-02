@@ -310,6 +310,22 @@ func (e *ReclaimerRequiredError) Error() string {
 		" was dropped on this node; creating it again requires the data plane to be attached"
 }
 
+// ShardIDClaimError reports that a database could not be created because a
+// cluster-wide shard ID could not be claimed. Nothing was created; the
+// condition the wrapped error names (a store outage, sustained contention) is
+// what decides whether a retry can succeed.
+type ShardIDClaimError struct {
+	Err error
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *ShardIDClaimError) Error() string {
+	return "database: claim cluster-wide shard ID: " + e.Err.Error()
+}
+
+// Unwrap returns the claimer's error.
+func (e *ShardIDClaimError) Unwrap() error { return e.Err }
+
 // IncarnationError reports that a new database incarnation could not be
 // generated because the system random source failed.
 type IncarnationError struct {

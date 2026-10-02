@@ -528,8 +528,8 @@ func TestNew_Validates(t *testing.T) {
 
 // The advertised names are exactly this binary's features.
 func TestSupported(t *testing.T) {
-	assert.Equal(t, []Feature{GuardedWrites}, Supported())
-	assert.Equal(t, []string{string(GuardedWrites)}, SupportedNames())
+	assert.Equal(t, []Feature{GuardedWrites, ClusterShardIDs}, Supported())
+	assert.Equal(t, []string{string(GuardedWrites), string(ClusterShardIDs)}, SupportedNames())
 }
 
 // fakeReader is a quicraft membership reader.
@@ -668,9 +668,12 @@ func TestGate_ActivationIsLoggedOnlyByTheNodeThatRecordsIt(t *testing.T) {
 	assert.Contains(t, created, "feature activated cluster-wide")
 	assert.NotContains(t, created, "activation observed")
 
+	// Another node activated every feature this binary supports.
 	existing := newMemKV()
-	_, err := existing.PutIfAbsent(context.Background(), ActivationPrefix+string(GuardedWrites), []byte(`{}`))
-	require.NoError(t, err)
+	for _, f := range Supported() {
+		_, err := existing.PutIfAbsent(context.Background(), ActivationPrefix+string(f), []byte(`{}`))
+		require.NoError(t, err)
+	}
 	observed := logs(laterActivationKV{existing})
 	assert.Contains(t, observed, "feature activation observed")
 	assert.NotContains(t, observed, "activated cluster-wide")

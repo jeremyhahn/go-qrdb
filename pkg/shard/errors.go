@@ -44,3 +44,57 @@ type InvalidShardIDError struct {
 func (e *InvalidShardIDError) Error() string {
 	return "shard: invalid shard ID: " + strconv.FormatUint(e.ShardID, 10)
 }
+
+// ClaimerConfigError is returned when a Claimer is constructed without a
+// required dependency.
+type ClaimerConfigError struct {
+	Field string
+}
+
+func (e *ClaimerConfigError) Error() string {
+	return "shard: claimer requires " + e.Field
+}
+
+// ClaimStoreError wraps a failure of the replicated store while claiming a
+// shard ID. The outcome of the failed operation is unknown, so no ID was
+// issued to the caller; an ID the store did record is left as a gap.
+type ClaimStoreError struct {
+	Op  string
+	Err error
+}
+
+func (e *ClaimStoreError) Error() string {
+	return "shard: claim " + e.Op + ": " + e.Err.Error()
+}
+
+// Unwrap returns the store's error.
+func (e *ClaimStoreError) Unwrap() error { return e.Err }
+
+// HighWaterCorruptError is returned when the replicated high-water mark does
+// not hold a decimal shard ID. A claim refuses rather than guess, because a
+// guess can re-issue an ID.
+type HighWaterCorruptError struct {
+	Value string
+}
+
+func (e *HighWaterCorruptError) Error() string {
+	return "shard: high-water mark is not a shard ID: " + strconv.Quote(e.Value)
+}
+
+// ClaimContentionError is returned when a claim lost the race for the
+// high-water mark on every attempt. Each lost race is another node's claim
+// committing, so the condition is transient.
+type ClaimContentionError struct {
+	Attempts int
+}
+
+func (e *ClaimContentionError) Error() string {
+	return "shard: claim lost the high-water race " + strconv.Itoa(e.Attempts) + " times"
+}
+
+// ShardIDExhaustedError is returned when no shard ID remains to issue.
+type ShardIDExhaustedError struct{}
+
+func (e *ShardIDExhaustedError) Error() string {
+	return "shard: shard ID space exhausted"
+}

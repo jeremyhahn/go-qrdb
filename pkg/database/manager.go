@@ -73,6 +73,7 @@ type Manager struct {
 	factory    BackendFactory
 	barrierMgr *DatabaseBarrierManager
 	allocator  *shard.Allocator
+	claimer    ShardIDClaimer
 	reclaimer  KeyspaceReclaimer
 
 	// dropping holds the name of every database with a Drop in flight, so
@@ -330,7 +331,12 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	// has not provided an explicit shard ID. The allocated ID is written into
 	// the config so it is persisted in meta.json and survives restarts.
 	if m.allocator != nil && cfg.Raft != nil && cfg.Raft.ShardID == 0 {
-		cfg.Raft.ShardID = m.allocator.Allocate()
+		id, err := m.issueShardID(ctx, shared)
+		if err != nil {
+			undo.run()
+			return nil, err
+		}
+		cfg.Raft.ShardID = id
 	}
 	// A shard ID is issued once, ever: it is recorded as used before the
 	// database exists, so neither a drop nor a restart can let it be issued
