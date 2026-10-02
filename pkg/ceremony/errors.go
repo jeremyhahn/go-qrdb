@@ -442,3 +442,46 @@ func (e *DuplicateEnrollmentUsernameError) Error() string {
 	return "ceremony: username " + strconv.Quote(e.Username) +
 		" appears more than once; each identity is enrolled exactly once"
 }
+
+// NilCeremonyCAProviderError is returned by NewProviderCA when given a nil
+// cakey.Provider. A nil seam is refused rather than silently leaving the
+// resulting ProviderCA unable to sign anything.
+type NilCeremonyCAProviderError struct{}
+
+// Error implements error.
+func (e *NilCeremonyCAProviderError) Error() string {
+	return "ceremony: nil cakey.Provider"
+}
+
+// ProviderCASignerError wraps a failure resolving the signer from a
+// ProviderCA's cakey.Provider (e.g. the barrier is sealed, or an injected
+// HSM/TPM/KMS backend is unreachable).
+type ProviderCASignerError struct {
+	Err error
+}
+
+// Error implements error.
+func (e *ProviderCASignerError) Error() string {
+	return fmt.Sprintf("ceremony: resolving the CA signer failed: %v", e.Err)
+}
+
+// Unwrap returns the underlying error.
+func (e *ProviderCASignerError) Unwrap() error {
+	return e.Err
+}
+
+// ProviderCACertificateError wraps a failure resolving the certificate from
+// a ProviderCA's cakey.Provider.
+type ProviderCACertificateError struct {
+	Err error
+}
+
+// Error implements error.
+func (e *ProviderCACertificateError) Error() string {
+	return fmt.Sprintf("ceremony: resolving the CA certificate failed: %v", e.Err)
+}
+
+// Unwrap returns the underlying error.
+func (e *ProviderCACertificateError) Unwrap() error {
+	return e.Err
+}

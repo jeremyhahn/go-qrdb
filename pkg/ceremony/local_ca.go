@@ -89,6 +89,29 @@ func NewLocalCA(caCertPEM, caKeyPEM []byte) (*LocalCA, error) {
 // the CSR asked for. Key usage, extended key usage and validity come from
 // opts. Missing TenantID or Username is a *CertSubjectError.
 func (c *LocalCA) SignCSR(_ context.Context, csrPEM []byte, opts *SignCSROptions) (*x509.Certificate, error) {
+	return signCSRWith(c.caCert, c.caKey, csrPEM, opts)
+}
+
+// CACertificate returns the parsed CA certificate.
+func (c *LocalCA) CACertificate() (*x509.Certificate, error) {
+	return c.caCert, nil
+}
+
+// CABundle returns the PEM-encoded CA certificate chain.
+func (c *LocalCA) CABundle() ([]byte, error) {
+	return c.caCertPEM, nil
+}
+
+// IssueCertificate generates a new ECDSA P-256 key pair and issues a leaf
+// certificate signed by the local CA with the given parameters.
+func (c *LocalCA) IssueCertificate(_ context.Context, req *IssueCertRequest) (*IssuedCert, error) {
+	return issueCertificateWith(c.caCert, c.caKey, req)
+}
+
+// signCSRWith signs csrPEM under caCert/caKey, applying the SignCSROptions
+// subject-replacement rule shared by every CeremonyCA implementation in this
+// package. It is the common body of LocalCA.SignCSR and ProviderCA.SignCSR.
+func signCSRWith(caCert *x509.Certificate, caKey crypto.Signer, csrPEM []byte, opts *SignCSROptions) (*x509.Certificate, error) {
 	if opts == nil {
 		return nil, &CSRParseError{Err: errors.New("nil sign options")}
 	}
@@ -124,7 +147,7 @@ func (c *LocalCA) SignCSR(_ context.Context, csrPEM []byte, opts *SignCSROptions
 		BasicConstraintsValid: true,
 	}
 
-	der, err := x509.CreateCertificate(rand.Reader, template, c.caCert, csr.PublicKey, c.caKey)
+	der, err := x509.CreateCertificate(rand.Reader, template, caCert, csr.PublicKey, caKey)
 	if err != nil {
 		return nil, &CertEncodeError{Err: err}
 	}
@@ -135,19 +158,10 @@ func (c *LocalCA) SignCSR(_ context.Context, csrPEM []byte, opts *SignCSROptions
 	return cert, nil
 }
 
-// CACertificate returns the parsed CA certificate.
-func (c *LocalCA) CACertificate() (*x509.Certificate, error) {
-	return c.caCert, nil
-}
-
-// CABundle returns the PEM-encoded CA certificate chain.
-func (c *LocalCA) CABundle() ([]byte, error) {
-	return c.caCertPEM, nil
-}
-
-// IssueCertificate generates a new ECDSA P-256 key pair and issues a leaf
-// certificate signed by the local CA with the given parameters.
-func (c *LocalCA) IssueCertificate(_ context.Context, req *IssueCertRequest) (*IssuedCert, error) {
+// issueCertificateWith generates a new ECDSA P-256 key pair and issues a leaf
+// certificate under caCert/caKey. It is the common body of
+// LocalCA.IssueCertificate and ProviderCA.IssueCertificate.
+func issueCertificateWith(caCert *x509.Certificate, caKey crypto.Signer, req *IssueCertRequest) (*IssuedCert, error) {
 	if req == nil {
 		return nil, &CertEncodeError{Err: errors.New("nil issue request")}
 	}
@@ -175,7 +189,7 @@ func (c *LocalCA) IssueCertificate(_ context.Context, req *IssueCertRequest) (*I
 		BasicConstraintsValid: true,
 	}
 
-	der, err := x509.CreateCertificate(rand.Reader, template, c.caCert, &leafKey.PublicKey, c.caKey)
+	der, err := x509.CreateCertificate(rand.Reader, template, caCert, &leafKey.PublicKey, caKey)
 	if err != nil {
 		return nil, &CertEncodeError{Err: err}
 	}
