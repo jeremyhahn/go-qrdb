@@ -271,6 +271,17 @@ Standalone parity (#582) and durable leases. Highlights:
   `certs:revoke:cross` -- the deny-by-serial revocation of a serial no tenant
   owns -- stays `ScopeCross`. A platform tool that issued certificates into
   customer tenants must now run as each tenant's own Admin.
+- **BREAKING: `audit:read:cross` is removed.** The permission was declared
+  `ScopeCross`, granted to the built-in Admin role and re-exported as
+  `sdk.PermissionAuditReadCross`, and nothing in qrdb enforced it -- yet its
+  name promised a read of every tenant's audit trail. Under the owner ruling no
+  caller reads another tenant's audit events, so the permission, its grant, its
+  "Cross-Tenant Audit" category and its SDK name are deleted. A downstream
+  consumer naming `sdk.PermissionAuditReadCross` no longer compiles. A custom
+  role stored with `audit:read:cross` keeps the inert string, but creating or
+  updating a role that names it is now refused with
+  `*role.InvalidPermissionError`; the built-in Admin loses it on its next
+  reconcile.
 
 ### Fixed
 

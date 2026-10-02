@@ -110,8 +110,8 @@ func registerSOGrants() {
 // bootstrapping.
 //
 // The cross-scope permissions near the end of this list (TenantsListCross,
-// TenantsCreateCross, TenantsApprove, VolumePool*, RegistrationConfig*,
-// AuditReadCross) confer cross-tenant authority only when held by an
+// TenantsCreateCross, TenantsApprove, VolumePool*, RegistrationConfig*)
+// confer cross-tenant authority only when held by an
 // identity in the system tenant (the system-tenant rule in pkg/auth/rbac
 // filters them out for tenant-local identities). A tenant-local Admin can
 // carry these grants without exercising them outside their own tenant.
@@ -196,8 +196,6 @@ func registerAdminGrants() {
 		VolumePoolUpdate, VolumePoolDelete,
 		// Cross-scope registration policy — only effective for system-tenant Admin.
 		RegistrationConfigRead, RegistrationConfigUpdate,
-		// Cross-scope audit — only effective for system-tenant Admin.
-		AuditReadCross,
 		// Cross-scope CA-operator revocation (deny-by-serial for a serial
 		// this node holds no record for) — only effective for system-tenant
 		// Admin. The self-scope CertsRevoke above still covers every

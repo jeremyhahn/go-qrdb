@@ -1528,7 +1528,6 @@ func TestBuiltInRoles_AdminHasCrossScopePermissions(t *testing.T) {
 		permission.VolumePoolDelete,
 		permission.RegistrationConfigRead,
 		permission.RegistrationConfigUpdate,
-		permission.AuditReadCross,
 	}
 
 	permSet := make(map[permission.Permission]struct{}, len(admin.Permissions))

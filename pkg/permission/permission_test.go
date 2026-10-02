@@ -504,7 +504,8 @@ func TestAll_TotalCount(t *testing.T) {
 	// + 5 AuthFactor = 144 self-scope perms.
 	// + 11 cross-scope perms (3 Tenants:*:cross + 1 AuditReadCross
 	//   + 5 VolumePool + 2 RegistrationConfig) = 155. (CertsRevokeCross is
-	//   a twelfth cross-scope perm, added at the bottom of this tally.)
+	//   a twelfth cross-scope perm, added at the bottom of this tally.
+	//   AuditReadCross is removed again at the bottom.)
 	// + 4 tenant-only perms (tenant_barrier:init/unseal/seal/status) = 159.
 	// + 43 authorization-hardening perms = 202 total:
 	//   5 Databases + 7 Collections + 5 Locks + 8 Credentials + 4 Shard-control
@@ -543,7 +544,9 @@ func TestAll_TotalCount(t *testing.T) {
 	//   tenants:reconcile_deleted) = 370.
 	// + 6 tenant DEK keyring perms (dek:encrypt/decrypt/rewrap/rotate/retire/
 	//   status) = 376 total.
-	const expectedTotal = 376
+	// - 1 audit:read:cross, removed: no caller reads another tenant's audit
+	//   events, so a permission claiming to grant it may not exist = 375.
+	const expectedTotal = 375
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)

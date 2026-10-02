@@ -34,7 +34,7 @@ import (
 var (
 	_ *rbac.PermissionDeniedError = (*sdk.PermissionDeniedError)(nil)
 	_ error                       = (*sdk.PermissionDeniedError)(nil)
-	_ sdk.Permission              = sdk.PermissionAuditReadCross
+	_ sdk.Permission              = sdk.PermissionCertsRevokeCross
 )
 
 // sdkCrossScopePermissions is every cross-scope permission the SDK
@@ -51,7 +51,6 @@ var sdkCrossScopePermissions = []sdk.Permission{
 	sdk.PermissionTenantsSetQuotas,
 	sdk.PermissionTenantsListDeleted,
 	sdk.PermissionTenantsReconcileDeleted,
-	sdk.PermissionAuditReadCross,
 	sdk.PermissionCertsRevokeCross,
 	sdk.PermissionVolumePoolCreate,
 	sdk.PermissionVolumePoolList,
@@ -121,7 +120,6 @@ func TestSDK_CrossScopePermissions_AreTheCanonicalOnes(t *testing.T) {
 		sdk.PermissionTenantsSetQuotas:           permission.TenantsSetQuotas,
 		sdk.PermissionTenantsListDeleted:         permission.TenantsListDeleted,
 		sdk.PermissionTenantsReconcileDeleted:    permission.TenantsReconcileDeleted,
-		sdk.PermissionAuditReadCross:             permission.AuditReadCross,
 		sdk.PermissionCertsRevokeCross:           permission.CertsRevokeCross,
 		sdk.PermissionVolumePoolCreate:           permission.VolumePoolCreate,
 		sdk.PermissionVolumePoolList:             permission.VolumePoolList,
@@ -191,8 +189,8 @@ func TestSDK_CrossScopePermissions_AreTheCanonicalOnes(t *testing.T) {
 			t.Errorf("%q is not cross-scope", sdkValue)
 		}
 	}
-	if sdk.PermissionAuditReadCross != "audit:read:cross" {
-		t.Errorf("PermissionAuditReadCross = %q, want audit:read:cross", sdk.PermissionAuditReadCross)
+	if sdk.IsPermissionRegistered("audit:read:cross") {
+		t.Error("audit:read:cross is registered; no caller reads another tenant's audit events")
 	}
 }
 
@@ -227,7 +225,7 @@ func TestSDK_CrossScopePermissions_AreComplete(t *testing.T) {
 
 // TestSDK_PermissionDeniedError_IsDistinguishable is the behaviour the
 // re-export exists for: against a real RBAC authorizer, a tenant-local
-// identity holding audit:read:cross is DENIED — the cross-scope rule, not a
+// identity holding certs:revoke:cross is DENIED — the cross-scope rule, not a
 // missing grant — and the consumer recognises the denial with errors.As on
 // the SDK name. The system-tenant control proves the grant itself is real,
 // so the denial is the scope rule and not an empty role.
@@ -242,7 +240,7 @@ func TestSDK_PermissionDeniedError_IsDistinguishable(t *testing.T) {
 		r, cerr := roles.CreateRole(tenant.WithTenantID(ctx, tid), &role.CreateRoleRequest{
 			Name:        "cross-auditor",
 			TenantID:    tid,
-			Permissions: []permission.Permission{sdk.PermissionAuditReadCross},
+			Permissions: []permission.Permission{sdk.PermissionCertsRevokeCross},
 		})
 		if cerr != nil {
 			t.Fatalf("CreateRole(%s): %v", tid, cerr)
@@ -250,19 +248,19 @@ func TestSDK_PermissionDeniedError_IsDistinguishable(t *testing.T) {
 		auditors[tid] = r.ID
 	}
 	var authz sdk.Authorizer = rbac.New(roles)
-	resource := permission.Resource(sdk.PermissionAuditReadCross)
-	action := permission.Action(sdk.PermissionAuditReadCross)
+	resource := permission.Resource(sdk.PermissionCertsRevokeCross)
+	action := permission.Action(sdk.PermissionCertsRevokeCross)
 
 	system := &sdk.Identity{Subject: "ops", TenantID: tenant.SystemTenantID, Roles: []string{auditors[tenant.SystemTenantID]}}
 	if err := authz.Authorize(tenant.WithTenantID(ctx, tenant.SystemTenantID), system, resource, action); err != nil {
-		t.Fatalf("system-tenant auditor refused %s: %v", sdk.PermissionAuditReadCross, err)
+		t.Fatalf("system-tenant CA operator refused %s: %v", sdk.PermissionCertsRevokeCross, err)
 	}
 
 	local := &sdk.Identity{Subject: "eve", TenantID: "acme", Roles: []string{auditors["acme"]}}
 	err = authz.Authorize(tenant.WithTenantID(ctx, "acme"), local, resource, action)
 	var denied *sdk.PermissionDeniedError
 	if !errors.As(err, &denied) {
-		t.Fatalf("tenant-local %s: got %T (%v), want *sdk.PermissionDeniedError", sdk.PermissionAuditReadCross, err, err)
+		t.Fatalf("tenant-local %s: got %T (%v), want *sdk.PermissionDeniedError", sdk.PermissionCertsRevokeCross, err, err)
 	}
 	if denied.Subject != "eve" || denied.Resource != resource || denied.Action != action {
 		t.Errorf("denial = %+v, want eve on %s:%s", denied, resource, action)

@@ -116,7 +116,6 @@ func TestLookupScope_RegisteredCrossScopePermissions(t *testing.T) {
 		TenantsListCross,
 		TenantsCreateCross,
 		TenantsApprove,
-		AuditReadCross,
 		VolumePoolCreate,
 		VolumePoolList,
 		VolumePoolRead,

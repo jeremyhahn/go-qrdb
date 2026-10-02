@@ -290,7 +290,7 @@ general form: an empty requested tenant means the caller's own, any other is a
 no system-tenant lift.
 
 **Every `ScopeCross` permission has an SDK name.** `sdk/go/types_permission_cross.go`
-re-exports each one (`sdk.PermissionAuditReadCross`, the `tenants`,
+re-exports each one (`sdk.PermissionCertsRevokeCross`, the `tenants`,
 `volumepool`, `registration_config` and `credentials` families,
 `sdk.PermissionMVCCCompact`, the node-barrier `seal`, `ceremony` and
 `barrier:unseal-share` permissions, and the cluster `admin`, `rebalance` and `backup`
@@ -411,8 +411,13 @@ from the serial.
 operation.** A revocation of a serial no record matches names no tenant, so it
 gets its own cross-scope permission (`certs:revoke:cross`) rather than riding
 on a self-scope one whose check can never fire. Declaring a second, cross-scope
-permission for the unattributable case is the pattern; `audit:read:cross`
-beside `audit:read` is the same shape.
+permission for the unattributable case is the pattern.
+
+**There is no `audit:read:cross`.** It was declared, granted to the built-in
+Admin and re-exported by the SDK, and nothing in qrdb enforced it -- yet its
+name promised a read of every tenant's audit trail. No caller reads another
+tenant's audit events (the query is confined by `tenant.ConfineAuditFilter`),
+so the permission is removed rather than left to suggest otherwise.
 
 **Pin the scope of each member of a family, not the family.** Before that fix
 nothing asserted the scope of any individual permission in the family — the

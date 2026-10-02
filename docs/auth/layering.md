@@ -71,7 +71,7 @@ The downstream app owns the permission semantics; qrdb owns the membership.
 ## Cross-cutting authorization in qrdb
 
 Authorization in qrdb itself uses qrdb's permission registry (e.g.
-`tenant:list:cross`, `audit:read:cross`). Downstream apps that need to
+`tenant:list:cross`, `certs:revoke:cross`). Downstream apps that need to
 perform identity-layer operations (e.g. an admin UI listing all tenants)
 go through qrdb's RBACClient:
 

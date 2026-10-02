@@ -52,12 +52,6 @@ const (
 	// cannot approve other tenants' registrations.
 	TenantsApprove Permission = "tenants:approve"
 
-	// AuditReadCross grants access to read audit events across every
-	// tenant on the platform. Reserved for the system tenant; the
-	// per-tenant AuditRead permission constrains tenant-local auditors to
-	// their own tenant's audit log.
-	AuditReadCross Permission = "audit:read:cross"
-
 	// CertsRevokeCross grants the CA-operator revocation: writing a
 	// cluster-wide deny marker for a serial this node holds NO issued
 	// record for. Reserved for the system tenant.
@@ -146,7 +140,6 @@ func crossScopePermissions() []Permission {
 		TenantsListDeleted,
 		TenantsReconcileDeleted,
 		TenantsApprove,
-		AuditReadCross,
 		CertsRevokeCross,
 		VolumePoolCreate,
 		VolumePoolList,

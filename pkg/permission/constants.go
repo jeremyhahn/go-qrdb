@@ -1030,13 +1030,6 @@ var categories = []Category{
 		},
 	},
 	{
-		Name:  "Cross-Tenant Audit",
-		Group: "Admin Services",
-		Permissions: []Permission{
-			AuditReadCross,
-		},
-	},
-	{
 		Name:  "CA Operator",
 		Group: "Admin Services",
 		Permissions: []Permission{

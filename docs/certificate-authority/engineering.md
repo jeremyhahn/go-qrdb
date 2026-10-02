@@ -337,8 +337,8 @@ enumeration.
 
 `certs:revoke:cross` is **cross-scope**: the RBAC authorizer admits it only for
 identities in the system tenant. It is an escalation ON TOP of `certs:revoke`,
-not a substitute for it — the same relationship `audit:read:cross` has to
-`audit:read` — so a caller needs both, and the built-in Admin role grants both.
+not a substitute for it -- so a caller needs both, and the built-in Admin
+role grants both.
 
 Every other permission in the table is **`ScopeSelfStrict`**
 (`pkg/permission/self_strict_scope.go`), and for generate, revoke and list the

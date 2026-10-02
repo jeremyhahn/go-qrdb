@@ -67,10 +67,6 @@ const (
 	// from its disk.
 	PermissionTenantsReconcileDeleted = permission.TenantsReconcileDeleted
 
-	// PermissionAuditReadCross ("audit:read:cross") reads audit events across
-	// every tenant. The per-tenant audit read is self-scope.
-	PermissionAuditReadCross = permission.AuditReadCross
-
 	// PermissionCertsRevokeCross ("certs:revoke:cross") writes a cluster-wide
 	// deny marker for a serial the node holds no issued record for.
 	PermissionCertsRevokeCross = permission.CertsRevokeCross
