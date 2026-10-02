@@ -49,7 +49,7 @@ func (s *Server) handleDatabaseCreate(ctx context.Context, payload []byte) ([]by
 		Mode:     database.DatabaseMode(req.Mode),
 		Replicas: req.Replicas,
 		Protocol: req.Protocol.toDomain(),
-		Raft:     req.Raft,
+		Raft:     req.Raft.toDomain(),
 	}
 	if req.Connection != nil {
 		cfg.Connection = req.Connection
@@ -229,7 +229,7 @@ func (s *Server) handleDatabaseUpdateRaft(ctx context.Context, payload []byte) (
 		return nil, &InvalidArgumentError{Reason: "raft configuration is required"}
 	}
 
-	info, err := s.databaseSvc.UpdateRaftForTenant(ctx, req.Name, req.Raft)
+	info, err := s.databaseSvc.UpdateRaftForTenant(ctx, req.Name, req.Raft.toDomain())
 	if err != nil {
 		return nil, err
 	}
@@ -373,7 +373,7 @@ type databaseCreateRequest struct {
 	Mode       string                             `json:"mode,omitempty"`
 	Replicas   int                                `json:"replicas,omitempty"`
 	Protocol   databaseCreateProtocolConfig       `json:"protocol,omitempty"`
-	Raft       *database.DatabaseRaftConfig       `json:"raft,omitempty"`
+	Raft       *databaseRaftRequest               `json:"raft,omitempty"`
 	Barrier    *databaseCreateBarrierConfig       `json:"barrier,omitempty"`
 	Connection *database.DatabaseConnectionConfig `json:"connection,omitempty"`
 	SQL        *database.SQLConfig                `json:"sql,omitempty"`
@@ -446,8 +446,46 @@ type databaseUpdateEtcdRequest struct {
 // databaseUpdateRaftRequest is the JSON wire format for updating the Raft
 // consensus configuration of a database.
 type databaseUpdateRaftRequest struct {
-	Name string                       `json:"name"`
-	Raft *database.DatabaseRaftConfig `json:"raft"`
+	Name string               `json:"name"`
+	Raft *databaseRaftRequest `json:"raft"`
+}
+
+// databaseRaftRequest is the Raft configuration a create or Raft-update
+// request carries. It has no shard ID: the cluster issues a database's shard
+// ID at create, and no request names one, so a `shardId` key is not a field
+// and is ignored, as on every other transport. The discovery blocks carry
+// their secrets in; responses report them only as set.
+type databaseRaftRequest struct {
+	ClusterMode    string                             `json:"clusterMode"`
+	ReplicaID      uint64                             `json:"replicaId,omitempty"`
+	RaftAddress    string                             `json:"raftAddress,omitempty"`
+	Peers          []string                           `json:"peers,omitempty"`
+	LocalNodeCount int                                `json:"localNodeCount,omitempty"`
+	Discovery      string                             `json:"discovery,omitempty"`
+	Static         *database.StaticDiscoveryConfig    `json:"static,omitempty"`
+	Multicast      *database.MulticastDiscoveryConfig `json:"multicast,omitempty"`
+	DNS            *database.DNSDiscoveryConfig       `json:"dns,omitempty"`
+	Token          *database.TokenDiscoveryConfig     `json:"token,omitempty"`
+}
+
+// toDomain converts the wire request to the domain configuration; nil stays
+// nil (no Raft configuration).
+func (r *databaseRaftRequest) toDomain() *database.DatabaseRaftConfig {
+	if r == nil {
+		return nil
+	}
+	return &database.DatabaseRaftConfig{
+		ClusterMode:    database.RaftClusterMode(r.ClusterMode),
+		ReplicaID:      r.ReplicaID,
+		RaftAddress:    r.RaftAddress,
+		Peers:          r.Peers,
+		LocalNodeCount: r.LocalNodeCount,
+		Discovery:      database.DiscoveryMethod(r.Discovery),
+		Static:         r.Static,
+		Multicast:      r.Multicast,
+		DNS:            r.DNS,
+		Token:          r.Token,
+	}
 }
 
 // databaseScaleRequest is the JSON wire format for changing the replication
