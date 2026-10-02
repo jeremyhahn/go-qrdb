@@ -36,6 +36,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/abac"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -187,6 +188,20 @@ type AuthMiddlewareConfig struct {
 	// visible at the wiring site.
 	CertProvider cert.CertProvider
 
+	// ClusterCA, when non-nil, is this node's cluster CA (Key A), used to
+	// enable the issuer-tenant binding check (auth.WithIssuerTenantBinding):
+	// a verified client certificate's issuing CA must be either ClusterCA
+	// (which legitimately signs holder and node certificates for any
+	// tenant) or the Key B CA registered for the certificate's OWN claimed
+	// tenant -- read from CertProvider when it implements
+	// auth.TenantIssuerChecker (cert.DefaultCertProvider does).
+	//
+	// Nil disables the check entirely: every CA in the dynamic client-auth
+	// trust pool (pkg/clienttrust) authenticates any tenant it names, the
+	// posture before this check existed. A composer with a cluster CA
+	// available should always set this.
+	ClusterCA ceremony.CeremonyCA
+
 	// RevocationCacheTTL is how long a NOT-REVOKED answer is cached on the
 	// authentication path.
 	//
@@ -302,6 +317,25 @@ func revocationChecker(provider cert.CertProvider, ttl time.Duration) auth.Revoc
 	return cache
 }
 
+// issuerTenantBinding builds the mTLS authenticator's issuer-tenant binding
+// (see auth.IssuerTenantBinding) from a cluster CA and certificate provider,
+// or returns nil when neither piece needed to enforce it is available --
+// clusterCA is nil, or provider is nil or does not implement
+// auth.TenantIssuerChecker (an embedder's own CertProvider replacement via
+// server.WithCertProvider is not required to support it). A nil return
+// leaves the check unenforced, the posture before it existed.
+func issuerTenantBinding(clusterCA ceremony.CeremonyCA, provider cert.CertProvider) *auth.IssuerTenantBinding {
+	if clusterCA == nil {
+		return nil
+	}
+	clusterCACert, err := clusterCA.CACertificate()
+	if err != nil || clusterCACert == nil {
+		return nil
+	}
+	checker, _ := provider.(auth.TenantIssuerChecker)
+	return &auth.IssuerTenantBinding{ClusterCA: clusterCACert, KeyB: checker}
+}
+
 // BuildAuthMiddleware constructs the production AuthMiddleware: an mTLS
 // authenticator, the RBAC[+ABAC] authorizer built via BuildAuthorizer, and
 // user-store identity enrichment — the exact stack cmd/qrdbd/start.go
@@ -354,6 +388,9 @@ func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, 
 	// explicitly.
 	revocation := revocationChecker(cfg.CertProvider, cfg.RevocationCacheTTL)
 	mtlsOpts := []auth.MTLSOption{auth.WithRevocationChecker(revocation)}
+	if binding := issuerTenantBinding(cfg.ClusterCA, cfg.CertProvider); binding != nil {
+		mtlsOpts = append(mtlsOpts, auth.WithIssuerTenantBinding(binding))
+	}
 	mtlsAuthenticator := auth.NewMTLSAuthenticator(mtlsOpts...)
 	if cfg.SPIFFETrustDomain != "" {
 		mtlsAuthenticator = auth.NewMTLSAuthenticatorWithTrustDomain(cfg.SPIFFETrustDomain, mtlsOpts...)

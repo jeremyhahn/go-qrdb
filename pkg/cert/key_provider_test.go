@@ -259,3 +259,98 @@ func TestDefaultCertProvider_CACertPEMs_InjectedProviderError(t *testing.T) {
 		t.Fatal("expected error when the injected provider's Certificate fails")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// IsTenantIssuer -- the mTLS authenticator's issuer-tenant binding seam
+// ---------------------------------------------------------------------------
+
+func TestDefaultCertProvider_IsTenantIssuer_OwnCAMatches(t *testing.T) {
+	p, _, _ := newTestProvider()
+	ctx := context.Background()
+
+	if _, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "alice", TenantID: "acme"}); err != nil {
+		t.Fatalf("GenerateClientCert: %v", err)
+	}
+	pems, err := p.CACertPEMs(ctx)
+	if err != nil || len(pems) != 1 {
+		t.Fatalf("CACertPEMs: %v (len=%d)", err, len(pems))
+	}
+	acmeCA := parsePEMCert(t, pems[0])
+
+	ok, err := p.IsTenantIssuer(ctx, "acme", acmeCA)
+	if err != nil {
+		t.Fatalf("IsTenantIssuer: %v", err)
+	}
+	if !ok {
+		t.Error("expected acme's own CA certificate to match IsTenantIssuer(ctx, \"acme\", ...)")
+	}
+}
+
+func TestDefaultCertProvider_IsTenantIssuer_ForeignCADoesNotMatch(t *testing.T) {
+	p, _, _ := newTestProvider()
+	ctx := context.Background()
+
+	for _, tenantID := range []string{"acme", "globex"} {
+		if _, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "alice", TenantID: tenantID}); err != nil {
+			t.Fatalf("GenerateClientCert(%s): %v", tenantID, err)
+		}
+	}
+	_, globexCA, err := p.getCAMaterial(ctx, "globex")
+	if err != nil {
+		t.Fatalf("getCAMaterial: %v", err)
+	}
+
+	ok, err := p.IsTenantIssuer(ctx, "acme", globexCA)
+	if err != nil {
+		t.Fatalf("IsTenantIssuer: %v", err)
+	}
+	if ok {
+		t.Error("expected globex's CA certificate NOT to match IsTenantIssuer(ctx, \"acme\", ...)")
+	}
+}
+
+func TestDefaultCertProvider_IsTenantIssuer_NilIssuer(t *testing.T) {
+	p, _, _ := newTestProvider()
+	ok, err := p.IsTenantIssuer(context.Background(), "acme", nil)
+	if err != nil {
+		t.Fatalf("IsTenantIssuer: %v", err)
+	}
+	if ok {
+		t.Error("expected a nil issuer to never match")
+	}
+}
+
+func TestDefaultCertProvider_IsTenantIssuer_EmptyTenantFoldsToSystem(t *testing.T) {
+	p, _, _ := newTestProvider()
+	ctx := context.Background()
+
+	if _, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "alice", TenantID: "system"}); err != nil {
+		t.Fatalf("GenerateClientCert: %v", err)
+	}
+	_, systemCA, err := p.getCAMaterial(ctx, "system")
+	if err != nil {
+		t.Fatalf("getCAMaterial: %v", err)
+	}
+
+	ok, err := p.IsTenantIssuer(ctx, "", systemCA)
+	if err != nil {
+		t.Fatalf("IsTenantIssuer: %v", err)
+	}
+	if !ok {
+		t.Error("expected an empty tenantID to fold to the system tenant")
+	}
+}
+
+func TestDefaultCertProvider_IsTenantIssuer_BarrierSealed(t *testing.T) {
+	p, _, barrier := initializeProvider(t)
+	barrier.seal()
+
+	_, err := p.IsTenantIssuer(context.Background(), "system", &x509.Certificate{})
+	if err == nil {
+		t.Fatal("expected an error when the barrier is sealed")
+	}
+	var bsErr *BarrierSealedError
+	if !errors.As(err, &bsErr) {
+		t.Fatalf("expected *BarrierSealedError, got %T: %v", err, err)
+	}
+}

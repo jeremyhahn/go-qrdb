@@ -65,7 +65,7 @@ func runAuthBootstrapWithPolicy(t *testing.T, mgmt *mgmtBootstrapResult, policy 
 	return bootstrapAuthEnforcement(
 		context.Background(), mgmt, t.TempDir(), &mockRaftNode{},
 		audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{},
-		nil, "", "", policy,
+		nil, nil, "", "", policy,
 	)
 }
 

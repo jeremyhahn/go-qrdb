@@ -130,6 +130,7 @@ func TestBootstrapAuthEnforcement_WithSPIFFETrustDomain(t *testing.T) {
 		"spiffe://example.org", // non-empty trust domain triggers line 1907-1909
 		qrdbconfig.AuthABACConfig{},
 		nil, // no cert provider: revocation not enforced
+		nil, // no cluster CA: issuer-tenant binding not enforced
 		"",  // revocation cache TTL: default
 		"",  // audit failure policy: default (fail-closed)
 		"",  // mtls binding policy: default (enrolled)
@@ -168,6 +169,7 @@ func TestBootstrapAuthEnforcement_NilComplianceAudit(t *testing.T) {
 		false, "",
 		qrdbconfig.AuthABACConfig{},
 		nil, // no cert provider: revocation not enforced
+		nil, // no cluster CA: issuer-tenant binding not enforced
 		"",  // revocation cache TTL: default
 		"",  // audit failure policy: default (fail-closed)
 		"",  // mtls binding policy: default (enrolled)

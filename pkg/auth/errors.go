@@ -14,6 +14,8 @@
 
 package auth
 
+import "strconv"
+
 // AuthError is a typed error for authentication/authorization failures.
 type AuthError struct {
 	Code    string
@@ -69,6 +71,54 @@ func (e *CertificateTenantError) Error() string {
 // Unwrap exposes both ErrInvalidCertificate and the cause.
 func (e *CertificateTenantError) Unwrap() []error {
 	return []error{ErrInvalidCertificate, e.Err}
+}
+
+// IssuerTenantMismatchError reports that a verified client certificate's
+// issuing CA is neither the cluster CA (Key A) nor the Key B CA registered
+// for the tenant the certificate's Subject names. It matches
+// ErrInvalidCertificate under errors.Is and errors.As, like
+// CertificateTenantError, so every transport classifies it exactly as a
+// malformed or untrusted certificate.
+//
+// This is the enforcement, at the authentication layer, of the rule that
+// lets every tenant's Key B CA be trusted on one shared client-facing
+// listener at all: a login CA scoped to tenant A signing a leaf whose
+// Subject names tenant B must be refused, not merely accepted because SOME
+// trusted CA's signature verifies. See
+// docs/certificate-authority/architecture.md, "Issuer-tenant binding".
+type IssuerTenantMismatchError struct {
+	// TenantID is the tenant the certificate's Subject named.
+	TenantID string
+
+	// Err is the underlying cause when the mismatch was detected via a
+	// failed lookup (e.g. the barrier was sealed) rather than a clean "no".
+	Err error
+}
+
+// Error returns the invalid-certificate message naming the claimed tenant.
+func (e *IssuerTenantMismatchError) Error() string {
+	msg := ErrInvalidCertificate.Error() + ": issuer is not tenant " + quoteTenant(e.TenantID) + "'s registered CA"
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Unwrap exposes both ErrInvalidCertificate and the cause, when one exists.
+func (e *IssuerTenantMismatchError) Unwrap() []error {
+	if e.Err == nil {
+		return []error{ErrInvalidCertificate}
+	}
+	return []error{ErrInvalidCertificate, e.Err}
+}
+
+// quoteTenant renders a tenant ID for an error message, naming the system
+// tenant explicitly when the ID is empty rather than printing "" unhelpfully.
+func quoteTenant(tenantID string) string {
+	if tenantID == "" {
+		return strconv.Quote("(system)")
+	}
+	return strconv.Quote(tenantID)
 }
 
 // RevocationCheckError reports that a certificate's revocation status could

@@ -15,6 +15,7 @@
 package cert
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/ecdsa"
@@ -766,6 +767,41 @@ func (p *DefaultCertProvider) CACertPEMs(ctx context.Context) ([][]byte, error) 
 		return nil, &StoreError{Op: "scan", Detail: prefixCertCA, Err: err}
 	}
 	return out, nil
+}
+
+// IsTenantIssuer reports whether issuer is tenantID's registered Key B CA
+// certificate: byte-identical DER, not merely matching Subject fields. It is
+// the seam the mTLS authenticator's issuer-tenant binding check uses (see
+// auth.IssuerTenantBinding) so a leaf naming tenantID is refused unless the
+// CA that actually verified it is tenantID's own registered CA -- the
+// enforcement, at authentication time, of the separate-trust-domains rule
+// that every tenant's Key B CA being trusted on one shared client-facing
+// listener would otherwise let a leaf defeat simply by naming a foreign
+// tenant in its Subject OU.
+//
+// An empty tenantID is folded to the system tenant, matching every other
+// tenant-scoped accessor in this package. A nil issuer is never anyone's
+// CA.
+func (p *DefaultCertProvider) IsTenantIssuer(ctx context.Context, tenantID string, issuer *x509.Certificate) (bool, error) {
+	if issuer == nil {
+		return false, nil
+	}
+	if tenantID == "" {
+		tenantID = tenant.SystemTenantID
+	}
+	if p.barrier.IsSealed() {
+		return false, &BarrierSealedError{}
+	}
+
+	prov, err := p.resolveKeyProvider(tenantID)
+	if err != nil {
+		return false, err
+	}
+	registered, err := prov.Certificate(ctx)
+	if err != nil {
+		return false, mapProviderError(err)
+	}
+	return bytes.Equal(registered.Raw, issuer.Raw), nil
 }
 
 // getCAMaterial resolves tenantID's cakey.Provider and returns its signer
