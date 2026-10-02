@@ -472,6 +472,23 @@ func (e *TransactionServiceUnavailableError) Error() string {
 	return "provider: transaction service unavailable for relational table: " + e.Table
 }
 
+// MixedTransactionalWriteError refuses a statement that writes both a
+// relational table and a non-transactional one (the kv, entity or
+// collection tables). A statement is atomic -- its own transaction outside
+// an explicit one -- and a non-transactional write is applied at once and
+// cannot be rolled back with it, so the statement is refused before it
+// writes either. Write the two in separate statements.
+type MixedTransactionalWriteError struct {
+	Relational       string
+	NonTransactional string
+}
+
+// Error returns a human-readable description.
+func (e *MixedTransactionalWriteError) Error() string {
+	return "provider: a statement cannot write both relational table " + e.Relational +
+		" and non-transactional table " + e.NonTransactional + "; write them in separate statements"
+}
+
 // TransactionSessionRequiredError is returned by a RelationalTable DML
 // method called on a context that carries no QRDB session. Every relational
 // write is part of a transaction -- an explicit one, or the autocommit

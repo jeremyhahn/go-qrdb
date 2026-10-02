@@ -287,6 +287,13 @@ type WriteSet struct {
 	implicit     bool
 	uniqueChecks []uniqueCheck
 
+	// relationalWriter and nonTransactionalWriter name the first table of
+	// each kind the statement in flight opened for writing; a statement
+	// may not write both (see MixedTransactionalWriteError). Both are
+	// cleared at every statement boundary (resetStatements).
+	relationalWriter       string
+	nonTransactionalWriter string
+
 	// rowLocks is this transaction's row-lock state -- its lock owner, the
 	// current reads its locks were granted with, and whether it was rolled
 	// back as a deadlock victim. See writeset_locks.go and

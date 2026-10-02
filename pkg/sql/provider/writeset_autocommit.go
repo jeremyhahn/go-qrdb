@@ -77,6 +77,31 @@ func (ws *WriteSet) beginImplicit() {
 	ws.implicit = true
 }
 
+// noteRelationalWriter records that the statement in flight writes the
+// relational table name.
+func (ws *WriteSet) noteRelationalWriter(name string) {
+	if ws.relationalWriter == "" {
+		ws.relationalWriter = name
+	}
+}
+
+// noteNonTransactionalWriter records, on ctx's session, that the statement
+// in flight writes the non-transactional (kv, entity or collection) table
+// name. go-mysql-server opens every editor of a statement before any of
+// them writes, so whichever kind writes first finds the other noted and the
+// statement is refused before it changes anything: a kv write applies at
+// once and cannot be undone with the relational rows of an atomic
+// statement.
+func noteNonTransactionalWriter(ctx *sqle.Context, name string) {
+	sess, ok := ctx.Session.(*QRDBSession)
+	if !ok {
+		return
+	}
+	if ws := sess.writeSet(); ws != nil && ws.nonTransactionalWriter == "" {
+		ws.nonTransactionalWriter = name
+	}
+}
+
 // Implicit reports whether ws is an autocommit statement's implicit
 // transaction.
 func (ws *WriteSet) Implicit() bool { return ws.implicit }

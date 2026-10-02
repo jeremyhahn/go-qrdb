@@ -298,8 +298,11 @@ var (
 )
 
 // StatementBegin is called before the first operation of a statement.
-func (w *kvWriter) StatementBegin(_ *sqle.Context) {
-	// KV operations are applied immediately; no batching required.
+func (w *kvWriter) StatementBegin(ctx *sqle.Context) {
+	// KV operations are applied immediately; no batching required. The
+	// statement is told it writes a non-transactional table, so it cannot
+	// also write a relational one (see noteNonTransactionalWriter).
+	noteNonTransactionalWriter(ctx, tableName)
 }
 
 // DiscardChanges is called if a statement encounters an error.

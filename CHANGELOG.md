@@ -28,6 +28,11 @@ are not reconstructed here — their history is in the git log.
   two Raft proposals instead of three. The query service and the PostgreSQL
   wire now report an error raised when a result is closed -- the commit --
   instead of dropping it.
+- **BREAKING (behaviour): a SQL statement writing a relational table and a
+  `kv`, entity or collection table is refused**
+  (`provider.MixedTransactionalWriteError`) before it writes either. The
+  relational half is now atomic and the other applies at once, so such a
+  statement could fail with its non-transactional half already committed.
 - **Every SQL surface resolves each table, view and servicer once per
   statement.** In 0.27.0-alpha only the MySQL wire delivered the statement
   boundaries this memoization needs; the PostgreSQL wire (each executed statement),

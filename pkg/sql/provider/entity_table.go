@@ -462,8 +462,10 @@ var (
 )
 
 // StatementBegin is called before the first operation of a statement.
-func (w *entityWriter) StatementBegin(_ *sqle.Context) {
-	// Entity operations are applied immediately; no batching required.
+func (w *entityWriter) StatementBegin(ctx *sqle.Context) {
+	// Entity operations are applied immediately; no batching required. See
+	// noteNonTransactionalWriter.
+	noteNonTransactionalWriter(ctx, w.reg.EntityType)
 }
 
 // DiscardChanges is called if a statement encounters an error.

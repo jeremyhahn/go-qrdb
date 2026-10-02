@@ -456,7 +456,11 @@ var (
 	_ sqle.RowReplacer = (*collectionWriter)(nil)
 )
 
-func (w *collectionWriter) StatementBegin(_ *sqle.Context) {}
+// StatementBegin tells the statement it writes a non-transactional table
+// (see noteNonTransactionalWriter).
+func (w *collectionWriter) StatementBegin(ctx *sqle.Context) {
+	noteNonTransactionalWriter(ctx, w.collection)
+}
 
 func (w *collectionWriter) DiscardChanges(_ *sqle.Context, _ error) error {
 	return nil

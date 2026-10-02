@@ -671,6 +671,7 @@ type relationalWriter struct {
 func (w *relationalWriter) StatementBegin(ctx *sqle.Context) {
 	if ws := openStatement(ctx); ws != nil {
 		ws.beginStatement()
+		ws.noteRelationalWriter(w.table.def.Name)
 	}
 }
 

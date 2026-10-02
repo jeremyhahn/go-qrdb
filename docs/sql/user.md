@@ -227,6 +227,12 @@ should retry. A read-modify-write spread over several statements is still not
 held together, because a collection table has no transactions; use a relational
 table inside a transaction for that.
 
+**A statement that writes a relational table and the `kv` table was
+refused.** Each statement is all-or-nothing, and a `kv`, entity or
+collection write applies at once and cannot be rolled back with the
+relational rows, so one statement may not write both. Split it into two
+statements.
+
 **A write inside `BEGIN` failed with "non-transactional table".** The `kv`,
 entity and collection tables are autocommit-only — they have no write buffer.
 The failure is loud on purpose: silently escaping the transaction's atomicity

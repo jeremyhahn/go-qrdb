@@ -1052,6 +1052,9 @@ func (t *RelationalTable) writeSetFor(ctx *sqle.Context, write bool) (*WriteSet,
 		if !write && (!ws.implicit || !ws.bound || ws.tenantID != sess.TenantID() || ws.database != t.def.Database) {
 			return nil, nil
 		}
+		if write && ws.nonTransactionalWriter != "" {
+			return nil, &MixedTransactionalWriteError{Relational: t.def.Name, NonTransactional: ws.nonTransactionalWriter}
+		}
 		if write && !ws.implicit {
 			// A write the engine made without opening its statement
 			// (StatementBegin) is still the statement's: the statement is

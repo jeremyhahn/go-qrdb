@@ -519,17 +519,23 @@ func explicitTxn(ctx *sqle.Context) (bool, error) {
 // a later ROLLBACK. An ordinary autocommit statement against these table
 // kinds is entirely unaffected.
 func requireAutocommit(ctx *sqle.Context, table string) error {
-	if _, ok := ctx.Session.(*QRDBSession); !ok {
+	sess, ok := ctx.Session.(*QRDBSession)
+	if !ok {
 		return nil
 	}
 	explicit, err := explicitTxn(ctx)
 	if err != nil {
 		return err
 	}
-	if !explicit {
-		return nil
+	if explicit {
+		return &NonTransactionalTableError{Table: table}
 	}
-	return &NonTransactionalTableError{Table: table}
+	// An autocommit statement that also writes a relational table is
+	// atomic; this write could not be undone with it.
+	if ws := sess.writeSet(); ws != nil && ws.relationalWriter != "" {
+		return &MixedTransactionalWriteError{Relational: ws.relationalWriter, NonTransactional: table}
+	}
+	return nil
 }
 
 // flushPendingWriteSet commits any writes buffered by the session's current
