@@ -1228,6 +1228,13 @@ func runStart(f *startFlags) (err error) {
 		applyTLSClientAuth(f, bundle)
 	}
 
+	// Install the dynamic client-auth trust pool before any listener starts,
+	// for the same reason: it must be live for the pre-host sealed-window
+	// listener too. Until SetKeyBProvider is called (after the service graph
+	// below constructs a CertProvider), the hook holds Key A only -- the
+	// correct pre-unseal state.
+	bundle.wireClientTrustPool()
+
 	// Generate the admin client certificate immediately after TLS is
 	// resolved, before any seal/barrier boot phase. Only possible when the
 	// CA private key is available (auto-generated single-node TLS) and auth
@@ -2458,6 +2465,11 @@ func runStart(f *startFlags) (err error) {
 			}
 			if svcNode.CertProv != nil {
 				serverOpts = append(serverOpts, server.WithCertProvider(svcNode.CertProv))
+				// From here on, the dynamic client-auth trust pool
+				// (wireClientTrustPool, installed before any listener
+				// started) trusts every tenant's Key B CA certificate in
+				// addition to Key A.
+				bundle.SetKeyBProvider(svcNode.CertProv)
 			}
 			if svcNode.Credential != nil {
 				serverOpts = append(serverOpts, server.WithCredentialService(svcNode.Credential))
