@@ -110,6 +110,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
@@ -2868,6 +2869,17 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 			return &AuthMiddlewareWiringError{Err: verr}
 		}
 	}
+	// The issuer-tenant binding (go-qrdb#560) needs the cluster CA (Key A)
+	// certificate: a Key B leaf's issuing CA must be its own claimed
+	// tenant's registered CA, or the cluster CA. The ceremony service core
+	// carries it (lifecycle.BuildServices wires infra.CeremonyCA into it),
+	// the same source cmd/qrdbd uses. A node with no ceremony service, or
+	// one whose CA is not yet established, leaves the check unenforced
+	// (wiring.issuerTenantBinding's nil-clusterCA case).
+	var clusterCA ceremony.CeremonyCA
+	if coreSvc, ok := service.CeremonyServiceCore(svcNode.Ceremony); ok {
+		clusterCA = coreSvc.CA()
+	}
 	authMW, err := wiring.BuildAuthMiddleware(wiring.AuthMiddlewareConfig{
 		Enabled:             cfg.Auth.IsEnabled(),
 		Authorizer:          n.authorizer,
@@ -2884,6 +2896,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		// it records revocations, lists them, and lets the revoked
 		// certificate keep authenticating until it expires.
 		CertProvider:       svcNode.CertProv,
+		ClusterCA:          clusterCA,
 		RevocationCacheTTL: revocationTTL,
 		MTLSBindingPolicy:  bindingPolicy,
 		PeerAttestation:    n.peerAttestation,
@@ -3042,6 +3055,22 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	var encMigrator service.EncryptionMigrator = server.NewScopedEncryptionMigrator(sysMig, n.tenantHosts, n.raftBackend, barrierRegistry, &nodeTenantResolver{node: n},
 		server.WithTenantAdmission(n.admitTenantMigration))
 	n.encMigrator.Store(&encMigrator)
+
+	// Wire the shared dynamic client-auth trust pool (pkg/clienttrust) onto
+	// the embedder's own *tls.Config, the same implementation
+	// cmd/qrdbd/tls.go uses, so a Key B leaf authenticates on this node's
+	// client-facing listeners too (go-qrdb#560). A node with no explicit
+	// WithTLS (relying on CeremonyCA auto-provisioning instead) has nothing
+	// to wire this onto here; that composition's listeners keep whatever
+	// trust posture ceremony.ServerTLSConfig and the auth middleware already
+	// give them.
+	if tlsCfg := server.ResolveTLSConfig(allOpts...); tlsCfg != nil {
+		pool := clienttrust.New()
+		pool.Wire(tlsCfg)
+		if svcNode.CertProv != nil {
+			pool.SetKeyBProvider(svcNode.CertProv)
+		}
+	}
 
 	srv := server.New(serverCfg, svcNode.KV, svcNode.Admin, allOpts...)
 	if err := srv.Start(); err != nil {

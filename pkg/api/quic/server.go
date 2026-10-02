@@ -494,6 +494,39 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	return s
 }
 
+// quicOnlyTLSConfig clones base and pins its ALPN list to exactly
+// wire.ProtocolV3 -- nothing a TLS config shared with the REST listener
+// carries ("h3", "h2"): this listener speaks one protocol, so a client that
+// does not offer it fails the handshake here rather than connecting under a
+// label it will not be served by.
+//
+// A dynamic GetConfigForClient hook shared with the other listeners
+// (pkg/clienttrust's trust-pool widening) was installed on base BEFORE this
+// clone, so Clone copied the closure itself, not its effect: the closure
+// still clones from the ORIGINAL base it closed over, whose NextProtos is
+// whatever the shared config carries for REST/gRPC/Unix/MCP, not
+// wire.ProtocolV3. Left unwrapped, a connection that exercises the dynamic
+// path (any Key B certificate login, once one exists) would be served the
+// WRONG ALPN list and fail the handshake with "tls: server did not select an
+// ALPN protocol" -- every other field the hook widens (ClientCAs) is
+// correct; only this listener-specific override needs reasserting on top of
+// whatever the hook returns.
+func quicOnlyTLSConfig(base *tls.Config) *tls.Config {
+	cfg := base.Clone()
+	cfg.NextProtos = []string{wire.ProtocolV3}
+	if dynamic := cfg.GetConfigForClient; dynamic != nil {
+		cfg.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+			got, err := dynamic(hello)
+			if err != nil || got == nil {
+				return got, err
+			}
+			got.NextProtos = []string{wire.ProtocolV3}
+			return got, nil
+		}
+	}
+	return cfg
+}
+
 // Start begins listening for QUIC connections and serving requests.
 // The method returns after the listener is bound; connections are
 // served in the background.
@@ -502,12 +535,7 @@ func (s *Server) Start() error {
 		return &StartError{Addr: s.addr, Err: &tlsRequiredError{}}
 	}
 
-	tlsCfg := s.tlsConfig.Clone()
-	// Only wire.ProtocolV3, and nothing a TLS config shared with the REST
-	// listener carries ("h3", "h2"): this listener speaks one protocol, so a
-	// client that does not offer it fails the handshake here rather than
-	// connecting under a label it will not be served by.
-	tlsCfg.NextProtos = []string{wire.ProtocolV3}
+	tlsCfg := quicOnlyTLSConfig(s.tlsConfig)
 
 	// 0-RTT stays off (Allow0RTT is false). Early data is replayable: an
 	// on-path attacker can resend a captured flight and the server processes

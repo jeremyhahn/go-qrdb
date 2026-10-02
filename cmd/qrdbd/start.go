@@ -1228,6 +1228,15 @@ func runStart(f *startFlags) (err error) {
 		applyTLSClientAuth(f, bundle)
 	}
 
+	// pkg/clienttrust reads TLSConfig.ClientCAs fresh on every connection as
+	// its Key A baseline (see wireClientTrustPool), so that field must carry
+	// Key A before any listener can accept a connection. applyTLSClientAuth
+	// above already sets it when the operator chose a client-auth mode
+	// explicitly; set it here unconditionally too (idempotent when it
+	// already matches) so the invariant holds on the default path as well,
+	// which only assigns it later, right before server construction.
+	bundle.TLSConfig.ClientCAs = bundle.ClientCACertPool
+
 	// Install the dynamic client-auth trust pool before any listener starts,
 	// for the same reason: it must be live for the pre-host sealed-window
 	// listener too. Until SetKeyBProvider is called (after the service graph
@@ -1926,7 +1935,7 @@ func runStart(f *startFlags) (err error) {
 			// already initialized above and reused here.
 			var authResult *authBootstrapResult
 			if f.authEnabled {
-				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, f.dataDir, rnode, complianceAudit, strictSoD, f.spiffeTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir}, svcNode.CertProv, f.revocationCacheTTL, f.auditFailurePolicy, f.mtlsBindingPolicy)
+				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, f.dataDir, rnode, complianceAudit, strictSoD, f.spiffeTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir}, svcNode.CertProv, ceremonyCA, f.revocationCacheTTL, f.auditFailurePolicy, f.mtlsBindingPolicy)
 				if err != nil {
 					_ = shutdownNode(nodeCloser)
 					// Context cancellation from signal is a clean shutdown, not an error.
@@ -3782,7 +3791,7 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 // sdk/go/node.Node calls when wiring an embedded unified server — so a
 // daemon-run node and an embedded node (go-xkms xkmsd, go-quicbaas
 // quicbaasd) enforce authn/authz identically.
-func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, spiffeTrustDomain string, abacCfg qrdbconfig.AuthABACConfig, certProv cert.CertProvider, revocationCacheTTL string, auditFailurePolicy string, mtlsBindingPolicy string) (*authBootstrapResult, error) {
+func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, spiffeTrustDomain string, abacCfg qrdbconfig.AuthABACConfig, certProv cert.CertProvider, clusterCA ceremony.CeremonyCA, revocationCacheTTL string, auditFailurePolicy string, mtlsBindingPolicy string) (*authBootstrapResult, error) {
 	_ = ctx
 	_ = node
 
@@ -3896,6 +3905,9 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, da
 		// lists them, prints them, and lets the revoked certificate keep
 		// authenticating until it expires.
 		CertProvider:       certProv,
+		// The issuer-tenant binding (go-qrdb#560): a Key B leaf's issuing CA
+		// must be its own claimed tenant's registered CA, or the cluster CA.
+		ClusterCA:          clusterCA,
 		RevocationCacheTTL: revocationTTL,
 		MTLSBindingPolicy:  bindingPolicy,
 	})

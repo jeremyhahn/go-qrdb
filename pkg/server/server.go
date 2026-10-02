@@ -1000,6 +1000,23 @@ func ResolveCryptoOptions(opts ...ServerOption) CryptoOptions {
 	}
 }
 
+// ResolveTLSConfig applies the given ServerOptions to a throwaway option set
+// and returns the explicit *tls.Config passed via WithTLS, or nil when none
+// was supplied (the composer relies on CeremonyCA auto-provisioning
+// instead). Embedders that need to wire something onto the listener TLS
+// config before server.New runs call this the same way ResolveCryptoOptions
+// is called for crypto injection -- e.g. sdk/go/node wiring the shared
+// pkg/clienttrust dynamic client-auth trust pool onto it.
+func ResolveTLSConfig(opts ...ServerOption) *tls.Config {
+	o := &serverOptions{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(o)
+		}
+	}
+	return o.tlsConfig
+}
+
 // New creates a new multi-protocol server orchestrator. kvSvc and adminSvc may
 // be nil when only non-KV services (barrier, cert, auth) are needed; protocol
 // servers propagate their nil-service behaviour to callers as Unimplemented

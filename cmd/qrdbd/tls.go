@@ -15,7 +15,6 @@
 package main
 
 import (
-	"context"
 	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
@@ -25,10 +24,10 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 )
 
@@ -98,31 +97,12 @@ type TLSBundle struct {
 	// the cluster/login CA are separate concerns".
 	ExplicitTLS bool
 
-	// keyBProvider is the CertProvider wireClientTrustPool's
-	// GetConfigForClient hook reads Key B's CA certificates from, set once
-	// post-unseal via SetKeyBProvider. nil (the state before that call, and
-	// again after a reseal that makes the provider's own calls fail) means
-	// the dynamic trust pool holds Key A only.
-	keyBProvider atomic.Pointer[keyBProviderBox]
-}
-
-// keyBProviderBox boxes a cert.CertProvider so it can be held in an
-// atomic.Pointer: that type needs a concrete pointee, and an interface value
-// is not one.
-type keyBProviderBox struct {
-	prov cert.CertProvider
-}
-
-// keyBCertSource is the capability DefaultCertProvider.CACertPEMs provides:
-// every tenant's Key B CA certificate (or, with an injected cakey.Provider,
-// the single one that replaces them). It is declared here, rather than
-// added to cert.CertProvider, because that interface is what an embedder's
-// own CertProvider replacement (server.WithCertProvider) must satisfy, and
-// multi-tenant enumeration is not part of its contract -- a type assertion
-// against this shape is how the trust pool asks for the capability without
-// widening the interface every CertProvider implementation must carry.
-type keyBCertSource interface {
-	CACertPEMs(ctx context.Context) ([][]byte, error)
+	// trustPool is the single, shared implementation of the dynamic
+	// client-auth trust pool (pkg/clienttrust), installed on TLSConfig by
+	// wireClientTrustPool. qrdbd, the SDK node builders, and the
+	// qrdb_embedded composer all wire the SAME package rather than keeping
+	// independent copies of this logic.
+	trustPool *clienttrust.Pool
 }
 
 // SetKeyBProvider installs the CertProvider the dynamic client-auth trust
@@ -130,19 +110,21 @@ type keyBCertSource interface {
 // once, as soon as the CertProvider exists -- which is after
 // lifecycle.BuildServices runs, meaning after the barrier is first unsealed.
 // Safe to call concurrently with a live GetConfigForClient hook: the next
-// connection sees the newly installed provider.
+// connection sees the newly installed provider. Must be called after
+// wireClientTrustPool.
 func (b *TLSBundle) SetKeyBProvider(p cert.CertProvider) {
-	b.keyBProvider.Store(&keyBProviderBox{prov: p})
+	b.trustPool.SetKeyBProvider(p)
 }
 
-// wireClientTrustPool installs TLSConfig.GetConfigForClient, the dynamic
-// client-auth trust pool every client-facing listener sharing this bundle's
-// TLSConfig pointer (REST, gRPC, Unix, QUIC, MCP) verifies a presented
-// client certificate against: Key A (ClientCACertPool, the static pool
-// already assigned to TLSConfig.ClientCAs) plus every tenant's Key B CA
-// certificate, read fresh from whatever provider SetKeyBProvider most
-// recently installed. See docs/certificate-authority/architecture.md, "Key B
-// trust on the client-facing listeners".
+// wireClientTrustPool installs TLSConfig.GetConfigForClient (via
+// pkg/clienttrust), the dynamic client-auth trust pool every client-facing
+// listener sharing this bundle's TLSConfig pointer (REST, gRPC, Unix, QUIC,
+// MCP) verifies a presented client certificate against: Key A
+// (TLSConfig.ClientCAs, the static pool already assigned there) plus every
+// tenant's Key B CA certificate, read fresh from whatever provider
+// SetKeyBProvider most recently installed. See
+// docs/certificate-authority/architecture.md, "Key B trust on the
+// client-facing listeners".
 //
 // Call once, before any listener using this bundle starts (including the
 // pre-host sealed-window listener), so the hook is live even before
@@ -156,37 +138,8 @@ func (b *TLSBundle) SetKeyBProvider(p cert.CertProvider) {
 // quicraftconfig.MTLSConfig in start.go), so a Key B leaf is refused there
 // regardless of what this pool trusts.
 func (b *TLSBundle) wireClientTrustPool() {
-	b.TLSConfig.GetConfigForClient = func(*tls.ClientHelloInfo) (*tls.Config, error) {
-		box := b.keyBProvider.Load()
-		if box == nil || box.prov == nil {
-			return nil, nil
-		}
-		src, ok := box.prov.(keyBCertSource)
-		if !ok {
-			return nil, nil
-		}
-		pems, err := src.CACertPEMs(context.Background())
-		if err != nil || len(pems) == 0 {
-			// Sealed (the ordinary cause in Raft mode, where the replicated
-			// store cannot be opened while sealed), or no tenant has
-			// established Key B yet: fall back to the static config, not an
-			// error, so a Key A holder keeps authenticating through a
-			// reseal.
-			return nil, nil
-		}
-
-		pool := b.ClientCACertPool.Clone()
-		for _, p := range pems {
-			pool.AppendCertsFromPEM(p)
-		}
-		clone := b.TLSConfig.Clone()
-		clone.ClientCAs = pool
-		// crypto/tls invokes GetConfigForClient at most once per handshake,
-		// so this is not re-entered for the connection being set up; nil it
-		// anyway so the clone is never mistaken for a second, live hook.
-		clone.GetConfigForClient = nil
-		return clone, nil
-	}
+	b.trustPool = clienttrust.New()
+	b.trustPool.Wire(b.TLSConfig)
 }
 
 // localSANs discovers all local DNS names and IP addresses suitable for

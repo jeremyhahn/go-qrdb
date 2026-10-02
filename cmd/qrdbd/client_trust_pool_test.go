@@ -23,27 +23,27 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 )
 
-// These tests close the "Key B trust on the client-facing listeners" gap
-// (docs/certificate-authority/architecture.md): wireClientTrustPool's
-// GetConfigForClient hook must widen the client-auth trust pool to include
-// Key B while the provider is available, and transparently fall back to the
-// static, Key-A-only config whenever it is not (pre-unseal, a reseal, or no
-// CertProvider installed at all).
+// These tests prove TLSBundle wires pkg/clienttrust correctly -- the actual
+// trust-pool widening/fallback behavior is pkg/clienttrust's own test
+// suite's job (pkg/clienttrust/pool_test.go). qrdbd, sdk/go/node, and the
+// qrdb_embedded composer all share that ONE implementation; this file only
+// proves qrdbd's wiring of it.
 
 // fakeKeyBCertProvider implements cert.CertProvider (every method a no-op)
-// plus CACertPEMs, so it satisfies keyBCertSource via the type assertion
-// wireClientTrustPool performs. It never persists or generates real key
-// material: it only hands back whatever pems/err a test configured.
+// plus CACertPEMs, so it satisfies clienttrust.CertSource. It never
+// persists or generates real key material: it only hands back whatever
+// pems/err a test configured.
 type fakeKeyBCertProvider struct {
 	pems [][]byte
 	err  error
 }
 
 var _ cert.CertProvider = (*fakeKeyBCertProvider)(nil)
-var _ keyBCertSource = (*fakeKeyBCertProvider)(nil)
+var _ clienttrust.CertSource = (*fakeKeyBCertProvider)(nil)
 
 func (f *fakeKeyBCertProvider) GenerateClientCert(context.Context, *cert.GenerateRequest) (*cert.CertBundle, error) {
 	return nil, errors.New("not implemented")
@@ -67,49 +67,20 @@ func (f *fakeKeyBCertProvider) CACertPEMs(context.Context) ([][]byte, error) {
 	return f.pems, f.err
 }
 
-// fakePlainCertProvider implements cert.CertProvider but NOT CACertPEMs --
-// the shape of a CertProvider an embedder swapped in wholesale via
-// server.WithCertProvider, which is not required to support multi-tenant
-// enumeration. It deliberately does NOT embed fakeKeyBCertProvider: Go
-// method promotion through embedding would hand it CACertPEMs anyway and
-// defeat the point of this double.
-type fakePlainCertProvider struct{}
-
-var _ cert.CertProvider = (*fakePlainCertProvider)(nil)
-
-func (f *fakePlainCertProvider) GenerateClientCert(context.Context, *cert.GenerateRequest) (*cert.CertBundle, error) {
-	return nil, errors.New("not implemented")
-}
-func (f *fakePlainCertProvider) ExportPKCS12(context.Context, []byte, []byte, string) ([]byte, error) {
-	return nil, errors.New("not implemented")
-}
-func (f *fakePlainCertProvider) RevokeCert(context.Context, string) (*cert.RevokeResult, error) {
-	return nil, errors.New("not implemented")
-}
-func (f *fakePlainCertProvider) IsRevoked(context.Context, string) (bool, error) { return false, nil }
-func (f *fakePlainCertProvider) TenantForSerial(context.Context, string) (string, bool, error) {
-	return "", false, nil
-}
-func (f *fakePlainCertProvider) ListCerts(context.Context, string) ([]*cert.CertRecord, error) {
-	return nil, nil
-}
-func (f *fakePlainCertProvider) CACertPEM() []byte { return nil }
-
-// testBundle builds a minimal TLSBundle with real Key A material, wired
-// exactly as runStart wires one, for wireClientTrustPool to operate on.
 func testBundle(t *testing.T) *TLSBundle {
 	t.Helper()
 	bundle, err := generateCATLS()
 	if err != nil {
 		t.Fatalf("generateCATLS: %v", err)
 	}
+	// Matches the production sequence in runStart: ClientCAs carries Key A
+	// before wireClientTrustPool installs the hook that reads it fresh on
+	// every connection.
+	bundle.TLSConfig.ClientCAs = bundle.ClientCACertPool
 	bundle.wireClientTrustPool()
 	return bundle
 }
 
-// genClientCertPool generates a throwaway CA and returns its PEM alongside
-// an x509.CertPool trusting only Key A, to prove the dynamic pool actually
-// added something the static one does not already trust.
 func genSecondCAPEM(t *testing.T) []byte {
 	t.Helper()
 	caCertPEM, _, _, _, err := clustertls.GenerateCA(clustertls.CAValidity)
@@ -131,16 +102,14 @@ func getConfigForClient(t *testing.T, bundle *TLSBundle) *tls.Config {
 	return cfg
 }
 
-func TestWireClientTrustPool_NoProviderInstalled_FallsBackToStatic(t *testing.T) {
+func TestWireClientTrustPool_InstallsHook(t *testing.T) {
 	bundle := testBundle(t)
-
-	cfg := getConfigForClient(t, bundle)
-	if cfg != nil {
+	if cfg := getConfigForClient(t, bundle); cfg != nil {
 		t.Fatalf("expected (nil, nil) before SetKeyBProvider, got %+v", cfg)
 	}
 }
 
-func TestWireClientTrustPool_WidensPoolWithKeyBCerts(t *testing.T) {
+func TestWireClientTrustPool_SetKeyBProviderWidensPool(t *testing.T) {
 	bundle := testBundle(t)
 	keyB := genSecondCAPEM(t)
 	bundle.SetKeyBProvider(&fakeKeyBCertProvider{pems: [][]byte{keyB}})
@@ -165,7 +134,6 @@ func TestWireClientTrustPool_WidensPoolWithKeyBCerts(t *testing.T) {
 		t.Errorf("Key B CA certificate was not added to the widened pool: %v", err)
 	}
 
-	// Key A (the static ClientCACertPool) must still be trusted too.
 	block, _ = pem.Decode(bundle.CACertPEM)
 	if block == nil {
 		t.Fatal("bundle.CACertPEM did not decode as PEM")
@@ -179,51 +147,11 @@ func TestWireClientTrustPool_WidensPoolWithKeyBCerts(t *testing.T) {
 	}
 }
 
-func TestWireClientTrustPool_PreservesOtherConfigFields(t *testing.T) {
-	bundle := testBundle(t)
-	bundle.SetKeyBProvider(&fakeKeyBCertProvider{pems: [][]byte{genSecondCAPEM(t)}})
-
-	cfg := getConfigForClient(t, bundle)
-	if cfg == nil {
-		t.Fatal("expected a widened config")
-	}
-	if cfg.MinVersion != bundle.TLSConfig.MinVersion {
-		t.Errorf("MinVersion = %v, want %v", cfg.MinVersion, bundle.TLSConfig.MinVersion)
-	}
-	if len(cfg.Certificates) != len(bundle.TLSConfig.Certificates) {
-		t.Errorf("Certificates count = %d, want %d", len(cfg.Certificates), len(bundle.TLSConfig.Certificates))
-	}
-	if cfg.GetConfigForClient != nil {
-		t.Error("expected GetConfigForClient to be cleared on the returned clone")
-	}
-}
-
 func TestWireClientTrustPool_ProviderErrorFallsBackToStatic(t *testing.T) {
 	bundle := testBundle(t)
 	bundle.SetKeyBProvider(&fakeKeyBCertProvider{err: errors.New("barrier is sealed")})
 
-	cfg := getConfigForClient(t, bundle)
-	if cfg != nil {
+	if cfg := getConfigForClient(t, bundle); cfg != nil {
 		t.Fatalf("expected (nil, nil) when CACertPEMs fails (simulating sealed), got %+v", cfg)
-	}
-}
-
-func TestWireClientTrustPool_NoKeyBCertsYetFallsBackToStatic(t *testing.T) {
-	bundle := testBundle(t)
-	bundle.SetKeyBProvider(&fakeKeyBCertProvider{})
-
-	cfg := getConfigForClient(t, bundle)
-	if cfg != nil {
-		t.Fatalf("expected (nil, nil) when no tenant has established Key B yet, got %+v", cfg)
-	}
-}
-
-func TestWireClientTrustPool_ProviderWithoutCACertPEMsFallsBackToStatic(t *testing.T) {
-	bundle := testBundle(t)
-	bundle.SetKeyBProvider(&fakePlainCertProvider{})
-
-	cfg := getConfigForClient(t, bundle)
-	if cfg != nil {
-		t.Fatalf("expected (nil, nil) for a CertProvider that does not implement keyBCertSource, got %+v", cfg)
 	}
 }
