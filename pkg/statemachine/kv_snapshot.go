@@ -26,8 +26,12 @@ func (k *KVStateMachine) RecoverSnapshot(r io.Reader, stopper <-chan struct{}) e
 	return k.backend.RecoverSnapshot(r, stopper)
 }
 
-// GetHash delegates hash computation to the backend.
+// GetHash delegates hash computation to the backend, between batches: it
+// waits for a batch Update is applying, so the hash is of the state after
+// the whole batch.
 func (k *KVStateMachine) GetHash() (uint64, error) {
+	k.batch.Lock()
+	defer k.batch.Unlock()
 	return k.backend.GetHash()
 }
 

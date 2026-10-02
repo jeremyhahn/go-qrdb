@@ -137,6 +137,15 @@ type ConcurrentStateMachine struct {
 	// wg tracks outstanding async persistence goroutines so Close can
 	// wait for them to finish.
 	wg sync.WaitGroup
+
+	// batch is held shared by every Update while it applies a batch of
+	// entries, and exclusively by GetHash while it hashes the state.
+	// go-quicraft's concurrent tier runs Lookup and GetHash concurrently with
+	// Update; replicas compare the hash to detect divergence, so it must be of
+	// a state between batches -- one every replica passes through -- never of
+	// a batch half applied. Holding it shared leaves applies as concurrent as
+	// they were; Lookup takes no part in it, so a read may run during a batch.
+	batch sync.RWMutex
 }
 
 // NewConcurrentStateMachine creates a new ConcurrentStateMachine with
@@ -227,6 +236,8 @@ func NewConcurrentCreateFunc(storeFactory func(shardID, replicaID uint64) storag
 // Update applies committed log entries to the state machine. It dispatches
 // each entry through the handler map based on the leading op byte.
 func (c *ConcurrentStateMachine) Update(_ context.Context, entries []sm.Entry, results []sm.Result) error {
+	c.batch.RLock()
+	defer c.batch.RUnlock()
 	for i := range entries {
 		cmd := entries[i].Cmd
 		if len(cmd) == 0 {
@@ -454,9 +465,12 @@ func (c *ConcurrentStateMachine) Close(_ context.Context) error {
 // ---------------------------------------------------------------------------
 
 // GetHash computes a deterministic xxhash64 hash of all key-value pairs
-// across all shards. Keys are sorted to ensure determinism. Acquires
-// read locks on all shards.
+// across all shards. Keys are sorted to ensure determinism. It waits for a
+// batch Update is applying, so the hash is of the state after the whole
+// batch, and acquires read locks on all shards.
 func (c *ConcurrentStateMachine) GetHash() (uint64, error) {
+	c.batch.Lock()
+	defer c.batch.Unlock()
 	h := xxhash.New()
 
 	// Collect all keys from all shards under read locks.

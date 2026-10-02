@@ -17,6 +17,7 @@ package statemachine
 import (
 	"encoding/binary"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
@@ -41,6 +42,15 @@ type KVStateMachine struct {
 	revision atomic.Uint64
 	handlers map[byte]updateHandler
 	logger   *slog.Logger
+
+	// batch is held shared by every Update while it applies a batch of
+	// entries, and exclusively by GetHash while it hashes the state.
+	// go-quicraft's concurrent tier runs Lookup and GetHash concurrently with
+	// Update; replicas compare the hash to detect divergence, so it must be of
+	// a state between batches -- one every replica passes through -- never of
+	// a batch half applied. Holding it shared leaves applies as concurrent as
+	// they were; Lookup takes no part in it, so a read may run during a batch.
+	batch sync.RWMutex
 
 	// Optional subsystem managers.
 	watchManager WatchManager
@@ -129,6 +139,8 @@ func NewKVStateMachine(backend Backend, opts ...KVOption) *KVStateMachine {
 // processing continues; the proposer inspects Data (via checkResultError)
 // and surfaces a typed refusal without poisoning Raft.
 func (k *KVStateMachine) Update(entries []sm.Entry, results []sm.Result) error {
+	k.batch.RLock()
+	defer k.batch.RUnlock()
 	for i := range entries {
 		cmd := entries[i].Cmd
 		if len(cmd) == 0 {
