@@ -2593,6 +2593,18 @@ Standalone parity (#582) and durable leases. Highlights:
   `CorruptTableError`. A state machine opening over a corrupt lease table
   fails with `CorruptTableError` rather than guessing which keys a lease owns.
 
+### Fixed
+
+- **A slow user lookup no longer denies a tenant's users.** When the
+  linearizable user lookup missed its 500 ms budget, the auth middleware consulted
+  its StaleRead fallback. That store holds the system tenant only, so for any
+  other tenant's user it answered "no such user". The middleware treated that as
+  authoritative, let the identity through with no roles, and returned a
+  definitive 403 to a correctly enrolled user. It now consults the fallback for
+  the system tenant only, and other tenants get the retryable 503 the transient
+  error describes. Found by the measurement that armed the tenancy job: it
+  reddened `TestIsolationRaft_Scale_RestartSurvival` once in ten runs.
+
 ## [0.26.0-alpha] - 2026-10-01
 
 Merge train 5. Highlights:

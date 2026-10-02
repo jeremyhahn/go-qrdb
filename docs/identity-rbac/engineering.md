@@ -890,9 +890,20 @@ authenticated value — whether or not the authenticator set one.
 | Re-permissioning a built-in role through `UpdateRole` | `SystemRoleImmutableError{Op: "re-permissioned"}` | **yes** |
 | Reconciling another tenant's built-ins as a normal tenant caller | `tenant.CrossTenantDeniedError` | **yes** |
 | Reconciling a sealed barrier tenant | `tenant.ErrTenantSealed`, no fallback to the shared store | **yes** |
+| The linearizable user lookup misses its 500 ms budget for a NON-system tenant | `StoreUnavailableError` (503, retryable): the StaleRead fallback holds the system tenant only and is not consulted, because its "no such user" says nothing about another tenant | **yes** |
 | Stored role carries a permission this build does not define | reported on read via `RetiredPermissions`; **no read fails** | — |
 | Duplicate username within a tenant | refused | yes |
 | `Permissions()` / `RBAC()` on an unsupporting transport | returns **nil** — callers must nil-check | — |
+
+**The StaleRead user fallback answers for the system tenant only.** qrdbd
+builds it over a store confined to the system tenant's identity namespace, so
+it holds no other tenant's records. It used to be consulted for every tenant
+whenever the linearizable lookup missed its 500 ms budget, and its "no such
+user" was treated as authoritative: the identity then proceeded with no roles,
+and RBAC refused a correctly enrolled tenant user with a definitive 403. Under
+load this reddened the multi-node tenant suites about once in ten runs. For a
+non-system tenant the primary's transient error now stands, and the caller gets
+a retryable 503.
 
 The nil returns are the sharp edge here: they are not error values, so an
 unchecked call panics rather than failing cleanly.

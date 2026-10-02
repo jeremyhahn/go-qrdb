@@ -202,6 +202,12 @@ func WithUserService(u user.UserServicer) Option {
 // after cluster restart). The fallback typically uses StaleRead which
 // reads from the local state machine directly. This is safe because
 // bootstrap ensures user/role data is replicated before servers start.
+//
+// The fallback serves the SYSTEM tenant only. qrdbd builds it over a store
+// confined to the system tenant's identity namespace, so it cannot hold any
+// other tenant's records, and lookupUser never consults it for another tenant:
+// a lookup there that misses the primary's budget is reported as the transient
+// failure it is, not as "no such user".
 func WithUserServiceFallback(u user.UserServicer) Option {
 	return func(m *AuthMiddleware) {
 		m.usersFallback = u
@@ -596,8 +602,14 @@ func (m *AuthMiddleware) lookupUser(ctx context.Context, tenantID, subject strin
 		return nil, err
 	}
 
-	// Primary failed with a transient error; try fallback.
-	if m.usersFallback != nil {
+	// Primary failed with a transient error; try the fallback, but ONLY for the
+	// tenant it holds. The fallback is confined to the system tenant's identity
+	// namespace (see WithUserServiceFallback), so for any other tenant its
+	// "not found" is not an answer about that tenant at all -- and treating it
+	// as authoritative turned a slow ReadIndex into a definitive 403 for a
+	// correctly enrolled user. For those tenants the primary's transient error
+	// stands, and the caller gets the retryable 503 it describes.
+	if m.usersFallback != nil && tenant.IsSystemTenant(tenantID) {
 		fallbackCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		u, ferr := m.usersFallback.GetUserByUsername(fallbackCtx, tenantID, subject)
 		cancel()

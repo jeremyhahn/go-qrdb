@@ -128,8 +128,9 @@ func TestWithUserServiceFallback_SetsField(t *testing.T) {
 
 func TestWithUserServiceFallback_PrimaryFails_FallbackSucceeds(t *testing.T) {
 	// Primary user service fails with a transient error; fallback returns
-	// the user so the middleware can enrich the identity.
-	id := &auth.Identity{Subject: "alice", TenantID: "t1", Roles: []string{"base"}}
+	// the user so the middleware can enrich the identity. The fallback holds
+	// the system tenant only, so the identity is a system-tenant one.
+	id := &auth.Identity{Subject: "alice", TenantID: "system", Roles: []string{"base"}}
 	authn := &mockAuthenticator{name: "mtls", identity: id}
 	authz := &mockAuthorizer{}
 
@@ -137,7 +138,7 @@ func TestWithUserServiceFallback_PrimaryFails_FallbackSucceeds(t *testing.T) {
 	fallback := &mockUserServicer{
 		user: &user.User{
 			Username:  "alice",
-			TenantID:  "t1",
+			TenantID:  "system",
 			RoleIDs:   []string{"admin", "operator"},
 			Lifecycle: user.LifecycleActive,
 		},
@@ -221,14 +222,14 @@ func TestLookupUser_PrimaryTransient_FallbackSucceeds(t *testing.T) {
 	fallback := &mockUserServicer{
 		user: &user.User{
 			Username:  "bob",
-			TenantID:  "t2",
+			TenantID:  "system",
 			Lifecycle: user.LifecycleActive,
 		},
 	}
 
 	m := &AuthMiddleware{users: primary, usersFallback: fallback}
 
-	u, err := m.lookupUser(context.Background(), "t2", "bob")
+	u, err := m.lookupUser(context.Background(), "system", "bob")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -245,7 +246,8 @@ func TestLookupUser_PrimaryTransient_FallbackSucceeds(t *testing.T) {
 
 func TestLookupUser_PrimaryTransient_FallbackNotFound(t *testing.T) {
 	// Primary fails with transient error, fallback returns UserNotFoundError.
-	// The fallback's UserNotFoundError should be used.
+	// The fallback's UserNotFoundError should be used: it holds the system
+	// tenant, so for a system-tenant lookup its "not found" is authoritative.
 	primary := &mockUserServicer{err: errors.New("raft timeout")}
 	fallback := &mockUserServicer{
 		err: &user.UserNotFoundError{Lookup: "ghost"},
@@ -253,7 +255,7 @@ func TestLookupUser_PrimaryTransient_FallbackNotFound(t *testing.T) {
 
 	m := &AuthMiddleware{users: primary, usersFallback: fallback}
 
-	_, err := m.lookupUser(context.Background(), "t1", "ghost")
+	_, err := m.lookupUser(context.Background(), "system", "ghost")
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -850,7 +852,7 @@ func TestStreamInterceptor_StoreUnavailable(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAuthenticateQUIC_FallbackUsed(t *testing.T) {
-	id := &auth.Identity{Subject: "alice", TenantID: "t1"}
+	id := &auth.Identity{Subject: "alice", TenantID: "system"}
 	authn := &mockAuthenticator{name: "mtls", identity: id}
 	authz := &mockAuthorizer{}
 
@@ -858,7 +860,7 @@ func TestAuthenticateQUIC_FallbackUsed(t *testing.T) {
 	fallback := &mockUserServicer{
 		user: &user.User{
 			Username:  "alice",
-			TenantID:  "t1",
+			TenantID:  "system",
 			RoleIDs:   []string{"operator"},
 			Lifecycle: user.LifecycleActive,
 		},
