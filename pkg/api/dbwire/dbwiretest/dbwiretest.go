@@ -41,10 +41,6 @@ const (
 // Secrets lists every secret the fixture stores.
 var Secrets = []string{StaticSecret, MulticastSecret, DiscoveryToken}
 
-// SetIndicators lists the JSON keys a response carries, true, in place of
-// the secrets.
-var SetIndicators = []string{"sharedSecretSet", "tokenSet"}
-
 // RaftConfig is a distributed Raft configuration that carries every
 // discovery secret.
 func RaftConfig() *database.DatabaseRaftConfig {
@@ -97,8 +93,10 @@ func Seed(t testing.TB, svc service.DatabaseServicer) {
 	}
 }
 
-// AssertNoSecrets fails when a response holds any stored secret, and when it
-// does not report each one as set. what names the transport and operation.
+// AssertNoSecrets fails when a response holds any stored secret, and when any
+// raft block in it does not report each discovery block's secret as set --
+// static, multicast and token, each by its own flag. what names the transport
+// and operation.
 func AssertNoSecrets(t testing.TB, what string, response []byte) {
 	t.Helper()
 	// protojson spaces its output unpredictably; compare compact JSON.
@@ -111,9 +109,49 @@ func AssertNoSecrets(t testing.TB, what string, response []byte) {
 			t.Errorf("%s returned the stored secret %q:\n%s", what, secret, response)
 		}
 	}
-	for _, key := range SetIndicators {
-		if !bytes.Contains(response, []byte(`"`+key+`":true`)) {
-			t.Errorf("%s does not report %q as set:\n%s", what, key, response)
+	var decoded any
+	if err := json.Unmarshal(response, &decoded); err != nil {
+		t.Fatalf("%s: response is not JSON: %v\n%s", what, err, response)
+	}
+	rafts := raftBlocks(decoded, nil)
+	if len(rafts) == 0 {
+		t.Errorf("%s: response holds no raft block to check:\n%s", what, response)
+	}
+	for _, raft := range rafts {
+		for block, flag := range setFlags {
+			b, _ := raft[block].(map[string]any)
+			if b == nil || b[flag] != true {
+				t.Errorf("%s does not report %s.%s as set:\n%s", what, block, flag, response)
+			}
 		}
 	}
+}
+
+// setFlags names, per discovery block the fixture fills, the flag that
+// reports its secret set. Each block is checked on its own: one block's flag
+// cannot stand in for another's.
+var setFlags = map[string]string{
+	"static":    "sharedSecretSet",
+	"multicast": "sharedSecretSet",
+	"token":     "tokenSet",
+}
+
+// raftBlocks returns every object found under a "raft" key anywhere in v --
+// one per database in a list, one in a single database's response.
+func raftBlocks(v any, into []map[string]any) []map[string]any {
+	switch x := v.(type) {
+	case map[string]any:
+		for k, child := range x {
+			if r, ok := child.(map[string]any); ok && k == "raft" {
+				into = append(into, r)
+				continue
+			}
+			into = raftBlocks(child, into)
+		}
+	case []any:
+		for _, child := range x {
+			into = raftBlocks(child, into)
+		}
+	}
+	return into
 }
