@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -43,6 +44,7 @@ func TestRetryAfter_ReadsEveryDelayingRefusal(t *testing.T) {
 		"SO PIN lockout":        {&pin.SOPINLockedError{RetryAfter: 3 * time.Second}, 3 * time.Second},
 		"wrapped":               {&wrappedError{&pin.SOPINLockedError{RetryAfter: 4 * time.Second}}, 4 * time.Second},
 		"tenant SO PIN lockout": {&auth.SOPINLockedError{RetryAfter: 5 * time.Second}, 5 * time.Second},
+		"auth rate limit":       {&middleware.RateLimitedError{RetryAfter: 6 * time.Second}, 6 * time.Second},
 	}
 	for name, tc := range cases {
 		got, ok := RetryAfter(tc.err)
@@ -57,23 +59,6 @@ func TestRetryAfter_OtherErrorsNameNoDelay(t *testing.T) {
 	for _, err := range []error{nil, errors.New("boom"), pin.ErrPINLocked, pin.ErrPINInvalid} {
 		if d, ok := RetryAfter(err); ok {
 			t.Errorf("RetryAfter(%v) = %v, true; want none", err, d)
-		}
-	}
-}
-
-// TestRetryAfterSeconds_RoundsUpAndFloorsAtOne: whole seconds, never early,
-// never zero.
-func TestRetryAfterSeconds_RoundsUpAndFloorsAtOne(t *testing.T) {
-	cases := map[time.Duration]int64{
-		0:                       1,
-		10 * time.Millisecond:   1,
-		time.Second:             1,
-		1500 * time.Millisecond: 2,
-		15 * time.Minute:        900,
-	}
-	for d, want := range cases {
-		if got := RetryAfterSeconds(d); got != want {
-			t.Errorf("RetryAfterSeconds(%v) = %d, want %d", d, got, want)
 		}
 	}
 }

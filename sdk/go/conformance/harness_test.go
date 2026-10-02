@@ -447,7 +447,7 @@ func (c cell) boot(t *testing.T) clients {
 // transport is TLS-only by design — the client certificate IS the identity the
 // auth middleware authenticates — so there is no insecure shortcut here, and
 // server.WithTLS feeds REST, gRPC, QUIC and unix from this one config (the
-// QUIC listener replaces its ALPN list with its own "qrdb-quic/2").
+// QUIC listener replaces its ALPN list with its own "qrdb-quic/3").
 //
 // The client certificate is issued to "matrix" in clientTenant, which is the
 // identity every remote cell authenticates as.

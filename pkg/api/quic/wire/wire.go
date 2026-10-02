@@ -40,7 +40,7 @@ import (
 // The set of CONDITIONS this wire can report is exactly the set gRPC's status
 // codes name — one wire status per gRPC code, seventeen of each, no condition
 // in either that the other cannot express. That correspondence is written down
-// once, in pkg/api/quic.wireStatusByGRPCCode, and asserted to be a bijection by
+// once, in statusByGRPCCode (StatusForGRPCCode, GRPCCodeForStatus), and asserted to be a bijection by
 // TestWireStatusByGRPCCode_IsABijection.
 //
 // It was chosen rather than a smaller set for three measured reasons:
@@ -203,13 +203,22 @@ func StatusDeclared(status uint16) bool {
 	return ok
 }
 
-// ProtocolV2 is the TLS ALPN identifier of this frame protocol, and the only
+// ProtocolV3 is the TLS ALPN identifier of this frame protocol, and the only
 // one a qrdb QUIC listener accepts: a peer that does not offer it fails the
-// handshake. It replaced "qrdb-quic", whose frames were identical but which
-// let the client half-close a request stream as soon as it had written the
-// request.
+// handshake.
 //
-// Under ProtocolV2 the client holds its write side open until it has READ the
+// It replaced "qrdb-quic/2", whose error frames carried the server's message
+// as bare text. Under ProtocolV3 the body of every non-OK response frame is an
+// ErrorPayload -- a google.rpc.Status carrying the message and, when the
+// failure names one, the retry delay as a google.rpc.RetryInfo detail -- so a
+// QUIC caller is told how long to wait exactly as a REST, gRPC or MCP caller
+// is. A peer that read one format as the other would show a caller protobuf
+// bytes as a message, or bare text as a malformed body, so the two are not
+// accepted alongside each other.
+//
+// "qrdb-quic/2" in turn replaced "qrdb-quic", whose frames were identical but
+// which let the client half-close a request stream as soon as it had written
+// the request. Under ProtocolV3, as under "qrdb-quic/2", the client holds its write side open until it has READ the
 // whole response frame, and only then closes it. That FIN is the client's
 // acknowledgement that the response arrived, and the server waits for it
 // (bounded) before it treats a request as finished. It is what lets a server
@@ -218,7 +227,7 @@ func StatusDeclared(status uint16) bool {
 // whatever it had queued but not yet sent. The old identifier is not accepted
 // alongside it because a client that half-closes early sends a FIN that
 // proves nothing, and a server cannot tell that FIN from an acknowledgement.
-const ProtocolV2 = "qrdb-quic/2"
+const ProtocolV3 = "qrdb-quic/3"
 
 // MaxMethodLen is the maximum length of a method name in bytes.
 const MaxMethodLen = 256

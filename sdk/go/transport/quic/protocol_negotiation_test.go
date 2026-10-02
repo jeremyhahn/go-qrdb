@@ -30,7 +30,7 @@ import (
 
 // streamServer is a minimal QUIC listener that hands every accepted stream to
 // serve. It exists so a test can play a server whose stream discipline differs
-// from pkg/api/quic's -- one that does not speak wire.ProtocolV2, or one that
+// from pkg/api/quic's -- one that does not speak wire.ProtocolV3, or one that
 // checks exactly when the client closes its side.
 func streamServer(t *testing.T, serverCfg *tls.Config, serve func(*quicgo.Stream)) string {
 	t.Helper()
@@ -83,20 +83,21 @@ func connectTo(t *testing.T, addr string, clientCfg *tls.Config) *Transport {
 	return tr
 }
 
-// TestConnect_RefusesAServerThatDoesNotSelectProtocolV2 pins that the client
-// speaks only wire.ProtocolV2: against a server predating it (which offers
-// only the retired "qrdb-quic") the handshake fails, and against a peer that
+// TestConnect_RefusesAServerThatDoesNotSelectProtocolV3 pins that the client
+// speaks only wire.ProtocolV3: against a server predating it (which offers
+// only the retired "qrdb-quic/2" or "qrdb-quic") the handshake fails, and against a peer that
 // selects some other protocol a caller-supplied TLS config also offered,
-// Connect refuses the connection rather than speaking ProtocolV2's stream
+// Connect refuses the connection rather than speaking ProtocolV3's stream
 // discipline under another label.
-func TestConnect_RefusesAServerThatDoesNotSelectProtocolV2(t *testing.T) {
+func TestConnect_RefusesAServerThatDoesNotSelectProtocolV3(t *testing.T) {
 	tests := []struct {
 		name         string
 		serverProtos []string
 		clientProtos []string
 		wantMismatch bool
 	}{
-		{name: "server predating ProtocolV2", serverProtos: []string{"qrdb-quic"}, clientProtos: nil},
+		{name: "server predating ProtocolV3", serverProtos: []string{"qrdb-quic/2"}, clientProtos: nil},
+		{name: "server predating qrdb-quic/2", serverProtos: []string{"qrdb-quic"}, clientProtos: nil},
 		{name: "peer selecting another offered protocol", serverProtos: []string{"h3"}, clientProtos: []string{"h3"}, wantMismatch: true},
 	}
 	for _, tt := range tests {
@@ -122,7 +123,7 @@ func TestConnect_RefusesAServerThatDoesNotSelectProtocolV2(t *testing.T) {
 			err = tr.Connect(ctx)
 			if err == nil {
 				_ = tr.Close()
-				t.Fatal("Connect succeeded without negotiating ProtocolV2")
+				t.Fatal("Connect succeeded without negotiating ProtocolV3")
 			}
 			var connErr *transport.ConnectionError
 			if !errors.As(err, &connErr) {
@@ -143,18 +144,18 @@ type finObservation struct {
 	// before the server wrote its response.
 	finBeforeResponse bool
 	// finAfterResponse is true when the client's FIN arrived after the
-	// response was written, which is the ProtocolV2 acknowledgement.
+	// response was written, which is the ProtocolV3 acknowledgement.
 	finAfterResponse bool
 }
 
 // TestCall_AcknowledgesResponseByClosingAfterReading pins the client half of
-// wire.ProtocolV2: the client must
+// wire.ProtocolV3: the client must
 // NOT half-close before it has the response -- if it did, the FIN the server
 // waits on would prove nothing -- and it MUST half-close once it has read the
 // response, or the server would wait out its bound on every call.
 func TestCall_AcknowledgesResponseByClosingAfterReading(t *testing.T) {
 	serverCfg, clientCfg := e2eTLS(t)
-	serverCfg.NextProtos = []string{wire.ProtocolV2}
+	serverCfg.NextProtos = []string{wire.ProtocolV3}
 
 	observed := make(chan finObservation, 8)
 	addr := streamServer(t, serverCfg, func(stream *quicgo.Stream) {
@@ -217,8 +218,8 @@ func TestAlpnMismatchError_NamesBothProtocols(t *testing.T) {
 		negotiated string
 		want       string
 	}{
-		{negotiated: "h3", want: `quic transport: server selected ALPN protocol "h3", want "qrdb-quic/2"`},
-		{negotiated: "", want: `quic transport: server selected ALPN protocol "", want "qrdb-quic/2"`},
+		{negotiated: "h3", want: `quic transport: server selected ALPN protocol "h3", want "qrdb-quic/3"`},
+		{negotiated: "", want: `quic transport: server selected ALPN protocol "", want "qrdb-quic/3"`},
 	}
 	for _, tt := range tests {
 		if got := (&alpnMismatchError{Negotiated: tt.negotiated}).Error(); got != tt.want {
@@ -234,7 +235,7 @@ func TestAlpnMismatchError_NamesBothProtocols(t *testing.T) {
 // transport.
 func TestCall_HonoursContextWhileAwaitingTheResponse(t *testing.T) {
 	serverCfg, clientCfg := e2eTLS(t)
-	serverCfg.NextProtos = []string{wire.ProtocolV2}
+	serverCfg.NextProtos = []string{wire.ProtocolV3}
 	addr := streamServer(t, serverCfg, func(stream *quicgo.Stream) {
 		defer func() { _ = stream.Close() }()
 		method, _, requestID, _, err := wire.ReadRequest(stream)

@@ -218,7 +218,7 @@ func authzToolError(err error) *mcpgo.CallToolResult {
 	code := ServiceErrorCode(authmw.GRPCError(err, codes.PermissionDenied))
 
 	if authmw.ClassifyAuthError(err).Retryable() {
-		return toolErrorResult("", code, "authorization unavailable, retry: "+err.Error())
+		return withRetryAfter(toolErrorResult("", code, "authorization unavailable, retry: "+err.Error()), err)
 	}
 	return toolErrorResult("", code, "authorization denied: "+err.Error())
 }

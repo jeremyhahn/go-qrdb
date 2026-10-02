@@ -26,13 +26,13 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 )
 
-// TestServer_AcceptsOnlyProtocolV2 pins that the listener speaks one
-// protocol: a client that does not offer wire.ProtocolV2 -- one offering only
-// the retired "qrdb-quic", one offering only a protocol from a TLS config the
+// TestServer_AcceptsOnlyProtocolV3 pins that the listener speaks one
+// protocol: a client that does not offer wire.ProtocolV3 -- one offering only
+// the retired "qrdb-quic" or "qrdb-quic/2", one offering only a protocol from a TLS config the
 // listener might share with REST, or one offering nothing -- fails the
 // handshake instead of connecting and being served under another label, and
-// a client that offers ProtocolV2 among others gets ProtocolV2.
-func TestServer_AcceptsOnlyProtocolV2(t *testing.T) {
+// a client that offers ProtocolV3 among others gets ProtocolV3.
+func TestServer_AcceptsOnlyProtocolV3(t *testing.T) {
 	env := startIntegrationServer(t, &mockKVService{}, &mockAdminService{})
 
 	dial := func(protos []string) (*quicgo.Conn, error) {
@@ -48,6 +48,7 @@ func TestServer_AcceptsOnlyProtocolV2(t *testing.T) {
 		protos []string
 	}{
 		{name: "the retired qrdb-quic", protos: []string{"qrdb-quic"}},
+		{name: "the retired qrdb-quic/2", protos: []string{"qrdb-quic/2"}},
 		{name: "a protocol a shared REST config carries", protos: []string{"h3"}},
 		{name: "no ALPN at all", protos: nil},
 	}
@@ -61,14 +62,14 @@ func TestServer_AcceptsOnlyProtocolV2(t *testing.T) {
 		})
 	}
 
-	t.Run("ProtocolV2 among others", func(t *testing.T) {
-		conn, err := dial([]string{"h3", "qrdb-quic", wire.ProtocolV2})
+	t.Run("ProtocolV3 among others", func(t *testing.T) {
+		conn, err := dial([]string{"h3", "qrdb-quic", wire.ProtocolV3})
 		if err != nil {
-			t.Fatalf("dial offering ProtocolV2: %v", err)
+			t.Fatalf("dial offering ProtocolV3: %v", err)
 		}
 		defer func() { _ = conn.CloseWithError(0, "test done") }()
-		if got := conn.ConnectionState().TLS.NegotiatedProtocol; got != wire.ProtocolV2 {
-			t.Fatalf("negotiated %q, want %q", got, wire.ProtocolV2)
+		if got := conn.ConnectionState().TLS.NegotiatedProtocol; got != wire.ProtocolV3 {
+			t.Fatalf("negotiated %q, want %q", got, wire.ProtocolV3)
 		}
 	})
 }
@@ -135,12 +136,12 @@ func startAckTestServer(t *testing.T) *integrationEnv {
 	})
 }
 
-// TestServer_ProtocolV2_HoldsTheRequestUntilTheClientAcknowledges pins the
+// TestServer_ProtocolV3_HoldsTheRequestUntilTheClientAcknowledges pins the
 // delivery confirmation go-qrdb#550 needs: a handler that has written its response still counts as in
 // flight -- so Stop does not yet close the connection carrying that response
 // -- until the client closes its side, and the client closing it (not the
 // bounded timeout) is what releases it.
-func TestServer_ProtocolV2_HoldsTheRequestUntilTheClientAcknowledges(t *testing.T) {
+func TestServer_ProtocolV3_HoldsTheRequestUntilTheClientAcknowledges(t *testing.T) {
 	env := startAckTestServer(t)
 
 	conn := env.dialServer(t)

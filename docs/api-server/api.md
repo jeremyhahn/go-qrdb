@@ -171,7 +171,8 @@ Three things follow from the decision and are worth knowing before adding to it:
 - **The numbering is qrdb's own, not gRPC's.** Statuses 0–5 predate the
   vocabulary and were not renumbered, so `StatusNotFound` is 6 while
   `codes.NotFound` is 5. The correspondence is by MEANING and goes through one
-  table in the server package; there is no arithmetic relating the two.
+  table in the wire package (`wire.StatusForGRPCCode`,
+  `wire.GRPCCodeForStatus`); there is no arithmetic relating the two.
 - **A new condition is a lookup, not a protocol change.** Anything the service
   layer can express already has a status, because gRPC's set is closed and this
   set matches it. A genuinely new condition appends at the next free number.
@@ -190,20 +191,35 @@ on old clients and nothing else.
 ### QUIC protocol version and response acknowledgement
 
 The QUIC listener speaks exactly one protocol, selected by TLS ALPN:
-**`qrdb-quic/2`**. A client that does not offer it fails the TLS handshake. The
-Go SDK offers only `qrdb-quic/2` and refuses a connection on which any other
+**`qrdb-quic/3`**. A client that does not offer it fails the TLS handshake. The
+Go SDK offers only `qrdb-quic/3` and refuses a connection on which any other
 protocol was selected.
 
-**Breaking change.** The listener no longer accepts `qrdb-quic`, the identifier
-before it. The frames are unchanged; what changed is when the client closes
-its half of each request stream, and a server cannot tell an old client's
-close from the new one's. A Go SDK older than this change cannot connect to a
+**Breaking change.** The listener no longer accepts `qrdb-quic/2`, the
+identifier before it, nor `qrdb-quic` before that. `qrdb-quic/3` changed the
+body of every error frame (below); `qrdb-quic/2` changed when the client
+closes its half of each request stream, which a server cannot tell apart from
+an old client's close. A Go SDK older than this change cannot connect to a
 current server, and a current Go SDK cannot connect to an older server.
 Upgrade both together.
 
+**Error frames.** The body of every response frame whose status is not
+`StatusOK` is a protobuf `google.rpc.Status` (`wire.ErrorPayload`):
+
+| Field | Carries |
+|---|---|
+| `code` | the gRPC equivalent of the frame's status (`wire.GRPCCodeForStatus`), so the body is a well-formed `google.rpc.Status` to any reader. The frame's status is authoritative; a client classifies on it alone |
+| `message` | the server's account of the failure. Bytes that are not valid UTF-8 are replaced with U+FFFD |
+| `details` | a `google.rpc.RetryInfo` when the failure names how long to wait before a retry can succeed -- a throttled request, an SO PIN lockout, a rate-limited caller -- with the exact delay. It is REST's `Retry-After`, gRPC's `RetryInfo` and MCP's `retry_after_seconds` on this transport. A reader ignores details it does not know |
+
+The Go SDK decodes it with `wire.DecodeErrorPayload`. A body that does not
+decode is reported as `*wire.ErrorPayloadDecodeError` on the request error --
+never shown as the server's message, and never classified as a typed
+condition such as absence.
+
 | | The client closes its side of the request stream | What the server does after writing a response |
 |---|---|---|
-| `qrdb-quic/2` | only after it has read the whole response | waits, up to 2 s, for that close before the request counts as finished |
+| `qrdb-quic/3` | only after it has read the whole response | waits, up to 2 s, for that close before the request counts as finished |
 
 The client's close is an acknowledgement that the response arrived. The
 server needs one because QUIC gives it no other way to learn that a reply was
@@ -224,7 +240,7 @@ with a final frame — `Canceled`, reason `server shutting down` — which the
 client acknowledges by closing its side, exactly as it does a response, so the
 frame is delivered before the connection closes.
 
-The listener advertises only `qrdb-quic/2` even when its TLS configuration is
+The listener advertises only `qrdb-quic/3` even when its TLS configuration is
 shared with the REST listener, whose `h3` and `h2` it does not speak.
 
 ### Absence is typed over QUIC, and never read out of the message

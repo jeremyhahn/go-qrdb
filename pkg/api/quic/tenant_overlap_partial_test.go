@@ -32,7 +32,7 @@ import (
 func TestMapServiceError_DataRootOverlapIsAFailedPrecondition(t *testing.T) {
 	err := &tenant.DataRootOverlapError{DataRoot: "/srv/d", Conflict: "/srv/d", Kind: "retired tenant vgone", Remedy: "run `qrdb tenant reconcile-deleted`"}
 	code, msg := mapServiceError(err)
-	if code != wire.StatusFailedPrecondition || string(msg) != err.Error() {
+	if code != wire.StatusFailedPrecondition || frameMessage(t, msg) != err.Error() {
 		t.Fatalf("mapServiceError = %d %q; want StatusFailedPrecondition carrying the message", code, msg)
 	}
 }

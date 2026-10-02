@@ -557,8 +557,8 @@ func TestMapServiceError_WatchCompacted(t *testing.T) {
 	if statusCode != wire.StatusOutOfRange {
 		t.Fatalf("expected StatusOutOfRange (%d), got %d", wire.StatusOutOfRange, statusCode)
 	}
-	if string(payload) != watch.ErrCompacted.Error() {
-		t.Fatalf("payload = %q, want %q", string(payload), watch.ErrCompacted.Error())
+	if got := frameMessage(t, payload); got != watch.ErrCompacted.Error() {
+		t.Fatalf("payload = %q, want %q", got, watch.ErrCompacted.Error())
 	}
 }
 
@@ -570,8 +570,8 @@ func TestMapServiceError_WatchStartRevisionUnsupported(t *testing.T) {
 	if statusCode != wire.StatusUnimplemented {
 		t.Fatalf("expected StatusUnimplemented (%d), got %d", wire.StatusUnimplemented, statusCode)
 	}
-	if string(payload) != watch.ErrStartRevisionUnsupported.Error() {
-		t.Fatalf("payload = %q, want %q", string(payload), watch.ErrStartRevisionUnsupported.Error())
+	if got := frameMessage(t, payload); got != watch.ErrStartRevisionUnsupported.Error() {
+		t.Fatalf("payload = %q, want %q", got, watch.ErrStartRevisionUnsupported.Error())
 	}
 }
 

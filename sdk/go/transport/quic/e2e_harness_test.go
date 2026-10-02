@@ -225,11 +225,25 @@ func (s *e2eServer) handleStream(stream *quicgo.Stream) {
 	s.mu.RUnlock()
 
 	if !ok {
-		_ = wire.WriteResponse(stream, requestID, wire.StatusUnimplemented, []byte("no responder: "+method))
+		writeHarnessResponse(stream, requestID, wire.StatusUnimplemented, []byte("no responder: "+method))
 		return
 	}
 
 	status, resp := responder(payload)
+	writeHarnessResponse(stream, requestID, status, resp)
+}
+
+// writeHarnessResponse writes a responder's answer as the real server frames
+// it: an OK body as given, and a non-OK body -- which responders write as the
+// message text -- as the wire.ErrorPayload every error frame carries.
+func writeHarnessResponse(stream *quicgo.Stream, requestID uint64, status uint16, resp []byte) {
+	if status != wire.StatusOK {
+		body, err := wire.EncodeErrorPayload(status, wire.ErrorPayload{Message: string(resp)})
+		if err != nil {
+			panic("e2e harness: error payload does not encode: " + err.Error())
+		}
+		resp = body
+	}
 	_ = wire.WriteResponse(stream, requestID, status, resp)
 }
 
@@ -281,11 +295,11 @@ func e2eTLS(t *testing.T) (*tls.Config, *tls.Config) {
 		Certificates: []tls.Certificate{tlsCert},
 		ClientAuth:   tls.NoClientCert,
 		MinVersion:   tls.VersionTLS13,
-		NextProtos:   []string{wire.ProtocolV2},
+		NextProtos:   []string{wire.ProtocolV3},
 	}
 	clientCfg := &tls.Config{
 		RootCAs:    caPool,
-		NextProtos: []string{wire.ProtocolV2},
+		NextProtos: []string{wire.ProtocolV3},
 		MinVersion: tls.VersionTLS13,
 	}
 	return serverCfg, clientCfg

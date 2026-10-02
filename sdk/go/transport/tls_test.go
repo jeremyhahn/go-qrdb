@@ -117,7 +117,7 @@ func TestBuildTLSConfig_CustomWithNextProtosClonesAndAppends(t *testing.T) {
 	custom := &tls.Config{ServerName: "example", NextProtos: []string{"h3"}}
 	got, err := BuildTLSConfig(TLSBuildOptions{
 		Custom:     custom,
-		NextProtos: []string{"qrdb-quic/2"},
+		NextProtos: []string{"qrdb-quic/3"},
 	})
 	if err != nil {
 		t.Fatalf("BuildTLSConfig: %v", err)
@@ -128,7 +128,7 @@ func TestBuildTLSConfig_CustomWithNextProtosClonesAndAppends(t *testing.T) {
 	if got.ServerName != "example" {
 		t.Errorf("clone lost ServerName, got %q", got.ServerName)
 	}
-	if len(got.NextProtos) != 2 || got.NextProtos[0] != "h3" || got.NextProtos[1] != "qrdb-quic/2" {
+	if len(got.NextProtos) != 2 || got.NextProtos[0] != "h3" || got.NextProtos[1] != "qrdb-quic/3" {
 		t.Errorf("NextProtos = %v, want [h3 qrdb-quic]", got.NextProtos)
 	}
 	if len(custom.NextProtos) != 1 {
@@ -137,10 +137,10 @@ func TestBuildTLSConfig_CustomWithNextProtosClonesAndAppends(t *testing.T) {
 }
 
 func TestBuildTLSConfig_CustomWithNextProtosAlreadyPresent(t *testing.T) {
-	custom := &tls.Config{NextProtos: []string{"qrdb-quic/2", "h3"}}
+	custom := &tls.Config{NextProtos: []string{"qrdb-quic/3", "h3"}}
 	got, err := BuildTLSConfig(TLSBuildOptions{
 		Custom:     custom,
-		NextProtos: []string{"qrdb-quic/2"},
+		NextProtos: []string{"qrdb-quic/3"},
 	})
 	if err != nil {
 		t.Fatalf("BuildTLSConfig: %v", err)
@@ -179,12 +179,12 @@ func TestBuildTLSConfig_EnabledMinimal(t *testing.T) {
 func TestBuildTLSConfig_EnabledWithNextProtos(t *testing.T) {
 	got, err := BuildTLSConfig(TLSBuildOptions{
 		Enabled:    true,
-		NextProtos: []string{"qrdb-quic/2"},
+		NextProtos: []string{"qrdb-quic/3"},
 	})
 	if err != nil {
 		t.Fatalf("BuildTLSConfig: %v", err)
 	}
-	if len(got.NextProtos) != 1 || got.NextProtos[0] != "qrdb-quic/2" {
+	if len(got.NextProtos) != 1 || got.NextProtos[0] != "qrdb-quic/3" {
 		t.Errorf("NextProtos = %v, want [qrdb-quic]", got.NextProtos)
 	}
 }

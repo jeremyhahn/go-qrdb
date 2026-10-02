@@ -497,11 +497,11 @@ func (s *Server) Start() error {
 	}
 
 	tlsCfg := s.tlsConfig.Clone()
-	// Only wire.ProtocolV2, and nothing a TLS config shared with the REST
+	// Only wire.ProtocolV3, and nothing a TLS config shared with the REST
 	// listener carries ("h3", "h2"): this listener speaks one protocol, so a
 	// client that does not offer it fails the handshake here rather than
 	// connecting under a label it will not be served by.
-	tlsCfg.NextProtos = []string{wire.ProtocolV2}
+	tlsCfg.NextProtos = []string{wire.ProtocolV3}
 
 	// 0-RTT stays off (Allow0RTT is false). Early data is replayable: an
 	// on-path attacker can resend a captured flight and the server processes
@@ -571,7 +571,7 @@ const quicResponseAckTimeout = 2 * time.Second
 // ever saw it (go-qrdb#550): the caller saw "server shutting down" instead of
 // its answer.
 //
-// The acknowledgement is the client's FIN (see wire.ProtocolV2): the client
+// The acknowledgement is the client's FIN (see wire.ProtocolV3): the client
 // closes its write side only after it has read the response, so the EOF this
 // function waits for cannot arrive before the response did.
 //
@@ -800,7 +800,8 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 				"panic", r,
 				"stack", string(debug.Stack()),
 			)
-			_ = s.writeResponse(stream, 0, wire.StatusError, []byte("internal server error"))
+			st, body := errorFrameBody(wire.StatusError, wire.ErrorPayload{Message: internalErrorMessage})
+			_ = s.writeResponse(stream, 0, st, body)
 		}
 	}()
 
@@ -825,8 +826,9 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 	if s.authMW != nil {
 		ctx, err = s.authenticate(ctx, conn)
 		if err != nil {
-			_ = s.writeResponse(stream, requestID, wire.StatusUnauthenticated, []byte(err.Error()))
-			s.logRequest(method, requestID, wire.StatusUnauthenticated, start)
+			st, body := errorFrame(wire.StatusUnauthenticated, err)
+			_ = s.writeResponse(stream, requestID, st, body)
+			s.logRequest(method, requestID, st, start)
 			return
 		}
 
@@ -835,8 +837,8 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 			// Hard-coding PermissionDenied told a caller whose request this
 			// node merely could not RECORD that it was not permitted, and
 			// permission-denied is terminal in every client.
-			authStatus := authzStatus(authErr)
-			_ = s.writeResponse(stream, requestID, authStatus, []byte(authErr.Error()))
+			authStatus, body := errorFrame(authzStatus(authErr), authErr)
+			_ = s.writeResponse(stream, requestID, authStatus, body)
 			s.logRequest(method, requestID, authStatus, start)
 			return
 		}
@@ -849,8 +851,8 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 	// being skipped.
 	if s.soGate != nil {
 		if soErr := s.enforceSOGate(ctx, conn, method, payload); soErr != nil {
-			soStatus := authzStatus(soErr)
-			_ = s.writeResponse(stream, requestID, soStatus, []byte(soErr.Error()))
+			soStatus, body := errorFrame(authzStatus(soErr), soErr)
+			_ = s.writeResponse(stream, requestID, soStatus, body)
 			s.logRequest(method, requestID, soStatus, start)
 			return
 		}
@@ -868,8 +870,9 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 		defer s.sealedWindowListener.Admit(transition)()
 	}
 	if refusal, refused := s.sealedWindowRefusal(ctx, method); refused {
-		_ = s.writeResponse(stream, requestID, refusal.status, []byte(refusal.msg))
-		s.logRequest(method, requestID, refusal.status, start)
+		st, body := errorFrameBody(refusal.status, wire.ErrorPayload{Message: refusal.msg})
+		_ = s.writeResponse(stream, requestID, st, body)
+		s.logRequest(method, requestID, st, start)
 		return
 	}
 	if s.sealedWindowListener != nil {
@@ -888,8 +891,9 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 	// Dispatch to handler.
 	handler, ok := s.handlers[method]
 	if !ok {
-		_ = s.writeResponse(stream, requestID, wire.StatusUnimplemented, []byte((&DispatchError{Method: method}).Error()))
-		s.logRequest(method, requestID, wire.StatusUnimplemented, start)
+		st, body := errorFrame(wire.StatusUnimplemented, &DispatchError{Method: method})
+		_ = s.writeResponse(stream, requestID, st, body)
+		s.logRequest(method, requestID, st, start)
 		return
 	}
 

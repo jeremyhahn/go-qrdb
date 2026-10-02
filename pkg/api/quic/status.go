@@ -15,51 +15,10 @@
 package quic
 
 import (
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 )
-
-// wireStatusByGRPCCode is the correspondence between gRPC's status codes and
-// this wire's statuses, written down exactly once.
-//
-// It is a bijection: seventeen codes, seventeen statuses, every code mapped
-// and no two codes sharing a status. TestWireStatusByGRPCCode_IsABijection
-// asserts both halves, so a status added without its row — or a row that
-// duplicates another's status — fails the build rather than degrading a live
-// condition to StatusError.
-//
-// The numbering differs on the two sides because this wire's codes 0-5 predate
-// the correspondence and are not renumbered (see the wire package's Status
-// documentation). That is precisely why the mapping is a table and not a cast:
-// StatusNotFound is 6 and codes.NotFound is 5, and any arithmetic relating
-// them would be wrong for fifteen of the seventeen rows.
-//
-// codes.Internal maps to StatusError, which is this protocol's fallback name
-// for the same condition and predates the vocabulary. codes.Unknown gets its
-// own StatusUnknown rather than sharing StatusError, because the two are
-// genuinely different claims: Unknown is the ORIGIN saying it could not
-// classify, StatusError is this server declining to.
-var wireStatusByGRPCCode = map[codes.Code]uint16{
-	codes.OK:                 wire.StatusOK,
-	codes.Internal:           wire.StatusError,
-	codes.Unimplemented:      wire.StatusUnimplemented,
-	codes.Unauthenticated:    wire.StatusUnauthenticated,
-	codes.PermissionDenied:   wire.StatusPermissionDenied,
-	codes.Unavailable:        wire.StatusUnavailable,
-	codes.NotFound:           wire.StatusNotFound,
-	codes.InvalidArgument:    wire.StatusInvalidArgument,
-	codes.AlreadyExists:      wire.StatusAlreadyExists,
-	codes.FailedPrecondition: wire.StatusFailedPrecondition,
-	codes.ResourceExhausted:  wire.StatusResourceExhausted,
-	codes.Aborted:            wire.StatusAborted,
-	codes.OutOfRange:         wire.StatusOutOfRange,
-	codes.Canceled:           wire.StatusCanceled,
-	codes.DataLoss:           wire.StatusDataLoss,
-	codes.DeadlineExceeded:   wire.StatusDeadlineExceeded,
-	codes.Unknown:            wire.StatusUnknown,
-}
 
 // moduleStatus translates a gRPC status error raised by a PROJECTED
 // capability module into a wire status.
@@ -84,6 +43,5 @@ func moduleStatus(err error) (uint16, bool) {
 		// StatusUnknown.
 		return 0, false
 	}
-	ws, known := wireStatusByGRPCCode[st.Code()]
-	return ws, known
+	return wire.StatusForGRPCCode(st.Code())
 }

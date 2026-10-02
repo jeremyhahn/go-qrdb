@@ -16,7 +16,7 @@
 // (go-qrdb#437).
 //
 // No build constraint: these name only mapServiceError, moduleStatus,
-// wireStatusByGRPCCode, pkg/api/grpc's ServiceErrorCode and the service-layer
+// wire.StatusForGRPCCode, pkg/api/grpc's ServiceErrorCode and the service-layer
 // error types, all unconstrained.
 
 package quic
@@ -69,56 +69,6 @@ var allGRPCCodes = []codes.Code{
 	codes.Unavailable, codes.DataLoss, codes.Unauthenticated,
 }
 
-// TestWireStatusByGRPCCode_IsABijection is the claim the vocabulary decision
-// rests on: this wire can express every condition gRPC can, and no two of
-// gRPC's conditions collapse into one status here.
-//
-// It matters because the QUIC server PROJECTS gRPC services onto its frames
-// (modules.go). A code with no row degrades a module's answer to StatusError,
-// and two codes sharing a row make two different module answers the same
-// frame — both of which are the defect go-qrdb#437 exists to remove, arriving
-// through the one path that cannot be fixed by adding a clause to a handler.
-func TestWireStatusByGRPCCode_IsABijection(t *testing.T) {
-	if len(wireStatusByGRPCCode) != len(allGRPCCodes) {
-		t.Errorf("correspondence has %d rows for %d gRPC codes",
-			len(wireStatusByGRPCCode), len(allGRPCCodes))
-	}
-
-	seen := make(map[uint16]codes.Code, len(wireStatusByGRPCCode))
-	for _, code := range allGRPCCodes {
-		st, ok := wireStatusByGRPCCode[code]
-		if !ok {
-			t.Errorf("codes.%s has no wire status: a module answering it would "+
-				"reach a QUIC caller as the generic StatusError", code)
-			continue
-		}
-		if !wire.StatusDeclared(st) {
-			t.Errorf("codes.%s maps to status %d, which the wire package does not declare", code, st)
-		}
-		if prev, dup := seen[st]; dup {
-			t.Errorf("codes.%s and codes.%s both map to %s: two conditions "+
-				"sharing one status cannot be told apart by a caller",
-				prev, code, wire.StatusName(st))
-		}
-		seen[st] = code
-	}
-}
-
-// TestWireStatusByGRPCCode_CoversEveryDeclaredStatus is the bijection's other
-// direction: a status the correspondence never produces is a status no
-// projected module can ever reach, which would make it dead vocabulary.
-func TestWireStatusByGRPCCode_CoversEveryDeclaredStatus(t *testing.T) {
-	produced := make(map[uint16]bool, len(wireStatusByGRPCCode))
-	for _, st := range wireStatusByGRPCCode {
-		produced[st] = true
-	}
-	for st := uint16(0); wire.StatusDeclared(st); st++ {
-		if !produced[st] {
-			t.Errorf("%s (%d) is declared but no gRPC code maps to it", wire.StatusName(st), st)
-		}
-	}
-}
-
 // ---------------------------------------------------------------------------
 // The module projection bridge
 // ---------------------------------------------------------------------------
@@ -138,7 +88,7 @@ func TestModuleStatus_TranslatesEveryGRPCCode(t *testing.T) {
 			if !ok {
 				t.Fatalf("codes.%s was not recognised as a gRPC status", code)
 			}
-			if want := wireStatusByGRPCCode[code]; got != want {
+			if want, _ := wire.StatusForGRPCCode(code); got != want {
 				t.Errorf("status = %s, want %s", wire.StatusName(got), wire.StatusName(want))
 			}
 		})
@@ -193,7 +143,7 @@ func TestModuleStatus_ExplicitUnknownIsNotStatusError(t *testing.T) {
 // gRPC transport must not tell two callers different things about one event,
 // and writing the code beside each row makes a divergence visible in a diff
 // rather than only in a consumer's bug report. The row asserts
-// mapServiceError(err) == wireStatusByGRPCCode[grpcCode], so the wire status
+// mapServiceError(err) == wire.StatusForGRPCCode(grpcCode), so the wire status
 // is never written twice and can never be "corrected" on one side alone.
 //
 // The gap this comment used to state is closed (go-qrdb#462). It said the
@@ -474,7 +424,7 @@ func TestMapServiceError_EveryCondition(t *testing.T) {
 			if got != row.want {
 				t.Errorf("status = %s, want %s", wire.StatusName(got), wire.StatusName(row.want))
 			}
-			if want := wireStatusByGRPCCode[row.grpcCode]; got != want {
+			if want, _ := wire.StatusForGRPCCode(row.grpcCode); got != want {
 				t.Errorf("status %s disagrees with codes.%s, which this condition "+
 					"answers on the gRPC transport (%s). One event must not reach two "+
 					"callers as two different conditions",

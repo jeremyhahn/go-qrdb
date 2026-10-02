@@ -78,7 +78,7 @@ func (t *Transport) watchStream(ctx context.Context, method string, key, rangeEn
 	}
 
 	// The write side stays open until readWatchResponses is done reading:
-	// under wire.ProtocolV2 the client's FIN acknowledges what it has read,
+	// under wire.ProtocolV3 the client's FIN acknowledges what it has read,
 	// and the server waits for it after the terminal frame it sends when it
 	// stops, so that frame is delivered rather than lost to the connection
 	// closing behind it.
@@ -131,7 +131,7 @@ func readWatchResponses(ctx context.Context, stream *quicgo.Stream, ch chan<- tr
 		}
 
 		if statusCode != wire.StatusOK {
-			reason := string(payload)
+			reason := watchCancelReason(payload)
 			if statusCode == wire.StatusUnimplemented {
 				reason = transport.UnsupportedWatchReason(reason)
 			}
@@ -196,4 +196,15 @@ func protoToWatchEvent(ev *pb.Event) *transport.WatchEvent {
 		Kv:     protoToMVCCKeyValue(ev.GetKv()),
 		PrevKv: protoToMVCCKeyValue(ev.GetPrevKv()),
 	}
+}
+
+// watchCancelReason is the reason a watch error frame gives: the message of
+// its wire.ErrorPayload body, or, for a body that does not decode, that
+// decoding failure -- never the undecoded bytes.
+func watchCancelReason(payload []byte) string {
+	decoded, err := wire.DecodeErrorPayload(payload)
+	if err != nil {
+		return err.Error()
+	}
+	return decoded.Message
 }

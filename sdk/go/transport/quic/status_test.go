@@ -43,7 +43,7 @@ func TestMapWireError_EveryStatusIsLegible(t *testing.T) {
 			continue
 		}
 		t.Run(wire.StatusName(st), func(t *testing.T) {
-			err := mapWireError("kv.Get", st, []byte("the server's reason"))
+			err := mapWireError("kv.Get", st, errorBody(t, st, "the server's reason"))
 			if err == nil {
 				t.Fatal("a non-OK status must produce an error")
 			}
@@ -81,7 +81,7 @@ func TestMapWireError_EveryStatusIsLegible(t *testing.T) {
 // any condition this build knows would be a lie.
 func TestMapWireError_UnknownStatusDegradesRatherThanMisclassifies(t *testing.T) {
 	const future = uint16(4242)
-	err := mapWireError("kv.Get", future, []byte("a condition from a newer server"))
+	err := mapWireError("kv.Get", future, errorBody(t, future, "a condition from a newer server"))
 
 	var reqErr *transport.RequestError
 	if !errors.As(err, &reqErr) {
@@ -106,7 +106,7 @@ func TestMapWireError_UnknownStatusDegradesRatherThanMisclassifies(t *testing.T)
 // operator their barrier is sealed sends them to unseal something that was
 // never locked.
 func TestMapWireError_UnavailableIsNoLongerWordedAsASealedBarrier(t *testing.T) {
-	err := mapWireError("kv.Put", wire.StatusUnavailable, []byte("storage: store is closed"))
+	err := mapWireError("kv.Put", wire.StatusUnavailable, errorBody(t, wire.StatusUnavailable, "storage: store is closed"))
 	if strings.Contains(err.Error(), "barrier sealed") {
 		t.Fatalf("a closed store was reported as a sealed barrier: %q", err.Error())
 	}
@@ -118,7 +118,7 @@ func TestMapWireError_UnavailableIsNoLongerWordedAsASealedBarrier(t *testing.T) 
 // TestMapWireError_UnimplementedStaysTyped: the reconstitution go-qrdb#141 put
 // here is untouched by the vocabulary change.
 func TestMapWireError_UnimplementedStaysTyped(t *testing.T) {
-	err := mapWireError("kv.Scan", wire.StatusUnimplemented, []byte("no opcode"))
+	err := mapWireError("kv.Scan", wire.StatusUnimplemented, errorBody(t, wire.StatusUnimplemented, "no opcode"))
 	var cue *transport.CapabilityUnsupportedError
 	if !errors.As(err, &cue) {
 		t.Fatalf("expected *transport.CapabilityUnsupportedError, got %T: %v", err, err)
@@ -131,14 +131,14 @@ func TestMapWireError_UnimplementedStaysTyped(t *testing.T) {
 
 // TestIsWireNotFound fires on the shared mapper's not-found and on nothing else.
 func TestIsWireNotFound(t *testing.T) {
-	if !isWireNotFound(mapWireError("kv.Get", wire.StatusNotFound, []byte("gone"))) {
+	if !isWireNotFound(mapWireError("kv.Get", wire.StatusNotFound, errorBody(t, wire.StatusNotFound, "gone"))) {
 		t.Error("a StatusNotFound frame must be recognised as absence")
 	}
 	for _, st := range []uint16{
 		wire.StatusError, wire.StatusUnavailable, wire.StatusInvalidArgument,
 		wire.StatusPermissionDenied, wire.StatusUnimplemented,
 	} {
-		if isWireNotFound(mapWireError("kv.Get", st, []byte("key not found"))) {
+		if isWireNotFound(mapWireError("kv.Get", st, errorBody(t, st, "key not found"))) {
 			t.Errorf("%s was recognised as absence — note the payload deliberately "+
 				"contains the old substring, which must no longer matter",
 				wire.StatusName(st))
@@ -153,7 +153,7 @@ func TestIsWireNotFound(t *testing.T) {
 // the typed error names the user the CALLER asked for, reconstructed from the
 // call site's own argument and never parsed out of the server's message.
 func TestMapUserNotFound_TypesTheIdTheCallerAsked(t *testing.T) {
-	absent := mapWireError("user.Get", wire.StatusNotFound, []byte("user: not found: 999999"))
+	absent := mapWireError("user.Get", wire.StatusNotFound, errorBody(t, wire.StatusNotFound, "user: not found: 999999"))
 
 	err := mapUserNotFound("GetUser", 999999, absent)
 	var unf *transport.UserNotFoundError
@@ -176,7 +176,7 @@ func TestMapUserNotFound_LeavesEverythingElseAlone(t *testing.T) {
 		wire.StatusError, wire.StatusPermissionDenied, wire.StatusUnavailable,
 		wire.StatusInvalidArgument,
 	} {
-		err := mapUserNotFound("GetUser", 7, mapWireError("user.Get", st, []byte("user: not found: 7")))
+		err := mapUserNotFound("GetUser", 7, mapWireError("user.Get", st, errorBody(t, st, "user: not found: 7")))
 		var unf *transport.UserNotFoundError
 		if errors.As(err, &unf) {
 			t.Errorf("%s was classified as a missing user", wire.StatusName(st))
@@ -192,7 +192,7 @@ func TestMapUserNotFound_LeavesEverythingElseAlone(t *testing.T) {
 // lookups: the descriptor has to come from the call site, because the server's
 // message is not a key.
 func TestMapUserLookupNotFound_TypesTheKeyTheCallerAsked(t *testing.T) {
-	absent := mapWireError("user.GetByUsername", wire.StatusNotFound, []byte("user: not found: system/nobody"))
+	absent := mapWireError("user.GetByUsername", wire.StatusNotFound, errorBody(t, wire.StatusNotFound, "user: not found: system/nobody"))
 
 	err := mapUserLookupNotFound("GetUserByUsername", "system/nobody", absent)
 	var unf *transport.UserNotFoundError
@@ -210,7 +210,7 @@ func TestMapUserLookupNotFound_TypesTheKeyTheCallerAsked(t *testing.T) {
 // TestMapUserLookupNotFound_LeavesEverythingElseAlone.
 func TestMapUserLookupNotFound_LeavesEverythingElseAlone(t *testing.T) {
 	err := mapUserLookupNotFound("GetUserByEmail", "system/a@example.com",
-		mapWireError("user.GetByEmail", wire.StatusPermissionDenied, []byte("no grant")))
+		mapWireError("user.GetByEmail", wire.StatusPermissionDenied, errorBody(t, wire.StatusPermissionDenied, "no grant")))
 	var unf *transport.UserNotFoundError
 	if errors.As(err, &unf) {
 		t.Fatal("a permission denial was classified as a missing user")
@@ -222,7 +222,7 @@ func TestMapUserLookupNotFound_LeavesEverythingElseAlone(t *testing.T) {
 // expired-specific sibling of not-found, so the message is what separates
 // them — at a call site that already knows the subject is a lease.
 func TestMapLeaseAbsent_SplitsTheTwoLeaseConditions(t *testing.T) {
-	gone := mapWireError("lease.Revoke", wire.StatusNotFound, []byte("service: lease not found: 42"))
+	gone := mapWireError("lease.Revoke", wire.StatusNotFound, errorBody(t, wire.StatusNotFound, "service: lease not found: 42"))
 	if err := mapLeaseAbsent(42, gone); err != nil {
 		var notFound *transport.LeaseNotFoundError
 		if !errors.As(err, &notFound) {
@@ -233,7 +233,7 @@ func TestMapLeaseAbsent_SplitsTheTwoLeaseConditions(t *testing.T) {
 		}
 	}
 
-	expired := mapWireError("lease.Revoke", wire.StatusNotFound, []byte("service: lease expired: 42"))
+	expired := mapWireError("lease.Revoke", wire.StatusNotFound, errorBody(t, wire.StatusNotFound, "service: lease expired: 42"))
 	var exp *transport.LeaseExpiredError
 	if err := mapLeaseAbsent(42, expired); !errors.As(err, &exp) {
 		t.Fatalf("expected *transport.LeaseExpiredError, got %T: %v", err, err)
@@ -252,7 +252,7 @@ func TestMapLeaseAbsent_IgnoresEveryOtherStatus(t *testing.T) {
 	} {
 		// The payload deliberately reads as a lease absence. Only the status
 		// decides.
-		err := mapLeaseAbsent(42, mapWireError("lease.Revoke", st, []byte("service: lease not found: 42")))
+		err := mapLeaseAbsent(42, mapWireError("lease.Revoke", st, errorBody(t, st, "service: lease not found: 42")))
 		var notFound *transport.LeaseNotFoundError
 		var expired *transport.LeaseExpiredError
 		if errors.As(err, &notFound) || errors.As(err, &expired) {

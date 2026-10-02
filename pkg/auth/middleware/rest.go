@@ -21,7 +21,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 )
@@ -273,21 +272,17 @@ func mapHTTPAuthError(err error) int {
 }
 
 // setRetryAfterHeader sets the standard Retry-After header (RFC 9110
-// §10.2.3, delay-seconds form) when err is a RateLimitedError, so a caller
-// refused by mapHTTPAuthError's 429 does not have to parse the JSON body to
-// learn how long to wait. It is a no-op for every other error. The caller
-// must set it before the response status is written -- net/http silently
-// drops headers set after WriteHeader.
+// §10.2.3, delay-seconds form) when err names a delay (RetryAfter: a
+// RateLimitedError, a tenant SO PIN lockout), so a caller refused with 429
+// does not have to parse the JSON body to learn how long to wait. It is a
+// no-op for every other error. The caller must set it before the response
+// status is written -- net/http silently drops headers set after WriteHeader.
 func setRetryAfterHeader(w http.ResponseWriter, err error) {
-	var rateLimited *RateLimitedError
-	if !errors.As(err, &rateLimited) {
+	delay, ok := RetryAfter(err)
+	if !ok {
 		return
 	}
-	seconds := int(rateLimited.RetryAfter.Round(time.Second) / time.Second)
-	if seconds < 1 {
-		seconds = 1
-	}
-	w.Header().Set("Retry-After", strconv.Itoa(seconds))
+	w.Header().Set("Retry-After", strconv.FormatInt(RetryAfterSeconds(delay), 10))
 }
 
 // restErrorResponse is the JSON payload for auth error responses.

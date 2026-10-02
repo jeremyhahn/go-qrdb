@@ -26,7 +26,7 @@ import (
 // TestServer_Stop_WaitsForInFlightHandlerBeforeClosingItsConnection is the
 // go-qrdb#550 regression test for the QUIC response-vs-teardown race: before
 // Stop waited on streamWG -- in-flight handlers, each now including its
-// wait for the client's wire.ProtocolV2 acknowledgement (awaitStreamAck) --
+// wait for the client's wire.ProtocolV3 acknowledgement (awaitStreamAck) --
 // it actively closed every live connection BEFORE waiting for in-flight
 // handlers to return, so a
 // handler still computing its response -- exactly the shape a system-scope

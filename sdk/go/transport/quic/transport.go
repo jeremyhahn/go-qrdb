@@ -98,7 +98,7 @@ func New(opts ...transport.Option) (*Transport, error) {
 }
 
 // Connect establishes the QUIC connection to the QRDB server. QUIC
-// always requires TLS; ALPN must select wire.ProtocolV2 (see
+// always requires TLS; ALPN must select wire.ProtocolV3 (see
 // buildTLSConfig), and any other selection is refused.
 // quicConnectBudget bounds QUIC connection establishment (dial + health
 // probe) so a stalled UDP handshake fails fast rather than hanging until the
@@ -141,10 +141,10 @@ func (t *Transport) Connect(ctx context.Context) error {
 	}
 
 	// A caller-supplied TLS config may offer other protocols alongside
-	// wire.ProtocolV2, and a server that is not a qrdb QUIC listener could
-	// select one of them. Every call on this connection relies on ProtocolV2's
+	// wire.ProtocolV3, and a server that is not a qrdb QUIC listener could
+	// select one of them. Every call on this connection relies on ProtocolV3's
 	// stream discipline, so anything else is refused rather than spoken to.
-	if got := conn.ConnectionState().TLS.NegotiatedProtocol; got != wire.ProtocolV2 {
+	if got := conn.ConnectionState().TLS.NegotiatedProtocol; got != wire.ProtocolV3 {
 		_ = conn.CloseWithError(0, "unsupported protocol")
 		return &transport.ConnectionError{
 			Address: t.config.Address,
@@ -724,7 +724,7 @@ func (t *Transport) callContext(ctx context.Context) (context.Context, context.C
 // the deferred Close is the only close -- so its FIN is this client's
 // acknowledgement that the response arrived, which the server waits for
 // before it can close the connection during a system-scope migration's
-// recycle (go-qrdb#550). See wire.ProtocolV2.
+// recycle (go-qrdb#550). See wire.ProtocolV3.
 // callWithSecret is call for a request whose payload carries the SO PIN in
 // its so_pin field: the payload is wiped once the call returns, sent or not.
 // The PIN string the message was built from cannot be wiped; this removes the
@@ -801,7 +801,7 @@ func callContextError(ctx context.Context, err error) error {
 }
 
 // buildTLSConfig constructs the TLS configuration from the transport
-// config. QUIC always requires TLS; ALPN offers wire.ProtocolV2, the only
+// config. QUIC always requires TLS; ALPN offers wire.ProtocolV3, the only
 // protocol a qrdb QUIC listener accepts.
 func (t *Transport) buildTLSConfig() (*tls.Config, error) {
 	return transport.BuildTLSConfig(transport.TLSBuildOptions{
@@ -810,7 +810,7 @@ func (t *Transport) buildTLSConfig() (*tls.Config, error) {
 		CAFile:     t.config.TLSCAFile,
 		CertFile:   t.config.TLSCertFile,
 		KeyFile:    t.config.TLSKeyFile,
-		NextProtos: []string{wire.ProtocolV2},
+		NextProtos: []string{wire.ProtocolV3},
 	})
 }
 
@@ -880,15 +880,24 @@ var wireStatusPrefixes = map[uint16]string{
 	wire.StatusUnknown:            "unknown: ",
 }
 
-// mapWireError translates a QUIC wire status code and payload into the
-// appropriate SDK transport error type.
+// mapWireError translates a QUIC wire status code and error frame body into
+// the appropriate SDK transport error type.
+//
+// The body is a wire.ErrorPayload; only its message is read here, because the
+// frame's status alone classifies the failure. A body that does not decode is
+// reported as such on a RequestError carrying the status, rather than shown to
+// the caller as if it were the server's message.
 //
 // A status this build does not recognise — a newer server's — keeps its
 // number on the RequestError and its message unprefixed, so it degrades to the
 // generic failure this client would have reported anyway and never to a
 // misclassification.
 func mapWireError(method string, statusCode uint16, payload []byte) error {
-	msg := string(payload)
+	decoded, err := wire.DecodeErrorPayload(payload)
+	if err != nil {
+		return &transport.RequestError{Method: method, StatusCode: int(statusCode), Err: err}
+	}
+	msg := decoded.Message
 
 	if build, ok := typedWireErrors[statusCode]; ok {
 		return build(msg)

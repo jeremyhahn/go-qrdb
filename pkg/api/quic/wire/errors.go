@@ -79,3 +79,35 @@ func (e *WriteError) Error() string {
 func (e *WriteError) Unwrap() error {
 	return e.Err
 }
+
+// ErrorPayloadEncodeError is returned when an error frame's body cannot be
+// encoded.
+type ErrorPayloadEncodeError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *ErrorPayloadEncodeError) Error() string {
+	return "wire: error payload encode failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *ErrorPayloadEncodeError) Unwrap() error {
+	return e.Err
+}
+
+// ErrorPayloadDecodeError is returned when an error frame's body is not a
+// well-formed google.rpc.Status.
+type ErrorPayloadDecodeError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *ErrorPayloadDecodeError) Error() string {
+	return "wire: error payload decode failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *ErrorPayloadDecodeError) Unwrap() error {
+	return e.Err
+}

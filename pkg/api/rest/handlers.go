@@ -34,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
@@ -1155,7 +1156,7 @@ func setRetryAfter(w http.ResponseWriter, err error) {
 	if !ok {
 		return
 	}
-	w.Header().Set("Retry-After", strconv.FormatInt(errclass.RetryAfterSeconds(wait), 10))
+	w.Header().Set("Retry-After", strconv.FormatInt(authmw.RetryAfterSeconds(wait), 10))
 }
 
 // ---------------------------------------------------------------------------

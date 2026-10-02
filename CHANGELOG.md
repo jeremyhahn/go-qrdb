@@ -135,7 +135,22 @@ are not reconstructed here — their history is in the git log.
   `google.rpc.RetryInfo` status detail with the exact delay, and MCP sets
   `retry_after_seconds` in the error envelope. One rule
   (`errclass.RetryAfter`) decides which refusals carry a delay on every
-  transport. QUIC's error frame still carries only the message.
+  transport. QUIC carries it too, in the error frame's payload (below).
+- **QUIC error frames carry the retry delay.** The body of every non-OK
+  QUIC response frame is now a `google.rpc.Status` (`wire.ErrorPayload`,
+  `wire.EncodeErrorPayload` / `wire.DecodeErrorPayload`): the message, and a
+  `google.rpc.RetryInfo` detail carrying the exact delay when the refusal
+  names one -- what a gRPC caller receives for the same refusal. The Go SDK
+  decodes it in the same release; a body that does not decode is reported as
+  `*wire.ErrorPayloadDecodeError` on the `RequestError`, never shown as the
+  server's message.
+- **Auth-layer refusals carry their retry delay on every transport.** A
+  rate-limited caller (`middleware.RateLimitedError`) and a locked-out tenant
+  SO PIN (`auth.SOPINLockedError`, from the SO gate) now carry the delay as
+  gRPC / Unix `RetryInfo`, REST `Retry-After` (the SO middleware included),
+  MCP `retry_after_seconds` and in the QUIC error frame; previously only the
+  REST authorization path sent it. `middleware.RetryAfter` names these
+  refusals and `errclass.RetryAfter` consults it.
 
 ### Security
 
@@ -518,6 +533,22 @@ are not reconstructed here — their history is in the git log.
   `mtls.SignChallenge`; a client that signs outside qrdb must sign that
   message. A bare-nonce signature no longer verifies. The CLI's `quorum
   submit` signs it.
+- **BREAKING: the QUIC listener accepts only the ALPN protocol `qrdb-quic/3`.**
+  Under `qrdb-quic/3` the body of every error frame is a `google.rpc.Status`
+  rather than bare text (see Added); the stream discipline is
+  `qrdb-quic/2`'s. The listener no longer accepts `qrdb-quic/2`, and the Go
+  SDK offers only `qrdb-quic/3` (`wire.ProtocolV3`, which replaces
+  `wire.ProtocolV2`). Upgrade servers and clients together.
+- **`errclass.RetryAfterSeconds` is now `middleware.RetryAfterSeconds`**, so
+  the auth-layer renderers, which `errclass` imports, round the same way.
+  The REST authorization path's `Retry-After` now rounds up rather than to
+  the nearest second, so it is never early.
+- **The QUIC table of gRPC codes moved into the wire package**
+  (`wire.StatusForGRPCCode`, `wire.GRPCCodeForStatus`), beside the statuses
+  it maps, so the server and the SDK frame error bodies the same way.
+- **A watch request whose payload does not decode answers QUIC
+  `INVALID_ARGUMENT`** rather than the generic `ERROR`, as every other
+  undecodable request already did.
 - **`pin.RequireSOPIN`, `pin.RequireProvisionedSOPIN` and `pin.Provision`
   take a `context.Context`** (the caller selects the lockout counter), as
   does `ceremony.CeremonyService.AuthorizeSOPIN`. The lockout constants are

@@ -151,8 +151,9 @@ tenant (`auth.SOPINLockout`); a locked tenant PIN answers `429` with the
 delay rather than "invalid PIN". Rekey and revocation refuse while no SO PIN has been
 provisioned (`pin.ErrPINNotSet`, `412` / `FAILED_PRECONDITION`). A
 locked-out check answers `429` / `RESOURCE_EXHAUSTED`, with the wait as a
-gRPC / Unix `google.rpc.RetryInfo` detail, MCP `retry_after_seconds`, and `Retry-After` on
-REST. **Every network
+gRPC / Unix `google.rpc.RetryInfo` detail, a `google.rpc.RetryInfo` detail in
+the QUIC error frame's payload, MCP `retry_after_seconds`, and `Retry-After` on
+REST -- the tenant SO PIN's lockout from the SO gate included. **Every network
 transport fills it from the bound PIN** when the request carries none, so a
 caller never sets `SOPin` by hand on any transport. A request whose own
 `SOPin` differs from the bound PIN is refused with `sdk.SOPINConflictError`

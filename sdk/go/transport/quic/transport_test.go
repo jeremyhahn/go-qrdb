@@ -490,7 +490,7 @@ func TestStripScheme_EmptyString(t *testing.T) {
 // not-found status. go-qrdb#437 gave it one, so the classification now comes
 // from the status and the message is never read.
 func TestMapWireError_StatusNotFound_IsTyped(t *testing.T) {
-	err := mapWireError("kv.Get", wire.StatusNotFound, []byte("service: key not found: k"))
+	err := mapWireError("kv.Get", wire.StatusNotFound, errorBody(t, wire.StatusNotFound, "service: key not found: k"))
 	var knf *transport.KeyNotFoundError
 	if !errors.As(err, &knf) {
 		t.Fatalf("expected KeyNotFoundError, got %T: %v", err, err)
@@ -501,7 +501,7 @@ func TestMapWireError_StatusNotFound_IsTyped(t *testing.T) {
 // one that matters: the substring must NOT be trusted any more. A server fault
 // whose message mentions a missing key is a server fault.
 func TestMapWireError_StatusErrorIsNeverNotFound(t *testing.T) {
-	err := mapWireError("kv.Get", wire.StatusError, []byte("proxy died: key not found in upstream"))
+	err := mapWireError("kv.Get", wire.StatusError, errorBody(t, wire.StatusError, "proxy died: key not found in upstream"))
 	var knf *transport.KeyNotFoundError
 	if errors.As(err, &knf) {
 		t.Fatal("a StatusError frame was classified as absence because its message " +
@@ -515,7 +515,7 @@ func TestMapWireError_StatusErrorIsNeverNotFound(t *testing.T) {
 }
 
 func TestMapWireError_StatusError_Generic(t *testing.T) {
-	err := mapWireError("kv.Put", wire.StatusError, []byte("internal error"))
+	err := mapWireError("kv.Put", wire.StatusError, errorBody(t, wire.StatusError, "internal error"))
 	var reqErr *transport.RequestError
 	if !errors.As(err, &reqErr) {
 		t.Fatalf("expected RequestError, got %T: %v", err, err)
@@ -540,7 +540,7 @@ func TestMapWireError_StatusError_Generic(t *testing.T) {
 // verbatim because a refusal that does not say WHAT is missing is little
 // better than an untyped one.
 func TestMapWireError_StatusUnimplemented(t *testing.T) {
-	err := mapWireError("ts.RichQuery", wire.StatusUnimplemented, []byte("not implemented"))
+	err := mapWireError("ts.RichQuery", wire.StatusUnimplemented, errorBody(t, wire.StatusUnimplemented, "not implemented"))
 	var unsupported *transport.CapabilityUnsupportedError
 	if !errors.As(err, &unsupported) {
 		t.Fatalf("expected *transport.CapabilityUnsupportedError, got %T: %v", err, err)
@@ -551,7 +551,7 @@ func TestMapWireError_StatusUnimplemented(t *testing.T) {
 }
 
 func TestMapWireError_StatusUnauthenticated(t *testing.T) {
-	err := mapWireError("admin.Drain", wire.StatusUnauthenticated, []byte("no cert"))
+	err := mapWireError("admin.Drain", wire.StatusUnauthenticated, errorBody(t, wire.StatusUnauthenticated, "no cert"))
 	var reqErr *transport.RequestError
 	if !errors.As(err, &reqErr) {
 		t.Fatalf("expected RequestError, got %T: %v", err, err)
@@ -565,7 +565,7 @@ func TestMapWireError_StatusUnauthenticated(t *testing.T) {
 }
 
 func TestMapWireError_StatusPermissionDenied(t *testing.T) {
-	err := mapWireError("admin.Drain", wire.StatusPermissionDenied, []byte("insufficient perms"))
+	err := mapWireError("admin.Drain", wire.StatusPermissionDenied, errorBody(t, wire.StatusPermissionDenied, "insufficient perms"))
 	var reqErr *transport.RequestError
 	if !errors.As(err, &reqErr) {
 		t.Fatalf("expected RequestError, got %T: %v", err, err)
@@ -579,7 +579,7 @@ func TestMapWireError_StatusPermissionDenied(t *testing.T) {
 }
 
 func TestMapWireError_UnknownStatusCode(t *testing.T) {
-	err := mapWireError("test.Method", 99, []byte("unknown error"))
+	err := mapWireError("test.Method", 99, errorBody(t, 99, "unknown error"))
 	var reqErr *transport.RequestError
 	if !errors.As(err, &reqErr) {
 		t.Fatalf("expected RequestError, got %T: %v", err, err)
@@ -611,8 +611,8 @@ func TestBuildTLSConfig_WithCustomConfig(t *testing.T) {
 		t.Fatalf("buildTLSConfig() returned unexpected error: %v", err)
 	}
 	// Verify the wire protocol is appended.
-	if !slices.Contains(tlsCfg.NextProtos, wire.ProtocolV2) {
-		t.Errorf("buildTLSConfig() should append %q to NextProtos, got %v", wire.ProtocolV2, tlsCfg.NextProtos)
+	if !slices.Contains(tlsCfg.NextProtos, wire.ProtocolV3) {
+		t.Errorf("buildTLSConfig() should append %q to NextProtos, got %v", wire.ProtocolV3, tlsCfg.NextProtos)
 	}
 	// Verify original "h3" is preserved.
 	foundH3 := false
@@ -630,7 +630,7 @@ func TestBuildTLSConfig_WithCustomConfig(t *testing.T) {
 func TestBuildTLSConfig_WithCustomConfigAlreadyHasALPN(t *testing.T) {
 	customCfg := &tls.Config{
 		MinVersion: tls.VersionTLS13,
-		NextProtos: []string{wire.ProtocolV2},
+		NextProtos: []string{wire.ProtocolV3},
 	}
 	tr, err := New(
 		transport.WithAddress("localhost:63002"),
@@ -645,7 +645,7 @@ func TestBuildTLSConfig_WithCustomConfigAlreadyHasALPN(t *testing.T) {
 		t.Fatalf("buildTLSConfig() returned unexpected error: %v", err)
 	}
 	// The protocol the caller already listed is not duplicated.
-	if want := []string{wire.ProtocolV2}; !slices.Equal(tlsCfg.NextProtos, want) {
+	if want := []string{wire.ProtocolV3}; !slices.Equal(tlsCfg.NextProtos, want) {
 		t.Errorf("NextProtos = %v, want %v", tlsCfg.NextProtos, want)
 	}
 }
@@ -663,7 +663,7 @@ func TestBuildTLSConfig_NoCustomConfig(t *testing.T) {
 	if tlsCfg.MinVersion != tls.VersionTLS13 {
 		t.Errorf("expected MinVersion TLS 1.3, got %d", tlsCfg.MinVersion)
 	}
-	if want := []string{wire.ProtocolV2}; !slices.Equal(tlsCfg.NextProtos, want) {
+	if want := []string{wire.ProtocolV3}; !slices.Equal(tlsCfg.NextProtos, want) {
 		t.Errorf("NextProtos = %v, want %v", tlsCfg.NextProtos, want)
 	}
 }

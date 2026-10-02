@@ -29,7 +29,7 @@ import (
 // now pkg/api/errclass's answer for every transport; this table only chooses
 // the status that carries it.
 //
-// Each row is the status wireStatusByGRPCCode assigns to gRPC's code for the
+// Each row is the status wire.StatusForGRPCCode assigns to gRPC's code for the
 // same class. The parity test in pkg/api/errclass asserts it through both
 // transports' real mappings, so a QUIC caller and a gRPC caller cannot be told
 // different things about one event. It is total over errclass.All.
@@ -86,7 +86,7 @@ func (e *UnmarshalError) ErrorClass() errclass.Class { return errclass.InvalidAr
 // An error the classification table does not recognise gets one more chance:
 // a PROJECTED capability module answers in gRPC's vocabulary rather than in
 // qrdb's typed errors, so its status is translated through
-// wireStatusByGRPCCode. Consulting it only for an unclassified error means it
+// wire.StatusForGRPCCode. Consulting it only for an unclassified error means it
 // can never shadow qrdb's own classification. A nil error is StatusOK.
 //
 // It is exported so the cross-transport parity test (pkg/api/errclass) can
@@ -104,11 +104,12 @@ func ServiceErrorStatus(err error) uint16 {
 	return wireStatusByClass[class]
 }
 
-// mapServiceError translates err into a wire status and error payload.
+// mapServiceError translates err into a wire status and the error frame body
+// that carries it (errorFrame): err's message, and the delay it names, if any.
 // Returns StatusOK with a nil payload when err is nil.
 func mapServiceError(err error) (uint16, []byte) {
 	if err == nil {
 		return wire.StatusOK, nil
 	}
-	return ServiceErrorStatus(err), []byte(err.Error())
+	return errorFrame(ServiceErrorStatus(err), err)
 }

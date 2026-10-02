@@ -18,8 +18,10 @@ import (
 	"errors"
 	"net/http"
 
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -369,8 +371,15 @@ func GRPCError(err error, fallback codes.Code) error {
 	if err == nil {
 		return nil
 	}
-	if code, ok := grpcCodeByClass[ClassifyAuthError(err)]; ok {
-		return status.Error(code, err.Error())
+	code, ok := grpcCodeByClass[ClassifyAuthError(err)]
+	if !ok {
+		code = fallback
 	}
-	return status.Error(fallback, err.Error())
+	st := status.New(code, err.Error())
+	if delay, named := RetryAfter(err); named {
+		if detailed, derr := st.WithDetails(&errdetails.RetryInfo{RetryDelay: durationpb.New(delay)}); derr == nil {
+			st = detailed
+		}
+	}
+	return st.Err()
 }

@@ -18,7 +18,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -27,8 +27,9 @@ import (
 // retryAfterRules are the refusals that say how long the caller must wait
 // before a retry can succeed, each reading its own delay. Every transport
 // renders the delay from RetryAfter -- REST as Retry-After, gRPC and the Unix
-// socket as a google.rpc.RetryInfo status detail, MCP in the error envelope --
-// so one list decides which refusals carry one on all of them.
+// socket as a google.rpc.RetryInfo status detail, MCP in the error envelope,
+// QUIC in the error frame's google.rpc.Status -- so one list decides which
+// refusals carry one on all of them.
 var retryAfterRules = []func(error) (time.Duration, bool){
 	// A throttled ceremony-sign-csr.
 	func(err error) (time.Duration, bool) {
@@ -55,14 +56,9 @@ var retryAfterRules = []func(error) (time.Duration, bool){
 		}
 		return 0, false
 	},
-	// A tenant SO PIN check refused while that tenant's lockout is engaged.
-	func(err error) (time.Duration, bool) {
-		var e *auth.SOPINLockedError
-		if errors.As(err, &e) {
-			return e.RetryAfter, true
-		}
-		return 0, false
-	},
+	// The authentication and authorization refusals that name a delay: a
+	// request over the caller's rate limit, a tenant SO PIN lockout.
+	middleware.RetryAfter,
 }
 
 // RetryAfter reports how long err says its caller must wait before a retry
@@ -77,11 +73,4 @@ func RetryAfter(err error) (time.Duration, bool) {
 		}
 	}
 	return 0, false
-}
-
-// RetryAfterSeconds renders a retry delay in whole seconds, the delay-seconds
-// form of RFC 9110's Retry-After: rounded up, and never below one, so a caller
-// that honours it is never early.
-func RetryAfterSeconds(d time.Duration) int64 {
-	return max(int64((d+time.Second-1)/time.Second), 1)
 }

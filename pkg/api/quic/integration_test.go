@@ -99,7 +99,7 @@ func generateIntegrationTLS(t *testing.T) *integrationTLSBundle {
 		},
 		clientCfg: &tls.Config{
 			RootCAs:    caPool,
-			NextProtos: []string{wire.ProtocolV2},
+			NextProtos: []string{wire.ProtocolV3},
 			MinVersion: tls.VersionTLS13,
 		},
 	}
@@ -650,8 +650,8 @@ func TestIntegration_PanicRecovery(t *testing.T) {
 	if status != wire.StatusError {
 		t.Fatalf("expected StatusError (1) for panic, got %d", status)
 	}
-	if string(respPayload) != "internal server error" {
-		t.Fatalf("expected 'internal server error' payload, got %q", respPayload)
+	if got := frameMessage(t, respPayload); got != "internal server error" {
+		t.Fatalf("expected 'internal server error' payload, got %q", got)
 	}
 }
 
@@ -1061,7 +1061,7 @@ func generateMutualTLS(t *testing.T) *mutualTLSBundle {
 	clientCfg := &tls.Config{
 		Certificates: []tls.Certificate{clientTLSCert},
 		RootCAs:      caPool,
-		NextProtos:   []string{wire.ProtocolV2},
+		NextProtos:   []string{wire.ProtocolV3},
 		MinVersion:   tls.VersionTLS13,
 	}
 

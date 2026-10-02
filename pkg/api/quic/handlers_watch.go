@@ -58,8 +58,8 @@ func (s *Server) handleWatchStream(ctx context.Context, stream *quicgo.Stream, r
 
 	var req pb.WatchRequest
 	if err := proto.Unmarshal(payload, &req); err != nil {
-		_ = wire.WriteResponse(stream, requestID, wire.StatusError,
-			[]byte((&UnmarshalError{Err: err}).Error()))
+		statusCode, errPayload := mapServiceError(&UnmarshalError{Err: err})
+		_ = wire.WriteResponse(stream, requestID, statusCode, errPayload)
 		return
 	}
 

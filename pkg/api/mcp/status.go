@@ -25,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
 	grpcapi "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 )
 
 // codeByGRPCCode is the correspondence between gRPC's status codes and this
@@ -133,10 +134,16 @@ func toolErrorResult(tool string, code wire.Code, message string) *mcpgo.CallToo
 // carries the delay in the envelope's retry_after_seconds -- the peer of
 // REST's Retry-After and gRPC's RetryInfo.
 func classifiedToolError(tool string, err error) *mcpgo.CallToolResult {
-	res := toolErrorResult(tool, ServiceErrorCode(err), err.Error())
+	return withRetryAfter(toolErrorResult(tool, ServiceErrorCode(err), err.Error()), err)
+}
+
+// withRetryAfter stamps the delay err names (errclass.RetryAfter) on res's
+// error envelope, in whole seconds rounded up. It is a no-op for an error
+// that names none.
+func withRetryAfter(res *mcpgo.CallToolResult, err error) *mcpgo.CallToolResult {
 	if delay, ok := errclass.RetryAfter(err); ok {
 		if env, isEnvelope := res.StructuredContent.(*wire.ErrorEnvelope); isEnvelope {
-			env.Error.RetryAfterSeconds = errclass.RetryAfterSeconds(delay)
+			env.Error.RetryAfterSeconds = authmw.RetryAfterSeconds(delay)
 		}
 	}
 	return res

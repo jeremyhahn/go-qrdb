@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -48,5 +49,19 @@ func TestClassifiedToolError_CarriesRetryAfter(t *testing.T) {
 		if payload.RetryAfterSeconds != tc.want {
 			t.Errorf("%s: RetryAfterSeconds = %d, want %d", name, payload.RetryAfterSeconds, tc.want)
 		}
+	}
+}
+
+// TestAuthzToolError_CarriesRetryAfter: an auth-layer refusal that names a
+// delay -- a tenant SO PIN lockout from the SO gate -- carries it in the
+// envelope as a service-layer one does.
+func TestAuthzToolError_CarriesRetryAfter(t *testing.T) {
+	res := authzToolError(&auth.SOPINLockedError{RetryAfter: 1500 * time.Millisecond})
+	payload, ok := wire.DecodeErrorPayload(res.StructuredContent)
+	if !ok {
+		t.Fatal("no decodable error payload")
+	}
+	if payload.Code != wire.CodeResourceExhausted || payload.RetryAfterSeconds != 2 {
+		t.Fatalf("payload = %+v, want ResourceExhausted with retry_after_seconds 2", payload)
 	}
 }

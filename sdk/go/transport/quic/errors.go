@@ -36,7 +36,7 @@ func (e *dialError) Unwrap() error {
 }
 
 // alpnMismatchError is returned by Connect when the TLS handshake selected a
-// protocol other than wire.ProtocolV2 -- possible only when a caller-supplied
+// protocol other than wire.ProtocolV3 -- possible only when a caller-supplied
 // TLS config offers others and the peer is not a qrdb QUIC listener.
 type alpnMismatchError struct {
 	Negotiated string
@@ -44,7 +44,7 @@ type alpnMismatchError struct {
 
 // Error returns a human-readable description.
 func (e *alpnMismatchError) Error() string {
-	return "quic transport: server selected ALPN protocol " + strconv.Quote(e.Negotiated) + ", want " + strconv.Quote(wire.ProtocolV2)
+	return "quic transport: server selected ALPN protocol " + strconv.Quote(e.Negotiated) + ", want " + strconv.Quote(wire.ProtocolV3)
 }
 
 // streamError is returned when opening a QUIC stream fails.
