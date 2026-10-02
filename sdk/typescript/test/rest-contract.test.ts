@@ -502,6 +502,7 @@ describe('Outbound transform — tenants.updateQuotas sends snake_case quota fie
             tenantId: 'q1',
             quotas: {
                 maxDatabases: 5,
+                maxDedicatedWalGroups: 2,
                 maxRaftGroups: 3,
                 maxReplicasPerGroup: 3,
                 maxTotalReplicas: 9,
@@ -535,6 +536,7 @@ describe('Outbound transform — tenants.updateQuotas sends snake_case quota fie
         expect(body['max_replicas_per_group']).toBe(3);
         expect(body['max_total_replicas']).toBe(9);
         expect(body['max_users']).toBe(20);
+        expect(body['max_dedicated_wal_groups']).toBe(2);
         // camelCase originals must not appear.
         expect(body['maxDatabases']).toBeUndefined();
         expect(body['maxKeys']).toBeUndefined();

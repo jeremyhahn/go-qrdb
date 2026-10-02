@@ -2083,9 +2083,10 @@ export interface DatabaseInfo {
     /** SQL settings (concurrency mode). Absent means the defaults. */
     readonly sql?: DatabaseSQLConfig;
     /** Data directory path, if applicable. */
-    readonly data_dir?: string;
-    /** Shard ID, if applicable. */
-    readonly shard_id?: number;
+    readonly dataDir?: string;
+    /** Raft shard ID the cluster issued at create; absent for non-raft
+     * databases. It never changes. */
+    readonly shardId?: number;
     /** Database mode (e.g. "embedded", "remote"). */
     readonly mode?: string;
     /** Replication factor of a dedicated-raft database. Zero for non-raft. */

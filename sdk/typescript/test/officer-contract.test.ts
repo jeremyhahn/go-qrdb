@@ -121,8 +121,8 @@ describe('officers – registerOfficer', () => {
         expect(result.certPem).toContain('BEGIN CERT');
         expect(result.shareIndex).toBe(1);
         // Confirm no share bytes in the response.
-        expect((result as Record<string, unknown>)['shareBytes']).toBeUndefined();
-        expect((result as Record<string, unknown>)['share']).toBeUndefined();
+        expect((result as unknown as Record<string, unknown>)['shareBytes']).toBeUndefined();
+        expect((result as unknown as Record<string, unknown>)['share']).toBeUndefined();
     });
 });
 
@@ -444,8 +444,8 @@ describe('initializeShamir – share bytes never present in response', () => {
         const result = await client.seal.initializeShamir('', 2, 3);
 
         // The BootstrapResult type has no keyShares field; verify at runtime too.
-        expect((result as Record<string, unknown>)['keyShares']).toBeUndefined();
-        expect((result as Record<string, unknown>)['shares']).toBeUndefined();
+        expect((result as unknown as Record<string, unknown>)['keyShares']).toBeUndefined();
+        expect((result as unknown as Record<string, unknown>)['shares']).toBeUndefined();
         expect(result.threshold).toBe(2);
         expect(result.shareCount).toBe(3);
     });
@@ -474,7 +474,7 @@ describe('initializeShamir – share bytes never present in response', () => {
             strategy: 'shamir',
         });
 
-        expect((result as Record<string, unknown>)['shares']).toBeUndefined();
+        expect((result as unknown as Record<string, unknown>)['shares']).toBeUndefined();
         expect(result.shareCount).toBe(3);
     });
 });

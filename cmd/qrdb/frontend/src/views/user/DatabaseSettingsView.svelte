@@ -147,16 +147,16 @@
             />
           </p>
         </div>
-        {#if database.data_dir}
+        {#if database.dataDir}
           <div class="col-span-2">
             <span class="text-xs font-semibold text-base-content/60">Data Directory</span>
-            <p class="break-all font-mono text-xs">{database.data_dir}</p>
+            <p class="break-all font-mono text-xs">{database.dataDir}</p>
           </div>
         {/if}
-        {#if database.shard_id !== undefined}
+        {#if database.shardId !== undefined}
           <div>
             <span class="text-xs font-semibold text-base-content/60">Shard ID</span>
-            <p class="font-mono">{database.shard_id}</p>
+            <p class="font-mono">{database.shardId}</p>
           </div>
         {/if}
       </div>

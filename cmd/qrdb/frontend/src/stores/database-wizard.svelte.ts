@@ -63,7 +63,6 @@ export interface RaftGroupsConfig {
 
 export interface DatabaseRaftConfig {
     clusterMode: RaftClusterMode;
-    shardId: number;
     replicaId: number;
     raftAddress: string;
     peers: string[];
@@ -177,7 +176,6 @@ const defaultSealConfig: EmbeddedSealConfig = {
 /** Default raft configuration. */
 const defaultRaftConfig: DatabaseRaftConfig = {
     clusterMode: 'none',
-    shardId: 0,
     replicaId: 1,
     raftAddress: 'localhost:63001',
     peers: [],

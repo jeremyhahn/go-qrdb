@@ -27,6 +27,18 @@ Fix release. Highlights:
   failures in `forwardToLeader`. The status (502), the fixed message and
   `errors.As` reachability of the holder error are unchanged.
 
+### Fixed
+
+- **The TypeScript SDK reads a database's shard ID and data directory.**
+  `DatabaseInfo` declared `shard_id` and `data_dir`, but REST (and the desktop
+  bindings) send `shardId` and `dataDir`, so both were always undefined; the
+  desktop database views never showed either. The fields are now `shardId` and
+  `dataDir` (**BREAKING** for TypeScript callers that read the old names).
+  A recorded REST response is now decoded by a Go handler test, which also
+  holds the Go SDK's `transport.DatabaseInfo` to it, and by a TypeScript SDK
+  test, and `npm test` in `sdk/typescript` typechecks the tests before running
+  them. The desktop database wizard no longer carries a shard ID.
+
 ## [0.29.0-alpha] - 2026-10-02
 
 Holder-certificate hardening, following the v0.28.1 security hotfix. This release contains BREAKING changes; see the entries below. Highlights:

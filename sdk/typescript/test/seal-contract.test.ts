@@ -175,7 +175,7 @@ describe('seal client – initializeShamir', () => {
         expect(result.threshold).toBe(3);
         expect(result.shareCount).toBe(5);
         // Confirm keyShares is not present on the result type at runtime.
-        expect((result as Record<string, unknown>)['keyShares']).toBeUndefined();
+        expect((result as unknown as Record<string, unknown>)['keyShares']).toBeUndefined();
     });
 
     it('returns shareCount from total_shares fallback when share_count absent', async () => {

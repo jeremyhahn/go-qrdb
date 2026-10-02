@@ -69,7 +69,13 @@ Shipped:
   "connection": { "transport": "tcp", "address": "db2.example.com:63003" } }
 ```
 
-Response — `DatabaseInfo`, which adds `tenantId`, `status` and `shardId`.
+Response — `DatabaseInfo`, which adds `status` and `shardId` (and
+`dedicatedWal`). The REST response carries no `tenantId`; the gRPC and unix
+transports report it. Its keys are pinned by a recorded REST response that the
+Go handler test (`TestDatabaseInfoWire_*`) and the TypeScript SDK test
+(`database-info-wire.test.ts`) both decode. *(Corrected: this said the REST
+response carried `tenantId`, and the TypeScript SDK read `shard_id` and
+`data_dir`, keys REST never sends.)*
 
 `engine` is accepted as `kv`, `timeseries` or `vector`; `backend` as `memory`,
 `file`, `pebble`, `raft` or `objstore`. Measured: the backend does not decide

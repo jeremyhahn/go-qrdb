@@ -128,12 +128,6 @@
             {/if}
             {#if dbWizardStore.raftConfig.clusterMode === "distributed"}
               <div class="flex items-center justify-between">
-                <span class="text-base-content/70">Shard ID</span>
-                <span class="font-mono text-sm">
-                  {dbWizardStore.raftConfig.shardId}
-                </span>
-              </div>
-              <div class="flex items-center justify-between">
                 <span class="text-base-content/70">Replica ID</span>
                 <span class="font-mono text-sm">
                   {dbWizardStore.raftConfig.replicaId}

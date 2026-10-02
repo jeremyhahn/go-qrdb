@@ -78,7 +78,6 @@
       if (dbWizardStore.raftConfig === null) {
         dbWizardStore.raftConfig = {
           clusterMode: "none",
-          shardId: 0,
           replicaId: 1,
           raftAddress: "localhost:63001",
           peers: [],

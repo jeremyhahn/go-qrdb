@@ -110,7 +110,6 @@
       // Standalone server: no Raft configuration needed.
       dbWizardStore.raftConfig = {
         clusterMode: "none",
-        shardId: 0,
         replicaId: 1,
         raftAddress: "localhost:63001",
         peers: [],
@@ -128,7 +127,6 @@
       // server-managed replication for this database.
       dbWizardStore.raftConfig = {
         clusterMode: "none",
-        shardId: 0,
         replicaId: 1,
         raftAddress: "",
         peers: [],
@@ -151,7 +149,6 @@
     };
     dbWizardStore.raftConfig = {
       clusterMode,
-      shardId: 0,
       replicaId: 1,
       raftAddress: "",
       peers: [],

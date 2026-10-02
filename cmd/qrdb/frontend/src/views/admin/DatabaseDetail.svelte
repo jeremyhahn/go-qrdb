@@ -498,16 +498,16 @@
               />
             </p>
           </div>
-          {#if existingDb.data_dir}
+          {#if existingDb.dataDir}
             <div>
               <span class="text-base-content/60 text-xs font-semibold">Data Directory</span>
-              <p class="font-mono text-xs break-all">{existingDb.data_dir}</p>
+              <p class="font-mono text-xs break-all">{existingDb.dataDir}</p>
             </div>
           {/if}
-          {#if existingDb.shard_id !== undefined}
+          {#if existingDb.shardId !== undefined}
             <div>
               <span class="text-base-content/60 text-xs font-semibold">Shard ID</span>
-              <p class="font-mono">{existingDb.shard_id}</p>
+              <p class="font-mono">{existingDb.shardId}</p>
             </div>
           {/if}
           <div>

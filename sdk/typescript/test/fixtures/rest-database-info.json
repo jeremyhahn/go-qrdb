@@ -1,0 +1,75 @@
+{
+  "name": "orders",
+  "engine": "kv",
+  "backend": "raft",
+  "status": "open",
+  "protocol": {
+    "mysql": true,
+    "postgresql": true,
+    "etcd": {
+      "enabled": true,
+      "listenAddr": "0.0.0.0:2379",
+      "advertiseClientUrls": [
+        "https://db.example.com:2379"
+      ]
+    }
+  },
+  "dataDir": "/var/lib/qrdb/databases/orders",
+  "shardId": 1007,
+  "mode": "embedded",
+  "replicas": 3,
+  "dedicatedWal": true,
+  "raft": {
+    "clusterMode": "distributed",
+    "shardId": 1007,
+    "replicaId": 2,
+    "raftAddress": "db.example.com:63001",
+    "peers": [
+      "db.example.com:63001"
+    ],
+    "localNodeCount": 3,
+    "discovery": "static",
+    "static": {
+      "peers": [
+        "db.example.com:63001"
+      ],
+      "sharedSecret": "example-static-secret"
+    },
+    "multicast": {
+      "sharedSecret": "example-multicast-secret",
+      "multicastGroup": "239.255.0.1:63100",
+      "interface": "eth0",
+      "minPeers": 2,
+      "announceInterval": "1s",
+      "discoverTimeout": "10s"
+    },
+    "dns": {
+      "service": "qrdb",
+      "proto": "tcp",
+      "domain": "example.com",
+      "lookupTimeout": "5s"
+    },
+    "token": {
+      "endpoint": "https://db.example.com/discovery",
+      "token": "example-token",
+      "clusterSize": 3,
+      "timeout": "30s"
+    }
+  },
+  "barrier": {
+    "enabled": true,
+    "mode": "shamir",
+    "sharesRequired": 2,
+    "sharesTotal": 3
+  },
+  "connection": {
+    "transport": "grpc",
+    "address": "db.example.com:63000",
+    "caFile": "/etc/qrdb/ca.pem",
+    "certFile": "/etc/qrdb/client.pem",
+    "keyFile": "/etc/qrdb/client-key.pem"
+  },
+  "sql": {
+    "concurrency": "pessimistic"
+  }
+}

@@ -134,7 +134,6 @@
         dbWizardStore.mode === "embedded" && dbWizardStore.raftConfig !== null
           ? {
               clusterMode: dbWizardStore.raftConfig.clusterMode,
-              shardId: dbWizardStore.raftConfig.shardId,
               replicaId: dbWizardStore.raftConfig.replicaId,
               raftAddress: dbWizardStore.raftConfig.raftAddress,
               peers: dbWizardStore.raftConfig.peers,
