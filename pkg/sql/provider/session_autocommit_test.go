@@ -19,6 +19,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // TestAutocommitOff_IsOneTransactionUntilCommit: with SET autocommit = 0 a
@@ -73,6 +75,47 @@ func TestExplicitTxn(t *testing.T) {
 	explicit, err = explicitTxn(begun)
 	require.NoError(t, err)
 	assert.True(t, explicit, "BEGIN opens an explicit transaction")
+}
+
+// noopLease and noopWatch only stand in for the servicers rowlock.New
+// requires; the test that uses them takes no lock.
+type noopLease struct{ service.LeaseServicer }
+type noopWatch struct{ service.WatchServicer }
+
+// TestStoreID_LockScopeIsSharedByLocksAndCommits: the row-lock table and the
+// write-set name a store's lock scope through the one helper, so a
+// transaction's lock release folds into its commit.
+func TestStoreID_LockScopeIsSharedByLocksAndCommits(t *testing.T) {
+	id := storeID{tenant: "acme", db: "shop"}
+	assert.Equal(t, "acme/shop", id.lockScope())
+
+	ws := newWriteSet(false, IsolationWritten)
+	assert.Empty(t, ws.lockScope(), "an unbound write-set commits to no store")
+	ws.bound, ws.tenantID, ws.database = true, "acme", "shop"
+	assert.Equal(t, id.lockScope(), ws.lockScope())
+
+	reg := &fakeRelationalRegistry{leaseSvc: noopLease{}, watchSvc: noopWatch{}}
+	d := &Database{name: "shop", registry: reg}
+	tbl, err := d.rowLockTable(reg, "acme", &memTxn{store: newMemStore()}, newMemStore())
+	require.NoError(t, err)
+	assert.Equal(t, id.lockScope(), tbl.Scope())
+}
+
+// TestRelationalWrite_RequiresASession: every relational write is part of a
+// transaction, which lives on a QRDB session; a context without one has
+// nowhere to put it and is refused rather than written row by row.
+func TestRelationalWrite_RequiresASession(t *testing.T) {
+	h := newDDLHarness()
+	tbl, _ := newWriterHarnessTable(t, h, ordersCreateRequest())
+	plain := newTestContext()
+	row := orderRow(1, "SKU-1", "east", int32(1))
+
+	var noSession *TransactionSessionRequiredError
+	require.ErrorAs(t, tbl.Inserter(plain).Insert(plain, row), &noSession)
+	assert.Equal(t, tbl.def.Name, noSession.Table)
+	require.ErrorAs(t, tbl.Updater(plain).Update(plain, row, row), &noSession)
+	require.ErrorAs(t, tbl.Deleter(plain).Delete(plain, row), &noSession)
+	assert.Contains(t, noSession.Error(), "requires a QRDB session")
 }
 
 // TestAutocommitOff_CommandBoundariesKeepTheTransaction is the same over a

@@ -58,10 +58,15 @@ type sessionLease struct {
 	users     int
 	idleSince time.Time
 
-	// lost is set once the lease is known to have ended under the session
-	// -- expired, or revoked by the leader's sweep -- so every record bound
-	// to it is gone, or about to be.
+	// lost is set once the lease may no longer be used: it ended, or the
+	// session retired it. No owner may rely on records bound to it.
 	lost atomic.Bool
+
+	// ended is set once the lease is KNOWN to be gone -- a revoke
+	// succeeded, or the store reported it not found -- so every record
+	// bound to it went with it. A lease that is lost but not ended (its
+	// revoke failed) still holds its records; their owners delete them.
+	ended atomic.Bool
 
 	stop    context.CancelFunc
 	stopped chan struct{}
@@ -211,6 +216,7 @@ func (s *Session) keepalive(ctx context.Context, l *sessionLease) {
 		if _, err := l.table.deps.Lease.KeepAlive(ctx, l.id); err != nil {
 			var gone *service.LeaseNotFoundError
 			if errors.As(err, &gone) {
+				l.ended.Store(true)
 				s.mu.Lock()
 				s.retireLocked(l)
 				s.mu.Unlock()
@@ -232,10 +238,10 @@ func revoke(ctx context.Context, l *sessionLease) error {
 	defer cancel()
 	if err := l.table.deps.Lease.Revoke(rctx, l.id); err != nil {
 		var gone *service.LeaseNotFoundError
-		if errors.As(err, &gone) {
-			return nil
+		if !errors.As(err, &gone) {
+			return err
 		}
-		return err
 	}
+	l.ended.Store(true)
 	return nil
 }

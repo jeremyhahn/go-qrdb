@@ -590,9 +590,11 @@ Only atomicity changes. An implicit transaction:
 | Several stores | a read of a table in another database goes straight to the store; a write to a second database in one statement is refused (`CrossDatabaseTransactionError`) — one proposal targets one shard |
 | Limits | an autocommit statement is bounded like a transaction: 8 MiB and 100,000 distinct keys (`WriteSetLimitError`). Split a bulk load into statements under that bound |
 
-A context with no QRDB session — none of the SQL surfaces creates one — still
-writes row by row. The KV transaction API (`TransactionServicer.Execute`)
-remains available directly.
+There is no row-by-row write path: every relational write goes through a
+transaction, explicit or implicit, and a write on a context without a QRDB
+session — which no SQL surface creates — is refused
+(`TransactionSessionRequiredError`). The KV transaction API
+(`TransactionServicer.Execute`) remains available directly.
 
 
 ## PostgreSQL Syntax Translation

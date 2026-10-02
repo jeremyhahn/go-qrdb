@@ -43,7 +43,7 @@ func execQueryCtx(prov *Provider, dbName, query string) (*sqle.Context, sqle.Sch
 	eng := engine.New(engine.Config{Provider: prov})
 	defer func() { _ = eng.Close() }()
 
-	sqlCtx := sqle.NewContext(context.Background())
+	sqlCtx := sqle.NewContext(context.Background(), sqle.WithSession(NewSession(sqle.NewBaseSession(), nil)))
 	sqlCtx.SetCurrentDatabase(dbName)
 
 	schema, iter, _, err := eng.Query(sqlCtx, query)

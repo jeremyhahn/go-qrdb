@@ -164,12 +164,11 @@ func (ws *WriteSet) commitAndRelease(ctx context.Context) (*service.TransactionR
 	return resp, nil
 }
 
-// lockScope is the lock-table scope of the store the write-set commits to:
-// "<tenant>/<database>", as Database.rowLockTable names it. Empty while
-// unbound.
+// lockScope is the lock-table scope of the store the write-set commits to
+// (see storeID.lockScope). Empty while unbound.
 func (ws *WriteSet) lockScope() string {
 	if !ws.bound {
 		return ""
 	}
-	return ws.tenantID + "/" + ws.database
+	return storeID{tenant: ws.tenantID, db: ws.database}.lockScope()
 }

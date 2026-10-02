@@ -64,7 +64,7 @@ func constCounter(n uint64, calls *atomic.Int32) rowCounter {
 	}
 }
 
-var testEstimateKey = rowEstimateKey{store: estimateStore{tenant: "acme", db: "shop"}, tableID: 7, generation: 0}
+var testEstimateKey = rowEstimateKey{store: storeID{tenant: "acme", db: "shop"}, tableID: 7, generation: 0}
 
 func TestRowEstimates_FirstRequestCountsThenServesFromCache(t *testing.T) {
 	clock := newFakeClock()
@@ -187,7 +187,7 @@ func TestRowEstimates_GenerationsAreIndependent(t *testing.T) {
 
 func TestRowEstimates_ForgetAndForgetStore(t *testing.T) {
 	e := newTestEstimates(newFakeClock())
-	other := rowEstimateKey{store: estimateStore{tenant: "acme", db: "billing"}, tableID: 7}
+	other := rowEstimateKey{store: storeID{tenant: "acme", db: "billing"}, tableID: 7}
 	e.store(testEstimateKey, 1)
 	e.store(rowEstimateKey{store: testEstimateKey.store, tableID: 8}, 2)
 	e.store(other, 3)
@@ -197,7 +197,7 @@ func TestRowEstimates_ForgetAndForgetStore(t *testing.T) {
 	e.forget(testEstimateKey) // idempotent
 	assert.Equal(t, int64(2), e.size.Load())
 
-	e.forgetStore(estimateStore{tenant: "acme", db: "shop"})
+	e.forgetStore(storeID{tenant: "acme", db: "shop"})
 	assert.Equal(t, int64(1), e.size.Load())
 	_, ok := e.entries.Load(other)
 	assert.True(t, ok, "another database's estimates survive")
@@ -217,10 +217,10 @@ func TestRowEstimates_BoundEvictsIdleEntriesFirst(t *testing.T) {
 	clock := newFakeClock()
 	e := newTestEstimates(clock)
 	for i := range rowEstimateMaxEntries {
-		e.store(rowEstimateKey{store: estimateStore{tenant: "idle"}, tableID: uint64(i)}, 1)
+		e.store(rowEstimateKey{store: storeID{tenant: "idle"}, tableID: uint64(i)}, 1)
 	}
 	clock.Advance(rowEstimateIdle + time.Second)
-	hot := rowEstimateKey{store: estimateStore{tenant: "hot"}, tableID: 1}
+	hot := rowEstimateKey{store: storeID{tenant: "hot"}, tableID: 1}
 	e.store(hot, 5)
 	e.background.Wait()
 
@@ -232,16 +232,16 @@ func TestRowEstimates_BoundEvictsIdleEntriesFirst(t *testing.T) {
 func TestRowEstimates_EvictionRunsOffTheCallersPath(t *testing.T) {
 	e := newTestEstimates(newFakeClock())
 	for i := range rowEstimateMaxEntries {
-		e.store(rowEstimateKey{store: estimateStore{tenant: "busy"}, tableID: uint64(i)}, 1)
+		e.store(rowEstimateKey{store: storeID{tenant: "busy"}, tableID: uint64(i)}, 1)
 	}
 	// An eviction already in flight: the next store past the bound must not
 	// walk the cache itself, nor start a second walk.
 	e.evicting.Store(true)
-	e.store(rowEstimateKey{store: estimateStore{tenant: "busy"}, tableID: 1 << 40}, 1)
+	e.store(rowEstimateKey{store: storeID{tenant: "busy"}, tableID: 1 << 40}, 1)
 	assert.Equal(t, int64(rowEstimateMaxEntries+1), e.size.Load(), "the statement that grew the cache did not evict on its own path")
 
 	e.evicting.Store(false)
-	e.store(rowEstimateKey{store: estimateStore{tenant: "busy"}, tableID: 1 << 41}, 1)
+	e.store(rowEstimateKey{store: storeID{tenant: "busy"}, tableID: 1 << 41}, 1)
 	e.background.Wait()
 	assert.LessOrEqual(t, e.size.Load(), int64(rowEstimateMaxEntries))
 }
@@ -249,7 +249,7 @@ func TestRowEstimates_EvictionRunsOffTheCallersPath(t *testing.T) {
 func TestRowEstimates_BoundHoldsWhenNothingIsIdle(t *testing.T) {
 	e := newTestEstimates(newFakeClock())
 	for i := range rowEstimateMaxEntries + 10 {
-		e.store(rowEstimateKey{store: estimateStore{tenant: "busy"}, tableID: uint64(i)}, 1)
+		e.store(rowEstimateKey{store: storeID{tenant: "busy"}, tableID: uint64(i)}, 1)
 	}
 	e.background.Wait()
 	assert.LessOrEqual(t, e.size.Load(), int64(rowEstimateMaxEntries))

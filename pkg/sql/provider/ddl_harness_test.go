@@ -514,7 +514,9 @@ func execQuery(prov *Provider, dbName, query string) (sqle.Schema, []sqle.Row, e
 	eng := engine.New(engine.Config{Provider: prov})
 	defer func() { _ = eng.Close() }()
 
-	sqlCtx := sqle.NewContext(context.Background())
+	// A QRDB session, as every SQL surface creates: a relational write is
+	// part of a transaction, which lives on the session.
+	sqlCtx := sqle.NewContext(context.Background(), sqle.WithSession(NewSession(sqle.NewBaseSession(), nil)))
 	sqlCtx.SetCurrentDatabase(dbName)
 
 	schema, iter, _, err := eng.Query(sqlCtx, query)

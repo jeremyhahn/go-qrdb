@@ -472,6 +472,21 @@ func (e *TransactionServiceUnavailableError) Error() string {
 	return "provider: transaction service unavailable for relational table: " + e.Table
 }
 
+// TransactionSessionRequiredError is returned by a RelationalTable DML
+// method called on a context that carries no QRDB session. Every relational
+// write is part of a transaction -- an explicit one, or the autocommit
+// statement's implicit one -- and the transaction lives on the session; a
+// context without one has nothing to buffer the write into or commit it
+// with. Every SQL surface creates a session per connection.
+type TransactionSessionRequiredError struct {
+	Table string
+}
+
+// Error returns a human-readable description.
+func (e *TransactionSessionRequiredError) Error() string {
+	return "provider: a write to relational table " + e.Table + " requires a QRDB session"
+}
+
 // SequenceServiceUnavailableError is returned by a RelationalTable
 // AUTO_INCREMENT method when the table declares an AUTO_INCREMENT column
 // but was constructed without WithSequenceService.

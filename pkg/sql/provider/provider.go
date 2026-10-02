@@ -612,7 +612,7 @@ func (p *Provider) DropDatabase(ctx *sqle.Context, name string) error {
 		return &DropDatabaseError{Name: name, Err: err}
 	}
 	if p.estimates != nil {
-		p.estimates.forgetStore(estimateStore{tenant: tenantID, db: name})
+		p.estimates.forgetStore(storeID{tenant: tenantID, db: name})
 	}
 	return nil
 }

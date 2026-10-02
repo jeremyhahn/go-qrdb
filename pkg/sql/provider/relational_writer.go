@@ -509,31 +509,6 @@ func (t *RelationalTable) checkGenerationStale(ctx *sqle.Context, g *tableGenera
 	return sqle.ErrLockDeadlock.Wrap(stale, stale.Error())
 }
 
-// checkResolutionStale is checkGenerationStale for a DML commit, which is
-// also fenced on the definition (metadataCompare): after a failed CAS it
-// reports which of the two moved, if either. A nil return means neither
-// did, and the caller proceeds to its duplicate-vs-transient classification
-// (resolveDuplicate).
-func (t *RelationalTable) checkResolutionStale(ctx *sqle.Context, g *tableGeneration) error {
-	if err := t.checkGenerationStale(ctx, g); err != nil {
-		return err
-	}
-	if _, fenced := t.metadataCompare(); !fenced || t.mvccSvc == nil {
-		return nil
-	}
-	live, err := t.mvccSvc.GetRevision(ctx, service.TableMetadataKey(t.def.Database, t.def.Name))
-	if err != nil {
-		if isNotFound(err) {
-			return t.definitionStale("the table was renamed or dropped")
-		}
-		return err
-	}
-	if live.ModRevision != t.def.MetadataRevision {
-		return t.definitionStale("its definition changed")
-	}
-	return nil
-}
-
 // ---------------------------------------------------------------------------
 // Size limits
 // ---------------------------------------------------------------------------
@@ -795,45 +770,10 @@ func (w *relationalWriter) Insert(ctx *sqle.Context, row sqle.Row) error {
 	if err != nil {
 		return err
 	}
-	if ws != nil {
-		return t.bufferInsert(ctx, ws, g, candidates, rowKey, encodedRow, actions)
+	if ws == nil {
+		return &TransactionSessionRequiredError{Table: t.def.Name}
 	}
-
-	for attempt := 0; attempt < writeMaxAttempts; attempt++ {
-		idxOps, idxCompares := actionsToOpsAndCompares(actions)
-		compares := append([]service.Compare{
-			{Key: []byte(rowKey), Target: service.CompareVersion, Result: service.CompareEqual, Version: 0},
-		}, t.resolutionCompares(g)...)
-		compares = append(compares, idxCompares...)
-		ops := append([]service.Op{{Type: service.OpPut, Key: []byte(rowKey), Value: encodedRow}}, idxOps...)
-
-		if err := checkProposalSize(t.def.Name, compares, ops); err != nil {
-			return err
-		}
-
-		resp, err := t.txnSvc.Execute(ctx, compares, ops, nil)
-		if err != nil {
-			return err
-		}
-		if resp.Succeeded {
-			return nil
-		}
-
-		if staleErr := t.checkResolutionStale(ctx, g); staleErr != nil {
-			return staleErr
-		}
-
-		dupErr, transient, rerr := t.resolveDuplicate(ctx, g, candidates)
-		if rerr != nil {
-			return rerr
-		}
-		if !transient {
-			return dupErr
-		}
-		// transient: whatever caused this attempt to lose the race is gone
-		// on recheck (e.g. a concurrent DELETE); retry.
-	}
-	return &TransactionConflictRetriesExhaustedError{Table: t.def.Name}
+	return t.bufferInsert(ctx, ws, g, candidates, rowKey, encodedRow, actions)
 }
 
 // bufferInsert is Insert's interactive-transaction path: it first checks
@@ -885,24 +825,6 @@ type indexAction struct {
 	value  []byte
 	delete bool
 	unique bool
-}
-
-// actionsToOpsAndCompares renders actions into the Op/Compare lists an
-// autocommit compare-and-swap proposes alongside the row's own write.
-func actionsToOpsAndCompares(actions []indexAction) (ops []service.Op, compares []service.Compare) {
-	for _, a := range actions {
-		if a.delete {
-			ops = append(ops, service.Op{Type: service.OpDelete, Key: []byte(a.key)})
-			continue
-		}
-		ops = append(ops, service.Op{Type: service.OpPut, Key: []byte(a.key), Value: a.value})
-		if a.unique {
-			compares = append(compares, service.Compare{
-				Key: []byte(a.key), Target: service.CompareVersion, Result: service.CompareEqual, Version: 0,
-			})
-		}
-	}
-	return ops, compares
 }
 
 // applyActionsToWriteSet buffers every action into ws, via PutUnique for a
@@ -1009,46 +931,10 @@ func (w *relationalWriter) Delete(ctx *sqle.Context, row sqle.Row) error {
 	if err != nil {
 		return err
 	}
-	if ws != nil {
-		return applyActionsToWriteSet(ctx, ws, actions)
+	if ws == nil {
+		return &TransactionSessionRequiredError{Table: t.def.Name}
 	}
-
-	// As in Update: a row read under a lock was read at a known revision,
-	// and the autocommit delete is guarded on it, so a writer that took no
-	// lock cannot have its change deleted.
-	rowGuard, guarded := t.lockedRowGuard(ctx, rowKey)
-	ops, _ := actionsToOpsAndCompares(actions)
-	compares := t.resolutionCompares(g)
-	if guarded {
-		compares = append(compares, rowGuard)
-	}
-	if err := checkProposalSize(t.def.Name, compares, ops); err != nil {
-		return err
-	}
-
-	resp, err := t.txnSvc.Execute(ctx, compares, ops, nil)
-	if err != nil {
-		return err
-	}
-	if resp.Succeeded {
-		return nil
-	}
-	if staleErr := t.checkResolutionStale(ctx, g); staleErr != nil {
-		return staleErr
-	}
-	if guarded {
-		moved, gerr := t.rowGuardFailed(ctx, rowGuard)
-		if gerr != nil {
-			return gerr
-		}
-		if moved {
-			return rowChangedError(rowKey)
-		}
-	}
-	// The generation compare and the row guard are the only preconditions
-	// this proposal carries, so a failure that is neither should not happen;
-	// report it as a conflict rather than silently treating it as success.
-	return &TransactionConflictRetriesExhaustedError{Table: t.def.Name}
+	return applyActionsToWriteSet(ctx, ws, actions)
 }
 
 // Update updates a row from old to newRow, atomically maintaining every
@@ -1134,69 +1020,10 @@ func (w *relationalWriter) Update(ctx *sqle.Context, old, newRow sqle.Row) error
 	if err != nil {
 		return err
 	}
-	if ws != nil {
-		return t.bufferUpdate(ctx, ws, g, candidates, oldRowKey, newRowKey, encodedNewRow, pkChanged, actions)
+	if ws == nil {
+		return &TransactionSessionRequiredError{Table: t.def.Name}
 	}
-
-	// A row this statement read under a lock was read at a known revision;
-	// the autocommit write is guarded on it, so a writer that took no lock
-	// cannot have its change overwritten (go-qrdb row-locking's commit CAS).
-	rowGuard, guarded := t.lockedRowGuard(ctx, oldRowKey)
-
-	for attempt := 0; attempt < writeMaxAttempts; attempt++ {
-		idxOps, idxCompares := actionsToOpsAndCompares(actions)
-		var compares []service.Compare
-		var ops []service.Op
-		if guarded {
-			compares = append(compares, rowGuard)
-		}
-
-		if pkChanged {
-			compares = append(compares, service.Compare{
-				Key: []byte(newRowKey), Target: service.CompareVersion, Result: service.CompareEqual, Version: 0,
-			})
-			ops = append(ops, service.Op{Type: service.OpDelete, Key: []byte(oldRowKey)})
-			ops = append(ops, service.Op{Type: service.OpPut, Key: []byte(newRowKey), Value: encodedNewRow})
-		} else {
-			ops = append(ops, service.Op{Type: service.OpPut, Key: []byte(newRowKey), Value: encodedNewRow})
-		}
-		compares = append(compares, t.resolutionCompares(g)...)
-		compares = append(compares, idxCompares...)
-		ops = append(ops, idxOps...)
-
-		if err := checkProposalSize(t.def.Name, compares, ops); err != nil {
-			return err
-		}
-
-		resp, err := t.txnSvc.Execute(ctx, compares, ops, nil)
-		if err != nil {
-			return err
-		}
-		if resp.Succeeded {
-			return nil
-		}
-
-		if staleErr := t.checkResolutionStale(ctx, g); staleErr != nil {
-			return staleErr
-		}
-		if guarded {
-			if moved, gerr := t.rowGuardFailed(ctx, rowGuard); gerr != nil || moved {
-				if gerr != nil {
-					return gerr
-				}
-				return rowChangedError(oldRowKey)
-			}
-		}
-
-		dupErr, transient, rerr := t.resolveDuplicate(ctx, g, candidates)
-		if rerr != nil {
-			return rerr
-		}
-		if !transient {
-			return dupErr
-		}
-	}
-	return &TransactionConflictRetriesExhaustedError{Table: t.def.Name}
+	return t.bufferUpdate(ctx, ws, g, candidates, oldRowKey, newRowKey, encodedNewRow, pkChanged, actions)
 }
 
 // candidateKeys returns the keys of candidates, in order.
@@ -1206,36 +1033,6 @@ func candidateKeys(candidates []uniqueCandidate) []string {
 		keys[i] = c.key
 	}
 	return keys
-}
-
-// lockedRowGuard returns the commit precondition of a row the statement's
-// transaction read under a lock, and whether there is one.
-func (t *RelationalTable) lockedRowGuard(ctx *sqle.Context, key string) (service.Compare, bool) {
-	_, ws := lockState(ctx)
-	if ws == nil {
-		return service.Compare{}, false
-	}
-	c, ok := ws.currentState(key)
-	if !ok {
-		return service.Compare{}, false
-	}
-	return c.compare(key), true
-}
-
-// rowGuardFailed reports whether the row a lockedRowGuard guards no longer
-// holds the state it was read in.
-func (t *RelationalTable) rowGuardFailed(ctx *sqle.Context, guard service.Compare) (bool, error) {
-	kv, err := t.mvccSvc.GetRevision(ctx, string(guard.Key))
-	switch {
-	case err != nil && isNotFound(err):
-		return guard.Target != service.CompareVersion, nil
-	case err != nil:
-		return false, err
-	case guard.Target == service.CompareVersion:
-		return true, nil
-	default:
-		return kv.ModRevision != guard.ModRevision, nil
-	}
 }
 
 // bufferUpdate is Update's interactive-transaction path. Every candidate --

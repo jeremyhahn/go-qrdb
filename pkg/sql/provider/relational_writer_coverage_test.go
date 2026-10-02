@@ -33,30 +33,36 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestRelationalWriter_Update_UniqueValueRemoved_DeletesIndexEntry(t *testing.T) {
+	ctx, endStatement := autocommitStatement(t)
 	h := newDDLHarness()
 	tbl, def := newWriterHarnessTable(t, h, ordersCreateRequest())
-	ins := tbl.Inserter(newTestContext())
+	ins := tbl.Inserter(ctx)
 	old := orderRow(1, "SKU-1", "east", int32(10))
-	require.NoError(t, ins.Insert(newTestContext(), old))
+	require.NoError(t, ins.Insert(ctx, old))
+	require.NoError(t, endStatement())
 
-	upd := tbl.Updater(newTestContext())
+	upd := tbl.Updater(ctx)
 	newRow := orderRow(1, nil, "east", int32(10))
-	require.NoError(t, upd.Update(newTestContext(), old, newRow))
+	require.NoError(t, upd.Update(ctx, old, newRow))
+	require.NoError(t, endStatement())
 
 	_, err := h.kvSvc.Get(context.Background(), skuIndexKey(t, def, "SKU-1"))
 	assert.Error(t, err, "clearing a unique indexed value must delete its physical entry")
 }
 
 func TestRelationalWriter_Update_UniqueValueAdded_CreatesIndexEntry(t *testing.T) {
+	ctx, endStatement := autocommitStatement(t)
 	h := newDDLHarness()
 	tbl, def := newWriterHarnessTable(t, h, ordersCreateRequest())
-	ins := tbl.Inserter(newTestContext())
+	ins := tbl.Inserter(ctx)
 	old := orderRow(1, nil, "east", int32(10))
-	require.NoError(t, ins.Insert(newTestContext(), old))
+	require.NoError(t, ins.Insert(ctx, old))
+	require.NoError(t, endStatement())
 
-	upd := tbl.Updater(newTestContext())
+	upd := tbl.Updater(ctx)
 	newRow := orderRow(1, "SKU-9", "east", int32(10))
-	require.NoError(t, upd.Update(newTestContext(), old, newRow))
+	require.NoError(t, upd.Update(ctx, old, newRow))
+	require.NoError(t, endStatement())
 
 	idxVal, err := h.kvSvc.Get(context.Background(), skuIndexKey(t, def, "SKU-9"))
 	require.NoError(t, err)
@@ -66,15 +72,18 @@ func TestRelationalWriter_Update_UniqueValueAdded_CreatesIndexEntry(t *testing.T
 }
 
 func TestRelationalWriter_Update_NonUniqueValueRemoved_DeletesEntry(t *testing.T) {
+	ctx, endStatement := autocommitStatement(t)
 	h := newDDLHarness()
 	tbl, def := newWriterHarnessTable(t, h, ordersCreateRequest())
-	ins := tbl.Inserter(newTestContext())
+	ins := tbl.Inserter(ctx)
 	old := orderRow(1, "SKU-1", "east", int32(10))
-	require.NoError(t, ins.Insert(newTestContext(), old))
+	require.NoError(t, ins.Insert(ctx, old))
+	require.NoError(t, endStatement())
 
-	upd := tbl.Updater(newTestContext())
+	upd := tbl.Updater(ctx)
 	newRow := orderRow(1, "SKU-1", nil, int32(10))
-	require.NoError(t, upd.Update(newTestContext(), old, newRow))
+	require.NoError(t, upd.Update(ctx, old, newRow))
+	require.NoError(t, endStatement())
 
 	entries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix(def.Database, def.TableID, 0, incarnationOf(def, "idx_warehouse")))
 	require.NoError(t, err)
@@ -82,15 +91,18 @@ func TestRelationalWriter_Update_NonUniqueValueRemoved_DeletesEntry(t *testing.T
 }
 
 func TestRelationalWriter_Update_NeitherValueExists_NoIndexChange(t *testing.T) {
+	ctx, endStatement := autocommitStatement(t)
 	h := newDDLHarness()
 	tbl, def := newWriterHarnessTable(t, h, ordersCreateRequest())
-	ins := tbl.Inserter(newTestContext())
+	ins := tbl.Inserter(ctx)
 	old := orderRow(1, nil, nil, int32(10))
-	require.NoError(t, ins.Insert(newTestContext(), old))
+	require.NoError(t, ins.Insert(ctx, old))
+	require.NoError(t, endStatement())
 
-	upd := tbl.Updater(newTestContext())
+	upd := tbl.Updater(ctx)
 	newRow := orderRow(1, nil, nil, int32(20))
-	require.NoError(t, upd.Update(newTestContext(), old, newRow))
+	require.NoError(t, upd.Update(ctx, old, newRow))
+	require.NoError(t, endStatement())
 
 	skuEntries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix(def.Database, def.TableID, 0, incarnationOf(def, "idx_sku")))
 	require.NoError(t, err)
@@ -127,35 +139,37 @@ func TestRelationalDML_EndToEnd_SelectByNonUniqueIndex(t *testing.T) {
 }
 
 func TestRelationalTable_SecondaryIndexKeysFromRanges_NonEqualityShapes(t *testing.T) {
+	ctx, endStatement := autocommitStatement(t)
 	h := newDDLHarness()
 	tbl, _ := newWriterHarnessTable(t, h, ordersCreateRequest())
-	ins := tbl.Inserter(newTestContext())
-	require.NoError(t, ins.Insert(newTestContext(), orderRow(1, "SKU-1", "east", int32(10))))
+	ins := tbl.Inserter(ctx)
+	require.NoError(t, ins.Insert(ctx, orderRow(1, "SKU-1", "east", int32(10))))
+	require.NoError(t, endStatement())
 
 	spec, found := tbl.indexSpecByName("idx_sku") // sku
 	require.True(t, found)
 	strType := tbl.schema[1].Type
 
 	// Not a MySQLRange at all.
-	_, exact, err := tbl.secondaryIndexKeysFromRanges(newTestContext(), spec, []sqle.Range{})
+	_, exact, err := tbl.secondaryIndexKeysFromRanges(ctx, spec, []sqle.Range{})
 	require.NoError(t, err)
 	assert.True(t, exact)
 
 	// A genuine (non-degenerate) closed range is not a point match.
 	rangeExpr := sqle.ClosedRangeColumnExpr("SKU-1", "SKU-9", strType)
-	_, exact, err = tbl.secondaryIndexKeysFromRanges(newTestContext(), spec, []sqle.Range{sqle.MySQLRange{rangeExpr}})
+	_, exact, err = tbl.secondaryIndexKeysFromRanges(ctx, spec, []sqle.Range{sqle.MySQLRange{rangeExpr}})
 	require.NoError(t, err)
 	assert.False(t, exact, "a genuine range must fall back to the filtered scan")
 
 	// An open-open (non-ClosedClosed) range type.
 	openExpr := sqle.GreaterThanRangeColumnExpr("SKU-1", strType)
-	_, exact, err = tbl.secondaryIndexKeysFromRanges(newTestContext(), spec, []sqle.Range{sqle.MySQLRange{openExpr}})
+	_, exact, err = tbl.secondaryIndexKeysFromRanges(ctx, spec, []sqle.Range{sqle.MySQLRange{openExpr}})
 	require.NoError(t, err)
 	assert.False(t, exact)
 
 	// An unbound (all rows) range.
 	allExpr := sqle.AllRangeColumnExpr(strType)
-	_, exact, err = tbl.secondaryIndexKeysFromRanges(newTestContext(), spec, []sqle.Range{sqle.MySQLRange{allExpr}})
+	_, exact, err = tbl.secondaryIndexKeysFromRanges(ctx, spec, []sqle.Range{sqle.MySQLRange{allExpr}})
 	require.NoError(t, err)
 	assert.False(t, exact)
 }

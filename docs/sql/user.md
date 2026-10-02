@@ -116,6 +116,15 @@ truncated, dropped or altered while it ran fails the same way, as do the REST
 statements**, not by re-issuing `COMMIT`: the server buffered operations, not
 your SQL, so replaying `SET n = n + 1` would re-apply a stale value.
 
+**Retry a single statement the same way.** A statement outside a
+transaction is its own transaction, so it can lose its commit too — to a
+`TRUNCATE`, `DROP` or `ALTER` of its table that committed while it ran, or,
+in pessimistic mode, to a writer that changed a row it had locked without
+taking the lock — and it fails with the same **1213**, having changed
+nothing. Re-run the statement. A duplicate key is not a retry: it is
+**1062**, whether the row was already there or another statement inserted
+it while this one ran.
+
 **Wait instead of retrying.** If 1213s are frequent, lock the rows instead:
 `SELECT ... FOR UPDATE` serialises a read-modify-write in any mode, and
 `SET qrdb_concurrency = 'pessimistic'` makes every `UPDATE`/`DELETE`/`INSERT`

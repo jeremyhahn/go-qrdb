@@ -57,19 +57,12 @@ const (
 	rowEstimateIdle = 6 * rowEstimateTTL
 )
 
-// estimateStore names the (tenant, database) store a table's rows live in.
-// It is a struct rather than a joined string so no tenant or database name
-// can be read as part of the other.
-type estimateStore struct {
-	tenant, db string
-}
-
 // rowEstimateKey names one generation of one relational table in one
 // store. The generation is part of the key because a TRUNCATE moves the
 // table to an empty keyspace: the new generation's count starts from
 // scratch rather than inheriting the old one's.
 type rowEstimateKey struct {
-	store      estimateStore
+	store      storeID
 	tableID    uint64
 	generation uint64
 }
@@ -189,7 +182,7 @@ func (e *rowEstimates) forget(key rowEstimateKey) {
 // forgetStore drops every estimate of the (tenant, database) store: the
 // database was dropped, and a database later created under the same name
 // starts its table IDs over.
-func (e *rowEstimates) forgetStore(store estimateStore) {
+func (e *rowEstimates) forgetStore(store storeID) {
 	e.each(func(key rowEstimateKey, _ *rowEstimate) bool {
 		if key.store == store {
 			e.forget(key)

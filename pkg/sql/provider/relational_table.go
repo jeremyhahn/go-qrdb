@@ -74,7 +74,7 @@ type RelationalTable struct {
 	// without it gets a cache of its own, so a statement still counts it at
 	// most once.
 	estimates     *rowEstimates
-	estimateStore estimateStore
+	estimateStore storeID
 
 	// tableSvc is nil unless supplied via WithTableService. It is required
 	// for every DDL capability implemented in relational_table_ddl.go
@@ -213,7 +213,7 @@ func WithSequenceService(svc service.SequenceServicer) RelationalTableOption {
 // withRowEstimates shares the provider's row-count estimate cache with the
 // table, keeping its estimates under store -- the (tenant, database) store
 // the table's rows live in.
-func withRowEstimates(estimates *rowEstimates, store estimateStore) RelationalTableOption {
+func withRowEstimates(estimates *rowEstimates, store storeID) RelationalTableOption {
 	return func(t *RelationalTable) {
 		t.estimates = estimates
 		t.estimateStore = store
@@ -1049,11 +1049,14 @@ func (t *RelationalTable) writeSetFor(ctx *sqle.Context, write bool) (*WriteSet,
 		return nil, err
 	}
 	if !explicit {
-		if !ws.implicit {
+		if !write && (!ws.implicit || !ws.bound || ws.tenantID != sess.TenantID() || ws.database != t.def.Database) {
 			return nil, nil
 		}
-		if !write && (!ws.bound || ws.tenantID != sess.TenantID() || ws.database != t.def.Database) {
-			return nil, nil
+		if write && !ws.implicit {
+			// A write the engine made without opening its statement
+			// (StatementBegin) is still the statement's: the statement is
+			// its implicit transaction either way.
+			ws.beginImplicit()
 		}
 	}
 	if ws.aborted != nil {

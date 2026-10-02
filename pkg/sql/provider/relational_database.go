@@ -109,7 +109,7 @@ func (d *Database) relationalTable(ctx *sqle.Context, name string) (sqle.Table, 
 		opts = append(opts, WithPostgreSQLDialect())
 	}
 	if d.estimates != nil {
-		opts = append(opts, withRowEstimates(d.estimates, estimateStore{tenant: tenantID, db: d.name}))
+		opts = append(opts, withRowEstimates(d.estimates, storeID{tenant: tenantID, db: d.name}))
 	}
 
 	tbl, err := NewRelationalTable(def, kvSvc, mvccSvc, opts...)
@@ -134,7 +134,7 @@ func (d *Database) rowLockTable(registry service.Registry, tenantID string, txnS
 	if err != nil {
 		return nil, err
 	}
-	return rowlock.New(rowlock.Deps{Txn: txnSvc, MVCC: mvccSvc, Lease: leaseSvc, Watch: watchSvc}, tenantID+"/"+d.name)
+	return rowlock.New(rowlock.Deps{Txn: txnSvc, MVCC: mvccSvc, Lease: leaseSvc, Watch: watchSvc}, storeID{tenant: tenantID, db: d.name}.lockScope())
 }
 
 // concurrency returns this database's configured SQL concurrency mode.

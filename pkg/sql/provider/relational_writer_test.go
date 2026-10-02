@@ -97,14 +97,16 @@ func skuIndexKey(t *testing.T, def *service.TableDef, sku string) string {
 // ---------------------------------------------------------------------------
 
 func TestRelationalWriter_Insert_WritesRowAndUniqueIndexEntry(t *testing.T) {
+	ctx, endStatement := autocommitStatement(t)
 	h := newDDLHarness()
 	tbl, def := newWriterHarnessTable(t, h, ordersCreateRequest())
-	ins := tbl.Inserter(newTestContext())
-	ins.StatementBegin(newTestContext())
+	ins := tbl.Inserter(ctx)
+	ins.StatementBegin(ctx)
 
 	row := orderRow(1, "SKU-1", "east", int32(10))
-	require.NoError(t, ins.Insert(newTestContext(), row))
-	require.NoError(t, ins.Close(newTestContext()))
+	require.NoError(t, ins.Insert(ctx, row))
+	require.NoError(t, endStatement())
+	require.NoError(t, ins.Close(ctx))
 
 	rowKey := service.TableDataPrefix(def.Database, def.TableID, 0) + encodeUserKeyGeneric(t, tbl, row)
 	raw, err := h.kvSvc.Get(context.Background(), rowKey)
@@ -122,14 +124,16 @@ func TestRelationalWriter_Insert_WritesRowAndUniqueIndexEntry(t *testing.T) {
 }
 
 func TestRelationalWriter_Insert_NonUniqueIndex_KeyCarriesPrimaryKeySuffix(t *testing.T) {
+	ctx, endStatement := autocommitStatement(t)
 	h := newDDLHarness()
 	tbl, def := newWriterHarnessTable(t, h, ordersCreateRequest())
-	ins := tbl.Inserter(newTestContext())
+	ins := tbl.Inserter(ctx)
 
 	row1 := orderRow(1, "SKU-1", "east", int32(10))
 	row2 := orderRow(2, "SKU-2", "east", int32(5))
-	require.NoError(t, ins.Insert(newTestContext(), row1))
-	require.NoError(t, ins.Insert(newTestContext(), row2))
+	require.NoError(t, ins.Insert(ctx, row1))
+	require.NoError(t, ins.Insert(ctx, row2))
+	require.NoError(t, endStatement())
 
 	entries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix(def.Database, def.TableID, 0, incarnationOf(def, "idx_warehouse")))
 	require.NoError(t, err)
@@ -137,12 +141,14 @@ func TestRelationalWriter_Insert_NonUniqueIndex_KeyCarriesPrimaryKeySuffix(t *te
 }
 
 func TestRelationalWriter_Insert_NullIndexedColumn_NoIndexEntry(t *testing.T) {
+	ctx, endStatement := autocommitStatement(t)
 	h := newDDLHarness()
 	tbl, def := newWriterHarnessTable(t, h, ordersCreateRequest())
-	ins := tbl.Inserter(newTestContext())
+	ins := tbl.Inserter(ctx)
 
 	row := orderRow(1, nil, nil, int32(1))
-	require.NoError(t, ins.Insert(newTestContext(), row))
+	require.NoError(t, ins.Insert(ctx, row))
+	require.NoError(t, endStatement())
 
 	skuEntries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix(def.Database, def.TableID, 0, incarnationOf(def, "idx_sku")))
 	require.NoError(t, err)
@@ -154,13 +160,15 @@ func TestRelationalWriter_Insert_NullIndexedColumn_NoIndexEntry(t *testing.T) {
 }
 
 func TestRelationalWriter_Insert_MultiRow(t *testing.T) {
+	ctx, endStatement := autocommitStatement(t)
 	h := newDDLHarness()
 	tbl, def := newWriterHarnessTable(t, h, ordersCreateRequest())
-	ins := tbl.Inserter(newTestContext())
+	ins := tbl.Inserter(ctx)
 
 	for i := uint64(1); i <= 5; i++ {
 		row := orderRow(i, "SKU-"+string(rune('0'+i)), "east", int32(i))
-		require.NoError(t, ins.Insert(newTestContext(), row))
+		require.NoError(t, ins.Insert(ctx, row))
+		require.NoError(t, endStatement())
 	}
 
 	rows, err := h.kvSvc.Scan(context.Background(), service.TableDataPrefix(def.Database, def.TableID, 0))
@@ -169,12 +177,14 @@ func TestRelationalWriter_Insert_MultiRow(t *testing.T) {
 }
 
 func TestRelationalWriter_Insert_DuplicatePrimaryKey_Rejected(t *testing.T) {
+	ctx, endStatement := autocommitStatement(t)
 	h := newDDLHarness()
 	tbl, def := newWriterHarnessTable(t, h, ordersCreateRequest())
-	ins := tbl.Inserter(newTestContext())
+	ins := tbl.Inserter(ctx)
 
-	require.NoError(t, ins.Insert(newTestContext(), orderRow(1, "SKU-1", "east", int32(10))))
-	err := ins.Insert(newTestContext(), orderRow(1, "SKU-2", "west", int32(20)))
+	require.NoError(t, ins.Insert(ctx, orderRow(1, "SKU-1", "east", int32(10))))
+	require.NoError(t, endStatement())
+	err := ins.Insert(ctx, orderRow(1, "SKU-2", "west", int32(20)))
 	require.Error(t, err)
 	assert.True(t, sqle.ErrPrimaryKeyViolation.Is(err) || sqle.ErrUniqueKeyViolation.Is(err))
 
@@ -188,12 +198,14 @@ func TestRelationalWriter_Insert_DuplicatePrimaryKey_Rejected(t *testing.T) {
 }
 
 func TestRelationalWriter_Insert_UniqueIndexViolation_RejectsWholeTransaction(t *testing.T) {
+	ctx, endStatement := autocommitStatement(t)
 	h := newDDLHarness()
 	tbl, def := newWriterHarnessTable(t, h, ordersCreateRequest())
-	ins := tbl.Inserter(newTestContext())
+	ins := tbl.Inserter(ctx)
 
-	require.NoError(t, ins.Insert(newTestContext(), orderRow(1, "SKU-1", "east", int32(10))))
-	err := ins.Insert(newTestContext(), orderRow(2, "SKU-1", "west", int32(20)))
+	require.NoError(t, ins.Insert(ctx, orderRow(1, "SKU-1", "east", int32(10))))
+	require.NoError(t, endStatement())
+	err := ins.Insert(ctx, orderRow(2, "SKU-1", "west", int32(20)))
 	require.Error(t, err)
 	assert.True(t, sqle.ErrUniqueKeyViolation.Is(err) || sqle.ErrPrimaryKeyViolation.Is(err))
 
@@ -221,15 +233,18 @@ func TestRelationalWriter_Insert_UniqueIndexViolation_RejectsWholeTransaction(t 
 // ---------------------------------------------------------------------------
 
 func TestRelationalWriter_Update_ChangedIndexedValue_MovesIndexEntry(t *testing.T) {
+	ctx, endStatement := autocommitStatement(t)
 	h := newDDLHarness()
 	tbl, def := newWriterHarnessTable(t, h, ordersCreateRequest())
-	ins := tbl.Inserter(newTestContext())
+	ins := tbl.Inserter(ctx)
 	old := orderRow(1, "SKU-1", "east", int32(10))
-	require.NoError(t, ins.Insert(newTestContext(), old))
+	require.NoError(t, ins.Insert(ctx, old))
+	require.NoError(t, endStatement())
 
-	upd := tbl.Updater(newTestContext())
+	upd := tbl.Updater(ctx)
 	newRow := orderRow(1, "SKU-2", "east", int32(10))
-	require.NoError(t, upd.Update(newTestContext(), old, newRow))
+	require.NoError(t, upd.Update(ctx, old, newRow))
+	require.NoError(t, endStatement())
 
 	_, err := h.kvSvc.Get(context.Background(), skuIndexKey(t, def, "SKU-1"))
 	assert.Error(t, err, "the old value's index entry must be gone")
@@ -242,15 +257,18 @@ func TestRelationalWriter_Update_ChangedIndexedValue_MovesIndexEntry(t *testing.
 }
 
 func TestRelationalWriter_Update_UnchangedIndexedValue_LeavesIndexEntryAlone(t *testing.T) {
+	ctx, endStatement := autocommitStatement(t)
 	h := newDDLHarness()
 	tbl, def := newWriterHarnessTable(t, h, ordersCreateRequest())
-	ins := tbl.Inserter(newTestContext())
+	ins := tbl.Inserter(ctx)
 	old := orderRow(1, "SKU-1", "east", int32(10))
-	require.NoError(t, ins.Insert(newTestContext(), old))
+	require.NoError(t, ins.Insert(ctx, old))
+	require.NoError(t, endStatement())
 
-	upd := tbl.Updater(newTestContext())
+	upd := tbl.Updater(ctx)
 	newRow := orderRow(1, "SKU-1", "east", int32(99))
-	require.NoError(t, upd.Update(newTestContext(), old, newRow))
+	require.NoError(t, upd.Update(ctx, old, newRow))
+	require.NoError(t, endStatement())
 
 	idxVal, err := h.kvSvc.Get(context.Background(), skuIndexKey(t, def, "SKU-1"))
 	require.NoError(t, err)
@@ -267,15 +285,18 @@ func TestRelationalWriter_Update_UnchangedIndexedValue_LeavesIndexEntryAlone(t *
 }
 
 func TestRelationalWriter_Update_PrimaryKeyChange_MovesRowAndAllIndexEntries(t *testing.T) {
+	ctx, endStatement := autocommitStatement(t)
 	h := newDDLHarness()
 	tbl, def := newWriterHarnessTable(t, h, ordersCreateRequest())
-	ins := tbl.Inserter(newTestContext())
+	ins := tbl.Inserter(ctx)
 	old := orderRow(1, "SKU-1", "east", int32(10))
-	require.NoError(t, ins.Insert(newTestContext(), old))
+	require.NoError(t, ins.Insert(ctx, old))
+	require.NoError(t, endStatement())
 
-	upd := tbl.Updater(newTestContext())
+	upd := tbl.Updater(ctx)
 	newRow := orderRow(2, "SKU-1", "east", int32(10))
-	require.NoError(t, upd.Update(newTestContext(), old, newRow))
+	require.NoError(t, upd.Update(ctx, old, newRow))
+	require.NoError(t, endStatement())
 
 	oldRowKey := service.TableDataPrefix(def.Database, def.TableID, 0) + encodeUserKeyGeneric(t, tbl, old)
 	_, err := h.kvSvc.Get(context.Background(), oldRowKey)
@@ -307,16 +328,18 @@ func TestRelationalWriter_Update_PrimaryKeyChange_MovesRowAndAllIndexEntries(t *
 }
 
 func TestRelationalWriter_Update_PrimaryKeyCollision_Rejected(t *testing.T) {
+	ctx, endStatement := autocommitStatement(t)
 	h := newDDLHarness()
 	tbl, def := newWriterHarnessTable(t, h, ordersCreateRequest())
-	ins := tbl.Inserter(newTestContext())
-	require.NoError(t, ins.Insert(newTestContext(), orderRow(1, "SKU-1", "east", int32(10))))
-	require.NoError(t, ins.Insert(newTestContext(), orderRow(2, "SKU-2", "east", int32(20))))
+	ins := tbl.Inserter(ctx)
+	require.NoError(t, ins.Insert(ctx, orderRow(1, "SKU-1", "east", int32(10))))
+	require.NoError(t, ins.Insert(ctx, orderRow(2, "SKU-2", "east", int32(20))))
+	require.NoError(t, endStatement())
 
-	upd := tbl.Updater(newTestContext())
+	upd := tbl.Updater(ctx)
 	old := orderRow(1, "SKU-1", "east", int32(10))
 	newRow := orderRow(2, "SKU-1", "east", int32(10)) // collides with row 2's primary key.
-	err := upd.Update(newTestContext(), old, newRow)
+	err := upd.Update(ctx, old, newRow)
 	require.Error(t, err)
 	assert.True(t, sqle.ErrPrimaryKeyViolation.Is(err) || sqle.ErrUniqueKeyViolation.Is(err))
 
@@ -330,16 +353,18 @@ func TestRelationalWriter_Update_PrimaryKeyCollision_Rejected(t *testing.T) {
 }
 
 func TestRelationalWriter_Update_UniqueIndexCollision_Rejected(t *testing.T) {
+	ctx, endStatement := autocommitStatement(t)
 	h := newDDLHarness()
 	tbl, def := newWriterHarnessTable(t, h, ordersCreateRequest())
-	ins := tbl.Inserter(newTestContext())
-	require.NoError(t, ins.Insert(newTestContext(), orderRow(1, "SKU-1", "east", int32(10))))
-	require.NoError(t, ins.Insert(newTestContext(), orderRow(2, "SKU-2", "east", int32(20))))
+	ins := tbl.Inserter(ctx)
+	require.NoError(t, ins.Insert(ctx, orderRow(1, "SKU-1", "east", int32(10))))
+	require.NoError(t, ins.Insert(ctx, orderRow(2, "SKU-2", "east", int32(20))))
+	require.NoError(t, endStatement())
 
-	upd := tbl.Updater(newTestContext())
+	upd := tbl.Updater(ctx)
 	old := orderRow(2, "SKU-2", "east", int32(20))
 	newRow := orderRow(2, "SKU-1", "east", int32(20)) // collides with row 1's unique sku.
-	err := upd.Update(newTestContext(), old, newRow)
+	err := upd.Update(ctx, old, newRow)
 	require.Error(t, err)
 	assert.True(t, sqle.ErrUniqueKeyViolation.Is(err) || sqle.ErrPrimaryKeyViolation.Is(err))
 
@@ -364,14 +389,17 @@ func TestRelationalWriter_Update_UniqueIndexCollision_Rejected(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRelationalWriter_Delete_RemovesRowAndIndexEntries(t *testing.T) {
+	ctx, endStatement := autocommitStatement(t)
 	h := newDDLHarness()
 	tbl, def := newWriterHarnessTable(t, h, ordersCreateRequest())
-	ins := tbl.Inserter(newTestContext())
+	ins := tbl.Inserter(ctx)
 	row := orderRow(1, "SKU-1", "east", int32(10))
-	require.NoError(t, ins.Insert(newTestContext(), row))
+	require.NoError(t, ins.Insert(ctx, row))
+	require.NoError(t, endStatement())
 
-	del := tbl.Deleter(newTestContext())
-	require.NoError(t, del.Delete(newTestContext(), row))
+	del := tbl.Deleter(ctx)
+	require.NoError(t, del.Delete(ctx, row))
+	require.NoError(t, endStatement())
 
 	rowKey := service.TableDataPrefix(def.Database, def.TableID, 0) + encodeUserKeyGeneric(t, tbl, row)
 	_, err := h.kvSvc.Get(context.Background(), rowKey)
@@ -386,11 +414,13 @@ func TestRelationalWriter_Delete_RemovesRowAndIndexEntries(t *testing.T) {
 }
 
 func TestRelationalWriter_Delete_NonExistentRow_NoOp(t *testing.T) {
+	ctx, endStatement := autocommitStatement(t)
 	h := newDDLHarness()
 	tbl, _ := newWriterHarnessTable(t, h, ordersCreateRequest())
-	del := tbl.Deleter(newTestContext())
-	err := del.Delete(newTestContext(), orderRow(1, "SKU-1", "east", int32(10)))
+	del := tbl.Deleter(ctx)
+	err := del.Delete(ctx, orderRow(1, "SKU-1", "east", int32(10)))
 	assert.NoError(t, err, "deleting an already-absent row must be a benign no-op")
+	assert.NoError(t, endStatement(), "and so is committing it")
 }
 
 // ---------------------------------------------------------------------------
@@ -405,14 +435,16 @@ func TestRelationalWriter_Delete_NonExistentRow_NoOp(t *testing.T) {
 // table itself immediately reads as empty because its resolved Generation
 // (and therefore dataPrefix) has advanced past it.
 func TestRelationalWriter_Truncate_AdvancesGenerationLeavingOldRowsUntouched(t *testing.T) {
+	ctx, endStatement := autocommitStatement(t)
 	h := newDDLHarness()
 	tbl, def := newWriterHarnessTable(t, h, ordersCreateRequest())
-	ins := tbl.Inserter(newTestContext())
-	require.NoError(t, ins.Insert(newTestContext(), orderRow(1, "SKU-1", "east", int32(10))))
-	require.NoError(t, ins.Insert(newTestContext(), orderRow(2, "SKU-2", "east", int32(20))))
+	ins := tbl.Inserter(ctx)
+	require.NoError(t, ins.Insert(ctx, orderRow(1, "SKU-1", "east", int32(10))))
+	require.NoError(t, ins.Insert(ctx, orderRow(2, "SKU-2", "east", int32(20))))
+	require.NoError(t, endStatement())
 
 	oldGeneration := tbl.gen().generation
-	n, err := tbl.Truncate(newTestContext())
+	n, err := tbl.Truncate(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, 0, n, "TRUNCATE reports no affected-row count, matching real MySQL")
 	assert.Equal(t, oldGeneration+1, tbl.gen().generation)

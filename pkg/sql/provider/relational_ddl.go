@@ -151,7 +151,7 @@ func (d *Database) DropTable(ctx *sqle.Context, name string) error {
 		return sqle.ErrLockDeadlock.Wrap(err, err.Error())
 	}
 	if err == nil && def != nil && d.estimates != nil {
-		d.estimates.forget(rowEstimateKey{store: estimateStore{tenant: tenantID, db: d.name}, tableID: def.TableID, generation: def.Generation})
+		d.estimates.forget(rowEstimateKey{store: storeID{tenant: tenantID, db: d.name}, tableID: def.TableID, generation: def.Generation})
 	}
 	return err
 }

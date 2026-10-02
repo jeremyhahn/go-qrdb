@@ -230,6 +230,7 @@ func (o *Owner) renewLease(ctx context.Context, t *Table, l *sessionLease, writt
 		return err
 	}
 	o.withdrawn(written, mode)
+	l.ended.Store(true)
 	l.lost.Store(true)
 	_ = o.session.release(rctx, l, true)
 	o.mu.Lock()
@@ -438,10 +439,11 @@ func (o *Owner) withdrawn(keys []string, mode Mode) {
 // one proposal per thousand. It is idempotent and safe to call from any
 // goroutine.
 //
-// A lease that has ended -- expired, swept, or revoked by the session (its
-// Close, or a failed release) -- took the owner's records with it, so none
-// are deleted; only a record written after the lease ended, which is bound
-// to nothing, still is. If the delete fails, the session revokes the lease
+// A lease known to have ended -- expired, swept, or successfully revoked by
+// the session (its Close, or a failed release) -- took the owner's records
+// with it, so none are deleted; only a record written after the lease
+// ended, which is bound to nothing, still is. A lease the session retired
+// but could not revoke still holds them, and they are deleted here. If the delete fails, the session revokes the lease
 // instead, which removes the records just the same: a record is never left
 // bound to a lease the session goes on renewing.
 //
@@ -455,7 +457,7 @@ func (o *Owner) Release(ctx context.Context) error {
 		return nil
 	}
 	toDelete := unattached
-	if !l.lost.Load() {
+	if !l.ended.Load() {
 		toDelete = append(toDelete, attached...)
 	}
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
@@ -572,6 +574,9 @@ func (o *Owner) lostAtEnqueue(ctx context.Context, t *Table, written []string, k
 	}
 	o.mu.Unlock()
 	if l != nil {
+		// The store reported the lease gone: the records bound to it went
+		// with it.
+		l.ended.Store(true)
 		l.lost.Store(true)
 	}
 	if len(written) > 0 {

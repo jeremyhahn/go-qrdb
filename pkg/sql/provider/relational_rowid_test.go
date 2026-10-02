@@ -295,11 +295,12 @@ func TestRowIDAllocation_IsClusterSafe(t *testing.T) {
 
 	insert := func(tbl *RelationalTable) {
 		w := &relationalWriter{table: tbl}
-		ctx := newTestContext()
 		for i := 0; i < perNode; i++ {
 			// Every row is byte-identical, so nothing but the row id can
 			// possibly distinguish the resulting storage keys.
-			assert.NoError(t, w.Insert(ctx, sqle.Row{"same", uint64(7), nil}))
+			assert.NoError(t, writeStatement(t, func(ctx *sqle.Context) error {
+				return w.Insert(ctx, sqle.Row{"same", uint64(7), nil})
+			}))
 		}
 	}
 
@@ -336,7 +337,7 @@ func TestRowIDAllocation_UsesTheReplicatedSequence(t *testing.T) {
 	h := newDDLHarness()
 	tbl := newRowIDTable(t, h, "seqadvance")
 	w := &relationalWriter{table: tbl}
-	ctx := newTestContext()
+	ctx, endStatement := autocommitStatement(t)
 
 	before, err := h.seqSvc.Peek(context.Background(), "shop", tbl.rowIDSequenceName())
 	require.NoError(t, err)
@@ -345,6 +346,7 @@ func TestRowIDAllocation_UsesTheReplicatedSequence(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		require.NoError(t, w.Insert(ctx, sqle.Row{"a", uint64(1), nil}))
 	}
+	require.NoError(t, endStatement())
 
 	after, err := h.seqSvc.Peek(context.Background(), "shop", tbl.rowIDSequenceName())
 	require.NoError(t, err)

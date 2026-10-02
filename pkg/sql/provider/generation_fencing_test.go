@@ -81,8 +81,9 @@ func TestGenerationFencing_Autocommit_InsertRejectedWhenTruncateRaces(t *testing
 	_, err := h.tableSvc.TruncateTable(context.Background(), def.Database, def.Name, true)
 	require.NoError(t, err)
 
-	ins := staleTbl.Inserter(newTestContext())
-	insErr := ins.Insert(newTestContext(), orderRow(1, "SKU-1", "east", int32(10)))
+	insErr := writeStatement(t, func(ctx *sqle.Context) error {
+		return staleTbl.Inserter(ctx).Insert(ctx, orderRow(1, "SKU-1", "east", int32(10)))
+	})
 
 	stale := requireLockDeadlockStale(t, insErr)
 	assert.Equal(t, uint64(0), stale.Expected)
@@ -102,7 +103,7 @@ func TestGenerationFencing_Autocommit_UpdateRejectedWhenTruncateRaces(t *testing
 	h := newDDLHarness()
 	tbl, def := newWriterHarnessTable(t, h, ordersCreateRequest())
 	old := orderRow(1, "SKU-1", "east", int32(10))
-	require.NoError(t, tbl.Inserter(newTestContext()).Insert(newTestContext(), old))
+	require.NoError(t, writeStatement(t, func(ctx *sqle.Context) error { return tbl.Inserter(ctx).Insert(ctx, old) }))
 
 	// Re-resolve to get the handle an UPDATE statement would plan against
 	// (still generation 0, row present).
@@ -115,9 +116,8 @@ func TestGenerationFencing_Autocommit_UpdateRejectedWhenTruncateRaces(t *testing
 	_, err = h.tableSvc.TruncateTable(context.Background(), def.Database, def.Name, true)
 	require.NoError(t, err)
 
-	upd := staleTbl.Updater(newTestContext())
 	newRow := orderRow(1, "SKU-1", "east", int32(99))
-	updErr := upd.Update(newTestContext(), old, newRow)
+	updErr := writeStatement(t, func(ctx *sqle.Context) error { return staleTbl.Updater(ctx).Update(ctx, old, newRow) })
 
 	stale := requireLockDeadlockStale(t, updErr)
 	assert.Equal(t, uint64(0), stale.Expected)
@@ -245,12 +245,16 @@ func TestGenerationFencing_BulkInsert_NoPerRowConsensusRead(t *testing.T) {
 		WithTableService(tableSvcOverKV), WithTransactionService(h.txnSvc), WithSequenceService(h.seqSvc))
 	require.NoError(t, err)
 
-	ins := tbl.Inserter(newTestContext())
 	const rowCount = 200
-	for i := 0; i < rowCount; i++ {
-		row := orderRow(uint64(i), nil, nil, nil)
-		require.NoError(t, ins.Insert(newTestContext(), row))
-	}
+	require.NoError(t, writeStatement(t, func(ctx *sqle.Context) error {
+		ins := tbl.Inserter(ctx)
+		for i := 0; i < rowCount; i++ {
+			if err := ins.Insert(ctx, orderRow(uint64(i), nil, nil, nil)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}))
 
 	assert.Equal(t, 1, spy.gets,
 		"resolving the table costs exactly the one per-STATEMENT generation read GetTable already makes; "+
@@ -446,10 +450,15 @@ func resolvedOrders(t *testing.T, n int) (*ddlHarness, *RelationalTable, *counti
 	t.Helper()
 	h := newDDLHarness()
 	writer, def := newWriterHarnessTable(t, h, ordersCreateRequest())
-	ins := writer.Inserter(newTestContext())
-	for i := range n {
-		require.NoError(t, ins.Insert(newTestContext(), orderRow(uint64(i+1), nil, nil, nil)))
-	}
+	require.NoError(t, writeStatement(t, func(ctx *sqle.Context) error {
+		ins := writer.Inserter(ctx)
+		for i := range n {
+			if err := ins.Insert(ctx, orderRow(uint64(i+1), nil, nil, nil)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}))
 
 	spy := &countingGenerationKV{MVCCKVServicer: h.mvccSvc, genKey: service.TableGenerationKey(def.Database, def.TableID)}
 	// A TableService over the spy, so the re-proof's own generation read
@@ -762,7 +771,9 @@ func TestDefinitionFence_InsertResolvedBeforeCreateIndexIsRefused(t *testing.T) 
 		Index: service.TableIndex{Name: "idx_qty", Columns: []service.IndexCol{{Name: "qty"}}},
 	}))
 
-	err = stale.Inserter(newTestContext()).Insert(newTestContext(), orderRow(1, "SKU-1", "east", int32(5)))
+	err = writeStatement(t, func(ctx *sqle.Context) error {
+		return stale.Inserter(ctx).Insert(ctx, orderRow(1, "SKU-1", "east", int32(5)))
+	})
 	requireDefinitionStale(t, err)
 	rows, err := h.kvSvc.Scan(context.Background(), service.TableDataPrefix(def.Database, def.TableID, 0))
 	require.NoError(t, err)
@@ -776,7 +787,9 @@ func TestDefinitionFence_InsertResolvedBeforeCreateIndexIsRefused(t *testing.T) 
 func TestDefinitionFence_UpdateAndDeleteResolvedBeforeDDLAreRefused(t *testing.T) {
 	h := newDDLHarness()
 	writer, def := newWriterHarnessTable(t, h, ordersCreateRequest())
-	require.NoError(t, writer.Inserter(newTestContext()).Insert(newTestContext(), orderRow(1, "SKU-1", "east", int32(5))))
+	require.NoError(t, writeStatement(t, func(ctx *sqle.Context) error {
+		return writer.Inserter(ctx).Insert(ctx, orderRow(1, "SKU-1", "east", int32(5)))
+	}))
 	resolved, err := h.tableSvc.GetTable(context.Background(), def.Database, def.Name)
 	require.NoError(t, err)
 	stale, err := NewRelationalTable(resolved, h.kvSvc, h.mvccSvc,
@@ -785,10 +798,13 @@ func TestDefinitionFence_UpdateAndDeleteResolvedBeforeDDLAreRefused(t *testing.T
 
 	require.NoError(t, h.tableSvc.DropIndex(context.Background(), def.Database, def.Name, "idx_warehouse"))
 
-	err = stale.Updater(newTestContext()).Update(newTestContext(),
-		orderRow(1, "SKU-1", "east", int32(5)), orderRow(1, "SKU-1", "west", int32(5)))
+	err = writeStatement(t, func(ctx *sqle.Context) error {
+		return stale.Updater(ctx).Update(ctx, orderRow(1, "SKU-1", "east", int32(5)), orderRow(1, "SKU-1", "west", int32(5)))
+	})
 	requireDefinitionStale(t, err)
-	err = stale.Deleter(newTestContext()).Delete(newTestContext(), orderRow(1, "SKU-1", "east", int32(5)))
+	err = writeStatement(t, func(ctx *sqle.Context) error {
+		return stale.Deleter(ctx).Delete(ctx, orderRow(1, "SKU-1", "east", int32(5)))
+	})
 	requireDefinitionStale(t, err)
 }
 

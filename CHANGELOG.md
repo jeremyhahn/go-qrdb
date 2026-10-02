@@ -40,6 +40,10 @@ are not reconstructed here — their history is in the git log.
 
 ### Removed
 
+- **The row-by-row relational write path.** Every relational write is part
+  of a transaction (explicit, or the autocommit statement's implicit one).
+  A write on a `*sql.Context` without a QRDB session -- which no SQL surface
+  creates -- is refused with `provider.TransactionSessionRequiredError`.
 - **BREAKING (Go API): `rowlock.NewOwner`.** An owner is made from the
   session whose lease it uses, `rowlock.NewSession().NewOwner()`; nothing
   outside the package's own tests used an owner with a private lease.
@@ -63,7 +67,9 @@ are not reconstructed here — their history is in the git log.
   record on the connection's lease; it now deletes it and fails with
   `OwnerReleasedError`. A lease grant no longer holds the session's lock, and
   of two concurrent grants the loser is revoked. A connection's end revokes
-  its lease first and deletes no record one by one.
+  its lease first and deletes no record one by one -- unless that revoke
+  fails, in which case each transaction deletes its own records rather than
+  leave them until the lease expires.
 
 ## [0.27.0-alpha] - 2026-10-02
 

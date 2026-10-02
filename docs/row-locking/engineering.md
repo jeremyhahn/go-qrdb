@@ -215,10 +215,13 @@ lease  = the owning session's lease in this store
    ⌈N / 1,000⌉ proposals. If that delete fails, the session revokes the lease
    instead, which deletes every record bound to it, and grants a fresh lease
    for its next transaction: no record outlives its owner by more than the
-   lease TTL. An owner whose lease has already ended deletes nothing — the
-   lease took its records — except a record written after the lease ended,
-   which is bound to nothing. `SessionEnd` therefore revokes the session's
-   lease first: one proposal ends a session however many locks it held.
+   lease TTL. An owner whose lease is known to have ended — expired, swept,
+   or revoked successfully — deletes nothing, since the lease took its
+   records, except a record written after the lease ended, which is bound to
+   nothing. `SessionEnd` therefore revokes the session's lease first: one
+   proposal ends a session however many locks it held. If that revoke fails,
+   the lease is not known to have ended, and each owner deletes its own
+   records instead of leaving them until the lease expires.
 6. **Enqueue is one proposal per batch.** A statement's locks on many keys are
    written in as few transactions as the per-proposal ceiling allows, never one
    per key.

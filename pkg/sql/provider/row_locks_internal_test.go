@@ -169,40 +169,6 @@ func TestForUpdate_LeaseOrWatchUnavailable_IsReported(t *testing.T) {
 	}
 }
 
-func TestRowGuardFailed_ComparesTheLiveRow(t *testing.T) {
-	h := newLockHarness(t)
-	setupAccounts(t, h)
-	tbl, ctx := lockTestTable(t, h, h.conn(t), "accounts")
-	key := tbl.gen().dataPrefix + "missing"
-
-	moved, err := tbl.rowGuardFailed(ctx, absenceCompare(key))
-	require.NoError(t, err)
-	assert.False(t, moved, "an absent row that was absent has not moved")
-
-	moved, err = tbl.rowGuardFailed(ctx, modRevisionCompare(key, 5))
-	require.NoError(t, err)
-	assert.True(t, moved, "a present row that is gone has moved")
-
-	_, ctx2 := lockTestTable(t, h, h.conn(t), "accounts")
-	keys, _, err := tbl.primaryKeysFromRanges(ctx2, nil)
-	require.NoError(t, err)
-	_ = keys
-	kvs, _, _, err := h.mvcc.Range(ctx, []byte(tbl.gen().dataPrefix), prefixEnd([]byte(tbl.gen().dataPrefix)))
-	require.NoError(t, err)
-	require.NotEmpty(t, kvs)
-	live := string(kvs[0].Key)
-
-	moved, err = tbl.rowGuardFailed(ctx, absenceCompare(live))
-	require.NoError(t, err)
-	assert.True(t, moved, "a row that appeared has moved")
-	moved, err = tbl.rowGuardFailed(ctx, modRevisionCompare(live, kvs[0].ModRevision))
-	require.NoError(t, err)
-	assert.False(t, moved)
-	moved, err = tbl.rowGuardFailed(ctx, modRevisionCompare(live, kvs[0].ModRevision+100))
-	require.NoError(t, err)
-	assert.True(t, moved)
-}
-
 func TestLockRowForUpdate_RefusesARowThatChangedSinceItWasRead(t *testing.T) {
 	h := newLockHarness(t)
 	setupAccounts(t, h)

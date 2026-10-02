@@ -239,6 +239,24 @@ func TestSession_ConcurrentFirstGrantsKeepOneLease(t *testing.T) {
 	assert.True(t, leaseAlive(t, s, a.lease.id))
 }
 
+func TestSession_FailedRevokeAtCloseFallsBackToDeletingTheRecords(t *testing.T) {
+	s := newStack(t)
+	deps := s.deps
+	deps.Lease = failingRevoke{s.deps.Lease}
+	tbl, err := New(deps, "acme/shop")
+	require.NoError(t, err)
+	sess := NewSession()
+
+	o := sess.NewOwner()
+	require.NoError(t, o.Acquire(context.Background(), tbl, []string{keyA}, ModeExclusive, 0))
+	var injected *injectedError
+	require.ErrorAs(t, sess.Close(context.Background()), &injected)
+	require.NoError(t, o.Release(context.Background()))
+	assert.Empty(t, queueOwners(t, tbl, keyA),
+		"a lease whose revoke failed still holds the records; the owner deletes them rather than strand them until the TTL")
+	_ = s.deps.Lease.Revoke(context.Background(), o.lease.id)
+}
+
 func TestSession_EndingSessionRevokesOnceAndDeletesNothing(t *testing.T) {
 	s := newStack(t)
 	deps := s.deps
