@@ -58,8 +58,21 @@ import (
 // principal's own backoff holds it far below the cap (about 15 failures in a
 // window), so reaching it takes several principals guessing together: that is
 // the residual, by design, because the alternative is unbounded distributed
-// guessing. The number of principals tracked per key is capped at
-// SOPINMaxTrackedPrincipals; principals beyond it share one overflow counter.
+// guessing.
+//
+// A principal that has presented the correct SO PIN for a key joins that key's
+// known-good set (at most SOPINMaxKnownGood, the most recent kept), which a
+// SOPINKnownGoodStore persists across restarts. A known-good principal is
+// exempt from the aggregate cap -- other principals' guesses never refuse the
+// Security Officer -- but not from its own counter's backoff, and its
+// failures do not count toward the cap. Everyone else stays bounded by it.
+//
+// The number of principals tracked per key is capped at
+// SOPINMaxTrackedPrincipals. When the cap is reached, counters whose lockout
+// has expired and whose last failure is older than SOPINStaleAfter are
+// evicted first, so attackers' aged-out entries cannot push new legitimate
+// principals onto the one overflow counter that principals beyond the cap
+// share.
 //
 // Recovery is to wait the backoff out (RetryAfter) and present the right PIN;
 // an officer locked out anonymously recovers at once by authenticating.
@@ -84,7 +97,34 @@ const (
 	// SOPINMaxTrackedPrincipals caps the per-principal counters kept for one
 	// key; further principals share one overflow counter.
 	SOPINMaxTrackedPrincipals = 4096
+	// SOPINMaxKnownGood caps a key's known-good set; the most recent
+	// principals to present the correct SO PIN are kept.
+	SOPINMaxKnownGood = 8
+	// SOPINStaleAfter is how long after its last failure an unlocked
+	// per-principal counter may be evicted to make room for another
+	// principal: the longer of the aggregate window and the backoff cap, so
+	// an eviction can never shorten a lockout or reopen a window.
+	SOPINStaleAfter = max(SOPINAggregateWindow, SOPINMaxBackoff)
 )
+
+// SOPINKnownGoodStore persists, per key, the principals that have presented
+// the correct SO PIN, so their exemption from the aggregate cap survives a
+// restart. A lockout without one keeps the set in memory only.
+type SOPINKnownGoodStore interface {
+	// LoadKnownGood returns key's persisted known-good principals, oldest
+	// first; none is not an error.
+	LoadKnownGood(key string) ([]string, error)
+	// SaveKnownGood replaces key's persisted known-good principals.
+	SaveKnownGood(key string, principals []string) error
+}
+
+// SOPINLockoutOption configures a SOPINLockout.
+type SOPINLockoutOption func(*SOPINLockout)
+
+// WithKnownGoodStore persists the known-good sets in store.
+func WithKnownGoodStore(store SOPINKnownGoodStore) SOPINLockoutOption {
+	return func(l *SOPINLockout) { l.knownGood = store }
+}
 
 // overflowPrincipal is the counter principals beyond SOPINMaxTrackedPrincipals
 // share. It cannot collide with a real principal, which always carries an
@@ -133,6 +173,13 @@ func CallerPrincipal(ctx context.Context) string {
 type soPINCounter struct {
 	failures    int
 	lockedUntil time.Time
+	lastFailure time.Time
+}
+
+// stale reports whether c may be evicted at now: unlocked, and failing last
+// longer than SOPINStaleAfter ago.
+func (c *soPINCounter) stale(now time.Time) bool {
+	return !now.Before(c.lockedUntil) && now.Sub(c.lastFailure) >= SOPINStaleAfter
 }
 
 // locked reports how long c stays locked at now, and whether it is.
@@ -146,6 +193,7 @@ func (c *soPINCounter) locked(now time.Time) (time.Duration, bool) {
 // fail counts one wrong PIN at now.
 func (c *soPINCounter) fail(now time.Time) {
 	c.failures++
+	c.lastFailure = now
 	if c.failures >= SOPINFreeFailures {
 		c.lockedUntil = now.Add(soPINBackoff(c.failures - SOPINFreeFailures))
 	}
@@ -180,11 +228,44 @@ type soPINKeyState struct {
 	anonymous  soPINCounter
 	principals map[string]*soPINCounter
 	aggregate  soPINAggregate
+	// knownGood is the key's known-good principals, oldest first, and
+	// knownGoodLoaded whether it has been read from the store yet.
+	knownGood       []string
+	knownGoodLoaded bool
 }
 
 // empty reports whether the state holds nothing worth keeping.
 func (k *soPINKeyState) empty() bool {
-	return k.anonymous == (soPINCounter{}) && len(k.principals) == 0 && k.aggregate.failures == 0
+	return k.anonymous == (soPINCounter{}) && len(k.principals) == 0 && k.aggregate.failures == 0 && len(k.knownGood) == 0
+}
+
+// isKnownGood reports whether principal is in k's known-good set.
+func (k *soPINKeyState) isKnownGood(principal string) bool {
+	for _, p := range k.knownGood {
+		if p == principal {
+			return true
+		}
+	}
+	return false
+}
+
+// addKnownGood records principal as known-good, keeping the most recent
+// SOPINMaxKnownGood, and reports whether the set changed.
+func (k *soPINKeyState) addKnownGood(principal string) bool {
+	for i, p := range k.knownGood {
+		if p == principal {
+			if i == len(k.knownGood)-1 {
+				return false
+			}
+			k.knownGood = append(append(k.knownGood[:i:i], k.knownGood[i+1:]...), principal)
+			return true
+		}
+	}
+	k.knownGood = append(k.knownGood, principal)
+	if len(k.knownGood) > SOPINMaxKnownGood {
+		k.knownGood = append([]string(nil), k.knownGood[len(k.knownGood)-SOPINMaxKnownGood:]...)
+	}
+	return true
 }
 
 // SOPINLockout counts failed SO PIN checks per key, in the counters described
@@ -193,23 +274,62 @@ func (k *soPINKeyState) empty() bool {
 // than guesses fired in turn. The zero value is not usable; use
 // NewSOPINLockout.
 type SOPINLockout struct {
-	mu   sync.Mutex
-	keys map[string]*soPINKeyState
-	now  func() time.Time
+	mu        sync.Mutex
+	keys      map[string]*soPINKeyState
+	now       func() time.Time
+	knownGood SOPINKnownGoodStore
 }
 
 // NewSOPINLockout returns an empty lockout. clock is the time source; nil
 // means time.Now.
-func NewSOPINLockout(clock func() time.Time) *SOPINLockout {
+func NewSOPINLockout(clock func() time.Time, opts ...SOPINLockoutOption) *SOPINLockout {
 	if clock == nil {
 		clock = time.Now
 	}
-	return &SOPINLockout{keys: make(map[string]*soPINKeyState), now: clock}
+	l := &SOPINLockout{keys: make(map[string]*soPINKeyState), now: clock}
+	for _, opt := range opts {
+		opt(l)
+	}
+	return l
 }
 
-// principalCounter returns principal's counter in k, creating it -- or, past
-// SOPINMaxTrackedPrincipals, the shared overflow counter -- when asked to.
-func (k *soPINKeyState) principalCounter(principal string, create bool) *soPINCounter {
+// loadKnownGood reads key's persisted known-good set into state once. A read
+// that fails leaves the set unloaded, to be tried again on the next check;
+// meanwhile the principal is held to the cap like any other.
+func (l *SOPINLockout) loadKnownGood(key string, state *soPINKeyState) {
+	if state.knownGoodLoaded {
+		return
+	}
+	if l.knownGood == nil {
+		state.knownGoodLoaded = true
+		return
+	}
+	principals, err := l.knownGood.LoadKnownGood(key)
+	if err != nil {
+		return
+	}
+	state.knownGood = principals
+	if len(state.knownGood) > SOPINMaxKnownGood {
+		state.knownGood = state.knownGood[len(state.knownGood)-SOPINMaxKnownGood:]
+	}
+	state.knownGoodLoaded = true
+}
+
+// rememberKnownGood records principal as known-good for key and persists the
+// set when it changed. A persist that fails keeps the exemption in memory: a
+// successful SO PIN check is never turned into a refusal by its bookkeeping.
+func (l *SOPINLockout) rememberKnownGood(key, principal string, state *soPINKeyState) {
+	if !state.addKnownGood(principal) || l.knownGood == nil {
+		return
+	}
+	_ = l.knownGood.SaveKnownGood(key, append([]string(nil), state.knownGood...))
+}
+
+// principalCounter returns principal's counter in k, creating it when asked
+// to. At SOPINMaxTrackedPrincipals it first evicts stale counters (see
+// soPINCounter.stale), and only when none is stale falls back to the shared
+// overflow counter.
+func (k *soPINKeyState) principalCounter(principal string, create bool, now time.Time) *soPINCounter {
 	if c, ok := k.principals[principal]; ok {
 		return c
 	}
@@ -218,6 +338,13 @@ func (k *soPINKeyState) principalCounter(principal string, create bool) *soPINCo
 	}
 	if k.principals == nil {
 		k.principals = make(map[string]*soPINCounter)
+	}
+	if len(k.principals) >= SOPINMaxTrackedPrincipals {
+		for name, c := range k.principals {
+			if c.stale(now) {
+				delete(k.principals, name)
+			}
+		}
 	}
 	if len(k.principals) >= SOPINMaxTrackedPrincipals {
 		principal = overflowPrincipal
@@ -247,9 +374,12 @@ func (l *SOPINLockout) Check(key, principal string, verify func() error, mismatc
 	}
 	now := l.now()
 	c := &state.anonymous
+	capped := false
 	if principal != "" {
-		c = state.principalCounter(principal, true)
-		if wait, held := state.aggregate.locked(now); held {
+		l.loadKnownGood(key, state)
+		capped = !state.isKnownGood(principal)
+		c = state.principalCounter(principal, true, now)
+		if wait, held := state.aggregate.locked(now); capped && held {
 			return &SOPINLockedError{RetryAfter: wait}
 		}
 	}
@@ -266,6 +396,7 @@ func (l *SOPINLockout) Check(key, principal string, verify func() error, mismatc
 		}
 		if principal != "" {
 			state.aggregate = soPINAggregate{}
+			l.rememberKnownGood(key, principal, state)
 		}
 		if state.empty() {
 			delete(l.keys, key)
@@ -276,7 +407,7 @@ func (l *SOPINLockout) Check(key, principal string, verify func() error, mismatc
 		return err
 	}
 	c.fail(now)
-	if principal != "" {
+	if capped {
 		state.aggregate.fail(now)
 	}
 	return err
@@ -295,10 +426,10 @@ func (l *SOPINLockout) Status(key, principal string) (failures int, lockedUntil 
 	now := l.now()
 	c := &state.anonymous
 	if principal != "" {
-		if wait, held := state.aggregate.locked(now); held {
+		if wait, held := state.aggregate.locked(now); held && !state.isKnownGood(principal) {
 			lockedUntil = now.Add(wait)
 		}
-		if c = state.principalCounter(principal, false); c == nil {
+		if c = state.principalCounter(principal, false, now); c == nil {
 			return 0, lockedUntil
 		}
 	}

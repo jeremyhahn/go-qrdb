@@ -151,7 +151,7 @@ func NewSOAuthenticator(store kvstore.KVStore, auditLogger audit.AuditLogger, lo
 	if logger == nil {
 		return nil, ErrNilLogger
 	}
-	a := &SOAuthenticator{store: store, audit: auditLogger, logger: logger, lockout: NewSOPINLockout(nil)}
+	a := &SOAuthenticator{store: store, audit: auditLogger, logger: logger, lockout: NewSOPINLockout(nil, WithKnownGoodStore(soKnownGoodStore{store: store}))}
 	for _, opt := range opts {
 		opt(a)
 	}

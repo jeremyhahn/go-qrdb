@@ -202,7 +202,7 @@ func TestSOPINLockout_PrincipalsBeyondTheCapShareOverflow(t *testing.T) {
 	f := newLockoutFixture()
 	state := &soPINKeyState{}
 	for i := 0; i < SOPINMaxTrackedPrincipals; i++ {
-		state.principalCounter("cert:"+string(rune(i+0x100)), true)
+		state.principalCounter("cert:"+string(rune(i+0x100)), true, f.now).fail(f.now)
 	}
 	f.l.keys["node"] = state
 	for i := 0; i < SOPINFreeFailures; i++ {
@@ -219,5 +219,155 @@ func TestSOPINLockout_PrincipalsBeyondTheCapShareOverflow(t *testing.T) {
 	}
 	if failures, _ := f.l.Status("node", "cert:never-seen"); failures != 0 {
 		t.Fatalf("an untracked principal's status = %d failures", failures)
+	}
+}
+
+// memKnownGood is an in-memory SOPINKnownGoodStore that counts its writes.
+type memKnownGood struct {
+	sets  map[string][]string
+	saves int
+}
+
+func (m *memKnownGood) LoadKnownGood(key string) ([]string, error) {
+	return append([]string(nil), m.sets[key]...), nil
+}
+
+func (m *memKnownGood) SaveKnownGood(key string, principals []string) error {
+	if m.sets == nil {
+		m.sets = map[string][]string{}
+	}
+	m.sets[key] = principals
+	m.saves++
+	return nil
+}
+
+// verifiedCertPrincipal is the principal of a TLS-verified leaf with raw bytes.
+func verifiedCertPrincipal(raw string) string {
+	return CallerPrincipal(WithTLSState(context.Background(), &tls.ConnectionState{
+		VerifiedChains: [][]*x509.Certificate{{{Raw: []byte(raw)}}},
+	}))
+}
+
+// TestSOPINLockout_KnownGoodSOPassesTheHeldCap: five verified certificates
+// guessing together hold the aggregate cap, and an SO that has presented the
+// correct PIN before still gets through with it -- while a principal never
+// seen with the right PIN is refused by the cap, as is every other guesser.
+func TestSOPINLockout_KnownGoodSOPassesTheHeldCap(t *testing.T) {
+	f := newLockoutFixture()
+	so := CallerPrincipal(WithIdentity(context.Background(), &Identity{Subject: "officer", TenantID: "system"}))
+	if err := f.l.Check("node", so, f.right, f.isWrong); err != nil {
+		t.Fatalf("the SO's first check = %v", err)
+	}
+	guessers := []string{"leaf-1", "leaf-2", "leaf-3", "leaf-4", "leaf-5"}
+	held := false
+	for !held {
+		progress := false
+		for _, g := range guessers {
+			err := f.l.Check("node", verifiedCertPrincipal(g), f.wrong, f.isWrong)
+			var locked *SOPINLockedError
+			if errors.As(err, &locked) {
+				continue
+			}
+			progress = true
+		}
+		if _, held = f.l.keys["node"].aggregate.locked(f.now); held {
+			break
+		}
+		if !progress {
+			f.now = f.now.Add(SOPINBaseBackoff)
+		}
+	}
+	var locked *SOPINLockedError
+	if err := f.l.Check("node", verifiedCertPrincipal("newcomer"), f.right, f.isWrong); !errors.As(err, &locked) {
+		t.Fatalf("a principal never known good, under the held cap = %v, want refused", err)
+	}
+	if err := f.l.Check("node", so, f.right, f.isWrong); err != nil {
+		t.Fatalf("the known-good SO under the held cap = %v, want admitted", err)
+	}
+}
+
+// TestSOPINLockout_KnownGoodIsPersistedAndStillBacksOff: the known-good set
+// survives a new lockout over the same store, and a known-good principal's
+// own wrong PINs still lock it out (and do not count toward the cap).
+func TestSOPINLockout_KnownGoodIsPersistedAndStillBacksOff(t *testing.T) {
+	store := &memKnownGood{}
+	f := newLockoutFixture()
+	f.l = NewSOPINLockout(func() time.Time { return f.now }, WithKnownGoodStore(store))
+	so := "id:system/officer"
+	if err := f.l.Check("node", so, f.right, f.isWrong); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.l.Check("node", so, f.right, f.isWrong); err != nil {
+		t.Fatal(err)
+	}
+	if store.saves != 1 || len(store.sets["node"]) != 1 {
+		t.Fatalf("store = %+v after two successes, want one save of one principal", store)
+	}
+
+	restarted := NewSOPINLockout(func() time.Time { return f.now }, WithKnownGoodStore(store))
+	restarted.keys["node"] = &soPINKeyState{aggregate: soPINAggregate{windowStart: f.now, failures: SOPINAggregateFailures}}
+	if err := restarted.Check("node", so, f.right, f.isWrong); err != nil {
+		t.Fatalf("after a restart under a held cap, the persisted SO = %v, want admitted", err)
+	}
+	for i := 0; i < SOPINFreeFailures; i++ {
+		_ = restarted.Check("node", so, f.wrong, f.isWrong)
+	}
+	var locked *SOPINLockedError
+	if err := restarted.Check("node", so, f.right, f.isWrong); !errors.As(err, &locked) {
+		t.Fatalf("the known-good SO after its own free failures = %v, want its own backoff", err)
+	}
+	if got := restarted.keys["node"].aggregate.failures; got != 0 {
+		t.Fatalf("a known-good principal's failures counted toward the cap: %d", got)
+	}
+}
+
+// TestSOPINLockout_KnownGoodSetIsBounded keeps the most recent
+// SOPINMaxKnownGood principals.
+func TestSOPINLockout_KnownGoodSetIsBounded(t *testing.T) {
+	k := &soPINKeyState{}
+	for i := 0; i < SOPINMaxKnownGood+3; i++ {
+		k.addKnownGood("id:t/" + string(rune('a'+i)))
+	}
+	if len(k.knownGood) != SOPINMaxKnownGood || k.isKnownGood("id:t/a") || !k.isKnownGood("id:t/"+string(rune('a'+SOPINMaxKnownGood+2))) {
+		t.Fatalf("known-good = %v", k.knownGood)
+	}
+	if k.addKnownGood(k.knownGood[len(k.knownGood)-1]) {
+		t.Fatal("re-adding the most recent principal changed the set")
+	}
+	first := k.knownGood[0]
+	if !k.addKnownGood(first) || k.knownGood[len(k.knownGood)-1] != first {
+		t.Fatalf("re-adding an older principal did not make it most recent: %v", k.knownGood)
+	}
+}
+
+// TestSOPINLockout_StalePrincipalsAreEvictedBeforeOverflow: once attackers'
+// counters at the tracking cap have aged out (unlocked, last failure older
+// than SOPINStaleAfter), a new legitimate principal gets its own counter
+// rather than the shared overflow one -- while fresh entries are not evicted.
+func TestSOPINLockout_StalePrincipalsAreEvictedBeforeOverflow(t *testing.T) {
+	f := newLockoutFixture()
+	state := &soPINKeyState{}
+	for i := 0; i < SOPINMaxTrackedPrincipals; i++ {
+		state.principalCounter("cert:attacker-"+string(rune(i+0x100)), true, f.now).fail(f.now)
+	}
+	f.l.keys["node"] = state
+
+	fresh := state.principalCounter("cert:legit-early", true, f.now)
+	if fresh != state.principals[overflowPrincipal] {
+		t.Fatal("with every tracked counter fresh, a new principal must share the overflow counter")
+	}
+
+	f.now = f.now.Add(SOPINStaleAfter)
+	if err := f.l.Check("node", "cert:legit", f.right, f.isWrong); err != nil {
+		t.Fatalf("the new principal's check = %v", err)
+	}
+	for i := 0; i < SOPINFreeFailures; i++ {
+		_ = f.l.Check("node", "cert:legit-2", f.wrong, f.isWrong)
+	}
+	if _, ok := state.principals["cert:legit-2"]; !ok {
+		t.Fatal("a new principal was pushed to overflow although the old entries had aged out")
+	}
+	if len(state.principals) >= SOPINMaxTrackedPrincipals {
+		t.Fatalf("stale entries were not evicted: %d tracked", len(state.principals))
 	}
 }

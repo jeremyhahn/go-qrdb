@@ -204,8 +204,13 @@ are not reconstructed here — their history is in the git log.
   15-minute window and at most 4096 tracked principals per key. Neither
   anonymous wrong PINs nor a tenant user's or share holder's certificate can
   lock out the officer's rekey or revocation; several principals guessing
-  together can engage the cap for one window, which is the documented
-  residual. The counting is one implementation, `auth.SOPINLockout`, behind
+  together can engage the cap for one window, but never against a known-good
+  principal -- one that has presented the correct SO PIN before, persisted
+  (`auth.SOPINKnownGoodStore`; the software PIN backend and the tenant SO
+  authenticator implement it) so the exemption survives a restart. Stale
+  per-principal counters are evicted before new principals fall back to the
+  overflow counter, and `pin.NewLockoutBackend` returns one decoration per raw
+  backend, so consumers of one backend share one budget. The counting is one implementation, `auth.SOPINLockout`, behind
   both the node SO PIN (`pin.NewLockoutBackend`) and each tenant's SO PIN
   (`auth.SOAuthenticator.VerifySOPIN`, previously unlimited); a locked
   tenant PIN answers 429 with its retry delay. Every transport's

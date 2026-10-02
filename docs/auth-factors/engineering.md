@@ -120,7 +120,11 @@ Storage keys: `so-pin` and `user-pin`, each a JSON-encoded `PINRecord`.
   failures per 15-minute window. No caller can lock another out: neither
   anonymous guesses nor a tenant user's certificate lock out the officer;
   only several principals guessing together can engage the cap, for one
-  window. `pin.ForCaller(ctx, backend)` selects the counter; the
+  window, and never against a known-good principal (one that has presented
+  the correct PIN before, persisted through `auth.SOPINKnownGoodStore` --
+  `SoftwareBackend` implements it). Stale per-principal counters are evicted
+  before new principals fall back to the shared overflow counter, and
+  `NewLockoutBackend` keeps one decoration per raw backend. `pin.ForCaller(ctx, backend)` selects the counter; the
   helpers `RequireSOPIN`, `RequireProvisionedSOPIN` and `Provision` take a
   context and apply it, and a backend reached without one is held to the
   anonymous counter. The counting itself is `auth.SOPINLockout`, which also

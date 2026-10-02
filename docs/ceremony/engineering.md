@@ -131,10 +131,22 @@ the last initial holder claims.
     authenticated check of the key -- the officer's included -- is refused
     until the window ends. One principal's own backoff holds it to about 15
     failures in a window, so the cap is reached only by several principals
-    guessing together. That is the residual, by design: a handful of
-    colluding certificate holders can delay the officer for one window, and
-    without the cap they could guess without bound. At most 4096 principals
-    are tracked per key; any beyond that share one overflow counter.
+    guessing together, and it never refuses a **known-good** principal: one
+    that has presented the correct SO PIN before. Up to 8 known-good
+    principals are kept per key, persisted with the PIN backend (the software
+    backend's storage) and, for a tenant SO PIN, in the authenticator's store,
+    so the exemption survives a restart. A known-good principal still has its
+    own backoff, and its failures do not count toward the cap. The residual is
+    therefore narrower: colluding certificate holders can delay, for one
+    window, only an officer that has never yet presented the correct PIN from
+    that principal. At most 4096 principals are tracked per key; when that is
+    reached, counters whose lockout has expired and whose last failure is
+    older than 15 minutes are evicted first, and only then do new principals
+    share one overflow counter.
+  - **One decoration per backend.** `pin.NewLockoutBackend` returns the same
+    decoration every time it is given the same raw backend, so the ceremony
+    and each transport that installs the lockout on one backend share one set
+    of counters and one budget of free failures.
   - It is installed once, where the node's backend is chosen:
     `lifecycle.NewSealStorePINBackend` returns the seal-store backend already
     decorated, and `server.WithPINBackend` decorates an injected backend when
