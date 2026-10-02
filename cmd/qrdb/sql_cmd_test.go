@@ -54,6 +54,20 @@ func (m *stubDatabaseService) Get(name string) (*database.DatabaseInfo, error) {
 	return m.getFn(name)
 }
 
+// GetForTenant is the owner-checked read the SQL query service makes, held
+// to the same rule as the real DatabaseService.GetForTenant: a database
+// another tenant owns is answered as missing (database.OwnedBy).
+func (m *stubDatabaseService) GetForTenant(ctx context.Context, name string) (*database.DatabaseInfo, error) {
+	info, err := m.getFn(name)
+	if err != nil {
+		return nil, err
+	}
+	if !database.OwnedBy(info.TenantID, tenant.FromContext(ctx)) {
+		return nil, &database.NotFoundError{Name: name}
+	}
+	return info, nil
+}
+
 // kvEngineDatabase returns a DatabaseInfo describing a plain KV-engine
 // database, matching what the SQL provider needs to scope table exposure.
 func kvEngineDatabase(name string) (*database.DatabaseInfo, error) {
