@@ -11,6 +11,12 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.29.1-alpha] - 2026-10-02
+
+Fix release. Highlights:
+
+- **CI build gate green again.** v0.29.0's refused-unsigned-holder-forward path wrote a fixed 502 for a received error and failed the `test/buildgates` error-routing gate. It is now a `LeaderForwardError` like the other forwarding failures; behaviour is unchanged.
+
 ### Fixed
 
 - **A refused unsigned holder forward is classified like every other forwarding
