@@ -20,7 +20,7 @@ import (
 // TestNewCounter_CacheHitWrongType exercises the type assertion failure path
 // inside NewCounter by manually injecting an incorrect type into the metric cache
 // for a key, then calling NewCounter with matching opts. This covers the second
-// metricCacheMu.RUnlock() inside the type-assertion-fail branch.
+// type-assertion-fail branch, which registers a new counter.
 func TestNewCounter_CacheHitWrongType(t *testing.T) {
 	freshRegistry(t)
 
@@ -32,7 +32,7 @@ func TestNewCounter_CacheHitWrongType(t *testing.T) {
 	metricCacheMu.Unlock()
 
 	// NewCounter should see the cache hit but fail the type assertion,
-	// hit the second RUnlock, and then fall through to register a new counter.
+	// and fall through to register a new counter.
 	c := NewCounter(CounterOpts{
 		Namespace: "coverage",
 		Subsystem: "wrongtype",

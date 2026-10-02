@@ -188,14 +188,14 @@ func NewCounter(opts CounterOpts) *Counter {
 	registryMu.RUnlock()
 
 	key := "counter:" + opts.Namespace + ":" + opts.Subsystem + ":" + opts.Name
-	metricCacheMu.RLock()
+	// The lock is held across the lookup and the registration: two callers
+	// asking for the same metric at once must not both register it.
+	metricCacheMu.Lock()
+	defer metricCacheMu.Unlock()
 	if v, ok := metricCache[key]; ok {
-		metricCacheMu.RUnlock()
 		if c, ok := v.(prometheus.Counter); ok {
 			return &Counter{counter: c}
 		}
-	} else {
-		metricCacheMu.RUnlock()
 	}
 
 	counter := promauto.With(reg).NewCounter(prometheus.CounterOpts{
@@ -206,9 +206,7 @@ func NewCounter(opts CounterOpts) *Counter {
 		ConstLabels: opts.ConstLabels,
 	})
 
-	metricCacheMu.Lock()
 	metricCache[key] = counter
-	metricCacheMu.Unlock()
 	return &Counter{counter: counter}
 }
 
@@ -219,15 +217,14 @@ func NewGauge(opts GaugeOpts) *Gauge {
 	registryMu.RUnlock()
 
 	key := "gauge:" + opts.Namespace + ":" + opts.Subsystem + ":" + opts.Name
-	metricCacheMu.RLock()
+	metricCacheMu.Lock()
+	defer metricCacheMu.Unlock()
 	if v, ok := metricCache[key]; ok {
-		metricCacheMu.RUnlock()
 		if g, ok := v.(prometheus.Gauge); ok {
 			return &Gauge{gauge: g}
 		}
 		panic("cached metric is not a prometheus.Gauge")
 	}
-	metricCacheMu.RUnlock()
 
 	gauge := promauto.With(reg).NewGauge(prometheus.GaugeOpts{
 		Namespace:   opts.Namespace,
@@ -237,9 +234,7 @@ func NewGauge(opts GaugeOpts) *Gauge {
 		ConstLabels: opts.ConstLabels,
 	})
 
-	metricCacheMu.Lock()
 	metricCache[key] = gauge
-	metricCacheMu.Unlock()
 	return &Gauge{gauge: gauge}
 }
 
@@ -255,15 +250,14 @@ func NewHistogram(opts HistogramOpts) *Histogram {
 	}
 
 	key := "hist:" + opts.Namespace + ":" + opts.Subsystem + ":" + opts.Name + ":" + fmt.Sprint(buckets)
-	metricCacheMu.RLock()
+	metricCacheMu.Lock()
+	defer metricCacheMu.Unlock()
 	if v, ok := metricCache[key]; ok {
-		metricCacheMu.RUnlock()
 		if h, ok := v.(prometheus.Histogram); ok {
 			return &Histogram{histogram: h}
 		}
 		panic("cached metric is not a prometheus.Histogram")
 	}
-	metricCacheMu.RUnlock()
 
 	histogram := promauto.With(reg).NewHistogram(prometheus.HistogramOpts{
 		Namespace:   opts.Namespace,
@@ -273,9 +267,7 @@ func NewHistogram(opts HistogramOpts) *Histogram {
 		ConstLabels: opts.ConstLabels,
 		Buckets:     buckets,
 	})
-	metricCacheMu.Lock()
 	metricCache[key] = histogram
-	metricCacheMu.Unlock()
 	return &Histogram{histogram: histogram}
 }
 
