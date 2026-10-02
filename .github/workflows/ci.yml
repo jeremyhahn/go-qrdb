@@ -639,19 +639,11 @@ jobs:
         with:
           node-version: "22"
 
-      - name: TypeScript SDK (typecheck, tests, build)
-        working-directory: sdk/typescript
-        run: |
-          npm ci
-          npx tsc --noEmit -p .
-          npm test
-          npm run build
-
-      - name: Desktop frontend (svelte-check against the built SDK)
-        working-directory: cmd/qrdb/frontend
-        run: |
-          npm ci
-          npm run check
+      # `make test-typescript` is the whole job, so a developer runs exactly
+      # what CI runs: the SDK's npm ci, tsc, npm test and build, then
+      # svelte-check on the frontend against the built SDK.
+      - name: TypeScript SDK and desktop frontend
+        run: make test-typescript
 
   integration-standalone:
     name: Integration (standalone stack)

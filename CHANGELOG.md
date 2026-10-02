@@ -31,6 +31,13 @@ are not reconstructed here — their history is in the git log.
     `database.CallerShardIDError` (400 / `INVALID_ARGUMENT`), and
     `Manager.UpdateRaft` keeps the issued ID.
 
+### Added
+
+- **`make test-typescript`** runs exactly what CI's `test-typescript` job runs
+  -- the TypeScript SDK's `npm ci`, `tsc`, `npm test` and build, then
+  `svelte-check` on the desktop frontend against the built SDK -- and the job
+  now runs the target.
+
 ### Fixed
 
 - **Every transport reports a database's storage codec.** `storageCodec` is

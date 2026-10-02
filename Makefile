@@ -574,6 +574,17 @@ build-sdk: install-sdk
 build-frontend: build-sdk install-frontend
 	cd cmd/qrdb/frontend && npm run build
 
+# test-typescript is CI's test-typescript job, which runs this target: the
+# TypeScript SDK's clean install, typecheck, tests (`npm test` typechecks the
+# tests first -- the wire contract's key tables are held to the SDK's types
+# only by the typecheck) and build, then svelte-check on the desktop frontend
+# against the SDK just built. `npm ci`, not `npm install`: the lockfiles are
+# what is tested.
+.PHONY: test-typescript
+test-typescript: ## TypeScript SDK typecheck, tests and build; desktop frontend svelte-check
+	cd sdk/typescript && npm ci && npx tsc --noEmit -p . && npm test && npm run build
+	cd cmd/qrdb/frontend && npm ci && npm run check
+
 .PHONY: dev-gui
 dev-gui:
 	cd cmd/qrdb && wails dev $(DESKTOP_TAG_FLAG)
