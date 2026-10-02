@@ -55,32 +55,33 @@ type Config struct {
 	// Empty means "raft" for full backward compatibility.
 	Mode string `yaml:"mode"`
 
-	Server     ServerConfig     `yaml:"server"`
-	Protocols  ProtocolsConfig  `yaml:"protocols"`
-	Raft       RaftConfig       `yaml:"raft"`
-	Storage    StorageConfig    `yaml:"storage"`
-	TLS        TLSConfig        `yaml:"tls"`
-	MTLS       MTLSConfig       `yaml:"mtls"`
-	Unix       UnixConfig       `yaml:"unix"`
-	MCP        MCPConfig        `yaml:"mcp"`
-	Logging    LoggingConfig    `yaml:"logging"`
-	Discovery  DiscoveryConfig  `yaml:"discovery"`
-	MVCC       MVCCConfig       `yaml:"mvcc"`
-	Watch      WatchConfig      `yaml:"watch"`
-	Lease      LeaseConfig      `yaml:"lease"`
-	Index      IndexConfig      `yaml:"index"`
-	TimeSeries TimeSeriesConfig `yaml:"timeseries"`
-	WriteMode  WriteModeConfig  `yaml:"write_mode"`
-	Auth       AuthConfig       `yaml:"auth"`
-	CORS       CORSConfig       `yaml:"cors"`
-	SQL        SQLConfig        `yaml:"sql"`
-	Codec      CodecConfig      `yaml:"codec"`
-	Seal       SealConfig       `yaml:"seal"`
-	Bootstrap  BootstrapConfig  `yaml:"bootstrap"`
-	Databases  []DatabaseConfig `yaml:"databases,omitempty" json:"databases,omitempty"`
-	Embedding  EmbeddingConfig  `yaml:"embedding"`
-	RAG        RAGConfig        `yaml:"rag"`
-	Tenant     TenantConfig     `yaml:"tenant"`
+	Server      ServerConfig      `yaml:"server"`
+	Protocols   ProtocolsConfig   `yaml:"protocols"`
+	Raft        RaftConfig        `yaml:"raft"`
+	Storage     StorageConfig     `yaml:"storage"`
+	TLS         TLSConfig         `yaml:"tls"`
+	MTLS        MTLSConfig        `yaml:"mtls"`
+	Unix        UnixConfig        `yaml:"unix"`
+	MCP         MCPConfig         `yaml:"mcp"`
+	Logging     LoggingConfig     `yaml:"logging"`
+	Discovery   DiscoveryConfig   `yaml:"discovery"`
+	MVCC        MVCCConfig        `yaml:"mvcc"`
+	Watch       WatchConfig       `yaml:"watch"`
+	Lease       LeaseConfig       `yaml:"lease"`
+	Index       IndexConfig       `yaml:"index"`
+	TimeSeries  TimeSeriesConfig  `yaml:"timeseries"`
+	WriteMode   WriteModeConfig   `yaml:"write_mode"`
+	Auth        AuthConfig        `yaml:"auth"`
+	CORS        CORSConfig        `yaml:"cors"`
+	SQL         SQLConfig         `yaml:"sql"`
+	Codec       CodecConfig       `yaml:"codec"`
+	Seal        SealConfig        `yaml:"seal"`
+	Bootstrap   BootstrapConfig   `yaml:"bootstrap"`
+	ClusterJoin ClusterJoinConfig `yaml:"cluster_join"`
+	Databases   []DatabaseConfig  `yaml:"databases,omitempty" json:"databases,omitempty"`
+	Embedding   EmbeddingConfig   `yaml:"embedding"`
+	RAG         RAGConfig         `yaml:"rag"`
+	Tenant      TenantConfig      `yaml:"tenant"`
 }
 
 // TenantConfig configures tenant isolation behaviour.
@@ -1128,6 +1129,64 @@ type BootstrapConfig struct {
 	// Addr is the host:port of the first node's admin server. Used
 	// by SPKI and DANE methods to construct the bootstrap server URL.
 	Addr string `yaml:"addr"`
+
+	// JoinAddr is the host:port of an admitted member's member-side
+	// CSR-sign listener (clusterenroll.JoinServer), for the Noise_NK
+	// member-side join transport. Mutually exclusive with JoinHTTPURL in
+	// practice: Noise is preferred when both are set.
+	JoinAddr string `yaml:"join_addr"`
+
+	// JoinKey is the hex-encoded Curve25519 public key of that listener.
+	// Required alongside JoinAddr.
+	JoinKey string `yaml:"join_key"`
+
+	// JoinHTTPURL is the base admin HTTPS URL of an admitted member (e.g.
+	// "https://10.0.0.2:8443"), for the SPKI/Direct member-side join
+	// transport (clusterenroll.JoinHTTPPath). Trust in the connection is
+	// established the same way SPKIPin/DirectURL already establish it for
+	// the anchor fetch.
+	JoinHTTPURL string `yaml:"join_http_url"`
+
+	// JoinTokenFile is the path to a file holding the member-side join
+	// admission secret. Mutually exclusive with JoinTokenEnv; the token is
+	// never configured inline in YAML. See ResolveJoinToken.
+	JoinTokenFile string `yaml:"join_token_file"`
+
+	// JoinTokenEnv is the name of an environment variable holding the
+	// member-side join admission secret. Mutually exclusive with
+	// JoinTokenFile.
+	JoinTokenEnv string `yaml:"join_token_env"`
+}
+
+// ClusterJoinConfig configures this node's member-side CSR-sign surface:
+// the capability an ADMITTED member offers to sign a joining node's CSR
+// with the cluster CA (Key A). Any admitted, unsealed member may enable
+// this, not only the first node (see docs/clustering/architecture.md,
+// "Member-side CSR join").
+type ClusterJoinConfig struct {
+	// Enabled turns on both transports this node offers for signing a
+	// joining node's CSR: the Noise_NK listener (ListenHost/ListenPort) and
+	// the SPKI/Direct HTTPS route (POST /v1/enroll/join on the existing
+	// admin listener). Default false: a node does not sign joins for
+	// others unless the operator configures it to.
+	Enabled bool `yaml:"enabled"`
+
+	// ListenHost is the bind host for the Noise_NK join listener. Required
+	// when Enabled, for the same containment reason Bootstrap.NoiseHost is.
+	ListenHost string `yaml:"listen_host"`
+
+	// ListenPort is the TCP port for the Noise_NK join listener. Zero
+	// defaults to clusterenroll.DefaultJoinPort.
+	ListenPort int `yaml:"listen_port"`
+
+	// TokenFile is the path to a file holding the join admission secret.
+	// Mutually exclusive with TokenEnv; the token is never configured
+	// inline in YAML. See ResolveJoinToken.
+	TokenFile string `yaml:"token_file"`
+
+	// TokenEnv is the name of an environment variable holding the join
+	// admission secret. Mutually exclusive with TokenFile.
+	TokenEnv string `yaml:"token_env"`
 }
 
 // SealConfig configures the cryptographic barrier that encrypts data at rest.
@@ -2012,6 +2071,35 @@ func (c *Config) Validate() error {
 	// Bootstrap validation.
 	if c.Bootstrap.NoisePort < 0 || c.Bootstrap.NoisePort > 65535 {
 		return &ValidationError{Field: "bootstrap.noise_port", Reason: "must be between 0 and 65535"}
+	}
+	if c.Bootstrap.JoinTokenFile != "" && c.Bootstrap.JoinTokenEnv != "" {
+		return &ValidationError{Field: "bootstrap.join_token_file", Reason: "mutually exclusive with bootstrap.join_token_env; configure exactly one"}
+	}
+	joinClientConfigured := c.Bootstrap.JoinAddr != "" || c.Bootstrap.JoinKey != "" || c.Bootstrap.JoinHTTPURL != ""
+	if joinClientConfigured && c.Bootstrap.JoinTokenFile == "" && c.Bootstrap.JoinTokenEnv == "" {
+		return &ValidationError{Field: "bootstrap.join_token_file", Reason: "member-side join requires bootstrap.join_token_file or bootstrap.join_token_env; the token is never configured inline"}
+	}
+	if c.Bootstrap.JoinAddr != "" && c.Bootstrap.JoinKey == "" {
+		return &ValidationError{Field: "bootstrap.join_key", Reason: "required when bootstrap.join_addr is set"}
+	}
+	if c.Bootstrap.JoinKey != "" && c.Bootstrap.JoinAddr == "" {
+		return &ValidationError{Field: "bootstrap.join_addr", Reason: "required when bootstrap.join_key is set"}
+	}
+
+	// Cluster join (member-side CSR signing surface) validation.
+	if c.ClusterJoin.Enabled {
+		if c.ClusterJoin.ListenHost == "" {
+			return &ValidationError{Field: "cluster_join.listen_host", Reason: "required when cluster_join.enabled is true"}
+		}
+		if c.ClusterJoin.ListenPort < 0 || c.ClusterJoin.ListenPort > 65535 {
+			return &ValidationError{Field: "cluster_join.listen_port", Reason: "must be between 0 and 65535"}
+		}
+		if c.ClusterJoin.TokenFile == "" && c.ClusterJoin.TokenEnv == "" {
+			return &ValidationError{Field: "cluster_join.token_file", Reason: "required when cluster_join.enabled is true; configure cluster_join.token_file or cluster_join.token_env"}
+		}
+	}
+	if c.ClusterJoin.TokenFile != "" && c.ClusterJoin.TokenEnv != "" {
+		return &ValidationError{Field: "cluster_join.token_file", Reason: "mutually exclusive with cluster_join.token_env; configure exactly one"}
 	}
 
 	return nil

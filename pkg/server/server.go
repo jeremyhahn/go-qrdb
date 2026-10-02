@@ -45,6 +45,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
+	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
@@ -274,6 +275,13 @@ type serverOptions struct {
 	// clusterKeyReceiver handles the /v1/cluster/keydelivery and
 	// /v1/cluster/nodekey endpoints. When nil the routes are not registered.
 	clusterKeyReceiver rest.ClusterKeyReceiver
+
+	// clusterJoinProvider and clusterJoinToken configure the member-side
+	// /v1/enroll/join route (SPKI/Direct CSR join), the plain-HTTPS twin of
+	// the Noise_NK listener clusterenroll.StartJoinServer runs. Both are set
+	// together or not at all; see WithClusterJoin.
+	clusterJoinProvider cakey.Provider
+	clusterJoinToken    string
 
 	// restListener, restPacketConn and grpcListener are sockets the embedder
 	// pre-bound (WithRESTListener, WithRESTPacketConn, WithGRPCListener,
@@ -539,6 +547,21 @@ func WithBootstrapCABundle(bundle func(ctx context.Context) ([]byte, error)) Ser
 // routes are omitted (single-node or non-clustered deployments).
 func WithClusterKeyReceiver(rcv rest.ClusterKeyReceiver) ServerOption {
 	return func(o *serverOptions) { o.clusterKeyReceiver = rcv }
+}
+
+// WithClusterJoin enables the /v1/enroll/join route on the REST server: the
+// SPKI/Direct plain-HTTPS twin of clusterenroll's Noise_NK join listener,
+// both bound to the same cakey.Provider and admission token so a joining
+// node may use either transport interchangeably. provider must be the
+// cluster CA (Key A) provider, available only once the barrier is unsealed
+// (confirmClusterCAPersisted), which is why this route is never a member of
+// the sealed-window allowlist. When provider is nil the route is not
+// registered at all.
+func WithClusterJoin(provider cakey.Provider, token string) ServerOption {
+	return func(o *serverOptions) {
+		o.clusterJoinProvider = provider
+		o.clusterJoinToken = token
+	}
 }
 
 // WithBatch configures the batch service for all protocol servers.
@@ -1598,6 +1621,9 @@ func (s *Server) startREST() error {
 	}
 	if s.soDualFactorEnabled() {
 		restOpts = append(restOpts, rest.WithSODualFactor())
+	}
+	if s.opts.clusterJoinProvider != nil {
+		restOpts = append(restOpts, rest.WithClusterJoin(s.opts.clusterJoinProvider, s.opts.clusterJoinToken))
 	}
 	// The SO dual-factor gate reads the operator's audit failure posture from
 	// the SAME key the authorization middleware does (go-qrdb#445). It is

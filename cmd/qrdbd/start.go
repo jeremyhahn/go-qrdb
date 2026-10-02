@@ -62,6 +62,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterkeys"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
@@ -212,8 +213,31 @@ type startFlags struct {
 	bootstrapDANEDoT      bool
 	bootstrapDirectURL    string
 	bootstrapAddr         string
-	leaseRead             bool
-	checkQuorum           bool
+
+	// bootstrapJoin* configure this node's JOINER side of member-side CSR
+	// join: either the Noise_NK transport (Addr+Key) or the SPKI/Direct
+	// HTTPS transport (HTTPURL, reusing bootstrapSPKIPin), plus the shared
+	// admission token, resolved from exactly one of a file or an
+	// environment variable (never inline). See config.ResolveJoinToken.
+	bootstrapJoinAddr      string
+	bootstrapJoinKey       string
+	bootstrapJoinHTTPURL   string
+	bootstrapJoinTokenFile string
+	bootstrapJoinTokenEnv  string
+
+	// clusterJoin* configure this node's MEMBER side of member-side CSR
+	// join: whether it signs CSRs for other nodes at all, and if so, the
+	// Noise_NK listener's bind address and the shared admission token. The
+	// SPKI/Direct transport needs no separate listener -- it rides this
+	// node's existing admin HTTPS server once enabled.
+	clusterJoinEnabled    bool
+	clusterJoinListenHost string
+	clusterJoinListenPort int
+	clusterJoinTokenFile  string
+	clusterJoinTokenEnv   string
+
+	leaseRead   bool
+	checkQuorum bool
 
 	// backupDir roots a durable, file-backed BackupSink used by the Backup
 	// service (create/list/get/verify/delete/restore) so backup artifacts
@@ -500,6 +524,16 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 	cmd.Flags().BoolVar(&f.bootstrapDANEDoT, "bootstrap-dane-dot", false, "Use DNS-over-TLS for DANE")
 	cmd.Flags().StringVar(&f.bootstrapDirectURL, "bootstrap-direct-url", "", "Full HTTPS URL for direct bootstrap")
 	cmd.Flags().StringVar(&f.bootstrapAddr, "bootstrap-addr", "", "host:port of first node's admin server (for SPKI/DANE)")
+	cmd.Flags().StringVar(&f.bootstrapJoinAddr, "bootstrap-join-addr", "", "host:port of an admitted member's Noise_NK join listener (member-side CSR join)")
+	cmd.Flags().StringVar(&f.bootstrapJoinKey, "bootstrap-join-key", "", "Hex Curve25519 public key of that join listener")
+	cmd.Flags().StringVar(&f.bootstrapJoinHTTPURL, "bootstrap-join-url", "", "Base admin HTTPS URL of an admitted member, for the SPKI/Direct join transport (e.g. https://10.0.0.2:8443)")
+	cmd.Flags().StringVar(&f.bootstrapJoinTokenFile, "bootstrap-join-token-file", "", "Path to a file holding the member-side join admission secret")
+	cmd.Flags().StringVar(&f.bootstrapJoinTokenEnv, "bootstrap-join-token-env", "", "Name of an environment variable holding the member-side join admission secret")
+	cmd.Flags().BoolVar(&f.clusterJoinEnabled, "cluster-join-enabled", false, "Sign CSRs for joining nodes (Noise_NK listener + SPKI/Direct HTTPS route), as an admitted member")
+	cmd.Flags().StringVar(&f.clusterJoinListenHost, "cluster-join-listen-host", "", "Bind host for the Noise_NK join listener; defaults to --host")
+	cmd.Flags().IntVar(&f.clusterJoinListenPort, "cluster-join-listen-port", clusterenroll.DefaultJoinPort, "TCP port for the Noise_NK join listener")
+	cmd.Flags().StringVar(&f.clusterJoinTokenFile, "cluster-join-token-file", "", "Path to a file holding the join admission secret this node checks")
+	cmd.Flags().StringVar(&f.clusterJoinTokenEnv, "cluster-join-token-env", "", "Name of an environment variable holding the join admission secret this node checks")
 	cmd.Flags().BoolVar(&f.leaseRead, "lease-read", true,
 		"Enable lease-based linearizable reads (requires --check-quorum)")
 	cmd.Flags().BoolVar(&f.checkQuorum, "check-quorum", true,
@@ -748,6 +782,43 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	}
 	if !cmd.Flags().Changed("bootstrap-addr") && cfg.Bootstrap.Addr != "" {
 		f.bootstrapAddr = cfg.Bootstrap.Addr
+	}
+	if !cmd.Flags().Changed("bootstrap-join-addr") && cfg.Bootstrap.JoinAddr != "" {
+		f.bootstrapJoinAddr = cfg.Bootstrap.JoinAddr
+	}
+	if !cmd.Flags().Changed("bootstrap-join-key") && cfg.Bootstrap.JoinKey != "" {
+		f.bootstrapJoinKey = cfg.Bootstrap.JoinKey
+	}
+	if !cmd.Flags().Changed("bootstrap-join-url") && cfg.Bootstrap.JoinHTTPURL != "" {
+		f.bootstrapJoinHTTPURL = cfg.Bootstrap.JoinHTTPURL
+	}
+	if !cmd.Flags().Changed("bootstrap-join-token-file") && cfg.Bootstrap.JoinTokenFile != "" {
+		f.bootstrapJoinTokenFile = cfg.Bootstrap.JoinTokenFile
+	}
+	if !cmd.Flags().Changed("bootstrap-join-token-env") && cfg.Bootstrap.JoinTokenEnv != "" {
+		f.bootstrapJoinTokenEnv = cfg.Bootstrap.JoinTokenEnv
+	}
+	if !cmd.Flags().Changed("cluster-join-enabled") {
+		f.clusterJoinEnabled = cfg.ClusterJoin.Enabled
+	}
+	if !cmd.Flags().Changed("cluster-join-listen-host") && cfg.ClusterJoin.ListenHost != "" {
+		f.clusterJoinListenHost = cfg.ClusterJoin.ListenHost
+	}
+	if !cmd.Flags().Changed("cluster-join-listen-port") && cfg.ClusterJoin.ListenPort != 0 {
+		f.clusterJoinListenPort = cfg.ClusterJoin.ListenPort
+	}
+	if !cmd.Flags().Changed("cluster-join-token-file") && cfg.ClusterJoin.TokenFile != "" {
+		f.clusterJoinTokenFile = cfg.ClusterJoin.TokenFile
+	}
+	if !cmd.Flags().Changed("cluster-join-token-env") && cfg.ClusterJoin.TokenEnv != "" {
+		f.clusterJoinTokenEnv = cfg.ClusterJoin.TokenEnv
+	}
+	// A bind host left unset defaults to --host, exactly as
+	// bootstrap-noise-host already does (go-qrdb#167): the join listener is
+	// another socket a node contained to one interface must not silently
+	// expose on every interface.
+	if f.clusterJoinListenHost == "" {
+		f.clusterJoinListenHost = f.host
 	}
 
 	if !cmd.Flags().Changed("lease-read") && cfg.Raft.LeaseRead != nil {
@@ -1090,6 +1161,22 @@ func runStart(f *startFlags) (err error) {
 	// Stop is nil-safe and idempotent, so this is safe both when no advertiser
 	// was started and alongside the explicit Stop on the shutdown path.
 	defer bootServers.Stop()
+
+	// joinServer is the member-side CSR-sign (Noise_NK) listener started
+	// below once the cluster CA provider is confirmed persisted, mirroring
+	// bootServers: declared here so the deferred Stop below covers every
+	// return between its start and the explicit shutdown path, including the
+	// early migration-recycle returns that never reach that path. The Stop
+	// call is wrapped in a closure, unlike bootServers.Stop above, because
+	// joinServer's final value is not known until well after this defer is
+	// registered -- a bare `defer joinServer.Stop()` here would bind the
+	// nil receiver immediately and never see the assignment below.
+	var joinServer *clusterenroll.JoinServer
+	defer func() { joinServer.Stop() }()
+	// clusterJoinToken is resolved alongside joinServer below (cluster-join-
+	// enabled path only) and reused for server.WithClusterJoin, so the token
+	// file or env var is read exactly once rather than once per consumer.
+	var clusterJoinToken string
 
 	// Enable TLS certificate hot-reload when certs are file-backed.
 	// The CertReloader watches the data directory for cert changes and
@@ -1599,6 +1686,26 @@ func runStart(f *startFlags) (err error) {
 					_ = svcNode.Stop(context.Background())
 					_ = shutdownNode(nodeCloser)
 					return err
+				}
+				if f.clusterJoinEnabled {
+					var tokenErr error
+					clusterJoinToken, tokenErr = qrdbconfig.ResolveJoinToken(f.clusterJoinTokenFile, f.clusterJoinTokenEnv)
+					if tokenErr != nil {
+						_ = svcNode.Stop(context.Background())
+						_ = shutdownNode(nodeCloser)
+						return tokenErr
+					}
+					joinServer, err = clusterenroll.StartJoinServer(svcNode.ClusterCAProv, clusterenroll.JoinServerOptions{
+						Host:      f.clusterJoinListenHost,
+						Port:      f.clusterJoinListenPort,
+						Token:     clusterJoinToken,
+						AdminPort: f.adminPort,
+					}, f.dataDir, slog.Default())
+					if err != nil {
+						_ = svcNode.Stop(context.Background())
+						_ = shutdownNode(nodeCloser)
+						return err
+					}
 				}
 			}
 			// Guarded so the system-migration path (which closes svcNode early to
@@ -2374,6 +2481,17 @@ func runStart(f *startFlags) (err error) {
 			// rather than on the presence of a Noise server.
 			if bootServers != nil {
 				serverOpts = append(serverOpts, server.WithCABootstrap(bundle.CACertPEM))
+			}
+			// The SPKI/Direct HTTPS join route is the plain-HTTPS twin of the
+			// Noise_NK joinServer started above: both are gated on
+			// cluster-join-enabled and share the same cakey.Provider and
+			// admission token, so a joining node may use either transport.
+			// Registered only once joinServer has started, which happens
+			// only after confirmClusterCAPersisted -- Key A is unseal-only,
+			// so this route is deliberately never a member of the
+			// sealed-window allowlist.
+			if joinServer != nil {
+				serverOpts = append(serverOpts, server.WithClusterJoin(svcNode.ClusterCAProv, clusterJoinToken))
 			}
 			if svcNode.Embedding != nil {
 				serverOpts = append(serverOpts, server.WithEmbedding(svcNode.Embedding))

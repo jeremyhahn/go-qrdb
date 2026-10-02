@@ -20,6 +20,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
+	"github.com/jeremyhahn/go-qrdb/pkg/config"
 )
 
 const (
@@ -88,7 +89,11 @@ func resolveTLS(f *startFlags, logger *slog.Logger) (*TLSBundle, *bootstrapServe
 		// keep the qrdbd-typed X.509 errors and returns BEFORE the delegation
 		// to clusterenroll.Resolve below, so the resume in Resolve's own
 		// cached path never runs for the daemon (go-qrdb#241).
-		adv, advErr := clusterenroll.ResumeAdvertiser(flagsToEnrollOptions(f), &clustertls.Material{
+		opts, optsErr := flagsToEnrollOptions(f)
+		if optsErr != nil {
+			return nil, nil, optsErr
+		}
+		adv, advErr := clusterenroll.ResumeAdvertiser(opts, &clustertls.Material{
 			CACertPEM: bundle.CACertPEM,
 			CAKeyPEM:  bundle.CAKeyPEM,
 		}, logger)
@@ -99,7 +104,10 @@ func resolveTLS(f *startFlags, logger *slog.Logger) (*TLSBundle, *bootstrapServe
 	}
 
 	// Paths 3–5: delegate to clusterenroll.
-	opts := flagsToEnrollOptions(f)
+	opts, err := flagsToEnrollOptions(f)
+	if err != nil {
+		return nil, nil, err
+	}
 	mat, adv, err := clusterenroll.Resolve(context.Background(), opts, logger)
 	if err != nil {
 		return nil, nil, err
@@ -114,8 +122,16 @@ func resolveTLS(f *startFlags, logger *slog.Logger) (*TLSBundle, *bootstrapServe
 }
 
 // flagsToEnrollOptions converts the daemon start flags to a
-// clusterenroll.Options value for paths 3–5.
-func flagsToEnrollOptions(f *startFlags) *clusterenroll.Options {
+// clusterenroll.Options value for paths 3–5. The member-side join token is
+// resolved here, from exactly one of a file or an environment variable
+// (config.ResolveJoinToken): it is never read from an inline flag or YAML
+// value, so the only way this function fails is a configured source that
+// cannot be read.
+func flagsToEnrollOptions(f *startFlags) (*clusterenroll.Options, error) {
+	joinToken, err := joinerToken(f)
+	if err != nil {
+		return nil, err
+	}
 	return &clusterenroll.Options{
 		RaftAddress: f.raftAddress,
 		TrustDomain: f.clusterTrustDomain,
@@ -133,13 +149,28 @@ func flagsToEnrollOptions(f *startFlags) *clusterenroll.Options {
 			Peers:           f.peers,
 			DNSDomain:       f.dnsDomain,
 			AdminPort:       f.adminPort,
+			JoinAddr:        f.bootstrapJoinAddr,
+			JoinKey:         f.bootstrapJoinKey,
+			JoinHTTPURL:     f.bootstrapJoinHTTPURL,
+			JoinToken:       joinToken,
 		},
 		Advertise: clusterenroll.AdvertiseOptions{
 			NoisePort: f.bootstrapNoisePort,
 			NoiseHost: resolveNoiseHost(f),
 			AdminPort: f.adminPort,
 		},
+	}, nil
+}
+
+// joinerToken resolves the member-side join admission secret from the
+// configured file or environment variable. It returns "" without error when
+// no join transport is configured, so a node that never intends to join by
+// CSR never needs a token source at all.
+func joinerToken(f *startFlags) (string, error) {
+	if f.bootstrapJoinAddr == "" && f.bootstrapJoinKey == "" && f.bootstrapJoinHTTPURL == "" {
+		return "", nil
 	}
+	return config.ResolveJoinToken(f.bootstrapJoinTokenFile, f.bootstrapJoinTokenEnv)
 }
 
 // hasBootstrapFlags returns true if any bootstrap-related flags are set
@@ -161,7 +192,10 @@ func hasBootstrapFlags(f *startFlags) bool {
 // around clusterenroll.Join that converts the raw clustertls.Material
 // into the qrdbd-specific TLSBundle type.
 func bootstrapTLS(f *startFlags, logger *slog.Logger) (*TLSBundle, error) {
-	opts := flagsToEnrollOptions(f)
+	opts, err := flagsToEnrollOptions(f)
+	if err != nil {
+		return nil, err
+	}
 	mat, err := clusterenroll.Join(context.Background(), opts, logger)
 	if err != nil {
 		return nil, err
