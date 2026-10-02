@@ -1009,19 +1009,24 @@ func (t *RelationalTable) matchingRows(ctx *sqle.Context, g *tableGeneration, ke
 // isolation model.
 // ---------------------------------------------------------------------------
 
-// activeWriteSet returns the WriteSet backing ctx's open interactive
-// transaction, bound to this table's (tenant, database) TransactionServicer
-// and MVCCKVServicer, or nil when there is no such transaction to
-// participate in.
+// activeWriteSet returns the WriteSet a READ of this table participates in
+// (see writeSetFor), or nil when it reads the store directly.
+func (t *RelationalTable) activeWriteSet(ctx *sqle.Context) (*WriteSet, error) {
+	return t.writeSetFor(ctx, false)
+}
+
+// writeSetFor returns the WriteSet backing ctx's transaction, bound to this
+// table's (tenant, database) TransactionServicer and MVCCKVServicer, or nil
+// when there is none to participate in. write says whether the caller is
+// about to write the table rather than read it.
 //
-// nil is returned -- not an error -- for every autocommit statement
-// (ctx.GetIgnoreAutoCommit() false): go-mysql-server starts an implicit,
-// per-statement transaction before every single query, not only after an
-// explicit BEGIN/START TRANSACTION (see engine.beginTransaction), so
-// gating on GetIgnoreAutoCommit rather than merely "a write-set exists" is
-// what keeps ordinary autocommit reads and writes on their original,
-// zero-added-latency code path -- no pinned-revision read, no buffering --
-// exactly as before this table gained interactive-transaction support.
+// Inside an explicit transaction that is the transaction's write-set. In
+// an autocommit statement it is the statement's implicit write-set (see
+// writeset_autocommit.go) once one of the statement's relational editors
+// has opened it: a write binds it, and a read of the same store then sees
+// the statement's own buffered writes. A read of a statement that writes
+// nothing, or of a table in a store the statement does not write, is nil
+// -- a direct read of the latest committed state, exactly as before.
 //
 // Every resolution also registers this table's generation and definition as
 // a commit-time fence (see WriteSet.RequireResolution and go-qrdb#547): a
@@ -1030,10 +1035,7 @@ func (t *RelationalTable) matchingRows(ctx *sqle.Context, g *tableGeneration, ke
 // an index set that is no longer the table's. This happens for a read-only
 // participation too, harmlessly -- WriteSet.commit only ever proposes the
 // fence when there are buffered writes to commit alongside it.
-func (t *RelationalTable) activeWriteSet(ctx *sqle.Context) (*WriteSet, error) {
-	if !ctx.GetIgnoreAutoCommit() {
-		return nil, nil
-	}
+func (t *RelationalTable) writeSetFor(ctx *sqle.Context, write bool) (*WriteSet, error) {
 	sess, ok := ctx.Session.(*QRDBSession)
 	if !ok {
 		return nil, nil
@@ -1041,6 +1043,14 @@ func (t *RelationalTable) activeWriteSet(ctx *sqle.Context) (*WriteSet, error) {
 	ws := sess.writeSet()
 	if ws == nil {
 		return nil, nil
+	}
+	if !ctx.GetIgnoreAutoCommit() {
+		if !ws.implicit {
+			return nil, nil
+		}
+		if !write && (!ws.bound || ws.tenantID != sess.TenantID() || ws.database != t.def.Database) {
+			return nil, nil
+		}
 	}
 	if ws.aborted != nil {
 		// Rolled back as a deadlock victim: nothing the transaction does
@@ -1082,6 +1092,12 @@ func (t *RelationalTable) activeWriteSet(ctx *sqle.Context) (*WriteSet, error) {
 		if pinned.metadataRevision != 0 && t.def.MetadataRevision != 0 && pinned.metadataRevision != t.def.MetadataRevision {
 			return nil, t.definitionStale("its definition changed during this transaction")
 		}
+		return ws, nil
+	}
+	if ws.implicit {
+		// No snapshot to be stale against: the statement reads the latest
+		// committed state, and its commit is fenced on what it resolved.
+		ws.RequireResolution(fence)
 		return ws, nil
 	}
 	// First registration. The snapshot may have been bound earlier, by

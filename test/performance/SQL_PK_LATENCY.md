@@ -104,6 +104,46 @@ noise.
   still holds go-quicraft's state-machine read lock while it runs, which
   `Apply` waits behind; see `docs/sql/engineering.md`, "Known limits".
 
+## Atomic autocommit statements
+
+A later change made every autocommit statement its own transaction (all its
+rows or none), with the statement's row-lock release folded into its commit.
+A single-row statement must not pay for that. The two builds were run
+alternately, three rounds each, on the same host while other workloads were
+running on it (load average 10–20), so each cell is the median of three runs.
+
+Rounds of 400 statements per workload, tables of 0 and 1,000 rows (p50 / p95,
+milliseconds):
+
+| mode | workload | row-by-row p50 / p95 | atomic p50 / p95 |
+|---|---|---:|---:|
+| optimistic | insert | 3.21 / 6.47 | 3.42 / 7.12 |
+| optimistic | select | 0.92 / 1.78 | 1.00 / 2.16 |
+| optimistic | update | 3.18 / 6.94 | 3.39 / 6.94 |
+| optimistic | delete | 3.25 / 6.41 | 3.54 / 8.75 |
+| pessimistic | insert | 7.51 / 12.07 | 5.94 / 12.42 |
+| pessimistic | select | 1.04 / 2.04 | 1.05 / 3.08 |
+| pessimistic | update | 8.36 / 13.78 | 7.46 / 14.17 |
+| pessimistic | delete | 8.75 / 14.68 | 7.07 / 14.56 |
+
+The optimistic differences are within the run-to-run noise: `select`, whose
+path the change does not touch, moved by as much. A tighter re-run of the
+optimistic workloads (1,000 statements per workload, empty table, three
+alternating rounds; p50 of each round, milliseconds):
+
+| workload | row-by-row | atomic |
+|---|---|---|
+| insert | 2.86, 3.41, 3.06 | 3.02, 2.95, 5.59 |
+| select | 0.95, 0.98, 1.15 | 0.91, 0.99, 0.98 |
+| update | 7.24, 3.32, 3.53 | 3.33, 3.48, 2.99 |
+| delete | 3.82, 3.57, 3.65 | 3.34, 4.47, 3.26 |
+
+No single-row regression is measurable. In pessimistic mode a single-row
+write is about 1–1.7 ms faster: its lock release is now part of its commit,
+two proposals instead of three. An optimistic `INSERT` does one more read
+than before (its duplicate check runs before the row is buffered rather than
+after a failed write); at a local read's cost it does not show above the noise.
+
 ## Reproducing
 
 ```bash

@@ -281,6 +281,12 @@ type WriteSet struct {
 	resolutions     map[string]resolutionGuard
 	resolutionOrder []string
 
+	// implicit marks the write-set of one autocommit statement rather than
+	// of an explicit transaction, and uniqueChecks explain its commit
+	// failure. See writeset_autocommit.go.
+	implicit     bool
+	uniqueChecks []uniqueCheck
+
 	// rowLocks is this transaction's row-lock state -- its lock owner, the
 	// current reads its locks were granted with, and whether it was rolled
 	// back as a deadlock victim. See writeset_locks.go and
@@ -343,9 +349,15 @@ func (ws *WriteSet) bind(ctx context.Context, tenantID, database string, txnSvc 
 		return nil
 	}
 
-	rev, err := mvccSvc.CurrentRevision(ctx)
-	if err != nil {
-		return err
+	// An implicit (autocommit-statement) transaction reads the latest
+	// committed state, as an autocommit statement always did, so it pins no
+	// snapshot.
+	var rev int64
+	if !ws.implicit {
+		var err error
+		if rev, err = mvccSvc.CurrentRevision(ctx); err != nil {
+			return err
+		}
 	}
 
 	ws.tenantID = tenantID
@@ -491,6 +503,16 @@ func (ws *WriteSet) Lookup(ctx context.Context, key string) (value []byte, found
 	if !ws.bound {
 		return nil, false, nil
 	}
+	if ws.implicit {
+		kv, err := ws.mvccSvc.GetRevision(ctx, key)
+		if err != nil {
+			if isNotFound(err) {
+				return nil, false, nil
+			}
+			return nil, false, err
+		}
+		return kv.Value, true, nil
+	}
 
 	kv, err := ws.mvccSvc.GetAtRevision(ctx, key, ws.revision)
 	if err != nil {
@@ -523,7 +545,7 @@ func (ws *WriteSet) Lookup(ctx context.Context, key string) (value []byte, found
 // point-reads its way past them is refused with *WriteSetLimitError at the
 // offending statement rather than at COMMIT.
 func (ws *WriteSet) recordRead(key string, cmp service.Compare) error {
-	if ws.level != IsolationWrittenReads {
+	if ws.level != IsolationWrittenReads || ws.implicit {
 		return nil
 	}
 	if _, ok := ws.reads[key]; ok {
@@ -603,7 +625,7 @@ func (ws *WriteSet) Get(ctx context.Context, key string) ([]byte, error) {
 // so the transaction is told, at the statement that asked, exactly what
 // this level cannot do.
 func (ws *WriteSet) RangeOverlay(ctx context.Context, prefix string) (map[string][]byte, error) {
-	if ws.level == IsolationWrittenReads {
+	if ws.level == IsolationWrittenReads && !ws.implicit {
 		return nil, &IsolationRangeReadError{Level: ws.level.String(), Prefix: prefix}
 	}
 
@@ -611,7 +633,11 @@ func (ws *WriteSet) RangeOverlay(ctx context.Context, prefix string) (map[string
 
 	if ws.bound {
 		end := prefixEnd([]byte(prefix))
-		kvs, _, _, err := ws.mvccSvc.Range(ctx, []byte(prefix), end, service.WithRevision(ws.revision))
+		var opts []service.RangeOption
+		if !ws.implicit {
+			opts = append(opts, service.WithRevision(ws.revision))
+		}
+		kvs, _, _, err := ws.mvccSvc.Range(ctx, []byte(prefix), end, opts...)
 		if err != nil {
 			return nil, translateSnapshotError(err)
 		}
@@ -728,9 +754,12 @@ func (ws *WriteSet) recordTouch(ctx context.Context, key string, value []byte, t
 	}
 
 	var cmp service.Compare
-	if unique {
+	switch {
+	case ws.implicit:
+		cmp, _ = ws.implicitCompare(key, unique)
+	case unique:
 		cmp = absenceCompare(key)
-	} else {
+	default:
 		var err error
 		cmp, err = ws.baselineCompare(ctx, key)
 		if err != nil {
@@ -894,6 +923,11 @@ var compareBuilders = map[IsolationLevel]func(*WriteSet) []service.Compare{
 // back to IsolationWritten, the default, so an out-of-range value can never
 // silently weaken a transaction's conflict detection.
 func (ws *WriteSet) Compares() []service.Compare {
+	if ws.implicit {
+		// qrdb_isolation is a transaction setting; an autocommit statement
+		// compares what it always compared (see implicitCompare).
+		return ws.writtenCompares()
+	}
 	build, ok := compareBuilders[ws.level]
 	if !ok {
 		build = (*WriteSet).writtenCompares
@@ -906,11 +940,14 @@ func (ws *WriteSet) Compares() []service.Compare {
 func (ws *WriteSet) noCompares() []service.Compare { return nil }
 
 // writtenCompares is IsolationWritten's builder: the precondition of every
-// buffered key, in insertion order.
+// buffered key, in insertion order. A key an implicit transaction buffered
+// without one (see implicitCompare) contributes nothing.
 func (ws *WriteSet) writtenCompares() []service.Compare {
 	out := make([]service.Compare, 0, len(ws.order))
 	for _, k := range ws.order {
-		out = append(out, ws.entries[k].compare)
+		if cmp := ws.entries[k].compare; cmp.Key != nil {
+			out = append(out, cmp)
+		}
 	}
 	return out
 }
@@ -965,12 +1002,6 @@ func (ws *WriteSet) Ops() []service.Op {
 // effect on the database is empty. So a read-only transaction is never
 // failed for losing a race it was not in, at any level.
 func (ws *WriteSet) commit(ctx context.Context) (*service.TransactionResponse, error) {
-	if !ws.bound || len(ws.order) == 0 {
-		return &service.TransactionResponse{Succeeded: true}, nil
-	}
-	compares := ws.Compares()
-	for _, key := range ws.resolutionOrder {
-		compares = append(compares, ws.resolutions[key].compares...)
-	}
-	return ws.txnSvc.Execute(ctx, compares, ws.Ops(), nil)
+	resp, _, err := ws.commitWith(ctx, nil)
+	return resp, err
 }

@@ -464,6 +464,64 @@ func (o *Owner) Release(ctx context.Context) error {
 	return o.session.release(rctx, l, err == nil)
 }
 
+// Scope returns the scope of the lock table the owner is bound to -- the
+// store its records live in -- or "" before its first lock.
+func (o *Owner) Scope() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.table == nil {
+		return ""
+	}
+	return o.table.scope
+}
+
+// ReleaseWith releases the owner's locks inside the caller's own final
+// proposal instead of in one of their own: the commit of the transaction
+// the locks protected.
+//
+// final is handed the ops that delete every record the owner holds, which
+// it must apply in BOTH branches of its compare-and-swap -- the locks end
+// with the transaction whether its commit wins or loses -- and reports
+// whether it proposed them. They are nil when the owner cannot fold its
+// release (no lock, more records than one proposal carries, or a lease
+// that has ended, whose records are already gone or bound to nothing), in
+// which case final runs on its own and the owner is then released as
+// Release does. An error from final means the proposal's outcome is
+// unknown -- an infrastructure failure the caller may retry -- and the locks
+// stay held.
+func (o *Owner) ReleaseWith(ctx context.Context, final func(release []service.Op) (folded bool, err error)) error {
+	ops := o.releaseOps()
+	folded, err := final(ops)
+	if err != nil {
+		return err
+	}
+	if !folded || ops == nil {
+		return o.Release(ctx)
+	}
+	_, l, _, _, ok := o.markReleased()
+	if !ok || l == nil {
+		return nil
+	}
+	return o.session.release(ctx, l, true)
+}
+
+// releaseOps returns the ops deleting every record the owner holds, or nil
+// when its release cannot be folded into another proposal (see
+// ReleaseWith).
+func (o *Owner) releaseOps() []service.Op {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.released || o.lease == nil || o.lease.lost.Load() || len(o.unattached) > 0 ||
+		len(o.records) == 0 || len(o.records) > maxRecordsPerProposal {
+		return nil
+	}
+	ops := make([]service.Op, 0, len(o.records))
+	for r := range o.records {
+		ops = append(ops, service.Op{Type: service.OpDelete, Key: []byte(r)})
+	}
+	return ops
+}
+
 // markReleased marks the owner released, forgets its locks, and returns
 // what was needed to release them: its table and lease and the records it
 // wrote, bound to the lease and not. ok is false when it was already

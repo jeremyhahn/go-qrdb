@@ -43,6 +43,10 @@ func (o *Owner) Acquire(ctx context.Context, t *Table, keys []string, mode Mode,
 func (o *Owner) Holds(key string, mode Mode) bool
 func (o *Owner) Active() bool
 func (o *Owner) Release(ctx context.Context) error
+// ReleaseWith folds the release into the caller's final proposal: final is
+// handed the record deletes to apply in both branches of its CAS.
+func (o *Owner) ReleaseWith(ctx context.Context, final func(release []service.Op) (folded bool, err error)) error
+func (o *Owner) Scope() string
 func (o *Owner) ID() string
 
 const Prefix = "__sys:rowlock/"
@@ -284,9 +288,10 @@ transaction's write set as that key's baseline:
   the transaction's own buffered write);
 - the key's commit precondition is `ModRevision == baseline` (or
   `Version == 0` when the key was absent), not the snapshot's state;
-- in autocommit, the statement's own compare-and-swap carries the same
-  precondition, so an autocommit pessimistic `UPDATE` or `DELETE` is guarded
-  against a writer that took no lock (1213 instead of a lost update).
+- in autocommit, the statement's implicit transaction carries the same
+  precondition in its commit, so an autocommit pessimistic `UPDATE` or
+  `DELETE` is guarded against a writer that took no lock (1213 instead of a
+  lost update).
 
 A row an `UPDATE` rewrites or a `DELETE` removes that the transaction did
 **not** read under its lock — a foreign-key cascade's child rows, found by the
@@ -429,24 +434,20 @@ A statement that locks N rows it does not already hold costs, uncontended:
 | lease | none: the session's lease is granted once and reused by every transaction | — |
 | release | ⌈N / 1,000⌉ Raft proposals deleting the owner's records | yes |
 
-A pessimistic autocommit `UPDATE` or `DELETE` of one row therefore costs three
-proposals — the enqueue, the row's own compare-and-swap, the release — where a
-lease per transaction cost five (a grant and a revoke besides).
+**The release rides in the commit.** `COMMIT` — and the end of an autocommit
+statement, which is its own transaction — proposes the transaction's writes
+and the deletes of its lock records as **one** compare-and-swap, the deletes
+in both its branches: the locks end with the transaction whether its commit
+wins or loses (`rowlock.Owner.ReleaseWith`). It is folded only when the locks
+live in the store the transaction commits to and number at most 1,000; a
+transaction that wrote nothing, one with more locks, and one whose lease has
+ended release on their own. An infrastructure failure of the commit leaves
+the locks held, as invariant 5 says.
 
-**Why the release is not folded into the row's write.** It would save one more
-proposal, and it is not done, because the write does not know it is the
-statement's last. Outside a transaction each row an autocommit statement
-writes is its own compare-and-swap, committed as the row is written (see
-[architecture.md](architecture.md#timeouts)); a statement's locks must be held
-until the statement ends — a foreign-key cascade writes its child rows after
-the parent, and a multi-row `UPDATE` writes row by row — and the end is
-`StatementComplete`, which arrives after the last write was already proposed.
-Folding the delete into a write would release the statement's locks before
-its later writes. Folding it into the statement's end would mean buffering an
-autocommit statement's writes and committing them at once, which makes a
-multi-row autocommit statement atomic — a change to what a statement means
-outside a transaction, not an optimisation of how it releases. The enqueue
-cannot be folded either: the locks must be granted before the rows are read.
+A pessimistic autocommit `UPDATE` or `DELETE` of one row therefore costs two
+proposals — the enqueue, and the commit that also releases — where a lease
+per transaction and a release of its own cost five. The enqueue cannot be
+folded: the locks must be granted before the rows are read.
 
 The queue and current reads are per key, not per batch. The read surfaces
 offer no multi-key read that is cheaper than its parts: `MVCCKVServicer` reads

@@ -226,9 +226,9 @@ statements, the locks the statement took and the rows it read are kept. The
 same holds whatever made the statement fail (see
 [../sql/engineering.md](../sql/engineering.md#transaction-control)).
 
-Outside a transaction a multi-row statement is **not** atomic: each row write
-is its own commit, so the rows written before a timeout stay committed. Run a
-multi-row statement inside a transaction when it must be all-or-nothing.
+Outside a transaction the statement is its own transaction, so the same
+holds: a statement that times out leaves none of its rows committed (see
+[../sql/engineering.md](../sql/engineering.md#autocommit-statements-are-atomic)).
 
 ## Component boundaries
 

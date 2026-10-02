@@ -18,8 +18,10 @@ package pgsql
 
 import (
 	"context"
+	"errors"
 	"testing"
 
+	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -55,4 +57,27 @@ func TestPGWire_StatementResolvesEachTableOnce(t *testing.T) {
 
 	run("ALTER TABLE notes ADD COLUMN extra INT")
 	run("UPDATE notes SET extra = 1 WHERE id = 1")
+}
+
+// refusingSession is a session whose commands cannot begin.
+type refusingSession struct {
+	*sql.BaseSession
+	ended int
+}
+
+func (r *refusingSession) CommandBegin() error { return errCommandRefused }
+func (r *refusingSession) CommandEnd()         { r.ended++ }
+func (r *refusingSession) SessionEnd()         {}
+
+var errCommandRefused = errors.New("command refused")
+
+func TestBeginCommand(t *testing.T) {
+	sess := &refusingSession{BaseSession: sql.NewBaseSession()}
+	_, err := beginCommand(sql.NewContext(context.Background(), sql.WithSession(sess)))
+	require.ErrorIs(t, err, errCommandRefused, "a command that cannot begin fails the statement")
+
+	plain := sql.NewContext(context.Background(), sql.WithSession(provider.NewSession(sql.NewBaseSession(), nil)))
+	end, err := beginCommand(plain)
+	require.NoError(t, err)
+	end()
 }

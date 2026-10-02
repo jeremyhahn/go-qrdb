@@ -295,10 +295,11 @@ statements carry no bind parameter for the name, so an unvalidated name would be
 an injection surface.
 
 **GORM wraps every single write in a transaction by default.** That means each
-`Create`/`Update`/`Delete` goes through the buffered write-set path rather than
-the direct autocommit path. If you do not need that, set
-`gorm.Config{SkipDefaultTransaction: true}` and single statements go straight to
-the engine's autocommit path, which is one proposal with no snapshot read.
+`Create`/`Update`/`Delete` is an explicit transaction (a snapshot read, then
+the commit). If you do not need that, set
+`gorm.Config{SkipDefaultTransaction: true}`: a single statement is then its own
+implicit transaction — still all-or-nothing, but one proposal with no snapshot
+read.
 
 Do **not** issue DDL inside a transaction and expect it to roll back: DDL
 implicitly commits any pending write-set first, exactly as in MySQL.

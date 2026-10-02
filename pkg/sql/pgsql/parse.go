@@ -1251,7 +1251,12 @@ func collectRows(ctx *sql.Context, schema sql.Schema, iter sql.RowIter) (*queryR
 		result.rows = append(result.rows, anyRow)
 	}
 
-	_ = iter.Close(ctx)
+	// Closing the result is when an autocommit statement commits, so its
+	// error is the statement's: a commit that lost its compare-and-swap
+	// must fail the statement, not vanish with the iterator.
+	if err := iter.Close(ctx); err != nil {
+		return nil, err
+	}
 	return result, nil
 }
 

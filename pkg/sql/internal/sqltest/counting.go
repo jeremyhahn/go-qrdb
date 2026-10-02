@@ -45,8 +45,10 @@ func (c *CountingTableService) Reset() { c.gets.Store(0) }
 // CountingTableService, which it returns.
 func (h *Harness) CountTableReads() *CountingTableService {
 	counting := &CountingTableService{TableServicer: h.TableSvc}
-	h.Registry.(*FakeRegistry).TableServiceFn = func(string, string) (service.TableServicer, error) {
-		return counting, nil
+	if reg, ok := h.Registry.(*FakeRegistry); ok {
+		reg.TableServiceFn = func(string, string) (service.TableServicer, error) {
+			return counting, nil
+		}
 	}
 	return counting
 }

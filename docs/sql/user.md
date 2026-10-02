@@ -233,6 +233,12 @@ transaction cannot span two databases. Split it.
 revision was compacted before it committed. It fails rather than silently
 re-reading at a newer revision. Shorten the transaction.
 
+**A multi-row statement failed and none of its rows are there.** That is
+the contract: outside a transaction a statement is its own transaction, so
+it commits all of its rows or none, as in MySQL and PostgreSQL. A bulk
+`INSERT` is bounded like a transaction (8 MiB, 100,000 keys); split a very
+large load into several statements.
+
 **A big statement failed on a size limit.** Ceilings are per statement and are
 checked up front: 65535 bytes per encoded key, 4 MB per encoded row, 8 MiB for
 one statement's compares plus operations. A transaction may buffer at most

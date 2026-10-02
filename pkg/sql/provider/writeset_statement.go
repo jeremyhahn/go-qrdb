@@ -37,8 +37,9 @@ import sqle "github.com/dolthub/go-mysql-server/sql"
 // What a discarded statement leaves, as InnoDB's statement rollback does:
 // the row locks it took and the reads it made (a read precondition records
 // something the transaction saw, which no rollback can unsee -- see
-// WriteSet.RollbackTo). A statement outside a transaction has no write-set
-// here; each of its row writes commits on its own.
+// WriteSet.RollbackTo). A statement outside a transaction is its own
+// implicit transaction (see writeset_autocommit.go), and the same marks make
+// it atomic.
 
 // beginStatement marks the start of a statement at the undo log's current
 // position.
@@ -78,20 +79,47 @@ func (ws *WriteSet) resetStatements() {
 }
 
 // statementWriteSet returns the write-set a table editor's statement
-// boundaries apply to: the open interactive transaction's, or nil for an
-// autocommit statement, whose row writes are each their own commit.
+// boundaries apply to: the open interactive transaction's, or the
+// autocommit statement's implicit one.
 //
 // It deliberately does not go through RelationalTable.activeWriteSet: a
 // statement boundary neither binds the write-set to a snapshot nor
 // registers a table fence, and it must still work on a write-set aborted
 // as a deadlock victim.
 func statementWriteSet(ctx *sqle.Context) *WriteSet {
-	if ctx == nil || !ctx.GetIgnoreAutoCommit() {
+	if ctx == nil {
 		return nil
 	}
 	sess, ok := ctx.Session.(*QRDBSession)
 	if !ok {
 		return nil
 	}
-	return sess.writeSet()
+	ws := sess.writeSet()
+	if ws == nil || (!ctx.GetIgnoreAutoCommit() && !ws.implicit) {
+		return nil
+	}
+	return ws
+}
+
+// openStatement returns the write-set a statement an editor is opening
+// applies to: the explicit transaction's, or -- outside one -- the session's
+// write-set, made the statement's implicit transaction (see
+// writeset_autocommit.go). nil for a context that is not a QRDB session.
+func openStatement(ctx *sqle.Context) *WriteSet {
+	if ws := statementWriteSet(ctx); ws != nil {
+		return ws
+	}
+	if ctx == nil {
+		return nil
+	}
+	sess, ok := ctx.Session.(*QRDBSession)
+	if !ok {
+		return nil
+	}
+	ws := sess.writeSet()
+	if ws == nil || ws.Bound() {
+		return nil
+	}
+	ws.beginImplicit()
+	return ws
 }

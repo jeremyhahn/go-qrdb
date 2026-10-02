@@ -276,7 +276,7 @@ func (s *sqlService) engineFor(key engineKey, prov *provider.Provider) *sqle.Eng
 // provider.Database.GetTableInsensitive scopes KV/entity table access to
 // the caller's tenant instead of falling back to the system tenant. It then
 // executes the query and materializes the result rows.
-func run(ctx context.Context, eng *sqle.Engine, dbName, query string) (*service.SQLQueryResult, error) {
+func run(ctx context.Context, eng *sqle.Engine, dbName, query string) (result *service.SQLQueryResult, err error) {
 	identity := auth.IdentityFromContext(ctx)
 	sess := provider.NewSession(sql.NewBaseSession(), identity)
 	// The session lives for this one request; ending it releases any row
@@ -298,7 +298,14 @@ func run(ctx context.Context, eng *sqle.Engine, dbName, query string) (*service.
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = iter.Close(sqlCtx) }()
+	// Closing the result is when an autocommit statement commits, so its
+	// error is the statement's: a commit that lost its compare-and-swap must
+	// fail the request, not vanish with the iterator.
+	defer func() {
+		if cerr := iter.Close(sqlCtx); cerr != nil && err == nil {
+			result, err = nil, cerr
+		}
+	}()
 
 	// Build column names from the schema.
 	columns := make([]string, len(schema))

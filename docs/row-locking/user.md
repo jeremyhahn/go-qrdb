@@ -96,9 +96,8 @@ that waited; your transaction is still open and still holds the locks it had.
 
 Inside a transaction, a statement that changed several rows before it timed
 out is undone whole — none of its changes stay — and your earlier statements
-are kept. Outside a transaction it is not: each row it wrote before the timeout
-is already committed. Put a multi-row statement inside a transaction when it
-must be all-or-nothing.
+are kept. Outside a transaction the statement is its own transaction, so none
+of its rows are committed either.
 
 ## Troubleshooting
 

@@ -13,6 +13,21 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- **Behaviour: an autocommit SQL statement is atomic.** A statement outside
+  an explicit transaction now commits all of its rows or none, as in InnoDB
+  and PostgreSQL. A three-row `INSERT` whose third row is a duplicate leaves
+  the first two absent; previously each row was its own commit and they
+  stayed. This holds on the MySQL and PostgreSQL wires, the ad-hoc query
+  service (REST, gRPC, Unix, QUIC, MCP, embedded) and the embedded driver.
+  Reads, commit preconditions and duplicate reporting (1062, including a key
+  taken concurrently before the commit) are unchanged; `qrdb_isolation` does
+  not apply to an autocommit statement. An autocommit statement is now
+  bounded like a transaction (8 MiB, 100,000 keys), and a statement that
+  writes two databases is refused. The statement's row-lock release is
+  folded into its commit, so a pessimistic single-row `UPDATE`/`DELETE` is
+  two Raft proposals instead of three. The query service and the PostgreSQL
+  wire now report an error raised when a result is closed -- the commit --
+  instead of dropping it.
 - **Every SQL surface resolves each table, view and servicer once per
   statement.** In 0.27.0-alpha only the MySQL wire delivered the statement
   boundaries this memoization needs; the PostgreSQL wire (each executed statement),

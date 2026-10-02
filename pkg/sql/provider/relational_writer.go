@@ -687,23 +687,23 @@ type relationalWriter struct {
 	table *RelationalTable
 }
 
-// StatementBegin marks the start of a statement. Inside an interactive
-// transaction it opens an implicit statement savepoint on the transaction's
-// WriteSet, so a statement that fails part way can be undone whole (see
-// writeset_statement.go). Outside one it does nothing: each autocommit row
-// write is its own compare-and-swap, committed before the next row is
-// written, and there is nothing in flight to check-point.
+// StatementBegin marks the start of a statement. It opens an implicit
+// statement savepoint on the transaction's WriteSet, so a statement that
+// fails part way can be undone whole (see writeset_statement.go). Outside
+// an explicit transaction the statement is its own: its WriteSet becomes
+// the statement's implicit transaction, committed when the statement ends
+// (see writeset_autocommit.go).
 func (w *relationalWriter) StatementBegin(ctx *sqle.Context) {
-	if ws := statementWriteSet(ctx); ws != nil {
+	if ws := openStatement(ctx); ws != nil {
 		ws.beginStatement()
 	}
 }
 
 // DiscardChanges undoes everything the failed statement buffered into the
-// interactive transaction's WriteSet since StatementBegin, across every
-// table the statement edited. The transaction's earlier statements, its
-// row locks and its reads are kept. Outside a transaction it does nothing:
-// the rows the statement already wrote are committed (see StatementBegin).
+// transaction's WriteSet since StatementBegin, across every table the
+// statement edited. The transaction's earlier statements, its row locks and
+// its reads are kept; for an autocommit statement nothing is left to
+// commit.
 func (w *relationalWriter) DiscardChanges(ctx *sqle.Context, _ error) error {
 	if ws := statementWriteSet(ctx); ws != nil {
 		ws.discardStatement()
@@ -730,9 +730,9 @@ func (w *relationalWriter) StatementComplete(ctx *sqle.Context) error {
 	return nil
 }
 
-// Close finalizes the writer. No-op: an autocommit write is durable as soon
-// as its Execute call returns, and a buffered one is the transaction's to
-// commit.
+// Close finalizes the writer. No-op: every write is buffered, and the
+// transaction -- explicit, or the autocommit statement's implicit one --
+// commits it.
 func (w *relationalWriter) Close(_ *sqle.Context) error { return nil }
 
 // Insert inserts row, together with one physical entry per secondary index
@@ -791,7 +791,7 @@ func (w *relationalWriter) Insert(ctx *sqle.Context, row sqle.Row) error {
 		return err
 	}
 
-	ws, err := t.activeWriteSet(ctx)
+	ws, err := t.writeSetFor(ctx, true)
 	if err != nil {
 		return err
 	}
@@ -854,7 +854,21 @@ func (t *RelationalTable) bufferInsert(ctx *sqle.Context, ws *WriteSet, g *table
 	if err := ws.PutUnique(ctx, rowKey, encodedRow); err != nil {
 		return err
 	}
+	ws.addUniqueCheck(t.duplicateCheck(g, candidates))
 	return applyActionsToWriteSet(ctx, ws, actions)
+}
+
+// duplicateCheck explains a lost implicit commit for a row that newly
+// occupied candidates: the duplicate-key error resolveDuplicate reports
+// when one of them is taken by now, or nil.
+func (t *RelationalTable) duplicateCheck(g *tableGeneration, candidates []uniqueCandidate) uniqueCheck {
+	return func(ctx *sqle.Context) error {
+		dupErr, transient, err := t.resolveDuplicate(ctx, g, candidates)
+		if err != nil || transient {
+			return nil
+		}
+		return dupErr
+	}
 }
 
 // indexAction describes one secondary-index physical entry an Insert or
@@ -991,7 +1005,7 @@ func (w *relationalWriter) Delete(ctx *sqle.Context, row sqle.Row) error {
 		}
 	}
 
-	ws, err := t.activeWriteSet(ctx)
+	ws, err := t.writeSetFor(ctx, true)
 	if err != nil {
 		return err
 	}
@@ -1116,7 +1130,7 @@ func (w *relationalWriter) Update(ctx *sqle.Context, old, newRow sqle.Row) error
 		}
 	}
 
-	ws, err := t.activeWriteSet(ctx)
+	ws, err := t.writeSetFor(ctx, true)
 	if err != nil {
 		return err
 	}
@@ -1255,6 +1269,9 @@ func (t *RelationalTable) bufferUpdate(ctx *sqle.Context, ws *WriteSet, g *table
 		if err := ws.Put(ctx, newRowKey, encodedNewRow); err != nil {
 			return err
 		}
+	}
+	if len(candidates) > 0 {
+		ws.addUniqueCheck(t.duplicateCheck(g, candidates))
 	}
 	return applyActionsToWriteSet(ctx, ws, actions)
 }

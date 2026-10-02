@@ -558,7 +558,39 @@ A losing commit clears the write-set (matching InnoDB, which rolls back a transa
 
 Both wire protocols and the in-process driver carry this, because transaction state lives on the **session**, not the query context — so every statement of a connection must share one `provider.QRDBSession`. `sdk/go/driver`'s connection owns exactly one session for its lifetime; the MySQL listener builds one per connection; on the PostgreSQL listener the session is created once per connection by a `wire.SessionMiddleware` handler (`pkg/sql/pgsql/parse.go`) and threaded through every statement, since `psql-wire` calls its parse function once per statement with no connection handle. PostgreSQL's `END` / `END WORK` / `END TRANSACTION` — spellings the vitess-derived parser does not accept — are rewritten to `COMMIT` before reaching the engine.
 
-Outside a transaction, each **row** write is atomic — the row and every index entry it touches commit in one Raft proposal — but a **multi-row** statement is not: each row is its own commit, so a statement that fails on its third row leaves the first two committed. Run a multi-row statement inside a transaction when it must be all-or-nothing. The KV transaction API (`TransactionServicer.Execute`) remains available directly.
+### Autocommit statements are atomic
+
+A statement outside an explicit transaction is **its own transaction**, as in
+InnoDB and PostgreSQL: all of its rows commit when it ends, or none do. A
+three-row `INSERT` whose third row is a duplicate leaves the first two absent;
+a multi-row `UPDATE`, or a `DELETE` whose foreign-key cascade fails part way,
+leaves nothing behind. This holds on every surface — both wires, the ad-hoc
+query service and the embedded driver.
+
+It reuses the transaction machinery above (`pkg/sql/provider/writeset_autocommit.go`).
+When a relational table's editor opens an autocommit statement
+(`StatementBegin`), the statement's write-set becomes **implicit**: its writes
+are buffered rather than proposed row by row, a failed statement is undone by
+the statement savepoint, and go-mysql-server's autocommit `COMMIT` when the
+statement's result is closed proposes them as **one** compare-and-swap — with
+the statement's row-lock release folded into the same proposal (see
+[../row-locking/engineering.md](../row-locking/engineering.md#cost-of-a-locking-statement)).
+
+Only atomicity changes. An implicit transaction:
+
+| Property | Value |
+|---|---|
+| Reads | the latest committed version, overlaid by the statement's own writes — no snapshot is pinned, so binding costs no read |
+| Commit preconditions | what an autocommit row write always carried: absence of every primary key and UNIQUE value the statement newly occupies, the grant-time revision of a row it locked (pessimistic mode), and the tables' resolution fences. A row it merely rewrites or deletes is not compared (last-writer-wins for optimistic autocommit DML, as before) |
+| `qrdb_isolation` | does not apply; it is a transaction setting |
+| Duplicates | reported at the row (1062), because the candidate keys are checked before the row is buffered — which is what `INSERT IGNORE` and `ON DUPLICATE KEY UPDATE` rely on. A key a concurrent statement commits between that check and this commit is reported as the same 1062 |
+| Commit failure | reported to the client: closing the result is the commit, so every surface returns the close error |
+| Several stores | a read of a table in another database goes straight to the store; a write to a second database in one statement is refused (`CrossDatabaseTransactionError`) — one proposal targets one shard |
+| Limits | an autocommit statement is bounded like a transaction: 8 MiB and 100,000 distinct keys (`WriteSetLimitError`). Split a bulk load into statements under that bound |
+
+A context with no QRDB session — none of the SQL surfaces creates one — still
+writes row by row. The KV transaction API (`TransactionServicer.Execute`)
+remains available directly.
 
 
 ## PostgreSQL Syntax Translation

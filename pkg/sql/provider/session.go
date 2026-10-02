@@ -327,16 +327,24 @@ func (s *QRDBSession) CommitTransaction(ctx *sqle.Context, _ sqle.Transaction) e
 		return nil
 	}
 
-	resp, err := ws.commit(ctx)
+	// The commit and the release of the transaction's row locks are one
+	// proposal: the locks end with the transaction, whether its commit wins
+	// or loses (see WriteSet.commitAndRelease).
+	resp, err := ws.commitAndRelease(ctx)
 	if err != nil {
+		if ws.implicit {
+			// An autocommit statement has no COMMIT to retry: the
+			// statement failed, and nothing of it outlives it.
+			s.ws.CompareAndSwap(ws, nil)
+			s.endTransaction()
+			_ = ws.releaseLocks(ctx)
+			return err
+		}
 		// The write set stays for a retry, and so do the locks that
 		// protect it.
 		return err
 	}
 	s.ws.CompareAndSwap(ws, nil)
-	// The commit is decided -- applied, or lost to a conflict -- so the
-	// transaction's row locks have done their job.
-	_ = ws.releaseLocks(ctx)
 
 	if !resp.Succeeded {
 		// The transaction is over -- rolled back, as InnoDB rolls back a
@@ -348,6 +356,12 @@ func (s *QRDBSession) CommitTransaction(ctx *sqle.Context, _ sqle.Transaction) e
 		s.endTransaction()
 		if stale, serr := ws.staleResolution(ctx); serr == nil && stale != nil {
 			return sqle.ErrLockDeadlock.Wrap(stale, stale.Error())
+		}
+		// An autocommit statement that lost its commit to a concurrent
+		// statement taking one of the keys it occupies is a duplicate key,
+		// exactly as when the row was written on its own.
+		if dup := ws.duplicateAfterConflict(ctx); dup != nil {
+			return dup
 		}
 
 		key := ""
@@ -401,6 +415,17 @@ var _ sqle.LifecycleAwareSession = (*QRDBSession)(nil)
 func (s *QRDBSession) CommandBegin() error {
 	if ws := s.ws.Load(); ws != nil {
 		ws.resetStatements()
+		if ws.implicit {
+			// An autocommit statement that failed before go-mysql-server
+			// committed it left its implicit transaction open. Nothing of a
+			// statement may outlive it: the next statement gets a fresh
+			// write-set, and the leftover's locks are released.
+			fresh := newWriteSet(ws.readOnly, ws.level)
+			fresh.concurrency = ws.concurrency
+			if s.ws.CompareAndSwap(ws, fresh) {
+				_ = ws.releaseLocks(context.Background())
+			}
+		}
 	}
 	s.stmt.Store(&statementScope{})
 	return nil
