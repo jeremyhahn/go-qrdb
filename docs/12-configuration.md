@@ -191,7 +191,11 @@ Configures the QRDB server's network listeners.
 ### bootstrap
 
 Configures TLS bootstrap for cluster enrollment: how a joining node obtains the
-cluster CA, and where the first node serves it from.
+cluster CA, and where the first node serves it from. Joining has two
+independent halves — fetching the trust anchor (`noise_key`..`addr` below) and
+submitting a CSR to an admitted member for signing (`join_addr`..`join_token_env`)
+— both required for a join through enrollment to succeed; see
+[docs/clustering/user.md](clustering/user.md#adding-a-node-member-side-csr-join).
 
 | Field | Type | Default | CLI Flag | Description |
 |---|---|---|---|---|
@@ -204,6 +208,11 @@ cluster CA, and where the first node serves it from.
 | `dane_dot`    | bool   | `false` | `--bootstrap-dane-dot`  | Use DNS-over-TLS for DANE lookups |
 | `direct_url`  | string | `""` | `--bootstrap-direct-url` | Full HTTPS URL for direct CA bundle download |
 | `addr`        | string | `""` | `--bootstrap-addr`       | `host:port` of the first node's admin server |
+| `join_addr`       | string | `""` | `--bootstrap-join-addr`       | `host:port` of an admitted member's Noise_NK join listener (member-side CSR join) |
+| `join_key`        | string | `""` | `--bootstrap-join-key`        | Hex Curve25519 public key of that join listener |
+| `join_http_url`   | string | `""` | `--bootstrap-join-url`        | Base admin HTTPS URL of an admitted member, for the SPKI/Direct join transport |
+| `join_token_file` | string | `""` | `--bootstrap-join-token-file` | Path to a file holding the join-admission secret |
+| `join_token_env`  | string | `""` | `--bootstrap-join-token-env`  | Name of an environment variable holding the join-admission secret |
 
 **Notes:**
 
@@ -217,6 +226,38 @@ cluster CA, and where the first node serves it from.
   `server.admin_port`. If that port is unset the derivation **fails with
   `*clusterenroll.MissingAdminPortError`** rather than completing the URL with a
   guessed port.
+- `join_token_file` and `join_token_env` are mutually exclusive; configuring
+  either `join_addr`/`join_key` or `join_http_url` without one of them fails
+  config validation with a typed `*ValidationError` — the join-admission
+  secret is never configured inline in YAML.
+- `join_addr` requires `join_key` and vice versa; `join_http_url` needs neither.
+  Both transports may be configured together — the Noise_NK transport is
+  preferred when both are set.
+
+---
+
+### cluster_join
+
+Configures this node to sign CSRs for joining nodes as an admitted,
+unsealed member (the signing side of member-side CSR join; see `bootstrap`
+above for the joining side).
+
+| Field | Type | Default | CLI Flag | Description |
+|---|---|---|---|---|
+| `enabled`     | bool   | `false` | `--cluster-join-enabled`      | Run the Noise_NK join listener and register the SPKI/Direct `/v1/enroll/join` route |
+| `listen_host` | string | `server.host` | `--cluster-join-listen-host` | Bind host for the Noise_NK join listener |
+| `listen_port` | int    | `63007` | `--cluster-join-listen-port`  | TCP port for the Noise_NK join listener |
+| `token_file`  | string | `""` | `--cluster-join-token-file`   | Path to a file holding the admission secret this node checks |
+| `token_env`   | string | `""` | `--cluster-join-token-env`    | Name of an environment variable holding the admission secret |
+
+**Notes:**
+
+- `token_file` and `token_env` are mutually exclusive; `enabled: true` with
+  neither configured fails config validation.
+- The SPKI/Direct route needs no listener of its own: it is registered on the
+  node's existing admin HTTPS listener, reachable only once the barrier is
+  unsealed — the cluster CA (Key A) this node signs with is not available
+  before that.
 
 ---
 

@@ -1,6 +1,6 @@
 # Clustering — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-02
 
 Two command groups: `qrdb admin` (node and shard administration) and
 `qrdb rebalance` (shard distribution). Both accept the root persistent flags
@@ -214,12 +214,14 @@ qrdbd start --replica-id 1 --peers 1=node1.db.example.com:63001,2=node2.db.examp
 
 Dynamic membership is **off by default**, leader-only, and quorum-guarded.
 
-Peer enrollment is configured on the joining node. **In this release, every
-flag in the table below selects a join path that refuses to start** with
-`EnrollmentUnavailableError`, before any dial or write, because the cluster CA
-private key is no longer distributed. Add a node with `--tls-ca-file`,
-`--tls-cert-file` and `--tls-key-file` instead. See
-[user.md](user.md#adding-a-node-joining-through-enrollment-is-unavailable-in-this-release).
+Peer enrollment is configured on the joining node and has two independent
+halves, both required for a join to succeed: fetching the trust anchor (the CA
+**certificate** only) and submitting a CSR to an admitted member for signing
+(member-side CSR join). Configuring only the first half selects a join path
+that refuses to start with `EnrollmentUnavailableError`, before any dial or
+write. See [user.md](user.md#adding-a-node-member-side-csr-join).
+
+### Trust-anchor fetch
 
 | Flag | Method |
 |---|---|
@@ -236,6 +238,46 @@ dropped with a WARN and the approved method is used. The first node's
 `--bootstrap-noise-port` / `--bootstrap-noise-host` are still accepted and
 validated, and open no listener. See
 [user.md](user.md#in-fips-140-3-mode-do-not-use-the-noise-bootstrap-method).
+
+### Member-side CSR join
+
+The joining node generates its own node key locally and submits a PKCS#10 CSR
+to an admitted member's join listener; that member signs it with the
+replicated cluster CA (Key A) and returns only the signed leaf. Neither
+private key ever crosses the wire. Exactly one transport is configured per
+joining node:
+
+| Flag | Transport |
+|---|---|
+| `--bootstrap-join-addr` with `--bootstrap-join-key` | Noise_NK — **not available in FIPS 140-3 mode** |
+| `--bootstrap-join-url` | SPKI/Direct, plain HTTPS against an admitted member's admin listener (`/v1/enroll/join`) |
+
+| Flag | Meaning |
+|---|---|
+| `--bootstrap-join-token-file` | path to a file holding the join-admission secret |
+| `--bootstrap-join-token-env` | name of an environment variable holding it (mutually exclusive with the file flag) |
+
+### Signing a join: `--cluster-join-enabled`
+
+An admitted, unsealed member signs CSRs for joining nodes when started with:
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--cluster-join-enabled` | `false` | run the Noise_NK join listener and register the SPKI/Direct `/v1/enroll/join` route on the admin listener |
+| `--cluster-join-listen-host` | `--host` | bind host for the Noise_NK join listener |
+| `--cluster-join-listen-port` | `63007` | TCP port for the Noise_NK join listener |
+| `--cluster-join-token-file` | — | path to a file holding the admission secret this node checks |
+| `--cluster-join-token-env` | — | name of an environment variable holding it (mutually exclusive with the file flag) |
+
+The SPKI/Direct route needs no separate port or flag of its own: it registers
+on the same admin HTTPS listener `/v1/ca/bootstrap` already uses, and only
+once the barrier is unsealed — the cluster CA is not available before that, so
+the route is never a member of the sealed-window allowlist.
+
+```bash
+qrdbd start ... --cluster-join-enabled \
+  --cluster-join-token-file /etc/qrdb/join-token.secret
+```
 
 ## Startup refusal under an activated feature
 

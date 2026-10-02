@@ -1,6 +1,6 @@
 # Clustering — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-02
 
 Forming a cluster, watching it, changing its membership, and moving shards
 around when the load goes lopsided.
@@ -53,37 +53,78 @@ certificate on the same key keeps the identity; a new key changes it.
 
 A single-node cluster has no network transport and needs no identities.
 
-### Adding a node: joining through enrollment is unavailable in this release
+### Adding a node: member-side CSR join
 
-**A node started with bootstrap flags refuses to start** in this release:
-`--bootstrap-noise-key`, `--bootstrap-spki-pin`, `--bootstrap-dane-dns` and
-`--bootstrap-direct-url` all select the join path, and the join path now fails
-with `EnrollmentUnavailableError`. The error message tells you what to do
-instead. The refusal comes before the node dials anything, and nothing is
-written to its data directory.
+A joining node generates its own key **locally** and submits a certificate
+signing request (CSR) to an already-admitted, unsealed member, which signs it
+with the replicated cluster CA (Key A) and returns only the signed leaf
+certificate. Neither the joiner's private key nor the cluster CA's private key
+ever crosses the wire, in either direction.
 
-The reason is a security fix. Earlier releases enrolled a joining node by
-handing it the cluster CA **private key**, which it used to sign its own
-certificate. The key was served by `/v1/ca/bootstrap`, a route that needs no
-credential, so anyone who could reach a first node's admin port could read it.
-The key never leaves the node that holds it any more. The replacement,
-where the joining node generates its key locally and a running member signs
-its certificate request, ships in a following release.
+Joining has two independent halves, and both must be configured on the
+joining node:
 
-**To add a node now**, issue its certificate yourself on the node that holds
-the cluster CA (`ca.pem` and `ca-key.pem` in its data directory):
+1. **Fetch the trust anchor** — the CA **certificate** only — using one of the
+   existing bootstrap methods: `--bootstrap-noise-key` (with
+   `--bootstrap-noise-addr`), `--bootstrap-spki-pin` (with `--bootstrap-addr`),
+   `--bootstrap-dane-dns`, or `--bootstrap-direct-url`.
+2. **Submit the CSR** to an admitted member's join listener, over one of two
+   transports:
+   - Noise_NK: `--bootstrap-join-addr` with `--bootstrap-join-key` (that
+     member's join-listener address and public key).
+   - SPKI/Direct, plain HTTPS: `--bootstrap-join-url` (that member's admin
+     HTTPS URL), pinned the same way `--bootstrap-spki-pin` pins the anchor
+     fetch.
 
-1. Generate an ECDSA P-256 key and a certificate signed by the cluster CA,
-   with the node's SPIFFE identity as a URI SAN:
-   `spiffe://<trust-domain>/node/<raft-address>`. Give it both the
-   `serverAuth` and `clientAuth` extended key usages, and add the node's DNS
-   names and IP addresses as SANs.
-2. Copy `ca.pem`, the new certificate and the new key to the new node, and
-   **never `ca-key.pem`**.
-3. Start the new node with `--tls-ca-file`, `--tls-cert-file` and
-   `--tls-key-file` pointing at them, and without bootstrap flags.
-4. Add it to the Raft group as usual (`qrdb admin add-member`, or dynamic
-   membership).
+   Either transport needs the join-admission secret, which is never inline in
+   YAML or on the command line: `--bootstrap-join-token-file` (a file holding
+   it) or `--bootstrap-join-token-env` (an environment variable holding it).
+
+Configuring only the first half (an anchor-fetch method with none of the
+join-transport flags) is refused at startup with `EnrollmentUnavailableError`,
+before any dial or write — that error is this repository's own history: it is
+the full "joining is unavailable" refusal from the release where only the
+anchor-fetch half existed.
+
+**On the member doing the signing**, start it with `--cluster-join-enabled`
+(plus `--cluster-join-token-file` or `--cluster-join-token-env`, the same
+secret the joiner is given). This runs the Noise_NK join listener
+(`--cluster-join-listen-host` / `--cluster-join-listen-port`, defaulting to
+`--host` and `63007`) and registers the SPKI/Direct route
+(`/v1/enroll/join`) on the member's existing admin HTTPS listener — no
+separate port for that transport. The route is reachable only once the
+barrier is unsealed, because the cluster CA is: an admitted member signs
+nothing while sealed.
+
+```bash
+# Admitted member: sign joins over both transports
+qrdbd start ... --cluster-join-enabled \
+  --cluster-join-token-file /etc/qrdb/join-token.secret
+
+# Joining node, Noise_NK
+qrdbd start ... \
+  --bootstrap-noise-key <hex> --bootstrap-noise-addr member1.db.example.com:63006 \
+  --bootstrap-join-addr member1.db.example.com:63007 --bootstrap-join-key <hex> \
+  --bootstrap-join-token-file /etc/qrdb/join-token.secret
+
+# Joining node, SPKI/Direct
+qrdbd start ... \
+  --bootstrap-spki-pin <hex> --bootstrap-addr member1.db.example.com:8443 \
+  --bootstrap-join-url https://member1.db.example.com:8443 \
+  --bootstrap-join-token-file /etc/qrdb/join-token.secret
+```
+
+Add the joined node to the Raft group as usual once it starts
+(`qrdb admin member add`, or dynamic membership).
+
+**You can still add a node by issuing its certificate out of band**, without
+either member running a join listener: generate an ECDSA P-256 key and a
+certificate signed by the cluster CA, with the node's SPIFFE identity as a URI
+SAN (`spiffe://<trust-domain>/node/<raft-address>`, both `serverAuth` and
+`clientAuth` extended key usages, and the node's DNS names/IPs as SANs). Copy
+`ca.pem`, the new certificate and the new key to the new node — never
+`ca-key.pem` — and start it with `--tls-ca-file`, `--tls-cert-file` and
+`--tls-key-file` instead of any bootstrap flag.
 
 ### If your cluster was formed by an earlier release, rotate its CA
 
@@ -96,8 +137,9 @@ Rotate the cluster CA:
 
 1. On the node that will hold the new CA, generate a new CA key and
    certificate. Keep the key on that node only.
-2. Issue a new node certificate for every member from the new CA, as in
-   [Adding a node](#adding-a-node-joining-through-enrollment-is-unavailable-in-this-release).
+2. Issue a new node certificate for every member from the new CA, as in the
+   out-of-band issuance steps under
+   [Adding a node](#adding-a-node-member-side-csr-join).
 3. Build a trust bundle holding **both** CA certificates. Restart each member,
    one at a time, with `--tls-ca-file` set to that bundle and its new
    certificate and key. Both old and new certificates verify during this step.
@@ -119,8 +161,9 @@ changes, and the node tells you so at startup:
 - **The first node still advertises.** It comes up without a Noise listener and
   logs a WARN saying so. Joining nodes reach its `/v1/ca/bootstrap` endpoint on
   the admin port instead.
-- **Joining nodes must use an approved method**: `--bootstrap-spki-pin` (with
-  `--bootstrap-addr`), `--bootstrap-dane-dns`, or `--bootstrap-direct-url`.
+- **Joining nodes must use an approved method for the anchor fetch**:
+  `--bootstrap-spki-pin` (with `--bootstrap-addr`), `--bootstrap-dane-dns`, or
+  `--bootstrap-direct-url`.
 - **`--bootstrap-noise-key` on its own is refused at startup**, with an error
   that names FIPS and lists the methods to use instead. If you give it
   alongside an approved method, the approved one is used and the Noise entry is
@@ -128,6 +171,15 @@ changes, and the node tells you so at startup:
 
 `--bootstrap-noise-port` and `--bootstrap-noise-host` are still accepted and
 validated; they simply configure a listener that is not opened.
+
+**The member-side CSR join's Noise_NK transport is unavailable for the same
+reason**, independent of the anchor-fetch method: `--cluster-join-enabled`
+starts no Noise_NK join listener in FIPS mode (`StartJoinServer` refuses with
+an error naming FIPS), and a joining node's `--bootstrap-join-addr` /
+`--bootstrap-join-key` fail the same way `--bootstrap-noise-key` does. Use the
+SPKI/Direct join transport (`--bootstrap-join-url`, with `--bootstrap-spki-pin`
+or `--bootstrap-direct-url` for the anchor) on both sides instead — it is TLS
+only and carries no FIPS restriction of its own.
 
 ## Watching the cluster
 
@@ -352,11 +404,14 @@ final imbalance. Re-plan and re-run — the plan is computed from current state,
 so a second pass picks up where the first stopped.
 
 **A joining node refuses to start with "joining an existing cluster is
-unavailable in this release".** This is expected in this release: bootstrap
-flags select a join, and joins through enrollment are unavailable because the
-CA key is no longer distributed. Issue the node's certificate on the node that
-holds the cluster CA and start it with the explicit TLS file flags. See
-[Adding a node](#adding-a-node-joining-through-enrollment-is-unavailable-in-this-release).
+unavailable in this release".** An anchor-fetch method is configured
+(`--bootstrap-noise-key`, `--bootstrap-spki-pin`, `--bootstrap-dane-dns` or
+`--bootstrap-direct-url`) but neither join-transport is: set
+`--bootstrap-join-addr`/`--bootstrap-join-key` or `--bootstrap-join-url`, with
+`--bootstrap-join-token-file` or `--bootstrap-join-token-env`, to reach an
+admitted member's join listener — or issue the node's certificate out of band
+and start it with the explicit TLS file flags instead. See
+[Adding a node](#adding-a-node-member-side-csr-join).
 
 **A joining node reports that Noise NK is not FIPS 140-3 approved.** The daemon
 is running in FIPS mode, where that method cannot be used. Configure

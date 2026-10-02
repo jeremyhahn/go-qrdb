@@ -1,6 +1,6 @@
 # Clustering — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-02
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column.
@@ -146,9 +146,24 @@ refusals with the same codes (REST no longer answers them `500`).
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | Node draining | 503 | `UNAVAILABLE` |
 
-Cluster enrollment is not an API surface — it runs at daemon startup, below
-every transport — so its failures are startup errors rather than status codes.
-The Go surface is in `pkg/clusterenroll`, re-exported from
+Cluster enrollment mostly runs at daemon startup, below every transport, so
+most of its failures are startup errors rather than status codes. The one
+exception is the member-side CSR join's SPKI/Direct transport: an admitted,
+unsealed member with `--cluster-join-enabled` registers a plain-HTTPS route,
+`POST /v1/enroll/join`, on its existing admin listener, pinned the same way
+`/v1/ca/bootstrap` is. Unlike every other route in this document it needs no
+bearer credential — the join-admission token in the request body is the
+credential — and it is never a member of the sealed-window allowlist, because
+the cluster CA it signs with is available only once the barrier is unsealed.
+
+| Request / response | Meaning |
+|---|---|
+| `{"token", "csr_der", "node_uri"}` → `{"cert_pem"}` | token checked, CSR's signature verified, leaf issued from the replicated cluster CA |
+| `{"token", "csr_der", "node_uri"}` → `{"error"}`, `403` | bad token, malformed/unsigned CSR, or a signing failure |
+| unconfigured (`--cluster-join-enabled` unset) | the path is not registered at all — not a `404`, an absent route |
+
+The Noise_NK join transport and the trust-anchor fetch have no HTTP surface of
+their own; their Go surface is in `pkg/clusterenroll`, re-exported from
 `sdk/go/clusterenroll`:
 
 | Symbol | Meaning |
@@ -157,7 +172,8 @@ The Go surface is in `pkg/clusterenroll`, re-exported from
 | `*NoiseFIPSUnavailableError` | a join configured with Noise as its only method, in FIPS 140-3 mode; the message names FIPS and the approved methods |
 | `(*Advertiser).NoiseEnabled() bool` | whether this first node is running a Noise listener; a non-nil `Advertiser` means the node advertises enrollment, which is a different question |
 
-See [engineering.md](engineering.md#fips-140-3--the-noise-nk-method-is-unavailable).
+See [engineering.md](engineering.md#fips-140-3--the-noise-nk-method-is-unavailable)
+and [architecture.md](architecture.md) for the member-side CSR join design.
 
 The cluster feature gate is not an API surface either: a node refused under a
 feature the cluster activated fails at startup with
