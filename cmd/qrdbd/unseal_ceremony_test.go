@@ -22,6 +22,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
@@ -178,6 +180,16 @@ func TestRunStart_UnsealCeremony_ProceedsToFullStartup(t *testing.T) {
 	}
 
 	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
+
+	// The cluster CA key (Key A) is confirmed persisted into the replicated
+	// store during this same boot (confirmClusterCAPersisted, called once
+	// waitForLeaderElection succeeds) and the local ca-key.pem fixture --
+	// present on disk before runStart ever ran, exactly as a real first
+	// node's bootstrap-generated file would be -- is deleted as soon as that
+	// is confirmed. No CA private key file survives a completed boot.
+	if _, err := os.Stat(filepath.Join(dir, "ca-key.pem")); !os.IsNotExist(err) {
+		t.Fatalf("ca-key.pem still exists in the data directory after a completed boot (stat err = %v)", err)
+	}
 }
 
 // initializeBarrier performs the operator's half of the ceremony.
