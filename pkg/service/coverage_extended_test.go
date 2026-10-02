@@ -186,8 +186,11 @@ func TestWithBarrierManager_Option(t *testing.T) {
 	if svc == nil {
 		t.Fatal("expected non-nil service")
 	}
-	// SealDatabase should still return BarrierManagerNotConfiguredError since
-	// we passed nil.
+	// SealDatabase on the caller's own database should still return
+	// BarrierManagerNotConfiguredError since we passed nil.
+	if _, err := svc.Create(testDBConfig("db")); err != nil {
+		t.Fatal(err)
+	}
 	err := svc.SealDatabase(context.Background(), "db")
 	var bmErr *BarrierManagerNotConfiguredError
 	if !errors.As(err, &bmErr) {
@@ -238,6 +241,9 @@ func TestDatabaseService_UpdateEtcd_NotFound(t *testing.T) {
 
 func TestDatabaseService_UnsealDatabase_NoBarrierManager(t *testing.T) {
 	svc := newTestDatabaseService(t)
+	if _, err := svc.Create(testDBConfig("db")); err != nil {
+		t.Fatal(err)
+	}
 
 	err := svc.UnsealDatabase(context.Background(), "db", seal.Credentials{})
 	if err == nil {
@@ -255,7 +261,14 @@ func TestDatabaseService_UnsealDatabase_NoBarrierManager(t *testing.T) {
 
 func TestDatabaseService_DatabaseBarrierStatus_NilBarrierMgrTyped(t *testing.T) {
 	// Use the typed struct directly to access unexported field.
-	s := &DatabaseService{manager: nil, barrierMgr: nil}
+	svc := newTestDatabaseService(t)
+	if _, err := svc.Create(testDBConfig("db")); err != nil {
+		t.Fatal(err)
+	}
+	s, ok := svc.(*DatabaseService)
+	if !ok || s.barrierMgr != nil {
+		t.Fatal("the test needs a *DatabaseService with no barrier manager")
+	}
 	_, err := s.DatabaseBarrierStatus(context.Background(), "db")
 	var bmErr *BarrierManagerNotConfiguredError
 	if !errors.As(err, &bmErr) {

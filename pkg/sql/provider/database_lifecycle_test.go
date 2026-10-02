@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -129,6 +130,36 @@ func TestProvider_Lifecycle_SystemSessionUsesManager(t *testing.T) {
 	require.NoError(t, p.DropDatabase(ctx, "opsdb"))
 	_, err := mgr.Get("opsdb")
 	require.Error(t, err)
+}
+
+// mustCreateTenantDatabase creates name owned by tenantID in mgr.
+func mustCreateTenantDatabase(t *testing.T, mgr *database.Manager, tenantID, name string) {
+	t.Helper()
+	if _, err := mgr.Create(database.DatabaseConfig{
+		TenantID: tenantID, Name: name, Engine: database.EngineKV, Backend: database.BackendMemory,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A system-tenant session drops only the system tenant's own databases. On
+// the manager path, as through the database service, another tenant's
+// database answers as a missing one and is left as it was: there is no
+// cross-tenant database access.
+func TestProvider_Lifecycle_SystemSessionCannotDropATenantsDatabase(t *testing.T) {
+	mgr := newTestManager(t)
+	mustCreateTenantDatabase(t, mgr, "acme", "acme-ledger")
+	for name, p := range map[string]*Provider{
+		"manager path": NewManagerProvider(mgr, &mockKVService{}),
+		"service path": NewManagerProvider(mgr, &mockKVService{},
+			WithDatabaseService(service.NewDatabaseService(mgr)), WithLifecycleAuthorizer(&recordingAuthorizer{})),
+	} {
+		err := p.DropDatabase(tenantSession("root", tenantid.System), "acme-ledger")
+		var notFound *database.NotFoundError
+		require.ErrorAs(t, err, &notFound, name)
+		_, getErr := mgr.Get("acme-ledger")
+		require.NoError(t, getErr, "%s: a system session dropped acme's database", name)
+	}
 }
 
 func TestDatabaseLifecycleUnavailableError_Error(t *testing.T) {

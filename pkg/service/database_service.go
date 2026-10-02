@@ -1140,36 +1140,34 @@ func (s *DatabaseService) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*d
 // fail closed (mirroring the tenant-ownership check the database.Manager
 // applies to its *ForTenant methods, and the IAM cross-tenant rule).
 //
-// The system tenant is the store-global admin and may target any database. A
-// non-system caller may target only a database whose owning TenantID matches
-// its own; any mismatch — including an unowned/legacy database with an empty
-// TenantID — fails closed with the same *database.NotFoundError a missing
-// database gets, so the answer does not tell the caller which names other
-// tenants hold.
-//
-// A share holder whose identity is in the system tenant is NOT the
-// store-global admin: it holds a share, and nothing else. The holder routes
-// are identity-gated rather than permission-gated, so lifting it would let
-// it probe every tenant's database names (another tenant's database would
-// answer with a holder or round refusal, a missing one with NotFound). It is
-// confined to the system tenant's own databases like any tenant caller.
+// There is no cross-tenant database access. Every caller -- the system
+// tenant's included -- may target only a database its own tenant owns
+// (ownedDatabase); any other database answers with the same
+// *database.NotFoundError a missing one gets, so the answer does not tell the
+// caller which names other tenants hold. The system tenant owns the databases
+// whose TenantID is the system tenant or empty (the bootstrap and legacy
+// ones).
 func (s *DatabaseService) authorizeDatabaseTenant(ctx context.Context, name string) error {
-	tenantID := tenant.FromContext(ctx)
-	if tenantid.IsSystem(tenantID) {
-		if !auth.IdentityFromContext(ctx).IsShareHolder() {
-			return nil
-		}
-		db, err := s.manager.Get(name)
-		if err != nil {
-			return err
-		}
-		if !tenantid.IsSystem(db.TenantID()) {
-			return &database.NotFoundError{Name: name}
-		}
-		return nil
-	}
-	_, err := s.manager.GetForTenant(ctx, name)
+	_, err := s.ownedDatabase(ctx, name)
 	return err
+}
+
+// ownedDatabase returns the named database when the caller's tenant
+// (tenant.FromContext) owns it, and *database.NotFoundError when it is
+// missing or another tenant's. It is the one ownership check every
+// per-database verb of this service makes, for the system tenant as for any
+// other: the system tenant is confined to its own databases exactly as a
+// tenant is. Node-internal components that need a database regardless of its
+// owner use the database manager directly, never a caller identity.
+func (s *DatabaseService) ownedDatabase(ctx context.Context, name string) (*database.Database, error) {
+	db, err := s.manager.Get(name)
+	if err != nil {
+		return nil, err
+	}
+	if tenantid.Normalize(db.TenantID()) != tenant.FromContext(ctx) {
+		return nil, &database.NotFoundError{Name: name}
+	}
+	return db, nil
 }
 
 // SealDatabase seals the encryption barrier for the named database.
@@ -1250,6 +1248,10 @@ func (s *DatabaseService) CreateForTenant(ctx context.Context, cfg database.Data
 // see CreateWithCredentials and DatabaseCredentialCreator.
 func (s *DatabaseService) CreateForTenantWithCredentials(ctx context.Context, cfg database.DatabaseConfig, creds seal.Credentials) (*database.DatabaseInfo, error) {
 	if tenantid.IsSystem(tenant.FromContext(ctx)) {
+		// The system tenant creates its own databases. A tenant named in
+		// the request is discarded, as a tenant caller's is: no caller
+		// creates a database in another tenant.
+		cfg.TenantID = ""
 		return s.CreateWithCredentials(ctx, cfg, creds)
 	}
 	tenantID := tenant.FromContext(ctx)
@@ -1641,14 +1643,7 @@ func (s *DatabaseService) persistPlacement(ctx context.Context, tenantID string,
 // accurate cluster-wide after a ScaleForTenant call, which very often
 // executes on a different node than the one serving this read.
 func (s *DatabaseService) GetForTenant(ctx context.Context, name string) (*database.DatabaseInfo, error) {
-	if tenantid.IsSystem(tenant.FromContext(ctx)) {
-		info, err := s.Get(name)
-		if err != nil {
-			return nil, err
-		}
-		return s.withCompactionPolicy(ctx, info)
-	}
-	db, err := s.manager.GetForTenant(ctx, name)
+	db, err := s.ownedDatabase(ctx, name)
 	if err != nil {
 		return nil, err
 	}
@@ -1661,12 +1656,19 @@ func (s *DatabaseService) GetForTenant(ctx context.Context, name string) (*datab
 // context's tenant, sorted by name. Each dedicated-raft database's Replicas
 // is refreshed from the placement table; see refreshReplicasFromPlacement.
 func (s *DatabaseService) ListForTenant(ctx context.Context) ([]database.DatabaseInfo, error) {
+	var infos []database.DatabaseInfo
 	if tenantid.IsSystem(tenant.FromContext(ctx)) {
-		return s.List()
-	}
-	infos, err := s.manager.ListForTenant(ctx)
-	if err != nil {
-		return nil, err
+		// The system tenant lists its own databases, as every tenant does.
+		for _, info := range s.manager.List() {
+			if tenantid.IsSystem(info.TenantID) {
+				infos = append(infos, info)
+			}
+		}
+	} else {
+		var err error
+		if infos, err = s.manager.ListForTenant(ctx); err != nil {
+			return nil, err
+		}
 	}
 	for i := range infos {
 		s.refreshReplicasFromPlacement(ctx, &infos[i])
@@ -1734,6 +1736,9 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 	}
 	tenantID := tenant.FromContext(ctx)
 	if tenantid.IsSystem(tenantID) {
+		if _, err := s.ownedDatabase(ctx, name); err != nil {
+			return err
+		}
 		return s.Drop(ctx, name)
 	}
 
@@ -1829,6 +1834,9 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 // database with tenant enforcement and returns the updated runtime information.
 func (s *DatabaseService) UpdateProtocolForTenant(ctx context.Context, name string, protocol database.ProtocolConfig) (*database.DatabaseInfo, error) {
 	if tenantid.IsSystem(tenant.FromContext(ctx)) {
+		if _, err := s.ownedDatabase(ctx, name); err != nil {
+			return nil, err
+		}
 		return s.UpdateProtocol(name, protocol)
 	}
 	if err := s.manager.UpdateProtocolForTenant(ctx, name, protocol); err != nil {
@@ -1841,6 +1849,9 @@ func (s *DatabaseService) UpdateProtocolForTenant(ctx context.Context, name stri
 // database with tenant enforcement and returns the updated runtime information.
 func (s *DatabaseService) UpdateEtcdForTenant(ctx context.Context, name string, etcd *database.EtcdConfig) (*database.DatabaseInfo, error) {
 	if tenantid.IsSystem(tenant.FromContext(ctx)) {
+		if _, err := s.ownedDatabase(ctx, name); err != nil {
+			return nil, err
+		}
 		return s.UpdateEtcd(name, etcd)
 	}
 	if err := s.manager.UpdateEtcdForTenant(ctx, name, etcd); err != nil {
@@ -1853,6 +1864,9 @@ func (s *DatabaseService) UpdateEtcdForTenant(ctx context.Context, name string, 
 // database with tenant enforcement and returns the updated runtime information.
 func (s *DatabaseService) UpdateRaftForTenant(ctx context.Context, name string, raft *database.DatabaseRaftConfig) (*database.DatabaseInfo, error) {
 	if tenantid.IsSystem(tenant.FromContext(ctx)) {
+		if _, err := s.ownedDatabase(ctx, name); err != nil {
+			return nil, err
+		}
 		return s.UpdateRaft(name, raft)
 	}
 	if err := s.manager.UpdateRaftForTenant(ctx, name, raft); err != nil {
@@ -1865,6 +1879,9 @@ func (s *DatabaseService) UpdateRaftForTenant(ctx context.Context, name string, 
 // database with tenant enforcement and returns the updated runtime information.
 func (s *DatabaseService) UpdateBarrierForTenant(ctx context.Context, name string, barrier *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
 	if tenantid.IsSystem(tenant.FromContext(ctx)) {
+		if _, err := s.ownedDatabase(ctx, name); err != nil {
+			return nil, err
+		}
 		return s.UpdateBarrier(name, barrier)
 	}
 	if err := s.manager.UpdateBarrierForTenant(ctx, name, barrier); err != nil {
@@ -1877,6 +1894,9 @@ func (s *DatabaseService) UpdateBarrierForTenant(ctx context.Context, name strin
 // database with tenant enforcement and returns the updated runtime information.
 func (s *DatabaseService) UpdateConnectionForTenant(ctx context.Context, name string, conn *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
 	if tenantid.IsSystem(tenant.FromContext(ctx)) {
+		if _, err := s.ownedDatabase(ctx, name); err != nil {
+			return nil, err
+		}
 		return s.UpdateConnection(name, conn)
 	}
 	if err := s.manager.UpdateConnectionForTenant(ctx, name, conn); err != nil {
@@ -1889,6 +1909,9 @@ func (s *DatabaseService) UpdateConnectionForTenant(ctx context.Context, name st
 // tenant enforcement and returns the updated runtime information.
 func (s *DatabaseService) UpdateSQLForTenant(ctx context.Context, name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
 	if tenantid.IsSystem(tenant.FromContext(ctx)) {
+		if _, err := s.ownedDatabase(ctx, name); err != nil {
+			return nil, err
+		}
 		return s.UpdateSQL(name, sqlCfg)
 	}
 	if err := s.manager.UpdateSQLForTenant(ctx, name, sqlCfg); err != nil {

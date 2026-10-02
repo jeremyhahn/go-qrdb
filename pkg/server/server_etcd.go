@@ -190,11 +190,10 @@ func (a *etcdRequestAuthorizer) AuthorizeRequest(ctx context.Context, perm permi
 	if identity == nil {
 		return nil, authmw.GRPCError(auth.ErrUnauthenticated, codes.Unauthenticated)
 	}
-	callerTenant := identity.TenantID
-	if callerTenant == "" {
-		callerTenant = tenantid.System
-	}
-	if callerTenant != a.owner && !tenantid.IsSystem(callerTenant) {
+	// The listener serves its owning tenant and no one else -- the system
+	// tenant included: there is no cross-tenant database access.
+	callerTenant := tenantid.Normalize(identity.TenantID)
+	if callerTenant != tenantid.Normalize(a.owner) {
 		if a.logger != nil {
 			a.logger.Warn("etcd request refused",
 				"subject", identity.Subject,

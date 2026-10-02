@@ -111,38 +111,39 @@ func (m *fnDatabaseService) CreateForTenant(_ context.Context, cfg database.Data
 	return m.createFn(cfg)
 }
 
-// GetForTenant is Get, as the service's is for the system tenant every
-// call here runs as.
+// GetForTenant is Get: the service's is owner-checked, and every database
+// this double serves is the system tenant's own, which every call here runs
+// as, so the check would pass.
 func (m *fnDatabaseService) GetForTenant(_ context.Context, name string) (*database.DatabaseInfo, error) {
 	return m.Get(name)
 }
 
 func (m *fnDatabaseService) ListForTenant(_ context.Context) ([]database.DatabaseInfo, error) {
-	return nil, nil
+	return m.List()
 }
 
-func (m *fnDatabaseService) DropForTenant(_ context.Context, _ string) error {
-	return nil
+func (m *fnDatabaseService) DropForTenant(ctx context.Context, name string) error {
+	return m.Drop(ctx, name)
 }
 
-func (m *fnDatabaseService) UpdateProtocolForTenant(_ context.Context, _ string, _ database.ProtocolConfig) (*database.DatabaseInfo, error) {
-	return nil, nil
+func (m *fnDatabaseService) UpdateProtocolForTenant(_ context.Context, name string, proto database.ProtocolConfig) (*database.DatabaseInfo, error) {
+	return m.UpdateProtocol(name, proto)
 }
 
-func (m *fnDatabaseService) UpdateEtcdForTenant(_ context.Context, _ string, _ *database.EtcdConfig) (*database.DatabaseInfo, error) {
-	return nil, nil
+func (m *fnDatabaseService) UpdateEtcdForTenant(_ context.Context, name string, cfg *database.EtcdConfig) (*database.DatabaseInfo, error) {
+	return m.UpdateEtcd(name, cfg)
 }
 
-func (m *fnDatabaseService) UpdateRaftForTenant(_ context.Context, _ string, _ *database.DatabaseRaftConfig) (*database.DatabaseInfo, error) {
-	return nil, nil
+func (m *fnDatabaseService) UpdateRaftForTenant(_ context.Context, name string, cfg *database.DatabaseRaftConfig) (*database.DatabaseInfo, error) {
+	return m.UpdateRaft(name, cfg)
 }
 
-func (m *fnDatabaseService) UpdateBarrierForTenant(_ context.Context, _ string, _ *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
-	return nil, nil
+func (m *fnDatabaseService) UpdateBarrierForTenant(_ context.Context, name string, cfg *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
+	return m.UpdateBarrier(name, cfg)
 }
 
-func (m *fnDatabaseService) UpdateConnectionForTenant(_ context.Context, _ string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	return nil, nil
+func (m *fnDatabaseService) UpdateConnectionForTenant(_ context.Context, name string, cfg *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
+	return m.UpdateConnection(name, cfg)
 }
 
 func (m *fnDatabaseService) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {

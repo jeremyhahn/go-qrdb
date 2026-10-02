@@ -714,34 +714,36 @@ func (m *fullFnDatabaseService) CreateForTenant(_ context.Context, _ database.Da
 	return nil, nil
 }
 
-func (m *fullFnDatabaseService) GetForTenant(_ context.Context, _ string) (*database.DatabaseInfo, error) {
-	return nil, nil
+func (m *fullFnDatabaseService) GetForTenant(_ context.Context, name string) (*database.DatabaseInfo, error) {
+	return m.Get(name)
 }
 
 func (m *fullFnDatabaseService) ListForTenant(_ context.Context) ([]database.DatabaseInfo, error) {
-	return nil, nil
+	return m.List()
 }
 
-func (m *fullFnDatabaseService) DropForTenant(_ context.Context, _ string) error { return nil }
-
-func (m *fullFnDatabaseService) UpdateProtocolForTenant(_ context.Context, _ string, _ database.ProtocolConfig) (*database.DatabaseInfo, error) {
-	return nil, nil
+func (m *fullFnDatabaseService) DropForTenant(ctx context.Context, name string) error {
+	return m.Drop(ctx, name)
 }
 
-func (m *fullFnDatabaseService) UpdateEtcdForTenant(_ context.Context, _ string, _ *database.EtcdConfig) (*database.DatabaseInfo, error) {
-	return nil, nil
+func (m *fullFnDatabaseService) UpdateProtocolForTenant(_ context.Context, name string, proto database.ProtocolConfig) (*database.DatabaseInfo, error) {
+	return m.UpdateProtocol(name, proto)
 }
 
-func (m *fullFnDatabaseService) UpdateRaftForTenant(_ context.Context, _ string, _ *database.DatabaseRaftConfig) (*database.DatabaseInfo, error) {
-	return nil, nil
+func (m *fullFnDatabaseService) UpdateEtcdForTenant(_ context.Context, name string, cfg *database.EtcdConfig) (*database.DatabaseInfo, error) {
+	return m.UpdateEtcd(name, cfg)
 }
 
-func (m *fullFnDatabaseService) UpdateBarrierForTenant(_ context.Context, _ string, _ *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
-	return nil, nil
+func (m *fullFnDatabaseService) UpdateRaftForTenant(_ context.Context, name string, cfg *database.DatabaseRaftConfig) (*database.DatabaseInfo, error) {
+	return m.UpdateRaft(name, cfg)
 }
 
-func (m *fullFnDatabaseService) UpdateConnectionForTenant(_ context.Context, _ string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	return nil, nil
+func (m *fullFnDatabaseService) UpdateBarrierForTenant(_ context.Context, name string, cfg *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
+	return m.UpdateBarrier(name, cfg)
+}
+
+func (m *fullFnDatabaseService) UpdateConnectionForTenant(_ context.Context, name string, cfg *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
+	return m.UpdateConnection(name, cfg)
 }
 
 func (m *fullFnDatabaseService) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {

@@ -77,11 +77,12 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 	return dbwire.Info(info), nil
 }
 
-// GetDatabase returns information about a specific database by delegating
-// to the injected DatabaseServicer, as every remote transport does: through
-// GetForTenant, which reads the database's scheduled-compaction policy from
-// its own store. Returns NilServiceError when no database service has been
-// configured.
+// GetDatabase returns information about a database the context's tenant owns
+// by delegating to the injected DatabaseServicer's tenant-scoped lookup,
+// GetForTenant, as every network transport does: another tenant's database
+// answers *database.NotFoundError, and the database's scheduled-compaction
+// policy is read from its own store. Returns NilServiceError when no database
+// service has been configured.
 func (t *Transport) GetDatabase(ctx context.Context, name string) (*transport.DatabaseInfo, error) {
 	if t.dbSvc == nil {
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
@@ -93,38 +94,38 @@ func (t *Transport) GetDatabase(ctx context.Context, name string) (*transport.Da
 	return dbwire.Info(info), nil
 }
 
-// ListDatabases returns information about all databases by delegating
-// to the injected DatabaseServicer. Returns NilServiceError when no
-// database service has been configured.
-func (t *Transport) ListDatabases(_ context.Context) ([]transport.DatabaseInfo, error) {
+// ListDatabases returns the databases the context's tenant owns by
+// delegating to the injected DatabaseServicer's tenant-scoped list. Returns
+// NilServiceError when no database service has been configured.
+func (t *Transport) ListDatabases(ctx context.Context) ([]transport.DatabaseInfo, error) {
 	if t.dbSvc == nil {
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
 	}
-	infos, err := t.dbSvc.List()
+	infos, err := t.dbSvc.ListForTenant(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return dbwire.Infos(infos), nil
 }
 
-// DropDatabase removes a database by name by delegating to the injected
-// DatabaseServicer. Returns NilServiceError when no database service
-// has been configured.
+// DropDatabase removes a database the context's tenant owns by delegating to
+// the injected DatabaseServicer's tenant-scoped drop. Returns NilServiceError
+// when no database service has been configured.
 func (t *Transport) DropDatabase(ctx context.Context, name string) error {
 	if t.dbSvc == nil {
 		return &NilServiceError{Service: "DatabaseServicer"}
 	}
-	return t.dbSvc.Drop(ctx, name)
+	return t.dbSvc.DropForTenant(ctx, name)
 }
 
 // UpdateDatabaseProtocol updates the wire protocol configuration for a
 // database by delegating to the injected DatabaseServicer. Returns
 // NilServiceError when no database service has been configured.
-func (t *Transport) UpdateDatabaseProtocol(_ context.Context, req transport.UpdateDatabaseProtocolRequest) (*transport.DatabaseInfo, error) {
+func (t *Transport) UpdateDatabaseProtocol(ctx context.Context, req transport.UpdateDatabaseProtocolRequest) (*transport.DatabaseInfo, error) {
 	if t.dbSvc == nil {
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
 	}
-	info, err := t.dbSvc.UpdateProtocol(req.Name, database.ProtocolConfig{
+	info, err := t.dbSvc.UpdateProtocolForTenant(ctx, req.Name, database.ProtocolConfig{
 		MySQL:      req.MySQL,
 		PostgreSQL: req.PostgreSQL,
 	})
@@ -137,11 +138,11 @@ func (t *Transport) UpdateDatabaseProtocol(_ context.Context, req transport.Upda
 // UpdateDatabaseEtcd updates the etcd wire protocol configuration for a
 // database by delegating to the injected DatabaseServicer. Returns
 // NilServiceError when no database service has been configured.
-func (t *Transport) UpdateDatabaseEtcd(_ context.Context, req transport.UpdateDatabaseEtcdRequest) (*transport.DatabaseInfo, error) {
+func (t *Transport) UpdateDatabaseEtcd(ctx context.Context, req transport.UpdateDatabaseEtcdRequest) (*transport.DatabaseInfo, error) {
 	if t.dbSvc == nil {
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
 	}
-	info, err := t.dbSvc.UpdateEtcd(req.Name, &database.EtcdConfig{
+	info, err := t.dbSvc.UpdateEtcdForTenant(ctx, req.Name, &database.EtcdConfig{
 		Enabled:             req.Enabled,
 		ListenAddr:          req.ListenAddr,
 		AdvertiseClientURLs: req.AdvertiseClientURLs,
@@ -154,11 +155,11 @@ func (t *Transport) UpdateDatabaseEtcd(_ context.Context, req transport.UpdateDa
 
 // UpdateDatabaseRaft updates the Raft consensus configuration for a
 // database by delegating to the injected DatabaseServicer.
-func (t *Transport) UpdateDatabaseRaft(_ context.Context, req transport.UpdateDatabaseRaftRequest) (*transport.DatabaseInfo, error) {
+func (t *Transport) UpdateDatabaseRaft(ctx context.Context, req transport.UpdateDatabaseRaftRequest) (*transport.DatabaseInfo, error) {
 	if t.dbSvc == nil {
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
 	}
-	info, err := t.dbSvc.UpdateRaft(req.Name, fromTransportRaftConfig(req.Raft))
+	info, err := t.dbSvc.UpdateRaftForTenant(ctx, req.Name, fromTransportRaftConfig(req.Raft))
 	if err != nil {
 		return nil, err
 	}
@@ -167,9 +168,7 @@ func (t *Transport) UpdateDatabaseRaft(_ context.Context, req transport.UpdateDa
 
 // ScaleDatabase changes the replication factor of a dedicated-raft database
 // by delegating to the injected DatabaseServicer's tenant-scoped
-// ScaleForTenant (unlike UpdateDatabaseRaft/UpdateDatabaseBarrier, scaling
-// has no non-tenant plain variant on DatabaseServicer -- it always enforces
-// tenant quota, so ctx is threaded through here).
+// ScaleForTenant, as every verb of this transport is tenant-scoped.
 func (t *Transport) ScaleDatabase(ctx context.Context, req transport.ScaleDatabaseRequest) (*transport.DatabaseInfo, error) {
 	if t.dbSvc == nil {
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
@@ -183,11 +182,11 @@ func (t *Transport) ScaleDatabase(ctx context.Context, req transport.ScaleDataba
 
 // UpdateDatabaseBarrier updates the encryption barrier configuration for
 // a database by delegating to the injected DatabaseServicer.
-func (t *Transport) UpdateDatabaseBarrier(_ context.Context, req transport.UpdateDatabaseBarrierRequest) (*transport.DatabaseInfo, error) {
+func (t *Transport) UpdateDatabaseBarrier(ctx context.Context, req transport.UpdateDatabaseBarrierRequest) (*transport.DatabaseInfo, error) {
 	if t.dbSvc == nil {
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
 	}
-	info, err := t.dbSvc.UpdateBarrier(req.Name, fromTransportBarrierConfig(req.Barrier))
+	info, err := t.dbSvc.UpdateBarrierForTenant(ctx, req.Name, fromTransportBarrierConfig(req.Barrier))
 	if err != nil {
 		return nil, err
 	}
@@ -196,11 +195,11 @@ func (t *Transport) UpdateDatabaseBarrier(_ context.Context, req transport.Updat
 
 // UpdateDatabaseConnection updates the remote connection configuration for
 // a database by delegating to the injected DatabaseServicer.
-func (t *Transport) UpdateDatabaseConnection(_ context.Context, req transport.UpdateDatabaseConnectionRequest) (*transport.DatabaseInfo, error) {
+func (t *Transport) UpdateDatabaseConnection(ctx context.Context, req transport.UpdateDatabaseConnectionRequest) (*transport.DatabaseInfo, error) {
 	if t.dbSvc == nil {
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
 	}
-	info, err := t.dbSvc.UpdateConnection(req.Name, fromTransportConnectionConfig(req.Connection))
+	info, err := t.dbSvc.UpdateConnectionForTenant(ctx, req.Name, fromTransportConnectionConfig(req.Connection))
 	if err != nil {
 		return nil, err
 	}
@@ -209,11 +208,11 @@ func (t *Transport) UpdateDatabaseConnection(_ context.Context, req transport.Up
 
 // UpdateDatabaseSQL updates a database's SQL settings by delegating to the
 // injected DatabaseServicer.
-func (t *Transport) UpdateDatabaseSQL(_ context.Context, req transport.UpdateDatabaseSQLRequest) (*transport.DatabaseInfo, error) {
+func (t *Transport) UpdateDatabaseSQL(ctx context.Context, req transport.UpdateDatabaseSQLRequest) (*transport.DatabaseInfo, error) {
 	if t.dbSvc == nil {
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
 	}
-	info, err := t.dbSvc.UpdateSQL(req.Name, fromTransportSQLConfig(req.SQL))
+	info, err := t.dbSvc.UpdateSQLForTenant(ctx, req.Name, fromTransportSQLConfig(req.SQL))
 	if err != nil {
 		return nil, err
 	}

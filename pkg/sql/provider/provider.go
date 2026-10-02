@@ -588,6 +588,22 @@ func (p *Provider) authorizeLifecycle(ctx context.Context, tenantID, operation s
 // database. The SQL context's own context.Context is threaded through,
 // because the drop reclaims the database's keys from the shared store and
 // that is a replicated operation that must stay cancellable.
+// dropSystemOwned drops name on the manager path a system-tenant session
+// without a database service takes, when the system tenant owns it. Another
+// tenant's database answers *database.NotFoundError, exactly as a missing one
+// does: there is no cross-tenant database access, on this path as through
+// DatabaseService.DropForTenant.
+func (p *Provider) dropSystemOwned(ctx context.Context, name string) error {
+	db, err := p.manager.Get(name)
+	if err != nil {
+		return err
+	}
+	if !tenantid.IsSystem(db.TenantID()) {
+		return &database.NotFoundError{Name: name}
+	}
+	return p.manager.Drop(ctx, name)
+}
+
 func (p *Provider) DropDatabase(ctx *sqle.Context, name string) error {
 	if strings.EqualFold(name, MySQLSchemaName) || strings.EqualFold(name, pgcatalog.SchemaName) {
 		return &ReservedDatabaseNameError{Name: name}
@@ -605,7 +621,7 @@ func (p *Provider) DropDatabase(ctx *sqle.Context, name string) error {
 	case p.databaseSvc != nil:
 		err = p.databaseSvc.DropForTenant(lctx, name)
 	case tenantid.IsSystem(tenantID):
-		err = p.manager.Drop(lctx, name)
+		err = p.dropSystemOwned(lctx, name)
 	default:
 		err = &DatabaseLifecycleUnavailableError{Operation: "DROP DATABASE", TenantID: tenantID}
 	}

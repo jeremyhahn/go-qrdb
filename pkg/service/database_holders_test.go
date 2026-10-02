@@ -247,6 +247,9 @@ func TestDatabaseHolders_Refusals(t *testing.T) {
 	if !ok {
 		t.Fatal("not a *DatabaseService")
 	}
+	if _, err := noBarrier.Create(testDBConfig("x")); err != nil {
+		t.Fatal(err)
+	}
 	var notConfigured *BarrierManagerNotConfiguredError
 	if _, err := noBarrier.DatabaseBarrierOfficerList(context.Background(), "x"); !errors.As(err, &notConfigured) {
 		t.Fatalf("a node with no barrier manager = %v", err)

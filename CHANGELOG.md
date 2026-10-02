@@ -139,6 +139,20 @@ are not reconstructed here — their history is in the git log.
 
 ### Security
 
+- **A system-tenant identity could act on every tenant's databases.** The
+  database service lifted the system tenant past the ownership check on every
+  per-database verb (get, list, drop, every update, seal, unseal, barrier
+  status and the share-holder verbs), a system-tenant create honoured a
+  tenant named in the request (the QUIC create passed it through), the
+  embedded transport's get, list, drop and update verbs called the
+  node-wide service methods for any caller, the SQL `DROP DATABASE` manager
+  path dropped any database by name for a system session, and a database's
+  etcd listener admitted the system tenant. There is no cross-tenant database
+  access: every caller, the system tenant's Admin, Security Officer and
+  Auditor included, is confined to its own tenant's databases by one
+  ownership check (`DatabaseService.ownedDatabase`); another tenant's
+  database answers `NotFound`, exactly as a missing one does, on all six
+  transports.
 - **The SO PIN lockout could be bypassed by spending guesses on any SO PIN
   check but sign-csr, rekey and revocation.** Present in v0.25.2-alpha. The
   lockout was a counter inside the ceremony service, so only the ceremony's
@@ -254,13 +268,6 @@ are not reconstructed here — their history is in the git log.
   `sdk.SignShareClaim` produce it, and the CLI's `claim-begin` prints the
   exact message for an external signer. A claim signed over the bare nonce is
   refused.
-- **A system-tenant share holder could probe every tenant's database
-  names.** The database service lifts the system tenant to every database,
-  as the store-global admin. That lift also covered a share holder whose
-  identity is in the system tenant, and the identity-gated claim and quorum
-  routes then answered another tenant's database differently from a missing
-  one. Such a holder is now confined to the system tenant's databases;
-  another tenant's database answers `NotFound`.
 - **Rekey and holder-revocation SO PIN guesses were unlimited, and an
   unprovisioned SO PIN admitted any PIN.** Each transport checked the rekey
   start and revocation SO PIN itself, outside the ceremony's lockout, and
@@ -466,6 +473,17 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed — BREAKING
 
+- **The system tenant no longer reaches other tenants' databases.** A
+  system-tenant caller's database verbs act only on databases the system
+  tenant owns (`TenantID` empty or `system`); another tenant's database
+  answers `NotFound`. `ListForTenant` for the system tenant lists only its
+  own databases. A system-tenant create always creates a system-owned
+  database, ignoring a `tenant_id` in the request. The embedded transport's
+  `GetDatabase`, `ListDatabases`, `DropDatabase` and `UpdateDatabase*` now go
+  through the tenant-scoped service methods. A database's etcd listener
+  refuses every caller outside the owning tenant, the system tenant included.
+  A platform operator who managed tenants' databases through the system
+  tenant must act as the owning tenant.
 - **An `mtls` factor answer signs a domain-separated message, not the bare
   nonce.** The answer is now a signature over `mtls.ChallengeMessage`:
   `qrdb/mtls-challenge/v1`, the challenge ID, the purpose the issuer bound

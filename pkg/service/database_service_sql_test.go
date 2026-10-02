@@ -70,9 +70,9 @@ func TestDatabaseService_UpdateSQLForTenant(t *testing.T) {
 		t.Fatalf("cross-tenant = %v, want *database.NotFoundError", err)
 	}
 
-	// The system tenant may target any database.
+	// So is the system tenant: there is no cross-tenant database access.
 	system := tenant.WithTenantID(context.Background(), tenantid.System)
-	if _, err := svc.UpdateSQLForTenant(system, "acme-sql", nil); err != nil {
-		t.Fatalf("system UpdateSQLForTenant() error = %v", err)
+	if _, err := svc.UpdateSQLForTenant(system, "acme-sql", nil); !errors.As(err, &notFound) {
+		t.Fatalf("system UpdateSQLForTenant() = %v, want *database.NotFoundError", err)
 	}
 }

@@ -138,10 +138,10 @@ func TestGRPCDatabaseHolders_Refusals(t *testing.T) {
 	s := &qrdbServiceServer{databaseSvc: fx.Service}
 	ctx := context.Background()
 
-	// A system caller is not ownership-checked, so the database barrier
-	// manager answers, as it does for db.Seal: there is no Shamir barrier.
+	// Every caller, the system tenant's included, is ownership-checked
+	// first: an absent database is NotFound before any barrier is consulted.
 	_, err := s.DatabaseBarrierOfficerList(ctx, &pb.DatabaseBarrierOfficerListRequest{Database: "absent"})
-	requireCode(t, err, codes.FailedPrecondition)
+	requireCode(t, err, codes.NotFound)
 	_, err = s.DatabaseBarrierOfficerRegister(ctx, &pb.DatabaseBarrierOfficerRegisterRequest{
 		Database: "vault", Officer: &pb.BarrierOfficerRegisterRequest{Username: "a", Factors: []*pb.HolderFactorEnrolment{{Name: "fido2", ParamsJson: []byte("{")}}},
 	})

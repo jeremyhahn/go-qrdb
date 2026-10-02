@@ -56,6 +56,13 @@ type ShamirDatabase struct {
 // barrier. Everything lives in memory or under t's temporary directories.
 func NewShamirDatabase(t testing.TB, name string, m, n int) *ShamirDatabase {
 	t.Helper()
+	return NewShamirDatabaseOwnedBy(t, "", name, m, n)
+}
+
+// NewShamirDatabaseOwnedBy is NewShamirDatabase with the database owned by
+// tenantID ("" is the system tenant).
+func NewShamirDatabaseOwnedBy(t testing.TB, tenantID, name string, m, n int) *ShamirDatabase {
+	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mgr := database.NewManager(logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
@@ -74,7 +81,7 @@ func NewShamirDatabase(t testing.TB, name string, m, n int) *ShamirDatabase {
 	bm.SetHolderDeps(ceremony.HolderDeps{CA: ca, TrustDomain: "db.example.com"})
 	mgr.SetBarrierManager(bm)
 	cfg := database.DatabaseConfig{
-		Name: name, Engine: database.EngineKV, Backend: database.BackendMemory, DataDir: t.TempDir(),
+		TenantID: tenantID, Name: name, Engine: database.EngineKV, Backend: database.BackendMemory, DataDir: t.TempDir(),
 		Barrier: &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModeShamir, SharesRequired: m, SharesTotal: n},
 	}
 	if _, err := mgr.CreateWithCredentials(context.Background(), cfg, seal.Credentials{}); err != nil {

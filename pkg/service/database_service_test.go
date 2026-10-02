@@ -573,6 +573,9 @@ func TestDatabaseService_UpdateConnection_InvalidMissingFields(t *testing.T) {
 
 func TestDatabaseService_SealDatabase_NoBarrierManager(t *testing.T) {
 	svc := newTestDatabaseService(t)
+	if _, err := svc.Create(testDBConfig("some-db")); err != nil {
+		t.Fatal(err)
+	}
 
 	err := svc.SealDatabase(context.Background(), "some-db")
 	if err == nil {
@@ -586,6 +589,9 @@ func TestDatabaseService_SealDatabase_NoBarrierManager(t *testing.T) {
 
 func TestDatabaseService_DatabaseBarrierStatus_NoBarrierManager(t *testing.T) {
 	svc := newTestDatabaseService(t)
+	if _, err := svc.Create(testDBConfig("some-db")); err != nil {
+		t.Fatal(err)
+	}
 
 	_, err := svc.DatabaseBarrierStatus(context.Background(), "some-db")
 	if err == nil {

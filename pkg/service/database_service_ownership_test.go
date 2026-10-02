@@ -113,21 +113,27 @@ func TestDatabaseService_BarrierOps_OwnerAllowed(t *testing.T) {
 	}
 }
 
-// TestDatabaseService_BarrierOps_SystemAllowed proves the system tenant — the
-// legitimate store-global admin — may target any tenant's database barrier.
-func TestDatabaseService_BarrierOps_SystemAllowed(t *testing.T) {
+// TestDatabaseService_BarrierOps_SystemConfined proves there is no
+// cross-tenant database access: the system tenant may not target another
+// tenant's database barrier, and is answered exactly as for a missing
+// database. The owner still can.
+func TestDatabaseService_BarrierOps_SystemConfined(t *testing.T) {
 	const owner, dbName = "tenant-b", "b-db"
 	svc, secret := newBarrierDBOwnedByTenant(t, owner, dbName)
 	sysCtx := tenant.WithTenantID(context.Background(), tenantid.System)
 
-	if _, err := svc.DatabaseBarrierStatus(sysCtx, dbName); err != nil {
-		t.Fatalf("system DatabaseBarrierStatus error: %v", err)
+	var notFound *database.NotFoundError
+	if _, err := svc.DatabaseBarrierStatus(sysCtx, dbName); !errors.As(err, &notFound) {
+		t.Fatalf("system DatabaseBarrierStatus = %v, want *database.NotFoundError", err)
 	}
-	if err := svc.SealDatabase(sysCtx, dbName); err != nil {
-		t.Fatalf("system SealDatabase error: %v", err)
+	if err := svc.SealDatabase(sysCtx, dbName); !errors.As(err, &notFound) {
+		t.Fatalf("system SealDatabase = %v, want *database.NotFoundError", err)
 	}
-	if err := svc.UnsealDatabase(sysCtx, dbName, seal.MustCredentials(bytes.Clone(secret))); err != nil {
-		t.Fatalf("system UnsealDatabase error: %v", err)
+	if err := svc.UnsealDatabase(sysCtx, dbName, seal.MustCredentials(bytes.Clone(secret))); !errors.As(err, &notFound) {
+		t.Fatalf("system UnsealDatabase = %v, want *database.NotFoundError", err)
+	}
+	if _, err := svc.DatabaseBarrierStatus(tenant.WithTenantID(context.Background(), owner), dbName); err != nil {
+		t.Fatalf("owner DatabaseBarrierStatus: %v", err)
 	}
 }
 

@@ -38,15 +38,13 @@ func systemHolderCtx() context.Context {
 	return tenant.WithTenantID(ctx, tenantid.System)
 }
 
-// TestAuthorizeDatabaseTenant_SystemShareHolderIsNotLifted: the system
-// tenant may target any database by name, because it is the store-global
-// admin. A share holder whose identity happens to be in the system tenant is
-// not that admin. The holder routes are identity-gated, so before this they
-// let such a holder probe every tenant's database names: another tenant's
-// database answered with a holder or round refusal, a missing one with
-// NotFound. Such a holder is confined to the system tenant's own databases,
-// like any tenant caller, and another tenant's database answers NotFound,
-// exactly as a missing one does.
+// TestAuthorizeDatabaseTenant_SystemShareHolderIsNotLifted: a share holder
+// whose identity is in the system tenant is confined to the system tenant's
+// own databases, as every system-tenant caller is. The holder routes are
+// identity-gated, so before this they let such a holder probe every tenant's
+// database names: another tenant's database answered with a holder or round
+// refusal, a missing one with NotFound. Another tenant's database now answers
+// NotFound, exactly as a missing one does.
 func TestAuthorizeDatabaseTenant_SystemShareHolderIsNotLifted(t *testing.T) {
 	svc, _ := newHolderDatabaseService(t)
 	holder := systemHolderCtx()
@@ -64,8 +62,9 @@ func TestAuthorizeDatabaseTenant_SystemShareHolderIsNotLifted(t *testing.T) {
 		t.Fatalf("a system-tenant holder's claim on acme's database = %v, want NotFoundError", err)
 	}
 
-	// The system tenant's administrator is still the store-global admin.
-	if _, err := svc.DatabaseBarrierOfficerList(dbAdminCtx(tenantid.System), "vault"); err != nil {
-		t.Fatalf("the system administrator listing acme's holders: %v", err)
+	// The system tenant's administrator is confined the same way: there is
+	// no cross-tenant database access.
+	if _, err := svc.DatabaseBarrierOfficerList(dbAdminCtx(tenantid.System), "vault"); !errors.As(err, &notFound) {
+		t.Fatalf("the system administrator listing acme's holders = %v, want NotFoundError", err)
 	}
 }

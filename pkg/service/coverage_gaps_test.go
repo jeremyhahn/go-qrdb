@@ -796,6 +796,9 @@ func TestDatabaseService_WithBarrierManager_Option(t *testing.T) {
 	// Without the WithBarrierManager option, UnsealDatabase should return
 	// BarrierManagerNotConfiguredError because barrierMgr is nil.
 	svc := newTestDatabaseService(t)
+	if _, err := svc.Create(testDBConfig("any")); err != nil {
+		t.Fatal(err)
+	}
 	err := svc.UnsealDatabase(context.Background(), "any", seal.Credentials{})
 	var bmErr *BarrierManagerNotConfiguredError
 	if !errors.As(err, &bmErr) {
