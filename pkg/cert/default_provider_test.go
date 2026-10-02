@@ -133,6 +133,49 @@ func (m *mockKVStore) ScanCompoundIndex(_ context.Context, _ string, _ [][]byte,
 	return nil, nil
 }
 
+// PutAllIfUnchanged and PutAllIfAllUnchanged make mockKVStore satisfy
+// kvstore.MultiGuardedBatchKVStore, which cakey.NewSoftwareProvider now
+// requires: a real guard check (absent key for a nil Value, exact match
+// otherwise) under the same mutex every other method already uses, so a
+// losing guard really does leave the store unchanged.
+func (m *mockKVStore) guardHolds(key string, want []byte) bool {
+	got, ok := m.data[key]
+	if want == nil {
+		return !ok
+	}
+	return ok && bytes.Equal(got, want)
+}
+
+func (m *mockKVStore) PutAllIfUnchanged(_ context.Context, guardKey string, guardValue []byte, writes []kvstore.KV) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.guardHolds(guardKey, guardValue) {
+		return false, nil
+	}
+	for _, w := range writes {
+		stored := make([]byte, len(w.Value))
+		copy(stored, w.Value)
+		m.data[w.Key] = stored
+	}
+	return true, nil
+}
+
+func (m *mockKVStore) PutAllIfAllUnchanged(_ context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, g := range guards {
+		if !m.guardHolds(g.Key, g.Value) {
+			return false, nil
+		}
+	}
+	for _, w := range writes {
+		stored := make([]byte, len(w.Value))
+		copy(stored, w.Value)
+		m.data[w.Key] = stored
+	}
+	return true, nil
+}
+
 // mockBarrier implements seal.EncryptionBarrier using AES-GCM for real
 // encrypt/decrypt round-trips in tests.
 type mockBarrier struct {
@@ -263,6 +306,14 @@ func (e *errorKVStore) ScanCompoundIndex(_ context.Context, _ string, _ [][]byte
 	return nil, nil
 }
 
+func (e *errorKVStore) PutAllIfUnchanged(_ context.Context, _ string, _ []byte, _ []kvstore.KV) (bool, error) {
+	return false, e.err
+}
+
+func (e *errorKVStore) PutAllIfAllUnchanged(_ context.Context, _ []kvstore.Guard, _ []kvstore.KV) (bool, error) {
+	return false, e.err
+}
+
 // newTestProvider creates a DefaultCertProvider with mocks, ready for
 // Initialize.
 func newTestProvider(opts ...ProviderOption) (*DefaultCertProvider, *mockKVStore, *mockBarrier) {
@@ -294,30 +345,26 @@ func TestDefaultCertProvider_Initialize_NewCA(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 
-	// Verify wrapped key was stored.
-	wrappedKey, err := kv.Get(ctx, "__sys:cert_ca/system/wrapped_key")
+	// Verify the key material record was stored.
+	material, err := kv.Get(ctx, "__sys:cert_ca/system/material")
 	if err != nil {
-		t.Fatalf("Get wrapped_key: %v", err)
+		t.Fatalf("Get material: %v", err)
 	}
-	if wrappedKey == nil {
-		t.Fatal("wrapped_key should exist after Initialize")
+	if material == nil {
+		t.Fatal("material should exist after Initialize")
 	}
 
-	// Verify CA cert PEM was stored.
-	certPEM, err := kv.Get(ctx, "__sys:cert_ca/system/cert_pem")
+	// Verify the certificate record was stored, as raw DER (cakey's own
+	// record shape -- never PEM).
+	certDER, err := kv.Get(ctx, "__sys:cert_ca/system/certificate")
 	if err != nil {
-		t.Fatalf("Get cert_pem: %v", err)
+		t.Fatalf("Get certificate: %v", err)
 	}
-	if certPEM == nil {
-		t.Fatal("cert_pem should exist after Initialize")
+	if certDER == nil {
+		t.Fatal("certificate should exist after Initialize")
 	}
 
-	// Verify CA cert PEM is valid.
-	block, _ := pem.Decode(certPEM)
-	if block == nil {
-		t.Fatal("cert_pem should be valid PEM")
-	}
-	cert, err := x509.ParseCertificate(block.Bytes)
+	cert, err := x509.ParseCertificate(certDER)
 	if err != nil {
 		t.Fatalf("ParseCertificate: %v", err)
 	}
@@ -379,13 +426,14 @@ func TestDefaultCertProvider_Initialize_TenantFromContext(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 
-	// Verify wrapped key was stored under the correct tenant prefix.
-	wrappedKey, err := kv.Get(ctx, "__sys:cert_ca/org-42/wrapped_key")
+	// Verify the key material record was stored under the correct tenant
+	// prefix.
+	material, err := kv.Get(ctx, "__sys:cert_ca/org-42/material")
 	if err != nil {
-		t.Fatalf("Get wrapped_key: %v", err)
+		t.Fatalf("Get material: %v", err)
 	}
-	if wrappedKey == nil {
-		t.Fatal("wrapped_key should exist under tenant org-42")
+	if material == nil {
+		t.Fatal("material should exist under tenant org-42")
 	}
 }
 
@@ -418,25 +466,32 @@ func TestDefaultCertProvider_Unseal(t *testing.T) {
 		t.Fatalf("Seal: %v", err)
 	}
 
-	// Verify CA key is wiped.
+	// Verify the public CA-certificate cache is cleared.
 	p.mu.RLock()
-	keyNil := p.caKey == nil
+	certNil := p.caCert == nil
 	p.mu.RUnlock()
-	if !keyNil {
-		t.Error("CA key should be nil after Seal")
+	if !certNil {
+		t.Error("CA cert cache should be nil after Seal")
 	}
 
-	// Unseal should reload the CA key.
+	// Unseal should reload the CA material (resolving tenant.FromContext(ctx)
+	// through the built-in per-tenant cakey.SoftwareProvider).
 	if err := p.Unseal(ctx); err != nil {
 		t.Fatalf("Unseal: %v", err)
 	}
 
-	// Verify CA key is loaded.
+	// Verify the CA cert is cached again.
 	p.mu.RLock()
-	keyNil = p.caKey == nil
+	certNil = p.caCert == nil
 	p.mu.RUnlock()
-	if keyNil {
-		t.Error("CA key should be loaded after Unseal")
+	if certNil {
+		t.Error("CA cert should be cached after Unseal")
+	}
+
+	// And the underlying key is actually usable again: GenerateClientCert
+	// signs successfully without error.
+	if _, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "post-unseal", TenantID: "system"}); err != nil {
+		t.Fatalf("GenerateClientCert after Unseal: %v", err)
 	}
 }
 
@@ -1246,6 +1301,11 @@ func TestDefaultCertProvider_ImplementsCertProvider(t *testing.T) {
 // Unseal without existing CA
 // ---------------------------------------------------------------------------
 
+// TestDefaultCertProvider_Unseal_NoCA verifies that Unseal (unlike
+// Initialize) refuses rather than silently minting a fresh CA when none has
+// ever been established for the tenant: it resolves the built-in
+// cakey.SoftwareProvider and calls its own Unseal (load-only), never
+// Initialize (create-or-load) -- see DefaultCertProvider.Unseal.
 func TestDefaultCertProvider_Unseal_NoCA(t *testing.T) {
 	p, _, _ := newTestProvider()
 	ctx := context.Background()
@@ -1305,12 +1365,13 @@ func TestDefaultCertProvider_RevokeCert_UpdatesRecord(t *testing.T) {
 // partialErrorKVStore wraps a mockKVStore but fails specific operations.
 type partialErrorKVStore struct {
 	*mockKVStore
-	failPutN int // fail the Nth Put call (1-based)
-	putCount int
-	failScan bool
-	failGet  bool
-	getCount int
-	failGetN int // fail the Nth Get call (1-based)
+	failPutN            int // fail the Nth Put call (1-based)
+	putCount            int
+	failScan            bool
+	failGet             bool
+	getCount            int
+	failGetN            int // fail the Nth Get call (1-based)
+	failPutAllUnchanged bool
 }
 
 func (p *partialErrorKVStore) Put(ctx context.Context, key string, value []byte) error {
@@ -1319,6 +1380,13 @@ func (p *partialErrorKVStore) Put(ctx context.Context, key string, value []byte)
 		return errors.New("injected put error")
 	}
 	return p.mockKVStore.Put(ctx, key, value)
+}
+
+func (p *partialErrorKVStore) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	if p.failPutAllUnchanged {
+		return false, errors.New("injected putallifallunchanged error")
+	}
+	return p.mockKVStore.PutAllIfAllUnchanged(ctx, guards, writes)
 }
 
 func (p *partialErrorKVStore) Scan(ctx context.Context, prefix string, fn func(key string, value []byte) error) error {
@@ -1343,35 +1411,23 @@ func (p *partialErrorKVStore) Exists(ctx context.Context, key string) (bool, err
 	return p.mockKVStore.Exists(ctx, key)
 }
 
-func TestDefaultCertProvider_Initialize_PutWrappedKeyError(t *testing.T) {
+// TestDefaultCertProvider_Initialize_PutMaterialError proves Initialize
+// surfaces a *StoreError when the single atomic batch write that persists
+// the key and certificate together (cakey.SoftwareProvider's
+// writeIfBothAbsent, via PutAllIfAllUnchanged) fails. There is only one
+// such write now -- the key and certificate are written together, never as
+// two independent Puts a caller could observe landing one at a time.
+func TestDefaultCertProvider_Initialize_PutMaterialError(t *testing.T) {
 	barrier := newMockBarrier()
 	pkv := &partialErrorKVStore{
-		mockKVStore: newMockKVStore(),
-		failPutN:    1, // Fail the first Put (wrapped key).
+		mockKVStore:         newMockKVStore(),
+		failPutAllUnchanged: true,
 	}
 	p := NewDefaultProvider(pkv, barrier)
 
 	err := p.Initialize(context.Background())
 	if err == nil {
-		t.Fatal("expected error when Put fails")
-	}
-	var se *StoreError
-	if !errors.As(err, &se) {
-		t.Fatalf("expected *StoreError, got %T: %v", err, err)
-	}
-}
-
-func TestDefaultCertProvider_Initialize_PutCertPEMError(t *testing.T) {
-	barrier := newMockBarrier()
-	pkv := &partialErrorKVStore{
-		mockKVStore: newMockKVStore(),
-		failPutN:    2, // Fail the second Put (cert PEM).
-	}
-	p := NewDefaultProvider(pkv, barrier)
-
-	err := p.Initialize(context.Background())
-	if err == nil {
-		t.Fatal("expected error when Put cert PEM fails")
+		t.Fatal("expected error when the material batch write fails")
 	}
 	var se *StoreError
 	if !errors.As(err, &se) {
@@ -1487,7 +1543,7 @@ func TestDefaultCertProvider_ListCerts_CorruptRecord(t *testing.T) {
 	}
 }
 
-func TestDefaultCertProvider_Unseal_LoadCA_CertPEMGetError(t *testing.T) {
+func TestDefaultCertProvider_Unseal_LoadCA_CertificateMissing(t *testing.T) {
 	barrier := newMockBarrier()
 	inner := newMockKVStore()
 	p := NewDefaultProvider(inner, barrier)
@@ -1500,12 +1556,12 @@ func TestDefaultCertProvider_Unseal_LoadCA_CertPEMGetError(t *testing.T) {
 		t.Fatalf("Seal: %v", err)
 	}
 
-	// Remove the cert PEM but leave the wrapped key.
-	_ = inner.Delete(ctx, "__sys:cert_ca/system/cert_pem")
+	// Remove the certificate record but leave the key material.
+	_ = inner.Delete(ctx, "__sys:cert_ca/system/certificate")
 
 	err := p.Unseal(ctx)
 	if err == nil {
-		t.Fatal("expected error when cert PEM is missing")
+		t.Fatal("expected error when the certificate record is missing")
 	}
 	var caErr *CAKeyNotAvailableError
 	if !errors.As(err, &caErr) {
@@ -1513,7 +1569,7 @@ func TestDefaultCertProvider_Unseal_LoadCA_CertPEMGetError(t *testing.T) {
 	}
 }
 
-func TestDefaultCertProvider_Unseal_LoadCA_DecryptError(t *testing.T) {
+func TestDefaultCertProvider_Unseal_LoadCA_MaterialCorrupt(t *testing.T) {
 	barrier := newMockBarrier()
 	inner := newMockKVStore()
 	p := NewDefaultProvider(inner, barrier)
@@ -1526,12 +1582,13 @@ func TestDefaultCertProvider_Unseal_LoadCA_DecryptError(t *testing.T) {
 		t.Fatalf("Seal: %v", err)
 	}
 
-	// Corrupt the wrapped key.
-	_ = inner.Put(ctx, "__sys:cert_ca/system/wrapped_key", []byte("corrupt-data"))
+	// Corrupt the key material record: it no longer decodes as a SEC1 EC
+	// private key.
+	_ = inner.Put(ctx, "__sys:cert_ca/system/material", []byte("corrupt-data"))
 
 	err := p.Unseal(ctx)
 	if err == nil {
-		t.Fatal("expected error when decrypt fails")
+		t.Fatal("expected error when the key material record does not decode")
 	}
 	var genErr *CertGenerateError
 	if !errors.As(err, &genErr) {
@@ -1539,7 +1596,7 @@ func TestDefaultCertProvider_Unseal_LoadCA_DecryptError(t *testing.T) {
 	}
 }
 
-func TestDefaultCertProvider_Unseal_LoadCA_InvalidPEM(t *testing.T) {
+func TestDefaultCertProvider_Unseal_LoadCA_CertificateNotDER(t *testing.T) {
 	barrier := newMockBarrier()
 	inner := newMockKVStore()
 	p := NewDefaultProvider(inner, barrier)
@@ -1552,42 +1609,13 @@ func TestDefaultCertProvider_Unseal_LoadCA_InvalidPEM(t *testing.T) {
 		t.Fatalf("Seal: %v", err)
 	}
 
-	// Replace cert PEM with invalid PEM.
-	_ = inner.Put(ctx, "__sys:cert_ca/system/cert_pem", []byte("not-pem-data"))
+	// Replace the certificate record with data that is not even
+	// well-formed ASN.1 -- the record holds raw DER, never PEM.
+	_ = inner.Put(ctx, "__sys:cert_ca/system/certificate", []byte("not-der-data"))
 
 	err := p.Unseal(ctx)
 	if err == nil {
-		t.Fatal("expected error for invalid PEM")
-	}
-	var genErr *CertGenerateError
-	if !errors.As(err, &genErr) {
-		t.Fatalf("expected *CertGenerateError, got %T: %v", err, err)
-	}
-}
-
-func TestDefaultCertProvider_Unseal_LoadCA_InvalidCert(t *testing.T) {
-	barrier := newMockBarrier()
-	inner := newMockKVStore()
-	p := NewDefaultProvider(inner, barrier)
-	ctx := context.Background()
-
-	if err := p.Initialize(ctx); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	if err := p.Seal(); err != nil {
-		t.Fatalf("Seal: %v", err)
-	}
-
-	// Replace cert PEM with valid PEM structure but invalid certificate data.
-	invalidPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: []byte("not-a-real-certificate"),
-	})
-	_ = inner.Put(ctx, "__sys:cert_ca/system/cert_pem", invalidPEM)
-
-	err := p.Unseal(ctx)
-	if err == nil {
-		t.Fatal("expected error for invalid certificate")
+		t.Fatal("expected error for a certificate record that is not DER")
 	}
 	var genErr *CertGenerateError
 	if !errors.As(err, &genErr) {
@@ -1642,61 +1670,12 @@ func TestDefaultCertProvider_RevokeCert_PutRevokedKeyError(t *testing.T) {
 	}
 }
 
-func TestDefaultCertProvider_Unseal_LoadCA_GetWrappedKeyError(t *testing.T) {
-	barrier := newMockBarrier()
-	inner := newMockKVStore()
-	p := NewDefaultProvider(inner, barrier)
-	ctx := context.Background()
-
-	if err := p.Initialize(ctx); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	if err := p.Seal(); err != nil {
-		t.Fatalf("Seal: %v", err)
-	}
-
-	// Replace with error store for the Unseal call.
-	p.kvStore = &errorKVStore{err: errors.New("get wrapped failed")}
-
-	err := p.Unseal(ctx)
-	if err == nil {
-		t.Fatal("expected error when Get fails")
-	}
-	var se *StoreError
-	if !errors.As(err, &se) {
-		t.Fatalf("expected *StoreError, got %T: %v", err, err)
-	}
-}
-
-func TestDefaultCertProvider_Unseal_LoadCA_GetCertPEMError(t *testing.T) {
-	barrier := newMockBarrier()
-	inner := newMockKVStore()
-	p := NewDefaultProvider(inner, barrier)
-	ctx := context.Background()
-
-	if err := p.Initialize(ctx); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	if err := p.Seal(); err != nil {
-		t.Fatalf("Seal: %v", err)
-	}
-
-	// Replace with a KVStore that fails on the second Get (cert PEM).
-	pkv := &partialErrorKVStore{
-		mockKVStore: inner,
-		failGetN:    2, // First Get (wrapped key) succeeds, second (cert PEM) fails.
-	}
-	p.kvStore = pkv
-
-	err := p.Unseal(ctx)
-	if err == nil {
-		t.Fatal("expected error when cert PEM Get fails")
-	}
-	var se *StoreError
-	if !errors.As(err, &se) {
-		t.Fatalf("expected *StoreError, got %T: %v", err, err)
-	}
-}
+// Note: a KVStore Get failure while loading persisted CA material (either
+// the wrapped key or the cert PEM record) is exercised against
+// cakey.SoftwareProvider directly in pkg/cakey/software_test.go
+// (TestSoftwareProvider_LoadFailures) -- the only place that store/decrypt
+// plumbing lives now that DefaultCertProvider delegates Key B's key
+// material to the cakey.Provider seam (see resolveKeyProvider).
 
 // ---------------------------------------------------------------------------
 // PKCS12 with invalid CA cert PEM

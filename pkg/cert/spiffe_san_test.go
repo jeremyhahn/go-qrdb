@@ -237,13 +237,9 @@ func TestGenerateClientCert_TrustDomain_ReissueWithSANKeepsSPKIBinding(t *testin
 	p, _, _ := initializeProvider(t)
 	original := issueParsed(t, p, sanTestTenant, sanTestSubject)
 
-	caKeyDER, caCert, err := p.getCAMaterial()
+	caSigner, caCert, err := p.getCAMaterial(context.Background(), sanTestTenant)
 	if err != nil {
 		t.Fatalf("getCAMaterial: %v", err)
-	}
-	caKey, err := x509.ParseECPrivateKey(caKeyDER)
-	if err != nil {
-		t.Fatalf("ParseECPrivateKey: %v", err)
 	}
 	san, err := url.Parse(spiffe.ID{TrustDomain: sanTestDomain, TenantID: sanTestTenant, Kind: spiffe.KindUser, Name: sanTestSubject}.String())
 	if err != nil {
@@ -262,7 +258,7 @@ func TestGenerateClientCert_TrustDomain_ReissueWithSANKeepsSPKIBinding(t *testin
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 		URIs:         []*url.URL{san},
-	}, caCert, original.PublicKey, caKey)
+	}, caCert, original.PublicKey, caSigner)
 	if err != nil {
 		t.Fatalf("re-issue: %v", err)
 	}

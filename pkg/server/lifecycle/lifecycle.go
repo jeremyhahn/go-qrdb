@@ -170,6 +170,17 @@ type Infra struct {
 	// before, with no SAN.
 	SPIFFETrustDomain string
 
+	// CertKeyProvider, when non-nil, replaces Key B's built-in per-tenant
+	// cakey.SoftwareProvider entirely (the CA key provider seam,
+	// cert.WithKeyProvider): every client-certificate signature is routed to
+	// it, and no software key is ever generated or stored under
+	// __sys:cert_ca/ for any tenant. An embedder (go-xkms) injects an
+	// HSM/TPM/KMS-backed provider here via server.WithCertKeyProvider,
+	// resolved before BuildServices runs (see CryptoOptions) for the same
+	// reason StrategyRegistry is: the provider must be in place before the
+	// CertProvider is constructed below, not after.
+	CertKeyProvider cakey.Provider
+
 	// MTLSBindingPolicy is the operator's auth.mtls_binding_policy, as
 	// configured. Under "required" the user service refuses every change that
 	// would leave the bootstrap admin unable to log in by certificate
@@ -997,7 +1008,9 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 
 	if infra.BarrierRegistry != nil {
 		// CertProvider uses the KV service as its underlying store and the
-		// barrier for transparent encryption of certificate material.
+		// barrier for transparent encryption of certificate material,
+		// unless infra.CertKeyProvider replaces Key B's key material
+		// entirely.
 		//
 		// GUARDED: n.Transaction is already built above, unconditionally (see
 		// authStore), so certStore gets kvstore.MultiGuardedBatchKVStore
@@ -1008,8 +1021,11 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 		if err != nil {
 			return &CertStoreError{Err: err}
 		}
-		n.CertProv = cert.NewDefaultProvider(certStore, infra.SealBarrier,
-			cert.WithTrustDomain(infra.SPIFFETrustDomain))
+		certOpts := []cert.ProviderOption{cert.WithTrustDomain(infra.SPIFFETrustDomain)}
+		if infra.CertKeyProvider != nil {
+			certOpts = append(certOpts, cert.WithKeyProvider(infra.CertKeyProvider))
+		}
+		n.CertProv = cert.NewDefaultProvider(certStore, infra.SealBarrier, certOpts...)
 
 		// Cluster CA (Key A): an injected provider replaces the built-in one
 		// entirely. Otherwise the built-in cakey.SoftwareProvider is

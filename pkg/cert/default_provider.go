@@ -16,6 +16,7 @@ package cert
 
 import (
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -26,10 +27,12 @@ import (
 	"log/slog"
 	"math/big"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
+	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -44,13 +47,9 @@ const (
 	// caTTL is the CA certificate validity period (10 years).
 	caTTL = 87600 * time.Hour
 
-	// keyWrappedKey is the KVStore key suffix for the wrapped CA key.
-	keyWrappedKey = "wrapped_key"
-
-	// keyCertPEM is the KVStore key suffix for the CA certificate PEM.
-	keyCertPEM = "cert_pem"
-
-	// prefixCertCA is the KVStore key prefix for CA material.
+	// prefixCertCA is the KVStore key prefix for CA material (consumed by
+	// cakey.SoftwareProvider, one instance per tenant -- see
+	// resolveKeyProvider).
 	prefixCertCA = "__sys:cert_ca/"
 
 	// prefixCerts is the KVStore key prefix for issued cert records.
@@ -73,6 +72,7 @@ type ProviderOption func(*providerOptions)
 type providerOptions struct {
 	defaultTTL  time.Duration
 	trustDomain string
+	keyProvider cakey.Provider
 }
 
 // WithDefaultTTL sets the default certificate validity period used when
@@ -80,6 +80,24 @@ type providerOptions struct {
 func WithDefaultTTL(d time.Duration) ProviderOption {
 	return func(o *providerOptions) {
 		o.defaultTTL = d
+	}
+}
+
+// WithKeyProvider injects the cakey.Provider this DefaultCertProvider signs
+// through, replacing the built-in per-tenant cakey.SoftwareProvider entirely
+// (the CA key provider seam, go-qrdb#555). When set, no software key is ever
+// generated or stored under prefixCertCA for any tenant: every Signer and
+// Certificate call is routed to p, so an embedder (go-xkms) backing Key B
+// with an HSM, TPM, or KMS plugs in with no glue code beyond cakey.Adapter.
+//
+// A nil p is refused by NewDefaultProvider's caller indirectly: passing a nil
+// Provider here is equivalent to not calling this option at all (the
+// built-in per-tenant default remains active), because a configuration
+// mistake should fail by keeping the safe default, not by panicking inside a
+// functional option.
+func WithKeyProvider(p cakey.Provider) ProviderOption {
+	return func(o *providerOptions) {
+		o.keyProvider = p
 	}
 }
 
@@ -103,17 +121,35 @@ func WithTrustDomain(trustDomain string) ProviderOption {
 	}
 }
 
-// DefaultCertProvider implements CertProvider using barrier-sealed CA key
-// material. The CA private key is encrypted at rest via the
-// EncryptionBarrier and held in a secure.Wipe'd buffer while
-// unsealed.
+// DefaultCertProvider implements CertProvider over the cakey.Provider seam.
+// It never holds a CA private key itself: every signature is produced by
+// resolving a cakey.Provider (the built-in per-tenant cakey.SoftwareProvider,
+// barrier-encrypted at rest and persisted through kvStore, or an injected
+// one -- see WithKeyProvider) and calling its Signer. caCert/caCertPEM cache
+// only the CA's own certificate, which is public data and is deliberately
+// still served while sealed (see CACertPEM).
 type DefaultCertProvider struct {
-	kvStore    kvstore.KVStore
-	barrier    seal.EncryptionBarrier
-	caKey      []byte
-	caCert     *x509.Certificate
-	caCertPEM  []byte
-	mu         sync.RWMutex
+	kvStore kvstore.MultiGuardedBatchKVStore
+	barrier seal.EncryptionBarrier
+
+	// keyProvider, when non-nil, is an embedder-injected cakey.Provider that
+	// replaces the built-in per-tenant default entirely (WithKeyProvider).
+	keyProvider cakey.Provider
+
+	mu sync.RWMutex
+
+	// perTenant holds the built-in cakey.SoftwareProvider for each tenant
+	// that has resolved Key B material, keyed by tenant ID, constructed
+	// lazily on first use. Empty and never consulted when keyProvider is
+	// injected.
+	perTenant map[string]*cakey.SoftwareProvider
+
+	// caCert/caCertPEM cache the most recently resolved CA certificate --
+	// public data, read by CACertPEM without a barrier check and never wiped
+	// by Seal.
+	caCert    *x509.Certificate
+	caCertPEM []byte
+
 	defaultTTL time.Duration
 
 	// trustDomain, when non-empty, is the SPIFFE trust domain every issued
@@ -124,7 +160,7 @@ type DefaultCertProvider struct {
 // NewDefaultProvider creates a new DefaultCertProvider. The provider
 // must be initialized via Initialize and unsealed via Unseal before
 // certificate operations are available.
-func NewDefaultProvider(kvStore kvstore.KVStore, barrier seal.EncryptionBarrier, opts ...ProviderOption) *DefaultCertProvider {
+func NewDefaultProvider(kvStore kvstore.MultiGuardedBatchKVStore, barrier seal.EncryptionBarrier, opts ...ProviderOption) *DefaultCertProvider {
 	o := &providerOptions{
 		defaultTTL: defaultTTL,
 	}
@@ -134,132 +170,138 @@ func NewDefaultProvider(kvStore kvstore.KVStore, barrier seal.EncryptionBarrier,
 	return &DefaultCertProvider{
 		kvStore:     kvStore,
 		barrier:     barrier,
+		keyProvider: o.keyProvider,
 		defaultTTL:  o.defaultTTL,
 		trustDomain: o.trustDomain,
 	}
 }
 
-// Initialize generates a CA key pair, seals the private key via the
-// barrier, and persists both the wrapped key and CA certificate PEM to
-// KVStore. If CA material already exists in KVStore, it is loaded
-// instead.
+// Initialize resolves this provider's cakey.Provider for the system tenant
+// (tenant.FromContext(ctx)) and ensures its CA key and certificate exist,
+// generating them on first call. If CA material already exists it is loaded
+// instead. For the built-in cakey.SoftwareProvider this calls its own
+// Initialize (create-or-load); an injected Provider (WithKeyProvider) has no
+// such distinction on the Provider interface, so it is proven ready by
+// calling Signer directly -- an embedder's CA is established by construction,
+// not by this call.
 func (p *DefaultCertProvider) Initialize(ctx context.Context) error {
 	if p.barrier.IsSealed() {
 		return &BarrierSealedError{}
 	}
-
-	tenantID := tenant.FromContext(ctx)
-	wrappedKeyPath := prefixCertCA + tenantID + "/" + keyWrappedKey
-	certPEMPath := prefixCertCA + tenantID + "/" + keyCertPEM
-
-	// Check if CA already exists.
-	existing, err := p.kvStore.Get(ctx, wrappedKeyPath)
+	prov, err := p.resolveKeyProvider(tenant.FromContext(ctx))
 	if err != nil {
-		return &StoreError{Op: "get", Detail: wrappedKeyPath, Err: err}
+		return err
 	}
-	if existing != nil {
-		return p.loadCA(ctx, tenantID)
+	if sp, ok := prov.(*cakey.SoftwareProvider); ok {
+		if err := sp.Initialize(ctx); err != nil {
+			return mapProviderError(err)
+		}
+	} else if _, err := prov.Signer(ctx); err != nil {
+		return mapProviderError(err)
 	}
-
-	// Generate new CA key pair.
-	caPrivKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return &CertGenerateError{Err: err}
-	}
-
-	serialNumber, err := generateSerial()
-	if err != nil {
-		return &CertGenerateError{Err: err}
-	}
-
-	now := time.Now().UTC()
-	caTemplate := &x509.Certificate{
-		SerialNumber: serialNumber,
-		Subject: pkix.Name{
-			CommonName:         "qrdb-ca",
-			OrganizationalUnit: []string{tenantID},
-		},
-		NotBefore:             now,
-		NotAfter:              now.Add(caTTL),
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
-		BasicConstraintsValid: true,
-		IsCA:                  true,
-		MaxPathLen:            0,
-		MaxPathLenZero:        true,
-	}
-
-	caCertDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caPrivKey.PublicKey, caPrivKey)
-	if err != nil {
-		return &CertGenerateError{Err: err}
-	}
-
-	// Marshal private key to DER.
-	caKeyDER, err := x509.MarshalECPrivateKey(caPrivKey)
-	if err != nil {
-		return &CertGenerateError{Err: err}
-	}
-
-	// Encrypt the private key via the barrier.
-	wrappedKey, err := p.barrier.Encrypt(caKeyDER)
-	if err != nil {
-		secure.Wipe(caKeyDER)
-		return &CertGenerateError{Err: err}
-	}
-
-	// Encode CA cert to PEM.
-	caCertPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: caCertDER,
-	})
-
-	// Persist wrapped key and CA cert PEM.
-	if err := p.kvStore.Put(ctx, wrappedKeyPath, wrappedKey); err != nil {
-		secure.Wipe(caKeyDER)
-		return &StoreError{Op: "put", Detail: wrappedKeyPath, Err: err}
-	}
-	if err := p.kvStore.Put(ctx, certPEMPath, caCertPEM); err != nil {
-		secure.Wipe(caKeyDER)
-		return &StoreError{Op: "put", Detail: certPEMPath, Err: err}
-	}
-
-	// Parse the CA cert for signing.
-	caCert, err := x509.ParseCertificate(caCertDER)
-	if err != nil {
-		secure.Wipe(caKeyDER)
-		return &CertGenerateError{Err: err}
-	}
-
-	// Store the key material in memory.
-	p.mu.Lock()
-	p.caKey = caKeyDER
-	p.caCert = caCert
-	p.caCertPEM = caCertPEM
-	p.mu.Unlock()
-
-	return nil
+	return p.warmCertCache(ctx, prov)
 }
 
-// Unseal loads the wrapped CA key from KVStore, decrypts it via the
-// barrier, and caches the key in memory for signing operations.
+// Unseal resolves this provider's cakey.Provider for the system tenant and
+// loads its CA key and certificate. Unlike Initialize it never mints a new
+// CA: for the built-in cakey.SoftwareProvider it calls the provider's own
+// Unseal (load-only), which returns *CAKeyNotAvailableError (translated from
+// cakey.NotInitializedError) when nothing has ever been established for this
+// tenant, rather than silently generating a fresh key. An injected Provider
+// has no such distinction, so it is proven ready the same way Initialize
+// does.
 func (p *DefaultCertProvider) Unseal(ctx context.Context) error {
 	if p.barrier.IsSealed() {
 		return &BarrierSealedError{}
 	}
-
-	tenantID := tenant.FromContext(ctx)
-	return p.loadCA(ctx, tenantID)
+	prov, err := p.resolveKeyProvider(tenant.FromContext(ctx))
+	if err != nil {
+		return err
+	}
+	if sp, ok := prov.(*cakey.SoftwareProvider); ok {
+		if err := sp.Unseal(ctx); err != nil {
+			return mapProviderError(err)
+		}
+	} else if _, err := prov.Signer(ctx); err != nil {
+		return mapProviderError(err)
+	}
+	return p.warmCertCache(ctx, prov)
 }
 
-// Seal destroys the in-memory CA key material and clears the cached
-// signer. All certificate operations will return BarrierSealedError
-// until Unseal is called again.
+// warmCertCache reads prov's certificate and caches it (and its PEM
+// encoding) on p, so CACertPEM can keep serving public data without a
+// barrier check or a call into prov.
+func (p *DefaultCertProvider) warmCertCache(ctx context.Context, prov cakey.Provider) error {
+	cert, err := prov.Certificate(ctx)
+	if err != nil {
+		return mapProviderError(err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
+	p.mu.Lock()
+	p.caCert = cert
+	p.caCertPEM = certPEM
+	p.mu.Unlock()
+	return nil
+}
+
+// resolveKeyProvider returns the cakey.Provider that signs Key B material
+// for tenantID: the injected keyProvider when WithKeyProvider was used
+// (shared across every tenant, never persisting or generating a software
+// key), otherwise the built-in cakey.SoftwareProvider for tenantID,
+// constructed lazily and cached in perTenant on first use.
+func (p *DefaultCertProvider) resolveKeyProvider(tenantID string) (cakey.Provider, error) {
+	if p.keyProvider != nil {
+		return p.keyProvider, nil
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if sp, ok := p.perTenant[tenantID]; ok {
+		return sp, nil
+	}
+	if p.perTenant == nil {
+		p.perTenant = make(map[string]*cakey.SoftwareProvider)
+	}
+	subject := pkix.Name{
+		CommonName:         "qrdb-ca",
+		OrganizationalUnit: []string{tenantID},
+	}
+	sp := cakey.NewSoftwareProvider(p.kvStore, p.barrier, prefixCertCA+tenantID+"/", subject, caTTL)
+	p.perTenant[tenantID] = sp
+	return sp, nil
+}
+
+// mapProviderError translates a cakey package error into the equivalent
+// pkg/cert typed error, so CertProvider's callers see only this package's
+// error vocabulary regardless of which cakey.Provider implementation signed
+// (the built-in software one or an injected HSM/TPM/KMS adapter).
+func mapProviderError(err error) error {
+	switch e := err.(type) {
+	case *cakey.BarrierSealedError:
+		return &BarrierSealedError{}
+	case *cakey.NotInitializedError:
+		return &CAKeyNotAvailableError{}
+	case *cakey.StoreError:
+		return &StoreError{Op: e.Op, Detail: e.Detail, Err: e.Err}
+	case *cakey.GenerateError:
+		return &CertGenerateError{Err: e.Err}
+	default:
+		return &CertGenerateError{Err: err}
+	}
+}
+
+// Seal clears the cached CA certificate and, for every tenant whose Key B
+// uses the built-in software provider, destroys its in-memory private key
+// (cakey.SoftwareProvider.Seal). An injected provider (WithKeyProvider) is
+// never sealed here: this process holds none of its key material to
+// destroy, and the barrier's own sealed state is what every subsequent
+// Signer/Certificate call is checked against.
 func (p *DefaultCertProvider) Seal() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.caKey != nil {
-		secure.Wipe(p.caKey)
-		p.caKey = nil
+	for _, sp := range p.perTenant {
+		sp.Seal()
 	}
 	p.caCert = nil
 	// caCertPEM is public data and does not need zeroing.
@@ -290,15 +332,9 @@ func (p *DefaultCertProvider) GenerateClientCert(ctx context.Context, req *Gener
 		return nil, err
 	}
 
-	caKey, caCert, err := p.getCAMaterial()
+	caSigner, caCert, err := p.getCAMaterial(ctx, req.TenantID)
 	if err != nil {
 		return nil, err
-	}
-
-	// Parse CA private key.
-	privKey, err := x509.ParseECPrivateKey(caKey)
-	if err != nil {
-		return nil, &CertGenerateError{Err: err}
 	}
 
 	// Generate client key pair.
@@ -333,7 +369,7 @@ func (p *DefaultCertProvider) GenerateClientCert(ctx context.Context, req *Gener
 		URIs: uris,
 	}
 
-	clientCertDER, err := x509.CreateCertificate(rand.Reader, clientTemplate, caCert, &clientPrivKey.PublicKey, privKey)
+	clientCertDER, err := x509.CreateCertificate(rand.Reader, clientTemplate, caCert, &clientPrivKey.PublicKey, caSigner)
 	if err != nil {
 		return nil, &CertGenerateError{Err: err}
 	}
@@ -682,93 +718,84 @@ func (p *DefaultCertProvider) CACertPEM() []byte {
 	return out
 }
 
-// loadCA loads the CA key and certificate from KVStore, decrypts the
-// key via the barrier, and caches both in memory.
-func (p *DefaultCertProvider) loadCA(ctx context.Context, tenantID string) error {
-	wrappedKeyPath := prefixCertCA + tenantID + "/" + keyWrappedKey
-	certPEMPath := prefixCertCA + tenantID + "/" + keyCertPEM
+// certPEMRecordSuffix is the KVStore record name a tenant's Key B CA
+// certificate is stored under (prefixCertCA + tenantID + "/" +
+// certPEMRecordSuffix), mirroring cakey.SoftwareProvider's own internal
+// layout for the same prefix: the record holds the certificate's raw DER,
+// not PEM, exactly as cakey's own certMaterial record does. It is duplicated
+// here, rather than imported, because it names a storage record shape the
+// cakey package does not export -- the two must stay in sync, exactly as
+// prefixCertCA already must.
+const certPEMRecordSuffix = "/certificate"
 
-	// Load wrapped key.
-	wrappedKey, err := p.kvStore.Get(ctx, wrappedKeyPath)
-	if err != nil {
-		return &StoreError{Op: "get", Detail: wrappedKeyPath, Err: err}
-	}
-	if wrappedKey == nil {
-		return &CAKeyNotAvailableError{}
-	}
-
-	// Load CA cert PEM.
-	caCertPEM, err := p.kvStore.Get(ctx, certPEMPath)
-	if err != nil {
-		return &StoreError{Op: "get", Detail: certPEMPath, Err: err}
-	}
-	if caCertPEM == nil {
-		return &CAKeyNotAvailableError{}
-	}
-
-	// Decrypt the CA private key.
-	caKeyDER, err := p.barrier.Decrypt(wrappedKey)
-	if err != nil {
-		return &CertGenerateError{Err: err}
-	}
-
-	// Parse the CA certificate.
-	block, _ := pem.Decode(caCertPEM)
-	if block == nil {
-		return &CertGenerateError{Err: &ValidationError{Field: "ca_cert_pem", Reason: "invalid PEM data"}}
-	}
-	caCert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		secure.Wipe(caKeyDER)
-		return &CertGenerateError{Err: err}
+// CACertPEMs returns the PEM-encoded Key B CA certificate for every tenant
+// that has established one -- or, when WithKeyProvider replaced the built-in
+// per-tenant default, the single injected provider's certificate. This is
+// the seam the client-facing listeners' dynamic trust pool uses to trust
+// every tenant's login CA (see docs/certificate-authority/architecture.md,
+// "Key B trust on the client-facing listeners").
+//
+// Like CACertPEM, every record scanned here is public data stored in
+// plaintext (never barrier-encrypted): this never needs the barrier
+// unsealed on its own. It CAN still fail -- in Raft mode the replicated
+// store that holds these records cannot be opened while sealed at all
+// (encfs) -- and the returned *StoreError is the caller's signal to fall
+// back rather than block: see docs/certificate-authority/architecture.md's
+// "while sealed, Key B isn't available, so the pool holds Key A only" rule.
+func (p *DefaultCertProvider) CACertPEMs(ctx context.Context) ([][]byte, error) {
+	if p.keyProvider != nil {
+		cert, err := p.keyProvider.Certificate(ctx)
+		if err != nil {
+			return nil, mapProviderError(err)
+		}
+		return [][]byte{pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})}, nil
 	}
 
-	p.mu.Lock()
-	// Wipe old key if present.
-	if p.caKey != nil {
-		secure.Wipe(p.caKey)
+	var out [][]byte
+	if err := p.kvStore.Scan(ctx, prefixCertCA, func(key string, value []byte) error {
+		if !strings.HasSuffix(key, certPEMRecordSuffix) {
+			return nil
+		}
+		cert, err := x509.ParseCertificate(value)
+		if err != nil {
+			return &StoreError{Op: "scan", Detail: key, Err: err}
+		}
+		out = append(out, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}))
+		return nil
+	}); err != nil {
+		return nil, &StoreError{Op: "scan", Detail: prefixCertCA, Err: err}
 	}
-	p.caKey = caKeyDER
-	p.caCert = caCert
-	p.caCertPEM = caCertPEM
-	p.mu.Unlock()
-
-	return nil
+	return out, nil
 }
 
-// getCAMaterial returns the CA key DER and certificate under the read
-// lock. Returns BarrierSealedError when the barrier is sealed.
-//
-// If the barrier is unsealed but the CA key is not yet loaded (e.g.,
-// after a barrier unseal or server restart), getCAMaterial
-// auto-initializes by calling Initialize, which loads or generates
-// the CA material.
-func (p *DefaultCertProvider) getCAMaterial() ([]byte, *x509.Certificate, error) {
+// getCAMaterial resolves tenantID's cakey.Provider and returns its signer
+// and certificate, warming the public CA-certificate cache exactly as
+// Initialize/Unseal do. Unlike the pre-convergence version, the caller never
+// sees raw key bytes: every signature is produced by calling the returned
+// crypto.Signer. Signer auto-initializes the built-in cakey.SoftwareProvider
+// on first use (create-or-load), matching GenerateClientCert's existing
+// auto-init-on-first-issuance behavior.
+func (p *DefaultCertProvider) getCAMaterial(ctx context.Context, tenantID string) (crypto.Signer, *x509.Certificate, error) {
 	if p.barrier.IsSealed() {
 		return nil, nil, &BarrierSealedError{}
 	}
 
-	p.mu.RLock()
-	key, cert := p.caKey, p.caCert
-	p.mu.RUnlock()
-
-	if key == nil || cert == nil {
-		// Auto-initialize: barrier is unsealed but CA not loaded.
-		if err := p.Initialize(context.Background()); err != nil {
-			return nil, nil, err
-		}
-		p.mu.RLock()
-		key, cert = p.caKey, p.caCert
-		p.mu.RUnlock()
-		if key == nil || cert == nil {
-			return nil, nil, &CAKeyNotAvailableError{}
-		}
+	prov, err := p.resolveKeyProvider(tenantID)
+	if err != nil {
+		return nil, nil, err
+	}
+	signer, err := prov.Signer(ctx)
+	if err != nil {
+		return nil, nil, mapProviderError(err)
+	}
+	if err := p.warmCertCache(ctx, prov); err != nil {
+		return nil, nil, err
 	}
 
-	// Return a copy of the key to avoid aliasing.
-	keyCopy := make([]byte, len(key))
-	copy(keyCopy, key)
-	return keyCopy, cert, nil
+	p.mu.RLock()
+	cert := p.caCert
+	p.mu.RUnlock()
+	return signer, cert, nil
 }
 
 // generateSerial returns a cryptographically random serial number for

@@ -258,6 +258,13 @@ type serverOptions struct {
 	// hardware-backed factors from go-xkms.
 	factorRegistry *authfactors.FactorRegistry
 
+	// certKeyProvider replaces Key B's built-in per-tenant
+	// cakey.SoftwareProvider entirely. nil means qrdb's built-in software
+	// provider signs every tenant's client certificates, barrier-encrypted
+	// and persisted under __sys:cert_ca/; higher layers inject an
+	// HSM/TPM/KMS-backed cakey.Provider here (see WithCertKeyProvider).
+	certKeyProvider cakey.Provider
+
 	// sealedWindowProbe controls the sealed-window middleware /
 	// interceptors on REST and gRPC. While the probe reports sealed,
 	// every endpoint not on the allowlist returns 503 / Unavailable.
@@ -923,6 +930,25 @@ func WithFactorRegistry(reg *authfactors.FactorRegistry) ServerOption {
 	return func(o *serverOptions) { o.factorRegistry = reg }
 }
 
+// WithCertKeyProvider injects the cakey.Provider that signs Key B (the login
+// CA, pkg/cert) in place of qrdb's built-in per-tenant
+// cakey.SoftwareProvider. When set, no software key is ever generated or
+// stored under __sys:cert_ca/ for any tenant: every client-certificate
+// signature is routed to p. This is the Key B half of the CA key provider
+// seam (see docs/certificate-authority/architecture.md); the cluster CA
+// (Key A) has its own, separate injection point.
+//
+// The CertProvider that consumes this is constructed during
+// lifecycle.BuildServices — strictly BEFORE server.New runs — so, like
+// WithStrategyRegistry, the SDK node builders and qrdbd resolve this option
+// via ResolveCryptoOptions and forward it into lifecycle.Infra.CertKeyProvider
+// up front. Passing it only to server.New would be too late: the
+// DefaultCertProvider would already have been constructed with the built-in
+// software provider.
+func WithCertKeyProvider(p cakey.Provider) ServerOption {
+	return func(o *serverOptions) { o.certKeyProvider = p }
+}
+
 // CryptoOptions holds the hardware/seal injection values carried by a set of
 // ServerOptions. It exists because the TenantService (which consumes the
 // StrategyRegistry to resolve per-tenant hardware/cloud seal strategies) is
@@ -936,6 +962,7 @@ type CryptoOptions struct {
 	SealStrategy     seal.SealingStrategy
 	PINBackend       pin.PINBackend
 	FactorRegistry   *authfactors.FactorRegistry
+	CertKeyProvider  cakey.Provider
 	AuditLogger      audit.AuditLogger
 	// AuthFactorService is the caller-supplied AuthFactorServicer, if any.
 	// When non-nil the caller passed server.WithAuthFactorService explicitly.
@@ -966,6 +993,7 @@ func ResolveCryptoOptions(opts ...ServerOption) CryptoOptions {
 		SealStrategy:      o.sealStrategy,
 		PINBackend:        o.pinBackend,
 		FactorRegistry:    o.factorRegistry,
+		CertKeyProvider:   o.certKeyProvider,
 		AuditLogger:       o.auditLogger,
 		AuthFactorService: o.authFactorSvc,
 		CeremonyCA:        o.ceremonyCA,

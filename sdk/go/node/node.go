@@ -1163,7 +1163,10 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		// TenantService so per-tenant hardware/cloud seal strategies resolve.
 		// This must happen here (before BuildServices), not via server.New,
 		// because the TenantService is constructed inside BuildServices.
-		StrategyRegistry:          server.ResolveCryptoOptions(pending.serverOpts...).StrategyRegistry,
+		StrategyRegistry: server.ResolveCryptoOptions(pending.serverOpts...).StrategyRegistry,
+		// Forward an injected (xkms) Key B provider the same way: the
+		// CertProvider is also constructed inside BuildServices.
+		CertKeyProvider:           server.ResolveCryptoOptions(pending.serverOpts...).CertKeyProvider,
 		DefaultTenantEntitlements: n.defaultTenantEntitlements,
 	}, pending.cfg, pending.serverOpts)
 	if err != nil {
@@ -1652,7 +1655,9 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		// Forward an injected (xkms) seal StrategyRegistry into the
 		// TenantService (constructed inside BuildServices) so per-tenant
 		// hardware/cloud seal strategies resolve in clustered mode too.
-		StrategyRegistry:          server.ResolveCryptoOptions(pending.serverOpts...).StrategyRegistry,
+		StrategyRegistry: server.ResolveCryptoOptions(pending.serverOpts...).StrategyRegistry,
+		// Forward an injected (xkms) Key B provider the same way.
+		CertKeyProvider:           server.ResolveCryptoOptions(pending.serverOpts...).CertKeyProvider,
 		DefaultTenantEntitlements: n.defaultTenantEntitlements,
 	}, pending.cfg, pending.serverOpts)
 	if err != nil {
@@ -2241,7 +2246,9 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		// TenantService even on the no-seal data path, so the option a
 		// composer passes via server.WithStrategyRegistry is honored rather
 		// than silently dropped.
-		StrategyRegistry:          server.ResolveCryptoOptions(serverOpts...).StrategyRegistry,
+		StrategyRegistry: server.ResolveCryptoOptions(serverOpts...).StrategyRegistry,
+		// Forward an injected (xkms) Key B provider the same way.
+		CertKeyProvider:           server.ResolveCryptoOptions(serverOpts...).CertKeyProvider,
 		DefaultTenantEntitlements: n.defaultTenantEntitlements,
 	})
 	if err != nil {

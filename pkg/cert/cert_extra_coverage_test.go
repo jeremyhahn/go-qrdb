@@ -27,156 +27,60 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
 
 // ---------------------------------------------------------------------------
-// Initialize — uncovered error branches
+// mapProviderError — every cakey error branch
 // ---------------------------------------------------------------------------
 
-// TestInitialize_PutCertPEMError exercises the branch where the second
-// Put call (persisting the CA cert PEM) fails. This requires a KVStore
-// that succeeds on the first Put and fails on the second.
-func TestInitialize_PutCertPEMError(t *testing.T) {
-	kv := &putCountKVStore{inner: newMockKVStore(), failOnPut: 2}
-	barrier := newMockBarrier()
-	p := NewDefaultProvider(kv, barrier)
+// TestMapProviderError_Translates verifies that every cakey package error
+// mapProviderError understands is translated to its pkg/cert equivalent,
+// which is what lets CertProvider's callers see only this package's error
+// vocabulary regardless of which cakey.Provider signed (the built-in
+// software one or an injected HSM/TPM/KMS adapter).
+func TestMapProviderError_Translates(t *testing.T) {
+	underlying := errors.New("injected")
 
-	err := p.Initialize(context.Background())
-	if err == nil {
-		t.Fatal("expected error when second Put fails")
-	}
-	var se *StoreError
-	if !errors.As(err, &se) {
-		t.Fatalf("expected *StoreError, got %T: %v", err, err)
-	}
-}
-
-// TestInitialize_EncryptError exercises the branch where barrier.Encrypt
-// returns an error during CA key wrapping.
-func TestInitialize_EncryptError(t *testing.T) {
-	barrier := &errorBarrier{}
-	p := NewDefaultProvider(newMockKVStore(), barrier)
-
-	err := p.Initialize(context.Background())
-	if err == nil {
-		t.Fatal("expected error when barrier.Encrypt fails")
-	}
-	var cge *CertGenerateError
-	if !errors.As(err, &cge) {
-		t.Fatalf("expected *CertGenerateError, got %T: %v", err, err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// loadCA — uncovered nil cert PEM branch
-// ---------------------------------------------------------------------------
-
-// TestLoadCA_NilCertPEM exercises the branch in loadCA where the wrapped
-// key exists in KVStore but the cert PEM entry is absent (nil).
-func TestLoadCA_NilCertPEM(t *testing.T) {
-	p, kv, _ := initializeProvider(t)
-	ctx := context.Background()
-
-	// Delete only the cert PEM entry so loadCA finds the key but not the cert.
-	if err := kv.Delete(ctx, "__sys:cert_ca/system/cert_pem"); err != nil {
-		t.Fatalf("Delete cert_pem: %v", err)
-	}
-
-	// Wipe in-memory state so loadCA is forced to reload from KVStore.
-	p.mu.Lock()
-	p.caKey = nil
-	p.caCert = nil
-	p.caCertPEM = nil
-	p.mu.Unlock()
-
-	err := p.loadCA(ctx, "system")
-	if err == nil {
-		t.Fatal("expected error when cert PEM is missing")
-	}
-	var cnaErr *CAKeyNotAvailableError
-	if !errors.As(err, &cnaErr) {
-		t.Fatalf("expected *CAKeyNotAvailableError, got %T: %v", err, err)
-	}
-}
-
-// TestLoadCA_InvalidCertPEM exercises the branch where the stored cert PEM
-// cannot be decoded (corrupt PEM block returns nil from pem.Decode).
-func TestLoadCA_InvalidCertPEM(t *testing.T) {
-	p, kv, _ := initializeProvider(t)
-	ctx := context.Background()
-
-	// Overwrite cert_pem with invalid data so pem.Decode returns nil.
-	if err := kv.Put(ctx, "__sys:cert_ca/system/cert_pem", []byte("not-pem")); err != nil {
-		t.Fatalf("Put invalid cert_pem: %v", err)
-	}
-
-	// Wipe in-memory state so loadCA reloads from KVStore.
-	p.mu.Lock()
-	p.caKey = nil
-	p.caCert = nil
-	p.caCertPEM = nil
-	p.mu.Unlock()
-
-	err := p.loadCA(ctx, "system")
-	if err == nil {
-		t.Fatal("expected error for invalid cert PEM")
-	}
-	var cge *CertGenerateError
-	if !errors.As(err, &cge) {
-		t.Fatalf("expected *CertGenerateError, got %T: %v", err, err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// getCAMaterial — remaining nil-key branch after auto-init
-// ---------------------------------------------------------------------------
-
-// TestGetCAMaterial_NilAfterAutoInit exercises the branch where auto-init
-// succeeds but the in-memory key is still nil (forced by injecting a store
-// that writes to KVStore but where we zero the key after Initialize).
-// In practice this branch guards against races; we simulate it by providing
-// a KVStore that silently drops all Put calls so Initialize completes without
-// error but leaves no material in the store—resulting in loadCA returning
-// CAKeyNotAvailableError, which causes Initialize to fail, so the
-// auto-init path returns an error covering the `if err := p.Initialize`
-// branch rather than the subsequent `if key == nil` branch (which is
-// inherently a race guard and nearly impossible to hit in tests without
-// concurrency gymnastics).
-//
-// We verify the behavior by testing a simpler route: a fresh provider
-// whose barrier is unsealed but whose KVStore returns an error for the
-// second Get (cert PEM) so Initialize via auto-init fails.
-func TestGetCAMaterial_AutoInit_CertPEMGetError(t *testing.T) {
-	// Store with selective Get failure: first Get (wrapped key) succeeds by
-	// returning nil (no existing CA), subsequent Puts succeed, but a second
-	// call to loadCA fails because the cert PEM Get returns an error.
-	// Use a real provider that was initialized first so the wrapped key is
-	// stored, then swap in an errorKVStore that fails on Get so loadCA errors.
-	kv := newMockKVStore()
-	barrier := newMockBarrier()
-	p := NewDefaultProvider(kv, barrier)
-
-	// Initialize to persist the CA material.
-	if err := p.Initialize(context.Background()); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-
-	// Replace the KV store with one that returns an error for Get so the
-	// second call to loadCA (via auto-init in getCAMaterial) fails.
-	p.kvStore = &errorKVStore{err: errors.New("storage failure")}
-
-	// Wipe in-memory state.
-	p.mu.Lock()
-	p.caKey = nil
-	p.caCert = nil
-	p.caCertPEM = nil
-	p.mu.Unlock()
-
-	_, _, err := p.getCAMaterial()
-	if err == nil {
-		t.Fatal("expected error when KVStore fails during auto-init")
-	}
+	t.Run("barrier sealed", func(t *testing.T) {
+		var want *BarrierSealedError
+		if err := mapProviderError(&cakey.BarrierSealedError{}); !errors.As(err, &want) {
+			t.Fatalf("mapProviderError(*cakey.BarrierSealedError) = %T, want *BarrierSealedError", err)
+		}
+	})
+	t.Run("not initialized", func(t *testing.T) {
+		var want *CAKeyNotAvailableError
+		if err := mapProviderError(&cakey.NotInitializedError{}); !errors.As(err, &want) {
+			t.Fatalf("mapProviderError(*cakey.NotInitializedError) = %T, want *CAKeyNotAvailableError", err)
+		}
+	})
+	t.Run("store error", func(t *testing.T) {
+		var want *StoreError
+		err := mapProviderError(&cakey.StoreError{Op: "get", Detail: "d", Err: underlying})
+		if !errors.As(err, &want) {
+			t.Fatalf("mapProviderError(*cakey.StoreError) = %T, want *StoreError", err)
+		}
+		if want.Op != "get" || want.Detail != "d" || !errors.Is(want.Err, underlying) {
+			t.Errorf("StoreError fields not preserved: %+v", want)
+		}
+	})
+	t.Run("generate error", func(t *testing.T) {
+		var want *CertGenerateError
+		err := mapProviderError(&cakey.GenerateError{Err: underlying})
+		if !errors.As(err, &want) {
+			t.Fatalf("mapProviderError(*cakey.GenerateError) = %T, want *CertGenerateError", err)
+		}
+		if !errors.Is(want.Err, underlying) {
+			t.Errorf("GenerateError.Err not preserved: %+v", want)
+		}
+	})
+	t.Run("unrecognised error", func(t *testing.T) {
+		var want *CertGenerateError
+		if err := mapProviderError(underlying); !errors.As(err, &want) {
+			t.Fatalf("mapProviderError(unrecognised) = %T, want *CertGenerateError", err)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -266,39 +170,6 @@ func TestEncodePKCS12_InvalidCACert(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// loadCA — existing key wipe branch
-// ---------------------------------------------------------------------------
-
-// TestLoadCA_WipesExistingKey verifies that loadCA wipes and replaces an
-// existing in-memory CA key when called a second time (e.g., after rotation).
-func TestLoadCA_WipesExistingKey(t *testing.T) {
-	p, _, _ := initializeProvider(t)
-	ctx := context.Background()
-
-	// Record the original key bytes.
-	p.mu.RLock()
-	origLen := len(p.caKey)
-	p.mu.RUnlock()
-
-	if origLen == 0 {
-		t.Fatal("expected non-empty CA key after Initialize")
-	}
-
-	// Call loadCA again — it should wipe the old key and reload.
-	if err := p.loadCA(ctx, "system"); err != nil {
-		t.Fatalf("second loadCA: %v", err)
-	}
-
-	p.mu.RLock()
-	newLen := len(p.caKey)
-	p.mu.RUnlock()
-
-	if newLen == 0 {
-		t.Fatal("expected non-empty CA key after second loadCA")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // generateSerial — indirect coverage via unit test for the success path
 // ---------------------------------------------------------------------------
 
@@ -359,78 +230,10 @@ func TestValidateGenerateRequest_NilRequest(t *testing.T) {
 // Helper types
 // ---------------------------------------------------------------------------
 
-// putCountKVStore wraps a mockKVStore and fails on the N-th Put call.
-type putCountKVStore struct {
-	inner     *mockKVStore
-	failOnPut int
-	putCount  int
-}
-
-func (s *putCountKVStore) Put(ctx context.Context, key string, value []byte) error {
-	s.putCount++
-	if s.putCount == s.failOnPut {
-		return errors.New("injected Put failure")
-	}
-	return s.inner.Put(ctx, key, value)
-}
-
-func (s *putCountKVStore) Get(ctx context.Context, key string) ([]byte, error) {
-	return s.inner.Get(ctx, key)
-}
-
-func (s *putCountKVStore) Delete(ctx context.Context, key string) error {
-	return s.inner.Delete(ctx, key)
-}
-
-func (s *putCountKVStore) Scan(ctx context.Context, prefix string, fn func(string, []byte) error) error {
-	return s.inner.Scan(ctx, prefix, fn)
-}
-
-func (s *putCountKVStore) List(ctx context.Context, prefix string) ([]string, error) {
-	return s.inner.List(ctx, prefix)
-}
-
-func (s *putCountKVStore) Exists(ctx context.Context, key string) (bool, error) {
-	return s.inner.Exists(ctx, key)
-}
-
-func (s *putCountKVStore) RegisterEntityIndexes(_ string, _ []kvstore.EntityIndex) error {
-	return nil
-}
-
-func (s *putCountKVStore) QueryIndex(_ context.Context, _ string, _ []byte) ([][]byte, error) {
-	return nil, nil
-}
-
-func (s *putCountKVStore) ScanIndex(_ context.Context, _ string, _, _ []byte) (map[string][][]byte, error) {
-	return nil, nil
-}
-
-func (s *putCountKVStore) QueryCompoundIndex(_ context.Context, _ string, _ [][]byte) ([][]byte, error) {
-	return nil, nil
-}
-
-func (s *putCountKVStore) ScanCompoundIndex(_ context.Context, _ string, _ [][]byte, _, _ []byte) (map[string][][]byte, error) {
-	return nil, nil
-}
-
-// errorBarrier is a barrier that succeeds IsSealed() but fails on Encrypt.
-type errorBarrier struct{}
-
-func (b *errorBarrier) IsSealed() bool { return false }
-
-func (b *errorBarrier) Encrypt(_ []byte) ([]byte, error) {
-	return nil, errors.New("encrypt failure")
-}
-
-func (b *errorBarrier) Decrypt(_ []byte) ([]byte, error) {
-	return nil, errors.New("decrypt failure")
-}
-
 // putSucceedsScanFailsKVStore wraps a KV store, allowing Put but injecting
 // Scan errors.
 type putSucceedsScanFailsKVStore struct {
-	inner   kvstore.KVStore
+	inner   kvstore.MultiGuardedBatchKVStore
 	scanErr error
 }
 
@@ -476,6 +279,14 @@ func (s *putSucceedsScanFailsKVStore) QueryCompoundIndex(_ context.Context, _ st
 
 func (s *putSucceedsScanFailsKVStore) ScanCompoundIndex(_ context.Context, _ string, _ [][]byte, _, _ []byte) (map[string][][]byte, error) {
 	return nil, nil
+}
+
+func (s *putSucceedsScanFailsKVStore) PutAllIfUnchanged(ctx context.Context, guardKey string, guardValue []byte, writes []kvstore.KV) (bool, error) {
+	return s.inner.PutAllIfUnchanged(ctx, guardKey, guardValue, writes)
+}
+
+func (s *putSucceedsScanFailsKVStore) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	return s.inner.PutAllIfAllUnchanged(ctx, guards, writes)
 }
 
 // ---------------------------------------------------------------------------
