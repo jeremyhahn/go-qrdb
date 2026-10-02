@@ -38,13 +38,14 @@ are not reconstructed here — their history is in the git log.
   (`provider.MixedTransactionalWriteError`) before it writes either. The
   relational half is now atomic and the other applies at once, so such a
   statement could fail with its non-transactional half already committed.
-- **A SQL statement begun while another is still open on the same session is
-  refused** (`provider.CommandInProgressError`). Only a caller driving the
-  embedded driver's `driver.Conn` directly can do this, by running a
-  statement while a query's rows are still open, and the second statement
-  would discard the first's pending writes; close the rows first.
-  `database/sql` and the wire protocols never overlap statements on a
-  connection.
+- **BREAKING (behaviour): within a `sql.Tx` or `sql.Conn` on the embedded
+  driver, running a statement while a query's rows are open is refused**
+  (`provider.CommandInProgressError`), as the network MySQL and PostgreSQL
+  drivers refuse it; read or close the rows first. In 0.27.0-alpha such a
+  statement ran; each statement is now a command on the connection's session
+  (see the per-statement resolution entry below), and one begun inside
+  another would discard the open statement's pending writes. `Ping` on such
+  a connection succeeds without running a statement.
 - **Every SQL surface resolves each table, view and servicer once per
   statement.** In 0.27.0-alpha only the MySQL wire delivered the statement
   boundaries this memoization needs; the PostgreSQL wire (each executed

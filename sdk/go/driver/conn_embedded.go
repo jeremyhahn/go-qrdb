@@ -20,6 +20,7 @@ import (
 	"context"
 	"database/sql"
 	sqld "database/sql/driver"
+	"errors"
 	"sync/atomic"
 	"time"
 
@@ -107,7 +108,10 @@ func (c *embeddedConn) IsValid() bool {
 // ResetSession prepares a pooled connection for reuse by a new caller. A
 // transaction left open by the previous user is rolled back rather than
 // inherited, and a connection that cannot be returned to a clean state is
-// reported bad so the pool discards it.
+// reported bad so the pool discards it. A statement still open on the
+// connection is not such a state: the reset is refused with the typed
+// *provider.CommandInProgressError and the connection stays valid (see
+// commandInProgress).
 func (c *embeddedConn) ResetSession(ctx context.Context) error {
 	if c.closed.Load() {
 		return sqld.ErrBadConn
@@ -115,6 +119,9 @@ func (c *embeddedConn) ResetSession(ctx context.Context) error {
 
 	if c.inTx.Load() {
 		if _, err := c.execInternal(ctx, "ROLLBACK"); err != nil {
+			if commandInProgress(err) {
+				return err
+			}
 			c.bad.Store(true)
 			return sqld.ErrBadConn
 		}
@@ -126,15 +133,31 @@ func (c *embeddedConn) ResetSession(ctx context.Context) error {
 }
 
 // Ping verifies the engine is reachable and able to execute a statement.
+// While a statement is still open on the connection -- a query whose rows
+// the caller has not closed -- Ping cannot run its own, and does not need
+// to: the open statement is proof the session is alive, so Ping succeeds.
 func (c *embeddedConn) Ping(ctx context.Context) error {
 	if c.closed.Load() {
 		return sqld.ErrBadConn
 	}
 	if _, err := c.execInternal(ctx, "SELECT 1"); err != nil {
+		if commandInProgress(err) {
+			return nil
+		}
 		c.bad.Store(true)
 		return sqld.ErrBadConn
 	}
 	return nil
+}
+
+// commandInProgress reports whether err is the session's refusal to begin a
+// statement while another is still open on it. That refusal says nothing
+// about the connection's health, so it must never mark the connection bad:
+// database/sql closes a bad connection, and the close waits on the caller's
+// own open rows -- forever.
+func commandInProgress(err error) bool {
+	var inProgress *provider.CommandInProgressError
+	return errors.As(err, &inProgress)
 }
 
 // CheckNamedValue accepts the Go types bindArg can bind, widening the default

@@ -181,6 +181,13 @@ moves a document, and is refused with nothing destroyed if `N` is taken.
 
 ## Troubleshooting
 
+**A statement fails with "another statement is still in progress on this
+connection".** Within a `sql.Tx` or `sql.Conn` on the embedded driver, you ran
+a statement while an earlier query's rows were still open. The network MySQL
+and PostgreSQL drivers refuse the same thing. Read the rows to the end or close
+them, then run the next statement. Statements on a `*sql.DB` are not affected:
+each takes its own connection from the pool.
+
 **"Access denied" (1044 / 1142 / 1143) right after your first `GRANT`.** You
 armed the database. It was unrestricted until that statement and is
 default-deny now. Grant the rest of what you need from an identity that already
