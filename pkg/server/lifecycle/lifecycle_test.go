@@ -17,6 +17,7 @@ package lifecycle_test
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/hex"
@@ -31,7 +32,9 @@ import (
 	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
+	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
@@ -1542,5 +1545,160 @@ func TestBuildServices_ReclaimerDoesNotDependOnTheDiscoveryFilter(t *testing.T) 
 	}
 	if len(all) != 1 {
 		t.Errorf("ListAll(%q) = %v, want the one key — the reclaimer reads through this, and it must see it", prefix, all)
+	}
+}
+
+// TestBuildServices_ClusterCAProv_GeneratesOnFirstUse covers the default
+// path every ordinary caller takes: no Infra.ClusterCA{Cert,Key}PEM and no
+// Infra.ClusterCAKeyProvider. ClusterCAProv is still non-nil, generated on
+// first use exactly like CertProv (Key B) already is.
+func TestBuildServices_ClusterCAProv_GeneratesOnFirstUse(t *testing.T) {
+	host := newLocalHost()
+	defer func() { _ = host.Close() }()
+	hub := watch.NewHub()
+	defer hub.Close()
+	barrier, registry, credSvc := newTestBarrier(t)
+
+	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+		Host:              host,
+		WatchHub:          hub,
+		DataDir:           t.TempDir(),
+		SealBarrier:       barrier,
+		BarrierRegistry:   registry,
+		CredentialCoreSvc: credSvc,
+	})
+	if err != nil {
+		t.Fatalf("BuildServices: %v", err)
+	}
+	defer func() { _ = node.Stop(context.Background()) }()
+
+	if node.ClusterCAProv == nil {
+		t.Fatal("ClusterCAProv is nil, want a generated-on-first-use SoftwareProvider")
+	}
+	cert, err := node.ClusterCAProv.Certificate(context.Background())
+	if err != nil {
+		t.Fatalf("Certificate: %v", err)
+	}
+	if !cert.IsCA {
+		t.Fatal("generated cluster CA certificate is not a CA certificate")
+	}
+}
+
+// TestBuildServices_ClusterCAProv_AdoptsInMemoryMaterial covers the
+// bootstrap crash-window path: a caller supplies in-memory key material
+// generated before any store existed, and it is what gets persisted.
+func TestBuildServices_ClusterCAProv_AdoptsInMemoryMaterial(t *testing.T) {
+	host := newLocalHost()
+	defer func() { _ = host.Close() }()
+	hub := watch.NewHub()
+	defer hub.Close()
+	barrier, registry, credSvc := newTestBarrier(t)
+
+	caCertPEM, caKeyPEM, caCert, _, err := clustertls.GenerateCA(clustertls.CAValidity)
+	if err != nil {
+		t.Fatalf("GenerateCA: %v", err)
+	}
+
+	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+		Host:              host,
+		WatchHub:          hub,
+		DataDir:           t.TempDir(),
+		SealBarrier:       barrier,
+		BarrierRegistry:   registry,
+		CredentialCoreSvc: credSvc,
+		ClusterCACertPEM:  caCertPEM,
+		ClusterCAKeyPEM:   caKeyPEM,
+	})
+	if err != nil {
+		t.Fatalf("BuildServices: %v", err)
+	}
+	defer func() { _ = node.Stop(context.Background()) }()
+
+	gotCert, err := node.ClusterCAProv.Certificate(context.Background())
+	if err != nil {
+		t.Fatalf("Certificate: %v", err)
+	}
+	if gotCert.SerialNumber.Cmp(caCert.SerialNumber) != 0 {
+		t.Fatalf("adopted certificate serial %s != supplied serial %s", gotCert.SerialNumber, caCert.SerialNumber)
+	}
+
+	// A second BuildServices call over the SAME store/barrier, with no
+	// material this time, must LOAD the already-adopted CA rather than
+	// generating a new one -- the "ordinary restart after persistence"
+	// case.
+	node2, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+		Host:              host,
+		WatchHub:          hub,
+		DataDir:           t.TempDir(),
+		SealBarrier:       barrier,
+		BarrierRegistry:   registry,
+		CredentialCoreSvc: credSvc,
+	})
+	if err != nil {
+		t.Fatalf("BuildServices (restart): %v", err)
+	}
+	defer func() { _ = node2.Stop(context.Background()) }()
+	gotCert2, err := node2.ClusterCAProv.Certificate(context.Background())
+	if err != nil {
+		t.Fatalf("Certificate (restart): %v", err)
+	}
+	if gotCert2.SerialNumber.Cmp(caCert.SerialNumber) != 0 {
+		t.Fatalf("restart generated a NEW cluster CA (serial %s) instead of loading the adopted one (%s)", gotCert2.SerialNumber, caCert.SerialNumber)
+	}
+}
+
+// stubClusterCAProvider is a minimal cakey.Provider double for proving
+// Infra.ClusterCAKeyProvider replaces the built-in SoftwareProvider
+// entirely.
+type stubClusterCAProvider struct {
+	cert *x509.Certificate
+}
+
+func (s *stubClusterCAProvider) Signer(context.Context) (crypto.Signer, error) { return nil, nil }
+func (s *stubClusterCAProvider) Certificate(context.Context) (*x509.Certificate, error) {
+	return s.cert, nil
+}
+
+// TestBuildServices_ClusterCAProv_InjectedProviderReplacesBuiltin covers the
+// HSM/TPM/KMS injection seam: when Infra.ClusterCAKeyProvider is set, it is
+// used as-is and the built-in SoftwareProvider's store prefix is never
+// touched.
+func TestBuildServices_ClusterCAProv_InjectedProviderReplacesBuiltin(t *testing.T) {
+	host := newLocalHost()
+	defer func() { _ = host.Close() }()
+	hub := watch.NewHub()
+	defer hub.Close()
+	barrier, registry, credSvc := newTestBarrier(t)
+
+	_, _, caCert, _, err := clustertls.GenerateCA(clustertls.CAValidity)
+	if err != nil {
+		t.Fatalf("GenerateCA: %v", err)
+	}
+	injected := &stubClusterCAProvider{cert: caCert}
+
+	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+		Host:                 host,
+		WatchHub:             hub,
+		DataDir:              t.TempDir(),
+		SealBarrier:          barrier,
+		BarrierRegistry:      registry,
+		CredentialCoreSvc:    credSvc,
+		ClusterCAKeyProvider: injected,
+	})
+	if err != nil {
+		t.Fatalf("BuildServices: %v", err)
+	}
+	defer func() { _ = node.Stop(context.Background()) }()
+
+	if node.ClusterCAProv != cakey.Provider(injected) {
+		t.Fatalf("ClusterCAProv = %v, want the injected provider %v", node.ClusterCAProv, injected)
+	}
+
+	keys, err := node.KV.List(context.Background(), "__sys:cluster_ca/")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(keys) != 0 {
+		t.Fatalf("injected provider must leave __sys:cluster_ca/ untouched, found %v", keys)
 	}
 }

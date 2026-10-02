@@ -33,9 +33,11 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
+	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterca"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
@@ -268,6 +270,26 @@ type Infra struct {
 	// store BuildServices creates validates written policies against it
 	// (user.WithAuthMethodVocabulary). Nil means the built-in tokens only.
 	AuthMethodVocabulary func(method string) bool
+
+	// ClusterCAKeyProvider, when non-nil, replaces the built-in cluster CA
+	// (Key A) entirely: BuildServices never constructs a
+	// cakey.SoftwareProvider and never reads or writes
+	// clusterca.Prefix ("__sys:cluster_ca/"). This is the injection seam an
+	// embedder (go-xkms) uses to back Key A with an HSM/TPM/KMS, via
+	// cakey.Adapter. See docs/certificate-authority/architecture.md, "The
+	// CA key provider seam".
+	ClusterCAKeyProvider cakey.Provider
+
+	// ClusterCACertPEM and ClusterCAKeyPEM carry an in-memory cluster CA
+	// generated before any store existed (the bootstrap crash window; see
+	// docs/certificate-authority/architecture.md, "Bootstrap crash window").
+	// Both are empty on every boot after the key has been confirmed
+	// persisted into the replicated store — the caller's local cache of the
+	// key is deleted at that point, so there is nothing left to pass.
+	// Ignored when ClusterCAKeyProvider is set. See
+	// cakey.SoftwareProvider.AdoptIfAbsent for the adoption semantics.
+	ClusterCACertPEM []byte
+	ClusterCAKeyPEM  []byte
 }
 
 // Node aggregates all services built by BuildServices and provides a
@@ -321,6 +343,14 @@ type Node struct {
 	Credential service.CredentialServicer
 	Tenant     tenant.TenantServicer
 	CertProv   cert.CertProvider
+
+	// ClusterCAProv is the cluster CA (Key A) provider: the built-in
+	// cakey.SoftwareProvider over the replicated store, or
+	// Infra.ClusterCAKeyProvider when one was injected. Non-nil exactly
+	// when CertProv is (both are built in the same BarrierRegistry-gated
+	// block). Used for node-leaf issuance and member-side cluster-join CSR
+	// signing (pkg/clusterenroll).
+	ClusterCAProv cakey.Provider
 
 	// StoreResolver maps a tenant ID to the KVStore backing its IAM data.
 	// It is non-nil only when a BarrierRegistry was supplied: barrier-mode
@@ -980,6 +1010,38 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 		certStore := newKVStoreAdapter(n.KV, n.Index)
 		n.CertProv = cert.NewDefaultProvider(certStore, infra.SealBarrier,
 			cert.WithTrustDomain(infra.SPIFFETrustDomain))
+
+		// Cluster CA (Key A): an injected provider replaces the built-in one
+		// entirely. Otherwise the built-in cakey.SoftwareProvider either
+		// ADOPTS in-memory key material this boot's caller holds -- the
+		// bootstrap crash window, generated before any store existed on the
+		// node that is bootstrapping the cluster -- or, when the caller
+		// holds none, INITIALIZES (loads already-persisted material, or
+		// generates fresh when there is none). Every ordinary caller of
+		// BuildServices (standalone mode, the SDK, tests) supplies no
+		// material at all and gets exactly the same generate-on-first-use
+		// behavior cert.DefaultCertProvider (Key B) already has. Only
+		// cmd/qrdbd's Raft-mode bootstrap supplies material, and only while
+		// its local ca-key.pem cache still exists; it deletes that cache
+		// ONLY after AdoptIfAbsent confirms persistence, so "no material AND
+		// an empty store" cannot arise from a prior successful boot -- see
+		// docs/certificate-authority/architecture.md, "Bootstrap crash
+		// window".
+		if infra.ClusterCAKeyProvider != nil {
+			n.ClusterCAProv = infra.ClusterCAKeyProvider
+		} else {
+			clusterCAProv := clusterca.NewProvider(certStore, infra.SealBarrier)
+			var ccaErr error
+			if len(infra.ClusterCAKeyPEM) > 0 || len(infra.ClusterCACertPEM) > 0 {
+				ccaErr = clusterCAProv.AdoptIfAbsent(ctx, infra.ClusterCAKeyPEM, infra.ClusterCACertPEM)
+			} else {
+				ccaErr = clusterCAProv.Initialize(ctx)
+			}
+			if ccaErr != nil {
+				return &ClusterCAProviderError{Err: ccaErr}
+			}
+			n.ClusterCAProv = clusterCAProv
+		}
 	}
 
 	return nil
