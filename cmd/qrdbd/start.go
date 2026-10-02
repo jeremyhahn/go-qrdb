@@ -3904,7 +3904,7 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, da
 		// the cert API handlers. Without this the daemon records revocations,
 		// lists them, prints them, and lets the revoked certificate keep
 		// authenticating until it expires.
-		CertProvider:       certProv,
+		CertProvider: certProv,
 		// The issuer-tenant binding (go-qrdb#560): a Key B leaf's issuing CA
 		// must be its own claimed tenant's registered CA, or the cluster CA.
 		ClusterCA:          clusterCA,
