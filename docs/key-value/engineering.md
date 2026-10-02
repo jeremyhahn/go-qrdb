@@ -673,6 +673,29 @@ mvcc:
   raw shard service (`service.NodeKeyspaceCompactor`), behind the cluster
   feature `node-compaction`. Every node with the policy configured runs it; a
   second compaction to the same revision is the already-compacted refusal.
+- **It costs a scan of the shard's whole data keyspace, in the apply loop.**
+  Node keys are not one contiguous range -- a data key sorts by key length
+  first, and node keys share lengths with every database's -- so the
+  compaction visits every data entry on the shard, every tenant's included,
+  to find the ones outside all namespaces. It runs as a Raft command, so
+  every replica does that scan inside its apply loop, and no later entry on
+  the shard applies until it finishes. Size the interval and the retention so
+  it runs rarely on a large shared shard; a per-database compaction has no
+  such cost (see "Compaction cost" below).
+
+### Compaction cost
+
+A per-database compaction costs the entries under the database's own prefix,
+however much other databases on the shard hold. The data scan seeks to the
+prefix once per key length present, and the change log is collected in the
+same pass: every change is a data entry and a change-log entry at the same
+`(key, revision)`, so each data entry in `(previous floor, revision]` has its
+change-log record deleted as it is visited. The revision-ordered change log,
+which interleaves every database's changes, is never walked.
+`TestCompactPrefix_WorkIsBoundedByTheCompactedDatabase` pins this.
+*(Corrected: the change log was collected by walking every change on the
+shard in the compacted window and filtering by prefix -- every database's,
+from revision 1 on a database's first compaction.)*
 
 ### Scheduled compaction
 

@@ -84,7 +84,7 @@ func (s *Store) CompactPrefix(prefix []byte, revision int64) error {
 // the floor answers as it did before, and loses every entry older than that;
 // a kept entry that is a tombstone goes too when the key has a newer entry,
 // since it records only that the key did not exist. Those keys' change-log
-// entries at or below revision go, and prefix's floor becomes revision.
+// entries go with their data entries, and prefix's floor becomes revision.
 //
 // The apply path uses the batch form for two reasons: the scan reads through
 // batch, so it sees the data entries earlier entries in the same apply batch
@@ -157,18 +157,10 @@ func (s *Store) compactInto(batch storage.Batch, prefix []byte, revision int64) 
 	})
 	defer func() { _ = iter.Close() }()
 
-	if err := forEachDataKeyWithPrefix(iter, prefix, supersededEntryDeleter(batch, revision)); err != nil {
+	deleter := supersededEntryDeleter(batch, s.CompactionFloor(prefix), revision)
+	if err := forEachDataKeyWithPrefix(iter, prefix, deleter); err != nil {
 		return err
 	}
-
-	// The change log of these keys at or below the floor serves no purpose
-	// once the floor refuses every replay that would read it. Entries below
-	// the floor already covering prefix went with that compaction.
-	covered := func(key []byte) bool { return bytes.HasPrefix(key, prefix) }
-	if err := s.gcRevIndexInBatch(batch, covered, s.CompactionFloor(prefix)+1, revision); err != nil {
-		return err
-	}
-
 	if err := batch.Set(CompactionFloorKey(prefix), EncodeRevision(revision)); err != nil {
 		return &CompactionError{Err: err}
 	}
@@ -185,7 +177,17 @@ func (s *Store) compactInto(batch storage.Batch, prefix []byte, revision int64) 
 //     returns: kept -- unless it is a tombstone and the key has a newer
 //     entry, when it records only an absence nothing can ask about and goes;
 //   - every older entry is superseded at revision: deleted.
-func supersededEntryDeleter(batch storage.Batch, revision int64) func(raw, value []byte) error {
+//
+// The change log of the compacted keys at or below revision goes too: every
+// change is recorded as a data entry and a change-log entry at the same (key,
+// revision), so each data entry in (previous, revision] -- kept or deleted --
+// has its change-log entry deleted here, where previous is the floor the
+// keyspace had. Entries at or below previous lost theirs to that compaction.
+// The change log is therefore collected in exactly the work the data scan
+// already does, the entries under the compacted keyspace, and never by
+// walking the revision window, which holds every other database's changes
+// too.
+func supersededEntryDeleter(batch storage.Batch, previous, revision int64) func(raw, value []byte) error {
 	// The key group is the encoded key without its trailing 8-byte
 	// complemented revision.
 	var (
@@ -206,17 +208,34 @@ func supersededEntryDeleter(batch storage.Batch, revision int64) func(raw, value
 			newer = true
 			return nil
 		}
+		if entryRev > previous {
+			if err := deleteKey(batch, changeLogKey(raw, entryRev)); err != nil {
+				return err
+			}
+		}
 		if !atLive {
 			atLive = true
 			if !newer || !isTombstone(value) {
 				return nil
 			}
 		}
-		if err := batch.Delete(append([]byte(nil), raw...)); err != nil {
-			return &CompactionError{Err: err}
-		}
-		return nil
+		return deleteKey(batch, append([]byte(nil), raw...))
 	}
+}
+
+// changeLogKey returns the change-log key paired with the data entry raw at
+// revision rev.
+func changeLogKey(raw []byte, rev int64) []byte {
+	key, _ := dataUserKey(raw)
+	return EncodeRevIndexKey(rev, key)
+}
+
+// deleteKey queues the deletion of key into batch.
+func deleteKey(batch storage.Batch, key []byte) error {
+	if err := batch.Delete(key); err != nil {
+		return &CompactionError{Err: err}
+	}
+	return nil
 }
 
 // isTombstone reports whether an encoded data value is a deletion tombstone.
@@ -283,7 +302,7 @@ func (s *Store) compactNodeInto(batch storage.Batch, revision int64) error {
 	})
 	defer func() { _ = iter.Close() }()
 
-	deleteSuperseded := supersededEntryDeleter(batch, revision)
+	deleteSuperseded := supersededEntryDeleter(batch, s.NodeCompactionFloor(), revision)
 	for iter.SeekToFirst(); iter.Valid(); iter.Next() {
 		raw := iter.Key()
 		userKey, ok := dataUserKey(raw)
@@ -299,14 +318,6 @@ func (s *Store) compactNodeInto(batch storage.Batch, revision int64) error {
 	}
 	if err := iter.Error(); err != nil {
 		return &CompactionError{Err: err}
-	}
-
-	outsideNamespaces := func(key []byte) bool {
-		_, namespaced := tenant.NamespaceOf(key)
-		return !namespaced
-	}
-	if err := s.gcRevIndexInBatch(batch, outsideNamespaces, s.NodeCompactionFloor()+1, revision); err != nil {
-		return err
 	}
 	if err := batch.Set(NodeCompactionFloorKey(), EncodeRevision(revision)); err != nil {
 		return &CompactionError{Err: err}
