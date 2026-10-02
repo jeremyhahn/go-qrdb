@@ -885,7 +885,8 @@ func (s *Server) forwardToLeader(w http.ResponseWriter, r *http.Request, adminUR
 		// describe this node's signing key, is logged here.
 		slog.Error("leader forwarding: refusing to forward a holder request unsigned",
 			"leader", adminURL, "error", errors.Unwrap(err))
-		writeErrorJSON(w, http.StatusBadGateway, err)
+		writeErrorJSON(w, http.StatusBadGateway,
+			&LeaderForwardError{LeaderURL: adminURL, Err: err})
 		return
 	}
 

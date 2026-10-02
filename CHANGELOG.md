@@ -11,6 +11,16 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A refused unsigned holder forward is classified like every other forwarding
+  failure.** v0.29.0 wrote the holder refusal straight as a 502, bypassing the
+  error-mapping rule that `test/buildgates` enforces for REST handlers, which
+  left that gate red. The refusal is now a `*rest.LeaderForwardError` wrapping
+  `*rest.HolderForwardUnsignedError`, the same shape as the other two forwarding
+  failures in `forwardToLeader`. The status (502), the fixed message and
+  `errors.As` reachability of the holder error are unchanged.
+
 ## [0.29.0-alpha] - 2026-10-02
 
 Holder-certificate hardening, following the v0.28.1 security hotfix. This release contains BREAKING changes; see the entries below. Highlights:
