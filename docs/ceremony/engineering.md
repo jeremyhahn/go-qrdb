@@ -32,6 +32,29 @@ type CeremonyCA interface {
 Both `cert.CertProvider` (qrdb) and `ca.TrustedCA` (go-xkms) satisfy it through
 thin adapters.
 
+**The `SignCSR` contract is a MUST, and it is enforced.** The ceremony CA signs
+under the node's cluster CA, which the mTLS listener trusts for client logins,
+so every certificate it issues is a login claim. Every `CeremonyCA` —
+qrdb's `LocalCA` and any CA composed in from outside, such as go-xkms's —
+**MUST**:
+
+- sign with `SignCSROptions.RawSubject()` as the certificate's raw Subject:
+  `CN=<Username>`, `OU=[<TenantID>, <Profile>]`, one RDN per attribute so the
+  tenant stays the first OU. Encoding the same `pkix.Name` through
+  `x509.Certificate.Subject` packs the OUs into one sorted DER SET, which can
+  put the profile first;
+- carry **no** Subject Alternative Name, and take nothing from the CSR but its
+  public key, after checking its proof of possession;
+- issue a leaf: not a CA, no certificate-signing key usage, key usage
+  exactly `SignCSROptions.KeyUsage`, and extended key usages exactly the set
+  `SignCSROptions.ExtKeyUsage` names (order aside, no duplicates).
+
+A CA that does not conform is **refused, fail-closed**: the ceremony re-checks
+every certificate a `CeremonyCA` returns and records nothing for it, returning
+`*ceremony.CertSubjectError` (Subject, SANs or key differ) or
+`*ceremony.IssuedCertCapabilityError` (a CA, certificate signing or another
+key usage, or another set of extended key usages).
+
 Officer configuration (`pkg/ceremony/types.go`) carries `AuthenticatorType` and
 `AuthenticatorRef`. `ceremony.ParseEnrollmentSpec` parses
 `<username>:<kind>:<path>`; the two-field form `<username>:<path>` means `csr`.

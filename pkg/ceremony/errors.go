@@ -333,6 +333,21 @@ func (e *CertSubjectError) Error() string {
 	return "ceremony: certificate subject " + e.Field + " is missing or not the registered identity"
 }
 
+// IssuedCertCapabilityError is returned when a CeremonyCA returned a
+// certificate that can do more than SignCSROptions asked: it is a CA
+// (Field "IsCA"), its key usage includes certificate signing or otherwise
+// differs from SignCSROptions.KeyUsage ("KeyUsage"), or its extended key
+// usages are not the set SignCSROptions.ExtKeyUsage names ("ExtKeyUsage").
+// Nothing is issued.
+type IssuedCertCapabilityError struct {
+	Field string
+}
+
+// Error names the field.
+func (e *IssuedCertCapabilityError) Error() string {
+	return "ceremony: issued certificate " + e.Field + " exceeds what was requested"
+}
+
 // CSRParseError wraps an error from CSR parsing.
 type CSRParseError struct {
 	Err error

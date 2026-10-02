@@ -292,9 +292,15 @@ func signHolderCSR(ctx context.Context, ca CeremonyCA, csrPEM []byte, opts *Sign
 
 // checkIssuedSubject refuses a certificate a CeremonyCA returned unless its
 // Subject is CN=opts.Username, OU=[opts.TenantID, opts.Profile], it carries no
-// Subject Alternative Name, and it certifies the CSR's own key. It holds every
-// CeremonyCA implementation -- including ones composed in from outside this
-// module -- to the SignCSROptions contract, rather than trusting each to.
+// Subject Alternative Name, and it certifies the CSR's own key -- each a
+// *CertSubjectError -- and unless it is a leaf that can do exactly what opts
+// asked: not a CA, no certificate-signing key usage, key usage exactly
+// opts.KeyUsage, and the same set of extended key usages as opts.ExtKeyUsage
+// (order aside, no duplicates) -- each an *IssuedCertCapabilityError. A holder
+// certificate that could sign certificates would be a sub-CA under the
+// cluster CA, able to mint any login. It holds every CeremonyCA
+// implementation -- including ones composed in from outside this module -- to
+// the SignCSROptions contract, rather than trusting each to.
 func checkIssuedSubject(cert *x509.Certificate, csr *x509.CertificateRequest, opts *SignCSROptions) error {
 	want, err := opts.Subject()
 	if err != nil {
@@ -313,7 +319,35 @@ func checkIssuedSubject(cert *x509.Certificate, csr *x509.CertificateRequest, op
 	if !ok || !pub.Equal(csr.PublicKey) {
 		return &CertSubjectError{Field: "PublicKey"}
 	}
+	if cert.IsCA {
+		return &IssuedCertCapabilityError{Field: "IsCA"}
+	}
+	if cert.KeyUsage&x509.KeyUsageCertSign != 0 || cert.KeyUsage != opts.KeyUsage {
+		return &IssuedCertCapabilityError{Field: "KeyUsage"}
+	}
+	if !sameExtKeyUsages(cert.ExtKeyUsage, opts.ExtKeyUsage) || len(cert.UnknownExtKeyUsage) != 0 {
+		return &IssuedCertCapabilityError{Field: "ExtKeyUsage"}
+	}
 	return nil
+}
+
+// sameExtKeyUsages reports whether got holds exactly the extended key usages
+// in want, in any order. A duplicate in got is a mismatch: a certificate
+// repeating a usage is not the one that was requested.
+func sameExtKeyUsages(got, want []x509.ExtKeyUsage) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	g := slices.Clone(got)
+	w := slices.Clone(want)
+	slices.Sort(g)
+	slices.Sort(w)
+	for i := 1; i < len(g); i++ {
+		if g[i] == g[i-1] {
+			return false
+		}
+	}
+	return slices.Equal(g, w)
 }
 
 // sealSharesToOfficers splits shareSecret and seals one share per officer.

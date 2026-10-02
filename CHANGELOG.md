@@ -33,6 +33,25 @@ are not reconstructed here — their history is in the git log.
   `holderprofile.Is` as the predicate; `auth.HolderProfile` uses it. There are
   no aliases. The leaf lets `pkg/auth` and `pkg/tenant` share the names without
   `pkg/tenant` depending on `pkg/auth` for them.
+- **The ceremony refuses a holder certificate that is a sub-CA.** A
+  `CeremonyCA` returning a certificate with the right subject was trusted with
+  what the certificate could do. One that is a CA, carries certificate-signing
+  key usage or any key usage other than the requested one (CRL signing
+  included), or carries a set of extended key usages other than exactly the
+  requested set (order aside, duplicates refused) is now refused with
+  `*ceremony.IssuedCertCapabilityError` naming the field, on every signing
+  path, and nothing is recorded. A holder certificate able to sign
+  certificates would be a sub-CA under the cluster CA and could mint any login.
+
+### Changed
+
+- **The `CeremonyCA` signing contract is a stated MUST.** The `CeremonyCA` and
+  `SignCSROptions` doc comments and docs/ceremony now say that every CA,
+  including one composed in from outside qrdb, MUST sign with
+  `SignCSROptions.RawSubject()`, carry no SAN, take only the CSR's key, and
+  issue a leaf with exactly the requested key usage and extended key usages --
+  and that a non-conforming CA's certificates are refused, fail-closed, with
+  `*ceremony.CertSubjectError` or `*ceremony.IssuedCertCapabilityError`.
 
 ## [0.28.1-alpha] - 2026-10-02
 

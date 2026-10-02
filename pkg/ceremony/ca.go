@@ -26,11 +26,15 @@ import (
 // The certificate's identity comes from HERE, never from the CSR. A ceremony
 // CA signs under the node's cluster CA, which the mTLS listener trusts for
 // client logins, so a CSR's Subject and SANs would otherwise be a login claim
-// the registering caller chose. A CeremonyCA MUST set the Subject to
-// CN=Username, OU=[TenantID, Profile] (Profile omitted when empty), carry NO
-// Subject Alternative Name, and use the CSR only for its public key and proof
-// of possession. The ceremony re-checks every certificate a CA returns
-// (checkIssuedSubject) and refuses one that does not conform.
+// the registering caller chose. A CeremonyCA MUST sign with RawSubject() as
+// the certificate's raw Subject -- CN=Username, OU=[TenantID, Profile], one
+// RDN per attribute -- carry NO Subject Alternative Name, use the CSR only for
+// its public key and proof of possession, and issue a leaf: not a CA, no
+// certificate-signing key usage, key usage exactly KeyUsage, and extended key
+// usages exactly the set ExtKeyUsage names (order aside, no duplicates).
+// The ceremony re-checks every certificate a CA returns (checkIssuedSubject)
+// and refuses one that does not conform, fail-closed, with *CertSubjectError
+// or *IssuedCertCapabilityError; nothing is recorded for it.
 type SignCSROptions struct {
 	// TenantID is the tenant the certificate authenticates in: its first
 	// Subject OU. It is the signing scope's tenant -- the system tenant for
@@ -143,6 +147,15 @@ type IssuedCert struct {
 // CeremonyCA is the interface for the certificate authority used during
 // the initialization ceremony. It provides CSR signing, direct certificate
 // issuance, and CA bundle retrieval.
+//
+// SignCSR MUST follow the SignCSROptions contract: sign with
+// SignCSROptions.RawSubject() as the raw Subject, no Subject Alternative
+// Name, nothing from the CSR but its key, and a leaf certificate whose key
+// usage is exactly SignCSROptions.KeyUsage and whose extended key usages are
+// exactly the set SignCSROptions.ExtKeyUsage names. An
+// implementation that does not -- including one composed in from outside
+// this module -- has its certificates refused, fail-closed, with
+// *CertSubjectError or *IssuedCertCapabilityError.
 type CeremonyCA interface {
 	// SignCSR signs a PEM-encoded certificate signing request with the
 	// given options and returns the issued certificate.
