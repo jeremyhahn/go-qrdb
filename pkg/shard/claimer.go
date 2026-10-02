@@ -57,14 +57,41 @@ type ClaimStore interface {
 // configuration (database.ProvisionRaftError).
 type Claimer struct {
 	store ClaimStore
+
+	// feature and active gate every claim; see WithActivation.
+	feature string
+	active  func() bool
+}
+
+// ClaimerOption configures a Claimer.
+type ClaimerOption func(*Claimer)
+
+// WithActivation makes every claim wait for feature: while active reports
+// false the claim is refused with *FeatureNotActiveError and the store is
+// not touched. A cluster whose nodes do not all claim -- a rolling upgrade
+// from a binary that allocated shard IDs per node -- could otherwise issue
+// one ID twice, from the old node's counter and from the mark. A Claimer
+// with no activation serves a host whose groups hold only this binary.
+func WithActivation(feature string, active func() bool) ClaimerOption {
+	return func(c *Claimer) {
+		c.feature = feature
+		c.active = active
+	}
 }
 
 // NewClaimer returns a Claimer over store.
-func NewClaimer(store ClaimStore) (*Claimer, error) {
+func NewClaimer(store ClaimStore, opts ...ClaimerOption) (*Claimer, error) {
 	if store == nil {
 		return nil, &ClaimerConfigError{Field: "store"}
 	}
-	return &Claimer{store: store}, nil
+	c := &Claimer{store: store}
+	for _, opt := range opts {
+		opt(c)
+	}
+	if c.active != nil && c.feature == "" {
+		return nil, &ClaimerConfigError{Field: "activation feature"}
+	}
+	return c, nil
 }
 
 // ClaimShardID issues the next cluster-wide shard ID. The first ID a cluster
@@ -73,6 +100,9 @@ func NewClaimer(store ClaimStore) (*Claimer, error) {
 // The returned ID is recorded as issued before it is returned: a claim whose
 // caller then fails leaves a gap, never a reuse.
 func (c *Claimer) ClaimShardID(ctx context.Context) (uint64, error) {
+	if c.active != nil && !c.active() {
+		return 0, &FeatureNotActiveError{Feature: c.feature}
+	}
 	for attempt := 0; attempt < maxClaimAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return 0, &ClaimStoreError{Op: "claim", Err: err}

@@ -144,6 +144,20 @@ dropped" rather than stored.
 
 The default database, `system`, cannot be dropped.
 
+## Upgrading a cluster that holds raft databases
+
+A cluster that already holds raft-backed databases cannot be upgraded in place
+to a release with cluster-wide shard IDs. Earlier releases issued shard IDs per
+node, so two databases may share one, and the new issuer cannot tell which IDs
+are taken. Build a new cluster on the new release and move the data across. A
+cluster with no raft-backed databases upgrades as usual.
+
+During a rolling upgrade, and on a new cluster until every node has joined
+with the new release, creating a raft-backed database is refused with
+`503 Service Unavailable` (`UNAVAILABLE`): the cluster feature
+`cluster-shard-ids` is not active yet. Retry once every node runs the new
+release.
+
 ## Troubleshooting
 
 **`--barrier-enabled` was rejected.** The database shares the default store, so

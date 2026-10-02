@@ -92,6 +92,19 @@ func (e *ClaimContentionError) Error() string {
 	return "shard: claim lost the high-water race " + strconv.Itoa(e.Attempts) + " times"
 }
 
+// FeatureNotActiveError is returned by a claim made before the cluster has
+// activated the feature claims depend on: until every node runs a binary
+// that claims shard IDs, no node issues one. Nothing was claimed; the claim
+// succeeds once the feature is active.
+type FeatureNotActiveError struct {
+	Feature string
+}
+
+func (e *FeatureNotActiveError) Error() string {
+	return "shard: cluster feature " + strconv.Quote(e.Feature) +
+		" is not active yet: raft databases cannot be created until every node runs a binary that supports it"
+}
+
 // ShardIDExhaustedError is returned when no shard ID remains to issue.
 type ShardIDExhaustedError struct{}
 

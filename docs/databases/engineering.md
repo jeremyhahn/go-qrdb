@@ -794,10 +794,29 @@ How a claim works:
   nothing behind. A mark that is not one this code wrote -- not a decimal, or
   at or below `shard.UserMin` -- is `*shard.HighWaterCorruptError` (500 /
   `INTERNAL`): a claim refuses rather than guess.
+- **No claim before activation.** On a host whose groups can hold other
+  binaries (one that answers `FeatureEnabled`, the raft adapter), the claimer
+  is built with `shard.WithActivation`: every claim -- and so every raft
+  database create -- is refused with `*shard.FeatureNotActiveError` (503 /
+  `UNAVAILABLE`, retryable) until `featuregate.ClusterShardIDs` is active
+  cluster-wide, and the store is not touched. Before activation an old node
+  could still allocate per node, and a rolling upgrade would otherwise have a
+  window in which two nodes issue one ID. A host with no transport holds only
+  this binary and claims at once. **Proof:**
+  `TestNewShardClaimer_WaitsForClusterShardIDs`,
+  `TestShardIDs_RaftCreateWaitsForClusterShardIDs`,
+  `TestClaimShardID_WaitsForActivation`.
 - **Feature gate.** `featuregate.ClusterShardIDs` adds no Raft command. Its
-  activation applies the gate's downgrade rule: once every node claims, a
-  binary that allocates per node or accepts a caller's shard ID can neither
-  start nor be admitted as a replica.
+  activation opens the claim, and applies the gate's downgrade rule: once every
+  node claims, a binary that allocates per node or accepts a caller's shard ID
+  can neither start nor be admitted as a replica.
+- **No in-place upgrade of a cluster that holds raft databases.** Their shard
+  IDs were issued per node and may collide, and nothing reconciles them with the
+  high-water mark: the mark starts at `shard.UserMin` and could re-issue an ID a
+  per-node database still holds. Such a cluster is rebuilt, not upgraded: create
+  a new cluster on this release and move the data across. There is no
+  migration and no seed -- the per-node allocation it would carry forward is
+  the defect.
 - **Proof.** `TestShardIDs_*` (unit: two managers over one replicated store; a
   caller-chosen ID, including the system shard, refused; raft provisioning
   refused; an update that names another shard refused; a restore of the store

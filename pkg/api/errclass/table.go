@@ -332,6 +332,13 @@ var databaseRules = []rule{
 	// and it reaches the caller wrapped in ShardIDClaimError, which would
 	// otherwise answer it as retryable.
 	as(&shard.HighWaterCorruptError{Value: "x"}, Internal),
+	// No shard ID remains to issue. Nothing a retry can change: the space is
+	// spent for the life of the cluster.
+	as(&shard.ShardIDExhaustedError{}, ResourceExhausted),
+	// A raft create before the cluster activated cluster-wide shard IDs: the
+	// node is not yet able to issue one. A retry succeeds once every node runs
+	// a binary that claims.
+	as(&shard.FeatureNotActiveError{Feature: "cluster-shard-ids"}, Unavailable),
 	// A claim that lost the race on every attempt, or whose store did not
 	// answer: nothing was created, and a retry can succeed.
 	as(&shard.ClaimContentionError{Attempts: 1}, Unavailable),

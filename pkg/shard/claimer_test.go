@@ -240,6 +240,37 @@ func TestClaimShardID_ExhaustionIsTyped(t *testing.T) {
 	}
 }
 
+// A claimer with an activation refuses every claim, without touching the
+// store, until the activation reports true; then it claims as usual.
+func TestClaimShardID_WaitsForActivation(t *testing.T) {
+	store := kvstore.NewMemoryKVStore()
+	active := false
+	c, err := shard.NewClaimer(store, shard.WithActivation("cluster-shard-ids", func() bool { return active }))
+	if err != nil {
+		t.Fatalf("NewClaimer: %v", err)
+	}
+	_, err = c.ClaimShardID(context.Background())
+	var inactive *shard.FeatureNotActiveError
+	if !errors.As(err, &inactive) || inactive.Feature != "cluster-shard-ids" {
+		t.Fatalf("claim before activation = %v, want *FeatureNotActiveError", err)
+	}
+	if raw, _ := store.Get(context.Background(), shard.HighWaterKey); raw != nil {
+		t.Fatalf("a refused claim wrote the mark: %q", raw)
+	}
+	active = true
+	if id, err := c.ClaimShardID(context.Background()); err != nil || id != shard.UserMin {
+		t.Fatalf("claim after activation = %d, %v; want %d", id, err, shard.UserMin)
+	}
+}
+
+func TestNewClaimer_ActivationNeedsAFeature(t *testing.T) {
+	_, err := shard.NewClaimer(kvstore.NewMemoryKVStore(), shard.WithActivation("", func() bool { return true }))
+	var cfg *shard.ClaimerConfigError
+	if !errors.As(err, &cfg) || cfg.Field != "activation feature" {
+		t.Fatalf("NewClaimer with an unnamed activation = %v, want *ClaimerConfigError{activation feature}", err)
+	}
+}
+
 // failingStore fails one operation with a store error.
 type failingStore struct {
 	*kvstore.MemoryKVStore

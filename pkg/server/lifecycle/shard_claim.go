@@ -15,7 +15,9 @@
 package lifecycle
 
 import (
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 )
 
@@ -23,12 +25,23 @@ import (
 // system store. A store without the atomic verbs cannot make a claim every
 // node agrees on, and a node without a claimer would issue IDs another node
 // may hold, so the build refuses rather than wire one.
-func newShardClaimer(store kvstore.KVStore) (*shard.Claimer, error) {
+//
+// On a host whose groups can hold other binaries (a service.FeatureGatedHost)
+// every claim waits for featuregate.ClusterShardIDs to be active, so no raft
+// database is created while any node may still allocate shard IDs on its
+// own. A host that gates nothing holds only this binary, and claims at once.
+func newShardClaimer(store kvstore.KVStore, host service.Host) (*shard.Claimer, error) {
 	claimStore, ok := store.(shard.ClaimStore)
 	if !ok {
 		return nil, &ShardClaimerError{Err: kvstore.ErrAtomicWriteUnsupported}
 	}
-	claimer, err := shard.NewClaimer(claimStore)
+	var opts []shard.ClaimerOption
+	if gated, ok := host.(service.FeatureGatedHost); ok {
+		opts = append(opts, shard.WithActivation(string(featuregate.ClusterShardIDs), func() bool {
+			return gated.FeatureEnabled(shard.ShardKV, featuregate.ClusterShardIDs)
+		}))
+	}
+	claimer, err := shard.NewClaimer(claimStore, opts...)
 	if err != nil {
 		return nil, &ShardClaimerError{Err: err}
 	}

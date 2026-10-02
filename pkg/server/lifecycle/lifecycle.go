@@ -539,7 +539,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// and is unique on that node only, so two nodes creating raft databases
 	// issued the same shard ID. Every raft database create now claims its ID
 	// from one replicated high-water mark in the system store.
-	claimer, err := newShardClaimer(authStore)
+	claimer, err := newShardClaimer(authStore, infra.Host)
 	if err != nil {
 		return nil, err
 	}

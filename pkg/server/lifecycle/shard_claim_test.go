@@ -28,7 +28,7 @@ import (
 type plainKV struct{ kvstore.KVStore }
 
 func TestNewShardClaimer_RefusesAStoreWithoutAtomicVerbs(t *testing.T) {
-	_, err := newShardClaimer(plainKV{KVStore: kvstore.NewMemoryKVStore()})
+	_, err := newShardClaimer(plainKV{KVStore: kvstore.NewMemoryKVStore()}, nil)
 	var claimerErr *ShardClaimerError
 	if !errors.As(err, &claimerErr) || !errors.Is(err, kvstore.ErrAtomicWriteUnsupported) {
 		t.Fatalf("newShardClaimer over a non-atomic store = %v, want *ShardClaimerError wrapping ErrAtomicWriteUnsupported", err)
@@ -40,7 +40,7 @@ func TestNewShardClaimer_RefusesAStoreWithoutAtomicVerbs(t *testing.T) {
 
 func TestNewShardClaimer_ClaimsOverTheReplicatedStore(t *testing.T) {
 	store := kvstore.NewMemoryKVStore()
-	claimer, err := newShardClaimer(store)
+	claimer, err := newShardClaimer(store, nil)
 	if err != nil {
 		t.Fatalf("newShardClaimer: %v", err)
 	}

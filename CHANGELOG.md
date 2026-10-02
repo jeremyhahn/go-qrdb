@@ -56,6 +56,16 @@ are not reconstructed here — their history is in the git log.
   - **New cluster feature `cluster-shard-ids`.** Once every node claims, a
     binary that allocates per node can neither start nor be admitted as a
     replica.
+  - **BREAKING: raft creates wait for `cluster-shard-ids`.** On a node whose
+    groups can hold other binaries, a raft database create is refused with
+    `shard.FeatureNotActiveError` (503 / `UNAVAILABLE`, retryable) until the
+    feature is active cluster-wide, and nothing is claimed. That closes the
+    rolling-upgrade window in which an old node allocates per node while a new
+    one claims.
+  - **BREAKING: a cluster that holds raft databases cannot be upgraded in
+    place.** Their shard IDs were issued per node and may collide, and the
+    high-water mark could re-issue one. Rebuild such a cluster on this release
+    and move the data across; nothing seeds or migrates the old IDs.
   - This is phase 2 of the strict tenant isolation plan.
 
 ## [0.31.0-alpha] - 2026-10-02
