@@ -28,7 +28,7 @@ import (
 
 	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -241,7 +241,7 @@ func signOfficerCSR(ctx context.Context, ca CeremonyCA, csrPEM []byte, tenantID,
 	cert, csr, err := signHolderCSR(ctx, ca, csrPEM, &SignCSROptions{
 		TenantID:     tenantID,
 		Username:     username,
-		Profile:      auth.ProfileCustodian,
+		Profile:      holderprofile.Custodian,
 		ValidityDays: 365,
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},

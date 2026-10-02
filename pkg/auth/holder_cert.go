@@ -14,36 +14,19 @@
 
 package auth
 
-import "crypto/x509"
+import (
+	"crypto/x509"
 
-// Holder certificate profiles. The ceremony CA (pkg/ceremony) stamps one of
-// these as the second Subject OU of every Security Officer and share-holder
-// certificate it signs, after the tenant: OU = [<tenant>, <profile>].
-//
-// A holder certificate proves who holds a share; it is not a login. It reaches
-// only the identity-gated ceremony surface, where the handler binds the caller
-// by certificate thumbprint, and never resolves to a user account -- a holder
-// registered as "admin" does not become the tenant's admin user.
-const (
-	// ProfileSecurityOfficer marks a Security Officer certificate.
-	ProfileSecurityOfficer = "security-officer"
-
-	// ProfileCustodian marks an officer or custodian share-holder certificate.
-	ProfileCustodian = "custodian"
+	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
 )
-
-// holderProfiles is the set HolderProfile recognises.
-var holderProfiles = map[string]struct{}{
-	ProfileSecurityOfficer: {},
-	ProfileCustodian:       {},
-}
 
 // HolderProfileMetadataKey is the Identity.Metadata key the mTLS
 // authenticator sets, to the profile, when the client certificate is a holder
 // certificate. See IsHolderIdentity.
 const HolderProfileMetadataKey = "holder_profile"
 
-// HolderProfile reports the holder profile cert carries in any Subject OU, and
+// HolderProfile reports the holder profile (holderprofile.Is) cert carries in
+// any Subject OU, and
 // whether it carries one. Every position is checked, not only the second: a
 // certificate whose FIRST OU is a profile -- the layout before the ceremony CA
 // set the tenant itself -- is a holder certificate too.
@@ -52,7 +35,7 @@ func HolderProfile(cert *x509.Certificate) (string, bool) {
 		return "", false
 	}
 	for _, ou := range cert.Subject.OrganizationalUnit {
-		if _, ok := holderProfiles[ou]; ok {
+		if holderprofile.Is(ou) {
 			return ou, true
 		}
 	}

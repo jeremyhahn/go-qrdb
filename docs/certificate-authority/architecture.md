@@ -469,6 +469,15 @@ and reaches only the identity-gated ceremony surface, where the handler binds
 it by certificate thumbprint. An officer registered as `admin` therefore does
 not become the tenant's `admin` user, binding policy or not.
 
+**The mark survives leader forwarding.** A follower that forwards a holder's
+request to the leader signs the holder profile into the on-behalf assertion
+(`forward.CallerAssertion.HolderProfile`), and the leader re-marks the
+identity, so it resolves to no account there either. An assertion naming a
+profile the leader does not recognise is refused. A holder request is never
+forwarded unsigned — an unsigned forward is authorized as the forwarding node
+— so a follower that cannot sign the assertion refuses it with 502
+(`HolderForwardUnsignedError`).
+
 **The trust domain is validated when configuration loads.** A value that does
 not survive being written into a SPIFFE ID and parsed back (`/`, `?`, `@`,
 whitespace) fails the load with a validation error on `auth.spiffe_trust_domain`

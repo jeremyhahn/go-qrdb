@@ -18,6 +18,8 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
 )
 
 func TestHolderProfile(t *testing.T) {
@@ -27,9 +29,9 @@ func TestHolderProfile(t *testing.T) {
 		want    string
 		holding bool
 	}{
-		{"tenant then custodian", []string{"acme", ProfileCustodian}, ProfileCustodian, true},
-		{"tenant then security officer", []string{"system", ProfileSecurityOfficer}, ProfileSecurityOfficer, true},
-		{"legacy layout, profile first", []string{ProfileCustodian}, ProfileCustodian, true},
+		{"tenant then custodian", []string{"acme", holderprofile.Custodian}, holderprofile.Custodian, true},
+		{"tenant then security officer", []string{"system", holderprofile.SecurityOfficer}, holderprofile.SecurityOfficer, true},
+		{"legacy layout, profile first", []string{holderprofile.Custodian}, holderprofile.Custodian, true},
 		{"user certificate", []string{"acme"}, "", false},
 		{"user profile is not a holder", []string{"system", "operator"}, "", false},
 		{"no OU", nil, "", false},
@@ -54,7 +56,7 @@ func TestIsHolderIdentity(t *testing.T) {
 	if IsHolderIdentity(&Identity{Subject: "u"}) {
 		t.Error("an identity with no metadata is a holder")
 	}
-	if !IsHolderIdentity(&Identity{Subject: "u", Metadata: map[string]string{HolderProfileMetadataKey: ProfileCustodian}}) {
+	if !IsHolderIdentity(&Identity{Subject: "u", Metadata: map[string]string{HolderProfileMetadataKey: holderprofile.Custodian}}) {
 		t.Error("a marked identity is not a holder")
 	}
 }

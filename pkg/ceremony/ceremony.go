@@ -30,7 +30,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
-	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -612,7 +612,7 @@ func (s *CeremonyService) initializeMofN(ctx context.Context, result *InitResult
 		cert, _, err := signHolderCSR(ctx, s.ca, officer.CSRPEM, &SignCSROptions{
 			TenantID:     tenantid.System,
 			Username:     officer.Username,
-			Profile:      auth.ProfileCustodian,
+			Profile:      holderprofile.Custodian,
 			ValidityDays: 365,
 			KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 			ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},

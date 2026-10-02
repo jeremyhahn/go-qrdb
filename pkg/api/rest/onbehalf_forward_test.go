@@ -127,7 +127,9 @@ func TestAttachOnBehalfAssertion_VerifiesOnLeader(t *testing.T) {
 		t.Fatalf("new fwd req: %v", err)
 	}
 
-	srv.attachOnBehalfAssertion(fwd, orig, body)
+	if err := srv.attachOnBehalfAssertion(fwd, orig, body); err != nil {
+		t.Fatalf("attachOnBehalfAssertion: %v", err)
+	}
 
 	ab := fwd.Header.Get(forward.HeaderAssertion)
 	sb := fwd.Header.Get(forward.HeaderSignature)
@@ -154,7 +156,9 @@ func TestAttachOnBehalfAssertion_SkipsWithoutCaller(t *testing.T) {
 	srv, _ := newForwardServer(t)
 	orig := requestWithCaller(http.MethodPut, "/kv/foo", []byte("x"), nil)
 	fwd, _ := http.NewRequest(http.MethodPut, "https://leader/kv/foo", nil)
-	srv.attachOnBehalfAssertion(fwd, orig, []byte("x"))
+	if err := srv.attachOnBehalfAssertion(fwd, orig, []byte("x")); err != nil {
+		t.Fatalf("attachOnBehalfAssertion: %v", err)
+	}
 	if fwd.Header.Get(forward.HeaderAssertion) != "" {
 		t.Fatal("assertion attached without a caller identity")
 	}
@@ -172,7 +176,9 @@ func TestAttachOnBehalfAssertion_SkipsWithoutSigner(t *testing.T) {
 	orig := requestWithCaller(http.MethodPut, "/kv/foo", []byte("x"),
 		&auth.Identity{Subject: "alice", TenantID: "acme"})
 	fwd, _ := http.NewRequest(http.MethodPut, "https://leader/kv/foo", nil)
-	srv.attachOnBehalfAssertion(fwd, orig, []byte("x"))
+	if err := srv.attachOnBehalfAssertion(fwd, orig, []byte("x")); err != nil {
+		t.Fatalf("attachOnBehalfAssertion: %v", err)
+	}
 	if fwd.Header.Get(forward.HeaderAssertion) != "" {
 		t.Fatal("assertion attached without a signer")
 	}

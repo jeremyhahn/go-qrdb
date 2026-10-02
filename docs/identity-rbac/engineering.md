@@ -570,6 +570,20 @@ wrong fails a test rather than passing a typed-in column.
   every forwarding handler's bound within it). Previously any certificate
   chaining to the cluster CA could make the node buffer an unbounded body
   before the signature was checked.
+- **A forwarded holder stays a holder.** The on-behalf assertion
+  (`forward.CallerAssertion`) carries the caller's subject and tenant, and,
+  for a caller that authenticated with a holder certificate, its
+  `holder_profile` (`security-officer` or `custodian`). The field is signed
+  with the rest of the assertion and omitted for users, so a user's
+  assertion is unchanged. The leader re-marks such an identity, so
+  `finalizeIdentity` never resolves it to a user account; an assertion naming
+  a profile the leader does not recognise is refused with the usual opaque
+  401. A holder request is never forwarded unsigned, because an unsigned
+  forward is authorized as the forwarding node: a follower with no signing
+  identity, or whose signing fails, answers **502** with a fixed message
+  (`rest.HolderForwardUnsignedError`) and logs the cause; the request never
+  reaches the leader. A user request in the same situation is forwarded as
+  before.
 - **The rule is one exported function, `CheckAuthMethod(u, method)`**
   (`pkg/auth/middleware`, re-exported as `sdk.CheckAuthMethod` with
   `sdk.AuthMethodNotPermittedError`). The middleware calls it for every method

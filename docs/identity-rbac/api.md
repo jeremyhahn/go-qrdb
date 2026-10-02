@@ -502,6 +502,7 @@ of its own, and the listing never contains one.
 | Unregistered permission string | 400 | `INVALID_ARGUMENT` |
 | Deleting a `system` user or a built-in role | 403 | `PERMISSION_DENIED` |
 | Certificate with no matching binding | 401 | `UNAUTHENTICATED` |
+| A request authenticated with a holder (officer or custodian) certificate must be forwarded to the leader, and this node cannot sign the on-behalf assertion (`HolderForwardUnsignedError`) | 502 | — (REST leader forwarding only) |
 | Disabled user | 401 | `UNAUTHENTICATED` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | Role-assignment write names a role that does not exist, or belongs to another tenant | 400 | `INVALID_ARGUMENT` |

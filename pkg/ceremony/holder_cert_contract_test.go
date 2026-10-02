@@ -28,6 +28,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -139,7 +140,7 @@ func TestHolderCert_IsMarkedAsHolder(t *testing.T) {
 	require.NoError(t, err)
 	profile, ok := auth.HolderProfile(leaf)
 	require.True(t, ok)
-	require.Equal(t, auth.ProfileCustodian, profile)
+	require.Equal(t, holderprofile.Custodian, profile)
 
 	chains, err := leaf.Verify(x509.VerifyOptions{Roots: b.roots, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}})
 	require.NoError(t, err)

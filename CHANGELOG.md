@@ -11,6 +11,29 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Security
+
+- **A holder certificate stays a holder when its request is forwarded to the
+  leader.** The on-behalf assertion a follower signs carried only the subject
+  and tenant, so the leader resolved a forwarded holder certificate named
+  `admin` to the `admin` account and its roles. The assertion now carries the
+  holder profile (`forward.CallerAssertion.HolderProfile`, omitted for users
+  so their assertions are unchanged), and the leader re-marks the identity; a
+  profile it does not recognise is refused. A holder request is never
+  forwarded unsigned, because an unsigned forward is authorized as the
+  forwarding node: a follower without a signing identity, or whose signing
+  fails, refuses it with 502 (`rest.HolderForwardUnsignedError`), whose body
+  is a fixed message; the signing failure is logged and kept for `errors.Is`,
+  never sent to the client. In a cluster mixing this release with an earlier
+  one, an earlier leader ignores the field.
+- **BREAKING: the holder profile names live in the new leaf package
+  `pkg/holderprofile`.** `auth.ProfileCustodian` and
+  `auth.ProfileSecurityOfficer` are removed in favour of
+  `holderprofile.Custodian` and `holderprofile.SecurityOfficer`, with
+  `holderprofile.Is` as the predicate; `auth.HolderProfile` uses it. There are
+  no aliases. The leaf lets `pkg/auth` and `pkg/tenant` share the names without
+  `pkg/tenant` depending on `pkg/auth` for them.
+
 ## [0.28.1-alpha] - 2026-10-02
 
 Security hotfix. This release contains BREAKING changes; see the entries below. Highlights:

@@ -878,8 +878,16 @@ func (s *Server) forwardToLeader(w http.ResponseWriter, r *http.Request, adminUR
 	// identity so the leader re-authorizes as the caller rather than as this
 	// forwarding node (whose node certificate carries no user roles). Skipped
 	// when there is no authenticated caller in context (auth-disabled
-	// deployments) or when this node has no signing identity/node id.
-	s.attachOnBehalfAssertion(fwdReq, r, body)
+	// deployments) or when this node has no signing identity/node id -- except
+	// for a holder caller, which is refused rather than forwarded unsigned.
+	if err := s.attachOnBehalfAssertion(fwdReq, r, body); err != nil {
+		// The client gets the fixed message only; the cause, which may
+		// describe this node's signing key, is logged here.
+		slog.Error("leader forwarding: refusing to forward a holder request unsigned",
+			"leader", adminURL, "error", errors.Unwrap(err))
+		writeErrorJSON(w, http.StatusBadGateway, err)
+		return
+	}
 
 	resp, doErr := s.forwardClient.Do(fwdReq)
 	if doErr != nil {
@@ -929,13 +937,24 @@ func forwardHopCount(r *http.Request) int {
 // caller in context, when this node has no signing identity, or when signing
 // fails (the failure is logged; the request still forwards and will simply be
 // authorized as the node, preserving prior behavior for non-RBAC paths).
-func (s *Server) attachOnBehalfAssertion(fwdReq, r *http.Request, body []byte) {
-	if s.forwardSigner == nil || s.forwardNodeID == "" {
-		return
-	}
+//
+// A HOLDER caller (auth.IsHolderIdentity) is the exception, and the only case
+// that returns an error: a holder request forwarded without an assertion would
+// be authorized as the forwarding node, so when the assertion cannot be
+// attached it returns *HolderForwardUnsignedError and the request is not
+// forwarded. The assertion it does attach carries the holder profile, so the
+// leader keeps the identity a holder.
+func (s *Server) attachOnBehalfAssertion(fwdReq, r *http.Request, body []byte) error {
 	caller := auth.IdentityFromContext(r.Context())
 	if caller == nil || caller.Subject == "" {
-		return
+		return nil
+	}
+	holder := auth.IsHolderIdentity(caller)
+	if s.forwardSigner == nil || s.forwardNodeID == "" {
+		if holder {
+			return &HolderForwardUnsignedError{Subject: caller.Subject}
+		}
+		return nil
 	}
 
 	assertion := forward.NewCallerAssertion(
@@ -948,6 +967,7 @@ func (s *Server) attachOnBehalfAssertion(fwdReq, r *http.Request, body []byte) {
 		time.Now(),
 		forward.DefaultTTL,
 	)
+	assertion.HolderProfile = caller.Metadata[auth.HolderProfileMetadataKey]
 
 	assertionB64, sigB64, err := forward.Sign(assertion, s.forwardSigner)
 	if err != nil {
@@ -956,11 +976,15 @@ func (s *Server) attachOnBehalfAssertion(fwdReq, r *http.Request, body []byte) {
 			"subject", caller.Subject,
 			"tenant", caller.TenantID,
 		)
-		return
+		if holder {
+			return &HolderForwardUnsignedError{Subject: caller.Subject, Err: err}
+		}
+		return nil
 	}
 
 	fwdReq.Header.Set(forward.HeaderAssertion, assertionB64)
 	fwdReq.Header.Set(forward.HeaderSignature, sigB64)
+	return nil
 }
 
 // deriveForwardIdentity extracts the on-behalf signing key and this node's

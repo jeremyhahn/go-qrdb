@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -69,7 +70,7 @@ func TestAuthenticate_HolderCertificateIsNeverAUserLogin(t *testing.T) {
 	createUser(t, svc, tenant.SystemTenantID, "admin", []string{"admin-role"})
 	m := mtlsMiddleware(svc)
 
-	for _, profile := range []string{auth.ProfileCustodian, auth.ProfileSecurityOfficer} {
+	for _, profile := range []string{holderprofile.Custodian, holderprofile.SecurityOfficer} {
 		holder := mintHolderCert(t, "admin", tenant.SystemTenantID, profile)
 		_, identity, err := m.authenticate(mtlsContext(holder))
 		if err != nil {
@@ -98,10 +99,10 @@ func TestAuthenticate_HolderCertificateIsNeverAUserLogin(t *testing.T) {
 // holder certificate in any position.
 func TestAuthenticate_LegacyHolderLayoutIsAHolderToo(t *testing.T) {
 	svc := newRealUserStore(t)
-	createUser(t, svc, auth.ProfileCustodian, "admin", []string{"admin-role"})
+	createUser(t, svc, holderprofile.Custodian, "admin", []string{"admin-role"})
 	m := mtlsMiddleware(svc)
 
-	_, identity, err := m.authenticate(mtlsContext(mintHolderCert(t, "admin", auth.ProfileCustodian)))
+	_, identity, err := m.authenticate(mtlsContext(mintHolderCert(t, "admin", holderprofile.Custodian)))
 	if err != nil {
 		t.Fatalf("legacy holder certificate refused outright: %v", err)
 	}

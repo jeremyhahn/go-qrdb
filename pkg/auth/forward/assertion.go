@@ -136,6 +136,14 @@ type CallerAssertion struct {
 
 	// ExpiresAtUnix is the assertion expiry time (Unix seconds).
 	ExpiresAtUnix int64 `json:"expires_at_unix"`
+
+	// HolderProfile is the holder-certificate profile (auth.HolderProfile)
+	// the original caller authenticated with, and empty for a user. A holder
+	// certificate is never resolved to a user account; carrying the profile
+	// is what keeps that true when the request is forwarded, since the leader
+	// never sees the certificate. omitempty keeps a user's assertion
+	// byte-identical to the form before the field existed.
+	HolderProfile string `json:"holder_profile,omitempty"`
 }
 
 // NewCallerAssertion builds a request-bound assertion for the given caller and

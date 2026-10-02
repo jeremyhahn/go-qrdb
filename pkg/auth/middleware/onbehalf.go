@@ -25,6 +25,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
+	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
 )
 
 // authSourceMetadataKey / authSourceOnBehalf mark an identity that arrived as
@@ -135,6 +136,17 @@ func (m *AuthMiddleware) authenticateOnBehalf(ctx context.Context, w http.Respon
 			authSourceMetadataKey: authSourceOnBehalf,
 			"forwarder_nodeid":    assertion.ForwarderNodeID,
 		},
+	}
+
+	// A caller that authenticated with a holder certificate stays a holder:
+	// finalizeIdentity never resolves it to a user account. A profile this
+	// node does not recognise is refused rather than dropped, because dropping
+	// it would resolve the subject to the account of the same name.
+	if assertion.HolderProfile != "" {
+		if !holderprofile.Is(assertion.HolderProfile) {
+			return ctx, nil, &auth.AuthError{Code: "unauthorized", Message: "on-behalf assertion rejected"}
+		}
+		identity.Metadata[auth.HolderProfileMetadataKey] = assertion.HolderProfile
 	}
 
 	// No auth method: the SUBJECT presented nothing here. This is a cluster peer
