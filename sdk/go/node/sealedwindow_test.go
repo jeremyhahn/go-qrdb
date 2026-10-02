@@ -123,9 +123,13 @@ func TestSealedWindowOptions_CarryThePINBackend(t *testing.T) {
 	require.NotNil(t, got, "the sealed window must serve a PIN backend")
 	assert.Same(t, n.sealPINBackend, got, "by default the node's own seal-store backend")
 
-	injected := pintest.NewBackend(t)
-	got = server.ResolveCryptoOptions(n.sealedWindowOptions([]server.ServerOption{server.WithPINBackend(injected)})...).PINBackend
-	assert.Same(t, pin.PINBackend(injected), got, "an injected backend wins")
+	// An injected backend wins, as the one decorated instance its option
+	// carries: the option installs the node's SO PIN lockout around it once.
+	injected := server.WithPINBackend(pintest.NewBackend(t))
+	want := server.ResolveCryptoOptions(injected).PINBackend
+	got = server.ResolveCryptoOptions(n.sealedWindowOptions([]server.ServerOption{injected})...).PINBackend
+	assert.Same(t, want, got, "an injected backend wins")
+	assert.Same(t, got, pin.NewLockoutBackend(got), "the injected backend carries the SO PIN lockout")
 }
 
 // TestSealedWindowConfig verifies the pending-boot config resolution used
