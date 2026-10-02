@@ -90,8 +90,9 @@ const maxPendingQuorumChallenges = 256
 const maxPendingPerHolderOp = 2
 
 // maxPendingDecoys bounds the decoy table: the challenges answered for names
-// outside the roster (and the unstored answers to a holder whose slots are
-// full). They are kept apart from the real table so a flood of them can
+// outside the roster, and the fallback challenges answered to a holder whose
+// slots are full of bound ones -- each stored here, and each verified like a
+// real one when answered. They are kept apart from the real table so a flood of them can
 // never crowd a holder's real challenge out; the oldest is evicted first.
 const maxPendingDecoys = 256
 
@@ -803,8 +804,9 @@ func (h *holderScope) completeClaim(ctx context.Context, username, nonceHex stri
 //     the oldest evicted first, and a challenge requested over a connection
 //     presenting the holder's own certificate is never evicted by one that
 //     did not (admitQuorumChallenge). A request that cannot be admitted is
-//     answered with the challenge it would have got, unstored, rather than
-//     an error a stranger's name could never produce.
+//     answered with the challenge it would have got, stored in the decoy
+//     table rather than in the holder's slots, so it verifies when answered,
+//     rather than with an error a stranger's name could never produce.
 func (h *holderScope) beginQuorum(ctx context.Context, d *HolderDeps, barrier *seal.StorageBarrier, op seal.QuorumOp, username, factorName string) (*QuorumChallenge, error) {
 	if !op.ValidIn(h.domain) {
 		return nil, &seal.QuorumOpInvalidError{Domain: h.domain, Op: op}
@@ -920,7 +922,7 @@ func (h *holderScope) pruneQuorumChallenges() {
 // bound to the holder's certificate is evicted, and a bound one only to make
 // room for another bound request. An unbound request that finds every slot
 // bound is refused with ErrTooManyPendingChallenges (beginQuorum answers it
-// with an unstored challenge, never the error). The scope's whole table
+// with a challenge stored in the decoy table, never the error). The scope's whole table
 // is capped at what its roster can legitimately use -- every holder, every
 // operation of the domain, maxPendingPerHolderOp each -- and never above
 // maxPendingQuorumChallenges.
@@ -1002,9 +1004,9 @@ func quorumCaller(ctx context.Context) (key, peerThumb string, anonymous bool) {
 	return "anonymous", peerThumb, true
 }
 
-// issueDecoy issues the decoy challenge for username: the challenge a name
-// outside the roster gets, built -- but not stored -- on every request, real
-// or not, so both cost the same.
+// issueDecoy builds the decoy challenge for username: the challenge a name
+// outside the roster gets, built on every request, real or not, so both cost
+// the same. beginQuorum stores it (storeDecoy) only when it is the answer.
 //
 // The decoy is issued by the requested factor (mtls when none was requested)
 // from a decoy enrollment it derives from the domain's seed, persisted with the

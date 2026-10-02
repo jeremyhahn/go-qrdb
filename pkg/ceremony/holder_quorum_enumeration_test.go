@@ -163,14 +163,14 @@ func TestQuorum_SubmitIsRateLimitedPerCaller(t *testing.T) {
 	require.Len(t, limiter.seen, 2, "one submission and one challenge bucket for the anonymous caller")
 }
 
-// TestQuorum_FullBoundSlotsAnswerUnboundWithAnUnstoredChallenge: when every
-// slot a holder has for an operation is bound to their certificate, an
-// unbound request gets its challenge -- the holder's own key and thumbprint --
-// rather than an error no stranger's name could ever produce. It is kept in
-// the decoy table, apart from the holder's slots, so it evicts none of the
-// bound challenges, and it is answerable like any other: the holder who
-// requested it can use it, and the bound challenges survive.
-func TestQuorum_FullBoundSlotsAnswerUnboundWithAnUnstoredChallenge(t *testing.T) {
+// TestQuorum_FullBoundSlotsStoreTheUnboundChallengeApart: when every slot a
+// holder has for an operation is bound to their certificate, an unbound
+// request gets its challenge -- the holder's own key and thumbprint -- rather
+// than an error no stranger's name could ever produce. That fallback challenge
+// IS stored, in the decoy table apart from the holder's slots, so it evicts
+// none of the bound challenges, and it verifies like any other: the holder who
+// requested it can answer it, and the bound challenges survive.
+func TestQuorum_FullBoundSlotsStoreTheUnboundChallengeApart(t *testing.T) {
 	ctx := context.Background()
 	e := newHolderEnv(t, 2, 2)
 	a, b := newHolder(t, "alice", ""), newHolder(t, "bob", "")
@@ -190,6 +190,7 @@ func TestQuorum_FullBoundSlotsAnswerUnboundWithAnUnstoredChallenge(t *testing.T)
 	assert.Equal(t, bt, ut)
 
 	require.Len(t, e.svc.system.quorum, maxPendingPerHolderOp, "the unbound challenge took none of the holder's slots")
+	require.Contains(t, e.svc.system.decoys, unbound.ChallengeID, "the fallback challenge is stored, in the decoy table")
 	out, err := submitChallenge(t, e, unbound, a)
 	require.NoError(t, err, "the unbound challenge answers like any other")
 	require.False(t, out.Complete)

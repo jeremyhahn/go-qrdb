@@ -224,8 +224,8 @@ func TestQuorum_AuthenticationRefusals(t *testing.T) {
 // TestQuorum_PendingChallengesAreBounded pins that no caller can grow the
 // challenge table without limit: once every slot a holder has for an
 // operation is bound to the holder's certificate, a request that does not
-// present it is answered with a challenge that is not stored, rather than
-// evicting one.
+// present it is answered with a challenge stored apart, in the bounded decoy
+// table, rather than evicting one of the holder's.
 func TestQuorum_PendingChallengesAreBounded(t *testing.T) {
 	ctx := context.Background()
 	e := newHolderEnv(t, 2, 2)
@@ -235,9 +235,10 @@ func TestQuorum_PendingChallengesAreBounded(t *testing.T) {
 		_, err := e.svc.BeginQuorum(withPeerCert(t, ctx, a), seal.DomainUnseal, seal.OpSeal, "alice", "")
 		require.NoError(t, err)
 	}
-	unstored, err := e.svc.BeginQuorum(ctx, seal.DomainUnseal, seal.OpSeal, "alice", "")
+	fallback, err := e.svc.BeginQuorum(ctx, seal.DomainUnseal, seal.OpSeal, "alice", "")
 	require.NoError(t, err)
-	assert.NotContains(t, e.svc.system.quorum, unstored.ChallengeID)
+	assert.NotContains(t, e.svc.system.quorum, fallback.ChallengeID)
+	assert.Contains(t, e.svc.system.decoys, fallback.ChallengeID)
 	assert.Len(t, e.svc.system.quorum, maxPendingPerHolderOp)
 	_, err = e.svc.BeginQuorum(withPeerCert(t, ctx, a), seal.DomainUnseal, seal.OpSeal, "alice", "")
 	assert.NoError(t, err, "the holder's own certificate evicts its oldest challenge")
