@@ -41,6 +41,29 @@ are not reconstructed here — their history is in the git log.
 - **The flat embedded server delivers watches.** `embedded.NewServer` built its
   engine without a watch hub, so a watch opened through it never received an
   event; it also composed no watch or lock service and ran no lease expiry.
+- **A transaction op naming a lease is refused on the file and objstore
+  engines.** The plain KV engine keeps no leases, but its transaction handler
+  stored a leased put as an ordinary key that never expired. The whole op set
+  is now refused with `CapabilityUnsupportedError` and writes nothing. Plain
+  value/version transactions are still served there.
+- **A lease revoke whose key delete fails halts the apply on the MVCC engine**,
+  as on the Pebble state machine. It was logged and skipped, leaving the key
+  with nothing to expire it on that replica alone.
+- **A failed standalone apply no longer leaves the lessor ahead of the
+  store.** A standalone node keeps serving after a failed apply, so
+  `MVCCEngine.Update` now re-reads the committed lease table into the lessor
+  when an apply fails (`engine.LessorResyncError` when that read fails too).
+- **The Pebble state machine refuses user keys in its reserved `0x00`
+  namespace** (`statemachine.ReservedKeyError`), on every write path. A user
+  write could overwrite the lease table or the last-applied index.
+- **The `qrdb` GUI's embedded server expires its leases.** It gave its MVCC
+  engine an anonymous lessor nothing swept, and composed no lock service; it
+  now composes the engine through `lifecycle.NewLocalEngine`, sweeps it, and
+  serves locks.
+- **The lease-expiry sweeper is stopped before the backend closes.**
+  `lifecycle.StartLocalLeaseExpiry` returns a stop function that waits for
+  the sweeper to exit; the daemon, `node.Node`, `embedded.Server` and the GUI
+  binding call it before closing the backend it revokes through.
 - **The embedded transport keeps a refusal's type under a lock or an MVCC
   read.** A lease refusal underneath a lock, and `service.MVCCBackendRequiredError`,
   reached embedded callers as untyped errors; they are now
