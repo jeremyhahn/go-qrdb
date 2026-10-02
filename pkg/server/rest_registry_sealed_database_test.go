@@ -66,7 +66,7 @@ func newSealedDatabaseRegistry(t *testing.T, owner, name string) (*restServiceRe
 		t.Fatalf("Create(%q): %v", name, err)
 	}
 	reg, ok := NewRESTServiceRegistry(newFilledRegistry(), nil, tenantid.System,
-		WithDatabaseCatalog(newManagerCatalog(mgr, tenantid.System)),
+		WithDatabaseCatalog(newManagerCatalog(mgr)),
 		withDatabaseManager(mgr),
 	).(*restServiceRegistry)
 	if !ok {

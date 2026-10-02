@@ -38,6 +38,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
@@ -170,7 +171,7 @@ func newSharedStoreFixture(t *testing.T) *sharedStoreFixture {
 	dbReg := NewDatabaseServiceRegistry(tenant.DefaultDatabase)
 	dbReg.Register(tenant.DefaultDatabase, raw)
 	reg := NewRESTServiceRegistry(dbReg, nil, tenantid.System,
-		WithDatabaseCatalog(newManagerCatalog(mgr, tenantid.System)),
+		WithDatabaseCatalog(newManagerCatalog(mgr)),
 		withDatabaseManager(mgr)).(*restServiceRegistry)
 	return &sharedStoreFixture{host: host, raw: raw, mgr: mgr, reg: reg}
 }

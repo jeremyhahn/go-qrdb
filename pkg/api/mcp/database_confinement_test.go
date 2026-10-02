@@ -17,6 +17,7 @@ package mcp
 import (
 	"crypto/tls"
 	"net/http"
+	"strings"
 	"testing"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
@@ -27,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service/servicetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -34,14 +36,19 @@ import (
 // TestDatabaseConfinement: over a real MCP session, with the real RBAC and
 // built-in roles, a system-tenant Admin, Security Officer or Auditor holding
 // every database permission is answered CodeNotFound on another tenant's
-// database, on every database tool -- the data verbs, seal, unseal and the
-// share-holder ones -- exactly as for a missing database, and the database is
-// left as it was. There is no cross-tenant database access.
+// database, on every database tool -- the data and update verbs, seal, unseal
+// and the share-holder ones -- exactly as for a missing database, the list
+// does not name it, and the database is left as it was. There is no cross-tenant database access.
 func TestDatabaseConfinement(t *testing.T) {
 	tools := map[string]map[string]any{
 		"qrdb_database_get":                  {"name": "vault"},
 		"qrdb_database_drop":                 {"name": "vault"},
 		"qrdb_database_update_sql":           {"name": "vault"},
+		"qrdb_database_update_protocol":      {"name": "vault"},
+		"qrdb_database_update_etcd":          {"name": "vault"},
+		"qrdb_database_update_raft":          {"name": "vault"},
+		"qrdb_database_update_barrier":       {"name": "vault"},
+		"qrdb_database_update_connection":    {"name": "vault"},
 		"qrdb_database_seal":                 {"name": "vault"},
 		"qrdb_database_unseal":               {"name": "vault", "secret": "c2VjcmV0"},
 		"qrdb_database_barrier_status":       {"name": "vault"},
@@ -91,6 +98,25 @@ func TestDatabaseConfinement(t *testing.T) {
 				if !res.IsError || !ok || payload.Code != wire.CodeNotFound {
 					t.Errorf("%s on acme's database = %+v, want CodeNotFound, as for a missing database", tool, res.Content)
 				}
+			}
+			if _, err := fx.Service.Create(database.DatabaseConfig{Name: "sysdb", Engine: database.EngineKV, Backend: database.BackendMemory}); err != nil {
+				t.Fatalf("create the system tenant's own database: %v", err)
+			}
+			// The list names the caller's own databases and only those.
+			listReq := mcpgo.CallToolRequest{}
+			listReq.Params.Name = "qrdb_database_list"
+			list, err := client.CallTool(callCtx(t), listReq)
+			if err != nil || list.IsError {
+				t.Fatalf("qrdb_database_list: %v %+v", err, list)
+			}
+			var listed strings.Builder
+			for _, c := range list.Content {
+				if text, ok := c.(mcpgo.TextContent); ok {
+					listed.WriteString(text.Text)
+				}
+			}
+			if strings.Contains(listed.String(), `"vault"`) || !strings.Contains(listed.String(), `"sysdb"`) {
+				t.Errorf("qrdb_database_list = %s, want the caller's sysdb and not acme's vault", listed.String())
 			}
 			if _, err := fx.Service.Get(fx.Name); err != nil {
 				t.Fatalf("acme's database was changed: %v", err)

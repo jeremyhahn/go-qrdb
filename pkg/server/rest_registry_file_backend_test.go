@@ -46,7 +46,7 @@ func TestRESTServiceRegistry_FileBackendDatabaseServedFromNodeStore(t *testing.T
 	}
 	nodeStore := newFilledRegistry()
 	reg := NewRESTServiceRegistry(nodeStore, nil, tenantid.System,
-		WithDatabaseCatalog(newManagerCatalog(mgr, tenantid.System)),
+		WithDatabaseCatalog(newManagerCatalog(mgr)),
 		withDatabaseManager(mgr),
 	)
 

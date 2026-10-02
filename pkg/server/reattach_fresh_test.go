@@ -29,7 +29,6 @@ import (
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // freshRegistryFixture holds the persistent boot resources needed to rebuild a
@@ -226,7 +225,7 @@ func TestReattachRaftTenants_FreshRegistryReRegisters(t *testing.T) {
 
 	host := newRaftReattachHost(t)
 	raftReg := NewRaftBackendFactoryFromManager(
-		host, raftReattachReplicaID, raftReattachRaftAddr, reg2, mgr, tenantid.System, reattachTestLogger())
+		host, raftReattachReplicaID, raftReattachRaftAddr, reg2, mgr, reattachTestLogger())
 	t.Cleanup(func() { _ = raftReg.CloseAll() })
 
 	// Mirror the boot sequence: RestoreVolumeTenants re-registers + unseals the

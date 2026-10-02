@@ -1160,14 +1160,7 @@ func (s *DatabaseService) authorizeDatabaseTenant(ctx context.Context, name stri
 // tenant is. Node-internal components that need a database regardless of its
 // owner use the database manager directly, never a caller identity.
 func (s *DatabaseService) ownedDatabase(ctx context.Context, name string) (*database.Database, error) {
-	db, err := s.manager.Get(name)
-	if err != nil {
-		return nil, err
-	}
-	if tenantid.Normalize(db.TenantID()) != tenant.FromContext(ctx) {
-		return nil, &database.NotFoundError{Name: name}
-	}
-	return db, nil
+	return s.manager.GetOwned(name, tenant.FromContext(ctx))
 }
 
 // SealDatabase seals the encryption barrier for the named database.
@@ -1656,19 +1649,9 @@ func (s *DatabaseService) GetForTenant(ctx context.Context, name string) (*datab
 // context's tenant, sorted by name. Each dedicated-raft database's Replicas
 // is refreshed from the placement table; see refreshReplicasFromPlacement.
 func (s *DatabaseService) ListForTenant(ctx context.Context) ([]database.DatabaseInfo, error) {
-	var infos []database.DatabaseInfo
-	if tenantid.IsSystem(tenant.FromContext(ctx)) {
-		// The system tenant lists its own databases, as every tenant does.
-		for _, info := range s.manager.List() {
-			if tenantid.IsSystem(info.TenantID) {
-				infos = append(infos, info)
-			}
-		}
-	} else {
-		var err error
-		if infos, err = s.manager.ListForTenant(ctx); err != nil {
-			return nil, err
-		}
+	infos, err := s.manager.ListForTenant(ctx)
+	if err != nil {
+		return nil, err
 	}
 	for i := range infos {
 		s.refreshReplicasFromPlacement(ctx, &infos[i])
@@ -1736,6 +1719,10 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 	}
 	tenantID := tenant.FromContext(ctx)
 	if tenantid.IsSystem(tenantID) {
+		// Bookkeeping, not ownership: ownedDatabase holds the system tenant to
+		// the one ownership rule like every tenant, but a system database was
+		// never metered against a quota nor given a placement entry
+		// (CreateForTenant serves tenants), so there is nothing to release.
 		if _, err := s.ownedDatabase(ctx, name); err != nil {
 			return err
 		}
@@ -1833,12 +1820,6 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 // UpdateProtocolForTenant updates the wire protocol configuration for the named
 // database with tenant enforcement and returns the updated runtime information.
 func (s *DatabaseService) UpdateProtocolForTenant(ctx context.Context, name string, protocol database.ProtocolConfig) (*database.DatabaseInfo, error) {
-	if tenantid.IsSystem(tenant.FromContext(ctx)) {
-		if _, err := s.ownedDatabase(ctx, name); err != nil {
-			return nil, err
-		}
-		return s.UpdateProtocol(name, protocol)
-	}
 	if err := s.manager.UpdateProtocolForTenant(ctx, name, protocol); err != nil {
 		return nil, err
 	}
@@ -1848,12 +1829,6 @@ func (s *DatabaseService) UpdateProtocolForTenant(ctx context.Context, name stri
 // UpdateEtcdForTenant updates the etcd wire protocol configuration for the named
 // database with tenant enforcement and returns the updated runtime information.
 func (s *DatabaseService) UpdateEtcdForTenant(ctx context.Context, name string, etcd *database.EtcdConfig) (*database.DatabaseInfo, error) {
-	if tenantid.IsSystem(tenant.FromContext(ctx)) {
-		if _, err := s.ownedDatabase(ctx, name); err != nil {
-			return nil, err
-		}
-		return s.UpdateEtcd(name, etcd)
-	}
 	if err := s.manager.UpdateEtcdForTenant(ctx, name, etcd); err != nil {
 		return nil, err
 	}
@@ -1863,12 +1838,6 @@ func (s *DatabaseService) UpdateEtcdForTenant(ctx context.Context, name string, 
 // UpdateRaftForTenant updates the Raft consensus configuration for the named
 // database with tenant enforcement and returns the updated runtime information.
 func (s *DatabaseService) UpdateRaftForTenant(ctx context.Context, name string, raft *database.DatabaseRaftConfig) (*database.DatabaseInfo, error) {
-	if tenantid.IsSystem(tenant.FromContext(ctx)) {
-		if _, err := s.ownedDatabase(ctx, name); err != nil {
-			return nil, err
-		}
-		return s.UpdateRaft(name, raft)
-	}
 	if err := s.manager.UpdateRaftForTenant(ctx, name, raft); err != nil {
 		return nil, err
 	}
@@ -1878,12 +1847,6 @@ func (s *DatabaseService) UpdateRaftForTenant(ctx context.Context, name string, 
 // UpdateBarrierForTenant updates the encryption barrier configuration for the named
 // database with tenant enforcement and returns the updated runtime information.
 func (s *DatabaseService) UpdateBarrierForTenant(ctx context.Context, name string, barrier *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
-	if tenantid.IsSystem(tenant.FromContext(ctx)) {
-		if _, err := s.ownedDatabase(ctx, name); err != nil {
-			return nil, err
-		}
-		return s.UpdateBarrier(name, barrier)
-	}
 	if err := s.manager.UpdateBarrierForTenant(ctx, name, barrier); err != nil {
 		return nil, err
 	}
@@ -1893,12 +1856,6 @@ func (s *DatabaseService) UpdateBarrierForTenant(ctx context.Context, name strin
 // UpdateConnectionForTenant updates the remote connection configuration for the named
 // database with tenant enforcement and returns the updated runtime information.
 func (s *DatabaseService) UpdateConnectionForTenant(ctx context.Context, name string, conn *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	if tenantid.IsSystem(tenant.FromContext(ctx)) {
-		if _, err := s.ownedDatabase(ctx, name); err != nil {
-			return nil, err
-		}
-		return s.UpdateConnection(name, conn)
-	}
 	if err := s.manager.UpdateConnectionForTenant(ctx, name, conn); err != nil {
 		return nil, err
 	}
@@ -1908,12 +1865,6 @@ func (s *DatabaseService) UpdateConnectionForTenant(ctx context.Context, name st
 // UpdateSQLForTenant updates the SQL settings of the named database with
 // tenant enforcement and returns the updated runtime information.
 func (s *DatabaseService) UpdateSQLForTenant(ctx context.Context, name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
-	if tenantid.IsSystem(tenant.FromContext(ctx)) {
-		if _, err := s.ownedDatabase(ctx, name); err != nil {
-			return nil, err
-		}
-		return s.UpdateSQL(name, sqlCfg)
-	}
 	if err := s.manager.UpdateSQLForTenant(ctx, name, sqlCfg); err != nil {
 		return nil, err
 	}

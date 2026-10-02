@@ -17,6 +17,7 @@ package quic
 import (
 	"crypto/tls"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -26,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service/servicetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -77,6 +79,11 @@ func TestDatabaseConfinement(t *testing.T) {
 				"db.Get":                mustJSON(t, databaseNameRequest{Name: "vault"}),
 				"db.Drop":               mustJSON(t, databaseNameRequest{Name: "vault"}),
 				"db.UpdateSQL":          mustJSON(t, map[string]any{"name": "vault"}),
+				"db.UpdateProtocol":     mustJSON(t, map[string]any{"name": "vault"}),
+				"db.UpdateEtcd":         mustJSON(t, map[string]any{"name": "vault"}),
+				"db.UpdateRaft":         mustJSON(t, databaseUpdateRaftRequest{Name: "vault", Raft: &database.DatabaseRaftConfig{}}),
+				"db.UpdateBarrier":      mustJSON(t, databaseUpdateBarrierRequest{Name: "vault", Barrier: &database.DatabaseBarrierConfig{}}),
+				"db.UpdateConnection":   mustJSON(t, databaseUpdateConnectionRequest{Name: "vault", Connection: &database.DatabaseConnectionConfig{}}),
 				"db.Seal":               mustProto(t, &pb.DatabaseSealRequest{Name: "vault"}),
 				"db.Unseal":             mustProto(t, &pb.DatabaseUnsealRequest{Name: "vault", Secret: "c2VjcmV0"}),
 				"db.BarrierStatus":      mustProto(t, &pb.DatabaseBarrierStatusRequest{Name: "vault"}),
@@ -90,6 +97,27 @@ func TestDatabaseConfinement(t *testing.T) {
 				if status, body := credentialE2ERoundTrip(t, srv.Addr(), clientCfg, method, payload); status != wire.StatusNotFound {
 					t.Errorf("%s on acme's database = status %d (%s), want StatusNotFound, as for a missing database", method, status, body)
 				}
+			}
+			if _, err := fx.Service.Create(database.DatabaseConfig{Name: "sysdb", Engine: database.EngineKV, Backend: database.BackendMemory}); err != nil {
+				t.Fatalf("create the system tenant's own database: %v", err)
+			}
+			// The list names the caller's own databases and only those.
+			status, body := credentialE2ERoundTrip(t, srv.Addr(), clientCfg, "db.List", []byte("{}"))
+			if status != wire.StatusOK {
+				t.Fatalf("db.List = status %d (%s)", status, body)
+			}
+			if strings.Contains(string(body), `"vault"`) || !strings.Contains(string(body), `"sysdb"`) {
+				t.Errorf("db.List = %s, want the caller's sysdb and not acme's vault", body)
+			}
+			// A tenant named in a create request is discarded: the database is
+			// the caller's, never acme's.
+			createReq := mustJSON(t, map[string]any{"name": "smuggled", "tenantId": "acme", "engine": "kv", "backend": "memory"})
+			if status, body := credentialE2ERoundTrip(t, srv.Addr(), clientCfg, "db.Create", createReq); status == wire.StatusOK {
+				if info, err := fx.Service.Get("smuggled"); err != nil || !database.OwnedBy(info.TenantID, tenantid.System) {
+					t.Errorf("create naming tenant acme made %+v (%v), want a database the system tenant owns", info, err)
+				}
+			} else if name == "admin" || status != wire.StatusPermissionDenied {
+				t.Errorf("db.Create naming tenant acme = status %d (%s), want it created for the caller (admin) or refused", status, body)
 			}
 			if _, err := fx.Service.Get(fx.Name); err != nil {
 				t.Fatalf("acme's database was changed: %v", err)

@@ -67,10 +67,7 @@ func startEtcd(s *Server, dbName string, cfg *database.EtcdConfig) (EtcdProtocol
 	if err != nil {
 		return nil, err
 	}
-	owner := db.TenantID()
-	if owner == "" {
-		owner = tenantid.System
-	}
+	owner := tenantid.Normalize(db.TenantID())
 	// The etcd compatibility listener is raft-only (capabilities.Etcd). A
 	// standalone node serves the MVCC, watch and lease families it would
 	// confine to, but not this product surface; see WithStandaloneMode.
@@ -193,7 +190,7 @@ func (a *etcdRequestAuthorizer) AuthorizeRequest(ctx context.Context, perm permi
 	// The listener serves its owning tenant and no one else -- the system
 	// tenant included: there is no cross-tenant database access.
 	callerTenant := tenantid.Normalize(identity.TenantID)
-	if callerTenant != tenantid.Normalize(a.owner) {
+	if !database.OwnedBy(a.owner, callerTenant) {
 		if a.logger != nil {
 			a.logger.Warn("etcd request refused",
 				"subject", identity.Subject,

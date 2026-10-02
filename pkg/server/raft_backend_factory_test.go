@@ -770,7 +770,7 @@ func TestManagerRaftInfoSource_Ownership(t *testing.T) {
 		t.Fatalf("CreateForTenant(memory): %v", err)
 	}
 
-	src := &managerRaftInfoSource{manager: mgr, systemTenant: "system"}
+	src := &managerRaftInfoSource{manager: mgr}
 
 	if _, _, ok := src.databaseInfo("owner", "rdb", false); !ok {
 		t.Error("owner should resolve its own raft database")
@@ -789,7 +789,7 @@ func TestManagerRaftInfoSource_Ownership(t *testing.T) {
 // TestManagerRaftInfoSource_NilManager verifies the source fails closed without
 // a manager.
 func TestManagerRaftInfoSource_NilManager(t *testing.T) {
-	src := &managerRaftInfoSource{manager: nil, systemTenant: "system"}
+	src := &managerRaftInfoSource{manager: nil}
 	if _, _, ok := src.databaseInfo("t", "db", false); ok {
 		t.Error("nil-manager source must return ok=false")
 	}

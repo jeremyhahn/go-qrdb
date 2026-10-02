@@ -247,7 +247,7 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 			raftOpts = append(raftOpts, WithFeatureGate(cfg.FeatureGate))
 		}
 		ti.Raft = NewRaftBackendFactoryFromManager(
-			cfg.Host, cfg.ReplicaID, cfg.RaftAddr, cfg.BarrierReg, cfg.Manager, cfg.SystemTenant, logger, raftOpts...)
+			cfg.Host, cfg.ReplicaID, cfg.RaftAddr, cfg.BarrierReg, cfg.Manager, logger, raftOpts...)
 
 		if err := reattachRaftTenants(cfg.Ctx, cfg.TenantSvc, cfg.BarrierReg, ti.Raft, cfg.Manager, logger); err != nil {
 			_ = ti.Raft.CloseAll()

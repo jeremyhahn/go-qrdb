@@ -464,29 +464,14 @@ func (p *Provider) sessionDatabase(ctx *sqle.Context, name string) (*database.Da
 }
 
 // visibleTo reports whether tenantID's sessions see the managed database
-// info: the tenant owns it, or it is the shared default SQL database.
+// info: the tenant owns it (database.OwnedBy, the one ownership rule, under
+// which a database recorded with no owner is the system tenant's), or it is
+// the shared default SQL database.
 func (p *Provider) visibleTo(info database.DatabaseInfo, tenantID string) bool {
 	if p.sharedDefaultDB != "" && strings.EqualFold(info.Name, p.sharedDefaultDB) {
 		return true
 	}
-	return strings.EqualFold(databaseOwner(info), tenantID)
-}
-
-// databaseOwner returns the tenant a managed database belongs to, treating an
-// empty TenantID as the system tenant.
-//
-// The bootstrap databases a node creates before any tenant exists carry no
-// TenantID at all. Reading that as "owned by nobody" would hide them from
-// every session including the operator's; reading it as "owned by everyone"
-// is the disclosure AllDatabases exists to prevent. System-owned is the only
-// reading that is both safe and true, and it matches the fallback
-// Database.sessionTenantID already applies at the other end of the same
-// comparison.
-func databaseOwner(info database.DatabaseInfo) string {
-	if info.TenantID == "" {
-		return tenantid.System
-	}
-	return info.TenantID
+	return database.OwnedBy(info.TenantID, tenantID)
 }
 
 // providerSessionTenantID returns the tenant of the session driving ctx,
@@ -582,28 +567,16 @@ func (p *Provider) authorizeLifecycle(ctx context.Context, tenantID, operation s
 // none of its relations implements a write-capability interface.
 //
 // The statement is the API's database drop and is held to the same rules:
-// the caller needs databases:delete, and a non-system session may drop only a
-// database its own tenant owns (DatabaseService.DropForTenant). It used to
-// call database.Manager.Drop by name, so any session could drop any tenant's
+// the caller needs databases:delete, and every session -- a system-tenant one
+// included -- may drop only a database its own tenant owns: through
+// DatabaseService.DropForTenant, or, on a system-tenant session with no
+// database service, database.Manager.DropForTenant. Another tenant's
+// database answers *database.NotFoundError, exactly as a missing one does:
+// there is no cross-tenant database access. It used to call
+// database.Manager.Drop by name, so any session could drop any tenant's
 // database. The SQL context's own context.Context is threaded through,
 // because the drop reclaims the database's keys from the shared store and
 // that is a replicated operation that must stay cancellable.
-// dropSystemOwned drops name on the manager path a system-tenant session
-// without a database service takes, when the system tenant owns it. Another
-// tenant's database answers *database.NotFoundError, exactly as a missing one
-// does: there is no cross-tenant database access, on this path as through
-// DatabaseService.DropForTenant.
-func (p *Provider) dropSystemOwned(ctx context.Context, name string) error {
-	db, err := p.manager.Get(name)
-	if err != nil {
-		return err
-	}
-	if !tenantid.IsSystem(db.TenantID()) {
-		return &database.NotFoundError{Name: name}
-	}
-	return p.manager.Drop(ctx, name)
-}
-
 func (p *Provider) DropDatabase(ctx *sqle.Context, name string) error {
 	if strings.EqualFold(name, MySQLSchemaName) || strings.EqualFold(name, pgcatalog.SchemaName) {
 		return &ReservedDatabaseNameError{Name: name}
@@ -621,7 +594,9 @@ func (p *Provider) DropDatabase(ctx *sqle.Context, name string) error {
 	case p.databaseSvc != nil:
 		err = p.databaseSvc.DropForTenant(lctx, name)
 	case tenantid.IsSystem(tenantID):
-		err = p.dropSystemOwned(lctx, name)
+		// Metering, not ownership: as for CREATE DATABASE, only a system
+		// session may act without the service that meters a tenant.
+		err = p.manager.DropForTenant(lctx, name)
 	default:
 		err = &DatabaseLifecycleUnavailableError{Operation: "DROP DATABASE", TenantID: tenantID}
 	}

@@ -846,9 +846,15 @@ policies, rekey and revocation that serve the system and tenant barriers.
   holder's certificate and factor proof are the credential. There is no
   cross-tenant database access: every caller, the system tenant's Admin,
   Security Officer, Auditor and share holders included, is confined to its
-  own tenant's databases by the same ownership check. Another tenant's
-  database answers `NotFound`, exactly as a missing one does, so no route
-  reveals another tenant's database names.
+  own tenant's databases by the same ownership check. That check is one
+  function, `database.OwnedBy` (a database recorded with no owner is the
+  system tenant's), applied through `database.Manager.GetOwned` by the
+  manager's and the database service's `*ForTenant` operations, the service
+  registry and catalog, the dedicated-raft backend, the etcd listener and the
+  SQL provider alike; none restates it and none forks on the system tenant.
+  Another tenant's database answers `NotFound`, exactly as a missing one does,
+  so no route reveals another tenant's database names, and a create request
+  naming another tenant makes a database the caller owns.
 - **Tenants.** A Shamir barrier is held to the passphrase barrier's rule: it
   is accepted only on the database's data path, a non-raft database with its
   own data directory, which only the system tenant can set. Until per-database

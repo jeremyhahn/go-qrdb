@@ -105,17 +105,17 @@ func TestManager_GetForTenant_CrossTenantDenied(t *testing.T) {
 	}
 }
 
+// TestManager_GetForTenant_NoTenant: a context with no tenant is the system tenant, held to
+// the ownership rule rather than refused; it owns no database named any-db,
+// so the name is answered as missing.
 func TestManager_GetForTenant_NoTenant(t *testing.T) {
 	mgr := newTestManager(t)
 	defer func() { _ = mgr.Close() }()
 
 	_, err := mgr.GetForTenant(context.Background(), "any-db")
-	if err == nil {
-		t.Fatal("GetForTenant() with no tenant = nil, want error")
-	}
-	var tidErr *TenantIDRequiredError
-	if !errors.As(err, &tidErr) {
-		t.Fatalf("error type = %T, want *TenantIDRequiredError", err)
+	var notFound *NotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("GetForTenant() with no tenant = %T %v, want *NotFoundError", err, err)
 	}
 }
 
@@ -175,13 +175,11 @@ func TestManager_ListForTenant_NoTenant(t *testing.T) {
 	mgr := newTestManager(t)
 	defer func() { _ = mgr.Close() }()
 
-	_, err := mgr.ListForTenant(context.Background())
-	if err == nil {
-		t.Fatal("ListForTenant() with no tenant = nil, want error")
-	}
-	var tidErr *TenantIDRequiredError
-	if !errors.As(err, &tidErr) {
-		t.Fatalf("error type = %T, want *TenantIDRequiredError", err)
+	// No tenant is the system tenant, which lists its own databases -- here
+	// none -- rather than being refused.
+	infos, err := mgr.ListForTenant(context.Background())
+	if err != nil || len(infos) != 0 {
+		t.Fatalf("ListForTenant() with no tenant = %v, %v; want an empty list", infos, err)
 	}
 }
 
@@ -264,7 +262,7 @@ func TestManager_DropForTenant_CrossTenantDenied(t *testing.T) {
 }
 
 // TestManager_GetForTenant_CrossTenantDroppingIndistinguishableFromMissing is
-// SEC-8(b): getOwned used to resolve ownership through Get, whose drop-fence
+// SEC-8(b): GetOwned (then getOwned) used to resolve ownership through Get, whose drop-fence
 // refusal (DroppingError) fires before ownership is ever checked. A probe of
 // another tenant's DROPPING database therefore answered 409/ABORTED while the
 // identical probe of a name nobody holds answered 404/NOT_FOUND -- an oracle
@@ -283,8 +281,8 @@ func TestManager_GetForTenant_CrossTenantDroppingIndistinguishableFromMissing(t 
 	}
 	db.SetDropping(true)
 
-	_, owned := mgr.getOwned("acme-ledger", "tenant-b")
-	_, missing := mgr.getOwned("nobody-has-this", "tenant-b")
+	_, owned := mgr.GetOwned("acme-ledger", "tenant-b")
+	_, missing := mgr.GetOwned("nobody-has-this", "tenant-b")
 
 	var ownedNotFound, missingNotFound *NotFoundError
 	if !errors.As(owned, &ownedNotFound) {
@@ -304,17 +302,17 @@ func TestManager_GetForTenant_CrossTenantDroppingIndistinguishableFromMissing(t 
 	}
 }
 
+// TestManager_DropForTenant_NoTenant: a context with no tenant is the system tenant, held to
+// the ownership rule rather than refused; it owns no database named any-db,
+// so the name is answered as missing.
 func TestManager_DropForTenant_NoTenant(t *testing.T) {
 	mgr := newTestManager(t)
 	defer func() { _ = mgr.Close() }()
 
 	err := mgr.DropForTenant(context.Background(), "any-db")
-	if err == nil {
-		t.Fatal("DropForTenant() with no tenant = nil, want error")
-	}
-	var tidErr *TenantIDRequiredError
-	if !errors.As(err, &tidErr) {
-		t.Fatalf("error type = %T, want *TenantIDRequiredError", err)
+	var notFound *NotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("DropForTenant() with no tenant = %T %v, want *NotFoundError", err, err)
 	}
 }
 
@@ -568,17 +566,17 @@ func TestManager_UpdateProtocolForTenant_NotFound(t *testing.T) {
 	}
 }
 
+// TestManager_UpdateProtocolForTenant_NoTenant: a context with no tenant is the system tenant, held to
+// the ownership rule rather than refused; it owns no database named any-db,
+// so the name is answered as missing.
 func TestManager_UpdateProtocolForTenant_NoTenant(t *testing.T) {
 	mgr := newTestManager(t)
 	defer func() { _ = mgr.Close() }()
 
 	err := mgr.UpdateProtocolForTenant(context.Background(), "any-db", ProtocolConfig{})
-	if err == nil {
-		t.Fatal("UpdateProtocolForTenant() with no tenant = nil, want error")
-	}
-	var tidErr *TenantIDRequiredError
-	if !errors.As(err, &tidErr) {
-		t.Fatalf("error type = %T, want *TenantIDRequiredError", err)
+	var notFound *NotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("UpdateProtocolForTenant() with no tenant = %T %v, want *NotFoundError", err, err)
 	}
 }
 
@@ -597,17 +595,17 @@ func TestManager_UpdateEtcdForTenant_NotFound(t *testing.T) {
 	}
 }
 
+// TestManager_UpdateEtcdForTenant_NoTenant: a context with no tenant is the system tenant, held to
+// the ownership rule rather than refused; it owns no database named any-db,
+// so the name is answered as missing.
 func TestManager_UpdateEtcdForTenant_NoTenant(t *testing.T) {
 	mgr := newTestManager(t)
 	defer func() { _ = mgr.Close() }()
 
 	err := mgr.UpdateEtcdForTenant(context.Background(), "any-db", nil)
-	if err == nil {
-		t.Fatal("UpdateEtcdForTenant() with no tenant = nil, want error")
-	}
-	var tidErr *TenantIDRequiredError
-	if !errors.As(err, &tidErr) {
-		t.Fatalf("error type = %T, want *TenantIDRequiredError", err)
+	var notFound *NotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("UpdateEtcdForTenant() with no tenant = %T %v, want *NotFoundError", err, err)
 	}
 }
 
@@ -626,17 +624,17 @@ func TestManager_UpdateRaftForTenant_NotFound(t *testing.T) {
 	}
 }
 
+// TestManager_UpdateRaftForTenant_NoTenant: a context with no tenant is the system tenant, held to
+// the ownership rule rather than refused; it owns no database named any-db,
+// so the name is answered as missing.
 func TestManager_UpdateRaftForTenant_NoTenant(t *testing.T) {
 	mgr := newTestManager(t)
 	defer func() { _ = mgr.Close() }()
 
 	err := mgr.UpdateRaftForTenant(context.Background(), "any-db", nil)
-	if err == nil {
-		t.Fatal("UpdateRaftForTenant() with no tenant = nil, want error")
-	}
-	var tidErr *TenantIDRequiredError
-	if !errors.As(err, &tidErr) {
-		t.Fatalf("error type = %T, want *TenantIDRequiredError", err)
+	var notFound *NotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("UpdateRaftForTenant() with no tenant = %T %v, want *NotFoundError", err, err)
 	}
 }
 
@@ -655,17 +653,17 @@ func TestManager_UpdateBarrierForTenant_NotFound(t *testing.T) {
 	}
 }
 
+// TestManager_UpdateBarrierForTenant_NoTenant: a context with no tenant is the system tenant, held to
+// the ownership rule rather than refused; it owns no database named any-db,
+// so the name is answered as missing.
 func TestManager_UpdateBarrierForTenant_NoTenant(t *testing.T) {
 	mgr := newTestManager(t)
 	defer func() { _ = mgr.Close() }()
 
 	err := mgr.UpdateBarrierForTenant(context.Background(), "any-db", nil)
-	if err == nil {
-		t.Fatal("UpdateBarrierForTenant() with no tenant = nil, want error")
-	}
-	var tidErr *TenantIDRequiredError
-	if !errors.As(err, &tidErr) {
-		t.Fatalf("error type = %T, want *TenantIDRequiredError", err)
+	var notFound *NotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("UpdateBarrierForTenant() with no tenant = %T %v, want *NotFoundError", err, err)
 	}
 }
 
@@ -685,17 +683,17 @@ func TestManager_UpdateConnectionForTenant_NotFound(t *testing.T) {
 	}
 }
 
+// TestManager_UpdateConnectionForTenant_NoTenant: a context with no tenant is the system tenant, held to
+// the ownership rule rather than refused; it owns no database named any-db,
+// so the name is answered as missing.
 func TestManager_UpdateConnectionForTenant_NoTenant(t *testing.T) {
 	mgr := newTestManager(t)
 	defer func() { _ = mgr.Close() }()
 
 	err := mgr.UpdateConnectionForTenant(context.Background(), "any-db", nil)
-	if err == nil {
-		t.Fatal("UpdateConnectionForTenant() with no tenant = nil, want error")
-	}
-	var tidErr *TenantIDRequiredError
-	if !errors.As(err, &tidErr) {
-		t.Fatalf("error type = %T, want *TenantIDRequiredError", err)
+	var notFound *NotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("UpdateConnectionForTenant() with no tenant = %T %v, want *NotFoundError", err, err)
 	}
 }
 

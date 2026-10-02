@@ -376,12 +376,11 @@ func NewRaftBackendFactoryFromManager(
 	localRaftAddr string,
 	barrierReg *seal.BarrierRegistry,
 	manager *database.Manager,
-	systemTenant string,
 	logger *slog.Logger,
 	opts ...RaftBackendOption,
 ) *RaftBackendFactory {
 	return NewRaftBackendFactory(host, localReplicaID, localRaftAddr, barrierReg,
-		&managerRaftInfoSource{manager: manager, systemTenant: systemTenant}, logger, opts...)
+		&managerRaftInfoSource{manager: manager}, logger, opts...)
 }
 
 // refuseIfDroppingLocked re-checks the replicated placement fence for
@@ -1239,8 +1238,7 @@ func (f *RaftBackendFactory) RestartAfterRestore(ctx context.Context, shardID ui
 // interface, resolving the persisted shard ID and DataDir for a (tenant, db)
 // pair and enforcing per-tenant ownership.
 type managerRaftInfoSource struct {
-	manager      *database.Manager
-	systemTenant string
+	manager *database.Manager
 }
 
 // databaseInfo resolves the shard ID and DataDir for a dedicated-raft database
@@ -1250,24 +1248,16 @@ func (s *managerRaftInfoSource) databaseInfo(tenantID, db string, ignoreFence bo
 	if s.manager == nil {
 		return 0, "", false
 	}
-	get := s.manager.Get
+	get := s.manager.GetOwned
 	if ignoreFence {
-		get = s.manager.GetIgnoringFence
+		get = s.manager.GetOwnedIgnoringFence
 	}
-	dbase, err := get(db)
+	dbase, err := get(db, tenantID)
 	if err != nil {
 		return 0, "", false
 	}
 	info := dbase.Info()
 	if info.Backend != database.BackendRaft {
-		return 0, "", false
-	}
-	owner := info.TenantID
-	if tenantID == s.systemTenant {
-		if owner != "" && owner != s.systemTenant {
-			return 0, "", false
-		}
-	} else if owner != tenantID {
 		return 0, "", false
 	}
 	if info.ShardID == 0 || info.DataDir == "" {

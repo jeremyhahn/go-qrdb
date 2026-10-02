@@ -29,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // droppingCatalog is the real manager catalog with a hook that runs a drop
@@ -58,7 +59,7 @@ func TestDropFence_DropDuringResolutionNeverYieldsAnUnguardedHandle(t *testing.T
 	ctx := context.Background()
 	dbReg := NewDatabaseServiceRegistry(tenant.DefaultDatabase)
 	dbReg.Register(tenant.DefaultDatabase, f.raw)
-	catalog := &droppingCatalog{managerCatalog: newManagerCatalog(f.mgr, tenantid.System)}
+	catalog := &droppingCatalog{managerCatalog: newManagerCatalog(f.mgr)}
 	catalog.drop = func() {
 		if err := f.mgr.Drop(ctx, "orders"); err != nil {
 			t.Errorf("Drop: %v", err)
@@ -169,7 +170,7 @@ func TestRaftBackendFactory_ColdDedicatedDatabaseIsDroppable(t *testing.T) {
 	mgr := claimingManager(t, volTestLogger(), t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	host, _ := newSharedTestHost(t)
-	raftReg := NewRaftBackendFactoryFromManager(host, sharedHostReplicaID, sharedHostRaftAddr, reg, mgr, tenantid.System, volTestLogger())
+	raftReg := NewRaftBackendFactoryFromManager(host, sharedHostReplicaID, sharedHostRaftAddr, reg, mgr, volTestLogger())
 	t.Cleanup(func() { _ = raftReg.CloseAll() })
 
 	reclaim := service.NewKeyspaceReclaimService(service.ReclaimTarget{KV: newMockKVService()})

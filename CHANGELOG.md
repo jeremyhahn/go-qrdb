@@ -549,6 +549,16 @@ are not reconstructed here — their history is in the git log.
 - **A watch request whose payload does not decode answers QUIC
   `INVALID_ARGUMENT`** rather than the generic `ERROR`, as every other
   undecodable request already did.
+- **Database ownership is one function.** `database.OwnedBy(owner,
+  tenantID)` (both normalized, so an untagged database is the system
+  tenant's) and `database.Manager.GetOwned` replace the restatements in the
+  database service, the service registry, the catalog, the dedicated-raft
+  info source, the etcd listener and the SQL provider. The manager's
+  `GetForTenant`, `ListForTenant`, `DropForTenant` and `Update*ForTenant`
+  now hold the system tenant to the ownership rule instead of refusing it
+  with `TenantIDRequiredError`, so the database service no longer forks
+  around them. `NewRaftBackendFactoryFromManager` drops its `systemTenant`
+  parameter, which only fed the restated check.
 - **`pin.RequireSOPIN`, `pin.RequireProvisionedSOPIN` and `pin.Provision`
   take a `context.Context`** (the caller selects the lockout counter), as
   does `ceremony.CeremonyService.AuthorizeSOPIN`. The lockout constants are

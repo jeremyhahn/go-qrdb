@@ -1687,7 +1687,7 @@ func (s *Server) restRegistryOptions() []RESTRegistryOption {
 		regOpts = append(regOpts, WithTenantServicer(s.opts.tenantSvc))
 	}
 	if s.opts.dbManager != nil {
-		regOpts = append(regOpts, WithDatabaseCatalog(newManagerCatalog(s.opts.dbManager, tenantid.System)))
+		regOpts = append(regOpts, WithDatabaseCatalog(newManagerCatalog(s.opts.dbManager)))
 		regOpts = append(regOpts, withDatabaseManager(s.opts.dbManager))
 	}
 	if s.opts.tenantHosts != nil {

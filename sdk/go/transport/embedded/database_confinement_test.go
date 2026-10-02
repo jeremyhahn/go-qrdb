@@ -115,6 +115,25 @@ func TestDatabaseConfinement(t *testing.T) {
 					t.Errorf("the system tenant's list includes acme's database %q", info.Name)
 				}
 			}
+			// A tenant named in a create request is discarded: the database is
+			// the caller's, never acme's.
+			if _, err := tr.CreateDatabase(ctx, transport.CreateDatabaseRequest{TenantID: "acme", Name: "smuggled", Engine: "kv", Backend: "memory"}); err == nil {
+				info, err := fx.Service.Get("smuggled")
+				if err != nil || !database.OwnedBy(info.TenantID, tenantid.System) {
+					t.Errorf("create naming tenant acme made %+v (%v), want a database the system tenant owns", info, err)
+				}
+				list, err := tr.ListDatabases(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				listed := false
+				for _, info := range list {
+					listed = listed || info.Name == "smuggled"
+				}
+				if !listed {
+					t.Errorf("the system tenant's list omits its own database: %v", list)
+				}
+			}
 		})
 	}
 }

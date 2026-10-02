@@ -180,8 +180,9 @@ func TestManager_UpdateSQLForTenant(t *testing.T) {
 	if err := mgr.UpdateSQLForTenant(ctxA, "missing", pess); !errors.As(err, &notFound) {
 		t.Fatalf("missing = %v, want *NotFoundError", err)
 	}
-	var tid *TenantIDRequiredError
-	if err := mgr.UpdateSQLForTenant(context.Background(), "sql-tenant-db", pess); !errors.As(err, &tid) {
-		t.Fatalf("no tenant = %v, want *TenantIDRequiredError", err)
+	// No tenant is the system tenant, confined like any other: tenant-a's
+	// database is missing to it.
+	if err := mgr.UpdateSQLForTenant(context.Background(), "sql-tenant-db", pess); !errors.As(err, &notFound) {
+		t.Fatalf("no tenant = %v, want *NotFoundError", err)
 	}
 }

@@ -50,7 +50,7 @@ func TestReclaim_CollectionsWrittenThroughTheResolverAreReclaimed(t *testing.T) 
 	dbReg := NewDatabaseServiceRegistry("system")
 	dbReg.Register("system", &DatabaseServices{Name: "system", KV: root})
 	reg := NewRESTServiceRegistry(dbReg, nil, tenantid.System,
-		WithDatabaseCatalog(newManagerCatalog(mgr, tenantid.System)))
+		WithDatabaseCatalog(newManagerCatalog(mgr)))
 
 	for _, name := range []string{"reports", "ledger"} {
 		if _, err := mgr.Create(database.DatabaseConfig{
@@ -152,7 +152,7 @@ func TestReclaim_CollectionKeysAreInsideTheCompositeNamespace(t *testing.T) {
 	dbReg := NewDatabaseServiceRegistry("system")
 	dbReg.Register("system", &DatabaseServices{Name: "system", KV: root})
 	reg := NewRESTServiceRegistry(dbReg, nil, tenantid.System,
-		WithDatabaseCatalog(newManagerCatalog(mgr, tenantid.System)))
+		WithDatabaseCatalog(newManagerCatalog(mgr)))
 
 	if _, err := mgr.Create(database.DatabaseConfig{
 		Name: "reports", Engine: database.EngineKV, Backend: database.BackendMemory,

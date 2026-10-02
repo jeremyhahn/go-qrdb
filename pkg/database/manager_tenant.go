@@ -45,68 +45,38 @@ func (m *Manager) CreateForTenantWithCredentials(ctx context.Context, cfg Databa
 	return m.CreateWithCredentials(ctx, cfg, creds)
 }
 
-// GetForTenant returns a database by name after verifying tenant ownership.
-// A database of another tenant is answered with NotFoundError, exactly as a
-// missing one is (see getOwned).
+// GetForTenant returns a database by name when the context's tenant owns it
+// (GetOwned). A database of another tenant is answered with NotFoundError,
+// exactly as a missing one is; the system tenant is held to the same rule.
 func (m *Manager) GetForTenant(ctx context.Context, name string) (*Database, error) {
-	tenantID := tenant.FromContext(ctx)
-	if tenantid.IsSystem(tenantID) {
-		return nil, &TenantIDRequiredError{Operation: "GetForTenant"}
-	}
-
-	return m.getOwned(name, tenantID)
+	return m.GetOwned(name, tenant.FromContext(ctx))
 }
 
 // GetForTenantIgnoringFence returns a database by name after verifying
-// tenant ownership, WITHOUT refusing when the database's local drop fence
-// is set -- unlike GetForTenant, which refuses through Get's DroppingError
-// check.
+// tenant ownership (OwnedBy), WITHOUT refusing when the database's local drop
+// fence is set -- unlike GetForTenant, which refuses a dropping database.
 //
-// Ownership is checked directly against the catalog (m.databases), the same
-// way DropForTenant's own bypass works and for the identical reason: a
-// caller resolving THIS information -- Backend/Replicas/DedicatedWAL, the
-// bookkeeping DropForTenant needs to release the tenant's quota once its
-// drop succeeds -- is the drop resuming its own claim after a restart, not
-// an ordinary operation the fence exists to refuse (go-qrdb#482 round 3,
-// finding 9). Returns NotFoundError when this node has no local record for
-// name at all: that absence is itself meaningful to DropForTenant (finding
-// 6), which is why this returns the error rather than silently reporting
-// a zero-value database. Also NotFoundError -- never a distinguishable
-// access-denied type -- when the record belongs to a different tenant
-// (SEC-8(b)): the two must be indistinguishable to the caller.
+// A caller resolving THIS information -- Backend/Replicas/DedicatedWAL, the
+// bookkeeping DropForTenant needs to release the tenant's quota once its drop
+// succeeds -- is the drop resuming its own claim after a restart, not an
+// ordinary operation the fence exists to refuse (go-qrdb#482 round 3, finding
+// 9). Returns NotFoundError when this node has no local record for name at
+// all: that absence is itself meaningful to DropForTenant (finding 6). Also
+// NotFoundError -- never a distinguishable access-denied type -- when the
+// record belongs to a different tenant (SEC-8(b)). The system tenant is held
+// to the same rule as any other.
 func (m *Manager) GetForTenantIgnoringFence(ctx context.Context, name string) (*Database, error) {
-	tenantID := tenant.FromContext(ctx)
-	if tenantid.IsSystem(tenantID) {
-		return nil, &TenantIDRequiredError{Operation: "GetForTenantIgnoringFence"}
-	}
-
-	val, ok := m.databases.Load(name)
-	if !ok {
-		return nil, &NotFoundError{Name: name}
-	}
-	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
-	if db.TenantID() != tenantID {
-		// NotFoundError, not TenantAccessDeniedError: another tenant's
-		// database is answered exactly as a missing one is, never revealing
-		// that the name is held by someone else (SEC-8(b)).
-		return nil, &NotFoundError{Name: name}
-	}
-
-	return db, nil
+	return m.GetOwnedIgnoringFence(name, tenant.FromContext(ctx))
 }
 
-// ListForTenant returns databases owned by the tenant from the context.
-// Results are sorted by name.
+// ListForTenant returns databases owned by the tenant from the context
+// (OwnedBy), the system tenant included. Results are sorted by name.
 func (m *Manager) ListForTenant(ctx context.Context) ([]DatabaseInfo, error) {
 	tenantID := tenant.FromContext(ctx)
-	if tenantid.IsSystem(tenantID) {
-		return nil, &TenantIDRequiredError{Operation: "ListForTenant"}
-	}
-
 	var infos []DatabaseInfo
 	m.databases.Range(func(_, value any) bool {
 		db := value.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
-		if db.TenantID() == tenantID {
+		if OwnedBy(db.TenantID(), tenantID) {
 			infos = append(infos, db.Info())
 		}
 		return true
@@ -117,35 +87,21 @@ func (m *Manager) ListForTenant(ctx context.Context) ([]DatabaseInfo, error) {
 	return infos, nil
 }
 
-// DropForTenant drops a database after verifying tenant ownership. A database
-// of another tenant is answered with NotFoundError, exactly as a missing one
-// is: it never reveals that the name is held by someone else.
+// DropForTenant drops a database after verifying tenant ownership (OwnedBy).
+// A database of another tenant is answered with NotFoundError, exactly as a
+// missing one is; the system tenant is held to the same rule.
 //
-// Ownership is checked directly against the catalog (m.databases), NOT
-// through Get: every other *ForTenant accessor in this file uses Get
-// deliberately, because refusing a dropping database is exactly what it
-// should do for a read or a config update. DropForTenant is the one
-// exception -- it must still let the OWNING tenant retry a drop that a
-// restart (Open restores the fence from meta.json) or a failed reclamation
-// left fenced (go-qrdb#482). Routing the ownership check through Get would
-// refuse the tenant issuing the retry exactly as it refuses everyone else,
-// permanently locking them out of finishing their own interrupted drop.
+// Ownership is checked without the drop fence (GetOwnedIgnoringFence): every
+// other *ForTenant accessor refuses a dropping database, which is what a read
+// or a config update should get, but DropForTenant must still let the OWNING
+// tenant retry a drop that a restart (Open restores the fence from meta.json)
+// or a failed reclamation left fenced (go-qrdb#482).
 func (m *Manager) DropForTenant(ctx context.Context, name string) error {
 	if err := CheckDroppable(name); err != nil {
 		return err
 	}
-	tenantID := tenant.FromContext(ctx)
-	if tenantid.IsSystem(tenantID) {
-		return &TenantIDRequiredError{Operation: "DropForTenant"}
-	}
-
-	val, ok := m.databases.Load(name)
-	if !ok {
-		return &NotFoundError{Name: name}
-	}
-	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
-	if db.TenantID() != tenantID {
-		return &NotFoundError{Name: name}
+	if _, err := m.GetOwnedIgnoringFence(name, tenant.FromContext(ctx)); err != nil {
+		return err
 	}
 
 	return m.Drop(ctx, name)
@@ -153,12 +109,7 @@ func (m *Manager) DropForTenant(ctx context.Context, name string) error {
 
 // UpdateProtocolForTenant updates protocol config after verifying tenant ownership.
 func (m *Manager) UpdateProtocolForTenant(ctx context.Context, name string, protocol ProtocolConfig) error {
-	tenantID := tenant.FromContext(ctx)
-	if tenantid.IsSystem(tenantID) {
-		return &TenantIDRequiredError{Operation: "UpdateProtocolForTenant"}
-	}
-
-	if _, err := m.getOwned(name, tenantID); err != nil {
+	if _, err := m.GetOwned(name, tenant.FromContext(ctx)); err != nil {
 		return err
 	}
 
@@ -167,12 +118,7 @@ func (m *Manager) UpdateProtocolForTenant(ctx context.Context, name string, prot
 
 // UpdateEtcdForTenant updates etcd config after verifying tenant ownership.
 func (m *Manager) UpdateEtcdForTenant(ctx context.Context, name string, etcd *EtcdConfig) error {
-	tenantID := tenant.FromContext(ctx)
-	if tenantid.IsSystem(tenantID) {
-		return &TenantIDRequiredError{Operation: "UpdateEtcdForTenant"}
-	}
-
-	if _, err := m.getOwned(name, tenantID); err != nil {
+	if _, err := m.GetOwned(name, tenant.FromContext(ctx)); err != nil {
 		return err
 	}
 
@@ -181,12 +127,7 @@ func (m *Manager) UpdateEtcdForTenant(ctx context.Context, name string, etcd *Et
 
 // UpdateRaftForTenant updates Raft config after verifying tenant ownership.
 func (m *Manager) UpdateRaftForTenant(ctx context.Context, name string, raft *DatabaseRaftConfig) error {
-	tenantID := tenant.FromContext(ctx)
-	if tenantid.IsSystem(tenantID) {
-		return &TenantIDRequiredError{Operation: "UpdateRaftForTenant"}
-	}
-
-	if _, err := m.getOwned(name, tenantID); err != nil {
+	if _, err := m.GetOwned(name, tenant.FromContext(ctx)); err != nil {
 		return err
 	}
 
@@ -195,12 +136,7 @@ func (m *Manager) UpdateRaftForTenant(ctx context.Context, name string, raft *Da
 
 // UpdateBarrierForTenant updates barrier config after verifying tenant ownership.
 func (m *Manager) UpdateBarrierForTenant(ctx context.Context, name string, barrier *DatabaseBarrierConfig) error {
-	tenantID := tenant.FromContext(ctx)
-	if tenantid.IsSystem(tenantID) {
-		return &TenantIDRequiredError{Operation: "UpdateBarrierForTenant"}
-	}
-
-	if _, err := m.getOwned(name, tenantID); err != nil {
+	if _, err := m.GetOwned(name, tenant.FromContext(ctx)); err != nil {
 		return err
 	}
 
@@ -209,12 +145,7 @@ func (m *Manager) UpdateBarrierForTenant(ctx context.Context, name string, barri
 
 // UpdateConnectionForTenant updates connection config after verifying tenant ownership.
 func (m *Manager) UpdateConnectionForTenant(ctx context.Context, name string, conn *DatabaseConnectionConfig) error {
-	tenantID := tenant.FromContext(ctx)
-	if tenantid.IsSystem(tenantID) {
-		return &TenantIDRequiredError{Operation: "UpdateConnectionForTenant"}
-	}
-
-	if _, err := m.getOwned(name, tenantID); err != nil {
+	if _, err := m.GetOwned(name, tenant.FromContext(ctx)); err != nil {
 		return err
 	}
 
@@ -224,12 +155,7 @@ func (m *Manager) UpdateConnectionForTenant(ctx context.Context, name string, co
 // UpdateSQLForTenant updates the SQL settings after verifying tenant
 // ownership.
 func (m *Manager) UpdateSQLForTenant(ctx context.Context, name string, sqlCfg *SQLConfig) error {
-	tenantID := tenant.FromContext(ctx)
-	if tenantid.IsSystem(tenantID) {
-		return &TenantIDRequiredError{Operation: "UpdateSQLForTenant"}
-	}
-
-	if _, err := m.getOwned(name, tenantID); err != nil {
+	if _, err := m.GetOwned(name, tenant.FromContext(ctx)); err != nil {
 		return err
 	}
 
@@ -237,71 +163,18 @@ func (m *Manager) UpdateSQLForTenant(ctx context.Context, name string, sqlCfg *S
 }
 
 // CompactionOwnerForTenant returns the tenant that owns the named database
-// when the context's tenant may set its scheduled-compaction policy. Unlike
-// the other ForTenant checks, the system tenant is held to the same rule: it
-// may set a policy on its own databases (owned by it, or by no tenant) and on
-// no other tenant's, because a policy compacts that database's history and no
-// one compacts another tenant's. Another tenant's database is answered as
-// missing. The policy itself is not the catalog's: it is a replicated record
-// in the database's own store (pkg/compaction).
+// when the context's tenant may set its scheduled-compaction policy: its own
+// databases only (OwnedBy), the system tenant included -- a policy compacts
+// that database's history and no one compacts another tenant's. Another
+// tenant's database is answered as missing, the caller's own dropping one as
+// dropping (GetOwned). The policy itself is not the catalog's: it is a
+// replicated record in the database's own store (pkg/compaction).
 func (m *Manager) CompactionOwnerForTenant(ctx context.Context, name string) (string, error) {
-	tenantID := tenant.FromContext(ctx)
-	val, ok := m.databases.Load(name)
-	if !ok {
-		return "", &NotFoundError{Name: name}
+	db, err := m.GetOwned(name, tenant.FromContext(ctx))
+	if err != nil {
+		return "", err
 	}
-	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
-	// Ownership before the drop fence, as getOwned: another tenant's dropping
-	// database must answer as missing, not as dropping.
-	if !ownsCompactionPolicy(tenantID, db.TenantID()) {
-		return "", &NotFoundError{Name: name}
-	}
-	if db.Dropping() {
-		return "", &DroppingError{Name: name, TenantID: db.TenantID()}
-	}
-	owner := db.TenantID()
-	if owner == "" {
-		owner = tenantid.System
-	}
-	return owner, nil
-}
-
-// ownsCompactionPolicy reports whether tenantID may set the compaction policy
-// of a database owner owns: its own databases only, for every tenant. The
-// system tenant's own databases are those owned by it or by no tenant.
-func ownsCompactionPolicy(tenantID, owner string) bool {
-	if tenantid.IsSystem(tenantID) {
-		return tenantid.IsSystem(owner)
-	}
-	return owner == tenantID
-}
-
-// getOwned returns the named database when tenantID owns it, and
-// NotFoundError otherwise -- for a database that does not exist and for one
-// another tenant owns alike. Database names are one node-wide namespace, so
-// answering another tenant's database with an access denial told the caller
-// which names other tenants use; the two answers are now the same.
-//
-// Ownership is checked directly against the catalog (m.databases), NOT
-// through Get: Get's drop-fence refusal (DroppingError) fires before an
-// ownership check ever would, so routing through it answered a cross-tenant
-// probe of someone else's DROPPING database with 409/ABORTED while an
-// ordinary missing name got 404/NOT_FOUND -- the exact oracle this function
-// exists to close (SEC-8(b)). The fence is therefore checked AFTER
-// ownership, and only for the caller's own database.
-func (m *Manager) getOwned(name, tenantID string) (*Database, error) {
-	val, ok := m.databases.Load(name)
-	if !ok {
-		return nil, &NotFoundError{Name: name}
-	}
-	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
-	if db.TenantID() != tenantID {
-		return nil, &NotFoundError{Name: name}
-	}
-	if db.Dropping() {
-		return nil, &DroppingError{Name: name, TenantID: tenantID}
-	}
-	return db, nil
+	return tenantid.Normalize(db.TenantID()), nil
 }
 
 // Compile-time interface check: the tenant teardown's refusal reads this
@@ -326,14 +199,14 @@ var _ tenant.DatabaseLister = (*Manager)(nil)
 // list to have bounded it.
 //
 // An unknown tenant owns no databases, which is not an error. The system
-// tenant is answered like any other: its databases are those recorded with
-// no owner or with the system owner, matching GetForTenant's view.
+// tenant is answered like any other (OwnedBy): its databases are those
+// recorded with no owner or with the system owner, matching GetForTenant's
+// view.
 func (m *Manager) TenantDatabases(_ context.Context, tenantID string) ([]string, error) {
 	var names []string
 	m.databases.Range(func(_, value any) bool {
 		db := value.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
-		owner := db.TenantID()
-		if owner == tenantID || (tenantid.IsSystem(tenantID) && tenantid.IsSystem(owner)) {
+		if OwnedBy(db.TenantID(), tenantID) {
 			names = append(names, db.Name())
 		}
 		return true

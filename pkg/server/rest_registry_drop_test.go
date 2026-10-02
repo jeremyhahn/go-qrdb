@@ -105,7 +105,7 @@ func TestRESTServiceRegistry_CrossTenantDroppingDatabaseIndistinguishableFromMis
 	// record is ever consulted, which would make this test pass without
 	// exercising the fix at all.
 	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system",
-		withDatabaseManager(dbMgr), WithDatabaseCatalog(newManagerCatalog(dbMgr, "system")))
+		withDatabaseManager(dbMgr), WithDatabaseCatalog(newManagerCatalog(dbMgr)))
 
 	_, ownedErr := r.KVService("globex", "acme-ledger")
 	_, missingErr := r.KVService("globex", "nobody-has-this")

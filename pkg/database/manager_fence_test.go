@@ -315,7 +315,9 @@ func TestManager_GetForTenantIgnoringFence(t *testing.T) {
 	_, err = mgr.GetForTenantIgnoringFence(owner, "missing")
 	assert.ErrorAs(t, err, &notFound)
 
-	var required *TenantIDRequiredError
+	// No tenant is the system tenant, held to the one ownership rule rather
+	// than refused: acme's database is missing to it.
+	var systemNotFound *NotFoundError
 	_, err = mgr.GetForTenantIgnoringFence(context.Background(), "billing")
-	assert.ErrorAs(t, err, &required)
+	assert.ErrorAs(t, err, &systemNotFound)
 }

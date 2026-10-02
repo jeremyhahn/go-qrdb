@@ -21,11 +21,13 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/service/servicetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -54,6 +56,26 @@ func DatabaseConfinement(t *testing.T, start DatabaseStartFunc) {
 		},
 		"update sql": func(ctx context.Context, c pb.QRDBServiceClient) error {
 			_, err := c.DatabaseUpdateSQL(ctx, &pb.DatabaseUpdateSQLRequest{Name: "vault"})
+			return err
+		},
+		"update protocol": func(ctx context.Context, c pb.QRDBServiceClient) error {
+			_, err := c.DatabaseUpdateProtocol(ctx, &pb.DatabaseUpdateProtocolRequest{Name: "vault"})
+			return err
+		},
+		"update etcd": func(ctx context.Context, c pb.QRDBServiceClient) error {
+			_, err := c.DatabaseUpdateEtcd(ctx, &pb.DatabaseUpdateEtcdRequest{Name: "vault"})
+			return err
+		},
+		"update raft": func(ctx context.Context, c pb.QRDBServiceClient) error {
+			_, err := c.DatabaseUpdateRaft(ctx, &pb.DatabaseUpdateRaftRequest{Name: "vault"})
+			return err
+		},
+		"update barrier": func(ctx context.Context, c pb.QRDBServiceClient) error {
+			_, err := c.DatabaseUpdateBarrier(ctx, &pb.DatabaseUpdateBarrierRequest{Name: "vault"})
+			return err
+		},
+		"update connection": func(ctx context.Context, c pb.QRDBServiceClient) error {
+			_, err := c.DatabaseUpdateConnection(ctx, &pb.DatabaseUpdateConnectionRequest{Name: "vault"})
 			return err
 		},
 		"seal": func(ctx context.Context, c pb.QRDBServiceClient) error {
@@ -94,6 +116,21 @@ func DatabaseConfinement(t *testing.T, start DatabaseStartFunc) {
 				if err := call(callCtx(t), client); status.Code(err) != codes.NotFound {
 					t.Errorf("%s on acme's database = %v, want NotFound, as for a missing database", verb, err)
 				}
+			}
+			if _, err := fx.Service.Create(database.DatabaseConfig{Name: "sysdb", Engine: database.EngineKV, Backend: database.BackendMemory}); err != nil {
+				t.Fatalf("create the system tenant's own database: %v", err)
+			}
+			// The list names the caller's own databases and only those.
+			list, err := client.DatabaseList(callCtx(t), &emptypb.Empty{})
+			if err != nil {
+				t.Fatalf("list: %v", err)
+			}
+			listed := map[string]bool{}
+			for _, info := range list.GetDatabases() {
+				listed[info.GetName()] = true
+			}
+			if listed["vault"] || !listed["sysdb"] {
+				t.Errorf("list = %v, want the caller's sysdb and not acme's vault", listed)
 			}
 			if _, err := fx.Service.Get(fx.Name); err != nil {
 				t.Fatalf("acme's database was changed: %v", err)

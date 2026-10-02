@@ -133,14 +133,14 @@ func newRaftE2EStack(t *testing.T) *raftE2EStack {
 
 	host, _ := newSharedTestHost(t)
 	raftReg := NewRaftBackendFactoryFromManager(
-		host, sharedHostReplicaID, sharedHostRaftAddr, reg, mgr, tenantid.System, volTestLogger())
+		host, sharedHostReplicaID, sharedHostRaftAddr, reg, mgr, volTestLogger())
 	t.Cleanup(func() { _ = raftReg.CloseAll() })
 
 	resolver := &restServiceRegistry{
 		dbReg:        NewDatabaseServiceRegistry("system"),
 		barrierReg:   reg,
 		tenantSvc:    tenants,
-		catalog:      newManagerCatalog(mgr, tenantid.System),
+		catalog:      newManagerCatalog(mgr),
 		raftBackend:  raftReg,
 		systemTenant: tenantid.System,
 	}

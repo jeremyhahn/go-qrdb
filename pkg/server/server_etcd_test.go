@@ -223,6 +223,54 @@ func TestEtcdListener_RefusesOtherTenant(t *testing.T) {
 	}
 }
 
+// The etcd listener applies the one ownership rule (database.OwnedBy) in
+// both directions: the system tenant is refused on acme's database, and is
+// admitted on a database it owns -- one recorded with no owner included --
+// while acme is refused there. The owner of each database reads its own key.
+func TestEtcdListener_OwnerAdmittedEveryoneElseRefused(t *testing.T) {
+	f := newEtcdScopeFixture(t, true)
+	if _, err := f.mgr.Create(database.DatabaseConfig{Name: "sysapp", Engine: database.EngineKV, Backend: database.BackendMemory}); err != nil {
+		t.Fatalf("create the untagged system database: %v", err)
+	}
+	f.shared.put("system/sysapp/visible", []byte("v"))
+	callers := map[string]*auth.Identity{
+		"acme":   {Subject: "alice", TenantID: "acme"},
+		"system": {Subject: "root", TenantID: "system"},
+	}
+	cases := []struct {
+		db, caller string
+		admitted   bool
+	}{
+		{"app", "acme", true},
+		{"app", "system", false},
+		{"sysapp", "system", true},
+		{"sysapp", "acme", false},
+	}
+	for _, c := range cases {
+		t.Run(c.db+" as "+c.caller, func(t *testing.T) {
+			f.srv.opts.authMW = authmw.New(allowAll{}, authmw.WithAuthenticator(&etcdPeerIdentity{identity: callers[c.caller]}))
+			etcdSrv, err := startEtcd(f.srv, c.db, etcdListenCfg)
+			if err != nil {
+				t.Fatalf("startEtcd: %v", err)
+			}
+			t.Cleanup(func() { stopEtcd(etcdSrv) })
+			kv := f.kv(t, etcdSrv.Addr(), f.clientTLS)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			resp, err := kv.Range(ctx, &pb.RangeRequest{Key: []byte("visible")})
+			if !c.admitted {
+				if status.Code(err) != codes.PermissionDenied {
+					t.Fatalf("Range = %v, want PermissionDenied", err)
+				}
+				return
+			}
+			if err != nil || len(resp.Kvs) != 1 {
+				t.Fatalf("the owner's Range = %v, %v; want its one key", resp, err)
+			}
+		})
+	}
+}
+
 // The authorizer's refusal reaches the client, and nothing is written.
 func TestEtcdListener_RefusesWithoutPermission(t *testing.T) {
 	f := newEtcdScopeFixture(t, true)

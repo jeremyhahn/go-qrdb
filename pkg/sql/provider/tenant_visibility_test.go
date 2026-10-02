@@ -137,13 +137,6 @@ func TestAllDatabasesWithoutASessionIsSystemScoped(t *testing.T) {
 	assert.Equal(t, []string{"bootstrap"}, databaseNames(p.AllDatabases(nil)))
 }
 
-// TestDatabaseOwner covers the empty-TenantID reading directly.
-func TestDatabaseOwner(t *testing.T) {
-	assert.Equal(t, tenantid.System, databaseOwner(database.DatabaseInfo{}),
-		"an untagged database is system-owned")
-	assert.Equal(t, "acme", databaseOwner(database.DatabaseInfo{TenantID: "acme"}))
-}
-
 // tenantContext builds a *sqle.Context whose session is a QRDBSession
 // authenticated to the named tenant.
 func tenantContext(tenantID string) *sqle.Context {

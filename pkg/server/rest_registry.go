@@ -455,22 +455,17 @@ func servesFromNodeLocalStore(cfg *database.DatabaseConfig) bool {
 	return cfg.Barrier != nil && cfg.Barrier.Enabled && cfg.BarrierOnDataPath()
 }
 
-// ownedDatabase returns the catalog record for db when tenantID may address
-// it, and false when there is no database manager, no such database, or the
-// database belongs to another tenant. The ownership rule mirrors
-// managerCatalog.DatabaseExists and managerRaftInfoSource.databaseInfo: the
-// system tenant sees databases with no owner or the system owner; every other
-// tenant sees only databases it owns. A mismatch is "not this database", so a
-// caller never learns anything about another tenant's database.
+// ownedDatabase returns the catalog record for db when tenantID owns it
+// (database.Manager.GetOwned, the one ownership rule), and false when there is
+// no database manager, no such database, or the database belongs to another
+// tenant. A mismatch is "not this database", so a caller never learns
+// anything about another tenant's database.
 func (r *restServiceRegistry) ownedDatabase(tenantID, db string) (*database.Database, bool) {
 	if r.dbManager == nil {
 		return nil, false
 	}
-	dbase, err := r.dbManager.Get(db)
+	dbase, err := r.dbManager.GetOwned(db, tenantID)
 	if err != nil {
-		return nil, false
-	}
-	if !ownsManagedRecord(r.systemTenant, tenantID, dbase.TenantID()) {
 		return nil, false
 	}
 	return dbase, true
@@ -805,9 +800,9 @@ func (r *restServiceRegistry) sharedStoreFence(tenantID, db string, managed mana
 // ANOTHER tenant's DROPPING database returned DroppingError (409/ABORTED)
 // while the same tenant's lookup of a merely-absent name returned
 // NotFoundError (404/NOT_FOUND) -- the oracle SEC-8(b) exists to close.
-// Ownership is checked here instead, mirroring ownedDatabase's rule (the
-// system tenant sees an unowned or system-owned record, every other tenant
-// sees only its own), and a record that fails it is treated as no record at
+// Ownership is checked here instead, by the one rule (database.OwnedBy: every
+// tenant, the system tenant included, sees only its own record, an unowned
+// one being the system tenant's), and a record that fails it is treated as no record at
 // all: resolve's own existence check (databaseExists) answers NotFoundError
 // for it exactly as it would for a name nobody has ever held. DroppingError
 // is therefore only ever returned for the CALLER's own database.
@@ -817,7 +812,7 @@ func (r *restServiceRegistry) managedDatabase(tenantID, db string) (managedRecor
 	}
 	dbase, err := r.dbManager.GetIgnoringFence(db)
 	if err == nil {
-		if !ownsManagedRecord(r.systemTenant, tenantID, dbase.TenantID()) {
+		if !database.OwnedBy(dbase.TenantID(), tenantID) {
 			return managedRecord{}, nil
 		}
 		if dbase.Dropping() {
@@ -834,16 +829,6 @@ func (r *restServiceRegistry) managedDatabase(tenantID, db string) (managedRecor
 		return managedRecord{}, derr
 	}
 	return managedRecord{droppedHere: dropped, notFound: notFound}, nil
-}
-
-// ownsManagedRecord applies the same ownership rule as ownedDatabase (see its
-// doc comment): the system tenant sees a record with no owner or the system
-// owner; every other tenant sees only a record it owns itself.
-func ownsManagedRecord(systemTenant, tenantID, owner string) bool {
-	if tenantID == systemTenant {
-		return owner == "" || owner == systemTenant
-	}
-	return owner == tenantID
 }
 
 // managedRecord is what managedDatabase found for a name.
