@@ -120,3 +120,51 @@ func TestLockoutBackend_NodeKnownGoodRecordNamesNoPrincipal(t *testing.T) {
 		t.Fatalf("record %q names the principal", raw)
 	}
 }
+
+// valueBackend is a PINBackend whose dynamic type is a struct value, not a
+// pointer; extra lets a test make that value unhashable.
+type valueBackend struct {
+	*SoftwareBackend
+	extra any
+}
+
+// TestNewLockoutBackend_RefusesANonPointerBackend: a value-typed backend has
+// no identity the registry can recognise again, so it is refused -- every SO
+// PIN check fails closed with *LockoutBackendKindError and compares nothing,
+// the right PIN included -- rather than given a fresh budget per decoration.
+// A comparable value that holds an unhashable field is refused the same way
+// instead of panicking in the registry.
+func TestNewLockoutBackend_RefusesANonPointerBackend(t *testing.T) {
+	inner := newProvisionBackend(t)
+	if err := inner.SetSOPIN("", lockoutSOPIN); err != nil {
+		t.Fatal(err)
+	}
+	for name, raw := range map[string]PINBackend{
+		"comparable value": valueBackend{SoftwareBackend: inner},
+		"unhashable field": valueBackend{SoftwareBackend: inner, extra: []byte("x")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var decorated PINBackend
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Fatalf("NewLockoutBackend panicked: %v", r)
+					}
+				}()
+				decorated = NewLockoutBackend(raw)
+			}()
+			var kind *LockoutBackendKindError
+			for _, b := range []PINBackend{decorated, NewLockoutBackend(raw)} {
+				if err := b.VerifySOPIN(lockoutSOPIN); !errors.As(err, &kind) || kind.Type != "pin.valueBackend" || kind.Error() == "" {
+					t.Fatalf("the right SO PIN through a value-typed backend = %v, want *LockoutBackendKindError", err)
+				}
+				if err := ForCaller(context.Background(), b).ChangeSOPIN(lockoutSOPIN, "so-pin-5678"); !errors.As(err, &kind) {
+					t.Fatalf("ChangeSOPIN through a value-typed backend = %v, want *LockoutBackendKindError", err)
+				}
+			}
+			if err := inner.VerifySOPIN(lockoutSOPIN); err != nil {
+				t.Fatalf("the SO PIN changed through a refused decoration: %v", err)
+			}
+		})
+	}
+}

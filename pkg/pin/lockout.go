@@ -57,10 +57,31 @@ func (e *SOPINLockedError) Error() string {
 // Unwrap returns ErrPINLocked.
 func (e *SOPINLockedError) Unwrap() error { return ErrPINLocked }
 
+// LockoutBackendKindError is returned by every SO PIN check of a backend
+// NewLockoutBackend refused to decorate because its dynamic type is not a
+// pointer. The lockout keeps one set of counters per backend, recognised by
+// the backend's pointer identity; a value-typed backend has no identity to
+// recognise, so each decoration of it -- one per transport option -- would
+// get a fresh budget of free failures, multiplying what a guesser may spend.
+// The SO PIN-gated operations therefore fail closed, and the presented PIN
+// is never compared.
+type LockoutBackendKindError struct {
+	// Type is the refused backend's dynamic type.
+	Type string
+}
+
+// Error implements the error interface.
+func (e *LockoutBackendKindError) Error() string {
+	return "pin: the SO PIN lockout needs a pointer PIN backend, got " + e.Type
+}
+
 // lockoutShared is the state one decorated backend's views share: the
 // counting, keyed by the node.
 type lockoutShared struct {
 	lockout *auth.SOPINLockout
+	// refused, when set, is what every SO PIN check returns: the backend
+	// could not be decorated (*LockoutBackendKindError).
+	refused error
 }
 
 // nodeSOPINKey keys the node SO PIN in the shared lockout.
@@ -97,6 +118,11 @@ var (
 // counters and one budget of free failures. A nil backend is returned as nil,
 // so the PIN-gated operations still fail closed with ErrBackendNotConfigured.
 //
+// The backend must be a pointer: that is the identity the registry knows it
+// by. A backend of any other kind is refused -- every SO PIN check through
+// the result fails with *LockoutBackendKindError and compares nothing --
+// rather than given a budget of its own on each decoration.
+//
 // A backend that implements auth.SOPINKnownGoodStore (SoftwareBackend does)
 // persists the lockout's known-good set, so a Security Officer's exemption
 // from the aggregate cap survives a restart.
@@ -107,10 +133,10 @@ func NewLockoutBackend(backend PINBackend) PINBackend {
 	if _, ok := backend.(*lockoutBackend); ok {
 		return backend
 	}
-	if !reflect.TypeOf(backend).Comparable() {
-		// A backend whose dynamic type cannot key a map cannot be
-		// recognised again; it is decorated afresh each time.
-		return newLockoutBackend(backend, nil)
+	if t := reflect.TypeOf(backend); t.Kind() != reflect.Pointer {
+		refused := newLockoutBackend(backend, nil)
+		refused.shared.refused = &LockoutBackendKindError{Type: t.String()}
+		return refused
 	}
 	if existing, ok := lockoutRegistry.Load(backend); ok {
 		return existing.(*lockoutBackend) //nolint:errcheck // type assertion on a value this container only ever holds
@@ -120,8 +146,9 @@ func NewLockoutBackend(backend PINBackend) PINBackend {
 }
 
 // lockoutRegistry maps each raw backend NewLockoutBackend has decorated to its
-// decoration, keyed by the backend's identity, so two decorations of one
-// backend share one set of counters. A node's PIN backends live as long as
+// decoration, keyed by the backend's pointer identity -- always a valid map
+// key, unlike a struct value that may hold an unhashable field -- so two
+// decorations of one backend share one set of counters. A node's PIN backends live as long as
 // the process, so entries are never removed.
 var lockoutRegistry sync.Map
 
@@ -214,9 +241,13 @@ func (b *lockoutBackend) VerifyFIDO2Hash(hash []byte) bool {
 
 // check runs verify, the decorated backend's SO PIN comparison, through the
 // shared lockout on this view's counter. A refusal while locked out is
-// *SOPINLockedError, and verify did not run. Only a wrong PIN counts (see
+// *SOPINLockedError, and verify did not run; so is the refusal of a backend
+// NewLockoutBackend could not decorate. Only a wrong PIN counts (see
 // isSOPINMismatch): a backend that cannot answer is not a guess.
 func (b *lockoutBackend) check(verify func() error) error {
+	if b.shared.refused != nil {
+		return b.shared.refused
+	}
 	err := b.shared.lockout.Check(context.Background(), nodeSOPINKey, b.principal, verify, isSOPINMismatch)
 	var locked *auth.SOPINLockedError
 	if errors.As(err, &locked) {

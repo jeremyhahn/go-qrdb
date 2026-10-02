@@ -128,7 +128,9 @@ Storage keys: `so-pin` and `user-pin`, each a JSON-encoded `PINRecord`.
   certificate's principal (`holder:<tenant>/<subject>`) is distinct from the
   user of the same name. Stale per-principal counters are evicted
   before new principals fall back to the shared overflow counter, and
-  `NewLockoutBackend` keeps one decoration per raw backend. `pin.ForCaller(ctx, backend)` selects the counter; the
+  `NewLockoutBackend` keeps one decoration per raw backend, recognised by
+  pointer identity: a backend that is not a pointer is refused, and its SO
+  PIN checks fail closed with `pin.LockoutBackendKindError`. `pin.ForCaller(ctx, backend)` selects the counter; the
   helpers `RequireSOPIN`, `RequireProvisionedSOPIN` and `Provision` take a
   context and apply it, and a backend reached without one is held to the
   anonymous counter. The counting itself is `auth.SOPINLockout`, which also

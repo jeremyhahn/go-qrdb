@@ -156,7 +156,11 @@ the last initial holder claims.
   - **One decoration per backend.** `pin.NewLockoutBackend` returns the same
     decoration every time it is given the same raw backend, so the ceremony
     and each transport that installs the lockout on one backend share one set
-    of counters and one budget of free failures.
+    of counters and one budget of free failures. The backend is recognised by
+    its pointer identity, so it must be a pointer: a value-typed backend is
+    refused, and every SO PIN check through it fails closed with
+    `pin.LockoutBackendKindError` without comparing the PIN, rather than
+    getting a fresh budget on each decoration.
   - It is installed once, where the node's backend is chosen:
     `lifecycle.NewSealStorePINBackend` returns the seal-store backend already
     decorated, and `server.WithPINBackend` decorates an injected backend when

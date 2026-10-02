@@ -231,7 +231,11 @@ are not reconstructed here — their history is in the git log.
   user of the same name share neither a counter nor known-good status. Stale
   per-principal counters are evicted before new principals fall back to the
   overflow counter, and `pin.NewLockoutBackend` returns one decoration per raw
-  backend, so consumers of one backend share one budget. The counting is one implementation, `auth.SOPINLockout`, behind
+  backend, so consumers of one backend share one budget. The backend is
+  recognised by pointer identity; a backend that is not a pointer is refused
+  -- its SO PIN checks fail closed with `pin.LockoutBackendKindError` --
+  instead of getting a fresh budget per decoration or, for a struct holding
+  an unhashable field, panicking. The counting is one implementation, `auth.SOPINLockout`, behind
   both the node SO PIN (`pin.NewLockoutBackend`) and each tenant's SO PIN
   (`auth.SOAuthenticator.VerifySOPIN`, previously unlimited); a locked
   tenant PIN answers 429 with its retry delay. Every transport's
