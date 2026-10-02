@@ -1,6 +1,6 @@
 # etcd Compatibility — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
 
 This feature is **not** one of the six qrdb transports. It is a separate,
 per-database gRPC listener speaking upstream etcd's own v3 API
@@ -29,7 +29,7 @@ TLS and auth must both be enabled, the database `engine` must be `kv` and its
 | `KV` | `Put` | `MVCCKVService.PutWithLease` | `kv:put` |
 | `KV` | `DeleteRange` | `MVCCKVService.Delete` | `kv:delete` |
 | `KV` | `Txn` | `TransactionService.Execute` | `transaction:execute` |
-| `KV` | `Compact` | `MVCCKVService.Compact` | `mvcc:compact` (system tenant only) |
+| `KV` | `Compact` | `MVCCKVService.Compact` (this database only) | `mvcc:compact` |
 | `Watch` | `Watch` | `WatchService.Watch` / `WatchPrefix` | `watch:watch_prefix` |
 | `Lease` | `LeaseGrant` | `LeaseService.Grant` | `lease:grant` |
 | `Lease` | `LeaseRevoke` | `LeaseService.Revoke` | `lease:revoke` |
@@ -104,7 +104,7 @@ kube-apiserver \
 - The node must run in mode `raft`: the etcd listener is a raft-only surface (`capabilities.Etcd`), and a standalone node's listener refuses to start (`service.CapabilityUnsupportedError`, "requires mode: raft"). *(Corrected: `backend: raft` was documented as required and was neither required nor checked -- the listener serves any backend through the service registry -- and `engine: kv` was documented as validated and was not.)*
 - The `sm_type` must be `mvcc` (Kubernetes requires MVCC semantics: revisions, watches, leases, transactions).
 - mTLS must be enabled with certificates signed by the same CA as the `kube-apiserver` client certificate.
-- The RBAC role assigned to the Kubernetes client certificate must include `kv:range`, `kv:put`, `kv:delete`, `transaction:execute`, `watch:watch_prefix`, `admin:status` and `lease:*` permissions, and must be issued to a user of the tenant that owns the database. `Compact` is reserved to the system tenant on the shared shard.
+- The RBAC role assigned to the Kubernetes client certificate must include `kv:range`, `kv:put`, `kv:delete`, `transaction:execute`, `watch:watch_prefix`, `admin:status` and `lease:*` permissions, and must be issued to a user of the tenant that owns the database. Add `mvcc:compact` if the client compacts (`kube-apiserver` does): it compacts that database's history only.
 
 **Supported Kubernetes operations:**
 

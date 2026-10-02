@@ -113,7 +113,7 @@ func TestMVCCEngine_WatchStartRevision_Compacted(t *testing.T) {
 		baseKVPutEntry(2, "k", "v2"),
 		baseKVPutEntry(3, "k", "v3"),
 	})
-	if err := eng.Store().Compact(2); err != nil {
+	if err := eng.Store().CompactPrefix(nil, 2); err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
 

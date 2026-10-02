@@ -81,19 +81,19 @@ func (k *KVStateMachine) handleMVCCRange(payload []byte, revision uint64) (sm.Re
 	return sm.Result{Value: revision}, nil
 }
 
-// handleMVCCCompact decodes an MVCC Compact command and delegates to
+// handleMVCCCompact decodes an OpMVCCCompactPrefix command and delegates to
 // the configured MVCCStore.
 func (k *KVStateMachine) handleMVCCCompact(payload []byte, revision uint64) (sm.Result, error) {
 	if k.mvccStore == nil {
 		return sm.Result{}, &ServiceNotConfiguredError{Service: "mvcc"}
 	}
 
-	compactRevision, err := protocol.DecodeMVCCCompact(payload)
+	prefix, compactRevision, err := protocol.DecodeMVCCCompactPrefix(payload)
 	if err != nil {
 		return sm.Result{}, &IncompleteDataError{Reason: "mvcc compact: " + err.Error()}
 	}
 
-	if compactErr := k.mvccStore.Compact(compactRevision); compactErr != nil {
+	if compactErr := k.mvccStore.Compact(prefix, compactRevision); compactErr != nil {
 		return sm.Result{}, &StorageError{Op: "mvcc-compact", Inner: compactErr}
 	}
 

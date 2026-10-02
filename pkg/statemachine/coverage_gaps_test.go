@@ -1672,7 +1672,7 @@ func TestKVDispatch_MVCCRange_NotConfigured(t *testing.T) {
 func TestKVDispatch_MVCCCompact_NotConfigured(t *testing.T) {
 	k := NewKVStateMachine(NewStandardBackend())
 
-	cmd := mustEncode(protocol.EncodeMVCCCompact(5))
+	cmd := mustEncode(protocol.EncodeMVCCCompactPrefix(nil, 5))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -1882,7 +1882,7 @@ func TestKVDispatch_MVCCCompact_DecodeError(t *testing.T) {
 	k := NewKVStateMachine(NewStandardBackend(), WithKVMVCCStore(mvcc))
 
 	// Truncated MVCCCompact payload (needs 8 bytes for int64, give only 1)
-	entries := []sm.Entry{{Cmd: []byte{protocol.OpMVCCCompact, 0x01}}}
+	entries := []sm.Entry{{Cmd: []byte{protocol.OpMVCCCompactPrefix, 0x01}}}
 	results := make([]sm.Result, 1)
 
 	err := k.Update(entries, results)

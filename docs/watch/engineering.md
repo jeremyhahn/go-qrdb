@@ -1,6 +1,6 @@
 # Watch — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-22
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
 
 ## Exported surface
 
@@ -173,7 +173,7 @@ ordinary service error would hand back a generic `RequestError` and break
 | Missing `watch:watch` / `watch:watch_prefix` | stream refused at open | **yes** |
 | Barrier sealed | stream refused | **yes** |
 | Start revision above current | accepted at open; delivers once a change reaches that revision | n/a — nothing to fail; the revision has simply not happened yet |
-| Start revision below the compaction floor | `WatchCompactedError` | **yes** — never silently starts live instead |
+| Start revision at or below the watched database's compaction floor | `WatchCompactedError` | **yes** — never silently starts live instead. The floor is the one covering the watched key or range, so another database's compaction never cancels this watch |
 | Caller context cancelled | stream ends, channel closed | n/a |
 
 The compacted case fails rather than quietly downgrading to a live watch,
@@ -181,7 +181,9 @@ because a silent downgrade loses events the caller believes it received. A
 start revision above current is the opposite of that case rather than a
 variant of it: it does not name a revision the store refuses to serve, it
 names one the store has not reached yet, so `Hub.prepareReplay` only checks it
-against the compaction floor (`pkg/watch/hub.go`) and never against
+against the compaction floor covering the watched range
+(`HistoryReplayer.CompactedRevision(key, rangeEnd)`, `pkg/watch/hub.go`) and
+never against
 `CurrentRevision()`. The watch opens, replays nothing (there is nothing yet to
 replay), and the deliver floor — initialised to `startRevision-1` — holds every
 live event below the requested revision until one arrives at or above it, so
@@ -192,7 +194,8 @@ beyond the current one.
 ## Configuration
 
 No watch-specific keys. Replay availability is governed by `raft.sm_type`
-(`mvcc` required) and the replay window by `mvcc.compaction_retention` — see
+(`mvcc` required) and the replay window by the watched database's compaction
+floor -- per database, moved only by that database's owner. See
 [../key-value/engineering.md](../key-value/engineering.md).
 
 ## Persistence

@@ -247,7 +247,7 @@ func TestCompact_DropsRevIndexAtOrBelowFloor(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := s.Compact(2); err != nil {
+	if err := s.CompactPrefix(nil, 2); err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
 

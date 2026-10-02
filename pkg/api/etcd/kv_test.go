@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -1183,6 +1184,51 @@ func TestCompact_ErrorPropagation(t *testing.T) {
 	}
 	if st.Code() != codes.Internal {
 		t.Errorf("code = %v, want %v", st.Code(), codes.Internal)
+	}
+}
+
+// TestCompact_AnswersWithEtcdsOwnRevisionErrors: kube-apiserver's compactor
+// and watch cache read etcd's compacted and future-revision errors; the
+// listener answers with exactly those, not an Internal status.
+func TestCompact_AnswersWithEtcdsOwnRevisionErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want error
+	}{
+		{"already compacted", &service.RevisionCompactedError{Requested: 5, Compacted: 9}, rpctypes.ErrGRPCCompacted},
+		{"future revision", &service.CompactRevisionFutureError{Requested: 50, Current: 9}, rpctypes.ErrGRPCFutureRev},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			srv := newTestKVServer(&mockMVCCKVServicer{
+				compactFn: func(context.Context, int64) error { return tt.err },
+			}, nil)
+			_, err := srv.Compact(context.Background(), &pb.CompactionRequest{Revision: 5})
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("Compact = %v, want %v", err, tt.want)
+			}
+		})
+	}
+}
+
+// TestRange_CompactedRevisionIsEtcdsCompactedError: a historical range below
+// the database's floor answers rpctypes.ErrGRPCCompacted, the error an etcd
+// client relists on.
+func TestRange_CompactedRevisionIsEtcdsCompactedError(t *testing.T) {
+	t.Parallel()
+
+	srv := newTestKVServer(&mockMVCCKVServicer{
+		rangeFn: func(context.Context, []byte, []byte, ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
+			return nil, 0, 0, &service.RevisionCompactedError{Requested: 2, Compacted: 9}
+		},
+	}, nil)
+	_, err := srv.Range(context.Background(), &pb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), Revision: 2})
+	if !errors.Is(err, rpctypes.ErrGRPCCompacted) {
+		t.Fatalf("Range = %v, want rpctypes.ErrGRPCCompacted", err)
 	}
 }
 

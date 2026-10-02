@@ -1228,7 +1228,7 @@ func TestRegularStateMachine_MVCCRange_NotConfigured(t *testing.T) {
 func TestRegularStateMachine_MVCCCompact_NotConfigured(t *testing.T) {
 	rsm := newTestRegularFSM()
 
-	cmd := []byte{protocol.OpMVCCCompact, 0x00}
+	cmd := []byte{protocol.OpMVCCCompactPrefix, 0x00}
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 

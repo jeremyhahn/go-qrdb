@@ -1,6 +1,6 @@
 # Key-Value Store — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
 
 ## Exported surface
 
@@ -126,6 +126,30 @@ sweep becoming an enumeration of the internal keyspace.
 - **Revision monotonicity**: the store's current revision only increases.
   `Compact(r)` discards revisions strictly older than `r`; reads below the
   compaction floor fail closed rather than returning an approximation.
+- **Compaction is per database and never cross-tenant.** `Compact(r)`
+  compacts the history of the database the request resolved to -- its
+  `<tenant>/<database>/` namespace on a shared shard, its own shard under raft
+  isolation -- and nothing else. `mvcc:compact` is `ScopeSelfStrict`: own
+  tenant only, for every identity, the system tenant included. The raw
+  (un-namespaced) service refuses with `service.CompactScopeRequiredError`, so
+  no path compacts a store globally. See architecture.md "MVCC compaction is
+  per database".
+- **The compaction floor is per keyspace prefix.** `mvcc.Store` records one
+  floor per compacted prefix (`[0x04][prefix]`). A point read at revision `r`
+  is refused when `r` is at or below the floor of any prefix of its key; a
+  range read, a watch replay and a change-log scan when it is at or below a
+  floor whose keyspace the range overlaps. Each key keeps its newest data
+  entry through a compaction, so its current state is always readable.
+- **Compaction validates its revision.** `r < 1` is
+  `service.CompactRevisionInvalidError`; `r` above the store's current
+  revision is `service.CompactRevisionFutureError`; `r` at or below the floor
+  already covering the database is `service.RevisionCompactedError` and
+  changes nothing. The state machine re-checks all three when it applies the
+  command, so two concurrent compactions of one database cannot regress its
+  floor.
+- **Nothing compacts implicitly.** A database is compacted only when its
+  owning tenant asks. There is no node-wide retention setting;
+  `mvcc.compaction_retention`, which nothing read, is removed.
 - **Restore is a logical undo, never a Raft rewind.** Every change is proposed
   as an ordinary forward write. Committed history is never discarded.
 - **Restore is not atomic across keys.** Each key is an independent Raft
@@ -532,6 +556,11 @@ boundary as a typed value and is mapped per transport by
 | Key absent | not-found, distinct from an empty value | n/a |
 | Requested revision above current | invalid-argument | yes |
 | Requested revision below the compaction floor | error, never an approximate value | **yes** |
+| `Compact` through the raw, un-namespaced service | `service.CompactScopeRequiredError`; nothing compacted | **yes** |
+| `Compact` to a revision below 1 | `service.CompactRevisionInvalidError` | **yes** |
+| `Compact` to a revision above the current one | `service.CompactRevisionFutureError` | **yes** |
+| `Compact` to a revision the database is already compacted to | `service.RevisionCompactedError`; the floor is unchanged | **yes** |
+| `Compact` before every replica of the group supports per-database compaction | `service.FeatureNotEnabledError` naming `prefix-compaction`; nothing proposed | **yes** |
 | As-of read against a non-MVCC state machine | `service: requires raft.sm_type: mvcc` | **yes** |
 | Restore naming a reserved prefix or key | refused, HTTP 403 equivalent, **no override** | **yes** |
 | Restore with no scope or both scopes | refused | **yes** |
@@ -586,16 +615,13 @@ if err := kv.Put(ctx, key, value); err != nil {
 |---|---|---|---|
 | `raft.sm_type` | `pebble`, `memory`, `mvcc`, `standard`, `concurrent`, `fast`, `disk`, `highperf`, `regular` | `pebble` | State-machine wrapper. Every value supports the single-key guarded verbs, batches and transactions. Only `mvcc` keeps revisions, so only `mvcc` supports as-of reads, watch replay, selective restore and create/mod-revision compares. |
 | `storage.backend` | `pebble`, `file`, `memory` | `pebble` | Underlying storage engine. |
-| `mvcc.compaction_retention` | integer | — | Minimum revisions retained; sets the compaction floor. |
 
 ```yaml
 raft:
   sm_type: mvcc
-mvcc:
-  compaction_retention: 1000
 ```
 
-Full reference: [../configuration/](../configuration/).
+There is no node-wide compaction setting.
 
 ## Persistence
 

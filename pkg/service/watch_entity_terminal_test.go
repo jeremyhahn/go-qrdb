@@ -190,8 +190,8 @@ type stubHistory struct {
 	replayErr error
 }
 
-func (s *stubHistory) CurrentRevision() int64   { return s.current }
-func (s *stubHistory) CompactedRevision() int64 { return s.compacted }
+func (s *stubHistory) CurrentRevision() int64              { return s.current }
+func (s *stubHistory) CompactedRevision(_, _ []byte) int64 { return s.compacted }
 
 func (s *stubHistory) Replay(_, _ int64, _ func([]byte) bool, _ bool, _ func(*watch.Event) bool) error {
 	return s.replayErr

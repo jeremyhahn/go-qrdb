@@ -380,9 +380,11 @@ func newKVCompactCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "compact",
-		Short: "Compact MVCC revisions",
-		Long:  "Discards all MVCC revisions older than the specified revision.",
-		Args:  cobra.NoArgs,
+		Short: "Compact this database's MVCC history",
+		Long: "Discards the MVCC history of the database the command is scoped to (--database, or the\n" +
+			"server default) at or below --revision. Only that database is compacted: another\n" +
+			"database's history, and another tenant's, is untouched.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := client.MVCC().Compact(cmd.Context(), revision); err != nil {
 				return err
@@ -392,7 +394,7 @@ func newKVCompactCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().Int64Var(&revision, "revision", 0, "Compact revisions older than this value")
+	cmd.Flags().Int64Var(&revision, "revision", 0, "Compact this database's history at or below this store revision")
 	_ = cmd.MarkFlagRequired("revision")
 
 	return cmd

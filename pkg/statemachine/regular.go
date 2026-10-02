@@ -146,10 +146,10 @@ func NewRegularStateMachine(opts ...RegularOption) *RegularStateMachine {
 		protocol.OpGuarded: r.handleGuarded,
 
 		// MVCC
-		protocol.OpMVCCPut:     r.handleMVCCPut,
-		protocol.OpMVCCDelete:  r.handleMVCCDelete,
-		protocol.OpMVCCRange:   r.handleMVCCRange,
-		protocol.OpMVCCCompact: r.handleMVCCCompact,
+		protocol.OpMVCCPut:           r.handleMVCCPut,
+		protocol.OpMVCCDelete:        r.handleMVCCDelete,
+		protocol.OpMVCCRange:         r.handleMVCCRange,
+		protocol.OpMVCCCompactPrefix: r.handleMVCCCompact,
 
 		// Transactions
 		protocol.OpTransaction: r.handleTransaction,

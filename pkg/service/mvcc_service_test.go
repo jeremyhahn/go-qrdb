@@ -1176,7 +1176,7 @@ func TestMVCCKVService_Range_UnexpectedType(t *testing.T) {
 // Compact tests
 // ---------------------------------------------------------------------------
 
-func TestMVCCKVService_Compact_Success(t *testing.T) {
+func TestMVCCKVService_CompactPrefix_Success(t *testing.T) {
 	var capturedCmd []byte
 
 	host := &mockHost{
@@ -1188,18 +1188,18 @@ func TestMVCCKVService_Compact_Success(t *testing.T) {
 	}
 
 	svc := NewMVCCKVService(host, 1)
-	err := svc.Compact(context.Background(), 100)
+	err := svc.(PrefixCompactor).CompactPrefix(context.Background(), "acme/app/", 100)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
 
-	expected := mustEncode(protocol.EncodeMVCCCompact(100))
+	expected := mustEncode(protocol.EncodeMVCCCompactPrefix([]byte("acme/app/"), 100))
 	if !bytes.Equal(capturedCmd, expected) {
 		t.Fatalf("command mismatch: expected %v, got %v", expected, capturedCmd)
 	}
 }
 
-func TestMVCCKVService_Compact_NotLeaderError(t *testing.T) {
+func TestMVCCKVService_CompactPrefix_NotLeaderError(t *testing.T) {
 	host := &mockHost{
 		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
 			return sm.Result{}, &quicraft.NotLeaderError{
@@ -1211,7 +1211,7 @@ func TestMVCCKVService_Compact_NotLeaderError(t *testing.T) {
 	}
 
 	svc := NewMVCCKVService(host, 1)
-	err := svc.Compact(context.Background(), 50)
+	err := svc.(PrefixCompactor).CompactPrefix(context.Background(), "acme/app/", 50)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1225,7 +1225,7 @@ func TestMVCCKVService_Compact_NotLeaderError(t *testing.T) {
 	}
 }
 
-func TestMVCCKVService_Compact_GenericError(t *testing.T) {
+func TestMVCCKVService_CompactPrefix_GenericError(t *testing.T) {
 	sentinel := errors.New("compact failed")
 	host := &mockHost{
 		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
@@ -1234,7 +1234,7 @@ func TestMVCCKVService_Compact_GenericError(t *testing.T) {
 	}
 
 	svc := NewMVCCKVService(host, 1)
-	err := svc.Compact(context.Background(), 50)
+	err := svc.(PrefixCompactor).CompactPrefix(context.Background(), "acme/app/", 50)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1708,29 +1708,6 @@ func TestMVCCKVService_Delete_EmptyKey(t *testing.T) {
 	err := svc.Delete(context.Background(), "")
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
-	}
-}
-
-func TestMVCCKVService_Compact_ZeroRevision(t *testing.T) {
-	var capturedCmd []byte
-
-	host := &mockHost{
-		syncProposeFn: func(_ context.Context, _ uint64, cmd []byte) (sm.Result, error) {
-			capturedCmd = make([]byte, len(cmd))
-			copy(capturedCmd, cmd)
-			return sm.Result{}, nil
-		},
-	}
-
-	svc := NewMVCCKVService(host, 1)
-	err := svc.Compact(context.Background(), 0)
-	if err != nil {
-		t.Fatalf("expected nil error, got %v", err)
-	}
-
-	expected := mustEncode(protocol.EncodeMVCCCompact(0))
-	if !bytes.Equal(capturedCmd, expected) {
-		t.Fatalf("command mismatch: expected %v, got %v", expected, capturedCmd)
 	}
 }
 

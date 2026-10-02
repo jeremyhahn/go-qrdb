@@ -245,7 +245,7 @@ func TestRegularStateMachine_MVCCCompact_Success(t *testing.T) {
 	ms := &mockMVCCStore{}
 	rsm := newRegularWithMVCC(ms)
 
-	cmd := mustEncode(protocol.EncodeMVCCCompact(10))
+	cmd := mustEncode(protocol.EncodeMVCCCompactPrefix(nil, 10))
 	result, err := regularApplyCmd(t, rsm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -259,7 +259,7 @@ func TestRegularStateMachine_MVCCCompact_StoreError(t *testing.T) {
 	ms := &mockMVCCStore{compactErr: errors.New("compact fail")}
 	rsm := newRegularWithMVCC(ms)
 
-	cmd := mustEncode(protocol.EncodeMVCCCompact(10))
+	cmd := mustEncode(protocol.EncodeMVCCCompactPrefix(nil, 10))
 	_, err := regularApplyCmd(t, rsm, cmd)
 	if err == nil {
 		t.Fatal("expected error from store")

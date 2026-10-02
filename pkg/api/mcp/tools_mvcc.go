@@ -430,10 +430,10 @@ func handleMVCCRange(mvccSvc service.MVCCKVServicer) mcpserver.ToolHandlerFunc {
 // toolMVCCCompact defines the qrdb_mvcc_compact tool schema.
 func toolMVCCCompact() mcp.Tool {
 	return mcp.NewTool("qrdb_mvcc_compact",
-		mcp.WithDescription("Discard all MVCC revisions older than the specified revision to reclaim storage."),
+		mcp.WithDescription("Discard this database's MVCC history at or below the specified revision to reclaim storage. Only the scoped database is compacted; another database's or tenant's history is untouched."),
 		mcp.WithNumber("revision",
 			mcp.Required(),
-			mcp.Description("Compact all revisions older than this value."),
+			mcp.Description("Compact this database's history at or below this store revision."),
 		),
 	)
 }

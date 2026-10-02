@@ -668,19 +668,14 @@ type DiscoveryConfig struct {
 }
 
 // MVCCConfig configures the MVCC versioned key-value engine.
+//
+// There is no node-wide history retention here: MVCC history is compacted per
+// database, only by the tenant that owns it (see docs/key-value/).
 type MVCCConfig struct {
 	// Enabled toggles the MVCC service. Nil means enabled (in raft
 	// mode). Explicitly setting true under mode "standalone" is a
 	// validation error: MVCC requires mode "raft".
 	Enabled *bool `yaml:"enabled"`
-
-	// CompactionRetention is the minimum number of revisions to retain
-	// after compaction. Zero disables automatic compaction retention.
-	CompactionRetention int64 `yaml:"compaction_retention"`
-
-	// RevisionLimit is the maximum number of historical revisions to
-	// retain per key. Zero means unlimited.
-	RevisionLimit int64 `yaml:"revision_limit"`
 }
 
 // WatchConfig configures the real-time watch notification system.
@@ -1231,9 +1226,6 @@ func DefaultConfig() *Config {
 			Method:          "static",
 			MulticastSecret: "",
 		},
-		MVCC: MVCCConfig{
-			CompactionRetention: 1000,
-		},
 		Watch: WatchConfig{
 			BufferSize: 1024,
 		},
@@ -1717,14 +1709,6 @@ func (c *Config) Validate() error {
 		if _, ok := validDiscoveryMethods[c.Discovery.Method]; !ok {
 			return &ValidationError{Field: "discovery.method", Reason: "must be one of: static, multicast, dns, token"}
 		}
-	}
-
-	// MVCC validation.
-	if c.MVCC.CompactionRetention < 0 {
-		return &ValidationError{Field: "mvcc.compaction_retention", Reason: "must not be negative"}
-	}
-	if c.MVCC.RevisionLimit < 0 {
-		return &ValidationError{Field: "mvcc.revision_limit", Reason: "must not be negative"}
 	}
 
 	// Watch validation.

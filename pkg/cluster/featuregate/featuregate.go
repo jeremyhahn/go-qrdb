@@ -91,9 +91,13 @@ const GuardedWrites Feature = "guarded-writes"
 // replica, so no node can re-issue a shard ID another holds.
 const ClusterShardIDs Feature = "cluster-shard-ids"
 
+// PrefixCompaction is protocol.OpMVCCCompactPrefix: a compaction confined to
+// one database's keyspace prefix, with a compaction floor per prefix.
+const PrefixCompaction Feature = "prefix-compaction"
+
 // supported lists the features this binary implements. A new feature is
 // added here, and to nothing else in this package.
-var supported = []Feature{GuardedWrites, ClusterShardIDs}
+var supported = []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction}
 
 // Supported returns the features this binary implements.
 func Supported() []Feature {

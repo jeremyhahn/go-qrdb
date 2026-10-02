@@ -1,6 +1,6 @@
 # etcd Compatibility — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
 
 Point `etcdctl`, a `clientv3` program, or `kube-apiserver` at a qrdb database
 and it works as an etcd v3 endpoint.
@@ -95,9 +95,13 @@ Your certificate's role is missing one of them — the mapping table is in
 
 
 **`kube-apiserver` reports compacted revisions.** `kube-apiserver` calls
-`Compact` periodically; that is normal, and it discards revision history by
-design. If a watcher fell behind further than the retained window, it must
-re-list rather than resume.
+`Compact` periodically; that is normal, and it discards this database's
+revision history by design -- never another database's. If a watcher fell
+behind further than the retained window, it must re-list rather than resume.
+
+**`kube-apiserver` logs `permission denied` from its compactor.** Its
+certificate's role lacks `mvcc:compact`. Grant it to the role in the tenant
+that owns the database; a role in any other tenant cannot compact it.
 
 **`etcdctl defrag` is refused.** `Maintenance.Defragment` is not served; the
 storage engine compacts on its own.

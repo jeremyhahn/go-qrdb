@@ -1,6 +1,6 @@
 # etcd Compatibility — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
 
 > **Build-tag gated.** `qrdb_etcd` (`WITH_QRDB_ETCD=1`, on by default in the
 > Makefile). `qrdb admin capabilities` reports `etcd`.
@@ -34,8 +34,11 @@ is its database's keyspace, and nothing else:
 - **Leases** are the ones this database granted; another database's lease ID
   is answered as a missing one (not-found; `LeaseRevoke` succeeds as a no-op).
 - **Revisions** are those of the store serving the database: store-global on
-  the shared shard (which is why `Compact` is reserved to the system tenant
-  there), per group for a raft-isolated tenant's database.
+  the shared shard, per group for a raft-isolated tenant's database.
+- **Compaction** is the database's own. `Compact` discards this database's
+  history below the revision and nothing else, on the shared shard as on a
+  dedicated one: the store keeps a compaction floor per database namespace (see
+  [../key-value/architecture.md](../key-value/architecture.md)).
 - **Encryption at rest** is the store's: the node or tenant barrier, not a
   per-database one.
 
@@ -50,9 +53,9 @@ cluster with its own revision counter and encryption barrier; see
 - **A single global etcd facade over the whole store.** Rejected: one facade
   would serve every tenant's and every database's keys to one etcd client, and
   a compaction driven by one `kube-apiserver` would truncate history every
-  other consumer depended on. A listener per database confines keys, watches
-  and leases to that database; on the shared shard its revisions stay
-  store-global, which is why `Compact` there is reserved to the system tenant.
+  other consumer depended on. A listener per database confines keys, watches,
+  leases and compaction to that database; on the shared shard its revisions
+  stay store-global, and its compaction floor is its own.
 - **Implementing etcd's `Auth` RPCs.** Rejected: the `Auth` service is not
   served — its RPCs are refused like every other unmapped RPC. This store
   authenticates with mTLS; adding a
@@ -73,7 +76,10 @@ and authorized against the database's owning tenant:
   administrator, is admitted. The refusal names neither the database nor its
   owning tenant, so it does not tell a stranger what the port serves; the
   caller, its tenant, the owner and the database are logged on the server.
-- The RPC's permission (table below) is checked for the owning tenant.
+- The RPC's permission (table below) is checked for the owning tenant. For
+  `Compact` that admits only the owning tenant's own identities:
+  `mvcc:compact` is `ScopeSelfStrict`, so the system tenant cannot compact
+  another tenant's database through its listener.
 - A client that presents **no certificate** is refused (`UNAUTHENTICATED`).
 
 The listener **refuses to start** (`etcd.AuthRequiredError`) unless the node has
@@ -102,7 +108,7 @@ is default-deny: an RPC without a row is refused before its handler runs.
 | `KV` | `Put` | `MVCCKVService.PutWithLease` | `kv:put` |
 | `KV` | `DeleteRange` | `MVCCKVService.Delete` | `kv:delete` |
 | `KV` | `Txn` | `TransactionService.Execute` | `transaction:execute` |
-| `KV` | `Compact` | `MVCCKVService.Compact` | `mvcc:compact` (system tenant only) |
+| `KV` | `Compact` | `MVCCKVService.Compact` (this database only) | `mvcc:compact` |
 | `Watch` | `Watch` | `WatchService.Watch` / `WatchPrefix` | `watch:watch_prefix` |
 | `Lease` | `LeaseGrant` | `LeaseService.Grant` | `lease:grant` |
 | `Lease` | `LeaseRevoke` | `LeaseService.Revoke` | `lease:revoke` |
@@ -143,9 +149,12 @@ or whose tenant barrier is sealed is refused on the next request: the listener
 re-resolves the database on every RPC.
 
 Revision counters are those of the store serving the database: a database on
-the shared shard sees the shard's store-global revisions (which is why `Compact`
-is reserved to the system tenant there), and a raft-isolated tenant's database
-has its own group and its own counter. Watches and leases resolve through the
+the shared shard sees the shard's store-global revisions, and a raft-isolated
+tenant's database has its own group and its own counter. `Compact` compacts
+the database's own history in either case: a `kube-apiserver` compacting its
+database never discards another database's or another tenant's revisions.
+*(Corrected: `Compact` was reserved to the system tenant on the shared shard,
+because it then discarded every tenant's history; it is now per database.)* Watches and leases resolve through the
 same scoped services, so events and lease-attached keys never cross databases.
 *(Corrected: earlier revisions of this document claimed every database had its
 own revision counter starting at 1, and that keys were prefixed with the

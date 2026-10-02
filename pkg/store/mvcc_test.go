@@ -72,7 +72,7 @@ func mvccDeleteEntry(index uint64, key []byte) sm.Entry {
 func mvccCompactEntry(index uint64, revision int64) sm.Entry {
 	return sm.Entry{
 		Index: index,
-		Cmd:   mustEncode(protocol.EncodeMVCCCompact(revision)),
+		Cmd:   mustEncode(protocol.EncodeMVCCCompactPrefix(nil, revision)),
 	}
 }
 
@@ -369,7 +369,7 @@ func TestMVCCStateMachine_CompactInvalidPayload(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
 	// Construct a command with OpMVCCCompact but truncated payload.
-	cmd := []byte{protocol.OpMVCCCompact, 0x01} // only 1 byte of payload, needs 8
+	cmd := []byte{protocol.OpMVCCCompactPrefix, 0x01} // only 1 byte of payload, needs 8
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 	err := s.Update(context.Background(), entries, results)

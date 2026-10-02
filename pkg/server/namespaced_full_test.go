@@ -1057,6 +1057,8 @@ type mvccRec struct {
 	lastKey            string
 	lastStart, lastEnd []byte
 	compactRev         int64
+	compactPrefix      string
+	globalCompacts     int
 	restoreReq         *service.RestoreRevisionRequest
 	conflictKeys       []string
 	err                error
@@ -1103,8 +1105,17 @@ func (m *mvccRec) RangeWithConsistency(_ context.Context, start, end []byte, _ c
 	}
 	return []*kvKV{{Key: []byte("p/x")}}, 1, 1, nil
 }
-func (m *mvccRec) Compact(_ context.Context, rev int64) error {
-	m.compactRev = rev
+
+// Compact is the raw service's store-global form, which the real service
+// refuses: a namespaced view must never reach it.
+func (m *mvccRec) Compact(context.Context, int64) error {
+	m.globalCompacts++
+	return &service.CompactScopeRequiredError{}
+}
+
+// CompactPrefix is the per-prefix compaction the view compacts through.
+func (m *mvccRec) CompactPrefix(_ context.Context, prefix string, rev int64) error {
+	m.compactPrefix, m.compactRev = prefix, rev
 	return m.err
 }
 func (m *mvccRec) CurrentRevision(_ context.Context) (int64, error) {
@@ -1193,9 +1204,10 @@ func TestNamespacedMVCC_FullRevisionSurface(t *testing.T) {
 		t.Errorf("RangeWithConsistency stripped = %q", kvs[0].Key)
 	}
 
-	// Compact and CurrentRevision forward unchanged (store-global counter).
-	if err := w.Compact(ctx, 11); err != nil || rec.compactRev != 11 {
-		t.Fatalf("Compact err=%v rev=%d", err, rec.compactRev)
+	// Compact compacts this namespace's prefix and nothing wider; CurrentRevision
+	// forwards unchanged (store-global counter).
+	if err := w.Compact(ctx, 11); err != nil || rec.compactRev != 11 || rec.compactPrefix != "p/" || rec.globalCompacts != 0 {
+		t.Fatalf("Compact err=%v prefix=%q rev=%d global=%d", err, rec.compactPrefix, rec.compactRev, rec.globalCompacts)
 	}
 	rev, err := w.CurrentRevision(ctx)
 	if err != nil || rev != 42 {

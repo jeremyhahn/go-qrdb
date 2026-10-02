@@ -322,16 +322,6 @@ func TestDefaultConfig_DiscoveryDefaults(t *testing.T) {
 	}
 }
 
-func TestDefaultConfig_MVCCDefaults(t *testing.T) {
-	cfg := DefaultConfig()
-	if cfg.MVCC.CompactionRetention != 1000 {
-		t.Errorf("CompactionRetention: got %d, want 1000", cfg.MVCC.CompactionRetention)
-	}
-	if cfg.MVCC.RevisionLimit != 0 {
-		t.Errorf("RevisionLimit: got %d, want 0", cfg.MVCC.RevisionLimit)
-	}
-}
-
 func TestDefaultConfig_WatchDefaults(t *testing.T) {
 	cfg := DefaultConfig()
 	if cfg.Watch.BufferSize != 1024 {
@@ -746,20 +736,6 @@ func TestValidate_InvalidFields(t *testing.T) {
 			field:  "discovery.method",
 			reason: "static, multicast, dns",
 		},
-		// mvcc.compaction_retention
-		{
-			name:   "mvcc_compaction_retention_negative",
-			mutate: func(c *Config) { c.MVCC.CompactionRetention = -1 },
-			field:  "mvcc.compaction_retention",
-			reason: "must not be negative",
-		},
-		// mvcc.revision_limit
-		{
-			name:   "mvcc_revision_limit_negative",
-			mutate: func(c *Config) { c.MVCC.RevisionLimit = -1 },
-			field:  "mvcc.revision_limit",
-			reason: "must not be negative",
-		},
 		// watch.buffer_size
 		{
 			name:   "watch_buffer_size_negative",
@@ -1117,15 +1093,6 @@ func TestValidate_PositiveMaxOpenFiles_Allowed(t *testing.T) {
 	}
 }
 
-func TestValidate_MVCCZeroValues_Allowed(t *testing.T) {
-	cfg := validConfig()
-	cfg.MVCC.CompactionRetention = 0
-	cfg.MVCC.RevisionLimit = 0
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Validate: MVCC zero values should be valid, got %v", err)
-	}
-}
-
 func TestValidate_WatchZeroValues_Allowed(t *testing.T) {
 	cfg := validConfig()
 	cfg.Watch.BufferSize = 0
@@ -1474,9 +1441,6 @@ logging:
   format: "json"
 discovery:
   method: "static"
-mvcc:
-  compaction_retention: 5000
-  revision_limit: 50
 watch:
   buffer_size: 2048
   max_watchers: 500
@@ -1494,14 +1458,6 @@ timeseries:
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatalf("Load: unexpected error: %v", err)
-	}
-
-	// MVCC
-	if cfg.MVCC.CompactionRetention != 5000 {
-		t.Errorf("MVCC.CompactionRetention: got %d, want 5000", cfg.MVCC.CompactionRetention)
-	}
-	if cfg.MVCC.RevisionLimit != 50 {
-		t.Errorf("MVCC.RevisionLimit: got %d, want 50", cfg.MVCC.RevisionLimit)
 	}
 
 	// Watch
@@ -1559,16 +1515,6 @@ tls:
 	}
 
 	defaults := DefaultConfig()
-
-	// MVCC defaults preserved.
-	if cfg.MVCC.CompactionRetention != defaults.MVCC.CompactionRetention {
-		t.Errorf("MVCC.CompactionRetention: got %d, want default %d",
-			cfg.MVCC.CompactionRetention, defaults.MVCC.CompactionRetention)
-	}
-	if cfg.MVCC.RevisionLimit != defaults.MVCC.RevisionLimit {
-		t.Errorf("MVCC.RevisionLimit: got %d, want default %d",
-			cfg.MVCC.RevisionLimit, defaults.MVCC.RevisionLimit)
-	}
 
 	// Watch defaults preserved.
 	if cfg.Watch.BufferSize != defaults.Watch.BufferSize {

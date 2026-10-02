@@ -990,7 +990,7 @@ func TestMVCCStateMachine_CloseIdempotent(t *testing.T) {
 func TestMVCCHandleMVCCCompact_InvalidPayload(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
-	cmd := []byte{protocol.OpMVCCCompact} // empty payload
+	cmd := []byte{protocol.OpMVCCCompactPrefix} // empty payload
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 	err := s.Update(context.Background(), entries, results)

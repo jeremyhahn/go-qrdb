@@ -1,6 +1,6 @@
 # Key-Value Store — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
 
 Command group: `qrdb kv`. Three top-level aliases exist for the most common
 verbs: `qrdb put`, `qrdb get`, `qrdb del` are identical to their `kv`
@@ -114,17 +114,24 @@ qrdb kv revision
 
 ## `qrdb kv compact`
 
-Discard all MVCC revisions older than `--revision`.
+Discard the MVCC history of the database the command is scoped to (`--database`,
+or the server default) older than `--revision`. Only that database is
+compacted: another database's history, and another tenant's, is untouched.
+The caller must belong to the tenant that owns the database and hold
+`mvcc:compact`; the system tenant is no exception.
 
 | Flag | Type | Required |
 |---|---|---|
-| `--revision` | int | yes in practice — compaction below this value |
+| `--revision` | int | yes -- compaction to this store revision; must be >= 1 and not above the current revision |
 
 ```bash
-qrdb kv compact --revision 10000
+qrdb --database billing kv compact --revision 10000
 ```
 
-Compaction is irreversible: as-of reads below the new floor fail afterwards.
+Compaction is irreversible: as-of reads, watch replays and restores of this
+database below the new floor fail afterwards. Compacting to a revision the
+database is already compacted to is refused (`revision ... has been
+compacted`) and changes nothing.
 
 ## `qrdb kv restore`
 

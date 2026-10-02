@@ -14,7 +14,11 @@
 
 package mvcc
 
-import "github.com/jeremyhahn/go-qrdb/pkg/storage"
+import (
+	"bytes"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+)
 
 // Change is a single historical key change replayed from the revision index.
 // It carries everything a watch event needs about the NEW state of the key at
@@ -51,8 +55,9 @@ func (s *Store) setRevIndexInBatch(batch storage.Batch, rev int64, key []byte, e
 // in ascending revision order (and, within a revision, ascending key order).
 // fn returns false to stop the scan early. Changes are read from the durable
 // revision index, so replay survives restarts and snapshot restores; only
-// revisions at or below CompactedRevision are unavailable (the caller checks
-// that and returns a compaction error before calling ScanChanges).
+// a change at or below the compaction floor covering its key is unavailable
+// (the caller checks the floor of the range it replays -- CompactedRevisionForRange
+// -- and returns a compaction error before calling ScanChanges).
 //
 // For a put, Change.Value is the value stored at that revision; for a delete,
 // Value is nil and IsDelete is true.
@@ -100,7 +105,7 @@ func (s *Store) ScanChanges(startRev, endRev int64, fn func(Change) bool) error 
 				// yield a put with a silently empty value — the caller turns this
 				// into a fail-closed watch, matching etcd's "catch up fully or
 				// return compacted" contract.
-				return &RevisionCompactedError{Requested: rev, Compacted: s.compacted.Load()}
+				return &RevisionCompactedError{Requested: rev, Compacted: s.CompactedRevisionForKey(key)}
 			}
 			v, tomb, derr := DecodeValue(raw)
 			if derr != nil {
@@ -124,23 +129,32 @@ func (s *Store) ScanChanges(startRev, endRev int64, fn func(Change) bool) error 
 	return nil
 }
 
-// gcRevIndexInBatch removes revision-index entries at or below revision within
-// batch. Called from Compact so the change log honours the same compaction floor
-// as the data entries: a replay at or below CompactedRevision is refused, so its
-// index entries serve no purpose and must not accumulate.
+// gcRevIndexInBatch removes, within batch, the revision-index entries in
+// [from, revision] whose key begins with prefix. Called from a compaction of
+// prefix, so the change log honours the same floor as the data entries: a
+// replay at or below the floor is refused, so those entries serve no purpose
+// and must not accumulate. Entries of every other prefix -- another
+// database's change log -- are left alone.
 //
 // The scan reads through batch so that index entries written by earlier entries
 // of the same apply batch are collected too; scanning committed storage instead
 // would leave them behind whenever the apply loop happened to pack the writes
 // and the compaction into one call.
-func (s *Store) gcRevIndexInBatch(batch storage.Batch, revision int64) error {
+func (s *Store) gcRevIndexInBatch(batch storage.Batch, prefix []byte, from, revision int64) error {
+	if from > revision {
+		return nil
+	}
 	iter := batch.NewIterator(&storage.IteratorOptions{
-		LowerBound: []byte{prefixRevIndex},
+		LowerBound: RevIndexLowerBound(from),
 		UpperBound: RevIndexUpperBound(revision),
 	})
 	defer func() { _ = iter.Close() }()
 
 	for iter.SeekToFirst(); iter.Valid(); iter.Next() {
+		_, key, err := DecodeRevIndexKey(iter.Key())
+		if err != nil || !bytes.HasPrefix(key, prefix) {
+			continue
+		}
 		kc := make([]byte, len(iter.Key()))
 		copy(kc, iter.Key())
 		if err := batch.Delete(kc); err != nil {

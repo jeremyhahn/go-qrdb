@@ -89,7 +89,7 @@ func (f *FastStateMachine) handleMVCCRange(payload []byte, revision uint64) (sm.
 	return sm.Result{Value: revision}, nil
 }
 
-// handleMVCCCompact decodes an MVCC Compact command and delegates to the
+// handleMVCCCompact decodes an OpMVCCCompactPrefix command and delegates to the
 // configured MVCCStore. Returns the Raft revision as the result value.
 //
 // Payload format: [revision:8 LE].
@@ -98,12 +98,12 @@ func (f *FastStateMachine) handleMVCCCompact(payload []byte, revision uint64) (s
 		return sm.Result{}, &ServiceNotConfiguredError{Service: "mvcc"}
 	}
 
-	compactRevision, err := protocol.DecodeMVCCCompact(payload)
+	prefix, compactRevision, err := protocol.DecodeMVCCCompactPrefix(payload)
 	if err != nil {
 		return sm.Result{}, &IncompleteDataError{Reason: "mvcc compact: " + err.Error()}
 	}
 
-	if compactErr := f.mvccStore.Compact(compactRevision); compactErr != nil {
+	if compactErr := f.mvccStore.Compact(prefix, compactRevision); compactErr != nil {
 		return sm.Result{}, &StorageError{Op: "mvcc-compact", Inner: compactErr}
 	}
 

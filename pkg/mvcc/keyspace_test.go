@@ -392,7 +392,7 @@ func TestRevisionKey_Keyspace_Deterministic(t *testing.T) {
 }
 
 func TestCompactedKey_Keyspace_IsSingleByte(t *testing.T) {
-	k := CompactedKey()
+	k := CompactionFloorKey(nil)
 	if len(k) != 1 {
 		t.Errorf("CompactedKey length: got %d, want 1", len(k))
 	}
@@ -402,8 +402,8 @@ func TestCompactedKey_Keyspace_IsSingleByte(t *testing.T) {
 }
 
 func TestCompactedKey_Keyspace_Deterministic(t *testing.T) {
-	a := CompactedKey()
-	b := CompactedKey()
+	a := CompactionFloorKey(nil)
+	b := CompactionFloorKey(nil)
 	if !bytes.Equal(a, b) {
 		t.Error("CompactedKey should return the same value on each call")
 	}

@@ -1382,7 +1382,7 @@ func TestMVCCEngine_Compact(t *testing.T) {
 	})
 
 	// Compact to revision 1.
-	compactCmd := mustEncode(protocol.EncodeMVCCCompact(1))
+	compactCmd := mustEncode(protocol.EncodeMVCCCompactPrefix(nil, 1))
 	entries := []sm.Entry{{Index: 3, Cmd: compactCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1398,11 +1398,67 @@ func TestMVCCEngine_CompactEmpty(t *testing.T) {
 	defer func() { _ = stg.Close() }()
 	defer func() { _ = eng.Close(context.Background()) }()
 
-	compactCmd := mustEncode(protocol.EncodeMVCCCompact(0))
+	compactCmd := mustEncode(protocol.EncodeMVCCCompactPrefix(nil, 0))
 	entries := []sm.Entry{{Index: 1, Cmd: compactCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
 		t.Fatalf("compact empty: %v", err)
+	}
+	// Revision 0 is refused in the result -- deterministically, without
+	// halting the group -- rather than compacting anything.
+	if reason, _, _, ok := protocol.DecodeCompactRefusal(results[0].Data); !ok || reason != protocol.CompactRefusalInvalid {
+		t.Fatalf("compact to revision 0 result = %q, want the invalid-revision refusal", results[0].Data)
+	}
+}
+
+// TestMVCCEngine_CompactPrefix_RefusalsAreResultsAndConfinement: the apply
+// path compacts only the command's prefix, and answers an out-of-range
+// revision with a refusal in the result rather than a Go error that would
+// stall the group.
+func TestMVCCEngine_CompactPrefix_RefusalsAreResultsAndConfinement(t *testing.T) {
+	eng, stg := newMVCCEngine(t)
+	defer func() { _ = stg.Close() }()
+	defer func() { _ = eng.Close(context.Background()) }()
+
+	applyMVCCEntries(t, eng, []sm.Entry{
+		mvccPutEntry(1, []byte("acme/app/k"), []byte("a1"), 0),
+		mvccPutEntry(2, []byte("beta/app/k"), []byte("b1"), 0),
+		mvccPutEntry(3, []byte("acme/app/k"), []byte("a2"), 0),
+		mvccPutEntry(4, []byte("beta/app/k"), []byte("b2"), 0),
+	})
+	cur := eng.Store().CurrentRevision()
+
+	apply := func(index uint64, prefix string, rev int64) sm.Result {
+		t.Helper()
+		results := make([]sm.Result, 1)
+		cmd := mustEncode(protocol.EncodeMVCCCompactPrefix([]byte(prefix), rev))
+		if err := eng.Update(context.Background(), []sm.Entry{{Index: index, Cmd: cmd}}, results); err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+		return results[0]
+	}
+
+	if r := apply(5, "acme/app/", cur+5); func() bool {
+		reason, req, bound, ok := protocol.DecodeCompactRefusal(r.Data)
+		return !ok || reason != protocol.CompactRefusalFuture || req != cur+5 || bound != cur
+	}() {
+		t.Fatalf("future compaction result = %q", r.Data)
+	}
+	if r := apply(6, "acme/app/", cur); r.Value != 1 || len(r.Data) != 0 {
+		t.Fatalf("compaction result = %+v", r)
+	}
+	if r := apply(7, "acme/app/", cur); func() bool {
+		reason, _, bound, ok := protocol.DecodeCompactRefusal(r.Data)
+		return !ok || reason != protocol.CompactRefusalCompacted || bound != cur
+	}() {
+		t.Fatalf("repeat compaction result = %q, want the already-compacted refusal", r.Data)
+	}
+
+	if _, err := eng.Store().GetAtRevision([]byte("acme/app/k"), 1); err == nil {
+		t.Fatal("acme's compacted history is still readable")
+	}
+	if kv, err := eng.Store().GetAtRevision([]byte("beta/app/k"), 2); err != nil || string(kv.Value) != "b1" {
+		t.Fatalf("beta's history = %v, %v: the compaction crossed its prefix", kv, err)
 	}
 }
 
@@ -2494,7 +2550,7 @@ func TestMVCCEngine_Compact_InvalidPayload(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Compact with truncated payload.
-	cmd := []byte{protocol.OpMVCCCompact, 0x01, 0x02} // too short for int64
+	cmd := []byte{protocol.OpMVCCCompactPrefix, 0x01, 0x02} // too short for int64
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 	err := eng.Update(context.Background(), entries, results)
@@ -3301,7 +3357,7 @@ func TestMVCCEngine_Compact_HighRevision(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Compact at a revision higher than any data -- should not error.
-	compactCmd := mustEncode(protocol.EncodeMVCCCompact(999))
+	compactCmd := mustEncode(protocol.EncodeMVCCCompactPrefix(nil, 999))
 	entries := []sm.Entry{{Index: 1, Cmd: compactCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {

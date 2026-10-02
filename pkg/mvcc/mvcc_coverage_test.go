@@ -26,48 +26,6 @@ import (
 // NewRaftStorage — compacted revision loaded from storage (71.4%)
 // ---------------------------------------------------------------------------
 
-// TestNewRaftStorage_WithPersistedCompactedRevision verifies the else-branch
-// in NewRaftStorage that decodes a previously persisted compacted revision.
-func TestNewRaftStorage_WithPersistedCompactedRevision(t *testing.T) {
-	store := newMemStorage()
-
-	// Pre-seed a valid compacted revision so NewRaftStorage decodes it.
-	rev := int64(42)
-	if err := store.Set(CompactedKey(), EncodeRevision(rev)); err != nil {
-		t.Fatalf("seed CompactedKey: %v", err)
-	}
-
-	s, err := NewRaftStorage(&RaftStorageConfig{
-		Store:  store,
-		Logger: newTestLogger(t),
-	})
-	if err != nil {
-		t.Fatalf("NewRaftStorage: %v", err)
-	}
-	if got := s.CompactedRevision(); got != rev {
-		t.Errorf("CompactedRevision: got %d, want %d", got, rev)
-	}
-}
-
-// TestNewRaftStorage_CorruptCompactedRevision verifies the error path when
-// the stored compacted revision bytes are invalid (cannot be decoded).
-func TestNewRaftStorage_CorruptCompactedRevision(t *testing.T) {
-	store := newMemStorage()
-
-	// Store garbage bytes at the compacted key.
-	if err := store.Set(CompactedKey(), []byte("not-a-revision")); err != nil {
-		t.Fatalf("seed garbage: %v", err)
-	}
-
-	_, err := NewRaftStorage(&RaftStorageConfig{
-		Store:  store,
-		Logger: newTestLogger(t),
-	})
-	if err == nil {
-		t.Fatal("expected error for corrupt compacted revision")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // RaftStorage.Close — storage-error path (71.4%)
 // ---------------------------------------------------------------------------

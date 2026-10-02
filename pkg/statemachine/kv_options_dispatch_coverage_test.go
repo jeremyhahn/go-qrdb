@@ -131,7 +131,7 @@ func (m *errMVCCStore) Range(start, end []byte, revision, limit int64, countOnly
 	return nil, 0, m.rangeErr
 }
 
-func (m *errMVCCStore) Compact(revision int64) error {
+func (m *errMVCCStore) Compact(prefix []byte, revision int64) error {
 	m.compactCalled = true
 	return m.compactErr
 }
@@ -206,7 +206,7 @@ func TestKVDispatch_MVCCCompact_StorageError(t *testing.T) {
 	mvcc := &errMVCCStore{compactErr: storageErr}
 	k := newTestKVSM(WithKVMVCCStore(mvcc))
 
-	cmd := mustEncode(protocol.EncodeMVCCCompact(5))
+	cmd := mustEncode(protocol.EncodeMVCCCompactPrefix(nil, 5))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -270,7 +270,7 @@ func (m *failedTransactionMVCCStore) Range(start, end []byte, revision, limit in
 	return nil, 0, nil
 }
 
-func (m *failedTransactionMVCCStore) Compact(revision int64) error {
+func (m *failedTransactionMVCCStore) Compact(prefix []byte, revision int64) error {
 	return nil
 }
 

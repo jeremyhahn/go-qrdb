@@ -41,20 +41,20 @@ import (
 // Thread safety: The underlying storage.Storage implementation handles its own
 // internal synchronization. The atomic revision counter is lock-free.
 type Store struct {
-	storage   storage.Storage
-	revision  atomic.Int64
-	compacted atomic.Int64
+	storage  storage.Storage
+	revision atomic.Int64
+	floors   atomic.Pointer[compactionFloors]
 }
 
 // New creates a new MVCC store backed by the given storage.Storage instance.
-// The store loads the current revision and compacted marker from the
+// The store loads the current revision and the compaction floors from the
 // storage if they exist.
 func New(store storage.Storage) (*Store, error) {
 	s := &Store{storage: store}
 	if err := s.loadRevision(); err != nil {
 		return nil, err
 	}
-	if err := s.loadCompacted(); err != nil {
+	if err := s.loadFloors(); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -78,21 +78,30 @@ func (s *Store) loadRevision() error {
 	return nil
 }
 
-// loadCompacted reads the persisted compacted revision from storage.
-func (s *Store) loadCompacted() error {
-	val, err := s.storage.Get(CompactedKey())
-	if err != nil {
-		return &StoreError{Op: "load compacted", Err: err}
-	}
-	if val == nil {
-		return nil
-	}
+// loadFloors reads every persisted compaction floor from storage.
+func (s *Store) loadFloors() error {
+	iter := s.storage.NewIterator(&storage.IteratorOptions{
+		LowerBound: CompactionFloorLowerBound(),
+		UpperBound: CompactionFloorUpperBound(),
+	})
+	defer func() { _ = iter.Close() }()
 
-	rev, err := DecodeRevision(val)
-	if err != nil {
-		return err
+	floors := emptyFloors
+	for iter.SeekToFirst(); iter.Valid(); iter.Next() {
+		prefix, err := DecodeCompactionFloorKey(iter.Key())
+		if err != nil {
+			return err
+		}
+		rev, err := DecodeRevision(iter.Value())
+		if err != nil {
+			return err
+		}
+		floors = floors.with(prefix, rev)
 	}
-	s.compacted.Store(rev)
+	if err := iter.Error(); err != nil {
+		return &StoreError{Op: "load compaction floors", Err: err}
+	}
+	s.floors.Store(floors)
 	return nil
 }
 
@@ -104,12 +113,6 @@ func (s *Store) nextRevision() int64 {
 // CurrentRevision returns the current global revision.
 func (s *Store) CurrentRevision() int64 {
 	return s.revision.Load()
-}
-
-// CompactedRevision returns the last compacted revision. Reads at or
-// below this revision will return RevisionCompactedError.
-func (s *Store) CompactedRevision() int64 {
-	return s.compacted.Load()
 }
 
 // Put stores a key-value pair at a new revision. Returns the resulting
@@ -225,11 +228,11 @@ func (s *Store) getFrom(r storage.Reader, key []byte) (*service.KeyValue, error)
 }
 
 // GetAtRevision retrieves the value of a key at a specific revision.
-// Returns RevisionCompactedError if the revision has been compacted,
-// or RevisionNotFoundError if no version exists at or before the
-// requested revision.
+// Returns RevisionCompactedError if the revision is at or below the
+// compaction floor covering key, or RevisionNotFoundError if no version
+// exists at or before the requested revision.
 func (s *Store) GetAtRevision(key []byte, revision int64) (*service.KeyValue, error) {
-	compacted := s.compacted.Load()
+	compacted := s.CompactedRevisionForKey(key)
 	if revision > 0 && revision <= compacted {
 		return nil, &RevisionCompactedError{
 			Requested: revision,
@@ -338,7 +341,7 @@ func (s *Store) rangeFrom(r storage.Reader, start, end []byte, opts ...service.R
 
 	targetRev := currentRev
 	if ro.Revision > 0 {
-		compacted := s.compacted.Load()
+		compacted := s.rangeFloor(start, end)
 		if ro.Revision <= compacted {
 			return nil, 0, 0, &RevisionCompactedError{
 				Requested: ro.Revision,
@@ -472,117 +475,14 @@ func sortLessFunc(results []*service.KeyValue, target service.SortTarget) (func(
 	}
 }
 
-// Compact removes old data entries at revisions at or below the given revision,
-// while preserving the latest (highest) revision per unique key. This ensures
-// that keys whose only write is within the compaction range (e.g., system keys
-// written during bootstrap) remain readable after compaction.
-//
-// Data keys are sorted by [prefix][keyLen][key][complement(revision)], so within
-// each user key group the highest revision appears first in iteration order.
-// The method tracks the current key prefix and skips the first entry per group
-// (the latest revision), deleting only subsequent older entries at or below the
-// compaction revision.
-//
-// Metadata is preserved so that Get and Delete can still detect the key's
-// existence via its metadata entry.
-func (s *Store) Compact(revision int64) error {
-	batch := s.storage.Batch()
-	defer func() { _ = batch.Close() }()
-
-	if err := s.CompactInBatch(batch, revision); err != nil {
-		return err
+// rangeFloor returns the compaction floor a Range over start and end is
+// checked against: the floor covering the single key start when end is nil
+// (Range's single-key form), otherwise every floor [start, end) overlaps.
+func (s *Store) rangeFloor(start, end []byte) int64 {
+	if end == nil {
+		return s.CompactedRevisionForKey(start)
 	}
-
-	if err := batch.Commit(); err != nil {
-		return &CompactionError{Err: err}
-	}
-
-	s.compacted.Store(revision)
-	return nil
-}
-
-// CompactInBatch queues a compaction into batch instead of committing its own.
-// The apply path uses it for two reasons: the scan reads through batch, so it
-// sees the data entries earlier entries in the same apply batch wrote; and the
-// deletions land in the caller's batch, so compaction commits atomically with
-// the rest of the apply rather than half a step ahead of it.
-//
-// The compacted marker is advanced immediately, matching Compact: the marker is
-// in-memory state that the caller's commit makes durable, and the apply loop
-// treats a failed Update as fatal.
-func (s *Store) CompactInBatch(batch storage.Batch, revision int64) error {
-	if err := s.compactInto(batch, revision); err != nil {
-		return err
-	}
-	s.compacted.Store(revision)
-	return nil
-}
-
-// compactInto queues the compaction deletions and the compacted marker into
-// batch, reading the entries to remove through batch as well.
-func (s *Store) compactInto(batch storage.Batch, revision int64) error {
-	// Iterate all data entries.
-	iter := batch.NewIterator(&storage.IteratorOptions{
-		LowerBound: []byte{prefixData},
-		UpperBound: []byte{prefixData + 1},
-	})
-	defer func() { _ = iter.Close() }()
-
-	// Track the current user key prefix to detect group boundaries.
-	// Data key format: [0x01][keyLen:8 BE][key][complement:8 BE]
-	// The prefix for grouping is everything except the last 8 bytes.
-	var currentPrefix []byte
-
-	for iter.SeekToFirst(); iter.Valid(); iter.Next() {
-		raw := iter.Key()
-		if len(raw) < 17 { // 1 + 8 + 0 + 8 minimum
-			continue
-		}
-
-		_, entryRev, err := DecodeDataKey(raw)
-		if err != nil {
-			continue
-		}
-
-		// Extract the key prefix (everything except the trailing 8-byte complement).
-		keyPrefix := raw[:len(raw)-8]
-
-		// Detect new key group: skip the first entry (latest revision) in each group.
-		if !bytes.Equal(keyPrefix, currentPrefix) {
-			currentPrefix = make([]byte, len(keyPrefix))
-			copy(currentPrefix, keyPrefix)
-			// This is the latest revision for this key. Preserve it.
-			continue
-		}
-
-		// Subsequent (older) entry in the same key group.
-		// Delete if at or below the compaction point.
-		if entryRev <= revision {
-			keyCopy := make([]byte, len(raw))
-			copy(keyCopy, raw)
-			if err := batch.Delete(keyCopy); err != nil {
-				return &CompactionError{Err: err}
-			}
-		}
-	}
-
-	if err := iter.Error(); err != nil {
-		return &CompactionError{Err: err}
-	}
-
-	// Drop revision-index entries at or below the compaction point: a replay at
-	// or below CompactedRevision is refused, so these change-log entries serve no
-	// purpose and must not accumulate.
-	if err := s.gcRevIndexInBatch(batch, revision); err != nil {
-		return err
-	}
-
-	// Persist the compacted revision marker.
-	if err := batch.Set(CompactedKey(), EncodeRevision(revision)); err != nil {
-		return &CompactionError{Err: err}
-	}
-
-	return nil
+	return s.CompactedRevisionForRange(start, end)
 }
 
 // PutInBatch writes a key-value pair into the given storage.Batch

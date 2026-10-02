@@ -1098,7 +1098,7 @@ func TestMVCCEngine_HandleMVCCCompact_WithRevision(t *testing.T) {
 	}
 
 	// Compact to revision 2.
-	compact := mustEncode(protocol.EncodeMVCCCompact(2))
+	compact := mustEncode(protocol.EncodeMVCCCompactPrefix(nil, 2))
 	r := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), []sm.Entry{{Index: 10, Cmd: compact}}, r); err != nil {
 		t.Fatalf("compact: %v", err)

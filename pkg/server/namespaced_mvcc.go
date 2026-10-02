@@ -20,7 +20,6 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
@@ -31,9 +30,11 @@ import (
 // MVCC service's KV methods. The MVCC-specific methods below add the same
 // prefixing for revision-aware operations.
 //
-// Compact and CurrentRevision are intentionally not prefixed: MVCC revisions
-// are a store-global monotonic counter, not a per-namespace value, so they are
-// forwarded unchanged.
+// CurrentRevision is intentionally not prefixed: MVCC revisions are a
+// store-global monotonic counter, not a per-namespace value. Compact is
+// confined to the namespace: it compacts the view's own prefix through the
+// inner service's service.PrefixCompactor, and the store keeps a compaction
+// floor per prefix.
 //
 // A write that attaches a lease attaches only a lease this namespace owns
 // (leases): lease IDs are global, and attaching another tenant's lease would
@@ -47,6 +48,10 @@ type namespacedMVCCService struct {
 	inner  service.MVCCKVServicer
 	prefix string
 	leases leaseOwnership
+
+	// compactor is inner's per-prefix compaction, nil when inner has none;
+	// see Compact.
+	compactor service.PrefixCompactor
 }
 
 // leaseOwnership confines lease attachment to the namespace's own leases.
@@ -64,11 +69,16 @@ var _ service.MVCCKVServicer = (*namespacedMVCCService)(nil)
 // with the given composite namespace prefix (e.g. "acme/reports/"). leases is
 // the namespace's lease view; with none, no lease can be attached.
 func newNamespacedMVCCService(inner service.MVCCKVServicer, prefix string, leases leaseOwnership) *namespacedMVCCService {
+	// The view compacts through the inner service's per-prefix compaction,
+	// detected here once: an inner service without one leaves Compact
+	// refusing rather than compacting anything wider than this namespace.
+	compactor, _ := inner.(service.PrefixCompactor)
 	return &namespacedMVCCService{
 		namespacedKVService: &namespacedKVService{inner: inner, prefix: prefix},
 		inner:               inner,
 		prefix:              prefix,
 		leases:              leases,
+		compactor:           compactor,
 	}
 }
 
@@ -179,21 +189,23 @@ func (s *namespacedMVCCService) RangeWithConsistency(ctx context.Context, start,
 	return stripKeyValues(kvs, s.prefix), count, revision, nil
 }
 
-// Compact is gated to the system tenant. MVCC revisions are a store-global
-// monotonic counter shared by every prefix-isolated tenant on this store, so a
-// Compact to revision N discards ALL historical revisions below N for EVERY
-// tenant's keys — destroying other tenants' time-travel history even though it
-// is issued through a single tenant's namespaced view. Because compaction
-// cannot be confined to the namespace prefix, a non-system caller is rejected
-// here (the data-plane defense) in addition to the ScopeCross authz gate on
-// the mvcc:compact permission. The system tenant — the legitimate store-global
-// admin — is forwarded unchanged.
+// Compact compacts THIS namespace's history and nothing else: the inner
+// service compacts the keys under the view's own prefix, so another
+// database's and another tenant's history -- which share the store's revision
+// counter on a shared shard -- is untouched. The prefix comes from the view,
+// which the service registry built for the (tenant, database) the request
+// resolved to; the caller names no keyspace and cannot widen it. A
+// dedicated-raft database's view has an empty prefix because its shard is its
+// whole keyspace.
+//
+// An inner service that cannot compact by prefix is refused with
+// *service.CompactScopeRequiredError rather than compacted whole.
 func (s *namespacedMVCCService) Compact(ctx context.Context, revision int64) error {
 	ctx = s.scope(ctx)
-	if callerTenant := tenant.FromContext(ctx); !tenant.IsSystemTenant(callerTenant) {
-		return &service.CompactSystemOnlyError{TenantID: callerTenant}
+	if s.compactor == nil {
+		return &service.CompactScopeRequiredError{}
 	}
-	return s.inner.Compact(ctx, revision)
+	return s.compactor.CompactPrefix(ctx, s.prefix, revision)
 }
 
 // CurrentRevision forwards unchanged: the latest committed revision is global
@@ -203,9 +215,7 @@ func (s *namespacedMVCCService) CurrentRevision(ctx context.Context) (int64, err
 }
 
 // RestoreToRevision confines a selective point-in-time restore to this
-// namespace. Unlike Compact, a restore CAN be confined — it names the keys it
-// writes — so it is prefixed and forwarded rather than reserved to the system
-// tenant.
+// namespace: it names the keys it writes, so it is prefixed and forwarded.
 //
 // The request is validated BEFORE the namespace prefix is attached, and this
 // ordering is the whole point of the method. Two guards would otherwise be

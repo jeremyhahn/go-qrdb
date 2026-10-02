@@ -122,6 +122,30 @@ func (e *CompactionError) Unwrap() error {
 	return e.Err
 }
 
+// CompactRevisionInvalidError is returned when a compaction names a revision
+// below 1: there is no history before the first revision to discard.
+type CompactRevisionInvalidError struct {
+	Revision int64
+}
+
+// Error returns a human-readable description of the invalid revision.
+func (e *CompactRevisionInvalidError) Error() string {
+	return "mvcc: compaction revision " + strconv.FormatInt(e.Revision, 10) + " is invalid (must be at least 1)"
+}
+
+// CompactRevisionFutureError is returned when a compaction names a revision
+// above the store's current revision.
+type CompactRevisionFutureError struct {
+	Requested int64
+	Current   int64
+}
+
+// Error returns a human-readable description of the future revision.
+func (e *CompactRevisionFutureError) Error() string {
+	return "mvcc: compaction revision " + strconv.FormatInt(e.Requested, 10) +
+		" is a future revision (current: " + strconv.FormatInt(e.Current, 10) + ")"
+}
+
 // UnsupportedSortTargetError is returned when a range query requests a
 // service.SortTarget value outside the set of targets the store knows how
 // to sort by.

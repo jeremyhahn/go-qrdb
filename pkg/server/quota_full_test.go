@@ -300,8 +300,12 @@ func TestQuotaMVCCService_ReadPassthroughs(t *testing.T) {
 	if _, _, _, err := q.RangeWithConsistency(ctx, []byte("a"), []byte("z"), consistency.ReadOptions{}); err != nil {
 		t.Fatalf("RangeWithConsistency: %v", err)
 	}
-	if err := q.Compact(ctx, 1); err != nil {
-		t.Fatalf("Compact: %v", err)
+	// Compact is forwarded to whatever the quota view wraps -- in the real
+	// composition a database's namespaced view. This inner is shaped like the
+	// raw shard service, whose store-global Compact refuses.
+	var scope *service.CompactScopeRequiredError
+	if err := q.Compact(ctx, 1); !errors.As(err, &scope) || inner.globalCompacts != 1 {
+		t.Fatalf("Compact = %v (inner reached %d time(s)), want the inner refusal forwarded once", err, inner.globalCompacts)
 	}
 	if rev, err := q.CurrentRevision(ctx); err != nil || rev != 42 {
 		t.Fatalf("CurrentRevision = %d, %v", rev, err)

@@ -159,7 +159,7 @@ func TestConcurrentStateMachine_MVCCCompact_Success(t *testing.T) {
 	ms := &mockMVCCStore{}
 	csm, _ := newConcurrentWithMVCC(ms)
 
-	cmd := mustEncode(protocol.EncodeMVCCCompact(10))
+	cmd := mustEncode(protocol.EncodeMVCCCompactPrefix(nil, 10))
 	result, err := concurrentApplyCmd(t, csm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -173,7 +173,7 @@ func TestConcurrentStateMachine_MVCCCompact_StoreError(t *testing.T) {
 	ms := &mockMVCCStore{compactErr: errors.New("compact fail")}
 	csm, _ := newConcurrentWithMVCC(ms)
 
-	cmd := mustEncode(protocol.EncodeMVCCCompact(10))
+	cmd := mustEncode(protocol.EncodeMVCCCompactPrefix(nil, 10))
 	_, err := concurrentApplyCmd(t, csm, cmd)
 	if err == nil {
 		t.Fatal("expected error from store")

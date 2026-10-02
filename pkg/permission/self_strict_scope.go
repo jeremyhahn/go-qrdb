@@ -62,6 +62,17 @@ func selfStrictPermissions() []Permission {
 		EscrowList,
 		EscrowRecover,
 		EscrowRevoke,
+
+		// mvcc
+		//
+		// Compaction discards a database's revision history. The store keeps
+		// a compaction floor per database namespace, so a compaction is the
+		// owning tenant's act on its own history -- the system tenant's on
+		// its own databases included -- and a lift onto another tenant's
+		// would destroy history that tenant owns. It was ScopeCross while a
+		// compaction discarded the whole store's history, which made the
+		// platform operator the one identity able to destroy every tenant's.
+		MVCCCompact,
 	}
 }
 

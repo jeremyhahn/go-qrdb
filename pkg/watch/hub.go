@@ -118,7 +118,7 @@ func (h *Hub) Watch(ctx context.Context, key string, opts ...WatchOption) (Watch
 
 	// Validate a start revision BEFORE creating any state, so a compacted or
 	// unsupported request fails cleanly with nothing registered.
-	replay, err := h.prepareReplay(wo.StartRevision)
+	replay, err := h.prepareReplay(wo.StartRevision, []byte(key), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -163,13 +163,13 @@ func (h *Hub) WatchPrefix(ctx context.Context, prefix string, opts ...WatchOptio
 
 	wo := ApplyWatchOptions(opts)
 
-	replay, err := h.prepareReplay(wo.StartRevision)
+	rangeEnd := prefixEnd([]byte(prefix))
+	replay, err := h.prepareReplay(wo.StartRevision, []byte(prefix), rangeEnd)
 	if err != nil {
 		return nil, err
 	}
 
 	id := h.idSeq.Add(1)
-	rangeEnd := prefixEnd([]byte(prefix))
 	w := newWatcher(id, []byte(prefix), rangeEnd, wo, ctx)
 	if replay {
 		w.beginReplay()
@@ -197,8 +197,9 @@ func (h *Hub) WatchPrefix(ctx context.Context, prefix string, opts ...WatchOptio
 // prepareReplay validates a requested start revision and reports whether a
 // historical replay is required. A zero/negative start revision is a live-only
 // watch (false, nil). A positive start revision needs a history replayer and a
-// revision above the compaction floor, else it fails closed.
-func (h *Hub) prepareReplay(startRev int64) (bool, error) {
+// revision above the compaction floor covering the watched key or range (key,
+// rangeEnd, in the watcher's convention), else it fails closed.
+func (h *Hub) prepareReplay(startRev int64, key, rangeEnd []byte) (bool, error) {
 	if startRev <= 0 {
 		return false, nil
 	}
@@ -206,7 +207,7 @@ func (h *Hub) prepareReplay(startRev int64) (bool, error) {
 	if hr == nil {
 		return false, ErrStartRevisionUnsupported
 	}
-	if startRev <= hr.CompactedRevision() {
+	if startRev <= hr.CompactedRevision(key, rangeEnd) {
 		return false, ErrCompacted
 	}
 	return true, nil
@@ -339,7 +340,7 @@ func (h *Hub) startReplay(w *watcher, wo WatchOptions, boundary int64) {
 		// watcher was registered before every relevant event and is already
 		// correctly withholding them via the deliver floor until one arrives
 		// at or after wo.StartRevision (go-qrdb#514).
-		if attemptedReplay && (replayErr != nil || hr.CompactedRevision() >= wo.StartRevision) {
+		if attemptedReplay && (replayErr != nil || hr.CompactedRevision(w.key, w.rangeEnd) >= wo.StartRevision) {
 			w.setErr(ErrCompacted)
 			w.finishReplay()
 			w.cancel()

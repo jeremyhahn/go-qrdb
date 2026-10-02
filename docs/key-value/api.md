@@ -1,6 +1,6 @@
 # Key-Value Store — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
 
 Six transports, one capability set. The gRPC service is `qrdb.v1.QRDBService`;
 the **Unix socket transport serves the same gRPC wire over a UDS**, so its
@@ -25,7 +25,7 @@ Go call on the SDK client.
 | Get at revision | `GET /kv/{key}?at-revision=N` | `GetAtRevision` | `mvcc.GetAtRevision` | `qrdb_mvcc_get_at_revision` | `Client.MVCC().GetAtRevision` | `mvcc:get_at_revision` |
 | Range | `GET /kv/range` | `Range` | `mvcc.Range` | `qrdb_mvcc_range` | `Client.MVCC().Range` | `kv:range` / `mvcc:range` |
 | Current revision | `GET /kv/revision` | `CurrentRevision` | `mvcc.CurrentRevision` | `qrdb_mvcc_current_revision` | `Client.MVCC().CurrentRevision` | `mvcc:current_revision` |
-| Compact | `POST /kv/compact` | `Compact` | `mvcc.Compact` | `qrdb_mvcc_compact` | `Client.MVCC().Compact` | `mvcc:compact` |
+| Compact (this database's history) | `POST /kv/compact` | `Compact` | `mvcc.Compact` | `qrdb_mvcc_compact` | `Client.MVCC().Compact` | `mvcc:compact` (`ScopeSelfStrict`) |
 | Restore to revision | `POST /kv/restore` | `RestoreToRevision` | `mvcc.RestoreToRevision` | `qrdb_mvcc_restore_to_revision` | `Client.MVCC().RestoreToRevision` | `mvcc:restore` |
 
 **Put with lease on a state machine without revision history.** On the default
@@ -195,7 +195,12 @@ plus `dry_run` and `force`. The response carries the plan entries
 | Success | 200 | `OK` | |
 | Key not found | 404 | `NOT_FOUND` | distinct from an empty value. QUIC answers `StatusNotFound`; the SDK reconstitutes `transport.KeyNotFoundError` from the status, never from the message |
 | Bad parameter (`at-revision` unparseable, bad sort key) | 400 | `INVALID_ARGUMENT` | |
-| Revision above current, or below the compaction floor | 400 | `INVALID_ARGUMENT` | fails closed, never approximated |
+| Revision above current | 400 | `INVALID_ARGUMENT` | fails closed, never approximated |
+| Revision at or below the database's compaction floor | 416 | `OUT_OF_RANGE` | `service.RevisionCompactedError`; fails closed, never approximated. *(Corrected: this row said 400 / `INVALID_ARGUMENT`; the classification has been `OUT_OF_RANGE` since it was introduced -- see [../api-server/api.md](../api-server/api.md).)* |
+| `Compact` to a revision below 1, or above the current revision | 400 | `INVALID_ARGUMENT` | `service.CompactRevisionInvalidError`, `service.CompactRevisionFutureError` |
+| `Compact` to a revision the database is already compacted to | 416 | `OUT_OF_RANGE` | `service.RevisionCompactedError`; nothing changes |
+| `Compact` on a server with no database scope (raw service) | 422 | `FAILED_PRECONDITION` | `service.CompactScopeRequiredError`; there is no store-wide compaction |
+| `Compact` before every replica of the group supports per-database compaction | 422 | `FAILED_PRECONDITION` | `service.FeatureNotEnabledError` naming `prefix-compaction` |
 | Non-MVCC state machine asked for an MVCC operation | 400 | `FAILED_PRECONDITION` | `service: requires raft.sm_type: mvcc` |
 | Guarded request body over the endpoint's encoded byte bound | 413 | — | REST only; the coarse pre-decode guard |
 | Guarded request key and values, SUMMED, over what one proposal can carry | 413 | — | REST only; the precise limit, derived from the Raft entry ceiling |

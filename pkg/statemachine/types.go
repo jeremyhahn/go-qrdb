@@ -193,9 +193,13 @@ type MVCCStore interface {
 	// revision as an int64.
 	Range(start, end []byte, revision, limit int64, countOnly, keysOnly bool) (interface{}, int64, error)
 
-	// Compact removes all data entries at or below the specified
-	// revision.
-	Compact(revision int64) error
+	// Compact removes the history at or below revision of the keys
+	// beginning with prefix -- one database's namespace -- keeping each
+	// key's newest entry, and refuses reads of those keys at or below
+	// revision from then on. It never touches a key outside prefix: one
+	// store serves many tenants, and there is no store-global compaction.
+	// An empty prefix is a store that is one database's keyspace.
+	Compact(prefix []byte, revision int64) error
 
 	// Transaction evaluates compare preconditions and executes the
 	// success or failure operations atomically. Returns whether the

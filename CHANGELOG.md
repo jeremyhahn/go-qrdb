@@ -31,6 +31,56 @@ are not reconstructed here — their history is in the git log.
   `CreateDatabaseRequest.barrier` is a `DatabaseBarrierRequest`, which carries
   the `secret`.
 
+### Security
+
+- **MVCC compaction no longer destroys other tenants' history.** Every prefix-isolated
+  tenant's databases share one MVCC store, and `Compact` discarded every key's history below
+  the revision -- so the system tenant, the one identity `mvcc:compact` admitted, destroyed
+  every tenant's time-travel history, as-of reads, watch replay window and restore window in
+  one call. Compaction is now per database: the store keeps a compaction floor per keyspace
+  prefix, a database's namespaced view compacts only its own `<tenant>/<database>/` prefix
+  (its whole shard under raft isolation), and reads, watches, restores and change scans are
+  checked against the floors their keys fall under. No one compacts another tenant's history:
+  `mvcc:compact` is `ScopeSelfStrict`, so the system tenant compacts only its own databases,
+  through the etcd listener as on every other transport. Proved on all six transports in
+  `sdk/go/conformance` (`TestCompaction_*`).
+
+### Changed — BREAKING
+
+- **BREAKING: `Compact` compacts the scoped database's history, and only its owning tenant
+  may call it.** It used to compact the whole store and was reserved to the system tenant;
+  `mvcc:compact` moved from `ScopeCross` to `ScopeSelfStrict`, and `sdk.PermissionMVCCCompact`
+  (a cross-scope export) is removed. A tenant role holding `mvcc:compact` -- the built-in
+  Operator does -- can now compact its own databases. `service.CompactSystemOnlyError` is
+  removed.
+- **BREAKING: there is no store-global compaction.** The raw shard service's `Compact` refuses
+  with `service.CompactScopeRequiredError` (REST 422, gRPC/QUIC `FAILED_PRECONDITION`): the
+  unscoped embedded client, a server built without a service registry, and
+  `mvcc.Store.Compact`/`CompactInBatch` and `mvcc.RaftStorage.Compact`/`CompactedRevision` are
+  gone. Keys outside every database namespace (node-internal records) are no longer compacted.
+- **BREAKING: Raft opcode 13 (`OpMVCCCompact`) is retired** and replaced by
+  `OpMVCCCompactPrefix` (14, payload `[revision:8][prefixLen:2][prefix]`), proposed only once
+  the new cluster feature `prefix-compaction` is enabled (`service.FeatureNotEnabledError`
+  before then). A log holding opcode 13 is refused as an unknown opcode. The compacted marker
+  `[0x04]` becomes one floor key per prefix (`[0x04][prefix]`); an existing `[0x04]` loads as
+  the floor of the empty prefix.
+- **BREAKING: compaction validates its revision.** Below 1 is
+  `service.CompactRevisionInvalidError`, above the current revision
+  `service.CompactRevisionFutureError` (etcd: `ErrGRPCFutureRev`), at or below the database's
+  floor `service.RevisionCompactedError` (etcd: `ErrGRPCCompacted`); the state machine
+  re-checks all three at apply and answers in the result. A compacted window of
+  `MVCCScanChangesQuery` is now refused instead of returning an empty key set, and the etcd
+  listener's `Range` below the floor answers `ErrGRPCCompacted` instead of `Internal`.
+- **BREAKING: Go API.** `statemachine.MVCCStore.Compact(prefix []byte, revision int64)`
+  (was `Compact(revision)`), `watch.HistoryReplayer.CompactedRevision(key, rangeEnd []byte)`
+  (was `CompactedRevision()`), `mvcc.Store.CompactedRevision` replaced by
+  `CompactionFloor`/`CompactedRevisionForKey`/`CompactedRevisionForRange`/`CompactedRevisionForPrefix`,
+  and `mvcc.CompactedKey` by `CompactionFloorKey(prefix)`. New: `service.PrefixCompactor`,
+  `featuregate.PrefixCompaction`.
+- **BREAKING: `mvcc.compaction_retention` and `mvcc.revision_limit` are removed.** Nothing read
+  either key; both advertised a node-wide retention that would compact every tenant's history
+  implicitly.
+
 ## [0.32.0-alpha] - 2026-10-02
 
 Strict tenant isolation, phase 2: cluster-wide shard IDs. This release contains BREAKING changes; see the entries below. Highlights:

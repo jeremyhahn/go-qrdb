@@ -16,6 +16,7 @@ package protocol
 
 import (
 	"bytes"
+	"encoding/binary"
 	"strconv"
 )
 
@@ -166,6 +167,83 @@ func guardRefusalMessage(key []byte) string {
 	return "write guard refused on key " + string(key)
 }
 
+// CompactRefusalReason is why the state machine refused an
+// OpMVCCCompactPrefix: the command named a revision outside the range a
+// compaction of its prefix can take.
+type CompactRefusalReason uint8
+
+const (
+	// CompactRefusalInvalid -- the revision is below 1. Bound is unused.
+	CompactRefusalInvalid CompactRefusalReason = iota + 1
+
+	// CompactRefusalFuture -- the revision is above the store's current
+	// revision. Bound is the current revision.
+	CompactRefusalFuture
+
+	// CompactRefusalCompacted -- the revision is at or below the compaction
+	// floor already covering the prefix. Bound is that floor.
+	CompactRefusalCompacted
+)
+
+// compactRefusalMarker distinguishes a compaction refusal from the other
+// application errors. Like the guard and ownership refusals it carries a
+// structured body -- [reason:1][requested:8 LE][bound:8 LE] -- because the
+// service layer returns a typed error per reason (etcd's compacted and
+// future-revision errors among them), and branching on message text is the
+// defect go-qrdb#141 removed.
+var compactRefusalMarker = []byte("\x00compact\x00")
+
+// EncodeCompactRefusal encodes the refusal of a compaction to requested; see
+// CompactRefusalReason for what bound carries.
+func EncodeCompactRefusal(reason CompactRefusalReason, requested, bound int64) []byte {
+	out := make([]byte, 0, len(appErrorPrefix)+len(compactRefusalMarker)+1+8+8)
+	out = append(out, appErrorPrefix...)
+	out = append(out, compactRefusalMarker...)
+	out = append(out, byte(reason))
+	out = binary.LittleEndian.AppendUint64(out, uint64(requested)) //nolint:gosec // G115: two's-complement round trip of an int64
+	out = binary.LittleEndian.AppendUint64(out, uint64(bound))     //nolint:gosec // G115: two's-complement round trip of an int64
+	return out
+}
+
+// DecodeCompactRefusal reports whether data is a compaction refusal and, if
+// so, its reason, the requested revision and the bound it violated.
+func DecodeCompactRefusal(data []byte) (reason CompactRefusalReason, requested, bound int64, ok bool) {
+	if !bytes.HasPrefix(data, appErrorPrefix) {
+		return 0, 0, 0, false
+	}
+	body := data[len(appErrorPrefix):]
+	if !bytes.HasPrefix(body, compactRefusalMarker) {
+		return 0, 0, 0, false
+	}
+	body = body[len(compactRefusalMarker):]
+	if len(body) != 1+8+8 {
+		return 0, 0, 0, false
+	}
+	reason = CompactRefusalReason(body[0])
+	requested = int64(binary.LittleEndian.Uint64(body[1:9])) //nolint:gosec // G115: two's-complement round trip of an int64
+	bound = int64(binary.LittleEndian.Uint64(body[9:17]))    //nolint:gosec // G115: two's-complement round trip of an int64
+	return reason, requested, bound, true
+}
+
+// compactRefusalMessage renders a compaction refusal as the message a
+// generic DecodeAppError caller reads.
+func compactRefusalMessage(reason CompactRefusalReason, requested, bound int64) string {
+	msg := "mvcc compact: revision " + strconv.FormatInt(requested, 10)
+	phrase, ok := compactRefusalPhrases[reason]
+	if !ok {
+		return msg + " was refused for an unknown reason " + strconv.Itoa(int(reason))
+	}
+	return msg + phrase(strconv.FormatInt(bound, 10))
+}
+
+// compactRefusalPhrases renders each refusal reason after the requested
+// revision; bound is the reason's bound (see CompactRefusalReason).
+var compactRefusalPhrases = map[CompactRefusalReason]func(bound string) string{
+	CompactRefusalInvalid:   func(string) string { return " is invalid (must be at least 1)" },
+	CompactRefusalFuture:    func(bound string) string { return " is a future revision (current " + bound + ")" },
+	CompactRefusalCompacted: func(bound string) string { return " has been compacted (floor " + bound + ")" },
+}
+
 // ownershipMarker distinguishes an index-ownership refusal (go-qrdb#426) from
 // the other application errors. Like capabilityMarker it has to be carried
 // rather than inferred from message text: the service layer turns it into a
@@ -300,6 +378,14 @@ func DecodeAppErrorKind(data []byte) (msg string, kind AppErrorKind, ok bool) {
 	// kind -- the request named a lease that does not exist.
 	if id, nf := DecodeLeaseNotFoundError(data); nf {
 		return "lease not found: " + strconv.FormatInt(id, 10), AppErrorInvalid, true
+	}
+	// A compaction refusal carries its own marker and payload too (see
+	// EncodeCompactRefusal). checkResultError decodes it into the typed
+	// service error for its reason before it gets here; a generic reader gets
+	// its message and the invalid kind -- the command was refused on its
+	// merits.
+	if reason, requested, bound, refused := DecodeCompactRefusal(data); refused {
+		return compactRefusalMessage(reason, requested, bound), AppErrorInvalid, true
 	}
 	return string(body), AppErrorCorrupt, true
 }

@@ -1,6 +1,6 @@
 # Identity and RBAC — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-30
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
 
 ## Exported surface
 
@@ -292,7 +292,7 @@ no system-tenant lift.
 **Every `ScopeCross` permission has an SDK name.** `sdk/go/types_permission_cross.go`
 re-exports each one (`sdk.PermissionCertsRevokeCross`, the `tenants`,
 `volumepool`, `registration_config` and `credentials` families,
-`sdk.PermissionMVCCCompact`, the node-barrier `seal`, `ceremony` and
+the node-barrier `seal`, `ceremony` and
 `barrier:unseal-share` permissions, and the cluster `admin`, `rebalance` and `backup`
 permissions), and `TestSDK_CrossScopePermissions_AreComplete`
 compares that list with the registry, so a cross-scope permission added without
@@ -370,6 +370,17 @@ would deny it that outright. `init()` tags the two groups with separate
 `RegisterScope` calls, each naming its members explicitly, so `secrets:*`
 cannot silently drift back onto the family's default the next time someone
 edits the list.
+
+**`mvcc:compact` is `ScopeSelfStrict` for the same reason.** Compaction
+discards a database's revision history, and each tenant -- the system tenant
+included -- compacts only databases it owns. It was `ScopeCross` while
+compaction discarded the whole store's history; that made the platform
+operator the one identity able to destroy every tenant's history at once,
+which no role may do. With the floor per database
+([../key-value/architecture.md](../key-value/architecture.md)), the
+permission's material is the tenant's own history, and a system lift onto
+another tenant's would be a cross-tenant act. *(Corrected: this document
+listed `sdk.PermissionMVCCCompact` among the cross-scope permissions.)*
 
 **The counter-example is in the same family, and it is the more instructive
 one.** `orchestrator:status` looks like the same case and is not: it is

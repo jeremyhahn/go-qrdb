@@ -17,6 +17,7 @@ package mvcc
 import (
 	"bytes"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -47,7 +48,7 @@ func TestNew_FreshDB_RevisionZero(t *testing.T) {
 	if rev := s.CurrentRevision(); rev != 0 {
 		t.Errorf("CurrentRevision: got %d, want 0", rev)
 	}
-	if compacted := s.CompactedRevision(); compacted != 0 {
+	if compacted := s.CompactionFloor(nil); compacted != 0 {
 		t.Errorf("CompactedRevision: got %d, want 0", compacted)
 	}
 }
@@ -76,10 +77,10 @@ func TestNew_LoadsPersistedRevision(t *testing.T) {
 	expectedRev := s.CurrentRevision()
 
 	// Compact to revision 1.
-	if err := s.Compact(1); err != nil {
+	if err := s.CompactPrefix(nil, 1); err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
-	expectedCompacted := s.CompactedRevision()
+	expectedCompacted := s.CompactionFloor(nil)
 
 	// Close and reopen.
 	if err := store.Close(); err != nil {
@@ -100,8 +101,8 @@ func TestNew_LoadsPersistedRevision(t *testing.T) {
 	if s2.CurrentRevision() != expectedRev {
 		t.Errorf("loaded revision: got %d, want %d", s2.CurrentRevision(), expectedRev)
 	}
-	if s2.CompactedRevision() != expectedCompacted {
-		t.Errorf("loaded compacted: got %d, want %d", s2.CompactedRevision(), expectedCompacted)
+	if s2.CompactionFloor(nil) != expectedCompacted {
+		t.Errorf("loaded compacted: got %d, want %d", s2.CompactionFloor(nil), expectedCompacted)
 	}
 }
 
@@ -319,7 +320,7 @@ func TestGetAtRevision_CompactedRevision(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	if err := s.Compact(1); err != nil {
+	if err := s.CompactPrefix(nil, 1); err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
 	_, err = s.GetAtRevision([]byte("key"), 1)
@@ -740,7 +741,7 @@ func TestRange_WithRevision_Compacted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	if err := s.Compact(1); err != nil {
+	if err := s.CompactPrefix(nil, 1); err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
 	_, _, _, err = s.Range([]byte("key"), nil, service.WithRevision(1))
@@ -768,12 +769,12 @@ func TestCompact_RemovesOldRevisions(t *testing.T) {
 		t.Fatalf("Put 2: %v", err)
 	}
 
-	if err := s.Compact(kv1.ModRevision); err != nil {
+	if err := s.CompactPrefix(nil, kv1.ModRevision); err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
 
-	if s.CompactedRevision() != kv1.ModRevision {
-		t.Errorf("CompactedRevision: got %d, want %d", s.CompactedRevision(), kv1.ModRevision)
+	if s.CompactionFloor(nil) != kv1.ModRevision {
+		t.Errorf("CompactedRevision: got %d, want %d", s.CompactionFloor(nil), kv1.ModRevision)
 	}
 
 	// The latest version should still be readable.
@@ -801,7 +802,7 @@ func TestCompact_PersistsCompactedMarker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	if err := s.Compact(1); err != nil {
+	if err := s.CompactPrefix(nil, 1); err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
 	if err := store.Close(); err != nil {
@@ -819,8 +820,8 @@ func TestCompact_PersistsCompactedMarker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new store 2: %v", err)
 	}
-	if s2.CompactedRevision() != 1 {
-		t.Errorf("CompactedRevision after reopen: got %d, want 1", s2.CompactedRevision())
+	if s2.CompactionFloor(nil) != 1 {
+		t.Errorf("CompactedRevision after reopen: got %d, want 1", s2.CompactionFloor(nil))
 	}
 }
 
@@ -962,8 +963,8 @@ func TestCurrentRevision_IncreasesMonotonically(t *testing.T) {
 
 func TestCompactedRevision_InitiallyZero(t *testing.T) {
 	s := newTestStore(t)
-	if s.CompactedRevision() != 0 {
-		t.Errorf("CompactedRevision: got %d, want 0", s.CompactedRevision())
+	if s.CompactionFloor(nil) != 0 {
+		t.Errorf("CompactedRevision: got %d, want 0", s.CompactionFloor(nil))
 	}
 }
 
@@ -1216,7 +1217,7 @@ func TestRange_StartEnd_CompactedRevision(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	if err := s.Compact(1); err != nil {
+	if err := s.CompactPrefix(nil, 1); err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
 	_, _, _, err = s.Range([]byte("a"), []byte("c"), service.WithRevision(1))
@@ -1281,7 +1282,7 @@ func TestCompact_PreservesLaterRevisions(t *testing.T) {
 	}
 
 	// Compact up to rev 2: should remove rev 1 and rev 2 data entries.
-	if err := s.Compact(2); err != nil {
+	if err := s.CompactPrefix(nil, 2); err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
 
@@ -1384,7 +1385,7 @@ func TestNew_CorruptCompactedData_ReturnsError(t *testing.T) {
 	if err := store.Set(RevisionKey(), EncodeRevision(5)); err != nil {
 		t.Fatalf("Set revision: %v", err)
 	}
-	if err := store.Set(CompactedKey(), []byte{0xFF}); err != nil {
+	if err := store.Set(CompactionFloorKey(nil), []byte{0xFF}); err != nil {
 		t.Fatalf("Set corrupt compacted: %v", err)
 	}
 	if err := store.Close(); err != nil {
@@ -1488,17 +1489,187 @@ func TestRange_AllKeys(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Compact edge case: compact revision 0
+// Compact edge cases: the revision is validated before anything changes
 // ---------------------------------------------------------------------------
 
-func TestCompact_RevisionZero(t *testing.T) {
+func TestCompactPrefix_RefusesOutOfRangeRevisions(t *testing.T) {
 	s := newTestStore(t)
-	// No data at all; compact at 0 should succeed.
-	if err := s.Compact(0); err != nil {
-		t.Fatalf("Compact(0): %v", err)
+	if _, err := s.Put([]byte("a/k"), []byte("v1"), 0); err != nil {
+		t.Fatalf("Put: %v", err)
 	}
-	if s.CompactedRevision() != 0 {
-		t.Errorf("CompactedRevision: got %d, want 0", s.CompactedRevision())
+	if _, err := s.Put([]byte("a/k"), []byte("v2"), 0); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	tests := []struct {
+		name     string
+		revision int64
+		check    func(error) bool
+	}{
+		{"zero", 0, func(err error) bool { var e *CompactRevisionInvalidError; return errors.As(err, &e) && e.Revision == 0 }},
+		{"negative", -3, func(err error) bool { var e *CompactRevisionInvalidError; return errors.As(err, &e) }},
+		{"future", 3, func(err error) bool {
+			var e *CompactRevisionFutureError
+			return errors.As(err, &e) && e.Requested == 3 && e.Current == 2
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := s.CompactPrefix([]byte("a/"), tt.revision)
+			if !tt.check(err) {
+				t.Fatalf("CompactPrefix(%d) = %v (%T)", tt.revision, err, err)
+			}
+			if got := s.CompactionFloor([]byte("a/")); got != 0 {
+				t.Fatalf("a refused compaction moved the floor to %d", got)
+			}
+			if _, err := s.GetAtRevision([]byte("a/k"), 1); err != nil {
+				t.Fatalf("a refused compaction discarded history: %v", err)
+			}
+		})
+	}
+}
+
+func TestCompactPrefix_AlreadyCompactedIsRefusedAndKeepsTheFloor(t *testing.T) {
+	s := newTestStore(t)
+	for i := 0; i < 4; i++ {
+		if _, err := s.Put([]byte("a/k"), []byte{byte(i)}, 0); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+	}
+	if err := s.CompactPrefix([]byte("a/"), 3); err != nil {
+		t.Fatalf("CompactPrefix: %v", err)
+	}
+	for _, rev := range []int64{3, 2} {
+		err := s.CompactPrefix([]byte("a/"), rev)
+		var e *RevisionCompactedError
+		if !errors.As(err, &e) || e.Requested != rev || e.Compacted != 3 {
+			t.Fatalf("CompactPrefix(%d) after compacting to 3 = %v (%T)", rev, err, err)
+		}
+	}
+	if got := s.CompactionFloor([]byte("a/")); got != 3 {
+		t.Fatalf("floor = %d, want 3: a refused compaction moved it", got)
+	}
+}
+
+// TestCompactPrefix_ConfinedToItsPrefix is the store-level half of the
+// per-tenant compaction rule: compacting one database's prefix discards that
+// database's history and nothing of any other's -- neither its data entries,
+// nor its change log, nor its readability at old revisions.
+func TestCompactPrefix_ConfinedToItsPrefix(t *testing.T) {
+	s := newTestStore(t)
+	put := func(k, v string) int64 {
+		t.Helper()
+		kv, err := s.Put([]byte(k), []byte(v), 0)
+		if err != nil {
+			t.Fatalf("Put(%s): %v", k, err)
+		}
+		return kv.ModRevision
+	}
+	aOld := put("acme/app/k", "a1")
+	bOld := put("beta/app/k", "b1")
+	// A key whose user-key length differs, so the per-length seek is exercised.
+	put("acme/app/longer-key", "x1")
+	put("acme/app/k", "a2")
+	put("beta/app/k", "b2")
+	put("acme/app/longer-key", "x2")
+	// A key that shares a byte prefix but is another database's.
+	put("acme/apps/k", "s1")
+	put("acme/apps/k", "s2")
+	cut := s.CurrentRevision()
+
+	if err := s.CompactPrefix([]byte("acme/app/"), cut); err != nil {
+		t.Fatalf("CompactPrefix: %v", err)
+	}
+
+	if _, err := s.GetAtRevision([]byte("acme/app/k"), aOld); err == nil {
+		t.Fatal("the compacted database's old revision is still readable")
+	}
+	if kv, err := s.GetAtRevision([]byte("beta/app/k"), bOld); err != nil || string(kv.Value) != "b1" {
+		t.Fatalf("another tenant's history was discarded: %v, %v", kv, err)
+	}
+	if kv, err := s.GetAtRevision([]byte("acme/apps/k"), cut-1); err != nil || string(kv.Value) != "s1" {
+		t.Fatalf("a sibling database sharing a byte prefix lost its history: %v, %v", kv, err)
+	}
+	if kv, err := s.Get([]byte("acme/app/k")); err != nil || string(kv.Value) != "a2" {
+		t.Fatalf("the compacted key's current state is gone: %v, %v", kv, err)
+	}
+	if got := s.CompactedRevisionForKey([]byte("beta/app/k")); got != 0 {
+		t.Fatalf("beta's floor = %d, want 0", got)
+	}
+	if got := s.CompactedRevisionForRange([]byte("beta/app/"), []byte("beta/app0")); got != 0 {
+		t.Fatalf("beta's range floor = %d, want 0", got)
+	}
+	if got := s.CompactedRevisionForRange([]byte("acme/"), []byte("acme0")); got != cut {
+		t.Fatalf("a range overlapping acme/app/ reports floor %d, want %d", got, cut)
+	}
+
+	var replayed []string
+	if err := s.ScanChanges(1, cut, func(c Change) bool {
+		replayed = append(replayed, string(c.Key))
+		return true
+	}); err != nil {
+		t.Fatalf("ScanChanges: %v", err)
+	}
+	for _, k := range replayed {
+		if strings.HasPrefix(k, "acme/app/") {
+			t.Fatalf("the compacted database's change log survived: %v", replayed)
+		}
+	}
+	if len(replayed) != 4 {
+		t.Fatalf("other databases' change log = %v, want beta/app/k x2 and acme/apps/k x2", replayed)
+	}
+}
+
+func TestCompactPrefix_FloorsSurviveReopen(t *testing.T) {
+	store := memory.NewStorage()
+	t.Cleanup(func() { _ = store.Close() })
+	s, err := New(store)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, k := range []string{"a/k", "a/k", "b/k", "b/k"} {
+		if _, err := s.Put([]byte(k), []byte("v"), 0); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+	}
+	if err := s.CompactPrefix([]byte("a/"), 2); err != nil {
+		t.Fatalf("CompactPrefix a/: %v", err)
+	}
+	if err := s.CompactPrefix([]byte("b/"), 3); err != nil {
+		t.Fatalf("CompactPrefix b/: %v", err)
+	}
+	s2, err := New(store)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if got := s2.CompactionFloor([]byte("a/")); got != 2 {
+		t.Fatalf("a/ floor after reopen = %d, want 2", got)
+	}
+	if got := s2.CompactionFloor([]byte("b/")); got != 3 {
+		t.Fatalf("b/ floor after reopen = %d, want 3", got)
+	}
+	if got := s2.CompactionFloor([]byte("c/")); got != 0 {
+		t.Fatalf("c/ floor after reopen = %d, want 0", got)
+	}
+}
+
+func TestCompactPrefix_EmptyPrefixCoversTheWholeStore(t *testing.T) {
+	s := newTestStore(t)
+	for _, k := range []string{"x", "y/z", "x"} {
+		if _, err := s.Put([]byte(k), []byte("v"), 0); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+	}
+	if err := s.CompactPrefix(nil, 2); err != nil {
+		t.Fatalf("CompactPrefix: %v", err)
+	}
+	if got := s.CompactedRevisionForKey([]byte("y/z")); got != 2 {
+		t.Fatalf("floor for y/z = %d, want 2", got)
+	}
+	// A narrower compaction under an already-compacted prefix is refused at
+	// or below the covering floor.
+	var e *RevisionCompactedError
+	if err := s.CompactPrefix([]byte("y/"), 2); !errors.As(err, &e) {
+		t.Fatalf("CompactPrefix(y/, 2) under a covering floor = %v", err)
 	}
 }
 
@@ -1921,7 +2092,7 @@ func TestDelete_AfterCompaction_SingleRevisionPreserved(t *testing.T) {
 	}
 	// Compaction preserves the latest revision per key, so the single
 	// revision at rev 1 is preserved even though rev 1 <= compaction point.
-	if err := s.Compact(1); err != nil {
+	if err := s.CompactPrefix(nil, 1); err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
 	// Data is still present because it's the latest revision for this key.
@@ -1943,7 +2114,7 @@ func TestGet_AfterCompaction_SingleRevisionPreserved(t *testing.T) {
 	}
 	// Compaction preserves the latest revision per key, so the single
 	// revision at rev 1 is preserved.
-	if err := s.Compact(1); err != nil {
+	if err := s.CompactPrefix(nil, 1); err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
 	// Get should succeed because compaction preserved the latest (only) revision.
@@ -1970,7 +2141,7 @@ func TestCompact_ThenReadLatest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	if err := s.Compact(2); err != nil {
+	if err := s.CompactPrefix(nil, 2); err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
 

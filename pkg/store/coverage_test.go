@@ -1683,7 +1683,7 @@ func TestMVCCHandleMVCCCompact_RevisionZero(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
 	// Compact at revision 0 - this should be handled by the MVCC store.
-	compactCmd := mustEncode(protocol.EncodeMVCCCompact(0))
+	compactCmd := mustEncode(protocol.EncodeMVCCCompactPrefix(nil, 0))
 	entries := []sm.Entry{{Index: 1, Cmd: compactCmd}}
 	results := make([]sm.Result, 1)
 	err := s.Update(context.Background(), entries, results)

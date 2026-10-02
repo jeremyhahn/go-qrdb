@@ -84,10 +84,10 @@ func NewKVStateMachine(backend Backend, opts ...KVOption) *KVStateMachine {
 		protocol.OpGuarded: k.handleGuarded,
 
 		// MVCC
-		protocol.OpMVCCPut:     k.handleMVCCPut,
-		protocol.OpMVCCDelete:  k.handleMVCCDelete,
-		protocol.OpMVCCRange:   k.handleMVCCRange,
-		protocol.OpMVCCCompact: k.handleMVCCCompact,
+		protocol.OpMVCCPut:           k.handleMVCCPut,
+		protocol.OpMVCCDelete:        k.handleMVCCDelete,
+		protocol.OpMVCCRange:         k.handleMVCCRange,
+		protocol.OpMVCCCompactPrefix: k.handleMVCCCompact,
 
 		// Transactions
 		protocol.OpTransaction: k.handleTransaction,

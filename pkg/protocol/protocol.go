@@ -77,9 +77,16 @@ const (
 	// Payload: [startLen:2 LE][start][endLen:2 LE][end][revision:8 LE][limit:8 LE][flags:1].
 	OpMVCCRange byte = 12
 
-	// OpMVCCCompact compacts revisions up to the specified revision.
-	// Payload: [revision:8 LE].
-	OpMVCCCompact byte = 13
+	// Opcode 13 was OpMVCCCompact, a compaction of the WHOLE store. It is
+	// retired, not reused: one store serves many tenants, and a compaction
+	// with no prefix discarded every tenant's history. A replica refuses it
+	// as an unknown opcode.
+
+	// OpMVCCCompactPrefix compacts the history of the keys beginning with a
+	// prefix -- one database's namespace -- up to the specified revision.
+	// Payload: [revision:8 LE][prefixLen:2 LE][prefix]. Emitted only once
+	// the cluster feature gate enables featuregate.PrefixCompaction.
+	OpMVCCCompactPrefix byte = 14
 
 	// Transaction operations (20-29).
 
@@ -496,12 +503,19 @@ func EncodeMVCCRange(start, end []byte, revision, limit int64, countOnly, keysOn
 	return buf, nil
 }
 
-// EncodeMVCCCompact creates a binary MVCC Compact command.
-// Format: [op:1][revision:8 LE].
-func EncodeMVCCCompact(revision int64) ([]byte, error) {
-	buf := make([]byte, headerSize+8)
-	buf[0] = OpMVCCCompact
-	binary.LittleEndian.PutUint64(buf[1:], uint64(revision))
+// EncodeMVCCCompactPrefix creates a binary MVCC compaction of the keys
+// beginning with prefix. Format: [op:1][revision:8 LE][prefixLen:2 LE][prefix].
+func EncodeMVCCCompactPrefix(prefix []byte, revision int64) ([]byte, error) {
+	if err := checkUint16Len(len(prefix), "compaction prefix"); err != nil {
+		return nil, err
+	}
+	buf := make([]byte, headerSize+8+2+len(prefix))
+	buf[0] = OpMVCCCompactPrefix
+	binary.LittleEndian.PutUint64(buf[1:9], uint64(revision)) //nolint:gosec // G115: two's-complement round trip, decoded back to int64
+	if err := putUint16Len(buf[9:11], len(prefix), "compaction prefix"); err != nil {
+		return nil, err
+	}
+	copy(buf[11:], prefix)
 	return buf, nil
 }
 
@@ -1270,12 +1284,20 @@ func DecodeMVCCRange(payload []byte) (MVCCRangeParams, error) {
 	}, nil
 }
 
-// DecodeMVCCCompact extracts the revision from an MVCC Compact payload.
-func DecodeMVCCCompact(payload []byte) (int64, error) {
-	if len(payload) < 8 {
-		return 0, &InvalidCommandError{Reason: "mvcc compact: payload too short"}
+// DecodeMVCCCompactPrefix extracts the prefix and revision from an
+// OpMVCCCompactPrefix payload. A payload whose length does not match its
+// prefix length exactly is refused: trailing bytes would mean a writer framed
+// something this decoder does not read.
+func DecodeMVCCCompactPrefix(payload []byte) (prefix []byte, revision int64, err error) {
+	if len(payload) < 10 {
+		return nil, 0, &InvalidCommandError{Reason: "mvcc compact: payload too short"}
 	}
-	return int64(binary.LittleEndian.Uint64(payload[0:8])), nil
+	revision = int64(binary.LittleEndian.Uint64(payload[0:8])) //nolint:gosec // G115: two's-complement round trip of the encoded int64
+	prefixLen := int(binary.LittleEndian.Uint16(payload[8:10]))
+	if 10+prefixLen != len(payload) {
+		return nil, 0, &InvalidCommandError{Reason: "mvcc compact: prefix length does not match payload"}
+	}
+	return payload[10:], revision, nil
 }
 
 // DecodeLeaseGrant extracts the TTL from a Lease Grant payload.

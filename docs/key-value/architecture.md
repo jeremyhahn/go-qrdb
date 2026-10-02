@@ -1,6 +1,6 @@
 # Key-Value Store — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
 
 ## Problem
 
@@ -161,6 +161,71 @@ refusal must not cost the shard its circuit breaker — an unimplemented verb
 that killed the group would take every later proposal with it, including plain
 `Put`. Both properties are asserted per engine, per mode and per transport by
 the conformance matrix in `sdk/go/conformance`.
+
+## MVCC compaction is per database
+
+Compaction discards a database's revision history up to a revision. It acts on
+**one database's keyspace and nothing else**, and only the tenant that owns the
+database can ask for it.
+
+The reason is the shared shard. Every prefix-isolated tenant's databases live
+in one MVCC store, whose revision counter is store-global. A compaction that
+discarded every key's history below a revision -- what `Compact` did before
+this rule -- destroyed the time-travel history of every tenant on the store,
+whoever asked for it. There is no tenant for whom that is acceptable, the
+platform operator included: no one compacts another tenant's history.
+
+So the store keeps a **compaction floor per keyspace prefix** instead of one
+floor for the whole store:
+
+```
+compact(prefix "acme/app/", revision 900)
+  deletes every data entry under "acme/app/" older than 900,
+          except each key's newest entry (its current state)
+  deletes the change-log entries of those keys at or below 900
+  records floor["acme/app/"] = 900
+
+GetAtRevision("acme/app/k", 850)  -> compacted   (floor of "acme/app/" is 900)
+GetAtRevision("beta/app/k", 850)  -> served      (no floor for "beta/app/")
+```
+
+- **The prefix is the resolver's, never the caller's.** A request names no
+  prefix. It resolves (tenant, database) through the service registry exactly as
+  a read or write does, and the database's namespaced view supplies its own
+  `<tenant>/<database>/` prefix. A raft-isolated tenant's database is its own
+  shard, so its view's prefix is empty and the floor covers that shard alone.
+- **A read is checked against the floors its keys fall under.** A point read
+  checks the floor of every prefix of its key; a range or watch checks every
+  floor whose keyspace it overlaps. On the shared shard those are the
+  database's own floor, so one tenant's compaction is invisible to another's
+  reads, watches and restores.
+- **Revisions remain store-global.** Compacting to revision `r` means "this
+  database's history before the store's revision `r`", the same number a
+  `CurrentRevision` or a watch reports. Retention by revision counts the
+  store's revisions, every tenant's writes included.
+- **There is no store-global compaction.** The raw service refuses `Compact`
+  with `service.CompactScopeRequiredError`; only a database's namespaced view
+  can compact, and only its own prefix. Keys outside every database namespace
+  (the node's internal `__sys:` records, the unscoped embedded client's keys)
+  are never compacted.
+- **Nothing compacts unless the owner asked.** Compaction runs on an explicit
+  `Compact` request from the owning tenant. There is no node-wide retention
+  setting.
+
+The command that carries it is a new Raft opcode, `OpMVCCCompactPrefix`,
+emitted only once the cluster feature gate reports that every replica of the
+group applies it (`featuregate.PrefixCompaction`). A replica that did not
+would refuse the entry while its peers applied it.
+
+### Alternatives rejected
+
+- **Reserve compaction to the system tenant** (the previous rule). Rejected:
+  the system tenant compacting the shared store still destroys every tenant's
+  history, which is a cross-tenant act no role may perform.
+- **A revision counter per database.** Rejected: revisions are the shard's
+  Raft-ordered sequence, and the etcd surface, watch cursors and restore all
+  speak in it. A per-prefix floor confines compaction without inventing a
+  second clock.
 
 ## What this feature deliberately does not do
 

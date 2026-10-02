@@ -45,6 +45,41 @@ func TestEscrowIsSelfStrict(t *testing.T) {
 	}
 }
 
+// TestMVCCCompactIsSelfStrict pins compaction to the caller's own tenant for
+// every identity. It was ScopeCross -- admitted only for, and to, the system
+// tenant -- while a compaction discarded the whole store's history; with a
+// compaction floor per database it is each tenant's act on its own history,
+// and a system lift onto another tenant's would be a cross-tenant act.
+func TestMVCCCompactIsSelfStrict(t *testing.T) {
+	s, err := LookupScope(MVCCCompact)
+	if err != nil {
+		t.Fatalf("LookupScope(%q): %v", MVCCCompact, err)
+	}
+	if s != ScopeSelfStrict {
+		t.Fatalf("LookupScope(%q) = %v, want ScopeSelfStrict", MVCCCompact, s)
+	}
+	if IsCrossScope(MVCCCompact) {
+		t.Fatal("mvcc:compact is still cross-scope")
+	}
+	if !IsRegistered(MVCCCompact) {
+		t.Fatal("mvcc:compact is not registered")
+	}
+}
+
+// TestMVCCReads_RemainSelfScope is a regression guard: only compaction moved.
+// The revision-aware read verbs stay ScopeSelf.
+func TestMVCCReads_RemainSelfScope(t *testing.T) {
+	for _, p := range []Permission{MVCCPutWithLease, MVCCGetRevision, MVCCGetAtRevision, MVCCRange, MVCCCurrentRevision} {
+		s, err := LookupScope(p)
+		if err != nil {
+			t.Fatalf("LookupScope(%q): %v", p, err)
+		}
+		if s != ScopeSelf {
+			t.Errorf("LookupScope(%q) = %v, want ScopeSelf", p, s)
+		}
+	}
+}
+
 // TestSelfStrictIsDistinctFromItsNeighbours guards the one confusion this
 // scope invites: that it is a synonym for one of the two it sits between.
 func TestSelfStrictIsDistinctFromItsNeighbours(t *testing.T) {

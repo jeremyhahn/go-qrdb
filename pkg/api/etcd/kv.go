@@ -17,8 +17,10 @@ package etcd
 import (
 	"bytes"
 	"context"
+	"errors"
 
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -87,7 +89,7 @@ func (s *kvServer) Range(ctx context.Context, req *pb.RangeRequest) (*pb.RangeRe
 
 	kvs, count, _, err := s.mvccSvc.Range(ctx, start, end, opts...)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "range: %v", err)
+		return nil, revisionStatus("range", err)
 	}
 
 	return &pb.RangeResponse{
@@ -238,10 +240,12 @@ func (s *kvServer) Txn(ctx context.Context, req *pb.TxnRequest) (*pb.TxnResponse
 	}, nil
 }
 
-// Compact handles etcd Compact requests.
+// Compact handles etcd Compact requests. The listener's MVCC service is its
+// database's namespaced view, so this compacts that database's history and
+// nothing else.
 func (s *kvServer) Compact(ctx context.Context, req *pb.CompactionRequest) (*pb.CompactionResponse, error) {
 	if err := s.mvccSvc.Compact(ctx, req.Revision); err != nil {
-		return nil, status.Errorf(codes.Internal, "compact: %v", err)
+		return nil, revisionStatus("compact", err)
 	}
 
 	return &pb.CompactionResponse{
@@ -325,4 +329,22 @@ func keepsRevisionHistory(svc service.MVCCKVServicer) bool {
 		return r.KeepsRevisionHistory()
 	}
 	return true
+}
+
+// revisionStatus answers a revision refusal with etcd's own gRPC error, so an
+// etcd client -- kube-apiserver's compactor and its watch-cache relist among
+// them -- reads it exactly as it would from etcd: a revision at or below the
+// database's compaction floor is rpctypes.ErrGRPCCompacted, and a compaction
+// above the current revision rpctypes.ErrGRPCFutureRev. Any other failure
+// keeps the listener's existing Internal answer, prefixed with op.
+func revisionStatus(op string, err error) error {
+	var compacted *service.RevisionCompactedError
+	if errors.As(err, &compacted) {
+		return rpctypes.ErrGRPCCompacted
+	}
+	var future *service.CompactRevisionFutureError
+	if errors.As(err, &future) {
+		return rpctypes.ErrGRPCFutureRev
+	}
+	return status.Error(codes.Internal, op+": "+err.Error())
 }

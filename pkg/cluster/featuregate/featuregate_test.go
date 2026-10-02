@@ -528,8 +528,8 @@ func TestNew_Validates(t *testing.T) {
 
 // The advertised names are exactly this binary's features.
 func TestSupported(t *testing.T) {
-	assert.Equal(t, []Feature{GuardedWrites, ClusterShardIDs}, Supported())
-	assert.Equal(t, []string{string(GuardedWrites), string(ClusterShardIDs)}, SupportedNames())
+	assert.Equal(t, []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction}, Supported())
+	assert.Equal(t, []string{string(GuardedWrites), string(ClusterShardIDs), string(PrefixCompaction)}, SupportedNames())
 }
 
 // fakeReader is a quicraft membership reader.

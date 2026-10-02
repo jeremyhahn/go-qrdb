@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
@@ -85,9 +86,11 @@ type MVCCKVServicer interface {
 	// performed at are returned alongside the results.
 	RangeWithConsistency(ctx context.Context, start, end []byte, opts consistency.ReadOptions, rangeOpts ...RangeOption) ([]*KeyValue, int64, int64, error)
 
-	// Compact discards all MVCC revisions older than the specified
-	// revision, reclaiming storage. Compacted revisions can no longer
-	// be read via GetAtRevision or watched via WithStartRevision.
+	// Compact discards this service's keyspace's MVCC history at or below
+	// revision -- one database's, never the store's -- reclaiming storage.
+	// Compacted revisions can no longer be read via GetAtRevision or watched
+	// via WithStartRevision. The raw shard service has no keyspace of its own
+	// and refuses with *CompactScopeRequiredError.
 	Compact(ctx context.Context, revision int64) error
 
 	// CurrentRevision returns the latest committed MVCC revision.
@@ -812,10 +815,46 @@ func (s *MVCCKVService) RangeWithConsistency(ctx context.Context, start, end []b
 	return rr.KeyValues, rr.Count, rr.Revision, nil
 }
 
-// Compact discards all MVCC revisions older than the specified revision
-// through Raft consensus.
-func (s *MVCCKVService) Compact(ctx context.Context, revision int64) error {
-	cmd, encErr := protocol.EncodeMVCCCompact(revision)
+// Compact refuses with *CompactScopeRequiredError. This service is the raw
+// shard, shared on the system store by every prefix-isolated tenant, and
+// compacting it whole would discard every tenant's history. A database is
+// compacted through its namespaced view, which calls CompactPrefix with the
+// database's own prefix.
+func (s *MVCCKVService) Compact(context.Context, int64) error {
+	return &CompactScopeRequiredError{}
+}
+
+// PrefixCompactor compacts the MVCC history of the keys under one prefix. It
+// is the seam a database's namespaced view compacts through: the view, not
+// the caller, supplies the prefix.
+type PrefixCompactor interface {
+	// CompactPrefix discards the history at or below revision of the keys
+	// beginning with prefix, keeping each key's current state.
+	CompactPrefix(ctx context.Context, prefix string, revision int64) error
+}
+
+// Compile-time interface check.
+var _ PrefixCompactor = (*MVCCKVService)(nil)
+
+// CompactPrefix discards, through Raft consensus, the history at or below
+// revision of the keys beginning with prefix. It is called by a database's
+// namespaced view with the database's own "<tenant>/<database>/" prefix, or
+// with the empty prefix for a dedicated shard that is one database's whole
+// keyspace.
+//
+// A revision below 1 is refused before anything is proposed; a revision above
+// the current one, or at or below the database's floor, is refused by the
+// state machine (*CompactRevisionFutureError, *RevisionCompactedError) and
+// changes nothing. The command is proposed only once the group's feature gate
+// reports every replica can apply it (*FeatureNotEnabledError otherwise).
+func (s *MVCCKVService) CompactPrefix(ctx context.Context, prefix string, revision int64) error {
+	if revision < 1 {
+		return &CompactRevisionInvalidError{Revision: revision}
+	}
+	if gated, ok := s.host.(FeatureGatedHost); ok && !gated.FeatureEnabled(s.shardID, featuregate.PrefixCompaction) {
+		return &FeatureNotEnabledError{Feature: featuregate.PrefixCompaction, ShardID: s.shardID}
+	}
+	cmd, encErr := protocol.EncodeMVCCCompactPrefix([]byte(prefix), revision)
 	if encErr != nil {
 		return &EncodeRequestError{Err: encErr}
 	}

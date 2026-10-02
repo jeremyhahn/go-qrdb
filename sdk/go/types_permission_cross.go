@@ -96,11 +96,6 @@ const (
 	// PermissionRegistrationConfigUpdate ("registration_config:update")
 	// changes the platform-wide self-service registration policy.
 	PermissionRegistrationConfigUpdate = permission.RegistrationConfigUpdate
-
-	// PermissionMVCCCompact ("mvcc:compact") compacts MVCC history. It is
-	// cross-scope because compaction acts on the whole store, not on one
-	// tenant's namespace.
-	PermissionMVCCCompact = permission.MVCCCompact
 )
 
 // The named-credential permissions are cross-scope because the credential

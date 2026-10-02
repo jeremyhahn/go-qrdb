@@ -100,8 +100,6 @@ discovery:
 mvcc:
   # enabled: narrows the feature in either mode. Omitted (null) means enabled.
   # enabled: true
-  compaction_retention: 1000
-  revision_limit: 0
 
 watch:
   # enabled: same semantics as mvcc.enabled.
@@ -464,21 +462,16 @@ detail in [discovery.md](clustering/architecture.md).
 
 Configures the MVCC (Multi-Version Concurrency Control) versioned key-value engine. This section applies when `raft.sm_type` is set to `mvcc`.
 
-| Field                  | Type  | Default | Description                                                |
-|------------------------|-------|---------|------------------------------------------------------------|
-| `compaction_retention` | int64 | `1000`  | Minimum number of revisions to retain after compaction      |
-| `revision_limit`       | int64 | `0`     | Maximum historical revisions to retain per key              |
+| Field     | Type | Default | Description                                   |
+|-----------|------|---------|-----------------------------------------------|
+| `enabled` | bool | (raft)  | Raft-only toggle; omitted means enabled in raft mode |
 
-**Validation rules:**
-
-- `compaction_retention` must not be negative (>= 0).
-- `revision_limit` must not be negative (>= 0).
-
-**Notes:**
-
-- Setting `compaction_retention` to `0` disables automatic compaction retention.
-- Setting `revision_limit` to `0` means unlimited revisions are retained per key.
-- The `compaction_retention` value determines how many revisions survive a compaction pass. For example, with a retention of `1000`, at least the most recent 1000 revisions across all keys are preserved.
+There is no node-wide history retention. MVCC history is compacted per
+database, only by the tenant that owns it: an explicit `Compact`, or the
+database's own compaction policy. See
+[key-value/engineering.md](key-value/engineering.md). *(Corrected: this section
+documented `compaction_retention` and `revision_limit`; nothing read either
+key, and both are removed.)*
 
 **Features requiring `raft.sm_type: mvcc`:**
 
@@ -1233,10 +1226,6 @@ logging:
 discovery:
   method: "static"
 
-mvcc:
-  compaction_retention: 5000
-  revision_limit: 100
-
 watch:
   buffer_size: 4096
   max_watchers: 10000
@@ -1262,8 +1251,6 @@ timeseries:
 - **`storage.cache_size: 4294967296`** -- Allocates 4 GB to the PebbleDB block cache to minimize disk reads for hot keys.
 - **`storage.wal_dir: "/mnt/nvme/qrdb-wal"`** -- Isolates WAL writes on a dedicated NVMe device to eliminate I/O contention with SSTable compaction.
 - **`storage.max_open_files: 16384`** -- Raises the file descriptor limit to handle large LSM trees without thrashing.
-- **`mvcc.compaction_retention: 5000`** -- Retains 5000 revisions after compaction, balancing history depth with storage efficiency.
-- **`mvcc.revision_limit: 100`** -- Caps per-key revision history to 100 entries, preventing unbounded growth for frequently updated keys.
 - **`watch.buffer_size: 4096`** -- Large event buffers reduce back-pressure on the watch publisher under bursty write loads.
 - **`watch.max_watchers: 10000`** -- Caps concurrent watchers to bound memory allocation.
 - **`lease.max_ttl: 86400`** -- Prevents clients from acquiring leases longer than 24 hours.

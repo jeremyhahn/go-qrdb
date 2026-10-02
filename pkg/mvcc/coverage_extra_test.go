@@ -268,44 +268,6 @@ func TestRaftStorage_DeleteAtRevision_KeyNotFound(t *testing.T) {
 // RaftStorage.Compact — iterator with older revisions (delete branch)
 // ---------------------------------------------------------------------------
 
-func TestRaftStorage_Compact_DeletesOldRevisions(t *testing.T) {
-	s := newTestRaftStorage(t)
-	ctx := context.Background()
-
-	// Write the same key multiple times to create multiple revisions.
-	_, _, err := s.Put(ctx, []byte("ckey"), []byte("v1"))
-	if err != nil {
-		t.Fatalf("Put v1: %v", err)
-	}
-	_, _, err = s.Put(ctx, []byte("ckey"), []byte("v2"))
-	if err != nil {
-		t.Fatalf("Put v2: %v", err)
-	}
-	rev2 := s.RaftCurrentRevision()
-
-	_, _, err = s.Put(ctx, []byte("ckey"), []byte("v3"))
-	if err != nil {
-		t.Fatalf("Put v3: %v", err)
-	}
-
-	// Compact up to rev2 — should remove old revision of ckey.
-	if err := s.Compact(rev2); err != nil {
-		t.Fatalf("Compact: %v", err)
-	}
-	if s.CompactedRevision() != rev2 {
-		t.Errorf("CompactedRevision: got %d, want %d", s.CompactedRevision(), rev2)
-	}
-
-	// Latest value should still be readable.
-	kv, err := s.Get(ctx, []byte("ckey"), 0)
-	if err != nil {
-		t.Fatalf("Get after compact: %v", err)
-	}
-	if string(kv.Value) != "v3" {
-		t.Errorf("expected v3, got %q", kv.Value)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // RaftStorage.Close — persist revision error path
 // ---------------------------------------------------------------------------
@@ -717,7 +679,7 @@ func TestStore_LoadCompacted_WithPersistedValue(t *testing.T) {
 
 	// Pre-seed a compacted revision so loadCompacted decodes it.
 	rev := int64(10)
-	if err := store.Set(CompactedKey(), EncodeRevision(rev)); err != nil {
+	if err := store.Set(CompactionFloorKey(nil), EncodeRevision(rev)); err != nil {
 		t.Fatalf("seed CompactedKey: %v", err)
 	}
 
@@ -725,7 +687,7 @@ func TestStore_LoadCompacted_WithPersistedValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if got := s.CompactedRevision(); got != rev {
+	if got := s.CompactionFloor(nil); got != rev {
 		t.Errorf("CompactedRevision: got %d, want %d", got, rev)
 	}
 }

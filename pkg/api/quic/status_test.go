@@ -325,6 +325,10 @@ var conditions = []conditionRow{
 	// --- state, not merits ---------------------------------------------
 	{"consistency unmet", &service.ConsistencyError{Level: "linearizable", Reason: "no quorum"}, wire.StatusFailedPrecondition, codes.FailedPrecondition},
 	{"PIN not set", pin.ErrPINNotSet, wire.StatusFailedPrecondition, codes.FailedPrecondition},
+	{"compaction without a database scope", &service.CompactScopeRequiredError{}, wire.StatusFailedPrecondition, codes.FailedPrecondition},
+	{"compaction feature not yet enabled", &service.FeatureNotEnabledError{Feature: "prefix-compaction", ShardID: 1}, wire.StatusFailedPrecondition, codes.FailedPrecondition},
+	{"compaction to a future revision", &service.CompactRevisionFutureError{Requested: 9, Current: 3}, wire.StatusInvalidArgument, codes.InvalidArgument},
+	{"compaction to revision zero", &service.CompactRevisionInvalidError{Revision: 0}, wire.StatusInvalidArgument, codes.InvalidArgument},
 	{"PIN strategy unset", pin.ErrStrategyNotSet, wire.StatusFailedPrecondition, codes.FailedPrecondition},
 	{"replica on a node without the group's features", &featuregate.UnsupportedReplicaError{ShardID: 1, Address: "n3:1", Feature: featuregate.GuardedWrites}, wire.StatusFailedPrecondition, codes.FailedPrecondition},
 
@@ -355,7 +359,6 @@ var conditions = []conditionRow{
 
 	// --- authority --------------------------------------------------------
 	{"not the lock holder", &lock.NotLockHolderError{Key: "k", ExpectedToken: 1}, wire.StatusPermissionDenied, codes.PermissionDenied},
-	{"compaction is system only", &service.CompactSystemOnlyError{TenantID: "t"}, wire.StatusPermissionDenied, codes.PermissionDenied},
 	{"restore reached an internal key", &service.RestoreInternalKeyError{}, wire.StatusPermissionDenied, codes.PermissionDenied},
 
 	// --- identity ----------------------------------------------------------

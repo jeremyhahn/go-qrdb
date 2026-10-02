@@ -1,6 +1,6 @@
 # etcd Compatibility — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
 
 > **Build-tag gated: `qrdb_etcd`** (`WITH_QRDB_ETCD=1`, on by default). Disable
 > with `WITH_QRDB_ETCD=0`.
@@ -45,7 +45,7 @@ The etcd gRPC services map to QRDB service layer calls:
 | `KV` | `Put` | `MVCCKVService.PutWithLease` | `kv:put` |
 | `KV` | `DeleteRange` | `MVCCKVService.Delete` | `kv:delete` |
 | `KV` | `Txn` | `TransactionService.Execute` | `transaction:execute` |
-| `KV` | `Compact` | `MVCCKVService.Compact` | `mvcc:compact` (system tenant only) |
+| `KV` | `Compact` | `MVCCKVService.Compact` (this database only) | `mvcc:compact` |
 | `Watch` | `Watch` | `WatchService.Watch` / `WatchPrefix` | `watch:watch_prefix` |
 | `Lease` | `LeaseGrant` | `LeaseService.Grant` | `lease:grant` |
 | `Lease` | `LeaseRevoke` | `LeaseService.Revoke` | `lease:revoke` |
@@ -81,8 +81,17 @@ types (`service.KeyValue`, `service.RangeOptions`, …).
 - **The listener refuses to start without TLS and an authorizer**
   (`etcd.AuthRequiredError`), and the composer refuses without a database
   catalog or service registry (`etcd.ScopeUnavailableError`).
-- **`Compact` is system-tenant only on the shared shard.** Revisions there are
-  store-global, so the namespaced MVCC service refuses a non-system caller.
+- **`Compact` compacts this database's history only.** The namespaced MVCC
+  service compacts the database's own `<tenant>/<database>/` prefix (its whole
+  shard under raft isolation); revisions stay store-global on the shared shard,
+  and the compaction floor is per database. The owning tenant's identities
+  holding `mvcc:compact` may compact; no other tenant may, the system tenant
+  included.
+- **`Compact` answers with etcd's revision errors.** A revision the database is
+  already compacted to is `rpctypes.ErrGRPCCompacted`, one above the current
+  revision `rpctypes.ErrGRPCFutureRev` (both `OUT_OF_RANGE`, etcd's own
+  messages), so `kube-apiserver`'s compactor reads them exactly as it would
+  from etcd.
 
 ## Error semantics
 
@@ -99,6 +108,7 @@ types (`service.KeyValue`, `service.RangeOptions`, …).
 | Database sealed or dropped after the listener started | `UNAVAILABLE` / `NOT_FOUND` on the next RPC, and open streams end with it | **yes** |
 | Missing permission for the mapped operation | permission denied on the RPC | **yes** |
 | Compacted revision requested | etcd's compacted-revision error | **yes** |
+| `Compact` to a revision already compacted, or above the current one | `ErrGRPCCompacted` / `ErrGRPCFutureRev`; nothing changes | **yes** |
 | Barrier sealed | requests refused | **yes** |
 | The state machine keeps no MVCC revision history (the default `pebble`) | the server refuses to start (`RevisionHistoryRequiredError`); a `Put` that reaches one is `FailedPrecondition`, never revision 0 | **yes** |
 

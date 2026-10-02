@@ -59,7 +59,7 @@ func (m *kvMockMVCCStore) Range(start, end []byte, revision, limit int64, countO
 	return nil, 0, nil
 }
 
-func (m *kvMockMVCCStore) Compact(revision int64) error {
+func (m *kvMockMVCCStore) Compact(prefix []byte, revision int64) error {
 	m.compactCalled = true
 	return nil
 }
@@ -263,7 +263,7 @@ func TestKVDispatch_MVCCCompact(t *testing.T) {
 	mvcc := &kvMockMVCCStore{}
 	k := newTestKVSM(WithKVMVCCStore(mvcc))
 
-	cmd := mustEncode(protocol.EncodeMVCCCompact(10))
+	cmd := mustEncode(protocol.EncodeMVCCCompactPrefix(nil, 10))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 

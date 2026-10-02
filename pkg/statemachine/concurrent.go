@@ -183,10 +183,10 @@ func NewConcurrentStateMachine(shardID, replicaID uint64, store storage.Storage,
 		protocol.OpGuarded: c.handleGuarded,
 
 		// MVCC
-		protocol.OpMVCCPut:     c.handleMVCCPut,
-		protocol.OpMVCCDelete:  c.handleMVCCDelete,
-		protocol.OpMVCCRange:   c.handleMVCCRange,
-		protocol.OpMVCCCompact: c.handleMVCCCompact,
+		protocol.OpMVCCPut:           c.handleMVCCPut,
+		protocol.OpMVCCDelete:        c.handleMVCCDelete,
+		protocol.OpMVCCRange:         c.handleMVCCRange,
+		protocol.OpMVCCCompactPrefix: c.handleMVCCCompact,
 
 		// Transactions
 		protocol.OpTransaction: c.handleTransaction,

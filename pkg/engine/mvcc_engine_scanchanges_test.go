@@ -16,10 +16,12 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/mvcc"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -245,14 +247,27 @@ func TestMVCCEngine_ScanChanges_FailsClosedBelowCompactionFloor(t *testing.T) {
 		mvccPutEntry(2, []byte("app/a"), []byte("v2"), 0),
 	})
 	floor := eng.store.CurrentRevision()
-	if err := eng.store.Compact(floor); err != nil {
+	if err := eng.store.CompactPrefix([]byte("app/"), floor); err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
 
 	// Compaction garbage-collects the index entries at or below the floor, so
-	// a scan of the compacted window reports nothing rather than stale keys.
-	result := scanChanges(t, eng, service.MVCCScanChangesQuery{StartRevision: 1, EndRevision: floor})
+	// a scan of the compacted window would report an empty -- incomplete --
+	// set as if nothing had changed. It is refused instead, as a historical
+	// read below the floor is.
+	_, err := eng.Lookup(context.Background(), service.MVCCScanChangesQuery{StartRevision: 1, EndRevision: floor, Prefix: []byte("app/")})
+	var compacted *mvcc.RevisionCompactedError
+	if !errors.As(err, &compacted) || compacted.Compacted != floor {
+		t.Fatalf("scan of a compacted window = %v, want *mvcc.RevisionCompactedError at floor %d", err, floor)
+	}
+
+	// Another prefix's change log is untouched by that compaction, and a
+	// window above the floor still scans.
+	applyEntries(t, eng, []sm.Entry{mvccPutEntry(3, []byte("other/b"), []byte("v1"), 0)})
+	result := scanChanges(t, eng, service.MVCCScanChangesQuery{StartRevision: 1, EndRevision: 100, Prefix: []byte("other/")})
+	assertKeys(t, "other prefix", result.Keys, []string{"other/b"})
+	result = scanChanges(t, eng, service.MVCCScanChangesQuery{StartRevision: floor + 1, EndRevision: 100, Prefix: []byte("app/")})
 	if len(result.Keys) != 0 {
-		t.Fatalf("compacted window still yields keys: %v", result.Keys)
+		t.Fatalf("window above the floor = %v, want nothing (no change since)", result.Keys)
 	}
 }

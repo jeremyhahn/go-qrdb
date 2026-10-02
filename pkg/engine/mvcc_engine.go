@@ -575,28 +575,28 @@ func (e *MVCCEngine) Close(_ context.Context) error {
 // buildUpdateHandlers constructs the op code to handler dispatch map.
 func (e *MVCCEngine) buildUpdateHandlers() map[byte]mvccHandler {
 	return map[byte]mvccHandler{
-		kv.OpPut:                    e.handleBaseKVPut,
-		kv.OpPutIfAbsent:            e.handleBaseKVPutIfAbsent,
-		kv.OpDelete:                 e.handleBaseKVDelete,
-		protocol.OpMVCCPut:          e.handleMVCCPut,
-		protocol.OpMVCCPutIfAbsent:  e.handleMVCCPutIfAbsent,
-		protocol.OpMVCCDelete:       e.handleMVCCDelete,
-		protocol.OpMVCCCompact:      handleMVCCCompact,
-		protocol.OpTransaction:      e.handleTransaction,
-		protocol.OpCompareAndDelete: e.handleCompareAndDelete,
-		protocol.OpCompareAndSwap:   e.handleCompareAndSwap,
-		protocol.OpGuarded:          e.handleGuarded,
-		protocol.OpBatch:            e.handleBatch,
-		protocol.OpLeaseGrant:       handleLeaseGrant,
-		protocol.OpLeaseRevoke:      e.handleLeaseRevoke,
-		protocol.OpLeaseKeepAlive:   handleLeaseKeepAlive,
-		protocol.OpIndexCreate:      e.handleIndexCreate,
-		protocol.OpIndexDrop:        e.handleIndexDrop,
-		protocol.OpTSWrite:          e.handleTSWrite,
-		protocol.OpTSWriteBatch:     e.handleTSWriteBatch,
-		protocol.OpTSWritePoint:     e.handleTSWritePoint,
-		protocol.OpTSDeleteSeries:   e.handleTSDeleteSeries,
-		protocol.OpTSSetRetention:   e.handleTSSetRetention,
+		kv.OpPut:                     e.handleBaseKVPut,
+		kv.OpPutIfAbsent:             e.handleBaseKVPutIfAbsent,
+		kv.OpDelete:                  e.handleBaseKVDelete,
+		protocol.OpMVCCPut:           e.handleMVCCPut,
+		protocol.OpMVCCPutIfAbsent:   e.handleMVCCPutIfAbsent,
+		protocol.OpMVCCDelete:        e.handleMVCCDelete,
+		protocol.OpMVCCCompactPrefix: handleMVCCCompactPrefix,
+		protocol.OpTransaction:       e.handleTransaction,
+		protocol.OpCompareAndDelete:  e.handleCompareAndDelete,
+		protocol.OpCompareAndSwap:    e.handleCompareAndSwap,
+		protocol.OpGuarded:           e.handleGuarded,
+		protocol.OpBatch:             e.handleBatch,
+		protocol.OpLeaseGrant:        handleLeaseGrant,
+		protocol.OpLeaseRevoke:       e.handleLeaseRevoke,
+		protocol.OpLeaseKeepAlive:    handleLeaseKeepAlive,
+		protocol.OpIndexCreate:       e.handleIndexCreate,
+		protocol.OpIndexDrop:         e.handleIndexDrop,
+		protocol.OpTSWrite:           e.handleTSWrite,
+		protocol.OpTSWriteBatch:      e.handleTSWriteBatch,
+		protocol.OpTSWritePoint:      e.handleTSWritePoint,
+		protocol.OpTSDeleteSeries:    e.handleTSDeleteSeries,
+		protocol.OpTSSetRetention:    e.handleTSSetRetention,
 	}
 }
 
@@ -1162,21 +1162,48 @@ func (e *MVCCEngine) handleMVCCDelete(s *mvcc.Store, lr *lease.Lessor, batch sto
 	return sm.Result{Value: uint64(rev)}, notifs, nil
 }
 
-// handleMVCCCompact processes an MVCC Compact command. The compaction is
+// handleMVCCCompactPrefix processes an OpMVCCCompactPrefix command: a
+// compaction of the keys under one prefix -- one database's namespace, or the
+// empty prefix of a shard that is one database's keyspace. The compaction is
 // queued into the apply batch: it must see the revisions earlier entries in
 // the same batch wrote, and it must become durable in the same commit as they
 // do rather than one step ahead of them.
-func handleMVCCCompact(s *mvcc.Store, _ *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
-	revision, err := protocol.DecodeMVCCCompact(payload)
+//
+// A revision out of range is a deterministic consequence of the command, so it
+// is answered with a compaction refusal in the result rather than a Go error,
+// which would halt the group.
+func handleMVCCCompactPrefix(s *mvcc.Store, _ *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
+	prefix, revision, err := protocol.DecodeMVCCCompactPrefix(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
 
-	if err := s.CompactInBatch(batch, revision); err != nil {
+	if err := s.CompactPrefixInBatch(batch, prefix, revision); err != nil {
+		if refusal, ok := compactRefusal(err); ok {
+			return sm.Result{Data: refusal}, nil, nil
+		}
 		return sm.Result{}, nil, err
 	}
 
 	return sm.Result{Value: 1}, nil, nil
+}
+
+// compactRefusal encodes the mvcc store's refusal of a compaction's revision
+// as the protocol's compaction refusal, and reports false for any other error.
+func compactRefusal(err error) ([]byte, bool) {
+	var invalid *mvcc.CompactRevisionInvalidError
+	if errors.As(err, &invalid) {
+		return protocol.EncodeCompactRefusal(protocol.CompactRefusalInvalid, invalid.Revision, 0), true
+	}
+	var future *mvcc.CompactRevisionFutureError
+	if errors.As(err, &future) {
+		return protocol.EncodeCompactRefusal(protocol.CompactRefusalFuture, future.Requested, future.Current), true
+	}
+	var compacted *mvcc.RevisionCompactedError
+	if errors.As(err, &compacted) {
+		return protocol.EncodeCompactRefusal(protocol.CompactRefusalCompacted, compacted.Requested, compacted.Compacted), true
+	}
+	return nil, false
 }
 
 // ---------------------------------------------------------------------------
@@ -1836,6 +1863,13 @@ func skipInternalKeyFilter(prefix string) bool {
 // a complete one.
 func (e *MVCCEngine) scanChanges(q service.MVCCScanChangesQuery) (*service.MVCCScanChangesResult, error) {
 	result := &service.MVCCScanChangesResult{Revision: e.store.CurrentRevision()}
+
+	// The change log of a compacted keyspace is gone at and below its floor,
+	// so a window starting there would report an incomplete set of changed
+	// keys as if it were complete. Refuse it, as a historical read is refused.
+	if floor := e.store.CompactedRevisionForPrefix(q.Prefix); q.StartRevision <= floor {
+		return nil, &mvcc.RevisionCompactedError{Requested: q.StartRevision, Compacted: floor}
+	}
 
 	prefix := string(q.Prefix)
 	seen := make(map[string]struct{})

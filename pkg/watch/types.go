@@ -128,9 +128,17 @@ type HistoryReplayer interface {
 	// that shard.
 	CurrentRevision() int64
 
-	// CompactedRevision returns the highest revision that has been compacted
-	// away; a start revision at or below it can no longer be replayed.
-	CompactedRevision() int64
+	// CompactedRevision returns the highest revision compacted away from the
+	// watched keys: a start revision at or below it can no longer be
+	// replayed. rangeEnd follows the watcher's convention -- nil for the
+	// single key key, an empty non-nil slice for every key at or after key,
+	// otherwise [key, rangeEnd).
+	//
+	// Compaction floors are per keyspace prefix (one per database), so this
+	// is the highest floor covering the watched range, never a store-wide
+	// one: another database's compaction does not refuse or cancel this
+	// watch. Like CurrentRevision it must not block.
+	CompactedRevision(key, rangeEnd []byte) int64
 
 	// Replay invokes fn for each change with startRev <= revision <= endRev, in
 	// ascending revision order (and ascending key order within a revision),

@@ -72,7 +72,7 @@ func (f *fakeHistory) CurrentRevision() int64 {
 	return f.current
 }
 
-func (f *fakeHistory) CompactedRevision() int64 {
+func (f *fakeHistory) CompactedRevision(_, _ []byte) int64 {
 	v := f.compacted
 	f.compactedReadOnce.Do(func() {
 		if f.compactedRead != nil {

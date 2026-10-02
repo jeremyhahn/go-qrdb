@@ -23,109 +23,110 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
-// compactRecordingMVCC is an inner MVCCKVServicer that records whether its
-// store-global Compact was reached and at which revision. It embeds the
-// interface so only Compact (and CurrentRevision) need real bodies for these
-// tests; any other method call would panic, proving the guard short-circuits
-// before touching the shared store.
+// compactRecordingMVCC is an inner MVCCKVServicer shaped like the raw shard
+// service: Compact is its store-global form, which the real service refuses
+// and which a namespaced view must never reach, and CompactPrefix is the
+// per-prefix compaction the view is meant to use. It embeds the interface so
+// any other method call panics, proving Compact touches nothing else.
 type compactRecordingMVCC struct {
 	service.MVCCKVServicer
-	compacted     bool
-	compactedRev  int64
-	compactCalls  int
+	globalCalls   int
+	prefixes      []string
+	revisions     []int64
 	compactReturn error
 }
 
-func (m *compactRecordingMVCC) Compact(_ context.Context, revision int64) error {
-	m.compacted = true
-	m.compactedRev = revision
-	m.compactCalls++
+var _ service.PrefixCompactor = (*compactRecordingMVCC)(nil)
+
+func (m *compactRecordingMVCC) Compact(context.Context, int64) error {
+	m.globalCalls++
+	return &service.CompactScopeRequiredError{}
+}
+
+func (m *compactRecordingMVCC) CompactPrefix(_ context.Context, prefix string, revision int64) error {
+	m.prefixes = append(m.prefixes, prefix)
+	m.revisions = append(m.revisions, revision)
 	return m.compactReturn
 }
 
-func (m *compactRecordingMVCC) CurrentRevision(_ context.Context) (int64, error) {
-	return 0, nil
+// globalOnlyMVCC is an inner service with no per-prefix compaction at all.
+type globalOnlyMVCC struct {
+	service.MVCCKVServicer
+	globalCalls int
 }
 
-// TestNamespacedMVCC_Compact_NonSystemTenantRejected proves that a non-system
-// tenant's Compact is rejected at the namespaced data-plane view with a typed
-// *service.CompactSystemOnlyError and NEVER reaches the shared inner store.
-// MVCC revisions are a store-global counter, so forwarding a tenant Compact
-// would discard every other tenant's historical revisions.
-func TestNamespacedMVCC_Compact_NonSystemTenantRejected(t *testing.T) {
-	for _, tenantID := range []string{"tenantA", "acme", "another-tenant"} {
+func (m *globalOnlyMVCC) Compact(context.Context, int64) error {
+	m.globalCalls++
+	return nil
+}
+
+// TestNamespacedMVCC_Compact_CompactsOnlyItsOwnPrefix is the data-plane half
+// of the per-tenant compaction rule: every tenant -- the system tenant
+// included -- compacts exactly its own (tenant, database) namespace through
+// the view, and the store-global compaction is never reached.
+func TestNamespacedMVCC_Compact_CompactsOnlyItsOwnPrefix(t *testing.T) {
+	for _, tenantID := range []string{"tenantA", "acme", tenant.SystemTenantID} {
 		t.Run(tenantID, func(t *testing.T) {
 			inner := &compactRecordingMVCC{}
-			w := newNamespacedMVCCService(inner, tenantID+"/db/", nil)
+			prefix := tenant.ComposeNamespace(tenantID, "db")
+			w := newNamespacedMVCCService(inner, prefix, nil)
 			ctx := tenant.WithTenantID(context.Background(), tenantID)
 
-			err := w.Compact(ctx, 42)
-			if err == nil {
-				t.Fatal("Compact() returned nil error for a non-system tenant; want *service.CompactSystemOnlyError")
+			if err := w.Compact(ctx, 42); err != nil {
+				t.Fatalf("Compact: %v", err)
 			}
-			var cso *service.CompactSystemOnlyError
-			if !errors.As(err, &cso) {
-				t.Fatalf("Compact() error type = %T (%v), want *service.CompactSystemOnlyError", err, err)
+			if inner.globalCalls != 0 {
+				t.Fatalf("CROSS-TENANT COMPACTION: the store-global Compact was reached %d time(s)", inner.globalCalls)
 			}
-			if cso.TenantID != tenantID {
-				t.Fatalf("CompactSystemOnlyError.TenantID = %q, want %q", cso.TenantID, tenantID)
-			}
-			if inner.compacted || inner.compactCalls != 0 {
-				t.Fatalf("CROSS-TENANT COMPACT LEAK: inner store Compact reached (calls=%d, rev=%d) for tenant %q",
-					inner.compactCalls, inner.compactedRev, tenantID)
+			if len(inner.prefixes) != 1 || inner.prefixes[0] != prefix || inner.revisions[0] != 42 {
+				t.Fatalf("CompactPrefix calls = %q at %v, want exactly [%q] at 42", inner.prefixes, inner.revisions, prefix)
 			}
 		})
 	}
 }
 
-// TestNamespacedMVCC_Compact_SystemTenantAllowed proves the legitimate admin
-// path is preserved: a system-tenant caller's Compact is forwarded unchanged
-// to the shared inner store at the requested revision.
-func TestNamespacedMVCC_Compact_SystemTenantAllowed(t *testing.T) {
+// TestNamespacedMVCC_Compact_DedicatedShardCompactsItsWholeKeyspace pins the
+// raft-isolated case: the view's prefix is empty because the shard IS the
+// database's keyspace, and it compacts that shard -- through the per-prefix
+// path, still never the store-global one.
+func TestNamespacedMVCC_Compact_DedicatedShardCompactsItsWholeKeyspace(t *testing.T) {
 	inner := &compactRecordingMVCC{}
-	w := newNamespacedMVCCService(inner, tenant.SystemTenantID+"/system/", nil)
-	ctx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
+	w := newNamespacedMVCCService(inner, "", nil)
 
-	if err := w.Compact(ctx, 7); err != nil {
-		t.Fatalf("Compact() as system tenant returned error: %v", err)
+	if err := w.Compact(tenant.WithTenantID(context.Background(), "acme"), 9); err != nil {
+		t.Fatalf("Compact: %v", err)
 	}
-	if !inner.compacted {
-		t.Fatal("Compact() as system tenant did not reach the inner store")
-	}
-	if inner.compactedRev != 7 {
-		t.Fatalf("inner Compact revision = %d, want 7", inner.compactedRev)
-	}
-	if inner.compactCalls != 1 {
-		t.Fatalf("inner Compact calls = %d, want 1", inner.compactCalls)
+	if inner.globalCalls != 0 || len(inner.prefixes) != 1 || inner.prefixes[0] != "" {
+		t.Fatalf("global=%d prefixes=%q, want one CompactPrefix of the empty prefix", inner.globalCalls, inner.prefixes)
 	}
 }
 
-// TestNamespacedMVCC_Compact_UnboundContextTreatedAsSystem proves an unbound
-// context (no tenant binding) resolves to the system tenant and is allowed,
-// matching tenant.FromContext's documented daemon-internal fallback so
-// in-process maintenance compaction is not broken.
-func TestNamespacedMVCC_Compact_UnboundContextTreatedAsSystem(t *testing.T) {
-	inner := &compactRecordingMVCC{}
-	w := newNamespacedMVCCService(inner, tenant.SystemTenantID+"/system/", nil)
+// TestNamespacedMVCC_Compact_RefusesAnInnerWithoutPrefixCompaction proves the
+// view never falls back to compacting its inner service whole: with no
+// per-prefix compaction available it refuses.
+func TestNamespacedMVCC_Compact_RefusesAnInnerWithoutPrefixCompaction(t *testing.T) {
+	inner := &globalOnlyMVCC{}
+	w := newNamespacedMVCCService(inner, "acme/db/", nil)
 
-	if err := w.Compact(context.Background(), 3); err != nil {
-		t.Fatalf("Compact() with unbound context returned error: %v", err)
+	err := w.Compact(context.Background(), 5)
+	var scope *service.CompactScopeRequiredError
+	if !errors.As(err, &scope) {
+		t.Fatalf("Compact = %v (%T), want *service.CompactScopeRequiredError", err, err)
 	}
-	if !inner.compacted || inner.compactedRev != 3 {
-		t.Fatalf("inner Compact not reached as expected (compacted=%v rev=%d)", inner.compacted, inner.compactedRev)
+	if inner.globalCalls != 0 {
+		t.Fatalf("the view fell back to the store-global Compact (%d call(s))", inner.globalCalls)
 	}
 }
 
-// TestNamespacedMVCC_Compact_SystemErrorPropagates proves a genuine inner
-// Compact failure surfaces unchanged for the system tenant (the guard adds no
-// error masking on the allowed path).
-func TestNamespacedMVCC_Compact_SystemErrorPropagates(t *testing.T) {
-	sentinel := errors.New("inner compact failed")
-	inner := &compactRecordingMVCC{compactReturn: sentinel}
-	w := newNamespacedMVCCService(inner, tenant.SystemTenantID+"/system/", nil)
-	ctx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
+// TestNamespacedMVCC_Compact_ErrorPropagates proves the inner refusal reaches
+// the caller unchanged, typed.
+func TestNamespacedMVCC_Compact_ErrorPropagates(t *testing.T) {
+	refusal := &service.RevisionCompactedError{Requested: 3, Compacted: 5}
+	inner := &compactRecordingMVCC{compactReturn: refusal}
+	w := newNamespacedMVCCService(inner, "acme/db/", nil)
 
-	if err := w.Compact(ctx, 1); !errors.Is(err, sentinel) {
-		t.Fatalf("Compact() error = %v, want inner sentinel", err)
+	var got *service.RevisionCompactedError
+	if err := w.Compact(context.Background(), 3); !errors.As(err, &got) || got != refusal {
+		t.Fatalf("Compact = %v, want the inner *service.RevisionCompactedError", err)
 	}
 }

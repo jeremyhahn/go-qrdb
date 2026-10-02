@@ -61,12 +61,13 @@ type mockMVCCStore struct {
 	mu sync.Mutex
 
 	// Call tracking
-	putCalls     []mvccPutCall
-	deleteCalls  []mvccDeleteCall
-	rangeCalls   []mvccRangeCall
-	compactCalls []int64
-	txnCalls     []txnCall
-	scanCalls    []mvccScanChangesCall
+	putCalls        []mvccPutCall
+	deleteCalls     []mvccDeleteCall
+	rangeCalls      []mvccRangeCall
+	compactCalls    []int64
+	compactPrefixes [][]byte
+	txnCalls        []txnCall
+	scanCalls       []mvccScanChangesCall
 
 	// Error injection
 	putErr     error
@@ -123,10 +124,11 @@ func (m *mockMVCCStore) Range(start, end []byte, revision, limit int64, countOnl
 	return m.rangeResult, m.rangeRevision, m.rangeErr
 }
 
-func (m *mockMVCCStore) Compact(revision int64) error {
+func (m *mockMVCCStore) Compact(prefix []byte, revision int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.compactCalls = append(m.compactCalls, revision)
+	m.compactPrefixes = append(m.compactPrefixes, append([]byte(nil), prefix...))
 	return m.compactErr
 }
 
@@ -423,7 +425,7 @@ func TestFSM_MVCCCompact_Success(t *testing.T) {
 	ms := &mockMVCCStore{}
 	fsm, _ := newTestFSMWithMVCC(ms)
 
-	cmd := mustEncode(protocol.EncodeMVCCCompact(42))
+	cmd := mustEncode(protocol.EncodeMVCCCompactPrefix([]byte("acme/app/"), 42))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -445,12 +447,15 @@ func TestFSM_MVCCCompact_Success(t *testing.T) {
 	if ms.compactCalls[0] != 42 {
 		t.Fatalf("expected compact revision 42, got %d", ms.compactCalls[0])
 	}
+	if string(ms.compactPrefixes[0]) != "acme/app/" {
+		t.Fatalf("compact prefix = %q, want the command's \"acme/app/\": a store-wide compaction would discard every tenant's history", ms.compactPrefixes[0])
+	}
 }
 
 func TestFSM_MVCCCompact_NotConfigured(t *testing.T) {
 	fsm, _ := newTestFSM()
 
-	cmd := mustEncode(protocol.EncodeMVCCCompact(10))
+	cmd := mustEncode(protocol.EncodeMVCCCompactPrefix(nil, 10))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -471,7 +476,7 @@ func TestFSM_MVCCCompact_StoreError(t *testing.T) {
 	ms := &mockMVCCStore{compactErr: storeErr}
 	fsm, _ := newTestFSMWithMVCC(ms)
 
-	cmd := mustEncode(protocol.EncodeMVCCCompact(5))
+	cmd := mustEncode(protocol.EncodeMVCCCompactPrefix(nil, 5))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -1283,7 +1288,7 @@ func TestFSM_MVCCCompact_NegativeRevision(t *testing.T) {
 	ms := &mockMVCCStore{}
 	fsm, _ := newTestFSMWithMVCC(ms)
 
-	cmd := mustEncode(protocol.EncodeMVCCCompact(-1))
+	cmd := mustEncode(protocol.EncodeMVCCCompactPrefix(nil, -1))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 

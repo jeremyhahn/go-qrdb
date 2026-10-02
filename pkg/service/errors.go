@@ -22,6 +22,7 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 )
@@ -68,6 +69,13 @@ func checkResultError(result sm.Result) error {
 	// a caller sees one error whichever side of the proposal caught it.
 	if id, nf := protocol.DecodeLeaseNotFoundError(result.Data); nf {
 		return &LeaseNotFoundError{LeaseID: id}
+	}
+	// A compaction refusal is decoded ahead of the kind dispatch like a guard
+	// refusal: its payload carries the revisions the typed error reports.
+	if reason, requested, bound, refused := protocol.DecodeCompactRefusal(result.Data); refused {
+		if typed, known := compactRefusalErrors[reason]; known {
+			return typed(requested, bound)
+		}
 	}
 	msg, kind, ok := protocol.DecodeAppErrorKind(result.Data)
 	if !ok {
@@ -1072,24 +1080,69 @@ func (e *LeaderTransferTimeoutError) Error() string {
 		" did not complete after " + e.Timeout.String()
 }
 
-// CompactSystemOnlyError is returned when a non-system tenant attempts an
-// MVCC Compact. MVCC revisions are a store-global monotonic counter shared by
-// every prefix-isolated tenant on the store, so compacting to revision N
-// discards the historical revisions below N for EVERY tenant's keys, not just
-// the caller's. Compaction is therefore an inherently store-global admin
-// operation reserved for the system tenant. This is the service-layer
-// (data-plane) defense; the mvcc:compact permission is additionally tagged
-// ScopeCross so the RBAC authorizer denies it to tenant-local identities. It
-// maps to 403 Forbidden on REST and codes.PermissionDenied on gRPC/QUIC.
-type CompactSystemOnlyError struct {
-	// TenantID is the non-system caller that was refused.
-	TenantID string
+// CompactScopeRequiredError is returned when Compact reaches a raw MVCC
+// service rather than a database's namespaced view. There is no store-global
+// compaction: one store serves many tenants, and compacting it whole would
+// discard every tenant's history. Compaction is a database's own, reached
+// through the database's view (service.Registry), which supplies the prefix.
+type CompactScopeRequiredError struct{}
+
+// Error returns a human-readable description.
+func (e *CompactScopeRequiredError) Error() string {
+	return "service: compaction requires a database scope; there is no store-wide compaction"
+}
+
+// CompactRevisionInvalidError is returned when Compact names a revision below
+// 1.
+type CompactRevisionInvalidError struct {
+	Revision int64
 }
 
 // Error returns a human-readable description.
-func (e *CompactSystemOnlyError) Error() string {
-	return "service: tenant " + e.TenantID + " is not permitted to compact MVCC revisions; " +
-		"compaction is store-global and reserved for the system tenant"
+func (e *CompactRevisionInvalidError) Error() string {
+	return "service: compaction revision " + strconv.FormatInt(e.Revision, 10) + " is invalid (must be at least 1)"
+}
+
+// CompactRevisionFutureError is returned when Compact names a revision above
+// the store's current revision.
+type CompactRevisionFutureError struct {
+	Requested int64
+	Current   int64
+}
+
+// Error returns a human-readable description.
+func (e *CompactRevisionFutureError) Error() string {
+	return "service: compaction revision " + strconv.FormatInt(e.Requested, 10) +
+		" is a future revision (current: " + strconv.FormatInt(e.Current, 10) + ")"
+}
+
+// FeatureNotEnabledError is returned, before anything is proposed, for a
+// command that uses a cluster feature the group's feature gate has not
+// enabled: some replica of the group may run a binary that cannot apply it,
+// and would refuse the entry while its peers applied it.
+type FeatureNotEnabledError struct {
+	Feature featuregate.Feature
+	ShardID uint64
+}
+
+// Error returns a human-readable description.
+func (e *FeatureNotEnabledError) Error() string {
+	return "service: feature " + string(e.Feature) + " is not yet enabled on shard " +
+		strconv.FormatUint(e.ShardID, 10) + "; every replica must run a release that supports it"
+}
+
+// compactRefusalErrors maps each compaction refusal the state machine encodes
+// to its typed error. A map rather than a switch, as refusalErrors.
+var compactRefusalErrors = map[protocol.CompactRefusalReason]func(requested, bound int64) error{
+	protocol.CompactRefusalInvalid: func(requested, _ int64) error {
+		return &CompactRevisionInvalidError{Revision: requested}
+	},
+	protocol.CompactRefusalFuture: func(requested, bound int64) error {
+		return &CompactRevisionFutureError{Requested: requested, Current: bound}
+	},
+	protocol.CompactRefusalCompacted: func(requested, bound int64) error {
+		return &RevisionCompactedError{Requested: requested, Compacted: bound}
+	},
 }
 
 // ---------------------------------------------------------------------------

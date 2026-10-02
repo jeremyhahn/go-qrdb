@@ -45,14 +45,13 @@ type RaftNode interface {
 // with optional Raft integration for distributed consensus.
 // It provides transactional semantics with revision tracking.
 type RaftStorage struct {
-	store     storage.Storage
-	logger    *logger.Logger
-	revMgr    *revisionManager
-	mu        sync.RWMutex // Protects metadata operations
-	metrics   *raftMVCCMetrics
-	raftNode  RaftNode // Raft node for distributed transaction commits (optional)
-	shardID   uint64   // Shard ID for Raft proposals (required if raftNode is set)
-	compacted int64    // Atomic: revision at which last compaction occurred
+	store    storage.Storage
+	logger   *logger.Logger
+	revMgr   *revisionManager
+	mu       sync.RWMutex // Protects metadata operations
+	metrics  *raftMVCCMetrics
+	raftNode RaftNode // Raft node for distributed transaction commits (optional)
+	shardID  uint64   // Shard ID for Raft proposals (required if raftNode is set)
 }
 
 // raftMVCCMetrics holds Prometheus metrics for MVCC operations.
@@ -69,7 +68,6 @@ type raftMVCCMetrics struct {
 	txnLatency    *metrics.Histogram
 	revision      *metrics.Gauge
 	conflicts     *metrics.Counter
-	compactions   *metrics.Counter
 }
 
 // RaftStorageConfig holds configuration for Raft-backed MVCC storage.
@@ -115,38 +113,6 @@ func NewRaftStorage(config *RaftStorageConfig) (*RaftStorage, error) {
 		revMgr:   revMgr,
 		raftNode: config.RaftNode,
 		shardID:  config.ShardID,
-	}
-
-	// Load compacted revision from storage (defaults to 0 if not found).
-	//
-	// Absence has two spellings and both mean "fresh store, compacted stays 0":
-	// storage.Reader.Get documents (nil, nil) and every shipped engine returns
-	// it, while a decorator may report a typed ErrNotFound. Testing only the
-	// error arm let an empty read fall through to DecodeRevision, which
-	// rejects a zero-length slice — the same defect as in newRevisionManager,
-	// and the reason a fresh store could not be opened with any engine.
-	compactedData, err := config.Store.Get(CompactedKey())
-	switch {
-	case absent(compactedData, err):
-		// Fresh store: compacted stays 0.
-	case err != nil:
-		return nil, errors.Wrapf(
-			err,
-			errors.ErrStorage,
-			"mvcc.NewRaftStorage",
-			"failed to load compacted revision",
-		)
-	default:
-		compactedRev, decErr := DecodeRevision(compactedData)
-		if decErr != nil {
-			return nil, errors.Wrapf(
-				decErr,
-				errors.ErrStorage,
-				"mvcc.NewRaftStorage",
-				"failed to decode compacted revision",
-			)
-		}
-		atomic.StoreInt64(&s.compacted, compactedRev)
 	}
 
 	s.initMetrics()
@@ -239,12 +205,6 @@ func (s *RaftStorage) initMetrics() {
 			Subsystem: "mvcc_raft",
 			Name:      "conflicts_total",
 			Help:      "Total number of transaction conflicts",
-		}),
-		compactions: metrics.NewCounter(metrics.CounterOpts{
-			Namespace: "qrdb",
-			Subsystem: "mvcc_raft",
-			Name:      "compactions_total",
-			Help:      "Total number of compactions",
 		}),
 	}
 }
@@ -921,119 +881,6 @@ func (s *RaftStorage) SetRevision(revision int64) {
 	atomic.StoreInt64(&s.revMgr.current, revision)
 	s.revMgr.dirty.Store(true)
 	s.metrics.revision.Set(float64(revision))
-}
-
-// CompactedRevision returns the revision at which the last compaction occurred.
-// Returns 0 if no compaction has been performed.
-func (s *RaftStorage) CompactedRevision() int64 {
-	return atomic.LoadInt64(&s.compacted)
-}
-
-// Compact removes old data revisions at or below the given revision for each
-// key while preserving the latest (highest) revision per unique key. This
-// ensures that keys whose only write is within the compaction range (e.g.,
-// system keys written during bootstrap) remain readable after compaction.
-//
-// Data keys are sorted by [prefix][keyLen][key][complement(revision)], so
-// within each user key group the highest revision appears first in iteration
-// order. The method tracks the current key prefix and skips the first entry
-// per group (the latest revision), deleting only subsequent older entries
-// that fall at or below the compaction revision.
-//
-// This is the Apply-path compaction used by the state machine.
-func (s *RaftStorage) Compact(revision int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Iterate all data keys with prefix prefixData
-	opts := &storage.IteratorOptions{
-		LowerBound: []byte{prefixData},
-		UpperBound: []byte{prefixData + 1},
-	}
-
-	iter := s.store.NewIterator(opts)
-	defer func() { _ = iter.Close() }()
-
-	batch := s.store.Batch()
-	defer func() { _ = batch.Close() }()
-
-	// Track the current user key prefix to detect group boundaries.
-	// Data key format: [0x01][keyLen:8 BE][key][complement:8 BE]
-	// The prefix for grouping is everything except the last 8 bytes.
-	var currentPrefix []byte
-
-	for iter.SeekToFirst(); iter.Valid(); iter.Next() {
-		raw := iter.Key()
-		if len(raw) < 17 { // 1 + 8 + 0 + 8 minimum
-			continue
-		}
-
-		_, keyRev, err := DecodeDataKey(raw)
-		if err != nil {
-			continue // Skip invalid keys
-		}
-
-		// Extract the key prefix (everything except the trailing 8-byte complement).
-		keyPrefix := raw[:len(raw)-8]
-
-		// Detect new key group: skip the first entry (latest revision) in each group.
-		if !bytes.Equal(keyPrefix, currentPrefix) {
-			currentPrefix = make([]byte, len(keyPrefix))
-			copy(currentPrefix, keyPrefix)
-			// This is the latest revision for this key. Preserve it.
-			continue
-		}
-
-		// Subsequent (older) entry in the same key group.
-		// Delete if at or below the compaction point.
-		if keyRev <= revision {
-			keyCopy := make([]byte, len(raw))
-			copy(keyCopy, raw)
-			if err := batch.Delete(keyCopy); err != nil {
-				return errors.Wrapf(
-					err,
-					errors.ErrStorage,
-					"mvcc.Compact",
-					"failed to delete old revision",
-				)
-			}
-		}
-	}
-
-	if err := iter.Error(); err != nil {
-		return errors.Wrapf(
-			err,
-			errors.ErrStorage,
-			"mvcc.Compact",
-			"iterator error",
-		)
-	}
-
-	// Persist compacted marker in the same batch
-	if err := batch.Set(CompactedKey(), EncodeRevision(revision)); err != nil {
-		return errors.Wrapf(
-			err,
-			errors.ErrStorage,
-			"mvcc.Compact",
-			"failed to persist compacted revision",
-		)
-	}
-
-	// Commit atomically
-	if err := batch.Commit(); err != nil {
-		return errors.Wrapf(
-			err,
-			errors.ErrStorage,
-			"mvcc.Compact",
-			"failed to commit compaction batch",
-		)
-	}
-
-	// Update in-memory state
-	atomic.StoreInt64(&s.compacted, revision)
-	s.metrics.compactions.Inc()
-
-	return nil
 }
 
 // BeginRaftTxn creates a new Raft-backed transaction.

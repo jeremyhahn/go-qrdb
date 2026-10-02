@@ -19,7 +19,7 @@
 //	DataKey:      [0x01][keyLen:8 BE][key][complement(revision):8 BE]
 //	MetaKey:      [0x02][keyLen:8 BE][key]
 //	RevisionKey:  [0x03]
-//	CompactedKey: [0x04]
+//	FloorKey:     [0x04][prefix]          (compaction floor of a keyspace prefix)
 //	RevIndexKey:  [0x05][revision:8 BE ASCENDING][key]
 //	Metadata:     [createRev:8][modRev:8][version:8][leaseID:8]  (32 bytes fixed)
 //	Entry:        [flag:flagLive|flagTombstone][value]
@@ -208,9 +208,38 @@ func RevisionKey() []byte {
 	return []byte{prefixRevision}
 }
 
-// CompactedKey returns the storage key for the compacted revision marker.
-func CompactedKey() []byte {
+// CompactionFloorKey returns the storage key holding the compaction floor of
+// the keys beginning with prefix: [0x04][prefix]. The empty prefix -- every
+// key of the store -- is the bare [0x04], which only a store that IS one
+// database's keyspace (a raft-isolated database's own shard) ever writes.
+func CompactionFloorKey(prefix []byte) []byte {
+	buf := make([]byte, 1+len(prefix))
+	buf[0] = prefixCompact
+	copy(buf[1:], prefix)
+	return buf
+}
+
+// CompactionFloorLowerBound returns the inclusive lower bound for iterating
+// every compaction floor key.
+func CompactionFloorLowerBound() []byte {
 	return []byte{prefixCompact}
+}
+
+// CompactionFloorUpperBound returns the exclusive upper bound for iterating
+// every compaction floor key.
+func CompactionFloorUpperBound() []byte {
+	return []byte{prefixRevIndex}
+}
+
+// DecodeCompactionFloorKey returns the keyspace prefix a compaction floor key
+// names.
+func DecodeCompactionFloorKey(encoded []byte) ([]byte, error) {
+	if len(encoded) < 1 || encoded[0] != prefixCompact {
+		return nil, &EncodingError{Reason: "invalid compaction floor key prefix"}
+	}
+	prefix := make([]byte, len(encoded)-1)
+	copy(prefix, encoded[1:])
+	return prefix, nil
 }
 
 // EncodeRevision serializes a revision as 8-byte big-endian.

@@ -265,7 +265,13 @@ var restoreRules = []rule{
 	as(&service.RestoreChangeIndexUnavailableError{}, Unimplemented),
 	// An authority the caller does not have, not a malformed request.
 	as(&service.RestoreInternalKeyError{}, PermissionDenied),
-	as(&service.CompactSystemOnlyError{}, PermissionDenied),
+	// Compaction is a database's own: the raw shard has no keyspace to
+	// compact, and a feature the group has not enabled is not usable here
+	// yet. Neither is the caller's request to fix.
+	as(&service.CompactScopeRequiredError{}, Unprocessable),
+	as(&service.FeatureNotEnabledError{}, Unprocessable),
+	as(&service.CompactRevisionInvalidError{}, InvalidArgument),
+	as(&service.CompactRevisionFutureError{}, InvalidArgument),
 	as(&service.RestoreNilRequestError{}, InvalidArgument),
 	as(&service.RestoreRevisionInvalidError{}, InvalidArgument),
 	as(&service.RestoreRevisionFutureError{}, InvalidArgument),

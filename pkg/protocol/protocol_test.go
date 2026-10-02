@@ -145,7 +145,7 @@ func TestOpCodeConstants(t *testing.T) {
 		{"OpMVCCPut", OpMVCCPut, 10},
 		{"OpMVCCDelete", OpMVCCDelete, 11},
 		{"OpMVCCRange", OpMVCCRange, 12},
-		{"OpMVCCCompact", OpMVCCCompact, 13},
+		{"OpMVCCCompactPrefix", OpMVCCCompactPrefix, 14},
 		{"OpTransaction", OpTransaction, 20},
 		{"OpBatch", OpBatch, 30},
 		{"OpLeaseGrant", OpLeaseGrant, 40},
@@ -205,8 +205,8 @@ func TestDecodeCommand(t *testing.T) {
 		},
 		{
 			name:    "valid command no payload",
-			data:    []byte{OpMVCCCompact},
-			wantOp:  OpMVCCCompact,
+			data:    []byte{OpMVCCCompactPrefix},
+			wantOp:  OpMVCCCompactPrefix,
 			wantLen: 0,
 		},
 		{
@@ -626,21 +626,23 @@ func TestDecodeMVCCRange_Errors(t *testing.T) {
 // MVCC Compact roundtrip tests
 // ---------------------------------------------------------------------------
 
-func TestMVCCCompactRoundtrip(t *testing.T) {
+func TestMVCCCompactPrefixRoundtrip(t *testing.T) {
 	tests := []struct {
 		name     string
+		prefix   []byte
 		revision int64
 	}{
-		{name: "positive revision", revision: 42},
-		{name: "zero revision", revision: 0},
-		{name: "negative revision", revision: -100},
-		{name: "max int64", revision: math.MaxInt64},
+		{name: "database namespace", prefix: []byte("acme/app/"), revision: 42},
+		{name: "empty prefix (a dedicated shard)", prefix: nil, revision: 7},
+		{name: "zero revision", prefix: []byte("p/"), revision: 0},
+		{name: "negative revision", prefix: []byte("p/"), revision: -100},
+		{name: "max int64", prefix: []byte("p/"), revision: math.MaxInt64},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoded := mustEncode(EncodeMVCCCompact(tt.revision))
-			if encoded[0] != OpMVCCCompact {
-				t.Fatalf("op byte = %d, want %d", encoded[0], OpMVCCCompact)
+			encoded := mustEncode(EncodeMVCCCompactPrefix(tt.prefix, tt.revision))
+			if encoded[0] != OpMVCCCompactPrefix {
+				t.Fatalf("op byte = %d, want %d", encoded[0], OpMVCCCompactPrefix)
 			}
 
 			cmd, err := DecodeCommand(encoded)
@@ -648,18 +650,29 @@ func TestMVCCCompactRoundtrip(t *testing.T) {
 				t.Fatalf("DecodeCommand: %v", err)
 			}
 
-			rev, err := DecodeMVCCCompact(cmd.Payload)
+			prefix, rev, err := DecodeMVCCCompactPrefix(cmd.Payload)
 			if err != nil {
-				t.Fatalf("DecodeMVCCCompact: %v", err)
+				t.Fatalf("DecodeMVCCCompactPrefix: %v", err)
 			}
 			if rev != tt.revision {
 				t.Errorf("revision = %d, want %d", rev, tt.revision)
+			}
+			if !bytes.Equal(prefix, tt.prefix) {
+				t.Errorf("prefix = %q, want %q", prefix, tt.prefix)
 			}
 		})
 	}
 }
 
-func TestDecodeMVCCCompact_Errors(t *testing.T) {
+func TestEncodeMVCCCompactPrefix_RefusesAnUnframablePrefix(t *testing.T) {
+	_, err := EncodeMVCCCompactPrefix(make([]byte, MaxUint16Field+1), 1)
+	var fe *FieldTooLongError
+	if !errors.As(err, &fe) || fe.Field != "compaction prefix" {
+		t.Fatalf("EncodeMVCCCompactPrefix(65536-byte prefix) = %v", err)
+	}
+}
+
+func TestDecodeMVCCCompactPrefix_Errors(t *testing.T) {
 	tests := []struct {
 		name    string
 		payload []byte
@@ -675,10 +688,27 @@ func TestDecodeMVCCCompact_Errors(t *testing.T) {
 			payload: []byte{0x01, 0x02, 0x03},
 			wantMsg: "payload too short",
 		},
+		{
+			// The retired whole-store form: a bare revision. It must never
+			// decode as a compaction of the empty prefix.
+			name:    "revision with no prefix field",
+			payload: []byte{1, 0, 0, 0, 0, 0, 0, 0},
+			wantMsg: "payload too short",
+		},
+		{
+			name:    "prefix length past the payload",
+			payload: []byte{1, 0, 0, 0, 0, 0, 0, 0, 5, 0, 'a'},
+			wantMsg: "prefix length does not match payload",
+		},
+		{
+			name:    "trailing bytes after the prefix",
+			payload: []byte{1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 'a', 'b'},
+			wantMsg: "prefix length does not match payload",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := DecodeMVCCCompact(tt.payload)
+			_, _, err := DecodeMVCCCompactPrefix(tt.payload)
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}
@@ -2127,9 +2157,9 @@ func TestEncodedOpCodes(t *testing.T) {
 			wantOp: OpMVCCRange,
 		},
 		{
-			name:   "EncodeMVCCCompact",
-			encode: func() []byte { return mustEncode(EncodeMVCCCompact(1)) },
-			wantOp: OpMVCCCompact,
+			name:   "EncodeMVCCCompactPrefix",
+			encode: func() []byte { return mustEncode(EncodeMVCCCompactPrefix([]byte("p/"), 1)) },
+			wantOp: OpMVCCCompactPrefix,
 		},
 		{
 			name:   "EncodeLeaseGrant",
@@ -2511,11 +2541,11 @@ func TestEncodeMVCCRange_BufferSize(t *testing.T) {
 	}
 }
 
-func TestEncodeMVCCCompact_BufferSize(t *testing.T) {
-	encoded := mustEncode(EncodeMVCCCompact(0))
-	// Expected: 1 (op) + 8 (revision) = 9
-	if len(encoded) != 9 {
-		t.Errorf("encoded length = %d, want 9", len(encoded))
+func TestEncodeMVCCCompactPrefix_BufferSize(t *testing.T) {
+	encoded := mustEncode(EncodeMVCCCompactPrefix([]byte("ab/"), 0))
+	// Expected: 1 (op) + 8 (revision) + 2 (prefix length) + 3 (prefix) = 14
+	if len(encoded) != 14 {
+		t.Errorf("encoded length = %d, want 14", len(encoded))
 	}
 }
 

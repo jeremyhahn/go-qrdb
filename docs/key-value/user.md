@@ -1,6 +1,6 @@
 # Key-Value Store — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
 
 ## Prerequisites
 
@@ -166,8 +166,17 @@ As-of reads, `kv restore` and watch replay all need it. This is a server
 configuration change, not something you can pass as a flag.
 
 **A revision you asked for is "below the compaction floor"** — that history has
-been discarded by `kv compact` and cannot come back. Restore from a backup
-instead ([../backup-restore/user.md](../backup-restore/user.md)).
+been discarded by `kv compact` on this database and cannot come back. Restore
+from a backup instead ([../backup-restore/user.md](../backup-restore/user.md)).
+Compaction is per database: compacting one database never discards another
+database's history, and no tenant -- the platform operator included -- can
+compact a database it does not own.
+
+**`kv compact` says "compaction requires a database scope"** — you reached the
+node's raw MVCC service rather than a database (the unscoped embedded client,
+or a server built without a service registry). There is no store-wide
+compaction; scope the client to a database (`--database`,
+`Client.DatabaseScoped`) and compact that.
 
 **`kv restore` exited non-zero but said it succeeded** — that is the conflict
 signal. One or more keys were written by somebody else between the plan and the

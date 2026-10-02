@@ -57,7 +57,7 @@ func (f *fakeHistory) CurrentRevision() int64 {
 	return f.current
 }
 
-func (f *fakeHistory) CompactedRevision() int64 {
+func (f *fakeHistory) CompactedRevision(_, _ []byte) int64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.compacted

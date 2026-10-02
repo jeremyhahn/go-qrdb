@@ -904,7 +904,7 @@ func TestConcurrentStateMachine_HandlersNotConfigured(t *testing.T) {
 		{protocol.OpMVCCPut, "mvcc"},
 		{protocol.OpMVCCDelete, "mvcc"},
 		{protocol.OpMVCCRange, "mvcc"},
-		{protocol.OpMVCCCompact, "mvcc"},
+		{protocol.OpMVCCCompactPrefix, "mvcc"},
 		{protocol.OpTransaction, "mvcc"},
 		{protocol.OpLeaseGrant, "lease"},
 		{protocol.OpLeaseRevoke, "lease"},

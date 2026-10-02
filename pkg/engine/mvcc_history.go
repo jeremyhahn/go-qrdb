@@ -36,8 +36,18 @@ func newMVCCHistoryAdapter(store *mvcc.Store) *mvccHistoryAdapter {
 // CurrentRevision implements watch.HistoryReplayer.
 func (a *mvccHistoryAdapter) CurrentRevision() int64 { return a.store.CurrentRevision() }
 
-// CompactedRevision implements watch.HistoryReplayer.
-func (a *mvccHistoryAdapter) CompactedRevision() int64 { return a.store.CompactedRevision() }
+// CompactedRevision implements watch.HistoryReplayer: the floor covering the
+// single key key when rangeEnd is nil, otherwise the highest floor
+// [key, rangeEnd) overlaps (an empty rangeEnd is unbounded above).
+func (a *mvccHistoryAdapter) CompactedRevision(key, rangeEnd []byte) int64 {
+	if rangeEnd == nil {
+		return a.store.CompactedRevisionForKey(key)
+	}
+	if len(rangeEnd) == 0 {
+		return a.store.CompactedRevisionForRange(key, nil)
+	}
+	return a.store.CompactedRevisionForRange(key, rangeEnd)
+}
 
 // Replay implements watch.HistoryReplayer by streaming the store's revision
 // index over [startRev, endRev] and yielding one watch event per matching

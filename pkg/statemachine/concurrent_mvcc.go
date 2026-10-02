@@ -80,12 +80,12 @@ func (c *ConcurrentStateMachine) handleMVCCCompact(payload []byte, revision uint
 		return sm.Result{}, &ServiceNotConfiguredError{Service: "mvcc"}
 	}
 
-	compactRevision, err := protocol.DecodeMVCCCompact(payload)
+	prefix, compactRevision, err := protocol.DecodeMVCCCompactPrefix(payload)
 	if err != nil {
 		return sm.Result{}, &IncompleteDataError{Reason: "mvcc compact: " + err.Error()}
 	}
 
-	if compactErr := c.mvccStore.Compact(compactRevision); compactErr != nil {
+	if compactErr := c.mvccStore.Compact(prefix, compactRevision); compactErr != nil {
 		return sm.Result{}, &StorageError{Op: "mvcc-compact", Inner: compactErr}
 	}
 
