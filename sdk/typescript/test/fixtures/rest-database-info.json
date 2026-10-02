@@ -1,4 +1,5 @@
 {
+  "tenantId": "acme",
   "name": "orders",
   "engine": "kv",
   "backend": "raft",
@@ -33,10 +34,10 @@
       "peers": [
         "db.example.com:63001"
       ],
-      "sharedSecret": "example-static-secret"
+      "sharedSecretSet": true
     },
     "multicast": {
-      "sharedSecret": "example-multicast-secret",
+      "sharedSecretSet": true,
       "multicastGroup": "239.255.0.1:63100",
       "interface": "eth0",
       "minPeers": 2,
@@ -51,7 +52,7 @@
     },
     "token": {
       "endpoint": "https://db.example.com/discovery",
-      "token": "example-token",
+      "tokenSet": true,
       "clusterSize": 3,
       "timeout": "30s"
     }

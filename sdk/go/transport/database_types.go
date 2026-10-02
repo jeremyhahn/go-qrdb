@@ -37,22 +37,86 @@ type EtcdProtocolConfig struct {
 	AdvertiseClientURLs []string `json:"advertiseClientUrls,omitempty"`
 }
 
-// DatabaseInfo represents information about a database.
+// DatabaseInfo represents information about a database. It is a response:
+// its Raft and Barrier blocks are read views that cannot hold a secret. A
+// secret set on a database is write-only, reported only as a *Set flag.
 type DatabaseInfo struct {
-	TenantID   string                    `json:"tenantId,omitempty"`
-	Name       string                    `json:"name"`
-	Engine     string                    `json:"engine"`
-	Backend    string                    `json:"backend"`
-	Status     string                    `json:"status"`
-	Protocol   ProtocolConfig            `json:"protocol,omitempty"`
-	DataDir    string                    `json:"dataDir,omitempty"`
-	ShardID    uint64                    `json:"shardId,omitempty"`
-	Mode       string                    `json:"mode,omitempty"`
-	Replicas   int                       `json:"replicas,omitempty"`
-	Raft       *DatabaseRaftConfig       `json:"raft,omitempty"`
-	Barrier    *DatabaseBarrierConfig    `json:"barrier,omitempty"`
-	Connection *DatabaseConnectionConfig `json:"connection,omitempty"`
-	SQL        *DatabaseSQLConfig        `json:"sql,omitempty"`
+	TenantID     string                    `json:"tenantId,omitempty"`
+	Name         string                    `json:"name"`
+	Engine       string                    `json:"engine"`
+	Backend      string                    `json:"backend"`
+	Status       string                    `json:"status"`
+	Protocol     ProtocolConfig            `json:"protocol,omitempty"`
+	DataDir      string                    `json:"dataDir,omitempty"`
+	ShardID      uint64                    `json:"shardId,omitempty"`
+	Mode         string                    `json:"mode,omitempty"`
+	Replicas     int                       `json:"replicas,omitempty"`
+	DedicatedWAL bool                      `json:"dedicatedWal,omitempty"`
+	Raft         *DatabaseRaftInfo         `json:"raft,omitempty"`
+	Barrier      *DatabaseBarrierInfo      `json:"barrier,omitempty"`
+	Connection   *DatabaseConnectionConfig `json:"connection,omitempty"`
+	SQL          *DatabaseSQLConfig        `json:"sql,omitempty"`
+}
+
+// DatabaseRaftInfo is a database's Raft configuration as a response reports
+// it. Discovery secrets are write-only: each is reported only as set.
+type DatabaseRaftInfo struct {
+	ClusterMode    string                  `json:"clusterMode"`
+	ShardID        uint64                  `json:"shardId,omitempty"`
+	ReplicaID      uint64                  `json:"replicaId,omitempty"`
+	RaftAddress    string                  `json:"raftAddress,omitempty"`
+	Peers          []string                `json:"peers,omitempty"`
+	LocalNodeCount int                     `json:"localNodeCount,omitempty"`
+	Discovery      string                  `json:"discovery,omitempty"`
+	Static         *StaticDiscoveryInfo    `json:"static,omitempty"`
+	Multicast      *MulticastDiscoveryInfo `json:"multicast,omitempty"`
+	DNS            *DNSDiscoveryInfo       `json:"dns,omitempty"`
+	Token          *TokenDiscoveryInfo     `json:"token,omitempty"`
+}
+
+// StaticDiscoveryInfo reports static peer discovery.
+type StaticDiscoveryInfo struct {
+	Peers []string `json:"peers,omitempty"`
+	// SharedSecretSet reports that an HMAC shared secret is configured.
+	SharedSecretSet bool `json:"sharedSecretSet,omitempty"`
+}
+
+// MulticastDiscoveryInfo reports UDP multicast peer discovery.
+type MulticastDiscoveryInfo struct {
+	// SharedSecretSet reports that the HMAC shared secret is configured.
+	SharedSecretSet  bool   `json:"sharedSecretSet,omitempty"`
+	MulticastGroup   string `json:"multicastGroup,omitempty"`
+	Interface        string `json:"interface,omitempty"`
+	MinPeers         int    `json:"minPeers,omitempty"`
+	AnnounceInterval string `json:"announceInterval,omitempty"`
+	DiscoverTimeout  string `json:"discoverTimeout,omitempty"`
+}
+
+// DNSDiscoveryInfo reports DNS SRV peer discovery. It holds no secret.
+type DNSDiscoveryInfo struct {
+	Service       string `json:"service,omitempty"`
+	Proto         string `json:"proto,omitempty"`
+	Domain        string `json:"domain"`
+	LookupTimeout string `json:"lookupTimeout,omitempty"`
+}
+
+// TokenDiscoveryInfo reports token-based peer discovery.
+type TokenDiscoveryInfo struct {
+	Endpoint string `json:"endpoint"`
+	// TokenSet reports that the bootstrap token is configured.
+	TokenSet    bool   `json:"tokenSet,omitempty"`
+	ClusterSize int    `json:"clusterSize"`
+	Timeout     string `json:"timeout,omitempty"`
+}
+
+// DatabaseBarrierInfo is a database's encryption barrier configuration as a
+// response reports it. The barrier passphrase is never stored, so no
+// response can carry it.
+type DatabaseBarrierInfo struct {
+	Enabled        bool   `json:"enabled"`
+	Mode           string `json:"mode,omitempty"`
+	SharesRequired int    `json:"sharesRequired,omitempty"`
+	SharesTotal    int    `json:"sharesTotal,omitempty"`
 }
 
 // DatabaseSQLConfig holds a database's SQL settings. See docs/row-locking/.
@@ -68,7 +132,8 @@ type UpdateDatabaseSQLRequest struct {
 	SQL  *DatabaseSQLConfig `json:"sql"`
 }
 
-// DatabaseRaftConfig holds Raft consensus settings for a database.
+// DatabaseRaftConfig holds Raft consensus settings a request sets on a
+// database. A response reports them as a DatabaseRaftInfo.
 type DatabaseRaftConfig struct {
 	ClusterMode    string   `json:"clusterMode"`
 	ShardID        uint64   `json:"shardId,omitempty"`
@@ -88,8 +153,8 @@ type DatabaseBarrierConfig struct {
 	// Secret carries the barrier passphrase for the initial Initialize call
 	// when Enabled is set on a CreateDatabaseRequest. It is never persisted
 	// (the server's on-disk DatabaseBarrierConfig / meta.json has no secret
-	// field) and is only meaningful on the request path -- a DatabaseInfo /
-	// UpdateDatabaseBarrierRequest never populates it.
+	// field) and is only meaningful on the request path; a DatabaseInfo
+	// reports the barrier as a DatabaseBarrierInfo, which has no secret.
 	Secret string `json:"secret,omitempty"`
 }
 

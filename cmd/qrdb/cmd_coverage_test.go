@@ -382,12 +382,12 @@ func TestPrintDatabaseInfo_Table_WithAllFields(t *testing.T) {
 				AdvertiseClientURLs: []string{"https://localhost:2379"},
 			},
 		},
-		Raft: &transport.DatabaseRaftConfig{
+		Raft: &transport.DatabaseRaftInfo{
 			ClusterMode: "single",
 			ShardID:     1,
 			RaftAddress: "localhost:9090",
 		},
-		Barrier: &transport.DatabaseBarrierConfig{
+		Barrier: &transport.DatabaseBarrierInfo{
 			Enabled: true,
 		},
 		Connection: &transport.DatabaseConnectionConfig{

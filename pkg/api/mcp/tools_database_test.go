@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -650,8 +651,8 @@ func TestHandleDatabaseCreate_WithRaftDistributed(t *testing.T) {
 	if info.Raft.Static == nil {
 		t.Fatal("static config should not be nil")
 	}
-	if info.Raft.Static.SharedSecret != "my-secret" {
-		t.Errorf("shared secret: got %q, want %q", info.Raft.Static.SharedSecret, "my-secret")
+	if strings.Contains(text, "my-secret") || !strings.Contains(text, `"sharedSecretSet":true`) {
+		t.Errorf("static shared secret: want it reported set and never returned, got %s", text)
 	}
 }
 
@@ -703,8 +704,8 @@ func TestHandleDatabaseCreate_WithMulticastDiscovery(t *testing.T) {
 	if info.Raft.Multicast == nil {
 		t.Fatal("multicast config should not be nil")
 	}
-	if info.Raft.Multicast.SharedSecret != "hmac-secret" {
-		t.Errorf("shared secret: got %q, want %q", info.Raft.Multicast.SharedSecret, "hmac-secret")
+	if strings.Contains(text, "hmac-secret") || !strings.Contains(text, `"sharedSecretSet":true`) {
+		t.Errorf("multicast shared secret: want it reported set and never returned, got %s", text)
 	}
 	if info.Raft.Multicast.MulticastGroup != "239.255.77.77:63777" {
 		t.Errorf("multicast group: got %q, want %q", info.Raft.Multicast.MulticastGroup, "239.255.77.77:63777")
@@ -825,8 +826,8 @@ func TestHandleDatabaseCreate_WithTokenDiscovery(t *testing.T) {
 	if info.Raft.Token.Endpoint != "https://discovery.example.com/v1/cluster" {
 		t.Errorf("endpoint: got %q, want %q", info.Raft.Token.Endpoint, "https://discovery.example.com/v1/cluster")
 	}
-	if info.Raft.Token.Token != "bootstrap-token-abc123" {
-		t.Errorf("token: got %q, want %q", info.Raft.Token.Token, "bootstrap-token-abc123")
+	if strings.Contains(text, "bootstrap-token-abc123") || !strings.Contains(text, `"tokenSet":true`) {
+		t.Errorf("bootstrap token: want it reported set and never returned, got %s", text)
 	}
 	if info.Raft.Token.ClusterSize != 5 {
 		t.Errorf("cluster size: got %d, want 5", info.Raft.Token.ClusterSize)

@@ -30,6 +30,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/dbwire"
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/internal/collectionpb"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
@@ -2279,7 +2280,7 @@ func TestDatabaseInfoToProto_WithRaftAndBarrierAndConnection(t *testing.T) {
 			Address:   "remote:9000",
 		},
 	}
-	result := databaseInfoToProto(info)
+	result := dbwire.InfoProto(info)
 	if result.GetRaft() == nil {
 		t.Fatal("expected non-nil Raft in proto response")
 	}
@@ -2708,7 +2709,7 @@ func TestDatabaseInfoToProto_WithRaftMulticastAndDNS(t *testing.T) {
 			},
 		},
 	}
-	result := databaseInfoToProto(info)
+	result := dbwire.InfoProto(info)
 	pbRaft := result.GetRaft()
 	if pbRaft == nil {
 		t.Fatal("expected non-nil Raft in proto response")

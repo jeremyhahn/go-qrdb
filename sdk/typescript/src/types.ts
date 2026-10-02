@@ -1984,6 +1984,23 @@ export interface DatabaseProtocolConfig {
     readonly postgresql: boolean;
 }
 
+/** The etcd wire protocol as a database reports it. The Go SDK's
+ * `EtcdProtocolConfig`. */
+export interface DatabaseEtcdProtocolInfo {
+    /** Whether the etcd wire protocol serves this database. */
+    readonly enabled: boolean;
+    /** Address the etcd listener binds. */
+    readonly listenAddr: string;
+    /** Client URLs the listener advertises. */
+    readonly advertiseClientUrls?: readonly string[];
+}
+
+/** Wire protocols as a database reports them. */
+export interface DatabaseProtocolInfo extends DatabaseProtocolConfig {
+    /** etcd wire protocol settings, when configured. */
+    readonly etcd?: DatabaseEtcdProtocolInfo;
+}
+
 /** A database's SQL concurrency mode: whether its SQL statements serialise
  * on row locks (`pessimistic`) or settle conflicts at commit (`optimistic`,
  * the default). */
@@ -2010,6 +2027,72 @@ export interface DatabaseRaftConfig {
     readonly peers?: readonly string[];
     /** Number of local nodes in the cluster. */
     readonly localNodeCount?: number;
+}
+
+/** Static peer discovery as a database reports it. */
+export interface StaticDiscoveryInfo {
+    /** Configured peer addresses. */
+    readonly peers?: readonly string[];
+    /** Whether an HMAC shared secret is configured. The secret itself is
+     * write-only: no response carries it. */
+    readonly sharedSecretSet?: boolean;
+}
+
+/** UDP multicast peer discovery as a database reports it. */
+export interface MulticastDiscoveryInfo {
+    /** Whether the HMAC shared secret is configured. The secret itself is
+     * write-only: no response carries it. */
+    readonly sharedSecretSet?: boolean;
+    /** Multicast group address. */
+    readonly multicastGroup?: string;
+    /** Network interface the announcements use. */
+    readonly interface?: string;
+    /** Peers to find before forming the cluster. */
+    readonly minPeers?: number;
+    /** Interval between announcements. */
+    readonly announceInterval?: string;
+    /** How long discovery waits for peers. */
+    readonly discoverTimeout?: string;
+}
+
+/** DNS SRV peer discovery as a database reports it. */
+export interface DNSDiscoveryInfo {
+    /** SRV service name. */
+    readonly service?: string;
+    /** SRV protocol. */
+    readonly proto?: string;
+    /** Domain the SRV records live under. */
+    readonly domain: string;
+    /** Lookup timeout. */
+    readonly lookupTimeout?: string;
+}
+
+/** Token-based peer discovery as a database reports it. */
+export interface TokenDiscoveryInfo {
+    /** Discovery service endpoint. */
+    readonly endpoint: string;
+    /** Whether the bootstrap token is configured. The token itself is
+     * write-only: no response carries it. */
+    readonly tokenSet?: boolean;
+    /** Expected cluster size. */
+    readonly clusterSize: number;
+    /** Discovery timeout. */
+    readonly timeout?: string;
+}
+
+/** Raft configuration as a database reports it. Discovery secrets are
+ * write-only: each is reported only as set. The Go SDK's `DatabaseRaftInfo`. */
+export interface DatabaseRaftInfo extends DatabaseRaftConfig {
+    /** Peer discovery method (static, multicast, dns, token). */
+    readonly discovery?: string;
+    /** Static discovery settings. */
+    readonly static?: StaticDiscoveryInfo;
+    /** Multicast discovery settings. */
+    readonly multicast?: MulticastDiscoveryInfo;
+    /** DNS discovery settings. */
+    readonly dns?: DNSDiscoveryInfo;
+    /** Token discovery settings. */
+    readonly token?: TokenDiscoveryInfo;
 }
 
 /** Encryption barrier configuration for a database. */
@@ -2068,6 +2151,8 @@ export interface DaemonStatus {
 
 /** Information about a database. */
 export interface DatabaseInfo {
+    /** Tenant that owns the database. */
+    readonly tenantId?: string;
     /** Database name. */
     readonly name: string;
     /** Engine type (kv, timeseries, vector). */
@@ -2079,13 +2164,12 @@ export interface DatabaseInfo {
     /** Wire protocol configuration (mysql/postgresql/etc). Wire field name
      * is `protocol` to match the Go transport type; this is the canonical
      * field. */
-    readonly protocol?: DatabaseProtocolConfig;
+    readonly protocol?: DatabaseProtocolInfo;
     /** SQL settings (concurrency mode). Absent means the defaults. */
     readonly sql?: DatabaseSQLConfig;
     /** Data directory path, if applicable. */
     readonly dataDir?: string;
-    /** Raft shard ID the cluster issued at create; absent for non-raft
-     * databases. It never changes. */
+    /** Raft shard ID; absent for non-raft databases. */
     readonly shardId?: number;
     /** Database mode (e.g. "embedded", "remote"). */
     readonly mode?: string;
@@ -2095,7 +2179,7 @@ export interface DatabaseInfo {
      * tenant's own key. Only meaningful for the raft backend. */
     readonly dedicatedWal?: boolean;
     /** Raft consensus configuration. */
-    readonly raft?: DatabaseRaftConfig;
+    readonly raft?: DatabaseRaftInfo;
     /** Encryption barrier configuration. */
     readonly barrier?: DatabaseBarrierConfig;
     /** Remote connection configuration. */

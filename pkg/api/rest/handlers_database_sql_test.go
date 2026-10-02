@@ -25,6 +25,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // newSQLConfigServer serves the database API over a REAL DatabaseService on
@@ -39,9 +40,9 @@ func newSQLConfigServer(t *testing.T) *Server {
 		WithDatabaseService(service.NewDatabaseService(mgr)))
 }
 
-func decodeDatabaseInfo(t *testing.T, rec *httptest.ResponseRecorder) databaseInfoResponse {
+func decodeDatabaseInfo(t *testing.T, rec *httptest.ResponseRecorder) transport.DatabaseInfo {
 	t.Helper()
-	var info databaseInfoResponse
+	var info transport.DatabaseInfo
 	if err := json.Unmarshal(rec.Body.Bytes(), &info); err != nil {
 		t.Fatalf("decode: %v (%s)", err, rec.Body.String())
 	}

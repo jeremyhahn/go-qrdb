@@ -20,49 +20,16 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/dbwire"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // ---------------------------------------------------------------------------
 // Database request/response types
 // ---------------------------------------------------------------------------
-
-// protocolConfigResponse is the JSON representation of wire protocol
-// configuration for a database.
-type protocolConfigResponse struct {
-	MySQL      bool                `json:"mysql"`
-	PostgreSQL bool                `json:"postgresql"`
-	Etcd       *etcdConfigResponse `json:"etcd,omitempty"`
-}
-
-// etcdConfigResponse is the JSON representation of etcd wire protocol
-// configuration in a response payload.
-type etcdConfigResponse struct {
-	Enabled             bool     `json:"enabled"`
-	ListenAddr          string   `json:"listenAddr"`
-	AdvertiseClientURLs []string `json:"advertiseClientUrls,omitempty"`
-}
-
-// barrierConfigResponse is the JSON representation of encryption barrier
-// configuration in a response payload.
-type barrierConfigResponse struct {
-	Enabled        bool   `json:"enabled"`
-	Mode           string `json:"mode,omitempty"`
-	SharesRequired int    `json:"sharesRequired,omitempty"`
-	SharesTotal    int    `json:"sharesTotal,omitempty"`
-}
-
-// connectionConfigResponse is the JSON representation of remote connection
-// configuration in a response payload.
-type connectionConfigResponse struct {
-	Transport string `json:"transport"`
-	Address   string `json:"address"`
-	CAFile    string `json:"caFile,omitempty"`
-	CertFile  string `json:"certFile,omitempty"`
-	KeyFile   string `json:"keyFile,omitempty"`
-}
 
 // createDatabaseRequest is the JSON payload for POST /v1/databases.
 type createDatabaseRequest struct {
@@ -217,79 +184,9 @@ type updateDatabaseConnectionRequest struct {
 	KeyFile   string `json:"keyFile,omitempty"`
 }
 
-// databaseInfoResponse is the JSON representation of a database instance.
-type databaseInfoResponse struct {
-	Name         string                    `json:"name"`
-	Engine       string                    `json:"engine"`
-	Backend      string                    `json:"backend"`
-	Status       string                    `json:"status"`
-	Protocol     protocolConfigResponse    `json:"protocol,omitempty"`
-	DataDir      string                    `json:"dataDir,omitempty"`
-	ShardID      uint64                    `json:"shardId,omitempty"`
-	Mode         string                    `json:"mode,omitempty"`
-	Replicas     int                       `json:"replicas,omitempty"`
-	DedicatedWAL bool                      `json:"dedicatedWal,omitempty"`
-	Raft         *raftConfigResponse       `json:"raft,omitempty"`
-	Barrier      *barrierConfigResponse    `json:"barrier,omitempty"`
-	Connection   *connectionConfigResponse `json:"connection,omitempty"`
-	SQL          *sqlConfigJSON            `json:"sql,omitempty"`
-}
-
-// raftConfigResponse is the JSON representation of Raft consensus configuration
-// in a database info response.
-type raftConfigResponse struct {
-	ClusterMode    string                            `json:"clusterMode"`
-	ShardID        uint64                            `json:"shardId,omitempty"`
-	ReplicaID      uint64                            `json:"replicaId,omitempty"`
-	RaftAddress    string                            `json:"raftAddress,omitempty"`
-	Peers          []string                          `json:"peers,omitempty"`
-	LocalNodeCount int                               `json:"localNodeCount,omitempty"`
-	Discovery      string                            `json:"discovery,omitempty"`
-	Static         *staticDiscoveryConfigResponse    `json:"static,omitempty"`
-	Multicast      *multicastDiscoveryConfigResponse `json:"multicast,omitempty"`
-	DNS            *dnsDiscoveryConfigResponse       `json:"dns,omitempty"`
-	Token          *tokenDiscoveryConfigResponse     `json:"token,omitempty"`
-}
-
-// staticDiscoveryConfigResponse is the JSON representation of static peer
-// discovery configuration in a response payload.
-type staticDiscoveryConfigResponse struct {
-	Peers        []string `json:"peers,omitempty"`
-	SharedSecret string   `json:"sharedSecret,omitempty"`
-}
-
-// multicastDiscoveryConfigResponse is the JSON representation of UDP multicast
-// peer discovery configuration in a response payload.
-type multicastDiscoveryConfigResponse struct {
-	SharedSecret     string `json:"sharedSecret"`
-	MulticastGroup   string `json:"multicastGroup,omitempty"`
-	Interface        string `json:"interface,omitempty"`
-	MinPeers         int    `json:"minPeers,omitempty"`
-	AnnounceInterval string `json:"announceInterval,omitempty"`
-	DiscoverTimeout  string `json:"discoverTimeout,omitempty"`
-}
-
-// dnsDiscoveryConfigResponse is the JSON representation of DNS SRV record
-// peer discovery configuration in a response payload.
-type dnsDiscoveryConfigResponse struct {
-	Service       string `json:"service,omitempty"`
-	Proto         string `json:"proto,omitempty"`
-	Domain        string `json:"domain"`
-	LookupTimeout string `json:"lookupTimeout,omitempty"`
-}
-
-// tokenDiscoveryConfigResponse is the JSON representation of token-based
-// discovery configuration in a response payload.
-type tokenDiscoveryConfigResponse struct {
-	Endpoint    string `json:"endpoint"`
-	Token       string `json:"token"`
-	ClusterSize int    `json:"clusterSize"`
-	Timeout     string `json:"timeout,omitempty"`
-}
-
 // listDatabasesResponse is the JSON payload returned by GET /v1/databases/list.
 type listDatabasesResponse struct {
-	Databases []databaseInfoResponse `json:"databases"`
+	Databases []transport.DatabaseInfo `json:"databases"`
 }
 
 // ---------------------------------------------------------------------------
@@ -352,7 +249,7 @@ func (s *Server) handleCreateDatabase(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(databaseInfoToResponse(info))
+	_ = json.NewEncoder(w).Encode(dbwire.Info(info))
 }
 
 // createDatabaseForTenant creates cfg via the tenant-scoped path, threading
@@ -377,12 +274,7 @@ func (s *Server) handleListDatabases(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := make([]databaseInfoResponse, len(dbs))
-	for i, db := range dbs {
-		resp[i] = databaseInfoToResponse(&db)
-	}
-
-	writeJSON(w, listDatabasesResponse{Databases: resp})
+	writeJSON(w, listDatabasesResponse{Databases: dbwire.Infos(dbs)})
 }
 
 // handleDatabaseByName routes GET /v1/databases/{name},
@@ -475,7 +367,7 @@ func (s *Server) handleGetDatabase(w http.ResponseWriter, r *http.Request, name 
 		return
 	}
 
-	writeJSON(w, databaseInfoToResponse(info))
+	writeJSON(w, dbwire.Info(info))
 }
 
 // handleDropDatabase handles DELETE /v1/databases/{name} -- closes and
@@ -507,7 +399,7 @@ func (s *Server) handleUpdateDatabaseProtocol(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	writeJSON(w, databaseInfoToResponse(info))
+	writeJSON(w, dbwire.Info(info))
 }
 
 // handleUpdateDatabaseEtcd handles PATCH /v1/databases/{name}/etcd --
@@ -538,7 +430,7 @@ func (s *Server) handleUpdateDatabaseEtcd(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	writeJSON(w, databaseInfoToResponse(info))
+	writeJSON(w, dbwire.Info(info))
 }
 
 // handleUpdateDatabaseRaft handles PATCH /v1/databases/{name}/raft --
@@ -570,7 +462,7 @@ func (s *Server) handleUpdateDatabaseRaft(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	writeJSON(w, databaseInfoToResponse(info))
+	writeJSON(w, dbwire.Info(info))
 }
 
 // handleScaleDatabase handles PATCH /v1/databases/{name}/scale -- changes
@@ -601,7 +493,7 @@ func (s *Server) handleScaleDatabase(w http.ResponseWriter, r *http.Request, nam
 		return
 	}
 
-	writeJSON(w, databaseInfoToResponse(info))
+	writeJSON(w, dbwire.Info(info))
 }
 
 // handleUpdateDatabaseBarrier handles PATCH /v1/databases/{name}/barrier --
@@ -626,7 +518,7 @@ func (s *Server) handleUpdateDatabaseBarrier(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	writeJSON(w, databaseInfoToResponse(info))
+	writeJSON(w, dbwire.Info(info))
 }
 
 // handleUpdateDatabaseConnection handles PATCH /v1/databases/{name}/connection --
@@ -652,7 +544,7 @@ func (s *Server) handleUpdateDatabaseConnection(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	writeJSON(w, databaseInfoToResponse(info))
+	writeJSON(w, dbwire.Info(info))
 }
 
 // handleUpdateDatabaseSQL handles PATCH /v1/databases/{name}/sql -- updates
@@ -670,63 +562,12 @@ func (s *Server) handleUpdateDatabaseSQL(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	writeJSON(w, databaseInfoToResponse(info))
+	writeJSON(w, dbwire.Info(info))
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-// databaseInfoToResponse converts a database.DatabaseInfo to its JSON
-// response representation.
-func databaseInfoToResponse(info *database.DatabaseInfo) databaseInfoResponse {
-	resp := databaseInfoResponse{
-		Name:    info.Name,
-		Engine:  string(info.Engine),
-		Backend: string(info.Backend),
-		Status:  string(info.Status),
-		Protocol: protocolConfigResponse{
-			MySQL:      info.Protocol.MySQL,
-			PostgreSQL: info.Protocol.PostgreSQL,
-		},
-		DataDir:      info.DataDir,
-		ShardID:      info.ShardID,
-		Mode:         string(info.Mode),
-		Replicas:     info.Replicas,
-		DedicatedWAL: info.DedicatedWAL,
-	}
-	if info.Protocol.Etcd != nil {
-		resp.Protocol.Etcd = &etcdConfigResponse{
-			Enabled:             info.Protocol.Etcd.Enabled,
-			ListenAddr:          info.Protocol.Etcd.ListenAddr,
-			AdvertiseClientURLs: info.Protocol.Etcd.AdvertiseClientURLs,
-		}
-	}
-	if info.Raft != nil {
-		resp.Raft = raftConfigToResponse(info.Raft)
-	}
-	if info.Barrier != nil {
-		resp.Barrier = &barrierConfigResponse{
-			Enabled:        info.Barrier.Enabled,
-			Mode:           info.Barrier.Mode,
-			SharesRequired: info.Barrier.SharesRequired,
-			SharesTotal:    info.Barrier.SharesTotal,
-		}
-	}
-	if info.Connection != nil {
-		resp.Connection = &connectionConfigResponse{
-			Transport: info.Connection.Transport,
-			Address:   info.Connection.Address,
-			CAFile:    info.Connection.CAFile,
-			CertFile:  info.Connection.CertFile,
-			KeyFile:   info.Connection.KeyFile,
-		}
-	}
-	if info.SQL != nil {
-		resp.SQL = &sqlConfigJSON{Concurrency: string(info.SQL.Concurrency)}
-	}
-	return resp
-}
 
 // raftConfigFromRequest converts a raftConfigRequest to a database.DatabaseRaftConfig.
 func raftConfigFromRequest(req *raftConfigRequest) *database.DatabaseRaftConfig {
@@ -772,50 +613,4 @@ func raftConfigFromRequest(req *raftConfigRequest) *database.DatabaseRaftConfig 
 		}
 	}
 	return raft
-}
-
-// raftConfigToResponse converts a database.DatabaseRaftConfig to a raftConfigResponse.
-func raftConfigToResponse(raft *database.DatabaseRaftConfig) *raftConfigResponse {
-	resp := &raftConfigResponse{
-		ClusterMode:    string(raft.ClusterMode),
-		ShardID:        raft.ShardID,
-		ReplicaID:      raft.ReplicaID,
-		RaftAddress:    raft.RaftAddress,
-		Peers:          raft.Peers,
-		LocalNodeCount: raft.LocalNodeCount,
-		Discovery:      string(raft.Discovery),
-	}
-	if raft.Static != nil {
-		resp.Static = &staticDiscoveryConfigResponse{
-			Peers:        raft.Static.Peers,
-			SharedSecret: raft.Static.SharedSecret,
-		}
-	}
-	if raft.Multicast != nil {
-		resp.Multicast = &multicastDiscoveryConfigResponse{
-			SharedSecret:     raft.Multicast.SharedSecret,
-			MulticastGroup:   raft.Multicast.MulticastGroup,
-			Interface:        raft.Multicast.Interface,
-			MinPeers:         raft.Multicast.MinPeers,
-			AnnounceInterval: raft.Multicast.AnnounceInterval,
-			DiscoverTimeout:  raft.Multicast.DiscoverTimeout,
-		}
-	}
-	if raft.DNS != nil {
-		resp.DNS = &dnsDiscoveryConfigResponse{
-			Service:       raft.DNS.Service,
-			Proto:         raft.DNS.Proto,
-			Domain:        raft.DNS.Domain,
-			LookupTimeout: raft.DNS.LookupTimeout,
-		}
-	}
-	if raft.Token != nil {
-		resp.Token = &tokenDiscoveryConfigResponse{
-			Endpoint:    raft.Token.Endpoint,
-			Token:       raft.Token.Token,
-			ClusterSize: raft.Token.ClusterSize,
-			Timeout:     raft.Token.Timeout,
-		}
-	}
-	return resp
 }

@@ -21,6 +21,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/dbwire"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -264,7 +265,7 @@ func handleDatabaseCreate(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerF
 			return nil, &ToolError{Tool: "qrdb_database_create", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(info)
+		data, jsonErr := json.Marshal(dbwire.Info(info))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_database_create", Err: jsonErr}
 		}
@@ -288,7 +289,7 @@ func handleDatabaseList(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerFun
 			return nil, &ToolError{Tool: "qrdb_database_list", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(infos)
+		data, jsonErr := json.Marshal(dbwire.Infos(infos))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_database_list", Err: jsonErr}
 		}
@@ -321,7 +322,7 @@ func handleDatabaseGet(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerFunc
 			return nil, &ToolError{Tool: "qrdb_database_get", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(info)
+		data, jsonErr := json.Marshal(dbwire.Info(info))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_database_get", Err: jsonErr}
 		}
@@ -393,7 +394,7 @@ func handleDatabaseUpdateProtocol(dbSvc service.DatabaseServicer) mcpserver.Tool
 			return nil, &ToolError{Tool: "qrdb_database_update_protocol", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(info)
+		data, jsonErr := json.Marshal(dbwire.Info(info))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_database_update_protocol", Err: jsonErr}
 		}
@@ -438,7 +439,7 @@ func handleDatabaseUpdateEtcd(dbSvc service.DatabaseServicer) mcpserver.ToolHand
 			return nil, &ToolError{Tool: "qrdb_database_update_etcd", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(info)
+		data, jsonErr := json.Marshal(dbwire.Info(info))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_database_update_etcd", Err: jsonErr}
 		}
@@ -527,7 +528,7 @@ func handleDatabaseUpdateRaft(dbSvc service.DatabaseServicer) mcpserver.ToolHand
 			return nil, &ToolError{Tool: "qrdb_database_update_raft", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(info)
+		data, jsonErr := json.Marshal(dbwire.Info(info))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_database_update_raft", Err: jsonErr}
 		}
@@ -568,7 +569,7 @@ func handleDatabaseScale(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerFu
 			return nil, &ToolError{Tool: "qrdb_database_scale", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(info)
+		data, jsonErr := json.Marshal(dbwire.Info(info))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_database_scale", Err: jsonErr}
 		}
@@ -625,7 +626,7 @@ func handleDatabaseUpdateBarrier(dbSvc service.DatabaseServicer) mcpserver.ToolH
 			return nil, &ToolError{Tool: "qrdb_database_update_barrier", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(info)
+		data, jsonErr := json.Marshal(dbwire.Info(info))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_database_update_barrier", Err: jsonErr}
 		}
@@ -683,7 +684,7 @@ func handleDatabaseUpdateConnection(dbSvc service.DatabaseServicer) mcpserver.To
 			return nil, &ToolError{Tool: "qrdb_database_update_connection", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(info)
+		data, jsonErr := json.Marshal(dbwire.Info(info))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_database_update_connection", Err: jsonErr}
 		}
@@ -726,7 +727,7 @@ func handleDatabaseUpdateSQL(dbSvc service.DatabaseServicer) mcpserver.ToolHandl
 			return nil, &ToolError{Tool: "qrdb_database_update_sql", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(info)
+		data, jsonErr := json.Marshal(dbwire.Info(info))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_database_update_sql", Err: jsonErr}
 		}

@@ -21,6 +21,7 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/dbconv"
 )
 
 // Compile-time interface assertion.
@@ -80,7 +81,7 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 		return nil, mapGRPCError("CreateDatabase", err)
 	}
 
-	return protoDatabaseInfoToTransport(resp), nil
+	return dbconv.Info(resp), nil
 }
 
 // GetDatabase returns information about a specific database by calling the
@@ -95,7 +96,7 @@ func (t *Transport) GetDatabase(ctx context.Context, name string) (*transport.Da
 		return nil, mapGRPCError("GetDatabase", err)
 	}
 
-	return protoDatabaseInfoToTransport(resp), nil
+	return dbconv.Info(resp), nil
 }
 
 // ListDatabases returns information about all databases by calling the
@@ -110,12 +111,7 @@ func (t *Transport) ListDatabases(ctx context.Context) ([]transport.DatabaseInfo
 		return nil, mapGRPCError("ListDatabases", err)
 	}
 
-	databases := make([]transport.DatabaseInfo, 0, len(resp.GetDatabases()))
-	for _, db := range resp.GetDatabases() {
-		databases = append(databases, *protoDatabaseInfoToTransport(db))
-	}
-
-	return databases, nil
+	return dbconv.Infos(resp.GetDatabases()), nil
 }
 
 // DropDatabase removes a database by name by calling the DatabaseDrop gRPC
@@ -150,7 +146,7 @@ func (t *Transport) UpdateDatabaseProtocol(ctx context.Context, req transport.Up
 		return nil, mapGRPCError("UpdateDatabaseProtocol", err)
 	}
 
-	return protoDatabaseInfoToTransport(resp), nil
+	return dbconv.Info(resp), nil
 }
 
 // UpdateDatabaseEtcd updates the etcd wire protocol configuration for a
@@ -171,7 +167,7 @@ func (t *Transport) UpdateDatabaseEtcd(ctx context.Context, req transport.Update
 		return nil, mapGRPCError("UpdateDatabaseEtcd", err)
 	}
 
-	return protoDatabaseInfoToTransport(resp), nil
+	return dbconv.Info(resp), nil
 }
 
 // UpdateDatabaseRaft updates the Raft consensus configuration for a database
@@ -194,7 +190,7 @@ func (t *Transport) UpdateDatabaseRaft(ctx context.Context, req transport.Update
 		return nil, mapGRPCError("UpdateDatabaseRaft", err)
 	}
 
-	return protoDatabaseInfoToTransport(resp), nil
+	return dbconv.Info(resp), nil
 }
 
 // ScaleDatabase changes the replication factor of a dedicated-raft database
@@ -214,7 +210,7 @@ func (t *Transport) ScaleDatabase(ctx context.Context, req transport.ScaleDataba
 		return nil, mapGRPCError("ScaleDatabase", err)
 	}
 
-	return protoDatabaseInfoToTransport(resp), nil
+	return dbconv.Info(resp), nil
 }
 
 // UpdateDatabaseBarrier updates the encryption barrier configuration for a
@@ -243,7 +239,7 @@ func (t *Transport) UpdateDatabaseBarrier(ctx context.Context, req transport.Upd
 		return nil, mapGRPCError("UpdateDatabaseBarrier", err)
 	}
 
-	return protoDatabaseInfoToTransport(resp), nil
+	return dbconv.Info(resp), nil
 }
 
 // UpdateDatabaseSQL updates a database's SQL settings by calling the
@@ -263,7 +259,7 @@ func (t *Transport) UpdateDatabaseSQL(ctx context.Context, req transport.UpdateD
 		return nil, mapGRPCError("UpdateDatabaseSQL", err)
 	}
 
-	return protoDatabaseInfoToTransport(resp), nil
+	return dbconv.Info(resp), nil
 }
 
 // UpdateDatabaseConnection updates the remote connection configuration for a
@@ -293,84 +289,12 @@ func (t *Transport) UpdateDatabaseConnection(ctx context.Context, req transport.
 		return nil, mapGRPCError("UpdateDatabaseConnection", err)
 	}
 
-	return protoDatabaseInfoToTransport(resp), nil
+	return dbconv.Info(resp), nil
 }
 
 // ---------------------------------------------------------------------------
 // Proto conversion helpers
 // ---------------------------------------------------------------------------
-
-// protoDatabaseInfoToTransport converts a protobuf DatabaseInfoResponse to the
-// SDK transport DatabaseInfo type.
-func protoDatabaseInfoToTransport(resp *pb.DatabaseInfoResponse) *transport.DatabaseInfo {
-	info := &transport.DatabaseInfo{
-		TenantID: resp.GetTenantId(),
-		Name:     resp.GetName(),
-		Engine:   resp.GetEngine(),
-		Backend:  resp.GetBackend(),
-		Status:   resp.GetStatus(),
-		DataDir:  resp.GetDataDir(),
-		ShardID:  resp.GetShardId(),
-		Mode:     resp.GetMode(),
-		Replicas: int(resp.GetReplicas()),
-	}
-
-	if p := resp.GetProtocol(); p != nil {
-		info.Protocol = transport.ProtocolConfig{
-			MySQL:      p.GetMysql(),
-			PostgreSQL: p.GetPostgresql(),
-		}
-		if e := p.GetEtcd(); e != nil {
-			info.Protocol.Etcd = &transport.EtcdProtocolConfig{
-				Enabled:             e.GetEnabled(),
-				ListenAddr:          e.GetListenAddr(),
-				AdvertiseClientURLs: e.GetAdvertiseClientUrls(),
-			}
-		}
-	}
-
-	if r := resp.GetRaft(); r != nil {
-		info.Raft = protoRaftConfigToTransport(r)
-	}
-
-	if b := resp.GetBarrier(); b != nil {
-		info.Barrier = &transport.DatabaseBarrierConfig{
-			Enabled:        b.GetEnabled(),
-			Mode:           b.GetMode(),
-			SharesRequired: int(b.GetSharesRequired()),
-			SharesTotal:    int(b.GetSharesTotal()),
-		}
-	}
-
-	if c := resp.GetConnection(); c != nil {
-		info.Connection = &transport.DatabaseConnectionConfig{
-			Transport: c.GetTransport(),
-			Address:   c.GetRemoteAddress(),
-			CAFile:    c.GetCaFile(),
-			CertFile:  c.GetCertFile(),
-			KeyFile:   c.GetKeyFile(),
-		}
-	}
-
-	if q := resp.GetSql(); q != nil {
-		info.SQL = &transport.DatabaseSQLConfig{Concurrency: q.GetConcurrency()}
-	}
-
-	return info
-}
-
-// protoRaftConfigToTransport converts a protobuf DatabaseRaftConfig to the
-// SDK transport DatabaseRaftConfig type.
-func protoRaftConfigToTransport(r *pb.DatabaseRaftConfig) *transport.DatabaseRaftConfig {
-	return &transport.DatabaseRaftConfig{
-		ClusterMode:    r.GetClusterMode(),
-		ShardID:        r.GetShardId(),
-		ReplicaID:      r.GetReplicaId(),
-		RaftAddress:    r.GetRaftAddress(),
-		Peers:          r.GetPeers(),
-		LocalNodeCount: int(r.GetLocalNodeCount()),
-	}
-}
 
 // transportRaftConfigToProto converts an SDK transport DatabaseRaftConfig to
 // its protobuf representation.

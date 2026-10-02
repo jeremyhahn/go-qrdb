@@ -23,6 +23,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/dbwire"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -92,7 +93,7 @@ func fullDatabaseInfo() *database.DatabaseInfo {
 // fullDatabaseInfo.
 func restDatabaseInfo(t *testing.T) (raw []byte, generic map[string]any) {
 	t.Helper()
-	raw, err := json.MarshalIndent(databaseInfoToResponse(fullDatabaseInfo()), "", "  ")
+	raw, err := json.MarshalIndent(dbwire.Info(fullDatabaseInfo()), "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,37 +222,23 @@ func TestDatabaseInfoWire_GoSDKDecodesEveryField(t *testing.T) {
 		}
 	}
 
-	// Every key the SDK declares is a key REST sends, except those it
-	// declares for other transports or for requests.
+	// Every key the SDK declares is a key REST sends, and every key REST
+	// sends is one the SDK declares: no exceptions, so a new key, or a
+	// renamed one, fails here.
 	declared := make(map[string]bool)
 	declaredPaths(reflect.TypeFor[transport.DatabaseInfo](), "", declared)
-	notSentByREST := map[string]string{
-		"tenantId":       "the gRPC and unix transports report it; the REST response carries no tenant",
-		"barrier.secret": "request-only: a create carries the passphrase, a DatabaseInfo never does",
-	}
 	for p := range declared {
-		if !restPaths[p] && notSentByREST[p] == "" {
+		if !restPaths[p] {
 			t.Errorf("Go SDK declares %q, which the REST response never sends: a misnamed key decodes to its zero value", p)
 		}
 	}
-
-	// What REST sends and the SDK does not decode is a known, listed gap; a
-	// new key, or a renamed one, fails here.
 	undecoded := make(map[string]bool)
 	for p := range restPaths {
 		if !declared[p] {
 			undecoded[p] = true
 		}
 	}
-	wantUndecoded := []string{
-		"dedicatedWal",
-		"raft.discovery",
-		"raft.dns",
-		"raft.multicast",
-		"raft.static",
-		"raft.token",
-	}
-	if got := outermost(undecoded); !reflect.DeepEqual(got, wantUndecoded) {
-		t.Fatalf("REST keys the Go SDK does not decode = %v, want %v", got, wantUndecoded)
+	if got := outermost(undecoded); len(got) != 0 {
+		t.Fatalf("REST keys the Go SDK does not decode: %v", got)
 	}
 }

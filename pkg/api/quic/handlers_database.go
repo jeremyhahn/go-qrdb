@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/dbwire"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -75,7 +76,7 @@ func (s *Server) handleDatabaseCreate(ctx context.Context, payload []byte) ([]by
 		return nil, err
 	}
 
-	resp, err := json.Marshal(info)
+	resp, err := json.Marshal(dbwire.Info(info))
 	if err != nil {
 		return nil, &MarshalError{Err: err}
 	}
@@ -102,7 +103,7 @@ func (s *Server) handleDatabaseGet(ctx context.Context, payload []byte) ([]byte,
 		return nil, err
 	}
 
-	resp, err := json.Marshal(info)
+	resp, err := json.Marshal(dbwire.Info(info))
 	if err != nil {
 		return nil, &MarshalError{Err: err}
 	}
@@ -120,7 +121,7 @@ func (s *Server) handleDatabaseList(ctx context.Context, payload []byte) ([]byte
 		return nil, err
 	}
 
-	resp, err := json.Marshal(infos)
+	resp, err := json.Marshal(dbwire.Infos(infos))
 	if err != nil {
 		return nil, &MarshalError{Err: err}
 	}
@@ -172,7 +173,7 @@ func (s *Server) handleDatabaseUpdateProtocol(ctx context.Context, payload []byt
 		return nil, err
 	}
 
-	resp, err := json.Marshal(info)
+	resp, err := json.Marshal(dbwire.Info(info))
 	if err != nil {
 		return nil, &MarshalError{Err: err}
 	}
@@ -203,7 +204,7 @@ func (s *Server) handleDatabaseUpdateEtcd(ctx context.Context, payload []byte) (
 		return nil, err
 	}
 
-	resp, err := json.Marshal(info)
+	resp, err := json.Marshal(dbwire.Info(info))
 	if err != nil {
 		return nil, &MarshalError{Err: err}
 	}
@@ -233,7 +234,7 @@ func (s *Server) handleDatabaseUpdateRaft(ctx context.Context, payload []byte) (
 		return nil, err
 	}
 
-	resp, err := json.Marshal(info)
+	resp, err := json.Marshal(dbwire.Info(info))
 	if err != nil {
 		return nil, &MarshalError{Err: err}
 	}
@@ -260,7 +261,7 @@ func (s *Server) handleDatabaseScale(ctx context.Context, payload []byte) ([]byt
 		return nil, err
 	}
 
-	resp, err := json.Marshal(info)
+	resp, err := json.Marshal(dbwire.Info(info))
 	if err != nil {
 		return nil, &MarshalError{Err: err}
 	}
@@ -290,7 +291,7 @@ func (s *Server) handleDatabaseUpdateBarrier(ctx context.Context, payload []byte
 		return nil, err
 	}
 
-	resp, err := json.Marshal(info)
+	resp, err := json.Marshal(dbwire.Info(info))
 	if err != nil {
 		return nil, &MarshalError{Err: err}
 	}
@@ -320,7 +321,7 @@ func (s *Server) handleDatabaseUpdateConnection(ctx context.Context, payload []b
 		return nil, err
 	}
 
-	resp, err := json.Marshal(info)
+	resp, err := json.Marshal(dbwire.Info(info))
 	if err != nil {
 		return nil, &MarshalError{Err: err}
 	}
@@ -348,7 +349,7 @@ func (s *Server) handleDatabaseUpdateSQL(ctx context.Context, payload []byte) ([
 		return nil, err
 	}
 
-	resp, err := json.Marshal(info)
+	resp, err := json.Marshal(dbwire.Info(info))
 	if err != nil {
 		return nil, &MarshalError{Err: err}
 	}

@@ -790,6 +790,13 @@ store instead of walking it (see "Drop under a binding").
   from the rest. A database opened from disk with a barrier starts sealed.
   Sealing is a node's own state, not replicated: a database sealed on one node
   of a cluster is still served by any node on which it is unsealed.
+- **Secrets set on a database are write-only.** A Raft discovery secret
+  (static or multicast shared secret, bootstrap token) goes in with a request
+  and never comes out: every transport reports only that it is set. The
+  response types have no field that could carry one, and every transport
+  builds them in one place (`pkg/api/dbwire`), so a transport cannot reopen
+  the leak on its own. Reading a database's configuration is not the same
+  privilege as holding the secret that admits a node to its group.
 - **Target design: a tenant's data is encrypted under the tenant's key on every
   engine.** The node-local vector store under the system encryptor is the case
   this closes.

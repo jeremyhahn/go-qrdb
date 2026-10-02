@@ -32,7 +32,6 @@ import (
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
-	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	tenantpkg "github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
@@ -465,87 +464,6 @@ func TestProtoRaftConfigToDomain_Nil(t *testing.T) {
 	result := protoRaftConfigToDomain(nil)
 	if result != nil {
 		t.Fatal("expected nil for nil input")
-	}
-}
-
-func TestDatabaseInfoToProto_WithAllFields(t *testing.T) {
-	info := &database.DatabaseInfo{
-		Name:     "mydb",
-		Engine:   "mvcc",
-		Backend:  "pebble",
-		Status:   "running",
-		ShardID:  1,
-		TenantID: "tenant-1",
-		Raft: &database.DatabaseRaftConfig{
-			ClusterMode: "single",
-			ShardID:     1,
-			Static: &database.StaticDiscoveryConfig{
-				Peers: []string{"peer1"},
-			},
-			Multicast: &database.MulticastDiscoveryConfig{
-				SharedSecret: "ms",
-			},
-		},
-		Barrier: &database.DatabaseBarrierConfig{Enabled: true},
-		Connection: &database.DatabaseConnectionConfig{
-			Transport: "tcp",
-			Address:   "127.0.0.1:9999",
-		},
-	}
-	result := databaseInfoToProto(info)
-	if result.GetName() != "mydb" {
-		t.Fatalf("expected name 'mydb', got %q", result.GetName())
-	}
-	if result.GetRaft() == nil {
-		t.Fatal("expected non-nil raft config")
-	}
-	if result.GetBarrier() == nil || !result.GetBarrier().GetEnabled() {
-		t.Fatal("expected barrier enabled")
-	}
-	if result.GetConnection() == nil {
-		t.Fatal("expected non-nil connection config")
-	}
-}
-
-func TestDomainRaftConfigToProto_AllFields(t *testing.T) {
-	r := &database.DatabaseRaftConfig{
-		ClusterMode: "multi",
-		ShardID:     5,
-		Static: &database.StaticDiscoveryConfig{
-			Peers:        []string{"p1"},
-			SharedSecret: "s",
-		},
-		Multicast: &database.MulticastDiscoveryConfig{
-			SharedSecret:   "mc",
-			MulticastGroup: "224.0.0.1",
-		},
-		DNS: &database.DNSDiscoveryConfig{
-			Service: "_raft",
-			Domain:  "cluster.local",
-		},
-		Token: &database.TokenDiscoveryConfig{
-			Endpoint: "http://tok-svc",
-			Token:    "abc",
-		},
-	}
-	result := domainRaftConfigToProto(r)
-	if result == nil {
-		t.Fatal("expected non-nil raft proto")
-	}
-	if result.GetShardId() != 5 {
-		t.Fatalf("expected shard_id 5, got %d", result.GetShardId())
-	}
-	if result.GetStatic() == nil {
-		t.Fatal("expected non-nil static config")
-	}
-	if result.GetMulticast() == nil {
-		t.Fatal("expected non-nil multicast config")
-	}
-	if result.GetDns() == nil {
-		t.Fatal("expected non-nil DNS config")
-	}
-	if result.GetToken() == nil {
-		t.Fatal("expected non-nil token config")
 	}
 }
 

@@ -295,6 +295,29 @@ must hold, at the entry's own log position, for it to apply:
 
 ### Shipped
 
+- **Secrets are write-only, and one converter builds every response.**
+  `pkg/api/dbwire` converts a `database.DatabaseInfo` to the JSON wire shape
+  (`dbwire.Info`, `transport.DatabaseInfo`: REST, QUIC, MCP, the embedded
+  transport and so the desktop bindings) and to the protobuf one
+  (`dbwire.InfoProto`, `DatabaseInfoResponse`: gRPC and the Unix socket); the
+  gRPC and Unix SDKs decode it back in one place
+  (`sdk/go/transport/internal/dbconv`). No transport has a response conversion
+  of its own. The response types are read views
+  (`transport.DatabaseRaftInfo`, `transport.DatabaseBarrierInfo`, the proto's
+  `DatabaseRaftInfo`/`DatabaseBarrierInfo` with the secret field numbers
+  `reserved`): each discovery secret is reported as `SharedSecretSet` /
+  `TokenSet`, true when set. The request types keep the secret fields.
+  **Proof:** the `dbwiretest` fixture stores every discovery secret through
+  the real `DatabaseService`; `TestDatabaseSecrets_NeverReadBack` (REST),
+  `TestGRPC_DatabaseSecrets_NeverReadBack`,
+  `TestHandleDatabaseSecrets_NeverReadBack` (QUIC),
+  `TestDatabaseTools_SecretsNeverReadBack` (MCP),
+  `TestUnixRT_DatabaseSecretsNeverReadBack` (Unix wire and SDK),
+  `TestEmbeddedDatabase_SecretsNeverReadBack` and
+  `TestDatabaseBinding_SecretsNeverReadBack` (desktop) read it back through
+  get, list and an update, and fail on any secret byte or a missing set flag.
+  `TestDatabaseInfoWire_*` holds the Go SDK, and `database-info-wire.test.ts`
+  the TypeScript SDK, to the recorded REST response key for key.
 - **A per-database barrier must be on the data path.** It is permitted only on
   a non-raft database with an explicit `DataDir`
   (`DatabaseConfig.BarrierOnDataPath`), and the tenant-scoped create path never

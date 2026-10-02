@@ -1099,35 +1099,3 @@ func TestForwardToLeader_LoopDetection(t *testing.T) {
 	s.forwardToLeader(rec, req, "http://leader", nil)
 	assertStatus(t, rec, http.StatusLoopDetected)
 }
-
-// ---------------------------------------------------------------------------
-// databaseInfoToResponse with Raft and Barrier sub-configs present
-// ---------------------------------------------------------------------------
-
-func TestDatabaseInfoToResponse_WithRaftAndBarrierConfig(t *testing.T) {
-	info := &database.DatabaseInfo{
-		Name:    "mydb",
-		Engine:  database.EngineKV,
-		Backend: database.BackendPebble,
-		Status:  database.StatusOpen,
-		Raft: &database.DatabaseRaftConfig{
-			ShardID:   1,
-			ReplicaID: 1,
-		},
-		Barrier: &database.DatabaseBarrierConfig{
-			Enabled:        true,
-			SharesRequired: 2,
-			SharesTotal:    3,
-		},
-	}
-	resp := databaseInfoToResponse(info)
-	if resp.Name != "mydb" {
-		t.Errorf("name = %q, want 'mydb'", resp.Name)
-	}
-	if resp.Raft == nil {
-		t.Error("raft config should not be nil")
-	}
-	if resp.Barrier == nil {
-		t.Error("barrier config should not be nil")
-	}
-}

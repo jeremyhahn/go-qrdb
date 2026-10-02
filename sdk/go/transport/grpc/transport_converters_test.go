@@ -92,43 +92,6 @@ func TestAnyToString_NonString(t *testing.T) {
 	}
 }
 
-// TestProtoToTransportRaftConfig verifies field mapping for a populated
-// DatabaseRaftConfig proto.
-func TestProtoToTransportRaftConfig(t *testing.T) {
-	rc := protoToTransportRaftConfig(&pb.DatabaseRaftConfig{
-		ClusterMode:    "multi",
-		ShardId:        5,
-		ReplicaId:      2,
-		RaftAddress:    "127.0.0.1:9000",
-		Peers:          []string{"127.0.0.1:9001"},
-		LocalNodeCount: 3,
-	})
-	if rc.ClusterMode != "multi" {
-		t.Errorf("ClusterMode = %q, want multi", rc.ClusterMode)
-	}
-	if rc.ShardID != 5 || rc.ReplicaID != 2 {
-		t.Errorf("ShardID/ReplicaID = %d/%d, want 5/2", rc.ShardID, rc.ReplicaID)
-	}
-	if rc.RaftAddress != "127.0.0.1:9000" {
-		t.Errorf("RaftAddress = %q, want 127.0.0.1:9000", rc.RaftAddress)
-	}
-	if len(rc.Peers) != 1 || rc.Peers[0] != "127.0.0.1:9001" {
-		t.Errorf("Peers = %v, want [127.0.0.1:9001]", rc.Peers)
-	}
-	if rc.LocalNodeCount != 3 {
-		t.Errorf("LocalNodeCount = %d, want 3", rc.LocalNodeCount)
-	}
-}
-
-// TestProtoToTransportRaftConfig_Zero verifies a zero-value proto maps to a
-// zero-value transport config (GetX accessors tolerate the zero message).
-func TestProtoToTransportRaftConfig_Zero(t *testing.T) {
-	rc := protoToTransportRaftConfig(&pb.DatabaseRaftConfig{})
-	if rc.ClusterMode != "" || rc.ShardID != 0 || rc.ReplicaID != 0 || rc.RaftAddress != "" || rc.LocalNodeCount != 0 {
-		t.Errorf("zero proto mapped to non-zero config: %+v", rc)
-	}
-}
-
 // TestPrefixRangeEnd_AllFF verifies the all-0xff prefix branch returns the
 // no-upper-bound sentinel.
 func TestPrefixRangeEnd_AllFF(t *testing.T) {

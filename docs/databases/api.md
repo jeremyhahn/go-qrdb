@@ -69,13 +69,36 @@ Shipped:
   "connection": { "transport": "tcp", "address": "db2.example.com:63003" } }
 ```
 
-Response — `DatabaseInfo`, which adds `status` and `shardId` (and
-`dedicatedWal`). The REST response carries no `tenantId`; the gRPC and unix
-transports report it. Its keys are pinned by a recorded REST response that the
-Go handler test (`TestDatabaseInfoWire_*`) and the TypeScript SDK test
-(`database-info-wire.test.ts`) both decode. *(Corrected: this said the REST
-response carried `tenantId`, and the TypeScript SDK read `shard_id` and
-`data_dir`, keys REST never sends.)*
+Response — `DatabaseInfo`, which adds `tenantId`, `status`, `shardId` and
+`dedicatedWal`. Every transport sends the same shape: REST, QUIC, MCP, the
+embedded transport and the desktop bindings emit the JSON form, gRPC and the
+Unix socket the protobuf `DatabaseInfoResponse`, both produced by one converter
+(`pkg/api/dbwire`). Its keys are pinned by a recorded REST response that the Go
+handler test (`TestDatabaseInfoWire_*`) and the TypeScript SDK test
+(`database-info-wire.test.ts`) both decode, with no exceptions in either
+direction. *(Corrected: the TypeScript SDK read `shard_id` and `data_dir`, keys
+REST never sends; QUIC and MCP sent the server's internal snake_case shape,
+which the Go SDK decoded as zero shard ID, data directory and tenant.)*
+
+**Secrets are write-only.** A request may set a discovery secret
+(`raft.static.sharedSecret`, `raft.multicast.sharedSecret`,
+`raft.token.token`); no response on any transport returns it. A response
+reports only that it is set:
+
+```json
+"raft": { "clusterMode": "distributed", "discovery": "static",
+  "static":    { "peers": ["db.example.com:63001"], "sharedSecretSet": true },
+  "multicast": { "multicastGroup": "239.255.0.1:63100", "sharedSecretSet": true },
+  "token":     { "endpoint": "https://db.example.com/join", "clusterSize": 3, "tokenSet": true } }
+```
+
+The response types cannot carry a secret: `DatabaseRaftInfo` and
+`DatabaseBarrierInfo` in the Go SDK and the protobuf, and `DatabaseRaftInfo`
+in the TypeScript SDK, have a `*Set` flag where the request has the secret. The
+barrier passphrase is never stored, so no response reports it at all. On gRPC
+the secret field numbers are `reserved` in the response messages. *(Changed:
+every read of a database -- get, list, and the response to every update --
+returned the stored discovery secrets on every transport.)*
 
 `engine` is accepted as `kv`, `timeseries` or `vector`; `backend` as `memory`,
 `file`, `pebble`, `raft` or `objstore`. Measured: the backend does not decide

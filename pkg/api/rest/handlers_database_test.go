@@ -27,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // ---------------------------------------------------------------------------
@@ -209,7 +210,7 @@ func TestHandleCreateDatabase_Success(t *testing.T) {
 
 	assertStatus(t, rec, http.StatusCreated)
 
-	var resp databaseInfoResponse
+	var resp transport.DatabaseInfo
 	decodeJSON(t, rec, &resp)
 	if resp.Name != "mydb" {
 		t.Fatalf("name = %q, want %q", resp.Name, "mydb")
@@ -379,7 +380,7 @@ func TestHandleCreateDatabase_WithSQL(t *testing.T) {
 
 	assertStatus(t, rec, http.StatusCreated)
 
-	var resp databaseInfoResponse
+	var resp transport.DatabaseInfo
 	decodeJSON(t, rec, &resp)
 	if resp.Name != "sqldb" {
 		t.Fatalf("name = %q, want %q", resp.Name, "sqldb")
@@ -451,7 +452,7 @@ func TestHandleGetDatabase_Success(t *testing.T) {
 
 	assertStatus(t, rec, http.StatusOK)
 
-	var resp databaseInfoResponse
+	var resp transport.DatabaseInfo
 	decodeJSON(t, rec, &resp)
 	if resp.Name != "testdb" {
 		t.Fatalf("name = %q, want %q", resp.Name, "testdb")
@@ -481,7 +482,7 @@ func TestHandleGetDatabase_IncludesSQL(t *testing.T) {
 
 	assertStatus(t, rec, http.StatusOK)
 
-	var resp databaseInfoResponse
+	var resp transport.DatabaseInfo
 	decodeJSON(t, rec, &resp)
 	if resp.Name != "sqldb" {
 		t.Fatalf("name = %q, want %q", resp.Name, "sqldb")
@@ -605,7 +606,7 @@ func TestHandleUpdateDatabaseProtocol_Success(t *testing.T) {
 
 	assertStatus(t, rec, http.StatusOK)
 
-	var resp databaseInfoResponse
+	var resp transport.DatabaseInfo
 	decodeJSON(t, rec, &resp)
 	if resp.Name != "testdb" {
 		t.Fatalf("name = %q, want %q", resp.Name, "testdb")
@@ -667,7 +668,7 @@ func TestHandleUpdateDatabaseProtocol_DisableBoth(t *testing.T) {
 
 	assertStatus(t, rec, http.StatusOK)
 
-	var resp databaseInfoResponse
+	var resp transport.DatabaseInfo
 	decodeJSON(t, rec, &resp)
 	if resp.Protocol.MySQL {
 		t.Fatal("protocol.mysql = true, want false")
@@ -715,52 +716,6 @@ func TestHandleDatabaseByName_EmptyName(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// databaseInfoToResponse tests
-// ---------------------------------------------------------------------------
-
-func TestDatabaseInfoToResponse(t *testing.T) {
-	info := &database.DatabaseInfo{
-		Name:    "mydb",
-		Engine:  database.EngineKV,
-		Backend: database.BackendPebble,
-		Status:  database.StatusOpen,
-		Protocol: database.ProtocolConfig{
-			MySQL:      true,
-			PostgreSQL: false,
-		},
-		DataDir: "/data/mydb",
-		ShardID: 42,
-	}
-
-	resp := databaseInfoToResponse(info)
-
-	if resp.Name != "mydb" {
-		t.Fatalf("name = %q, want %q", resp.Name, "mydb")
-	}
-	if resp.Engine != "kv" {
-		t.Fatalf("engine = %q, want %q", resp.Engine, "kv")
-	}
-	if resp.Backend != "pebble" {
-		t.Fatalf("backend = %q, want %q", resp.Backend, "pebble")
-	}
-	if resp.Status != "open" {
-		t.Fatalf("status = %q, want %q", resp.Status, "open")
-	}
-	if !resp.Protocol.MySQL {
-		t.Fatal("protocol.mysql = false, want true")
-	}
-	if resp.Protocol.PostgreSQL {
-		t.Fatal("protocol.postgresql = true, want false")
-	}
-	if resp.DataDir != "/data/mydb" {
-		t.Fatalf("data_dir = %q, want %q", resp.DataDir, "/data/mydb")
-	}
-	if resp.ShardID != 42 {
-		t.Fatalf("shard_id = %d, want 42", resp.ShardID)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Request/response type serialization tests
 // ---------------------------------------------------------------------------
 
@@ -801,40 +756,6 @@ func TestUpdateDatabaseProtocolRequest_JSON(t *testing.T) {
 	}
 }
 
-func TestDatabaseInfoResponse_JSON(t *testing.T) {
-	resp := databaseInfoResponse{
-		Name:    "mydb",
-		Engine:  "kv",
-		Backend: "pebble",
-		Status:  "open",
-		Protocol: protocolConfigResponse{
-			MySQL:      true,
-			PostgreSQL: false,
-		},
-		DataDir: "/data/mydb",
-		ShardID: 1,
-	}
-
-	data, err := json.Marshal(resp)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	var decoded databaseInfoResponse
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if decoded.Name != "mydb" {
-		t.Fatalf("name = %q, want %q", decoded.Name, "mydb")
-	}
-	if !decoded.Protocol.MySQL {
-		t.Fatal("protocol.mysql = false, want true")
-	}
-	if decoded.Protocol.PostgreSQL {
-		t.Fatal("protocol.postgresql = true, want false")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // handleCreateDatabase with Raft discovery tests
 // ---------------------------------------------------------------------------
@@ -872,7 +793,7 @@ func TestHandleCreateDatabase_WithRaftStatic(t *testing.T) {
 
 	assertStatus(t, rec, http.StatusCreated)
 
-	var resp databaseInfoResponse
+	var resp transport.DatabaseInfo
 	decodeJSON(t, rec, &resp)
 	if resp.Name != "staticdb" {
 		t.Fatalf("name = %q, want %q", resp.Name, "staticdb")
@@ -892,8 +813,9 @@ func TestHandleCreateDatabase_WithRaftStatic(t *testing.T) {
 	if len(resp.Raft.Static.Peers) != 2 {
 		t.Fatalf("raft.static.peers length = %d, want 2", len(resp.Raft.Static.Peers))
 	}
-	if resp.Raft.Static.SharedSecret != "s3cret" {
-		t.Fatalf("raft.static.sharedSecret = %q, want %q", resp.Raft.Static.SharedSecret, "s3cret")
+	// The secret is write-only: the response reports it set, never its value.
+	if !resp.Raft.Static.SharedSecretSet || strings.Contains(rec.Body.String(), "s3cret") {
+		t.Fatalf("raft.static: sharedSecretSet = %v, body %s; want set and no secret", resp.Raft.Static.SharedSecretSet, rec.Body.String())
 	}
 	if resp.Raft.RaftAddress != "10.0.0.1:63001" {
 		t.Fatalf("raft.raftAddress = %q, want %q", resp.Raft.RaftAddress, "10.0.0.1:63001")
@@ -938,7 +860,7 @@ func TestHandleCreateDatabase_WithRaftMulticast(t *testing.T) {
 
 	assertStatus(t, rec, http.StatusCreated)
 
-	var resp databaseInfoResponse
+	var resp transport.DatabaseInfo
 	decodeJSON(t, rec, &resp)
 	if resp.Raft == nil {
 		t.Fatal("raft config should not be nil")
@@ -949,8 +871,8 @@ func TestHandleCreateDatabase_WithRaftMulticast(t *testing.T) {
 	if resp.Raft.Multicast == nil {
 		t.Fatal("raft.multicast should not be nil")
 	}
-	if resp.Raft.Multicast.SharedSecret != "hmac-secret" {
-		t.Fatalf("raft.multicast.sharedSecret = %q, want %q", resp.Raft.Multicast.SharedSecret, "hmac-secret")
+	if !resp.Raft.Multicast.SharedSecretSet || strings.Contains(rec.Body.String(), "hmac-secret") {
+		t.Fatalf("raft.multicast: sharedSecretSet = %v, body %s; want set and no secret", resp.Raft.Multicast.SharedSecretSet, rec.Body.String())
 	}
 	if resp.Raft.Multicast.MulticastGroup != "239.1.1.1:9999" {
 		t.Fatalf("raft.multicast.multicastGroup = %q, want %q", resp.Raft.Multicast.MulticastGroup, "239.1.1.1:9999")
@@ -1003,7 +925,7 @@ func TestHandleCreateDatabase_WithRaftDNS(t *testing.T) {
 
 	assertStatus(t, rec, http.StatusCreated)
 
-	var resp databaseInfoResponse
+	var resp transport.DatabaseInfo
 	decodeJSON(t, rec, &resp)
 	if resp.Raft == nil {
 		t.Fatal("raft config should not be nil")
@@ -1064,7 +986,7 @@ func TestHandleCreateDatabase_WithRaftToken(t *testing.T) {
 
 	assertStatus(t, rec, http.StatusCreated)
 
-	var resp databaseInfoResponse
+	var resp transport.DatabaseInfo
 	decodeJSON(t, rec, &resp)
 	if resp.Raft == nil {
 		t.Fatal("raft config should not be nil")
@@ -1078,8 +1000,8 @@ func TestHandleCreateDatabase_WithRaftToken(t *testing.T) {
 	if resp.Raft.Token.Endpoint != "https://discovery.example.com/join" {
 		t.Fatalf("raft.token.endpoint = %q, want %q", resp.Raft.Token.Endpoint, "https://discovery.example.com/join")
 	}
-	if resp.Raft.Token.Token != "bootstrap-token-abc123" {
-		t.Fatalf("raft.token.token = %q, want %q", resp.Raft.Token.Token, "bootstrap-token-abc123")
+	if !resp.Raft.Token.TokenSet || strings.Contains(rec.Body.String(), "bootstrap-token-abc123") {
+		t.Fatalf("raft.token: tokenSet = %v, body %s; want set and no token", resp.Raft.Token.TokenSet, rec.Body.String())
 	}
 	if resp.Raft.Token.ClusterSize != 3 {
 		t.Fatalf("raft.token.clusterSize = %d, want 3", resp.Raft.Token.ClusterSize)
@@ -1247,228 +1169,6 @@ func TestRaftConfigFromRequest_NilSubConfigs(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// raftConfigToResponse tests
-// ---------------------------------------------------------------------------
-
-func TestRaftConfigToResponse(t *testing.T) {
-	raft := &database.DatabaseRaftConfig{
-		ClusterMode:    database.RaftDistributed,
-		ShardID:        7,
-		ReplicaID:      3,
-		RaftAddress:    "10.0.0.5:63001",
-		Peers:          []string{"10.0.0.6:63001"},
-		LocalNodeCount: 1,
-		Discovery:      database.DiscoveryMulticast,
-		Static: &database.StaticDiscoveryConfig{
-			Peers:        []string{"10.0.0.6:63001"},
-			SharedSecret: "static-secret",
-		},
-		Multicast: &database.MulticastDiscoveryConfig{
-			SharedSecret:     "mcast-key",
-			MulticastGroup:   "239.0.0.1:8888",
-			Interface:        "wlan0",
-			MinPeers:         2,
-			AnnounceInterval: "500ms",
-			DiscoverTimeout:  "15s",
-		},
-		DNS: &database.DNSDiscoveryConfig{
-			Service:       "_qrdb",
-			Proto:         "_udp",
-			Domain:        "prod.internal",
-			LookupTimeout: "3s",
-		},
-		Token: &database.TokenDiscoveryConfig{
-			Endpoint:    "https://join.example.com",
-			Token:       "join-token",
-			ClusterSize: 7,
-			Timeout:     "20s",
-		},
-	}
-
-	resp := raftConfigToResponse(raft)
-
-	if resp.ClusterMode != "distributed" {
-		t.Fatalf("ClusterMode = %q, want %q", resp.ClusterMode, "distributed")
-	}
-	if resp.ShardID != 7 {
-		t.Fatalf("ShardID = %d, want 7", resp.ShardID)
-	}
-	if resp.ReplicaID != 3 {
-		t.Fatalf("ReplicaID = %d, want 3", resp.ReplicaID)
-	}
-	if resp.RaftAddress != "10.0.0.5:63001" {
-		t.Fatalf("RaftAddress = %q, want %q", resp.RaftAddress, "10.0.0.5:63001")
-	}
-	if len(resp.Peers) != 1 {
-		t.Fatalf("Peers length = %d, want 1", len(resp.Peers))
-	}
-	if resp.LocalNodeCount != 1 {
-		t.Fatalf("LocalNodeCount = %d, want 1", resp.LocalNodeCount)
-	}
-	if resp.Discovery != "multicast" {
-		t.Fatalf("Discovery = %q, want %q", resp.Discovery, "multicast")
-	}
-
-	// Static
-	if resp.Static == nil {
-		t.Fatal("Static should not be nil")
-	}
-	if resp.Static.SharedSecret != "static-secret" {
-		t.Fatalf("Static.SharedSecret = %q, want %q", resp.Static.SharedSecret, "static-secret")
-	}
-
-	// Multicast
-	if resp.Multicast == nil {
-		t.Fatal("Multicast should not be nil")
-	}
-	if resp.Multicast.SharedSecret != "mcast-key" {
-		t.Fatalf("Multicast.SharedSecret = %q, want %q", resp.Multicast.SharedSecret, "mcast-key")
-	}
-	if resp.Multicast.MulticastGroup != "239.0.0.1:8888" {
-		t.Fatalf("Multicast.MulticastGroup = %q, want %q", resp.Multicast.MulticastGroup, "239.0.0.1:8888")
-	}
-	if resp.Multicast.Interface != "wlan0" {
-		t.Fatalf("Multicast.Interface = %q, want %q", resp.Multicast.Interface, "wlan0")
-	}
-	if resp.Multicast.MinPeers != 2 {
-		t.Fatalf("Multicast.MinPeers = %d, want 2", resp.Multicast.MinPeers)
-	}
-	if resp.Multicast.AnnounceInterval != "500ms" {
-		t.Fatalf("Multicast.AnnounceInterval = %q, want %q", resp.Multicast.AnnounceInterval, "500ms")
-	}
-	if resp.Multicast.DiscoverTimeout != "15s" {
-		t.Fatalf("Multicast.DiscoverTimeout = %q, want %q", resp.Multicast.DiscoverTimeout, "15s")
-	}
-
-	// DNS
-	if resp.DNS == nil {
-		t.Fatal("DNS should not be nil")
-	}
-	if resp.DNS.Service != "_qrdb" {
-		t.Fatalf("DNS.Service = %q, want %q", resp.DNS.Service, "_qrdb")
-	}
-	if resp.DNS.Proto != "_udp" {
-		t.Fatalf("DNS.Proto = %q, want %q", resp.DNS.Proto, "_udp")
-	}
-	if resp.DNS.Domain != "prod.internal" {
-		t.Fatalf("DNS.Domain = %q, want %q", resp.DNS.Domain, "prod.internal")
-	}
-	if resp.DNS.LookupTimeout != "3s" {
-		t.Fatalf("DNS.LookupTimeout = %q, want %q", resp.DNS.LookupTimeout, "3s")
-	}
-
-	// Token
-	if resp.Token == nil {
-		t.Fatal("Token should not be nil")
-	}
-	if resp.Token.Endpoint != "https://join.example.com" {
-		t.Fatalf("Token.Endpoint = %q, want %q", resp.Token.Endpoint, "https://join.example.com")
-	}
-	if resp.Token.Token != "join-token" {
-		t.Fatalf("Token.Token = %q, want %q", resp.Token.Token, "join-token")
-	}
-	if resp.Token.ClusterSize != 7 {
-		t.Fatalf("Token.ClusterSize = %d, want 7", resp.Token.ClusterSize)
-	}
-	if resp.Token.Timeout != "20s" {
-		t.Fatalf("Token.Timeout = %q, want %q", resp.Token.Timeout, "20s")
-	}
-}
-
-func TestRaftConfigToResponse_NilSubConfigs(t *testing.T) {
-	raft := &database.DatabaseRaftConfig{
-		ClusterMode: database.RaftLocal,
-		Discovery:   database.DiscoveryStatic,
-	}
-
-	resp := raftConfigToResponse(raft)
-
-	if resp.ClusterMode != "local" {
-		t.Fatalf("ClusterMode = %q, want %q", resp.ClusterMode, "local")
-	}
-	if resp.Static != nil {
-		t.Fatal("Static should be nil")
-	}
-	if resp.Multicast != nil {
-		t.Fatal("Multicast should be nil")
-	}
-	if resp.DNS != nil {
-		t.Fatal("DNS should be nil")
-	}
-	if resp.Token != nil {
-		t.Fatal("Token should be nil")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// databaseInfoToResponse with Raft tests
-// ---------------------------------------------------------------------------
-
-func TestDatabaseInfoToResponse_WithRaft(t *testing.T) {
-	info := &database.DatabaseInfo{
-		Name:    "raftdb",
-		Engine:  database.EngineKV,
-		Backend: database.BackendRaft,
-		Status:  database.StatusOpen,
-		Mode:    database.ModeEmbedded,
-		Raft: &database.DatabaseRaftConfig{
-			ClusterMode: database.RaftDistributed,
-			ShardID:     10,
-			ReplicaID:   1,
-			Discovery:   database.DiscoveryDNS,
-			DNS: &database.DNSDiscoveryConfig{
-				Domain: "test.local",
-			},
-		},
-	}
-
-	resp := databaseInfoToResponse(info)
-
-	if resp.Name != "raftdb" {
-		t.Fatalf("name = %q, want %q", resp.Name, "raftdb")
-	}
-	if resp.Mode != "embedded" {
-		t.Fatalf("mode = %q, want %q", resp.Mode, "embedded")
-	}
-	if resp.Raft == nil {
-		t.Fatal("raft should not be nil")
-	}
-	if resp.Raft.ClusterMode != "distributed" {
-		t.Fatalf("raft.clusterMode = %q, want %q", resp.Raft.ClusterMode, "distributed")
-	}
-	if resp.Raft.ShardID != 10 {
-		t.Fatalf("raft.shardId = %d, want 10", resp.Raft.ShardID)
-	}
-	if resp.Raft.Discovery != "dns" {
-		t.Fatalf("raft.discovery = %q, want %q", resp.Raft.Discovery, "dns")
-	}
-	if resp.Raft.DNS == nil {
-		t.Fatal("raft.dns should not be nil")
-	}
-	if resp.Raft.DNS.Domain != "test.local" {
-		t.Fatalf("raft.dns.domain = %q, want %q", resp.Raft.DNS.Domain, "test.local")
-	}
-}
-
-func TestDatabaseInfoToResponse_WithoutRaft(t *testing.T) {
-	info := &database.DatabaseInfo{
-		Name:    "simple",
-		Engine:  database.EngineKV,
-		Backend: database.BackendPebble,
-		Status:  database.StatusOpen,
-	}
-
-	resp := databaseInfoToResponse(info)
-
-	if resp.Name != "simple" {
-		t.Fatalf("name = %q, want %q", resp.Name, "simple")
-	}
-	if resp.Raft != nil {
-		t.Fatal("raft should be nil when not set in info")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Raft config JSON serialization tests
 // ---------------------------------------------------------------------------
 
@@ -1542,92 +1242,6 @@ func TestRaftConfigRequest_JSON(t *testing.T) {
 	}
 }
 
-func TestRaftConfigResponse_JSON(t *testing.T) {
-	resp := raftConfigResponse{
-		ClusterMode:    "distributed",
-		ShardID:        4,
-		ReplicaID:      1,
-		RaftAddress:    "10.0.0.1:63001",
-		Peers:          []string{"10.0.0.2:63001"},
-		LocalNodeCount: 3,
-		Discovery:      "token",
-		Static: &staticDiscoveryConfigResponse{
-			Peers:        []string{"a"},
-			SharedSecret: "ss",
-		},
-		Multicast: &multicastDiscoveryConfigResponse{
-			SharedSecret:     "ms",
-			MulticastGroup:   "239.1.1.1:9999",
-			Interface:        "eth0",
-			MinPeers:         2,
-			AnnounceInterval: "1s",
-			DiscoverTimeout:  "10s",
-		},
-		DNS: &dnsDiscoveryConfigResponse{
-			Service:       "_raft",
-			Proto:         "_tcp",
-			Domain:        "d.local",
-			LookupTimeout: "5s",
-		},
-		Token: &tokenDiscoveryConfigResponse{
-			Endpoint:    "https://e.com",
-			Token:       "t",
-			ClusterSize: 3,
-			Timeout:     "8s",
-		},
-	}
-
-	data, err := json.Marshal(resp)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	var roundTrip raftConfigResponse
-	if err := json.Unmarshal(data, &roundTrip); err != nil {
-		t.Fatalf("unmarshal round-trip: %v", err)
-	}
-
-	if roundTrip.ClusterMode != "distributed" {
-		t.Fatalf("ClusterMode = %q, want %q", roundTrip.ClusterMode, "distributed")
-	}
-	if roundTrip.ShardID != 4 {
-		t.Fatalf("ShardID = %d, want 4", roundTrip.ShardID)
-	}
-	if roundTrip.Discovery != "token" {
-		t.Fatalf("Discovery = %q, want %q", roundTrip.Discovery, "token")
-	}
-	if roundTrip.Static == nil {
-		t.Fatal("Static should not be nil")
-	}
-	if roundTrip.Static.SharedSecret != "ss" {
-		t.Fatalf("Static.SharedSecret = %q, want %q", roundTrip.Static.SharedSecret, "ss")
-	}
-	if roundTrip.Multicast == nil {
-		t.Fatal("Multicast should not be nil")
-	}
-	if roundTrip.Multicast.MinPeers != 2 {
-		t.Fatalf("Multicast.MinPeers = %d, want 2", roundTrip.Multicast.MinPeers)
-	}
-	if roundTrip.DNS == nil {
-		t.Fatal("DNS should not be nil")
-	}
-	if roundTrip.DNS.Domain != "d.local" {
-		t.Fatalf("DNS.Domain = %q, want %q", roundTrip.DNS.Domain, "d.local")
-	}
-	if roundTrip.Token == nil {
-		t.Fatal("Token should not be nil")
-	}
-	if roundTrip.Token.Token != "t" {
-		t.Fatalf("Token.Token = %q, want %q", roundTrip.Token.Token, "t")
-	}
-	if roundTrip.Token.ClusterSize != 3 {
-		t.Fatalf("Token.ClusterSize = %d, want 3", roundTrip.Token.ClusterSize)
-	}
-	if roundTrip.Token.Timeout != "8s" {
-		t.Fatalf("Token.Timeout = %q, want %q", roundTrip.Token.Timeout, "8s")
-	}
-}
-
 func TestWithDatabaseService_Option(t *testing.T) {
 	dbSvc := newMockDatabaseService()
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
@@ -1659,7 +1273,7 @@ func TestHandleScaleDatabase_Success(t *testing.T) {
 
 	assertStatus(t, rec, http.StatusOK)
 
-	var resp databaseInfoResponse
+	var resp transport.DatabaseInfo
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
 	}
@@ -1696,7 +1310,7 @@ func TestHandleScaleDatabase_ForwardToLeader_Success(t *testing.T) {
 		if req.TargetReplicas != 3 {
 			t.Fatalf("leader received target_replicas=%d, want 3", req.TargetReplicas)
 		}
-		writeJSON(w, databaseInfoResponse{Name: "mydb", Replicas: 3})
+		writeJSON(w, transport.DatabaseInfo{Name: "mydb", Replicas: 3})
 	}))
 	defer leaderSrv.Close()
 
@@ -1724,7 +1338,7 @@ func TestHandleScaleDatabase_ForwardToLeader_Success(t *testing.T) {
 
 	assertStatus(t, rec, http.StatusOK)
 
-	var resp databaseInfoResponse
+	var resp transport.DatabaseInfo
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal forwarded response: %v", err)
 	}

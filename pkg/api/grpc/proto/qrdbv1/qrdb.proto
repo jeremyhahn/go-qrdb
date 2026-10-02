@@ -3043,8 +3043,11 @@ message DatabaseInfoResponse {
     string data_dir = 6;
     uint64 shard_id = 7;
     string mode = 8;
-    DatabaseRaftConfig raft = 9;
-    DatabaseBarrierConfig barrier = 10;
+    // raft and barrier are read views: a secret set on a database is
+    // write-only and is reported only as set. Their field numbers match the
+    // request messages', less the secrets.
+    DatabaseRaftInfo raft = 9;
+    DatabaseBarrierInfo barrier = 10;
     DatabaseConnectionConfig connection = 11;
     string tenant_id = 12;
     // replicas is the replication factor of a dedicated-raft database. Zero for
@@ -3052,6 +3055,69 @@ message DatabaseInfoResponse {
     uint32 replicas = 13;
     // sql holds the database's SQL settings; unset means the defaults.
     DatabaseSQLConfig sql = 14;
+    // dedicated_wal reports that a dedicated-raft database's Raft log is
+    // encrypted under the tenant's own key.
+    bool dedicated_wal = 15;
+}
+
+// DatabaseRaftInfo is a database's Raft configuration as a response reports
+// it: DatabaseRaftConfig without its secrets.
+message DatabaseRaftInfo {
+    string cluster_mode = 1;
+    uint64 shard_id = 2;
+    uint64 replica_id = 3;
+    string raft_address = 4;
+    repeated string peers = 5;
+    int32 local_node_count = 6;
+    string discovery = 7;
+    DatabaseStaticDiscoveryInfo static = 8;
+    DatabaseMulticastDiscoveryInfo multicast = 9;
+    DatabaseDNSDiscovery dns = 10;
+    DatabaseTokenDiscoveryInfo token = 11;
+}
+
+// DatabaseStaticDiscoveryInfo reports static peer discovery.
+message DatabaseStaticDiscoveryInfo {
+    repeated string peers = 1;
+    reserved 2;
+    reserved "shared_secret";
+    // shared_secret_set reports that an HMAC shared secret is configured.
+    bool shared_secret_set = 3;
+}
+
+// DatabaseMulticastDiscoveryInfo reports multicast peer discovery.
+message DatabaseMulticastDiscoveryInfo {
+    reserved 1;
+    reserved "shared_secret";
+    string multicast_group = 2;
+    string iface = 3 [json_name = "interface"];
+    int32 min_peers = 4;
+    string announce_interval = 5;
+    string discover_timeout = 6;
+    // shared_secret_set reports that the HMAC shared secret is configured.
+    bool shared_secret_set = 7;
+}
+
+// DatabaseTokenDiscoveryInfo reports token-based peer discovery.
+message DatabaseTokenDiscoveryInfo {
+    string endpoint = 1;
+    reserved 2;
+    reserved "token";
+    int32 cluster_size = 3;
+    string timeout = 4;
+    // token_set reports that the bootstrap token is configured.
+    bool token_set = 5;
+}
+
+// DatabaseBarrierInfo is a database's barrier configuration as a response
+// reports it. The passphrase is never stored, so it has no secret field.
+message DatabaseBarrierInfo {
+    bool enabled = 1;
+    string mode = 2;
+    int32 shares_required = 3;
+    int32 shares_total = 4;
+    reserved 5;
+    reserved "secret";
 }
 
 // DatabaseSQLConfig holds a database's SQL settings.

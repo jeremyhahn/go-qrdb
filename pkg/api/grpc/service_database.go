@@ -19,6 +19,7 @@ import (
 
 	"google.golang.org/protobuf/types/known/emptypb"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/dbwire"
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -55,7 +56,7 @@ func (s *qrdbServiceServer) DatabaseCreate(ctx context.Context, req *pb.Database
 		return nil, mapServiceError(err)
 	}
 
-	return databaseInfoToProto(info), nil
+	return dbwire.InfoProto(info), nil
 }
 
 // DatabaseGet returns information about a specific database.
@@ -69,7 +70,7 @@ func (s *qrdbServiceServer) DatabaseGet(ctx context.Context, req *pb.DatabaseGet
 		return nil, mapServiceError(err)
 	}
 
-	return databaseInfoToProto(info), nil
+	return dbwire.InfoProto(info), nil
 }
 
 // DatabaseList returns information about all open databases.
@@ -83,13 +84,7 @@ func (s *qrdbServiceServer) DatabaseList(ctx context.Context, _ *emptypb.Empty) 
 		return nil, mapServiceError(err)
 	}
 
-	pbDatabases := make([]*pb.DatabaseInfoResponse, len(databases))
-	for i, db := range databases {
-		d := db
-		pbDatabases[i] = databaseInfoToProto(&d)
-	}
-
-	return &pb.DatabaseListResponse{Databases: pbDatabases}, nil
+	return &pb.DatabaseListResponse{Databases: dbwire.InfosProto(databases)}, nil
 }
 
 // DatabaseDrop closes and removes a database.
@@ -121,7 +116,7 @@ func (s *qrdbServiceServer) DatabaseUpdateProtocol(ctx context.Context, req *pb.
 		return nil, mapServiceError(err)
 	}
 
-	return databaseInfoToProto(info), nil
+	return dbwire.InfoProto(info), nil
 }
 
 // DatabaseUpdateEtcd updates the etcd wire protocol configuration.
@@ -141,7 +136,7 @@ func (s *qrdbServiceServer) DatabaseUpdateEtcd(ctx context.Context, req *pb.Data
 		return nil, mapServiceError(err)
 	}
 
-	return databaseInfoToProto(info), nil
+	return dbwire.InfoProto(info), nil
 }
 
 // DatabaseUpdateRaft updates the Raft consensus configuration.
@@ -157,7 +152,7 @@ func (s *qrdbServiceServer) DatabaseUpdateRaft(ctx context.Context, req *pb.Data
 		return nil, mapServiceError(err)
 	}
 
-	return databaseInfoToProto(info), nil
+	return dbwire.InfoProto(info), nil
 }
 
 // DatabaseScale changes the replication factor of an existing dedicated-raft
@@ -172,7 +167,7 @@ func (s *qrdbServiceServer) DatabaseScale(ctx context.Context, req *pb.DatabaseS
 		return nil, mapServiceError(err)
 	}
 
-	return databaseInfoToProto(info), nil
+	return dbwire.InfoProto(info), nil
 }
 
 // DatabaseUpdateBarrier updates the encryption barrier configuration.
@@ -188,7 +183,7 @@ func (s *qrdbServiceServer) DatabaseUpdateBarrier(ctx context.Context, req *pb.D
 		return nil, mapServiceError(err)
 	}
 
-	return databaseInfoToProto(info), nil
+	return dbwire.InfoProto(info), nil
 }
 
 // DatabaseUpdateConnection updates the remote connection configuration.
@@ -204,7 +199,7 @@ func (s *qrdbServiceServer) DatabaseUpdateConnection(ctx context.Context, req *p
 		return nil, mapServiceError(err)
 	}
 
-	return databaseInfoToProto(info), nil
+	return dbwire.InfoProto(info), nil
 }
 
 // DatabaseUpdateSQL updates a database's SQL settings -- its
@@ -219,7 +214,7 @@ func (s *qrdbServiceServer) DatabaseUpdateSQL(ctx context.Context, req *pb.Datab
 		return nil, mapServiceError(err)
 	}
 
-	return databaseInfoToProto(info), nil
+	return dbwire.InfoProto(info), nil
 }
 
 // DatabaseSeal seals the encryption barrier for a database.
@@ -417,122 +412,4 @@ func protoConnectionConfigToDomain(c *pb.DatabaseConnectionConfig) *database.Dat
 		CertFile:  c.GetCertFile(),
 		KeyFile:   c.GetKeyFile(),
 	}
-}
-
-// databaseInfoToProto converts a domain DatabaseInfo to its protobuf
-// representation.
-func databaseInfoToProto(info *database.DatabaseInfo) *pb.DatabaseInfoResponse {
-	resp := &pb.DatabaseInfoResponse{
-		Name:     info.Name,
-		Engine:   string(info.Engine),
-		Backend:  string(info.Backend),
-		Status:   string(info.Status),
-		DataDir:  info.DataDir,
-		ShardId:  info.ShardID,
-		Mode:     string(info.Mode),
-		TenantId: info.TenantID,
-		Replicas: uint32(info.Replicas),
-	}
-
-	resp.Protocol = domainProtocolConfigToProto(info.Protocol)
-
-	if info.Raft != nil {
-		resp.Raft = domainRaftConfigToProto(info.Raft)
-	}
-
-	if info.Barrier != nil {
-		resp.Barrier = &pb.DatabaseBarrierConfig{
-			Enabled:        info.Barrier.Enabled,
-			Mode:           info.Barrier.Mode,
-			SharesRequired: int32(info.Barrier.SharesRequired),
-			SharesTotal:    int32(info.Barrier.SharesTotal),
-		}
-	}
-
-	if info.Connection != nil {
-		resp.Connection = &pb.DatabaseConnectionConfig{
-			Transport:     info.Connection.Transport,
-			RemoteAddress: info.Connection.Address,
-			CaFile:        info.Connection.CAFile,
-			CertFile:      info.Connection.CertFile,
-			KeyFile:       info.Connection.KeyFile,
-		}
-	}
-
-	if info.SQL != nil {
-		resp.Sql = &pb.DatabaseSQLConfig{Concurrency: string(info.SQL.Concurrency)}
-	}
-
-	return resp
-}
-
-// domainProtocolConfigToProto converts a domain ProtocolConfig to its
-// protobuf representation.
-func domainProtocolConfigToProto(pc database.ProtocolConfig) *pb.DatabaseProtocolConfig {
-	proto := &pb.DatabaseProtocolConfig{
-		Mysql:      pc.MySQL,
-		Postgresql: pc.PostgreSQL,
-	}
-
-	if pc.Etcd != nil {
-		proto.Etcd = &pb.DatabaseEtcdConfig{
-			Enabled:             pc.Etcd.Enabled,
-			ListenAddr:          pc.Etcd.ListenAddr,
-			AdvertiseClientUrls: pc.Etcd.AdvertiseClientURLs,
-		}
-	}
-
-	return proto
-}
-
-// domainRaftConfigToProto converts a domain DatabaseRaftConfig to its
-// protobuf representation.
-func domainRaftConfigToProto(r *database.DatabaseRaftConfig) *pb.DatabaseRaftConfig {
-	raft := &pb.DatabaseRaftConfig{
-		ClusterMode:    string(r.ClusterMode),
-		ShardId:        r.ShardID,
-		ReplicaId:      r.ReplicaID,
-		RaftAddress:    r.RaftAddress,
-		Peers:          r.Peers,
-		LocalNodeCount: int32(r.LocalNodeCount),
-		Discovery:      string(r.Discovery),
-	}
-
-	if r.Static != nil {
-		raft.Static = &pb.DatabaseStaticDiscovery{
-			Peers:        r.Static.Peers,
-			SharedSecret: r.Static.SharedSecret,
-		}
-	}
-
-	if r.Multicast != nil {
-		raft.Multicast = &pb.DatabaseMulticastDiscovery{
-			SharedSecret:     r.Multicast.SharedSecret,
-			MulticastGroup:   r.Multicast.MulticastGroup,
-			Iface:            r.Multicast.Interface,
-			MinPeers:         int32(r.Multicast.MinPeers),
-			AnnounceInterval: r.Multicast.AnnounceInterval,
-			DiscoverTimeout:  r.Multicast.DiscoverTimeout,
-		}
-	}
-
-	if r.DNS != nil {
-		raft.Dns = &pb.DatabaseDNSDiscovery{
-			Service:       r.DNS.Service,
-			Proto:         r.DNS.Proto,
-			Domain:        r.DNS.Domain,
-			LookupTimeout: r.DNS.LookupTimeout,
-		}
-	}
-
-	if r.Token != nil {
-		raft.Token = &pb.DatabaseTokenDiscovery{
-			Endpoint:    r.Token.Endpoint,
-			Token:       r.Token.Token,
-			ClusterSize: int32(r.Token.ClusterSize),
-			Timeout:     r.Token.Timeout,
-		}
-	}
-
-	return raft
 }

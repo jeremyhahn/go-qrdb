@@ -1182,7 +1182,7 @@ endef
 # the gate with nothing to check against.
 COVER_BASELINE     := test/coverage-baseline.txt
 COVER_TOLERANCE    := 1.0
-COVER_EXCLUDE_PKGS := github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest,github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest,github.com/jeremyhahn/go-qrdb/pkg/auth/authtest,github.com/jeremyhahn/go-qrdb/pkg/api/grpc/grpctest
+COVER_EXCLUDE_PKGS := github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest,github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest,github.com/jeremyhahn/go-qrdb/pkg/auth/authtest,github.com/jeremyhahn/go-qrdb/pkg/api/grpc/grpctest,github.com/jeremyhahn/go-qrdb/pkg/api/dbwire/dbwiretest
 #
 # THE BASELINE IS MEASURED UNDER BUILD_TAGS, the default feature set, and says
 # so in its `# build-tags:` line. A package's coverage depends on which of its

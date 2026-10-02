@@ -27,6 +27,41 @@ Fix release. Highlights:
   failures in `forwardToLeader`. The status (502), the fixed message and
   `errors.As` reachability of the holder error are unchanged.
 
+### Security
+
+- **BREAKING: a database's discovery secrets are write-only.** Every read of a
+  database -- get, list, and the response to every update -- returned the
+  stored Raft discovery secrets (`raft.static.sharedSecret`,
+  `raft.multicast.sharedSecret`, `raft.token.token`) on REST, gRPC, the Unix
+  socket, QUIC, MCP, the embedded transport and the desktop bindings, to
+  anyone allowed to read the database's configuration. No response carries
+  them now; each is reported only as `sharedSecretSet` / `tokenSet`.
+  - **Typed so it cannot come back.** The responses are read views with no
+    field for a secret: in the Go SDK `DatabaseInfo.Raft` is a
+    `transport.DatabaseRaftInfo` and `DatabaseInfo.Barrier` a
+    `transport.DatabaseBarrierInfo` (callers of the old field types must
+    move); in protobuf `DatabaseInfoResponse.raft` and `.barrier` are the new
+    `DatabaseRaftInfo` and `DatabaseBarrierInfo`, with the secret field numbers
+    `reserved` and the other numbers unchanged; in the TypeScript SDK
+    `DatabaseInfo.raft` is a `DatabaseRaftInfo`. Request types still carry the
+    secrets.
+  - **One converter.** Every transport builds its response in `pkg/api/dbwire`
+    (the gRPC and Unix SDKs decode it in `transport/internal/dbconv`); the
+    per-transport copies are gone. QUIC and MCP had sent the server's internal
+    snake_case record, which the Go SDK decoded as a zero shard ID, data
+    directory and tenant; they now send the same shape as REST.
+  - Proven on every transport by a test that stores each secret through the
+    real service and reads it back.
+
+### Added
+
+- **Parity of `DatabaseInfo` across transports and SDKs.** `dedicatedWal` is
+  now in the protobuf response (`dedicated_wal = 15`) and the Go SDK; the Raft
+  discovery settings (method, static, multicast, DNS, token -- minus secrets)
+  and `protocol.etcd` are typed in both SDKs; REST reports `tenantId` like gRPC.
+  The Go and TypeScript wire contract tests hold both SDKs to the REST response
+  with no exception list.
+
 ### Fixed
 
 - **The TypeScript SDK reads a database's shard ID and data directory.**

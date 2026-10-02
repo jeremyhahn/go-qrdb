@@ -125,7 +125,14 @@ func (m *mockDatabaseClient) UpdateDatabaseRaft(_ context.Context, req UpdateDat
 	if !ok {
 		return nil, &DatabaseNotFoundError{Name: req.Name}
 	}
-	info.Raft = req.Raft
+	info.Raft = &DatabaseRaftInfo{
+		ClusterMode:    req.Raft.ClusterMode,
+		ShardID:        req.Raft.ShardID,
+		ReplicaID:      req.Raft.ReplicaID,
+		RaftAddress:    req.Raft.RaftAddress,
+		Peers:          req.Raft.Peers,
+		LocalNodeCount: req.Raft.LocalNodeCount,
+	}
 	return info, nil
 }
 
@@ -137,7 +144,12 @@ func (m *mockDatabaseClient) UpdateDatabaseBarrier(_ context.Context, req Update
 	if !ok {
 		return nil, &DatabaseNotFoundError{Name: req.Name}
 	}
-	info.Barrier = req.Barrier
+	info.Barrier = &DatabaseBarrierInfo{
+		Enabled:        req.Barrier.Enabled,
+		Mode:           req.Barrier.Mode,
+		SharesRequired: req.Barrier.SharesRequired,
+		SharesTotal:    req.Barrier.SharesTotal,
+	}
 	return info, nil
 }
 

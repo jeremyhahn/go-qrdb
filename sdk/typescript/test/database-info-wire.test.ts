@@ -28,10 +28,15 @@ import { RestClient } from '../src/rest.js';
 import type {
     DatabaseBarrierConfig,
     DatabaseConnectionConfig,
+    DatabaseEtcdProtocolInfo,
     DatabaseInfo,
-    DatabaseProtocolConfig,
-    DatabaseRaftConfig,
+    DatabaseProtocolInfo,
+    DatabaseRaftInfo,
     DatabaseSQLConfig,
+    DNSDiscoveryInfo,
+    MulticastDiscoveryInfo,
+    StaticDiscoveryInfo,
+    TokenDiscoveryInfo,
 } from '../src/types.js';
 import restDatabaseInfo from './fixtures/rest-database-info.json';
 
@@ -39,6 +44,7 @@ const fixture: Record<string, unknown> = restDatabaseInfo;
 
 /** Every key DatabaseInfo declares. */
 const databaseInfoKeys = {
+    tenantId: true,
     name: true,
     engine: true,
     backend: true,
@@ -55,7 +61,13 @@ const databaseInfoKeys = {
     connection: true,
 } satisfies Record<keyof DatabaseInfo, true>;
 
-const protocolKeys = { mysql: true, postgresql: true } satisfies Record<keyof DatabaseProtocolConfig, true>;
+const protocolKeys = { mysql: true, postgresql: true, etcd: true } satisfies Record<keyof DatabaseProtocolInfo, true>;
+
+const etcdKeys = {
+    enabled: true,
+    listenAddr: true,
+    advertiseClientUrls: true,
+} satisfies Record<keyof DatabaseEtcdProtocolInfo, true>;
 
 const raftKeys = {
     clusterMode: true,
@@ -64,7 +76,37 @@ const raftKeys = {
     raftAddress: true,
     peers: true,
     localNodeCount: true,
-} satisfies Record<keyof DatabaseRaftConfig, true>;
+    discovery: true,
+    static: true,
+    multicast: true,
+    dns: true,
+    token: true,
+} satisfies Record<keyof DatabaseRaftInfo, true>;
+
+const staticKeys = { peers: true, sharedSecretSet: true } satisfies Record<keyof StaticDiscoveryInfo, true>;
+
+const multicastKeys = {
+    sharedSecretSet: true,
+    multicastGroup: true,
+    interface: true,
+    minPeers: true,
+    announceInterval: true,
+    discoverTimeout: true,
+} satisfies Record<keyof MulticastDiscoveryInfo, true>;
+
+const dnsKeys = {
+    service: true,
+    proto: true,
+    domain: true,
+    lookupTimeout: true,
+} satisfies Record<keyof DNSDiscoveryInfo, true>;
+
+const tokenKeys = {
+    endpoint: true,
+    tokenSet: true,
+    clusterSize: true,
+    timeout: true,
+} satisfies Record<keyof TokenDiscoveryInfo, true>;
 
 const barrierKeys = {
     enabled: true,
@@ -84,8 +126,9 @@ const connectionKeys = {
 const sqlKeys = { concurrency: true } satisfies Record<keyof DatabaseSQLConfig, true>;
 
 /**
- * Each object of the response, the keys the SDK declares for it, and the keys
- * REST sends that the SDK does not type yet. A key in neither list fails.
+ * Each object of the response and the keys the SDK declares for it. There are
+ * no listed gaps: a key the server sends that the SDK does not type fails, as
+ * does a key the SDK types that the server does not send.
  */
 const objects: ReadonlyArray<{
     path: string;
@@ -93,15 +136,24 @@ const objects: ReadonlyArray<{
     untyped: readonly string[];
 }> = [
     { path: '', declared: databaseInfoKeys, untyped: [] },
-    { path: 'protocol', declared: protocolKeys, untyped: ['etcd'] },
-    { path: 'raft', declared: raftKeys, untyped: ['discovery', 'dns', 'multicast', 'static', 'token'] },
+    { path: 'protocol', declared: protocolKeys, untyped: [] },
+    { path: 'protocol.etcd', declared: etcdKeys, untyped: [] },
+    { path: 'raft', declared: raftKeys, untyped: [] },
+    { path: 'raft.static', declared: staticKeys, untyped: [] },
+    { path: 'raft.multicast', declared: multicastKeys, untyped: [] },
+    { path: 'raft.dns', declared: dnsKeys, untyped: [] },
+    { path: 'raft.token', declared: tokenKeys, untyped: [] },
     { path: 'barrier', declared: barrierKeys, untyped: [] },
     { path: 'connection', declared: connectionKeys, untyped: [] },
     { path: 'sql', declared: sqlKeys, untyped: [] },
 ];
 
 function objectAt(path: string): Record<string, unknown> {
-    return (path === '' ? fixture : fixture[path]) as Record<string, unknown>;
+    let at: Record<string, unknown> = fixture;
+    for (const key of path === '' ? [] : path.split('.')) {
+        at = at[key] as Record<string, unknown>;
+    }
+    return at;
 }
 
 describe('DatabaseInfo wire contract (REST)', () => {
@@ -146,5 +198,11 @@ describe('DatabaseInfo wire contract (REST)', () => {
         expect(info.dedicatedWal).toBe(true);
         expect(info.raft?.replicaId).toBe(2);
         expect(info.sql?.concurrency).toBe('pessimistic');
+        expect(info.tenantId).toBe('acme');
+        expect(info.protocol?.etcd?.listenAddr).toBe('0.0.0.0:2379');
+        expect(info.raft?.static?.sharedSecretSet).toBe(true);
+        expect(info.raft?.multicast?.sharedSecretSet).toBe(true);
+        expect(info.raft?.token?.tokenSet).toBe(true);
+        expect(info.raft?.dns?.domain).toBe('example.com');
     });
 });

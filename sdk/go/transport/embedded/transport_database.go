@@ -17,6 +17,7 @@ package embedded
 import (
 	"context"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/dbwire"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -71,7 +72,7 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 	if err != nil {
 		return nil, err
 	}
-	return toTransportDatabaseInfo(info), nil
+	return dbwire.Info(info), nil
 }
 
 // GetDatabase returns information about a specific database by delegating
@@ -85,7 +86,7 @@ func (t *Transport) GetDatabase(_ context.Context, name string) (*transport.Data
 	if err != nil {
 		return nil, err
 	}
-	return toTransportDatabaseInfo(info), nil
+	return dbwire.Info(info), nil
 }
 
 // ListDatabases returns information about all databases by delegating
@@ -99,11 +100,7 @@ func (t *Transport) ListDatabases(_ context.Context) ([]transport.DatabaseInfo, 
 	if err != nil {
 		return nil, err
 	}
-	out := make([]transport.DatabaseInfo, len(infos))
-	for i, info := range infos {
-		out[i] = *toTransportDatabaseInfo(&info)
-	}
-	return out, nil
+	return dbwire.Infos(infos), nil
 }
 
 // DropDatabase removes a database by name by delegating to the injected
@@ -130,7 +127,7 @@ func (t *Transport) UpdateDatabaseProtocol(_ context.Context, req transport.Upda
 	if err != nil {
 		return nil, err
 	}
-	return toTransportDatabaseInfo(info), nil
+	return dbwire.Info(info), nil
 }
 
 // UpdateDatabaseEtcd updates the etcd wire protocol configuration for a
@@ -148,7 +145,7 @@ func (t *Transport) UpdateDatabaseEtcd(_ context.Context, req transport.UpdateDa
 	if err != nil {
 		return nil, err
 	}
-	return toTransportDatabaseInfo(info), nil
+	return dbwire.Info(info), nil
 }
 
 // UpdateDatabaseRaft updates the Raft consensus configuration for a
@@ -161,7 +158,7 @@ func (t *Transport) UpdateDatabaseRaft(_ context.Context, req transport.UpdateDa
 	if err != nil {
 		return nil, err
 	}
-	return toTransportDatabaseInfo(info), nil
+	return dbwire.Info(info), nil
 }
 
 // ScaleDatabase changes the replication factor of a dedicated-raft database
@@ -177,7 +174,7 @@ func (t *Transport) ScaleDatabase(ctx context.Context, req transport.ScaleDataba
 	if err != nil {
 		return nil, err
 	}
-	return toTransportDatabaseInfo(info), nil
+	return dbwire.Info(info), nil
 }
 
 // UpdateDatabaseBarrier updates the encryption barrier configuration for
@@ -190,7 +187,7 @@ func (t *Transport) UpdateDatabaseBarrier(_ context.Context, req transport.Updat
 	if err != nil {
 		return nil, err
 	}
-	return toTransportDatabaseInfo(info), nil
+	return dbwire.Info(info), nil
 }
 
 // UpdateDatabaseConnection updates the remote connection configuration for
@@ -203,7 +200,7 @@ func (t *Transport) UpdateDatabaseConnection(_ context.Context, req transport.Up
 	if err != nil {
 		return nil, err
 	}
-	return toTransportDatabaseInfo(info), nil
+	return dbwire.Info(info), nil
 }
 
 // UpdateDatabaseSQL updates a database's SQL settings by delegating to the
@@ -216,7 +213,7 @@ func (t *Transport) UpdateDatabaseSQL(_ context.Context, req transport.UpdateDat
 	if err != nil {
 		return nil, err
 	}
-	return toTransportDatabaseInfo(info), nil
+	return dbwire.Info(info), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -230,63 +227,6 @@ func fromTransportSQLConfig(c *transport.DatabaseSQLConfig) *database.SQLConfig 
 		return nil
 	}
 	return &database.SQLConfig{Concurrency: database.Concurrency(c.Concurrency)}
-}
-
-// toTransportDatabaseInfo converts a database.DatabaseInfo to a
-// transport.DatabaseInfo.
-func toTransportDatabaseInfo(info *database.DatabaseInfo) *transport.DatabaseInfo {
-	ti := &transport.DatabaseInfo{
-		Name:    info.Name,
-		Engine:  string(info.Engine),
-		Backend: string(info.Backend),
-		Status:  string(info.Status),
-		Protocol: transport.ProtocolConfig{
-			MySQL:      info.Protocol.MySQL,
-			PostgreSQL: info.Protocol.PostgreSQL,
-		},
-		DataDir:  info.DataDir,
-		ShardID:  info.ShardID,
-		Mode:     string(info.Mode),
-		Replicas: info.Replicas,
-	}
-	if info.Protocol.Etcd != nil {
-		ti.Protocol.Etcd = &transport.EtcdProtocolConfig{
-			Enabled:             info.Protocol.Etcd.Enabled,
-			ListenAddr:          info.Protocol.Etcd.ListenAddr,
-			AdvertiseClientURLs: info.Protocol.Etcd.AdvertiseClientURLs,
-		}
-	}
-	if info.Raft != nil {
-		ti.Raft = &transport.DatabaseRaftConfig{
-			ClusterMode:    string(info.Raft.ClusterMode),
-			ShardID:        info.Raft.ShardID,
-			ReplicaID:      info.Raft.ReplicaID,
-			RaftAddress:    info.Raft.RaftAddress,
-			Peers:          info.Raft.Peers,
-			LocalNodeCount: info.Raft.LocalNodeCount,
-		}
-	}
-	if info.Barrier != nil {
-		ti.Barrier = &transport.DatabaseBarrierConfig{
-			Enabled:        info.Barrier.Enabled,
-			Mode:           info.Barrier.Mode,
-			SharesRequired: info.Barrier.SharesRequired,
-			SharesTotal:    info.Barrier.SharesTotal,
-		}
-	}
-	if info.Connection != nil {
-		ti.Connection = &transport.DatabaseConnectionConfig{
-			Transport: info.Connection.Transport,
-			Address:   info.Connection.Address,
-			CAFile:    info.Connection.CAFile,
-			CertFile:  info.Connection.CertFile,
-			KeyFile:   info.Connection.KeyFile,
-		}
-	}
-	if info.SQL != nil {
-		ti.SQL = &transport.DatabaseSQLConfig{Concurrency: string(info.SQL.Concurrency)}
-	}
-	return ti
 }
 
 // fromTransportRaftConfig converts transport raft config to domain type.
