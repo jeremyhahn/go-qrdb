@@ -41,6 +41,13 @@ the system tenant included, which sets policies on its own databases only. It
 is set by its own verb and the configuration file, never by create: a create
 carrying a policy would let `databases:create` compact.
 
+The TypeScript SDK sets it with `client.database.updateCompaction(name,
+compaction?)` (`DatabaseCompactionConfig`: `mode` `'off' | 'revision' |
+'period'`, `retainRevisions`, `retainPeriod`) -- `PATCH
+/v1/databases/{name}/compaction` over REST, `DatabaseBinding.UpdateCompaction`
+in the desktop client -- and reads it back as `DatabaseInfo.compaction`.
+Omitting `compaction` turns the policy off.
+
 **Note the additive permissions.** Creating a raft-backed database checks
 `databases:create_raft` *in addition to* `databases:create`, as does every
 database of a raft-isolated tenant; every database of a volume-isolated tenant

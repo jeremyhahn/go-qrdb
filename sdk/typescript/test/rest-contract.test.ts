@@ -428,6 +428,88 @@ describe('database SQL settings (concurrency)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// updateCompaction sets a database's scheduled-compaction policy with
+// PATCH /v1/databases/{name}/compaction and a {"compaction": {...}} body, the
+// same request the Go SDK's UpdateDatabaseCompaction sends: camelCase
+// retainRevisions/retainPeriod, exactly the server's field names. Omitting the
+// policy turns it off.
+// ---------------------------------------------------------------------------
+
+describe('database compaction policy', () => {
+    beforeEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('sends PATCH /v1/databases/{name}/compaction with a revision policy', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({
+            name: 'shop',
+            engine: 'kv',
+            backend: 'pebble',
+            status: 'open',
+            compaction: { mode: 'revision', retainRevisions: 1000 },
+        });
+
+        const info = await client.database.updateCompaction('shop', { mode: 'revision', retainRevisions: 1000 });
+
+        expect(calls).toHaveLength(1);
+        const req = calls[0];
+        expect(new URL(req.url).pathname).toBe('/v1/databases/shop/compaction');
+        expect(req.method).toBe('PATCH');
+        expect(req.body).toEqual({ compaction: { mode: 'revision', retainRevisions: 1000 } });
+        expect(info.compaction).toEqual({ mode: 'revision', retainRevisions: 1000 });
+    });
+
+    it('sends a period policy with its Go duration untouched', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({
+            name: 'shop',
+            engine: 'kv',
+            backend: 'pebble',
+            status: 'open',
+            compaction: { mode: 'period', retainPeriod: '24h' },
+        });
+
+        const info = await client.database.updateCompaction('shop', { mode: 'period', retainPeriod: '24h' });
+
+        expect(calls[0].body).toEqual({ compaction: { mode: 'period', retainPeriod: '24h' } });
+        expect(info.compaction?.mode).toBe('period');
+        expect(info.compaction?.retainPeriod).toBe('24h');
+    });
+
+    it('omitting the policy sends no compaction, turning it off', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({ name: 'shop', engine: 'kv', backend: 'pebble', status: 'open' });
+
+        const info = await client.database.updateCompaction('shop');
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0].body).toEqual({});
+        expect(info.compaction).toBeUndefined();
+    });
+
+    it('percent-encodes the database name', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({ name: 'my db', engine: 'kv', backend: 'pebble', status: 'open' });
+
+        await client.database.updateCompaction('my db', { mode: 'off' });
+
+        expect(new URL(calls[0].url).pathname).toBe('/v1/databases/my%20db/compaction');
+    });
+
+    it('surfaces a refused policy as a transport error carrying the status', async () => {
+        const client = await connectedClient();
+        vi.stubGlobal('fetch', vi.fn(async () => new Response(
+            JSON.stringify({ error: 'compaction: invalid policy' }),
+            { status: 400, headers: { 'Content-Type': 'application/json' } },
+        )));
+
+        await expect(client.database.updateCompaction('shop', { mode: 'revision' }))
+            .rejects.toMatchObject({ statusCode: 400 });
+    });
+});
+
+// ---------------------------------------------------------------------------
 // Outbound snake_case transform — camelCase SDK fields must arrive as
 // snake_case in the serialized JSON body that the Go server receives.
 // These are the request types that were silently broken before jsonBody()

@@ -2013,6 +2013,32 @@ export interface DatabaseSQLConfig {
     readonly concurrency?: SQLConcurrency;
 }
 
+/** How a database's scheduled compaction picks its revision: never
+ * (`off`, the default), keeping the store's last N revisions (`revision`),
+ * or keeping the history newer than a duration (`period`). */
+export type CompactionMode = 'off' | 'revision' | 'period';
+
+/** A database's scheduled-compaction policy. The Go SDK's
+ * `DatabaseCompactionConfig`. A database without one is never compacted
+ * implicitly. */
+export interface DatabaseCompactionConfig {
+    /** The policy's mode. Absent means `off`. */
+    readonly mode?: CompactionMode;
+    /** How many of the store's most recent revisions a `revision` policy
+     * keeps (at least 1). Revision mode only. */
+    readonly retainRevisions?: number;
+    /** How much history, by age, a `period` policy keeps: a Go duration
+     * string of at least `1s`, e.g. `"24h"`. Period mode only. */
+    readonly retainPeriod?: string;
+}
+
+/** Request to set a database's scheduled-compaction policy. An absent
+ * `compaction` turns it off. */
+export interface UpdateDatabaseCompactionRequest {
+    /** The policy to apply. */
+    readonly compaction?: DatabaseCompactionConfig;
+}
+
 /**
  * Raft consensus configuration for a database. There is no shard ID: the cluster
  * issues it when the database is created, it never changes, and it is
@@ -2178,6 +2204,9 @@ export interface DatabaseInfo {
     readonly protocol?: DatabaseProtocolInfo;
     /** SQL settings (concurrency mode). Absent means the defaults. */
     readonly sql?: DatabaseSQLConfig;
+    /** Scheduled-compaction policy. Absent means off: the database is never
+     * compacted implicitly. */
+    readonly compaction?: DatabaseCompactionConfig;
     /** Data directory path, if applicable. */
     readonly dataDir?: string;
     /** Raft shard ID the cluster issued at create; absent for non-raft

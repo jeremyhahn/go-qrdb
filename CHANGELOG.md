@@ -42,7 +42,10 @@ are not reconstructed here — their history is in the git log.
   `PATCH /v1/databases/{name}/compaction`, gRPC and the Unix socket `DatabaseUpdateCompaction`,
   QUIC `db.UpdateCompaction`, MCP `qrdb_database_update_compaction`, and the embedded
   transport; the Go SDK `DatabaseClient.UpdateDatabaseCompaction` and `DatabaseInfo.Compaction`;
-  the CLI `qrdb database update-compaction --mode --retain-revisions --retain-period`; and the
+  the CLI `qrdb database update-compaction --mode --retain-revisions --retain-period`; the
+  TypeScript SDK `client.database.updateCompaction(name, compaction?)` with
+  `DatabaseCompactionConfig`/`CompactionMode` and `DatabaseInfo.compaction` (REST and the
+  desktop client's `DatabaseBinding.UpdateCompaction`); and the
   `qrdbd` YAML `databases[].compaction` (`mode`, `retain_revisions`, `retain_period`), applied
   at every start. Setting a policy requires `mvcc:compact` (`ScopeSelfStrict`), never
   `databases:update`, and create does not take one; every caller, the system tenant included,

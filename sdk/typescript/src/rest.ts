@@ -83,6 +83,8 @@ import type {
     DatabaseProtocolConfig,
     DatabaseSQLConfig,
     UpdateDatabaseSQLRequest,
+    DatabaseCompactionConfig,
+    UpdateDatabaseCompactionRequest,
     CreateNamespaceResponse,
     CreateRoleRequest,
     CreateUserRequest,
@@ -1687,6 +1689,17 @@ export class RestClient implements Client {
                 this.ensureConnected();
                 const req: UpdateDatabaseSQLRequest = sql === undefined ? {} : { sql };
                 return this.fetchJSON<DatabaseInfo>(`/v1/databases/${encodeURIComponent(name)}/sql`,
+                    {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(req),
+                    },
+                );
+            },
+            updateCompaction: async (name: string, compaction?: DatabaseCompactionConfig): Promise<DatabaseInfo> => {
+                this.ensureConnected();
+                const req: UpdateDatabaseCompactionRequest = compaction === undefined ? {} : { compaction };
+                return this.fetchJSON<DatabaseInfo>(`/v1/databases/${encodeURIComponent(name)}/compaction`,
                     {
                         method: 'PATCH',
                         headers: { 'Content-Type': 'application/json' },

@@ -1643,6 +1643,25 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             }
             return db;
           },
+          // UpdateCompaction mirrors DatabaseBinding.UpdateCompaction: the Go
+          // UpdateDatabaseCompactionRequest is {compaction: {mode,
+          // retainRevisions, retainPeriod}}; an absent compaction turns the
+          // policy off.
+          UpdateCompaction: async (
+            name: string,
+            req: { compaction?: { mode?: string; retainRevisions?: number; retainPeriod?: string } },
+          ) => {
+            maybeReject("DatabaseBinding.UpdateCompaction");
+            const s = getState();
+            const db = s.databases.find((d: { name: string }) => d.name === name) as Record<string, unknown> | undefined;
+            if (!db) throw new Error(`database "${name}" not found`);
+            if (req.compaction === undefined) {
+              delete db.compaction;
+            } else {
+              db.compaction = { ...req.compaction };
+            }
+            return db;
+          },
           UpdateRaft: async (name: string, raft: unknown) => {
             maybeReject("DatabaseBinding.UpdateRaft");
             const s = getState();

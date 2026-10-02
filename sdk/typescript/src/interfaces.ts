@@ -142,6 +142,7 @@ import type {
     CreateDatabaseRequest,
     DatabaseProtocolConfig,
     DatabaseSQLConfig,
+    DatabaseCompactionConfig,
     DatabaseRaftConfig,
     DatabaseBarrierConfig,
     DatabaseConnectionConfig,
@@ -1255,6 +1256,17 @@ export interface DatabaseClient {
      * @returns The updated database information.
      */
     updateSQL(name: string, sql?: DatabaseSQLConfig): Promise<DatabaseInfo>;
+
+    /**
+     * Sets a database's scheduled-compaction policy. Omitting `compaction`
+     * turns it off. Requires `mvcc:compact` on the database, which only its
+     * owning tenant can hold; another tenant's database answers as missing.
+     *
+     * @param name - Database name.
+     * @param compaction - Compaction policy.
+     * @returns The updated database information.
+     */
+    updateCompaction(name: string, compaction?: DatabaseCompactionConfig): Promise<DatabaseInfo>;
 
     /**
      * Updates the Raft consensus configuration for a database.

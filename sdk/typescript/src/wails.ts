@@ -70,6 +70,8 @@ import type {
     DatabaseRaftConfig,
     DatabaseProtocolConfig,
     DatabaseSQLConfig,
+    DatabaseCompactionConfig,
+    UpdateDatabaseCompactionRequest,
     UpdateDatabaseProtocolRequest,
     UpdateDatabaseSQLRequest,
     CreateNamespaceResponse,
@@ -1085,6 +1087,13 @@ export class WailsClient implements Client {
                 // whose JSON is {sql: {...}}; an absent sql restores the defaults.
                 const req: UpdateDatabaseSQLRequest = sql === undefined ? {} : { sql };
                 return b.UpdateSQL(name, req) as Promise<DatabaseInfo>;
+            },
+            updateCompaction: async (name: string, compaction?: DatabaseCompactionConfig): Promise<DatabaseInfo> => {
+                // DatabaseBinding.UpdateCompaction takes the Go
+                // UpdateDatabaseCompactionRequest, whose JSON is {compaction: {...}};
+                // an absent compaction turns the policy off.
+                const req: UpdateDatabaseCompactionRequest = compaction === undefined ? {} : { compaction };
+                return b.UpdateCompaction(name, req) as Promise<DatabaseInfo>;
             },
             updateRaft: async (name: string, raft: DatabaseRaftConfig): Promise<DatabaseInfo> => {
                 return b.UpdateRaft(name, raft) as Promise<DatabaseInfo>;
