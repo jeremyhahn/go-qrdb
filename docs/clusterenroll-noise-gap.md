@@ -1,12 +1,20 @@
 # Shared-CA-key enrollment does not work over the Noise transport
 
-**Status:** superseded. The owner ruled that the cluster CA private key is
-never distributed, on any transport. The Noise handler's behaviour described
-below was the correct one. SPKI, DANE and Direct now match it, because the
-advertiser and `/v1/ca/bootstrap` serve the certificate only. Joining through
-enrollment is refused (`EnrollmentUnavailableError`) until member-side CSR
-issuance ships; see [clustering/user.md](clustering/user.md). The rest of this
-document is kept as the record of the defect.
+**Status:** resolved. The owner ruled that the cluster CA private key is
+never distributed, on any transport — the Noise handler's behaviour
+described below was the correct one, and SPKI, DANE and Direct now match it,
+because the advertiser and `/v1/ca/bootstrap` serve the certificate only.
+
+**Member-side CSR issuance has since shipped** (see
+[clustering/architecture.md](clustering/architecture.md#member-side-csr-join-key-a-cluster-ca)):
+a joiner fetches the anchor certificate exactly as this document describes,
+generates its own key pair, and sends a CSR; an existing, unsealed member
+signs it with the replicated cluster CA key (Key A) and returns the leaf.
+The CA private key still never crosses the wire in either direction.
+`clusterenroll.Join` no longer refuses unconditionally with
+`EnrollmentUnavailableError` once a join token is configured. The rest of
+this document is kept as the record of the defect that motivated the
+"never distribute the key" ruling in the first place.
 
 ## Symptom
 
@@ -61,9 +69,13 @@ rather than error-path only.
 `Join` had **0% test coverage** until 2026-08-15. Nothing exercised the
 advertiser and the joiner against each other.
 
-## Options
+## Options (resolved: option 1, extended)
 
-Owner decision required — this is an architecture question, not a bug fix:
+Owner decision — this was an architecture question, not a bug fix. The
+ruling took option 1 and added the missing half: anchor mode is canonical,
+`Join`-over-Noise's shared-CA-key shape is removed, and the joining node's
+leaf is now issued through a member-side CSR-sign exchange rather than left
+unspecified.
 
 1. **Anchor mode is canonical.** `pkg/clusterenroll/anchor.go` already
    implements anchor-only distribution (`StartAnchorAdvertiser` +

@@ -529,19 +529,184 @@ Generate Certificate (barrier unsealed)
   ├─ x509.CreateCertificate(CA signs client)
   ├─ Persist CertRecord to KVStore
 
+## The CA key provider seam (`pkg/cakey`)
+
+**Normative target; lands incrementally.** go-qrdb is embedded as the
+datastore and consensus engine under go-xkms and other projects that bring
+their own key custody (software, TPM 2.0, PKCS#11, cloud KMS). Neither CA in
+this repository may hard-code where its key lives: both obtain their signing
+key **only** through one qrdb-defined interface, `cakey.Provider`.
+
+```go
+package cakey
+
+type Provider interface {
+	// Signer returns a crypto.Signer backed by the CA's private key. A
+	// hardware or remote backend (HSM, TPM, KMS) routes Sign to the device;
+	// the key itself never enters this process.
+	Signer(ctx context.Context) (crypto.Signer, error)
+
+	// Certificate returns the CA's own certificate (public data).
+	Certificate(ctx context.Context) (*x509.Certificate, error)
+}
+```
+
+This is the minimum every existing signing seam in this repository already
+needs: `ceremony.CeremonyCA`'s `SignCSR`/`IssueCertificate`, `cert.CertProvider`'s
+`GenerateClientCert`, and `clustertls`'s node-leaf issuance all reduce to "get
+a signer, get the CA cert, call `x509.CreateCertificate`." Three separate
+paths converge on it rather than growing a fourth:
+
+| Before | After |
+|---|---|
+| `ceremony.LocalCA` holds `caKey crypto.Signer` parsed once from raw PEM | `ceremony.NewProviderCA(p cakey.Provider)` resolves signer+cert from `p` on every call, so a re-seal/re-unseal or an HSM failover is reflected immediately |
+| `cert.DefaultCertProvider` owns barrier+KVStore key material directly | `cert.DefaultCertProvider` holds a `cakey.Provider` (`cakey.SoftwareProvider` by default, or an injected one) and its `getCAMaterial` returns a `crypto.Signer`, not key bytes |
+| `clustertls.IssueLeafForKey(caCertPEM, caKeyPEM []byte, pub, ...)` | a provider-backed sibling takes a `cakey.Provider` instead of raw PEM, for both node-leaf issuance and member-side cluster-join CSR signing (see [../clustering/architecture.md](../clustering/architecture.md)) |
+
+**Never return or export a CA private key; only sign through the Signer**
+(the CA signer ruling). `cakey.Provider` is the enforcement point: nothing
+outside `pkg/cakey` ever holds `*ecdsa.PrivateKey` for a CA key again.
+
+### `cakey.SoftwareProvider` — the built-in backend
+
+`cakey.SoftwareProvider` is what runs when nothing is injected: an ECDSA
+P-256 key, barrier-encrypted, persisted through `kvstore.KVStore` — qrdb's
+storage abstraction, not the Raft log specifically. The same type and the
+same two records (`{prefix}wrapped_key`, `{prefix}cert_pem`) serve:
+
+- **Key A, the cluster CA**, under `__sys:cluster_ca/` — no tenant, one per
+  cluster.
+- **Key B, the login CA**, under `__sys:cert_ca/{tenantID}/` — one per
+  tenant, exactly as today.
+
+Because `kvstore.KVStore` is the same interface in standalone mode (the
+local store) and Raft mode (the replicated store), `SoftwareProvider` has
+no mode-specific branch and is tested against both.
+
+### Injection
+
+An embedder supplies its own `cakey.Provider` through a `With*` option on
+`qrdbd`, `sdk/go/node`, and the embedded SDK alike:
+
+- `WithClusterCAKeyProvider(cakey.Provider)` — replaces Key A: the ceremony
+  CA, node-leaf issuance, and member-side cluster-join signing.
+- `WithCertKeyProvider(cakey.Provider)` — replaces Key B: `pkg/cert`'s login
+  CA.
+
+**Two options, not one role-parameterized option.** Key A and Key B are
+separate trust domains by ruling (a leaked login CA must not mint node
+certificates); one option accepting a "role" argument would let a caller
+wire the *same* provider instance to both roles by mistake, silently
+collapsing the separation the two-key design exists to hold. Two distinctly
+named options make that mistake require two separate, deliberate lines.
+
+When a provider is injected, qrdb's built-in `SoftwareProvider` for that key
+is never constructed, never generates a key pair, and never reads or writes
+`__sys:cluster_ca/`/`__sys:cert_ca/{tenantID}/` — the key is wherever the
+injected provider says it is, and qrdb stores at most a certificate.
+
+### `cakey.Adapter` — the no-glue seam for an xkms backend
+
+An xkms-backed CA already implements `pkg/ca.CASigningIdentity.Signer(ctx)
+(crypto.Signer, error)` and `pkg/ca.CACertificateAccessor.Certificate(ctx,
+attrs) (*x509.Certificate, error)` (closed over its own `types.KeyAttributes`
+for the one key this CA cares about). `cakey.Adapter` composes exactly those
+two method values into a `Provider`:
+
+```go
+provider := cakey.Adapter{
+	SignerFunc:      xkmsCA.Signer,
+	CertificateFunc: func(ctx context.Context) (*x509.Certificate, error) {
+		return xkmsCA.Certificate(ctx, issuingKeyAttrs)
+	},
+}
+```
+
+go-qrdb never imports go-xkms — the fit above is verified in `pkg/cakey`'s
+own tests against a same-shaped local double, not against the real xkms
+type.
+
+### Bootstrap crash window (Key A, first node)
+
+Key A must exist before the cluster — and before any store — does. The
+first node:
+
+1. Generates Key A in memory (unchanged from today).
+2. Uses it immediately to sign its own node leaf and, if the initial M-of-N
+   ceremony runs before the barrier exists, the first officers' CSRs — via a
+   `cakey.StaticProvider` wrapping the in-memory signer, so this step goes
+   through the same `Provider` seam as every later signature rather than a
+   separate code path.
+3. As soon as the barrier is unsealed and the store is reachable, persists
+   Key A through `cakey.SoftwareProvider.Initialize` (barrier-encrypted,
+   under `__sys:cluster_ca/`).
+
+If the node crashes between steps 1 and 3, no node certificate has been
+issued under the lost key yet (the only thing it has signed is this node's
+own bootstrap leaf, regenerated on restart), so the next boot regenerating
+a fresh Key A is safe: it is a retry, not a rollback.
+
+### Signing only while unsealed
+
+`cakey.SoftwareProvider.Signer`/`Certificate` return `*BarrierSealedError`
+while sealed — there is no "always decryptable" exemption, because the
+replicated store itself cannot be opened while sealed (encfs). The one
+exception is the in-memory `StaticProvider` window in step 2 above, which
+holds no store or barrier reference at all.
+
+This is why `ceremony-sign-csr` (`sealedwindow.VerbCeremonySignCSR`) is
+`PreOperationalOnly`, the same flag `officer-register` already carries: its
+anonymous, sealed-window exemption is justified only before the init
+ceremony completes, while Key A is still the in-memory `StaticProvider`.
+After the ceremony is operational, signing a new officer CSR requires the
+barrier to be unsealed first (so `cakey.SoftwareProvider` can load Key A).
+**Verifying a certificate an officer already holds needs only the CA
+certificate**, which is public and already part of every node's cached TLS
+identity — so an existing officer unseals exactly as before; only *minting a
+new* CSR-signed certificate moves to post-unseal.
+
 ## Component boundaries
 
 | Piece | Package | Owner |
 |---|---|---|
-| `CertProvider` interface, `DefaultCertProvider` | `pkg/cert` | go-qrdb |
+| `cakey.Provider`, `cakey.SoftwareProvider`, `cakey.StaticProvider`, `cakey.Adapter` | `pkg/cakey` | go-qrdb |
+| `CertProvider` interface, `DefaultCertProvider` (Key B, over a `cakey.Provider`) | `pkg/cert` | go-qrdb |
+| Cluster CA (Key A, over a `cakey.Provider`) | `pkg/clustertls`, `pkg/clusterenroll` — see [../clustering/](../clustering/) | go-qrdb |
 | At-rest protection of the CA key | `pkg/seal` — see [../barrier-seal/](../barrier-seal/) | go-qrdb |
 | Certificate-to-user binding | `pkg/user` — see [../identity-rbac/](../identity-rbac/) | go-qrdb |
-| Ceremony CA adapter | `pkg/ceremony` — see [../ceremony/](../ceremony/) | go-qrdb |
-| CRL, OCSP, HSM-backed CA, profiles, CT | — | **go-xkms**, injected via `WithCertProvider` |
+| Ceremony CA adapter (`LocalCA` over raw PEM, `ProviderCA` over `cakey.Provider`) | `pkg/ceremony` — see [../ceremony/](../ceremony/) | go-qrdb |
+| CRL, OCSP, HSM-backed CA, profiles, CT | — | **go-xkms**, injected via `WithCertProvider` / `WithClusterCAKeyProvider` / `WithCertKeyProvider` |
 
-`ceremony.CeremonyCA` is satisfied by both `cert.CertProvider` and go-xkms's
-`ca.TrustedCA` through thin adapters, which is what lets the ceremony run
-against either.
+`ceremony.CeremonyCA` is satisfied by `ceremony.LocalCA` (raw PEM, used only
+for the pre-store `StaticProvider` window), `ceremony.ProviderCA` (any
+`cakey.Provider`), `cert.CertProvider`, and go-xkms's `ca.TrustedCA`, through
+thin adapters, which is what lets the ceremony run against any of them.
+
+## Key B trust on the client-facing listeners
+
+**Normative target; lands incrementally.** Before this change, a Key
+B-issued certificate could never authenticate to this node's own mTLS
+listener on any transport: `ClientCACertPool` was built once, at TLS setup,
+from Key A plus operator-configured client CA files only, and Key B's CA
+certificate (generated lazily, inside a sealed barrier, per tenant) had no
+path into it. `test/integration/api/cli_tenant_identity_ca_test.go` pinned
+this as a documented parity gap.
+
+The fix is a dynamic trust pool, not a static one seeded at boot:
+
+- **Client-facing listeners (REST, gRPC, Unix, QUIC, MCP)** verify a
+  presented client certificate against Key A **and** every tenant's Key B CA
+  certificate, read from the replicated store after unseal. This is wired
+  through `tls.Config.GetConfigForClient` (or an equivalent
+  `VerifyPeerCertificate`/`VerifyConnection` hook on transports that are not
+  `crypto/tls`-shaped), so a Key B CA created — or rotated to an
+  HSM-backed one — after the listener started is picked up on the next
+  connection, not only at boot.
+- **The peer/Raft/enrollment transport trusts Key A only, never Key B.** A
+  Key B leaf (a tenant login certificate) presented on the peer transport is
+  refused: Key B is a login credential, and must never be able to act as a
+  cluster node. This is the enforcement of the "separate trust domains"
+  ruling at the transport layer, not only at the issuance layer.
 
 ## Trust boundaries
 

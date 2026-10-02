@@ -29,6 +29,11 @@ Recovery train: stranded fixes brought onto main. Highlights:
 
 ### Added
 
+- `pkg/cakey`: the CA key provider seam (`Provider`, `SoftwareProvider`,
+  `StaticProvider`, `Adapter`). Both CA keys (the cluster CA and the login
+  CA) obtain their signing key only through this interface, so an embedder
+  (go-xkms) can inject an HSM/TPM/KMS-backed provider with no glue code and
+  qrdb never holds the key.
 - **The multi-node tenant suites gate every push.** CI's new
   `integration-cluster-tenancy` job runs `make integration-test-cluster-tenancy`,
   the cluster stage narrowed to the tenant suites by `CLUSTER_TENANCY_RUN`, and the
@@ -155,6 +160,22 @@ Recovery train: stranded fixes brought onto main. Highlights:
   after recovery cleared the state but before every entry was restored.
   Both now hold the batch lock exclusively for the whole recovery, the same
   way `GetHash` itself does.
+
+### Changed (contract; implementation lands incrementally)
+
+- The cluster CA key (Key A) is barrier-encrypted and persisted through
+  `kvstore.KVStore` (`__sys:cluster_ca/`) instead of `{dataDir}/ca-key.pem`.
+  No node ever writes a CA private key to a local file again.
+- Client-facing listeners (REST, gRPC, Unix, QUIC, MCP) trust the login CA
+  (Key B) dynamically, loaded from the replicated store after unseal, in
+  addition to the cluster CA; the peer/Raft/enrollment transport continues
+  to trust the cluster CA only.
+- `ceremony-sign-csr` is `PreOperationalOnly`, matching `officer-register`:
+  minting a new CSR-signed certificate requires the barrier to be unsealed
+  once the init ceremony is operational.
+- Member-side CSR issuance ships: `clusterenroll.Join` no longer refuses
+  unconditionally with `*EnrollmentUnavailableError`. See
+  `docs/clustering/architecture.md`.
 
 ## [0.38.0-alpha] - 2026-10-03
 

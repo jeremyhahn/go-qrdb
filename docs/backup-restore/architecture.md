@@ -62,6 +62,20 @@ snapshots, which exist only where there is a replicated log. In standalone mode
 they refuse with `requires mode: raft` — see
 [../run-modes/](../run-modes/architecture.md).
 
+## CA key material
+
+Both CA keys (Key A, the cluster CA; Key B, the per-tenant login CA) are
+ordinary barrier-encrypted records in the system shard's key-value space
+(`__sys:cluster_ca/`, `__sys:cert_ca/{tenantID}/` — see
+[../certificate-authority/architecture.md](../certificate-authority/architecture.md#the-ca-key-provider-seam-pkgcakey)),
+not a special case: a shard snapshot that includes the system shard captures
+them exactly as it captures any other `__sys:` record, and restoring that
+snapshot onto a new node or cluster restores both CAs along with everything
+else. There is no separate CA-key export/import path, and none is needed.
+This holds only for qrdb's built-in `cakey.SoftwareProvider`; a CA key held
+by an injected HSM/TPM/KMS provider lives on that device and is out of scope
+for a qrdb backup by construction — qrdb never held it to begin with.
+
 ## Trust boundaries
 
 - **A backup leaves the process and usually the machine.** Encryption is

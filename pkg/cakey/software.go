@@ -1,0 +1,280 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package cakey
+
+import (
+	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
+	"sync"
+	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+)
+
+// serialBits is the bit width of a generated CA certificate's serial number.
+const serialBits = 128
+
+// SoftwareProvider is qrdb's built-in Provider: an ECDSA P-256 CA key,
+// barrier-encrypted at rest and held in memory only while unsealed. It is
+// the default behind the Provider seam whenever an embedder does not inject
+// one of its own (go-xkms HSM/TPM/PKCS#11/KMS, via cakey.Adapter).
+//
+// It persists through kvstore.KVStore, qrdb's storage abstraction -- the
+// local store in standalone mode, the replicated store in Raft mode. No
+// code path here assumes Raft: a SoftwareProvider built over either store
+// behaves identically, and a key written in one mode reads back correctly
+// in the other, because both are the same interface.
+type SoftwareProvider struct {
+	kvStore  kvstore.KVStore
+	barrier  seal.EncryptionBarrier
+	prefix   string
+	subject  pkix.Name
+	validity time.Duration
+
+	mu   sync.RWMutex
+	key  *ecdsa.PrivateKey
+	cert *x509.Certificate
+}
+
+// Compile-time interface check.
+var _ Provider = (*SoftwareProvider)(nil)
+
+const (
+	keyWrappedKey = "wrapped_key"
+	keyCertPEM    = "cert_pem"
+)
+
+// NewSoftwareProvider returns a Provider backed by kvStore and barrier.
+// prefix is the key-value namespace this provider's two records live under
+// (e.g. "__sys:cluster_ca/" for the cluster-wide CA, or
+// "__sys:cert_ca/<tenantID>/" for a per-tenant login CA) and must end in
+// "/". subject and validity describe the self-signed CA certificate
+// Initialize generates when the store holds none yet.
+func NewSoftwareProvider(kvStore kvstore.KVStore, barrier seal.EncryptionBarrier, prefix string, subject pkix.Name, validity time.Duration) *SoftwareProvider {
+	return &SoftwareProvider{
+		kvStore:  kvStore,
+		barrier:  barrier,
+		prefix:   prefix,
+		subject:  subject,
+		validity: validity,
+	}
+}
+
+// Initialize loads this provider's CA material from the store, generating
+// and persisting a fresh key pair the first time it is called for a given
+// prefix. It is idempotent and safe to call on every boot.
+func (p *SoftwareProvider) Initialize(ctx context.Context) error {
+	if p.barrier.IsSealed() {
+		return &BarrierSealedError{}
+	}
+
+	wrappedPath := p.prefix + keyWrappedKey
+	certPath := p.prefix + keyCertPEM
+
+	existing, err := p.kvStore.Get(ctx, wrappedPath)
+	if err != nil {
+		return &StoreError{Op: "get", Detail: wrappedPath, Err: err}
+	}
+	if existing != nil {
+		return p.load(ctx)
+	}
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return &GenerateError{Err: err}
+	}
+
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), serialBits))
+	if err != nil {
+		return &GenerateError{Err: err}
+	}
+
+	now := time.Now().UTC()
+	template := &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               p.subject,
+		NotBefore:             now,
+		NotAfter:              now.Add(p.validity),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		MaxPathLen:            0,
+		MaxPathLenZero:        true,
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		return &GenerateError{Err: err}
+	}
+
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return &GenerateError{Err: err}
+	}
+
+	wrapped, err := p.barrier.Encrypt(keyDER)
+	secure.Wipe(keyDER)
+	if err != nil {
+		return &GenerateError{Err: err}
+	}
+
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+
+	if err := p.kvStore.Put(ctx, wrappedPath, wrapped); err != nil {
+		return &StoreError{Op: "put", Detail: wrappedPath, Err: err}
+	}
+	if err := p.kvStore.Put(ctx, certPath, certPEM); err != nil {
+		return &StoreError{Op: "put", Detail: certPath, Err: err}
+	}
+
+	cert, err := x509.ParseCertificate(certDER)
+	if err != nil {
+		return &GenerateError{Err: err}
+	}
+
+	p.mu.Lock()
+	p.key = key
+	p.cert = cert
+	p.mu.Unlock()
+
+	return nil
+}
+
+// Unseal loads the wrapped key from the store and decrypts it via the
+// barrier, caching it in memory for signing. It is an alias of the load
+// half of Initialize, exposed separately so a caller that already knows
+// material exists (an ordinary restart) does not pay for the existence
+// check Initialize performs.
+func (p *SoftwareProvider) Unseal(ctx context.Context) error {
+	if p.barrier.IsSealed() {
+		return &BarrierSealedError{}
+	}
+	return p.load(ctx)
+}
+
+// load reads this provider's wrapped key and certificate from the store,
+// decrypts the key, and caches both in memory.
+func (p *SoftwareProvider) load(ctx context.Context) error {
+	wrappedPath := p.prefix + keyWrappedKey
+	certPath := p.prefix + keyCertPEM
+
+	wrapped, err := p.kvStore.Get(ctx, wrappedPath)
+	if err != nil {
+		return &StoreError{Op: "get", Detail: wrappedPath, Err: err}
+	}
+	if wrapped == nil {
+		return &NotInitializedError{}
+	}
+	certPEM, err := p.kvStore.Get(ctx, certPath)
+	if err != nil {
+		return &StoreError{Op: "get", Detail: certPath, Err: err}
+	}
+	if certPEM == nil {
+		return &NotInitializedError{}
+	}
+
+	keyDER, err := p.barrier.Decrypt(wrapped)
+	if err != nil {
+		return &GenerateError{Err: err}
+	}
+	key, err := x509.ParseECPrivateKey(keyDER)
+	secure.Wipe(keyDER)
+	if err != nil {
+		return &GenerateError{Err: err}
+	}
+
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return &GenerateError{Err: errInvalidCertPEM}
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return &GenerateError{Err: err}
+	}
+
+	p.mu.Lock()
+	p.key = key
+	p.cert = cert
+	p.mu.Unlock()
+	return nil
+}
+
+// Seal destroys the in-memory key. Certificate, like cert.CertProvider's
+// CACertPEM, remains cached: it is public data.
+func (p *SoftwareProvider) Seal() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.key = nil
+}
+
+// Signer returns the cached key, auto-initializing from the store first
+// when the barrier is unsealed but nothing has been loaded into memory yet
+// (the ordinary case on every boot after the first).
+func (p *SoftwareProvider) Signer(ctx context.Context) (crypto.Signer, error) {
+	key, _, err := p.material(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return key, nil
+}
+
+// Certificate returns the cached CA certificate, auto-initializing as
+// Signer does.
+func (p *SoftwareProvider) Certificate(ctx context.Context) (*x509.Certificate, error) {
+	_, cert, err := p.material(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return cert, nil
+}
+
+// material returns the cached key and certificate, loading them from the
+// store first if this is the first call since the process started (or
+// since the barrier was last unsealed).
+func (p *SoftwareProvider) material(ctx context.Context) (*ecdsa.PrivateKey, *x509.Certificate, error) {
+	if p.barrier.IsSealed() {
+		return nil, nil, &BarrierSealedError{}
+	}
+
+	p.mu.RLock()
+	key, cert := p.key, p.cert
+	p.mu.RUnlock()
+
+	if key == nil || cert == nil {
+		if err := p.Initialize(ctx); err != nil {
+			return nil, nil, err
+		}
+		p.mu.RLock()
+		key, cert = p.key, p.cert
+		p.mu.RUnlock()
+		if key == nil || cert == nil {
+			return nil, nil, &NotInitializedError{}
+		}
+	}
+	return key, cert, nil
+}
+
+// errInvalidCertPEM is the underlying error wrapped by GenerateError when a
+// stored certificate record does not decode as PEM.
+var errInvalidCertPEM = staticMaterialError("cakey: stored certificate is not valid PEM")

@@ -175,6 +175,75 @@ brand-new node to a running cluster is two steps — print its identity with
 `qrdbd node-identity --cert`, and pass it to `member add`; every later add of a
 replica on that host is automatic.
 
+## Member-side CSR join (Key A, cluster CA)
+
+**Normative target; lands incrementally.** This replaces
+`docs/clusterenroll-noise-gap.md`'s unresolved options with an owner
+ruling: the cluster CA private key (Key A) is **never** distributed to a
+joiner, on any transport — that part of the prior ruling stands — but a
+joiner can still get a leaf certificate without it, because Key A is now
+reachable (barrier-encrypted, replicated — see
+[../certificate-authority/architecture.md](../certificate-authority/architecture.md#the-ca-key-provider-seam-pkgcakey))
+from **any** admitted, unsealed member, not only the first node.
+
+1. The joiner fetches the trust anchor (the CA **certificate** only) exactly
+   as today — `clusterenroll.FetchAnchor` over Noise/SPKI/DANE/Direct,
+   unchanged.
+2. The joiner generates its own node key pair (the private key never leaves
+   it) and sends a CSR for that key.
+3. After admission — a shared join token today, matching the operator-PSK
+   pattern multicast discovery already uses; a stronger per-node approval
+   workflow is a future extension of the same admission point — an existing
+   member signs the CSR with Key A (`cakey.Provider.Signer`, loaded from the
+   replicated store) and returns the leaf.
+4. The joiner now holds a Key-A-chained leaf and can present it for Raft
+   peer TLS like any other member.
+
+This removes `clusterenroll.Join`'s hard `*EnrollmentUnavailableError`
+refusal: the CSR-sign exchange is what "member-side CSR issuance" (named but
+not implemented in earlier releases) turns out to be.
+
+**Wire transport.** The one-shot `get_ca_bundle` request/response the
+Noise bootstrap `Handler` in go-truststrap dispatches cannot carry a second
+method — the handler is a fixed map built once in `NewServer`, and the
+connection closes after one round trip. The CSR exchange therefore runs as
+qrdb's **own** protocol, framed with `bootstrap.WriteFrame`/`ReadFrame`
+(already exported, used unmodified) over a session built with
+go-truststrap's lower-level `noiseproto.Session` (handshake + `Encrypt`/
+`Decrypt` of arbitrary bytes) — a generic Noise\_NK/XX primitive that is not
+specific to the bundle-fetch protocol. go-truststrap is not modified; this
+package only calls primitives it already exports. SPKI and Direct carry the
+CSR exchange as an ordinary request/response over the connection those
+methods already establish.
+
+**Admission is a separate concern from signing.** Reaching an existing
+member and completing the Noise/SPKI/Direct handshake proves nothing about
+whether this joiner should be issued a certificate — that is what the join
+token (or a future approval workflow) decides, before the CSR is signed, not
+after.
+
+### Why this does not reopen the shared-CA-key defect
+
+`docs/clusterenroll-noise-gap.md` described a transport that silently
+stripped the CA **key** out of a bundle meant to carry it. That mode is
+retired, not repaired: Key A's private half is never serialized onto the
+wire in any direction, by either side, in this design. What crosses the
+wire is a certificate (anchor, step 1) and a CSR/leaf pair (steps 2–4),
+exactly the two artifact types trust-bootstrap already treats as public.
+
+## Enrollment-role, kept
+
+`clusterenroll.RoleFile` (`enrollment-role`) is **not** removed. It was
+never purely a function of CA key custody: `StartAdvertiser` has only ever
+served the CA **certificate** (never the key, even before this change — see
+`docs/clusterenroll-noise-gap.md`), so every member already caches `ca.pem`
+locally today regardless of where Key A's private half lives. The role file
+additionally encodes `RoleSingleNode` (no Raft peers at all, unrelated to
+key location) and today's one-canonical-advertiser topology choice. Whether
+*every* admitted member should also run the trust-anchor advertiser (as
+opposed to only the first node) is a smaller, separate topology decision
+this change does not make.
+
 ## Dynamic membership (opt-in)
 
 `cluster.MembershipManager` reconciles the Raft group as nodes join and leave,
@@ -390,6 +459,8 @@ cadence is `DefaultMembershipPollInterval`.
 |---|---|---|
 | Discovery methods and `Manager` | `pkg/discovery` | go-qrdb |
 | Bootstrap orchestration, `MembershipManager` | `pkg/cluster` | go-qrdb |
+| Member-side CSR join (anchor fetch, CSR exchange, admission) | `pkg/clusterenroll` | go-qrdb |
+| Cluster CA (Key A) provider seam | `pkg/cakey`, `pkg/clustertls` — see [../certificate-authority/](../certificate-authority/) | go-qrdb |
 | Node admin (health, status, peers, drain, snapshot, shards, topology) | `pkg/service` admin | go-qrdb |
 | Shard rebalancing | `pkg/placement`, `pkg/service` | go-qrdb |
 | Raft primitives, leader election, log | — | **go-quicraft** |
@@ -414,6 +485,14 @@ cadence is `DefaultMembershipPollInterval`.
   unauthenticated node; nothing else in this feature is.
 - **Rebalance `execute` physically moves shards** and is gated apart from the
   read-only `stats`/`plan`/`report`.
+- **Member-side CSR join requires the operator-configured join token** (an
+  operator-chosen secret, following the same no-default-secret rule as
+  multicast discovery's PSK); a CSR presented without it is refused before
+  Key A is ever touched.
+- **The peer/Raft/enrollment transport trusts Key A only.** A certificate
+  issued by Key B (a tenant login CA) is refused on this transport even
+  though it is a validly-chained client certificate elsewhere — see
+  [../certificate-authority/architecture.md](../certificate-authority/architecture.md#key-b-trust-on-the-client-facing-listeners).
 
 ## What this feature deliberately does not do
 
