@@ -95,6 +95,14 @@ const (
 	// gate enables featuregate.NodeCompaction.
 	OpMVCCCompactNode byte = 15
 
+	// OpCompactionState writes a scope's scheduled-compaction state -- its
+	// policy, or a revision sample -- as a reserved record in the state
+	// machine's own keyspace (pkg/compaction). Payload:
+	// [kind:1][scopeLen:2 LE][scope][body]; see EncodeCompactionState.
+	// Emitted only once the cluster feature gate enables
+	// featuregate.PrefixCompaction.
+	OpCompactionState byte = 16
+
 	// Transaction operations (20-29).
 
 	// OpTransaction executes an atomic compare-and-swap transaction.

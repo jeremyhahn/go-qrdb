@@ -15,6 +15,7 @@
 package store
 
 import (
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -28,14 +29,19 @@ const metaKeyLastApplied = "\x00__quicraft_last_applied__"
 // must not cover, because every replica holds its own value for it.
 //
 // Both state machines reserve the 0x00 prefix for their own records. All but
-// one of those are node-local; the lease table (lease.TablePrefix) is
-// replicated state, written in the apply batch alongside the data it
-// governs, so it travels in snapshots and is covered by the hash like any
-// other applied record. A snapshot that dropped it would hand the recovering
-// replica keys bound to leases it has never heard of, which then never
-// expire.
+// two of those are node-local. The two replicated tables are written only in
+// the apply batch, so they travel in snapshots (and so in backups) and are
+// covered by the hash like any other applied record:
+//
+//   - the lease table (lease.TablePrefix): a snapshot that dropped it would
+//     hand the recovering replica keys bound to leases it has never heard
+//     of, which then never expire;
+//   - the compaction table (compaction.TablePrefix): a snapshot that dropped
+//     it would leave the recovering replica -- or a restored cluster -- with
+//     no compaction policy, and a new leader with no samples, so its
+//     schedule would silently stop or restart its retention clock.
 func isNodeLocalKey(k []byte) bool {
-	return len(k) > 0 && k[0] == '\x00' && !lease.IsTableKey(k)
+	return len(k) > 0 && k[0] == '\x00' && !lease.IsTableKey(k) && !compaction.IsTableKey(k)
 }
 
 // The internal key namespace is declared once, in pkg/service. This package

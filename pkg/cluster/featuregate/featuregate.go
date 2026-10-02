@@ -91,8 +91,11 @@ const GuardedWrites Feature = "guarded-writes"
 // replica, so no node can re-issue a shard ID another holds.
 const ClusterShardIDs Feature = "cluster-shard-ids"
 
-// PrefixCompaction is protocol.OpMVCCCompactPrefix: a compaction confined to
-// one database's keyspace prefix, with a compaction floor per prefix.
+// PrefixCompaction is protocol.OpMVCCCompactPrefix -- a compaction confined
+// to one database's keyspace prefix, with a compaction floor per prefix --
+// and protocol.OpCompactionState, the replicated scheduled-compaction state
+// (policy and samples) those compactions run from. One gate: both arrived
+// together, and a replica that applies one applies the other.
 const PrefixCompaction Feature = "prefix-compaction"
 
 // NodeCompaction is protocol.OpMVCCCompactNode: a compaction of the node

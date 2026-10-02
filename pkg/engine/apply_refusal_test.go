@@ -186,3 +186,20 @@ func TestWrappedUnsupportedOperationErrorIsStillARefusal(t *testing.T) {
 		t.Fatal("an UnsupportedOperationError stopped being a refusal")
 	}
 }
+
+// TestKVEngineRefusesCompactionStateWithoutHalting: the KV engine keeps no
+// MVCC history and no compaction table, so the compaction-state command is a
+// verb it does not have -- refused in the result, never fatal.
+func TestKVEngineRefusesCompactionStateWithoutHalting(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+	eng := NewKVEngine(stg)
+
+	cmd := mustEncode(protocol.EncodeCompactionState(protocol.CompactionStateCommand{
+		Kind: protocol.CompactionStateSetPolicy, Scope: "acme/app/", Policy: []byte(`{"policy":{"mode":"revision","retainRevisions":1}}`),
+	}))
+	results := make([]sm.Result, 1)
+	err := eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: cmd}}, results)
+
+	assertRefusedNotHalted(t, err, results[0], "unsupported operation")
+}

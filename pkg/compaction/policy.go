@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package compaction defines a database's scheduled-compaction policy: the
-// schedule on which a node compacts that database's MVCC history, set only by
-// the tenant that owns the database. It is a leaf -- it imports nothing of
-// this module -- so the database catalog and the node's configuration file
-// share one definition and one validation. See docs/key-value/engineering.md
-// "Scheduled compaction".
+// Package compaction defines scheduled compaction's policy and its replicated
+// state: the schedule on which a database's MVCC history -- or, set by the
+// platform, the node keyspace's -- is compacted, and the reserved record that
+// holds it in the store holding that data (State, RecordKey). It imports only
+// the leaf pkg/tenantid, so the state machine, the services and every
+// transport share one definition and one validation. See
+// docs/key-value/engineering.md "Scheduled compaction".
 package compaction
 
 import "time"

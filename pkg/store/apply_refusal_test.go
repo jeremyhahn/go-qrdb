@@ -61,6 +61,23 @@ func TestPebbleStateMachineRefusesUnknownOpcodeWithoutHalting(t *testing.T) {
 	assertRefusedNotHalted(t, err, results[0], "unknown op code")
 }
 
+// TestPebbleStateMachineRefusesCompactionStateWithoutHalting: the pebble KV
+// state machine keeps no MVCC history and so no compaction table; the
+// compaction-state command is refused like any verb it does not have.
+func TestPebbleStateMachineRefusesCompactionStateWithoutHalting(t *testing.T) {
+	s := openStore(t)
+	cmd, err := protocol.EncodeCompactionState(protocol.CompactionStateCommand{
+		Kind: protocol.CompactionStateClear, Scope: "acme/app/",
+	})
+	if err != nil {
+		t.Fatalf("EncodeCompactionState: %v", err)
+	}
+	results := make([]sm.Result, 1)
+	uerr := s.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: cmd}}, results)
+
+	assertRefusedNotHalted(t, uerr, results[0], "unknown op code")
+}
+
 // TestPebbleStateMachineKeepsServingAfterARefusal is PROBE-B's shape without
 // Raft: a refused entry must not cost the entries applied after it, nor the
 // reads that follow.

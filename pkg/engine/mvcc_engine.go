@@ -29,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/mvcc"
@@ -367,6 +368,12 @@ func (e *MVCCEngine) Lookup(_ context.Context, query interface{}) (interface{}, 
 	case service.MVCCScanChangesQuery:
 		return e.scanChanges(q)
 
+	case service.CompactionStateQuery:
+		return readCompactionState(e.stg, compaction.RecordKey(q.Scope))
+
+	case service.CompactionStatesQuery:
+		return compactionStates(e.stg)
+
 	case service.LeaseTimeToLiveQuery:
 		if e.lessor == nil {
 			return nil, &InvalidQueryError{Reason: "lessor not configured"}
@@ -582,6 +589,7 @@ func (e *MVCCEngine) buildUpdateHandlers() map[byte]mvccHandler {
 		protocol.OpMVCCDelete:        e.handleMVCCDelete,
 		protocol.OpMVCCCompactPrefix: handleMVCCCompactPrefix,
 		protocol.OpMVCCCompactNode:   handleMVCCCompactNode,
+		protocol.OpCompactionState:   handleCompactionState,
 		protocol.OpTransaction:       e.handleTransaction,
 		protocol.OpCompareAndDelete:  e.handleCompareAndDelete,
 		protocol.OpCompareAndSwap:    e.handleCompareAndSwap,
@@ -1176,6 +1184,14 @@ func handleMVCCCompactPrefix(s *mvcc.Store, _ *lease.Lessor, batch storage.Batch
 	prefix, revision, err := protocol.DecodeMVCCCompactPrefix(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
+	}
+	// The prefix is exactly one database's keyspace or nothing is compacted:
+	// "acme/" would be every database of acme. The service checks this before
+	// proposing; the state machine checks it again because the log, not the
+	// proposer, is what every replica trusts. NodeScope names a record, not a
+	// data prefix.
+	if !compaction.ValidScope(string(prefix)) || string(prefix) == compaction.NodeScope {
+		return compactionStateRefusal("mvcc compact: prefix is not one database's keyspace"), nil, nil
 	}
 
 	if err := s.CompactPrefixInBatch(batch, prefix, revision); err != nil {

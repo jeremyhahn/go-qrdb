@@ -27,11 +27,27 @@ import (
 // MVCC engine's (pkg/engine), which owns the per-prefix floors and refuses a
 // read below them. No state machine in this package compacts, even with an
 // MVCCStore attached -- MVCCStore has no Compact -- so each refuses the
-// compaction opcode exactly as it refuses any verb it was not built with: an
-// application error naming the opcode, never an error returned to Raft and
-// never a silent success.
+// compaction opcodes -- the compaction and the compaction-state record alike
+// -- exactly as it refuses any verb it was not built with: an application
+// error naming the opcode, never an error returned to Raft and never a silent
+// success.
 func TestStateMachines_RefuseCompactionAsUnknownOpcode(t *testing.T) {
-	cmd := mustEncode(protocol.EncodeMVCCCompactPrefix([]byte("acme/app/"), 5))
+	commands := map[byte][]byte{
+		protocol.OpMVCCCompactPrefix: mustEncode(protocol.EncodeMVCCCompactPrefix([]byte("acme/app/"), 5)),
+		protocol.OpMVCCCompactNode:   mustEncode(protocol.EncodeMVCCCompactNode(5)),
+		protocol.OpCompactionState: mustEncode(protocol.EncodeCompactionState(protocol.CompactionStateCommand{
+			Kind: protocol.CompactionStateClear, Scope: "acme/app/",
+		})),
+	}
+	for op, cmd := range commands {
+		refusesOpcode(t, op, cmd)
+	}
+}
+
+// refusesOpcode asserts every state machine in this package refuses cmd,
+// whose opcode is op, as an unknown opcode.
+func refusesOpcode(t *testing.T, op byte, cmd []byte) {
+	t.Helper()
 	apply := map[string]func(t *testing.T) (sm.Result, error){
 		"regular": func(t *testing.T) (sm.Result, error) {
 			return regularApplyCmd(t, newRegularWithMVCC(&mockMVCCStore{}), cmd)
@@ -57,7 +73,7 @@ func TestStateMachines_RefuseCompactionAsUnknownOpcode(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			result, err := run(t)
 			assertOpcodeRefused(t, err, result)
-			assertRefusalNamesOpcode(t, result, protocol.OpMVCCCompactPrefix)
+			assertRefusalNamesOpcode(t, result, op)
 		})
 	}
 }
