@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -396,9 +397,18 @@ func (t *Transport) ListPermissions(_ context.Context) (*transport.ListPermissio
 // ---------------------------------------------------------------------------
 
 // GenerateCert creates a client certificate via the embedded cert provider.
+//
+// The certificate authenticates as req.Username in req.TenantID, so it is
+// minted only for the caller's own tenant (tenant.Confine): a request naming
+// another tenant is refused with *tenant.CrossTenantDeniedError, the system
+// tenant included -- the rule certs:generate's ScopeSelfStrict enforces on the
+// network transports.
 func (t *Transport) GenerateCert(ctx context.Context, req *transport.GenerateCertRequest) (*transport.CertBundle, error) {
 	if t.certProv == nil {
 		return nil, &transport.NotImplementedError{Method: "GenerateCert"}
+	}
+	if _, err := tenant.Confine(ctx, req.TenantID, "generate a certificate"); err != nil {
+		return nil, err
 	}
 	genReq := &cert.GenerateRequest{
 		Username: req.Username,
@@ -440,9 +450,25 @@ func (t *Transport) ExportCert(ctx context.Context, req *transport.ExportCertReq
 // provider, and reports whether it held a local record for the serial.
 //
 // BREAKING (go-qrdb#287): this method previously returned only error.
+//
+// A serial with an issued record is revoked only by its owning tenant
+// (tenant.Confine). A serial with none is the deny-by-serial revocation, a
+// platform act on the CA the system tenant operates, so only a system-tenant
+// caller may write it -- the rule certs:revoke and certs:revoke:cross enforce
+// on the network transports. Either refusal is *tenant.CrossTenantDeniedError.
 func (t *Transport) RevokeCert(ctx context.Context, serial string) (*transport.RevokeResult, error) {
 	if t.certProv == nil {
 		return nil, &transport.NotImplementedError{Method: "RevokeCert"}
+	}
+	owner, found, err := t.certProv.TenantForSerial(ctx, serial)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		owner = tenant.SystemTenantID
+	}
+	if _, err := tenant.Confine(ctx, owner, "revoke a certificate"); err != nil {
+		return nil, err
 	}
 	result, err := t.certProv.RevokeCert(ctx, serial)
 	if err != nil {
@@ -454,10 +480,15 @@ func (t *Transport) RevokeCert(ctx context.Context, serial string) (*transport.R
 	}, nil
 }
 
-// ListCerts lists issued certificates for a tenant via the embedded cert provider.
+// ListCerts lists issued certificates for a tenant via the embedded cert
+// provider. Only the caller's own tenant may be listed (tenant.Confine); any
+// other is refused with *tenant.CrossTenantDeniedError.
 func (t *Transport) ListCerts(ctx context.Context, tenantID string) (*transport.ListCertsResponse, error) {
 	if t.certProv == nil {
 		return nil, &transport.NotImplementedError{Method: "ListCerts"}
+	}
+	if _, err := tenant.Confine(ctx, tenantID, "list certificates"); err != nil {
+		return nil, err
 	}
 	records, err := t.certProv.ListCerts(ctx, tenantID)
 	if err != nil {

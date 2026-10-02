@@ -106,13 +106,21 @@ func TestAuthorizeCertTenant_ForeignTenantIsRefused(t *testing.T) {
 	}
 }
 
-// TestAuthorizeCertTenant_SystemTenantReachesAnyTenant keeps platform
-// provisioning working: the system-tenant rule lifts ScopeSelf.
-func TestAuthorizeCertTenant_SystemTenantReachesAnyTenant(t *testing.T) {
+// TestAuthorizeCertTenant_SystemTenantIsConfinedToItself: the certs verbs are
+// ScopeSelfStrict, so the system-tenant rule does not lift them. A certificate
+// the system tenant minted for globex's user would authenticate as that user.
+func TestAuthorizeCertTenant_SystemTenantIsConfinedToItself(t *testing.T) {
 	mw := newCertAuthzMiddleware()
+	sys := certAuthzCtx(tenant.SystemTenantID)
 
-	if err := mw.AuthorizeCertTenant(certAuthzCtx(tenant.SystemTenantID), "globex", permission.CertsList); err != nil {
-		t.Fatalf("the platform operator must reach any tenant: %v", err)
+	for _, perm := range []permission.Permission{permission.CertsGenerate, permission.CertsList} {
+		err := mw.AuthorizeCertTenant(sys, "globex", perm)
+		if !errors.Is(err, auth.ErrUnauthorized) {
+			t.Errorf("%s on globex from the system tenant: err = %v, want an authorization denial", perm, err)
+		}
+		if err := mw.AuthorizeCertTenant(sys, tenant.SystemTenantID, perm); err != nil {
+			t.Errorf("%s on the system tenant's own certificates: %v", perm, err)
+		}
 	}
 }
 
@@ -171,15 +179,21 @@ func TestAuthorizeCertRevoke_UnknownSerialRequiresTheSystemTenant(t *testing.T) 
 	}
 }
 
-// TestAuthorizeCertRevoke_SystemTenantReachesAnyKnownSerial pins the other
-// system-tenant path, so the operator is not confined to its own tenant on the
-// known-serial branch either.
-func TestAuthorizeCertRevoke_SystemTenantReachesAnyKnownSerial(t *testing.T) {
+// TestAuthorizeCertRevoke_SystemTenantCannotRevokeAnotherTenantsSerial: on
+// the known-serial branch the operator is confined to its own tenant like
+// everyone else. Holding certs:revoke:cross does not help, because a serial
+// with an owner is never the deny-by-serial case.
+func TestAuthorizeCertRevoke_SystemTenantCannotRevokeAnotherTenantsSerial(t *testing.T) {
 	mw := newCertAuthzMiddleware()
-	res := &stubSerialResolver{owners: map[string]string{"s-globex": "globex"}}
+	res := &stubSerialResolver{owners: map[string]string{"s-globex": "globex", "s-system": tenant.SystemTenantID}}
+	sys := certAuthzCtx(tenant.SystemTenantID)
 
-	if err := mw.AuthorizeCertRevoke(certAuthzCtx(tenant.SystemTenantID), "s-globex", res); err != nil {
-		t.Fatalf("the platform operator must revoke any known serial: %v", err)
+	err := mw.AuthorizeCertRevoke(sys, "s-globex", res)
+	if !errors.Is(err, auth.ErrUnauthorized) {
+		t.Fatalf("the platform operator revoking globex's serial: err = %v, want an authorization denial", err)
+	}
+	if err := mw.AuthorizeCertRevoke(sys, "s-system", res); err != nil {
+		t.Fatalf("the platform operator revoking its own serial: %v", err)
 	}
 }
 

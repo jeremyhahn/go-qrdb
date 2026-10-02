@@ -49,12 +49,12 @@ type CertSerialResolver interface {
 // the REQUEST names — the tenantID in a generate body or a list query — rather
 // than the tenant the caller happens to be in.
 //
-// It is AuthorizeTenant under a name that says why it is being called, and the
-// scope rules it delegates to are unchanged: a ScopeSelf permission admits the
-// caller when the request's target is the caller's own tenant, and the
-// system-tenant rule still lifts it for the platform operator, which is what
-// keeps cross-tenant provisioning working for the identity that is entitled to
-// it.
+// It is AuthorizeTenant under a name that says why it is being called. The
+// certs permissions are ScopeSelfStrict, so it admits the caller only when the
+// request's target is the caller's own tenant -- for EVERY caller. The
+// system-tenant rule does not lift them: a certificate this CA signs
+// authenticates as the user and tenant its Subject names, so a system Admin
+// minting one for another tenant's user would be logging in as that user.
 //
 // Passing the caller's own tenant here is not a no-op even though it looks
 // like one — it is the statement that the handler CHECKED, which is precisely
@@ -72,8 +72,8 @@ func (m *AuthMiddleware) AuthorizeCertTenant(ctx context.Context, targetTenantID
 //   - The serial resolves to an issued record. Its record names the owning
 //     tenant, so the ordinary self-scope permission.CertsRevoke is checked
 //     against THAT tenant. A tenant admin revoking its own certificate is
-//     admitted; a tenant admin reaching for another tenant's serial is
-//     refused; the platform operator is admitted by the system-tenant rule.
+//     admitted; anyone reaching for another tenant's serial is refused, the
+//     platform operator included (certs:revoke is ScopeSelfStrict).
 //
 //   - The serial resolves to nothing. This is deny-by-serial, which
 //     docs/certificate-authority/architecture.md guarantees and go-qrdb#287

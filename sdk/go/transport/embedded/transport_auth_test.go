@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -1437,7 +1438,7 @@ func TestGenerateCert_Success(t *testing.T) {
 	}
 	tr := newAuthTransport(t, WithCertProvider(mock))
 
-	bundle, err := tr.GenerateCert(context.Background(), &transport.GenerateCertRequest{
+	bundle, err := tr.GenerateCert(tenant.WithTenantID(context.Background(), "tenant-a"), &transport.GenerateCertRequest{
 		Username: "alice",
 		TenantID: "tenant-a",
 		TTL:      "24h",
@@ -1692,7 +1693,7 @@ func TestListCerts_Success(t *testing.T) {
 	}
 	tr := newAuthTransport(t, WithCertProvider(mock))
 
-	resp, err := tr.ListCerts(context.Background(), "tenant-a")
+	resp, err := tr.ListCerts(tenant.WithTenantID(context.Background(), "tenant-a"), "tenant-a")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1727,7 +1728,7 @@ func TestListCerts_Success(t *testing.T) {
 
 func TestListCerts_NilProvider(t *testing.T) {
 	tr := newAuthTransport(t)
-	_, err := tr.ListCerts(context.Background(), "tenant-a")
+	_, err := tr.ListCerts(tenant.WithTenantID(context.Background(), "tenant-a"), "tenant-a")
 	assertNotImplementedError(t, err, "ListCerts")
 }
 
@@ -1739,7 +1740,7 @@ func TestListCerts_ServiceError(t *testing.T) {
 	}
 	tr := newAuthTransport(t, WithCertProvider(mock))
 
-	_, err := tr.ListCerts(context.Background(), "tenant-a")
+	_, err := tr.ListCerts(tenant.WithTenantID(context.Background(), "tenant-a"), "tenant-a")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1757,7 +1758,7 @@ func TestListCerts_Empty(t *testing.T) {
 	}
 	tr := newAuthTransport(t, WithCertProvider(mock))
 
-	resp, err := tr.ListCerts(context.Background(), "tenant-a")
+	resp, err := tr.ListCerts(tenant.WithTenantID(context.Background(), "tenant-a"), "tenant-a")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

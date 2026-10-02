@@ -253,6 +253,24 @@ Standalone parity (#582) and durable leases. Highlights:
   from a request), and is refused every other tenant's. The tenant match runs
   before pagination, so no time range, filter or cursor widens it. New:
   `tenant.CallerTenant`, `tenant.Confine` and `tenant.ConfineAuditFilter`.
+- **BREAKING: no caller can mint, list or revoke another tenant's
+  certificates -- the system tenant included.** `certs:generate` was
+  authorized against the request body's tenant under `ScopeSelf`, which the
+  system-tenant rule lifts, so a system-tenant Admin could mint a CA-signed
+  client certificate naming another tenant's user; under the default
+  `auth.mtls_binding_policy` that certificate authenticates as the user.
+  `certs:list` and `certs:revoke` had the same lift. `certs:generate`,
+  `certs:list`, `certs:revoke`, `certs:read` and `certs:export` are now
+  `ScopeSelfStrict`, so on REST, gRPC, unix, QUIC and MCP the target tenant
+  must be the caller's own for every caller; a request naming another tenant
+  is refused with the transport's permission-denied form. The embedded
+  transport, which runs no authorization middleware, applies the same rule
+  with `tenant.Confine`: `GenerateCert` and `ListCerts` confine the named
+  tenant, and `RevokeCert` confines the serial's owner, or the system tenant
+  for a deny-by-serial revocation (`*tenant.CrossTenantDeniedError`).
+  `certs:revoke:cross` -- the deny-by-serial revocation of a serial no tenant
+  owns -- stays `ScopeCross`. A platform tool that issued certificates into
+  customer tenants must now run as each tenant's own Admin.
 
 ### Fixed
 

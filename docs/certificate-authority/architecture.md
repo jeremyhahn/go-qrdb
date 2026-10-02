@@ -243,6 +243,21 @@ derives an identity's tenant from exactly that OU, so an unchecked cross-tenant
 mint would hand the caller a CA-signed credential for another tenant rather
 than merely misfiling a record.
 
+**The target must be the caller's own tenant, for every caller.** The `certs:*`
+verbs are `ScopeSelfStrict` (see
+[../identity-rbac/engineering.md](../identity-rbac/engineering.md)): the
+system-tenant rule does **not** lift them. A system-tenant Admin generates,
+lists and revokes the system tenant's certificates and no one else's; a
+certificate it minted for another tenant's user would authenticate as that
+user. There is no platform provisioning path that mints for a tenant — each
+tenant's own Admin issues its own users' certificates. The embedded transport,
+which runs no authorization middleware, applies the same rule to the caller in
+its context (`tenant.Confine`).
+
+**BREAKING:** before this rule, `certs:generate`, `certs:list` and
+`certs:revoke` were `ScopeSelf`, and a system-tenant identity could act on any
+tenant's certificates.
+
 **Issuance is not the only layer that has to hold.** The gate above is what
 stops the certificate being minted; the certificate-binding gate in
 [../identity-rbac/](../identity-rbac/architecture.md#what-a-certificate-actually-claims)
@@ -282,10 +297,10 @@ is an operator signal for the same reason — it withholds nothing.)
 authority is required:
 
 - **The serial resolves to an issued record.** The record names the owning
-  tenant, and the ordinary self-scope `certs:revoke` is checked against *that*
-  tenant. A tenant admin revoking its own certificate is admitted; the same
-  admin reaching for another tenant's serial is refused; an identity in the
-  system tenant is admitted by the system-tenant rule.
+  tenant, and `certs:revoke` is checked against *that* tenant. A tenant admin
+  revoking its own certificate is admitted; anyone reaching for another
+  tenant's serial is refused — an identity in the system tenant included,
+  because `certs:revoke` is `ScopeSelfStrict`.
 
 - **The serial resolves to nothing.** This is deny-by-serial, and it requires
   `certs:revoke:cross`, which is cross-scope and therefore **system tenant

@@ -340,10 +340,16 @@ identities in the system tenant. It is an escalation ON TOP of `certs:revoke`,
 not a substitute for it — the same relationship `audit:read:cross` has to
 `audit:read` — so a caller needs both, and the built-in Admin role grants both.
 
-Every other permission in the table is **self-scope**, and for generate, revoke
-and list the gate re-checks it against the tenant the REQUEST names rather than
-the tenant the caller is in. A caller acting inside its own tenant is
-unaffected.
+Every other permission in the table is **`ScopeSelfStrict`**
+(`pkg/permission/self_strict_scope.go`), and for generate, revoke and list the
+gate re-checks it against the tenant the REQUEST names rather than the tenant
+the caller is in. `ScopeSelfStrict` is not lifted by the system-tenant rule, so
+the target must be the caller's own tenant for every caller, the system tenant
+included. A caller acting inside its own tenant is unaffected. The embedded
+transport has no authorization middleware and applies the same rule with
+`tenant.Confine` against the caller in its context: `GenerateCert` and
+`ListCerts` confine the named tenant, and `RevokeCert` confines the serial's
+owner, or the system tenant for a deny-by-serial revocation.
 
 ## Configuration
 

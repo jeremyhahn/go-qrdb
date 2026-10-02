@@ -109,16 +109,17 @@ names, not the tenant your credential is in:
 
 | Command | Refused with `PERMISSION_DENIED` when |
 |---|---|
-| `ca issue --tenant-id <t>` | `<t>` is not your tenant and you are not in `system` |
-| `ca list --tenant-id <t>` | `<t>` is not your tenant and you are not in `system` |
+| `ca issue --tenant-id <t>` | `<t>` is not your tenant — whoever you are, `system` included |
+| `ca list --tenant-id <t>` | `<t>` is not your tenant — whoever you are, `system` included |
 | `ca revoke --serial <s>` | `<s>` belongs to another tenant, or matches no record and you lack `certs:revoke:cross` |
 
 `ca issue` is the one to watch: `--tenant-id` becomes the certificate's OU, and
 the OU is where an mTLS login reads the tenant from. Issuing into a tenant is
 issuing a credential FOR that tenant.
 
-An operator in the `system` tenant is unrestricted, which is how a platform
-administrator provisions and audits customer tenants.
+An operator in the `system` tenant is confined to the `system` tenant like
+everyone else: it cannot issue a certificate for, list, or revoke the
+certificates of a customer tenant. Each tenant's own Admin does that.
 
 `ca export-bundle` names no tenant: it re-encodes the certificate and key you
 supply, and the server holds neither.

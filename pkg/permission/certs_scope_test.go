@@ -57,27 +57,25 @@ func TestCertsRevokeCross_IsRegisteredAndGranted(t *testing.T) {
 	}
 }
 
-// TestCertsSelfScopePermissions_StayScopeSelf pins the other half of the
-// design. The ordinary certs verbs are deliberately self-scope: promoting one
-// to ScopeCross would take it away from every tenant admin, and demoting
-// CertsRevokeCross is what this file exists to prevent.
+// TestCertsPermissions_AreSelfStrict pins the other half of the design. The
+// ordinary certs verbs are ScopeSelfStrict: every tenant acts on its own
+// certificates, and the system-tenant rule does NOT lift them, because a
+// certificate minted for another tenant's user authenticates as that user.
+// Promoting one to ScopeCross would take it away from every tenant admin;
+// relaxing one to ScopeSelf would hand the system tenant every tenant's
+// identities again.
 //
 // certs:read is included even though no handler audited here consumes it, so a
 // future reader of that permission inherits a scope that was stated rather than
 // defaulted into.
-func TestCertsSelfScopePermissions_StayScopeSelf(t *testing.T) {
+func TestCertsPermissions_AreSelfStrict(t *testing.T) {
 	for _, p := range []Permission{CertsGenerate, CertsExport, CertsRevoke, CertsList, CertsRead} {
-		if got := mustScope(t, p); got != ScopeSelf {
-			t.Errorf("LookupScope(%s) = %v, want ScopeSelf", p, got)
+		if got := mustScope(t, p); got != ScopeSelfStrict {
+			t.Errorf("LookupScope(%s) = %v, want ScopeSelfStrict", p, got)
 		}
 	}
 }
 
-// TestCertsRevokeCross_SplitsIntoTheCertsResource pins the wire form. The RBAC
-// authorizer splits a permission on its FIRST colon, so "certs:revoke:cross"
-// must present as resource "certs" with action "revoke:cross" -- the same
-// shape tenants:list:cross already has. A permission that split differently
-// would be checked against a resource no role grants.
 func TestCertsRevokeCross_SplitsIntoTheCertsResource(t *testing.T) {
 	if got := Resource(CertsRevokeCross); got != "certs" {
 		t.Errorf("Resource = %q, want %q", got, "certs")

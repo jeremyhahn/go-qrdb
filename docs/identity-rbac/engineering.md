@@ -274,6 +274,21 @@ the identity fails.
 | `ScopeTenantOnly` | own tenant only | **denied, structurally** |
 | `ScopeSelfStrict` | own tenant only | **own tenant only** (not lifted) |
 
+`ScopeSelfStrict` holds the `escrow:*` and `certs:*` families
+(`pkg/permission/self_strict_scope.go`; `certs:revoke:cross` alone stays
+`ScopeCross`). `certs:*` moved there from `ScopeSelf` because a certificate
+minted for another tenant's user authenticates as that user, so the
+system-tenant lift on `certs:generate` was a lift to every tenant's identities
+(**BREAKING**). `TestCertsPermissions_AreSelfStrict` pins it.
+
+The audit query is not decided by scope at all: its permission is checked
+against the caller, and the filter is then confined to the caller's own tenant
+by `tenant.ConfineAuditFilter`, on every transport, before the node-local
+logger — which holds every tenant's events — is read. `tenant.Confine` is the
+general form: an empty requested tenant means the caller's own, any other is a
+`*tenant.CrossTenantDeniedError`, and unlike `tenant.EffectiveTenant` there is
+no system-tenant lift.
+
 **Every `ScopeCross` permission has an SDK name.** `sdk/go/types_permission_cross.go`
 re-exports each one (`sdk.PermissionAuditReadCross`, the `tenants`,
 `volumepool`, `registration_config` and `credentials` families,

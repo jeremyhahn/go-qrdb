@@ -132,12 +132,8 @@ func selfScopedPermissions() []Permission {
 		CeremonyClaimShareComplete,
 		CeremonyStatus,
 
-		// certs
-		CertsExport,
-		CertsGenerate,
-		CertsList,
-		CertsRead,
-		CertsRevoke,
+		// certs: ScopeSelfStrict (self_strict_scope.go), except
+		// CertsRevokeCross, which is ScopeCross.
 
 		// collections
 		CollectionsCreate,

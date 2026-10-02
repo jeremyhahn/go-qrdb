@@ -46,9 +46,9 @@ one is a privileged act and why revoking one matters.
 
 **And OU is why `--tenant-id` is not bookkeeping.** A login reads the tenant out
 of the OU, so issuing a certificate into a tenant is issuing a credential for
-that tenant. You may name your own tenant; naming another is refused unless you
-are a platform operator in the `system` tenant. The same rule governs
-`ca list`.
+that tenant. You may name your own tenant; naming another is refused, for
+everyone — a platform operator in the `system` tenant included. The same rule
+governs `ca list` and `ca revoke`.
 
 ## Common tasks
 
@@ -155,11 +155,11 @@ authorization are separate. Check the user binding and the role assignment.
 **`ca issue`, `ca list` or `ca revoke` was refused with a permission error even
 though you hold the `certs:*` permissions.** Those permissions apply to your own
 tenant. Naming a different `--tenant-id`, or revoking a serial another tenant
-owns, is refused for everyone outside the `system` tenant — holding the
+owns, is refused for everyone, the `system` tenant included — holding the
 permission is not the same as the certificate being yours to act on. Revoking a
 serial nobody here issued needs `certs:revoke:cross`, which only the `system`
-tenant can exercise. If you are the platform operator, use a credential in the
-`system` tenant; otherwise ask the tenant that owns the certificate.
+tenant can exercise. Ask the tenant that owns the certificate: its own Admin
+issues, lists and revokes it.
 
 **A certificate expired.** Issue a new one and revoke the old. There is no
 renewal workflow.

@@ -33,14 +33,17 @@ tenant. A second check establishes the target:
 | Export | none named | — |
 
 A caller acting inside its own tenant sees no change. A caller naming another
-tenant is refused unless it is in the system tenant, whose members the
-system-tenant rule lifts. See
+tenant is refused — **every** caller, the system tenant included: the `certs:*`
+permissions are `ScopeSelfStrict`, which the system-tenant rule does not lift.
+The refusal is 403 on REST, `PERMISSION_DENIED` on gRPC and the unix socket,
+`StatusPermissionDenied` on QUIC, the permission-denied tool code on MCP, and
+`*tenant.CrossTenantDeniedError` on the embedded transport. See
 [architecture.md](architecture.md#which-tenant-a-certs-call-may-act-on) for why
 deny-by-serial is a CA-operator capability.
 
 `tenant_id` on the MCP `qrdb_cert_list` tool defaults to the **system tenant**
 when omitted; that default is gated exactly like an explicit cross-tenant
-request.
+request, so a tenant caller names its own tenant.
 
 **Note the path prefix.** These are `/certs/...`, unversioned, even though the
 CLI group is `qrdb ca`. The CLI was renamed (`certs` → `ca`); the routes were
@@ -127,7 +130,7 @@ than merely inert.
 | Field validation failure | 400 | `INVALID_ARGUMENT` — `ValidationError` |
 | Generation or export failure | 500 | `INTERNAL` — wraps the cause, `Unwrap()`-able |
 | Missing permission | 403 | `PERMISSION_DENIED` |
-| Target tenant is not the caller's, and the caller is not in the system tenant | 403 | `PERMISSION_DENIED` |
+| Target tenant is not the caller's — for every caller, the system tenant included | 403 | `PERMISSION_DENIED` |
 | Deny-by-serial attempted without `certs:revoke:cross` | 403 | `PERMISSION_DENIED` |
 | Owning tenant could not be resolved (no provider wired, store unreachable) | 503 | `UNAVAILABLE` — the decision was never made, so 403 would be a lie |
 

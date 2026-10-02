@@ -421,6 +421,16 @@ handle, so a global index would forbid that while buying nothing.
 
 - **The tenant comes from the certificate, never from the request.** This is the
   root of tenant isolation across every feature.
+- **No caller mints another tenant's identities or reads another tenant's
+  audit trail — the system tenant included.** `certs:generate`, `certs:list`,
+  `certs:revoke`, `certs:read` and `certs:export` are `ScopeSelfStrict`, which
+  the system-tenant rule does not lift: a certificate this node's CA signs
+  authenticates as the user and tenant it names, so minting one for another
+  tenant's user is logging in as that user. An audit query is confined to the
+  caller's own tenant on every transport (`tenant.ConfineAuditFilter`); the
+  system tenant additionally sees the platform events that carry no tenant.
+  See [../certificate-authority/architecture.md](../certificate-authority/architecture.md#which-tenant-a-certs-call-may-act-on)
+  and [../audit/architecture.md](../audit/architecture.md).
 - **Enrolment bindings are SPKI thumbprints**, so possession of the private key
   is what authenticates. An account holding at least one binding is refused any
   certificate that matches none of them, whatever its CN, OU or SPIFFE SAN say;

@@ -314,21 +314,22 @@ func TestCertsRevoke_UnknownSerialPermittedToSystemTenant(t *testing.T) {
 	}
 }
 
-// TestCertsRevoke_SystemTenantMayRevokeAnyKnownSerial pins the system-tenant
-// rule on the known-serial path too: the platform operator is not confined to
-// its own tenant.
-func TestCertsRevoke_SystemTenantMayRevokeAnyKnownSerial(t *testing.T) {
+// TestCertsRevoke_SystemTenantCannotRevokeAnotherTenantsSerial: on the
+// known-serial path the platform operator is confined to its own tenant like
+// every other caller (certs:revoke is ScopeSelfStrict), and no marker is
+// written.
+func TestCertsRevoke_SystemTenantCannotRevokeAnotherTenantsSerial(t *testing.T) {
 	f := newCertScopeFixture(t)
 	target := f.issue(t, certScopeTenantB, "b-user")
 
 	f.caller.as(tenant.SystemTenantID, "platform-op")
 	rec := f.do(t, http.MethodPost, "/certs/revoke", map[string]string{"serial": target})
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (body %q)", rec.Code, rec.Body.String())
 	}
-	if !f.revoked(t, target) {
-		t.Fatal("the platform operator's revocation wrote no marker")
+	if f.revoked(t, target) {
+		t.Fatal("a refused revocation of another tenant's certificate still wrote a marker")
 	}
 }
 
@@ -422,9 +423,10 @@ func TestCertsGenerate_OwnTenantStillSucceeds(t *testing.T) {
 	}
 }
 
-// TestCertsGenerate_SystemTenantMayTargetAnyTenant keeps the platform
-// operator's provisioning path open — the system-tenant rule lifts ScopeSelf.
-func TestCertsGenerate_SystemTenantMayTargetAnyTenant(t *testing.T) {
+// TestCertsGenerate_SystemTenantCannotTargetAnotherTenant: the system tenant
+// mints for itself only. A certificate it minted for tenant B's user would
+// authenticate as that user, so certs:generate is ScopeSelfStrict.
+func TestCertsGenerate_SystemTenantCannotTargetAnotherTenant(t *testing.T) {
 	f := newCertScopeFixture(t)
 
 	f.caller.as(tenant.SystemTenantID, "platform-op")
@@ -432,9 +434,17 @@ func TestCertsGenerate_SystemTenantMayTargetAnyTenant(t *testing.T) {
 		"username": "b-user",
 		"tenantID": certScopeTenantB,
 	})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: the platform operator minted for another tenant (body %q)",
+			rec.Code, rec.Body.String())
+	}
 
+	rec = f.do(t, http.MethodPost, "/certs/generate", map[string]string{
+		"username": "op",
+		"tenantID": tenant.SystemTenantID,
+	})
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("status = %d, want 201: the platform operator provisions any tenant (body %q)",
+		t.Fatalf("status = %d, want 201: the platform operator mints for its own tenant (body %q)",
 			rec.Code, rec.Body.String())
 	}
 }
@@ -501,23 +511,16 @@ func TestCertsList_OwnTenantStillSucceeds(t *testing.T) {
 	}
 }
 
-// TestCertsList_SystemTenantMayListAnyTenant keeps the platform operator's
-// inventory view open.
-func TestCertsList_SystemTenantMayListAnyTenant(t *testing.T) {
+// TestCertsList_SystemTenantCannotListAnotherTenant: the platform operator
+// reads its own certificate inventory only.
+func TestCertsList_SystemTenantCannotListAnotherTenant(t *testing.T) {
 	f := newCertScopeFixture(t)
-	target := f.issue(t, certScopeTenantB, "b-user")
+	f.issue(t, certScopeTenantB, "b-user")
 
 	f.caller.as(tenant.SystemTenantID, "platform-op")
 	rec := f.do(t, http.MethodGet, "/certs/list?tenantID="+certScopeTenantB, nil)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
-	}
-	var body listCertsResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(body.Certs) != 1 || body.Certs[0].Serial != target {
-		t.Fatalf("platform operator listing = %+v, want exactly %s", body.Certs, target)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (body %q)", rec.Code, rec.Body.String())
 	}
 }

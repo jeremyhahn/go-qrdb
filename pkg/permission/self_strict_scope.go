@@ -34,6 +34,22 @@ package permission
 // global registry and tags it ScopeSelfStrict.
 func selfStrictPermissions() []Permission {
 	return []Permission{
+		// certs
+		//
+		// A certificate this CA signs authenticates as the user and tenant
+		// its Subject names, so minting one for another tenant's user IS
+		// logging in as that user. Each tenant generates, lists, revokes and
+		// exports its own certificates; the system tenant does the same for
+		// its own and for no one else's. These were ScopeSelf -- the
+		// system-tenant rule let a system Admin mint a certificate for any
+		// tenant's user. CertsRevokeCross, the deny-by-serial revocation of
+		// a serial no tenant owns, stays ScopeCross (cross_scope.go).
+		CertsExport,
+		CertsGenerate,
+		CertsList,
+		CertsRead,
+		CertsRevoke,
+
 		// escrow
 		//
 		// Escrow hands wrapped key material to a custodian so it can be
