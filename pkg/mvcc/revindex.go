@@ -15,8 +15,6 @@
 package mvcc
 
 import (
-	"bytes"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
 
@@ -130,17 +128,17 @@ func (s *Store) ScanChanges(startRev, endRev int64, fn func(Change) bool) error 
 }
 
 // gcRevIndexInBatch removes, within batch, the revision-index entries in
-// [from, revision] whose key begins with prefix. Called from a compaction of
-// prefix, so the change log honours the same floor as the data entries: a
-// replay at or below the floor is refused, so those entries serve no purpose
-// and must not accumulate. Entries of every other prefix -- another
-// database's change log -- are left alone.
+// [from, revision] whose key the compaction covers. Called from a compaction,
+// so the change log honours the same floor as the data entries: a replay at
+// or below the floor is refused, so those entries serve no purpose and must
+// not accumulate. Entries of every key the compaction does not cover --
+// another database's change log -- are left alone.
 //
 // The scan reads through batch so that index entries written by earlier entries
 // of the same apply batch are collected too; scanning committed storage instead
 // would leave them behind whenever the apply loop happened to pack the writes
 // and the compaction into one call.
-func (s *Store) gcRevIndexInBatch(batch storage.Batch, prefix []byte, from, revision int64) error {
+func (s *Store) gcRevIndexInBatch(batch storage.Batch, covered func(key []byte) bool, from, revision int64) error {
 	if from > revision {
 		return nil
 	}
@@ -152,7 +150,7 @@ func (s *Store) gcRevIndexInBatch(batch storage.Batch, prefix []byte, from, revi
 
 	for iter.SeekToFirst(); iter.Valid(); iter.Next() {
 		_, key, err := DecodeRevIndexKey(iter.Key())
-		if err != nil || !bytes.HasPrefix(key, prefix) {
+		if err != nil || !covered(key) {
 			continue
 		}
 		kc := make([]byte, len(iter.Key()))

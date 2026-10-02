@@ -34,17 +34,53 @@ const DefaultCompactionInterval = time.Minute
 // compactionPassTimeout bounds the work one pass spends on one database.
 const compactionPassTimeout = 30 * time.Second
 
-// compactionTarget is one database with a compaction policy: its owning
-// tenant, its name, and the policy.
+// compactionTarget is one keyspace with a compaction policy: a database --
+// its owning tenant, its name -- or, with Node set, the node keyspace.
 type compactionTarget struct {
 	Tenant   string
 	Database string
 	Policy   *compaction.Policy
+
+	// Node marks the node keyspace: every key outside all database
+	// namespaces, compacted by the platform's own policy.
+	Node bool
 }
 
 // key identifies the target's revision samples.
 func (t compactionTarget) key() string {
+	if t.Node {
+		// A NUL can appear in no tenant id or database name.
+		return "\x00node"
+	}
 	return t.Tenant + "/" + t.Database
+}
+
+// compactionView is what a pass needs of a target: the store's current
+// revision, and the compaction of exactly that target's keyspace.
+type compactionView interface {
+	CurrentRevision(ctx context.Context) (int64, error)
+	compact(ctx context.Context, revision int64) error
+}
+
+// databaseView compacts one database through its namespaced view.
+type databaseView struct{ service.MVCCKVServicer }
+
+func (v databaseView) compact(ctx context.Context, revision int64) error {
+	return v.Compact(ctx, revision)
+}
+
+// nodeKeyspaceStore is the raw shard service as the node-keyspace target
+// needs it.
+type nodeKeyspaceStore interface {
+	service.NodeKeyspaceCompactor
+	CurrentRevision(ctx context.Context) (int64, error)
+}
+
+// nodeView compacts the node keyspace through the raw shard service.
+type nodeView struct{ nodeKeyspaceStore }
+
+func (v nodeView) compact(ctx context.Context, revision int64) error {
+	return v.CompactNodeKeyspace(ctx, revision)
 }
 
 // revisionSample is a database's current revision as observed at a time.
@@ -66,6 +102,10 @@ type compactionScheduler struct {
 	interval time.Duration
 	now      func() time.Time
 	logger   *slog.Logger
+
+	// node is the raw shard service the node-keyspace target compacts
+	// through; nil when the server has none.
+	node nodeKeyspaceStore
 
 	// ticks, when non-nil, replaces the interval ticker as run's pass
 	// trigger, so a test drives each pass with one send.
@@ -130,15 +170,15 @@ func (c *compactionScheduler) compactTarget(ctx context.Context, t compactionTar
 	tctx, cancel := context.WithTimeout(tenant.WithTenantID(ctx, t.Tenant), compactionPassTimeout)
 	defer cancel()
 
-	mvcc, err := c.registry.MVCCService(t.Tenant, t.Database)
+	view, err := c.view(t)
 	if err != nil {
 		// Sealed, being dropped, or not served here: skipped for this pass,
 		// and never compacted on its behalf any other way.
-		c.logger.Debug("compaction scheduler: database not resolvable; skipped",
+		c.logger.Debug("compaction scheduler: keyspace not resolvable; skipped",
 			slog.String("tenant_id", t.Tenant), slog.String("database", t.Database), slog.Any("error", err))
 		return false
 	}
-	current, err := mvcc.CurrentRevision(tctx)
+	current, err := view.CurrentRevision(tctx)
 	if err != nil {
 		c.logger.Warn("compaction scheduler: current revision unavailable",
 			slog.String("tenant_id", t.Tenant), slog.String("database", t.Database), slog.Any("error", err))
@@ -149,7 +189,7 @@ func (c *compactionScheduler) compactTarget(ctx context.Context, t compactionTar
 	if target < 1 {
 		return false
 	}
-	err = mvcc.Compact(tctx, target)
+	err = view.compact(tctx, target)
 	var already *service.RevisionCompactedError
 	switch {
 	case err == nil:
@@ -166,6 +206,22 @@ func (c *compactionScheduler) compactTarget(ctx context.Context, t compactionTar
 			slog.Int64("revision", target), slog.Any("error", err))
 		return false
 	}
+}
+
+// view returns the keyspace t compacts: the node keyspace through the raw
+// shard service, or a database through the registry, resolved for its owner.
+func (c *compactionScheduler) view(t compactionTarget) (compactionView, error) {
+	if t.Node {
+		if c.node == nil {
+			return nil, &service.CompactScopeRequiredError{}
+		}
+		return nodeView{c.node}, nil
+	}
+	mvcc, err := c.registry.MVCCService(t.Tenant, t.Database)
+	if err != nil {
+		return nil, err
+	}
+	return databaseView{mvcc}, nil
 }
 
 // compactionTargeters computes a policy's target revision. A map rather than
@@ -215,13 +271,18 @@ func (c *compactionScheduler) periodTarget(t compactionTarget, current int64, no
 	return target
 }
 
-// compactionTargets returns the databases in this node's catalog that carry
-// an enabled compaction policy, with their owning tenant.
+// compactionTargets returns the keyspaces this node compacts: the node
+// keyspace when the platform's configuration sets a policy for it, and the
+// databases in this node's catalog that carry an enabled compaction policy,
+// with their owning tenant.
 func (s *Server) compactionTargets() []compactionTarget {
-	if s.opts.dbManager == nil {
-		return nil
-	}
 	var out []compactionTarget
+	if policy := s.nodeCompactionPolicy(); policy.Enabled() {
+		out = append(out, compactionTarget{Tenant: tenant.SystemTenantID, Node: true, Policy: policy})
+	}
+	if s.opts.dbManager == nil {
+		return out
+	}
 	for _, info := range s.opts.dbManager.List() {
 		policy := info.Compaction
 		if !policy.Enabled() {
@@ -236,6 +297,15 @@ func (s *Server) compactionTargets() []compactionTarget {
 	return out
 }
 
+// nodeCompactionPolicy returns the platform's node-keyspace policy from the
+// node's configuration file; nil when none is set.
+func (s *Server) nodeCompactionPolicy() *compaction.Policy {
+	if s.config == nil {
+		return nil
+	}
+	return s.config.MVCC.NodeCompaction
+}
+
 // WithCompactionInterval overrides how often the compaction scheduler runs
 // the databases' compaction policies. A non-positive value keeps
 // DefaultCompactionInterval.
@@ -248,14 +318,16 @@ func WithCompactionInterval(interval time.Duration) ServerOption {
 }
 
 // startCompactionScheduler starts the scheduler when the server resolves
-// databases through a registry and has a database catalog to read policies
-// from.
+// databases through a registry, and has either a database catalog to read
+// policies from or a node-keyspace policy and the raw shard service to run
+// it through.
 func (s *Server) startCompactionScheduler() {
-	if s.opts.dbManager == nil {
-		return
-	}
 	registry := s.buildServiceRegistry()
 	if registry == nil {
+		return
+	}
+	node, _ := s.opts.mvccSvc.(nodeKeyspaceStore)
+	if s.opts.dbManager == nil && (node == nil || !s.nodeCompactionPolicy().Enabled()) {
 		return
 	}
 	interval := s.opts.compactionInterval
@@ -264,6 +336,7 @@ func (s *Server) startCompactionScheduler() {
 	}
 	scheduler := &compactionScheduler{
 		registry: registry,
+		node:     node,
 		targets:  s.compactionTargets,
 		interval: interval,
 		now:      time.Now,

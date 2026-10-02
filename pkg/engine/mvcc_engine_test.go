@@ -1411,6 +1411,48 @@ func TestMVCCEngine_CompactEmpty(t *testing.T) {
 	}
 }
 
+// TestMVCCEngine_CompactNode_SkipsEveryDatabaseNamespace: the apply path of
+// a node-keyspace compaction discards node-keyspace history only, and answers
+// an out-of-range revision with a refusal in the result.
+func TestMVCCEngine_CompactNode_SkipsEveryDatabaseNamespace(t *testing.T) {
+	eng, stg := newMVCCEngine(t)
+	defer func() { _ = stg.Close() }()
+	defer func() { _ = eng.Close(context.Background()) }()
+
+	applyMVCCEntries(t, eng, []sm.Entry{
+		mvccPutEntry(1, []byte("__sys:users/1"), []byte("n1"), 0),
+		mvccPutEntry(2, []byte("acme/app/k"), []byte("a1"), 0),
+		mvccPutEntry(3, []byte("__sys:users/1"), []byte("n2"), 0),
+		mvccPutEntry(4, []byte("acme/app/k"), []byte("a2"), 0),
+	})
+	cur := eng.Store().CurrentRevision()
+
+	apply := func(index uint64, rev int64) sm.Result {
+		t.Helper()
+		results := make([]sm.Result, 1)
+		cmd := mustEncode(protocol.EncodeMVCCCompactNode(rev))
+		if err := eng.Update(context.Background(), []sm.Entry{{Index: index, Cmd: cmd}}, results); err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+		return results[0]
+	}
+	if r := apply(5, cur+3); func() bool {
+		reason, _, _, ok := protocol.DecodeCompactRefusal(r.Data)
+		return !ok || reason != protocol.CompactRefusalFuture
+	}() {
+		t.Fatalf("future node compaction = %q", r.Data)
+	}
+	if r := apply(6, cur); r.Value != 1 {
+		t.Fatalf("node compaction result = %+v", r)
+	}
+	if _, err := eng.Store().GetAtRevision([]byte("__sys:users/1"), 1); err == nil {
+		t.Fatal("the node key's history survived")
+	}
+	if kv, err := eng.Store().GetAtRevision([]byte("acme/app/k"), 2); err != nil || string(kv.Value) != "a1" {
+		t.Fatalf("TENANT HISTORY DISCARDED by a node compaction: %v, %v", kv, err)
+	}
+}
+
 // TestMVCCEngine_CompactPrefix_RefusalsAreResultsAndConfinement: the apply
 // path compacts only the command's prefix, and answers an out-of-range
 // revision with a refusal in the result rather than a Go error that would
@@ -2549,13 +2591,14 @@ func TestMVCCEngine_Compact_InvalidPayload(t *testing.T) {
 	defer func() { _ = stg.Close() }()
 	defer func() { _ = eng.Close(context.Background()) }()
 
-	// Compact with truncated payload.
-	cmd := []byte{protocol.OpMVCCCompactPrefix, 0x01, 0x02} // too short for int64
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	err := eng.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for invalid compact payload")
+	// Each compaction opcode with a payload too short for its int64 revision.
+	for i, op := range []byte{protocol.OpMVCCCompactPrefix, protocol.OpMVCCCompactNode} {
+		cmd := []byte{op, 0x01, 0x02}
+		entries := []sm.Entry{{Index: uint64(i + 1), Cmd: cmd}}
+		results := make([]sm.Result, 1)
+		if err := eng.Update(context.Background(), entries, results); err == nil {
+			t.Fatalf("opcode %d: expected error for invalid compact payload", op)
+		}
 	}
 }
 

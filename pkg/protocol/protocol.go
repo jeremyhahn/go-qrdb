@@ -88,6 +88,13 @@ const (
 	// the cluster feature gate enables featuregate.PrefixCompaction.
 	OpMVCCCompactPrefix byte = 14
 
+	// OpMVCCCompactNode compacts the history of the node keyspace -- every
+	// key outside all "<tenant>/<db>/" namespaces -- up to the specified
+	// revision; no key with a database namespace is touched. A platform
+	// act. Payload: [revision:8 LE]. Emitted only once the cluster feature
+	// gate enables featuregate.NodeCompaction.
+	OpMVCCCompactNode byte = 15
+
 	// Transaction operations (20-29).
 
 	// OpTransaction executes an atomic compare-and-swap transaction.
@@ -1282,6 +1289,24 @@ func DecodeMVCCRange(payload []byte) (MVCCRangeParams, error) {
 		CountOnly: flags&RangeFlagCountOnly != 0,
 		KeysOnly:  flags&RangeFlagKeysOnly != 0,
 	}, nil
+}
+
+// EncodeMVCCCompactNode creates a binary node-keyspace compaction.
+// Format: [op:1][revision:8 LE].
+func EncodeMVCCCompactNode(revision int64) ([]byte, error) {
+	buf := make([]byte, headerSize+8)
+	buf[0] = OpMVCCCompactNode
+	binary.LittleEndian.PutUint64(buf[1:9], uint64(revision)) //nolint:gosec // G115: two's-complement round trip, decoded back to int64
+	return buf, nil
+}
+
+// DecodeMVCCCompactNode extracts the revision from an OpMVCCCompactNode
+// payload, which must be exactly the revision.
+func DecodeMVCCCompactNode(payload []byte) (int64, error) {
+	if len(payload) != 8 {
+		return 0, &InvalidCommandError{Reason: "mvcc compact node: payload must be the 8-byte revision"}
+	}
+	return int64(binary.LittleEndian.Uint64(payload)), nil //nolint:gosec // G115: two's-complement round trip of the encoded int64
 }
 
 // DecodeMVCCCompactPrefix extracts the prefix and revision from an

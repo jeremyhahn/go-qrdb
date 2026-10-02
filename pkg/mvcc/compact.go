@@ -19,6 +19,7 @@ import (
 	"encoding/binary"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // ---------------------------------------------------------------------------
@@ -116,13 +117,20 @@ func (s *Store) CompactPrefixInBatch(batch storage.Batch, prefix []byte, revisio
 // of range. Every input is the store's in-memory revision and floors, which
 // the apply loop advances entry by entry.
 func (s *Store) validateCompaction(prefix []byte, revision int64) error {
+	return s.validateRevision(revision, s.CompactionFloor(prefix))
+}
+
+// validateRevision refuses a compaction to revision that is below 1, above
+// the current revision, or at or below floor, the floor already covering the
+// keyspace being compacted.
+func (s *Store) validateRevision(revision, floor int64) error {
 	if revision < 1 {
 		return &CompactRevisionInvalidError{Revision: revision}
 	}
 	if current := s.CurrentRevision(); revision > current {
 		return &CompactRevisionFutureError{Requested: revision, Current: current}
 	}
-	if floor := s.CompactionFloor(prefix); revision <= floor {
+	if revision <= floor {
 		return &RevisionCompactedError{Requested: revision, Compacted: floor}
 	}
 	return nil
@@ -147,13 +155,34 @@ func (s *Store) compactInto(batch storage.Batch, prefix []byte, revision int64) 
 	})
 	defer func() { _ = iter.Close() }()
 
-	// Entries of one user key are contiguous, newest first: the key group is
-	// the encoded key without its trailing 8-byte complemented revision.
+	if err := forEachDataKeyWithPrefix(iter, prefix, oldEntryDeleter(batch, revision)); err != nil {
+		return err
+	}
+
+	// The change log of these keys at or below the floor serves no purpose
+	// once the floor refuses every replay that would read it. Entries below
+	// the floor already covering prefix went with that compaction.
+	covered := func(key []byte) bool { return bytes.HasPrefix(key, prefix) }
+	if err := s.gcRevIndexInBatch(batch, covered, s.CompactionFloor(prefix)+1, revision); err != nil {
+		return err
+	}
+
+	if err := batch.Set(CompactionFloorKey(prefix), EncodeRevision(revision)); err != nil {
+		return &CompactionError{Err: err}
+	}
+	return nil
+}
+
+// oldEntryDeleter returns a visitor that, fed a key's data entries in storage
+// order (newest first), keeps each key's newest entry -- its current state --
+// and queues every older entry at or below revision for deletion into batch.
+func oldEntryDeleter(batch storage.Batch, revision int64) func(raw []byte) error {
+	// The key group is the encoded key without its trailing 8-byte
+	// complemented revision.
 	var currentGroup []byte
-	err := forEachDataKeyWithPrefix(iter, prefix, func(raw []byte) error {
+	return func(raw []byte) error {
 		group := raw[:len(raw)-8]
 		if !bytes.Equal(group, currentGroup) {
-			// The key's newest entry: its current state. Preserved.
 			currentGroup = append(currentGroup[:0], group...)
 			return nil
 		}
@@ -165,22 +194,115 @@ func (s *Store) compactInto(batch storage.Batch, prefix []byte, revision int64) 
 			return &CompactionError{Err: err}
 		}
 		return nil
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Node-keyspace compaction
+//
+// The node keyspace is every key outside all "<tenant>/<db>/" namespaces
+// (tenant.NamespaceOf): the node's own internal records and the system
+// tenant's raw keyspace. Compacting it is a platform act that skips every key
+// with a database namespace by construction, so it can never discard any
+// tenant's history.
+// ---------------------------------------------------------------------------
+
+// NodeCompactionFloor returns the node keyspace's compaction floor.
+func (s *Store) NodeCompactionFloor() int64 {
+	return s.floors.Load().node
+}
+
+// CompactNodeKeyspace compacts the node keyspace to revision in a batch of
+// its own. See CompactNodeKeyspaceInBatch.
+func (s *Store) CompactNodeKeyspace(revision int64) error {
+	batch := s.storage.Batch()
+	defer func() { _ = batch.Close() }()
+
+	if err := s.compactNodeInto(batch, revision); err != nil {
+		return err
+	}
+	if err := batch.Commit(); err != nil {
+		return &CompactionError{Err: err}
+	}
+	s.publishNodeFloor(revision)
+	return nil
+}
+
+// CompactNodeKeyspaceInBatch queues a compaction of the node keyspace into
+// batch: every data entry at or below revision of a key outside all database
+// namespaces, except each key's newest, along with those keys' change-log
+// entries; and the node floor becomes revision. A key with a database
+// namespace is never visited. The revision is validated exactly as
+// CompactPrefixInBatch validates it, against the node floor.
+func (s *Store) CompactNodeKeyspaceInBatch(batch storage.Batch, revision int64) error {
+	if err := s.compactNodeInto(batch, revision); err != nil {
+		return err
+	}
+	s.publishNodeFloor(revision)
+	return nil
+}
+
+// compactNodeInto validates and queues a node-keyspace compaction into batch.
+func (s *Store) compactNodeInto(batch storage.Batch, revision int64) error {
+	if err := s.validateRevision(revision, s.NodeCompactionFloor()); err != nil {
+		return err
+	}
+
+	iter := batch.NewIterator(&storage.IteratorOptions{
+		LowerBound: []byte{prefixData},
+		UpperBound: []byte{prefixData + 1},
 	})
-	if err != nil {
-		return err
+	defer func() { _ = iter.Close() }()
+
+	deleteOld := oldEntryDeleter(batch, revision)
+	for iter.SeekToFirst(); iter.Valid(); iter.Next() {
+		raw := iter.Key()
+		userKey, ok := dataUserKey(raw)
+		if !ok {
+			continue
+		}
+		if _, namespaced := tenant.NamespaceOf(userKey); namespaced {
+			continue
+		}
+		if err := deleteOld(raw); err != nil {
+			return err
+		}
+	}
+	if err := iter.Error(); err != nil {
+		return &CompactionError{Err: err}
 	}
 
-	// The change log of these keys at or below the floor serves no purpose
-	// once the floor refuses every replay that would read it. Entries below
-	// the floor already covering prefix went with that compaction.
-	if err := s.gcRevIndexInBatch(batch, prefix, s.CompactionFloor(prefix)+1, revision); err != nil {
+	outsideNamespaces := func(key []byte) bool {
+		_, namespaced := tenant.NamespaceOf(key)
+		return !namespaced
+	}
+	if err := s.gcRevIndexInBatch(batch, outsideNamespaces, s.NodeCompactionFloor()+1, revision); err != nil {
 		return err
 	}
-
-	if err := batch.Set(CompactionFloorKey(prefix), EncodeRevision(revision)); err != nil {
+	if err := batch.Set(NodeCompactionFloorKey(), EncodeRevision(revision)); err != nil {
 		return &CompactionError{Err: err}
 	}
 	return nil
+}
+
+// publishNodeFloor makes revision the node floor in the in-memory snapshot.
+func (s *Store) publishNodeFloor(revision int64) {
+	for {
+		cur := s.floors.Load()
+		if s.floors.CompareAndSwap(cur, cur.withNode(revision)) {
+			return
+		}
+	}
+}
+
+// dataUserKey returns the user key an encoded data key carries, without
+// copying it.
+func dataUserKey(raw []byte) ([]byte, bool) {
+	keyLen, ok := dataKeyLen(raw)
+	if !ok || len(raw) != 1+8+keyLen+8 {
+		return nil, false
+	}
+	return raw[9 : 9+keyLen], true
 }
 
 // forEachDataKeyWithPrefix calls visit, in storage order, for every encoded

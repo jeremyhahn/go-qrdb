@@ -156,6 +156,14 @@ Viper-bound, equivalent to their flags:
 `databases` (with `ProtocolConfig` and `EtcdConfig`), `embedding` (with
 `EmbeddingProviderConfig`), `rag`, `tenant`, `seal`, `mode`.
 
+`mvcc.node_compaction` is the platform's compaction policy for the node
+keyspace -- every key outside all tenant database namespaces. It is off when
+absent and takes the same policy as a database's (`mode: off|revision|period`,
+`retain_revisions`, `retain_period`); an invalid one is a validation error
+naming `mvcc.node_compaction`. See
+[../key-value/engineering.md](../key-value/engineering.md) "Node-keyspace
+compaction".
+
 **The complete field-by-field reference with every default lives in
 [12-configuration.md](../12-configuration.md)**, which also carries worked
 example configurations (minimal single node, 3-node cluster with static

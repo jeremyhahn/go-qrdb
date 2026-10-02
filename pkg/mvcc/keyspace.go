@@ -21,6 +21,7 @@
 //	RevisionKey:  [0x03]
 //	FloorKey:     [0x04][prefix]          (compaction floor of a keyspace prefix)
 //	RevIndexKey:  [0x05][revision:8 BE ASCENDING][key]
+//	NodeFloorKey: [0x06]                  (compaction floor of the node keyspace)
 //	Metadata:     [createRev:8][modRev:8][version:8][leaseID:8]  (32 bytes fixed)
 //	Entry:        [flag:flagLive|flagTombstone][value]
 //	ChangeRecord: [eventType:1][createRev:8][version:8][leaseID:8]  (25 bytes fixed)
@@ -54,6 +55,7 @@ const (
 	prefixRevision = byte(0x03)
 	prefixCompact  = byte(0x04)
 	prefixRevIndex = byte(0x05)
+	prefixNodeComp = byte(0x06)
 )
 
 // Change event types recorded in the revision index. These mirror the watch
@@ -217,6 +219,12 @@ func CompactionFloorKey(prefix []byte) []byte {
 	buf[0] = prefixCompact
 	copy(buf[1:], prefix)
 	return buf
+}
+
+// NodeCompactionFloorKey returns the storage key holding the node keyspace's
+// compaction floor: the floor of every key outside all database namespaces.
+func NodeCompactionFloorKey() []byte {
+	return []byte{prefixNodeComp}
 }
 
 // CompactionFloorLowerBound returns the inclusive lower bound for iterating

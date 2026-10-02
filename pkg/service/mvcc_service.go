@@ -836,6 +836,43 @@ type PrefixCompactor interface {
 // Compile-time interface check.
 var _ PrefixCompactor = (*MVCCKVService)(nil)
 
+// NodeKeyspaceCompactor compacts the node keyspace: every key outside all
+// "<tenant>/<db>/" namespaces -- the node's own internal records and the
+// system tenant's raw keyspace. It is a platform act; no key with a database
+// namespace is ever touched. Only the raw shard service implements it, and
+// only the node's own compaction scheduler, driven by the platform's
+// configuration file, calls it.
+type NodeKeyspaceCompactor interface {
+	// CompactNodeKeyspace discards the node keyspace's history at or below
+	// revision, keeping each key's current state.
+	CompactNodeKeyspace(ctx context.Context, revision int64) error
+}
+
+// Compile-time interface check.
+var _ NodeKeyspaceCompactor = (*MVCCKVService)(nil)
+
+// CompactNodeKeyspace discards, through Raft consensus, the node keyspace's
+// history at or below revision. It is validated and gated exactly as
+// CompactPrefix is (featuregate.NodeCompaction), and the state machine skips
+// every key with a database namespace.
+func (s *MVCCKVService) CompactNodeKeyspace(ctx context.Context, revision int64) error {
+	if revision < 1 {
+		return &CompactRevisionInvalidError{Revision: revision}
+	}
+	if gated, ok := s.host.(FeatureGatedHost); ok && !gated.FeatureEnabled(s.shardID, featuregate.NodeCompaction) {
+		return &FeatureNotEnabledError{Feature: featuregate.NodeCompaction, ShardID: s.shardID}
+	}
+	cmd, encErr := protocol.EncodeMVCCCompactNode(revision)
+	if encErr != nil {
+		return &EncodeRequestError{Err: encErr}
+	}
+	result, err := propose(ctx, s.host, s.shardID, cmd)
+	if err != nil {
+		return translateProposeError(err)
+	}
+	return checkResultError(result)
+}
+
 // CompactPrefix discards, through Raft consensus, the history at or below
 // revision of the keys beginning with prefix. It is called by a database's
 // namespaced view with the database's own "<tenant>/<database>/" prefix, or

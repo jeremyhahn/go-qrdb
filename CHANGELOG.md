@@ -49,6 +49,17 @@ are not reconstructed here — their history is in the git log.
   reaches only its own databases (another tenant's answers as missing). An invalid policy is
   `compaction.InvalidPolicyError` (400 / `INVALID_ARGUMENT`). Proved on all six
   transports in `sdk/go/conformance` (`TestCompactionPolicy_OnEveryTransport`).
+- **Platform node-keyspace compaction, off by default.** `mvcc.node_compaction` in the node's
+  configuration file (the same `off|revision|period` policy type as a database's) compacts the
+  node keyspace -- every key outside all `<tenant>/<db>/` namespaces: the node's `__sys:`
+  records and the system tenant's raw keyspace -- on the compaction scheduler. It is
+  platform-only: set only in the node's configuration, with no API verb and no permission any
+  role can hold. It skips every key with a database namespace by construction
+  (`tenant.NamespaceOf`), so no tenant database's history, the system tenant's own included,
+  is touched; its floor (`[0x06]`) is kept apart from the per-database floors. New Raft opcode
+  `OpMVCCCompactNode` (15) behind the cluster feature `node-compaction`; new
+  `service.NodeKeyspaceCompactor` and `mvcc.Store.CompactNodeKeyspace`/`CompactNodeKeyspaceInBatch`.
+  Proved on a raft node in `sdk/go/conformance` (`TestNodeKeyspaceCompaction_*`).
 
 ### Security
 
@@ -76,7 +87,8 @@ are not reconstructed here — their history is in the git log.
   with `service.CompactScopeRequiredError` (REST 422, gRPC/QUIC `FAILED_PRECONDITION`): the
   unscoped embedded client, a server built without a service registry, and
   `mvcc.Store.Compact`/`CompactInBatch` and `mvcc.RaftStorage.Compact`/`CompactedRevision` are
-  gone. Keys outside every database namespace (node-internal records) are no longer compacted.
+  gone. Keys outside every database namespace are compacted only by the platform's
+  `mvcc.node_compaction` policy (see Added), never by `Compact`.
 - **BREAKING: Raft opcode 13 (`OpMVCCCompact`) is retired** and replaced by
   `OpMVCCCompactPrefix` (14, payload `[revision:8][prefixLen:2][prefix]`), proposed only once
   the new cluster feature `prefix-compaction` is enabled (`service.FeatureNotEnabledError`

@@ -101,6 +101,17 @@ func (s *Store) loadFloors() error {
 	if err := iter.Error(); err != nil {
 		return &StoreError{Op: "load compaction floors", Err: err}
 	}
+	nodeFloor, err := s.storage.Get(NodeCompactionFloorKey())
+	if err != nil {
+		return &StoreError{Op: "load node compaction floor", Err: err}
+	}
+	if nodeFloor != nil {
+		rev, err := DecodeRevision(nodeFloor)
+		if err != nil {
+			return err
+		}
+		floors = floors.withNode(rev)
+	}
 	s.floors.Store(floors)
 	return nil
 }

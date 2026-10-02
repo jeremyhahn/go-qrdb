@@ -19,6 +19,7 @@ import (
 	"crypto/tls"
 	"testing"
 
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -105,8 +106,18 @@ func compactionDatabase(tenantID string) string {
 // the system tenant included -- a database of its own on the shared shard.
 func bootCompactionCell(t *testing.T, tk transportKind, extra ...server.ServerOption) *compactionCell {
 	t.Helper()
+	return bootCompactionCellWith(t, tk, nil, extra...)
+}
+
+// bootCompactionCellWith is bootCompactionCell with the node's configuration
+// adjusted by configure before boot.
+func bootCompactionCellWith(t *testing.T, tk transportKind, configure func(*qrdbconfig.Config), extra ...server.ServerOption) *compactionCell {
+	t.Helper()
 	c := cell{backend: database.BackendPebble, mode: raft, transport: tk}
 	cfg := c.config(t)
+	if configure != nil {
+		configure(cfg)
+	}
 
 	var serverOpts []server.ServerOption
 	var ca *qrdbdharness.CA

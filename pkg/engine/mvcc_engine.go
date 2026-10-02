@@ -582,6 +582,7 @@ func (e *MVCCEngine) buildUpdateHandlers() map[byte]mvccHandler {
 		protocol.OpMVCCPutIfAbsent:   e.handleMVCCPutIfAbsent,
 		protocol.OpMVCCDelete:        e.handleMVCCDelete,
 		protocol.OpMVCCCompactPrefix: handleMVCCCompactPrefix,
+		protocol.OpMVCCCompactNode:   handleMVCCCompactNode,
 		protocol.OpTransaction:       e.handleTransaction,
 		protocol.OpCompareAndDelete:  e.handleCompareAndDelete,
 		protocol.OpCompareAndSwap:    e.handleCompareAndSwap,
@@ -1185,6 +1186,24 @@ func handleMVCCCompactPrefix(s *mvcc.Store, _ *lease.Lessor, batch storage.Batch
 		return sm.Result{}, nil, err
 	}
 
+	return sm.Result{Value: 1}, nil, nil
+}
+
+// handleMVCCCompactNode processes an OpMVCCCompactNode command: a compaction
+// of the node keyspace, which skips every key with a database namespace. Like
+// a prefix compaction it is queued into the apply batch, and an out-of-range
+// revision is answered with a compaction refusal in the result.
+func handleMVCCCompactNode(s *mvcc.Store, _ *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
+	revision, err := protocol.DecodeMVCCCompactNode(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+	if err := s.CompactNodeKeyspaceInBatch(batch, revision); err != nil {
+		if refusal, ok := compactRefusal(err); ok {
+			return sm.Result{Data: refusal}, nil, nil
+		}
+		return sm.Result{}, nil, err
+	}
 	return sm.Result{Value: 1}, nil, nil
 }
 

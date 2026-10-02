@@ -627,6 +627,43 @@ There is no node-wide compaction setting. A database's scheduled compaction is
 a per-database policy, owned by the database's tenant -- see "Scheduled
 compaction" below and [../databases/](../databases/).
 
+### Node-keyspace compaction
+
+The node keyspace is every key outside all `<tenant>/<db>/` namespaces: the
+node's own internal records and the system tenant's raw keyspace. It belongs
+to no tenant database, so no tenant's policy reaches it; the platform compacts
+it, and only when it has configured that.
+
+```yaml
+mvcc:
+  node_compaction:        # absent or `mode: off`: never compacted (the default)
+    mode: revision        # revision | period -- the same policy type as a database's
+    retain_revisions: 100000
+```
+
+- **Platform-only.** The policy is set only in the node's configuration file,
+  which the platform alone controls. There is no API verb for it and no
+  permission a tenant role -- or any role -- can hold for it; the system
+  tenant's identities cannot set it over a transport either.
+- **It never touches a tenant prefix, by construction.** A key is in a
+  database namespace when it has the shape `tenant.ComposeNamespace` produces
+  -- a non-empty segment, `/`, a non-empty segment, `/`
+  (`tenant.NamespaceOf`) -- whatever the segments are, whether or not the
+  tenant exists. The compaction (`OpMVCCCompactNode`,
+  `mvcc.Store.CompactNodeKeyspaceInBatch`) skips every such key's data
+  entries and change log, so every tenant database, the system tenant's own
+  included, is outside its reach. A node key that merely has that shape (an
+  internal record such as `__sys:cluster/features/nodes/1`) is skipped too:
+  the rule errs toward keeping history.
+- **Its floor covers the node keyspace only.** It is stored apart from the
+  per-prefix floors (`[0x06]`); a read of a namespaced key never consults it,
+  and a range consults it unless the whole range lies in one database
+  namespace.
+- **It runs on the same scheduler** as the databases' policies, through the
+  raw shard service (`service.NodeKeyspaceCompactor`), behind the cluster
+  feature `node-compaction`. Every node with the policy configured runs it; a
+  second compaction to the same revision is the already-compacted refusal.
+
 ### Scheduled compaction
 
 A database may carry a compaction policy. **It is off unless the owning tenant

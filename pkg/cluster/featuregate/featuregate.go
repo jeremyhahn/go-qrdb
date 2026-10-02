@@ -95,9 +95,13 @@ const ClusterShardIDs Feature = "cluster-shard-ids"
 // one database's keyspace prefix, with a compaction floor per prefix.
 const PrefixCompaction Feature = "prefix-compaction"
 
+// NodeCompaction is protocol.OpMVCCCompactNode: a compaction of the node
+// keyspace -- every key outside all database namespaces.
+const NodeCompaction Feature = "node-compaction"
+
 // supported lists the features this binary implements. A new feature is
 // added here, and to nothing else in this package.
-var supported = []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction}
+var supported = []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction}
 
 // Supported returns the features this binary implements.
 func Supported() []Feature {

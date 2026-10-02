@@ -686,6 +686,14 @@ type MVCCConfig struct {
 	// mode). Explicitly setting true under mode "standalone" is a
 	// validation error: MVCC requires mode "raft".
 	Enabled *bool `yaml:"enabled"`
+
+	// NodeCompaction is the platform's scheduled-compaction policy for the
+	// node keyspace: every key outside all "<tenant>/<db>/" namespaces -- the
+	// node's own internal records and the system tenant's raw keyspace. It
+	// never touches a key with a database namespace. Absent or off means the
+	// node keyspace is never compacted. It is set only here, in the node's
+	// configuration file, which the platform alone controls; no API sets it.
+	NodeCompaction *compaction.Policy `yaml:"node_compaction,omitempty"`
 }
 
 // WatchConfig configures the real-time watch notification system.
@@ -1718,6 +1726,12 @@ func (c *Config) Validate() error {
 	if c.Discovery.Method != "" {
 		if _, ok := validDiscoveryMethods[c.Discovery.Method]; !ok {
 			return &ValidationError{Field: "discovery.method", Reason: "must be one of: static, multicast, dns, token"}
+		}
+	}
+
+	if c.MVCC.NodeCompaction != nil {
+		if err := c.MVCC.NodeCompaction.Validate(); err != nil {
+			return &ValidationError{Field: "mvcc.node_compaction", Reason: err.Error()}
 		}
 	}
 

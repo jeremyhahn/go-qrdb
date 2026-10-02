@@ -468,7 +468,14 @@ Configures the MVCC (Multi-Version Concurrency Control) versioned key-value engi
 
 There is no node-wide history retention. MVCC history is compacted per
 database, only by the tenant that owns it: an explicit `Compact`, or the
-database's own compaction policy. See
+database's own compaction policy. The one platform setting is
+`node_compaction`, the policy for the node keyspace -- keys outside every
+tenant database, never a tenant's -- off when absent:
+
+| Field             | Type   | Default | Description                                   |
+|-------------------|--------|---------|-----------------------------------------------|
+| `node_compaction` | policy | absent (off) | `mode: off\|revision\|period`, `retain_revisions`, `retain_period` |
+ See
 [key-value/engineering.md](key-value/engineering.md). *(Corrected: this section
 documented `compaction_retention` and `revision_limit`; nothing read either
 key, and both are removed.)*

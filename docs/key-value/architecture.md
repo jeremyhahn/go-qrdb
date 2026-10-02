@@ -205,9 +205,14 @@ GetAtRevision("beta/app/k", 850)  -> served      (no floor for "beta/app/")
   store's revisions, every tenant's writes included.
 - **There is no store-global compaction.** The raw service refuses `Compact`
   with `service.CompactScopeRequiredError`; only a database's namespaced view
-  can compact, and only its own prefix. Keys outside every database namespace
-  (the node's internal `__sys:` records, the unscoped embedded client's keys)
-  are never compacted.
+  can compact, and only its own prefix.
+- **The node keyspace is the platform's.** Keys outside every database
+  namespace -- the node's internal `__sys:` records and the system tenant's
+  raw keyspace (the unscoped embedded client's keys) -- belong to no tenant
+  database. They are compacted only by the platform's own policy,
+  `mvcc.node_compaction` in the node's configuration file, which is off by
+  default and has no API (engineering.md "Node-keyspace compaction"). That
+  compaction skips every key with a database namespace by construction.
 - **Nothing compacts unless the owner asked.** Compaction runs on an explicit
   `Compact` request from the owning tenant, or on the database's own
   scheduled-compaction policy, which is off unless that tenant configured one
