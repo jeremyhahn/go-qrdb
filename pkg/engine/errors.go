@@ -101,3 +101,20 @@ func hexByte(b byte) string {
 	const hex = "0123456789abcdef"
 	return string([]byte{hex[b>>4], hex[b&0x0f]})
 }
+
+// LessorResyncError is returned by MVCCEngine.Update when an apply failed and
+// the lessor could not then be rebuilt from the committed lease table: the
+// in-memory lease table may describe changes the store never committed.
+type LessorResyncError struct {
+	ApplyErr   error
+	RestoreErr error
+}
+
+func (e *LessorResyncError) Error() string {
+	return "engine: apply failed (" + e.ApplyErr.Error() + ") and the lessor could not be rebuilt from storage: " + e.RestoreErr.Error()
+}
+
+// Unwrap returns both causes.
+func (e *LessorResyncError) Unwrap() []error {
+	return []error{e.ApplyErr, e.RestoreErr}
+}

@@ -189,7 +189,21 @@ func (e *MVCCEngine) TimeSeries() *timeseries.Storage { return e.ts }
 // batch. Each entry is decoded using the extended wire protocol and dispatched
 // to the appropriate handler. Watch notifications are delivered after the
 // batch is committed.
+//
+// Update commits its own batch, which is how the raft-free composition
+// (backend.LocalBackend) applies commands. That host keeps serving after a
+// failed apply, unlike Raft, so a failed Update re-reads the durable lease
+// table into the lessor: the lease changes it made in memory for a batch that
+// never committed must not outlive the failure (resyncLessor).
 func (e *MVCCEngine) Update(_ context.Context, entries []sm.Entry, results []sm.Result) error {
+	if err := e.update(entries, results); err != nil {
+		return e.resyncLessor(err)
+	}
+	return nil
+}
+
+// update is Update's body: apply, persist the revision, commit.
+func (e *MVCCEngine) update(entries []sm.Entry, results []sm.Result) error {
 	batch := e.stg.Batch()
 	defer func() { _ = batch.Close() }()
 
@@ -212,6 +226,20 @@ func (e *MVCCEngine) Update(_ context.Context, entries []sm.Entry, results []sm.
 
 	e.DeliverNotifications(notifications)
 	return nil
+}
+
+// resyncLessor rebuilds the lessor from the committed lease table after the
+// apply that failed with applyErr, and returns applyErr. When the table
+// cannot be read either, it returns a *LessorResyncError carrying both, so
+// the caller learns the lessor may no longer match the store.
+func (e *MVCCEngine) resyncLessor(applyErr error) error {
+	if e.lessor == nil {
+		return applyErr
+	}
+	if err := e.lessor.Restore(e.stg); err != nil {
+		return &LessorResyncError{ApplyErr: applyErr, RestoreErr: err}
+	}
+	return applyErr
 }
 
 // UpdateEntries dispatches entries to their handlers using the provided batch,
@@ -1426,13 +1454,12 @@ func (e *MVCCEngine) handleLeaseRevoke(s *mvcc.Store, lr *lease.Lessor, batch st
 		for _, key := range keys {
 			prevKv, delErr := s.DeleteInBatch(batch, key, rev)
 			if delErr != nil {
-				// A lease-attached key that is already absent is expected (it
-				// was deleted independently); a genuine storage write failure is
-				// not. Log it so a silent durability fault is observable rather
-				// than swallowed. The op stays deterministic across replicas.
-				slog.Warn("engine: lease revoke could not delete attached key",
-					"lease_id", leaseID, "error", delErr)
-				continue
+				// DeleteInBatch fails only on a storage write fault (an absent
+				// key tombstones without error). That is an apply fault, as on
+				// the Pebble state machine: the lessor has already dropped the
+				// lease, so carrying on would leave the key with nothing to
+				// expire it, on this replica alone.
+				return sm.Result{}, nil, delErr
 			}
 			if ierr := RemoveIndexes(e.indexes, e.indexFields, e.indexScopes, key, prevKv); ierr != nil {
 				return sm.Result{}, nil, ierr
