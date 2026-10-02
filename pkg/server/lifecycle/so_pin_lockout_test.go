@@ -24,11 +24,13 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 const (
@@ -78,10 +80,10 @@ func (c *soPINComposition) post(path, body string) int {
 	return rec.Code
 }
 
-// guessBySeal spends pin.SOPINFreeFailures wrong SO PINs on REST seal.
+// guessBySeal spends auth.SOPINFreeFailures wrong SO PINs on REST seal.
 func (c *soPINComposition) guessBySeal(t *testing.T) {
 	t.Helper()
-	for i := 0; i < pin.SOPINFreeFailures; i++ {
+	for i := 0; i < auth.SOPINFreeFailures; i++ {
 		if code := c.post("/v1/barrier/seal", `{"so_pin":"`+lockoutWrongPIN+`"}`); code == http.StatusNoContent {
 			t.Fatalf("seal guess %d with a wrong SO PIN was admitted", i+1)
 		}
@@ -111,7 +113,7 @@ func TestSOPINLockout_DaemonComposition_SealGuessesLockRekey(t *testing.T) {
 	c.guessBySeal(t)
 	var locked *pin.SOPINLockedError
 	if err := c.rekeyWithRightPIN(); !errors.As(err, &locked) {
-		t.Fatalf("rekey with the right SO PIN after %d wrong seal guesses = %v, want *pin.SOPINLockedError", pin.SOPINFreeFailures, err)
+		t.Fatalf("rekey with the right SO PIN after %d wrong seal guesses = %v, want *pin.SOPINLockedError", auth.SOPINFreeFailures, err)
 	}
 }
 
@@ -128,7 +130,7 @@ func TestSOPINLockout_InjectedComposition_SealGuessesLockRekey(t *testing.T) {
 	c.guessBySeal(t)
 	var locked *pin.SOPINLockedError
 	if err := c.rekeyWithRightPIN(); !errors.As(err, &locked) {
-		t.Fatalf("rekey with the right SO PIN after %d wrong seal guesses = %v, want *pin.SOPINLockedError", pin.SOPINFreeFailures, err)
+		t.Fatalf("rekey with the right SO PIN after %d wrong seal guesses = %v, want *pin.SOPINLockedError", auth.SOPINFreeFailures, err)
 	}
 }
 
@@ -153,7 +155,7 @@ func TestSOPINLockout_InitializeOnInitializedRefusedBeforePIN(t *testing.T) {
 	}
 	for path, body := range paths {
 		for _, presented := range []string{lockoutWrongPIN, lockoutRightPIN} {
-			for i := 0; i < pin.SOPINFreeFailures; i++ {
+			for i := 0; i < auth.SOPINFreeFailures; i++ {
 				if code := c.post(path, strings.Replace(body, "%s", presented, 1)); code != http.StatusConflict && code != http.StatusPreconditionFailed {
 					t.Fatalf("%s on an initialized barrier with SO PIN %q = %d; want the already-initialized refusal whatever the PIN", path, presented, code)
 				}
@@ -162,6 +164,35 @@ func TestSOPINLockout_InitializeOnInitializedRefusedBeforePIN(t *testing.T) {
 	}
 	if err := c.rekeyWithRightPIN(); errors.Is(err, pin.ErrPINLocked) {
 		t.Fatalf("initialize calls on an initialized barrier counted against the SO PIN lockout: %v", err)
+	}
+}
+
+// TestSOPINLockout_AnonymousGuessesNeverLockAnAuthenticatedSO: anonymous
+// sealed-window checks and checks by an authenticated SO count against
+// separate counters. Wrong PINs guessed anonymously -- through seal, which an
+// unauthenticated caller can reach -- lock the anonymous counter only; an
+// authenticated SO's rekey with the right PIN is still admitted, so anonymous
+// traffic cannot deny the operator the governance operations.
+func TestSOPINLockout_AnonymousGuessesNeverLockAnAuthenticatedSO(t *testing.T) {
+	pins, err := lifecycle.NewSealStorePINBackend(seal.NewMemoryBackend())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pins.SetSOPIN("", lockoutRightPIN); err != nil {
+		t.Fatal(err)
+	}
+	c := composeSOPINSurface(t, pins, server.WithPINBackend(pins))
+	for i := 0; i < 3*auth.SOPINFreeFailures; i++ {
+		_ = c.post("/v1/barrier/seal", `{"so_pin":"`+lockoutWrongPIN+`"}`)
+	}
+	so := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "officer", TenantID: tenantid.System})
+	_, err = c.node.Barrier.BarrierRekeyStart(so, seal.DomainUnseal, 2, "", lockoutRightPIN)
+	if errors.Is(err, pin.ErrPINLocked) || errors.Is(err, pin.ErrPINInvalid) {
+		t.Fatalf("an authenticated SO's rekey after anonymous guesses = %v; anonymous guesses must not lock it out", err)
+	}
+	// The anonymous counter itself is locked.
+	if err := c.rekeyWithRightPIN(); !errors.Is(err, pin.ErrPINLocked) {
+		t.Fatalf("an anonymous rekey after the anonymous guesses = %v, want the lockout", err)
 	}
 }
 

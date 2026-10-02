@@ -976,14 +976,14 @@ func TestCovHandleLockList_ServiceError(t *testing.T) {
 // TestCovApplyBarrierInitializePINs_NilBackend proves PINs supplied with no
 // backend are refused, never silently dropped.
 func TestCovApplyBarrierInitializePINs_NilBackend(t *testing.T) {
-	if err := pin.Provision(nil, "so", "user"); !errors.Is(err, pin.ErrBackendNotConfigured) {
+	if err := pin.Provision(context.Background(), nil, "so", "user"); !errors.Is(err, pin.ErrBackendNotConfigured) {
 		t.Fatalf("Provision with no backend = %v, want ErrBackendNotConfigured", err)
 	}
 }
 
 func TestCovApplyBarrierInitializePINs_SetBoth(t *testing.T) {
 	backend := &covMockPINBackend{}
-	if err := pin.Provision(backend, "sopin123", "userpin456"); err != nil {
+	if err := pin.Provision(context.Background(), backend, "sopin123", "userpin456"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if backend.soPIN != "sopin123" {
@@ -998,7 +998,7 @@ func TestCovApplyBarrierInitializePINs_SetSOPINError(t *testing.T) {
 	backend := &covMockPINBackend{
 		setSOPINFn: func(_, _ string) error { return errors.New("set failed") },
 	}
-	if err := pin.Provision(backend, "sopin", ""); err == nil {
+	if err := pin.Provision(context.Background(), backend, "sopin", ""); err == nil {
 		t.Fatal("expected error from SetSOPIN")
 	}
 }
@@ -1007,35 +1007,35 @@ func TestCovApplyBarrierInitializePINs_SetUserPINError(t *testing.T) {
 	backend := &covMockPINBackend{
 		setUserFn: func(_, _ string) error { return errors.New("set user failed") },
 	}
-	if err := pin.Provision(backend, "sopin", "userpin"); err == nil {
+	if err := pin.Provision(context.Background(), backend, "sopin", "userpin"); err == nil {
 		t.Fatal("expected error from SetUserPIN")
 	}
 }
 
 // TestCovVerifyBarrierSOPIN_NilBackend proves the SO PIN gate fails closed.
 func TestCovVerifyBarrierSOPIN_NilBackend(t *testing.T) {
-	if err := pin.RequireSOPIN(nil, "anypin"); !errors.Is(err, pin.ErrBackendNotConfigured) {
+	if err := pin.RequireSOPIN(context.Background(), nil, "anypin"); !errors.Is(err, pin.ErrBackendNotConfigured) {
 		t.Fatalf("RequireSOPIN with no backend = %v, want ErrBackendNotConfigured", err)
 	}
 }
 
 func TestCovVerifyBarrierSOPIN_NotSet(t *testing.T) {
 	backend := &covMockPINBackend{soPINSet: false}
-	if err := pin.RequireSOPIN(backend, "anypin"); err != nil {
+	if err := pin.RequireSOPIN(context.Background(), backend, "anypin"); err != nil {
 		t.Fatalf("expected nil error when SO PIN not set, got %v", err)
 	}
 }
 
 func TestCovVerifyBarrierSOPIN_Correct(t *testing.T) {
 	backend := &covMockPINBackend{soPINSet: true, soPIN: "correct"}
-	if err := pin.RequireSOPIN(backend, "correct"); err != nil {
+	if err := pin.RequireSOPIN(context.Background(), backend, "correct"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
 func TestCovVerifyBarrierSOPIN_Wrong(t *testing.T) {
 	backend := &covMockPINBackend{soPINSet: true, soPIN: "correct"}
-	if err := pin.RequireSOPIN(backend, "wrong"); err == nil {
+	if err := pin.RequireSOPIN(context.Background(), backend, "wrong"); err == nil {
 		t.Fatal("expected error for wrong PIN")
 	}
 }

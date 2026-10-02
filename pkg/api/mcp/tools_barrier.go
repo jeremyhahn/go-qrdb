@@ -319,7 +319,7 @@ func toolBarrierSeal() mcp.Tool {
 func handleBarrierSeal(svc service.BarrierServicer, pinBackend pin.PINBackend) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		soPIN := mcp.ParseString(req, "so_pin", "")
-		if err := pin.RequireSOPIN(pinBackend, soPIN); err != nil {
+		if err := pin.RequireSOPIN(ctx, pinBackend, soPIN); err != nil {
 			return nil, &ToolError{Tool: "qrdb_barrier_seal", Err: err}
 		}
 
@@ -466,7 +466,7 @@ func handleBarrierRecoveryGenerate(svc service.BarrierServicer, pinBackend pin.P
 		}
 
 		soPIN := mcp.ParseString(req, "so_pin", "")
-		if err := pin.RequireSOPIN(pinBackend, soPIN); err != nil {
+		if err := pin.RequireSOPIN(ctx, pinBackend, soPIN); err != nil {
 			return nil, &ToolError{Tool: "qrdb_barrier_recovery_generate", Err: err}
 		}
 

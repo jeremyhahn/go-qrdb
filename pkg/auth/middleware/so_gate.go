@@ -16,6 +16,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 
@@ -206,6 +207,13 @@ func (g *SOGate) Enforce(ctx context.Context, perm permission.Permission, resour
 		// an officer holding a good PIN is never told to re-enrol. See
 		// isAuditFailure for why the narrow class is the test.
 		if isAuditFailure(err) {
+			return err
+		}
+		// A lockout is not a wrong PIN: the PIN was never compared, and the
+		// officer must be told to wait (429, with the delay), not to fix a
+		// PIN that may be right.
+		var locked *auth.SOPINLockedError
+		if errors.As(err, &locked) {
 			return err
 		}
 		if emitErr := emit(audit.OutcomeFailure + ":invalid-so-pin"); emitErr != nil {

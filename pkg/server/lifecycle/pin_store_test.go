@@ -35,7 +35,7 @@ func TestNewSealStorePINBackend_PersistsAcrossRestarts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSealStorePINBackend: %v", err)
 	}
-	if err := pin.Provision(first, "so-pin-1234", "user-pin-1234"); err != nil {
+	if err := pin.Provision(context.Background(), first, "so-pin-1234", "user-pin-1234"); err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
 	second, err := lifecycle.NewSealStorePINBackend(store)

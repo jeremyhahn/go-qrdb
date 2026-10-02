@@ -337,3 +337,34 @@ func TestSOFactorFromHTTPRequest(t *testing.T) {
 		t.Fatalf("PIN-less TLS factor = %+v, want secure and no PIN", f)
 	}
 }
+
+// TestSOGate_LockedOutSOPINIsRateLimited: once a tenant's SO PIN is locked
+// out, the gate answers the right PIN with the lockout itself -- 429 /
+// ResourceExhausted with the delay -- not "invalid SO PIN", which would tell
+// an officer holding a good PIN to fix it.
+func TestSOGate_LockedOutSOPINIsRateLimited(t *testing.T) {
+	gate, soRoleID := newTestSOGate(t)
+	enforce := func(pinText string) error {
+		return gate.Enforce(WithSOFactor(officerCtx(soRoleID), NewSOFactor([]byte(pinText), true, "")), permission.SealRekey, "r", "a")
+	}
+	for i := 0; i < auth.SOPINFreeFailures; i++ {
+		var invalid *SOFactorError
+		if err := enforce("wrong-pin-0000"); !errors.As(err, &invalid) || invalid.Reason != SOReasonPINInvalid {
+			t.Fatalf("wrong PIN %d = %v, want SOReasonPINInvalid", i+1, err)
+		}
+	}
+	err := enforce(soGatePIN)
+	var locked *auth.SOPINLockedError
+	if !errors.As(err, &locked) || locked.RetryAfter <= 0 {
+		t.Fatalf("the right PIN during the lockout = %v, want *auth.SOPINLockedError with a delay", err)
+	}
+	if got := ClassifyAuthError(err); got != AuthFailureRateLimited {
+		t.Fatalf("class %v, want AuthFailureRateLimited", got)
+	}
+	if got := HTTPStatus(err, 0); got != http.StatusTooManyRequests {
+		t.Fatalf("HTTP %d, want 429", got)
+	}
+	if got := status.Code(GRPCError(err, codes.Unknown)); got != codes.ResourceExhausted {
+		t.Fatalf("gRPC %v, want ResourceExhausted", got)
+	}
+}

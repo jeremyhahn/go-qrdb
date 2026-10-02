@@ -88,15 +88,19 @@ Minimum length is **6 characters**, enforced server side.
 
 | Backend | Lockout |
 |---|---|
-| software (the default) | **none** — the hash strength is the protection |
+| software (the default) | **none in the backend itself** — the hash strength is the protection; the node's SO PIN lockout decorator fronts it (below) |
 | TPM 2.0 | native dictionary-attack protection |
 | PKCS#11 token | the token's own policy |
 
 The software backend has **no attempt counter** of its own. A node fronts its
-PIN backend with an SO PIN lockout: after 5 wrong SO PINs in a row, every SO
-PIN check -- the right PIN included -- is refused for a backoff that doubles
-from 1 s up to 15 min, on every operation and transport. That counter is in
-memory, so a restart clears it. If you need a lockout that survives restarts,
+PIN backend with an SO PIN lockout that keeps two counters: one for
+anonymous sealed-window callers and one for authenticated (or TLS-verified)
+callers. After 5 wrong SO PINs in a row on a counter, every SO PIN check on
+that counter -- the right PIN included -- is refused for a backoff that
+doubles from 1 s up to 15 min, on every operation and transport. Anonymous
+guesses never lock an authenticated Security Officer out. Wait the backoff
+out and present the right PIN to recover. The counters are in memory, so a
+restart clears them. If you need a lockout that survives restarts,
 the deployment must inject a hardware PIN backend.
 
 A FIPS binary can verify a PIN hashed by a non-FIPS binary and vice versa —

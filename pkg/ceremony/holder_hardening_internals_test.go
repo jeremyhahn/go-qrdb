@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -35,19 +36,32 @@ import (
 func TestAuthorizeSOPIN_ProvisionedAndLockedOut(t *testing.T) {
 	e := newHolderEnv(t, 2, 2)
 	e.svc.SetPINBackend(pin.NewLockoutBackend(e.pins))
-	require.ErrorIs(t, e.svc.AuthorizeSOPIN("so-pin-1234"), pin.ErrPINNotSet)
+	require.ErrorIs(t, e.svc.AuthorizeSOPIN(context.Background(), "so-pin-1234"), pin.ErrPINNotSet)
 	require.NoError(t, e.pins.SetSOPIN("", "so-pin-1234"))
-	require.NoError(t, e.svc.AuthorizeSOPIN("so-pin-1234"))
-	for i := 0; i < pin.SOPINFreeFailures; i++ {
-		require.ErrorIs(t, e.svc.AuthorizeSOPIN("wrong-pin-00"), pin.ErrPINInvalid)
+	require.NoError(t, e.svc.AuthorizeSOPIN(context.Background(), "so-pin-1234"))
+	for i := 0; i < auth.SOPINFreeFailures; i++ {
+		require.ErrorIs(t, e.svc.AuthorizeSOPIN(context.Background(), "wrong-pin-00"), pin.ErrPINInvalid)
 	}
 	var locked *pin.SOPINLockedError
-	require.ErrorAs(t, e.svc.AuthorizeSOPIN("so-pin-1234"), &locked)
-	require.ErrorIs(t, e.svc.AuthorizeSOPIN("so-pin-1234"), pin.ErrPINLocked)
+	require.ErrorAs(t, e.svc.AuthorizeSOPIN(context.Background(), "so-pin-1234"), &locked)
+	require.ErrorIs(t, e.svc.AuthorizeSOPIN(context.Background(), "so-pin-1234"), pin.ErrPINLocked)
 
 	unwired, err := NewCeremonyService(&CeremonyConfig{DataDir: t.TempDir()}, testBarrier(t), testLogger())
 	require.NoError(t, err)
-	require.ErrorIs(t, unwired.AuthorizeSOPIN("so-pin-1234"), pin.ErrBackendNotConfigured)
+	require.ErrorIs(t, unwired.AuthorizeSOPIN(context.Background(), "so-pin-1234"), pin.ErrBackendNotConfigured)
+}
+
+// TestSetPINBackend_InstallsTheLockout: a backend handed to the ceremony
+// undecorated is decorated by SetPINBackend, so its SO PIN checks are held to
+// the lockout even when a composer forgot to install it.
+func TestSetPINBackend_InstallsTheLockout(t *testing.T) {
+	e := newHolderEnv(t, 2, 2)
+	e.svc.SetPINBackend(e.pins)
+	require.NoError(t, e.pins.SetSOPIN("", "so-pin-1234"))
+	for i := 0; i < auth.SOPINFreeFailures; i++ {
+		require.ErrorIs(t, e.svc.AuthorizeSOPIN(context.Background(), "wrong-pin-00"), pin.ErrPINInvalid)
+	}
+	require.ErrorIs(t, e.svc.AuthorizeSOPIN(context.Background(), "so-pin-1234"), pin.ErrPINLocked)
 }
 
 // TestShareClaim_EmptyNonceRefused: a claim message is never signed or

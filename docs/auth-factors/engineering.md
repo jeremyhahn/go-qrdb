@@ -108,9 +108,21 @@ Storage keys: `so-pin` and `user-pin`, each a JSON-encoded `PINRecord`.
   every one of them with `SOPINLockedError` (unwraps to `ErrPINLocked`) while
   locked: 5 free failures, then a backoff doubling from 1 s to 15 min. It is
   idempotent and is installed where a node chooses its backend
-  (`lifecycle.NewSealStorePINBackend`, `server.WithPINBackend`), so the
-  ceremony and every transport share one counter. Over a backend with no
-  native lockout its `GetLockoutStatus` reports the decorator's own state.
+  (`lifecycle.NewSealStorePINBackend`, `server.WithPINBackend`), and again by
+  `embedded.WithPINBackend` and `CeremonyService.SetPINBackend`, so the
+  ceremony and every transport share it. It keeps **two counters**: checks by
+  an authenticated identity or over a TLS-verified certificate
+  (`auth.AuthenticatedCaller`) count against one, anonymous sealed-window
+  checks against the other, so anonymous guesses cannot lock an authenticated
+  officer out. `pin.ForCaller(ctx, backend)` selects the counter; the
+  helpers `RequireSOPIN`, `RequireProvisionedSOPIN` and `Provision` take a
+  context and apply it, and a backend reached without one is held to the
+  anonymous counter. The counting itself is `auth.SOPINLockout`, which also
+  holds each tenant's SO PIN (`auth.SOAuthenticator.VerifySOPIN`, keyed by
+  tenant) to the same schedule. Over a backend with no native lockout
+  `GetLockoutStatus` reports the decorator's own state for the counter the
+  view checks against. Recovery is waiting the backoff out (the error carries
+  `RetryAfter`) and presenting the right PIN, which resets that counter.
 - **`SoftwareBackend` loads existing records at construction**, so
   `SOPINSet()` / `UserPINSet()` report prior state correctly after a restart.
 - **The CTAP2 hash is cached in an atomic pointer** and wiped on `Close`, so a
@@ -561,9 +573,13 @@ storage.
   CTAP2 hash caching and wipe on `Close`, and state reload at construction.
 - **The lockout no-ops are explicitly tested** so their absence stays visible.
 - **The SO PIN lockout decorator is tested** for the doubling backoff and
-  reset, every SO-PIN-comparing method sharing one counter, concurrent guesses
-  counted one at a time, idempotent installation, and -- at the composition
-  seams -- that wrong SO PINs spent on a seal lock out a rekey.
+  reset, every SO-PIN-comparing method sharing a counter, the anonymous and
+  authenticated counters kept apart (anonymous guesses never lock an
+  authenticated officer), concurrent guesses counted one at a time,
+  idempotent installation (including by `embedded.WithPINBackend` and
+  `SetPINBackend`), the per-tenant SO PIN lockout, and -- at the composition
+  seams -- that wrong SO PINs spent on a seal lock out a rekey on the same
+  counter.
 - **Error tests** for every sentinel and typed error above.
 
 ## Observability

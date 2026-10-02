@@ -44,5 +44,5 @@ func ProvisionInitializePINs(ctx context.Context, barrier BarrierServicer, pins 
 	if initialized {
 		return seal.ErrAlreadyInitialized
 	}
-	return pin.Provision(pins, soPIN, userPIN)
+	return pin.Provision(ctx, pins, soPIN, userPIN)
 }

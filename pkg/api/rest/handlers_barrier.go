@@ -140,7 +140,7 @@ func (s *Server) handleBarrierSeal(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := pin.RequireSOPIN(s.pinBackend, req.SOPin); err != nil {
+	if err := pin.RequireSOPIN(r.Context(), s.pinBackend, req.SOPin); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
@@ -376,7 +376,7 @@ func (s *Server) handleBarrierRecoveryGenerate(w http.ResponseWriter, r *http.Re
 
 	// Verify the SO PIN before generating recovery keys; fails closed
 	// when no PIN backend is configured.
-	if err := pin.RequireSOPIN(s.pinBackend, req.SOPin); err != nil {
+	if err := pin.RequireSOPIN(r.Context(), s.pinBackend, req.SOPin); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}

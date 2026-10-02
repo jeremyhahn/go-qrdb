@@ -717,6 +717,7 @@ var auditVerifyRules = []rule{
 var pinRules = []rule{
 	is(pin.ErrPINNotSet, PreconditionFailed),
 	is(pin.ErrPINLocked, ResourceExhausted),
+	is(auth.ErrSOPINLocked, ResourceExhausted),
 	is(pin.ErrPINInvalid, Unauthenticated),
 	is(pin.ErrSOPINRequired, Unauthenticated),
 	is(pin.ErrPINTooShort, InvalidArgument),

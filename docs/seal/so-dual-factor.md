@@ -142,8 +142,13 @@ verifies that field. Every SO PIN comparison on the node -- these, the
 transports' checks for seal, recovery-key generation and initialization, and
 `CeremonySignCSR` -- runs through the PIN backend's SO PIN lockout
 (`pin.NewLockoutBackend`), installed once where the node's backend is chosen,
-so all of them count against one counter and a guess costs the same on every
-operation and every transport. Rekey and revocation refuse while no SO PIN has been
+so a guess costs the same on every operation and every transport. The
+lockout keeps two counters -- anonymous sealed-window checks and checks by an
+authenticated or TLS-verified caller -- so anonymous guesses can never lock
+the officer's authenticated rekey or revocation out. The tenant SO PIN this
+gate verifies (`auth.SOAuthenticator`) is held to the same lockout, per
+tenant (`auth.SOPINLockout`); a locked tenant PIN answers `429` with the
+delay rather than "invalid PIN". Rekey and revocation refuse while no SO PIN has been
 provisioned (`pin.ErrPINNotSet`, `412` / `FAILED_PRECONDITION`). A
 locked-out check answers `429` / `RESOURCE_EXHAUSTED`, with the wait as a
 gRPC / Unix `google.rpc.RetryInfo` detail, MCP `retry_after_seconds`, and `Retry-After` on

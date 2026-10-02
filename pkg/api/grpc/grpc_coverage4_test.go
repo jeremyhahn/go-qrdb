@@ -697,28 +697,28 @@ func TestMapPINError_AllSentinels(t *testing.T) {
 // TestApplyBarrierInitializePINs_NilBackend pins the fail-closed rule: PINs
 // with no backend to hold them are refused, never silently dropped.
 func TestApplyBarrierInitializePINs_NilBackend(t *testing.T) {
-	if err := pin.Provision(nil, "so", "user"); !errors.Is(err, pin.ErrBackendNotConfigured) {
+	if err := pin.Provision(context.Background(), nil, "so", "user"); !errors.Is(err, pin.ErrBackendNotConfigured) {
 		t.Fatalf("expected ErrBackendNotConfigured for nil backend, got %v", err)
 	}
 }
 
 func TestApplyBarrierInitializePINs_EmptyPINs(t *testing.T) {
 	backend := &pinBackendMini{}
-	if err := pin.Provision(backend, "", ""); err != nil {
+	if err := pin.Provision(context.Background(), backend, "", ""); err != nil {
 		t.Fatalf("expected nil error for empty PINs, got %v", err)
 	}
 }
 
 func TestApplyBarrierInitializePINs_SOPINError(t *testing.T) {
 	backend := &pinBackendMini{setSOErr: pin.ErrPINTooShort}
-	if err := pin.Provision(backend, "short", ""); err == nil {
+	if err := pin.Provision(context.Background(), backend, "short", ""); err == nil {
 		t.Fatal("expected error from SetSOPIN, got nil")
 	}
 }
 
 func TestApplyBarrierInitializePINs_UserPINError(t *testing.T) {
 	backend := &pinBackendMini{setUserErr: pin.ErrPINTooShort}
-	if err := pin.Provision(backend, "", "x"); err == nil {
+	if err := pin.Provision(context.Background(), backend, "", "x"); err == nil {
 		t.Fatal("expected error from SetUserPIN, got nil")
 	}
 }
@@ -726,21 +726,21 @@ func TestApplyBarrierInitializePINs_UserPINError(t *testing.T) {
 // TestVerifyBarrierSOPIN_NilBackend pins the fail-closed rule: with no PIN
 // backend a PIN-gated operation is refused.
 func TestVerifyBarrierSOPIN_NilBackend(t *testing.T) {
-	if err := pin.RequireSOPIN(nil, "pin"); !errors.Is(err, pin.ErrBackendNotConfigured) {
+	if err := pin.RequireSOPIN(context.Background(), nil, "pin"); !errors.Is(err, pin.ErrBackendNotConfigured) {
 		t.Fatalf("expected ErrBackendNotConfigured for nil backend, got %v", err)
 	}
 }
 
 func TestVerifyBarrierSOPIN_SOPINNotSet(t *testing.T) {
 	backend := &pinBackendMini{soPINSet: false}
-	if err := pin.RequireSOPIN(backend, "pin"); err != nil {
+	if err := pin.RequireSOPIN(context.Background(), backend, "pin"); err != nil {
 		t.Fatalf("expected nil when SO PIN not set, got %v", err)
 	}
 }
 
 func TestVerifyBarrierSOPIN_VerifyError(t *testing.T) {
 	backend := &pinBackendMini{soPINSet: true, verifyErr: pin.ErrPINInvalid}
-	err := pin.RequireSOPIN(backend, "wrong")
+	err := pin.RequireSOPIN(context.Background(), backend, "wrong")
 	if err == nil {
 		t.Fatal("expected error from VerifySOPIN, got nil")
 	}

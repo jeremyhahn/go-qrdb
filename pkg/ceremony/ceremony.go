@@ -177,12 +177,14 @@ func (s *CeremonyService) SetQuorumLimiter(l QuorumLimitFunc) {
 	s.deps.QuorumLimiter = l
 }
 
-// SetPINBackend installs the PIN backend. Without one, every PIN-gated
+// SetPINBackend installs the PIN backend, decorated with the SO PIN lockout
+// (pin.NewLockoutBackend, idempotent: a backend the composer already
+// decorated keeps its one pair of counters). Without one, every PIN-gated
 // ceremony operation fails closed with pin.ErrBackendNotConfigured.
 func (s *CeremonyService) SetPINBackend(b pin.PINBackend) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.pins = b
+	s.pins = pin.NewLockoutBackend(b)
 }
 
 // HolderDeps returns the holder dependencies, for tenant ceremonies to share.
@@ -259,7 +261,7 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		s.mu.Unlock()
 		return nil, ErrNilCA
 	}
-	if err := pin.Provision(s.pins, opts.SOPin, opts.UserPin); err != nil {
+	if err := pin.Provision(ctx, s.pins, opts.SOPin, opts.UserPin); err != nil {
 		s.mu.Unlock()
 		return nil, err
 	}
@@ -387,7 +389,7 @@ func (s *CeremonyService) SignCSRInit(ctx context.Context, username, soPin strin
 	if soPin == "" {
 		return nil, ErrInvalidSOPIN
 	}
-	if err := pin.RequireSOPIN(pins, soPin); err != nil {
+	if err := pin.RequireSOPIN(ctx, pins, soPin); err != nil {
 		return nil, err
 	}
 	if len(csrPEM) == 0 {
@@ -428,11 +430,11 @@ func (s *CeremonyService) SignCSRInit(ctx context.Context, username, soPin strin
 // this check counts against the same counter as every other SO PIN check on
 // the node: once the free failures are spent, the right PIN included is
 // refused with *pin.SOPINLockedError until the backoff passes.
-func (s *CeremonyService) AuthorizeSOPIN(soPIN string) error {
+func (s *CeremonyService) AuthorizeSOPIN(ctx context.Context, soPIN string) error {
 	s.mu.Lock()
 	pins := s.pins
 	s.mu.Unlock()
-	return pin.RequireProvisionedSOPIN(pins, soPIN)
+	return pin.RequireProvisionedSOPIN(ctx, pins, soPIN)
 }
 
 // RegisterOfficer enrols a share holder — Security Officer or key custodian —

@@ -96,12 +96,12 @@ func TestInitialize_FailsClosedWithoutAPINBackend(t *testing.T) {
 // and a mismatched PIN is refused.
 func TestInitialize_VerifiesPINsAlreadyProvisioned(t *testing.T) {
 	e := newHolderEnv(t, 2, 2)
-	require.NoError(t, pin.Provision(e.pins, "so-pin-1234", "user-pin-1234"))
+	require.NoError(t, pin.Provision(context.Background(), e.pins, "so-pin-1234", "user-pin-1234"))
 	_, err := e.svc.Initialize(context.Background(), e.ca, initOpts(0))
 	require.NoError(t, err)
 
 	e2 := newHolderEnv(t, 2, 2)
-	require.NoError(t, pin.Provision(e2.pins, "other-so-pin", "user-pin-1234"))
+	require.NoError(t, pin.Provision(context.Background(), e2.pins, "other-so-pin", "user-pin-1234"))
 	_, err = e2.svc.Initialize(context.Background(), e2.ca, initOpts(0))
 	assert.Error(t, err, "a different SO PIN is refused, never overwritten")
 }

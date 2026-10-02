@@ -530,7 +530,7 @@ func (s *BarrierService) BarrierRekeyStart(ctx context.Context, domain seal.Quor
 	if s.ceremony == nil {
 		return nil, ErrCeremonyNotConfigured
 	}
-	if err := s.ceremony.AuthorizeSOPIN(soPIN); err != nil {
+	if err := s.ceremony.AuthorizeSOPIN(ctx, soPIN); err != nil {
 		return nil, err
 	}
 	return s.barrier.StartRekey(ctx, domain, seal.RekeyParams{Threshold: threshold, Policy: policy})
@@ -542,7 +542,7 @@ func (s *BarrierService) BarrierOfficerRevoke(ctx context.Context, domain seal.Q
 	if s.ceremony == nil {
 		return nil, ErrCeremonyNotConfigured
 	}
-	if err := s.ceremony.AuthorizeSOPIN(soPIN); err != nil {
+	if err := s.ceremony.AuthorizeSOPIN(ctx, soPIN); err != nil {
 		return nil, err
 	}
 	return s.ceremony.RevokeOfficer(ctx, domain, username, threshold)

@@ -18,6 +18,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -49,6 +50,14 @@ var retryAfterRules = []func(error) (time.Duration, bool){
 	// An SO PIN check refused while the node's SO PIN lockout is engaged.
 	func(err error) (time.Duration, bool) {
 		var e *pin.SOPINLockedError
+		if errors.As(err, &e) {
+			return e.RetryAfter, true
+		}
+		return 0, false
+	},
+	// A tenant SO PIN check refused while that tenant's lockout is engaged.
+	func(err error) (time.Duration, bool) {
+		var e *auth.SOPINLockedError
 		if errors.As(err, &e) {
 			return e.RetryAfter, true
 		}

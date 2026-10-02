@@ -15,11 +15,14 @@
 package pin
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 )
 
 const (
@@ -36,18 +39,15 @@ func newLockoutFixture(t *testing.T) (*lockoutBackend, *SoftwareBackend, *time.T
 		t.Fatal(err)
 	}
 	now := time.Unix(1_000_000, 0)
-	b, ok := NewLockoutBackend(inner).(*lockoutBackend)
-	if !ok {
-		t.Fatal("NewLockoutBackend did not return the lockout decorator")
-	}
-	b.now = func() time.Time { return now }
-	return b, inner, &now
+	clock := &now
+	b := newLockoutBackend(inner, func() time.Time { return *clock })
+	return b, inner, clock
 }
 
 // spendFreeFailures spends every free failure on VerifySOPIN.
 func spendFreeFailures(t *testing.T, b PINBackend) {
 	t.Helper()
-	for i := 0; i < SOPINFreeFailures; i++ {
+	for i := 0; i < auth.SOPINFreeFailures; i++ {
 		if err := b.VerifySOPIN(lockoutWrongPIN); !errors.Is(err, ErrPINInvalid) {
 			t.Fatalf("wrong SO PIN %d = %v, want ErrPINInvalid", i+1, err)
 		}
@@ -76,19 +76,19 @@ func requireLocked(t *testing.T, err error, retry time.Duration) {
 func TestLockoutBackend_BackoffDoublesAndResets(t *testing.T) {
 	b, _, now := newLockoutFixture(t)
 	spendFreeFailures(t, b)
-	requireLocked(t, b.VerifySOPIN(lockoutSOPIN), SOPINBaseBackoff)
+	requireLocked(t, b.VerifySOPIN(lockoutSOPIN), auth.SOPINBaseBackoff)
 
-	*now = now.Add(SOPINBaseBackoff)
+	*now = now.Add(auth.SOPINBaseBackoff)
 	if err := b.VerifySOPIN(lockoutWrongPIN); !errors.Is(err, ErrPINInvalid) {
 		t.Fatalf("wrong PIN after the backoff = %v", err)
 	}
-	requireLocked(t, b.VerifySOPIN(lockoutSOPIN), 2*SOPINBaseBackoff)
+	requireLocked(t, b.VerifySOPIN(lockoutSOPIN), 2*auth.SOPINBaseBackoff)
 
-	*now = now.Add(2 * SOPINBaseBackoff)
+	*now = now.Add(2 * auth.SOPINBaseBackoff)
 	if err := b.VerifySOPIN(lockoutSOPIN); err != nil {
 		t.Fatalf("right PIN after the backoff = %v", err)
 	}
-	for i := 0; i < SOPINFreeFailures-1; i++ {
+	for i := 0; i < auth.SOPINFreeFailures-1; i++ {
 		if err := b.VerifySOPIN(lockoutWrongPIN); !errors.Is(err, ErrPINInvalid) {
 			t.Fatalf("free failure %d after a reset = %v", i+1, err)
 		}
@@ -111,13 +111,13 @@ func TestLockoutBackend_EverySOPINComparisonShares(t *testing.T) {
 	for name, guess := range guesses {
 		t.Run(name, func(t *testing.T) {
 			b, _, _ := newLockoutFixture(t)
-			for i := 0; i < SOPINFreeFailures; i++ {
+			for i := 0; i < auth.SOPINFreeFailures; i++ {
 				if err := guess(b, lockoutWrongPIN); !isSOPINMismatch(err) {
 					t.Fatalf("wrong SO PIN %d via %s = %v, want a mismatch", i+1, name, err)
 				}
 			}
-			requireLocked(t, b.VerifySOPIN(lockoutSOPIN), SOPINBaseBackoff)
-			requireLocked(t, guess(b, lockoutSOPIN), SOPINBaseBackoff)
+			requireLocked(t, b.VerifySOPIN(lockoutSOPIN), auth.SOPINBaseBackoff)
+			requireLocked(t, guess(b, lockoutSOPIN), auth.SOPINBaseBackoff)
 		})
 	}
 }
@@ -140,8 +140,8 @@ func TestLockoutBackend_ConcurrentGuessesAreCountedBeforeTheNext(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if n := compared.Load(); n != SOPINFreeFailures {
-		t.Fatalf("%d of %d concurrent SO PIN guesses were compared; want exactly %d", n, guesses, SOPINFreeFailures)
+	if n := compared.Load(); n != auth.SOPINFreeFailures {
+		t.Fatalf("%d of %d concurrent SO PIN guesses were compared; want exactly %d", n, guesses, auth.SOPINFreeFailures)
 	}
 }
 
@@ -149,7 +149,7 @@ func TestLockoutBackend_ConcurrentGuessesAreCountedBeforeTheNext(t *testing.T) {
 // a guess, so it neither counts toward the lockout nor is masked.
 func TestLockoutBackend_OnlyAWrongPINCounts(t *testing.T) {
 	b := NewLockoutBackend(newProvisionBackend(t))
-	for i := 0; i < 3*SOPINFreeFailures; i++ {
+	for i := 0; i < 3*auth.SOPINFreeFailures; i++ {
 		if err := b.VerifySOPIN(lockoutSOPIN); !errors.Is(err, ErrPINNotSet) {
 			t.Fatalf("VerifySOPIN with no SO PIN = %v, want ErrPINNotSet", err)
 		}
@@ -188,12 +188,12 @@ func TestNewLockoutBackend_IdempotentAndNil(t *testing.T) {
 // decorated backend has no native lockout, and the native one when it does.
 func TestLockoutBackend_LockoutStatus(t *testing.T) {
 	b, _, _ := newLockoutFixture(t)
-	if s := b.GetLockoutStatus(); s == nil || s.IsLocked || s.FailedAttempts != 0 || s.MaxAttempts != SOPINFreeFailures {
+	if s := b.GetLockoutStatus(); s == nil || s.IsLocked || s.FailedAttempts != 0 || s.MaxAttempts != auth.SOPINFreeFailures {
 		t.Fatalf("fresh status = %+v", s)
 	}
 	spendFreeFailures(t, b)
 	s := b.GetLockoutStatus()
-	if s == nil || !s.IsLocked || s.FailedAttempts != SOPINFreeFailures || s.RecoverySeconds != int(SOPINBaseBackoff.Seconds()) {
+	if s == nil || !s.IsLocked || s.FailedAttempts != auth.SOPINFreeFailures || s.RecoverySeconds != int(auth.SOPINBaseBackoff.Seconds()) {
 		t.Fatalf("locked status = %+v", s)
 	}
 
@@ -220,14 +220,31 @@ func TestLockoutBackend_FIDO2Delegates(t *testing.T) {
 	}
 }
 
-// TestSOPINBackoff_Caps: the backoff stops doubling at SOPINMaxBackoff and
-// does not overflow however long the failures go on.
-func TestSOPINBackoff_Caps(t *testing.T) {
-	cases := map[int]time.Duration{0: SOPINBaseBackoff, 2: 4 * SOPINBaseBackoff, 20: SOPINMaxBackoff, 1_000_000: SOPINMaxBackoff}
-	for n, want := range cases {
-		if got := soPINBackoff(n); got != want {
-			t.Errorf("soPINBackoff(%d) = %v, want %v", n, got, want)
-		}
+// TestForCaller_SeparateCounters: anonymous and authenticated SO PIN checks
+// count against separate counters. Anonymous wrong PINs lock only the
+// anonymous counter -- an authenticated SO is still admitted -- and an
+// authenticated caller's own wrong PINs lock only the authenticated one.
+func TestForCaller_SeparateCounters(t *testing.T) {
+	b, _, _ := newLockoutFixture(t)
+	anonymous := context.Background()
+	so := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "officer", TenantID: "system"})
+
+	spendFreeFailures(t, ForCaller(anonymous, b))
+	requireLocked(t, ForCaller(anonymous, b).VerifySOPIN(lockoutSOPIN), auth.SOPINBaseBackoff)
+	if err := ForCaller(so, b).VerifySOPIN(lockoutSOPIN); err != nil {
+		t.Fatalf("an authenticated SO after anonymous guesses = %v, want admitted", err)
+	}
+
+	spendFreeFailures(t, ForCaller(so, b))
+	requireLocked(t, ForCaller(so, b).VerifySOPIN(lockoutSOPIN), auth.SOPINBaseBackoff)
+}
+
+// TestForCaller_UndecoratedPassesThrough: an undecorated backend is
+// returned as it is.
+func TestForCaller_UndecoratedPassesThrough(t *testing.T) {
+	plain := newProvisionBackend(t)
+	if ForCaller(context.Background(), plain) != PINBackend(plain) {
+		t.Fatal("ForCaller must return an undecorated backend as it is")
 	}
 }
 

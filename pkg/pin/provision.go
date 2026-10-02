@@ -14,7 +14,10 @@
 
 package pin
 
-import "errors"
+import (
+	"context"
+	"errors"
+)
 
 // ErrBackendNotConfigured is returned when an operation needs the SO or User
 // PIN and no PINBackend has been injected. It fails closed: there is no
@@ -26,19 +29,21 @@ var ErrBackendNotConfigured = errors.New("pin: no PIN backend configured; PIN-ga
 // whichever runs first sets the PINs and the other, supplying the same PINs,
 // verifies them instead of failing on "already set". A PIN that is already
 // set and does not match is refused with the backend's own error — Provision
-// never overwrites a PIN.
+// never overwrites a PIN. The SO PIN comparison counts against the lockout
+// counter of the caller in ctx (ForCaller).
 //
 // Empty soPIN and userPIN is a no-op (nothing to provision). A userPIN
 // without a soPIN is refused with ErrSOPINRequired, because the User PIN is
 // set under SO PIN authorization. PINs are compared by the backend (hashed,
 // constant-time for the software backend), never with ==.
-func Provision(backend PINBackend, soPIN, userPIN string) error {
+func Provision(ctx context.Context, backend PINBackend, soPIN, userPIN string) error {
 	if soPIN == "" && userPIN == "" {
 		return nil
 	}
 	if backend == nil {
 		return ErrBackendNotConfigured
 	}
+	backend = ForCaller(ctx, backend)
 	if soPIN == "" {
 		return ErrSOPINRequired
 	}
@@ -63,11 +68,13 @@ func Provision(backend PINBackend, soPIN, userPIN string) error {
 // RequireSOPIN it does not admit the call when no SO PIN has been
 // provisioned: it refuses with ErrPINNotSet, since there is nothing to check
 // the presented PIN against. With no backend it fails closed with
-// ErrBackendNotConfigured.
-func RequireProvisionedSOPIN(backend PINBackend, soPIN string) error {
+// ErrBackendNotConfigured. The comparison counts against the lockout counter
+// of the caller in ctx (ForCaller).
+func RequireProvisionedSOPIN(ctx context.Context, backend PINBackend, soPIN string) error {
 	if backend == nil {
 		return ErrBackendNotConfigured
 	}
+	backend = ForCaller(ctx, backend)
 	if !backend.SOPINSet() {
 		return ErrPINNotSet
 	}
@@ -77,11 +84,14 @@ func RequireProvisionedSOPIN(backend PINBackend, soPIN string) error {
 // RequireSOPIN gates an administrative operation behind SO PIN
 // authorization. With no backend it fails closed. With a backend on which no
 // SO PIN has been provisioned it admits the call: the node has no PIN to
-// check yet, and provisioning one is the first administrative act.
-func RequireSOPIN(backend PINBackend, soPIN string) error {
+// check yet, and provisioning one is the first administrative act. The
+// comparison counts against the lockout counter of the caller in ctx
+// (ForCaller).
+func RequireSOPIN(ctx context.Context, backend PINBackend, soPIN string) error {
 	if backend == nil {
 		return ErrBackendNotConfigured
 	}
+	backend = ForCaller(ctx, backend)
 	if !backend.SOPINSet() {
 		return nil
 	}

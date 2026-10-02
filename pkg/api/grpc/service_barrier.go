@@ -83,7 +83,7 @@ func (s *qrdbServiceServer) BarrierSeal(ctx context.Context, req *pb.BarrierSeal
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
 	}
 
-	if err := pin.RequireSOPIN(s.pinBackend, req.GetSoPin()); err != nil {
+	if err := pin.RequireSOPIN(ctx, s.pinBackend, req.GetSoPin()); err != nil {
 		return nil, mapServiceError(err)
 	}
 
@@ -247,7 +247,7 @@ func (s *qrdbServiceServer) BarrierRecoveryGenerate(ctx context.Context, req *pb
 	if s.barrierSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
 	}
-	if err := pin.RequireSOPIN(s.pinBackend, req.GetSoPin()); err != nil {
+	if err := pin.RequireSOPIN(ctx, s.pinBackend, req.GetSoPin()); err != nil {
 		return nil, mapServiceError(err)
 	}
 	info, err := s.barrierSvc.BarrierGenerateRecoveryKeys(ctx, int(req.GetThreshold()), seal.FactorPolicy(req.GetPolicy()))

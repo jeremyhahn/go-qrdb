@@ -157,7 +157,7 @@ func TestRekeySOPIN_RecoveryGuessesLockRekey(t *testing.T) {
 	}
 	tr := newRekeyTransport(t, pins)
 	ctx := context.Background()
-	for i := 0; i < pin.SOPINFreeFailures; i++ {
+	for i := 0; i < auth.SOPINFreeFailures; i++ {
 		if _, err := tr.BarrierGenerateRecoveryKeys(ctx, &transport.BarrierGenerateRecoveryKeysRequest{Threshold: 2, SOPin: "wrong-pin-0000"}); !errors.Is(err, pin.ErrPINInvalid) {
 			t.Fatalf("wrong PIN %d = %v, want pin.ErrPINInvalid", i+1, err)
 		}
@@ -165,6 +165,29 @@ func TestRekeySOPIN_RecoveryGuessesLockRekey(t *testing.T) {
 	var locked *pin.SOPINLockedError
 	if _, err := tr.BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: transport.DomainUnseal, Threshold: 2, SOPin: rekeySOPIN}); !errors.As(err, &locked) {
 		t.Fatalf("the right PIN during the lockout = %v, want *pin.SOPINLockedError", err)
+	}
+}
+
+// TestWithPINBackend_InstallsTheLockout: a backend handed to the embedded
+// transport undecorated is decorated by WithPINBackend, so the transport's
+// own SO PIN checks are held to the lockout.
+func TestWithPINBackend_InstallsTheLockout(t *testing.T) {
+	pins := pintest.NewBackend(t)
+	if err := pins.SetSOPIN("", rekeySOPIN); err != nil {
+		t.Fatal(err)
+	}
+	tr, err := New(newMockKVService(), &mockAdminService{}, WithPINBackend(pins), WithBarrierService(&mockBarrierService{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for i := 0; i < auth.SOPINFreeFailures; i++ {
+		if _, err := tr.BarrierGenerateRecoveryKeys(ctx, &transport.BarrierGenerateRecoveryKeysRequest{Threshold: 2, SOPin: "wrong-pin-0000"}); !errors.Is(err, pin.ErrPINInvalid) {
+			t.Fatalf("wrong PIN %d = %v", i+1, err)
+		}
+	}
+	if _, err := tr.BarrierGenerateRecoveryKeys(ctx, &transport.BarrierGenerateRecoveryKeysRequest{Threshold: 2, SOPin: rekeySOPIN}); !errors.Is(err, pin.ErrPINLocked) {
+		t.Fatalf("the right PIN after the free failures = %v, want the lockout", err)
 	}
 }
 
@@ -179,7 +202,7 @@ func TestInitializeOnInitialized_RefusedBeforePIN(t *testing.T) {
 	tr := newRekeyTransport(t, pins)
 	ctx := context.Background()
 	for _, presented := range []string{"wrong-pin-0000", rekeySOPIN} {
-		for i := 0; i < pin.SOPINFreeFailures; i++ {
+		for i := 0; i < auth.SOPINFreeFailures; i++ {
 			if err := tr.BarrierInitialize(ctx, &transport.BarrierInitializeRequest{Secret: []byte("secret-secret-1234"), SOPin: presented}); !errors.Is(err, seal.ErrAlreadyInitialized) {
 				t.Fatalf("initialize with SO PIN %q = %v, want seal.ErrAlreadyInitialized", presented, err)
 			}

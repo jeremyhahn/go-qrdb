@@ -291,6 +291,12 @@ var authFailureRules = []struct {
 		var e *RateLimitedError
 		return AuthFailureRateLimited, errors.As(err, &e)
 	}},
+	// A tenant SO PIN locked out after repeated failures: the officer may be
+	// entitled and their PIN right, and must wait the backoff out.
+	{"SOPINLockedError", func(err error) (AuthFailureClass, bool) {
+		var e *auth.SOPINLockedError
+		return AuthFailureRateLimited, errors.As(err, &e)
+	}},
 }
 
 // ClassifyAuthError reports what kind of failure err represents, or

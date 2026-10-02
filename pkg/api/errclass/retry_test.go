@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -37,10 +38,11 @@ func TestRetryAfter_ReadsEveryDelayingRefusal(t *testing.T) {
 		err  error
 		want time.Duration
 	}{
-		"sign-csr":        {&service.SignCSRThrottledError{RetryAfter: time.Second}, time.Second},
-		"quorum throttle": {&ceremony.QuorumRateLimitedError{RetryAfter: 2 * time.Second}, 2 * time.Second},
-		"SO PIN lockout":  {&pin.SOPINLockedError{RetryAfter: 3 * time.Second}, 3 * time.Second},
-		"wrapped":         {&wrappedError{&pin.SOPINLockedError{RetryAfter: 4 * time.Second}}, 4 * time.Second},
+		"sign-csr":              {&service.SignCSRThrottledError{RetryAfter: time.Second}, time.Second},
+		"quorum throttle":       {&ceremony.QuorumRateLimitedError{RetryAfter: 2 * time.Second}, 2 * time.Second},
+		"SO PIN lockout":        {&pin.SOPINLockedError{RetryAfter: 3 * time.Second}, 3 * time.Second},
+		"wrapped":               {&wrappedError{&pin.SOPINLockedError{RetryAfter: 4 * time.Second}}, 4 * time.Second},
+		"tenant SO PIN lockout": {&auth.SOPINLockedError{RetryAfter: 5 * time.Second}, 5 * time.Second},
 	}
 	for name, tc := range cases {
 		got, ok := RetryAfter(tc.err)

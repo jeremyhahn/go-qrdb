@@ -88,7 +88,7 @@ func (s *Server) handleBarrierSeal(ctx context.Context, payload []byte) ([]byte,
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
 	}
-	if err := pin.RequireSOPIN(s.pinBackend, req.GetSoPin()); err != nil {
+	if err := pin.RequireSOPIN(ctx, s.pinBackend, req.GetSoPin()); err != nil {
 		return nil, err
 	}
 
@@ -284,7 +284,7 @@ func (s *Server) handleBarrierRecoveryGenerate(ctx context.Context, payload []by
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	if err := pin.RequireSOPIN(s.pinBackend, req.GetSoPin()); err != nil {
+	if err := pin.RequireSOPIN(ctx, s.pinBackend, req.GetSoPin()); err != nil {
 		return nil, err
 	}
 

@@ -254,7 +254,7 @@ func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transp
 	if t.barrierSvc == nil {
 		return nil, &NilServiceError{Service: "BarrierServicer"}
 	}
-	if err := pin.RequireSOPIN(t.pinBackend, req.SOPin); err != nil {
+	if err := pin.RequireSOPIN(ctx, t.pinBackend, req.SOPin); err != nil {
 		return nil, err
 	}
 	info, err := t.barrierSvc.BarrierGenerateRecoveryKeys(ctx, req.Threshold, seal.FactorPolicy(req.Policy))
@@ -573,9 +573,11 @@ func WithEncryptionMigrator(m service.EncryptionMigrator) Option {
 // embedded transport's barrier handlers to provision SO PIN / User PIN
 // on initialize and to verify the SO PIN on seal, recovery generation, rekey
 // start and holder revocation. Without one those operations fail closed with
-// pin.ErrBackendNotConfigured.
+// pin.ErrBackendNotConfigured. The backend is decorated with the SO PIN
+// lockout (pin.NewLockoutBackend, idempotent) when the option is built.
 func WithPINBackend(backend pin.PINBackend) Option {
+	locked := pin.NewLockoutBackend(backend)
 	return func(t *Transport) {
-		t.pinBackend = backend
+		t.pinBackend = locked
 	}
 }

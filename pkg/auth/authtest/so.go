@@ -300,8 +300,8 @@ func (m *memPINStore) Put(_ context.Context, key string, value []byte) error {
 
 // BarrierRekeyStart checks the SO PIN against PINs and records the rekey
 // round.
-func (b *Barrier) BarrierRekeyStart(_ context.Context, domain seal.QuorumDomain, threshold int, policy seal.FactorPolicy, soPIN string) (*service.QuorumRoundInfo, error) {
-	if err := pin.RequireProvisionedSOPIN(b.PINs, soPIN); err != nil {
+func (b *Barrier) BarrierRekeyStart(ctx context.Context, domain seal.QuorumDomain, threshold int, policy seal.FactorPolicy, soPIN string) (*service.QuorumRoundInfo, error) {
+	if err := pin.RequireProvisionedSOPIN(ctx, b.PINs, soPIN); err != nil {
 		return nil, err
 	}
 	b.rekeys.Add(1)
@@ -313,8 +313,8 @@ func (b *Barrier) Rekeys() int64 { return b.rekeys.Load() }
 
 // BarrierOfficerRevoke checks the SO PIN against PINs and records the
 // revocation round.
-func (b *Barrier) BarrierOfficerRevoke(_ context.Context, domain seal.QuorumDomain, username string, threshold int, soPIN string) (*service.QuorumRoundInfo, error) {
-	if err := pin.RequireProvisionedSOPIN(b.PINs, soPIN); err != nil {
+func (b *Barrier) BarrierOfficerRevoke(ctx context.Context, domain seal.QuorumDomain, username string, threshold int, soPIN string) (*service.QuorumRoundInfo, error) {
+	if err := pin.RequireProvisionedSOPIN(ctx, b.PINs, soPIN); err != nil {
 		return nil, err
 	}
 	b.revocations.Add(1)

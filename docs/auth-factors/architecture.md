@@ -43,7 +43,7 @@ guaranteed to carry both.
 
 | StrategyID | Owner | Lockout |
 |---|---|---|
-| `software` | qrdb (`pkg/pin/software_backend.go`) | **none** — hashing strength is the protection |
+| `software` | qrdb (`pkg/pin/software_backend.go`) | **none in the backend** — hashing strength is the protection; the node fronts every backend with the SO PIN lockout decorator (`pin.NewLockoutBackend`) |
 | `tpm2` | go-xkms | TPM 2.0 dictionary-attack protection |
 | `pkcs11` | go-xkms | token-native policy via `C_Login` |
 
@@ -106,8 +106,9 @@ surface applies to its own by-id verbs. See
   `SoftwareBackend.GetLockoutStatus()` returns **nil** and `ResetLockout()` is a
   **no-op**. The SO PIN lockout is a separate decorator,
   `pin.NewLockoutBackend`, that a node installs around whichever backend it
-  uses, so one counter covers every SO PIN check whatever the backend. Its
-  counter is in memory and a process restart clears it; a deployment that
+  uses, so it covers every SO PIN check whatever the backend, with separate
+  counters for anonymous sealed-window checks and authenticated ones. Its
+  counters are in memory and a process restart clears them; a deployment that
   needs a lockout that survives restarts injects a hardware backend, which the
   decorator then fronts. This is stated rather than implied so nobody assumes
   protection that is not there.
@@ -207,5 +208,6 @@ change.
 
 - **No hardware factor implementations.**
 - **No hardware verification in the qrdb CLI.**
-- **No software lockout counter.**
+- **No lockout counter inside the software backend** (the SO PIN lockout is
+  the separate decorator described above).
 - **No interpretation of enrolment data.**

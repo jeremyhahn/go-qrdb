@@ -102,6 +102,10 @@ type SOAuthenticator struct {
 	audit  audit.AuditLogger
 	logger *slog.Logger
 
+	// lockout counts failed SO PIN checks per tenant (SOPINLockout), the
+	// one lockout every SO PIN check on the node is held to.
+	lockout *SOPINLockout
+
 	// auditFailure is what VerifySOPIN does when a verification outcome
 	// cannot be recorded (go-qrdb#445).
 	//
@@ -147,7 +151,7 @@ func NewSOAuthenticator(store kvstore.KVStore, auditLogger audit.AuditLogger, lo
 	if logger == nil {
 		return nil, ErrNilLogger
 	}
-	a := &SOAuthenticator{store: store, audit: auditLogger, logger: logger}
+	a := &SOAuthenticator{store: store, audit: auditLogger, logger: logger, lockout: NewSOPINLockout(nil)}
 	for _, opt := range opts {
 		opt(a)
 	}
@@ -320,9 +324,27 @@ func (a *SOAuthenticator) VerifySOPIN(ctx context.Context, tenantID string, pres
 	// enclave holds — go-enclave gives every enclave its own independent
 	// lock, so there is no cross-enclave contention to avoid in the first
 	// place.
-	if err := pinBuf.WithBytes(func(pin []byte) error {
-		return verifyPIN(pin, string(record))
-	}); err != nil {
+	//
+	// The comparison runs under the tenant's SO PIN lockout, on the counter
+	// of the caller's class (AuthenticatedCaller): once the free failures are
+	// spent, even the right PIN is refused, uncompared, until the backoff
+	// passes.
+	err = a.lockout.Check(tenantID, AuthenticatedCaller(ctx), func() error {
+		if verr := pinBuf.WithBytes(func(pin []byte) error {
+			return verifyPIN(pin, string(record))
+		}); verr != nil {
+			return ErrSOPINInvalid
+		}
+		return nil
+	}, func(err error) bool { return errors.Is(err, ErrSOPINInvalid) })
+	var locked *SOPINLockedError
+	if errors.As(err, &locked) {
+		if gateErr := a.emitVerify(ctx, tenantID, audit.OutcomeFailure+":locked"); gateErr != nil {
+			return gateErr
+		}
+		return err
+	}
+	if err != nil {
 		if gateErr := a.emitVerify(ctx, tenantID, audit.OutcomeFailure+":invalid"); gateErr != nil {
 			return gateErr
 		}

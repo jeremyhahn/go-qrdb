@@ -15,45 +15,32 @@
 package pin
 
 import (
+	"context"
 	"errors"
-	"sync"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 )
 
 // The SO PIN lockout. Several SO-PIN-gated operations are reachable without
 // authentication on the boot-time sealed-window listener -- barrier
 // initialization, seal, CSR signing -- and the SO PIN is their only
-// authorization, so every call is an online guess at the PIN. The lockout
-// lives here, in a PINBackend decorator, so that every SO PIN check on the
-// node counts against ONE counter whichever operation and transport made it:
-// a guess spent on a seal costs the same as one spent on a rekey.
+// authorization, so every such call is an online guess at the PIN. The
+// lockout sits in a PINBackend decorator, so every SO PIN check on the node
+// is counted whichever operation and transport made it.
 //
-// Only failed checks count. The first SOPINFreeFailures failures in a row
-// cost nothing, so an operator can mistype; every failure from then on locks
-// the SO PIN for a backoff that doubles each time, from SOPINBaseBackoff up
-// to SOPINMaxBackoff. A correct PIN resets the count. A legitimate officer is
-// therefore never refused for volume: requests that never reach the check,
-// and successful checks, cost nothing.
-//
-// Once the backoff reaches its cap an attacker gets about 96 guesses a day,
-// so the SO PIN needs at least 40 bits of entropy to hold for decades -- for
-// example 8 random characters from a 62-character alphabet (about 47 bits)
-// or a 12-digit random number (about 40 bits).
-const (
-	// SOPINFreeFailures is the number of consecutive wrong SO PINs admitted
-	// before the lockout engages.
-	SOPINFreeFailures = 5
-	// SOPINBaseBackoff is the lockout after the first failure past the free
-	// ones.
-	SOPINBaseBackoff = time.Second
-	// SOPINMaxBackoff caps the doubling backoff.
-	SOPINMaxBackoff = 15 * time.Minute
-)
+// The counting itself is auth.SOPINLockout, the one implementation shared
+// with the per-tenant SO PIN (auth.SOAuthenticator): two counters, one for
+// anonymous sealed-window checks and one for checks by an authenticated or
+// TLS-verified caller, so anonymous traffic can never lock an authenticated
+// Security Officer out. See auth.SOPINLockout for the policy, the backoff and
+// the recovery path.
 
 // SOPINLockedError is returned by every SO PIN check of a lockout backend
-// (see NewLockoutBackend) while it is locked out after repeated failures. The
-// presented PIN was not compared. It unwraps to ErrPINLocked, the PIN-lockout
-// condition every transport answers as 429 / RESOURCE_EXHAUSTED.
+// (see NewLockoutBackend) while its counter is locked out after repeated
+// failures (auth.SOPINLockout). The presented PIN was not compared. It unwraps to ErrPINLocked,
+// the PIN-lockout condition every transport answers as 429 /
+// RESOURCE_EXHAUSTED.
 type SOPINLockedError struct {
 	// RetryAfter is how long until the next check is admitted.
 	RetryAfter time.Duration
@@ -67,18 +54,25 @@ func (e *SOPINLockedError) Error() string {
 // Unwrap returns ErrPINLocked.
 func (e *SOPINLockedError) Unwrap() error { return ErrPINLocked }
 
-// lockoutBackend decorates a PINBackend with the SO PIN lockout. Every method
-// that compares a presented SO PIN -- VerifySOPIN, SetSOPIN with a current
-// PIN, ChangeSOPIN, SetUserPIN, ResetLockout -- runs through check; the rest
-// pass straight through.
+// lockoutShared is the state one decorated backend's views share: the
+// counting, keyed by the node.
+type lockoutShared struct {
+	lockout *auth.SOPINLockout
+}
+
+// nodeSOPINKey keys the node SO PIN in the shared lockout.
+const nodeSOPINKey = "node"
+
+// lockoutBackend decorates a PINBackend with the SO PIN lockout. It is a view
+// of the decoration bound to one counter: NewLockoutBackend returns the
+// anonymous view, and ForCaller the view the caller's class selects. Every
+// method that compares a presented SO PIN -- VerifySOPIN, SetSOPIN with a
+// current PIN, ChangeSOPIN, SetUserPIN, ResetLockout -- runs through check on
+// the view's counter; the rest pass straight through.
 type lockoutBackend struct {
 	PINBackend
-
-	mu          sync.Mutex
-	failures    int
-	lockedUntil time.Time
-	// now is the clock; nil means time.Now. Tests replace it.
-	now func() time.Time
+	shared        *lockoutShared
+	authenticated bool
 }
 
 var (
@@ -86,15 +80,19 @@ var (
 	_ FIDO2HashVerifier = (*lockoutBackend)(nil)
 )
 
-// NewLockoutBackend returns backend decorated with the SO PIN lockout. It is
-// idempotent: a backend that is already decorated is returned as it is, so a
-// backend that crosses more than one composition seam keeps ONE counter. A
-// nil backend is returned as nil, so the PIN-gated operations still fail
-// closed with ErrBackendNotConfigured.
+// NewLockoutBackend returns backend decorated with the SO PIN lockout, as its
+// anonymous view: a check made through it without a caller in hand counts
+// against the anonymous counter, which can never lock out an authenticated
+// SO. Callers that know who is asking select the counter with ForCaller.
+//
+// It is idempotent: a backend that is already decorated is returned as it
+// is, so a backend that crosses more than one composition seam keeps ONE pair
+// of counters. A nil backend is returned as nil, so the PIN-gated operations
+// still fail closed with ErrBackendNotConfigured.
 //
 // Install it where the node's backend is chosen, before the backend is handed
-// to more than one consumer: two decorators around the same backend are two
-// counters, and each would admit its own free failures.
+// to more than one consumer: two decorations of the same backend are two
+// pairs of counters, and each would admit its own free failures.
 func NewLockoutBackend(backend PINBackend) PINBackend {
 	if backend == nil {
 		return nil
@@ -102,7 +100,26 @@ func NewLockoutBackend(backend PINBackend) PINBackend {
 	if _, ok := backend.(*lockoutBackend); ok {
 		return backend
 	}
-	return &lockoutBackend{PINBackend: backend}
+	return newLockoutBackend(backend, nil)
+}
+
+// newLockoutBackend decorates backend with a lockout on clock (nil means
+// time.Now), as its anonymous view.
+func newLockoutBackend(backend PINBackend, clock func() time.Time) *lockoutBackend {
+	return &lockoutBackend{PINBackend: backend, shared: &lockoutShared{lockout: auth.NewSOPINLockout(clock)}}
+}
+
+// ForCaller returns the view of backend whose SO PIN checks count against the
+// counter of the caller in ctx: the authenticated counter for an
+// authenticated identity (not admitted anonymously by the sealed window) or a
+// TLS-verified certificate, the anonymous counter otherwise. A backend that
+// is not decorated is returned as it is.
+func ForCaller(ctx context.Context, backend PINBackend) PINBackend {
+	b, ok := backend.(*lockoutBackend)
+	if !ok {
+		return backend
+	}
+	return &lockoutBackend{PINBackend: b.PINBackend, shared: b.shared, authenticated: auth.AuthenticatedCaller(ctx)}
 }
 
 // VerifySOPIN verifies the SO PIN under the lockout.
@@ -145,19 +162,17 @@ func (b *lockoutBackend) ResetLockout(soPIN string) error {
 }
 
 // GetLockoutStatus reports the decorated backend's native lockout when it has
-// one, else this decorator's SO PIN lockout.
+// one, else this view's counter.
 func (b *lockoutBackend) GetLockoutStatus() *LockoutStatus {
 	if status := b.PINBackend.GetLockoutStatus(); status != nil {
 		return status
 	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	now := b.clock()
-	status := &LockoutStatus{FailedAttempts: b.failures, MaxAttempts: SOPINFreeFailures}
-	if now.Before(b.lockedUntil) {
+	failures, lockedUntil := b.shared.lockout.Status(nodeSOPINKey, b.authenticated)
+	status := &LockoutStatus{FailedAttempts: failures, MaxAttempts: auth.SOPINFreeFailures}
+	if !lockedUntil.IsZero() {
 		status.IsLocked = true
-		status.LockoutUntil = b.lockedUntil
-		status.RecoverySeconds = int(b.lockedUntil.Sub(now).Seconds())
+		status.LockoutUntil = lockedUntil
+		status.RecoverySeconds = int(lockedUntil.Sub(b.shared.lockout.Now()).Seconds())
 	}
 	return status
 }
@@ -171,41 +186,15 @@ func (b *lockoutBackend) VerifyFIDO2Hash(hash []byte) bool {
 	return false
 }
 
-// clock returns the current time.
-func (b *lockoutBackend) clock() time.Time {
-	if b.now != nil {
-		return b.now()
-	}
-	return time.Now()
-}
-
-// check runs verify, the decorated backend's SO PIN comparison, unless the SO
-// PIN is locked out. Checks run one at a time and a failure is counted before
-// the next check starts, so guesses fired concurrently are no cheaper than
-// guesses fired in turn. It returns verify's result unchanged, or
-// *SOPINLockedError without running verify while locked out. Only a wrong PIN
-// counts as a failure (see isSOPINMismatch): a backend that cannot answer is
-// not a guess.
+// check runs verify, the decorated backend's SO PIN comparison, through the
+// shared lockout on this view's counter. A refusal while locked out is
+// *SOPINLockedError, and verify did not run. Only a wrong PIN counts (see
+// isSOPINMismatch): a backend that cannot answer is not a guess.
 func (b *lockoutBackend) check(verify func() error) error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	now := b.clock()
-	if now.Before(b.lockedUntil) {
-		return &SOPINLockedError{RetryAfter: b.lockedUntil.Sub(now)}
-	}
-	err := verify()
-	if err == nil {
-		b.failures = 0
-		b.lockedUntil = time.Time{}
-		return nil
-	}
-	if !isSOPINMismatch(err) {
-		return err
-	}
-	b.failures++
-	if b.failures >= SOPINFreeFailures {
-		b.lockedUntil = now.Add(soPINBackoff(b.failures - SOPINFreeFailures))
+	err := b.shared.lockout.Check(nodeSOPINKey, b.authenticated, verify, isSOPINMismatch)
+	var locked *auth.SOPINLockedError
+	if errors.As(err, &locked) {
+		return &SOPINLockedError{RetryAfter: locked.RetryAfter}
 	}
 	return err
 }
@@ -217,14 +206,4 @@ func (b *lockoutBackend) check(verify func() error) error {
 func isSOPINMismatch(err error) bool {
 	var withStatus *ErrPINInvalidWithStatus
 	return errors.Is(err, ErrPINInvalid) || errors.Is(err, ErrInvalidCurrentPIN) || errors.As(err, &withStatus)
-}
-
-// soPINBackoff is the lockout after the n-th failure past the free ones:
-// SOPINBaseBackoff doubled n times, capped at SOPINMaxBackoff.
-func soPINBackoff(n int) time.Duration {
-	backoff := SOPINBaseBackoff
-	for i := 0; i < n && backoff < SOPINMaxBackoff; i++ {
-		backoff *= 2
-	}
-	return min(backoff, SOPINMaxBackoff)
 }
