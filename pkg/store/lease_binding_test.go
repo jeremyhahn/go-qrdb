@@ -35,6 +35,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -270,7 +271,7 @@ func TestLeaseBinding_TransactionPutMovesKey(t *testing.T) {
 		a, b := h.grant(60), h.grant(60)
 		h.put("k", "old", a)
 
-		cmp, err := protocol.EncodeCompare([]byte("k"), compareTargetValue, 0, []byte("old"), 0, 0, 0)
+		cmp, err := protocol.EncodeCompare([]byte("k"), byte(service.CompareValue), 0, []byte("old"), 0, 0, 0)
 		if err != nil {
 			t.Fatalf("EncodeCompare: %v", err)
 		}
