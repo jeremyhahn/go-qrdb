@@ -53,6 +53,12 @@ are not reconstructed here — their history is in the git log.
   and that a non-conforming CA's certificates are refused, fail-closed, with
   `*ceremony.CertSubjectError` or `*ceremony.IssuedCertCapabilityError`.
 
+### Fixed
+
+- **docs/shamir-custody/user.md no longer says an officer certificate reaches
+  the unseal step.** It reaches the officer claim steps only; unseal shares are
+  submitted as a user or an administrator. Documentation only.
+
 ## [0.28.1-alpha] - 2026-10-02
 
 Security hotfix. This release contains BREAKING changes; see the entries below. Highlights:
