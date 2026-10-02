@@ -947,6 +947,9 @@ func pebbleHandlePut(s *PebbleStateMachine, batch *pebble.Batch, payload []byte)
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
+	if res, refused := statemachine.ReservedKeyRefusal(cmd.Key); refused {
+		return res, nil, nil
+	}
 
 	// Capture previous value for watch notifications.
 	prevKv := s.watchPrevKV(batch, cmd.Key)
@@ -992,6 +995,9 @@ func pebbleHandlePutIfAbsent(s *PebbleStateMachine, batch *pebble.Batch, payload
 	cmd, err := kv.DecodeCommand(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
+	}
+	if res, refused := statemachine.ReservedKeyRefusal(cmd.Key); refused {
+		return res, nil, nil
 	}
 
 	absent, getErr := s.keyIsAbsentInBatch(batch, cmd.Key)
@@ -1041,6 +1047,9 @@ func pebbleHandleCompareAndDelete(s *PebbleStateMachine, batch *pebble.Batch, pa
 	key, expected, err := protocol.DecodeCompareAndDelete(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
+	}
+	if res, refused := statemachine.ReservedKeyRefusal(key); refused {
+		return res, nil, nil
 	}
 
 	current, getErr := s.getKeyInBatch(batch, key)
@@ -1093,6 +1102,9 @@ func pebbleHandleCompareAndSwap(s *PebbleStateMachine, batch *pebble.Batch, payl
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
+	if res, refused := statemachine.ReservedKeyRefusal(key); refused {
+		return res, nil, nil
+	}
 
 	current, getErr := s.getKeyInBatch(batch, key)
 	if getErr != nil {
@@ -1140,6 +1152,9 @@ func pebbleHandleDelete(s *PebbleStateMachine, batch *pebble.Batch, payload []by
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
+	if res, refused := statemachine.ReservedKeyRefusal(cmd.Key); refused {
+		return res, nil, nil
+	}
 
 	// Capture previous value for watch notifications.
 	prevKv := s.watchPrevKV(batch, cmd.Key)
@@ -1176,6 +1191,9 @@ func pebbleHandleMVCCPut(s *PebbleStateMachine, batch *pebble.Batch, payload []b
 	key, value, leaseID, err := protocol.DecodeMVCCPut(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
+	}
+	if res, refused := statemachine.ReservedKeyRefusal(key); refused {
+		return res, nil, nil
 	}
 	if res, refused := statemachine.LeaseRefusal(s.lessor, leaseID); refused {
 		return res, nil, nil
@@ -1219,6 +1237,9 @@ func pebbleHandleMVCCPutIfAbsent(s *PebbleStateMachine, batch *pebble.Batch, pay
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
+	if res, refused := statemachine.ReservedKeyRefusal(key); refused {
+		return res, nil, nil
+	}
 	if res, refused := statemachine.LeaseRefusal(s.lessor, leaseID); refused {
 		return res, nil, nil
 	}
@@ -1258,6 +1279,9 @@ func pebbleHandleMVCCDelete(s *PebbleStateMachine, batch *pebble.Batch, payload 
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
+	if res, refused := statemachine.ReservedKeyRefusal(key); refused {
+		return res, nil, nil
+	}
 
 	// Capture previous value for watch notifications.
 	prevKv := s.watchPrevKV(batch, key)
@@ -1295,6 +1319,9 @@ func pebbleHandleBatch(s *PebbleStateMachine, batch *pebble.Batch, payload []byt
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
+	if res, refused := statemachine.ReservedKeyRefusal(statemachine.OpKeys(ops)...); refused {
+		return res, nil, nil
+	}
 
 	// Pre-validate the OPCODES: an operation this state machine cannot execute
 	// refuses the whole batch and stages nothing (validatePebbleOps).
@@ -1328,6 +1355,9 @@ func pebbleHandleTransaction(s *PebbleStateMachine, batch *pebble.Batch, payload
 	txn, err := protocol.DecodeTransaction(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
+	}
+	if res, refused := statemachine.ReservedKeyRefusal(append(statemachine.OpKeys(txn.SuccessOps), statemachine.OpKeys(txn.FailureOps)...)...); refused {
+		return res, nil, nil
 	}
 
 	// Reject revision-based compares BEFORE evaluating anything. This state

@@ -16,6 +16,7 @@ package statemachine
 
 import (
 	"errors"
+	"strconv"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
@@ -51,6 +52,7 @@ var refusalRules = []refusalRule{
 	// An absent capability declares itself (protocol.CapabilityError), as
 	// timeseries.NotCompiledError does.
 	{func(err error) bool { _, ok := protocol.AsCapabilityError(err); return ok }, protocol.AppErrorCapability},
+	{isType[ReservedKeyError], protocol.AppErrorInvalid},
 	{isType[lease.InvalidTTLError], protocol.AppErrorInvalid},
 	{isType[lease.ExistsError], protocol.AppErrorConflict},
 	{isType[lease.LessorClosedError], protocol.AppErrorUnavailable},
@@ -134,4 +136,37 @@ func OpsLeaseRefusal(lr *lease.Lessor, ops []protocol.DecodedOp) (sm.Result, boo
 		}
 	}
 	return sm.Result{}, false
+}
+
+// ReservedKeyError refuses a write naming a key that begins with 0x00, the
+// byte a state machine that stores user keys raw reserves for its own records
+// (the last-applied index, the lease table). Such a write could overwrite or
+// delete one of them -- forge a lease, roll back the applied index.
+type ReservedKeyError struct {
+	Key []byte
+}
+
+func (e *ReservedKeyError) Error() string {
+	return "statemachine: key " + strconv.Quote(string(e.Key)) + " is in the reserved 0x00 namespace"
+}
+
+// ReservedKeyRefusal answers whether a write naming keys must be refused
+// because one of them is in the reserved 0x00 namespace, and if so returns
+// the refusal. It is asked before the write stages anything.
+func ReservedKeyRefusal(keys ...[]byte) (sm.Result, bool) {
+	for _, k := range keys {
+		if len(k) > 0 && k[0] == 0x00 {
+			return RefusalResult(&ReservedKeyError{Key: k}), true
+		}
+	}
+	return sm.Result{}, false
+}
+
+// OpKeys returns the keys an operation set names, for ReservedKeyRefusal.
+func OpKeys(ops []protocol.DecodedOp) [][]byte {
+	keys := make([][]byte, 0, len(ops))
+	for _, op := range ops {
+		keys = append(keys, op.Key)
+	}
+	return keys
 }
