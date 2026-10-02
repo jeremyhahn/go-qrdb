@@ -23,8 +23,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jeremyhahn/go-quicraft/pkg/sm"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
@@ -34,12 +32,6 @@ import (
 // ---------------------------------------------------------------------------
 // Test helpers for ConcurrentStateMachine subsystem tests
 // ---------------------------------------------------------------------------
-
-func newConcurrentWithMVCC(ms MVCCStore) (*ConcurrentStateMachine, *memStorage) {
-	store := newMemStorage()
-	csm := NewConcurrentStateMachine(1, 1, store, WithConcurrentMVCCStore(ms))
-	return csm, store
-}
 
 func newConcurrentWithLease(lm LeaseManager) (*ConcurrentStateMachine, *memStorage) {
 	store := newMemStorage()
@@ -57,14 +49,6 @@ func newConcurrentWithTS(ts TimeSeriesStore) (*ConcurrentStateMachine, *memStora
 	store := newMemStorage()
 	csm := NewConcurrentStateMachine(1, 1, store, WithConcurrentTimeSeriesStore(ts))
 	return csm, store
-}
-
-func concurrentApplyCmd(t *testing.T, csm *ConcurrentStateMachine, cmd []byte) (sm.Result, error) {
-	t.Helper()
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	err := csm.Update(context.Background(), entries, results)
-	return results[0], err
 }
 
 // ---------------------------------------------------------------------------
@@ -149,31 +133,6 @@ func TestConcurrentStateMachine_MVCCRange_StoreError(t *testing.T) {
 	csm, _ := newConcurrentWithMVCC(ms)
 
 	cmd := mustEncode(protocol.EncodeMVCCRange([]byte("a"), []byte("z"), 0, 100, false, false))
-	_, err := concurrentApplyCmd(t, csm, cmd)
-	if err == nil {
-		t.Fatal("expected error from store")
-	}
-}
-
-func TestConcurrentStateMachine_MVCCCompact_Success(t *testing.T) {
-	ms := &mockMVCCStore{}
-	csm, _ := newConcurrentWithMVCC(ms)
-
-	cmd := mustEncode(protocol.EncodeMVCCCompactPrefix(nil, 10))
-	result, err := concurrentApplyCmd(t, csm, cmd)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.Value == 0 {
-		t.Fatal("expected non-zero revision")
-	}
-}
-
-func TestConcurrentStateMachine_MVCCCompact_StoreError(t *testing.T) {
-	ms := &mockMVCCStore{compactErr: errors.New("compact fail")}
-	csm, _ := newConcurrentWithMVCC(ms)
-
-	cmd := mustEncode(protocol.EncodeMVCCCompactPrefix(nil, 10))
 	_, err := concurrentApplyCmd(t, csm, cmd)
 	if err == nil {
 		t.Fatal("expected error from store")

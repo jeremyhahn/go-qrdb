@@ -109,11 +109,10 @@ func TestKVDispatch_TSWriteBatch_Empty(t *testing.T) {
 
 type errMVCCStore struct {
 	kvMockMVCCStore
-	putErr     error
-	deleteErr  error
-	rangeErr   error
-	compactErr error
-	txnErr     error
+	putErr    error
+	deleteErr error
+	rangeErr  error
+	txnErr    error
 }
 
 func (m *errMVCCStore) Put(key, value []byte, leaseID int64, revision uint64) (interface{}, error) {
@@ -129,11 +128,6 @@ func (m *errMVCCStore) Delete(key []byte, revision uint64) (interface{}, error) 
 func (m *errMVCCStore) Range(start, end []byte, revision, limit int64, countOnly, keysOnly bool) (interface{}, int64, error) {
 	m.rangeCalled = true
 	return nil, 0, m.rangeErr
-}
-
-func (m *errMVCCStore) Compact(prefix []byte, revision int64) error {
-	m.compactCalled = true
-	return m.compactErr
 }
 
 func (m *errMVCCStore) Transaction(compares []MVCCCompare, successOps, failureOps []MVCCOp) (bool, int64, interface{}, error) {
@@ -201,25 +195,6 @@ func TestKVDispatch_MVCCRange_StorageError(t *testing.T) {
 	}
 }
 
-func TestKVDispatch_MVCCCompact_StorageError(t *testing.T) {
-	storageErr := errors.New("compact error")
-	mvcc := &errMVCCStore{compactErr: storageErr}
-	k := newTestKVSM(WithKVMVCCStore(mvcc))
-
-	cmd := mustEncode(protocol.EncodeMVCCCompactPrefix(nil, 5))
-	entries := []sm.Entry{{Cmd: cmd}}
-	results := make([]sm.Result, 1)
-
-	err := k.Update(entries, results)
-	var storErr *StorageError
-	if !errors.As(err, &storErr) {
-		t.Fatalf("expected StorageError, got %T: %v", err, err)
-	}
-	if storErr.Op != "mvcc-compact" {
-		t.Fatalf("expected op 'mvcc-compact', got %q", storErr.Op)
-	}
-}
-
 func TestKVDispatch_Transaction_StorageError(t *testing.T) {
 	storageErr := errors.New("txn error")
 	mvcc := &errMVCCStore{txnErr: storageErr}
@@ -268,10 +243,6 @@ func (m *failedTransactionMVCCStore) Delete(key []byte, revision uint64) (interf
 
 func (m *failedTransactionMVCCStore) Range(start, end []byte, revision, limit int64, countOnly, keysOnly bool) (interface{}, int64, error) {
 	return nil, 0, nil
-}
-
-func (m *failedTransactionMVCCStore) Compact(prefix []byte, revision int64) error {
-	return nil
 }
 
 func (m *failedTransactionMVCCStore) Transaction(compares []MVCCCompare, successOps, failureOps []MVCCOp) (bool, int64, interface{}, error) {

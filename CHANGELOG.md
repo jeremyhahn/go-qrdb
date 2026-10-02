@@ -105,8 +105,11 @@ are not reconstructed here — their history is in the git log.
   re-checks all three at apply and answers in the result. A compacted window of
   `MVCCScanChangesQuery` is now refused instead of returning an empty key set, and the etcd
   listener's `Range` below the floor answers `ErrGRPCCompacted` instead of `Internal`.
-- **BREAKING: Go API.** `statemachine.MVCCStore.Compact(prefix []byte, revision int64)`
-  (was `Compact(revision)`), `watch.HistoryReplayer.CompactedRevision(key, rangeEnd []byte)`
+- **BREAKING: Go API.** `statemachine.MVCCStore.Compact` (`sdk.MVCCStore`) is removed: no
+  implementation existed, and the state machines of `pkg/statemachine` -- regular, concurrent,
+  fast and kv -- no longer dispatch compaction, refusing it as an unknown opcode like any verb
+  they are not built with; MVCC compaction is the MVCC engine's (`pkg/engine`).
+  `watch.HistoryReplayer.CompactedRevision(key, rangeEnd []byte)`
   (was `CompactedRevision()`), `mvcc.Store.CompactedRevision` replaced by
   `CompactionFloor`/`CompactedRevisionForKey`/`CompactedRevisionForRange`/`CompactedRevisionForPrefix`,
   and `mvcc.CompactedKey` by `CompactionFloorKey(prefix)`. New: `service.PrefixCompactor`,

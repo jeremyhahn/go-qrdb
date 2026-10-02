@@ -75,23 +75,6 @@ func (c *ConcurrentStateMachine) handleMVCCRange(payload []byte, revision uint64
 	return sm.Result{Value: revision}, nil
 }
 
-func (c *ConcurrentStateMachine) handleMVCCCompact(payload []byte, revision uint64) (sm.Result, error) {
-	if c.mvccStore == nil {
-		return sm.Result{}, &ServiceNotConfiguredError{Service: "mvcc"}
-	}
-
-	prefix, compactRevision, err := protocol.DecodeMVCCCompactPrefix(payload)
-	if err != nil {
-		return sm.Result{}, &IncompleteDataError{Reason: "mvcc compact: " + err.Error()}
-	}
-
-	if compactErr := c.mvccStore.Compact(prefix, compactRevision); compactErr != nil {
-		return sm.Result{}, &StorageError{Op: "mvcc-compact", Inner: compactErr}
-	}
-
-	return sm.Result{Value: revision}, nil
-}
-
 func (c *ConcurrentStateMachine) handleTransaction(payload []byte, _ uint64) (sm.Result, error) {
 	if c.mvccStore == nil {
 		return sm.Result{}, &ServiceNotConfiguredError{Service: "mvcc"}

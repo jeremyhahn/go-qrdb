@@ -24,8 +24,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jeremyhahn/go-quicraft/pkg/sm"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
@@ -35,10 +33,6 @@ import (
 // ---------------------------------------------------------------------------
 // Test helpers for RegularStateMachine subsystem tests
 // ---------------------------------------------------------------------------
-
-func newRegularWithMVCC(ms MVCCStore) *RegularStateMachine {
-	return NewRegularStateMachine(WithRegularMVCCStore(ms))
-}
 
 func newRegularWithLease(lm LeaseManager) *RegularStateMachine {
 	return NewRegularStateMachine(WithRegularLeaseManager(lm))
@@ -50,14 +44,6 @@ func newRegularWithIndex(im IndexManager) *RegularStateMachine {
 
 func newRegularWithTS(ts TimeSeriesStore) *RegularStateMachine {
 	return NewRegularStateMachine(WithRegularTimeSeriesStore(ts))
-}
-
-func regularApplyCmd(t *testing.T, rsm *RegularStateMachine, cmd []byte) (sm.Result, error) {
-	t.Helper()
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	err := rsm.Update(context.Background(), entries, results)
-	return results[0], err
 }
 
 // ---------------------------------------------------------------------------
@@ -235,31 +221,6 @@ func TestRegularStateMachine_MVCCRange_StoreError(t *testing.T) {
 	rsm := newRegularWithMVCC(ms)
 
 	cmd := mustEncode(protocol.EncodeMVCCRange([]byte("a"), []byte("z"), 0, 100, false, false))
-	_, err := regularApplyCmd(t, rsm, cmd)
-	if err == nil {
-		t.Fatal("expected error from store")
-	}
-}
-
-func TestRegularStateMachine_MVCCCompact_Success(t *testing.T) {
-	ms := &mockMVCCStore{}
-	rsm := newRegularWithMVCC(ms)
-
-	cmd := mustEncode(protocol.EncodeMVCCCompactPrefix(nil, 10))
-	result, err := regularApplyCmd(t, rsm, cmd)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.Value == 0 {
-		t.Fatal("expected non-zero revision")
-	}
-}
-
-func TestRegularStateMachine_MVCCCompact_StoreError(t *testing.T) {
-	ms := &mockMVCCStore{compactErr: errors.New("compact fail")}
-	rsm := newRegularWithMVCC(ms)
-
-	cmd := mustEncode(protocol.EncodeMVCCCompactPrefix(nil, 10))
 	_, err := regularApplyCmd(t, rsm, cmd)
 	if err == nil {
 		t.Fatal("expected error from store")

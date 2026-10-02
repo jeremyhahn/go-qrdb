@@ -1669,22 +1669,6 @@ func TestKVDispatch_MVCCRange_NotConfigured(t *testing.T) {
 	}
 }
 
-func TestKVDispatch_MVCCCompact_NotConfigured(t *testing.T) {
-	k := NewKVStateMachine(NewStandardBackend())
-
-	cmd := mustEncode(protocol.EncodeMVCCCompactPrefix(nil, 5))
-	entries := []sm.Entry{{Cmd: cmd}}
-	results := make([]sm.Result, 1)
-
-	err := k.Update(entries, results)
-	if err != nil {
-		t.Fatalf("Update must not return error for unconfigured mvcc service: %v", err)
-	}
-	if len(results[0].Data) == 0 {
-		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data for MVCCCompact")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // kv_dispatch.go — Transaction decode error
 // ---------------------------------------------------------------------------
@@ -1870,24 +1854,6 @@ func TestKVDispatch_MVCCRange_DecodeError(t *testing.T) {
 	err := k.Update(entries, results)
 	if err == nil {
 		t.Fatal("expected IncompleteDataError for truncated MVCCRange payload")
-	}
-	var ide *IncompleteDataError
-	if !stderrors.As(err, &ide) {
-		t.Fatalf("expected IncompleteDataError, got %T: %v", err, err)
-	}
-}
-
-func TestKVDispatch_MVCCCompact_DecodeError(t *testing.T) {
-	mvcc := &kvMockMVCCStore{}
-	k := NewKVStateMachine(NewStandardBackend(), WithKVMVCCStore(mvcc))
-
-	// Truncated MVCCCompact payload (needs 8 bytes for int64, give only 1)
-	entries := []sm.Entry{{Cmd: []byte{protocol.OpMVCCCompactPrefix, 0x01}}}
-	results := make([]sm.Result, 1)
-
-	err := k.Update(entries, results)
-	if err == nil {
-		t.Fatal("expected IncompleteDataError for truncated MVCCCompact payload")
 	}
 	var ide *IncompleteDataError
 	if !stderrors.As(err, &ide) {

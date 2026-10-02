@@ -70,11 +70,6 @@ func TestRegularStateMachine_MVCCRange_DecodeError(t *testing.T) {
 	applyTruncated(t, rsm.Update, protocol.OpMVCCRange)
 }
 
-func TestRegularStateMachine_MVCCCompact_DecodeError(t *testing.T) {
-	rsm := newRegularWithMVCC(&mockMVCCStore{})
-	applyTruncated(t, rsm.Update, protocol.OpMVCCCompactPrefix)
-}
-
 func TestRegularStateMachine_Transaction_DecodeError(t *testing.T) {
 	rsm := newRegularWithMVCC(&mockMVCCStore{})
 	applyTruncated(t, rsm.Update, protocol.OpTransaction)
@@ -153,11 +148,6 @@ func TestConcurrentStateMachine_MVCCRange_DecodeError(t *testing.T) {
 	applyTruncated(t, concurrentUpdate(csm), protocol.OpMVCCRange)
 }
 
-func TestConcurrentStateMachine_MVCCCompact_DecodeError(t *testing.T) {
-	csm, _ := newConcurrentWithMVCC(&mockMVCCStore{})
-	applyTruncated(t, concurrentUpdate(csm), protocol.OpMVCCCompactPrefix)
-}
-
 func TestConcurrentStateMachine_Transaction_DecodeError(t *testing.T) {
 	csm, _ := newConcurrentWithMVCC(&mockMVCCStore{})
 	applyTruncated(t, concurrentUpdate(csm), protocol.OpTransaction)
@@ -234,12 +224,6 @@ func TestFSM_MVCCRange_DecodeError(t *testing.T) {
 	ms := &mockMVCCStore{}
 	fsm, _ := newTestFSM(WithMVCCStore(ms))
 	applyTruncated(t, fsm.Update, protocol.OpMVCCRange)
-}
-
-func TestFSM_MVCCCompact_DecodeError(t *testing.T) {
-	ms := &mockMVCCStore{}
-	fsm, _ := newTestFSM(WithMVCCStore(ms))
-	applyTruncated(t, fsm.Update, protocol.OpMVCCCompactPrefix)
 }
 
 func TestFSM_Transaction_DecodeError(t *testing.T) {

@@ -70,12 +70,11 @@ type mockMVCCStore struct {
 	scanCalls       []mvccScanChangesCall
 
 	// Error injection
-	putErr     error
-	deleteErr  error
-	rangeErr   error
-	compactErr error
-	txnErr     error
-	scanErr    error
+	putErr    error
+	deleteErr error
+	rangeErr  error
+	txnErr    error
+	scanErr   error
 
 	// Return values
 	putResult     interface{}
@@ -122,14 +121,6 @@ func (m *mockMVCCStore) Range(start, end []byte, revision, limit int64, countOnl
 		KeysOnly:  keysOnly,
 	})
 	return m.rangeResult, m.rangeRevision, m.rangeErr
-}
-
-func (m *mockMVCCStore) Compact(prefix []byte, revision int64) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.compactCalls = append(m.compactCalls, revision)
-	m.compactPrefixes = append(m.compactPrefixes, append([]byte(nil), prefix...))
-	return m.compactErr
 }
 
 func (m *mockMVCCStore) Transaction(compares []MVCCCompare, successOps, failureOps []MVCCOp) (bool, int64, interface{}, error) {
@@ -420,79 +411,6 @@ func TestFSM_MVCCRange_StoreError(t *testing.T) {
 // ---------------------------------------------------------------------------
 // MVCC Compact (Update path)
 // ---------------------------------------------------------------------------
-
-func TestFSM_MVCCCompact_Success(t *testing.T) {
-	ms := &mockMVCCStore{}
-	fsm, _ := newTestFSMWithMVCC(ms)
-
-	cmd := mustEncode(protocol.EncodeMVCCCompactPrefix([]byte("acme/app/"), 42))
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-
-	err := fsm.Update(context.Background(), entries, results)
-	if err != nil {
-		t.Fatalf("Update(mvcc compact) failed: %v", err)
-	}
-
-	if results[0].Value == 0 {
-		t.Fatal("expected non-zero revision from MVCC compact")
-	}
-
-	ms.mu.Lock()
-	defer ms.mu.Unlock()
-
-	if len(ms.compactCalls) != 1 {
-		t.Fatalf("expected 1 compact call, got %d", len(ms.compactCalls))
-	}
-	if ms.compactCalls[0] != 42 {
-		t.Fatalf("expected compact revision 42, got %d", ms.compactCalls[0])
-	}
-	if string(ms.compactPrefixes[0]) != "acme/app/" {
-		t.Fatalf("compact prefix = %q, want the command's \"acme/app/\": a store-wide compaction would discard every tenant's history", ms.compactPrefixes[0])
-	}
-}
-
-func TestFSM_MVCCCompact_NotConfigured(t *testing.T) {
-	fsm, _ := newTestFSM()
-
-	cmd := mustEncode(protocol.EncodeMVCCCompactPrefix(nil, 10))
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-
-	err := fsm.Update(context.Background(), entries, results)
-	if err != nil {
-		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
-	}
-	if len(results[0].Data) == 0 {
-		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
-	}
-	if !bytes.Contains(results[0].Data, []byte("mvcc")) {
-		t.Fatalf("expected Data to mention %q, got %q", "mvcc", results[0].Data)
-	}
-}
-
-func TestFSM_MVCCCompact_StoreError(t *testing.T) {
-	storeErr := errors.New("compaction in progress")
-	ms := &mockMVCCStore{compactErr: storeErr}
-	fsm, _ := newTestFSMWithMVCC(ms)
-
-	cmd := mustEncode(protocol.EncodeMVCCCompactPrefix(nil, 5))
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-
-	err := fsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected StorageError, got nil")
-	}
-
-	var storageErr *StorageError
-	if !errors.As(err, &storageErr) {
-		t.Fatalf("expected StorageError, got %T: %v", err, err)
-	}
-	if storageErr.Op != "mvcc-compact" {
-		t.Fatalf("expected op 'mvcc-compact', got %q", storageErr.Op)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Transaction (Update path)
@@ -1283,30 +1201,6 @@ func TestFSM_MVCCMultipleEntries(t *testing.T) {
 // ---------------------------------------------------------------------------
 // MVCC Compact: negative revision
 // ---------------------------------------------------------------------------
-
-func TestFSM_MVCCCompact_NegativeRevision(t *testing.T) {
-	ms := &mockMVCCStore{}
-	fsm, _ := newTestFSMWithMVCC(ms)
-
-	cmd := mustEncode(protocol.EncodeMVCCCompactPrefix(nil, -1))
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-
-	err := fsm.Update(context.Background(), entries, results)
-	if err != nil {
-		t.Fatalf("Update(mvcc compact negative) failed: %v", err)
-	}
-
-	ms.mu.Lock()
-	defer ms.mu.Unlock()
-
-	if len(ms.compactCalls) != 1 {
-		t.Fatalf("expected 1 compact call, got %d", len(ms.compactCalls))
-	}
-	if ms.compactCalls[0] != -1 {
-		t.Fatalf("expected compact revision -1, got %d", ms.compactCalls[0])
-	}
-}
 
 // mvccScanChangesCall records one ScanChanges invocation.
 type mvccScanChangesCall struct {

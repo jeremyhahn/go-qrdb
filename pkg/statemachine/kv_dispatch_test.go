@@ -28,14 +28,13 @@ import (
 // ---------------------------------------------------------------------------
 
 type kvMockMVCCStore struct {
-	putCalled     bool
-	deleteCalled  bool
-	rangeCalled   bool
-	compactCalled bool
-	txnCalled     bool
-	scanCalled    bool
-	scanResult    interface{}
-	scanErr       error
+	putCalled    bool
+	deleteCalled bool
+	rangeCalled  bool
+	txnCalled    bool
+	scanCalled   bool
+	scanResult   interface{}
+	scanErr      error
 }
 
 // ScanChanges satisfies the MVCCStore interface.
@@ -57,11 +56,6 @@ func (m *kvMockMVCCStore) Delete(key []byte, revision uint64) (interface{}, erro
 func (m *kvMockMVCCStore) Range(start, end []byte, revision, limit int64, countOnly, keysOnly bool) (interface{}, int64, error) {
 	m.rangeCalled = true
 	return nil, 0, nil
-}
-
-func (m *kvMockMVCCStore) Compact(prefix []byte, revision int64) error {
-	m.compactCalled = true
-	return nil
 }
 
 func (m *kvMockMVCCStore) Transaction(compares []MVCCCompare, successOps, failureOps []MVCCOp) (bool, int64, interface{}, error) {
@@ -256,22 +250,6 @@ func TestKVDispatch_MVCCRange(t *testing.T) {
 	}
 	if !mvcc.rangeCalled {
 		t.Fatal("expected MVCCStore.Range to be called")
-	}
-}
-
-func TestKVDispatch_MVCCCompact(t *testing.T) {
-	mvcc := &kvMockMVCCStore{}
-	k := newTestKVSM(WithKVMVCCStore(mvcc))
-
-	cmd := mustEncode(protocol.EncodeMVCCCompactPrefix(nil, 10))
-	entries := []sm.Entry{{Cmd: cmd}}
-	results := make([]sm.Result, 1)
-
-	if err := k.Update(entries, results); err != nil {
-		t.Fatalf("MVCC Compact failed: %v", err)
-	}
-	if !mvcc.compactCalled {
-		t.Fatal("expected MVCCStore.Compact to be called")
 	}
 }
 

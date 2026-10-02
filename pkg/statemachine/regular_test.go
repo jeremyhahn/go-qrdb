@@ -1225,25 +1225,6 @@ func TestRegularStateMachine_MVCCRange_NotConfigured(t *testing.T) {
 	}
 }
 
-func TestRegularStateMachine_MVCCCompact_NotConfigured(t *testing.T) {
-	rsm := newTestRegularFSM()
-
-	cmd := []byte{protocol.OpMVCCCompactPrefix, 0x00}
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-
-	err := rsm.Update(context.Background(), entries, results)
-	if err != nil {
-		t.Fatalf("expected nil error (SNC encoded in result.Data), got %v", err)
-	}
-	if len(results[0].Data) == 0 {
-		t.Fatal("expected ServiceNotConfiguredError encoded in result.Data")
-	}
-	if !bytes.Contains(results[0].Data, []byte("mvcc")) {
-		t.Fatalf("expected Data to mention %q, got %q", "mvcc", results[0].Data)
-	}
-}
-
 // TestRegularStateMachine_Transaction_RunsNativelyWithoutMVCCStore pins
 // go-qrdb#136: with no MVCCStore injected — the "regular" sm_type as the
 // registry builds it — a transaction is decided against the map itself rather

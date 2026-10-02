@@ -183,10 +183,9 @@ func NewFastStateMachine(shardID, replicaID uint64, store storage.Storage, opts 
 		protocol.OpGuarded: f.handleGuarded,
 
 		// MVCC
-		protocol.OpMVCCPut:           f.handleMVCCPut,
-		protocol.OpMVCCDelete:        f.handleMVCCDelete,
-		protocol.OpMVCCRange:         f.handleMVCCRange,
-		protocol.OpMVCCCompactPrefix: f.handleMVCCCompact,
+		protocol.OpMVCCPut:    f.handleMVCCPut,
+		protocol.OpMVCCDelete: f.handleMVCCDelete,
+		protocol.OpMVCCRange:  f.handleMVCCRange,
 
 		// Transactions
 		protocol.OpTransaction: f.handleTransaction,
