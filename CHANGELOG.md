@@ -446,16 +446,31 @@ The CA key provider seam and replicated cluster CA. This release contains BREAKI
 - `DefaultCertProvider.CACertPEMs` enumerates every tenant's Key B CA
   certificate (or the single injected provider's), the seam the dynamic
   client-auth trust pool reads from.
-- `cmd/qrdbd`: the client-facing listeners' trust pool is dynamic.
-  `TLSBundle.wireClientTrustPool` installs `tls.Config.GetConfigForClient`
-  on the `*tls.Config` shared by REST, gRPC, Unix, QUIC, and MCP, verifying a
-  presented client certificate against Key A plus every tenant's Key B CA
-  certificate (`TLSBundle.SetKeyBProvider`, installed once the CertProvider
-  exists post-unseal). A Key B CA created, or rotated to an HSM-backed one,
-  after the listener started is picked up on the next connection, with no
-  restart. The peer/Raft/enrollment transport is unaffected: it already built
-  its own trust pool directly from Key A's certificate PEM, never from this
-  shared config, so a Key B leaf continues to be refused there.
+- `pkg/clienttrust`: the ONE shared implementation of the dynamic
+  client-auth trust pool. `Pool.Wire` installs `tls.Config.GetConfigForClient`
+  on a composer's own `*tls.Config`, verifying a presented client certificate
+  against Key A (the config's own `ClientCAs`, read fresh on every
+  connection) plus every tenant's Key B CA certificate
+  (`Pool.SetKeyBProvider`, installed once the `CertProvider` exists
+  post-unseal). A Key B CA created, or rotated to an HSM-backed one, after
+  the listener started is picked up on the next connection, with no restart.
+  `cmd/qrdbd`'s `TLSBundle.wireClientTrustPool`/`SetKeyBProvider` and
+  `sdk/go/node`'s `wireClientAndServer` both wire this package rather than
+  keeping independent copies of the logic; the `qrdb_embedded` composer opens
+  no network TLS listener, so there is nothing to wire it onto there. The
+  peer/Raft/enrollment transport is unaffected: it already built its own
+  trust pool directly from Key A's certificate PEM, never from a
+  client-facing listener's config, so a Key B leaf continues to be refused
+  there (now proven directly, `pkg/clustertls/peer_trust_domain_test.go`).
+- `auth.IssuerTenantBinding`: a verified client certificate's issuing CA must
+  be the cluster CA (Key A, any tenant) or the Key B CA registered for the
+  tenant the certificate's own Subject names -- never a foreign tenant's Key
+  B CA. Checked in `MTLSAuthenticator.Authenticate` against the verified
+  chain; `cert.DefaultCertProvider.IsTenantIssuer` is the seam it reads Key
+  B's registered CA from. `pkg/auth/wiring.BuildAuthMiddleware` wires it
+  automatically from a new `ClusterCA` config field, giving `cmd/qrdbd` and
+  `sdk/go/node` parity in one place. A mismatch is
+  `*auth.IssuerTenantMismatchError`.
 
 ### Changed
 
@@ -2775,12 +2790,20 @@ Fix release. Highlights:
 
 ### Fixed
 
-- **The documented Key B authentication parity gap is closed for the qrdbd
-  daemon composer.** A Key B-issued login certificate can now authenticate to
-  the daemon's own client-facing listeners. The SDK node builders
-  (`sdk/go/node`) and the `qrdb_embedded` composer still rely on each
-  listener's static, Key-A-only `ClientCAs` pool; wiring the same dynamic
-  pool there is tracked as follow-up work.
+- **The documented Key B authentication parity gap is closed.** A Key
+  B-issued login certificate now authenticates on the client-facing
+  listeners of both the qrdbd daemon composer and an `sdk/go/node`-embedded
+  one that supplies its own TLS config via `server.WithTLS`. Proven directly
+  for all five remote transports in
+  `sdk/go/conformance/key_b_login_test.go`.
+- **A latent QUIC ALPN-negotiation bug the dynamic trust pool would have
+  triggered in production is fixed before it shipped.** `pkg/api/quic/
+  server.go` clones the shared TLS config and pins its own ALPN protocol,
+  but `Clone()` copies a `GetConfigForClient` closure's reference, not its
+  effect: the closure still cloned from the PRE-pin config, so any QUIC
+  connection that took the dynamic (Key B) path would have been served the
+  wrong ALPN list and failed the handshake. The listener now wraps the
+  dynamic hook and re-pins its ALPN list on whatever config the hook returns.
 
 ## [0.30.0-alpha] - 2026-10-02
 

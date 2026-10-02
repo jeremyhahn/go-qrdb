@@ -779,34 +779,86 @@ node's own mTLS listener on any transport: `ClientCACertPool` was built once,
 at TLS setup, from Key A plus operator-configured client CA files only, and
 Key B's CA certificate (generated lazily, inside a sealed barrier, per
 tenant) had no path into it. `test/integration/api/cli_tenant_identity_ca_test.go`
-pinned this as a documented parity gap.
+pinned this as a documented parity gap; its step 7 now asserts the login
+succeeds.
 
-The fix is a dynamic trust pool, not a static one seeded at boot:
+The fix is a dynamic trust pool, not a static one seeded at boot, and it is
+ONE implementation (`pkg/clienttrust`) every composer wires rather than three
+copies of the same logic:
 
 - **Client-facing listeners (REST, gRPC, Unix, QUIC, MCP)** verify a
   presented client certificate against Key A **and** every tenant's Key B CA
   certificate, read fresh on every connection via
-  `DefaultCertProvider.CACertPEMs`. In the qrdbd daemon composer this is
-  `TLSBundle.wireClientTrustPool` (`cmd/qrdbd/tls.go`), which installs
-  `tls.Config.GetConfigForClient` on the single `*tls.Config` all five
-  transports share (`server.WithTLS`); `TLSBundle.SetKeyBProvider` installs
-  the live `cert.CertProvider` once it exists (after the first unseal), so a
-  Key B CA created — or rotated to an HSM-backed one via `WithCertKeyProvider`
-  — after the listener started is picked up on the next connection, not only
-  at boot. `GetConfigForClient` returning `(nil, nil)` keeps the original,
-  static (Key A-only) config, which is what happens before the first
+  `DefaultCertProvider.CACertPEMs`. `clienttrust.Pool.Wire` installs
+  `tls.Config.GetConfigForClient` on the composer's own `*tls.Config`, reading
+  its `ClientCAs` field fresh on every connection (not captured at Wire time)
+  as the Key A baseline; `clienttrust.Pool.SetKeyBProvider` installs the live
+  `cert.CertProvider` once it exists (after the first unseal), so a Key B CA
+  created — or rotated to an HSM-backed one via `WithCertKeyProvider` — after
+  the listener started is picked up on the next connection, not only at boot.
+  `GetConfigForClient` returning `(nil, nil)` keeps the original, static
+  (Key A-only) config, which is what happens before the first
   `SetKeyBProvider` call, and on every call where `CACertPEMs` fails — the
   ordinary outcome while sealed in Raft mode, where the replicated store
-  cannot be opened at all. **Normative target for the SDK node builders and
-  the `qrdb_embedded` composer; not yet wired there** — they still rely on
-  each listener's static `ClientCAs` pool (Key A only).
+  cannot be opened at all.
+  - **qrdbd**: `TLSBundle.wireClientTrustPool`/`SetKeyBProvider`
+    (`cmd/qrdbd/tls.go`) delegate to `clienttrust.Pool` directly.
+  - **sdk/go/node**: `wireClientAndServer` calls `clienttrust.New().Wire` on
+    whatever `*tls.Config` the embedder supplied via `server.WithTLS`
+    (resolved with `server.ResolveTLSConfig`), and `SetKeyBProvider` once
+    `svcNode.CertProv` exists. An embedder that instead relies on
+    `WithCeremonyCA` auto-provisioning (no explicit `WithTLS`) has no config
+    to wire this onto; that composition's listeners keep whatever posture
+    `ceremony.ServerTLSConfig` and the auth middleware already give them.
+  - **`qrdb_embedded`** (the Wails binding, `cmd/qrdb/bindings_server.go`)
+    opens no network TLS listener at all — only the in-process embedded
+    transport — so there is nothing for this seam to widen there.
+  - A real login proof across all five client-facing transports lives in
+    `sdk/go/conformance/key_b_login_test.go`
+    (`TestKeyBLogin_AuthenticatesOnEveryRemoteTransport`): a certificate
+    issued through a node's own Key B `CertProvider`, with NO client CA
+    seeded into the listener ahead of time, authenticates and completes an
+    authorized call.
 - **The peer/Raft/enrollment transport trusts Key A only, never Key B.** It
   never shares the client-facing listeners' `*tls.Config`: `buildHostConfig`
   constructs `quicraftconfig.MTLSConfig` directly from `bundle.CACertPEM`
   (Key A), so a Key B leaf (a tenant login certificate) presented there is
   refused without any extra code -- this is the enforcement of the "separate
   trust domains" ruling at the transport layer, not only at the issuance
-  layer.
+  layer. `pkg/clustertls/peer_trust_domain_test.go` reproduces the same
+  `ClientCAs`/`ClientAuth` shape over real `crypto/tls` and proves a Key B
+  leaf is refused there while a Key-A-signed node leaf is accepted.
+
+## Issuer-tenant binding
+
+Trusting every tenant's Key B CA on ONE shared listener creates a new
+question the pre-shared-pool design never had to answer: a presented
+certificate verifies against SOME CA in the pool, but which one, and does it
+match the tenant the certificate's own Subject OU (or SPIFFE SAN) claims?
+Without an answer, tenant A's Key B CA could mint a leaf naming tenant B in
+its OU, and it would authenticate as B — the dynamic pool verifies the
+signature, not which tenant the signing CA was ever issued for.
+
+`auth.IssuerTenantBinding`, checked in `MTLSAuthenticator.Authenticate` where
+the verified chain (`tls.ConnectionState.VerifiedChains[0]`) is available,
+closes this: the chain's trust anchor (the CA that actually verified the
+leaf) must be either the cluster CA (Key A — which legitimately signs holder
+and node certificates for any tenant, checked first and exempted) or the Key
+B CA **registered for the tenant the leaf's own Subject names**
+(`cert.DefaultCertProvider.IsTenantIssuer`, a byte-identical DER comparison,
+not a Subject-field comparison). A mismatch is
+`*auth.IssuerTenantMismatchError`, matching `ErrInvalidCertificate` like
+`CertificateTenantError`.
+
+`pkg/auth/wiring.BuildAuthMiddleware` — the single constructor `cmd/qrdbd`
+and `sdk/go/node` both call — builds the binding automatically from a new
+`ClusterCA` config field (a `ceremony.CeremonyCA`, the same cluster CA each
+composer already threads through for TLS auto-provisioning) and
+`CertProvider` (already present for revocation enforcement), which is what
+gives this parity across both composers in one place. A nil `ClusterCA`, or
+a `CertProvider` that does not implement the capability, leaves the check
+unenforced — the posture before it existed — so this is purely additive and
+never a regression for a composer that has not wired a cluster CA.
 
 ## Trust boundaries
 

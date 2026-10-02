@@ -123,36 +123,33 @@ func parseIDResponse(t *testing.T, proto ProtocolType, what, out string) string 
 // end-to-end via ca issue.
 //
 // Step 7 (using that identity to authenticate a barrier-init/barrier-unseal
-// call) was a VERIFIED, REPRODUCIBLE PARITY GAP, not a workaround-avoidance
-// choice: pkg/cert.DefaultCertProvider (used by `ca issue`) mints its own
-// independent CA on first use (pkg/server/lifecycle/lifecycle.go ->
+// call) was a VERIFIED, REPRODUCIBLE PARITY GAP: pkg/cert.
+// DefaultCertProvider (used by `ca issue`) mints its own independent CA per
+// tenant on first use (pkg/server/lifecycle/lifecycle.go ->
 // cert.NewDefaultProvider(certStore, infra.SealBarrier) ->
 // DefaultCertProvider.Initialize generates a fresh ECDSA CA key pair sealed
-// under the tenant/system data barrier). That CA is NEVER cross-trusted
-// with the node's own TLS bootstrap CA (cmd/qrdbd/tls.go, used for the
-// admin client cert and for verifying inbound client certificates on the
-// mTLS listener) -- there is no code path anywhere in this repo that seeds
-// or converges the two. The only configured extension point,
-// mtls.client_ca_files (pkg/config/config.go MTLSConfig.ClientCAFiles), is a
-// static file list read once at boot, which cannot include a CA that is
-// generated lazily, inside a sealed barrier, at runtime -- and there is no
-// REST/gRPC/CLI-exposed endpoint to read the pkg/cert CA's certificate PEM
-// (handlers_certs.go exposes generate/export/revoke/list, but not the CA
-// cert itself) to seed such a file even across a restart. So a `ca
-// issue`-minted client certificate can never be accepted by this node's own
-// mTLS listener, and every tenant-scoped barrier operation reachable ONLY
-// via that identity (tenant barrier-init/unseal, which
-// authorizeTenantBarrierOp denies to the admin/system-tenant identity, see
-// cli_tenant_barrier_test.go) is UNREACHABLE end-to-end via pure CLI
-// subprocesses against a standard qrdbd deployment today.
+// under the tenant/system data barrier), and that CA was never cross-trusted
+// with the node's own TLS bootstrap CA (cmd/qrdbd/tls.go, used for the admin
+// client cert and for verifying inbound client certificates on the mTLS
+// listener): there was no code path anywhere in this repo that seeded or
+// converged the two. So a `ca issue`-minted client certificate could never
+// be accepted by this node's own mTLS listener.
 //
-// The pin point moved EARLIER. Reaching step 7 at all required minting the
-// tenant administrator's Key-A-trusted bootstrap certificate (step 6) by
-// reading this node's own ca-key.pem and signing with it directly -- the
-// only way to get a certificate the mTLS listener accepts for a brand-new
-// subject. cmd/qrdbd now deletes that local key cache unconditionally
-// (every boot, not only Raft mode) once the cluster CA key is confirmed
-// durable in the replicated store (cmd/qrdbd/clusterca.go
+// That ORIGINAL gap is now closed: cmd/qrdbd/tls.go's TLSBundle installs a
+// DYNAMIC client-auth trust pool (pkg/clienttrust), reading every tenant's
+// Key B CA certificate from the node's own cert.CertProvider in addition to
+// the cluster CA (Key A), on every connection -- a `ca issue`-minted
+// certificate DOES now authenticate on this node's own mTLS listener, were
+// this test ever able to reach step 7 with one.
+//
+// The pin point moved EARLIER instead, independent of the Key B fix above.
+// Reaching step 7 at all required minting the tenant administrator's
+// Key-A-trusted bootstrap certificate (step 6) by reading this node's own
+// ca-key.pem and signing with it directly -- the only way to get a
+// certificate the mTLS listener accepted for a brand-new subject BEFORE the
+// Key B trust pool existed. cmd/qrdbd now deletes that local key cache
+// unconditionally (every boot, not only Raft mode) once the cluster CA key
+// is confirmed durable in the replicated store (cmd/qrdbd/clusterca.go
 // confirmClusterCAPersisted; see docs/certificate-authority/architecture.md
 // "Bootstrap crash window" and the CA-signer ruling: a CA private key is
 // never returned or cached on disk past that confirmation). That
@@ -162,10 +159,11 @@ func parseIDResponse(t *testing.T, proto ProtocolType, what, out string) string 
 // is deterministic here, not a race. There is therefore no supported way,
 // through any CLI or API surface, to mint a NEW Key-A-trusted identity for
 // an arbitrary subject on an already-booted node, which makes step 6 itself
-// unreachable now, not only step 7. This test pins THAT (a REST 401 "no
-// client certificate in TLS connection" / equivalent transport error is no
-// longer even reachable to observe) rather than working around it with the
-// now-closed raw-key-file shortcut.
+// unreachable now, not only step 7 -- regardless of Key B now being
+// trusted, there is no certificate left to present it with. This test pins
+// THAT (a REST 401 "no client certificate in TLS connection" / equivalent
+// transport error is no longer even reachable to observe) rather than
+// working around it with the now-closed raw-key-file shortcut.
 func TestCLIMultiProtocolTenantIdentityBarrierFlow(t *testing.T) {
 	cfg := LoadTestConfig()
 	requireCLI(t, cfg)
