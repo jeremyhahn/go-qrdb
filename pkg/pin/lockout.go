@@ -17,6 +17,8 @@ package pin
 import (
 	"context"
 	"errors"
+	"reflect"
+	"sync"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -88,14 +90,16 @@ var (
 // against the anonymous counter, which can never lock out an authenticated
 // SO. Callers that know who is asking select the counter with ForCaller.
 //
-// It is idempotent: a backend that is already decorated is returned as it
-// is, so a backend that crosses more than one composition seam keeps ONE set
-// of counters. A nil backend is returned as nil, so the PIN-gated operations
-// still fail closed with ErrBackendNotConfigured.
+// It is idempotent twice over: a backend that is already decorated is
+// returned as it is, and decorating the same raw backend again -- in two
+// transport options, say -- returns the decoration made the first time
+// (lockoutRegistry), so every consumer of one backend shares ONE set of
+// counters and one budget of free failures. A nil backend is returned as nil,
+// so the PIN-gated operations still fail closed with ErrBackendNotConfigured.
 //
-// Install it where the node's backend is chosen, before the backend is handed
-// to more than one consumer: two decorations of the same backend are two
-// sets of counters, and each would admit its own free failures.
+// A backend that implements auth.SOPINKnownGoodStore (SoftwareBackend does)
+// persists the lockout's known-good set, so a Security Officer's exemption
+// from the aggregate cap survives a restart.
 func NewLockoutBackend(backend PINBackend) PINBackend {
 	if backend == nil {
 		return nil
@@ -103,13 +107,32 @@ func NewLockoutBackend(backend PINBackend) PINBackend {
 	if _, ok := backend.(*lockoutBackend); ok {
 		return backend
 	}
-	return newLockoutBackend(backend, nil)
+	if !reflect.TypeOf(backend).Comparable() {
+		// A backend whose dynamic type cannot key a map cannot be
+		// recognised again; it is decorated afresh each time.
+		return newLockoutBackend(backend, nil)
+	}
+	if existing, ok := lockoutRegistry.Load(backend); ok {
+		return existing.(*lockoutBackend) //nolint:errcheck // type assertion on a value this container only ever holds
+	}
+	decorated, _ := lockoutRegistry.LoadOrStore(backend, newLockoutBackend(backend, nil))
+	return decorated.(*lockoutBackend) //nolint:errcheck // type assertion on a value this container only ever holds
 }
+
+// lockoutRegistry maps each raw backend NewLockoutBackend has decorated to its
+// decoration, keyed by the backend's identity, so two decorations of one
+// backend share one set of counters. A node's PIN backends live as long as
+// the process, so entries are never removed.
+var lockoutRegistry sync.Map
 
 // newLockoutBackend decorates backend with a lockout on clock (nil means
 // time.Now), as its anonymous view.
 func newLockoutBackend(backend PINBackend, clock func() time.Time) *lockoutBackend {
-	return &lockoutBackend{PINBackend: backend, shared: &lockoutShared{lockout: auth.NewSOPINLockout(clock)}}
+	var opts []auth.SOPINLockoutOption
+	if store, ok := backend.(auth.SOPINKnownGoodStore); ok {
+		opts = append(opts, auth.WithKnownGoodStore(store))
+	}
+	return &lockoutBackend{PINBackend: backend, shared: &lockoutShared{lockout: auth.NewSOPINLockout(clock, opts...)}}
 }
 
 // ForCaller returns the view of backend whose SO PIN checks count against the
