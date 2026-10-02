@@ -237,6 +237,45 @@ func TestEmbedded_ResetSessionWhileACommandIsOpen(t *testing.T) {
 	}
 }
 
+// TestEmbedded_ResetSessionWithAnAutocommitStatementOpen: a connection reset
+// while an autocommit statement is still open -- no explicit transaction,
+// but a query whose rows were never closed -- is reported bad too. The open
+// statement's implicit write-set and row locks live on the session, and a
+// reset that passed would hand them to the next caller.
+func TestEmbedded_ResetSessionWithAnAutocommitStatementOpen(t *testing.T) {
+	ctx := context.Background()
+	cfg := &DSNConfig{Scheme: SchemeEmbedded, Database: "resetauto", Backend: "memory", Engine: "kv"}
+	dc, err := NewEmbeddedConnector(cfg, WithRegistry(newRelationalRegistry())).Connect(ctx)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { _ = dc.Close() })
+	c, ok := dc.(*embeddedConn)
+	if !ok {
+		t.Fatalf("connection is %T", dc)
+	}
+	if err := c.ResetSession(ctx); err != nil {
+		t.Fatalf("reset with nothing open: %v", err)
+	}
+	if !c.IsValid() {
+		t.Fatal("a reset with nothing open marked the connection bad")
+	}
+
+	rows, err := c.QueryContext(ctx, "SELECT 1", nil)
+	if err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+	if err := c.ResetSession(ctx); !errors.Is(err, sqld.ErrBadConn) {
+		t.Fatalf("reset with an autocommit statement open = %v, want ErrBadConn", err)
+	}
+	if c.IsValid() {
+		t.Fatal("a connection reset with a statement open stayed valid for the pool")
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+}
+
 // TestEmbedded_StatementResolvesEachTableOnce: the embedded driver runs
 // every statement as one command, so a statement resolves each table
 // definition once, as it does on the MySQL wire -- for Exec, and for a Query

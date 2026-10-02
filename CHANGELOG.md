@@ -45,7 +45,10 @@ are not reconstructed here — their history is in the git log.
   statement ran; each statement is now a command on the connection's session
   (see the per-statement resolution entry below), and one begun inside
   another would discard the open statement's pending writes. `Ping` on such
-  a connection succeeds without running a statement.
+  a connection succeeds without running a statement; a pooled connection
+  reset with a statement still open is reported bad and discarded, so its
+  transaction, write-set and row locks never reach the next caller. New:
+  `provider.QRDBSession.CommandOpen`.
 - **Every SQL surface resolves each table, view and servicer once per
   statement.** In 0.27.0-alpha only the MySQL wire delivered the statement
   boundaries this memoization needs; the PostgreSQL wire (each executed

@@ -109,11 +109,16 @@ func (c *embeddedConn) IsValid() bool {
 // transaction left open by the previous user is rolled back rather than
 // inherited, and a connection that cannot be returned to a clean state is
 // reported bad so the pool discards it. That includes a connection with a
-// statement still open on it: the ROLLBACK cannot run, and database/sql
-// acts only on ErrBadConn from ResetSession -- any other error would hand
-// the previous user's transaction, and its row locks, to the next caller.
+// statement still open on it, inside an explicit transaction or not: the
+// open statement's write-set and row locks belong to the previous user, and
+// database/sql acts only on ErrBadConn from ResetSession -- any other
+// outcome would hand them to the next caller.
 func (c *embeddedConn) ResetSession(ctx context.Context) error {
 	if c.closed.Load() {
+		return sqld.ErrBadConn
+	}
+	if c.session != nil && c.session.CommandOpen() {
+		c.bad.Store(true)
 		return sqld.ErrBadConn
 	}
 

@@ -464,6 +464,15 @@ func (s *QRDBSession) CommandEnd() {
 	s.commandOpen.Store(false)
 }
 
+// CommandOpen reports whether a command is open on the session: begun by
+// CommandBegin and not yet ended by CommandEnd. A connection pool resetting
+// the session for a new user treats an open command as a connection it
+// cannot hand on, since the open statement's write-set and row locks belong
+// to the previous user.
+func (s *QRDBSession) CommandOpen() bool {
+	return s.commandOpen.Load()
+}
+
 // SessionEnd implements sql.LifecycleAwareSession: the connection is gone,
 // so its open transaction is abandoned, every row lock it holds is released
 // now, and its lock lease is revoked. A connection that dies without this

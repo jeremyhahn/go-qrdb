@@ -181,3 +181,19 @@ func TestSessionCommandBegin_RefusesWhileACommandIsOpen(t *testing.T) {
 	require.NoError(t, sess.CommandBegin(), "the next command begins once the open one ends")
 	sess.CommandEnd()
 }
+
+// TestSessionCommandOpen: a command is open from CommandBegin to CommandEnd,
+// and a refused CommandBegin neither opens nor closes one.
+func TestSessionCommandOpen(t *testing.T) {
+	sess := NewSession(sqle.NewBaseSession(), nil)
+	assert.False(t, sess.CommandOpen(), "a new session has no command open")
+
+	require.NoError(t, sess.CommandBegin())
+	assert.True(t, sess.CommandOpen())
+	var inProgress *CommandInProgressError
+	require.ErrorAs(t, sess.CommandBegin(), &inProgress)
+	assert.True(t, sess.CommandOpen(), "a refused begin leaves the open command open")
+
+	sess.CommandEnd()
+	assert.False(t, sess.CommandOpen())
+}
