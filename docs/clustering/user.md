@@ -262,6 +262,23 @@ withdraws its advertisement at once. After a crash its advertisement lapses
 only when its lease expires, so **after a crash, wait out the lease TTL (10
 seconds by default) before starting the node on an older release**.
 
+### The Noise bootstrap wire is not version-skewed
+
+The first node of a cluster runs the Noise NK bootstrap **server**
+(`pkg/clusterenroll`'s `Advertiser`, started on the boot that generates or
+loads the cluster CA) that a joining node's enrollment dials as a **client**.
+Both halves are this codebase's own call into `go-truststrap`, so a bump to
+`go-truststrap` that changes the wire format is a qrdb-to-qrdb compatibility
+question, not a question about an external service. A release whose
+`go-truststrap` adds a suite-negotiation header to the first bootstrap frame
+cannot complete a handshake against a peer running the pre-negotiation wire,
+in either direction: **a mixed-version cluster cannot enroll a new member
+until every node that might advertise is on the same `go-truststrap` wire.**
+This is independent of, and checked separately from, the replicated-command
+feature-gating described above — a bootstrap wire mismatch fails before any
+Raft log entry is involved. Finish rolling every node forward before adding
+a new member if the release notes call out a bootstrap wire change.
+
 ## Troubleshooting
 
 **A node refuses to start: "the cluster has activated feature ...".** The

@@ -2711,6 +2711,16 @@ vuln:
 	eval "$${GOMODAUTH:-}"; \
 	$(GOVULNCHECK) ./... && cd sdk/go && $(GOVULNCHECK) ./...
 
+# `vulncheck` is `vuln` under the name a dependency-bump lane's own gate
+# documentation uses (go-qrdb#580): a `go.mod` edit that reintroduces a known
+# vulnerability -- an unannounced indirect downgrade, or a version this
+# repository chose not to take because of one -- should fail the SAME make
+# target a human or an agent runs by hand before proposing the bump, not only
+# the CI job that runs after. `vuln` is kept as the pre-existing name so
+# nothing that already calls it breaks.
+.PHONY: vulncheck
+vulncheck: vuln
+
 # No `require-scanner` guard: this one runs the Go toolchain, not a separately
 # installed scanner. Every other target in this file needs `go` too, so its
 # absence cannot produce the failure #299 is about -- a suite that reports a
@@ -3378,6 +3388,7 @@ help:
 	@echo "  security               Blocking suite: gosec, govulncheck, go mod verify, trivy"
 	@echo "  gosec                  Run gosec security scanner"
 	@echo "  vuln                   Run govulncheck vulnerability scanner"
+	@echo "  vulncheck              Alias for vuln (root + sdk/go)"
 	@echo "  trivy                  Blocking trivy leg (CRITICAL/HIGH)"
 	@echo "  trivy-report           Sub-threshold advisories (MEDIUM/LOW + UNKNOWN); blocks no merge"
 	@echo ""

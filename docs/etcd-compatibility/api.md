@@ -39,7 +39,18 @@ TLS and auth must both be enabled, the database `engine` must be `kv` and its
 | `Cluster` | `MemberList` | `AdminService.Peers` | `admin:peers` |
 | `Maintenance` | `Status` | current revision | `admin:status` |
 | `Maintenance` | `Alarm` | — | `admin:status`; returns no alarms |
+| `KV` | `RangeStream` | — | **unimplemented**: `codes.Unimplemented` from the embedded `etcdserverpb.UnimplementedKVServer`, not a permission refusal |
 | every other RPC — `Auth.*`, member changes, `Defragment`, `Snapshot`, `Hash`, `HashKV`, `MoveLeader`, `Downgrade` | | — | **refused** with `PERMISSION_DENIED` before any handler runs |
+
+`KV.RangeStream` is a server-streaming RPC the `etcdserverpb.KV` service gained
+in etcd v3.7 (a long-lived range read delivered incrementally rather than in
+one response). `pkg/api/etcd`'s `kvServer` embeds
+`etcdserverpb.UnimplementedKVServer` and does not override it, so a client
+that calls it gets `codes.Unimplemented` — distinct from every RPC in the row
+below, which this listener recognizes and actively refuses. A client wanting
+a long-running range read uses `Range` with its existing pagination
+(`RangeRequest.limit` and the returned `more` flag), as every client does
+against this listener today.
 
 The listener refuses to start without TLS and the node's authentication
 (`etcd.AuthRequiredError`) or without a database catalog and service registry
