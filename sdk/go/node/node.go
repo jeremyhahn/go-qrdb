@@ -769,10 +769,10 @@ type Node struct {
 	bgCancel context.CancelFunc
 
 	// stopLeaseExpiry ends the lease-expiry sweeper of the current
-	// standalone data plane (startLeaseExpiryStandalone); nil on a
-	// clustered node, whose sweeper runs on bgCtx. Written only by the
-	// lifecycle-gated boot and teardown paths.
-	stopLeaseExpiry context.CancelFunc
+	// standalone data plane (startLeaseExpiryStandalone) and waits for it to
+	// exit; nil on a clustered node, whose sweeper runs on bgCtx. Written
+	// only by the lifecycle-gated boot, teardown and Close paths.
+	stopLeaseExpiry func()
 
 	// featureGate decides when the clustered host's Raft groups may be sent
 	// guarded writes; nil for a host with no transport. featureAdv is its
@@ -1065,9 +1065,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 // in-process encryption migration (teardownDataPlane), which builds a new
 // engine and lessor -- or the node closes.
 func (n *Node) startLeaseExpiryStandalone(lr *lease.Lessor, leaseSvc service.LeaseServicer) {
-	ctx, cancel := context.WithCancel(n.background())
-	n.stopLeaseExpiry = cancel
-	lifecycle.StartLocalLeaseExpiry(ctx, lr, leaseSvc, n.logger)
+	n.stopLeaseExpiry = lifecycle.StartLocalLeaseExpiry(n.background(), lr, leaseSvc, n.logger)
 }
 
 // openStandaloneDatabaseManager opens the standalone node's database catalog
@@ -1604,6 +1602,12 @@ func (n *Node) Close() error {
 	if n.bgCancel != nil {
 		n.bgCancel()
 		n.bgCancel = nil
+	}
+	// Wait for the standalone lease-expiry sweeper to exit before anything it
+	// revokes through is stopped: cancelling alone leaves a revoke in flight.
+	if n.stopLeaseExpiry != nil {
+		n.stopLeaseExpiry()
+		n.stopLeaseExpiry = nil
 	}
 	record(n.stopFeatureGate())
 

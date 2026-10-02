@@ -31,13 +31,17 @@ func Get(feature string) bool        // pre-seal, falls back to compile-time
 ```go
 func NewLocalStorage(backend database.BackendType, dataDir string, fs vfs.FS, obj config.ObjstoreConfig) (storage.Storage, *pebble.DB, error)
 func NewLocalEngine(backend database.BackendType, stg storage.Storage, pdb *pebble.DB, hub *watch.Hub, lr *lease.Lessor) (backend.SMAdapter, error)
-func StartLocalLeaseExpiry(ctx context.Context, lr *lease.Lessor, leaseSvc service.LeaseServicer, logger *slog.Logger)
+func StartLocalLeaseExpiry(ctx context.Context, lr *lease.Lessor, leaseSvc service.LeaseServicer, logger *slog.Logger) (stop func())
 ```
 
 `hub` and `lr` MUST be the instances the composer builds its watch service on
 and runs the expiry sweeper over. `NewLocalEngine` gained `lr` on 2026-10-01
 (it used to build a private lessor nothing swept); a caller passes `nil` only
-for a composition that serves no leases.
+for a composition that serves no leases. `stop` cancels the sweeper and
+waits for it to exit; every composer calls it before closing the backend the
+sweeper revokes through -- the daemon on shutdown, `node.Node` on `Close` and on
+an encryption-migration teardown, `embedded.Server.Shutdown`, and the `qrdb`
+GUI's `StopEmbedded`.
 
 The daemon selects the mode with `mode: standalone | raft` in YAML or
 `--mode standalone`; **absent means raft**, for full backward compatibility.

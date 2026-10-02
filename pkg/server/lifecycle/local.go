@@ -153,7 +153,7 @@ func NewLocalEngine(backendType database.BackendType, stg storage.Storage, pdb *
 }
 
 // StartLocalLeaseExpiry starts the lease-expiry sweeper of a raft-free
-// composition and returns at once; the sweeper stops when ctx is cancelled.
+// composition. The sweeper also stops when ctx is cancelled.
 //
 // A standalone node is the only replica of its data, so it is always the one
 // that sweeps: the leader gate RunExpiry consults in raft mode is constant
@@ -163,12 +163,28 @@ func NewLocalEngine(backendType database.BackendType, stg storage.Storage, pdb *
 // sweeper a lease's Done channel closes on time but nothing deletes the keys
 // bound to it, which leaves a dead holder's lock held for good.
 //
-// It is a no-op when lr or leaseSvc is nil (a composition without leases).
-func StartLocalLeaseExpiry(ctx context.Context, lr *lease.Lessor, leaseSvc service.LeaseServicer, logger *slog.Logger) {
+// The returned stop function cancels the sweeper and WAITS for it to exit.
+// A composer calls it before closing the backend the sweeper revokes
+// through: cancelling alone would leave a revoke in flight against a backend
+// that is closing. It is safe to call more than once, and the sweeper also
+// stops when ctx is cancelled.
+//
+// It starts nothing, and returns a no-op stop, when lr or leaseSvc is nil (a
+// composition without leases).
+func StartLocalLeaseExpiry(ctx context.Context, lr *lease.Lessor, leaseSvc service.LeaseServicer, logger *slog.Logger) (stop func()) {
 	if lr == nil || leaseSvc == nil {
-		return
+		return func() {}
 	}
-	go lr.RunExpiry(ctx, lease.DefaultExpiryInterval, alwaysSweeps, leaseSvc.Revoke, logger)
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		lr.RunExpiry(ctx, lease.DefaultExpiryInterval, alwaysSweeps, leaseSvc.Revoke, logger)
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
 }
 
 // alwaysSweeps is the leader gate of a node that is the only replica.

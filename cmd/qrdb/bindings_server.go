@@ -33,6 +33,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
@@ -45,7 +46,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/store"
-	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
@@ -93,6 +93,12 @@ type EmbeddedServerBinding struct {
 	svcNode      *lifecycle.Node      // owns all service lifecycle (vector, db, etc.)
 	sealBarrier  *seal.StorageBarrier // owns the persistent seal store; closed on stop to release its file lock
 	registry     *DatabaseInstanceRegistry
+
+	// lessor is the local MVCC engine's lease table, and stopLeaseExpiry
+	// ends (and waits for) the sweeper that expires its leases. Both are
+	// nil when the binding runs raft or the plain KV engine.
+	lessor          *lease.Lessor
+	stopLeaseExpiry func()
 }
 
 // NewEmbeddedServerBinding creates a new EmbeddedServerBinding backed
@@ -237,6 +243,7 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 		embedded.WithBatchService(svcNode.Batch),
 		embedded.WithWatchService(svcNode.Watch),
 		embedded.WithLeaseService(svcNode.Lease),
+		embedded.WithLockService(svcNode.Lock),
 		embedded.WithIndexService(svcNode.Index),
 		embedded.WithTimeSeriesService(svcNode.TimeSeries),
 	}
@@ -283,11 +290,17 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 	// Hold a reference to the lifecycle node so StopEmbedded can call Stop.
 	b.svcNode = svcNode
 
+	// Expire the local engine's leases. A raft binding runs no local lessor.
+	if b.lessor != nil {
+		b.stopLeaseExpiry = lifecycle.StartLocalLeaseExpiry(context.Background(), b.lessor, svcNode.Lease, slog.Default())
+	}
+
 	// Store the watch hub for cleanup on shutdown.
 	b.watchHub = hub
 
 	client, err := b.buildClient(kvSvc, adminSvc, opts...)
 	if err != nil {
+		b.stopLocalLeaseExpiry()
 		if b.watchHub != nil {
 			b.watchHub.Close()
 			b.watchHub = nil
@@ -342,6 +355,9 @@ func (b *EmbeddedServerBinding) StopEmbedded() error {
 		b.logger.Error("StopEmbedded failed", "error", "not running")
 		return &EmbeddedServerError{Op: "stop", Err: &NotRunningError{}}
 	}
+	// The sweeper revokes through the backend closed below; stop it, and
+	// wait for it, first.
+	b.stopLocalLeaseExpiry()
 	if b.watchHub != nil {
 		b.watchHub.Close()
 		b.watchHub = nil
@@ -523,32 +539,47 @@ func (b *EmbeddedServerBinding) startLocalNode(cfg *EmbeddedConfig, hub *watch.H
 		sm = engine.NewKVEngine(stg, opts...)
 
 	case "mvcc":
-		mvccOpts := []engine.MVCCOption{
-			engine.WithMVCCLessor(lease.NewLessor()),
-			engine.WithMVCCWatchHub(hub),
+		// The canonical raft-free composition, with a named lessor the
+		// binding sweeps (see StartEmbedded): an engine whose lessor nothing
+		// sweeps grants leases whose keys are never deleted.
+		lr := lease.NewLessor()
+		eng, engErr := lifecycle.NewLocalEngine(localBackendType(cfg.StorageBackend), stg, pebbleDB, hub, lr)
+		if engErr != nil {
+			return nil, &SMOpenError{Backend: engineType, Err: engErr}
 		}
-		if pebbleDB != nil {
-			mvccOpts = append(mvccOpts, engine.WithMVCCPebbleDB(pebbleDB))
-
-			// Create time-series storage for pebble backends.
-			tsStorage, tsErr := timeseries.New(pebbleDB)
-			if tsErr != nil {
-				b.logger.Warn("embedded: time-series storage unavailable", "error", tsErr)
-			} else {
-				mvccOpts = append(mvccOpts, engine.WithMVCCTimeSeries(tsStorage))
-			}
-		}
-		mvccEng, mvccErr := engine.NewMVCCEngine(stg, mvccOpts...)
-		if mvccErr != nil {
-			return nil, &SMOpenError{Backend: engineType, Err: mvccErr}
-		}
-		sm = mvccEng
+		b.lessor = lr
+		sm = eng
 
 	default:
 		return nil, &UnknownEngineError{Engine: engineType}
 	}
 
 	return backend.NewLocalBackend(sm), nil
+}
+
+// localBackendType maps the binding's storage backend name onto the database
+// backend type lifecycle.NewLocalEngine composes an engine for. An empty
+// name and "pebbledb" mean pebble, as in createStorage.
+func localBackendType(name string) database.BackendType {
+	switch name {
+	case "memory":
+		return database.BackendMemory
+	case "file":
+		return database.BackendFile
+	default:
+		return database.BackendPebble
+	}
+}
+
+// stopLocalLeaseExpiry stops the lease-expiry sweeper, if one runs, and waits
+// for it to exit. It is called before the backend the sweeper revokes
+// through is closed.
+func (b *EmbeddedServerBinding) stopLocalLeaseExpiry() {
+	if b.stopLeaseExpiry != nil {
+		b.stopLeaseExpiry()
+		b.stopLeaseExpiry = nil
+	}
+	b.lessor = nil
 }
 
 // createStorage creates the appropriate storage.Storage backend based on

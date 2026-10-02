@@ -56,7 +56,8 @@ func TestStartLocalLeaseExpiry_DeletesAnExpiredLeasesKeys(t *testing.T) {
 	if _, err := mvccSvc.PutWithLease(ctx, "held", []byte("x"), l.ID); err != nil {
 		t.Fatalf("put with lease: %v", err)
 	}
-	lifecycle.StartLocalLeaseExpiry(ctx, lr, leaseSvc, nil)
+	stop := lifecycle.StartLocalLeaseExpiry(ctx, lr, leaseSvc, nil)
+	defer stop()
 
 	for {
 		if _, err := kvSvc.Get(ctx, "held"); err != nil {
@@ -71,8 +72,61 @@ func TestStartLocalLeaseExpiry_DeletesAnExpiredLeasesKeys(t *testing.T) {
 }
 
 // TestStartLocalLeaseExpiry_NilIsANoOp: a composition without leases starts
-// nothing and does not panic.
+// nothing, and its stop function returns at once.
 func TestStartLocalLeaseExpiry_NilIsANoOp(t *testing.T) {
-	lifecycle.StartLocalLeaseExpiry(context.Background(), nil, nil, nil)
-	lifecycle.StartLocalLeaseExpiry(context.Background(), lease.NewLessor(), nil, nil)
+	lifecycle.StartLocalLeaseExpiry(context.Background(), nil, nil, nil)()
+	lifecycle.StartLocalLeaseExpiry(context.Background(), lease.NewLessor(), nil, nil)()
+}
+
+// TestStartLocalLeaseExpiry_StopWaitsAndStaysStopped: stop returns only once
+// the sweeper has exited, is safe to call twice, and nothing is revoked after
+// it -- which is what lets a composer close the backend right after it.
+func TestStartLocalLeaseExpiry_StopWaitsAndStaysStopped(t *testing.T) {
+	ctx := context.Background()
+	stg, pdb, err := lifecycle.NewLocalStorage(database.BackendMemory, t.TempDir(), nil, qrdbconfig.ObjstoreConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = stg.Close() })
+	lr := lease.NewLessor()
+	eng, err := lifecycle.NewLocalEngine(database.BackendMemory, stg, pdb, nil, lr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := backend.NewLocalBackend(eng)
+	leaseSvc := service.NewLeaseService(host, 1)
+	mvccSvc := service.NewMVCCKVService(host, 1)
+	kvSvc := service.NewKVService(host, 1)
+
+	l, err := leaseSvc.Grant(ctx, 1)
+	if err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	if _, err := mvccSvc.PutWithLease(ctx, "held", []byte("x"), l.ID); err != nil {
+		t.Fatalf("put with lease: %v", err)
+	}
+
+	stop := lifecycle.StartLocalLeaseExpiry(ctx, lr, leaseSvc, nil)
+	done := make(chan struct{})
+	go func() {
+		stop()
+		stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("stop did not return")
+	}
+
+	// The lease is past its TTL two sweep intervals from now; a sweeper that
+	// outlived stop would have revoked it by then.
+	time.Sleep(2*lease.DefaultExpiryInterval + 500*time.Millisecond)
+	if _, err := kvSvc.Get(ctx, "held"); err != nil {
+		t.Fatalf("a stopped sweeper revoked the lease: %v", err)
+	}
+	// Closing the backend now races nothing.
+	if err := host.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
 }

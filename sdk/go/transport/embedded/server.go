@@ -365,10 +365,11 @@ type Server struct {
 	// hub and lessor are the engine's watch hub and lease table: the
 	// engine publishes every change to hub and rebuilds its durable leases
 	// into lessor, and the watch, lease and lock services are built over
-	// them. stopExpiry ends the lease-expiry sweeper running over lessor.
+	// them. stopExpiry ends the lease-expiry sweeper running over lessor
+	// and waits for it to exit.
 	hub        *watch.Hub
 	lessor     *lease.Lessor
-	stopExpiry context.CancelFunc
+	stopExpiry func()
 }
 
 // NewServer creates an embedded QRDB server from the given configuration.
@@ -461,10 +462,9 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	}
 
 	// The lease-expiry sweeper: without it a lease's keys -- and a lock
-	// held by a process that died -- are never deleted.
-	expiryCtx, stopExpiry := context.WithCancel(context.Background())
-	srv.stopExpiry = stopExpiry
-	lifecycle.StartLocalLeaseExpiry(expiryCtx, srv.lessor, leaseSvc, logger)
+	// held by a process that died -- are never deleted. Shutdown stops it,
+	// and waits for it, before closing the backend it revokes through.
+	srv.stopExpiry = lifecycle.StartLocalLeaseExpiry(context.Background(), srv.lessor, leaseSvc, logger)
 
 	opts := []Option{
 		WithMVCCService(mvccSvc),

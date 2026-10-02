@@ -2273,9 +2273,14 @@ func runStart(f *startFlags) (err error) {
 			// correct across elections and a no-op on followers. Skipped when the lease
 			// service is absent (embeddable deployments without lease support).
 			// A standalone daemon is the only replica, so it always sweeps
-			// (lifecycle.StartLocalLeaseExpiry).
+			// (lifecycle.StartLocalLeaseExpiry). stopLeaseExpiry waits for the
+			// sweeper to exit; the shutdown path calls it before closing the
+			// backend the sweeper revokes through, and the defer covers every
+			// other exit (it is idempotent).
+			stopLeaseExpiry := func() {}
 			if standalone {
-				lifecycle.StartLocalLeaseExpiry(bootCtx, lr, leaseSvc, slog.Default())
+				stopLeaseExpiry = lifecycle.StartLocalLeaseExpiry(bootCtx, lr, leaseSvc, slog.Default())
+				defer stopLeaseExpiry()
 			} else if leaseSvc != nil && host != nil {
 				go lr.RunExpiry(bootCtx, lease.DefaultExpiryInterval,
 					func() bool {
@@ -2388,6 +2393,7 @@ func runStart(f *startFlags) (err error) {
 				}
 
 				srv.Stop()
+				stopLeaseExpiry()
 				return shutdownNode(nodeCloser)
 			case req := <-migrateCh:
 				if host == nil {
