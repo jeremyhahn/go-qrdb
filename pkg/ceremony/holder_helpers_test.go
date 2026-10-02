@@ -18,9 +18,9 @@ import (
 	"context"
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
@@ -127,11 +127,11 @@ func newP384Holder(t testing.TB, username string, role seal.HolderRole) *testHol
 	return newHolderWithKey(t, username, role, key)
 }
 
-// newRSAHolder builds a holder with an RSA certificate key, which no KEM
-// seals to directly.
-func newRSAHolder(t testing.TB, username string, role seal.HolderRole) *testHolder {
+// newEd25519Holder builds a holder with an Ed25519 certificate key, which no
+// KEM seals to directly.
+func newEd25519Holder(t testing.TB, username string, role seal.HolderRole) *testHolder {
 	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	_, key, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 	return newHolderWithKey(t, username, role, key)
 }

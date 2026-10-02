@@ -823,6 +823,7 @@ var holderRules = []rule{
 	is(ceremony.ErrShareEnvelopeMalformed, InvalidArgument),
 	as(&ceremony.InvalidHolderNameError{}, InvalidArgument),
 	as(&ceremony.EncryptionKeyRequiredError{Err: errHolderSample}, InvalidArgument),
+	as(&ceremony.UnsupportedHolderKeyError{}, InvalidArgument),
 	as(&ceremony.DuplicateFactorError{}, InvalidArgument),
 	as(&ceremony.FactorNotEnrolledError{}, InvalidArgument),
 	as(&ceremony.HolderFactorEnrollmentError{Err: errHolderSample}, InvalidArgument),

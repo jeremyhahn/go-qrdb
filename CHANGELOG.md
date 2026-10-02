@@ -479,6 +479,12 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed — BREAKING
 
+- **RSA share-holder keys are refused at enrolment.** A holder's certificate
+  key must be ECDSA P-256, P-384, P-521 or Ed25519; an RSA CSR is refused with
+  `ceremony.UnsupportedHolderKeyError` (`INVALID_ARGUMENT`). No per-name decoy
+  can be derived for an RSA key without revealing it, so an RSA holder was
+  distinguishable from a stranger. Re-enrol any RSA holder with an EC or
+  Ed25519 key before the next distribution.
 - **`seal.HolderAuthenticationError` no longer unwraps or names its cause.**
   Its message is fixed and its `Err` is for the server's log and audit only;
   a caller that inspected the verifier's error through it must not.

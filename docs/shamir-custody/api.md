@@ -145,10 +145,12 @@ The claim label names the barrier:
 | Tenant barrier | `tenant:<tenant id>` |
 | Database barrier | `database:<database name>` |
 
-The signature format is that of the `mtls` factor: ECDSA (ASN.1 DER) or RSA
-PKCS#1 v1.5 over SHA-256 of the message, or Ed25519 over the message. The
-`mtls` quorum factor signs the bare challenge nonce, so a claim signature and
-a factor answer never verify as each other. Go callers use
+The signature format is that of the `mtls` factor: ECDSA (ASN.1 DER) over
+SHA-256 of the message, or Ed25519 over the message (a holder's key is ECDSA
+P-256, P-384, P-521 or Ed25519; RSA is refused at enrolment). The `mtls`
+quorum factor signs its own domain-separated challenge message
+(`mtls.ChallengeMessage`), so a claim signature and a factor answer never
+verify as each other. Go callers use
 `SignShareClaim` (`sdk.SignShareClaim`), with `ShareClaimMessage` and the
 label helpers (`SystemClaimLabel`, `RecoveryClaimLabel`, `TenantClaimLabel`,
 `DatabaseClaimLabel`).

@@ -288,10 +288,10 @@ hardened against a caller who is not the holder:
   from strangers by shape; every factor should implement it. The
   decoy names the requested factor, or mtls when none was requested. A holder
   whose designated factor is not mtls, asked for without a factor, therefore
-  answers with that factor's name. A roster whose holders' keys are RSA gets
-  P-256 decoys: no RSA key can be derived per name at a cost that does not
-  itself reveal the decoy, so on such a roster the key type distinguishes a
-  decoy from a holder.
+  answers with that factor's name. RSA holder keys are refused at enrolment
+  (`ceremony.UnsupportedHolderKeyError`): no RSA key can be derived per name
+  at a cost that does not itself reveal the decoy, so an RSA holder would be
+  told apart from a stranger by the key type.
 - **Bounded per holder and operation.** A holder keeps at most 2 pending
   challenges per operation, and a further request evicts the oldest. A
   challenge requested over a connection presenting the holder's own enrolled
@@ -328,7 +328,9 @@ per domain may be open (`ErrQuorumRoundInProgress`).
 - **One person, one share, one role per scope**: usernames, certificate keys
   and envelope keys are unique within a scope, and nobody enrols themselves
   (`ErrSelfEnrolment`).
-- **Certificate identity is CA-assigned**; the CSR supplies only a public key.
+- **Certificate identity is CA-assigned**; the CSR supplies only a public key,
+  which must be ECDSA P-256, P-384, P-521 or Ed25519. An RSA key is refused
+  with `ceremony.UnsupportedHolderKeyError` (`INVALID_ARGUMENT`).
 - **Membership changes need the quorum**: every change of holders, threshold
   or policy is a rekey completed by M current holders.
 - **Rekey never rotates the root key** and re-encrypts no data; it revokes

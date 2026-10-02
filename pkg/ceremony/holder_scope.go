@@ -337,6 +337,9 @@ func (h *holderScope) register(ctx context.Context, d *HolderDeps, req RegisterO
 	if err != nil {
 		return nil, err
 	}
+	if _, ok := mtls.PublicKeyKind(csr.PublicKey); !ok {
+		return nil, &UnsupportedHolderKeyError{Algorithm: csr.PublicKeyAlgorithm.String()}
+	}
 	spki, err := x509.MarshalPKIXPublicKey(csr.PublicKey)
 	if err != nil {
 		return nil, &CSRParseError{Err: err}

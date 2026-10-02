@@ -182,3 +182,18 @@ func (e *ShareEnvelopeError) Error() string {
 
 // Unwrap returns the underlying error.
 func (e *ShareEnvelopeError) Unwrap() error { return e.Err }
+
+// UnsupportedHolderKeyError is returned when a holder's certificate key is
+// not one the share-holder model enrols: ECDSA P-256, P-384 or P-521, or
+// Ed25519. RSA is refused, because no decoy can be derived per name for an
+// RSA key at a cost that does not itself reveal the decoy, so an RSA holder
+// would be told apart from a stranger by the key type alone.
+type UnsupportedHolderKeyError struct {
+	// Algorithm names the refused key's algorithm.
+	Algorithm string
+}
+
+// Error returns a human-readable description.
+func (e *UnsupportedHolderKeyError) Error() string {
+	return "ceremony: a share holder's certificate key must be ECDSA P-256, P-384, P-521 or Ed25519, not " + e.Algorithm
+}

@@ -113,8 +113,8 @@ func TestRegisterOfficer_Refusals(t *testing.T) {
 			req:  newHolderWithKey(t, "alice2", seal.RoleCustodian, alice.certKey).request("admin"),
 			want: func(err error) bool { return assert.ErrorIs(t, err, ErrDuplicateHolderKey) },
 		},
-		"RSA key without an envelope key": {
-			req:  newRSAHolder(t, "rsa", seal.RoleSecurityOfficer).request("admin"),
+		"Ed25519 key without an envelope key": {
+			req:  newEd25519Holder(t, "ed", seal.RoleSecurityOfficer).request("admin"),
 			want: func(err error) bool { return assert.True(t, errorAs[*EncryptionKeyRequiredError](err), err) },
 		},
 		"unknown KEM": {
@@ -211,7 +211,7 @@ func TestRegisterOfficer_EnvelopeKEMs(t *testing.T) {
 	}{
 		{newHolder(t, "p256", ""), keydelivery.KEMP256},
 		{newP384Holder(t, "p384", ""), keydelivery.KEMP384},
-		{newRSAHolder(t, "x25519", "").withEncryptionKey(t, keydelivery.KEMX25519), keydelivery.KEMX25519},
+		{newEd25519Holder(t, "x25519", "").withEncryptionKey(t, keydelivery.KEMX25519), keydelivery.KEMX25519},
 		{newHolder(t, "hybrid", "").withEncryptionKey(t, keydelivery.KEMMLKEM768X25519), keydelivery.KEMMLKEM768X25519},
 	}
 	for _, tc := range cases {
