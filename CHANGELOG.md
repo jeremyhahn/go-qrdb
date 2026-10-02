@@ -221,7 +221,14 @@ are not reconstructed here — their history is in the git log.
   together can engage the cap for one window, but never against a known-good
   principal -- one that has presented the correct SO PIN before, persisted
   (`auth.SOPINKnownGoodStore`; the software PIN backend and the tenant SO
-  authenticator implement it) so the exemption survives a restart. Stale
+  authenticator implement it) so the exemption survives a restart. The
+  record holds domain-separated SHA-256 digests of key and principal, never
+  principal ids; the store is called outside the lockout's lock, each call
+  bounded by `auth.SOPINKnownGoodTimeout` (5 s), so a slow Raft-backed store
+  delays only the check that asked, never another tenant's; and a failed
+  load is retried no sooner than `auth.SOPINKnownGoodRetry` (30 s). A holder
+  certificate's principal is `holder:<tenant>/<subject>`, so a holder and the
+  user of the same name share neither a counter nor known-good status. Stale
   per-principal counters are evicted before new principals fall back to the
   overflow counter, and `pin.NewLockoutBackend` returns one decoration per raw
   backend, so consumers of one backend share one budget. The counting is one implementation, `auth.SOPINLockout`, behind

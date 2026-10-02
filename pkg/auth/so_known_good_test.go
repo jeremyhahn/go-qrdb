@@ -16,9 +16,11 @@ package auth_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -58,5 +60,32 @@ func TestSOAuthenticator_KnownGoodSurvivesARestart(t *testing.T) {
 	}
 	if err := restarted.VerifySOPIN(so, "acme", []byte("correct-horse-battery-staple")); err != nil {
 		t.Fatalf("the persisted known-good SO after a restart = %v, want admitted", err)
+	}
+}
+
+// TestSOAuthenticator_KnownGoodRecordNamesNoPrincipal: the tenant's persisted
+// known-good record -- replicated through Raft with the rest of the system
+// keyspace -- holds digests only: neither the SO's subject nor its principal
+// id appears in it.
+func TestSOAuthenticator_KnownGoodRecordNamesNoPrincipal(t *testing.T) {
+	store := newSOMemKV()
+	a, err := auth.NewSOAuthenticator(store, &soNoopAudit{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	so := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "officer-jane", TenantID: "acme"})
+	if err := a.SetSOPIN(so, "acme", []byte("correct-horse-battery-staple")); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.VerifySOPIN(so, "acme", []byte("correct-horse-battery-staple")); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := store.Get(context.Background(), "__sys:so-pin-known-good/acme")
+	var digests []string
+	if err := json.Unmarshal(raw, &digests); err != nil || len(digests) != 1 || len(digests[0]) != 64 {
+		t.Fatalf("record = %q (%v), want one 64-hex digest", raw, err)
+	}
+	if strings.Contains(string(raw), "officer-jane") || strings.Contains(string(raw), "id:") {
+		t.Fatalf("record %q names the principal", raw)
 	}
 }

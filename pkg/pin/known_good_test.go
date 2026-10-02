@@ -16,8 +16,12 @@ package pin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 )
 
 // memPINStorage is an in-memory Storage for the known-good tests.
@@ -51,30 +55,30 @@ func (s *memPINStorage) Put(_ context.Context, key string, value []byte) error {
 func TestSoftwareBackend_KnownGoodRoundTrips(t *testing.T) {
 	store := &memPINStorage{}
 	b := &SoftwareBackend{store: store}
-	if got, err := b.LoadKnownGood("node"); err != nil || got != nil {
+	if got, err := b.LoadKnownGood(context.Background(), "node"); err != nil || got != nil {
 		t.Fatalf("empty = %v, %v", got, err)
 	}
-	if err := b.SaveKnownGood("node", []string{"id:system/officer"}); err != nil {
+	if err := b.SaveKnownGood(context.Background(), "node", []string{"id:system/officer"}); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := b.LoadKnownGood("node"); err != nil || len(got) != 1 || got[0] != "id:system/officer" {
+	if got, err := b.LoadKnownGood(context.Background(), "node"); err != nil || len(got) != 1 || got[0] != "id:system/officer" {
 		t.Fatalf("reloaded = %v, %v", got, err)
 	}
 	store.m[soKnownGoodStorageKeyPrefix+"node"] = []byte("{not json")
 	var codec *KnownGoodCodecError
-	if _, err := b.LoadKnownGood("node"); !errors.As(err, &codec) || codec.Unwrap() == nil || codec.Error() == "" {
+	if _, err := b.LoadKnownGood(context.Background(), "node"); !errors.As(err, &codec) || codec.Unwrap() == nil || codec.Error() == "" {
 		t.Fatalf("corrupt = %v, want *KnownGoodCodecError", err)
 	}
 	fault := errors.New("disk")
 	store.getErr = fault
-	if _, err := b.LoadKnownGood("node"); !errors.Is(err, fault) {
+	if _, err := b.LoadKnownGood(context.Background(), "node"); !errors.Is(err, fault) {
 		t.Fatalf("store failure = %v", err)
 	}
 	none := &SoftwareBackend{}
-	if err := none.SaveKnownGood("node", []string{"x"}); err != nil {
+	if err := none.SaveKnownGood(context.Background(), "node", []string{"x"}); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := none.LoadKnownGood("node"); err != nil || got != nil {
+	if got, err := none.LoadKnownGood(context.Background(), "node"); err != nil || got != nil {
 		t.Fatalf("no storage = %v, %v", got, err)
 	}
 }
@@ -88,5 +92,31 @@ func TestNewLockoutBackend_OneDecorationPerRawBackend(t *testing.T) {
 	}
 	if NewLockoutBackend(raw) == NewLockoutBackend(other) {
 		t.Fatal("two raw backends share a decoration")
+	}
+}
+
+// TestLockoutBackend_NodeKnownGoodRecordNamesNoPrincipal: the node SO PIN's
+// persisted known-good record holds digests only -- the SO that verified its
+// PIN through the decoration is not named in the backend's storage.
+func TestLockoutBackend_NodeKnownGoodRecordNamesNoPrincipal(t *testing.T) {
+	storage := &memPINStorage{}
+	inner, err := NewSoftwareBackend(storage, fastHashConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := inner.SetSOPIN("", lockoutSOPIN); err != nil {
+		t.Fatal(err)
+	}
+	so := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "officer-jane", TenantID: "system"})
+	if err := ForCaller(so, newLockoutBackend(inner, nil)).VerifySOPIN(lockoutSOPIN); err != nil {
+		t.Fatal(err)
+	}
+	raw := storage.m[soKnownGoodStorageKeyPrefix+nodeSOPINKey]
+	var digests []string
+	if err := json.Unmarshal(raw, &digests); err != nil || len(digests) != 1 || len(digests[0]) != 64 {
+		t.Fatalf("record = %q (%v), want one 64-hex digest", raw, err)
+	}
+	if strings.Contains(string(raw), "officer-jane") || strings.Contains(string(raw), "id:") {
+		t.Fatalf("record %q names the principal", raw)
 	}
 }

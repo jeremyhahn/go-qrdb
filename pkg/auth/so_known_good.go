@@ -22,7 +22,7 @@ import (
 )
 
 // soKnownGoodPrefix is the KV key prefix for each tenant's SO PIN known-good
-// principals (see SOPINLockout). Full key: __sys:so-pin-known-good/{tenantID}.
+// digests (see SOPINLockout). Full key: __sys:so-pin-known-good/{tenantID}.
 const soKnownGoodPrefix = "__sys:so-pin-known-good/"
 
 // soKnownGoodStore persists the tenant SO PIN lockout's known-good sets in
@@ -34,9 +34,9 @@ type soKnownGoodStore struct {
 
 var _ SOPINKnownGoodStore = soKnownGoodStore{}
 
-// LoadKnownGood reads tenantID's known-good principals; none is an empty set.
-func (s soKnownGoodStore) LoadKnownGood(tenantID string) ([]string, error) {
-	data, err := s.store.Get(context.Background(), soKnownGoodPrefix+tenantID)
+// LoadKnownGood reads tenantID's known-good digests; none is an empty set.
+func (s soKnownGoodStore) LoadKnownGood(ctx context.Context, tenantID string) ([]string, error) {
+	data, err := s.store.Get(ctx, soKnownGoodPrefix+tenantID)
 	if err != nil {
 		return nil, &OperationError{Op: "known-good get", Cause: err}
 	}
@@ -50,13 +50,13 @@ func (s soKnownGoodStore) LoadKnownGood(tenantID string) ([]string, error) {
 	return principals, nil
 }
 
-// SaveKnownGood replaces tenantID's known-good principals.
-func (s soKnownGoodStore) SaveKnownGood(tenantID string, principals []string) error {
-	data, err := json.Marshal(principals)
+// SaveKnownGood replaces tenantID's known-good digests.
+func (s soKnownGoodStore) SaveKnownGood(ctx context.Context, tenantID string, digests []string) error {
+	data, err := json.Marshal(digests)
 	if err != nil {
 		return &OperationError{Op: "known-good encode", Cause: err}
 	}
-	if err := s.store.Put(context.Background(), soKnownGoodPrefix+tenantID, data); err != nil {
+	if err := s.store.Put(ctx, soKnownGoodPrefix+tenantID, data); err != nil {
 		return &OperationError{Op: "known-good put", Cause: err}
 	}
 	return nil

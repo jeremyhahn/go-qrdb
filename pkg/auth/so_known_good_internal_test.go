@@ -55,26 +55,26 @@ func (k *knownGoodKV) Put(_ context.Context, key string, value []byte) error {
 func TestSOKnownGoodStore_RoundTripAndFaults(t *testing.T) {
 	kv := &knownGoodKV{}
 	s := soKnownGoodStore{store: kv}
-	if got, err := s.LoadKnownGood("acme"); err != nil || got != nil {
+	if got, err := s.LoadKnownGood(context.Background(), "acme"); err != nil || got != nil {
 		t.Fatalf("absent = %v, %v", got, err)
 	}
-	if err := s.SaveKnownGood("acme", []string{"id:acme/so"}); err != nil {
+	if err := s.SaveKnownGood(context.Background(), "acme", []string{"id:acme/so"}); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := s.LoadKnownGood("acme"); err != nil || len(got) != 1 || got[0] != "id:acme/so" {
+	if got, err := s.LoadKnownGood(context.Background(), "acme"); err != nil || len(got) != 1 || got[0] != "id:acme/so" {
 		t.Fatalf("reloaded = %v, %v", got, err)
 	}
 	var opErr *OperationError
 	kv.data[soKnownGoodPrefix+"acme"] = []byte("{")
-	if _, err := s.LoadKnownGood("acme"); !errors.As(err, &opErr) {
+	if _, err := s.LoadKnownGood(context.Background(), "acme"); !errors.As(err, &opErr) {
 		t.Fatalf("corrupt = %v", err)
 	}
 	kv.getErr = errors.New("raft down")
-	if _, err := s.LoadKnownGood("acme"); !errors.As(err, &opErr) {
+	if _, err := s.LoadKnownGood(context.Background(), "acme"); !errors.As(err, &opErr) {
 		t.Fatalf("get failure = %v", err)
 	}
 	kv.putErr = errors.New("raft down")
-	if err := s.SaveKnownGood("acme", nil); !errors.As(err, &opErr) {
+	if err := s.SaveKnownGood(context.Background(), "acme", nil); !errors.As(err, &opErr) {
 		t.Fatalf("put failure = %v", err)
 	}
 }
@@ -82,10 +82,12 @@ func TestSOKnownGoodStore_RoundTripAndFaults(t *testing.T) {
 // failingKnownGood is a SOPINKnownGoodStore that cannot read or write.
 type failingKnownGood struct{}
 
-func (failingKnownGood) LoadKnownGood(string) ([]string, error) {
+func (failingKnownGood) LoadKnownGood(context.Context, string) ([]string, error) {
 	return nil, errors.New("store down")
 }
-func (failingKnownGood) SaveKnownGood(string, []string) error { return errors.New("store down") }
+func (failingKnownGood) SaveKnownGood(context.Context, string, []string) error {
+	return errors.New("store down")
+}
 
 // TestSOPINLockout_KnownGoodStoreFaultsNeverRefuseAGoodPIN: a store that
 // cannot load leaves the set to be loaded on a later check, and one that
@@ -96,11 +98,112 @@ func TestSOPINLockout_KnownGoodStoreFaultsNeverRefuseAGoodPIN(t *testing.T) {
 	l := NewSOPINLockout(func() time.Time { return now }, WithKnownGoodStore(failingKnownGood{}))
 	right := func() error { return nil }
 	never := func(error) bool { return false }
-	if err := l.Check("node", "id:system/officer", right, never); err != nil {
+	if err := l.Check(context.Background(), "node", "id:system/officer", right, never); err != nil {
 		t.Fatalf("check with a failing store = %v", err)
 	}
 	state := l.keys["node"]
-	if state == nil || !state.isKnownGood("id:system/officer") || state.knownGoodLoaded {
+	if state == nil || !state.isKnownGood(knownGoodDigest("node", "id:system/officer")) || state.knownGoodLoaded || !state.nextLoad.After(now) {
 		t.Fatalf("state = %+v, want the exemption in memory and the load retried later", state)
+	}
+}
+
+// countingStore counts loads and fails every one.
+type countingStore struct{ loads int }
+
+func (c *countingStore) LoadKnownGood(context.Context, string) ([]string, error) {
+	c.loads++
+	return nil, errors.New("store down")
+}
+func (c *countingStore) SaveKnownGood(context.Context, string, []string) error { return nil }
+
+// TestSOPINLockout_FailingLoadIsNotRetriedEveryCheck: a load that failed is
+// retried only after SOPINKnownGoodRetry, not on every check.
+func TestSOPINLockout_FailingLoadIsNotRetriedEveryCheck(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	store := &countingStore{}
+	l := NewSOPINLockout(func() time.Time { return now }, WithKnownGoodStore(store))
+	right := func() error { return nil }
+	never := func(error) bool { return false }
+	for i := 0; i < 5; i++ {
+		_ = l.Check(context.Background(), "node", "id:system/officer", right, never)
+	}
+	if store.loads != 1 {
+		t.Fatalf("loads = %d within the retry interval, want 1", store.loads)
+	}
+	now = now.Add(SOPINKnownGoodRetry)
+	_ = l.Check(context.Background(), "node", "id:system/officer", right, never)
+	if store.loads != 2 {
+		t.Fatalf("loads = %d after the retry interval, want 2", store.loads)
+	}
+}
+
+// blockingStore blocks every call until release is closed, and reports each
+// call's start on entered.
+type blockingStore struct {
+	entered chan string
+	release chan struct{}
+}
+
+func (b *blockingStore) LoadKnownGood(ctx context.Context, key string) ([]string, error) {
+	b.entered <- "load " + key
+	select {
+	case <-b.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return nil, nil
+}
+
+func (b *blockingStore) SaveKnownGood(ctx context.Context, key string, _ []string) error {
+	b.entered <- "save " + key
+	select {
+	case <-b.release:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return nil
+}
+
+// TestSOPINLockout_SlowStoreHoldsUpOnlyItsOwnCheck: a known-good store call
+// that does not return -- a degraded Raft shard -- holds up the check that
+// made it, never another key's check: no store call runs under the
+// lockout's lock. Both a stuck load and a stuck save are covered.
+func TestSOPINLockout_SlowStoreHoldsUpOnlyItsOwnCheck(t *testing.T) {
+	for _, stuck := range []string{"load", "save"} {
+		t.Run(stuck, func(t *testing.T) {
+			store := &blockingStore{entered: make(chan string, 4), release: make(chan struct{})}
+			l := NewSOPINLockout(nil, WithKnownGoodStore(store))
+			right := func() error { return nil }
+			never := func(error) bool { return false }
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				_ = l.Check(context.Background(), "acme", "id:acme/so", right, never)
+			}()
+			// The acme check's load blocks; for the save case let the load
+			// through and wait for the save to block instead.
+			if got := <-store.entered; got != "load acme" {
+				t.Fatalf("first store call = %q", got)
+			}
+			if stuck == "save" {
+				store.release <- struct{}{}
+				if got := <-store.entered; got != "save acme" {
+					t.Fatalf("second store call = %q", got)
+				}
+			}
+
+			other := make(chan error, 1)
+			go func() { other <- l.Check(context.Background(), "globex", "", right, never) }()
+			select {
+			case err := <-other:
+				if err != nil {
+					t.Fatalf("globex check = %v", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("another key's check waited on acme's stuck %s", stuck)
+			}
+			close(store.release)
+			<-done
+		})
 	}
 }

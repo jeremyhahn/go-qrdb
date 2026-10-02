@@ -19,10 +19,12 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
+	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
 )
 
 // TestCallerPrincipal_Classification: an authenticated identity is its
@@ -81,18 +83,18 @@ func TestSOPINLockout_KeysAndClassesAreSeparate(t *testing.T) {
 	right := func() error { return nil }
 	isWrong := func(err error) bool { return errors.Is(err, errWrong) }
 	for i := 0; i < SOPINFreeFailures; i++ {
-		if err := l.Check("acme", "", wrong, isWrong); !errors.Is(err, errWrong) {
+		if err := l.Check(context.Background(), "acme", "", wrong, isWrong); !errors.Is(err, errWrong) {
 			t.Fatalf("failure %d = %v", i, err)
 		}
 	}
 	var locked *SOPINLockedError
-	if err := l.Check("acme", "", right, isWrong); !errors.As(err, &locked) || !errors.Is(err, ErrSOPINLocked) || locked.RetryAfter != SOPINBaseBackoff {
+	if err := l.Check(context.Background(), "acme", "", right, isWrong); !errors.As(err, &locked) || !errors.Is(err, ErrSOPINLocked) || locked.RetryAfter != SOPINBaseBackoff {
 		t.Fatalf("anonymous after the free failures = %v", err)
 	}
-	if err := l.Check("acme", "id:system/officer", right, isWrong); err != nil {
+	if err := l.Check(context.Background(), "acme", "id:system/officer", right, isWrong); err != nil {
 		t.Fatalf("authenticated on the same key = %v", err)
 	}
-	if err := l.Check("globex", "", right, isWrong); err != nil {
+	if err := l.Check(context.Background(), "globex", "", right, isWrong); err != nil {
 		t.Fatalf("another key = %v", err)
 	}
 	if f, until := l.Status("acme", ""); f != SOPINFreeFailures || until.IsZero() {
@@ -102,7 +104,7 @@ func TestSOPINLockout_KeysAndClassesAreSeparate(t *testing.T) {
 		t.Fatalf("unknown key status = %d, %v", f, until)
 	}
 	errOther := errors.New("store down")
-	if err := l.Check("acme", "id:system/officer", func() error { return errOther }, isWrong); !errors.Is(err, errOther) {
+	if err := l.Check(context.Background(), "acme", "id:system/officer", func() error { return errOther }, isWrong); !errors.Is(err, errOther) {
 		t.Fatalf("a non-mismatch error = %v", err)
 	}
 	if (&SOPINLockedError{RetryAfter: time.Second}).Error() == "" || !l.Now().Equal(now) {
@@ -142,7 +144,7 @@ func TestSOPINLockout_TenantUserCannotLockOutTheSO(t *testing.T) {
 	end := f.now.Add(SOPINAggregateWindow)
 	attempts := 0
 	for f.now.Before(end) {
-		err := f.l.Check("node", user, f.wrong, f.isWrong)
+		err := f.l.Check(context.Background(), "node", user, f.wrong, f.isWrong)
 		var locked *SOPINLockedError
 		if errors.As(err, &locked) {
 			f.now = f.now.Add(locked.RetryAfter)
@@ -157,7 +159,7 @@ func TestSOPINLockout_TenantUserCannotLockOutTheSO(t *testing.T) {
 	if failures, _ := f.l.Status("node", user); failures != attempts {
 		t.Fatalf("the user's own counter = %d, want %d", failures, attempts)
 	}
-	if err := f.l.Check("node", so, f.right, f.isWrong); err != nil {
+	if err := f.l.Check(context.Background(), "node", so, f.right, f.isWrong); err != nil {
 		t.Fatalf("the SO after %d wrong PINs from a tenant user's certificate = %v, want admitted", attempts, err)
 	}
 }
@@ -172,25 +174,25 @@ func TestSOPINLockout_AggregateCapsManyPrincipals(t *testing.T) {
 	f := newLockoutFixture()
 	for i := 0; i < SOPINAggregateFailures; i++ {
 		principal := "cert:" + string(rune('a'+i/SOPINFreeFailures))
-		if err := f.l.Check("node", principal, f.wrong, f.isWrong); !errors.Is(err, errWrong) {
+		if err := f.l.Check(context.Background(), "node", principal, f.wrong, f.isWrong); !errors.Is(err, errWrong) {
 			t.Fatalf("failure %d by %s = %v", i, principal, err)
 		}
 	}
 	var locked *SOPINLockedError
-	if err := f.l.Check("node", "id:system/officer", f.right, f.isWrong); !errors.As(err, &locked) || locked.RetryAfter != SOPINAggregateWindow {
+	if err := f.l.Check(context.Background(), "node", "id:system/officer", f.right, f.isWrong); !errors.As(err, &locked) || locked.RetryAfter != SOPINAggregateWindow {
 		t.Fatalf("an unrelated principal past the cap = %v, want locked for the window", err)
 	}
 	if _, until := f.l.Status("node", "id:system/officer"); until.IsZero() {
 		t.Fatal("status does not report the aggregate lock")
 	}
-	if err := f.l.Check("node", "", f.right, f.isWrong); err != nil {
+	if err := f.l.Check(context.Background(), "node", "", f.right, f.isWrong); err != nil {
 		t.Fatalf("the anonymous counter = %v, want untouched", err)
 	}
-	if err := f.l.Check("tenant-acme", "id:acme/so", f.right, f.isWrong); err != nil {
+	if err := f.l.Check(context.Background(), "tenant-acme", "id:acme/so", f.right, f.isWrong); err != nil {
 		t.Fatalf("another key = %v, want untouched", err)
 	}
 	f.now = f.now.Add(SOPINAggregateWindow)
-	if err := f.l.Check("node", "id:system/officer", f.right, f.isWrong); err != nil {
+	if err := f.l.Check(context.Background(), "node", "id:system/officer", f.right, f.isWrong); err != nil {
 		t.Fatalf("after the window = %v, want admitted", err)
 	}
 }
@@ -206,7 +208,7 @@ func TestSOPINLockout_PrincipalsBeyondTheCapShareOverflow(t *testing.T) {
 	}
 	f.l.keys["node"] = state
 	for i := 0; i < SOPINFreeFailures; i++ {
-		if err := f.l.Check("node", "cert:late-"+string(rune('a'+i)), f.wrong, f.isWrong); !errors.Is(err, errWrong) {
+		if err := f.l.Check(context.Background(), "node", "cert:late-"+string(rune('a'+i)), f.wrong, f.isWrong); !errors.Is(err, errWrong) {
 			t.Fatalf("overflow failure %d = %v", i, err)
 		}
 	}
@@ -214,7 +216,7 @@ func TestSOPINLockout_PrincipalsBeyondTheCapShareOverflow(t *testing.T) {
 		t.Fatalf("tracked %d principals, want the cap plus the overflow counter", len(state.principals))
 	}
 	var locked *SOPINLockedError
-	if err := f.l.Check("node", "cert:late-z", f.right, f.isWrong); !errors.As(err, &locked) {
+	if err := f.l.Check(context.Background(), "node", "cert:late-z", f.right, f.isWrong); !errors.As(err, &locked) {
 		t.Fatalf("a further overflow principal = %v, want the shared overflow lockout", err)
 	}
 	if failures, _ := f.l.Status("node", "cert:never-seen"); failures != 0 {
@@ -228,11 +230,11 @@ type memKnownGood struct {
 	saves int
 }
 
-func (m *memKnownGood) LoadKnownGood(key string) ([]string, error) {
+func (m *memKnownGood) LoadKnownGood(_ context.Context, key string) ([]string, error) {
 	return append([]string(nil), m.sets[key]...), nil
 }
 
-func (m *memKnownGood) SaveKnownGood(key string, principals []string) error {
+func (m *memKnownGood) SaveKnownGood(_ context.Context, key string, principals []string) error {
 	if m.sets == nil {
 		m.sets = map[string][]string{}
 	}
@@ -255,7 +257,7 @@ func verifiedCertPrincipal(raw string) string {
 func TestSOPINLockout_KnownGoodSOPassesTheHeldCap(t *testing.T) {
 	f := newLockoutFixture()
 	so := CallerPrincipal(WithIdentity(context.Background(), &Identity{Subject: "officer", TenantID: "system"}))
-	if err := f.l.Check("node", so, f.right, f.isWrong); err != nil {
+	if err := f.l.Check(context.Background(), "node", so, f.right, f.isWrong); err != nil {
 		t.Fatalf("the SO's first check = %v", err)
 	}
 	guessers := []string{"leaf-1", "leaf-2", "leaf-3", "leaf-4", "leaf-5"}
@@ -263,7 +265,7 @@ func TestSOPINLockout_KnownGoodSOPassesTheHeldCap(t *testing.T) {
 	for !held {
 		progress := false
 		for _, g := range guessers {
-			err := f.l.Check("node", verifiedCertPrincipal(g), f.wrong, f.isWrong)
+			err := f.l.Check(context.Background(), "node", verifiedCertPrincipal(g), f.wrong, f.isWrong)
 			var locked *SOPINLockedError
 			if errors.As(err, &locked) {
 				continue
@@ -278,10 +280,10 @@ func TestSOPINLockout_KnownGoodSOPassesTheHeldCap(t *testing.T) {
 		}
 	}
 	var locked *SOPINLockedError
-	if err := f.l.Check("node", verifiedCertPrincipal("newcomer"), f.right, f.isWrong); !errors.As(err, &locked) {
+	if err := f.l.Check(context.Background(), "node", verifiedCertPrincipal("newcomer"), f.right, f.isWrong); !errors.As(err, &locked) {
 		t.Fatalf("a principal never known good, under the held cap = %v, want refused", err)
 	}
-	if err := f.l.Check("node", so, f.right, f.isWrong); err != nil {
+	if err := f.l.Check(context.Background(), "node", so, f.right, f.isWrong); err != nil {
 		t.Fatalf("the known-good SO under the held cap = %v, want admitted", err)
 	}
 }
@@ -294,10 +296,10 @@ func TestSOPINLockout_KnownGoodIsPersistedAndStillBacksOff(t *testing.T) {
 	f := newLockoutFixture()
 	f.l = NewSOPINLockout(func() time.Time { return f.now }, WithKnownGoodStore(store))
 	so := "id:system/officer"
-	if err := f.l.Check("node", so, f.right, f.isWrong); err != nil {
+	if err := f.l.Check(context.Background(), "node", so, f.right, f.isWrong); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.l.Check("node", so, f.right, f.isWrong); err != nil {
+	if err := f.l.Check(context.Background(), "node", so, f.right, f.isWrong); err != nil {
 		t.Fatal(err)
 	}
 	if store.saves != 1 || len(store.sets["node"]) != 1 {
@@ -306,14 +308,14 @@ func TestSOPINLockout_KnownGoodIsPersistedAndStillBacksOff(t *testing.T) {
 
 	restarted := NewSOPINLockout(func() time.Time { return f.now }, WithKnownGoodStore(store))
 	restarted.keys["node"] = &soPINKeyState{aggregate: soPINAggregate{windowStart: f.now, failures: SOPINAggregateFailures}}
-	if err := restarted.Check("node", so, f.right, f.isWrong); err != nil {
+	if err := restarted.Check(context.Background(), "node", so, f.right, f.isWrong); err != nil {
 		t.Fatalf("after a restart under a held cap, the persisted SO = %v, want admitted", err)
 	}
 	for i := 0; i < SOPINFreeFailures; i++ {
-		_ = restarted.Check("node", so, f.wrong, f.isWrong)
+		_ = restarted.Check(context.Background(), "node", so, f.wrong, f.isWrong)
 	}
 	var locked *SOPINLockedError
-	if err := restarted.Check("node", so, f.right, f.isWrong); !errors.As(err, &locked) {
+	if err := restarted.Check(context.Background(), "node", so, f.right, f.isWrong); !errors.As(err, &locked) {
 		t.Fatalf("the known-good SO after its own free failures = %v, want its own backoff", err)
 	}
 	if got := restarted.keys["node"].aggregate.failures; got != 0 {
@@ -358,16 +360,83 @@ func TestSOPINLockout_StalePrincipalsAreEvictedBeforeOverflow(t *testing.T) {
 	}
 
 	f.now = f.now.Add(SOPINStaleAfter)
-	if err := f.l.Check("node", "cert:legit", f.right, f.isWrong); err != nil {
+	if err := f.l.Check(context.Background(), "node", "cert:legit", f.right, f.isWrong); err != nil {
 		t.Fatalf("the new principal's check = %v", err)
 	}
 	for i := 0; i < SOPINFreeFailures; i++ {
-		_ = f.l.Check("node", "cert:legit-2", f.wrong, f.isWrong)
+		_ = f.l.Check(context.Background(), "node", "cert:legit-2", f.wrong, f.isWrong)
 	}
 	if _, ok := state.principals["cert:legit-2"]; !ok {
 		t.Fatal("a new principal was pushed to overflow although the old entries had aged out")
 	}
 	if len(state.principals) >= SOPINMaxTrackedPrincipals {
 		t.Fatalf("stale entries were not evicted: %d tracked", len(state.principals))
+	}
+}
+
+// TestCallerPrincipal_HolderIsNotTheUserOfTheSameName: a holder certificate
+// whose CN is "alice" and the user alice of the same tenant are different
+// principals. The holder's own wrong SO PINs lock out only the holder, and the
+// holder having presented the right PIN does not make the user known-good
+// under a held aggregate cap.
+func TestCallerPrincipal_HolderIsNotTheUserOfTheSameName(t *testing.T) {
+	user := CallerPrincipal(WithIdentity(context.Background(), &Identity{Subject: "alice", TenantID: "acme"}))
+	holder := CallerPrincipal(WithIdentity(context.Background(), &Identity{
+		Subject:  "alice",
+		TenantID: "acme",
+		Metadata: map[string]string{HolderProfileMetadataKey: holderprofile.Custodian},
+	}))
+	if holder != "holder:acme/alice" || user != "id:acme/alice" {
+		t.Fatalf("principals = holder %q, user %q", holder, user)
+	}
+
+	f := newLockoutFixture()
+	for i := 0; i < SOPINFreeFailures; i++ {
+		_ = f.l.Check(context.Background(), "acme", holder, f.wrong, f.isWrong)
+	}
+	var locked *SOPINLockedError
+	if err := f.l.Check(context.Background(), "acme", holder, f.right, f.isWrong); !errors.As(err, &locked) {
+		t.Fatalf("the holder after its own free failures = %v, want locked", err)
+	}
+	if err := f.l.Check(context.Background(), "acme", user, f.right, f.isWrong); err != nil {
+		t.Fatalf("the user alice after the holder's failures = %v, want admitted", err)
+	}
+
+	f = newLockoutFixture()
+	if err := f.l.Check(context.Background(), "acme", holder, f.right, f.isWrong); err != nil {
+		t.Fatal(err)
+	}
+	f.l.keys["acme"].aggregate = soPINAggregate{windowStart: f.now, failures: SOPINAggregateFailures}
+	if err := f.l.Check(context.Background(), "acme", user, f.right, f.isWrong); !errors.As(err, &locked) {
+		t.Fatalf("the user alice under the held cap, after the holder was known good = %v, want refused", err)
+	}
+	if err := f.l.Check(context.Background(), "acme", holder, f.right, f.isWrong); err != nil {
+		t.Fatalf("the known-good holder under the held cap = %v, want admitted", err)
+	}
+}
+
+// TestSOPINLockout_StoreHoldsDigestsNotPrincipals: what the known-good store
+// is handed is a domain-separated digest of key and principal -- never the
+// principal id -- and the digest differs per key, so one key's record says
+// nothing about another's.
+func TestSOPINLockout_StoreHoldsDigestsNotPrincipals(t *testing.T) {
+	store := &memKnownGood{}
+	l := NewSOPINLockout(nil, WithKnownGoodStore(store))
+	so := "id:system/officer"
+	right := func() error { return nil }
+	never := func(error) bool { return false }
+	for _, key := range []string{"node", "acme"} {
+		if err := l.Check(context.Background(), key, so, right, never); err != nil {
+			t.Fatal(err)
+		}
+	}
+	node, acme := store.sets["node"], store.sets["acme"]
+	if len(node) != 1 || len(acme) != 1 || node[0] == acme[0] {
+		t.Fatalf("stored = %v / %v, want one distinct digest per key", node, acme)
+	}
+	for key, got := range map[string]string{"node": node[0], "acme": acme[0]} {
+		if got != knownGoodDigest(key, so) || len(got) != 64 || strings.Contains(got, "officer") {
+			t.Fatalf("%s stored %q, want the 64-hex digest of the principal", key, got)
+		}
 	}
 }

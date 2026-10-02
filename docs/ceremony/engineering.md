@@ -134,7 +134,18 @@ the last initial holder claims.
     that has presented the correct SO PIN before. Up to 8 known-good
     principals are kept per key, persisted with the PIN backend (the software
     backend's storage) and, for a tenant SO PIN, in the authenticator's store,
-    so the exemption survives a restart. A known-good principal still has its
+    so the exemption survives a restart. What is persisted is a
+    domain-separated SHA-256 digest of the key and the principal, never the
+    principal id, so the record does not say who has held the SO PIN. The
+    store is never called under the lockout's lock: the set is loaded before
+    the check and saved after it, each call bounded to 5 s
+    (`auth.SOPINKnownGoodTimeout`), so a slow store -- a degraded Raft shard --
+    delays only the check that asked, never another key's. A load that fails
+    is not retried for 30 s (`auth.SOPINKnownGoodRetry`); until then the
+    key's principals are simply held to the cap. A principal authenticated by
+    a holder certificate is `holder:<tenant>/<subject>`, never the user of the
+    same name (`id:<tenant>/<subject>`): the two share neither a counter nor
+    known-good status. A known-good principal still has its
     own backoff, and its failures do not count toward the cap. The residual is
     therefore narrower: colluding certificate holders can delay, for one
     window, only an officer that has never yet presented the correct PIN from

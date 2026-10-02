@@ -217,7 +217,7 @@ func (b *lockoutBackend) VerifyFIDO2Hash(hash []byte) bool {
 // *SOPINLockedError, and verify did not run. Only a wrong PIN counts (see
 // isSOPINMismatch): a backend that cannot answer is not a guess.
 func (b *lockoutBackend) check(verify func() error) error {
-	err := b.shared.lockout.Check(nodeSOPINKey, b.principal, verify, isSOPINMismatch)
+	err := b.shared.lockout.Check(context.Background(), nodeSOPINKey, b.principal, verify, isSOPINMismatch)
 	var locked *auth.SOPINLockedError
 	if errors.As(err, &locked) {
 		return &SOPINLockedError{RetryAfter: locked.RetryAfter}

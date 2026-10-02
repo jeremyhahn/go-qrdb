@@ -32,11 +32,11 @@ var _ auth.SOPINKnownGoodStore = (*SoftwareBackend)(nil)
 // storage, so the SO PIN lockout decorator (NewLockoutBackend) keeps a
 // Security Officer's exemption from the aggregate cap across a restart. A
 // backend with no storage persists nothing and loads an empty set.
-func (b *SoftwareBackend) LoadKnownGood(key string) ([]string, error) {
+func (b *SoftwareBackend) LoadKnownGood(ctx context.Context, key string) ([]string, error) {
 	if b.store == nil {
 		return nil, nil
 	}
-	data, err := b.store.Get(context.Background(), soKnownGoodStorageKeyPrefix+key)
+	data, err := b.store.Get(ctx, soKnownGoodStorageKeyPrefix+key)
 	if errors.Is(err, ErrNotFound) {
 		return nil, nil
 	}
@@ -51,15 +51,15 @@ func (b *SoftwareBackend) LoadKnownGood(key string) ([]string, error) {
 }
 
 // SaveKnownGood implements auth.SOPINKnownGoodStore.
-func (b *SoftwareBackend) SaveKnownGood(key string, principals []string) error {
+func (b *SoftwareBackend) SaveKnownGood(ctx context.Context, key string, digests []string) error {
 	if b.store == nil {
 		return nil
 	}
-	data, err := json.Marshal(principals)
+	data, err := json.Marshal(digests)
 	if err != nil {
 		return &KnownGoodCodecError{Err: err}
 	}
-	return b.store.Put(context.Background(), soKnownGoodStorageKeyPrefix+key, data)
+	return b.store.Put(ctx, soKnownGoodStorageKeyPrefix+key, data)
 }
 
 // KnownGoodCodecError is returned when a persisted known-good set cannot be

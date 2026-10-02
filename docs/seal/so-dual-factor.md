@@ -150,7 +150,9 @@ or share holder's certificate can lock the officer's rekey or revocation out.
 An aggregate cap (64 authenticated failures per 15 minutes) bounds guessing
 by many principals together. Reaching it delays authenticated checks for the
 rest of the window, but never those of a known-good principal: one that has
-presented the correct SO PIN before, remembered persistently. The residual is
+presented the correct SO PIN before, remembered persistently (as a digest,
+never the principal's id, and read and written outside the lockout's lock
+with a bounded deadline). The residual is
 a delay only for an officer that has not yet done so from that principal. The tenant SO PIN this
 gate verifies (`auth.SOAuthenticator`) is held to the same lockout, per
 tenant (`auth.SOPINLockout`); a locked tenant PIN answers `429` with the
