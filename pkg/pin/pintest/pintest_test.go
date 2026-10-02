@@ -58,3 +58,51 @@ func TestNewBackend_VerifiesPINs(t *testing.T) {
 		t.Fatal("VerifySOPIN(wrong) succeeded")
 	}
 }
+
+// fatalRecorder is a testing.TB whose Fatalf records the failure and stops
+// the helper, so a test can assert that a helper fails.
+type fatalRecorder struct {
+	testing.TB
+	failed string
+}
+
+// errHelperStopped unwinds a helper that called Fatalf on a fatalRecorder.
+var errHelperStopped = errors.New("helper stopped")
+
+func (r *fatalRecorder) Helper() {}
+
+func (r *fatalRecorder) Fatalf(format string, _ ...any) {
+	r.failed = format
+	panic(errHelperStopped)
+}
+
+// runHelper runs fn against a fatalRecorder and reports what it failed with.
+func runHelper(t *testing.T, fn func(tb testing.TB)) (failed string) {
+	t.Helper()
+	r := &fatalRecorder{TB: t}
+	defer func() {
+		if p := recover(); p != nil {
+			if err, ok := p.(error); !ok || !errors.Is(err, errHelperStopped) {
+				panic(p)
+			}
+		}
+		failed = r.failed
+	}()
+	fn(r)
+	return ""
+}
+
+// TestRequireThrottled: it passes for a backend behind the SO PIN lockout and
+// fails for the same raw backend, which admits the right PIN after any number
+// of wrong ones, and for a backend with no SO PIN.
+func TestRequireThrottled(t *testing.T) {
+	if failed := runHelper(t, func(tb testing.TB) { RequireThrottled(tb, pin.NewLockoutBackend(NewSOPINBackend(t))) }); failed != "" {
+		t.Fatalf("a throttled backend failed: %s", failed)
+	}
+	if failed := runHelper(t, func(tb testing.TB) { RequireThrottled(tb, NewSOPINBackend(t)) }); failed == "" {
+		t.Fatal("a raw backend passed RequireThrottled")
+	}
+	if failed := runHelper(t, func(tb testing.TB) { RequireThrottled(tb, NewBackend(t)) }); failed == "" {
+		t.Fatal("a backend with no SO PIN passed RequireThrottled")
+	}
+}
