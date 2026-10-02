@@ -229,6 +229,12 @@ func (a *MTLSAuthenticator) Authenticate(ctx context.Context) (*Identity, error)
 		id.Metadata["tenant_source"] = "ou"
 	}
 
+	// A holder certificate (an officer's or custodian's) is marked, so the
+	// authentication middleware never resolves it to a user account.
+	if profile, ok := HolderProfile(cert); ok {
+		id.Metadata[HolderProfileMetadataKey] = profile
+	}
+
 	// Organization becomes a metadata field.
 	if len(cert.Subject.Organization) > 0 {
 		id.Metadata["organization"] = cert.Subject.Organization[0]

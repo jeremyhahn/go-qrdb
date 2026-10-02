@@ -11,6 +11,105 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Security
+
+- **CRITICAL, BREAKING: registering an officer can no longer mint a login.**
+  The ceremony CA is the node's cluster CA, which the mTLS listener trusts for
+  client logins, and `LocalCA.SignCSR` copied the CSR's Subject and SANs. A
+  tenant Admin registering a tenant-barrier officer with a CSR for
+  `CN=admin, OU=system` received a certificate that authenticated as the
+  system tenant's `admin` -- under the default `auth.mtls_binding_policy`, an
+  account with no enrolled binding is admitted on CN and OU alone -- and
+  `OU=globex` or a SPIFFE SAN for globex worked the same way. The same copy
+  ran on system and recovery officer registration, `ceremony sign-csr` and the
+  initial M-of-N ceremony. Every one of those paths now names the registered
+  holder and the scope's tenant in `ceremony.SignCSROptions` (new `TenantID`
+  and `Username`), and the CA issues `CN=<username>`,
+  `OU=[<scope tenant>, <profile>]` -- one RDN per OU, so a long tenant id stays
+  first -- with **no Subject Alternative Name**: the CSR contributes only its
+  key. The ceremony re-checks every certificate a `CeremonyCA` returns
+  (Subject, no SANs, the CSR's own key) and refuses one that differs with
+  `*ceremony.CertSubjectError`, so a CA composed in from outside qrdb is held to
+  the contract too (`SignCSROptions.Subject` and `RawSubject` state it). As
+  defence in depth, a certificate carrying a holder profile OU
+  (`security-officer`, `custodian`) is marked by the mTLS authenticator
+  (`auth.HolderProfile`) and is never resolved to a user account: it
+  authenticates with no roles and reaches only the identity-gated ceremony
+  surface. The officer certificate layout changes from `OU=[<csr ou>...,
+  <profile>]` to `OU=[<scope tenant>, <profile>]`; `ceremony.CSRTenantSANError`
+  is removed. New leaf package `pkg/tenantid` holds the system tenant id that
+  `pkg/ceremony` needs (`tenant.SystemTenantID` is it).
+- **BREAKING: an audit query reads only the caller's own tenant's events, on
+  every transport.** The query took `tenant_id` from the request unchecked on
+  REST (`GET /v1/audit/events`), gRPC and the unix socket
+  (`AuditService/Query`), QUIC (`audit.Query`), MCP (`qrdb_audit_query`) and
+  the embedded client, and an omitted `tenant_id` read every tenant's events.
+  The audit sinks are node-local and shared by every tenant, so a tenant Admin
+  holding `audit:query` read the whole node's trail. Every transport now
+  confines the filter with `tenant.ConfineAuditFilter` before a logger is read:
+  an omitted `tenant_id` reads the caller's own tenant, and one naming any other
+  tenant is refused (REST 403, gRPC and unix `PERMISSION_DENIED`, QUIC
+  `StatusPermissionDenied`, the MCP permission-denied tool code, and
+  `*tenant.CrossTenantDeniedError` on embedded). There is no system-tenant
+  exception: a system-tenant caller reads the system tenant's events plus the
+  platform events that carry no tenant (`audit.Filter.Untenanted`, never decoded
+  from a request), and is refused every other tenant's. The tenant match runs
+  before pagination, so no time range, filter or cursor widens it. New:
+  `tenant.CallerTenant`, `tenant.Confine` and `tenant.ConfineAuditFilter`.
+- **BREAKING: no caller can mint, list or revoke another tenant's
+  certificates -- the system tenant included.** `certs:generate` was
+  authorized against the request body's tenant under `ScopeSelf`, which the
+  system-tenant rule lifts, so a system-tenant Admin could mint a CA-signed
+  client certificate naming another tenant's user; under the default
+  `auth.mtls_binding_policy` that certificate authenticates as the user.
+  `certs:list` and `certs:revoke` had the same lift. `certs:generate`,
+  `certs:list`, `certs:revoke`, `certs:read` and `certs:export` are now
+  `ScopeSelfStrict`, so on REST, gRPC, unix, QUIC and MCP the target tenant
+  must be the caller's own for every caller; a request naming another tenant
+  is refused with the transport's permission-denied form. The embedded
+  transport, which runs no authorization middleware, applies the same rule
+  with `tenant.Confine`: `GenerateCert` and `ListCerts` confine the named
+  tenant, and `RevokeCert` confines the serial's owner, or the system tenant
+  for a deny-by-serial revocation (`*tenant.CrossTenantDeniedError`).
+  `certs:revoke:cross` -- the deny-by-serial revocation of a serial no tenant
+  owns -- stays `ScopeCross`. A platform tool that issued certificates into
+  customer tenants must now run as each tenant's own Admin.
+- **BREAKING: `audit:read:cross` is removed.** The permission was declared
+  `ScopeCross`, granted to the built-in Admin role and re-exported as
+  `sdk.PermissionAuditReadCross`, and nothing in qrdb enforced it -- yet its
+  name promised a read of every tenant's audit trail. Under the owner ruling no
+  caller reads another tenant's audit events, so the permission, its grant, its
+  "Cross-Tenant Audit" category and its SDK name are deleted. A downstream
+  consumer naming `sdk.PermissionAuditReadCross` no longer compiles. A custom
+  role stored with `audit:read:cross` keeps the inert string, but creating or
+  updating a role that names it is now refused with
+  `*role.InvalidPermissionError`; the built-in Admin loses it on its next
+  reconcile.
+
+### Fixed
+
+- **A custodian's audit events name its tenant.** Registration and revocation
+  (refusals included) in `pkg/custodian`, and the share-claim and unseal-share
+  steps in `pkg/ceremony`, now set `TenantID` to the custodian's tenant. With
+  audit queries confined to the caller's tenant, an event without one is a
+  platform event only the system tenant reads, so a tenant's auditors could
+  not see their own custodians' activity.
+- **One revocation target for every transport.** `middleware.CertRevokeTarget`
+  states what a revocation is authorized as -- the serial's owner with
+  `certs:revoke`, or the system tenant with `certs:revoke:cross` for a serial no
+  tenant owns -- and both `AuthorizeCertRevoke` and the embedded transport use
+  it.
+
+- **The REST, QUIC and MCP SDK clients speak the audit query's wire shape.**
+  The server's wire types are `audit.Filter` and `audit.Page`, whose JSON names
+  (`tenant_id`, `client_ip`, `request_id`, `prev_hash`) differ from the SDK's
+  `transport.AuditFilter` and `transport.AuditEvent`. The QUIC client sent the
+  filter's tenant as `tenantID`, which the server never read, so a QUIC query
+  silently ignored its tenant; and the REST, QUIC and MCP clients decoded every
+  event without its tenant, client IP, request id and chain hash. They now
+  convert through `sdk/go/transport/internal/auditconv`, which the embedded
+  client shares.
+
 ## [0.28.0-alpha] - 2026-10-02
 
 SQL correctness. This release contains BREAKING changes; see the entries below. Highlights:
@@ -233,79 +332,6 @@ Standalone parity (#582) and durable leases. Highlights:
   `TablePrefix`, and the typed `TableWriteError`, `TableReadError` and
   `CorruptTableError`. A state machine opening over a corrupt lease table
   fails with `CorruptTableError` rather than guessing which keys a lease owns.
-
-### Security
-
-- **BREAKING: an audit query reads only the caller's own tenant's events, on
-  every transport.** The query took `tenant_id` from the request unchecked on
-  REST (`GET /v1/audit/events`), gRPC and the unix socket
-  (`AuditService/Query`), QUIC (`audit.Query`), MCP (`qrdb_audit_query`) and
-  the embedded client, and an omitted `tenant_id` read every tenant's events.
-  The audit sinks are node-local and shared by every tenant, so a tenant Admin
-  holding `audit:query` read the whole node's trail. Every transport now
-  confines the filter with `tenant.ConfineAuditFilter` before a logger is read:
-  an omitted `tenant_id` reads the caller's own tenant, and one naming any other
-  tenant is refused (REST 403, gRPC and unix `PERMISSION_DENIED`, QUIC
-  `StatusPermissionDenied`, the MCP permission-denied tool code, and
-  `*tenant.CrossTenantDeniedError` on embedded). There is no system-tenant
-  exception: a system-tenant caller reads the system tenant's events plus the
-  platform events that carry no tenant (`audit.Filter.Untenanted`, never decoded
-  from a request), and is refused every other tenant's. The tenant match runs
-  before pagination, so no time range, filter or cursor widens it. New:
-  `tenant.CallerTenant`, `tenant.Confine` and `tenant.ConfineAuditFilter`.
-- **BREAKING: no caller can mint, list or revoke another tenant's
-  certificates -- the system tenant included.** `certs:generate` was
-  authorized against the request body's tenant under `ScopeSelf`, which the
-  system-tenant rule lifts, so a system-tenant Admin could mint a CA-signed
-  client certificate naming another tenant's user; under the default
-  `auth.mtls_binding_policy` that certificate authenticates as the user.
-  `certs:list` and `certs:revoke` had the same lift. `certs:generate`,
-  `certs:list`, `certs:revoke`, `certs:read` and `certs:export` are now
-  `ScopeSelfStrict`, so on REST, gRPC, unix, QUIC and MCP the target tenant
-  must be the caller's own for every caller; a request naming another tenant
-  is refused with the transport's permission-denied form. The embedded
-  transport, which runs no authorization middleware, applies the same rule
-  with `tenant.Confine`: `GenerateCert` and `ListCerts` confine the named
-  tenant, and `RevokeCert` confines the serial's owner, or the system tenant
-  for a deny-by-serial revocation (`*tenant.CrossTenantDeniedError`).
-  `certs:revoke:cross` -- the deny-by-serial revocation of a serial no tenant
-  owns -- stays `ScopeCross`. A platform tool that issued certificates into
-  customer tenants must now run as each tenant's own Admin.
-- **BREAKING: `audit:read:cross` is removed.** The permission was declared
-  `ScopeCross`, granted to the built-in Admin role and re-exported as
-  `sdk.PermissionAuditReadCross`, and nothing in qrdb enforced it -- yet its
-  name promised a read of every tenant's audit trail. Under the owner ruling no
-  caller reads another tenant's audit events, so the permission, its grant, its
-  "Cross-Tenant Audit" category and its SDK name are deleted. A downstream
-  consumer naming `sdk.PermissionAuditReadCross` no longer compiles. A custom
-  role stored with `audit:read:cross` keeps the inert string, but creating or
-  updating a role that names it is now refused with
-  `*role.InvalidPermissionError`; the built-in Admin loses it on its next
-  reconcile.
-
-### Fixed
-
-- **A custodian's audit events name its tenant.** Registration and revocation
-  (refusals included) in `pkg/custodian`, and the share-claim and unseal-share
-  steps in `pkg/ceremony`, now set `TenantID` to the custodian's tenant. With
-  audit queries confined to the caller's tenant, an event without one is a
-  platform event only the system tenant reads, so a tenant's auditors could
-  not see their own custodians' activity.
-- **One revocation target for every transport.** `middleware.CertRevokeTarget`
-  states what a revocation is authorized as -- the serial's owner with
-  `certs:revoke`, or the system tenant with `certs:revoke:cross` for a serial no
-  tenant owns -- and both `AuthorizeCertRevoke` and the embedded transport use
-  it.
-
-- **The REST, QUIC and MCP SDK clients speak the audit query's wire shape.**
-  The server's wire types are `audit.Filter` and `audit.Page`, whose JSON names
-  (`tenant_id`, `client_ip`, `request_id`, `prev_hash`) differ from the SDK's
-  `transport.AuditFilter` and `transport.AuditEvent`. The QUIC client sent the
-  filter's tenant as `tenantID`, which the server never read, so a QUIC query
-  silently ignored its tenant; and the REST, QUIC and MCP clients decoded every
-  event without its tenant, client IP, request id and chain hash. They now
-  convert through `sdk/go/transport/internal/auditconv`, which the embedded
-  client shares.
 
 ## [0.26.0-alpha] - 2026-10-01
 

@@ -14,7 +14,11 @@
 
 package tenant
 
-import "context"
+import (
+	"context"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+)
 
 // SystemTenantID is the reserved identifier for the platform's structurally
 // privileged tenant. Membership in the system tenant grants cross-tenant
@@ -28,7 +32,7 @@ import "context"
 // (and a small set of other reserved patterns) for all external callers.
 // Only first-boot bootstrap may create the system tenant, by passing
 // WithInternalCall(ctx) to bypass the reservation check.
-const SystemTenantID = "system"
+const SystemTenantID = tenantid.System
 
 // IsSystemTenant reports whether id denotes the structurally privileged
 // system tenant. It returns true for both SystemTenantID and the empty

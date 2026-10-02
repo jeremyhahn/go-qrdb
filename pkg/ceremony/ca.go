@@ -17,11 +17,33 @@ package ceremony
 import (
 	"context"
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/asn1"
 )
 
 // SignCSROptions controls how a CSR is signed by the ceremony CA.
+//
+// The certificate's identity comes from HERE, never from the CSR. A ceremony
+// CA signs under the node's cluster CA, which the mTLS listener trusts for
+// client logins, so a CSR's Subject and SANs would otherwise be a login claim
+// the registering caller chose. A CeremonyCA MUST set the Subject to
+// CN=Username, OU=[TenantID, Profile] (Profile omitted when empty), carry NO
+// Subject Alternative Name, and use the CSR only for its public key and proof
+// of possession. The ceremony re-checks every certificate a CA returns
+// (checkIssuedSubject) and refuses one that does not conform.
 type SignCSROptions struct {
-	// Profile is the certificate profile name (e.g., "security-officer").
+	// TenantID is the tenant the certificate authenticates in: its first
+	// Subject OU. It is the signing scope's tenant -- the system tenant for
+	// the node ceremony and recovery scope, the tenant itself for a
+	// tenant-barrier officer. Required.
+	TenantID string
+
+	// Username is the certificate's Common Name: the officer, holder or user
+	// the ceremony registered. Required.
+	Username string
+
+	// Profile is the certificate profile name (e.g., "security-officer"),
+	// the second Subject OU.
 	Profile string
 
 	// ValidityDays is the number of days the certificate is valid.
@@ -33,6 +55,58 @@ type SignCSROptions struct {
 	// ExtKeyUsage specifies the allowed extended key usage flags.
 	ExtKeyUsage []x509.ExtKeyUsage
 }
+
+// Subject is the Subject a CeremonyCA must give the certificate:
+// CN=Username, OU=[TenantID, Profile], with Profile omitted when empty. A
+// missing TenantID or Username is a *CertSubjectError, and nothing may be
+// signed.
+func (o *SignCSROptions) Subject() (pkix.Name, error) {
+	if o.TenantID == "" {
+		return pkix.Name{}, &CertSubjectError{Field: "TenantID"}
+	}
+	if o.Username == "" {
+		return pkix.Name{}, &CertSubjectError{Field: "Username"}
+	}
+	ou := []string{o.TenantID}
+	if o.Profile != "" {
+		ou = append(ou, o.Profile)
+	}
+	return pkix.Name{CommonName: o.Username, OrganizationalUnit: ou}, nil
+}
+
+// RawSubject is Subject DER-encoded with every attribute in its OWN relative
+// distinguished name, in order: CN, then the tenant OU, then the profile OU.
+// A CeremonyCA signs with this as the certificate's RawSubject.
+//
+// It matters because the authenticator reads the tenant from the FIRST OU,
+// and encoding/x509 puts several OUs of a pkix.Name into one RDN -- a DER SET,
+// whose members are sorted by encoding, so the shorter value comes first. A
+// tenant longer than its profile ("tenant-list" against "custodian") would
+// then parse back with the PROFILE as the first OU, and the certificate would
+// authenticate in a tenant named after the profile.
+func (o *SignCSROptions) RawSubject() ([]byte, error) {
+	name, err := o.Subject()
+	if err != nil {
+		return nil, err
+	}
+	rdns := pkix.RDNSequence{
+		{{Type: oidCommonName, Value: name.CommonName}},
+	}
+	for _, ou := range name.OrganizationalUnit {
+		rdns = append(rdns, pkix.RelativeDistinguishedNameSET{{Type: oidOrganizationalUnit, Value: ou}})
+	}
+	der, err := asn1.Marshal(rdns)
+	if err != nil {
+		return nil, &CertEncodeError{Err: err}
+	}
+	return der, nil
+}
+
+// The X.520 attribute types RawSubject writes.
+var (
+	oidCommonName         = asn1.ObjectIdentifier{2, 5, 4, 3}
+	oidOrganizationalUnit = asn1.ObjectIdentifier{2, 5, 4, 11}
+)
 
 // IssueCertRequest describes a certificate to be issued directly by the CA,
 // including key generation.

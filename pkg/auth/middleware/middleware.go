@@ -392,7 +392,19 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 	identity.RoleBindings = nil
 	identity.Attributes = nil
 
-	if m.users != nil {
+	// A holder certificate -- an officer's or custodian's, signed by the
+	// ceremony CA -- proves who holds a share; it is never a user login. It
+	// is not resolved against the user store at all, so it carries no roles
+	// and reaches only the identity-gated ceremony surface, whose handlers
+	// bind it by thumbprint. Without this, a holder registered under a user's
+	// name ("admin") would authenticate as that user wherever the account
+	// has no enrolled certificate binding.
+	holder := auth.IsHolderIdentity(identity)
+	if holder {
+		identity.Roles = nil
+	}
+
+	if m.users != nil && !holder {
 		u, err := m.lookupUser(ctx, identity.TenantID, identity.Subject)
 		if err != nil {
 			// A dedicated-isolation tenant whose barrier is sealed (or not

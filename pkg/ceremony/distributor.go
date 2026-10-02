@@ -107,7 +107,7 @@ func (s *CeremonyService) RegisterRecoveryOfficer(ctx context.Context, req Regis
 		return nil, ErrDuplicateUsername
 	}
 
-	cert, csr, certPEM, err := signOfficerCSR(ctx, s.ca, req.CSRPEM)
+	cert, csr, certPEM, err := signOfficerCSR(ctx, s.ca, req.CSRPEM, ScopeRecovery.TenantID(), req.Username)
 	if err != nil {
 		return nil, err
 	}

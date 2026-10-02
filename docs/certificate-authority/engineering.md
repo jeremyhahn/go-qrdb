@@ -192,9 +192,16 @@ type AuthMiddlewareConfig struct {
   `clientSPIFFEURIs` round-trips the ID through `spiffe.ParseID` and requires
   field-for-field equality before signing; anything else is
   `*SPIFFEIdentityError` and no certificate or record exists.
-- **The ceremony CA's `SignCSR` refuses a CSR tenant SAN that disagrees with
-  its OU** (`checkTenantSANsAgreeWithOU` → `*ceremony.CSRTenantSANError`).
-  Certificates from CAs outside qrdb are not covered by either check.
+- **The ceremony CA sets the Subject and signs no SAN.** `SignCSROptions`
+  carries `TenantID` and `Username`; `SignCSROptions.Subject` and `RawSubject`
+  are the contract every `CeremonyCA` implements (`CN=Username`,
+  `OU=[TenantID, Profile]`, one RDN per attribute), and `LocalCA.SignCSR`
+  issues exactly that, dropping every CSR SAN. A missing tenant or username is
+  `*ceremony.CertSubjectError`. `signHolderCSR` is the one path that calls a
+  CA, and `checkIssuedSubject` refuses a returned certificate whose Subject,
+  SANs or public key differ from what was asked (`*ceremony.CertSubjectError`
+  naming the field). `auth.HolderProfile` marks officer and custodian
+  certificates; `finalizeIdentity` never resolves one against the user store.
 - **`auth.spiffe_trust_domain` is validated at load** with
   `spiffe.ValidateTrustDomain`, the same round trip. A refusal is a
   `*spiffe.TrustDomainError` carrying the rejected value and unwrapping to

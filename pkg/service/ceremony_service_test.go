@@ -135,9 +135,13 @@ func (ca *testCeremonyCA) SignCSR(_ context.Context, csrPEM []byte, opts *ceremo
 		return nil, err
 	}
 
+	rawSubject, err := opts.RawSubject()
+	if err != nil {
+		return nil, err
+	}
 	template := &x509.Certificate{
 		SerialNumber: big.NewInt(time.Now().UnixNano()),
-		Subject:      csr.Subject,
+		RawSubject:   rawSubject,
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(time.Duration(opts.ValidityDays) * 24 * time.Hour),
 		KeyUsage:     opts.KeyUsage,

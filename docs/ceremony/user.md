@@ -100,6 +100,12 @@ qrdb ceremony sign-csr --csr-file dave.csr --username dave \
      --role operator --so-pin "$SO_PIN"
 ```
 
+The certificate is issued as `CN=dave`, `OU=[system, <role profile>]` with no
+Subject Alternative Name: `--username` is the identity, and the CSR contributes
+only its key. Whatever Subject or SANs the CSR asks for are ignored, so this
+step cannot mint a login in another tenant. A `--role so` certificate is an
+officer credential and never logs in as a user.
+
 Choose an SO PIN with **at least 40 bits of entropy**, for example 8 random
 characters from letters and digits, or a 12-digit random number. Before
 unseal, sign-csr can be reached without authentication, so the PIN is all that

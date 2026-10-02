@@ -209,6 +209,8 @@ func TestLocalCA_SignCSR_Custodian(t *testing.T) {
 	csrPEM := newTestCSRPEM(t, "so-1")
 
 	cert, err := ca.SignCSR(context.Background(), csrPEM, &SignCSROptions{
+		TenantID:     "acme",
+		Username:     "so-1",
 		Profile:      "custodian",
 		ValidityDays: 365,
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
@@ -218,8 +220,8 @@ func TestLocalCA_SignCSR_Custodian(t *testing.T) {
 	require.NotNil(t, cert)
 
 	assert.Equal(t, "so-1", cert.Subject.CommonName)
-	assert.Contains(t, cert.Subject.OrganizationalUnit, "custodian")
-	assert.Contains(t, cert.DNSNames, "so.example.test")
+	assert.Equal(t, []string{"acme", "custodian"}, cert.Subject.OrganizationalUnit)
+	assert.Empty(t, cert.DNSNames, "the CSR's DNS SAN must not be signed")
 	assert.Equal(t, x509.KeyUsageDigitalSignature|x509.KeyUsageKeyEncipherment, cert.KeyUsage)
 	assert.Contains(t, cert.ExtKeyUsage, x509.ExtKeyUsageClientAuth)
 	assert.WithinDuration(t, time.Now().AddDate(0, 0, 365), cert.NotAfter, time.Hour)
@@ -231,21 +233,23 @@ func TestLocalCA_SignCSR_Custodian(t *testing.T) {
 	assert.NoError(t, cert.CheckSignatureFrom(caCert))
 }
 
-func TestLocalCA_SignCSR_EmptyProfileLeavesOU(t *testing.T) {
+func TestLocalCA_SignCSR_EmptyProfileIsTenantOnly(t *testing.T) {
 	ca := newTestLocalCA(t)
 	csrPEM := newTestCSRPEM(t, "so-2")
 
 	cert, err := ca.SignCSR(context.Background(), csrPEM, &SignCSROptions{
+		TenantID:     "acme",
+		Username:     "so-2",
 		ValidityDays: 30,
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 	})
 	require.NoError(t, err)
-	assert.Empty(t, cert.Subject.OrganizationalUnit)
+	assert.Equal(t, []string{"acme"}, cert.Subject.OrganizationalUnit)
 }
 
 func TestLocalCA_SignCSR_InvalidInputs(t *testing.T) {
 	ca := newTestLocalCA(t)
-	validOpts := &SignCSROptions{ValidityDays: 1}
+	validOpts := &SignCSROptions{TenantID: "acme", Username: "so", ValidityDays: 1}
 
 	// CSR whose embedded signature has been corrupted: re-encode a valid
 	// CSR DER with flipped bytes near the end (the signature field).

@@ -424,8 +424,9 @@ separate shape (`spiffe://<trust-domain>/node/<id>`) minted by the daemon's
 node-certificate path and never by this one.
 
 **Neither of qrdb's CAs mints a certificate whose SAN and OU disagree.** The
-built-in CA's `GenerateClientCert` and the ceremony CA's `SignCSR` both refuse
-one; a certificate issued by a CA outside qrdb is outside this guarantee, and
+built-in CA's `GenerateClientCert` refuses one, and the ceremony CA's `SignCSR`
+signs no SAN at all; a certificate issued by a CA outside qrdb is outside this
+guarantee, and
 the authenticator's trust-domain pin is what bounds those. For
 `GenerateClientCert` the SAN is built,
 then parsed back with the same parser the authenticator applies to a presented
@@ -437,12 +438,36 @@ reason is not tidiness: a certificate whose SAN named one tenant and whose OU
 named another would authenticate as different tenants depending on whether the
 node it reached had a pin set.
 
-**The ceremony CA checks what a CSR asks for.** `SignCSR` copies a CSR's URI
-SANs into the certificate it signs, so a tenant SPIFFE SAN in the CSR would
-become a tenant claim that CA vouches for. A malformed tenant SPIFFE ID, or one
-naming a tenant other than the Subject's first OU (or any tenant when the
-Subject has no OU), is refused with `*ceremony.CSRTenantSANError` and nothing is
-signed. Other URIs — node identities, other schemes — are signed as before.
+**The ceremony CA takes nothing from a CSR but its key.** The ceremony CA is
+the node's cluster CA — the CA the mTLS listener trusts for client logins — so
+whatever Subject an officer certificate carries is a login claim. It is
+therefore never taken from the CSR. Every signing path (system, tenant and
+recovery officer registration, `ceremony sign-csr`, and the initial M-of-N
+ceremony) names the registered holder and the registering scope's tenant in
+`ceremony.SignCSROptions`, and the CA issues `CN=<username>`,
+`OU=[<scope tenant>, <profile>]` with **no Subject Alternative Name** — the
+CSR's URI, DNS, IP and e-mail SANs are dropped. Each OU is its own RDN, so the
+tenant stays the first OU whatever its length. The ceremony then re-checks
+every certificate a `CeremonyCA` returns — Subject, absence of SANs, and that
+it certifies the CSR's own key — and refuses one that differs
+(`*ceremony.CertSubjectError`), so a CA composed in from outside qrdb is held
+to the same contract.
+
+**BREAKING:** before this, `SignCSR` copied the CSR's Subject and URI SANs. A
+tenant Admin registering a tenant-barrier officer with a CSR for
+`CN=admin, OU=system` received a certificate that authenticated as the system
+tenant's `admin` (and with `OU=globex`, or a SPIFFE SAN for globex, as globex's
+user). Officer certificates now name the scope's tenant first and the profile
+second; a certificate issued under the old layout carries the profile as its
+first OU, and is still recognised as a holder certificate (below).
+
+**A holder certificate is never a user login.** A certificate whose OU carries
+a holder profile (`security-officer` or `custodian`, in any position) is marked
+by the mTLS authenticator (`auth.HolderProfile`), and the authentication
+middleware never resolves it to a user account: it authenticates with no roles
+and reaches only the identity-gated ceremony surface, where the handler binds
+it by certificate thumbprint. An officer registered as `admin` therefore does
+not become the tenant's `admin` user, binding policy or not.
 
 **The trust domain is validated when configuration loads.** A value that does
 not survive being written into a SPIFFE ID and parsed back (`/`, `?`, `@`,

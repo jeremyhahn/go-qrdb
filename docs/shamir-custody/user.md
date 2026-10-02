@@ -26,7 +26,10 @@ for the people who hold the shares and the person who sets it up.
 ## Setting it up
 
 **Register the officers.** Each supplies a CSR; the ceremony CA signs it and
-binds the officer to their certificate's thumbprint.
+binds the officer to their certificate's thumbprint. Only the CSR's key
+matters: the certificate is issued for the `--username` you register, in your
+tenant, and it is an officer credential — it reaches the officer claim and
+unseal steps, and never logs in as a user, even one of the same name.
 
 ```bash
 qrdb barrier officer register --username alice --csr-file alice.csr \

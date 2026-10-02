@@ -18,6 +18,8 @@ import (
 	"crypto"
 	"crypto/x509"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 )
 
 // CeremonyState represents the current phase of the initialization ceremony.
@@ -251,7 +253,7 @@ type roleProfile struct {
 // roleProfileMap maps recognized role names to their certificate profiles.
 var roleProfileMap = map[string]*roleProfile{
 	"so": {
-		profile:      "security-officer",
+		profile:      auth.ProfileSecurityOfficer,
 		validityDays: 365,
 		keyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		extKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
@@ -281,7 +283,7 @@ var roleProfileMap = map[string]*roleProfile{
 		extKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	},
 	"custodian": {
-		profile:      "custodian",
+		profile:      auth.ProfileCustodian,
 		validityDays: 365,
 		keyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		extKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},

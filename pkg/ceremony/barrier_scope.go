@@ -14,7 +14,11 @@
 
 package ceremony
 
-import "log/slog"
+import (
+	"log/slog"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+)
 
 // scopeKind distinguishes system-level, tenant-level, and recovery-level
 // barrier scopes.
@@ -60,6 +64,16 @@ func (b BarrierScope) StoragePrefix() string {
 	default:
 		return "ceremony/officers/"
 	}
+}
+
+// TenantID returns the tenant this scope's officer certificates authenticate
+// in: the tenant itself for a tenant scope, and the system tenant for the
+// node ceremony and recovery scopes, which belong to the platform.
+func (b BarrierScope) TenantID() string {
+	if b.kind == scopeTenant {
+		return b.tenantID
+	}
+	return tenantid.System
 }
 
 // String returns a human-readable description of the scope for diagnostics.

@@ -319,18 +319,18 @@ func (e *ShamirSplitError) Unwrap() error {
 	return e.Err
 }
 
-// CSRTenantSANError is returned by LocalCA.SignCSR when the CSR carries a
-// tenant-scoped SPIFFE URI SAN the certificate may not have: malformed, or
-// naming a tenant other than the Subject's first OU (go-qrdb#519). Nothing is
-// signed.
-type CSRTenantSANError struct {
-	URI    string
-	Reason string
+// CertSubjectError is returned when a ceremony certificate cannot be given
+// the identity the ceremony registered: SignCSROptions omits the TenantID or
+// Username, or a CeremonyCA returned a certificate whose Subject or SANs
+// differ from what it was told to sign (Field names what differs). Nothing
+// is issued.
+type CertSubjectError struct {
+	Field string
 }
 
-// Error names the refused SAN and why.
-func (e *CSRTenantSANError) Error() string {
-	return "ceremony: refusing to sign CSR with SPIFFE SAN " + e.URI + ": " + e.Reason
+// Error names the field.
+func (e *CertSubjectError) Error() string {
+	return "ceremony: certificate subject " + e.Field + " is missing or not the registered identity"
 }
 
 // CSRParseError wraps an error from CSR parsing.

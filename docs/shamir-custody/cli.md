@@ -22,7 +22,9 @@ each claims their own share through an mTLS challenge/response.
 ### `qrdb barrier officer register`
 
 The officer's CSR is validated, signed by the ceremony CA, and the officer
-record is persisted. **Share bytes are NOT produced at this step** — the
+record is persisted. Only the CSR's key is used: the certificate is issued as
+`CN=<--username>`, `OU=[<tenant>, custodian]` with no SAN, whatever Subject the
+CSR names. **Share bytes are NOT produced at this step** — the
 barrier must be initialized (`barrier init-shamir`) for distribution to occur.
 
 | Flag | Type | Meaning |

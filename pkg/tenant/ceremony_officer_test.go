@@ -92,9 +92,13 @@ func (c *tenantTestCA) SignCSR(_ context.Context, csrPEM []byte, opts *ceremony.
 	if opts != nil && opts.ValidityDays > 0 {
 		validDays = opts.ValidityDays
 	}
+	rawSubject, err := opts.RawSubject()
+	if err != nil {
+		return nil, err
+	}
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
-		Subject:      csr.Subject,
+		RawSubject:   rawSubject,
 		NotBefore:    time.Now().Add(-time.Minute),
 		NotAfter:     time.Now().Add(time.Duration(validDays) * 24 * time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,

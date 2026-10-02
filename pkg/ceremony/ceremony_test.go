@@ -137,14 +137,17 @@ func (m *mockCA) SignCSR(_ context.Context, csrPEM []byte, opts *SignCSROptions)
 		return nil, err
 	}
 
+	rawSubject, err := opts.RawSubject()
+	if err != nil {
+		return nil, err
+	}
 	template := &x509.Certificate{
 		SerialNumber: serial,
-		Subject:      csr.Subject,
+		RawSubject:   rawSubject,
 		NotBefore:    time.Now().Add(-time.Minute),
 		NotAfter:     time.Now().Add(time.Duration(opts.ValidityDays) * 24 * time.Hour),
 		KeyUsage:     opts.KeyUsage,
 		ExtKeyUsage:  opts.ExtKeyUsage,
-		DNSNames:     csr.DNSNames,
 	}
 
 	certDER, err := x509.CreateCertificate(rand.Reader, template, m.cert, csr.PublicKey, m.key)

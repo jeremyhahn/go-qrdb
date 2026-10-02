@@ -30,8 +30,10 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 const (
@@ -493,7 +495,9 @@ func (s *CeremonyService) SignCSRInit(
 		return nil, ErrInvalidRole
 	}
 
-	cert, err := s.ca.SignCSR(ctx, csrPEM, &SignCSROptions{
+	cert, _, err := signHolderCSR(ctx, s.ca, csrPEM, &SignCSROptions{
+		TenantID:     tenantid.System,
+		Username:     username,
 		Profile:      profile.profile,
 		ValidityDays: profile.validityDays,
 		KeyUsage:     profile.keyUsage,
@@ -605,8 +609,10 @@ func (s *CeremonyService) initializeMofN(ctx context.Context, result *InitResult
 		}
 
 		// Sign the officer's CSR.
-		cert, err := s.ca.SignCSR(ctx, officer.CSRPEM, &SignCSROptions{
-			Profile:      "custodian",
+		cert, _, err := signHolderCSR(ctx, s.ca, officer.CSRPEM, &SignCSROptions{
+			TenantID:     tenantid.System,
+			Username:     officer.Username,
+			Profile:      auth.ProfileCustodian,
 			ValidityDays: 365,
 			KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 			ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},

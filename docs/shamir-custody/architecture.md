@@ -30,7 +30,16 @@ challenge/response claim. The full design contract is
    (`POST /v1/barrier/officers`). The ceremony CA signs it and binds the
    officer to the SHA-256 thumbprint of the issued certificate. The response
    carries the signed certificate and the officer's share index — never share
-   bytes. When `qrdbd` manages its own TLS material, the ceremony CA is a
+   bytes. The certificate's identity comes from the registration, not the
+   CSR: it is issued as `CN=<username>`, `OU=[<scope tenant>, custodian]`
+   with no Subject Alternative Name, where the scope tenant is `system` for
+   the node barrier and recovery scope and the tenant itself for a
+   tenant-barrier officer. Whatever Subject or SANs the CSR asks for are
+   ignored, and the certificate is a holder certificate the authentication
+   middleware never resolves to a user account, so registering an officer
+   cannot mint a login for anyone (see
+   [../certificate-authority/architecture.md](../certificate-authority/architecture.md)).
+   When `qrdbd` manages its own TLS material, the ceremony CA is a
    `ceremony.LocalCA` built from the cluster CA bundle, so officer
    certificates chain to the same CA the server trusts for mTLS client auth
    (see [sealed-window.md](../seal/sealed-window.md)); with BYO TLS certificates,

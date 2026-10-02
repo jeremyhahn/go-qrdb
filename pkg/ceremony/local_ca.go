@@ -26,10 +26,7 @@ import (
 	"errors"
 	"math/big"
 	"net"
-	"net/url"
 	"time"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 )
 
 // localCASerialBits is the bit width of randomly generated certificate
@@ -86,11 +83,18 @@ func NewLocalCA(caCertPEM, caKeyPEM []byte) (*LocalCA, error) {
 }
 
 // SignCSR signs a PEM-encoded certificate signing request with the local CA
-// key. The subject is taken from the CSR; key usage, extended key usage,
-// and validity come from opts.
+// key. The CSR contributes only its public key, after its self-signature
+// proves possession: the Subject is CN=opts.Username, OU=[opts.TenantID,
+// opts.Profile], and no Subject Alternative Name is carried over, whatever
+// the CSR asked for. Key usage, extended key usage and validity come from
+// opts. Missing TenantID or Username is a *CertSubjectError.
 func (c *LocalCA) SignCSR(_ context.Context, csrPEM []byte, opts *SignCSROptions) (*x509.Certificate, error) {
 	if opts == nil {
 		return nil, &CSRParseError{Err: errors.New("nil sign options")}
+	}
+	rawSubject, err := opts.RawSubject()
+	if err != nil {
+		return nil, err
 	}
 
 	block, _ := pem.Decode(csrPEM)
@@ -110,28 +114,9 @@ func (c *LocalCA) SignCSR(_ context.Context, csrPEM []byte, opts *SignCSROptions
 		return nil, &CertEncodeError{Err: err}
 	}
 
-	subject := csr.Subject
-	if opts.Profile != "" {
-		subject.OrganizationalUnit = append(subject.OrganizationalUnit, opts.Profile)
-	}
-
-	// The CSR's URI SANs are copied into the certificate, so a tenant-scoped
-	// SPIFFE ID among them is a tenant claim this CA would sign. The mTLS
-	// authenticator prefers that SAN over the Subject OU, so one that names a
-	// different tenant than the OU yields a certificate that authenticates as
-	// different tenants depending on whether the node has a trust-domain pin
-	// (go-qrdb#519). Refuse it, as GenerateClientCert does.
-	if err := checkTenantSANsAgreeWithOU(csr.URIs, subject.OrganizationalUnit); err != nil {
-		return nil, err
-	}
-
 	template := &x509.Certificate{
 		SerialNumber:          serial,
-		Subject:               subject,
-		DNSNames:              csr.DNSNames,
-		IPAddresses:           csr.IPAddresses,
-		EmailAddresses:        csr.EmailAddresses,
-		URIs:                  csr.URIs,
+		RawSubject:            rawSubject,
 		NotBefore:             time.Now().Add(-1 * time.Minute),
 		NotAfter:              time.Now().AddDate(0, 0, opts.ValidityDays),
 		KeyUsage:              opts.KeyUsage,
@@ -148,28 +133,6 @@ func (c *LocalCA) SignCSR(_ context.Context, csrPEM []byte, opts *SignCSROptions
 		return nil, &CertEncodeError{Err: err}
 	}
 	return cert, nil
-}
-
-// checkTenantSANsAgreeWithOU refuses URI SANs that would give a signed
-// certificate a tenant other than its first Subject OU: a malformed SPIFFE
-// tenant ID (which the authenticator refuses outright), or a well-formed one
-// naming a different tenant -- or naming one when the Subject has no OU. URIs
-// that are not tenant SPIFFE IDs (node identities, other schemes) are left
-// alone.
-func checkTenantSANsAgreeWithOU(uris []*url.URL, ou []string) error {
-	for _, u := range uris {
-		id, ok, err := spiffe.ParseID(u)
-		if err != nil {
-			return &CSRTenantSANError{URI: u.String(), Reason: "malformed SPIFFE tenant identity"}
-		}
-		if !ok {
-			continue
-		}
-		if len(ou) == 0 || id.TenantID != ou[0] {
-			return &CSRTenantSANError{URI: u.String(), Reason: "its tenant does not match the certificate's Subject OU"}
-		}
-	}
-	return nil
 }
 
 // CACertificate returns the parsed CA certificate.

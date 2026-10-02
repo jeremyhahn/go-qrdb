@@ -109,7 +109,7 @@ func (t *TenantCeremonyService) RegisterOfficer(
 		return nil, ErrDuplicateUsername
 	}
 
-	cert, csr, certPEM, err := signOfficerCSR(ctx, t.ca, req.CSRPEM)
+	cert, csr, certPEM, err := signOfficerCSR(ctx, t.ca, req.CSRPEM, t.scope.TenantID(), req.Username)
 	if err != nil {
 		return nil, err
 	}
