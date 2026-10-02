@@ -277,6 +277,7 @@ func (e *MVCCEngine) UpdateEntries(batch storage.Batch, entries []sm.Entry, resu
 		if stop {
 			return nil, applyErr
 		}
+		// #nosec G602 -- the sm.StateMachine Update contract pre-allocates results with len(results) == len(entries), and i ranges over entries.
 		results[i] = resolved
 
 		// Notifications from a refused entry are deliberately dropped: it
