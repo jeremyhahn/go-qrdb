@@ -336,6 +336,9 @@ var databaseRules = []rule{
 	// per-database share holders ship): the request's choice, not a fault.
 	as(&database.UnsupportedBarrierStrategyError{Mode: "shamir"}, InvalidArgument),
 	as(&compaction.InvalidPolicyError{}, InvalidArgument),
+	// A compaction policy on a store that keeps no MVCC history: the
+	// configuration refusing the feature, which the caller cannot change.
+	as(&service.CompactionPolicyUnavailableError{}, Unprocessable),
 	// A per-database barrier operation on a node with no barrier manager.
 	as(&service.BarrierManagerNotConfiguredError{}, Unimplemented),
 	// A database mid-drop is not gone (NotFoundError, above) and not a naming

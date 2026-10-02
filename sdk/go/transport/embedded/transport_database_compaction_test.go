@@ -22,9 +22,9 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+	"github.com/jeremyhahn/go-qrdb/pkg/service/servicetest"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
-	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -39,7 +39,7 @@ func TestEmbeddedDatabase_CompactionPolicy_RealService(t *testing.T) {
 	if _, err := mgr.Create(database.DatabaseConfig{Name: "acme-db", TenantID: "acme", Engine: database.EngineKV, Backend: database.BackendMemory}); err != nil {
 		t.Fatal(err)
 	}
-	tr := newExtTransport(t, WithDatabaseService(service.NewDatabaseService(mgr)))
+	tr := newExtTransport(t, WithDatabaseService(servicetest.NewDatabaseService(mgr)))
 	policy := &transport.DatabaseCompactionConfig{Mode: "revision", RetainRevisions: 2}
 
 	var nf *database.NotFoundError

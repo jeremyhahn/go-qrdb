@@ -120,8 +120,10 @@ func (m *bindingDatabaseService) CreateForTenant(_ context.Context, cfg database
 	return m.createFn(cfg)
 }
 
-func (m *bindingDatabaseService) GetForTenant(_ context.Context, _ string) (*database.DatabaseInfo, error) {
-	return nil, nil
+// GetForTenant is Get, as the service's is for the system tenant every
+// call here runs as.
+func (m *bindingDatabaseService) GetForTenant(_ context.Context, name string) (*database.DatabaseInfo, error) {
+	return m.Get(name)
 }
 
 func (m *bindingDatabaseService) ListForTenant(_ context.Context) ([]database.DatabaseInfo, error) {

@@ -78,13 +78,15 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 }
 
 // GetDatabase returns information about a specific database by delegating
-// to the injected DatabaseServicer. Returns NilServiceError when no
-// database service has been configured.
-func (t *Transport) GetDatabase(_ context.Context, name string) (*transport.DatabaseInfo, error) {
+// to the injected DatabaseServicer, as every remote transport does: through
+// GetForTenant, which reads the database's scheduled-compaction policy from
+// its own store. Returns NilServiceError when no database service has been
+// configured.
+func (t *Transport) GetDatabase(ctx context.Context, name string) (*transport.DatabaseInfo, error) {
 	if t.dbSvc == nil {
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
 	}
-	info, err := t.dbSvc.Get(name)
+	info, err := t.dbSvc.GetForTenant(ctx, name)
 	if err != nil {
 		return nil, err
 	}

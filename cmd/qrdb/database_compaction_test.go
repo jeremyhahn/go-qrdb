@@ -15,6 +15,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -43,7 +44,7 @@ func TestDatabaseUpdateCompaction_Command(t *testing.T) {
 	if !strings.Contains(output, "24h0m0s") {
 		t.Fatalf("output missing the period: %q", output)
 	}
-	info, err := svc.Get("events")
+	info, err := svc.GetForTenant(context.Background(), "events")
 	if err != nil || info.Compaction == nil || info.Compaction.RetainDuration().Hours() != 24 {
 		t.Fatalf("stored policy = %+v, %v", info.Compaction, err)
 	}

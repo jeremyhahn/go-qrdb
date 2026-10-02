@@ -23,6 +23,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/service/servicetest"
 )
 
 func newRealCLIDatabaseService(t *testing.T) service.DatabaseServicer {
@@ -30,7 +31,7 @@ func newRealCLIDatabaseService(t *testing.T) service.DatabaseServicer {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	mgr := database.NewManager(logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
-	return service.NewDatabaseService(mgr)
+	return servicetest.NewDatabaseService(mgr)
 }
 
 func TestDatabaseCreate_SQLConcurrencyFlag(t *testing.T) {

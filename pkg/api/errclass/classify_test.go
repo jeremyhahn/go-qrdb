@@ -151,6 +151,7 @@ func TestClassify_ServiceConditionsTheTableOnceMissed(t *testing.T) {
 		{"leader transfer did not complete", &service.LeaderTransferTimeoutError{ShardID: 1}, Unavailable},
 		{"shard snapshot export timed out", &service.ShardSnapshotTimeoutError{ShardID: 1}, Unavailable},
 		{"factor migration left records behind", &service.FactorMigrationRefusedError{}, FailedPrecondition},
+		{"database store keeps no compaction policy", &service.CompactionPolicyUnavailableError{Database: "d"}, Unprocessable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := Classify(wrapped{tc.err}); got != tc.want {

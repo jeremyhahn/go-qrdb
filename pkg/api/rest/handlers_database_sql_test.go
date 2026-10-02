@@ -24,7 +24,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
-	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/service/servicetest"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -37,7 +37,7 @@ func newSQLConfigServer(t *testing.T) *Server {
 	mgr := database.NewManager(logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	return NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
-		WithDatabaseService(service.NewDatabaseService(mgr)))
+		WithDatabaseService(servicetest.NewDatabaseService(mgr)))
 }
 
 func decodeDatabaseInfo(t *testing.T, rec *httptest.ResponseRecorder) transport.DatabaseInfo {

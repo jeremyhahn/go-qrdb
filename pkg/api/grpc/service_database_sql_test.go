@@ -26,6 +26,7 @@ import (
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/service/servicetest"
 )
 
 func newRealDatabaseService(t *testing.T) service.DatabaseServicer {
@@ -33,7 +34,7 @@ func newRealDatabaseService(t *testing.T) service.DatabaseServicer {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	mgr := database.NewManager(logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
-	return service.NewDatabaseService(mgr)
+	return servicetest.NewDatabaseService(mgr)
 }
 
 func TestGRPC_DatabaseSQL_CreateAndUpdate(t *testing.T) {
