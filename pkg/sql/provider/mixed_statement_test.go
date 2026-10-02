@@ -18,6 +18,7 @@ import (
 	"context"
 	"testing"
 
+	sqle "github.com/dolthub/go-mysql-server/sql"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -43,4 +44,34 @@ func TestStatement_WritingRelationalAndKVTablesIsRefused(t *testing.T) {
 	raw, err := h.store.Get(context.Background(), "k")
 	require.NoError(t, err)
 	assert.Equal(t, "a", string(raw), "the kv row is unchanged")
+}
+
+// TestMixedWriteMarks_EndWithTheTransaction: which kinds of table a
+// statement writes is noted on the write-set for the statement's own
+// mixed-write check, and must never reach a later statement -- even one no
+// command bracket precedes. A transaction starts with no marks, and its
+// commit clears them, including the commit that fails and keeps its
+// write-set for a retry.
+func TestMixedWriteMarks_EndWithTheTransaction(t *testing.T) {
+	ctx, sess := newTxContext(true)
+	_, err := sess.StartTransaction(ctx, sqle.ReadWrite)
+	require.NoError(t, err)
+	ws := sess.writeSet()
+	require.NoError(t, ws.bind(ctx, "t1", "db1", &errTxn{}, newMemStore()))
+	require.NoError(t, ws.Put(ctx, "k1", []byte("v1")))
+	ws.noteRelationalWriter("t1")
+	noteNonTransactionalWriter(ctx, "kv")
+	require.Equal(t, "kv", ws.nonTransactionalWriter, "the statement's marks are noted")
+
+	require.ErrorIs(t, sess.CommitTransaction(ctx, nil), errBoom)
+	require.Same(t, ws, sess.writeSet(), "a commit that fails on infrastructure keeps its write-set")
+	assert.Empty(t, ws.relationalWriter, "the kept write-set carries no statement's marks")
+	assert.Empty(t, ws.nonTransactionalWriter, "the kept write-set carries no statement's marks")
+
+	ws.noteRelationalWriter("t1")
+	_, err = sess.StartTransaction(ctx, sqle.ReadWrite)
+	require.NoError(t, err)
+	fresh := sess.writeSet()
+	assert.Empty(t, fresh.relationalWriter, "a transaction starts with no marks")
+	assert.Empty(t, fresh.nonTransactionalWriter, "a transaction starts with no marks")
 }

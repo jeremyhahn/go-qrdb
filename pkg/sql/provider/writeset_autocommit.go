@@ -85,6 +85,17 @@ func (ws *WriteSet) noteRelationalWriter(name string) {
 	}
 }
 
+// clearWriterMarks forgets which kinds of table the statement in flight
+// writes. The marks belong to one statement; a command boundary
+// (resetStatements) and every commit clear them, and a transaction starts
+// with a fresh write-set that has none, so a later statement is never
+// refused for an earlier one's writes -- whether or not its caller
+// brackets statements as commands.
+func (ws *WriteSet) clearWriterMarks() {
+	ws.relationalWriter = ""
+	ws.nonTransactionalWriter = ""
+}
+
 // noteNonTransactionalWriter records, on ctx's session, that the statement
 // in flight writes the non-transactional (kv, entity or collection) table
 // name. go-mysql-server opens every editor of a statement before any of

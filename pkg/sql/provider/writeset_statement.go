@@ -76,8 +76,7 @@ func (ws *WriteSet) popStatement() (int, bool) {
 // mark behind for a later statement to roll back to.
 func (ws *WriteSet) resetStatements() {
 	ws.statements = ws.statements[:0]
-	ws.relationalWriter = ""
-	ws.nonTransactionalWriter = ""
+	ws.clearWriterMarks()
 }
 
 // statementWriteSet returns the write-set a table editor's statement

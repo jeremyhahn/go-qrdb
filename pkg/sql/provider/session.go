@@ -284,6 +284,8 @@ func (s *QRDBSession) writeSet() *WriteSet {
 // once per statement in autocommit.
 func (s *QRDBSession) StartTransaction(ctx *sqle.Context, tCharacteristic sqle.TransactionCharacteristic) (sqle.Transaction, error) {
 	readOnly := tCharacteristic == sqle.ReadOnly
+	// A fresh write-set: no buffered writes, no statement marks, and no
+	// mixed-write marks from an earlier statement (see clearWriterMarks).
 	ws := newWriteSet(readOnly, s.isolationLevel(ctx))
 	ws.concurrency = s.concurrencyChoice(ctx)
 	if prev := s.ws.Swap(ws); prev != nil {
@@ -319,6 +321,10 @@ func (s *QRDBSession) CommitTransaction(ctx *sqle.Context, _ sqle.Transaction) e
 	if ws == nil {
 		return nil
 	}
+	// The statement that wrote is over, whatever becomes of the commit: a
+	// write-set kept for a retry must not refuse the next statement for this
+	// one's writes (see clearWriterMarks).
+	ws.clearWriterMarks()
 	if ws.aborted != nil {
 		// The transaction was already rolled back as a deadlock victim.
 		// Ending it is what the client must do next; an explicit COMMIT
