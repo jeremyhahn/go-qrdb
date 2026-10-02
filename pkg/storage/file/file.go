@@ -183,7 +183,7 @@ func (e *Engine) List(prefix []byte) ([][]byte, error) {
 		if relErr != nil {
 			return relErr
 		}
-		key := []byte(filepath.ToSlash(rel))
+		key := decodePathToKey(filepath.ToSlash(rel))
 		if bytes.HasPrefix(key, prefix) {
 			keys = append(keys, key)
 		}

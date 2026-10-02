@@ -206,6 +206,52 @@ func TestFileEngine_ListAllKeys(t *testing.T) {
 	}
 }
 
+// TestFileEngine_List_DecodesEscapedKeys pins List against the same binary
+// keys Get/Set/Delete already handle via encodeKeyToPath/decodePathToKey
+// (keyenc.go). List walked the on-disk tree and returned the PERCENT-ENCODED
+// path string as the key, never calling decodePathToKey — the one place in
+// this engine that didn't. A key requiring escaping (anything outside
+// printable ASCII, here a NUL byte matching pkg/lease.TablePrefix's shape)
+// therefore came back from List as literal "%00..." bytes rather than the
+// raw key that was Set, and a prefix search for the raw (unescaped) prefix
+// matched nothing even though the key existed.
+func TestFileEngine_List_DecodesEscapedKeys(t *testing.T) {
+	dir := t.TempDir()
+	eng, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = eng.Close() }()
+
+	const tablePrefix = "\x00qrdb.lease/"
+	tableKeys := [][]byte{
+		[]byte(tablePrefix + "b/k1"),
+		[]byte(tablePrefix + "b/k2"),
+	}
+	for _, k := range tableKeys {
+		if err := eng.Set(k, []byte("v")); err != nil {
+			t.Fatalf("Set(%q): %v", k, err)
+		}
+	}
+
+	got, err := eng.List([]byte(tablePrefix))
+	if err != nil {
+		t.Fatalf("List(%q): %v", tablePrefix, err)
+	}
+	if len(got) != len(tableKeys) {
+		t.Fatalf("List(%q) returned %d keys, want %d: %q", tablePrefix, len(got), len(tableKeys), got)
+	}
+	gotSet := make(map[string]bool, len(got))
+	for _, k := range got {
+		gotSet[string(k)] = true
+	}
+	for _, want := range tableKeys {
+		if !gotSet[string(want)] {
+			t.Errorf("List(%q) missing decoded key %q, got %q", tablePrefix, want, got)
+		}
+	}
+}
+
 func TestFileEngine_ListNoMatch(t *testing.T) {
 	dir := t.TempDir()
 	eng, err := New(dir)

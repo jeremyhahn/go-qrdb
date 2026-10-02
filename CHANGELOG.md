@@ -133,6 +133,20 @@ are not reconstructed here — their history is in the git log.
   (`make vulncheck`, `make vulncheck-sdk`). It is how GO-2026-6443 and
   GO-2026-4514 were caught before either reached `dev/main`.
 
+### Fixed
+
+- **`pkg/storage/file`'s `List` now decodes the percent-encoded path back to
+  the raw key it returns**, found while extending a sibling fix's parity
+  tests to the file backend. It was the one place in that engine that read
+  the on-disk path without reversing `encodeKeyToPath`
+  (`pkg/storage/file/keyenc.go`), so a key that needed escaping (anything
+  outside printable ASCII, including a NUL-byte-prefixed key like the lease
+  table's) came back from `List` as the literal percent-encoded string
+  rather than the key that was `Set`, and a prefix search for the real
+  (unescaped) prefix matched nothing even though the key existed.
+  `Get`/`Set`/`Delete`/`Exists` and the iterator were unaffected; only
+  `List` had the gap.
+
 ## [0.30.1-alpha] - 2026-10-02
 
 Fix release. Highlights:
