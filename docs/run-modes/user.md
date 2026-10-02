@@ -70,8 +70,9 @@ the next holder. On a standalone node the server runs the expiry itself.
 
 **Pick a backend that serves what you need.** The pebble and memory backends
 serve every data-plane family. The file and objstore backends keep no
-revisions and no leases, so they serve watch but refuse leases, locks,
-revisions and transactions with a typed "unsupported" error.
+revisions and no leases, so they serve watch and value/version transactions
+but refuse leases, locks, revisions, revision compares and any write that
+names a lease with a typed "unsupported" error.
 
 **Compile in the optional features you want.** Build tags are the outermost
 gate — config cannot switch on something the binary does not contain.

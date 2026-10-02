@@ -263,9 +263,11 @@ Build tags currently registering capabilities: `qrdb_sql`, `qrdb_mysql`,
 - Plus the always-compiled core below
 
 On the file and objstore backends the engine is the plain KV engine
-(`pkg/engine/kv_engine.go`): watch is served, and MVCC, lease, lock,
-transactions, time series and vector are refused per call with a typed
-capability error. The run-modes [API table](api.md#the-storage-engine-not-the-mode-bounds-the-coordination-families)
+(`pkg/engine/kv_engine.go`): watch and value/version transactions are served,
+and MVCC, lease, lock, time series, vector, revision compares and
+lease-carrying writes are refused per call with a typed capability error. A
+transaction op naming a lease is refused before anything is staged, so it
+writes nothing rather than storing a key that would never expire. The run-modes [API table](api.md#the-storage-engine-not-the-mode-bounds-the-coordination-families)
 lists the outcome per family.
 
 **Refused with `requires mode: raft`** — cluster membership and topology,
@@ -386,7 +388,7 @@ mode: raft   # "standalone" | "raft"; absent = raft (full back-compat)
 |---|---|---|
 | Raft-only call in standalone | typed error, `requires mode: raft`; REST 501, gRPC/QUIC `Unimplemented` | **yes** |
 | `mode: standalone` with `raft.join` or multi-member `raft.peers` | validation error at boot | **yes** |
-| Lease, lock, MVCC or transaction on a standalone file/objstore backend | `CapabilityUnsupportedError` per call | **yes** |
+| Lease, lock, MVCC, a revision compare or a lease-carrying write on a standalone file/objstore backend | `CapabilityUnsupportedError` per call; nothing is written | **yes** |
 | Wire protocol enabled whose build tag is absent | boot-time error **naming the tag** (`Config.ValidateCapabilities`) | **yes** |
 | Objstore configured as `raft.sm_storage` | validation error | **yes** |
 | Non-pebble `sm_storage` with a pebble-native state machine | rejected | **yes** |

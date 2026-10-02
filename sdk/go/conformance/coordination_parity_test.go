@@ -61,6 +61,7 @@ func coordinationCells() []cell {
 // coordinationPermissions are the verbs the suite exercises.
 var coordinationPermissions = []permission.Permission{
 	permission.KVPut, permission.KVGet, permission.KVDelete,
+	permission.TransactionExecute,
 	permission.MVCCPutWithLease, permission.MVCCGetRevision, permission.MVCCCurrentRevision,
 	permission.WatchWatch, permission.WatchWatchPrefix,
 	permission.LeaseGrant, permission.LeaseRevoke, permission.LeaseKeepAlive,
@@ -382,10 +383,13 @@ func assertLockLifecycle(t *testing.T, c *sdk.Client) {
 }
 
 // TestCoordinationFamilies_FileBackendServesWatchOnly: a standalone node on the
-// file backend composes the plain KV engine, which publishes changes but keeps
-// no revisions and no leases. It serves watch, and refuses MVCC, lease and
-// lock per call with the typed capability refusal -- the same answer a raft
-// state machine without those planes gives -- on every transport.
+// file or objstore backend composes the plain KV engine, which publishes
+// changes but keeps no revisions and no leases. It serves watch and plain
+// value/version transactions, and refuses MVCC, lease, lock and any
+// lease-carrying write per call with the typed capability refusal -- the same
+// answer a raft state machine without those planes gives -- on every
+// transport. A transaction op naming a lease is refused and writes nothing:
+// stored lease-less, it would never expire.
 //
 // MCP is the one exception for watch, and it is the transport's, not the
 // node's: MCP has no stream, so its client polls with a start revision to
@@ -393,8 +397,18 @@ func assertLockLifecycle(t *testing.T, c *sdk.Client) {
 // ends the watch with the typed WatchStartRevisionUnsupportedError rather than
 // silently dropping changes between polls.
 func TestCoordinationFamilies_FileBackendServesWatchOnly(t *testing.T) {
+	// The objstore row runs on the embedded transport only. A remote cell
+	// seeds an RBAC identity, and the identity store's claim keys carry a
+	// separator go-objstore's key validation rejects, so no objstore node can
+	// create a user on any transport -- a limitation of the objstore backend
+	// under IAM, independent of these families. The engine under test is the
+	// same plain KV engine the file row runs on every transport.
+	cells := []cell{{backend: database.BackendObjstore, mode: standalone, transport: embeddedTransport}}
 	for _, tk := range transportKinds {
-		c := cell{backend: database.BackendFile, mode: standalone, transport: tk}
+		cells = append(cells, cell{backend: database.BackendFile, mode: standalone, transport: tk})
+	}
+	for _, c := range cells {
+		tk := c.transport
 		t.Run(c.name(), func(t *testing.T) {
 			client := c.bootClient(t)
 			if tk == mcpTransport {
@@ -409,11 +423,29 @@ func TestCoordinationFamilies_FileBackendServesWatchOnly(t *testing.T) {
 			_, refused["lease"] = client.Lease().LeaseGrant(ctx, 5)
 			_, refused["lock"] = client.Lock().LockTryLock(ctx, &transport.LockAcquireRequest{Key: "cp/file/lock", HolderID: "a", TTL: 5})
 			_, refused["mvcc"] = client.MVCC().GetRevision(ctx, "cp/file/k")
+			_, refused["leased-txn"] = client.Transaction().ExecuteTransaction(ctx, &transport.TransactionRequest{
+				SuccessOps: []transport.Op{{Type: transport.OpPut, Key: []byte("cp/file/leased"), Value: []byte("v"), LeaseID: 7}},
+			})
 			for family, err := range refused {
 				var unsupported *transport.CapabilityUnsupportedError
 				if !errors.As(err, &unsupported) {
-					t.Errorf("%s on the file backend: err = %T (%v), want *transport.CapabilityUnsupportedError", family, err, err)
+					t.Errorf("%s on the %s backend: err = %T (%v), want *transport.CapabilityUnsupportedError", family, c.backend, err, err)
 				}
+			}
+			if _, err := client.KV().Get(ctx, "cp/file/leased"); err == nil {
+				t.Error("the refused leased transaction op wrote its key")
+			}
+
+			// Plain value/version transactions are served on this engine.
+			if err := client.KV().Put(ctx, "cp/file/tx", []byte("a")); err != nil {
+				t.Fatalf("put: %v", err)
+			}
+			resp, err := client.Transaction().ExecuteTransaction(ctx, &transport.TransactionRequest{
+				Compares:   []transport.Compare{{Key: []byte("cp/file/tx"), Target: transport.CompareValue, Result: transport.CompareEqual, Value: []byte("a")}},
+				SuccessOps: []transport.Op{{Type: transport.OpPut, Key: []byte("cp/file/tx"), Value: []byte("b")}},
+			})
+			if err != nil || !resp.Succeeded {
+				t.Fatalf("value-compare transaction on the %s backend = %+v, %v; want served and succeeded", c.backend, resp, err)
 			}
 		})
 	}

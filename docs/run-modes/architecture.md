@@ -47,8 +47,9 @@ error whose text names the remedy: `requires mode: raft`.
 **The engine, not the mode, bounds the data plane.** Pebble and memory compose
 the MVCC engine and serve all of it. File and objstore compose the plain KV
 engine (`pkg/engine/kv_engine.go`), which publishes changes to the watch hub but
-keeps no revisions and no leases: it serves watch and refuses MVCC, lease, lock,
-transactions, time series and vector per call with a typed capability error —
+keeps no revisions and no leases: it serves watch and value/version
+transactions, and refuses MVCC, lease, lock, time series, vector, revision
+compares and lease-carrying writes per call with a typed capability error —
 the same answer a raft `sm_type` without those planes gives.
 
 ### Watch, lease and lock in standalone

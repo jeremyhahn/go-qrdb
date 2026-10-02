@@ -89,6 +89,28 @@ func mustLookupValue(t *testing.T, eng *KVEngine, key, want string) {
 	}
 }
 
+// This engine keeps no leases, so a transaction put naming one is refused
+// and the whole op set writes nothing. Stored lease-less, the key would never
+// expire.
+func TestKVEngine_Transaction_LeasedPutIsRefusedAndWritesNothing(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+	eng := NewKVEngine(stg)
+
+	ops := [][]byte{
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("plain"), []byte("v"), nil, 0)),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("leased"), []byte("v"), nil, 7)),
+	}
+	entry := sm.Entry{Index: 1, Cmd: mustEncode(protocol.EncodeTransaction(nil, ops, nil))}
+	results := applyKVEntries(t, eng, []sm.Entry{entry})
+
+	if len(results[0].Data) <= 1 {
+		t.Fatalf("result Data = %v, want an encoded refusal", results[0].Data)
+	}
+	mustLookupAbsent(t, eng, "plain")
+	mustLookupAbsent(t, eng, "leased")
+}
+
 func TestKVEngine_Transaction_ValueCompareTrue_RunsSuccessOps(t *testing.T) {
 	stg := memory.NewStorage()
 	defer func() { _ = stg.Close() }()

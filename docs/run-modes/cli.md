@@ -60,8 +60,10 @@ the always-compiled core — `auth`, `users`, `roles`, `barrier`, `ceremony`,
 
 *(Corrected: `watch`, `lease`, `lock` and the `kv` revision verbs were listed
 as refusing until 2026-10-01, and `tx` was listed in error before that.)* On
-the file and objstore backends, `lease`, `lock`, `tx` and the revision verbs
-refuse as unsupported, because those engines keep no leases or revisions; see
+the file and objstore backends, `lease`, `lock` and the revision verbs refuse
+as unsupported, because those engines keep no leases or revisions; `tx` is
+served there, except that a revision compare or an op naming a lease is
+refused; see
 [api.md](api.md#the-storage-engine-not-the-mode-bounds-the-coordination-families).
 
 ## Build-time feature selection

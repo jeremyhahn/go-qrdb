@@ -53,7 +53,7 @@ KV engine**, which publishes changes but keeps no revisions and no leases:
 | MVCC revisions, `at-revision` | served | refused: `CapabilityUnsupportedError` |
 | Lease | served | refused: `CapabilityUnsupportedError` |
 | Lock | served | refused: `CapabilityUnsupportedError` (a lock is a lease) |
-| Transactions | served | refused: `CapabilityUnsupportedError` |
+| Transactions | served | served on value and version compares; revision compares and lease-carrying ops refused: `CapabilityUnsupportedError` |
 
 MCP has no stream, so its SDK client watches by polling with a start revision
 to stay gap-free. On a store that keeps no revisions the first poll after an

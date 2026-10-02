@@ -613,6 +613,12 @@ func (e *KVEngine) handleTransaction(payload []byte) (sm.Result, error) {
 		ops = txn.FailureOps
 	}
 
+	// This engine keeps no leases. A put naming one is refused before any of
+	// the set is staged: stored lease-less, it would never expire.
+	if res, refused := statemachine.OpsLeaseRefusal(nil, ops); refused {
+		return res, nil
+	}
+
 	// Pre-validate unique-index constraints for the whole selected op set
 	// (read-only, delete-aware) so a violation rejects the transaction
 	// atomically via a non-fatal application error — no partial writes, no

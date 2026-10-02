@@ -81,7 +81,7 @@ func Reset()
 | Batch | Core | Always |
 | Index | Core | Always |
 | MVCC | Both modes | Always (narrowable via `mvcc.enabled`; the file/objstore engines refuse per call) |
-| Transaction | Both modes | Always (the file/objstore engines refuse per call) |
+| Transaction | Both modes | Always (the file/objstore engines refuse revision compares and lease-carrying ops per call) |
 | Watch | Both modes | Always (narrowable via `watch.enabled`) |
 | Lease | Both modes | Always (narrowable via `lease.enabled`; the file/objstore engines refuse per call) |
 | Lock | Both modes | Always (needs a lease-capable engine) |

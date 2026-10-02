@@ -26,8 +26,9 @@ are not reconstructed here — their history is in the git log.
   so tenant confinement is identical. A standalone node runs the lease-expiry
   sweeper itself (`lifecycle.StartLocalLeaseExpiry`), and its leases survive a
   restart like raft mode's. The file and objstore backends keep no revisions
-  or leases: they serve watch and refuse MVCC, lease, lock and transactions per
-  call with `CapabilityUnsupportedError`; an MCP watch there ends with
+  or leases: they serve watch and value/version transactions, and refuse MVCC,
+  lease, lock, revision compares and any lease-carrying write per call with
+  `CapabilityUnsupportedError`; an MCP watch there ends with
   `WatchStartRevisionUnsupportedError`. The capability report shows `mvcc`,
   `watch`, `lease` and `lock` true in both modes, and `mvcc.enabled`,
   `watch.enabled` and `lease.enabled` are valid under standalone. The etcd
