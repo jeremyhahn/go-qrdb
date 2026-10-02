@@ -95,6 +95,10 @@ func TestStartAdvertiser_FailsClosedWithoutBindHost(t *testing.T) {
 	if !errors.As(err, &missing) {
 		t.Fatalf("StartAdvertiser error = %v (%T), want *MissingBindHostError", err, err)
 	}
+	if got, want := missing.Error(), "clusterenroll: no bind host configured for the noise bootstrap server"+
+		"; set bootstrap.noise_host (or server.host, which it defaults to)"; got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
 	if fileExists(filepath.Join(dir, NoiseKeyFile)) {
 		t.Fatalf("a rejected configuration persisted %s; the bind host must be checked before any key material is generated", NoiseKeyFile)
 	}

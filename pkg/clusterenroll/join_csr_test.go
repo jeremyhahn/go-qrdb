@@ -29,6 +29,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -449,6 +450,46 @@ func TestLoadOrGenerateJoinKey_ReadFailure(t *testing.T) {
 	var serverErr *ServerError
 	if !errors.As(err, &serverErr) {
 		t.Fatalf("loadOrGenerateJoinKey with corrupt key file = %v, want *ServerError", err)
+	}
+}
+
+// TestLoadOrGenerateJoinKey_MkdirFails covers the generate path's MkdirAll
+// failure: a regular file where the key's parent directory should be makes
+// fileExists report the key absent, takes the generate path, and fails at
+// MkdirAll -- the join listener's own instance of the same branch
+// TestStartAdvertiser_DataDirUnusableIsAServerError covers for the anchor
+// advertiser, which shares none of this function's code.
+func TestLoadOrGenerateJoinKey_MkdirFails(t *testing.T) {
+	blocked := filepath.Join(t.TempDir(), "blocked")
+	if err := os.WriteFile(blocked, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	keyPath := filepath.Join(blocked, JoinKeyFile)
+
+	_, err := loadOrGenerateJoinKey(keyPath, discardLogger())
+	var serverErr *ServerError
+	if !errors.As(err, &serverErr) {
+		t.Fatalf("loadOrGenerateJoinKey with an unusable parent directory = %v, want *ServerError", err)
+	}
+	if serverErr.Protocol != "join" {
+		t.Errorf("ServerError.Protocol = %q, want %q", serverErr.Protocol, "join")
+	}
+}
+
+// TestLoadOrGenerateJoinKey_WriteFails covers the generate path's
+// WriteFileAtomic failure: a directory at the key's own path makes
+// os.WriteFile (inside WriteFileAtomic's rename) fail.
+func TestLoadOrGenerateJoinKey_WriteFails(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, JoinKeyFile)
+	if err := os.MkdirAll(keyPath, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	_, err := loadOrGenerateJoinKey(keyPath, discardLogger())
+	var serverErr *ServerError
+	if !errors.As(err, &serverErr) {
+		t.Fatalf("loadOrGenerateJoinKey with a directory at the key path = %v, want *ServerError", err)
 	}
 }
 

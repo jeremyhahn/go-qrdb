@@ -19,13 +19,18 @@ package clusterenroll
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -316,6 +321,92 @@ func TestJoin_SurvivesFirstNodeLoss(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(opts.DataDir, "ca-key.pem")); !os.IsNotExist(err) {
 		t.Fatalf("a joined node must never cache a CA key file (stat err = %v)", err)
 	}
+	role, found, err := loadRole(opts.DataDir)
+	if err != nil {
+		t.Fatalf("loadRole: %v", err)
+	}
+	if !found || role != RoleJoined {
+		t.Fatalf("role = %q (found=%v), want %q", role, found, RoleJoined)
+	}
+}
+
+// TestJoin_SPKIDirectEndToEnd drives Join's SPKI/Direct branch end to end:
+// TestJoin_SurvivesFirstNodeLoss above exercises the Noise_NK branch, but
+// Join itself has two independent branches (joinNoiseConfigured selects
+// between them) and nothing in this package drove the other one through
+// Join directly -- only through cmd/qrdbd's own operator-wiring test, whose
+// coverage is attributed to cmd/qrdbd's profile, not this package's.
+func TestJoin_SPKIDirectEndToEnd(t *testing.T) {
+	provider := newTestClusterCAProvider(t)
+	caCert, err := provider.Certificate(context.Background())
+	if err != nil {
+		t.Fatalf("Certificate: %v", err)
+	}
+	caCertPEM, err := clusterca.CACertPEM(context.Background(), provider)
+	if err != nil {
+		t.Fatalf("CACertPEM: %v", err)
+	}
+
+	const token = "spki-direct-join-secret"
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/ca/bootstrap", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/pem-certificate-chain")
+		_, _ = w.Write(caCertPEM)
+	})
+	mux.HandleFunc(JoinHTTPPath, func(w http.ResponseWriter, r *http.Request) {
+		var req JoinRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		resp := HandleJoinRequest(r.Context(), provider, token, &req)
+		respBody, err := json.Marshal(resp)
+		if err != nil {
+			http.Error(w, "marshal failed", http.StatusInternalServerError)
+			return
+		}
+		if resp.Error != "" {
+			w.WriteHeader(http.StatusForbidden)
+		}
+		_, _ = w.Write(respBody)
+	})
+	srv := httptest.NewTLSServer(mux)
+	defer srv.Close()
+	sum := sha256.Sum256(srv.Certificate().RawSubjectPublicKeyInfo)
+	pin := hex.EncodeToString(sum[:])
+	serverAddr := strings.TrimPrefix(srv.URL, "https://")
+
+	opts := &Options{
+		RaftAddress: "127.0.0.1:63098",
+		TrustDomain: "test.cluster",
+		DataDir:     t.TempDir(),
+		Bootstrap: BootstrapOptions{
+			SPKIPin:     pin,
+			ServerAddr:  serverAddr,
+			JoinHTTPURL: srv.URL,
+			JoinToken:   token,
+		},
+	}
+	mat, err := Join(context.Background(), opts, discardLogger())
+	if err != nil {
+		t.Fatalf("Join (SPKI/Direct): %v", err)
+	}
+	if len(mat.CAKeyPEM) != 0 {
+		t.Fatal("joined material must never carry the cluster CA private key")
+	}
+
+	leafBlock, _ := pem.Decode(mat.CertPEM)
+	if leafBlock == nil {
+		t.Fatal("joined material has no leaf certificate PEM")
+	}
+	leaf, err := x509.ParseCertificate(leafBlock.Bytes)
+	if err != nil {
+		t.Fatalf("ParseCertificate: %v", err)
+	}
+	if err := leaf.CheckSignatureFrom(caCert); err != nil {
+		t.Fatalf("the new node's leaf does not chain to the cluster CA: %v", err)
+	}
+
 	role, found, err := loadRole(opts.DataDir)
 	if err != nil {
 		t.Fatalf("loadRole: %v", err)

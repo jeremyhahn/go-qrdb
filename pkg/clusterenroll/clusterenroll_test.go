@@ -30,6 +30,8 @@ import (
 	"strings"
 	"testing"
 
+	noiseboot "github.com/jeremyhahn/go-truststrap/pkg/noiseproto/bootstrap"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 )
 
@@ -681,6 +683,86 @@ func TestStartAdvertiser_PortInUseIsAServerErrorNamingNoise(t *testing.T) {
 	}
 	if serverErr.Protocol != "noise" {
 		t.Errorf("ServerError.Protocol = %q, want %q: the error must name the listener that failed", serverErr.Protocol, "noise")
+	}
+}
+
+// TestStartAdvertiser_NewNoiseServerFails exercises the construction-failure
+// branch distinct from the bind-failure one above: TestStartAdvertiser_
+// PortInUseIsAServerErrorNamingNoise fails inside srv.Start() (the actual
+// listen), while this fails inside newNoiseServer itself (noiseboot.NewServer
+// validates its ServerConfig before anything binds), using the same
+// injectable seam ca_key_never_leaves_test.go uses to observe the bundle
+// provider.
+func TestStartAdvertiser_NewNoiseServerFails(t *testing.T) {
+	if !noiseAvailable() {
+		t.Skip("FIPS 140-3 mode: this node never constructs a Noise server")
+	}
+	mat, err := clustertls.GenerateCABundle()
+	if err != nil {
+		t.Fatalf("GenerateCABundle: %v", err)
+	}
+
+	prev := newNoiseServer
+	injected := errors.New("injected construction failure")
+	newNoiseServer = func(cfg *noiseboot.ServerConfig) (*noiseboot.Server, error) {
+		return nil, injected
+	}
+	t.Cleanup(func() { newNoiseServer = prev })
+
+	dir := t.TempDir()
+	adv, err := StartAdvertiser(mat, AdvertiseOptions{NoisePort: freePort(t), NoiseHost: testBindHost}, dir, discardLogger())
+	if err == nil {
+		adv.Stop()
+		t.Fatal("StartAdvertiser succeeded despite a faulted newNoiseServer")
+	}
+	var serverErr *ServerError
+	if !errors.As(err, &serverErr) {
+		t.Fatalf("expected *ServerError, got %T: %v", err, err)
+	}
+	if !errors.Is(err, injected) {
+		t.Fatalf("ServerError does not wrap the injected construction failure: %v", err)
+	}
+	// The static key is generated and persisted before newNoiseServer is ever
+	// called (so a restart need not regenerate it), so a construction failure
+	// here leaves it on disk -- unlike a bind failure, this is not a defect:
+	// the same key is simply reloaded and retried on the next attempt.
+	if !fileExists(filepath.Join(dir, NoiseKeyFile)) {
+		t.Fatal("expected the static key to have been persisted before the construction failure")
+	}
+}
+
+// TestStartAdvertiser_DefaultsNoisePort proves NoisePort: 0 binds
+// DefaultNoisePort rather than failing or binding an OS-chosen ephemeral
+// port, by reading back the advertiser's own bound address.
+func TestStartAdvertiser_DefaultsNoisePort(t *testing.T) {
+	if !noiseAvailable() {
+		t.Skip("FIPS 140-3 mode: this node starts no Noise listener")
+	}
+	// Reserve and release DefaultNoisePort first: if something else on this
+	// host already holds it, skip rather than fail on an environment issue
+	// unrelated to the behavior under test.
+	ln, err := net.Listen("tcp", net.JoinHostPort(testBindHost, "63006"))
+	if err != nil {
+		t.Skipf("DefaultNoisePort not free on this host: %v", err)
+	}
+	ln.Close()
+
+	mat, err := clustertls.GenerateCABundle()
+	if err != nil {
+		t.Fatalf("GenerateCABundle: %v", err)
+	}
+	adv, err := StartAdvertiser(mat, AdvertiseOptions{NoiseHost: testBindHost}, t.TempDir(), discardLogger())
+	if err != nil {
+		t.Fatalf("StartAdvertiser: %v", err)
+	}
+	defer adv.Stop()
+
+	_, portStr, err := net.SplitHostPort(adv.Addr())
+	if err != nil {
+		t.Fatalf("SplitHostPort(%q): %v", adv.Addr(), err)
+	}
+	if portStr != "63006" {
+		t.Fatalf("advertiser bound port %q, want DefaultNoisePort (63006)", portStr)
 	}
 }
 
