@@ -38,8 +38,14 @@ policy below and in [../key-value/engineering.md](../key-value/engineering.md).
 compacting, on a schedule, so it takes `mvcc:compact` rather than
 `databases:update`, and only the tenant that owns the database may set it --
 the system tenant included, which sets policies on its own databases only. It
-is set by its own verb and the configuration file, never by create: a create
-carrying a policy would let `databases:create` compact.
+is set by its own verb alone -- never by create, which would let
+`databases:create` compact, and not by any configuration file. The policy is
+replicated state in the database's own store (see
+[../key-value/engineering.md](../key-value/engineering.md) "Scheduled
+compaction"): every replica of the database's group holds it, the group's
+leader runs it, and a backup carries it. *(Corrected: the policy was a field
+of the node-local catalog record and a `databases[].compaction` key of the
+node's configuration file; both are removed.)*
 
 The TypeScript SDK sets it with `client.database.updateCompaction(name,
 compaction?)` (`DatabaseCompactionConfig`: `mode` `'off' | 'revision' |

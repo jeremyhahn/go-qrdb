@@ -19,16 +19,18 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
-func newCompactionManager(t *testing.T) *Manager {
+func newCompactionManager(t *testing.T) (*Manager, string) {
 	t.Helper()
-	m := NewManager(slog.New(slog.NewTextHandler(io.Discard, nil)), t.TempDir())
+	dir := t.TempDir()
+	m := NewManager(slog.New(slog.NewTextHandler(io.Discard, nil)), dir)
 	t.Cleanup(func() { _ = m.Close() })
 	for _, cfg := range []DatabaseConfig{
 		{Name: "acme-db", TenantID: "acme", Engine: EngineKV, Backend: BackendMemory},
@@ -39,110 +41,79 @@ func newCompactionManager(t *testing.T) *Manager {
 			t.Fatalf("Create(%s): %v", cfg.Name, err)
 		}
 	}
-	return m
+	return m, dir
 }
 
-// The policy is persisted with the database, survives a reopen, and "off"
-// is stored as no policy at all.
-func TestManager_UpdateCompaction_PersistsAndClears(t *testing.T) {
-	dir := t.TempDir()
-	m := NewManager(slog.New(slog.NewTextHandler(io.Discard, nil)), dir)
-	if _, err := m.Create(DatabaseConfig{Name: "app", Engine: EngineKV, Backend: BackendMemory}); err != nil {
-		t.Fatal(err)
-	}
-	policy := &compaction.Policy{Mode: compaction.Revision, RetainRevisions: 7}
-	if err := m.UpdateCompaction("app", policy); err != nil {
-		t.Fatalf("UpdateCompaction: %v", err)
-	}
-	if err := m.UpdateCompaction("app", &compaction.Policy{Mode: "nope"}); err == nil {
-		t.Fatal("an invalid policy was accepted")
-	}
-	if err := m.UpdateCompaction("missing", policy); err == nil {
-		t.Fatal("a missing database took a policy")
-	}
-	_ = m.Close()
-
-	reopened := NewManager(slog.New(slog.NewTextHandler(io.Discard, nil)), dir)
-	t.Cleanup(func() { _ = reopened.Close() })
-	db, err := reopened.Open("app")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	if got := db.CompactionConfig(); got == nil || *got != *policy {
-		t.Fatalf("policy after reopen = %+v, want %+v", got, policy)
-	}
-	if got := db.Info().Compaction; got == nil || *got != *policy {
-		t.Fatalf("Info().Compaction = %+v", got)
-	}
-	if err := reopened.UpdateCompaction("app", &compaction.Policy{Mode: compaction.Off}); err != nil {
-		t.Fatal(err)
-	}
-	if db.CompactionConfig() != nil {
-		t.Fatal("an off policy was stored rather than cleared")
-	}
-}
-
-// Every tenant, the system tenant included, sets policies on its own
-// databases only; another tenant's database answers as missing.
-func TestManager_UpdateCompactionForTenant_OwnDatabasesOnly(t *testing.T) {
-	m := newCompactionManager(t)
-	policy := &compaction.Policy{Mode: compaction.Revision, RetainRevisions: 3}
+// Every tenant, the system tenant included, may set policies on its own
+// databases only; another tenant's database answers as missing. The answer
+// is the owner the policy is written for.
+func TestManager_CompactionOwnerForTenant_OwnDatabasesOnly(t *testing.T) {
+	m, _ := newCompactionManager(t)
 	tests := []struct {
-		caller, db string
-		allowed    bool
+		caller, db, owner string
 	}{
-		{"acme", "acme-db", true},
-		{"acme", "beta-db", false},
-		{"acme", "sys-db", false},
-		{tenant.SystemTenantID, "sys-db", true},
-		{tenant.SystemTenantID, "acme-db", false},
-		{"", "beta-db", false},
+		{"acme", "acme-db", "acme"},
+		{"acme", "beta-db", ""},
+		{"acme", "sys-db", ""},
+		{tenant.SystemTenantID, "sys-db", tenant.SystemTenantID},
+		{tenant.SystemTenantID, "acme-db", ""},
+		{"", "beta-db", ""},
+		{"acme", "nope", ""},
 	}
 	for _, tt := range tests {
-		err := m.UpdateCompactionForTenant(tenant.WithTenantID(context.Background(), tt.caller), tt.db, policy)
-		if tt.allowed {
-			if err != nil {
-				t.Errorf("%q on %s: %v", tt.caller, tt.db, err)
+		owner, err := m.CompactionOwnerForTenant(tenant.WithTenantID(context.Background(), tt.caller), tt.db)
+		if tt.owner != "" {
+			if err != nil || owner != tt.owner {
+				t.Errorf("%q on %s = %q, %v; want %q", tt.caller, tt.db, owner, err, tt.owner)
 			}
 			continue
 		}
 		var nf *NotFoundError
 		if !errors.As(err, &nf) {
-			t.Errorf("%q on %s = %v, want NotFoundError", tt.caller, tt.db, err)
+			t.Errorf("%q on %s = %q, %v; want NotFoundError", tt.caller, tt.db, owner, err)
 		}
-	}
-	if beta, _ := m.Get("beta-db"); beta.CompactionConfig() != nil {
-		t.Fatal("a refused caller set beta's policy")
-	}
-	var nf *NotFoundError
-	if err := m.UpdateCompactionForTenant(tenant.WithTenantID(context.Background(), "acme"), "nope", policy); !errors.As(err, &nf) {
-		t.Fatalf("missing database = %v", err)
 	}
 }
 
 // The owner of a database being dropped is told so; anyone else is told the
 // database does not exist.
-func TestManager_UpdateCompactionForTenant_DroppingDatabase(t *testing.T) {
-	m := newCompactionManager(t)
+func TestManager_CompactionOwnerForTenant_DroppingDatabase(t *testing.T) {
+	m, _ := newCompactionManager(t)
 	db, _ := m.Get("acme-db")
 	db.SetDropping(true)
-	policy := &compaction.Policy{Mode: compaction.Revision, RetainRevisions: 3}
 
 	var dropping *DroppingError
-	if err := m.UpdateCompactionForTenant(tenant.WithTenantID(context.Background(), "acme"), "acme-db", policy); !errors.As(err, &dropping) {
+	if _, err := m.CompactionOwnerForTenant(tenant.WithTenantID(context.Background(), "acme"), "acme-db"); !errors.As(err, &dropping) {
 		t.Fatalf("owner on a dropping database = %v", err)
 	}
 	var nf *NotFoundError
-	if err := m.UpdateCompactionForTenant(tenant.WithTenantID(context.Background(), "beta"), "acme-db", policy); !errors.As(err, &nf) {
+	if _, err := m.CompactionOwnerForTenant(tenant.WithTenantID(context.Background(), "beta"), "acme-db"); !errors.As(err, &nf) {
 		t.Fatalf("stranger on a dropping database = %v, want NotFoundError", err)
 	}
 }
 
-func TestDatabaseConfig_ValidatesItsCompactionPolicy(t *testing.T) {
-	cfg := DatabaseConfig{Name: "app", Engine: EngineKV, Backend: BackendMemory,
-		Compaction: &compaction.Policy{Mode: compaction.Period, RetainPeriod: "0s"}}
-	var invalid *compaction.InvalidPolicyError
-	if err := cfg.Validate(); !errors.As(err, &invalid) {
-		t.Fatalf("Validate = %v", err)
+// TestManager_CatalogHoldsNoCompactionPolicy: the catalog record -- each
+// database's node-local meta.json -- carries no compaction policy. The policy
+// is replicated state in the database's own store (pkg/compaction), never
+// node-local.
+func TestManager_CatalogHoldsNoCompactionPolicy(t *testing.T) {
+	_, dir := newCompactionManager(t)
+	found := 0
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || d.Name() != metaFile {
+			return err
+		}
+		found++
+		data, rerr := os.ReadFile(path) //nolint:gosec // G304: a path this test's own manager wrote under t.TempDir
+		if rerr != nil {
+			return rerr
+		}
+		if strings.Contains(string(data), "compaction") {
+			t.Errorf("%s carries a compaction field: %s", path, data)
+		}
+		return nil
+	})
+	if err != nil || found == 0 {
+		t.Fatalf("walked the catalog: %d meta files, %v", found, err)
 	}
 }

@@ -218,11 +218,19 @@ GetAtRevision("beta/app/k", 850)  -> served      (no floor for "beta/app/")
   scheduled-compaction policy, which is off unless that tenant configured one
   (engineering.md "Scheduled compaction"). There is no node-wide retention
   setting.
+- **A schedule is the database's, not a node's.** The policy and the samples
+  a period policy targets from are one reserved record in the database's own
+  store (`pkg/compaction`, beside the durable lease table), written only
+  through the log. Every replica holds it, a snapshot or backup carries it,
+  and only the leader of the database's group runs it -- so a leader change
+  continues the schedule, retention clock included, and nothing about it is
+  lost with a node. No node-local copy exists: not the catalog, not a file.
 
-The command that carries it is a new Raft opcode, `OpMVCCCompactPrefix`,
-emitted only once the cluster feature gate reports that every replica of the
-group applies it (`featuregate.PrefixCompaction`). A replica that did not
-would refuse the entry while its peers applied it.
+The commands that carry it are new Raft opcodes -- `OpMVCCCompactPrefix`
+(14) and `OpCompactionState` (16) -- emitted only once the cluster feature
+gate reports that every replica of the group applies them
+(`featuregate.PrefixCompaction`). A replica that did not would refuse the
+entry while its peers applied it.
 
 ### Alternatives rejected
 

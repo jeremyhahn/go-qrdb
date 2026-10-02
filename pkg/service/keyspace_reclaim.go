@@ -20,6 +20,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -132,6 +133,12 @@ type ReclaimTarget struct {
 	// Vector deletes vector namespaces, which live in their own per-node
 	// store and are likewise not reached by deleting keys.
 	Vector ReclaimVector
+
+	// Compaction is the store's replicated compaction table, which holds a
+	// database's scheduled-compaction policy and samples as a reserved
+	// record and is likewise not reached by deleting keys. nil when the
+	// store has none.
+	Compaction CompactionStateStore
 }
 
 // StoreResolver answers which store holds a tenant's composite-namespaced
@@ -270,7 +277,12 @@ func (s *KeyspaceReclaimService) ReclaimDatabaseKeyspace(ctx context.Context, te
 		return err
 	}
 	ns := tenant.ComposeNamespace(tenantID, db)
-	return s.reclaim(ctx, target, NamespacedKeyPrefixes(ns), DatabaseIndexNamePrefixes(ns), ns)
+	if err := s.reclaim(ctx, target, NamespacedKeyPrefixes(ns), DatabaseIndexNamePrefixes(ns), ns); err != nil {
+		return err
+	}
+	// The database's compaction record goes with it, so a database created
+	// again under the name starts with no policy and no samples.
+	return clearCompactionRecords(ctx, target.Compaction, func(scope string, _ *compaction.State) bool { return scope == ns })
 }
 
 // FenceDatabaseKeyspace fences the (tenantID, db) database in the store
@@ -466,8 +478,39 @@ func (s *KeyspaceReclaimService) ReclaimTenantKeyspace(ctx context.Context, tena
 	if len(prefixes) == 0 {
 		return &ReclaimScopeError{TenantID: tenantID}
 	}
-	return s.reclaim(ctx, s.system, prefixes,
-		TenantIndexNamePrefixes(tenantID), tenant.IdentityNamespace(tenantID))
+	if err := s.reclaim(ctx, s.system, prefixes,
+		TenantIndexNamePrefixes(tenantID), tenant.IdentityNamespace(tenantID)); err != nil {
+		return err
+	}
+	return clearCompactionRecords(ctx, s.system.Compaction, func(_ string, st *compaction.State) bool { return st.Tenant == tenantID })
+}
+
+// clearCompactionRecords clears every record in store's compaction table that
+// owned accepts. A store with no table, or one that keeps no MVCC history --
+// a record is only ever written to an MVCC store -- has nothing to clear and
+// is not read. A store that cannot be read fails the reclamation, typed: a
+// policy left behind would be inherited by a database created again under
+// the name.
+func clearCompactionRecords(ctx context.Context, store CompactionStateStore, owned func(scope string, st *compaction.State) bool) error {
+	if store == nil {
+		return nil
+	}
+	if r, ok := store.(RevisionHistoryReporter); ok && !r.KeepsRevisionHistory() {
+		return nil
+	}
+	states, err := store.CompactionStates(ctx)
+	if err != nil {
+		return &ReclaimCompactionError{Err: err}
+	}
+	for scope, st := range states {
+		if st == nil || !owned(scope, st) {
+			continue
+		}
+		if err := store.ClearCompactionState(ctx, scope); err != nil {
+			return &ReclaimCompactionError{Scope: scope, Err: err}
+		}
+	}
+	return nil
 }
 
 // namespacedTarget returns the store holding tenantID's composite-namespaced

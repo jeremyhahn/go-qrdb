@@ -51,6 +51,19 @@ func TestLocalBackend_ID(t *testing.T) {
 	}
 }
 
+// TestLocalBackend_LeadsItsShard: a single process with no peers leads its
+// one shard, whatever id it is asked about -- leader-only work runs here.
+func TestLocalBackend_LeadsItsShard(t *testing.T) {
+	lb := newTestLocalBackend()
+	defer func() { _ = lb.Close() }()
+	for _, id := range []uint64{1, 7} {
+		info, err := lb.GetShardInfo(id)
+		if err != nil || info == nil || !info.IsLeader || info.ShardID != id {
+			t.Fatalf("GetShardInfo(%d) = %+v, %v", id, info, err)
+		}
+	}
+}
+
 func TestLocalBackend_ID_Constant(t *testing.T) {
 	lb := newTestLocalBackend()
 	defer func() { _ = lb.Close() }()

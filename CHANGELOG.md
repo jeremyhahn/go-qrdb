@@ -35,23 +35,37 @@ are not reconstructed here — their history is in the git log.
 
 - **Per-database scheduled compaction, off by default.** A database's owning tenant may set
   a compaction policy -- `revision` (keep the store's last N revisions) or `period` (keep the
-  history newer than a duration) -- and the node's compaction scheduler
+  history newer than a duration) -- and the compaction scheduler
   (`server.DefaultCompactionInterval`, one minute; `server.WithCompactionInterval`) compacts
-  that database, and only that database, through its own namespaced view as its owner.
-  A database without a policy is never compacted implicitly. On every transport: REST
+  that database, and only that database. A database without a policy is never compacted
+  implicitly. **The policy and a period policy's revision samples are replicated state in the
+  database's own store** -- one reserved record (`"\x00qrdb.compaction/" + scope`,
+  `pkg/compaction`) beside the durable lease table, written only through the new Raft opcode
+  `OpCompactionState` (16) behind the `prefix-compaction` cluster feature -- never the node's
+  catalog and never a file: every replica holds it, snapshots and backups carry it, the
+  replica hash covers it, and only the leader of the database's group runs it, so a leader
+  change continues the schedule, retention clock included, and a standalone node keeps it
+  across restarts. Samples are capped at `retain_period`/64 per period; samples the store's
+  revisions cannot have produced are never a target; every scheduled proposal carries the
+  database's drop fence for the incarnation the policy was set for, and dropping a database
+  clears its record. On every transport: REST
   `PATCH /v1/databases/{name}/compaction`, gRPC and the Unix socket `DatabaseUpdateCompaction`,
   QUIC `db.UpdateCompaction`, MCP `qrdb_database_update_compaction`, and the embedded
   transport; the Go SDK `DatabaseClient.UpdateDatabaseCompaction` and `DatabaseInfo.Compaction`;
   the CLI `qrdb database update-compaction --mode --retain-revisions --retain-period`; the
   TypeScript SDK `client.database.updateCompaction(name, compaction?)` with
   `DatabaseCompactionConfig`/`CompactionMode` and `DatabaseInfo.compaction` (REST and the
-  desktop client's `DatabaseBinding.UpdateCompaction`); and the
-  `qrdbd` YAML `databases[].compaction` (`mode`, `retain_revisions`, `retain_period`), applied
-  at every start. Setting a policy requires `mvcc:compact` (`ScopeSelfStrict`), never
+  desktop client's `DatabaseBinding.UpdateCompaction`). There is no configuration-file form:
+  a `compaction` key under `databases[]` is not read. Setting a policy requires
+  `mvcc:compact` (`ScopeSelfStrict`), never
   `databases:update`, and create does not take one; every caller, the system tenant included,
   reaches only its own databases (another tenant's answers as missing). An invalid policy is
   `compaction.InvalidPolicyError` (400 / `INVALID_ARGUMENT`). Proved on all six
-  transports in `sdk/go/conformance` (`TestCompactionPolicy_OnEveryTransport`).
+  transports in `sdk/go/conformance` (`TestCompactionPolicy_OnEveryTransport`); across a
+  leader failover of a three-node cluster and a standalone restart in `sdk/go/node`
+  (`TestClusteredNodes_CompactionContinuesAfterLeaderFailover`,
+  `TestStandaloneNode_CompactionScheduleSurvivesRestart`); and through snapshot recovery and
+  the replica hash in `pkg/store` (`TestCompactionState_*`).
 - **Platform node-keyspace compaction, off by default.** `mvcc.node_compaction` in the node's
   configuration file (the same `off|revision|period` policy type as a database's) compacts the
   node keyspace -- every key outside all `<tenant>/<db>/` namespaces: the node's `__sys:`
@@ -120,6 +134,26 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **Concurrent service construction no longer panics on metric registration.**
+  `metrics.NewCounter`, `NewGauge` and `NewHistogram` registered outside the lookup's lock, so
+  two nodes building the same services at once in one process both registered a metric and
+  the second panicked with a duplicate registration.
+- **A change scan reads only its own keyspace.** A watch replay or an
+  `MVCCScanChangesQuery` of one database read every key's data entries in the change log
+  before filtering, so another database compacting mid-scan failed it -- cancelling the first
+  database's watch with a compaction error naming its own floor. `mvcc.Store.ScanChanges` now
+  takes the caller's key matcher and applies it before reading anything else.
+- **A past-revision `Range` answers for every key live at that revision.** It enumerated the
+  current keys, so a key deleted since was silently left out; it now enumerates the keys with
+  a data entry in the range, and a `CountOnly` range at a revision counts the keys live then.
+- **A read racing a compaction reports the compaction.** `GetAtRevision` and `Range` checked
+  the floor and then read with no snapshot, so a compaction committing in between made the
+  read come back absent. A compaction now publishes its floor before its deletions are
+  visible, and every read at a revision re-checks the floor after reading
+  (`mvcc.RevisionCompactedError`).
+- **Compaction drops a tombstone live at the floor**, as etcd does, whether or not the key was
+  written again; the apply path refuses a prefix compaction whose prefix is not exactly one
+  database's keyspace.
 - **Compaction keeps the value live at the floor.** Compacting to a revision kept only each
   key's newest entry, so a read above the floor but below a key's newest write -- a key written
   at 1, 3 and 5, compacted to 3, read at 4 -- answered "revision not found", and a `Range` at

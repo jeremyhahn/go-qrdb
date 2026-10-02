@@ -20,8 +20,6 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -114,29 +112,6 @@ func TestProvisionDatabases_CreatesAndKeepsTheSQLDatabase(t *testing.T) {
 	assert.True(t, again.ProtocolConfig().PostgreSQL, "an existing SQL database gains the enabled protocols")
 }
 
-// A configured database's compaction policy is applied on every boot, and a
-// database the file gives none keeps no policy -- nothing compacts it.
-func TestProvisionDatabases_AppliesTheConfiguredCompactionPolicy(t *testing.T) {
-	mgr := database.NewManager(nil, t.TempDir())
-	t.Cleanup(func() { _ = mgr.Close() })
-	policy := &compaction.Policy{Mode: compaction.Revision, RetainRevisions: 100}
-	f := provisionFlags("")
-	f.databases = append(f.databases, qrdbconfig.DatabaseConfig{Name: "events", Engine: "kv", Backend: "memory", Compaction: policy})
-	require.NoError(t, provisionDatabases(context.Background(), f, mgr, electedLeader{}))
-
-	events, err := mgr.Get("events")
-	require.NoError(t, err)
-	assert.Equal(t, policy, events.CompactionConfig())
-	orders, err := mgr.Get("orders")
-	require.NoError(t, err)
-	assert.Nil(t, orders.CompactionConfig(), "a database with no configured policy is never compacted")
-
-	// Re-provisioning (a restart) reapplies the file's declaration.
-	f.databases[1].Compaction = &compaction.Policy{Mode: compaction.Period, RetainPeriod: "1h"}
-	require.NoError(t, provisionDatabases(context.Background(), f, mgr, electedLeader{}))
-	assert.Equal(t, compaction.Period, events.CompactionConfig().Mode)
-}
-
 // No SQL protocol enabled means --sql-database is not provisioned.
 func TestProvisionDatabases_SkipsTheSQLDatabaseWithoutASQLProtocol(t *testing.T) {
 	mgr := database.NewManager(nil, t.TempDir())
@@ -185,9 +160,6 @@ func (p failingProvisioner) Provision(context.Context, database.DatabaseConfig) 
 func (p failingProvisioner) UpdateProtocol(string, database.ProtocolConfig) error { return p.err }
 
 func (p failingProvisioner) UpdateSQL(string, *database.SQLConfig) error { return p.err }
-func (p failingProvisioner) UpdateCompaction(string, *compaction.Policy) error {
-	return p.err
-}
 
 // electedLeader reports the system shard's leader as known, as every node
 // does once the shard has elected one.

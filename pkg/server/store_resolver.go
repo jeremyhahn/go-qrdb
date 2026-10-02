@@ -109,10 +109,12 @@ func (r *storeResolver) ReclaimTarget(ctx context.Context, tenantID string) (ser
 		// drop once the Host is available completes it.
 		return service.ReclaimTarget{}, true, err
 	}
+	hostCompaction, _ := svcs.MVCC.(service.CompactionStateStore)
 	return service.ReclaimTarget{
-		KV:     svcs.KV,
-		Index:  svcs.Index,
-		Vector: svcs.Vector,
+		KV:         svcs.KV,
+		Index:      svcs.Index,
+		Vector:     svcs.Vector,
+		Compaction: hostCompaction,
 	}, true, nil
 }
 

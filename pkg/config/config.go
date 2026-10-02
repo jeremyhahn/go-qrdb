@@ -225,14 +225,6 @@ type DatabaseConfig struct {
 	// every start -- the file is the declaration -- and a database it is
 	// absent from keeps whatever was last set through UpdateDatabaseSQL.
 	SQL *DatabaseSQLConfig `yaml:"sql,omitempty" json:"sql,omitempty"`
-
-	// Compaction is the database's scheduled-compaction policy (mode off,
-	// revision or period). When set, it is applied at every start -- the file
-	// is the declaration -- and a database it is absent from keeps whatever
-	// was last set through UpdateDatabaseCompaction. Absent everywhere means
-	// off: nothing compacts a database implicitly. See
-	// docs/key-value/engineering.md "Scheduled compaction".
-	Compaction *compaction.Policy `yaml:"compaction,omitempty" json:"compaction,omitempty"`
 }
 
 // DatabaseSQLConfig is a database's SQL settings in the configuration file.
@@ -1940,11 +1932,6 @@ func (c *Config) Validate() error {
 		if db.SQL != nil {
 			if _, ok := validDatabaseConcurrencies[db.SQL.Concurrency]; !ok {
 				return &DatabaseConfigError{Name: db.Name, Message: "sql.concurrency must be one of: optimistic, pessimistic"}
-			}
-		}
-		if db.Compaction != nil {
-			if err := db.Compaction.Validate(); err != nil {
-				return &DatabaseConfigError{Name: db.Name, Message: "compaction: " + err.Error()}
 			}
 		}
 		if _, dup := seen[db.Name]; dup {

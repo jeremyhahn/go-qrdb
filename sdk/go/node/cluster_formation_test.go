@@ -33,6 +33,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -128,6 +129,14 @@ func peerIdentitySpecs(t *testing.T, self uint64, replicas []formationReplica) s
 // their Close. identitiesFor returns each replica's raft.member_identities.
 func bootFormationCluster(t *testing.T, ca *qrdbdharness.CA, replicas []formationReplica, identitiesFor func(uint64) string) ([]*Node, error) {
 	t.Helper()
+	return bootFormationClusterWith(t, ca, replicas, identitiesFor, nil)
+}
+
+// bootFormationClusterWith is bootFormationCluster with configure applied to
+// every replica's configuration (nil for none) and serverOpts given to every
+// replica's server.
+func bootFormationClusterWith(t *testing.T, ca *qrdbdharness.CA, replicas []formationReplica, identitiesFor func(uint64) string, configure func(*qrdbconfig.Config), serverOpts ...server.ServerOption) ([]*Node, error) {
+	t.Helper()
 	caPEM := mustReadCAPEM(t, ca)
 	members := make(map[uint64]string, len(replicas))
 	for _, r := range replicas {
@@ -140,11 +149,14 @@ func bootFormationCluster(t *testing.T, ca *qrdbdharness.CA, replicas []formatio
 	for i, r := range replicas {
 		// Built on the test goroutine: the helpers may t.Fatal.
 		cfg := formationConfig(t, r, identitiesFor(r.id))
+		if configure != nil {
+			configure(cfg)
+		}
 		mtls := &RaftMTLSConfig{CACert: caPEM, Cert: r.cert.CertPEM, Key: r.cert.KeyPEM}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			nodes[i], errs[i] = NewClusteredNode(context.Background(), cfg, members, nil, WithRaftMTLS(mtls))
+			nodes[i], errs[i] = NewClusteredNode(context.Background(), cfg, members, serverOpts, WithRaftMTLS(mtls))
 		}()
 	}
 	wg.Wait()

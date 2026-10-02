@@ -754,6 +754,11 @@ type DatabaseService struct {
 	scaleLeaderWaitTimeout  time.Duration
 	scaleLeaderWaitInterval time.Duration
 
+	// compactionPolicies reaches a database's scheduled-compaction policy in
+	// the database's own store; nil until the server wires it
+	// (SetCompactionPolicies), and then UpdateCompactionForTenant refuses.
+	compactionPolicies CompactionPolicies
+
 	// scaleMu serializes concurrent ScaleForTenant calls to the same
 	// (tenant, database) on this node -- see ScaleForTenant for the
 	// concurrency rationale (§F of the elastic-scaling design). Keyed by
@@ -763,6 +768,8 @@ type DatabaseService struct {
 
 // Compile-time interface check.
 var _ DatabaseServicer = (*DatabaseService)(nil)
+
+var _ CompactionPolicyWiring = (*DatabaseService)(nil)
 
 // NewDatabaseService creates a new DatabaseService backed by the given manager.
 func NewDatabaseService(manager *database.Manager, opts ...DatabaseServiceOption) DatabaseServicer {
@@ -1617,7 +1624,11 @@ func (s *DatabaseService) persistPlacement(ctx context.Context, tenantID string,
 // executes on a different node than the one serving this read.
 func (s *DatabaseService) GetForTenant(ctx context.Context, name string) (*database.DatabaseInfo, error) {
 	if tenant.IsSystemTenant(tenant.FromContext(ctx)) {
-		return s.Get(name)
+		info, err := s.Get(name)
+		if err != nil {
+			return nil, err
+		}
+		return s.withCompactionPolicy(ctx, info)
 	}
 	db, err := s.manager.GetForTenant(ctx, name)
 	if err != nil {
@@ -1625,7 +1636,7 @@ func (s *DatabaseService) GetForTenant(ctx context.Context, name string) (*datab
 	}
 	info := db.Info()
 	s.refreshReplicasFromPlacement(ctx, &info)
-	return &info, nil
+	return s.withCompactionPolicy(ctx, &info)
 }
 
 // ListForTenant returns runtime information about databases owned by the
@@ -1872,12 +1883,57 @@ func (s *DatabaseService) UpdateSQLForTenant(ctx context.Context, name string, s
 // database and returns its updated runtime information. Every caller,
 // the system tenant included, reaches only its own databases: a policy
 // compacts that database's history, and no one compacts another tenant's.
-// See docs/key-value/engineering.md "Scheduled compaction".
+//
+// The policy is not catalog state. It is a replicated record in the
+// database's own store, written through the database's own view
+// (CompactionPolicies) as a Raft proposal, so every replica of the
+// database's group holds it, a backup carries it, and whichever node leads
+// the group runs it. See docs/key-value/engineering.md "Scheduled
+// compaction".
 func (s *DatabaseService) UpdateCompactionForTenant(ctx context.Context, name string, policy *compaction.Policy) (*database.DatabaseInfo, error) {
-	if err := s.manager.UpdateCompactionForTenant(ctx, name, policy); err != nil {
+	if policy != nil {
+		if err := policy.Validate(); err != nil {
+			return nil, err
+		}
+	}
+	owner, err := s.manager.CompactionOwnerForTenant(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	if s.compactionPolicies == nil {
+		return nil, &CompactionPolicyUnavailableError{Database: name}
+	}
+	if err := s.compactionPolicies.SetCompactionPolicy(ctx, owner, name, policy); err != nil {
 		return nil, err
 	}
 	return s.GetForTenant(ctx, name)
+}
+
+// SetCompactionPolicies implements CompactionPolicyWiring: the server gives
+// the service the port to databases' stores once its registry exists, before
+// it serves.
+func (s *DatabaseService) SetCompactionPolicies(p CompactionPolicies) {
+	s.compactionPolicies = p
+}
+
+// withCompactionPolicy reports info's scheduled-compaction policy from the
+// database's own store. A sealed database's views are refused by design, so
+// its policy is not reported while it is sealed; nothing else is skipped --
+// a store that cannot be read fails the call.
+func (s *DatabaseService) withCompactionPolicy(ctx context.Context, info *database.DatabaseInfo) (*database.DatabaseInfo, error) {
+	if s.compactionPolicies == nil || info.Status == database.StatusSealed {
+		return info, nil
+	}
+	owner := info.TenantID
+	if owner == "" {
+		owner = tenant.SystemTenantID
+	}
+	policy, err := s.compactionPolicies.CompactionPolicy(ctx, owner, info.Name)
+	if err != nil {
+		return nil, err
+	}
+	info.Compaction = policy
+	return info, nil
 }
 
 // ScaleForTenant changes the replication factor of an existing dedicated-raft

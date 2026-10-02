@@ -18,6 +18,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
@@ -52,6 +53,16 @@ type namespacedMVCCService struct {
 	// compactor is inner's per-prefix compaction, nil when inner has none;
 	// see Compact.
 	compactor service.PrefixCompactor
+
+	// states is inner's replicated compaction table, nil when inner has
+	// none; history reports whether inner's state machine keeps MVCC
+	// history at all. See CompactionPolicy.
+	states  service.CompactionStateStore
+	history service.RevisionHistoryReporter
+
+	// binding identifies the database this view serves -- its owner, name
+	// and incarnation -- for the compaction policy it writes.
+	binding compaction.Binding
 }
 
 // leaseOwnership confines lease attachment to the namespace's own leases.
@@ -62,8 +73,12 @@ type leaseOwnership interface {
 	requireOwned(ctx context.Context, leaseID int64) error
 }
 
-// Compile-time interface check.
-var _ service.MVCCKVServicer = (*namespacedMVCCService)(nil)
+// Compile-time interface checks.
+var (
+	_ service.MVCCKVServicer          = (*namespacedMVCCService)(nil)
+	_ service.CompactionPolicyHolder  = (*namespacedMVCCService)(nil)
+	_ service.RevisionHistoryReporter = (*namespacedMVCCService)(nil)
+)
 
 // newNamespacedMVCCService creates an MVCCKVServicer that prefixes all keys
 // with the given composite namespace prefix (e.g. "acme/reports/"). leases is
@@ -73,13 +88,55 @@ func newNamespacedMVCCService(inner service.MVCCKVServicer, prefix string, lease
 	// detected here once: an inner service without one leaves Compact
 	// refusing rather than compacting anything wider than this namespace.
 	compactor, _ := inner.(service.PrefixCompactor)
+	states, _ := inner.(service.CompactionStateStore)
+	history, _ := inner.(service.RevisionHistoryReporter)
 	return &namespacedMVCCService{
 		namespacedKVService: &namespacedKVService{inner: inner, prefix: prefix},
 		inner:               inner,
 		prefix:              prefix,
 		leases:              leases,
 		compactor:           compactor,
+		states:              states,
+		history:             history,
 	}
+}
+
+// KeepsRevisionHistory implements service.RevisionHistoryReporter for the
+// inner service: a view keeps history exactly when its store does.
+func (s *namespacedMVCCService) KeepsRevisionHistory() bool {
+	return s.history == nil || s.history.KeepsRevisionHistory()
+}
+
+// CompactionPolicy returns this database's scheduled-compaction policy from
+// the replicated record in its own store: nil when it has none, when the
+// record belongs to another incarnation of the name, or when the store keeps
+// no MVCC history and so can have none.
+func (s *namespacedMVCCService) CompactionPolicy(ctx context.Context) (*compaction.Policy, error) {
+	if s.states == nil || !s.KeepsRevisionHistory() {
+		return nil, nil
+	}
+	st, err := s.states.CompactionState(ctx, s.prefix)
+	if err != nil || st == nil {
+		return nil, err
+	}
+	if st.Tenant != s.binding.Tenant || st.Database != s.binding.Database || st.Incarnation != s.binding.Incarnation {
+		return nil, nil
+	}
+	return st.Policy, nil
+}
+
+// SetCompactionPolicy writes this database's policy -- bound to its owner,
+// name and incarnation -- into the replicated record in its own store, as a
+// write of the database: it carries the view's drop-fence guard, so a policy
+// can never be written for an incarnation that has been dropped. nil turns
+// the policy off.
+func (s *namespacedMVCCService) SetCompactionPolicy(ctx context.Context, policy *compaction.Policy) error {
+	if s.states == nil || !s.KeepsRevisionHistory() {
+		return &service.CompactionPolicyUnavailableError{Database: s.binding.Database}
+	}
+	binding := s.binding
+	binding.Policy = policy
+	return s.states.SetCompactionPolicy(s.scope(ctx), s.prefix, binding)
 }
 
 // requireOwnedLease returns nil for no lease (0) or a lease this namespace

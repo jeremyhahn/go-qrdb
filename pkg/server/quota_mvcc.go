@@ -17,6 +17,7 @@ package server
 import (
 	"context"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -33,8 +34,12 @@ type quotaMVCCService struct {
 	mvcc service.MVCCKVServicer
 }
 
-// Compile-time interface check.
-var _ service.MVCCKVServicer = (*quotaMVCCService)(nil)
+// Compile-time interface checks.
+var (
+	_ service.MVCCKVServicer          = (*quotaMVCCService)(nil)
+	_ service.CompactionPolicyHolder  = (*quotaMVCCService)(nil)
+	_ service.RevisionHistoryReporter = (*quotaMVCCService)(nil)
+)
 
 // newQuotaMVCCService wraps inner with storage-byte quota enforcement for the
 // given tenant and limit (MaxStorageBytes).
@@ -103,6 +108,31 @@ func (s *quotaMVCCService) RangeWithConsistency(ctx context.Context, start, end 
 
 func (s *quotaMVCCService) Compact(ctx context.Context, revision int64) error {
 	return s.mvcc.Compact(ctx, revision)
+}
+
+// KeepsRevisionHistory forwards to the wrapped view; a view that cannot say
+// keeps history.
+func (s *quotaMVCCService) KeepsRevisionHistory() bool {
+	r, ok := s.mvcc.(service.RevisionHistoryReporter)
+	return !ok || r.KeepsRevisionHistory()
+}
+
+// CompactionPolicy forwards to the wrapped view: a policy is no storage.
+func (s *quotaMVCCService) CompactionPolicy(ctx context.Context) (*compaction.Policy, error) {
+	h, ok := s.mvcc.(service.CompactionPolicyHolder)
+	if !ok {
+		return nil, nil
+	}
+	return h.CompactionPolicy(ctx)
+}
+
+// SetCompactionPolicy forwards to the wrapped view.
+func (s *quotaMVCCService) SetCompactionPolicy(ctx context.Context, policy *compaction.Policy) error {
+	h, ok := s.mvcc.(service.CompactionPolicyHolder)
+	if !ok {
+		return &service.CompactionPolicyUnavailableError{}
+	}
+	return h.SetCompactionPolicy(ctx, policy)
 }
 
 func (s *quotaMVCCService) CurrentRevision(ctx context.Context) (int64, error) {

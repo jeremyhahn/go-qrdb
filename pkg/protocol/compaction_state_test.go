@@ -65,7 +65,7 @@ func TestDecodeCompactionState_RefusesMalformedPayloads(t *testing.T) {
 		"no scope length":  {byte(CompactionStateClear)},
 		"short scope":      {byte(CompactionStateClear), 5, 0, 'a'},
 		"unknown kind":     {9, 0, 0},
-		"short sample":     append(append([]byte(nil), good[1:len(good)-1]...)),
+		"short sample":     append([]byte(nil), good[1:len(good)-1]...),
 		"clear with body":  {byte(CompactionStateClear), 0, 0, 1},
 		"set without body": {byte(CompactionStateSetPolicy), 0, 0},
 	} {

@@ -16,262 +16,370 @@ package server
 
 import (
 	"context"
-	"errors"
 	"io"
 	"log/slog"
+	"reflect"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
-// schedMVCC is a database's MVCC view as the scheduler sees it: a current
-// revision, and a Compact that records what it was asked for and the tenant
-// the request carried.
-type schedMVCC struct {
-	service.MVCCKVServicer
-	mu         sync.Mutex
-	current    int64
-	compacted  []int64
-	tenants    []string
-	compactErr error
+// schedStore is a store's raw shard service as the scheduler drives it, kept
+// faithful to the real one where the scheduler's correctness depends on it:
+//
+//   - its compaction table applies records with the very compaction.State
+//     methods the state machine applies them with (Bind, Record);
+//   - a compaction refuses a revision above the current one and one at or
+//     below the scope's floor, as the service does;
+//   - a proposal carrying a drop-fence guard is refused unless the guard
+//     names the database's live incarnation, as the state machine refuses it.
+type schedStore struct {
+	mu        sync.Mutex
+	current   int64
+	table     map[string]*compaction.State
+	floors    map[string]int64
+	live      map[string]string // "tenant/db" -> live incarnation
+	compacted []string          // "scope@revision"
+	leads     bool
 }
 
-func (m *schedMVCC) CurrentRevision(context.Context) (int64, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.current, nil
-}
+var (
+	_ compactionStore     = (*schedStore)(nil)
+	_ service.ShardLeader = (*schedStore)(nil)
+)
 
-func (m *schedMVCC) Compact(ctx context.Context, revision int64) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.compacted = append(m.compacted, revision)
-	m.tenants = append(m.tenants, tenant.FromContext(ctx))
-	return m.compactErr
-}
-
-func (m *schedMVCC) calls() []int64 {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return append([]int64(nil), m.compacted...)
-}
-
-// schedRegistry resolves (tenant, database) to its MVCC view, and refuses
-// every pair it does not hold -- as the real registry refuses another
-// tenant's database.
-type schedRegistry struct {
-	service.Registry
-	views map[string]*schedMVCC
-}
-
-func (r *schedRegistry) MVCCService(tenantID, db string) (service.MVCCKVServicer, error) {
-	if v, ok := r.views[tenantID+"/"+db]; ok {
-		return v, nil
+func newSchedStore(current int64) *schedStore {
+	return &schedStore{
+		current: current, leads: true,
+		table: map[string]*compaction.State{}, floors: map[string]int64{}, live: map[string]string{},
 	}
-	return nil, &database.NotFoundError{Name: db}
 }
 
-func newSched(reg service.Registry, targets []compactionTarget, now func() time.Time) *compactionScheduler {
+func (s *schedStore) LeadsShard() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.leads
+}
+
+func (s *schedStore) setCurrent(rev int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.current = rev
+}
+
+// admit evaluates ctx's guard the way the state machine does.
+func (s *schedStore) admit(ctx context.Context, st *compaction.State) error {
+	guard := service.WriteGuardFrom(ctx)
+	if guard.IsZero() {
+		return nil
+	}
+	want, err := service.DropFenceGuard(st.Tenant, st.Database, s.live[st.Tenant+"/"+st.Database])
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(guard, want) {
+		return &service.WriteGuardRefusedError{Key: service.DropFenceKey(st.Tenant, st.Database)}
+	}
+	return nil
+}
+
+func (s *schedStore) SetCompactionPolicy(_ context.Context, scope string, b compaction.Binding) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st := s.table[scope]
+	if st == nil {
+		st = &compaction.State{}
+	}
+	st.Bind(b)
+	s.table[scope] = st
+	return nil
+}
+
+func (s *schedStore) ClearCompactionState(_ context.Context, scope string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.table, scope)
+	return nil
+}
+
+func (s *schedStore) RecordCompactionSample(ctx context.Context, scope string, at time.Time, revision int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st := s.table[scope]
+	if st == nil {
+		return nil
+	}
+	if err := s.admit(ctx, st); err != nil {
+		return err
+	}
+	st.Record(at.UnixNano(), revision)
+	return nil
+}
+
+func (s *schedStore) CompactionState(_ context.Context, scope string) (*compaction.State, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return copyState(s.table[scope]), nil
+}
+
+func (s *schedStore) CompactionStates(context.Context) (map[string]*compaction.State, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]*compaction.State, len(s.table))
+	for scope, st := range s.table {
+		out[scope] = copyState(st)
+	}
+	return out, nil
+}
+
+func (s *schedStore) CurrentRevision(context.Context) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.current, nil
+}
+
+func (s *schedStore) CompactPrefix(ctx context.Context, prefix string, revision int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if st := s.table[prefix]; st != nil {
+		if err := s.admit(ctx, st); err != nil {
+			return err
+		}
+	}
+	if revision > s.current {
+		return &service.CompactRevisionFutureError{Requested: revision, Current: s.current}
+	}
+	if revision <= s.floors[prefix] {
+		return &service.RevisionCompactedError{Requested: revision, Compacted: s.floors[prefix]}
+	}
+	s.floors[prefix] = revision
+	s.compacted = append(s.compacted, prefix+"@"+strconv.FormatInt(revision, 10))
+	return nil
+}
+
+func (s *schedStore) CompactNodeKeyspace(ctx context.Context, revision int64) error {
+	return s.CompactPrefix(ctx, compaction.NodeScope, revision)
+}
+
+func (s *schedStore) calls() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.compacted...)
+}
+
+func copyState(st *compaction.State) *compaction.State {
+	if st == nil {
+		return nil
+	}
+	cp := *st
+	cp.Samples = append([]compaction.Sample(nil), st.Samples...)
+	return &cp
+}
+
+// newTestScheduler runs over stores with a controllable clock.
+func newTestScheduler(now func() time.Time, stores ...scheduledStore) *compactionScheduler {
 	return &compactionScheduler{
-		registry: reg,
-		targets:  func() []compactionTarget { return targets },
+		stores:   func(context.Context) []scheduledStore { return stores },
 		interval: time.Hour,
 		now:      now,
 		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
-		samples:  make(map[string][]revisionSample),
 	}
 }
 
-func fixedClock(t time.Time) func() time.Time { return func() time.Time { return t } }
+// bind sets scope's policy for (tenant, db, incarnation) and marks that
+// incarnation live.
+func (s *schedStore) bind(scope, tenantID, db, incarnation string, p *compaction.Policy) {
+	_ = s.SetCompactionPolicy(context.Background(), scope, compaction.Binding{Policy: p, Tenant: tenantID, Database: db, Incarnation: incarnation})
+	s.mu.Lock()
+	s.live[tenantID+"/"+db] = incarnation
+	s.mu.Unlock()
+}
 
-// No policy, an off policy, or an invalid one compacts nothing: nothing is
-// compacted implicitly.
+// No record, an off record: nothing is compacted implicitly.
 func TestCompactionScheduler_NoPolicyCompactsNothing(t *testing.T) {
-	view := &schedMVCC{current: 100}
-	reg := &schedRegistry{views: map[string]*schedMVCC{"acme/app": view}}
-	s := newSched(reg, []compactionTarget{
-		{Tenant: "acme", Database: "app", Policy: nil},
-		{Tenant: "acme", Database: "app", Policy: &compaction.Policy{Mode: compaction.Off}},
-		{Tenant: "acme", Database: "app", Policy: &compaction.Policy{Mode: compaction.Revision}},
-	}, fixedClock(time.Now()))
-
-	for i := 0; i < 3; i++ {
-		if n := s.passOnce(context.Background()); n != 0 {
-			t.Fatalf("pass %d compacted %d database(s) with no policy", i, n)
-		}
-	}
-	if calls := view.calls(); len(calls) != 0 {
-		t.Fatalf("Compact was called %v without a configured policy", calls)
+	store := newSchedStore(100)
+	s := newTestScheduler(time.Now, scheduledStore{name: "s", store: store, leader: store})
+	if n := s.passOnce(context.Background()); n != 0 || len(store.calls()) != 0 {
+		t.Fatalf("a store with no record compacted %d: %v", n, store.calls())
 	}
 }
 
-// A revision policy keeps the last N revisions, as the owning tenant, and
-// waits while there are fewer.
+// A revision policy compacts to current - N, once per new target; a repeat
+// of the same target is the already-compacted refusal, not a compaction.
 func TestCompactionScheduler_RevisionPolicyKeepsTheLastN(t *testing.T) {
-	view := &schedMVCC{current: 5}
-	reg := &schedRegistry{views: map[string]*schedMVCC{"acme/app": view}}
-	s := newSched(reg, []compactionTarget{{Tenant: "acme", Database: "app",
-		Policy: &compaction.Policy{Mode: compaction.Revision, RetainRevisions: 10}}}, fixedClock(time.Now()))
+	store := newSchedStore(100)
+	store.bind("acme/app/", "acme", "app", "i1", &compaction.Policy{Mode: compaction.Revision, RetainRevisions: 10})
+	s := newTestScheduler(time.Now, scheduledStore{name: "s", store: store, leader: store})
 
-	if n := s.passOnce(context.Background()); n != 0 {
-		t.Fatalf("compacted with fewer revisions than the policy keeps")
-	}
-	view.mu.Lock()
-	view.current = 25
-	view.mu.Unlock()
 	if n := s.passOnce(context.Background()); n != 1 {
 		t.Fatalf("pass compacted %d, want 1", n)
 	}
-	if calls := view.calls(); len(calls) != 1 || calls[0] != 15 {
-		t.Fatalf("Compact calls = %v, want [15]", calls)
+	if n := s.passOnce(context.Background()); n != 0 {
+		t.Fatalf("a second pass at the same revision compacted %d", n)
 	}
-	if view.tenants[0] != "acme" {
-		t.Fatalf("compaction ran as tenant %q, want the owning tenant", view.tenants[0])
+	store.setCurrent(150)
+	s.passOnce(context.Background())
+	if got := store.calls(); !reflect.DeepEqual(got, []string{"acme/app/@90", "acme/app/@140"}) {
+		t.Fatalf("compactions = %v", got)
 	}
 }
 
-// A period policy compacts to the newest revision observed at least the
-// period ago, and nothing until a full period has been observed.
-func TestCompactionScheduler_PeriodPolicyKeepsTheLastPeriod(t *testing.T) {
-	view := &schedMVCC{current: 10}
-	reg := &schedRegistry{views: map[string]*schedMVCC{"acme/app": view}}
-	start := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
-	now := start
-	s := newSched(reg, []compactionTarget{{Tenant: "acme", Database: "app",
-		Policy: &compaction.Policy{Mode: compaction.Period, RetainPeriod: "1h"}}}, func() time.Time { return now })
+// A period policy samples into the replicated record under the cap and
+// compacts to the newest sample a period old.
+func TestCompactionScheduler_PeriodPolicySamplesIntoTheRecord(t *testing.T) {
+	store := newSchedStore(10)
+	store.bind("acme/app/", "acme", "app", "i1", &compaction.Policy{Mode: compaction.Period, RetainPeriod: "1h"})
+	now := time.Unix(1_700_000_000, 0)
+	s := newTestScheduler(func() time.Time { return now }, scheduledStore{name: "s", store: store, leader: store})
 
 	advance := func(d time.Duration, rev int64) int {
 		now = now.Add(d)
-		view.mu.Lock()
-		view.current = rev
-		view.mu.Unlock()
+		store.setCurrent(rev)
 		return s.passOnce(context.Background())
 	}
-
 	if n := advance(0, 10); n != 0 {
 		t.Fatal("compacted on the first observation")
 	}
 	if n := advance(30*time.Minute, 20); n != 0 {
 		t.Fatal("compacted before a full period was observed")
 	}
-	if n := advance(30*time.Minute, 30); n != 1 {
-		t.Fatalf("an hour on, compacted %d, want 1", n)
+	if n := advance(31*time.Minute, 30); n != 1 {
+		t.Fatalf("a period on, compacted %d, want 1", n)
 	}
-	if calls := view.calls(); len(calls) != 1 || calls[0] != 10 {
-		t.Fatalf("Compact calls = %v, want [10] (the revision observed an hour ago)", calls)
+	if got := store.calls(); !reflect.DeepEqual(got, []string{"acme/app/@10"}) {
+		t.Fatalf("compactions = %v, want the revision observed a period ago", got)
 	}
-	if n := advance(40*time.Minute, 40); n != 1 {
-		t.Fatalf("compacted %d, want 1", n)
-	}
-	if calls := view.calls(); calls[len(calls)-1] != 20 {
-		t.Fatalf("Compact calls = %v, want the last at 20", calls)
+	st, _ := store.CompactionState(context.Background(), "acme/app/")
+	if len(st.Samples) == 0 {
+		t.Fatal("the samples are not in the replicated record")
 	}
 }
 
-// An already-compacted refusal is not a compaction, and any other failure
-// or an unresolvable database is skipped without stopping the pass.
-func TestCompactionScheduler_RefusalsAndUnresolvableDatabases(t *testing.T) {
-	already := &schedMVCC{current: 50, compactErr: &service.RevisionCompactedError{Requested: 40, Compacted: 45}}
-	broken := &schedMVCC{current: 50, compactErr: errors.New("boom")}
-	fine := &schedMVCC{current: 50}
-	reg := &schedRegistry{views: map[string]*schedMVCC{"a/one": already, "a/two": broken, "a/three": fine}}
-	policy := &compaction.Policy{Mode: compaction.Revision, RetainRevisions: 10}
-	s := newSched(reg, []compactionTarget{
-		{Tenant: "a", Database: "one", Policy: policy},
-		{Tenant: "a", Database: "two", Policy: policy},
-		{Tenant: "a", Database: "gone", Policy: policy},
-		{Tenant: "a", Database: "three", Policy: policy},
-	}, fixedClock(time.Now()))
+// TestCompactionScheduler_OnlyTheLeaderRuns: a store this node does not lead
+// is not run -- not sampled, not compacted -- so exactly one node runs each
+// policy; when leadership moves here, the record's samples are continued.
+func TestCompactionScheduler_OnlyTheLeaderRuns(t *testing.T) {
+	store := newSchedStore(10)
+	store.bind("acme/app/", "acme", "app", "i1", &compaction.Policy{Mode: compaction.Period, RetainPeriod: "1h"})
+	// Another node led the group an hour ago and sampled revision 10.
+	now := time.Unix(1_700_000_000, 0)
+	_ = store.RecordCompactionSample(context.Background(), "acme/app/", now, 10)
+	now = now.Add(61 * time.Minute)
+	store.setCurrent(40)
 
+	store.leads = false
+	s := newTestScheduler(func() time.Time { return now }, scheduledStore{name: "s", store: store, leader: store})
+	if n := s.passOnce(context.Background()); n != 0 || len(store.calls()) != 0 {
+		t.Fatalf("a follower ran the policy: %d, %v", n, store.calls())
+	}
+	st, _ := store.CompactionState(context.Background(), "acme/app/")
+	if len(st.Samples) != 1 {
+		t.Fatalf("a follower sampled: %+v", st.Samples)
+	}
+
+	store.leads = true // leadership moved here
 	if n := s.passOnce(context.Background()); n != 1 {
-		t.Fatalf("pass compacted %d, want 1 (only the database that succeeded)", n)
+		t.Fatalf("the new leader compacted %d, want 1", n)
 	}
-	if len(fine.calls()) != 1 {
-		t.Fatal("a failing database stopped the pass")
-	}
-}
-
-// Samples of a database whose period policy is removed are forgotten.
-func TestCompactionScheduler_ForgetsSamplesOfRemovedPolicies(t *testing.T) {
-	view := &schedMVCC{current: 10}
-	reg := &schedRegistry{views: map[string]*schedMVCC{"acme/app": view}}
-	targets := []compactionTarget{{Tenant: "acme", Database: "app",
-		Policy: &compaction.Policy{Mode: compaction.Period, RetainPeriod: "1h"}}}
-	s := newSched(reg, nil, fixedClock(time.Now()))
-	s.targets = func() []compactionTarget { return targets }
-	s.passOnce(context.Background())
-	if len(s.samples) != 1 {
-		t.Fatalf("samples = %v", s.samples)
-	}
-	targets = nil
-	s.passOnce(context.Background())
-	if len(s.samples) != 0 {
-		t.Fatalf("samples of a removed policy were kept: %v", s.samples)
+	if got := store.calls(); !reflect.DeepEqual(got, []string{"acme/app/@10"}) {
+		t.Fatalf("the new leader compacted %v, want revision 10 -- the former leader's sample", got)
 	}
 }
 
-// run drives a pass per tick and returns when its context ends.
+// TestCompactionScheduler_ADroppedOrRecreatedDatabaseIsNotCompacted is BL2:
+// a record that outlived its database -- dropped, or dropped and created
+// again under the name -- compacts nothing, because every proposal carries
+// the record's incarnation's drop fence and the state machine refuses it.
+// The re-review's probe compacted a re-created database to a revision written
+// a second earlier, under a one-hour policy.
+func TestCompactionScheduler_ADroppedOrRecreatedDatabaseIsNotCompacted(t *testing.T) {
+	store := newSchedStore(100)
+	store.bind("acme/app/", "acme", "app", "old", &compaction.Policy{Mode: compaction.Period, RetainPeriod: "1h"})
+	now := time.Unix(1_700_000_000, 0)
+	_ = store.RecordCompactionSample(context.Background(), "acme/app/", now.Add(-2*time.Hour), 90)
+	// The database is dropped and created again: a new incarnation is live,
+	// the old record is still there.
+	store.mu.Lock()
+	store.live["acme/app"] = "new"
+	store.mu.Unlock()
+
+	s := newTestScheduler(func() time.Time { return now }, scheduledStore{name: "s", store: store, leader: store})
+	if n := s.passOnce(context.Background()); n != 0 || len(store.calls()) != 0 {
+		t.Fatalf("the old incarnation's record compacted the new database: %d, %v", n, store.calls())
+	}
+}
+
+// Samples a store's revisions cannot have produced -- above the current
+// revision after the revisions started over -- are never a target.
+func TestCompactionScheduler_RevisionsThatStartedOverAreNoTarget(t *testing.T) {
+	store := newSchedStore(5) // a restored or re-created store
+	store.bind("", "acme", "app", "", &compaction.Policy{Mode: compaction.Period, RetainPeriod: "1h"})
+	now := time.Unix(1_700_000_000, 0)
+	store.mu.Lock()
+	store.table[""].Samples = []compaction.Sample{{At: now.Add(-2 * time.Hour).UnixNano(), Revision: 900}}
+	store.mu.Unlock()
+
+	s := newTestScheduler(func() time.Time { return now }, scheduledStore{name: "s", store: store, leader: store})
+	if n := s.passOnce(context.Background()); n != 0 || len(store.calls()) != 0 {
+		t.Fatalf("a sample above the current revision became a target: %v", store.calls())
+	}
+	st, _ := store.CompactionState(context.Background(), "")
+	if len(st.Samples) != 1 || st.Samples[0].Revision != 5 {
+		t.Fatalf("samples after the pass = %+v, want the series started over at 5", st.Samples)
+	}
+}
+
+// The node keyspace's record is run through the node-keyspace compaction,
+// with no drop fence: no database owns it.
+func TestCompactionScheduler_NodeScopeUsesTheNodeKeyspaceCompaction(t *testing.T) {
+	store := newSchedStore(100)
+	store.bind(compaction.NodeScope, "", "", "", &compaction.Policy{Mode: compaction.Revision, RetainRevisions: 10})
+	s := newTestScheduler(time.Now, scheduledStore{name: "s", store: store, leader: store})
+	if n := s.passOnce(context.Background()); n != 1 {
+		t.Fatalf("pass compacted %d", n)
+	}
+	if got := store.calls(); !reflect.DeepEqual(got, []string{compaction.NodeScope + "@90"}) {
+		t.Fatalf("compactions = %v", got)
+	}
+}
+
+// A store that is the node's alone (leader nil) is run without asking.
+func TestCompactionScheduler_NodeLocalStoreIsUngated(t *testing.T) {
+	store := newSchedStore(100)
+	store.leads = false
+	store.bind("acme/app/", "acme", "app", "i1", &compaction.Policy{Mode: compaction.Revision, RetainRevisions: 10})
+	s := newTestScheduler(time.Now, scheduledStore{name: "s", store: store})
+	if n := s.passOnce(context.Background()); n != 1 {
+		t.Fatalf("a node-local store compacted %d, want 1", n)
+	}
+}
+
+// run drives a pass per tick and returns when its context ends; a pass never
+// overlaps another.
 func TestCompactionScheduler_RunPassesPerTick(t *testing.T) {
-	view := &schedMVCC{current: 20}
-	reg := &schedRegistry{views: map[string]*schedMVCC{"acme/app": view}}
-	s := newSched(reg, []compactionTarget{{Tenant: "acme", Database: "app",
-		Policy: &compaction.Policy{Mode: compaction.Revision, RetainRevisions: 5}}}, fixedClock(time.Now()))
+	store := newSchedStore(100)
+	store.bind("acme/app/", "acme", "app", "i1", &compaction.Policy{Mode: compaction.Revision, RetainRevisions: 10})
 	ticks := make(chan time.Time)
+	s := newTestScheduler(time.Now, scheduledStore{name: "s", store: store, leader: store})
 	s.ticks = ticks
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() {
-		s.run(ctx)
-		close(done)
-	}()
+	go func() { s.run(ctx); close(done) }()
 	ticks <- time.Now()
 	ticks <- time.Now()
 	cancel()
 	<-done
-	if calls := view.calls(); len(calls) < 1 {
-		t.Fatalf("no pass ran on a tick: %v", calls)
-	}
-}
-
-// compactionTargets reads policies from the node's catalog, attributing an
-// unowned database to the system tenant, and lists only databases with an
-// enabled policy.
-func TestServer_CompactionTargetsReadTheCatalog(t *testing.T) {
-	mgr := database.NewManager(slog.New(slog.NewTextHandler(io.Discard, nil)), t.TempDir())
-	t.Cleanup(func() { _ = mgr.Close() })
-	for _, cfg := range []database.DatabaseConfig{
-		{Name: "acme-db", TenantID: "acme", Engine: database.EngineKV, Backend: database.BackendMemory},
-		{Name: "sys-db", Engine: database.EngineKV, Backend: database.BackendMemory},
-		{Name: "plain", TenantID: "acme", Engine: database.EngineKV, Backend: database.BackendMemory},
-	} {
-		if _, err := mgr.Create(cfg); err != nil {
-			t.Fatalf("Create(%s): %v", cfg.Name, err)
-		}
-	}
-	revision := &compaction.Policy{Mode: compaction.Revision, RetainRevisions: 3}
-	if err := mgr.UpdateCompaction("acme-db", revision); err != nil {
-		t.Fatal(err)
-	}
-	if err := mgr.UpdateCompaction("sys-db", revision); err != nil {
-		t.Fatal(err)
+	if len(store.calls()) != 1 {
+		t.Fatalf("compactions = %v", store.calls())
 	}
 
-	s := &Server{opts: serverOptions{dbManager: mgr}}
-	got := map[string]string{}
-	for _, tgt := range s.compactionTargets() {
-		got[tgt.Database] = tgt.Tenant
-	}
-	if len(got) != 2 || got["acme-db"] != "acme" || got["sys-db"] != tenant.SystemTenantID {
-		t.Fatalf("targets = %v, want acme-db as acme and sys-db as the system tenant only", got)
-	}
-	if (&Server{}).compactionTargets() != nil {
-		t.Fatal("a server with no catalog has targets")
+	s.running.Store(true)
+	if n := s.passOnce(context.Background()); n != 0 {
+		t.Fatal("a pass ran while another was running")
 	}
 }
 
@@ -279,10 +387,44 @@ func TestWithCompactionInterval(t *testing.T) {
 	var o serverOptions
 	WithCompactionInterval(0)(&o)
 	if o.compactionInterval != 0 {
-		t.Fatal("a non-positive interval replaced the default")
+		t.Fatal("a non-positive interval was kept")
 	}
 	WithCompactionInterval(time.Second)(&o)
 	if o.compactionInterval != time.Second {
-		t.Fatalf("interval = %v", o.compactionInterval)
+		t.Fatal("interval not set")
 	}
+}
+
+// compactionStores runs the shared store gated by leadership, and leaves out
+// a store that keeps no MVCC history.
+func TestServer_CompactionStores(t *testing.T) {
+	shared := newSchedStore(1)
+	reg := NewDatabaseServiceRegistry("default")
+	reg.Register("default", &DatabaseServices{Name: "default", MVCC: &schedMVCCView{schedStore: shared}})
+	srv := New(testConfig(t, false, false), newMockKVService(), &mockAdminService{}, WithDatabaseServiceRegistry(reg))
+	stores := srv.compactionStores(context.Background())
+	if len(stores) != 1 || stores[0].leader == nil {
+		t.Fatalf("stores = %+v, want the shared store, gated", stores)
+	}
+
+	noHistory := NewDatabaseServiceRegistry("default")
+	noHistory.Register("default", &DatabaseServices{Name: "default", MVCC: &schedMVCCView{schedStore: shared, noHistory: true}})
+	srv = New(testConfig(t, false, false), newMockKVService(), &mockAdminService{}, WithDatabaseServiceRegistry(noHistory))
+	if stores := srv.compactionStores(context.Background()); len(stores) != 0 {
+		t.Fatalf("a store without history was scheduled: %+v", stores)
+	}
+}
+
+// schedMVCCView is a raw MVCC service over a schedStore, as a registry
+// bundle holds it.
+type schedMVCCView struct {
+	service.MVCCKVServicer
+	*schedStore
+	noHistory bool
+}
+
+func (v *schedMVCCView) KeepsRevisionHistory() bool { return !v.noHistory }
+
+func (v *schedMVCCView) CurrentRevision(ctx context.Context) (int64, error) {
+	return v.schedStore.CurrentRevision(ctx)
 }

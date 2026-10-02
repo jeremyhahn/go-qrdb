@@ -329,25 +329,15 @@ func (s *Server) collectionSweepTargets(ctx context.Context) ([]collectionSweepT
 }
 
 // sharedStoreKVs returns the raw KV of every bundle the registry's shared
-// path is built over -- the default bundle and each one registered by name.
-// Bundles are de-duplicated by identity; a KV is not used as a map key, since
-// an implementation need not be comparable.
+// path is built over (sharedStoreBundles). A KV is not used as a map key,
+// since an implementation need not be comparable: the bundles are
+// de-duplicated by identity instead.
 func (s *Server) sharedStoreKVs() []service.KVServicer {
-	if s.opts.dbRegistry == nil {
-		return nil
-	}
 	var out []service.KVServicer
-	seen := make(map[*DatabaseServices]bool)
-	add := func(svcs *DatabaseServices) {
-		if svcs == nil || svcs.KV == nil || seen[svcs] {
-			return
+	for _, svcs := range s.sharedStoreBundles() {
+		if svcs.KV != nil {
+			out = append(out, svcs.KV)
 		}
-		seen[svcs] = true
-		out = append(out, svcs.KV)
-	}
-	add(s.opts.dbRegistry.Default())
-	for _, name := range s.opts.dbRegistry.List() {
-		add(s.opts.dbRegistry.Get(name))
 	}
 	return out
 }

@@ -110,6 +110,25 @@ func (e *ReclaimVectorError) Error() string {
 // Unwrap returns the underlying error for use with errors.Is and errors.As.
 func (e *ReclaimVectorError) Unwrap() error { return e.Err }
 
+// ReclaimCompactionError reports that a reclamation could not read or clear
+// the store's compaction table. Scope is empty when the table could not be
+// read at all.
+type ReclaimCompactionError struct {
+	Scope string
+	Err   error
+}
+
+// Error returns a human-readable description.
+func (e *ReclaimCompactionError) Error() string {
+	if e.Scope == "" {
+		return "service: reclaim: compaction table unreadable: " + e.Err.Error()
+	}
+	return "service: reclaim: clear compaction record " + strconv.Quote(e.Scope) + ": " + e.Err.Error()
+}
+
+// Unwrap returns the cause.
+func (e *ReclaimCompactionError) Unwrap() error { return e.Err }
+
 // ReclaimJobEncodeError is returned when a ReclaimJob record could not be
 // marshaled for persistence (see ReclaimJobOp).
 type ReclaimJobEncodeError struct {

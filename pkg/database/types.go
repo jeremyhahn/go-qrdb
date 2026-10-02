@@ -523,7 +523,6 @@ type DatabaseConfig struct {
 	Barrier      *DatabaseBarrierConfig    `yaml:"barrier"                 json:"barrier,omitempty"`
 	Connection   *DatabaseConnectionConfig `yaml:"connection"              json:"connection,omitempty"`
 	SQL          *SQLConfig                `yaml:"sql"                     json:"sql,omitempty"`
-	Compaction   *compaction.Policy        `yaml:"compaction"              json:"compaction,omitempty"`
 }
 
 // Directory names a volume-isolated tenant's own Raft host keeps under
@@ -610,12 +609,6 @@ func (c *DatabaseConfig) Validate() error {
 		}
 	}
 
-	if c.Compaction != nil {
-		if err := c.Compaction.Validate(); err != nil {
-			return err
-		}
-	}
-
 	// Validate per-database storage codec when specified.
 	if c.StorageCodec != "" {
 		available := codec.AvailableCodecs()
@@ -692,7 +685,6 @@ type DatabaseMeta struct {
 	Barrier      *DatabaseBarrierConfig    `json:"barrier,omitempty"`
 	Connection   *DatabaseConnectionConfig `json:"connection,omitempty"`
 	SQL          *SQLConfig                `json:"sql,omitempty"`
-	Compaction   *compaction.Policy        `json:"compaction,omitempty"`
 
 	// Dropping is true from the moment Manager.Drop fences this database
 	// (step 0, before it reclaims the keyspace) until the drop finishes and

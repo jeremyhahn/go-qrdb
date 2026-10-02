@@ -712,40 +712,88 @@ explicit `Compact` from that tenant.
 
 A field that does not belong to the mode is refused
 (`compaction.InvalidPolicyError`) rather than ignored. The policy is
-set with `UpdateDatabaseCompaction` (`mvcc:compact`, owning tenant only) or the
-configuration file; see [../databases/](../databases/).
+set with `UpdateDatabaseCompaction` (`mvcc:compact`, owning tenant only); see
+[../databases/](../databases/). There is no configuration-file form.
 
-The node's compaction scheduler (`pkg/server`, every
-`server.DefaultCompactionInterval`, one minute) walks the databases in this
-node's catalog that carry a policy and compacts each through its own
-namespaced view, resolved for the owning tenant exactly as an explicit
-`Compact` from that tenant is:
+**The policy and its samples are replicated state in the database's own
+store** -- never the node's catalog (`meta.json`), never a file in a node's
+data directory. Each scope's state is one reserved record in the raw keyspace
+of the store that holds the data it governs, beside the durable lease table
+(`pkg/compaction`):
+
+```
+"\x00qrdb.compaction/" + scope  ->  compaction.State (JSON: policy, binding, samples)
+```
+
+The scope is the database's `<tenant>/<database>/` namespace on a store many
+databases share (the shared shard; a volume tenant's own host), `""` on a raft
+group that is one database's own, and `compaction.NodeScope` for the
+platform's node keyspace ("Node-keyspace compaction" above). The `0x00` prefix
+is the state machines' reserved-record prefix: the record is never a user key,
+consumes no revision, fires no watch and is never itself compacted.
+
+- **Written only through the log.** Every change -- setting or clearing a
+  policy, recording a sample -- is `protocol.OpCompactionState` (16), proposed
+  to the database's own group and applied in the apply batch, so every replica
+  holds the same record. It is proposed only once the cluster feature
+  `prefix-compaction` is activated (`service.FeatureNotEnabledError` before),
+  the gate that carries `OpMVCCCompactPrefix` too. A state machine that does
+  not apply it -- the pebble KV state machine, the KV engine, the state
+  machines of `pkg/statemachine` -- refuses it as an unknown opcode.
+- **Carried by snapshots and backups, covered by the replica hash.** The
+  compaction table is exempt from the node-local filter (`pkg/store`
+  `isNodeLocalKey`), exactly as the lease table is.
+- **Bound to the database's incarnation.** Setting a policy writes a
+  `compaction.Binding`: the policy, the owning tenant, the database and its
+  incarnation. The write goes through the database's own view, so it carries
+  the database's drop fence. A drop's keyspace reclamation clears the record,
+  and a policy bound to another incarnation replaces the record outright,
+  samples included.
+- **Read back** through `database info`/`GetDatabase`
+  (`DatabaseInfo.compaction`), from the same record. A sealed database's
+  policy is not reported while it is sealed -- its views are refused by
+  design -- and `list` does not report policies.
+
+The compaction scheduler (`pkg/server`, every
+`server.DefaultCompactionInterval`, one minute) runs on every node and holds
+no state of its own. Each pass visits the stores this node may act on, with
+the collection sweeper's gating: the shared store and each raft group **only
+where this node leads the group** (`service.ShardLeader`), a volume tenant's
+own host where it is started; a standalone node leads its only store. It reads
+each store's compaction table and, for each enabled policy:
 
 - `revision`: target = current revision - `retain_revisions`.
-- `period`: the scheduler samples the database's current revision with the
-  time, taking a new sample only once the newest is `retain_period`/64 old,
-  so a policy holds about 64 samples however often the scheduler runs; target
-  = the newest sample at least `retain_period` old, which keeps at most one
-  sample interval more history than the period asks. The samples persist in
-  `compaction-samples.json` in the node's `data_dir` (written atomically, only
-  when they change), so a node that restarts more often than its period still
-  compacts. A fresh policy, or a node whose samples file is missing or cannot
-  be read (logged), compacts nothing until a full period has been observed --
-  the policy errs toward keeping history, never toward discarding it.
-  *(Corrected: samples were held in memory, one per pass -- about 43,000 for a
-  30-day period at the default interval -- and a node that restarted more
-  often than its period never compacted.)*
+- `period`: the leader records the store's current revision with the time,
+  as a sample, into the replicated record -- only once the newest sample is
+  `retain_period`/64 old, so a policy holds about 64 samples however often the
+  scheduler runs (`compaction.SampleResolution`). Target = the newest usable
+  sample at least `retain_period` old, which keeps at most one sample interval
+  more history than the period asks. **After a leader change the new leader
+  continues from the replicated samples**, and a restarted standalone node
+  from its own store, so the retention clock never starts over. A fresh
+  policy compacts nothing until a full period has been observed.
+- Samples that cannot describe the store are never a target: a sample
+  stamped in the future, samples out of order, or a sample above the store's
+  current revision -- the revisions started over, after a restore or a
+  re-created store -- make the whole series unusable, and a newer sample with
+  a lower revision starts the series over. A delayed sample from a former
+  leader, no newer than the newest, is ignored.
+- Every sample and compaction the schedule proposes for a database carries
+  that database's drop fence for the record's incarnation
+  (`service.CompactionScheduleGuard`), so a record that outlived its
+  database -- or one a database re-created under the name never wrote --
+  compacts nothing: the state machine refuses the proposal.
 - A target below 1 is skipped. A target the database is already compacted to
-  is answered with the typed already-compacted refusal and is not a failure.
-- A database whose barrier is sealed, which is being dropped, or which cannot
-  be resolved is skipped for that pass and logged; nothing is compacted on its
-  behalf another way.
+  is the typed already-compacted refusal, not a failure: floors only move
+  forward, so a former leader's proposal landing after a new leader's is
+  harmless.
 
-The policy lives in the database's catalog record, so it is run by the node
-whose catalog holds the database (every node, for a database declared in each
-node's configuration file). Two nodes compacting one database repeat work and
-never disagree: the second compaction to the same revision is refused as
-already compacted.
+Exactly one node runs a policy at a time: the group's leader. A leadership
+change hands the schedule to the new leader with its samples; nothing is
+duplicated and nothing restarts. *(Corrected: the policy lived in the node's
+catalog and its samples in memory, then in a file in the node's data
+directory -- run by whichever node's catalog held the database, lost with
+that node, and reset by a restart. It is now replicated state.)*
 
 ## Persistence
 

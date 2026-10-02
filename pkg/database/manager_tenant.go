@@ -18,8 +18,6 @@ import (
 	"context"
 	"sort"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -237,28 +235,34 @@ func (m *Manager) UpdateSQLForTenant(ctx context.Context, name string, sqlCfg *S
 	return m.UpdateSQL(name, sqlCfg)
 }
 
-// UpdateCompactionForTenant replaces the scheduled-compaction policy of a
-// database the context's tenant owns. Unlike the other ForTenant updates, the
-// system tenant is held to the same rule: it may set a policy on its own
-// databases (owned by it, or by no tenant) and on no other tenant's, because a
-// policy compacts that database's history and no one compacts another
-// tenant's. Another tenant's database is answered as missing.
-func (m *Manager) UpdateCompactionForTenant(ctx context.Context, name string, policy *compaction.Policy) error {
+// CompactionOwnerForTenant returns the tenant that owns the named database
+// when the context's tenant may set its scheduled-compaction policy. Unlike
+// the other ForTenant checks, the system tenant is held to the same rule: it
+// may set a policy on its own databases (owned by it, or by no tenant) and on
+// no other tenant's, because a policy compacts that database's history and no
+// one compacts another tenant's. Another tenant's database is answered as
+// missing. The policy itself is not the catalog's: it is a replicated record
+// in the database's own store (pkg/compaction).
+func (m *Manager) CompactionOwnerForTenant(ctx context.Context, name string) (string, error) {
 	tenantID := tenant.FromContext(ctx)
 	val, ok := m.databases.Load(name)
 	if !ok {
-		return &NotFoundError{Name: name}
+		return "", &NotFoundError{Name: name}
 	}
 	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
 	// Ownership before the drop fence, as getOwned: another tenant's dropping
 	// database must answer as missing, not as dropping.
 	if !ownsCompactionPolicy(tenantID, db.TenantID()) {
-		return &NotFoundError{Name: name}
+		return "", &NotFoundError{Name: name}
 	}
 	if db.Dropping() {
-		return &DroppingError{Name: name, TenantID: db.TenantID()}
+		return "", &DroppingError{Name: name, TenantID: db.TenantID()}
 	}
-	return m.UpdateCompaction(name, policy)
+	owner := db.TenantID()
+	if owner == "" {
+		owner = tenant.SystemTenantID
+	}
+	return owner, nil
 }
 
 // ownsCompactionPolicy reports whether tenantID may set the compaction policy

@@ -966,6 +966,7 @@ func New(cfg *config.Config, kvSvc service.KVServicer, adminSvc service.AdminSer
 	s.wireStoreResolver()
 	s.wireTenantDataProbe()
 	s.wireReclaimStoreResolver()
+	s.wireCompactionPolicies()
 	s.wireProvisioningAuthorization()
 
 	return s
@@ -1002,6 +1003,23 @@ func (s *Server) wireTenantDataProbe() {
 	}
 	if reg := s.buildServiceRegistry(); reg != nil {
 		w.SetTenantDataProbe(service.NewTenantDataProbe(reg))
+	}
+}
+
+// wireCompactionPolicies gives the database service the port it sets and
+// reads a database's scheduled-compaction policy through: the database's own
+// view, over the same service registry the transports resolve every other
+// write to the database through. The policy is a replicated record in the
+// database's own store, never catalog state. It is wired before the
+// provisioning decorator wraps the service, which does not carry the wiring
+// method.
+func (s *Server) wireCompactionPolicies() {
+	w, ok := s.opts.databaseSvc.(service.CompactionPolicyWiring)
+	if !ok {
+		return
+	}
+	if reg := s.buildServiceRegistry(); reg != nil {
+		w.SetCompactionPolicies(service.NewCompactionPolicies(reg))
 	}
 }
 

@@ -195,7 +195,9 @@ qrdb database update-compaction events --mode off
 ```
 
 `qrdb database create` does not take a policy: setting one is compacting, and
-create is a different permission.
+create is a different permission. The policy is stored in the database's own
+replicated store, so it applies on every node and survives a leader change, a
+restart and a backup; `qrdb database info` shows it.
 
 ### `qrdb database update-etcd <name>`
 

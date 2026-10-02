@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -747,20 +748,25 @@ func (r *restServiceRegistry) applyComposite(svcs *DatabaseServices, tenantID, d
 type databaseFence struct {
 	guard       service.WriteGuard
 	vectorCheck func() error
+
+	// binding identifies the database the fence was built for -- owner,
+	// name, incarnation -- for the views' compaction policy.
+	binding compaction.Binding
 }
 
 // newDatabaseFence builds the fence for incarnation of (tenantID, db). The
 // default database cannot be dropped (database.CheckDroppable), so its views
 // carry no guard and its writes pay no extra read.
 func newDatabaseFence(tenantID, db, incarnation string, vectorCheck func() error) (databaseFence, error) {
+	binding := compaction.Binding{Tenant: tenantID, Database: db, Incarnation: incarnation}
 	if db == "" || db == tenant.DefaultDatabase {
-		return databaseFence{}, nil
+		return databaseFence{binding: binding}, nil
 	}
 	guard, err := service.DropFenceGuard(tenantID, db, incarnation)
 	if err != nil {
 		return databaseFence{}, err
 	}
-	return databaseFence{guard: guard, vectorCheck: vectorCheck}, nil
+	return databaseFence{guard: guard, vectorCheck: vectorCheck, binding: binding}, nil
 }
 
 // sharedStoreFence builds the fence for a database whose data is in a store
@@ -777,7 +783,7 @@ func (r *restServiceRegistry) sharedStoreFence(tenantID, db string, managed mana
 			// view of it would be unguarded over a reclaimed keyspace.
 			return databaseFence{}, managed.notFound
 		}
-		return databaseFence{}, nil
+		return databaseFence{binding: compaction.Binding{Tenant: tenantID, Database: db}}, nil
 	}
 	incarnation := managed.db.Incarnation()
 	return newDatabaseFence(tenantID, db, incarnation, func() error { return r.refuseIfDropping(db, true, incarnation) })
@@ -890,6 +896,7 @@ func (f databaseFence) apply(svcs *DatabaseServices, prefix string, wrapLease bo
 		mvcc := newNamespacedMVCCService(svcs.MVCC, prefix, owned)
 		mvcc.dbGuard = g
 		mvcc.namespacedKVService.dbGuard = g
+		mvcc.binding = f.binding
 		out.MVCC = mvcc
 	}
 	if svcs.Batch != nil {

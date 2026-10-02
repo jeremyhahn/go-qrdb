@@ -602,10 +602,12 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	//
 	// It is wired after n.Vector because a vector namespace is part of what a
 	// database owns and is not reached by deleting keys.
+	systemCompaction, _ := n.MVCC.(service.CompactionStateStore)
 	n.KeyspaceReclaim = service.NewKeyspaceReclaimService(service.ReclaimTarget{
-		KV:     n.KV,
-		Index:  n.Index,
-		Vector: n.Vector,
+		KV:         n.KV,
+		Index:      n.Index,
+		Vector:     n.Vector,
+		Compaction: systemCompaction,
 	})
 	dbManager.SetKeyspaceReclaimer(n.KeyspaceReclaim)
 

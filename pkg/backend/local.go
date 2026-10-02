@@ -67,6 +67,13 @@ func (b *LocalBackend) GetNodeHostInfo(_ quicraft.NodeHostInfoOption) *quicraft.
 	return &quicraft.NodeHostInfo{}
 }
 
+// GetShardInfo reports the LocalBackend's one logical shard. A single process
+// with no peers leads it: work only a shard's leader may do -- the compaction
+// schedule -- runs here.
+func (b *LocalBackend) GetShardInfo(shardID uint64) (*quicraft.ShardInfo, error) {
+	return &quicraft.ShardInfo{ShardID: shardID, ReplicaID: 1, LeaderID: 1, IsLeader: true}, nil
+}
+
 // HealthCheck returns a healthy status since the LocalBackend is always
 // operational (no leader election or consensus required).
 func (b *LocalBackend) HealthCheck() *quicraft.HealthStatus {
