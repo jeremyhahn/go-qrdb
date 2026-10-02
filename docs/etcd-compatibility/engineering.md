@@ -92,6 +92,21 @@ types (`service.KeyValue`, `service.RangeOptions`, …).
   revision `rpctypes.ErrGRPCFutureRev` (both `OUT_OF_RANGE`, etcd's own
   messages), so `kube-apiserver`'s compactor reads them exactly as it would
   from etcd.
+- **A `Watch` from a compacted revision is etcd's compacted watch.** A start
+  revision at or below the database's compaction floor is answered as etcd
+  answers it: the watch is created, then cancelled by a response whose
+  `CompactRevision` is the floor, which an etcd client reports as
+  `rpctypes.ErrCompacted` -- `kube-apiserver`'s reflector relists on it. The
+  same response ends a watch whose replay compaction overtook. The floor is
+  the watched range's own (`watch.CompactedError`), never another database's.
+  *(Corrected: the create was refused with a response an etcd client cannot
+  match to its request, so the client's `Watch` call never returned.)*
+- **A refused create is etcd's failed create.** Any other refusal -- an empty
+  key, a permission or scope refusal from the watch service -- is `Created` and
+  `Canceled` with watch ID `-1` and the reason, which the client returns as the
+  watch's error; a watch that ends for a reason (an overflowed consumer, the
+  database ceasing to serve) is cancelled with that reason rather than going
+  silent.
 
 ## Error semantics
 
@@ -107,7 +122,7 @@ types (`service.KeyValue`, `service.RangeOptions`, …).
 | Any RPC without a permission mapping, including `Auth.*` | `PERMISSION_DENIED` | **yes** — no fallback to password auth |
 | Database sealed or dropped after the listener started | `UNAVAILABLE` / `NOT_FOUND` on the next RPC, and open streams end with it | **yes** |
 | Missing permission for the mapped operation | permission denied on the RPC | **yes** |
-| Compacted revision requested | etcd's compacted-revision error | **yes** |
+| Compacted revision requested | etcd's compacted-revision error; a `Watch` is created then cancelled with `CompactRevision` set to the floor | **yes** |
 | `Compact` to a revision already compacted, or above the current one | `ErrGRPCCompacted` / `ErrGRPCFutureRev`; nothing changes | **yes** |
 | Barrier sealed | requests refused | **yes** |
 | The state machine keeps no MVCC revision history (the default `pebble`) | the server refuses to start (`RevisionHistoryRequiredError`); a `Put` that reaches one is `FailedPrecondition`, never revision 0 | **yes** |

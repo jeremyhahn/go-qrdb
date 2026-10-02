@@ -29,6 +29,23 @@ var ErrWatcherOverflow = errors.New("qrdb/watch: watcher event buffer overflow; 
 // compacted".
 var ErrCompacted = errors.New("qrdb/watch: required start revision has been compacted")
 
+// CompactedError is the ErrCompacted condition with the compaction floor that
+// caused it: the floor covering the watched key or range, never another
+// namespace's. It matches ErrCompacted under errors.Is and reads as it does.
+// The floor is what etcd's watch protocol returns as a response's
+// CompactRevision.
+type CompactedError struct {
+	// CompactRevision is the compaction floor covering the watched key or
+	// range when the watch was refused or cancelled.
+	CompactRevision int64
+}
+
+// Error returns ErrCompacted's text, which clients match on.
+func (e *CompactedError) Error() string { return ErrCompacted.Error() }
+
+// Is reports whether target is ErrCompacted.
+func (e *CompactedError) Is(target error) bool { return target == ErrCompacted }
+
 // ErrStartRevisionUnsupported indicates a watch requested a start revision on a
 // hub that has no history replayer attached (a non-MVCC store), so replay is
 // impossible.

@@ -65,6 +65,9 @@ type mockWatcher struct {
 	watchID int64
 	closed  bool
 	mu      sync.Mutex
+	// err is what Err reports: the reason the watch ended, nil for a clean
+	// close.
+	err error
 }
 
 func newMockWatcher(id int64, buf int) *mockWatcher {
@@ -85,7 +88,20 @@ func (w *mockWatcher) Close() error {
 	}
 	return nil
 }
-func (w *mockWatcher) Err() error { return nil }
+func (w *mockWatcher) Err() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.err
+}
+
+// end closes the watcher's events as the hub does when a watch ends for a
+// reason: the reason first, then the channel.
+func (w *mockWatcher) end(err error) {
+	w.mu.Lock()
+	w.err = err
+	w.mu.Unlock()
+	_ = w.Close()
+}
 
 // ---------------------------------------------------------------------------
 // Mock Watch_WatchServer stream
@@ -298,8 +314,8 @@ func TestWatch_CreateEmptyKey(t *testing.T) {
 	if len(sent) != 1 {
 		t.Fatalf("expected 1 response, got %d", len(sent))
 	}
-	if !sent[0].Canceled {
-		t.Error("expected Canceled=true for empty key")
+	if !sent[0].Created || !sent[0].Canceled || sent[0].WatchId != invalidWatchID {
+		t.Errorf("empty-key create = %+v, want etcd's failed create", sent[0])
 	}
 	if sent[0].CancelReason != "key is required" {
 		t.Errorf("unexpected cancel reason: %s", sent[0].CancelReason)
@@ -331,8 +347,10 @@ func TestWatch_CreateWatchError(t *testing.T) {
 	if len(sent) != 1 {
 		t.Fatalf("expected 1 response, got %d", len(sent))
 	}
-	if !sent[0].Canceled {
-		t.Error("expected Canceled=true for watch error")
+	// etcd's failed create: Created and Canceled with no watch ID, so an etcd
+	// client matches it to its pending create instead of waiting forever.
+	if !sent[0].Created || !sent[0].Canceled || sent[0].WatchId != invalidWatchID {
+		t.Errorf("failed create = %+v, want Created, Canceled, WatchId %d", sent[0], invalidWatchID)
 	}
 	if sent[0].CancelReason != "watch failed" {
 		t.Errorf("unexpected cancel reason: %s", sent[0].CancelReason)

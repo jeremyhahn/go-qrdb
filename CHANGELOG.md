@@ -115,6 +115,20 @@ are not reconstructed here — their history is in the git log.
   either key; both advertised a node-wide retention that would compact every tenant's history
   implicitly.
 
+### Fixed
+
+- **etcd listener: a `Watch` from a compacted revision is etcd's compacted watch.** A start
+  revision at or below the database's compaction floor was refused with a response an etcd
+  client cannot match to its create, so `clientv3`'s `Watch` call never returned. It is now
+  created and then cancelled with `CompactRevision` set to the floor, which the client reports
+  as `rpctypes.ErrCompacted`; a watch whose replay compaction overtakes ends the same way. The
+  hub's refusal is the new `watch.CompactedError`, which matches `watch.ErrCompacted` and
+  carries the floor covering the watched range. Any other refused create is etcd's failed
+  create (`Created`, `Canceled`, watch ID `-1`, the reason) instead of a hang, a watch that
+  ends for a reason is cancelled with it instead of going silent, and the stream's sends are
+  serialized (gRPC forbids concurrent sends on a stream, and each watch is forwarded on its own
+  goroutine). Proved against the etcd client itself (`TestEtcdClient_*` in `pkg/api/etcd`).
+
 ## [0.32.0-alpha] - 2026-10-02
 
 Strict tenant isolation, phase 2: cluster-wide shard IDs. This release contains BREAKING changes; see the entries below. Highlights:

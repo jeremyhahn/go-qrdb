@@ -207,8 +207,8 @@ func (h *Hub) prepareReplay(startRev int64, key, rangeEnd []byte) (bool, error) 
 	if hr == nil {
 		return false, ErrStartRevisionUnsupported
 	}
-	if startRev <= hr.CompactedRevision(key, rangeEnd) {
-		return false, ErrCompacted
+	if floor := hr.CompactedRevision(key, rangeEnd); startRev <= floor {
+		return false, &CompactedError{CompactRevision: floor}
 	}
 	return true, nil
 }
@@ -340,11 +340,13 @@ func (h *Hub) startReplay(w *watcher, wo WatchOptions, boundary int64) {
 		// watcher was registered before every relevant event and is already
 		// correctly withholding them via the deliver floor until one arrives
 		// at or after wo.StartRevision (go-qrdb#514).
-		if attemptedReplay && (replayErr != nil || hr.CompactedRevision(w.key, w.rangeEnd) >= wo.StartRevision) {
-			w.setErr(ErrCompacted)
-			w.finishReplay()
-			w.cancel()
-			return
+		if attemptedReplay {
+			if floor := hr.CompactedRevision(w.key, w.rangeEnd); replayErr != nil || floor >= wo.StartRevision {
+				w.setErr(&CompactedError{CompactRevision: floor})
+				w.finishReplay()
+				w.cancel()
+				return
+			}
 		}
 
 		w.finishReplay()

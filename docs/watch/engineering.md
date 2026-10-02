@@ -177,7 +177,11 @@ ordinary service error would hand back a generic `RequestError` and break
 | Caller context cancelled | stream ends, channel closed | n/a |
 
 The compacted case fails rather than quietly downgrading to a live watch,
-because a silent downgrade loses events the caller believes it received. A
+because a silent downgrade loses events the caller believes it received. The
+hub's refusal, and the error of a watch whose replay compaction overtook, is
+`watch.CompactedError`: it matches `watch.ErrCompacted`, reads as it, and
+carries the floor that caused it (`CompactRevision`), which the etcd listener
+returns as etcd's `CompactRevision`. A
 start revision above current is the opposite of that case rather than a
 variant of it: it does not name a revision the store refuses to serve, it
 names one the store has not reached yet, so `Hub.prepareReplay` only checks it
