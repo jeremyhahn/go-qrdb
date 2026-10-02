@@ -274,6 +274,15 @@ export function resetDatabaseWizard(): void {
 }
 
 /**
+ * Clears the barrier passphrase from the store. The wizard calls it when it is
+ * torn down, so leaving it by any route -- not only Cancel or a create --
+ * leaves no passphrase behind.
+ */
+export function clearBarrierPassphrase(): void {
+    dbWizardStore.barrierPassphrase = '';
+}
+
+/**
  * Returns the barrier passphrase for the create request and clears it from
  * the store, so it lives no longer than the request that carries it.
  */

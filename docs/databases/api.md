@@ -194,7 +194,12 @@ was a request field on every transport, and a caller-chosen ID was accepted
 unchecked.)*
 
 `DatabaseBarrierConfig` fields: `enabled`, `mode` (`passphrase|shamir`),
-`sharesRequired`, `sharesTotal`, `secret`.
+`sharesRequired`, `sharesTotal`, `secret`. A per-database barrier is built in
+`passphrase` mode only: `shamir` is refused with
+`database.UnsupportedBarrierStrategyError` (400 / `INVALID_ARGUMENT` on every
+transport) until per-database Shamir share holders ship. *(Corrected: `shamir`
+was listed as served; the server has always refused it, and reported the
+refusal as a server fault.)*
 
 `DatabaseConnectionConfig` fields: `transport` (`tcp|quic`), `address`,
 `caFile`, `certFile`, `keyFile`.

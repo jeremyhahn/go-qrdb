@@ -70,8 +70,11 @@ management, feature errors), watch streaming and npm packaging are documented in
   behind, and cancelling the wizard (`resetDatabaseWizard`) clears it. It is
   never logged -- the create step logs a summary of the request, not the
   request -- and the summary step shows only that it is set. Returning to the
-  barrier step asks for it again. The barrier defaults to none, so the
-  barrier is opt-in. *(Changed: the wizard sent the barrier block without
+  barrier step asks for it again, and tearing the wizard down by any route
+  (`onDestroy` → `clearBarrierPassphrase`) clears it. The barrier defaults to
+  none, so the barrier is opt-in. The Shamir card is shown disabled, with a
+  tooltip, until per-database Shamir share holders ship: the server refuses a
+  per-database Shamir barrier until then. *(Changed: the wizard sent the barrier block without
   `enabled` and with no secret, so the server never created a barrier and the
   barrier step had no effect.)*
 
@@ -136,8 +139,10 @@ closed.)* The Playwright suites under `cmd/qrdb/frontend/e2e/` are not in CI.
 - **TypeScript side**: the SDK's vitest suites and `svelte-check` run in CI
   (above). The wizard's barrier passphrase is covered by
   `e2e/database-wizard-barrier-passphrase.spec.ts` (mocked tier): validation,
-  the exact create request, and that the passphrase appears on no page after
-  a successful or a failed create. On the Go side,
+  the exact create request, and that the passphrase appears on no page and in
+  no console message after a successful or a failed create. The Shamir card's
+  disabled state is covered in `wizard-encryption.spec.ts` and
+  `database-wizard-full-flow.spec.ts`. On the Go side,
   `TestDatabaseBinding_CreateWithBarrierInitialisesIt` drives a barrier create
   through the binding into a real barrier manager and proves the passphrase it
   sent is the one that unseals the database.

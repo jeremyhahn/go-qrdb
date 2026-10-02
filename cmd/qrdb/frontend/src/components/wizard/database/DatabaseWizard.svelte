@@ -15,8 +15,10 @@
   limitations under the License.
 -->
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import type { Client } from "@qrdb/sdk";
   import {
+    clearBarrierPassphrase,
     dbWizardStore,
     activeSteps,
     nextStep,
@@ -85,6 +87,10 @@
   function handleBack(): void {
     prevStep();
   }
+
+  // Leaving the wizard by any route -- navigating away, closing the view --
+  // drops a passphrase the barrier step stored and no create took.
+  onDestroy(clearBarrierPassphrase);
 
   function handleCancel(): void {
     resetDatabaseWizard();

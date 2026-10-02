@@ -16,7 +16,8 @@
 /**
  * Database wizard encryption barrier tests.
  *
- * Covers all storage + encryption combinations and Shamir M-of-N validation.
+ * Covers all storage + encryption combinations; Shamir is shown disabled until
+ * per-database share holders ship.
  *
  * The wizard step sequence for standalone servers:
  *   Name → Storage → SQL → Barrier → Summary → Creating → sidebar
@@ -92,24 +93,16 @@ async function advanceThroughSQL(page: import("@playwright/test").Page): Promise
 }
 
 /**
- * Select encryption barrier mode and advance. For Shamir, configures
- * the specified shares required and total before advancing.
+ * Select encryption barrier mode and advance.
  */
 async function selectBarrierAndAdvance(
   page: import("@playwright/test").Page,
-  mode: "None" | "Passphrase" | "Shamir",
-  shamirConfig?: { required: number; total: number },
+  mode: "None" | "Passphrase",
 ): Promise<void> {
   await expect(page.getByRole("heading", { name: "Database Encryption Barrier" })).toBeVisible();
 
   if (mode === "None") {
     await page.locator("button").filter({ hasText: "None" }).click();
-  } else if (mode === "Shamir") {
-    await page.locator("button").filter({ hasText: "Shamir" }).click();
-    if (shamirConfig) {
-      await page.locator("#db-shares-required").fill(String(shamirConfig.required));
-      await page.locator("#db-shares-total").fill(String(shamirConfig.total));
-    }
   } else if (mode === "Passphrase") {
     // The barrier defaults to none; the passphrase barrier asks for a
     // confirmed passphrase.
@@ -132,14 +125,13 @@ async function navigateToSummaryWithConfig(
   page: import("@playwright/test").Page,
   name: string,
   backend: "Memory" | "File" | "Pebble",
-  barrierMode: "None" | "Passphrase" | "Shamir",
-  shamirConfig?: { required: number; total: number },
+  barrierMode: "None" | "Passphrase",
 ): Promise<void> {
   await openCreateWizard(page);
   await fillNameAndAdvance(page, name);
   await selectStorageAndAdvance(page, backend);
   await advanceThroughSQL(page);
-  await selectBarrierAndAdvance(page, barrierMode, shamirConfig);
+  await selectBarrierAndAdvance(page, barrierMode);
   await expect(page.getByRole("heading", { name: "Review Configuration" })).toBeVisible();
 }
 
@@ -186,19 +178,6 @@ test.describe("Wizard Encryption Combinations", () => {
     await createAndVerifyComplete(page, "enc-mem-pass");
   });
 
-  test("Memory + Shamir (2-of-3) completes successfully", async ({ page }) => {
-    await navigateToSummaryWithConfig(
-      page, "enc-mem-shamir", "Memory", "Shamir", { required: 2, total: 3 },
-    );
-
-    // Verify summary shows correct configuration
-    await expect(page.getByText("Memory", { exact: true })).toBeVisible();
-    await expect(page.getByText("Shamir", { exact: true })).toBeVisible();
-    await expect(page.getByText("2-of-3", { exact: true })).toBeVisible();
-
-    await createAndVerifyComplete(page, "enc-mem-shamir");
-  });
-
   // -------------------------------------------------------------------------
   // File combinations
   // -------------------------------------------------------------------------
@@ -223,136 +202,49 @@ test.describe("Wizard Encryption Combinations", () => {
     await createAndVerifyComplete(page, "enc-file-pass");
   });
 
-  test("File + Shamir (2-of-3) completes successfully", async ({ page }) => {
-    await navigateToSummaryWithConfig(
-      page, "enc-file-shamir", "File", "Shamir", { required: 2, total: 3 },
-    );
 
-    // Verify summary shows correct configuration
-    await expect(page.getByText("File", { exact: true })).toBeVisible();
-    await expect(page.getByText("Shamir", { exact: true })).toBeVisible();
-    await expect(page.getByText("2-of-3", { exact: true })).toBeVisible();
+  // Per-database Shamir is refused by the server until per-database share
+  // holders ship (database.UnsupportedBarrierStrategyError, 400), so the
+  // wizard does not offer it: the card is disabled and says why. A Shamir
+  // create request is never sent.
+  test("File + Shamir is not offered: the card is disabled and no Shamir create is sent", async ({ page }) => {
+    const creates: unknown[] = [];
+    await page.exposeFunction("__recordCreate", (req: unknown) => {
+      creates.push(req);
+    });
+    await page.addInitScript(() => {
+      const w = window as unknown as Record<string, unknown>;
+      const db = (
+        w.go as Record<string, Record<string, Record<string, unknown>>>
+      )?.main?.DatabaseBinding;
+      if (db && typeof db.Create === "function") {
+        const orig = db.Create as (...args: unknown[]) => Promise<unknown>;
+        db.Create = async (...args: unknown[]): Promise<unknown> => {
+          await (w.__recordCreate as (r: unknown) => Promise<void>)(JSON.parse(JSON.stringify(args[0])));
+          return orig(...args);
+        };
+      }
+    });
+    await openCreateWizard(page);
+    await fillNameAndAdvance(page, "enc-file-shamir");
+    await selectStorageAndAdvance(page, "File");
+    await advanceThroughSQL(page);
+    await expect(page.getByRole("heading", { name: "Database Encryption Barrier" })).toBeVisible();
 
+    const shamir = page.getByTestId("db-seal-mode-shamir");
+    await expect(shamir).toBeDisabled();
+    await expect(shamir).toHaveAttribute("title", /per-database Shamir share holders/);
+    await shamir.click({ force: true });
+    await expect(page.locator("input[name='db-seal-mode'][value='shamir']")).not.toBeChecked();
+    await expect(page.locator("#db-shares-required")).toHaveCount(0);
+
+    // The wizard can still finish -- without a Shamir barrier.
+    await page.getByRole("button", { name: "Next" }).click();
     await createAndVerifyComplete(page, "enc-file-shamir");
+    expect(creates.length).toBeGreaterThan(0);
+    for (const req of creates) {
+      expect((req as { barrier?: { mode?: string } }).barrier?.mode).not.toBe("shamir");
+    }
   });
 });
 
-// ---------------------------------------------------------------------------
-// Shamir M-of-N Configuration Variations
-// ---------------------------------------------------------------------------
-
-test.describe("Shamir Configuration Variations", () => {
-  test.use({ mockState: secondLaunchEmbeddedState });
-
-  test("Shamir 3-of-5 displays configuration in summary", async ({ page }) => {
-    await navigateToSummaryWithConfig(
-      page, "shamir-3of5", "Pebble", "Shamir", { required: 3, total: 5 },
-    );
-
-    await expect(page.getByText("Shamir", { exact: true })).toBeVisible();
-    await expect(page.getByText("3-of-5", { exact: true })).toBeVisible();
-
-    await createAndVerifyComplete(page, "shamir-3of5");
-  });
-
-  test("Shamir 1-of-1 displays configuration in summary", async ({ page }) => {
-    await navigateToSummaryWithConfig(
-      page, "shamir-1of1", "Pebble", "Shamir", { required: 1, total: 1 },
-    );
-
-    await expect(page.getByText("Shamir", { exact: true })).toBeVisible();
-    await expect(page.getByText("1-of-1", { exact: true })).toBeVisible();
-
-    await createAndVerifyComplete(page, "shamir-1of1");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Shamir Validation Tests
-// ---------------------------------------------------------------------------
-
-test.describe("Shamir Validation", () => {
-  test.use({ mockState: secondLaunchEmbeddedState });
-
-  test("Shamir threshold exceeding total shares shows error", async ({ page }) => {
-    await openCreateWizard(page);
-    await fillNameAndAdvance(page, "shamir-invalid");
-    await selectStorageAndAdvance(page, "Pebble");
-    // Raft step skipped for standalone — SQL step appears directly.
-    await advanceThroughSQL(page);
-
-    // Arrive at Encryption Barrier step
-    await expect(page.getByRole("heading", { name: "Database Encryption Barrier" })).toBeVisible();
-    await page.locator("button").filter({ hasText: "Shamir" }).click();
-
-    // Set threshold > total (5 required, 3 total)
-    await page.locator("#db-shares-required").fill("5");
-    await page.locator("#db-shares-total").fill("3");
-
-    // Verify error message appears
-    await expect(
-      page.getByText("Shares required cannot exceed total shares."),
-    ).toBeVisible();
-
-    // Verify Next button is disabled
-    const nextButton = page.getByRole("button", { name: "Next" });
-    await expect(nextButton).toBeDisabled();
-  });
-
-  test("Shamir zero values show error", async ({ page }) => {
-    await openCreateWizard(page);
-    await fillNameAndAdvance(page, "shamir-zero");
-    await selectStorageAndAdvance(page, "Pebble");
-    // Raft step skipped for standalone — SQL step appears directly.
-    await advanceThroughSQL(page);
-
-    // Arrive at Encryption Barrier step
-    await expect(page.getByRole("heading", { name: "Database Encryption Barrier" })).toBeVisible();
-    await page.locator("button").filter({ hasText: "Shamir" }).click();
-
-    // Set both values to zero
-    await page.locator("#db-shares-required").fill("0");
-    await page.locator("#db-shares-total").fill("0");
-
-    // Verify error message appears
-    await expect(
-      page.getByText("Both values must be greater than zero."),
-    ).toBeVisible();
-
-    // Verify Next button is disabled
-    const nextButton = page.getByRole("button", { name: "Next" });
-    await expect(nextButton).toBeDisabled();
-  });
-
-  test("Shamir correcting invalid values clears error and enables Next", async ({ page }) => {
-    await openCreateWizard(page);
-    await fillNameAndAdvance(page, "shamir-corrected");
-    await selectStorageAndAdvance(page, "Pebble");
-    // Raft step skipped for standalone — SQL step appears directly.
-    await advanceThroughSQL(page);
-
-    // Arrive at Encryption Barrier step
-    await expect(page.getByRole("heading", { name: "Database Encryption Barrier" })).toBeVisible();
-    await page.locator("button").filter({ hasText: "Shamir" }).click();
-
-    // Set invalid values first (threshold > total)
-    await page.locator("#db-shares-required").fill("5");
-    await page.locator("#db-shares-total").fill("3");
-
-    // Verify error is shown and Next is disabled
-    await expect(
-      page.getByText("Shares required cannot exceed total shares."),
-    ).toBeVisible();
-    await expect(page.getByRole("button", { name: "Next" })).toBeDisabled();
-
-    // Correct the values
-    await page.locator("#db-shares-required").fill("2");
-    await page.locator("#db-shares-total").fill("5");
-
-    // Verify error is cleared and Next is enabled
-    await expect(
-      page.getByText("Shares required cannot exceed total shares."),
-    ).not.toBeVisible();
-    await expect(page.getByRole("button", { name: "Next" })).toBeEnabled();
-  });
-});

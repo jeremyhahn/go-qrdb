@@ -323,6 +323,9 @@ var databaseRules = []rule{
 	as(&database.DiscoveryClusterSizeError{Size: 0}, InvalidArgument),
 	as(&database.EtcdListenAddrRequiredError{}, InvalidArgument),
 	as(&database.InvalidStorageCodecError{Codec: "x"}, InvalidArgument),
+	// A per-database barrier mode this node cannot build (Shamir, until
+	// per-database share holders ship): the request's choice, not a fault.
+	as(&database.UnsupportedBarrierStrategyError{Mode: "shamir"}, InvalidArgument),
 	// A per-database barrier operation on a node with no barrier manager.
 	as(&service.BarrierManagerNotConfiguredError{}, Unimplemented),
 	// A database mid-drop is not gone (NotFoundError, above) and not a naming

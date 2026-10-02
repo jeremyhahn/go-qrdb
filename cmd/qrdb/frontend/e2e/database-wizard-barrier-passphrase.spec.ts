@@ -68,6 +68,26 @@ async function capturedCreates(page: Page): Promise<Record<string, unknown>[]> {
   );
 }
 
+/**
+ * Records every console message the page writes, so a test can assert the
+ * passphrase never reaches one.
+ */
+function captureConsole(page: Page): string[] {
+  const messages: string[] = [];
+  page.on("console", (msg) => {
+    messages.push(msg.text());
+  });
+  return messages;
+}
+
+/** Fails when any console message holds the passphrase. */
+function expectNoPassphraseLogged(messages: readonly string[]): void {
+  expect(messages.length).toBeGreaterThan(0);
+  for (const m of messages) {
+    expect(m).not.toContain(PASSPHRASE);
+  }
+}
+
 /** Opens the wizard and walks to the Barrier step. */
 async function toBarrierStep(page: Page, dbName: string): Promise<void> {
   await page.goto("/");
@@ -136,6 +156,7 @@ test.describe("Database Wizard - barrier passphrase", () => {
     page,
   }) => {
     await captureCreates(page, false);
+    const logged = captureConsole(page);
     await toBarrierStep(page, "barrier-create-db");
     await choosePassphrase(page);
     await page.locator("main").getByRole("button", { name: "Next" }).click();
@@ -161,10 +182,12 @@ test.describe("Database Wizard - barrier passphrase", () => {
       timeout: STEP_TIMEOUT,
     });
     await expect(page.locator("body")).not.toContainText(PASSPHRASE);
+    expectNoPassphraseLogged(logged);
   });
 
   test("a failed create does not show the passphrase", async ({ page }) => {
     await captureCreates(page, true);
+    const logged = captureConsole(page);
     await toBarrierStep(page, "barrier-fail-db");
     await choosePassphrase(page);
     await page.locator("main").getByRole("button", { name: "Next" }).click();
@@ -176,6 +199,7 @@ test.describe("Database Wizard - barrier passphrase", () => {
     const captured = await capturedCreates(page);
     expect((captured[0].barrier as Record<string, unknown>).secret).toBe(PASSPHRASE);
     await expect(page.locator("body")).not.toContainText(PASSPHRASE);
+    expectNoPassphraseLogged(logged);
   });
 
   test("going back to the barrier step asks for the passphrase again", async ({ page }) => {

@@ -21,8 +21,9 @@
  *   - The Barrier (step 4) Next button is specifically reachable without
  *     any scroll/layout clipping.
  *   - Both standalone and raft mock server modes are covered.
- *   - All three barrier modes (none, passphrase, shamir) allow the user
- *     to advance past the barrier step.
+ *   - The none and passphrase barrier modes allow the user to advance past
+ *     the barrier step; Shamir is shown disabled until per-database share
+ *     holders ship.
  */
 
 import {
@@ -288,51 +289,13 @@ test.describe("Database Wizard - Barrier Step Modes", () => {
     ).toBeVisible({ timeout: STEP_TIMEOUT });
   });
 
-  test("barrier mode: shamir — valid M-of-N config enables Next and advances to Summary", async ({ page }) => {
+  test("barrier mode: shamir — unavailable until per-database share holders ship", async ({ page }) => {
     await navigateToBarrier(page, "barrier-shamir-db");
 
-    // Select the "Shamir" barrier option.
-    await page.locator("button").filter({ hasText: "Shamir" }).first().click();
-
-    // Shamir configuration fields become visible.
-    await expect(
-      page.locator("#db-shares-required"),
-    ).toBeVisible({ timeout: STEP_TIMEOUT });
-
-    // Fill valid configuration: 2-of-3.
-    await page.locator("#db-shares-required").fill("2");
-    await page.locator("#db-shares-total").fill("3");
-
-    await assertNextButtonClickable(page);
-    await page.locator("main").getByRole("button", { name: "Next" }).click();
-
-    await expect(
-      page.getByRole("heading", { name: "Review Configuration" }),
-    ).toBeVisible({ timeout: STEP_TIMEOUT });
-  });
-
-  test("barrier mode: shamir — invalid threshold disables Next until corrected", async ({ page }) => {
-    await navigateToBarrier(page, "barrier-shamir-invalid-db");
-
-    await page.locator("button").filter({ hasText: "Shamir" }).first().click();
-
-    await expect(
-      page.locator("#db-shares-required"),
-    ).toBeVisible({ timeout: STEP_TIMEOUT });
-
-    // Set threshold greater than total — invalid configuration.
-    await page.locator("#db-shares-required").fill("5");
-    await page.locator("#db-shares-total").fill("3");
-
-    const nextBtn = page.locator("main").getByRole("button", { name: "Next" });
-    await expect(nextBtn).toBeDisabled();
-    await expect(
-      page.getByText("Shares required cannot exceed total shares."),
-    ).toBeVisible({ timeout: STEP_TIMEOUT });
-
-    // Correct the values — Next becomes enabled again.
-    await page.locator("#db-shares-required").fill("2");
-    await expect(nextBtn).toBeEnabled();
+    const shamir = page.getByTestId("db-seal-mode-shamir");
+    await expect(shamir).toBeDisabled();
+    await expect(shamir).toHaveAttribute("title", /per-database Shamir share holders/);
+    await expect(page.locator("#db-shares-required")).toHaveCount(0);
   });
 
   test("barrier step: Next button is within viewport without scrolling", async ({ page }) => {

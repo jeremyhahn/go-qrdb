@@ -41,7 +41,9 @@ the full application.
 settings on a Raft server, wire protocols, the encryption barrier, a summary,
 then creation.
 
-The barrier is off unless you choose one. Choosing **Passphrase** asks for the
+The barrier is off unless you choose one. **Shamir** is shown but not yet
+selectable: it becomes available once per-database Shamir share holders ship.
+Choosing **Passphrase** asks for the
 passphrase twice; it is sent once, when the database is created, and the
 application does not keep it or show it again. You need it to unseal the
 database, so store it safely. A per-database barrier needs the database's own

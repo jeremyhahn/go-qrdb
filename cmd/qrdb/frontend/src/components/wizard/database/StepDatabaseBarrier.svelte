@@ -46,11 +46,13 @@
   let passphrase: string = $state("");
   let passphraseConfirm: string = $state("");
 
-  /** Seal mode options for the card selector. */
+  /** Seal mode options for the card selector. A mode with `unavailable`
+   * set is shown, disabled, with that text as its tooltip. */
   const sealModes: readonly {
     id: SealMode;
     label: string;
     description: string;
+    unavailable?: string;
   }[] = [
     {
       id: "none",
@@ -69,6 +71,9 @@
       label: "Shamir (M-of-N)",
       description:
         "Advanced: Shamir secret sharing requires multiple key holders to unseal this database.",
+      // The server refuses a per-database Shamir barrier until per-database
+      // share holders ship; offering it would only produce that refusal.
+      unavailable: "Available once per-database Shamir share holders ship.",
     },
   ] as const;
 
@@ -143,11 +148,18 @@
         {#each sealModes as mode (mode.id)}
           <button
             type="button"
-            class="card cursor-pointer border-2 p-4 text-left transition-colors
-              {sealMode === mode.id
-                ? 'border-primary bg-primary/5'
-                : 'border-base-300 hover:border-primary/50'}"
-            onclick={() => (sealMode = mode.id)}
+            data-testid={`db-seal-mode-${mode.id}`}
+            disabled={mode.unavailable !== undefined}
+            title={mode.unavailable}
+            class="card border-2 p-4 text-left transition-colors
+              {mode.unavailable !== undefined
+                ? 'border-base-300 cursor-not-allowed opacity-50'
+                : sealMode === mode.id
+                  ? 'border-primary bg-primary/5 cursor-pointer'
+                  : 'border-base-300 hover:border-primary/50 cursor-pointer'}"
+            onclick={() => {
+              if (mode.unavailable === undefined) sealMode = mode.id;
+            }}
           >
             <div class="flex items-start gap-3">
               <input
@@ -156,13 +168,19 @@
                 class="radio radio-primary mt-1"
                 value={mode.id}
                 checked={sealMode === mode.id}
-                onchange={() => (sealMode = mode.id)}
+                disabled={mode.unavailable !== undefined}
+                onchange={() => {
+                  if (mode.unavailable === undefined) sealMode = mode.id;
+                }}
               />
               <div>
                 <span class="font-semibold">{mode.label}</span>
                 <p class="text-base-content/60 mt-1 text-sm">
                   {mode.description}
                 </p>
+                {#if mode.unavailable !== undefined}
+                  <p class="text-base-content/60 mt-1 text-xs italic">{mode.unavailable}</p>
+                {/if}
               </div>
             </div>
           </button>

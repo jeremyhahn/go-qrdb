@@ -95,8 +95,7 @@ async function advanceThroughSQL(page: import("@playwright/test").Page): Promise
  */
 async function selectBarrierAndAdvance(
   page: import("@playwright/test").Page,
-  mode: "None" | "Passphrase" | "Shamir",
-  shamirConfig?: { required: number; total: number },
+  mode: "None" | "Passphrase",
 ): Promise<void> {
   await expect(
     page.getByRole("heading", { name: "Database Encryption Barrier" }),
@@ -104,12 +103,6 @@ async function selectBarrierAndAdvance(
 
   if (mode === "None") {
     await page.locator("button").filter({ hasText: "None" }).click();
-  } else if (mode === "Shamir") {
-    await page.locator("button").filter({ hasText: "Shamir" }).click();
-    if (shamirConfig) {
-      await page.locator("#db-shares-required").fill(String(shamirConfig.required));
-      await page.locator("#db-shares-total").fill(String(shamirConfig.total));
-    }
   } else if (mode === "Passphrase") {
     // The barrier defaults to none; the passphrase barrier asks for a
     // confirmed passphrase.
@@ -146,14 +139,13 @@ async function navigateToSummaryEmbedded(
   name: string,
   engine: "Key-Value" | "TimeSeries" | "Vector",
   backend: "Memory" | "File" | "Pebble",
-  barrierMode: "None" | "Passphrase" | "Shamir",
-  shamirConfig?: { required: number; total: number },
+  barrierMode: "None" | "Passphrase",
 ): Promise<void> {
   await openCreateWizard(page);
   await fillNameAndAdvance(page, name, engine);
   await selectStorageAndAdvance(page, backend);
   await advanceThroughSQL(page);
-  await selectBarrierAndAdvance(page, barrierMode, shamirConfig);
+  await selectBarrierAndAdvance(page, barrierMode);
   await expect(
     page.getByRole("heading", { name: "Review Configuration" }),
   ).toBeVisible();
@@ -201,19 +193,6 @@ test.describe("Engine Type Combinations", () => {
     await expect(page.getByText("Disabled", { exact: true })).toBeVisible();
 
     await createAndVerifyComplete(page, "vec-pebble-none");
-  });
-
-  test("Vector engine + File + Shamir shows in summary and completes", async ({ page }) => {
-    await navigateToSummaryEmbedded(
-      page, "vec-file-shamir", "Vector", "File", "Shamir", { required: 2, total: 3 },
-    );
-
-    await expect(page.getByText("Vector", { exact: true })).toBeVisible();
-    await expect(page.getByText("File", { exact: true })).toBeVisible();
-    await expect(page.getByText("Shamir", { exact: true })).toBeVisible();
-    await expect(page.getByText("2-of-3", { exact: true })).toBeVisible();
-
-    await createAndVerifyComplete(page, "vec-file-shamir");
   });
 
   test("Switching engine type preserves database name", async ({ page }) => {

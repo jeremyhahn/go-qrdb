@@ -164,37 +164,6 @@ test.describe("Database Creation Wizard", () => {
     await expect(sidebar.getByText("test-pebble-pass")).toBeVisible({ timeout: INIT_TIMEOUT });
   });
 
-  test("Pebble + Shamir displays configuration in summary", async ({ page }) => {
-    await openCreateWizard(page);
-    await fillNameAndAdvance(page, "test-pebble-shamir");
-
-    // Storage Backend -- Pebble (default)
-    await expect(page.getByRole("heading", { name: "Storage Backend" })).toBeVisible();
-    await page.getByRole("button", { name: "Next" }).click();
-
-    // SQL Wire Protocols step -- Raft step skipped for standalone
-    await expect(page.getByRole("heading", { name: "SQL Wire Protocols" })).toBeVisible();
-    await page.getByRole("button", { name: "Next" }).click();
-
-    // Encryption Barrier -- select Shamir and configure shares
-    await expect(page.getByRole("heading", { name: "Database Encryption Barrier" })).toBeVisible();
-    await page.locator("button").filter({ hasText: "Shamir" }).click();
-
-    await page.locator("#db-shares-required").fill("2");
-    await page.locator("#db-shares-total").fill("3");
-    await page.getByRole("button", { name: "Next" }).click();
-
-    // Summary -- verify Shamir badge and 2-of-3 scheme
-    await expect(page.getByRole("heading", { name: "Review Configuration" })).toBeVisible();
-    await expect(page.getByText("Shamir", { exact: true })).toBeVisible();
-    await expect(page.getByText("2-of-3", { exact: true })).toBeVisible();
-    await page.locator("main").getByRole("button", { name: "Create Database" }).click();
-
-    // Complete
-    const sidebar = page.locator("aside");
-    await expect(sidebar.getByText("test-pebble-shamir")).toBeVisible({ timeout: INIT_TIMEOUT });
-  });
-
   test("Memory + no encryption completes successfully", async ({ page }) => {
     await openCreateWizard(page);
     await fillNameAndAdvance(page, "test-mem-none");
