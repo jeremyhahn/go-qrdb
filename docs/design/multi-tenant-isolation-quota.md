@@ -28,6 +28,10 @@ the foundation for tiered service plans.
   (used today for the barrier IAM Pebble via `seal.BarrierRegistry.allocatePooledBackend`).
 - **Database manager** (`pkg/database/`): `Create` honors `cfg.DataDir`; `BackendRaft`
   is **stubbed** (`factory.go:~137`); `shard.Allocator` wired via `WithAllocator`.
+  *(Superseded: the per-node `shard.Allocator` and `WithAllocator` are gone.
+  Every raft database claims its shard ID from one replicated high-water mark,
+  `shard.Claimer`, set with `Manager.SetShardIDClaimer`; see
+  [../databases/engineering.md](../databases/engineering.md#cluster-wide-shard-ids).)*
 - **Multi-DB data plane** (just landed): `{tenant}/{db}/` key-namespacing across all
   5 transports + Go/TS SDKs; resolver `pkg/server/rest_registry.go`.
 - **Permissions** (`pkg/permission/`): databases CRUD perms exist; none yet for

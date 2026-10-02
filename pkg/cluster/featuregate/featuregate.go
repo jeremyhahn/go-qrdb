@@ -81,11 +81,14 @@ const GuardedWrites Feature = "guarded-writes"
 
 // ClusterShardIDs is cluster-wide shard ID allocation: every raft database
 // claims its shard ID from one replicated high-water mark (shard.Claimer)
-// instead of a per-node counter, and no caller may name one. It adds no Raft command --
-// the claim is the KV engine's existing compare-and-set -- so it gates nothing
-// before activation. What activation buys is the gate's downgrade rule: once
-// every node claims, a binary that allocates locally can neither start nor be
-// admitted as a replica, so no node can re-issue a shard ID another holds.
+// instead of a per-node counter, and no caller may name one. It adds no Raft
+// command -- the claim is the KV engine's existing compare-and-set -- but the
+// claim itself waits for it: on a host that gates features, every claim, and
+// so every raft database create, is refused with *shard.FeatureNotActiveError
+// until the feature is active cluster-wide (lifecycle's shard claimer).
+// Activation also applies the gate's downgrade rule: once every node claims, a
+// binary that allocates locally can neither start nor be admitted as a
+// replica, so no node can re-issue a shard ID another holds.
 const ClusterShardIDs Feature = "cluster-shard-ids"
 
 // supported lists the features this binary implements. A new feature is

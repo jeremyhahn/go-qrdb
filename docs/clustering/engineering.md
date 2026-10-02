@@ -406,10 +406,15 @@ func HostMembership(h ShardMembershipReader) MembershipSource
 - **`cluster-shard-ids`** is behaviour, not a command. Every raft database
   create claims its shard ID from one replicated high-water mark
   (`shard.Claimer`, see [../databases/engineering.md](../databases/engineering.md#cluster-wide-shard-ids)),
-  using the KV engine's existing compare-and-set, so nothing is gated on
-  `Enabled` before activation. Its activation applies the downgrade rule: once
-  every node claims, a binary that allocates shard IDs per node, or accepts a
-  caller's shard ID, can neither start nor be admitted as a replica.
+  using the KV engine's existing compare-and-set. The claim is gated on the
+  feature: on a host that gates features, every claim -- and so every raft
+  database create -- is refused with `*shard.FeatureNotActiveError` (503 /
+  `UNAVAILABLE`, retryable) until `cluster-shard-ids` is active cluster-wide,
+  so no node claims while another may still allocate per node. Its activation
+  also applies the downgrade rule: once every node claims, a binary that
+  allocates shard IDs per node, or accepts a caller's shard ID, can neither
+  start nor be admitted as a replica. *(Corrected: this said nothing is gated
+  on `Enabled` before activation.)*
 - Invariants: an undecidable group (membership unreadable, empty) is not
   enabled; an unknown feature is never enabled; activation counts witnesses and
   is recorded with `PutIfAbsent` -- only the node whose claim created the record
