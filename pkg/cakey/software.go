@@ -52,6 +52,12 @@ type SoftwareProvider struct {
 	subject  pkix.Name
 	validity time.Duration
 
+	// adoptKeyPEM / adoptCertPEM are in-memory bootstrap material to adopt
+	// on first use instead of generating fresh, when the store holds none
+	// yet. See WithAdoptMaterial.
+	adoptKeyPEM  []byte
+	adoptCertPEM []byte
+
 	mu   sync.RWMutex
 	key  *ecdsa.PrivateKey
 	cert *x509.Certificate
@@ -65,20 +71,48 @@ const (
 	keyCertPEM    = "cert_pem"
 )
 
+// SoftwareProviderOption configures a SoftwareProvider at construction.
+type SoftwareProviderOption func(*SoftwareProvider)
+
+// WithAdoptMaterial supplies in-memory key material generated before any
+// store existed -- the bootstrap crash window (see
+// docs/certificate-authority/architecture.md). On first use (the first
+// Signer/Certificate/Initialize call), the provider adopts this material
+// into the store if the store holds none yet (AdoptIfAbsent), or loads the
+// already-persisted material otherwise, exactly as if AdoptIfAbsent had
+// been called directly. Without this option, first use generates fresh
+// material when the store is empty (plain Initialize semantics).
+func WithAdoptMaterial(keyPEM, certPEM []byte) SoftwareProviderOption {
+	return func(p *SoftwareProvider) {
+		p.adoptKeyPEM = keyPEM
+		p.adoptCertPEM = certPEM
+	}
+}
+
 // NewSoftwareProvider returns a Provider backed by kvStore and barrier.
 // prefix is the key-value namespace this provider's two records live under
 // (e.g. "__sys:cluster_ca/" for the cluster-wide CA, or
 // "__sys:cert_ca/<tenantID>/" for a per-tenant login CA) and must end in
 // "/". subject and validity describe the self-signed CA certificate
 // Initialize generates when the store holds none yet.
-func NewSoftwareProvider(kvStore kvstore.KVStore, barrier seal.EncryptionBarrier, prefix string, subject pkix.Name, validity time.Duration) *SoftwareProvider {
-	return &SoftwareProvider{
+//
+// Construction performs no I/O: Initialize/AdoptIfAbsent/Signer/Certificate
+// are all lazy, consulting the store only on first use. This matters in
+// Raft mode, where the replicated store is not yet readable (no leader
+// elected) for a brief window right after the shard starts; eagerly reading
+// it at construction would race that window on every boot.
+func NewSoftwareProvider(kvStore kvstore.KVStore, barrier seal.EncryptionBarrier, prefix string, subject pkix.Name, validity time.Duration, opts ...SoftwareProviderOption) *SoftwareProvider {
+	p := &SoftwareProvider{
 		kvStore:  kvStore,
 		barrier:  barrier,
 		prefix:   prefix,
 		subject:  subject,
 		validity: validity,
 	}
+	for _, o := range opts {
+		o(p)
+	}
+	return p
 }
 
 // Initialize loads this provider's CA material from the store, generating
@@ -348,7 +382,13 @@ func (p *SoftwareProvider) material(ctx context.Context) (*ecdsa.PrivateKey, *x5
 	p.mu.RUnlock()
 
 	if key == nil || cert == nil {
-		if err := p.Initialize(ctx); err != nil {
+		var err error
+		if len(p.adoptKeyPEM) > 0 || len(p.adoptCertPEM) > 0 {
+			err = p.AdoptIfAbsent(ctx, p.adoptKeyPEM, p.adoptCertPEM)
+		} else {
+			err = p.Initialize(ctx)
+		}
+		if err != nil {
 			return nil, nil, err
 		}
 		p.mu.RLock()

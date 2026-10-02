@@ -60,8 +60,12 @@ func Subject() pkix.Name {
 // replicated store in Raft mode -- so this provider behaves identically in
 // either, and material adopted or generated in one mode reads back
 // correctly in the other.
-func NewProvider(kvStore kvstore.KVStore, barrier seal.EncryptionBarrier) *cakey.SoftwareProvider {
-	return cakey.NewSoftwareProvider(kvStore, barrier, Prefix, Subject(), clustertls.CAValidity)
+//
+// Construction performs no I/O (see cakey.NewSoftwareProvider): opts is
+// typically cakey.WithAdoptMaterial when the caller holds in-memory
+// bootstrap material (the crash window), and omitted otherwise.
+func NewProvider(kvStore kvstore.KVStore, barrier seal.EncryptionBarrier, opts ...cakey.SoftwareProviderOption) *cakey.SoftwareProvider {
+	return cakey.NewSoftwareProvider(kvStore, barrier, Prefix, Subject(), clustertls.CAValidity, opts...)
 }
 
 // IssueNodeLeaf generates a new ECDSA P-256 node key pair and issues a leaf

@@ -654,6 +654,56 @@ func selfSignedTestCert(t *testing.T, key *ecdsa.PrivateKey) *x509.Certificate {
 	return cert
 }
 
+func TestSoftwareProvider_WithAdoptMaterial(t *testing.T) {
+	store := kvstore.NewMemoryKVStore()
+	barrier := newMockBarrier()
+
+	seedKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	seedCert := selfSignedTestCert(t, seedKey)
+	seedKeyDER, _ := x509.MarshalECPrivateKey(seedKey)
+	seedKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: seedKeyDER})
+	seedCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: seedCert.Raw})
+
+	// Construction performs no I/O: the store is untouched until first use.
+	p := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour,
+		WithAdoptMaterial(seedKeyPEM, seedCertPEM))
+	if keys, err := store.List(context.Background(), "__sys:cluster_ca/"); err != nil {
+		t.Fatalf("List: %v", err)
+	} else if len(keys) != 0 {
+		t.Fatalf("NewSoftwareProvider performed I/O at construction, found %v", keys)
+	}
+
+	// First use adopts the seed material (store was empty).
+	cert, err := p.Certificate(context.Background())
+	if err != nil {
+		t.Fatalf("Certificate: %v", err)
+	}
+	if cert.SerialNumber.Cmp(seedCert.SerialNumber) != 0 {
+		t.Fatalf("adopted certificate serial %s != seed serial %s", cert.SerialNumber, seedCert.SerialNumber)
+	}
+
+	// A second provider, with DIFFERENT adopt material, over the SAME
+	// now-populated store loads the already-persisted CA instead.
+	otherKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	otherCert := selfSignedTestCert(t, otherKey)
+	otherKeyDER, _ := x509.MarshalECPrivateKey(otherKey)
+	otherKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: otherKeyDER})
+	otherCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: otherCert.Raw})
+
+	p2 := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour,
+		WithAdoptMaterial(otherKeyPEM, otherCertPEM))
+	cert2, err := p2.Signer(context.Background())
+	if err != nil {
+		t.Fatalf("Signer: %v", err)
+	}
+	if !cert2.Public().(*ecdsa.PublicKey).Equal(&seedKey.PublicKey) {
+		t.Fatal("second provider's Signer does not match the originally adopted key")
+	}
+}
+
 func TestStaticProvider(t *testing.T) {
 	store := kvstore.NewMemoryKVStore()
 	barrier := newMockBarrier()

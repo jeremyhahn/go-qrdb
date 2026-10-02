@@ -637,9 +637,15 @@ first node:
    `cakey.StaticProvider` wrapping the in-memory signer, so this step goes
    through the same `Provider` seam as every later signature rather than a
    separate code path.
-3. As soon as the barrier is unsealed and the store is reachable, persists
-   Key A through `cakey.SoftwareProvider.Initialize` (barrier-encrypted,
-   under `__sys:cluster_ca/`).
+3. Once the barrier is unsealed, the first signing call against the
+   replicated `cakey.SoftwareProvider` (constructed with
+   `cakey.WithAdoptMaterial`) adopts this same in-memory key into the store
+   if it holds none yet, or loads whatever a prior boot already persisted.
+   This happens lazily, on first use, rather than synchronously at startup:
+   in Raft mode the replicated store is not readable for a brief window
+   right after the shard starts (no leader elected yet), so reading it
+   eagerly at construction would race that window on every boot, not only
+   the bootstrap one.
 
 If the node crashes between steps 1 and 3, no node certificate has been
 issued under the lost key yet (the only thing it has signed is this node's

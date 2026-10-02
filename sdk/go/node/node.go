@@ -107,6 +107,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/wiring"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
+	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
@@ -232,6 +233,13 @@ type nodeOptions struct {
 	// transport's auth middleware. See WithPeerAttestationGate.
 	peerAttestation *middleware.PeerAttestationGate
 
+	// clusterCAKeyProvider, clusterCACertPEM, clusterCAKeyPEM mirror the
+	// Node fields of the same name. See WithClusterCAKeyProvider and
+	// WithClusterCAMaterial.
+	clusterCAKeyProvider cakey.Provider
+	clusterCACertPEM     []byte
+	clusterCAKeyPEM      []byte
+
 	// sessionIssuer mints/resolves/revokes the opaque bearer tokens issued
 	// by the unified-login ceremony. When non-nil it is forwarded to the
 	// embedded transport via embedded.WithSessionIssuer so successful logins
@@ -319,6 +327,33 @@ type RaftMTLSConfig = quicraftconfig.MTLSConfig
 // bytes from the operator-supplied certificate files.
 func WithRaftMTLS(mtls *RaftMTLSConfig) NodeOption {
 	return func(o *nodeOptions) { o.raftMTLS = mtls }
+}
+
+// WithClusterCAKeyProvider injects a cakey.Provider that replaces the
+// built-in cluster CA (Key A) entirely: the node never constructs a
+// cakey.SoftwareProvider and never reads or writes its replicated-store
+// record. This is the seam an embedder (go-xkms) uses to back Key A with an
+// HSM, TPM or cloud KMS, via cakey.Adapter. When set, WithClusterCAMaterial
+// is ignored. See docs/certificate-authority/architecture.md, "The CA key
+// provider seam".
+func WithClusterCAKeyProvider(p cakey.Provider) NodeOption {
+	return func(o *nodeOptions) { o.clusterCAKeyProvider = p }
+}
+
+// WithClusterCAMaterial supplies an in-memory cluster CA (Key A) generated
+// before any store existed -- the bootstrap crash window. It is how an
+// embedder that drives its own cluster-TLS bootstrap (sdk/go/clusterenroll)
+// hands the first node's freshly generated CA to the built-in
+// cakey.SoftwareProvider for adoption into the replicated store. Both
+// arguments are typically empty on every boot after the embedder's local
+// cache of the key is confirmed persisted and deleted: see
+// cakey.SoftwareProvider.AdoptIfAbsent. Ignored when
+// WithClusterCAKeyProvider is set.
+func WithClusterCAMaterial(caCertPEM, caKeyPEM []byte) NodeOption {
+	return func(o *nodeOptions) {
+		o.clusterCACertPEM = caCertPEM
+		o.clusterCAKeyPEM = caKeyPEM
+	}
 }
 
 // MemberIdentityFromPEM returns the Raft member identity of the node whose
@@ -722,6 +757,21 @@ type Node struct {
 	credCoreSvc *credentials.CredentialService
 	logger      *slog.Logger
 
+	// clusterCAKeyProvider, when non-nil (WithClusterCAKeyProvider), replaces
+	// the built-in cluster CA (Key A) entirely -- the HSM/TPM/KMS injection
+	// seam, threaded into lifecycle.BuildServices.Infra.ClusterCAKeyProvider.
+	clusterCAKeyProvider cakey.Provider
+
+	// clusterCACertPEM / clusterCAKeyPEM carry an in-memory cluster CA
+	// generated before any store existed -- the bootstrap crash window (see
+	// docs/certificate-authority/architecture.md). Set via
+	// WithClusterCAMaterial by an embedder driving its own cluster-TLS
+	// bootstrap (sdk/go/clusterenroll.Resolve) ahead of calling
+	// NewClusteredNode; both are empty once the key is confirmed persisted
+	// and the embedder's own local cache of it is gone.
+	clusterCACertPEM []byte
+	clusterCAKeyPEM  []byte
+
 	// preboundSockets are the listeners and packet conns the caller handed
 	// over through server.WithRESTListener / WithRESTPacketConn /
 	// WithGRPCListener. Each server lifetime serves on them without closing
@@ -1090,6 +1140,12 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		SealEnabled:       pending.cfg.Seal.Enabled,
 		BarrierRegistry:   barrierRegistry,
 		CredentialCoreSvc: n.credCoreSvc,
+		// Key A: either an injected HSM/TPM/KMS provider, or in-memory
+		// bootstrap material for the built-in cakey.SoftwareProvider to
+		// adopt. See WithClusterCAKeyProvider / WithClusterCAMaterial.
+		ClusterCAKeyProvider: n.clusterCAKeyProvider,
+		ClusterCACertPEM:     n.clusterCACertPEM,
+		ClusterCAKeyPEM:      n.clusterCAKeyPEM,
 		// The CA mints its client certificates under the same trust domain
 		// the mTLS authenticator pins, so the pin is exercised by the
 		// certificates this node issues (go-qrdb#519).
@@ -1568,6 +1624,12 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		SealEnabled:       pending.cfg.Seal.Enabled,
 		BarrierRegistry:   barrierRegistry,
 		CredentialCoreSvc: n.credCoreSvc,
+		// Key A: either an injected HSM/TPM/KMS provider, or in-memory
+		// bootstrap material for the built-in cakey.SoftwareProvider to
+		// adopt. See WithClusterCAKeyProvider / WithClusterCAMaterial.
+		ClusterCAKeyProvider: n.clusterCAKeyProvider,
+		ClusterCACertPEM:     n.clusterCACertPEM,
+		ClusterCAKeyPEM:      n.clusterCAKeyPEM,
 		// The CA mints its client certificates under the same trust domain
 		// the mTLS authenticator pins, so the pin is exercised by the
 		// certificates this node issues (go-qrdb#519).
@@ -2064,6 +2126,9 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		extraAuthenticators:       nOpts.extraAuthenticators,
 		authorizerWrapper:         nOpts.authorizerWrapper,
 		peerAttestation:           nOpts.peerAttestation,
+		clusterCAKeyProvider:      nOpts.clusterCAKeyProvider,
+		clusterCACertPEM:          nOpts.clusterCACertPEM,
+		clusterCAKeyPEM:           nOpts.clusterCAKeyPEM,
 	}
 
 	backendType, dataDir, err := resolveBackend(cfg)
@@ -2252,6 +2317,9 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		extraAuthenticators:       nOpts.extraAuthenticators,
 		authorizerWrapper:         nOpts.authorizerWrapper,
 		peerAttestation:           nOpts.peerAttestation,
+		clusterCAKeyProvider:      nOpts.clusterCAKeyProvider,
+		clusterCACertPEM:          nOpts.clusterCACertPEM,
+		clusterCAKeyPEM:           nOpts.clusterCAKeyPEM,
 	}
 
 	dataDir := cfg.Raft.DataDir

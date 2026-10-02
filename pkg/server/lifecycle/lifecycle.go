@@ -1012,35 +1012,31 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 			cert.WithTrustDomain(infra.SPIFFETrustDomain))
 
 		// Cluster CA (Key A): an injected provider replaces the built-in one
-		// entirely. Otherwise the built-in cakey.SoftwareProvider either
-		// ADOPTS in-memory key material this boot's caller holds -- the
-		// bootstrap crash window, generated before any store existed on the
-		// node that is bootstrapping the cluster -- or, when the caller
-		// holds none, INITIALIZES (loads already-persisted material, or
-		// generates fresh when there is none). Every ordinary caller of
-		// BuildServices (standalone mode, the SDK, tests) supplies no
-		// material at all and gets exactly the same generate-on-first-use
-		// behavior cert.DefaultCertProvider (Key B) already has. Only
-		// cmd/qrdbd's Raft-mode bootstrap supplies material, and only while
-		// its local ca-key.pem cache still exists; it deletes that cache
-		// ONLY after AdoptIfAbsent confirms persistence, so "no material AND
-		// an empty store" cannot arise from a prior successful boot -- see
+		// entirely. Otherwise the built-in cakey.SoftwareProvider is
+		// constructed to ADOPT in-memory key material this boot's caller
+		// holds -- the bootstrap crash window, generated before any store
+		// existed on the node that is bootstrapping the cluster -- or,
+		// when the caller holds none, to behave exactly like CertProv (Key
+		// B): generate on first use when the store is empty, load when it
+		// is not. Every ordinary caller of BuildServices (standalone mode,
+		// the SDK, tests) supplies no material at all. Only cmd/qrdbd's
+		// Raft-mode bootstrap supplies material, and only while its local
+		// ca-key.pem cache still exists; it deletes that cache ONLY after
+		// confirming persistence, so "no material AND an empty store"
+		// cannot arise from a prior successful boot -- see
 		// docs/certificate-authority/architecture.md, "Bootstrap crash
 		// window".
+		//
+		// Construction performs NO I/O: adoption/initialization is lazy,
+		// deferred to first Signer/Certificate use. The replicated store is
+		// not yet readable immediately after BuildServices runs in Raft
+		// mode -- the shard has no leader yet -- so reading it here would
+		// race that window on every single boot, not only the bootstrap one.
 		if infra.ClusterCAKeyProvider != nil {
 			n.ClusterCAProv = infra.ClusterCAKeyProvider
 		} else {
-			clusterCAProv := clusterca.NewProvider(certStore, infra.SealBarrier)
-			var ccaErr error
-			if len(infra.ClusterCAKeyPEM) > 0 || len(infra.ClusterCACertPEM) > 0 {
-				ccaErr = clusterCAProv.AdoptIfAbsent(ctx, infra.ClusterCAKeyPEM, infra.ClusterCACertPEM)
-			} else {
-				ccaErr = clusterCAProv.Initialize(ctx)
-			}
-			if ccaErr != nil {
-				return &ClusterCAProviderError{Err: ccaErr}
-			}
-			n.ClusterCAProv = clusterCAProv
+			n.ClusterCAProv = clusterca.NewProvider(certStore, infra.SealBarrier,
+				cakey.WithAdoptMaterial(infra.ClusterCAKeyPEM, infra.ClusterCACertPEM))
 		}
 	}
 
