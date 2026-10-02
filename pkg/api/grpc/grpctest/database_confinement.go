@@ -61,7 +61,7 @@ func DatabaseConfinement(t *testing.T, start DatabaseStartFunc) {
 			return err
 		},
 		"unseal": func(ctx context.Context, c pb.QRDBServiceClient) error {
-			_, err := c.DatabaseUnseal(ctx, &pb.DatabaseUnsealRequest{Name: "vault", Secret: "c2VjcmV0"})
+			_, err := c.DatabaseUnseal(ctx, &pb.DatabaseUnsealRequest{Name: "vault", Secret: "c2VjcmV0"}) //nolint:gosec // G101: a placeholder the ownership check refuses before reading, not a credential
 			return err
 		},
 		"barrier status": func(ctx context.Context, c pb.QRDBServiceClient) error {

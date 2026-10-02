@@ -24,11 +24,11 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
-// wrappedErr wraps an error the way a transport or service layer might.
-type wrappedErr struct{ err error }
+// wrappedError wraps an error the way a transport or service layer might.
+type wrappedError struct{ err error }
 
-func (w *wrappedErr) Error() string { return "wrapped: " + w.err.Error() }
-func (w *wrappedErr) Unwrap() error { return w.err }
+func (w *wrappedError) Error() string { return "wrapped: " + w.err.Error() }
+func (w *wrappedError) Unwrap() error { return w.err }
 
 // TestRetryAfter_ReadsEveryDelayingRefusal: each refusal that names a delay
 // yields it, wrapped or not.
@@ -40,7 +40,7 @@ func TestRetryAfter_ReadsEveryDelayingRefusal(t *testing.T) {
 		"sign-csr":        {&service.SignCSRThrottledError{RetryAfter: time.Second}, time.Second},
 		"quorum throttle": {&ceremony.QuorumRateLimitedError{RetryAfter: 2 * time.Second}, 2 * time.Second},
 		"SO PIN lockout":  {&pin.SOPINLockedError{RetryAfter: 3 * time.Second}, 3 * time.Second},
-		"wrapped":         {&wrappedErr{&pin.SOPINLockedError{RetryAfter: 4 * time.Second}}, 4 * time.Second},
+		"wrapped":         {&wrappedError{&pin.SOPINLockedError{RetryAfter: 4 * time.Second}}, 4 * time.Second},
 	}
 	for name, tc := range cases {
 		got, ok := RetryAfter(tc.err)
