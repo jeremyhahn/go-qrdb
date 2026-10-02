@@ -14,9 +14,9 @@ as for `qrdb kv`. `qrdb lock acquire deploy --database billing` and
 not being contended when you expect it to be, check that both holders name the
 same database.
 
-Locks are a raft-mode feature. Under mode `standalone` every verb here is
-refused with `requires mode: raft`: a lock needs the lease that expires it and
-the watch that unblocks the next acquirer, neither of which standalone serves.
+Locks work the same in both run modes. A standalone node on the file or
+objstore backend keeps no leases, so every verb here is refused there as
+unsupported: a lock needs the lease that expires it.
 
 ## `qrdb lock acquire <key>`
 

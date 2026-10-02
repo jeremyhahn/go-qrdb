@@ -161,16 +161,25 @@ returning a lock that nothing can expire.
 
 ## Standalone vs clustered
 
-The semantics are identical in all three run modes. In embedded and standalone
-the CAS and the sweep are local; clustered, both go through Raft. A caller does
-not change code between them.
+The semantics are identical in all run modes. In embedded and standalone the
+CAS and the expiry sweep are local; clustered, both go through Raft. A caller
+does not change code between them.
 
-**Mode `standalone` is the exception, and it refuses rather than degrading.** A
-lock is composed from the lease, watch and MVCC resolutions the standalone gate
-already refuses as raft-only, so `LockService` under that mode returns
-not-implemented with the remedy `requires mode: raft`. Serving it would hand
-back a lock with no TTL expiry and no blocking acquisition, which is the
-"hopeful lock" this feature exists to avoid.
+*(Corrected: until 2026-10-01 mode `standalone` refused every lock verb with
+`requires mode: raft`, because the lease, watch and MVCC resolutions a lock is
+composed from were refused there. Standalone now serves all three over the same
+engine, lessor and watch hub as raft mode, and runs the lease-expiry sweeper
+itself, so a standalone lock has the TTL expiry and blocking acquisition this
+feature requires — see [../run-modes/architecture.md](../run-modes/architecture.md).)*
+
+**A lock survives a restart in both modes.** Its lease is durable: a lock held
+when the server stops is still held by the same holder afterwards, with one
+full TTL to renew, and a holder that died with the process loses it one TTL
+after the restart. See [../leases/engineering.md](../leases/engineering.md#persistence).
+
+**The storage engine bounds it.** A standalone node on the file or objstore
+backend keeps no leases, so every lock verb there is refused with a typed
+capability error rather than serving a lock nothing could expire.
 
 ## What this feature deliberately does not do
 

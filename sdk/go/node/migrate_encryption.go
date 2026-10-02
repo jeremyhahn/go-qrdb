@@ -473,6 +473,12 @@ func (p *nodeMigrationProvider) reopenStrategy(id seal.StrategyID) (seal.Sealing
 // leaving the seal layer (barrier, registry, seal store, volume pool) intact.
 // It mirrors the data-plane portion of Close.
 func (n *Node) teardownDataPlane() {
+	// The sweeper revokes through the data plane being stopped; the rebuild
+	// starts a new one over the new engine's lessor.
+	if n.stopLeaseExpiry != nil {
+		n.stopLeaseExpiry()
+		n.stopLeaseExpiry = nil
+	}
 	if client := n.client.Swap(nil); client != nil {
 		_ = client.Close()
 	}

@@ -535,12 +535,12 @@ func TestRunStart_SealEnabled_SoftwareStrategy_ThenSIGTERM(t *testing.T) {
 	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
 }
 
-// TestRunStart_StandaloneMode_ServesStandardOpsRefusesRaftOnly boots the
-// daemon in mode "standalone" (no raft, memory backend) and verifies over
-// REST: health serves, KV put/get round-trips, capabilities report mode
-// standalone with the raft-only features false, and the watch API is
-// refused with 501 naming the remedy.
-func TestRunStart_StandaloneMode_ServesStandardOpsRefusesRaftOnly(t *testing.T) {
+// TestRunStart_StandaloneMode_ServesCoordinationFamilies boots the daemon in
+// mode "standalone" (no raft, memory backend) and verifies over REST: health
+// serves, KV put/get round-trips, capabilities report mode standalone with
+// MVCC, watch and lease served (go-qrdb#582), and an MVCC range is served
+// rather than refused.
+func TestRunStart_StandaloneMode_ServesCoordinationFamilies(t *testing.T) {
 	dir := t.TempDir()
 
 	adminPort, err := freePortOn(testBindHost, networkTCP, networkUDP)
@@ -609,18 +609,17 @@ func TestRunStart_StandaloneMode_ServesStandardOpsRefusesRaftOnly(t *testing.T) 
 	}
 	require.NoError(t, json.Unmarshal(capBytes, &caps))
 	require.Equal(t, "standalone", caps.Mode)
-	require.False(t, caps.MVCC)
-	require.False(t, caps.Watch)
-	require.False(t, caps.Lease)
+	require.True(t, caps.MVCC)
+	require.True(t, caps.Watch)
+	require.True(t, caps.Lease)
 	require.True(t, caps.KV)
 
-	// A raft-only family is refused with 501 + the remedy hint.
+	// The MVCC family is served, as in raft mode.
 	rangeResp, err := client.Get(base + "/kv/range?start=a")
 	require.NoError(t, err)
 	rangeBytes, _ := io.ReadAll(rangeResp.Body)
 	_ = rangeResp.Body.Close()
-	require.Equal(t, 501, rangeResp.StatusCode, "mvcc range must be refused in standalone: %s", rangeBytes)
-	require.Contains(t, string(rangeBytes), "requires mode: raft")
+	require.Equal(t, 200, rangeResp.StatusCode, "mvcc range must be served in standalone: %s", rangeBytes)
 
 	if killErr := syscall.Kill(os.Getpid(), syscall.SIGTERM); killErr != nil {
 		t.Fatalf("Kill(SIGTERM) error = %v", killErr)

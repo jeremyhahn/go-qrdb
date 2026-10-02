@@ -18,8 +18,8 @@
 // run_modes_standalone_cli_test.go is the per-mode integration suite for
 // the ratified run-modes split (docs/run-modes.md): a qrdbd booted with
 // --mode standalone serves standard database operations plus the security
-// core over EVERY transport, refuses the raft-only families with a typed
-// "requires mode: raft" error, and reports a truthful capability profile.
+// core over EVERY transport, serves the coordination families as raft mode
+// does (go-qrdb#582), and reports a truthful capability profile.
 package integration_test
 
 import (
@@ -138,7 +138,7 @@ func startStandaloneModeNode(t *testing.T, backend string) *multiProtoNode {
 //     lease, lock, cluster, backup, rebalance all false; kv, batch, index
 //     and TRANSACTION true — see the go-qrdb#62 amendment in
 //     docs/run-modes.md),
-//  3. raft-only families are refused with an error naming the remedy.
+//  3. the coordination families (MVCC revision, lease grant) are served.
 func TestStandaloneMode_StandardOpsAndRefusals_PerProtocol(t *testing.T) {
 	node := startStandaloneModeNode(t, "pebble")
 
@@ -201,12 +201,18 @@ func TestStandaloneMode_StandardOpsAndRefusals_PerProtocol(t *testing.T) {
 				t.Error("core kv/batch/index must be true in standalone")
 			}
 			for name, v := range map[string]bool{
-				"mvcc": caps.MVCC, "watch": caps.Watch, "lease": caps.Lease,
-				"lock": caps.Lock, "cluster": caps.Cluster,
-				"backup": caps.Backup, "rebalance": caps.Rebalance,
+				"cluster": caps.Cluster,
+				"backup":  caps.Backup, "rebalance": caps.Rebalance,
 			} {
 				if v {
 					t.Errorf("capabilities %s = true, want false (raft-only)", name)
+				}
+			}
+			for name, v := range map[string]bool{
+				"mvcc": caps.MVCC, "watch": caps.Watch, "lease": caps.Lease, "lock": caps.Lock,
+			} {
+				if !v {
+					t.Errorf("capabilities %s = false, want true (served in both modes, go-qrdb#582)", name)
 				}
 			}
 			// Transactions are served in every mode (owner ruling
@@ -241,28 +247,16 @@ func TestStandaloneMode_StandardOpsAndRefusals_PerProtocol(t *testing.T) {
 				t.Errorf("the losing writer overwrote the winner over %s: %q", proto.name, out)
 			}
 
-			// --- 3. Raft-only families are refused. ---------------------
+			// --- 3. The coordination families are served. ---------------
 			// kv revision -> MVCC CurrentRevision; lease grant -> lease.
-			// The refusal text differs slightly per transport error
-			// mapping, but must never succeed and must name either the
-			// remedy or the not-configured/not-implemented family.
-			for _, neg := range [][]string{
+			// Both used to be refused with "requires mode: raft"; a
+			// standalone node serves them like a raft node (go-qrdb#582).
+			for _, pos := range [][]string{
 				{"kv", "revision"},
 				{"lease", "grant", "--ttl", "5"},
 			} {
-				out, err := runCLIProto(t, node, proto, neg...)
-				if err == nil {
-					t.Fatalf("%v must be refused in standalone, got success:\n%s", neg, out)
-				}
-				combined := strings.ToLower(out + err.Error())
-				if !strings.Contains(combined, "requires mode: raft") &&
-					!strings.Contains(combined, "not implemented") &&
-					!strings.Contains(combined, "not configured") &&
-					!strings.Contains(combined, "unimplemented") &&
-					// MCP's gate is structural: the raft-only tools are
-					// never registered, so the refusal is "tool not found".
-					!strings.Contains(combined, "tool not found") {
-					t.Errorf("%v refusal %q does not name the remedy or the unimplemented family", neg, combined)
+				if out, err := runCLIProto(t, node, proto, pos...); err != nil {
+					t.Errorf("%v must be served in standalone over %s: %v\n%s", pos, proto.name, err, out)
 				}
 			}
 		})

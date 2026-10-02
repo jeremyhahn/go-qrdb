@@ -11,7 +11,39 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Added
+
+- **Standalone mode serves watch, lease, lock and MVCC.** A standalone node (the
+  daemon's `mode: standalone`, `sdk/go/node.NewStandaloneNode`, and the flat
+  `embedded.NewServer`) serves the same API as a raft node, with the same
+  semantics and errors, on REST, gRPC, Unix, QUIC, MCP and the embedded
+  transport: prefix watch with revision resume and cancellation, lease grant,
+  keep-alive, revoke and expiry, locks, and MVCC revisions and historical
+  reads. They used to be refused with `requires mode: raft`, which pushed
+  hosts onto in-process fallbacks and one-member raft clusters. The families
+  are composed over the same engine, lessor and watch hub as raft mode's MVCC
+  state machine and resolved through the same per-(tenant, database) registry,
+  so tenant confinement is identical. A standalone node runs the lease-expiry
+  sweeper itself (`lifecycle.StartLocalLeaseExpiry`), and its leases survive a
+  restart like raft mode's. The file and objstore backends keep no revisions
+  or leases: they serve watch and refuse MVCC, lease, lock and transactions per
+  call with `CapabilityUnsupportedError`; an MCP watch there ends with
+  `WatchStartRevisionUnsupportedError`. The capability report shows `mvcc`,
+  `watch`, `lease` and `lock` true in both modes, and `mvcc.enabled`,
+  `watch.enabled` and `lease.enabled` are valid under standalone. The etcd
+  listener, cluster membership, rebalance and shard backup stay raft-only.
+  `sdk/go/conformance` runs one watch, lease and lock suite against standalone
+  and raft nodes on all six transports.
+
 ### Fixed
+
+- **The flat embedded server delivers watches.** `embedded.NewServer` built its
+  engine without a watch hub, so a watch opened through it never received an
+  event; it also composed no watch or lock service and ran no lease expiry.
+- **The embedded transport keeps a refusal's type under a lock or an MVCC
+  read.** A lease refusal underneath a lock, and `service.MVCCBackendRequiredError`,
+  reached embedded callers as untyped errors; they are now
+  `transport.CapabilityUnsupportedError`, as on every network transport.
 
 - **Revoking or expiring a lease no longer deletes a key that was written again
   under another lease, or with none.** A key stayed in every lease any of its
@@ -59,6 +91,14 @@ are not reconstructed here — their history is in the git log.
   check.
 
 ### Changed — BREAKING
+
+- **`embedded.WithStandaloneMode` is removed**, with the registry gate
+  (`raftOnlyGatedRegistry`) it mirrored: there is no longer a family a
+  standalone node withholds by design. Drop the option. `server.WithStandaloneMode`
+  remains and now refuses only the etcd listener.
+- **`lifecycle.NewLocalEngine` takes the node's lessor**
+  (`NewLocalEngine(backend, stg, pdb, hub, lr)`). It used to build a private
+  lessor that nothing swept; pass the lessor the expiry sweeper runs over.
 
 - **`pkg/lease`: mutations take the apply batch.** `Lessor.Grant(w, ttl)` and
   `Lessor.Revoke(w, id)` take a `lease.Writer`. `AttachKey` and `DetachKey` are

@@ -165,10 +165,6 @@ type Transport struct {
 	nowFunc func() time.Time
 
 	closed atomic.Bool
-
-	// standalone marks a raft-free composition: the raft-only families are
-	// absent by design, not by a wiring defect. See missingService.
-	standalone bool
 }
 
 // Option configures an embedded transport.
@@ -911,7 +907,7 @@ func (t *Transport) PutWithLease(ctx context.Context, key string, value []byte, 
 		return nil, &transport.ClosedError{}
 	}
 	if t.mvccSvc == nil {
-		return nil, t.missingService("MVCCKVServicer")
+		return nil, &NilServiceError{Service: "MVCCKVServicer"}
 	}
 	if mode, ok := resolveWriteMode(opts); ok {
 		kv, err := t.mvccSvc.PutWithLeaseAndMode(ctx, key, value, leaseID, mode)
@@ -935,7 +931,7 @@ func (t *Transport) GetRevision(ctx context.Context, key string, opts ...transpo
 		return nil, &transport.ClosedError{}
 	}
 	if t.mvccSvc == nil {
-		return nil, t.missingService("MVCCKVServicer")
+		return nil, &NilServiceError{Service: "MVCCKVServicer"}
 	}
 	if ro, ok := resolveReadConsistency(opts); ok {
 		kv, err := t.mvccSvc.GetRevisionWithConsistency(ctx, key, ro)
@@ -959,7 +955,7 @@ func (t *Transport) GetAtRevision(ctx context.Context, key string, revision int6
 		return nil, &transport.ClosedError{}
 	}
 	if t.mvccSvc == nil {
-		return nil, t.missingService("MVCCKVServicer")
+		return nil, &NilServiceError{Service: "MVCCKVServicer"}
 	}
 	if ro, ok := resolveReadConsistency(opts); ok {
 		kv, err := t.mvccSvc.GetAtRevisionWithConsistency(ctx, key, revision, ro)
@@ -983,7 +979,7 @@ func (t *Transport) Range(ctx context.Context, start, end []byte, rangeOpts tran
 		return nil, &transport.ClosedError{}
 	}
 	if t.mvccSvc == nil {
-		return nil, t.missingService("MVCCKVServicer")
+		return nil, &NilServiceError{Service: "MVCCKVServicer"}
 	}
 	if ro, ok := resolveReadConsistency(opts); ok {
 		kvs, count, revision, err := t.mvccSvc.RangeWithConsistency(ctx, start, end, ro, toServiceRangeOpts(rangeOpts)...)
@@ -1014,7 +1010,7 @@ func (t *Transport) Compact(ctx context.Context, revision int64) error {
 		return &transport.ClosedError{}
 	}
 	if t.mvccSvc == nil {
-		return t.missingService("MVCCKVServicer")
+		return &NilServiceError{Service: "MVCCKVServicer"}
 	}
 	return translateError(t.mvccSvc.Compact(ctx, revision))
 }
@@ -1026,7 +1022,7 @@ func (t *Transport) CurrentRevision(ctx context.Context) (int64, error) {
 		return 0, &transport.ClosedError{}
 	}
 	if t.mvccSvc == nil {
-		return 0, t.missingService("MVCCKVServicer")
+		return 0, &NilServiceError{Service: "MVCCKVServicer"}
 	}
 	rev, err := t.mvccSvc.CurrentRevision(ctx)
 	if err != nil {
@@ -1044,7 +1040,7 @@ func (t *Transport) RestoreToRevision(ctx context.Context, req *transport.Restor
 		return nil, &transport.ClosedError{}
 	}
 	if t.mvccSvc == nil {
-		return nil, t.missingService("MVCCKVServicer")
+		return nil, &NilServiceError{Service: "MVCCKVServicer"}
 	}
 	if req == nil {
 		return nil, &transport.RequestError{Method: "RestoreToRevision", Err: &transport.NilRequestError{}}
@@ -1206,7 +1202,7 @@ func (t *Transport) Watch(ctx context.Context, key string, opts transport.WatchO
 		return nil, &transport.ClosedError{}
 	}
 	if t.watchSvc == nil {
-		return nil, t.missingService("WatchServicer")
+		return nil, &NilServiceError{Service: "WatchServicer"}
 	}
 
 	return t.watchStream(ctx, t.watchSvc.Watch, key, opts)
@@ -1219,7 +1215,7 @@ func (t *Transport) WatchPrefix(ctx context.Context, prefix string, opts transpo
 		return nil, &transport.ClosedError{}
 	}
 	if t.watchSvc == nil {
-		return nil, t.missingService("WatchServicer")
+		return nil, &NilServiceError{Service: "WatchServicer"}
 	}
 
 	return t.watchStream(ctx, t.watchSvc.WatchPrefix, prefix, opts)
@@ -1351,7 +1347,7 @@ func (t *Transport) LeaseGrant(ctx context.Context, ttl int64) (*transport.Lease
 		return nil, &transport.ClosedError{}
 	}
 	if t.leaseSvc == nil {
-		return nil, t.missingService("LeaseServicer")
+		return nil, &NilServiceError{Service: "LeaseServicer"}
 	}
 	l, err := t.leaseSvc.Grant(ctx, ttl)
 	if err != nil {
@@ -1367,7 +1363,7 @@ func (t *Transport) LeaseRevoke(ctx context.Context, leaseID int64) error {
 		return &transport.ClosedError{}
 	}
 	if t.leaseSvc == nil {
-		return t.missingService("LeaseServicer")
+		return &NilServiceError{Service: "LeaseServicer"}
 	}
 	return translateError(t.leaseSvc.Revoke(ctx, leaseID))
 }
@@ -1379,7 +1375,7 @@ func (t *Transport) LeaseKeepAlive(ctx context.Context, leaseID int64) (*transpo
 		return nil, &transport.ClosedError{}
 	}
 	if t.leaseSvc == nil {
-		return nil, t.missingService("LeaseServicer")
+		return nil, &NilServiceError{Service: "LeaseServicer"}
 	}
 	l, err := t.leaseSvc.KeepAlive(ctx, leaseID)
 	if err != nil {
@@ -1395,7 +1391,7 @@ func (t *Transport) LeaseTimeToLive(ctx context.Context, leaseID int64) (*transp
 		return nil, &transport.ClosedError{}
 	}
 	if t.leaseSvc == nil {
-		return nil, t.missingService("LeaseServicer")
+		return nil, &NilServiceError{Service: "LeaseServicer"}
 	}
 	l, err := t.leaseSvc.TimeToLive(ctx, leaseID)
 	if err != nil {
@@ -1411,7 +1407,7 @@ func (t *Transport) LeaseList(ctx context.Context) ([]*transport.LeaseInfo, erro
 		return nil, &transport.ClosedError{}
 	}
 	if t.leaseSvc == nil {
-		return nil, t.missingService("LeaseServicer")
+		return nil, &NilServiceError{Service: "LeaseServicer"}
 	}
 	leases, err := t.leaseSvc.Leases(ctx)
 	if err != nil {

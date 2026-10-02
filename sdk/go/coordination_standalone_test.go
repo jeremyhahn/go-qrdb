@@ -112,20 +112,33 @@ func TestStandalone_GetPutCAS(t *testing.T) {
 	}
 }
 
-// TestStandalone_LeaseAndWatchRefused pins the raft-only half: AcquireLease and
-// Watch must fail on a standalone node with the transport's typed
-// not-configured error, not serve inertly. This is the boundary a consumer must
-// design around, so it is asserted rather than left implicit.
-func TestStandalone_LeaseAndWatchRefused(t *testing.T) {
+// TestStandalone_LeaseAndWatchServed: AcquireLease and Watch are served on a
+// standalone node exactly as on a raft node (go-qrdb#582). They used to be
+// refused with "requires mode: raft", which is what pushed hosts onto
+// in-process fallbacks and a one-member raft cluster.
+func TestStandalone_LeaseAndWatchServed(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	coord := bootStandaloneNode(t)
 
-	if _, err := coord.AcquireLease(ctx, "lease/k", 10*time.Second); err == nil {
-		t.Fatal("AcquireLease must be refused on a standalone node (lease is raft-only)")
+	w, err := coord.Watch(ctx, "lease/")
+	if err != nil {
+		t.Fatalf("Watch on a standalone node: %v", err)
 	}
-	if _, err := coord.Watch(ctx, "watch/"); err == nil {
-		t.Fatal("Watch must be refused on a standalone node (watch is raft-only)")
+	l, err := coord.AcquireLease(ctx, "lease/k", 10*time.Second)
+	if err != nil {
+		t.Fatalf("AcquireLease on a standalone node: %v", err)
+	}
+	select {
+	case ev, ok := <-w.Events():
+		if !ok || ev.Key != "lease/k" {
+			t.Fatalf("watch delivered %+v (open=%v), want the lease's key", ev, ok)
+		}
+	case <-ctx.Done():
+		t.Fatal("the watch never delivered the leased put")
+	}
+	if err := l.Release(ctx); err != nil {
+		t.Fatalf("Release: %v", err)
 	}
 }

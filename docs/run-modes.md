@@ -33,10 +33,12 @@ Serves **standard database operations**:
   so unavailable over the file/objstore backends — see the engine boundary
   in `pkg/engine/kv_engine.go`)
 
-Plus the **always-on security core** (below). Everything consensus-shaped —
-MVCC revisions, watch, lease, lock, etcd compatibility, cluster operations —
-is refused with a typed error whose text names the remedy:
-`requires mode: raft`.
+Plus the **always-on security core** (below). What needs a cluster — etcd
+compatibility, cluster operations — is refused with a typed error whose text
+names the remedy: `requires mode: raft`. *(Amended 2026-10-01, go-qrdb#582:
+MVCC revisions, watch, lease and lock were in this list; standalone serves
+them now — see the amendment at the end and
+[run-modes/architecture.md](run-modes/architecture.md).)*
 
 Transactions are **not** in that list, as of the amendment of 2026-08-23.
 Consensus is what makes a compare-and-swap linearizable across *replicas*; a
@@ -117,10 +119,10 @@ security posture or breaks a dependency of everything else:
 mode: raft   # "standalone" | "raft"; absent = raft (full back-compat)
 ```
 
-- `mode: standalone` + explicit `mvcc.enabled`/`watch.enabled`/
-  `lease.enabled: true`, `raft.join`, or a multi-member `raft.peers` list →
-  validation error: `requires mode: raft (standalone serves standard
-  database operations only)`. Transactions have no such gate: they are a
+- `mode: standalone` + `raft.join` or a multi-member `raft.peers` list →
+  validation error: `requires mode: raft (a standalone node has no cluster to
+  join)`. `mvcc`/`watch`/`lease.enabled` are valid in both modes since
+  go-qrdb#582. Transactions have no such gate: they are a
   standard database operation in both modes (amendment of 2026-08-23). Standalone skips the raft identity
   requirements (only `raft.data_dir` stays mandatory). Etcd is enabled
   per-database at runtime, so its mode gate lives at service composition.
@@ -128,13 +130,10 @@ mode: raft   # "standalone" | "raft"; absent = raft (full back-compat)
   naming the tag (`Config.ValidateCapabilities`, called by composition
   roots — a deliberate separate gate so pure-config validation stays
   build-independent).
-- The daemon serves `mode: standalone` natively: raft-only endpoint
+- The daemon serves `mode: standalone` natively: the cluster-shaped endpoint
   families answer 501/Unimplemented with the `requires mode: raft` hint
-  on every transport (nil singletons plus the gated per-database service
-  registry, `pkg/server/standalone_gate.go`), while the SQL catalog keeps
-  its internal MVCC plumbing. The transaction family is wired as a singleton
-  and passed through by the gated registry in **both** modes, so the network
-  surface matches what the SDK's in-process transport serves.
+  on every transport, and the data-plane families — transactions, MVCC,
+  watch, lease, lock — are wired in **both** modes.
 - Refusals at runtime surface through the existing per-transport typed
   errors (REST 501 / gRPC & QUIC Unimplemented) with the
   `requires mode: raft` hint.
@@ -184,3 +183,17 @@ above, not a mode gate.
 **Consumer-side fallbacks are not permitted.** A consumer must not
 substitute a process-local lock or any other consistency mechanism when a
 compare-and-swap is unavailable; it fails closed and reports.
+
+## Amendment 2026-10-01 — watch, lease, lock and MVCC are served in both modes
+
+**go-qrdb#582.** A standalone node serves the MVCC, watch, lease and lock
+families with the same API, semantics and errors as raft mode, on every
+transport. The amendment of 2026-08-23 kept them raft-only on the ground that
+they "coordinate state across replicas over time"; the hosts that depend on
+them (client watch, secret-rotation events, scheduler leader election) need
+them on one process just as much, and the semantics a single process can give
+are exactly raft mode's with one replica. They are composed over the same
+engine, lessor and watch hub as raft mode's MVCC state machine, and the
+standalone node runs the lease-expiry sweeper itself. Leases are durable in both
+modes, so a lock survives a restart. The normative contract is
+[run-modes/](run-modes/).

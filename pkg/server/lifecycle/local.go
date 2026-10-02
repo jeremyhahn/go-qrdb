@@ -15,6 +15,8 @@
 package lifecycle
 
 import (
+	"context"
+	"log/slog"
 	"path/filepath"
 
 	"github.com/cockroachdb/pebble/v2"
@@ -25,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
@@ -113,7 +116,13 @@ func resolveObjstoreSettings(objCfg qrdbconfig.ObjstoreConfig, dataDir string) (
 // Infra.WatchHub: the engine is the only publisher of change events, so an
 // engine built without the hub leaves the WatchService subscribed to a hub
 // nothing ever writes to — watches then "work" but never deliver.
-func NewLocalEngine(backendType database.BackendType, stg storage.Storage, pdb *pebble.DB, hub *watch.Hub) (backend.SMAdapter, error) {
+//
+// lr is the node's lessor and MUST be the same instance the composer runs the
+// expiry sweeper over (lease.Lessor.RunExpiry, see StartLocalLeaseExpiry):
+// the engine rebuilds the durable leases into it on open, and an engine whose
+// lessor nothing sweeps grants leases whose keys are never deleted. The file
+// and objstore engines keep no leases and ignore it.
+func NewLocalEngine(backendType database.BackendType, stg storage.Storage, pdb *pebble.DB, hub *watch.Hub, lr *lease.Lessor) (backend.SMAdapter, error) {
 	if backendType == database.BackendFile || backendType == database.BackendObjstore {
 		kvOpts := []engine.KVOption{}
 		if hub != nil {
@@ -122,8 +131,9 @@ func NewLocalEngine(backendType database.BackendType, stg storage.Storage, pdb *
 		return engine.NewKVEngine(stg, kvOpts...), nil
 	}
 
-	mvccOpts := []engine.MVCCOption{
-		engine.WithMVCCLessor(lease.NewLessor()),
+	var mvccOpts []engine.MVCCOption
+	if lr != nil {
+		mvccOpts = append(mvccOpts, engine.WithMVCCLessor(lr))
 	}
 	if hub != nil {
 		mvccOpts = append(mvccOpts, engine.WithMVCCWatchHub(hub))
@@ -141,3 +151,25 @@ func NewLocalEngine(backendType database.BackendType, stg storage.Storage, pdb *
 	}
 	return eng, nil
 }
+
+// StartLocalLeaseExpiry starts the lease-expiry sweeper of a raft-free
+// composition and returns at once; the sweeper stops when ctx is cancelled.
+//
+// A standalone node is the only replica of its data, so it is always the one
+// that sweeps: the leader gate RunExpiry consults in raft mode is constant
+// here. The revoke still goes through leaseSvc -- the same apply path a raft
+// leader's revoke takes -- so an expired lease deletes its keys, removes its
+// durable records and notifies watchers exactly as in raft mode. Without the
+// sweeper a lease's Done channel closes on time but nothing deletes the keys
+// bound to it, which leaves a dead holder's lock held for good.
+//
+// It is a no-op when lr or leaseSvc is nil (a composition without leases).
+func StartLocalLeaseExpiry(ctx context.Context, lr *lease.Lessor, leaseSvc service.LeaseServicer, logger *slog.Logger) {
+	if lr == nil || leaseSvc == nil {
+		return
+	}
+	go lr.RunExpiry(ctx, lease.DefaultExpiryInterval, alwaysSweeps, leaseSvc.Revoke, logger)
+}
+
+// alwaysSweeps is the leader gate of a node that is the only replica.
+func alwaysSweeps() bool { return true }

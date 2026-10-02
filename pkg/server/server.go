@@ -149,9 +149,8 @@ type Server struct {
 
 // serverOptions holds optional dependencies injected via ServerOption.
 type serverOptions struct {
-	// standaloneMode marks the raft-free composition: the transports'
-	// service registry gates the raft-only resolutions (see
-	// standalone_gate.go).
+	// standaloneMode marks the raft-free composition; it refuses the etcd
+	// compatibility listener (see WithStandaloneMode).
 	standaloneMode bool
 
 	// tenantMigrationAdmission gates tenant-scope migrations through the
@@ -993,7 +992,7 @@ func (s *Server) wireTenantDataProbe() {
 	if !ok {
 		return
 	}
-	if reg := s.transportServiceRegistry(); reg != nil {
+	if reg := s.buildServiceRegistry(); reg != nil {
 		w.SetTenantDataProbe(service.NewTenantDataProbe(reg))
 	}
 }
@@ -1200,7 +1199,7 @@ func (s *Server) start() error {
 		if s.opts.authMW == nil {
 			opts = append(opts, service.RAGUnauthenticatedTenant(tenant.SystemTenantID))
 		}
-		binder.BindRegistry(s.transportServiceRegistry(), opts...)
+		binder.BindRegistry(s.buildServiceRegistry(), opts...)
 	}
 
 	if s.config.Protocols.REST {
@@ -1574,7 +1573,7 @@ func (s *Server) startREST() error {
 		return err
 	}
 	restOpts = append(restOpts, rest.WithAuditFailurePolicy(auditFailure))
-	if reg := s.transportServiceRegistry(); reg != nil {
+	if reg := s.buildServiceRegistry(); reg != nil {
 		restOpts = append(restOpts, rest.WithServiceRegistry(reg))
 	}
 	if s.opts.clusterKeyReceiver != nil {
@@ -1794,7 +1793,7 @@ func (s *Server) startGRPC() error {
 	if s.opts.userAuthFactorSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithUserAuthFactorService(s.opts.userAuthFactorSvc))
 	}
-	if reg := s.transportServiceRegistry(); reg != nil {
+	if reg := s.buildServiceRegistry(); reg != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithServiceRegistry(reg))
 	}
 
@@ -1928,7 +1927,7 @@ func (s *Server) startQUIC() error {
 	if s.opts.dekSvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithDEKService(s.opts.dekSvc))
 	}
-	if reg := s.transportServiceRegistry(); reg != nil {
+	if reg := s.buildServiceRegistry(); reg != nil {
 		quicOpts = append(quicOpts, quicapi.WithServiceRegistry(reg))
 	}
 
@@ -2064,7 +2063,7 @@ func (s *Server) startUnix() error {
 	if s.opts.userAuthFactorSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithUserAuthFactorService(s.opts.userAuthFactorSvc))
 	}
-	if reg := s.transportServiceRegistry(); reg != nil {
+	if reg := s.buildServiceRegistry(); reg != nil {
 		unixOpts = append(unixOpts, unixapi.WithServiceRegistry(reg))
 	}
 
@@ -2198,7 +2197,7 @@ func (s *Server) startMCP() error {
 	if s.opts.userAuthFactorSvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithUserAuthFactorService(s.opts.userAuthFactorSvc))
 	}
-	if reg := s.transportServiceRegistry(); reg != nil {
+	if reg := s.buildServiceRegistry(); reg != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithServiceRegistry(reg))
 	}
 

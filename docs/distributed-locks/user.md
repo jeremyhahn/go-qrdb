@@ -124,9 +124,14 @@ two runs were in different scopes and never contended at all. Compare the
 another tenant is not visible to you and does not block you; a lock held in
 another of your databases needs `--database` to see.
 
-**Every lock command is refused with "requires mode: raft".** The server is
-running in standalone mode, which has no lease to expire a lock and no watch to
-unblock a waiter. Locks need a raft-mode server.
+**Every lock command is refused as "unsupported".** The server's storage
+backend is file or objstore, which keeps no leases to expire a lock. Run the
+server on the pebble or memory backend, in either mode.
+
+**A lock is still held after the server restarted.** That is deliberate: the
+lock's lease survives the restart and gets one full TTL from it. A holder that
+is still running keeps renewing; one that died loses the lock when that TTL
+runs out.
 
 **`acquire` times out.** Raise `--wait`, or use `trylock` and skip the run. Note
 that `--wait 0` falls back to the global `--timeout`.

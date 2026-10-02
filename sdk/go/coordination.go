@@ -35,24 +35,24 @@ import (
 // control plane (go-trusted-platform) whose own coordination interface, defined
 // in go-blockstore, wraps a value of this shape.
 //
-// Mode mapping (READ THIS — the two run-modes are not symmetric):
+// Mode mapping: every method behaves IDENTICALLY in standalone (single-node,
+// non-raft) and clustered (raft) modes.
 //
-//   - Get, Put and CompareAndSwap behave IDENTICALLY in standalone
-//     (single-node, non-raft) and clustered (raft) modes. A standalone node is
-//     engine-direct and single-process, so its compare-and-swap is already
-//     linearizable — consensus is what makes a swap linearizable across
-//     REPLICAS, and a standalone node has none (go-qrdb#62).
+//   - Get, Put and CompareAndSwap: a standalone node is engine-direct and
+//     single-process, so its compare-and-swap is already linearizable —
+//     consensus is what makes a swap linearizable across REPLICAS, and a
+//     standalone node has none (go-qrdb#62).
 //
-//   - AcquireLease and Watch depend on the lease/MVCC and watch families, which
-//     the ratified run-modes split makes RAFT-ONLY. On a standalone node they
-//     are refused rather than served inertly. In process, and over gRPC, Unix
-//     and QUIC, the refusal is *transport.CapabilityUnsupportedError naming
-//     the remedy "requires mode: raft"; REST and MCP return an untyped request
-//     error, and a remote Watch is refused on the stream rather than at open
-//     (sdk/go/conformance/standalone_refusal_test.go pins each transport). A
-//     consumer that needs lease- or watch-based coordination must run qrdb in
-//     raft mode, and should check Capabilities rather than match the error;
-//     CAS-based coordination works in either mode.
+//   - AcquireLease and Watch: a standalone node composes the lease, MVCC and
+//     watch families over the same engine, lessor and watch hub as raft
+//     mode's MVCC state machine, and runs the lease-expiry sweeper itself
+//     (go-qrdb#582). sdk/go/conformance's coordination parity suite runs the
+//     same lease, watch and lock assertions against both modes on every
+//     transport. The one boundary is the storage engine, not the mode: a
+//     standalone node on the file or objstore backend keeps no leases or
+//     revisions, so AcquireLease is refused there with
+//     *transport.CapabilityUnsupportedError; check Capabilities and the
+//     backend rather than match the error.
 
 // EventType identifies the kind of change carried by a coordination Event. It
 // aliases the transport event type so the two never drift.
@@ -150,10 +150,10 @@ var _ CoordinationClient = (*Coordinator)(nil)
 
 // Coordination returns a Coordinator backed by this client's transport. It
 // returns ClientClosedError on a closed client and CoordinationUnsupportedError
-// when the transport lacks a required sub-client. The mode-dependent refusal of
-// lease/watch on a standalone node is NOT reported here — every transport
-// implements the interfaces; the refusal surfaces from the individual call (see
-// the mode mapping at the top of this file).
+// when the transport lacks a required sub-client. A backend that keeps no
+// leases is NOT reported here — every transport implements the interfaces; the
+// refusal surfaces from the individual call (see the mode mapping at the top
+// of this file).
 func (c *Client) Coordination() (*Coordinator, error) {
 	if c.closed.Load() {
 		return nil, &ClientClosedError{}
@@ -359,8 +359,8 @@ func (w *watchStream) finish(err error) {
 // ended it. The caller stops the watch by cancelling ctx; a spawned goroutine
 // drains the transport stream until then.
 //
-// Watch is a raft-only family: on a standalone node it returns qrdb's typed
-// "not configured" error (see the mode mapping at the top of this file).
+// Watch is served in both run modes (see the mode mapping at the top of this
+// file).
 func (c *Coordinator) Watch(ctx context.Context, prefix string) (WatchStream, error) {
 	raw, err := c.watch.WatchPrefix(ctx, prefix, transport.WatchOptions{})
 	if err != nil {
@@ -498,9 +498,10 @@ func (e *LeaseLostError) Error() string {
 // floor of one second. A caller must Renew on an interval shorter than ttl to
 // retain the key.
 //
-// AcquireLease is a raft-only family: on a standalone node the lease grant is
-// refused — with *transport.CapabilityUnsupportedError in process and over
-// gRPC, Unix and QUIC (see the mode mapping at the top of this file).
+// AcquireLease is served in both run modes; a backend that keeps no leases
+// (standalone file or objstore) refuses the grant with
+// *transport.CapabilityUnsupportedError (see the mode mapping at the top of
+// this file).
 func (c *Coordinator) AcquireLease(ctx context.Context, key string, ttl time.Duration) (Lease, error) {
 	secs := ttl / time.Second
 	if ttl%time.Second != 0 {

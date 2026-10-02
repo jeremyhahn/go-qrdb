@@ -74,8 +74,9 @@ func TestBuildServerConfig_CarriesMode(t *testing.T) {
 
 	caps := cfg.EffectiveCapabilities()
 	assert.Equal(t, capabilities.ModeStandalone, caps.Mode)
-	assert.False(t, caps.MVCC)
-	assert.False(t, caps.Watch)
+	assert.True(t, caps.MVCC, "MVCC is served in both modes (go-qrdb#582)")
+	assert.True(t, caps.Watch, "watch is served in both modes (go-qrdb#582)")
+	assert.False(t, caps.Cluster)
 	assert.True(t, caps.KV)
 }
 
@@ -97,7 +98,7 @@ func TestLocalDataPlaneCloser_ClosesBackendThenStorage(t *testing.T) {
 	t.Parallel()
 
 	stg := memory.NewStorage()
-	eng, err := lifecycle.NewLocalEngine(database.BackendMemory, stg, nil, nil)
+	eng, err := lifecycle.NewLocalEngine(database.BackendMemory, stg, nil, nil, nil)
 	require.NoError(t, err)
 	c := localDataPlaneCloser{local: backend.NewLocalBackend(eng), storage: stg}
 	require.NoError(t, c.Close())

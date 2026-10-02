@@ -54,18 +54,15 @@ func TestValidate_ModeEnum(t *testing.T) {
 	}
 }
 
-// TestValidate_StandaloneRefusesRaftOnlyToggles pins the config gate: a
-// raft-only feature explicitly enabled under mode standalone is a
-// validation error naming the remedy, never a silent no-op.
-func TestValidate_StandaloneRefusesRaftOnlyToggles(t *testing.T) {
+// TestValidate_StandaloneRefusesClusterSettings pins the config gate: a
+// cluster setting under mode standalone is a validation error naming the
+// remedy, never a silent no-op.
+func TestValidate_StandaloneRefusesClusterSettings(t *testing.T) {
 	cases := []struct {
 		name  string
 		field string
 		mut   func(*Config)
 	}{
-		{"mvcc", "mvcc.enabled", func(c *Config) { c.MVCC.Enabled = boolPtr(true) }},
-		{"watch", "watch.enabled", func(c *Config) { c.Watch.Enabled = boolPtr(true) }},
-		{"lease", "lease.enabled", func(c *Config) { c.Lease.Enabled = boolPtr(true) }},
 		{"join", "raft.join", func(c *Config) { c.Raft.Join = true }},
 		{"peers", "raft.peers", func(c *Config) {
 			c.Raft.Peers = "1=127.0.0.1:63001,2=127.0.0.1:63002"
@@ -90,16 +87,18 @@ func TestValidate_StandaloneRefusesRaftOnlyToggles(t *testing.T) {
 	}
 }
 
-// TestValidate_StandaloneExplicitDisableIsFine verifies that explicitly
-// DISABLING a raft-only feature under standalone is not an error — only
-// enabling one is.
-func TestValidate_StandaloneExplicitDisableIsFine(t *testing.T) {
-	cfg := standaloneConfig()
-	cfg.MVCC.Enabled = boolPtr(false)
-	cfg.Watch.Enabled = boolPtr(false)
-	cfg.Lease.Enabled = boolPtr(false)
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("explicit disable under standalone should validate, got %v", err)
+// TestValidate_StandaloneCoordinationTogglesAreValid: MVCC, watch and lease
+// are served in both modes (go-qrdb#582), so enabling or disabling them under
+// standalone validates. They used to be refused when enabled.
+func TestValidate_StandaloneCoordinationTogglesAreValid(t *testing.T) {
+	for _, on := range []bool{true, false} {
+		cfg := standaloneConfig()
+		cfg.MVCC.Enabled = boolPtr(on)
+		cfg.Watch.Enabled = boolPtr(on)
+		cfg.Lease.Enabled = boolPtr(on)
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("enabled=%v under standalone should validate, got %v", on, err)
+		}
 	}
 }
 
@@ -170,7 +169,8 @@ func TestValidateCapabilities_TagAbsentProtocol(t *testing.T) {
 
 // TestEffectiveCapabilities_StandaloneProfile is the guard test required
 // by the run-modes plan: a sealed standalone profile reports every
-// raft-only feature false and the core true.
+// raft-only feature false and the core true. The coordination families --
+// MVCC, watch, lease, lock -- are served in both modes since go-qrdb#582.
 func TestEffectiveCapabilities_StandaloneProfile(t *testing.T) {
 	caps := standaloneConfig().EffectiveCapabilities()
 
@@ -181,12 +181,18 @@ func TestEffectiveCapabilities_StandaloneProfile(t *testing.T) {
 		t.Error("core kv/batch/index must be true in every mode")
 	}
 	for name, v := range map[string]bool{
-		"mvcc": caps.MVCC, "watch": caps.Watch, "lease": caps.Lease,
-		"lock": caps.Lock, "cluster": caps.Cluster, "backup": caps.Backup,
+		"cluster": caps.Cluster, "backup": caps.Backup,
 		"rebalance": caps.Rebalance, "etcd": caps.Etcd,
 	} {
 		if v {
 			t.Errorf("standalone profile: %s = true, want false (raft-only)", name)
+		}
+	}
+	for name, v := range map[string]bool{
+		"mvcc": caps.MVCC, "watch": caps.Watch, "lease": caps.Lease, "lock": caps.Lock,
+	} {
+		if !v {
+			t.Errorf("standalone profile: %s = false, want true (served in both modes)", name)
 		}
 	}
 	// Transactions moved OUT of the raft-only set (owner ruling 2026-08-23,

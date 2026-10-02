@@ -123,9 +123,9 @@ func (t *Transport) WithDatabase(database string) (transport.Transport, error) {
 
 // scopedIfServed returns scoped when the receiver serves the family (served
 // is non-nil) and nil otherwise. Scoping confines a family to a database; it
-// never grants one the unscoped transport withholds -- a standalone node's
-// transport serves no MVCC, leases or watches, and its scoped clone refuses
-// them the same way instead of resolving them through the database registry.
+// never grants one the unscoped transport withholds -- a transport built
+// without a family's servicer has a scoped clone that refuses it the same
+// way instead of resolving it through the database registry.
 func scopedIfServed[T any](served, scoped T) T {
 	if any(served) == nil {
 		var none T
@@ -181,14 +181,11 @@ func (t *Transport) cloneShared() *Transport {
 		userAuthFactorSvc: t.userAuthFactorSvc,
 		loginResolver:     t.loginResolver,
 		sessionIssuer:     t.sessionIssuer,
-		// A database-scoped view of a standalone node serves no raft-only
-		// family either, and must refuse them with the same typed error.
-		standalone:       t.standalone,
-		identityHydrator: t.identityHydrator,
-		loginSessions:    t.loginSessions,
-		poolManager:      t.poolManager,
-		poolStateStore:   t.poolStateStore,
-		nowFunc:          t.nowFunc,
+		identityHydrator:  t.identityHydrator,
+		loginSessions:     t.loginSessions,
+		poolManager:       t.poolManager,
+		poolStateStore:    t.poolStateStore,
+		nowFunc:           t.nowFunc,
 	}
 	t.factorVerifierMu.RLock()
 	if t.factorVerifiers != nil {

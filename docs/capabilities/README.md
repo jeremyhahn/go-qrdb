@@ -80,11 +80,11 @@ func Reset()
 | KV | Core | Always |
 | Batch | Core | Always |
 | Index | Core | Always |
-| MVCC | Raft-only | mode `raft` (narrowable via `mvcc.enabled`) |
-| Transaction | Raft-only | mode `raft` |
-| Watch | Raft-only | mode `raft` (narrowable via `watch.enabled`) |
-| Lease | Raft-only | mode `raft` (narrowable via `lease.enabled`) |
-| Lock | Raft-only | mode `raft` |
+| MVCC | Both modes | Always (narrowable via `mvcc.enabled`; the file/objstore engines refuse per call) |
+| Transaction | Both modes | Always (the file/objstore engines refuse per call) |
+| Watch | Both modes | Always (narrowable via `watch.enabled`) |
+| Lease | Both modes | Always (narrowable via `lease.enabled`; the file/objstore engines refuse per call) |
+| Lock | Both modes | Always (needs a lease-capable engine) |
 | Cluster | Raft-only | mode `raft` |
 | Backup | Raft-only | mode `raft` |
 | Rebalance | Raft-only | mode `raft` |

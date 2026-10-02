@@ -101,8 +101,9 @@ configured, which is the registry-less composition.
 - **A scope that cannot serve a lock is refused, not degraded.** The accessor
   returns `ServiceNotImplementedError{Service: "lock"}` when the resolved
   bundle lacks any of transaction, lease, watch or MVCC — a database on a
-  dedicated non-raft store — and the same error with the hint
-  `requires mode: raft` under mode `standalone`.
+  dedicated non-raft store. Mode `standalone` serves locks like raft mode
+ ; on its file or objstore backend the lease grant underneath is
+  refused with `CapabilityUnsupportedError`.
 
 ## Error semantics
 

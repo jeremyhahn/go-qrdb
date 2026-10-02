@@ -16,6 +16,7 @@ package embedded
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
@@ -40,12 +41,12 @@ func (t *Transport) LockAcquire(ctx context.Context, req *transport.LockAcquireR
 		return nil, &transport.ClosedError{}
 	}
 	if t.lockSvc == nil {
-		return nil, t.missingService("LockServicer")
+		return nil, &NilServiceError{Service: "LockServicer"}
 	}
 
 	l, err := t.lockSvc.Lock(ctx, req.Key, req.HolderID, time.Duration(req.TTL)*time.Second, req.Reentrant)
 	if err != nil {
-		return nil, err
+		return nil, translateLockError(err)
 	}
 
 	return mapLockInfo(l), nil
@@ -58,12 +59,12 @@ func (t *Transport) LockTryLock(ctx context.Context, req *transport.LockAcquireR
 		return nil, &transport.ClosedError{}
 	}
 	if t.lockSvc == nil {
-		return nil, t.missingService("LockServicer")
+		return nil, &NilServiceError{Service: "LockServicer"}
 	}
 
 	l, err := t.lockSvc.TryLock(ctx, req.Key, req.HolderID, time.Duration(req.TTL)*time.Second, req.Reentrant)
 	if err != nil {
-		return nil, err
+		return nil, translateLockError(err)
 	}
 
 	return mapLockInfo(l), nil
@@ -75,10 +76,10 @@ func (t *Transport) LockRelease(ctx context.Context, req *transport.LockReleaseR
 		return &transport.ClosedError{}
 	}
 	if t.lockSvc == nil {
-		return t.missingService("LockServicer")
+		return &NilServiceError{Service: "LockServicer"}
 	}
 
-	return t.lockSvc.Unlock(ctx, req.Key, req.FencingToken)
+	return translateLockError(t.lockSvc.Unlock(ctx, req.Key, req.FencingToken))
 }
 
 // LockExtend refreshes the TTL of an existing lock via lease keepalive.
@@ -87,12 +88,12 @@ func (t *Transport) LockExtend(ctx context.Context, req *transport.LockExtendReq
 		return nil, &transport.ClosedError{}
 	}
 	if t.lockSvc == nil {
-		return nil, t.missingService("LockServicer")
+		return nil, &NilServiceError{Service: "LockServicer"}
 	}
 
 	l, err := t.lockSvc.Extend(ctx, req.Key, req.FencingToken)
 	if err != nil {
-		return nil, err
+		return nil, translateLockError(err)
 	}
 
 	return mapLockInfo(l), nil
@@ -105,12 +106,12 @@ func (t *Transport) LockStatus(ctx context.Context, key string) (*transport.Lock
 		return nil, &transport.ClosedError{}
 	}
 	if t.lockSvc == nil {
-		return nil, t.missingService("LockServicer")
+		return nil, &NilServiceError{Service: "LockServicer"}
 	}
 
 	l, err := t.lockSvc.Status(ctx, key)
 	if err != nil {
-		return nil, err
+		return nil, translateLockError(err)
 	}
 	if l == nil {
 		return nil, nil
@@ -126,12 +127,12 @@ func (t *Transport) LockList(ctx context.Context, prefix string) (*transport.Loc
 		return nil, &transport.ClosedError{}
 	}
 	if t.lockSvc == nil {
-		return nil, t.missingService("LockServicer")
+		return nil, &NilServiceError{Service: "LockServicer"}
 	}
 
 	locks, err := t.lockSvc.List(ctx, prefix)
 	if err != nil {
-		return nil, err
+		return nil, translateLockError(err)
 	}
 
 	infos := make([]*transport.LockInfo, 0, len(locks))
@@ -154,4 +155,25 @@ func mapLockInfo(l *lock.Lock) *transport.LockInfo {
 		TTL:          l.TTL,
 		AcquiredAt:   l.AcquiredAt,
 	}
+}
+
+// translateLockError keeps the lock package's own typed errors -- which the
+// SDK re-exports as sdk.LockHeldError, sdk.NotLockHolderError and
+// sdk.LockNotFoundError -- exactly as the lock service returned them, and
+// translates everything else through translateError. A lock is composed from
+// the lease, watch and MVCC engines, so a refusal from one of those (a
+// backend that keeps no leases, say) must keep its identity across this seam
+// as it does on every network transport, rather than arrive as a bare
+// service error.
+func translateLockError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var held *lock.LockHeldError
+	var notHolder *lock.NotLockHolderError
+	var notFound *lock.LockNotFoundError
+	if errors.As(err, &held) || errors.As(err, &notHolder) || errors.As(err, &notFound) {
+		return err
+	}
+	return translateError(err)
 }

@@ -187,5 +187,7 @@ pkg/api/etcd/
 - **No support outside `engine: kv`, or on a standalone node.** Enabling etcd
   on another engine is refused at create and on update
   (`database.EtcdEngineUnsupportedError`), and a standalone node's listener
-  refuses to start, because etcd semantics need MVCC, leases and watches,
-  which are raft-only. Any backend serves it. *(Corrected: `backend: raft` was documented as required and was neither required nor checked -- the listener serves any backend through the service registry -- and `engine: kv` was documented as validated and was not.)*
+  refuses to start, because the etcd listener is a raft-only surface. *(The
+  reason given here was that MVCC, leases and watches are raft-only; a
+  standalone node serves those since 2026-10-01, and the listener stays
+  raft-only by its own capability flag.)* Any backend serves it. *(Corrected: `backend: raft` was documented as required and was neither required nor checked -- the listener serves any backend through the service registry -- and `engine: kv` was documented as validated and was not.)*

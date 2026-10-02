@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/encfs"
@@ -36,6 +37,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/secure"
 )
@@ -359,6 +361,14 @@ type Server struct {
 	sealStore    *pebbleStorage.PebbleStorage
 	barrier      *seal.StorageBarrier
 	logger       *slog.Logger
+
+	// hub and lessor are the engine's watch hub and lease table: the
+	// engine publishes every change to hub and rebuilds its durable leases
+	// into lessor, and the watch, lease and lock services are built over
+	// them. stopExpiry ends the lease-expiry sweeper running over lessor.
+	hub        *watch.Hub
+	lessor     *lease.Lessor
+	stopExpiry context.CancelFunc
 }
 
 // NewServer creates an embedded QRDB server from the given configuration.
@@ -417,9 +427,14 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	srv.stg = stg
 	srv.pebbleDB = pdb
 
-	// Create store engine. MVCC for pebble/memory, KV for file.
-	sm, err := createServerEngine(backendType, stg, pdb)
+	// Create store engine. MVCC for pebble/memory, KV for file. The engine
+	// publishes its changes to the watch hub and keeps its leases in the
+	// lessor, which the watch, lease and lock services below are built over.
+	srv.hub = watch.NewHub()
+	srv.lessor = lease.NewLessor()
+	sm, err := createServerEngine(backendType, stg, pdb, srv.hub, srv.lessor)
 	if err != nil {
+		srv.closeCoordination()
 		srv.closeStorage()
 		srv.closeSeal()
 		return nil, err
@@ -436,14 +451,28 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	txSvc := service.NewTransactionService(host, serverDefaultShardID)
 	batchSvc := service.NewBatchService(host, serverDefaultShardID)
 	leaseSvc := service.NewLeaseService(host, serverDefaultShardID)
+	watchSvc := service.NewWatchService(srv.hub)
 	indexSvc := service.NewIndexService(host, serverDefaultShardID)
 	tsSvc := service.NewTimeSeriesService(host, serverDefaultShardID)
+	lockSvc, err := service.NewLockService(txSvc, leaseSvc, watchSvc, mvccSvc, logger)
+	if err != nil {
+		srv.closeAll()
+		return nil, &ServerTransportCreateError{Err: err}
+	}
+
+	// The lease-expiry sweeper: without it a lease's keys -- and a lock
+	// held by a process that died -- are never deleted.
+	expiryCtx, stopExpiry := context.WithCancel(context.Background())
+	srv.stopExpiry = stopExpiry
+	lifecycle.StartLocalLeaseExpiry(expiryCtx, srv.lessor, leaseSvc, logger)
 
 	opts := []Option{
 		WithMVCCService(mvccSvc),
 		WithTransactionService(txSvc),
 		WithBatchService(batchSvc),
 		WithLeaseService(leaseSvc),
+		WithWatchService(watchSvc),
+		WithLockService(lockSvc),
 		WithIndexService(indexSvc),
 		WithTimeSeriesService(tsSvc),
 	}
@@ -518,13 +547,19 @@ func (s *Server) Shutdown(_ context.Context) error {
 		s.sealStore = nil
 	}
 
-	// 3. Close the local backend (state machine).
+	// 3. Stop the lease-expiry sweeper before the backend it revokes
+	// through, then close the local backend (state machine).
+	if s.stopExpiry != nil {
+		s.stopExpiry()
+		s.stopExpiry = nil
+	}
 	if s.localBackend != nil {
 		if err := s.localBackend.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 		s.localBackend = nil
 	}
+	s.closeCoordination()
 
 	// 4. Close the storage backend.
 	if s.stg != nil {
@@ -603,9 +638,10 @@ func createServerStorage(backendType database.BackendType, dataDir string, dataP
 
 // createServerEngine creates the appropriate store engine for the given
 // backend type. MVCC is used for pebble and memory backends; KV for file
-// backends.
-func createServerEngine(backendType database.BackendType, stg storage.Storage, pdb *pebble.DB) (backend.SMAdapter, error) {
-	eng, err := lifecycle.NewLocalEngine(backendType, stg, pdb, nil)
+// backends. hub and lr are the watch hub and lessor the engine publishes to
+// and keeps its leases in (see lifecycle.NewLocalEngine).
+func createServerEngine(backendType database.BackendType, stg storage.Storage, pdb *pebble.DB, hub *watch.Hub, lr *lease.Lessor) (backend.SMAdapter, error) {
+	eng, err := lifecycle.NewLocalEngine(backendType, stg, pdb, hub, lr)
 	if err != nil {
 		return nil, &EngineCreateError{Engine: "mvcc", Err: err}
 	}
@@ -974,8 +1010,26 @@ func (s *Server) closeAll() {
 		_ = s.sealStore.Close()
 		s.sealStore = nil
 	}
+	if s.stopExpiry != nil {
+		s.stopExpiry()
+		s.stopExpiry = nil
+	}
 	s.closeBackend()
+	s.closeCoordination()
 	s.closeStorage()
+}
+
+// closeCoordination closes the watch hub, ending every open watch, and the
+// lessor.
+func (s *Server) closeCoordination() {
+	if s.hub != nil {
+		s.hub.Close()
+		s.hub = nil
+	}
+	if s.lessor != nil {
+		s.lessor.Close()
+		s.lessor = nil
+	}
 }
 
 // serverKVAdapter wraps a KVServicer as a kvstore.KVStore for user/role stores.

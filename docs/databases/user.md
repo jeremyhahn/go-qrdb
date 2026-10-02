@@ -176,9 +176,10 @@ one of them can succeed.
 **`qrdb database scale` says the database is not eligible.** Scaling works on
 dedicated-raft databases. A pebble-backed database has no replicas to change.
 
-**Watch, lease, lock or transaction operations fail with "requires mode: raft".**
-Those need consensus. See [../run-modes/user.md](../run-modes/user.md) — this is
-the daemon's run mode, not just the database backend.
+**Lease, lock or transaction operations fail as "unsupported".** The node's
+storage backend is file or objstore, which keeps no leases or revisions. Watch,
+lease, lock and transactions work in both run modes on the pebble and memory
+backends. See [../run-modes/user.md](../run-modes/user.md).
 
 **"database not found" on a data-plane call.** Databases are never created
 implicitly, so a typo in `--database` is an error rather than a new, empty

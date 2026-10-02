@@ -1,6 +1,6 @@
 # Run Modes — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
 
 Run mode is not itself an API capability — it is the property that determines
 which capabilities exist. Two things are observable over the wire: the reported
@@ -20,10 +20,58 @@ mode-gated, or config-disabled — and `mode` plus the build is what
 disambiguates. This is recorded rather than smoothed over, because a caller
 that treats `false` as "not compiled" will misdiagnose a mode gate.
 
+## Capability families by mode
+
+**Available in both modes, with the same API, the same semantics and the same
+errors on every transport:** KV (get/put/delete/range/scan), batch, the
+transaction / compare-and-swap family, **MVCC revisions and `at-revision`
+reads, watch (prefix, revision resume, cancellation), lease (grant,
+keep-alive, revoke, expiry), lock**, secondary indexes, collections and entity
+CRUD, database management, SQL (`qrdb_sql`), time series and vector (their
+tags), plus the always-compiled core — auth, RBAC, identity, seal/barrier,
+credentials, audit, REST and gRPC transports.
+
+**Raft mode only:** etcd compatibility, cluster membership and topology,
+rebalance, shard backup/restore, and IsolationRaft tenancy. These are about a
+cluster or a separate product surface, not about one database's data.
+
+*(Corrected: this section listed MVCC, watch, lease and lock as raft-only until
+2026-10-01. A standalone node now composes them over the same engine, lessor
+and watch hub as raft mode's MVCC state machine — see
+[architecture.md](architecture.md#standalone--no-raft).)*
+
+### The storage engine, not the mode, bounds the coordination families
+
+A standalone node's backend selects its engine. Pebble and memory compose the
+MVCC engine and serve every family above. **File and objstore compose the plain
+KV engine**, which publishes changes but keeps no revisions and no leases:
+
+| Family | pebble / memory | file / objstore |
+|---|---|---|
+| Watch (live) | served | served (except over MCP, below) |
+| Watch with a start revision | served | refused: `WatchStartRevisionUnsupportedError` |
+| MVCC revisions, `at-revision` | served | refused: `CapabilityUnsupportedError` |
+| Lease | served | refused: `CapabilityUnsupportedError` |
+| Lock | served | refused: `CapabilityUnsupportedError` (a lock is a lease) |
+| Transactions | served | refused: `CapabilityUnsupportedError` |
+
+MCP has no stream, so its SDK client watches by polling with a start revision
+to stay gap-free. On a store that keeps no revisions the first poll after an
+event needs replay, and the watch ends with the typed
+`WatchStartRevisionUnsupportedError` rather than silently dropping changes
+between polls. This is the same answer a raft `sm_type` without revision history
+gives.
+
+The capability report is a **mode-level** statement, like `transaction`: it
+reports `mvcc`, `watch`, `lease` and `lock` true on a standalone node whatever
+its backend, and the engine boundary is answered per call.
+
 ## Refusal shape, per transport
 
-Every raft-only capability, called against a standalone server, refuses with a
-typed error whose text names the remedy: **`requires mode: raft`**.
+A capability the node cannot serve — a raft-only family on a standalone node,
+or a family the engine lacks — refuses with
+`*service.CapabilityUnsupportedError`, whose message names the refused service
+and, for a mode refusal, the remedy **`requires mode: raft`**.
 
 | Transport | Refusal |
 |---|---|
@@ -32,74 +80,31 @@ typed error whose text names the remedy: **`requires mode: raft`**.
 | Unix (gRPC over UDS) | `UNIMPLEMENTED` |
 | QUIC | `Unimplemented` |
 | MCP | `UNIMPLEMENTED` (−32014), with the same message |
-| Embedded | typed Go error: `*service.CapabilityUnsupportedError` |
+| Embedded | `*transport.CapabilityUnsupportedError` |
 
-Implemented by `pkg/server/standalone_gate.go` — nil singletons plus a gated
-per-database service registry — so the refusal is structural rather than a
-per-handler check that could be forgotten. The embedded transport is told it
-serves a standalone composition (`embedded.WithStandaloneMode`, set by
-`node.NewStandaloneNode`) and refuses the four raft-only families with the same
-type the gRPC, Unix and QUIC clients reconstitute; it keeps
-`*embedded.NilServiceError` for a service that should have been wired and was
-not.
+That type is the one every transport's classifier maps to "this node cannot do
+that", and the SDK rebuilds `transport.CapabilityUnsupportedError` from each
+transport's rendering of it, so a client gets the same typed answer whichever
+transport it holds. The embedded transport translates
+`service.MVCCBackendRequiredError` to the same type, and passes a lock's own
+errors (`LockHeldError`, `NotLockHolderError`, `LockNotFoundError`) through
+unchanged while translating the lease or MVCC refusal underneath a lock.
 
-The refusal is the same on every transport for every family, not just for the
-calls a transport happened to route. REST attaches the lease and lock routes
-unconditionally and each handler answers 501 before proposing anything (they
-used to be registered only when a service was wired, so a standalone node
-answered a router `404 page not found`); MCP registers the MVCC, watch, lease
-and lock tools unconditionally and each answers `UNIMPLEMENTED` (they used to
-be absent: `tool not found`). Pinned per transport by
-`sdk/go/conformance/standalone_refusal_test.go`.
+The etcd compatibility listener is refused at start on a standalone node
+(`server.WithStandaloneMode`): `etcd: not implemented on this server: requires
+mode: raft`.
 
-Watch is a stream, so where the refusal surfaces differs while its type does
-not: embedded and REST refuse at open, so `Watch` returns the error; gRPC,
-Unix, QUIC and MCP learn of it on the stream's first receive, which ends the
-stream with a terminal response whose `Err()` is the same
-`*transport.CapabilityUnsupportedError`. (MCP used to re-poll the refusal
-forever.)
+## Conformance
 
-The refusal is a **service-layer** error, `*service.CapabilityUnsupportedError`,
-whose message names the refused service and the remedy
-(`mvcc: not implemented on this server: requires mode: raft`). That type is the
-one every transport's classifier already maps to "this node cannot do that",
-and the SDK rebuilds `CapabilityUnsupportedError` from each transport's
-rendering of it, so a client gets the same typed answer whichever transport it
-holds. It used to be a REST transport type that only REST classified: REST
-answered 501 while gRPC, unix, QUIC and MCP fell through to their unclassified
-default and reported the mode gate as an internal fault — "the server broke",
-retry — for a condition that is a deployment mode. The same type now also
-carries "not configured on this node" refusals from the per-database service
-registry, for the same reason.
-
-## Capability families by mode
-
-**Available in both modes:** KV (get/put/delete/range/scan), batch, **the
-transaction / compare-and-swap family**, secondary indexes, collections and
-entity CRUD, database management, SQL (`qrdb_sql`), time series and vector
-(their tags; both need the MVCC-capable engine, so they are unavailable over
-file/objstore backends), plus the always-compiled core — auth, RBAC, identity,
-seal/barrier, credentials, audit, REST and gRPC transports.
-
-**Raft mode only:** MVCC revisions and `at-revision` reads, `Compact`,
-`RestoreToRevision`, watch (including replay), lease, lock, etcd compatibility,
-cluster membership and topology, rebalance, shard backup/restore, and
-IsolationRaft / IsolationVolume tenancy.
-
-**Transactions are deliberately NOT gated** (owner ruling 2026-08-23), and this
-list used to say they were — corrected here to match
-`pkg/server/standalone_gate.go`, whose `raftOnlyGatedRegistry` passes
-`TransactionService` straight through while refusing MVCC, watch and lease. A
-standalone node is engine-direct and single-process, so a compare-and-swap
-there is already linearizable: consensus is what makes a swap linearizable
-across *replicas*, and a standalone node has none. Gating it at the wire while
-the SDK's in-process transport served it would put the contradiction back one
-seam over. The etcd-style `Txn` **is** refused, but as part of etcd
-compatibility, which is listed separately above.
-
-The SQL catalog keeps its internal MVCC and transaction plumbing in standalone
-even though the MVCC *endpoints* are refused — the two are different surfaces.
+`sdk/go/conformance`'s `TestCoordinationFamilies_SameOnStandaloneAndRaft` runs
+ONE suite — lease lifecycle, lease expiry deleting its keys, prefix watch,
+revision resume, cancellation, lock lifecycle — against a standalone memory
+node, a standalone pebble node and a raft node, on REST, gRPC, Unix, QUIC, MCP
+and the embedded transport. `TestCoordinationFamilies_FileBackendServesWatchOnly`
+pins the file-backend row of the table above on every transport.
 
 ## Versioning
 
 `GET /capabilities` is an unversioned path. Nothing here is deprecated.
+`embedded.WithStandaloneMode` was removed: it only selected the refusal this
+document no longer describes.

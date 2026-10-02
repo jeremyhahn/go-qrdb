@@ -51,7 +51,7 @@ func TestLocalEngine_PublishesIntoServedWatchHub(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = stg.Close() })
 
-	eng, err := lifecycle.NewLocalEngine(database.BackendMemory, stg, pdb, hub)
+	eng, err := lifecycle.NewLocalEngine(database.BackendMemory, stg, pdb, hub, nil)
 	require.NoError(t, err)
 
 	local := backend.NewLocalBackend(eng)
@@ -74,12 +74,10 @@ func TestLocalEngine_PublishesIntoServedWatchHub(t *testing.T) {
 	}
 }
 
-// TestStandaloneNode_RaftOnlyFamiliesRefused pins the ratified run-modes
-// split on the SDK's standalone composition: the raft-only families
-// (watch here, as the representative) are not exposed, the refusal is the
-// transport's typed not-configured error, and the node's capabilities
-// report mode standalone with the raft-only features false.
-func TestStandaloneNode_RaftOnlyFamiliesRefused(t *testing.T) {
+// TestStandaloneNode_WatchServedAndReported: a standalone node serves watch
+// through its public client and reports watch, MVCC and lease in its
+// capabilities (go-qrdb#582); they used to be refused and reported false.
+func TestStandaloneNode_WatchServedAndReported(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -99,16 +97,25 @@ func TestStandaloneNode_RaftOnlyFamiliesRefused(t *testing.T) {
 	// Standard operations serve.
 	require.NoError(t, n.KVService().Put(ctx, "std/k1", []byte("v1")))
 
-	// The watch family is refused with a typed error, not served inertly.
-	_, err = n.Client().Watch().WatchPrefix(ctx, "watch-wire/", transport.WatchOptions{})
-	require.Error(t, err, "watch must be refused on a standalone node")
+	// The watch is served and delivers.
+	ch, err := n.Client().Watch().WatchPrefix(ctx, "watch-wire/", transport.WatchOptions{})
+	require.NoError(t, err, "watch is served on a standalone node")
+	require.NoError(t, n.KVService().Put(ctx, "watch-wire/k2", []byte("v2")))
+	select {
+	case resp, ok := <-ch:
+		require.True(t, ok, "watch stream closed before delivering the put")
+		require.NotEmpty(t, resp.Events, "watch response carried no events")
+	case <-ctx.Done():
+		t.Fatal("the watch never delivered the put")
+	}
 
 	// Capabilities report the standalone truth.
 	caps, err := n.Client().Admin().Capabilities(ctx)
 	require.NoError(t, err)
 	require.Equal(t, "standalone", caps.Mode)
-	require.False(t, caps.Watch, "capabilities must report watch=false in standalone")
-	require.False(t, caps.MVCC, "capabilities must report mvcc=false in standalone")
-	require.False(t, caps.Lease, "capabilities must report lease=false in standalone")
+	require.True(t, caps.Watch, "capabilities must report watch=true in standalone")
+	require.True(t, caps.MVCC, "capabilities must report mvcc=true in standalone")
+	require.True(t, caps.Lease, "capabilities must report lease=true in standalone")
+	require.False(t, caps.Cluster, "cluster operations stay raft-only")
 	require.True(t, caps.KV, "kv stays true in every mode")
 }

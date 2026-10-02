@@ -78,6 +78,16 @@ clustered node (`sdk/go/node`). The third was missing for a time, so an
 embedded clustered node closed a lease's `Done` channel on time and then never
 deleted the keys bound to it.
 
+**Standalone compositions start it too**: the daemon in mode
+`standalone`, `sdk/go/node.NewStandaloneNode` and the flat
+`sdk/go/transport/embedded.NewServer`, all through
+`lifecycle.StartLocalLeaseExpiry`. It is the same `RunExpiry` loop with a
+constant leadership gate — a standalone node is the only replica — and it
+revokes through `LeaseService.Revoke`, the same apply path a raft leader's
+revoke takes. So leases expire, delete their keys and notify watchers the same
+way in both modes, and "expiry is decided in one place" holds: one sweeper per
+node, never two clocks for the same lease.
+
 The failure is worth stating because it is quiet and it is not symmetric. The
 holder learns it lost the lease; nothing else changes. For a consumer whose HA
 design makes the bound key's existence the ownership signal, that is a control

@@ -768,6 +768,12 @@ type Node struct {
 	bgCtx    context.Context //nolint:containedctx
 	bgCancel context.CancelFunc
 
+	// stopLeaseExpiry ends the lease-expiry sweeper of the current
+	// standalone data plane (startLeaseExpiryStandalone); nil on a
+	// clustered node, whose sweeper runs on bgCtx. Written only by the
+	// lifecycle-gated boot and teardown paths.
+	stopLeaseExpiry context.CancelFunc
+
 	// featureGate decides when the clustered host's Raft groups may be sent
 	// guarded writes; nil for a host with no transport. featureAdv is its
 	// lease-backed advertisement once startFeatureGate has brought it up, and
@@ -924,7 +930,8 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 	n.pebbleDB = pdb
 
 	watchHub := watch.NewHub()
-	smAdapter, err := createNodeEngine(pending.backendType, stg, pdb, watchHub)
+	lr := lease.NewLessor()
+	smAdapter, err := createNodeEngine(pending.backendType, stg, pdb, watchHub, lr)
 	if err != nil {
 		_ = n.stg.Close()
 		n.stg = nil
@@ -1048,7 +1055,19 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		n.closeDatabaseManager()
 		return err
 	}
+	n.startLeaseExpiryStandalone(lr, svcNode.Lease)
 	return nil
+}
+
+// startLeaseExpiryStandalone starts the lease-expiry sweeper of a standalone
+// data plane (lifecycle.StartLocalLeaseExpiry): the node is the only replica,
+// so it always sweeps. It runs until this data plane is torn down -- by an
+// in-process encryption migration (teardownDataPlane), which builds a new
+// engine and lessor -- or the node closes.
+func (n *Node) startLeaseExpiryStandalone(lr *lease.Lessor, leaseSvc service.LeaseServicer) {
+	ctx, cancel := context.WithCancel(n.background())
+	n.stopLeaseExpiry = cancel
+	lifecycle.StartLocalLeaseExpiry(ctx, lr, leaseSvc, n.logger)
 }
 
 // openStandaloneDatabaseManager opens the standalone node's database catalog
@@ -1832,7 +1851,8 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 	n.pebbleDB = pdb
 
 	watchHub := watch.NewHub()
-	smAdapter, err := createNodeEngine(backendType, stg, pdb, watchHub)
+	lr := lease.NewLessor()
+	smAdapter, err := createNodeEngine(backendType, stg, pdb, watchHub, lr)
 	if err != nil {
 		_ = n.stg.Close()
 		return nil, &EngineCreateError{Engine: "mvcc", Err: err}
@@ -1891,6 +1911,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		n.closeDatabaseManager()
 		return nil, err
 	}
+	n.startLeaseExpiryStandalone(lr, svcNode.Lease)
 
 	return n, nil
 }
@@ -2674,22 +2695,15 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, strictSoD bool, standa
 	// all, which is why go-xkms could not boot: its CA key store reaches
 	// PutIfAbsent on the first write of a fresh node.
 	opts = append(opts, embedded.WithTransactionService(svcNode.Transaction))
-	// MVCC, lease and watch remain raft-only. Unlike CAS these are not
-	// single-process-satisfiable: they are about observing and coordinating
-	// state ACROSS replicas over time.
-	if standalone {
-		// The raft-only families are absent by design here; the transport
-		// refuses them with the same typed error the network transports
-		// give, rather than reporting a wiring defect.
-		opts = append(opts, embedded.WithStandaloneMode())
-	} else {
-		opts = append(opts,
-			embedded.WithMVCCService(svcNode.MVCC),
-			embedded.WithLeaseService(svcNode.Lease),
-			embedded.WithWatchService(svcNode.Watch),
-			embedded.WithLockService(svcNode.Lock),
-		)
-	}
+	// MVCC, lease, watch and lock are served in both modes too
+	// (go-qrdb#582): a standalone node composes them over the same engine,
+	// lessor and watch hub as raft mode's MVCC state machine.
+	opts = append(opts,
+		embedded.WithMVCCService(svcNode.MVCC),
+		embedded.WithLeaseService(svcNode.Lease),
+		embedded.WithWatchService(svcNode.Watch),
+		embedded.WithLockService(svcNode.Lock),
+	)
 	if svcNode.DEK != nil {
 		opts = append(opts, embedded.WithDEKService(svcNode.DEK))
 	}
@@ -2945,23 +2959,18 @@ func buildServerOpts(svcNode *lifecycle.Node, dbManager *database.Manager, calle
 	// server".
 	opts = append(opts, server.WithTransaction(svcNode.Transaction))
 
-	// The genuinely raft-only API surface (ratified run-modes split): composed
-	// only on the raft path; the standalone composition refuses these families
-	// with a typed "requires mode: raft" error via nil singletons plus the
-	// gated per-database registry (server.WithStandaloneMode). These are about
-	// observing and coordinating state ACROSS replicas, which is what a
-	// standalone node genuinely cannot do — unlike a compare-and-swap. The
-	// engine still serves MVCC operations internally for the SQL catalog and
-	// collections.
+	// MVCC, lease, watch and lock, likewise in both modes (go-qrdb#582):
+	// every transport serves them on a standalone node exactly as the
+	// in-process transport does. server.WithStandaloneMode now refuses only
+	// the etcd compatibility listener, which stays raft-only.
+	opts = append(opts,
+		server.WithMVCC(svcNode.MVCC),
+		server.WithLease(svcNode.Lease),
+		server.WithWatch(svcNode.Watch),
+		server.WithLockService(svcNode.Lock),
+	)
 	if standalone {
 		opts = append(opts, server.WithStandaloneMode())
-	} else {
-		opts = append(opts,
-			server.WithMVCC(svcNode.MVCC),
-			server.WithLease(svcNode.Lease),
-			server.WithWatch(svcNode.Watch),
-			server.WithLockService(svcNode.Lock),
-		)
 	}
 	if svcNode.User != nil {
 		opts = append(opts, server.WithUserService(svcNode.User))
@@ -3067,10 +3076,10 @@ func createNodeStorage(backendType database.BackendType, dataDir string, dataPla
 
 // createNodeEngine creates the appropriate store engine via the canonical
 // raft-free composition in pkg/server/lifecycle (see
-// lifecycle.NewLocalEngine for the engine-boundary and watch-hub
+// lifecycle.NewLocalEngine for the engine-boundary, watch-hub and lessor
 // contracts).
-func createNodeEngine(backendType database.BackendType, stg storage.Storage, pdb *pebble.DB, hub *watch.Hub) (backend.SMAdapter, error) {
-	return lifecycle.NewLocalEngine(backendType, stg, pdb, hub)
+func createNodeEngine(backendType database.BackendType, stg storage.Storage, pdb *pebble.DB, hub *watch.Hub, lr *lease.Lessor) (backend.SMAdapter, error) {
+	return lifecycle.NewLocalEngine(backendType, stg, pdb, hub, lr)
 }
 
 // systemShardReadyTimeout is the maximum duration completeClusteredBoot waits

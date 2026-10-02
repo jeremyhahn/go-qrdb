@@ -20,9 +20,9 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 )
 
-// standaloneReason is the remedy text shared by every raft-only feature
+// standaloneReason is the remedy text shared by every raft-only setting
 // refused under mode "standalone".
-const standaloneReason = "requires mode: raft (standalone serves standard database operations only)"
+const standaloneReason = "requires mode: raft (a standalone node has no cluster to join)"
 
 // IsStandalone reports whether the configuration selects the raft-free
 // standalone run mode. An empty Mode means "raft" for backward
@@ -32,23 +32,13 @@ func (c *Config) IsStandalone() bool {
 }
 
 // validateMode enforces the three-gate feature model at the config gate:
-// the mode enum itself, raft-only features explicitly enabled under mode
-// "standalone", cluster settings that are structurally impossible without
-// raft, and features enabled in config whose build tag is absent from the
-// binary.
+// the mode enum itself and the cluster settings that are structurally
+// impossible without raft. MVCC, watch and lease are served in both modes
+// (go-qrdb#582), so their enabled toggles are valid under either.
 func (c *Config) validateMode() error {
 	switch c.Mode {
 	case "", capabilities.ModeRaft:
 	case capabilities.ModeStandalone:
-		if c.MVCC.Enabled != nil && *c.MVCC.Enabled {
-			return &ValidationError{Field: "mvcc.enabled", Reason: standaloneReason}
-		}
-		if c.Watch.Enabled != nil && *c.Watch.Enabled {
-			return &ValidationError{Field: "watch.enabled", Reason: standaloneReason}
-		}
-		if c.Lease.Enabled != nil && *c.Lease.Enabled {
-			return &ValidationError{Field: "lease.enabled", Reason: standaloneReason}
-		}
 		if c.Raft.Join {
 			return &ValidationError{Field: "raft.join", Reason: standaloneReason}
 		}
@@ -164,13 +154,20 @@ func (c *Config) EffectiveCapabilities() capabilities.Capabilities {
 		// typed engine.UnsupportedOperationError, not per node here.
 		Transaction: true,
 
-		// Raft-only features, further narrowed by config toggles. Unlike
-		// CAS these are not single-process-satisfiable: they are about
-		// observing and coordinating state ACROSS replicas over time.
-		MVCC:      raft && enabled(c.MVCC.Enabled),
-		Watch:     raft && enabled(c.Watch.Enabled),
-		Lease:     raft && enabled(c.Lease.Enabled),
-		Lock:      raft,
+		// The coordination families are served in EVERY mode too
+		// (go-qrdb#582): a standalone node composes them over the same
+		// engine, lessor and watch hub as raft mode's MVCC state machine,
+		// applying commands in process instead of through the log. Config
+		// toggles narrow them in either mode. Like Transaction these are
+		// MODE-level statements: the file and objstore backends compose the
+		// plain KV engine, which keeps no revisions and no leases, and refuse
+		// those operations per call with a typed capability error.
+		MVCC:  enabled(c.MVCC.Enabled),
+		Watch: enabled(c.Watch.Enabled),
+		Lease: enabled(c.Lease.Enabled),
+		Lock:  true,
+
+		// Cluster-shaped features stay raft-only.
 		Cluster:   raft,
 		Backup:    raft,
 		Rebalance: raft,

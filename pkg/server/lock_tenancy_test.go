@@ -698,35 +698,3 @@ func TestLockService_PropagatesTenantAndDatabaseResolutionErrors(t *testing.T) {
 		}
 	})
 }
-
-// TestLockService_RefusedUnderStandaloneMode asserts the raft-only gate covers
-// locks. A lock is composed from the lease, watch and MVCC resolutions that
-// gate already refuses, so serving it under mode "standalone" would hand back
-// a lock with no TTL expiry and no blocking acquisition.
-func TestLockService_RefusedUnderStandaloneMode(t *testing.T) {
-	_, svcs := newLockDataPlane(t, lockTestDB)
-	dbReg := NewDatabaseServiceRegistry(lockTestDB)
-	dbReg.Register(lockTestDB, svcs)
-	inner := NewRESTServiceRegistry(dbReg, nil, tenant.SystemTenantID,
-		WithTenantServicer(&isolationTenantServicer{isolation: tenant.IsolationPrefix}),
-	)
-	gated := &raftOnlyGatedRegistry{inner: inner}
-
-	svc, err := gated.LockService(lockTenantA, lockTestDB)
-	if svc != nil {
-		t.Fatal("standalone mode must not resolve a lock servicer")
-	}
-	var ni *service.CapabilityUnsupportedError
-	if !errors.As(err, &ni) {
-		t.Fatalf("err = %v, want *service.CapabilityUnsupportedError", err)
-	}
-	if !strings.HasPrefix(ni.Message, "lock: ") || !strings.Contains(ni.Message, StandaloneModeHint) {
-		t.Fatalf("err = %+v, want service %q with hint %q", ni, "lock", StandaloneModeHint)
-	}
-
-	// The un-gated registry underneath still resolves, so the refusal is the
-	// gate rather than a broken fixture.
-	if _, err := inner.LockService(lockTenantA, lockTestDB); err != nil {
-		t.Fatalf("ungated LockService: %v", err)
-	}
-}

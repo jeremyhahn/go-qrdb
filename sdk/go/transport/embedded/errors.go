@@ -115,6 +115,14 @@ func translateError(err error) error {
 		return &transport.CapabilityUnsupportedError{Message: cue.Message}
 	}
 
+	// An MVCC-only operation on a store that keeps no revision history is
+	// the same "this node cannot do that" refusal; every network transport
+	// classifies it as unimplemented, and so does this one.
+	var mbr *service.MVCCBackendRequiredError
+	if errors.As(err, &mbr) {
+		return &transport.CapabilityUnsupportedError{Message: mbr.Error()}
+	}
+
 	var wce *service.WatchCanceledError
 	if errors.As(err, &wce) {
 		return &transport.WatchCanceledError{Reason: wce.Reason}

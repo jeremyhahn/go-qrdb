@@ -88,7 +88,7 @@ flags alone.
 
 | Rule | Consequence |
 |---|---|
-| `mode: standalone` with `mvcc.enabled` / `watch.enabled` / `lease.enabled: true`, `raft.join`, or multi-member `raft.peers` | validation error — `requires mode: raft` |
+| `mode: standalone` with `raft.join` or multi-member `raft.peers` | validation error — `requires mode: raft` (`mvcc`/`watch`/`lease.enabled` are valid in both modes since 2026-10-01) |
 | A wire protocol enabled without its build tag | boot-time error **naming the tag** (`ValidateCapabilities`) |
 | MySQL or PostgreSQL enabled with TLS or auth disabled | refused |
 | etcd enabled on a database that is not `engine: kv` | refused (`database.EtcdEngineUnsupportedError`); any backend serves etcd |

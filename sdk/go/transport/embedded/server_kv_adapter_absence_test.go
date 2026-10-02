@@ -54,7 +54,7 @@ func newRealKVService(t *testing.T) service.KVServicer {
 		}
 	})
 
-	sm, err := createServerEngine(database.BackendMemory, stg, pdb)
+	sm, err := createServerEngine(database.BackendMemory, stg, pdb, nil, nil)
 	if err != nil {
 		t.Fatalf("createServerEngine(memory): %v", err)
 	}

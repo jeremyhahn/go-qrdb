@@ -112,24 +112,21 @@ func TestStandaloneNode_ServesCompareAndSwap(t *testing.T) {
 		"the losing writer overwrote the winner -- the precondition was not enforced")
 }
 
-// TestStandaloneNode_RaftOnlyFamiliesStayGated is the control: the ruling
-// narrowed the standalone gate to the transaction family, it did not remove
-// it. MVCC, lease and watch are not single-process-satisfiable the way CAS is
-// -- they are about observing and coordinating state ACROSS replicas -- and
-// must still refuse.
-//
-// Without this, a change that dropped the whole `if !standalone` block would
-// pass the test above.
-func TestStandaloneNode_RaftOnlyFamiliesStayGated(t *testing.T) {
+// TestStandaloneNode_CoordinationFamiliesServed: MVCC and lease are served on
+// a standalone node alongside transactions (go-qrdb#582). A missing key is
+// the typed not-found, not a capability refusal.
+func TestStandaloneNode_CoordinationFamiliesServed(t *testing.T) {
 	n := newStandaloneNodeForTX(t)
 	ctx := context.Background()
 	c := n.Client()
 
 	_, err := c.MVCC().GetRevision(ctx, "k")
-	require.Error(t, err, "MVCC must stay raft-only in standalone")
+	var notFound *transport.KeyNotFoundError
+	require.ErrorAs(t, err, &notFound, "MVCC is served in standalone; a missing key is not-found")
 
-	_, err = c.Lease().LeaseGrant(ctx, 10)
-	require.Error(t, err, "lease must stay raft-only in standalone")
+	l, err := c.Lease().LeaseGrant(ctx, 10)
+	require.NoError(t, err, "lease is served in standalone")
+	require.Equal(t, int64(10), l.GrantedTTL)
 }
 
 // TestStandaloneNode_TransactionsNeedTheMVCCCapableEngine pins the one limit

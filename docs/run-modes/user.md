@@ -1,30 +1,29 @@
 # Run Modes — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
 
-A qrdb server runs in one of two modes. The mode decides which features exist,
-so it is usually the answer when something "is not there".
+A qrdb server runs in one of two modes. The mode decides whether there is a
+cluster, so it is the answer when a cluster feature "is not there".
 
 ## The two modes
 
 **Standalone** — one process, no consensus. Fast, simple, no cluster to
-operate. You get the standard database operations: keys and values, batch,
-**compare-and-swap transactions**, indexes, collections, databases, SQL, time
-series and vectors.
+operate. You get the whole data plane: keys and values, batch,
+compare-and-swap transactions, **revisions and historical reads, watch,
+leases and locks**, indexes, collections, databases, SQL, time series and
+vectors. Your application code is the same as against a raft server.
 
-**Raft** — the consensus layer. Everything standalone has, plus the things that
-need a replicated log: revisions and historical reads, watch, leases, locks,
-etcd compatibility, cluster membership, rebalance and shard backup/restore. A
-single-node raft deployment is a one-replica group — same write path as a
-cluster, and it scales out cleanly later.
+**Raft** — the consensus layer. Everything standalone has, plus what needs a
+cluster: replication, cluster membership, rebalance, shard backup/restore and
+etcd compatibility. A single-node raft deployment is a one-replica group —
+same write path as a cluster, and it scales out cleanly later.
 
-*(Transactions were previously listed here as raft-only. They are not: a
-standalone node is single-process, so its compare-and-swap is already
-linearizable, and the server passes the transaction family through in both
-modes. Corrected to match the code.)*
+*(Watch, leases, locks and revisions were previously listed here as raft-only.
+They are served in standalone too since 2026-10-01; corrected to match the
+code. Transactions were listed as raft-only before that, and were not.)*
 
-**If in doubt, run raft.** A single-node raft server gives you the full feature
-set and can grow; standalone cannot.
+**Run standalone** when one process is enough and you want no cluster to
+operate. **Run raft** when you need replicas, or expect to grow into a cluster.
 
 ## Which mode am I on?
 
@@ -52,15 +51,27 @@ qrdbd start --mode standalone
 ## Common tasks
 
 **Run embedded, in your own process.** Embedded is a deployment shape of
-standalone, not a third mode:
+standalone, not a third mode, and it serves watch, leases and locks:
 
 ```go
 node, err := node.NewStandaloneNode(...)
 client := node.Client()
 defer node.Close()
+
+lease, _ := client.Lease().LeaseGrant(ctx, 10)
+lock, _ := client.Lock().LockTryLock(ctx, &transport.LockAcquireRequest{
+	Key: "scheduler", HolderID: "node-a", TTL: 10,
+})
 ```
 
-For the full feature set in process, use `node.NewClusteredNode` instead.
+**Leader election on a single process.** A lock is a lease: the holder keeps
+it alive, and if the process dies the lease expires and the lock is free for
+the next holder. On a standalone node the server runs the expiry itself.
+
+**Pick a backend that serves what you need.** The pebble and memory backends
+serve every data-plane family. The file and objstore backends keep no
+revisions and no leases, so they serve watch but refuse leases, locks,
+revisions and transactions with a typed "unsupported" error.
 
 **Compile in the optional features you want.** Build tags are the outermost
 gate — config cannot switch on something the binary does not contain.
@@ -70,16 +81,27 @@ make build WITH_QRDB_SQL=1 WITH_QRDB_PGSQL=1 WITH_QRDB_VECTOR=1 WITH_QRDB_TS=1
 ```
 
 **Turn something off that is compiled in.** Config can narrow, never widen:
-`mvcc.enabled`, `watch.enabled` and `lease.enabled` can be set false even in
-raft mode.
+`mvcc.enabled`, `watch.enabled` and `lease.enabled` can be set false in either
+mode.
+
+## What survives a restart
+
+Leases do. A lease held when the server stops is still there when it starts
+again, with its keys, and gets **one full TTL** from the restart to be renewed.
+A holder that is still running renews as usual; a holder that died with the
+process loses its keys — and its locks — one TTL after the restart. This is the
+same in both modes. Watches do not survive: a consumer reconnects and resumes
+from the last revision it saw.
 
 ## Troubleshooting
 
-**"requires mode: raft (standalone serves standard database operations only)".**
-Exactly what it says. The feature needs the consensus layer. Either move to raft
-mode — a single-node raft server is enough — or do without it. It is an error
-rather than a silent no-op on purpose: a watch that never fires would be far
-harder to diagnose.
+**"requires mode: raft".** The feature needs a cluster: membership, rebalance,
+shard backup, or the etcd listener. Move to raft mode — a single-node raft
+server is enough — or do without it.
+
+**A lease or lock call is refused as "unsupported" on a standalone node.** The
+node runs on the file or objstore backend, which keeps no leases. Use pebble or
+memory.
 
 **A capability reports `false` and you do not know why.** Three possibilities:
 it was not compiled in, the run mode forbids it, or config disabled it. Check
@@ -91,10 +113,9 @@ whose tag is absent. Rebuild with the tag, or remove the protocol from the
 config. This is a deliberately separate check from ordinary config validation,
 so config files stay valid independent of how a binary was built.
 
-**The daemon refused to start on a standalone config.** You asked for something
-standalone cannot do: `mvcc.enabled`, `watch.enabled` or `lease.enabled` set
-true, a `raft.join`, or a multi-member `raft.peers` list. Remove it, or switch
-to raft mode.
+**The daemon refused to start on a standalone config.** You asked for a
+cluster: a `raft.join`, or a multi-member `raft.peers` list. Remove it, or
+switch to raft mode.
 
 **`raft.sm_storage` was rejected.** Objstore is a snapshot and backup tier and
 is refused as a hot apply path. Use `pebble` (the default), `file` or `memory`.
@@ -105,13 +126,6 @@ other state machine carries its own storage and rejects a non-pebble
 **Time series or vector operations are unavailable even though the tags are
 compiled in.** Both need the MVCC-capable engine, so they do not work over the
 file or objstore backends.
-
-**Your SDK standalone code stopped composing MVCC and lease services.** That is
-the ratified behaviour change: those became raft-mode-only everywhere, and
-standalone compositions no longer build them. Move to `NewClusteredNode` if you
-need them. **Transactions are not in that list** — this paragraph used to name
-them and was wrong; compare-and-swap still works standalone, on every
-transport.
 
 **Switching modes.** The mode is fixed at composition. Changing it is a restart,
 not a runtime operation.

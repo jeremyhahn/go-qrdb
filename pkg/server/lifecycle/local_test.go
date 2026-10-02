@@ -30,6 +30,7 @@ import (
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
+	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
@@ -186,7 +187,7 @@ func TestNewLocalEngine_EngineBoundary(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = stg.Close() })
 
-			eng, err := lifecycle.NewLocalEngine(tc.backend, stg, pdb, watch.NewHub())
+			eng, err := lifecycle.NewLocalEngine(tc.backend, stg, pdb, watch.NewHub(), lease.NewLessor())
 			if err != nil {
 				t.Fatalf("NewLocalEngine(%s): %v", tc.backend, err)
 			}
@@ -211,7 +212,7 @@ func TestNewLocalEngine_EngineBoundary(t *testing.T) {
 	}
 }
 
-// TestNewLocalEngine_NilHubIsAccepted: the hub is optional at this seam, and a
+// TestNewLocalEngine_NilHubIsAccepted: the hub and the lessor are optional at this seam, and a
 // nil one must not panic. The engine is the only publisher of change events,
 // so a nil hub means "nothing is watching", not "misconfigured".
 func TestNewLocalEngine_NilHubIsAccepted(t *testing.T) {
@@ -222,7 +223,7 @@ func TestNewLocalEngine_NilHubIsAccepted(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = stg.Close() })
 
-	eng, err := lifecycle.NewLocalEngine(database.BackendMemory, stg, pdb, nil)
+	eng, err := lifecycle.NewLocalEngine(database.BackendMemory, stg, pdb, nil, nil)
 	if err != nil {
 		t.Fatalf("NewLocalEngine with a nil hub: %v", err)
 	}

@@ -75,6 +75,20 @@ died rather than ended.
   nobody is reading. The two guarantees are separated instead: `Close` means
   deregistered, and ranging over `Events()` means drained.
 
+## Run modes
+
+Watch is served identically in both run modes (it was refused on
+a standalone node before). In both, the engine that applies a write is the one
+publisher into the node's `watch.Hub`, and the watch service subscribes to that
+hub through the same per-(tenant, db) registry, so prefix watches, revision
+resume and cancellation behave the same and a tenant sees only its own
+namespace. Revision resume needs the store's revision index: the MVCC engine
+(raft `sm_type: mvcc`, standalone pebble and memory) keeps one; the plain KV
+engine (standalone file and objstore) does not, and answers a start revision
+with `WatchStartRevisionUnsupportedError`. MCP's polling watch needs replay
+after its first event, so on those backends an MCP watch ends with that typed
+error rather than dropping changes between polls.
+
 ## Component boundaries
 
 | Piece | Package | Owner |

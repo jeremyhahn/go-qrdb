@@ -1,6 +1,6 @@
 # Run Modes — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10 ·
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01 ·
 > Ratified 2026-08-17
 
 ## Problem
@@ -27,21 +27,72 @@ implementation that applies commands directly to an engine on a local
 storage backend — so the entire service/transport stack above it is
 identical to raft mode.
 
-Serves **standard database operations**:
+Serves the **whole per-database data plane**, with the same API and the same
+semantics as raft mode:
 
 - KV (get/put/delete/range/scan), batch, secondary indexes
+- Transactions / compare-and-swap
+- **MVCC revisions and `at-revision` reads, watch (prefix, revision resume,
+  cancellation), lease (grant, keep-alive, revoke, expiry) and lock**
 - Collections and entity CRUD
 - Database management (create/list/delete; engines kv, timeseries, vector)
 - SQL (build-tag gated, `qrdb_sql`)
-- Timeseries and vector (build-tag gated; require the MVCC-capable engine,
-  so unavailable over the file/objstore backends — see the engine boundary
-  in `pkg/engine/kv_engine.go`)
-- Transactions / compare-and-swap (`pkg/server/standalone_gate.go` passes
-  `TransactionService` through deliberately — see below)
+- Timeseries and vector (build-tag gated)
 
-Plus the **always-on security core** (below). Everything consensus-shaped —
-MVCC revisions, watch, lease, lock, etcd compatibility, cluster operations — is
-refused with a typed error whose text names the remedy: `requires mode: raft`.
+Plus the **always-on security core** (below). What stays raft-only is
+cluster-shaped — membership, rebalance, shard backup/restore, IsolationRaft
+tenancy — and the etcd compatibility listener; those are refused with a typed
+error whose text names the remedy: `requires mode: raft`.
+
+**The engine, not the mode, bounds the data plane.** Pebble and memory compose
+the MVCC engine and serve all of it. File and objstore compose the plain KV
+engine (`pkg/engine/kv_engine.go`), which publishes changes to the watch hub but
+keeps no revisions and no leases: it serves watch and refuses MVCC, lease, lock,
+transactions, time series and vector per call with a typed capability error —
+the same answer a raft `sm_type` without those planes gives.
+
+### Watch, lease and lock in standalone
+
+*(This section replaces the earlier rule that "everything consensus-shaped —
+MVCC revisions, watch, lease, lock — is refused". QuicBaaS and go-xkms depend on
+them for client watch, secret-rotation events and scheduler leader election, and
+worked around the refusal with in-process fallbacks and a one-member raft
+cluster.)*
+
+**Same code by construction.** The standalone engine is `engine.MVCCEngine` —
+the engine raft `sm_type: mvcc` wraps in `store.MVCCStateMachine`. Standalone
+applies the same commands through `backend.LocalBackend` in process instead of
+through the log, so every family runs the code raft mode runs:
+
+| Piece | Raft mode | Standalone |
+|---|---|---|
+| Engine | `MVCCEngine` inside `MVCCStateMachine` | `MVCCEngine` under `LocalBackend` |
+| Watch hub | the node's `watch.Hub`, passed to the state machine | the node's `watch.Hub`, passed to `lifecycle.NewLocalEngine` |
+| Lessor | the node's `lease.Lessor`, passed to the state machine | the node's `lease.Lessor`, passed to `lifecycle.NewLocalEngine` |
+| Lease expiry | `Lessor.RunExpiry`, gated on Raft leadership | `lifecycle.StartLocalLeaseExpiry`: the same loop, always sweeping — a standalone node is the only replica |
+| Revoke on expiry | `LeaseService.Revoke` → the log → apply | `LeaseService.Revoke` → `LocalBackend` → apply |
+| Lock | `service.NewLockService` over the (tenant, db) lease, watch, MVCC and transaction views | identical |
+| Tenancy | `restServiceRegistry` namespaced views | identical — the same registry |
+
+**Determinism and restart.** Leases are durable in both modes: the engine
+records each lease, its attached keys and the ID sequence in its own store in
+the same batch as the change, and rebuilds them when it is constructed over that
+store. A lease recovered after a restart expires one full granted TTL after
+recovery, so a dead holder's lock is freed one TTL after the restart. See
+[../leases/engineering.md](../leases/engineering.md#persistence). Expiry is
+decided by one sweeper per node: in raft mode on the leader, in standalone on
+the only replica — never on two clocks.
+
+**Tenancy.** Watch, lease and lock resolve through the same per-(tenant, db)
+service registry on both modes, so a standalone node enforces the same
+confinement: a tenant's watch sees only its own `<tenant>/<database>/` keys, a
+lease is owned by the namespace that granted it, and a lock lands in the
+caller's namespace. There is no standalone-specific scoping code.
+
+**What standalone does not get.** Replication: a standalone node's leases,
+watches and locks are exactly as available as the process. Watch history
+replay is bounded by the store's own revision index, as in raft mode, and a
+watch does not survive a restart in either mode.
 
 **Transactions are the deliberate exception** (owner ruling 2026-08-23). This
 paragraph used to list them among the refusals; corrected here to match
@@ -65,7 +116,9 @@ clean scale-out path. Adds every consensus-dependent feature: MVCC
 revisions and `--at-revision` reads, watch (incl. replay), lease, lock,
 transactions, etcd compatibility (`qrdb_etcd`), cluster
 membership/topology, rebalance, shard backup/restore, IsolationRaft and
-IsolationVolume tenancy.
+IsolationVolume tenancy. *(MVCC, watch, lease, lock and transactions are
+served by standalone too; listed here because raft serves them on every
+`sm_type` that carries them, below.)*
 
 **Every `sm_type` starts a raft daemon.** Each one — `pebble` (the default),
 `mvcc`, `memory`, `standard`, `concurrent`, `fast`, `disk`, `highperf` and
@@ -160,7 +213,8 @@ security posture or breaks a dependency of everything else:
 | Standalone composition (`LocalBackend`) | `pkg/backend/local.go` | go-qrdb |
 | Canonical composition roots | `pkg/lifecycle` (`NewLocalStorage`, `NewLocalEngine`) | go-qrdb |
 | Capability registry and sealing | `pkg/capabilities` | go-qrdb |
-| Standalone refusal gate | `pkg/server/standalone_gate.go` | go-qrdb |
+| Standalone mode option (etcd refusal) | `pkg/server/standalone_gate.go` | go-qrdb |
+| Standalone lease-expiry sweeper | `pkg/server/lifecycle` (`StartLocalLeaseExpiry`) | go-qrdb |
 | Consensus | — | **go-quicraft** |
 | SDK entry points | `sdk/go/node` (`NewStandaloneNode`, `NewClusteredNode`) | go-qrdb |
 

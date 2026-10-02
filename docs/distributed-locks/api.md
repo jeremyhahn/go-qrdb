@@ -95,7 +95,7 @@ hold in this scope", never "every lock on this node".
 | Not leader, no resolver | 503 | `UNAVAILABLE` |
 | Unknown tenant / unknown database | 404 | `NOT_FOUND` |
 | Isolation backend not wired for the tenant | 503 | `UNAVAILABLE` |
-| Mode `standalone`, or a database on a dedicated non-raft store | 501 | `UNIMPLEMENTED` |
+| A backend that keeps no leases (standalone file/objstore), or a database on a dedicated non-raft store | 501 | `UNIMPLEMENTED` |
 
 No failure path returns a `LockInfo`. A caller that gets a lock got the lock.
 

@@ -1326,7 +1326,7 @@ func runStart(f *startFlags) (err error) {
 				if lerr != nil {
 					return lerr
 				}
-				eng, lerr := lifecycle.NewLocalEngine(localBackend, stg, pdb, watchHub)
+				eng, lerr := lifecycle.NewLocalEngine(localBackend, stg, pdb, watchHub, lr)
 				if lerr != nil {
 					_ = stg.Close()
 					return lerr
@@ -2074,31 +2074,26 @@ func runStart(f *startFlags) (err error) {
 				// same registry the transports resolve requests with.
 				server.WithReclaimSweeper(svcNode.ReclaimSweeper),
 			}
-			// The transaction/CAS family is served in BOTH modes (owner
-			// ruling 2026-08-23, go-qrdb#62): a standalone node is
-			// engine-direct and single-process, so a compare-and-swap there
-			// is already linearizable without consensus. It is wired as a
-			// singleton here and passed through by the gated per-database
-			// registry, so the network surface matches what the SDK's
-			// in-process transport serves.
-			//
-			// The remaining raft-only API surface is composed only in raft
-			// mode; in standalone the transports refuse those families with a
-			// typed "requires mode: raft" error (nil singletons + the gated
-			// per-database registry, see server.WithStandaloneMode). The
-			// underlying engine still serves MVCC operations internally for
-			// the SQL catalog and collections.
-			serverOpts = append(serverOpts, server.WithTransaction(txSvc))
+			// The data-plane families -- transactions, MVCC, lease, lock and
+			// watch -- are served in BOTH modes, over the same engine, lessor
+			// and watch hub (go-qrdb#62 for transactions, go-qrdb#582 for the
+			// rest): a standalone node applies the commands in process
+			// instead of through the log, so the semantics are the raft
+			// state machine's by construction. What stays raft-only is
+			// cluster-shaped -- the host, the collection sweep leader,
+			// backup, rebalance -- and the etcd listener
+			// (server.WithStandaloneMode).
+			serverOpts = append(serverOpts,
+				server.WithTransaction(txSvc),
+				server.WithMVCC(mvccSvc),
+				server.WithLease(leaseSvc),
+				server.WithLockService(lockSvc),
+				server.WithWatch(watchSvc),
+			)
 			if standalone {
 				serverOpts = append(serverOpts, server.WithStandaloneMode())
 			} else {
-				serverOpts = append(serverOpts,
-					server.WithHost(host),
-					server.WithMVCC(mvccSvc),
-					server.WithLease(leaseSvc),
-					server.WithLockService(lockSvc),
-					server.WithWatch(watchSvc),
-				)
+				serverOpts = append(serverOpts, server.WithHost(host))
 				// The collection sweeper finishes interrupted creates and
 				// drops in the shared system store from the system shard's
 				// leader only, so a cluster sweeps each database once per pass
@@ -2277,7 +2272,11 @@ func runStart(f *startFlags) (err error) {
 			// applies it. The leadership gate is re-evaluated each tick, so the loop is
 			// correct across elections and a no-op on followers. Skipped when the lease
 			// service is absent (embeddable deployments without lease support).
-			if leaseSvc != nil && host != nil {
+			// A standalone daemon is the only replica, so it always sweeps
+			// (lifecycle.StartLocalLeaseExpiry).
+			if standalone {
+				lifecycle.StartLocalLeaseExpiry(bootCtx, lr, leaseSvc, slog.Default())
+			} else if leaseSvc != nil && host != nil {
 				go lr.RunExpiry(bootCtx, lease.DefaultExpiryInterval,
 					func() bool {
 						leaderID, ok, lerr := host.GetLeaderID(shard.ShardKV)

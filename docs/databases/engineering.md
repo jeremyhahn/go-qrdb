@@ -332,7 +332,8 @@ must hold, at the entry's own log position, for it to apply:
 - **etcd requires `engine: kv`**, a node in mode `raft`, and TLS and auth
   enabled. Another engine is refused at create and on update
   (`database.EtcdEngineUnsupportedError`); a standalone node's listener refuses
-  to start (MVCC, leases and watches are raft-only). Any backend serves it.
+  to start (the etcd listener is raft-only, `server.WithStandaloneMode`). Any
+  backend serves it.
   *(Corrected: `backend: raft` was documented as required and was neither required nor checked -- the listener serves any backend through the service registry -- and `engine: kv` was documented as validated and was not.)*
 - **`DatabaseScoped` returns a new client** with its own immutable scope, so
   scopes never leak between clients; scoping to `system` or `""` yields the

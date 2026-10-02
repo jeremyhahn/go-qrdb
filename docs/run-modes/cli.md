@@ -40,23 +40,29 @@ the binary was built is what tells them apart.
 
 ## Recognising a mode refusal
 
-Raft-only verbs in a standalone daemon fail with a typed error naming the
+Cluster verbs in a standalone daemon fail with a typed error naming the
 remedy:
 
 ```bash
-$ qrdb watch app/config/ --prefix
-error: requires mode: raft (standalone serves standard database operations only)
+$ qrdb admin member list
+error: requires mode: raft
 ```
 
-The families that refuse in standalone: `kv revision`, `kv restore`,
-`kv get --at-revision`, `kv compact`, `watch`, `lease`, `lock`, `tx`, the etcd
-protocol, and the `admin` cluster verbs (`member`, `peers`, `snapshot`,
-`topology`).
+The families that refuse in standalone: the etcd protocol, `backup`, and the
+`admin` cluster verbs (`member`, `peers`, `snapshot`, `topology`, rebalance).
 
-The families that work in standalone: `kv` (get/put/del/list/scan/range),
-`batch`, `index`, `collection`, `database`, `sql` (with `qrdb_sql`), `ts` and
-`vector` (with their tags), plus the always-compiled core — `auth`, `users`,
-`roles`, `barrier`, `ceremony`, `credential`, `ca`, `audit`.
+The families that work in standalone, exactly as in raft mode: `kv`
+(get/put/del/list/scan/range, `revision`, `get --at-revision`, `compact`,
+`restore`), `watch`, `lease`, `lock`, `tx`, `batch`, `index`, `collection`,
+`database`, `sql` (with `qrdb_sql`), `ts` and `vector` (with their tags), plus
+the always-compiled core — `auth`, `users`, `roles`, `barrier`, `ceremony`,
+`credential`, `ca`, `audit`.
+
+*(Corrected: `watch`, `lease`, `lock` and the `kv` revision verbs were listed
+as refusing until 2026-10-01, and `tx` was listed in error before that.)* On
+the file and objstore backends, `lease`, `lock`, `tx` and the revision verbs
+refuse as unsupported, because those engines keep no leases or revisions; see
+[api.md](api.md#the-storage-engine-not-the-mode-bounds-the-coordination-families).
 
 ## Build-time feature selection
 

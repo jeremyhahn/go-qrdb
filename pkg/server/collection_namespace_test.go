@@ -414,8 +414,7 @@ func TestRegistryImplementationsAnswerEveryAccessor(t *testing.T) {
 	base := NewRESTServiceRegistry(dbReg, nil, tenant.SystemTenantID)
 
 	impls := map[string]service.Registry{
-		"restServiceRegistry":   base,
-		"raftOnlyGatedRegistry": &raftOnlyGatedRegistry{inner: base},
+		"restServiceRegistry": base,
 	}
 
 	// Each entry calls one accessor and discards the result: the assertion is
