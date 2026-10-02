@@ -18,9 +18,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -98,13 +98,18 @@ func TestManager_CompactionOwnerForTenant_DroppingDatabase(t *testing.T) {
 // node-local.
 func TestManager_CatalogHoldsNoCompactionPolicy(t *testing.T) {
 	_, dir := newCompactionManager(t)
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
 	found := 0
-	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+	err = fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || d.Name() != metaFile {
 			return err
 		}
 		found++
-		data, rerr := os.ReadFile(path) //nolint:gosec // G304: a path this test's own manager wrote under t.TempDir
+		data, rerr := root.ReadFile(path)
 		if rerr != nil {
 			return rerr
 		}
