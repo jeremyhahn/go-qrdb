@@ -164,7 +164,7 @@ func TestRaftBackendFactory_ColdDedicatedDatabaseIsDroppable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTenantService: %v", err)
 	}
-	mgr := database.NewManager(volTestLogger(), t.TempDir(), database.WithShardIDClaimer(testShardClaimer(t)))
+	mgr := claimingManager(t, volTestLogger(), t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	host, _ := newSharedTestHost(t)
 	raftReg := NewRaftBackendFactoryFromManager(host, sharedHostReplicaID, sharedHostRaftAddr, reg, mgr, tenant.SystemTenantID, volTestLogger())

@@ -46,8 +46,7 @@ func TestReattachRaftTenants_SkipsNonRaftDatabase(t *testing.T) {
 		t.Fatalf("CreateTenant(rnoskip): %v", err)
 	}
 
-	mgr := database.NewManager(reattachTestLogger(), t.TempDir(),
-		database.WithShardIDClaimer(testShardClaimer(t)))
+	mgr := claimingManager(t, reattachTestLogger(), t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 
 	tenantCtx := tenant.WithTenantID(ctx, "rnoskip")

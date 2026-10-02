@@ -340,6 +340,18 @@ func (e *CallerShardIDError) Error() string {
 		strconv.FormatUint(e.ShardID, 10) + "; shard IDs are issued by the cluster, never chosen by the caller"
 }
 
+// RaftConfigRequiredError is returned when an update would clear the Raft
+// configuration of a raft-backend database. That configuration carries the
+// database's issued shard ID, its identity, so it can be changed but never
+// removed.
+type RaftConfigRequiredError struct {
+	Name string
+}
+
+func (e *RaftConfigRequiredError) Error() string {
+	return "database: " + strconv.Quote(e.Name) + " is raft-backed; its Raft configuration can be updated, never removed"
+}
+
 // ProvisionRaftError reports a provisioned database with a Raft
 // configuration. Every node provisions its configured databases on its own,
 // and nodes cannot agree on a raft database's shard ID without a claim.

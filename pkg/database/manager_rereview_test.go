@@ -115,7 +115,8 @@ func TestManager_ShardIDsNeverRepeatAcrossDropAndRestart(t *testing.T) {
 	}
 
 	replicated := kvstore.NewMemoryKVStore()
-	mgr := NewManager(nil, dir, WithShardIDClaimer(claimerOver(t, replicated)))
+	mgr := NewManager(nil, dir)
+	mgr.SetShardIDClaimer(claimerOver(t, replicated))
 	first, err := mgr.Create(raftCfg("a"))
 	require.NoError(t, err)
 	top, err := mgr.Create(raftCfg("b"))
@@ -125,7 +126,8 @@ func TestManager_ShardIDsNeverRepeatAcrossDropAndRestart(t *testing.T) {
 	require.NoError(t, mgr.Drop(context.Background(), "b"))
 	require.NoError(t, mgr.Close())
 
-	restarted := NewManager(nil, dir, WithShardIDClaimer(claimerOver(t, replicated)))
+	restarted := NewManager(nil, dir)
+	restarted.SetShardIDClaimer(claimerOver(t, replicated))
 	t.Cleanup(func() { _ = restarted.Close() })
 	require.NoError(t, restarted.OpenAll())
 	again, err := restarted.Create(raftCfg("b"))

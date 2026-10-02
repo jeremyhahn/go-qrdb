@@ -198,7 +198,7 @@ func TestReattachRaftTenants_FreshRegistryReRegisters(t *testing.T) {
 
 	// Populate the database manager with a dedicated-raft database for the
 	// tenant, mirroring dbManager.OpenAll at boot.
-	mgr := database.NewManager(reattachTestLogger(), t.TempDir(), database.WithShardIDClaimer(testShardClaimer(t)))
+	mgr := claimingManager(t, reattachTestLogger(), t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	tctx := tenant.WithTenantID(ctx, "rfresh")
 	cfg := database.DatabaseConfig{

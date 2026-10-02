@@ -24,6 +24,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
@@ -71,7 +72,7 @@ type Manager struct {
 	databases  sync.Map // name (string) -> *Database
 	factory    BackendFactory
 	barrierMgr *DatabaseBarrierManager
-	claimer    ShardIDClaimer
+	claimer    atomic.Pointer[claimerRef]
 	reclaimer  KeyspaceReclaimer
 
 	// dropping holds the name of every database with a Drop in flight, so
@@ -121,15 +122,6 @@ func WithBackendFactory(f BackendFactory) ManagerOption {
 func WithBarrierManager(bm *DatabaseBarrierManager) ManagerOption {
 	return func(m *Manager) {
 		m.barrierMgr = bm
-	}
-}
-
-// WithShardIDClaimer sets the issuer of every raft database's shard ID at
-// construction. A composer whose replicated store exists only later uses
-// SetShardIDClaimer instead.
-func WithShardIDClaimer(c ShardIDClaimer) ManagerOption {
-	return func(m *Manager) {
-		m.claimer = c
 	}
 }
 
@@ -859,27 +851,61 @@ func (m *Manager) UpdateEtcd(name string, etcd *EtcdConfig) error {
 // one, and an update naming a different one is refused with
 // *CallerShardIDError.
 func (m *Manager) UpdateRaft(name string, raft *DatabaseRaftConfig) error {
-	if raft != nil {
-		if err := raft.Validate(); err != nil {
-			return err
-		}
-	}
 	db, err := m.loadDatabase(name)
 	if err != nil {
 		return err
 	}
-	if raft != nil {
-		issued := db.ShardID()
-		if raft.ShardID != 0 && raft.ShardID != issued {
-			return &CallerShardIDError{Name: name, ShardID: raft.ShardID}
+	if raft == nil {
+		// A raft-backend database's Raft configuration carries its issued
+		// shard ID, its identity: no update clears it.
+		if db.BackendType() == BackendRaft {
+			return &RaftConfigRequiredError{Name: name}
 		}
-		kept := *raft
-		kept.ShardID = issued
-		raft = &kept
+		db.updateRaft(nil)
+		return m.rewriteMeta(name, db)
 	}
-	db.updateRaft(raft)
+	issued := db.ShardID()
+	if raft.ShardID != 0 && raft.ShardID != issued {
+		return &CallerShardIDError{Name: name, ShardID: raft.ShardID}
+	}
+	kept := *raft
+	kept.ShardID = issued
+	keepStoredSecrets(&kept, db.Config().Raft)
+	if err := kept.Validate(); err != nil {
+		return err
+	}
+	db.updateRaft(&kept)
 
 	return m.rewriteMeta(name, db)
+}
+
+// keepStoredSecrets fills each discovery secret an update left empty from the
+// stored configuration. Secrets are write-only -- no response returns them --
+// so a client that reads a database's Raft settings and writes them back
+// cannot send them; an omitted secret therefore means "unchanged", not
+// "cleared". Sending a secret rotates it. A discovery block the update leaves
+// out is removed, secret and all: that is how a secret is removed. update's
+// blocks are copied before they are filled, so the caller's request is never
+// written to.
+func keepStoredSecrets(update, stored *DatabaseRaftConfig) {
+	if stored == nil {
+		return
+	}
+	if update.Static != nil && update.Static.SharedSecret == "" && stored.Static != nil {
+		s := *update.Static
+		s.SharedSecret = stored.Static.SharedSecret
+		update.Static = &s
+	}
+	if update.Multicast != nil && update.Multicast.SharedSecret == "" && stored.Multicast != nil {
+		mc := *update.Multicast
+		mc.SharedSecret = stored.Multicast.SharedSecret
+		update.Multicast = &mc
+	}
+	if update.Token != nil && update.Token.Token == "" && stored.Token != nil {
+		tk := *update.Token
+		tk.Token = stored.Token.Token
+		update.Token = &tk
+	}
 }
 
 // UpdateReplicas updates the replication factor recorded for a database. It

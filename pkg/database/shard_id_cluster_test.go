@@ -147,7 +147,8 @@ func (f failingClaimer) ClaimShardID(context.Context) (uint64, error) { return 0
 func TestShardIDs_FailedClaimCreatesNothing(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	storeDown := errors.New("system store unavailable")
-	m := NewManager(logger, t.TempDir(), WithShardIDClaimer(failingClaimer{err: storeDown}))
+	m := NewManager(logger, t.TempDir())
+	m.SetShardIDClaimer(failingClaimer{err: storeDown})
 	t.Cleanup(func() { _ = m.Close() })
 
 	_, err := m.Create(DatabaseConfig{Name: "refused", Engine: EngineKV, Backend: BackendMemory, Raft: validRaftConfig(0)})

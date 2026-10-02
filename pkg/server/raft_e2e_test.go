@@ -108,7 +108,7 @@ func newRaftE2EStack(t *testing.T) *raftE2EStack {
 		t.Fatalf("NewTenantService: %v", err)
 	}
 
-	mgr := database.NewManager(volTestLogger(), t.TempDir(), database.WithShardIDClaimer(testShardClaimer(t)))
+	mgr := claimingManager(t, volTestLogger(), t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 
 	// Numeric quota plane (raft-group counter reads the persisted usage record).

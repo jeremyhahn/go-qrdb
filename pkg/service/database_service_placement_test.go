@@ -117,7 +117,7 @@ func (s *staticTopology) Nodes() []placement.NodeLoad { return s.nodes }
 func newPlacementDatabaseService(t *testing.T, info *tenant.TenantInfo, f *fakeReplicaQuota, nodes []placement.NodeLoad) (DatabaseServicer, *placement.Store) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, t.TempDir(), database.WithShardIDClaimer(testShardClaimer(t)))
+	mgr := claimingManager(t, logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 
 	store, err := placement.NewStore(newMemPlacementKV())
@@ -190,7 +190,7 @@ func TestCreateForTenant_PersistsPlacement(t *testing.T) {
 func newPlacementDatabaseServiceWithLocalNode(t *testing.T, info *tenant.TenantInfo, f *fakeReplicaQuota, nodes []placement.NodeLoad, localNodeID string) (DatabaseServicer, *placement.Store) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, t.TempDir(), database.WithShardIDClaimer(testShardClaimer(t)))
+	mgr := claimingManager(t, logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 
 	store, err := placement.NewStore(newMemPlacementKV())
@@ -403,7 +403,7 @@ func (f *flakyDeleteKV) CompareAndSwap(ctx context.Context, key string, expected
 func newFlakyPlacementDatabaseService(t *testing.T, info *tenant.TenantInfo, f *fakeReplicaQuota, nodes []placement.NodeLoad) (DatabaseServicer, *placement.Store, *flakyDeleteKV) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, t.TempDir(), database.WithShardIDClaimer(testShardClaimer(t)))
+	mgr := claimingManager(t, logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 
 	kv := &flakyDeleteKV{KV: newMemPlacementKV()}
@@ -632,7 +632,7 @@ func TestDropForTenant_NonCreatorReplica_NeverFinishesTeardownWithoutCommitting(
 	// database.Manager -- it never created "orders" and has no local
 	// catalog record for it at all.
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	nonCreatorMgr := database.NewManager(logger, t.TempDir(), database.WithShardIDClaimer(testShardClaimer(t)))
+	nonCreatorMgr := claimingManager(t, logger, t.TempDir())
 	t.Cleanup(func() { _ = nonCreatorMgr.Close() })
 	scheduler, err := placement.NewScheduler(&staticTopology{nodes: healthyNodes("n1")})
 	if err != nil {
@@ -890,7 +890,7 @@ func (f *failNthCompareAndSwapKV) CompareAndSwap(ctx context.Context, key string
 func TestDrop_MarkDropCommittedFailureFailsTheDrop(t *testing.T) {
 	f := &fakeReplicaQuota{q: &quota.Quotas{MaxReplicasPerGroup: 5, MaxTotalReplicas: 100}}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, t.TempDir(), database.WithShardIDClaimer(testShardClaimer(t)))
+	mgr := claimingManager(t, logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 
 	boom := errors.New("kv: unavailable")

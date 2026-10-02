@@ -38,7 +38,8 @@ func TestShardIDs_RaftCreateWaitsForClusterShardIDs(t *testing.T) {
 		t.Fatalf("shard.NewClaimer: %v", err)
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	m := NewManager(logger, t.TempDir(), WithShardIDClaimer(claimer))
+	m := NewManager(logger, t.TempDir())
+	m.SetShardIDClaimer(claimer)
 	t.Cleanup(func() { _ = m.Close() })
 
 	cfg := DatabaseConfig{Name: "early", Engine: EngineKV, Backend: BackendMemory, Raft: validRaftConfig(0)}

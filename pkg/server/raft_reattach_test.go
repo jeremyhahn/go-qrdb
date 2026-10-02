@@ -96,7 +96,7 @@ func TestReattachRaftTenants_AutoStartsShard_SelfStaysSealed(t *testing.T) {
 
 	// Populate the database manager with a dedicated-raft database for the
 	// auto tenant, mirroring dbManager.OpenAll at boot.
-	mgr := database.NewManager(reattachTestLogger(), t.TempDir(), database.WithShardIDClaimer(testShardClaimer(t)))
+	mgr := claimingManager(t, reattachTestLogger(), t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	autoCtx := tenant.WithTenantID(ctx, "rauto")
 	cfg := database.DatabaseConfig{
@@ -170,8 +170,7 @@ func TestReattachRaftTenants_AttachError(t *testing.T) {
 
 	// Build a database.Manager with a Raft-backed placeholder database owned
 	// by the tenant.
-	mgr := database.NewManager(slog.Default(), t.TempDir(),
-		database.WithShardIDClaimer(testShardClaimer(t)))
+	mgr := claimingManager(t, slog.Default(), t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	if _, cerr := mgr.Create(database.DatabaseConfig{
 		Name:     "raft-db",

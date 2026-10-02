@@ -60,20 +60,33 @@ type ShardIDClaimer interface {
 // the store and nowhere on the node's disk. A Manager with none refuses raft
 // creates.
 //
-// Thread-safety: call it before serving create requests.
+// It is the one way to set the claimer: no production composition has the
+// replicated store when it constructs the Manager, so a construction option
+// would only ever serve tests. The claimer is held in an atomic pointer, so a
+// create racing the composition sees either no claimer (and refuses) or the
+// one set, never a torn value. A nil c clears it.
 func (m *Manager) SetShardIDClaimer(c ShardIDClaimer) {
-	m.claimer = c
+	if c == nil {
+		m.claimer.Store(nil)
+		return
+	}
+	m.claimer.Store(&claimerRef{c})
 }
+
+// claimerRef boxes a ShardIDClaimer so the Manager can hold it in an
+// atomic.Pointer.
+type claimerRef struct{ ShardIDClaimer }
 
 // issueShardID returns the shard ID for a raft database being created. The
 // claimer is the only issuer: its record lives in the replicated store, so an
 // ID is issued once in the cluster's lifetime, survives a restore into a fresh
 // data directory, and behaves identically in standalone and raft mode.
 func (m *Manager) issueShardID(ctx context.Context) (uint64, error) {
-	if m.claimer == nil {
+	ref := m.claimer.Load()
+	if ref == nil {
 		return 0, &ShardIssuerRequiredError{}
 	}
-	id, err := m.claimer.ClaimShardID(ctx)
+	id, err := ref.ClaimShardID(ctx)
 	if err != nil {
 		return 0, &ShardIDClaimError{Err: err}
 	}

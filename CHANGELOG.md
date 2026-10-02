@@ -33,6 +33,18 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **A Raft update keeps the secrets it leaves out.** Secrets are write-only,
+  so a client that read a database's Raft settings and wrote them back sent
+  none: the update cleared the static shared secret and failed validation for
+  multicast and token discovery. A discovery block without its secret now
+  keeps the stored one; sending a secret rotates it; leaving a block out
+  removes it. A Raft update that would remove a raft-backed database's Raft
+  configuration -- its shard ID with it -- is refused
+  (`database.RaftConfigRequiredError`, 400). Database configuration
+  validation failures are 400 / `INVALID_ARGUMENT` on every transport instead
+  of 500. `database.WithShardIDClaimer`, added in this cycle, is removed: no composition has the
+  replicated store when it builds the Manager, so `SetShardIDClaimer`, now
+  safe to call while the Manager serves, is the one way to set the claimer.
 - **Shard IDs are unique across the cluster, not only per node.** Every
   node's allocator started at 1000 and moved past only the IDs that node had
   issued, so two nodes creating raft databases were handed the same shard ID:
@@ -47,7 +59,7 @@ are not reconstructed here — their history is in the git log.
     `database.WithAllocator`) and its `{dataDir}/shard-high-water` file are
     removed, so a node restored from a backup onto an empty data directory
     never re-issues an ID. Nothing migrates the old file.
-    `database.WithShardIDClaimer` sets the claimer at construction.
+    `Manager.SetShardIDClaimer` sets the claimer.
   - **Refusals.** `database.Manager.Provision` refuses a Raft configuration
     (`database.ProvisionRaftError`), because nodes provisioning on their own
     cannot agree on a shard ID; no shipped path provisions one. A create that

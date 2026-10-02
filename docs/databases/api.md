@@ -100,6 +100,31 @@ the secret field numbers are `reserved` in the response messages. *(Changed:
 every read of a database -- get, list, and the response to every update --
 returned the stored discovery secrets on every transport.)*
 
+**A Raft update keeps a secret it leaves out.** A Raft update replaces the
+whole Raft block, and a client that reads a database's settings back has no
+secrets to send. So in an update:
+
+- a discovery block **with** its secret field sets that secret (this is how a
+  secret is rotated);
+- a discovery block **without** its secret field keeps the stored secret --
+  including where validation needs one, as for multicast and token discovery;
+- a discovery block **left out** is removed, secret and all (this is how a
+  secret is removed: disable that discovery method).
+
+The response to the update reports each kept secret as set. *(Changed: an
+update without the secrets cleared the static shared secret and failed
+validation for multicast and token discovery, so a read-modify-write was
+impossible once secrets became write-only.)*
+
+A raft-backed database's Raft configuration carries its shard ID, so an
+update can change it but not remove it: a Raft update with no configuration is
+refused with `database.RaftConfigRequiredError` (400 / `INVALID_ARGUMENT`).
+Configuration validation failures -- an unknown cluster mode or discovery
+method, a missing discovery block, secret, domain, endpoint or token, an
+invalid cluster size, mode, storage codec or etcd listen address -- are
+400 / `INVALID_ARGUMENT` on every transport. *(Corrected: they reached REST as
+500.)*
+
 `engine` is accepted as `kv`, `timeseries` or `vector`; `backend` as `memory`,
 `file`, `pebble`, `raft` or `objstore`. Measured: the backend does not decide
 where most databases' data lives, and `objstore` is refused when the store is

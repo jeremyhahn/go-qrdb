@@ -56,7 +56,7 @@ func newScaleDatabaseService(
 ) (*DatabaseService, *placement.Store, *fakeReplicaQuota) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, t.TempDir(), database.WithShardIDClaimer(testShardClaimer(t)))
+	mgr := claimingManager(t, logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 
 	store, err := placement.NewStore(newMemPlacementKV())
@@ -185,7 +185,7 @@ func TestScaleForTenant_NotDedicatedRaftDatabase(t *testing.T) {
 	// (non-raft) memory backend and never gets a placement entry -- mirroring
 	// TestCreateForTenant_Replicas_NonRaftIgnored.
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, t.TempDir(), database.WithShardIDClaimer(testShardClaimer(t)))
+	mgr := claimingManager(t, logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	store, err := placement.NewStore(newMemPlacementKV())
 	if err != nil {
@@ -227,7 +227,7 @@ func TestScaleForTenant_PlacementSubsystemUnavailable(t *testing.T) {
 	t.Parallel()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, t.TempDir(), database.WithShardIDClaimer(testShardClaimer(t)))
+	mgr := claimingManager(t, logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	f := &fakeReplicaQuota{q: &quota.Quotas{MaxReplicasPerGroup: 5, MaxTotalReplicas: 100}}
 	svc := NewDatabaseService(mgr,
@@ -445,7 +445,7 @@ func TestScaleForTenant_ScaleUp_PlacementThenKeyDeliveryThenAddNodeOrdering(t *t
 
 	log := &stepLog{}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, t.TempDir(), database.WithShardIDClaimer(testShardClaimer(t)))
+	mgr := claimingManager(t, logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 
 	store, err := placement.NewStore(&orderingPlacementKV{memPlacementKV: newMemPlacementKV(), log: log})
@@ -741,7 +741,7 @@ func TestScaleForTenant_ScaleDown_NoQuotaCheck(t *testing.T) {
 	t.Parallel()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, t.TempDir(), database.WithShardIDClaimer(testShardClaimer(t)))
+	mgr := claimingManager(t, logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	store, err := placement.NewStore(newMemPlacementKV())
 	if err != nil {
@@ -1036,7 +1036,7 @@ func newScaleDatabaseServiceWithLocalNode(
 ) (*DatabaseService, *placement.Store, *fakeReplicaQuota) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, t.TempDir(), database.WithShardIDClaimer(testShardClaimer(t)))
+	mgr := claimingManager(t, logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 
 	store, err := placement.NewStore(newMemPlacementKV())
@@ -1324,7 +1324,7 @@ func newFlakyLeaderScaleService(
 ) (*DatabaseService, *placement.Store, *fakeReplicaQuota) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, t.TempDir(), database.WithShardIDClaimer(testShardClaimer(t)))
+	mgr := claimingManager(t, logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 
 	store, err := placement.NewStore(newMemPlacementKV())
@@ -1537,7 +1537,7 @@ func TestGetForTenant_NonRaftDatabase_ReplicasUntouchedByPlacementLookup(t *test
 	t.Parallel()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, t.TempDir(), database.WithShardIDClaimer(testShardClaimer(t)))
+	mgr := claimingManager(t, logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	store, err := placement.NewStore(newMemPlacementKV())
 	if err != nil {

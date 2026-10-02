@@ -21,7 +21,6 @@ import (
 	"os"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -155,7 +154,7 @@ func newNodeAddDatabaseService(
 ) DatabaseServicer {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, t.TempDir(), database.WithShardIDClaimer(testShardClaimer(t)))
+	mgr := claimingManager(t, logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 
 	store, err := placement.NewStore(newMemPlacementKV())

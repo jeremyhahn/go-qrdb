@@ -52,7 +52,9 @@ func newTestManager(t *testing.T) *Manager {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	// Every production Manager has a shard ID claimer; so does a test one, so
 	// a raft database created here gets a real shard ID.
-	return NewManager(logger, dataDir, WithShardIDClaimer(testShardClaimer(t)))
+	m := NewManager(logger, dataDir)
+	m.SetShardIDClaimer(testShardClaimer(t))
+	return m
 }
 
 // validMemoryConfig returns a DatabaseConfig with the given name using the

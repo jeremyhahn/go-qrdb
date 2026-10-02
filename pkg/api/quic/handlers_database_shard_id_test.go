@@ -37,7 +37,8 @@ func newShardIDQUICServer(t *testing.T) *Server {
 		t.Fatalf("shard.NewClaimer: %v", err)
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, t.TempDir(), database.WithShardIDClaimer(claimer))
+	mgr := database.NewManager(logger, t.TempDir())
+	mgr.SetShardIDClaimer(claimer)
 	t.Cleanup(func() { _ = mgr.Close() })
 	return NewServer(nil, nil, "localhost:0", WithDatabaseService(service.NewDatabaseService(mgr)))
 }

@@ -34,7 +34,7 @@ func newTestDatabaseService(t *testing.T) DatabaseServicer {
 	t.Helper()
 	dataDir := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, dataDir, database.WithShardIDClaimer(testShardClaimer(t)))
+	mgr := claimingManager(t, logger, dataDir)
 	t.Cleanup(func() { _ = mgr.Close() })
 	return NewDatabaseService(mgr)
 }
@@ -870,7 +870,7 @@ func newTestDatabaseServiceWithBarrier(t *testing.T) (*DatabaseService, *databas
 	t.Helper()
 	dataDir := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, dataDir, database.WithShardIDClaimer(testShardClaimer(t)))
+	mgr := claimingManager(t, logger, dataDir)
 	t.Cleanup(func() { _ = mgr.Close() })
 
 	reg, _ := initNoneSystemRegistry(t)

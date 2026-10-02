@@ -74,7 +74,7 @@ func newRaftMigrateStack(t *testing.T) *raftMigrateStack {
 		t.Fatalf("NewTenantService: %v", err)
 	}
 
-	mgr := database.NewManager(volTestLogger(), t.TempDir(), database.WithShardIDClaimer(testShardClaimer(t)))
+	mgr := claimingManager(t, volTestLogger(), t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 
 	dbSvc := service.NewDatabaseService(mgr,

@@ -306,6 +306,20 @@ var databaseRules = []rule{
 	as(&database.SharedStoreBarrierUnsupportedError{}, Unprocessable),
 	as(&database.BarrierOffDataPathError{}, Unprocessable),
 	as(&database.InvalidConcurrencyError{}, InvalidArgument),
+	// A database configuration that fails validation is the caller's error,
+	// not the server's: each of these used to reach REST as a 500.
+	as(&database.InvalidModeError{Mode: "x"}, InvalidArgument),
+	as(&database.ConnectionRequiredError{}, InvalidArgument),
+	as(&database.InvalidRaftClusterModeError{Mode: "x"}, InvalidArgument),
+	as(&database.InvalidDiscoveryMethodError{Method: "x"}, InvalidArgument),
+	as(&database.DiscoveryConfigRequiredError{Method: "multicast"}, InvalidArgument),
+	as(&database.DiscoverySharedSecretRequiredError{Method: "multicast"}, InvalidArgument),
+	as(&database.DiscoveryDomainRequiredError{}, InvalidArgument),
+	as(&database.DiscoveryEndpointRequiredError{}, InvalidArgument),
+	as(&database.DiscoveryTokenRequiredError{}, InvalidArgument),
+	as(&database.DiscoveryClusterSizeError{Size: 0}, InvalidArgument),
+	as(&database.EtcdListenAddrRequiredError{}, InvalidArgument),
+	as(&database.InvalidStorageCodecError{Codec: "x"}, InvalidArgument),
 	// A per-database barrier operation on a node with no barrier manager.
 	as(&service.BarrierManagerNotConfiguredError{}, Unimplemented),
 	// A database mid-drop is not gone (NotFoundError, above) and not a naming
@@ -326,6 +340,9 @@ var databaseRules = []rule{
 	// refused, never validated.
 	as(&database.CallerShardIDError{Name: "db", ShardID: 1}, InvalidArgument),
 	as(&database.ProvisionRaftError{Name: "db"}, InvalidArgument),
+	// A raft-backed database's Raft configuration carries its shard ID; an
+	// update may change it but not remove it.
+	as(&database.RaftConfigRequiredError{Name: "db"}, InvalidArgument),
 	// A raft create on a node with no shard ID issuer: a composition fault.
 	as(&database.ShardIssuerRequiredError{}, Unimplemented),
 	// FIRST of the claim rows: a corrupt high-water mark is a server fault,
