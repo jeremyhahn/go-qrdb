@@ -133,9 +133,6 @@ func toolDatabaseCreate() mcp.Tool {
 		mcp.WithString("raft_cluster_mode",
 			mcp.Description("Raft cluster mode: none, local, or distributed."),
 		),
-		mcp.WithNumber("raft_shard_id",
-			mcp.Description("Raft shard ID for distributed mode."),
-		),
 		mcp.WithNumber("raft_replica_id",
 			mcp.Description("Raft replica ID for distributed mode."),
 		),
@@ -459,9 +456,6 @@ func toolDatabaseUpdateRaft() mcp.Tool {
 		mcp.WithString("cluster_mode",
 			mcp.Description("Raft cluster mode: none, local, or distributed."),
 		),
-		mcp.WithNumber("shard_id",
-			mcp.Description("Raft shard ID for distributed mode."),
-		),
 		mcp.WithNumber("replica_id",
 			mcp.Description("Raft replica ID for distributed mode."),
 		),
@@ -742,11 +736,11 @@ func handleDatabaseUpdateSQL(dbSvc service.DatabaseServicer) mcpserver.ToolHandl
 
 // buildRaftConfigFromRequest builds a DatabaseRaftConfig from MCP request
 // parameters used by the database create tool. The raft-specific parameters
-// use the "raft_" prefix (e.g., "raft_shard_id").
+// use the "raft_" prefix (e.g., "raft_replica_id"). There is no shard ID
+// parameter: the cluster issues a database's shard ID at create.
 func buildRaftConfigFromRequest(req mcp.CallToolRequest, raftMode string) *database.DatabaseRaftConfig {
 	raftCfg := &database.DatabaseRaftConfig{
 		ClusterMode: database.RaftClusterMode(raftMode),
-		ShardID:     mcp.ParseUInt64(req, "raft_shard_id", 0),
 		ReplicaID:   mcp.ParseUInt64(req, "raft_replica_id", 0),
 		RaftAddress: mcp.ParseString(req, "raft_address", ""),
 	}
@@ -763,11 +757,11 @@ func buildRaftConfigFromRequest(req mcp.CallToolRequest, raftMode string) *datab
 
 // buildRaftConfigFromUpdateRequest builds a DatabaseRaftConfig from MCP
 // request parameters used by the raft update tool. The raft-specific
-// parameters use direct names (e.g., "shard_id") without the "raft_" prefix.
+// parameters use direct names (e.g., "replica_id") without the "raft_"
+// prefix. There is no shard ID parameter: a database's shard ID never changes.
 func buildRaftConfigFromUpdateRequest(req mcp.CallToolRequest, clusterMode string) *database.DatabaseRaftConfig {
 	raftCfg := &database.DatabaseRaftConfig{
 		ClusterMode: database.RaftClusterMode(clusterMode),
-		ShardID:     mcp.ParseUInt64(req, "shard_id", 0),
 		ReplicaID:   mcp.ParseUInt64(req, "replica_id", 0),
 		RaftAddress: mcp.ParseString(req, "raft_address", ""),
 	}

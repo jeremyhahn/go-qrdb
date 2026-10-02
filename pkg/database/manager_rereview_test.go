@@ -23,7 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/shard"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
 
 // A database dropped through a manager with a reclaimer leaves a tombstone
@@ -114,7 +114,8 @@ func TestManager_ShardIDsNeverRepeatAcrossDropAndRestart(t *testing.T) {
 		return DatabaseConfig{Name: name, Engine: EngineKV, Backend: BackendMemory, Raft: &DatabaseRaftConfig{ClusterMode: "none"}}
 	}
 
-	mgr := NewManager(nil, dir, WithAllocator(shard.NewAllocator()))
+	replicated := kvstore.NewMemoryKVStore()
+	mgr := NewManager(nil, dir, WithShardIDClaimer(claimerOver(t, replicated)))
 	first, err := mgr.Create(raftCfg("a"))
 	require.NoError(t, err)
 	top, err := mgr.Create(raftCfg("b"))
@@ -124,7 +125,7 @@ func TestManager_ShardIDsNeverRepeatAcrossDropAndRestart(t *testing.T) {
 	require.NoError(t, mgr.Drop(context.Background(), "b"))
 	require.NoError(t, mgr.Close())
 
-	restarted := NewManager(nil, dir, WithAllocator(shard.NewAllocator()))
+	restarted := NewManager(nil, dir, WithShardIDClaimer(claimerOver(t, replicated)))
 	t.Cleanup(func() { _ = restarted.Close() })
 	require.NoError(t, restarted.OpenAll())
 	again, err := restarted.Create(raftCfg("b"))

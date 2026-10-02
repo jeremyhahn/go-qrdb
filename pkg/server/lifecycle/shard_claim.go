@@ -15,47 +15,22 @@
 package lifecycle
 
 import (
-	"context"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/placement"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 )
 
-// placementLister is the slice of the placement store the shard seed reads.
-type placementLister interface {
-	List(ctx context.Context) ([]*placement.Placement, error)
-}
-
-// placementShardSeed returns the seed the cluster shard-ID claimer consults
-// when it creates the replicated high-water mark: the highest shard ID any
-// placement records. Placement is the one cluster-wide record of which shard
-// IDs are in use. The seed is required for correctness: claims share the ID
-// space with IDs issued outside them (a provisioned database takes its ID
-// from each node's allocator), and the first claim must start past all of
-// them.
-//
-// A nil store yields a nil seed: a composition with no placement table has no
-// dedicated-raft database another node could be serving.
-func placementShardSeed(store *placement.Store) shard.SeedFunc {
-	if store == nil {
-		return nil
+// newShardClaimer builds the cluster shard-ID claimer over the replicated
+// system store. A store without the atomic verbs cannot make a claim every
+// node agrees on, and a node without a claimer would issue IDs another node
+// may hold, so the build refuses rather than wire one.
+func newShardClaimer(store kvstore.KVStore) (*shard.Claimer, error) {
+	claimStore, ok := store.(shard.ClaimStore)
+	if !ok {
+		return nil, &ShardClaimerError{Err: kvstore.ErrAtomicWriteUnsupported}
 	}
-	return seedFromPlacements(store)
-}
-
-// seedFromPlacements is placementShardSeed over the lister interface.
-func seedFromPlacements(lister placementLister) shard.SeedFunc {
-	return func(ctx context.Context) (uint64, error) {
-		placements, err := lister.List(ctx)
-		if err != nil {
-			return 0, err
-		}
-		var highest uint64
-		for _, p := range placements {
-			if p != nil && p.ShardID > highest {
-				highest = p.ShardID
-			}
-		}
-		return highest, nil
+	claimer, err := shard.NewClaimer(claimStore)
+	if err != nil {
+		return nil, &ShardClaimerError{Err: err}
 	}
+	return claimer, nil
 }

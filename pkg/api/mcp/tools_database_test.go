@@ -636,8 +636,10 @@ func TestHandleDatabaseCreate_WithRaftDistributed(t *testing.T) {
 	if info.Raft.ClusterMode != database.RaftDistributed {
 		t.Errorf("cluster mode: got %q, want %q", info.Raft.ClusterMode, database.RaftDistributed)
 	}
-	if info.Raft.ShardID != 1 {
-		t.Errorf("shard id: got %d, want 1", info.Raft.ShardID)
+	// raft_shard_id is not a parameter of the tool: a caller cannot name a
+	// shard, and the argument is dropped before it reaches the service.
+	if info.Raft.ShardID != 0 {
+		t.Errorf("shard id: got %d, want 0 (the caller's raft_shard_id must be ignored)", info.Raft.ShardID)
 	}
 	if info.Raft.ReplicaID != 1 {
 		t.Errorf("replica id: got %d, want 1", info.Raft.ReplicaID)

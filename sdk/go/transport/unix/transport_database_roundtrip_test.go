@@ -303,15 +303,14 @@ func TestUnixRT_UpdateDatabaseRaft(t *testing.T) {
 		Name: "db1",
 		Raft: &transport.DatabaseRaftConfig{
 			ClusterMode: "single",
-			ShardID:     1,
 			ReplicaID:   1,
 		},
 	})
 	if err != nil {
 		t.Fatalf("UpdateDatabaseRaft: %v", err)
 	}
-	if resp.Raft == nil || resp.Raft.ShardID != 1 {
-		t.Errorf("got %+v, want Raft.ShardID=1", resp.Raft)
+	if resp.Raft == nil || resp.Raft.ReplicaID != 1 {
+		t.Errorf("got %+v, want Raft.ReplicaID=1", resp.Raft)
 	}
 }
 

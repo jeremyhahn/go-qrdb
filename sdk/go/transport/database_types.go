@@ -59,10 +59,10 @@ type DatabaseInfo struct {
 }
 
 // DatabaseRaftInfo is a database's Raft configuration as a response reports
-// it. Discovery secrets are write-only: each is reported only as set.
+// it. Discovery secrets are write-only: each is reported only as set. It has
+// no shard ID: that is reported once, as DatabaseInfo.ShardID.
 type DatabaseRaftInfo struct {
 	ClusterMode    string                  `json:"clusterMode"`
-	ShardID        uint64                  `json:"shardId,omitempty"`
 	ReplicaID      uint64                  `json:"replicaId,omitempty"`
 	RaftAddress    string                  `json:"raftAddress,omitempty"`
 	Peers          []string                `json:"peers,omitempty"`
@@ -136,7 +136,6 @@ type UpdateDatabaseSQLRequest struct {
 // database. A response reports them as a DatabaseRaftInfo.
 type DatabaseRaftConfig struct {
 	ClusterMode    string   `json:"clusterMode"`
-	ShardID        uint64   `json:"shardId,omitempty"`
 	ReplicaID      uint64   `json:"replicaId,omitempty"`
 	RaftAddress    string   `json:"raftAddress,omitempty"`
 	Peers          []string `json:"peers,omitempty"`

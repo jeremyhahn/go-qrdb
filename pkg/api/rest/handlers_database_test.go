@@ -1018,7 +1018,6 @@ func TestHandleCreateDatabase_WithRaftToken(t *testing.T) {
 func TestRaftConfigFromRequest(t *testing.T) {
 	req := &raftConfigRequest{
 		ClusterMode:    "distributed",
-		ShardID:        5,
 		ReplicaID:      2,
 		RaftAddress:    "10.0.0.1:63001",
 		Peers:          []string{"10.0.0.2:63001"},
@@ -1055,8 +1054,9 @@ func TestRaftConfigFromRequest(t *testing.T) {
 	if raft.ClusterMode != database.RaftDistributed {
 		t.Fatalf("ClusterMode = %q, want %q", raft.ClusterMode, database.RaftDistributed)
 	}
-	if raft.ShardID != 5 {
-		t.Fatalf("ShardID = %d, want 5", raft.ShardID)
+	// The request carries no shard ID: the cluster issues it at create.
+	if raft.ShardID != 0 {
+		t.Fatalf("ShardID = %d, want 0", raft.ShardID)
 	}
 	if raft.ReplicaID != 2 {
 		t.Fatalf("ReplicaID = %d, want 2", raft.ReplicaID)
@@ -1204,8 +1204,10 @@ func TestRaftConfigRequest_JSON(t *testing.T) {
 	if roundTrip.ClusterMode != "distributed" {
 		t.Fatalf("ClusterMode = %q, want %q", roundTrip.ClusterMode, "distributed")
 	}
-	if roundTrip.ShardID != 1 {
-		t.Fatalf("ShardID = %d, want 1", roundTrip.ShardID)
+	// A request naming a shard ID is not honoured: the field does not exist,
+	// so the name is dropped on decode and never reaches the server.
+	if strings.Contains(string(data), "shardId") {
+		t.Fatalf("a decoded raft request still carries a shard ID: %s", data)
 	}
 	if roundTrip.ReplicaID != 2 {
 		t.Fatalf("ReplicaID = %d, want 2", roundTrip.ReplicaID)

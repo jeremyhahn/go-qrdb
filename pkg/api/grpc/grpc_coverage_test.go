@@ -2140,7 +2140,6 @@ func TestProtoDatabaseCreateToConfig_WithRaft(t *testing.T) {
 	req := &pb.DatabaseCreateRequest{
 		Name: "db",
 		Raft: &pb.DatabaseRaftConfig{
-			ShardId:     1,
 			ReplicaId:   1,
 			RaftAddress: "127.0.0.1:63001",
 			Static: &pb.DatabaseStaticDiscovery{
@@ -2153,8 +2152,12 @@ func TestProtoDatabaseCreateToConfig_WithRaft(t *testing.T) {
 	if cfg.Raft == nil {
 		t.Fatal("expected non-nil Raft config")
 	}
-	if cfg.Raft.ShardID != 1 {
-		t.Fatalf("expected shard_id=1, got %d", cfg.Raft.ShardID)
+	if cfg.Raft.ReplicaID != 1 {
+		t.Fatalf("expected replica_id=1, got %d", cfg.Raft.ReplicaID)
+	}
+	// The wire carries no shard ID: the cluster issues it at create.
+	if cfg.Raft.ShardID != 0 {
+		t.Fatalf("a create request produced shard ID %d", cfg.Raft.ShardID)
 	}
 	if cfg.Raft.Static == nil {
 		t.Fatal("expected non-nil Static discovery config")
@@ -2170,7 +2173,6 @@ func TestProtoRaftConfigToDomain_NilInput(t *testing.T) {
 
 func TestProtoRaftConfigToDomain_WithMulticast(t *testing.T) {
 	r := &pb.DatabaseRaftConfig{
-		ShardId: 1,
 		Multicast: &pb.DatabaseMulticastDiscovery{
 			SharedSecret:   "secret",
 			MulticastGroup: "224.0.0.1",

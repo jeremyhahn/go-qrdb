@@ -148,7 +148,14 @@ travels in the **path**, not the body (`json:"-"` on the request struct).
 `POST /v1/databases/{name}/unseal` — carries the unseal `secret`.
 
 `DatabaseRaftConfig` fields: `clusterMode` (`none|local|distributed`),
-`shardId`, `replicaId`, `raftAddress`, `peers`, `localNodeCount`.
+`replicaId`, `raftAddress`, `peers`, `localNodeCount`. **There is no
+`shardId`**: the cluster issues a database's shard ID at create, it never
+changes, and it is reported only as `DatabaseInfo.shardId`. gRPC reserves
+field 2 (`shard_id`) of `DatabaseRaftConfig`; on the JSON transports the key is
+not a field and is ignored. See
+[engineering.md](engineering.md#cluster-wide-shard-ids). *(Changed: `shardId`
+was a request field on every transport, and a caller-chosen ID was accepted
+unchecked.)*
 
 `DatabaseBarrierConfig` fields: `enabled`, `mode` (`passphrase|shamir`),
 `sharesRequired`, `sharesTotal`, `secret`.
@@ -177,6 +184,9 @@ travels in the **path**, not the body (`json:"-"` on the request struct).
 | A second `DROP DATABASE` for the same database while one is already running on this node | 409 | `ABORTED` — `database.DropInProgressError` |
 | A write that was accepted before a drop and reached the store after it | 409 | `ABORTED` — `database.DroppingError`; nothing was written |
 | `DROP DATABASE` of the default database (`system`) | 400 | `INVALID_ARGUMENT` — `database.DefaultDatabaseDropError`; it can never be dropped |
+| A create or Raft update that names a shard ID (reachable only through a library call; no transport carries one) | 400 | `INVALID_ARGUMENT` — `database.CallerShardIDError` |
+| A cluster-wide shard ID could not be claimed (store unavailable, sustained contention) | 503 | `UNAVAILABLE` — `database.ShardIDClaimError` / `shard.ClaimContentionError`; nothing was created, retry |
+| The replicated shard high-water mark is corrupt | 500 | `INTERNAL` — `shard.HighWaterCorruptError` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | Target: `backend: raft` on a standalone node | 400 | `FAILED_PRECONDITION` — `database.RaftBackendUnavailableError` |
 | Target: raft options on a non-raft backend | 400 | `INVALID_ARGUMENT` — `database.RaftOptionsRequireRaftBackendError` |

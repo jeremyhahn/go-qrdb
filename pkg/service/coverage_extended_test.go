@@ -472,7 +472,6 @@ func TestDatabaseService_UpdateRaftForTenant_Success(t *testing.T) {
 
 	raftCfg := &database.DatabaseRaftConfig{
 		ClusterMode: database.RaftLocal,
-		ShardID:     1,
 		ReplicaID:   1,
 	}
 	info, err := svc.UpdateRaftForTenant(ctx, "t-raft-db", raftCfg)
@@ -492,7 +491,6 @@ func TestDatabaseService_UpdateRaftForTenant_SystemTenantRoutesToAdmin(t *testin
 	}
 	info, err := svc.UpdateRaftForTenant(context.Background(), "sys-raft-db", &database.DatabaseRaftConfig{
 		ClusterMode: database.RaftLocal,
-		ShardID:     1,
 		ReplicaID:   1,
 	})
 	if err != nil {

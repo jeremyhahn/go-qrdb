@@ -59,7 +59,6 @@ func fullDatabaseInfo() *database.DatabaseInfo {
 		DedicatedWAL: true,
 		Raft: &database.DatabaseRaftConfig{
 			ClusterMode:    database.RaftClusterMode("distributed"),
-			ShardID:        1007,
 			ReplicaID:      2,
 			RaftAddress:    "db.example.com:63001",
 			Peers:          []string{"db.example.com:63001"},

@@ -451,7 +451,6 @@ func TestGRPCDatabase_ConvertersDirect(t *testing.T) {
 	}
 	rc := &transport.DatabaseRaftConfig{
 		ClusterMode:    "single",
-		ShardID:        1,
 		ReplicaID:      1,
 		RaftAddress:    "127.0.0.1:8000",
 		Peers:          []string{"a"},
@@ -476,7 +475,7 @@ func TestGRPCDatabase_FullProtocol_Success(t *testing.T) {
 	t.Run("UpdateDatabaseRaft_Full", func(t *testing.T) {
 		req := transport.UpdateDatabaseRaftRequest{
 			Name: "testdb",
-			Raft: &transport.DatabaseRaftConfig{ClusterMode: "single", ShardID: 1, ReplicaID: 1, RaftAddress: "127.0.0.1:8000", LocalNodeCount: 1, Peers: []string{"127.0.0.1:8001"}},
+			Raft: &transport.DatabaseRaftConfig{ClusterMode: "single", ReplicaID: 1, RaftAddress: "127.0.0.1:8000", LocalNodeCount: 1, Peers: []string{"127.0.0.1:8001"}},
 		}
 		if _, err := tr.UpdateDatabaseRaft(ctx, req); err != nil {
 			t.Fatalf("UpdateDatabaseRaft: %v", err)

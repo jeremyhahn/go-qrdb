@@ -23,7 +23,6 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
-	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -82,7 +81,7 @@ func TestCreateForTenant_DedicatedWAL_OverQuota(t *testing.T) {
 func TestCreateForTenant_DedicatedWAL_EntitlementRejected(t *testing.T) {
 	dataDir := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, dataDir, database.WithAllocator(shard.NewAllocator()))
+	mgr := database.NewManager(logger, dataDir, database.WithShardIDClaimer(testShardClaimer(t)))
 	t.Cleanup(func() { _ = mgr.Close() })
 
 	entChecker := &mockEntitlementChecker{

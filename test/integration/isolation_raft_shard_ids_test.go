@@ -47,6 +47,8 @@ const (
 type shardIDsCluster struct {
 	adminPorts []int
 	tenant     *http.Client
+	// anchorShard is the shard issued to the database every node hosts.
+	anchorShard uint64
 }
 
 // startShardIDsCluster starts and unseals three nodes, creates the raft
@@ -167,10 +169,18 @@ func startShardIDsCluster(t *testing.T) *shardIDsCluster {
 	// node one of the tenant's replicas; until then the node cannot read the
 	// tenant's identity records and answers "sealed". Placing one database on
 	// all three nodes is what lets the tests below create through any node.
-	if body, st := iraftAPIPost(t, c.tenant, fmt.Sprintf("https://127.0.0.1:%d/v1/databases", leaderPort),
-		map[string]interface{}{"name": "sid-anchor", "engine": "kv", "backend": "pebble", "replicas": 3}); st != http.StatusCreated && st != http.StatusOK {
+	body, st := iraftAPIPost(t, c.tenant, fmt.Sprintf("https://127.0.0.1:%d/v1/databases", leaderPort),
+		map[string]interface{}{"name": "sid-anchor", "engine": "kv", "backend": "pebble", "replicas": 3})
+	if st != http.StatusCreated && st != http.StatusOK {
 		t.Fatalf("create anchor database: status %d, body %s", st, body)
 	}
+	var anchor struct {
+		ShardID uint64 `json:"shardId"`
+	}
+	if err := json.Unmarshal(body, &anchor); err != nil || anchor.ShardID == 0 {
+		t.Fatalf("anchor database: no shard ID in %s", body)
+	}
+	c.anchorShard = anchor.ShardID
 	for node := range adminPorts {
 		c.waitForTenantOn(t, node)
 	}
@@ -280,7 +290,8 @@ func TestIsolationRaft_ShardIDs_UniqueAcrossNodes(t *testing.T) {
 	c := startShardIDsCluster(t)
 
 	names := []string{"sid-one", "sid-two", "sid-three"}
-	seen := make(map[uint64]string)
+	// The anchor database holds a shard too; no later create may reuse it.
+	seen := map[uint64]string{c.anchorShard: "sid-anchor"}
 	for node, name := range names {
 		id := c.createThrough(t, node, name)
 		if prev, dup := seen[id]; dup {

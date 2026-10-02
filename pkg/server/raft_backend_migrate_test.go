@@ -29,7 +29,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -75,7 +74,7 @@ func newRaftMigrateStack(t *testing.T) *raftMigrateStack {
 		t.Fatalf("NewTenantService: %v", err)
 	}
 
-	mgr := database.NewManager(volTestLogger(), t.TempDir(), database.WithAllocator(shard.NewAllocator()))
+	mgr := database.NewManager(volTestLogger(), t.TempDir(), database.WithShardIDClaimer(testShardClaimer(t)))
 	t.Cleanup(func() { _ = mgr.Close() })
 
 	dbSvc := service.NewDatabaseService(mgr,

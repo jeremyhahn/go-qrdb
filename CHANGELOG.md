@@ -11,6 +11,26 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Security
+
+- **BREAKING: a database create can no longer choose its shard ID, on any
+  transport.** A raft database create claimed a cluster-wide shard ID only when
+  the request named none. A request that named one -- `shardId` on REST, QUIC
+  and the SDKs, `shard_id` on gRPC, `raft_shard_id` on MCP, `--shard-id` on the
+  CLI -- was recorded in the receiving node's ledger alone and never checked
+  against what other nodes hold. One tenant could therefore place a database on
+  another tenant's Raft group, or on a reserved shard such as the system shard.
+  What changed:
+  - The field is removed from every transport's create and Raft-update request:
+    - REST, QUIC and MCP JSON (the key is now ignored);
+    - gRPC, which reserves field 2 of `DatabaseRaftConfig`;
+    - the Go and TypeScript SDKs' `DatabaseRaftConfig`;
+    - the CLI's `database update-raft --shard-id`.
+  - A database's shard ID is reported only as `DatabaseInfo.shardId`.
+  - As defence in depth, `database.Manager` refuses a caller's shard ID with
+    `database.CallerShardIDError` (400 / `INVALID_ARGUMENT`), and
+    `Manager.UpdateRaft` keeps the issued ID.
+
 ### Fixed
 
 - **Shard IDs are unique across the cluster, not only per node.** Every
@@ -18,19 +38,25 @@ are not reconstructed here — their history is in the git log.
   issued, so two nodes creating raft databases were handed the same shard ID:
   two Raft groups under one ID. A database dropped on one node and created
   again through another could also be handed the dropped incarnation's ID,
-  which the drop fence relies on never happening. A database created through
-  the API now claims its ID from one replicated high-water mark in the system
-  store (`__sys:shard/high-water`, `shard.Claimer`) with a compare-and-swap.
-  Claims share the ID space with provisioned databases, which keep the
-  per-node allocator, so the first claim starts past every shard ID placement
-  records and every claim starts at or above the claiming node's allocator. A create that
-  cannot claim refuses with `database.ShardIDClaimError` instead of falling
-  back to a per-node ID. Provisioned databases keep the per-node allocator,
-  because every node must give them the same ID. The new cluster feature
-  `cluster-shard-ids` makes the guarantee rollback-proof: once every node
-  claims, a binary that allocates per node can neither start nor be admitted
-  as a replica. During a rolling upgrade, create raft databases through
-  upgraded nodes. This is phase 2 of the strict tenant isolation plan.
+  which the drop fence relies on never happening.
+  - **How IDs are issued now.** Every raft database create claims its ID from
+    one replicated high-water mark in the system store
+    (`__sys:shard/high-water`, `shard.Claimer`) with a compare-and-swap, in
+    standalone and raft mode alike.
+  - **No node-local shard state.** The per-node counter (`shard.Allocator`,
+    `database.WithAllocator`) and its `{dataDir}/shard-high-water` file are
+    removed, so a node restored from a backup onto an empty data directory
+    never re-issues an ID. Nothing migrates the old file.
+    `database.WithShardIDClaimer` sets the claimer at construction.
+  - **Refusals.** `database.Manager.Provision` refuses a Raft configuration
+    (`database.ProvisionRaftError`), because nodes provisioning on their own
+    cannot agree on a shard ID; no shipped path provisions one. A create that
+    cannot claim refuses with `database.ShardIDClaimError` (503 / retryable)
+    instead of falling back to a per-node ID.
+  - **New cluster feature `cluster-shard-ids`.** Once every node claims, a
+    binary that allocates per node can neither start nor be admitted as a
+    replica.
+  - This is phase 2 of the strict tenant isolation plan.
 
 ## [0.31.0-alpha] - 2026-10-02
 

@@ -441,11 +441,9 @@ is live while its marker is absent; the tombstone a drop leaves is what
 refuses its stale handles, which is why the tombstone stays after the drop
 completes rather than being removed. A dedicated-raft database's marker is
 absent while it is live, because its shard identifies its incarnation: no
-shard ID is ever issued twice in the cluster -- a database created through the
-API claims its ID from one replicated high-water mark, and each node also
-persists a high-water mark covering every ID it has issued, dropped ones
-included, and moves its allocator past it at startup (see
-[engineering.md](engineering.md#cluster-wide-shard-ids)) -- so a database
+shard ID is ever issued twice in the cluster -- every raft database create
+claims its ID from one replicated high-water mark, and no caller can name one
+(see [engineering.md](engineering.md#cluster-wide-shard-ids)) -- so a database
 created again under the name always gets a new shard, and a shard cached under the dropped one's ID is
 evicted (and its directory purged) rather than served.
 

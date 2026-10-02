@@ -22,7 +22,6 @@
   "dedicatedWal": true,
   "raft": {
     "clusterMode": "distributed",
-    "shardId": 1007,
     "replicaId": 2,
     "raftAddress": "db.example.com:63001",
     "peers": [

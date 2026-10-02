@@ -236,7 +236,6 @@ func fromTransportRaftConfig(rc *transport.DatabaseRaftConfig) *database.Databas
 	}
 	return &database.DatabaseRaftConfig{
 		ClusterMode:    database.RaftClusterMode(rc.ClusterMode),
-		ShardID:        rc.ShardID,
 		ReplicaID:      rc.ReplicaID,
 		RaftAddress:    rc.RaftAddress,
 		Peers:          rc.Peers,

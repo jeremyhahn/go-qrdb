@@ -374,7 +374,6 @@ func TestProtoDatabaseCreateToConfig_WithProtocol(t *testing.T) {
 		},
 		Raft: &pb.DatabaseRaftConfig{
 			ClusterMode: "single",
-			ShardId:     1,
 			ReplicaId:   1,
 			RaftAddress: "127.0.0.1:63001",
 		},
@@ -389,8 +388,9 @@ func TestProtoDatabaseCreateToConfig_WithProtocol(t *testing.T) {
 	if cfg.Protocol.Etcd == nil || !cfg.Protocol.Etcd.Enabled {
 		t.Fatal("expected etcd config with Enabled=true")
 	}
-	if cfg.Raft == nil || cfg.Raft.ShardID != 1 {
-		t.Fatal("expected raft config with ShardID=1")
+	// The wire carries no shard ID: the cluster issues it at create.
+	if cfg.Raft == nil || cfg.Raft.ReplicaID != 1 || cfg.Raft.ShardID != 0 {
+		t.Fatalf("raft config = %+v, want ReplicaID 1 and no shard ID", cfg.Raft)
 	}
 }
 
@@ -418,7 +418,6 @@ func TestProtoProtocolConfigToDomain_WithEtcd(t *testing.T) {
 func TestProtoRaftConfigToDomain_AllBranches(t *testing.T) {
 	r := &pb.DatabaseRaftConfig{
 		ClusterMode: "multi",
-		ShardId:     2,
 		ReplicaId:   3,
 		RaftAddress: "127.0.0.1:63002",
 		Static: &pb.DatabaseStaticDiscovery{
@@ -443,8 +442,8 @@ func TestProtoRaftConfigToDomain_AllBranches(t *testing.T) {
 	if result == nil {
 		t.Fatal("expected non-nil raft config")
 	}
-	if result.ShardID != 2 {
-		t.Fatalf("expected ShardID 2, got %d", result.ShardID)
+	if result.ReplicaID != 3 {
+		t.Fatalf("expected ReplicaID 3, got %d", result.ReplicaID)
 	}
 	if result.Static == nil || len(result.Static.Peers) != 2 {
 		t.Fatal("expected Static discovery with 2 peers")

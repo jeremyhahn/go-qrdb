@@ -1121,14 +1121,10 @@ func runStart(f *startFlags) (err error) {
 		return err
 	}
 
-	// Initialize database manager. A shard allocator assigns a unique shard ID
-	// to every raft-backed database (its Raft config carries ShardID == 0 at
-	// create); OpenAll advances the allocator past the highest persisted shard
-	// ID so IDs are never reused across restarts. Non-raft databases (Raft ==
-	// nil) are unaffected. The allocated IDs drive the dedicated per-database
-	// raft shards of IsolationRaft tenants (Phase 4b).
-	shardAllocator := shard.NewAllocator()
-	dbManager := database.NewManager(slog.Default(), f.dataDir, database.WithAllocator(shardAllocator))
+	// Initialize the database manager. A raft database's shard ID is claimed
+	// from the replicated store (lifecycle.BuildServices wires the claimer),
+	// never issued from anything on this node's disk.
+	dbManager := database.NewManager(slog.Default(), f.dataDir)
 	defer func() { _ = dbManager.Close() }()
 
 	// Rehydrate every database persisted under {dataDir}/databases so that

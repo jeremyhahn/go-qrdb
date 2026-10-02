@@ -86,7 +86,6 @@ type barrierConfigRequest struct {
 // in a database creation request.
 type raftConfigRequest struct {
 	ClusterMode    string                           `json:"clusterMode"`
-	ShardID        uint64                           `json:"shardId,omitempty"`
 	ReplicaID      uint64                           `json:"replicaId,omitempty"`
 	RaftAddress    string                           `json:"raftAddress,omitempty"`
 	Peers          []string                         `json:"peers,omitempty"`
@@ -150,7 +149,6 @@ type updateDatabaseEtcdRequest struct {
 // updateDatabaseRaftRequest is the JSON payload for PATCH /v1/databases/{name}/raft.
 type updateDatabaseRaftRequest struct {
 	ClusterMode    string                           `json:"clusterMode"`
-	ShardID        uint64                           `json:"shardId,omitempty"`
 	ReplicaID      uint64                           `json:"replicaId,omitempty"`
 	RaftAddress    string                           `json:"raftAddress,omitempty"`
 	Peers          []string                         `json:"peers,omitempty"`
@@ -444,7 +442,6 @@ func (s *Server) handleUpdateDatabaseRaft(w http.ResponseWriter, r *http.Request
 
 	raftCfg := raftConfigFromRequest(&raftConfigRequest{
 		ClusterMode:    req.ClusterMode,
-		ShardID:        req.ShardID,
 		ReplicaID:      req.ReplicaID,
 		RaftAddress:    req.RaftAddress,
 		Peers:          req.Peers,
@@ -573,7 +570,6 @@ func (s *Server) handleUpdateDatabaseSQL(w http.ResponseWriter, r *http.Request,
 func raftConfigFromRequest(req *raftConfigRequest) *database.DatabaseRaftConfig {
 	raft := &database.DatabaseRaftConfig{
 		ClusterMode:    database.RaftClusterMode(req.ClusterMode),
-		ShardID:        req.ShardID,
 		ReplicaID:      req.ReplicaID,
 		RaftAddress:    req.RaftAddress,
 		Peers:          req.Peers,

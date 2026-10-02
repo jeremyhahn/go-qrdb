@@ -20,81 +20,63 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 )
 
 // ---------------------------------------------------------------------------
 // What the Manager remembers after a database is gone
 //
-// The catalog record of a dropped database is removed, but two facts about it
-// must outlive it on this node:
+// The catalog record of a dropped database is removed, but one fact about it
+// must outlive it on this node: that the name was DROPPED here, so its store
+// holds a tombstone. A create of the name with no reclaimer attached cannot
+// replace the tombstone with a live incarnation, and must be refused rather
+// than produce a database that refuses every write (droppedHere).
 //
-//   - that the name was DROPPED here, so its store holds a tombstone. A
-//     create of the name with no reclaimer attached cannot replace the
-//     tombstone with a live incarnation, and must be refused rather than
-//     produce a database that refuses every write (droppedHere).
-//   - the shard IDs it used. A dedicated-raft database's shard stands in for
-//     its incarnation, which holds only if a shard ID is never issued twice
-//     -- across drops AND restarts. The allocator is rebuilt at boot from the
-//     databases that still exist, so the highest ID ever issued is persisted
-//     separately and OpenAll moves the allocator past it (recordShardID).
+// The shard IDs a dropped database used are NOT remembered here. A
+// dedicated-raft database's shard stands in for its incarnation, which holds
+// only if a shard ID is never issued twice; that is the replicated claimer's
+// guarantee (shard.Claimer), recorded in the store rather than on this node's
+// disk, so it survives a restart, a restore into a fresh data directory and
+// a create through another node alike.
 // ---------------------------------------------------------------------------
 
-const (
-	// droppedDir holds one empty file per database name this node dropped
-	// and has not created again.
-	droppedDir = "dropped"
-
-	// shardHighWaterFile holds the highest shard ID this node ever issued.
-	shardHighWaterFile = "shard-high-water"
-)
+// droppedDir holds one empty file per database name this node dropped and
+// has not created again.
+const droppedDir = "dropped"
 
 // ShardIDClaimer issues shard IDs that are unique across a cluster.
 // *shard.Claimer is the implementation; the interface keeps this package
 // independent of the store the claims are made in.
 type ShardIDClaimer interface {
-	ClaimShardID(ctx context.Context, floor uint64) (uint64, error)
+	ClaimShardID(ctx context.Context) (uint64, error)
 }
 
-// SetShardIDClaimer makes every database created through the API take its
-// shard ID from c rather than from this node's allocator alone.
+// SetShardIDClaimer makes every raft database this Manager creates take its
+// shard ID from c.
 //
 // It exists for the same ordering reason SetKeyspaceReclaimer does: the
 // Manager is built before the replicated system store the claims are made in.
-// A composition with more than one node wires it once that store exists; a
-// single-node composition has no other node to collide with and may leave it
-// unset.
+// Every composition that builds the data plane (lifecycle.BuildServices) wires
+// one, in standalone and raft mode alike, so a shard ID's issue is recorded in
+// the store and nowhere on the node's disk. A Manager with none refuses raft
+// creates.
 //
 // Thread-safety: call it before serving create requests.
 func (m *Manager) SetShardIDClaimer(c ShardIDClaimer) {
 	m.claimer = c
 }
 
-// issueShardID returns the shard ID for a database being created with none.
-//
-// A database created through the API takes a cluster-wide claim when a
-// claimer is wired: per-node allocators all start at shard.UserMin, so two
-// nodes creating raft databases would otherwise issue the same ID, and a
-// database dropped on one node and created again through another could be
-// handed the dropped incarnation's ID. The node's own allocator is the claim's
-// floor and is moved past the claimed ID, so this node never issues an ID it
-// has issued before either way.
-//
-// A provisioned database (shared) keeps the node-local allocator. Every node
-// provisions the same configured names independently, and they agree on such
-// a database's shard ID only because each allocates it deterministically from
-// the same starting point; a cluster claim would hand every node a different
-// ID for the same group.
-func (m *Manager) issueShardID(ctx context.Context, shared bool) (uint64, error) {
-	if m.claimer == nil || shared {
-		return m.allocator.Allocate(), nil
+// issueShardID returns the shard ID for a raft database being created. The
+// claimer is the only issuer: its record lives in the replicated store, so an
+// ID is issued once in the cluster's lifetime, survives a restore into a fresh
+// data directory, and behaves identically in standalone and raft mode.
+func (m *Manager) issueShardID(ctx context.Context) (uint64, error) {
+	if m.claimer == nil {
+		return 0, &ShardIssuerRequiredError{}
 	}
-	id, err := m.claimer.ClaimShardID(ctx, m.allocator.Next())
+	id, err := m.claimer.ClaimShardID(ctx)
 	if err != nil {
 		return 0, &ShardIDClaimError{Err: err}
 	}
-	m.allocator.AdvanceTo(id + 1)
 	return id, nil
 }
 
@@ -135,43 +117,6 @@ func (m *Manager) forgetDrop(name string) error {
 		return &MetaWriteError{Path: path, Err: err}
 	}
 	return nil
-}
-
-// recordShardID raises the persisted shard high-water mark to id. It runs
-// before the database that uses id exists, so an ID is never issued without
-// being recorded.
-func (m *Manager) recordShardID(id uint64) error {
-	m.shardHWMu.Lock()
-	defer m.shardHWMu.Unlock()
-	current, err := m.readShardHighWater()
-	if err != nil {
-		return err
-	}
-	if id <= current {
-		return nil
-	}
-	if err := os.MkdirAll(m.dataDir, 0o750); err != nil {
-		return &MetaWriteError{Path: m.dataDir, Err: err}
-	}
-	return writeFileAtomic(m.dataDir, shardHighWaterFile, []byte(strconv.FormatUint(id, 10)))
-}
-
-// readShardHighWater returns the highest shard ID ever recorded, or zero
-// when none is (a node whose databases predate the record).
-func (m *Manager) readShardHighWater() (uint64, error) {
-	path := filepath.Join(m.dataDir, shardHighWaterFile)
-	data, err := os.ReadFile(path) // #nosec G304 -- m.dataDir is the node's own configured data directory, shardHighWaterFile a constant
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return 0, nil
-		}
-		return 0, &MetaReadError{Path: path, Err: err}
-	}
-	id, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
-	if err != nil {
-		return 0, &MetaReadError{Path: path, Err: err}
-	}
-	return id, nil
 }
 
 // createUndo removes what a failed Create made, and nothing it did not.

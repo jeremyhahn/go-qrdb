@@ -26,7 +26,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -109,7 +108,7 @@ func newRaftE2EStack(t *testing.T) *raftE2EStack {
 		t.Fatalf("NewTenantService: %v", err)
 	}
 
-	mgr := database.NewManager(volTestLogger(), t.TempDir(), database.WithAllocator(shard.NewAllocator()))
+	mgr := database.NewManager(volTestLogger(), t.TempDir(), database.WithShardIDClaimer(testShardClaimer(t)))
 	t.Cleanup(func() { _ = mgr.Close() })
 
 	// Numeric quota plane (raft-group counter reads the persisted usage record).

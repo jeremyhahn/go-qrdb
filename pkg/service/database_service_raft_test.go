@@ -70,7 +70,7 @@ func (r *recordingQuotaUsage) DecrementQuotaUsage(_ context.Context, _ string, r
 func newRaftTenantDatabaseService(t *testing.T, info *tenant.TenantInfo, rec QuotaUsageRecorder) (DatabaseServicer, *database.Manager) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, t.TempDir(), database.WithAllocator(shard.NewAllocator()))
+	mgr := database.NewManager(logger, t.TempDir(), database.WithShardIDClaimer(testShardClaimer(t)))
 	t.Cleanup(func() { _ = mgr.Close() })
 	opts := []DatabaseServiceOption{
 		WithEntitlementChecker(&mockEntitlementChecker{}),
@@ -164,7 +164,7 @@ func TestCreateForTenant_Raft_EntitlementRejected(t *testing.T) {
 	dataRoot := t.TempDir()
 	info := &tenant.TenantInfo{ID: "racme", IsolationType: tenant.IsolationRaft, DataRoot: dataRoot}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, t.TempDir(), database.WithAllocator(shard.NewAllocator()))
+	mgr := database.NewManager(logger, t.TempDir(), database.WithShardIDClaimer(testShardClaimer(t)))
 	t.Cleanup(func() { _ = mgr.Close() })
 
 	wantErr := errors.New("no dedicated raft")

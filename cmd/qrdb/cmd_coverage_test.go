@@ -384,7 +384,6 @@ func TestPrintDatabaseInfo_Table_WithAllFields(t *testing.T) {
 		},
 		Raft: &transport.DatabaseRaftInfo{
 			ClusterMode: "single",
-			ShardID:     1,
 			RaftAddress: "localhost:9090",
 		},
 		Barrier: &transport.DatabaseBarrierInfo{

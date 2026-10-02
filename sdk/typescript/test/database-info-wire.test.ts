@@ -71,7 +71,6 @@ const etcdKeys = {
 
 const raftKeys = {
     clusterMode: true,
-    shardId: true,
     replicaId: true,
     raftAddress: true,
     peers: true,

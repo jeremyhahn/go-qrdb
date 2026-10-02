@@ -280,7 +280,6 @@ func TestUnixProtoToLockInfo_Valid(t *testing.T) {
 func TestUnixTransportRaftConfigToProto_RoundTrip(t *testing.T) {
 	in := &transport.DatabaseRaftConfig{
 		ClusterMode:    "multi",
-		ShardID:        7,
 		ReplicaID:      8,
 		RaftAddress:    "10.0.0.1:5000",
 		Peers:          []string{"8=10.0.0.1:5000"},
@@ -290,7 +289,7 @@ func TestUnixTransportRaftConfigToProto_RoundTrip(t *testing.T) {
 	if out == nil {
 		t.Fatal("nil result")
 	}
-	if out.GetClusterMode() != "multi" || out.GetShardId() != 7 || out.GetReplicaId() != 8 {
+	if out.GetClusterMode() != "multi" || out.GetReplicaId() != 8 {
 		t.Errorf("raft mismatch: %+v", out)
 	}
 	if out.GetLocalNodeCount() != 5 {

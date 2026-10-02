@@ -387,9 +387,7 @@ func TestUpdateDatabaseRaft_Success(t *testing.T) {
 
 	info, err := tr.UpdateDatabaseRaft(context.Background(), transport.UpdateDatabaseRaftRequest{
 		Name: "db1",
-		Raft: &transport.DatabaseRaftConfig{
-			ShardID: 1,
-		},
+		Raft: &transport.DatabaseRaftConfig{},
 	})
 	if err != nil {
 		t.Fatalf("UpdateDatabaseRaft: %v", err)

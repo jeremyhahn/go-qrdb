@@ -3064,7 +3064,10 @@ message DatabaseInfoResponse {
 // it: DatabaseRaftConfig without its secrets.
 message DatabaseRaftInfo {
     string cluster_mode = 1;
-    uint64 shard_id = 2;
+    // Field 2 was shard_id: a database's shard ID is reported once, as
+    // DatabaseInfoResponse.shard_id.
+    reserved 2;
+    reserved "shard_id";
     uint64 replica_id = 3;
     string raft_address = 4;
     repeated string peers = 5;
@@ -3143,7 +3146,11 @@ message DatabaseEtcdConfig {
 // DatabaseRaftConfig holds Raft consensus settings for a database.
 message DatabaseRaftConfig {
     string cluster_mode = 1;
-    uint64 shard_id = 2;
+    // Field 2 was shard_id. A shard ID is issued by the cluster at create and
+    // is the database's identity: no request may name one, and it is reported
+    // only as DatabaseInfo.shard_id.
+    reserved 2;
+    reserved "shard_id";
     uint64 replica_id = 3;
     string raft_address = 4;
     repeated string peers = 5;

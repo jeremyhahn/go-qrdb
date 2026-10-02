@@ -21,8 +21,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 )
 
 // failingCloseBackendError is a sentinel error used by failingCloseBackend.
@@ -52,7 +50,9 @@ func newTestManager(t *testing.T) *Manager {
 	t.Helper()
 	dataDir := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	return NewManager(logger, dataDir)
+	// Every production Manager has a shard ID claimer; so does a test one, so
+	// a raft database created here gets a real shard ID.
+	return NewManager(logger, dataDir, WithShardIDClaimer(testShardClaimer(t)))
 }
 
 // validMemoryConfig returns a DatabaseConfig with the given name using the
@@ -919,11 +919,8 @@ func validRaftConfig(shardID uint64) *DatabaseRaftConfig {
 	}
 }
 
-func TestManager_CreateWithAllocator(t *testing.T) {
-	dataDir := t.TempDir()
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	alloc := shard.NewAllocator()
-	mgr := NewManager(logger, dataDir, WithAllocator(alloc))
+func TestManager_CreateClaimsShardIDs(t *testing.T) {
+	mgr := newTestManager(t)
 	defer func() { _ = mgr.Close() }()
 
 	names := []string{"alloc-a", "alloc-b", "alloc-c"}
@@ -948,96 +945,6 @@ func TestManager_CreateWithAllocator(t *testing.T) {
 			t.Errorf("duplicate shard ID %d assigned to %q and %q", id, name, prev)
 		}
 		seen[id] = name
-	}
-}
-
-func TestManager_CreatePreservesExplicitShardID(t *testing.T) {
-	dataDir := t.TempDir()
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	alloc := shard.NewAllocator()
-	mgr := NewManager(logger, dataDir, WithAllocator(alloc))
-	defer func() { _ = mgr.Close() }()
-
-	const wantShardID uint64 = 42
-
-	cfg := DatabaseConfig{
-		Name:    "explicit-shard-db",
-		Engine:  EngineKV,
-		Backend: BackendMemory,
-		Raft:    validRaftConfig(wantShardID),
-	}
-	db, err := mgr.Create(cfg)
-	if err != nil {
-		t.Fatalf("Create() returned unexpected error: %v", err)
-	}
-
-	if got := db.ShardID(); got != wantShardID {
-		t.Errorf("ShardID() = %d, want %d (explicit shard ID must not be overwritten)", got, wantShardID)
-	}
-}
-
-func TestManager_OpenAllResumesAllocator(t *testing.T) {
-	dataDir := t.TempDir()
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-
-	// Phase 1: create three databases with auto-allocated shard IDs.
-	alloc1 := shard.NewAllocator()
-	mgr1 := NewManager(logger, dataDir, WithAllocator(alloc1))
-
-	names := []string{"resume-a", "resume-b", "resume-c"}
-	var maxShardID uint64
-	for _, name := range names {
-		cfg := DatabaseConfig{
-			Name:    name,
-			Engine:  EngineKV,
-			Backend: BackendMemory,
-			Raft:    validRaftConfig(0),
-		}
-		db, err := mgr1.Create(cfg)
-		if err != nil {
-			t.Fatalf("Create(%q) returned unexpected error: %v", name, err)
-		}
-		if id := db.ShardID(); id > maxShardID {
-			maxShardID = id
-		}
-	}
-	if err := mgr1.Close(); err != nil {
-		t.Fatalf("Close() returned unexpected error: %v", err)
-	}
-
-	if maxShardID == 0 {
-		t.Fatal("no shard IDs were allocated in phase 1")
-	}
-
-	// Phase 2: create a new manager with a fresh allocator starting at UserMin,
-	// call OpenAll to re-discover existing databases, then create a new database.
-	alloc2 := shard.NewAllocator()
-	mgr2 := NewManager(logger, dataDir, WithAllocator(alloc2))
-	defer func() { _ = mgr2.Close() }()
-
-	if err := mgr2.OpenAll(); err != nil {
-		t.Fatalf("OpenAll() returned unexpected error: %v", err)
-	}
-
-	// The allocator must have advanced past maxShardID.
-	if got := alloc2.Next(); got <= maxShardID {
-		t.Errorf("allocator.Next() = %d after OpenAll, want > %d (max shard ID from phase 1)", got, maxShardID)
-	}
-
-	// A newly created database must receive a shard ID strictly greater than
-	// every shard ID assigned in phase 1.
-	newCfg := DatabaseConfig{
-		Name:    "resume-new",
-		Engine:  EngineKV,
-		Backend: BackendMemory,
-		Raft:    validRaftConfig(0),
-	}
-	newDB, err := mgr2.Create(newCfg)
-	if err != nil {
-		t.Fatalf("Create(resume-new) returned unexpected error: %v", err)
-	}
-	if newID := newDB.ShardID(); newID <= maxShardID {
-		t.Errorf("new database ShardID() = %d, want > %d (must not reuse phase-1 shard IDs)", newID, maxShardID)
 	}
 }
 

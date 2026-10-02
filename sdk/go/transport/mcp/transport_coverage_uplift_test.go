@@ -391,7 +391,6 @@ func TestApplyRaftArgs_PrefixedFields(t *testing.T) {
 	args := map[string]any{}
 	cfg := &transport.DatabaseRaftConfig{
 		ClusterMode: "multi-raft",
-		ShardID:     7,
 		ReplicaID:   3,
 		RaftAddress: "127.0.0.1:63001",
 	}
@@ -401,8 +400,9 @@ func TestApplyRaftArgs_PrefixedFields(t *testing.T) {
 	if args["raft_cluster_mode"] != "multi-raft" {
 		t.Errorf("raft_cluster_mode: %v", args["raft_cluster_mode"])
 	}
-	if args["raft_shard_id"].(uint64) != 7 {
-		t.Errorf("raft_shard_id: %v", args["raft_shard_id"])
+	// A shard ID is never sent: the cluster issues it at create.
+	if v, ok := args["raft_shard_id"]; ok {
+		t.Errorf("raft_shard_id sent: %v", v)
 	}
 	if args["raft_replica_id"].(uint64) != 3 {
 		t.Errorf("raft_replica_id: %v", args["raft_replica_id"])
@@ -416,7 +416,6 @@ func TestApplyRaftArgs_UpdateMode(t *testing.T) {
 	args := map[string]any{}
 	cfg := &transport.DatabaseRaftConfig{
 		ClusterMode: "single",
-		ShardID:     1,
 		ReplicaID:   1,
 	}
 
@@ -425,8 +424,9 @@ func TestApplyRaftArgs_UpdateMode(t *testing.T) {
 	if args["cluster_mode"] != "single" {
 		t.Errorf("cluster_mode: %v", args["cluster_mode"])
 	}
-	if args["shard_id"].(uint64) != 1 {
-		t.Errorf("shard_id: %v", args["shard_id"])
+	// A database's shard ID never changes, so an update never sends one.
+	if v, ok := args["shard_id"]; ok {
+		t.Errorf("shard_id sent: %v", v)
 	}
 	if _, ok := args["raft_cluster_mode"]; ok {
 		t.Error("expected raft_cluster_mode to be absent in update mode")
@@ -495,7 +495,6 @@ func TestCreateDatabase_WithRaftAndProtocol(t *testing.T) {
 		},
 		Raft: &transport.DatabaseRaftConfig{
 			ClusterMode: "multi-raft",
-			ShardID:     2,
 			ReplicaID:   1,
 			RaftAddress: "127.0.0.1:63002",
 		},

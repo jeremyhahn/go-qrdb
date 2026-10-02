@@ -338,7 +338,6 @@ func protoRaftConfigToDomain(r *pb.DatabaseRaftConfig) *database.DatabaseRaftCon
 
 	raft := &database.DatabaseRaftConfig{
 		ClusterMode:    database.RaftClusterMode(r.GetClusterMode()),
-		ShardID:        r.GetShardId(),
 		ReplicaID:      r.GetReplicaId(),
 		RaftAddress:    r.GetRaftAddress(),
 		Peers:          r.GetPeers(),

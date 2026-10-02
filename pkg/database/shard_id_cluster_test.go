@@ -22,7 +22,6 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
-	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 )
 
 // clusterNode is one node's database Manager wired as a cluster composition
@@ -31,12 +30,8 @@ import (
 func clusterNode(t *testing.T, replicated kvstore.AtomicKVStore) *Manager {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	m := NewManager(logger, t.TempDir(), WithAllocator(shard.NewAllocator()))
-	claimer, err := shard.NewClaimer(replicated, nil)
-	if err != nil {
-		t.Fatalf("shard.NewClaimer: %v", err)
-	}
-	m.SetShardIDClaimer(claimer)
+	m := NewManager(logger, t.TempDir())
+	m.SetShardIDClaimer(claimerOver(t, replicated))
 	t.Cleanup(func() { _ = m.Close() })
 	return m
 }
@@ -74,57 +69,69 @@ func TestShardIDs_NeverCollideAcrossNodes(t *testing.T) {
 	}
 }
 
-// TestShardIDs_ProvisionedDatabasesStayNodeLocal pins the one exception: a
-// database every node provisions from its configuration must get the same
-// shard ID on every node, which only the deterministic local allocator gives.
-func TestShardIDs_ProvisionedDatabasesStayNodeLocal(t *testing.T) {
-	replicated := kvstore.NewMemoryKVStore()
-	a := clusterNode(t, replicated)
-	b := clusterNode(t, replicated)
-	cfg := func() DatabaseConfig {
-		return DatabaseConfig{Name: "configured", Engine: EngineKV, Backend: BackendMemory, Raft: validRaftConfig(0)}
+// restoreInto copies every record of from into a fresh store: what a restore
+// of the replicated store from a backup produces.
+func restoreInto(t *testing.T, from kvstore.KVStore) kvstore.AtomicKVStore {
+	t.Helper()
+	to := kvstore.NewMemoryKVStore()
+	if err := from.Scan(context.Background(), "", func(key string, value []byte) error {
+		return to.Put(context.Background(), key, value)
+	}); err != nil {
+		t.Fatalf("restore: %v", err)
 	}
-	da, err := a.Provision(context.Background(), cfg())
-	if err != nil {
-		t.Fatalf("provision on a: %v", err)
+	return to
+}
+
+// TestShardIDs_RestoreToAFreshDataDirNeverReissues: a shard ID's issue is
+// recorded in the replicated store and nowhere else, so a node rebuilt from a
+// backup of that store, on an empty data directory, continues past every ID
+// the cluster issued -- including those of databases since dropped.
+func TestShardIDs_RestoreToAFreshDataDirNeverReissues(t *testing.T) {
+	original := kvstore.NewMemoryKVStore()
+	before := clusterNode(t, original)
+	issued := make(map[uint64]string)
+	for _, name := range []string{"kept", "dropped"} {
+		db, err := before.Create(DatabaseConfig{Name: name, Engine: EngineKV, Backend: BackendMemory, Raft: validRaftConfig(0)})
+		if err != nil {
+			t.Fatalf("create %s: %v", name, err)
+		}
+		issued[db.ShardID()] = name
 	}
-	db, err := b.Provision(context.Background(), cfg())
-	if err != nil {
-		t.Fatalf("provision on b: %v", err)
+	if err := before.Drop(context.Background(), "dropped"); err != nil {
+		t.Fatalf("drop: %v", err)
 	}
-	if da.ShardID() != db.ShardID() {
-		t.Fatalf("the same provisioned database got shard %d on a and %d on b", da.ShardID(), db.ShardID())
-	}
-	if raw, _ := replicated.Get(context.Background(), shard.HighWaterKey); raw != nil {
-		t.Fatalf("provisioning claimed a cluster-wide ID (high-water %q)", raw)
-	}
-	// An API create after it never takes the provisioned ID.
-	created, err := a.Create(DatabaseConfig{Name: "created", Engine: EngineKV, Backend: BackendMemory, Raft: validRaftConfig(0)})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	if created.ShardID() == da.ShardID() {
-		t.Fatalf("created database reused provisioned shard %d", da.ShardID())
+
+	// A fresh data directory: nothing of the old node's disk survives.
+	after := clusterNode(t, restoreInto(t, original))
+	for _, name := range []string{"dropped", "new"} {
+		db, err := after.Create(DatabaseConfig{Name: name, Engine: EngineKV, Backend: BackendMemory, Raft: validRaftConfig(0)})
+		if err != nil {
+			t.Fatalf("create %s after restore: %v", name, err)
+		}
+		if prev, reused := issued[db.ShardID()]; reused {
+			t.Fatalf("after a restore to a fresh data dir, %q got shard %d, already issued to %q", name, db.ShardID(), prev)
+		}
 	}
 }
 
-// TestShardIDs_ClaimMovesTheLocalAllocator: an ID the cluster issued to this
-// node is never issued by this node's allocator afterwards.
-func TestShardIDs_ClaimMovesTheLocalAllocator(t *testing.T) {
-	replicated := kvstore.NewMemoryKVStore()
-	if err := replicated.Put(context.Background(), shard.HighWaterKey, []byte("7000")); err != nil {
+// TestShardIDs_NoNodeLocalShardState: issuing a shard ID writes nothing to the
+// node's data directory. Everything a create leaves there is the database's
+// own catalog entry and data.
+func TestShardIDs_NoNodeLocalShardState(t *testing.T) {
+	m := clusterNode(t, kvstore.NewMemoryKVStore())
+	for _, name := range []string{"a", "b"} {
+		if _, err := m.Create(DatabaseConfig{Name: name, Engine: EngineKV, Backend: BackendMemory, Raft: validRaftConfig(0)}); err != nil {
+			t.Fatalf("create %s: %v", name, err)
+		}
+	}
+	entries, err := os.ReadDir(m.DataDir())
+	if err != nil {
 		t.Fatal(err)
 	}
-	a := clusterNode(t, replicated)
-	db, err := a.Create(DatabaseConfig{Name: "far", Engine: EngineKV, Backend: BackendMemory, Raft: validRaftConfig(0)})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	if db.ShardID() != 7000 {
-		t.Fatalf("shard = %d, want 7000 from the cluster mark", db.ShardID())
-	}
-	if next := a.allocator.Next(); next != 7001 {
-		t.Fatalf("local allocator next = %d, want 7001", next)
+	for _, e := range entries {
+		if e.Name() != databasesDir {
+			t.Fatalf("a raft create left %q in the node's data directory; shard IDs must live only in the replicated store", e.Name())
+		}
 	}
 }
 
@@ -132,17 +139,16 @@ func TestShardIDs_ClaimMovesTheLocalAllocator(t *testing.T) {
 // system store does.
 type failingClaimer struct{ err error }
 
-func (f failingClaimer) ClaimShardID(context.Context, uint64) (uint64, error) { return 0, f.err }
+func (f failingClaimer) ClaimShardID(context.Context) (uint64, error) { return 0, f.err }
 
 // TestShardIDs_FailedClaimCreatesNothing: a create that cannot claim an ID
 // refuses with a typed error and leaves no catalog entry behind -- it never
 // falls back to a node-local ID that another node may already hold.
 func TestShardIDs_FailedClaimCreatesNothing(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	m := NewManager(logger, t.TempDir(), WithAllocator(shard.NewAllocator()))
-	t.Cleanup(func() { _ = m.Close() })
 	storeDown := errors.New("system store unavailable")
-	m.SetShardIDClaimer(failingClaimer{err: storeDown})
+	m := NewManager(logger, t.TempDir(), WithShardIDClaimer(failingClaimer{err: storeDown}))
+	t.Cleanup(func() { _ = m.Close() })
 
 	_, err := m.Create(DatabaseConfig{Name: "refused", Engine: EngineKV, Backend: BackendMemory, Raft: validRaftConfig(0)})
 	var claimErr *ShardIDClaimError
@@ -157,8 +163,5 @@ func TestShardIDs_FailedClaimCreatesNothing(t *testing.T) {
 	}
 	if _, err := os.Stat(m.dbDir("refused")); !os.IsNotExist(err) {
 		t.Fatalf("a refused create left its directory: %v", err)
-	}
-	if next := m.allocator.Next(); next != shard.UserMin {
-		t.Fatalf("a refused create consumed a local ID: next = %d", next)
 	}
 }

@@ -26,9 +26,9 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 )
 
-func newClaimer(t *testing.T, store shard.ClaimStore, seed shard.SeedFunc) *shard.Claimer {
+func newClaimer(t *testing.T, store shard.ClaimStore) *shard.Claimer {
 	t.Helper()
-	c, err := shard.NewClaimer(store, seed)
+	c, err := shard.NewClaimer(store)
 	if err != nil {
 		t.Fatalf("NewClaimer: %v", err)
 	}
@@ -48,8 +48,15 @@ func highWater(t *testing.T, store kvstore.KVStore) uint64 {
 	return v
 }
 
+func setMark(t *testing.T, store kvstore.KVStore, v string) {
+	t.Helper()
+	if err := store.Put(context.Background(), shard.HighWaterKey, []byte(v)); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestNewClaimer_RequiresStore(t *testing.T) {
-	_, err := shard.NewClaimer(nil, nil)
+	_, err := shard.NewClaimer(nil)
 	var cfg *shard.ClaimerConfigError
 	if !errors.As(err, &cfg) || cfg.Field != "store" {
 		t.Fatalf("NewClaimer(nil) = %v, want *ClaimerConfigError{store}", err)
@@ -59,10 +66,10 @@ func TestNewClaimer_RequiresStore(t *testing.T) {
 	}
 }
 
-func TestClaimShardID_FirstClaimStartsAtUserMin(t *testing.T) {
+func TestClaimShardID_FirstClaimIsUserMin(t *testing.T) {
 	store := kvstore.NewMemoryKVStore()
-	c := newClaimer(t, store, nil)
-	id, err := c.ClaimShardID(context.Background(), 0)
+	c := newClaimer(t, store)
+	id, err := c.ClaimShardID(context.Background())
 	if err != nil || id != shard.UserMin {
 		t.Fatalf("first claim = %d, %v; want %d", id, err, shard.UserMin)
 	}
@@ -71,33 +78,14 @@ func TestClaimShardID_FirstClaimStartsAtUserMin(t *testing.T) {
 	}
 }
 
-func TestClaimShardID_SeedCoversIDsAlreadyInUse(t *testing.T) {
+func TestClaimShardID_ClaimsAreSequential(t *testing.T) {
 	store := kvstore.NewMemoryKVStore()
-	c := newClaimer(t, store, func(context.Context) (uint64, error) { return 1041, nil })
-	id, err := c.ClaimShardID(context.Background(), 1003)
-	if err != nil || id != 1042 {
-		t.Fatalf("claim = %d, %v; want 1042, past the highest ID in use", id, err)
-	}
-	// The seed is consulted only to create the mark.
-	id, err = c.ClaimShardID(context.Background(), 0)
-	if err != nil || id != 1043 {
-		t.Fatalf("second claim = %d, %v; want 1043", id, err)
-	}
-}
-
-func TestClaimShardID_FloorWinsOverAnOlderMark(t *testing.T) {
-	store := kvstore.NewMemoryKVStore()
-	c := newClaimer(t, store, nil)
-	if _, err := c.ClaimShardID(context.Background(), 0); err != nil {
-		t.Fatal(err)
-	}
-	// A node whose own history is ahead of the mark never re-issues its IDs.
-	id, err := c.ClaimShardID(context.Background(), 5000)
-	if err != nil || id != 5000 {
-		t.Fatalf("claim with floor 5000 = %d, %v; want 5000", id, err)
-	}
-	if hw := highWater(t, store); hw != 5001 {
-		t.Fatalf("high-water = %d, want 5001", hw)
+	c := newClaimer(t, store)
+	for want := shard.UserMin; want < shard.UserMin+5; want++ {
+		id, err := c.ClaimShardID(context.Background())
+		if err != nil || id != want {
+			t.Fatalf("claim = %d, %v; want %d", id, err, want)
+		}
 	}
 }
 
@@ -108,12 +96,12 @@ func TestClaimShardID_ConcurrentClaimsAreUnique(t *testing.T) {
 	errs := make(chan error, nodes*perNode)
 	var wg sync.WaitGroup
 	for range nodes {
-		c := newClaimer(t, store, nil) // one claimer per node, one store
+		c := newClaimer(t, store) // one claimer per node, one store
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for range perNode {
-				id, err := c.ClaimShardID(context.Background(), 0)
+				id, err := c.ClaimShardID(context.Background())
 				if err != nil {
 					errs <- err
 					return
@@ -133,6 +121,9 @@ func TestClaimShardID_ConcurrentClaimsAreUnique(t *testing.T) {
 	}
 	seen := make(map[uint64]bool)
 	for id := range ids {
+		if id < shard.UserMin {
+			t.Fatalf("claim %d is below UserMin", id)
+		}
 		if seen[id] {
 			t.Fatalf("shard ID %d issued twice", id)
 		}
@@ -163,29 +154,29 @@ func (r *racingStore) CompareAndSwap(ctx context.Context, key string, expected, 
 
 func TestClaimShardID_RetriesALostRace(t *testing.T) {
 	store := &racingStore{MemoryKVStore: kvstore.NewMemoryKVStore()}
-	c := newClaimer(t, store, nil)
-	if _, err := c.ClaimShardID(context.Background(), 0); err != nil { // creates the mark: 1000
+	c := newClaimer(t, store)
+	if _, err := c.ClaimShardID(context.Background()); err != nil { // creates the mark: 1000
 		t.Fatal(err)
 	}
 	store.races = 3
-	id, err := c.ClaimShardID(context.Background(), 0)
+	id, err := c.ClaimShardID(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Three competing claims took 1001..1003.
-	if id != 1004 {
-		t.Fatalf("claim after three lost races = %d, want 1004", id)
+	if id != shard.UserMin+4 {
+		t.Fatalf("claim after three lost races = %d, want %d", id, shard.UserMin+4)
 	}
 }
 
 func TestClaimShardID_SustainedContentionIsTyped(t *testing.T) {
 	store := &racingStore{MemoryKVStore: kvstore.NewMemoryKVStore()}
-	c := newClaimer(t, store, nil)
-	if _, err := c.ClaimShardID(context.Background(), 0); err != nil {
+	c := newClaimer(t, store)
+	if _, err := c.ClaimShardID(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	store.races = math.MaxInt
-	_, err := c.ClaimShardID(context.Background(), 0)
+	_, err := c.ClaimShardID(context.Background())
 	var contention *shard.ClaimContentionError
 	if !errors.As(err, &contention) || contention.Attempts <= 0 {
 		t.Fatalf("claim under sustained contention = %v, want *ClaimContentionError", err)
@@ -205,7 +196,7 @@ type lostCreateStore struct {
 func (l *lostCreateStore) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
 	if !l.lost {
 		l.lost = true
-		if _, err := l.MemoryKVStore.PutIfAbsent(ctx, key, []byte("2000")); err != nil {
+		if _, err := l.MemoryKVStore.PutIfAbsent(ctx, key, []byte(strconv.FormatUint(shard.UserMin+1, 10))); err != nil {
 			return false, err
 		}
 	}
@@ -214,51 +205,38 @@ func (l *lostCreateStore) PutIfAbsent(ctx context.Context, key string, value []b
 
 func TestClaimShardID_ClaimsFromAMarkAnotherNodeCreated(t *testing.T) {
 	store := &lostCreateStore{MemoryKVStore: kvstore.NewMemoryKVStore()}
-	c := newClaimer(t, store, nil)
-	id, err := c.ClaimShardID(context.Background(), 0)
-	if err != nil || id != 2000 {
-		t.Fatalf("claim = %d, %v; want 2000 from the other node's mark", id, err)
+	c := newClaimer(t, store)
+	id, err := c.ClaimShardID(context.Background())
+	if err != nil || id != shard.UserMin+1 {
+		t.Fatalf("claim = %d, %v; want %d, after the other node's %d", id, err, shard.UserMin+1, shard.UserMin)
 	}
 }
 
 func TestClaimShardID_CorruptMarkRefuses(t *testing.T) {
-	store := kvstore.NewMemoryKVStore()
-	if err := store.Put(context.Background(), shard.HighWaterKey, []byte("not-a-number")); err != nil {
-		t.Fatal(err)
-	}
-	_, err := newClaimer(t, store, nil).ClaimShardID(context.Background(), 0)
-	var corrupt *shard.HighWaterCorruptError
-	if !errors.As(err, &corrupt) || corrupt.Value != "not-a-number" {
-		t.Fatalf("claim over a corrupt mark = %v, want *HighWaterCorruptError", err)
-	}
-	if corrupt.Error() == "" {
-		t.Fatal("empty error text")
+	for _, v := range []string{"not-a-number", "1", strconv.FormatUint(shard.UserMin, 10)} {
+		store := kvstore.NewMemoryKVStore()
+		setMark(t, store, v)
+		_, err := newClaimer(t, store).ClaimShardID(context.Background())
+		var corrupt *shard.HighWaterCorruptError
+		if !errors.As(err, &corrupt) || corrupt.Value != v {
+			t.Fatalf("claim over mark %q = %v, want *HighWaterCorruptError", v, err)
+		}
+		if corrupt.Error() == "" {
+			t.Fatal("empty error text")
+		}
 	}
 }
 
 func TestClaimShardID_ExhaustionIsTyped(t *testing.T) {
 	store := kvstore.NewMemoryKVStore()
-	if err := store.Put(context.Background(), shard.HighWaterKey, []byte(strconv.FormatUint(math.MaxUint64, 10))); err != nil {
-		t.Fatal(err)
-	}
-	_, err := newClaimer(t, store, nil).ClaimShardID(context.Background(), 0)
+	setMark(t, store, strconv.FormatUint(math.MaxUint64, 10))
+	_, err := newClaimer(t, store).ClaimShardID(context.Background())
 	var exhausted *shard.ShardIDExhaustedError
 	if !errors.As(err, &exhausted) {
 		t.Fatalf("claim at the end of the ID space = %v, want *ShardIDExhaustedError", err)
 	}
 	if exhausted.Error() == "" {
 		t.Fatal("empty error text")
-	}
-
-	seeded := newClaimer(t, kvstore.NewMemoryKVStore(), func(context.Context) (uint64, error) { return math.MaxUint64, nil })
-	if _, err := seeded.ClaimShardID(context.Background(), 0); !errors.As(err, &exhausted) {
-		t.Fatalf("claim seeded at the end of the ID space = %v, want *ShardIDExhaustedError", err)
-	}
-
-	// The claim that would create the mark at the last ID cannot record what
-	// follows it, so it refuses rather than issue an ID it cannot fence.
-	if _, err := newClaimer(t, kvstore.NewMemoryKVStore(), nil).ClaimShardID(context.Background(), math.MaxUint64); !errors.As(err, &exhausted) {
-		t.Fatalf("first claim at the end of the ID space = %v, want *ShardIDExhaustedError", err)
 	}
 }
 
@@ -296,12 +274,10 @@ func TestClaimShardID_StoreFailuresAreTyped(t *testing.T) {
 		t.Run(op, func(t *testing.T) {
 			store := &failingStore{MemoryKVStore: kvstore.NewMemoryKVStore()}
 			if op == "swap" {
-				if err := store.Put(context.Background(), shard.HighWaterKey, []byte("1000")); err != nil {
-					t.Fatal(err)
-				}
+				setMark(t, store, strconv.FormatUint(shard.UserMin+1, 10))
 			}
 			store.failOp = op
-			_, err := newClaimer(t, store, nil).ClaimShardID(context.Background(), 0)
+			_, err := newClaimer(t, store).ClaimShardID(context.Background())
 			var se *shard.ClaimStoreError
 			if !errors.As(err, &se) || se.Op != op || !errors.Is(err, errStore) {
 				t.Fatalf("claim with failing %s = %v, want *ClaimStoreError{%s} wrapping the store error", op, err, op)
@@ -313,19 +289,10 @@ func TestClaimShardID_StoreFailuresAreTyped(t *testing.T) {
 	}
 }
 
-func TestClaimShardID_SeedFailureIsTyped(t *testing.T) {
-	c := newClaimer(t, kvstore.NewMemoryKVStore(), func(context.Context) (uint64, error) { return 0, errStore })
-	_, err := c.ClaimShardID(context.Background(), 0)
-	var se *shard.ClaimStoreError
-	if !errors.As(err, &se) || se.Op != "seed" || !errors.Is(err, errStore) {
-		t.Fatalf("claim with a failing seed = %v, want *ClaimStoreError{seed}", err)
-	}
-}
-
 func TestClaimShardID_CancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := newClaimer(t, kvstore.NewMemoryKVStore(), nil).ClaimShardID(ctx, 0)
+	_, err := newClaimer(t, kvstore.NewMemoryKVStore()).ClaimShardID(ctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("claim on a cancelled context = %v, want context.Canceled", err)
 	}

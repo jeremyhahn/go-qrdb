@@ -306,7 +306,6 @@ func transportRaftConfigToProto(r *transport.DatabaseRaftConfig) *pb.DatabaseRaf
 	}
 	return &pb.DatabaseRaftConfig{
 		ClusterMode:    r.ClusterMode,
-		ShardId:        r.ShardID,
 		ReplicaId:      r.ReplicaID,
 		RaftAddress:    r.RaftAddress,
 		Peers:          r.Peers,

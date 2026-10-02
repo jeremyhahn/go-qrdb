@@ -26,7 +26,6 @@ import (
 	"sync"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
-	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
 )
 
@@ -72,7 +71,6 @@ type Manager struct {
 	databases  sync.Map // name (string) -> *Database
 	factory    BackendFactory
 	barrierMgr *DatabaseBarrierManager
-	allocator  *shard.Allocator
 	claimer    ShardIDClaimer
 	reclaimer  KeyspaceReclaimer
 
@@ -87,9 +85,6 @@ type Manager struct {
 	// flight. See CreateWithCredentials for why two of them must not
 	// interleave.
 	inFlight sync.Map // name (string) -> struct{}
-
-	// shardHWMu serializes updates of the persisted shard high-water mark.
-	shardHWMu sync.Mutex
 }
 
 // NewManager creates a new Manager rooted at the given data directory.
@@ -129,13 +124,12 @@ func WithBarrierManager(bm *DatabaseBarrierManager) ManagerOption {
 	}
 }
 
-// WithAllocator sets a shard.Allocator for automatic shard ID assignment.
-// When set, Create assigns a unique shard ID to every database whose Raft
-// config has ShardID == 0. If not set, auto-allocation is disabled and the
-// caller is responsible for supplying explicit shard IDs.
-func WithAllocator(alloc *shard.Allocator) ManagerOption {
+// WithShardIDClaimer sets the issuer of every raft database's shard ID at
+// construction. A composer whose replicated store exists only later uses
+// SetShardIDClaimer instead.
+func WithShardIDClaimer(c ShardIDClaimer) ManagerOption {
 	return func(m *Manager) {
-		m.allocator = alloc
+		m.claimer = c
 	}
 }
 
@@ -236,6 +230,13 @@ func (m *Manager) CreateWithCredentials(ctx context.Context, cfg DatabaseConfig,
 // marker holding a live incarnation -- the name created through the API on
 // some node -- refuses the provisioning with *AlreadyExistsError.
 func (m *Manager) Provision(ctx context.Context, cfg DatabaseConfig) (*Database, error) {
+	// A provisioned database is created on every node independently, so a
+	// raft one would need a shard ID every node agrees on without a claim --
+	// which only a node-local allocator could give, and node-local allocators
+	// do not agree. No shipped path provisions one; refuse it.
+	if cfg.Raft != nil {
+		return nil, &ProvisionRaftError{Name: cfg.Name}
+	}
 	if db, err := m.GetIgnoringFence(cfg.Name); err == nil {
 		return db, nil
 	}
@@ -258,6 +259,13 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 		if err := barrierDataPathError(cfg); err != nil {
 			return nil, err
 		}
+	}
+	// Shard IDs are issued by the cluster. A caller naming one could put a
+	// database on another database's Raft group, or on a reserved shard such
+	// as the system shard; nothing the caller supplies is checked against
+	// what other nodes hold, so it is refused rather than validated.
+	if cfg.Raft != nil && cfg.Raft.ShardID != 0 {
+		return nil, &CallerShardIDError{Name: cfg.Name, ShardID: cfg.Raft.ShardID}
 	}
 
 	// Check for duplicates.
@@ -327,25 +335,16 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 		cfg.Mode = ModeEmbedded
 	}
 
-	// Auto-allocate a shard ID when an allocator is configured and the caller
-	// has not provided an explicit shard ID. The allocated ID is written into
-	// the config so it is persisted in meta.json and survives restarts.
-	if m.allocator != nil && cfg.Raft != nil && cfg.Raft.ShardID == 0 {
-		id, err := m.issueShardID(ctx, shared)
+	// A raft database's shard ID is issued here, never chosen by the caller
+	// (refused above). It is written into the config so it is persisted in
+	// meta.json and survives restarts.
+	if cfg.Raft != nil {
+		id, err := m.issueShardID(ctx)
 		if err != nil {
 			undo.run()
 			return nil, err
 		}
 		cfg.Raft.ShardID = id
-	}
-	// A shard ID is issued once, ever: it is recorded as used before the
-	// database exists, so neither a drop nor a restart can let it be issued
-	// again (see recordShardID).
-	if cfg.Raft != nil && cfg.Raft.ShardID != 0 {
-		if err := m.recordShardID(cfg.Raft.ShardID); err != nil {
-			undo.run()
-			return nil, err
-		}
 	}
 
 	// Write meta.json. A freshly created database is never already dropping.
@@ -854,6 +853,11 @@ func (m *Manager) UpdateEtcd(name string, etcd *EtcdConfig) error {
 
 // UpdateRaft updates the Raft consensus configuration for a database.
 // It updates both the in-memory config and the on-disk meta.json.
+//
+// The shard ID is not part of what an update sets: it is the database's
+// identity, issued at create. An update that leaves it unset keeps the issued
+// one, and an update naming a different one is refused with
+// *CallerShardIDError.
 func (m *Manager) UpdateRaft(name string, raft *DatabaseRaftConfig) error {
 	if raft != nil {
 		if err := raft.Validate(); err != nil {
@@ -863,6 +867,15 @@ func (m *Manager) UpdateRaft(name string, raft *DatabaseRaftConfig) error {
 	db, err := m.loadDatabase(name)
 	if err != nil {
 		return err
+	}
+	if raft != nil {
+		issued := db.ShardID()
+		if raft.ShardID != 0 && raft.ShardID != issued {
+			return &CallerShardIDError{Name: name, ShardID: raft.ShardID}
+		}
+		kept := *raft
+		kept.ShardID = issued
+		raft = &kept
 	}
 	db.updateRaft(raft)
 
@@ -1052,9 +1065,8 @@ func (m *Manager) Close() error {
 }
 
 // OpenAll scans the databases directory and opens all databases that
-// have a valid meta.json. When an allocator is configured it also
-// advances the allocator past the highest persisted shard ID so that
-// subsequent Create calls never reuse an existing shard ID.
+// have a valid meta.json. It issues nothing: shard IDs come from the
+// replicated claimer alone, so there is no node-local counter to restore.
 func (m *Manager) OpenAll() error {
 	dbsDir := filepath.Join(m.dataDir, databasesDir)
 	entries, err := os.ReadDir(dbsDir)
@@ -1065,47 +1077,19 @@ func (m *Manager) OpenAll() error {
 		return &MetaReadError{Path: dbsDir, Err: err}
 	}
 
-	var maxShardID uint64
-
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
 		name := entry.Name()
-		db, openErr := m.Open(name)
-		if openErr != nil {
+		if _, openErr := m.Open(name); openErr != nil {
 			m.logger.Warn("failed to open database",
 				slog.String("name", name),
 				slog.String("error", openErr.Error()))
 			// Continue opening other databases.
 			continue
 		}
-		// Track the highest shard ID across all successfully opened databases.
-		if m.allocator != nil {
-			if id := db.ShardID(); id > maxShardID {
-				maxShardID = id
-			}
-		}
 	}
-
-	// Advance the allocator so the next allocation starts after every known
-	// shard ID. Only advance when the discovered maximum is at or above the
-	// allocator's current next value to avoid rolling the counter backwards.
-	// The persisted high-water mark covers IDs of databases dropped since
-	// they were issued, which no remaining database carries.
-	if m.allocator != nil {
-		hw, err := m.readShardHighWater()
-		if err != nil {
-			return err
-		}
-		if hw > maxShardID {
-			maxShardID = hw
-		}
-	}
-	if m.allocator != nil && maxShardID > 0 {
-		m.allocator.AdvanceTo(maxShardID + 1)
-	}
-
 	return nil
 }
 

@@ -79,8 +79,7 @@ type DatabaseBinding struct {
 
 type DatabaseRaftConfig struct {
 	ClusterMode    string   `json:"clusterMode"` // none | local | distributed
-	ShardID        uint64   `json:"shardId,omitempty"`
-	ReplicaID      uint64   `json:"replicaId,omitempty"`
+	ReplicaID      uint64   `json:"replicaId,omitempty"` // no shard ID: issued by the cluster, see below
 	RaftAddress    string   `json:"raftAddress,omitempty"`
 	Peers          []string `json:"peers,omitempty"`
 	LocalNodeCount int      `json:"localNodeCount,omitempty"`
@@ -431,8 +430,8 @@ must hold, at the entry's own log position, for it to apply:
     which is why a drop's tombstone stays after the drop completes. A
     dedicated-raft database's marker is absent while it is live, because its
     shard ID identifies its incarnation: shard IDs are never issued twice
-    on a node (`Manager.OpenAll` moves the allocator past the persisted
-    `shard-high-water` mark, which covers dropped IDs too), so a shard
+    in the cluster (they are claimed from the replicated high-water mark;
+    see [Cluster-wide shard IDs](#cluster-wide-shard-ids)), so a shard
     cached for a dropped incarnation carries a different ID from the name's
     new placement and is evicted — stopped and its directory purged,
     outside the factory lock — never served or unfenced. A cold,
@@ -738,51 +737,76 @@ explicit one is: the check is on the resolved record, not on the request.
 ### Cluster-wide shard IDs
 
 A shard ID names one Raft group on a host every tenant shares, so it must be
-unique across the cluster, not only on the node that issued it. Every node's
-`shard.Allocator` starts at `shard.UserMin` and moves past the IDs that node
-issued, so before this two nodes creating raft databases each issued the same
+unique across the cluster, not only on the node that issued it. Every node
+used to issue from its own counter, starting at `shard.UserMin` and moving
+past the IDs that node had issued (persisted in a `shard-high-water` file in
+its data directory), so two nodes creating raft databases each issued the same
 ID -- two groups under one ID -- and a database dropped on one node and created
 again through another could be handed the dropped incarnation's ID, which the
-drop fence relies on never happening.
+drop fence relies on never happening. The per-node counter and its file are
+gone.
 
-- **A database created through the API claims its ID.** `Manager.create` asks
-  the `ShardIDClaimer` set with `Manager.SetShardIDClaimer`.
-  `lifecycle.BuildServices` wires a `shard.Claimer` over the replicated
-  system store, so every composition (`qrdbd`, `sdk/go/node`, an embedding)
-  that builds the data plane claims.
-- **The claim is a compare-and-swap on one record**,
-  `__sys:shard/high-water`: the next ID no node has issued, in decimal. A
-  claim reads it, swaps it to one past the ID it takes, and re-reads on a lost
-  race (`shard.ClaimContentionError` after 64 lost races in a row). An ID is
-  recorded as issued before it is returned, so a create that fails afterwards
-  leaves a gap, never a reuse.
-- **Floors, and why they are a correctness requirement.** Claims share the
-  shard ID space with IDs issued outside them: a provisioned database takes
-  its ID from each node's allocator (below). So a claim never issues below the
-  claiming node's own allocator, which it then moves past the claimed ID, nor
-  below `shard.UserMin`, and the claim that creates the record starts past the
-  highest shard ID any placement records. Without them a claim could issue an
-  ID a provisioned database already holds.
+**The guarantee: a user-range shard ID is issued once in a cluster's lifetime,
+and only by the cluster.** Its only state is one record in the replicated
+store: nothing on a node's disk takes part, so standalone and raft mode behave
+identically, and a node restored from a backup onto an empty data directory
+continues past every ID the cluster issued. It rests on three things, each
+enforced in code:
+
+- **One issuer.** Every raft database create takes its ID from the
+  `ShardIDClaimer` set with `Manager.SetShardIDClaimer`.
+  `lifecycle.BuildServices` wires a `shard.Claimer` over the replicated system
+  store, so every composition that builds the data plane (`qrdbd`,
+  `sdk/go/node`, an embedding) claims. It refuses to build over a store
+  without the atomic verbs (`lifecycle.ShardClaimerError`). Standalone and
+  raft compositions wire the same claimer, each over its own system store. A
+  Manager with no claimer refuses raft creates
+  (`*database.ShardIssuerRequiredError`); there is no node-local issuer to
+  fall back to.
+- **No caller-chosen IDs.** No transport's create or Raft-update request
+  carries a shard ID: the field is gone from REST, QUIC and MCP, gRPC reserves
+  field 2 of `DatabaseRaftConfig`, and the Go and TypeScript SDKs and the CLI
+  have no way to send one. As defence in depth, `Manager.create` refuses a
+  non-zero `Raft.ShardID` with `*database.CallerShardIDError` (400 /
+  `INVALID_ARGUMENT`), and `Manager.UpdateRaft` keeps the issued ID and refuses
+  any other. A caller's ID was never checked against what other nodes hold, so
+  it could name another database's group or a reserved shard such as the
+  system shard.
+- **No per-node IDs for provisioned databases.** `Manager.Provision` refuses a
+  configuration with Raft settings (`*database.ProvisionRaftError`). Every
+  node provisions its configured databases on its own, so a raft one could
+  only take an ID from something on its own node, and nodes do not agree. No
+  shipped path provisions one: `qrdbd` builds its configured databases with no
+  Raft configuration.
+
+How a claim works:
+
+- **One record**, `__sys:shard/high-water`: the next ID no node has issued, in
+  decimal. The first claim in a cluster creates it with `PutIfAbsent` and takes
+  `shard.UserMin`. Every later claim reads it and swaps it to one past the ID it
+  takes with `CompareAndSwap`, re-reading on a lost race
+  (`*shard.ClaimContentionError` after 64 losses in a row, 503 /
+  `UNAVAILABLE`).
+- **A gap, never a reuse.** An ID is recorded as issued before it is returned,
+  so a create that fails afterwards leaves a gap.
 - **No fallback.** A create that cannot claim refuses with
-  `*database.ShardIDClaimError` and leaves nothing behind. It never takes a
-  per-node ID that another node may already hold.
-- **Provisioned databases keep the node-local allocator.** Every node
-  provisions the configured databases independently, and they agree on such
-  a database's shard ID only because each allocates it deterministically; a
-  claim would give every node a different ID for the same group.
+  `*database.ShardIDClaimError` (503 / `UNAVAILABLE`, retryable) and leaves
+  nothing behind. A mark that is not one this code wrote -- not a decimal, or
+  at or below `shard.UserMin` -- is `*shard.HighWaterCorruptError` (500 /
+  `INTERNAL`): a claim refuses rather than guess.
 - **Feature gate.** `featuregate.ClusterShardIDs` adds no Raft command. Its
-  activation makes a binary that allocates per node unable to start or be
-  admitted, so the guarantee cannot be undone by a rollback.
-- **Rolling upgrade.** Until every node of a cluster being upgraded runs a
-  claiming binary, a database created through an older node takes a per-node
-  ID. Create raft databases through upgraded nodes while an upgrade is in
-  progress. Nothing refuses it: a binary without claims is not supported once
-  the upgrade completes, and the gate keeps it out from then on.
-- **Proof.** `TestShardIDs_*` (unit, two managers over one replicated store)
-  and `TestIsolationRaft_ShardIDs_*` (three real nodes, in the per-push cluster
-  tenancy job) assert distinct IDs for databases created through different
-  nodes, and no reuse of a dropped database's ID when its name is created
-  again through another node.
+  activation applies the gate's downgrade rule: once every node claims, a
+  binary that allocates per node or accepts a caller's shard ID can neither
+  start nor be admitted as a replica.
+- **Proof.** `TestShardIDs_*` (unit: two managers over one replicated store; a
+  caller-chosen ID, including the system shard, refused; raft provisioning
+  refused; an update that names another shard refused; a restore of the store
+  onto a fresh data directory issues no ID twice; a create writes nothing to
+  the node's data directory but the database's own entry) and
+  `TestIsolationRaft_ShardIDs_*` (three real nodes, in the per-push cluster
+  tenancy job: distinct IDs for databases created through different nodes, and
+  no reuse of a dropped database's ID when its name is created again through
+  another node).
 
 ## Error semantics
 

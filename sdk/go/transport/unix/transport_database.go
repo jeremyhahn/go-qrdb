@@ -301,7 +301,6 @@ func (t *Transport) UpdateDatabaseConnection(ctx context.Context, req transport.
 func transportRaftConfigToProto(r *transport.DatabaseRaftConfig) *pb.DatabaseRaftConfig {
 	return &pb.DatabaseRaftConfig{
 		ClusterMode:    r.ClusterMode,
-		ShardId:        r.ShardID,
 		ReplicaId:      r.ReplicaID,
 		RaftAddress:    r.RaftAddress,
 		Peers:          r.Peers,

@@ -40,6 +40,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/rowlock"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
@@ -321,6 +322,20 @@ var databaseRules = []rule{
 	// The default database can never be dropped, whatever state it is in: the
 	// request itself is invalid, not in conflict with anything.
 	as(&database.DefaultDatabaseDropError{}, InvalidArgument),
+	// Shard IDs are issued by the cluster; a request that names one is
+	// refused, never validated.
+	as(&database.CallerShardIDError{Name: "db", ShardID: 1}, InvalidArgument),
+	as(&database.ProvisionRaftError{Name: "db"}, InvalidArgument),
+	// A raft create on a node with no shard ID issuer: a composition fault.
+	as(&database.ShardIssuerRequiredError{}, Unimplemented),
+	// FIRST of the claim rows: a corrupt high-water mark is a server fault,
+	// and it reaches the caller wrapped in ShardIDClaimError, which would
+	// otherwise answer it as retryable.
+	as(&shard.HighWaterCorruptError{Value: "x"}, Internal),
+	// A claim that lost the race on every attempt, or whose store did not
+	// answer: nothing was created, and a retry can succeed.
+	as(&shard.ClaimContentionError{Attempts: 1}, Unavailable),
+	as(&database.ShardIDClaimError{Err: context.DeadlineExceeded}, Unavailable),
 }
 
 // placementRules are the quota, placement and raft-topology conditions.

@@ -108,23 +108,3 @@ func TestManager_ForgetDrop_RemoveFailureIsAMetaWriteError(t *testing.T) {
 	var writeErr *MetaWriteError
 	require.ErrorAs(t, err, &writeErr)
 }
-
-// readShardHighWater reports *MetaReadError, not a parse panic or a silent
-// zero, when the high-water file holds something that is not a uint64 --
-// corruption, or a foreign writer.
-func TestManager_ReadShardHighWater_CorruptFileIsAMetaReadError(t *testing.T) {
-	mgr := newTestManager(t)
-	defer func() { _ = mgr.Close() }()
-
-	require.NoError(t, os.WriteFile(filepath.Join(mgr.dataDir, shardHighWaterFile), []byte("not-a-number"), 0o600))
-
-	_, err := mgr.readShardHighWater()
-	var readErr *MetaReadError
-	require.ErrorAs(t, err, &readErr)
-
-	// recordShardID reads the high-water mark before it writes a new one, so
-	// the same corruption refuses a record attempt instead of silently
-	// treating the corrupt file as "no mark yet".
-	err = mgr.recordShardID(5)
-	require.ErrorAs(t, err, &readErr)
-}

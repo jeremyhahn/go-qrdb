@@ -1076,7 +1076,7 @@ func (n *Node) startLeaseExpiryStandalone(lr *lease.Lessor, leaseSvc service.Lea
 // built inside BuildServices, which never reopened a previous run's databases
 // and which the server never saw.
 func (n *Node) openStandaloneDatabaseManager(dataDir string) (*database.Manager, error) {
-	dbManager := database.NewManager(n.logger, dataDir, database.WithAllocator(shard.NewAllocator()))
+	dbManager := database.NewManager(n.logger, dataDir)
 	if err := dbManager.OpenAll(); err != nil {
 		_ = dbManager.Close()
 		return nil, &StorageCreateError{Backend: "database-manager", Err: err}
@@ -1298,17 +1298,15 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	}
 	n.host = host
 
-	// Build the database manager with a shard allocator so dedicated-raft
-	// database shard IDs are tracked and auto-incremented. OpenAll re-scans
-	// the databases directory, loads persisted meta.json records, and advances
-	// the allocator past the highest known shard ID — the same sequence the
-	// daemon performs before BuildServices. The manager is shared with
+	// Build the database manager. OpenAll re-scans the databases directory and
+	// loads persisted meta.json records -- the same sequence the daemon
+	// performs before BuildServices. Shard IDs are claimed from the replicated
+	// store (lifecycle.BuildServices wires the claimer), not from this node. The manager is shared with
 	// lifecycle.BuildServices (which skips creating its own when non-nil) and
 	// with BuildTenantInfra (reattachRaftTenants walks manager.List()). The
 	// node owns the manager's lifetime; lifecycle does NOT add a closer for an
 	// externally-supplied manager.
-	shardAlloc := shard.NewAllocator()
-	dbManager := database.NewManager(n.logger, pending.cfg.Raft.DataDir, database.WithAllocator(shardAlloc))
+	dbManager := database.NewManager(n.logger, pending.cfg.Raft.DataDir)
 	if err := dbManager.OpenAll(); err != nil {
 		_ = host.Close()
 		_ = dbManager.Close()

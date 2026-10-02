@@ -34,7 +34,7 @@ func newTestDatabaseService(t *testing.T) DatabaseServicer {
 	t.Helper()
 	dataDir := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, dataDir)
+	mgr := database.NewManager(logger, dataDir, database.WithShardIDClaimer(testShardClaimer(t)))
 	t.Cleanup(func() { _ = mgr.Close() })
 	return NewDatabaseService(mgr)
 }
@@ -298,7 +298,6 @@ func TestDatabaseService_UpdateRaft_Success(t *testing.T) {
 	// Update Raft config via service.
 	raftCfg := &database.DatabaseRaftConfig{
 		ClusterMode: database.RaftLocal,
-		ShardID:     1,
 		ReplicaID:   1,
 	}
 	info, err := svc.UpdateRaft("raft-db", raftCfg)
@@ -315,8 +314,10 @@ func TestDatabaseService_UpdateRaft_Success(t *testing.T) {
 	if info.Raft.ClusterMode != database.RaftLocal {
 		t.Errorf("UpdateRaft().Raft.ClusterMode = %q, want %q", info.Raft.ClusterMode, database.RaftLocal)
 	}
-	if info.Raft.ShardID != 1 {
-		t.Errorf("UpdateRaft().Raft.ShardID = %d, want 1", info.Raft.ShardID)
+	// The database was created with no Raft configuration, so it was issued
+	// no shard, and an update cannot give it one.
+	if info.Raft.ShardID != 0 {
+		t.Errorf("UpdateRaft().Raft.ShardID = %d, want 0", info.Raft.ShardID)
 	}
 	if info.Raft.ReplicaID != 1 {
 		t.Errorf("UpdateRaft().Raft.ReplicaID = %d, want 1", info.Raft.ReplicaID)
@@ -869,7 +870,7 @@ func newTestDatabaseServiceWithBarrier(t *testing.T) (*DatabaseService, *databas
 	t.Helper()
 	dataDir := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, dataDir)
+	mgr := database.NewManager(logger, dataDir, database.WithShardIDClaimer(testShardClaimer(t)))
 	t.Cleanup(func() { _ = mgr.Close() })
 
 	reg, _ := initNoneSystemRegistry(t)

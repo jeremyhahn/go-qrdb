@@ -87,7 +87,6 @@ func raftInfo(r *pb.DatabaseRaftInfo) *transport.DatabaseRaftInfo {
 	}
 	out := &transport.DatabaseRaftInfo{
 		ClusterMode:    r.GetClusterMode(),
-		ShardID:        r.GetShardId(),
 		ReplicaID:      r.GetReplicaId(),
 		RaftAddress:    r.GetRaftAddress(),
 		Peers:          r.GetPeers(),

@@ -23,7 +23,6 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
-	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -48,7 +47,7 @@ func TestReattachRaftTenants_SkipsNonRaftDatabase(t *testing.T) {
 	}
 
 	mgr := database.NewManager(reattachTestLogger(), t.TempDir(),
-		database.WithAllocator(shard.NewAllocator()))
+		database.WithShardIDClaimer(testShardClaimer(t)))
 	t.Cleanup(func() { _ = mgr.Close() })
 
 	tenantCtx := tenant.WithTenantID(ctx, "rnoskip")

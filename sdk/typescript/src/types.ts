@@ -2013,12 +2013,14 @@ export interface DatabaseSQLConfig {
     readonly concurrency?: SQLConcurrency;
 }
 
-/** Raft consensus configuration for a database. */
+/**
+ * Raft consensus configuration for a database. There is no shard ID: the cluster
+ * issues it when the database is created, it never changes, and it is
+ * reported as {@link DatabaseInfo.shard_id}.
+ */
 export interface DatabaseRaftConfig {
     /** Cluster mode (e.g. "single", "multi"). */
     readonly clusterMode: string;
-    /** Shard identifier for this database. */
-    readonly shardId?: number;
     /** Replica identifier for this database. */
     readonly replicaId?: number;
     /** Raft transport address. */

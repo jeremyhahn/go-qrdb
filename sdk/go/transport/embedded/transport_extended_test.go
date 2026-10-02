@@ -2192,7 +2192,6 @@ func TestEmbeddedDatabase_Create(t *testing.T) {
 		},
 		Raft: &transport.DatabaseRaftConfig{
 			ClusterMode: "multi",
-			ShardID:     1,
 			ReplicaID:   2,
 			RaftAddress: "127.0.0.1:63001",
 			Peers:       []string{"p1", "p2"},
@@ -2223,7 +2222,7 @@ func TestEmbeddedDatabase_Create(t *testing.T) {
 	if resp.Protocol.Etcd == nil || !resp.Protocol.Etcd.Enabled {
 		t.Errorf("Etcd = %+v", resp.Protocol.Etcd)
 	}
-	if resp.Raft == nil || resp.Raft.ShardID != 1 {
+	if resp.Raft == nil || resp.Raft.ReplicaID != 2 {
 		t.Errorf("Raft = %+v", resp.Raft)
 	}
 	if resp.Barrier == nil || !resp.Barrier.Enabled {

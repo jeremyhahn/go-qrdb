@@ -1011,7 +1011,6 @@ func TestDatabaseUpdateRaft_Success(t *testing.T) {
 
 	output, err := executeDatabaseCmd(t, svc, "update-raft", "mydb",
 		"--cluster-mode", "local",
-		"--shard-id", "1",
 		"--replica-id", "2",
 		"--raft-address", "127.0.0.1:9090",
 	)
@@ -1027,8 +1026,15 @@ func TestDatabaseUpdateRaft_Success(t *testing.T) {
 	if gotCfg.ClusterMode != "local" {
 		t.Errorf("ClusterMode = %q, want %q", gotCfg.ClusterMode, "local")
 	}
-	if gotCfg.ShardID != 1 {
-		t.Errorf("ShardID = %d, want 1", gotCfg.ShardID)
+	if gotCfg.ShardID != 0 {
+		t.Errorf("ShardID = %d, want 0: the CLI cannot name a shard", gotCfg.ShardID)
+	}
+
+	// A database's shard ID is issued at create and never changes, so
+	// update-raft has no flag to name one.
+	if _, err := executeDatabaseCmd(t, svc, "update-raft", "mydb", "--shard-id", "1"); err == nil ||
+		!strings.Contains(err.Error(), "unknown flag: --shard-id") {
+		t.Errorf("update-raft --shard-id = %v, want an unknown-flag error", err)
 	}
 	if !strings.Contains(output, "Name:") {
 		t.Errorf("output missing Name:, got: %q", output)

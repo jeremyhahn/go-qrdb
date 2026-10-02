@@ -42,7 +42,6 @@ func TestInfo_FullPayload(t *testing.T) {
 		},
 		Raft: &pb.DatabaseRaftInfo{
 			ClusterMode:    "distributed",
-			ShardId:        1,
 			ReplicaId:      2,
 			RaftAddress:    "db.example.com:63001",
 			Peers:          []string{"db.example.com:63001"},
@@ -67,7 +66,7 @@ func TestInfo_FullPayload(t *testing.T) {
 		t.Errorf("protocol mismatch: %+v", out.Protocol)
 	}
 	r := out.Raft
-	if r == nil || r.ClusterMode != "distributed" || r.ShardID != 1 || r.ReplicaID != 2 || r.Discovery != "static" {
+	if r == nil || r.ClusterMode != "distributed" || r.ReplicaID != 2 || r.Discovery != "static" {
 		t.Fatalf("raft mismatch: %+v", r)
 	}
 	if r.Static == nil || !r.Static.SharedSecretSet || len(r.Static.Peers) != 1 {

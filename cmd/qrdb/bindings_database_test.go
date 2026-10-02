@@ -605,7 +605,7 @@ func TestDatabaseBinding_UpdateRaft_Success(t *testing.T) {
 	b := NewDatabaseBinding(testLogger(t), conn)
 
 	info, err := b.UpdateRaft("db", &transport.UpdateDatabaseRaftRequest{
-		Raft: &transport.DatabaseRaftConfig{ShardID: 1},
+		Raft: &transport.DatabaseRaftConfig{ReplicaID: 1},
 	})
 	if err != nil {
 		t.Fatalf("UpdateRaft() unexpected error: %v", err)

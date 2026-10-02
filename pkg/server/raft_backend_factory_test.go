@@ -750,7 +750,7 @@ func TestRaftBackendError_Error(t *testing.T) {
 // TestManagerRaftInfoSource_Ownership exercises the database.Manager-backed
 // info source: ownership enforcement, non-raft rejection, and unknown databases.
 func TestManagerRaftInfoSource_Ownership(t *testing.T) {
-	mgr := database.NewManager(volTestLogger(), t.TempDir(), database.WithAllocator(shard.NewAllocator()))
+	mgr := database.NewManager(volTestLogger(), t.TempDir(), database.WithShardIDClaimer(testShardClaimer(t)))
 	t.Cleanup(func() { _ = mgr.Close() })
 
 	ctx := tenant.WithTenantID(context.Background(), "owner")

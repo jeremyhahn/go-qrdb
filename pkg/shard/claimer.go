@@ -42,46 +42,37 @@ type ClaimStore interface {
 	CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error)
 }
 
-// SeedFunc reports the highest shard ID already in use anywhere in the
-// cluster, or zero when there is none. It is consulted once, when the
-// high-water mark does not exist yet. It is a correctness requirement, not a
-// migration aid: claims share the shard ID space with IDs issued outside them
-// -- a provisioned database takes its ID from each node's allocator -- and the
-// first claim must start past every one of those already in use.
-type SeedFunc func(ctx context.Context) (uint64, error)
-
 // Claimer issues shard IDs that are unique across a cluster.
 //
-// An Allocator is unique per node only: every node's counter starts at
-// UserMin and moves past the IDs THAT node issued, so two nodes creating a
-// raft database each issue the same ID. A Claimer takes every ID from one
-// replicated high-water mark with a compare-and-swap, so an ID is issued once
-// in the cluster's lifetime -- dropped databases included, which is what a
-// shard ID standing in for a database incarnation requires.
+// A Claimer takes every ID from one replicated high-water mark with a
+// compare-and-swap, so an ID is issued once in the cluster's lifetime --
+// dropped databases included, which is what a shard ID standing in for a
+// database incarnation requires. The record is the only state: nothing on a
+// node's disk takes part, so a restart, a restore into a fresh data
+// directory, and standalone and raft mode all behave the same.
+//
+// The guarantee rests on the Claimer being the only issuer of user-range
+// shard IDs in a cluster: a database create cannot name its own ID
+// (database.CallerShardIDError) and cannot be provisioned with a Raft
+// configuration (database.ProvisionRaftError).
 type Claimer struct {
 	store ClaimStore
-	seed  SeedFunc
 }
 
-// NewClaimer returns a Claimer over store. seed may be nil when the store
-// is known to start empty.
-func NewClaimer(store ClaimStore, seed SeedFunc) (*Claimer, error) {
+// NewClaimer returns a Claimer over store.
+func NewClaimer(store ClaimStore) (*Claimer, error) {
 	if store == nil {
 		return nil, &ClaimerConfigError{Field: "store"}
 	}
-	return &Claimer{store: store, seed: seed}, nil
+	return &Claimer{store: store}, nil
 }
 
-// ClaimShardID issues the next cluster-wide shard ID at or above floor.
-//
-// floor is the caller's own lower bound -- a node passes its allocator's
-// next value, so a claim never issues an ID the node has issued itself even
-// on a cluster whose high-water mark is newer than that node's history.
-// UserMin is always a floor too, keeping claims out of the reserved ranges.
+// ClaimShardID issues the next cluster-wide shard ID. The first ID a cluster
+// issues is UserMin, which keeps claims out of the reserved ranges.
 //
 // The returned ID is recorded as issued before it is returned: a claim whose
 // caller then fails leaves a gap, never a reuse.
-func (c *Claimer) ClaimShardID(ctx context.Context, floor uint64) (uint64, error) {
+func (c *Claimer) ClaimShardID(ctx context.Context) (uint64, error) {
 	for attempt := 0; attempt < maxClaimAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return 0, &ClaimStoreError{Op: "claim", Err: err}
@@ -91,33 +82,26 @@ func (c *Claimer) ClaimShardID(ctx context.Context, floor uint64) (uint64, error
 			return 0, &ClaimStoreError{Op: "read", Err: err}
 		}
 		if raw == nil {
-			id, err := c.firstID(ctx, floor)
-			if err != nil {
-				return 0, err
-			}
-			next, err := after(id)
-			if err != nil {
-				return 0, err
-			}
-			stored, err := c.store.PutIfAbsent(ctx, HighWaterKey, next)
+			stored, err := c.store.PutIfAbsent(ctx, HighWaterKey, []byte(strconv.FormatUint(UserMin+1, 10)))
 			if err != nil {
 				return 0, &ClaimStoreError{Op: "create", Err: err}
 			}
 			if stored {
-				return id, nil
+				return UserMin, nil
 			}
 			continue // another node created the mark first; claim from it
 		}
-		current, err := strconv.ParseUint(string(raw), 10, 64)
-		if err != nil {
+		id, err := strconv.ParseUint(string(raw), 10, 64)
+		// The mark is only ever written past an issued ID, so it is never
+		// at or below UserMin. Anything else is not a mark this code wrote,
+		// and a claim refuses rather than guess.
+		if err != nil || id <= UserMin {
 			return 0, &HighWaterCorruptError{Value: string(raw)}
 		}
-		id := max(current, floor, UserMin)
-		next, err := after(id)
-		if err != nil {
-			return 0, err
+		if id == math.MaxUint64 {
+			return 0, &ShardIDExhaustedError{}
 		}
-		swapped, err := c.store.CompareAndSwap(ctx, HighWaterKey, raw, next)
+		swapped, err := c.store.CompareAndSwap(ctx, HighWaterKey, raw, []byte(strconv.FormatUint(id+1, 10)))
 		if err != nil {
 			return 0, &ClaimStoreError{Op: "swap", Err: err}
 		}
@@ -126,29 +110,4 @@ func (c *Claimer) ClaimShardID(ctx context.Context, floor uint64) (uint64, error
 		}
 	}
 	return 0, &ClaimContentionError{Attempts: maxClaimAttempts}
-}
-
-// firstID is the ID the claim that creates the high-water mark issues: past
-// every ID the cluster already uses, the caller's floor and UserMin.
-func (c *Claimer) firstID(ctx context.Context, floor uint64) (uint64, error) {
-	id := max(floor, UserMin)
-	if c.seed == nil {
-		return id, nil
-	}
-	inUse, err := c.seed(ctx)
-	if err != nil {
-		return 0, &ClaimStoreError{Op: "seed", Err: err}
-	}
-	if inUse == math.MaxUint64 {
-		return 0, &ShardIDExhaustedError{}
-	}
-	return max(id, inUse+1), nil
-}
-
-// after encodes the high-water mark that follows issuing id.
-func after(id uint64) ([]byte, error) {
-	if id == math.MaxUint64 {
-		return nil, &ShardIDExhaustedError{}
-	}
-	return []byte(strconv.FormatUint(id+1, 10)), nil
 }

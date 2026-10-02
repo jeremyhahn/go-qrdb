@@ -24,7 +24,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
-	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -92,7 +91,7 @@ func newDistributorDatabaseService(
 ) (DatabaseServicer, *placement.Store) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, t.TempDir(), database.WithAllocator(shard.NewAllocator()))
+	mgr := database.NewManager(logger, t.TempDir(), database.WithShardIDClaimer(testShardClaimer(t)))
 	t.Cleanup(func() { _ = mgr.Close() })
 
 	store, err := placement.NewStore(newMemPlacementKV())
@@ -228,7 +227,7 @@ func TestCreateForTenant_DistributorSkippedWithoutPrerequisites(t *testing.T) {
 		lookup := &fakeTenantBarrierLookup{tb: tb}
 		// Build service WITHOUT WithKeyDistributor.
 		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-		mgr := database.NewManager(logger, t.TempDir(), database.WithAllocator(shard.NewAllocator()))
+		mgr := database.NewManager(logger, t.TempDir(), database.WithShardIDClaimer(testShardClaimer(t)))
 		t.Cleanup(func() { _ = mgr.Close() })
 		store, _ := placement.NewStore(newMemPlacementKV())
 		scheduler, _ := placement.NewScheduler(&staticTopology{nodes: healthyNodes("n1", "n2")})
@@ -260,7 +259,7 @@ func TestCreateForTenant_DistributorSkippedWithoutPrerequisites(t *testing.T) {
 		tb := newTestTenantBarrier(t, "rt")
 		lookup := &fakeTenantBarrierLookup{tb: tb}
 		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-		mgr := database.NewManager(logger, t.TempDir(), database.WithAllocator(shard.NewAllocator()))
+		mgr := database.NewManager(logger, t.TempDir(), database.WithShardIDClaimer(testShardClaimer(t)))
 		t.Cleanup(func() { _ = mgr.Close() })
 		store, _ := placement.NewStore(newMemPlacementKV())
 		scheduler, _ := placement.NewScheduler(&staticTopology{nodes: healthyNodes("n1")})
@@ -301,7 +300,7 @@ func TestSetDistributor_PostConstruction(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, t.TempDir(), database.WithAllocator(shard.NewAllocator()))
+	mgr := database.NewManager(logger, t.TempDir(), database.WithShardIDClaimer(testShardClaimer(t)))
 	t.Cleanup(func() { _ = mgr.Close() })
 	store, _ := placement.NewStore(newMemPlacementKV())
 	scheduler, _ := placement.NewScheduler(&staticTopology{nodes: healthyNodes("n1", "n2")})

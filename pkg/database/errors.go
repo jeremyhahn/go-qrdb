@@ -326,6 +326,42 @@ func (e *ShardIDClaimError) Error() string {
 // Unwrap returns the claimer's error.
 func (e *ShardIDClaimError) Unwrap() error { return e.Err }
 
+// CallerShardIDError reports a create or a Raft update that named a shard ID.
+// Shard IDs are issued by the cluster (Manager.SetShardIDClaimer); a caller's
+// ID is never checked against what other nodes hold, so it is refused.
+type CallerShardIDError struct {
+	Name    string
+	ShardID uint64
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *CallerShardIDError) Error() string {
+	return "database: database " + strconv.Quote(e.Name) + " names shard " +
+		strconv.FormatUint(e.ShardID, 10) + "; shard IDs are issued by the cluster, never chosen by the caller"
+}
+
+// ProvisionRaftError reports a provisioned database with a Raft
+// configuration. Every node provisions its configured databases on its own,
+// and nodes cannot agree on a raft database's shard ID without a claim.
+type ProvisionRaftError struct {
+	Name string
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *ProvisionRaftError) Error() string {
+	return "database: database " + strconv.Quote(e.Name) +
+		" cannot be provisioned with a Raft configuration; create it through the API"
+}
+
+// ShardIssuerRequiredError reports a raft database create on a Manager with no
+// shard ID claimer: a composition fault.
+type ShardIssuerRequiredError struct{}
+
+// Error returns a human-readable description of the refusal.
+func (e *ShardIssuerRequiredError) Error() string {
+	return "database: no shard ID claimer is configured; raft databases cannot be created"
+}
+
 // IncarnationError reports that a new database incarnation could not be
 // generated because the system random source failed.
 type IncarnationError struct {

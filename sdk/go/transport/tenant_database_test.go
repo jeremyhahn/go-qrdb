@@ -127,7 +127,6 @@ func (m *mockDatabaseClient) UpdateDatabaseRaft(_ context.Context, req UpdateDat
 	}
 	info.Raft = &DatabaseRaftInfo{
 		ClusterMode:    req.Raft.ClusterMode,
-		ShardID:        req.Raft.ShardID,
 		ReplicaID:      req.Raft.ReplicaID,
 		RaftAddress:    req.Raft.RaftAddress,
 		Peers:          req.Raft.Peers,

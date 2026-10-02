@@ -13692,7 +13692,6 @@ func (x *DatabaseInfoResponse) GetDedicatedWal() bool {
 type DatabaseRaftInfo struct {
 	state          protoimpl.MessageState          `protogen:"open.v1"`
 	ClusterMode    string                          `protobuf:"bytes,1,opt,name=cluster_mode,json=clusterMode,proto3" json:"cluster_mode,omitempty"`
-	ShardId        uint64                          `protobuf:"varint,2,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
 	ReplicaId      uint64                          `protobuf:"varint,3,opt,name=replica_id,json=replicaId,proto3" json:"replica_id,omitempty"`
 	RaftAddress    string                          `protobuf:"bytes,4,opt,name=raft_address,json=raftAddress,proto3" json:"raft_address,omitempty"`
 	Peers          []string                        `protobuf:"bytes,5,rep,name=peers,proto3" json:"peers,omitempty"`
@@ -13741,13 +13740,6 @@ func (x *DatabaseRaftInfo) GetClusterMode() string {
 		return x.ClusterMode
 	}
 	return ""
-}
-
-func (x *DatabaseRaftInfo) GetShardId() uint64 {
-	if x != nil {
-		return x.ShardId
-	}
-	return 0
 }
 
 func (x *DatabaseRaftInfo) GetReplicaId() uint64 {
@@ -14265,7 +14257,6 @@ func (x *DatabaseEtcdConfig) GetAdvertiseClientUrls() []string {
 type DatabaseRaftConfig struct {
 	state          protoimpl.MessageState      `protogen:"open.v1"`
 	ClusterMode    string                      `protobuf:"bytes,1,opt,name=cluster_mode,json=clusterMode,proto3" json:"cluster_mode,omitempty"`
-	ShardId        uint64                      `protobuf:"varint,2,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
 	ReplicaId      uint64                      `protobuf:"varint,3,opt,name=replica_id,json=replicaId,proto3" json:"replica_id,omitempty"`
 	RaftAddress    string                      `protobuf:"bytes,4,opt,name=raft_address,json=raftAddress,proto3" json:"raft_address,omitempty"`
 	Peers          []string                    `protobuf:"bytes,5,rep,name=peers,proto3" json:"peers,omitempty"`
@@ -14314,13 +14305,6 @@ func (x *DatabaseRaftConfig) GetClusterMode() string {
 		return x.ClusterMode
 	}
 	return ""
-}
-
-func (x *DatabaseRaftConfig) GetShardId() uint64 {
-	if x != nil {
-		return x.ShardId
-	}
-	return 0
 }
 
 func (x *DatabaseRaftConfig) GetReplicaId() uint64 {
@@ -27916,10 +27900,9 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\ttenant_id\x18\f \x01(\tR\btenantId\x12\x1a\n" +
 	"\breplicas\x18\r \x01(\rR\breplicas\x12,\n" +
 	"\x03sql\x18\x0e \x01(\v2\x1a.qrdb.v1.DatabaseSQLConfigR\x03sql\x12#\n" +
-	"\rdedicated_wal\x18\x0f \x01(\bR\fdedicatedWal\"\xe1\x03\n" +
+	"\rdedicated_wal\x18\x0f \x01(\bR\fdedicatedWal\"\xd6\x03\n" +
 	"\x10DatabaseRaftInfo\x12!\n" +
-	"\fcluster_mode\x18\x01 \x01(\tR\vclusterMode\x12\x19\n" +
-	"\bshard_id\x18\x02 \x01(\x04R\ashardId\x12\x1d\n" +
+	"\fcluster_mode\x18\x01 \x01(\tR\vclusterMode\x12\x1d\n" +
 	"\n" +
 	"replica_id\x18\x03 \x01(\x04R\treplicaId\x12!\n" +
 	"\fraft_address\x18\x04 \x01(\tR\vraftAddress\x12\x14\n" +
@@ -27930,7 +27913,7 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\tmulticast\x18\t \x01(\v2'.qrdb.v1.DatabaseMulticastDiscoveryInfoR\tmulticast\x12/\n" +
 	"\x03dns\x18\n" +
 	" \x01(\v2\x1d.qrdb.v1.DatabaseDNSDiscoveryR\x03dns\x129\n" +
-	"\x05token\x18\v \x01(\v2#.qrdb.v1.DatabaseTokenDiscoveryInfoR\x05token\"t\n" +
+	"\x05token\x18\v \x01(\v2#.qrdb.v1.DatabaseTokenDiscoveryInfoR\x05tokenJ\x04\b\x02\x10\x03R\bshard_id\"t\n" +
 	"\x1bDatabaseStaticDiscoveryInfo\x12\x14\n" +
 	"\x05peers\x18\x01 \x03(\tR\x05peers\x12*\n" +
 	"\x11shared_secret_set\x18\x03 \x01(\bR\x0fsharedSecretSetJ\x04\b\x02\x10\x03R\rshared_secret\"\x99\x02\n" +
@@ -27963,10 +27946,9 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1f\n" +
 	"\vlisten_addr\x18\x02 \x01(\tR\n" +
 	"listenAddr\x122\n" +
-	"\x15advertise_client_urls\x18\x03 \x03(\tR\x13advertiseClientUrls\"\xd7\x03\n" +
+	"\x15advertise_client_urls\x18\x03 \x03(\tR\x13advertiseClientUrls\"\xcc\x03\n" +
 	"\x12DatabaseRaftConfig\x12!\n" +
-	"\fcluster_mode\x18\x01 \x01(\tR\vclusterMode\x12\x19\n" +
-	"\bshard_id\x18\x02 \x01(\x04R\ashardId\x12\x1d\n" +
+	"\fcluster_mode\x18\x01 \x01(\tR\vclusterMode\x12\x1d\n" +
 	"\n" +
 	"replica_id\x18\x03 \x01(\x04R\treplicaId\x12!\n" +
 	"\fraft_address\x18\x04 \x01(\tR\vraftAddress\x12\x14\n" +
@@ -27977,7 +27959,7 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\tmulticast\x18\t \x01(\v2#.qrdb.v1.DatabaseMulticastDiscoveryR\tmulticast\x12/\n" +
 	"\x03dns\x18\n" +
 	" \x01(\v2\x1d.qrdb.v1.DatabaseDNSDiscoveryR\x03dns\x125\n" +
-	"\x05token\x18\v \x01(\v2\x1f.qrdb.v1.DatabaseTokenDiscoveryR\x05token\"T\n" +
+	"\x05token\x18\v \x01(\v2\x1f.qrdb.v1.DatabaseTokenDiscoveryR\x05tokenJ\x04\b\x02\x10\x03R\bshard_id\"T\n" +
 	"\x17DatabaseStaticDiscovery\x12\x14\n" +
 	"\x05peers\x18\x01 \x03(\tR\x05peers\x12#\n" +
 	"\rshared_secret\x18\x02 \x01(\tR\fsharedSecret\"\xf9\x01\n" +

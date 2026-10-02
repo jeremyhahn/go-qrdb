@@ -23,7 +23,6 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
-	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -107,7 +106,7 @@ func newReplicaQuotaChecker(t *testing.T, f *fakeReplicaQuota) quota.Checker {
 func newReplicaDatabaseService(t *testing.T, info *tenant.TenantInfo, f *fakeReplicaQuota) DatabaseServicer {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, t.TempDir(), database.WithAllocator(shard.NewAllocator()))
+	mgr := database.NewManager(logger, t.TempDir(), database.WithShardIDClaimer(testShardClaimer(t)))
 	t.Cleanup(func() { _ = mgr.Close() })
 	return NewDatabaseService(mgr,
 		WithEntitlementChecker(&mockEntitlementChecker{}),

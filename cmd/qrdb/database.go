@@ -332,7 +332,6 @@ func newDatabaseUpdateEtcdCmd() *cobra.Command {
 func newDatabaseUpdateRaftCmd() *cobra.Command {
 	var (
 		clusterMode string
-		shardID     uint64
 		replicaID   uint64
 		raftAddress string
 	)
@@ -348,7 +347,6 @@ func newDatabaseUpdateRaftCmd() *cobra.Command {
 				Name: name,
 				Raft: &transport.DatabaseRaftConfig{
 					ClusterMode: clusterMode,
-					ShardID:     shardID,
 					ReplicaID:   replicaID,
 					RaftAddress: raftAddress,
 				},
@@ -362,7 +360,6 @@ func newDatabaseUpdateRaftCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&clusterMode, "cluster-mode", "", "Raft cluster mode (none, local, distributed)")
-	cmd.Flags().Uint64Var(&shardID, "shard-id", 0, "Raft shard ID")
 	cmd.Flags().Uint64Var(&replicaID, "replica-id", 0, "Raft replica ID")
 	cmd.Flags().StringVar(&raftAddress, "raft-address", "", "Raft address (host:port)")
 
@@ -528,9 +525,6 @@ func printDatabaseInfo(info *transport.DatabaseInfo) error {
 		if info.Raft != nil {
 			_, _ = fmt.Fprintf(outputWriter, "Raft:\n")
 			_, _ = fmt.Fprintf(outputWriter, "  Mode:     %s\n", info.Raft.ClusterMode)
-			if info.Raft.ShardID != 0 {
-				_, _ = fmt.Fprintf(outputWriter, "  ShardID:  %s\n", strconv.FormatUint(info.Raft.ShardID, 10))
-			}
 			if info.Raft.RaftAddress != "" {
 				_, _ = fmt.Fprintf(outputWriter, "  Address:  %s\n", info.Raft.RaftAddress)
 			}

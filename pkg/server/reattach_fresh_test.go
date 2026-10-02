@@ -26,7 +26,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
-	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -199,7 +198,7 @@ func TestReattachRaftTenants_FreshRegistryReRegisters(t *testing.T) {
 
 	// Populate the database manager with a dedicated-raft database for the
 	// tenant, mirroring dbManager.OpenAll at boot.
-	mgr := database.NewManager(reattachTestLogger(), t.TempDir(), database.WithAllocator(shard.NewAllocator()))
+	mgr := database.NewManager(reattachTestLogger(), t.TempDir(), database.WithShardIDClaimer(testShardClaimer(t)))
 	t.Cleanup(func() { _ = mgr.Close() })
 	tctx := tenant.WithTenantID(ctx, "rfresh")
 	cfg := database.DatabaseConfig{
