@@ -86,7 +86,11 @@ func TestMVCCEngine_ScanChanges_ReportsPutsInWindow(t *testing.T) {
 }
 
 // TestMVCCEngine_ScanChanges_ReportsDeletedKeys is the capability the restore
-// depends on and the one a range scan cannot provide.
+// depends on: the keys a window changed, deleted ones included. A range at a
+// revision before the delete sees the key too -- it answers for every key
+// live at that revision. (Corrected: this test asserted that such a range did
+// NOT see the deleted key, which was the defect -- a past-revision Range
+// enumerated only the keys live now.)
 func TestMVCCEngine_ScanChanges_ReportsDeletedKeys(t *testing.T) {
 	eng, _ := newMVCCEngine(t)
 
@@ -94,17 +98,17 @@ func TestMVCCEngine_ScanChanges_ReportsDeletedKeys(t *testing.T) {
 	afterPut := eng.store.CurrentRevision()
 	applyEntries(t, eng, []sm.Entry{mvccDeleteEntry(2, []byte("app/gone"))})
 
-	// A range scan at the revision the key existed no longer sees it, because
-	// it enumerates keys that are live NOW.
 	kvs, _, _, err := eng.store.Range([]byte("app/"), []byte("app0"), service.WithRevision(afterPut))
 	if err != nil {
 		t.Fatalf("Range: %v", err)
 	}
-	if len(kvs) != 0 {
-		t.Fatalf("precondition failed: the range scan still sees the deleted key: %v", kvs)
+	if len(kvs) != 1 || string(kvs[0].Key) != "app/gone" {
+		t.Fatalf("a range at the revision the key was live = %v, want app/gone", kvs)
+	}
+	if kvs, _, _, err := eng.store.Range([]byte("app/"), []byte("app0")); err != nil || len(kvs) != 0 {
+		t.Fatalf("a current range sees the deleted key: %v, %v", kvs, err)
 	}
 
-	// The change scan does.
 	result := scanChanges(t, eng, service.MVCCScanChangesQuery{StartRevision: 1, EndRevision: 100})
 	assertKeys(t, "keys", result.Keys, []string{"app/gone"})
 }

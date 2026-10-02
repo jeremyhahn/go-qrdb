@@ -71,10 +71,13 @@ func (s *Store) CompactPrefix(prefix []byte, revision int64) error {
 	if err := s.compactInto(batch, prefix, revision); err != nil {
 		return err
 	}
+	// The floor is published BEFORE the deletions become visible, so a
+	// reader that observes a deletion observes the floor that refuses it
+	// (refusedAfterRead), as on the apply path.
+	s.publishFloor(prefix, revision)
 	if err := batch.Commit(); err != nil {
 		return &CompactionError{Err: err}
 	}
-	s.publishFloor(prefix, revision)
 	return nil
 }
 
@@ -268,10 +271,11 @@ func (s *Store) CompactNodeKeyspace(revision int64) error {
 	if err := s.compactNodeInto(batch, revision); err != nil {
 		return err
 	}
+	// Published before the deletions are visible, as in CompactPrefix.
+	s.publishNodeFloor(revision)
 	if err := batch.Commit(); err != nil {
 		return &CompactionError{Err: err}
 	}
-	s.publishNodeFloor(revision)
 	return nil
 }
 

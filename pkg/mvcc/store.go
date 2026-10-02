@@ -253,11 +253,33 @@ func (s *Store) GetAtRevision(key []byte, revision int64) (*service.KeyValue, er
 
 	// Find the data entry at or before the requested revision.
 	kv, err := s.findAtRevision(key, revision)
+	// A compaction that committed between the floor check above and the read
+	// may have removed the entry the read was looking for, so an answer --
+	// absent above all -- is only good if the floor still admits revision.
+	if refused := s.refusedAfterRead(key, nil, revision); refused != nil {
+		return nil, refused
+	}
 	if err != nil {
 		return nil, err
 	}
 
 	return kv, nil
+}
+
+// refusedAfterRead re-checks the compaction floor covering [start, end) (the
+// single key start when end is nil) after a read at revision, and returns the
+// *RevisionCompactedError the read must answer when a compaction moved the
+// floor to or past revision while it ran. A compaction publishes its floor
+// before its deletions become visible, so a read that observed a deletion
+// observes the floor here.
+func (s *Store) refusedAfterRead(start, end []byte, revision int64) error {
+	if revision <= 0 {
+		return nil
+	}
+	if floor := s.rangeFloor(start, end); revision <= floor {
+		return &RevisionCompactedError{Requested: revision, Compacted: floor}
+	}
+	return nil
 }
 
 // Delete removes a key by writing a tombstone at a new revision.
@@ -365,6 +387,9 @@ func (s *Store) rangeFrom(r storage.Reader, start, end []byte, opts ...service.R
 	// Single key lookup if no end specified.
 	if end == nil {
 		kv, err := s.rangeGetSingle(r, start, targetRev, ro)
+		if refused := s.refusedAfterRead(start, nil, ro.Revision); refused != nil {
+			return nil, 0, 0, refused
+		}
 		if err != nil {
 			// Key not found is not an error for range.
 			return nil, 0, currentRev, nil
@@ -380,20 +405,27 @@ func (s *Store) rangeFrom(r storage.Reader, start, end []byte, opts ...service.R
 	// whatever order the storage iterator produces.
 	sorting := ro.SortOrder != service.SortNone || ro.SortTarget != service.SortByKey
 
-	// Range scan over the metadata keys in [start, end). Length-prefixed meta
-	// keys sort by length first, so the scan seeks once per key length rather
-	// than walking the namespace; see ForEachMetaKeyInRange.
-	iter := r.NewIterator(&storage.IteratorOptions{
-		LowerBound: MetaLowerBound(),
-		UpperBound: MetaUpperBound(),
-	})
+	// The keys to answer for. At the current revision they are the
+	// metadata keys in [start, end) -- exactly the live keys. At a past
+	// revision they are every key with a data entry in [start, end): the
+	// metadata holds the CURRENT keys only, so a key deleted since the
+	// revision would be missed. Both enumerations seek once per key length
+	// rather than walking the namespace (ForEachMetaKeyInRange).
+	historical := targetRev < currentRev
+	bounds := &storage.IteratorOptions{LowerBound: MetaLowerBound(), UpperBound: MetaUpperBound()}
+	forEachKey := ForEachMetaKeyInRange
+	if historical {
+		bounds = &storage.IteratorOptions{LowerBound: []byte{prefixData}, UpperBound: []byte{prefixData + 1}}
+		forEachKey = forEachDataKeyInRange
+	}
+	iter := r.NewIterator(bounds)
 	defer func() { _ = iter.Close() }()
 
 	var results []*service.KeyValue
 	var count int64
 
-	scanErr := ForEachMetaKeyInRange(iter, start, end, func(userKey []byte) bool {
-		if ro.CountOnly {
+	scanErr := forEachKey(iter, start, end, func(userKey []byte) bool {
+		if ro.CountOnly && !historical {
 			count++
 			return true
 		}
@@ -401,6 +433,10 @@ func (s *Store) rangeFrom(r storage.Reader, start, end []byte, opts ...service.R
 		kv, err := s.findAtRevisionFrom(r, userKey, targetRev)
 		if err != nil {
 			return true // Key might not exist at this revision.
+		}
+		if ro.CountOnly {
+			count++
+			return true
 		}
 
 		if ro.KeysOnly {
@@ -415,6 +451,9 @@ func (s *Store) rangeFrom(r storage.Reader, start, end []byte, opts ...service.R
 
 	if err := scanErr; err != nil {
 		return nil, 0, 0, &StoreError{Op: "range scan", Err: err}
+	}
+	if refused := s.refusedAfterRead(start, end, ro.Revision); refused != nil {
+		return nil, 0, 0, refused
 	}
 
 	if ro.CountOnly {

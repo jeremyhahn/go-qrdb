@@ -89,6 +89,58 @@ func ForEachMetaKeyInRange(iter storage.Iterator, start, end []byte, visit func(
 	return iter.Error()
 }
 
+// forEachDataKeyInRange calls visit, in (length, key) order, ONCE for every
+// user key in [start, end) that has a data entry -- any entry, live,
+// tombstone or historical -- with the same per-length seeks as
+// ForEachMetaKeyInRange. After visiting a key it seeks past the key's
+// remaining revisions, so its cost is one seek per key and per length, not
+// one step per revision. The iterator must be bounded to the data namespace.
+//
+// It is the enumeration a read at a past revision needs: the metadata
+// namespace holds the CURRENT keys only, so a key deleted since that
+// revision has no metadata and would be missed.
+func forEachDataKeyInRange(iter storage.Iterator, start, end []byte, visit func(userKey []byte) bool) error {
+	keyLen := 0
+	for iter.Seek(dataSeekKey(keyLen, lowerBoundAtLen(start, keyLen))) && iter.Valid() {
+		landed, ok := dataKeyLen(iter.Key())
+		if !ok || landed < keyLen {
+			break
+		}
+		if landed > keyLen {
+			keyLen = landed
+			continue
+		}
+		for iter.Valid() {
+			encoded := iter.Key()
+			if length, ok := dataKeyLen(encoded); !ok || length != keyLen {
+				break
+			}
+			userKey, ok := dataUserKey(encoded)
+			if !ok {
+				iter.Next()
+				continue
+			}
+			if bytes.Compare(userKey, start) < 0 {
+				iter.Next()
+				continue
+			}
+			if end != nil && bytes.Compare(userKey, end) >= 0 {
+				break
+			}
+			owned := append([]byte(nil), userKey...)
+			if !visit(owned) {
+				return iter.Error()
+			}
+			// Past this key's every revision, to the next key of this length.
+			if !iter.Seek(DataKeyUpperBound(owned)) {
+				break
+			}
+		}
+		keyLen++
+	}
+	return iter.Error()
+}
+
 // ForEachMetaKeyWithPrefix calls visit for every user key that starts with
 // prefix, in (length, key) order. An empty prefix visits every key.
 func ForEachMetaKeyWithPrefix(iter storage.Iterator, prefix []byte, visit func(userKey []byte) bool) error {
