@@ -128,17 +128,15 @@ func (e *InvalidTenantIDCharError) Error() string {
 	return fmt.Sprintf("tenant: id %q contains illegal character 0x%02x", e.TenantID, e.Byte)
 }
 
-// ReservedTenantIDError is returned when a caller attempts to create a
-// tenant whose id is reserved by the platform. The set of reserved ids is:
+// ReservedTenantIDError is returned when a caller attempts to create or
+// delete a tenant whose id is reserved by the platform. The reserved set is
+// declared in exactly one place, reservedTenantIDReason (reserved.go); Reason
+// carries why the id is reserved.
 //
-//   - "system"        — the structurally privileged platform tenant.
-//   - "default"       — legacy id; permanently reserved so it can never be
-//     accidentally re-created.
-//   - any id starting with "_"  — reserved for internal future use.
-//   - any id containing ":"     — reserved for compound-id schemes.
-//
-// Trusted internal callers (first-boot bootstrap) bypass the check by
-// passing a context marked with tenant.WithInternalCall.
+// Trusted internal callers (first-boot bootstrap) bypass the check on CREATE
+// by passing a context marked with tenant.WithInternalCall. The DELETE path
+// (validateDeletableTenantID) has no bypass: nothing deletes a reserved
+// tenant.
 type ReservedTenantIDError struct {
 	TenantID string
 	Reason   string

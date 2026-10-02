@@ -18,6 +18,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
 
@@ -84,6 +85,11 @@ func validateTenantIDCharset(id string) error {
 //
 //   - SystemTenantID ("system") — structurally privileged platform tenant.
 //   - legacyDefaultTenantID ("default") — retired; permanently reserved.
+//   - the holder certificate profiles ("custodian", "security-officer",
+//     holderprofile.Is) — a certificate issued before the ceremony CA set
+//     the tenant carries its profile as its FIRST OU, which the mTLS
+//     authenticator reads as the tenant, so a tenant by that name would be
+//     the tenant those certificates authenticate in.
 //   - any id starting with "_" — reserved for internal future use.
 //   - any id containing ":" — reserved for compound-id schemes.
 func reservedTenantIDReason(id string) error {
@@ -97,6 +103,11 @@ func reservedTenantIDReason(id string) error {
 		return &ReservedTenantIDError{
 			TenantID: id,
 			Reason:   "legacy default tenant id is permanently reserved",
+		}
+	case holderprofile.Is(id):
+		return &ReservedTenantIDError{
+			TenantID: id,
+			Reason:   "holder certificate profile names are reserved",
 		}
 	case strings.HasPrefix(id, "_"):
 		return &ReservedTenantIDError{

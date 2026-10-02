@@ -767,7 +767,7 @@ isolation gap.
 | Unknown tenant, tenant service configured | rejected | **yes** |
 | Unknown tenant, **no** tenant service | **accepted** — the documented gap above | **no** |
 | Tenant barrier sealed | tenant operations refused | **yes** |
-| Deleting a RESERVED tenant id (`system`, `default`, `_*`, `*:*`) | `*ReservedTenantIDError`, 400 / `InvalidArgument`, nothing committed | **yes** |
+| Deleting a RESERVED tenant id (`system`, `default`, `custodian`, `security-officer`, `_*`, `*:*`) | `*ReservedTenantIDError`, 400 / `InvalidArgument`, nothing committed | **yes** |
 | Deleting a malformed tenant id | `*InvalidTenantIDCharError` / `*InvalidTenantIDError`, nothing committed | **yes** |
 | Creating a tenant under a DELETED id | `*TenantDeletedError`, 409 / `AlreadyExists` | **yes** |
 | Deleting a tenant that still owns databases | `*TenantHasDatabasesError`, 409 / `FailedPrecondition` | **yes** |

@@ -117,7 +117,7 @@ The order of the whole operation follows one rule — **persist the retirement
 before anything irreversible**:
 
 0. **Refuse a reserved id outright**, before any read. The reserved set —
-   `system`, `default`, `_*`, `*:*` — is declared in exactly one place and
+   `system`, `default`, `custodian`, `security-officer`, `_*`, `*:*` — is declared in exactly one place and
    consulted by creation and deletion alike; see "One reserved set, two
    policies" below.
 1. **Refuse while the tenant still owns databases.** Teardown is bottom-up. A

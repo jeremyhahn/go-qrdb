@@ -42,6 +42,12 @@ are not reconstructed here — their history is in the git log.
   `*ceremony.IssuedCertCapabilityError` naming the field, on every signing
   path, and nothing is recorded. A holder certificate able to sign
   certificates would be a sub-CA under the cluster CA and could mint any login.
+- **BREAKING: `custodian` and `security-officer` are reserved tenant ids.** An
+  officer certificate issued before v0.28.1-alpha carries its profile as its
+  first Subject OU, which the mTLS authenticator reads as the tenant, so a
+  tenant by either name would be the tenant those certificates authenticate
+  in. Creating or deleting one is refused with `*tenant.ReservedTenantIDError`
+  (400 / `INVALID_ARGUMENT`), like `system` and `default`.
 
 ### Changed
 

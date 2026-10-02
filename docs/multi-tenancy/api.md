@@ -174,7 +174,7 @@ wipes the slice its decoder produced before the handler returns. See
 `DELETE /v1/tenants/{id}` (and its peers on every transport) is **permanent in
 both directions**: it reclaims the tenant's data AND retires the id.
 
-- It **refuses a reserved id** — `system`, `default`, anything starting with
+- It **refuses a reserved id** — `system`, `default`, `custodian`, `security-officer`, anything starting with
   `_`, anything containing `:` — with 400, before it reads anything. The
   platform's own tenant is not deletable through the API, and no flag makes it
   so.

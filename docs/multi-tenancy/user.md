@@ -111,7 +111,7 @@ name before, and guessing wrong would hand you their data, so it does not
 guess. The message includes when the id was retired.
 
 **"id system is reserved" when deleting a tenant.** The platform's own tenant
-and the other reserved names (`default`, anything starting with `_`, anything
+and the other reserved names (`default`, `custodian`, `security-officer`, anything starting with `_`, anything
 containing `:`) cannot be deleted. Nothing was changed when you saw that
 message — no key was destroyed and no record was removed.
 

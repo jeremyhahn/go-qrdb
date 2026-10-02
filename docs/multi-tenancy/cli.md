@@ -44,7 +44,7 @@ refused, for good. There is no release, no retention window and no force flag,
 because "is this the same customer as the one that held the name before?" is
 not a question the server can answer about a name you chose.
 
-It refuses reserved ids outright — `system`, `default`, anything starting with
+It refuses reserved ids outright — `system`, `default`, `custodian`, `security-officer`, anything starting with
 `_`, anything containing `:`. The platform's own tenant is not yours to
 delete, and nothing was committed when it says so.
 
