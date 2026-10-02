@@ -942,8 +942,10 @@ distinguishes them.
   every replica; a cut-off node stops serving and resumes; a restarted node
   reads the record before serving.
 - **Integration**: `cluster_enable_encryption_test.go` lives in the **cluster
-  stage** (`make integration-test-cluster`), which is **not currently wired into
-  CI**.
+  stage** (`make integration-test-cluster`), which CI runs nightly. Its
+  tenant-scope case also runs on every push, in the cluster tenancy job (see
+  [../multi-tenancy/engineering.md](../multi-tenancy/engineering.md#test-strategy)).
+  *(Corrected 2026-10-02: this said the stage was not wired into CI.)*
 
 ## Observability
 

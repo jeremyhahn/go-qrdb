@@ -11,6 +11,85 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Added
+
+- **The multi-node tenant suites gate every push.** CI's new
+  `integration-cluster-tenancy` job runs `make integration-test-cluster-tenancy`,
+  the cluster stage narrowed to the tenant suites by `CLUSTER_TENANCY_RUN`, and the
+  CI result gate requires it. The full cluster stage stays nightly.
+  `test/buildgates/cluster_tenancy_gate_test.go` keeps the selection, the job and
+  the gate from drifting apart. This is phase 0 of the strict tenant isolation
+  plan; the selection was measured under shared-host load before it was armed.
+  The gate's test-function count is build-constraint aware (a file tagged
+  `!integration` cannot inflate it), and it asserts the workflow's `on:` names
+  `push` and `pull_request` and that the job carries no `if:`.
+
+### Fixed
+
+- **A slow user lookup no longer denies a tenant's users.** When the
+  linearizable user lookup missed its 500 ms budget, the auth middleware consulted
+  its StaleRead fallback. That store holds the system tenant only, so for any
+  other tenant's user it answered "no such user". The middleware treated that as
+  authoritative, let the identity through with no roles, and returned a
+  definitive 403 to a correctly enrolled user. It now consults the fallback for
+  the system tenant only, and other tenants get the retryable 503 the transient
+  error describes. Found by the measurement that armed the tenancy job: it
+  reddened `TestIsolationRaft_Scale_RestartSurvival` once in ten runs.
+- **The RBAC role-resolution StaleRead fallback now has the same
+  system-tenant confinement as the user-lookup fallback, applied to all
+  three places it is read: permission resolution, the SO deny-list, and the
+  strict-SoD Owner strip.** `resolvePermissionSet`, `systemRoleIDs` and
+  `staleMayDenote` consult `rolesFallback` only when the tenant in question
+  is the system tenant; otherwise the primary's transient error stands. The
+  fallback is confined to the system tenant's identity namespace and cannot
+  answer for any other tenant's roles, so consulting it unconditionally let
+  it read "no persisted record" as "no legacy override, use the canonical
+  identifier" — correct for a store with full visibility into the tenant and
+  wrong for one simply blind to it. Every one of a tenant's role ids then
+  missed the canonical-only set and fell to `staleMayDenote`, which treats an
+  identifier the replica cannot account for as one that MAY be the system
+  role being checked: an ordinary tenant role was wrongly recognised as SO (a
+  false 403 under FIPS 140-3 AS10.03) or wrongly stripped by the
+  strict-separation-of-duties Owner strip, whenever the primary role store
+  missed its 500 ms resolve budget.
+- **A role or tenant store authorization failure now classifies as a
+  retryable 503/Unavailable when, and only when, it is genuinely transient
+  — never by guessing from a store error's free-text label.**
+  `pkg/auth/middleware.ClassifyAuthError` did not recognise `*rbac.ResolveError`
+  at all, so every authorization failure that reached it as one — a role
+  resolve, the SO deny-list, or the strict-SoD Owner strip failing to reach
+  the role store — fell through to the caller's own default instead of a
+  retryable 503, even when the underlying cause (a timeout, the store
+  unreachable) was transient. `resolveErrorIsTransient` is now an explicit
+  ALLOW-list: `context.DeadlineExceeded`/`Canceled`; `tenant.ErrTenantSealed`/
+  `seal.ErrSealed` (a barrier-isolated tenant's role store resolved to a
+  sealed barrier); and a cause declaring itself transient through a small
+  `transientMarker` interface (`ReadTransient() bool`). `*role.StoreError`
+  and `*tenant.StoreError` both implement it, set only by their own
+  package's `newStoreError` constructor at the point the underlying cause is
+  first observed — never inferred from `Op`/`Detail`, which name WHERE a
+  failure happened, not WHAT KIND it is. A decrypt or seal-authentication
+  failure (`seal.ErrDecryptionFailed` — a tampered ciphertext, or the wrong
+  key) is marked definitive, never transient, since no retry decrypts it. A
+  definitive cause — the role was deleted or never existed
+  (`*role.RoleNotFoundError`), the request was malformed
+  (`*role.ValidationError`), or a corrupt stored record — is never retried
+  against the fallback and never classifies as retryable: marking every
+  `*rbac.ResolveError` retryable would turn a deleted role, which
+  `DeleteRole` does not cascade from the users who still hold it, into a
+  PERMANENT 503 for every request they made.
+- **`resolvePermissionSet` now bounds its primary (linearizable) role
+  resolve with a 500 ms timeout on every tenant, not only when a StaleRead
+  fallback is configured for it.** This changes observable behavior only for
+  an embedder that has not configured a role-service fallback at all, or for
+  a non-system tenant (the fallback only ever serves the system tenant):
+  previously that resolve ran against the caller's own context with no added
+  bound, so a request with no deadline of its own could hang forever on a
+  stalled ReadIndex instead of getting the retryable `*rbac.ResolveError`
+  its eventual failure describes. An embedder with a configured fallback
+  sees no change, since the system tenant's resolve was already bounded the
+  same way.
+
 ## [0.38.0-alpha] - 2026-10-03
 
 Strict configuration loading. This release contains BREAKING changes; see the entries below. Highlights:
@@ -2592,18 +2671,6 @@ Standalone parity (#582) and durable leases. Highlights:
   `TablePrefix`, and the typed `TableWriteError`, `TableReadError` and
   `CorruptTableError`. A state machine opening over a corrupt lease table
   fails with `CorruptTableError` rather than guessing which keys a lease owns.
-
-### Fixed
-
-- **A slow user lookup no longer denies a tenant's users.** When the
-  linearizable user lookup missed its 500 ms budget, the auth middleware consulted
-  its StaleRead fallback. That store holds the system tenant only, so for any
-  other tenant's user it answered "no such user". The middleware treated that as
-  authoritative, let the identity through with no roles, and returned a
-  definitive 403 to a correctly enrolled user. It now consults the fallback for
-  the system tenant only, and other tenants get the retryable 503 the transient
-  error describes. Found by the measurement that armed the tenancy job: it
-  reddened `TestIsolationRaft_Scale_RestartSurvival` once in ten runs.
 
 ## [0.26.0-alpha] - 2026-10-01
 

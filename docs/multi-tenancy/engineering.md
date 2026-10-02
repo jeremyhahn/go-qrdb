@@ -885,7 +885,14 @@ did not.
 - **Integration**: the multi-node tenant suites —
   `isolation_raft_cluster_test.go`, `isolation_raft_dedicated_wal_test.go`,
   `isolation_raft_rebalance_test.go`, `isolation_raft_scale_test.go` — live in
-  the **cluster stage**, which is **not currently wired into CI**.
+  the **cluster stage**. CI runs them on **every push** in the
+  `integration-cluster-tenancy` job (`make integration-test-cluster-tenancy`,
+  selected by `CLUSTER_TENANCY_RUN` in the Makefile), and the full cluster
+  stage runs nightly. `test/buildgates/cluster_tenancy_gate_test.go` fails
+  when the selection drops an `isolation_raft_*` suite, selects fewer than its
+  floor of tests, or leaves the job out of the CI result gate. *(Corrected
+  2026-10-02: this said the stage was not wired into CI; it has run nightly
+  since 2026-09-22.)*
 
 ## Observability
 

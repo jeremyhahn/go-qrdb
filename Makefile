@@ -1074,17 +1074,44 @@ _integration-server-logs:
 # Cluster stage: the self-spawning tests in ./test/integration (single-node +
 # real 3-node Raft clusters, leader election, restart/durability, snapshots).
 # These start their own qrdbd nodes and do not use the docker servers.
+#
+# INTEGRATION_RUN narrows the stage to a -run expression; empty (the default)
+# runs every test in the package, which is what the nightly does.
+INTEGRATION_RUN ?=
 .PHONY: integration-test-cluster
 integration-test-cluster: integration-image
 	@echo "==> Running CLUSTER integration tests (self-spawned single-node + 3-node clusters)..."
 	@cd test/integration/api && docker compose -p $(INT_PROJECT) down -v 2>/dev/null; true
 	@cd test/integration/api && \
 		INTEGRATION_TEST_PKGS='./test/integration/' \
+		INTEGRATION_RUN='$(INTEGRATION_RUN)' \
 		docker compose -p $(INT_PROJECT) up --abort-on-container-exit integration-tests; \
 		rc=$$?; \
 		if [ $$rc -ne 0 ]; then $(MAKE) -s -C $(CURDIR) _integration-server-logs INT_PROJECT=$(INT_PROJECT); fi; \
 		docker compose -p $(INT_PROJECT) down -v; \
 		exit $$rc
+
+# Cluster tenancy stage: the multi-node tenant suites, run on EVERY push
+# (strict tenant isolation, plan phase 0; owner ruling 2026-10-02). It is the
+# cluster stage narrowed by CLUSTER_TENANCY_RUN, through the same compose path,
+# so a test behaves identically here and in the nightly full run.
+#
+# Measured before this was armed (2026-10-02, host load average 19-57 on a
+# shared host): the selection takes 3-4 minutes of test time. Before the fix
+# below, 9 of 10 runs of its two halves passed. The one failure was not a slow
+# test: it was a false 403 from the auth middleware's StaleRead user fallback,
+# which answered "no such user" for a tenant it does not hold whenever the
+# linearizable lookup missed its 500 ms budget. That is fixed in
+# pkg/auth/middleware, not by a larger budget here, and the full selection
+# passed on every run after it.
+#
+# The expression is read by test/buildgates/cluster_tenancy_gate_test.go,
+# which fails if it selects fewer than its floor of tests or drops any
+# isolation_raft_* suite. Keep it free of spaces and of '$'.
+CLUSTER_TENANCY_RUN := ^(TestIsolationRaft|TestTenantIsolation_|TestTenant_|TestTenantBarrier_|TestClusterEnableEncryption_TenantScope|TestEnableEncryption_TenantScope|TestCLI_TenantCreate_DataRoot|TestKVRestore_CLI_TenantIsolation|TestSQL_MultiTenant_Isolation|TestSQL_REST_TenantScoping)
+.PHONY: integration-test-cluster-tenancy
+integration-test-cluster-tenancy:
+	@$(MAKE) -s -C $(CURDIR) integration-test-cluster INT_PROJECT=$(INT_PROJECT) INTEGRATION_RUN='$(CLUSTER_TENANCY_RUN)'
 
 # Backward-compatible alias: the standalone multi-protocol suite.
 .PHONY: integration-test-api
