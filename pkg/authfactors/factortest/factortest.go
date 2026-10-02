@@ -25,7 +25,9 @@ package factortest
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/hkdf"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"time"
 
@@ -43,7 +45,10 @@ type Factor struct {
 }
 
 // Compile-time interface check.
-var _ authfactors.Factor = (*Factor)(nil)
+var (
+	_ authfactors.Factor        = (*Factor)(nil)
+	_ authfactors.DecoyEnroller = (*Factor)(nil)
+)
 
 // New returns a Factor registered under name whose challenges live for ttl
 // (five minutes when ttl is not positive).
@@ -93,6 +98,24 @@ func (f *Factor) Challenge(_ context.Context, enrollment *authfactors.Enrollment
 		Nonce:        nonce,
 		ExpiresAt:    time.Now().UTC().Add(f.ttl),
 		MethodData:   map[string]any{ParamPublicKey: base64.StdEncoding.EncodeToString(enrollment.PublicKey)},
+	}, nil
+}
+
+// DecoyEnrollment implements authfactors.DecoyEnroller as a hardware factor
+// should: an enrollment whose Ed25519 public key is derived from seed and
+// userID, the same on every call, so the challenge issued from it has this
+// factor's shape and stable public material.
+func (f *Factor) DecoyEnrollment(seed []byte, userID string, _ []*authfactors.Enrollment) (*authfactors.Enrollment, error) {
+	keySeed, err := hkdf.Key(sha256.New, seed, nil, "qrdb/factortest-decoy/v1\x00"+f.name+"\x00"+userID, ed25519.SeedSize)
+	if err != nil {
+		return nil, err
+	}
+	pub, _ := ed25519.NewKeyFromSeed(keySeed).Public().(ed25519.PublicKey)
+	return &authfactors.Enrollment{
+		EnrollmentID: f.name + ":" + base64.RawURLEncoding.EncodeToString(pub[:8]),
+		UserID:       userID,
+		FactorName:   f.name,
+		PublicKey:    pub,
 	}, nil
 }
 

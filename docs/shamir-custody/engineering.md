@@ -261,18 +261,31 @@ hardened against a caller who is not the holder:
   one). QUIC's error frame carries the message only. An embedder that builds a ceremony
   service by hand and installs no limiter gets no throttling.
 - **No holder enumeration.** A name outside the roster, or a holder asked for
-  a factor the policy does not admit, gets a decoy challenge. A decoy is
-  shaped like an mtls challenge to a real holder: a fresh nonce, a public key
-  and certificate thumbprint, and the same lifetime. A real holder's key and
-  thumbprint are the same on every request, so a decoy's are too: both are
-  derived from a random per-scope seed and the name (thumbprint =
-  HMAC-SHA256(seed, name); key scalar = HKDF-SHA256(seed, domain ‖ name)), on
-  the key type the roster's holders predominantly use (P-256, P-384, P-521 or
-  Ed25519). The seed lives as long as the scope, which is the life of the
-  process; a restart draws a new one. Every request derives the decoy for the
-  name it asks about, holder or not, so a real and a decoy answer cost the
-  same work. A decoy is never stored, so a submission against it fails with
-  `ErrQuorumChallengeNotFound`, as an expired or evicted challenge does. The
+  a factor the policy does not admit, gets a decoy challenge, issued by the
+  requested factor's own `Challenge` from a decoy enrollment the factor
+  derives (`authfactors.DecoyEnroller`), so it has exactly that factor's
+  shape. A real holder's public material is the same on every request, so a
+  decoy's is too: it is derived from the domain's decoy seed and the name.
+  For mtls the thumbprint is HMAC-SHA256(seed, name) and the key scalar
+  HKDF-SHA256(seed, name, kind), on the key type the roster's holders
+  predominantly use (P-256, P-384, P-521 or Ed25519). The seed is persisted
+  with the roster metadata in the barrier's base storage
+  (`StorageBarrier.DecoySeed`), so decoys survive a restart. Every request
+  derives the decoy for the name it asks about, holder or not, so a real and
+  a decoy answer cost the same work.
+
+  A decoy is **stored** like a real challenge, in a separate bounded table
+  (256, oldest evicted) that can never crowd a holder's challenges out, so a
+  submission against it runs the same checks and the same factor `Verify`,
+  and fails as a wrong answer to a real challenge fails. The refusal itself
+  is opaque: `*seal.HolderAuthenticationError` has one fixed message
+  ("share holder authentication failed"), names no holder and does not
+  unwrap to the verifier's reason, which goes only to the server log and the
+  audit record (`reason`). A begin followed by a bogus submit therefore
+  answers a holder and a stranger with the same text and class. A factor
+  that does not implement `authfactors.DecoyEnroller` is answered for with an
+  mtls decoy advertised under its name, so its holders are distinguishable
+  from strangers by shape; every factor should implement it. The
   decoy names the requested factor, or mtls when none was requested. A holder
   whose designated factor is not mtls, asked for without a factor, therefore
   answers with that factor's name. A roster whose holders' keys are RSA gets
@@ -284,10 +297,10 @@ hardened against a caller who is not the holder:
   challenge requested over a connection presenting the holder's own enrolled
   certificate is *bound*. A request that does not present the holder's
   certificate never evicts a bound challenge. When every slot is bound, such
-  a request is answered with the challenge it would have got -- the holder's
-  own key and thumbprint, a fresh nonce -- but not stored, so it never
-  verifies; it is not refused, because a refusal is an answer no stranger's
-  name could produce. The same holds when the scope's table is full. A holder who
+  a request is answered with its challenge all the same, kept in the decoy
+  table rather than the holder's slots, so it evicts nothing; it is not
+  refused, because a refusal is an answer no stranger's name could produce.
+  The same holds when the scope's table is full. A holder who
   connects with their certificate therefore cannot be locked out by a caller
   naming them.
 - **Bounded per scope.** Challenges issued against a replaced roster are

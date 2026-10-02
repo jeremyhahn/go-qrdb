@@ -405,7 +405,7 @@ func (b *StorageBarrier) admitLocked(ctx context.Context, sub *HolderSubmission,
 			slog.String("domain", string(sub.Domain)), slog.String("op", string(sub.Op)),
 			slog.String("holder", sub.Holder), slog.String("error", err.Error()))
 		emitAudit(b.config.AuditLogger, "quorum-share", "barrier", b.config.RootKeyPath, "deny",
-			map[string]string{"domain": string(sub.Domain), "op": string(sub.Op), "holder": sub.Holder})
+			map[string]string{"domain": string(sub.Domain), "op": string(sub.Op), "holder": sub.Holder, "reason": err.Error()})
 		return nil, nil, &HolderAuthenticationError{Holder: sub.Holder, Err: err}
 	}
 	holder, ok := round.roster.Holder(sub.Holder)

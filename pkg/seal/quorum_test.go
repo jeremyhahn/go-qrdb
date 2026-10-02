@@ -112,7 +112,7 @@ func TestQuorum_RefusesUnauthenticatedAndUnknownSubmitters(t *testing.T) {
 	}
 
 	var missing *HolderNotInRosterError
-	if _, err := f.submitShare(DomainUnseal, OpUnseal, "mallory", f.dist.share(DomainUnseal, "h1")); !errors.As(err, &missing) {
+	if _, err := f.submitShare(DomainUnseal, OpUnseal, "mallory", f.dist.share(DomainUnseal, "h1")); !refusedAs(err, &missing) {
 		t.Fatalf("unknown holder = %v", err)
 	}
 
@@ -304,7 +304,7 @@ func TestQuorum_RecoveryDomainIsIndependent(t *testing.T) {
 	f.sealWith("h2", "h3")
 
 	var missing *HolderNotInRosterError
-	if _, err := f.submit(DomainRecovery, OpRecover, "h1"); !errors.As(err, &missing) {
+	if _, err := f.submit(DomainRecovery, OpRecover, "h1"); !refusedAs(err, &missing) {
 		t.Fatalf("unseal holder in the recovery domain = %v", err)
 	}
 	if o := f.quorum(DomainRecovery, OpRecover, "r2", "r3"); !o.Complete {
@@ -388,7 +388,7 @@ func TestQuorum_RevocationIsAQuorumGatedRekey(t *testing.T) {
 
 	f.sealWith("h1", "h2", "h3")
 	var missing *HolderNotInRosterError
-	if _, err := f.submit(DomainUnseal, OpUnseal, "h5"); !errors.As(err, &missing) {
+	if _, err := f.submit(DomainUnseal, OpUnseal, "h5"); !refusedAs(err, &missing) {
 		t.Fatalf("revoked holder after rekey = %v", err)
 	}
 	// An old share of a still-enrolled holder is dead too.
@@ -600,4 +600,11 @@ func (b *StorageBarrier) openRound(domain QuorumDomain, op QuorumOp) *QuorumRoun
 		return nil
 	}
 	return r.info()
+}
+
+// refusedAs reports whether err is a refused submission -- the opaque
+// *HolderAuthenticationError -- whose server-side cause is target's type.
+func refusedAs(err error, target any) bool {
+	var authErr *HolderAuthenticationError
+	return errors.As(err, &authErr) && errors.As(authErr.Err, target)
 }

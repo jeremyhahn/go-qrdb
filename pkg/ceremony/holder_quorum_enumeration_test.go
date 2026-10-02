@@ -17,10 +17,6 @@ package ceremony
 import (
 	"context"
 	"crypto/ecdsa"
-	"crypto/ed25519"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
 	"errors"
@@ -99,55 +95,6 @@ func TestQuorum_DecoyMatchesRosterKeyKind(t *testing.T) {
 	assert.Equal(t, challengeCurve(t, real), challengeCurve(t, decoy))
 }
 
-// rosterWith is a roster whose holders' mtls keys are pubs.
-func rosterWith(t *testing.T, pubs ...any) *seal.HolderRoster {
-	t.Helper()
-	r := &seal.HolderRoster{}
-	for _, pub := range pubs {
-		spki, err := x509.MarshalPKIXPublicKey(pub)
-		require.NoError(t, err)
-		r.Holders = append(r.Holders, seal.RosterHolder{Factors: []seal.RosterFactor{{Name: mtls.Name, PublicKey: spki}}})
-	}
-	return r
-}
-
-// TestRosterDecoyKind_Predominant: the most common derivable kind wins, ties
-// go to the earlier kind, and a roster with none yields P-256.
-func TestRosterDecoyKind_Predominant(t *testing.T) {
-	p256, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	require.NoError(t, err)
-	p521, err := ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
-	require.NoError(t, err)
-	edPub, _, err := ed25519.GenerateKey(rand.Reader)
-	require.NoError(t, err)
-	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	require.NoError(t, err)
-
-	assert.Equal(t, decoyEd25519, rosterDecoyKind(rosterWith(t, edPub, edPub, &p256.PublicKey)))
-	assert.Equal(t, decoyP521, rosterDecoyKind(rosterWith(t, &p521.PublicKey, &rsaKey.PublicKey)))
-	assert.Equal(t, decoyP256, rosterDecoyKind(rosterWith(t, &p256.PublicKey, edPub)))
-	assert.Equal(t, decoyP256, rosterDecoyKind(rosterWith(t, &rsaKey.PublicKey)))
-	assert.Equal(t, decoyP256, rosterDecoyKind(nil))
-}
-
-// TestDecoyIdentity_EveryKindDerives: every kind derives a parseable key of
-// that kind, deterministically.
-func TestDecoyIdentity_EveryKindDerives(t *testing.T) {
-	h := &holderScope{domain: seal.DomainUnseal, decoySeed: make([]byte, 32)}
-	for kind := decoyP256; kind <= decoyEd25519; kind++ {
-		first, err := h.decoyIdentityFor("mallory", kind)
-		require.NoError(t, err, kind.String())
-		again, err := h.decoyIdentityFor("mallory", kind)
-		require.NoError(t, err)
-		assert.Equal(t, first, again, kind.String())
-		got, ok := spkiDecoyKind(first.spki)
-		require.True(t, ok, kind.String())
-		assert.Equal(t, kind, got)
-	}
-	_, ok := spkiDecoyKind([]byte("not a key"))
-	assert.False(t, ok)
-}
-
 // submitBogus submits a share for holder whose proof answers no challenge.
 func submitBogus(t *testing.T, e *holderEnv, holder string, share []byte) error {
 	t.Helper()
@@ -179,7 +126,7 @@ func TestQuorum_SubmitDoesNotRevealHolders(t *testing.T) {
 		err := submitBogus(t, e, holder, []byte("share"))
 		var authErr *seal.HolderAuthenticationError
 		require.ErrorAs(t, err, &authErr, "%s: an unverified submission is an authentication failure", holder)
-		assert.ErrorIs(t, err, ErrQuorumChallengeNotFound, holder)
+		requireAuthCause(t, err, ErrQuorumChallengeNotFound, holder)
 		var notInRoster *seal.HolderNotInRosterError
 		var already *seal.HolderAlreadySubmittedError
 		assert.False(t, errors.As(err, &notInRoster), "%s: roster membership leaked", holder)
@@ -207,7 +154,7 @@ func TestQuorum_SubmitIsRateLimitedPerCaller(t *testing.T) {
 	e.svc.SetQuorumLimiter(limiter.allow)
 
 	for i := 0; i < 2; i++ {
-		require.ErrorIs(t, submitBogus(t, e, "mallory", []byte("share")), ErrQuorumChallengeNotFound)
+		requireAuthCause(t, submitBogus(t, e, "mallory", []byte("share")), ErrQuorumChallengeNotFound)
 	}
 	var limited *QuorumRateLimitedError
 	require.ErrorAs(t, submitBogus(t, e, "alice", []byte("share")), &limited, "the caller's submission bucket is spent")
@@ -218,9 +165,11 @@ func TestQuorum_SubmitIsRateLimitedPerCaller(t *testing.T) {
 
 // TestQuorum_FullBoundSlotsAnswerUnboundWithAnUnstoredChallenge: when every
 // slot a holder has for an operation is bound to their certificate, an
-// unbound request gets a challenge that looks exactly like a real one -- the
-// holder's own key and thumbprint -- but is not stored, rather than an error
-// no stranger's name could ever produce. The bound challenges survive.
+// unbound request gets its challenge -- the holder's own key and thumbprint --
+// rather than an error no stranger's name could ever produce. It is kept in
+// the decoy table, apart from the holder's slots, so it evicts none of the
+// bound challenges, and it is answerable like any other: the holder who
+// requested it can use it, and the bound challenges survive.
 func TestQuorum_FullBoundSlotsAnswerUnboundWithAnUnstoredChallenge(t *testing.T) {
 	ctx := context.Background()
 	e := newHolderEnv(t, 2, 2)
@@ -240,9 +189,11 @@ func TestQuorum_FullBoundSlotsAnswerUnboundWithAnUnstoredChallenge(t *testing.T)
 	assert.Equal(t, bk, uk)
 	assert.Equal(t, bt, ut)
 
-	_, err = submitChallenge(t, e, unbound, a)
-	require.ErrorIs(t, err, ErrQuorumChallengeNotFound, "the unbound challenge was never stored")
-	out, err := submitChallenge(t, e, bound[0], a)
-	require.NoError(t, err, "the bound challenges survive")
+	require.Len(t, e.svc.system.quorum, maxPendingPerHolderOp, "the unbound challenge took none of the holder's slots")
+	out, err := submitChallenge(t, e, unbound, a)
+	require.NoError(t, err, "the unbound challenge answers like any other")
 	require.False(t, out.Complete)
+	for _, ch := range bound {
+		require.Contains(t, e.svc.system.quorum, ch.ChallengeID, "the bound challenges survive")
+	}
 }

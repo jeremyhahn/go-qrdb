@@ -206,15 +206,21 @@ are not reconstructed here — their history is in the git log.
     first;
   - a challenge requested over a connection presenting the holder's own
     certificate can never be evicted by a request that does not present it;
-    a request that finds every slot bound gets an unstored challenge (the
-    holder's own key and thumbprint, never verifying) rather than an error;
+    a request that finds every slot bound gets its challenge, kept apart
+    from the holder's slots, rather than an error;
   - the table is capped at what the roster can use;
   - an unknown holder, or a factor the policy does not admit, gets a decoy
-    challenge of the same shape that never verifies. Its key and thumbprint
-    are derived from a per-scope seed and the name, on the roster's
-    predominant key type, so -- like a real holder's -- they are the same on
-    every request; every request derives one, holder or not, so both cost
-    the same;
+    challenge issued by the requested factor itself from a decoy enrollment
+    it derives (`authfactors.DecoyEnroller`, implemented by mtls), from a
+    seed persisted with the roster and the name, so -- like a real
+    holder's -- it has the factor's shape and the same public material on
+    every request and across restarts; every request derives one, holder or
+    not, so both cost the same. The decoy is stored like a real challenge,
+    so a submission against it runs the same verification and fails the
+    same way;
+  - `seal.HolderAuthenticationError` is opaque across the transport
+    boundary: one fixed message, no holder name, and no unwrap to the
+    verifier's reason, which goes only to the server log and audit;
   - a submission's proof is verified before anything about the holder or
     the round is checked, so an unverified submission answers
     `HolderAuthenticationError` whoever it names; only a verified one learns
@@ -473,6 +479,9 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed — BREAKING
 
+- **`seal.HolderAuthenticationError` no longer unwraps or names its cause.**
+  Its message is fixed and its `Err` is for the server's log and audit only;
+  a caller that inspected the verifier's error through it must not.
 - **The system tenant no longer reaches other tenants' databases.** A
   system-tenant caller's database verbs act only on databases the system
   tenant owns (`TenantID` empty or `system`); another tenant's database

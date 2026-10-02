@@ -146,7 +146,7 @@ func TestHolderScope_ExpiredQuorumChallengeRefused(t *testing.T) {
 		Proof: seal.HolderProof{ChallengeID: ch.ChallengeID, Factor: ch.Factor, Response: a.answer(t, ch)},
 		Share: a.openShare(t),
 	})
-	assert.ErrorIs(t, err, ErrChallengeExpired)
+	requireAuthCause(t, err, ErrChallengeExpired)
 }
 
 // TestClaim_ExpiredNonceRefused pins the claim nonce TTL.
@@ -161,7 +161,7 @@ func TestClaim_ExpiredNonceRefused(t *testing.T) {
 	require.NoError(t, err)
 	e.svc.system.claims["alice"].ExpiresAt = time.Now().Add(-time.Second)
 	_, err = e.svc.CompleteClaimShare(ctx, seal.DomainUnseal, "alice", "00", []byte{1}, a.thumb)
-	assert.ErrorIs(t, err, ErrChallengeExpired)
+	require.ErrorIs(t, err, ErrChallengeExpired)
 	_ = ch
 }
 

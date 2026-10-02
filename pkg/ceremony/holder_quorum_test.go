@@ -157,7 +157,7 @@ func TestQuorum_DesignatedPolicyRefusesOtherFactors(t *testing.T) {
 		Proof: seal.HolderProof{ChallengeID: ch.ChallengeID, Factor: testFactorName, Response: a.answer(t, ch)},
 		Share: a.openShare(t),
 	})
-	assert.ErrorIs(t, err, ErrQuorumChallengeNotFound, "designated policy admits only mtls")
+	requireAuthRefused(t, err) // designated policy admits only mtls
 
 	out, err := e.submit(svc2, b2, seal.DomainUnseal, seal.OpUnseal, a, "")
 	require.NoError(t, err, "an empty factor selects the designated one")
@@ -179,17 +179,17 @@ func TestQuorum_AuthenticationRefusals(t *testing.T) {
 
 	// Unknown challenge.
 	err := submit(seal.HolderProof{ChallengeID: "nope", Factor: mtls.Name, Response: []byte{1}}, a, seal.OpUnseal)
-	assert.ErrorIs(t, err, ErrQuorumChallengeNotFound)
+	requireAuthCause(t, err, ErrQuorumChallengeNotFound)
 
 	// A challenge issued to alice cannot be spent by bob.
 	ch, err := svc2.BeginQuorum(ctx, seal.DomainUnseal, seal.OpUnseal, "alice", "")
 	require.NoError(t, err)
 	err = submit(seal.HolderProof{ChallengeID: ch.ChallengeID, Factor: mtls.Name, Response: b.answer(t, ch)}, b, seal.OpUnseal)
-	assert.ErrorIs(t, err, ErrQuorumChallengeMismatch)
+	requireAuthCause(t, err, ErrQuorumChallengeMismatch)
 
 	// A challenge is consumed by a failed attempt.
 	err = submit(seal.HolderProof{ChallengeID: ch.ChallengeID, Factor: mtls.Name, Response: a.answer(t, ch)}, a, seal.OpUnseal)
-	assert.ErrorIs(t, err, ErrQuorumChallengeNotFound)
+	requireAuthCause(t, err, ErrQuorumChallengeNotFound)
 
 	// A bad signature.
 	ch, err = svc2.BeginQuorum(ctx, seal.DomainUnseal, seal.OpUnseal, "alice", "")
@@ -214,7 +214,7 @@ func TestQuorum_AuthenticationRefusals(t *testing.T) {
 	ch, err = svc2.BeginQuorum(ctx, seal.DomainUnseal, seal.OpUnseal, "mallory", "")
 	require.NoError(t, err)
 	err = submit(seal.HolderProof{ChallengeID: ch.ChallengeID, Factor: mtls.Name, Response: c.answer(t, ch)}, c, seal.OpUnseal)
-	assert.ErrorIs(t, err, ErrQuorumChallengeNotFound)
+	requireAuthRefused(t, err)
 
 	// An operation outside the domain is refused.
 	_, err = svc2.BeginQuorum(ctx, seal.DomainUnseal, seal.OpRecover, "alice", "")
@@ -312,10 +312,11 @@ func TestRevoke_QuorumOfRemainingHoldersRedistributes(t *testing.T) {
 		Proof: seal.HolderProof{ChallengeID: ch.ChallengeID, Factor: ch.Factor, Response: c.answer(t, ch)},
 		Share: c.openShare(t),
 	})
-	// The decoy was never stored, so the submission fails authentication
-	// exactly as any holder's would; roster membership is not revealed.
+	// The decoy carries a decoy key, so even carol's own answer fails its
+	// verification exactly as a wrong answer to a holder's challenge would;
+	// roster membership is not revealed.
 	assert.True(t, errorAs[*seal.HolderAuthenticationError](err), err)
-	assert.ErrorIs(t, err, ErrQuorumChallengeNotFound)
+	requireAuthRefused(t, err)
 	assert.False(t, errorAs[*seal.HolderNotInRosterError](err), err)
 	_, err = e.submit(svc2, b2, seal.DomainUnseal, seal.OpUnseal, a, "")
 	require.NoError(t, err)

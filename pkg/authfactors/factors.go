@@ -46,6 +46,27 @@ type Factor interface {
 	Verify(ctx context.Context, challenge *Challenge, response *Response) error
 }
 
+// DecoyEnroller is implemented by a factor that can enrol a decoy: a stand-in
+// for a user who holds no enrollment, from which the factor's own Challenge
+// issues a challenge indistinguishable in shape from a real one.
+//
+// The share-holder quorum is reachable anonymously, and a request naming
+// someone who is not a holder must be answered exactly as a request naming a
+// holder is, so as not to reveal who the holders are. A decoy enrollment
+// makes that possible for every factor: the challenge comes out of the same
+// Challenge, with the same method data, and an answer to it runs the same
+// Verify and fails it.
+//
+// DecoyEnrollment must be deterministic in (seed, userID): asking twice for
+// one user yields the same public material, as a real user's enrollment
+// does. like is the factor's real enrollments in force, so the decoy's
+// public material can take their predominant form (key type, sizes). A
+// factor that does not implement it is answered for with an mtls decoy, and
+// its holders are then distinguishable from strangers by shape.
+type DecoyEnroller interface {
+	DecoyEnrollment(seed []byte, userID string, like []*Enrollment) (*Enrollment, error)
+}
+
 // EnrollParams captures the inputs needed to enroll a user with a factor.
 type EnrollParams struct {
 	// UserID is the identifier for the enrollment subject (e.g., "custodian_a").

@@ -204,7 +204,13 @@ func TestHolderErrors_Messages(t *testing.T) {
 	if !errors.Is(&RevocationBreaksQuorumError{}, ErrShamirThresholdInvalid) {
 		t.Fatal("RevocationBreaksQuorumError does not match ErrShamirThresholdInvalid")
 	}
-	if !errors.Is(&HolderAuthenticationError{Err: errTestProof}, errTestProof) {
-		t.Fatal("HolderAuthenticationError does not unwrap")
+	// Opaque across the transport boundary: one fixed message, and no
+	// unwrap to the verifier's reason, which stays in Err for the log.
+	opaque := &HolderAuthenticationError{Holder: "alice", Err: errTestProof}
+	if errors.Is(opaque, errTestProof) {
+		t.Fatal("HolderAuthenticationError unwraps to the verifier's reason")
+	}
+	if opaque.Error() != (&HolderAuthenticationError{Holder: "mallory", Err: errors.New("other")}).Error() {
+		t.Fatal("HolderAuthenticationError's message varies with the holder or reason")
 	}
 }

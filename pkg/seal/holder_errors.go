@@ -140,20 +140,26 @@ func (e *ShareIndexMismatchError) Error() string {
 
 // HolderAuthenticationError is returned when the holder verifier refuses a
 // submission's proof.
+//
+// It is OPAQUE across the transport boundary: Error is one fixed message,
+// naming neither the holder nor the verifier's reason, and it does not unwrap
+// to the verifier's error. The sealed window admits submissions anonymously,
+// and the reason -- a challenge not found, a signature that does not verify,
+// a mismatched operation -- would tell a holder from a stranger. The cause is
+// kept in Err for the server's own log and audit, which record it; no
+// transport renders it.
 type HolderAuthenticationError struct {
-	// Holder is the username.
+	// Holder is the username the submission named. Server-side only.
 	Holder string
-	// Err is the verifier's error.
+	// Err is the verifier's error. Server-side only: log and audit it, never
+	// return it to the caller.
 	Err error
 }
 
-// Error returns a human-readable description.
+// Error returns the one fixed message every refused proof gets.
 func (e *HolderAuthenticationError) Error() string {
-	return "qrdb/seal: holder " + e.Holder + " failed authentication: " + e.Err.Error()
+	return "qrdb/seal: share holder authentication failed"
 }
-
-// Unwrap returns the verifier's error.
-func (e *HolderAuthenticationError) Unwrap() error { return e.Err }
 
 // QuorumOpInvalidError is returned for an unknown domain or an operation that
 // cannot run in the named domain (for example "recover" in the unseal domain).

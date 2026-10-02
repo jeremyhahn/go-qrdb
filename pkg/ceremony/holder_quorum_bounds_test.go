@@ -67,7 +67,7 @@ func TestQuorum_PendingChallengesBoundedPerHolderAndOp(t *testing.T) {
 		issued = append(issued, ch)
 	}
 	_, err := submitChallenge(t, e, issued[0], a)
-	require.ErrorIs(t, err, ErrQuorumChallengeNotFound, "the oldest challenge was evicted")
+	requireAuthCause(t, err, ErrQuorumChallengeNotFound, "the oldest challenge was evicted")
 	_, err = submitChallenge(t, e, issued[len(issued)-1], a)
 	require.NoError(t, err, "the newest challenge stands")
 
@@ -107,7 +107,7 @@ func TestQuorum_CertificateBoundChallengeSurvivesAnonymousChurn(t *testing.T) {
 		require.NoError(t, err)
 	}
 	_, err = submitChallenge(t, e, notBound, a)
-	require.ErrorIs(t, err, ErrQuorumChallengeNotFound, "bob's certificate did not protect alice's challenge")
+	requireAuthCause(t, err, ErrQuorumChallengeNotFound, "bob's certificate did not protect alice's challenge")
 }
 
 // challengeShape is everything a quorum challenge reveals about its holder
@@ -148,7 +148,12 @@ func TestQuorum_UnknownHolderIsIndistinguishable(t *testing.T) {
 		}
 		assert.Equal(t, wantFactor, gotFactor, tc.name)
 		assert.Equal(t, wantNonce, gotNonce, tc.name)
-		assert.Equal(t, wantKeys, gotKeys, tc.name)
+		if tc.factor == "" || tc.factor == mtls.Name {
+			// A non-mtls decoy has that factor's own shape, compared with a
+			// real challenge of the factor in
+			// TestQuorum_NonMTLSDecoyHasTheFactorsShape.
+			assert.Equal(t, wantKeys, gotKeys, tc.name)
+		}
 		assert.Equal(t, wantTTL, gotTTL, tc.name)
 		assert.Equal(t, tc.holder, decoy.Holder, tc.name)
 		assert.NotEqual(t, real.MethodData[mtls.MetaThumbprint], decoy.MethodData[mtls.MetaThumbprint], tc.name)
@@ -160,7 +165,7 @@ func TestQuorum_UnknownHolderIsIndistinguishable(t *testing.T) {
 			Proof: seal.HolderProof{ChallengeID: decoy.ChallengeID, Response: sig},
 			Share: a.openShare(t),
 		})
-		require.ErrorIs(t, err, ErrQuorumChallengeNotFound, "%s: a decoy never verifies", tc.name)
+		requireAuthRefused(t, err) // a decoy never verifies
 	}
 }
 

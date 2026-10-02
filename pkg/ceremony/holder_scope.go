@@ -89,6 +89,12 @@ const maxPendingQuorumChallenges = 256
 // one operation.
 const maxPendingPerHolderOp = 2
 
+// maxPendingDecoys bounds the decoy table: the challenges answered for names
+// outside the roster (and the unstored answers to a holder whose slots are
+// full). They are kept apart from the real table so a flood of them can
+// never crowd a holder's real challenge out; the oldest is evicted first.
+const maxPendingDecoys = 256
+
 // pendingQuorumChallenge is one issued, unanswered quorum challenge.
 type pendingQuorumChallenge struct {
 	domain    seal.QuorumDomain
@@ -102,6 +108,14 @@ type pendingQuorumChallenge struct {
 	// bound records that the request presented the holder's own enrolled
 	// certificate. A request that does not can never evict it.
 	bound bool
+	// decoy marks a challenge issued for a name outside the roster, or for a
+	// factor the policy does not admit. It verifies with verifier -- the
+	// factor that issued it from a decoy enrollment -- exactly as a real
+	// challenge verifies with its holder's factor, and fails as a wrong
+	// answer to a real challenge fails, so a submission against it cannot
+	// tell a stranger from a holder.
+	decoy    bool
+	verifier authfactors.Factor
 }
 
 // holderScope is the one share-holder engine. The system, recovery and every
@@ -126,11 +140,10 @@ type holderScope struct {
 	// so two instances of one scope (a test's second node, a re-created
 	// tenant authority) never share a bucket.
 	limitID string
-	// decoySeed keys the decoy challenges answered for names outside the
-	// roster (quorum_decoy.go), so each name's decoy is stable for the life
-	// of the scope.
-	decoySeed []byte
-	sealed    func() bool
+	// decoys holds the decoy challenges issued and not yet answered (see
+	// maxPendingDecoys).
+	decoys map[string]*pendingQuorumChallenge
+	sealed func() bool
 	// roster reads the domain's roster in force from the backing barrier,
 	// whose blob it is bound to. A backend that is not a barrier has none.
 	roster func(context.Context, seal.QuorumDomain) (*seal.HolderRoster, []byte, error)
@@ -163,7 +176,7 @@ func newHolderScope(scope BarrierScope, domain seal.QuorumDomain, tenantID strin
 		claims:      make(map[string]*ChallengeResponse),
 		quorum:      make(map[string]*pendingQuorumChallenge),
 		limitID:     scope.String() + "#" + randomHex(8),
-		decoySeed:   randomBytes(32),
+		decoys:      make(map[string]*pendingQuorumChallenge),
 		sealed:      sealed,
 		roster:      rosterProbe(backend),
 		initialized: initializedProbe(backend),
@@ -775,12 +788,14 @@ func (h *holderScope) completeClaim(ctx context.Context, username, nonceHex stri
 //   - every request passes the composer's throttle first, keyed by scope and
 //     caller (see throttle);
 //   - a name outside the roster, or a holder asked for a factor the policy
-//     does not admit, gets a decoy challenge (decoyQuorumChallenge): the same
-//     shape as a real one, with a key and thumbprint derived from the name
-//     that stay the same from one request to the next, as a real holder's
-//     do. It is never stored and never verifies, so the request does not
-//     reveal which holders exist. The decoy is derived on every request,
-//     real or not, so the two cost the same;
+//     does not admit, gets a decoy challenge (issueDecoy): issued by the
+//     requested factor's own Challenge from a decoy enrollment derived from
+//     the domain's persisted seed and the name, so it has the shape of a
+//     real one and the same public material on every request and across
+//     restarts, as a real holder's has. It is STORED like a real challenge,
+//     so an answer to it runs the same Verify and fails it the same way. The
+//     decoy is derived on every request, real or not, so the two cost the
+//     same;
 //   - a holder has at most maxPendingPerHolderOp challenges per operation,
 //     the oldest evicted first, and a challenge requested over a connection
 //     presenting the holder's own certificate is never evicted by one that
@@ -799,7 +814,7 @@ func (h *holderScope) beginQuorum(ctx context.Context, d *HolderDeps, barrier *s
 	if err != nil {
 		return nil, err
 	}
-	decoy, err := h.decoyIdentityFor(username, rosterDecoyKind(roster))
+	decoy, decoyOut, err := h.issueDecoy(ctx, d, barrier, roster, digest, op, username, factorName)
 	if err != nil {
 		return nil, err
 	}
@@ -808,10 +823,8 @@ func (h *holderScope) beginQuorum(ctx context.Context, d *HolderDeps, barrier *s
 		var notInRoster *seal.HolderNotInRosterError
 		var notAdmitted *seal.FactorNotAdmittedError
 		if errors.As(err, &notInRoster) || errors.As(err, &notAdmitted) {
-			if factorName == "" {
-				factorName = mtls.Name
-			}
-			return h.decoyQuorumChallenge(ctx, op, username, factorName, decoy)
+			h.storeDecoy(decoy, digest)
+			return decoyOut, nil
 		}
 		return nil, err
 	}
@@ -843,16 +856,22 @@ func (h *holderScope) beginQuorum(ctx context.Context, d *HolderDeps, barrier *s
 		MethodData:  stringMethodData(ch.MethodData),
 		ExpiresAt:   ch.ExpiresAt,
 	}
+	pending := &pendingQuorumChallenge{
+		domain: h.domain, op: op, holder: username, digest: digest, factor: rf.Name, challenge: ch,
+		issued: time.Now(), bound: bound,
+	}
 	if err := h.admitQuorumChallenge(roster, digest, op, username, bound); err != nil {
 		if errors.Is(err, ErrTooManyPendingChallenges) {
+			// The holder's slots are full of bound challenges. The request
+			// is answered with its challenge all the same, kept in the decoy
+			// table, so it neither evicts a bound one nor answers in a way a
+			// stranger's name never could.
+			h.storeDecoy(pending, digest)
 			return out, nil
 		}
 		return nil, err
 	}
-	h.quorum[ch.ChallengeID] = &pendingQuorumChallenge{
-		domain: h.domain, op: op, holder: username, digest: digest, factor: rf.Name, challenge: ch,
-		issued: time.Now(), bound: bound,
-	}
+	h.quorum[ch.ChallengeID] = pending
 	return out, nil
 }
 
@@ -980,39 +999,104 @@ func quorumCaller(ctx context.Context) (key, peerThumb string, anonymous bool) {
 	return "anonymous", peerThumb, true
 }
 
-// decoyQuorumChallenge returns a challenge for a holder that cannot answer
-// one -- a name outside the roster, or a factor the policy does not admit --
-// shaped exactly like an mtls challenge to a real holder: a fresh nonce, the
-// name's decoy public key and thumbprint (see quorum_decoy.go), the same
-// lifetime. It is not stored, so a submission against it is
-// ErrQuorumChallengeNotFound, as for any expired or evicted challenge.
+// issueDecoy issues the decoy challenge for username: the challenge a name
+// outside the roster gets, built -- but not stored -- on every request, real
+// or not, so both cost the same.
 //
-// factorName is the factor requested, or mtls when none was: a holder whose
-// designated factor is not mtls, asked for with no factor, would answer with
-// that factor's name, so such a holder is distinguishable to a caller who
-// omits the factor. Every built-in holder is designated mtls by default.
-func (h *holderScope) decoyQuorumChallenge(ctx context.Context, op seal.QuorumOp, username, factorName string, decoy *decoyIdentity) (*QuorumChallenge, error) {
-	ch, err := mtls.New().Challenge(ctx, &authfactors.Enrollment{
-		EnrollmentID: mtls.Name + ":" + decoy.thumbprint,
-		UserID:       username,
-		FactorName:   mtls.Name,
-		PublicKey:    decoy.spki,
-		Metadata:     map[string]string{mtls.MetaThumbprint: decoy.thumbprint},
-	})
+// The decoy is issued by the requested factor (mtls when none was requested)
+// from a decoy enrollment it derives from the domain's seed, persisted with the
+// roster by the barrier (seal.StorageBarrier.DecoySeed) so it survives a
+// restart, and the name (authfactors.DecoyEnroller), shaped like the factor's enrollments in
+// the roster. Its challenge therefore has the factor's own shape and the same
+// public material on every request. A factor that cannot derive decoys -- or
+// a name no factor is registered under -- is answered with an mtls decoy
+// advertised under the requested name; the holders of such a factor are then
+// distinguishable from strangers by the challenge's shape, which is why every
+// factor should implement authfactors.DecoyEnroller.
+func (h *holderScope) issueDecoy(ctx context.Context, d *HolderDeps, barrier *seal.StorageBarrier, roster *seal.HolderRoster, digest []byte, op seal.QuorumOp, username, factorName string) (*pendingQuorumChallenge, *QuorumChallenge, error) {
+	seed, err := barrier.DecoySeed(ctx, h.domain)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	advertised := factorName
+	if advertised == "" {
+		advertised = mtls.Name
+	}
+	f, enroller := decoyFactor(d, advertised)
+	enr, err := enroller.DecoyEnrollment(seed, username, rosterEnrollments(roster, f.Name()))
+	if err != nil {
+		return nil, nil, err
+	}
+	enr.TenantID = h.tenantID
+	ch, err := f.Challenge(ctx, enr)
+	if err != nil {
+		return nil, nil, err
 	}
 	bindQuorumPurpose(ch, h.quorumPurpose(op))
-	return &QuorumChallenge{
+	pending := &pendingQuorumChallenge{
+		domain: h.domain, op: op, holder: username, digest: digest, factor: advertised, challenge: ch,
+		issued: time.Now(), decoy: true, verifier: f,
+	}
+	return pending, &QuorumChallenge{
 		ChallengeID: ch.ChallengeID,
 		Domain:      h.domain,
 		Op:          op,
 		Holder:      username,
-		Factor:      factorName,
+		Factor:      advertised,
 		Nonce:       ch.Nonce,
 		MethodData:  stringMethodData(ch.MethodData),
 		ExpiresAt:   ch.ExpiresAt,
 	}, nil
+}
+
+// decoyFactor returns the factor that issues name's decoys: name's own when it
+// is registered and derives decoys, else the built-in mtls factor.
+func decoyFactor(d *HolderDeps, name string) (authfactors.Factor, authfactors.DecoyEnroller) {
+	if f, err := d.factor(name); err == nil {
+		if e, ok := f.(authfactors.DecoyEnroller); ok {
+			return f, e
+		}
+	}
+	m := mtls.New()
+	return m, m
+}
+
+// rosterEnrollments returns the roster's enrollments of the named factor, the
+// form a decoy of that factor takes after.
+func rosterEnrollments(roster *seal.HolderRoster, factor string) []*authfactors.Enrollment {
+	var out []*authfactors.Enrollment
+	for _, holder := range roster.Holders {
+		for _, rf := range holder.Factors {
+			if rf.Name == factor {
+				out = append(out, &authfactors.Enrollment{
+					EnrollmentID: rf.EnrollmentID, UserID: holder.Username, FactorName: rf.Name,
+					PublicKey: rf.PublicKey, Metadata: rf.Metadata,
+				})
+			}
+		}
+	}
+	return out
+}
+
+// storeDecoy keeps p in the decoy table until it is answered, expires, or its
+// roster is replaced, evicting the oldest entry when the table is full.
+func (h *holderScope) storeDecoy(p *pendingQuorumChallenge, digest []byte) {
+	now := time.Now()
+	for id, q := range h.decoys {
+		if now.After(q.challenge.ExpiresAt) || !bytes.Equal(q.digest, digest) {
+			delete(h.decoys, id)
+		}
+	}
+	for len(h.decoys) >= maxPendingDecoys {
+		oldest := ""
+		for id, q := range h.decoys {
+			if oldest == "" || q.issued.Before(h.decoys[oldest].issued) {
+				oldest = id
+			}
+		}
+		delete(h.decoys, oldest)
+	}
+	h.decoys[p.challenge.ChallengeID] = p
 }
 
 // quorumPurpose is the purpose a quorum challenge of this scope for op is
@@ -1059,9 +1143,16 @@ func randomBytes(n int) []byte {
 
 // verifyHolder implements seal.HolderVerifier for the scope. The challenge is
 // consumed whatever the outcome.
+//
+// A challenge is looked up in the real table and then the decoy table, so a
+// decoy is answered by the same checks and the same Verify as a real one.
 func (h *holderScope) verifyHolder(ctx context.Context, d *HolderDeps, domain seal.QuorumDomain, op seal.QuorumOp, holder string, roster *seal.HolderRoster, digest []byte, proof seal.HolderProof) error {
 	p, ok := h.quorum[proof.ChallengeID]
 	delete(h.quorum, proof.ChallengeID)
+	if !ok {
+		p, ok = h.decoys[proof.ChallengeID]
+		delete(h.decoys, proof.ChallengeID)
+	}
 	if !ok {
 		return ErrQuorumChallengeNotFound
 	}
@@ -1072,12 +1163,15 @@ func (h *holderScope) verifyHolder(ctx context.Context, d *HolderDeps, domain se
 	if time.Now().After(p.challenge.ExpiresAt) {
 		return ErrChallengeExpired
 	}
-	if _, err := roster.AdmittedFactor(holder, p.factor); err != nil {
-		return err
-	}
-	f, err := d.factor(p.factor)
-	if err != nil {
-		return err
+	f := p.verifier
+	if !p.decoy {
+		if _, err := roster.AdmittedFactor(holder, p.factor); err != nil {
+			return err
+		}
+		var err error
+		if f, err = d.factor(p.factor); err != nil {
+			return err
+		}
 	}
 	meta := make(map[string]string, len(proof.ResponseMetadata)+1)
 	for k, v := range proof.ResponseMetadata {
@@ -1144,6 +1238,9 @@ func (h *holderScope) cleanup() {
 	}
 	for k := range h.quorum {
 		delete(h.quorum, k)
+	}
+	for k := range h.decoys {
+		delete(h.decoys, k)
 	}
 }
 
