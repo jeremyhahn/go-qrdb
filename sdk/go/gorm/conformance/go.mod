@@ -28,7 +28,7 @@ go 1.27.0
 
 require (
 	github.com/go-sql-driver/mysql v1.9.3
-	github.com/jeremyhahn/go-qrdb/sdk/go v0.30.0-alpha
+	github.com/jeremyhahn/go-qrdb/sdk/go v0.30.1-alpha
 	gorm.io/driver/mysql v1.6.0
 	gorm.io/driver/postgres v1.6.2
 	gorm.io/gorm v1.31.2
@@ -136,7 +136,7 @@ require (
 	github.com/jeremyhahn/go-codec v1.4.0 // indirect
 	github.com/jeremyhahn/go-enclave v0.6.1-alpha // indirect
 	github.com/jeremyhahn/go-objstore v0.3.0-alpha // indirect
-	github.com/jeremyhahn/go-qrdb v0.30.0-alpha // indirect
+	github.com/jeremyhahn/go-qrdb v0.30.1-alpha // indirect
 	github.com/jeremyhahn/go-quicraft v0.15.0-alpha // indirect
 	github.com/jeroenrinzema/psql-wire v0.18.0 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect

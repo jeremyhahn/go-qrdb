@@ -11,6 +11,12 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.30.1-alpha] - 2026-10-02
+
+Fix release. Highlights:
+
+- **A shard is handed out only once it can serve a linearizable read.** Every host-open path now waits for the new leader to commit in its term, not just for a leader to be known: the tenant volume host, dedicated per-database shards, the SDK clustered node, the qrdbd system shard (before its listeners start), and the desktop embedded server. This fixes intermittent "read index not ready" failures right after a node or shard starts. `NewClusteredNode` now blocks until a quorum has elected and committed (within a 15s budget).
+
 ### Fixed
 
 - **A shard is handed out only once it can serve a linearizable read.** Every
