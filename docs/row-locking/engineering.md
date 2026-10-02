@@ -217,8 +217,8 @@ lease  = the owning session's lease in this store
    for its next transaction: no record outlives its owner by more than the
    lease TTL. An owner whose lease is known to have ended — expired, swept,
    or revoked successfully — deletes nothing, since the lease took its
-   records, except a record written after the lease ended, which is bound to
-   nothing. `SessionEnd` therefore revokes the session's lease first: one
+   records, except one a lost request's explicit delete failed to remove,
+   which it deletes again. `SessionEnd` therefore revokes the session's lease first: one
    proposal ends a session however many locks it held. If that revoke fails,
    the lease is not known to have ended, and each owner deletes its own
    records instead of leaving them until the lease expires.
@@ -240,11 +240,12 @@ lease  = the owning session's lease in this store
    (its lease expired, or the database's namespace was reclaimed) fails with
    `*rowlock.LockLostError` and its transaction is rolled back. So does a
    request whose lease is found gone just after its enqueue (expired or swept
-   before the keepalive noticed): after every enqueue the owner reads its
-   lease back linearizably, and a missing lease means the records may have
-   been written attached to nothing — the state machine stores a write whose
-   lease no longer exists without attaching it — so the request deletes them
-   explicitly, fails with `LockLostError`, and the owner is released.
+   before the keepalive noticed). The state machine refuses an enqueue naming
+   a lease it no longer holds, with `*service.LeaseNotFoundError`, and writes
+   nothing; and after every enqueue the owner reads its lease back
+   linearizably, catching a lease that ended just after the write. Either way
+   the records went with the lease, the request deletes any it wrote
+   explicitly as well, fails with `LockLostError`, and the owner is released.
    A **fresh** owner — one that held nothing and wrote nothing before the
    request — has lost nothing: it withdraws what it just wrote, the session
    retires the ended lease, and the request is made once more on a live one.

@@ -56,10 +56,12 @@ type Owner struct {
 	// live. A lease that has ended took them with it.
 	records map[string]struct{}
 
-	// unattached are the keys of records written after the owner's lease had
-	// already ended, which the store keeps attached to nothing, and which an
-	// explicit withdraw failed to delete: no revoke or expiry will ever
-	// remove them, so Release deletes them whatever became of the lease.
+	// unattached are the keys of records a request wrote before finding its
+	// lease ended, which an explicit withdraw failed to delete. The state
+	// machine refuses a write naming a lease it no longer holds, so they were
+	// written while the lease lived and went with it; Release deletes them
+	// anyway, whatever became of the lease, so a lost request never relies
+	// on that to leave nothing behind.
 	unattached map[string]struct{}
 }
 
@@ -221,8 +223,9 @@ func (o *Owner) enqueue(ctx context.Context, t *Table, pending []string, mode Mo
 }
 
 // renewLease drops l, found ended under a fresh owner, after withdrawing
-// the records just written to it (attached to nothing, so only an explicit
-// delete removes them). The next ensureLease is granted a live lease.
+// any records the request wrote to it before it ended (they went with the
+// lease; the explicit delete leaves nothing behind whatever its state). The
+// next ensureLease is granted a live lease.
 func (o *Owner) renewLease(ctx context.Context, t *Table, l *sessionLease, written []string, mode Mode) error {
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
 	defer cancel()
@@ -441,8 +444,8 @@ func (o *Owner) withdrawn(keys []string, mode Mode) {
 //
 // A lease known to have ended -- expired, swept, or successfully revoked by
 // the session (its Close, or a failed release) -- took the owner's records
-// with it, so none are deleted; only a record written after the lease
-// ended, which is bound to nothing, still is. A lease the session retired
+// with it, so none are deleted; only one a lost request's withdraw failed to
+// delete (see unattached) still is. A lease the session retired
 // but could not revoke still holds them, and they are deleted here. If the delete fails, the session revokes the lease
 // instead, which removes the records just the same: a record is never left
 // bound to a lease the session goes on renewing.
@@ -486,7 +489,7 @@ func (o *Owner) Scope() string {
 // with the transaction whether its commit wins or loses -- and reports
 // whether it proposed them. They are nil when the owner cannot fold its
 // release (no lock, more records than one proposal carries, or a lease
-// that has ended, whose records are already gone or bound to nothing), in
+// that has ended, whose records went with it), in
 // which case final runs on its own and the owner is then released as
 // Release does. An error from final means the proposal's outcome is
 // unknown -- an infrastructure failure the caller may retry -- and the locks

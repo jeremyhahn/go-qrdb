@@ -188,9 +188,11 @@ func (t *Table) enqueue(ctx context.Context, keys []string, owner string, mode M
 // any revoke of the lease (an explicit revoke or the leader's expiry
 // sweep): if the lease is still present now, the revoke has not been
 // applied yet, so the records were written while it existed, were attached
-// to it, and will go with it. If it is gone, the records may have been
-// written after it ended and attached to nothing; the caller removes them
-// (see Owner.lostAtEnqueue). A missing lease is *service.LeaseNotFoundError.
+// to it, and will go with it. If it is gone, the lock is lost: the records
+// went with the lease, and the caller deletes them explicitly as well (see
+// Owner.lostAtEnqueue). The state machine refuses an enqueue naming a lease
+// it no longer holds, so a record is never attached to nothing. A missing
+// lease is *service.LeaseNotFoundError.
 func (t *Table) leaseAlive(ctx context.Context, leaseID int64) error {
 	_, err := t.deps.Lease.TimeToLive(ctx, leaseID)
 	return err

@@ -230,6 +230,32 @@ func TestAcquire_EnqueueOnAnEndedLease_IsALostLock(t *testing.T) {
 	assert.Empty(t, queueOwners(t, tbl, keyB), "no record was left behind")
 }
 
+// TestTableEnqueue_OnAnEndedLease_IsRefusedAndWritesNothing pins the store
+// behaviour Owner.enqueue's lost-lock and fresh-owner paths react to: the
+// state machine refuses a write naming a lease it no longer holds, with
+// *service.LeaseNotFoundError, and writes nothing -- so no record is ever
+// left attached to nothing. A write on a live lease is attached to it and
+// goes with its revoke.
+func TestTableEnqueue_OnAnEndedLease_IsRefusedAndWritesNothing(t *testing.T) {
+	s := newStack(t)
+	tbl := s.table(t)
+	ctx := context.Background()
+
+	live, err := s.deps.Lease.Grant(ctx, 60)
+	require.NoError(t, err)
+	written, err := tbl.enqueue(ctx, []string{keyA}, "owner-live", ModeExclusive, live.ID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{keyA}, written)
+	require.NoError(t, s.deps.Lease.Revoke(ctx, live.ID))
+	assert.Empty(t, queueOwners(t, tbl, keyA), "a record on a live lease goes with its revoke")
+
+	written, err = tbl.enqueue(ctx, []string{keyB}, "owner-ended", ModeExclusive, live.ID)
+	var gone *service.LeaseNotFoundError
+	require.ErrorAs(t, err, &gone, "a write naming an ended lease is refused")
+	assert.Empty(t, written)
+	assert.Empty(t, queueOwners(t, tbl, keyB), "the refused write left no record")
+}
+
 // failingTimeToLive refuses every lease lookup.
 type failingTimeToLive struct{ service.LeaseServicer }
 
