@@ -40,11 +40,7 @@ func TestHolderCert_TenantOUStaysFirst(t *testing.T) {
 	for _, tenantID := range []string{"a", "acme", "a-tenant-id-longer-than-the-profile"} {
 		t.Run(tenantID, func(t *testing.T) {
 			b := newHolderCATestbed(t)
-			svc, err := NewTenantCeremonyService(tenantID, seal.NewMemoryBackend(), b.ca, testLogger())
-			require.NoError(t, err)
-			res, err := svc.RegisterOfficer(context.Background(), RegisterOfficerRequest{
-				Username: "officer", CSRPEM: newHostileCSRPEM(t, hostileCSRs[0]), AuthenticatorType: AuthenticatorSoftware,
-			})
+			res, err := newTenantHolders(t, tenantID, b.ca).RegisterOfficer(context.Background(), hostileRequest(t, hostileCSRs[0], "officer", seal.RoleCustodian))
 			require.NoError(t, err)
 			b.assertAuthenticatesAs(t, res.CertPEM, "officer", tenantID)
 		})
@@ -82,11 +78,8 @@ func (c copyingCA) SignCSR(_ context.Context, csrPEM []byte, opts *SignCSROption
 func TestHolderCert_NonConformingCAIsRefused(t *testing.T) {
 	for _, c := range hostileCSRs {
 		t.Run(c.name, func(t *testing.T) {
-			svc, err := NewTenantCeremonyService("acme", seal.NewMemoryBackend(), copyingCA{newTestLocalCA(t)}, testLogger())
-			require.NoError(t, err)
-			res, err := svc.RegisterOfficer(context.Background(), RegisterOfficerRequest{
-				Username: "acme-officer", CSRPEM: newHostileCSRPEM(t, c), AuthenticatorType: AuthenticatorSoftware,
-			})
+			svc := newTenantHolders(t, "acme", copyingCA{newTestLocalCA(t)})
+			res, err := svc.RegisterOfficer(context.Background(), hostileRequest(t, c, "acme-officer", seal.RoleSecurityOfficer))
 			var subjErr *CertSubjectError
 			require.True(t, errors.As(err, &subjErr), "RegisterOfficer = (%v, %v); want *CertSubjectError", res, err)
 			officers, err := svc.ListOfficers(context.Background())
@@ -113,11 +106,8 @@ func (c keySwappingCA) SignCSR(ctx context.Context, _ []byte, opts *SignCSROptio
 }
 
 func TestHolderCert_CertificateForAnotherKeyIsRefused(t *testing.T) {
-	svc, err := NewTenantCeremonyService("acme", seal.NewMemoryBackend(), keySwappingCA{newTestLocalCA(t)}, testLogger())
-	require.NoError(t, err)
-	_, err = svc.RegisterOfficer(context.Background(), RegisterOfficerRequest{
-		Username: "acme-officer", CSRPEM: newHostileCSRPEM(t, hostileCSRs[3]), AuthenticatorType: AuthenticatorSoftware,
-	})
+	svc := newTenantHolders(t, "acme", keySwappingCA{newTestLocalCA(t)})
+	_, err := svc.RegisterOfficer(context.Background(), hostileRequest(t, hostileCSRs[3], "acme-officer", seal.RoleSecurityOfficer))
 	var subjErr *CertSubjectError
 	require.True(t, errors.As(err, &subjErr), "err = %v; want *CertSubjectError", err)
 	require.Equal(t, "PublicKey", subjErr.Field)
@@ -129,11 +119,7 @@ func TestHolderCert_CertificateForAnotherKeyIsRefused(t *testing.T) {
 // user's name.
 func TestHolderCert_IsMarkedAsHolder(t *testing.T) {
 	b := newHolderCATestbed(t)
-	svc, err := NewTenantCeremonyService("acme", seal.NewMemoryBackend(), b.ca, testLogger())
-	require.NoError(t, err)
-	res, err := svc.RegisterOfficer(context.Background(), RegisterOfficerRequest{
-		Username: "admin", CSRPEM: newHostileCSRPEM(t, hostileCSRs[0]), AuthenticatorType: AuthenticatorSoftware,
-	})
+	res, err := newTenantHolders(t, "acme", b.ca).RegisterOfficer(context.Background(), hostileRequest(t, hostileCSRs[0], "admin", seal.RoleCustodian))
 	require.NoError(t, err)
 	blk, _ := pem.Decode(res.CertPEM)
 	leaf, err := x509.ParseCertificate(blk.Bytes)

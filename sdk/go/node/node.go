@@ -493,7 +493,6 @@ func (n *Node) sealedWindowCeremonyCore() *ceremony.CeremonyService {
 func (n *Node) withHolderInfra(infra lifecycle.Infra, cfg *qrdbconfig.Config, serverOpts []server.ServerOption) lifecycle.Infra {
 	crypto := server.ResolveCryptoOptions(serverOpts...)
 	infra.PINBackend = n.pinBackend(serverOpts)
-	infra.HolderTrustDomain = qrdbconfig.HolderTrustDomain(cfg.Auth.SPIFFETrustDomain, cfg.Auth.ClusterTrustDomain)
 	infra.FactorRegistry = crypto.FactorRegistry
 	infra.CeremonyCA = crypto.CeremonyCA
 	return infra

@@ -72,7 +72,7 @@ func tenantAdminCtx(tenantID string) context.Context {
 func newHolderTenantService(t *testing.T) *TenantService {
 	t.Helper()
 	svc, err := NewTenantService(seal.NewMemoryBackend(), newTestBarrierRegistry(t), testLogger(),
-		WithTenantHolderDeps(ceremony.HolderDeps{CA: newTenantHolderCA(t), TrustDomain: "db.example.com"}))
+		WithTenantHolderDeps(ceremony.HolderDeps{CA: newTenantHolderCA(t)}))
 	if err != nil {
 		t.Fatalf("NewTenantService: %v", err)
 	}

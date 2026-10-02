@@ -816,7 +816,6 @@ var holderRules = []rule{
 	is(ceremony.ErrAlreadyInitialized, FailedPrecondition),
 	is(ceremony.ErrTooManyPendingChallenges, ResourceExhausted),
 	as(&ceremony.QuorumRateLimitedError{}, ResourceExhausted),
-	is(ceremony.ErrTrustDomainNotConfigured, FailedPrecondition),
 	is(ceremony.ErrCANotInitialized, FailedPrecondition),
 	is(ceremony.ErrInvalidHolderRole, InvalidArgument),
 	is(ceremony.ErrMissingUsername, InvalidArgument),

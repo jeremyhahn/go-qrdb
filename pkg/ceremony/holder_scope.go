@@ -34,20 +34,17 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // HolderDeps are the dependencies every holder scope shares: the ceremony CA
-// that issues holder certificates, the trust domain those certificates'
-// SPIFFE identities live in, and the registry of authentication factors
+// that issues holder certificates, and the registry of authentication factors
 // holders may enrol (hardware factors are go-xkms implementations injected
 // through WithFactorRegistry). The system ceremony hands the same deps to
 // every tenant ceremony.
 type HolderDeps struct {
 	// CA issues holder certificates.
 	CA CeremonyCA
-
-	// TrustDomain is the SPIFFE trust domain of holder identities.
-	TrustDomain string
 
 	// Factors resolves factor names. "mtls" is always available: when the
 	// registry does not carry it, the built-in pkg/authfactors/mtls factor
@@ -362,20 +359,27 @@ func (h *holderScope) register(ctx context.Context, d *HolderDeps, req RegisterO
 		}
 	}
 
-	ident, err := holderIdentity(d.TrustDomain, h.tenantID, req.Username, req.Role)
-	if err != nil {
-		return nil, err
+	profile, ok := holderProfiles[req.Role]
+	if !ok {
+		return nil, ErrInvalidHolderRole
 	}
-	cert, err := d.CA.SignCSR(ctx, req.CSRPEM, &SignCSROptions{
-		Subject:      ident.subject,
-		URIs:         ident.uris,
-		Profile:      holderProfiles[req.Role],
+	if !validPrincipalName(req.Username) {
+		return nil, &InvalidHolderNameError{Name: req.Username}
+	}
+	// The certificate names the registered holder in the scope's tenant and
+	// carries no SAN, whatever the CSR asked for (signHolderCSR); the holder
+	// profile OU makes it a holder certificate, which authenticates with no
+	// roles (auth.HolderProfile).
+	cert, _, err := signHolderCSR(ctx, d.CA, req.CSRPEM, &SignCSROptions{
+		TenantID:     tenantid.Normalize(h.tenantID),
+		Username:     req.Username,
+		Profile:      profile,
 		ValidityDays: 365,
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyAgreement | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	})
 	if err != nil {
-		return nil, &CertEncodeError{Err: err}
+		return nil, err
 	}
 
 	factors, err := h.enrolFactors(ctx, d, req, cert)

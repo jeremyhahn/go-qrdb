@@ -995,21 +995,6 @@ func BoolPtr(b bool) *bool { return &b }
 // configured.
 const DefaultClusterTrustDomain = "qrdb.cluster"
 
-// HolderTrustDomain returns the SPIFFE trust domain share-holder
-// certificates are issued in. It is the configured SPIFFE trust domain when
-// there is one — the mTLS authenticator pins it, so a holder certificate in
-// any other domain could not authenticate — and otherwise the cluster trust
-// domain, falling back to DefaultClusterTrustDomain.
-func HolderTrustDomain(spiffeTrustDomain, clusterTrustDomain string) string {
-	if spiffeTrustDomain != "" {
-		return spiffeTrustDomain
-	}
-	if clusterTrustDomain != "" {
-		return clusterTrustDomain
-	}
-	return DefaultClusterTrustDomain
-}
-
 // AuthABACConfig configures the ABAC authorization decorator.
 type AuthABACConfig struct {
 	// Enabled activates ABAC policy evaluation on top of RBAC.

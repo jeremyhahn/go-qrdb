@@ -180,11 +180,6 @@ var (
 	// ErrEmptyDatabase is returned when an empty database name is provided to
 	// a database barrier's holder authority.
 	ErrEmptyDatabase = errors.New("ceremony: database name must not be empty")
-
-	// ErrCertIdentityRequired is returned when a CSR is to be signed without
-	// a CA-assigned subject. The CA never takes a certificate's identity from
-	// the CSR.
-	ErrCertIdentityRequired = errors.New("ceremony: the CA must assign the certificate identity; no subject common name was supplied")
 )
 
 // OfficerRegistryError wraps an error from persistent-registry operations.

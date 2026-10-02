@@ -23,7 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
@@ -34,7 +34,7 @@ func TestTenantCeremony_HolderLifecycle(t *testing.T) {
 	ctx := context.Background()
 	backend := seal.NewMemoryBackend()
 	barrier := shamirBarrier(t, backend, 2, 2)
-	svc, err := NewTenantCeremonyService("acme", backend, HolderDeps{CA: testCA(t), TrustDomain: testTrustDomain, Factors: testFactors(t)}, testLogger())
+	svc, err := NewTenantCeremonyService("acme", backend, HolderDeps{CA: testCA(t), Factors: testFactors(t)}, testLogger())
 	require.NoError(t, err)
 	barrier.SetCeremonyDistributor(svc)
 	barrier.SetHolderVerifier(svc)
@@ -47,11 +47,10 @@ func TestTenantCeremony_HolderLifecycle(t *testing.T) {
 		h.recordCert(t, res.CertPEM)
 		cert, err := mtls.ParseCertificatePEM(res.CertPEM)
 		require.NoError(t, err)
-		id, ok, err := spiffe.ParseID(cert.URIs[0])
-		require.NoError(t, err)
-		require.True(t, ok)
-		assert.Equal(t, "acme", id.TenantID, "a tenant holder's identity is in its tenant")
-		assert.Equal(t, spiffe.KindHolder, id.Kind)
+		assert.Equal(t, "acme", cert.Subject.OrganizationalUnit[0], "a tenant holder's identity is in its tenant")
+		_, isHolder := auth.HolderProfile(cert)
+		assert.True(t, isHolder, "a tenant holder's certificate is a holder certificate")
+		assert.Empty(t, cert.URIs, "a holder certificate carries no SAN")
 	}
 	_, err = barrier.InitializeShamir(ctx, seal.FactorPolicyAnyEnrolled)
 	require.NoError(t, err)
@@ -100,7 +99,7 @@ func TestTenantCeremony_HolderLifecycle(t *testing.T) {
 
 // TestTenantCeremony_ConstructorRefusals covers the constructor checks.
 func TestTenantCeremony_ConstructorRefusals(t *testing.T) {
-	deps := HolderDeps{CA: testCA(t), TrustDomain: testTrustDomain}
+	deps := HolderDeps{CA: testCA(t)}
 	backend := seal.NewMemoryBackend()
 	_, err := NewTenantCeremonyService("", backend, deps, testLogger())
 	assert.ErrorIs(t, err, ErrEmptyTenantID)
@@ -117,7 +116,7 @@ func TestScopedCeremonyRegistry(t *testing.T) {
 	reg := NewScopedCeremonyRegistry()
 	_, ok := reg.Get("acme")
 	assert.False(t, ok)
-	svc, err := NewTenantCeremonyService("acme", seal.NewMemoryBackend(), HolderDeps{CA: testCA(t), TrustDomain: testTrustDomain}, testLogger())
+	svc, err := NewTenantCeremonyService("acme", seal.NewMemoryBackend(), HolderDeps{CA: testCA(t)}, testLogger())
 	require.NoError(t, err)
 	reg.Set("acme", svc)
 	got, ok := reg.Get("acme")

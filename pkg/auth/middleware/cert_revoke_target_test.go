@@ -19,9 +19,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // TestCertRevokeTarget is the one statement of what a revocation targets,

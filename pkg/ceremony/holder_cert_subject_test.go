@@ -126,59 +126,70 @@ func (b *holderCATestbed) assertAuthenticatesAs(t *testing.T, certPEM []byte, us
 	require.Empty(t, leaf.EmailAddresses, "an e-mail SAN from the CSR was signed")
 }
 
-func TestHolderCert_TenantOfficerRegistration(t *testing.T) {
-	for _, c := range hostileCSRs {
-		t.Run(c.name, func(t *testing.T) {
-			b := newHolderCATestbed(t)
-			svc, err := NewTenantCeremonyService("acme", seal.NewMemoryBackend(), b.ca, testLogger())
-			require.NoError(t, err)
-			res, err := svc.RegisterOfficer(context.Background(), RegisterOfficerRequest{
-				Username: "acme-officer", CSRPEM: newHostileCSRPEM(t, c), AuthenticatorType: AuthenticatorSoftware,
-			})
-			require.NoError(t, err)
-			b.assertAuthenticatesAs(t, res.CertPEM, "acme-officer", "acme")
-		})
-	}
+// hostileRequest is a holder registration of username whose CSR is the
+// hostile case c, enrolled by an administrator.
+func hostileRequest(t *testing.T, c hostileCSR, username string, role seal.HolderRole) RegisterOfficerRequest {
+	t.Helper()
+	return RegisterOfficerRequest{Username: username, Role: role, CSRPEM: newHostileCSRPEM(t, c), Enroller: "enrolling-admin"}
 }
 
-// newSystemCeremonyWithCA is a system CeremonyService signing with the real
-// LocalCA, ready for officer registration.
-func newSystemCeremonyWithCA(t *testing.T, ca CeremonyCA) *CeremonyService {
+// newTenantHolders is the tenant-barrier holder authority for tenantID over
+// ca.
+func newTenantHolders(t *testing.T, tenantID string, ca CeremonyCA) *ScopedCeremonyService {
 	t.Helper()
-	svc, err := NewCeremonyService(defaultConfig(), unsealedTestBarrier(t), newTestCredentialService(), testLogger())
+	svc, err := NewTenantCeremonyService(tenantID, seal.NewMemoryBackend(), HolderDeps{CA: ca, Factors: testFactors(t)}, testLogger())
 	require.NoError(t, err)
-	svc.mu.Lock()
-	svc.ca = ca
-	require.NoError(t, svc.ensureOfficerRegistry())
-	svc.mu.Unlock()
 	return svc
 }
 
-func TestHolderCert_SystemOfficerRegistration(t *testing.T) {
+// newSystemHolders is the system ceremony service over a Shamir barrier,
+// signing with ca.
+func newSystemHolders(t *testing.T, ca *LocalCA) *holderEnv {
+	t.Helper()
+	e := newHolderEnv(t, 2, 2)
+	e.svc = nil
+	e.ca = ca
+	e.svc = e.newService(e.barrier)
+	return e
+}
+
+func TestHolderCert_TenantHolderRegistration(t *testing.T) {
+	for _, c := range hostileCSRs {
+		for _, role := range []seal.HolderRole{seal.RoleSecurityOfficer, seal.RoleCustodian} {
+			t.Run(c.name+"/"+string(role), func(t *testing.T) {
+				b := newHolderCATestbed(t)
+				res, err := newTenantHolders(t, "acme", b.ca).RegisterOfficer(context.Background(), hostileRequest(t, c, "acme-officer", role))
+				require.NoError(t, err)
+				b.assertAuthenticatesAs(t, res.CertPEM, "acme-officer", "acme")
+			})
+		}
+	}
+}
+
+func TestHolderCert_DatabaseHolderRegistration(t *testing.T) {
 	for _, c := range hostileCSRs {
 		t.Run(c.name, func(t *testing.T) {
 			b := newHolderCATestbed(t)
-			svc := newSystemCeremonyWithCA(t, b.ca)
-			res, err := svc.RegisterOfficer(context.Background(), RegisterOfficerRequest{
-				Username: "so-1", CSRPEM: newHostileCSRPEM(t, c), AuthenticatorType: AuthenticatorSoftware,
-			})
+			svc, err := NewDatabaseCeremonyService("acme", "vault", seal.NewMemoryBackend(), HolderDeps{CA: b.ca, Factors: testFactors(t)}, testLogger())
 			require.NoError(t, err)
-			b.assertAuthenticatesAs(t, res.CertPEM, "so-1", "system")
+			res, err := svc.RegisterOfficer(context.Background(), hostileRequest(t, c, "vault-officer", seal.RoleSecurityOfficer))
+			require.NoError(t, err)
+			b.assertAuthenticatesAs(t, res.CertPEM, "vault-officer", "acme")
 		})
 	}
 }
 
-func TestHolderCert_RecoveryOfficerRegistration(t *testing.T) {
+func TestHolderCert_SystemHolderRegistration(t *testing.T) {
 	for _, c := range hostileCSRs {
-		t.Run(c.name, func(t *testing.T) {
-			b := newHolderCATestbed(t)
-			svc := newSystemCeremonyWithCA(t, b.ca)
-			res, err := svc.RegisterRecoveryOfficer(context.Background(), RegisterOfficerRequest{
-				Username: "recovery-1", CSRPEM: newHostileCSRPEM(t, c), AuthenticatorType: AuthenticatorSoftware,
+		for _, domain := range []seal.QuorumDomain{seal.DomainUnseal, seal.DomainRecovery} {
+			t.Run(c.name+"/"+string(domain), func(t *testing.T) {
+				b := newHolderCATestbed(t)
+				e := newSystemHolders(t, b.ca)
+				res, err := e.svc.RegisterOfficer(context.Background(), domain, hostileRequest(t, c, "so-1", seal.RoleSecurityOfficer))
+				require.NoError(t, err)
+				b.assertAuthenticatesAs(t, res.CertPEM, "so-1", "system")
 			})
-			require.NoError(t, err)
-			b.assertAuthenticatesAs(t, res.CertPEM, "recovery-1", "system")
-		})
+		}
 	}
 }
 
@@ -186,37 +197,13 @@ func TestHolderCert_SignCSRInit(t *testing.T) {
 	for _, c := range hostileCSRs {
 		t.Run(c.name, func(t *testing.T) {
 			b := newHolderCATestbed(t)
-			cfg := defaultConfig()
-			svc, err := NewCeremonyService(cfg, unsealedTestBarrier(t), newTestCredentialService(), testLogger())
-			require.NoError(t, err)
-			_, err = svc.Initialize(context.Background(), b.ca, nil)
+			e := newSystemHolders(t, b.ca)
+			_, err := e.svc.Initialize(context.Background(), b.ca, initOpts(0))
 			require.NoError(t, err)
 
-			res, err := svc.SignCSRInit(context.Background(), "operator-1", cfg.SOPin, newHostileCSRPEM(t, c), "operator")
+			res, err := e.svc.SignCSRInit(context.Background(), "operator-1", "so-pin-1234", newHostileCSRPEM(t, c), "operator")
 			require.NoError(t, err)
 			b.assertAuthenticatesAs(t, res.CertPEM, "operator-1", "system")
-		})
-	}
-}
-
-func TestHolderCert_InitialCeremonyOfficers(t *testing.T) {
-	for _, c := range hostileCSRs {
-		t.Run(c.name, func(t *testing.T) {
-			b := newHolderCATestbed(t)
-			cfg, _ := mofnConfig(t, 2, 2)
-			for i := range cfg.Officers {
-				cfg.Officers[i].CSRPEM = newHostileCSRPEM(t, c)
-			}
-			svc, err := NewCeremonyService(cfg, unsealedTestBarrier(t), newTestCredentialService(), testLogger())
-			require.NoError(t, err)
-			_, err = svc.Initialize(context.Background(), b.ca, nil)
-			require.NoError(t, err)
-
-			for _, officer := range cfg.Officers {
-				pending, ok := svc.pendingCerts[officer.Username]
-				require.True(t, ok, "no certificate issued for %s", officer.Username)
-				b.assertAuthenticatesAs(t, pending.CertPEM, officer.Username, "system")
-			}
 		})
 	}
 }

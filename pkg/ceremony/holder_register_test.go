@@ -21,7 +21,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
@@ -31,8 +30,9 @@ import (
 
 // TestRegisterOfficer_CAAssignsTheIdentity pins the §6 fix: the CSR asks to
 // be "admin" in the system security-officer profile, and the certificate the
-// CA issues names the holder it was registered as, in the holder SPIFFE
-// namespace, and nothing the CSR asked for.
+// CA issues names the holder it was registered as, in the scope's tenant with
+// the holder's profile, carries no Subject Alternative Name, and has nothing
+// the CSR asked for (the v0.28.1 SignCSROptions contract).
 func TestRegisterOfficer_CAAssignsTheIdentity(t *testing.T) {
 	e := newHolderEnv(t, 2, 2)
 	h := newHolder(t, "carol", seal.RoleCustodian)
@@ -43,11 +43,7 @@ func TestRegisterOfficer_CAAssignsTheIdentity(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "carol", cert.Subject.CommonName)
 	assert.Equal(t, []string{tenantid.System, "custodian"}, cert.Subject.OrganizationalUnit)
-	require.Len(t, cert.URIs, 1)
-	id, ok, err := spiffe.ParseID(cert.URIs[0])
-	require.NoError(t, err)
-	require.True(t, ok)
-	assert.Equal(t, spiffe.ID{TrustDomain: testTrustDomain, TenantID: tenantid.System, Kind: spiffe.KindHolder, Name: "carol"}, id)
+	assert.Empty(t, cert.URIs, "a holder certificate carries no SAN")
 	assert.Equal(t, seal.RoleCustodian, res.Role)
 	assert.Equal(t, mtls.Name, res.Designated)
 	assert.Equal(t, keydelivery.KEMP256, res.EncryptionKEM)
@@ -188,18 +184,12 @@ func TestRegisterOfficer_OnePersonOneRolePerScope(t *testing.T) {
 	assert.ErrorIs(t, err, ErrDuplicateHolderKey)
 }
 
-// TestRegisterOfficer_RequiresCAAndTrustDomain pins the fail-closed
-// dependencies.
-func TestRegisterOfficer_RequiresCAAndTrustDomain(t *testing.T) {
-	e := newHolderEnv(t, 2, 2)
+// TestRegisterOfficer_RequiresCA pins the fail-closed dependency.
+func TestRegisterOfficer_RequiresCA(t *testing.T) {
 	noCA, err := NewCeremonyService(&CeremonyConfig{DataDir: t.TempDir()}, shamirBarrier(t, seal.NewMemoryBackend(), 2, 2), testLogger())
 	require.NoError(t, err)
 	_, err = noCA.RegisterOfficer(context.Background(), seal.DomainUnseal, newHolder(t, "a", "").request("admin"))
 	assert.ErrorIs(t, err, ErrCANotInitialized)
-
-	noCA.SetCA(e.ca)
-	_, err = noCA.RegisterOfficer(context.Background(), seal.DomainUnseal, newHolder(t, "a", "").request("admin"))
-	assert.ErrorIs(t, err, ErrTrustDomainNotConfigured)
 }
 
 // TestRegisterOfficer_EnvelopeKEMs pins the KEM each key type enrols with.

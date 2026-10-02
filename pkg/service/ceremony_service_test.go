@@ -122,11 +122,9 @@ func (ca *testCeremonyCA) IssueCertificate(_ context.Context, req *ceremony.Issu
 
 // SignCSR signs a PEM-encoded CSR with the test CA.
 func (ca *testCeremonyCA) SignCSR(_ context.Context, csrPEM []byte, opts *ceremony.SignCSROptions) (*x509.Certificate, error) {
-	// Faithful to the CeremonyCA contract: the caller assigns the identity
-	// and the CSR contributes only its public key.
-	if opts == nil || opts.Subject.CommonName == "" {
-		return nil, ceremony.ErrCertIdentityRequired
-	}
+	// Faithful to the CeremonyCA contract: the subject comes from opts
+	// (RawSubject, which refuses a missing tenant or username) and the CSR
+	// contributes only its public key.
 	block, _ := pem.Decode(csrPEM)
 	if block == nil {
 		return nil, ceremony.ErrInvalidCSR

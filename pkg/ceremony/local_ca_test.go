@@ -206,13 +206,12 @@ func TestNewLocalCA_BadKeyPEM(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestLocalCA_SignCSR_AssignsTheIdentity pins the §6 fix: the certificate
-// carries the subject and URIs the caller assigns, and nothing the CSR asked
-// for — not its common name, not its OUs, not its DNS SANs.
+// carries the subject the caller assigns, CN=Username, OU=[TenantID,
+// Profile], and nothing the CSR asked for -- not its common name, not its
+// OUs, not its SANs.
 func TestLocalCA_SignCSR_AssignsTheIdentity(t *testing.T) {
 	ca := newTestLocalCA(t)
 	csrPEM := newTestCSRPEM(t, "so-1")
-	uri, err := url.Parse("spiffe://db.example.com/tenant/system/holder/carol")
-	require.NoError(t, err)
 
 	cert, err := ca.SignCSR(context.Background(), csrPEM, &SignCSROptions{
 		TenantID:     "acme",
@@ -417,7 +416,7 @@ func TestCAKeyParseError(t *testing.T) {
 // TestLocalCA_SignCSR_DropsRequestedURISANs pins that a URI SAN the CSR asks
 // for never reaches the certificate: a tenant-scoped SPIFFE ID the requester
 // chose would otherwise be a tenant claim this CA vouches for (go-qrdb#519).
-// Only the URIs the caller assigns are signed.
+// The certificate carries no SAN at all.
 func TestLocalCA_SignCSR_DropsRequestedURISANs(t *testing.T) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
@@ -430,24 +429,12 @@ func TestLocalCA_SignCSR_DropsRequestedURISANs(t *testing.T) {
 	require.NoError(t, err)
 	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})
 
-	assigned, err := url.Parse("spiffe://db.example.com/tenant/acme/holder/alice")
-	require.NoError(t, err)
 	cert, err := newTestLocalCA(t).SignCSR(context.Background(), csrPEM, &SignCSROptions{
-		Subject:      pkix.Name{CommonName: "alice", OrganizationalUnit: []string{"acme"}},
-		URIs:         []*url.URL{assigned},
+		TenantID:     "acme",
+		Username:     "alice",
 		ValidityDays: 30,
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 	})
 	require.NoError(t, err)
-	require.Len(t, cert.URIs, 1)
-	assert.Equal(t, assigned.String(), cert.URIs[0].String(), "the CSR's URI SAN is dropped")
-
-	// With no URIs assigned, the certificate carries none.
-	cert, err = newTestLocalCA(t).SignCSR(context.Background(), csrPEM, &SignCSROptions{
-		Subject:      pkix.Name{CommonName: "alice"},
-		ValidityDays: 30,
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-	})
-	require.NoError(t, err)
-	assert.Empty(t, cert.URIs)
+	assert.Empty(t, cert.URIs, "the CSR's URI SAN is dropped: a ceremony certificate carries no SAN")
 }

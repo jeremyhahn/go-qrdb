@@ -23,7 +23,6 @@ func WithFactorRegistry(reg *authfactors.FactorRegistry) ServerOption
 ```go
 func NewCeremonyService(cfg *CeremonyConfig, barrier *seal.StorageBarrier, log *slog.Logger) (*CeremonyService, error)
 func (s *CeremonyService) SetCA(ca CeremonyCA)
-func (s *CeremonyService) SetTrustDomain(trustDomain string)
 func (s *CeremonyService) SetFactorRegistry(r *authfactors.FactorRegistry)
 func (s *CeremonyService) SetPINBackend(b pin.PINBackend)
 func (s *CeremonyService) Initialize(ctx, ca CeremonyCA, opts *InitializeOptions) (*InitResult, error)
@@ -34,7 +33,7 @@ func (s *CeremonyService) SignCSRInit(ctx, username, soPin string, csrPEM []byte
 `seal.HolderVerifier`, and serves the holder operations documented in
 [../shamir-custody/engineering.md](../shamir-custody/engineering.md).
 `NewTenantCeremonyService` builds the same engine for a tenant barrier over the
-system ceremony's `HolderDeps` (CA, trust domain, factor registry).
+system ceremony's `HolderDeps` (CA, factor registry).
 
 The CA seam:
 

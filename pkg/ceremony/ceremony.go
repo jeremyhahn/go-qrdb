@@ -23,8 +23,6 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
-	"github.com/jeremyhahn/go-qrdb/pkg/auth"
-	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
@@ -151,13 +149,6 @@ func (s *CeremonyService) SetCA(ca CeremonyCA) {
 	if s.deps.CA == nil {
 		s.deps.CA = ca
 	}
-}
-
-// SetTrustDomain sets the SPIFFE trust domain the CA assigns identities in.
-func (s *CeremonyService) SetTrustDomain(trustDomain string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.deps.TrustDomain = trustDomain
 }
 
 // SetFactorRegistry installs the authentication factors holders may enrol
@@ -402,13 +393,12 @@ func (s *CeremonyService) SignCSRInit(ctx context.Context, username, soPin strin
 	if !ok {
 		return nil, ErrInvalidRole
 	}
-	ident, err := principalIdentity(deps.TrustDomain, tenantid.System, spiffe.KindUser, username, profile.profile)
-	if err != nil {
-		return nil, err
+	if !validPrincipalName(username) {
+		return nil, &InvalidHolderNameError{Name: username}
 	}
-	cert, err := deps.CA.SignCSR(ctx, csrPEM, &SignCSROptions{
-		Subject:      ident.subject,
-		URIs:         ident.uris,
+	cert, _, err := signHolderCSR(ctx, deps.CA, csrPEM, &SignCSROptions{
+		TenantID:     tenantid.System,
+		Username:     username,
 		Profile:      profile.profile,
 		ValidityDays: profile.validityDays,
 		KeyUsage:     profile.keyUsage,

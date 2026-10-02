@@ -54,12 +54,18 @@ holder's CSR (`barrier officer register`). Nobody may enrol themselves. The
 enrolment:
 
 - has the node's **ceremony CA** issue the holder a certificate whose identity
-  the CA assigns: `CN=<username>`, and a single SPIFFE URI SAN in the **holder
-  namespace**, `spiffe://<trust-domain>/tenant/<tenant>/holder/<username>`. The
-  CSR contributes only its public key; any subject or SAN it carries is
-  ignored. The authentication layer refuses a holder-namespace identity as a
-  login identity, so a holder certificate cannot be used to reach anything
-  except the holder routes.
+  comes from the registration, never the CSR: `CN=<username>`,
+  `OU=[<scope tenant>, <profile>]` (`security-officer` or `custodian`) and no
+  Subject Alternative Name, where the scope tenant is `system` for the node
+  barrier and recovery scope and the tenant itself for a tenant or database
+  barrier. The CSR contributes only its public key, after its proof of
+  possession; whatever Subject or SANs it asks for are ignored, and the
+  ceremony refuses any certificate a CA returns that differs from this
+  (`*CertSubjectError`). The certificate is a **holder certificate**
+  (`auth.HolderProfile`), which the authentication middleware never resolves
+  to a user account: it authenticates with no roles and reaches only the holder
+  routes, so registering a holder cannot mint a login for anyone (see
+  [../certificate-authority/architecture.md](../certificate-authority/architecture.md)).
 - records the holder's **envelope recipient key**: the certificate key itself
   (P-256 or P-384), or a separately enrolled HPKE key — `dhkem-p256`,
   `dhkem-p384`, `dhkem-x25519` or the post-quantum hybrid `mlkem768-x25519`.
@@ -280,8 +286,8 @@ distinct, authenticated holders present.
   reconstructed key is wiped after use.
 - **Membership changes need the quorum.** Adding, removing or re-policing
   holders is a rekey, and a rekey completes only with M current holders.
-- **Holder certificates are not login credentials.** The holder SPIFFE
-  namespace is refused by the authentication layer.
+- **Holder certificates are not login credentials.** A certificate carrying a
+  holder profile OU authenticates with no roles, whatever its common name.
 
 ## What this feature deliberately does not do
 

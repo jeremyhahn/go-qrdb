@@ -85,7 +85,6 @@ func newCLIHolderStack(t *testing.T, threshold, total int) *cliHolderStack {
 		t.Fatal(err)
 	}
 	core.SetCA(ca)
-	core.SetTrustDomain("qrdb.test")
 	core.SetFactorRegistry(factors)
 	pins := pintest.NewBackend(t)
 	if err := pins.SetSOPIN("", cliSOPIN); err != nil {

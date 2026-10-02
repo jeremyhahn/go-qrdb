@@ -24,7 +24,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
@@ -165,15 +164,15 @@ func TestClaim_ExpiredNonceRefused(t *testing.T) {
 	_ = ch
 }
 
-// TestIdentity_Refusals covers the identity builders' refusals.
+// TestIdentity_Refusals covers the holder registration's name and role
+// refusals, made before anything is signed.
 func TestIdentity_Refusals(t *testing.T) {
-	_, err := principalIdentity("", "system", spiffe.KindUser, "a", "p")
-	assert.ErrorIs(t, err, ErrTrustDomainNotConfigured)
-	_, err = principalIdentity(testTrustDomain, "system", spiffe.KindUser, "..", "p")
+	e := newHolderEnv(t, 2, 2)
+	bad := newHolder(t, "..", "")
+	_, err := e.svc.RegisterOfficer(context.Background(), seal.DomainUnseal, bad.request("admin"))
 	assert.True(t, errorAs[*InvalidHolderNameError](err), err)
-	_, err = principalIdentity(testTrustDomain, "", spiffe.KindUser, "a", "p")
-	assert.Error(t, err, "an empty tenant is not a valid SPIFFE identity")
-	_, err = holderIdentity(testTrustDomain, "system", "a", "root")
+	rootRole := newHolder(t, "a", "root")
+	_, err = e.svc.RegisterOfficer(context.Background(), seal.DomainUnseal, rootRole.request("admin"))
 	assert.ErrorIs(t, err, ErrInvalidHolderRole)
 
 	assert.False(t, validPrincipalName(string(make([]byte, maxHolderNameLen+1))))

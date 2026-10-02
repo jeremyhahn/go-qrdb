@@ -85,10 +85,10 @@ are not reconstructed here — their history is in the git log.
   kind of share holder, distinguished only by role (`so` | `custodian`) and
   the RBAC rights that role carries. Both are enrolled the same way — by an
   Admin or a Security Officer, never by themselves — from a CSR whose public
-  key is all the CA takes: the ceremony CA assigns `CN=<username>` and a
-  SPIFFE URI in the holder namespace
-  (`spiffe://<trust-domain>/tenant/<tenant>/holder/<username>`), which the
-  authentication layer refuses as a login identity. Enrolment records an
+  key is all the CA takes: the ceremony CA assigns `CN=<username>`,
+  `OU=[<scope tenant>, <profile>]` and no SAN, and the holder certificate
+  authenticates with no roles (v0.28.1's officer-certificate contract, see
+  Security). Enrolment records an
   envelope recipient key (the certificate key, or a separate HPKE key) and
   the holder's authentication factors: `mtls` always, plus any factor the
   composer registered with `WithFactorRegistry`. One person holds one share,
@@ -163,6 +163,20 @@ are not reconstructed here — their history is in the git log.
   refusals and `errclass.RetryAfter` consults it.
 
 ### Security
+
+- **Share-holder certificates follow v0.28.1's officer-certificate contract.**
+  Every holder enrolment -- system, recovery, tenant and database scope -- and
+  `ceremony sign-csr` sign through `signHolderCSR` with `SignCSROptions`
+  naming the registered holder and the scope's tenant: `CN=<username>`,
+  `OU=[<tenant>, <profile>]` in separate RDNs, no Subject Alternative Name,
+  and any certificate a CA returns otherwise refused (`*CertSubjectError`).
+  Holder certificates no longer carry a SPIFFE holder-namespace URI; they are
+  recognised by their profile OU and authenticate with no roles. The holder
+  trust-domain plumbing is removed: `lifecycle.Infra.HolderTrustDomain`,
+  `config.HolderTrustDomain`, `CeremonyService.SetTrustDomain`,
+  `HolderDeps.TrustDomain` and `ceremony.ErrTrustDomainNotConfigured`, as is
+  `ceremony.ErrCertIdentityRequired` (a missing tenant or username is a
+  `*CertSubjectError`).
 
 - **A system-tenant identity could act on every tenant's databases.** The
   database service lifted the system tenant past the ownership check on every

@@ -48,8 +48,8 @@ qrdb ceremony status --output json
 ## `qrdb ceremony sign-csr`
 
 Issue a login certificate under SO PIN authorization. The CA assigns the
-identity (`CN=<username>`, a SPIFFE user URI); the CSR supplies only the
-public key.
+identity (`CN=<username>`, `OU=[system, <profile>]`, no SAN); the CSR supplies
+only the public key.
 
 | Flag | Type | Meaning |
 |---|---|---|

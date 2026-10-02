@@ -66,7 +66,6 @@ func newRekeyTransport(t *testing.T, pins pin.PINBackend) *Transport {
 	}
 	ca, _ := ceremonytest.NewCA(t, "Rekey SO PIN CA")
 	core.SetCA(ca)
-	core.SetTrustDomain("db.example.com")
 	core.SetPINBackend(pins)
 	svc := service.NewBarrierServiceWithCeremony(barrier, core)
 	for _, name := range []string{"alice", "bob"} {

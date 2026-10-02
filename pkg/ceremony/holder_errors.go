@@ -27,11 +27,6 @@ var (
 	// holder.
 	ErrSelfEnrolment = errors.New("ceremony: a principal cannot enrol itself as a share holder")
 
-	// ErrTrustDomainNotConfigured is returned when a holder certificate is
-	// requested before the ceremony knows the SPIFFE trust domain the CA
-	// assigns identities in.
-	ErrTrustDomainNotConfigured = errors.New("ceremony: no SPIFFE trust domain configured for CA-assigned identities")
-
 	// ErrDuplicateHolderKey is returned when a registration reuses a
 	// certificate key or encryption key already enrolled in the scope. One
 	// person holds one share per scope, whatever their role.

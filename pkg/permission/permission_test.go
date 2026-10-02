@@ -556,10 +556,17 @@ func TestAll_TotalCount(t *testing.T) {
 	//   events, so a permission claiming to grant it may not exist = 375.
 	// + 1 admin:node_compaction, the platform's node-keyspace compaction
 	//   policy = 376.
-	// + 1 Tier-1 audit-verification perm (audit:verify) = 377, + 5 database
+	// The unified share-holder model then retires 10 (barrier:unseal-share,
+	//   ceremony:claim_cert, ceremony:claim_share_begin,
+	//   ceremony:claim_share_complete, ceremony:enroll_custodian,
+	//   ceremony:revoke_custodian, seal:recover_with_keys,
+	//   seal:submit_seal_vote, tenant_barrier:claim_share,
+	//   tenant_barrier:seal_vote) = 366, and adds 9: seal:officer_revoke,
+	//   tenant_barrier:officer_revoke, tenant_barrier:rekey, the 5 database
 	//   share-holder custody perms (databases:officer_register, officer_list,
-	//   officer_revoke, rekey, initialize_shamir) = 382 total.
-	const expectedTotal = 382
+	//   officer_revoke, rekey, initialize_shamir) and the Tier-1
+	//   audit-verification perm (audit:verify) = 375 total.
+	const expectedTotal = 375
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)

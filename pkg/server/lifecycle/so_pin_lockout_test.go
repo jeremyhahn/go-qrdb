@@ -58,7 +58,6 @@ func composeSOPINSurface(t *testing.T, infraBackend pin.PINBackend, opts ...serv
 		BarrierRegistry:   registry,
 		CredentialCoreSvc: credSvc,
 		PINBackend:        infraBackend,
-		HolderTrustDomain: "db.example.com",
 		Logger:            slog.Default(),
 	})
 	if err != nil {

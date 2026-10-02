@@ -78,7 +78,7 @@ func NewShamirDatabaseOwnedBy(t testing.TB, tenantID, name string, m, n int) *Sh
 		t.Fatal(err)
 	}
 	ca, _ := ceremonytest.NewCA(t, "Database Holder CA")
-	bm.SetHolderDeps(ceremony.HolderDeps{CA: ca, TrustDomain: "db.example.com"})
+	bm.SetHolderDeps(ceremony.HolderDeps{CA: ca})
 	mgr.SetBarrierManager(bm)
 	cfg := database.DatabaseConfig{
 		TenantID: tenantID, Name: name, Engine: database.EngineKV, Backend: database.BackendMemory, DataDir: t.TempDir(),

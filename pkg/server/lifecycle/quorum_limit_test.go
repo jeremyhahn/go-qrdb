@@ -60,7 +60,6 @@ func TestBuildSealServicesOnly_InstallsQuorumLimiter(t *testing.T) {
 		SealBarrier:       barrier,
 		BarrierRegistry:   registry,
 		CredentialCoreSvc: credSvc,
-		HolderTrustDomain: "db.example.com",
 		Logger:            slog.Default(),
 	})
 	if err != nil {

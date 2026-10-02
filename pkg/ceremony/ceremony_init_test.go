@@ -21,7 +21,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -159,11 +159,9 @@ func TestSignCSRInit_CAAssignsTheLoginIdentity(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "operator-1", cert.Subject.CommonName)
 	assert.Equal(t, []string{tenantid.System, "administrator"}, cert.Subject.OrganizationalUnit)
-	require.Len(t, cert.URIs, 1)
-	id, ok, err := spiffe.ParseID(cert.URIs[0])
-	require.NoError(t, err)
-	require.True(t, ok)
-	assert.Equal(t, spiffe.KindUser, id.Kind, "a login certificate is never in the holder namespace")
+	assert.Empty(t, cert.URIs, "a ceremony certificate carries no SAN")
+	_, isHolder := auth.HolderProfile(cert)
+	assert.False(t, isHolder, "a login certificate is never a holder certificate")
 
 	_, err = e.svc.SignCSRInit(ctx, "operator-2", "wrong-pin", h.csrPEM, "admin")
 	assert.ErrorIs(t, err, pin.ErrPINInvalid)
@@ -204,7 +202,7 @@ func TestSignCSRInit_Refusals(t *testing.T) {
 func TestCeremonyService_Accessors(t *testing.T) {
 	e := newHolderEnv(t, 2, 2)
 	deps := e.svc.HolderDeps()
-	assert.Equal(t, testTrustDomain, deps.TrustDomain)
+	assert.Same(t, e.ca, deps.CA)
 	assert.Same(t, e.ca, e.svc.CA())
 	assert.NotNil(t, e.svc.ThresholdRegistry())
 

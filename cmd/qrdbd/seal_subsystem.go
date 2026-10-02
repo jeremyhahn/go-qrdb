@@ -23,7 +23,6 @@ import (
 	"path/filepath"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
-	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
@@ -329,7 +328,6 @@ func awaitUnseal(sigCtx context.Context, f *startFlags, bundle *TLSBundle, sub *
 		CeremonyDataDir:           sub.SealDataDir,
 		CeremonyCA:                ceremonyCA,
 		PINBackend:                sub.PINBackend,
-		HolderTrustDomain:         qrdbconfig.HolderTrustDomain(f.spiffeTrustDomain, f.clusterTrustDomain),
 		Logger:                    slog.Default(),
 		DefaultTenantQuotas:       f.tenantConfig.DefaultQuotas.ToQuotas(),
 		DefaultTenantEntitlements: f.tenantConfig.DefaultEntitlements.ToEntitlements(),

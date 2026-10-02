@@ -32,7 +32,7 @@ func TestExecute_StatementResolvesEachTableOnce(t *testing.T) {
 		{Name: "name", Type: "VARCHAR(16)", Nullable: true},
 	})
 	counting := h.CountTableReads()
-	svc := NewService(newMockKV(), &mockDB{getFn: kvDB}, WithRegistry(h.Registry))
+	svc := NewService(newMockKV(), &mockDB{getFn: ownedKV("acme")}, WithRegistry(h.Registry))
 	ctx := authedContext("acme")
 
 	if _, err := svc.Execute(ctx, "testdb", "INSERT INTO widgets (id, name) VALUES (1, 'a')"); err != nil {

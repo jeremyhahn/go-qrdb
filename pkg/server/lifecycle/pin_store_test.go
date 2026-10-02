@@ -67,7 +67,7 @@ func TestNewSealStorePINBackend_NilStore(t *testing.T) {
 }
 
 // TestBuildSealServicesOnly_WiresHolderDeps pins that Infra's PIN backend
-// and holder trust domain reach the ceremony service.
+// reaches the ceremony service.
 func TestBuildSealServicesOnly_WiresHolderDeps(t *testing.T) {
 	barrier, registry, credSvc := newTestBarrier(t)
 	pins, err := lifecycle.NewSealStorePINBackend(seal.NewMemoryBackend())
@@ -80,7 +80,6 @@ func TestBuildSealServicesOnly_WiresHolderDeps(t *testing.T) {
 		BarrierRegistry:   registry,
 		CredentialCoreSvc: credSvc,
 		PINBackend:        pins,
-		HolderTrustDomain: "db.example.com",
 		Logger:            slog.Default(),
 	})
 	if err != nil {
@@ -91,7 +90,7 @@ func TestBuildSealServicesOnly_WiresHolderDeps(t *testing.T) {
 	if !ok {
 		t.Fatal("core ceremony service not exposed")
 	}
-	if got := core.HolderDeps().TrustDomain; got != "db.example.com" {
-		t.Errorf("holder trust domain = %q", got)
+	if err := core.AuthorizeSOPIN(context.Background(), "any-pin-0000"); !errors.Is(err, pin.ErrPINNotSet) {
+		t.Errorf("AuthorizeSOPIN through the built ceremony = %v, want pin.ErrPINNotSet from the wired backend", err)
 	}
 }

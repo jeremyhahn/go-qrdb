@@ -178,11 +178,6 @@ type Infra struct {
 	// closed with pin.ErrBackendNotConfigured: there is no fallback.
 	PINBackend pin.PINBackend
 
-	// HolderTrustDomain is the SPIFFE trust domain share-holder
-	// certificates are issued in. Holder registration fails with
-	// ceremony.ErrTrustDomainNotConfigured while it is empty.
-	HolderTrustDomain string
-
 	// FactorRegistry resolves the authentication factors share holders
 	// enrol and answer quorum challenges with. The built-in mtls factor is
 	// always available; hardware factors (FIDO2, PIV, ...) are registered
@@ -972,7 +967,6 @@ func ceremonyService(infra Infra, log *slog.Logger) (*ceremony.CeremonyService, 
 		svc = created
 	}
 	svc.SetCA(infra.CeremonyCA)
-	svc.SetTrustDomain(infra.HolderTrustDomain)
 	svc.SetFactorRegistry(infra.FactorRegistry)
 	// The SO PIN lockout is installed where the composer chose the backend
 	// (NewSealStorePINBackend, server.WithPINBackend); NewLockoutBackend is

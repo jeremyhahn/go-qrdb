@@ -43,9 +43,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
-// testTrustDomain is the SPIFFE trust domain of test holder identities.
-const testTrustDomain = "db.example.com"
-
 // testFactorName is the name the assertion-factor double is registered under.
 const testFactorName = "fido2"
 
@@ -268,7 +265,6 @@ func (e *holderEnv) newService(barrier *seal.StorageBarrier) *CeremonyService {
 	svc, err := NewCeremonyService(&CeremonyConfig{DataDir: e.t.TempDir()}, barrier, testLogger())
 	require.NoError(e.t, err)
 	svc.SetCA(e.ca)
-	svc.SetTrustDomain(testTrustDomain)
 	svc.SetFactorRegistry(e.factors)
 	svc.SetPINBackend(e.pins)
 	return svc

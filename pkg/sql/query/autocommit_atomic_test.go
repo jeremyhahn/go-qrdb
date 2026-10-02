@@ -38,7 +38,7 @@ func TestExecute_AutocommitStatementIsAtomic(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	svc := NewService(newMockKV(), &mockDB{getFn: kvDB}, WithRegistry(h.Registry))
+	svc := NewService(newMockKV(), &mockDB{getFn: ownedKV("acme")}, WithRegistry(h.Registry))
 	ctx := authedContext("acme")
 
 	if _, err := svc.Execute(ctx, "testdb", "INSERT INTO widgets (id) VALUES (1)"); err != nil {
@@ -99,7 +99,7 @@ func TestExecute_CommitFailureIsReported(t *testing.T) {
 	reg.TransactionServiceFn = func(string, string) (service.TransactionServicer, error) {
 		return &racingTxn{TransactionServicer: inner, prefix: service.TableDataPrefix("testdb", def.TableID, 0)}, nil
 	}
-	svc := NewService(newMockKV(), &mockDB{getFn: kvDB}, WithRegistry(h.Registry))
+	svc := NewService(newMockKV(), &mockDB{getFn: ownedKV("acme")}, WithRegistry(h.Registry))
 
 	if _, err := svc.Execute(authedContext("acme"), "testdb", "INSERT INTO widgets (id) VALUES (7)"); err == nil {
 		t.Fatal("the statement's commit lost to a concurrent insert of the same key; the request must fail")

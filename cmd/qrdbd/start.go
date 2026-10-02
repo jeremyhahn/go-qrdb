@@ -1498,7 +1498,6 @@ func runStart(f *startFlags) (err error) {
 				SPIFFETrustDomain:         f.spiffeTrustDomain,
 				MTLSBindingPolicy:         f.mtlsBindingPolicy,
 				PINBackend:                pinBackend,
-				HolderTrustDomain:         qrdbconfig.HolderTrustDomain(f.spiffeTrustDomain, f.clusterTrustDomain),
 				Logger:                    slog.Default(),
 				EmbeddingConfig:           f.embeddingConfig,
 				RAGConfig:                 f.ragConfig,

@@ -81,7 +81,6 @@ func startEnrollmentListenerOn(t *testing.T, base seal.StorageBackend, prepare f
 		t.Fatalf("NewCeremonyService: %v", err)
 	}
 	core.SetCA(testServerCA)
-	core.SetTrustDomain("db.example.com")
 
 	cfg := testConfig(t, true, false)
 	tlsCfg := selfSignedTLSConfig(t)

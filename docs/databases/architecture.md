@@ -816,10 +816,9 @@ policies, rekey and revocation that serve the system and tenant barriers.
   person may also hold a share of the system, tenant or another database's
   barrier, each under its own enrolment.
 - **Holder identity.** Enrolment has the ceremony CA issue the holder's
-  certificate in the holder namespace of the database's tenant,
-  `spiffe://<trust-domain>/tenant/<tenant>/holder/<username>`; the CSR
-  contributes only its public key. The authentication layer refuses a holder
-  identity as a login identity, as for every other scope.
+  certificate as `CN=<username>`, `OU=[<database's tenant>, <profile>]`, with
+  no SAN; the CSR contributes only its public key. A holder certificate
+  authenticates with no roles, as for every other scope.
 - **Lifecycle.** A database is created with `barrier: {enabled: true, mode:
   "shamir", sharesRequired: M, sharesTotal: N}` and no secret. It then has a
   registered, **uninitialized** barrier, reports itself `sealed`, and fails

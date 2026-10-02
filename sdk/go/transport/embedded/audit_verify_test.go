@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -88,7 +89,9 @@ func TestEmbeddedAuditClient_QueryAudit_Success(t *testing.T) {
 	if ac == nil {
 		t.Fatal("expected non-nil AuditClient")
 	}
-	page, err := ac.QueryAudit(context.Background(), transport.AuditFilter{TenantID: "tenant-1"})
+	// An audit query is confined to the caller's own tenant (v0.28.1), so
+	// the caller here is tenant-1 querying its own events.
+	page, err := ac.QueryAudit(tenant.WithTenantID(context.Background(), "tenant-1"), transport.AuditFilter{TenantID: "tenant-1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

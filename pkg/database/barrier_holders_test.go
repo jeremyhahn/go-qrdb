@@ -58,7 +58,7 @@ func newDBHolder(t *testing.T, name string) *dbHolder {
 func holderBarrierManager(t *testing.T, ca *ceremony.LocalCA) *DatabaseBarrierManager {
 	t.Helper()
 	bm := newTestBarrierManager(t)
-	bm.SetHolderDeps(ceremony.HolderDeps{CA: ca, TrustDomain: "db.example.com"})
+	bm.SetHolderDeps(ceremony.HolderDeps{CA: ca})
 	return bm
 }
 

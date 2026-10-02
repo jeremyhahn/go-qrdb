@@ -83,7 +83,7 @@ func newDBHolderServer(t *testing.T) *Server {
 		t.Fatal(err)
 	}
 	ca, _ := ceremonytest.NewCA(t, "Database Holder CA")
-	bm.SetHolderDeps(ceremony.HolderDeps{CA: ca, TrustDomain: "db.example.com"})
+	bm.SetHolderDeps(ceremony.HolderDeps{CA: ca})
 	mgr.SetBarrierManager(bm)
 	cfg := database.DatabaseConfig{
 		Name: "vault", Engine: database.EngineKV, Backend: database.BackendMemory, DataDir: t.TempDir(),

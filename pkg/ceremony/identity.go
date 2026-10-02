@@ -15,10 +15,7 @@
 package ceremony
 
 import (
-	"crypto/x509/pkix"
-	"net/url"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -45,47 +42,6 @@ func validPrincipalName(name string) bool {
 
 // holderProfiles maps a holder role onto its certificate profile.
 var holderProfiles = map[seal.HolderRole]string{
-	seal.RoleSecurityOfficer: "security-officer",
-	seal.RoleCustodian:       "custodian",
-}
-
-// assignedIdentity is the identity the ceremony CA writes into a certificate
-// it issues. The CSR never contributes to it.
-type assignedIdentity struct {
-	subject pkix.Name
-	uris    []*url.URL
-}
-
-// principalIdentity builds the CA-assigned identity for name in tenantID
-// under trustDomain: CN = name, OU = [tenant, profile], and one SPIFFE URI
-// SAN spiffe://<trust-domain>/tenant/<tenant>/<kind>/<name>.
-func principalIdentity(trustDomain, tenantID, kind, name, profile string) (*assignedIdentity, error) {
-	if trustDomain == "" {
-		return nil, ErrTrustDomainNotConfigured
-	}
-	if !validPrincipalName(name) {
-		return nil, &InvalidHolderNameError{Name: name}
-	}
-	id := spiffe.ID{TrustDomain: trustDomain, TenantID: tenantID, Kind: kind, Name: name}
-	if err := id.Validate(); err != nil {
-		return nil, err
-	}
-	u, err := url.Parse(id.String())
-	if err != nil {
-		return nil, err
-	}
-	return &assignedIdentity{
-		subject: pkix.Name{CommonName: name, OrganizationalUnit: []string{tenantID, profile}},
-		uris:    []*url.URL{u},
-	}, nil
-}
-
-// holderIdentity is principalIdentity in the SPIFFE holder namespace, which
-// pkg/auth refuses as a login identity.
-func holderIdentity(trustDomain, tenantID, name string, role seal.HolderRole) (*assignedIdentity, error) {
-	profile, ok := holderProfiles[role]
-	if !ok {
-		return nil, ErrInvalidHolderRole
-	}
-	return principalIdentity(trustDomain, tenantID, spiffe.KindHolder, name, profile)
+	seal.RoleSecurityOfficer: auth.ProfileSecurityOfficer,
+	seal.RoleCustodian:       auth.ProfileCustodian,
 }

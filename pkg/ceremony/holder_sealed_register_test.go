@@ -96,7 +96,7 @@ func sealedRegisterScopes(t *testing.T) map[string]func(t *testing.T, barrier *s
 	t.Helper()
 	ca := testCA(t)
 	factors := testFactors(t)
-	deps := HolderDeps{CA: ca, TrustDomain: testTrustDomain, Factors: factors}
+	deps := HolderDeps{CA: ca, Factors: factors}
 	scoped := func(build func(*seal.StorageBarrier) (*ScopedCeremonyService, error)) func(t *testing.T, barrier *seal.StorageBarrier) holderAuthority {
 		return func(t *testing.T, barrier *seal.StorageBarrier) holderAuthority {
 			svc, err := build(barrier)
@@ -111,7 +111,6 @@ func sealedRegisterScopes(t *testing.T) map[string]func(t *testing.T, barrier *s
 			svc, err := NewCeremonyService(&CeremonyConfig{DataDir: t.TempDir()}, barrier, testLogger())
 			require.NoError(t, err)
 			svc.SetCA(ca)
-			svc.SetTrustDomain(testTrustDomain)
 			svc.SetFactorRegistry(factors)
 			return systemAuthority{svc: svc}
 		},
@@ -209,7 +208,7 @@ func (b failingGetBackend) Get(context.Context, string) ([]byte, error) { return
 func TestRegister_LoadFaultIsNotAFreeName(t *testing.T) {
 	fault := errors.New("storage unavailable")
 	svc, err := NewTenantCeremonyService("acme", failingGetBackend{StorageBackend: seal.NewMemoryBackend(), err: fault},
-		HolderDeps{CA: testCA(t), TrustDomain: testTrustDomain, Factors: testFactors(t)}, testLogger())
+		HolderDeps{CA: testCA(t), Factors: testFactors(t)}, testLogger())
 	require.NoError(t, err)
 	_, err = svc.RegisterOfficer(context.Background(), newHolder(t, "alice", "").request("admin"))
 	require.ErrorIs(t, err, fault)

@@ -69,8 +69,9 @@ Each scope has its own registry (public records behind the barrier), its own
 envelope store and its own pending challenges. The engine:
 
 - **enrols** holders: the CA issues a certificate with a CA-assigned identity
-  (`CN=<username>`, a SPIFFE URI in the holder namespace); the CSR contributes
-  only its public key. Self-enrolment and a second share for the same person
+  (`CN=<username>`, `OU=[<scope tenant>, <profile>]`, no SAN); the CSR
+  contributes only its public key, and a certificate a CA returns that differs
+  is refused. Self-enrolment and a second share for the same person
   (same username, certificate key or envelope key) are refused;
 - **distributes**: as the barrier's `CeremonyDistributor` it prepares the
   roster and HPKE-seals each share to its holder into a `secure.Secret` with a
