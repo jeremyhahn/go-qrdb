@@ -624,3 +624,39 @@ func allZeroBytes(b []byte) bool {
 	}
 	return true
 }
+
+// TestNamespacedBackend_GuardedVerbsStayInTheNamespace: compare-and-delete
+// and compare-and-swap act on the namespaced key only, answer false on a
+// stale expectation, and a base with no guarded swap is refused rather than
+// degraded to a read followed by a write.
+func TestNamespacedBackend_GuardedVerbsStayInTheNamespace(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryBackend()
+	if err := base.Put(ctx, "other/k", []byte("v")); err != nil {
+		t.Fatal(err)
+	}
+	ns := NewNamespacedBackend("ns/", base)
+	if err := ns.Put(ctx, "k", []byte("v")); err != nil {
+		t.Fatal(err)
+	}
+	if swapped, err := ns.CompareAndSwap(ctx, "k", []byte("stale"), []byte("x")); swapped || err != nil {
+		t.Fatalf("stale swap = %v, %v", swapped, err)
+	}
+	if swapped, err := ns.CompareAndSwap(ctx, "k", []byte("v"), []byte("w")); !swapped || err != nil {
+		t.Fatalf("swap = %v, %v", swapped, err)
+	}
+	if got, _ := base.Get(ctx, "ns/k"); string(got) != "w" {
+		t.Fatalf("namespaced value after swap = %q", got)
+	}
+	if deleted, err := ns.CompareAndDelete(ctx, "k", []byte("w")); !deleted || err != nil {
+		t.Fatalf("delete = %v, %v", deleted, err)
+	}
+	if got, _ := base.Get(ctx, "other/k"); string(got) != "v" {
+		t.Fatalf("a key outside the namespace changed: %q", got)
+	}
+
+	plain := NewNamespacedBackend("ns/", unfencedMemory{NewMemoryBackend()})
+	if swapped, err := plain.CompareAndSwap(ctx, "k", []byte("v"), []byte("w")); swapped || !errors.Is(err, ErrGuardedSwapUnsupported) {
+		t.Fatalf("swap over a base without guarded swap = %v, %v", swapped, err)
+	}
+}

@@ -553,3 +553,22 @@ func TestAdmission(t *testing.T) {
 		r()
 	}
 }
+
+// TestRESTAllowlistDeduplicatesExtra: a RESTExtra path that a verb's REST
+// paths already admit appears once, at its first derivation. No verb shares a
+// path today, so the duplicate is staged in RESTExtra and restored after.
+func TestRESTAllowlistDeduplicatesExtra(t *testing.T) {
+	saved := sealedwindow.RESTExtra
+	t.Cleanup(func() { sealedwindow.RESTExtra = saved })
+	sealedwindow.RESTExtra = append(append([]string(nil), saved...), "/v1/barrier/status")
+
+	n := 0
+	for _, p := range sealedwindow.RESTAllowlist() {
+		if p == "/v1/barrier/status" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("/v1/barrier/status appears %d times, want once", n)
+	}
+}

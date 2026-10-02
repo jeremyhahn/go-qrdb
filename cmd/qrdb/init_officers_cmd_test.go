@@ -23,6 +23,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -51,12 +52,21 @@ func (m *capturingCeremonyService) CeremonyInitialize(_ context.Context, _ cerem
 	if m.err != nil {
 		return nil, m.err
 	}
+	// The real service issues one certificate per enrolled holder, in
+	// request order.
+	var holders []service.CeremonyHolderCert
+	if opts != nil {
+		for _, o := range opts.Officers {
+			holders = append(holders, service.CeremonyHolderCert{Username: o.Username, Role: o.Role, CertPEM: []byte("---CERT " + o.Username + "---")})
+		}
+	}
 	return &service.CeremonyInitResult{
 		SPKIPin:    "abc123",
 		CACertPEM:  []byte("---CA---"),
 		TLSCertPEM: []byte("---TLS---"),
 		State:      "initialized",
 		ShareCount: 3,
+		Holders:    holders,
 	}, nil
 }
 
@@ -205,6 +215,29 @@ func TestInitCmd_ShamirWithOfficers_Success(t *testing.T) {
 	}
 	if svc.gotOpts.Threshold != 2 {
 		t.Errorf("expected threshold 2 forwarded, got %d", svc.gotOpts.Threshold)
+	}
+	for _, want := range []string{"Holder:      alice (so)", "---CERT alice---", "Holder:      bob (custodian)", "---CERT bob---"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("init output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestInitCmd_CustodiansFlagMalformed_LocalError proves a malformed
+// --custodians entry fails before any call, like a malformed --officers one.
+func TestInitCmd_CustodiansFlagMalformed_LocalError(t *testing.T) {
+	svc := &capturingCeremonyService{}
+	root := newTestRootCmdInitOfficers(svc)
+	_, err := executeCommand(root, "init",
+		"--so-pin", "sopin", "--user-pin", "userpin",
+		"--custodians", "not-a-valid-entry",
+	)
+	var invalid *InvalidArgError
+	if !errors.As(err, &invalid) || invalid.Arg != "--custodians" {
+		t.Fatalf("err = %v, want an InvalidArgError on --custodians", err)
+	}
+	if svc.gotOpts != nil {
+		t.Error("CeremonyInitialize should not have been called for a local validation failure")
 	}
 }
 

@@ -341,3 +341,14 @@ func TestNilSealStoreError_Error(t *testing.T) {
 		t.Errorf("unexpected message: %q", msg)
 	}
 }
+
+func TestDEKServiceError_ErrorAndUnwrap(t *testing.T) {
+	inner := errors.New("keyring unavailable")
+	err := &lifecycle.DEKServiceError{Err: inner}
+	if !strings.Contains(err.Error(), "tenant DEK service") || !strings.Contains(err.Error(), inner.Error()) {
+		t.Errorf("unexpected message: %q", err.Error())
+	}
+	if !errors.Is(err, inner) {
+		t.Error("Unwrap did not return inner error")
+	}
+}

@@ -561,3 +561,106 @@ func mustHexNonce(t *testing.T, nonceHex string) []byte {
 	}
 	return nonce
 }
+
+// TestHolderCLI_EveryVerbRefusesABadDomain: each system holder verb resolves
+// its target from --domain first, so an unknown domain is refused locally by
+// every verb, before any file is read or any call is made.
+func TestHolderCLI_EveryVerbRefusesABadDomain(t *testing.T) {
+	stack := newCLIHolderStack(t, 2, 3)
+	root := func() *cobra.Command {
+		return newTestRootCmdWithOpts(newMockKVService(), newMockAdminService(), embedded.WithBarrierService(stack.svc))
+	}
+	for _, verb := range [][]string{
+		{"officer", "register", "--username", "u", "--csr-file", "x"},
+		{"officer", "claim", "--username", "u", "--key", "x", "--out", "x"},
+		{"officer", "claim-begin", "--username", "u"},
+		{"officer", "claim-complete", "--username", "u", "--nonce-hex", "ab", "--sig-file", "x", "--out", "x"},
+		{"officer", "revoke", "--username", "u", "--threshold", "2"},
+		{"rekey", "--threshold", "2"},
+		{"quorum", "begin", "--op", "unseal", "--username", "u"},
+		{"quorum", "submit", "--op", "unseal", "--username", "u", "--envelope", "x"},
+	} {
+		args := append(append([]string{"barrier"}, verb...), "--domain", "bogus")
+		var invalid *InvalidArgError
+		if _, err := runCLI(root(), context.Background(), args...); !errors.As(err, &invalid) || invalid.Arg != "--domain" {
+			t.Errorf("qrdb %s = %v, want an InvalidArgError on --domain", strings.Join(args, " "), err)
+		}
+	}
+}
+
+// TestHolderCLI_ServerRefusalsReachTheCaller: what the barrier refuses --
+// a duplicate enrolment, a claim by a name never enrolled, a quorum, rekey or
+// revocation before custody is initialized, a submission whose challenge
+// cannot be issued and an envelope that does not parse -- comes back from
+// every verb as an error, never as output.
+func TestHolderCLI_ServerRefusalsReachTheCaller(t *testing.T) {
+	stack := newCLIHolderStack(t, 2, 3)
+	root := func() *cobra.Command {
+		return newTestRootCmdWithOpts(newMockKVService(), newMockAdminService(),
+			embedded.WithBarrierService(stack.svc), embedded.WithPINBackend(pintest.NewBackend(t)))
+	}
+	alice := newCLIHolder(t, "alice", transport.RoleSecurityOfficer, false, false)
+	out := mustCLI(t, context.Background(), root, append([]string{"--output", "json", "barrier", "officer", "register"}, alice.registerArgs()...)...)
+	var resp transport.OfficerRegisterResponse
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if alice.cert, _ = mtls.ParseCertificatePEM([]byte(resp.CertPEM)); alice.cert == nil {
+		t.Fatal("alice's certificate did not parse")
+	}
+	sig := alice.write(t, "sig.bin", []byte("sig"))
+	response := alice.write(t, "response.bin", []byte("response"))
+
+	for name, tc := range map[string]struct {
+		ctx  context.Context
+		args []string
+	}{
+		"duplicate enrolment":   {context.Background(), append([]string{"barrier", "officer", "register"}, alice.registerArgs()...)},
+		"claim of a stranger":   {alice.ctx(), []string{"barrier", "officer", "claim", "--username", "mallory", "--key", alice.keyFile, "--out", alice.envFile}},
+		"begin by a stranger":   {alice.ctx(), []string{"barrier", "officer", "claim-begin", "--username", "mallory"}},
+		"complete by stranger":  {alice.ctx(), []string{"barrier", "officer", "claim-complete", "--username", "mallory", "--nonce-hex", "ab", "--sig-file", sig, "--out", alice.envFile}},
+		"quorum before custody": {context.Background(), []string{"barrier", "quorum", "begin", "--op", "unseal", "--username", "alice"}},
+		"rekey before custody":  {context.Background(), []string{"barrier", "rekey", "--threshold", "2", "--so-pin", cliSOPIN}},
+		"revoke before custody": {context.Background(), []string{"barrier", "officer", "revoke", "--username", "alice", "--threshold", "2", "--so-pin", cliSOPIN}},
+		"submit, no challenge":  {context.Background(), []string{"barrier", "quorum", "submit", "--op", "unseal", "--username", "alice", "--envelope", alice.csrFile, "--key", alice.keyFile}},
+		"submit, bad envelope": {context.Background(), []string{"barrier", "quorum", "submit", "--op", "unseal", "--username", "alice", "--envelope", alice.csrFile,
+			"--challenge-id", "c1", "--factor", cliFIDO, "--response-file", response}},
+	} {
+		if out, err := runCLI(root(), tc.ctx, tc.args...); err == nil {
+			t.Errorf("%s: answered %q, want a refusal", name, out)
+		}
+	}
+}
+
+// TestHolderCLI_RecoveryDomain: --domain recovery routes enrolment and both
+// claim halves to the recovery holders, and the claim message the CLI prints
+// for an external signer is bound to the recovery scope's label, not the
+// unseal domain's.
+func TestHolderCLI_RecoveryDomain(t *testing.T) {
+	stack := newCLIHolderStack(t, 2, 3)
+	root := func() *cobra.Command {
+		return newTestRootCmdWithOpts(newMockKVService(), newMockAdminService(), embedded.WithBarrierService(stack.svc))
+	}
+	if got := (systemHolders{domain: transport.DomainRecovery}).claimLabel(); got != ceremony.ScopeRecovery.ClaimLabel() || got == ceremony.ScopeSystem.ClaimLabel() {
+		t.Fatalf("recovery claim label = %q", got)
+	}
+	rita := newCLIHolder(t, "rita", transport.RoleCustodian, false, false)
+	out := mustCLI(t, context.Background(), root, append([]string{"--output", "json", "barrier", "officer", "register", "--domain", "recovery"}, rita.registerArgs()...)...)
+	var resp transport.OfficerRegisterResponse
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatalf("recovery register %q: %v", out, err)
+	}
+	if rita.cert, _ = mtls.ParseCertificatePEM([]byte(resp.CertPEM)); rita.cert == nil {
+		t.Fatal("rita's certificate did not parse")
+	}
+	// Before custody is initialized there is no share to claim: both halves
+	// reach the recovery service, and it refuses.
+	if _, err := runCLI(root(), rita.ctx(), "barrier", "officer", "claim-begin", "--domain", "recovery", "--username", "rita"); err == nil {
+		t.Fatal("a recovery claim before custody was answered")
+	}
+	sig := rita.write(t, "sig.bin", []byte("sig"))
+	if _, err := runCLI(root(), rita.ctx(), "barrier", "officer", "claim-complete", "--domain", "recovery", "--username", "rita",
+		"--nonce-hex", "ab", "--sig-file", sig, "--out", rita.envFile); err == nil {
+		t.Fatal("a recovery claim completion before custody was answered")
+	}
+}

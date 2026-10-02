@@ -94,3 +94,23 @@ func TestBuildSealServicesOnly_WiresHolderDeps(t *testing.T) {
 		t.Errorf("AuthorizeSOPIN through the built ceremony = %v, want pin.ErrPINNotSet from the wired backend", err)
 	}
 }
+
+// existsFaultStore is a seal store whose existence probe fails.
+type existsFaultStore struct {
+	seal.StorageBackend
+	fault error
+}
+
+func (s existsFaultStore) Exists(context.Context, string) (bool, error) { return false, s.fault }
+
+// TestNewSealStorePINBackend_StoreFaultIsNotAMissingPIN: a seal store that
+// cannot answer whether a PIN record exists fails the backend's construction
+// with its own error -- it is never read as "no PIN set", which would let the
+// next initialization provision a fresh SO PIN over the unreadable one.
+func TestNewSealStorePINBackend_StoreFaultIsNotAMissingPIN(t *testing.T) {
+	fault := errors.New("seal store unavailable")
+	b, err := lifecycle.NewSealStorePINBackend(existsFaultStore{StorageBackend: seal.NewMemoryBackend(), fault: fault})
+	if !errors.Is(err, fault) || b != nil {
+		t.Fatalf("NewSealStorePINBackend over a failing store = %v, %v; want the store's fault", b, err)
+	}
+}

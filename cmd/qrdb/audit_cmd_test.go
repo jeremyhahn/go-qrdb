@@ -394,3 +394,52 @@ func TestAuditVerify_NoLoggerConfigured(t *testing.T) {
 		t.Fatal("expected error when no audit logger is configured")
 	}
 }
+
+// TestAuditVerify_YAML renders the verdict as YAML.
+func TestAuditVerify_YAML(t *testing.T) {
+	logger := &mockVerifyingAuditLogger{
+		verifyFn: func(_ context.Context) (*audit.ChainVerification, error) {
+			return &audit.ChainVerification{Files: 1, Records: 4, Genesis: true}, nil
+		},
+	}
+	oldFormat := outputFormat
+	outputFormat = "yaml"
+	t.Cleanup(func() { outputFormat = oldFormat })
+
+	output, err := executeAuditCmd(t, logger, "verify")
+	if err != nil {
+		t.Fatalf("audit verify yaml error: %v", err)
+	}
+	if !strings.Contains(output, "verified: true") || !strings.Contains(output, "records: 4") {
+		t.Fatalf("yaml output = %q", output)
+	}
+}
+
+// TestPrintAuditVerifyResult_EveryField: the table names the reason, the
+// file order, the seed and the handoff when the verdict carries them, and
+// omits each line when it does not.
+func TestPrintAuditVerifyResult_EveryField(t *testing.T) {
+	oldWriter := outputWriter
+	t.Cleanup(func() { outputWriter = oldWriter })
+
+	var full bytes.Buffer
+	outputWriter = &full
+	printAuditVerifyResult(&transport.AuditVerifyResult{
+		Reason: "hash mismatch at record 2", Files: 2, Records: 7,
+		Order: []string{"a.ndjson", "b.ndjson"}, Seed: "5eed", Handoff: "cafe",
+	})
+	for _, want := range []string{"Verified: false", "Reason: hash mismatch at record 2", "Order: a.ndjson, b.ndjson", "Seed: 5eed", "Handoff: cafe"} {
+		if !strings.Contains(full.String(), want) {
+			t.Errorf("output missing %q: %q", want, full.String())
+		}
+	}
+
+	var bare bytes.Buffer
+	outputWriter = &bare
+	printAuditVerifyResult(&transport.AuditVerifyResult{Verified: true})
+	for _, absent := range []string{"Reason:", "Order:", "Seed:", "Handoff:"} {
+		if strings.Contains(bare.String(), absent) {
+			t.Errorf("an empty field printed %q: %q", absent, bare.String())
+		}
+	}
+}

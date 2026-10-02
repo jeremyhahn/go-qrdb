@@ -59,3 +59,63 @@ func TestDecoySeed_Refusals(t *testing.T) {
 		t.Fatalf("corrupt seed = %v", err)
 	}
 }
+
+// racingSeedStore is a barrier base whose seed creation can lose a race:
+// when racer is set, another process's seed lands just before this one's
+// PutIfAbsent, which then finds the path taken. getErrs fail the reads in
+// order (a nil entry lets that read through); putErr fails the create.
+type racingSeedStore struct {
+	StorageBackend
+	racer   []byte
+	getErrs []error
+	putErr  error
+}
+
+func (s *racingSeedStore) Get(ctx context.Context, key string) ([]byte, error) {
+	if len(s.getErrs) > 0 {
+		err := s.getErrs[0]
+		s.getErrs = s.getErrs[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
+	return s.StorageBackend.Get(ctx, key)
+}
+
+func (s *racingSeedStore) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	if s.putErr != nil {
+		return false, s.putErr
+	}
+	if s.racer != nil {
+		if _, err := s.StorageBackend.PutIfAbsent(ctx, key, s.racer); err != nil {
+			return false, err
+		}
+	}
+	return s.StorageBackend.PutIfAbsent(ctx, key, value)
+}
+
+// TestDecoySeed_RaceAndStoreFaults: a process that loses the creation race
+// adopts the winner's seed; a read that fails for any reason but "absent",
+// a create that fails, and a failed read-back after a lost race are returned,
+// never answered with a seed of this process's own.
+func TestDecoySeed_RaceAndStoreFaults(t *testing.T) {
+	ctx := context.Background()
+	winner := bytes.Repeat([]byte{7}, decoySeedSize)
+	lost := &racingSeedStore{StorageBackend: NewMemoryBackend(), racer: winner}
+	b := &StorageBarrier{base: lost, config: BarrierConfig{RootKeyPath: "root-key"}}
+	if seed, err := b.DecoySeed(ctx, DomainUnseal); err != nil || !bytes.Equal(seed, winner) {
+		t.Fatalf("after a lost race = %x, %v; want the winner's seed", seed, err)
+	}
+
+	fault := errors.New("store down")
+	for name, store := range map[string]*racingSeedStore{
+		"read fails":           {StorageBackend: NewMemoryBackend(), getErrs: []error{fault}},
+		"create fails":         {StorageBackend: NewMemoryBackend(), putErr: fault},
+		"read-back after race": {StorageBackend: NewMemoryBackend(), racer: winner, getErrs: []error{nil, fault}},
+	} {
+		b := &StorageBarrier{base: store, config: BarrierConfig{RootKeyPath: "root-key"}}
+		if seed, err := b.DecoySeed(ctx, DomainUnseal); !errors.Is(err, fault) || seed != nil {
+			t.Errorf("%s: DecoySeed = %x, %v; want the store's fault", name, seed, err)
+		}
+	}
+}

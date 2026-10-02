@@ -214,3 +214,23 @@ func TestHolderErrors_Messages(t *testing.T) {
 		t.Fatal("HolderAuthenticationError's message varies with the holder or reason")
 	}
 }
+
+// TestQuorumOpCount_PerDomain: every valid domain serves at least one
+// operation, the unseal domain more than the recovery domain, and an unknown
+// domain none.
+func TestQuorumOpCount_PerDomain(t *testing.T) {
+	unseal, recovery := QuorumOpCount(DomainUnseal), QuorumOpCount(DomainRecovery)
+	if unseal == 0 || recovery == 0 || unseal <= recovery {
+		t.Fatalf("op counts: unseal %d, recovery %d", unseal, recovery)
+	}
+	if n := QuorumOpCount(QuorumDomain("nope")); n != 0 {
+		t.Fatalf("an unknown domain serves %d operations", n)
+	}
+}
+
+// TestStaleRosterError_NamesTheDomain describes the refusal by its domain.
+func TestStaleRosterError_NamesTheDomain(t *testing.T) {
+	if msg := (&StaleRosterError{Domain: DomainRecovery}).Error(); msg != "qrdb/seal: the recovery roster changed while the request was prepared; retry" {
+		t.Fatalf("StaleRosterError = %q", msg)
+	}
+}
