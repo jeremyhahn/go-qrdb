@@ -11,6 +11,14 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.27.0-alpha] - 2026-10-02
+
+Standalone parity (#582) and durable leases. Highlights:
+
+- **Standalone mode serves watch, leases, locks and MVCC** with the same API and semantics as raft mode, through the same engine and the same tenant/database scoping, on all six transports and the SDK. File and objstore backends serve watch and plain transactions; MVCC, leases, locks and revision compares are refused with a typed error there.
+- **Leases are durable in both modes.** Lease records and the ID sequence are written in the same apply batch. They are rebuilt on open and snapshot restore, and every recovered lease gets one full TTL. This fixes raft-mode bugs where a restart left leased keys (including lock records) stuck forever, reused lease IDs, and diverged replicas.
+- A put naming an unknown lease is refused at apply. A re-put moves a key to its new lease. Keys with a leading `0x00` byte are reserved and refused.
+
 ### Added
 
 - **Standalone mode serves watch, lease, lock and MVCC.** A standalone node (the
