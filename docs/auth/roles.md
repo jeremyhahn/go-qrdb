@@ -122,8 +122,10 @@ The holder role (`custodian` or `so`) is recorded in the holder roster at
 enrolment, by an Admin or a Security Officer (never by the holder), in the
 initialization ceremony or with `barrier officer register --role custodian`.
 
-**Authentication:** a CA-issued holder certificate in the SPIFFE holder
-namespace, plus the holder's enrolled factors: `mtls` (possession of the
+**Authentication:** a CA-issued holder certificate --
+`CN=<username>`, `OU=[<tenant>, <profile>]` with a holder profile
+(`security-officer` or `custodian`), no SAN -- which authenticates with no
+roles and is refused every RBAC permission, plus the holder's enrolled factors: `mtls` (possession of the
 certificate key) and any factor the composer registered through
 `WithFactorRegistry` (FIDO2, PIV, PKCS#11 — go-xkms implementations). Every
 share submission carries a factor proof checked against the holder roster.

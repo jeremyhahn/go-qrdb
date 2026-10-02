@@ -29,7 +29,7 @@ import (
 )
 
 // TestDatabaseCeremony_HolderLifecycle drives a database barrier's holders
-// through the one holder engine: enrolment in the tenant's holder namespace,
+// through the one holder engine: enrolment as holders of the database's tenant,
 // distribution, claim, and a quorum seal and unseal.
 func TestDatabaseCeremony_HolderLifecycle(t *testing.T) {
 	ctx := context.Background()

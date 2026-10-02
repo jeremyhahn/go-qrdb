@@ -72,9 +72,8 @@ type TenantServiceOption = tenant.TenantServiceOption
 // pkg/tenant.WithStrategyRegistry.)
 var WithTenantStrategyRegistry = tenant.WithStrategyRegistry
 
-// WithTenantHolderDeps injects the share-holder dependencies (the ceremony CA,
-// the holder trust domain and the factor registry) per-tenant ceremonies are
-// built with. (Aliases pkg/tenant.WithTenantHolderDeps.)
+// WithTenantHolderDeps injects the share-holder dependencies (the ceremony CA
+// and the factor registry) per-tenant ceremonies are built with. (Aliases pkg/tenant.WithTenantHolderDeps.)
 var WithTenantHolderDeps = tenant.WithTenantHolderDeps
 
 // WithTenantDefaultQuotas injects the operator-configured default quotas applied

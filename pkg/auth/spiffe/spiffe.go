@@ -45,7 +45,7 @@ var (
 	ErrTenantEmpty = errors.New("spiffe: tenant id must not be empty")
 
 	// ErrKindInvalid indicates an unsupported workload kind was parsed.
-	ErrKindInvalid = errors.New("spiffe: kind must be user, svc or holder")
+	ErrKindInvalid = errors.New("spiffe: kind must be user or svc")
 
 	// ErrNameEmpty indicates an empty workload name was parsed.
 	ErrNameEmpty = errors.New("spiffe: name must not be empty")
@@ -86,11 +86,6 @@ const (
 	// KindService identifies a non-human service/workload identity.
 	KindService = "svc"
 
-	// KindHolder identifies a Shamir share holder. It is a namespace of its
-	// own so a holder certificate can never be read as a login identity:
-	// pkg/auth marks it and RBAC refuses every permission to it.
-	KindHolder = "holder"
-
 	scheme = "spiffe"
 )
 
@@ -110,7 +105,7 @@ func (id ID) Validate() error {
 	if strings.TrimSpace(id.TenantID) == "" {
 		return ErrTenantEmpty
 	}
-	if id.Kind != KindUser && id.Kind != KindService && id.Kind != KindHolder {
+	if id.Kind != KindUser && id.Kind != KindService {
 		return ErrKindInvalid
 	}
 	if strings.TrimSpace(id.Name) == "" {

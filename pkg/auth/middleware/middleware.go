@@ -392,28 +392,25 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 	// behind it cannot reach the authorizer.
 	identity.RoleBindings = nil
 	identity.Attributes = nil
-	// A share holder is not an account: it has no user record, no roles and
-	// no cert binding to check, and RBAC refuses it everything. Looking it up
-	// could only ever enrich it with the roles of an unrelated account that
-	// happens to share its name.
-	if identity.IsShareHolder() {
+	// A holder certificate -- an officer's or custodian's, signed by the
+	// ceremony CA (auth.IsHolderIdentity) -- proves who holds a share; it is
+	// never a user login. It has no user record, no roles and no cert binding
+	// to check, and RBAC refuses it everything, so it is not resolved against
+	// the user store at all: a lookup could only ever enrich it with the roles
+	// of an unrelated account that happens to share its name ("admin"). It
+	// reaches only the identity-gated ceremony surface, whose handlers bind it
+	// by thumbprint. Like any certificate login no account resolves, it is
+	// still held to the "required" binding posture.
+	if auth.IsHolderIdentity(identity) {
+		identity.Roles = nil
+		if rerr := checkUnresolvedCertLogin(ctx, identity, method, m.bindingPolicy); rerr != nil {
+			return ctx, nil, rerr
+		}
 		ctx = auth.WithIdentity(ctx, identity)
 		return tenant.WithTenantID(ctx, identity.TenantID), identity, nil
 	}
 
-	// A holder certificate -- an officer's or custodian's, signed by the
-	// ceremony CA -- proves who holds a share; it is never a user login. It
-	// is not resolved against the user store at all, so it carries no roles
-	// and reaches only the identity-gated ceremony surface, whose handlers
-	// bind it by thumbprint. Without this, a holder registered under a user's
-	// name ("admin") would authenticate as that user wherever the account
-	// has no enrolled certificate binding.
-	holder := auth.IsHolderIdentity(identity)
-	if holder {
-		identity.Roles = nil
-	}
-
-	if m.users != nil && !holder {
+	if m.users != nil {
 		u, err := m.lookupUser(ctx, identity.TenantID, identity.Subject)
 		if err != nil {
 			// A dedicated-isolation tenant whose barrier is sealed (or not

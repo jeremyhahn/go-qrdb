@@ -677,11 +677,12 @@ func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 		return auth.ErrUnauthenticated
 	}
 
-	// A share-holder certificate is a custody credential, not a login: it
-	// reaches only the identity-gated share endpoints, which never come
-	// here, and is refused every RBAC permission — even if an account with
-	// the same name holds roles.
-	if identity.IsShareHolder() {
+	// A holder certificate (auth.IsHolderIdentity: an officer's or
+	// custodian's, marked by its profile OU) is a custody credential, not a
+	// login: it reaches only the identity-gated share endpoints, which never
+	// come here, and is refused every RBAC permission -- even if it carries
+	// roles, or an account with the same name holds them.
+	if auth.IsHolderIdentity(identity) {
 		return &PermissionDeniedError{
 			Resource: resource,
 			Action:   action,

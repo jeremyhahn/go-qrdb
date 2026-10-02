@@ -21,6 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -33,7 +34,7 @@ func systemHolderCtx() context.Context {
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{
 		Subject:  "sys-holder",
 		TenantID: tenantid.System,
-		Metadata: map[string]string{auth.MetaPrincipalKind: auth.PrincipalShareHolder},
+		Metadata: map[string]string{auth.HolderProfileMetadataKey: holderprofile.SecurityOfficer},
 	})
 	return tenant.WithTenantID(ctx, tenantid.System)
 }

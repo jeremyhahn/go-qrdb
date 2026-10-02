@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -1588,9 +1589,10 @@ func (m *mockRoleService) ReconcileBuiltInRoles(_ context.Context, tenantID stri
 	return &role.ReconcileReport{TenantID: tenantID}, nil
 }
 
-// TestAuthorize_ShareHolderRefusedEverything pins ruling 8: an identity in
-// the SPIFFE holder namespace is refused every RBAC permission, whatever
-// roles a same-named account might carry.
+// TestAuthorize_ShareHolderRefusedEverything pins ruling 8: an identity that
+// authenticated with a holder certificate (the holder_profile mark the mTLS
+// authenticator sets from the profile OU) is refused every RBAC permission,
+// whatever roles it carries or a same-named account might carry.
 func TestAuthorize_ShareHolderRefusedEverything(t *testing.T) {
 	svc := newMockRoleService(map[string][]permission.Permission{
 		"admin-role": {permission.KVPut, permission.SealUnseal, permission.SealOfficerRegister},
@@ -1600,7 +1602,7 @@ func TestAuthorize_ShareHolderRefusedEverything(t *testing.T) {
 		Subject:  "carol",
 		TenantID: "tenant-1",
 		Roles:    []string{"admin-role"},
-		Metadata: map[string]string{auth.MetaPrincipalKind: auth.PrincipalShareHolder},
+		Metadata: map[string]string{auth.HolderProfileMetadataKey: holderprofile.Custodian},
 	}
 	for _, rc := range []struct{ resource, action string }{{"kv", "put"}, {"seal", "unseal"}, {"seal", "officer_register"}} {
 		if err := authz.Authorize(ctxFor("tenant-1"), holder, rc.resource, rc.action); err == nil {

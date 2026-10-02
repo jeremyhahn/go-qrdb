@@ -45,7 +45,7 @@ func (e *ShamirSecretNotAllowedError) Error() string {
 
 // ShamirCustodyNotConfiguredError is returned when a database's barrier is
 // a Shamir barrier but the node has no holder authority to give it: no
-// ceremony CA or trust domain is wired (SetHolderDeps).
+// ceremony CA is wired (SetHolderDeps).
 type ShamirCustodyNotConfiguredError struct {
 	Name string
 }
@@ -74,8 +74,7 @@ func (e *NotShamirBarrierError) Error() string {
 }
 
 // SetHolderDeps gives the manager what a Shamir database barrier's holder
-// authority needs: the ceremony CA, the holder trust domain and the factor
-// registry. Without it a Shamir database barrier cannot be created or
+// authority needs: the ceremony CA and the factor registry. Without it a Shamir database barrier cannot be created or
 // reopened.
 func (m *DatabaseBarrierManager) SetHolderDeps(deps ceremony.HolderDeps) {
 	m.holderMu.Lock()

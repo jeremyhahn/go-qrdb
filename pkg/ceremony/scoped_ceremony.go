@@ -54,7 +54,7 @@ func NewTenantCeremonyService(tenantID string, backend seal.StorageBackend, deps
 
 // NewDatabaseCeremonyService constructs the holder authority for the
 // database barrier of database in tenantID. Its holders are issued
-// certificates in the tenant's holder namespace; their records live in
+// certificates in the database's tenant (OU=[tenant, profile]); their records live in
 // backend, the database barrier's own storage.
 func NewDatabaseCeremonyService(tenantID, database string, backend seal.StorageBackend, deps HolderDeps, logger *slog.Logger) (*ScopedCeremonyService, error) {
 	if tenantID == "" {

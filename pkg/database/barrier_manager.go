@@ -72,7 +72,7 @@ func NewDatabaseBarrierManager(logger *slog.Logger, system *seal.StorageBarrier)
 // A shamir barrier is registered but not initialized: it takes no
 // credentials, and its share holders are enrolled and its custody
 // initialized afterwards (InitializeShamir). tenantID is the database's
-// tenant, in whose holder namespace its holders' certificates are issued.
+// tenant, in which its holders' certificates are issued.
 func (m *DatabaseBarrierManager) EnsureBarrier(
 	ctx context.Context,
 	dbName, tenantID string,

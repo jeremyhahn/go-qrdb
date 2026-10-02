@@ -487,7 +487,7 @@ func (n *Node) sealedWindowCeremonyCore() *ceremony.CeremonyService {
 }
 
 // withHolderInfra fills infra's share-holder dependencies: the PIN backend,
-// the holder trust domain, and the caller's factor registry and ceremony CA.
+// and the caller's factor registry and ceremony CA.
 // Without the CA the ceremony service cannot issue a holder certificate, so
 // no share holder could be enrolled on an SDK-built node.
 func (n *Node) withHolderInfra(infra lifecycle.Infra, cfg *qrdbconfig.Config, serverOpts []server.ServerOption) lifecycle.Infra {
