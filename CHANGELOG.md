@@ -11,6 +11,15 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.29.0-alpha] - 2026-10-02
+
+Holder-certificate hardening, following the v0.28.1 security hotfix. This release contains BREAKING changes; see the entries below. Highlights:
+
+- **The holder mark survives leader forwarding.** A forwarded officer or custodian request is still recognised as a holder by the leader, and gets no roles. A holder request is never forwarded unsigned (502).
+- **A holder certificate that can sign certificates is refused.** A CA certificate, cert-sign key usage, or any key usage or EKU set other than the one requested is refused on every holder entry point, whatever CA is composed in.
+- **The CeremonyCA signing contract is stated as a MUST:** sign with `SignCSROptions.RawSubject()`, take nothing from the CSR but its key, and issue a leaf with exactly the requested usages.
+- **`custodian` and `security-officer` are reserved tenant ids.** Holder profile names move to the new leaf package `pkg/holderprofile`.
+
 ### Security
 
 - **A holder certificate stays a holder when its request is forwarded to the
