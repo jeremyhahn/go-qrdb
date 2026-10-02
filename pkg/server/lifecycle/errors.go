@@ -145,28 +145,6 @@ func (e *TenantServiceError) Unwrap() error {
 	return e.Err
 }
 
-// ClusterCAProviderError is returned when the cluster CA (Key A) provider
-// cannot be constructed: either adopting in-memory bootstrap material into
-// the replicated store failed, or the store already holds nothing and the
-// caller held no in-memory key to adopt (see
-// cakey.SoftwareProvider.AdoptIfAbsent). It is fatal by design: a node that
-// proceeded with CertProv wired but no confirmed, durable cluster CA would
-// be able to issue tenant logins while its own cluster identity was never
-// made durable.
-type ClusterCAProviderError struct {
-	Err error
-}
-
-// Error returns a human-readable description.
-func (e *ClusterCAProviderError) Error() string {
-	return "lifecycle: cluster CA provider construction failed: " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *ClusterCAProviderError) Unwrap() error {
-	return e.Err
-}
-
 // UserServiceError is returned when the user store fails to initialize.
 type UserServiceError struct {
 	Err error
