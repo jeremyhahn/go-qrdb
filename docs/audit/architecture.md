@@ -307,10 +307,16 @@ client — confines the filter to the **caller's own tenant**
 
 **The rule has no exception for the system tenant.** An identity in the system
 tenant holding `audit:query` reads the system tenant's events and the
-**platform events** — those that carry no tenant at all, such as custodian and
-ceremony steps and the node's own inspection opt-out. It is refused every other
-tenant's events, exactly as a tenant Admin is refused the system tenant's and
-its neighbours'.
+**platform events** — those that carry no tenant at all, such as the node's own
+inspection opt-out, and a custodian revocation or
+unseal-share submission naming a custodian that does not exist. It is refused
+every other tenant's events, exactly as a tenant Admin is refused the system
+tenant's and its neighbours'.
+
+**An event of a tenant-scoped flow names its tenant.** A custodian's
+registration and revocation (refusals included) and its share-claim and
+unseal-share steps carry the custodian's tenant, so that tenant's auditors read
+them and nobody else's do.
 
 **Nothing else in the filter can widen it.** The tenant match is applied to
 every event before the page is cut, so the time range, the actor, resource,

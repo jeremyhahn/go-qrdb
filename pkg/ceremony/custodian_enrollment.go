@@ -397,6 +397,7 @@ func (s *CeremonyService) ClaimShareChallenge(ctx context.Context, custodianID s
 
 	if ext.AuditLogger != nil {
 		audit.EmitBestEffort(ctx, ext.AuditLogger, "ceremony", audit.AuditEvent{
+			TenantID: c.TenantID,
 			Resource: "barrier",
 			Action:   "unseal-share-claim-begin",
 			Outcome:  audit.OutcomeSuccess,
@@ -444,6 +445,7 @@ func (s *CeremonyService) VerifyClaimAndDeliver(
 	if c.ShareClaimed {
 		if ext.AuditLogger != nil {
 			audit.EmitBestEffort(ctx, ext.AuditLogger, "ceremony", audit.AuditEvent{
+				TenantID:   c.TenantID,
 				Resource:   "barrier",
 				Action:     "unseal-share-claim-complete",
 				Outcome:    audit.OutcomeFailure + ":already-delivered",
@@ -474,6 +476,7 @@ func (s *CeremonyService) VerifyClaimAndDeliver(
 	if err := ext.FactorVerifier.VerifyFactor(ctx, string(c.Method), factorChallengeID, response); err != nil {
 		if ext.AuditLogger != nil {
 			audit.EmitBestEffort(ctx, ext.AuditLogger, "ceremony", audit.AuditEvent{
+				TenantID: c.TenantID,
 				Resource: "barrier",
 				Action:   "unseal-share-claim-complete",
 				Outcome:  audit.OutcomeFailure + ":factor-verify",
@@ -488,6 +491,7 @@ func (s *CeremonyService) VerifyClaimAndDeliver(
 
 	if ext.AuditLogger != nil {
 		audit.EmitBestEffort(ctx, ext.AuditLogger, "ceremony", audit.AuditEvent{
+			TenantID: c.TenantID,
 			Resource: "barrier",
 			Action:   "unseal-share-claim-complete",
 			Outcome:  audit.OutcomeSuccess,
@@ -535,6 +539,7 @@ func (s *CeremonyService) SubmitUnsealShare(ctx context.Context, req SubmitUnsea
 	if err := ext.FactorVerifier.VerifyFactor(ctx, string(c.Method), req.ChallengeID, req.FactorResponse); err != nil {
 		if ext.AuditLogger != nil {
 			audit.EmitBestEffort(ctx, ext.AuditLogger, "ceremony", audit.AuditEvent{
+				TenantID: c.TenantID,
 				Resource: "barrier",
 				Action:   "unseal-share",
 				Outcome:  audit.OutcomeFailure + ":factor-verify",
@@ -559,6 +564,7 @@ func (s *CeremonyService) SubmitUnsealShare(ctx context.Context, req SubmitUnsea
 	if submitErr != nil {
 		if ext.AuditLogger != nil {
 			audit.EmitBestEffort(ctx, ext.AuditLogger, "ceremony", audit.AuditEvent{
+				TenantID:   c.TenantID,
 				Resource:   "barrier",
 				Action:     "unseal-share",
 				Outcome:    audit.OutcomeFailure + ":quorum-closed",
@@ -570,6 +576,7 @@ func (s *CeremonyService) SubmitUnsealShare(ctx context.Context, req SubmitUnsea
 
 	if ext.AuditLogger != nil {
 		audit.EmitBestEffort(ctx, ext.AuditLogger, "ceremony", audit.AuditEvent{
+			TenantID: c.TenantID,
 			Resource: "barrier",
 			Action:   "unseal-share",
 			Outcome:  audit.OutcomeSuccess,
@@ -595,6 +602,7 @@ func (s *CeremonyService) SubmitUnsealShare(ctx context.Context, req SubmitUnsea
 		if err := s.reconstructAndUnseal(ctx, shares, ext); err != nil {
 			if ext.AuditLogger != nil {
 				audit.EmitBestEffort(ctx, ext.AuditLogger, "ceremony", audit.AuditEvent{
+					TenantID: c.TenantID,
 					Resource: "barrier",
 					Action:   "unseal",
 					Outcome:  audit.OutcomeFailure + ":reconstruct",
@@ -605,6 +613,7 @@ func (s *CeremonyService) SubmitUnsealShare(ctx context.Context, req SubmitUnsea
 		result.Unsealed = true
 		if ext.AuditLogger != nil {
 			audit.EmitBestEffort(ctx, ext.AuditLogger, "ceremony", audit.AuditEvent{
+				TenantID: c.TenantID,
 				Resource: "barrier",
 				Action:   "unseal",
 				Outcome:  audit.OutcomeSuccess,

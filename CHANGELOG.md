@@ -274,6 +274,12 @@ Standalone parity (#582) and durable leases. Highlights:
 
 ### Fixed
 
+- **A custodian's audit events name its tenant.** Registration and revocation
+  (refusals included) in `pkg/custodian`, and the share-claim and unseal-share
+  steps in `pkg/ceremony`, now set `TenantID` to the custodian's tenant. With
+  audit queries confined to the caller's tenant, an event without one is a
+  platform event only the system tenant reads, so a tenant's auditors could
+  not see their own custodians' activity.
 - **One revocation target for every transport.** `middleware.CertRevokeTarget`
   states what a revocation is authorized as -- the serial's owner with
   `certs:revoke`, or the system tenant with `certs:revoke:cross` for a serial no
