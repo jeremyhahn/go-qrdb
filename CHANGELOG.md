@@ -46,6 +46,13 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **`SET autocommit = 0` starts a real transaction.** go-mysql-server marks
+  only `BEGIN`/`START TRANSACTION` as an explicit transaction, so with
+  autocommit off each relational write committed at once and `ROLLBACK`
+  undid nothing. A session with autocommit off now runs one transaction
+  until `COMMIT` or `ROLLBACK`, as InnoDB does, and a write to a `kv`,
+  entity or collection table inside it is refused with
+  `NonTransactionalTableError`, as inside `BEGIN`.
 - **Row-lock lease edge cases.** A transaction's first lock request on a
   connection whose lease had ended unnoticed (expired or swept between
   keepalives) failed with 1213 although it held nothing; it now withdraws,

@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 
 	sqle "github.com/dolthub/go-mysql-server/sql"
+	"github.com/dolthub/go-mysql-server/sql/plan"
 	"github.com/dolthub/go-mysql-server/sql/types"
 
 	// Imported for its initialization side effect: sql.SystemVariables, the
@@ -57,9 +58,9 @@ type QRDBSession struct {
 	// statement -- go-mysql-server's engine calls StartTransaction before
 	// every statement, not only after an explicit BEGIN (see
 	// engine.beginTransaction) -- but only ever bound (see WriteSet.bind)
-	// when a relational table actually participates while
-	// ctx.GetIgnoreAutoCommit() is true, i.e. inside an explicit
-	// transaction; see RelationalTable.activeWriteSet. An atomic.Pointer
+	// when a relational table actually participates in an explicit
+	// transaction (explicitTxn), or writes in an autocommit statement (see
+	// writeset_autocommit.go); see RelationalTable.writeSetFor. An atomic.Pointer
 	// is used, rather than a plain field guarded by a mutex, because a
 	// session's transaction methods and its table read/write methods can
 	// be invoked from goroutines the session itself does not schedule
@@ -319,7 +320,10 @@ func (s *QRDBSession) CommitTransaction(ctx *sqle.Context, _ sqle.Transaction) e
 		// Ending it is what the client must do next; an explicit COMMIT
 		// is told once more that nothing was committed.
 		s.ws.CompareAndSwap(ws, nil)
-		explicit := ctx.GetIgnoreAutoCommit()
+		explicit, err := explicitTxn(ctx)
+		if err != nil {
+			return err
+		}
 		s.endTransaction()
 		if explicit {
 			return abortedError(ws.aborted)
@@ -489,22 +493,40 @@ func (s *QRDBSession) ReleaseSavepoint(_ *sqle.Context, _ sqle.Transaction, name
 	return ws.Release(name)
 }
 
-// requireAutocommit returns *NonTransactionalTableError when ctx's session
-// has an explicit interactive transaction open (BEGIN/START TRANSACTION was
-// issued and not yet committed or rolled back). KV, entity, and collection
+// explicitTxn reports whether the statement ctx runs belongs to an explicit,
+// multi-statement transaction: one opened by BEGIN / START TRANSACTION, or
+// -- as in InnoDB -- any statement of a session with autocommit off, whose
+// transaction stays open until COMMIT or ROLLBACK. Every "explicit or
+// autocommit" decision in this package is made here, and nowhere else.
+func explicitTxn(ctx *sqle.Context) (bool, error) {
+	if ctx.GetIgnoreAutoCommit() {
+		return true, nil
+	}
+	autocommit, err := plan.IsSessionAutocommit(ctx)
+	if err != nil {
+		return false, err
+	}
+	return !autocommit, nil
+}
+
+// requireAutocommit returns *NonTransactionalTableError when ctx's
+// statement belongs to an explicit transaction (see explicitTxn). KV, entity, and collection
 // tables (kv_table.go, entity_table.go, collection_table.go) always apply
 // their writes immediately -- they have no WriteSet of their own to buffer
 // into -- so every one of their write paths calls this first: silently
 // applying such a write while an explicit transaction is open would let it
 // escape that transaction's atomicity and visibility boundary, and survive
 // a later ROLLBACK. An ordinary autocommit statement against these table
-// kinds (ctx.GetIgnoreAutoCommit() false, the overwhelming common case) is
-// entirely unaffected.
+// kinds is entirely unaffected.
 func requireAutocommit(ctx *sqle.Context, table string) error {
-	if !ctx.GetIgnoreAutoCommit() {
+	if _, ok := ctx.Session.(*QRDBSession); !ok {
 		return nil
 	}
-	if _, ok := ctx.Session.(*QRDBSession); !ok {
+	explicit, err := explicitTxn(ctx)
+	if err != nil {
+		return err
+	}
+	if !explicit {
 		return nil
 	}
 	return &NonTransactionalTableError{Table: table}

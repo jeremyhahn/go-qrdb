@@ -50,6 +50,33 @@ func TestMySQLWire_AutocommitStatementIsAtomic(t *testing.T) {
 	assert.Equal(t, 2, n)
 }
 
+// TestMySQLWire_AutocommitOff_IsOneTransaction: SET autocommit = 0 opens a
+// multi-statement transaction, as in InnoDB; COMMIT makes all of it
+// durable and ROLLBACK none of it.
+func TestMySQLWire_AutocommitOff_IsOneTransaction(t *testing.T) {
+	db := newRowLockWire(t)
+	a, b := pinned(t, db), pinned(t, db)
+
+	mustExec(t, a, "SET autocommit = 0")
+	mustExec(t, a, "INSERT INTO accounts VALUES (10, 1)")
+	mustExec(t, a, "INSERT INTO accounts VALUES (11, 1)")
+	count := func(c *sql.Conn) int {
+		var n int
+		require.NoError(t, c.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM accounts WHERE id IN (10, 11)").Scan(&n))
+		return n
+	}
+	assert.Equal(t, 2, count(a), "the transaction reads its own writes")
+	assert.Zero(t, count(b), "nothing is visible to another session before COMMIT")
+	mustExec(t, a, "COMMIT")
+	assert.Equal(t, 2, count(b), "COMMIT keeps every statement's writes")
+
+	mustExec(t, a, "INSERT INTO accounts VALUES (12, 1)")
+	mustExec(t, a, "ROLLBACK")
+	var n int
+	require.NoError(t, b.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM accounts WHERE id = 12").Scan(&n))
+	assert.Zero(t, n, "ROLLBACK undoes the transaction")
+}
+
 // racingTxn commits a row under prefix just before the first transaction
 // that writes one: a concurrent statement winning the race between this
 // statement's duplicate check and its commit.

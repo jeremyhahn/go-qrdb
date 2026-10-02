@@ -472,6 +472,8 @@ before it was resolved again for every servicer of every table resolution.
 
 `BEGIN` / `START TRANSACTION`, `COMMIT`, `ROLLBACK`, `SAVEPOINT`, `ROLLBACK TO SAVEPOINT` and `RELEASE SAVEPOINT` are **real** on user-defined relational tables. `provider.QRDBSession` implements `sql.TransactionSession`, so go-mysql-server's transaction plan nodes route through it instead of silently returning an empty iterator.
 
+**`SET autocommit = 0` opens a transaction too**, as in InnoDB: every statement of the session joins one transaction that stays open until `COMMIT` or `ROLLBACK`, and the statement after either starts the next one. The session's writes are invisible to other sessions until `COMMIT`. A statement is in an explicit transaction when it runs after `BEGIN`/`START TRANSACTION` **or** with autocommit off; that one rule (`explicitTxn`) decides buffering, statement boundaries, the refusal of non-transactional tables and `COMMIT` reporting alike.
+
 ```sql
 BEGIN;
 INSERT INTO accounts (id, balance) VALUES (1, 100);

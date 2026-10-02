@@ -95,7 +95,15 @@ func statementWriteSet(ctx *sqle.Context) *WriteSet {
 		return nil
 	}
 	ws := sess.writeSet()
-	if ws == nil || (!ctx.GetIgnoreAutoCommit() && !ws.implicit) {
+	if ws == nil {
+		return nil
+	}
+	if ws.implicit {
+		return ws
+	}
+	// An unreadable autocommit setting opens no statement here; the
+	// statement's first write reports it (see writeSetFor).
+	if explicit, err := explicitTxn(ctx); err != nil || !explicit {
 		return nil
 	}
 	return ws
@@ -118,6 +126,9 @@ func openStatement(ctx *sqle.Context) *WriteSet {
 	}
 	ws := sess.writeSet()
 	if ws == nil || ws.Bound() {
+		return nil
+	}
+	if explicit, err := explicitTxn(ctx); err != nil || explicit {
 		return nil
 	}
 	ws.beginImplicit()

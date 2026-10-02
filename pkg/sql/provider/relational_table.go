@@ -1044,7 +1044,11 @@ func (t *RelationalTable) writeSetFor(ctx *sqle.Context, write bool) (*WriteSet,
 	if ws == nil {
 		return nil, nil
 	}
-	if !ctx.GetIgnoreAutoCommit() {
+	explicit, err := explicitTxn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !explicit {
 		if !ws.implicit {
 			return nil, nil
 		}
