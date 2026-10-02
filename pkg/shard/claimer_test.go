@@ -19,6 +19,7 @@ import (
 	"errors"
 	"math"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -253,6 +254,9 @@ func TestClaimShardID_WaitsForActivation(t *testing.T) {
 	var inactive *shard.FeatureNotActiveError
 	if !errors.As(err, &inactive) || inactive.Feature != "cluster-shard-ids" {
 		t.Fatalf("claim before activation = %v, want *FeatureNotActiveError", err)
+	}
+	if msg := inactive.Error(); !strings.Contains(msg, `"cluster-shard-ids"`) {
+		t.Fatalf("error text %q does not name the feature", msg)
 	}
 	if raw, _ := store.Get(context.Background(), shard.HighWaterKey); raw != nil {
 		t.Fatalf("a refused claim wrote the mark: %q", raw)
