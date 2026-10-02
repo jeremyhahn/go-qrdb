@@ -1572,10 +1572,34 @@ func runStart(f *startFlags) (err error) {
 				DefaultTenantQuotas:       f.tenantConfig.DefaultQuotas.ToQuotas(),
 				DefaultTenantEntitlements: f.tenantConfig.DefaultEntitlements.ToEntitlements(),
 				Encryptor:                 enc,
+				// Key A: in-memory bootstrap material (populated only when
+				// ca-key.pem still exists on disk this boot) for the built-in
+				// cakey.SoftwareProvider to adopt into the replicated store on
+				// first use. See confirmClusterCAPersisted below.
+				ClusterCACertPEM: bundle.CACertPEM,
+				ClusterCAKeyPEM:  bundle.CAKeyPEM,
 			})
 			if err != nil {
 				_ = shutdownNode(nodeCloser)
 				return err
+			}
+			if svcNode.ClusterCAProv != nil {
+				// A leader must be known before this read-through-Raft check
+				// can mean anything: right after BuildServices the system
+				// shard may not have settled its own leader election yet,
+				// even on a single-node shard -- the same race
+				// waitForLeaderElection exists to close for
+				// bootstrapUserRoleStores below.
+				if err := waitForLeaderElection(sigCtx, rnode, shard.ShardKV); err != nil {
+					_ = svcNode.Stop(context.Background())
+					_ = shutdownNode(nodeCloser)
+					return err
+				}
+				if err := confirmClusterCAPersisted(sigCtx, svcNode.ClusterCAProv, f.dataDir, len(bundle.CAKeyPEM) > 0); err != nil {
+					_ = svcNode.Stop(context.Background())
+					_ = shutdownNode(nodeCloser)
+					return err
+				}
 			}
 			// Guarded so the system-migration path (which closes svcNode early to
 			// release its vector-store Pebble lock for re-encryption, then nils it)
