@@ -164,19 +164,18 @@ are not reconstructed here — their history is in the git log.
 
 ### Security
 
-- **Share-holder certificates follow v0.28.1's officer-certificate contract.**
-  Every holder enrolment -- system, recovery, tenant and database scope -- and
-  `ceremony sign-csr` sign through `signHolderCSR` with `SignCSROptions`
-  naming the registered holder and the scope's tenant: `CN=<username>`,
-  `OU=[<tenant>, <profile>]` in separate RDNs, no Subject Alternative Name,
-  and any certificate a CA returns otherwise refused (`*CertSubjectError`).
-  Holder certificates no longer carry a SPIFFE holder-namespace URI; they are
-  recognised by their profile OU and authenticate with no roles. The holder
-  trust-domain plumbing is removed: `lifecycle.Infra.HolderTrustDomain`,
-  `config.HolderTrustDomain`, `CeremonyService.SetTrustDomain`,
-  `HolderDeps.TrustDomain` and `ceremony.ErrTrustDomainNotConfigured`, as is
-  `ceremony.ErrCertIdentityRequired` (a missing tenant or username is a
-  `*CertSubjectError`).
+- **Every share-holder scope signs through one checked path.** Holder
+  enrolment in every scope -- system, recovery, tenant and the database scope
+  this release adds -- the initial ceremony and `ceremony sign-csr` sign
+  through `signHolderCSR` with `SignCSROptions` naming the registered holder
+  and the scope's tenant, and every certificate a CA returns is checked the
+  same way: `CN=<username>`, `OU=[<tenant>, <profile>]` in separate RDNs and
+  no Subject Alternative Name (`*CertSubjectError`), not a CA, no
+  certificate-signing key usage, exactly the requested key usage and the
+  requested extended key usages as a set, duplicates refused
+  (`*IssuedCertCapabilityError`). Holder certificates are recognised only by
+  their profile OU (`pkg/holderprofile`); they authenticate with no roles and
+  RBAC refuses them every permission.
 
 - **A system-tenant identity could act on every tenant's databases.** The
   database service lifted the system tenant past the ownership check on every
@@ -472,6 +471,11 @@ are not reconstructed here — their history is in the git log.
 
 ### Removed — BREAKING
 
+- **`ceremony.BarrierScope.TenantID()` is removed** (shipped in
+  v0.28.1-alpha). Nothing in the module used it once every scope signed
+  through `SignCSROptions`, which names the tenant explicitly; a caller
+  derives a scope's tenant from the tenant it built the scope with
+  (`ceremony.ScopeTenant(tenantID)`).
 - **The parallel custodian subsystem is deleted**: `pkg/custodian`,
   `ceremony.CeremonyExtension`, `CeremonyEnrollExternalOfficer`, the
   custodian-group service on every transport, and the ceremony's own share
