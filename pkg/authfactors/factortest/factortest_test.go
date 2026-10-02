@@ -86,3 +86,39 @@ func TestFactor_Refusals(t *testing.T) {
 		t.Error("a challenge without an enrolled key must be refused")
 	}
 }
+
+// TestFactor_DecoyEnrollment: the decoy is this factor's shape, derived from
+// the seed and the user alone -- the same on every call, different for
+// another user or seed -- and a challenge issued from it is well formed.
+func TestFactor_DecoyEnrollment(t *testing.T) {
+	f := New("fido2", time.Minute)
+	seed := []byte("decoy-seed-0123456789abcdef01234")
+	a, err := f.DecoyEnrollment(seed, "mallory", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := f.DecoyEnrollment(seed, "mallory", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.EnrollmentID != again.EnrollmentID || string(a.PublicKey) != string(again.PublicKey) {
+		t.Fatal("the decoy is not stable across calls")
+	}
+	if a.FactorName != "fido2" || a.UserID != "mallory" {
+		t.Fatalf("decoy = %+v", a)
+	}
+	other, err := f.DecoyEnrollment(seed, "trudy", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reseeded, err := f.DecoyEnrollment([]byte("another-seed-0123456789abcdef012"), "mallory", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(other.PublicKey) == string(a.PublicKey) || string(reseeded.PublicKey) == string(a.PublicKey) {
+		t.Fatal("the decoy does not depend on the user and the seed")
+	}
+	if _, err := f.Challenge(context.Background(), a); err != nil {
+		t.Fatalf("challenge from the decoy: %v", err)
+	}
+}
