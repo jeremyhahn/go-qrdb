@@ -11,6 +11,14 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.30.0-alpha] - 2026-10-02
+
+Database response hardening. This release contains BREAKING changes; see the entries below. Highlights:
+
+- **SECURITY: a database's secrets are write-only on every transport.** Raft discovery shared secrets and tokens, and the barrier secret, were returned by get, list, create and update on REST, gRPC, unix, QUIC and MCP. Responses now carry `sharedSecretSet` / `tokenSet` flags and no secret field. A single converter (`pkg/api/dbwire`) builds every database response, and a single SDK decoder replaces the per-transport copies.
+- **Parity:** QUIC and MCP report `shardId`, `dataDir` and `tenantId` again. `dedicatedWal`, the discovery blocks, `protocol.etcd` and `tenantId` are typed in both SDKs. The TypeScript SDK reads `shardId` and `dataDir`, the keys REST sends.
+- **CI runs the TypeScript SDK and the desktop frontend's svelte-check.**
+
 ### Security
 
 - **BREAKING: a database's discovery secrets are write-only.** Every read of a
