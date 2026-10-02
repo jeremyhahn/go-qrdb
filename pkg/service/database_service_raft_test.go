@@ -65,7 +65,7 @@ func (r *recordingQuotaUsage) DecrementQuotaUsage(_ context.Context, _ string, r
 }
 
 // newRaftTenantDatabaseService builds a DatabaseService whose Manager has a
-// shard allocator (so raft databases get a persisted shard ID) and is wired with
+// shard-ID claimer (so raft databases get a cluster-issued shard ID) and is wired with
 // the given tenant-info lookup and raft-group usage recorder.
 func newRaftTenantDatabaseService(t *testing.T, info *tenant.TenantInfo, rec QuotaUsageRecorder) (DatabaseServicer, *database.Manager) {
 	t.Helper()
@@ -84,7 +84,7 @@ func newRaftTenantDatabaseService(t *testing.T, info *tenant.TenantInfo, rec Quo
 
 // TestCreateForTenant_Raft_RoutesDataDirAndForcesBackend verifies an
 // IsolationRaft tenant's database is forced to the raft backend, gets a Raft
-// config (so the allocator assigns a shard ID), and has its DataDir routed under
+// config (so the claimer issues a shard ID), and has its DataDir routed under
 // the tenant's DataRoot. It also verifies the raft-group counter is incremented.
 func TestCreateForTenant_Raft_RoutesDataDirAndForcesBackend(t *testing.T) {
 	dataRoot := t.TempDir()

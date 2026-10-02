@@ -1296,7 +1296,7 @@ func (s *DatabaseService) CreateForTenantWithCredentials(ctx context.Context, cf
 			}
 			// Every database of an IsolationRaft tenant is a dedicated Raft group.
 			// Force the raft backend and ensure a Raft config exists so the
-			// Manager's shard allocator assigns and persists a unique shard ID.
+			// Manager claims the database a cluster-wide shard ID.
 			cfg.Backend = database.BackendRaft
 			if cfg.Raft == nil {
 				cfg.Raft = &database.DatabaseRaftConfig{ClusterMode: database.RaftLocal}

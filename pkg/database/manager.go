@@ -231,9 +231,9 @@ func (m *Manager) CreateWithCredentials(ctx context.Context, cfg DatabaseConfig,
 // some node -- refuses the provisioning with *AlreadyExistsError.
 func (m *Manager) Provision(ctx context.Context, cfg DatabaseConfig) (*Database, error) {
 	// A provisioned database is created on every node independently, so a
-	// raft one would need a shard ID every node agrees on without a claim --
-	// which only a node-local allocator could give, and node-local allocators
-	// do not agree. No shipped path provisions one; refuse it.
+	// raft one would need a shard ID every node agrees on without a claim,
+	// and nodes issuing on their own do not agree. No shipped path provisions
+	// one; refuse it.
 	if cfg.Raft != nil {
 		return nil, &ProvisionRaftError{Name: cfg.Name}
 	}

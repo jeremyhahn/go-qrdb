@@ -1356,9 +1356,9 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		MTLSBindingPolicy: pending.cfg.Auth.MTLSBindingPolicy,
 		// The node's own auth-chain vocabulary (see Node.authMethods).
 		AuthMethodVocabulary: n.authMethods.IsAuthMethod,
-		// DatabaseManager is shared so the shard allocator is not reset
-		// mid-flight and lifecycle does not open a second manager on the same
-		// data directory.
+		// DatabaseManager is shared so lifecycle wires its shard-ID claimer
+		// into the one manager the node serves, and does not open a second
+		// manager on the same data directory.
 		DatabaseManager: dbManager,
 		// Forward an injected (xkms) seal StrategyRegistry into the
 		// TenantService (constructed inside BuildServices) so per-tenant

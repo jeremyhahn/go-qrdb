@@ -907,11 +907,12 @@ func TestManager_List_InfoContents(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Shard allocator tests
+// Shard ID claim tests
 // ---------------------------------------------------------------------------
 
-// validRaftConfig returns a DatabaseRaftConfig using the given shard ID.
-// Pass shardID == 0 to request auto-allocation.
+// validRaftConfig returns a DatabaseRaftConfig naming the given shard ID.
+// Pass shardID == 0, as every request does, for the cluster to issue one; a
+// non-zero ID is a caller's choice, which create refuses.
 func validRaftConfig(shardID uint64) *DatabaseRaftConfig {
 	return &DatabaseRaftConfig{
 		ClusterMode: RaftNone,

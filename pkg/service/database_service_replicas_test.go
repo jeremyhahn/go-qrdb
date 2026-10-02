@@ -102,7 +102,7 @@ func newReplicaQuotaChecker(t *testing.T, f *fakeReplicaQuota) quota.Checker {
 }
 
 // newReplicaDatabaseService builds a DatabaseService backed by a Manager with a
-// shard allocator and wired with the replica-aware quota checker + usage recorder.
+// shard-ID claimer and wired with the replica-aware quota checker + usage recorder.
 func newReplicaDatabaseService(t *testing.T, info *tenant.TenantInfo, f *fakeReplicaQuota) DatabaseServicer {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))

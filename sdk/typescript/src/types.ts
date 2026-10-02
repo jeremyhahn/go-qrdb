@@ -2016,7 +2016,7 @@ export interface DatabaseSQLConfig {
 /**
  * Raft consensus configuration for a database. There is no shard ID: the cluster
  * issues it when the database is created, it never changes, and it is
- * reported as {@link DatabaseInfo.shard_id}.
+ * reported as {@link DatabaseInfo.shardId}.
  */
 export interface DatabaseRaftConfig {
     /** Cluster mode (e.g. "single", "multi"). */
@@ -2171,7 +2171,8 @@ export interface DatabaseInfo {
     readonly sql?: DatabaseSQLConfig;
     /** Data directory path, if applicable. */
     readonly dataDir?: string;
-    /** Raft shard ID; absent for non-raft databases. */
+    /** Raft shard ID the cluster issued at create; absent for non-raft
+     * databases. It never changes. */
     readonly shardId?: number;
     /** Database mode (e.g. "embedded", "remote"). */
     readonly mode?: string;

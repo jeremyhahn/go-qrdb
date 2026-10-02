@@ -25,7 +25,7 @@ import (
 )
 
 // clusterNode is one node's database Manager wired as a cluster composition
-// wires it: its own data directory, its own allocator, and the replicated
+// wires it: its own data directory, and a claimer over the replicated
 // system store every node shares.
 func clusterNode(t *testing.T, replicated kvstore.AtomicKVStore) *Manager {
 	t.Helper()

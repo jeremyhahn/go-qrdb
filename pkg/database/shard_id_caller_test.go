@@ -56,10 +56,9 @@ func TestShardIDs_CallerChosenIDIsRefused(t *testing.T) {
 	}
 }
 
-// TestShardIDs_NoIssuerRefusesARaftCreate: a Manager with neither a claimer
-// nor an allocator has no way to issue a shard ID, and no longer falls back to
-// one the caller names, so it refuses instead of creating a raft database on
-// shard 0.
+// TestShardIDs_NoIssuerRefusesARaftCreate: a Manager with no claimer has no
+// way to issue a shard ID, and no longer falls back to one the caller names,
+// so it refuses instead of creating a raft database on shard 0.
 func TestShardIDs_NoIssuerRefusesARaftCreate(t *testing.T) {
 	m := NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = m.Close() })
