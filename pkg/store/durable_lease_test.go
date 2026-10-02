@@ -266,15 +266,24 @@ func TestDurableLease_TravelsInASnapshot(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			// The follower holds a durable lease of its own that the
-			// snapshot does not: after recovery it must describe exactly the
-			// snapshot's leases.
+			// The follower holds leases of its own that the snapshot does
+			// not. It grants TWO, so the second has an ID the snapshot never
+			// issued: the first shares the leader's ID and is replaced by it,
+			// which on its own would let a recovery that kept stale leases
+			// pass. A key is bound to the stale lease too.
 			follower := openNode(t, kind, t.TempDir())
 			defer follower.stop(t)
+			if _, err := follower.lease.Grant(ctx, 10); err != nil {
+				t.Fatal(err)
+			}
 			stale, err := follower.lease.Grant(ctx, 10)
 			if err != nil {
 				t.Fatal(err)
 			}
+			if stale.ID == l.ID {
+				t.Fatalf("the follower's second lease reused the leader's ID %d: the stale-lease check below would be vacuous", l.ID)
+			}
+			follower.putWithLease(t, "stale/bound", "x", stale.ID)
 			if err := follower.sm.RecoverFromSnapshot(ctx, &buf, make(chan struct{})); err != nil {
 				t.Fatalf("recover: %v", err)
 			}
@@ -286,10 +295,11 @@ func TestDurableLease_TravelsInASnapshot(t *testing.T) {
 			if got.GrantedTTL != 45 || !hasKey(got, "svc/registration") {
 				t.Fatalf("restored lease = %+v, want granted TTL 45 with svc/registration attached", got)
 			}
-			if stale.ID != l.ID {
-				if _, err := follower.lease.TimeToLive(ctx, stale.ID); !isLeaseNotFound(err) {
-					t.Fatalf("lease %d absent from the snapshot survived recovery: err=%v", stale.ID, err)
-				}
+			if _, err := follower.lease.TimeToLive(ctx, stale.ID); !isLeaseNotFound(err) {
+				t.Fatalf("lease %d absent from the snapshot survived recovery: err=%v", stale.ID, err)
+			}
+			if follower.exists(t, "stale/bound") {
+				t.Fatal("a key bound to a lease absent from the snapshot survived recovery")
 			}
 			if err := follower.lease.Revoke(ctx, l.ID); err != nil {
 				t.Fatal(err)
