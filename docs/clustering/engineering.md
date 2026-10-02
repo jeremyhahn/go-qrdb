@@ -521,10 +521,13 @@ type ImbalanceReport struct {
   `server.WaitForShardServing`. The paths are the per-tenant volume Host and the
   dedicated per-database raft shards (`pkg/server`, which also covers an
   encryption migration's reopen), the system shard before `qrdbd` starts its
-  listeners, the system shard in `sdk/go/node`'s clustered boot (before
-  `BuildTenantInfra` reads the replicated tenant store, and so before any
-  committed-membership read such as a replica add), and the desktop embedded
-  server. A timeout names its phase: `*server.ShardLeaderWaitError` when no
+  listeners, the system shard of every `sdk/go/node` clustered node, sealed or
+  seal-disabled, with or without tenant isolation (the node's host builder
+  waits before it returns, so before `BuildTenantInfra` reads the replicated
+  tenant store and before the caller's first request, such as a replica add's
+  committed-membership read), and the desktop embedded server. The admin
+  `StartShard` operation is deliberately outside the rule: it starts a shard
+  whose other members may not exist yet, and its caller decides when to read. A timeout names its phase: `*server.ShardLeaderWaitError` when no
   leader was elected, `*server.ShardReadWaitError` (wraps
   `server.ErrShardNotReadReady`) when a leader was but never served a read --
   each reporting probe errors, a starved poller, or the genuine failure. Do not

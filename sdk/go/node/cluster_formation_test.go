@@ -419,3 +419,49 @@ func TestRunningCluster_AddReplica_Identity(t *testing.T) {
 		}
 	})
 }
+
+// TestNewClusteredNode_ServesALinearizableReadOnReturn holds the clustered
+// constructor to the host-open contract every other path keeps: a node is
+// handed out only once its system shard can serve a linearizable read, so the
+// caller's FIRST read succeeds -- no leader poll, no retry. Three founders boot
+// concurrently, as an operator's do, and nothing waits for an election before
+// each returned node is asked for one ReadIndex. Without the wait the founders
+// return within milliseconds of StartShard, seconds before any election
+// timeout fires, and the probe finds no leader -- or a leader that has not yet
+// committed in its term (quicraft.ErrReadIndexNotReady), which is what a
+// replica add's committed-membership read hit. Tenant isolation is off: the
+// wait must not ride on that option.
+func TestNewClusteredNode_ServesALinearizableReadOnReturn(t *testing.T) {
+	ca, replicas := newFormationReplicas(t, 3)
+	nodes, err := bootFormationCluster(t, ca, replicas, func(self uint64) string {
+		return peerIdentitySpecs(t, self, replicas)
+	})
+	if err != nil {
+		t.Fatalf("NewClusteredNode: %v", err)
+	}
+	for i, n := range nodes {
+		if err := readIndexOnce(n.host.(*quicraft.Host)); err != nil {
+			t.Fatalf("replica %d: first linearizable read after NewClusteredNode returned: %v", replicas[i].id, err)
+		}
+	}
+}
+
+// readIndexOnce issues exactly one linearizable ReadIndex against the system
+// shard and reports its outcome, bounded by firstReadBudget.
+func readIndexOnce(host *quicraft.Host) error {
+	ctx, cancel := context.WithTimeout(context.Background(), firstReadBudget)
+	defer cancel()
+	rs, err := host.ReadIndex(ctx, shard.ShardKV)
+	if err != nil {
+		return err
+	}
+	defer rs.Release()
+	_, err = rs.Result()
+	return err
+}
+
+// firstReadBudget bounds the single probe readIndexOnce issues: a round trip
+// to a healthy leader with headroom for the race detector, and well under the
+// founders' election timeout, so it cannot cover for a missing wait by
+// outlasting an election.
+const firstReadBudget = time.Second

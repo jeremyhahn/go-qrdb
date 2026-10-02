@@ -1388,18 +1388,6 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	// clustered path there is no in-process system-migration recycle today, but
 	// the guard matches the standalone pattern for consistency.
 	if n.tenantIsolation && barrierRegistry != nil && n.volumePool != nil && svcNode.Tenant != nil && n.tenantHosts == nil {
-		// Wait for the system shard to elect a leader before building tenant
-		// infrastructure. reattachRaftTenants calls ListTenants which requires
-		// a linearizable read; that read fails if the shard has no leader yet.
-		// The daemon relies on other boot steps (REST/gRPC/QUIC setup) to
-		// provide this window; the embedded node must wait explicitly.
-		if readyErr := waitSystemShardReady(host, shard.ShardKV); readyErr != nil {
-			_ = svcNode.Stop(context.Background())
-			_ = host.Close()
-			_ = dbManager.Close()
-			n.dbManager = nil
-			return readyErr
-		}
 		ti, tiErr := server.BuildTenantInfra(server.TenantInfraConfig{
 			Ctx:        ctx,
 			BarrierReg: barrierRegistry,
@@ -1458,13 +1446,12 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	// (go-qrdb#174).
 	//
 	// Started HERE, after every other fallible step, rather than beside the
-	// Lessor it sweeps. Placed earlier it sits above waitSystemShardReady and
-	// BuildTenantInfra, whose error branches tear down svcNode, host and
-	// dbManager and return WITHOUT cancelling the background context -- so a
-	// failed boot would return an error while the sweeper kept ticking against
-	// closed services. Adding a cancel to each of those branches would work and
-	// would leave three places to forget; one start point with one error path
-	// below it cannot be forgotten. The sweeper needs nothing that boot
+	// Lessor it sweeps. Placed earlier it sits above BuildTenantInfra, whose
+	// error branch tears down svcNode, host and dbManager and returns WITHOUT
+	// cancelling the background context -- so a failed boot would return an
+	// error while the sweeper kept ticking against closed services. Adding a
+	// cancel to each such branch would work and would leave places to forget;
+	// one start point with one error path below it cannot be forgotten. The sweeper needs nothing that boot
 	// produces after this line, and nothing is serving traffic yet.
 	n.startLeaseExpiry(host, lr, svcNode.Lease, pending.cfg.Raft.ReplicaID)
 	n.startReclaimSweep(host, svcNode.ReclaimSweeper, pending.cfg.Raft.ReplicaID)
@@ -3085,22 +3072,8 @@ func createNodeEngine(backendType database.BackendType, stg storage.Storage, pdb
 	return lifecycle.NewLocalEngine(backendType, stg, pdb, hub, lr)
 }
 
-// waitSystemShardReady blocks until the system shard can serve a linearizable
-// read: it has a leader AND that leader has committed an entry in its term.
-// It is called inside completeClusteredBoot before BuildTenantInfra, whose
-// reattachRaftTenants issues a linearizable read against the replicated
-// tenant store. A leader known is not enough -- until its term's first commit
-// every ReadIndex is refused with quicraft.ErrReadIndexNotReady. The wait and
-// its budget are server.WaitForShardServing, the one every host-open path
-// shares.
-func waitSystemShardReady(host *quicraft.Host, shardID uint64) error {
-	if err := server.WaitForShardServing(context.Background(), host, shardID); err != nil {
-		return &HostCreateError{Err: err}
-	}
-	return nil
-}
-
-// buildClusteredHost creates the quicraft.Host and starts the KV shard.
+// buildClusteredHost creates the quicraft.Host, starts the KV shard and waits
+// until that shard can serve a linearizable read.
 // A single-entry members map uses WithoutTransport (no network required).
 // members is passed directly to host.StartShard as the initial member set.
 // mtls provides the PEM-encoded mTLS certificate material for multi-node
@@ -3153,6 +3126,20 @@ func buildClusteredHost(
 	}
 
 	if err := host.StartShard(members, cfg.Raft.Join, createFn, shardCfg); err != nil {
+		_ = host.Close()
+		return nil, nil, err
+	}
+
+	// The host is handed out only once the system shard can serve a
+	// linearizable read: a leader is known AND has committed an entry in its
+	// term. Until then every ReadIndex is refused -- "leader unknown", then
+	// quicraft.ErrReadIndexNotReady -- and the first read is the boot's own
+	// (BuildTenantInfra lists the replicated tenant store) or the caller's (a
+	// replica add reads the committed membership). Both clustered branches,
+	// sealed and seal-disabled, build their host here, so neither can return a
+	// node that cannot serve. The wait and its budget are
+	// server.WaitForShardServing, the one every host-open path shares.
+	if err := server.WaitForShardServing(context.Background(), host, shard.ShardKV); err != nil {
 		_ = host.Close()
 		return nil, nil, err
 	}

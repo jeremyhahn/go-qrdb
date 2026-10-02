@@ -16,9 +16,10 @@ are not reconstructed here — their history is in the git log.
 - **A shard is handed out only once it can serve a linearizable read.** Every
   path that opens or reopens a shard -- the per-tenant volume host, the
   dedicated per-database raft shards (including an encryption migration's
-  reopen), the system shard before `qrdbd` serves and in `sdk/go/node`'s
-  clustered boot, and the desktop embedded server -- waited only until a leader
-  was known. A leader elected a moment ago refuses every ReadIndex until it
+  reopen), the system shard before `qrdbd` serves, and the desktop embedded
+  server -- waited only until a leader was known, and `sdk/go/node`'s
+  `NewClusteredNode` waited for nothing unless tenant isolation was on: three
+  founders booted together came back before any election. A leader elected a moment ago refuses every ReadIndex until it
   commits in its term, so the first read after an open could fail with
   `quicraft: read index not ready` (seen as intermittent failures after a
   tenant encryption migration and right after cluster formation). They now
