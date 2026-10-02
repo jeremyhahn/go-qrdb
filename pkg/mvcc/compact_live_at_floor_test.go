@@ -176,11 +176,13 @@ func TestCompaction_ReadAboveFloorBeforeNewestWrite(t *testing.T) {
 	}
 }
 
-// TestCompaction_DropsATombstoneWithNewerEntries: a tombstone live at the
-// floor is no history anyone can read -- the key did not exist -- so it goes
-// when the key was written again later, and stays when it is the key's newest
-// entry.
-func TestCompaction_DropsATombstoneWithNewerEntries(t *testing.T) {
+// TestCompaction_DropsATombstoneLiveAtTheFloor: a tombstone live at the floor
+// is no history anyone can read -- the key did not exist -- so it goes,
+// exactly as etcd drops it: whether the key was written again later or the
+// tombstone is the key's newest entry. No read above the floor can reach it:
+// a read at any revision above the floor finds no entry, which is the same
+// answer the tombstone gave.
+func TestCompaction_DropsATombstoneLiveAtTheFloor(t *testing.T) {
 	s := newTestStore(t)
 	liveAtFloorFixture(t, s, "acme/app/")
 	if err := s.CompactPrefix([]byte("acme/app/"), 9); err != nil {
@@ -191,9 +193,13 @@ func TestCompaction_DropsATombstoneWithNewerEntries(t *testing.T) {
 	if n := dataEntries(t, s, []byte("acme/app/gone")); n != 1 {
 		t.Fatalf("gone has %d data entries, want 1 (g7)", n)
 	}
-	// dead: its tombstone at 9 is its newest entry and is kept; d8 goes.
-	if n := dataEntries(t, s, []byte("acme/app/dead")); n != 1 {
-		t.Fatalf("dead has %d data entries, want 1 (its tombstone)", n)
+	// dead: its tombstone at 9 is its newest entry and live at the floor, so
+	// it goes with d8 below it; the key is simply absent.
+	if n := dataEntries(t, s, []byte("acme/app/dead")); n != 0 {
+		t.Fatalf("dead has %d data entries, want 0 (its tombstone dropped)", n)
+	}
+	if kv, err := s.GetAtRevision([]byte("acme/app/dead"), 10); err == nil {
+		t.Fatalf("dead reads %v above the floor; it was deleted", kv)
 	}
 
 	s2 := newTestStore(t)

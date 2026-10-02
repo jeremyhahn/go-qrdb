@@ -174,8 +174,10 @@ func (s *Store) compactInto(batch storage.Batch, prefix []byte, revision int64) 
 //   - an entry above revision is history the floor does not reach: kept;
 //   - the first entry at or below revision is the key's state at revision,
 //     which every read above the floor and below the key's next write
-//     returns: kept -- unless it is a tombstone and the key has a newer
-//     entry, when it records only an absence nothing can ask about and goes;
+//     returns: kept -- unless it is a tombstone, which records only an
+//     absence: with it gone a read above the floor finds no entry, the same
+//     answer, so it goes, as etcd drops it, whether or not the key was
+//     written again;
 //   - every older entry is superseded at revision: deleted.
 //
 // The change log of the compacted keys at or below revision goes too: every
@@ -192,20 +194,18 @@ func supersededEntryDeleter(batch storage.Batch, previous, revision int64) func(
 	// complemented revision.
 	var (
 		group  []byte
-		newer  bool // the key has an entry above revision
 		atLive bool // the key's entry live at revision has been visited
 	)
 	return func(raw, value []byte) error {
 		if g := raw[:len(raw)-8]; !bytes.Equal(g, group) {
 			group = append(group[:0], g...)
-			newer, atLive = false, false
+			atLive = false
 		}
 		_, entryRev, err := DecodeDataKey(raw)
 		if err != nil {
 			return nil
 		}
 		if entryRev > revision {
-			newer = true
 			return nil
 		}
 		if entryRev > previous {
@@ -215,7 +215,7 @@ func supersededEntryDeleter(batch storage.Batch, previous, revision int64) func(
 		}
 		if !atLive {
 			atLive = true
-			if !newer || !isTombstone(value) {
+			if !isTombstone(value) {
 				return nil
 			}
 		}
