@@ -18,7 +18,6 @@ import (
 	"crypto/x509"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )

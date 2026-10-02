@@ -25,6 +25,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -94,11 +95,8 @@ func TestHolderCert_CapabilityRefusals(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ca := tc.ca
 			ca.LocalCA = newTestLocalCA(t)
-			svc, err := NewTenantCeremonyService("acme", seal.NewMemoryBackend(), ca, testLogger())
-			require.NoError(t, err)
-			res, err := svc.RegisterOfficer(context.Background(), RegisterOfficerRequest{
-				Username: "acme-officer", CSRPEM: newHostileCSRPEM(t, hostileCSRs[3]), AuthenticatorType: AuthenticatorSoftware,
-			})
+			svc := newTenantHolders(t, "acme", ca)
+			res, err := svc.RegisterOfficer(context.Background(), hostileRequest(t, hostileCSRs[3], "acme-officer", seal.RoleSecurityOfficer))
 			var capErr *IssuedCertCapabilityError
 			require.True(t, errors.As(err, &capErr), "RegisterOfficer = (%v, %v); want *IssuedCertCapabilityError", res, err)
 			require.Equal(t, tc.field, capErr.Field)
@@ -112,11 +110,8 @@ func TestHolderCert_CapabilityRefusals(t *testing.T) {
 // TestHolderCert_ConformingCAIsAccepted is the control: the same double with
 // nothing changed issues the certificate.
 func TestHolderCert_ConformingCAIsAccepted(t *testing.T) {
-	svc, err := NewTenantCeremonyService("acme", seal.NewMemoryBackend(), usageCA{LocalCA: newTestLocalCA(t)}, testLogger())
-	require.NoError(t, err)
-	_, err = svc.RegisterOfficer(context.Background(), RegisterOfficerRequest{
-		Username: "acme-officer", CSRPEM: newHostileCSRPEM(t, hostileCSRs[3]), AuthenticatorType: AuthenticatorSoftware,
-	})
+	svc := newTenantHolders(t, "acme", usageCA{LocalCA: newTestLocalCA(t)})
+	_, err := svc.RegisterOfficer(context.Background(), hostileRequest(t, hostileCSRs[3], "acme-officer", seal.RoleSecurityOfficer))
 	require.NoError(t, err)
 }
 
@@ -168,58 +163,75 @@ func TestCheckIssuedSubject_ReorderedExtKeyUsagesAreAccepted(t *testing.T) {
 		"fixture: the certificate must carry the usages in the other order")
 }
 
+// systemHoldersWith is the system ceremony service over a Shamir barrier,
+// signing with ca, wired as a composer wires it.
+func systemHoldersWith(t *testing.T, ca CeremonyCA) *CeremonyService {
+	t.Helper()
+	svc, err := NewCeremonyService(&CeremonyConfig{DataDir: t.TempDir()}, shamirBarrier(t, seal.NewMemoryBackend(), 2, 2), testLogger())
+	require.NoError(t, err)
+	svc.SetCA(ca)
+	svc.SetFactorRegistry(testFactors(t))
+	svc.SetPINBackend(pintest.NewBackend(t))
+	return svc
+}
+
 // TestHolderCert_EveryEntryPointRefusesASubCA runs the CA-certificate double
-// through every path that signs a holder certificate. Each must refuse it and
-// keep nothing. SignCSRInit reports every signing failure as the
+// through every path that signs a holder certificate -- the unified holder
+// engine in every scope, the initial ceremony and sign-csr. Each must refuse
+// it and keep nothing. SignCSRInit reports every signing failure as the
 // ErrCSRSigningFailed sentinel; the others keep the typed cause.
 func TestHolderCert_EveryEntryPointRefusesASubCA(t *testing.T) {
 	ctx := context.Background()
-	register := RegisterOfficerRequest{Username: "officer", AuthenticatorType: AuthenticatorSoftware}
-	entryPoints := map[string]func(t *testing.T, ca CeremonyCA) error{
-		"system officer registration": func(t *testing.T, ca CeremonyCA) error {
-			svc := newSystemCeremonyWithCA(t, ca)
-			req := register
-			req.CSRPEM = newHostileCSRPEM(t, hostileCSRs[3])
-			_, err := svc.RegisterOfficer(ctx, req)
-			require.Empty(t, svc.pendingCerts, "a refused registration left a pending certificate")
+	req := func(t *testing.T) RegisterOfficerRequest {
+		return hostileRequest(t, hostileCSRs[3], "officer", seal.RoleSecurityOfficer)
+	}
+	systemScope := func(domain seal.QuorumDomain) func(t *testing.T, ca CeremonyCA) error {
+		return func(t *testing.T, ca CeremonyCA) error {
+			svc := systemHoldersWith(t, ca)
+			_, err := svc.RegisterOfficer(ctx, domain, req(t))
+			officers, lerr := svc.ListOfficers(ctx, domain)
+			require.NoError(t, lerr)
+			require.Empty(t, officers, "a refused registration was recorded")
 			return err
-		},
-		"tenant officer registration": func(t *testing.T, ca CeremonyCA) error {
-			svc, err := NewTenantCeremonyService("acme", seal.NewMemoryBackend(), ca, testLogger())
-			require.NoError(t, err)
-			req := register
-			req.CSRPEM = newHostileCSRPEM(t, hostileCSRs[3])
-			_, err = svc.RegisterOfficer(ctx, req)
+		}
+	}
+	entryPoints := map[string]func(t *testing.T, ca CeremonyCA) error{
+		"system holder registration":   systemScope(seal.DomainUnseal),
+		"recovery holder registration": systemScope(seal.DomainRecovery),
+		"tenant holder registration": func(t *testing.T, ca CeremonyCA) error {
+			svc := newTenantHolders(t, "acme", ca)
+			_, err := svc.RegisterOfficer(ctx, req(t))
 			officers, lerr := svc.ListOfficers(ctx)
 			require.NoError(t, lerr)
 			require.Empty(t, officers, "a refused registration was recorded")
 			return err
 		},
-		"recovery officer registration": func(t *testing.T, ca CeremonyCA) error {
-			svc := newSystemCeremonyWithCA(t, ca)
-			req := register
-			req.CSRPEM = newHostileCSRPEM(t, hostileCSRs[3])
-			_, err := svc.RegisterRecoveryOfficer(ctx, req)
+		"database holder registration": func(t *testing.T, ca CeremonyCA) error {
+			svc, err := NewDatabaseCeremonyService("acme", "vault", seal.NewMemoryBackend(), HolderDeps{CA: ca, Factors: testFactors(t)}, testLogger())
+			require.NoError(t, err)
+			_, err = svc.RegisterOfficer(ctx, req(t))
+			officers, lerr := svc.ListOfficers(ctx)
+			require.NoError(t, lerr)
+			require.Empty(t, officers, "a refused registration was recorded")
+			return err
+		},
+		"initial ceremony": func(t *testing.T, ca CeremonyCA) error {
+			svc := systemHoldersWith(t, ca)
+			_, err := svc.Initialize(ctx, ca, initOpts(2, newHolder(t, "alice", ""), newHolder(t, "bob", "")))
+			officers, lerr := svc.ListOfficers(ctx, seal.DomainUnseal)
+			require.NoError(t, lerr)
+			require.Empty(t, officers, "a refused ceremony recorded a holder")
 			return err
 		},
 		"sign-csr (SignCSRInit)": func(t *testing.T, ca CeremonyCA) error {
-			cfg := defaultConfig()
-			svc, err := NewCeremonyService(cfg, unsealedTestBarrier(t), newTestCredentialService(), testLogger())
+			svc := systemHoldersWith(t, newTestLocalCA(t))
+			_, err := svc.Initialize(ctx, newTestLocalCA(t), initOpts(0))
 			require.NoError(t, err)
-			_, err = svc.Initialize(ctx, ca, nil)
-			require.NoError(t, err)
-			res, err := svc.SignCSRInit(ctx, "operator-1", cfg.SOPin, newHostileCSRPEM(t, hostileCSRs[3]), "operator")
+			svc.deps.CA = ca
+			res, err := svc.SignCSRInit(ctx, "operator-1", "so-pin-1234", newHostileCSRPEM(t, hostileCSRs[3]), "operator")
 			require.Nil(t, res)
 			require.ErrorIs(t, err, ErrCSRSigningFailed)
 			return nil
-		},
-		"initial M-of-N ceremony": func(t *testing.T, ca CeremonyCA) error {
-			cfg, _ := mofnConfig(t, 2, 2)
-			svc, err := NewCeremonyService(cfg, unsealedTestBarrier(t), newTestCredentialService(), testLogger())
-			require.NoError(t, err)
-			_, err = svc.Initialize(ctx, ca, nil)
-			require.Empty(t, svc.pendingCerts, "a refused ceremony left a pending certificate")
-			return err
 		},
 	}
 	for name, run := range entryPoints {

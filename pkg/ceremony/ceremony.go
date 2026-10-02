@@ -24,7 +24,6 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
-	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"

@@ -59,9 +59,13 @@ func signHolderCSR(ctx context.Context, ca CeremonyCA, csrPEM []byte, opts *Sign
 
 // checkIssuedSubject refuses a certificate a CeremonyCA returned unless its
 // Subject is CN=opts.Username, OU=[opts.TenantID, opts.Profile], it carries no
-// Subject Alternative Name, and it certifies the CSR's own key. It holds every
-// CeremonyCA implementation -- including ones composed in from outside this
-// module -- to the SignCSROptions contract, rather than trusting each to.
+// Subject Alternative Name, it certifies the CSR's own key, and it is a leaf
+// with exactly the requested usages: not a CA, no certificate-signing key
+// usage, key usage exactly opts.KeyUsage, and extended key usages exactly the
+// set opts.ExtKeyUsage names (order aside, no duplicates, nothing unknown). It
+// holds every CeremonyCA implementation -- including ones composed in from
+// outside this module -- to the SignCSROptions contract, rather than trusting
+// each to.
 func checkIssuedSubject(cert *x509.Certificate, csr *x509.CertificateRequest, opts *SignCSROptions) error {
 	want, err := opts.Subject()
 	if err != nil {
@@ -80,5 +84,32 @@ func checkIssuedSubject(cert *x509.Certificate, csr *x509.CertificateRequest, op
 	if !ok || !pub.Equal(csr.PublicKey) {
 		return &CertSubjectError{Field: "PublicKey"}
 	}
+	if cert.IsCA {
+		return &IssuedCertCapabilityError{Field: "IsCA"}
+	}
+	if cert.KeyUsage&x509.KeyUsageCertSign != 0 || cert.KeyUsage != opts.KeyUsage {
+		return &IssuedCertCapabilityError{Field: "KeyUsage"}
+	}
+	if !sameExtKeyUsages(cert.ExtKeyUsage, opts.ExtKeyUsage) || len(cert.UnknownExtKeyUsage) != 0 {
+		return &IssuedCertCapabilityError{Field: "ExtKeyUsage"}
+	}
 	return nil
+}
+
+// sameExtKeyUsages reports whether got is exactly the set want names: the
+// same usages, in any order, with none repeated.
+func sameExtKeyUsages(got, want []x509.ExtKeyUsage) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	g := slices.Clone(got)
+	w := slices.Clone(want)
+	slices.Sort(g)
+	slices.Sort(w)
+	for i := 1; i < len(g); i++ {
+		if g[i] == g[i-1] {
+			return false
+		}
+	}
+	return slices.Equal(g, w)
 }

@@ -15,7 +15,7 @@
 package ceremony
 
 import (
-	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -42,6 +42,6 @@ func validPrincipalName(name string) bool {
 
 // holderProfiles maps a holder role onto its certificate profile.
 var holderProfiles = map[seal.HolderRole]string{
-	seal.RoleSecurityOfficer: auth.ProfileSecurityOfficer,
-	seal.RoleCustodian:       auth.ProfileCustodian,
+	seal.RoleSecurityOfficer: holderprofile.SecurityOfficer,
+	seal.RoleCustodian:       holderprofile.Custodian,
 }
