@@ -16,13 +16,17 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io/fs"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -33,6 +37,18 @@ const DefaultCompactionInterval = time.Minute
 
 // compactionPassTimeout bounds the work one pass spends on one database.
 const compactionPassTimeout = 30 * time.Second
+
+// periodSampleResolution is how many revision samples a period policy keeps
+// per period: a new sample is taken only once the newest is period/
+// periodSampleResolution old, so a target holds about this many however
+// often the scheduler runs, and its compaction target is at most one sample
+// interval older than the period -- precision lost on the side of keeping
+// history.
+const periodSampleResolution = 64
+
+// compactionSamplesFile is the file, in the node's data directory, that holds
+// the period policies' samples across restarts.
+const compactionSamplesFile = "compaction-samples.json"
 
 // compactionTarget is one keyspace with a compaction policy: a database --
 // its owning tenant, its name -- or, with Node set, the node keyspace.
@@ -116,6 +132,14 @@ type compactionScheduler struct {
 	// samples holds each period-policy database's observed revisions,
 	// oldest first. Passes never overlap (running), so it needs no lock.
 	samples map[string][]revisionSample
+
+	// samplesPath, when set, is where samples persist across restarts, so a
+	// node that restarts more often than a policy's period still compacts.
+	// Empty keeps them in memory only.
+	samplesPath string
+
+	// samplesDirty marks samples changed since they were last saved.
+	samplesDirty bool
 }
 
 // run compacts on the configured interval until ctx is cancelled.
@@ -160,6 +184,15 @@ func (c *compactionScheduler) passOnce(ctx context.Context) int {
 	for k := range c.samples {
 		if !live[k] {
 			delete(c.samples, k)
+			c.samplesDirty = true
+		}
+	}
+	if c.samplesDirty {
+		if err := c.saveSamples(); err != nil {
+			c.logger.Warn("compaction scheduler: period samples not saved; a restart waits a full period",
+				slog.Any("error", err))
+		} else {
+			c.samplesDirty = false
 		}
 	}
 	return compacted
@@ -243,15 +276,21 @@ func (c *compactionScheduler) target(t compactionTarget, current int64, now time
 	return targeter(c, t, current, now)
 }
 
-// periodTarget records the database's current revision and returns the
-// newest sampled revision at least the policy's period old: everything newer
-// than the period is kept. With no sample that old -- a fresh policy, or a
-// restart, since samples live in memory -- it returns 0 and nothing is
-// compacted: the policy errs toward keeping history.
+// periodTarget records the database's current revision -- once the newest
+// sample is a sample interval (period/periodSampleResolution) old -- and
+// returns the newest sampled revision at least the policy's period old:
+// everything newer than the period is kept. With no sample that old -- a
+// fresh policy, or a node whose samples could not be loaded -- it returns 0
+// and nothing is compacted: the policy errs toward keeping history.
 func (c *compactionScheduler) periodTarget(t compactionTarget, current int64, now time.Time) int64 {
 	key := t.key()
-	samples := append(c.samples[key], revisionSample{at: now, revision: current})
-	cutoff := now.Add(-t.Policy.RetainDuration())
+	period := t.Policy.RetainDuration()
+	samples := c.samples[key]
+	if n := len(samples); n == 0 || now.Sub(samples[n-1].at) >= period/periodSampleResolution {
+		samples = append(samples, revisionSample{at: now, revision: current})
+		c.samplesDirty = true
+	}
+	cutoff := now.Add(-period)
 
 	// The newest sample at or before the cutoff is the target; every older
 	// one is no longer needed.
@@ -265,11 +304,91 @@ func (c *compactionScheduler) periodTarget(t compactionTarget, current int64, no
 	var target int64
 	if newest >= 0 {
 		target = samples[newest].revision
-		samples = samples[newest:]
+		if newest > 0 {
+			samples = samples[newest:]
+			c.samplesDirty = true
+		}
 	}
 	c.samples[key] = samples
 	return target
 }
+
+// persistedSample is a revision sample as the samples file holds it.
+type persistedSample struct {
+	At       time.Time `json:"at"`
+	Revision int64     `json:"revision"`
+}
+
+// loadSamples replaces the samples with the ones persisted at samplesPath. A
+// missing file is no samples. A file that cannot be read or parsed is a
+// *CompactionSamplesError and leaves no samples: the scheduler then waits a
+// full period before compacting, as a fresh policy does, rather than guess.
+func (c *compactionScheduler) loadSamples() error {
+	c.samples = make(map[string][]revisionSample)
+	if c.samplesPath == "" {
+		return nil
+	}
+	data, err := os.ReadFile(c.samplesPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return &CompactionSamplesError{Path: c.samplesPath, Err: err}
+	}
+	var persisted map[string][]persistedSample
+	if err := json.Unmarshal(data, &persisted); err != nil {
+		return &CompactionSamplesError{Path: c.samplesPath, Err: err}
+	}
+	for key, list := range persisted {
+		samples := make([]revisionSample, 0, len(list))
+		for _, p := range list {
+			samples = append(samples, revisionSample{at: p.At, revision: p.Revision})
+		}
+		c.samples[key] = samples
+	}
+	return nil
+}
+
+// saveSamples writes the samples to samplesPath atomically; a no-op without
+// a path.
+func (c *compactionScheduler) saveSamples() error {
+	if c.samplesPath == "" {
+		return nil
+	}
+	persisted := make(map[string][]persistedSample, len(c.samples))
+	for key, list := range c.samples {
+		out := make([]persistedSample, 0, len(list))
+		for _, smp := range list {
+			out = append(out, persistedSample{At: smp.at, Revision: smp.revision})
+		}
+		persisted[key] = out
+	}
+	data, err := json.Marshal(persisted)
+	if err != nil {
+		return &CompactionSamplesError{Path: c.samplesPath, Err: err}
+	}
+	if err := clustertls.WriteFileAtomic(c.samplesPath, data, 0o600); err != nil {
+		return &CompactionSamplesError{Path: c.samplesPath, Err: err}
+	}
+	return nil
+}
+
+// CompactionSamplesError reports that the compaction scheduler could not read
+// or write its persisted period samples.
+type CompactionSamplesError struct {
+	// Path is the samples file.
+	Path string
+	// Err is the cause.
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *CompactionSamplesError) Error() string {
+	return "server: compaction samples " + e.Path + ": " + e.Err.Error()
+}
+
+// Unwrap returns the cause.
+func (e *CompactionSamplesError) Unwrap() error { return e.Err }
 
 // compactionTargets returns the keyspaces this node compacts: the node
 // keyspace when the platform's configuration sets a policy for it, and the
@@ -342,6 +461,13 @@ func (s *Server) startCompactionScheduler() {
 		now:      time.Now,
 		logger:   s.logger,
 		samples:  make(map[string][]revisionSample),
+	}
+	if s.config != nil && s.config.Raft.DataDir != "" {
+		scheduler.samplesPath = filepath.Join(s.config.Raft.DataDir, compactionSamplesFile)
+	}
+	if err := scheduler.loadSamples(); err != nil {
+		s.logger.Warn("compaction scheduler: period samples not loaded; period policies wait a full period",
+			slog.Any("error", err))
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s.compactorCancel = cancel

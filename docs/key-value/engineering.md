@@ -721,11 +721,19 @@ namespaced view, resolved for the owning tenant exactly as an explicit
 `Compact` from that tenant is:
 
 - `revision`: target = current revision - `retain_revisions`.
-- `period`: each pass samples the database's current revision with the time;
-  target = the newest sample at least `retain_period` old. Samples are held in
-  memory, so after a restart nothing is compacted until a full period has been
-  observed -- the policy errs toward keeping history, never toward discarding
-  it.
+- `period`: the scheduler samples the database's current revision with the
+  time, taking a new sample only once the newest is `retain_period`/64 old,
+  so a policy holds about 64 samples however often the scheduler runs; target
+  = the newest sample at least `retain_period` old, which keeps at most one
+  sample interval more history than the period asks. The samples persist in
+  `compaction-samples.json` in the node's `data_dir` (written atomically, only
+  when they change), so a node that restarts more often than its period still
+  compacts. A fresh policy, or a node whose samples file is missing or cannot
+  be read (logged), compacts nothing until a full period has been observed --
+  the policy errs toward keeping history, never toward discarding it.
+  *(Corrected: samples were held in memory, one per pass -- about 43,000 for a
+  30-day period at the default interval -- and a node that restarted more
+  often than its period never compacted.)*
 - A target below 1 is skipped. A target the database is already compacted to
   is answered with the typed already-compacted refusal and is not a failure.
 - A database whose barrier is sealed, which is being dropped, or which cannot

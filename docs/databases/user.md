@@ -173,6 +173,22 @@ tenant cannot set one on yours (nor you on theirs). As-of reads, watch replays
 and restores below what the policy keeps fail afterwards -- that history is
 gone.
 
+**A policy is held and run per node.** It is stored in the database's catalog
+record on the node that took the request -- its local `meta.json` -- and only
+a node whose catalog holds the database runs it. It is not replicated to the
+other nodes of a cluster. On a multi-node cluster, a policy set through one
+node is run by that node alone, so while that node is down nothing compacts
+the database on schedule. To have every node run it, declare it in each
+node's configuration file (`databases[].compaction`), which every node applies
+at start. Two nodes running one policy never disagree: the second compaction
+to a revision is refused as already done.
+
+**A `period` policy needs one full period first.** After you set a period
+policy, nothing is compacted until the node has watched the database for one
+whole period. The node remembers what it has seen across restarts, in
+`compaction-samples.json` in its data directory, so restarts do not reset
+that wait.
+
 ## Troubleshooting
 
 **`--barrier-enabled` was rejected.** The database shares the default store, so
