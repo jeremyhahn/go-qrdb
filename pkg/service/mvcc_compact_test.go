@@ -147,9 +147,39 @@ func TestCompactErrors_Messages(t *testing.T) {
 		&CompactRevisionInvalidError{Revision: -1},
 		&CompactRevisionFutureError{Requested: 9, Current: 3},
 		&FeatureNotEnabledError{Feature: featuregate.PrefixCompaction, ShardID: 7},
+		&CompactPrefixInvalidError{Prefix: "acme/"},
 	} {
 		if msg := err.Error(); len(msg) < len("service: ") || msg[:len("service: ")] != "service: " {
 			t.Errorf("%T.Error() = %q, want a service: prefix", err, msg)
+		}
+	}
+}
+
+// TestMVCCKVService_CompactPrefix_RefusesAnUnsafePrefix: a prefix compaction
+// is of exactly one database's keyspace -- a "<tenant>/<database>/" namespace,
+// or "" for a store that is one database's own (a dedicated raft group). Any
+// other prefix could span many databases ("acme/" is every database of acme,
+// "acme/ap" is acme/app/ and acme/apples/) or part of one, and is refused
+// before anything is proposed.
+func TestMVCCKVService_CompactPrefix_RefusesAnUnsafePrefix(t *testing.T) {
+	for _, prefix := range []string{"acme/", "acme/ap", "acme/app", "acme/app/deeper/", "/app/", "acme//", "p/"} {
+		host, cmds := recordingHost(sm.Result{})
+		err := NewMVCCKVService(host, 1).(PrefixCompactor).CompactPrefix(context.Background(), prefix, 5)
+		var unsafe *CompactPrefixInvalidError
+		if !errors.As(err, &unsafe) || unsafe.Prefix != prefix {
+			t.Fatalf("CompactPrefix(%q) = %v (%T), want *CompactPrefixInvalidError", prefix, err, err)
+		}
+		if len(*cmds) != 0 {
+			t.Fatalf("CompactPrefix(%q) proposed %v", prefix, *cmds)
+		}
+	}
+	for _, prefix := range []string{"acme/app/", "system/system/", ""} {
+		host, cmds := recordingHost(sm.Result{Value: 1})
+		if err := NewMVCCKVService(host, 1).(PrefixCompactor).CompactPrefix(context.Background(), prefix, 5); err != nil {
+			t.Fatalf("CompactPrefix(%q) = %v", prefix, err)
+		}
+		if len(*cmds) != 1 {
+			t.Fatalf("CompactPrefix(%q) proposed %d commands", prefix, len(*cmds))
 		}
 	}
 }

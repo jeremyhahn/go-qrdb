@@ -569,6 +569,7 @@ boundary as a typed value and is mapped per transport by
 | Requested revision above current | invalid-argument | yes |
 | Requested revision below the compaction floor | error, never an approximate value | **yes** |
 | `Compact` through the raw, un-namespaced service | `service.CompactScopeRequiredError`; nothing compacted | **yes** |
+| `MVCCKVService.CompactPrefix` with a prefix that is not exactly one database's keyspace (a `<tenant>/<database>/` namespace, or `""` for a dedicated raft group) | `service.CompactPrefixInvalidError` (`INVALID_ARGUMENT`); nothing proposed | **yes** |
 | `Compact` to a revision below 1 | `service.CompactRevisionInvalidError` | **yes** |
 | `Compact` to a revision above the current one | `service.CompactRevisionFutureError` | **yes** |
 | `Compact` to a revision the database is already compacted to | `service.RevisionCompactedError`; the floor is unchanged | **yes** |

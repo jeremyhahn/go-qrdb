@@ -110,7 +110,7 @@ func TestServices_ANotConfiguredSubsystemIsNotReportedAsSuccess(t *testing.T) {
 			return NewMVCCKVService(h, 1).Delete(ctx, "k")
 		}},
 		{"MVCCKVService.CompactPrefix", func(h Host) error {
-			return NewMVCCKVService(h, 1).(PrefixCompactor).CompactPrefix(ctx, "p/", 1)
+			return NewMVCCKVService(h, 1).(PrefixCompactor).CompactPrefix(ctx, "p/q/", 1)
 		}},
 		{"KVService.Delete", func(h Host) error {
 			return NewKVService(h, 1).Delete(ctx, "k")

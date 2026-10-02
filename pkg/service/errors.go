@@ -1092,6 +1092,20 @@ func (e *CompactScopeRequiredError) Error() string {
 	return "service: compaction requires a database scope; there is no store-wide compaction"
 }
 
+// CompactPrefixInvalidError is returned when a prefix compaction names a
+// prefix that is not exactly one database's keyspace: neither a
+// "<tenant>/<database>/" namespace (tenant.NamespaceOf) nor the empty prefix
+// of a store that is one database's own. Such a prefix could span several
+// databases or part of one.
+type CompactPrefixInvalidError struct {
+	Prefix string
+}
+
+// Error returns a human-readable description.
+func (e *CompactPrefixInvalidError) Error() string {
+	return "service: compaction prefix " + strconv.Quote(e.Prefix) + " is not one database's keyspace"
+}
+
 // CompactRevisionInvalidError is returned when Compact names a revision below
 // 1.
 type CompactRevisionInvalidError struct {

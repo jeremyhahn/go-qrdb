@@ -272,6 +272,7 @@ var restoreRules = []rule{
 	// yet. Neither is the caller's request to fix.
 	as(&service.CompactScopeRequiredError{}, Unprocessable),
 	as(&service.FeatureNotEnabledError{}, Unprocessable),
+	as(&service.CompactPrefixInvalidError{}, InvalidArgument),
 	as(&service.CompactRevisionInvalidError{}, InvalidArgument),
 	as(&service.CompactRevisionFutureError{}, InvalidArgument),
 	as(&service.RestoreNilRequestError{}, InvalidArgument),

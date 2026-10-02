@@ -30,6 +30,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
@@ -879,12 +880,18 @@ func (s *MVCCKVService) CompactNodeKeyspace(ctx context.Context, revision int64)
 // with the empty prefix for a dedicated shard that is one database's whole
 // keyspace.
 //
-// A revision below 1 is refused before anything is proposed; a revision above
-// the current one, or at or below the database's floor, is refused by the
-// state machine (*CompactRevisionFutureError, *RevisionCompactedError) and
-// changes nothing. The command is proposed only once the group's feature gate
-// reports every replica can apply it (*FeatureNotEnabledError otherwise).
+// Any other prefix is refused before anything is proposed
+// (*CompactPrefixInvalidError): it could span several databases or part of
+// one. A revision below 1 is refused before anything is proposed too; a
+// revision above the current one, or at or below the database's floor, is
+// refused by the state machine (*CompactRevisionFutureError,
+// *RevisionCompactedError) and changes nothing. The command is proposed only
+// once the group's feature gate reports every replica can apply it
+// (*FeatureNotEnabledError otherwise).
 func (s *MVCCKVService) CompactPrefix(ctx context.Context, prefix string, revision int64) error {
+	if !isDatabaseKeyspace(prefix) {
+		return &CompactPrefixInvalidError{Prefix: prefix}
+	}
 	if revision < 1 {
 		return &CompactRevisionInvalidError{Revision: revision}
 	}
@@ -906,6 +913,17 @@ func (s *MVCCKVService) CompactPrefix(ctx context.Context, prefix string, revisi
 		return resultErr
 	}
 	return nil
+}
+
+// isDatabaseKeyspace reports whether prefix is exactly one database's
+// keyspace: a "<tenant>/<database>/" namespace, or the empty prefix of a
+// store that is one database's own.
+func isDatabaseKeyspace(prefix string) bool {
+	if prefix == "" {
+		return true
+	}
+	ns, ok := tenant.NamespaceOf([]byte(prefix))
+	return ok && len(ns) == len(prefix)
 }
 
 // CurrentRevision returns the latest committed MVCC revision using a
