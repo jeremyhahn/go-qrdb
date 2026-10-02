@@ -11,6 +11,14 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.26.0-alpha] - 2026-10-01
+
+Merge train 5. Highlights:
+
+- **DROP DATABASE drop fence (#482).** A database drop is atomic with every write: a write that races the drop is refused, not half-applied. Guarded writes travel behind a cluster feature gate and are used only once every node in the cluster supports them. Another tenant's dropping database answers as missing.
+- **SQL primary-key statements no longer scale with table size.** The planner now uses a per-table row-count estimate (COUNT(*) stays exact), so a PK point read at 64k rows drops from about 127 ms to about 1.6 ms. Pessimistic row locking holds one lock lease per connection instead of one per statement.
+- **Watch** accepts a start revision above current and is no longer cancelled by a racing compaction (#514). KVStore comparability (#66) and the seal guarded-delete arm (#552) are documented.
+
 ### Added
 
 - **Cluster feature gate (`pkg/cluster/featuregate`).** A command only newer binaries
