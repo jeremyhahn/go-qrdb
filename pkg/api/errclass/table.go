@@ -343,6 +343,8 @@ var databaseRules = []rule{
 	// A raft-backed database's Raft configuration carries its shard ID; an
 	// update may change it but not remove it.
 	as(&database.RaftConfigRequiredError{Name: "db"}, InvalidArgument),
+	// An admin start in the user range the cluster issues to databases.
+	as(&service.UserRangeShardError{ShardID: 1000}, InvalidArgument),
 	// A raft create on a node with no shard ID issuer: a composition fault.
 	as(&database.ShardIssuerRequiredError{}, Unimplemented),
 	// FIRST of the claim rows: a corrupt high-water mark is a server fault,

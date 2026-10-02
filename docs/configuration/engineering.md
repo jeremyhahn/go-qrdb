@@ -97,6 +97,7 @@ flags alone.
 | Seal barrier enabled with `disk`/`fast` over `file` `sm_storage` | refused at start: file storage cannot be encrypted at rest (`pebble` storage is encrypted and allowed) |
 | Per-database barrier on a database sharing the default store | refused |
 | Multicast discovery with no secret | the method does not run |
+| `raft.shard_id` at or above `shard.UserMin` (1000) in raft mode | validation error -- the node's own group sits below the user range, whose IDs the cluster issues to databases |
 
 ## Environment variables
 

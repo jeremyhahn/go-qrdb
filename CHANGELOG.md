@@ -33,6 +33,11 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **The user shard range belongs to databases.** Shard IDs from
+  `shard.UserMin` (1000) up are issued by the cluster to databases. A node's
+  `raft.shard_id` in that range is a configuration validation error, and an
+  admin start-shard naming one is refused with `service.UserRangeShardError`
+  (400 / `INVALID_ARGUMENT`) on every transport.
 - **A Raft update keeps the secrets it leaves out.** Secrets are write-only,
   so a client that read a database's Raft settings and wrote them back sent
   none: the update cleared the static shared secret and failed validation for

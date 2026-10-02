@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 )
 
 // The state machine refused a committed command by encoding the refusal into
@@ -413,6 +414,20 @@ func (e *DrainError) Unwrap() error {
 // ---------------------------------------------------------------------------
 // Shard management errors
 // ---------------------------------------------------------------------------
+
+// UserRangeShardError is returned when an admin start names a shard ID in the
+// user range. The cluster issues those IDs to databases (shard.Claimer); a
+// group started on one by hand could hold an ID the claimer gives a database.
+type UserRangeShardError struct {
+	ShardID uint64
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *UserRangeShardError) Error() string {
+	return "service: shard " + strconv.FormatUint(e.ShardID, 10) +
+		" is in the user range, which the cluster issues to databases; start a shard below " +
+		strconv.FormatUint(shard.UserMin, 10)
+}
 
 // ShardStartError is returned when starting a Raft shard fails.
 type ShardStartError struct {

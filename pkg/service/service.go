@@ -32,6 +32,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
@@ -1297,6 +1298,11 @@ func (s *AdminService) Capabilities(_ context.Context) (*capabilities.Capabiliti
 // A state machine factory must be registered via WithStateMachineFactory
 // before calling this method.
 func (s *AdminService) StartShard(ctx context.Context, req *StartShardRequest) error {
+	// The user range is the cluster's to issue, to databases; a group started
+	// there by hand could hold an ID the claimer gives a database.
+	if req.ShardID >= shard.UserMin {
+		return &UserRangeShardError{ShardID: req.ShardID}
+	}
 	if s.smFactory == nil {
 		return &NoStateMachineFactoryError{}
 	}

@@ -21,6 +21,7 @@ package config
 import (
 	"crypto/tls"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,6 +32,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
+	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 )
 
 // envPrefix is the environment-variable prefix for config overrides. Nested
@@ -1622,6 +1624,12 @@ func (c *Config) Validate() error {
 	if !c.IsStandalone() {
 		if c.Raft.ShardID == 0 {
 			return &ValidationError{Field: "raft.shard_id", Reason: "must be greater than 0"}
+		}
+		// The node's own group sits below the user range, whose IDs the
+		// cluster issues to databases.
+		if c.Raft.ShardID >= shard.UserMin {
+			return &ValidationError{Field: "raft.shard_id",
+				Reason: "must be below " + strconv.FormatUint(shard.UserMin, 10) + ": shard IDs from there up are issued to databases"}
 		}
 		if c.Raft.ReplicaID == 0 {
 			return &ValidationError{Field: "raft.replica_id", Reason: "must be greater than 0"}

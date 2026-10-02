@@ -33,6 +33,12 @@ grants -- is refused with `403` / `PermissionDenied` on every transport.
 Health, status, peers and capabilities stay self-scoped; `admin:peers` backs
 the etcd listener's tenant-facing `Cluster.MemberList`.
 
+**Start shard refuses the user range.** Shard IDs from `shard.UserMin` (1000)
+up are issued by the cluster to databases; a start that names one is refused
+with `service.UserRangeShardError` (400 / `INVALID_ARGUMENT`) on every
+transport before the host is touched, so no group started by hand can hold an
+ID the claimer gives a database.
+
 **`GET /health` is one of only two unauthenticated routes in the server** (the
 other is `GET /v1/config/initialized`), so a load balancer can probe a node it
 has no credentials for.
