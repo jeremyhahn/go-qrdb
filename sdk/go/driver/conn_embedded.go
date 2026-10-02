@@ -108,10 +108,10 @@ func (c *embeddedConn) IsValid() bool {
 // ResetSession prepares a pooled connection for reuse by a new caller. A
 // transaction left open by the previous user is rolled back rather than
 // inherited, and a connection that cannot be returned to a clean state is
-// reported bad so the pool discards it. A statement still open on the
-// connection is not such a state: the reset is refused with the typed
-// *provider.CommandInProgressError and the connection stays valid (see
-// commandInProgress).
+// reported bad so the pool discards it. That includes a connection with a
+// statement still open on it: the ROLLBACK cannot run, and database/sql
+// acts only on ErrBadConn from ResetSession -- any other error would hand
+// the previous user's transaction, and its row locks, to the next caller.
 func (c *embeddedConn) ResetSession(ctx context.Context) error {
 	if c.closed.Load() {
 		return sqld.ErrBadConn
@@ -119,9 +119,6 @@ func (c *embeddedConn) ResetSession(ctx context.Context) error {
 
 	if c.inTx.Load() {
 		if _, err := c.execInternal(ctx, "ROLLBACK"); err != nil {
-			if commandInProgress(err) {
-				return err
-			}
 			c.bad.Store(true)
 			return sqld.ErrBadConn
 		}
@@ -151,10 +148,11 @@ func (c *embeddedConn) Ping(ctx context.Context) error {
 }
 
 // commandInProgress reports whether err is the session's refusal to begin a
-// statement while another is still open on it. That refusal says nothing
-// about the connection's health, so it must never mark the connection bad:
-// database/sql closes a bad connection, and the close waits on the caller's
-// own open rows -- forever.
+// statement while another is still open on it. To Ping that refusal says
+// nothing about the connection's health, so Ping must not mark the
+// connection bad: database/sql closes a bad connection, and the close waits
+// on the caller's own open rows -- forever. ResetSession is different (see
+// its doc comment).
 func commandInProgress(err error) bool {
 	var inProgress *provider.CommandInProgressError
 	return errors.As(err, &inProgress)

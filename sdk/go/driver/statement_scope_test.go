@@ -43,8 +43,8 @@ func (c *countingTableService) GetTable(ctx context.Context, database, name stri
 // until its rows are closed, and a second statement on the same connection
 // meanwhile is refused rather than run inside the first's command, where it
 // could drop the first statement's pending writes or be served the first's
-// resolution. database/sql never overlaps statements on one connection; a
-// caller driving the driver directly can, so the connection itself refuses.
+// resolution. The connection itself refuses, so the rule holds for a caller
+// driving the driver directly as well as through database/sql.
 func TestEmbedded_OverlappingStatementsAreRefused(t *testing.T) {
 	ctx := context.Background()
 	cfg := &DSNConfig{Scheme: SchemeEmbedded, Database: "overlap", Backend: "memory", Engine: "kv"}
@@ -193,9 +193,12 @@ func TestEmbedded_TxStatementWhileRowsAreOpenIsRefused(t *testing.T) {
 	}
 }
 
-// TestEmbedded_ResetSessionWhileACommandIsOpen: a connection reset while a
-// statement is still open on it reports the typed refusal and stays valid --
-// it is not marked bad, since its session is evidently alive.
+// TestEmbedded_ResetSessionWhileACommandIsOpen: a pooled connection reset
+// while a statement is still open on it cannot roll back the previous
+// user's transaction, so it is reported bad and the pool discards it rather
+// than hand that transaction and its locks to the next caller. database/sql
+// acts only on ErrBadConn from ResetSession. Ping, by contrast, leaves such
+// a connection valid: an open statement proves the session alive.
 func TestEmbedded_ResetSessionWhileACommandIsOpen(t *testing.T) {
 	ctx := context.Background()
 	cfg := &DSNConfig{Scheme: SchemeEmbedded, Database: "resetopen", Backend: "memory", Engine: "kv"}
@@ -216,13 +219,6 @@ func TestEmbedded_ResetSessionWhileACommandIsOpen(t *testing.T) {
 		t.Fatalf("SELECT: %v", err)
 	}
 
-	var inProgress *provider.CommandInProgressError
-	if err := c.ResetSession(ctx); !errors.As(err, &inProgress) {
-		t.Fatalf("reset with a command open = %v, want CommandInProgressError", err)
-	}
-	if !c.IsValid() {
-		t.Fatal("a connection with a live command was marked bad")
-	}
 	if err := c.Ping(ctx); err != nil {
 		t.Fatalf("ping with a command open = %v, want nil", err)
 	}
@@ -230,14 +226,14 @@ func TestEmbedded_ResetSessionWhileACommandIsOpen(t *testing.T) {
 		t.Fatal("ping marked a connection with a live command bad")
 	}
 
+	if err := c.ResetSession(ctx); !errors.Is(err, sqld.ErrBadConn) {
+		t.Fatalf("reset with a command open = %v, want ErrBadConn", err)
+	}
+	if c.IsValid() {
+		t.Fatal("a connection whose transaction the reset could not roll back stayed valid for the pool")
+	}
 	if err := rows.Close(); err != nil {
 		t.Fatalf("close: %v", err)
-	}
-	if err := c.ResetSession(ctx); err != nil {
-		t.Fatalf("reset after the rows close: %v", err)
-	}
-	if !c.IsValid() {
-		t.Fatal("the connection is valid after its reset")
 	}
 }
 
