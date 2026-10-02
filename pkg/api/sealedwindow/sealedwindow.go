@@ -226,7 +226,19 @@ var Table = map[Verb]Names{
 
 	VerbCeremonyInitialize: {REST: []string{"/v1/ceremony/initialize"}, GRPC: "CeremonyInitialize", QUIC: "ceremony.Initialize", MCP: "qrdb_ceremony_initialize", Embedded: "CeremonyInitialize", Transition: true},
 	VerbCeremonyStatus:     {REST: []string{"/v1/ceremony/status"}, GRPC: "CeremonyStatus", QUIC: "ceremony.Status", MCP: "qrdb_ceremony_status", Embedded: "CeremonyStatus"},
-	VerbCeremonySignCSR:    {REST: []string{"/v1/ceremony/sign-csr"}, GRPC: "CeremonySignCSR", QUIC: "ceremony.SignCSR", MCP: "qrdb_ceremony_sign_csr", Embedded: "CeremonySignCSR"},
+	// ceremony-sign-csr is PreOperationalOnly for the same reason the officer
+	// registration verbs are: minting a NEW CA-signed certificate from a
+	// caller-supplied CSR needs the cluster CA key (Key A), which is
+	// barrier-encrypted and reachable only through an unsealed
+	// cakey.Provider once the ceremony is operational. Before that -- the
+	// initial M-of-N ceremony -- Key A is still the in-memory
+	// cakey.StaticProvider created at generation (see
+	// docs/certificate-authority/architecture.md, "Signing only while
+	// unsealed"), which is what this exemption is scoped to. An officer who
+	// already holds a certificate still unseals with it on every later
+	// restart: verifying a presented certificate needs only the CA
+	// certificate (public), never this verb.
+	VerbCeremonySignCSR: {REST: []string{"/v1/ceremony/sign-csr"}, GRPC: "CeremonySignCSR", QUIC: "ceremony.SignCSR", MCP: "qrdb_ceremony_sign_csr", Embedded: "CeremonySignCSR", PreOperationalOnly: true},
 
 	VerbBarrierClusterUnseal: {REST: []string{"/v1/barrier/cluster-unseal"}, GRPC: "BarrierClusterUnseal", QUIC: "barrier.ClusterUnseal", MCP: "qrdb_barrier_cluster_unseal", Embedded: "BarrierClusterUnseal", AuthenticatedOnly: true},
 }

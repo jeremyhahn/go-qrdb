@@ -397,11 +397,17 @@ func TestDecide(t *testing.T) {
 // exactly the officer and recovery-officer registration verbs.
 func TestPreOperationalOnlyDerivations(t *testing.T) {
 	rest := sealedwindow.RESTPreOperationalOnly()
-	if len(rest) != 2 || rest[0] != "POST /v1/barrier/officers" || rest[1] != "POST /v1/barrier/recovery/officers" {
-		t.Errorf("RESTPreOperationalOnly = %v", rest)
+	wantREST := []string{"POST /v1/barrier/officers", "POST /v1/barrier/recovery/officers", "/v1/ceremony/sign-csr"}
+	if len(rest) != len(wantREST) {
+		t.Fatalf("RESTPreOperationalOnly = %v, want %v", rest, wantREST)
+	}
+	for i, w := range wantREST {
+		if rest[i] != w {
+			t.Errorf("RESTPreOperationalOnly[%d] = %q, want %q", i, rest[i], w)
+		}
 	}
 	grpc := sealedwindow.GRPCFullMethodPreOperationalOnly("qrdb.v1.QRDBService")
-	for _, m := range []string{"/qrdb.v1.QRDBService/BarrierOfficerRegister", "/qrdb.v1.QRDBService/BarrierRecoveryOfficerRegister"} {
+	for _, m := range []string{"/qrdb.v1.QRDBService/BarrierOfficerRegister", "/qrdb.v1.QRDBService/BarrierRecoveryOfficerRegister", "/qrdb.v1.QRDBService/CeremonySignCSR"} {
 		if _, ok := grpc[m]; !ok {
 			t.Errorf("GRPCFullMethodPreOperationalOnly missing %s", m)
 		}
@@ -409,8 +415,8 @@ func TestPreOperationalOnlyDerivations(t *testing.T) {
 	quic := sealedwindow.QUICPreOperationalOnly()
 	mcp := sealedwindow.MCPPreOperationalOnly()
 	for set, names := range map[string][]string{
-		"quic": {"barrier.OfficerRegister", "barrier.RecoveryOfficerRegister"},
-		"mcp":  {"qrdb_barrier_officer_register", "qrdb_barrier_recovery_officer_register"},
+		"quic": {"barrier.OfficerRegister", "barrier.RecoveryOfficerRegister", "ceremony.SignCSR"},
+		"mcp":  {"qrdb_barrier_officer_register", "qrdb_barrier_recovery_officer_register", "qrdb_ceremony_sign_csr"},
 	} {
 		got := map[string]map[string]struct{}{"quic": quic, "mcp": mcp}[set]
 		if len(got) != len(names) {
@@ -422,8 +428,8 @@ func TestPreOperationalOnlyDerivations(t *testing.T) {
 			}
 		}
 	}
-	if len(grpc) != 2 {
-		t.Errorf("GRPCFullMethodPreOperationalOnly has %d entries, want 2", len(grpc))
+	if len(grpc) != 3 {
+		t.Errorf("GRPCFullMethodPreOperationalOnly has %d entries, want 3", len(grpc))
 	}
 }
 
@@ -455,6 +461,7 @@ func TestPreOperationalOnlyFlags(t *testing.T) {
 	want := map[sealedwindow.Verb]bool{
 		sealedwindow.VerbOfficerRegister:         true,
 		sealedwindow.VerbRecoveryOfficerRegister: true,
+		sealedwindow.VerbCeremonySignCSR:         true,
 	}
 
 	for _, v := range sealedwindow.Verbs {
