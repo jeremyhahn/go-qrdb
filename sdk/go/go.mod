@@ -3,18 +3,18 @@ module github.com/jeremyhahn/go-qrdb/sdk/go
 go 1.27.0
 
 require (
-	github.com/cockroachdb/pebble/v2 v2.1.4
+	github.com/cockroachdb/pebble/v2 v2.1.7
 	github.com/dolthub/go-mysql-server v0.20.1-0.20260812191550-bda99d66b4bf
 	github.com/dolthub/vitess v0.0.0-20260728212736-0542037326d7
 	github.com/google/uuid v1.6.0
-	github.com/jeremyhahn/go-enclave v0.6.1-alpha
+	github.com/jeremyhahn/go-enclave v0.6.2-alpha
 	github.com/jeremyhahn/go-objstore v0.3.0-alpha
 	github.com/jeremyhahn/go-qrdb v0.30.1-alpha
-	github.com/jeremyhahn/go-quicraft v0.15.0-alpha
+	github.com/jeremyhahn/go-quicraft v0.16.0
 	github.com/mark3labs/mcp-go v0.45.0
 	github.com/quic-go/quic-go v0.63.0
 	github.com/stretchr/testify v1.12.1
-	golang.org/x/tools v0.49.0
+	golang.org/x/tools v0.51.0
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.12
 	gorm.io/gorm v1.31.2
@@ -92,7 +92,7 @@ require (
 	github.com/getsentry/sentry-go v0.43.0 // indirect
 	github.com/gin-contrib/sse v1.1.1 // indirect
 	github.com/gin-gonic/gin v1.12.0 // indirect
-	github.com/go-chi/chi/v5 v5.3.0 // indirect
+	github.com/go-chi/chi/v5 v5.3.2 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
@@ -109,12 +109,12 @@ require (
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.21 // indirect
 	github.com/googleapis/gax-go/v2 v2.23.0 // indirect
-	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect
+	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
 	github.com/hashicorp/golang-lru v1.0.2 // indirect
 	github.com/invopop/jsonschema v0.13.0 // indirect
-	github.com/jackc/pgx/v5 v5.10.0 // indirect
+	github.com/jackc/pgx/v5 v5.11.0 // indirect
 	github.com/jeremyhahn/go-codec v1.4.0 // indirect
-	github.com/jeremyhahn/go-truststrap v0.2.0-alpha // indirect
+	github.com/jeremyhahn/go-truststrap v0.4.0-alpha // indirect
 	github.com/jeroenrinzema/psql-wire v0.18.0 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
@@ -154,7 +154,7 @@ require (
 	github.com/spf13/viper v1.21.0 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.8.1 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
-	github.com/tidwall/btree v1.8.1 // indirect
+	github.com/tidwall/btree v1.8.2 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.3.2 // indirect
 	github.com/viterin/partial v1.1.0 // indirect
@@ -164,8 +164,8 @@ require (
 	github.com/wk8/go-ordered-map/v2 v2.1.8 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
-	go.etcd.io/etcd/api/v3 v3.6.8 // indirect
-	go.mongodb.org/mongo-driver v1.17.9 // indirect
+	go.etcd.io/etcd/api/v3 v3.7.2 // indirect
+	go.mongodb.org/mongo-driver v1.17.10 // indirect
 	go.mongodb.org/mongo-driver/v2 v2.8.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/detectors/gcp v1.45.0 // indirect
@@ -181,11 +181,11 @@ require (
 	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/exp v0.0.0-20260312153236-7ab1446f8b90 // indirect
 	golang.org/x/mod v0.41.0 // indirect
-	golang.org/x/net v0.58.0 // indirect
+	golang.org/x/net v0.59.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
-	golang.org/x/telemetry v0.0.0-20260811182544-a038080d80e5 // indirect
+	golang.org/x/telemetry v0.0.0-20260924152758-ed294f943157 // indirect
 	golang.org/x/term v0.46.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.15.0 // indirect

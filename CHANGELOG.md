@@ -11,6 +11,128 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Dependencies
+
+- **go-quicraft v0.15.0-alpha -> v0.16.0** (the project's first non-`-alpha`
+  tag) in the root, `sdk/go` and `sdk/go/gorm/conformance` modules, in
+  lockstep as the dependency-resolution convention requires.
+- **go-truststrap v0.2.0-alpha -> v0.4.0-alpha.** **BREAKING (wire,
+  upstream):** every bootstrap connection's first frame now carries a
+  two-byte `version || suite` header, incompatible with the
+  v0.2.0-alpha/v0.3.0-alpha wire. **This is qrdb-to-qrdb, not qrdb-to-an-
+  external-dependency:** `pkg/clusterenroll` runs both halves of the
+  handshake with this release's go-truststrap. The first node of a cluster
+  runs the Noise bootstrap **server** (`startNoiseAdvertiser` /
+  `noiseboot.NewServer`, `noiseboot` being
+  `go-truststrap/pkg/noiseproto/bootstrap` directly) from the moment it
+  generates or loads the cluster CA, on every boot (`ResumeAdvertiser`); a
+  joining node is the **client** (`truststrap.AutoFetch`) once member-side
+  CSR join ships (the join path is currently refused up front with
+  `EnrollmentUnavailableError`, go-qrdb#241, so no client dials today, but
+  the server is live now). A node on this release cannot complete the
+  handshake against a peer's server on the old wire, and vice versa: **a
+  mixed-version cluster cannot enroll a new member until every node able to
+  advertise is on this release.** The fleet moves together; the old wire is
+  obsolete, not a compatibility target. See
+  [docs/clustering/user.md](docs/clustering/user.md#upgrading-a-cluster) for
+  the operational note. `bootstrap.Server` was also made single-use in
+  v0.3.0-alpha (restart removed); `pkg/clusterenroll` already builds one
+  `*noiseboot.Server` per `Advertiser` and never restarts it in place, so
+  this needed no qrdb change. Noted for `lane/ca-keys-replicated`, which is
+  building member-side CSR join on `noiseproto`: the suite-negotiation API
+  (`ServerConfig.P256StaticKey`, `ClientConfig.ServerP256StaticKey`,
+  `ClientConfig.Suite`, `bootstrap.SuiteNoiseNK`/`SuiteP256AESGCM`) is new
+  surface to adopt on that branch, not a removal.
+- **go-enclave v0.6.1-alpha -> v0.6.2-alpha only** (bugfixes: a negative
+  `BudgetError.InUse` race, several release/rollback accounting fixes, a
+  `ModeRootKey` sealer no longer re-unsealing its root after a successful
+  first unseal, sticky canary-corruption reporting across a refused
+  release). **go-enclave v0.7.0-alpha, which the owner asked for by name, is
+  explicitly HELD BACK.** v0.7.0-alpha is a breaking MINOR release threading
+  `context.Context` through `NewSealed`, `(*Sealer).Seal`,
+  `(*SealedEnclave).Open`/`OpenWith` and the `KeyProtector`/`RootUnsealer`
+  provider seam, and freezing the plaintext `Open`/`OpenWith` return
+  read-only. Go's MVS selects the highest version any module in the graph
+  requires, so requiring go-enclave v0.7.0-alpha here while go-quicraft
+  v0.16.0's own `go.mod` asks for v0.6.2-alpha would still select v0.7.0-alpha
+  for go-quicraft's build too — and go-quicraft v0.16.0 does not compile
+  against it: 15 call sites across `pkg/seal/{barrier.go,strategy.go,
+  strategy_software.go}` call `enclave.NewSealed` and
+  `(*SealedEnclave).Open` without the new `ctx` parameter. Reproduced in a
+  scratch module (`GOWORK=off go build -gcflags="all=-e" ./...` against
+  `github.com/jeremyhahn/go-quicraft/pkg/seal`); the same module builds
+  go-quicraft v0.16.0 cleanly against v0.6.2-alpha, the version its `go.mod`
+  already declares. go-quicraft needs its own go-enclave v0.7 adoption before
+  qrdb can take it; see the upgrade guide at go-enclave `docs/README.md`
+  ("Upgrading from v0.6 to v0.7") for the call shapes that migration needs.
+- **go-objstore v0.3.0-alpha and go-codec v1.4.0 verified already latest** —
+  no change.
+- **Third-party, direct requires, patch/minor only:**
+  `github.com/RoaringBitmap/roaring/v2` v2.15.0 -> v2.29.0,
+  `github.com/cockroachdb/pebble/v2` v2.1.4 -> v2.1.7,
+  `github.com/go-chi/chi/v5` v5.3.0 -> v5.3.2,
+  `github.com/go-sql-driver/mysql` v1.9.3 -> v1.10.1 (root and
+  `sdk/go/gorm/conformance`),
+  `github.com/jackc/pgx/v5` v5.10.0 -> v5.11.0,
+  `github.com/tidwall/btree` v1.8.1 -> v1.8.2,
+  `go.etcd.io/etcd/api/v3` and `go.etcd.io/etcd/client/v3` v3.6.8 -> v3.7.2,
+  `go.mongodb.org/mongo-driver` v1.17.9 -> v1.17.10,
+  `golang.org/x/net` v0.58.0 -> v0.59.0,
+  `golang.org/x/tools` v0.49.0 -> v0.51.0,
+  `gorm.io/driver/postgres` v1.6.2 -> v1.6.3 (`sdk/go/gorm/conformance`
+  only). `protoc`/`protoc-gen-go`/`protoc-gen-go-grpc` pins and
+  `google.golang.org/protobuf` are already current and untouched.
+- **Held back, with reasons:**
+  - **`google.golang.org/grpc` stays at v1.83.2.** v1.84.0 is affected by
+    **GO-2026-6443**, a server panic on a request missing the `:authority`
+    pseudo-header, reachable through this repository's gRPC API server
+    (`pkg/api/unix/server.go:725` and the main gRPC listener). No tagged
+    grpc-go release fixes it yet and `govulncheck` against `dev/main`
+    reports zero findings; taking v1.84.0 now would introduce a
+    remotely-triggerable DoS. Re-evaluate once a patched tag exists.
+  - `github.com/jeroenrinzema/psql-wire` v0.18.0 (latest v0.20.0 changes
+    `ParseFn`'s signature; `pkg/sql/pgsql/server.go`'s `wire.NewServer` call
+    no longer type-checks against it — a pre-1.0 breaking change this release
+    does not adopt).
+  - `github.com/mark3labs/mcp-go` v0.45.0 (latest v1.1.1 **builds** cleanly
+    against every qrdb call site, but changes the MCP transport's
+    unauthenticated-request error shape: `TestWithAuthenticators_BearerAuthenticatesOnEveryNetworkTransport/mcp`
+    in `sdk/go/node` — the Tier-1 auth-parity test across all six transports —
+    fails under it with "no credential: refusal is not unauthenticated:
+    transport error: authorization required". This is a behavioral
+    regression in a Tier-1 capability, not a compile break, so it is held
+    back rather than silently shipped; confirmed green again at v0.45.0.
+    Holding mcp-go back also means its transitive pulls
+    (`buger/jsonparser`, `mailru/easyjson`, `google/jsonschema-go`) stay off
+    every module's dependency graph; `jsonparser`/`easyjson` in particular
+    must stay at v1.1.2/v0.9.2 — a stray trial of mcp-go v1.1.1 had briefly
+    downgraded them to v1.1.1/v0.7.7 via MVS, and v1.1.1 reintroduces
+    **GO-2026-4514**. `govulncheck` confirms zero findings at the restored
+    versions.)
+  - Every `cloud.google.com/go/*`, `github.com/aws/aws-sdk-go-v2/*`,
+    `github.com/wailsapp/wails/v2`, and similar large transitive graphs
+    pulled in only by `github.com/dolthub/go-mysql-server`'s indirect
+    dependencies are untouched: they are not direct requires of this
+    repository and move with `go-mysql-server`'s own releases.
+- **TypeScript SDK (`sdk/typescript`) and desktop frontend
+  (`cmd/qrdb/frontend`):** `npm outdated` and `npm update` run in both.
+  `sdk/typescript`'s `typescript` and `vitest` are already at the latest
+  version their declared ranges allow; the next versions available
+  (`typescript` 7.x, `vitest` 5.x) are major bumps, held back. `tsc` and
+  `vitest run` stay green (8 files, 183 tests). The frontend's
+  `@fontsource-variable/inter`, `@playwright/test`, `@tailwindcss/vite`,
+  `@types/node`, `daisyui`, `svelte` and `svelte-check` move to the latest
+  version their ranges allow; `@sveltejs/vite-plugin-svelte`, `lucide-svelte`,
+  `typescript` and `vite` have only major-version updates available and are
+  held back. `svelte-check` is green (0 errors) after rebuilding
+  `sdk/typescript`'s `dist/`, which the frontend's `file:` dependency on
+  `@qrdb/sdk` resolves against.
+- **`make vulncheck`**, backed by `govulncheck` (pinned alongside the
+  repository's other analysis tools), runs in `make lint` (so the CI Lint
+  job gates it) and is also runnable standalone per module
+  (`make vulncheck`, `make vulncheck-sdk`). It is how GO-2026-6443 and
+  GO-2026-4514 were caught before either reached `dev/main`.
+
 ## [0.30.1-alpha] - 2026-10-02
 
 Fix release. Highlights:
