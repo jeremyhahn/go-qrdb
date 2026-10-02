@@ -79,10 +79,12 @@ func (s *Store) CompactPrefix(prefix []byte, revision int64) error {
 }
 
 // CompactPrefixInBatch queues a compaction of the keys beginning with prefix
-// into batch: every data entry of such a key at or below revision is deleted
-// except the key's newest one, which is its current state and stays
-// readable, along with those keys' change-log entries at or below revision;
-// and prefix's floor becomes revision.
+// into batch, with etcd's semantics: each such key keeps its entry live at
+// revision -- the newest at or below it -- so every read at a revision above
+// the floor answers as it did before, and loses every entry older than that;
+// a kept entry that is a tombstone goes too when the key has a newer entry,
+// since it records only that the key did not exist. Those keys' change-log
+// entries at or below revision go, and prefix's floor becomes revision.
 //
 // The apply path uses the batch form for two reasons: the scan reads through
 // batch, so it sees the data entries earlier entries in the same apply batch
@@ -155,7 +157,7 @@ func (s *Store) compactInto(batch storage.Batch, prefix []byte, revision int64) 
 	})
 	defer func() { _ = iter.Close() }()
 
-	if err := forEachDataKeyWithPrefix(iter, prefix, oldEntryDeleter(batch, revision)); err != nil {
+	if err := forEachDataKeyWithPrefix(iter, prefix, supersededEntryDeleter(batch, revision)); err != nil {
 		return err
 	}
 
@@ -173,28 +175,54 @@ func (s *Store) compactInto(batch storage.Batch, prefix []byte, revision int64) 
 	return nil
 }
 
-// oldEntryDeleter returns a visitor that, fed a key's data entries in storage
-// order (newest first), keeps each key's newest entry -- its current state --
-// and queues every older entry at or below revision for deletion into batch.
-func oldEntryDeleter(batch storage.Batch, revision int64) func(raw []byte) error {
+// supersededEntryDeleter returns a visitor that, fed each key's data entries
+// in storage order (newest first, with their values), applies etcd's
+// compaction rule for revision and queues the deletions into batch:
+//
+//   - an entry above revision is history the floor does not reach: kept;
+//   - the first entry at or below revision is the key's state at revision,
+//     which every read above the floor and below the key's next write
+//     returns: kept -- unless it is a tombstone and the key has a newer
+//     entry, when it records only an absence nothing can ask about and goes;
+//   - every older entry is superseded at revision: deleted.
+func supersededEntryDeleter(batch storage.Batch, revision int64) func(raw, value []byte) error {
 	// The key group is the encoded key without its trailing 8-byte
 	// complemented revision.
-	var currentGroup []byte
-	return func(raw []byte) error {
-		group := raw[:len(raw)-8]
-		if !bytes.Equal(group, currentGroup) {
-			currentGroup = append(currentGroup[:0], group...)
-			return nil
+	var (
+		group  []byte
+		newer  bool // the key has an entry above revision
+		atLive bool // the key's entry live at revision has been visited
+	)
+	return func(raw, value []byte) error {
+		if g := raw[:len(raw)-8]; !bytes.Equal(g, group) {
+			group = append(group[:0], g...)
+			newer, atLive = false, false
 		}
 		_, entryRev, err := DecodeDataKey(raw)
-		if err != nil || entryRev > revision {
+		if err != nil {
 			return nil
+		}
+		if entryRev > revision {
+			newer = true
+			return nil
+		}
+		if !atLive {
+			atLive = true
+			if !newer || !isTombstone(value) {
+				return nil
+			}
 		}
 		if err := batch.Delete(append([]byte(nil), raw...)); err != nil {
 			return &CompactionError{Err: err}
 		}
 		return nil
 	}
+}
+
+// isTombstone reports whether an encoded data value is a deletion tombstone.
+func isTombstone(value []byte) bool {
+	_, tombstone, err := DecodeValue(value)
+	return err == nil && tombstone
 }
 
 // ---------------------------------------------------------------------------
@@ -229,9 +257,10 @@ func (s *Store) CompactNodeKeyspace(revision int64) error {
 }
 
 // CompactNodeKeyspaceInBatch queues a compaction of the node keyspace into
-// batch: every data entry at or below revision of a key outside all database
-// namespaces, except each key's newest, along with those keys' change-log
-// entries; and the node floor becomes revision. A key with a database
+// batch: each key outside all database namespaces is compacted to revision by
+// the same rule CompactPrefixInBatch applies -- its entry live at revision is
+// kept -- along with those keys' change-log entries; and the node floor
+// becomes revision. A key with a database
 // namespace is never visited. The revision is validated exactly as
 // CompactPrefixInBatch validates it, against the node floor.
 func (s *Store) CompactNodeKeyspaceInBatch(batch storage.Batch, revision int64) error {
@@ -254,7 +283,7 @@ func (s *Store) compactNodeInto(batch storage.Batch, revision int64) error {
 	})
 	defer func() { _ = iter.Close() }()
 
-	deleteOld := oldEntryDeleter(batch, revision)
+	deleteSuperseded := supersededEntryDeleter(batch, revision)
 	for iter.SeekToFirst(); iter.Valid(); iter.Next() {
 		raw := iter.Key()
 		userKey, ok := dataUserKey(raw)
@@ -264,7 +293,7 @@ func (s *Store) compactNodeInto(batch storage.Batch, revision int64) error {
 		if _, namespaced := tenant.NamespaceOf(userKey); namespaced {
 			continue
 		}
-		if err := deleteOld(raw); err != nil {
+		if err := deleteSuperseded(raw, iter.Value()); err != nil {
 			return err
 		}
 	}
@@ -306,8 +335,8 @@ func dataUserKey(raw []byte) ([]byte, bool) {
 }
 
 // forEachDataKeyWithPrefix calls visit, in storage order, for every encoded
-// data key whose user key begins with prefix. The iterator must be bounded to
-// the data namespace.
+// data key whose user key begins with prefix, with its value. The iterator
+// must be bounded to the data namespace.
 //
 // A data key sorts by user-key LENGTH first ([0x01][keyLen:8][key][rev:8]), so
 // the keys under one prefix are one contiguous run per key length, not one
@@ -315,7 +344,7 @@ func dataUserKey(raw []byte) ([]byte, bool) {
 // walking the namespace, so its cost is one seek per distinct key length plus
 // the entries under the prefix -- not every entry of every other database on
 // the store.
-func forEachDataKeyWithPrefix(iter storage.Iterator, prefix []byte, visit func(raw []byte) error) error {
+func forEachDataKeyWithPrefix(iter storage.Iterator, prefix []byte, visit func(raw, value []byte) error) error {
 	keyLen := len(prefix)
 	for iter.Seek(dataSeekKey(keyLen, prefix)) && iter.Valid() {
 		landed, ok := dataKeyLen(iter.Key())
@@ -337,7 +366,7 @@ func forEachDataKeyWithPrefix(iter storage.Iterator, prefix []byte, visit func(r
 				// Past the prefix's run for this length.
 				break
 			}
-			if err := visit(raw); err != nil {
+			if err := visit(raw, iter.Value()); err != nil {
 				return err
 			}
 		}

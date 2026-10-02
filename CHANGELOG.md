@@ -117,6 +117,16 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **Compaction keeps the value live at the floor.** Compacting to a revision kept only each
+  key's newest entry, so a read above the floor but below a key's newest write -- a key written
+  at 1, 3 and 5, compacted to 3, read at 4 -- answered "revision not found", and a `Range` at
+  that revision silently left the key out, breaking the contract a client listing just above
+  the compaction point (`kube-apiserver`) relies on. Compaction now follows etcd's rule: each
+  key keeps its newest entry at or below the revision and everything above it, and loses only
+  older entries; a kept tombstone goes when the key has a newer entry. Both per-database and
+  node-keyspace compaction. Proved in `pkg/mvcc` (every floor of a fixture), through the apply
+  path in `pkg/engine`, and on all six transports
+  (`TestCompaction_KeepsTheValueLiveAtTheFloorOnEveryTransport`).
 - **etcd listener: a `Watch` from a compacted revision is etcd's compacted watch.** A start
   revision at or below the database's compaction floor was refused with a response an etcd
   client cannot match to its create, so `clientv3`'s `Watch` call never returned. It is now

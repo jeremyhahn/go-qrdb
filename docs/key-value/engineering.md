@@ -138,8 +138,18 @@ sweep becoming an enumeration of the internal keyspace.
   floor per compacted prefix (`[0x04][prefix]`). A point read at revision `r`
   is refused when `r` is at or below the floor of any prefix of its key; a
   range read, a watch replay and a change-log scan when it is at or below a
-  floor whose keyspace the range overlaps. Each key keeps its newest data
-  entry through a compaction, so its current state is always readable.
+  floor whose keyspace the range overlaps.
+- **Compaction keeps the value live at the floor (etcd's rule).** Compacting
+  to `r` keeps, for each key, its newest entry at or below `r` -- its state
+  at `r` -- and every entry above `r`, and deletes only the entries older
+  than the kept one. So every read at a revision above the floor answers
+  exactly as it did before: a key written at 1, 3 and 5 and compacted to 3
+  still reads its revision-3 value at 4, and a `Range` at 4 still lists it,
+  which a client listing at a revision just above the compaction point
+  (`kube-apiserver`) relies on. A kept entry that is a tombstone goes too
+  when the key has a newer entry, since it records only that the key did not
+  exist. *(Corrected: compaction kept only each key's newest entry, so a read
+  above the floor but below a key's newest write answered "not found".)*
 - **Compaction validates its revision.** `r < 1` is
   `service.CompactRevisionInvalidError`; `r` above the store's current
   revision is `service.CompactRevisionFutureError`; `r` at or below the floor

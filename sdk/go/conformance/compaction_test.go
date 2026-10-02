@@ -47,10 +47,10 @@ import (
 var compactionTenants = []string{"tenant-a", "tenant-b"}
 
 // compactionPermissions is what each tenant's identity holds: enough to write,
-// read history, and compact.
+// delete, read history and ranges, and compact.
 var compactionPermissions = []permission.Permission{
-	permission.KVPut, permission.KVGet,
-	permission.MVCCGetRevision, permission.MVCCGetAtRevision,
+	permission.KVPut, permission.KVGet, permission.KVDelete, permission.KVRange,
+	permission.MVCCGetRevision, permission.MVCCGetAtRevision, permission.MVCCRange,
 	permission.MVCCCurrentRevision, permission.MVCCCompact,
 	permission.AdminHealth, permission.AdminStatus,
 }
