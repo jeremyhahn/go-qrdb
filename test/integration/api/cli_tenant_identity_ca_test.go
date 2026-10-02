@@ -18,6 +18,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
 // identityTLSProtocols is the subset of AllProtocols() where mTLS client
@@ -103,12 +105,19 @@ func parseIDResponse(t *testing.T, proto ProtocolType, what, out string) string 
 // ceremony for minting a tenant-scoped mTLS identity and using it:
 //
 //	tenant create -> tenant set-entitlement (allow barrier modes) ->
-//	roles create (tenant-scoped, tenant_barrier:* permissions) ->
-//	users create --tenant-id -> roles assign -> ca issue --username
-//	--tenant-id (writes cert.pem/key.pem with CN=username, OU=tenantID,
-//	per pkg/cert/default_provider.go GenerateClientCert) -> attempt
-//	tenant barrier-init/tenant barrier-unseal authenticated with that
-//	freshly minted certificate.
+//	roles create (tenant-scoped, tenant_barrier:* and certs:generate
+//	permissions) -> users create --tenant-id -> roles assign -> ca issue
+//	--username --tenant-id AS THE TENANT'S OWN ADMINISTRATOR (writes
+//	cert.pem/key.pem with CN=username, OU=tenantID, per
+//	pkg/cert/default_provider.go GenerateClientCert) -> attempt tenant
+//	barrier-init/tenant barrier-unseal authenticated with that freshly
+//	minted certificate.
+//
+// The harness admin is in the system tenant, and no caller may issue a
+// certificate into another tenant (certs:generate is ScopeSelfStrict), so
+// step 6 first asserts the harness admin's `ca issue --tenant-id` is refused
+// and then issues as the tenant's administrator, whose client certificate is
+// minted from the node's own CA (newTenantAdminIdentity).
 //
 // Steps 1-6 (everything up to and including `ca issue`) are fully
 // CLI-reachable and are asserted as hard successes -- this is new coverage:
@@ -191,7 +200,7 @@ func TestCLIMultiProtocolTenantIdentityBarrierFlow(t *testing.T) {
 			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
 				"--output", "json", "roles", "create",
 				"--name", roleName, "--tenant-id", tenantID,
-				"--permissions", "tenant_barrier:init,tenant_barrier:unseal,tenant_barrier:status,tenant_barrier:seal")
+				"--permissions", "tenant_barrier:init,tenant_barrier:unseal,tenant_barrier:status,tenant_barrier:seal,certs:generate")
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)
@@ -230,8 +239,25 @@ func TestCLIMultiProtocolTenantIdentityBarrierFlow(t *testing.T) {
 			// Step 6: ca issue --username --tenant-id, writing cert.pem/key.pem
 			// to a temp dir. This is the CN=username, OU=tenantID identity
 			// certificate (pkg/cert/default_provider.go GenerateClientCert).
+			//
+			// The system tenant's harness admin may not issue it: a
+			// certificate authenticates as the tenant it names.
 			certDir := t.TempDir()
 			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
+				"ca", "issue", "--username", username, "--tenant-id", tenantID, "--out", certDir)
+			assertPermissionDenied(t, proto, "system admin ca issue --tenant-id "+tenantID, stdout, stderr, err)
+
+			// The tenant's own administrator issues it, logging in with a
+			// client certificate minted from the node's CA.
+			nodeCA, err := qrdbdharness.LoadCA(cfg.TLSCACert, filepath.Join(filepath.Dir(cfg.TLSCACert), "ca-key.pem"))
+			if err != nil {
+				t.Fatalf("[%s] load the node CA: %v", proto, err)
+			}
+			adminKP, err := nodeCA.Issue(t.TempDir(), qrdbdharness.WithSubject(username, tenantID))
+			if err != nil {
+				t.Fatalf("[%s] mint the tenant administrator's client certificate: %v", proto, err)
+			}
+			stdout, stderr, err = execCLIWithProtocolAndCert(t, cfg, proto, adminKP.CertPath, adminKP.KeyPath,
 				"ca", "issue", "--username", username, "--tenant-id", tenantID, "--out", certDir)
 			if err != nil {
 				t.Logf("stdout: %s", stdout)

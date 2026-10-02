@@ -181,6 +181,11 @@ func TestCLIMultiProtocolCertsExport(t *testing.T) {
 
 // TestCLIMultiProtocolCertsGenerateTenant tests the --tenant-id flag on
 // certificate generation and listing across all protocols.
+//
+// A certificate authenticates as the tenant its OU names, so certs:* is
+// confined to the caller's own tenant for EVERY caller (ScopeSelfStrict). The
+// harness admin, in the system tenant, is refused `ca issue --tenant-id` for
+// another tenant; the tenant's own administrator issues, lists and revokes.
 func TestCLIMultiProtocolCertsGenerateTenant(t *testing.T) {
 	cfg := LoadTestConfig()
 	requireCLI(t, cfg)
@@ -193,18 +198,26 @@ func TestCLIMultiProtocolCertsGenerateTenant(t *testing.T) {
 			}
 
 			ts := testTimestamp()
+			tenantID := fmt.Sprintf("cert-tenant-%s-%d", proto, ts)
 			username := fmt.Sprintf("cert-tenant-%s-%d", proto, ts)
+			admin := newTenantAdminIdentity(t, cfg, proto, tenantID,
+				"certs:generate", "certs:list", "certs:revoke")
 
-			// Step 1: Issue a certificate with --tenant-id.
+			// Step 1: the system tenant's admin may not issue into the tenant.
 			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto,
+				"ca", "issue", "--username", username, "--tenant-id", tenantID, "--ttl", "8760h")
+			assertPermissionDenied(t, proto, "system admin ca issue --tenant-id "+tenantID, stdout, stderr, err)
+
+			// Step 2: the tenant's own administrator issues the certificate.
+			stdout, stderr, err = admin.exec(t, cfg, proto,
 				"ca", "issue",
 				"--username", username,
-				"--tenant-id", "test-tenant",
+				"--tenant-id", tenantID,
 				"--ttl", "8760h")
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)
-				t.Fatalf("[%s] ca issue --tenant-id failed: %v", proto, err)
+				t.Fatalf("[%s] tenant admin ca issue --tenant-id failed: %v", proto, err)
 			}
 			assertContains(t, stdout, "Serial:",
 				fmt.Sprintf("[%s] ca issue --tenant-id should contain 'Serial:'", proto))
@@ -223,28 +236,37 @@ func TestCLIMultiProtocolCertsGenerateTenant(t *testing.T) {
 			// Register cleanup to revoke the certificate in case of early failure.
 			t.Cleanup(func() {
 				if serial != "" {
-					execCLIWithProtocol(t, cfg, proto, "ca", "revoke", "--serial", serial) //nolint:errcheck
+					admin.exec(t, cfg, proto, "ca", "revoke", "--serial", serial) //nolint:errcheck
 				}
 			})
 
-			// Step 2: List certificates with --tenant-id and verify the cert is listed.
+			// Step 3: the system tenant's admin may not list the tenant's
+			// certificates, nor revoke one of them.
 			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
-				"ca", "list", "--tenant-id", "test-tenant")
+				"ca", "list", "--tenant-id", tenantID)
+			assertPermissionDenied(t, proto, "system admin ca list --tenant-id "+tenantID, stdout, stderr, err)
+			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
+				"ca", "revoke", "--serial", serial)
+			assertPermissionDenied(t, proto, "system admin ca revoke of "+tenantID+"'s serial", stdout, stderr, err)
+
+			// Step 4: the tenant's administrator lists and finds the certificate.
+			stdout, stderr, err = admin.exec(t, cfg, proto,
+				"ca", "list", "--tenant-id", tenantID)
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)
-				t.Fatalf("[%s] ca list --tenant-id failed: %v", proto, err)
+				t.Fatalf("[%s] tenant admin ca list --tenant-id failed: %v", proto, err)
 			}
-			assertNotEmpty(t, stdout,
-				fmt.Sprintf("[%s] ca list --tenant-id should produce output", proto))
+			assertContains(t, stdout, serial,
+				fmt.Sprintf("[%s] ca list --tenant-id should list the issued serial", proto))
 
-			// Step 3: Revoke the certificate.
-			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
+			// Step 5: the tenant's administrator revokes it.
+			stdout, stderr, err = admin.exec(t, cfg, proto,
 				"ca", "revoke", "--serial", serial)
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)
-				t.Fatalf("[%s] ca revoke failed: %v", proto, err)
+				t.Fatalf("[%s] tenant admin ca revoke failed: %v", proto, err)
 			}
 			assertContains(t, stdout, "OK",
 				fmt.Sprintf("[%s] ca revoke should output 'OK'", proto))
