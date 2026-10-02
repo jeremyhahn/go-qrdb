@@ -147,6 +147,14 @@ func (f *fakeClusterTransport) GetTopology(context.Context) (*transport.Topology
 	return &transport.TopologyResponse{}, nil
 }
 
+func (f *fakeClusterTransport) NodeCompaction(context.Context) (*transport.DatabaseCompactionConfig, error) {
+	return nil, nil
+}
+
+func (f *fakeClusterTransport) SetNodeCompaction(context.Context, *transport.DatabaseCompactionConfig) (*transport.DatabaseCompactionConfig, error) {
+	return nil, nil
+}
+
 // --- transport.KVClient ---
 //
 // Only Scan is exercised (via the cluster registry read); the rest are

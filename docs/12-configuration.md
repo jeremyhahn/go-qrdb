@@ -466,16 +466,13 @@ Configures the MVCC (Multi-Version Concurrency Control) versioned key-value engi
 |-----------|------|---------|-----------------------------------------------|
 | `enabled` | bool | (raft)  | Raft-only toggle; omitted means enabled in raft mode |
 
-There is no node-wide history retention. MVCC history is compacted per
-database, only by the tenant that owns it: an explicit `Compact`, or the
-database's own compaction policy. The one platform setting is
-`node_compaction`, the policy for the node keyspace -- keys outside every
-tenant database, never a tenant's -- off when absent:
-
-| Field             | Type   | Default | Description                                   |
-|-------------------|--------|---------|-----------------------------------------------|
-| `node_compaction` | policy | absent (off) | `mode: off\|revision\|period`, `retain_revisions`, `retain_period` |
- See
+There is no compaction setting. MVCC history is compacted per database, only
+by the tenant that owns it: an explicit `Compact`, or the database's own
+compaction policy. The node keyspace -- keys outside every tenant database --
+is compacted only by the platform's policy, set with `qrdb admin
+update-node-compaction` (system tenant only). Both policies are replicated
+records set through the API, not configuration. *(Corrected: this section
+documented `node_compaction`, which is no longer read.)* See
 [key-value/engineering.md](key-value/engineering.md). *(Corrected: this section
 documented `compaction_retention` and `revision_limit`; nothing read either
 key, and both are removed.)*

@@ -851,6 +851,14 @@ func (e *erroringAdminService) GetTopology(_ context.Context) (*service.Topology
 	return &service.TopologyResponse{}, nil
 }
 
+func (e *erroringAdminService) NodeCompaction(_ context.Context) (*compaction.Policy, error) {
+	return nil, nil
+}
+
+func (e *erroringAdminService) SetNodeCompaction(_ context.Context, _ *compaction.Policy) error {
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // IndexList handler tests
 // ---------------------------------------------------------------------------

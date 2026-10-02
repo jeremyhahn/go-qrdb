@@ -17,6 +17,8 @@ package grpc
 import (
 	"context"
 
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/compactionconv"
+
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -232,14 +234,7 @@ func (t *Transport) UpdateDatabaseCompaction(ctx context.Context, req transport.
 		return nil, &transport.ClosedError{}
 	}
 
-	pbReq := &pb.DatabaseUpdateCompactionRequest{Name: req.Name}
-	if c := req.Compaction; c != nil {
-		pbReq.Compaction = &pb.DatabaseCompactionConfig{
-			Mode:            c.Mode,
-			RetainRevisions: c.RetainRevisions,
-			RetainPeriod:    c.RetainPeriod,
-		}
-	}
+	pbReq := &pb.DatabaseUpdateCompactionRequest{Name: req.Name, Compaction: compactionconv.ToProto(req.Compaction)}
 
 	resp, err := t.client.DatabaseUpdateCompaction(ctx, pbReq)
 	if err != nil {

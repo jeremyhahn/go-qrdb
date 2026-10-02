@@ -24,6 +24,8 @@ package dbwire
 
 import (
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/internal/compactionpb"
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -75,14 +77,21 @@ func Info(info *database.DatabaseInfo) *transport.DatabaseInfo {
 	if s := info.SQL; s != nil {
 		out.SQL = &transport.DatabaseSQLConfig{Concurrency: string(s.Concurrency)}
 	}
-	if c := info.Compaction; c != nil {
-		out.Compaction = &transport.DatabaseCompactionConfig{
-			Mode:            string(c.Mode),
-			RetainRevisions: c.RetainRevisions,
-			RetainPeriod:    c.RetainPeriod,
-		}
-	}
+	out.Compaction = Compaction(info.Compaction)
 	return out
+}
+
+// Compaction converts a scheduled-compaction policy -- a database's, or the
+// platform's node-keyspace policy -- to its JSON wire form; nil stays nil.
+func Compaction(p *compaction.Policy) *transport.DatabaseCompactionConfig {
+	if p == nil {
+		return nil
+	}
+	return &transport.DatabaseCompactionConfig{
+		Mode:            string(p.Mode),
+		RetainRevisions: p.RetainRevisions,
+		RetainPeriod:    p.RetainPeriod,
+	}
 }
 
 // Infos converts a list of database information to its JSON wire form. It is
@@ -187,13 +196,7 @@ func InfoProto(info *database.DatabaseInfo) *pb.DatabaseInfoResponse {
 	if s := info.SQL; s != nil {
 		out.Sql = &pb.DatabaseSQLConfig{Concurrency: string(s.Concurrency)}
 	}
-	if c := info.Compaction; c != nil {
-		out.Compaction = &pb.DatabaseCompactionConfig{
-			Mode:            string(c.Mode),
-			RetainRevisions: c.RetainRevisions,
-			RetainPeriod:    c.RetainPeriod,
-		}
-	}
+	out.Compaction = compactionpb.ToProto(info.Compaction)
 	return out
 }
 

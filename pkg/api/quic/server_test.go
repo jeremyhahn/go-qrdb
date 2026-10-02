@@ -196,6 +196,7 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		"admin.Capabilities": true,
 		"admin.StartShard":   true, "admin.StopShard": true,
 		"admin.GetShardState": true, "admin.GetTopology": true,
+		"admin.GetNodeCompaction": true, "admin.SetNodeCompaction": true,
 		// MVCC
 		"mvcc.PutWithLease": true, "mvcc.GetRevision": true,
 		"mvcc.GetAtRevision": true, "mvcc.Range": true,

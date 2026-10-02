@@ -211,6 +211,14 @@ func (m *dbTestAdminService) GetTopology(_ context.Context) (*service.TopologyRe
 	return &service.TopologyResponse{}, nil
 }
 
+func (m *dbTestAdminService) NodeCompaction(_ context.Context) (*compaction.Policy, error) {
+	return nil, nil
+}
+
+func (m *dbTestAdminService) SetNodeCompaction(_ context.Context, _ *compaction.Policy) error {
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Test helper
 // ---------------------------------------------------------------------------

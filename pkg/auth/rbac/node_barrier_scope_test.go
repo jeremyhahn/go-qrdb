@@ -51,6 +51,8 @@ func TestNodeBarrier_TenantRoleHoldersAreDenied(t *testing.T) {
 		permission.AdminDrain, permission.AdminSnapshot,
 		permission.AdminStartShard, permission.AdminStopShard,
 		permission.AdminShardState, permission.AdminTopology,
+		// The node keyspace, which holds every tenant's raw history.
+		permission.AdminNodeCompaction,
 	}
 	exercised := 0
 	for _, name := range []string{role.RoleNameSO, role.RoleNameAdmin, role.RoleNameOperator, role.RoleNameCustodian} {

@@ -24,6 +24,7 @@ func TestClusterAdminPermissions_AreCrossScope(t *testing.T) {
 	for _, p := range []Permission{
 		AdminAddMember, AdminRemoveMember, AdminDrain, AdminSnapshot,
 		AdminStartShard, AdminStopShard, AdminShardState, AdminTopology,
+		AdminNodeCompaction,
 		RebalanceExecute, RebalancePlan, RebalanceReport, RebalanceStats,
 		BackupCreate, BackupDelete, BackupList, BackupRead, BackupRestore, BackupVerify,
 	} {

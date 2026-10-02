@@ -37,6 +37,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/engine"
@@ -481,6 +482,14 @@ func (m *mockAdminService) GetShardState(_ context.Context, _ uint64) (*service.
 }
 func (m *mockAdminService) GetTopology(_ context.Context) (*service.TopologyResponse, error) {
 	return nil, nil
+}
+
+func (m *mockAdminService) NodeCompaction(_ context.Context) (*compaction.Policy, error) {
+	return nil, nil
+}
+
+func (m *mockAdminService) SetNodeCompaction(_ context.Context, _ *compaction.Policy) error {
+	return nil
 }
 
 // logBuffer is a thread-safe bytes.Buffer for capturing slog output

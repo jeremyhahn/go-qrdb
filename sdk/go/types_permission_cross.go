@@ -241,6 +241,10 @@ const (
 	// PermissionAdminTopology ("admin:topology") reads the node's topology.
 	PermissionAdminTopology = permission.AdminTopology
 
+	// PermissionAdminNodeCompaction ("admin:node_compaction") reads and sets
+	// the platform's node-keyspace compaction policy.
+	PermissionAdminNodeCompaction = permission.AdminNodeCompaction
+
 	// PermissionRebalanceExecute ("rebalance:execute") moves shards between
 	// nodes.
 	PermissionRebalanceExecute = permission.RebalanceExecute

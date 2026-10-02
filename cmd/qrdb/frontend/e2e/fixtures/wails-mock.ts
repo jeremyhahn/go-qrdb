@@ -280,6 +280,11 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
     // Stateful in-memory stores for CRUD bindings
     const kvStore = new Map<string, string>();
 
+    // The platform's node-keyspace compaction policy, as AdminBinding holds
+    // it: null when none is set.
+    type CompactionPolicy = { mode?: string; retainRevisions?: number; retainPeriod?: string };
+    let nodeCompaction: CompactionPolicy | null = null;
+
     // Shared MVCC revision history, bridging KVBinding (used by the
     // KVExplorer's ordinary Create/Edit/Delete workflow) and MVCCBinding
     // (used by its "As of revision" browse and Restore workflow), so a
@@ -719,6 +724,18 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           Capabilities: async () => {
             maybeReject("AdminBinding.Capabilities");
             return { features: [] };
+          },
+          // NodeCompaction and SetNodeCompaction mirror AdminBinding: the Go
+          // *DatabaseCompactionConfig is null when no policy is set, and a
+          // null or mode-less policy turns it off.
+          NodeCompaction: async () => {
+            maybeReject("AdminBinding.NodeCompaction");
+            return nodeCompaction;
+          },
+          SetNodeCompaction: async (policy: CompactionPolicy | null) => {
+            maybeReject("AdminBinding.SetNodeCompaction");
+            nodeCompaction = policy && policy.mode && policy.mode !== "off" ? { ...policy } : null;
+            return nodeCompaction;
           },
           GetTopology: async () => {
             maybeReject("AdminBinding.GetTopology");

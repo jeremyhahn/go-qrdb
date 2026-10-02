@@ -1512,6 +1512,8 @@ func (s *Server) registerRoutes() {
 	s.routeIf(adminOn, http.MethodPost, "/snapshot", permission.AdminSnapshot, s.handleSnapshot)
 	s.routeIf(adminOn, http.MethodPost, "/admin/shards", permission.AdminStartShard, s.handleStartShard)
 	s.routeIf(adminOn, http.MethodGet, "/admin/topology", permission.AdminTopology, s.handleGetTopology)
+	s.routeIf(adminOn, http.MethodGet, "/admin/node-compaction", permission.AdminNodeCompaction, s.handleGetNodeCompaction)
+	s.routeIf(adminOn, http.MethodPut, "/admin/node-compaction", permission.AdminNodeCompaction, s.handleSetNodeCompaction)
 
 	// Admin per-shard path-param routes (always attached; the handler
 	// nil-checks the admin service).

@@ -20,6 +20,7 @@ import (
 	"sync"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -74,6 +75,14 @@ func (m *minimalAdminServicer) GetShardState(_ context.Context, _ uint64) (*serv
 
 func (m *minimalAdminServicer) GetTopology(_ context.Context) (*service.TopologyResponse, error) {
 	return &service.TopologyResponse{}, nil
+}
+
+func (m *minimalAdminServicer) NodeCompaction(_ context.Context) (*compaction.Policy, error) {
+	return nil, nil
+}
+
+func (m *minimalAdminServicer) SetNodeCompaction(_ context.Context, _ *compaction.Policy) error {
+	return nil
 }
 
 // mockLeaseServicer implements lease.LeaseServicer (= service.LeaseServicer).

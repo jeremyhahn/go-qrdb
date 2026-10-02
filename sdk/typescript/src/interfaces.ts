@@ -344,6 +344,22 @@ export interface AdminClient {
     getTopology(): Promise<TopologyResponse>;
 
     /**
+     * Returns the platform's node-keyspace compaction policy -- the scheduled
+     * compaction of the keys outside every database namespace -- or
+     * `undefined` when none is set. Requires `admin:node_compaction`, which
+     * only the system tenant can hold. Maps to GET /admin/node-compaction.
+     */
+    nodeCompaction(): Promise<DatabaseCompactionConfig | undefined>;
+
+    /**
+     * Sets the platform's node-keyspace compaction policy; omitting it turns
+     * the policy off. Resolves to the policy now in force, `undefined` when
+     * off. Requires `admin:node_compaction` (system tenant only). Maps to PUT
+     * /admin/node-compaction.
+     */
+    setNodeCompaction(compaction?: DatabaseCompactionConfig): Promise<DatabaseCompactionConfig | undefined>;
+
+    /**
      * Adds a new replica to the specified shard.
      *
      * @param shardId - Target shard identifier.

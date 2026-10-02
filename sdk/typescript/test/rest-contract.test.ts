@@ -510,6 +510,70 @@ describe('database compaction policy', () => {
 });
 
 // ---------------------------------------------------------------------------
+// The platform's node-keyspace compaction policy: GET and PUT
+// /admin/node-compaction with a {"compaction": {...}} body, the request the Go
+// SDK's SetNodeCompaction sends. Omitting the policy turns it off.
+// ---------------------------------------------------------------------------
+
+describe('admin node-keyspace compaction policy', () => {
+    beforeEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('reads it with GET /admin/node-compaction', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({ compaction: { mode: 'revision', retainRevisions: 100 } });
+
+        const policy = await client.admin.nodeCompaction();
+
+        expect(calls).toHaveLength(1);
+        expect(new URL(calls[0].url).pathname).toBe('/admin/node-compaction');
+        expect(calls[0].method).toBe('GET');
+        expect(policy).toEqual({ mode: 'revision', retainRevisions: 100 });
+    });
+
+    it('reports no policy as undefined', async () => {
+        const client = await connectedClient();
+        installMockFetch({});
+
+        expect(await client.admin.nodeCompaction()).toBeUndefined();
+    });
+
+    it('sets it with PUT /admin/node-compaction', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({ compaction: { mode: 'period', retainPeriod: '720h' } });
+
+        const policy = await client.admin.setNodeCompaction({ mode: 'period', retainPeriod: '720h' });
+
+        expect(new URL(calls[0].url).pathname).toBe('/admin/node-compaction');
+        expect(calls[0].method).toBe('PUT');
+        expect(calls[0].body).toEqual({ compaction: { mode: 'period', retainPeriod: '720h' } });
+        expect(policy).toEqual({ mode: 'period', retainPeriod: '720h' });
+    });
+
+    it('omitting the policy sends no compaction, turning it off', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({});
+
+        const policy = await client.admin.setNodeCompaction();
+
+        expect(calls[0].body).toEqual({});
+        expect(policy).toBeUndefined();
+    });
+
+    it('surfaces a tenant caller\'s refusal as a transport error carrying the status', async () => {
+        const client = await connectedClient();
+        vi.stubGlobal('fetch', vi.fn(async () => new Response(
+            JSON.stringify({ error: 'permission denied' }),
+            { status: 403, headers: { 'Content-Type': 'application/json' } },
+        )));
+
+        await expect(client.admin.setNodeCompaction({ mode: 'revision', retainRevisions: 1 }))
+            .rejects.toMatchObject({ statusCode: 403 });
+    });
+});
+
+// ---------------------------------------------------------------------------
 // Outbound snake_case transform — camelCase SDK fields must arrive as
 // snake_case in the serialized JSON body that the Go server receives.
 // These are the request types that were silently broken before jsonBody()

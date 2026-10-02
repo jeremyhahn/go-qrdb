@@ -33,7 +33,7 @@ var expectedMethods = []string{
 	"kv.CompareAndDelete",
 	"kv.CompareAndSwap",
 
-	// Admin (12)
+	// Admin (14)
 	"admin.Health",
 	"admin.Status",
 	"admin.Peers",
@@ -46,6 +46,8 @@ var expectedMethods = []string{
 	"admin.StopShard",
 	"admin.GetShardState",
 	"admin.GetTopology",
+	"admin.GetNodeCompaction",
+	"admin.SetNodeCompaction",
 
 	// MVCC (7)
 	"mvcc.PutWithLease",
@@ -249,6 +251,8 @@ func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
 func TestBuildHandlers_MethodCount(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 
+	// 172 = 170 + admin.GetNodeCompaction and admin.SetNodeCompaction, the
+	// platform's node-keyspace compaction policy (docs/key-value).
 	// 170 = 169 + db.UpdateCompaction, a database's scheduled-compaction
 	// policy (docs/key-value).
 	// 169 = 168 + db.UpdateSQL, a database's SQL concurrency mode
@@ -265,7 +269,7 @@ func TestBuildHandlers_MethodCount(t *testing.T) {
 	// kv.CompareAndDelete, kv.CompareAndSwap — go-qrdb#124), and the 161 was
 	// 160 plus user.GetByEmail, the canonical login-key lookup (go-qrdb#190).
 	// The 2 watch methods remain on the streaming path, not the unary table.
-	const wantCount = 170
+	const wantCount = 172
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}
@@ -356,7 +360,7 @@ func TestBuildHandlers_CategoryCounts(t *testing.T) {
 
 	expectedCounts := map[string]int{
 		"kv":       8,
-		"admin":    12,
+		"admin":    14,
 		"mvcc":     7,
 		"tx":       1,
 		"batch":    2,

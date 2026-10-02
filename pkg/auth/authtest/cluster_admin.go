@@ -20,13 +20,15 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
-// Admin is a service.AdminServicer that implements the four cluster-changing
-// methods -- AddMember, RemoveMember, RequestSnapshot and Drain -- and counts
-// the calls that reached them, so a test can tell a refused request from one
+// Admin is a service.AdminServicer that implements the platform-only methods
+// -- AddMember, RemoveMember, RequestSnapshot, Drain and the node-keyspace
+// compaction policy's NodeCompaction and SetNodeCompaction -- and counts the
+// calls that reached them, so a test can tell a refused request from one
 // the service performed. Every other method is delegated to the embedded
 // AdminServicer, which a test sets to its package's own admin double when the
 // transport calls one at start-up; left nil, reaching one panics, which means
@@ -62,8 +64,21 @@ func (a *Admin) Drain(context.Context) error {
 	return nil
 }
 
-// ClusterChanges reports how many add-member, remove-member, snapshot and
-// drain calls reached the service.
+// NodeCompaction records the read.
+func (a *Admin) NodeCompaction(context.Context) (*compaction.Policy, error) {
+	a.changes.Add(1)
+	return nil, nil
+}
+
+// SetNodeCompaction records the policy change.
+func (a *Admin) SetNodeCompaction(context.Context, *compaction.Policy) error {
+	a.changes.Add(1)
+	return nil
+}
+
+// ClusterChanges reports how many of the platform-only calls -- add-member,
+// remove-member, snapshot, drain and the node compaction policy's read and
+// write -- reached the service.
 func (a *Admin) ClusterChanges() int64 { return a.changes.Load() }
 
 // ClusterAdminCaller is one caller of the cluster-membership operations, and

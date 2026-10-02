@@ -35,6 +35,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -206,6 +207,14 @@ func (e *errorAdminService) GetShardState(_ context.Context, _ uint64) (*service
 
 func (e *errorAdminService) GetTopology(_ context.Context) (*service.TopologyResponse, error) {
 	return nil, errSentinel
+}
+
+func (e *errorAdminService) NodeCompaction(_ context.Context) (*compaction.Policy, error) {
+	return nil, nil
+}
+
+func (e *errorAdminService) SetNodeCompaction(_ context.Context, _ *compaction.Policy) error {
+	return nil
 }
 
 func TestEmbedded_AdminServiceErrors(t *testing.T) {

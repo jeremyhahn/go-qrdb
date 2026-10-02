@@ -33,21 +33,25 @@ import (
 // from the system shard and break quorum for everyone, or drain the node. Only
 // the system tenant's holders may use them.
 func TestClusterAdminScope(t *testing.T) {
-	ops := []struct{ path, body string }{
-		{"/membership/add", `{"shard_id":1,"replica_id":9,"address":"127.0.0.1:1"}`},
-		{"/membership/remove", `{"shard_id":1,"replica_id":2}`},
-		{"/snapshot", `{"shard_id":1}`},
-		{"/drain", ``},
+	ops := []struct{ method, path, body string }{
+		{http.MethodPost, "/membership/add", `{"shard_id":1,"replica_id":9,"address":"127.0.0.1:1"}`},
+		{http.MethodPost, "/membership/remove", `{"shard_id":1,"replica_id":2}`},
+		{http.MethodPost, "/snapshot", `{"shard_id":1}`},
+		{http.MethodPost, "/drain", ``},
+		// The node keyspace's compaction policy: the platform's, and its
+		// compaction discards every tenant's raw history on the node.
+		{http.MethodGet, "/admin/node-compaction", ``},
+		{http.MethodPut, "/admin/node-compaction", `{"compaction":{"mode":"revision","retainRevisions":10}}`},
 	}
 	roles := authtest.BuiltInRoles(t, tenant.SystemTenantID, authtest.ClusterAdminTenant)
 	for _, op := range ops {
 		for _, c := range authtest.ClusterAdminCallers(t) {
-			t.Run(op.path+"/"+c.Name, func(t *testing.T) {
+			t.Run(op.method+" "+op.path+"/"+c.Name, func(t *testing.T) {
 				caller := authtest.NewFixedAuthenticator(c.Identity)
 				admin := &authtest.Admin{AdminServicer: &mockAdminService{}}
 				srv := NewServer(nil, admin, "127.0.0.1:0",
 					WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithAuthenticator(caller))))
-				req := httptest.NewRequest(http.MethodPost, op.path, strings.NewReader(op.body))
+				req := httptest.NewRequest(op.method, op.path, strings.NewReader(op.body))
 				req.TLS = &tls.ConnectionState{}
 				rec := httptest.NewRecorder()
 				srv.server.Handler.ServeHTTP(rec, req)

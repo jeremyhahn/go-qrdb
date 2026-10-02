@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/dbwire"
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -86,6 +87,9 @@ func fullDatabaseInfo() *database.DatabaseInfo {
 			KeyFile:   "/etc/qrdb/client-key.pem",
 		},
 		SQL: &database.SQLConfig{Concurrency: database.ConcurrencyPessimistic},
+		// Every compaction key is set, so each is on the wire to compare:
+		// this is a wire fixture, not a valid policy.
+		Compaction: &compaction.Policy{Mode: compaction.Period, RetainRevisions: 500, RetainPeriod: "720h"},
 	}
 }
 

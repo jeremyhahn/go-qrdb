@@ -17,7 +17,7 @@ package grpc
 import (
 	"context"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/internal/compactionpb"
 
 	"google.golang.org/protobuf/types/known/emptypb"
 
@@ -227,7 +227,7 @@ func (s *qrdbServiceServer) DatabaseUpdateCompaction(ctx context.Context, req *p
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "database"})
 	}
 
-	info, err := s.databaseSvc.UpdateCompactionForTenant(ctx, req.GetName(), protoCompactionConfigToDomain(req.GetCompaction()))
+	info, err := s.databaseSvc.UpdateCompactionForTenant(ctx, req.GetName(), compactionpb.FromProto(req.GetCompaction()))
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -428,18 +428,5 @@ func protoConnectionConfigToDomain(c *pb.DatabaseConnectionConfig) *database.Dat
 		CAFile:    c.GetCaFile(),
 		CertFile:  c.GetCertFile(),
 		KeyFile:   c.GetKeyFile(),
-	}
-}
-
-// protoCompactionConfigToDomain converts a DatabaseCompactionConfig proto to
-// the domain policy; nil stays nil (off).
-func protoCompactionConfigToDomain(c *pb.DatabaseCompactionConfig) *compaction.Policy {
-	if c == nil {
-		return nil
-	}
-	return &compaction.Policy{
-		Mode:            compaction.Mode(c.GetMode()),
-		RetainRevisions: c.GetRetainRevisions(),
-		RetainPeriod:    c.GetRetainPeriod(),
 	}
 }

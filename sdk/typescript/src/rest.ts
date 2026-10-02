@@ -85,6 +85,7 @@ import type {
     UpdateDatabaseSQLRequest,
     DatabaseCompactionConfig,
     UpdateDatabaseCompactionRequest,
+    NodeCompactionBody,
     CreateNamespaceResponse,
     CreateRoleRequest,
     CreateUserRequest,
@@ -605,6 +606,21 @@ export class RestClient implements Client {
             getTopology: async (): Promise<TopologyResponse> => {
                 this.ensureConnected();
                 return this.fetchJSON<TopologyResponse>('/admin/topology');
+            },
+            nodeCompaction: async (): Promise<DatabaseCompactionConfig | undefined> => {
+                this.ensureConnected();
+                const resp = await this.fetchJSON<NodeCompactionBody>('/admin/node-compaction');
+                return resp.compaction;
+            },
+            setNodeCompaction: async (compaction?: DatabaseCompactionConfig): Promise<DatabaseCompactionConfig | undefined> => {
+                this.ensureConnected();
+                const req: NodeCompactionBody = compaction === undefined ? {} : { compaction };
+                const resp = await this.fetchJSON<NodeCompactionBody>('/admin/node-compaction', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(req),
+                });
+                return resp.compaction;
             },
             addMember: async (
                 shardId: number,

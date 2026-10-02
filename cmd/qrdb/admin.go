@@ -41,6 +41,8 @@ func newAdminCmd() *cobra.Command {
 		newAdminDrainCmd(),
 		newAdminTopologyCmd(),
 		newAdminCapabilitiesCmd(),
+		newAdminNodeCompactionCmd(),
+		newAdminUpdateNodeCompactionCmd(),
 	)
 
 	return cmd

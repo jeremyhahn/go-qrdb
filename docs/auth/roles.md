@@ -389,8 +389,8 @@ is anonymous and runs no RBAC at all, so it is unaffected.
 ### Cluster-membership permissions are platform-operator only
 
 `admin:add_member`, `admin:remove_member`, `admin:drain` and `admin:snapshot`
--- and `admin:start_shard`, `admin:stop_shard`, `admin:shard_state` and
-`admin:topology` -- are **cross-scope** (`ScopeCross`, declared in
+-- and `admin:start_shard`, `admin:stop_shard`, `admin:shard_state`,
+`admin:topology` and `admin:node_compaction` -- are **cross-scope** (`ScopeCross`, declared in
 `pkg/permission/cluster_admin_scope.go`). They act on the cluster's Raft
 membership and shards, addressed by shard id: the system shard every
 prefix-isolated tenant's data lives on, and every raft-isolated tenant's own

@@ -19,6 +19,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/internal/compactionpb"
+
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -678,6 +680,33 @@ func (s *qrdbServiceServer) GetShardState(ctx context.Context, req *pb.GetShardS
 		LeaderId:          resp.LeaderID,
 		HasLeader:         resp.HasLeader,
 	}, nil
+}
+
+// GetNodeCompaction returns the platform's node-keyspace compaction policy.
+// The RPC requires admin:node_compaction (ScopeCross: system tenant only).
+func (s *qrdbServiceServer) GetNodeCompaction(ctx context.Context, _ *emptypb.Empty) (*pb.NodeCompactionResponse, error) {
+	if s.adminSvc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "admin"})
+	}
+	policy, err := s.adminSvc.NodeCompaction(ctx)
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &pb.NodeCompactionResponse{Compaction: compactionpb.ToProto(policy)}, nil
+}
+
+// SetNodeCompaction sets the platform's node-keyspace compaction policy and
+// answers with the policy now in force; an unset compaction turns it off.
+// The RPC requires admin:node_compaction (ScopeCross: system tenant only).
+func (s *qrdbServiceServer) SetNodeCompaction(ctx context.Context, req *pb.SetNodeCompactionRequest) (*pb.NodeCompactionResponse, error) {
+	if s.adminSvc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "admin"})
+	}
+	policy := compactionpb.FromProto(req.GetCompaction())
+	if err := s.adminSvc.SetNodeCompaction(ctx, policy); err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &pb.NodeCompactionResponse{Compaction: compactionpb.ToProto(policy.Normalized())}, nil
 }
 
 // GetTopology returns the full cluster topology.

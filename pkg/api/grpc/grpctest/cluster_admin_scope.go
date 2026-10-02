@@ -31,7 +31,7 @@ import (
 // ClusterStartFunc starts the transport under test with mw as its auth
 // middleware and admin as its admin service, and returns a client connection
 // to it. It may set admin's embedded AdminServicer to its package's own admin
-// double for the methods the transport calls besides the four under test. It
+// double for the methods the transport calls besides the ones under test. It
 // registers its own cleanup.
 type ClusterStartFunc func(t *testing.T, mw *authmw.AuthMiddleware, admin *authtest.Admin) *grpc.ClientConn
 
@@ -59,6 +59,18 @@ func ClusterAdminScope(t *testing.T, start ClusterStartFunc) {
 		}},
 		{"drain", func(c pb.QRDBServiceClient, t *testing.T) error {
 			_, err := c.Drain(callCtx(t), &emptypb.Empty{})
+			return err
+		}},
+		// The node keyspace's compaction policy: the platform's, and its
+		// compaction discards every tenant's raw history on the node.
+		{"get node compaction", func(c pb.QRDBServiceClient, t *testing.T) error {
+			_, err := c.GetNodeCompaction(callCtx(t), &emptypb.Empty{})
+			return err
+		}},
+		{"set node compaction", func(c pb.QRDBServiceClient, t *testing.T) error {
+			_, err := c.SetNodeCompaction(callCtx(t), &pb.SetNodeCompactionRequest{
+				Compaction: &pb.DatabaseCompactionConfig{Mode: "revision", RetainRevisions: 10},
+			})
 			return err
 		}},
 	}

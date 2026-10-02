@@ -142,6 +142,8 @@ func (s *Server) buildHandlers() {
 	s.handleIf(adminOn, "admin.StopShard", permission.AdminStopShard, s.handleStopShard)
 	s.handleIf(adminOn, "admin.GetShardState", permission.AdminShardState, s.handleGetShardState)
 	s.handleIf(adminOn, "admin.GetTopology", permission.AdminTopology, s.handleGetTopology)
+	s.handleIf(adminOn, "admin.GetNodeCompaction", permission.AdminNodeCompaction, s.handleGetNodeCompaction)
+	s.handleIf(adminOn, "admin.SetNodeCompaction", permission.AdminNodeCompaction, s.handleSetNodeCompaction)
 
 	// MVCC
 	s.handle("mvcc.PutWithLease", permission.MVCCPutWithLease, s.handlePutWithLease)

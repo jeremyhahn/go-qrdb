@@ -156,13 +156,14 @@ Viper-bound, equivalent to their flags:
 `databases` (with `ProtocolConfig` and `EtcdConfig`), `embedding` (with
 `EmbeddingProviderConfig`), `rag`, `tenant`, `seal`, `mode`.
 
-`mvcc.node_compaction` is the platform's compaction policy for the node
-keyspace -- every key outside all tenant database namespaces. It is off when
-absent and takes the same policy as a database's (`mode: off|revision|period`,
-`retain_revisions`, `retain_period`); an invalid one is a validation error
-naming `mvcc.node_compaction`. See
-[../key-value/engineering.md](../key-value/engineering.md) "Node-keyspace
-compaction".
+No compaction policy is configuration. A database's scheduled compaction and
+the platform's node-keyspace policy are replicated records set through the
+API, so they apply on every node and survive a node's loss; see
+[../key-value/engineering.md](../key-value/engineering.md) "Scheduled
+compaction" and "Node-keyspace compaction". *(Corrected: `mvcc.node_compaction`
+and `databases[].compaction` were configuration keys. Neither is read any
+more; the loader ignores an unknown key, so a file that still carries one
+loads and the key has no effect.)*
 
 **The complete field-by-field reference with every default lives in
 [12-configuration.md](../12-configuration.md)**, which also carries worked

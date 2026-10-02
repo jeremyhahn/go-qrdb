@@ -35,6 +35,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
@@ -347,6 +348,14 @@ func (m *mockAdminService) GetTopology(ctx context.Context) (*service.TopologyRe
 	return &service.TopologyResponse{}, nil
 }
 
+func (m *mockAdminService) NodeCompaction(_ context.Context) (*compaction.Policy, error) {
+	return nil, nil
+}
+
+func (m *mockAdminService) SetNodeCompaction(_ context.Context, _ *compaction.Policy) error {
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -630,6 +639,8 @@ func TestServer_ToolRegistration(t *testing.T) {
 		"qrdb_stop_shard",
 		"qrdb_shard_state",
 		"qrdb_topology",
+		"qrdb_node_compaction",
+		"qrdb_update_node_compaction",
 		// Registered unconditionally, like the kv/admin tools above, not
 		// gated behind a barrier service or migrator (go-qrdb#558): the
 		// handler itself refuses with a typed error when no

@@ -166,3 +166,39 @@ func (b *AdminBinding) Capabilities() (*transport.CapabilitiesResponse, error) {
 	b.logger.Debug("Capabilities completed")
 	return resp, nil
 }
+
+// NodeCompaction returns the platform's node-keyspace compaction policy, nil
+// when none is set.
+func (b *AdminBinding) NodeCompaction() (*transport.DatabaseCompactionConfig, error) {
+	b.logger.Debug("NodeCompaction called")
+	cl, err := b.conn.loadClient()
+	if err != nil {
+		b.logger.Error("NodeCompaction failed", "error", err)
+		return nil, err
+	}
+	policy, err := cl.Admin().NodeCompaction(context.Background())
+	if err != nil {
+		b.logger.Error("NodeCompaction failed", "error", err)
+		return nil, err
+	}
+	b.logger.Debug("NodeCompaction completed")
+	return policy, nil
+}
+
+// SetNodeCompaction sets the platform's node-keyspace compaction policy; nil
+// turns it off. It returns the policy now in force, nil when off.
+func (b *AdminBinding) SetNodeCompaction(policy *transport.DatabaseCompactionConfig) (*transport.DatabaseCompactionConfig, error) {
+	b.logger.Debug("SetNodeCompaction called")
+	cl, err := b.conn.loadClient()
+	if err != nil {
+		b.logger.Error("SetNodeCompaction failed", "error", err)
+		return nil, err
+	}
+	inForce, err := cl.Admin().SetNodeCompaction(context.Background(), policy)
+	if err != nil {
+		b.logger.Error("SetNodeCompaction failed", "error", err)
+		return nil, err
+	}
+	b.logger.Debug("SetNodeCompaction completed")
+	return inForce, nil
+}

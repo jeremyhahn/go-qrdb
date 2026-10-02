@@ -42,10 +42,16 @@ package permission
 // shard on the cluster. No built-in role below Owner carries them, but a
 // tenant's SO holds roles:create and roles:assign, so under ScopeSelf it could
 // grant itself rebalance:execute and move the system shard.
+//
+// admin:node_compaction is here because the node keyspace -- the shared
+// store's keys outside every database namespace, the node's internal records
+// and the system tenant's raw keyspace among them -- is the platform's, and
+// its compaction policy discards that history for every tenant on the node.
 func clusterAdminPermissions() []Permission {
 	return []Permission{
 		AdminAddMember,
 		AdminDrain,
+		AdminNodeCompaction,
 		AdminRemoveMember,
 		AdminShardState,
 		AdminSnapshot,

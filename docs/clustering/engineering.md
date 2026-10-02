@@ -607,6 +607,7 @@ type ImbalanceReport struct {
 | `admin:add_member` / `admin:remove_member` | Raft reconfiguration — gated apart from reading peers | cross |
 | `admin:start_shard` / `admin:stop_shard` / `admin:shard_state` | shard lifecycle and state | cross |
 | `admin:topology` | every shard's replicas and addresses | cross |
+| `admin:node_compaction` | the node keyspace's scheduled-compaction policy (see [../key-value/engineering.md](../key-value/engineering.md) "Node-keyspace compaction") | cross |
 | `rebalance:stats` / `rebalance:plan` / `rebalance:report` | read-only | cross |
 | `rebalance:execute` | **physically moves shards** — separate grant | cross |
 

@@ -154,6 +154,17 @@ type AdminClient interface {
 	// GetTopology returns the full cluster topology as seen from
 	// this node, including all loaded shards and their membership.
 	GetTopology(ctx context.Context) (*TopologyResponse, error)
+
+	// NodeCompaction returns the platform's node-keyspace compaction
+	// policy -- the scheduled compaction of the keys outside every database
+	// namespace -- or nil when none is set. It requires
+	// admin:node_compaction, which only the system tenant can hold.
+	NodeCompaction(ctx context.Context) (*DatabaseCompactionConfig, error)
+
+	// SetNodeCompaction sets the platform's node-keyspace compaction
+	// policy; nil turns it off. It returns the policy now in force, nil when
+	// off. It requires admin:node_compaction (system tenant only).
+	SetNodeCompaction(ctx context.Context, policy *DatabaseCompactionConfig) (*DatabaseCompactionConfig, error)
 }
 
 // ---------------------------------------------------------------------------

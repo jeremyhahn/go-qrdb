@@ -24,9 +24,11 @@ and refuses in standalone with `requires mode: raft`.
 | Stop shard | `DELETE /admin/shards/{id}` | `StopShard` | `admin.StopShard` | `qrdb_stop_shard` | `StopShard` | `admin:stop_shard` |
 | Shard state | `GET /admin/shards/{id}/state` | `GetShardState` | `admin.GetShardState` | `qrdb_shard_state` | `GetShardState` | `admin:shard_state` |
 | Topology | `GET /admin/topology` | `GetTopology` | `admin.GetTopology` | `qrdb_topology` | `GetTopology` | `admin:topology` |
+| Node-keyspace compaction policy | `GET /admin/node-compaction` | `GetNodeCompaction` | `admin.GetNodeCompaction` | `qrdb_node_compaction` | `NodeCompaction` | `admin:node_compaction` |
+| Set node-keyspace compaction policy | `PUT /admin/node-compaction` | `SetNodeCompaction` | `admin.SetNodeCompaction` | `qrdb_update_node_compaction` | `SetNodeCompaction` | `admin:node_compaction` |
 
-**Drain, snapshot, add/remove member, start/stop shard, shard state and
-topology are system-tenant only** (cross-scope), as is every `rebalance:*`
+**Drain, snapshot, add/remove member, start/stop shard, shard state,
+topology and the node-keyspace compaction policy are system-tenant only** (cross-scope), as is every `rebalance:*`
 route: they act on, or describe, shards every tenant shares, and name no
 tenant. A tenant's Admin or SO -- whose built-in roles carry several of these
 grants -- is refused with `403` / `PermissionDenied` on every transport.

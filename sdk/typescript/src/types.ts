@@ -2039,6 +2039,15 @@ export interface UpdateDatabaseCompactionRequest {
     readonly compaction?: DatabaseCompactionConfig;
 }
 
+/** The platform's node-keyspace compaction policy, as `GET` and `PUT
+ * /admin/node-compaction` carry it: the scheduled compaction of the keys
+ * outside every database namespace. An absent `compaction` is no policy --
+ * in a request, it turns the policy off. */
+export interface NodeCompactionBody {
+    /** The policy. */
+    readonly compaction?: DatabaseCompactionConfig;
+}
+
 /**
  * Raft consensus configuration for a database. There is no shard ID: the cluster
  * issues it when the database is created, it never changes, and it is

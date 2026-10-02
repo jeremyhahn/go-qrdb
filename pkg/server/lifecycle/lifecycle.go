@@ -385,16 +385,22 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 
 	// Build core data-plane services.
 	n.KV = service.NewKVService(infra.Host, shard.ShardKV, infra.KVOptions...)
-	var adminOpts []service.AdminServiceOption
-	if infra.Profile != nil {
-		adminOpts = append(adminOpts, service.WithCapabilityProfile(*infra.Profile))
-	}
-	n.Admin = service.NewAdminService(infra.Host, adminOpts...)
 	var mvccOpts []service.MVCCKVServiceOption
 	if infra.NoRevisionHistory {
 		mvccOpts = append(mvccOpts, service.WithoutRevisionHistory())
 	}
 	n.MVCC = service.NewMVCCKVService(infra.Host, shard.ShardKV, mvccOpts...)
+	var adminOpts []service.AdminServiceOption
+	if infra.Profile != nil {
+		adminOpts = append(adminOpts, service.WithCapabilityProfile(*infra.Profile))
+	}
+	// The platform's node-keyspace compaction policy is a record in the
+	// shared store's compaction table; a shared store with no revision
+	// history has none to hold.
+	if table, ok := n.MVCC.(service.CompactionStateStore); ok && !infra.NoRevisionHistory {
+		adminOpts = append(adminOpts, service.WithNodeCompaction(table))
+	}
+	n.Admin = service.NewAdminService(infra.Host, adminOpts...)
 	n.Batch = service.NewBatchService(infra.Host, shard.ShardKV)
 	n.Transaction = service.NewTransactionService(infra.Host, shard.ShardKV)
 	n.Lease = service.NewLeaseService(infra.Host, shard.ShardKV)

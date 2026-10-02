@@ -27,6 +27,16 @@ Go call on the SDK client.
 | Current revision | `GET /kv/revision` | `CurrentRevision` | `mvcc.CurrentRevision` | `qrdb_mvcc_current_revision` | `Client.MVCC().CurrentRevision` | `mvcc:current_revision` |
 | Compact (this database's history) | `POST /kv/compact` | `Compact` | `mvcc.Compact` | `qrdb_mvcc_compact` | `Client.MVCC().Compact` | `mvcc:compact` (`ScopeSelfStrict`) |
 | Restore to revision | `POST /kv/restore` | `RestoreToRevision` | `mvcc.RestoreToRevision` | `qrdb_mvcc_restore_to_revision` | `Client.MVCC().RestoreToRevision` | `mvcc:restore` |
+| Node-keyspace compaction policy (platform) | `GET` / `PUT /admin/node-compaction` | `GetNodeCompaction` / `SetNodeCompaction` | `admin.GetNodeCompaction` / `admin.SetNodeCompaction` | `qrdb_node_compaction` / `qrdb_update_node_compaction` | `Client.Admin().NodeCompaction` / `SetNodeCompaction` | `admin:node_compaction` (`ScopeCross`) |
+
+**The node-keyspace policy is the platform's.** It governs the keys outside
+every database namespace, so no tenant may read or set it: the permission is
+`ScopeCross`, and a caller bound to any tenant but the system tenant is
+refused (403 / `PERMISSION_DENIED`) on every transport, the embedded one
+included. The body, both ways, is `{"compaction": {"mode": "revision",
+"retainRevisions": 100000}}` -- the database policy's shape -- and an absent
+`compaction` is no policy (in a request, it turns the policy off). A `PUT`
+answers with the policy now in force.
 
 **Put with lease on a state machine without revision history.** On the default
 `pebble` state machine the lease is attached and the value stored, but there is
@@ -201,6 +211,10 @@ plus `dry_run` and `force`. The response carries the plan entries
 | `Compact` to a revision the database is already compacted to | 416 | `OUT_OF_RANGE` | `service.RevisionCompactedError`; nothing changes |
 | `Compact` on a server with no database scope (raw service) | 422 | `FAILED_PRECONDITION` | `service.CompactScopeRequiredError`; there is no store-wide compaction |
 | `Compact` before every replica of the group supports per-database compaction | 422 | `FAILED_PRECONDITION` | `service.FeatureNotEnabledError` naming `prefix-compaction` |
+| `SetNodeCompaction` with an invalid policy | 400 | `INVALID_ARGUMENT` | `compaction.InvalidPolicyError` |
+| `SetNodeCompaction` before every replica of the shared store supports the compaction-state command | 422 | `FAILED_PRECONDITION` | `service.FeatureNotEnabledError` naming `prefix-compaction` |
+| `NodeCompaction` / `SetNodeCompaction` on a node whose shared store keeps no MVCC history | 422 | `FAILED_PRECONDITION` | `service.NodeCompactionUnavailableError` |
+| `NodeCompaction` / `SetNodeCompaction` by a caller of any tenant but the system tenant | 403 | `PERMISSION_DENIED` | the `ScopeCross` refusal; in process, `tenant.CrossTenantDeniedError` |
 | Non-MVCC state machine asked for an MVCC operation | 400 | `FAILED_PRECONDITION` | `service: requires raft.sm_type: mvcc` |
 | Guarded request body over the endpoint's encoded byte bound | 413 | — | REST only; the coarse pre-decode guard |
 | Guarded request key and values, SUMMED, over what one proposal can carry | 413 | — | REST only; the precise limit, derived from the Raft entry ceiling |

@@ -30,6 +30,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
@@ -241,6 +242,14 @@ type AdminServicer interface {
 	// GetTopology returns the full cluster topology as seen from
 	// this node, including all loaded shards and their membership.
 	GetTopology(ctx context.Context) (*TopologyResponse, error)
+
+	// NodeCompaction returns the platform's node-keyspace compaction
+	// policy, nil when none is set. System tenant only.
+	NodeCompaction(ctx context.Context) (*compaction.Policy, error)
+
+	// SetNodeCompaction sets the platform's node-keyspace compaction
+	// policy; nil or an off policy removes it. System tenant only.
+	SetNodeCompaction(ctx context.Context, policy *compaction.Policy) error
 }
 
 // HealthStatus describes the aggregate health of the host.
@@ -1107,6 +1116,9 @@ type AdminService struct {
 	smFactory  sm.CreateFunc
 	defaultCfg config.Config
 	profile    *capabilities.Capabilities
+	// nodeCompaction is the shared store's compaction table, which holds
+	// the platform's node-keyspace policy (WithNodeCompaction).
+	nodeCompaction CompactionStateStore
 }
 
 // NewAdminService creates a new AdminServicer backed by the given host.

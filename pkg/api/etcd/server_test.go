@@ -25,6 +25,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -217,6 +218,14 @@ func (m *mockAdminSvc) GetShardState(_ context.Context, _ uint64) (*service.Shar
 }
 func (m *mockAdminSvc) GetTopology(_ context.Context) (*service.TopologyResponse, error) {
 	panic("not implemented")
+}
+
+func (m *mockAdminSvc) NodeCompaction(_ context.Context) (*compaction.Policy, error) {
+	return nil, nil
+}
+
+func (m *mockAdminSvc) SetNodeCompaction(_ context.Context, _ *compaction.Policy) error {
+	return nil
 }
 
 // ---------------------------------------------------------------------------

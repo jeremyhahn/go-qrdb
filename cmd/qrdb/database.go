@@ -189,11 +189,7 @@ func newDatabaseUpdateSQLCmd() *cobra.Command {
 // newDatabaseUpdateCompactionCmd creates the "database update-compaction"
 // subcommand.
 func newDatabaseUpdateCompactionCmd() *cobra.Command {
-	var (
-		mode            string
-		retainRevisions int64
-		retainPeriod    time.Duration
-	)
+	var flags compactionPolicyFlags
 
 	cmd := &cobra.Command{
 		Use:   "update-compaction <name>",
@@ -204,13 +200,9 @@ func newDatabaseUpdateCompactionCmd() *cobra.Command {
 			"the tenant that owns the database may set it.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			policy := &transport.DatabaseCompactionConfig{Mode: mode, RetainRevisions: retainRevisions}
-			if retainPeriod != 0 {
-				policy.RetainPeriod = retainPeriod.String()
-			}
 			info, err := client.Database().UpdateDatabaseCompaction(cmd.Context(), transport.UpdateDatabaseCompactionRequest{
 				Name:       args[0],
-				Compaction: policy,
+				Compaction: flags.policy(),
 			})
 			if err != nil {
 				return err
@@ -219,12 +211,51 @@ func newDatabaseUpdateCompactionCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&mode, "mode", "", "Compaction mode (off, revision, period)")
-	cmd.Flags().Int64Var(&retainRevisions, "retain-revisions", 0, "Revision mode: keep the last N revisions")
-	cmd.Flags().DurationVar(&retainPeriod, "retain-period", 0, "Period mode: keep the history newer than this (at least 1s)")
-	_ = cmd.MarkFlagRequired("mode")
+	flags.bind(cmd)
 
 	return cmd
+}
+
+// compactionPolicyFlags are the flags every command that sets a
+// scheduled-compaction policy takes: --mode (required), --retain-revisions
+// and --retain-period.
+type compactionPolicyFlags struct {
+	mode            string
+	retainRevisions int64
+	retainPeriod    time.Duration
+}
+
+// bind registers the flags on cmd.
+func (f *compactionPolicyFlags) bind(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&f.mode, "mode", "", "Compaction mode (off, revision, period)")
+	cmd.Flags().Int64Var(&f.retainRevisions, "retain-revisions", 0, "Revision mode: keep the last N revisions")
+	cmd.Flags().DurationVar(&f.retainPeriod, "retain-period", 0, "Period mode: keep the history newer than this (at least 1s)")
+	_ = cmd.MarkFlagRequired("mode")
+}
+
+// policy returns the policy the flags describe; the server validates it.
+func (f *compactionPolicyFlags) policy() *transport.DatabaseCompactionConfig {
+	p := &transport.DatabaseCompactionConfig{Mode: f.mode, RetainRevisions: f.retainRevisions}
+	if f.retainPeriod != 0 {
+		p.RetainPeriod = f.retainPeriod.String()
+	}
+	return p
+}
+
+// printCompactionPolicy writes a policy as an indented Compaction block in
+// the table format; nothing for no policy.
+func printCompactionPolicy(c *transport.DatabaseCompactionConfig) {
+	if c == nil || c.Mode == "" {
+		return
+	}
+	_, _ = fmt.Fprintf(outputWriter, "Compaction:\n")
+	_, _ = fmt.Fprintf(outputWriter, "  Mode:     %s\n", c.Mode)
+	if c.RetainRevisions != 0 {
+		_, _ = fmt.Fprintf(outputWriter, "  Retain:   %d revisions\n", c.RetainRevisions)
+	}
+	if c.RetainPeriod != "" {
+		_, _ = fmt.Fprintf(outputWriter, "  Retain:   %s\n", c.RetainPeriod)
+	}
 }
 
 // newDatabaseListCmd creates the "database list" subcommand.
@@ -585,16 +616,7 @@ func printDatabaseInfo(info *transport.DatabaseInfo) error {
 			_, _ = fmt.Fprintf(outputWriter, "SQL:\n")
 			_, _ = fmt.Fprintf(outputWriter, "  Concurrency: %s\n", info.SQL.Concurrency)
 		}
-		if c := info.Compaction; c != nil && c.Mode != "" {
-			_, _ = fmt.Fprintf(outputWriter, "Compaction:\n")
-			_, _ = fmt.Fprintf(outputWriter, "  Mode:     %s\n", c.Mode)
-			if c.RetainRevisions != 0 {
-				_, _ = fmt.Fprintf(outputWriter, "  Retain:   %d revisions\n", c.RetainRevisions)
-			}
-			if c.RetainPeriod != "" {
-				_, _ = fmt.Fprintf(outputWriter, "  Retain:   %s\n", c.RetainPeriod)
-			}
-		}
+		printCompactionPolicy(info.Compaction)
 		return nil
 	}
 }

@@ -259,6 +259,8 @@ func TestRouteMappingGuard_RoutePermissions(t *testing.T) {
 		{"GET", "/capabilities", permission.AdminCapabilities},
 		{"POST", "/admin/shards", permission.AdminStartShard},
 		{"GET", "/admin/topology", permission.AdminTopology},
+		{"GET", "/admin/node-compaction", permission.AdminNodeCompaction},
+		{"PUT", "/admin/node-compaction", permission.AdminNodeCompaction},
 		{"DELETE", "/admin/shards/1", permission.AdminStopShard},
 		{"GET", "/admin/shards/1/state", permission.AdminShardState},
 

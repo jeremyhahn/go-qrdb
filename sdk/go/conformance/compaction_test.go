@@ -53,6 +53,10 @@ var compactionPermissions = []permission.Permission{
 	permission.MVCCGetRevision, permission.MVCCGetAtRevision, permission.MVCCRange,
 	permission.MVCCCurrentRevision, permission.MVCCCompact,
 	permission.AdminHealth, permission.AdminStatus,
+	// Every tenant's role holds the platform's node-compaction permission,
+	// so a tenant's refusal is the scope rule's -- admin:node_compaction is
+	// ScopeCross -- and never a missing grant.
+	permission.AdminNodeCompaction,
 }
 
 // compactionCell is one booted node and a way to act as each tenant on it.

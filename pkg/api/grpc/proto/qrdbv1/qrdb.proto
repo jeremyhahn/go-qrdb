@@ -471,6 +471,18 @@ service QRDBService {
         option (qrdb.v1.permission) = "admin:topology";
     }
 
+    // GetNodeCompaction returns the platform's node-keyspace compaction
+    // policy. admin:node_compaction is ScopeCross: system tenant only.
+    rpc GetNodeCompaction(google.protobuf.Empty) returns (NodeCompactionResponse) {
+        option (qrdb.v1.permission) = "admin:node_compaction";
+    }
+
+    // SetNodeCompaction sets the platform's node-keyspace compaction policy;
+    // an unset compaction turns it off. System tenant only.
+    rpc SetNodeCompaction(SetNodeCompactionRequest) returns (NodeCompactionResponse) {
+        option (qrdb.v1.permission) = "admin:node_compaction";
+    }
+
     // -----------------------------------------------------------------------
     // User management
     // -----------------------------------------------------------------------
@@ -3147,6 +3159,18 @@ message DatabaseCompactionConfig {
     // retain_period is how much history, by age, a period policy keeps: a Go
     // duration of at least 1s. Period mode only.
     string retain_period = 3;
+}
+
+// SetNodeCompactionRequest sets the platform's node-keyspace compaction
+// policy. An unset compaction turns it off.
+message SetNodeCompactionRequest {
+    DatabaseCompactionConfig compaction = 1;
+}
+
+// NodeCompactionResponse is the platform's node-keyspace compaction policy;
+// unset means none.
+message NodeCompactionResponse {
+    DatabaseCompactionConfig compaction = 1;
 }
 
 // DatabaseSQLConfig holds a database's SQL settings.

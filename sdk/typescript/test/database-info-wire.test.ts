@@ -27,6 +27,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { RestClient } from '../src/rest.js';
 import type {
     DatabaseBarrierConfig,
+    DatabaseCompactionConfig,
     DatabaseConnectionConfig,
     DatabaseEtcdProtocolInfo,
     DatabaseInfo,
@@ -51,6 +52,7 @@ const databaseInfoKeys = {
     status: true,
     protocol: true,
     sql: true,
+    compaction: true,
     dataDir: true,
     shardId: true,
     mode: true,
@@ -125,6 +127,12 @@ const connectionKeys = {
 
 const sqlKeys = { concurrency: true } satisfies Record<keyof DatabaseSQLConfig, true>;
 
+const compactionKeys = {
+    mode: true,
+    retainRevisions: true,
+    retainPeriod: true,
+} satisfies Record<keyof DatabaseCompactionConfig, true>;
+
 /**
  * Each object of the response and the keys the SDK declares for it. There are
  * no listed gaps: a key the server sends that the SDK does not type fails, as
@@ -146,6 +154,7 @@ const objects: ReadonlyArray<{
     { path: 'barrier', declared: barrierKeys, untyped: [] },
     { path: 'connection', declared: connectionKeys, untyped: [] },
     { path: 'sql', declared: sqlKeys, untyped: [] },
+    { path: 'compaction', declared: compactionKeys, untyped: [] },
 ];
 
 function objectAt(path: string): Record<string, unknown> {
@@ -198,6 +207,7 @@ describe('DatabaseInfo wire contract (REST)', () => {
         expect(info.dedicatedWal).toBe(true);
         expect(info.raft?.replicaId).toBe(2);
         expect(info.sql?.concurrency).toBe('pessimistic');
+        expect(info.compaction?.retainPeriod).toBe('720h');
         expect(info.tenantId).toBe('acme');
         expect(info.protocol?.etcd?.listenAddr).toBe('0.0.0.0:2379');
         expect(info.raft?.static?.sharedSecretSet).toBe(true);

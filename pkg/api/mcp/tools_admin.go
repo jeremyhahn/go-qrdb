@@ -89,6 +89,16 @@ func adminTools(adminSvc service.AdminServicer) []serverTool {
 			Perm:    permission.AdminTopology,
 			Handler: handleGetTopology(adminSvc),
 		},
+		{
+			Tool:    toolNodeCompaction(),
+			Perm:    permission.AdminNodeCompaction,
+			Handler: handleNodeCompaction(adminSvc),
+		},
+		{
+			Tool:    toolUpdateNodeCompaction(),
+			Perm:    permission.AdminNodeCompaction,
+			Handler: handleUpdateNodeCompaction(adminSvc),
+		},
 	}
 }
 

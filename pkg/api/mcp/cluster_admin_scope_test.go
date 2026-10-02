@@ -44,6 +44,10 @@ func TestClusterAdminScope(t *testing.T) {
 		{"qrdb_remove_member", map[string]any{"shard_id": 1, "replica_id": 2}},
 		{"qrdb_snapshot", map[string]any{"shard_id": 1}},
 		{"qrdb_drain", nil},
+		// The node keyspace's compaction policy: the platform's, and its
+		// compaction discards every tenant's raw history on the node.
+		{"qrdb_node_compaction", nil},
+		{"qrdb_update_node_compaction", map[string]any{"mode": "revision", "retainRevisions": 10}},
 	}
 	roles := authtest.BuiltInRoles(t, tenant.SystemTenantID, authtest.ClusterAdminTenant)
 	for _, op := range ops {

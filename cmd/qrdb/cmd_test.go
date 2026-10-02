@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
@@ -347,6 +348,14 @@ func (m *mockAdminService) GetTopology(_ context.Context) (*service.TopologyResp
 	return &service.TopologyResponse{}, nil
 }
 
+func (m *mockAdminService) NodeCompaction(_ context.Context) (*compaction.Policy, error) {
+	return nil, nil
+}
+
+func (m *mockAdminService) SetNodeCompaction(_ context.Context, _ *compaction.Policy) error {
+	return nil
+}
+
 // errorAdminService implements service.AdminServicer that returns errors.
 type errorAdminService struct{}
 
@@ -396,6 +405,14 @@ func (e *errorAdminService) GetShardState(_ context.Context, _ uint64) (*service
 
 func (e *errorAdminService) GetTopology(_ context.Context) (*service.TopologyResponse, error) {
 	return nil, errors.New("get topology unavailable")
+}
+
+func (e *errorAdminService) NodeCompaction(_ context.Context) (*compaction.Policy, error) {
+	return nil, nil
+}
+
+func (e *errorAdminService) SetNodeCompaction(_ context.Context, _ *compaction.Policy) error {
+	return nil
 }
 
 // yamlBrokenMarshaler implements yaml.Marshaler to trigger a marshal

@@ -292,6 +292,7 @@ export type {
     CompactionMode,
     DatabaseCompactionConfig,
     UpdateDatabaseCompactionRequest,
+    NodeCompactionBody,
     SQLConcurrency,
     DatabaseRaftConfig,
     DatabaseBarrierConfig,

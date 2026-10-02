@@ -112,6 +112,8 @@ const (
 	QRDBService_StopShard_FullMethodName                         = "/qrdb.v1.QRDBService/StopShard"
 	QRDBService_GetShardState_FullMethodName                     = "/qrdb.v1.QRDBService/GetShardState"
 	QRDBService_GetTopology_FullMethodName                       = "/qrdb.v1.QRDBService/GetTopology"
+	QRDBService_GetNodeCompaction_FullMethodName                 = "/qrdb.v1.QRDBService/GetNodeCompaction"
+	QRDBService_SetNodeCompaction_FullMethodName                 = "/qrdb.v1.QRDBService/SetNodeCompaction"
 	QRDBService_CreateUser_FullMethodName                        = "/qrdb.v1.QRDBService/CreateUser"
 	QRDBService_GetUser_FullMethodName                           = "/qrdb.v1.QRDBService/GetUser"
 	QRDBService_GetUserByUsername_FullMethodName                 = "/qrdb.v1.QRDBService/GetUserByUsername"
@@ -421,6 +423,12 @@ type QRDBServiceClient interface {
 	GetShardState(ctx context.Context, in *GetShardStateRequest, opts ...grpc.CallOption) (*ShardStateResponse, error)
 	// GetTopology returns the full cluster topology.
 	GetTopology(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*TopologyResponse, error)
+	// GetNodeCompaction returns the platform's node-keyspace compaction
+	// policy. admin:node_compaction is ScopeCross: system tenant only.
+	GetNodeCompaction(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*NodeCompactionResponse, error)
+	// SetNodeCompaction sets the platform's node-keyspace compaction policy;
+	// an unset compaction turns it off. System tenant only.
+	SetNodeCompaction(ctx context.Context, in *SetNodeCompactionRequest, opts ...grpc.CallOption) (*NodeCompactionResponse, error)
 	// CreateUser creates a new passwordless user.
 	CreateUser(ctx context.Context, in *CreateUserRequest, opts ...grpc.CallOption) (*UserResponse, error)
 	// GetUser retrieves a user by ID.
@@ -1524,6 +1532,26 @@ func (c *qRDBServiceClient) GetTopology(ctx context.Context, in *emptypb.Empty, 
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(TopologyResponse)
 	err := c.cc.Invoke(ctx, QRDBService_GetTopology_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) GetNodeCompaction(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*NodeCompactionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(NodeCompactionResponse)
+	err := c.cc.Invoke(ctx, QRDBService_GetNodeCompaction_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) SetNodeCompaction(ctx context.Context, in *SetNodeCompactionRequest, opts ...grpc.CallOption) (*NodeCompactionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(NodeCompactionResponse)
+	err := c.cc.Invoke(ctx, QRDBService_SetNodeCompaction_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -2989,6 +3017,12 @@ type QRDBServiceServer interface {
 	GetShardState(context.Context, *GetShardStateRequest) (*ShardStateResponse, error)
 	// GetTopology returns the full cluster topology.
 	GetTopology(context.Context, *emptypb.Empty) (*TopologyResponse, error)
+	// GetNodeCompaction returns the platform's node-keyspace compaction
+	// policy. admin:node_compaction is ScopeCross: system tenant only.
+	GetNodeCompaction(context.Context, *emptypb.Empty) (*NodeCompactionResponse, error)
+	// SetNodeCompaction sets the platform's node-keyspace compaction policy;
+	// an unset compaction turns it off. System tenant only.
+	SetNodeCompaction(context.Context, *SetNodeCompactionRequest) (*NodeCompactionResponse, error)
 	// CreateUser creates a new passwordless user.
 	CreateUser(context.Context, *CreateUserRequest) (*UserResponse, error)
 	// GetUser retrieves a user by ID.
@@ -3549,6 +3583,12 @@ func (UnimplementedQRDBServiceServer) GetShardState(context.Context, *GetShardSt
 }
 func (UnimplementedQRDBServiceServer) GetTopology(context.Context, *emptypb.Empty) (*TopologyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetTopology not implemented")
+}
+func (UnimplementedQRDBServiceServer) GetNodeCompaction(context.Context, *emptypb.Empty) (*NodeCompactionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetNodeCompaction not implemented")
+}
+func (UnimplementedQRDBServiceServer) SetNodeCompaction(context.Context, *SetNodeCompactionRequest) (*NodeCompactionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetNodeCompaction not implemented")
 }
 func (UnimplementedQRDBServiceServer) CreateUser(context.Context, *CreateUserRequest) (*UserResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateUser not implemented")
@@ -5330,6 +5370,42 @@ func _QRDBService_GetTopology_Handler(srv interface{}, ctx context.Context, dec 
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QRDBServiceServer).GetTopology(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_GetNodeCompaction_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).GetNodeCompaction(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_GetNodeCompaction_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).GetNodeCompaction(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_SetNodeCompaction_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetNodeCompactionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).SetNodeCompaction(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_SetNodeCompaction_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).SetNodeCompaction(ctx, req.(*SetNodeCompactionRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -7948,6 +8024,14 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetTopology",
 			Handler:    _QRDBService_GetTopology_Handler,
+		},
+		{
+			MethodName: "GetNodeCompaction",
+			Handler:    _QRDBService_GetNodeCompaction_Handler,
+		},
+		{
+			MethodName: "SetNodeCompaction",
+			Handler:    _QRDBService_SetNodeCompaction_Handler,
 		},
 		{
 			MethodName: "CreateUser",

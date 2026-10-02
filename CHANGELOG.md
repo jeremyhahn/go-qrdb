@@ -66,17 +66,32 @@ are not reconstructed here — their history is in the git log.
   (`TestClusteredNodes_CompactionContinuesAfterLeaderFailover`,
   `TestStandaloneNode_CompactionScheduleSurvivesRestart`); and through snapshot recovery and
   the replica hash in `pkg/store` (`TestCompactionState_*`).
-- **Platform node-keyspace compaction, off by default.** `mvcc.node_compaction` in the node's
-  configuration file (the same `off|revision|period` policy type as a database's) compacts the
-  node keyspace -- every key outside all `<tenant>/<db>/` namespaces: the node's `__sys:`
-  records and the system tenant's raw keyspace -- on the compaction scheduler. It is
-  platform-only: set only in the node's configuration, with no API verb and no permission any
-  role can hold. It skips every key with a database namespace by construction
+- **Platform node-keyspace compaction, off by default.** A policy of the same
+  `off|revision|period` type as a database's compacts the node keyspace -- every key outside
+  all `<tenant>/<db>/` namespaces: the node's `__sys:` records and the system tenant's raw
+  keyspace -- on the compaction scheduler. It is set by a new platform-only verb on every
+  transport: REST `GET`/`PUT /admin/node-compaction`, gRPC and the Unix socket
+  `GetNodeCompaction`/`SetNodeCompaction`, QUIC `admin.GetNodeCompaction`/
+  `admin.SetNodeCompaction`, MCP `qrdb_node_compaction`/`qrdb_update_node_compaction`, and the
+  embedded transport; the Go SDK `AdminClient.NodeCompaction`/`SetNodeCompaction`; the CLI
+  `qrdb admin node-compaction` and `qrdb admin update-node-compaction --mode
+  --retain-revisions --retain-period`; the TypeScript SDK `client.admin.nodeCompaction()` /
+  `setNodeCompaction(compaction?)` (REST and the desktop client's `AdminBinding`). Both need the
+  new permission `admin:node_compaction`, which is `ScopeCross` -- only a system-tenant identity
+  can exercise it; the built-in Admin role carries it -- and the admin service also refuses a
+  caller bound to any other tenant (`tenant.CrossTenantDeniedError`), so a tenant's Admin, or a
+  tenant role granted the permission, is refused on all six transports. The policy is the
+  `compaction.NodeScope` record of the shared store's replicated compaction table, written by
+  `OpCompactionState` like a database's and run by the shared store's leader only. The
+  compaction skips every key with a database namespace by construction
   (`tenantid.NamespaceOf`), so no tenant database's history, the system tenant's own included,
   is touched; its floor (`[0x06]`) is kept apart from the per-database floors. New Raft opcode
   `OpMVCCCompactNode` (15) behind the cluster feature `node-compaction`; new
-  `service.NodeKeyspaceCompactor` and `mvcc.Store.CompactNodeKeyspace`/`CompactNodeKeyspaceInBatch`.
-  Proved on a raft node in `sdk/go/conformance` (`TestNodeKeyspaceCompaction_*`).
+  `service.NodeKeyspaceCompactor` and `mvcc.Store.CompactNodeKeyspace`/`CompactNodeKeyspaceInBatch`;
+  `service.NodeCompactionUnavailableError` (422 / `FAILED_PRECONDITION`) on a node whose shared
+  store keeps no MVCC history. There is no configuration-file form: `mvcc.node_compaction` is not
+  read. Proved on all six transports, a tenant refused on each, in `sdk/go/conformance`
+  (`TestNodeKeyspaceCompaction_OnEveryTransport`).
 
 ### Security
 
@@ -105,7 +120,7 @@ are not reconstructed here — their history is in the git log.
   unscoped embedded client, a server built without a service registry, and
   `mvcc.Store.Compact`/`CompactInBatch` and `mvcc.RaftStorage.Compact`/`CompactedRevision` are
   gone. Keys outside every database namespace are compacted only by the platform's
-  `mvcc.node_compaction` policy (see Added), never by `Compact`.
+  node-keyspace policy (see Added), never by `Compact`.
 - **BREAKING: Raft opcode 13 (`OpMVCCCompact`) is retired** and replaced by
   `OpMVCCCompactPrefix` (14, payload `[revision:8][prefixLen:2][prefix]`), proposed only once
   the new cluster feature `prefix-compaction` is enabled (`service.FeatureNotEnabledError`

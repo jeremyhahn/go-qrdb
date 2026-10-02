@@ -268,6 +268,29 @@ func AdminCommands() []CommandDefinition {
 			IsDestructive:          true,
 			ExpectedOutputContains: []string{"OK"},
 		},
+		{
+			Name:                   "admin-node-compaction",
+			Category:               CategoryAdmin,
+			Command:                []string{"admin", "node-compaction"},
+			Description:            "Show the platform's node-keyspace compaction policy",
+			RequiresServer:         true,
+			ExpectedOutputContains: []string{"Compaction"},
+		},
+		{
+			Name:           "admin-update-node-compaction",
+			Category:       CategoryAdmin,
+			Command:        []string{"admin", "update-node-compaction"},
+			Description:    "Set the platform's node-keyspace compaction policy",
+			RequiresServer: true,
+			RequiredArgs: []ArgDefinition{
+				{Flag: "mode", Value: "off", Description: "Compaction mode: off, revision, period"},
+			},
+			OptionalArgs: []ArgDefinition{
+				{Flag: "retain-revisions", Value: "", Description: "Revision mode: keep the last N revisions"},
+				{Flag: "retain-period", Value: "", Description: "Period mode: keep history newer than this"},
+			},
+			ExpectedOutputContains: []string{"Compaction"},
+		},
 	}
 }
 
@@ -621,6 +644,22 @@ func DatabaseCommands() []CommandDefinition {
 				{Value: "test-db", Description: "Database name", IsPositional: true},
 			},
 			ExpectedOutputContains: []string{"OK"},
+		},
+		{
+			Name:           "database-update-compaction",
+			Category:       CategoryDatabase,
+			Command:        []string{"database", "update-compaction"},
+			Description:    "Set a database's scheduled-compaction policy",
+			RequiresServer: true,
+			RequiresSetup:  true,
+			RequiredArgs: []ArgDefinition{
+				{Value: "test-db", Description: "Database name", IsPositional: true},
+				{Flag: "mode", Value: "off", Description: "Compaction mode: off, revision, period"},
+			},
+			OptionalArgs: []ArgDefinition{
+				{Flag: "retain-revisions", Value: "", Description: "Revision mode: keep the last N revisions"},
+				{Flag: "retain-period", Value: "", Description: "Period mode: keep history newer than this"},
+			},
 		},
 		{
 			Name:           "database-update-etcd",

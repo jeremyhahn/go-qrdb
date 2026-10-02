@@ -177,6 +177,12 @@ policy: `qrdb database info <name> --output json` shows it as `compaction`, and
 the node compacts the database on that schedule. It is off unless your tenant
 set one.
 
+**The system tenant's raw keys keep all their history.** Keys outside every
+database -- what the unscoped embedded client writes -- are compacted only by
+the platform's node-keyspace policy, which is off until a system-tenant
+administrator sets it with `qrdb admin update-node-compaction`. A tenant
+cannot set it, and it never compacts a database's keys.
+
 **`kv compact` says "compaction requires a database scope"** — you reached the
 node's raw MVCC service rather than a database (the unscoped embedded client,
 or a server built without a service registry). There is no store-wide

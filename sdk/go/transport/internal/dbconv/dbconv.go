@@ -21,6 +21,7 @@ package dbconv
 import (
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/compactionconv"
 )
 
 // Info converts a protobuf DatabaseInfoResponse. Like the message, the
@@ -70,13 +71,7 @@ func Info(resp *pb.DatabaseInfoResponse) *transport.DatabaseInfo {
 	if q := resp.GetSql(); q != nil {
 		info.SQL = &transport.DatabaseSQLConfig{Concurrency: q.GetConcurrency()}
 	}
-	if c := resp.GetCompaction(); c != nil {
-		info.Compaction = &transport.DatabaseCompactionConfig{
-			Mode:            c.GetMode(),
-			RetainRevisions: c.GetRetainRevisions(),
-			RetainPeriod:    c.GetRetainPeriod(),
-		}
-	}
+	info.Compaction = compactionconv.FromProto(resp.GetCompaction())
 	return info
 }
 

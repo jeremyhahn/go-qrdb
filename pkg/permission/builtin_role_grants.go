@@ -173,6 +173,10 @@ func registerAdminGrants() {
 		AdminHealth, AdminStatus, AdminPeers,
 		AdminAddMember, AdminRemoveMember,
 		AdminSnapshot, AdminDrain, AdminCapabilities,
+		// The platform's node-keyspace compaction policy. ScopeCross
+		// (cluster_admin_scope.go): only effective for the system tenant's
+		// Admin, so a tenant Admin cannot compact the node keyspace.
+		AdminNodeCompaction,
 		// Selective point-in-time restore. This is the ONE MVCC data-plane
 		// verb the Admin role carries: Admin is otherwise a governance role
 		// and holds no kv:*/mvcc:* data verbs, but recovering a tenant's keys

@@ -643,19 +643,29 @@ compaction" below and [../databases/](../databases/).
 The node keyspace is every key outside all `<tenant>/<db>/` namespaces: the
 node's own internal records and the system tenant's raw keyspace. It belongs
 to no tenant database, so no tenant's policy reaches it; the platform compacts
-it, and only when it has configured that.
+it, and only when it has set a policy. Off by default.
 
-```yaml
-mvcc:
-  node_compaction:        # absent or `mode: off`: never compacted (the default)
-    mode: revision        # revision | period -- the same policy type as a database's
-    retain_revisions: 100000
-```
-
-- **Platform-only.** The policy is set only in the node's configuration file,
-  which the platform alone controls. There is no API verb for it and no
-  permission a tenant role -- or any role -- can hold for it; the system
-  tenant's identities cannot set it over a transport either.
+- **Set by a platform-only verb.** `SetNodeCompaction` / `NodeCompaction` on
+  the admin surface of every transport (`PUT`/`GET /admin/node-compaction`,
+  gRPC and the Unix socket `SetNodeCompaction`/`GetNodeCompaction`, QUIC
+  `admin.SetNodeCompaction`/`admin.GetNodeCompaction`, MCP
+  `qrdb_update_node_compaction`/`qrdb_node_compaction`, the embedded
+  transport; the CLI's `qrdb admin update-node-compaction` and
+  `qrdb admin node-compaction`) -- see [api.md](api.md). Both need
+  `admin:node_compaction`, which is `ScopeCross`: only an identity of the
+  system tenant can exercise it. The built-in Admin role carries it, so the
+  system tenant's Admin can; a tenant's Admin, or any tenant role granted it,
+  is refused on every transport, and the admin service itself refuses a
+  caller bound to any other tenant (`tenant.CrossTenantDeniedError`), so an
+  in-process caller scoped to a tenant is refused too.
+- **A replicated record, not a node's configuration.** The policy is the
+  `compaction.NodeScope` record of the shared store's compaction table
+  ("Scheduled compaction" below), written through `OpCompactionState` like a
+  database's policy: every replica holds it, a snapshot or backup carries it,
+  and the shared store's leader runs it, with no node-local copy anywhere.
+  *(Corrected: the policy was `mvcc.node_compaction` in each node's
+  configuration file, with no API verb, run by every node that had it
+  configured. That key is no longer read.)*
 - **It never touches a tenant prefix, by construction.** A key is in a
   database namespace when it has the shape `tenant.ComposeNamespace` produces
   -- a non-empty segment, `/`, a non-empty segment, `/`
@@ -672,8 +682,9 @@ mvcc:
   namespace.
 - **It runs on the same scheduler** as the databases' policies, through the
   raw shard service (`service.NodeKeyspaceCompactor`), behind the cluster
-  feature `node-compaction`. Every node with the policy configured runs it; a
-  second compaction to the same revision is the already-compacted refusal.
+  feature `node-compaction`, on the shared store's leader only (a standalone
+  node leads its only store). A former leader's compaction to a revision the
+  new leader already compacted to is the already-compacted refusal.
 - **It costs a scan of the shard's whole data keyspace, in the apply loop.**
   Node keys are not one contiguous range -- a data key sorts by key length
   first, and node keys share lengths with every database's -- so the

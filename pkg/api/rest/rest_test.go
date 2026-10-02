@@ -38,6 +38,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
@@ -295,6 +296,14 @@ func (m *mockAdminService) GetTopology(ctx context.Context) (*service.TopologyRe
 		return m.getTopologyFn(ctx)
 	}
 	return &service.TopologyResponse{}, nil
+}
+
+func (m *mockAdminService) NodeCompaction(_ context.Context) (*compaction.Policy, error) {
+	return nil, nil
+}
+
+func (m *mockAdminService) SetNodeCompaction(_ context.Context, _ *compaction.Policy) error {
+	return nil
 }
 
 // mockHost implements the Host interface for testing.

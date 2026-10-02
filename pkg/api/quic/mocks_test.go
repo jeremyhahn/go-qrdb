@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
@@ -294,6 +295,14 @@ func (m *mockAdminService) GetTopology(ctx context.Context) (*service.TopologyRe
 		return m.getTopologyFn(ctx)
 	}
 	return &service.TopologyResponse{}, nil
+}
+
+func (m *mockAdminService) NodeCompaction(_ context.Context) (*compaction.Policy, error) {
+	return nil, nil
+}
+
+func (m *mockAdminService) SetNodeCompaction(_ context.Context, _ *compaction.Policy) error {
+	return nil
 }
 
 func (m *mockAdminService) StartShard(ctx context.Context, req *service.StartShardRequest) error {

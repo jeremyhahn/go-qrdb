@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -92,6 +93,14 @@ func (m *topoAdminService) GetTopology(ctx context.Context) (*service.TopologyRe
 		return m.topologyFn(ctx)
 	}
 	return &service.TopologyResponse{}, nil
+}
+
+func (m *topoAdminService) NodeCompaction(_ context.Context) (*compaction.Policy, error) {
+	return nil, nil
+}
+
+func (m *topoAdminService) SetNodeCompaction(_ context.Context, _ *compaction.Policy) error {
+	return nil
 }
 
 var _ service.AdminServicer = (*topoAdminService)(nil)

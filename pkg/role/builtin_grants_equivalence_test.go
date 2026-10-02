@@ -111,6 +111,9 @@ var goldenAdminPermissions = []permission.Permission{
 	permission.AdminHealth, permission.AdminStatus, permission.AdminPeers,
 	permission.AdminAddMember, permission.AdminRemoveMember,
 	permission.AdminSnapshot, permission.AdminDrain, permission.AdminCapabilities,
+	// The node keyspace's compaction policy, ScopeCross: effective only for
+	// system-tenant Admin.
+	permission.AdminNodeCompaction,
 	permission.MVCCRestore,
 	permission.AuditRead, permission.AuditQuery,
 	permission.TenantsListCross, permission.TenantsCreateCross, permission.TenantsApprove,

@@ -52,6 +52,12 @@ func TestClusterAdminScope(t *testing.T) {
 		{"admin.RemoveMember", marshal(&pb.RemoveMemberRequest{ShardId: 1, ReplicaId: 2})},
 		{"admin.RequestSnapshot", marshal(&pb.RequestSnapshotMessage{ShardId: 1})},
 		{"admin.Drain", nil},
+		// The node keyspace's compaction policy: the platform's, and its
+		// compaction discards every tenant's raw history on the node.
+		{"admin.GetNodeCompaction", nil},
+		{"admin.SetNodeCompaction", marshal(&pb.SetNodeCompactionRequest{
+			Compaction: &pb.DatabaseCompactionConfig{Mode: "revision", RetainRevisions: 10},
+		})},
 	}
 	roles := authtest.BuiltInRoles(t, tenant.SystemTenantID, authtest.ClusterAdminTenant)
 	for _, op := range ops {

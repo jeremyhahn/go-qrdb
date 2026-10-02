@@ -72,5 +72,10 @@
   },
   "sql": {
     "concurrency": "pessimistic"
+  },
+  "compaction": {
+    "mode": "period",
+    "retainRevisions": 500,
+    "retainPeriod": "720h"
   }
 }

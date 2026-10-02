@@ -462,6 +462,18 @@ export class WailsClient implements Client {
             getTopology: async (): Promise<TopologyResponse> => {
                 return b.GetTopology() as Promise<TopologyResponse>;
             },
+            nodeCompaction: async (): Promise<DatabaseCompactionConfig | undefined> => {
+                // AdminBinding.NodeCompaction returns the Go
+                // *DatabaseCompactionConfig: null when no policy is set.
+                const policy = (await b.NodeCompaction()) as DatabaseCompactionConfig | null;
+                return policy ?? undefined;
+            },
+            setNodeCompaction: async (compaction?: DatabaseCompactionConfig): Promise<DatabaseCompactionConfig | undefined> => {
+                // AdminBinding.SetNodeCompaction takes a
+                // *DatabaseCompactionConfig: null turns the policy off.
+                const policy = (await b.SetNodeCompaction(compaction ?? null)) as DatabaseCompactionConfig | null;
+                return policy ?? undefined;
+            },
             addMember: async (
                 shardId: number,
                 replicaId: number,

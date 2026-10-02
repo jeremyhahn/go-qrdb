@@ -48,6 +48,11 @@ func (m *memoryCompactionTable) KeepsRevisionHistory() bool { return !m.noHistor
 func (m *memoryCompactionTable) SetCompactionPolicy(_ context.Context, scope string, b compaction.Binding) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// As the state machine does: an off policy removes the record.
+	if !b.Policy.Enabled() {
+		delete(m.states, scope)
+		return nil
+	}
 	st := m.states[scope]
 	if st == nil {
 		st = &compaction.State{}

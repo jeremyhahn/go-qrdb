@@ -715,6 +715,10 @@ const (
 	AdminStopShard  Permission = "admin:stop_shard"
 	AdminShardState Permission = "admin:shard_state"
 	AdminTopology   Permission = "admin:topology"
+	// AdminNodeCompaction reads and sets the platform's node-keyspace
+	// compaction policy: the scheduled compaction of the shared store's
+	// keys outside every database namespace.
+	AdminNodeCompaction Permission = "admin:node_compaction"
 )
 
 // Per-user authentication-factor permissions (the user-side factor lifecycle:
@@ -1074,6 +1078,7 @@ var categories = []Category{
 		Group: "Admin Services",
 		Permissions: []Permission{
 			AdminStartShard, AdminStopShard, AdminShardState, AdminTopology,
+			AdminNodeCompaction,
 		},
 	},
 	{

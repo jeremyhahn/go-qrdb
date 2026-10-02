@@ -98,6 +98,34 @@ service.
 qrdb admin drain
 ```
 
+## `qrdb admin node-compaction`
+
+Show the platform's node-keyspace compaction policy -- the scheduled compaction
+of the keys outside every database namespace -- or `Compaction: off`. No flags.
+Requires `admin:node_compaction`, which only the system tenant can hold.
+
+## `qrdb admin update-node-compaction`
+
+Set the platform's node-keyspace compaction policy. It is off unless set,
+never touches a database's keys, and is kept as a replicated record, so it
+applies on whichever node leads the shared store and survives a node's loss.
+Requires `admin:node_compaction` (system tenant only); a tenant's caller is
+refused.
+
+| Flag | Type | Meaning |
+|---|---|---|
+| `--mode` | string | `off \| revision \| period` (required) |
+| `--retain-revisions` | int | `revision` mode: keep the last N revisions |
+| `--retain-period` | duration | `period` mode: keep history newer than this (>= `1s`) |
+
+```bash
+qrdb admin update-node-compaction --mode revision --retain-revisions 100000
+qrdb admin update-node-compaction --mode off
+```
+
+See [../key-value/engineering.md](../key-value/engineering.md)
+"Node-keyspace compaction".
+
 ## `qrdb rebalance stats`
 
 Show statistics for one shard: key count, byte count, leader and replica count.
