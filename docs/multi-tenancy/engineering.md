@@ -890,9 +890,17 @@ did not.
   selected by `CLUSTER_TENANCY_RUN` in the Makefile), and the full cluster
   stage runs nightly. `test/buildgates/cluster_tenancy_gate_test.go` fails
   when the selection drops an `isolation_raft_*` suite, selects fewer than its
-  floor of tests, or leaves the job out of the CI result gate. *(Corrected
-  2026-10-02: this said the stage was not wired into CI; it has run nightly
-  since 2026-09-22.)*
+  floor of tests, or leaves the job out of the CI result gate. The test
+  function count behind that floor is **build-constraint aware**: it parses
+  each file's `//go:build` line with `go/build/constraint` and evaluates it
+  with only the `integration` tag (plus the default GOOS/GOARCH) set, so a
+  file tagged `!integration` — which never compiles into the binary
+  `make integration-test-cluster-tenancy` runs — cannot inflate the count. The
+  gate also asserts the workflow's top-level `on:` actually names `push` and
+  `pull_request`, and that the job carries no `if:` — a conditional job can be
+  skipped on exactly the runs this gate exists to cover, and a skipped job
+  satisfies `needs`. *(Corrected 2026-10-02: this said the stage was not wired
+  into CI; it has run nightly since 2026-09-22.)*
 
 ## Observability
 
