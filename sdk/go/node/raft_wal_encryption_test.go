@@ -62,7 +62,7 @@ func walContains(t *testing.T, dataDir string, needle []byte) bool {
 		if err != nil || d.IsDir() || found {
 			return err
 		}
-		data, rerr := os.ReadFile(path)
+		data, rerr := os.ReadFile(path) // #nosec G122 -- path comes from WalkDir over the test's own temp WAL directory; no symlink can race into it
 		if rerr != nil {
 			return rerr
 		}

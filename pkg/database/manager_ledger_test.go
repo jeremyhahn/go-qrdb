@@ -68,7 +68,7 @@ func TestManager_RecordDrop_MkdirFailureIsAMetaWriteError(t *testing.T) {
 
 	// A plain FILE already occupies the path recordDrop wants to MkdirAll,
 	// so MkdirAll fails (not a directory) instead of creating it.
-	require.NoError(t, os.WriteFile(filepath.Join(mgr.dataDir, droppedDir), []byte("x"), 0o640))
+	require.NoError(t, os.WriteFile(filepath.Join(mgr.dataDir, droppedDir), []byte("x"), 0o600))
 
 	err := mgr.recordDrop("orders")
 	var writeErr *MetaWriteError
@@ -83,8 +83,9 @@ func TestManager_DroppedHere_StatFailureIsAMetaReadError(t *testing.T) {
 
 	dir := filepath.Join(mgr.dataDir, droppedDir)
 	require.NoError(t, os.MkdirAll(dir, 0o750))
+	// #nosec G302 -- the test removes every permission from a temp directory to force the I/O error path
 	require.NoError(t, os.Chmod(dir, 0o000))
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o750) })
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o750) }) // #nosec G302 -- restores the temp directory so t.TempDir can remove it
 
 	_, err := mgr.droppedHere("orders")
 	var readErr *MetaReadError
@@ -99,8 +100,9 @@ func TestManager_ForgetDrop_RemoveFailureIsAMetaWriteError(t *testing.T) {
 
 	require.NoError(t, mgr.recordDrop("orders"))
 	dir := filepath.Join(mgr.dataDir, droppedDir)
-	require.NoError(t, os.Chmod(dir, 0o500)) // read-only: Stat/readdir fine, Remove refused
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o750) })
+	// #nosec G302 -- the test makes a temp directory read-only to force the remove error path
+	require.NoError(t, os.Chmod(dir, 0o500))       // read-only: Stat/readdir fine, Remove refused
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o750) }) // #nosec G302 -- restores the temp directory so t.TempDir can remove it
 
 	err := mgr.forgetDrop("orders")
 	var writeErr *MetaWriteError
@@ -114,7 +116,7 @@ func TestManager_ReadShardHighWater_CorruptFileIsAMetaReadError(t *testing.T) {
 	mgr := newTestManager(t)
 	defer func() { _ = mgr.Close() }()
 
-	require.NoError(t, os.WriteFile(filepath.Join(mgr.dataDir, shardHighWaterFile), []byte("not-a-number"), 0o640))
+	require.NoError(t, os.WriteFile(filepath.Join(mgr.dataDir, shardHighWaterFile), []byte("not-a-number"), 0o600))
 
 	_, err := mgr.readShardHighWater()
 	var readErr *MetaReadError
