@@ -124,6 +124,13 @@ export interface DatabaseWizardState {
     sealMode: SealMode;
     /** Seal configuration (shamir shares, etc.). */
     sealConfig: EmbeddedSealConfig;
+    /**
+     * The barrier passphrase, held only from the barrier step until the
+     * create request is built: `takeBarrierPassphrase` hands it to the
+     * request and clears it, and `resetDatabaseWizard` (cancel) clears it.
+     * Never persisted, logged or displayed.
+     */
+    barrierPassphrase: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -199,9 +206,10 @@ export const dbWizardStore: DatabaseWizardState = $state({
     sqlMySQL: false,
     sqlPostgreSQL: false,
     etcdEnabled: false,
-    barrierEnabled: true,
-    sealMode: 'passphrase',
+    barrierEnabled: false,
+    sealMode: 'none',
     sealConfig: { ...defaultSealConfig },
+    barrierPassphrase: '',
 });
 
 // ---------------------------------------------------------------------------
@@ -259,7 +267,18 @@ export function resetDatabaseWizard(): void {
     dbWizardStore.sqlMySQL = false;
     dbWizardStore.sqlPostgreSQL = false;
     dbWizardStore.etcdEnabled = false;
-    dbWizardStore.barrierEnabled = true;
-    dbWizardStore.sealMode = 'passphrase';
+    dbWizardStore.barrierEnabled = false;
+    dbWizardStore.sealMode = 'none';
     dbWizardStore.sealConfig = { ...defaultSealConfig };
+    dbWizardStore.barrierPassphrase = '';
+}
+
+/**
+ * Returns the barrier passphrase for the create request and clears it from
+ * the store, so it lives no longer than the request that carries it.
+ */
+export function takeBarrierPassphrase(): string {
+    const passphrase = dbWizardStore.barrierPassphrase;
+    dbWizardStore.barrierPassphrase = '';
+    return passphrase;
 }

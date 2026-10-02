@@ -2109,6 +2109,15 @@ export interface DatabaseBarrierConfig {
     readonly sharesTotal?: number;
 }
 
+/** Encryption barrier settings a create request sets. The secret
+ * initialises the barrier; it is write-only and no response returns it. The
+ * Go SDK's `DatabaseBarrierConfig`. */
+export interface DatabaseBarrierRequest extends DatabaseBarrierConfig {
+    /** The barrier passphrase. Sent once, at create; never stored by the
+     * server and never returned. */
+    readonly secret?: string;
+}
+
 /** Remote connection configuration for a database. */
 export interface DatabaseConnectionConfig {
     /** Transport protocol (e.g. "rest", "grpc", "unix"). */
@@ -2219,8 +2228,9 @@ export interface CreateDatabaseRequest {
     readonly dedicatedWal?: boolean;
     /** Raft consensus configuration. */
     readonly raft?: DatabaseRaftConfig;
-    /** Encryption barrier configuration. */
-    readonly barrier?: DatabaseBarrierConfig;
+    /** Encryption barrier configuration, with the passphrase that
+     * initialises it. */
+    readonly barrier?: DatabaseBarrierRequest;
     /** Remote connection configuration. */
     readonly connection?: DatabaseConnectionConfig;
 }

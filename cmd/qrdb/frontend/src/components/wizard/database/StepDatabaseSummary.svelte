@@ -229,6 +229,14 @@
             {/if}
           </span>
         </div>
+        {#if dbWizardStore.sealMode === "passphrase"}
+          <div class="flex items-center justify-between">
+            <span class="text-base-content/70">Secret</span>
+            <span class="font-medium" data-testid="db-summary-passphrase">
+              {dbWizardStore.barrierPassphrase !== "" ? "Set" : "Not set"}
+            </span>
+          </div>
+        {/if}
         {#if dbWizardStore.sealMode === "shamir"}
           <div class="flex items-center justify-between">
             <span class="text-base-content/70">Shamir Scheme</span>

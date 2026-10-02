@@ -17,7 +17,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import type { Client } from "@qrdb/sdk";
-  import { dbWizardStore } from "$stores/database-wizard.svelte.ts";
+  import { dbWizardStore, takeBarrierPassphrase } from "$stores/database-wizard.svelte.ts";
 
   let {
     client,
@@ -112,6 +112,9 @@
 
     // Phase 1: Save configuration.
     advancePhase(phaseIdx);
+    // Taken (and cleared from the store) before anything can fail, so the
+    // passphrase outlives neither a successful nor a failed request.
+    const barrierSecret = takeBarrierPassphrase();
     const req = {
       name: dbWizardStore.name,
       engine: dbWizardStore.engine,
@@ -159,14 +162,14 @@
             },
           }
         : {}),
-      // The request has always omitted `enabled`, which the server reads as
-      // false; it is spelled out here unchanged. The wizard collects no
-      // barrier secret, so it cannot initialise a barrier at create.
+      // The barrier is enabled at create and initialised with the passphrase
+      // collected in the barrier step.
       ...(dbWizardStore.barrierEnabled
         ? {
             barrier: {
-              enabled: false,
+              enabled: true,
               mode: dbWizardStore.sealMode,
+              ...(barrierSecret !== "" ? { secret: barrierSecret } : {}),
               ...(dbWizardStore.sealMode === "shamir"
                 ? {
                     sharesRequired: dbWizardStore.sealConfig.sharesRequired,
@@ -177,7 +180,13 @@
           }
         : {}),
     };
-    console.debug("[StepDatabaseCreating] assembled request", req);
+    // Never log the request itself: it carries the barrier passphrase.
+    console.debug("[StepDatabaseCreating] assembled request", {
+      name: req.name,
+      engine: req.engine,
+      backend: req.backend,
+      barrier: dbWizardStore.barrierEnabled ? dbWizardStore.sealMode : "none",
+    });
     completePhase(phaseIdx);
     phaseIdx++;
 

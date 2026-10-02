@@ -60,6 +60,20 @@ management, feature errors), watch streaming and npm packaging are documented in
   set**, Windows always.
 - **A non-`desktop` build returns `GUIUnavailableError`** and falls through to
   the CLI rather than failing.
+- **The database wizard's barrier passphrase is write-only.** Choosing the
+  passphrase barrier asks for the passphrase and a confirmation (both
+  `type="password"`); the create request carries `barrier: { enabled: true,
+  mode: "passphrase", secret }`. The passphrase lives in the barrier step, then
+  in the wizard store only until the create request is built:
+  `takeBarrierPassphrase` hands it to the request and clears it before the
+  request is sent, so neither a successful nor a failed create leaves it
+  behind, and cancelling the wizard (`resetDatabaseWizard`) clears it. It is
+  never logged -- the create step logs a summary of the request, not the
+  request -- and the summary step shows only that it is set. Returning to the
+  barrier step asks for it again. The barrier defaults to none, so the
+  barrier is opt-in. *(Changed: the wizard sent the barrier block without
+  `enabled` and with no secret, so the server never created a barrier and the
+  barrier step had no effect.)*
 
 ## App shell states
 
@@ -104,17 +118,13 @@ make dev-gui             # Wails dev mode with hot reload
 
 `build-client` produces a **single binary with every frontend asset embedded**.
 
-## Known test gap
+## TypeScript in CI
 
-`sdk/typescript/test/` holds **seven vitest contract suites** —
-`rest-contract`, `seal-contract`, `officer-contract`,
-`credential-audit-contract`, `wire-format`, `transform`, `vector-enum-wire`.
-The Makefile has `npm install` and `npm run build` targets but **no test
-target**, and **no CI job runs them**.
-
-**The TypeScript SDK is therefore entirely untested in CI**, despite the suites
-existing. That is a tracked gap, recorded here rather than left to be
-discovered.
+CI's `test-typescript` job, required by the CI gate, runs the TypeScript SDK's
+`tsc`, `npm test` (which typechecks the tests, then runs the vitest suites) and
+build, then `svelte-check` on this frontend against the built SDK. *(Corrected:
+this section recorded that no CI job ran the TypeScript suites; that gap is
+closed.)* The Playwright suites under `cmd/qrdb/frontend/e2e/` are not in CI.
 
 ## Test strategy
 
@@ -123,8 +133,14 @@ discovered.
   feature tag.
 - **Display detection** is tested per platform against the environment
   variables above.
-- **TypeScript side**: the seven contract suites exist and are **not run** — see
-  the gap above. Running them is the first thing to fix here.
+- **TypeScript side**: the SDK's vitest suites and `svelte-check` run in CI
+  (above). The wizard's barrier passphrase is covered by
+  `e2e/database-wizard-barrier-passphrase.spec.ts` (mocked tier): validation,
+  the exact create request, and that the passphrase appears on no page after
+  a successful or a failed create. On the Go side,
+  `TestDatabaseBinding_CreateWithBarrierInitialisesIt` drives a barrier create
+  through the binding into a real barrier manager and proves the passphrase it
+  sent is the one that unseals the database.
 
 ## Observability
 

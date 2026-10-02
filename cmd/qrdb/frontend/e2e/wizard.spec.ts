@@ -72,7 +72,7 @@ async function fillNameAndAdvance(
 
 /**
  * Navigate through wizard from the Name step to the summary step using
- * defaults (Pebble storage, passphrase barrier).
+ * defaults (Pebble storage, no barrier).
  *
  * Step flow: Name → Storage → SQL → Barrier → Summary
  * (Raft Configuration step is skipped for standalone servers.)
@@ -92,7 +92,7 @@ async function navigateToSummary(
   await expect(page.getByRole("heading", { name: "SQL Wire Protocols" })).toBeVisible();
   await page.getByRole("button", { name: "Next" }).click();
 
-  // Encryption Barrier step -- Passphrase is default
+  // Encryption Barrier step -- the default (none)
   await expect(page.getByRole("heading", { name: "Database Encryption Barrier" })).toBeVisible();
   await page.getByRole("button", { name: "Next" }).click();
 
@@ -147,8 +147,11 @@ test.describe("Database Creation Wizard", () => {
     await expect(page.getByRole("heading", { name: "SQL Wire Protocols" })).toBeVisible();
     await page.getByRole("button", { name: "Next" }).click();
 
-    // Encryption Barrier -- Passphrase is default selection
+    // Encryption Barrier -- choose Passphrase and confirm it
     await expect(page.getByRole("heading", { name: "Database Encryption Barrier" })).toBeVisible();
+    await page.locator("button").filter({ hasText: "Passphrase" }).click();
+    await page.locator("#db-barrier-passphrase").fill("e2e-barrier-passphrase");
+    await page.locator("#db-barrier-passphrase-confirm").fill("e2e-barrier-passphrase");
     await page.getByRole("button", { name: "Next" }).click();
 
     // Summary -- verify Passphrase badge

@@ -39,6 +39,13 @@
     dbWizardStore.sealConfig.sharesTotal ?? 5,
   );
 
+  // The passphrase and its confirmation live in this step only; the
+  // passphrase reaches the store on Next, and the create step takes it from
+  // there into the request and clears it. Going back to this step asks for
+  // it again rather than redisplaying it.
+  let passphrase: string = $state("");
+  let passphraseConfirm: string = $state("");
+
   /** Seal mode options for the card selector. */
   const sealModes: readonly {
     id: SealMode;
@@ -66,12 +73,30 @@
   ] as const;
 
   /** Validation: when Shamir is selected, sharesRequired must be <= sharesTotal, both > 0. */
-  let isValid = $derived(
+  let shamirValid = $derived(
     sealMode !== "shamir" ||
       (sharesRequired > 0 &&
         sharesTotal > 0 &&
         sharesRequired <= sharesTotal),
   );
+
+  /** Validation error for the passphrase, when the passphrase mode is selected. */
+  let passphraseError = $derived<string | null>(
+    sealMode !== "passphrase"
+      ? null
+      : passphrase.length === 0
+        ? "A passphrase is required."
+        : passphrase !== passphraseConfirm
+          ? "Passphrases do not match."
+          : null,
+  );
+
+  /** The error shows once the user has typed, not on an untouched form. */
+  let showPassphraseError = $derived(
+    passphraseError !== null && (passphrase.length > 0 || passphraseConfirm.length > 0),
+  );
+
+  let isValid = $derived(shamirValid && passphraseError === null);
 
   /** Validation error message for Shamir configuration. */
   let validationError = $derived<string | null>(
@@ -88,6 +113,9 @@
     if (!isValid) return;
     dbWizardStore.sealMode = sealMode;
     dbWizardStore.barrierEnabled = sealMode !== "none";
+    dbWizardStore.barrierPassphrase = sealMode === "passphrase" ? passphrase : "";
+    passphrase = "";
+    passphraseConfirm = "";
     if (sealMode === "shamir") {
       dbWizardStore.sealConfig = { mode: "shamir", sharesRequired, sharesTotal };
     } else {
@@ -141,6 +169,47 @@
         {/each}
       </div>
     </div>
+
+    <!-- Passphrase -->
+    {#if sealMode === "passphrase"}
+      <div class="bg-base-200 space-y-3 rounded-lg p-6">
+        <div class="form-control">
+          <label class="label" for="db-barrier-passphrase">
+            <span class="label-text font-semibold">Passphrase</span>
+          </label>
+          <input
+            id="db-barrier-passphrase"
+            type="password"
+            autocomplete="new-password"
+            class="input input-bordered w-full"
+            placeholder="Enter passphrase"
+            bind:value={passphrase}
+          />
+        </div>
+        <div class="form-control">
+          <label class="label" for="db-barrier-passphrase-confirm">
+            <span class="label-text font-semibold">Confirm Passphrase</span>
+          </label>
+          <input
+            id="db-barrier-passphrase-confirm"
+            type="password"
+            autocomplete="new-password"
+            class="input input-bordered w-full"
+            placeholder="Re-enter passphrase"
+            bind:value={passphraseConfirm}
+          />
+        </div>
+        <p class="text-base-content/60 text-sm">
+          The passphrase unseals this database. It is sent once, when the
+          database is created, and is not stored here or shown again. A
+          per-database barrier needs the database's own data directory, set in
+          the Storage step.
+        </p>
+        <p class="text-error min-h-5 text-sm" role="alert" data-testid="db-barrier-passphrase-error">
+          {showPassphraseError ? passphraseError : ""}
+        </p>
+      </div>
+    {/if}
 
     <!-- Shamir configuration -->
     {#if sealMode === "shamir"}

@@ -110,8 +110,13 @@ async function selectBarrierAndAdvance(
       await page.locator("#db-shares-required").fill(String(shamirConfig.required));
       await page.locator("#db-shares-total").fill(String(shamirConfig.total));
     }
+  } else if (mode === "Passphrase") {
+    // The barrier defaults to none; the passphrase barrier asks for a
+    // confirmed passphrase.
+    await page.locator("button").filter({ hasText: "Passphrase" }).click();
+    await page.locator("#db-barrier-passphrase").fill("e2e-barrier-passphrase");
+    await page.locator("#db-barrier-passphrase-confirm").fill("e2e-barrier-passphrase");
   }
-  // Passphrase is the default selection -- no click needed
 
   await page.getByRole("button", { name: "Next" }).click();
 }

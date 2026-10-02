@@ -35,6 +35,18 @@ The setup wizard walks you through it:
 After the wizard, if the server is sealed you get an unseal prompt; otherwise
 the full application.
 
+## Creating a database
+
+**New Database** opens the database wizard: name and engine, storage, Raft
+settings on a Raft server, wire protocols, the encryption barrier, a summary,
+then creation.
+
+The barrier is off unless you choose one. Choosing **Passphrase** asks for the
+passphrase twice; it is sent once, when the database is created, and the
+application does not keep it or show it again. You need it to unseal the
+database, so store it safely. A per-database barrier needs the database's own
+data directory, set in the storage step.
+
 ## Everyday use
 
 The application shows what the server can actually do — views are gated on the

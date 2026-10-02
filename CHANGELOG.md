@@ -11,6 +11,20 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The desktop database wizard's barrier works.** It sent the barrier block
+  without `enabled` and with no secret, so the server never created a barrier
+  and the step had no effect. Choosing the passphrase barrier now asks for the
+  passphrase and a confirmation and creates the database with `enabled: true`
+  and that passphrase. The passphrase is write-only on the client: it is
+  cleared once the create request is built (whether the create succeeds or
+  fails) and when the wizard is cancelled, never logged, and shown nowhere --
+  the summary says only that it is set. The barrier now defaults to none, so
+  a barrier is chosen, never implied. The TypeScript SDK's
+  `CreateDatabaseRequest.barrier` is a `DatabaseBarrierRequest`, which carries
+  the `secret`.
+
 ## [0.32.0-alpha] - 2026-10-02
 
 Strict tenant isolation, phase 2: cluster-wide shard IDs. This release contains BREAKING changes; see the entries below. Highlights:

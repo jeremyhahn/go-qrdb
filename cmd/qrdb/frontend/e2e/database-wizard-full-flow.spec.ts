@@ -273,8 +273,12 @@ test.describe("Database Wizard - Barrier Step Modes", () => {
   test("barrier mode: passphrase — Next button is clickable and advances to Summary", async ({ page }) => {
     await navigateToBarrier(page, "barrier-passphrase-db");
 
-    // Select the "Passphrase" barrier option.
+    // Select the "Passphrase" barrier option; Next waits for a confirmed
+    // passphrase.
     await page.locator("button").filter({ hasText: "Passphrase" }).first().click();
+    await expect(page.locator("main").getByRole("button", { name: "Next" })).toBeDisabled();
+    await page.locator("#db-barrier-passphrase").fill("correct horse battery");
+    await page.locator("#db-barrier-passphrase-confirm").fill("correct horse battery");
 
     await assertNextButtonClickable(page);
     await page.locator("main").getByRole("button", { name: "Next" }).click();
