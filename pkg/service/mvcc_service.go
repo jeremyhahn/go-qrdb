@@ -30,7 +30,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
@@ -922,7 +922,7 @@ func isDatabaseKeyspace(prefix string) bool {
 	if prefix == "" {
 		return true
 	}
-	ns, ok := tenant.NamespaceOf([]byte(prefix))
+	ns, ok := tenantid.NamespaceOf([]byte(prefix))
 	return ok && len(ns) == len(prefix)
 }
 

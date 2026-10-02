@@ -18,7 +18,7 @@ import (
 	"bytes"
 	"slices"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // compactionFloors is an immutable snapshot of the store's compaction floors:
@@ -33,7 +33,7 @@ import (
 // key; for a range, every floor whose keyspace the range overlaps.
 //
 // The node keyspace is every key outside all "<tenant>/<db>/" namespaces
-// (tenant.NamespaceOf): the node's own internal records and the system
+// (tenantid.NamespaceOf): the node's own internal records and the system
 // tenant's raw keyspace. Its floor covers exactly those keys, so it never
 // covers a key of any tenant's database.
 //
@@ -95,7 +95,7 @@ func (f *compactionFloors) forKey(key []byte) int64 {
 		}
 	}
 	if f.node > floor {
-		if _, namespaced := tenant.NamespaceOf(key); !namespaced {
+		if _, namespaced := tenantid.NamespaceOf(key); !namespaced {
 			floor = f.node
 		}
 	}
@@ -122,7 +122,7 @@ func (f *compactionFloors) forRange(start, end []byte) int64 {
 // withinOneNamespace reports whether every key in [start, end) lies under the
 // database namespace of start.
 func withinOneNamespace(start, end []byte) bool {
-	ns, ok := tenant.NamespaceOf(start)
+	ns, ok := tenantid.NamespaceOf(start)
 	if !ok || end == nil {
 		return false
 	}

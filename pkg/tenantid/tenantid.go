@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package tenantid holds the reserved system tenant identifier. It is a leaf
-// package -- it imports nothing from this module -- so packages below
-// pkg/tenant in the import graph (pkg/ceremony, pkg/auth) can name the system
-// tenant without importing pkg/tenant, which imports them.
+// Package tenantid holds the reserved system tenant identifier and the
+// structural rule for a key's "<tenant>/<db>/" namespace (NamespaceOf). It is
+// a leaf package -- it imports nothing from this module -- so packages below
+// pkg/tenant in the import graph (pkg/ceremony, pkg/auth, pkg/compaction) can
+// use them without importing pkg/tenant, which imports them.
 package tenantid
 
 // System is the reserved identifier of the platform's own tenant.

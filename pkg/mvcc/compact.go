@@ -19,7 +19,7 @@ import (
 	"encoding/binary"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // ---------------------------------------------------------------------------
@@ -248,7 +248,7 @@ func isTombstone(value []byte) bool {
 // Node-keyspace compaction
 //
 // The node keyspace is every key outside all "<tenant>/<db>/" namespaces
-// (tenant.NamespaceOf): the node's own internal records and the system
+// (tenantid.NamespaceOf): the node's own internal records and the system
 // tenant's raw keyspace. Compacting it is a platform act that skips every key
 // with a database namespace by construction, so it can never discard any
 // tenant's history.
@@ -309,7 +309,7 @@ func (s *Store) compactNodeInto(batch storage.Batch, revision int64) error {
 		if !ok {
 			continue
 		}
-		if _, namespaced := tenant.NamespaceOf(userKey); namespaced {
+		if _, namespaced := tenantid.NamespaceOf(userKey); namespaced {
 			continue
 		}
 		if err := deleteSuperseded(raw, iter.Value()); err != nil {

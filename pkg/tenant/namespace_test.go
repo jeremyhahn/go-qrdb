@@ -14,40 +14,20 @@
 
 package tenant
 
-import "testing"
+import (
+	"testing"
 
-func TestNamespaceOf(t *testing.T) {
-	tests := []struct {
-		key, want string
-		ok        bool
-	}{
-		{"acme/app/k", "acme/app/", true},
-		{"acme/app/", "acme/app/", true},
-		{"system/system/x/y", "system/system/", true},
-		{"__sys:cluster/features/nodes/1", "__sys:cluster/features/", true}, // looks namespaced: kept
-		{"__sys:users/42", "", false},
-		{"plain", "", false},
-		{"acme/app", "", false},
-		{"/app/k", "", false},
-		{"acme//k", "", false},
-		{"", "", false},
-	}
-	for _, tt := range tests {
-		got, ok := NamespaceOf([]byte(tt.key))
-		if ok != tt.ok || string(got) != tt.want {
-			t.Errorf("NamespaceOf(%q) = %q, %v; want %q, %v", tt.key, got, ok, tt.want, tt.ok)
-		}
-	}
-}
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+)
 
 // Every namespace ComposeNamespace builds -- whatever the tenant id and
 // database -- is recognised, so no tenant database can fall outside it.
 func TestNamespaceOf_RecognisesEveryComposedNamespace(t *testing.T) {
 	for _, pair := range [][2]string{{"acme", "app"}, {"", ""}, {"t:x", "d"}, {"__sys:odd", "db"}, {"a.b", "c-d_e"}} {
 		ns := ComposeNamespace(pair[0], pair[1])
-		got, ok := NamespaceOf([]byte(ns + "any/key"))
+		got, ok := tenantid.NamespaceOf([]byte(ns + "any/key"))
 		if !ok || string(got) != ns {
-			t.Errorf("NamespaceOf(%q+key) = %q, %v; want %q", ns, got, ok, ns)
+			t.Errorf("tenantid.NamespaceOf(%q+key) = %q, %v; want %q", ns, got, ok, ns)
 		}
 	}
 }

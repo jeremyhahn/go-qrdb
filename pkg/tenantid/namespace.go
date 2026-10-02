@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package tenant
+package tenantid
 
 import "bytes"
 
@@ -20,7 +20,7 @@ import "bytes"
 // and false when key cannot lie under any (tenant, database) namespace.
 //
 // It is structural, deliberately: a key has a namespace exactly when it has
-// the shape ComposeNamespace produces -- a non-empty segment, '/', a
+// the shape tenant.ComposeNamespace produces -- a non-empty segment, '/', a
 // non-empty segment, '/' -- whatever the segments say. It does not ask
 // whether the tenant exists or whether its id would pass validation, so no
 // tenant's database, known to this node or not, can fall outside it. A key
@@ -28,6 +28,9 @@ import "bytes"
 // "__sys:cluster/features/x") is reported as namespaced too; for the
 // node-keyspace compaction that relies on this, that errs toward keeping
 // history, never toward discarding a tenant's.
+//
+// It lives in this leaf package so packages below pkg/tenant in the import
+// graph -- pkg/compaction among them -- apply the one rule.
 func NamespaceOf(key []byte) ([]byte, bool) {
 	first := bytes.IndexByte(key, '/')
 	if first <= 0 {

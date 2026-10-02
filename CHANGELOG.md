@@ -58,7 +58,7 @@ are not reconstructed here — their history is in the git log.
   records and the system tenant's raw keyspace -- on the compaction scheduler. It is
   platform-only: set only in the node's configuration, with no API verb and no permission any
   role can hold. It skips every key with a database namespace by construction
-  (`tenant.NamespaceOf`), so no tenant database's history, the system tenant's own included,
+  (`tenantid.NamespaceOf`), so no tenant database's history, the system tenant's own included,
   is touched; its floor (`[0x06]`) is kept apart from the per-database floors. New Raft opcode
   `OpMVCCCompactNode` (15) behind the cluster feature `node-compaction`; new
   `service.NodeKeyspaceCompactor` and `mvcc.Store.CompactNodeKeyspace`/`CompactNodeKeyspaceInBatch`.

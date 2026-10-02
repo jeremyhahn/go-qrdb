@@ -659,7 +659,7 @@ mvcc:
 - **It never touches a tenant prefix, by construction.** A key is in a
   database namespace when it has the shape `tenant.ComposeNamespace` produces
   -- a non-empty segment, `/`, a non-empty segment, `/`
-  (`tenant.NamespaceOf`) -- whatever the segments are, whether or not the
+  (`tenantid.NamespaceOf`) -- whatever the segments are, whether or not the
   tenant exists. The compaction (`OpMVCCCompactNode`,
   `mvcc.Store.CompactNodeKeyspaceInBatch`) skips every such key's data
   entries and change log, so every tenant database, the system tenant's own

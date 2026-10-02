@@ -1094,7 +1094,7 @@ func (e *CompactScopeRequiredError) Error() string {
 
 // CompactPrefixInvalidError is returned when a prefix compaction names a
 // prefix that is not exactly one database's keyspace: neither a
-// "<tenant>/<database>/" namespace (tenant.NamespaceOf) nor the empty prefix
+// "<tenant>/<database>/" namespace (tenantid.NamespaceOf) nor the empty prefix
 // of a store that is one database's own. Such a prefix could span several
 // databases or part of one.
 type CompactPrefixInvalidError struct {
