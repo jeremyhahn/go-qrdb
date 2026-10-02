@@ -17,6 +17,8 @@ package grpc
 import (
 	"context"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/dbwire"
@@ -217,6 +219,22 @@ func (s *qrdbServiceServer) DatabaseUpdateSQL(ctx context.Context, req *pb.Datab
 	return dbwire.InfoProto(info), nil
 }
 
+// DatabaseUpdateCompaction sets a database's scheduled-compaction policy. An
+// unset compaction turns it off. The RPC requires mvcc:compact, and the
+// service confines it to the caller's own databases.
+func (s *qrdbServiceServer) DatabaseUpdateCompaction(ctx context.Context, req *pb.DatabaseUpdateCompactionRequest) (*pb.DatabaseInfoResponse, error) {
+	if s.databaseSvc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "database"})
+	}
+
+	info, err := s.databaseSvc.UpdateCompactionForTenant(ctx, req.GetName(), protoCompactionConfigToDomain(req.GetCompaction()))
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+
+	return dbwire.InfoProto(info), nil
+}
+
 // DatabaseSeal seals the encryption barrier for a database.
 func (s *qrdbServiceServer) DatabaseSeal(ctx context.Context, req *pb.DatabaseSealRequest) (*emptypb.Empty, error) {
 	if s.databaseSvc == nil {
@@ -410,5 +428,18 @@ func protoConnectionConfigToDomain(c *pb.DatabaseConnectionConfig) *database.Dat
 		CAFile:    c.GetCaFile(),
 		CertFile:  c.GetCertFile(),
 		KeyFile:   c.GetKeyFile(),
+	}
+}
+
+// protoCompactionConfigToDomain converts a DatabaseCompactionConfig proto to
+// the domain policy; nil stays nil (off).
+func protoCompactionConfigToDomain(c *pb.DatabaseCompactionConfig) *compaction.Policy {
+	if c == nil {
+		return nil
+	}
+	return &compaction.Policy{
+		Mode:            compaction.Mode(c.GetMode()),
+		RetainRevisions: c.GetRetainRevisions(),
+		RetainPeriod:    c.GetRetainPeriod(),
 	}
 }

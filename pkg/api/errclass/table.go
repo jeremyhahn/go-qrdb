@@ -18,6 +18,8 @@ import (
 	"context"
 	"errors"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+
 	"github.com/dolthub/vitess/go/mysql"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
@@ -332,6 +334,7 @@ var databaseRules = []rule{
 	// A per-database barrier mode this node cannot build (Shamir, until
 	// per-database share holders ship): the request's choice, not a fault.
 	as(&database.UnsupportedBarrierStrategyError{Mode: "shamir"}, InvalidArgument),
+	as(&compaction.InvalidPolicyError{}, InvalidArgument),
 	// A per-database barrier operation on a node with no barrier manager.
 	as(&service.BarrierManagerNotConfiguredError{}, Unimplemented),
 	// A database mid-drop is not gone (NotFoundError, above) and not a naming

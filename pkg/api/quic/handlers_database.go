@@ -19,6 +19,8 @@ import (
 	"encoding/json"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/dbwire"
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -356,6 +358,35 @@ func (s *Server) handleDatabaseUpdateSQL(ctx context.Context, payload []byte) ([
 	return resp, nil
 }
 
+// handleDatabaseUpdateCompaction sets a database's scheduled-compaction
+// policy via the service layer and returns the updated info. An absent
+// compaction turns it off. The method requires mvcc:compact, and the service
+// confines it to the caller's own databases.
+func (s *Server) handleDatabaseUpdateCompaction(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.databaseSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "database"}
+	}
+
+	var req databaseUpdateCompactionRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+	if req.Name == "" {
+		return nil, &InvalidArgumentError{Reason: "database name is required"}
+	}
+
+	info, err := s.databaseSvc.UpdateCompactionForTenant(ctx, req.Name, req.Compaction)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := json.Marshal(dbwire.Info(info))
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
 // ---------------------------------------------------------------------------
 // Wire-format request types for JSON-based database handlers
 // ---------------------------------------------------------------------------
@@ -514,4 +545,11 @@ type databaseUpdateConnectionRequest struct {
 type databaseUpdateSQLRequest struct {
 	Name string              `json:"name"`
 	SQL  *database.SQLConfig `json:"sql"`
+}
+
+// databaseUpdateCompactionRequest is the JSON wire format for setting a
+// database's scheduled-compaction policy.
+type databaseUpdateCompactionRequest struct {
+	Name       string             `json:"name"`
+	Compaction *compaction.Policy `json:"compaction"`
 }

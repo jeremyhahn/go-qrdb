@@ -23,6 +23,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -305,6 +307,10 @@ func (m *databaseSvcMini) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*d
 
 func (m *databaseSvcMini) UpdateSQLForTenant(_ context.Context, name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
 	return m.UpdateSQL(name, sqlCfg)
+}
+
+func (m *databaseSvcMini) UpdateCompactionForTenant(_ context.Context, name string, policy *compaction.Policy) (*database.DatabaseInfo, error) {
+	return &database.DatabaseInfo{Name: name, Compaction: policy}, nil
 }
 func (m *databaseSvcMini) ScaleForTenant(_ context.Context, _ string, _ int) (*database.DatabaseInfo, error) {
 	return m.updateResult, m.updateErr

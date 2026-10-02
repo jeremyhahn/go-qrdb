@@ -20,6 +20,8 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 )
@@ -31,6 +33,7 @@ type databaseProvisioner interface {
 	Provision(ctx context.Context, cfg database.DatabaseConfig) (*database.Database, error)
 	UpdateProtocol(name string, protocol database.ProtocolConfig) error
 	UpdateSQL(name string, sqlCfg *database.SQLConfig) error
+	UpdateCompaction(name string, policy *compaction.Policy) error
 }
 
 var _ databaseProvisioner = (*database.Manager)(nil)
@@ -64,6 +67,15 @@ func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisio
 		// protocol config on every boot.
 		if cfg.SQL != nil {
 			if err := dbs.UpdateSQL(cfg.Name, cfg.SQL); err != nil {
+				return err
+			}
+		}
+		// Likewise its compaction policy. The databases the file declares
+		// are the node's own (system-owned), so this is the system tenant
+		// setting policies on its own databases; absent, a database keeps
+		// whatever was last set, and with none it is never compacted.
+		if cfg.Compaction != nil {
+			if err := dbs.UpdateCompaction(cfg.Name, cfg.Compaction); err != nil {
 				return err
 			}
 		}
@@ -102,10 +114,11 @@ func configuredDatabases(f *startFlags) []database.DatabaseConfig {
 	cfgs := make([]database.DatabaseConfig, 0, len(f.databases))
 	for _, dbCfg := range f.databases {
 		cfgs = append(cfgs, database.DatabaseConfig{
-			Name:    dbCfg.Name,
-			Engine:  database.EngineType(dbCfg.Engine),
-			Backend: database.BackendType(dbCfg.Backend),
-			SQL:     databaseSQLConfig(dbCfg.SQL),
+			Name:       dbCfg.Name,
+			Engine:     database.EngineType(dbCfg.Engine),
+			Backend:    database.BackendType(dbCfg.Backend),
+			SQL:        databaseSQLConfig(dbCfg.SQL),
+			Compaction: dbCfg.Compaction,
 		})
 	}
 	return cfgs

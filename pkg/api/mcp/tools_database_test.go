@@ -21,6 +21,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
@@ -192,6 +194,10 @@ func (m *mockDatabaseService) UpdateSQLForTenant(_ context.Context, name string,
 	return m.UpdateSQL(name, sqlCfg)
 }
 
+func (m *mockDatabaseService) UpdateCompactionForTenant(_ context.Context, name string, policy *compaction.Policy) (*database.DatabaseInfo, error) {
+	return &database.DatabaseInfo{Name: name, Compaction: policy}, nil
+}
+
 func (m *mockDatabaseService) ScaleForTenant(_ context.Context, name string, targetReplicas int) (*database.DatabaseInfo, error) {
 	if m.scaleFn != nil {
 		return m.scaleFn(name, targetReplicas)
@@ -219,6 +225,7 @@ func TestDatabaseTools_Registration(t *testing.T) {
 		"qrdb_database_update_barrier",
 		"qrdb_database_update_connection",
 		"qrdb_database_update_sql",
+		"qrdb_database_update_compaction",
 		"qrdb_database_seal",
 		"qrdb_database_unseal",
 		"qrdb_database_barrier_status",

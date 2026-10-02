@@ -24,6 +24,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+
 	unixserver "github.com/jeremyhahn/go-qrdb/pkg/api/unix"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -191,6 +193,10 @@ func (m *mockDatabaseSvc) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*d
 
 func (m *mockDatabaseSvc) UpdateSQLForTenant(_ context.Context, name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
 	return m.UpdateSQL(name, sqlCfg)
+}
+
+func (m *mockDatabaseSvc) UpdateCompactionForTenant(_ context.Context, name string, policy *compaction.Policy) (*database.DatabaseInfo, error) {
+	return &database.DatabaseInfo{Name: name, Compaction: policy}, nil
 }
 
 func (m *mockDatabaseSvc) ScaleForTenant(_ context.Context, name string, targetReplicas int) (*database.DatabaseInfo, error) {

@@ -26,6 +26,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -969,6 +971,10 @@ func (m *fullFnDatabaseService) UpdateSQL(name string, sqlCfg *database.SQLConfi
 
 func (m *fullFnDatabaseService) UpdateSQLForTenant(_ context.Context, name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
 	return m.UpdateSQL(name, sqlCfg)
+}
+
+func (m *fullFnDatabaseService) UpdateCompactionForTenant(_ context.Context, name string, policy *compaction.Policy) (*database.DatabaseInfo, error) {
+	return &database.DatabaseInfo{Name: name, Compaction: policy}, nil
 }
 
 // newFullFnDatabaseService creates a fullFnDatabaseService with default no-op

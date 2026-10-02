@@ -188,6 +188,18 @@ func (m *mockDatabaseClient) UpdateDatabaseSQL(_ context.Context, req UpdateData
 	return info, nil
 }
 
+func (m *mockDatabaseClient) UpdateDatabaseCompaction(_ context.Context, req UpdateDatabaseCompactionRequest) (*DatabaseInfo, error) {
+	if m.updateErr != nil {
+		return nil, m.updateErr
+	}
+	info, ok := m.databases[req.Name]
+	if !ok {
+		return nil, &DatabaseNotFoundError{Name: req.Name}
+	}
+	info.Compaction = req.Compaction
+	return info, nil
+}
+
 func (m *mockDatabaseClient) SealDatabase(_ context.Context, name string) error {
 	if _, ok := m.databases[name]; !ok {
 		return &DatabaseNotFoundError{Name: name}
@@ -255,6 +267,10 @@ func (f *failingDatabaseClient) UpdateDatabaseConnection(_ context.Context, _ Up
 }
 
 func (f *failingDatabaseClient) UpdateDatabaseSQL(_ context.Context, _ UpdateDatabaseSQLRequest) (*DatabaseInfo, error) {
+	return nil, f.err
+}
+
+func (f *failingDatabaseClient) UpdateDatabaseCompaction(_ context.Context, _ UpdateDatabaseCompactionRequest) (*DatabaseInfo, error) {
 	return nil, f.err
 }
 

@@ -301,6 +301,36 @@ func (t *Transport) UpdateDatabaseSQL(ctx context.Context, req transport.UpdateD
 	return &info, nil
 }
 
+// UpdateDatabaseCompaction sets a database's scheduled-compaction policy by
+// calling the db.UpdateCompaction handler.
+func (t *Transport) UpdateDatabaseCompaction(ctx context.Context, req transport.UpdateDatabaseCompactionRequest) (*transport.DatabaseInfo, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	payload, err := json.Marshal(struct {
+		Name       string                              `json:"name"`
+		Compaction *transport.DatabaseCompactionConfig `json:"compaction"`
+	}{
+		Name:       req.Name,
+		Compaction: req.Compaction,
+	})
+	if err != nil {
+		return nil, &marshalError{Err: err}
+	}
+
+	respBytes, err := t.call(ctx, "db.UpdateCompaction", payload)
+	if err != nil {
+		return nil, err
+	}
+
+	var info transport.DatabaseInfo
+	if err := json.Unmarshal(respBytes, &info); err != nil {
+		return nil, &unmarshalError{Err: err}
+	}
+	return &info, nil
+}
+
 // UpdateDatabaseConnection updates the remote connection configuration
 // for a database by calling the db.UpdateConnection handler.
 func (t *Transport) UpdateDatabaseConnection(ctx context.Context, req transport.UpdateDatabaseConnectionRequest) (*transport.DatabaseInfo, error) {

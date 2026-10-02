@@ -25,6 +25,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -397,6 +399,10 @@ func (m *mockDatabaseService) UpdateSQL(name string, sqlCfg *database.SQLConfig)
 
 func (m *mockDatabaseService) UpdateSQLForTenant(_ context.Context, name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
 	return m.UpdateSQL(name, sqlCfg)
+}
+
+func (m *mockDatabaseService) UpdateCompactionForTenant(_ context.Context, name string, policy *compaction.Policy) (*database.DatabaseInfo, error) {
+	return &database.DatabaseInfo{Name: name, Compaction: policy}, nil
 }
 func (m *mockDatabaseService) ScaleForTenant(_ context.Context, _ string, _ int) (*database.DatabaseInfo, error) {
 	return m.updateResult, m.updateErr

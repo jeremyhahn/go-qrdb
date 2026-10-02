@@ -224,6 +224,20 @@ func (t *Transport) UpdateDatabaseSQL(ctx context.Context, req transport.UpdateD
 	return &info, nil
 }
 
+// UpdateDatabaseCompaction sets a database's scheduled-compaction policy.
+// Maps to PATCH /v1/databases/{name}/compaction.
+func (t *Transport) UpdateDatabaseCompaction(ctx context.Context, req transport.UpdateDatabaseCompactionRequest) (*transport.DatabaseInfo, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	var info transport.DatabaseInfo
+	if err := t.patchJSONDecode(ctx, "UpdateDatabaseCompaction", "/v1/databases/"+url.PathEscape(req.Name)+"/compaction", req, &info); err != nil {
+		return nil, err
+	}
+	return &info, nil
+}
+
 // UpdateDatabaseConnection updates the remote connection configuration for a
 // database. Maps to PATCH /v1/databases/{name}/connection.
 func (t *Transport) UpdateDatabaseConnection(ctx context.Context, req transport.UpdateDatabaseConnectionRequest) (*transport.DatabaseInfo, error) {

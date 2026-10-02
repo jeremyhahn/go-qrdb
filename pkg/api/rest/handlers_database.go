@@ -21,6 +21,8 @@ import (
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/dbwire"
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -57,6 +59,35 @@ type sqlConfigJSON struct {
 // updateDatabaseSQLRequest is the JSON payload for PATCH /v1/databases/{name}/sql.
 type updateDatabaseSQLRequest struct {
 	SQL *sqlConfigJSON `json:"sql"`
+}
+
+// compactionConfigJSON is the JSON representation of a database's
+// scheduled-compaction policy, requests and responses alike. See
+// docs/databases/api.md.
+type compactionConfigJSON struct {
+	Mode            string `json:"mode,omitempty"`
+	RetainRevisions int64  `json:"retainRevisions,omitempty"`
+	RetainPeriod    string `json:"retainPeriod,omitempty"`
+}
+
+// updateDatabaseCompactionRequest is the JSON payload for
+// PATCH /v1/databases/{name}/compaction. An absent compaction turns the
+// policy off.
+type updateDatabaseCompactionRequest struct {
+	Compaction *compactionConfigJSON `json:"compaction"`
+}
+
+// compactionConfigFromJSON converts a request's compaction policy; nil stays
+// nil (off).
+func compactionConfigFromJSON(c *compactionConfigJSON) *compaction.Policy {
+	if c == nil {
+		return nil
+	}
+	return &compaction.Policy{
+		Mode:            compaction.Mode(c.Mode),
+		RetainRevisions: c.RetainRevisions,
+		RetainPeriod:    c.RetainPeriod,
+	}
 }
 
 // sqlConfigFromJSON converts a request's SQL settings; nil stays nil (the
@@ -332,6 +363,10 @@ func (s *Server) handleDatabaseByName(w http.ResponseWriter, r *http.Request) {
 		s.handleUpdateDatabaseSQL(w, r, name)
 		return
 	}
+	if subPath == "compaction" && r.Method == http.MethodPatch {
+		s.handleUpdateDatabaseCompaction(w, r, name)
+		return
+	}
 	if subPath == "seal" && r.Method == http.MethodPost {
 		s.handleSealDatabase(w, r, name)
 		return
@@ -554,6 +589,25 @@ func (s *Server) handleUpdateDatabaseSQL(w http.ResponseWriter, r *http.Request,
 	}
 
 	info, err := s.databaseSvc.UpdateSQLForTenant(r.Context(), name, sqlConfigFromJSON(req.SQL))
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+
+	writeJSON(w, dbwire.Info(info))
+}
+
+// handleUpdateDatabaseCompaction handles PATCH /v1/databases/{name}/compaction
+// -- sets a database's scheduled-compaction policy. The route requires
+// mvcc:compact, and the service confines it to the caller's own databases.
+func (s *Server) handleUpdateDatabaseCompaction(w http.ResponseWriter, r *http.Request, name string) {
+	var req updateDatabaseCompactionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+
+	info, err := s.databaseSvc.UpdateCompactionForTenant(r.Context(), name, compactionConfigFromJSON(req.Compaction))
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return

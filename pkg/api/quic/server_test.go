@@ -262,7 +262,7 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		"db.Create": true, "db.Get": true, "db.List": true,
 		"db.Drop": true, "db.UpdateProtocol": true,
 		"db.UpdateEtcd": true, "db.UpdateRaft": true, "db.Scale": true,
-		"db.UpdateBarrier": true, "db.UpdateConnection": true, "db.UpdateSQL": true,
+		"db.UpdateBarrier": true, "db.UpdateConnection": true, "db.UpdateSQL": true, "db.UpdateCompaction": true,
 		"db.Seal": true, "db.Unseal": true, "db.BarrierStatus": true,
 		// SQL
 		"sql.Query": true,

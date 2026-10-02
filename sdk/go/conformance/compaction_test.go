@@ -103,7 +103,7 @@ func compactionDatabase(tenantID string) string {
 // bootCompactionCell boots a single-replica raft node (MVCC revisions are
 // raft-only) serving tk, provisions the two tenants, and gives each tenant --
 // the system tenant included -- a database of its own on the shared shard.
-func bootCompactionCell(t *testing.T, tk transportKind) *compactionCell {
+func bootCompactionCell(t *testing.T, tk transportKind, extra ...server.ServerOption) *compactionCell {
 	t.Helper()
 	c := cell{backend: database.BackendPebble, mode: raft, transport: tk}
 	cfg := c.config(t)
@@ -113,6 +113,7 @@ func bootCompactionCell(t *testing.T, tk transportKind) *compactionCell {
 	if tk.remote() {
 		ca, _, serverOpts = remoteServerTLS(t, tenant.SystemTenantID) // the cell dials each tenant with its own certificate
 	}
+	serverOpts = append(serverOpts, extra...)
 
 	members := map[uint64]string{1: cfg.Raft.RaftAddress}
 	n, err := node.NewClusteredNode(context.Background(), cfg, members, serverOpts)

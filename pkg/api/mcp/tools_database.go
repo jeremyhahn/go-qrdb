@@ -18,6 +18,8 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
@@ -86,6 +88,12 @@ func databaseTools(dbSvc service.DatabaseServicer) []serverTool {
 			Tool:    toolDatabaseUpdateSQL(),
 			Perm:    permission.DatabasesUpdate,
 			Handler: handleDatabaseUpdateSQL(dbSvc),
+		},
+		{
+			// Setting a compaction policy is compacting on a schedule.
+			Tool:    toolDatabaseUpdateCompaction(),
+			Perm:    permission.MVCCCompact,
+			Handler: handleDatabaseUpdateCompaction(dbSvc),
 		},
 		{
 			Tool:    toolDatabaseSeal(),
@@ -736,6 +744,60 @@ func handleDatabaseUpdateSQL(dbSvc service.DatabaseServicer) mcpserver.ToolHandl
 		data, jsonErr := json.Marshal(dbwire.Info(info))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_database_update_sql", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolDatabaseUpdateCompaction defines the qrdb_database_update_compaction
+// tool schema.
+func toolDatabaseUpdateCompaction() mcp.Tool {
+	return mcp.NewTool("qrdb_database_update_compaction",
+		mcp.WithDescription("Set a database's scheduled-compaction policy: off, revision (keep the last N revisions) or period (keep history newer than a duration). Omitting mode turns it off. Only the owning tenant may set it."),
+		mcp.WithString("name",
+			mcp.Required(),
+			mcp.Description("The database name to update."),
+		),
+		mcp.WithString("mode",
+			mcp.Description("\"off\", \"revision\" or \"period\". Omit it to turn scheduled compaction off."),
+		),
+		mcp.WithNumber("retainRevisions",
+			mcp.Description("Revision mode: how many of the store's most recent revisions to keep (at least 1)."),
+		),
+		mcp.WithString("retainPeriod",
+			mcp.Description("Period mode: how much history to keep by age, a Go duration of at least 1s (e.g. \"24h\")."),
+		),
+	)
+}
+
+// handleDatabaseUpdateCompaction returns a tool handler that delegates to
+// dbSvc.UpdateCompactionForTenant. An omitted mode turns scheduled compaction
+// off -- the same as an absent compaction on REST, gRPC, QUIC and the Unix
+// socket.
+func handleDatabaseUpdateCompaction(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		name := mcp.ParseString(req, "name", "")
+		if name == "" {
+			return mcp.NewToolResultError("name is required"), nil
+		}
+		var policy *compaction.Policy
+		if mode := mcp.ParseString(req, "mode", ""); mode != "" {
+			policy = &compaction.Policy{
+				Mode:            compaction.Mode(mode),
+				RetainRevisions: mcp.ParseInt64(req, "retainRevisions", 0),
+				RetainPeriod:    mcp.ParseString(req, "retainPeriod", ""),
+			}
+		}
+
+		info, err := dbSvc.UpdateCompactionForTenant(ctx, name, policy)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_database_update_compaction", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(info)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_database_update_compaction", Err: jsonErr}
 		}
 
 		return mcp.NewToolResultText(string(data)), nil

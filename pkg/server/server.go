@@ -145,6 +145,10 @@ type Server struct {
 	// sweeperCancel stops the collection sweeper (see collection_sweeper.go);
 	// nil when none is running.
 	sweeperCancel context.CancelFunc
+
+	// compactorCancel stops the compaction scheduler (see
+	// compaction_scheduler.go); nil when none is running.
+	compactorCancel context.CancelFunc
 }
 
 // serverOptions holds optional dependencies injected via ServerOption.
@@ -210,6 +214,10 @@ type serverOptions struct {
 	// sweeper; zero keeps the defaults. See WithCollectionSweep.
 	collectionSweepInterval time.Duration
 	collectionStaleAfter    time.Duration
+	// compactionInterval tunes how often the compaction scheduler runs the
+	// databases' policies; zero keeps DefaultCompactionInterval. See
+	// WithCompactionInterval.
+	compactionInterval time.Duration
 	// collectionSweepLeader reports whether this node leads the system
 	// shard; see WithCollectionSweepLeader. Nil means a single node.
 	collectionSweepLeader func() bool
@@ -1288,6 +1296,10 @@ func (s *Server) start() error {
 	// are finished in the background, so nobody has to re-issue them.
 	s.startCollectionSweeper()
 
+	// Databases whose owning tenant configured a compaction policy are
+	// compacted on it. A database with none is never compacted implicitly.
+	s.startCompactionScheduler()
+
 	return nil
 }
 
@@ -1319,6 +1331,7 @@ func (s *Server) stopModules() {
 // order (etcd, PostgreSQL, MySQL, MCP, Unix, QUIC, gRPC, REST) and waits
 // for all background goroutines to complete.
 func (s *Server) Stop() {
+	s.stopCompactionScheduler()
 	s.stopCollectionSweeper()
 	s.stopAllEtcd()
 	s.stopPgSQL()

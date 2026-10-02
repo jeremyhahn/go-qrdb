@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -46,6 +47,7 @@ func newDatabaseCmd() *cobra.Command {
 		newDatabaseUpdateBarrierCmd(),
 		newDatabaseUpdateConnectionCmd(),
 		newDatabaseUpdateSQLCmd(),
+		newDatabaseUpdateCompactionCmd(),
 		newDatabaseSealCmd(),
 		newDatabaseUnsealCmd(),
 		newDatabaseBarrierStatusCmd(),
@@ -180,6 +182,47 @@ func newDatabaseUpdateSQLCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&concurrency, "concurrency", "", "SQL concurrency mode (optimistic, pessimistic)")
 	_ = cmd.MarkFlagRequired("concurrency")
+
+	return cmd
+}
+
+// newDatabaseUpdateCompactionCmd creates the "database update-compaction"
+// subcommand.
+func newDatabaseUpdateCompactionCmd() *cobra.Command {
+	var (
+		mode            string
+		retainRevisions int64
+		retainPeriod    time.Duration
+	)
+
+	cmd := &cobra.Command{
+		Use:   "update-compaction <name>",
+		Short: "Set a database's scheduled-compaction policy",
+		Long: "Set the schedule on which the node compacts this database's MVCC history: off, " +
+			"revision (keep the last --retain-revisions revisions) or period (keep the history " +
+			"newer than --retain-period). It is off unless set, requires mvcc:compact, and only " +
+			"the tenant that owns the database may set it.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			policy := &transport.DatabaseCompactionConfig{Mode: mode, RetainRevisions: retainRevisions}
+			if retainPeriod != 0 {
+				policy.RetainPeriod = retainPeriod.String()
+			}
+			info, err := client.Database().UpdateDatabaseCompaction(cmd.Context(), transport.UpdateDatabaseCompactionRequest{
+				Name:       args[0],
+				Compaction: policy,
+			})
+			if err != nil {
+				return err
+			}
+			return printDatabaseInfo(info)
+		},
+	}
+
+	cmd.Flags().StringVar(&mode, "mode", "", "Compaction mode (off, revision, period)")
+	cmd.Flags().Int64Var(&retainRevisions, "retain-revisions", 0, "Revision mode: keep the last N revisions")
+	cmd.Flags().DurationVar(&retainPeriod, "retain-period", 0, "Period mode: keep the history newer than this (at least 1s)")
+	_ = cmd.MarkFlagRequired("mode")
 
 	return cmd
 }
@@ -541,6 +584,16 @@ func printDatabaseInfo(info *transport.DatabaseInfo) error {
 		if info.SQL != nil && info.SQL.Concurrency != "" {
 			_, _ = fmt.Fprintf(outputWriter, "SQL:\n")
 			_, _ = fmt.Fprintf(outputWriter, "  Concurrency: %s\n", info.SQL.Concurrency)
+		}
+		if c := info.Compaction; c != nil && c.Mode != "" {
+			_, _ = fmt.Fprintf(outputWriter, "Compaction:\n")
+			_, _ = fmt.Fprintf(outputWriter, "  Mode:     %s\n", c.Mode)
+			if c.RetainRevisions != 0 {
+				_, _ = fmt.Fprintf(outputWriter, "  Retain:   %d revisions\n", c.RetainRevisions)
+			}
+			if c.RetainPeriod != "" {
+				_, _ = fmt.Fprintf(outputWriter, "  Retain:   %s\n", c.RetainPeriod)
+			}
 		}
 		return nil
 	}

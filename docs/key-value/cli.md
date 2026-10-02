@@ -133,6 +133,9 @@ database below the new floor fail afterwards. Compacting to a revision the
 database is already compacted to is refused (`revision ... has been
 compacted`) and changes nothing.
 
+To compact a database on a schedule instead, set its compaction policy with
+`qrdb database update-compaction` ([../databases/cli.md](../databases/cli.md)).
+
 ## `qrdb kv restore`
 
 Return a bounded set of keys to the value they held at an earlier MVCC

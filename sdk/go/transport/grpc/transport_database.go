@@ -225,6 +225,30 @@ func (t *Transport) UpdateDatabaseBarrier(ctx context.Context, req transport.Upd
 	return dbconv.Info(resp), nil
 }
 
+// UpdateDatabaseCompaction sets a database's scheduled-compaction policy by
+// calling the DatabaseUpdateCompaction gRPC method.
+func (t *Transport) UpdateDatabaseCompaction(ctx context.Context, req transport.UpdateDatabaseCompactionRequest) (*transport.DatabaseInfo, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	pbReq := &pb.DatabaseUpdateCompactionRequest{Name: req.Name}
+	if c := req.Compaction; c != nil {
+		pbReq.Compaction = &pb.DatabaseCompactionConfig{
+			Mode:            c.Mode,
+			RetainRevisions: c.RetainRevisions,
+			RetainPeriod:    c.RetainPeriod,
+		}
+	}
+
+	resp, err := t.client.DatabaseUpdateCompaction(ctx, pbReq)
+	if err != nil {
+		return nil, mapGRPCError("UpdateDatabaseCompaction", err)
+	}
+
+	return dbconv.Info(resp), nil
+}
+
 // UpdateDatabaseSQL updates a database's SQL settings by calling the
 // DatabaseUpdateSQL gRPC method.
 func (t *Transport) UpdateDatabaseSQL(ctx context.Context, req transport.UpdateDatabaseSQLRequest) (*transport.DatabaseInfo, error) {

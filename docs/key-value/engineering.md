@@ -148,8 +148,10 @@ sweep becoming an enumeration of the internal keyspace.
   command, so two concurrent compactions of one database cannot regress its
   floor.
 - **Nothing compacts implicitly.** A database is compacted only when its
-  owning tenant asks. There is no node-wide retention setting;
-  `mvcc.compaction_retention`, which nothing read, is removed.
+  owning tenant asks: an explicit `Compact`, or the scheduled-compaction policy
+  that tenant configured on the database (below). There is no node-wide
+  retention setting; `mvcc.compaction_retention`, which nothing read, is
+  removed.
 - **Restore is a logical undo, never a Raft rewind.** Every change is proposed
   as an ordinary forward write. Committed history is never discarded.
 - **Restore is not atomic across keys.** Each key is an independent Raft
@@ -621,7 +623,50 @@ raft:
   sm_type: mvcc
 ```
 
-There is no node-wide compaction setting.
+There is no node-wide compaction setting. A database's scheduled compaction is
+a per-database policy, owned by the database's tenant -- see "Scheduled
+compaction" below and [../databases/](../databases/).
+
+### Scheduled compaction
+
+A database may carry a compaction policy. **It is off unless the owning tenant
+configured one**; a database with no policy is never compacted except by an
+explicit `Compact` from that tenant.
+
+| Field (YAML / JSON) | Values | Meaning |
+|---|---|---|
+| `mode` / `mode` | `off` (or absent), `revision`, `period` | Off, retention by revision count, or retention by age. |
+| `retain_revisions` / `retainRevisions` | integer >= 1 | `revision` mode: keep the last N revisions of the store serving the database. |
+| `retain_period` / `retainPeriod` | Go duration >= `1s` | `period` mode: keep the history newer than this age. |
+
+A field that does not belong to the mode is refused
+(`compaction.InvalidPolicyError`) rather than ignored. The policy is
+set with `UpdateDatabaseCompaction` (`mvcc:compact`, owning tenant only) or the
+configuration file; see [../databases/](../databases/).
+
+The node's compaction scheduler (`pkg/server`, every
+`server.DefaultCompactionInterval`, one minute) walks the databases in this
+node's catalog that carry a policy and compacts each through its own
+namespaced view, resolved for the owning tenant exactly as an explicit
+`Compact` from that tenant is:
+
+- `revision`: target = current revision - `retain_revisions`.
+- `period`: each pass samples the database's current revision with the time;
+  target = the newest sample at least `retain_period` old. Samples are held in
+  memory, so after a restart nothing is compacted until a full period has been
+  observed -- the policy errs toward keeping history, never toward discarding
+  it.
+- A target below 1 is skipped. A target the database is already compacted to
+  is answered with the typed already-compacted refusal and is not a failure.
+- A database whose barrier is sealed, which is being dropped, or which cannot
+  be resolved is skipped for that pass and logged; nothing is compacted on its
+  behalf another way.
+
+The policy lives in the database's catalog record, so it is run by the node
+whose catalog holds the database (every node, for a database declared in each
+node's configuration file). Two nodes compacting one database repeat work and
+never disagree: the second compaction to the same revision is refused as
+already compacted.
 
 ## Persistence
 

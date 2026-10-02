@@ -1,7 +1,7 @@
 # Databases — CLI
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-09-28
+> Scope: go-qrdb · Last verified: 2026-10-01
 >
 > "Target" sections describe the multi-model database program in
 > [architecture.md](architecture.md); they are approved by the owner on 2026-09-30 and not
@@ -176,6 +176,26 @@ qrdb database unseal secure --secret "$SECRET"
 
 `qrdb database create` takes the same setting as `--sql-concurrency`. See
 [../row-locking/cli.md](../row-locking/cli.md).
+
+### `qrdb database update-compaction <name>`
+
+Set the database's scheduled-compaction policy. Off unless set; requires
+`mvcc:compact`, and only the tenant that owns the database may set it.
+
+| Flag | Type | Meaning |
+|---|---|---|
+| `--mode` | string | `off \| revision \| period` (required) |
+| `--retain-revisions` | int | `revision` mode: keep the last N revisions |
+| `--retain-period` | duration | `period` mode: keep history newer than this (>= `1s`) |
+
+```bash
+qrdb database update-compaction events --mode revision --retain-revisions 100000
+qrdb database update-compaction audit --mode period --retain-period 720h
+qrdb database update-compaction events --mode off
+```
+
+`qrdb database create` does not take a policy: setting one is compacting, and
+create is a different permission.
 
 ### `qrdb database update-etcd <name>`
 

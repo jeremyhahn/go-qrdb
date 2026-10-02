@@ -1,7 +1,7 @@
 # Databases — API
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-09-28
+> Scope: go-qrdb · Last verified: 2026-10-01
 >
 > "Target" sections describe the multi-model database program in
 > [architecture.md](architecture.md); they are approved by the owner on 2026-09-30 and not
@@ -23,14 +23,23 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 | Update raft | `PATCH /v1/databases/{name}/raft` | `DatabaseUpdateRaft` | `db.UpdateRaft` | `qrdb_database_update_raft` | `UpdateDatabaseRaft` | `databases:update` |
 | Update barrier | `PATCH /v1/databases/{name}/barrier` | `DatabaseUpdateBarrier` | `db.UpdateBarrier` | `qrdb_database_update_barrier` | `UpdateDatabaseBarrier` | `databases:update` |
 | Update SQL settings | `PATCH /v1/databases/{name}/sql` | `DatabaseUpdateSQL` | `db.UpdateSQL` | `qrdb_database_update_sql` | `UpdateDatabaseSQL` | `databases:update` |
+| Update compaction policy | `PATCH /v1/databases/{name}/compaction` | `DatabaseUpdateCompaction` | `db.UpdateCompaction` | `qrdb_database_update_compaction` | `UpdateDatabaseCompaction` | `mvcc:compact` (`ScopeSelfStrict`) |
 | Update connection | `PATCH /v1/databases/{name}/connection` | `DatabaseUpdateConnection` | `db.UpdateConnection` | `qrdb_database_update_connection` | `UpdateDatabaseConnection` | `databases:update` |
 | Scale | `PATCH /v1/databases/{name}/scale` | `DatabaseScale` | `db.Scale` | `qrdb_database_scale` | `ScaleDatabase` | `databases:scale` |
 | Seal | `POST /v1/databases/{name}/seal` | `DatabaseSeal` | `db.Seal` | `qrdb_database_seal` | `SealDatabase` | `databases:seal` |
 | Unseal | `POST /v1/databases/{name}/unseal` | `DatabaseUnseal` | `db.Unseal` | `qrdb_database_unseal` | `UnsealDatabase` | `databases:unseal` |
 | Barrier status | `GET /v1/databases/{name}/barrier/status` | `DatabaseBarrierStatus` | `db.BarrierStatus` | `qrdb_database_barrier_status` | `DatabaseBarrierStatus` | `databases:barrier_status` |
 
-Fourteen capabilities, all present on all six transports. Update SQL settings
-is specified in [../row-locking/api.md](../row-locking/api.md).
+Fifteen capabilities, all present on all six transports. Update SQL settings
+is specified in [../row-locking/api.md](../row-locking/api.md); the compaction
+policy below and in [../key-value/engineering.md](../key-value/engineering.md).
+
+**The compaction policy is the owning tenant's alone.** Setting it is
+compacting, on a schedule, so it takes `mvcc:compact` rather than
+`databases:update`, and only the tenant that owns the database may set it --
+the system tenant included, which sets policies on its own databases only. It
+is set by its own verb and the configuration file, never by create: a create
+carrying a policy would let `databases:create` compact.
 
 **Note the additive permissions.** Creating a raft-backed database checks
 `databases:create_raft` *in addition to* `databases:create`, as does every
@@ -178,6 +187,23 @@ request carrying `engine` on REST, QUIC or MCP is refused as an unknown field
 (OD-13, ruled A). The `connection` block and the update-connection capability are
 removed on every transport (OD-9, ruled A).
 
+`PATCH /v1/databases/{name}/compaction` — the database's scheduled-compaction
+policy, off unless set:
+
+```json
+{ "compaction": { "mode": "revision", "retainRevisions": 10000 } }
+{ "compaction": { "mode": "period", "retainPeriod": "24h" } }
+{ "compaction": { "mode": "off" } }
+```
+
+`mode` is `off`, `revision` or `period`; `retainRevisions` (>= 1) belongs to
+`revision` and `retainPeriod` (a Go duration, >= `1s`) to `period`, and a field
+that does not belong to the mode is refused. An absent `compaction` turns the
+policy off. `DatabaseInfo` reports it as `compaction`. On gRPC:
+`DatabaseUpdateCompactionRequest{name, compaction}` with
+`DatabaseCompactionConfig{mode, retain_revisions, retain_period}`, and
+`DatabaseInfoResponse.compaction`.
+
 `PATCH /v1/databases/{name}/scale` — `{"target_replicas": 5}`. The database name
 travels in the **path**, not the body (`json:"-"` on the request struct).
 
@@ -228,6 +254,8 @@ refusal as a server fault.)*
 | A create or Raft update that names a shard ID (reachable only through a library call; no transport carries one) | 400 | `INVALID_ARGUMENT` — `database.CallerShardIDError` |
 | A cluster-wide shard ID could not be claimed (store unavailable, sustained contention) | 503 | `UNAVAILABLE` — `database.ShardIDClaimError` / `shard.ClaimContentionError`; nothing was created, retry |
 | The replicated shard high-water mark is corrupt | 500 | `INTERNAL` — `shard.HighWaterCorruptError` |
+| Invalid compaction policy (unknown mode, a field of another mode, `retainRevisions < 1`, `retainPeriod` unparseable or under `1s`) | 400 | `INVALID_ARGUMENT` — `compaction.InvalidPolicyError` |
+| Compaction policy on another tenant's database (the system tenant included) | 404 | `NOT_FOUND` — indistinguishable from a missing database |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | Target: `backend: raft` on a standalone node | 400 | `FAILED_PRECONDITION` — `database.RaftBackendUnavailableError` |
 | Target: raft options on a non-raft backend | 400 | `INVALID_ARGUMENT` — `database.RaftOptionsRequireRaftBackendError` |

@@ -70,6 +70,13 @@ func Info(resp *pb.DatabaseInfoResponse) *transport.DatabaseInfo {
 	if q := resp.GetSql(); q != nil {
 		info.SQL = &transport.DatabaseSQLConfig{Concurrency: q.GetConcurrency()}
 	}
+	if c := resp.GetCompaction(); c != nil {
+		info.Compaction = &transport.DatabaseCompactionConfig{
+			Mode:            c.GetMode(),
+			RetainRevisions: c.GetRetainRevisions(),
+			RetainPeriod:    c.GetRetainPeriod(),
+		}
+	}
 	return info
 }
 

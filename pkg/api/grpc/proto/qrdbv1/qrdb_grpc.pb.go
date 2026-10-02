@@ -22,6 +22,7 @@ package qrdbv1
 
 import (
 	context "context"
+
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
@@ -158,6 +159,7 @@ const (
 	QRDBService_DatabaseUpdateBarrier_FullMethodName             = "/qrdb.v1.QRDBService/DatabaseUpdateBarrier"
 	QRDBService_DatabaseUpdateConnection_FullMethodName          = "/qrdb.v1.QRDBService/DatabaseUpdateConnection"
 	QRDBService_DatabaseUpdateSQL_FullMethodName                 = "/qrdb.v1.QRDBService/DatabaseUpdateSQL"
+	QRDBService_DatabaseUpdateCompaction_FullMethodName          = "/qrdb.v1.QRDBService/DatabaseUpdateCompaction"
 	QRDBService_BarrierInitialize_FullMethodName                 = "/qrdb.v1.QRDBService/BarrierInitialize"
 	QRDBService_BarrierUnseal_FullMethodName                     = "/qrdb.v1.QRDBService/BarrierUnseal"
 	QRDBService_BarrierSeal_FullMethodName                       = "/qrdb.v1.QRDBService/BarrierSeal"
@@ -524,6 +526,11 @@ type QRDBServiceClient interface {
 	// DatabaseUpdateSQL updates a database's SQL settings -- its
 	// sql.concurrency (optimistic or pessimistic). See docs/row-locking/.
 	DatabaseUpdateSQL(ctx context.Context, in *DatabaseUpdateSQLRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error)
+	// DatabaseUpdateCompaction sets a database's scheduled-compaction policy
+	// (off, revision or period). Setting one is compacting on a schedule, so
+	// it takes mvcc:compact, and only the owning tenant may set it. See
+	// docs/key-value/engineering.md "Scheduled compaction".
+	DatabaseUpdateCompaction(ctx context.Context, in *DatabaseUpdateCompactionRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error)
 	// BarrierInitialize initializes the cryptographic barrier with a single
 	// master key.
 	BarrierInitialize(ctx context.Context, in *BarrierInitializeRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
@@ -1993,6 +2000,16 @@ func (c *qRDBServiceClient) DatabaseUpdateSQL(ctx context.Context, in *DatabaseU
 	return out, nil
 }
 
+func (c *qRDBServiceClient) DatabaseUpdateCompaction(ctx context.Context, in *DatabaseUpdateCompactionRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DatabaseInfoResponse)
+	err := c.cc.Invoke(ctx, QRDBService_DatabaseUpdateCompaction_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *qRDBServiceClient) BarrierInitialize(ctx context.Context, in *BarrierInitializeRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(emptypb.Empty)
@@ -3077,6 +3094,11 @@ type QRDBServiceServer interface {
 	// DatabaseUpdateSQL updates a database's SQL settings -- its
 	// sql.concurrency (optimistic or pessimistic). See docs/row-locking/.
 	DatabaseUpdateSQL(context.Context, *DatabaseUpdateSQLRequest) (*DatabaseInfoResponse, error)
+	// DatabaseUpdateCompaction sets a database's scheduled-compaction policy
+	// (off, revision or period). Setting one is compacting on a schedule, so
+	// it takes mvcc:compact, and only the owning tenant may set it. See
+	// docs/key-value/engineering.md "Scheduled compaction".
+	DatabaseUpdateCompaction(context.Context, *DatabaseUpdateCompactionRequest) (*DatabaseInfoResponse, error)
 	// BarrierInitialize initializes the cryptographic barrier with a single
 	// master key.
 	BarrierInitialize(context.Context, *BarrierInitializeRequest) (*emptypb.Empty, error)
@@ -3668,6 +3690,9 @@ func (UnimplementedQRDBServiceServer) DatabaseUpdateConnection(context.Context, 
 }
 func (UnimplementedQRDBServiceServer) DatabaseUpdateSQL(context.Context, *DatabaseUpdateSQLRequest) (*DatabaseInfoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DatabaseUpdateSQL not implemented")
+}
+func (UnimplementedQRDBServiceServer) DatabaseUpdateCompaction(context.Context, *DatabaseUpdateCompactionRequest) (*DatabaseInfoResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DatabaseUpdateCompaction not implemented")
 }
 func (UnimplementedQRDBServiceServer) BarrierInitialize(context.Context, *BarrierInitializeRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierInitialize not implemented")
@@ -6155,6 +6180,24 @@ func _QRDBService_DatabaseUpdateSQL_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _QRDBService_DatabaseUpdateCompaction_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DatabaseUpdateCompactionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).DatabaseUpdateCompaction(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_DatabaseUpdateCompaction_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).DatabaseUpdateCompaction(ctx, req.(*DatabaseUpdateCompactionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _QRDBService_BarrierInitialize_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(BarrierInitializeRequest)
 	if err := dec(in); err != nil {
@@ -8093,6 +8136,10 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DatabaseUpdateSQL",
 			Handler:    _QRDBService_DatabaseUpdateSQL_Handler,
+		},
+		{
+			MethodName: "DatabaseUpdateCompaction",
+			Handler:    _QRDBService_DatabaseUpdateCompaction_Handler,
 		},
 		{
 			MethodName: "BarrierInitialize",

@@ -23,6 +23,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
@@ -126,6 +128,11 @@ type DatabaseServicer interface {
 
 	// UpdateSQLForTenant updates SQL settings with tenant enforcement.
 	UpdateSQLForTenant(ctx context.Context, name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error)
+
+	// UpdateCompactionForTenant sets the scheduled-compaction policy of a
+	// database the context's tenant owns -- the system tenant included, which
+	// is held to its own databases. A nil policy turns it off.
+	UpdateCompactionForTenant(ctx context.Context, name string, policy *compaction.Policy) (*database.DatabaseInfo, error)
 
 	// ScaleForTenant changes the replication factor of a dedicated-raft
 	// database after verifying tenant ownership and quota.
@@ -1856,6 +1863,18 @@ func (s *DatabaseService) UpdateSQLForTenant(ctx context.Context, name string, s
 		return s.UpdateSQL(name, sqlCfg)
 	}
 	if err := s.manager.UpdateSQLForTenant(ctx, name, sqlCfg); err != nil {
+		return nil, err
+	}
+	return s.GetForTenant(ctx, name)
+}
+
+// UpdateCompactionForTenant sets the scheduled-compaction policy of the named
+// database and returns its updated runtime information. Every caller,
+// the system tenant included, reaches only its own databases: a policy
+// compacts that database's history, and no one compacts another tenant's.
+// See docs/key-value/engineering.md "Scheduled compaction".
+func (s *DatabaseService) UpdateCompactionForTenant(ctx context.Context, name string, policy *compaction.Policy) (*database.DatabaseInfo, error) {
+	if err := s.manager.UpdateCompactionForTenant(ctx, name, policy); err != nil {
 		return nil, err
 	}
 	return s.GetForTenant(ctx, name)

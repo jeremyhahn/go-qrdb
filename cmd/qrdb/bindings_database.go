@@ -209,6 +209,24 @@ func (b *DatabaseBinding) UpdateConnection(name string, req *transport.UpdateDat
 	return info, nil
 }
 
+// UpdateCompaction sets a database's scheduled-compaction policy.
+func (b *DatabaseBinding) UpdateCompaction(name string, req *transport.UpdateDatabaseCompactionRequest) (*transport.DatabaseInfo, error) {
+	b.logger.Debug("UpdateCompaction called", "name", name)
+	cl, err := b.conn.loadClient()
+	if err != nil {
+		b.logger.Error("UpdateCompaction failed", "error", err)
+		return nil, err
+	}
+	req.Name = name
+	info, err := cl.Database().UpdateDatabaseCompaction(context.Background(), *req)
+	if err != nil {
+		b.logger.Error("UpdateCompaction failed", "name", name, "error", err)
+		return nil, err
+	}
+	b.logger.Debug("UpdateCompaction completed", "name", name)
+	return info, nil
+}
+
 // UpdateSQL updates a database's SQL settings (its concurrency mode).
 func (b *DatabaseBinding) UpdateSQL(name string, req *transport.UpdateDatabaseSQLRequest) (*transport.DatabaseInfo, error) {
 	b.logger.Debug("UpdateSQL called", "name", name)

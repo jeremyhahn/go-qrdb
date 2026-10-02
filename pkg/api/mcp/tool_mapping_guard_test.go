@@ -254,6 +254,7 @@ var expectedToolPerms = map[string]permission.Permission{
 	"qrdb_database_update_barrier":               permission.DatabasesUpdate,
 	"qrdb_database_update_connection":            permission.DatabasesUpdate,
 	"qrdb_database_update_sql":                   permission.DatabasesUpdate,
+	"qrdb_database_update_compaction":            permission.MVCCCompact,
 	"qrdb_database_update_etcd":                  permission.DatabasesUpdate,
 	"qrdb_database_update_protocol":              permission.DatabasesUpdate,
 	"qrdb_database_update_raft":                  permission.DatabasesUpdate,

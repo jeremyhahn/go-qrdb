@@ -26,6 +26,8 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
 )
@@ -477,6 +479,7 @@ func (m *Manager) Open(name string) (*Database, error) {
 		Barrier:      meta.Barrier,
 		Connection:   meta.Connection,
 		SQL:          meta.SQL,
+		Compaction:   meta.Compaction,
 	}
 	if meta.Barrier != nil && meta.Barrier.Enabled && !cfg.HasDedicatedStore() {
 		return nil, &SharedStoreBarrierUnsupportedError{Name: name, Backend: cfg.Backend}
@@ -1051,6 +1054,37 @@ func (m *Manager) UpdateSQL(name string, sqlCfg *SQLConfig) error {
 	return nil
 }
 
+// UpdateCompaction replaces the scheduled-compaction policy of a database, in
+// memory and in its meta.json. A nil policy, or one whose mode is off, turns
+// scheduled compaction off. It enforces no ownership: request paths use
+// UpdateCompactionForTenant, and this is for the node's own configuration
+// file, which declares system-owned databases.
+func (m *Manager) UpdateCompaction(name string, policy *compaction.Policy) error {
+	if policy != nil {
+		if err := policy.Validate(); err != nil {
+			return err
+		}
+	}
+	db, err := m.loadDatabase(name)
+	if err != nil {
+		return err
+	}
+	stored := policy.Normalized()
+	db.updateCompaction(stored)
+
+	if err := m.rewriteMeta(name, db); err != nil {
+		return err
+	}
+	mode := compaction.Off
+	if stored != nil {
+		mode = stored.Mode
+	}
+	m.logger.Info("database compaction policy updated",
+		slog.String("name", name),
+		slog.String("mode", string(mode)))
+	return nil
+}
+
 // metaFromConfig builds the DatabaseMeta persisted to meta.json from cfg.
 // dropping is threaded through explicitly, rather than always false, so a
 // caller that rewrites meta.json for an unrelated reason (a configuration
@@ -1071,6 +1105,7 @@ func metaFromConfig(cfg DatabaseConfig, dropping bool, incarnation string) Datab
 		Barrier:      cfg.Barrier,
 		Connection:   cfg.Connection,
 		SQL:          cfg.SQL,
+		Compaction:   cfg.Compaction,
 		Dropping:     dropping,
 		Incarnation:  incarnation,
 	}

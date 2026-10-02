@@ -1665,6 +1665,9 @@ func (s *Server) registerRoutes() {
 	s.route(http.MethodPatch, "/v1/databases/{name}/barrier", permission.DatabasesUpdate, s.handleDatabaseByName)
 	s.route(http.MethodPatch, "/v1/databases/{name}/connection", permission.DatabasesUpdate, s.handleDatabaseByName)
 	s.route(http.MethodPatch, "/v1/databases/{name}/sql", permission.DatabasesUpdate, s.handleDatabaseByName)
+	// Setting a compaction policy is compacting on a schedule: mvcc:compact,
+	// not databases:update.
+	s.route(http.MethodPatch, "/v1/databases/{name}/compaction", permission.MVCCCompact, s.handleDatabaseByName)
 	s.route(http.MethodPatch, "/v1/databases/{name}/etcd", permission.DatabasesUpdate, s.handleDatabaseByName)
 	s.route(http.MethodPatch, "/v1/databases/{name}/protocol", permission.DatabasesUpdate, s.handleDatabaseByName)
 	s.route(http.MethodPatch, "/v1/databases/{name}/raft", permission.DatabasesUpdate, s.handleDatabaseByName)

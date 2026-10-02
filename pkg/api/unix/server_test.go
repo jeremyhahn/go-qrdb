@@ -33,6 +33,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+
 	"google.golang.org/grpc"
 	grpccredentials "google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -1441,6 +1443,10 @@ func (s *stubDatabaseSvc) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*d
 
 func (s *stubDatabaseSvc) UpdateSQLForTenant(_ context.Context, name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
 	return s.UpdateSQL(name, sqlCfg)
+}
+
+func (m *stubDatabaseSvc) UpdateCompactionForTenant(_ context.Context, name string, policy *compaction.Policy) (*database.DatabaseInfo, error) {
+	return &database.DatabaseInfo{Name: name, Compaction: policy}, nil
 }
 func (s *stubDatabaseSvc) ScaleForTenant(_ context.Context, _ string, _ int) (*database.DatabaseInfo, error) {
 	return nil, nil

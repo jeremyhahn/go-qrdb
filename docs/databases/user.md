@@ -1,7 +1,7 @@
 # Databases — User Guide
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-09-28
+> Scope: go-qrdb · Last verified: 2026-10-01
 >
 > "Coming change" sections describe the multi-model database design in
 > [architecture.md](architecture.md). It is approved and not yet implemented.
@@ -157,6 +157,21 @@ with the new release, creating a raft-backed database is refused with
 `503 Service Unavailable` (`UNAVAILABLE`): the cluster feature
 `cluster-shard-ids` is not active yet. Retry once every node runs the new
 release.
+**Keep a database's revision history bounded.** A database keeps every
+revision until you compact it, and nothing compacts it unless you say so. Set
+a policy and the node compacts it for you:
+
+```bash
+qrdb database update-compaction events --mode revision --retain-revisions 100000
+qrdb database update-compaction audit --mode period --retain-period 720h
+qrdb database info events --output json   # "compaction" shows the policy
+qrdb database update-compaction events --mode off
+```
+
+Only your own databases: a policy applies to the one database, and another
+tenant cannot set one on yours (nor you on theirs). As-of reads, watch replays
+and restores below what the policy keeps fail afterwards -- that history is
+gone.
 
 ## Troubleshooting
 

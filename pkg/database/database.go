@@ -17,6 +17,8 @@ package database
 import (
 	"sync"
 	"sync/atomic"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 )
 
 // backendHolder boxes a Backend so it can be swapped atomically via
@@ -365,6 +367,24 @@ func (d *Database) updateSQL(sqlCfg *SQLConfig) {
 	}
 }
 
+// CompactionConfig returns the database's scheduled-compaction policy, nil
+// when it has none (off).
+func (d *Database) CompactionConfig() *compaction.Policy {
+	return d.config.Load().Compaction
+}
+
+// updateCompaction atomically replaces the compaction policy.
+func (d *Database) updateCompaction(policy *compaction.Policy) {
+	for {
+		old := d.config.Load()
+		updated := *old
+		updated.Compaction = policy
+		if d.config.CompareAndSwap(old, &updated) {
+			return
+		}
+	}
+}
+
 // updateConnection atomically replaces the connection configuration.
 func (d *Database) updateConnection(conn *DatabaseConnectionConfig) {
 	for {
@@ -410,6 +430,7 @@ func (d *Database) Info() DatabaseInfo {
 		Barrier:      cfg.Barrier,
 		Connection:   cfg.Connection,
 		SQL:          cfg.SQL,
+		Compaction:   cfg.Compaction,
 	}
 	if cfg.Raft != nil {
 		info.ShardID = cfg.Raft.ShardID

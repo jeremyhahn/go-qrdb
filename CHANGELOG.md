@@ -31,6 +31,25 @@ are not reconstructed here — their history is in the git log.
   `CreateDatabaseRequest.barrier` is a `DatabaseBarrierRequest`, which carries
   the `secret`.
 
+### Added
+
+- **Per-database scheduled compaction, off by default.** A database's owning tenant may set
+  a compaction policy -- `revision` (keep the store's last N revisions) or `period` (keep the
+  history newer than a duration) -- and the node's compaction scheduler
+  (`server.DefaultCompactionInterval`, one minute; `server.WithCompactionInterval`) compacts
+  that database, and only that database, through its own namespaced view as its owner.
+  A database without a policy is never compacted implicitly. On every transport: REST
+  `PATCH /v1/databases/{name}/compaction`, gRPC and the Unix socket `DatabaseUpdateCompaction`,
+  QUIC `db.UpdateCompaction`, MCP `qrdb_database_update_compaction`, and the embedded
+  transport; the Go SDK `DatabaseClient.UpdateDatabaseCompaction` and `DatabaseInfo.Compaction`;
+  the CLI `qrdb database update-compaction --mode --retain-revisions --retain-period`; and the
+  `qrdbd` YAML `databases[].compaction` (`mode`, `retain_revisions`, `retain_period`), applied
+  at every start. Setting a policy requires `mvcc:compact` (`ScopeSelfStrict`), never
+  `databases:update`, and create does not take one; every caller, the system tenant included,
+  reaches only its own databases (another tenant's answers as missing). An invalid policy is
+  `compaction.InvalidPolicyError` (400 / `INVALID_ARGUMENT`). Proved on all six
+  transports in `sdk/go/conformance` (`TestCompactionPolicy_OnEveryTransport`).
+
 ### Security
 
 - **MVCC compaction no longer destroys other tenants' history.** Every prefix-isolated

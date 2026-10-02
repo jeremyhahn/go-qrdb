@@ -209,7 +209,9 @@ GetAtRevision("beta/app/k", 850)  -> served      (no floor for "beta/app/")
   (the node's internal `__sys:` records, the unscoped embedded client's keys)
   are never compacted.
 - **Nothing compacts unless the owner asked.** Compaction runs on an explicit
-  `Compact` request from the owning tenant. There is no node-wide retention
+  `Compact` request from the owning tenant, or on the database's own
+  scheduled-compaction policy, which is off unless that tenant configured one
+  (engineering.md "Scheduled compaction"). There is no node-wide retention
   setting.
 
 The command that carries it is a new Raft opcode, `OpMVCCCompactPrefix`,

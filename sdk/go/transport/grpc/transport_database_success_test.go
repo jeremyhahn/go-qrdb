@@ -19,6 +19,8 @@ import (
 	"net"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+
 	googlegrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
@@ -99,6 +101,10 @@ func (f *fakeDatabaseServicer) UpdateSQL(name string, sqlCfg *database.SQLConfig
 
 func (f *fakeDatabaseServicer) UpdateSQLForTenant(_ context.Context, name string, sqlCfg *database.SQLConfig) (*database.DatabaseInfo, error) {
 	return f.UpdateSQL(name, sqlCfg)
+}
+
+func (m *fakeDatabaseServicer) UpdateCompactionForTenant(_ context.Context, name string, policy *compaction.Policy) (*database.DatabaseInfo, error) {
+	return &database.DatabaseInfo{Name: name, Compaction: policy}, nil
 }
 func (f *fakeDatabaseServicer) ScaleForTenant(_ context.Context, name string, targetReplicas int) (*database.DatabaseInfo, error) {
 	return &database.DatabaseInfo{Name: name, Replicas: targetReplicas}, nil

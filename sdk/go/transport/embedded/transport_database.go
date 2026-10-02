@@ -18,6 +18,8 @@ import (
 	"context"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/dbwire"
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -216,9 +218,38 @@ func (t *Transport) UpdateDatabaseSQL(_ context.Context, req transport.UpdateDat
 	return dbwire.Info(info), nil
 }
 
+// UpdateDatabaseCompaction sets a database's scheduled-compaction policy by
+// delegating to the injected DatabaseServicer for the context's tenant. Unlike
+// the other embedded updates it is tenant-scoped: a policy compacts that
+// database's history, and the service confines every caller -- the system
+// tenant an unbound context resolves to included -- to its own databases.
+func (t *Transport) UpdateDatabaseCompaction(ctx context.Context, req transport.UpdateDatabaseCompactionRequest) (*transport.DatabaseInfo, error) {
+	if t.dbSvc == nil {
+		return nil, &NilServiceError{Service: "DatabaseServicer"}
+	}
+	info, err := t.dbSvc.UpdateCompactionForTenant(ctx, req.Name, fromTransportCompactionConfig(req.Compaction))
+	if err != nil {
+		return nil, err
+	}
+	return dbwire.Info(info), nil
+}
+
 // ---------------------------------------------------------------------------
 // Type conversion helpers
 // ---------------------------------------------------------------------------
+
+// fromTransportCompactionConfig converts a transport compaction policy to the
+// domain type; nil stays nil (off).
+func fromTransportCompactionConfig(c *transport.DatabaseCompactionConfig) *compaction.Policy {
+	if c == nil {
+		return nil
+	}
+	return &compaction.Policy{
+		Mode:            compaction.Mode(c.Mode),
+		RetainRevisions: c.RetainRevisions,
+		RetainPeriod:    c.RetainPeriod,
+	}
+}
 
 // fromTransportSQLConfig converts transport SQL settings to the domain type;
 // nil stays nil (the defaults).

@@ -736,6 +736,14 @@ service QRDBService {
         option (qrdb.v1.permission) = "databases:update";
     }
 
+    // DatabaseUpdateCompaction sets a database's scheduled-compaction policy
+    // (off, revision or period). Setting one is compacting on a schedule, so
+    // it takes mvcc:compact, and only the owning tenant may set it. See
+    // docs/key-value/engineering.md "Scheduled compaction".
+    rpc DatabaseUpdateCompaction(DatabaseUpdateCompactionRequest) returns (DatabaseInfoResponse) {
+        option (qrdb.v1.permission) = "mvcc:compact";
+    }
+
     // -----------------------------------------------------------------------
     // Barrier operations
     // -----------------------------------------------------------------------
@@ -3061,6 +3069,9 @@ message DatabaseInfoResponse {
     // storage_codec is the codec the database's values are stored in; empty
     // means the node's default.
     string storage_codec = 16;
+    // compaction is the database's scheduled-compaction policy; unset means
+    // off.
+    DatabaseCompactionConfig compaction = 17;
 }
 
 // DatabaseRaftInfo is a database's Raft configuration as a response reports
@@ -3124,6 +3135,18 @@ message DatabaseBarrierInfo {
     int32 shares_total = 4;
     reserved 5;
     reserved "secret";
+}
+
+// DatabaseCompactionConfig is a database's scheduled-compaction policy.
+message DatabaseCompactionConfig {
+    // mode is "off" (or empty), "revision" or "period".
+    string mode = 1;
+    // retain_revisions is how many of the store's most recent revisions a
+    // revision policy keeps (>= 1). Revision mode only.
+    int64 retain_revisions = 2;
+    // retain_period is how much history, by age, a period policy keeps: a Go
+    // duration of at least 1s. Period mode only.
+    string retain_period = 3;
 }
 
 // DatabaseSQLConfig holds a database's SQL settings.
@@ -3271,6 +3294,13 @@ message DatabaseUpdateConnectionRequest {
 message DatabaseUpdateSQLRequest {
     string name = 1;
     DatabaseSQLConfig sql = 2;
+}
+
+// DatabaseUpdateCompactionRequest sets a database's scheduled-compaction
+// policy. An unset compaction turns it off.
+message DatabaseUpdateCompactionRequest {
+    string name = 1;
+    DatabaseCompactionConfig compaction = 2;
 }
 
 // ===========================================================================

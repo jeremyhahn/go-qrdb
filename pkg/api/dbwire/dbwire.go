@@ -75,6 +75,13 @@ func Info(info *database.DatabaseInfo) *transport.DatabaseInfo {
 	if s := info.SQL; s != nil {
 		out.SQL = &transport.DatabaseSQLConfig{Concurrency: string(s.Concurrency)}
 	}
+	if c := info.Compaction; c != nil {
+		out.Compaction = &transport.DatabaseCompactionConfig{
+			Mode:            string(c.Mode),
+			RetainRevisions: c.RetainRevisions,
+			RetainPeriod:    c.RetainPeriod,
+		}
+	}
 	return out
 }
 
@@ -179,6 +186,13 @@ func InfoProto(info *database.DatabaseInfo) *pb.DatabaseInfoResponse {
 	}
 	if s := info.SQL; s != nil {
 		out.Sql = &pb.DatabaseSQLConfig{Concurrency: string(s.Concurrency)}
+	}
+	if c := info.Compaction; c != nil {
+		out.Compaction = &pb.DatabaseCompactionConfig{
+			Mode:            string(c.Mode),
+			RetainRevisions: c.RetainRevisions,
+			RetainPeriod:    c.RetainPeriod,
+		}
 	}
 	return out
 }

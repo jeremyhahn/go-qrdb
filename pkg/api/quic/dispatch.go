@@ -282,6 +282,8 @@ func (s *Server) buildHandlers() {
 	s.handle("db.UpdateBarrier", permission.DatabasesUpdate, s.handleDatabaseUpdateBarrier)
 	s.handle("db.UpdateConnection", permission.DatabasesUpdate, s.handleDatabaseUpdateConnection)
 	s.handle("db.UpdateSQL", permission.DatabasesUpdate, s.handleDatabaseUpdateSQL)
+	// Setting a compaction policy is compacting on a schedule.
+	s.handle("db.UpdateCompaction", permission.MVCCCompact, s.handleDatabaseUpdateCompaction)
 	s.handle("db.Seal", permission.DatabasesSeal, s.handleDatabaseSeal)
 	s.handle("db.Unseal", permission.DatabasesUnseal, s.handleDatabaseUnseal)
 	s.handle("db.BarrierStatus", permission.DatabasesBarrierStatus, s.handleDatabaseBarrierStatus)

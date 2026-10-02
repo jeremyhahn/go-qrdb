@@ -177,6 +177,7 @@ var expectedMethods = []string{
 	"db.UpdateBarrier",
 	"db.UpdateConnection",
 	"db.UpdateSQL",
+	"db.UpdateCompaction",
 	"db.Seal",
 	"db.Unseal",
 	"db.BarrierStatus",
@@ -248,6 +249,8 @@ func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
 func TestBuildHandlers_MethodCount(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 
+	// 170 = 169 + db.UpdateCompaction, a database's scheduled-compaction
+	// policy (docs/key-value).
 	// 169 = 168 + db.UpdateSQL, a database's SQL concurrency mode
 	// (docs/row-locking).
 	// The 168 was 166 + tenant.ListDeleted and tenant.ReconcileDeleted, the retired
@@ -262,7 +265,7 @@ func TestBuildHandlers_MethodCount(t *testing.T) {
 	// kv.CompareAndDelete, kv.CompareAndSwap — go-qrdb#124), and the 161 was
 	// 160 plus user.GetByEmail, the canonical login-key lookup (go-qrdb#190).
 	// The 2 watch methods remain on the streaming path, not the unary table.
-	const wantCount = 169
+	const wantCount = 170
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}

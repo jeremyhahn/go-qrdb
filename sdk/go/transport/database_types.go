@@ -57,6 +57,7 @@ type DatabaseInfo struct {
 	Barrier      *DatabaseBarrierInfo      `json:"barrier,omitempty"`
 	Connection   *DatabaseConnectionConfig `json:"connection,omitempty"`
 	SQL          *DatabaseSQLConfig        `json:"sql,omitempty"`
+	Compaction   *DatabaseCompactionConfig `json:"compaction,omitempty"`
 }
 
 // DatabaseRaftInfo is a database's Raft configuration as a response reports
@@ -131,6 +132,26 @@ type DatabaseSQLConfig struct {
 type UpdateDatabaseSQLRequest struct {
 	Name string             `json:"-"`
 	SQL  *DatabaseSQLConfig `json:"sql"`
+}
+
+// DatabaseCompactionConfig is a database's scheduled-compaction policy. See
+// docs/key-value/engineering.md "Scheduled compaction".
+type DatabaseCompactionConfig struct {
+	// Mode is "off" (or empty), "revision" or "period".
+	Mode string `json:"mode,omitempty"`
+	// RetainRevisions is how many of the store's most recent revisions a
+	// revision policy keeps (at least 1). Revision mode only.
+	RetainRevisions int64 `json:"retainRevisions,omitempty"`
+	// RetainPeriod is how much history, by age, a period policy keeps: a Go
+	// duration of at least 1s. Period mode only.
+	RetainPeriod string `json:"retainPeriod,omitempty"`
+}
+
+// UpdateDatabaseCompactionRequest sets a database's scheduled-compaction
+// policy. A nil Compaction turns it off.
+type UpdateDatabaseCompactionRequest struct {
+	Name       string                    `json:"-"`
+	Compaction *DatabaseCompactionConfig `json:"compaction"`
 }
 
 // DatabaseRaftConfig holds Raft consensus settings a request sets on a
@@ -278,6 +299,11 @@ type DatabaseClient interface {
 	// UpdateDatabaseSQL updates a database's SQL settings -- its
 	// concurrency mode -- and returns the updated database information.
 	UpdateDatabaseSQL(ctx context.Context, req UpdateDatabaseSQLRequest) (*DatabaseInfo, error)
+
+	// UpdateDatabaseCompaction sets a database's scheduled-compaction policy
+	// and returns the updated database information. It requires mvcc:compact,
+	// and only the tenant that owns the database may set it.
+	UpdateDatabaseCompaction(ctx context.Context, req UpdateDatabaseCompactionRequest) (*DatabaseInfo, error)
 
 	// SealDatabase seals the encryption barrier for a database.
 	SealDatabase(ctx context.Context, name string) error

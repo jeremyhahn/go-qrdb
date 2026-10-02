@@ -1,7 +1,7 @@
 # Databases — Engineering Contract
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-09-28
+> Scope: go-qrdb · Last verified: 2026-10-01
 >
 > Sections headed **Target** are the requirements contract for the multi-model
 > database program described in [architecture.md](architecture.md). They are
@@ -33,6 +33,7 @@ type DatabaseClient interface {
 	ScaleDatabase(ctx context.Context, req ScaleDatabaseRequest) (*DatabaseInfo, error)
 	UpdateDatabaseConnection(ctx context.Context, req UpdateDatabaseConnectionRequest) (*DatabaseInfo, error)
 	UpdateDatabaseSQL(ctx context.Context, req UpdateDatabaseSQLRequest) (*DatabaseInfo, error)
+	UpdateDatabaseCompaction(ctx context.Context, req UpdateDatabaseCompactionRequest) (*DatabaseInfo, error)
 	SealDatabase(ctx context.Context, name string) error
 	UnsealDatabase(ctx context.Context, name, secret string) error
 	DatabaseBarrierStatus(ctx context.Context, name string) (*DatabaseBarrierConfig, error)
@@ -61,7 +62,21 @@ type DatabaseInfo struct {
 	Raft       *DatabaseRaftConfig       `json:"raft,omitempty"`
 	Barrier    *DatabaseBarrierConfig    `json:"barrier,omitempty"`
 	SQL        *DatabaseSQLConfig        `json:"sql,omitempty"`
+	Compaction *DatabaseCompactionConfig `json:"compaction,omitempty"` // nil: off
 	Binding    *DatabaseBinding          `json:"binding,omitempty"`    // new, read-only
+}
+
+// DatabaseCompactionConfig is the database's scheduled-compaction policy,
+// specified in ../key-value/engineering.md "Scheduled compaction".
+type DatabaseCompactionConfig struct {
+	Mode            string `json:"mode,omitempty"`            // off | revision | period
+	RetainRevisions int64  `json:"retainRevisions,omitempty"` // revision mode, >= 1
+	RetainPeriod    string `json:"retainPeriod,omitempty"`    // period mode, Go duration >= 1s
+}
+
+type UpdateDatabaseCompactionRequest struct {
+	Name       string                    `json:"-"`
+	Compaction *DatabaseCompactionConfig `json:"compaction"` // nil turns the policy off
 }
 
 // DatabaseSQLConfig is specified in ../row-locking/engineering.md.
@@ -1256,3 +1271,40 @@ Breaking rows land in one MINOR release, recorded in the CHANGELOG.
 - `DatabaseBarrierStatus` reports seal state, mode and share counts.
 - Create, drop, scale, seal, unseal, relocation start and finish, and vector
   import are audited through [../audit/](../audit/).
+
+## Compaction policy
+
+A database's scheduled-compaction policy (`compaction.Policy` (`pkg/compaction`), the
+`compaction` block of `DatabaseConfig`, its `meta.json` record and
+`DatabaseInfo`) is **off unless its owning tenant set one**, and is set only by:
+
+- `UpdateDatabaseCompaction` on any transport, which requires `mvcc:compact`
+  (`ScopeSelfStrict`) and refuses -- as not found -- a database the caller's
+  tenant does not own; the system tenant owns only its own databases
+  (`database.Manager.UpdateCompactionForTenant` applies that rule to every
+  caller); and
+- the node's configuration file, `databases[].compaction`, for the databases
+  that file declares (all system-owned). When present it is applied at every
+  start; a database it is absent from keeps whatever was last set through the
+  API.
+
+Create never takes a policy, so `databases:create` cannot compact. The policy's
+semantics, and the scheduler that runs it, are specified in
+[../key-value/engineering.md](../key-value/engineering.md) "Scheduled
+compaction".
+
+```yaml
+databases:
+  - name: events
+    engine: kv
+    backend: pebble
+    compaction:
+      mode: revision        # off | revision | period
+      retain_revisions: 100000
+  - name: audit
+    engine: kv
+    backend: pebble
+    compaction:
+      mode: period
+      retain_period: 720h
+```

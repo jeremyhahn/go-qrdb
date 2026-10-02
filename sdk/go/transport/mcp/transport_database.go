@@ -319,6 +319,39 @@ func (t *Transport) UpdateDatabaseSQL(ctx context.Context, req transport.UpdateD
 	return &info, nil
 }
 
+// UpdateDatabaseCompaction sets a database's scheduled-compaction policy by
+// calling the qrdb_database_update_compaction MCP tool. A nil Compaction, or
+// one without a mode, omits the mode argument, which turns the policy off --
+// the same as an absent compaction on every other transport.
+func (t *Transport) UpdateDatabaseCompaction(ctx context.Context, req transport.UpdateDatabaseCompactionRequest) (*transport.DatabaseInfo, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	args := map[string]any{"name": req.Name}
+	if c := req.Compaction; c != nil && c.Mode != "" {
+		args["mode"] = c.Mode
+		if c.RetainRevisions != 0 {
+			args["retainRevisions"] = c.RetainRevisions
+		}
+		if c.RetainPeriod != "" {
+			args["retainPeriod"] = c.RetainPeriod
+		}
+	}
+
+	text, err := t.callTool(ctx, "qrdb_database_update_compaction", args)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "UpdateDatabaseCompaction", Err: err}
+	}
+
+	var info transport.DatabaseInfo
+	if jsonErr := json.Unmarshal([]byte(text), &info); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "UpdateDatabaseCompaction", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return &info, nil
+}
+
 // UpdateDatabaseConnection updates the remote connection configuration for a
 // database by calling the qrdb_database_update_connection MCP tool.
 func (t *Transport) UpdateDatabaseConnection(ctx context.Context, req transport.UpdateDatabaseConnectionRequest) (*transport.DatabaseInfo, error) {

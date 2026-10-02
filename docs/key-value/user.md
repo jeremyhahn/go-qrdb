@@ -172,6 +172,11 @@ Compaction is per database: compacting one database never discards another
 database's history, and no tenant -- the platform operator included -- can
 compact a database it does not own.
 
+**History you did not compact is gone.** Check the database's compaction
+policy: `qrdb database info <name> --output json` shows it as `compaction`, and
+the node compacts the database on that schedule. It is off unless your tenant
+set one.
+
 **`kv compact` says "compaction requires a database scope"** — you reached the
 node's raw MVCC service rather than a database (the unscoped embedded client,
 or a server built without a service registry). There is no store-wide
