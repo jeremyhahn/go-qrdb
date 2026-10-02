@@ -65,7 +65,7 @@ func TestUpdateRaft_OmittedSecretsAreKept(t *testing.T) {
 	}
 
 	update := withoutSecrets(secretsRaft())
-	update.Static.Peers = []string{"db.example.com:63001", "db2.example.com:63001"}
+	update.RaftAddress = "db.example.com:63002"
 	update.Discovery = DiscoveryMulticast // validation requires the multicast secret
 	if err := m.UpdateRaft("kept", update); err != nil {
 		t.Fatalf("read-modify-write UpdateRaft without secrets: %v", err)
@@ -75,7 +75,7 @@ func TestUpdateRaft_OmittedSecretsAreKept(t *testing.T) {
 		t.Fatalf("stored secrets after an update that omitted them = %q/%q/%q, want them kept",
 			got.Static.SharedSecret, got.Multicast.SharedSecret, got.Token.Token)
 	}
-	if len(got.Static.Peers) != 2 || got.Discovery != DiscoveryMulticast {
+	if got.RaftAddress != "db.example.com:63002" || got.Discovery != DiscoveryMulticast {
 		t.Fatalf("the rest of the update was not applied: %+v", got)
 	}
 }

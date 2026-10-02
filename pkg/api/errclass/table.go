@@ -314,6 +314,9 @@ var databaseRules = []rule{
 	as(&database.InvalidDiscoveryMethodError{Method: "x"}, InvalidArgument),
 	as(&database.DiscoveryConfigRequiredError{Method: "multicast"}, InvalidArgument),
 	as(&database.DiscoverySharedSecretRequiredError{Method: "multicast"}, InvalidArgument),
+	// A Raft update that re-points a discovery block without resending its
+	// secret: the stored secret stays with its destination.
+	as(&database.DiscoverySecretRebindError{Method: "token", Field: "endpoint"}, InvalidArgument),
 	as(&database.DiscoveryDomainRequiredError{}, InvalidArgument),
 	as(&database.DiscoveryEndpointRequiredError{}, InvalidArgument),
 	as(&database.DiscoveryTokenRequiredError{}, InvalidArgument),

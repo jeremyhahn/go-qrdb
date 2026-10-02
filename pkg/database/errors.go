@@ -340,6 +340,22 @@ func (e *CallerShardIDError) Error() string {
 		strconv.FormatUint(e.ShardID, 10) + "; shard IDs are issued by the cluster, never chosen by the caller"
 }
 
+// DiscoverySecretRebindError is returned when a Raft update changes what a
+// stored discovery secret authenticates -- the static peer set, the multicast
+// group or interface, the token endpoint -- without sending the secret. The
+// stored secret is kept only for an unchanged destination: carrying it to a
+// new one would give a secret the caller never knew to a destination the
+// caller chose. Send the secret with the new destination.
+type DiscoverySecretRebindError struct {
+	Method string
+	Field  string
+}
+
+func (e *DiscoverySecretRebindError) Error() string {
+	return "database: changing " + e.Method + " discovery's " + e.Field +
+		" requires sending its secret again; the stored secret is kept only for an unchanged " + e.Field
+}
+
 // RaftConfigRequiredError is returned when an update would clear the Raft
 // configuration of a raft-backend database. That configuration carries the
 // database's issued shard ID, its identity, so it can be changed but never

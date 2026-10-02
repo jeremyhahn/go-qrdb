@@ -464,7 +464,10 @@ func TestBuildRaftConfigFromUpdateRequest_Static(t *testing.T) {
 		"static_shared_secret": "mysecret",
 	})
 
-	cfg := buildRaftConfigFromUpdateRequest(req, "distributed")
+	cfg, err := buildRaftConfigFromUpdateRequest(req, "distributed")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if cfg.ClusterMode != database.RaftClusterMode("distributed") {
 		t.Errorf("cluster_mode: got %q, want %q", cfg.ClusterMode, "distributed")
 	}
@@ -486,7 +489,10 @@ func TestBuildRaftConfigFromUpdateRequest_Multicast(t *testing.T) {
 		"multicast_min_peers":     float64(3),
 	})
 
-	cfg := buildRaftConfigFromUpdateRequest(req, "distributed")
+	cfg, err := buildRaftConfigFromUpdateRequest(req, "distributed")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if cfg.Multicast == nil {
 		t.Fatal("expected multicast discovery config to be set")
 	}
@@ -507,7 +513,10 @@ func TestBuildRaftConfigFromUpdateRequest_DNS(t *testing.T) {
 		"dns_proto":        "tcp",
 	})
 
-	cfg := buildRaftConfigFromUpdateRequest(req, "distributed")
+	cfg, err := buildRaftConfigFromUpdateRequest(req, "distributed")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if cfg.DNS == nil {
 		t.Fatal("expected DNS discovery config to be set")
 	}
@@ -528,7 +537,10 @@ func TestBuildRaftConfigFromUpdateRequest_Token(t *testing.T) {
 		"token_cluster_size": float64(3),
 	})
 
-	cfg := buildRaftConfigFromUpdateRequest(req, "distributed")
+	cfg, err := buildRaftConfigFromUpdateRequest(req, "distributed")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if cfg.Token == nil {
 		t.Fatal("expected token discovery config to be set")
 	}

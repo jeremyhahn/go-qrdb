@@ -58,7 +58,13 @@ are not reconstructed here — their history is in the git log.
   none: the update cleared the static shared secret and failed validation for
   multicast and token discovery. A discovery block without its secret now
   keeps the stored one; sending a secret rotates it; leaving a block out
-  removes it. A Raft update that would remove a raft-backed database's Raft
+  removes it. A kept secret stays with what it authenticates: an update that
+  changes the static peer set, the multicast group or interface, or the token
+  endpoint without resending the secret is refused
+  (`database.DiscoverySecretRebindError`, 400), so a caller cannot point a
+  secret it never saw at a destination of its choosing. MCP now builds the
+  static block whether or not the request has a secret, and takes its peers
+  (`static_peers`), as the other transports do. A Raft update that would remove a raft-backed database's Raft
   configuration -- its shard ID with it -- is refused
   (`database.RaftConfigRequiredError`, 400). Database configuration
   validation failures are 400 / `INVALID_ARGUMENT` on every transport instead

@@ -870,7 +870,9 @@ func (m *Manager) UpdateRaft(name string, raft *DatabaseRaftConfig) error {
 	}
 	kept := *raft
 	kept.ShardID = issued
-	keepStoredSecrets(&kept, db.Config().Raft)
+	if err := keepStoredSecrets(&kept, db.Config().Raft); err != nil {
+		return err
+	}
 	if err := kept.Validate(); err != nil {
 		return err
 	}
@@ -887,25 +889,62 @@ func (m *Manager) UpdateRaft(name string, raft *DatabaseRaftConfig) error {
 // out is removed, secret and all: that is how a secret is removed. update's
 // blocks are copied before they are filled, so the caller's request is never
 // written to.
-func keepStoredSecrets(update, stored *DatabaseRaftConfig) {
+//
+// A kept secret stays bound to what it authenticates: the static peer set,
+// the multicast group and interface, the token endpoint. An update that
+// changes that destination without sending the secret is refused with
+// *DiscoverySecretRebindError -- keeping it would hand a secret the caller
+// never knew to a destination the caller chose.
+func keepStoredSecrets(update, stored *DatabaseRaftConfig) error {
 	if stored == nil {
-		return
+		return nil
 	}
-	if update.Static != nil && update.Static.SharedSecret == "" && stored.Static != nil {
+	if update.Static != nil && update.Static.SharedSecret == "" && stored.Static != nil && stored.Static.SharedSecret != "" {
+		if !samePeers(update.Static.Peers, stored.Static.Peers) {
+			return &DiscoverySecretRebindError{Method: string(DiscoveryStatic), Field: "peers"}
+		}
 		s := *update.Static
 		s.SharedSecret = stored.Static.SharedSecret
 		update.Static = &s
 	}
-	if update.Multicast != nil && update.Multicast.SharedSecret == "" && stored.Multicast != nil {
+	if update.Multicast != nil && update.Multicast.SharedSecret == "" && stored.Multicast != nil && stored.Multicast.SharedSecret != "" {
+		if update.Multicast.MulticastGroup != stored.Multicast.MulticastGroup {
+			return &DiscoverySecretRebindError{Method: string(DiscoveryMulticast), Field: "multicastGroup"}
+		}
+		if update.Multicast.Interface != stored.Multicast.Interface {
+			return &DiscoverySecretRebindError{Method: string(DiscoveryMulticast), Field: "interface"}
+		}
 		mc := *update.Multicast
 		mc.SharedSecret = stored.Multicast.SharedSecret
 		update.Multicast = &mc
 	}
-	if update.Token != nil && update.Token.Token == "" && stored.Token != nil {
+	if update.Token != nil && update.Token.Token == "" && stored.Token != nil && stored.Token.Token != "" {
+		if update.Token.Endpoint != stored.Token.Endpoint {
+			return &DiscoverySecretRebindError{Method: string(DiscoveryToken), Field: "endpoint"}
+		}
 		tk := *update.Token
 		tk.Token = stored.Token.Token
 		update.Token = &tk
 	}
+	return nil
+}
+
+// samePeers reports whether two peer lists name the same set of addresses.
+func samePeers(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	want := make(map[string]int, len(b))
+	for _, p := range b {
+		want[p]++
+	}
+	for _, p := range a {
+		if want[p] == 0 {
+			return false
+		}
+		want[p]--
+	}
+	return true
 }
 
 // UpdateReplicas updates the replication factor recorded for a database. It

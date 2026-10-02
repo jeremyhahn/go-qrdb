@@ -114,7 +114,13 @@ secrets to send. So in an update:
 - a discovery block **without** its secret field keeps the stored secret --
   including where validation needs one, as for multicast and token discovery;
 - a discovery block **left out** is removed, secret and all (this is how a
-  secret is removed: disable that discovery method).
+  secret is removed: disable that discovery method);
+- a kept secret stays with **what it authenticates** -- the static peer set
+  (in any order), the multicast group and interface, the token endpoint. An
+  update that changes that destination without sending the secret is refused
+  with `database.DiscoverySecretRebindError` (400 / `INVALID_ARGUMENT`):
+  keeping the secret would hand it, unseen, to a destination the caller chose.
+  Send the secret with the new destination.
 
 The response to the update reports each kept secret as set. *(Changed: an
 update without the secrets cleared the static shared secret and failed

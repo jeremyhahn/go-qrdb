@@ -143,8 +143,11 @@ func toolDatabaseCreate() mcp.Tool {
 			mcp.Description("Peer discovery method: static, multicast, dns, or token."),
 		),
 		// Static discovery
+		mcp.WithArray("static_peers",
+			mcp.Description("Static peer addresses (host:port) for static discovery."),
+		),
 		mcp.WithString("static_shared_secret",
-			mcp.Description("Shared secret for static peer authentication."),
+			mcp.Description("Shared secret for static peer authentication. Omitted on an update, the stored secret is kept while the peers are unchanged."),
 		),
 		// Multicast discovery
 		mcp.WithString("multicast_shared_secret",
@@ -238,7 +241,10 @@ func handleDatabaseCreate(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerF
 		// Build raft config if cluster mode is specified.
 		raftMode := mcp.ParseString(req, "raft_cluster_mode", "")
 		if raftMode != "" {
-			raftCfg := buildRaftConfigFromRequest(req, raftMode)
+			raftCfg, err := buildRaftConfigFromRequest(req, raftMode)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
 			cfg.Raft = raftCfg
 		}
 
@@ -466,8 +472,11 @@ func toolDatabaseUpdateRaft() mcp.Tool {
 			mcp.Description("Peer discovery method: static, multicast, dns, or token."),
 		),
 		// Static discovery
+		mcp.WithArray("static_peers",
+			mcp.Description("Static peer addresses (host:port) for static discovery."),
+		),
 		mcp.WithString("static_shared_secret",
-			mcp.Description("Shared secret for static peer authentication."),
+			mcp.Description("Shared secret for static peer authentication. Omitted on an update, the stored secret is kept while the peers are unchanged."),
 		),
 		// Multicast discovery
 		mcp.WithString("multicast_shared_secret",
@@ -515,7 +524,10 @@ func handleDatabaseUpdateRaft(dbSvc service.DatabaseServicer) mcpserver.ToolHand
 		}
 
 		clusterMode := mcp.ParseString(req, "cluster_mode", "")
-		raftCfg := buildRaftConfigFromUpdateRequest(req, clusterMode)
+		raftCfg, err := buildRaftConfigFromUpdateRequest(req, clusterMode)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 
 		info, err := dbSvc.UpdateRaftForTenant(ctx, name, raftCfg)
 		if err != nil {
@@ -738,7 +750,7 @@ func handleDatabaseUpdateSQL(dbSvc service.DatabaseServicer) mcpserver.ToolHandl
 // parameters used by the database create tool. The raft-specific parameters
 // use the "raft_" prefix (e.g., "raft_replica_id"). There is no shard ID
 // parameter: the cluster issues a database's shard ID at create.
-func buildRaftConfigFromRequest(req mcp.CallToolRequest, raftMode string) *database.DatabaseRaftConfig {
+func buildRaftConfigFromRequest(req mcp.CallToolRequest, raftMode string) (*database.DatabaseRaftConfig, error) {
 	raftCfg := &database.DatabaseRaftConfig{
 		ClusterMode: database.RaftClusterMode(raftMode),
 		ReplicaID:   mcp.ParseUInt64(req, "raft_replica_id", 0),
@@ -750,16 +762,18 @@ func buildRaftConfigFromRequest(req mcp.CallToolRequest, raftMode string) *datab
 		raftCfg.Discovery = database.DiscoveryMethod(discoveryMethod)
 	}
 
-	parseDiscoveryConfig(req, raftCfg, discoveryMethod)
+	if err := parseDiscoveryConfig(req, raftCfg, discoveryMethod); err != nil {
+		return nil, err
+	}
 
-	return raftCfg
+	return raftCfg, nil
 }
 
 // buildRaftConfigFromUpdateRequest builds a DatabaseRaftConfig from MCP
 // request parameters used by the raft update tool. The raft-specific
 // parameters use direct names (e.g., "replica_id") without the "raft_"
 // prefix. There is no shard ID parameter: a database's shard ID never changes.
-func buildRaftConfigFromUpdateRequest(req mcp.CallToolRequest, clusterMode string) *database.DatabaseRaftConfig {
+func buildRaftConfigFromUpdateRequest(req mcp.CallToolRequest, clusterMode string) (*database.DatabaseRaftConfig, error) {
 	raftCfg := &database.DatabaseRaftConfig{
 		ClusterMode: database.RaftClusterMode(clusterMode),
 		ReplicaID:   mcp.ParseUInt64(req, "replica_id", 0),
@@ -771,22 +785,30 @@ func buildRaftConfigFromUpdateRequest(req mcp.CallToolRequest, clusterMode strin
 		raftCfg.Discovery = database.DiscoveryMethod(discoveryMethod)
 	}
 
-	parseDiscoveryConfig(req, raftCfg, discoveryMethod)
+	if err := parseDiscoveryConfig(req, raftCfg, discoveryMethod); err != nil {
+		return nil, err
+	}
 
-	return raftCfg
+	return raftCfg, nil
 }
 
 // parseDiscoveryConfig populates discovery-specific sub-configs on a
 // DatabaseRaftConfig based on the discovery method. The discovery parameter
 // field names are shared between create and update tools.
-func parseDiscoveryConfig(req mcp.CallToolRequest, raftCfg *database.DatabaseRaftConfig, discoveryMethod string) {
+//
+// Every method builds its block, with or without a secret: an update that
+// leaves the secret out keeps the stored one while the block's destination is
+// unchanged (database.Manager.UpdateRaft), as on every other transport.
+func parseDiscoveryConfig(req mcp.CallToolRequest, raftCfg *database.DatabaseRaftConfig, discoveryMethod string) error {
 	switch database.DiscoveryMethod(discoveryMethod) {
 	case database.DiscoveryStatic:
-		secret := mcp.ParseString(req, "static_shared_secret", "")
-		if secret != "" {
-			raftCfg.Static = &database.StaticDiscoveryConfig{
-				SharedSecret: secret,
-			}
+		peers, err := stringListArg(req, "static_peers")
+		if err != nil {
+			return err
+		}
+		raftCfg.Static = &database.StaticDiscoveryConfig{
+			Peers:        peers,
+			SharedSecret: mcp.ParseString(req, "static_shared_secret", ""),
 		}
 	case database.DiscoveryMulticast:
 		raftCfg.Multicast = &database.MulticastDiscoveryConfig{
@@ -808,4 +830,27 @@ func parseDiscoveryConfig(req mcp.CallToolRequest, raftCfg *database.DatabaseRaf
 			ClusterSize: mcp.ParseInt(req, "token_cluster_size", 0),
 		}
 	}
+	return nil
+}
+
+// stringListArg reads an optional array-of-strings argument. Absent is nil; an
+// argument that is not an array of strings is refused, never half-read.
+func stringListArg(req mcp.CallToolRequest, name string) ([]string, error) {
+	raw := mcp.ParseArgument(req, name, nil)
+	if raw == nil {
+		return nil, nil
+	}
+	items, ok := raw.([]any)
+	if !ok {
+		return nil, &ToolArgumentError{Argument: name, Reason: "must be an array of strings"}
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		s, ok := item.(string)
+		if !ok {
+			return nil, &ToolArgumentError{Argument: name, Reason: "must be an array of strings"}
+		}
+		out = append(out, s)
+	}
+	return out, nil
 }
