@@ -11,6 +11,14 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.28.1-alpha] - 2026-10-02
+
+Security hotfix. This release contains BREAKING changes; see the entries below. Highlights:
+
+- **CRITICAL: registering an officer can no longer mint a login.** Officer, recovery, `ceremony sign-csr` and initial-ceremony certificates name the registered holder and the scope's tenant; the CSR contributes only its key. Holder certificates authenticate with no roles.
+- **Audit queries are confined to the caller's own tenant on every transport**, the system tenant included. `audit:read:cross` is removed.
+- **No caller mints, lists or revokes another tenant's certificates**, the system tenant included. One revocation target is shared by every transport.
+
 ### Security
 
 - **CRITICAL, BREAKING: registering an officer can no longer mint a login.**
