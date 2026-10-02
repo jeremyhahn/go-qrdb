@@ -161,6 +161,92 @@ func (p *SoftwareProvider) Initialize(ctx context.Context) error {
 	return nil
 }
 
+// AdoptIfAbsent persists keyPEM/certPEM (SEC1 "EC PRIVATE KEY" and
+// "CERTIFICATE" PEM blocks respectively) as this provider's material if the
+// store holds none yet, or discards them and loads the already-persisted
+// material otherwise.
+//
+// This is how a key generated before any store existed -- the cluster CA,
+// generated in memory on the first node before the cluster or its
+// replicated store exist -- becomes this provider's permanent material
+// exactly once, on whichever boot first reaches an unsealed store: the
+// first caller's material wins and is written; every later call, on every
+// later boot, is a no-op load that confirms the existing record instead of
+// touching it. Because the check-then-write is a single call under no lock
+// but the store's own, two callers racing to adopt will not corrupt the
+// record, but only one write is EXPECTED to ever happen in practice: this
+// is called once per cluster's lifetime, by the one node that ever holds an
+// un-persisted cluster CA key.
+//
+// keyPEM/certPEM may both be empty, for a boot that holds no in-memory key
+// of its own -- an ordinary restart once the key has already been adopted,
+// when the caller's own on-disk cache of the key was deleted on confirmed
+// persistence. In that case AdoptIfAbsent requires the store to already
+// hold material and returns *NotInitializedError if it does not, rather
+// than generating one, because it has no key to safely fall back on and
+// generating a different one would silently diverge from whatever
+// certificate this node (or a peer) already cached from the lost key.
+func (p *SoftwareProvider) AdoptIfAbsent(ctx context.Context, keyPEM, certPEM []byte) error {
+	if p.barrier.IsSealed() {
+		return &BarrierSealedError{}
+	}
+
+	wrappedPath := p.prefix + keyWrappedKey
+	certPath := p.prefix + keyCertPEM
+
+	existing, err := p.kvStore.Get(ctx, wrappedPath)
+	if err != nil {
+		return &StoreError{Op: "get", Detail: wrappedPath, Err: err}
+	}
+	if existing != nil {
+		return p.load(ctx)
+	}
+
+	if len(keyPEM) == 0 || len(certPEM) == 0 {
+		return &NotInitializedError{}
+	}
+
+	keyBlock, _ := pem.Decode(keyPEM)
+	if keyBlock == nil {
+		return &GenerateError{Err: errInvalidKeyPEM}
+	}
+	key, err := x509.ParseECPrivateKey(keyBlock.Bytes)
+	if err != nil {
+		return &GenerateError{Err: err}
+	}
+	certBlock, _ := pem.Decode(certPEM)
+	if certBlock == nil {
+		return &GenerateError{Err: errInvalidCertPEM}
+	}
+	cert, err := x509.ParseCertificate(certBlock.Bytes)
+	if err != nil {
+		return &GenerateError{Err: err}
+	}
+
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return &GenerateError{Err: err}
+	}
+	wrapped, err := p.barrier.Encrypt(keyDER)
+	secure.Wipe(keyDER)
+	if err != nil {
+		return &GenerateError{Err: err}
+	}
+
+	if err := p.kvStore.Put(ctx, wrappedPath, wrapped); err != nil {
+		return &StoreError{Op: "put", Detail: wrappedPath, Err: err}
+	}
+	if err := p.kvStore.Put(ctx, certPath, certPEM); err != nil {
+		return &StoreError{Op: "put", Detail: certPath, Err: err}
+	}
+
+	p.mu.Lock()
+	p.key = key
+	p.cert = cert
+	p.mu.Unlock()
+	return nil
+}
+
 // Unseal loads the wrapped key from the store and decrypts it via the
 // barrier, caching it in memory for signing. It is an alias of the load
 // half of Initialize, exposed separately so a caller that already knows
@@ -278,3 +364,8 @@ func (p *SoftwareProvider) material(ctx context.Context) (*ecdsa.PrivateKey, *x5
 // errInvalidCertPEM is the underlying error wrapped by GenerateError when a
 // stored certificate record does not decode as PEM.
 var errInvalidCertPEM = staticMaterialError("cakey: stored certificate is not valid PEM")
+
+// errInvalidKeyPEM is the underlying error wrapped by GenerateError when
+// AdoptIfAbsent is given a key that does not decode as SEC1 "EC PRIVATE KEY"
+// PEM.
+var errInvalidKeyPEM = staticMaterialError("cakey: adopted key is not valid EC PRIVATE KEY PEM")

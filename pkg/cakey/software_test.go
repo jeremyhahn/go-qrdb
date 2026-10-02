@@ -19,11 +19,15 @@ import (
 	"crypto"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"io"
+	"math/big"
 	"sync"
 	"testing"
 	"time"
@@ -443,6 +447,211 @@ func TestSoftwareProvider_UnsealAfterSealReloadsIntoMemory(t *testing.T) {
 	if _, err := p.Signer(context.Background()); err != nil {
 		t.Fatalf("Signer after Seal (barrier still unsealed) = %v, want auto-reload to succeed", err)
 	}
+}
+
+func TestSoftwareProvider_AdoptIfAbsent(t *testing.T) {
+	store := kvstore.NewMemoryKVStore()
+	barrier := newMockBarrier()
+
+	// Generate in-memory material exactly as the bootstrap crash-window
+	// design does: a key born before any store existed.
+	seedKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	seedCert := selfSignedTestCert(t, seedKey)
+	seedKeyDER, err := x509.MarshalECPrivateKey(seedKey)
+	if err != nil {
+		t.Fatalf("MarshalECPrivateKey: %v", err)
+	}
+	seedKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: seedKeyDER})
+	seedCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: seedCert.Raw})
+
+	p := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
+	if err := p.AdoptIfAbsent(context.Background(), seedKeyPEM, seedCertPEM); err != nil {
+		t.Fatalf("AdoptIfAbsent (first call, store empty): %v", err)
+	}
+	cert, err := p.Certificate(context.Background())
+	if err != nil {
+		t.Fatalf("Certificate: %v", err)
+	}
+	if cert.SerialNumber.Cmp(seedCert.SerialNumber) != 0 {
+		t.Fatalf("adopted certificate serial %s != seed serial %s", cert.SerialNumber, seedCert.SerialNumber)
+	}
+
+	// A second call, even with DIFFERENT material, is a no-op load: the
+	// first caller's material always wins once persisted.
+	otherKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	otherCert := selfSignedTestCert(t, otherKey)
+	otherKeyDER, _ := x509.MarshalECPrivateKey(otherKey)
+	otherKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: otherKeyDER})
+	otherCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: otherCert.Raw})
+
+	p2 := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
+	if err := p2.AdoptIfAbsent(context.Background(), otherKeyPEM, otherCertPEM); err != nil {
+		t.Fatalf("AdoptIfAbsent (second call, store already populated): %v", err)
+	}
+	cert2, err := p2.Certificate(context.Background())
+	if err != nil {
+		t.Fatalf("Certificate: %v", err)
+	}
+	if cert2.SerialNumber.Cmp(seedCert.SerialNumber) != 0 {
+		t.Fatalf("second AdoptIfAbsent overwrote the persisted CA: got serial %s, want the original %s", cert2.SerialNumber, seedCert.SerialNumber)
+	}
+}
+
+func TestSoftwareProvider_AdoptIfAbsent_NoMaterialAndStoreEmpty(t *testing.T) {
+	store := kvstore.NewMemoryKVStore()
+	barrier := newMockBarrier()
+	p := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
+
+	// An ordinary restart after the key was already adopted and its local
+	// cache deleted would call this with nil/nil; here the store is ALSO
+	// empty (the gap case), which must refuse rather than silently
+	// generating a key that would diverge from whatever was cached
+	// elsewhere.
+	err := p.AdoptIfAbsent(context.Background(), nil, nil)
+	var notInit *NotInitializedError
+	if !errors.As(err, &notInit) {
+		t.Fatalf("AdoptIfAbsent(nil, nil) with an empty store = %v, want *NotInitializedError", err)
+	}
+}
+
+func TestSoftwareProvider_AdoptIfAbsent_NoMaterialButStorePopulated(t *testing.T) {
+	store := kvstore.NewMemoryKVStore()
+	barrier := newMockBarrier()
+	seed := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
+	if err := seed.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	wantCert, err := seed.Certificate(context.Background())
+	if err != nil {
+		t.Fatalf("Certificate: %v", err)
+	}
+
+	// An ordinary restart: no in-memory key (it was never cached locally
+	// past the first successful adopt), store already has material.
+	p := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
+	if err := p.AdoptIfAbsent(context.Background(), nil, nil); err != nil {
+		t.Fatalf("AdoptIfAbsent(nil, nil) with a populated store: %v", err)
+	}
+	gotCert, err := p.Certificate(context.Background())
+	if err != nil {
+		t.Fatalf("Certificate: %v", err)
+	}
+	if gotCert.SerialNumber.Cmp(wantCert.SerialNumber) != 0 {
+		t.Fatalf("loaded certificate serial %s != persisted %s", gotCert.SerialNumber, wantCert.SerialNumber)
+	}
+}
+
+func TestSoftwareProvider_AdoptIfAbsent_SealedRefuses(t *testing.T) {
+	store := kvstore.NewMemoryKVStore()
+	barrier := newMockBarrier()
+	barrier.seal()
+	p := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
+	var sealedErr *BarrierSealedError
+	if err := p.AdoptIfAbsent(context.Background(), nil, nil); !errors.As(err, &sealedErr) {
+		t.Fatalf("AdoptIfAbsent while sealed = %v, want *BarrierSealedError", err)
+	}
+}
+
+func TestSoftwareProvider_AdoptIfAbsent_InvalidPEM(t *testing.T) {
+	store := kvstore.NewMemoryKVStore()
+	barrier := newMockBarrier()
+
+	t.Run("invalid key PEM", func(t *testing.T) {
+		p := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
+		var genErr *GenerateError
+		if err := p.AdoptIfAbsent(context.Background(), []byte("not pem"), []byte("also not pem")); !errors.As(err, &genErr) {
+			t.Fatalf("AdoptIfAbsent with invalid key PEM = %v, want *GenerateError", err)
+		}
+	})
+
+	t.Run("invalid cert PEM", func(t *testing.T) {
+		store2 := kvstore.NewMemoryKVStore()
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatalf("GenerateKey: %v", err)
+		}
+		keyDER, _ := x509.MarshalECPrivateKey(key)
+		keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+		p := NewSoftwareProvider(store2, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
+		var genErr *GenerateError
+		if err := p.AdoptIfAbsent(context.Background(), keyPEM, []byte("not pem")); !errors.As(err, &genErr) {
+			t.Fatalf("AdoptIfAbsent with invalid cert PEM = %v, want *GenerateError", err)
+		}
+	})
+}
+
+func TestSoftwareProvider_AdoptIfAbsent_StoreFailures(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	cert := selfSignedTestCert(t, key)
+	keyDER, _ := x509.MarshalECPrivateKey(key)
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
+	boom := errors.New("boom")
+
+	t.Run("get existing fails", func(t *testing.T) {
+		store := &faultyKVStore{KVStore: kvstore.NewMemoryKVStore(), failGetOn: "__sys:cluster_ca/wrapped_key", failErr: boom}
+		p := NewSoftwareProvider(store, newMockBarrier(), "__sys:cluster_ca/", testSubject(), time.Hour)
+		var storeErr *StoreError
+		if err := p.AdoptIfAbsent(context.Background(), keyPEM, certPEM); !errors.As(err, &storeErr) {
+			t.Fatalf("AdoptIfAbsent = %v, want *StoreError", err)
+		}
+	})
+
+	t.Run("put wrapped key fails", func(t *testing.T) {
+		store := &faultyKVStore{KVStore: kvstore.NewMemoryKVStore(), failPutOn: "__sys:cluster_ca/wrapped_key", failErr: boom}
+		p := NewSoftwareProvider(store, newMockBarrier(), "__sys:cluster_ca/", testSubject(), time.Hour)
+		var storeErr *StoreError
+		if err := p.AdoptIfAbsent(context.Background(), keyPEM, certPEM); !errors.As(err, &storeErr) {
+			t.Fatalf("AdoptIfAbsent = %v, want *StoreError", err)
+		}
+	})
+
+	t.Run("put cert fails", func(t *testing.T) {
+		store := &faultyKVStore{KVStore: kvstore.NewMemoryKVStore(), failPutOn: "__sys:cluster_ca/cert_pem", failErr: boom}
+		p := NewSoftwareProvider(store, newMockBarrier(), "__sys:cluster_ca/", testSubject(), time.Hour)
+		var storeErr *StoreError
+		if err := p.AdoptIfAbsent(context.Background(), keyPEM, certPEM); !errors.As(err, &storeErr) {
+			t.Fatalf("AdoptIfAbsent = %v, want *StoreError", err)
+		}
+	})
+}
+
+// selfSignedTestCert builds a minimal self-signed CA certificate for key,
+// for AdoptIfAbsent tests that need real cert bytes without depending on
+// SoftwareProvider's own generation path.
+func selfSignedTestCert(t *testing.T, key *ecdsa.PrivateKey) *x509.Certificate {
+	t.Helper()
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), serialBits))
+	if err != nil {
+		t.Fatalf("serial: %v", err)
+	}
+	template := &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               testSubject(),
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("CreateCertificate: %v", err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("ParseCertificate: %v", err)
+	}
+	return cert
 }
 
 func TestStaticProvider(t *testing.T) {

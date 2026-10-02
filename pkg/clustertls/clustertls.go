@@ -240,16 +240,16 @@ func GenerateCA(validity time.Duration) (caCertPEM, caKeyPEM []byte, caCert *x50
 	return caCertPEM, caKeyPEM, caCert, caKey, nil
 }
 
-// nodeLeafTemplate builds the x509 certificate template used for cluster node
+// NodeLeafTemplate builds the x509 certificate template used for cluster node
 // leaf certificates. It is shared by GenerateNodeCert (which generates the key
-// itself) and IssueLeafForKey (which signs a caller-supplied public key). The
-// template carries SANs for all local hostnames and interface IPs, the
-// DigitalSignature+KeyEncipherment key usages, and both ServerAuth and
-// ClientAuth extended key usages for mutual TLS. When nodeURI is provided and
-// non-empty it is parsed as a URI and appended as a URI SAN so the node carries
-// its SPIFFE identity. A non-empty URI that fails to parse returns a
-// GenerateError.
-func nodeLeafTemplate(validity time.Duration, nodeURI ...string) (*x509.Certificate, error) {
+// itself), IssueLeafForKey (which signs a caller-supplied public key), and
+// provider-backed issuance in pkg/clusterca. The template carries SANs for
+// all local hostnames and interface IPs, the DigitalSignature+KeyEncipherment
+// key usages, and both ServerAuth and ClientAuth extended key usages for
+// mutual TLS. When nodeURI is provided and non-empty it is parsed as a URI
+// and appended as a URI SAN so the node carries its SPIFFE identity. A
+// non-empty URI that fails to parse returns a GenerateError.
+func NodeLeafTemplate(validity time.Duration, nodeURI ...string) (*x509.Certificate, error) {
 	leafSerial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
 		return nil, &GenerateError{Err: err}
@@ -303,7 +303,7 @@ func GenerateNodeCert(caCert *x509.Certificate, caKey *ecdsa.PrivateKey, validit
 		return nil, nil, &GenerateError{Err: err}
 	}
 
-	leafTemplate, err := nodeLeafTemplate(validity, nodeURI...)
+	leafTemplate, err := NodeLeafTemplate(validity, nodeURI...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -351,7 +351,7 @@ func IssueLeafForKey(caCertPEM, caKeyPEM []byte, pub crypto.PublicKey, nodeURI .
 		return nil, &KeyError{Kind: "CA private key", Err: err}
 	}
 
-	leafTemplate, err := nodeLeafTemplate(NodeValidity, nodeURI...)
+	leafTemplate, err := NodeLeafTemplate(NodeValidity, nodeURI...)
 	if err != nil {
 		return nil, err
 	}
