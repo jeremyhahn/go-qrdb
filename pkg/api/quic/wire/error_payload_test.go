@@ -95,7 +95,7 @@ func TestEncodeErrorPayload_RepairsInvalidUTF8(t *testing.T) {
 
 // TestDecodeErrorPayload_RefusesMalformedBodies: bare text (a qrdb-quic/2
 // body), a RetryInfo that does not decode, and an invalid delay are each an
-// *ErrorPayloadDecodeError, never a message.
+// *PayloadDecodeError, never a message.
 func TestDecodeErrorPayload_RefusesMalformedBodies(t *testing.T) {
 	brokenDetail, err := proto.Marshal(&spb.Status{Message: "m", Details: []*anypb.Any{{
 		TypeUrl: "type.googleapis.com/google.rpc.RetryInfo", Value: []byte{0xff},
@@ -117,9 +117,9 @@ func TestDecodeErrorPayload_RefusesMalformedBodies(t *testing.T) {
 		"a delay that is not valid": badDelay,
 	} {
 		_, err := DecodeErrorPayload(body)
-		var decodeErr *ErrorPayloadDecodeError
+		var decodeErr *PayloadDecodeError
 		if !errors.As(err, &decodeErr) || decodeErr.Unwrap() == nil || decodeErr.Error() == "" {
-			t.Errorf("%s: err = %v, want *ErrorPayloadDecodeError", name, err)
+			t.Errorf("%s: err = %v, want *PayloadDecodeError", name, err)
 		}
 	}
 }
@@ -145,10 +145,10 @@ func TestDecodeErrorPayload_IgnoresOtherDetails(t *testing.T) {
 	}
 }
 
-// TestErrorPayloadEncodeError_Unwraps: the encode error names its cause.
-func TestErrorPayloadEncodeError_Unwraps(t *testing.T) {
+// TestPayloadEncodeError_Unwraps: the encode error names its cause.
+func TestPayloadEncodeError_Unwraps(t *testing.T) {
 	cause := errors.New("cause")
-	err := &ErrorPayloadEncodeError{Err: cause}
+	err := &PayloadEncodeError{Err: cause}
 	if !errors.Is(err, cause) || err.Error() == "" {
 		t.Fatalf("err = %v", err)
 	}

@@ -142,7 +142,7 @@ are not reconstructed here — their history is in the git log.
   `google.rpc.RetryInfo` detail carrying the exact delay when the refusal
   names one -- what a gRPC caller receives for the same refusal. The Go SDK
   decodes it in the same release; a body that does not decode is reported as
-  `*wire.ErrorPayloadDecodeError` on the `RequestError`, never shown as the
+  `*wire.PayloadDecodeError` on the `RequestError`, never shown as the
   server's message.
 - **Auth-layer refusals carry their retry delay on every transport.** A
   rate-limited caller (`middleware.RateLimitedError`) and a locked-out tenant

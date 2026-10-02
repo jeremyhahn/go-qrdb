@@ -63,9 +63,9 @@ func TestMapWireError_ReadsTheMessageOutOfTheErrorPayload(t *testing.T) {
 // passed off as the server's message, and never a typed condition.
 func TestMapWireError_MalformedBodyIsReportedNotShown(t *testing.T) {
 	got := mapWireError("kv.Get", wire.StatusNotFound, []byte("\xffkey not found"))
-	var decodeErr *wire.ErrorPayloadDecodeError
+	var decodeErr *wire.PayloadDecodeError
 	if !errors.As(got, &decodeErr) {
-		t.Fatalf("err = %T %v, want it to carry *wire.ErrorPayloadDecodeError", got, got)
+		t.Fatalf("err = %T %v, want it to carry *wire.PayloadDecodeError", got, got)
 	}
 	if isWireNotFound(got) {
 		t.Fatal("an undecodable body was classified as absence")

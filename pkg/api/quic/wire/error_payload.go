@@ -67,25 +67,25 @@ func EncodeErrorPayload(status uint16, p ErrorPayload) ([]byte, error) {
 	if p.HasRetryAfter {
 		detail, err := anypb.New(&errdetails.RetryInfo{RetryDelay: durationpb.New(p.RetryAfter)})
 		if err != nil {
-			return nil, &ErrorPayloadEncodeError{Err: err}
+			return nil, &PayloadEncodeError{Err: err}
 		}
 		st.Details = append(st.Details, detail)
 	}
 	b, err := proto.Marshal(st)
 	if err != nil {
-		return nil, &ErrorPayloadEncodeError{Err: err}
+		return nil, &PayloadEncodeError{Err: err}
 	}
 	return b, nil
 }
 
 // DecodeErrorPayload reads the body of an error frame. A body that is not a
 // google.rpc.Status, or whose RetryInfo does not decode or names an invalid
-// delay, is *ErrorPayloadDecodeError. Details other than RetryInfo are
+// delay, is *PayloadDecodeError. Details other than RetryInfo are
 // ignored, so a newer server may add some without breaking this reader.
 func DecodeErrorPayload(b []byte) (ErrorPayload, error) {
 	var st spb.Status
 	if err := proto.Unmarshal(b, &st); err != nil {
-		return ErrorPayload{}, &ErrorPayloadDecodeError{Err: err}
+		return ErrorPayload{}, &PayloadDecodeError{Err: err}
 	}
 	p := ErrorPayload{Message: st.GetMessage()}
 	for _, detail := range st.GetDetails() {
@@ -94,10 +94,10 @@ func DecodeErrorPayload(b []byte) (ErrorPayload, error) {
 		}
 		var ri errdetails.RetryInfo
 		if err := detail.UnmarshalTo(&ri); err != nil {
-			return ErrorPayload{}, &ErrorPayloadDecodeError{Err: err}
+			return ErrorPayload{}, &PayloadDecodeError{Err: err}
 		}
 		if err := ri.GetRetryDelay().CheckValid(); err != nil {
-			return ErrorPayload{}, &ErrorPayloadDecodeError{Err: err}
+			return ErrorPayload{}, &PayloadDecodeError{Err: err}
 		}
 		p.RetryAfter, p.HasRetryAfter = ri.GetRetryDelay().AsDuration(), true
 		break
