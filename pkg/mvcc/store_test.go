@@ -1603,7 +1603,7 @@ func TestCompactPrefix_ConfinedToItsPrefix(t *testing.T) {
 	}
 
 	var replayed []string
-	if err := s.ScanChanges(1, cut, func(c Change) bool {
+	if err := s.ScanChanges(1, cut, nil, func(c Change) bool {
 		replayed = append(replayed, string(c.Key))
 		return true
 	}); err != nil {

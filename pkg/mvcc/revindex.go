@@ -49,17 +49,26 @@ func (s *Store) setRevIndexInBatch(batch storage.Batch, rev int64, key []byte, e
 	return nil
 }
 
-// ScanChanges invokes fn for every change with startRev <= revision <= endRev,
-// in ascending revision order (and, within a revision, ascending key order).
-// fn returns false to stop the scan early. Changes are read from the durable
-// revision index, so replay survives restarts and snapshot restores; only
-// a change at or below the compaction floor covering its key is unavailable
-// (the caller checks the floor of the range it replays -- CompactedRevisionForRange
-// -- and returns a compaction error before calling ScanChanges).
+// ScanChanges invokes fn for every change to a key match accepts with
+// startRev <= revision <= endRev, in ascending revision order (and, within a
+// revision, ascending key order). A nil match accepts every key. fn returns
+// false to stop the scan early. Changes are read from the durable revision
+// index, so replay survives restarts and snapshot restores; only a change at
+// or below the compaction floor covering its key is unavailable (the caller
+// checks the floor of the range it replays -- CompactedRevisionForRange -- and
+// returns a compaction error before calling ScanChanges).
+//
+// match runs BEFORE anything else is read for a change. The change log is
+// revision-ordered across every database on the store, so a scan of one
+// database walks past the others' changes; reading their data entries would
+// make this scan depend on their compaction -- another database compacting
+// mid-scan removed the entries and failed the scan, cancelling a watch replay
+// that never asked for them. A change match rejects costs its index entry
+// alone.
 //
 // For a put, Change.Value is the value stored at that revision; for a delete,
 // Value is nil and IsDelete is true.
-func (s *Store) ScanChanges(startRev, endRev int64, fn func(Change) bool) error {
+func (s *Store) ScanChanges(startRev, endRev int64, match func(key []byte) bool, fn func(Change) bool) error {
 	if startRev > endRev {
 		return nil
 	}
@@ -73,6 +82,9 @@ func (s *Store) ScanChanges(startRev, endRev int64, fn func(Change) bool) error 
 	for iter.SeekToFirst(); iter.Valid(); iter.Next() {
 		rev, key, err := DecodeRevIndexKey(iter.Key())
 		if err != nil {
+			continue
+		}
+		if match != nil && !match(key) {
 			continue
 		}
 		rec, err := DecodeChangeRecord(iter.Value())

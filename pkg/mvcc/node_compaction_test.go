@@ -74,7 +74,7 @@ func TestCompactNodeKeyspace_NeverTouchesATenantPrefix(t *testing.T) {
 
 	// The change log of every tenant key survives; no node key's does.
 	seen := map[string]int{}
-	if err := s.ScanChanges(1, cut, func(c Change) bool {
+	if err := s.ScanChanges(1, cut, nil, func(c Change) bool {
 		seen[string(c.Key)]++
 		return true
 	}); err != nil {

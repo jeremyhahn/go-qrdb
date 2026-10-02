@@ -53,11 +53,7 @@ func (a *mvccHistoryAdapter) CompactedRevision(key, rangeEnd []byte) int64 {
 // index over [startRev, endRev] and yielding one watch event per matching
 // change, in revision order.
 func (a *mvccHistoryAdapter) Replay(startRev, endRev int64, keyMatch func([]byte) bool, wantPrev bool, fn func(*watch.Event) bool) error {
-	return a.store.ScanChanges(startRev, endRev, func(c mvcc.Change) bool {
-		if !keyMatch(c.Key) {
-			return true
-		}
-
+	return a.store.ScanChanges(startRev, endRev, keyMatch, func(c mvcc.Change) bool {
 		ev := &watch.Event{}
 		if c.IsDelete {
 			ev.Type = watch.EventDelete

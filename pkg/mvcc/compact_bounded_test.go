@@ -89,7 +89,7 @@ func TestCompactPrefix_WorkIsBoundedByTheCompactedDatabase(t *testing.T) {
 	// And the collection is complete: acme's change log at or below the floor
 	// is gone, beta's is whole.
 	var acme, beta int
-	if err := s.ScanChanges(1, cur, func(c Change) bool {
+	if err := s.ScanChanges(1, cur, nil, func(c Change) bool {
 		switch string(c.Key[:5]) {
 		case "acme/":
 			acme++
@@ -111,6 +111,41 @@ func TestCompactPrefix_WorkIsBoundedByTheCompactedDatabase(t *testing.T) {
 	}
 }
 
+// TestScanChanges_AnotherDatabasesCompactionDoesNotFailTheScan: a change scan
+// of one database -- the engine's MVCCScanChangesQuery, a watch replay --
+// reads nothing of another's. That database compacting mid-scan removes
+// entries the scan walks past in the change log, and must not fail it.
+func TestScanChanges_AnotherDatabasesCompactionDoesNotFailTheScan(t *testing.T) {
+	s := newTestStore(t)
+	for i := range 10 {
+		for _, k := range []string{"acme/app/k", "beta/app/k"} {
+			if _, err := s.Put([]byte(k), []byte{byte('a' + i)}, 0); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+		}
+	}
+	cur := s.CurrentRevision()
+	inAcme := func(k []byte) bool { return string(k[:len("acme/app/")]) == "acme/app/" }
+
+	seen, compacted := 0, false
+	err := s.ScanChanges(1, cur, inAcme, func(c Change) bool {
+		if string(c.Key) != "acme/app/k" {
+			t.Fatalf("the scan yielded another database's key %q", c.Key)
+		}
+		seen++
+		if !compacted {
+			if cerr := s.CompactPrefix([]byte("beta/app/"), cur); cerr != nil {
+				t.Fatalf("CompactPrefix(beta): %v", cerr)
+			}
+			compacted = true
+		}
+		return true
+	})
+	if err != nil || seen != 10 {
+		t.Fatalf("acme's scan after beta compacted = %d changes, %v; want all 10", seen, err)
+	}
+}
+
 // TestCompaction_ChangeLogCollectedOncePerWindow: a second compaction
 // collects only the change log of (previous floor, revision] -- the kept
 // entry's record went with the first -- and a key's change log above the
@@ -127,7 +162,7 @@ func TestCompaction_ChangeLogCollectedOncePerWindow(t *testing.T) {
 	}
 	revs := func() []int64 {
 		var out []int64
-		if err := s.ScanChanges(1, s.CurrentRevision(), func(c Change) bool {
+		if err := s.ScanChanges(1, s.CurrentRevision(), nil, func(c Change) bool {
 			out = append(out, c.Revision)
 			return true
 		}); err != nil {

@@ -26,7 +26,7 @@ import (
 func collectChanges(t *testing.T, s *Store, startRev, endRev int64) []Change {
 	t.Helper()
 	var got []Change
-	if err := s.ScanChanges(startRev, endRev, func(c Change) bool {
+	if err := s.ScanChanges(startRev, endRev, nil, func(c Change) bool {
 		got = append(got, c)
 		return true
 	}); err != nil {
@@ -170,7 +170,7 @@ func TestScanChanges_EarlyStop(t *testing.T) {
 		}
 	}
 	var seen int
-	if err := s.ScanChanges(1, 100, func(Change) bool {
+	if err := s.ScanChanges(1, 100, nil, func(Change) bool {
 		seen++
 		return seen < 2 // stop after the second change
 	}); err != nil {
@@ -229,7 +229,7 @@ func TestScanChanges_PutWithCompactedValueFailsClosed(t *testing.T) {
 	}
 	_ = batch.Close()
 
-	err := s.ScanChanges(1, 1, func(Change) bool { return true })
+	err := s.ScanChanges(1, 1, nil, func(Change) bool { return true })
 	var rce *RevisionCompactedError
 	if !errors.As(err, &rce) {
 		t.Fatalf("ScanChanges over a put whose value was compacted away = %v, want RevisionCompactedError", err)

@@ -21,7 +21,6 @@ import (
 	"errors"
 	"log/slog"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -1890,14 +1889,11 @@ func (e *MVCCEngine) scanChanges(q service.MVCCScanChangesQuery) (*service.MVCCS
 		return nil, &mvcc.RevisionCompactedError{Requested: q.StartRevision, Compacted: floor}
 	}
 
-	prefix := string(q.Prefix)
 	seen := make(map[string]struct{})
+	inPrefix := func(key []byte) bool { return bytes.HasPrefix(key, q.Prefix) }
 
-	err := e.store.ScanChanges(q.StartRevision, q.EndRevision, func(ch mvcc.Change) bool {
+	err := e.store.ScanChanges(q.StartRevision, q.EndRevision, inPrefix, func(ch mvcc.Change) bool {
 		key := string(ch.Key)
-		if prefix != "" && !strings.HasPrefix(key, prefix) {
-			return true
-		}
 		if _, dup := seen[key]; dup {
 			return true
 		}
