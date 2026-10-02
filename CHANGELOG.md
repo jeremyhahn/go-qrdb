@@ -11,6 +11,17 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.28.0-alpha] - 2026-10-02
+
+SQL correctness. This release contains BREAKING changes; see the entries below. Highlights:
+
+- **Autocommit statements are atomic.** Each one runs as an implicit one-statement transaction: all its rows commit together, or none do. Its row-lock release is folded into the same write. The statement is bounded like a transaction (8 MiB / 100,000 operations).
+- **`SET autocommit = 0` is a real multi-statement transaction:** COMMIT keeps, ROLLBACK discards.
+- A statement that writes both relational and kv/entity/collection tables is refused.
+- **Every SQL surface resolves each table once per statement:** MySQL wire, PostgreSQL wire, query service and embedded driver.
+- **Embedded driver:** within a `sql.Tx` or `sql.Conn`, running a statement while a query's rows are open is refused, as the network MySQL/PostgreSQL drivers do. Ping stays valid. A reset with any statement still open discards the connection instead of handing on its transaction and locks.
+- **Row locks:** one lease per connection, with a revoke fallback that deletes records. A fresh owner on a dead lease retries once.
+
 ### Changed
 
 - **Behaviour: an autocommit SQL statement is atomic.** A statement outside
