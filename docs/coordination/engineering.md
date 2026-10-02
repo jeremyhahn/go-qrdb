@@ -24,7 +24,8 @@ limitations under the License.
 |---|---|
 | `sdk/go/coordination.go` | the whole surface: interfaces, `Coordinator`, the concrete lease and watch stream, every error type |
 | `sdk/go/coordination_test.go` | unit tests over fakes for the four transport sub-clients. It is an in-package test (`package sdk`) because it shortens the unexported `leaseCleanupTimeout` directly, the only test seam |
-| `sdk/go/coordination_standalone_test.go` | end to end against a real standalone node — the capability split |
+| `sdk/go/coordination_standalone_test.go` | end to end against a real standalone node — CAS, lease and watch served |
+| `sdk/go/conformance/coordination_parity_test.go` | the lease, watch and lock suite against standalone and raft nodes on all six transports |
 | `sdk/go/coordination_raft_test.go` | end to end against a real single-replica raft group — lease lifecycle, expiry, exclusivity, renewal cadence, watch delivery |
 
 ## Exported surface
@@ -392,7 +393,7 @@ every one of those keepalives is a consensus proposal.
 | `*LeaseHeldError` | `AcquireLease` | another holder owns the key | **no** — the ordinary outcome of losing an election |
 | `*LeaseLostError` | `Renew` | the keepalive was acknowledged after the deadline | **no** — a correct report of lost ownership; fence |
 | `*transport.KeyNotFoundError` | never surfaced by `Get` | translated to `(nil, nil)` | n/a |
-| the transport's typed not-configured error | `AcquireLease`, `Watch` on a standalone node | the family is not composed in this run mode | design-time, not runtime |
+| `*transport.CapabilityUnsupportedError` | `AcquireLease` on a backend that keeps no leases (standalone file/objstore) | the engine cannot hold a lease | design-time, not runtime |
 | `*transport.WatchCanceledError` | `WatchStream.Err` | the server terminated the watch; reason carried verbatim | depends on the reason — see below |
 | `context.Canceled` / `context.DeadlineExceeded` | `WatchStream.Err` | the caller ended it | no |
 
@@ -410,33 +411,31 @@ compare-and-swap.
 - **A failed revoke fails closed.** It reports failure rather than claiming a
   cleanup that did not happen.
 - **A late ack fails closed.** `LeaseLostError`, not `nil`.
-- **Raft-only families fail closed in standalone.** A typed refusal, never inert
-  service.
+- **A backend that keeps no leases fails closed.** `AcquireLease` on a
+  standalone file or objstore node is a typed refusal, never a lease nothing
+  expires.
 
-### Capability split — how a caller discovers what it has
+### Availability — how a caller discovers what it has
 
-| Verb | Standalone | Raft |
-|---|---|---|
-| `Get`, `Put`, `CompareAndSwap` | serves | serves |
-| `AcquireLease`, `Watch` | typed not-configured error | serves |
+| Verb | Standalone, pebble/memory | Standalone, file/objstore | Raft |
+|---|---|---|---|
+| `Get`, `Put`, `CompareAndSwap` | serves | serves | serves |
+| `AcquireLease` | serves | `CapabilityUnsupportedError` | serves |
+| `Watch` | serves | serves | serves |
 
 Ask, do not probe:
 
 ```go
 caps, err := client.Admin().Capabilities(ctx)
 // caps.Mode is "standalone" or "raft"
-// caps.Lease, caps.Watch, caps.MVCC are false in standalone; caps.KV is always true
+// caps.Lease, caps.Watch, caps.MVCC and caps.KV are true in both modes
 ```
 
-The refusal's concrete type is the **transport's**, not this surface's. On the
-embedded, gRPC, Unix and QUIC transports `AcquireLease` returns
-`*transport.CapabilityUnsupportedError` whose text names the remedy
-`requires mode: raft`; REST and MCP return an untyped request error (see
-[run-modes/api.md](../run-modes/api.md)). `Watch` refuses at open in process and
-on the stream over the wire. **Do not match on the concrete type across
-transports** — check capabilities up front instead, and treat any error from
-`AcquireLease` or `Watch` on a standalone node as a design-time
-misconfiguration.
+The capability report is mode-level; the backend boundary is answered per
+call, with `*transport.CapabilityUnsupportedError` on every transport.
+*(Corrected: this section described a standalone node refusing
+`AcquireLease` and `Watch` with `requires mode: raft`, with an untyped error on
+REST and MCP. Both are served in both modes since 2026-10-01.)*
 
 ## The `WatchStream` terminal contract
 
@@ -513,8 +512,8 @@ variables, no flags. What governs it:
 
 | Gate | Effect |
 |---|---|
-| `mode: standalone` / `raft` | whether `AcquireLease` and `Watch` serve at all |
-| `lease.enabled`, `watch.enabled`, `mvcc.enabled` | narrow the raft profile further; config can only narrow, never enable what the mode forbids |
+| the storage backend | whether `AcquireLease` serves: the file and objstore backends keep no leases |
+| `lease.enabled`, `watch.enabled`, `mvcc.enabled` | narrow the profile in either mode; config can only narrow |
 | the granted TTL | passed per call, rounded up to whole seconds, floor 1 s |
 
 See [../run-modes/](../run-modes/) and [../configuration/](../configuration/).
@@ -559,8 +558,13 @@ random-`select` race between the caller's cancellation and the stream closing
 with it, repeated so a single lucky pass cannot make it green.
 
 **Standalone, against a real node** (`coordination_standalone_test.go`): `Get`,
-`Put` and `CompareAndSwap` serve; `AcquireLease` and `Watch` are refused. This
-is the capability split, asserted rather than left implicit.
+`Put` and `CompareAndSwap` serve, and `AcquireLease` and `Watch` serve too --
+a watch opened before the acquire delivers the leased key.
+
+**Parity, on every transport** (`sdk/go/conformance/coordination_parity_test.go`):
+one lease, watch and lock suite against a standalone memory node, a standalone
+pebble node and a raft node on REST, gRPC, Unix, QUIC, MCP and embedded; and the
+file/objstore row, where the lease is refused.
 
 **Raft, against a real single-replica group** (`coordination_raft_test.go`):
 lease lifecycle; expiry **including the reap of the bound key**, over both

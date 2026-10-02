@@ -281,7 +281,7 @@ listener (`server.WithStandaloneMode` refuses it in `startEtcd`).
 *(Corrected twice. This section listed transactions among the refusals until
 2026-08-23, and MVCC, watch, lease and lock until 2026-10-01. The refusal used
 to be `raftOnlyGatedRegistry`, a wrapper around the transports' service
-registry; it was deleted with #582, and `embedded.WithStandaloneMode` with it.
+registry; it was deleted on 2026-10-01, and `embedded.WithStandaloneMode` with it.
 `server.WithStandaloneMode` remains, now meaning only the etcd refusal.)*
 
 ### How standalone serves the coordination families
@@ -433,7 +433,7 @@ in-process and on the wire; `pkg/server/standalone_gate.go` passes
   a raft node on all six transports: lease lifecycle, lease expiry deleting its
   key (proves the sweeper is wired), prefix watch, revision resume,
   cancellation, lock lifecycle. `TestCoordinationFamilies_FileBackendServesWatchOnly`
-  pins the file-backend row. Before #582 every standalone cell failed with
+  pins the file-backend row. Before this change every standalone cell failed with
   `requires mode: raft`.
 - **Restart**: `sdk/go/node`'s `TestStandaloneNode_LeaseAndLockSurviveRestart`
   closes a standalone pebble node holding a lease and a lock and reopens it.

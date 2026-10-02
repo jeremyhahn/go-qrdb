@@ -93,8 +93,8 @@ lease:grant  lease:keepalive  lease:revoke  lease:ttl
 watch:watch_prefix
 ```
 
-A consumer restricted to the standalone-safe half (`Get`, `Put`,
-`CompareAndSwap`) needs only `kv:get`, `kv:put` and `transaction:execute`.
+A consumer that uses only `Get`, `Put` and `CompareAndSwap` needs only
+`kv:get`, `kv:put` and `transaction:execute`.
 
 **`lease:ttl` is not optional for a lease holder.** The liveness observer calls
 it on every poll. Without it the polls fail, which proves nothing about the
@@ -150,7 +150,7 @@ Transport-level statuses are the underlying capability's, unchanged:
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | Barrier sealed | 503 | `UNAVAILABLE` |
 | Not leader, no resolver | 503 | `UNAVAILABLE` |
-| Raft-only family in standalone mode | 501, body naming `requires mode: raft` | `UNIMPLEMENTED`, same text |
+| Lease on a backend that keeps none (standalone file/objstore) | 501 | `UNIMPLEMENTED` |
 
 What the coordination layer does with them:
 
@@ -169,10 +169,13 @@ Full semantics, including which paths fail closed, are in
 
 ## Run-mode availability
 
-| Verb | Standalone | Raft |
-|---|---|---|
-| `Get`, `Put`, `CompareAndSwap` | serves | serves |
-| `AcquireLease`, `Watch` | typed refusal | serves |
+Every verb is served in both run modes. The storage backend bounds the lease:
+
+| Verb | Standalone, pebble/memory | Standalone, file/objstore | Raft |
+|---|---|---|---|
+| `Get`, `Put`, `CompareAndSwap` | serves | serves | serves |
+| `AcquireLease` | serves | typed refusal | serves |
+| `Watch` | serves | serves | serves |
 
 Discover it before you depend on it, on any transport:
 
@@ -188,13 +191,12 @@ Discover it before you depend on it, on any transport:
 The permission is `admin:capabilities`.
 
 The response carries `mode` (`"standalone"` or `"raft"`) plus per-family
-booleans; `lease`, `watch` and `mvcc` are false in standalone, `kv` is true in
-every mode.
+booleans; `lease`, `watch`, `mvcc` and `kv` are true in both modes. The
+capability report is mode-level: a standalone node on the file or objstore
+backend reports `lease` true and refuses it per call.
 
-The refusal's **concrete Go type differs by transport** — the embedded
-transport reports its own missing-service error, the wire transports report a
-not-configured / unimplemented error carrying the remedy text. Check
-capabilities rather than matching on the type.
+The refusal is `*transport.CapabilityUnsupportedError` on every transport,
+the embedded one included.
 
 ## Pagination
 

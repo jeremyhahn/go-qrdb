@@ -95,13 +95,15 @@ watches and locks are exactly as available as the process. Watch history
 replay is bounded by the store's own revision index, as in raft mode, and a
 watch does not survive a restart in either mode.
 
-**Transactions are the deliberate exception** (owner ruling 2026-08-23). This
-paragraph used to list them among the refusals; corrected here to match
-`raftOnlyGatedRegistry`, which refuses MVCC, watch and lease and passes
-`TransactionService` through. Consensus is what makes a swap linearizable
-across *replicas*; a standalone node is engine-direct, single-process and has
-none, so its compare-and-swap is already linearizable. The etcd-style `Txn`
-endpoint is still refused, as part of etcd compatibility.
+**Transactions** have been served in both modes since the owner ruling of
+2026-08-23: consensus is what makes a swap linearizable across *replicas*, and
+a standalone node is engine-direct, single-process and has none, so its
+compare-and-swap is already linearizable. The etcd-style `Txn` endpoint is
+still refused on a standalone node, as part of etcd compatibility.
+*(Corrected: this paragraph described a per-database registry gate,
+`raftOnlyGatedRegistry`, that refused MVCC, watch and lease and passed
+transactions through. The gate is deleted; every data-plane family resolves
+through the same registry in both modes.)*
 
 Status: implemented everywhere — the SDK (`node://` /
 `sdk/go/node.NewStandaloneNode`, the flat `embedded://` driver) and the

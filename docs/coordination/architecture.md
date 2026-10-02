@@ -98,11 +98,11 @@ call site:
   lease, transaction and watch families already compose into exactly these
   semantics. A new service would be a second consensus-adjacent thing to get
   right, a second thing to test, and a second thing to serve on six transports.
-- **Serving lease and watch inertly on a standalone node** — a lease that never
-  expires, a watch that never fires. Rejected by the ratified run-modes split
-  ([../run-modes/](../run-modes/)): a primitive that silently does nothing is
-  worse than a refusal, because the consumer only finds out when its election
-  fails to elect. The refusal is a typed error naming the remedy.
+- **Serving lease and watch inertly where the node cannot back them** — a
+  lease that never expires, a watch that never fires. Rejected: a primitive
+  that silently does nothing is worse than a refusal, because the consumer only
+  finds out when its election fails to elect. A backend that keeps no leases
+  (standalone file or objstore) refuses `AcquireLease` with a typed error.
 - **A soft ownership deadline that credits a renewal already in flight.**
   Rejected, and this is the central safety decision. A keepalive that stalls in
   transport produces no extension on the server, so crediting it client-side
@@ -177,41 +177,44 @@ spawned goroutine that translates each transport event into a coordination
 is recorded **before** the close, so there is no window in which the stream
 looks finished but has no reason yet.
 
-## Standalone versus raft — the capability split
+## Standalone and raft — the same surface
 
-**The two run modes are not symmetric, and this is the first thing a consumer
-must design around.**
+**Every verb behaves the same on a standalone node and a raft node.** A
+standalone node composes the lease, watch and lock families over the same
+engine, lessor and watch hub as raft mode's MVCC state machine, applying
+commands in process instead of through the log, and runs the lease-expiry
+sweeper itself (see [../run-modes/architecture.md](../run-modes/architecture.md)).
+So lease-based leadership and watch-driven convergence work on a single
+process, and a lease survives a restart in both modes.
 
-| Verb | Standalone (no consensus) | Raft |
-|---|---|---|
-| `Get` | serves | serves |
-| `Put` | serves | serves |
-| `CompareAndSwap` | serves | serves |
-| `AcquireLease` | **refused** | serves |
-| `Watch` | **refused** | serves |
+| Verb | Standalone, pebble/memory | Standalone, file/objstore | Raft |
+|---|---|---|---|
+| `Get`, `Put`, `CompareAndSwap` | serves | serves | serves |
+| `AcquireLease` | serves | **refused** | serves |
+| `Watch` | serves | serves | serves |
 
-`CompareAndSwap` is identical in both modes because a standalone node is
-engine-direct and single-process, so its swap is already linearizable.
-Consensus is what makes a swap linearizable across *replicas*, and a standalone
-node has none.
+`CompareAndSwap` is linearizable on a standalone node because it is
+engine-direct and single-process; consensus is what makes a swap linearizable
+across *replicas*.
 
-`AcquireLease` and `Watch` depend on the lease and watch families, which the
-ratified run-modes split makes raft-only. On a standalone node the call is
-refused with a typed error rather than served inertly.
+**The storage backend, not the mode, is the boundary.** The file and objstore
+backends compose the plain KV engine, which keeps no leases: `AcquireLease`
+there is refused with `*transport.CapabilityUnsupportedError` rather than
+granting a lease nothing could expire. `Watch` is served there, except over
+MCP: MCP's polling client needs revision replay to stay gap-free, which that
+engine cannot give, so the watch ends with
+`*transport.WatchStartRevisionUnsupportedError` rather than dropping changes.
 
-**A consumer discovers which it has by asking, not by probing.**
-`Client.Admin().Capabilities(ctx)` returns `Mode` (`"standalone"` or `"raft"`)
-alongside per-family booleans including `Lease` and `Watch`. That report is the
-node's sealed effective profile, so it is the same answer every transport gives.
-Constructing the `Coordinator` tells you nothing about the mode — every
-transport implements all four sub-client interfaces, so construction succeeds in
-both modes and the refusal surfaces from the individual call.
+**A consumer discovers what it has by asking, not by probing.**
+`Client.Admin().Capabilities(ctx)` returns `Mode` alongside per-family booleans
+including `Lease` and `Watch`, the node's sealed effective profile, the same on
+every transport. Constructing the `Coordinator` tells you nothing about it —
+every transport implements all four sub-client interfaces — and a backend
+refusal surfaces from the individual call.
 
-**Consequence for a consumer's design:** CAS-based coordination — a claim, a
-generation counter, a configuration record — works in both modes. Lease-based
-leadership and watch-driven convergence require raft. A control plane that must
-run in both should treat leadership as a raft-only capability and degrade
-explicitly, not discover the gap at an election.
+*(Corrected: this section was "the capability split" and said a standalone node
+refuses `AcquireLease` and `Watch` with `requires mode: raft`, so lease-based
+leadership required raft. Since 2026-10-01 both are served in both modes.)*
 
 ## Trust boundaries
 

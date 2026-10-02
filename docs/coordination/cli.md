@@ -71,10 +71,11 @@ serve. `AcquireLease` and `Watch` require raft mode:
 qrdb admin capabilities --output json
 ```
 
-Read `mode`, `lease` and `watch` from the result. A node reporting
-`"mode": "standalone"` will refuse `AcquireLease` and `Watch` with a typed
-error naming the remedy, and will serve `Get`, `Put` and `CompareAndSwap`
-normally. See [../run-modes/cli.md](../run-modes/cli.md).
+Read `mode`, `lease` and `watch` from the result. Every verb is served in both
+run modes. A standalone node on the file or objstore backend keeps no leases
+and refuses `AcquireLease` with a typed "unsupported" error; it still serves
+`Get`, `Put`, `CompareAndSwap` and `Watch`. See
+[../run-modes/cli.md](../run-modes/cli.md).
 
 ## Parity
 

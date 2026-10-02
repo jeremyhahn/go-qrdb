@@ -31,19 +31,21 @@ discover it at an election.**
 qrdb admin capabilities --output json
 ```
 
-| `mode` | `Get`, `Put`, `CompareAndSwap` | `AcquireLease`, `Watch` |
-|---|---|---|
-| `raft` | yes | yes |
-| `standalone` | yes | **refused** |
+| Node | `Get`, `Put`, `CompareAndSwap` | `AcquireLease` | `Watch` |
+|---|---|---|---|
+| raft | yes | yes | yes |
+| standalone, pebble or memory backend | yes | yes | yes |
+| standalone, file or objstore backend | yes | **refused** | yes |
 
-On a standalone node `AcquireLease` and `Watch` return an error saying the
-family is not configured, with the remedy `requires mode: raft`. They do not
-half-work — no lease that never expires, no watch that never fires — because a
-primitive that silently does nothing is worse than one that says no.
+Every verb works the same on a raft node and a standalone node: a standalone
+node runs the same lease, watch and lock machinery in process, and expires
+leases itself. The one gap is the storage backend, not the mode: the file and
+objstore backends keep no leases, so `AcquireLease` there returns
+`*transport.CapabilityUnsupportedError` rather than a lease that would never
+expire. A primitive that silently does nothing is worse than one that says no.
 
-If you need leadership or change notification, run against a raft node. If your
-program must run in both, design leadership as an optional capability and use
-compare-and-swap for the rest.
+*(Corrected: this section said a standalone node refuses `AcquireLease` and
+`Watch` with `requires mode: raft`. It serves both since 2026-10-01.)*
 
 ## Getting the surface
 
@@ -193,8 +195,8 @@ Two more things about the TTL itself:
 
 ## Task 3 — claim something exactly once (works in either mode)
 
-`CompareAndSwap` needs no consensus, so this is the pattern to reach for when
-your program must also run standalone.
+`CompareAndSwap` needs no lease, so this is the pattern to reach for when your
+program must also run on a backend that keeps no leases.
 
 ```go
 // Claim: create only if absent. The first caller wins.
@@ -300,7 +302,7 @@ Two limits to plan around:
 | `Done` closed and you have no idea why | either the deadline passed without an acknowledged renewal, or the server said the lease is gone | fence first, diagnose second. Check renewal round-trip times against the TTL |
 | `Done` closes while you were renewing on time | the round trips, not your sleep, ate the budget — or the host stalled past the TTL | measure the keepalive round trip; if it is large, lengthen the TTL or shorten the interval |
 | `Release` returns an error | the revoke was not acknowledged, so the key may still be held | the lease is unchanged and `Done` is still open — **retry the release** |
-| `AcquireLease` or `Watch` fails with "not configured" / `requires mode: raft` | you are talking to a standalone node | run against a raft node, or use `CompareAndSwap` instead |
+| `AcquireLease` fails with `CapabilityUnsupportedError` ("unsupported") | the node's storage backend is file or objstore, which keeps no leases | run the node on the pebble or memory backend (either mode), or use `CompareAndSwap` instead |
 | `CompareAndSwap` returns `(false, nil)` | the precondition lost | this is an outcome, not an error — handle it |
 | A watch ends with a non-nil, non-context `Err()` | the server dropped you; you may have missed changes | reconcile with `Get`, then re-establish. If it recurs, your consumer is too slow |
 | `Watch` events stop arriving but the channel stays open | there is simply nothing to report | idle is not dead. Only a closed channel means the watch is over |
