@@ -40,10 +40,12 @@ func init() {
 // store; the tenant is the one authenticated on the request context by the
 // transport's auth middleware, never a fixed system default.
 func newSQLService(s *Server) service.SQLServicer {
-	return sqlquery.NewService(
-		s.kvSvc,
-		s.opts.databaseSvc,
+	opts := []sqlquery.Option{
 		sqlquery.WithReadOnly(),
 		sqlquery.WithRegistry(s.buildServiceRegistry()),
-	)
+	}
+	if s.config.SQL.DefaultDatabase != "" {
+		opts = append(opts, sqlquery.WithSharedDefaultDatabase(s.config.SQL.DefaultDatabase))
+	}
+	return sqlquery.NewService(s.kvSvc, s.opts.databaseSvc, opts...)
 }

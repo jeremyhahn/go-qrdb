@@ -62,6 +62,16 @@ auth:
 
 **Validation:** TLS and auth must be enabled when MySQL or PostgreSQL protocols are active.
 
+**`sql.default_database` exists for every tenant.** Each tenant addresses it by
+the one configured name and reaches its own namespace under it. The wire
+protocols (`provider.WithSharedDefaultDatabase`), the service registry
+(`server.WithSharedSQLDefaultDatabase`) and the ad-hoc query service
+(`query.WithSharedDefaultDatabase`) make the same exception. Every other
+database name is looked up through the owner-checked `GetForTenant`, and that
+includes the query service's engine and SQL-settings lookups. Another tenant's
+database is answered as missing, and its settings are never applied to your
+session.
+
 
 ## KV Table Schema
 

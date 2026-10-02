@@ -39,10 +39,14 @@ func TestExecute_WithRegistry_ForeignDatabaseAnsweredAsMissing(t *testing.T) {
 		},
 	}
 	catalog := &mockDB{getFn: func(name string) (*database.DatabaseInfo, error) {
-		if name == "nosuch" {
+		switch name {
+		case "nosuch":
 			return nil, &database.NotFoundError{Name: name}
+		case "mine":
+			return ownedKV("acme")(name)
+		default:
+			return ownedKV("globex")(name)
 		}
-		return kvDB(name)
 	}}
 	svc := NewService(newMockKV(), catalog, WithRegistry(reg))
 	ctx := authedContext("acme")

@@ -62,6 +62,11 @@ type sqlService struct {
 	registry service.Registry // optional per-(tenant, db) scoped resolver
 	readOnly bool             // true strips write capability from every served table
 
+	// sharedDefaultDB is the configured default SQL database, which exists
+	// for every tenant as that tenant's own namespace (see
+	// WithSharedDefaultDatabase); empty when none is configured.
+	sharedDefaultDB string
+
 	// engines caches one go-mysql-server engine per (tenant, database)
 	// scope so that repeated ad-hoc queries against the same scope reuse
 	// the same analyzer catalog instead of rebuilding it on every
@@ -104,6 +109,20 @@ func WithRegistry(registry service.Registry) Option {
 func WithReadOnly() Option {
 	return func(s *sqlService) {
 		s.readOnly = true
+	}
+}
+
+// WithSharedDefaultDatabase marks name, the configured default SQL database,
+// as addressable by every tenant: each tenant's queries against it run in
+// that tenant's own namespace, exactly as the service registry
+// (server.WithSharedSQLDefaultDatabase) and the SQL provider
+// (provider.WithSharedDefaultDatabase) already treat it. Its catalog record
+// -- the engine and SQL settings every tenant's namespace shares -- is read
+// by name. Every other database is read through the owner-checked
+// GetForTenant, so another tenant's database is answered as missing.
+func WithSharedDefaultDatabase(name string) Option {
+	return func(s *sqlService) {
+		s.sharedDefaultDB = name
 	}
 }
 
@@ -181,7 +200,7 @@ func (s *sqlService) Execute(ctx context.Context, dbName, query string) (*servic
 	// transports can map it to their not-found status.
 	var engineType database.EngineType
 	if s.dbSvc != nil {
-		info, err := s.dbSvc.Get(dbName)
+		info, err := s.databaseInfo(ctx, dbName)
 		if err != nil {
 			return nil, err
 		}
@@ -360,11 +379,23 @@ func formatValue(v any) string {
 	}
 }
 
-// databaseSQLConfig resolves a database's SQL settings for the provider
-// (see provider.WithSQLConfig); a database that cannot be resolved has the
-// defaults.
-func (s *sqlService) databaseSQLConfig(_, name string) *database.SQLConfig {
-	info, err := s.dbSvc.Get(name)
+// databaseInfo returns the catalog record of name as the context's tenant
+// addresses it: the shared default SQL database by name (every tenant's
+// namespace shares its record), every other database only when the tenant
+// owns it (GetForTenant), so another tenant's database is answered as
+// missing.
+func (s *sqlService) databaseInfo(ctx context.Context, name string) (*database.DatabaseInfo, error) {
+	if s.sharedDefaultDB != "" && name == s.sharedDefaultDB {
+		return s.dbSvc.Get(name)
+	}
+	return s.dbSvc.GetForTenant(ctx, name)
+}
+
+// databaseSQLConfig resolves the SQL settings of tenantID's database name for
+// the provider (see provider.WithSQLConfig), through databaseInfo; a database
+// that cannot be resolved -- another tenant's included -- has the defaults.
+func (s *sqlService) databaseSQLConfig(tenantID, name string) *database.SQLConfig {
+	info, err := s.databaseInfo(tenant.WithTenantID(context.Background(), tenantID), name)
 	if err != nil {
 		return nil
 	}

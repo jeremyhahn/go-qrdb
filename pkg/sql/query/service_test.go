@@ -104,8 +104,37 @@ type mockDB struct {
 	getFn func(name string) (*database.DatabaseInfo, error)
 }
 
+// Get reads the catalog record by name, as database.Manager.Get does: the
+// service uses it only for the shared default SQL database.
 func (m *mockDB) Get(name string) (*database.DatabaseInfo, error) {
 	return m.getFn(name)
+}
+
+// GetForTenant is the owner-checked read, held to the same rule as the
+// real DatabaseService.GetForTenant: a database another tenant owns is
+// answered as missing (database.OwnedBy).
+func (m *mockDB) GetForTenant(ctx context.Context, name string) (*database.DatabaseInfo, error) {
+	info, err := m.getFn(name)
+	if err != nil {
+		return nil, err
+	}
+	if !database.OwnedBy(info.TenantID, tenant.FromContext(ctx)) {
+		return nil, &database.NotFoundError{Name: name}
+	}
+	return info, nil
+}
+
+// ownedKV returns a catalog in which every name is a KV database owned by
+// owner -- the fixture for a tenant querying its own databases.
+func ownedKV(owner string) func(string) (*database.DatabaseInfo, error) {
+	return func(name string) (*database.DatabaseInfo, error) {
+		info, err := kvDB(name)
+		if err != nil {
+			return nil, err
+		}
+		info.TenantID = owner
+		return info, nil
+	}
 }
 
 func kvDB(name string) (*database.DatabaseInfo, error) {
@@ -371,7 +400,7 @@ func TestExecute_TenantScoping_ReadsOwnNamespaceNotSystem(t *testing.T) {
 		t.Fatalf("seed acme: %v", err)
 	}
 
-	svc := NewService(kv, &mockDB{getFn: kvDB})
+	svc := NewService(kv, &mockDB{getFn: kvDB}, WithSharedDefaultDatabase("testdb"))
 
 	result, err := svc.Execute(authedContext("acme"), "testdb", "SELECT * FROM kv")
 	if err != nil {
@@ -391,7 +420,7 @@ func TestExecute_TenantScoping_ReadsOwnNamespaceNotSystem(t *testing.T) {
 // namespace, not system/<db>/.
 func TestExecute_TenantScoping_WritesOwnNamespaceNotSystem(t *testing.T) {
 	kv := newMockKV()
-	svc := NewService(kv, &mockDB{getFn: kvDB})
+	svc := NewService(kv, &mockDB{getFn: kvDB}, WithSharedDefaultDatabase("testdb"))
 
 	_, err := svc.Execute(authedContext("acme"), "testdb",
 		"INSERT INTO kv (`key`, `value`) VALUES ('k1', 'v1')")
@@ -455,7 +484,7 @@ func TestExecute_WithRegistry_ResolvesPerTenantScope(t *testing.T) {
 	decoy := newMockKV()
 	seed(t, decoy, "testdb", "decoy", "should-not-be-visible")
 
-	svc := NewService(decoy, &mockDB{getFn: kvDB}, WithRegistry(reg))
+	svc := NewService(decoy, &mockDB{getFn: ownedKV("acme")}, WithRegistry(reg))
 
 	result, err := svc.Execute(authedContext("acme"), "testdb", "SELECT * FROM kv")
 	if err != nil {
@@ -481,7 +510,7 @@ func TestExecute_WithRegistry_WritesThroughScopedService(t *testing.T) {
 		},
 	}
 
-	svc := NewService(newMockKV(), &mockDB{getFn: kvDB}, WithRegistry(reg))
+	svc := NewService(newMockKV(), &mockDB{getFn: ownedKV("acme")}, WithRegistry(reg))
 
 	_, err := svc.Execute(authedContext("acme"), "testdb",
 		"INSERT INTO kv (`key`, `value`) VALUES ('k1', 'v1')")
@@ -721,7 +750,9 @@ func TestExecute_EngineCache_TenantIsolation_DistinctEnginesNotShared(t *testing
 			return widgetsKV, nil
 		},
 	}
-	svc := NewService(newMockKV(), &mockDB{getFn: kvDB}, WithRegistry(reg))
+	// One database name served to two tenants is the shared default SQL
+	// database: each tenant has its own namespace under it.
+	svc := NewService(newMockKV(), &mockDB{getFn: kvDB}, WithRegistry(reg), WithSharedDefaultDatabase("testdb"))
 
 	if _, err := svc.Execute(authedContext("acme"), "testdb", "SELECT 1"); err != nil {
 		t.Fatalf("Execute(acme): unexpected error: %v", err)
@@ -757,8 +788,17 @@ func TestExecute_EngineCache_TenantIsolation_DistinctEnginesNotShared(t *testing
 func TestExecute_EngineCache_ConcurrentAccess(t *testing.T) {
 	kv := newMockKV()
 	tenants := []string{"acme", "widgets", "globex"}
-	dbs := []string{"db1", "db2"}
-	svc := NewService(kv, &mockDB{getFn: kvDB})
+	// Each tenant queries the shared default SQL database and one database
+	// of its own ("<tenant>-db"): database names are one node-wide catalog,
+	// so only the shared default is addressed by more than one tenant.
+	dbs := []string{"shared", "-db"}
+	catalog := &mockDB{getFn: func(name string) (*database.DatabaseInfo, error) {
+		if name == "shared" {
+			return kvDB(name)
+		}
+		return ownedKV(strings.TrimSuffix(name, "-db"))(name)
+	}}
+	svc := NewService(kv, catalog, WithSharedDefaultDatabase("shared"))
 
 	var wg sync.WaitGroup
 	const iterationsPerScope = 20
@@ -766,6 +806,9 @@ func TestExecute_EngineCache_ConcurrentAccess(t *testing.T) {
 		for _, db := range dbs {
 			for i := 0; i < iterationsPerScope; i++ {
 				wg.Add(1)
+				if db == "-db" {
+					db = tid + db
+				}
 				go func(tid, db string) {
 					defer wg.Done()
 					ctx := authedContext(tid)
@@ -812,7 +855,7 @@ func TestExecute_WithRegistry_ResolvesRelationalTable(t *testing.T) {
 		{Name: "id", Type: "INT"},
 	})
 
-	svc := NewService(newMockKV(), &mockDB{getFn: kvDB}, WithRegistry(h.Registry))
+	svc := NewService(newMockKV(), &mockDB{getFn: ownedKV("acme")}, WithRegistry(h.Registry))
 
 	result, err := svc.Execute(authedContext("acme"), "testdb", "SELECT * FROM widgets")
 	if err != nil {
@@ -837,7 +880,7 @@ func TestExecute_WithRegistry_ReadOnly_RelationalTable_ReadableNotWritable(t *te
 		{Name: "id", Type: "INT"},
 	})
 
-	svc := NewService(newMockKV(), &mockDB{getFn: kvDB}, WithRegistry(h.Registry), WithReadOnly())
+	svc := NewService(newMockKV(), &mockDB{getFn: ownedKV("acme")}, WithRegistry(h.Registry), WithReadOnly())
 
 	result, err := svc.Execute(authedContext("acme"), "testdb", "SELECT * FROM widgets")
 	if err != nil {

@@ -549,6 +549,13 @@ are not reconstructed here — their history is in the git log.
 - **A watch request whose payload does not decode answers QUIC
   `INVALID_ARGUMENT`** rather than the generic `ERROR`, as every other
   undecodable request already did.
+- **The ad-hoc SQL query service reads the catalog owner-checked.** Its
+  engine and SQL-settings lookups used `DatabaseService.Get` by name, so a
+  session's settings could come from another tenant's database of that name.
+  They now use `GetForTenant`, except for the configured default SQL
+  database, which every tenant addresses as its own namespace
+  (`query.WithSharedDefaultDatabase`, wired from `sql.default_database`, the
+  same exception the registry and the wire protocols make).
 - **Database ownership is one function.** `database.OwnedBy(owner,
   tenantID)` (both normalized, so an untagged database is the system
   tenant's) and `database.Manager.GetOwned` replace the restatements in the
