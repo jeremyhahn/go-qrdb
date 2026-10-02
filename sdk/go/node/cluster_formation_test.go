@@ -33,6 +33,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
@@ -477,3 +478,98 @@ func readIndexOnce(host *quicraft.Host) error {
 // founders' election timeout, so it cannot cover for a missing wait by
 // outlasting an election.
 const firstReadBudget = time.Second
+
+// TestNewClusteredNode_CancelledContextReturnsPromptly: a founder waits for a
+// quorum to elect and commit before NewClusteredNode returns, and that wait
+// honours the caller's ctx. One founder of three is started alone -- no quorum
+// can form -- and its ctx is cancelled shortly after: the constructor returns
+// the cancellation well inside the readiness budget instead of holding the
+// caller for all of it.
+func TestNewClusteredNode_CancelledContextReturnsPromptly(t *testing.T) {
+	ca, replicas := newFormationReplicas(t, 3)
+	caPEM := mustReadCAPEM(t, ca)
+	members := make(map[uint64]string, len(replicas))
+	for _, r := range replicas {
+		members[r.id] = r.addr
+	}
+	r := replicas[0]
+	cfg := formationConfig(t, r, peerIdentitySpecs(t, r.id, replicas))
+	mtls := &RaftMTLSConfig{CACert: caPEM, Cert: r.cert.CertPEM, Key: r.cert.KeyPEM}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(300*time.Millisecond, cancel)
+	start := time.Now()
+	n, err := NewClusteredNode(ctx, cfg, members, nil, WithRaftMTLS(mtls))
+	elapsed := time.Since(start)
+	if n != nil {
+		_ = n.Close()
+		t.Fatal("NewClusteredNode returned a node although no quorum could form")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if elapsed > cancelledBootBudget {
+		t.Fatalf("NewClusteredNode returned %s after its ctx was cancelled at 300ms; want within %s", elapsed, cancelledBootBudget)
+	}
+}
+
+// cancelledBootBudget is how long a cancelled clustered boot may take to
+// return: the cancel at 300ms plus one bounded read probe and teardown, far
+// below the 15s readiness budget it would otherwise spend.
+const cancelledBootBudget = 5 * time.Second
+
+// TestClusteredNode_UnsealRetriesAfterACancelledBoot: the clustered boot that
+// Unseal runs honours Unseal's ctx, so a caller that gives up -- here, one
+// founder unsealed alone, its ctx cancelled before a quorum exists -- gets the
+// cancellation, and the node stays bootable: the next Unseal completes the
+// boot instead of reporting an unsealed barrier as a booted node. All three
+// founders are then unsealed together and the retried node serves a write.
+func TestClusteredNode_UnsealRetriesAfterACancelledBoot(t *testing.T) {
+	ca, replicas := newFormationReplicas(t, 3)
+	caPEM := mustReadCAPEM(t, ca)
+	members := make(map[uint64]string, len(replicas))
+	for _, r := range replicas {
+		members[r.id] = r.addr
+	}
+	nodes := make([]*Node, len(replicas))
+	for i, r := range replicas {
+		cfg := sealClustered(formationConfig(t, r, peerIdentitySpecs(t, r.id, replicas)))
+		mtls := &RaftMTLSConfig{CACert: caPEM, Cert: r.cert.CertPEM, Key: r.cert.KeyPEM}
+		n, err := NewClusteredNode(context.Background(), cfg, members, nil, WithRaftMTLS(mtls))
+		if err != nil {
+			t.Fatalf("NewClusteredNode(%d): %v", r.id, err)
+		}
+		nodes[i] = n
+		t.Cleanup(func() { _ = n.Close() })
+	}
+	creds := func() seal.Credentials { return seal.MustCredentials([]byte("wal-encryption-test")) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(300*time.Millisecond, cancel)
+	if err := nodes[0].Unseal(ctx, creds()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Unseal of a lone founder with its ctx cancelled: err = %v, want context.Canceled", err)
+	}
+
+	errs := make([]error, len(nodes))
+	var wg sync.WaitGroup
+	for i, n := range nodes {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = n.Unseal(context.Background(), creds())
+		}()
+	}
+	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
+		t.Fatalf("Unseal: %v", err)
+	}
+	client := nodes[0].Client()
+	if client == nil {
+		t.Fatal("the retried node reports unsealed but never finished booting: it has no client")
+	}
+	putCtx, putCancel := context.WithTimeout(context.Background(), clusterFormationBudget)
+	defer putCancel()
+	if err := putUntilCommitted(putCtx, client.KV(), "retried", []byte("v")); err != nil {
+		t.Fatalf("Put through the retried node: %v", err)
+	}
+}

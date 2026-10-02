@@ -74,11 +74,16 @@ type fakeLeaderSource struct {
 	reads   atomic.Int64
 	readyAt int64
 	readErr error
+	// onRead runs at the start of every ReadReady probe with its number.
+	onRead func(n int64)
 }
 
 // ReadReady probes a linearizable read on shardID.
 func (f *fakeLeaderSource) ReadReady(_ context.Context, _ uint64) error {
 	n := f.reads.Add(1)
+	if f.onRead != nil {
+		f.onRead(n)
+	}
 	if f.readErr != nil {
 		return f.readErr
 	}
@@ -547,5 +552,35 @@ func TestWaitForShardServing_HonoursCancellation(t *testing.T) {
 		if err := waitForShardServingWithin(ctx, f, 7, pollBudget(10, virtualInterval), virtualInterval, newVirtualClock()); !errors.Is(err, context.Canceled) {
 			t.Fatalf("%s: err = %v, want context.Canceled", name, err)
 		}
+	}
+}
+
+// TestWaitForShardServing_SuccessWinsOverACancelAtTheSameMoment: when the
+// probe that finds the shard serving and the caller's cancellation land
+// together, the wait reports what it observed -- the shard serves -- rather
+// than discarding a completed wait for ctx's error. Cancellation that arrives
+// while the wait is still unfinished is honoured
+// (TestWaitForShardServing_HonoursCancellation).
+func TestWaitForShardServing_SuccessWinsOverACancelAtTheSameMoment(t *testing.T) {
+	for name, at := range map[string]struct{ leaderPoll, readProbe bool }{
+		"cancel on the successful leader poll": {leaderPoll: true},
+		"cancel on the successful read probe":  {readProbe: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			f := &fakeLeaderSource{leader: true}
+			if at.leaderPoll {
+				f.onPoll = func(int64) { cancel() }
+				// The leader phase finished; the read phase then probes once
+				// and that probe succeeds.
+			}
+			if at.readProbe {
+				f.onRead = func(int64) { cancel() }
+			}
+			if err := waitForShardServingWithin(ctx, f, 7, pollBudget(10, virtualInterval), virtualInterval, newVirtualClock()); err != nil {
+				t.Fatalf("err = %v, want nil: the shard was found serving", err)
+			}
+		})
 	}
 }

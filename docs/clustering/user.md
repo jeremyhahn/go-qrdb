@@ -210,6 +210,16 @@ ended up with.
 
 ## From the SDK
 
+**`NewClusteredNode` returns once the cluster can serve.** A founder blocks
+until a quorum of the founders has elected a leader and that leader has
+committed in its term, so its first read succeeds. Start the founders within
+about 15 seconds of each other: a founder that waits longer for its peers
+fails with `*server.ShardLeaderWaitError` (no leader) or
+`*server.ShardReadWaitError` (a leader that never committed), naming what it
+saw. The constructor honours its `ctx`: cancel it to give up early. A sealed
+founder waits the same way in `Unseal`; one that fails or is cancelled stays
+sealed, and the next `Unseal` boots it.
+
 ```go
 cc := client.Cluster()
 members, _ := cc.Members(ctx, shardID)

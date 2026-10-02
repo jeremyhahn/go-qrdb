@@ -1257,8 +1257,23 @@ func (n *Node) startReclaimSweepStandalone(sweeper *service.ReclaimSweeper) {
 // completeClusteredBoot finishes wiring the clustered node after the barrier
 // is unsealed: creates the quicraft host, calls BuildServices, and wires the
 // server.
-func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingClusteredBoot) error {
+func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingClusteredBoot) (err error) {
 	n.pendingClustered = nil
+	// A boot that fails -- its ctx cancelled while the system shard waits
+	// for a quorum, say -- tears down what it built and leaves the node
+	// SEALED and bootable. Closing the host has already wiped the system
+	// barrier's key; sealing the barrier makes its state say so, and
+	// restoring pending makes the next Unseal re-derive the key and run this
+	// again, rather than find an "unsealed" barrier with no key and nothing
+	// pending and report the node booted.
+	defer func() {
+		if err != nil {
+			if b := n.barrier.Load(); b != nil {
+				_ = b.Seal()
+			}
+			n.pendingClustered = pending
+		}
+	}()
 
 	// One snapshot of the seal layer for the whole boot, as in
 	// completeStandaloneBoot: written by the constructor and by Close, never
@@ -3086,7 +3101,7 @@ func createNodeEngine(backendType database.BackendType, stg storage.Storage, pdb
 // judged plaintext, and one found under a barrier is refused with
 // *database.RaftWALFormatError rather than replayed as ciphertext.
 func buildClusteredHost(
-	_ context.Context,
+	ctx context.Context,
 	cfg *qrdbconfig.Config,
 	members map[uint64]string,
 	createFn sm.CreateFunc,
@@ -3136,8 +3151,9 @@ func buildClusteredHost(
 	// replica add reads the committed membership). Both clustered branches,
 	// sealed and seal-disabled, build their host here, so neither can return a
 	// node that cannot serve. The wait and its budget are
-	// server.WaitForShardServing, the one every host-open path shares.
-	if err := server.WaitForShardServing(context.Background(), host, shard.ShardKV); err != nil {
+	// server.WaitForShardServing, the one every host-open path shares. It
+	// honours ctx: a caller that gives up is not held for the budget.
+	if err := server.WaitForShardServing(ctx, host, shard.ShardKV); err != nil {
 		_ = host.Close()
 		return nil, nil, err
 	}

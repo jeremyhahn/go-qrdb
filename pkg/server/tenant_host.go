@@ -101,7 +101,7 @@ func buildTenantRaftConfigs(dataRoot string) (quicraftconfig.HostConfig, quicraf
 // opens the encrypted Pebble immediately and a sealed barrier would fail every
 // file open with seal.ErrSealed. The caller (TenantHostRegistry) drives the
 // barrier through Initialize (create) or Unseal (boot re-attach) first.
-func newTenantHost(tenantID, dataRoot string, tb *seal.TenantBarrier, logger *slog.Logger) (*tenantHost, error) {
+func newTenantHost(ctx context.Context, tenantID, dataRoot string, tb *seal.TenantBarrier, logger *slog.Logger) (*tenantHost, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -137,15 +137,17 @@ func newTenantHost(tenantID, dataRoot string, tb *seal.TenantBarrier, logger *sl
 
 	// Wait for the single-node shard to elect itself leader before binding
 	// services; until then proposals fail with "not leader". StartShard only
-	// registers the replica — leadership is established asynchronously.
-	if err := WaitForShardServing(context.Background(), host, tenantHostShardID); err != nil {
+	// registers the replica — leadership is established asynchronously. The
+	// wait honours ctx -- the request building the host -- so a caller that
+	// gives up is not held for the readiness budget.
+	if err := WaitForShardServing(ctx, host, tenantHostShardID); err != nil {
 		_ = host.StopShard(tenantHostShardID)
 		_ = host.Close()
 		return nil, &TenantHostError{TenantID: tenantID, Op: "await-leader", Err: err}
 	}
 
 	adapter := raftbackend.New(host)
-	ctx, cancel := context.WithCancel(context.Background())
+	hostCtx, cancel := context.WithCancel(context.Background())
 
 	th := &tenantHost{
 		tenantID: tenantID,
@@ -162,7 +164,7 @@ func newTenantHost(tenantID, dataRoot string, tb *seal.TenantBarrier, logger *sl
 	// cluster, so it is always the leader; the sweeper revokes elapsed leases
 	// through consensus, deleting attached keys and notifying watchers.
 	if th.services.Lease != nil {
-		go th.lessor.RunExpiry(ctx, lease.DefaultExpiryInterval,
+		go th.lessor.RunExpiry(hostCtx, lease.DefaultExpiryInterval,
 			func() bool { return true },
 			th.services.Lease.Revoke,
 			logger,
@@ -342,14 +344,17 @@ func waitForShardServingWithin(ctx context.Context, host shardLeaderSource, shar
 	start := clock.Now()
 	deadline := start.Add(timeout)
 
+	// Each phase's outcome is judged before ctx: a poll that found what it
+	// waited for is a finished wait even when ctx was cancelled at the same
+	// moment. Only an unfinished wait reports ctx's error.
 	leader, ok := pollShard(ctx, clock, start, deadline, interval, func() (bool, error) {
 		_, ok, err := host.GetLeaderID(shardID)
 		return err == nil && ok, err
 	})
-	if err := ctx.Err(); err != nil {
-		return err
-	}
 	if !ok {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return &ShardLeaderWaitError{
 			ShardID:  shardID,
 			Timeout:  timeout,
@@ -374,10 +379,10 @@ func waitForShardServingWithin(ctx context.Context, host shardLeaderSource, shar
 		}
 		return false, err
 	})
-	if err := ctx.Err(); err != nil {
-		return err
-	}
 	if !ok {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return &ShardReadWaitError{
 			ShardID:  shardID,
 			Timeout:  timeout,

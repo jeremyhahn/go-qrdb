@@ -123,7 +123,7 @@ func TestTenantHost_LifecycleAndDurability(t *testing.T) {
 	dataRoot, tb := registerVolumeTenant(t, reg, "t1")
 	ctx := context.Background()
 
-	th, err := newTenantHost("t1", dataRoot, tb, volTestLogger())
+	th, err := newTenantHost(context.Background(), "t1", dataRoot, tb, volTestLogger())
 	if err != nil {
 		t.Fatalf("newTenantHost: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestTenantHost_LifecycleAndDurability(t *testing.T) {
 	}
 
 	// Re-open at the same DataRoot: must succeed (lock released) and recover data.
-	th2, err := newTenantHost("t1", dataRoot, tb, volTestLogger())
+	th2, err := newTenantHost(context.Background(), "t1", dataRoot, tb, volTestLogger())
 	if err != nil {
 		t.Fatalf("newTenantHost (re-open): %v", err)
 	}
@@ -193,12 +193,12 @@ func TestTenantHost_FullEngineIsolationAndEncryption(t *testing.T) {
 	rootA, tbA := registerVolumeTenant(t, reg, "ta")
 	rootB, tbB := registerVolumeTenant(t, reg, "tb")
 
-	ha, err := newTenantHost("ta", rootA, tbA, volTestLogger())
+	ha, err := newTenantHost(context.Background(), "ta", rootA, tbA, volTestLogger())
 	if err != nil {
 		t.Fatalf("newTenantHost(ta): %v", err)
 	}
 	defer func() { _ = ha.Close() }()
-	hb, err := newTenantHost("tb", rootB, tbB, volTestLogger())
+	hb, err := newTenantHost(context.Background(), "tb", rootB, tbB, volTestLogger())
 	if err != nil {
 		t.Fatalf("newTenantHost(tb): %v", err)
 	}

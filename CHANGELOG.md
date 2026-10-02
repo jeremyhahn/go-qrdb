@@ -11,6 +11,22 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The readiness wait honours the caller's context.** `NewClusteredNode`,
+  `Node.Unseal`, the per-tenant volume host and the dedicated raft shards
+  waited on `context.Background()`, holding a caller that gave up for up to
+  15 seconds; they now return the context's error promptly. A wait that has
+  already found the shard serving reports success even if the context is
+  cancelled at that moment. (The wait itself -- a founder returns only once
+  a quorum has elected a leader and that leader has committed in its term,
+  within a 15s budget -- shipped in 0.30.1-alpha; this entry is the ctx fix
+  on top of it, not a new wait.)
+- **A clustered SDK boot that fails can be retried.** A failed or cancelled
+  boot left the barrier reporting unsealed with its key already wiped and no
+  boot pending, so the next `Unseal` reported a node that never booted as
+  ready. The node is now left sealed, and the next `Unseal` boots it.
+
 ## [0.33.0-alpha] - 2026-10-03
 
 Per-tenant compaction, database wizard encryption, and discovery parity. This release contains BREAKING changes; see the entries below. Highlights:

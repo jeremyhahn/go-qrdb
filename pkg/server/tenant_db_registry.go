@@ -147,7 +147,7 @@ func (r *TenantHostRegistry) Services(ctx context.Context, tenantID string) (*Da
 		return nil, &TenantHostError{TenantID: tenantID, Op: "data-root", Err: ErrTenantDataRootUnset}
 	}
 
-	th, err := newTenantHost(tenantID, dataRoot, tb, r.logger)
+	th, err := newTenantHost(ctx, tenantID, dataRoot, tb, r.logger)
 	if err != nil {
 		return nil, err
 	}

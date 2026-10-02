@@ -540,7 +540,15 @@ type ImbalanceReport struct {
   tenant store and before the caller's first request, such as a replica add's
   committed-membership read), and the desktop embedded server. The admin
   `StartShard` operation is deliberately outside the rule: it starts a shard
-  whose other members may not exist yet, and its caller decides when to read. A timeout names its phase: `*server.ShardLeaderWaitError` when no
+  whose other members may not exist yet, and its caller decides when to read.
+  So is the scale path's `waitForShardLeaderKnown` (`pkg/service`): it gates a
+  membership change, which is proposed through the log and ordered after the
+  new leader's first entry in its term, not a linearizable read -- a known
+  leader is the whole of what that proposal needs. Every wait honours the
+  caller's ctx and returns its error, unless the wait has already finished: a
+  cancellation that lands with the probe that found the shard serving still
+  reports success. A clustered SDK boot that fails -- cancelled, or timed out --
+  leaves the node sealed and bootable, so the next `Unseal` boots it. A timeout names its phase: `*server.ShardLeaderWaitError` when no
   leader was elected, `*server.ShardReadWaitError` (wraps
   `server.ErrShardNotReadReady`) when a leader was but never served a read --
   each reporting probe errors, a starved poller, or the genuine failure. Do not
