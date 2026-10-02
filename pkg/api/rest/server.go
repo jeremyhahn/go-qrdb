@@ -23,8 +23,10 @@ import (
 	"crypto"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -42,8 +44,10 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
@@ -207,9 +211,19 @@ type Server struct {
 	// Start (CABootstrapConflictError), never a silent pick.
 	caBootstrap        func(context.Context) ([]byte, error)
 	caBootstrapSources int
-	onEtcdUpdated      func(dbName string, cfg *database.EtcdConfig) error
-	webUI              http.Handler      // optional embedded web UI file server
-	auditLogger        audit.AuditLogger // optional compliance-grade audit logger
+
+	// clusterJoinProvider and clusterJoinToken configure the SPKI/Direct
+	// member-side CSR-sign route (/v1/enroll/join, WithClusterJoin). Both
+	// nil/empty means the route is not registered. The Noise_NK transport
+	// (clusterenroll.JoinServer) is a separate listener entirely; this is
+	// the SAME wire contract (clusterenroll.JoinRequest/JoinResponse,
+	// HandleJoinRequest) over the admin HTTPS listener instead.
+	clusterJoinProvider cakey.Provider
+	clusterJoinToken    string
+
+	onEtcdUpdated func(dbName string, cfg *database.EtcdConfig) error
+	webUI         http.Handler      // optional embedded web UI file server
+	auditLogger   audit.AuditLogger // optional compliance-grade audit logger
 
 	// soPINVerifier handles SO PIN verification for dual-factor auth.
 	soPINVerifier soPINVerifier
@@ -664,6 +678,26 @@ func (s *Server) addCABootstrap(source func(context.Context) ([]byte, error)) {
 	s.caBootstrapSources++
 }
 
+// WithClusterJoin registers the SPKI/Direct member-side CSR-sign route
+// (/v1/enroll/join) on this node's admin HTTPS listener: the SAME admitted-
+// member capability clusterenroll.JoinServer serves over Noise_NK, reached
+// instead over plain HTTPS -- trusted by the joiner exactly as the matching
+// anchor-fetch method (SPKI pin, or the system trust store for Direct)
+// already trusts this same listener for /v1/ca/bootstrap.
+//
+// It is public (no mTLS authentication: the joiner has no credentials yet)
+// and NOT on the sealed-window allowlist -- it exists only on the regular,
+// post-unseal server, because provider (the cluster CA, Key A) is only
+// reachable once unsealed. A nil provider or an empty token configures
+// nothing; configuring one without the other is refused at Start
+// (*ClusterJoinMissingTokenError).
+func WithClusterJoin(provider cakey.Provider, token string) ServerOption {
+	return func(s *Server) {
+		s.clusterJoinProvider = provider
+		s.clusterJoinToken = token
+	}
+}
+
 // WithKVService attaches a KVServicer for key-value operations. This is an
 // alternative to passing kvSvc as a positional parameter and is useful when
 // constructing a server that handles only barrier, cert, or auth services.
@@ -969,6 +1003,10 @@ func (s *Server) Start() error {
 	if s.caBootstrapSources > 1 {
 		s.closePrebound()
 		return &CABootstrapConflictError{}
+	}
+	if (s.clusterJoinProvider != nil) != (s.clusterJoinToken != "") {
+		s.closePrebound()
+		return &ClusterJoinMissingTokenError{}
 	}
 	// TLS-only: fail closed rather than bind a plaintext listener. The
 	// orchestrator always supplies a config (operator-provided or
@@ -1897,6 +1935,15 @@ func (s *Server) registerRoutes() {
 		s.public(http.MethodGet, "/v1/ca/bootstrap", s.handleCABootstrap)
 	}
 
+	// Member-side CSR-sign route (SPKI/Direct transport), the HTTPS
+	// counterpart of clusterenroll.JoinServer's Noise_NK listener. Public
+	// (the joiner has no credentials yet) and claimed only when configured
+	// (WithClusterJoin); deliberately NOT on the sealed-window allowlist --
+	// see WithClusterJoin.
+	if s.clusterJoinProvider != nil {
+		s.public(http.MethodPost, clusterenroll.JoinHTTPPath, s.handleClusterJoin)
+	}
+
 	// Cluster peer key-transport endpoints. Both routes are pre-exempt from
 	// the auth middleware (exact-path allowlist in middleware/rest.go) and on
 	// the SealedWindowAllowlist (/v1/cluster/ prefix) so they work in every
@@ -2033,6 +2080,58 @@ func (s *Server) handleCABootstrap(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(bundle)
 }
+
+// handleClusterJoin is the SPKI/Direct transport binding of member-side
+// CSR-sign join: it decodes the SAME clusterenroll.JoinRequest the Noise_NK
+// transport carries encrypted, and calls the SAME transport-agnostic core
+// (clusterenroll.HandleJoinRequest) the Noise listener calls -- there is no
+// second implementation of the admission check, the CSR validation, or the
+// issuance call to drift from it. Trust in THIS request's transport is TLS
+// itself (SPKI-pinned or Direct, whichever the joiner's client used to
+// reach this listener); the join token inside the body is the admission
+// control, checked in constant time by HandleJoinRequest before anything
+// else runs.
+func (s *Server) handleClusterJoin(w http.ResponseWriter, r *http.Request) {
+	if s.clusterJoinProvider == nil {
+		// Unreachable through the router (the route is registered only
+		// when configured), but a direct call must not dereference nil.
+		http.Error(w, "cluster join not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxClusterJoinRequestSize))
+	if err != nil {
+		http.Error(w, "failed to read request body", http.StatusBadRequest)
+		return
+	}
+	var req clusterenroll.JoinRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	resp := clusterenroll.HandleJoinRequest(r.Context(), s.clusterJoinProvider, s.clusterJoinToken, &req)
+	respBody, err := json.Marshal(resp)
+	if err != nil {
+		slog.Error("rest: cluster join response marshal failed", slog.Any("error", err))
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if resp.Error != "" {
+		w.WriteHeader(http.StatusForbidden)
+	} else {
+		w.WriteHeader(http.StatusOK)
+	}
+	_, _ = w.Write(respBody)
+}
+
+// maxClusterJoinRequestSize bounds the /v1/enroll/join request body: a
+// CSR is a few hundred bytes, so this is a generous ceiling against a
+// malicious or malformed caller, not a real limit a legitimate CSR
+// approaches.
+const maxClusterJoinRequestSize = 1 << 16
 
 // peerAdminRegistry is a thread-safe registry that maps Raft addresses to
 // admin HTTP base URLs. It first checks explicit registrations, then falls

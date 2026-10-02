@@ -572,3 +572,15 @@ type CABootstrapConflictError struct{}
 func (e *CABootstrapConflictError) Error() string {
 	return "rest: /v1/ca/bootstrap is configured twice (the cluster CA and a host-supplied bundle); configure exactly one"
 }
+
+// ClusterJoinMissingTokenError refuses a server configured with a cluster
+// CA provider for /v1/enroll/join (WithClusterJoin) but no join token, or a
+// token with no provider. Both are required together: a provider with no
+// token would serve signing with no admission control at all, and a token
+// with no provider is a configuration with no route to protect.
+type ClusterJoinMissingTokenError struct{}
+
+// Error describes the conflict and its remedy.
+func (e *ClusterJoinMissingTokenError) Error() string {
+	return "rest: WithClusterJoin requires both a cakey.Provider and a non-empty join token"
+}

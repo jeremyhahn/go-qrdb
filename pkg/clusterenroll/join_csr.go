@@ -116,40 +116,45 @@ func (e *JoinRefusedError) Error() string {
 	return "clusterenroll: member-side join refused: " + e.Reason
 }
 
-// joinRequest is the encrypted JSON payload a joiner sends after the
-// Noise_NK handshake completes. CSRDER is a PKCS#10 CertificateRequest
-// (self-signed, so the signing member can verify the joiner holds the
-// matching private key) encoding ONLY the joiner's own public key -- the
-// joiner's private key, like the cluster CA's, never crosses this wire.
-type joinRequest struct {
+// JoinRequest is the join-admission request payload: the encrypted JSON
+// body a Noise_NK joiner sends after the handshake completes, and the JSON
+// request body the SPKI/Direct HTTPS join route (pkg/api/rest) reads
+// directly -- the same shape, carried over two different transports.
+// CSRDER is a PKCS#10 CertificateRequest (self-signed, so the signing
+// member can verify the joiner holds the matching private key) encoding
+// ONLY the joiner's own public key -- the joiner's private key, like the
+// cluster CA's, never crosses this wire on any transport.
+type JoinRequest struct {
 	Token   string `json:"token"`
 	CSRDER  []byte `json:"csr_der"`
 	NodeURI string `json:"node_uri,omitempty"`
 }
 
-// joinResponse is the encrypted JSON payload a signing member sends back.
-type joinResponse struct {
+// JoinResponse is the join-admission response payload, over either
+// transport.
+type JoinResponse struct {
 	CertPEM []byte `json:"cert_pem,omitempty"`
 	Error   string `json:"error,omitempty"`
 }
 
-// handleJoinRequest is the transport-agnostic core of member-side CSR
-// signing: constant-time token check, CSR parse and proof-of-possession
-// check, then issuance through the cluster CA provider. It never reads a
-// private key out of provider -- IssueLeafForKey signs with it, nothing
-// more -- and the only error detail returned to the wire is a short,
-// key-material-free reason.
-func handleJoinRequest(ctx context.Context, provider cakey.Provider, token string, req *joinRequest) *joinResponse {
+// HandleJoinRequest is the transport-agnostic core of member-side CSR
+// signing, shared by every transport binding (Noise_NK's JoinServer, the
+// SPKI/Direct HTTPS route in pkg/api/rest): constant-time token check, CSR
+// parse and proof-of-possession check, then issuance through the cluster CA
+// provider. It never reads a private key out of provider -- IssueLeafForKey
+// signs with it, nothing more -- and the only error detail returned to the
+// wire is a short, key-material-free reason.
+func HandleJoinRequest(ctx context.Context, provider cakey.Provider, token string, req *JoinRequest) *JoinResponse {
 	if subtle.ConstantTimeCompare([]byte(token), []byte(req.Token)) != 1 {
-		return &joinResponse{Error: "join token rejected"}
+		return &JoinResponse{Error: "join token rejected"}
 	}
 
 	csr, err := x509.ParseCertificateRequest(req.CSRDER)
 	if err != nil {
-		return &joinResponse{Error: "invalid certificate signing request"}
+		return &JoinResponse{Error: "invalid certificate signing request"}
 	}
 	if err := csr.CheckSignature(); err != nil {
-		return &joinResponse{Error: "certificate signing request: proof of possession failed"}
+		return &JoinResponse{Error: "certificate signing request: proof of possession failed"}
 	}
 
 	var nodeURI []string
@@ -158,9 +163,9 @@ func handleJoinRequest(ctx context.Context, provider cakey.Provider, token strin
 	}
 	certPEM, err := clusterca.IssueLeafForKey(ctx, provider, csr.PublicKey, nodeURI...)
 	if err != nil {
-		return &joinResponse{Error: "signing failed"}
+		return &JoinResponse{Error: "signing failed"}
 	}
-	return &joinResponse{CertPEM: certPEM}
+	return &JoinResponse{CertPEM: certPEM}
 }
 
 // JoinServer is a running member-side CSR-sign listener. It must be stopped
@@ -274,7 +279,10 @@ func (s *JoinServer) serve() {
 }
 
 // handle drives one connection's Noise_NK handshake (as responder) and one
-// encrypted request/response exchange, then closes it.
+// encrypted request/response exchange, then closes it. conn is any
+// net.Conn, which is what lets a test drive this with an in-memory fake
+// that fails a specific Read or Write deterministically, rather than racing
+// real socket timing to reach these branches.
 func (s *JoinServer) handle(conn net.Conn) {
 	defer conn.Close()
 	deadline := time.Now().Add(DefaultTimeout)
@@ -319,12 +327,12 @@ func (s *JoinServer) handle(conn net.Conn) {
 		return
 	}
 
-	var req joinRequest
-	resp := &joinResponse{}
+	var req JoinRequest
+	resp := &JoinResponse{}
 	if err := json.Unmarshal(plaintext, &req); err != nil {
 		resp.Error = "invalid request"
 	} else {
-		resp = handleJoinRequest(context.Background(), s.provider, s.token, &req)
+		resp = HandleJoinRequest(context.Background(), s.provider, s.token, &req)
 	}
 
 	respData, err := json.Marshal(resp)
@@ -386,11 +394,21 @@ func JoinCSR(ctx context.Context, opts *JoinClientOptions, csrDER []byte, nodeUR
 	}
 	defer conn.Close()
 
-	deadline := time.Now().Add(opts.timeout())
+	return joinClientExchange(conn, opts.ServerKey, opts.timeout(), opts.Token, csrDER, nodeURI)
+}
+
+// joinClientExchange drives the initiator side of one join exchange over an
+// already-established conn: the Noise_NK handshake, then the encrypted
+// request/response. Separated from JoinCSR so a test can drive it with an
+// in-memory net.Conn fake that fails a specific Read or Write
+// deterministically, rather than racing real socket timing to reach a
+// frame-failure branch.
+func joinClientExchange(conn net.Conn, serverKey []byte, timeout time.Duration, token string, csrDER []byte, nodeURI string) ([]byte, error) {
+	deadline := time.Now().Add(timeout)
 
 	sess, err := noiseproto.NewSession(&noiseproto.SessionConfig{
 		Pattern:       noise.HandshakeNK,
-		PeerStaticKey: opts.ServerKey,
+		PeerStaticKey: serverKey,
 		IsInitiator:   true,
 	})
 	if err != nil {
@@ -419,7 +437,7 @@ func JoinCSR(ctx context.Context, opts *JoinClientOptions, csrDER []byte, nodeUR
 		return nil, &FetchError{Method: "join", Err: err}
 	}
 
-	req := joinRequest{Token: opts.Token, CSRDER: csrDER, NodeURI: nodeURI}
+	req := JoinRequest{Token: token, CSRDER: csrDER, NodeURI: nodeURI}
 	reqData, err := json.Marshal(req)
 	if err != nil {
 		return nil, &FetchError{Method: "join", Err: err}
@@ -441,7 +459,7 @@ func JoinCSR(ctx context.Context, opts *JoinClientOptions, csrDER []byte, nodeUR
 		return nil, &FetchError{Method: "join", Err: err}
 	}
 
-	var resp joinResponse
+	var resp JoinResponse
 	if err := json.Unmarshal(plaintext, &resp); err != nil {
 		return nil, &FetchError{Method: "join", Err: err}
 	}

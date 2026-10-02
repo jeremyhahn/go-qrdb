@@ -453,7 +453,7 @@ func TestLoadOrGenerateJoinKey_ReadFailure(t *testing.T) {
 }
 
 // signingFailureProvider is a cakey.Provider double whose Signer always
-// fails, for exercising handleJoinRequest's issuance-failure branch.
+// fails, for exercising HandleJoinRequest's issuance-failure branch.
 type signingFailureProvider struct {
 	cert *x509.Certificate
 }

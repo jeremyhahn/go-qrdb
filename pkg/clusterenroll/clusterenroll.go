@@ -163,28 +163,44 @@ type BootstrapOptions struct {
 	AdminPort int
 
 	// JoinAddr is the host:port of an admitted member's member-side
-	// CSR-sign listener (JoinServer). Required for member-side join; see
-	// JoinConfigured.
+	// CSR-sign listener (JoinServer), for the Noise_NK transport. Required
+	// for member-side join over Noise; see JoinConfigured.
 	JoinAddr string
 
 	// JoinKey is the hex Curve25519 public key of that listener
-	// (JoinServer.PublicKey, hex-encoded). Required for member-side join.
+	// (JoinServer.PublicKey, hex-encoded). Required for member-side join
+	// over Noise.
 	JoinKey string
 
-	// JoinToken is the join-admission secret. Required for member-side
-	// join; there is no default.
+	// JoinHTTPURL is the base admin HTTPS URL of an admitted member (e.g.
+	// "https://10.0.0.2:8443"), for the SPKI/Direct transport
+	// (JoinHTTPPath). Required for member-side join over SPKI/Direct;
+	// mutually exclusive with JoinAddr/JoinKey in practice, though both may
+	// be configured -- Join prefers Noise when both are set.
+	JoinHTTPURL string
+
+	// JoinToken is the join-admission secret, shared by every join
+	// transport. Required for member-side join; there is no default.
 	JoinToken string
 }
 
-// JoinConfigured reports whether member-side CSR join is configured: an
-// admitted member's join listener address and public key, plus the
-// admission token. Unlike HasFlags (which selects path 4 at all), this is
-// checked INSIDE Join to decide whether the join can proceed with a signed
-// leaf or must refuse -- a node joining via explicit TLS files, or one whose
-// operator has not yet stood up a join listener anywhere, takes the same
-// path 4 selection without this being set.
+// JoinConfigured reports whether member-side CSR join is configured over
+// EITHER transport: Noise (an admitted member's join listener address and
+// public key) or SPKI/Direct (an admitted member's admin HTTPS URL, trusted
+// the same way the matching anchor-fetch method already is) -- plus the
+// admission token in both cases. Unlike HasFlags (which selects path 4 at
+// all), this is checked INSIDE Join to decide whether the join can proceed
+// with a signed leaf or must refuse -- a node joining via explicit TLS
+// files, or one whose operator has not yet stood up a join route anywhere,
+// takes the same path 4 selection without this being set.
 func (b BootstrapOptions) JoinConfigured() bool {
-	return b.JoinAddr != "" && b.JoinKey != "" && b.JoinToken != ""
+	return b.JoinToken != "" && (b.joinNoiseConfigured() || b.JoinHTTPURL != "")
+}
+
+// joinNoiseConfigured reports whether the Noise_NK join transport is
+// configured, independent of the admission token.
+func (b BootstrapOptions) joinNoiseConfigured() bool {
+	return b.JoinAddr != "" && b.JoinKey != ""
 }
 
 // HasFlags returns true when at least one bootstrap method is configured,
@@ -656,20 +672,34 @@ func Join(ctx context.Context, opts *Options, logger *slog.Logger) (*clustertls.
 		return nil, err
 	}
 
-	joinKey, err := hex.DecodeString(opts.Bootstrap.JoinKey)
-	if err != nil {
-		return nil, &JoinKeyDecodeError{Err: err}
-	}
-
-	logger.Info("joining existing cluster via member-side CSR",
-		"join_addr", opts.Bootstrap.JoinAddr)
-	certPEM, err := JoinCSR(ctx, &JoinClientOptions{
-		ServerAddr: opts.Bootstrap.JoinAddr,
-		ServerKey:  joinKey,
-		Token:      opts.Bootstrap.JoinToken,
-	}, csrDER, nodeURI)
-	if err != nil {
-		return nil, err
+	var certPEM []byte
+	if opts.Bootstrap.joinNoiseConfigured() {
+		joinKey, err := hex.DecodeString(opts.Bootstrap.JoinKey)
+		if err != nil {
+			return nil, &JoinKeyDecodeError{Err: err}
+		}
+		logger.Info("joining existing cluster via member-side CSR (Noise_NK)",
+			"join_addr", opts.Bootstrap.JoinAddr)
+		certPEM, err = JoinCSR(ctx, &JoinClientOptions{
+			ServerAddr: opts.Bootstrap.JoinAddr,
+			ServerKey:  joinKey,
+			Token:      opts.Bootstrap.JoinToken,
+		}, csrDER, nodeURI)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		logger.Info("joining existing cluster via member-side CSR (SPKI/Direct)",
+			"join_url", opts.Bootstrap.JoinHTTPURL)
+		var err error
+		certPEM, err = JoinCSRHTTP(ctx, &JoinHTTPClientOptions{
+			ServerURL: opts.Bootstrap.JoinHTTPURL,
+			SPKIPin:   opts.Bootstrap.SPKIPin,
+			Token:     opts.Bootstrap.JoinToken,
+		}, csrDER, nodeURI)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	keyDER, err := x509.MarshalECPrivateKey(nodeKey)

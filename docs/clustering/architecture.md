@@ -227,17 +227,28 @@ arbitrary bytes) — a generic Noise\_NK primitive that is not specific to the
 bundle-fetch protocol. go-truststrap is not modified; this package only
 calls primitives it already exports.
 
-**Wire transport (SPKI, Direct): not yet implemented.** The same
-transport-agnostic core (`handleJoinRequest`) is ready for them — a
-plain-HTTPS binding over the existing admin listener, pinned the same way
-`/v1/ca/bootstrap` already is, is the natural shape — but only the Noise
-binding ships today. A node whose only configured anchor-fetch method is
-SPKI or Direct cannot yet complete a member-side join; it still has the
-explicit-TLS-files path available.
+**Wire transport (SPKI, Direct, shipped).** The same transport-agnostic
+core (`clusterenroll.HandleJoinRequest`) backs a second binding: a plain
+HTTPS route, `POST /v1/enroll/join` (`clusterenroll.JoinHTTPPath`), on the
+node's existing admin HTTPS listener (`pkg/api/rest`, `WithClusterJoin`),
+reached the same way `GET /v1/ca/bootstrap` already is -- SPKI-pinned
+(`spkipin.NewPinnedTLSConfig`, the same primitive the anchor fetch uses) or
+Direct (the system trust store). It carries the identical
+`JoinRequest`/`JoinResponse` JSON shape the Noise transport encrypts, in the
+clear body of a TLS-protected request: there is exactly one implementation
+of the admission check, the CSR validation and the issuance call, called by
+both bindings. The client side is `clusterenroll.JoinCSRHTTP`, selected by
+`Join` whenever `BootstrapOptions.JoinHTTPURL` is set instead of
+`JoinAddr`/`JoinKey`. Like `/v1/ca/bootstrap`, the route exists only on the
+regular (post-unseal) server and is deliberately NOT added to the
+sealed-window allowlist: the cluster CA (Key A) it signs with is only
+reachable once unsealed, so there is nothing for a sealed-window binding to
+serve.
 
 **Admission is a separate concern from signing.** Reaching an existing
-member and completing the Noise handshake proves nothing about whether this
-joiner should be issued a certificate — that is what the join token (or a
+member and completing the handshake (Noise) or the TLS connection
+(SPKI/Direct) proves nothing about whether this joiner should be issued a
+certificate — that is what the join token (or a
 future approval workflow) decides, before the CSR is signed, not after.
 
 ### Why this does not reopen the shared-CA-key defect
