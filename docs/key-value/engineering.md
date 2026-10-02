@@ -750,7 +750,10 @@ consumes no revision, fires no watch and is never itself compacted.
   `prefix-compaction` is activated (`service.FeatureNotEnabledError` before),
   the gate that carries `OpMVCCCompactPrefix` too. A state machine that does
   not apply it -- the pebble KV state machine, the KV engine, the state
-  machines of `pkg/statemachine` -- refuses it as an unknown opcode.
+  machines of `pkg/statemachine` -- refuses it as an unknown opcode. Such
+  a store therefore holds no record, and a read of its table answers empty:
+  dropping a database on it has nothing to clear, and the scheduler nothing
+  to run.
 - **Carried by snapshots and backups, covered by the replica hash.** The
   compaction table is exempt from the node-local filter (`pkg/store`
   `isNodeLocalKey`), exactly as the lease table is.

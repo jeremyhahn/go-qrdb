@@ -17,6 +17,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
@@ -131,7 +132,7 @@ func (s *MVCCKVService) proposeCompactionState(ctx context.Context, cmd protocol
 func (s *MVCCKVService) CompactionState(ctx context.Context, scope string) (*compaction.State, error) {
 	got, err := s.host.SyncRead(ctx, s.shardID, CompactionStateQuery{Scope: scope})
 	if err != nil {
-		return nil, s.translateReadError(err)
+		return nil, noTableIsEmpty(s.translateReadError(err))
 	}
 	state, ok := got.(*compaction.State)
 	if !ok {
@@ -144,13 +145,27 @@ func (s *MVCCKVService) CompactionState(ctx context.Context, scope string) (*com
 func (s *MVCCKVService) CompactionStates(ctx context.Context) (map[string]*compaction.State, error) {
 	got, err := s.host.SyncRead(ctx, s.shardID, CompactionStatesQuery{})
 	if err != nil {
-		return nil, s.translateReadError(err)
+		return nil, noTableIsEmpty(s.translateReadError(err))
 	}
 	states, ok := got.(map[string]*compaction.State)
 	if !ok {
 		return nil, &ReadError{Err: &unexpectedResultTypeError{}}
 	}
 	return states, nil
+}
+
+// noTableIsEmpty answers a read of the compaction table on a store whose
+// state machine keeps no MVCC history -- it refuses the table's query as an
+// unknown query type (*MVCCBackendRequiredError) -- as an empty table: such
+// a store refuses OpCompactionState, so it can hold no record. A drop of a
+// database on it then has nothing to clear and a scheduler pass nothing to
+// run, rather than failing. Every other error is returned as it is.
+func noTableIsEmpty(err error) error {
+	var noHistory *MVCCBackendRequiredError
+	if errors.As(err, &noHistory) {
+		return nil
+	}
+	return err
 }
 
 // shardInfoHost is a Host that reports a shard's state -- the quicraft host,

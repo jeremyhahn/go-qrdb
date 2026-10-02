@@ -165,6 +165,36 @@ func TestCompactionState_Reads(t *testing.T) {
 	}
 }
 
+// A store whose state machine keeps no MVCC history refuses the compaction
+// table's query as an unknown query type. It holds no record -- a record is
+// written only by a command such a store refuses -- so its table reads as
+// empty, and dropping a database on it, or a scheduler pass over it, has
+// nothing to clear or run rather than failing.
+func TestCompactionState_ANonMVCCStoreHasAnEmptyTable(t *testing.T) {
+	host := &mockHost{syncReadFn: func(context.Context, uint64, interface{}) (interface{}, error) {
+		return nil, &fakeUnsupportedQueryTypeError{unsupported: true}
+	}}
+	svc := NewMVCCKVService(host, 1).(*MVCCKVService)
+	if got, err := svc.CompactionState(context.Background(), "acme/app/"); err != nil || got != nil {
+		t.Fatalf("CompactionState = %+v, %v; want no record", got, err)
+	}
+	if got, err := svc.CompactionStates(context.Background()); err != nil || len(got) != 0 {
+		t.Fatalf("CompactionStates = %+v, %v; want an empty table", got, err)
+	}
+
+	// Any other read failure still fails.
+	failing := &mockHost{syncReadFn: func(context.Context, uint64, interface{}) (interface{}, error) {
+		return nil, errors.New("read failed")
+	}}
+	svc = NewMVCCKVService(failing, 1).(*MVCCKVService)
+	if _, err := svc.CompactionStates(context.Background()); err == nil {
+		t.Fatal("a failed read reported an empty table")
+	}
+	if _, err := svc.CompactionState(context.Background(), "acme/app/"); err == nil {
+		t.Fatal("a failed read reported no record")
+	}
+}
+
 // leaderHost is a mockHost that reports shard leadership.
 type leaderHost struct {
 	*mockHost
