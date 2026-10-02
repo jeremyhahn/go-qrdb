@@ -17,7 +17,7 @@
 <script lang="ts">
   import type { Client, PeersResponse, ShardPeers, PeerInfo } from "@qrdb/sdk";
   import { onMount } from "svelte";
-  import { RefreshCw, ChevronDown, UserMinus, PlusCircle, Camera, Minus } from "lucide-svelte";
+  import { RefreshCw, ChevronDown, UserMinus, Minus } from "lucide-svelte";
   import { showToast } from "$stores/toast.svelte.ts";
   import PageHeader from "../../components/PageHeader.svelte";
 

@@ -117,10 +117,9 @@
       engine: dbWizardStore.engine,
       mode: dbWizardStore.mode,
       backend: dbWizardStore.backend || "pebble",
-      dataDir:
-        dbWizardStore.mode === "embedded" && dbWizardStore.dataDir
-          ? dbWizardStore.dataDir
-          : undefined,
+      ...(dbWizardStore.mode === "embedded" && dbWizardStore.dataDir
+        ? { dataDir: dbWizardStore.dataDir }
+        : {}),
       // Replication factor and dedicated WAL for a dedicated-raft database.
       // Both are only meaningful on a Raft-mode server; the backend ignores
       // them for non-raft databases.
@@ -130,47 +129,53 @@
             ...(dbWizardStore.dedicatedWal ? { dedicatedWal: true } : {}),
           }
         : {}),
-      raft:
-        dbWizardStore.mode === "embedded" && dbWizardStore.raftConfig !== null
-          ? {
+      ...(dbWizardStore.mode === "embedded" && dbWizardStore.raftConfig !== null
+        ? {
+            raft: {
               clusterMode: dbWizardStore.raftConfig.clusterMode,
               replicaId: dbWizardStore.raftConfig.replicaId,
               raftAddress: dbWizardStore.raftConfig.raftAddress,
               peers: dbWizardStore.raftConfig.peers,
               localNodeCount: dbWizardStore.raftConfig.localNodeCount,
-            }
-          : undefined,
-      connection:
-        dbWizardStore.mode === "remote" &&
-        dbWizardStore.connectionConfig !== null
-          ? {
+            },
+          }
+        : {}),
+      ...(dbWizardStore.mode === "remote" && dbWizardStore.connectionConfig !== null
+        ? {
+            connection: {
               transport: dbWizardStore.connectionConfig.transport,
               address: dbWizardStore.connectionConfig.address,
-              caFile: dbWizardStore.connectionConfig.caFile || undefined,
-              certFile: dbWizardStore.connectionConfig.certFile || undefined,
-              keyFile: dbWizardStore.connectionConfig.keyFile || undefined,
-            }
-          : undefined,
-      protocol:
-        dbWizardStore.sqlMySQL || dbWizardStore.sqlPostgreSQL
-          ? {
+              ...(dbWizardStore.connectionConfig.caFile ? { caFile: dbWizardStore.connectionConfig.caFile } : {}),
+              ...(dbWizardStore.connectionConfig.certFile ? { certFile: dbWizardStore.connectionConfig.certFile } : {}),
+              ...(dbWizardStore.connectionConfig.keyFile ? { keyFile: dbWizardStore.connectionConfig.keyFile } : {}),
+            },
+          }
+        : {}),
+      ...(dbWizardStore.sqlMySQL || dbWizardStore.sqlPostgreSQL
+        ? {
+            protocol: {
               mysql: dbWizardStore.sqlMySQL,
               postgresql: dbWizardStore.sqlPostgreSQL,
-            }
-          : undefined,
-      barrier: dbWizardStore.barrierEnabled
-        ? {
-            mode: dbWizardStore.sealMode,
-            sharesRequired:
-              dbWizardStore.sealMode === "shamir"
-                ? dbWizardStore.sealConfig.sharesRequired
-                : undefined,
-            sharesTotal:
-              dbWizardStore.sealMode === "shamir"
-                ? dbWizardStore.sealConfig.sharesTotal
-                : undefined,
+            },
           }
-        : undefined,
+        : {}),
+      // The request has always omitted `enabled`, which the server reads as
+      // false; it is spelled out here unchanged. The wizard collects no
+      // barrier secret, so it cannot initialise a barrier at create.
+      ...(dbWizardStore.barrierEnabled
+        ? {
+            barrier: {
+              enabled: false,
+              mode: dbWizardStore.sealMode,
+              ...(dbWizardStore.sealMode === "shamir"
+                ? {
+                    sharesRequired: dbWizardStore.sealConfig.sharesRequired,
+                    sharesTotal: dbWizardStore.sealConfig.sharesTotal,
+                  }
+                : {}),
+            },
+          }
+        : {}),
     };
     console.debug("[StepDatabaseCreating] assembled request", req);
     completePhase(phaseIdx);

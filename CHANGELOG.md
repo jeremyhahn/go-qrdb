@@ -11,22 +11,6 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
-## [0.29.1-alpha] - 2026-10-02
-
-Fix release. Highlights:
-
-- **CI build gate green again.** v0.29.0's refused-unsigned-holder-forward path wrote a fixed 502 for a received error and failed the `test/buildgates` error-routing gate. It is now a `LeaderForwardError` like the other forwarding failures; behaviour is unchanged.
-
-### Fixed
-
-- **A refused unsigned holder forward is classified like every other forwarding
-  failure.** v0.29.0 wrote the holder refusal straight as a 502, bypassing the
-  error-mapping rule that `test/buildgates` enforces for REST handlers, which
-  left that gate red. The refusal is now a `*rest.LeaderForwardError` wrapping
-  `*rest.HolderForwardUnsignedError`, the same shape as the other two forwarding
-  failures in `forwardToLeader`. The status (502), the fixed message and
-  `errors.As` reachability of the holder error are unchanged.
-
 ### Security
 
 - **BREAKING: a database's discovery secrets are write-only.** Every read of a
@@ -61,6 +45,11 @@ Fix release. Highlights:
   and `protocol.etcd` are typed in both SDKs; REST reports `tenantId` like gRPC.
   The Go and TypeScript wire contract tests hold both SDKs to the REST response
   with no exception list.
+- **CI runs the TypeScript SDK and the desktop frontend.** A `test-typescript`
+  job, required by the CI gate, runs `npm ci`, `tsc`, `npm test` and the build
+  in `sdk/typescript`, then `svelte-check` in `cmd/qrdb/frontend` against the
+  built SDK. The frontend's seventeen type errors are fixed; none changed what
+  the frontend sends.
 
 ### Fixed
 
@@ -73,6 +62,22 @@ Fix release. Highlights:
   holds the Go SDK's `transport.DatabaseInfo` to it, and by a TypeScript SDK
   test, and `npm test` in `sdk/typescript` typechecks the tests before running
   them. The desktop database wizard no longer carries a shard ID.
+
+## [0.29.1-alpha] - 2026-10-02
+
+Fix release. Highlights:
+
+- **CI build gate green again.** v0.29.0's refused-unsigned-holder-forward path wrote a fixed 502 for a received error and failed the `test/buildgates` error-routing gate. It is now a `LeaderForwardError` like the other forwarding failures; behaviour is unchanged.
+
+### Fixed
+
+- **A refused unsigned holder forward is classified like every other forwarding
+  failure.** v0.29.0 wrote the holder refusal straight as a 502, bypassing the
+  error-mapping rule that `test/buildgates` enforces for REST handlers, which
+  left that gate red. The refusal is now a `*rest.LeaderForwardError` wrapping
+  `*rest.HolderForwardUnsignedError`, the same shape as the other two forwarding
+  failures in `forwardToLeader`. The status (502), the fixed message and
+  `errors.As` reachability of the holder error are unchanged.
 
 ## [0.29.0-alpha] - 2026-10-02
 

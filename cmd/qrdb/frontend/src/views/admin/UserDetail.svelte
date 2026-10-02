@@ -68,9 +68,9 @@
     if (hasWildcard) return databases;
     const dbNames = new Set<string>();
     for (const perm of userPerms) {
-      const parts = perm.split(":");
-      if (parts[0] === "database" && parts.length >= 2) {
-        dbNames.add(parts[1]);
+      const [kind, name] = perm.split(":");
+      if (kind === "database" && name !== undefined) {
+        dbNames.add(name);
       }
     }
     if (dbNames.size === 0) return databases;

@@ -82,6 +82,7 @@
           raftAddress: "localhost:63001",
           peers: [],
           localNodeCount: 3,
+          raftGroups: null,
         };
       }
     }

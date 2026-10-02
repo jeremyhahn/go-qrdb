@@ -15,7 +15,6 @@
   limitations under the License.
 -->
 <script lang="ts">
-  import { onMount } from "svelte";
   import type { Client } from "@qrdb/sdk";
   import {
     Database,
@@ -460,24 +459,22 @@
         embedded: {
           dataDir,
           raftEnabled: embeddedServerMode === "raft",
-          raftConfig:
-            embeddedServerMode === "raft"
-              ? {
+          ...(embeddedServerMode === "raft"
+            ? {
+                raftConfig: {
                   discovery: embeddedDiscovery,
-                  multicastSecret:
-                    embeddedDiscovery === "multicast"
-                      ? embeddedMulticastSecret || undefined
-                      : undefined,
-                  dnsDomain:
-                    embeddedDiscovery === "dns"
-                      ? embeddedDnsDomain || undefined
-                      : undefined,
-                  peers:
-                    embeddedDiscovery === "static" && peers !== undefined && peers.length > 0
-                      ? peers
-                      : undefined,
-                }
-              : undefined,
+                  ...(embeddedDiscovery === "multicast" && embeddedMulticastSecret
+                    ? { multicastSecret: embeddedMulticastSecret }
+                    : {}),
+                  ...(embeddedDiscovery === "dns" && embeddedDnsDomain
+                    ? { dnsDomain: embeddedDnsDomain }
+                    : {}),
+                  ...(embeddedDiscovery === "static" && peers !== undefined && peers.length > 0
+                    ? { peers }
+                    : {}),
+                },
+              }
+            : {}),
           sealConfig: {
             mode: embeddedBarrierMode,
           },
@@ -655,9 +652,9 @@
         external: {
           transport: externalTransport,
           address: externalAddress.trim(),
-          caFile: externalCaFile.trim() || undefined,
-          certFile: externalCertFile.trim() || undefined,
-          keyFile: externalKeyFile.trim() || undefined,
+          ...(externalCaFile.trim() ? { caFile: externalCaFile.trim() } : {}),
+          ...(externalCertFile.trim() ? { certFile: externalCertFile.trim() } : {}),
+          ...(externalKeyFile.trim() ? { keyFile: externalKeyFile.trim() } : {}),
         } satisfies ExternalConnectionConfig,
         createdAt: new Date().toISOString(),
       };

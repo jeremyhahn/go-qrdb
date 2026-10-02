@@ -75,9 +75,9 @@
         // Extract database scope from permissions
         const dbScope = new Set<string>();
         for (const perm of role.permissions) {
-          const parts = perm.split(":");
-          if (parts[0] === "database" && parts.length >= 2) {
-            dbScope.add(parts[1]);
+          const [kind, name] = perm.split(":");
+          if (kind === "database" && name !== undefined) {
+            dbScope.add(name);
           }
         }
         selectedDatabaseScope = dbScope.size > 0 ? [...dbScope] : [];

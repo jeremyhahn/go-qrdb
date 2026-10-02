@@ -103,7 +103,7 @@
   let compares: CompareRow[] = $state([]);
   let successOps: OpRow[] = $state([]);
   let failureOps: OpRow[] = $state([]);
-  let response: TransactionResponse | null = $state(null);
+  let response = $state<TransactionResponse | null>(null);
   let loading: boolean = $state(false);
 
   // ---------------------------------------------------------------------------

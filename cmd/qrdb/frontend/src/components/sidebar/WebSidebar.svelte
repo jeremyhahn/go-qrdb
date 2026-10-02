@@ -45,8 +45,6 @@
     dbLoading?: boolean;
     /** Whether the sidebar is in collapsed (icon-rail) mode. */
     collapsed?: boolean;
-    /** Callback to open the new-database wizard. */
-    oncreatedatabase?: () => void;
   }
 
   let {
@@ -54,7 +52,6 @@
     databases,
     dbLoading = false,
     collapsed = false,
-    oncreatedatabase,
   }: Props = $props();
 
   // Web mode always treats the single server as "active".

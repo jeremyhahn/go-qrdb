@@ -618,6 +618,41 @@ jobs:
       - name: Unit tests (race, sdk/go module)
         run: make test-sdk
 
+  test-typescript:
+    name: Test (TypeScript SDK + desktop frontend)
+    runs-on: ubuntu-latest
+    # The TypeScript SDK and the desktop frontend had no CI at all: the SDK's
+    # DatabaseInfo read `shard_id`/`data_dir` while REST sent `shardId`/
+    # `dataDir`, so both were always undefined, and nothing went red. The
+    # SDK's `npm test` typechecks its tests before running them -- its wire
+    # contract test pins the SDK's types to a REST response the Go handler
+    # test (TestDatabaseInfoWire_*) holds to the real handler output, and that
+    # pinning exists only in the typecheck. The frontend consumes the built
+    # SDK, so svelte-check catches an SDK change that breaks a view.
+    #
+    # No Go, so no `needs`: it runs beside lint and build.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22"
+
+      - name: TypeScript SDK (typecheck, tests, build)
+        working-directory: sdk/typescript
+        run: |
+          npm ci
+          npx tsc --noEmit -p .
+          npm test
+          npm run build
+
+      - name: Desktop frontend (svelte-check against the built SDK)
+        working-directory: cmd/qrdb/frontend
+        run: |
+          npm ci
+          npm run check
+
   integration-standalone:
     name: Integration (standalone stack)
     runs-on: ubuntu-latest
@@ -892,7 +927,7 @@ jobs:
     # fail-open gate; a job that is required and cannot pass freezes the
     # repository without closing a single finding. Neither is acceptable, which
     # is why the two halves must move together.
-    needs: [lint, build, test, test-sdk, integration-standalone, security, trivy]
+    needs: [lint, build, test, test-sdk, test-typescript, integration-standalone, security, trivy]
     steps:
       - name: Verify every job succeeded
         env:
@@ -900,6 +935,7 @@ jobs:
           RESULT_BUILD: ${{ needs.build.result }}
           RESULT_TEST: ${{ needs.test.result }}
           RESULT_TEST_SDK: ${{ needs.test-sdk.result }}
+          RESULT_TEST_TYPESCRIPT: ${{ needs.test-typescript.result }}
           RESULT_INTEGRATION_STANDALONE: ${{ needs.integration-standalone.result }}
           RESULT_SECURITY: ${{ needs.security.result }}
           RESULT_TRIVY: ${{ needs.trivy.result }}
@@ -924,6 +960,7 @@ jobs:
           check build "$RESULT_BUILD"
           check test "$RESULT_TEST"
           check test-sdk "$RESULT_TEST_SDK"
+          check test-typescript "$RESULT_TEST_TYPESCRIPT"
           check integration-standalone "$RESULT_INTEGRATION_STANDALONE"
           check security "$RESULT_SECURITY"
           check trivy "$RESULT_TRIVY"

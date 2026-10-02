@@ -16,7 +16,7 @@
 -->
 <script lang="ts">
   import type { Client, DatabaseInfo, SQLQueryResult } from "@qrdb/sdk";
-  import { Play, Terminal, Clock, RotateCcw } from "lucide-svelte";
+  import { Play, Clock, RotateCcw } from "lucide-svelte";
   import { showToast } from "$stores/toast.svelte.ts";
   import PageHeader from "../../components/PageHeader.svelte";
 
