@@ -19,6 +19,7 @@ package servicetest
 import (
 	"context"
 	"sync"
+	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -46,9 +47,14 @@ var _ service.CompactionPolicies = (*CompactionPolicies)(nil)
 // NewDatabaseService returns service.NewDatabaseService(manager, opts...)
 // with an in-memory CompactionPolicies installed, so a transport test can
 // drive a database's compaction policy without composing a server.
-func NewDatabaseService(manager *database.Manager, opts ...service.DatabaseServiceOption) service.DatabaseServicer {
+func NewDatabaseService(t testing.TB, manager *database.Manager, opts ...service.DatabaseServiceOption) service.DatabaseServicer {
+	t.Helper()
 	svc := service.NewDatabaseService(manager, opts...)
-	svc.(service.CompactionPolicyWiring).SetCompactionPolicies(NewCompactionPolicies())
+	wiring, ok := svc.(service.CompactionPolicyWiring)
+	if !ok {
+		t.Fatalf("servicetest: %T takes no CompactionPolicies port", svc)
+	}
+	wiring.SetCompactionPolicies(NewCompactionPolicies())
 	return svc
 }
 

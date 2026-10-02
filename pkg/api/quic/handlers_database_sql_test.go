@@ -31,7 +31,7 @@ func newSQLConfigQUICServer(t *testing.T) *Server {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	mgr := database.NewManager(logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
-	return NewServer(nil, nil, "localhost:0", WithDatabaseService(servicetest.NewDatabaseService(mgr)))
+	return NewServer(nil, nil, "localhost:0", WithDatabaseService(servicetest.NewDatabaseService(t, mgr)))
 }
 
 func TestHandleDatabaseSQL_CreateAndUpdate(t *testing.T) {

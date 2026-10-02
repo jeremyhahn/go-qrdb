@@ -17,10 +17,29 @@ package servicetest
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
+
+// The database service NewDatabaseService returns sets and reports a
+// database's policy through the installed port.
+func TestNewDatabaseService_InstallsThePort(t *testing.T) {
+	mgr := database.NewManager(slog.New(slog.DiscardHandler), t.TempDir())
+	t.Cleanup(func() { _ = mgr.Close() })
+	svc := NewDatabaseService(t, mgr)
+	ctx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
+	if _, err := svc.CreateForTenant(ctx, database.DatabaseConfig{Name: "events", Engine: database.EngineKV, Backend: database.BackendMemory}); err != nil {
+		t.Fatalf("CreateForTenant: %v", err)
+	}
+	info, err := svc.UpdateCompactionForTenant(ctx, "events", &compaction.Policy{Mode: compaction.Revision, RetainRevisions: 2})
+	if err != nil || info.Compaction == nil || info.Compaction.RetainRevisions != 2 {
+		t.Fatalf("UpdateCompactionForTenant = %+v, %v; want the policy", info, err)
+	}
+}
 
 func TestCompactionPolicies_SetReadAndClear(t *testing.T) {
 	p := NewCompactionPolicies()

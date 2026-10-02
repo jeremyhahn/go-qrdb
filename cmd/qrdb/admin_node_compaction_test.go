@@ -28,7 +28,7 @@ import (
 // nodeCompactionAdminService holds the node-keyspace policy the way the
 // admin service does: validated on set, off stored as none.
 type nodeCompactionAdminService struct {
-	topoAdminService
+	mockAdminService
 	policy *compaction.Policy
 	err    error
 }

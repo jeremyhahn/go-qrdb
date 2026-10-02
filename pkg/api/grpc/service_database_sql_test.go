@@ -34,7 +34,7 @@ func newRealDatabaseService(t *testing.T) service.DatabaseServicer {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	mgr := database.NewManager(logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
-	return servicetest.NewDatabaseService(mgr)
+	return servicetest.NewDatabaseService(t, mgr)
 }
 
 func TestGRPC_DatabaseSQL_CreateAndUpdate(t *testing.T) {

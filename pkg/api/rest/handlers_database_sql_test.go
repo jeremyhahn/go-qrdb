@@ -37,7 +37,7 @@ func newSQLConfigServer(t *testing.T) *Server {
 	mgr := database.NewManager(logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	return NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
-		WithDatabaseService(servicetest.NewDatabaseService(mgr)))
+		WithDatabaseService(servicetest.NewDatabaseService(t, mgr)))
 }
 
 func decodeDatabaseInfo(t *testing.T, rec *httptest.ResponseRecorder) transport.DatabaseInfo {

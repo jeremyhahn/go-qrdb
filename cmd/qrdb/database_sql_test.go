@@ -31,7 +31,7 @@ func newRealCLIDatabaseService(t *testing.T) service.DatabaseServicer {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	mgr := database.NewManager(logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
-	return servicetest.NewDatabaseService(mgr)
+	return servicetest.NewDatabaseService(t, mgr)
 }
 
 func TestDatabaseCreate_SQLConcurrencyFlag(t *testing.T) {

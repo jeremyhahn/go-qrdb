@@ -39,7 +39,7 @@ func TestEmbeddedDatabase_CompactionPolicy_RealService(t *testing.T) {
 	if _, err := mgr.Create(database.DatabaseConfig{Name: "acme-db", TenantID: "acme", Engine: database.EngineKV, Backend: database.BackendMemory}); err != nil {
 		t.Fatal(err)
 	}
-	tr := newExtTransport(t, WithDatabaseService(servicetest.NewDatabaseService(mgr)))
+	tr := newExtTransport(t, WithDatabaseService(servicetest.NewDatabaseService(t, mgr)))
 	policy := &transport.DatabaseCompactionConfig{Mode: "revision", RetainRevisions: 2}
 
 	var nf *database.NotFoundError
