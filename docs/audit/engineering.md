@@ -241,6 +241,19 @@ once *every* attempt has seen it absent across a walk in which nothing rotated:
 `rotate()` unlinks the active name and re-creates it a moment later, and a
 single listing cannot tell that from a deletion.
 
+Two equal listings cannot tell it either, when the rotation is **mid-stride
+across both**: a writer descheduled between its rename and its re-open, on a
+loaded host, for longer than all five attempts together leaves every attempt
+the same listing with the active name absent. So the logger's own verification
+(`VerifyChain`, `VerifyChainSet`) also reads the writer's rotation sequence --
+an atomic counter `rotate()` makes odd before the rename and even again once
+the replacement file is open -- before its first listing and after its second.
+An attempt counts only if both reads are the same even value; any other attempt
+is a race, never an absence, and a walk that never gets a still view ends in
+`*ConcurrentRotationError`. It takes no lock. *(Corrected: the absence was
+judged on the listings alone, and a stalled rotation under host load was
+reported as a missing audit log on an honest trail.)*
+
 The one edit the walk cannot distinguish from healthy operation is the removal
 of a contiguous **prefix** of the archives, because retention pruning does
 exactly that. It is reported rather than refused: `ChainVerification.Genesis`

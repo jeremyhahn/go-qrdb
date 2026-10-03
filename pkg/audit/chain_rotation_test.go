@@ -981,6 +981,15 @@ func TestVerifyChainSegment_ReportsALineTooLongToBeARecord(t *testing.T) {
 // the ONE thing that must never happen: no run may claim the trail is broken.
 // *ConcurrentRotationError is an accepted outcome -- it says the trail moved,
 // not that anything is wrong with it.
+//
+// It verifies through the LOGGER (VerifyChainSet), the production path, which
+// knows from the writer's rotation sequence whether a rotation was mid-stride
+// while it listed. It used to call the path-only verifyChainSet, which cannot
+// know that: under host load a writer stalled between its rename and its
+// re-open for longer than every retry made each attempt see the active name
+// absent, and the run failed with "file does not exist" on an honest trail.
+// TestChainFileLogger_VerifyChainSet_NeverReportsTheRotationGapAsAMissingLog
+// holds that window open deterministically.
 func TestChainFileLogger_VerifyChain_NeverCriesTamperWhileTheSinkRotates(t *testing.T) {
 	l, dir, path := rotatingLogger(t, 400)
 
@@ -1025,7 +1034,7 @@ func TestChainFileLogger_VerifyChain_NeverCriesTamperWhileTheSinkRotates(t *test
 		}
 
 		verifications++
-		_, err := verifyChainSet(path)
+		_, err := l.VerifyChainSet(ctx)
 		if err == nil {
 			continue
 		}

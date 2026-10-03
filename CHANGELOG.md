@@ -11,6 +11,19 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Audit chain verification no longer reports a stalled rotation as a missing log.**
+  `ChainFileLogger.VerifyChain`/`VerifyChainSet` judged a missing active file on its directory
+  listings alone. A writer descheduled between a rotation's rename and its re-open -- on a loaded
+  host, for longer than the verifier's whole retry budget -- left every attempt the same listing
+  with the active name absent, and the verifier reported the audit log missing
+  (`*FileError`, "file does not exist") on an honest trail. The logger now keeps a rotation
+  sequence that `rotate()` makes odd across the rename and re-open, and the verifier counts an
+  attempt only if it read the same even value on both sides of its listings; a stalled rotation
+  is a `*ConcurrentRotationError` ("the trail moved"), never a fault. It takes no lock, and the
+  verifier no longer takes the writer's lock to read the path.
+
 ## [0.33.1-alpha] - 2026-10-03
 
 A clustered SDK boot that fails can now be retried cleanly. Highlights:

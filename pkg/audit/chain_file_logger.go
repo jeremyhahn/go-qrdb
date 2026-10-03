@@ -28,6 +28,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/util/fsync"
@@ -115,6 +116,15 @@ type ChainFileLogger struct {
 	f          *os.File
 	prevDigest [sha256.Size]byte
 	size       int64
+
+	// rotations is a sequence counter the verifier reads WITHOUT l.mu. rotate
+	// makes it odd before the rename and even again once the replacement
+	// file is open, so a verifier that reads the same even value on both
+	// sides of a directory listing knows no rotation was mid-stride while it
+	// listed. Without it a listing taken in the gap between the rename and
+	// the re-open -- the active name briefly does not exist -- could not be
+	// told from an unlinked audit log. See verifyChainSetAt.
+	rotations atomic.Uint64
 
 	// writeFunc, syncFunc and rotateFunc, when non-nil, replace the append,
 	// the fsync and the rotation.
@@ -610,12 +620,11 @@ func (l *ChainFileLogger) VerifyChain(ctx context.Context) error {
 // way a caller learns that the digests were not traced back to zero. Removing
 // a contiguous prefix of the archives is the one edit a hash walk cannot tell
 // from retention doing its job; every other edit breaks a link.
+//
+// It takes no lock: l.path never changes after construction, and the walk
+// learns whether a rotation overlapped it from l.rotations.
 func (l *ChainFileLogger) VerifyChainSet(_ context.Context) (*ChainVerification, error) {
-	l.mu.Lock()
-	path := l.path
-	l.mu.Unlock()
-
-	return verifyChainSet(path)
+	return verifyChainSetAt(l.path, l.rotations.Load)
 }
 
 // Close flushes and closes the underlying file.
@@ -713,6 +722,10 @@ func (l *ChainFileLogger) rotate() error {
 	// depend on it -- but it is no longer the difference between a verifiable
 	// trail and an unverifiable one.
 	archivePath := rotatedPath(l.path)
+	// From the rename until the replacement file is open the active name does
+	// not exist. Mark that window for the lock-free verifier: odd while open,
+	// even again below whatever the rename and the reopen did.
+	l.rotations.Add(1)
 	rotErr := l.rename(l.path, archivePath)
 
 	// Reset the SIZE for the new file, and deliberately LEAVE prevDigest where
@@ -738,6 +751,7 @@ func (l *ChainFileLogger) rotate() error {
 	// auditing on a transient rename or fsync error. Report the rotation
 	// failure, but not by disabling the log.
 	openErr := l.openFile()
+	l.rotations.Add(1)
 	if rotErr != nil || closeErr != nil {
 		// Join rather than pick: when the reopen fails too, the logger is both
 		// undurable AND dead, and reporting only the first hides the second.

@@ -400,6 +400,23 @@ const (
 // out of the linking. They hand off nothing, so treating them as links would
 // fork the walk on honest data.
 func verifyChainSet(path string) (*ChainVerification, error) {
+	return verifyChainSetAt(path, nil)
+}
+
+// verifyChainSetAt is verifyChainSet with the writer's rotation sequence
+// (ChainFileLogger.rotations), when the set's writer is in this process.
+//
+// The two listings cannot see a rotation that is MID-STRIDE across both of
+// them: a writer stalled between its rename and its re-open -- descheduled on
+// a loaded host for longer than every retry together -- leaves the same
+// listing, active name absent, on both sides of every attempt, and that is
+// exactly what an unlinked audit log looks like. The sequence settles it: an
+// attempt counts only if it read the same EVEN value before its first listing
+// and after its second, so no rotation began, finished or was in progress
+// while it looked. Any other attempt is a race, never an absence. A nil
+// generation -- a set whose writer is not in this process -- leaves the
+// listings as the only evidence.
+func verifyChainSetAt(path string, generation func() uint64) (*ChainVerification, error) {
 	backoff := verifyScanBackoff
 	stableAbsences := 0
 	for attempt := 0; attempt < verifyScanAttempts; attempt++ {
@@ -408,6 +425,10 @@ func verifyChainSet(path string) (*ChainVerification, error) {
 			backoff *= 2
 		}
 
+		var genBefore uint64
+		if generation != nil {
+			genBefore = generation()
+		}
 		before, active, err := rotationSetFiles(path)
 		if err != nil {
 			return nil, err
@@ -419,6 +440,11 @@ func verifyChainSet(path string) (*ChainVerification, error) {
 		}
 		if !slices.Equal(before, after) {
 			continue // the sink rotated across the walk; that view is mixed
+		}
+		if generation != nil {
+			if genAfter := generation(); genBefore != genAfter || genBefore%2 == 1 {
+				continue // a rotation began, ended or was mid-stride while it looked
+			}
 		}
 		if !active {
 			// Absent across a walk that saw no rotation. That is what an
