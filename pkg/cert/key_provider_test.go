@@ -22,8 +22,12 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
+	"io"
 	"math/big"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -79,6 +83,26 @@ func newHSMDouble(t *testing.T) *hsmDouble {
 	return &hsmDouble{key: key, cert: cert}
 }
 
+// signerOnly wraps an *ecdsa.PrivateKey and exposes ONLY crypto.Signer's two
+// methods (Public, Sign) -- never the concrete *ecdsa.PrivateKey, whose
+// other fields and methods reach D, the private scalar, directly. A test
+// (or production code) that type-asserted hsmDouble's returned
+// crypto.Signer back to *ecdsa.PrivateKey would otherwise defeat the point
+// of these tests: that DefaultCertProvider touches an injected provider's
+// key ONLY by calling through crypto.Signer, exactly as it would a real
+// HSM/TPM/KMS-backed cakey.Adapter (go-qrdb#560 review, non-blocking).
+type signerOnly struct {
+	key *ecdsa.PrivateKey
+}
+
+func (s signerOnly) Public() crypto.PublicKey { return s.key.Public() }
+
+func (s signerOnly) Sign(rnd io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+	return s.key.Sign(rnd, digest, opts)
+}
+
+var _ crypto.Signer = signerOnly{}
+
 // provider returns a cakey.Adapter over this double, exactly the "no glue
 // code beyond cakey.Adapter" shape docs/certificate-authority/architecture.md
 // describes for an xkms-backed CA.
@@ -89,7 +113,7 @@ func (d *hsmDouble) provider() cakey.Adapter {
 			if d.signErr != nil {
 				return nil, d.signErr
 			}
-			return d.key, nil
+			return signerOnly{key: d.key}, nil
 		},
 		CertificateFunc: func(context.Context) (*x509.Certificate, error) {
 			d.certCalls++
@@ -233,6 +257,30 @@ func TestDefaultCertProvider_CACertPEMs_ScanError(t *testing.T) {
 	}
 }
 
+// TestDefaultCertProvider_CACertPEMs_BarrierSealed proves CACertPEMs checks
+// the barrier explicitly rather than relying on the KVStore scan to fail on
+// its own: outside Raft mode the plaintext cert_pem records are reachable
+// even while sealed, so without this check a runtime reseal would NOT make
+// the dynamic client-auth trust pool drop Key B (go-qrdb#560 review,
+// non-blocking).
+func TestDefaultCertProvider_CACertPEMs_BarrierSealed(t *testing.T) {
+	p, _, barrier := initializeProvider(t)
+	if _, err := p.GenerateClientCert(context.Background(), &GenerateRequest{Username: "alice", TenantID: "system"}); err != nil {
+		t.Fatalf("GenerateClientCert: %v", err)
+	}
+
+	barrier.seal()
+
+	_, err := p.CACertPEMs(context.Background())
+	if err == nil {
+		t.Fatal("expected an error once the barrier is sealed, even though the records are plaintext")
+	}
+	var bsErr *BarrierSealedError
+	if !errors.As(err, &bsErr) {
+		t.Fatalf("expected *BarrierSealedError, got %T: %v", err, err)
+	}
+}
+
 func TestDefaultCertProvider_CACertPEMs_InjectedProvider(t *testing.T) {
 	hsm := newHSMDouble(t)
 	p := NewDefaultProvider(newMockKVStore(), newMockBarrier(), WithKeyProvider(hsm.provider()))
@@ -338,6 +386,130 @@ func TestDefaultCertProvider_IsTenantIssuer_EmptyTenantFoldsToSystem(t *testing.
 	}
 	if !ok {
 		t.Error("expected an empty tenantID to fold to the system tenant")
+	}
+}
+
+// TestDefaultCertProvider_IsTenantIssuer_UnknownTenantNeverCreatesACA is the
+// B2-5 proof: a probe naming a tenant that has NEVER established a Key B CA
+// must answer (false, nil) and must NOT mint one as a side effect. Before
+// this fix, IsTenantIssuer called prov.Certificate directly, which
+// auto-initializes the built-in cakey.SoftwareProvider's CA via material()
+// on first use -- turning every such probe (reached on the authentication
+// path for whatever tenant a presented leaf CLAIMS to be, including
+// tenants that do not exist) into a CA-creation side effect.
+func TestDefaultCertProvider_IsTenantIssuer_UnknownTenantNeverCreatesACA(t *testing.T) {
+	p, kv, _ := newTestProvider()
+	ctx := context.Background()
+
+	const ghostTenant = "no-such-tenant"
+	someCert := newHSMDouble(t).cert // an unrelated certificate, standing in for an arbitrary leaf's issuer
+
+	ok, err := p.IsTenantIssuer(ctx, ghostTenant, someCert)
+	if err != nil {
+		t.Fatalf("IsTenantIssuer: %v", err)
+	}
+	if ok {
+		t.Error("expected an unrelated certificate to never match a tenant with no established CA")
+	}
+
+	// No record under this tenant's CA prefix exists -- the probe must not
+	// have created one. "wrapped_key" mirrors cakey.SoftwareProvider's own
+	// internal record name (unexported; duplicated here exactly as
+	// certPEMRecordSuffix already duplicates "cert_pem" in
+	// default_provider.go, for the same reason).
+	exists, err := kv.Exists(ctx, prefixCertCA+ghostTenant+"/wrapped_key")
+	if err != nil {
+		t.Fatalf("Exists: %v", err)
+	}
+	if exists {
+		t.Fatal("IsTenantIssuer created a CA key for a tenant that never had one")
+	}
+
+	// A second probe must answer identically -- this is a stable, repeatable
+	// "no" rather than a transient one that flips once something gets
+	// created on the first call.
+	ok, err = p.IsTenantIssuer(ctx, ghostTenant, someCert)
+	if err != nil {
+		t.Fatalf("IsTenantIssuer (second call): %v", err)
+	}
+	if ok {
+		t.Error("expected the second probe to also answer false")
+	}
+}
+
+// TestDefaultCertProvider_ConcurrentFirstIssuanceSharesOneCA is the B2-5
+// concurrency proof: N goroutines each issue the FIRST-EVER client
+// certificate for the SAME brand-new tenant concurrently. Each reaches
+// getCAMaterial -> resolveKeyProvider (which caches one
+// *cakey.SoftwareProvider per tenant) -> Signer, which
+// auto-initializes the tenant's CA key via cakey.SoftwareProvider's own
+// material()/Initialize on first use. Without tenantInitLocked serializing
+// that auto-init per tenant, two goroutines could both observe "no CA
+// exists yet" and both generate and persist one, with whichever Put landed
+// last silently winning over the in-memory key the other goroutine already
+// cached and signed a leaf with -- producing a leaf whose issuer does not
+// match the CA this tenant's own CACertPEMs now serves.
+//
+// Run with -race (as this package's test gate requires): a missing lock
+// here is a data race on cakey.SoftwareProvider's internal fields, not
+// merely a logic bug, since resolveKeyProvider hands every goroutine the
+// SAME *SoftwareProvider instance for this tenant.
+func TestDefaultCertProvider_ConcurrentFirstIssuanceSharesOneCA(t *testing.T) {
+	p, _, _ := newTestProvider()
+	ctx := context.Background()
+	const tenantID = "racy-tenant"
+	const n = 16
+
+	type result struct {
+		bundle *CertBundle
+		err    error
+	}
+	results := make([]result, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			bundle, err := p.GenerateClientCert(ctx, &GenerateRequest{
+				Username: "user" + strconv.Itoa(i),
+				TenantID: tenantID,
+			})
+			results[i] = result{bundle: bundle, err: err}
+		}(i)
+	}
+	wg.Wait()
+
+	pems, err := p.CACertPEMs(ctx)
+	if err != nil {
+		t.Fatalf("CACertPEMs: %v", err)
+	}
+	// Exactly one CA was ever persisted for this tenant: CACertPEMs scans
+	// every tenant's record, and this test created only one tenant.
+	if len(pems) != 1 {
+		t.Fatalf("expected exactly one persisted CA across all goroutines, got %d", len(pems))
+	}
+	servedCA := parsePEMCert(t, pems[0])
+	pool := x509.NewCertPool()
+	pool.AddCert(servedCA)
+
+	for i, r := range results {
+		if r.err != nil {
+			t.Fatalf("goroutine %d: GenerateClientCert: %v", i, r.err)
+		}
+		block, _ := pem.Decode(r.bundle.CertPEM)
+		if block == nil {
+			t.Fatalf("goroutine %d: CertPEM did not decode as PEM", i)
+		}
+		leaf, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			t.Fatalf("goroutine %d: ParseCertificate: %v", i, err)
+		}
+		if _, err := leaf.Verify(x509.VerifyOptions{
+			Roots:     pool,
+			KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+		}); err != nil {
+			t.Errorf("goroutine %d: leaf does not verify against the tenant's own served CA (split-brain CA creation): %v", i, err)
+		}
 	}
 }
 

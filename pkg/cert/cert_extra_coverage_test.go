@@ -137,6 +137,15 @@ func TestRevokeCert_ScanError(t *testing.T) {
 
 // TestEncodePKCS12_InvalidCACert exercises the branch in encodePKCS12 where
 // the CA cert PEM block decodes successfully but contains invalid DER data.
+//
+// This calls encodePKCS12 directly rather than through
+// DefaultCertProvider.ExportPKCS12: ExportPKCS12 now resolves its CA
+// certificate from getCAMaterial's own, already-parsed *x509.Certificate
+// (go-qrdb#560 review, non-blocking -- the shared-cache tenant mix-up fix),
+// so poisoning p.caCertPEM no longer reaches encodePKCS12's CA argument at
+// all. The branch itself is still real -- an embedder's own CA source could
+// still hand encodePKCS12 malformed DER -- so it is covered at the
+// function's own boundary instead.
 func TestEncodePKCS12_InvalidCACert(t *testing.T) {
 	p, _, _ := initializeProvider(t)
 	ctx := context.Background()
@@ -154,12 +163,7 @@ func TestEncodePKCS12_InvalidCACert(t *testing.T) {
 		Bytes: []byte("not-valid-der"),
 	})
 
-	// Inject the invalid CA cert PEM directly into the provider.
-	p.mu.Lock()
-	p.caCertPEM = invalidCACertPEM
-	p.mu.Unlock()
-
-	_, err = p.ExportPKCS12(ctx, bundle.CertPEM, bundle.KeyPEM, "pw")
+	_, err = encodePKCS12(bundle.CertPEM, bundle.KeyPEM, invalidCACertPEM, "pw")
 	if err == nil {
 		t.Fatal("expected error for invalid CA cert DER")
 	}

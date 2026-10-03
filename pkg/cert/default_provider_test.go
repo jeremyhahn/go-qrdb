@@ -1681,6 +1681,15 @@ func TestDefaultCertProvider_RevokeCert_PutRevokedKeyError(t *testing.T) {
 // PKCS12 with invalid CA cert PEM
 // ---------------------------------------------------------------------------
 
+// TestEncodePKCS12_InvalidCACertPEM calls encodePKCS12 directly rather than
+// through DefaultCertProvider.ExportPKCS12: ExportPKCS12 now resolves its CA
+// certificate from getCAMaterial's own, already-parsed *x509.Certificate
+// (go-qrdb#560 review, non-blocking -- the shared-cache tenant mix-up fix),
+// so poisoning p.caCertPEM no longer reaches encodePKCS12's CA argument at
+// all. See TestEncodePKCS12_InvalidCACert for the fuller explanation; the
+// two tests exercise the same branch (well-formed PEM wrapping invalid CA
+// certificate DER) and are kept as two call sites deliberately, matching
+// what they covered before this rewrite.
 func TestEncodePKCS12_InvalidCACertPEM(t *testing.T) {
 	p, _, _ := initializeProvider(t)
 	ctx := context.Background()
@@ -1691,16 +1700,12 @@ func TestEncodePKCS12_InvalidCACertPEM(t *testing.T) {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
 
-	// Inject invalid CA PEM.
 	invalidCAPEM := pem.EncodeToMemory(&pem.Block{
 		Type:  "CERTIFICATE",
 		Bytes: []byte("not-a-real-cert"),
 	})
-	p.mu.Lock()
-	p.caCertPEM = invalidCAPEM
-	p.mu.Unlock()
 
-	_, err = p.ExportPKCS12(ctx, bundle.CertPEM, bundle.KeyPEM, "pw")
+	_, err = encodePKCS12(bundle.CertPEM, bundle.KeyPEM, invalidCAPEM, "pw")
 	if err == nil {
 		t.Fatal("expected error for invalid CA cert PEM")
 	}
