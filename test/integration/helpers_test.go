@@ -33,6 +33,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -230,9 +231,24 @@ func noAuthConnArgs(caCertPath string, adminPort int) []string {
 // SPKIPin, ShareCount, ...) can decode it into its own richer struct.
 func bootAdminIdentity(t *testing.T, cli, caCertPath string, adminPort int, soPin, userPin, certPath, keyPath, csrPath string, extraArgs ...string) string {
 	t.Helper()
+	return bootAdminIdentityVia(t, cli, noAuthConnArgs(caCertPath, adminPort), soPin, userPin, certPath, keyPath, csrPath, extraArgs...)
+}
+
+// bootAdminIdentityVia is bootAdminIdentity over the caller's own connection
+// flags: connArgs selects the transport and server, presenting no client
+// certificate -- none exists yet -- so a per-protocol test bootstraps its
+// node over the transport it is testing.
+func bootAdminIdentityVia(t *testing.T, cli string, connArgs []string, soPin, userPin, certPath, keyPath, csrPath string, extraArgs ...string) string {
+	t.Helper()
 	args := []string{"--output", "json", "init", "--so-pin", soPin, "--user-pin", userPin}
-	if csrPath != "" {
+	switch {
+	case csrPath != "":
 		args = append(args, "--admin-csr", csrPath)
+	case !slices.Contains(extraArgs, "--admin-cert"):
+		// The generate path is explicit: `qrdb init` has no credential-less
+		// default. A caller bringing its own certificate passes --admin-cert
+		// (and, for a foreign issuer, --admin-cert-pool) in extraArgs.
+		args = append(args, "--admin-generate")
 	}
 	args = append(args, extraArgs...)
 
@@ -246,7 +262,7 @@ func bootAdminIdentity(t *testing.T, cli, caCertPath string, adminPort int, soPi
 	var err error
 	deadline := time.Now().Add(15 * time.Second)
 	for {
-		out, err = runQRDB(t, cli, noAuthConnArgs(caCertPath, adminPort), args...)
+		out, err = runQRDB(t, cli, connArgs, args...)
 		if err == nil || !time.Now().Before(deadline) {
 			break
 		}
@@ -266,7 +282,7 @@ func bootAdminIdentity(t *testing.T, cli, caCertPath string, adminPort int, soPi
 	if err := os.WriteFile(certPath, []byte(resp.AdminCertPEM), 0o600); err != nil {
 		t.Fatalf("bootAdminIdentity: write %s: %v", certPath, err)
 	}
-	if csrPath == "" {
+	if csrPath == "" && !slices.Contains(extraArgs, "--admin-cert") {
 		if resp.AdminKeyPEM == "" {
 			t.Fatalf("bootAdminIdentity: generate path returned no admin_key_pem: %s", out)
 		}

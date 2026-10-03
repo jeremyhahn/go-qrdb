@@ -40,9 +40,7 @@ func TestCLI_SqlQuery_KVRoundTrip(t *testing.T) {
 	node := bootSelfGenCANode(t, bin, "seal:\n  enabled: true\n  strategy: none\n", "[sql-query] ")
 	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
 
-	if out, err := runQRDB(t, cli, node.restArgsNoAuth(), "barrier", "init", "--barrier-strategy", "none"); err != nil {
-		t.Fatalf("barrier init: %v\noutput: %s", err, out)
-	}
+	node.bootAdmin(t, cli, "SOPIN12345", "USERPIN12345", "--barrier-strategy", "none")
 	waitForHealthy(t, node.dataDir, 60*time.Second)
 	pollUntilCLISucceeds(t, cli, node.restArgsAdmin(), 60*time.Second)
 
@@ -103,9 +101,7 @@ func TestCLI_SqlQuery_EmptyDatabase(t *testing.T) {
 	node := bootSelfGenCANode(t, bin, "seal:\n  enabled: true\n  strategy: none\n", "[sql-query-empty] ")
 	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
 
-	if out, err := runQRDB(t, cli, node.restArgsNoAuth(), "barrier", "init", "--barrier-strategy", "none"); err != nil {
-		t.Fatalf("barrier init: %v\noutput: %s", err, out)
-	}
+	node.bootAdmin(t, cli, "SOPIN12345", "USERPIN12345", "--barrier-strategy", "none")
 	waitForHealthy(t, node.dataDir, 60*time.Second)
 	pollUntilCLISucceeds(t, cli, node.restArgsAdmin(), 60*time.Second)
 
@@ -138,9 +134,7 @@ func TestCLI_SqlQuery_MissingQueryFails(t *testing.T) {
 	node := bootSelfGenCANode(t, bin, "seal:\n  enabled: true\n  strategy: none\n", "[sql-query-missing] ")
 	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
 
-	if out, err := runQRDB(t, cli, node.restArgsNoAuth(), "barrier", "init", "--barrier-strategy", "none"); err != nil {
-		t.Fatalf("barrier init: %v\noutput: %s", err, out)
-	}
+	node.bootAdmin(t, cli, "SOPIN12345", "USERPIN12345", "--barrier-strategy", "none")
 	waitForHealthy(t, node.dataDir, 60*time.Second)
 	pollUntilCLISucceeds(t, cli, node.restArgsAdmin(), 60*time.Second)
 

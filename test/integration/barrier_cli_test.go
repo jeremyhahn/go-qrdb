@@ -45,19 +45,20 @@
 // CA private key ... officer registration correctly fails with
 // ErrCANotInitialized"), which would make the whole Shamir officer/claim
 // flow untestable under the external-CA pattern the other CLI integration
-// tests (admin_test.go, drain_test.go) use. Because --auth-enabled defaults
-// true and the CA carries its key, cmd/qrdbd/start.go also auto-generates
-// {data-dir}/admin-cert.pem + admin-key.pem (CN=admin, OU=system) BEFORE the
-// pre-host sealed-window listener blocks on unseal ("that operator needs
-// the admin client cert to authenticate ... deferring cert generation until
-// after unseal would deadlock that bootstrap"). This file reads those three
-// generated files straight off disk instead of minting its own CA/cert
-// pair, and reconstructs a helpers_test.go `testCA` value (same package,
-// unexported field access) purely so it can reuse waitForAdmin /
+// tests (admin_test.go, drain_test.go) use. This file reads the generated CA
+// straight off disk and reconstructs a helpers_test.go `testCA` value (same
+// package, unexported field access) purely so it can reuse waitForAdmin /
 // waitForLeaderViaAdmin / httpPut / httpGet unmodified.
 //
-// Every barrier subcommand is invoked with the daemon's own admin identity
-// (Owner role via pkg/firstboot -- permission.All()) EXCEPT the share-holder
+// `qrdb init` is the only system bootstrap and the only source of the
+// bootstrap admin's credential: nothing writes an admin certificate to the
+// data directory. Each test brings its node up with `qrdb init` against the
+// sealed-window listener -- presenting no client certificate, since no admin
+// exists yet -- through bootAdminIdentityVia, which also brings the system
+// barrier up (--barrier-strategy, and --passphrase or the holders' CSRs) and
+// writes the admin credential the call issues. Every later barrier
+// subcommand is invoked with that admin identity (Owner role via
+// pkg/firstboot -- permission.All()) EXCEPT the share-holder
 // claim and quorum submissions, which are identity-gated: a claim must come
 // over a connection presenting the holder's own CA-issued certificate, and a
 // quorum submission's mtls factor, when the connection carries a
@@ -115,7 +116,10 @@ import (
 
 // sealNode holds the connection details and TLS material for a single
 // self-managed-TLS qrdbd node started with an enabled (possibly
-// uninitialized) barrier.
+// uninitialized) barrier. adminCert/adminKey are the bootstrap admin's
+// credential: issued by the node's own CA (ca.boundAdminCert) and bound by
+// `qrdb init --admin-cert` (initSystem), the bring-your-own-certificate
+// path. It authenticates nothing until init has bound it.
 type sealNode struct {
 	cmd       *exec.Cmd
 	dataDir   string
@@ -137,6 +141,52 @@ func (n *sealNode) adminFlags() []string {
 		"--key-file", n.adminKey,
 		"--timeout", "30s",
 	}
+}
+
+// noAuthFlags returns the qrdb CLI global flags reaching this node over REST
+// with no client certificate: the only flags that work before `qrdb init`
+// has issued the admin credential.
+func (n *sealNode) noAuthFlags() []string {
+	return []string{
+		"--server", n.serverURL,
+		"--ca-file", n.caFile,
+		"--timeout", "30s",
+	}
+}
+
+// sealNodeSOPIN and sealNodeUserPIN are the PINs every sealNode is
+// bootstrapped with.
+const (
+	sealNodeSOPIN   = "SOPIN12345"
+	sealNodeUserPIN = "USERPIN12345"
+)
+
+// initSystem bootstraps the node with `qrdb init` (bootAdminIdentityVia),
+// binding n.adminCert as the bootstrap admin (--admin-cert, the
+// bring-your-own-certificate path: the node's own CA issued it, so no
+// trust pool is needed) -- extraArgs carry --barrier-strategy and its
+// secret or holders. It returns init's JSON output.
+func (n *sealNode) initSystem(t *testing.T, cli string, extraArgs ...string) string {
+	t.Helper()
+	return bootAdminIdentityVia(t, cli, n.noAuthFlags(), sealNodeSOPIN, sealNodeUserPIN, n.adminCert, n.adminKey, "",
+		append([]string{"--admin-cert", n.adminCert}, extraArgs...)...)
+}
+
+// adoptIdentity carries a restarted node's CA handle and bootstrap admin
+// credential over from prev, the same node before its restart: `qrdb init`
+// bound prev's credential, and it is what authenticates after the restart.
+func (n *sealNode) adoptIdentity(prev *sealNode) {
+	n.ca, n.adminCert, n.adminKey = prev.ca, prev.adminCert, prev.adminKey
+}
+
+// waitForFullBoot blocks until the full RBAC-backed server (not the pre-host
+// sealed-window listener) serves on the admin port and the shard has a
+// leader.
+func (n *sealNode) waitForFullBoot(t *testing.T) {
+	t.Helper()
+	waitForHealthy(t, n.dataDir, 60*time.Second)
+	waitForAdmin(t, n.ca.Pool, n.adminPort, 90*time.Second)
+	waitForLeaderViaAdmin(t, n.ca, []int{n.adminPort}, 60*time.Second)
 }
 
 // writeSealConfig writes a minimal YAML config carrying only the `seal:`
@@ -162,11 +212,12 @@ func writeSealConfig(t *testing.T, strategy string, threshold, total int) string
 
 // startSealNode starts a single-node qrdbd with the given seal config and
 // NO --tls-* flags, letting the daemon self-generate (and persist under
-// dataDir) a CA that carries its own private key. It blocks until the
-// daemon's admin client certificate and CA material exist on disk -- both
-// are written very early in boot (cmd/qrdbd/start.go), strictly before the
-// barrier is ever initialized, so this never races the barrier lifecycle.
-func startSealNode(t *testing.T, binary, dataDir, configPath string, raftPort, adminPort, grpcPort int, priorCA ...*testCA) *sealNode {
+// dataDir) a CA that carries its own private key. It blocks until the CA
+// material exists on disk -- written very early in boot, strictly before
+// the barrier is ever initialized -- and issues the bootstrap admin's
+// certificate from that CA for initSystem to bind. A restarted node adopts
+// its predecessor's identity (adoptIdentity) instead.
+func startSealNode(t *testing.T, binary, dataDir, configPath string, raftPort, adminPort, grpcPort int) *sealNode {
 	t.Helper()
 	args := []string{
 		"start",
@@ -186,11 +237,9 @@ func startSealNode(t *testing.T, binary, dataDir, configPath string, raftPort, a
 	cmd := startNode(t, binary, args, "[barrier] ")
 
 	caPath := filepath.Join(dataDir, "ca.pem")
-	adminCertPath := filepath.Join(dataDir, "admin-cert.pem")
-	adminKeyPath := filepath.Join(dataDir, "admin-key.pem")
 	waitForNonEmptyFile(t, caPath, 30*time.Second)
-	waitForNonEmptyFile(t, adminCertPath, 30*time.Second)
-	waitForNonEmptyFile(t, adminKeyPath, 30*time.Second)
+	ca := loadDaemonCA(t, dataDir)
+	adminCert, adminKey := ca.boundAdminCert(t, t.TempDir())
 
 	return &sealNode{
 		cmd:       cmd,
@@ -198,9 +247,9 @@ func startSealNode(t *testing.T, binary, dataDir, configPath string, raftPort, a
 		adminPort: adminPort,
 		serverURL: fmt.Sprintf("https://127.0.0.1:%d", adminPort),
 		caFile:    caPath,
-		adminCert: adminCertPath,
-		adminKey:  adminKeyPath,
-		ca:        resolveSealNodeCA(t, dataDir, priorCA),
+		adminCert: adminCert,
+		adminKey:  adminKey,
+		ca:        ca,
 	}
 }
 
@@ -527,6 +576,42 @@ func signNonceASN1(t *testing.T, key *ecdsa.PrivateKey, nonce []byte) []byte {
 	return sig
 }
 
+// initHolders generates a key pair and CSR for each of names, returning the
+// officers (no certificate yet) and the `qrdb init --officers` flags naming
+// them: M-of-N custody is set up by `qrdb init` itself, which enrols the
+// holders from their CSRs and splits the unseal key to them.
+func initHolders(t *testing.T, dir string, names ...string) ([]*officer, []string) {
+	t.Helper()
+	var holders []*officer
+	var flags []string
+	for _, name := range names {
+		csrPath, key := generateOfficerCSR(t, dir, name)
+		holders = append(holders, &officer{username: name, key: key})
+		flags = append(flags, "--officers", name+"="+csrPath)
+	}
+	return holders, flags
+}
+
+// adoptInitHolders writes each holder's certificate from `qrdb init`'s JSON
+// output alongside its own key, so the holder can claim its envelope and
+// submit to quorums.
+func adoptInitHolders(t *testing.T, dir, initOut string, holders []*officer) {
+	t.Helper()
+	var resp transport.CeremonyInitializeResponse
+	decodeJSON(t, initOut, &resp)
+	certs := make(map[string]string, len(resp.Holders))
+	for _, h := range resp.Holders {
+		certs[h.Username] = h.CertPEM
+	}
+	for _, h := range holders {
+		certPEM, ok := certs[h.username]
+		if !ok || certPEM == "" {
+			t.Fatalf("qrdb init issued no certificate for holder %s: %s", h.username, initOut)
+		}
+		h.certPath, h.keyPath = writeOfficerKeyPair(t, dir, h.username, h.key, []byte(certPEM))
+	}
+}
+
 // registerOfficer generates a CSR for username, registers it against
 // scope's officer registry using the admin identity, and writes the
 // server-signed certificate alongside the officer's own private key.
@@ -586,24 +671,26 @@ func TestBarrierCLI_PassphraseLifecycle(t *testing.T) {
 	tcpPorts := allocateTCPPorts(t, 2)
 
 	node := startSealNode(t, binary, dataDir, configPath, raftPorts[0], tcpPorts[0], tcpPorts[1])
-	flags := node.adminFlags()
 
-	waitForBarrierReachable(t, cli, flags, 60*time.Second)
+	waitForBarrierReachable(t, cli, node.noAuthFlags(), 60*time.Second)
 
-	status := barrierStatus(t, cli, flags)
+	status := barrierStatus(t, cli, node.noAuthFlags())
 	if !status.Sealed {
 		t.Fatalf("expected fresh passphrase barrier to be sealed pre-init, got: %+v", status)
 	}
 
 	const passphrase = "correct-horse-battery-staple-1"
-	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
-		"barrier", "init", "--barrier-strategy", "passphrase", "--passphrase", passphrase)...); err != nil {
-		t.Fatalf("barrier init: %v\nstderr: %s", err, stderr)
-	}
+	node.initSystem(t, cli, "--barrier-strategy", "passphrase", "--passphrase", passphrase)
+
+	// Wait for the full host + RBAC-backed server to replace the pre-host
+	// sealed-window listener; the admin credential `qrdb init` issued
+	// authenticates from here on.
+	node.waitForFullBoot(t)
+	flags := node.adminFlags()
 
 	status = barrierStatus(t, cli, flags)
 	if status.Sealed {
-		t.Fatal("expected barrier to be unsealed immediately after init (Initialize auto-unseals)")
+		t.Fatal("expected barrier to be unsealed after qrdb init (it brings the barrier up)")
 	}
 	if status.Strategy != "passphrase" {
 		t.Errorf("expected strategy 'passphrase', got %q", status.Strategy)
@@ -611,12 +698,6 @@ func TestBarrierCLI_PassphraseLifecycle(t *testing.T) {
 	if status.InitializedAt == "" {
 		t.Error("expected non-empty InitializedAt after init")
 	}
-
-	// Wait for the full host + RBAC-backed server to replace the pre-host
-	// sealed-window listener before exercising data-plane operations.
-	waitForHealthy(t, dataDir, 60*time.Second)
-	waitForAdmin(t, node.ca.Pool, node.adminPort, 90*time.Second)
-	waitForLeaderViaAdmin(t, node.ca, []int{node.adminPort}, 60*time.Second)
 
 	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
 		"kv", "put", "barrier-cli-key", "barrier-cli-value")...); err != nil {
@@ -630,7 +711,7 @@ func TestBarrierCLI_PassphraseLifecycle(t *testing.T) {
 		t.Fatalf("kv get: expected value in output, got: %s", stdout)
 	}
 
-	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...), "barrier", "seal", "-y")...); err != nil {
+	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...), "barrier", "seal", "-y", "--so-pin", sealNodeSOPIN)...); err != nil {
 		t.Fatalf("barrier seal: %v\nstderr: %s", err, stderr)
 	}
 	status = barrierStatus(t, cli, flags)
@@ -690,41 +771,33 @@ func TestBarrierCLI_ShamirLifecycle(t *testing.T) {
 	tcpPorts := allocateTCPPorts(t, 2)
 
 	node := startSealNode(t, binary, dataDir, configPath, raftPorts[0], tcpPorts[0], tcpPorts[1])
-	flags := node.adminFlags()
 	ep := node.endpoint()
 
-	waitForBarrierReachable(t, cli, flags, 60*time.Second)
+	waitForBarrierReachable(t, cli, node.noAuthFlags(), 60*time.Second)
 
-	status := barrierStatus(t, cli, flags)
+	status := barrierStatus(t, cli, node.noAuthFlags())
 	if !status.Sealed {
 		t.Fatalf("expected fresh shamir barrier to be sealed pre-init, got: %+v", status)
 	}
 
-	// Holders enrol while the barrier is still uninitialized/sealed: the
-	// ceremony registry caches records until the barrier is first seen
-	// unsealed, and the SAME ceremony service is threaded from the pre-host
-	// sealed listener into the post-unseal boot.
-	alice := registerOfficer(t, cli, workDir, flags, systemScope(transport.DomainUnseal), "alice")
-	bob := registerOfficer(t, cli, workDir, flags, systemScope(transport.DomainUnseal), "bob")
-	registerOfficer(t, cli, workDir, flags, systemScope(transport.DomainUnseal), "carol")
+	// `qrdb init` enrols the holders from their CSRs and splits the unseal
+	// key to them in the same call that issues the admin credential.
+	holders, holderFlags := initHolders(t, workDir, "alice", "bob", "carol")
+	initOut := node.initSystem(t, cli, append([]string{"--barrier-strategy", "shamir",
+		"--threshold", strconv.Itoa(threshold), "--shares", strconv.Itoa(total)}, holderFlags...)...)
+	adoptInitHolders(t, workDir, initOut, holders)
+	alice, bob := holders[0], holders[1]
 
-	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
-		"barrier", "init-shamir",
-		"--threshold", strconv.Itoa(threshold), "--total", strconv.Itoa(total), "--so-pin", soPIN, "--user-pin", userPIN)...); err != nil {
-		t.Fatalf("barrier init-shamir: %v\nstderr: %s", err, stderr)
-	}
+	node.waitForFullBoot(t)
+	flags := node.adminFlags()
 
 	status = barrierStatus(t, cli, flags)
 	if status.Sealed {
-		t.Fatal("expected barrier to be unsealed immediately after init-shamir")
+		t.Fatal("expected barrier to be unsealed after qrdb init")
 	}
 	if status.Strategy != "shamir" {
 		t.Errorf("expected strategy 'shamir', got %q", status.Strategy)
 	}
-
-	waitForHealthy(t, dataDir, 60*time.Second)
-	waitForAdmin(t, node.ca.Pool, node.adminPort, 90*time.Second)
-	waitForLeaderViaAdmin(t, node.ca, []int{node.adminPort}, 60*time.Second)
 
 	claimEnvelope(t, cli, workDir, ep, systemScope(transport.DomainUnseal), alice)
 	claimEnvelope(t, cli, workDir, ep, systemScope(transport.DomainUnseal), bob)
@@ -762,7 +835,7 @@ func TestBarrierCLI_ShamirLifecycle(t *testing.T) {
 	}
 
 	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
-		"barrier", "rekey", "--threshold", strconv.Itoa(threshold), "--so-pin", soPIN)...); err != nil {
+		"barrier", "rekey", "--threshold", strconv.Itoa(threshold), "--so-pin", sealNodeSOPIN)...); err != nil {
 		t.Fatalf("barrier rekey: %v\nstderr: %s", err, stderr)
 	}
 	if out = quorumAll(t, cli, ep, systemScope(transport.DomainUnseal), "rekey", alice, bob); !out.Complete {
@@ -799,7 +872,7 @@ func TestBarrierCLI_ShamirLifecycle(t *testing.T) {
 	erin := registerOfficer(t, cli, workDir, flags, systemScope(transport.DomainRecovery), "erin")
 
 	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
-		"barrier", "recovery", "generate", "--threshold", "2", "--so-pin", soPIN)...); err != nil {
+		"barrier", "recovery", "generate", "--threshold", "2", "--so-pin", sealNodeSOPIN)...); err != nil {
 		t.Fatalf("barrier recovery generate: %v\nstderr: %s", err, stderr)
 	}
 	if !barrierHasRecoveryKeys(t, cli, flags) {
@@ -850,25 +923,20 @@ func TestBarrierCLI_RestartPersistence(t *testing.T) {
 	tcpPorts := allocateTCPPorts(t, 2)
 
 	node := startSealNode(t, binary, dataDir, configPath, raftPorts[0], tcpPorts[0], tcpPorts[1])
-	flags := node.adminFlags()
-	waitForBarrierReachable(t, cli, flags, 60*time.Second)
+	waitForBarrierReachable(t, cli, node.noAuthFlags(), 60*time.Second)
 
 	const passphrase = "restart-persistence-passphrase-1"
-	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
-		"barrier", "init", "--barrier-strategy", "passphrase", "--passphrase", passphrase)...); err != nil {
-		t.Fatalf("barrier init: %v\nstderr: %s", err, stderr)
-	}
+	node.initSystem(t, cli, "--barrier-strategy", "passphrase", "--passphrase", passphrase)
 
-	waitForHealthy(t, dataDir, 60*time.Second)
-	waitForAdmin(t, node.ca.Pool, node.adminPort, 90*time.Second)
-	waitForLeaderViaAdmin(t, node.ca, []int{node.adminPort}, 60*time.Second)
+	node.waitForFullBoot(t)
+	flags := node.adminFlags()
 
 	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
 		"kv", "put", "restart-key", "restart-value")...); err != nil {
 		t.Fatalf("kv put: %v\nstderr: %s", err, stderr)
 	}
 
-	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...), "barrier", "seal", "-y")...); err != nil {
+	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...), "barrier", "seal", "-y", "--so-pin", sealNodeSOPIN)...); err != nil {
 		t.Fatalf("barrier seal: %v\nstderr: %s", err, stderr)
 	}
 	status := barrierStatus(t, cli, flags)
@@ -877,18 +945,19 @@ func TestBarrierCLI_RestartPersistence(t *testing.T) {
 	}
 	initializedAt := status.InitializedAt
 
-	priorCA := node.ca
 	stopSealNode(t, node)
 
 	// Restart on the SAME data dir, config, and ports. resolveTLS's
 	// cached-certificate path (ca.pem/node-cert.pem/node-key.pem already
-	// present under dataDir) keeps the CA and admin identity stable across
-	// the restart.
-	node = startSealNode(t, binary, dataDir, configPath, raftPorts[0], tcpPorts[0], tcpPorts[1], priorCA)
+	// present under dataDir) keeps the CA stable across the restart, and the
+	// admin credential `qrdb init` bound stays bound.
+	prev := node
+	node = startSealNode(t, binary, dataDir, configPath, raftPorts[0], tcpPorts[0], tcpPorts[1])
+	node.adoptIdentity(prev)
 	flags = node.adminFlags()
-	waitForBarrierReachable(t, cli, flags, 60*time.Second)
+	waitForBarrierReachable(t, cli, node.noAuthFlags(), 60*time.Second)
 
-	status = barrierStatus(t, cli, flags)
+	status = barrierStatus(t, cli, node.noAuthFlags())
 	if !status.Sealed {
 		t.Fatal("expected barrier to still require an explicit unseal after restart (passphrase caches no secret)")
 	}
@@ -901,9 +970,7 @@ func TestBarrierCLI_RestartPersistence(t *testing.T) {
 		t.Fatalf("barrier unseal after restart: %v\nstderr: %s", err, stderr)
 	}
 
-	waitForHealthy(t, dataDir, 60*time.Second)
-	waitForAdmin(t, node.ca.Pool, node.adminPort, 90*time.Second)
-	waitForLeaderViaAdmin(t, node.ca, []int{node.adminPort}, 60*time.Second)
+	node.waitForFullBoot(t)
 
 	stdout, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...), "kv", "get", "restart-key")...)
 	if err != nil {
@@ -952,15 +1019,6 @@ func nonEmptyFileAppears(path string, timeout time.Duration) bool {
 	return false
 }
 
-func resolveSealNodeCA(t *testing.T, dataDir string, priorCA []*testCA) *testCA {
-	t.Helper()
-	keyPath := filepath.Join(dataDir, "ca-key.pem")
-	ok := len(priorCA) > 0 && !nonEmptyFileAppears(keyPath, 2*time.Second)
-	if ok {
-		return priorCA[0]
-	}
-	return loadDaemonCA(t, dataDir)
-}
 func startSealNodeAllTransports(t *testing.T, binary, dataDir, configPath string, raftPort, adminPort, grpcPort, quicPort, mcpPort int, unixSocket string) *sealNodeAllTransports {
 	t.Helper()
 	args := []string{

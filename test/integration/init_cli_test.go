@@ -123,17 +123,17 @@ func TestInit_CLI_LocalFlagValidation_Permutations(t *testing.T) {
 		},
 		{
 			name:    "officers entry missing '=' separator",
-			args:    []string{"init", "--so-pin", "a", "--user-pin", "b", "--barrier-strategy", "shamir", "--shares", "2", "--threshold", "2", "--officers", "malformed-entry-no-equals"},
+			args:    []string{"init", "--so-pin", "a", "--user-pin", "b", "--barrier-strategy", "shamir", "--shares", "2", "--threshold", "2", "--officers", "malformed-entry-no-equals", "--admin-generate"},
 			wantErr: "--officers",
 		},
 		{
 			name:    "officers entry with empty username",
-			args:    []string{"init", "--so-pin", "a", "--user-pin", "b", "--barrier-strategy", "shamir", "--shares", "2", "--threshold", "2", "--officers", "=" + presentCSR},
+			args:    []string{"init", "--so-pin", "a", "--user-pin", "b", "--barrier-strategy", "shamir", "--shares", "2", "--threshold", "2", "--officers", "=" + presentCSR, "--admin-generate"},
 			wantErr: "--officers",
 		},
 		{
 			name:    "officers CSR file does not exist",
-			args:    []string{"init", "--so-pin", "a", "--user-pin", "b", "--barrier-strategy", "shamir", "--shares", "2", "--threshold", "2", "--officers", "alice=" + missingCSR},
+			args:    []string{"init", "--so-pin", "a", "--user-pin", "b", "--barrier-strategy", "shamir", "--shares", "2", "--threshold", "2", "--officers", "alice=" + missingCSR, "--admin-generate"},
 			wantErr: "failed to read file",
 		},
 	}
@@ -156,32 +156,32 @@ func TestInit_CLI_LocalFlagValidation_Permutations(t *testing.T) {
 // --help` actually satisfy the required --so-pin/--user-pin flags, using
 // REST as the representative protocol -- the binding logic in
 // resolveAndValidateInitFlags is entirely transport-independent (it runs
-// before any RPC), so this is not repeated across every protocol (all five,
-// including the CLI's own documented default transport Unix, can now reach
-// the pre-host sealed window this test's `barrier init --barrier-strategy
-// none` step runs from -- see barrier_permutations_cli_test.go's
-// TestBarrierPermutations_SealedWindowConnectivity_AllProtocols).
+// before any RPC), so this is not repeated across every protocol. `qrdb
+// init` is the only system bootstrap, so the call under test is the one that
+// brings the fresh node up, over the sealed-window listener.
 func TestInit_CLI_EnvVarBinding_PerProtocol(t *testing.T) {
 	node := startFreshSealedNode(t, "none", 0, 0)
 	proto := multiProtocol{name: "rest", scheme: "https"}
-	flags := node.flagsFor(proto)
-	waitForBarrierReachable(t, node.cli, flags, 60*time.Second)
-
-	if _, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, flags...),
-		"barrier", "init", "--barrier-strategy", "none")...); err != nil {
-		t.Fatalf("barrier init: %v\nstderr: %s", err, stderr)
-	}
-	node.waitForFullBoot(t)
+	noAuth := node.noAuthFlagsFor(proto)
+	waitForBarrierReachable(t, node.cli, noAuth, 60*time.Second)
 
 	t.Setenv("QRDB_SO_PIN", "ENV-SOPIN-1")
 	t.Setenv("QRDB_USER_PIN", "ENV-USERPIN-1")
 
-	out, err := runCLI(t, node.cli, append(append([]string{}, flags...), "init")...)
+	out, err := runCLI(t, node.cli, append(append([]string{}, noAuth...),
+		"init", "--barrier-strategy", "none", "--admin-cert", node.adminCert)...)
 	if err != nil {
 		t.Fatalf("qrdb init with env-var PINs: %v\noutput: %s", err, out)
 	}
 	if !strings.Contains(out, "State:") {
 		t.Errorf("expected init output to report the ceremony state, got: %s", out)
+	}
+
+	// The bootstrap took effect: the admin certificate init bound
+	// authenticates once the full server is up.
+	node.waitForFullBoot(t)
+	if out, err := runCLI(t, node.cli, append(node.flagsFor(proto), "barrier", "status")...); err != nil {
+		t.Fatalf("barrier status as the bound admin: %v\noutput: %s", err, out)
 	}
 }
 
@@ -219,10 +219,10 @@ func TestInit_CLI_EnvVarBinding_PerProtocol(t *testing.T) {
 var ceremonyInitProtocols = multiProtocols
 
 // TestInit_CLI_SingleAdmin_PerProtocol drives the full single-admin `qrdb
-// init` happy path -- barrier init (strategy none, to reach full boot
-// cheaply), `qrdb init --so-pin --user-pin`, a second
-// `qrdb init` proving the typed ceremony.ErrAlreadyInitialized fires, and a
-// KV round trip proving the node is fully operational -- over every
+// init` happy path -- `qrdb init --so-pin --user-pin` bootstrapping a fresh
+// node (strategy none, binding the operator's own certificate), a second
+// `qrdb init` proving a retry is refused, and a KV round trip proving the
+// node is fully operational -- over every
 // protocol that can complete the ceremony-initialize RPC (REST, gRPC, native
 // QUIC, MCP, and Unix; see ceremonyInitProtocols above). This is the direct
 // multi-protocol extension of officer_ceremony_cli_test.go's
@@ -233,18 +233,13 @@ func TestInit_CLI_SingleAdmin_PerProtocol(t *testing.T) {
 	for _, proto := range ceremonyInitProtocols {
 		t.Run(proto.name, func(t *testing.T) {
 			node := startFreshSealedNode(t, "none", 0, 0)
-			flags := node.flagsFor(proto)
-			waitForBarrierReachable(t, node.cli, flags, 60*time.Second)
+			noAuth := node.noAuthFlagsFor(proto)
+			waitForBarrierReachable(t, node.cli, noAuth, 60*time.Second)
 
-			if _, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, flags...),
-				"barrier", "init", "--barrier-strategy", "none")...); err != nil {
-				t.Fatalf("[%s] barrier init: %v\nstderr: %s", proto.name, err, stderr)
-			}
-			node.waitForFullBoot(t)
-
-			stdout, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, flags...),
+			stdout, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, noAuth...),
 				"--output", "json",
-				"init", "--so-pin", "SOPIN-"+proto.name, "--user-pin", "USERPIN-"+proto.name)...)
+				"init", "--so-pin", "SOPIN-"+proto.name, "--user-pin", "USERPIN-"+proto.name,
+				"--barrier-strategy", "none", "--admin-cert", node.adminCert)...)
 			if err != nil {
 				t.Fatalf("[%s] qrdb init: %v\nstderr: %s", proto.name, err, stderr)
 			}
@@ -262,21 +257,23 @@ func TestInit_CLI_SingleAdmin_PerProtocol(t *testing.T) {
 				t.Errorf("[%s] expected ShareCount 0 for the single-admin (non-Shamir) path, got %d", proto.name, resp.ShareCount)
 			}
 
-			// A second `qrdb init` on the same node must fail closed with
-			// the typed ceremony.ErrAlreadyInitialized, over the same
-			// protocol.
+			node.waitForFullBoot(t)
+			flags := node.flagsFor(proto)
+
+			// A second `qrdb init` on the same node must fail closed over
+			// the same protocol: the admin already holds a live binding.
 			out, err := runCLI(t, node.cli, append(append([]string{}, flags...),
-				"init", "--so-pin", "SOPIN2", "--user-pin", "USERPIN2")...)
+				"init", "--so-pin", "SOPIN2", "--user-pin", "USERPIN2", "--barrier-strategy", "none",
+				"--admin-generate")...)
 			if err == nil {
 				t.Fatalf("[%s] second qrdb init should have failed; output: %s", proto.name, out)
 			}
-			if !strings.Contains(out, "already completed") {
-				t.Errorf("[%s] expected 'already completed' (ceremony.ErrAlreadyInitialized), got: %s", proto.name, out)
+			if !strings.Contains(out, "already holds a certificate binding") {
+				t.Errorf("[%s] expected the admin-already-bound refusal, got: %s", proto.name, out)
 			}
 
-			// Post-init usability: the node's own admin identity (CN=admin,
-			// OU=system) must still serve ordinary data-plane traffic over
-			// the same protocol.
+			// Post-init usability: the admin identity init bound must serve
+			// ordinary data-plane traffic over the same protocol.
 			key := "init-perm-" + proto.name
 			if _, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, flags...),
 				"kv", "put", key, "init-value")...); err != nil {
@@ -298,26 +295,19 @@ func TestInit_CLI_SingleAdmin_PerProtocol(t *testing.T) {
 // the flag-plumbing itself (cmd/qrdb/init.go's runInit building
 // req.Hostname/req.SANs) is transport-independent; the multi-protocol
 // value already established by TestInit_CLI_SingleAdmin_PerProtocol is not
-// duplicated here (all five protocols, including QUIC, can now reach the
-// pre-host sealed window this test's `barrier init --barrier-strategy
-// none` step runs from -- see barrier_permutations_cli_test.go's
-// TestBarrierPermutations_SealedWindowConnectivity_AllProtocols).
+// duplicated here. `qrdb init` is the only system bootstrap, so the call
+// under test brings the fresh node up over the sealed-window listener.
 func TestInit_CLI_HostnameSANs(t *testing.T) {
 	node := startFreshSealedNode(t, "none", 0, 0)
 	proto := multiProtocol{name: "mcp", scheme: "mcp"}
-	flags := node.flagsFor(proto)
-	waitForBarrierReachable(t, node.cli, flags, 60*time.Second)
-
-	if _, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, flags...),
-		"barrier", "init", "--barrier-strategy", "none")...); err != nil {
-		t.Fatalf("barrier init: %v\nstderr: %s", err, stderr)
-	}
-	node.waitForFullBoot(t)
+	noAuth := node.noAuthFlagsFor(proto)
+	waitForBarrierReachable(t, node.cli, noAuth, 60*time.Second)
 
 	const wantHostname = "qrdb-init-hostname-test.example"
-	stdout, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, flags...),
+	stdout, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, noAuth...),
 		"--output", "json",
 		"init", "--so-pin", "SOPIN1", "--user-pin", "USRPIN1",
+		"--barrier-strategy", "none", "--admin-cert", node.adminCert,
 		"--hostname", wantHostname,
 		"--sans", "extra-san.example,127.0.0.1")...)
 	if err != nil {
@@ -371,17 +361,18 @@ func TestInit_CLI_ShamirWithOfficers_PerProtocol(t *testing.T) {
 	for _, proto := range ceremonyInitProtocols {
 		t.Run(proto.name, func(t *testing.T) {
 			node := startFreshSealedNode(t, "shamir", 2, 2)
-			flags := node.flagsFor(proto)
-			waitForBarrierReachable(t, node.cli, flags, 60*time.Second)
+			noAuth := node.noAuthFlagsFor(proto)
+			waitForBarrierReachable(t, node.cli, noAuth, 60*time.Second)
 
 			dir := t.TempDir()
 			aliceCSR, _ := generateOfficerCSR(t, dir, "alice")
 			bobCSR, _ := generateOfficerCSR(t, dir, "bob")
 
-			stdout, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, flags...),
+			stdout, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, noAuth...),
 				"--output", "json",
 				"init", "--so-pin", "SOPIN1", "--user-pin", "USRPIN1",
 				"--barrier-strategy", "shamir", "--shares", "2", "--threshold", "2",
+				"--admin-cert", node.adminCert,
 				"--officers", "alice="+aliceCSR, "--custodians", "bob="+bobCSR)...)
 			if err != nil {
 				t.Fatalf("[%s] qrdb init --barrier-strategy shamir --officers: %v\nstderr: %s", proto.name, err, stderr)
@@ -398,6 +389,7 @@ func TestInit_CLI_ShamirWithOfficers_PerProtocol(t *testing.T) {
 			}
 			// Initializing the barrier unseals it and brings up the full server.
 			node.waitForFullBoot(t)
+			flags := node.flagsFor(proto)
 
 			out, err := runCLI(t, node.cli, append(append([]string{}, flags...), "ceremony", "status", "--output", "json")...)
 			if err != nil {
@@ -467,7 +459,8 @@ func TestCLI_Init_FollowerRefusesNamingLeader(t *testing.T) {
 	var alreadyBoundHits, notLeaderHits int
 	for _, port := range adminPorts {
 		out, err := runQRDB(t, cli, adminConnArgs(t, ca, port),
-			"init", "--so-pin", "RETRY-SO", "--user-pin", "RETRY-USER", "--barrier-strategy", "none")
+			"init", "--so-pin", "RETRY-SO", "--user-pin", "RETRY-USER", "--barrier-strategy", "none",
+			"--admin-generate")
 		if err == nil {
 			t.Fatalf("retry qrdb init on port %d should have been refused; output: %s", port, out)
 		}

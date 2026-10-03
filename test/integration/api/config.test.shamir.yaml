@@ -37,9 +37,9 @@ raft:
 discovery:
   method: "static"
 
-# TLS: omitted so the server auto-generates CA + node cert + admin client
-# cert via resolveTLS Path 3 (single-node mode). The admin client cert is
-# written to {data_dir}/admin-cert.pem and admin-key.pem.
+# TLS: omitted so the server auto-generates its CA and node certificate via
+# resolveTLS Path 3 (single-node mode). It writes no admin credential: the
+# compose bootstrap issues one with `qrdb init --admin-csr`.
 
 # Authentication enabled for mTLS integration testing.
 auth:

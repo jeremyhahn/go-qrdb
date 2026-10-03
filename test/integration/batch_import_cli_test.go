@@ -61,9 +61,7 @@ func TestCLI_BatchImport_CSV(t *testing.T) {
 	node := bootSelfGenCANode(t, bin, "seal:\n  enabled: true\n  strategy: none\n", "[batch-import] ")
 	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
 
-	if out, err := runQRDB(t, cli, node.restArgsNoAuth(), "barrier", "init", "--barrier-strategy", "none"); err != nil {
-		t.Fatalf("barrier init: %v\noutput: %s", err, out)
-	}
+	node.bootAdmin(t, cli, "SOPIN12345", "USERPIN12345", "--barrier-strategy", "none")
 	waitForHealthy(t, node.dataDir, 60*time.Second)
 	pollUntilCLISucceeds(t, cli, node.restArgsAdmin(), 60*time.Second)
 
@@ -138,23 +136,20 @@ func TestCLI_BatchImport_CSV_Unix(t *testing.T) {
 	}
 	startNode(t, bin, args, "[batch-import-unix] ")
 
+	credDir := t.TempDir()
 	node := &selfGenCANode{
 		dataDir:       dataDir,
 		adminPort:     adminPort,
 		grpcPort:      grpcPort,
 		raftPort:      raftPort,
 		caPath:        filepath.Join(dataDir, "ca.pem"),
-		adminCertPath: filepath.Join(dataDir, "admin-cert.pem"),
-		adminKeyPath:  filepath.Join(dataDir, "admin-key.pem"),
+		adminCertPath: filepath.Join(credDir, "bootstrap-admin-cert.pem"),
+		adminKeyPath:  filepath.Join(credDir, "bootstrap-admin-key.pem"),
 	}
 	waitForFile(t, node.caPath, 30*time.Second)
-	waitForFile(t, node.adminCertPath, 30*time.Second)
-	waitForFile(t, node.adminKeyPath, 30*time.Second)
 
 	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
-	if out, err := runQRDB(t, cli, node.restArgsNoAuth(), "barrier", "init", "--barrier-strategy", "none"); err != nil {
-		t.Fatalf("barrier init: %v\noutput: %s", err, out)
-	}
+	node.bootAdmin(t, cli, "SOPIN12345", "USERPIN12345", "--barrier-strategy", "none")
 	waitForHealthy(t, node.dataDir, 60*time.Second)
 
 	unixArgs := node.unixArgsAdmin(unixSocket)
@@ -195,9 +190,7 @@ func TestCLI_BatchImport_Stdin(t *testing.T) {
 	node := bootSelfGenCANode(t, bin, "seal:\n  enabled: true\n  strategy: none\n", "[batch-import-stdin] ")
 	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
 
-	if out, err := runQRDB(t, cli, node.restArgsNoAuth(), "barrier", "init", "--barrier-strategy", "none"); err != nil {
-		t.Fatalf("barrier init: %v\noutput: %s", err, out)
-	}
+	node.bootAdmin(t, cli, "SOPIN12345", "USERPIN12345", "--barrier-strategy", "none")
 	waitForHealthy(t, node.dataDir, 60*time.Second)
 	pollUntilCLISucceeds(t, cli, node.restArgsAdmin(), 60*time.Second)
 
@@ -227,9 +220,7 @@ func TestCLI_BatchImportFormats_ListsSupportedFormats(t *testing.T) {
 	node := bootSelfGenCANode(t, bin, "seal:\n  enabled: true\n  strategy: none\n", "[batch-import-formats] ")
 	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
 
-	if out, err := runQRDB(t, cli, node.restArgsNoAuth(), "barrier", "init", "--barrier-strategy", "none"); err != nil {
-		t.Fatalf("barrier init: %v\noutput: %s", err, out)
-	}
+	node.bootAdmin(t, cli, "SOPIN12345", "USERPIN12345", "--barrier-strategy", "none")
 	waitForHealthy(t, node.dataDir, 60*time.Second)
 	pollUntilCLISucceeds(t, cli, node.restArgsAdmin(), 60*time.Second)
 

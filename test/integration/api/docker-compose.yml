@@ -95,66 +95,74 @@ services:
         echo "Starting qrdbd server..."
         /app/build/bin/qrdbd start --config /workspace/go-qrdb/test/integration/api/config.test.yaml &
         QRDBD_PID=$!
-        # Wait for the admin endpoint to come up so we can initialize the barrier.
-        # Wait for the admin-client certificate (written alongside the node
-        # cert by qrdbd's single-node auto-TLS path) before attempting the
-        # mTLS-authenticated barrier init. auth.enabled=true requires a client
-        # cert on every admin request; /health is the only exempt endpoint.
-        echo "Waiting for admin client cert..."
+        # Wait for the admin endpoint to come up so we can bootstrap the node.
+        #
+        # `qrdb init` is the only system bootstrap: in one call against the
+        # pre-host sealed-window listener it brings the system barrier up
+        # (passphrase strategy), provisions the SO and user PINs, and binds
+        # the bootstrap admin's certificate. qrdbd writes no admin credential
+        # of its own; the admin's key pair is generated HERE and only the CSR
+        # leaves this shell (--admin-csr), so the key never reaches the
+        # server. The credential lives under /data/admin, which the test
+        # runner mounts read-only (QRDB_TLS_CERT/QRDB_TLS_KEY).
+        #
+        # Every step fails hard: a node that did not bootstrap must not pass
+        # its health check. (Comments go HERE, not between the continuation
+        # lines below: a backslash-continued command is one logical line, so a
+        # `#` inside it comments out the remainder of the command.)
+        fail() { echo "bootstrap failed: $$1"; kill $$QRDBD_PID; exit 1; }
+        QRDB="/app/build/bin/qrdb --server https://localhost:63002 --transport rest --ca-file /data/raft/ca.pem --timeout 30s"
+        ADMIN=/data/admin
+        mkdir -p $$ADMIN
+        echo "Waiting for the CA certificate..."
         for i in $$(seq 1 60); do
-          if [ -f /data/raft/admin-cert.pem ] && [ -f /data/raft/admin-key.pem ]; then
-            echo "Admin client cert ready"
-            break
-          fi
+          [ -s /data/raft/ca.pem ] && break
           sleep 1
         done
-        AUTH="--cacert /data/raft/ca.pem --cert /data/raft/admin-cert.pem --key /data/raft/admin-key.pem"
-        # Wait for the pre-host sealed-window admin listener to accept
-        # authenticated requests. /v1/barrier/status is on the sealed-window
-        # allowlist and returns 200 (with the admin client cert) while the
-        # barrier is still sealed, so it is the correct readiness probe for
-        # driving init. The public /health endpoint cannot be used here: it is
-        # registered only in the full-boot path (needs the admin service) and
-        # stays 503 until the barrier is unsealed -- gating init on /health
-        # would deadlock (init is what produces the unseal that makes /health
-        # return 200).
+        [ -s /data/raft/ca.pem ] || fail "no CA certificate at /data/raft/ca.pem"
+        # The sealed-window listener answers GET /v1/barrier/status (on its
+        # allowlist) with no client certificate. The public /health endpoint
+        # cannot be used here: it stays 503 until the barrier is unsealed, and
+        # bootstrapping is what unseals it.
         echo "Waiting for sealed-window admin listener..."
+        READY=""
         for i in $$(seq 1 60); do
-          if curl -ks --max-time 2 -o /dev/null -w '%{http_code}' $$AUTH https://localhost:63002/v1/barrier/status | grep -q 200; then
-            echo "Sealed-window admin listener ready"
-            break
-          fi
+          if $$QRDB barrier status > /dev/null 2>&1; then READY=1; break; fi
           sleep 1
         done
-        # Auto-initialize the seal barrier so first boot is non-interactive.
-        # During the sealed window POST /v1/barrier/initialize is allowlisted;
-        # it creates + seals the root key and unseals the barrier, after which
-        # qrdbd tears down the sealed-window listener and continues the full
-        # boot. Idempotent: re-init on an already-initialized barrier is
-        # tolerated via || true.
-        # The secret field is []byte on the wire, so its value is base64:
-        # aW50ZWdyYXRpb24tdGVzdC1zZWNyZXQ= decodes to integration-test-secret.
-        # (Comments go HERE, not between the continuation lines below: a
-        # backslash-continued command is one logical line, so a `#` inside it
-        # comments out the remainder of the command.)
-        echo "Initializing barrier..."
-        curl -ks --max-time 10 -X POST $$AUTH \
-          -H 'Content-Type: application/json' \
-          --data-binary '{"secret":"aW50ZWdyYXRpb24tdGVzdC1zZWNyZXQ="}' \
-          https://localhost:63002/v1/barrier/initialize || true
+        [ -n "$$READY" ] || fail "sealed-window admin listener never answered"
+        if [ -s $$ADMIN/admin.crt ]; then
+          # A restart against the persisted volume: the node is bootstrapped,
+          # and its passphrase barrier comes back sealed.
+          echo "Unsealing the barrier..."
+          $$QRDB --cert-file $$ADMIN/admin.crt --key-file $$ADMIN/admin.key \
+            barrier unseal --passphrase integration-test-secret || fail "barrier unseal"
+        else
+          echo "Bootstrapping with qrdb init..."
+          openssl ecparam -name prime256v1 -genkey -noout -out $$ADMIN/admin.key || fail "admin key"
+          openssl req -new -key $$ADMIN/admin.key -subj "/CN=admin" -out $$ADMIN/admin.csr || fail "admin CSR"
+          $$QRDB --output json init \
+            --so-pin integration-so-pin --user-pin integration-user-pin \
+            --barrier-strategy passphrase --passphrase integration-test-secret \
+            --admin-csr $$ADMIN/admin.csr > $$ADMIN/init.json || fail "qrdb init: $$(cat $$ADMIN/init.json)"
+          jq -er .admin_cert_pem $$ADMIN/init.json > $$ADMIN/admin.crt || fail "qrdb init returned no admin certificate"
+        fi
         # Wait for the full-boot admin endpoint: after unseal the data plane
         # opens, the host elects a leader, and /health flips to 200. Gating
         # "Bootstrap complete" on /health keeps the log an accurate signal
         # that the full server is up rather than racing the sealed-window
         # teardown.
         echo "Waiting for admin endpoint (post-unseal full boot)..."
+        HEALTHY=""
         for i in $$(seq 1 60); do
           if curl -ks --max-time 2 -o /dev/null -w '%{http_code}' https://localhost:63002/health | grep -q 200; then
+            HEALTHY=1
             echo "Admin endpoint ready"
             break
           fi
           sleep 1
         done
+        [ -n "$$HEALTHY" ] || fail "full boot never reported healthy"
         echo "Bootstrap complete"
         # Hand control back to qrdbd.
         wait $$QRDBD_PID
@@ -164,12 +172,11 @@ services:
   # DISTINCT port set (64001-64005), data volume, and unix socket so the
   # Shamir CLI tests exercise a real Shamir-sealed barrier without disturbing
   # the software-seal coverage. The entrypoint mirrors qrdbd's bootstrap but
-  # drives the Security Officer share-distribution flow
-  # (docs/seal/so-share-distribution-design.md): officers are registered
-  # with CSRs during the sealed window, POST /v1/barrier/shamir/initialize
-  # returns a share-free response (INV-1), and each officer claims their
-  # share exactly once over their own mTLS session (INV-11). The claimed
-  # share values are written to a file on a shared volume.
+  # bootstraps through `qrdb init` with three share holders named by their
+  # CSRs: init splits the unseal key to them (no share material in the
+  # response), and each holder claims its sealed envelope exactly once over
+  # its own certificate. The holders file the runner reads is written to a
+  # shared volume.
   qrdbd-shamir:
     build:
       context: ../../..
@@ -227,142 +234,99 @@ services:
         echo "Starting qrdbd (shamir) server..."
         /app/build/bin/qrdbd start --config /workspace/go-qrdb/test/integration/api/config.test.shamir.yaml &
         QRDBD_PID=$!
-        # Wait for the admin-client certificate (written alongside the node
-        # cert by qrdbd's single-node auto-TLS path) before attempting the
-        # mTLS-authenticated barrier init.
-        echo "Waiting for admin client cert..."
-        for i in $$(seq 1 60); do
-          if [ -f /data/raft/admin-cert.pem ] && [ -f /data/raft/admin-key.pem ]; then
-            echo "Admin client cert ready"
-            break
-          fi
-          sleep 1
-        done
-        AUTH="--cacert /data/raft/ca.pem --cert /data/raft/admin-cert.pem --key /data/raft/admin-key.pem"
-        # Wait for the pre-host sealed-window admin listener. /v1/barrier/status
-        # is on the sealed-window allowlist and returns 200 while sealed.
-        echo "Waiting for sealed-window admin listener..."
-        for i in $$(seq 1 60); do
-          if curl -ks --max-time 2 -o /dev/null -w '%{http_code}' $$AUTH https://localhost:64002/v1/barrier/status | grep -q 200; then
-            echo "Sealed-window admin listener ready"
-            break
-          fi
-          sleep 1
-        done
-        # Bootstrap the Shamir barrier through the share-holder flow
-        # (docs/shamir-custody/). Shares are never returned by
-        # shamir/initialize; instead three holders are enrolled with CSRs while
-        # the barrier is still sealed (holder enrolment is on the sealed-window
-        # allowlist), then initialization splits the unseal key and seals one
-        # HPKE envelope to each holder. The holder count must EQUAL
-        # total_shares, and enrolment must happen BEFORE initialize. Guarded on
-        # the holders file so a container restart against a persisted volume
-        # does not re-run the one-time flow.
+        # Bootstrap the Shamir barrier with `qrdb init`, the only system
+        # bootstrap (docs/shamir-custody/): one call against the sealed-window
+        # listener names the three share holders by their CSRs (--officers),
+        # splits the unseal key to them, provisions the PINs and binds the
+        # bootstrap admin's certificate (--admin-csr; the admin's key never
+        # leaves this shell). Each holder then claims its sealed envelope over
+        # its own certificate. The holders file lists each holder's
+        # certificate, key and envelope, relative to /data/raft, so the
+        # integration-test runner can drive the authenticated quorum with
+        # them. Guarded on the holders file so a container restart against a
+        # persisted volume does not re-run the one-time flow. Every step fails
+        # hard: a node that did not bootstrap must not pass its health check.
+        fail() { echo "bootstrap failed: $$1"; kill $$QRDBD_PID; exit 1; }
+        QRDB="/app/build/bin/qrdb --server https://localhost:64002 --transport rest --ca-file /data/raft/ca.pem --timeout 30s"
+        ADMIN=/data/admin
         OFFDIR=/data/raft/officers
+        echo "Waiting for the CA certificate..."
+        for i in $$(seq 1 60); do
+          [ -s /data/raft/ca.pem ] && break
+          sleep 1
+        done
+        [ -s /data/raft/ca.pem ] || fail "no CA certificate at /data/raft/ca.pem"
+        echo "Waiting for sealed-window admin listener..."
+        READY=""
+        for i in $$(seq 1 60); do
+          if $$QRDB barrier status > /dev/null 2>&1; then READY=1; break; fi
+          sleep 1
+        done
+        [ -n "$$READY" ] || fail "sealed-window admin listener never answered"
         if [ ! -s /data/raft/shamir-init.json ]; then
-          mkdir -p $$OFFDIR
-          echo "Generating Security Officer keys and CSRs..."
+          mkdir -p $$ADMIN $$OFFDIR
+          echo "Generating the admin and share-holder keys and CSRs..."
+          openssl ecparam -name prime256v1 -genkey -noout -out $$ADMIN/admin.key || fail "admin key"
+          openssl req -new -key $$ADMIN/admin.key -subj "/CN=admin" -out $$ADMIN/admin.csr || fail "admin CSR"
+          HOLDERS=""
           for n in 1 2 3; do
-            [ -f $$OFFDIR/so-$$n.key ] || openssl ecparam -name prime256v1 -genkey -noout -out $$OFFDIR/so-$$n.key
-            openssl req -new -key $$OFFDIR/so-$$n.key -subj "/CN=so-$$n" -out $$OFFDIR/so-$$n.csr
+            openssl ecparam -name prime256v1 -genkey -noout -out $$OFFDIR/so-$$n.key || fail "so-$$n key"
+            openssl req -new -key $$OFFDIR/so-$$n.key -subj "/CN=so-$$n" -out $$OFFDIR/so-$$n.csr || fail "so-$$n CSR"
+            HOLDERS="$$HOLDERS --officers so-$$n=$$OFFDIR/so-$$n.csr"
           done
-          echo "Registering Security Officers..."
+          echo "Bootstrapping with qrdb init (2-of-3 Shamir)..."
+          $$QRDB --output json init \
+            --so-pin integration-so-pin --user-pin integration-user-pin \
+            --barrier-strategy shamir --threshold 2 --shares 3 $$HOLDERS \
+            --admin-csr $$ADMIN/admin.csr > $$ADMIN/init.json || fail "qrdb init: $$(cat $$ADMIN/init.json)"
+          jq -er .admin_cert_pem $$ADMIN/init.json > $$ADMIN/admin.crt || fail "qrdb init returned no admin certificate"
           for n in 1 2 3; do
-            jq -n --arg u "so-$$n" --rawfile csr $$OFFDIR/so-$$n.csr '{username: $$u, csr_pem: $$csr}' \
-              | curl -ks --max-time 10 -X POST $$AUTH \
-                  -H 'Content-Type: application/json' \
-                  --data-binary @- \
-                  -o $$OFFDIR/so-$$n.register.json \
-                  https://localhost:64002/v1/barrier/officers || true
-            jq -r .cert_pem $$OFFDIR/so-$$n.register.json > $$OFFDIR/so-$$n.crt 2>/dev/null || true
-            if ! grep -q 'BEGIN CERTIFICATE' $$OFFDIR/so-$$n.crt 2>/dev/null; then
-              echo "Officer so-$$n registration failed:"
-              cat $$OFFDIR/so-$$n.register.json || true
-            fi
+            jq -er --arg u "so-$$n" '.holders[] | select(.username == $$u) | .cert_pem' $$ADMIN/init.json \
+              > $$OFFDIR/so-$$n.crt || fail "qrdb init issued no certificate for so-$$n"
           done
-          # Initialize the Shamir barrier (share-free response). The barrier
-          # generates its keys, seals one envelope to each enrolled holder and
-          # unseals, after which qrdbd tears down the sealed-window listener
-          # and continues the full boot.
-          echo "Initializing Shamir barrier..."
-          curl -ks --max-time 10 -X POST $$AUTH \
-            -H 'Content-Type: application/json' \
-            --data-binary '{"threshold":2,"total_shares":3}' \
-            -o /data/raft/shamir-init-response.json \
-            https://localhost:64002/v1/barrier/shamir/initialize || true
-          echo "Shamir init response:"
-          cat /data/raft/shamir-init-response.json || true
         fi
         # Wait for the full-boot admin endpoint: after unseal the data plane
         # opens, the host elects a leader, and /health flips to 200.
         echo "Waiting for admin endpoint (post-unseal full boot)..."
+        HEALTHY=""
         for i in $$(seq 1 60); do
           if curl -ks --max-time 2 -o /dev/null -w '%{http_code}' https://localhost:64002/health | grep -q 200; then
+            HEALTHY=1
             echo "Admin endpoint ready"
             break
           fi
           sleep 1
         done
-        # Claim each holder's envelope over the holder's own mTLS session: the
-        # envelope is delivered once, sealed to the holder's key. The handshake
-        # is begin (returns a hex nonce) -> sign SHA-256 of the DOMAIN-SEPARATED
-        # claim message (pkg/ceremony/claim_message.go ShareClaimMessage:
-        # "qrdb/share-claim/v1" NUL "system" NUL the holder's own username NUL
-        # the raw nonce bytes -- never the bare nonce, so a signature obtained
-        # here can never answer an mtls quorum-factor challenge or another
-        # holder's claim) with the holder key (ECDSA ASN.1-DER, exactly what
-        # `openssl dgst -sha256 -sign` produces) -> complete (returns the
-        # base64 envelope). The holders file lists each holder's certificate,
-        # key and envelope, relative to /data/raft, so the integration-test
-        # runner can drive the authenticated quorum with them.
+        [ -n "$$HEALTHY" ] || fail "full boot never reported healthy"
+        # Claim each holder's envelope over the holder's own certificate,
+        # through the real `qrdb barrier officer claim` CLI command rather
+        # than a hand-rolled curl/openssl handshake: the envelope is
+        # delivered once, sealed to the holder's key. The CLI signs the
+        # SAME domain-separated message the server verifies
+        # (ceremony.ShareClaimMessage, via barrier_holders.go's
+        # claimSignMessage: "qrdb/share-claim/v1" NUL the scope label NUL
+        # the holder's own username NUL the raw nonce bytes -- never the
+        # bare nonce), so this is the canonical path, not a shortcut around
+        # it. The holders file lists each holder's certificate, key and
+        # envelope, relative to /data/raft, so the integration-test runner
+        # can drive the authenticated quorum with them.
         if [ ! -s /data/raft/shamir-init.json ]; then
           echo "Claiming share-holder envelopes..."
           : > $$OFFDIR/holders.jsonl
           for n in 1 2 3; do
-            SOAUTH="--cacert /data/raft/ca.pem --cert $$OFFDIR/so-$$n.crt --key $$OFFDIR/so-$$n.key"
-            curl -ks --max-time 10 -X POST $$SOAUTH \
-              -o $$OFFDIR/so-$$n.begin.json \
-              https://localhost:64002/v1/barrier/officers/so-$$n/claim/begin || true
-            NONCE=$$(jq -r '.nonce_hex // empty' $$OFFDIR/so-$$n.begin.json 2>/dev/null)
-            if [ -z "$$NONCE" ]; then
-              echo "Claim begin failed for so-$$n:"
-              cat $$OFFDIR/so-$$n.begin.json || true
-              continue
-            fi
-            printf '%s' "$$NONCE" | xxd -r -p > $$OFFDIR/so-$$n.nonce
-            # The server verifies a DOMAIN-SEPARATED message
-            # (pkg/ceremony/claim_message.go ShareClaimMessage), never a
-            # signature over the bare nonce: ShareClaimContext NUL scopeLabel
-            # NUL username NUL nonce -- so a signature obtained for one
-            # purpose (an mtls quorum-factor challenge, another claim) can
-            # never answer this one. These are the system barrier's
-            # unseal-domain officers (POST /v1/barrier/officers, not
-            # /v1/barrier/recovery/officers), whose scopeLabel is "system"
-            # (BarrierScope.ClaimLabel's default case, SystemClaimLabel).
-            printf 'qrdb/share-claim/v1\0system\0so-%s\0' "$$n" > $$OFFDIR/so-$$n.msg
-            cat $$OFFDIR/so-$$n.nonce >> $$OFFDIR/so-$$n.msg
-            SIG=$$(openssl dgst -sha256 -sign $$OFFDIR/so-$$n.key $$OFFDIR/so-$$n.msg | base64 -w0)
-            jq -n --arg nonce "$$NONCE" --arg sig "$$SIG" '{nonce_hex: $$nonce, signature: $$sig}' \
-              | curl -ks --max-time 10 -X POST $$SOAUTH \
-                  -H 'Content-Type: application/json' \
-                  --data-binary @- \
-                  -o $$OFFDIR/so-$$n.complete.json \
-                  https://localhost:64002/v1/barrier/officers/so-$$n/claim/complete || true
-            if ! jq -r '.envelope // empty' $$OFFDIR/so-$$n.complete.json 2>/dev/null | base64 -d > $$OFFDIR/so-$$n.env 2>/dev/null \
-                || [ ! -s $$OFFDIR/so-$$n.env ]; then
-              echo "Claim complete failed for so-$$n:"
-              cat $$OFFDIR/so-$$n.complete.json || true
-              continue
-            fi
-            rm -f $$OFFDIR/so-$$n.complete.json $$OFFDIR/so-$$n.nonce $$OFFDIR/so-$$n.msg
+            $$QRDB --cert-file $$OFFDIR/so-$$n.crt --key-file $$OFFDIR/so-$$n.key \
+              barrier officer claim --username so-$$n --key $$OFFDIR/so-$$n.key --out $$OFFDIR/so-$$n.env \
+              || fail "claim for so-$$n"
+            [ -s $$OFFDIR/so-$$n.env ] || fail "claim for so-$$n wrote no envelope"
             jq -cn --arg u "so-$$n" '{username: $$u, cert: ("officers/" + $$u + ".crt"), key: ("officers/" + $$u + ".key"), envelope: ("officers/" + $$u + ".env")}' \
-              >> $$OFFDIR/holders.jsonl
+              >> $$OFFDIR/holders.jsonl || fail "holders file"
             echo "Holder so-$$n envelope claimed"
           done
-          jq -s '{threshold: 2, total_shares: 3, holders: .}' < $$OFFDIR/holders.jsonl > /data/raft/shamir-init.json
+          jq -s '{threshold: 2, total_shares: 3, holders: .}' < $$OFFDIR/holders.jsonl > /data/raft/shamir-init.json \
+            || fail "holders file"
           rm -f $$OFFDIR/holders.jsonl
           echo "Shamir holders file written:"
-          jq '{threshold, total_shares, holder_count: (.holders | length)}' /data/raft/shamir-init.json || true
+          jq '{threshold, total_shares, holder_count: (.holders | length)}' /data/raft/shamir-init.json
         fi
         echo "Bootstrap complete"
         # Hand control back to qrdbd.
@@ -413,8 +377,8 @@ services:
       - QRDB_QUIC_ADDR=qrdbd:63004
       - QRDB_CLI_BIN=/app/build/bin/qrdb
       - QRDB_TLS_CA=/data/raft/ca.pem
-      - QRDB_TLS_CERT=/data/raft/admin-cert.pem
-      - QRDB_TLS_KEY=/data/raft/admin-key.pem
+      - QRDB_TLS_CERT=/data/admin/admin.crt
+      - QRDB_TLS_KEY=/data/admin/admin.key
       # Dedicated Shamir-seal server connection (mounted read-only at /data-shamir).
       - QRDB_SHAMIR_REST_URL=https://qrdbd-shamir:64002
       - QRDB_SHAMIR_GRPC_ADDR=qrdbd-shamir:64003
@@ -422,8 +386,8 @@ services:
       - QRDB_SHAMIR_QUIC_ADDR=qrdbd-shamir:64004
       - QRDB_SHAMIR_UNIX_SOCKET=/var/run/qrdbd-shamir/qrdbd.sock
       - QRDB_SHAMIR_TLS_CA=/data-shamir/raft/ca.pem
-      - QRDB_SHAMIR_TLS_CERT=/data-shamir/raft/admin-cert.pem
-      - QRDB_SHAMIR_TLS_KEY=/data-shamir/raft/admin-key.pem
+      - QRDB_SHAMIR_TLS_CERT=/data-shamir/admin/admin.crt
+      - QRDB_SHAMIR_TLS_KEY=/data-shamir/admin/admin.key
       - QRDB_SHAMIR_SHARES_FILE=/data-shamir/raft/shamir-init.json
       - INTEGRATION_TIMEOUT=60s
       # Which Go packages the runner tests. Defaults to everything; the
@@ -449,10 +413,9 @@ services:
       echo 2500000 > /proc/sys/net/core/wmem_max 2>/dev/null || echo 'Warning: Could not set wmem_max' &&
       echo 'Waiting for server to be ready...' &&
       sleep 5 &&
-      echo 'Checking Unix socket...' &&
-      ls -la /var/run/qrdbd/ || true &&
-      echo 'Checking TLS certificates...' &&
-      ls -la /data/raft/*.pem || true &&
+      echo 'Checking Unix socket and admin credential...' &&
+      test -S /var/run/qrdbd/qrdbd.sock &&
+      test -s /data/admin/admin.crt &&
       echo \"Running integration tests ($$INTEGRATION_TEST_PKGS, tags='$$INTEGRATION_TAGS', run='$$INTEGRATION_RUN')...\" &&
       go test -p 1 -v -tags=$$INTEGRATION_TAGS $$INTEGRATION_TEST_PKGS -run \"$$INTEGRATION_RUN\" -timeout 45m
       "

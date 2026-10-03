@@ -178,14 +178,15 @@ func bootSelfGenCANode(t *testing.T, bin, sealYAML, prefix string) *selfGenCANod
 
 	startNode(t, bin, args, prefix)
 
+	credDir := t.TempDir()
 	n := &selfGenCANode{
 		dataDir:       dataDir,
 		adminPort:     adminPort,
 		grpcPort:      grpcPort,
 		raftPort:      raftPort,
 		caPath:        filepath.Join(dataDir, "ca.pem"),
-		adminCertPath: filepath.Join(dataDir, "admin-cert.pem"),
-		adminKeyPath:  filepath.Join(dataDir, "admin-key.pem"),
+		adminCertPath: filepath.Join(credDir, "bootstrap-admin-cert.pem"),
+		adminKeyPath:  filepath.Join(credDir, "bootstrap-admin-key.pem"),
 	}
 	waitForFile(t, n.caPath, 30*time.Second)
 	return n
@@ -222,9 +223,9 @@ func (n *selfGenCANode) restArgsNoAuth() []string {
 	}
 }
 
-// restArgsAdmin returns REST connection flags presenting the daemon's own
-// pre-generated admin identity (CN=admin, OU=system), which RBAC maps to
-// full platform access via the system-tenant rule.
+// restArgsAdmin returns REST connection flags presenting the bootstrap admin
+// identity `qrdb init` issued and first boot bound (bootAdmin), which RBAC
+// maps to full platform access via the system-tenant rule.
 func (n *selfGenCANode) restArgsAdmin() []string {
 	return append(n.restArgsNoAuth(), "--cert-file", n.adminCertPath, "--key-file", n.adminKeyPath)
 }
@@ -237,8 +238,8 @@ func (n *selfGenCANode) restArgsIdentity(certPath, keyPath string) []string {
 }
 
 // unixArgsAdmin returns qrdb CLI connection flags for the Unix socket
-// transport presenting the daemon's own pre-generated admin identity
-// (CN=admin, OU=system). Unix (grpc-over-UDS) is "verified TLS 1.3 only",
+// transport presenting the bootstrap admin identity `qrdb init` issued
+// (bootAdmin). Unix (grpc-over-UDS) is "verified TLS 1.3 only",
 // identical to TCP gRPC and REST: it authenticates and authorizes exactly
 // like every other transport, so calls that need SealOfficerRegister /
 // SealRecovery* permissions must present the admin client certificate the
@@ -447,7 +448,8 @@ func TestCLI_Init_PassphraseHappyPath(t *testing.T) {
 	// binding, is refused as a redundant retry (service.AdminAlreadyBoundError)
 	// rather than re-running the whole ceremony.
 	retryOut, err := runQRDB(t, cli, node.restArgsAdmin(),
-		"init", "--so-pin", "SOPIN12345", "--user-pin", "USERPIN12345", "--barrier-strategy", "none")
+		"init", "--so-pin", "SOPIN12345", "--user-pin", "USERPIN12345", "--barrier-strategy", "none",
+		"--admin-generate")
 	if err == nil {
 		t.Fatalf("second qrdb init should have failed; output: %s", retryOut)
 	}
@@ -482,7 +484,8 @@ func TestCLI_Init_ShamirFlags_RequiresOfficers(t *testing.T) {
 	out, err := runQRDB(t, cli, node.restArgsNoAuth(),
 		"init",
 		"--so-pin", "SOPIN12345", "--user-pin", "USERPIN12345",
-		"--barrier-strategy", "shamir", "--shares", "5", "--threshold", "3")
+		"--barrier-strategy", "shamir", "--shares", "5", "--threshold", "3",
+		"--admin-generate")
 	if err == nil {
 		t.Fatalf("qrdb init --barrier-strategy shamir with no officers should fail closed now that Threshold reaches the ceremony; output: %s", out)
 	}
@@ -537,16 +540,12 @@ func TestCLI_Init_ShamirWithOfficers_EndToEnd(t *testing.T) {
 		holderFlags = append(holderFlags, flag, h.username+"="+writeTempFile(t, h.username+".csr", csrPEM))
 	}
 
-	initArgs := append([]string{
-		"init",
-		"--so-pin", "SOPIN12345", "--user-pin", "USERPIN12345",
+	// `qrdb init` runs against the sealed window with no client
+	// certificate and issues the admin credential (generate path) in the
+	// same call that enrols the holders.
+	out := node.bootAdmin(t, cli, "SOPIN12345", "USERPIN12345", append([]string{
 		"--barrier-strategy", "shamir", "--shares", "3", "--threshold", "2",
-		"--output", "json",
-	}, holderFlags...)
-	out, err := runQRDB(t, cli, node.restArgsAdmin(), initArgs...)
-	if err != nil {
-		t.Fatalf("qrdb init --officers --custodians: %v\noutput: %s", err, out)
-	}
+	}, holderFlags...)...)
 	var initResp transport.CeremonyInitializeResponse
 	decodeJSON(t, out, &initResp)
 	if initResp.State != "enrolling" || initResp.ShareCount != 3 || len(initResp.Holders) != 3 {
@@ -878,14 +877,15 @@ func TestCLI_RecoveryOfficerFlow_EndToEnd(t *testing.T) {
 	}
 	startNode(t, bin, args, "[recovery-officer] ")
 
+	credDir := t.TempDir()
 	node := &selfGenCANode{
 		dataDir:       dataDir,
 		adminPort:     adminPort,
 		grpcPort:      grpcPort,
 		raftPort:      raftPort,
 		caPath:        filepath.Join(dataDir, "ca.pem"),
-		adminCertPath: filepath.Join(dataDir, "admin-cert.pem"),
-		adminKeyPath:  filepath.Join(dataDir, "admin-key.pem"),
+		adminCertPath: filepath.Join(credDir, "bootstrap-admin-cert.pem"),
+		adminKeyPath:  filepath.Join(credDir, "bootstrap-admin-key.pem"),
 	}
 	waitForFile(t, node.caPath, 30*time.Second)
 
@@ -902,7 +902,7 @@ func TestCLI_RecoveryOfficerFlow_EndToEnd(t *testing.T) {
 	off3 := registerRecoveryOfficer(t, cli, node, unixSocket, "r3")
 
 	out, err := runQRDB(t, cli, node.unixArgsAdmin(unixSocket), "barrier", "recovery", "generate",
-		"--threshold", "2", "--output", "json")
+		"--threshold", "2", "--so-pin", "SOPIN12345", "--output", "json")
 	if err != nil {
 		t.Fatalf("barrier recovery generate: %v\noutput: %s", err, out)
 	}

@@ -852,8 +852,8 @@ func TestCLIMultiProtocolDatabaseUpdateConnectionTLS(t *testing.T) {
 				"--address", "localhost:5002",
 				"--conn-transport", "tcp",
 				"--conn-ca-file", "/data/raft/ca.pem",
-				"--conn-cert-file", "/data/raft/admin-cert.pem",
-				"--conn-key-file", "/data/raft/admin-key.pem")
+				"--conn-cert-file", "/data/admin/admin.crt",
+				"--conn-key-file", "/data/admin/admin.key")
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)
