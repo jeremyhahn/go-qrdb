@@ -11,6 +11,18 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.34.0-alpha] - 2026-10-03
+
+Unified share holders. This release contains BREAKING changes; see the entries below. Highlights:
+
+- **One share-holder model.** Security Officers and key custodians are one holder type with a role. The parallel custodian subsystem, raw-share storage (`ceremony.ShareService`) and every unauthenticated or batch share entry point are deleted.
+- **Shares reach only their holder.** Each share is HPKE-sealed to the holder's enrolled key. The suites are algorithm-agile; X25519 is refused in FIPS mode. A share that is never claimed is destroyed.
+- **One authenticated quorum.** Unseal, seal, root token, rekey and holder revocation all go through one quorum. Each holder is authenticated by any auth factor and counted once.
+- **Quorum-gated rekey and holder revocation**, plus an independent recovery key.
+- **Shamir custody for database barriers**, with holder management in the CLI, the desktop app and the web UI.
+- **SO PIN hardening.** One lockout across every SO PIN check; hashed, constant-time checks that fail closed; no anonymous PIN oracle.
+- **Strict ownership.** The system tenant no longer reaches other tenants' databases on any transport, etcd included.
+
 ### Added
 
 - **`pin.WithLockoutClock`** sets the clock the SO PIN lockout's backoffs,
