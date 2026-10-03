@@ -17,6 +17,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -524,6 +525,56 @@ func toolMintJoinToken() mcp.Tool {
 	)
 }
 
+// parseTTLSecondsArg reads key from req's raw arguments as an integer
+// number of seconds, refusing with *ToolArgumentError rather than
+// silently coercing when the value is not a whole number (e.g. 3600.5) or
+// is too large for mcp.ParseInt's underlying cast (github.com/spf13/cast)
+// to convert safely: Go's float64->int conversion for an out-of-range or
+// non-finite float is implementation-specific, not a panic, so a huge or
+// non-finite JSON number would otherwise silently become some unrelated
+// in-range int rather than the refusal it should be. An absent key
+// returns 0 (the documented "use the server's default TTL" value); every
+// OTHER type (a string, a bool, an array) is refused the same way.
+func parseTTLSecondsArg(req mcp.CallToolRequest, key string) (int64, error) {
+	raw, ok := req.GetArguments()[key]
+	if !ok || raw == nil {
+		return 0, nil
+	}
+	// JSON-decoded arguments (every real wire call) arrive as float64; a
+	// Go-literal int (every in-process test that builds a
+	// mcp.CallToolRequest by hand rather than round-tripping JSON) is
+	// accepted too, rather than making this helper fragile to a
+	// distinction that is an artifact of how the caller built the
+	// request, not something the caller asked for.
+	var f float64
+	switch v := raw.(type) {
+	case float64:
+		f = v
+	case int:
+		f = float64(v)
+	case int64:
+		f = float64(v)
+	default:
+		return 0, &ToolArgumentError{Argument: key, Reason: "must be a number"}
+	}
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, &ToolArgumentError{Argument: key, Reason: "must be finite"}
+	}
+	if f != math.Trunc(f) {
+		return 0, &ToolArgumentError{Argument: key, Reason: "must be a whole number of seconds"}
+	}
+	// float64 represents every integer up to 2^53 exactly; bounding to
+	// service.MaxJoinTokenTTLSeconds (far smaller) keeps the eventual
+	// int64 conversion exact AND already within the range
+	// service.ParseJoinTokenTTLSeconds itself enforces, so this refusal
+	// reports as a tool-argument problem rather than that function's own
+	// overflow error for the same value.
+	if f < 0 || f > float64(service.MaxJoinTokenTTLSeconds) {
+		return 0, &ToolArgumentError{Argument: key, Reason: "out of range"}
+	}
+	return int64(f), nil
+}
+
 // handleMintJoinToken returns a tool handler that delegates to
 // adminSvc.MintJoinToken when adminSvc implements
 // service.ClusterJoinTokenMinter, and reports
@@ -538,9 +589,12 @@ func handleMintJoinToken(adminSvc service.AdminServicer) mcpserver.ToolHandlerFu
 		}
 
 		nodeID := mcp.ParseString(req, "node_id", "")
-		ttlSeconds := mcp.ParseInt(req, "ttl_seconds", 0)
+		ttlSeconds, err := parseTTLSecondsArg(req, "ttl_seconds")
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_mint_join_token", Err: err}
+		}
 
-		ttl, err := service.ParseJoinTokenTTLSeconds(int64(ttlSeconds))
+		ttl, err := service.ParseJoinTokenTTLSeconds(ttlSeconds)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_mint_join_token", Err: err}
 		}

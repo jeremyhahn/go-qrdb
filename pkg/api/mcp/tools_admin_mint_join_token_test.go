@@ -70,3 +70,64 @@ func TestMintJoinTokenTool_OrdinaryTTLConverted(t *testing.T) {
 		t.Fatal("expected a non-empty result text")
 	}
 }
+
+// TestMintJoinTokenTool_NonIntegerTTLRefused proves a ttl_seconds value
+// with a fractional part -- the shape a real JSON-RPC call sends, a
+// float64 -- is refused rather than silently truncated.
+func TestMintJoinTokenTool_NonIntegerTTLRefused(t *testing.T) {
+	admin := &mintJoinTokenAdmin{token: "tok", expires: time.Now().Add(time.Hour)}
+	_, err := handleMintJoinToken(admin)(context.Background(), buildCallToolRequest(t, "qrdb_mint_join_token",
+		map[string]any{"node_id": "node-1", "ttl_seconds": 3600.5}))
+	if err == nil {
+		t.Fatal("qrdb_mint_join_token with a non-integer ttl_seconds succeeded, want a refusal")
+	}
+	if admin.called {
+		t.Error("minter was called with a non-integer ttl_seconds; the guard did not refuse it first")
+	}
+}
+
+// TestMintJoinTokenTool_HugeFloatTTLRefused proves a huge, finite
+// floating-point ttl_seconds -- outside int64's exact range, the shape a
+// probing or buggy JSON-RPC client could send -- is refused rather than
+// silently becoming an implementation-specific (and possibly in-range)
+// int via an unchecked float-to-int conversion.
+func TestMintJoinTokenTool_HugeFloatTTLRefused(t *testing.T) {
+	admin := &mintJoinTokenAdmin{token: "tok", expires: time.Now().Add(time.Hour)}
+	_, err := handleMintJoinToken(admin)(context.Background(), buildCallToolRequest(t, "qrdb_mint_join_token",
+		map[string]any{"node_id": "node-1", "ttl_seconds": 1e300}))
+	if err == nil {
+		t.Fatal("qrdb_mint_join_token with a huge float ttl_seconds succeeded, want a refusal")
+	}
+	if admin.called {
+		t.Error("minter was called with a huge float ttl_seconds; the guard did not refuse it first")
+	}
+}
+
+// TestMintJoinTokenTool_NonNumericTTLRefused proves a ttl_seconds value
+// that is not a number at all (a string) is refused rather than coerced.
+func TestMintJoinTokenTool_NonNumericTTLRefused(t *testing.T) {
+	admin := &mintJoinTokenAdmin{token: "tok", expires: time.Now().Add(time.Hour)}
+	_, err := handleMintJoinToken(admin)(context.Background(), buildCallToolRequest(t, "qrdb_mint_join_token",
+		map[string]any{"node_id": "node-1", "ttl_seconds": "3600"}))
+	if err == nil {
+		t.Fatal("qrdb_mint_join_token with a string ttl_seconds succeeded, want a refusal")
+	}
+	if admin.called {
+		t.Error("minter was called with a non-numeric ttl_seconds; the guard did not refuse it first")
+	}
+}
+
+// TestMintJoinTokenTool_OmittedTTLUsesDefault proves omitting ttl_seconds
+// entirely still reaches the minter with 0 (the server's "use the
+// default TTL" convention), not a refusal.
+func TestMintJoinTokenTool_OmittedTTLUsesDefault(t *testing.T) {
+	admin := &mintJoinTokenAdmin{token: "tok", expires: time.Now().Add(time.Hour)}
+	_, err := handleMintJoinToken(admin)(context.Background(), buildCallToolRequest(t, "qrdb_mint_join_token",
+		map[string]any{"node_id": "node-1"}))
+	if err != nil {
+		t.Fatalf("qrdb_mint_join_token with no ttl_seconds: %v", err)
+	}
+	if !admin.called || admin.gotTTL != 0 {
+		t.Fatalf("minter called=%v ttl=%v, want called with 0 (use the default)", admin.called, admin.gotTTL)
+	}
+}
