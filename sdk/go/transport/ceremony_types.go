@@ -29,10 +29,12 @@ type CeremonyOfficerRequest struct {
 // security ceremony. A Threshold of 2 or more initializes Shamir custody
 // over Officers under Policy ("designated" when empty).
 //
-// AdminCSRPEM, AdminCertPEM and AdminCertPoolPEM select the bootstrap admin's
+// AdminCSRPEM, AdminCertPEM and AdminGenerate select the bootstrap admin's
 // credential path (go-qrdb#548): CSR-sign, bring-your-own-certificate, or
-// (when all three are empty) generate -- the default, dev/test/evaluation
-// only path, NOT suitable for production. See docs/firstboot/user.md.
+// generate -- the dev/test/evaluation only path, NOT suitable for
+// production. Exactly one must be set; a request selecting none is refused
+// with *NoAdminCredentialSelectedError, there is no credential-less default
+// (go-qrdb#548 review). See docs/firstboot/user.md.
 type CeremonyInitializeRequest struct {
 	SOPin                  string                   `json:"so_pin"`
 	UserPin                string                   `json:"user_pin"`
@@ -45,6 +47,11 @@ type CeremonyInitializeRequest struct {
 	AdminCSRPEM            string                   `json:"admin_csr_pem,omitempty"`
 	AdminCertPEM           string                   `json:"admin_cert_pem,omitempty"`
 	AdminCertPoolPEM       string                   `json:"admin_cert_pool_pem,omitempty"`
+
+	// AdminGenerate selects the generate path explicitly (go-qrdb#548
+	// review): mutually exclusive with AdminCSRPEM and AdminCertPEM. NOT
+	// suitable for production; see docs/firstboot/user.md.
+	AdminGenerate bool `json:"admin_generate,omitempty"`
 
 	// Secret is the passphrase the system barrier is initialized with
 	// (go-qrdb#548): qrdb init is the only system bootstrap, bringing the

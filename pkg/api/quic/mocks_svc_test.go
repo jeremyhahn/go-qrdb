@@ -159,11 +159,14 @@ func (m *mockCeremonyService) CeremonyInitialize(ctx context.Context, ca ceremon
 		return m.ceremonyInitializeFn(ctx, ca)
 	}
 	return &service.CeremonyInitResult{
-		SPKIPin:    "sha256/abc123",
-		CACertPEM:  []byte("ca-cert-pem"),
-		TLSCertPEM: []byte("tls-cert-pem"),
-		State:      "initialized",
-		ShareCount: 3,
+		SPKIPin:               "sha256/abc123",
+		CACertPEM:             []byte("ca-cert-pem"),
+		TLSCertPEM:            []byte("tls-cert-pem"),
+		State:                 "initialized",
+		ShareCount:            3,
+		AdminCertPEM:          []byte("admin-cert"),
+		AdminKeyPEM:           []byte("admin-key"),
+		AdminCredentialSource: "generated",
 	}, nil
 }
 

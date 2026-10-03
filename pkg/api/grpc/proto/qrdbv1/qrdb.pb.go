@@ -17862,6 +17862,14 @@ func (x *CeremonyHolderCert) GetCertPem() []byte {
 }
 
 // CeremonyInitializeRequest starts the initialization ceremony.
+//
+// admin_csr_pem, admin_cert_pem and admin_generate select the bootstrap
+// admin's credential path: CSR-sign, bring-your-own-certificate, or
+// generate -- the dev/test/evaluation only path, NOT suitable for
+// production. Exactly one must be set; a request selecting none is refused,
+// there is no credential-less default. secret is the passphrase the system
+// barrier is initialized with, required when the barrier's configured
+// strategy needs one.
 type CeremonyInitializeRequest struct {
 	state                  protoimpl.MessageState `protogen:"open.v1"`
 	SoPin                  string                 `protobuf:"bytes,1,opt,name=so_pin,json=soPin,proto3" json:"so_pin,omitempty"`
@@ -17872,9 +17880,14 @@ type CeremonyInitializeRequest struct {
 	Hostname               string                 `protobuf:"bytes,6,opt,name=hostname,proto3" json:"hostname,omitempty"`
 	Sans                   []string               `protobuf:"bytes,7,rep,name=sans,proto3" json:"sans,omitempty"`
 	// policy is the factor policy of the initial share set.
-	Policy        string `protobuf:"bytes,8,opt,name=policy,proto3" json:"policy,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Policy           string `protobuf:"bytes,8,opt,name=policy,proto3" json:"policy,omitempty"`
+	AdminCsrPem      string `protobuf:"bytes,9,opt,name=admin_csr_pem,json=adminCsrPem,proto3" json:"admin_csr_pem,omitempty"`
+	AdminCertPem     string `protobuf:"bytes,10,opt,name=admin_cert_pem,json=adminCertPem,proto3" json:"admin_cert_pem,omitempty"`
+	AdminCertPoolPem string `protobuf:"bytes,11,opt,name=admin_cert_pool_pem,json=adminCertPoolPem,proto3" json:"admin_cert_pool_pem,omitempty"`
+	AdminGenerate    bool   `protobuf:"varint,12,opt,name=admin_generate,json=adminGenerate,proto3" json:"admin_generate,omitempty"`
+	Secret           string `protobuf:"bytes,13,opt,name=secret,proto3" json:"secret,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *CeremonyInitializeRequest) Reset() {
@@ -17963,17 +17976,58 @@ func (x *CeremonyInitializeRequest) GetPolicy() string {
 	return ""
 }
 
+func (x *CeremonyInitializeRequest) GetAdminCsrPem() string {
+	if x != nil {
+		return x.AdminCsrPem
+	}
+	return ""
+}
+
+func (x *CeremonyInitializeRequest) GetAdminCertPem() string {
+	if x != nil {
+		return x.AdminCertPem
+	}
+	return ""
+}
+
+func (x *CeremonyInitializeRequest) GetAdminCertPoolPem() string {
+	if x != nil {
+		return x.AdminCertPoolPem
+	}
+	return ""
+}
+
+func (x *CeremonyInitializeRequest) GetAdminGenerate() bool {
+	if x != nil {
+		return x.AdminGenerate
+	}
+	return false
+}
+
+func (x *CeremonyInitializeRequest) GetSecret() string {
+	if x != nil {
+		return x.Secret
+	}
+	return ""
+}
+
 // CeremonyInitializeResponse returns the result of ceremony initialization.
+//
+// admin_key_pem is present ONLY when admin_credential_source is
+// "generated"; it is returned exactly once and the server retains no copy.
 type CeremonyInitializeResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	SpkiPin       string                 `protobuf:"bytes,1,opt,name=spki_pin,json=spkiPin,proto3" json:"spki_pin,omitempty"`
-	CaCertPem     string                 `protobuf:"bytes,2,opt,name=ca_cert_pem,json=caCertPem,proto3" json:"ca_cert_pem,omitempty"`
-	TlsCertPem    string                 `protobuf:"bytes,3,opt,name=tls_cert_pem,json=tlsCertPem,proto3" json:"tls_cert_pem,omitempty"`
-	State         string                 `protobuf:"bytes,6,opt,name=state,proto3" json:"state,omitempty"`
-	ShareCount    int32                  `protobuf:"varint,7,opt,name=share_count,json=shareCount,proto3" json:"share_count,omitempty"`
-	Holders       []*CeremonyHolderCert  `protobuf:"bytes,8,rep,name=holders,proto3" json:"holders,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	SpkiPin               string                 `protobuf:"bytes,1,opt,name=spki_pin,json=spkiPin,proto3" json:"spki_pin,omitempty"`
+	CaCertPem             string                 `protobuf:"bytes,2,opt,name=ca_cert_pem,json=caCertPem,proto3" json:"ca_cert_pem,omitempty"`
+	TlsCertPem            string                 `protobuf:"bytes,3,opt,name=tls_cert_pem,json=tlsCertPem,proto3" json:"tls_cert_pem,omitempty"`
+	State                 string                 `protobuf:"bytes,6,opt,name=state,proto3" json:"state,omitempty"`
+	ShareCount            int32                  `protobuf:"varint,7,opt,name=share_count,json=shareCount,proto3" json:"share_count,omitempty"`
+	Holders               []*CeremonyHolderCert  `protobuf:"bytes,8,rep,name=holders,proto3" json:"holders,omitempty"`
+	AdminCertPem          string                 `protobuf:"bytes,9,opt,name=admin_cert_pem,json=adminCertPem,proto3" json:"admin_cert_pem,omitempty"`
+	AdminKeyPem           string                 `protobuf:"bytes,10,opt,name=admin_key_pem,json=adminKeyPem,proto3" json:"admin_key_pem,omitempty"`
+	AdminCredentialSource string                 `protobuf:"bytes,11,opt,name=admin_credential_source,json=adminCredentialSource,proto3" json:"admin_credential_source,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *CeremonyInitializeResponse) Reset() {
@@ -18046,6 +18100,27 @@ func (x *CeremonyInitializeResponse) GetHolders() []*CeremonyHolderCert {
 		return x.Holders
 	}
 	return nil
+}
+
+func (x *CeremonyInitializeResponse) GetAdminCertPem() string {
+	if x != nil {
+		return x.AdminCertPem
+	}
+	return ""
+}
+
+func (x *CeremonyInitializeResponse) GetAdminKeyPem() string {
+	if x != nil {
+		return x.AdminKeyPem
+	}
+	return ""
+}
+
+func (x *CeremonyInitializeResponse) GetAdminCredentialSource() string {
+	if x != nil {
+		return x.AdminCredentialSource
+	}
+	return ""
 }
 
 // CeremonyStatusResponse describes the current ceremony state.
@@ -28832,7 +28907,7 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x12CeremonyHolderCert\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x12\n" +
 	"\x04role\x18\x02 \x01(\tR\x04role\x12\x19\n" +
-	"\bcert_pem\x18\x03 \x01(\fR\acertPem\"\xa3\x02\n" +
+	"\bcert_pem\x18\x03 \x01(\fR\acertPem\"\xdb\x03\n" +
 	"\x19CeremonyInitializeRequest\x12\x15\n" +
 	"\x06so_pin\x18\x01 \x01(\tR\x05soPin\x12\x19\n" +
 	"\buser_pin\x18\x02 \x01(\tR\auserPin\x12\x1c\n" +
@@ -28841,7 +28916,13 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\bofficers\x18\x05 \x03(\v2\x18.qrdb.v1.CeremonyOfficerR\bofficers\x12\x1a\n" +
 	"\bhostname\x18\x06 \x01(\tR\bhostname\x12\x12\n" +
 	"\x04sans\x18\a \x03(\tR\x04sans\x12\x16\n" +
-	"\x06policy\x18\b \x01(\tR\x06policy\"\x8c\x02\n" +
+	"\x06policy\x18\b \x01(\tR\x06policy\x12\"\n" +
+	"\radmin_csr_pem\x18\t \x01(\tR\vadminCsrPem\x12$\n" +
+	"\x0eadmin_cert_pem\x18\n" +
+	" \x01(\tR\fadminCertPem\x12-\n" +
+	"\x13admin_cert_pool_pem\x18\v \x01(\tR\x10adminCertPoolPem\x12%\n" +
+	"\x0eadmin_generate\x18\f \x01(\bR\radminGenerate\x12\x16\n" +
+	"\x06secret\x18\r \x01(\tR\x06secret\"\x8e\x03\n" +
 	"\x1aCeremonyInitializeResponse\x12\x19\n" +
 	"\bspki_pin\x18\x01 \x01(\tR\aspkiPin\x12\x1e\n" +
 	"\vca_cert_pem\x18\x02 \x01(\tR\tcaCertPem\x12 \n" +
@@ -28850,7 +28931,11 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x05state\x18\x06 \x01(\tR\x05state\x12\x1f\n" +
 	"\vshare_count\x18\a \x01(\x05R\n" +
 	"shareCount\x125\n" +
-	"\aholders\x18\b \x03(\v2\x1b.qrdb.v1.CeremonyHolderCertR\aholdersJ\x04\b\x04\x10\x05J\x04\b\x05\x10\x06R\vso_cert_pemR\n" +
+	"\aholders\x18\b \x03(\v2\x1b.qrdb.v1.CeremonyHolderCertR\aholders\x12$\n" +
+	"\x0eadmin_cert_pem\x18\t \x01(\tR\fadminCertPem\x12\"\n" +
+	"\radmin_key_pem\x18\n" +
+	" \x01(\tR\vadminKeyPem\x126\n" +
+	"\x17admin_credential_source\x18\v \x01(\tR\x15adminCredentialSourceJ\x04\b\x04\x10\x05J\x04\b\x05\x10\x06R\vso_cert_pemR\n" +
 	"so_key_pem\"I\n" +
 	"\x16CeremonyStatusResponse\x12\x14\n" +
 	"\x05state\x18\x01 \x01(\tR\x05state\x12\x19\n" +

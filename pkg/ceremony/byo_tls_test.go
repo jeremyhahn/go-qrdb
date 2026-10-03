@@ -140,8 +140,9 @@ func TestInitialize_BYOTLS_GenerateRefused(t *testing.T) {
 	svc := newTestCeremonyService(t, cfg, testBarrier(t))
 
 	_, err = svc.Initialize(context.Background(), nil, &InitializeOptions{
-		SOPin:   "test-so-pin",
-		UserPin: "test-user-pin",
+		SOPin:         "test-so-pin",
+		UserPin:       "test-user-pin",
+		AdminGenerate: true,
 	})
 	var needsCA *AdminCredentialRequiresCAError
 	require.ErrorAs(t, err, &needsCA)

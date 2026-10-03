@@ -317,8 +317,9 @@ func TestCeremonyService_InitializeWithHolders(t *testing.T) {
 
 	res, err := e.cer.CeremonyInitialize(adminCtx(), e.ca, &CeremonyInitializeOptions{
 		SOPin: "so-pin-1234", UserPin: "user-pin-1234", Threshold: 2, Policy: seal.FactorPolicyAnyEnrolled,
-		Officers: []CeremonyOfficerConfig{{Username: "alice", CSRPEM: string(a.csr)}, {Username: "bob", Role: seal.RoleCustodian, CSRPEM: string(b.csr)}},
-		Hostname: "db.example.com",
+		Officers:      []CeremonyOfficerConfig{{Username: "alice", CSRPEM: string(a.csr)}, {Username: "bob", Role: seal.RoleCustodian, CSRPEM: string(b.csr)}},
+		Hostname:      "db.example.com",
+		AdminGenerate: true,
 	})
 	require.NoError(t, err)
 	assert.Equal(t, 2, res.ShareCount)

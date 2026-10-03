@@ -31,7 +31,7 @@ import (
 
 // initOpts builds initialization options over holders.
 func initOpts(threshold int, holders ...*testHolder) *InitializeOptions {
-	opts := &InitializeOptions{SOPin: "so-pin-1234", UserPin: "user-pin-1234", Threshold: threshold, Enroller: "admin", Hostname: "db.example.com"}
+	opts := &InitializeOptions{SOPin: "so-pin-1234", UserPin: "user-pin-1234", Threshold: threshold, Enroller: "admin", Hostname: "db.example.com", AdminGenerate: true}
 	for _, h := range holders {
 		opts.Officers = append(opts.Officers, OfficerConfig{Username: h.username, Role: h.role, CSRPEM: h.csrPEM})
 	}

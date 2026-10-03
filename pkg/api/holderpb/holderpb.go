@@ -246,6 +246,11 @@ func CeremonyInitFromPB(req *pb.CeremonyInitializeRequest) *service.CeremonyInit
 		Officers:               holders,
 		Hostname:               req.GetHostname(),
 		SANs:                   req.GetSans(),
+		AdminCSRPEM:            req.GetAdminCsrPem(),
+		AdminCertPEM:           req.GetAdminCertPem(),
+		AdminCertPoolPEM:       req.GetAdminCertPoolPem(),
+		AdminGenerate:          req.GetAdminGenerate(),
+		Secret:                 req.GetSecret(),
 	}
 }
 
@@ -256,11 +261,14 @@ func CeremonyInitToPB(r *service.CeremonyInitResult) *pb.CeremonyInitializeRespo
 		holders[i] = &pb.CeremonyHolderCert{Username: h.Username, Role: string(h.Role), CertPem: h.CertPEM}
 	}
 	return &pb.CeremonyInitializeResponse{
-		SpkiPin:    r.SPKIPin,
-		CaCertPem:  string(r.CACertPEM),
-		TlsCertPem: string(r.TLSCertPEM),
-		State:      r.State,
-		ShareCount: int32(r.ShareCount), //nolint:gosec // bounded by the holder count
-		Holders:    holders,
+		SpkiPin:               r.SPKIPin,
+		CaCertPem:             string(r.CACertPEM),
+		TlsCertPem:            string(r.TLSCertPEM),
+		State:                 r.State,
+		ShareCount:            int32(r.ShareCount), //nolint:gosec // bounded by the holder count
+		Holders:               holders,
+		AdminCertPem:          string(r.AdminCertPEM),
+		AdminKeyPem:           string(r.AdminKeyPEM),
+		AdminCredentialSource: r.AdminCredentialSource,
 	}
 }

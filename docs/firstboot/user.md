@@ -107,12 +107,17 @@ at the same moment as the barrier and the CA):
   validated against the given pool (or, if you omit it, against this
   deployment's own CA bundle) and adopted unchanged. Your key never leaves
   your token.
-- **Neither flag (the default)** — the server **generates** a key pair and
-  returns the private key in the response, exactly once. **This path is for
+- **`--admin-generate`** — the server **generates** a key pair and returns
+  the private key in the response, exactly once. **This path is for
   development, testing and evaluation only.** It does not meet FedRAMP, HIPAA
   or PCI DSS 4.0, because the server briefly held the private key in memory.
   `qrdb init` prints a loud warning when it is used. Use `--admin-csr` or
   `--admin-cert` for any deployment that must meet those controls.
+
+One of the three flags is **required**: there is no credential-less
+default. Omitting all three is refused before anything is initialized
+(`*NoAdminCredentialSelectedError`), the same way supplying more than one is
+(`*ConflictingAdminCredentialInputsError`).
 
 The certificate (and, for the generate path, the key) are printed by `qrdb
 init` itself — capture them immediately; the key cannot be retrieved again.
@@ -131,7 +136,7 @@ fails closed.
 First boot waited for the admin's certificate to arrive (it may have been
 issued by `qrdb init` on a different node of the cluster) and nothing showed
 up in time. The admin-credential step is retriable: re-run `qrdb init` with
-`--admin-csr`, `--admin-cert`, or no flags to generate, against the node that
+`--admin-csr`, `--admin-cert`, or `--admin-generate`, against the node that
 is current Raft leader (`qrdb status`), and it issues a fresh credential and
 retries the binding. Nothing about this is destructive — it does not touch the
 barrier, the CA, or the SO/User PINs.

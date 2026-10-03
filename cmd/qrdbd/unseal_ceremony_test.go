@@ -202,9 +202,10 @@ func TestRunStart_UnsealCeremony_ProceedsToFullStartup(t *testing.T) {
 // (secret, the passphrase strategy's registered strategy expects) and runs
 // the bootstrap-admin ceremony, exactly as "qrdb init" does (go-qrdb#548).
 // This test's daemon has auth disabled and never looks at the admin
-// credential the ceremony issues, so so_pin/user_pin are placeholders and no
-// admin_csr_pem/admin_cert_pem is supplied -- the dev-only generate path
-// runs, and its output is discarded.
+// credential the ceremony issues, so so_pin/user_pin are placeholders and
+// admin_generate selects the dev-only generate path explicitly -- there is
+// no credential-less default (go-qrdb#548 review) -- and its output is
+// discarded.
 func initializeCeremony(t *testing.T, bundle *TLSBundle, adminPort int, secret string) {
 	t.Helper()
 
@@ -224,9 +225,10 @@ func initializeCeremony(t *testing.T, bundle *TLSBundle, adminPort int, secret s
 	}
 
 	body, err := json.Marshal(map[string]any{
-		"so_pin":   "unseal-ceremony-so-pin",
-		"user_pin": "unseal-ceremony-user-pin",
-		"secret":   secret,
+		"so_pin":         "unseal-ceremony-so-pin",
+		"user_pin":       "unseal-ceremony-user-pin",
+		"secret":         secret,
+		"admin_generate": true,
 	})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)

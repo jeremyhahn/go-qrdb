@@ -31,8 +31,9 @@ func TestInitialize_AdminCredential_Generate(t *testing.T) {
 	svc := newTestCeremonyService(t, defaultConfig(), testBarrier(t))
 
 	result, err := svc.Initialize(context.Background(), newMockCA(t), &InitializeOptions{
-		SOPin:   "test-so-pin",
-		UserPin: "test-user-pin",
+		SOPin:         "test-so-pin",
+		UserPin:       "test-user-pin",
+		AdminGenerate: true,
 	})
 	require.NoError(t, err)
 	assert.NotEmpty(t, result.AdminCertPEM)
@@ -196,12 +197,13 @@ func TestReissueAdminCredential_Succeeds(t *testing.T) {
 	svc := newTestCeremonyService(t, defaultConfig(), testBarrier(t))
 
 	first, err := svc.Initialize(context.Background(), newMockCA(t), &InitializeOptions{
-		SOPin:   "test-so-pin",
-		UserPin: "test-user-pin",
+		SOPin:         "test-so-pin",
+		UserPin:       "test-user-pin",
+		AdminGenerate: true,
 	})
 	require.NoError(t, err)
 
-	second, err := svc.ReissueAdminCredential(context.Background(), nil)
+	second, err := svc.ReissueAdminCredential(context.Background(), &InitializeOptions{AdminGenerate: true})
 	require.NoError(t, err)
 	assert.NotEmpty(t, second.AdminCertPEM)
 	assert.NotEmpty(t, second.AdminKeyPEM)
@@ -221,8 +223,9 @@ func TestReissueAdminCredential_HonoursCSRPath(t *testing.T) {
 	svc := newTestCeremonyService(t, defaultConfig(), testBarrier(t))
 
 	_, err := svc.Initialize(context.Background(), newMockCA(t), &InitializeOptions{
-		SOPin:   "test-so-pin",
-		UserPin: "test-user-pin",
+		SOPin:         "test-so-pin",
+		UserPin:       "test-user-pin",
+		AdminGenerate: true,
 	})
 	require.NoError(t, err)
 
@@ -249,8 +252,9 @@ func TestCACertPool_AfterInitialize(t *testing.T) {
 	svc := newTestCeremonyService(t, defaultConfig(), testBarrier(t))
 
 	_, err := svc.Initialize(context.Background(), ca, &InitializeOptions{
-		SOPin:   "test-so-pin",
-		UserPin: "test-user-pin",
+		SOPin:         "test-so-pin",
+		UserPin:       "test-user-pin",
+		AdminGenerate: true,
 	})
 	require.NoError(t, err)
 

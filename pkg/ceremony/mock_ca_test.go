@@ -216,10 +216,11 @@ func defaultConfig() *CeremonyConfig {
 // care about M-of-N or BYO-TLS specifics.
 func defaultInitOpts() *InitializeOptions {
 	return &InitializeOptions{
-		SOPin:    "test-so-pin",
-		UserPin:  "test-user-pin",
-		Hostname: "localhost",
-		SANs:     []string{"localhost", "127.0.0.1"},
+		SOPin:         "test-so-pin",
+		UserPin:       "test-user-pin",
+		Hostname:      "localhost",
+		SANs:          []string{"localhost", "127.0.0.1"},
+		AdminGenerate: true,
 	}
 }
 

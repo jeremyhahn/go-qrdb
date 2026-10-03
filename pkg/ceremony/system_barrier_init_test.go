@@ -35,9 +35,10 @@ func TestInitialize_SystemBarrier_FreshNodeUnsealsIt(t *testing.T) {
 	svc := newTestCeremonyService(t, defaultConfig(), barrier)
 
 	_, err := svc.Initialize(context.Background(), newMockCA(t), &InitializeOptions{
-		SOPin:   "test-so-pin",
-		UserPin: "test-user-pin",
-		Secret:  []byte("test-master-password"),
+		SOPin:         "test-so-pin",
+		UserPin:       "test-user-pin",
+		Secret:        []byte("test-master-password"),
+		AdminGenerate: true,
 	})
 	require.NoError(t, err)
 	assert.False(t, barrier.IsSealed(), "Initialize must bring the system barrier up itself")
@@ -60,9 +61,10 @@ func TestInitialize_SystemBarrier_RetryAfterCrashConverges(t *testing.T) {
 	svc := newTestCeremonyService(t, defaultConfig(), barrier)
 
 	_, err := svc.Initialize(context.Background(), newMockCA(t), &InitializeOptions{
-		SOPin:   "test-so-pin",
-		UserPin: "test-user-pin",
-		Secret:  secret,
+		SOPin:         "test-so-pin",
+		UserPin:       "test-user-pin",
+		Secret:        secret,
+		AdminGenerate: true,
 	})
 	require.NoError(t, err)
 	assert.False(t, barrier.IsSealed())
@@ -76,8 +78,9 @@ func TestInitialize_SystemBarrier_AlreadyUnsealedIsANoOp(t *testing.T) {
 	svc := newTestCeremonyService(t, defaultConfig(), barrier)
 
 	_, err := svc.Initialize(context.Background(), newMockCA(t), &InitializeOptions{
-		SOPin:   "test-so-pin",
-		UserPin: "test-user-pin",
+		SOPin:         "test-so-pin",
+		UserPin:       "test-user-pin",
+		AdminGenerate: true,
 	})
 	require.NoError(t, err)
 	assert.False(t, barrier.IsSealed())

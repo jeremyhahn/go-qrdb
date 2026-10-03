@@ -82,6 +82,7 @@ type initFlags struct {
 	adminCSR        string
 	adminCert       string
 	adminCertPool   string
+	adminGenerate   bool
 }
 
 // newInitCmd returns the canonical root-level "init" command.
@@ -137,8 +138,9 @@ officer claim'.
 The bootstrap admin's certificate is resolved in this same call through
 exactly one of --admin-csr (CSR-sign, the admin's key never leaves this
 machine), --admin-cert (bring-your-own-certificate, nothing is issued), or
-neither (generate -- dev/test/evaluation ONLY; the server issues a key
-pair and returns the private key below exactly once).
+--admin-generate (dev/test/evaluation ONLY; the server issues a key pair
+and returns the private key below exactly once). Exactly one is required;
+there is no credential-less default.
 
 Examples:
   qrdb init --barrier-strategy none --so-pin SOPIN --user-pin USERPIN
@@ -151,7 +153,7 @@ Examples:
             --custodians erin=erin.csr
   qrdb init --barrier-strategy none --so-pin SOPIN --user-pin USERPIN \
             --admin-csr admin.csr
-  QRDB_SO_PIN=... QRDB_USER_PIN=... qrdb init --barrier-strategy none`,
+  QRDB_SO_PIN=... QRDB_USER_PIN=... qrdb init --barrier-strategy none --admin-generate`,
 		Args: cobra.NoArgs,
 		PreRunE: func(cmd *cobra.Command, _ []string) error {
 			return resolveAndValidateInitFlags(cmd, f, "QRDB")
@@ -197,6 +199,8 @@ func registerInitFlags(cmd *cobra.Command, f *initFlags) {
 		"Path to a PEM-encoded certificate the admin already holds (bring-your-own-certificate path; nothing is issued). Mutually exclusive with --admin-csr. Requires --admin-cert-pool unless the certificate was issued by this deployment's own CA.")
 	cmd.Flags().StringVar(&f.adminCertPool, "admin-cert-pool", "",
 		"Path to a PEM-encoded trust anchor bundle --admin-cert must chain to. Only used with --admin-cert.")
+	cmd.Flags().BoolVar(&f.adminGenerate, "admin-generate", false,
+		"Generate the bootstrap admin's key pair and certificate in-process, returning the private key exactly once. Mutually exclusive with --admin-csr/--admin-cert. NOT suitable for production (dev/test/evaluation ONLY). Exactly one of --admin-csr, --admin-cert or --admin-generate is required.")
 }
 
 // resolveAndValidateInitFlags resolves env-var fallbacks via viper and
@@ -263,10 +267,26 @@ func resolveAndValidateInitFlags(cmd *cobra.Command, f *initFlags, envPrefix str
 			Reason: "only valid when --barrier-strategy=shamir",
 		}
 	}
-	if f.adminCSR != "" && f.adminCert != "" {
+	adminPathsSelected := 0
+	if f.adminCSR != "" {
+		adminPathsSelected++
+	}
+	if f.adminCert != "" {
+		adminPathsSelected++
+	}
+	if f.adminGenerate {
+		adminPathsSelected++
+	}
+	if adminPathsSelected > 1 {
 		return &InvalidArgError{
-			Arg:    "--admin-csr/--admin-cert",
-			Reason: "mutually exclusive: supply exactly one admin credential path, or neither to generate one (dev/test/evaluation only)",
+			Arg:    "--admin-csr/--admin-cert/--admin-generate",
+			Reason: "mutually exclusive: supply exactly one admin credential path",
+		}
+	}
+	if adminPathsSelected == 0 {
+		return &InvalidArgError{
+			Arg:    "--admin-csr/--admin-cert/--admin-generate",
+			Reason: "required: there is no credential-less default admin credential path; pass --admin-generate for the dev/test/evaluation ONLY path",
 		}
 	}
 	if f.adminCertPool != "" && f.adminCert == "" {
@@ -309,12 +329,14 @@ func parseOfficerFlags(flag, role string, raw []string) ([]transport.CeremonyOff
 // Holder identities are CA-assigned over CSR public keys; the server never
 // holds a holder's private key, so there is no credential bundle to deliver.
 //
-// Exactly one admin-credential path reaches the server (go-qrdb#548):
-// --admin-csr (CSR-sign, the admin's key never leaves this machine),
-// --admin-cert (bring-your-own-certificate, nothing is issued), or neither
-// (generate -- the server issues a key pair and returns the key exactly
-// once). The generate path is dev/test/evaluation only; runInit warns loudly
-// when it is used.
+// Exactly one admin-credential path reaches the server (go-qrdb#548
+// review): --admin-csr (CSR-sign, the admin's key never leaves this
+// machine), --admin-cert (bring-your-own-certificate, nothing is issued),
+// or --admin-generate (the server issues a key pair and returns the key
+// exactly once). resolveAndValidateInitFlags already refused a request
+// selecting none or more than one of the three before runInit is ever
+// reached. The generate path is dev/test/evaluation only; runInit warns
+// loudly when it is used.
 func runInit(cmd *cobra.Command, f *initFlags) error {
 	officers, err := parseOfficerFlags("--officers", transport.RoleSecurityOfficer, f.officers)
 	if err != nil {
@@ -368,14 +390,15 @@ func runInit(cmd *cobra.Command, f *initFlags) error {
 			}
 			req.AdminCertPoolPEM = string(poolPEM)
 		}
-	default:
+	case f.adminGenerate:
+		req.AdminGenerate = true
 		// This warning is operator-facing prose, not part of the command's
 		// output contract, so it goes to stderr even under --output
 		// json/yaml: outputWriter carries ONLY the response (go-qrdb#548).
 		// A caller parsing stdout as JSON/YAML (the CLI's own --output json
 		// contract, and every integration-test helper that decodes it) would
 		// otherwise fail on this line.
-		_, _ = fmt.Fprintln(os.Stderr, "WARNING: no --admin-csr or --admin-cert given; the server will GENERATE "+
+		_, _ = fmt.Fprintln(os.Stderr, "WARNING: --admin-generate given; the server will GENERATE "+
 			"the bootstrap admin's key pair and return the private key below, exactly once. This path is for "+
 			"dev/test/evaluation ONLY and does NOT meet FedRAMP, HIPAA or PCI DSS: use --admin-csr (a hardware- or "+
 			"software-generated key you keep) or --admin-cert (a certificate you already hold) for production.")

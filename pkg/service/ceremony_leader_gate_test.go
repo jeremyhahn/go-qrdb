@@ -43,7 +43,7 @@ func TestCeremonyServiceWithLeaderGate_RefusesOnAFollower(t *testing.T) {
 	gated := NewCeremonyServiceWithLeaderGate(inner, fakeLeaderChecker{isLeader: false, leaderAddr: "127.0.0.1:63002"})
 
 	_, err := gated.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{
-		SOPin: "test-so-pin", UserPin: "test-user-pin",
+		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminGenerate: true,
 	})
 	var notLeader *AdminCredentialNotLeaderError
 	require.ErrorAs(t, err, &notLeader)
@@ -63,7 +63,7 @@ func TestCeremonyServiceWithLeaderGate_RefusesWithNoLeaderKnownYet(t *testing.T)
 	gated := NewCeremonyServiceWithLeaderGate(inner, fakeLeaderChecker{isLeader: false, leaderAddr: ""})
 
 	_, err := gated.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{
-		SOPin: "test-so-pin", UserPin: "test-user-pin",
+		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminGenerate: true,
 	})
 	var notLeader *AdminCredentialNotLeaderError
 	require.ErrorAs(t, err, &notLeader)
@@ -78,7 +78,7 @@ func TestCeremonyServiceWithLeaderGate_DelegatesOnTheLeader(t *testing.T) {
 	gated := NewCeremonyServiceWithLeaderGate(inner, fakeLeaderChecker{isLeader: true})
 
 	result, err := gated.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{
-		SOPin: "test-so-pin", UserPin: "test-user-pin",
+		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminGenerate: true,
 	})
 	require.NoError(t, err)
 	assert.NotEmpty(t, result.AdminCertPEM)
@@ -93,7 +93,7 @@ func TestCeremonyServiceWithLeaderGate_PropagatesALeadershipLookupError(t *testi
 	gated := NewCeremonyServiceWithLeaderGate(inner, fakeLeaderChecker{err: cause})
 
 	_, err := gated.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{
-		SOPin: "test-so-pin", UserPin: "test-user-pin",
+		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminGenerate: true,
 	})
 	require.ErrorIs(t, err, cause)
 }
@@ -113,7 +113,7 @@ func TestCeremonyServiceWithLeaderGate_ComposesOverAdminRebind(t *testing.T) {
 
 	// First call (leader, uninitialized): succeeds through both decorators.
 	first, err := gated.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{
-		SOPin: "test-so-pin", UserPin: "test-user-pin",
+		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminGenerate: true,
 	})
 	require.NoError(t, err)
 	require.NotEmpty(t, first.AdminCertPEM)

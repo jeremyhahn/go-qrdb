@@ -223,6 +223,7 @@ func CeremonyInitFrom(req *transport.CeremonyInitializeRequest) *service.Ceremon
 		AdminCSRPEM:            req.AdminCSRPEM,
 		AdminCertPEM:           req.AdminCertPEM,
 		AdminCertPoolPEM:       req.AdminCertPoolPEM,
+		AdminGenerate:          req.AdminGenerate,
 		Secret:                 req.Secret,
 	}
 }

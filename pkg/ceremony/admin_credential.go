@@ -55,8 +55,11 @@ var adminCertProfile = &roleProfile{
 // Binding the certificate to the admin's user record happens later, at first
 // boot, once the admin account exists; see docs/firstboot/architecture.md.
 //
-//   - Both AdminCSRPEM and AdminCertPEM set: refused,
+//   - More than one of AdminCSRPEM, AdminCertPEM, AdminGenerate set: refused,
 //     *ConflictingAdminCredentialInputsError.
+//   - None set: refused, *NoAdminCredentialSelectedError (go-qrdb#548
+//     review) -- there is no credential-less default; generate must be
+//     selected explicitly, the same way CSR-sign and BYOC must be.
 //   - AdminCertPEM set (BYOC): validated against AdminCertPoolPEM, or against
 //     caBundlePEM when that is empty, and adopted unchanged. Nothing is
 //     signed; keyPEM is always nil; no CeremonyCA is needed at all -- the
@@ -65,22 +68,38 @@ var adminCertProfile = &roleProfile{
 //     CN=admin, OU=[system, administrator], using only the CSR's key.
 //     keyPEM is always nil -- the admin's key never leaves their machine.
 //     Refused with *AdminCredentialRequiresCAError when ca is nil.
-//   - Neither set (generate, the default): a key pair and CSR are generated
-//     in-process and signed the identical way. keyPEM carries the generated
-//     key, returned to the caller exactly once. NOT suitable for production;
-//     see docs/firstboot/user.md. Refused with *AdminCredentialRequiresCAError
+//   - AdminGenerate set: a key pair and CSR are generated in-process and
+//     signed the identical way. keyPEM carries the generated key, returned
+//     to the caller exactly once. NOT suitable for production; see
+//     docs/firstboot/user.md. Refused with *AdminCredentialRequiresCAError
 //     when ca is nil, for the same reason as CSR-sign.
 func issueAdminCredential(ctx context.Context, ca CeremonyCA, opts *InitializeOptions, caBundlePEM []byte) (certPEM, keyPEM []byte, source AdminCredentialSource, err error) {
 	var csrPEM, certInPEM, poolPEM []byte
+	var generate bool
 	if opts != nil {
 		csrPEM = opts.AdminCSRPEM
 		certInPEM = opts.AdminCertPEM
 		poolPEM = opts.AdminCertPoolPEM
+		generate = opts.AdminGenerate
+	}
+
+	selected := 0
+	if len(csrPEM) > 0 {
+		selected++
+	}
+	if len(certInPEM) > 0 {
+		selected++
+	}
+	if generate {
+		selected++
 	}
 
 	switch {
-	case len(csrPEM) > 0 && len(certInPEM) > 0:
+	case selected > 1:
 		return nil, nil, AdminCredentialNone, &ConflictingAdminCredentialInputsError{}
+
+	case selected == 0:
+		return nil, nil, AdminCredentialNone, &NoAdminCredentialSelectedError{}
 
 	case len(certInPEM) > 0:
 		if len(poolPEM) == 0 {
@@ -108,7 +127,7 @@ func issueAdminCredential(ctx context.Context, ca CeremonyCA, opts *InitializeOp
 		}
 		return signed, nil, AdminCredentialCSR, nil
 
-	default:
+	default: // generate -- the only remaining case once selected == 1
 		if ca == nil {
 			return nil, nil, AdminCredentialNone, &AdminCredentialRequiresCAError{Path: "generate"}
 		}

@@ -706,7 +706,7 @@ func TestResolveAndValidateInitFlags_SharesWithNonShamir(t *testing.T) {
 
 func TestResolveAndValidateInitFlags_ValidPassphrase(t *testing.T) {
 	cmd := newInitCmd()
-	f := &initFlags{soPin: "sopin", userPin: "userpin", barrierStrategy: "passphrase", passphrase: "barrier-secret"}
+	f := &initFlags{soPin: "sopin", userPin: "userpin", barrierStrategy: "passphrase", passphrase: "barrier-secret", adminGenerate: true}
 	if err := resolveAndValidateInitFlags(cmd, f, "QRDB_TEST_NOOP"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -720,6 +720,7 @@ func TestResolveAndValidateInitFlags_ValidShamir(t *testing.T) {
 		barrierStrategy: "shamir",
 		shares:          5,
 		threshold:       3,
+		adminGenerate:   true,
 	}
 	if err := resolveAndValidateInitFlags(cmd, f, "QRDB_TEST_NOOP"); err != nil {
 		t.Fatalf("unexpected error: %v", err)

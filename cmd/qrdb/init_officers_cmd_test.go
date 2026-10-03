@@ -190,6 +190,7 @@ func TestInitCmd_ShamirWithOfficers_Success(t *testing.T) {
 	out, err := executeCommand(root, "init",
 		"--so-pin", "sopin", "--user-pin", "userpin",
 		"--barrier-strategy", "shamir", "--shares", "2", "--threshold", "2",
+		"--admin-generate",
 		"--officers", "alice="+alicePath,
 		"--custodians", "bob="+bobPath,
 		"--policy", "any-enrolled",
@@ -235,6 +236,7 @@ func TestInitCmd_CustodiansFlagMalformed_LocalError(t *testing.T) {
 	_, err := executeCommand(root, "init",
 		"--so-pin", "sopin", "--user-pin", "userpin",
 		"--barrier-strategy", "none",
+		"--admin-generate",
 		"--custodians", "not-a-valid-entry",
 	)
 	var invalid *InvalidArgError
@@ -259,6 +261,7 @@ func TestInitCmd_SharesMustMatchHolders(t *testing.T) {
 			root := newTestRootCmdInitOfficers(svc)
 			args := []string{"init", "--so-pin", "sopin", "--user-pin", "userpin",
 				"--barrier-strategy", "shamir", "--shares", shares, "--threshold", "2",
+				"--admin-generate",
 				"--officers", "alice=" + alicePath, "--custodians", "bob=" + bobPath}
 			if shares == "2" {
 				args = append(args, "--custodians", "carol="+bobPath)
@@ -288,6 +291,7 @@ func TestInitCmd_OfficersFlagMalformed_LocalError(t *testing.T) {
 	_, err := executeCommand(root, "init",
 		"--so-pin", "sopin", "--user-pin", "userpin",
 		"--barrier-strategy", "none",
+		"--admin-generate",
 		"--officers", "not-a-valid-entry",
 	)
 	var invalid *InvalidArgError
@@ -311,6 +315,7 @@ func TestInitCmd_NoOfficers_ServiceRejects(t *testing.T) {
 	_, err := executeCommand(root, "init",
 		"--so-pin", "sopin", "--user-pin", "userpin",
 		"--barrier-strategy", "shamir", "--shares", "3", "--threshold", "2",
+		"--admin-generate",
 	)
 	if err == nil {
 		t.Fatal("expected the service's ErrNoOfficers-equivalent error to propagate")

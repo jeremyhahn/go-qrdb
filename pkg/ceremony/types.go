@@ -144,6 +144,16 @@ type InitializeOptions struct {
 	// docs/firstboot/user.md.
 	AdminCertPoolPEM []byte
 
+	// AdminGenerate selects the generate path explicitly: a key pair and CSR
+	// are generated in-process and signed by the ceremony CA, returned to
+	// the caller exactly once. It is mutually exclusive with AdminCSRPEM and
+	// AdminCertPEM (go-qrdb#548 review). NOT suitable for production; see
+	// docs/firstboot/user.md. When AdminCSRPEM, AdminCertPEM and
+	// AdminGenerate are ALL unset, Initialize refuses with
+	// *NoAdminCredentialSelectedError rather than defaulting to generate:
+	// there is no credential-less default admin-credential path.
+	AdminGenerate bool
+
 	// Secret is the passphrase (or other strategy-specific credential) the
 	// system barrier is initialized with, BORROWED for the duration of this
 	// call exactly as seal.StorageBarrier.Initialize's own creds parameter
@@ -175,11 +185,10 @@ const (
 	AdminCredentialBYOC AdminCredentialSource = "byoc"
 
 	// AdminCredentialGenerated means the ceremony generated the admin's key
-	// pair and signed it itself. This is the DEFAULT when neither
-	// AdminCSRPEM nor AdminCertPEM is supplied, and it is NOT suitable for
-	// production: the private key is returned to the caller over the wire
-	// exactly once, and go-qrdb never persists or retains it. See
-	// docs/firstboot/user.md.
+	// pair and signed it itself, selected by setting AdminGenerate. It is
+	// NOT suitable for production: the private key is returned to the
+	// caller over the wire exactly once, and go-qrdb never persists or
+	// retains it. See docs/firstboot/user.md.
 	AdminCredentialGenerated AdminCredentialSource = "generated"
 )
 

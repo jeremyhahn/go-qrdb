@@ -507,6 +507,19 @@ func (e *ConflictingAdminCredentialInputsError) Error() string {
 	return "ceremony: AdminCSRPEM and AdminCertPEM are mutually exclusive: supply exactly one admin credential path"
 }
 
+// NoAdminCredentialSelectedError is returned when an initialize request
+// selects none of the three admin-credential paths: AdminCSRPEM,
+// AdminCertPEM and AdminGenerate are all unset (go-qrdb#548 review). There is
+// no credential-less default: a caller that wants the generate path (NOT
+// suitable for production) must set AdminGenerate explicitly, the same way
+// it must set AdminCSRPEM or AdminCertPEM to select either other path.
+type NoAdminCredentialSelectedError struct{}
+
+// Error implements error.
+func (e *NoAdminCredentialSelectedError) Error() string {
+	return "ceremony: no admin credential path selected: set exactly one of AdminCSRPEM, AdminCertPEM or AdminGenerate"
+}
+
 // AdminCredentialRejectedError wraps the reason the bootstrap admin's
 // requested credential (a CSR, a presented certificate, or the generated
 // key/CSR pair) could not be turned into a bound-ready certificate: an

@@ -111,7 +111,12 @@ func TestHandleCeremonyInitialize_Success(t *testing.T) {
 // the bug where the QUIC handleCeremonyInitialize handler only forwarded
 // SoPin/UserPin into service.CeremonyInitializeOptions, silently dropping
 // CredentialSealStrategy, Threshold, Officers, Hostname, and Sans from the
-// wire request.
+// wire request. Also covers the admin-credential fields (go-qrdb#548
+// review, B2): admin_csr_pem/admin_cert_pem/admin_cert_pool_pem/
+// admin_generate/secret on the request, and admin_cert_pem/admin_key_pem/
+// admin_credential_source on the response -- holderpb.CeremonyInitFromPB/
+// CeremonyInitToPB, the SAME conversion gRPC and Unix use (Unix shares
+// gRPC's qrdbServiceServer over a different socket).
 func TestHandleCeremonyInitialize_ForwardsAllFields(t *testing.T) {
 	ceremonySvc := &mockCeremonyService{}
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithCeremonyService(ceremonySvc), WithCeremonyCA(stubCeremonyCA{}))
@@ -125,15 +130,25 @@ func TestHandleCeremonyInitialize_ForwardsAllFields(t *testing.T) {
 			{Username: "officer-1", CsrPem: "csr1"},
 			{Username: "officer-2", CsrPem: "csr2"},
 		},
-		Hostname: "override.example",
-		Sans:     []string{"alt1.example", "alt2.example"},
+		Hostname:         "override.example",
+		Sans:             []string{"alt1.example", "alt2.example"},
+		AdminCsrPem:      "admin-csr",
+		AdminCertPem:     "admin-cert-in",
+		AdminCertPoolPem: "admin-pool",
+		AdminGenerate:    true,
+		Secret:           "barrier-secret",
 	})
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
 	}
 
-	if _, err := srv.handleCeremonyInitialize(context.Background(), payload); err != nil {
+	respBytes, err := srv.handleCeremonyInitialize(context.Background(), payload)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	var initResp pb.CeremonyInitializeResponse
+	if err := proto.Unmarshal(respBytes, &initResp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
 	}
 
 	got := ceremonySvc.capturedInitOpts
@@ -157,6 +172,19 @@ func TestHandleCeremonyInitialize_ForwardsAllFields(t *testing.T) {
 	}
 	if len(got.Officers) != 2 || got.Officers[0].Username != "officer-1" || got.Officers[0].CSRPEM != "csr1" {
 		t.Errorf("Officers = %+v", got.Officers)
+	}
+	if got.AdminCSRPEM != "admin-csr" || got.AdminCertPEM != "admin-cert-in" || got.AdminCertPoolPEM != "admin-pool" {
+		t.Errorf("admin-credential request fields not forwarded: %+v", got)
+	}
+	if !got.AdminGenerate {
+		t.Error("AdminGenerate not forwarded")
+	}
+	if got.Secret != "barrier-secret" {
+		t.Errorf("Secret = %q, want %q", got.Secret, "barrier-secret")
+	}
+	if initResp.GetAdminCertPem() != "admin-cert" || initResp.GetAdminKeyPem() != "admin-key" || initResp.GetAdminCredentialSource() != "generated" {
+		t.Errorf("admin-credential response fields not forwarded: cert=%q key=%q source=%q",
+			initResp.GetAdminCertPem(), initResp.GetAdminKeyPem(), initResp.GetAdminCredentialSource())
 	}
 }
 

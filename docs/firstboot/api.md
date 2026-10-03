@@ -34,29 +34,44 @@ against.
 
 ## Admin credential paths
 
-Which path runs is decided by the `Dependencies` the daemon supplies, not by a
-request field:
+The bootstrap admin's credential path is selected by request fields on
+`CeremonyInitialize` itself, resolved identically on every transport (REST,
+gRPC, Unix, QUIC, MCP, embedded all share the same conversion:
+`pkg/api/holderwire` for REST/MCP/embedded, `pkg/api/holderpb` for
+gRPC/Unix/QUIC). Exactly one must be set; there is no credential-less
+default:
 
-| Path | Inputs | Result |
+| Path | Request field(s) | Result |
 |---|---|---|
-| **C** adopt-presented — **checked first** | `AdminCertPEM` + `AdminCertPool` | validates and adopts; issues nothing |
-| **B** CSR-sign | `AdminCSRPEM` + `Signer` | signs the admin's CSR |
-| **A** generate-and-distribute | `CA` | issues a key + certificate bundle |
+| Adopt-presented (BYOC) | `admin_cert_pem` (+ optional `admin_cert_pool_pem`) | validates and adopts; issues nothing; needs no CA |
+| CSR-sign | `admin_csr_pem` | the ceremony CA signs it; the admin's key never leaves their machine |
+| Generate | `admin_generate: true` | the server generates a key pair and returns the key exactly once; dev/test/evaluation only |
 
-Refusals: `ConflictingAdminCertInputsError` (both CSR and certificate),
-`MissingAdminCertPoolError` (certificate without a pool),
-`AdminCertRejectedError` (unparseable, expired, or no chain to the pool).
+Refusals: `ConflictingAdminCredentialInputsError` (more than one of the three
+set), `NoAdminCredentialSelectedError` (none set), `AdminCredentialRejectedError`
+(the presented certificate or pool is unparseable, expired, or does not
+chain), `AdminCredentialRequiresCAError` (CSR-sign or generate selected on a
+BYO-TLS node with no configured `CeremonyCA` — use BYOC instead).
 
 ## Ceremony initialize request
 
 ```json
-{ "so_pin": "…", "user_pin": "…", "threshold": 3 }
+{
+  "so_pin": "…", "user_pin": "…", "threshold": 3,
+  "admin_generate": true, "secret": "…"
+}
 ```
 
 With `threshold >= 2`, enrolled officers must have been named or the request
 fails closed with `ErrNoOfficers`. In M-of-N the User PIN **is** the Shamir
 secret. Both PINs go straight to the configured `pin.PINBackend` and never
-reach disk in raw form.
+reach disk in raw form. `secret` is the system barrier's own passphrase,
+required exactly when the configured barrier strategy needs one (e.g.
+`passphrase`); `qrdb init` brings the system barrier up in this same call.
+
+The response carries `admin_cert_pem` always, and `admin_key_pem` +
+`admin_credential_source: "generated"` only on the generate path -- the key
+is returned exactly once and never persisted.
 
 ## Status and error mapping
 
@@ -65,9 +80,10 @@ reach disk in raw form.
 | Success | 200 | `OK` |
 | Already initialized | 409 | `FAILED_PRECONDITION` — idempotent, creates nothing |
 | `threshold >= 2` with no officers | 400 | `INVALID_ARGUMENT` — `ErrNoOfficers` |
-| Conflicting admin certificate inputs | 400 | `INVALID_ARGUMENT` |
-| Admin certificate without a pool | 400 | `INVALID_ARGUMENT` |
-| Admin certificate rejected | 403 | `PERMISSION_DENIED` |
+| Conflicting admin-credential inputs | 400 | `INVALID_ARGUMENT` |
+| No admin-credential path selected | 400 | `INVALID_ARGUMENT` |
+| Admin credential rejected | 400 | `INVALID_ARGUMENT` |
+| CSR-sign/generate on a BYO-TLS node (no CA) | 412 | `FAILED_PRECONDITION` |
 | Follower attempted creation | — | retried after replication (`NotLeader` only) |
 | Any other first-boot failure | the underlying cause | returned, not retried — it is this node's own failure |
 | No bootstrap certificate configured | 404 (`/v1/ca/bootstrap` unregistered) | — |

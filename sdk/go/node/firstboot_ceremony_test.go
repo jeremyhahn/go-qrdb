@@ -102,8 +102,9 @@ func TestNode_FirstBootWithCeremony_BoundAdminLogsInUnderRequired(t *testing.T) 
 	ctx := context.Background()
 
 	// A real ceremony, issuing the admin's credential via the generate path
-	// (no --admin-csr / --admin-cert): neither is supplied, so the ceremony
-	// mints a key pair and signs it itself, returning the key exactly once.
+	// (AdminGenerate, go-qrdb#548 review: there is no credential-less
+	// default): the ceremony mints a key pair and signs it itself,
+	// returning the key exactly once.
 	ca, caCertPEM := ceremonyHandoffCA(t)
 	cfg := &ceremony.CeremonyConfig{}
 	svc, err := ceremony.NewCeremonyService(cfg, ceremonyHandoffBarrier(t), ceremonyHandoffLogger())
@@ -111,7 +112,7 @@ func TestNode_FirstBootWithCeremony_BoundAdminLogsInUnderRequired(t *testing.T) 
 	svc.SetPINBackend(pintest.NewBackend(t))
 	initResult, err := svc.Initialize(ctx, ca, &ceremony.InitializeOptions{
 		SOPin: "test-so-pin", UserPin: "test-user-pin",
-		Hostname: "localhost", SANs: []string{"localhost"},
+		Hostname: "localhost", SANs: []string{"localhost"}, AdminGenerate: true,
 	})
 	require.NoError(t, err)
 	require.NotEmpty(t, initResult.AdminCertPEM)

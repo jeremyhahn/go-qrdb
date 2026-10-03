@@ -109,6 +109,7 @@ func (s *CeremonyServiceWithAdminRebind) CeremonyInitialize(ctx context.Context,
 			AdminCSRPEM:      []byte(opts.AdminCSRPEM),
 			AdminCertPEM:     []byte(opts.AdminCertPEM),
 			AdminCertPoolPEM: []byte(opts.AdminCertPoolPEM),
+			AdminGenerate:    opts.AdminGenerate,
 		}
 	}
 	result, err := s.core.ReissueAdminCredential(ctx, coreOpts)

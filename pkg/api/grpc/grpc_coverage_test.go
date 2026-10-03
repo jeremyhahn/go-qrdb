@@ -140,11 +140,14 @@ type mockCeremonyService struct {
 func newMockCeremonyService() *mockCeremonyService {
 	return &mockCeremonyService{
 		initResult: &service.CeremonyInitResult{
-			SPKIPin:    "pin123",
-			CACertPEM:  []byte("ca-cert"),
-			TLSCertPEM: []byte("tls-cert"),
-			State:      "initialized",
-			ShareCount: 3,
+			SPKIPin:               "pin123",
+			CACertPEM:             []byte("ca-cert"),
+			TLSCertPEM:            []byte("tls-cert"),
+			State:                 "initialized",
+			ShareCount:            3,
+			AdminCertPEM:          []byte("admin-cert"),
+			AdminKeyPEM:           []byte("admin-key"),
+			AdminCredentialSource: "generated",
 		},
 		statusResult:     &service.CeremonyStatusInfo{State: "initialized", SPKIPin: "pin123"},
 		claimShareResult: []byte("share-value"),
@@ -1346,13 +1349,19 @@ func TestGRPC_CeremonyInitialize_NilCeremonyCA(t *testing.T) {
 // the bug where the gRPC CeremonyInitialize handler only forwarded
 // SoPin/UserPin into service.CeremonyInitializeOptions, silently dropping
 // CredentialSealStrategy, Threshold, Officers, Hostname, and Sans from the
-// wire request.
+// wire request. Also covers the admin-credential fields (go-qrdb#548
+// review, B2): admin_csr_pem/admin_cert_pem/admin_cert_pool_pem/
+// admin_generate/secret on the request, and admin_cert_pem/admin_key_pem/
+// admin_credential_source on the response -- holderpb.CeremonyInitFromPB/
+// CeremonyInitToPB, shared by gRPC, Unix (the same qrdbServiceServer over a
+// Unix socket) and QUIC (pkg/api/quic/handlers_ceremony.go uses the
+// identical holderpb conversion).
 func TestGRPC_CeremonyInitialize_ForwardsAllFields(t *testing.T) {
 	ceremonySvc := newMockCeremonyService()
 	client, cleanup := startTestServerFull(t, WithCeremonyService(ceremonySvc), WithCeremonyCA(&stubCeremonyCA{}))
 	defer cleanup()
 
-	_, err := client.CeremonyInitialize(context.Background(), &pb.CeremonyInitializeRequest{
+	resp, err := client.CeremonyInitialize(context.Background(), &pb.CeremonyInitializeRequest{
 		SoPin:                  "pin",
 		UserPin:                "upin",
 		CredentialSealStrategy: "shamir",
@@ -1361,8 +1370,13 @@ func TestGRPC_CeremonyInitialize_ForwardsAllFields(t *testing.T) {
 			{Username: "officer-1", CsrPem: "csr1"},
 			{Username: "officer-2", CsrPem: "csr2"},
 		},
-		Hostname: "override.example",
-		Sans:     []string{"alt1.example", "alt2.example"},
+		Hostname:         "override.example",
+		Sans:             []string{"alt1.example", "alt2.example"},
+		AdminCsrPem:      "admin-csr",
+		AdminCertPem:     "admin-cert-in",
+		AdminCertPoolPem: "admin-pool",
+		AdminGenerate:    true,
+		Secret:           "barrier-secret",
 	})
 	if err != nil {
 		t.Fatalf("CeremonyInitialize failed: %v", err)
@@ -1389,6 +1403,19 @@ func TestGRPC_CeremonyInitialize_ForwardsAllFields(t *testing.T) {
 	}
 	if len(got.Officers) != 2 || got.Officers[0].Username != "officer-1" || got.Officers[0].CSRPEM != "csr1" {
 		t.Errorf("Officers = %+v", got.Officers)
+	}
+	if got.AdminCSRPEM != "admin-csr" || got.AdminCertPEM != "admin-cert-in" || got.AdminCertPoolPEM != "admin-pool" {
+		t.Errorf("admin-credential request fields not forwarded: %+v", got)
+	}
+	if !got.AdminGenerate {
+		t.Error("AdminGenerate not forwarded")
+	}
+	if got.Secret != "barrier-secret" {
+		t.Errorf("Secret = %q, want %q", got.Secret, "barrier-secret")
+	}
+	if resp.GetAdminCertPem() != "admin-cert" || resp.GetAdminKeyPem() != "admin-key" || resp.GetAdminCredentialSource() != "generated" {
+		t.Errorf("admin-credential response fields not forwarded: cert=%q key=%q source=%q",
+			resp.GetAdminCertPem(), resp.GetAdminKeyPem(), resp.GetAdminCredentialSource())
 	}
 }
 

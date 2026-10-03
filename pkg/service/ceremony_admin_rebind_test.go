@@ -51,7 +51,7 @@ func TestCeremonyServiceWithAdminRebind_DelegatesBeforeInitialize(t *testing.T) 
 
 	wrapped := NewCeremonyServiceWithAdminRebind(inner, core, &fakeAdminLookup{err: &user.UserNotFoundError{}})
 	result, err := wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{
-		SOPin: "test-so-pin", UserPin: "test-user-pin",
+		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminGenerate: true,
 	})
 	require.NoError(t, err)
 	assert.NotEmpty(t, result.AdminCertPEM)
@@ -75,11 +75,11 @@ func TestCeremonyServiceWithAdminRebind_RefusesWhenAlreadyBound(t *testing.T) {
 	wrapped := NewCeremonyServiceWithAdminRebind(inner, core, bound)
 
 	_, err := wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{
-		SOPin: "test-so-pin", UserPin: "test-user-pin",
+		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminGenerate: true,
 	})
 	require.NoError(t, err)
 
-	_, err = wrapped.CeremonyInitialize(context.Background(), ca, nil)
+	_, err = wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{AdminGenerate: true})
 	var already *AdminAlreadyBoundError
 	require.ErrorAs(t, err, &already)
 }
@@ -100,11 +100,11 @@ func TestCeremonyServiceWithAdminRebind_ReissuesWhenUnbound(t *testing.T) {
 	wrapped := NewCeremonyServiceWithAdminRebind(inner, core, unbound)
 
 	first, err := wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{
-		SOPin: "test-so-pin", UserPin: "test-user-pin",
+		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminGenerate: true,
 	})
 	require.NoError(t, err)
 
-	second, err := wrapped.CeremonyInitialize(context.Background(), ca, nil)
+	second, err := wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{AdminGenerate: true})
 	require.NoError(t, err)
 	assert.NotEmpty(t, second.AdminCertPEM)
 	assert.NotEqual(t, first.AdminCertPEM, second.AdminCertPEM,
@@ -127,11 +127,11 @@ func TestCeremonyServiceWithAdminRebind_PropagatesUnverifiableLookup(t *testing.
 	wrapped := NewCeremonyServiceWithAdminRebind(inner, core, unverifiable)
 
 	_, err := wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{
-		SOPin: "test-so-pin", UserPin: "test-user-pin",
+		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminGenerate: true,
 	})
 	require.NoError(t, err)
 
-	_, err = wrapped.CeremonyInitialize(context.Background(), ca, nil)
+	_, err = wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{AdminGenerate: true})
 	require.Error(t, err)
 	var already *AdminAlreadyBoundError
 	assert.False(t, errors.As(err, &already), "an unverifiable lookup must not be treated as unbound")

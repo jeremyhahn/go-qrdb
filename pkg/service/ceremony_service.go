@@ -88,6 +88,13 @@ type CeremonyInitializeOptions struct {
 	// must chain to. Optional.
 	AdminCertPoolPEM string
 
+	// AdminGenerate selects the generate path explicitly (go-qrdb#548
+	// review): mutually exclusive with AdminCSRPEM and AdminCertPEM. NOT
+	// suitable for production. When AdminCSRPEM, AdminCertPEM and
+	// AdminGenerate are ALL unset, CeremonyInitialize refuses --
+	// there is no credential-less default.
+	AdminGenerate bool
+
 	// Secret is the passphrase (or other strategy-specific credential) the
 	// system barrier is initialized with (go-qrdb#548): qrdb init is the
 	// only system bootstrap, bringing the barrier up itself as part of
@@ -229,6 +236,7 @@ func (s *CeremonyService) CeremonyInitialize(ctx context.Context, ca ceremony.Ce
 		AdminCSRPEM:            []byte(opts.AdminCSRPEM),
 		AdminCertPEM:           []byte(opts.AdminCertPEM),
 		AdminCertPoolPEM:       []byte(opts.AdminCertPoolPEM),
+		AdminGenerate:          opts.AdminGenerate,
 		Secret:                 []byte(opts.Secret),
 	}
 	if id := auth.IdentityFromContext(ctx); id != nil {

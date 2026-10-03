@@ -46,7 +46,7 @@ func TestCeremonySignCSR_SOPINGuessingIsThrottled(t *testing.T) {
 	ctx := context.Background()
 	h1, h2 := newSvcHolder(t, "officer-1"), newSvcHolder(t, "officer-2")
 	_, err := svc.CeremonyInitialize(adminCtx(), e.ca, &CeremonyInitializeOptions{
-		SOPin: svcSOPIN, UserPin: "user-pin-1234", Threshold: 2, Hostname: "db.example.com",
+		SOPin: svcSOPIN, UserPin: "user-pin-1234", Threshold: 2, Hostname: "db.example.com", AdminGenerate: true,
 		Officers: []CeremonyOfficerConfig{
 			{Username: h1.name, CSRPEM: string(h1.csr)},
 			{Username: h2.name, CSRPEM: string(h2.csr)},

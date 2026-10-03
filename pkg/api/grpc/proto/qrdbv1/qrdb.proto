@@ -3713,6 +3713,14 @@ message CeremonyHolderCert {
 }
 
 // CeremonyInitializeRequest starts the initialization ceremony.
+//
+// admin_csr_pem, admin_cert_pem and admin_generate select the bootstrap
+// admin's credential path: CSR-sign, bring-your-own-certificate, or
+// generate -- the dev/test/evaluation only path, NOT suitable for
+// production. Exactly one must be set; a request selecting none is refused,
+// there is no credential-less default. secret is the passphrase the system
+// barrier is initialized with, required when the barrier's configured
+// strategy needs one.
 message CeremonyInitializeRequest {
     string so_pin = 1;
     string user_pin = 2;
@@ -3723,9 +3731,17 @@ message CeremonyInitializeRequest {
     repeated string sans = 7;
     // policy is the factor policy of the initial share set.
     string policy = 8;
+    string admin_csr_pem = 9;
+    string admin_cert_pem = 10;
+    string admin_cert_pool_pem = 11;
+    bool admin_generate = 12;
+    string secret = 13;
 }
 
 // CeremonyInitializeResponse returns the result of ceremony initialization.
+//
+// admin_key_pem is present ONLY when admin_credential_source is
+// "generated"; it is returned exactly once and the server retains no copy.
 message CeremonyInitializeResponse {
     string spki_pin = 1;
     string ca_cert_pem = 2;
@@ -3735,6 +3751,9 @@ message CeremonyInitializeResponse {
     string state = 6;
     int32 share_count = 7;
     repeated CeremonyHolderCert holders = 8;
+    string admin_cert_pem = 9;
+    string admin_key_pem = 10;
+    string admin_credential_source = 11;
 }
 
 // CeremonyStatusResponse describes the current ceremony state.

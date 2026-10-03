@@ -21,14 +21,16 @@ default role set in a single transactional ceremony**.
 | `--officers` | stringArray | — | `username=path/to/csr.pem`, repeatable — **required when `--barrier-strategy=shamir` with `--threshold >= 2`** |
 | `--hostname` | string | — | FQDN written into the admin/server certificate CN |
 | `--sans` | string | — | comma-separated additional DNS / IP SANs |
-| `--admin-csr` | string | — | path to a PEM CSR; selects the CSR-sign admin-credential path (mutually exclusive with `--admin-cert`) |
-| `--admin-cert` | string | — | path to a PEM certificate the admin already holds; selects bring-your-own-certificate (mutually exclusive with `--admin-csr`) |
+| `--admin-csr` | string | — | path to a PEM CSR; selects the CSR-sign admin-credential path (mutually exclusive with `--admin-cert`/`--admin-generate`) |
+| `--admin-cert` | string | — | path to a PEM certificate the admin already holds; selects bring-your-own-certificate (mutually exclusive with `--admin-csr`/`--admin-generate`) |
 | `--admin-cert-pool` | string | — | PEM trust-anchor bundle `--admin-cert` must chain to (optional; defaults to the ceremony's own CA bundle) |
+| `--admin-generate` | bool | `false` | selects the dev/test-only GENERATE path explicitly (mutually exclusive with `--admin-csr`/`--admin-cert`) |
 
-Neither `--admin-csr` nor `--admin-cert` selects the dev/test-only GENERATE
-path: the server mints the admin's key pair and returns the private key in
-the response exactly once. `runInit` warns loudly on stderr when this path
-is taken; it does not meet FedRAMP, HIPAA or PCI DSS.
+Exactly one of `--admin-csr`, `--admin-cert` or `--admin-generate` is
+**required** -- there is no credential-less default.
+`--admin-generate` makes the server mint the admin's key pair and return the
+private key in the response exactly once. `runInit` warns loudly on stderr
+when this path is taken; it does not meet FedRAMP, HIPAA or PCI DSS.
 
 The hardware strategy names (`pkcs11`, `tpm2`, `awskms`, `gcpkms`, `azurekv`,
 `vault`) are accepted here, but the strategies themselves ship in go-xkms and

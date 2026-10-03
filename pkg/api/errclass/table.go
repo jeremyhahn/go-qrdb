@@ -971,9 +971,14 @@ var ceremonyRules = []rule{
 	// node's qrdb init to pin; an operator/configuration gap, not
 	// something retrying the same request fixes.
 	as(&ceremony.NoServerCertificateError{}, FailedPrecondition),
-	// Both AdminCSRPEM and AdminCertPEM set: a malformed request, never a
-	// server-side fault -- 400, not 500 (go-qrdb#548).
+	// More than one of AdminCSRPEM, AdminCertPEM, AdminGenerate set: a
+	// malformed request, never a server-side fault -- 400, not 500
+	// (go-qrdb#548).
 	as(&ceremony.ConflictingAdminCredentialInputsError{}, InvalidArgument),
+	// None of AdminCSRPEM, AdminCertPEM, AdminGenerate set: there is no
+	// credential-less default admin-credential path, so this is a malformed
+	// request too, not a server-side fault (go-qrdb#548 review).
+	as(&ceremony.NoAdminCredentialSelectedError{}, InvalidArgument),
 	// The presented admin credential (CSR, certificate, or trust pool)
 	// could not be turned into a bound-ready certificate: unparseable
 	// input, an expired window, or a chain that does not validate. The
