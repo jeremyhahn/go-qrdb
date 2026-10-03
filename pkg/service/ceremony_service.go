@@ -36,8 +36,9 @@ type CeremonyServicer interface {
 	// PINBackend), the threshold, the factor policy and the initial holders.
 	CeremonyInitialize(ctx context.Context, ca ceremony.CeremonyCA, opts *CeremonyInitializeOptions) (*CeremonyInitResult, error)
 
-	// CeremonySignCSR issues a login certificate under SO PIN authorization.
-	// The CA assigns the certificate identity.
+	// CeremonySignCSR issues a system-tenant certificate for a role under SO
+	// PIN authorization: a holder certificate for roles "so" and "custodian",
+	// a login certificate for the others. The CA assigns the identity.
 	CeremonySignCSR(ctx context.Context, username, soPin, csrPEM, role string) (*CeremonySignCSRResult, error)
 
 	// CeremonyStatus returns the current ceremony state and SPKI pin.
@@ -195,7 +196,8 @@ func (s *CeremonyService) CeremonyInitialize(ctx context.Context, ca ceremony.Ce
 	return out, nil
 }
 
-// CeremonySignCSR issues a login certificate under SO PIN authorization.
+// CeremonySignCSR issues a system-tenant certificate for a role under SO PIN
+// authorization (ceremony.CeremonyService.SignCSRInit).
 func (s *CeremonyService) CeremonySignCSR(ctx context.Context, username, soPin, csrPEM, role string) (*CeremonySignCSRResult, error) {
 	result, err := s.ceremony.SignCSRInit(ctx, username, soPin, []byte(csrPEM), role)
 	if err != nil {

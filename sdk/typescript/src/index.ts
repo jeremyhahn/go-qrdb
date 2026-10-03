@@ -305,6 +305,7 @@ export type {
     DNSDiscoveryInfo,
     TokenDiscoveryInfo,
     DatabaseBarrierConfig,
+    DatabaseBarrierRequest,
     DatabaseConnectionConfig,
     UpdateDatabaseProtocolRequest,
     UpdateDatabaseSQLRequest,

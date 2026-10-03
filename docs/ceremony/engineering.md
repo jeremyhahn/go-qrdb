@@ -243,7 +243,7 @@ the last initial holder claims.
 |---|---|
 | `ceremony:initialize` | initializing the ceremony |
 | `ceremony:status` | reading state |
-| `ceremony:sign_csr` | issuing a login certificate under the SO PIN |
+| `ceremony:sign_csr` | issuing a system-tenant certificate (login or holder, by role) under the SO PIN |
 
 Holder permissions are listed in
 [../shamir-custody/api.md](../shamir-custody/api.md).

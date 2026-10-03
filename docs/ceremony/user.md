@@ -71,8 +71,9 @@ qrdb ceremony sign-csr --csr-file dave.csr --username dave \
 The certificate is issued as `CN=dave`, `OU=[system, <role profile>]` with no
 Subject Alternative Name: `--username` is the identity, and the CSR contributes
 only its key. Whatever Subject or SANs the CSR asks for are ignored, so this
-step cannot mint a login in another tenant. A `--role so` certificate is an
-officer credential and never logs in as a user.
+step cannot mint a login in another tenant. A `--role so` or
+`--role custodian` certificate is a holder certificate, not a login: it
+authenticates with no roles and is refused every permission.
 
 Choose an SO PIN with **at least 40 bits of entropy**, for example 8 random
 characters from letters and digits, or a 12-digit random number. Before
@@ -81,7 +82,7 @@ protects it. After 5 wrong PINs in a row the check locks for a delay that
 doubles from 1 second up to 15 minutes, and the server answers `429` with
 `Retry-After`. A correct PIN resets the count.
 
-This issues a login certificate, not a share. To give someone a share, enrol
+This issues a certificate, not a share. To give someone a share, enrol
 them as a holder and rekey.
 
 ## Troubleshooting

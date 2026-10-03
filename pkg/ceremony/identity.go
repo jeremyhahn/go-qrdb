@@ -19,12 +19,11 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
-// maxHolderNameLen bounds a username that becomes a certificate CN and a
-// SPIFFE path segment.
+// maxHolderNameLen bounds a username that becomes a certificate CN.
 const maxHolderNameLen = 64
 
-// validPrincipalName reports whether name can be a certificate CN and one
-// SPIFFE path segment: 1..64 characters from [A-Za-z0-9._@-].
+// validPrincipalName reports whether name can be a holder certificate's CN:
+// 1..64 characters from [A-Za-z0-9._@-], and neither "." nor "..".
 func validPrincipalName(name string) bool {
 	if name == "" || len(name) > maxHolderNameLen || name == "." || name == ".." {
 		return false

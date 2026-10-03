@@ -47,7 +47,9 @@ qrdb ceremony status --output json
 
 ## `qrdb ceremony sign-csr`
 
-Issue a login certificate under SO PIN authorization. The CA assigns the
+Issue a system-tenant certificate under SO PIN authorization: a login
+certificate for an RBAC role, or, for `--role so` and `--role custodian`, a
+holder certificate that carries no roles. The CA assigns the
 identity (`CN=<username>`, `OU=[system, <profile>]`, no SAN); the CSR supplies
 only the public key.
 

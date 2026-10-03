@@ -102,7 +102,7 @@ func (e *HolderRecordConflictError) Error() string {
 }
 
 // InvalidHolderNameError is returned for a username that cannot be a
-// certificate CN and a SPIFFE path segment.
+// certificate CN.
 type InvalidHolderNameError struct {
 	Name string
 }

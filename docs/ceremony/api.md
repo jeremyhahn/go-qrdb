@@ -56,8 +56,10 @@ Response — `CeremonyInitializeResponse`: `spki_pin`, `ca_cert_pem`,
 claims its own envelope.
 
 `POST /v1/ceremony/sign-csr` — `{ "username", "so_pin", "csr_pem", "role" }`
-issues a login certificate whose identity the CA assigns; the SO PIN is
-verified by the PIN backend.
+issues a system-tenant certificate whose identity the CA assigns -- a login
+certificate for an RBAC role, or a holder certificate for `so` and
+`custodian`, which carries no roles; the SO PIN is verified by the PIN
+backend.
 
 ## Bootstrap-window routes
 

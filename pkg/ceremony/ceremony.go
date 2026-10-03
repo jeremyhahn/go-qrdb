@@ -137,7 +137,8 @@ func (s *CeremonyService) Rebind(barrier *seal.StorageBarrier) {
 	barrier.SetHolderVerifier(s)
 }
 
-// SetCA wires the CeremonyCA used to issue holder and login certificates.
+// SetCA wires the CeremonyCA used to issue holder and login certificates
+// (SignCSRInit issues either, by role).
 // It never overwrites a CA already set: the first CA wired is authoritative.
 func (s *CeremonyService) SetCA(ca CeremonyCA) {
 	if ca == nil {
@@ -357,11 +358,16 @@ func validateInitOptions(opts *InitializeOptions) error {
 	return nil
 }
 
-// SignCSRInit issues a LOGIN certificate for username in the given RBAC role,
-// under SO PIN authorization. The CA assigns the identity: CN = username,
-// OU = [system, profile] and a SPIFFE user URI; nothing is taken from the CSR
-// but its public key. The SO PIN is verified by the PINBackend (hashed,
-// constant-time), never compared here.
+// SignCSRInit issues a system-tenant certificate for username with the
+// profile of the given role, under SO PIN authorization. The CA assigns the
+// identity: CN = username and OU = [system, profile], with no Subject
+// Alternative Name; nothing is taken from the CSR but its public key. The
+// profile decides what the certificate is: role "so" and role "custodian"
+// carry a holder profile (holderprofile.Is), so the certificate is a HOLDER
+// certificate that authenticates with no roles and is refused every RBAC
+// permission; the other roles yield a login certificate for that RBAC role.
+// The SO PIN is verified by the PINBackend (hashed, constant-time), never
+// compared here.
 func (s *CeremonyService) SignCSRInit(ctx context.Context, username, soPin string, csrPEM []byte, role string) (*SignCSRInitResult, error) {
 	s.mu.Lock()
 	state, deps, pins := s.state, s.deps, s.pins
