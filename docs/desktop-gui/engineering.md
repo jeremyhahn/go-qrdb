@@ -115,9 +115,11 @@ management, feature errors), watch streaming and npm packaging are documented in
 - **The database view resumes a pending custody.** `DatabaseHoldersPanel`
   reads the database barrier's status (`database.barrierStatus`) and treats a
   Shamir database as not yet initialized while it reports no `initializedAt`.
-  Such a database shows the enrolled holders, `HolderEnrolmentForms` for the
-  N less those already enrolled (N is the database's `sharesTotal`), and
-  **Initialize**, enabled only once exactly N are enrolled; the rekey and
+  Such a database shows the enrolled holders, each with a **Remove**
+  (`officers.unenrolDatabaseOfficer`: before initialization a holder holds no
+  share, so no quorum is needed), `HolderEnrolmentForms` for the N less those
+  already enrolled (N is the database's `sharesTotal`), and **Initialize**,
+  enabled only once exactly N are enrolled; the rekey and
   revocation rounds appear only once custody is initialized. The same rule
   holds as in the wizard: holder admin only, no share, envelope or holder key
   in the page. *(Changed: the panel inferred initialization from the holders'
@@ -126,7 +128,8 @@ management, feature errors), watch streaming and npm packaging are documented in
   initialization (`HolderLimitReachedError`), so two tabs, the wizard beside
   the database view, or the CLI cannot overfill a database. A database
   enrolled past N before that refusal existed shows why **Initialize** cannot
-  run (`db-holders-over-limit`) and offers no further enrolment.
+  run (`db-holders-over-limit`), offers no further enrolment, and is cleared
+  by removing the extra holders.
 
 ## App shell states
 

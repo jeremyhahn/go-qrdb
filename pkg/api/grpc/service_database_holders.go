@@ -18,6 +18,8 @@ import (
 	"context"
 	"time"
 
+	"google.golang.org/protobuf/types/known/emptypb"
+
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/holderpb"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -182,4 +184,17 @@ func (s *qrdbServiceServer) DatabaseBarrierOfficerRevoke(ctx context.Context, re
 		return nil, mapServiceError(err)
 	}
 	return holderpb.RoundToPB(round), nil
+}
+
+// DatabaseBarrierOfficerUnenrol removes a database holder before the
+// database's custody is initialized.
+func (s *qrdbServiceServer) DatabaseBarrierOfficerUnenrol(ctx context.Context, req *pb.DatabaseBarrierOfficerUnenrolRequest) (*emptypb.Empty, error) {
+	hs, err := s.databaseHolders()
+	if err != nil {
+		return nil, err
+	}
+	if err := hs.DatabaseBarrierOfficerUnenrol(ctx, req.GetDatabase(), req.GetUsername()); err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &emptypb.Empty{}, nil
 }

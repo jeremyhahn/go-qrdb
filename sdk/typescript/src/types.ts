@@ -1970,6 +1970,15 @@ export interface DatabaseRekeyStartRequest {
     readonly policy?: FactorPolicy;
 }
 
+/** Request to remove a holder of a database's barrier before its custody is
+ * initialized, when it holds no share. */
+export interface DatabaseOfficerUnenrolRequest {
+    /** The database, resolved in the caller's tenant. */
+    readonly database: string;
+    /** The holder to remove. */
+    readonly username: string;
+}
+
 /** Request to revoke a holder of a database's barrier. */
 export interface DatabaseOfficerRevokeRequest {
     /** The database, resolved in the caller's tenant. */

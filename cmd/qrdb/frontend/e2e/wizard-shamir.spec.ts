@@ -378,7 +378,7 @@ const overLimitState: MockState = {
 test.describe("Database view — more holders than N", () => {
   test.use({ mockState: overLimitState });
 
-  test("says why Initialize cannot run, and offers no more enrolment", async ({ page }) => {
+  test("says why Initialize cannot run, offers no more enrolment, and a removal clears the way", async ({ page }) => {
     await page.goto("/");
     await expect(page.locator(".breadcrumbs").getByText("Dashboard")).toBeVisible({ timeout: INIT_TIMEOUT });
     await openDatabaseView(page, "vault-over");
@@ -387,8 +387,70 @@ test.describe("Database view — more holders than N", () => {
     await expect(over).toContainText("3 holders are enrolled");
     await expect(over).toContainText("split to exactly 2");
     await expect(over).toContainText("remove 1 holder before initializing");
-    await expect(panel.getByTestId("db-holders-panel-initialize")).toBeDisabled();
+    const initialize = panel.getByTestId("db-holders-panel-initialize");
+    await expect(initialize).toBeDisabled();
     await expect(panel.getByTestId("officer-username-0")).toHaveCount(0);
+
+    // Before initialization a holder holds no share: removing one needs no quorum.
+    await panel.getByTestId("db-holder-unenrol-carol").click();
+    await expect(panel.getByTestId("db-holders-over-limit")).toHaveCount(0);
+    await expect(panel.getByTestId("db-holders-table")).not.toContainText("carol");
+    await expect(initialize).toBeEnabled();
+    await initialize.click();
+    await expect(panel.getByTestId("db-holders-initialized")).toContainText("2-of-2, 2");
+    // Initialized, holders are removed by revocation: no Remove is offered.
+    await expect(panel.getByTestId("db-holder-unenrol-alice")).toHaveCount(0);
+    expect((await mockDatabases(page)).holders["vault-over"]).toEqual([["alice", 1], ["bob", 2]]);
+  });
+});
+
+/** A sealed 2-of-3 database with two of its three holders enrolled. */
+const pendingState: MockState = {
+  ...overLimitState,
+  databases: [{ ...overLimitState.databases[0]!, name: "vault-pending", barrier: { enabled: true, mode: "shamir", sharesRequired: 2, sharesTotal: 3 } }],
+  databaseOfficers: { "vault-pending": overLimitState.databaseOfficers!["vault-over"]!.slice(0, 2) },
+};
+
+test.describe("Database view — removing a holder before initialization", () => {
+  test.use({ mockState: pendingState });
+
+  test("frees a form for another holder, counted once", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.locator(".breadcrumbs").getByText("Dashboard")).toBeVisible({ timeout: INIT_TIMEOUT });
+    await openDatabaseView(page, "vault-pending");
+    const panel = page.getByTestId("db-holders-panel");
+    const resume = panel.getByTestId("db-holders-resume");
+    const initialize = panel.getByTestId("db-holders-panel-initialize");
+    await expect(initialize).toContainText("(2/3)");
+    await expect(resume.getByTestId("officer-registration-count")).toHaveText(/0 \/ 1/);
+
+    await panel.getByTestId("db-holder-unenrol-bob").click();
+    await expect(panel.getByTestId("db-holders-table")).not.toContainText("bob");
+    await expect(resume.getByTestId("officer-registration-count")).toHaveText(/0 \/ 2/);
+    await expect(initialize).toContainText("(1/3)");
+
+    for (const [form, name] of [[0, "dave"], [1, "erin"]] as const) {
+      await resume.getByTestId(`officer-username-${form}`).fill(name);
+      await resume.getByTestId(`officer-csr-${form}`).fill(CSR);
+      await resume.getByTestId(`register-officer-btn-${form}`).click();
+      await expect(resume.getByTestId(`officer-cert-${form}`)).toBeVisible({ timeout: INIT_TIMEOUT });
+    }
+    await expect(initialize).toBeEnabled();
+    await expect(initialize).not.toContainText("(");
+  });
+
+  test("shows a removal the server refuses", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.locator(".breadcrumbs").getByText("Dashboard")).toBeVisible({ timeout: INIT_TIMEOUT });
+    await openDatabaseView(page, "vault-pending");
+    await page.evaluate(() => {
+      const s = (window as unknown as { __QRDB_MOCK_STATE__: { errors: Record<string, string> } }).__QRDB_MOCK_STATE__;
+      s.errors["OfficerBinding.UnenrolDatabaseHolder"] = "permission denied: databases:officer_unenrol";
+    });
+    const panel = page.getByTestId("db-holders-panel");
+    await panel.getByTestId("db-holder-unenrol-bob").click();
+    await expect(panel.getByTestId("db-holders-unenrol-error")).toContainText("databases:officer_unenrol");
+    await expect(panel.getByTestId("db-holders-table")).toContainText("bob");
   });
 });
 
@@ -432,7 +494,7 @@ test.describe("Wails mock — a Shamir database, as the server answers", () => {
     );
   });
 
-  test("refuses a holder past N and a second initialization", async ({ page }) => {
+  test("refuses a holder past N, unenrols before initialization only, and refuses a second initialization", async ({ page }) => {
     await page.goto("/");
     await expect(page.locator(".breadcrumbs").getByText("Dashboard")).toBeVisible({ timeout: INIT_TIMEOUT });
     await page.evaluate(() => {
@@ -447,8 +509,14 @@ test.describe("Wails mock — a Shamir database, as the server answers", () => {
     expect(await call(page, "OfficerBinding", "RegisterHolder", { database: "v" }, { username: "carol", csr_pem: "CSR" })).toBe(
       "ceremony: all 2 share holders the barrier is split to are enrolled; no more can be enrolled before it is initialized",
     );
+    expect(await call(page, "OfficerBinding", "UnenrolDatabaseHolder", "v", "mallory")).toBe("ceremony: officer not found");
+    expect(await call(page, "OfficerBinding", "UnenrolDatabaseHolder", "v", "bob")).toBe("ok");
+    expect(await call(page, "OfficerBinding", "RegisterHolder", { database: "v" }, { username: "bob", csr_pem: "CSR" })).toBe("ok");
     expect(await call(page, "OfficerBinding", "InitializeDatabaseShamir", "v", "")).toBe("ok");
     expect(await call(page, "OfficerBinding", "InitializeDatabaseShamir", "v", "")).toBe("qrdb/seal: barrier already initialized");
+    expect(await call(page, "OfficerBinding", "UnenrolDatabaseHolder", "v", "bob")).toBe(
+      "ceremony: a holder of an initialized barrier is removed by revocation, not unenrolment",
+    );
     // Once initialized, a new holder enrols and joins at the next rekey.
     expect(await call(page, "OfficerBinding", "RegisterHolder", { database: "v" }, { username: "carol", csr_pem: "CSR" })).toBe("ok");
   });

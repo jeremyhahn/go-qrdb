@@ -239,6 +239,7 @@ const (
 	QRDBService_DatabaseBarrierQuorumSubmit_FullMethodName       = "/qrdb.v1.QRDBService/DatabaseBarrierQuorumSubmit"
 	QRDBService_DatabaseBarrierRekeyStart_FullMethodName         = "/qrdb.v1.QRDBService/DatabaseBarrierRekeyStart"
 	QRDBService_DatabaseBarrierOfficerRevoke_FullMethodName      = "/qrdb.v1.QRDBService/DatabaseBarrierOfficerRevoke"
+	QRDBService_DatabaseBarrierOfficerUnenrol_FullMethodName     = "/qrdb.v1.QRDBService/DatabaseBarrierOfficerUnenrol"
 	QRDBService_SQLQuery_FullMethodName                          = "/qrdb.v1.QRDBService/SQLQuery"
 )
 
@@ -738,6 +739,10 @@ type QRDBServiceClient interface {
 	DatabaseBarrierRekeyStart(ctx context.Context, in *DatabaseBarrierRekeyStartRequest, opts ...grpc.CallOption) (*BarrierQuorumRound, error)
 	// DatabaseBarrierOfficerRevoke opens a rekey round that removes a holder.
 	DatabaseBarrierOfficerRevoke(ctx context.Context, in *DatabaseBarrierOfficerRevokeRequest, opts ...grpc.CallOption) (*BarrierQuorumRound, error)
+	// DatabaseBarrierOfficerUnenrol removes an enrolled holder before the
+	// database's custody is initialized, when it holds no share. After
+	// initialization a holder is removed by DatabaseBarrierOfficerRevoke.
+	DatabaseBarrierOfficerUnenrol(ctx context.Context, in *DatabaseBarrierOfficerUnenrolRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// SQLQuery executes an ad-hoc SQL query against a named database and
 	// returns the result set. Mirrors the REST POST /sql/query contract.
 	SQLQuery(ctx context.Context, in *SQLQueryRequest, opts ...grpc.CallOption) (*SQLQueryResponse, error)
@@ -2810,6 +2815,16 @@ func (c *qRDBServiceClient) DatabaseBarrierOfficerRevoke(ctx context.Context, in
 	return out, nil
 }
 
+func (c *qRDBServiceClient) DatabaseBarrierOfficerUnenrol(ctx context.Context, in *DatabaseBarrierOfficerUnenrolRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_DatabaseBarrierOfficerUnenrol_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *qRDBServiceClient) SQLQuery(ctx context.Context, in *SQLQueryRequest, opts ...grpc.CallOption) (*SQLQueryResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SQLQueryResponse)
@@ -3316,6 +3331,10 @@ type QRDBServiceServer interface {
 	DatabaseBarrierRekeyStart(context.Context, *DatabaseBarrierRekeyStartRequest) (*BarrierQuorumRound, error)
 	// DatabaseBarrierOfficerRevoke opens a rekey round that removes a holder.
 	DatabaseBarrierOfficerRevoke(context.Context, *DatabaseBarrierOfficerRevokeRequest) (*BarrierQuorumRound, error)
+	// DatabaseBarrierOfficerUnenrol removes an enrolled holder before the
+	// database's custody is initialized, when it holds no share. After
+	// initialization a holder is removed by DatabaseBarrierOfficerRevoke.
+	DatabaseBarrierOfficerUnenrol(context.Context, *DatabaseBarrierOfficerUnenrolRequest) (*emptypb.Empty, error)
 	// SQLQuery executes an ad-hoc SQL query against a named database and
 	// returns the result set. Mirrors the REST POST /sql/query contract.
 	SQLQuery(context.Context, *SQLQueryRequest) (*SQLQueryResponse, error)
@@ -3943,6 +3962,9 @@ func (UnimplementedQRDBServiceServer) DatabaseBarrierRekeyStart(context.Context,
 }
 func (UnimplementedQRDBServiceServer) DatabaseBarrierOfficerRevoke(context.Context, *DatabaseBarrierOfficerRevokeRequest) (*BarrierQuorumRound, error) {
 	return nil, status.Error(codes.Unimplemented, "method DatabaseBarrierOfficerRevoke not implemented")
+}
+func (UnimplementedQRDBServiceServer) DatabaseBarrierOfficerUnenrol(context.Context, *DatabaseBarrierOfficerUnenrolRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method DatabaseBarrierOfficerUnenrol not implemented")
 }
 func (UnimplementedQRDBServiceServer) SQLQuery(context.Context, *SQLQueryRequest) (*SQLQueryResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SQLQuery not implemented")
@@ -7651,6 +7673,24 @@ func _QRDBService_DatabaseBarrierOfficerRevoke_Handler(srv interface{}, ctx cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _QRDBService_DatabaseBarrierOfficerUnenrol_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DatabaseBarrierOfficerUnenrolRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).DatabaseBarrierOfficerUnenrol(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_DatabaseBarrierOfficerUnenrol_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).DatabaseBarrierOfficerUnenrol(ctx, req.(*DatabaseBarrierOfficerUnenrolRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _QRDBService_SQLQuery_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SQLQueryRequest)
 	if err := dec(in); err != nil {
@@ -8491,6 +8531,10 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DatabaseBarrierOfficerRevoke",
 			Handler:    _QRDBService_DatabaseBarrierOfficerRevoke_Handler,
+		},
+		{
+			MethodName: "DatabaseBarrierOfficerUnenrol",
+			Handler:    _QRDBService_DatabaseBarrierOfficerUnenrol_Handler,
 		},
 		{
 			MethodName: "SQLQuery",

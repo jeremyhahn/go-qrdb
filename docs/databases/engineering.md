@@ -748,6 +748,7 @@ Deliberately finer than one grant per verb:
 | `databases:seal` / `databases:unseal` | barrier custody, gated apart from configuration |
 | `databases:barrier_status` | reading barrier state |
 | `databases:officer_register` / `officer_list` / `officer_revoke` | a Shamir barrier's holder enrolment, listing and revocation |
+| `databases:officer_unenrol` | removing a Shamir barrier's holder before its custody is initialized |
 | `databases:initialize_shamir` | splitting a Shamir barrier's key to its enrolled holders |
 | `databases:rekey` | opening a Shamir barrier's rekey round |
 
@@ -1222,7 +1223,8 @@ Breaking rows land in one MINOR release, recorded in the CHANGELOG.
   (messages nest the system holder request), QUIC `db.Barrier*`, MCP
   `qrdb_database_barrier_*`, embedded (claims in process are bound by proof of
   possession). Errors classify through `pkg/api/errclass`.
-- SDK: `transport.DatabaseClient` gains the nine methods; the request types
+- SDK: `transport.DatabaseClient` gains the ten methods (unenrolment
+  included); the request types
   embed the system holder requests. `internal/holderconv.DatabaseHolders`
   carries the protobuf calls once for gRPC, Unix and QUIC (QUIC frames the same
   messages through a `DatabaseHolderRPC` of its own). A client refuses a
@@ -1230,7 +1232,8 @@ Breaking rows land in one MINOR release, recorded in the CHANGELOG.
 - CLI and desktop: the holder verbs are written once against `holderTarget`;
   `holderKind` (system, tenant, database) selects the scope flag and target by
   map. The desktop `OfficerBinding` takes `HolderScope.Database` and adds
-  `InitializeDatabaseShamir`.
+  `InitializeDatabaseShamir` and `UnenrolDatabaseHolder`; the CLI adds
+  `barrier-officer unenrol` for the database scope.
 - Web UI and desktop app: the database wizard offers Shamir, creates the
   database sealed, then a holders step enrols exactly N holders
   (`HolderEnrolmentForms` with an `enrol` callback that calls

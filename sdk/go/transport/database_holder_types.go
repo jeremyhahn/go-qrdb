@@ -80,6 +80,13 @@ func (e *DatabaseNameRequiredError) Error() string {
 	return "transport: " + e.Method + " requires a database name"
 }
 
+// DatabaseOfficerUnenrolRequest removes a database holder before the
+// database's custody is initialized, when it holds no share.
+type DatabaseOfficerUnenrolRequest struct {
+	Database string `json:"database"`
+	Username string `json:"username"`
+}
+
 // DatabaseOfficerRevokeRequest revokes a database holder: a rekey round that
 // removes them, completed by M of the remaining holders.
 type DatabaseOfficerRevokeRequest struct {

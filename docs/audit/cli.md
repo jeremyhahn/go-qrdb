@@ -98,7 +98,8 @@ Identity (`user.*`, `role.*`), certificates (`cert.generate`, `cert.revoke`),
 the barrier (`seal.initialize`, `unseal`, `seal`, `rotate`, `rekey`), cluster
 administration (`admin.drain`, `admin.snapshot`, `admin.member.add/remove`),
 share holders (`holder-register`, `holder-claim`, `holder-quorum-submit`,
-`holder-rekey-start`, `holder-revoked`, resource `share-holder`), and **every
+`holder-rekey-start`, `holder-revoked`, `holder-unenrol`, resource
+`share-holder`), and **every
 permission denial** (`auth.denied`).
 
 ```bash

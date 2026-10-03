@@ -57,6 +57,25 @@ func TestDatabaseHolderCLI_Lifecycle(t *testing.T) {
 		}
 		h.cert = cert
 	}
+	// A third holder of a 2-of-2 database is refused before initialization;
+	// one enrolled by mistake is removed with unenrol, without a quorum.
+	carol := newCLIHolder(t, "carol", transport.RoleCustodian, false, false)
+	if _, err := runCLI(root(), ctx, append([]string{"database", "barrier-officer", "register", "--database", "vault"}, carol.registerArgs()...)...); err == nil {
+		t.Fatal("a third holder of a 2-of-2 database was enrolled")
+	}
+	if out := mustCLI(t, ctx, root, "database", "barrier-officer", "unenrol", "--database", "vault", "--username", "bob"); !strings.Contains(out, "Unenrolled: bob") {
+		t.Fatalf("unenrol = %q", out)
+	}
+	out := mustCLI(t, ctx, root, append([]string{"--output", "json", "database", "barrier-officer", "register", "--database", "vault"}, bob.registerArgs()...)...)
+	var again transport.OfficerRegisterResponse
+	if err := json.Unmarshal([]byte(out), &again); err != nil {
+		t.Fatalf("re-register bob: %q: %v", out, err)
+	}
+	cert, err := mtls.ParseCertificatePEM([]byte(again.CertPEM))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob.cert = cert
 	if out := mustCLI(t, ctx, root, "database", "barrier-officer", "list", "--database", "vault"); !strings.Contains(out, "alice") || !strings.Contains(out, "bob") {
 		t.Fatalf("list = %q", out)
 	}
@@ -80,6 +99,9 @@ func TestDatabaseHolderCLI_Lifecycle(t *testing.T) {
 	if _, err := runCLI(root(), ctx, "database", "barrier-officer", "revoke", "--database", "vault", "--username", "bob", "--threshold", "2"); err == nil {
 		t.Fatal("revoking a holder below the threshold succeeded")
 	}
+	if _, err := runCLI(root(), ctx, "database", "barrier-officer", "unenrol", "--database", "vault", "--username", "bob"); err == nil {
+		t.Fatal("unenrolling a holder of an initialized database succeeded")
+	}
 }
 
 // TestDatabaseHolderCLI_Refusals covers the database verbs' own refusals:
@@ -99,6 +121,9 @@ func TestDatabaseHolderCLI_Refusals(t *testing.T) {
 		{"database", "barrier-officer", "revoke", "--database", "vault", "--username", "bob", "--so-pin", "1234"},
 		{"database", "barrier-init-shamir", "--database", "absent"},
 		{"database", "barrier-officer", "list", "--database", "absent"},
+		{"database", "barrier-officer", "unenrol", "--username", "bob"},
+		{"database", "barrier-officer", "unenrol", "--database", "vault"},
+		{"database", "barrier-officer", "unenrol", "--database", "absent", "--username", "bob"},
 	} {
 		if _, err := runCLI(root(), ctx, args...); err == nil {
 			t.Errorf("%v succeeded", args)

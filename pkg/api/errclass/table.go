@@ -805,6 +805,8 @@ var holderRules = []rule{
 	as(&seal.HolderCountMismatchError{}, FailedPrecondition),
 	// Every holder the uninitialized barrier is split to is enrolled.
 	as(&ceremony.HolderLimitReachedError{}, FailedPrecondition),
+	// An initialized barrier's holder is removed by revocation.
+	is(ceremony.ErrUnenrolInitialized, FailedPrecondition),
 	as(&seal.QuorumOpInvalidError{}, InvalidArgument),
 	as(&seal.InvalidRosterError{}, InvalidArgument),
 	is(seal.ErrHolderRosterMissing, FailedPrecondition),

@@ -662,13 +662,14 @@ const (
 	DatabasesUnseal        Permission = "databases:unseal"
 	DatabasesBarrierStatus Permission = "databases:barrier_status"
 
-	// Shamir custody of a database barrier. Enrolling, listing and revoking
-	// the database's share holders, initializing its custody and opening a
-	// rekey round are custody operations, gated apart from configuration as
-	// sealing is. Holders' own claims and quorum submissions are
-	// identity-gated, not permission-gated.
+	// Shamir custody of a database barrier. Enrolling, listing, unenrolling
+	// before initialization and revoking the database's share holders,
+	// initializing its custody and opening a rekey round are custody
+	// operations, gated apart from configuration as sealing is. Holders' own
+	// claims and quorum submissions are identity-gated, not permission-gated.
 	DatabasesOfficerRegister  Permission = "databases:officer_register"
 	DatabasesOfficerList      Permission = "databases:officer_list"
+	DatabasesOfficerUnenrol   Permission = "databases:officer_unenrol"
 	DatabasesOfficerRevoke    Permission = "databases:officer_revoke"
 	DatabasesRekey            Permission = "databases:rekey"
 	DatabasesInitializeShamir Permission = "databases:initialize_shamir"
@@ -1048,7 +1049,7 @@ var categories = []Category{
 			DatabasesCreate, DatabasesRead, DatabasesList, DatabasesDelete, DatabasesUpdate,
 			DatabasesCreateRaft, DatabasesCreateVolume, DatabasesScale,
 			DatabasesSeal, DatabasesUnseal, DatabasesBarrierStatus,
-			DatabasesOfficerRegister, DatabasesOfficerList, DatabasesOfficerRevoke,
+			DatabasesOfficerRegister, DatabasesOfficerList, DatabasesOfficerUnenrol, DatabasesOfficerRevoke,
 			DatabasesRekey, DatabasesInitializeShamir,
 		},
 	},

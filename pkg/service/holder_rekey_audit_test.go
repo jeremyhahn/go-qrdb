@@ -25,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -106,4 +107,43 @@ func TestDatabaseHolders_RekeyStartsAreAudited(t *testing.T) {
 	assert.Equal(t, audit.OutcomeSuccess, starts[1].Outcome)
 	assert.True(t, strings.HasPrefix(starts[2].Outcome, audit.OutcomeFailure+":"), starts[2].Outcome)
 	assert.Equal(t, "bob", starts[2].Attributes["holder"])
+}
+
+// TestDatabaseHolders_UnenrolBeforeInitialization pins the database service's
+// unenrolment: confined to the caller's tenant like every holder verb, it
+// removes a holder before the database's custody is initialized and refuses
+// once it is.
+func TestDatabaseHolders_UnenrolBeforeInitialization(t *testing.T) {
+	ring := audit.NewRingBuffer(64)
+	svc, _ := newAuditedHolderDatabaseService(t, ring)
+	ctx := dbAdminCtx("acme")
+	for _, h := range []*dbSvcHolder{newDBSvcHolder(t, "alice"), newDBSvcHolder(t, "bob")} {
+		_, err := svc.DatabaseBarrierOfficerRegister(ctx, "vault", &BarrierOfficerRegisterRequest{Username: h.name, CSRPEM: h.csr})
+		require.NoError(t, err)
+	}
+
+	var notFound *database.NotFoundError
+	require.True(t, errors.As(svc.DatabaseBarrierOfficerUnenrol(dbAdminCtx("globex"), "vault", "bob"), &notFound),
+		"another tenant's database is indistinguishable from a missing one")
+	require.NoError(t, svc.DatabaseBarrierOfficerUnenrol(ctx, "vault", "bob"))
+	list, err := svc.DatabaseBarrierOfficerList(ctx, "vault")
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+
+	carol := newDBSvcHolder(t, "carol")
+	_, err = svc.DatabaseBarrierOfficerRegister(ctx, "vault", &BarrierOfficerRegisterRequest{Username: carol.name, CSRPEM: carol.csr})
+	require.NoError(t, err)
+	_, err = svc.DatabaseBarrierShamirInitialize(ctx, "vault", "")
+	require.NoError(t, err)
+	require.ErrorIs(t, svc.DatabaseBarrierOfficerUnenrol(ctx, "vault", "carol"), ceremony.ErrUnenrolInitialized)
+
+	var unenrols []audit.AuditEvent
+	for _, ev := range ring.Snapshot() {
+		if ev.Action == ceremony.ActionHolderUnenrol {
+			unenrols = append(unenrols, ev)
+		}
+	}
+	require.Len(t, unenrols, 2, "the removal and the refusal are recorded; the other tenant was refused before the holder authority")
+	assert.Equal(t, audit.OutcomeSuccess, unenrols[0].Outcome)
+	assert.Equal(t, "acme", unenrols[0].TenantID)
 }

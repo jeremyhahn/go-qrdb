@@ -18,6 +18,7 @@ import (
 	"context"
 
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -37,6 +38,7 @@ type DatabaseHolderRPC interface {
 	DatabaseBarrierQuorumSubmit(ctx context.Context, in *pb.DatabaseBarrierQuorumSubmitRequest, opts ...grpc.CallOption) (*pb.BarrierQuorumOutcome, error)
 	DatabaseBarrierRekeyStart(ctx context.Context, in *pb.DatabaseBarrierRekeyStartRequest, opts ...grpc.CallOption) (*pb.BarrierQuorumRound, error)
 	DatabaseBarrierOfficerRevoke(ctx context.Context, in *pb.DatabaseBarrierOfficerRevokeRequest, opts ...grpc.CallOption) (*pb.BarrierQuorumRound, error)
+	DatabaseBarrierOfficerUnenrol(ctx context.Context, in *pb.DatabaseBarrierOfficerUnenrolRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 }
 
 var _ DatabaseHolderRPC = pb.QRDBServiceClient(nil)
@@ -175,4 +177,18 @@ func (d DatabaseHolders) Revoke(ctx context.Context, req *transport.DatabaseOffi
 		return nil, d.MapErr("DatabaseBarrierOfficerRevoke", err)
 	}
 	return RoundFromPB(resp), nil
+}
+
+// Unenrol removes a database holder before the database's custody is
+// initialized.
+func (d DatabaseHolders) Unenrol(ctx context.Context, req *transport.DatabaseOfficerUnenrolRequest) error {
+	if req == nil || req.Database == "" {
+		return &transport.DatabaseNameRequiredError{Method: "DatabaseBarrierOfficerUnenrol"}
+	}
+	if _, err := d.Client.DatabaseBarrierOfficerUnenrol(ctx, &pb.DatabaseBarrierOfficerUnenrolRequest{
+		Database: req.Database, Username: req.Username,
+	}); err != nil {
+		return d.MapErr("DatabaseBarrierOfficerUnenrol", err)
+	}
+	return nil
 }

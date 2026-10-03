@@ -29,7 +29,8 @@ func databaseManagementPermissions() []string {
 		permission.DatabasesCreate, permission.DatabasesRead, permission.DatabasesList,
 		permission.DatabasesDelete, permission.DatabasesUpdate, permission.DatabasesScale,
 		permission.DatabasesSeal, permission.DatabasesUnseal, permission.DatabasesBarrierStatus,
-		permission.DatabasesOfficerRegister, permission.DatabasesOfficerList, permission.DatabasesOfficerRevoke,
+		permission.DatabasesOfficerRegister, permission.DatabasesOfficerList, permission.DatabasesOfficerUnenrol,
+		permission.DatabasesOfficerRevoke,
 		permission.DatabasesRekey, permission.DatabasesInitializeShamir,
 	}
 	out := make([]string, len(perms))

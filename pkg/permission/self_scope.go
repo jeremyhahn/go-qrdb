@@ -152,6 +152,7 @@ func selfScopedPermissions() []Permission {
 		DatabasesUpdate,
 		DatabasesOfficerRegister,
 		DatabasesOfficerList,
+		DatabasesOfficerUnenrol,
 		DatabasesOfficerRevoke,
 		DatabasesRekey,
 		DatabasesInitializeShamir,

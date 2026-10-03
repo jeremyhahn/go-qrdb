@@ -96,6 +96,14 @@ func (t *ScopedCeremonyService) RegisterOfficer(ctx context.Context, req Registe
 	return t.holder.register(ctx, &t.deps, req)
 }
 
+// UnenrolOfficer removes an enrolled holder before the barrier is
+// initialized. After initialization a holder is removed by revocation.
+func (t *ScopedCeremonyService) UnenrolOfficer(ctx context.Context, username string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.holder.unenrol(ctx, &t.deps, username)
+}
+
 // ListOfficers returns every holder with its claim state.
 func (t *ScopedCeremonyService) ListOfficers(ctx context.Context) ([]*OfficerStatus, error) {
 	t.mu.Lock()

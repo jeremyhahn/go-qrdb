@@ -44,6 +44,7 @@ var databaseHolderRoutes = map[string]func(s *Server, w http.ResponseWriter, r *
 	http.MethodPost + " barrier/quorum/submit":     (*Server).handleDatabaseBarrierQuorumSubmit,
 	http.MethodPost + " barrier/rekey/start":       (*Server).handleDatabaseBarrierRekeyStart,
 	http.MethodPost + " barrier/officers/revoke":   (*Server).handleDatabaseBarrierOfficerRevoke,
+	http.MethodPost + " barrier/officers/unenrol":  (*Server).handleDatabaseBarrierOfficerUnenrol,
 }
 
 // dispatchDatabaseHolder serves a database share-holder sub-path, reporting
@@ -77,7 +78,8 @@ func (s *Server) dispatchDatabaseHolder(w http.ResponseWriter, r *http.Request, 
 
 // databaseHolderCall runs call under the request timeout against the
 // database service's holder custody, decoding the request body into body
-// first (nil for a bodyless route), and renders the result or error.
+// first (nil for a bodyless route), and renders the result or error. A call
+// with no result answers 204 No Content.
 func (s *Server) databaseHolderCall(w http.ResponseWriter, r *http.Request, body any, call func(ctx context.Context, hs service.DatabaseHolderServicer) (any, error)) {
 	hs, ok := s.databaseSvc.(service.DatabaseHolderServicer)
 	if !ok {
@@ -92,6 +94,10 @@ func (s *Server) databaseHolderCall(w http.ResponseWriter, r *http.Request, body
 	out, err := call(ctx, hs)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+	if out == nil {
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	writeJSON(w, out)
@@ -251,5 +257,22 @@ func (s *Server) handleDatabaseBarrierOfficerRevoke(w http.ResponseWriter, r *ht
 			return nil, err
 		}
 		return holderwire.RoundTo(round), nil
+	})
+}
+
+// databaseOfficerUnenrolRequest is the body of a database holder's removal
+// before initialization.
+type databaseOfficerUnenrolRequest struct {
+	Username string `json:"username"`
+}
+
+// handleDatabaseBarrierOfficerUnenrol handles
+// POST /v1/databases/{name}/barrier/officers/unenrol -- removes an enrolled
+// holder before the database's custody is initialized. 204 on success.
+// Required permission: databases:officer_unenrol.
+func (s *Server) handleDatabaseBarrierOfficerUnenrol(w http.ResponseWriter, r *http.Request, name string) {
+	var req databaseOfficerUnenrolRequest
+	s.databaseHolderCall(w, r, &req, func(ctx context.Context, hs service.DatabaseHolderServicer) (any, error) {
+		return nil, hs.DatabaseBarrierOfficerUnenrol(ctx, name, req.Username)
 	})
 }

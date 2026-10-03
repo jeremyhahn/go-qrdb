@@ -229,3 +229,16 @@ func (b *OfficerBinding) RevokeHolder(req *HolderRekeyParams) (*transport.Quorum
 		return target.revoke(context.Background(), req.Username, req.Threshold, req.SOPin)
 	})
 }
+
+// UnenrolDatabaseHolder removes a holder of a Shamir database before its
+// custody is initialized; after it a holder is removed with RevokeHolder.
+func (b *OfficerBinding) UnenrolDatabaseHolder(database, username string) error {
+	_, err := logged(b, "UnenrolDatabaseHolder", func() (struct{}, error) {
+		cl, err := b.conn.loadClient()
+		if err != nil {
+			return struct{}{}, err
+		}
+		return struct{}{}, databaseHolders{cl: cl, database: database}.unenrol(context.Background(), username)
+	})
+	return err
+}

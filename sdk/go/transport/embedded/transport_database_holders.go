@@ -218,3 +218,19 @@ func (t *Transport) DatabaseBarrierOfficerRevoke(ctx context.Context, req *trans
 	}
 	return holderwire.RoundTo(round), nil
 }
+
+// DatabaseBarrierOfficerUnenrol removes a database holder before the
+// database's custody is initialized.
+func (t *Transport) DatabaseBarrierOfficerUnenrol(ctx context.Context, req *transport.DatabaseOfficerUnenrolRequest) error {
+	if req == nil {
+		return &transport.DatabaseNameRequiredError{Method: "DatabaseBarrierOfficerUnenrol"}
+	}
+	hs, err := t.databaseHolders("DatabaseBarrierOfficerUnenrol", req.Database)
+	if err != nil {
+		return delayed("DatabaseBarrierOfficerUnenrol", err)
+	}
+	if err := hs.DatabaseBarrierOfficerUnenrol(ctx, req.Database, req.Username); err != nil {
+		return delayed("DatabaseBarrierOfficerUnenrol", err)
+	}
+	return nil
+}

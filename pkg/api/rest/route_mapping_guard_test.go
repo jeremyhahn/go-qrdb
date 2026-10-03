@@ -398,6 +398,7 @@ func TestRouteMappingGuard_RoutePermissions(t *testing.T) {
 		{"POST", "/v1/databases/mydb/barrier/quorum/submit", permission.IdentityGated},
 		{"POST", "/v1/databases/mydb/barrier/rekey/start", permission.DatabasesRekey},
 		{"POST", "/v1/databases/mydb/barrier/officers/revoke", permission.DatabasesOfficerRevoke},
+		{"POST", "/v1/databases/mydb/barrier/officers/unenrol", permission.DatabasesOfficerUnenrol},
 
 		// Collections + documents.
 		{"POST", "/v1/collections", permission.CollectionsCreate},

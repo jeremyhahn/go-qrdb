@@ -49,6 +49,7 @@ func TestClassify_HolderConditions(t *testing.T) {
 		{ceremony.ErrSelfEnrolment, PermissionDenied},
 		// Every holder the uninitialized barrier is split to is enrolled.
 		{&ceremony.HolderLimitReachedError{Total: 3}, FailedPrecondition},
+		{ceremony.ErrUnenrolInitialized, FailedPrecondition},
 		{ceremony.ErrNoPendingShare, NotFound},
 		{ceremony.ErrShareExpired, Gone},
 		{ceremony.ErrTooManyPendingChallenges, ResourceExhausted},

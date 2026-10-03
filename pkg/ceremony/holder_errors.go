@@ -58,6 +58,12 @@ var (
 	// see whether the name is taken nor persist the record; enrolment while
 	// sealed is legitimate only before initialization. Unseal first.
 	ErrRegistrationWhileSealed = errors.New("ceremony: share holders cannot be registered while the initialized barrier is sealed")
+
+	// ErrUnenrolInitialized is returned when a holder is unenrolled from a
+	// scope whose barrier is already initialized. Every holder of an
+	// initialized barrier may hold a share, and only a rekey the quorum
+	// completes can take it away: remove the holder by revocation.
+	ErrUnenrolInitialized = errors.New("ceremony: a holder of an initialized barrier is removed by revocation, not unenrolment")
 )
 
 // QuorumRateLimitedError is returned when a quorum request -- a challenge

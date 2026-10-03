@@ -54,6 +54,10 @@ const (
 	// ActionHolderRevoked records a holder's removal, once the rekey that
 	// revoked it is durable.
 	ActionHolderRevoked = "holder-revoked"
+
+	// ActionHolderUnenrol records a holder's removal before the barrier is
+	// initialized, when it holds no share.
+	ActionHolderUnenrol = "holder-unenrol"
 )
 
 // holderInvalidName stands in the trail for a holder name that is not a

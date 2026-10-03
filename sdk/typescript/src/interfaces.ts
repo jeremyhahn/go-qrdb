@@ -180,6 +180,7 @@ import type {
     TenantOfficerRevokeRequest,
     DatabaseOfficerRegisterRequest,
     DatabaseOfficerRevokeRequest,
+    DatabaseOfficerUnenrolRequest,
     DatabaseRekeyStartRequest,
     DatabaseShamirInitializeRequest,
     DatabaseShamirInitializeResponse,
@@ -1577,6 +1578,16 @@ export interface OfficerClient {
      * @returns The open round.
      */
     revokeDatabaseOfficer(req: DatabaseOfficerRevokeRequest): Promise<QuorumRound>;
+
+    /**
+     * Removes a holder of a database's barrier before its custody is
+     * initialized, when it holds no share; its place is free for another
+     * holder. Once initialized a holder is removed by
+     * {@link revokeDatabaseOfficer}.
+     *
+     * @param req - The database and the holder.
+     */
+    unenrolDatabaseOfficer(req: DatabaseOfficerUnenrolRequest): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------

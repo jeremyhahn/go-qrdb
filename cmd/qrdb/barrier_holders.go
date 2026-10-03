@@ -226,6 +226,11 @@ func (s databaseHolders) revoke(ctx context.Context, username string, threshold 
 	return s.cl.Database().DatabaseBarrierOfficerRevoke(ctx, &transport.DatabaseOfficerRevokeRequest{Database: s.database, Username: username, Threshold: threshold})
 }
 
+// unenrol removes a holder before the database's custody is initialized.
+func (s databaseHolders) unenrol(ctx context.Context, username string) error {
+	return s.cl.Database().DatabaseBarrierOfficerUnenrol(ctx, &transport.DatabaseOfficerUnenrolRequest{Database: s.database, Username: username})
+}
+
 // initialize splits the database's root key to its enrolled holders at the
 // M-of-N the database was created with.
 func (s databaseHolders) initialize(ctx context.Context, policy string) (*transport.BarrierInitializeShamirResponse, error) {
@@ -980,12 +985,44 @@ func newTenantBarrierHolderCmds() []*cobra.Command {
 // tenant forms taking --database, plus the custody initialization a tenant
 // barrier performs at init.
 func newDatabaseBarrierHolderCmds() []*cobra.Command {
+	officer := newHolderOfficerCmd("barrier-officer", "Manage a database barrier's share holders", holderDatabase)
+	officer.AddCommand(newDatabaseUnenrolCmd())
 	return []*cobra.Command{
-		newHolderOfficerCmd("barrier-officer", "Manage a database barrier's share holders", holderDatabase),
+		officer,
 		newDatabaseInitShamirCmd(),
 		newHolderQuorumCmd("barrier-quorum", holderDatabase),
 		newHolderRekeyCmd("barrier-rekey", holderDatabase),
 	}
+}
+
+// newDatabaseUnenrolCmd returns `barrier-officer unenrol`.
+func newDatabaseUnenrolCmd() *cobra.Command {
+	var database, username string
+	cmd := &cobra.Command{
+		Use:   "unenrol",
+		Short: "Remove a holder before the database's custody is initialized",
+		Long: `Remove an enrolled holder from a database whose custody is not yet
+initialized. No share exists before initialization, so the holder holds
+nothing and no quorum is needed; its place is free for another holder. Once
+the custody is initialized a holder is removed with 'barrier-officer revoke',
+a rekey the remaining holders complete.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := (databaseHolders{cl: client, database: database}).unenrol(cmd.Context(), username); err != nil {
+				return err
+			}
+			return renderHolder(struct {
+				Unenrolled string `json:"unenrolled" yaml:"unenrolled"`
+			}{Unenrolled: username}, func() {
+				_, _ = fmt.Fprintf(outputWriter, "Unenrolled: %s\n", username)
+			})
+		},
+	}
+	cmd.Flags().StringVar(&database, "database", "", "Database whose barrier the holder belongs to")
+	cmd.Flags().StringVar(&username, "username", "", "Holder to remove")
+	_ = cmd.MarkFlagRequired("database")
+	_ = cmd.MarkFlagRequired("username")
+	return cmd
 }
 
 // newDatabaseInitShamirCmd returns `barrier-init-shamir`.

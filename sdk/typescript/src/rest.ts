@@ -233,6 +233,7 @@ import type {
     TenantOfficerRevokeRequest,
     DatabaseOfficerRegisterRequest,
     DatabaseOfficerRevokeRequest,
+    DatabaseOfficerUnenrolRequest,
     DatabaseRekeyStartRequest,
     DatabaseShamirInitializeRequest,
     DatabaseShamirInitializeResponse,
@@ -2102,6 +2103,13 @@ export class RestClient implements Client {
                 this.ensureConnected();
                 const { database, ...body } = req;
                 return this.fetchJSON<QuorumRound>(databasePath(database, '/officers/revoke'),
+                    { method: 'POST', ...jsonBody(body) },
+                );
+            },
+            unenrolDatabaseOfficer: async (req: DatabaseOfficerUnenrolRequest): Promise<void> => {
+                this.ensureConnected();
+                const { database, ...body } = req;
+                await this.fetchVoid(databasePath(database, '/officers/unenrol'),
                     { method: 'POST', ...jsonBody(body) },
                 );
             },

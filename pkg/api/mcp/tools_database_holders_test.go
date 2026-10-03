@@ -25,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/service/servicetest"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -111,6 +112,31 @@ func TestDatabaseHolderTools_Lifecycle(t *testing.T) {
 		}
 		h.Enrolled(t, resp.CertPEM)
 	}
+	// A third holder of a 2-of-2 database is refused before initialization;
+	// one enrolled by mistake is removed by unenrolment, without a quorum.
+	extra := servicetest.NewHolder(t, "carol")
+	var limit *ceremony.HolderLimitReachedError
+	if err := d.call(ctx, "qrdb_database_barrier_officer_register", transport.DatabaseOfficerRegisterRequest{
+		Database: "vault", OfficerRegisterRequest: transport.OfficerRegisterRequest{Username: extra.Name, CSRPEM: extra.CSRPEM},
+	}, &transport.OfficerRegisterResponse{}); !errors.As(err, &limit) {
+		t.Fatalf("a third holder = %v, want HolderLimitReachedError", err)
+	}
+	var removed struct {
+		Unenrolled string `json:"unenrolled"`
+	}
+	if err := d.call(ctx, "qrdb_database_barrier_officer_unenrol", transport.DatabaseOfficerUnenrolRequest{Database: "vault", Username: "bob"}, &removed); err != nil || removed.Unenrolled != "bob" {
+		t.Fatalf("unenrol bob = %+v, %v", removed, err)
+	}
+	if err := d.call(ctx, "qrdb_database_barrier_officer_unenrol", transport.DatabaseOfficerUnenrolRequest{Database: "vault", Username: "bob"}, &removed); !errors.Is(err, ceremony.ErrOfficerNotFound) {
+		t.Fatalf("unenrol bob again = %v, want ErrOfficerNotFound", err)
+	}
+	var again transport.OfficerRegisterResponse
+	if err := d.call(ctx, "qrdb_database_barrier_officer_register", transport.DatabaseOfficerRegisterRequest{
+		Database: "vault", OfficerRegisterRequest: transport.OfficerRegisterRequest{Username: "bob", CSRPEM: holders[1].CSRPEM},
+	}, &again); err != nil {
+		t.Fatalf("re-register bob: %v", err)
+	}
+	holders[1].Enrolled(t, again.CertPEM)
 	var list struct {
 		Officers []transport.OfficerStatus `json:"officers"`
 	}
@@ -162,6 +188,9 @@ func TestDatabaseHolderTools_Lifecycle(t *testing.T) {
 	if err := d.call(ctx, "qrdb_database_barrier_officer_revoke", transport.DatabaseOfficerRevokeRequest{Database: "vault", Username: "bob", Threshold: 2}, &round); err == nil {
 		t.Fatal("revoking a holder below the threshold succeeded")
 	}
+	if err := d.call(ctx, "qrdb_database_barrier_officer_unenrol", transport.DatabaseOfficerUnenrolRequest{Database: "vault", Username: "bob"}, &struct{}{}); !errors.Is(err, ceremony.ErrUnenrolInitialized) {
+		t.Fatalf("unenrol after initialization = %v, want ErrUnenrolInitialized", err)
+	}
 }
 
 // TestDatabaseHolderTools_Refusals covers the tools' own refusals: no
@@ -178,7 +207,7 @@ func TestDatabaseHolderTools_Refusals(t *testing.T) {
 		"qrdb_database_barrier_shamir_initialize", "qrdb_database_barrier_share_claim_begin",
 		"qrdb_database_barrier_share_claim_complete", "qrdb_database_barrier_quorum_begin",
 		"qrdb_database_barrier_quorum_submit", "qrdb_database_barrier_rekey_start",
-		"qrdb_database_barrier_officer_revoke",
+		"qrdb_database_barrier_officer_revoke", "qrdb_database_barrier_officer_unenrol",
 	}
 	for _, name := range names {
 		if err := d.call(ctx, name, map[string]string{}, &struct{}{}); err == nil || err.Error() != "database is required" {

@@ -192,6 +192,7 @@ var expectedMethods = []string{
 	"db.BarrierQuorumSubmit",
 	"db.BarrierRekeyStart",
 	"db.BarrierOfficerRevoke",
+	"db.BarrierOfficerUnenrol",
 
 	// SQL (1)
 	"sql.Query",
@@ -251,6 +252,8 @@ func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
 func TestBuildHandlers_MethodCount(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 
+	// 173 = 172 + db.BarrierOfficerUnenrol, removing a database holder before
+	// its custody is initialized (docs/databases/api.md).
 	// 172 = 171 + barrier.ClusterUnseal, the authorized cluster-unseal record
 	// (docs/barrier-seal).
 	// 171 = 162 + the 9 db.Barrier* share-holder verbs of a Shamir database
@@ -279,7 +282,7 @@ func TestBuildHandlers_MethodCount(t *testing.T) {
 	// kv.CompareAndDelete, kv.CompareAndSwap — go-qrdb#124), and the 161 was
 	// 160 plus user.GetByEmail, the canonical login-key lookup (go-qrdb#190).
 	// The 2 watch methods remain on the streaming path, not the unary table.
-	const wantCount = 172
+	const wantCount = 173
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}

@@ -265,6 +265,7 @@ var expectedToolPerms = map[string]permission.Permission{
 	"qrdb_database_barrier_quorum_submit":        permission.IdentityGated,
 	"qrdb_database_barrier_rekey_start":          permission.DatabasesRekey,
 	"qrdb_database_barrier_officer_revoke":       permission.DatabasesOfficerRevoke,
+	"qrdb_database_barrier_officer_unenrol":      permission.DatabasesOfficerUnenrol,
 	"qrdb_sql_query":                             permission.KVRange,
 	"qrdb_collection_create":                     permission.CollectionsCreate,
 	"qrdb_collection_get":                        permission.CollectionsRead,

@@ -57,7 +57,9 @@ the database sealed until you finish enrolling its holders: open the
 database's view, where **Share Holders** shows who is enrolled, the forms for
 the rest and **Initialize**, or use the CLI. A database takes exactly N
 holders before it is initialized: the server refuses one more, wherever it is
-enrolled from.
+enrolled from. Until then **Remove** takes a holder off -- they hold no share
+yet -- and frees their place; after initialization a holder is removed by
+revocation, which the remaining holders complete.
 Choosing **Passphrase** asks for the
 passphrase twice; it is sent once, when the database is created, and the
 application does not keep it or show it again. You need it to unseal the

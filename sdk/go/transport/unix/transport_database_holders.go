@@ -102,3 +102,12 @@ func (t *Transport) DatabaseBarrierOfficerRevoke(ctx context.Context, req *trans
 	}
 	return t.databaseHolders().Revoke(ctx, req)
 }
+
+// DatabaseBarrierOfficerUnenrol removes a database holder before the
+// database's custody is initialized.
+func (t *Transport) DatabaseBarrierOfficerUnenrol(ctx context.Context, req *transport.DatabaseOfficerUnenrolRequest) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	return t.databaseHolders().Unenrol(ctx, req)
+}

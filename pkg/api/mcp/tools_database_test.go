@@ -249,6 +249,7 @@ func TestDatabaseTools_Registration(t *testing.T) {
 		"qrdb_database_barrier_quorum_submit",
 		"qrdb_database_barrier_rekey_start",
 		"qrdb_database_barrier_officer_revoke",
+		"qrdb_database_barrier_officer_unenrol",
 	}
 
 	if len(tools) != len(expectedNames) {

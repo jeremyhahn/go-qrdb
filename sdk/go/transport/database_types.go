@@ -387,6 +387,9 @@ type DatabaseClient interface {
 	DatabaseBarrierRekeyStart(ctx context.Context, req *DatabaseRekeyStartRequest) (*QuorumRound, error)
 	// DatabaseBarrierOfficerRevoke opens a rekey round that removes a holder.
 	DatabaseBarrierOfficerRevoke(ctx context.Context, req *DatabaseOfficerRevokeRequest) (*QuorumRound, error)
+	// DatabaseBarrierOfficerUnenrol removes a holder before the database's
+	// custody is initialized; after it a holder is removed by revocation.
+	DatabaseBarrierOfficerUnenrol(ctx context.Context, req *DatabaseOfficerUnenrolRequest) error
 }
 
 // DatabaseBarrierStatus reports a database barrier's sealed state and active

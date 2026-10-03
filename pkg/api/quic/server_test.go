@@ -269,7 +269,7 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		"db.BarrierShamirInitialize": true,
 		"db.BarrierShareClaimBegin":  true, "db.BarrierShareClaimComplete": true,
 		"db.BarrierQuorumBegin": true, "db.BarrierQuorumSubmit": true,
-		"db.BarrierRekeyStart": true, "db.BarrierOfficerRevoke": true,
+		"db.BarrierRekeyStart": true, "db.BarrierOfficerRevoke": true, "db.BarrierOfficerUnenrol": true,
 		// SQL
 		"sql.Query": true,
 		// Barrier

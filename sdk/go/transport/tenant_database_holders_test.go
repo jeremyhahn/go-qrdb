@@ -101,6 +101,10 @@ func (m *mockDatabaseClient) DatabaseBarrierOfficerRevoke(_ context.Context, req
 	return &QuorumRound{}, nil
 }
 
+func (m *mockDatabaseClient) DatabaseBarrierOfficerUnenrol(_ context.Context, req *DatabaseOfficerUnenrolRequest) error {
+	return m.holderCall("OfficerUnenrol", req.Database)
+}
+
 func (f *failingDatabaseClient) DatabaseBarrierOfficerRegister(context.Context, *DatabaseOfficerRegisterRequest) (*OfficerRegisterResponse, error) {
 	return nil, f.err
 }
@@ -137,6 +141,10 @@ func (f *failingDatabaseClient) DatabaseBarrierOfficerRevoke(context.Context, *D
 	return nil, f.err
 }
 
+func (f *failingDatabaseClient) DatabaseBarrierOfficerUnenrol(context.Context, *DatabaseOfficerUnenrolRequest) error {
+	return f.err
+}
+
 // holderOps calls every share-holder method of c on database name and
 // returns each call's error by method.
 func holderOps(ctx context.Context, c DatabaseClient, name string) map[string]error {
@@ -150,6 +158,7 @@ func holderOps(ctx context.Context, c DatabaseClient, name string) map[string]er
 	_, errs["QuorumSubmit"] = c.DatabaseBarrierQuorumSubmit(ctx, &DatabaseQuorumSubmitRequest{Database: name})
 	_, errs["RekeyStart"] = c.DatabaseBarrierRekeyStart(ctx, &DatabaseRekeyStartRequest{Database: name})
 	_, errs["OfficerRevoke"] = c.DatabaseBarrierOfficerRevoke(ctx, &DatabaseOfficerRevokeRequest{Database: name})
+	errs["OfficerUnenrol"] = c.DatabaseBarrierOfficerUnenrol(ctx, &DatabaseOfficerUnenrolRequest{Database: name})
 	return errs
 }
 
@@ -168,8 +177,8 @@ func TestTenantDatabaseClient_HolderOps_ForwardOwned(t *testing.T) {
 			t.Errorf("%s on an owned database: %v", method, err)
 		}
 	}
-	if len(mock.holderCalls) != 9 {
-		t.Errorf("inner client saw %d holder calls, want 9: %v", len(mock.holderCalls), mock.holderCalls)
+	if len(mock.holderCalls) != 10 {
+		t.Errorf("inner client saw %d holder calls, want 10: %v", len(mock.holderCalls), mock.holderCalls)
 	}
 }
 
@@ -219,6 +228,7 @@ func TestTenantDatabaseClient_HolderOps_RefuseNilRequest(t *testing.T) {
 	errs = append(errs, e)
 	_, e = tc.DatabaseBarrierOfficerRevoke(ctx, nil)
 	errs = append(errs, e)
+	errs = append(errs, tc.DatabaseBarrierOfficerUnenrol(ctx, nil))
 	for i, err := range errs {
 		var required *DatabaseNameRequiredError
 		if !errors.As(err, &required) {

@@ -19,6 +19,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -93,6 +94,11 @@ func (r databaseHolderRPC) DatabaseBarrierRekeyStart(ctx context.Context, in *pb
 // DatabaseBarrierOfficerRevoke frames the request to db.BarrierOfficerRevoke.
 func (r databaseHolderRPC) DatabaseBarrierOfficerRevoke(ctx context.Context, in *pb.DatabaseBarrierOfficerRevokeRequest, _ ...grpc.CallOption) (*pb.BarrierQuorumRound, error) {
 	return callHolder[pb.BarrierQuorumRound](ctx, r.t, "OfficerRevoke", in)
+}
+
+// DatabaseBarrierOfficerUnenrol frames the request to db.BarrierOfficerUnenrol.
+func (r databaseHolderRPC) DatabaseBarrierOfficerUnenrol(ctx context.Context, in *pb.DatabaseBarrierOfficerUnenrolRequest, _ ...grpc.CallOption) (*emptypb.Empty, error) {
+	return callHolder[emptypb.Empty](ctx, r.t, "OfficerUnenrol", in)
 }
 
 // passthroughError returns err unchanged: the QUIC client's errors are typed
@@ -174,4 +180,13 @@ func (t *Transport) DatabaseBarrierOfficerRevoke(ctx context.Context, req *trans
 		return nil, &transport.ClosedError{}
 	}
 	return t.databaseHolders().Revoke(ctx, req)
+}
+
+// DatabaseBarrierOfficerUnenrol removes a database holder before the
+// database's custody is initialized.
+func (t *Transport) DatabaseBarrierOfficerUnenrol(ctx context.Context, req *transport.DatabaseOfficerUnenrolRequest) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	return t.databaseHolders().Unenrol(ctx, req)
 }

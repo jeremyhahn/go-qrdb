@@ -838,7 +838,8 @@ policies, rekey and revocation that serve the system and tenant barriers.
   on the database's configuration. A configuration update never changes a
   Shamir barrier's strategy or M-of-N: that is a rekey.
 - **Authorization.** The `databases:officer_register`, `officer_list`,
-  `initialize_shamir`, `rekey` and `officer_revoke` permissions are
+  `officer_unenrol`, `initialize_shamir`, `rekey` and `officer_revoke`
+  permissions are
   self-scoped like the rest of `databases:*`; the database service confines
   each call to a database in the caller's tenant before it learns whether the
   database or its barrier exists. Claim and quorum are identity-gated: the

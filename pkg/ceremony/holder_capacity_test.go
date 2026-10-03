@@ -101,3 +101,66 @@ func TestCapacityProbe(t *testing.T) {
 	assert.Zero(t, capacityProbe(db, testBarrier(t))(), "a barrier with no Shamir configuration fixes none")
 	assert.Zero(t, capacityProbe(db, seal.NewMemoryBackend())(), "a backend that is not a barrier fixes none")
 }
+
+// databaseUnenrol returns the database scope's authority from an audit scope.
+func databaseUnenrol(t *testing.T, ring audit.AuditLogger) (*auditScope, func(context.Context, string) error) {
+	t.Helper()
+	barrier := shamirBarrier(t, seal.NewMemoryBackend(), 2, 3)
+	svc, err := NewDatabaseCeremonyService("acme", "orders", barrier, HolderDeps{CA: testCA(t), Factors: testFactors(t), Audit: ring}, testLogger())
+	require.NoError(t, err)
+	barrier.SetCeremonyDistributor(svc)
+	barrier.SetHolderVerifier(svc)
+	a := &auditScope{
+		tenantID: "acme", scope: ScopeDatabase("acme", "orders").String(), domain: seal.DomainUnseal,
+		quorumOp: seal.OpUnseal, barrier: barrier, claimLabel: svc.holder.scope.ClaimLabel(),
+		register: svc.RegisterOfficer, beginClaim: svc.BeginClaimShare, complete: svc.CompleteClaimShare,
+		distribute: func(ctx context.Context) error {
+			_, err := barrier.InitializeShamir(ctx, "")
+			return err
+		},
+	}
+	return a, svc.UnenrolOfficer
+}
+
+// TestUnenrol_BeforeInitializationFreesTheSlot pins the way out of an
+// enrolment that cannot be initialized: before initialization a holder holds
+// no share, so it is removed without a quorum, its slot is free for another
+// holder, and initialization goes ahead with the N enrolled.
+func TestUnenrol_BeforeInitializationFreesTheSlot(t *testing.T) {
+	ring := audit.NewRingBuffer(64)
+	a, unenrol := databaseUnenrol(t, ring)
+	ctx := context.Background()
+	a.enrol(t, ctx, newHolder(t, "alice", ""), newHolder(t, "bob", ""), newHolder(t, "carol", ""))
+
+	require.NoError(t, unenrol(ctx, "bob"))
+	_, err := a.register(ctx, newHolder(t, "dave", "").request("admin-1"))
+	require.NoError(t, err, "the unenrolled holder's slot is free")
+	require.NoError(t, a.distribute(ctx))
+
+	removed := eventsOf(scopeEvents(ring, a.scope), ActionHolderUnenrol)
+	require.Len(t, removed, 1)
+	assert.Equal(t, "bob", removed[0].Attributes["holder"])
+	assert.Equal(t, audit.OutcomeSuccess, removed[0].Outcome)
+	assert.Equal(t, "acme", removed[0].TenantID)
+}
+
+// TestUnenrol_Refusals pins the refusals: no name, a name never enrolled,
+// and any holder once the barrier is initialized -- then every holder may
+// hold a share, and only a revocation removes one. Each refusal is recorded.
+func TestUnenrol_Refusals(t *testing.T) {
+	ring := audit.NewRingBuffer(64)
+	a, unenrol := databaseUnenrol(t, ring)
+	ctx := context.Background()
+	a.enrol(t, ctx, newHolder(t, "alice", ""), newHolder(t, "bob", ""), newHolder(t, "carol", ""))
+
+	require.ErrorIs(t, unenrol(ctx, ""), ErrMissingUsername)
+	require.ErrorIs(t, unenrol(ctx, "mallory"), ErrOfficerNotFound)
+	require.NoError(t, a.distribute(ctx))
+	require.ErrorIs(t, unenrol(ctx, "bob"), ErrUnenrolInitialized)
+
+	refused := eventsOf(scopeEvents(ring, a.scope), ActionHolderUnenrol)
+	require.Len(t, refused, 3)
+	for _, ev := range refused {
+		assert.True(t, strings.HasPrefix(ev.Outcome, audit.OutcomeFailure+":"), ev.Outcome)
+	}
+}

@@ -84,6 +84,25 @@ func TestGRPCDatabaseHolders_Lifecycle(t *testing.T) {
 		}
 		h.Enrolled(t, string(resp.GetCertPem()))
 	}
+	// A third holder of a 2-of-2 database is refused before initialization;
+	// one enrolled by mistake is removed by unenrolment, without a quorum.
+	extra := servicetest.NewHolder(t, "carol")
+	_, err := s.DatabaseBarrierOfficerRegister(ctx, &pb.DatabaseBarrierOfficerRegisterRequest{
+		Database: "vault", Officer: &pb.BarrierOfficerRegisterRequest{Username: extra.Name, CsrPem: []byte(extra.CSRPEM)},
+	})
+	requireCode(t, err, codes.FailedPrecondition)
+	if _, err := s.DatabaseBarrierOfficerUnenrol(ctx, &pb.DatabaseBarrierOfficerUnenrolRequest{Database: "vault", Username: "bob"}); err != nil {
+		t.Fatalf("unenrol bob: %v", err)
+	}
+	_, err = s.DatabaseBarrierOfficerUnenrol(ctx, &pb.DatabaseBarrierOfficerUnenrolRequest{Database: "vault", Username: "bob"})
+	requireCode(t, err, codes.NotFound)
+	resp, err := s.DatabaseBarrierOfficerRegister(ctx, &pb.DatabaseBarrierOfficerRegisterRequest{
+		Database: "vault", Officer: &pb.BarrierOfficerRegisterRequest{Username: "bob", CsrPem: []byte(holders[1].CSRPEM)},
+	})
+	if err != nil {
+		t.Fatalf("re-register bob: %v", err)
+	}
+	holders[1].Enrolled(t, string(resp.GetCertPem()))
 	list, err := s.DatabaseBarrierOfficerList(ctx, &pb.DatabaseBarrierOfficerListRequest{Database: "vault"})
 	if err != nil || len(list.GetOfficers()) != 2 {
 		t.Fatalf("list = %v, %v", list, err)
@@ -127,6 +146,9 @@ func TestGRPCDatabaseHolders_Lifecycle(t *testing.T) {
 		t.Fatalf("rekey start = %v, %v", round, err)
 	}
 	_, err = s.DatabaseBarrierOfficerRevoke(ctx, &pb.DatabaseBarrierOfficerRevokeRequest{Database: "vault", Username: "bob", Threshold: 2})
+	requireCode(t, err, codes.FailedPrecondition)
+	// Initialized, a holder is removed by revocation only.
+	_, err = s.DatabaseBarrierOfficerUnenrol(ctx, &pb.DatabaseBarrierOfficerUnenrolRequest{Database: "vault", Username: "bob"})
 	requireCode(t, err, codes.FailedPrecondition)
 }
 
@@ -185,6 +207,10 @@ func TestGRPCDatabaseHolders_Refusals(t *testing.T) {
 		},
 		"OfficerRevoke": func() error {
 			_, err := bare.DatabaseBarrierOfficerRevoke(ctx, &pb.DatabaseBarrierOfficerRevokeRequest{Database: "vault"})
+			return err
+		},
+		"OfficerUnenrol": func() error {
+			_, err := bare.DatabaseBarrierOfficerUnenrol(ctx, &pb.DatabaseBarrierOfficerUnenrolRequest{Database: "vault"})
 			return err
 		},
 	}

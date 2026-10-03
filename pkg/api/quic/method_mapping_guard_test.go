@@ -259,6 +259,7 @@ var expectedMethodPerms = map[string]permission.Permission{
 	"db.BarrierQuorumSubmit":           permission.IdentityGated,
 	"db.BarrierRekeyStart":             permission.DatabasesRekey,
 	"db.BarrierOfficerRevoke":          permission.DatabasesOfficerRevoke,
+	"db.BarrierOfficerUnenrol":         permission.DatabasesOfficerUnenrol,
 	"sql.Query":                        permission.KVRange,
 	"lock.Acquire":                     permission.LocksAcquire,
 	"lock.TryLock":                     permission.LocksAcquire,

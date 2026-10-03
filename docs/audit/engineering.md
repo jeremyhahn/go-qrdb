@@ -579,7 +579,7 @@ With metadata, as a nested group:
 | `admin.snapshot` | `shard:{id}` | admin operations |
 | `admin.member.add` / `admin.member.remove` | `shard:{id}` | membership management |
 | `auth.denied` | `{resource}` | authentication middleware |
-| `holder-register` / `holder-claim` / `holder-quorum-submit` / `holder-rekey-start` / `holder-revoked` | `share-holder` | the share-holder engine (`pkg/ceremony`), every scope |
+| `holder-register` / `holder-claim` / `holder-quorum-submit` / `holder-rekey-start` / `holder-revoked` / `holder-unenrol` | `share-holder` | the share-holder engine (`pkg/ceremony`), every scope |
 
 The share-holder events carry the scope's owning tenant as `tenant_id` and
 these attributes only: `scope` (`system`, `recovery`, `tenant:<id>`,

@@ -403,6 +403,25 @@ describe('holders – database barrier', () => {
             .toEqual({ username: 'erin', threshold: 2 });
     });
 
+    it('unenrolDatabaseOfficer POSTs the holder to /v1/databases/{name}/barrier/officers/unenrol and expects no body', async () => {
+        const client = await connectedClient();
+        const { calls } = installRouter({ 'POST /v1/databases/vault/barrier/officers/unenrol': { status: 204 } });
+
+        await expect(client.officers.unenrolDatabaseOfficer({ database: 'vault', username: 'erin' })).resolves.toBeUndefined();
+
+        const req = calls.find((c) => c.path === '/v1/databases/vault/barrier/officers/unenrol');
+        expect(req?.method).toBe('POST');
+        // The database travels in the path, never in the body.
+        expect(req?.body).toEqual({ username: 'erin' });
+    });
+
+    it('unenrolDatabaseOfficer reports the server refusal of an initialized database', async () => {
+        const client = await connectedClient();
+        installRouter({ 'POST /v1/databases/vault/barrier/officers/unenrol': { status: 409, body: { error: 'revoke instead' } } });
+
+        await expect(client.officers.unenrolDatabaseOfficer({ database: 'vault', username: 'erin' })).rejects.toThrow();
+    });
+
     it('database names are path-escaped', async () => {
         const client = await connectedClient();
         const { calls } = installRouter({});

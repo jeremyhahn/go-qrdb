@@ -255,6 +255,7 @@ qrdb database create vault --backend file --data-dir <install-dir>/vault \
 qrdb database barrier-officer register --database vault --username alice \
      --role so --csr-file alice.csr
 qrdb database barrier-officer list --database vault
+qrdb database barrier-officer unenrol --database vault --username carol   # before init only
 qrdb database barrier-init-shamir --database vault --policy designated
 qrdb database barrier-officer claim --database vault --username alice \
      --key alice.key --out alice.envelope
@@ -267,6 +268,7 @@ qrdb database barrier-officer revoke --database vault --username bob --threshold
 | Verb | Does |
 |---|---|
 | `barrier-officer register\|list\|claim\|claim-begin\|claim-complete\|revoke` | Enrol, list, claim (whole handshake or split), revoke |
+| `barrier-officer unenrol` | Remove a holder before the custody is initialized: it holds no share, so no quorum is needed. Refused once initialized; revoke instead |
 | `barrier-init-shamir` | Split the key at the M-of-N the create fixed (`--barrier-shamir-threshold` of `--barrier-shamir-total`); exactly that many holders must be enrolled |
 | `barrier-quorum begin\|submit` | A holder's factor challenge and share submission |
 | `barrier-rekey` | Open a rekey round |

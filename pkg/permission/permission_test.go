@@ -559,7 +559,9 @@ func TestAll_TotalCount(t *testing.T) {
 	//   share-holder custody perms (databases:officer_register, officer_list,
 	//   officer_revoke, rekey, initialize_shamir) and the Tier-1
 	//   audit-verification perm (audit:verify) = 375 total.
-	const expectedTotal = 375
+	// + 1 databases:officer_unenrol, removing a database holder before its
+	//   custody is initialized = 376.
+	const expectedTotal = 376
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)

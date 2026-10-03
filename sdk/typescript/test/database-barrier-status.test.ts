@@ -118,3 +118,25 @@ describe('normalizeDatabaseBarrierStatus', () => {
         expect(normalizeDatabaseBarrierStatus(base)).toEqual(base);
     });
 });
+
+describe('WailsClient officers.unenrolDatabaseOfficer', () => {
+    beforeEach(() => vi.unstubAllGlobals());
+    afterEach(() => vi.unstubAllGlobals());
+
+    it('calls OfficerBinding.UnenrolDatabaseHolder with the database and the holder', async () => {
+        const unenrol = vi.fn<BindingFn>(async () => null);
+        vi.stubGlobal('window', { go: { main: { OfficerBinding: { UnenrolDatabaseHolder: unenrol } } } });
+
+        await expect(new WailsClient().officers.unenrolDatabaseOfficer({ database: 'vault', username: 'erin' })).resolves.toBeUndefined();
+
+        expect(unenrol).toHaveBeenCalledWith('vault', 'erin');
+    });
+
+    it('reports the binding refusal', async () => {
+        vi.stubGlobal('window', { go: { main: { OfficerBinding: {
+            UnenrolDatabaseHolder: vi.fn<BindingFn>(async () => { throw new Error('revoke instead'); }),
+        } } } });
+
+        await expect(new WailsClient().officers.unenrolDatabaseOfficer({ database: 'vault', username: 'erin' })).rejects.toThrow('revoke instead');
+    });
+});

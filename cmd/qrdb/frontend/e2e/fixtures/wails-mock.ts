@@ -704,6 +704,19 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               }
               return round(req, req.threshold, "", [req.username]);
             },
+            // Mirrors DatabaseService.DatabaseBarrierOfficerUnenrol: a holder
+            // is removed before initialization only; after it, by revocation.
+            UnenrolDatabaseHolder: async (database: string, username: string) => {
+              maybeReject("OfficerBinding.UnenrolDatabaseHolder");
+              if (!username) throw new Error("ceremony: username is required");
+              const holders = holdersOf({ database });
+              if (getState().databaseBarrierInitializedAt?.[database] !== undefined) {
+                throw new Error("ceremony: a holder of an initialized barrier is removed by revocation, not unenrolment");
+              }
+              const i = holders.findIndex((h) => h.username === username);
+              if (i < 0) throw new Error("ceremony: officer not found");
+              holders.splice(i, 1);
+            },
             // Mirrors DatabaseService.DatabaseBarrierShamirInitialize: a
             // barrier is initialized once (seal.ErrAlreadyInitialized), with
             // exactly sharesTotal holders enrolled (seal.HolderCountMismatchError);

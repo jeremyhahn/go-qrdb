@@ -74,10 +74,12 @@ func ClaimRefusedWithStatus(status int) Claim {
 	}}
 }
 
-// Run drives fx's database through c: enrolment of two holders, listing,
+// Run drives fx's database through c: enrolment of two holders, the refusal
+// of a third, the unenrolment of one and its re-enrolment, listing,
 // initialization at the created M-of-N, each holder's claim, a quorum seal
 // and unseal, a rekey round, a revocation the remaining holders cannot
-// satisfy, and the client's refusal of a request that names no database.
+// satisfy, the refusal of an unenrolment once initialized, and the client's
+// refusal of a request that names no database.
 func Run(t *testing.T, c transport.DatabaseClient, fx *servicetest.ShamirDatabase, claim Claim) {
 	t.Helper()
 	ctx := context.Background()
@@ -93,6 +95,30 @@ func Run(t *testing.T, c transport.DatabaseClient, fx *servicetest.ShamirDatabas
 		}
 		h.Enrolled(t, resp.CertPEM)
 	}
+
+	// A third holder of a 2-of-2 database is refused before initialization;
+	// one enrolled by mistake is removed by unenrolment, without a quorum.
+	extra := servicetest.NewHolder(t, "carol")
+	if _, err := c.DatabaseBarrierOfficerRegister(ctx, &transport.DatabaseOfficerRegisterRequest{
+		Database:               Database,
+		OfficerRegisterRequest: transport.OfficerRegisterRequest{Username: extra.Name, CSRPEM: extra.CSRPEM},
+	}); err == nil {
+		t.Fatal("a third holder of a 2-of-2 database was enrolled before initialization")
+	}
+	if err := c.DatabaseBarrierOfficerUnenrol(ctx, &transport.DatabaseOfficerUnenrolRequest{Database: Database, Username: "bob"}); err != nil {
+		t.Fatalf("unenrol bob: %v", err)
+	}
+	if err := c.DatabaseBarrierOfficerUnenrol(ctx, &transport.DatabaseOfficerUnenrolRequest{Database: Database, Username: "bob"}); err == nil {
+		t.Fatal("unenrolling a holder no longer enrolled succeeded")
+	}
+	again, err := c.DatabaseBarrierOfficerRegister(ctx, &transport.DatabaseOfficerRegisterRequest{
+		Database:               Database,
+		OfficerRegisterRequest: transport.OfficerRegisterRequest{Username: "bob", CSRPEM: holders[1].CSRPEM},
+	})
+	if err != nil {
+		t.Fatalf("re-register bob: %v", err)
+	}
+	holders[1].Enrolled(t, again.CertPEM)
 
 	officers, err := c.DatabaseBarrierOfficerList(ctx, Database)
 	if err != nil {
@@ -133,6 +159,9 @@ func Run(t *testing.T, c transport.DatabaseClient, fx *servicetest.ShamirDatabas
 	}
 	if _, err := c.DatabaseBarrierOfficerRevoke(ctx, &transport.DatabaseOfficerRevokeRequest{Database: Database, Username: "bob", Threshold: 2}); err == nil {
 		t.Fatal("revoking a holder below the threshold succeeded")
+	}
+	if err := c.DatabaseBarrierOfficerUnenrol(ctx, &transport.DatabaseOfficerUnenrolRequest{Database: Database, Username: "bob"}); err == nil {
+		t.Fatal("unenrolling a holder of an initialized database succeeded")
 	}
 
 	refusesNoDatabase(t, c)
@@ -207,7 +236,8 @@ func refusesNoDatabase(t *testing.T, c transport.DatabaseClient) {
 			_, err := c.DatabaseBarrierRekeyStart(ctx, &transport.DatabaseRekeyStartRequest{})
 			return err
 		},
-		"OfficerRevoke": func() error { _, err := c.DatabaseBarrierOfficerRevoke(ctx, nil); return err },
+		"OfficerRevoke":  func() error { _, err := c.DatabaseBarrierOfficerRevoke(ctx, nil); return err },
+		"OfficerUnenrol": func() error { return c.DatabaseBarrierOfficerUnenrol(ctx, nil) },
 	}
 	for name, call := range calls {
 		var required *transport.DatabaseNameRequiredError

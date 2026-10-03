@@ -1249,6 +1249,13 @@ service QRDBService {
         option (qrdb.v1.permission) = "databases:officer_revoke";
     }
 
+    // DatabaseBarrierOfficerUnenrol removes an enrolled holder before the
+    // database's custody is initialized, when it holds no share. After
+    // initialization a holder is removed by DatabaseBarrierOfficerRevoke.
+    rpc DatabaseBarrierOfficerUnenrol(DatabaseBarrierOfficerUnenrolRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "databases:officer_unenrol";
+    }
+
     // -----------------------------------------------------------------------
     // SQL operations
     // -----------------------------------------------------------------------
@@ -4468,6 +4475,13 @@ message DatabaseBarrierOfficerRevokeRequest {
     string database  = 1;
     string username  = 2;
     int32  threshold = 3;
+}
+
+// DatabaseBarrierOfficerUnenrolRequest removes a database holder before its
+// custody is initialized.
+message DatabaseBarrierOfficerUnenrolRequest {
+    string database = 1;
+    string username = 2;
 }
 
 // DatabaseBarrierStatusResponse reports a database barrier's sealed state and

@@ -55,6 +55,10 @@ type DatabaseHolderServicer interface {
 	DatabaseBarrierRekeyStart(ctx context.Context, name string, threshold int, policy seal.FactorPolicy) (*QuorumRoundInfo, error)
 	// DatabaseBarrierOfficerRevoke opens a rekey round that removes a holder.
 	DatabaseBarrierOfficerRevoke(ctx context.Context, name, username string, threshold int) (*QuorumRoundInfo, error)
+	// DatabaseBarrierOfficerUnenrol removes an enrolled holder before the
+	// database's custody is initialized, when it holds no share; after it a
+	// holder is removed by revocation (ceremony.ErrUnenrolInitialized).
+	DatabaseBarrierOfficerUnenrol(ctx context.Context, name, username string) error
 }
 
 // Compile-time interface check.
@@ -247,6 +251,21 @@ func (s *DatabaseService) DatabaseBarrierOfficerRevoke(ctx context.Context, name
 		return nil, err
 	}
 	return holders.StartRekey(ctx, barrier, seal.RekeyParams{Threshold: threshold, Remove: []string{username}})
+}
+
+// DatabaseBarrierOfficerUnenrol implements DatabaseHolderServicer: a holder
+// enrolled by mistake, or one whose key is lost before custody is
+// initialized, is removed without a quorum, and its slot is free for another.
+func (s *DatabaseService) DatabaseBarrierOfficerUnenrol(ctx context.Context, name, username string) error {
+	holders, _, err := s.databaseHolders(ctx, name)
+	if err != nil {
+		return err
+	}
+	if err := holders.UnenrolOfficer(ctx, username); err != nil {
+		return err
+	}
+	s.holderLog("database share holder unenrolled", name, slog.String("username", username))
+	return nil
 }
 
 // setDatabaseStatus reflects a barrier transition on the database's status.

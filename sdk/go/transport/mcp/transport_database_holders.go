@@ -119,3 +119,15 @@ func (t *Transport) DatabaseBarrierOfficerRevoke(ctx context.Context, req *trans
 	}
 	return callDatabaseHolder[transport.QuorumRound](ctx, t, "DatabaseBarrierOfficerRevoke", "qrdb_database_barrier_officer_revoke", req.Database, req)
 }
+
+// DatabaseBarrierOfficerUnenrol removes a database holder before the
+// database's custody is initialized.
+func (t *Transport) DatabaseBarrierOfficerUnenrol(ctx context.Context, req *transport.DatabaseOfficerUnenrolRequest) error {
+	if req == nil {
+		return &transport.DatabaseNameRequiredError{Method: "DatabaseBarrierOfficerUnenrol"}
+	}
+	_, err := callDatabaseHolder[struct {
+		Unenrolled string `json:"unenrolled"`
+	}](ctx, t, "DatabaseBarrierOfficerUnenrol", "qrdb_database_barrier_officer_unenrol", req.Database, req)
+	return err
+}

@@ -42,6 +42,23 @@ are not reconstructed here — their history is in the git log.
   `seal.RekeyParams.Admit` is the hook the barrier calls once a rekey is
   validated and before its round opens.
 
+- **Unenrol a database holder before initialization, on every transport.**
+  Before a Shamir database's custody is initialized a holder holds no share,
+  so one enrolled by mistake, or one whose key is lost before it was used, is
+  removed without a quorum and its place freed: REST
+  `POST /v1/databases/{name}/barrier/officers/unenrol` (204), gRPC and the
+  Unix socket `DatabaseBarrierOfficerUnenrol`, QUIC
+  `db.BarrierOfficerUnenrol`, MCP `qrdb_database_barrier_officer_unenrol`,
+  the Go SDK's `DatabaseClient.DatabaseBarrierOfficerUnenrol` on all six
+  transports, the CLI `qrdb database barrier-officer unenrol`, the desktop
+  `OfficerBinding.UnenrolDatabaseHolder`, the TypeScript SDK's
+  `officers.unenrolDatabaseOfficer`, and a **Remove** in the database view.
+  New permission `databases:officer_unenrol` (self-scoped, like the rest of
+  `databases:*`). Once initialized, unenrolment is refused with
+  `ceremony.ErrUnenrolInitialized` and a holder is removed by revocation. The
+  removal is audited (`holder-unenrol`). **BREAKING** for implementers of
+  `transport.DatabaseClient` and `service.DatabaseHolderServicer`: each gains
+  the method.
 - **`database.barrierStatus(name)` in the TypeScript SDK**, on REST and the
   desktop binding (`DatabaseBinding.BarrierStatus`): a database barrier's
   sealed state, strategy and `initializedAt`, absent until the barrier is

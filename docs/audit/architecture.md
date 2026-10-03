@@ -368,8 +368,8 @@ which exists before the node does, so its sealed window is recorded too.
 
 ### Share-holder events
 
-Every holder scope -- system, recovery, tenant and database -- records five
-events on the trail through the one holder engine, keyed by the scope's
+Every holder scope -- system, recovery, tenant and database -- records its
+holder events on the trail through the one holder engine, keyed by the scope's
 owning tenant. Each names the scope, the holder and the outcome; quorum
 events name the operation. **None carries a share, an envelope, a PIN, a
 claim signature, a factor response or a key**, and a refusal's reason is a
@@ -395,6 +395,7 @@ that refuses one is counted on
 | `holder-quorum-submit` | a share submission's holder is authenticated, or refused |
 | `holder-rekey-start` | a rekey round opens, a revocation's included, or is refused |
 | `holder-revoked` | a revoked holder's record is removed, once the rekey is durable |
+| `holder-unenrol` | a holder is removed before the barrier is initialized, or the removal refused |
 
 ### The replicated in-tenant trail
 

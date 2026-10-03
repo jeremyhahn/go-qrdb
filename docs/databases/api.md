@@ -322,6 +322,7 @@ has the unseal domain only; the holder model, error classes and identity
 | Quorum submission | `POST /v1/databases/{name}/barrier/quorum/submit` | `DatabaseBarrierQuorumSubmit` | `db.BarrierQuorumSubmit` | `qrdb_database_barrier_quorum_submit` | `DatabaseBarrierQuorumSubmit` | **identity-gated** |
 | Start rekey | `POST /v1/databases/{name}/barrier/rekey/start` | `DatabaseBarrierRekeyStart` | `db.BarrierRekeyStart` | `qrdb_database_barrier_rekey_start` | `DatabaseBarrierRekeyStart` | `databases:rekey` |
 | Revoke holder | `POST /v1/databases/{name}/barrier/officers/revoke` | `DatabaseBarrierOfficerRevoke` | `db.BarrierOfficerRevoke` | `qrdb_database_barrier_officer_revoke` | `DatabaseBarrierOfficerRevoke` | `databases:officer_revoke` |
+| Unenrol holder (before initialization) | `POST /v1/databases/{name}/barrier/officers/unenrol` (204) | `DatabaseBarrierOfficerUnenrol` | `db.BarrierOfficerUnenrol` | `qrdb_database_barrier_officer_unenrol` | `DatabaseBarrierOfficerUnenrol` | `databases:officer_unenrol` |
 
 Unseal and seal of a Shamir database barrier have no route of their own: each
 is the quorum submission with `op` `unseal` or `seal`; a single caller's
@@ -336,7 +337,12 @@ Initialization request: `{"policy": "designated"}` — the M-of-N is the
 `sharesRequired`/`sharesTotal` the database was created with, and exactly
 `sharesTotal` holders must be enrolled. Until initialization no more than
 `sharesTotal` can be: one more is refused with
-`ceremony.HolderLimitReachedError` (409, `FAILED_PRECONDITION`).
+`ceremony.HolderLimitReachedError` (409, `FAILED_PRECONDITION`). Before
+initialization a holder holds no share, so one enrolled by mistake is removed
+by unenrolment (`{"username"}`, 204) with no quorum, and its place is free for
+another; once the custody is initialized unenrolment is refused with
+`ceremony.ErrUnenrolInitialized` (409, `FAILED_PRECONDITION`) and a holder is
+removed by revocation.
 `GET /v1/databases/{name}/barrier/status` reports `initialized_at` once the
 custody is initialized and omits it until then; the TypeScript SDK's
 `database.barrierStatus(name)` reports it as `initializedAt` on both of its
@@ -373,6 +379,7 @@ with `DatabaseNameRequiredError` before it is sent.
 | A holder operation on a database with no Shamir barrier (`NotShamirBarrierError`) | 409 | `FAILED_PRECONDITION` |
 | A `shamir` create on a node with no holder CA (`ShamirCustodyNotConfiguredError`) | 409 | `FAILED_PRECONDITION` |
 | A holder enrolled past `sharesTotal` before initialization (`ceremony.HolderLimitReachedError`) | 409 | `FAILED_PRECONDITION` |
+| A holder unenrolled once the custody is initialized (`ceremony.ErrUnenrolInitialized`) | 409 | `FAILED_PRECONDITION` — revoke instead |
 | Changing a Shamir barrier's strategy or M-of-N by update (`BarrierMigrationNotSupportedError`) | 409 | `FAILED_PRECONDITION` — rekey instead |
 | Turning an existing database's barrier on or off (`BarrierMigrationNotSupportedError`) | 409 | `FAILED_PRECONDITION` |
 | `cluster_mode` / `replicas` on a non-raft backend | 400 | `INVALID_ARGUMENT` |

@@ -119,3 +119,15 @@ func (t *TenantDatabaseClient) DatabaseBarrierOfficerRevoke(ctx context.Context,
 	}
 	return t.inner.DatabaseBarrierOfficerRevoke(ctx, req)
 }
+
+// DatabaseBarrierOfficerUnenrol removes a holder of a tenant-owned database
+// before its custody is initialized.
+func (t *TenantDatabaseClient) DatabaseBarrierOfficerUnenrol(ctx context.Context, req *DatabaseOfficerUnenrolRequest) error {
+	if req == nil {
+		return &DatabaseNameRequiredError{Method: "DatabaseBarrierOfficerUnenrol"}
+	}
+	if err := t.verifyOwnership(ctx, req.Database); err != nil {
+		return err
+	}
+	return t.inner.DatabaseBarrierOfficerUnenrol(ctx, req)
+}

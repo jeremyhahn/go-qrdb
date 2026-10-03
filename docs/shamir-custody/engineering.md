@@ -100,6 +100,17 @@ the next rekey. No other scope fixes N beforehand: the system barrier's and a
 tenant's initialization take the M-of-N with the request, and a recovery key
 is split to every recovery holder enrolled.
 
+**A database holder is unenrolled before initialization.** No share exists
+before a database barrier is initialized, so a holder enrolled by mistake, or
+one whose key is lost before it was ever used, is removed without a quorum
+(`ScopedCeremonyService.UnenrolOfficer`, the database service's
+`DatabaseBarrierOfficerUnenrol`, on every transport); its place is free for
+another holder. On an initialized barrier every holder may hold a share and
+unenrolment is refused with `ceremony.ErrUnenrolInitialized`: removal is a
+revocation, a rekey the remaining holders complete. The engine verb serves
+any scope; only the database scope exposes it, the one whose N is fixed
+before initialization and so the one an enrolment can leave stuck.
+
 The reconciliation on the first unsealed access never overwrites a persisted
 holder:
 
@@ -383,6 +394,7 @@ per domain may be open (`ErrQuorumRoundInProgress`).
 | `QuorumOpInvalidError` | op not valid in the domain or state |
 | `RevocationBreaksQuorumError`, `HolderCountMismatchError`, `InvalidRosterError` | distribution refusals |
 | `ceremony.HolderLimitReachedError` | registration past a database barrier's N before initialization |
+| `ceremony.ErrUnenrolInitialized` | unenrolment once the barrier is initialized; revoke instead |
 | `ceremony.ErrSelfEnrolment`, `ErrDuplicateUsername`, `ErrDuplicateHolderKey`, `ErrInvalidHolderRole`, `InvalidHolderNameError`, `EncryptionKeyRequiredError`, `FactorNotEnrolledError`, `DuplicateFactorError`, `HolderFactorEnrollmentError` | enrolment refusals |
 | `ceremony.ErrShareAlreadyClaimed`, `ErrShareExpired`, `ErrNoPendingShare`, `ErrCertThumbprintMismatch`, `ErrChallengeExpired`, `ErrChallengeVerificationFailed` | claim refusals |
 | `ceremony.ErrQuorumChallengeNotFound`, `ErrQuorumChallengeMismatch`, `*QuorumRateLimitedError` | challenge refusals (`ErrTooManyPendingChallenges` is internal: a request it would refuse gets a challenge stored in the decoy table, which verifies when answered) |
@@ -443,8 +455,9 @@ and policy are per distribution, not configuration.
 
 Every holder scope records its holder events on the node's compliance trail
 (`HolderDeps.Audit`), keyed by the scope's owning tenant: `holder-register`,
-`holder-claim`, `holder-quorum-submit`, `holder-rekey-start` and
-`holder-revoked`, refusals included, with the scope, the holder and the
+`holder-claim`, `holder-quorum-submit`, `holder-rekey-start`,
+`holder-revoked` and `holder-unenrol`, refusals included, with the scope, the
+holder and the
 operation and never a share, an envelope, a PIN, a signature, a factor
 response or a key; a refusal's reason is a fixed token, never an error's
 text. A registration, a claim and a rekey opening are recorded before they

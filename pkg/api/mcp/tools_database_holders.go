@@ -64,6 +64,8 @@ func databaseHolderTools(dbSvc service.DatabaseServicer) []serverTool {
 			argUsername,
 			mcp.WithNumber("threshold", mcp.Description("Threshold of the remaining share set; the current threshold when zero.")),
 		}), Perm: permission.DatabasesOfficerRevoke, Handler: handleDatabaseOfficerRevoke(dbSvc)},
+		{Tool: withArgs("qrdb_database_barrier_officer_unenrol", "Remove a database holder before the database's custody is initialized, when it holds no share.", dbArgs, []mcp.ToolOption{argUsername}),
+			Perm: permission.DatabasesOfficerUnenrol, Handler: handleDatabaseOfficerUnenrol(dbSvc)},
 	}
 }
 
@@ -118,6 +120,9 @@ type (
 	databaseRevokeArgs struct {
 		transport.DatabaseOfficerRevokeRequest
 	}
+	databaseUnenrolArgs struct {
+		transport.DatabaseOfficerUnenrolRequest
+	}
 )
 
 func (a *databaseRegisterArgs) database() string      { return a.Database }
@@ -128,6 +133,7 @@ func (a *databaseClaimCompleteArgs) database() string { return a.Database }
 func (a *databaseQuorumBeginArgs) database() string   { return a.Database }
 func (a *databaseQuorumSubmitArgs) database() string  { return a.Database }
 func (a *databaseRekeyStartArgs) database() string    { return a.Database }
+func (a *databaseUnenrolArgs) database() string       { return a.Database }
 func (a *databaseRevokeArgs) database() string        { return a.Database }
 
 // handleDatabaseHolderRegister enrols a database holder.
@@ -265,6 +271,25 @@ func handleDatabaseOfficerRevoke(dbSvc service.DatabaseServicer) mcpserver.ToolH
 				return nil, err
 			}
 			return holderwire.RoundTo(round), nil
+		})
+	}
+}
+
+// databaseUnenrolResult reports the holder an unenrolment removed.
+type databaseUnenrolResult struct {
+	Unenrolled string `json:"unenrolled"`
+}
+
+// handleDatabaseOfficerUnenrol removes a database holder before the
+// database's custody is initialized.
+func handleDatabaseOfficerUnenrol(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		in := &databaseUnenrolArgs{}
+		return databaseHolderCall(req, "qrdb_database_barrier_officer_unenrol", dbSvc, in, func(hs service.DatabaseHolderServicer) (any, error) {
+			if err := hs.DatabaseBarrierOfficerUnenrol(ctx, in.Database, in.Username); err != nil {
+				return nil, err
+			}
+			return databaseUnenrolResult{Unenrolled: in.Username}, nil
 		})
 	}
 }

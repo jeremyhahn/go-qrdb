@@ -343,6 +343,7 @@ export type {
     TenantOfficerRevokeRequest,
     DatabaseOfficerRegisterRequest,
     DatabaseOfficerRevokeRequest,
+    DatabaseOfficerUnenrolRequest,
     DatabaseRekeyStartRequest,
     DatabaseShamirInitializeRequest,
     DatabaseShamirInitializeResponse,

@@ -22,10 +22,12 @@ import (
 	"testing"
 
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/service/servicetest"
 )
@@ -100,6 +102,28 @@ func TestQUICDatabaseHolders_Lifecycle(t *testing.T) {
 		}
 		h.Enrolled(t, string(resp.GetCertPem()))
 	}
+	// A third holder of a 2-of-2 database is refused before initialization;
+	// one enrolled by mistake is removed by unenrolment, without a quorum.
+	extra := servicetest.NewHolder(t, "carol")
+	var limit *ceremony.HolderLimitReachedError
+	if err := dbHolderCall(t, ctx, s.handleDatabaseBarrierOfficerRegister, &pb.DatabaseBarrierOfficerRegisterRequest{
+		Database: "vault", Officer: &pb.BarrierOfficerRegisterRequest{Username: extra.Name, CsrPem: []byte(extra.CSRPEM)},
+	}, &pb.BarrierOfficerRegisterResponse{}); !errors.As(err, &limit) {
+		t.Fatalf("a third holder = %v, want HolderLimitReachedError", err)
+	}
+	if err := dbHolderCall(t, ctx, s.handleDatabaseBarrierOfficerUnenrol, &pb.DatabaseBarrierOfficerUnenrolRequest{Database: "vault", Username: "bob"}, &emptypb.Empty{}); err != nil {
+		t.Fatalf("unenrol bob: %v", err)
+	}
+	if err := dbHolderCall(t, ctx, s.handleDatabaseBarrierOfficerUnenrol, &pb.DatabaseBarrierOfficerUnenrolRequest{Database: "vault", Username: "bob"}, &emptypb.Empty{}); !errors.Is(err, ceremony.ErrOfficerNotFound) {
+		t.Fatalf("unenrol bob again = %v, want ErrOfficerNotFound", err)
+	}
+	var again pb.BarrierOfficerRegisterResponse
+	if err := dbHolderCall(t, ctx, s.handleDatabaseBarrierOfficerRegister, &pb.DatabaseBarrierOfficerRegisterRequest{
+		Database: "vault", Officer: &pb.BarrierOfficerRegisterRequest{Username: "bob", CsrPem: []byte(holders[1].CSRPEM)},
+	}, &again); err != nil {
+		t.Fatalf("re-register bob: %v", err)
+	}
+	holders[1].Enrolled(t, string(again.GetCertPem()))
 	var list pb.BarrierOfficerListResponse
 	if err := dbHolderCall(t, ctx, s.handleDatabaseBarrierOfficerList, &pb.DatabaseBarrierOfficerListRequest{Database: "vault"}, &list); err != nil || len(list.GetOfficers()) != 2 {
 		t.Fatalf("list = %v, %v", list.GetOfficers(), err)
@@ -146,6 +170,10 @@ func TestQUICDatabaseHolders_Lifecycle(t *testing.T) {
 	}
 	if err := dbHolderCall(t, ctx, s.handleDatabaseBarrierOfficerRevoke, &pb.DatabaseBarrierOfficerRevokeRequest{Database: "vault", Username: "bob", Threshold: 2}, &round); err == nil {
 		t.Fatal("revoking a holder below the threshold succeeded")
+	}
+	// Initialized, a holder is removed by revocation only.
+	if err := dbHolderCall(t, ctx, s.handleDatabaseBarrierOfficerUnenrol, &pb.DatabaseBarrierOfficerUnenrolRequest{Database: "vault", Username: "bob"}, &emptypb.Empty{}); !errors.Is(err, ceremony.ErrUnenrolInitialized) {
+		t.Fatalf("unenrol after initialization = %v, want ErrUnenrolInitialized", err)
 	}
 }
 
@@ -205,6 +233,7 @@ func TestQUICDatabaseHolders_Refusals(t *testing.T) {
 		"QuorumSubmit":       bare.handleDatabaseBarrierQuorumSubmit,
 		"RekeyStart":         bare.handleDatabaseBarrierRekeyStart,
 		"OfficerRevoke":      bare.handleDatabaseBarrierOfficerRevoke,
+		"OfficerUnenrol":     bare.handleDatabaseBarrierOfficerUnenrol,
 	}
 	for name, h := range handlers {
 		var notConfigured *ServiceNotConfiguredError

@@ -526,6 +526,50 @@ func (h *holderScope) refuseOverCapacity(ctx context.Context) error {
 	return nil
 }
 
+// unenrol removes an enrolled holder from a scope whose barrier is not yet
+// initialized (removeEnrolled), and records the removal, or its refusal, on
+// the compliance trail.
+func (h *holderScope) unenrol(ctx context.Context, d *HolderDeps, username string) error {
+	err := h.removeEnrolled(ctx, username)
+	h.record(ctx, d, holderEvent{action: ActionHolderUnenrol, holder: username, err: err})
+	return err
+}
+
+// removeEnrolled removes username's enrolment before initialization. No share
+// exists before it, so the holder holds nothing and the removal needs no
+// quorum: it is the way out of an enrolment that cannot be initialized (a
+// holder enrolled by mistake, or one whose key is lost before it was ever
+// used). On an initialized barrier every holder may hold a share, and only a
+// revocation -- a rekey the quorum completes -- removes one
+// (ErrUnenrolInitialized).
+func (h *holderScope) removeEnrolled(ctx context.Context, username string) error {
+	if username == "" {
+		return ErrMissingUsername
+	}
+	initialized, err := h.initialized(ctx)
+	if err != nil {
+		return err
+	}
+	if initialized {
+		return ErrUnenrolInitialized
+	}
+	if err := h.sync(ctx); err != nil {
+		return err
+	}
+	if _, ok := h.registry.cached(username); !ok {
+		return ErrOfficerNotFound
+	}
+	if h.sealed() {
+		// Enrolled while sealed, the record is in the cache alone.
+		h.registry.evict(username)
+	} else if err := h.registry.Delete(ctx, username); err != nil {
+		return err
+	}
+	h.logger.Info("share holder unenrolled before initialization",
+		slog.String("scope", h.scope.String()), slog.String("username", username))
+	return nil
+}
+
 // nameFree reports whether username can be enrolled, failing closed.
 //
 // While the barrier is sealed the persisted roster cannot be read, so

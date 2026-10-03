@@ -1692,6 +1692,7 @@ func (s *Server) registerRoutes() {
 	s.route(http.MethodPost, "/v1/databases/{name}/barrier/quorum/submit", permission.IdentityGated, s.handleDatabaseByName)
 	s.route(http.MethodPost, "/v1/databases/{name}/barrier/rekey/start", permission.DatabasesRekey, s.handleDatabaseByName)
 	s.route(http.MethodPost, "/v1/databases/{name}/barrier/officers/revoke", permission.DatabasesOfficerRevoke, s.handleDatabaseByName)
+	s.route(http.MethodPost, "/v1/databases/{name}/barrier/officers/unenrol", permission.DatabasesOfficerUnenrol, s.handleDatabaseByName)
 
 	// Collection management routes. Attached when either the singleton is
 	// wired or a registry is configured, for the reason the lease routes give

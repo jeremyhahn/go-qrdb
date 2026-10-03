@@ -299,6 +299,7 @@ func (s *Server) buildHandlers() {
 	s.handle("db.BarrierQuorumSubmit", permission.IdentityGated, s.handleDatabaseBarrierQuorumSubmit)
 	s.handle("db.BarrierRekeyStart", permission.DatabasesRekey, s.handleDatabaseBarrierRekeyStart)
 	s.handle("db.BarrierOfficerRevoke", permission.DatabasesOfficerRevoke, s.handleDatabaseBarrierOfficerRevoke)
+	s.handle("db.BarrierOfficerUnenrol", permission.DatabasesOfficerUnenrol, s.handleDatabaseBarrierOfficerUnenrol)
 
 	// SQL query (read-through over the KV range surface). Mirrors the REST
 	// "POST /sql/query" route / the gRPC SQLQuery permission option.

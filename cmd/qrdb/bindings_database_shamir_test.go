@@ -129,7 +129,7 @@ func TestBindings_WizardShamirSequence(t *testing.T) {
 	}
 	// A fourth holder -- a second tab, the database view, the CLI -- is
 	// refused: initialization needs exactly N, and before it no holder can
-	// be revoked.
+	// be revoked. One enrolled by mistake is unenrolled instead.
 	extra := servicetest.NewHolder(t, "dave")
 	_, err = officers.RegisterHolder(scope, &transport.OfficerRegisterRequest{Username: "dave", Role: transport.RoleCustodian, CSRPEM: extra.CSRPEM})
 	var limit *ceremony.HolderLimitReachedError
@@ -138,6 +138,16 @@ func TestBindings_WizardShamirSequence(t *testing.T) {
 	}
 	if got := errclass.Classify(err); got != errclass.FailedPrecondition {
 		t.Fatalf("the refusal classifies as %v, want FailedPrecondition", got)
+	}
+	if err := officers.UnenrolDatabaseHolder("wizard-vault", "carol"); err != nil {
+		t.Fatalf("UnenrolDatabaseHolder(carol) = %v", err)
+	}
+	if err := officers.UnenrolDatabaseHolder("wizard-vault", "carol"); !errors.Is(err, ceremony.ErrOfficerNotFound) {
+		t.Fatalf("UnenrolDatabaseHolder(carol) again = %v, want ErrOfficerNotFound", err)
+	}
+	carol := servicetest.NewHolder(t, "carol")
+	if _, err := officers.RegisterHolder(scope, &transport.OfficerRegisterRequest{Username: "carol", Role: transport.RoleCustodian, CSRPEM: carol.CSRPEM}); err != nil {
+		t.Fatalf("RegisterHolder(carol) after the unenrolment = %v", err)
 	}
 
 	before, err := dbs.BarrierStatus("wizard-vault")
@@ -172,6 +182,13 @@ func TestBindings_WizardShamirSequence(t *testing.T) {
 	}
 	if _, err := officers.InitializeDatabaseShamir("wizard-vault", ""); err == nil {
 		t.Fatal("a second initialization was admitted")
+	}
+	if err := officers.UnenrolDatabaseHolder("wizard-vault", "alice"); !errors.Is(err, ceremony.ErrUnenrolInitialized) {
+		t.Fatalf("UnenrolDatabaseHolder after initialization = %v, want ErrUnenrolInitialized", err)
+	}
+	notConnected := NewOfficerBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
+	if err := notConnected.UnenrolDatabaseHolder("wizard-vault", "alice"); err == nil {
+		t.Fatal("UnenrolDatabaseHolder without a connection succeeded")
 	}
 }
 

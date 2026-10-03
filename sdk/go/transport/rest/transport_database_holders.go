@@ -171,3 +171,14 @@ func (t *Transport) DatabaseBarrierOfficerRevoke(ctx context.Context, req *trans
 	}
 	return &resp, nil
 }
+
+// DatabaseBarrierOfficerUnenrol removes a database holder before the
+// database's custody is initialized. Maps to
+// POST /v1/databases/{name}/barrier/officers/unenrol (204).
+func (t *Transport) DatabaseBarrierOfficerUnenrol(ctx context.Context, req *transport.DatabaseOfficerUnenrolRequest) error {
+	if req == nil {
+		return &transport.DatabaseNameRequiredError{Method: "DatabaseBarrierOfficerUnenrol"}
+	}
+	payload := map[string]any{"username": req.Username}
+	return t.databaseHolderPost(ctx, "DatabaseBarrierOfficerUnenrol", req.Database, "/officers/unenrol", payload, nil)
+}

@@ -209,6 +209,7 @@ import type {
     TenantOfficerRevokeRequest,
     DatabaseOfficerRegisterRequest,
     DatabaseOfficerRevokeRequest,
+    DatabaseOfficerUnenrolRequest,
     DatabaseRekeyStartRequest,
     DatabaseShamirInitializeRequest,
     DatabaseShamirInitializeResponse,
@@ -1556,6 +1557,9 @@ export class WailsClient implements Client {
             },
             revokeDatabaseOfficer: async (req: DatabaseOfficerRevokeRequest): Promise<QuorumRound> => {
                 return b.RevokeHolder({ ...database(req.database), username: req.username, threshold: req.threshold ?? 0 }) as Promise<QuorumRound>;
+            },
+            unenrolDatabaseOfficer: async (req: DatabaseOfficerUnenrolRequest): Promise<void> => {
+                await b.UnenrolDatabaseHolder(req.database, req.username);
             },
         };
     }

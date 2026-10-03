@@ -22,9 +22,11 @@
 
   A database whose custody is not yet initialized -- its barrier status has
   no initialization time, as after the database wizard's "Finish later" --
-  shows instead the enrolment of its remaining holders (HolderEnrolmentForms)
-  and Initialize, enabled only once exactly N are enrolled. Holder admin only:
-  no share, no envelope and no holder key enters this page.
+  shows instead the enrolment of its remaining holders (HolderEnrolmentForms),
+  a Remove for each holder already enrolled (unenrolment: before
+  initialization a holder holds no share, so no quorum is needed), and
+  Initialize, enabled only once exactly N are enrolled. Holder admin only: no
+  share, no envelope and no holder key enters this page.
 -->
 <script lang="ts">
   import type {
@@ -62,6 +64,12 @@
   let initializing: boolean = $state(false);
   let initError: string = $state("");
   let split = $state<DatabaseShamirInitializeResponse | null>(null);
+  // Unenrolment before initialization. formsEpoch remounts the enrolment
+  // forms once the holder list is reloaded, so the holders the forms
+  // registered are counted once, from the list.
+  let unenrolling: string = $state("");
+  let unenrolError: string = $state("");
+  let formsEpoch: number = $state(0);
 
   /**
    * Custody is initialized exactly when the database barrier reports when it
@@ -95,6 +103,22 @@
   /** Enrols one more holder of this database's barrier. */
   function enrol(req: OfficerRegisterRequest) {
     return client.officers.registerDatabaseOfficer({ database, ...req });
+  }
+
+  /** Removes a holder enrolled before initialization. */
+  async function unenrol(username: string): Promise<void> {
+    unenrolling = username;
+    unenrolError = "";
+    try {
+      await client.officers.unenrolDatabaseOfficer({ database, username });
+      registered = 0;
+      formsEpoch += 1;
+      await load();
+    } catch (err: unknown) {
+      unenrolError = err instanceof Error ? err.message : String(err);
+    } finally {
+      unenrolling = "";
+    }
   }
 
   async function initialize(): Promise<void> {
@@ -153,6 +177,9 @@
                 <th>Role</th>
                 <th>Share #</th>
                 <th>Claim</th>
+                {#if !initialized}
+                  <th></th>
+                {/if}
               </tr>
             </thead>
             <tbody>
@@ -164,11 +191,31 @@
                   <td class="text-xs">
                     {holder.claimedAt ? "Claimed" : holder.sharePending ? "Pending" : "Not claimed"}
                   </td>
+                  {#if !initialized}
+                    <td class="text-right">
+                      <button
+                        class="btn btn-ghost btn-xs"
+                        disabled={unenrolling !== ""}
+                        onclick={() => void unenrol(holder.username)}
+                        data-testid="db-holder-unenrol-{holder.username}"
+                      >
+                        {#if unenrolling === holder.username}
+                          <span class="loading loading-spinner loading-xs"></span>
+                        {/if}
+                        Remove
+                      </button>
+                    </td>
+                  {/if}
                 </tr>
               {/each}
             </tbody>
           </table>
         </div>
+        {#if unenrolError}
+          <div role="alert" class="alert alert-error text-sm" data-testid="db-holders-unenrol-error">
+            <span>{unenrolError}</span>
+          </div>
+        {/if}
       {/if}
 
       {#if !initialized && sharesTotal > 0}
@@ -192,7 +239,9 @@
             </div>
           {/if}
           {#if remaining > 0}
-            <HolderEnrolmentForms {client} count={remaining} bind:registeredCount={registered} {enrol} />
+            {#key formsEpoch}
+              <HolderEnrolmentForms {client} count={remaining} bind:registeredCount={registered} {enrol} />
+            {/key}
           {/if}
           {#if initError}
             <div role="alert" class="alert alert-error text-sm" data-testid="db-holders-init-error">
