@@ -51,6 +51,24 @@ func (s *Server) handleCeremonyInitialize(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// s.ceremonyCA is nil whenever this node's TLS bundle carries no CA
+	// private key (BYO --tls-ca-file/--tls-cert-file/--tls-key-file --
+	// ceremonyCAFromBundle's documented (nil, nil) case). That is no
+	// longer refused here: ceremony.Initialize supports it directly (the
+	// operator's own leaf certificate is the server identity, and the
+	// bring-your-own-certificate admin-credential path needs no CA at
+	// all), refusing only the two admin-credential paths that actually
+	// need one to sign with (CSR-sign, generate) via the typed
+	// *ceremony.AdminCredentialRequiresCAError mapErrorJSON already
+	// propagates.
+	//
+	// admin_csr_pem/admin_cert_pem/admin_cert_pool_pem/secret round-trip
+	// through transport.CeremonyInitializeRequest/Response and the
+	// holderwire.CeremonyInitFrom/To conversions below -- shared by REST,
+	// MCP and the embedded transport (go-qrdb#548 B2). gRPC/Unix and native
+	// QUIC still need the matching fields added to their own
+	// protobuf-generated and transport-specific request/response types;
+	// that part of B2 is not done by this handler.
 	var req transport.CeremonyInitializeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
@@ -63,6 +81,11 @@ func (s *Server) handleCeremonyInitialize(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// The admin key, when the generate path produced one, is wiped from this
+	// handler's own copy immediately after writeJSON serializes the response
+	// (go-qrdb#548) -- not yet reachable over this transport (see the TODO
+	// above), but WipeAdminKeyPEM is a safe no-op when result carries none.
+	defer result.WipeAdminKeyPEM()
 	writeJSON(w, holderwire.CeremonyInitTo(result))
 }
 

@@ -64,6 +64,27 @@ type CeremonyConfig struct {
 	// applies to the system and recovery scopes; tenant scopes use
 	// DefaultShareTTL.
 	ShareTTL time.Duration
+
+	// ServerCertPEM is this node's own TLS server (leaf) certificate.
+	// Required when Initialize is ever called with a nil CeremonyCA (a
+	// BYO-TLS node: the operator's own certificate and key are the server
+	// identity, not a CA this process holds the key for). Initialize
+	// computes the SPKI pin it returns from THIS certificate's public key
+	// -- not a CA's -- and returns it unchanged as InitResult.TLSCertPEM,
+	// since there is no CA to self-issue a different one from. Ignored
+	// when a CeremonyCA is configured: that case self-issues its own TLS
+	// certificate, exactly as before BYO-TLS support existed.
+	ServerCertPEM []byte
+
+	// ClientCACertPEM is this node's configured client-authentication
+	// trust anchor PEM (the CA(s) that verify a client certificate this
+	// node accepts). It is the default admin-certificate pool
+	// (InitializeOptions.AdminCertPoolPEM's fallback, and
+	// InitResult.CACertPEM) when Initialize is called with a nil
+	// CeremonyCA: the bring-your-own-certificate admin-credential path on
+	// a BYO-TLS node validates against it. Ignored when a CeremonyCA is
+	// configured: that case falls back to the CA's own bundle instead.
+	ClientCACertPEM []byte
 }
 
 // InitializeOptions carries the per-request parameters of an initialization
@@ -102,7 +123,65 @@ type InitializeOptions struct {
 
 	// SANs is the list of Subject Alternative Names for TLS certificates.
 	SANs []string
+
+	// AdminCSRPEM, when non-empty, selects the CSR-sign path for the
+	// bootstrap admin's certificate: the ceremony CA signs it as
+	// CN=<admin>, OU=[system, administrator], using only the CSR's key.
+	// Mutually exclusive with AdminCertPEM.
+	AdminCSRPEM []byte
+
+	// AdminCertPEM, when non-empty, selects the bring-your-own-certificate
+	// path: a certificate the admin already holds (typically on a PIV card
+	// or security key) is validated against AdminCertPoolPEM -- or, when that
+	// is empty, against this ceremony's own CA bundle -- and adopted
+	// unchanged. Nothing is signed and no key is generated. Mutually
+	// exclusive with AdminCSRPEM.
+	AdminCertPEM []byte
+
+	// AdminCertPoolPEM is the PEM-encoded trust anchor bundle a presented
+	// AdminCertPEM must chain to. Optional: when empty, AdminCertPEM is
+	// validated against this ceremony's own CA bundle instead, per
+	// docs/firstboot/user.md.
+	AdminCertPoolPEM []byte
+
+	// Secret is the passphrase (or other strategy-specific credential) the
+	// system barrier is initialized with, BORROWED for the duration of this
+	// call exactly as seal.StorageBarrier.Initialize's own creds parameter
+	// is: Initialize copies it into protected memory and destroys its own
+	// copy before returning, leaving this slice for the caller to wipe.
+	// Required when the barrier's configured strategy needs one (e.g.
+	// "passphrase"); must be empty for "none". qrdb init is the only way a
+	// fresh node's system barrier is ever initialized (go-qrdb#548): `barrier
+	// init` refuses the system barrier outright and names this field's CLI
+	// flag instead.
+	Secret []byte
 }
+
+// AdminCredentialSource records which of the three supported paths produced
+// the bootstrap admin's certificate during Initialize.
+type AdminCredentialSource string
+
+const (
+	// AdminCredentialNone means Initialize did not produce an admin
+	// credential (should not occur on a successful Initialize).
+	AdminCredentialNone AdminCredentialSource = ""
+
+	// AdminCredentialCSR means the ceremony CA signed an operator-supplied
+	// CSR (AdminCSRPEM). The admin's own key never left their machine.
+	AdminCredentialCSR AdminCredentialSource = "csr"
+
+	// AdminCredentialBYOC means a certificate the admin already held was
+	// validated and adopted unchanged (AdminCertPEM). Nothing was issued.
+	AdminCredentialBYOC AdminCredentialSource = "byoc"
+
+	// AdminCredentialGenerated means the ceremony generated the admin's key
+	// pair and signed it itself. This is the DEFAULT when neither
+	// AdminCSRPEM nor AdminCertPEM is supplied, and it is NOT suitable for
+	// production: the private key is returned to the caller over the wire
+	// exactly once, and go-qrdb never persists or retains it. See
+	// docs/firstboot/user.md.
+	AdminCredentialGenerated AdminCredentialSource = "generated"
+)
 
 // ChallengeResponse holds the nonce issued for a share-claim handshake.
 type ChallengeResponse struct {
@@ -135,6 +214,25 @@ type InitResult struct {
 	// admin).
 	ShareCount int
 
+	// AdminCertPEM is the bootstrap admin's issued or adopted certificate
+	// (go-qrdb#548). Always present on a successful Initialize: signed from
+	// AdminCSRPEM, adopted from AdminCertPEM, or generated when neither was
+	// supplied. The SAME bytes are persisted as the pending-admin-credential
+	// record first boot reads to bind it; this copy is returned so a caller
+	// that wants it immediately (the CLI, an SDK embedder) does not have to
+	// wait for first boot.
+	AdminCertPEM []byte
+
+	// AdminKeyPEM is the generated private key, present ONLY when
+	// AdminCredentialSource is AdminCredentialGenerated. It is returned
+	// exactly once -- Initialize cannot be called again on the same ceremony
+	// -- and go-qrdb never writes it to storage. The caller must capture it
+	// immediately; there is no way to retrieve it again.
+	AdminKeyPEM []byte
+
+	// AdminCredentialSource records which path produced AdminCertPEM.
+	AdminCredentialSource AdminCredentialSource
+
 	// Holders is each enrolled holder's issued certificate, in Officers
 	// order. The certificates are public; each must reach its holder, who
 	// then claims their share envelope with it.
@@ -156,35 +254,22 @@ type roleProfile struct {
 }
 
 // roleProfileMap maps recognized role names to their certificate profiles.
+//
+// sign-csr issues HOLDER certificates only: a Security Officer and a
+// Custodian hold no login account, so naming either role here cannot mint a
+// login. admin/operator/user/auditor were REMOVED (go-qrdb#548): sign-csr is
+// reachable with only the SO PIN, before unseal, and let an SO name ANY
+// username with a login role's profile -- under auth.mtls_binding_policy:
+// enrolled, that unenrolled certificate then logged in as whichever account
+// the SO named, including the system admin. A login certificate for a
+// user-facing role is issued by the tenant Admin through the certs CSR-sign
+// or BYOC path (pkg/certificate-authority) instead, which requires the caller
+// to already be authenticated and authorized, not merely to know a PIN.
 var roleProfileMap = map[string]*roleProfile{
 	"so": {
 		profile:      holderprofile.SecurityOfficer,
 		validityDays: 365,
 		keyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		extKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-	},
-	"admin": {
-		profile:      "administrator",
-		validityDays: 365,
-		keyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		extKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-	},
-	"operator": {
-		profile:      "operator",
-		validityDays: 180,
-		keyUsage:     x509.KeyUsageDigitalSignature,
-		extKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-	},
-	"user": {
-		profile:      "user",
-		validityDays: 90,
-		keyUsage:     x509.KeyUsageDigitalSignature,
-		extKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-	},
-	"auditor": {
-		profile:      "auditor",
-		validityDays: 180,
-		keyUsage:     x509.KeyUsageDigitalSignature,
 		extKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	},
 	"custodian": {

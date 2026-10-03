@@ -35,6 +35,20 @@ binding.
 
 ## Enrolling somebody, end to end
 
+Under the default `auth.mtls_binding_policy: required`, issuing
+a certificate is not enough on its own — alice cannot log in until her
+account also holds a binding for that certificate's key (step 5 below). Skip
+it and her certificate authenticates to nobody.
+
+> **Known limitation:** a certificate from `qrdb ca issue` (step 1 below) does
+> not yet authenticate to any listener on any transport, regardless of
+> enrollment -- a separate, in-progress fix. Until that lands, use a
+> certificate from the `certs` CSR-sign or BYOC path, or the one `qrdb init`
+> issues for the bootstrap admin, wherever this guide needs a login
+> certificate that actually works today.
+
+```bash
+
 ```bash
 # 1. Issue a certificate
 qrdb ca issue --username alice --tenant-id acme --out ./alice
@@ -49,6 +63,17 @@ USER=$(qrdb users list --tenant-id acme --output json \
 
 # 4. Give them a role
 qrdb roles assign --user "$USER" --role "$ROLE"
+
+# 5. Enrol her certificate's key -- REQUIRED before she can log in.
+#    No CLI verb exists for this yet; every transport exposes AddCertBinding,
+#    REST shown here (see api.md). The thumbprint is the base64url SHA-256 of
+#    the certificate's SubjectPublicKeyInfo (user.ComputeSPKIThumbprint).
+THUMB=$(openssl x509 -in ./alice/alice-cert.pem -noout -pubkey \
+        | openssl pkey -pubin -outform DER \
+        | openssl dgst -sha256 -binary | base64 | tr -d '=' | tr '/+' '_-')
+curl -X POST "https://db.example.com/v1/users/$USER/cert-bindings" \
+     --cert admin-cert.pem --key admin-key.pem --cacert ca.pem \
+     -d "{\"thumbprint\": \"$THUMB\"}"
 ```
 
 ## Common tasks
@@ -203,17 +228,25 @@ records cannot be read at that moment, the command fails with an
 
 ## Moving a fleet to required certificate enrolment
 
-By default an account nobody has enrolled still logs in on its certificate's CN
-and OU. Once every account that logs in by certificate has an enrolled key, you
-can make that the rule for the whole fleet:
+`auth.mtls_binding_policy: required` is the default and the only
+posture that meets FedRAMP, HIPAA and PCI DSS 4.0: every certificate login
+must present a key the named account actually enrolled. A **fresh** fleet
+needs no migration — first boot enrols the bootstrap admin's certificate for
+you, and every other user is enrolled the ordinary way
+(`POST /users/{id}/cert-bindings`) before their first login.
+
+This section is for an **existing** fleet still running with
+`auth.mtls_binding_policy: enrolled` set explicitly (the non-compliant
+opt-out, where an account nobody has enrolled still logs in on its
+certificate's CN and OU alone) and moving off it:
 
 ```yaml
 auth:
-  mtls_binding_policy: required   # default: enrolled
+  mtls_binding_policy: enrolled   # TEMPORARY, while migrating -- see below
 ```
 
-1. **Pre-flight: find who would be refused.** List each tenant's users and look
-   for empty `cert_bindings`:
+1. **Pre-flight: find who would be refused once you remove this line.** List
+   each tenant's users and look for empty `cert_bindings`:
 
    ```bash
    qrdb users list --tenant-id acme --output json \
@@ -225,10 +258,13 @@ auth:
    (`POST /users/{id}/cert-bindings`, or `AddCertBinding` on any other
    transport — see [api.md](api.md)). **Start with `admin` in the `system`
    tenant.**
-2. **Set `required` on every node** and restart them. A node checks at boot that
-   the bootstrap admin holds an unexpired binding and **refuses to start** if it
-   does not, with a message naming the reason.
-3. **Rolling back** is setting `enrolled` and restarting. Nothing else changes.
+2. **Remove the `enrolled` line (or set it to `required`) on every node** and
+   restart them. A node checks at boot that the bootstrap admin holds an
+   unexpired binding and **refuses to start** if it does not, with a message
+   naming the reason.
+3. **Rolling back** is setting `enrolled` again and restarting. Nothing else
+   changes — but remember `enrolled` does not meet FedRAMP, HIPAA or PCI DSS
+   4.0, so treat it as a temporary step back, not a resting configuration.
 4. **Watch the admin's key expiry.** Every boot check exports
    `qrdb_auth_admin_cert_binding_not_after_timestamp_seconds` — when the
    admin's last unexpired binding expires, as a Unix time — and logs a warning,

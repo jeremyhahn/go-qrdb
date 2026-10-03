@@ -25,7 +25,7 @@ func TestParseMTLSBindingPolicy(t *testing.T) {
 		in   string
 		want MTLSBindingPolicy
 	}{
-		{"", MTLSBindingEnrolled},
+		{"", MTLSBindingRequired},
 		{"enrolled", MTLSBindingEnrolled},
 		{"  Enrolled ", MTLSBindingEnrolled},
 		{"required", MTLSBindingRequired},
@@ -58,9 +58,10 @@ func TestMTLSBindingPolicy_String(t *testing.T) {
 	if MTLSBindingEnrolled.String() != "enrolled" || MTLSBindingRequired.String() != "required" {
 		t.Fatalf("String() = %q/%q", MTLSBindingEnrolled, MTLSBindingRequired)
 	}
-	// The zero value is the historical posture.
+	// The zero value is the compliant posture (go-qrdb#548): an embedder that
+	// never sets this field gets "required", not the historical "enrolled".
 	var zero MTLSBindingPolicy
-	if zero != MTLSBindingEnrolled {
-		t.Fatal("zero value is not MTLSBindingEnrolled")
+	if zero != MTLSBindingRequired {
+		t.Fatal("zero value is not MTLSBindingRequired")
 	}
 }

@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"errors"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"testing"
 
 	tenantpkg "github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -52,6 +53,7 @@ func TestBootstrapUserRoleStores_SealDisabled_StillRoutesByTenant(t *testing.T) 
 		&prefixTenantServicer{}, false,
 		nil, // NO barrier registry: sealing is disabled
 		"", nil,
+		auth.MTLSBindingEnrolled, nil, nil, nil,
 	)
 	if err != nil {
 		t.Fatalf("bootstrapUserRoleStores: %v", err)

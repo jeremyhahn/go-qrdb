@@ -123,7 +123,7 @@ func startDataRootTenantNode(t *testing.T, bin string, logPrefix string) (adminP
 	waitForHealthy(t, dataDir, 60*time.Second)
 	waitForAdmin(t, ca.Pool, adminPort, 90*time.Second)
 
-	adminCertPath, adminKeyPath := ca.generateAdminClientCert(t, dataDir)
+	adminCertPath, adminKeyPath := ca.boundAdminCert(t, dataDir)
 	sysConnArgs = restConnArgs(ca, adminCertPath, adminKeyPath, adminPort)
 	return adminPort, volumePoolDir, ca, sysConnArgs
 }

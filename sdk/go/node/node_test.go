@@ -615,6 +615,12 @@ func TestIsSealed_NilBarrier(t *testing.T) {
 // cfg.Seal.Enabled exposes a nil BarrierRegistry (no seal subsystem was built).
 func TestBarrierRegistry_NilWhenSealDisabled(t *testing.T) {
 	cfg := qrdbconfig.DefaultConfig()
+	// DefaultConfig's seal defaults to enabled (go-qrdb#548); this test is
+	// specifically about the disabled case, so both are turned off
+	// explicitly (auth.enabled now requires seal.enabled, were this node
+	// to validate its config, which NewStandaloneNode does not).
+	cfg.Seal.Enabled = false
+	cfg.Auth.Enabled = qrdbconfig.BoolPtr(false)
 	cfg.Raft.DataDir = t.TempDir()
 	cfg.Databases = []qrdbconfig.DatabaseConfig{
 		{Name: "default", Backend: string(database.BackendMemory)},

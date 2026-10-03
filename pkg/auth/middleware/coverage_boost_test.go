@@ -298,7 +298,7 @@ func TestRESTRouteRegistry_Lookup_EmptySegment(t *testing.T) {
 
 func TestRESTMiddleware_NonAPIPath_PassThrough(t *testing.T) {
 	authn := &mockAuthenticator{
-		name:     "mtls",
+		name:     "test-authn",
 		identity: &auth.Identity{Subject: "u1", TenantID: "t1"},
 	}
 	m := New(&mockAuthorizer{}, WithAuthenticator(authn))
@@ -321,7 +321,7 @@ func TestRESTMiddleware_NonAPIPath_PassThrough(t *testing.T) {
 
 func TestRESTMiddleware_PublicPath_SkipsAuthn(t *testing.T) {
 	authn := &mockAuthenticator{
-		name:     "mtls",
+		name:     "test-authn",
 		identity: &auth.Identity{Subject: "u1", TenantID: "t1"},
 	}
 	m := New(&mockAuthorizer{}, WithAuthenticator(authn))
@@ -347,7 +347,7 @@ func TestRESTMiddleware_PublicPath_SkipsAuthn(t *testing.T) {
 
 func TestRESTMiddleware_APIPath_NoPermissionMapping_DefaultDeny(t *testing.T) {
 	authn := &mockAuthenticator{
-		name:     "mtls",
+		name:     "test-authn",
 		identity: &auth.Identity{Subject: "u1", TenantID: "t1"},
 	}
 	m := New(&mockAuthorizer{}, WithAuthenticator(authn))
@@ -391,7 +391,7 @@ func TestRESTMiddleware_AuthzPublicPath_Allowed(t *testing.T) {
 	// /metrics is on the API surface but in the authz-public set; authenticated
 	// callers should reach the handler without a specific permission.
 	authn := &mockAuthenticator{
-		name:     "mtls",
+		name:     "test-authn",
 		identity: &auth.Identity{Subject: "u1", TenantID: "t1"},
 	}
 	m := New(&mockAuthorizer{}, WithAuthenticator(authn))
@@ -418,7 +418,7 @@ func TestRESTMiddleware_AuthzPublicPath_Allowed(t *testing.T) {
 
 func TestUnaryInterceptor_PublicMethod_PassThrough(t *testing.T) {
 	authn := &mockAuthenticator{
-		name:     "mtls",
+		name:     "test-authn",
 		identity: &auth.Identity{Subject: "u1", TenantID: "t1"},
 	}
 	m := New(&mockAuthorizer{}, WithAuthenticator(authn))
@@ -445,7 +445,7 @@ func TestUnaryInterceptor_PublicMethod_PassThrough(t *testing.T) {
 
 func TestUnaryInterceptor_UnmappedNonPublicMethod_DefaultDeny(t *testing.T) {
 	authn := &mockAuthenticator{
-		name:     "mtls",
+		name:     "test-authn",
 		identity: &auth.Identity{Subject: "u1", TenantID: "t1"},
 	}
 	m := New(&mockAuthorizer{}, WithAuthenticator(authn))
@@ -472,7 +472,7 @@ func TestUnaryInterceptor_UnmappedNonPublicMethod_DefaultDeny(t *testing.T) {
 
 func TestStreamInterceptor_PublicMethod_PassThrough(t *testing.T) {
 	authn := &mockAuthenticator{
-		name:     "mtls",
+		name:     "test-authn",
 		identity: &auth.Identity{Subject: "u1", TenantID: "t1"},
 	}
 	m := New(&mockAuthorizer{}, WithAuthenticator(authn))
@@ -496,7 +496,7 @@ func TestStreamInterceptor_PublicMethod_PassThrough(t *testing.T) {
 
 func TestStreamInterceptor_UnmappedNonPublicMethod_DefaultDeny(t *testing.T) {
 	authn := &mockAuthenticator{
-		name:     "mtls",
+		name:     "test-authn",
 		identity: &auth.Identity{Subject: "u1", TenantID: "t1"},
 	}
 	m := New(&mockAuthorizer{}, WithAuthenticator(authn))

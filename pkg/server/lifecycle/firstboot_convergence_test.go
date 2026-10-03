@@ -21,6 +21,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -95,6 +96,10 @@ func TestFirstBoot_ConcurrentNodesConverge(t *testing.T) {
 				Users:   users,
 				Roles:   roles,
 				Logger:  logger,
+				// This test is about convergence under concurrent races, not
+				// certificate binding, and wires no CertBinder -- "enrolled"
+				// is the correct, explicit choice (go-qrdb#548).
+				MTLSBindingPolicy: auth.MTLSBindingEnrolled,
 			})
 		}(i, users)
 	}

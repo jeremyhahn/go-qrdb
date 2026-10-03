@@ -41,11 +41,16 @@ import (
 // never proceeds (go-qrdb#96).
 //
 // The ceremony is driven the way an operator drives it: an HTTPS POST to
-// /v1/barrier/initialize against the sealed-window server. The test supplies
-// the TLS material itself, so the client verifies the daemon's certificate
-// against a CA it owns rather than skipping verification — a test that turns
-// verification off proves nothing about a server that is meant to present a
-// valid certificate.
+// /v1/ceremony/initialize against the sealed-window server -- "qrdb init" is
+// the only system bootstrap (go-qrdb#548), and it brings the system barrier
+// up itself in the same call rather than through the now-refused
+// /v1/barrier/initialize. This daemon has auth disabled, but the seal
+// subsystem -- and therefore the ceremony service -- is wired whenever
+// seal.enabled is true regardless of auth.enabled, so the sealed-window
+// listener still answers it. The test supplies the TLS material itself, so
+// the client verifies the daemon's certificate against a CA it owns rather
+// than skipping verification — a test that turns verification off proves
+// nothing about a server that is meant to present a valid certificate.
 //
 // Readiness is taken from barrierUnsealed rather than from the admin port,
 // because the port cannot distinguish the two servers: the sealed-window
@@ -130,7 +135,7 @@ func TestRunStart_UnsealCeremony_ProceedsToFullStartup(t *testing.T) {
 
 	// From here to the end of the test every exit is a t.Fatalf, and a Fatalf
 	// ends this goroutine without reaching the shutdown below. The guard is
-	// what stops the daemon on those paths -- the initializeBarrier failure,
+	// what stops the daemon on those paths -- the initializeCeremony failure,
 	// both milestone timeouts, and a runStart that exits early -- so that a
 	// regression reports as this test failing rather than as a daemon holding
 	// its ports and the process signal handlers through everything that runs
@@ -149,7 +154,7 @@ func TestRunStart_UnsealCeremony_ProceedsToFullStartup(t *testing.T) {
 	// this test exists to remove.
 	awaitReady(t, done, listenerReady(fmt.Sprintf("127.0.0.1:%d", adminPort)), readyDeadline(t))
 
-	initializeBarrier(t, bundle, adminPort, "unseal-ceremony-passphrase")
+	initializeCeremony(t, bundle, adminPort, "unseal-ceremony-passphrase")
 
 	select {
 	case <-unsealed:
@@ -192,8 +197,15 @@ func TestRunStart_UnsealCeremony_ProceedsToFullStartup(t *testing.T) {
 	}
 }
 
-// initializeBarrier performs the operator's half of the ceremony.
-func initializeBarrier(t *testing.T, bundle *TLSBundle, adminPort int, secret string) {
+// initializeCeremony performs the operator's half of the ceremony: a single
+// POST to /v1/ceremony/initialize that both brings the system barrier up
+// (secret, the passphrase strategy's registered strategy expects) and runs
+// the bootstrap-admin ceremony, exactly as "qrdb init" does (go-qrdb#548).
+// This test's daemon has auth disabled and never looks at the admin
+// credential the ceremony issues, so so_pin/user_pin are placeholders and no
+// admin_csr_pem/admin_cert_pem is supplied -- the dev-only generate path
+// runs, and its output is discarded.
+func initializeCeremony(t *testing.T, bundle *TLSBundle, adminPort int, secret string) {
 	t.Helper()
 
 	pool := x509.NewCertPool()
@@ -211,15 +223,16 @@ func initializeBarrier(t *testing.T, bundle *TLSBundle, adminPort int, secret st
 		},
 	}
 
-	// The wire field is []byte so the daemon can zeroize it, and
-	// encoding/json renders a []byte as base64. Marshaling the plaintext as a
-	// string would be accepted by the encoder and REJECTED by the server.
-	body, err := json.Marshal(map[string]any{"secret": []byte(secret)})
+	body, err := json.Marshal(map[string]any{
+		"so_pin":   "unseal-ceremony-so-pin",
+		"user_pin": "unseal-ceremony-user-pin",
+		"secret":   secret,
+	})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	url := fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/initialize", adminPort)
+	url := fmt.Sprintf("https://127.0.0.1:%d/v1/ceremony/initialize", adminPort)
 
 	// The listener accepts before the handler is necessarily wired, so this
 	// retries until the endpoint answers rather than betting on one attempt.
@@ -247,5 +260,5 @@ func initializeBarrier(t *testing.T, bundle *TLSBundle, adminPort int, secret st
 		lastErr = fmt.Errorf("status %d", resp.StatusCode)
 		time.Sleep(signalRetryInterval)
 	}
-	t.Fatalf("barrier initialize never succeeded within %v: %v", readinessTimeout, lastErr)
+	t.Fatalf("ceremony initialize never succeeded within %v: %v", readinessTimeout, lastErr)
 }

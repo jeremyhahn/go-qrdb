@@ -344,7 +344,8 @@ func TestBootstrapSystem_NoneStrategy(t *testing.T) {
 	reg := newRegistry(t, seal.NewNoneStrategy())
 	tenants, users, roles := &fakeTenants{}, &fakeUsers{}, &fakeRoles{}
 
-	result, err := BootstrapSystem(context.Background(), SystemConfig{Strategy: StrategyNone}, Dependencies{
+	result, err := BootstrapSystem(context.Background(), SystemConfig{
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled, Strategy: StrategyNone}, Dependencies{
 		Tenants: tenants, Users: users, Roles: roles,
 		Barriers: reg, Logger: discardLogger(),
 	})
@@ -370,8 +371,9 @@ func TestBootstrapSystem_PassphraseStrategy(t *testing.T) {
 	tenants, users, roles := &fakeTenants{}, &fakeUsers{}, &fakeRoles{}
 
 	result, err := BootstrapSystem(context.Background(), SystemConfig{
-		Strategy:   StrategyPassphrase,
-		Passphrase: passphraseBuffer(t, "correct horse battery staple"),
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Strategy:          StrategyPassphrase,
+		Passphrase:        passphraseBuffer(t, "correct horse battery staple"),
 	}, Dependencies{
 		Tenants: tenants, Users: users, Roles: roles,
 		Barriers: reg, Logger: discardLogger(),
@@ -391,7 +393,8 @@ func TestBootstrapSystem_PassphraseStrategy_EmptyPassphraseRejected(t *testing.T
 	reg := newRegistry(t, seal.NewDeferredSoftwareStrategy())
 
 	_, err := BootstrapSystem(context.Background(), SystemConfig{
-		Strategy: StrategyPassphrase,
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Strategy:          StrategyPassphrase,
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Barriers: reg, Logger: discardLogger(),
@@ -427,7 +430,8 @@ func TestBootstrapSystem_PassphraseEmptyButAlreadyUnsealed(t *testing.T) {
 
 	// Empty passphrase — exactly what cmd/qrdbd supplies post-unseal.
 	result, err := BootstrapSystem(context.Background(), SystemConfig{
-		Strategy: StrategyPassphrase,
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Strategy:          StrategyPassphrase,
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Barriers: reg, Logger: discardLogger(),
@@ -457,7 +461,8 @@ func TestBootstrapSystem_ShamirSealedDefersToCeremony(t *testing.T) {
 	reg := newRegistry(t, shamir)
 	tenants, users, roles := &fakeTenants{}, &fakeUsers{}, &fakeRoles{}
 
-	result, err := BootstrapSystem(context.Background(), SystemConfig{Strategy: StrategyShamir}, Dependencies{
+	result, err := BootstrapSystem(context.Background(), SystemConfig{
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled, Strategy: StrategyShamir}, Dependencies{
 		Tenants: tenants, Users: users, Roles: roles,
 		Barriers: reg, Logger: discardLogger(),
 	})
@@ -502,7 +507,8 @@ func TestBootstrapSystem_ShamirAlreadyUnsealed(t *testing.T) {
 		t.Fatal("setup: shamir barrier should be unsealed after Initialize")
 	}
 
-	result, err := BootstrapSystem(context.Background(), SystemConfig{Strategy: StrategyShamir}, Dependencies{
+	result, err := BootstrapSystem(context.Background(), SystemConfig{
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled, Strategy: StrategyShamir}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Barriers: reg, Logger: discardLogger(),
 	})
@@ -523,7 +529,8 @@ func TestBootstrapSystem_AdminCertViaCA(t *testing.T) {
 	ca := &fakeCA{cert: certPEM, key: []byte("KEY")}
 	binder := &fakeBinder{}
 
-	result, err := BootstrapSystem(context.Background(), SystemConfig{Strategy: StrategyNone}, Dependencies{
+	result, err := BootstrapSystem(context.Background(), SystemConfig{
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled, Strategy: StrategyNone}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		CA: ca, Binder: binder, Barriers: reg, Logger: discardLogger(),
 	})
@@ -544,7 +551,8 @@ func TestBootstrapSystem_AlreadyInitializedIsIdempotent(t *testing.T) {
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Barriers: reg, Logger: discardLogger(),
 	}
-	if _, err := BootstrapSystem(context.Background(), SystemConfig{Strategy: StrategyNone}, deps); err != nil {
+	if _, err := BootstrapSystem(context.Background(), SystemConfig{
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled, Strategy: StrategyNone}, deps); err != nil {
 		t.Fatalf("first BootstrapSystem: %v", err)
 	}
 
@@ -553,7 +561,8 @@ func TestBootstrapSystem_AlreadyInitializedIsIdempotent(t *testing.T) {
 	// provenance check (createAdminUser) now verifies a username collision
 	// by reading the record back, exactly as a real user.UserServicer would
 	// let it, rather than trusting UsernameExistsError alone.
-	result, err := BootstrapSystem(context.Background(), SystemConfig{Strategy: StrategyNone}, Dependencies{
+	result, err := BootstrapSystem(context.Background(), SystemConfig{
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled, Strategy: StrategyNone}, Dependencies{
 		Tenants: &fakeTenants{createAlreadyErr: true},
 		Users: &fakeUsersWithLookup{
 			fakeUsers: fakeUsers{exists: true},
@@ -579,7 +588,8 @@ func TestBootstrapSystem_AlreadyInitializedIsIdempotent(t *testing.T) {
 }
 
 func TestBootstrapSystem_MissingBarriersRejected(t *testing.T) {
-	_, err := BootstrapSystem(context.Background(), SystemConfig{}, Dependencies{
+	_, err := BootstrapSystem(context.Background(), SystemConfig{
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Logger: discardLogger(),
 	})
@@ -591,7 +601,8 @@ func TestBootstrapSystem_MissingBarriersRejected(t *testing.T) {
 
 func TestBootstrapSystem_UnsupportedStrategyRejected(t *testing.T) {
 	reg := newRegistry(t, seal.NewNoneStrategy())
-	_, err := BootstrapSystem(context.Background(), SystemConfig{Strategy: seal.StrategyID("tpm2")}, Dependencies{
+	_, err := BootstrapSystem(context.Background(), SystemConfig{
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled, Strategy: seal.StrategyID("tpm2")}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Barriers: reg, Logger: discardLogger(),
 	})
@@ -604,7 +615,8 @@ func TestBootstrapSystem_UnsupportedStrategyRejected(t *testing.T) {
 func TestBootstrapSystem_FirstBootErrorWrapped(t *testing.T) {
 	reg := newRegistry(t, seal.NewNoneStrategy())
 	sentinel := errors.New("backend down")
-	_, err := BootstrapSystem(context.Background(), SystemConfig{Strategy: StrategyNone}, Dependencies{
+	_, err := BootstrapSystem(context.Background(), SystemConfig{
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled, Strategy: StrategyNone}, Dependencies{
 		Tenants: &fakeTenants{createErr: sentinel}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Barriers: reg, Logger: discardLogger(),
 	})
@@ -1703,7 +1715,8 @@ func TestInitializeTenantBarrier_RefusesPreRegisteredShamir(t *testing.T) {
 // the BootstrapSystem entry point.
 func TestBootstrapSystem_MissingLoggerRejected(t *testing.T) {
 	reg := newRegistry(t, seal.NewNoneStrategy())
-	_, err := BootstrapSystem(context.Background(), SystemConfig{Strategy: StrategyNone}, Dependencies{
+	_, err := BootstrapSystem(context.Background(), SystemConfig{
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled, Strategy: StrategyNone}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Barriers: reg,
 	})
@@ -1718,6 +1731,7 @@ func TestBootstrapSystem_MissingLoggerRejected(t *testing.T) {
 func TestBootstrapSystem_EmptyStrategyDefaultsToNone(t *testing.T) {
 	reg := newRegistry(t, seal.NewNoneStrategy())
 	result, err := BootstrapSystem(context.Background(), SystemConfig{
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
 		// Strategy deliberately left empty; should default to none.
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
@@ -1770,7 +1784,8 @@ func TestBootstrapSystem_InitializeReturnsAlreadyInitialized(t *testing.T) {
 	// BootstrapSystem sees a sealed barrier for StrategyNone → calls
 	// credentialsForStrategy (empty creds OK) → calls system.Initialize →
 	// receives ErrAlreadyInitialized → sets BarrierAlreadyInitialized = true.
-	result, err := BootstrapSystem(context.Background(), SystemConfig{Strategy: StrategyNone}, Dependencies{
+	result, err := BootstrapSystem(context.Background(), SystemConfig{
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled, Strategy: StrategyNone}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Barriers: reg, Logger: discardLogger(),
 	})
@@ -2037,8 +2052,9 @@ func TestBootstrapSystem_WipesTheCredentialCopy(t *testing.T) {
 	reg := newRegistry(t, strategy)
 
 	_, err := BootstrapSystem(context.Background(), SystemConfig{
-		Strategy:   StrategyPassphrase,
-		Passphrase: passphraseBuffer(t, passphrase),
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Strategy:          StrategyPassphrase,
+		Passphrase:        passphraseBuffer(t, passphrase),
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Barriers: reg, Logger: discardLogger(),
@@ -2066,8 +2082,9 @@ func TestBootstrapSystem_WipesTheCredentialCopyOnInitFailure(t *testing.T) {
 	reg := newRegistry(t, strategy)
 
 	_, err := BootstrapSystem(context.Background(), SystemConfig{
-		Strategy:   StrategyPassphrase,
-		Passphrase: passphraseBuffer(t, passphrase),
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Strategy:          StrategyPassphrase,
+		Passphrase:        passphraseBuffer(t, passphrase),
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Barriers: reg, Logger: discardLogger(),

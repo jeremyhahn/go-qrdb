@@ -39,8 +39,9 @@ import (
 func bootstrapGate(t *testing.T, rbacErr error) *gateFixture {
 	t.Helper()
 	svc := newRealUserStore(t)
-	createUser(t, svc, "acme", "bob", []string{"operator"})
+	u := createUser(t, svc, "acme", "bob", []string{"operator"})
 	cert := mintCert(t, "bob", "acme", nil, "")
+	enroll(t, svc, u.ID, cert)
 	now := time.Now().UTC()
 	v := &cacheVerifier{evidence: map[string]cachedEvidence{}}
 	gate, err := NewPeerAttestationGate(v, PeerAttestationPolicy{

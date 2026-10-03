@@ -23,6 +23,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
+	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -72,10 +73,14 @@ func TestInitialize_ShamirEnrolsHoldersAndGoesOperationalOnceAllClaim(t *testing
 	assert.Equal(t, res.SPKIPin, pinned)
 }
 
-// TestInitialize_SingleAdmin pins the threshold < 2 path.
+// TestInitialize_SingleAdmin pins the threshold < 2 path. go-qrdb#548: qrdb
+// init brings the system barrier up itself for single-admin, so this needs
+// a barrier that Initialize's credential path can actually bring up --
+// newHolderEnv's own is Shamir-configured and can only be brought up through
+// InitializeShamir.
 func TestInitialize_SingleAdmin(t *testing.T) {
-	e := newHolderEnv(t, 2, 2)
-	res, err := e.svc.Initialize(context.Background(), e.ca, initOpts(0))
+	svc := newTestCeremonyService(t, &CeremonyConfig{DataDir: t.TempDir()}, noneStrategyBarrier(t))
+	res, err := svc.Initialize(context.Background(), testCA(t), initOpts(0))
 	require.NoError(t, err)
 	assert.Equal(t, StateOperational, res.State)
 	assert.Empty(t, res.Holders)
@@ -95,21 +100,26 @@ func TestInitialize_FailsClosedWithoutAPINBackend(t *testing.T) {
 // pin.Provision, so the second verifies instead of failing on "already set",
 // and a mismatched PIN is refused.
 func TestInitialize_VerifiesPINsAlreadyProvisioned(t *testing.T) {
-	e := newHolderEnv(t, 2, 2)
-	require.NoError(t, pin.Provision(context.Background(), e.pins, "so-pin-1234", "user-pin-1234"))
-	_, err := e.svc.Initialize(context.Background(), e.ca, initOpts(0))
+	svc := newTestCeremonyService(t, &CeremonyConfig{DataDir: t.TempDir()}, noneStrategyBarrier(t))
+	require.NoError(t, pin.Provision(context.Background(), svc.pins, "so-pin-1234", "user-pin-1234"))
+	_, err := svc.Initialize(context.Background(), testCA(t), initOpts(0))
 	require.NoError(t, err)
 
-	e2 := newHolderEnv(t, 2, 2)
-	require.NoError(t, pin.Provision(context.Background(), e2.pins, "other-so-pin", "user-pin-1234"))
-	_, err = e2.svc.Initialize(context.Background(), e2.ca, initOpts(0))
+	svc2 := newTestCeremonyService(t, &CeremonyConfig{DataDir: t.TempDir()}, noneStrategyBarrier(t))
+	require.NoError(t, pin.Provision(context.Background(), svc2.pins, "other-so-pin", "user-pin-1234"))
+	_, err = svc2.Initialize(context.Background(), testCA(t), initOpts(0))
 	assert.Error(t, err, "a different SO PIN is refused, never overwritten")
 }
 
 // TestInitialize_ValidationRefusals covers the option checks.
 func TestInitialize_ValidationRefusals(t *testing.T) {
 	ctx := context.Background()
-	e := newHolderEnv(t, 2, 2)
+	// go-qrdb#548: qrdb init brings the system barrier up itself for the
+	// single-admin path, which the final nil-CA case below reaches; that
+	// needs a barrier Initialize's credential path can actually bring up,
+	// not newHolderEnv's own Shamir-configured one.
+	svc := newTestCeremonyService(t, &CeremonyConfig{DataDir: t.TempDir()}, noneStrategyBarrier(t))
+	ca := testCA(t)
 	a := newHolder(t, "alice", "")
 
 	cases := map[string]struct {
@@ -126,12 +136,17 @@ func TestInitialize_ValidationRefusals(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := e.svc.Initialize(ctx, e.ca, tc.opts)
+			_, err := svc.Initialize(ctx, ca, tc.opts)
 			assert.ErrorIs(t, err, tc.want)
 		})
 	}
-	_, err := e.svc.Initialize(ctx, nil, initOpts(0))
-	assert.ErrorIs(t, err, ErrNilCA)
+	// go-qrdb#548: a nil CeremonyCA is no longer refused outright -- it
+	// selects the BYO-TLS path, which here has no configured
+	// CeremonyConfig.ServerCertPEM to pin, so it is refused with
+	// *NoServerCertificateError instead of the old ErrNilCA.
+	_, err := svc.Initialize(ctx, nil, initOpts(0))
+	var noCert *NoServerCertificateError
+	assert.ErrorAs(t, err, &noCert)
 }
 
 // TestInitialize_HolderRegistrationFailureAborts pins that a bad holder
@@ -144,26 +159,30 @@ func TestInitialize_HolderRegistrationFailureAborts(t *testing.T) {
 	assert.True(t, errorAs[*CSRParseError](err), err)
 }
 
-// TestSignCSRInit_CAAssignsTheLoginIdentity pins the §6 fix for login
-// certificates, and that the SO PIN is verified by the PIN backend.
-func TestSignCSRInit_CAAssignsTheLoginIdentity(t *testing.T) {
+// TestSignCSRInit_CAAssignsTheHolderIdentity pins the §6 fix: the CA assigns
+// the certificate's identity from the request, never the CSR, and the SO PIN
+// is verified by the PIN backend. go-qrdb#548: sign-csr issues HOLDER
+// certificates only (so, custodian) and is PreOperationalOnly, so this now
+// drives an M-of-N ceremony to StateEnrolling rather than single-admin's
+// StateOperational.
+func TestSignCSRInit_CAAssignsTheHolderIdentity(t *testing.T) {
 	ctx := context.Background()
 	e := newHolderEnv(t, 2, 2)
-	_, err := e.svc.Initialize(ctx, e.ca, initOpts(0))
+	_, err := e.svc.Initialize(ctx, e.ca, initOpts(2, newHolder(t, "alice", seal.RoleSecurityOfficer), newHolder(t, "bob", seal.RoleSecurityOfficer)))
 	require.NoError(t, err)
 	h := newHolder(t, "ignored", "")
 
-	res, err := e.svc.SignCSRInit(ctx, "operator-1", "so-pin-1234", h.csrPEM, "admin")
+	res, err := e.svc.SignCSRInit(ctx, "operator-1", "so-pin-1234", h.csrPEM, "so")
 	require.NoError(t, err)
 	cert, err := mtls.ParseCertificatePEM(res.CertPEM)
 	require.NoError(t, err)
 	assert.Equal(t, "operator-1", cert.Subject.CommonName)
-	assert.Equal(t, []string{tenantid.System, "administrator"}, cert.Subject.OrganizationalUnit)
+	assert.Equal(t, []string{tenantid.System, holderprofile.SecurityOfficer}, cert.Subject.OrganizationalUnit)
 	assert.Empty(t, cert.URIs, "a ceremony certificate carries no SAN")
 	_, isHolder := auth.HolderProfile(cert)
-	assert.False(t, isHolder, "a login certificate is never a holder certificate")
+	assert.True(t, isHolder, "sign-csr issues HOLDER certificates only")
 
-	_, err = e.svc.SignCSRInit(ctx, "operator-2", "wrong-pin", h.csrPEM, "admin")
+	_, err = e.svc.SignCSRInit(ctx, "operator-2", "wrong-pin", h.csrPEM, "so")
 	assert.ErrorIs(t, err, pin.ErrPINInvalid)
 }
 
@@ -172,22 +191,22 @@ func TestSignCSRInit_Refusals(t *testing.T) {
 	ctx := context.Background()
 	e := newHolderEnv(t, 2, 2)
 	h := newHolder(t, "x", "")
-	_, err := e.svc.SignCSRInit(ctx, "u", "so-pin-1234", h.csrPEM, "admin")
+	_, err := e.svc.SignCSRInit(ctx, "u", "so-pin-1234", h.csrPEM, "so")
 	assert.ErrorIs(t, err, ErrNotInitializedOrEnrolling)
 
-	_, err = e.svc.Initialize(ctx, e.ca, initOpts(0))
+	_, err = e.svc.Initialize(ctx, e.ca, initOpts(2, newHolder(t, "alice", seal.RoleSecurityOfficer), newHolder(t, "bob", seal.RoleSecurityOfficer)))
 	require.NoError(t, err)
 	cases := map[string]struct {
 		user, pin, role string
 		csr             []byte
 		want            error
 	}{
-		"no username": {"", "so-pin-1234", "admin", h.csrPEM, ErrMissingUsername},
-		"no SO PIN":   {"u", "", "admin", h.csrPEM, ErrInvalidSOPIN},
-		"no CSR":      {"u", "so-pin-1234", "admin", nil, ErrMissingCSRPEM},
+		"no username": {"", "so-pin-1234", "so", h.csrPEM, ErrMissingUsername},
+		"no SO PIN":   {"u", "", "so", h.csrPEM, ErrInvalidSOPIN},
+		"no CSR":      {"u", "so-pin-1234", "so", nil, ErrMissingCSRPEM},
 		"no role":     {"u", "so-pin-1234", "", h.csrPEM, ErrMissingRole},
 		"bad role":    {"u", "so-pin-1234", "root", h.csrPEM, ErrInvalidRole},
-		"bad CSR":     {"u", "so-pin-1234", "admin", []byte("x"), ErrCSRSigningFailed},
+		"bad CSR":     {"u", "so-pin-1234", "so", []byte("x"), ErrCSRSigningFailed},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

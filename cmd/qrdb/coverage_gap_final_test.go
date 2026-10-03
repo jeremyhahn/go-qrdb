@@ -706,7 +706,7 @@ func TestResolveAndValidateInitFlags_SharesWithNonShamir(t *testing.T) {
 
 func TestResolveAndValidateInitFlags_ValidPassphrase(t *testing.T) {
 	cmd := newInitCmd()
-	f := &initFlags{soPin: "sopin", userPin: "userpin", barrierStrategy: "passphrase"}
+	f := &initFlags{soPin: "sopin", userPin: "userpin", barrierStrategy: "passphrase", passphrase: "barrier-secret"}
 	if err := resolveAndValidateInitFlags(cmd, f, "QRDB_TEST_NOOP"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

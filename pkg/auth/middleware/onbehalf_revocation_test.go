@@ -56,7 +56,7 @@ func (e *obUnavailableError) RevocationStateUnavailable() bool { return true }
 func runOnBehalfWithRevocation(t *testing.T, r *http.Request, storeUser *user.User, rc auth.RevocationChecker) (int, bool) {
 	t.Helper()
 	m := New(&capturingAuthorizer{},
-		WithAuthenticator(&mockAuthenticator{name: "mtls", err: auth.ErrNoPeerCertificate}),
+		WithAuthenticator(&mockAuthenticator{name: "test-authn", err: auth.ErrNoPeerCertificate}),
 		WithUserService(&mockUserServicer{user: storeUser}),
 		WithRevocationChecker(rc),
 	)

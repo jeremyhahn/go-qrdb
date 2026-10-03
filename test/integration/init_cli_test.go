@@ -62,6 +62,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -414,4 +415,189 @@ func TestInit_CLI_ShamirWithOfficers_PerProtocol(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Follower refusal (coordinator decision, go-qrdb#548): a second qrdb init
+// against an already-bootstrapped cluster is refused on a follower, naming
+// the leader, before it issues or signs anything; on the leader it is
+// refused too, but for the unrelated reason that the admin already holds a
+// live binding (CeremonyServiceWithAdminRebind's AdminAlreadyBoundError).
+// ---------------------------------------------------------------------------
+
+// adminConnArgs returns the qrdb CLI connection flags that authenticate as
+// the cluster's bound bootstrap admin against the node at port, over REST.
+func adminConnArgs(t *testing.T, ca *testCA, port int) []string {
+	t.Helper()
+	certPath, keyPath := ca.boundAdminCert(t, t.TempDir())
+	return []string{
+		"--server", fmt.Sprintf("https://127.0.0.1:%d", port),
+		"--transport", "rest",
+		"--ca-file", ca.CertPath,
+		"--cert-file", certPath,
+		"--key-file", keyPath,
+		"--timeout", "20s",
+	}
+}
+
+// TestCLI_Init_FollowerRefusesNamingLeader proves the coordinator decision
+// end to end on a real 3-node cluster: a second `qrdb init` lands
+// differently depending on which node answers it.
+//   - On a FOLLOWER it is refused up front, before anything is issued or
+//     signed, with a typed *service.AdminCredentialNotLeaderError naming the
+//     leader -- the CLI surfaces that message unchanged, which is the
+//     operator-facing guidance to retry there.
+//   - On the LEADER it is refused too, but for the different reason that
+//     the admin already holds a live binding
+//     (*service.AdminAlreadyBoundError) -- proving the leader gate is
+//     transparent to a request that reaches it, not a blanket refusal.
+//
+// Exactly one of the three nodes must answer with the "already bound"
+// reason (the leader) and the other two with the "not leader" reason,
+// naming a consistent remedy.
+func TestCLI_Init_FollowerRefusesNamingLeader(t *testing.T) {
+	cli := buildCLIBinary(t)
+	adminPorts, _, ca, _ := startThreeNodeClusterLogged(t, "pebble")
+
+	// Re-derive the leader: startThreeNodeClusterLogged's own leader-wait
+	// result is not exported, and the cluster is quiescent enough after
+	// boot that it is cheap and safe to ask again.
+	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 30*time.Second)
+
+	var alreadyBoundHits, notLeaderHits int
+	for _, port := range adminPorts {
+		out, err := runQRDB(t, cli, adminConnArgs(t, ca, port),
+			"init", "--so-pin", "RETRY-SO", "--user-pin", "RETRY-USER", "--barrier-strategy", "none")
+		if err == nil {
+			t.Fatalf("retry qrdb init on port %d should have been refused; output: %s", port, out)
+		}
+		switch {
+		case strings.Contains(out, "already holds a certificate binding"):
+			alreadyBoundHits++
+			if port != leaderPort {
+				t.Errorf("port %d answered the leader's refusal (already bound) but waitForLeaderViaAdmin named %d as leader", port, leaderPort)
+			}
+		case strings.Contains(out, "must run on the Raft leader"):
+			notLeaderHits++
+			if !strings.Contains(out, "qrdb init") {
+				t.Errorf("port %d (follower) refusal does not name the remedy: %s", port, out)
+			}
+			if port == leaderPort {
+				t.Errorf("port %d is the leader but answered the follower's refusal: %s", port, out)
+			}
+		default:
+			t.Errorf("port %d: unexpected refusal, want either the leader's or a follower's: %s", port, out)
+		}
+	}
+	if alreadyBoundHits != 1 {
+		t.Errorf("expected exactly 1 node (the leader) to answer 'already bound', got %d", alreadyBoundHits)
+	}
+	if notLeaderHits != 2 {
+		t.Errorf("expected exactly 2 nodes (the followers) to answer 'not leader', got %d", notLeaderHits)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Production boot proof (coordinator decision, go-qrdb#548): each of the
+// three admin-credential paths -- bring-your-own-certificate on a BYO-TLS
+// node, CSR-sign and generate on a qrdb-managed-CA node -- ends in a real
+// admin login under the default auth.mtls_binding_policy "required". BYOC
+// is the only path a BYO-TLS node supports; CSR-sign and generate need a
+// CeremonyCA to sign with, which only a qrdb-managed-CA node has.
+// ---------------------------------------------------------------------------
+
+// TestCLI_Init_ProductionBootProof_BYOC_OnBYOTLS is the BYOC half: the
+// node's own TLS comes from an externally-generated CA/leaf (ca.tlsFlags,
+// startSingleNode) -- the daemon never holds that CA's private key -- so
+// qrdb init brings the system barrier up and pins the operator's own
+// server leaf (no TLS certificate is self-issued), and the SAME CA that
+// issues the node's TLS material issues the admin's certificate too
+// (initAndUnsealBarrier's admin_cert_pem). The bound admin then logs in
+// over the real CLI.
+func TestCLI_Init_ProductionBootProof_BYOC_OnBYOTLS(t *testing.T) {
+	cli := buildCLIBinary(t)
+	adminPort, ca := startSingleNode(t, "pebble")
+
+	out, err := runQRDB(t, cli, adminConnArgs(t, ca, adminPort), "--output", "json", "admin", "status")
+	if err != nil {
+		t.Fatalf("admin login (BYOC, BYO-TLS): %v\noutput: %s", err, out)
+	}
+	var status struct {
+		NodeID string `json:"node_id"`
+	}
+	if jerr := json.Unmarshal([]byte(out), &status); jerr != nil {
+		t.Fatalf("decode status JSON: %v\noutput: %s", jerr, out)
+	}
+	if status.NodeID == "" {
+		t.Errorf("expected a non-empty node_id, got: %s", out)
+	}
+}
+
+// TestCLI_Init_ProductionBootProof_CSRAndGenerate_OnManagedCA covers the
+// other two paths together, both on a qrdb-managed-CA node (no --tls-*
+// flags: the daemon self-generates its own CA, retaining the private
+// key -- bootSelfGenCANode): CSR-sign (the admin's key never leaves this
+// test, only the CSR does) and generate (the server mints the key pair,
+// dev/test/evaluation only). Each ends in a real admin login over the CLI.
+func TestCLI_Init_ProductionBootProof_CSRAndGenerate_OnManagedCA(t *testing.T) {
+	bin := buildBinary(t)
+	cli := buildCLIBinary(t)
+
+	t.Run("csr-sign", func(t *testing.T) {
+		node := bootSelfGenCANode(t, bin, "seal:\n  enabled: true\n  strategy: none\n", "[boot-proof-csr] ")
+		pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
+
+		dir := t.TempDir()
+		keyPath := filepath.Join(dir, "admin-key.pem")
+		csrPath := generateAdminCSR(t, dir, keyPath)
+
+		bootAdminIdentity(t, cli, node.caPath, node.adminPort, "SOPIN12345", "USERPIN12345",
+			node.adminCertPath, node.adminKeyPath, csrPath, "--barrier-strategy", "none")
+		// bootAdminIdentity leaves keyPath untouched for the CSR path (the
+		// server never sees it); node.adminKeyPath is never written for
+		// this path either, so the key generated above is this identity's
+		// real key.
+		node.adminKeyPath = keyPath
+
+		waitForHealthy(t, node.dataDir, 60*time.Second)
+		pollUntilCLISucceeds(t, cli, node.restArgsAdmin(), 60*time.Second)
+
+		out, err := runQRDB(t, cli, node.restArgsAdmin(), "--output", "json", "admin", "status")
+		if err != nil {
+			t.Fatalf("admin login (CSR-sign, managed CA): %v\noutput: %s", err, out)
+		}
+		var status struct {
+			NodeID string `json:"node_id"`
+		}
+		if jerr := json.Unmarshal([]byte(out), &status); jerr != nil {
+			t.Fatalf("decode status JSON: %v\noutput: %s", jerr, out)
+		}
+		if status.NodeID == "" {
+			t.Errorf("expected a non-empty node_id, got: %s", out)
+		}
+	})
+
+	t.Run("generate", func(t *testing.T) {
+		node := bootSelfGenCANode(t, bin, "seal:\n  enabled: true\n  strategy: none\n", "[boot-proof-generate] ")
+		pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
+
+		node.bootAdmin(t, cli, "SOPIN12345", "USERPIN12345", "--barrier-strategy", "none")
+
+		waitForHealthy(t, node.dataDir, 60*time.Second)
+		pollUntilCLISucceeds(t, cli, node.restArgsAdmin(), 60*time.Second)
+
+		out, err := runQRDB(t, cli, node.restArgsAdmin(), "--output", "json", "admin", "status")
+		if err != nil {
+			t.Fatalf("admin login (generate, managed CA): %v\noutput: %s", err, out)
+		}
+		var status struct {
+			NodeID string `json:"node_id"`
+		}
+		if jerr := json.Unmarshal([]byte(out), &status); jerr != nil {
+			t.Fatalf("decode status JSON: %v\noutput: %s", jerr, out)
+		}
+		if status.NodeID == "" {
+			t.Errorf("expected a non-empty node_id, got: %s", out)
+		}
+	})
 }

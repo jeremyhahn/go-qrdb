@@ -19,6 +19,8 @@ package node
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"io"
 	"net/http"
 	"testing"
@@ -108,11 +110,22 @@ func newAuthEnforcedRESTNode(t *testing.T, nodeOpts ...NodeOption) (n *Node, ca 
 	})
 	require.NoError(t, err)
 
-	_, err = svcNode.User.CreateUser(context.Background(), &user.CreateUserRequest{WithoutEmailLoginKey: true,
+	createdAdmin, err := svcNode.User.CreateUser(context.Background(), &user.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "admin",
 		TenantID: tenantid.System,
 		RoleIDs:  []string{adminRole.ID},
 	})
+	require.NoError(t, err)
+
+	// auth.mtls_binding_policy defaults to "required": a login certificate
+	// must be enrolled against the account before it authenticates, the same
+	// way production binds the bootstrap admin's certificate during first
+	// boot (pkg/firstboot.UserCertBinder).
+	adminCertBlock, _ := pem.Decode(adminKP.CertPEM)
+	require.NotNil(t, adminCertBlock, "adminKP.CertPEM has no PEM block")
+	adminCert, err := x509.ParseCertificate(adminCertBlock.Bytes)
+	require.NoError(t, err)
+	_, err = svcNode.User.AddCertBinding(context.Background(), createdAdmin.ID, user.ComputeSPKIThumbprint(adminCert), 0)
 	require.NoError(t, err)
 
 	return n, ca, adminKP

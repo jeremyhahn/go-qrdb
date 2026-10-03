@@ -435,7 +435,7 @@ func TestCLI_Status(t *testing.T) {
 
 	// Generate admin client cert from the test CA (external TLS mode
 	// means the binary doesn't have the CA key to generate one).
-	adminCert, adminKey := ca.generateAdminClientCert(t, dataDir)
+	adminCert, adminKey := ca.boundAdminCert(t, dataDir)
 
 	out, err := runCLI(t, binary, "status",
 		"--address", fmt.Sprintf("127.0.0.1:%d", adminPorts[0]),
@@ -481,7 +481,7 @@ func TestCLI_Peers(t *testing.T) {
 	waitForHealthy(t, dataDir, 30*time.Second)
 	waitForAdmin(t, ca.Pool, adminPorts[0], 30*time.Second)
 
-	adminCert, adminKey := ca.generateAdminClientCert(t, dataDir)
+	adminCert, adminKey := ca.boundAdminCert(t, dataDir)
 
 	out, err := runCLI(t, binary, "peers",
 		"--address", fmt.Sprintf("127.0.0.1:%d", adminPorts[0]),
@@ -544,7 +544,7 @@ func TestCLI_Status_ThreeNode(t *testing.T) {
 	waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
 
 	// Generate admin client cert from test CA for CLI commands.
-	adminCert, adminKey := ca.generateAdminClientCert(t, dataDirs[0])
+	adminCert, adminKey := ca.boundAdminCert(t, dataDirs[0])
 
 	out, err := runCLI(t, binary, "status",
 		"--address", fmt.Sprintf("127.0.0.1:%d", adminPorts[0]),
@@ -604,7 +604,7 @@ func TestCLI_Peers_ThreeNode(t *testing.T) {
 	waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
 
 	// Generate admin client cert from test CA for CLI commands.
-	adminCert, adminKey := ca.generateAdminClientCert(t, dataDirs[0])
+	adminCert, adminKey := ca.boundAdminCert(t, dataDirs[0])
 
 	out, err := runCLI(t, binary, "peers",
 		"--address", fmt.Sprintf("127.0.0.1:%d", adminPorts[0]),

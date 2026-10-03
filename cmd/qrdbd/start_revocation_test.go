@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"errors"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -40,6 +41,7 @@ func TestBootstrapAuthEnforcement_InvalidRevocationTTLFailsBoot(t *testing.T) {
 	mgmt, err := bootstrapUserRoleStores(
 		context.Background(), mock, mock, tx, node,
 		1, 1, &mockTenantServicer{}, false, nil, "", nil,
+		auth.MTLSBindingEnrolled, nil, nil, nil,
 	)
 	require.NoError(t, err)
 

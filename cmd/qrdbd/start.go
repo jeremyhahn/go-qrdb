@@ -369,18 +369,54 @@ func resolveStartFlags(cmd *cobra.Command, f *startFlags) error {
 
 	// Load YAML config if --config is provided, then let CLI
 	// flags override any YAML values that were explicitly set.
-	if f.configFile == "" {
-		return nil
+	if f.configFile != "" {
+		cfg, err := qrdbconfig.Load(f.configFile)
+		if err != nil {
+			return err
+		}
+		if err := cfg.ValidateCapabilities(); err != nil {
+			return err
+		}
+		applyConfigToFlags(cmd, f, cfg)
+	} else if f.authEnabled {
+		// No --config at all, and auth is enabled (its own flag default):
+		// there is no YAML to default the seal subsystem the way
+		// qrdbconfig.Load (DefaultConfig() overlaid by the file) already
+		// does, and qrdbd start has no --seal-* flag of its own. Default it
+		// here the identical way (go-qrdb#548): auth.enabled requires
+		// seal.enabled, and a bare `qrdbd start` must boot its own defaults
+		// rather than refuse them. "none" is identity passthrough, not
+		// encryption; an operator who wants real encryption still needs
+		// --config. Conditioned on f.authEnabled, not unconditional: an
+		// operator who explicitly passes --auth-enabled=false is choosing
+		// the simpler, seal-less boot the auth-requires-seal rule never
+		// applies to, and this must not force a sealed window on them.
+		f.sealConfig = qrdbconfig.DefaultConfig().Seal
 	}
-	cfg, err := qrdbconfig.Load(f.configFile)
-	if err != nil {
-		return err
+
+	// One validation path for both branches above (go-qrdb#548): overlay
+	// the handful of fields flags can actually move -- Auth.Enabled, Seal,
+	// Databases -- onto qrdbconfig.DefaultConfig(), the SAME starting point
+	// qrdbconfig.Load uses before its own overlay, and run the result
+	// through config.Validate. That catches a flag-only request's
+	// auth/seal mismatch here, with the SAME typed ValidationError the
+	// --config path already gets, instead of surfacing confusingly deep
+	// inside boot. The base is DefaultConfig(), not buildServerConfig's
+	// bare struct literal: buildServerConfig only ever fed
+	// ValidateCapabilities, a narrower check, and leaves fields Validate
+	// checks unconditionally (admin_username, among others) at their zero
+	// value, which is not a flag-only request's fault to fail on. Databases
+	// defaults the same way runStart's own fallback does (len(f.databases)
+	// == 0 below), applied here too so an unset Databases does not itself
+	// read as invalid.
+	if len(f.databases) == 0 {
+		f.databases = qrdbconfig.DefaultConfig().Databases
 	}
-	if err := cfg.ValidateCapabilities(); err != nil {
-		return err
-	}
-	applyConfigToFlags(cmd, f, cfg)
-	return nil
+	validateCfg := qrdbconfig.DefaultConfig()
+	validateCfg.Auth.Enabled = qrdbconfig.BoolPtr(f.authEnabled)
+	validateCfg.Seal = f.sealConfig
+	validateCfg.Databases = f.databases
+	return validateCfg.Validate()
 }
 
 // compiledProtocolListeners lists the wire protocols --host actually binds
@@ -1237,21 +1273,16 @@ func runStart(f *startFlags) (err error) {
 	// correct pre-unseal state.
 	bundle.wireClientTrustPool()
 
-	// Generate the admin client certificate immediately after TLS is
-	// resolved, before any seal/barrier boot phase. Only possible when the
-	// CA private key is available (auto-generated single-node TLS) and auth
-	// is enabled; with external TLS the operator supplies their own client
-	// certs (CAKeyPEM empty -> skipped). This MUST happen before the pre-host
-	// sealed-window listener blocks on unseal: on first boot the barrier is
-	// uninitialized and stays sealed until an operator drives
-	// POST /v1/barrier/initialize, and that operator needs the admin client
-	// cert to authenticate. Deferring cert generation until after unseal
-	// would deadlock that bootstrap.
-	if f.authEnabled && len(bundle.CAKeyPEM) > 0 {
-		if err := generateAdminClientCert(bundle, f.dataDir, "admin", tenantid.System); err != nil {
-			return err
-		}
-	}
+	// The admin's login certificate is no longer generated here as a
+	// per-node file (go-qrdb#548): a per-node admin key written to disk is
+	// both node-local state (violates "no node-local state; everything
+	// survives backup/restore") and an uncontrolled generate-path credential
+	// (violates "generate is dev/test/evaluation only, key returned once and
+	// never persisted"). The admin's certificate now comes from exactly one
+	// of three paths through `qrdb init` (ceremony.CeremonyService.Initialize):
+	// CSR-sign, bring-your-own-certificate, or generate-and-return-once --
+	// see docs/firstboot/user.md. First boot binds whichever one the operator
+	// chose once the admin account exists.
 
 	// Create subsystems that must be shared between the state machine
 	// and the service layer. The Lessor handles lease lifecycle inside
@@ -1671,6 +1702,8 @@ func runStart(f *startFlags) (err error) {
 				CredentialCoreSvc:         credCoreSvc,
 				CeremonyDataDir:           filepath.Join(f.dataDir, "seal"),
 				CeremonyCA:                ceremonyCA,
+				ServerCertPEM:             bundle.CertPEM,
+				ClientCACertPEM:           bundle.CACertPEM,
 				CeremonyCoreSvc:           ceremonyCoreSvc,
 				AuditLogger:               complianceAudit,
 				AuditFailurePolicy:        auditPolicy,
@@ -1821,6 +1854,39 @@ func runStart(f *startFlags) (err error) {
 			vectorSvc := svcNode.Vector
 			barrierSvc := svcNode.Barrier
 			ceremonySvc := svcNode.Ceremony
+			// Ceremony-initialize's admin-credential step (go-qrdb#548) must run
+			// on the Raft leader: the durable pending-admin-cert record it writes
+			// is itself a Raft write, which a follower could never actually
+			// commit. CeremonyServiceWithLeaderGate refuses UP FRONT, before the
+			// ceremony issues or signs anything, naming the current leader so the
+			// operator's next `qrdb init` lands there; it wraps
+			// CeremonyServiceWithAdminRebind, which is what turns a second
+			// CeremonyInitialize call (after the first already succeeded) into the
+			// admin-credential retry path rather than ceremony.ErrAlreadyInitialized.
+			if ceremonySvc != nil {
+				if coreSvc, ok := service.CeremonyServiceCore(ceremonySvc); ok {
+					members, perr := parsePeers(f.peers)
+					if perr != nil {
+						// f.peers is only ever "id=address" pairs under static
+						// discovery (resolveStartFlags/buildHost's own earlier
+						// validation already refused an unparseable one THERE);
+						// any other discovery method (multicast, DNS, token) never
+						// populates it in that shape, so a parse failure here is
+						// expected and this leader check degrades to an empty
+						// membership map rather than aborting an otherwise-valid
+						// boot over a field this path does not own.
+						if f.discoveryMethod == "static" {
+							return perr
+						}
+						slog.Debug("ceremony leader-gate: --peers not in id=address form under non-static discovery; membership map empty", slog.String("error", perr.Error()))
+					}
+					leader := hostLeaderChecker{
+						host: svcHost, shardID: shard.ShardKV, replicaID: f.replicaID, members: members,
+					}
+					rebound := service.NewCeremonyServiceWithAdminRebind(ceremonySvc, coreSvc, svcNode.User)
+					ceremonySvc = service.NewCeremonyServiceWithLeaderGate(rebound, leader)
+				}
+			}
 			tenantSvcInst := svcNode.Tenant
 
 			// Create a codec-free KV service for the auth middleware. System stores
@@ -1879,10 +1945,26 @@ func runStart(f *startFlags) (err error) {
 
 			// Under auth.mtls_binding_policy "required" every user store
 			// refuses any change that would lock the bootstrap admin out of
-			// certificate login (lifecycle.UserStoreOptions).
-			// An unrecognised value aborts here, before any store exists.
+			// certificate login (lifecycle.UserStoreOptions), and first boot
+			// itself requires a certificate to bind at create time
+			// (go-qrdb#548). An unrecognised value aborts here, before any
+			// store exists.
 			var userOpts []user.Option
+			// The zero value of auth.MTLSBindingPolicy is now MTLSBindingRequired
+			// (go-qrdb#548), so leaving this unset is no longer harmless: with
+			// auth disabled there is no certificate login to gate at all, and
+			// first boot must not impose the "required" pre-flight (await a
+			// certificate, refuse without one) on a composition that enforces no
+			// binding either way. "enrolled" -- the posture's own no-op value --
+			// is the correct, explicit choice for the auth-disabled case.
+			mtlsBindingPolicy := auth.MTLSBindingEnrolled
 			if f.authEnabled {
+				policy, perr := auth.ParseMTLSBindingPolicy(f.mtlsBindingPolicy)
+				if perr != nil {
+					_ = shutdownNode(nodeCloser)
+					return &AuthBootstrapError{Step: "auth.mtls_binding_policy", Err: perr}
+				}
+				mtlsBindingPolicy = policy
 				opts, perr := lifecycle.UserStoreOptions(f.mtlsBindingPolicy, slog.Default())
 				if perr != nil {
 					_ = shutdownNode(nodeCloser)
@@ -1894,7 +1976,7 @@ func runStart(f *startFlags) (err error) {
 			// against THIS node's auth-chain vocabulary (built-ins until the
 			// middleware is bound below, and with auth disabled).
 			userOpts = append(userOpts, user.WithAuthMethodVocabulary(authMethods.IsAuthMethod))
-			mgmtResult, err := bootstrapUserRoleStores(sigCtx, bootKVSvc, authKVSvc, txSvc, rnode, shard.ShardKV, f.replicaID, tenantSvcInst, strictSoD, bootBarriers, bootStrategy, complianceAudit, userOpts...)
+			mgmtResult, err := bootstrapUserRoleStores(sigCtx, bootKVSvc, authKVSvc, txSvc, rnode, shard.ShardKV, f.replicaID, tenantSvcInst, strictSoD, bootBarriers, bootStrategy, complianceAudit, mtlsBindingPolicy, ceremonyCoreSvc, ceremonyCA, bundle.CACertPEM, userOpts...)
 			if err != nil {
 				_ = shutdownNode(nodeCloser)
 				if sigCtx.Err() != nil {
@@ -3507,7 +3589,7 @@ type authBootstrapResult struct {
 // so no transport can make a change that leaves the bootstrap admin unable to
 // log in by certificate (delete, rename, disable or suspend it, drop mtls from
 // its methods, or withdraw its last live binding).
-func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc service.KVServicer, txSvc service.TransactionServicer, node raftNode, shardID, replicaID uint64, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID, auditLogger audit.AuditLogger, userOpts ...user.Option) (*mgmtBootstrapResult, error) {
+func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc service.KVServicer, txSvc service.TransactionServicer, node raftNode, shardID, replicaID uint64, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID, auditLogger audit.AuditLogger, mtlsBindingPolicy auth.MTLSBindingPolicy, ceremonyCoreSvc *ceremony.CeremonyService, ceremonyCA ceremony.CeremonyCA, clientCACertPEM []byte, userOpts ...user.Option) (*mgmtBootstrapResult, error) {
 	// User IDs are Snowflake-assigned by the user store; map the Raft
 	// ReplicaID onto the Snowflake node field (zero maps to node 1 per the
 	// standalone convention).
@@ -3590,6 +3672,15 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "boot store namespace", Err: err}
 	}
+	// bootStore's PutIfAbsent is the pending-admin-cert record's
+	// create-if-absent guard (go-qrdb#548): NewNamespacedKVStore preserves
+	// AtomicKVStore when its inner store has it, and guardedBootAdapter
+	// (asserted MultiGuardedBatchKVStore just above) always does. Defensive
+	// rather than a panic if that construction ever changes.
+	pendingAdminStore, ok := bootStore.(kvstore.AtomicKVStore)
+	if !ok {
+		return nil, &AuthBootstrapError{Step: "boot store atomic", Err: ErrTransactionServiceRequired}
+	}
 	// The placement index lives in the system tenant's identity namespace,
 	// which is exactly what bootStore is confined to — so the bootstrap path
 	// writes its entries to the same physical keys the resolver-backed
@@ -3617,12 +3708,48 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 		return nil, &AuthBootstrapError{Step: "boot role store", Err: err}
 	}
 
+	// If THIS node ran the ceremony (sealed-window Initialize or a retry
+	// through CeremonyServiceWithAdminRebind), its *ceremony.CeremonyService
+	// holds the bootstrap admin's issued-or-adopted certificate ONLY in
+	// memory (go-qrdb#548): the seal/credential store cannot carry it
+	// (per-node by design), so it is written here into bootStore -- the
+	// REPLICATED system store first boot's own role/user records live in --
+	// as soon as that store exists. A crash before this write loses the
+	// in-memory value; the admin-credential step is retriable (re-run
+	// `qrdb init`) until the first binding commits, so that gap is
+	// recoverable rather than a permanent loss.
+	//
+	// The write is create-if-absent. On a multi-node cluster every node that
+	// ran the ceremony races to record ITS OWN credential here; exactly one
+	// wins. A loser is not a boot failure -- another node's credential
+	// already won the race and will be the one first boot binds below, so
+	// this node continues booting normally. Any OTHER error (a genuine store
+	// fault) still fails the boot.
+	if ceremonyCoreSvc != nil {
+		if certPEM, _ := ceremonyCoreSvc.LastIssuedAdminCertPEM(); len(certPEM) > 0 {
+			if err := firstboot.WritePendingAdminCert(ctx, pendingAdminStore, certPEM); err != nil {
+				var alreadyPending *firstboot.AdminCredentialAlreadyPendingError
+				if !errors.As(err, &alreadyPending) {
+					return nil, &AuthBootstrapError{Step: "pending admin credential", Err: err}
+				}
+				slog.Info("first-boot: another node already recorded the pending admin credential; this node's credential is discarded")
+			}
+		}
+	}
+
 	// First-boot: create the system tenant, register built-in roles, and
 	// create the admin user with the canonical Admin@system grant. The
 	// system-tenant rule in pkg/auth/rbac promotes that single grant to
 	// cross-tenant authority. Idempotent across daemon restarts.
-	if err := runFirstBoot(ctx, node, shardID, bootUserSvc, bootRoleSvc, tenantSvc, strictSoD, barriers, sealStrategy); err != nil {
+	if err := runFirstBoot(ctx, node, shardID, bootUserSvc, bootRoleSvc, tenantSvc, strictSoD, barriers, sealStrategy, mtlsBindingPolicy, pendingAdminStore, ceremonyCA, clientCACertPEM); err != nil {
 		return nil, err
+	}
+
+	// The binding committed (or the admin already held one): the pending
+	// record, if any, has served its purpose. Best-effort -- the binding
+	// already succeeded, so a failure here is logged, not fatal.
+	if err := firstboot.ClearPendingAdminCert(ctx, pendingAdminStore); err != nil {
+		slog.Warn("first-boot: failed to clear the pending admin credential record", slog.Any("error", err))
 	}
 
 	// Create runtime stores backed by linearizable SyncRead for management
@@ -3939,7 +4066,7 @@ func defaultAuthFactors() []authfactors.Factor {
 // reserved-id rejection on CreateTenant. Production startup always
 // supplies a non-nil tenant servicer; tests do the same via a small
 // in-memory tenant servicer.
-func runFirstBoot(ctx context.Context, node raftNode, shardID uint64, userSvc user.UserServicer, roleSvc role.RoleServicer, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID) error {
+func runFirstBoot(ctx context.Context, node raftNode, shardID uint64, userSvc user.UserServicer, roleSvc role.RoleServicer, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID, mtlsBindingPolicy auth.MTLSBindingPolicy, pendingAdminCertStore firstboot.PendingAdminCertStore, ceremonyCA ceremony.CeremonyCA, clientCACertPEM []byte) error {
 	// Phase 1: Wait for leader election. All operations (reads on leader
 	// via SyncRead, writes via SyncPropose) require a leader.
 	if err := waitForLeaderElection(ctx, node, shardID); err != nil {
@@ -3970,6 +4097,35 @@ func runFirstBoot(ctx context.Context, node raftNode, shardID uint64, userSvc us
 		// existing admin's System flag without minting a second user.
 	}
 
+	// Phase 2.5: Resolve the bootstrap admin's certificate, if any is
+	// available, BEFORE running first-boot (go-qrdb#548). Under "required"
+	// this is a bounded wait: the pending record may not have reached this
+	// node's replica yet (it was written on whichever node ran the
+	// ceremony), or the admin may already be bound (nothing to do). Under
+	// "enrolled" it is a single, non-blocking check -- opportunistic, never
+	// required, so an "enrolled" deployment never waits on it.
+	adminCertPEM, err := firstboot.ResolveAdminCertForFirstBoot(ctx, pendingAdminCertStore, userSvc, mtlsBindingPolicy, adminBindingWait)
+	if err != nil {
+		return err
+	}
+	var adminCertPool *x509.CertPool
+	if len(adminCertPEM) > 0 {
+		switch {
+		case ceremonyCA != nil:
+			if caBundle, caErr := ceremonyCA.CABundle(); caErr == nil {
+				adminCertPool = firstboot.AdminCertPoolFromCABundle(caBundle)
+			}
+		case len(clientCACertPEM) > 0:
+			// BYO-TLS (go-qrdb#548): there is no CeremonyCA to ask for a
+			// bundle -- the operator's own configured client-CA trust
+			// anchor, the same one ceremony-initialize's BYOC path
+			// validated the presented certificate against, is the pool
+			// first boot chains it to here too.
+			adminCertPool = firstboot.AdminCertPoolFromCABundle(clientCACertPEM)
+		}
+	}
+	adminBinder := firstboot.UserCertBinder{Users: userSvc}
+
 	// Phase 3: Run the canonical first-boot path. It creates the system
 	// tenant (WithInternalCall bypasses the reserved-id rejection), registers
 	// all built-in roles, and creates the admin user with the Admin@system
@@ -3991,11 +4147,15 @@ func runFirstBoot(ctx context.Context, node raftNode, shardID uint64, userSvc us
 			_, bsErr := bootstrap.BootstrapSystem(ctx, bootstrap.SystemConfig{
 				Strategy:           sealStrategy,
 				SeparationOfDuties: strictSoD,
+				MTLSBindingPolicy:  mtlsBindingPolicy,
+				AdminCertPEM:       adminCertPEM,
+				AdminCertPool:      adminCertPool,
 			}, bootstrap.Dependencies{
 				Tenants:      tenantSvc,
 				Users:        userSvc,
 				Roles:        roleSvc,
 				RoleResolver: roleSvc,
+				Binder:       adminBinder,
 				Barriers:     barriers,
 				Logger:       slog.Default(),
 			})
@@ -4011,6 +4171,10 @@ func runFirstBoot(ctx context.Context, node raftNode, shardID uint64, userSvc us
 			RoleResolver:       roleSvc,
 			Logger:             slog.Default(),
 			SeparationOfDuties: strictSoD,
+			MTLSBindingPolicy:  mtlsBindingPolicy,
+			AdminCertPEM:       adminCertPEM,
+			AdminCertPool:      adminCertPool,
+			Binder:             adminBinder,
 		})
 		return fbErr
 	}
@@ -4113,6 +4277,34 @@ func requireGuardedBatch(ctx context.Context, guarded kvstore.MultiGuardedBatchK
 		return &AuthBootstrapError{Step: "atomic role/user creation requires an --sm state machine with transaction support", Err: kvstore.ErrAtomicWriteUnsupported}
 	}
 	return nil
+}
+
+// hostLeaderChecker is the production service.LeaderChecker: whether THIS
+// replica is the current Raft leader for shardID, and the current leader's
+// Raft address from the static peer map when it is not. members is the
+// SAME map parsePeers builds from --peers for shard membership, reused here
+// rather than querying topology: a static cluster's peer addresses are
+// already known without asking the host.
+type hostLeaderChecker struct {
+	host      service.Host
+	shardID   uint64
+	replicaID uint64
+	members   map[uint64]string
+}
+
+// IsLeader implements service.LeaderChecker.
+func (c hostLeaderChecker) IsLeader() (isLeader bool, leaderAddr string, err error) {
+	leaderID, hasLeader, err := c.host.GetLeaderID(c.shardID)
+	if err != nil {
+		return false, "", err
+	}
+	if !hasLeader {
+		return false, "", nil
+	}
+	if leaderID == c.replicaID {
+		return true, "", nil
+	}
+	return false, c.members[leaderID], nil
 }
 
 // waitForLeaderElection polls GetLeaderID until a leader is known, reporting

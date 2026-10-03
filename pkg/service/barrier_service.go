@@ -331,12 +331,26 @@ func NewBarrierServiceWithCeremony(barrier *seal.StorageBarrier, svc *ceremony.C
 	return s
 }
 
-// BarrierInitialize initializes the barrier with a secret credential by
-// delegating to the StorageBarrier's Initialize method. secret is BORROWED for
-// the duration of the call, as the interface says: it is copied into protected
-// memory, the credential built from it is destroyed when the initialization
-// returns, and the caller's slice is left as it was for the caller to wipe.
+// BarrierInitialize is refused when this BarrierService was constructed
+// with a ceremony (NewBarrierServiceWithCeremony, s.ceremony != nil): that
+// shape is qrdbd's own system barrier, which `qrdb init` -- the only
+// system bootstrap -- brings up itself, in the sealed window, before
+// anything is unsealed, issuing the bootstrap admin's credential in the
+// same call. A standalone `barrier init` against it would run outside
+// that window with no ceremony and no admin-credential issuance, so it
+// is refused with a typed *SystemBarrierInitRefusedError naming the
+// replacement.
+//
+// A BarrierService built WITHOUT a ceremony (plain NewBarrierService) has
+// no such model at all -- the embedded SDK's barrier (sdk/go/transport/
+// embedded), for one, is a library-level encryption barrier with no
+// multi-tenant RBAC, no first-boot admin binding, and no ceremony
+// concept to merge into -- so it delegates to the real
+// StorageBarrier.Initialize unchanged, exactly as it always has.
 func (s *BarrierService) BarrierInitialize(ctx context.Context, secret []byte) error {
+	if s.ceremony != nil {
+		return &SystemBarrierInitRefusedError{}
+	}
 	creds, err := seal.CredentialsFor(ctx, secret)
 	if err != nil {
 		return err

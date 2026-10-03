@@ -242,11 +242,15 @@ type AuthMiddlewareConfig struct {
 
 	// MTLSBindingPolicy is the fleet-wide mTLS enrolment posture
 	// (middleware.WithMTLSBindingPolicy). The ZERO VALUE is
-	// auth.MTLSBindingEnrolled, the behaviour before the setting existed.
+	// auth.MTLSBindingRequired (go-qrdb#548): FedRAMP, HIPAA and PCI DSS 4.0
+	// require possession-based authentication of every account, so an
+	// embedder that never sets this field gets the compliant posture.
 	// Resolve the operator's auth.mtls_binding_policy with
 	// auth.ParseMTLSBindingPolicy, which fails the boot on an unrecognised
-	// value. A composer that selects auth.MTLSBindingRequired must also refuse
-	// to boot when firstboot.VerifyAdminCertBinding fails (go-qrdb#517).
+	// value. Every composer in this module enrols the bootstrap admin's
+	// certificate as part of first boot so the default does not lock a fresh
+	// node out of itself; firstboot.VerifyAdminCertBinding is the boot-time
+	// check that proves it (go-qrdb#517, go-qrdb#548).
 	MTLSBindingPolicy auth.MTLSBindingPolicy
 
 	// PeerAttestation, when non-nil, installs the attested-caller gate

@@ -228,8 +228,13 @@ func TestInitCmd_ShamirWithOfficers_Success(t *testing.T) {
 func TestInitCmd_CustodiansFlagMalformed_LocalError(t *testing.T) {
 	svc := &capturingCeremonyService{}
 	root := newTestRootCmdInitOfficers(svc)
+	// go-qrdb#548: --barrier-strategy defaults to "passphrase", which now
+	// requires --passphrase (qrdb init brings the system barrier up
+	// itself); "none" needs no passphrase, so this reaches --custodians
+	// parsing rather than failing earlier on the now-missing --passphrase.
 	_, err := executeCommand(root, "init",
 		"--so-pin", "sopin", "--user-pin", "userpin",
+		"--barrier-strategy", "none",
 		"--custodians", "not-a-valid-entry",
 	)
 	var invalid *InvalidArgError
@@ -277,12 +282,17 @@ func TestInitCmd_OfficersFlagMalformed_LocalError(t *testing.T) {
 	svc := &capturingCeremonyService{}
 	root := newTestRootCmdInitOfficers(svc)
 
+	// go-qrdb#548: "none" needs no --passphrase, so this reaches
+	// --officers parsing rather than failing earlier on the now-required
+	// --passphrase for the default "passphrase" strategy.
 	_, err := executeCommand(root, "init",
 		"--so-pin", "sopin", "--user-pin", "userpin",
+		"--barrier-strategy", "none",
 		"--officers", "not-a-valid-entry",
 	)
-	if err == nil {
-		t.Fatal("expected an error for a malformed --officers entry")
+	var invalid *InvalidArgError
+	if !errors.As(err, &invalid) || invalid.Arg != "--officers" {
+		t.Fatalf("err = %v, want an InvalidArgError on --officers", err)
 	}
 	if svc.gotOpts != nil {
 		t.Error("CeremonyInitialize should not have been called for a local validation failure")

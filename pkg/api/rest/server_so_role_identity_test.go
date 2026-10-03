@@ -91,9 +91,13 @@ func newSORESTFixture(t *testing.T) *soRESTFixture {
 	if err := verifier.SetSOPIN(ctx, soRESTTenant, []byte(soRESTPIN)); err != nil {
 		t.Fatalf("SetSOPIN: %v", err)
 	}
+	// This fixture is about SO dual-factor gating, exercised with certificates
+	// that are never enrolled -- "enrolled" is the correct, explicit choice
+	// for that reason, not a workaround (go-qrdb#548).
 	mw := authmw.New(rbac.New(roles),
 		authmw.WithAuthenticator(auth.NewMTLSAuthenticator()),
 		authmw.WithUserService(users),
+		authmw.WithMTLSBindingPolicy(auth.MTLSBindingEnrolled),
 	)
 	srv := NewServer(nil, nil, "127.0.0.1:0",
 		WithAuthMiddleware(mw),

@@ -16,13 +16,9 @@ package main
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
-	"encoding/pem"
 	"errors"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"net"
 	"os"
 	"path/filepath"
@@ -68,126 +64,6 @@ func TestFileExists_Directory(t *testing.T) {
 // ---------------------------------------------------------------------------
 // generateAdminClientCert tests
 // ---------------------------------------------------------------------------
-
-func TestGenerateAdminClientCert_Success(t *testing.T) {
-	bundle, err := generateCATLS()
-	require.NoError(t, err)
-
-	dataDir := t.TempDir()
-	err = generateAdminClientCert(bundle, dataDir, "admin", "default")
-	require.NoError(t, err)
-
-	// Verify files were created.
-	assert.True(t, fileExists(filepath.Join(dataDir, "admin-cert.pem")))
-	assert.True(t, fileExists(filepath.Join(dataDir, "admin-key.pem")))
-}
-
-func TestGenerateAdminClientCert_AlreadyExists(t *testing.T) {
-	bundle, err := generateCATLS()
-	require.NoError(t, err)
-
-	dataDir := t.TempDir()
-
-	// Create both files so the function returns early.
-	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "admin-cert.pem"), []byte("cert"), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "admin-key.pem"), []byte("key"), 0o600))
-
-	err = generateAdminClientCert(bundle, dataDir, "admin", "default")
-	require.NoError(t, err)
-}
-
-func TestGenerateAdminClientCert_InvalidCACertPEM(t *testing.T) {
-	bundle := &TLSBundle{
-		CACertPEM: []byte("not valid PEM"),
-		CAKeyPEM:  []byte("not valid PEM"),
-	}
-
-	dataDir := t.TempDir()
-	err := generateAdminClientCert(bundle, dataDir, "admin", "default")
-	require.Error(t, err)
-	var certErr *AdminCertError
-	require.True(t, errors.As(err, &certErr))
-}
-
-func TestGenerateAdminClientCert_NoCAKey(t *testing.T) {
-	bundle, err := generateCATLS()
-	require.NoError(t, err)
-	bundle.CAKeyPEM = nil // Remove the CA key.
-
-	dataDir := t.TempDir()
-	err = generateAdminClientCert(bundle, dataDir, "admin", "default")
-	require.Error(t, err)
-	var certErr *AdminCertError
-	require.True(t, errors.As(err, &certErr))
-	assert.True(t, errors.Is(certErr.Err, errNoCAKeyAvailable))
-}
-
-func TestGenerateAdminClientCert_InvalidCAKeyPEM(t *testing.T) {
-	bundle, err := generateCATLS()
-	require.NoError(t, err)
-	bundle.CAKeyPEM = []byte("not valid PEM key data")
-
-	dataDir := t.TempDir()
-	err = generateAdminClientCert(bundle, dataDir, "admin", "default")
-	require.Error(t, err)
-	var certErr *AdminCertError
-	require.True(t, errors.As(err, &certErr))
-}
-
-func TestGenerateAdminClientCert_CAKeyIsNotEC(t *testing.T) {
-	bundle, err := generateCATLS()
-	require.NoError(t, err)
-
-	// Replace the CA key PEM with an RSA-style key block (wrong type for
-	// x509.ParseECPrivateKey). Use a PEM block with correct structure but
-	// invalid DER for EC parsing.
-	bundle.CAKeyPEM = pem.EncodeToMemory(&pem.Block{
-		Type:  "EC PRIVATE KEY",
-		Bytes: []byte("not-a-valid-der-encoded-ec-key"),
-	})
-
-	dataDir := t.TempDir()
-	err = generateAdminClientCert(bundle, dataDir, "admin", "default")
-	require.Error(t, err)
-	var certErr *AdminCertError
-	require.True(t, errors.As(err, &certErr))
-}
-
-func TestGenerateAdminClientCert_OnlyCertExistsNotKey(t *testing.T) {
-	bundle, err := generateCATLS()
-	require.NoError(t, err)
-
-	dataDir := t.TempDir()
-	// Only create cert, not key -- should proceed to generate.
-	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "admin-cert.pem"), []byte("cert"), 0o600))
-
-	err = generateAdminClientCert(bundle, dataDir, "admin", "default")
-	require.NoError(t, err)
-
-	// Both files should now exist.
-	assert.True(t, fileExists(filepath.Join(dataDir, "admin-cert.pem")))
-	assert.True(t, fileExists(filepath.Join(dataDir, "admin-key.pem")))
-}
-
-func TestGenerateAdminClientCert_CACertDERInvalid(t *testing.T) {
-	// Valid PEM block but with garbage DER bytes that cannot be parsed as a certificate.
-	bundle := &TLSBundle{
-		CACertPEM: pem.EncodeToMemory(&pem.Block{
-			Type:  "CERTIFICATE",
-			Bytes: []byte("not-valid-der-certificate"),
-		}),
-		CAKeyPEM: pem.EncodeToMemory(&pem.Block{
-			Type:  "EC PRIVATE KEY",
-			Bytes: []byte("some-key-bytes"),
-		}),
-	}
-
-	dataDir := t.TempDir()
-	err := generateAdminClientCert(bundle, dataDir, "admin", "default")
-	require.Error(t, err)
-	var certErr *AdminCertError
-	require.True(t, errors.As(err, &certErr))
-}
 
 // ---------------------------------------------------------------------------
 // loadTLSFromFiles tests
@@ -650,7 +526,7 @@ func TestRunFirstBoot_AdminAlreadyExists(t *testing.T) {
 	roleSvc := &mockRoleServicer{}
 	node := &mockRaftNode{} // default: leader ready
 
-	err := runFirstBoot(context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
+	err := runFirstBoot(context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
 	require.NoError(t, err)
 }
 
@@ -676,7 +552,7 @@ func TestRunFirstBoot_AdminExistsButNotSystem_FallsThroughToReconcile(t *testing
 	roleSvc := &mockRoleServicer{}
 	node := &mockRaftNode{} // default: leader ready
 
-	err := runFirstBoot(context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
+	err := runFirstBoot(context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
 	require.NoError(t, err)
 	if !createCalled {
 		t.Fatal("expected runFirstBoot to fall through to the bootstrap path (CreateUser) for a non-System existing admin")
@@ -706,7 +582,7 @@ func TestRunFirstBoot_FreshBootstrap(t *testing.T) {
 	}
 
 	node := &mockRaftNode{} // default: leader ready
-	err := runFirstBoot(context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
+	err := runFirstBoot(context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
 	require.NoError(t, err)
 	// All built-in roles should have been created.
 	assert.True(t, len(createdRoles) > 0, "expected at least one role to be created")
@@ -744,7 +620,7 @@ func TestRunFirstBoot_RoleAlreadyExists(t *testing.T) {
 	}
 
 	node := &mockRaftNode{} // default: leader ready
-	err := runFirstBoot(context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
+	err := runFirstBoot(context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
 	require.NoError(t, err)
 }
 
@@ -775,7 +651,7 @@ func TestRunFirstBoot_RoleExistsUnexplainedIDRefused(t *testing.T) {
 	node := &mockRaftNode{} // default: leader ready
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	err := runFirstBoot(ctx, node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
+	err := runFirstBoot(ctx, node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "register role")
 }
@@ -825,7 +701,7 @@ func TestRunFirstBoot_RoleCreateError(t *testing.T) {
 	defer cancel()
 
 	node := &mockRaftNode{} // default: leader ready
-	err := runFirstBoot(ctx, node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
+	err := runFirstBoot(ctx, node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
 	require.Error(t, err)
 	require.ErrorIs(t, err, sentinel)
 }
@@ -852,7 +728,7 @@ func TestRunFirstBoot_AdminCreateError(t *testing.T) {
 	defer cancel()
 
 	node := &mockRaftNode{} // default: leader ready
-	err := runFirstBoot(ctx, node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
+	err := runFirstBoot(ctx, node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
 	require.Error(t, err)
 	var abe *AuthBootstrapError
 	require.False(t, errors.As(err, &abe),
@@ -895,7 +771,7 @@ func TestRunFirstBoot_AdminUsernameExists(t *testing.T) {
 	roleSvc := &mockRoleServicer{}
 
 	node := &mockRaftNode{} // default: leader ready
-	err := runFirstBoot(context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
+	err := runFirstBoot(context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
 	require.NoError(t, err)
 }
 
@@ -926,7 +802,7 @@ func TestRunFirstBoot_LeaderElectionWait(t *testing.T) {
 	}
 	roleSvc := &mockRoleServicer{}
 
-	err := runFirstBoot(context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
+	err := runFirstBoot(context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
 	require.NoError(t, err)
 	assert.Greater(t, attempts, 3)
 }
@@ -956,7 +832,7 @@ func TestRunFirstBoot_ContextCanceledDuringLeaderWait(t *testing.T) {
 	}
 	roleSvc := &mockRoleServicer{}
 
-	err := runFirstBoot(ctx, node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
+	err := runFirstBoot(ctx, node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
 	require.Error(t, err)
 	var abe *AuthBootstrapError
 	require.True(t, errors.As(err, &abe))
@@ -987,7 +863,7 @@ func TestRunFirstBoot_UnexpectedStoreError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
-	err := runFirstBoot(ctx, node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
+	err := runFirstBoot(ctx, node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
 	require.Error(t, err)
 	require.ErrorIs(t, err, sentinel,
 		"a storage fault must surface as itself, not as a replication timeout")
@@ -1028,7 +904,7 @@ func TestRunFirstBoot_RoleExistsUsesCanonicalIDs(t *testing.T) {
 	}
 	node := &mockRaftNode{} // default: leader ready
 
-	err := runFirstBoot(context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
+	err := runFirstBoot(context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
 	require.NoError(t, err)
 
 	// Under the standard posture (strictSoD=false) that is the Admin@system
@@ -1058,7 +934,7 @@ func TestRunFirstBoot_UnseededRolesUseDerivedIDs(t *testing.T) {
 		},
 	}
 
-	err := runFirstBoot(context.Background(), &mockRaftNode{}, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
+	err := runFirstBoot(context.Background(), &mockRaftNode{}, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
 	require.NoError(t, err)
 
 	expectedAdminID := role.SystemRoleID(tenantid.System, role.RoleNameAdmin)
@@ -1094,7 +970,7 @@ func TestRunFirstBoot_FollowerWaitsForReplication(t *testing.T) {
 	}
 	node := &mockRaftNode{}
 
-	err := runFirstBoot(context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
+	err := runFirstBoot(context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
 	require.NoError(t, err)
 	assert.Greater(t, calls, 2, "should have polled for admin replication")
 }
@@ -1121,7 +997,7 @@ func TestRunFirstBoot_NoLeaderExhaustsRetries(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	err := runFirstBoot(ctx, node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
+	err := runFirstBoot(ctx, node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
 	require.Error(t, err)
 	var abe *AuthBootstrapError
 	require.True(t, errors.As(err, &abe))
@@ -1174,13 +1050,13 @@ func TestBootstrapAuth_Success(t *testing.T) {
 	dataDir := t.TempDir()
 	node := &mockRaftNode{} // default: leader ready
 	tx := newMockTransactionServicer(store)
-	mgmt, err := bootstrapUserRoleStores(context.Background(), mock, mock, tx, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil)
+	mgmt, err := bootstrapUserRoleStores(context.Background(), mock, mock, tx, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil, auth.MTLSBindingEnrolled, nil, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, mgmt)
 	require.NotNil(t, mgmt.userSvc)
 	require.NotNil(t, mgmt.roleSvc)
 
-	authResult, err := bootstrapAuthEnforcement(context.Background(), mgmt, dataDir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{}, nil, nil, "", "", "")
+	authResult, err := bootstrapAuthEnforcement(context.Background(), mgmt, dataDir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{}, nil, nil, "", "", "enrolled")
 	require.NoError(t, err)
 	require.NotNil(t, authResult)
 	require.NotNil(t, authResult.auditLogger)
@@ -1244,10 +1120,10 @@ func TestBootstrapAuth_NoSideFile_DecisionAuditRidesChain(t *testing.T) {
 	node := &mockRaftNode{} // default: leader ready
 	tx := newMockTransactionServicer(store)
 
-	mgmt, err := bootstrapUserRoleStores(context.Background(), mock, mock, tx, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil)
+	mgmt, err := bootstrapUserRoleStores(context.Background(), mock, mock, tx, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil, auth.MTLSBindingEnrolled, nil, nil, nil)
 	require.NoError(t, err)
 
-	result, err := bootstrapAuthEnforcement(context.Background(), mgmt, nonexistentDir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{}, nil, nil, "", "", "")
+	result, err := bootstrapAuthEnforcement(context.Background(), mgmt, nonexistentDir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{}, nil, nil, "", "", "enrolled")
 	require.NoError(t, err)
 	require.NotNil(t, result)
 }
@@ -1256,79 +1132,13 @@ func TestBootstrapAuth_NoSideFile_DecisionAuditRidesChain(t *testing.T) {
 // generateAdminClientCert: verify certificate CN and OU
 // ---------------------------------------------------------------------------
 
-func TestGenerateAdminClientCert_VerifyCertificateIdentity(t *testing.T) {
-	bundle, err := generateCATLS()
-	require.NoError(t, err)
-
-	dataDir := t.TempDir()
-	err = generateAdminClientCert(bundle, dataDir, "testadmin", "test-tenant")
-	require.NoError(t, err)
-
-	// Read and parse the generated certificate.
-	certPEM, err := os.ReadFile(filepath.Join(dataDir, "admin-cert.pem"))
-	require.NoError(t, err)
-
-	block, _ := pem.Decode(certPEM)
-	require.NotNil(t, block)
-
-	cert, err := x509.ParseCertificate(block.Bytes)
-	require.NoError(t, err)
-
-	assert.Equal(t, "testadmin", cert.Subject.CommonName)
-	require.Len(t, cert.Subject.OrganizationalUnit, 1)
-	assert.Equal(t, "test-tenant", cert.Subject.OrganizationalUnit[0])
-
-	// Verify the certificate is signed by the CA.
-	caBlock, _ := pem.Decode(bundle.CACertPEM)
-	require.NotNil(t, caBlock)
-	caCert, err := x509.ParseCertificate(caBlock.Bytes)
-	require.NoError(t, err)
-	require.NoError(t, cert.CheckSignatureFrom(caCert))
-
-	// Verify ClientAuth EKU.
-	assert.Contains(t, cert.ExtKeyUsage, x509.ExtKeyUsageClientAuth)
-}
-
 // ---------------------------------------------------------------------------
 // generateAdminClientCert: write to unwritable directory
 // ---------------------------------------------------------------------------
 
-func TestGenerateAdminClientCert_WriteErrorOnCert(t *testing.T) {
-	bundle, err := generateCATLS()
-	require.NoError(t, err)
-
-	// Use a path where we construct a valid cert but the directory is
-	// actually a file, which causes MkdirAll/WriteFile to fail.
-	dir := t.TempDir()
-	blockingFile := filepath.Join(dir, "subdir")
-	require.NoError(t, os.WriteFile(blockingFile, []byte("x"), 0o600))
-
-	// The dataDir "subdir" is a file, so MkdirAll should fail.
-	err = generateAdminClientCert(bundle, blockingFile, "admin", "default")
-	require.Error(t, err)
-	var writeErr *AdminCertWriteError
-	require.True(t, errors.As(err, &writeErr))
-}
-
 // ---------------------------------------------------------------------------
 // generateAdminClientCert: cert write succeeds but key write fails
 // ---------------------------------------------------------------------------
-
-func TestGenerateAdminClientCert_WriteErrorOnKey(t *testing.T) {
-	bundle, err := generateCATLS()
-	require.NoError(t, err)
-
-	// Create a directory where admin-cert.pem can be written but
-	// admin-key.pem is a directory (causing WriteFile to fail).
-	dataDir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(dataDir, "admin-key.pem"), 0o700))
-
-	err = generateAdminClientCert(bundle, dataDir, "admin", "default")
-	require.Error(t, err)
-	var writeErr *AdminCertWriteError
-	require.True(t, errors.As(err, &writeErr))
-	assert.Contains(t, writeErr.Path, "admin-key.pem")
-}
 
 // ---------------------------------------------------------------------------
 // resolveAutoConfig edge cases
@@ -1439,30 +1249,6 @@ func TestNewKVServiceAdapter_ReturnsNonNil(t *testing.T) {
 // what signed the CA cert (will fail at CreateCertificate or earlier)
 // ---------------------------------------------------------------------------
 
-func TestGenerateAdminClientCert_MismatchedCAKeyForCert(t *testing.T) {
-	bundle, err := generateCATLS()
-	require.NoError(t, err)
-
-	// Generate a different EC key and replace the CA key PEM.
-	differentKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	require.NoError(t, err)
-	differentKeyDER, err := x509.MarshalECPrivateKey(differentKey)
-	require.NoError(t, err)
-	bundle.CAKeyPEM = pem.EncodeToMemory(&pem.Block{
-		Type:  "EC PRIVATE KEY",
-		Bytes: differentKeyDER,
-	})
-
-	dataDir := t.TempDir()
-	// Go's x509.CreateCertificate validates that the provided private key
-	// matches the parent certificate's public key (since Go 1.20+).
-	err = generateAdminClientCert(bundle, dataDir, "admin", "default")
-	require.Error(t, err)
-
-	var certErr *AdminCertError
-	require.True(t, errors.As(err, &certErr))
-}
-
 // ---------------------------------------------------------------------------
 // buildMulticastDiscovery: success path with valid secret
 // ---------------------------------------------------------------------------
@@ -1533,22 +1319,6 @@ func TestNewPeersCmd_InvalidCAFile(t *testing.T) {
 // ---------------------------------------------------------------------------
 // generateAdminClientCert: read-only directory covers cert write error
 // ---------------------------------------------------------------------------
-
-func TestGenerateAdminClientCert_ReadOnlyDir(t *testing.T) {
-	bundle, err := generateCATLS()
-	require.NoError(t, err)
-
-	// Place a directory at the admin-cert.pem path so WriteFile fails
-	// (works even as root, unlike chmod).
-	dataDir := t.TempDir()
-	certPath := filepath.Join(dataDir, "admin-cert.pem")
-	require.NoError(t, os.MkdirAll(certPath, 0o700))
-
-	err = generateAdminClientCert(bundle, dataDir, "admin", "default")
-	require.Error(t, err)
-	var writeErr *AdminCertWriteError
-	require.True(t, errors.As(err, &writeErr))
-}
 
 // ---------------------------------------------------------------------------
 // runStart: TLS file load error path

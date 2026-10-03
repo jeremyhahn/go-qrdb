@@ -988,6 +988,31 @@ func (e *BarrierManagerNotConfiguredError) Error() string {
 	return "service: database barrier manager not configured"
 }
 
+// SystemBarrierInitRefusedError is returned by BarrierService.BarrierInitialize
+// when that BarrierService was built with a ceremony
+// (NewBarrierServiceWithCeremony) -- qrdbd's own system barrier shape,
+// always built this way (go-qrdb#548): `qrdb init` is the only system
+// bootstrap now, bringing the system barrier up itself as part of the
+// ceremony, in the sealed window, before anything is unsealed -- a
+// standalone `barrier init` against it would run outside that window with
+// no ceremony and no admin-credential issuance. A BarrierService built
+// without a ceremony (plain NewBarrierService) has no such model to
+// refuse into -- the embedded SDK's library-level barrier, for one -- and
+// delegates to the real barrier unchanged. BarrierInitializeShamir (the
+// system barrier's OWN Shamir-split root key, `barrier init-shamir`) is
+// UNCHANGED either way: it is a distinct bring-up path this error does
+// not cover. Tenant and database barriers are also unaffected -- a
+// different service (tenant.TenantService) a tenant admin still
+// initializes with the separate `tenant barrier-init` command, never
+// `barrier init` itself, which has only ever been the system barrier.
+type SystemBarrierInitRefusedError struct{}
+
+// Error implements error.
+func (e *SystemBarrierInitRefusedError) Error() string {
+	return `service: the system barrier is brought up by "qrdb init", not "barrier init"; ` +
+		`re-run "qrdb init" to bootstrap a fresh node`
+}
+
 // InvalidRaftTopologyError is returned when a raft-backed database's
 // requested Raft cluster-mode topology is internally incoherent (e.g.
 // Backend == BackendRaft paired with ClusterMode == RaftNone). See

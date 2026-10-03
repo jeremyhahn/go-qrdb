@@ -22,6 +22,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -57,15 +58,20 @@ func newTestSoftwareBarrier(t *testing.T) (*seal.StorageBarrier, seal.SealingStr
 
 // initAndUnsealSoftwareBarrier initializes and returns an unsealed
 // software-backed barrier service with its secret.
+// initAndUnsealSoftwareBarrier returns a BarrierServicer over an already
+// initialized, unsealed software barrier. BarrierInitialize itself is
+// refused now (go-qrdb#548: the system barrier is brought up by `qrdb
+// init`, not this service), so this initializes the underlying
+// seal.StorageBarrier directly -- the same thing ceremony.Initialize does
+// server-side -- rather than through the service method under test.
 func initAndUnsealSoftwareBarrier(t *testing.T) BarrierServicer {
 	t.Helper()
 	barrier, _ := newTestSoftwareBarrier(t)
-	svc := NewBarrierService(barrier)
 	ctx := context.Background()
-	if err := svc.BarrierInitialize(ctx, []byte("my-secret")); err != nil {
-		t.Fatalf("BarrierInitialize: %v", err)
+	if err := barrier.Initialize(ctx, seal.MustCredentials([]byte("my-secret"))); err != nil {
+		t.Fatalf("barrier.Initialize: %v", err)
 	}
-	return svc
+	return NewBarrierService(barrier)
 }
 
 // ---------------------------------------------------------------------------
@@ -96,44 +102,40 @@ func TestRecoveryKeysInfo_NoKeysField(t *testing.T) {
 // Lifecycle Tests
 // ---------------------------------------------------------------------------
 
-func TestBarrierService_BarrierInitialize(t *testing.T) {
+// TestBarrierService_BarrierInitialize_Refused covers the go-qrdb#548
+// refusal: the system barrier is brought up by `qrdb init`, not this
+// service method, so it always refuses with *SystemBarrierInitRefusedError
+// and never touches the barrier.
+// TestBarrierService_BarrierInitialize_RefusedWithCeremony pins the
+// go-qrdb#548 refusal to the shape that actually has a ceremony to merge
+// into: a BarrierService built via NewBarrierServiceWithCeremony, exactly
+// as qrdbd's own system barrier always is.
+func TestBarrierService_BarrierInitialize_RefusedWithCeremony(t *testing.T) {
 	barrier, _ := newTestSoftwareBarrier(t)
-	svc := NewBarrierService(barrier)
+	core, err := ceremony.NewCeremonyService(&ceremony.CeremonyConfig{DataDir: t.TempDir()}, barrier, testLogger())
+	if err != nil {
+		t.Fatalf("ceremony.NewCeremonyService: %v", err)
+	}
+	svc := NewBarrierServiceWithCeremony(barrier, core)
 	ctx := context.Background()
 
-	err := svc.BarrierInitialize(ctx, []byte("my-secret"))
-	if err != nil {
-		t.Fatalf("BarrierInitialize returned unexpected error: %v", err)
+	initErr := svc.BarrierInitialize(ctx, []byte("my-secret"))
+	var refused *SystemBarrierInitRefusedError
+	if !errors.As(initErr, &refused) {
+		t.Fatalf("BarrierInitialize = %v, want *SystemBarrierInitRefusedError", initErr)
 	}
-
-	status, err := svc.BarrierStatus(ctx)
-	if err != nil {
-		t.Fatalf("BarrierStatus: %v", err)
-	}
-	if status.Sealed {
-		t.Error("expected barrier to be unsealed after initialization")
-	}
-	if status.Strategy != string(seal.StrategyPassphrase) {
-		t.Errorf("strategy = %q, want %q", status.Strategy, seal.StrategyPassphrase)
+	if !barrier.IsSealed() {
+		t.Error("a refused BarrierInitialize must not have touched the barrier")
 	}
 }
 
-func TestBarrierService_BarrierInitialize_AlreadyInitialized(t *testing.T) {
-	barrier, _ := newTestSoftwareBarrier(t)
-	svc := NewBarrierService(barrier)
-	ctx := context.Background()
-
-	if err := svc.BarrierInitialize(ctx, []byte("my-secret")); err != nil {
-		t.Fatalf("first BarrierInitialize: %v", err)
-	}
-
-	err := svc.BarrierInitialize(ctx, []byte("my-secret"))
-	if !errors.Is(err, seal.ErrAlreadyInitialized) {
-		t.Errorf("second BarrierInitialize = %v, want %v", err, seal.ErrAlreadyInitialized)
-	}
-}
-
-func TestBarrierService_BarrierUnseal(t *testing.T) {
+// TestBarrierService_BarrierInitialize_DelegatesWithoutCeremony covers the
+// other half: a BarrierService built via the plain NewBarrierService (no
+// ceremony -- the shape the embedded SDK's library-level barrier uses, with
+// no multi-tenant RBAC or first-boot admin binding to merge qrdb init's
+// bring-up into) still initializes the barrier directly, exactly as before
+// go-qrdb#548.
+func TestBarrierService_BarrierInitialize_DelegatesWithoutCeremony(t *testing.T) {
 	barrier, _ := newTestSoftwareBarrier(t)
 	svc := NewBarrierService(barrier)
 	ctx := context.Background()
@@ -141,6 +143,18 @@ func TestBarrierService_BarrierUnseal(t *testing.T) {
 	if err := svc.BarrierInitialize(ctx, []byte("my-secret")); err != nil {
 		t.Fatalf("BarrierInitialize: %v", err)
 	}
+	if barrier.IsSealed() {
+		t.Error("BarrierInitialize without a ceremony must unseal the barrier")
+	}
+}
+
+func TestBarrierService_BarrierUnseal(t *testing.T) {
+	barrier, _ := newTestSoftwareBarrier(t)
+	if err := barrier.Initialize(context.Background(), seal.MustCredentials([]byte("my-secret"))); err != nil {
+		t.Fatalf("barrier.Initialize: %v", err)
+	}
+	svc := NewBarrierService(barrier)
+	ctx := context.Background()
 
 	// Seal first so we can unseal.
 	if err := svc.BarrierSeal(ctx); err != nil {
@@ -175,12 +189,11 @@ func TestBarrierService_BarrierUnseal_NotInitialized(t *testing.T) {
 
 func TestBarrierService_BarrierUnseal_AlreadyUnsealed(t *testing.T) {
 	barrier, _ := newTestSoftwareBarrier(t)
-	svc := NewBarrierService(barrier)
 	ctx := context.Background()
-
-	if err := svc.BarrierInitialize(ctx, []byte("my-secret")); err != nil {
-		t.Fatalf("BarrierInitialize: %v", err)
+	if err := barrier.Initialize(ctx, seal.MustCredentials([]byte("my-secret"))); err != nil {
+		t.Fatalf("barrier.Initialize: %v", err)
 	}
+	svc := NewBarrierService(barrier)
 
 	// Barrier is already unsealed after initialization.
 	err := svc.BarrierUnseal(ctx, []byte("my-secret"))

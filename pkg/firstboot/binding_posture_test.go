@@ -278,6 +278,10 @@ func (lookupUsers) CreateUser(context.Context, *user.CreateUserRequest) (*user.U
 func TestInitialize_Enrolled_UnchangedWithoutBinder(t *testing.T) {
 	result, err := Initialize(context.Background(), Dependencies{
 		Tenants: &fakeTenants{}, Users: newRealUsers(t), Roles: &fakeRoles{}, Logger: discardLogger(),
+		// This test is specifically about the "enrolled" opt-out (go-qrdb#548):
+		// under the "required" default this exact configuration -- no
+		// CertBinder -- is refused instead.
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
 	})
 	if err != nil || !result.AdminCreated {
 		t.Fatalf("Initialize = (%+v, %v), want a created admin", result, err)

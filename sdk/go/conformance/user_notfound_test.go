@@ -551,6 +551,8 @@ func bootCellAs(t *testing.T, tk transportKind, callerTenant string, extraOpts [
 		return n.Client()
 	}
 
+	enrollMatrixCert(t, n, callerTenant, clientKP)
+
 	clientCert, err := clientKP.TLSCertificate()
 	if err != nil {
 		t.Fatalf("client TLS cert: %v", err)

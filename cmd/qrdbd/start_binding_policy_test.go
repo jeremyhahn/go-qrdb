@@ -46,8 +46,16 @@ import (
 // against the real user store, so the admin they check is the one the daemon
 // actually created.
 
-// bootstrapForBindingPolicy runs the daemon's first boot and returns the
-// management stores it produced.
+// bootstrapForBindingPolicy runs the daemon's first boot UNDER THE "enrolled"
+// OPT-OUT and returns the management stores it produced: these tests are
+// about bootstrapAuthEnforcement's OWN, SEPARATE later binding check (the
+// daemon's second, linearizable-store verification of whatever first boot
+// already committed), not about first boot's own pre-flight -- so first boot
+// here is deliberately run under "enrolled" to produce its baseline
+// pre-go-qrdb#548 outcome, an admin that exists with no certificate binding,
+// regardless of what policy a given sub-test later re-checks against. First
+// boot's OWN new pre-flight under "required" (go-qrdb#548) is covered
+// separately by TestBootstrapUserRoleStores_RequiredWithNoCertPathRefusesFirstBoot.
 func bootstrapForBindingPolicy(t *testing.T) *mgmtBootstrapResult {
 	t.Helper()
 	store := make(map[string][]byte)
@@ -55,9 +63,38 @@ func bootstrapForBindingPolicy(t *testing.T) *mgmtBootstrapResult {
 	mgmt, err := bootstrapUserRoleStores(
 		context.Background(), mock, mock, newMockTransactionServicer(store), &mockRaftNode{},
 		1, 1, &mockTenantServicer{}, false, nil, "", nil,
+		auth.MTLSBindingEnrolled, nil, nil, nil,
 	)
 	require.NoError(t, err)
 	return mgmt
+}
+
+// TestBootstrapUserRoleStores_RequiredWithNoCertPathRefusesFirstBoot is the
+// go-qrdb#548 fix itself, at the layer bootstrapForBindingPolicy's helper
+// deliberately avoids: under the DEFAULT "required" posture, with no
+// ceremony having run on this node (no pending credential) and no admin
+// existing yet, first boot now refuses -- via runFirstBoot's own bounded
+// wait for a pending admin credential, which times out first and names the
+// retry command -- rather than creating an unbound admin and letting
+// bootstrapAuthEnforcement discover it later.
+func TestBootstrapUserRoleStores_RequiredWithNoCertPathRefusesFirstBoot(t *testing.T) {
+	// No ceremony ran on this node (nil ceremonyCoreSvc) and nothing else
+	// writes the pending-admin-cert record in this test, so the bounded wait
+	// for one to arrive from elsewhere in the cluster would genuinely run out
+	// -- shorten it rather than block this unit test for the production bound.
+	saved := adminBindingWait
+	adminBindingWait = 50 * time.Millisecond
+	t.Cleanup(func() { adminBindingWait = saved })
+
+	store := make(map[string][]byte)
+	mock := newMockKVStore(store)
+	_, err := bootstrapUserRoleStores(
+		context.Background(), mock, mock, newMockTransactionServicer(store), &mockRaftNode{},
+		1, 1, &mockTenantServicer{}, false, nil, "", nil,
+		auth.MTLSBindingRequired, nil, nil, nil,
+	)
+	var noCred *firstboot.NoPendingAdminCredentialError
+	require.True(t, errors.As(err, &noCred), "err = %v", err)
 }
 
 func runAuthBootstrapWithPolicy(t *testing.T, mgmt *mgmtBootstrapResult, policy string) (*authBootstrapResult, error) {
@@ -115,15 +152,27 @@ func TestBootstrapAuthEnforcement_RequiredWithUnboundAdminRefusesBoot(t *testing
 }
 
 // TestBootstrapAuthEnforcement_EnrolledWithUnboundAdminBoots is the control:
-// the same unbound admin boots under the default posture, so the refusal
-// above is the policy's and nothing else's.
+// the same unbound admin boots under the explicit "enrolled" opt-out, so the
+// refusal above is the DEFAULT posture's and nothing else's. The empty
+// string is NOT equivalent to "enrolled" (go-qrdb#548: the zero value / an
+// omitted policy is "required"), so it is covered by
+// TestBootstrapAuthEnforcement_RequiredWithUnboundAdminRefusesBoot instead,
+// not here.
 func TestBootstrapAuthEnforcement_EnrolledWithUnboundAdminBoots(t *testing.T) {
-	for _, policy := range []string{"", "enrolled"} {
-		result, err := runAuthBootstrapWithPolicy(t, bootstrapForBindingPolicy(t), policy)
-		require.NoError(t, err, "policy %q", policy)
-		assert.Equal(t, auth.MTLSBindingEnrolled, result.authMW.MTLSBindingPolicy())
-		_ = result.auditLogger.Close()
-	}
+	result, err := runAuthBootstrapWithPolicy(t, bootstrapForBindingPolicy(t), "enrolled")
+	require.NoError(t, err)
+	assert.Equal(t, auth.MTLSBindingEnrolled, result.authMW.MTLSBindingPolicy())
+	_ = result.auditLogger.Close()
+}
+
+// TestBootstrapAuthEnforcement_EmptyPolicyIsRequired pins the go-qrdb#548
+// default: an empty auth.mtls_binding_policy resolves to "required", not
+// "enrolled" -- the same unbound admin that boots under "enrolled" above is
+// refused when the policy string is simply omitted.
+func TestBootstrapAuthEnforcement_EmptyPolicyIsRequired(t *testing.T) {
+	_, err := runAuthBootstrapWithPolicy(t, bootstrapForBindingPolicy(t), "")
+	var refusal *firstboot.AdminCertBindingRequiredError
+	require.True(t, errors.As(err, &refusal), "err = %v", err)
 }
 
 // servingAdmin serves the admin record the daemon REALLY created, with the

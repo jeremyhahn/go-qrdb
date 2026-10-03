@@ -48,22 +48,24 @@ qrdb ceremony status --output json
 
 ## `qrdb ceremony sign-csr`
 
-Issue a system-tenant certificate under SO PIN authorization: a login
-certificate for an RBAC role, or, for `--role so` and `--role custodian`, a
-holder certificate that carries no roles. The CA assigns the
-identity (`CN=<username>`, `OU=[system, <profile>]`, no SAN); the CSR supplies
-only the public key.
+Submit a CSR for signing during or after the ceremony. **Issues HOLDER
+certificates only**: `--role` accepts `so` or `custodian`, never
+a login role. A login certificate for a user-facing account (admin, operator,
+user, auditor) is issued by the tenant Admin through the certs CSR-sign or
+BYOC path ([../certificate-authority/cli.md](../certificate-authority/cli.md)),
+which requires an authenticated, authorized caller — not merely the SO PIN
+this command accepts before unseal.
 
 | Flag | Type | Meaning |
 |---|---|---|
 | `--csr-file` | string | path to the CSR PEM |
-| `--username` | string | the user the certificate is for |
-| `--role` | string | role for the signed certificate |
+| `--username` | string | holder username |
+| `--role` | string | `so` or `custodian` |
 | `--so-pin` | string | Security Officer PIN |
 
 ```bash
 qrdb ceremony sign-csr --csr-file dave.csr --username dave \
-     --role operator --so-pin "$SO_PIN"
+     --role custodian --so-pin SO123
 ```
 
 ## Related groups

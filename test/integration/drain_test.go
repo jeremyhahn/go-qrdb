@@ -149,7 +149,7 @@ func startDrainNode(t *testing.T) *drainNode {
 	t.Cleanup(func() { os.RemoveAll(sockDir) })
 	unixSocket := filepath.Join(sockDir, "qrdbd.sock")
 
-	clientCert, clientKey := ca.generateAdminClientCert(t, dataDir)
+	clientCert, clientKey := ca.boundAdminCert(t, dataDir)
 
 	raftPorts := allocatePorts(t, 1)
 	quicPorts := allocatePorts(t, 1)

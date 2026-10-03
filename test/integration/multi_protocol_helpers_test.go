@@ -162,6 +162,15 @@ func startMultiProtocolNode(t *testing.T) *multiProtoNode {
 // (kv_restore_default_sm_cli_test.go) needs: those tests must run against
 // the actual out-of-the-box default, not merely an explicit "--sm pebble"
 // that could silently drift from it.
+//
+// This node's TLS comes from ca.tlsFlags, a bring-your-own leaf certificate
+// signed by the test's OWN CA -- the daemon never holds that CA's private
+// key, so s.ceremonyCA is nil. qrdb init supports that directly
+// (go-qrdb#548): with no CeremonyCA it does not self-issue a TLS
+// certificate, pinning the operator's own configured leaf instead, and the
+// bring-your-own-certificate admin-credential path (initAndUnsealBarrier's
+// admin_cert_pem) needs no CA at all -- the test's own CA plays the
+// operator's CA, present in ca's client-CA trust pool.
 func startMultiProtocolNodeWithSM(t *testing.T, smType string) *multiProtoNode {
 	t.Helper()
 	return startMultiProtocolNodeWithArgs(t, smType)
@@ -234,13 +243,11 @@ func startMultiProtocolNodeWithArgs(t *testing.T, smType string, extraArgs ...st
 	// authorization) that must be initialized and unsealed before the Raft
 	// host, and therefore every other transport, comes up.
 	waitForBarrierStatusReachable(t, ca, restPort, 90*time.Second)
-	initAndUnsealBarrier(t, ca, restPort, passphrase)
+	clientCert, clientKey := initAndUnsealBarrier(t, ca, restPort, passphrase)
 
 	waitForHealthy(t, dataDir, 60*time.Second)
 	waitForAdmin(t, ca.Pool, restPort, 90*time.Second)
 	waitForLeaderViaAdmin(t, ca, []int{restPort}, 60*time.Second)
-
-	clientCert, clientKey := ca.generateAdminClientCert(t, dataDir)
 
 	n := &multiProtoNode{
 		cli:        cli,

@@ -223,38 +223,6 @@ func (e *AdminReplicationTimeoutError) Error() string {
 	return "admin user not replicated within " + e.Timeout.String()
 }
 
-// AdminCertError is returned when admin client certificate generation fails.
-type AdminCertError struct {
-	Err error
-}
-
-// Error returns a human-readable description.
-func (e *AdminCertError) Error() string {
-	return "cli: admin client certificate generation failed: " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *AdminCertError) Unwrap() error {
-	return e.Err
-}
-
-// AdminCertWriteError is returned when writing the admin client cert to
-// disk fails.
-type AdminCertWriteError struct {
-	Path string
-	Err  error
-}
-
-// Error returns a human-readable description.
-func (e *AdminCertWriteError) Error() string {
-	return "cli: failed to write admin certificate to " + strconv.Quote(e.Path) + ": " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *AdminCertWriteError) Unwrap() error {
-	return e.Err
-}
-
 // BootstrapFetchError is returned when fetching the CA bundle from a
 // bootstrap server fails. Aliased from pkg/clusterenroll.
 type BootstrapFetchError = clusterenroll.FetchError

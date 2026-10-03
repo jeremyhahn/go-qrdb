@@ -167,6 +167,21 @@ type Infra struct {
 	// the server trusts for mTLS client authentication.
 	CeremonyCA ceremony.CeremonyCA
 
+	// ServerCertPEM is this node's own TLS server (leaf) certificate PEM,
+	// threaded into ceremony.CeremonyConfig.ServerCertPEM so qrdb init can
+	// compute its SPKI pin from it on a BYO-TLS node (CeremonyCA nil,
+	// because ceremonyCAFromBundle has no CA private key to issue a
+	// different certificate with). Ignored when CeremonyCA is non-nil: the
+	// CA self-issues its own TLS certificate in that case, unchanged.
+	ServerCertPEM []byte
+
+	// ClientCACertPEM is this node's configured client-authentication
+	// trust anchor PEM, threaded into
+	// ceremony.CeremonyConfig.ClientCACertPEM so the bring-your-own-
+	// certificate admin-credential path has a pool to validate against on
+	// a BYO-TLS node. Ignored when CeremonyCA is non-nil.
+	ClientCACertPEM []byte
+
 	// CeremonyCoreSvc is an already-constructed core ceremony service to
 	// reuse instead of building a new one. The sealed-window boot phase
 	// (BuildSealServicesOnly) accumulates in-memory state — enclave-stored
@@ -1224,7 +1239,11 @@ func ceremonyService(infra Infra, log *slog.Logger) (*ceremony.CeremonyService, 
 		if dataDir == "" {
 			dataDir = filepath.Join(infra.DataDir, "seal")
 		}
-		created, err := ceremony.NewCeremonyService(&ceremony.CeremonyConfig{DataDir: dataDir}, infra.SealBarrier, log)
+		created, err := ceremony.NewCeremonyService(&ceremony.CeremonyConfig{
+			DataDir:         dataDir,
+			ServerCertPEM:   infra.ServerCertPEM,
+			ClientCACertPEM: infra.ClientCACertPEM,
+		}, infra.SealBarrier, log)
 		if err != nil {
 			return nil, &CeremonyServiceError{Err: err}
 		}

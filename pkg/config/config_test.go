@@ -80,6 +80,14 @@ func validConfig() *Config {
 			CertTTL:       "8760h",
 			PermCacheTTL:  30,
 		},
+		// Auth enabled (above) now requires seal enabled (go-qrdb#548);
+		// "none" keeps this fixture's behavior identical to before that
+		// rule existed -- no encryption, just the state transition
+		// qrdb init needs.
+		Seal: SealConfig{
+			Enabled:  true,
+			Strategy: "none",
+		},
 		Raft: RaftConfig{
 			DataDir:     "/tmp/data",
 			ShardID:     1,

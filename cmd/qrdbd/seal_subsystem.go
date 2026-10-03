@@ -391,6 +391,8 @@ func awaitUnseal(sigCtx context.Context, f *startFlags, bundle *TLSBundle, sub *
 		CeremonyDataDir:           sub.SealDataDir,
 		CeremonyCA:                ceremonyCA,
 		PINBackend:                sub.PINBackend,
+		ServerCertPEM:             bundle.CertPEM,
+		ClientCACertPEM:           bundle.CACertPEM,
 		Logger:                    slog.Default(),
 		DefaultTenantQuotas:       f.tenantConfig.DefaultQuotas.ToQuotas(),
 		DefaultTenantEntitlements: f.tenantConfig.DefaultEntitlements.ToEntitlements(),

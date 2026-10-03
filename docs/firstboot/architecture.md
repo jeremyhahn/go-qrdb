@@ -119,6 +119,67 @@ refuses to start on its error. Every refusal is
   UUIDv8 (SHA-256) derived from its name, so role identity is stable across
   clusters.
 
+## How go-qrdb's own compositions wire the three paths
+
+Before this change, `qrdbd`'s own first boot wired no `CA`, `Signer` or
+`Binder` at all — none of the three paths above were reachable, and the
+bootstrap admin was created with an empty binding set. Under the default
+`auth.mtls_binding_policy` at the time (`enrolled`) that was merely
+non-compliant; under the new default (`required`, see
+[../identity-rbac/architecture.md](../identity-rbac/architecture.md)) it would
+refuse every fresh boot.
+
+`qrdbd`, `sdk/go/node` and the embedded composition now resolve the three
+paths through the ceremony instead of through `firstboot.Dependencies.CA` /
+`Signer` directly:
+
+1. **`qrdb init` selects the path** (`--admin-csr`, `--admin-cert` +
+   `--admin-cert-pool`, or neither to generate) and sends it to
+   `pkg/ceremony.CeremonyService.Initialize`, which performs the CSR-sign,
+   BYOC-validate, or generate-and-sign SYNCHRONOUSLY, where the CA is
+   available — no admin account exists yet, and signing does not need one.
+   The result (and, for generate, the key, exactly once) is returned in
+   `InitResult`/`CeremonyInitializeResponse`.
+2. **The issuing node durably records the public certificate** (never the
+   key) in the cluster's own REPLICATED system store, under the system
+   tenant's identity namespace — the SAME store first boot's role and user
+   records live in. This is NOT the seal/credential store: that store is
+   per-node by design (every cluster node holds its own system barrier and
+   master key, never shared — see
+   [../seal/per-node-barrier-architecture.md](../seal/per-node-barrier-architecture.md))
+   and cannot carry a record the Raft LEADER's first boot needs, because
+   `qrdb init` may run against any node.
+
+   **Known limitation:** the write in this step is a direct, in-process
+   proposal against this node's own replica. It succeeds immediately when
+   this node IS the Raft leader (the common case — a single-node deployment,
+   or `qrdb init` pointed at the leader of a multi-node cluster). On a
+   genuine follower it currently has no way to forward the proposal to the
+   leader (go-qrdb ships no non-HTTP inter-node forwarding primitive today),
+   so it surfaces the write failure rather than silently succeeding; the
+   documented remedy is the SAME retry path as step 4 — re-run `qrdb init`
+   against the current leader (`qrdb status`). Building genuine any-node
+   forwarding for this write is tracked separately.
+3. **First boot waits (bounded) for that record**, or for the admin to
+   already hold a binding (nothing to do), builds a pool from the cluster's
+   own CA bundle, and passes the certificate to `firstboot.Dependencies` as
+   `AdminCertPEM`/`AdminCertPool` — Path C, UNCHANGED from the table above,
+   with `Binder` set to `firstboot.UserCertBinder` over the composition's own
+   user store. All three operator-facing paths converge on this ONE binding
+   code path.
+4. **A crash between steps 1 and 2** loses the in-memory certificate before
+   it is durably recorded. The admin-credential step is retriable: re-running
+   `qrdb init` with the same (or different) flags on the already-initialized
+   ceremony issues a FRESH credential and durably records it again, gated on
+   the admin not already holding a live binding
+   (`service.CeremonyServiceWithAdminRebind`, `*AdminAlreadyBoundError`) so a
+   retry after the first binding committed is refused rather than silently
+   replacing a working credential.
+5. **No record and no binding within the bound** is
+   `*firstboot.NoPendingAdminCredentialError`, naming the retry command. This
+   is the ONLY way a default (`required`) boot can still refuse: no ceremony
+   has ever run against any node of this cluster.
+
 ## Built-in roles
 
 Created deterministically on first init, undeletable, persisted at

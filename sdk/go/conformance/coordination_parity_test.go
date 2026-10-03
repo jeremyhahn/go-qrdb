@@ -128,6 +128,7 @@ func (c cell) bootClient(t *testing.T) *sdk.Client {
 	}
 
 	seedCoordinationIdentity(t, n)
+	enrollMatrixCert(t, n, tenantid.System, clientKP)
 	clientCert, err := clientKP.TLSCertificate()
 	if err != nil {
 		t.Fatalf("client TLS cert: %v", err)

@@ -23,6 +23,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -355,89 +356,6 @@ func TestGenerateClientCert_ValidKeyPair(t *testing.T) {
 		}
 	}
 	assert.True(t, hasClientAuth, "client cert must have ClientAuth extended key usage")
-}
-
-// ---------------------------------------------------------------------------
-// tls.go: generateAdminClientCert
-// ---------------------------------------------------------------------------
-
-func TestGenerateAdminClientCert_CreatesFiles(t *testing.T) {
-	dir := t.TempDir()
-
-	bundle, err := generateCATLS()
-	require.NoError(t, err)
-
-	err = generateAdminClientCert(bundle, dir, "admin", "default")
-	require.NoError(t, err)
-
-	assert.True(t, fileExists(filepath.Join(dir, "admin-cert.pem")))
-	assert.True(t, fileExists(filepath.Join(dir, "admin-key.pem")))
-}
-
-func TestGenerateAdminClientCert_Idempotent(t *testing.T) {
-	dir := t.TempDir()
-
-	bundle, err := generateCATLS()
-	require.NoError(t, err)
-
-	// First call creates the files.
-	require.NoError(t, generateAdminClientCert(bundle, dir, "admin", "default"))
-
-	// Record modification time of the cert file.
-	info1, err := os.Stat(filepath.Join(dir, "admin-cert.pem"))
-	require.NoError(t, err)
-
-	// Second call should skip regeneration (idempotent).
-	require.NoError(t, generateAdminClientCert(bundle, dir, "admin", "default"))
-
-	info2, err := os.Stat(filepath.Join(dir, "admin-cert.pem"))
-	require.NoError(t, err)
-
-	// File should not have been touched.
-	assert.Equal(t, info1.ModTime(), info2.ModTime(),
-		"idempotent call must not regenerate existing admin cert")
-}
-
-func TestGenerateAdminClientCert_NoCAKeyReturnsError(t *testing.T) {
-	dir := t.TempDir()
-
-	// Bundle without CA key.
-	bundle, err := generateCATLS()
-	require.NoError(t, err)
-	bundle.CAKeyPEM = nil
-
-	err = generateAdminClientCert(bundle, dir, "admin", "default")
-	require.Error(t, err)
-	var ace *AdminCertError
-	require.True(t, errors.As(err, &ace))
-}
-
-func TestGenerateAdminClientCert_EmptyCACertReturnsError(t *testing.T) {
-	dir := t.TempDir()
-
-	bundle, err := generateCATLS()
-	require.NoError(t, err)
-	// Corrupt the CA cert PEM.
-	bundle.CACertPEM = []byte("not-valid-pem")
-
-	err = generateAdminClientCert(bundle, dir, "admin", "default")
-	require.Error(t, err)
-	var ace *AdminCertError
-	require.True(t, errors.As(err, &ace))
-}
-
-func TestGenerateAdminClientCert_WriteErrorWhenDirIsFile(t *testing.T) {
-	// Create a file where the cert directory would be so MkdirAll fails.
-	tmpDir := t.TempDir()
-	blockFile := filepath.Join(tmpDir, "blockfile")
-	require.NoError(t, os.WriteFile(blockFile, []byte("x"), 0o600))
-
-	bundle, err := generateCATLS()
-	require.NoError(t, err)
-
-	// Put the "dataDir" as a file to make os.MkdirAll fail.
-	err = generateAdminClientCert(bundle, blockFile, "admin", "default")
-	require.Error(t, err)
 }
 
 // ---------------------------------------------------------------------------
@@ -953,12 +871,12 @@ func TestBootstrapAuth_UserStoreCreationError(t *testing.T) {
 	// A throwaway map backs the guarded-batch mock: this test targets the
 	// List/Scan failure path, not the atomic-identity plane.
 	tx := newMockTransactionServicer(make(map[string][]byte))
-	mgmt, err := bootstrapUserRoleStores(context.Background(), mock, mock, tx, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil)
+	mgmt, err := bootstrapUserRoleStores(context.Background(), mock, mock, tx, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil, auth.MTLSBindingEnrolled, nil, nil, nil)
 	// The error should be from bootstrap, though user/role stores may
 	// succeed if they don't require initial List; just verify it completes.
 	// If no error, also try auth enforcement (audit logger won't fail on valid dir).
 	if err == nil && mgmt != nil {
-		_, _ = bootstrapAuthEnforcement(context.Background(), mgmt, dir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{}, nil, nil, "", "", "")
+		_, _ = bootstrapAuthEnforcement(context.Background(), mgmt, dir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{}, nil, nil, "", "", "enrolled")
 	}
 }
 
@@ -979,7 +897,7 @@ func TestBootstrapAuth_ContextCanceledSkipsBootstrap(t *testing.T) {
 
 	dir := t.TempDir()
 	tx := newMockTransactionServicer(make(map[string][]byte))
-	_, err := bootstrapUserRoleStores(ctx, mock, mock, tx, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil)
+	_, err := bootstrapUserRoleStores(ctx, mock, mock, tx, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil, auth.MTLSBindingEnrolled, nil, nil, nil)
 	require.Error(t, err)
 	var abe *AuthBootstrapError
 	require.True(t, errors.As(err, &abe))
@@ -1469,9 +1387,14 @@ func TestRunStart_AuthEnabled_FullStartup_ThenSIGTERM(t *testing.T) {
 		adminPort:       adminPort,
 		grpcPort:        grpcPort,
 		authEnabled:     true, // full auth bootstrap path
-		enableREST:      true,
-		enableGRPC:      true,
-		host:            testBindHost,
+		// This test is about the full-startup lifecycle (listeners, signal
+		// handling), exercised with no admin certificate ever enrolled --
+		// "enrolled" is the correct, explicit choice for that reason, not a
+		// workaround (go-qrdb#548).
+		mtlsBindingPolicy: "enrolled",
+		enableREST:        true,
+		enableGRPC:        true,
+		host:              testBindHost,
 	}
 
 	done := make(chan error, 1)

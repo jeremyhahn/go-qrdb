@@ -26,21 +26,30 @@ import (
 // row -- or signing while anonymous callers send requests that never reach a
 // PIN check -- is never refused for volume alone.
 func TestCeremonySignCSR_CorrectPINIsNotStarved(t *testing.T) {
+	// go-qrdb#548: sign-csr is HOLDER-only (so, custodian) and
+	// PreOperationalOnly, so this must land -- and stay -- in
+	// StateEnrolling (an M-of-N ceremony) rather than the single-admin
+	// setup that used to drive it straight to StateOperational.
 	e := newHolderSvcEnv(t, 2, 2)
 	svc := e.cer
 	ctx := context.Background()
+	h1, h2 := newSvcHolder(t, "officer-1"), newSvcHolder(t, "officer-2")
 	_, err := svc.CeremonyInitialize(adminCtx(), e.ca, &CeremonyInitializeOptions{
-		SOPin: "so-pin-1234", UserPin: "user-pin-1234", Hostname: "db.example.com",
+		SOPin: svcSOPIN, UserPin: "user-pin-1234", Threshold: 2, Hostname: "db.example.com",
+		Officers: []CeremonyOfficerConfig{
+			{Username: h1.name, CSRPEM: string(h1.csr)},
+			{Username: h2.name, CSRPEM: string(h2.csr)},
+		},
 	})
 	require.NoError(t, err)
 	for i := 0; i < 30; i++ {
 		// Malformed requests that fail before the PIN is looked at.
-		_, err := svc.CeremonySignCSR(ctx, "", "anything", "csr", "admin")
+		_, err := svc.CeremonySignCSR(ctx, "", "anything", "csr", "so")
 		require.Error(t, err)
 	}
 	for i := 0; i < 30; i++ {
 		csrPEM := string(newTestOfficerCSR(t, "officer"))
-		if _, err := svc.CeremonySignCSR(ctx, "officer", "so-pin-1234", csrPEM, "admin"); err != nil {
+		if _, err := svc.CeremonySignCSR(ctx, "officer", svcSOPIN, csrPEM, "so"); err != nil {
 			t.Fatalf("correct-PIN signing %d: %v", i, err)
 		}
 	}

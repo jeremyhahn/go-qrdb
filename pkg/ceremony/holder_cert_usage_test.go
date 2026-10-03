@@ -224,11 +224,23 @@ func TestHolderCert_EveryEntryPointRefusesASubCA(t *testing.T) {
 			return err
 		},
 		"sign-csr (SignCSRInit)": func(t *testing.T, ca CeremonyCA) error {
-			svc := systemHoldersWith(t, newTestLocalCA(t))
-			_, err := svc.Initialize(ctx, newTestLocalCA(t), initOpts(0))
-			require.NoError(t, err)
+			// SignCSRInit is PreOperationalOnly (go-qrdb#548): it only
+			// matters while StateEnrolling, so this entry point sets that
+			// state directly rather than through Initialize. Initialize
+			// itself, under M-of-N, would use ca (this subtest's saboteur,
+			// whose SignCSR always returns a sub-CA) to sign every officer's
+			// CSR synchronously, failing the ceremony before SignCSRInit's
+			// own refusal is ever reached -- a problem orthogonal to what
+			// this entry point tests. Role is "so": sign-csr issues HOLDER
+			// certificates only (go-qrdb#548), "operator" was removed from
+			// roleProfileMap.
+			opts := enrollingInitOpts(t)
+			svc := newTestCeremonyService(t, defaultConfig(), unsealedTestBarrier(t))
+			svc.mu.Lock()
 			svc.deps.CA = ca
-			res, err := svc.SignCSRInit(ctx, "operator-1", "so-pin-1234", newHostileCSRPEM(t, hostileCSRs[3]), "operator")
+			svc.state = StateEnrolling
+			svc.mu.Unlock()
+			res, err := svc.SignCSRInit(ctx, "operator-1", opts.SOPin, newHostileCSRPEM(t, hostileCSRs[3]), "so")
 			require.Nil(t, res)
 			require.ErrorIs(t, err, ErrCSRSigningFailed)
 			return nil

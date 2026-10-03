@@ -1207,11 +1207,18 @@ type ClusterJoinConfig struct {
 // SealConfig configures the cryptographic barrier that encrypts data at rest.
 type SealConfig struct {
 	// Enabled controls whether the seal barrier is active.
-	// When false (default), data is stored unencrypted.
+	// Default: true (go-qrdb#548). auth.enabled defaults to true too and now
+	// requires Enabled: true -- the bootstrap admin's certificate binding
+	// depends on `qrdb init` being able to bring the system barrier up at
+	// all, which does not exist when the seal is off. A deployment that
+	// does not want encryption sets Strategy "none" rather than Enabled
+	// false.
 	Enabled bool `yaml:"enabled"`
 
-	// Strategy selects the sealing strategy: "passphrase" or "shamir".
-	// Default: "passphrase".
+	// Strategy selects the sealing strategy: "none", "passphrase" or
+	// "shamir". Default: "none" (go-qrdb#548) -- a barrier-present-but-
+	// unencrypted strategy that still satisfies the Enabled-true
+	// requirement above with no secret material.
 	Strategy string `yaml:"strategy"`
 
 	// RootKeyPath is the storage key under which the sealed root key
@@ -1404,9 +1411,16 @@ func DefaultConfig() *Config {
 			WireCodec:    "json",
 			UseOptimized: true,
 		},
+		// Enabled defaults to true, strategy "none" (go-qrdb#548): auth
+		// defaults to enabled, and auth.enabled now requires seal.enabled,
+		// since the bootstrap admin's credential depends on `qrdb init`
+		// being able to bring the system barrier up at all. "none" is
+		// identity passthrough -- no ciphertext, just the state transition
+		// `qrdb init` needs -- for a deployment that does not want
+		// encryption; set strategy: passphrase (or stronger) to turn it on.
 		Seal: SealConfig{
-			Enabled:            false,
-			Strategy:           "passphrase",
+			Enabled:            true,
+			Strategy:           "none",
 			RootKeyPath:        "__sys:seal/root_key",
 			ShareTTL:           DefaultShareTTLString,
 			CredentialStrategy: "barrier",
@@ -2022,6 +2036,14 @@ func (c *Config) Validate() error {
 		if _, err := c.Seal.ClusterSealTiming(); err != nil {
 			return err
 		}
+	} else if c.Auth.IsEnabled() {
+		// Auth requires the seal subsystem (go-qrdb#548): the bootstrap
+		// admin's certificate binding depends on `qrdb init` being able to
+		// bring up the system barrier and run the ceremony, which does not
+		// exist at all when seal.enabled is false. A deployment that does
+		// not want encryption runs the seal with strategy "none" --
+		// identity passthrough, no ciphertext -- rather than omitting it.
+		return &ValidationError{Field: "seal.enabled", Reason: `auth.enabled requires seal.enabled: true (use seal.strategy: none for no encryption)`}
 	}
 
 	// Tenant validation.

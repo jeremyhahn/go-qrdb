@@ -75,7 +75,8 @@ func isCertBoundMethod(method authMethod) bool {
 // oversights:
 //
 //   - The account has NO cert bindings AND the fleet's posture is
-//     auth.MTLSBindingEnrolled (the default). An empty binding set then states
+//     auth.MTLSBindingEnrolled (an explicit opt-out since go-qrdb#548; the
+//     default is auth.MTLSBindingRequired). An empty binding set then states
 //     no restriction — the same statement user.User.AuthMethods makes with an
 //     empty policy, and for the same reason: enrolment is an operator act that
 //     predates this gate in every existing deployment, and enforcing an empty

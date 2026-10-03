@@ -63,17 +63,26 @@ holders — is in [../shamir-custody/user.md](../shamir-custody/user.md).
 
 ## Issuing a login certificate
 
+`sign-csr` issues HOLDER certificates only: `--role so` for a
+Security Officer, `--role custodian` for a Shamir share holder. Neither holds
+a login account.
+
 ```bash
 qrdb ceremony sign-csr --csr-file dave.csr --username dave \
-     --role operator --so-pin "$SO_PIN"
+     --role custodian --so-pin "$SO_PIN"
 ```
 
-The certificate is issued as `CN=dave`, `OU=[system, <role profile>]` with no
+The certificate is issued as `CN=dave`, `OU=[system, <holder profile>]` with no
 Subject Alternative Name: `--username` is the identity, and the CSR contributes
 only its key. Whatever Subject or SANs the CSR asks for are ignored, so this
-step cannot mint a login in another tenant. A `--role so` or
-`--role custodian` certificate is a holder certificate, not a login: it
-authenticates with no roles and is refused every permission.
+step cannot mint a login in another tenant. Neither holder role's certificate
+ever logs in as a user.
+
+A login certificate for a user-facing account (admin, operator, user,
+auditor) is a SEPARATE path: the tenant Admin issues it through the certs
+CSR-sign or BYOC flow ([../certificate-authority/user.md](../certificate-authority/user.md)),
+which requires an authenticated, authorized caller rather than only the SO
+PIN. `sign-csr` refuses any other role with `ErrInvalidRole`.
 
 `sign-csr` is `PreOperationalOnly` in a specific sense: it is one of the
 sealed-window boot listener's allowlisted verbs, reachable there WITHOUT

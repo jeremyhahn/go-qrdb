@@ -617,7 +617,7 @@ func startWatchRestartNode(t *testing.T) *watchRestartNode {
 	waitForAdmin(t, ca.Pool, restPort, 90*time.Second)
 	waitForLeaderViaAdmin(t, ca, []int{restPort}, 60*time.Second)
 
-	clientCert, clientKey := ca.generateAdminClientCert(t, dataDir)
+	clientCert, clientKey := ca.boundAdminCert(t, dataDir)
 
 	mp := &multiProtoNode{
 		cli:        cli,

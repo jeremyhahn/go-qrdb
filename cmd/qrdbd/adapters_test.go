@@ -56,50 +56,6 @@ func TestAuthBootstrapError_ErrorsAs(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// AdminCertError tests
-// ---------------------------------------------------------------------------
-
-func TestAdminCertError_Error(t *testing.T) {
-	inner := errors.New("key generation failed")
-	err := &AdminCertError{Err: inner}
-	want := "cli: admin client certificate generation failed: key generation failed"
-	assert.Equal(t, want, err.Error())
-}
-
-func TestAdminCertError_Unwrap(t *testing.T) {
-	inner := errors.New("rand source exhausted")
-	err := &AdminCertError{Err: inner}
-	assert.Equal(t, inner, err.Unwrap())
-	assert.True(t, errors.Is(err, inner))
-}
-
-// ---------------------------------------------------------------------------
-// AdminCertWriteError tests
-// ---------------------------------------------------------------------------
-
-func TestAdminCertWriteError_Error(t *testing.T) {
-	inner := errors.New("permission denied")
-	err := &AdminCertWriteError{Path: "/data/admin-cert.pem", Err: inner}
-	want := `cli: failed to write admin certificate to "/data/admin-cert.pem": permission denied`
-	assert.Equal(t, want, err.Error())
-}
-
-func TestAdminCertWriteError_Unwrap(t *testing.T) {
-	inner := errors.New("disk full")
-	err := &AdminCertWriteError{Path: "/data/admin-key.pem", Err: inner}
-	assert.Equal(t, inner, err.Unwrap())
-	assert.True(t, errors.Is(err, inner))
-}
-
-func TestAdminCertWriteError_ErrorsAs(t *testing.T) {
-	inner := errors.New("no space left")
-	err := &AdminCertWriteError{Path: "/tmp/cert.pem", Err: inner}
-	var target *AdminCertWriteError
-	require.True(t, errors.As(err, &target))
-	assert.Equal(t, "/tmp/cert.pem", target.Path)
-}
-
-// ---------------------------------------------------------------------------
 // mockKVServicer for kvServiceAdapter tests
 // ---------------------------------------------------------------------------
 

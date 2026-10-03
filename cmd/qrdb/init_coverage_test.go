@@ -80,6 +80,7 @@ func TestRunInit_SuccessPath_Table(t *testing.T) {
 	out, err := executeCommand(root, "init",
 		"--so-pin", "sopin",
 		"--user-pin", "userpin",
+		"--barrier-strategy", "none",
 	)
 	if err != nil {
 		t.Fatalf("runInit table: %v", err)
@@ -94,6 +95,7 @@ func TestRunInit_SuccessPath_JSON(t *testing.T) {
 	_, err := executeCommand(root, "--output", "json", "init",
 		"--so-pin", "sopin",
 		"--user-pin", "userpin",
+		"--barrier-strategy", "none",
 	)
 	if err != nil {
 		t.Fatalf("runInit json: %v", err)
@@ -105,6 +107,7 @@ func TestRunInit_SuccessPath_YAML(t *testing.T) {
 	_, err := executeCommand(root, "--output", "yaml", "init",
 		"--so-pin", "sopin",
 		"--user-pin", "userpin",
+		"--barrier-strategy", "none",
 	)
 	if err != nil {
 		t.Fatalf("runInit yaml: %v", err)
@@ -116,6 +119,7 @@ func TestRunInit_WithSANs_Success(t *testing.T) {
 	_, err := executeCommand(root, "init",
 		"--so-pin", "sopin",
 		"--user-pin", "userpin",
+		"--barrier-strategy", "none",
 		"--sans", "host1.example.com,host2.example.com",
 	)
 	if err != nil {

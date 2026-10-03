@@ -28,6 +28,11 @@ type CeremonyOfficerRequest struct {
 // CeremonyInitializeRequest holds the parameters for initializing the
 // security ceremony. A Threshold of 2 or more initializes Shamir custody
 // over Officers under Policy ("designated" when empty).
+//
+// AdminCSRPEM, AdminCertPEM and AdminCertPoolPEM select the bootstrap admin's
+// credential path (go-qrdb#548): CSR-sign, bring-your-own-certificate, or
+// (when all three are empty) generate -- the default, dev/test/evaluation
+// only path, NOT suitable for production. See docs/firstboot/user.md.
 type CeremonyInitializeRequest struct {
 	SOPin                  string                   `json:"so_pin"`
 	UserPin                string                   `json:"user_pin"`
@@ -37,6 +42,16 @@ type CeremonyInitializeRequest struct {
 	Officers               []CeremonyOfficerRequest `json:"officers,omitempty"`
 	Hostname               string                   `json:"hostname,omitempty"`
 	SANs                   []string                 `json:"sans,omitempty"`
+	AdminCSRPEM            string                   `json:"admin_csr_pem,omitempty"`
+	AdminCertPEM           string                   `json:"admin_cert_pem,omitempty"`
+	AdminCertPoolPEM       string                   `json:"admin_cert_pool_pem,omitempty"`
+
+	// Secret is the passphrase the system barrier is initialized with
+	// (go-qrdb#548): qrdb init is the only system bootstrap, bringing the
+	// barrier up itself in this same call. Required when the barrier's
+	// registered strategy needs one (e.g. "passphrase"); must be empty for
+	// "none".
+	Secret string `json:"secret,omitempty"`
 }
 
 // CeremonyHolderCert is the CA-issued certificate of one initial holder.
@@ -49,13 +64,21 @@ type CeremonyHolderCert struct {
 // CeremonyInitializeResponse returns the result of a successful ceremony
 // initialization. Holders carries each initial holder's certificate; the
 // share envelopes are not part of it, each holder claims its own.
+//
+// AdminKeyPEM is present ONLY when AdminCredentialSource is "generated"; it
+// is returned exactly once and the server retains no copy (go-qrdb#548). A
+// caller that receives it must capture it immediately -- there is no way to
+// retrieve it again.
 type CeremonyInitializeResponse struct {
-	SPKIPin    string               `json:"spki_pin"`
-	CACertPEM  string               `json:"ca_cert_pem"`
-	TLSCertPEM string               `json:"tls_cert_pem"`
-	State      string               `json:"state"`
-	ShareCount int                  `json:"share_count"`
-	Holders    []CeremonyHolderCert `json:"holders,omitempty"`
+	SPKIPin               string               `json:"spki_pin"`
+	CACertPEM             string               `json:"ca_cert_pem"`
+	TLSCertPEM            string               `json:"tls_cert_pem"`
+	State                 string               `json:"state"`
+	ShareCount            int                  `json:"share_count"`
+	Holders               []CeremonyHolderCert `json:"holders,omitempty"`
+	AdminCertPEM          string               `json:"admin_cert_pem,omitempty"`
+	AdminKeyPEM           string               `json:"admin_key_pem,omitempty"`
+	AdminCredentialSource string               `json:"admin_credential_source,omitempty"`
 }
 
 // CeremonyStatusResponse describes the current state of the ceremony.

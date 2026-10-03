@@ -59,8 +59,16 @@ func (e *ServiceNotConfiguredError) Error() string {
 
 // CeremonyCANotConfiguredError is returned when CeremonyInitialize is
 // invoked but the server was not configured with a CeremonyCA via
-// WithCeremonyCA. The ceremony service dereferences the CA to issue
-// certificates, so failing closed here avoids a nil-pointer panic.
+// WithCeremonyCA.
+//
+// Unlike REST, this refusal is unconditional here: ceremony.Initialize
+// itself now supports a nil CeremonyCA directly (go-qrdb#548, a BYO-TLS
+// node), but this transport's wire request carries no
+// admin_cert_pem/admin_csr_pem/secret fields at all, so a caller has no
+// way to drive the only admin-credential path (BYOC) that nil CeremonyCA
+// leaves available -- removing this check would just trade one clean
+// refusal for another, not unlock anything. See pkg/api/grpc/errors.go's
+// identical note.
 type CeremonyCANotConfiguredError struct{}
 
 // Error returns a human-readable description.

@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -253,7 +254,7 @@ func TestRunFirstBoot_NonLeaderFailurePropagatesItsCause(t *testing.T) {
 				return nil, sentinel
 			},
 		},
-		&mockTenantServicer{}, false, nil, "")
+		&mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
 
 	require.Error(t, err)
 	require.ErrorIs(t, err, sentinel,
@@ -296,7 +297,7 @@ func TestRunFirstBoot_NotLeaderFallsToReplicationWait(t *testing.T) {
 						return nil, notLeader
 					},
 				},
-				&mockTenantServicer{}, false, nil, "")
+				&mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
 
 			require.Error(t, err)
 			var abe *AuthBootstrapError

@@ -325,13 +325,15 @@ func TestCeremonyService_InitializeWithHolders(t *testing.T) {
 	require.Len(t, res.Holders, 2)
 	assert.Equal(t, seal.RoleCustodian, res.Holders[1].Role)
 
-	signed, err := e.cer.CeremonySignCSR(ctx, "operator-1", "so-pin-1234", string(newTestOfficerCSR(t, "ignored")), "admin")
+	// go-qrdb#548: sign-csr issues HOLDER certificates only (so, custodian);
+	// "admin" was removed from roleProfileMap.
+	signed, err := e.cer.CeremonySignCSR(ctx, "operator-1", "so-pin-1234", string(newTestOfficerCSR(t, "ignored")), "so")
 	require.NoError(t, err)
 	cert, err := mtls.ParseCertificatePEM(signed.CertPEM)
 	require.NoError(t, err)
 	assert.Equal(t, "operator-1", cert.Subject.CommonName)
 
-	_, err = e.cer.CeremonySignCSR(ctx, "operator-2", "wrong", string(newTestOfficerCSR(t, "x")), "admin")
+	_, err = e.cer.CeremonySignCSR(ctx, "operator-2", "wrong", string(newTestOfficerCSR(t, "x")), "so")
 	assert.ErrorIs(t, err, pin.ErrPINInvalid)
 
 	core, ok := CeremonyServiceCore(e.cer)

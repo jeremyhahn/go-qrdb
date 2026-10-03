@@ -394,7 +394,10 @@ func TestDecide(t *testing.T) {
 }
 
 // TestPreOperationalOnlyDerivations: every transport's derivation names
-// exactly the officer and recovery-officer registration verbs.
+// exactly the officer, recovery-officer registration, and sign-csr verbs
+// (go-qrdb#548: sign-csr joined the set so a node restarted sealed after the
+// ceremony already completed cannot mint a holder certificate through the
+// boot-time sealed-window listener either).
 func TestPreOperationalOnlyDerivations(t *testing.T) {
 	rest := sealedwindow.RESTPreOperationalOnly()
 	wantREST := []string{"POST /v1/barrier/officers", "POST /v1/barrier/recovery/officers", "/v1/ceremony/sign-csr"}
@@ -448,15 +451,19 @@ func TestOrFailClosed(t *testing.T) {
 }
 
 // TestPreOperationalOnlyFlags locks the exact set of verbs whose sealed-window
-// authentication exemption is gated on a pre-operational ceremony. The two
+// authentication exemption is gated on a pre-operational ceremony. The
 // holder registration verbs are flagged because RegisterOfficer has the CA
 // issue a holder certificate for any caller-supplied CSR with no
 // service-layer auth: an exemption surviving ceremony completion would let an
 // unauthenticated caller enrol a holder during any restart-while-sealed.
+// sign-csr joined them (go-qrdb#548) for the identical reason: it mints a
+// holder certificate from any caller-supplied CSR plus the SO PIN alone, and
+// CeremonyService.SignCSRInit itself now refuses once operational too, so
+// the two gates close the same hole from both sides.
 //
 // Flagging a NEW verb here is a security-posture change reviewed as such;
-// UN-flagging either officer verb reopens the post-operational enrollment
-// hole and must never happen.
+// UN-flagging officer, recovery-officer, or sign-csr reopens a
+// post-operational enrollment hole and must never happen.
 func TestPreOperationalOnlyFlags(t *testing.T) {
 	want := map[sealedwindow.Verb]bool{
 		sealedwindow.VerbOfficerRegister:         true,

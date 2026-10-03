@@ -80,6 +80,11 @@ func TestServeSealedWindow_RefusesAnonymousRequestsAfterUnseal(t *testing.T) {
 	distributor.SetHolders(seal.DomainRecovery, "r1", "r2", "r3")
 	barrier.SetCeremonyDistributor(distributor)
 	barrierSvc := service.NewBarrierService(barrier)
+	// barrierSvc is built without a ceremony (NewBarrierService, not
+	// NewBarrierServiceWithCeremony), so BarrierInitialize delegates
+	// straight to the barrier rather than being refused (go-qrdb#548
+	// refuses it only for a ceremony-backed BarrierService, qrdbd's own
+	// system barrier shape); this test's barrierSvc has no such shape.
 	if err := barrierSvc.BarrierInitialize(ctx, secret); err != nil {
 		t.Fatalf("BarrierInitialize: %v", err)
 	}

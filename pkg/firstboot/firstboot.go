@@ -84,11 +84,19 @@ type Result struct {
 	AdminCertThumbprint string
 }
 
-// CertProvider is the minimal cert-issuance contract first-boot needs.
-// qrdb's pkg/cert/DefaultCertProvider satisfies this, and go-xkms's
-// CAAdapter (sdk/go NewCAAdapter) satisfies it, wiring the xkms CA into
-// first-boot admin enrollment. Defined narrow here so firstboot doesn't
-// pull in either package as a dependency.
+// CertProvider is the minimal cert-issuance contract first-boot needs (Path
+// A, generate-and-distribute).
+//
+// go-qrdb ships no production implementation of its own: go-xkms's CAAdapter
+// (sdk/go NewCAAdapter) satisfies it for xkms-composed binaries. go-qrdb's own
+// compositions (qrdbd, sdk/go/node) do not call this interface at all --
+// pkg/ceremony.CeremonyService issues the bootstrap admin's certificate
+// itself, synchronously during Initialize (go-qrdb#548), using whichever of
+// the CSR-sign, BYOC or generate paths the operator selected, and hands first
+// boot the already-issued certificate through Dependencies.AdminCertPEM (see
+// AdoptAdminCert) rather than asking first boot to issue one. This interface
+// remains for a composer whose admin certificate comes from a CA first boot
+// itself must call, which is not how go-qrdb's own daemon works.
 type CertProvider interface {
 	// GenerateAdminCert issues a client certificate for the platform
 	// admin user. tenantID identifies the OU; subject is the CN
@@ -98,7 +106,9 @@ type CertProvider interface {
 
 // CertSigner is the admin-mTLS Path B seam: the admin (or tenant admin) supplies
 // a CSR and the CA signs it, so the private key never leaves the admin.
-// go-xkms's CAAdapter (sdk/go NewCAAdapter) satisfies this (CSR signing).
+// go-xkms's CAAdapter (sdk/go NewCAAdapter) satisfies this (CSR signing). Like
+// CertProvider, go-qrdb's own compositions do not call this: the ceremony
+// signs the CSR itself during Initialize (go-qrdb#548).
 type CertSigner interface {
 	// SignAdminCSR signs an admin-supplied CSR and returns the PEM cert.
 	SignAdminCSR(ctx context.Context, tenantID, subject string, csrPEM []byte) (certPEM []byte, err error)
@@ -106,11 +116,31 @@ type CertSigner interface {
 
 // CertBinder is the store seam that pins an admin certificate's SPKI thumbprint
 // to the admin user record so subsequent mTLS handshakes authenticate as the
-// admin. The consumer's user store implements it (e.g. via
-// user.UpdateUserRequest{CertBindings: ...}).
+// admin. UserCertBinder is the canonical implementation over qrdb's own user
+// store; a foreign IAM stack's adapter implements this directly.
 type CertBinder interface {
 	// BindAdminCert binds the SPKI thumbprint to the admin user.
 	BindAdminCert(ctx context.Context, tenantID string, userID uint64, thumbprint string) error
+}
+
+// UserCertBinder is the canonical CertBinder over qrdb's own user store
+// (go-qrdb#548): every composition in this module (qrdbd, sdk/go/node,
+// embedded) wires one of these rather than reimplementing the one-line
+// adapter. notAfterUnix is always 0 (never expires): the binding tracks the
+// key, not the certificate's validity window, consistent with every other
+// CertBinder this package has ever been called with -- a certificate rotation
+// enrols the new key additively rather than updating an expiry on the old
+// entry.
+type UserCertBinder struct {
+	Users interface {
+		AddCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*user.User, error)
+	}
+}
+
+// BindAdminCert implements CertBinder.
+func (b UserCertBinder) BindAdminCert(ctx context.Context, _ string, userID uint64, thumbprint string) error {
+	_, err := b.Users.AddCertBinding(ctx, userID, thumbprint, 0)
+	return err
 }
 
 // TenantCreator is the narrow tenant-creation surface first-boot needs.
@@ -226,14 +256,15 @@ type Dependencies struct {
 	// config.Auth.SeparationOfDuties — see cmd/qrdbd.
 	SeparationOfDuties bool
 
-	// MTLSBindingPolicy is the fleet's auth.mtls_binding_policy. Under
-	// auth.MTLSBindingRequired, Initialize refuses — before writing anything —
-	// a configuration that would leave the admin unable to log in by
-	// certificate: creating the admin needs a Binder and an admin certificate
-	// path, and an existing admin must already hold a live binding (which
-	// needs Users to implement AdminLookup). The error is
-	// *AdminCertBindingRequiredError. The zero value, MTLSBindingEnrolled,
-	// changes nothing.
+	// MTLSBindingPolicy is the fleet's auth.mtls_binding_policy. The ZERO
+	// VALUE is auth.MTLSBindingRequired (go-qrdb#548), under which Initialize
+	// refuses — before writing anything — a configuration that would leave
+	// the admin unable to log in by certificate: creating the admin needs a
+	// Binder and an admin certificate path, and an existing admin must
+	// already hold a live binding (which needs Users to implement
+	// AdminLookup). The error is *AdminCertBindingRequiredError.
+	// auth.MTLSBindingEnrolled is the explicit opt-out that restores the
+	// pre-go-qrdb#517 behaviour (an empty binding set admits).
 	MTLSBindingPolicy auth.MTLSBindingPolicy
 }
 

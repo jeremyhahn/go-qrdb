@@ -18,6 +18,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -209,8 +210,44 @@ func TestValidate_Seal_ValidShamirConfig(t *testing.T) {
 
 // TestValidate_Seal_Disabled_SkipsValidation verifies that a disabled seal
 // does not trigger validation of strategy fields.
+// TestValidate_AuthEnabledRequiresSeal covers the go-qrdb#548 rule: an
+// auth-enabled node with the seal off is refused at config validation, and
+// the message names the escape hatch (seal.strategy: none).
+func TestValidate_AuthEnabledRequiresSeal(t *testing.T) {
+	cfg := validConfig()
+	cfg.Seal.Enabled = false
+
+	err := cfg.Validate()
+	var verr *ValidationError
+	if !errors.As(err, &verr) {
+		t.Fatalf("Validate() = %v, want *ValidationError", err)
+	}
+	if verr.Field != "seal.enabled" {
+		t.Errorf("Field = %q, want %q", verr.Field, "seal.enabled")
+	}
+	if !strings.Contains(verr.Reason, "seal.enabled: true") || !strings.Contains(verr.Reason, "strategy: none") {
+		t.Errorf("Reason = %q, want it to name both requirements", verr.Reason)
+	}
+}
+
+// TestValidate_AuthDisabledToleratesSealDisabled covers the other half: an
+// operator that explicitly disables auth is not forced to run the seal.
+func TestValidate_AuthDisabledToleratesSealDisabled(t *testing.T) {
+	cfg := validConfig()
+	cfg.Auth.Enabled = BoolPtr(false)
+	cfg.Seal.Enabled = false
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate(): %v", err)
+	}
+}
+
 func TestValidate_Seal_Disabled_SkipsValidation(t *testing.T) {
 	cfg := validConfig()
+	// Auth requires seal (go-qrdb#548); this test is about seal validation
+	// being skipped when seal is disabled, not that interaction, so auth is
+	// explicitly disabled too.
+	cfg.Auth.Enabled = BoolPtr(false)
 	cfg.Seal.Enabled = false
 	cfg.Seal.Strategy = "hashicorp" // would fail if seal were enabled
 	if err := cfg.Validate(); err != nil {

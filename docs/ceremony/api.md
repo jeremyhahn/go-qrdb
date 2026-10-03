@@ -40,7 +40,8 @@ share-claim route of its own.
     { "username": "alice", "role": "so",        "csr_pem": "-----BEGIN CERTIFICATE REQUEST-----…" },
     { "username": "carol", "role": "custodian", "csr_pem": "…" }
   ],
-  "hostname": "db.example.com", "sans": ["db.example.com"]
+  "hostname": "db.example.com", "sans": ["db.example.com"],
+  "admin_csr_pem": "…", "admin_cert_pem": "…", "admin_cert_pool_pem": "…"
 }
 ```
 
@@ -50,16 +51,39 @@ initial share holder, officers and custodians alike, each with its role — and
 fails closed with `ErrNoOfficers` without them. The unseal key is split
 `threshold`-of-`len(officers)`. The caller may not name itself among them.
 
+**`admin_csr_pem`, `admin_cert_pem` and `admin_cert_pool_pem` select the
+bootstrap admin's credential path**: CSR-sign, BYOC, or (when
+all three are empty) generate — dev/test/evaluation only, not suitable for
+production. `admin_csr_pem` and `admin_cert_pem` are mutually exclusive
+(`*ceremony.ConflictingAdminCredentialInputsError`, 400).
+
 Response — `CeremonyInitializeResponse`: `spki_pin`, `ca_cert_pem`,
-`tls_cert_pem`, `state`, `share_count`, and `holders` — each initial holder's
-`username`, `role` and CA-issued `cert_pem`. **Never a share**: each holder
-claims its own envelope.
+`tls_cert_pem`, `state`, `share_count`, `holders` — each initial holder's
+`username`, `role` and CA-issued `cert_pem` (**never a share**: each holder
+claims its own envelope) — and the bootstrap admin's credential result:
+`admin_cert_pem`, `admin_credential_source` (`"csr"`, `"byoc"` or
+`"generated"`), and `admin_key_pem`.
+
+```json
+{ "spki_pin": "…", "ca_cert_pem": "…", "state": "operational",
+  "admin_cert_pem": "…", "admin_credential_source": "generated",
+  "admin_key_pem": "…" }
+```
+
+`admin_key_pem` is present **only** when `admin_credential_source` is
+`"generated"`. It is returned exactly once; the server retains no copy. First
+boot binds `admin_cert_pem`'s thumbprint to the admin account once that
+account exists — see [../firstboot/api.md](../firstboot/api.md).
 
 `POST /v1/ceremony/sign-csr` — `{ "username", "so_pin", "csr_pem", "role" }`
-issues a system-tenant certificate whose identity the CA assigns -- a login
-certificate for an RBAC role, or a holder certificate for `so` and
-`custodian`, which carries no roles; the SO PIN is verified by the PIN
-backend.
+issues a HOLDER certificate only (`role` is `so` or `custodian`, which
+carries no roles) whose identity the CA assigns; the SO PIN is verified by
+the PIN backend. A login certificate for a user-facing account (admin,
+operator, user, auditor) is a SEPARATE path: the tenant Admin issues it
+through the certs CSR-sign or BYOC flow
+([../certificate-authority/api.md](../certificate-authority/api.md)), which
+requires an authenticated, authorized caller rather than only the SO PIN.
+`sign-csr` refuses any other role with `ceremony.ErrInvalidRole`.
 
 ## Bootstrap-window routes
 

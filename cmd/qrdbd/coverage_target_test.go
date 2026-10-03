@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"errors"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"os"
 	"path/filepath"
 	"testing"
@@ -265,6 +266,7 @@ func TestRunFirstBoot_WithBarriers_UnsealedBarrier_FirstBootError(t *testing.T) 
 		ctx, node, 1,
 		userSvc, roleSvc, &mockTenantServicer{},
 		false, sub.BarrierRegistry, seal.StrategyID("passphrase"),
+		auth.MTLSBindingEnrolled, nil, nil, nil,
 	)
 
 	// firstBootErr is assigned the *bootstrap.FirstBootError from

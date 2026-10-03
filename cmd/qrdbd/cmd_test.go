@@ -2489,6 +2489,14 @@ func TestNewStartCmd_MemorySM_SingleNodeStatic_NoPeers(t *testing.T) {
 	// resolveCreateFunc into buildHostConfig, isSingleNode (true),
 	// quicraft.NewHost (WithoutTransport), and startShardStatic which
 	// returns NoPeersError. The host.Close() cleanup path is also covered.
+	//
+	// --auth-enabled=false: with no --config, auth's own flag default is
+	// true, which now defaults the seal subsystem on too (go-qrdb#548) and
+	// routes boot through the sealed window -- a real ceremony is a
+	// different test's concern (TestRunStart_UnsealCeremony_*). This test is
+	// about startShardStatic's NoPeersError, reached only once past that
+	// window, so it opts out of it the same way an operator who does not
+	// want auth or seal does.
 	dir := t.TempDir()
 	cmd := newStartCmd()
 	buf := &bytes.Buffer{}
@@ -2500,6 +2508,7 @@ func TestNewStartCmd_MemorySM_SingleNodeStatic_NoPeers(t *testing.T) {
 		"--data-dir", dir,
 		"--shard-id", "1",
 		"--replica-id", "1",
+		"--auth-enabled=false",
 	})
 
 	err := cmd.Execute()
@@ -2522,6 +2531,13 @@ func TestNewStartCmd_MemorySM_SingleNodeStatic_WithPeer(t *testing.T) {
 	// role/user creation (go-qrdb#555) commits guarded batches: since
 	// go-qrdb#136 every state machine serves them natively, and this is the
 	// end-to-end proof that a non-default one does.
+	//
+	// --auth-enabled=false for the same reason as _NoPeers above: with no
+	// --config, auth's flag default (true) now defaults the seal subsystem
+	// on too (go-qrdb#548), routing boot through the sealed window, which
+	// here would wait forever for a ceremony this test never runs. This
+	// test is about the full start-to-serving handover with a real peer,
+	// which a ceremony is orthogonal to.
 	dir := t.TempDir()
 	cmd := newStartCmd()
 	buf := &bytes.Buffer{}
@@ -2534,6 +2550,7 @@ func TestNewStartCmd_MemorySM_SingleNodeStatic_WithPeer(t *testing.T) {
 		"--data-dir", dir,
 		"--shard-id", "1",
 		"--replica-id", "1",
+		"--auth-enabled=false",
 	})
 
 	done := make(chan error, 1)

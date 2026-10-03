@@ -22,6 +22,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // CeremonyServicer provides the initialization ceremony: first-boot
@@ -67,7 +68,34 @@ type CeremonyInitializeOptions struct {
 
 	// Hostname and SANs describe the server TLS certificate.
 	Hostname string
-	SANs     []string
+
+	// SANs is the list of Subject Alternative Names for TLS certificates.
+	SANs []string
+
+	// AdminCSRPEM, when non-empty, selects the CSR-sign path for the
+	// bootstrap admin's certificate (go-qrdb#548). Mutually exclusive with
+	// AdminCertPEM.
+	AdminCSRPEM string
+
+	// AdminCertPEM, when non-empty, selects the bring-your-own-certificate
+	// path for the bootstrap admin: a certificate the admin already holds,
+	// validated against AdminCertPoolPEM (or the ceremony's own CA bundle
+	// when that is empty) and adopted unchanged. Mutually exclusive with
+	// AdminCSRPEM.
+	AdminCertPEM string
+
+	// AdminCertPoolPEM is the PEM-encoded trust anchor bundle AdminCertPEM
+	// must chain to. Optional.
+	AdminCertPoolPEM string
+
+	// Secret is the passphrase (or other strategy-specific credential) the
+	// system barrier is initialized with (go-qrdb#548): qrdb init is the
+	// only system bootstrap, bringing the barrier up itself as part of
+	// this same call. Required when the barrier's registered strategy
+	// needs one (e.g. "passphrase"); must be empty for "none". Ignored in
+	// M-of-N mode, where the barrier stays sealed until officers later
+	// reconstruct it from their shares.
+	Secret string
 }
 
 // CeremonyOfficerConfig names one initial share holder. CSRPEM is a PEM
@@ -104,6 +132,29 @@ type CeremonyInitResult struct {
 	// Holders are the enrolled holders' issued certificates, in request
 	// order. Each must reach its holder, who claims their envelope with it.
 	Holders []CeremonyHolderCert
+
+	// AdminCertPEM is the bootstrap admin's issued or adopted certificate
+	// (go-qrdb#548). Always present on success.
+	AdminCertPEM []byte
+
+	// AdminKeyPEM is the generated private key, present ONLY when
+	// AdminCredentialSource is "generated". Returned exactly once.
+	AdminKeyPEM []byte
+
+	// AdminCredentialSource records which path produced AdminCertPEM: "csr",
+	// "byoc", or "generated".
+	AdminCredentialSource string
+}
+
+// WipeAdminKeyPEM zeroes r's generated admin key material in place and clears
+// the field. Transports call this immediately after writing AdminKeyPEM into
+// their response (go-qrdb#548). A nil receiver or an empty key is a no-op.
+func (r *CeremonyInitResult) WipeAdminKeyPEM() {
+	if r == nil {
+		return
+	}
+	secure.Wipe(r.AdminKeyPEM)
+	r.AdminKeyPEM = nil
 }
 
 // CeremonyHolderCert is one holder's issued certificate.
@@ -175,6 +226,10 @@ func (s *CeremonyService) CeremonyInitialize(ctx context.Context, ca ceremony.Ce
 		Officers:               officers,
 		Hostname:               opts.Hostname,
 		SANs:                   opts.SANs,
+		AdminCSRPEM:            []byte(opts.AdminCSRPEM),
+		AdminCertPEM:           []byte(opts.AdminCertPEM),
+		AdminCertPoolPEM:       []byte(opts.AdminCertPoolPEM),
+		Secret:                 []byte(opts.Secret),
 	}
 	if id := auth.IdentityFromContext(ctx); id != nil {
 		copts.Enroller = id.Subject
@@ -183,17 +238,30 @@ func (s *CeremonyService) CeremonyInitialize(ctx context.Context, ca ceremony.Ce
 	if err != nil {
 		return nil, err
 	}
-	out := &CeremonyInitResult{
-		SPKIPin:    result.SPKIPin,
-		CACertPEM:  result.CACertPEM,
-		TLSCertPEM: result.TLSCertPEM,
-		State:      string(result.State),
-		ShareCount: result.ShareCount,
-	}
+	out := ceremonyInitResultFromCore(result)
 	for i, h := range result.Holders {
 		out.Holders = append(out.Holders, CeremonyHolderCert{Username: opts.Officers[i].Username, Role: h.Role, CertPEM: h.CertPEM})
 	}
 	return out, nil
+}
+
+// ceremonyInitResultFromCore maps the ceremony-package result onto the
+// service-layer type, except Holders: zipping a RegisterOfficerResult (which
+// carries no username of its own) with its officer needs the caller's own
+// request, so CeremonyInitialize fills Holders in itself after calling this.
+// CeremonyReissueAdminCredential's result never carries holders at all, so
+// it does not need to.
+func ceremonyInitResultFromCore(result *ceremony.InitResult) *CeremonyInitResult {
+	return &CeremonyInitResult{
+		SPKIPin:               result.SPKIPin,
+		CACertPEM:             result.CACertPEM,
+		TLSCertPEM:            result.TLSCertPEM,
+		State:                 string(result.State),
+		ShareCount:            result.ShareCount,
+		AdminCertPEM:          result.AdminCertPEM,
+		AdminKeyPEM:           result.AdminKeyPEM,
+		AdminCredentialSource: string(result.AdminCredentialSource),
+	}
 }
 
 // CeremonySignCSR issues a system-tenant certificate for a role under SO PIN

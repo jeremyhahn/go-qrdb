@@ -17,10 +17,12 @@ package middleware
 import (
 	"context"
 	"encoding/pem"
+	"errors"
 	"io"
 	"log/slog"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -87,17 +89,20 @@ func (b *firstBootBinder) BindAdminCert(ctx context.Context, _ string, userID ui
 	return err
 }
 
-// TestFirstBoot_UnboundAdminStillAuthenticates is the no-migration assertion,
-// and it is the measurement the no-bindings decision rests on.
+// TestFirstBoot_UnboundAdminStillAuthenticates_UnderEnrolled is the
+// no-migration assertion for a composer that has explicitly opted OUT to
+// "enrolled" (go-qrdb#548): it is the measurement the empty-set admission
+// rests on, for a composer that cannot yet wire a CertBinder.
 //
-// The daemon's own first-boot path wires neither a CertProvider nor a
-// CertBinder, so the admin it creates has an EMPTY binding set and there is no
-// certificate anywhere for an operator to have enrolled. Requiring a binding
-// unconditionally would therefore lock every stock deployment out of its own
-// cluster on upgrade, with no in-band way back in: adding the first binding
-// needs a permission that needs a login.
-func TestFirstBoot_UnboundAdminStillAuthenticates(t *testing.T) {
+// Under the DEFAULT "required" posture this exact configuration -- no CA, no
+// CertBinder wired -- is refused at firstboot.Initialize itself
+// (*firstboot.AdminCertBindingRequiredError, AdminBindingNoBinder), before an
+// unbound admin is ever created; that is the fix go-qrdb#548 makes. This test
+// covers the remaining, explicit "enrolled" escape hatch for a composer that
+// has not finished wiring a CertBinder yet, not the default behavior.
+func TestFirstBoot_UnboundAdminStillAuthenticates_UnderEnrolled(t *testing.T) {
 	users, deps := firstBootServices(t)
+	deps.MTLSBindingPolicy = auth.MTLSBindingEnrolled
 	if _, err := firstboot.Initialize(context.Background(), deps); err != nil {
 		t.Fatalf("firstboot.Initialize: %v", err)
 	}
@@ -111,13 +116,29 @@ func TestFirstBoot_UnboundAdminStillAuthenticates(t *testing.T) {
 			len(admin.CertBindings))
 	}
 
-	m := mtlsMiddleware(users)
+	m := mtlsMiddleware(users, WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
 	_, identity, err := m.authenticate(mtlsContext(mintCert(t, "admin", tenantid.System, nil, "")))
 	if err != nil {
 		t.Fatalf("bootstrapped admin refused: %v", err)
 	}
 	if identity.Subject != "admin" || len(identity.Roles) == 0 {
 		t.Fatalf("identity = %+v, want the admin with its bootstrapped roles", identity)
+	}
+}
+
+// TestFirstBoot_NoBinderRefusedUnderRequired is the go-qrdb#548 fix itself:
+// the DEFAULT posture refuses to create an admin it cannot bind, rather than
+// creating one with an empty binding set and admitting any certificate that
+// names it.
+func TestFirstBoot_NoBinderRefusedUnderRequired(t *testing.T) {
+	_, deps := firstBootServices(t)
+	_, err := firstboot.Initialize(context.Background(), deps)
+	var required *firstboot.AdminCertBindingRequiredError
+	if !errors.As(err, &required) {
+		t.Fatalf("firstboot.Initialize with no CertBinder under the default policy = %v, want *firstboot.AdminCertBindingRequiredError", err)
+	}
+	if required.Reason != firstboot.AdminBindingNoBinder {
+		t.Fatalf("Reason = %q, want %q", required.Reason, firstboot.AdminBindingNoBinder)
 	}
 }
 

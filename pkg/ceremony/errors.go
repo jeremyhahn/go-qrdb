@@ -125,8 +125,15 @@ var (
 	// ErrMissingRole is returned when a role is required but not provided.
 	ErrMissingRole = errors.New("ceremony: role is required")
 
-	// ErrInvalidRole is returned when the provided role is not recognized.
-	ErrInvalidRole = errors.New("ceremony: invalid role")
+	// ErrInvalidRole is returned when the requested role is not one
+	// sign-csr issues. sign-csr mints HOLDER certificates only ("so",
+	// "custodian") -- a login certificate for a user-facing role (admin,
+	// operator, user, auditor) is issued by the tenant Admin through the
+	// certs CSR-sign or BYOC path (pkg/certificate-authority), never here,
+	// because sign-csr is reachable with only the SO PIN, before unseal, for
+	// anyone to name any account.
+	ErrInvalidRole = errors.New("ceremony: invalid role: sign-csr issues holder certificates only (so, custodian); " +
+		"a login certificate for a user-facing role is issued by the tenant Admin through the certs CSR-sign or BYOC path")
 
 	// ErrCSRSigningFailed is returned when CSR signing fails.
 	ErrCSRSigningFailed = errors.New("ceremony: CSR signing failed")
@@ -484,4 +491,110 @@ func (e *ProviderCACertificateError) Error() string {
 // Unwrap returns the underlying error.
 func (e *ProviderCACertificateError) Unwrap() error {
 	return e.Err
+}
+
+// ConflictingAdminCredentialInputsError is returned when an initialize
+// request carries both AdminCSRPEM and AdminCertPEM (go-qrdb#548). The two
+// select different bootstrap-admin credential paths for the same identity --
+// CSR-sign and bring-your-own-certificate -- and there is no defensible way
+// to choose on the operator's behalf: signing the CSR would leave the
+// presented certificate unbound, and adopting the certificate would silently
+// discard the CSR.
+type ConflictingAdminCredentialInputsError struct{}
+
+// Error implements error.
+func (e *ConflictingAdminCredentialInputsError) Error() string {
+	return "ceremony: AdminCSRPEM and AdminCertPEM are mutually exclusive: supply exactly one admin credential path"
+}
+
+// AdminCredentialRejectedError wraps the reason the bootstrap admin's
+// requested credential (a CSR, a presented certificate, or the generated
+// key/CSR pair) could not be turned into a bound-ready certificate: an
+// unparseable trust pool, a certificate outside its validity window, a
+// certificate that does not chain to the given (or default cluster) CA, or a
+// CSR the ceremony CA refused.
+type AdminCredentialRejectedError struct {
+	Cause error
+}
+
+// Error implements error.
+func (e *AdminCredentialRejectedError) Error() string {
+	return "ceremony: bootstrap admin credential rejected: " + e.Cause.Error()
+}
+
+// Unwrap exposes the underlying cause for errors.Is / errors.As.
+func (e *AdminCredentialRejectedError) Unwrap() error { return e.Cause }
+
+// AdminCredentialIssuanceError wraps a failure signing the bootstrap admin's
+// certificate, whether the CSR came from the operator (Path B) or was
+// generated in-process (Path A).
+type AdminCredentialIssuanceError struct {
+	Cause error
+}
+
+// Error implements error.
+func (e *AdminCredentialIssuanceError) Error() string {
+	return "ceremony: bootstrap admin credential issuance failed: " + e.Cause.Error()
+}
+
+// Unwrap exposes the underlying cause for errors.Is / errors.As.
+func (e *AdminCredentialIssuanceError) Unwrap() error { return e.Cause }
+
+// SystemBarrierInitError wraps a failure initializing or unsealing the
+// system barrier as part of Initialize (go-qrdb#548): qrdb init is the only
+// system bootstrap, so this is the one place that barrier is ever brought
+// up on a fresh node.
+type SystemBarrierInitError struct {
+	Cause error
+}
+
+// Error implements error.
+func (e *SystemBarrierInitError) Error() string {
+	return "ceremony: system barrier initialization failed: " + e.Cause.Error()
+}
+
+// Unwrap exposes the underlying cause for errors.Is / errors.As.
+func (e *SystemBarrierInitError) Unwrap() error { return e.Cause }
+
+// NoServerCertificateError is returned by Initialize when it is called with
+// a nil CeremonyCA (a BYO-TLS node: the operator's own leaf certificate is
+// the server identity, so there is no CA to self-issue one from) and
+// CeremonyConfig.ServerCertPEM is empty or unparseable. The composer
+// (cmd/qrdbd, sdk/go/node) must set it from the node's own configured TLS
+// certificate whenever it constructs a CeremonyService with no CeremonyCA.
+type NoServerCertificateError struct {
+	// Cause is the parse failure, when ServerCertPEM was non-empty but
+	// unparseable. Nil when it was empty.
+	Cause error
+}
+
+// Error implements error.
+func (e *NoServerCertificateError) Error() string {
+	if e.Cause != nil {
+		return "ceremony: configured server certificate could not be parsed: " + e.Cause.Error()
+	}
+	return "ceremony: no CeremonyCA configured and no server certificate available to compute the SPKI pin from"
+}
+
+// Unwrap exposes the underlying cause for errors.Is / errors.As.
+func (e *NoServerCertificateError) Unwrap() error { return e.Cause }
+
+// AdminCredentialRequiresCAError is returned by issueAdminCredential when
+// the CSR-sign or generate admin-credential path is selected (or defaulted
+// to) but no CeremonyCA is configured to sign with -- a BYO-TLS node, where
+// the operator holds the signing key, not this process. Path names
+// "csr-sign" and "generate". The bring-your-own-certificate path
+// (--admin-cert) needs no signing CA at all and is the one this error
+// names as supported. A future cluster CA provider (cakey.Provider)
+// composed in at the CeremonyCA seam removes this refusal without any
+// change here: it is gated purely on ca == nil, not on the node's TLS
+// shape.
+type AdminCredentialRequiresCAError struct {
+	Path string
+}
+
+// Error implements error.
+func (e *AdminCredentialRequiresCAError) Error() string {
+	return "ceremony: the " + e.Path + " admin-credential path requires a configured CeremonyCA, " +
+		"which this node has none of (BYO-TLS); use --admin-cert (bring-your-own-certificate) instead"
 }

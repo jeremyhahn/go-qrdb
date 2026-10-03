@@ -187,7 +187,7 @@ func TestAuthorize_RateLimitDoesNotApplyWithNilIdentity(t *testing.T) {
 
 func TestRESTMiddleware_RateLimited(t *testing.T) {
 	id := &auth.Identity{Subject: "alice", TenantID: "t1"}
-	authn := &mockAuthenticator{name: "mtls", identity: id}
+	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{}
 
 	limiter := ratelimit.NewTokenBucketLimiter()
@@ -229,7 +229,7 @@ func TestRESTMiddleware_RateLimited(t *testing.T) {
 
 func TestRESTMiddleware_NotRateLimitedWhenNotConfigured(t *testing.T) {
 	id := &auth.Identity{Subject: "alice", TenantID: "t1"}
-	authn := &mockAuthenticator{name: "mtls", identity: id}
+	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{}
 
 	m := New(authz, WithAuthenticator(authn))
@@ -293,7 +293,7 @@ func TestMapGRPCAuthError_RateLimited(t *testing.T) {
 
 func TestUnaryInterceptor_RateLimited(t *testing.T) {
 	id := &auth.Identity{Subject: "alice", TenantID: "t1"}
-	authn := &mockAuthenticator{name: "mtls", identity: id}
+	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{}
 
 	limiter := ratelimit.NewTokenBucketLimiter()

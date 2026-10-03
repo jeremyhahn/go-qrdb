@@ -168,19 +168,34 @@ type barrierInitFlags struct {
 
 // newBarrierInitCmd returns the canonical `barrier init` subcommand.
 //
-// Unlike the root `init` command (which runs the full ceremony --
-// barrier + CA + admin cert + roles), this verb initializes only the
-// barrier subsystem. Use this when bolting a barrier onto an existing
-// cluster or when the CA / IAM has already been provisioned.
+// It refuses the SYSTEM barrier of a fresh node with a typed error naming
+// `qrdb init` (go-qrdb#548): that barrier is brought up by `qrdb init`,
+// which runs the full ceremony (barrier + CA + admin cert + roles) in the
+// sealed window, in one call, before anything else is unsealed. This verb
+// has always been the SYSTEM barrier only -- POST /v1/barrier/initialize
+// carries no tenant or database scope -- so it is now refused
+// unconditionally; it does not gain a refusal exception for some other
+// scope it never had. A tenant admin initializes their own tenant barrier
+// with the separate "qrdb tenant barrier-init" command, untouched by this
+// change; there is no equivalent per-database command.
 func newBarrierInitCmd() *cobra.Command {
 	f := &barrierInitFlags{}
 
 	cmd := &cobra.Command{
 		Use:   "init",
-		Short: "Initialize the cryptographic barrier",
-		Long: `Initialize the cryptographic barrier.
+		Short: "Initialize the system barrier (refused: use qrdb init instead)",
+		Long: `Initialize the system cryptographic barrier.
 
-Strategies:
+Refused unconditionally (go-qrdb#548): the system barrier is brought up by
+"qrdb init", the only system bootstrap, which also runs the ceremony and
+issues the bootstrap admin's credential in the same call. This command has
+always been the system barrier only; it carries no tenant or database
+scope, so there is no case in which it still succeeds. A tenant admin
+initializes their own tenant barrier with "qrdb tenant barrier-init"
+instead, a separate command untouched by this change.
+
+Strategies (documented for the error message's context only; every
+invocation is refused regardless of which one is given):
   none        Identity passthrough; data stored in cleartext (dev only).
   passphrase  Single passphrase-derived master key (default).
 

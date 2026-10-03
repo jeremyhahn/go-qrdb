@@ -37,18 +37,27 @@ const signCSRGuessBudget = 50
 // RESOURCE_EXHAUSTED) instead of checking another guess, and the refusal
 // covers the correct PIN too, so it cannot confirm a guess while throttled.
 func TestCeremonySignCSR_SOPINGuessingIsThrottled(t *testing.T) {
+	// go-qrdb#548: sign-csr is HOLDER-only (so, custodian) and
+	// PreOperationalOnly, so this must land -- and stay -- in
+	// StateEnrolling (an M-of-N ceremony) rather than the single-admin
+	// setup that used to drive it straight to StateOperational.
 	e := newHolderSvcEnv(t, 2, 2)
 	svc := e.cer
 	ctx := context.Background()
+	h1, h2 := newSvcHolder(t, "officer-1"), newSvcHolder(t, "officer-2")
 	_, err := svc.CeremonyInitialize(adminCtx(), e.ca, &CeremonyInitializeOptions{
-		SOPin: "so-pin-1234", UserPin: "user-pin-1234", Hostname: "db.example.com",
+		SOPin: svcSOPIN, UserPin: "user-pin-1234", Threshold: 2, Hostname: "db.example.com",
+		Officers: []CeremonyOfficerConfig{
+			{Username: h1.name, CSRPEM: string(h1.csr)},
+			{Username: h2.name, CSRPEM: string(h2.csr)},
+		},
 	})
 	require.NoError(t, err)
 	csrPEM := string(newTestOfficerCSR(t, "user-1"))
 
 	throttled := 0
 	for i := 0; i < signCSRGuessBudget; i++ {
-		_, err := svc.CeremonySignCSR(ctx, "user-1", "wrong-pin", csrPEM, "admin")
+		_, err := svc.CeremonySignCSR(ctx, "user-1", "wrong-pin", csrPEM, "so")
 		switch {
 		case errors.Is(err, pin.ErrPINLocked):
 			throttled++
@@ -60,7 +69,7 @@ func TestCeremonySignCSR_SOPINGuessingIsThrottled(t *testing.T) {
 		t.Fatalf("%d SO PIN guesses in a row were all checked; want the endpoint throttled", signCSRGuessBudget)
 	}
 
-	_, err = svc.CeremonySignCSR(ctx, "user-1", "so-pin-1234", csrPEM, "admin")
+	_, err = svc.CeremonySignCSR(ctx, "user-1", svcSOPIN, csrPEM, "so")
 	if !errors.Is(err, pin.ErrPINLocked) {
 		t.Fatalf("the correct SO PIN while throttled: %v, want pin.ErrPINLocked", err)
 	}

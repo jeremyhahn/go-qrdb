@@ -250,6 +250,11 @@ See [../firstboot/cli.md](../firstboot/cli.md).
 
 ## A complete enrolment
 
+> **Known limitation:** `qrdb ca issue` below does not yet produce a
+> certificate that authenticates to any listener on any transport -- a
+> separate, in-progress fix. Use the `certs` CSR-sign or BYOC path for a
+> login certificate that works today.
+
 ```bash
 qrdb ca issue --username alice --tenant-id acme --out ./alice
 qrdb users create --username alice --tenant-id acme

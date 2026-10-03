@@ -21,6 +21,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"net"
 	"os"
 	"path/filepath"
@@ -76,6 +77,7 @@ func TestBootstrapUserRoleStores_ZeroReplicaID(t *testing.T) {
 		context.Background(), mock, mock, tx, node,
 		1, 0, // shardID=1, replicaID=0
 		&mockTenantServicer{}, false, nil, "", nil,
+		auth.MTLSBindingEnrolled, nil, nil, nil,
 	)
 	require.NoError(t, err)
 	require.NotNil(t, mgmt)
@@ -96,6 +98,7 @@ func TestBootstrapUserRoleStores_OversizedReplicaID(t *testing.T) {
 		context.Background(), mock, mock, tx, node,
 		1, 1024,
 		&mockTenantServicer{}, false, nil, "", nil,
+		auth.MTLSBindingEnrolled, nil, nil, nil,
 	)
 	require.Error(t, err)
 	var abe *AuthBootstrapError
@@ -119,6 +122,7 @@ func TestBootstrapAuthEnforcement_WithSPIFFETrustDomain(t *testing.T) {
 	mgmt, err := bootstrapUserRoleStores(
 		context.Background(), mock, mock, tx, node,
 		1, 1, &mockTenantServicer{}, false, nil, "", nil,
+		auth.MTLSBindingEnrolled, nil, nil, nil,
 	)
 	require.NoError(t, err)
 
@@ -129,11 +133,11 @@ func TestBootstrapAuthEnforcement_WithSPIFFETrustDomain(t *testing.T) {
 		false,
 		"spiffe://example.org", // non-empty trust domain triggers line 1907-1909
 		qrdbconfig.AuthABACConfig{},
-		nil, // no cert provider: revocation not enforced
-		nil, // no cluster CA: issuer-tenant binding not enforced
-		"",  // revocation cache TTL: default
-		"",  // audit failure policy: default (fail-closed)
-		"",  // mtls binding policy: default (enrolled)
+		nil,        // no cert provider: revocation not enforced
+		nil,        // no cluster CA: issuer-tenant binding not enforced
+		"",         // revocation cache TTL: default
+		"",         // audit failure policy: default (fail-closed)
+		"enrolled", // mtls binding policy: this test is not about binding
 	)
 	require.NoError(t, err)
 	require.NotNil(t, authResult)
@@ -157,6 +161,7 @@ func TestBootstrapAuthEnforcement_NilComplianceAudit(t *testing.T) {
 	mgmt, err := bootstrapUserRoleStores(
 		context.Background(), mock, mock, tx, node,
 		1, 1, &mockTenantServicer{}, false, nil, "", nil,
+		auth.MTLSBindingEnrolled, nil, nil, nil,
 	)
 	require.NoError(t, err)
 
@@ -168,11 +173,11 @@ func TestBootstrapAuthEnforcement_NilComplianceAudit(t *testing.T) {
 		nil, // nil complianceAudit
 		false, "",
 		qrdbconfig.AuthABACConfig{},
-		nil, // no cert provider: revocation not enforced
-		nil, // no cluster CA: issuer-tenant binding not enforced
-		"",  // revocation cache TTL: default
-		"",  // audit failure policy: default (fail-closed)
-		"",  // mtls binding policy: default (enrolled)
+		nil,        // no cert provider: revocation not enforced
+		nil,        // no cluster CA: issuer-tenant binding not enforced
+		"",         // revocation cache TTL: default
+		"",         // audit failure policy: default (fail-closed)
+		"enrolled", // mtls binding policy: this test is not about binding
 	)
 	require.Error(t, err)
 	var abe *AuthBootstrapError

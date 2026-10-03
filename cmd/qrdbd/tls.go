@@ -18,7 +18,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/pem"
 	"errors"
 	"log/slog"
 	"net"
@@ -497,70 +496,6 @@ func loadCACertPool(path string) (*x509.CertPool, error) {
 	return pool, nil
 }
 
-// generateAdminClientCert creates a client certificate for the admin user
-// signed by the CA from the TLS bundle. CN is set to the admin username
-// and OU to the tenant ID so that the mTLS authenticator can extract
-// the identity. The cert and key are written to {dataDir}/admin-cert.pem
-// and {dataDir}/admin-key.pem. If both files already exist, the function
-// returns nil without regenerating.
-func generateAdminClientCert(bundle *TLSBundle, dataDir, username, tenantID string) error {
-	certPath := filepath.Join(dataDir, "admin-cert.pem")
-	keyPath := filepath.Join(dataDir, "admin-key.pem")
-
-	// Skip if both files already exist.
-	if fileExists(certPath) && fileExists(keyPath) {
-		slog.Info("admin client certificate already exists", "cert", certPath)
-		return nil
-	}
-
-	// Parse the CA certificate from PEM.
-	caBlock, _ := pem.Decode(bundle.CACertPEM)
-	if caBlock == nil {
-		return &AdminCertError{Err: errNoCertsInPEM}
-	}
-	caCert, err := x509.ParseCertificate(caBlock.Bytes)
-	if err != nil {
-		return &AdminCertError{Err: err}
-	}
-
-	// Parse the CA private key from PEM.
-	if len(bundle.CAKeyPEM) == 0 {
-		return &AdminCertError{Err: errNoCAKeyAvailable}
-	}
-	caKeyBlock, _ := pem.Decode(bundle.CAKeyPEM)
-	if caKeyBlock == nil {
-		return &AdminCertError{Err: errNoCAKeyAvailable}
-	}
-	caKey, err := x509.ParseECPrivateKey(caKeyBlock.Bytes)
-	if err != nil {
-		return &AdminCertError{Err: err}
-	}
-
-	clientCertPEM, clientKeyPEM, err := generateClientCert(caCert, caKey, username, tenantID, adminValidity)
-	if err != nil {
-		return &AdminCertError{Err: err}
-	}
-
-	// Write certificate and key files.
-	if err := os.MkdirAll(dataDir, 0o700); err != nil {
-		return &AdminCertWriteError{Path: dataDir, Err: err}
-	}
-	if err := os.WriteFile(certPath, clientCertPEM, 0o600); err != nil {
-		return &AdminCertWriteError{Path: certPath, Err: err}
-	}
-	if err := os.WriteFile(keyPath, clientKeyPEM, 0o600); err != nil {
-		return &AdminCertWriteError{Path: keyPath, Err: err}
-	}
-
-	slog.Info("admin client certificate generated",
-		"cert", certPath,
-		"key", keyPath,
-		"cn", username,
-		"ou", tenantID,
-	)
-	return nil
-}
-
 // fileExists returns true when the path refers to an existing regular file.
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
@@ -585,7 +520,3 @@ func wireCertReloader(bundle *TLSBundle, certPath, keyPath string, logger *slog.
 
 	return nil
 }
-
-// errNoCAKeyAvailable is returned when the TLS bundle does not contain a
-// CA private key, which is required for signing additional certificates.
-var errNoCAKeyAvailable = errors.New("CA private key not available in TLS bundle")

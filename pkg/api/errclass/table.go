@@ -34,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
+	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
@@ -220,6 +221,14 @@ var dataPlaneRules = []rule{
 	// narrower before the shard can start. A configuration precondition the
 	// operator corrects, not a transient fault.
 	is(quicraft.ErrSharedPeerCertificate, FailedPrecondition),
+	// Ceremony-initialize's admin-credential step refuses up front on a
+	// follower, naming the current leader (go-qrdb#548); the same retry-
+	// elsewhere class as NotLeaderError above.
+	as(&service.AdminCredentialNotLeaderError{}, Unavailable),
+	// The system barrier is brought up by "qrdb init", not "barrier init"
+	// (go-qrdb#548): the request names an operation this node refuses to
+	// perform at all, not a transient or server-side fault.
+	as(&service.SystemBarrierInitRefusedError{}, FailedPrecondition),
 	// A request the protocol cannot encode was never proposed (go-qrdb#52).
 	as(&service.EncodeRequestError{}, InvalidArgument),
 	// A guard that could not be built or applied to a command -- a compare
@@ -951,6 +960,44 @@ var ceremonyRules = []rule{
 	// deals a new one.
 	is(ceremony.ErrShareExpired, Gone),
 	is(ceremony.ErrInsufficientOfficers, Unprocessable),
+	// sign-csr issues holder certificates for so/custodian only; any other
+	// requested role is a malformed request, not a server-side fault.
+	is(ceremony.ErrInvalidRole, InvalidArgument),
+	// CSR-sign and generate need a CA that can sign, which a BYO-TLS node
+	// (no CeremonyCA) has none of; the request names a path this node
+	// cannot ever satisfy, not a transient or server-side fault.
+	as(&ceremony.AdminCredentialRequiresCAError{}, FailedPrecondition),
+	// The composer never configured a server certificate for a BYO-TLS
+	// node's qrdb init to pin; an operator/configuration gap, not
+	// something retrying the same request fixes.
+	as(&ceremony.NoServerCertificateError{}, FailedPrecondition),
+	// Both AdminCSRPEM and AdminCertPEM set: a malformed request, never a
+	// server-side fault -- 400, not 500 (go-qrdb#548).
+	as(&ceremony.ConflictingAdminCredentialInputsError{}, InvalidArgument),
+	// The presented admin credential (CSR, certificate, or trust pool)
+	// could not be turned into a bound-ready certificate: unparseable
+	// input, an expired window, or a chain that does not validate. The
+	// caller's request is what is wrong, not this node.
+	as(&ceremony.AdminCredentialRejectedError{Cause: errors.New("sample")}, InvalidArgument),
+	// The ceremony CA itself refused to sign (or the in-process generate
+	// path failed before reaching it): a server-side fault, not something
+	// the caller's request can fix by retrying unchanged.
+	as(&ceremony.AdminCredentialIssuanceError{Cause: errors.New("sample")}, Internal),
+	// The system barrier failed to initialize or unseal during `qrdb init`:
+	// a server-side fault in the one place that barrier is ever brought up.
+	as(&ceremony.SystemBarrierInitError{Cause: errors.New("sample")}, Internal),
+	// The bootstrap admin already holds a live certificate binding: retrying
+	// the admin-credential step would mint a second, unbound credential for
+	// no reason -- the caller's own prior success, not a fault.
+	as(&service.AdminAlreadyBoundError{}, FailedPrecondition),
+	// Create-if-absent lost the pending-admin-cert race to another node's
+	// ceremony (go-qrdb#548): this node's credential will not be bound: the
+	// caller must discard it, not retry the identical request.
+	as(&firstboot.AdminCredentialAlreadyPendingError{}, FailedPrecondition),
+	// Neither a live admin binding nor a pending-admin-cert record appeared
+	// within the bound: retriable by re-running `qrdb init`, not a
+	// server-side fault.
+	as(&firstboot.NoPendingAdminCredentialError{}, FailedPrecondition),
 }
 
 // migrationRules are the enable-encryption migration conditions.

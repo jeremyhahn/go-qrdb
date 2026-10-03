@@ -14,17 +14,34 @@ default role set in a single transactional ceremony**.
 |---|---|---|---|
 | `--so-pin` | string | — | **required** — Security Officer PIN (FIPS 140-3 / PCI-DSS v4 SO credential) |
 | `--user-pin` | string | — | **required** — User PIN (FIPS 140-3 / PCI-DSS v4 user credential) |
-| `--barrier-strategy` | string | `passphrase` | `passphrase \| shamir \| pkcs11 \| tpm2 \| awskms \| gcpkms \| azurekv \| vault` |
+| `--barrier-strategy` | string | `passphrase` | `none \| passphrase \| shamir \| pkcs11 \| tpm2 \| awskms \| gcpkms \| azurekv \| vault` |
+| `--passphrase` | string | — | the system barrier's secret — **required when `--barrier-strategy=passphrase`**, rejected otherwise. `qrdb init` is the only way a fresh node's system barrier is ever brought up — `qrdb barrier init` targeting it is refused. |
 | `--shares` | int | — | total Shamir shares — required when `--barrier-strategy=shamir` |
 | `--threshold` | int | — | Shamir M-of-N threshold — required when `--barrier-strategy=shamir` |
 | `--officers` | stringArray | — | `username=path/to/csr.pem`, repeatable — **required when `--barrier-strategy=shamir` with `--threshold >= 2`** |
 | `--hostname` | string | — | FQDN written into the admin/server certificate CN |
 | `--sans` | string | — | comma-separated additional DNS / IP SANs |
+| `--admin-csr` | string | — | path to a PEM CSR; selects the CSR-sign admin-credential path (mutually exclusive with `--admin-cert`) |
+| `--admin-cert` | string | — | path to a PEM certificate the admin already holds; selects bring-your-own-certificate (mutually exclusive with `--admin-csr`) |
+| `--admin-cert-pool` | string | — | PEM trust-anchor bundle `--admin-cert` must chain to (optional; defaults to the ceremony's own CA bundle) |
+
+Neither `--admin-csr` nor `--admin-cert` selects the dev/test-only GENERATE
+path: the server mints the admin's key pair and returns the private key in
+the response exactly once. `runInit` warns loudly on stderr when this path
+is taken; it does not meet FedRAMP, HIPAA or PCI DSS.
 
 The hardware strategy names (`pkcs11`, `tpm2`, `awskms`, `gcpkms`, `azurekv`,
 `vault`) are accepted here, but the strategies themselves ship in go-xkms and
 must have been registered into this server's strategy registry at composition
 time — see [../barrier-seal/](../barrier-seal/architecture.md).
+
+**`--so-pin` and `--user-pin` are both required on every call, not an
+optional pair** -- this is the system barrier's dual control: `qrdb init`
+is the only way a fresh node's system barrier is ever brought up, and that
+same call demands both PINs, so one party holding only the SO PIN or only
+the user PIN can never bring it up alone. (A tenant's own barrier has no
+equivalent dual-control pair today; see
+[../barrier-seal/user.md](../barrier-seal/user.md#common-tasks).)
 
 ### Environment variables
 
@@ -35,6 +52,7 @@ All Viper-bound, and equivalent to the flags:
 | `QRDB_SO_PIN` | `--so-pin` |
 | `QRDB_USER_PIN` | `--user-pin` |
 | `QRDB_BARRIER_STRATEGY` | `--barrier-strategy` |
+| `QRDB_PASSPHRASE` | `--passphrase` |
 | `QRDB_SHARES` | `--shares` |
 | `QRDB_THRESHOLD` | `--threshold` |
 | `QRDB_HOSTNAME` | `--hostname` |
@@ -43,17 +61,22 @@ All Viper-bound, and equivalent to the flags:
 ### Examples
 
 ```bash
-# Single admin
-qrdb init --so-pin SOPIN --user-pin USERPIN
+# Single admin, passphrase-strategy system barrier
+qrdb init --so-pin SOPIN --user-pin USERPIN \
+          --barrier-strategy passphrase --passphrase '<passphrase>'
 
-# M-of-N, 3 of 5, officers named up front
+# Single admin, no encryption (--passphrase omitted; rejected if given)
+qrdb init --so-pin SOPIN --user-pin USERPIN --barrier-strategy none
+
+# M-of-N, 3 of 5, officers named up front -- the barrier stays sealed
+# until officers reconstruct it from their shares, so no --passphrase here
 qrdb init --barrier-strategy shamir --shares 5 --threshold 3 \
           --so-pin SOPIN --user-pin USERPIN \
           --officers alice=alice.csr --officers bob=bob.csr \
           --officers carol=carol.csr
 
 # From the environment
-QRDB_SO_PIN=... QRDB_USER_PIN=... qrdb init
+QRDB_SO_PIN=... QRDB_USER_PIN=... QRDB_PASSPHRASE=... qrdb init --barrier-strategy passphrase
 ```
 
 **A `--threshold >= 2` request with no `--officers` fails closed** with the

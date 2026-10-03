@@ -136,7 +136,7 @@ func startRestoreDRNode(t *testing.T, bin string, prefix string) *restoreDRNode 
 	waitForAdmin(t, ca.Pool, adminPort, 90*time.Second)
 	waitForLeaderViaAdmin(t, ca, []int{adminPort}, 60*time.Second)
 
-	n.adminCertPath, n.adminKeyPath = ca.generateAdminClientCert(t, certDir)
+	n.adminCertPath, n.adminKeyPath = ca.boundAdminCert(t, certDir)
 	n.connArgs = restConnArgs(ca, n.adminCertPath, n.adminKeyPath, adminPort)
 	return n
 }

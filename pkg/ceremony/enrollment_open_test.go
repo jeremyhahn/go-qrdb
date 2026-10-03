@@ -37,6 +37,11 @@ func TestEnrollmentOpen_FreshCeremony(t *testing.T) {
 func TestEnrollmentOpen_ClosedWhenOperationalAndAfterRestart(t *testing.T) {
 	ctx := context.Background()
 	e := newHolderEnv(t, 2, 2)
+	// go-qrdb#548: qrdb init brings the system barrier up itself for the
+	// single-admin path below, which newHolderEnv's own Shamir-configured
+	// barrier cannot be -- it requires InitializeShamir, never a credential.
+	e.barrier = noneStrategyBarrier(t)
+	e.svc = e.newService(e.barrier)
 	_, err := e.svc.Initialize(ctx, e.ca, initOpts(0))
 	require.NoError(t, err)
 	require.Equal(t, StateOperational, e.svc.State())

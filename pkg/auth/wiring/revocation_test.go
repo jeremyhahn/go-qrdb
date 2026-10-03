@@ -38,6 +38,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
@@ -159,6 +160,10 @@ func buildRevocationMiddleware(t *testing.T, f *revocationFixture, username, ten
 		}},
 		CertProvider:       f.provider,
 		RevocationCacheTTL: ttl,
+		// This test is about revocation, exercised with a fixed fake user
+		// record that carries no cert bindings -- "enrolled" is the correct,
+		// explicit choice for that reason, not a workaround (go-qrdb#548).
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
 	})
 	require.NoError(t, err)
 	require.NotNil(t, mw)

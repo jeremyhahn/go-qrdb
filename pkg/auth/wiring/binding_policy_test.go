@@ -32,8 +32,8 @@ func TestBuildAuthMiddleware_MTLSBindingPolicy(t *testing.T) {
 		set  auth.MTLSBindingPolicy
 		want auth.MTLSBindingPolicy
 	}{
-		"unset is enrolled": {want: auth.MTLSBindingEnrolled},
-		"required reaches":  {set: auth.MTLSBindingRequired, want: auth.MTLSBindingRequired},
+		"unset is required": {want: auth.MTLSBindingRequired},
+		"enrolled reaches":  {set: auth.MTLSBindingEnrolled, want: auth.MTLSBindingEnrolled},
 	} {
 		t.Run(name, func(t *testing.T) {
 			mw, err := BuildAuthMiddleware(AuthMiddlewareConfig{

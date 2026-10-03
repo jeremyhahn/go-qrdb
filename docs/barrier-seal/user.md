@@ -26,11 +26,23 @@ Hardware strategies — TPM 2.0, PKCS#11, AWS KMS, GCP KMS, Azure Key Vault,
 Vault — are available when the deployment composes go-xkms in. From your side
 they are just another `--barrier-strategy` name.
 
+## Auth requires the seal
+
+`auth.enabled` defaults to `true`, and an auth-enabled node now requires
+`seal.enabled: true` too: the bootstrap admin's certificate
+binding depends on `qrdb init` being able to bring the system barrier up at
+all, which does not exist when the seal is off. Config validation refuses to
+start an auth-enabled, seal-disabled node with a typed error naming the fix.
+A deployment that does not want encryption runs the seal with strategy
+`none` (below) rather than omitting it; only a node that also sets
+`auth.enabled: false` may run with the seal off.
+
 ## Running with no barrier at all
 
-`seal.enabled: false` (the default) is a step further than strategy `none`:
-there is no barrier object in front of the data plane at all, so none of the
-barrier commands above apply. Every node started this way logs one WARN at
+`seal.enabled: false` is a step further than strategy `none`: there is no
+barrier object in front of the data plane at all, so none of the barrier
+commands above apply, and (per the previous section) it is only reachable
+with auth also disabled. Every node started this way logs one WARN at
 startup:
 
 ```
@@ -60,8 +72,18 @@ or an application-level re-seed — never a raw copy of the old data directory.
 
 ## First run
 
+`qrdb init` is the only way a fresh node's system barrier is ever brought
+up: it runs in the sealed window before anything is unsealed,
+initializes the system barrier with the strategy and secret you give it, and
+issues the bootstrap admin's certificate in the same call (see
+[../firstboot/user.md](../firstboot/user.md)). `qrdb barrier init` targeting
+the system barrier is refused with a typed error pointing back here — it
+remains the command for a tenant or database barrier, which a tenant admin
+initializes separately after the system is up.
+
 ```bash
-qrdb barrier init --barrier-strategy passphrase --passphrase '<passphrase>'
+qrdb init --so-pin <so-pin> --user-pin <user-pin> \
+  --barrier-strategy passphrase --passphrase '<passphrase>'
 qrdb barrier status
 ```
 
@@ -152,13 +174,19 @@ The directory and the file must be owned by the user the daemon runs as; no
 one else may write the directory or read the file. A node without its file waits, in phase `awaiting-credential`, and
 carries on as soon as the file is there. A Shamir target needs no file.
 
-**Use PINs for dual control.** Supplying one requires the other; the pair is
-what satisfies FIPS 140-3 and PCI-DSS v4.
-
-```bash
-qrdb barrier init --barrier-strategy passphrase --passphrase '<pp>' \
-                  --so-pin SO123 --user-pin USR123
-```
+**Dual control on the system barrier moved to `qrdb init`, not lost.**
+`barrier init --so-pin/--user-pin` was always the system barrier only
+(`POST /v1/barrier/initialize` carries no tenant scope), and now refuses it
+unconditionally. `qrdb init` is where that control lives now: `--so-pin`
+and `--user-pin` are both required on every call, not optional the way
+`barrier init`'s pair was, so the system barrier's bring-up (the same call
+that brings it up, since `qrdb init` is the only way a fresh node's system
+barrier is ever brought up) already satisfies FIPS 140-3 / PCI-DSS v4
+dual control -- one party supplying the SO PIN alone, or the user PIN
+alone, is never enough. **Tenant barriers are a real, separate gap**:
+`tenant barrier-init` has never accepted a PIN pair at all, and there is
+no dual-control path for a tenant's own barrier today. Documented as a
+gap, not built here.
 
 **Give one database its own key.** Only a non-raft database with its own
 `--data-dir`, created by an operator as the system tenant, accepts one today;

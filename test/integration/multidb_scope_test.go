@@ -85,7 +85,7 @@ func startScopeNode(t *testing.T) scopeNode {
 	waitForLeaderViaAdmin(t, ca, []int{adminPorts[0]}, 60*time.Second)
 	warmupWrite(t, ca, adminPorts[0], 15*time.Second)
 
-	certPath, keyPath := ca.generateAdminClientCert(t, dataDir)
+	certPath, keyPath := ca.boundAdminCert(t, dataDir)
 	return scopeNode{
 		grpcPort: grpcPorts[0],
 		quicPort: quicPorts[0],

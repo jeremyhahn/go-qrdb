@@ -197,13 +197,18 @@ func TestHolderCert_SignCSRInit(t *testing.T) {
 	for _, c := range hostileCSRs {
 		t.Run(c.name, func(t *testing.T) {
 			b := newHolderCATestbed(t)
-			e := newSystemHolders(t, b.ca)
-			_, err := e.svc.Initialize(context.Background(), b.ca, initOpts(0))
+			// go-qrdb#548: sign-csr is HOLDER-only (so, custodian) and
+			// PreOperationalOnly, so this must land -- and stay -- in
+			// StateEnrolling rather than the single-admin initOpts(0) that
+			// used to drive it straight to StateOperational.
+			opts := enrollingInitOpts(t)
+			svc := newTestCeremonyService(t, defaultConfig(), shamirBarrier(t, seal.NewMemoryBackend(), 2, 3))
+			_, err := svc.Initialize(context.Background(), b.ca, opts)
 			require.NoError(t, err)
 
-			res, err := e.svc.SignCSRInit(context.Background(), "operator-1", "so-pin-1234", newHostileCSRPEM(t, c), "operator")
+			res, err := svc.SignCSRInit(context.Background(), "custodian-1", opts.SOPin, newHostileCSRPEM(t, c), "custodian")
 			require.NoError(t, err)
-			b.assertAuthenticatesAs(t, res.CertPEM, "operator-1", "system")
+			b.assertAuthenticatesAs(t, res.CertPEM, "custodian-1", "system")
 		})
 	}
 }

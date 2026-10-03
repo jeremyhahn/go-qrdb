@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -60,6 +61,14 @@ type CeremonyService struct {
 	recovery *holderScope
 
 	thresholdRegistry *ThresholdRegistry
+
+	// lastAdminCertPEM is the bootstrap admin's most recently issued or
+	// adopted certificate (go-qrdb#548), held ONLY in memory -- see
+	// LastIssuedAdminCertPEM.
+	lastAdminCertPEM []byte
+
+	// lastAdminSource records which path produced lastAdminCertPEM.
+	lastAdminSource AdminCredentialSource
 }
 
 // Compile-time checks.
@@ -279,7 +288,12 @@ func (s *CeremonyService) scope(domain seal.QuorumDomain) (*holderScope, error) 
 
 // Initialize performs the initialization ceremony: it establishes the SO and
 // User PINs through the PINBackend (verifying them instead when barrier
-// initialization already did), issues the server TLS certificate, and — with
+// initialization already did), brings the system barrier up for the
+// single-admin path (go-qrdb#548: qrdb init is the ONLY system bootstrap),
+// resolves the server TLS identity (a configured CeremonyCA self-issues it;
+// a BYO-TLS node with ca == nil pins its own configured leaf instead),
+// issues the bootstrap admin's certificate through exactly one of the
+// CSR-sign / BYOC / generate paths (issueAdminCredential), and — with
 // Threshold >= 2 — enrols Officers as share holders and initializes the
 // barrier's Shamir custody, which splits the barrier UNSEAL KEY M-of-N and
 // seals one envelope to each holder. Nothing else is split.
@@ -296,46 +310,142 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		s.mu.Unlock()
 		return nil, ErrAlreadyInitialized
 	}
-	if ca == nil {
-		s.mu.Unlock()
-		return nil, ErrNilCA
-	}
 	if err := pin.Provision(ctx, s.pins, opts.SOPin, opts.UserPin); err != nil {
 		s.mu.Unlock()
 		return nil, err
 	}
 	s.deps.CA = ca
 
-	tlsCert, err := ca.IssueCertificate(ctx, &IssueCertRequest{
-		CommonName:   opts.Hostname,
-		SANs:         opts.SANs,
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		ValidityDays: 365,
-	})
-	if err != nil {
-		s.mu.Unlock()
-		s.logger.Error("failed to issue TLS certificate", slog.String("error", err.Error()))
-		return nil, ErrInitFailed
+	// isMofN is decided once and reused below: the barrier initialization
+	// this call performs branches on it, exactly like the officer
+	// enrollment further down.
+	isMofN := opts.Threshold >= 2
+
+	// Initialize the system barrier (go-qrdb#548): qrdb init is the ONLY
+	// system bootstrap, running in the sealed window before anything is
+	// unsealed. `barrier init` refuses the system barrier unconditionally
+	// and points here instead; `tenant barrier-init` is the separate,
+	// untouched command for a tenant's own barrier.
+	//
+	// M-of-N is excepted: the barrier legitimately stays sealed through
+	// enrollment and unseals later as officers reconstruct it from their
+	// shares -- a single operator-supplied secret here would defeat the
+	// quorum requirement that mode exists for.
+	if !isMofN {
+		if err := s.initializeSystemBarrierLocked(ctx, opts.Secret); err != nil {
+			s.mu.Unlock()
+			return nil, err
+		}
 	}
-	caCert, err := ca.CACertificate(ctx)
-	if err != nil {
-		s.mu.Unlock()
-		return nil, &CABundleError{Err: err}
+
+	// Resolve the TLS certificate, SPKI pin and CA bundle this call
+	// returns. A CeremonyCA self-issues the node's TLS certificate and
+	// pins its OWN certificate (the issuer): any certificate it issues
+	// chains to it, so pinning the CA is the stable, reusable pin. A
+	// BYO-TLS node (ca == nil) has no such CA -- the operator's leaf IS
+	// the server identity, and this process holds no key to self-issue a
+	// different one with -- so it pins THAT leaf's own public key
+	// instead, and returns it, and the node's configured client-CA trust
+	// anchor, unchanged rather than self-issuing or deriving anything.
+	var tlsCertPEM, caBundle []byte
+	var spkiPin string
+	if ca != nil {
+		tlsCert, err := ca.IssueCertificate(ctx, &IssueCertRequest{
+			CommonName:   opts.Hostname,
+			SANs:         opts.SANs,
+			KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+			ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+			ValidityDays: 365,
+		})
+		if err != nil {
+			s.mu.Unlock()
+			s.logger.Error("failed to issue TLS certificate", slog.String("error", err.Error()))
+			return nil, ErrInitFailed
+		}
+		tlsCertPEM = tlsCert.CertPEM
+
+		caCert, err := ca.CACertificate(ctx)
+		if err != nil {
+			s.mu.Unlock()
+			return nil, &CABundleError{Err: err}
+		}
+		spkiPin, err = computeSPKIPin(caCert)
+		if err != nil {
+			s.mu.Unlock()
+			return nil, err
+		}
+		caBundle, err = ca.CABundle()
+		if err != nil {
+			s.mu.Unlock()
+			return nil, &CABundleError{Err: err}
+		}
+	} else {
+		block, _ := pem.Decode(s.config.ServerCertPEM)
+		if block == nil {
+			s.mu.Unlock()
+			return nil, &NoServerCertificateError{}
+		}
+		serverCert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			s.mu.Unlock()
+			return nil, &NoServerCertificateError{Cause: err}
+		}
+		spkiPin, err = computeSPKIPin(serverCert)
+		if err != nil {
+			s.mu.Unlock()
+			s.logger.Error("failed to compute SPKI pin from server certificate", slog.String("error", err.Error()))
+			return nil, ErrInitFailed
+		}
+		tlsCertPEM = s.config.ServerCertPEM
+		caBundle = s.config.ClientCACertPEM
 	}
-	spkiPin, err := computeSPKIPin(caCert)
+
+	result := &InitResult{SPKIPin: spkiPin, CACertPEM: caBundle, TLSCertPEM: tlsCertPEM}
+
+	// Issue the bootstrap admin's certificate (go-qrdb#548). Signing/adopting
+	// happens HERE, synchronously, where the CA is available; binding it to
+	// the admin's user record happens later at first boot, once the admin
+	// account exists (sign-csr-style identity minting needs no account; only
+	// binding does).
+	//
+	// The result is kept ONLY in memory (s.lastAdminCert*) -- NOT written to
+	// the seal/credential store, which is per-node by design (every cluster
+	// node holds its own system barrier and master key, never shared) and so
+	// cannot carry a record the Raft LEADER's first boot needs to read,
+	// because initialize may run against any node. The composer (cmd/qrdbd,
+	// sdk/go/node) is responsible for writing LastIssuedAdminCertPEM into the
+	// REPLICATED system store as soon as it exists, which is durable, works
+	// identically in standalone and Raft mode, and survives backup/restore.
+	// A crash between this call returning and that write landing loses the
+	// in-memory value; the admin-credential step is retriable (go-qrdb#548,
+	// ReissueAdminCredential) until an admin binding exists, so that gap is
+	// recoverable rather than a permanent loss. The key, when generated, is
+	// NEVER written anywhere by this package.
+	adminCertPEM, adminKeyPEM, adminSource, err := issueAdminCredential(ctx, ca, opts, caBundle)
 	if err != nil {
 		s.mu.Unlock()
+		s.logger.Error("bootstrap admin credential issuance failed", slog.String("error", err.Error()))
 		return nil, err
 	}
-	caBundle, err := ca.CABundle()
-	if err != nil {
-		s.mu.Unlock()
-		return nil, &CABundleError{Err: err}
+	s.lastAdminCertPEM = adminCertPEM
+	s.lastAdminSource = adminSource
+	result.AdminCertPEM = adminCertPEM
+	result.AdminKeyPEM = adminKeyPEM
+	result.AdminCredentialSource = adminSource
+	s.logger.Info("ceremony: bootstrap admin credential issued",
+		slog.String("source", string(adminSource)))
+	if adminSource == AdminCredentialGenerated {
+		// The generate path is reachable from every transport, not only
+		// `qrdb init`'s own client-side warning (cmd/qrdb/init.go): the
+		// server itself must say, in its own log, that this credential does
+		// not meet FedRAMP, HIPAA or PCI DSS 4.0 and is dev/test/evaluation
+		// only (docs/firstboot/user.md).
+		s.logger.Warn("ceremony: bootstrap admin credential GENERATED in-process -- " +
+			"dev/test/evaluation ONLY, does not meet FedRAMP, HIPAA or PCI DSS 4.0; " +
+			"use --admin-csr or --admin-cert for a production deployment")
 	}
-	result := &InitResult{SPKIPin: spkiPin, CACertPEM: caBundle, TLSCertPEM: tlsCert.CertPEM}
 
-	if opts.Threshold < 2 {
+	if !isMofN {
 		s.becomeOperationalLocked(ctx)
 		s.mu.Unlock()
 		result.State = StateOperational
@@ -400,6 +510,43 @@ func (s *CeremonyService) GenerateRecoveryKeys(ctx context.Context, threshold in
 	return s.recovery.generateRecoveryKeys(ctx, &s.mu, barrier, threshold, policy)
 }
 
+// initializeSystemBarrierLocked brings the system barrier up as part of
+// Initialize (go-qrdb#548), using whatever strategy the daemon registered
+// it with (seal.StorageBarrier.Initialize's own best-strategy selection --
+// the same one `barrier init` has always used; this does not choose a
+// different one). secret is BORROWED exactly as seal.StorageBarrier's own
+// Initialize/Unseal methods treat their creds parameter: copied into
+// protected memory and destroyed before this returns, leaving the caller's
+// slice for it to wipe. Must be called with s.mu held for writing.
+//
+// A barrier already initialized -- a retry after a crash between this
+// succeeding and the ceremony's own state committing, or simply not sealed
+// to begin with -- is tolerated: Initialize's ErrAlreadyInitialized falls
+// through to Unseal with the same secret, so a retry with the same
+// credential converges rather than failing closed on work it already did.
+func (s *CeremonyService) initializeSystemBarrierLocked(ctx context.Context, secret []byte) error {
+	if !s.barrier.IsSealed() {
+		return nil
+	}
+	creds, err := seal.CredentialsFor(secret)
+	if err != nil {
+		return &SystemBarrierInitError{Cause: err}
+	}
+	defer creds.Secret.Destroy()
+
+	if err := s.barrier.Initialize(ctx, creds); err != nil {
+		if !errors.Is(err, seal.ErrAlreadyInitialized) {
+			s.logger.Error("failed to initialize system barrier", slog.String("error", err.Error()))
+			return &SystemBarrierInitError{Cause: err}
+		}
+		if err := s.barrier.Unseal(ctx, creds); err != nil {
+			s.logger.Error("failed to unseal already-initialized system barrier", slog.String("error", err.Error()))
+			return &SystemBarrierInitError{Cause: err}
+		}
+	}
+	return nil
+}
+
 // validateInitOptions checks the request before any work is done.
 func validateInitOptions(opts *InitializeOptions) error {
 	if opts.SOPin == "" {
@@ -437,15 +584,25 @@ func validateInitOptions(opts *InitializeOptions) error {
 // profile decides what the certificate is: role "so" and role "custodian"
 // carry a holder profile (holderprofile.Is), so the certificate is a HOLDER
 // certificate that authenticates with no roles and is refused every RBAC
-// permission; the other roles yield a login certificate for that RBAC role.
+// permission -- roleProfileMap carries no other roles (go-qrdb#548): a login
+// certificate for a user-facing role is issued by the tenant Admin through
+// the certs CSR-sign or BYOC path instead, which requires the caller to
+// already be authenticated and authorized, not merely to know the SO PIN.
 // The SO PIN is verified by the PINBackend (hashed, constant-time), never
 // compared here.
+//
+// SignCSRInit is PreOperationalOnly (go-qrdb#548, matching
+// sealedwindow.VerbCeremonySignCSR): it requires the enrolling state and
+// refuses once the ceremony has reached operational, even through an
+// authenticated transport. A node restarted sealed after the ceremony
+// already completed cannot mint a fresh holder certificate through this
+// path -- there is nothing left here for it to enroll.
 func (s *CeremonyService) SignCSRInit(ctx context.Context, username, soPin string, csrPEM []byte, role string) (*SignCSRInitResult, error) {
 	s.mu.Lock()
 	state, deps, pins := s.state, s.deps, s.pins
 	s.mu.Unlock()
 
-	if state != StateEnrolling && state != StateOperational {
+	if state != StateEnrolling {
 		return nil, ErrNotInitializedOrEnrolling
 	}
 	if deps.CA == nil {

@@ -29,6 +29,8 @@ package conformance
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"os"
@@ -435,6 +437,7 @@ func (c cell) boot(t *testing.T) clients {
 
 	if c.transport.remote() {
 		seedGuardedIdentity(t, n)
+		enrollMatrixCert(t, n, tenantid.System, clientKP)
 		return dialRemote(t, c, n, ca, clientKP)
 	}
 
@@ -516,6 +519,36 @@ func seedGuardedIdentity(t *testing.T, n *node.Node) {
 		RoleIDs:  []string{r.ID},
 	}); err != nil {
 		t.Fatalf("create user: %v", err)
+	}
+}
+
+// enrollMatrixCert binds clientKP's certificate to the "matrix" account in
+// clientTenant via the canonical users:add_cert_binding verb -- the same way
+// production enrols the bootstrap admin's certificate during first boot
+// (pkg/firstboot.UserCertBinder).
+//
+// auth.mtls_binding_policy defaults to "required", so a remote cell's own
+// acting identity needs a live binding before it can authenticate at all; a
+// "matrix" user left unenrolled is locked out of the very node it was just
+// seeded on, not merely unauthorized.
+func enrollMatrixCert(t *testing.T, n *node.Node, clientTenant string, clientKP *qrdbdharness.KeyPair) {
+	t.Helper()
+	block, _ := pem.Decode(clientKP.CertPEM)
+	if block == nil {
+		t.Fatalf("matrix client cert carries no PEM block")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse matrix client cert: %v", err)
+	}
+	svc := n.Services()
+	ctx := boundedCtx(t)
+	u, err := svc.User.GetUserByUsername(ctx, clientTenant, "matrix")
+	if err != nil {
+		t.Fatalf("lookup matrix user in %s: %v", clientTenant, err)
+	}
+	if _, err := svc.User.AddCertBinding(ctx, u.ID, user.ComputeSPKIThumbprint(cert), 0); err != nil {
+		t.Fatalf("enrol matrix cert binding: %v", err)
 	}
 }
 

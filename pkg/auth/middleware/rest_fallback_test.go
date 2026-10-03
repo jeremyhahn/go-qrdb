@@ -134,7 +134,7 @@ func TestRESTMiddleware_Fallback_NotConsultedForOtherRoutes(t *testing.T) {
 // precedence: when qrdb's own authenticators produce an identity, the module
 // fallback never runs.
 func TestRESTMiddleware_Fallback_SkippedWhenUpstreamAuthenticates(t *testing.T) {
-	authn := &mockAuthenticator{name: "mtls", identity: &auth.Identity{Subject: "cert-user", TenantID: "t1"}}
+	authn := &mockAuthenticator{name: "test-authn", identity: &auth.Identity{Subject: "cert-user", TenantID: "t1"}}
 	fb := &mockFallback{identity: &auth.Identity{Subject: "token-user"}}
 	m := New(&mockAuthorizer{}, WithAuthenticator(authn))
 

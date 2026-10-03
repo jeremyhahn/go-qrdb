@@ -179,8 +179,14 @@ func (f *enrollmentFixture) registerAnonymouslyAt(t *testing.T, path, username s
 // caller a certificate signed by the cluster CA.
 func TestSealedWindow_OfficerEnrollmentClosedAfterInitialization(t *testing.T) {
 	f := startEnrollmentListener(t, func(ctx context.Context, b *seal.StorageBarrier) {
-		if err := service.NewBarrierService(b).BarrierInitialize(ctx, []byte("sealed-window-enrollment-pass")); err != nil {
-			t.Fatalf("BarrierInitialize: %v", err)
+		// The system barrier is brought up directly here, on the raw
+		// barrier, before startEnrollmentListener wraps it in a
+		// ceremony-backed BarrierService -- the shape go-qrdb#548 refuses
+		// BarrierInitialize for. This test is about the enrollment
+		// listener's PreOperationalOnly gate, not about how the barrier
+		// came up.
+		if err := b.Initialize(ctx, seal.MustCredentials([]byte("sealed-window-enrollment-pass"))); err != nil {
+			t.Fatalf("Initialize: %v", err)
 		}
 		if err := b.Seal(); err != nil {
 			t.Fatalf("Seal: %v", err)

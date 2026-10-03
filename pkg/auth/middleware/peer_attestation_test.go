@@ -121,8 +121,9 @@ type gateFixture struct {
 func newGateFixture(t *testing.T) *gateFixture {
 	t.Helper()
 	svc := newRealUserStore(t)
-	createUser(t, svc, "acme", "bob", []string{"operator"})
+	u := createUser(t, svc, "acme", "bob", []string{"operator"})
 	cert := mintCert(t, "bob", "acme", nil, "")
+	enroll(t, svc, u.ID, cert)
 
 	now := time.Now().UTC()
 	v := &cacheVerifier{evidence: map[string]cachedEvidence{}}
@@ -462,7 +463,9 @@ func TestNewPeerAttestationGate_RefusesIncompletePolicy(t *testing.T) {
 func transportGate(t *testing.T, perm permission.Permission) (*AuthMiddleware, certKey, *cacheVerifier) {
 	t.Helper()
 	svc := newRealUserStore(t)
-	createUser(t, svc, "acme", "bob", []string{"operator"})
+	u := createUser(t, svc, "acme", "bob", []string{"operator"})
+	ck := mintCert(t, "bob", "acme", nil, "")
+	enroll(t, svc, u.ID, ck)
 	v := &cacheVerifier{evidence: map[string]cachedEvidence{}}
 	gate, err := NewPeerAttestationGate(v, PeerAttestationPolicy{Permissions: []permission.Permission{perm}, MaxEvidenceAge: time.Minute})
 	if err != nil {
@@ -473,7 +476,7 @@ func transportGate(t *testing.T, perm permission.Permission) (*AuthMiddleware, c
 		WithUserService(svc),
 		WithPeerAttestationGate(gate),
 	)
-	return m, mintCert(t, "bob", "acme", nil, ""), v
+	return m, ck, v
 }
 
 func grpcPeerContext(ck certKey) context.Context {

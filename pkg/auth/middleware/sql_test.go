@@ -29,7 +29,7 @@ import (
 
 func TestAuthenticateSQL_Success(t *testing.T) {
 	id := &auth.Identity{Subject: "alice", TenantID: "t1"}
-	authn := &mockAuthenticator{name: "mtls", identity: id}
+	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{}
 
 	m := New(authz, WithAuthenticator(authn))
@@ -88,7 +88,7 @@ func TestAuthenticateSQL_NoAuthenticators(t *testing.T) {
 
 func TestAuthenticateSQL_UserEnrichment(t *testing.T) {
 	id := &auth.Identity{Subject: "charlie", TenantID: "t1", Roles: []string{"base"}}
-	authn := &mockAuthenticator{name: "mtls", identity: id}
+	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{}
 	users := &mockUserServicer{
 		user: &user.User{
@@ -116,7 +116,7 @@ func TestAuthenticateSQL_UserEnrichment(t *testing.T) {
 
 func TestAuthenticateSQL_UserDisabled(t *testing.T) {
 	id := &auth.Identity{Subject: "disabled-user", TenantID: "t1"}
-	authn := &mockAuthenticator{name: "mtls", identity: id}
+	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{}
 	users := &mockUserServicer{
 		user: &user.User{
@@ -141,7 +141,7 @@ func TestAuthenticateSQL_UserDisabled(t *testing.T) {
 
 func TestAuthenticateSQL_StoreUnavailable(t *testing.T) {
 	id := &auth.Identity{Subject: "alice", TenantID: "t1"}
-	authn := &mockAuthenticator{name: "mtls", identity: id}
+	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{}
 	users := &mockUserServicer{err: errors.New("raft not ready")}
 

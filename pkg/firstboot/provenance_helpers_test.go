@@ -19,6 +19,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -65,13 +66,16 @@ func TestUserResolver_Precedence(t *testing.T) {
 	explicit := &fakeUsers{}
 	users := &fakeUsers{}
 
-	if got := userResolver(Dependencies{Users: users, UserResolver: explicit}); got != UserResolver(explicit) {
+	if got := userResolver(Dependencies{
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled, Users: users, UserResolver: explicit}); got != UserResolver(explicit) {
 		t.Errorf("explicit resolver not preferred: got %v", got)
 	}
-	if got := userResolver(Dependencies{Users: users}); got != UserResolver(users) {
+	if got := userResolver(Dependencies{
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled, Users: users}); got != UserResolver(users) {
 		t.Errorf("Users that can resolve was not used: got %v", got)
 	}
-	if got := userResolver(Dependencies{Users: usersOnlyCreator{}}); got != nil {
+	if got := userResolver(Dependencies{
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled, Users: usersOnlyCreator{}}); got != nil {
 		t.Errorf("want nil for a Users that cannot resolve, got %v", got)
 	}
 }
@@ -116,7 +120,8 @@ func allBuiltInRolesPresent() *fakeRoles {
 func TestCreateAdminUser_IDCollisionWithAnotherUserRetries(t *testing.T) {
 	users := &scriptedAdminUsers{createErrs: []error{&user.UserIDExistsError{ID: 7, TenantID: tenantid.System}}}
 	result, err := Initialize(context.Background(), Dependencies{
-		Tenants: &fakeTenants{createAlreadyErr: true}, Users: users, Roles: allBuiltInRolesPresent(),
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           &fakeTenants{createAlreadyErr: true}, Users: users, Roles: allBuiltInRolesPresent(),
 		CA: &fakeCA{cert: realCertPEM(t), key: []byte("KEY")}, Logger: discardLogger(),
 	})
 	if err != nil {
@@ -133,7 +138,8 @@ func TestCreateAdminUser_IDCollisionRetriesAreBounded(t *testing.T) {
 	collide := &user.UserIDExistsError{ID: 7, TenantID: tenantid.System}
 	users := &scriptedAdminUsers{createErrs: []error{collide, collide, collide, collide, collide}}
 	_, err := Initialize(context.Background(), Dependencies{
-		Tenants: &fakeTenants{createAlreadyErr: true}, Users: users, Roles: allBuiltInRolesPresent(),
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           &fakeTenants{createAlreadyErr: true}, Users: users, Roles: allBuiltInRolesPresent(),
 		CA: &fakeCA{cert: []byte("CERT"), key: []byte("KEY")}, Logger: discardLogger(),
 	})
 	var ace *AdminUserCreationError
@@ -153,7 +159,8 @@ func TestCreateAdminUser_UsernameSquatterIsRefusedWithoutRetry(t *testing.T) {
 		lookup:     &user.User{ID: 5, Username: adminUsername, TenantID: tenantid.System, RoleIDs: []string{"some-ordinary-role"}, Lifecycle: user.LifecycleActive},
 	}
 	_, err := Initialize(context.Background(), Dependencies{
-		Tenants: &fakeTenants{createAlreadyErr: true}, Users: users, Roles: allBuiltInRolesPresent(),
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           &fakeTenants{createAlreadyErr: true}, Users: users, Roles: allBuiltInRolesPresent(),
 		CA: &fakeCA{cert: []byte("CERT"), key: []byte("KEY")}, Logger: discardLogger(),
 	})
 	var ace *AdminUserCreationError

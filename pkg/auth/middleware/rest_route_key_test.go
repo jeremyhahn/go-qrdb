@@ -167,13 +167,16 @@ func TestRESTMiddleware_UnmatchedPathUnderModulePrefixRefused(t *testing.T) {
 	routes := NewRESTRouteRegistry()
 	routes.Register(http.MethodGet, "/v1/devices/{id}", permission.KVGet)
 	routes.RegisterModulePrefix("/v1/devices/")
-	m := New(&mockAuthorizer{}, WithAuthenticator(auth.NewMTLSAuthenticator()))
+	svc := newRealUserStore(t)
+	u := createUser(t, svc, "acme", "bob", []string{"operator"})
+	ck := mintCert(t, "bob", "acme", nil, "")
+	enroll(t, svc, u.ID, ck)
+	m := New(&mockAuthorizer{}, WithAuthenticator(auth.NewMTLSAuthenticator()), WithUserService(svc))
 	reached := 0
 	h := m.RESTMiddleware(routes, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		reached++
 		w.WriteHeader(http.StatusTeapot)
 	}))
-	ck := mintCert(t, "bob", "acme", nil, "")
 	serve := func(path string) int {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{ck.cert}, VerifiedChains: [][]*x509.Certificate{{ck.cert}}}

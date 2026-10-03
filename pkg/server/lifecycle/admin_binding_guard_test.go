@@ -110,12 +110,12 @@ func TestBuildServices_RequiredPolicyGuardsTheAdminsLastBinding(t *testing.T) {
 }
 
 func TestBuildServices_EnrolledPolicyLeavesWithdrawalOpen(t *testing.T) {
-	node, err := buildWithPolicy(t, "")
+	node, err := buildWithPolicy(t, auth.MTLSBindingEnrolled.String())
 	if err != nil {
 		t.Fatalf("BuildServices: %v", err)
 	}
 	if err := withdrawAdminsOnlyBinding(t, node); err != nil {
-		t.Fatalf("withdrawal under the default policy = %v, want nil", err)
+		t.Fatalf("withdrawal under the enrolled opt-out = %v, want nil", err)
 	}
 }
 
@@ -129,7 +129,9 @@ func TestBuildServices_UnknownBindingPolicyFails(t *testing.T) {
 
 func TestUserStoreOptions(t *testing.T) {
 	// Every policy sets the store's logger; "required" adds the admin guard.
-	for policy, want := range map[string]int{"": 1, "enrolled": 1, "required": 2} {
+	// The empty string resolves to "required" (go-qrdb#548's zero value), so
+	// it carries the guard too.
+	for policy, want := range map[string]int{"": 2, "enrolled": 1, "required": 2} {
 		opts, err := lifecycle.UserStoreOptions(policy, slog.Default())
 		if err != nil || len(opts) != want {
 			t.Fatalf("UserStoreOptions(%q) = (%d options, %v), want %d", policy, len(opts), err, want)

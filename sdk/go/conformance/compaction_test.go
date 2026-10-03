@@ -17,6 +17,8 @@ package conformance
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"testing"
 
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
@@ -157,15 +159,19 @@ func bootCompactionCellWith(t *testing.T, tk transportKind, configure func(*qrdb
 			out.base[id] = n.Client()
 			continue
 		}
-		seedCompactionIdentity(t, n, id)
-		out.base[id] = dialAsTenant(t, tk, n, ca, id)
+		userID := seedCompactionIdentity(t, n, id)
+		out.base[id] = dialAsTenant(t, tk, n, ca, id, userID)
 	}
 	return out
 }
 
 // seedCompactionIdentity creates, in tenantID, a role holding
-// compactionPermissions and the user its client certificate names.
-func seedCompactionIdentity(t *testing.T, n *node.Node, tenantID string) {
+// compactionPermissions and the user its client certificate names. It
+// returns the created user's ID so dialAsTenant can bind the certificate it
+// mints to it: under the default auth.mtls_binding_policy "required", a
+// certificate matching no enrolled binding authenticates as no one,
+// regardless of CN/OU match.
+func seedCompactionIdentity(t *testing.T, n *node.Node, tenantID string) uint64 {
 	t.Helper()
 	svc := n.Services()
 	ctx := boundedCtx(t)
@@ -177,19 +183,25 @@ func seedCompactionIdentity(t *testing.T, n *node.Node, tenantID string) {
 	if err != nil {
 		t.Fatalf("create role in %s: %v", tenantID, err)
 	}
-	if _, err := svc.User.CreateUser(ctx, &user.CreateUserRequest{
+	u, err := svc.User.CreateUser(ctx, &user.CreateUserRequest{
 		WithoutEmailLoginKey: true,
 		Username:             "compactor",
 		TenantID:             tenantID,
 		RoleIDs:              []string{r.ID},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("create user in %s: %v", tenantID, err)
 	}
+	return u.ID
 }
 
 // dialAsTenant connects an SDK client whose certificate authenticates as the
-// "compactor" user of tenantID.
-func dialAsTenant(t *testing.T, tk transportKind, n *node.Node, ca *qrdbdharness.CA, tenantID string) *sdk.Client {
+// "compactor" user of tenantID. The minted certificate's SPKI thumbprint is
+// bound to userID first, matching what first boot's own AddCertBinding call
+// does for the bootstrap admin: under the default auth.mtls_binding_policy
+// "required", an account with no enrolled binding admits no certificate at
+// all, CN/OU match or not.
+func dialAsTenant(t *testing.T, tk transportKind, n *node.Node, ca *qrdbdharness.CA, tenantID string, userID uint64) *sdk.Client {
 	t.Helper()
 	kp, err := ca.Issue(t.TempDir(), qrdbdharness.WithSubject("compactor", tenantID))
 	if err != nil {
@@ -199,6 +211,19 @@ func dialAsTenant(t *testing.T, tk transportKind, n *node.Node, ca *qrdbdharness
 	if err != nil {
 		t.Fatalf("client TLS cert: %v", err)
 	}
+
+	block, _ := pem.Decode(kp.CertPEM)
+	if block == nil {
+		t.Fatalf("issued client cert for %s: no CERTIFICATE block in PEM", tenantID)
+	}
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse issued client cert for %s: %v", tenantID, err)
+	}
+	if _, err := n.Services().User.AddCertBinding(boundedCtx(t), userID, user.ComputeSPKIThumbprint(leaf), 0); err != nil {
+		t.Fatalf("bind client cert for %s: %v", tenantID, err)
+	}
+
 	client, err := sdk.NewClient(tk.dial(t, n, &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		RootCAs:      ca.Pool,

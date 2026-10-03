@@ -1,6 +1,6 @@
 # Firstboot and System Bootstrap — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-02
 
 Getting a brand-new server from nothing to something you can log into.
 
@@ -20,11 +20,27 @@ curl -k https://db.example.com/v1/config/initialized
 Simplest case, one administrator:
 
 ```bash
-qrdb init --so-pin SOPIN --user-pin USERPIN
+qrdb init --so-pin SOPIN --user-pin USERPIN \
+          --barrier-strategy passphrase --passphrase '<passphrase>'
 ```
 
-That one call creates the barrier, the CA, the admin certificate and the six
-built-in roles, transactionally.
+That one call brings up the system barrier (`--barrier-strategy` defaults to
+`passphrase`, which --- unlike `none` --- needs the `--passphrase` above;
+see [../barrier-seal/user.md](../barrier-seal/user.md) for the other
+strategies), the CA and the six built-in roles. The ceremony also resolves
+the bootstrap admin's credential right there (see "Bringing your own admin
+credential" below) and prints it; first boot binds it to the admin account
+moments later, once the account exists. By default
+(`auth.mtls_binding_policy: required`) the daemon will not finish
+starting until that binding has committed — see Troubleshooting if it does
+not.
+
+`qrdb init` is the ONLY way a fresh node's system barrier is ever brought
+up: `qrdb barrier init` targeting it is refused with a typed error pointing
+back here. Auth also now requires the seal subsystem --- an auth-enabled
+node started with `seal.enabled: false` is refused at config validation ---
+so a deployment that wants no encryption runs `--barrier-strategy none`
+above (no `--passphrase`) rather than disabling the seal.
 
 For a production M-of-N setup, name the officers up front:
 
@@ -69,24 +85,41 @@ holder roster and authenticates with its holder certificate and factors. See
 [../shamir-custody/](../shamir-custody/).
 
 Plus an admin user for the system tenant, and a data directory containing
-`ca.pem`, the server certificate and key, the admin client certificate, the
-storage directory, the Raft WAL and a `.qrdb.lock` preventing a second daemon
-from starting on the same data.
+`ca.pem`, the server certificate and key, the storage directory, the Raft WAL
+and a `.qrdb.lock` preventing a second daemon from starting on the same data.
+There is no per-node admin certificate file: the admin's credential travels
+through the ceremony and the cluster's own replicated store, not
+a file on one node's disk.
 
 ## Bringing your own admin credential
 
-Three ways the admin identity can be established, and you choose by what you
-give the daemon:
+Exactly one of three paths produces the bootstrap admin's certificate, chosen
+by which flag you pass to `qrdb init` (none of these are an `admin-user` CLI
+flag — all three are initialize-time, because the credential is chosen once,
+at the same moment as the barrier and the CA):
 
-- **Present a certificate you already hold** — a PIV card, a corporate PKI
-  credential. Nothing is issued; your existing certificate is validated against
-  a pool *you* supply and adopted. Your key never leaves your token.
-- **Submit a CSR** — the server signs it. Your key never leaves your machine.
-- **Let the CA generate one** — you receive a key and certificate bundle.
+- **`--admin-csr <path>`** — a CSR you generated with your own key (ideally on
+  a PIV card or a security key). The ceremony's CA signs it as
+  `CN=admin, OU=[system, administrator]`, using only the CSR's key. Your
+  private key never leaves your machine.
+- **`--admin-cert <path>`** (optionally with `--admin-cert-pool <path>`) — a
+  certificate you already hold. Nothing is issued: the certificate is
+  validated against the given pool (or, if you omit it, against this
+  deployment's own CA bundle) and adopted unchanged. Your key never leaves
+  your token.
+- **Neither flag (the default)** — the server **generates** a key pair and
+  returns the private key in the response, exactly once. **This path is for
+  development, testing and evaluation only.** It does not meet FedRAMP, HIPAA
+  or PCI DSS 4.0, because the server briefly held the private key in memory.
+  `qrdb init` prints a loud warning when it is used. Use `--admin-csr` or
+  `--admin-cert` for any deployment that must meet those controls.
 
-The presented-certificate path is checked **first**. If you present a
-certificate, that is the identity that gets bound — the server will not quietly
-mint a second one from its CA and bind that instead.
+The certificate (and, for the generate path, the key) are printed by `qrdb
+init` itself — capture them immediately; the key cannot be retrieved again.
+First boot binds the certificate's thumbprint to the admin account once that
+account exists, which may be moments after `qrdb init` returns rather than
+inside the same call: see Troubleshooting below for what to do if the daemon
+does not finish starting.
 
 ## Troubleshooting
 
@@ -94,29 +127,39 @@ mint a second one from its CA and bind that instead.
 them you would end up with a quorum arrangement nobody holds a share in, so it
 fails closed.
 
-**"auth.mtls_binding_policy is "required" but the bootstrap admin … could not
-log in under it".** The fleet requires every certificate login to present an
-enrolled key, and the admin would have none — because first boot has nothing to
-bind it with, or because the admin already exists without a binding. Start with
-`mtls_binding_policy: enrolled`, enrol the admin's certificate
-(`POST /users/{id}/cert-bindings`), then set `required`. See
+**"no admin certificate binding and no pending admin credential record".**
+First boot waited for the admin's certificate to arrive (it may have been
+issued by `qrdb init` on a different node of the cluster) and nothing showed
+up in time. The admin-credential step is retriable: re-run `qrdb init` with
+`--admin-csr`, `--admin-cert`, or no flags to generate, against the node that
+is current Raft leader (`qrdb status`), and it issues a fresh credential and
+retries the binding. Nothing about this is destructive — it does not touch the
+barrier, the CA, or the SO/User PINs.
+
+**"the bootstrap admin … could not log in under it" (auth.mtls_binding_policy
+is "required").** The admin exists but has no live certificate binding —
+typically because its one enrolled key expired, or because a fleet was moved
+to `required` before every account finished migrating. Start with
+`auth.mtls_binding_policy: enrolled`, enrol the admin's certificate
+(`POST /users/{id}/cert-bindings`), then set `required` again. See
 [../identity-rbac/user.md](../identity-rbac/user.md#moving-a-fleet-to-required-certificate-enrolment).
+Note `enrolled` does **not** meet FedRAMP, HIPAA or PCI DSS 4.0 — it is a
+migration step, not a resting configuration.
 
-**"conflicting admin cert inputs".** You gave both a CSR and a certificate.
-Signing the CSR would leave your certificate unbound; adopting the certificate
-would discard your CSR. Pick one.
+**"AdminCSRPEM and AdminCertPEM are mutually exclusive" / "conflicting admin
+cert inputs".** You gave both `--admin-csr` and `--admin-cert`. Signing the
+CSR would leave your certificate unbound; adopting the certificate would
+discard your CSR. Pick one.
 
-**"missing admin cert pool".** You presented a certificate but no pool to
-validate it against. An absent pool is refused rather than treated as "trust
-anything". Note the pool is **not** the platform CA — your certificate came
-from somewhere else, so validating it against the CA this deployment is about
-to create would reject every legitimate input.
-
-**"admin cert rejected".** It does not parse, it has expired, or it does not
-chain to the pool you supplied.
+**"bootstrap admin credential rejected".** The presented certificate (or the
+pool you supplied) does not parse, the certificate has expired, or it does not
+chain to the pool (or, with no `--admin-cert-pool`, to this deployment's own
+CA).
 
 **Re-running `init` did nothing.** Correct — bootstrap is idempotent. Existing
-roles and the admin user cause an immediate return.
+roles and the admin user cause an immediate return. If the admin already holds
+a certificate binding, a retried admin-credential flag is refused rather than
+silently replacing a working binding.
 
 **On a cluster, a node says "not leader".** Only the leader creates; followers
 wait for the writes to replicate. Nothing to do.
@@ -138,8 +181,8 @@ you. See [../barrier-seal/user.md](../barrier-seal/user.md).
 their permissions are fixed. Create additional roles instead:
 [../identity-rbac/user.md](../identity-rbac/user.md).
 
-**You lost the admin certificate.** Issue a new one with
-`qrdb ca issue --username admin`, then bind it — see
-[../certificate-authority/user.md](../certificate-authority/user.md) and
-[../identity-rbac/user.md](../identity-rbac/user.md). If you have also lost the
-ability to authenticate at all, you are into barrier recovery territory.
+**You lost the admin certificate.** Re-run `qrdb init` with a fresh
+`--admin-csr` or `--admin-cert` (see "no admin certificate binding" above) —
+this is the same retry path, not a separate recovery procedure. If you have
+also lost the ability to authenticate at all, you are into barrier recovery
+territory.

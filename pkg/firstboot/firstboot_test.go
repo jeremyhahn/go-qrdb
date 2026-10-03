@@ -35,6 +35,7 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -361,7 +362,8 @@ func TestInitialize_BindsAdminCertThumbprint(t *testing.T) {
 	certPEM := realCertPEM(t)
 	binder := &fakeBinder{}
 	result, err := Initialize(context.Background(), Dependencies{
-		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		CA:     &fakeCA{cert: certPEM, key: []byte("KEY")},
 		Binder: binder, Logger: discardLogger(),
 	})
@@ -388,7 +390,8 @@ func TestInitialize_PathB_CSRSign(t *testing.T) {
 	binder := &fakeBinder{}
 	ca := &fakeCA{cert: realCertPEM(t), key: []byte("CA-KEY")}
 	result, err := Initialize(context.Background(), Dependencies{
-		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		CA:          ca, // present, but CSR path must take precedence
 		Signer:      signer,
 		AdminCSRPEM: []byte("THE-CSR"),
@@ -427,11 +430,12 @@ func TestInitialize_FreshBootCreatesEverything(t *testing.T) {
 	ca := &fakeCA{cert: certPEM, key: []byte("KEY-PEM")}
 
 	result, err := Initialize(context.Background(), Dependencies{
-		Tenants: tenants,
-		Users:   users,
-		Roles:   roles,
-		CA:      ca,
-		Logger:  discardLogger(),
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           tenants,
+		Users:             users,
+		Roles:             roles,
+		CA:                ca,
+		Logger:            discardLogger(),
 	})
 	if err != nil {
 		t.Fatalf("Initialize: %v", err)
@@ -514,6 +518,7 @@ func TestInitialize_StrictSeparationOfDuties(t *testing.T) {
 	roles := &fakeRoles{}
 
 	_, err := Initialize(context.Background(), Dependencies{
+		MTLSBindingPolicy:  auth.MTLSBindingEnrolled,
 		Tenants:            tenants,
 		Users:              users,
 		Roles:              roles,
@@ -558,8 +563,9 @@ func TestInitialize_StrictSeparationOfDuties(t *testing.T) {
 // PromoteToSystemUser, so it stands in for that adapter shape here.
 func TestReconcileExistingAdmin_UnsupportedUserCreatorIsANoOp(t *testing.T) {
 	got := reconcileExistingAdmin(context.Background(), Dependencies{
-		Users:  &fakeUsers{exists: true},
-		Logger: discardLogger(),
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Users:             &fakeUsers{exists: true},
+		Logger:            discardLogger(),
 	}, tenantid.System)
 	if got != nil {
 		t.Errorf("reconcileExistingAdmin(unsupported UserCreator) = %+v, want nil", got)
@@ -595,8 +601,9 @@ func (f *fakeSystemPromoter) PromoteToSystemUser(_ context.Context, _ uint64) (*
 // out of an otherwise-successful first-boot.
 func TestReconcileExistingAdmin_GetUserByUsernameErrorIsANoOp(t *testing.T) {
 	got := reconcileExistingAdmin(context.Background(), Dependencies{
-		Users:  &fakeSystemPromoter{getByUsernameErr: errors.New("transient lookup failure")},
-		Logger: discardLogger(),
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Users:             &fakeSystemPromoter{getByUsernameErr: errors.New("transient lookup failure")},
+		Logger:            discardLogger(),
 	}, tenantid.System)
 	if got != nil {
 		t.Errorf("reconcileExistingAdmin(GetUserByUsername error) = %+v, want nil", got)
@@ -610,6 +617,7 @@ func TestReconcileExistingAdmin_GetUserByUsernameErrorIsANoOp(t *testing.T) {
 func TestReconcileExistingAdmin_PromoteErrorReturnsTheUnpromotedRecord(t *testing.T) {
 	existing := &user.User{ID: 42, Username: adminUsername, TenantID: tenantid.System}
 	got := reconcileExistingAdmin(context.Background(), Dependencies{
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
 		Users: &fakeSystemPromoter{
 			getByUsernameResult: existing,
 			promoteErr:          errors.New("sentinel already held"),
@@ -635,11 +643,12 @@ func TestInitialize_AllPresentReturnsIdempotent(t *testing.T) {
 	ca := &fakeCA{cert: []byte("CERT"), key: []byte("KEY")}
 
 	result, err := Initialize(context.Background(), Dependencies{
-		Tenants: tenants,
-		Users:   users,
-		Roles:   roles,
-		CA:      ca,
-		Logger:  discardLogger(),
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           tenants,
+		Users:             users,
+		Roles:             roles,
+		CA:                ca,
+		Logger:            discardLogger(),
 	})
 	if err != nil {
 		t.Fatalf("Initialize: %v", err)
@@ -685,11 +694,12 @@ func TestInitialize_AdminIDCollisionIsIdempotent(t *testing.T) {
 	ca := &fakeCA{cert: []byte("CERT"), key: []byte("KEY")}
 
 	result, err := Initialize(context.Background(), Dependencies{
-		Tenants: tenants,
-		Users:   users,
-		Roles:   roles,
-		CA:      ca,
-		Logger:  discardLogger(),
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           tenants,
+		Users:             users,
+		Roles:             roles,
+		CA:                ca,
+		Logger:            discardLogger(),
 	})
 	if err != nil {
 		t.Fatalf("Initialize: %v", err)
@@ -719,10 +729,11 @@ func TestInitialize_AdminIDCollisionUnverifiableRefused(t *testing.T) {
 	}}
 
 	_, err := Initialize(context.Background(), Dependencies{
-		Tenants: tenants,
-		Users:   users,
-		Roles:   roles,
-		Logger:  discardLogger(),
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           tenants,
+		Users:             users,
+		Roles:             roles,
+		Logger:            discardLogger(),
 	})
 	var target *AdminUserCreationError
 	if !errors.As(err, &target) {
@@ -762,11 +773,12 @@ func TestInitialize_IDCollisionVerifiedIdenticalIsIdempotent(t *testing.T) {
 	ca := &fakeCA{cert: []byte("CERT"), key: []byte("KEY")}
 
 	result, err := Initialize(context.Background(), Dependencies{
-		Tenants: tenants,
-		Users:   users,
-		Roles:   roles,
-		CA:      ca,
-		Logger:  discardLogger(),
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           tenants,
+		Users:             users,
+		Roles:             roles,
+		CA:                ca,
+		Logger:            discardLogger(),
 	})
 	if err != nil {
 		t.Fatalf("Initialize: %v", err)
@@ -813,11 +825,12 @@ func TestInitialize_IDCollisionDifferentDefinitionRefused(t *testing.T) {
 	ca := &fakeCA{cert: []byte("CERT"), key: []byte("KEY")}
 
 	_, err := Initialize(context.Background(), Dependencies{
-		Tenants: tenants,
-		Users:   users,
-		Roles:   roles,
-		CA:      ca,
-		Logger:  discardLogger(),
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           tenants,
+		Users:             users,
+		Roles:             roles,
+		CA:                ca,
+		Logger:            discardLogger(),
 	})
 	var target *RolesRegistrationError
 	if !errors.As(err, &target) {
@@ -839,11 +852,12 @@ func TestInitialize_NameCollisionVerifiedIdenticalIsIdempotent(t *testing.T) {
 	ca := &fakeCA{cert: []byte("CERT"), key: []byte("KEY")}
 
 	result, err := Initialize(context.Background(), Dependencies{
-		Tenants: tenants,
-		Users:   users,
-		Roles:   roles,
-		CA:      ca,
-		Logger:  discardLogger(),
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           tenants,
+		Users:             users,
+		Roles:             roles,
+		CA:                ca,
+		Logger:            discardLogger(),
 	})
 	if err != nil {
 		t.Fatalf("Initialize: %v", err)
@@ -878,11 +892,12 @@ func TestInitialize_NameCollisionDifferentDefinitionRefused(t *testing.T) {
 	ca := &fakeCA{cert: []byte("CERT"), key: []byte("KEY")}
 
 	_, err := Initialize(context.Background(), Dependencies{
-		Tenants: tenants,
-		Users:   users,
-		Roles:   roles,
-		CA:      ca,
-		Logger:  discardLogger(),
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           tenants,
+		Users:             users,
+		Roles:             roles,
+		CA:                ca,
+		Logger:            discardLogger(),
 	})
 	var target *RolesRegistrationError
 	if !errors.As(err, &target) {
@@ -1120,9 +1135,10 @@ func TestBuiltInRoleAlreadySeededWithin(t *testing.T) {
 
 func TestInitialize_MissingTenantsReturnsTypedError(t *testing.T) {
 	_, err := Initialize(context.Background(), Dependencies{
-		Users:  &fakeUsers{},
-		Roles:  &fakeRoles{},
-		Logger: discardLogger(),
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Users:             &fakeUsers{},
+		Roles:             &fakeRoles{},
+		Logger:            discardLogger(),
 	})
 	var want *MissingTenantsError
 	if !errors.As(err, &want) {
@@ -1132,9 +1148,10 @@ func TestInitialize_MissingTenantsReturnsTypedError(t *testing.T) {
 
 func TestInitialize_MissingUsersReturnsTypedError(t *testing.T) {
 	_, err := Initialize(context.Background(), Dependencies{
-		Tenants: &fakeTenants{},
-		Roles:   &fakeRoles{},
-		Logger:  discardLogger(),
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           &fakeTenants{},
+		Roles:             &fakeRoles{},
+		Logger:            discardLogger(),
 	})
 	var want *MissingUsersError
 	if !errors.As(err, &want) {
@@ -1144,9 +1161,10 @@ func TestInitialize_MissingUsersReturnsTypedError(t *testing.T) {
 
 func TestInitialize_MissingRolesReturnsTypedError(t *testing.T) {
 	_, err := Initialize(context.Background(), Dependencies{
-		Tenants: &fakeTenants{},
-		Users:   &fakeUsers{},
-		Logger:  discardLogger(),
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           &fakeTenants{},
+		Users:             &fakeUsers{},
+		Logger:            discardLogger(),
 	})
 	var want *MissingRolesError
 	if !errors.As(err, &want) {
@@ -1156,9 +1174,10 @@ func TestInitialize_MissingRolesReturnsTypedError(t *testing.T) {
 
 func TestInitialize_MissingLoggerReturnsTypedError(t *testing.T) {
 	_, err := Initialize(context.Background(), Dependencies{
-		Tenants: &fakeTenants{},
-		Users:   &fakeUsers{},
-		Roles:   &fakeRoles{},
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           &fakeTenants{},
+		Users:             &fakeUsers{},
+		Roles:             &fakeRoles{},
 	})
 	var want *MissingLoggerError
 	if !errors.As(err, &want) {
@@ -1175,10 +1194,11 @@ func TestInitialize_TenantCreationErrorWrapped(t *testing.T) {
 	tenants := &fakeTenants{createErr: sentinel}
 
 	_, err := Initialize(context.Background(), Dependencies{
-		Tenants: tenants,
-		Users:   &fakeUsers{},
-		Roles:   &fakeRoles{},
-		Logger:  discardLogger(),
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           tenants,
+		Users:             &fakeUsers{},
+		Roles:             &fakeRoles{},
+		Logger:            discardLogger(),
 	})
 	var wantErr *SystemTenantCreationError
 	if !errors.As(err, &wantErr) {
@@ -1194,10 +1214,11 @@ func TestInitialize_RoleCreationErrorWrapped(t *testing.T) {
 	roles := &fakeRoles{createErr: sentinel}
 
 	_, err := Initialize(context.Background(), Dependencies{
-		Tenants: &fakeTenants{},
-		Users:   &fakeUsers{},
-		Roles:   roles,
-		Logger:  discardLogger(),
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           &fakeTenants{},
+		Users:             &fakeUsers{},
+		Roles:             roles,
+		Logger:            discardLogger(),
 	})
 	var wantErr *RolesRegistrationError
 	if !errors.As(err, &wantErr) {
@@ -1213,10 +1234,11 @@ func TestInitialize_AdminUserCreationErrorWrapped(t *testing.T) {
 	users := &fakeUsers{createErr: sentinel}
 
 	_, err := Initialize(context.Background(), Dependencies{
-		Tenants: &fakeTenants{},
-		Users:   users,
-		Roles:   &fakeRoles{},
-		Logger:  discardLogger(),
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           &fakeTenants{},
+		Users:             users,
+		Roles:             &fakeRoles{},
+		Logger:            discardLogger(),
 	})
 	var wantErr *AdminUserCreationError
 	if !errors.As(err, &wantErr) {
@@ -1232,11 +1254,12 @@ func TestInitialize_AdminCertGenerationErrorWrapped(t *testing.T) {
 	ca := &fakeCA{err: sentinel}
 
 	_, err := Initialize(context.Background(), Dependencies{
-		Tenants: &fakeTenants{},
-		Users:   &fakeUsers{},
-		Roles:   &fakeRoles{},
-		CA:      ca,
-		Logger:  discardLogger(),
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           &fakeTenants{},
+		Users:             &fakeUsers{},
+		Roles:             &fakeRoles{},
+		CA:                ca,
+		Logger:            discardLogger(),
 	})
 	var wantErr *AdminCertGenerationError
 	if !errors.As(err, &wantErr) {
@@ -1257,10 +1280,11 @@ func TestInitialize_NoCAProvidedSkipsCertGeneration(t *testing.T) {
 	roles := &fakeRoles{}
 
 	result, err := Initialize(context.Background(), Dependencies{
-		Tenants: tenants,
-		Users:   users,
-		Roles:   roles,
-		Logger:  discardLogger(),
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           tenants,
+		Users:             users,
+		Roles:             roles,
+		Logger:            discardLogger(),
 	})
 	if err != nil {
 		t.Fatalf("Initialize: %v", err)
@@ -1287,10 +1311,11 @@ func TestInitialize_TenantExistsAdminMissingCreatesAdmin(t *testing.T) {
 	}}
 
 	result, err := Initialize(context.Background(), Dependencies{
-		Tenants: tenants,
-		Users:   users,
-		Roles:   roles,
-		Logger:  discardLogger(),
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           tenants,
+		Users:             users,
+		Roles:             roles,
+		Logger:            discardLogger(),
 	})
 	if err != nil {
 		t.Fatalf("Initialize: %v", err)
@@ -1327,10 +1352,11 @@ func TestInitialize_RealTenantServicerAcceptsSystemTenantID(t *testing.T) {
 	roles := &fakeRoles{}
 
 	result, err := Initialize(context.Background(), Dependencies{
-		Tenants: tenantSvc,
-		Users:   users,
-		Roles:   roles,
-		Logger:  discardLogger(),
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           tenantSvc,
+		Users:             users,
+		Roles:             roles,
+		Logger:            discardLogger(),
 	})
 	if err != nil {
 		t.Fatalf("Initialize: %v (would fail with ReservedTenantIDError if WithInternalCall not propagated)", err)
@@ -1390,10 +1416,11 @@ func TestInitialize_ReconcilesPreExistingAdminToSystem(t *testing.T) {
 
 	roles := &fakeRoles{}
 	result, err := Initialize(context.Background(), Dependencies{
-		Tenants: tenantSvc,
-		Users:   userSvc,
-		Roles:   roles,
-		Logger:  discardLogger(),
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           tenantSvc,
+		Users:             userSvc,
+		Roles:             roles,
+		Logger:            discardLogger(),
 	})
 	if err != nil {
 		t.Fatalf("Initialize: %v", err)
@@ -1439,7 +1466,8 @@ func TestInitialize_ReconciliationIsIdempotent(t *testing.T) {
 		t.Fatalf("NewKVTenantService: %v", err)
 	}
 
-	deps := Dependencies{Tenants: tenantSvc, Users: userSvc, Roles: &fakeRoles{}, Logger: discardLogger()}
+	deps := Dependencies{
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled, Tenants: tenantSvc, Users: userSvc, Roles: &fakeRoles{}, Logger: discardLogger()}
 
 	if _, err := Initialize(context.Background(), deps); err != nil {
 		t.Fatalf("first Initialize: %v", err)
@@ -1561,12 +1589,13 @@ func TestInitialize_BindAdminCertErrorWrapped(t *testing.T) {
 	binder := &fakeBinder{err: sentinel}
 
 	_, err := Initialize(context.Background(), Dependencies{
-		Tenants: &fakeTenants{},
-		Users:   &fakeUsers{},
-		Roles:   &fakeRoles{},
-		CA:      &fakeCA{cert: certPEM, key: []byte("KEY")},
-		Binder:  binder,
-		Logger:  discardLogger(),
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           &fakeTenants{},
+		Users:             &fakeUsers{},
+		Roles:             &fakeRoles{},
+		CA:                &fakeCA{cert: certPEM, key: []byte("KEY")},
+		Binder:            binder,
+		Logger:            discardLogger(),
 	})
 	var wantErr *AdminCertBindError
 	if !errors.As(err, &wantErr) {
@@ -1627,12 +1656,13 @@ func TestInitialize_PathB_SignerError(t *testing.T) {
 	signer := &fakeSigner{err: sentinel}
 
 	_, err := Initialize(context.Background(), Dependencies{
-		Tenants:     &fakeTenants{},
-		Users:       &fakeUsers{},
-		Roles:       &fakeRoles{},
-		Signer:      signer,
-		AdminCSRPEM: []byte("MY-CSR"),
-		Logger:      discardLogger(),
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           &fakeTenants{},
+		Users:             &fakeUsers{},
+		Roles:             &fakeRoles{},
+		Signer:            signer,
+		AdminCSRPEM:       []byte("MY-CSR"),
+		Logger:            discardLogger(),
 	})
 	var wantErr *AdminCertGenerationError
 	if !errors.As(err, &wantErr) {
@@ -1657,11 +1687,12 @@ func TestInitialize_SpkiThumbprintError(t *testing.T) {
 	ca := &fakeCA{cert: invalidDERPEM, key: []byte("KEY")}
 
 	_, err := Initialize(context.Background(), Dependencies{
-		Tenants: &fakeTenants{},
-		Users:   &fakeUsers{},
-		Roles:   &fakeRoles{},
-		CA:      ca,
-		Logger:  discardLogger(),
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           &fakeTenants{},
+		Users:             &fakeUsers{},
+		Roles:             &fakeRoles{},
+		CA:                ca,
+		Logger:            discardLogger(),
 	})
 	var wantErr *AdminCertGenerationError
 	if !errors.As(err, &wantErr) {
@@ -1742,7 +1773,8 @@ func TestInitialize_PathC_AdoptsPresentedCert(t *testing.T) {
 	ca := &fakeCA{cert: realCertPEM(t), key: []byte("CA-KEY")}
 
 	result, err := Initialize(context.Background(), Dependencies{
-		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		CA:            ca, // configured, and must NOT be used
 		AdminCertPEM:  presented,
 		AdminCertPool: pool,
@@ -1777,7 +1809,8 @@ func TestInitialize_PathC_RejectsUntrustedCert(t *testing.T) {
 	binder := &fakeBinder{}
 
 	_, err := Initialize(context.Background(), Dependencies{
-		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		AdminCertPEM:  presented,
 		AdminCertPool: unrelatedPool, // does not contain the presenting CA
 		Binder:        binder,
@@ -1802,7 +1835,8 @@ func TestInitialize_PathC_RejectsExpiredCert(t *testing.T) {
 	binder := &fakeBinder{}
 
 	_, err := Initialize(context.Background(), Dependencies{
-		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		AdminCertPEM:  presented,
 		AdminCertPool: pool,
 		Binder:        binder,
@@ -1826,7 +1860,8 @@ func TestInitialize_PathC_RequiresPool(t *testing.T) {
 	presented, _ := issueCertFromCA(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
 
 	_, err := Initialize(context.Background(), Dependencies{
-		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		AdminCertPEM: presented,
 		Logger:       discardLogger(),
 	})
@@ -1848,7 +1883,8 @@ func TestInitialize_RejectsConflictingAdminCertInputs(t *testing.T) {
 	presented, pool := issueCertFromCA(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
 
 	_, err := Initialize(context.Background(), Dependencies{
-		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		MTLSBindingPolicy: auth.MTLSBindingEnrolled,
+		Tenants:           &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Signer:        &fakeSigner{cert: realCertPEM(t)},
 		AdminCSRPEM:   []byte("THE-CSR"),
 		AdminCertPEM:  presented,

@@ -157,11 +157,15 @@ func holdExpiredBinding(t *testing.T, svc user.UserServicer, userID uint64, ck c
 }
 
 // mtlsMiddleware wires the REAL mTLS authenticator over the given user store.
-func mtlsMiddleware(svc user.UserServicer) *AuthMiddleware {
-	return New(&mockAuthorizer{},
+// The default policy is "required" (go-qrdb#548); pass
+// WithMTLSBindingPolicy(auth.MTLSBindingEnrolled) for a test that
+// specifically covers the "enrolled" opt-out.
+func mtlsMiddleware(svc user.UserServicer, opts ...Option) *AuthMiddleware {
+	base := []Option{
 		WithAuthenticator(auth.NewMTLSAuthenticator()),
 		WithUserService(svc),
-	)
+	}
+	return New(&mockAuthorizer{}, append(base, opts...)...)
 }
 
 // ---------------------------------------------------------------------------
@@ -284,9 +288,13 @@ func TestAuthenticate_NoBindingsAdmitsAndEnrollingOneCloses(t *testing.T) {
 	bob := createUser(t, svc, "acme", "bob", []string{"reader"})
 	unbound := mintCert(t, "bob", "acme", nil, "")
 
-	m := mtlsMiddleware(svc)
+	// This test specifically covers the "enrolled" opt-out (go-qrdb#548):
+	// under the default "required" posture, direction 1 below would be
+	// refused, not admitted -- that is the whole point of the default
+	// changing. "enrolled" is what this test is about, not a workaround.
+	m := mtlsMiddleware(svc, WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
 
-	// Direction 1: no bindings -> admitted, exactly as today.
+	// Direction 1: no bindings -> admitted under "enrolled".
 	_, identity, err := m.authenticate(mtlsContext(unbound))
 	if err != nil {
 		t.Fatalf("unenrolled account refused: %v", err)
@@ -375,14 +383,17 @@ func TestFinalizeIdentity_UnobservableMethodSkipsTheBindingCheck(t *testing.T) {
 }
 
 // TestFinalizeIdentity_UnknownUserIsUnaffected keeps the check off the
-// not-found path: there is no record, so there is no binding set to compare
-// against, and the identity proceeds unenriched into default-deny exactly as
-// it did before.
+// not-found path UNDER "enrolled": there is no record, so there is no binding
+// set to compare against, and the identity proceeds unenriched into
+// default-deny exactly as it did before go-qrdb#517. This is specifically an
+// "enrolled" behavior -- under the "required" default a certificate naming no
+// account is refused outright (docs/identity-rbac/architecture.md), which is
+// covered elsewhere (go-qrdb#548).
 func TestFinalizeIdentity_UnknownUserIsUnaffected(t *testing.T) {
 	svc := newRealUserStore(t)
 	stranger := mintCert(t, "nobody", "acme", nil, "")
 
-	m := mtlsMiddleware(svc)
+	m := mtlsMiddleware(svc, WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
 	_, identity, err := m.authenticate(mtlsContext(stranger))
 	if err != nil {
 		t.Fatalf("unknown subject refused: %v", err)

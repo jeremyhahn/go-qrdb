@@ -101,6 +101,15 @@ type adminClusterSpareReplica struct {
 // helper works unmodified against a cluster member), the index of the node
 // that won leadership of shard 1, and the spares slice (len(multiProtocols),
 // in the same order).
+//
+// Shares startMultiProtocolNodeWithSM's (see multi_protocol_helpers_test.go)
+// bring-your-own TLS shape -- ca.clusterNodeTLS is also bring-your-own, so
+// every node's s.ceremonyCA is nil -- which qrdb init supports directly
+// (go-qrdb#548). Each node's system barrier is local, so each one runs its
+// own ceremony during its own sealed window in parallel, all handed the
+// SAME bring-your-own-certificate admin identity (minted once, before the
+// loop): first boot on whichever node's write lands first binds it, and
+// every other node's write is an idempotent no-op once raft replicates it.
 func start3NodeMultiProtocolCluster(t *testing.T) (nodes [3]*multiProtoNode, leaderIdx int, spares []adminClusterSpareReplica) {
 	t.Helper()
 
@@ -160,18 +169,28 @@ func start3NodeMultiProtocolCluster(t *testing.T) (nodes [3]*multiProtoNode, lea
 		startNode(t, bin, args, fmt.Sprintf("[admincluster-node%d] ", i+1))
 	}
 
-	// Sealed-window: initialize and unseal the passphrase barrier on all n
-	// nodes in parallel, exactly as TestClusterEnableEncryption_SystemScope_RF3
-	// does for the "none" strategy -- each node's local storage barrier must
-	// be unsealed before that node's own Raft host (and therefore every
-	// other transport on that node) starts serving.
+	// "qrdb init" is the only system bootstrap (go-qrdb#548): each node's
+	// system barrier is local, so each one still runs its own ceremony
+	// during its own sealed window, in parallel, exactly as
+	// TestClusterEnableEncryption_SystemScope_RF3 does for the "none"
+	// strategy. initAndUnsealBarrier's admin identity is this CA's ONE
+	// shared bootstrap admin certificate (see testCA.adminIdentity), so
+	// calling it once per node hands every one of them the identical
+	// certificate: first boot on whichever node's write lands first binds
+	// it, and every other node's write is an idempotent no-op once raft
+	// replicates it, so this one certificate authenticates against every
+	// node.
+	var clientCert, clientKey string
 	var sealWg sync.WaitGroup
 	sealWg.Add(n)
 	for i := range n {
 		go func(idx int) {
 			defer sealWg.Done()
 			waitForBarrierStatusReachable(t, ca, adminPorts[idx], 90*time.Second)
-			initAndUnsealBarrier(t, ca, adminPorts[idx], adminClusterPassphrase)
+			cp, kp := initAndUnsealBarrier(t, ca, adminPorts[idx], adminClusterPassphrase)
+			if idx == 0 {
+				clientCert, clientKey = cp, kp
+			}
 		}(i)
 	}
 	sealWg.Wait()
@@ -217,8 +236,6 @@ func start3NodeMultiProtocolCluster(t *testing.T) (nodes [3]*multiProtoNode, lea
 			raftAddr:  fmt.Sprintf("127.0.0.1:%d", raftPorts[i]),
 		})
 	}
-
-	clientCert, clientKey := ca.generateAdminClientCert(t, t.TempDir())
 
 	leaderIdx = -1
 	for pos, idx := range controlGenesisIdx {

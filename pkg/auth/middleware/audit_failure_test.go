@@ -209,7 +209,7 @@ func TestRESTMiddleware_RESTRequestDeniedByAuditFailure(t *testing.T) {
 	sink, _ := faultedChainSink(t)
 	id := &auth.Identity{Subject: "alice", TenantID: "t1"}
 	m := New(&mockAuthorizer{},
-		WithAuthenticator(&mockAuthenticator{name: "mtls", identity: id}),
+		WithAuthenticator(&mockAuthenticator{name: "test-authn", identity: id}),
 		WithAuditLogger(sink))
 
 	handlerRan := false
@@ -250,7 +250,7 @@ func TestRESTMiddleware_HealthyChainFileServesAndRecords(t *testing.T) {
 
 	id := &auth.Identity{Subject: "alice", TenantID: "t1"}
 	m := New(&mockAuthorizer{},
-		WithAuthenticator(&mockAuthenticator{name: "mtls", identity: id}),
+		WithAuthenticator(&mockAuthenticator{name: "test-authn", identity: id}),
 		WithAuditLogger(audit.NewDecisionLogger(chain)))
 
 	handlerRan := false

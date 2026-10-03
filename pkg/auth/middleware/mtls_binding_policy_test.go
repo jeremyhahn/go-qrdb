@@ -176,16 +176,20 @@ func TestMTLSBindingPolicy_Required_NonCertMethodIsNotGated(t *testing.T) {
 	}
 }
 
+// TestMTLSBindingPolicy_Accessor pins the default (go-qrdb#548): the zero
+// value, and a middleware built without WithMTLSBindingPolicy, is "required",
+// not "enrolled" -- an omitted or empty auth.mtls_binding_policy must not
+// silently resolve to the non-compliant posture.
 func TestMTLSBindingPolicy_Accessor(t *testing.T) {
 	var nilMW *AuthMiddleware
-	if got := nilMW.MTLSBindingPolicy(); got != auth.MTLSBindingEnrolled {
-		t.Fatalf("nil middleware policy = %v, want enrolled", got)
+	if got := nilMW.MTLSBindingPolicy(); got != auth.MTLSBindingRequired {
+		t.Fatalf("nil middleware policy = %v, want required", got)
 	}
-	if got := New(&mockAuthorizer{}).MTLSBindingPolicy(); got != auth.MTLSBindingEnrolled {
-		t.Fatalf("default policy = %v, want enrolled", got)
+	if got := New(&mockAuthorizer{}).MTLSBindingPolicy(); got != auth.MTLSBindingRequired {
+		t.Fatalf("default policy = %v, want required", got)
 	}
-	if got := New(&mockAuthorizer{}, WithMTLSBindingPolicy(auth.MTLSBindingRequired)).MTLSBindingPolicy(); got != auth.MTLSBindingRequired {
-		t.Fatalf("configured policy = %v, want required", got)
+	if got := New(&mockAuthorizer{}, WithMTLSBindingPolicy(auth.MTLSBindingEnrolled)).MTLSBindingPolicy(); got != auth.MTLSBindingEnrolled {
+		t.Fatalf("configured policy = %v, want enrolled", got)
 	}
 }
 

@@ -1101,10 +1101,13 @@ func startMutualTLSServer(
 func TestIntegration_Auth_MutualTLS_Success(t *testing.T) {
 	bundle := generateMutualTLS(t)
 
-	// MTLSAuthenticator reads VerifiedChains from TLS state.
+	// MTLSAuthenticator reads VerifiedChains from TLS state. This test is
+	// about QUIC mTLS mechanics, exercised with no user store at all, so
+	// "enrolled" is the correct, explicit choice (go-qrdb#548).
 	mw := authmw.New(
 		&noopAuthorizer{},
 		authmw.WithAuthenticator(auth.NewMTLSAuthenticator()),
+		authmw.WithMTLSBindingPolicy(auth.MTLSBindingEnrolled),
 	)
 
 	env := startMutualTLSServer(t, &mockKVService{}, &mockAdminService{}, bundle,

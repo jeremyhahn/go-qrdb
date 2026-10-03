@@ -123,7 +123,7 @@ func runOnBehalf(t *testing.T, r *http.Request, storeUser *user.User, authz *cap
 	t.Helper()
 	users := &mockUserServicer{user: storeUser}
 	m := New(authz,
-		WithAuthenticator(&mockAuthenticator{name: "mtls", err: auth.ErrNoPeerCertificate}),
+		WithAuthenticator(&mockAuthenticator{name: "test-authn", err: auth.ErrNoPeerCertificate}),
 		WithUserService(users),
 	)
 
@@ -311,7 +311,7 @@ func TestOnBehalf_NoPeerCertRejected(t *testing.T) {
 func TestOnBehalf_AbsentHeadersUseNormalAuth(t *testing.T) {
 	users := &mockUserServicer{user: &user.User{Username: "node", TenantID: "system", Lifecycle: user.LifecycleActive}}
 	m := New(&capturingAuthorizer{},
-		WithAuthenticator(&mockAuthenticator{name: "mtls", identity: &auth.Identity{Subject: "node", TenantID: "system"}}),
+		WithAuthenticator(&mockAuthenticator{name: "test-authn", identity: &auth.Identity{Subject: "node", TenantID: "system"}}),
 		WithUserService(users),
 	)
 	var ran bool

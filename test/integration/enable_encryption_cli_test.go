@@ -53,7 +53,7 @@ import (
 // convention. That helper mints a CN=admin, OU=system client cert on every
 // call, which maps onto the "admin" user + Owner role first-boot always
 // creates on the system tenant (see cmd/qrdbd/start.go bootstrapAuthEnforcement
-// + runFirstBoot) -- so ca.generateAdminClientCert(t, dataDir), which mints
+// + runFirstBoot) -- so ca.boundAdminCert(t, dataDir), which mints
 // the identical CN=admin/OU=system identity as on-disk PEM files, is the
 // correct credential for the CLI's --cert-file/--key-file. The daemon's own
 // TLS listener identity (--tls-cert-file/--tls-key-file) is a SEPARATE,
@@ -170,7 +170,7 @@ func startCLIEncNode(t *testing.T, bin string, prefix string) *cliBarrierEncNode
 	waitForHealthy(t, dataDir, 60*time.Second)
 	waitForAdmin(t, ca.Pool, adminPort, 90*time.Second)
 
-	n.adminCertPath, n.adminKeyPath = ca.generateAdminClientCert(t, dataDir)
+	n.adminCertPath, n.adminKeyPath = ca.boundAdminCert(t, dataDir)
 	n.connArgs = restConnArgs(ca, n.adminCertPath, n.adminKeyPath, adminPort)
 	return n
 }
@@ -838,7 +838,7 @@ func TestCLI_BarrierEnableEncryption_TenantScope(t *testing.T) {
 	// driven as a CLI subprocess authenticated as the SYSTEM admin identity
 	// (matching the REST test: a tenant migration is admin-gated at the
 	// permission layer, not self-service by the tenant's own cert).
-	adminCertPath, adminKeyPath := ca.generateAdminClientCert(t, dataDir)
+	adminCertPath, adminKeyPath := ca.boundAdminCert(t, dataDir)
 	connArgs := restConnArgs(ca, adminCertPath, adminKeyPath, adminPort)
 
 	const tenantPass = "cli-tenant-acme-passphrase"

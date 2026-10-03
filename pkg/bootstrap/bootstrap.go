@@ -165,7 +165,27 @@ type SystemConfig struct {
 	// AdminCSRPEM, when non-empty, selects the admin-mTLS CSR-sign path
 	// (Path B) for the system admin: the admin's CSR is signed via the
 	// Signer seam. When empty, Path A (generate-and-distribute via CA) is used.
+	//
+	// Deprecated for go-qrdb's own compositions (go-qrdb#548): qrdbd and
+	// sdk/go/node no longer sign a CSR here -- the ceremony already issued the
+	// admin's certificate during Initialize, and AdminCertPEM carries the
+	// result. Retained for a composer that still drives CA/Signer directly.
 	AdminCSRPEM []byte
+
+	// AdminCertPEM is the bootstrap admin's certificate, already issued or
+	// adopted by pkg/ceremony.CeremonyService.Initialize (go-qrdb#548): the
+	// ceremony resolves the operator's CSR-sign / BYOC / generate choice and
+	// signs or validates synchronously, where the CA is available, before the
+	// admin account exists. BootstrapSystem passes this straight to
+	// firstboot.Dependencies.AdminCertPEM, which only needs to BIND it, not
+	// issue it -- so CA/Signer stay nil for this path.
+	AdminCertPEM []byte
+
+	// AdminCertPool is the trust anchor AdminCertPEM is (re-)validated against
+	// before binding -- normally a pool containing the cluster's own CA
+	// (ceremony.CeremonyService.CACertPool()), since AdminCertPEM was issued
+	// by that same CA. Required whenever AdminCertPEM is set.
+	AdminCertPool *x509.CertPool
 }
 
 // SystemResult reports what BootstrapSystem did: the system barrier strategy
@@ -279,6 +299,8 @@ func BootstrapSystem(ctx context.Context, cfg SystemConfig, deps Dependencies) (
 		CA:                 deps.CA,
 		Signer:             deps.Signer,
 		AdminCSRPEM:        cfg.AdminCSRPEM,
+		AdminCertPEM:       cfg.AdminCertPEM,
+		AdminCertPool:      cfg.AdminCertPool,
 		Binder:             deps.Binder,
 		Logger:             deps.Logger,
 		SeparationOfDuties: cfg.SeparationOfDuties,

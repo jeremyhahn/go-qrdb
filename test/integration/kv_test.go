@@ -38,6 +38,18 @@ import (
 //
 // smType is any registered raft.sm_type: every one serves the guarded batches
 // qrdbd's boot-time role/user stores require (go-qrdb#555, go-qrdb#136).
+//
+// This node's TLS comes from ca.tlsFlags, a bring-your-own leaf certificate
+// signed by the test's OWN CA -- the daemon never holds that CA's private
+// key, so ceremonyCAFromBundle leaves s.ceremonyCA nil (see
+// pkg/api/rest/handlers_ceremony.go). qrdb init supports that directly
+// (go-qrdb#548): with no CeremonyCA it does not self-issue a TLS
+// certificate, pinning the operator's own configured leaf instead, and the
+// bring-your-own-certificate admin-credential path (initAndUnsealBarrier's
+// admin_cert_pem) needs no CA at all -- the test's own CA plays the
+// operator's CA, present in ca's client-CA trust pool. CSR-sign and
+// generate remain refused on a node like this one (there is no CA to sign
+// with); nothing here uses them.
 func startSingleNode(t *testing.T, smType string, extraArgs ...string) (int, *testCA) {
 	t.Helper()
 	bin := buildBinary(t)
@@ -46,9 +58,11 @@ func startSingleNode(t *testing.T, smType string, extraArgs ...string) (int, *te
 	adminPorts := allocateTCPPorts(t, 1)
 	grpcPorts := allocateTCPPorts(t, 1)
 	dataDir := t.TempDir()
+	cfgPath := writeNoneSealConfig(t)
 
 	args := []string{
 		"start",
+		"--config", cfgPath,
 		"--listen", fmt.Sprintf("0.0.0.0:%d", ports[0]),
 		"--raft-address", fmt.Sprintf("127.0.0.1:%d", ports[0]),
 		"--data-dir", dataDir,
@@ -64,6 +78,13 @@ func startSingleNode(t *testing.T, smType string, extraArgs ...string) (int, *te
 	args = append(args, extraArgs...)
 
 	startNode(t, bin, args, "[node1] ")
+	// "qrdb init" is the only system bootstrap (go-qrdb#548): auth defaults
+	// to enabled, which now requires the seal subsystem (writeNoneSealConfig
+	// above), so the node comes up through the sealed window and needs its
+	// barrier brought up and its admin ceremony run before first boot can
+	// bind an identity and the full server starts.
+	waitForBarrierStatusReachable(t, ca, adminPorts[0], 90*time.Second)
+	initAndUnsealBarrier(t, ca, adminPorts[0], "")
 	waitForHealthy(t, dataDir, 60*time.Second)
 	waitForAdmin(t, ca.Pool, adminPorts[0], 90*time.Second)
 	waitForLeaderViaAdmin(t, ca, []int{adminPorts[0]}, 60*time.Second)
@@ -86,11 +107,24 @@ func startThreeNodeCluster(t *testing.T, smType string, extraArgs ...string) ([]
 
 // startThreeNodeClusterLogged is startThreeNodeCluster that also returns
 // each node's captured log output, for assertions on what a node reported.
+//
+// Each node's system barrier is local, so each one runs its own ceremony
+// during its own sealed window, in parallel, exactly as
+// admin_cluster_cli_test.go's start3NodeMultiProtocolCluster does.
+// initAndUnsealBarrier's admin identity is this CA's ONE shared bootstrap
+// admin certificate (testCA.adminIdentity), so calling it once per node
+// hands every one of them the identical bring-your-own-certificate: first
+// boot on whichever node's write lands first binds it, and the other two
+// nodes' writes are idempotent no-ops once raft replicates it. ca.tlsFlags
+// and ca.clusterNodeTLS are also bring-your-own (the daemon holds no CA
+// private key), which qrdb init supports directly (go-qrdb#548): no TLS
+// certificate is self-issued, and BYOC needs no CA at all.
 func startThreeNodeClusterLogged(t *testing.T, smType string, extraArgs ...string) ([]int, []string, *testCA, []*nodeLog) {
 	t.Helper()
 	logs := make([]*nodeLog, 3)
 	bin := buildBinary(t)
 	ca := generateTestCA(t)
+	cfgPath := writeNoneSealConfig(t)
 	ports := allocatePorts(t, 3)
 	adminPorts := allocateTCPPorts(t, 3)
 	grpcPorts := allocateTCPPorts(t, 3)
@@ -104,6 +138,7 @@ func startThreeNodeClusterLogged(t *testing.T, smType string, extraArgs ...strin
 
 		args := []string{
 			"start",
+			"--config", cfgPath,
 			"--listen", fmt.Sprintf("0.0.0.0:%d", ports[i]),
 			"--raft-address", fmt.Sprintf("127.0.0.1:%d", ports[i]),
 			"--data-dir", dataDir,
@@ -123,6 +158,17 @@ func startThreeNodeClusterLogged(t *testing.T, smType string, extraArgs ...strin
 		logs[i] = &nodeLog{}
 		logs[i].cmd = startNode(t, bin, args, prefix, logs[i])
 	}
+
+	var sealWg sync.WaitGroup
+	sealWg.Add(3)
+	for i := range 3 {
+		go func(idx int) {
+			defer sealWg.Done()
+			waitForBarrierStatusReachable(t, ca, adminPorts[idx], 90*time.Second)
+			initAndUnsealBarrier(t, ca, adminPorts[idx], "")
+		}(i)
+	}
+	sealWg.Wait()
 
 	for i, dir := range dataDirs {
 		waitForHealthy(t, dir, 60*time.Second)

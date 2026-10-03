@@ -31,8 +31,13 @@ import (
 //
 // It is how an embedder bootstraps a node without being able to lock the admin
 // out: the policy the node enforces on every login is the policy first-boot
-// is held to, whatever deps says. deps.MTLSBindingPolicy is raised to the
-// node's, never lowered. Call it after the node has started.
+// is held to, whatever deps.MTLSBindingPolicy says. The node's own policy is
+// authoritative and always overrides deps.MTLSBindingPolicy, in either
+// direction -- not merely raised, since auth.MTLSBindingPolicy's zero value
+// is auth.MTLSBindingRequired (not an "unset" sentinel), so a deps literal
+// that never sets the field already reads as the strict policy and a
+// one-directional raise could never lower it back to what the node actually
+// enforces. Call it after the node has started.
 //
 // Calling firstboot.Initialize directly instead forgoes the node's policy for
 // that run; the node still refuses to START on its next boot when an existing
@@ -41,19 +46,65 @@ func (n *Node) FirstBoot(ctx context.Context, deps firstboot.Dependencies) (*fir
 	return firstBootUnderPolicy(ctx, deps, auth.MTLSBindingPolicy(n.bindingPolicy.Load()), n.UserService())
 }
 
+// FirstBootWithCeremony is FirstBoot, but first resolves
+// deps.AdminCertPEM / deps.AdminCertPool / deps.Binder from the durable
+// ceremony-initialize -> first-boot hand-off (go-qrdb#548), via the SAME
+// pkg/firstboot wiring cmd/qrdbd's own first boot uses --
+// firstboot.ResolveAdminCertForFirstBoot, firstboot.AdminCertPoolFromCABundle
+// and firstboot.UserCertBinder -- rather than a copy of it. This is the
+// shared production path behind "every composition enrols the bootstrap
+// admin's binding" (docs/identity-rbac/architecture.md) for an embedder
+// composing through sdk/go/node, exactly as bootstrapUserRoleStores /
+// runFirstBoot is for qrdbd.
+//
+// store is the durable, replicated pending-admin-cert record SOMETHING in
+// this cluster wrote via firstboot.WritePendingAdminCert after running the
+// ceremony -- possibly this node, possibly another one. PendingAdminCertStore
+// builds one over this node's own KV plane. nil is valid: an embedder with
+// no cluster-wide record to resolve (one that already set
+// deps.AdminCertPEM/.CA/.Binder itself) should call FirstBoot instead.
+// caBundlePEM, when non-empty, is the trust anchor the resolved certificate
+// must chain to (ordinarily the ceremony CA's own CABundle()).
+func (n *Node) FirstBootWithCeremony(ctx context.Context, store firstboot.PendingAdminCertStore, caBundlePEM []byte, timeout time.Duration, deps firstboot.Dependencies) (*firstboot.Result, error) {
+	policy := auth.MTLSBindingPolicy(n.bindingPolicy.Load())
+	users := n.UserService()
+
+	adminCertPEM, err := firstboot.ResolveAdminCertForFirstBoot(ctx, store, users, policy, timeout)
+	if err != nil {
+		return nil, err
+	}
+	deps.AdminCertPEM = adminCertPEM
+	deps.AdminCertPool = firstboot.AdminCertPoolFromCABundle(caBundlePEM)
+	deps.Binder = firstboot.UserCertBinder{Users: users}
+
+	result, err := firstBootUnderPolicy(ctx, deps, policy, users)
+	if err != nil {
+		return nil, err
+	}
+	// Best-effort: the binding already committed (or the admin already held
+	// one), so a failure clearing the now-superfluous record is logged, not
+	// fatal, matching cmd/qrdbd/start.go's own treatment of the same step.
+	if err := firstboot.ClearPendingAdminCert(ctx, store); err != nil {
+		slog.Warn("node: failed to clear the pending admin credential record", "error", err)
+	}
+	return result, nil
+}
+
 // firstBootUnderPolicy is FirstBoot with the node's state passed in, so the
 // policy handling is testable without standing up a node. users is the store
 // the node's auth middleware authenticates against; the verdict is read from
 // it rather than from deps.Users, which may be an adapter over something else.
+//
+// policy -- the node's own configured auth.mtls_binding_policy -- always wins
+// over whatever deps.MTLSBindingPolicy already held, since that field's zero
+// value is indistinguishable from an explicit auth.MTLSBindingRequired.
 func firstBootUnderPolicy(ctx context.Context, deps firstboot.Dependencies, policy auth.MTLSBindingPolicy, users firstboot.AdminLookup) (*firstboot.Result, error) {
-	if policy == auth.MTLSBindingRequired {
-		deps.MTLSBindingPolicy = auth.MTLSBindingRequired
-	}
+	deps.MTLSBindingPolicy = policy
 	result, err := firstboot.Initialize(ctx, deps)
 	if err != nil {
 		return nil, err
 	}
-	if deps.MTLSBindingPolicy == auth.MTLSBindingRequired {
+	if policy == auth.MTLSBindingRequired {
 		if err := firstboot.VerifyAdminCertBinding(ctx, users, time.Now().UTC()); err != nil {
 			return nil, err
 		}

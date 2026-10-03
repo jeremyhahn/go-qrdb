@@ -97,6 +97,7 @@ func bootBarrierNode(t *testing.T, tk transportKind, backend database.BackendTyp
 	}
 
 	seedBarrierIdentity(t, n)
+	enrollMatrixCert(t, n, tenantid.System, clientKP)
 
 	clientCert, err := clientKP.TLSCertificate()
 	if err != nil {

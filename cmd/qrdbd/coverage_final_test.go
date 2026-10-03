@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"errors"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"os"
 	"path/filepath"
 	"testing"
@@ -145,6 +146,7 @@ func TestRunFirstBoot_WithBarriers_AdminAlreadyExists(t *testing.T) {
 		context.Background(), node, 1,
 		userSvc, roleSvc, &mockTenantServicer{},
 		false, sub.BarrierRegistry, seal.StrategyID("passphrase"),
+		auth.MTLSBindingEnrolled, nil, nil, nil,
 	)
 	require.NoError(t, err)
 }
@@ -184,6 +186,7 @@ func TestRunFirstBoot_WithBarriers_FreshBoot_ThenFirstBootError(t *testing.T) {
 		ctx, node, 1,
 		userSvc, roleSvc, &mockTenantServicer{},
 		false, sub.BarrierRegistry, seal.StrategyID("passphrase"),
+		auth.MTLSBindingEnrolled, nil, nil, nil,
 	)
 	// We expect an error (waitForAdminReplication times out).
 	if err != nil {
@@ -278,7 +281,7 @@ func TestBootstrapUserRoleStores_FirstBootFails_NoLeader(t *testing.T) {
 	}
 
 	tx := newMockTransactionServicer(store)
-	_, err := bootstrapUserRoleStores(ctx, mock, mock, tx, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil)
+	_, err := bootstrapUserRoleStores(ctx, mock, mock, tx, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil, auth.MTLSBindingEnrolled, nil, nil, nil)
 	require.Error(t, err)
 	var abe *AuthBootstrapError
 	require.True(t, errors.As(err, &abe))
@@ -428,37 +431,6 @@ func TestRunStart_MigrateIfNeededFails(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// runStart: authEnabled + CAKeyPEM present → generateAdminClientCert failure
-// (line 770-772 of runStart)
-// ---------------------------------------------------------------------------
-
-func TestRunStart_AuthEnabled_AdminCertWriteFails(t *testing.T) {
-	dir := t.TempDir()
-
-	// Block the admin-cert.pem path so generateAdminClientCert fails.
-	certBlockPath := filepath.Join(dir, "admin-cert.pem")
-	require.NoError(t, os.MkdirAll(certBlockPath, 0o700))
-
-	f := &startFlags{
-		dataDir:         dir,
-		smType:          "nonexistent-sm-cert",
-		discoveryMethod: "static",
-		listen:          "0.0.0.0:0",
-		raftAddress:     "127.0.0.1:0",
-		shardID:         1,
-		replicaID:       1,
-		authEnabled:     true, // triggers generateAdminClientCert with CAKeyPEM
-		host:            testBindHost,
-	}
-
-	err := runStart(f)
-	require.Error(t, err)
-	// Should fail with AdminCertWriteError.
-	var writeErr *AdminCertWriteError
-	require.True(t, errors.As(err, &writeErr),
-		"expected AdminCertWriteError, got %T: %v", err, err)
-}
-
 // ---------------------------------------------------------------------------
 // runStart: smType "mvcc" and "pebble" switch cases (lines 923-936)
 //

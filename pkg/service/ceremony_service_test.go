@@ -29,6 +29,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
 )
 
 // testCeremonyCA is an in-memory CA that implements ceremony.CeremonyCA
@@ -169,4 +170,18 @@ func newTestOfficerCSR(t *testing.T, commonName string) []byte {
 	}, key)
 	require.NoError(t, err)
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
+}
+
+// newTestCeremonyService builds a fresh, single-admin CeremonyServicer over
+// an unsealed software barrier, with a testCeremonyCA wired in via SetCA, for
+// tests that only need a working ceremony/CA pair to drive CeremonyInitialize
+// through (the admin-rebind and leader-gate decorators).
+func newTestCeremonyService(t *testing.T) (CeremonyServicer, ceremony.CeremonyCA) {
+	t.Helper()
+	barrier, _ := newTestSoftwareBarrier(t)
+	core, err := ceremony.NewCeremonyService(&ceremony.CeremonyConfig{DataDir: t.TempDir()}, barrier, testLogger())
+	require.NoError(t, err)
+	core.SetPINBackend(pintest.NewBackend(t))
+	ca := newTestCeremonyCA(t)
+	return NewCeremonyService(core), ca
 }

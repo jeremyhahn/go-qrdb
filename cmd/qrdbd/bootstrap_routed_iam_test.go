@@ -23,6 +23,7 @@ package main
 import (
 	"context"
 	"errors"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"testing"
 
 	"github.com/jeremyhahn/go-objstore/pkg/common"
@@ -124,7 +125,7 @@ func TestBootstrapUserRoleStores_ServedIAMFailsClosedForSealedBarrierTenant(t *t
 	tx := newMockTransactionServicer(store)
 	node := &mockRaftNode{} // default: leader ready
 
-	mgmt, err := bootstrapUserRoleStores(ctx, mock, mock, tx, node, 1, 1, svc, false, reg, seal.StrategyPassphrase, nil)
+	mgmt, err := bootstrapUserRoleStores(ctx, mock, mock, tx, node, 1, 1, svc, false, reg, seal.StrategyPassphrase, nil, auth.MTLSBindingEnrolled, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("bootstrapUserRoleStores: %v", err)
 	}

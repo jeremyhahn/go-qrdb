@@ -25,6 +25,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -145,7 +146,9 @@ func TestAuthenticate_WithdrawingTheLastBindingRestoresTheEmptySetAdmission(t *t
 	// A certificate naming carol that she never enrolled.
 	unbound := mintCert(t, "carol", "acme", nil, "")
 
-	m := mtlsMiddleware(svc)
+	// This test specifically covers the "enrolled" opt-out (go-qrdb#548): the
+	// empty-set-admits widening it asserts does not occur under "required".
+	m := mtlsMiddleware(svc, WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
 
 	// While she holds a binding, the unbound certificate is refused.
 	if _, _, err := m.authenticate(mtlsContext(unbound)); err == nil {
@@ -187,7 +190,9 @@ func TestAuthenticate_WithdrawalIsNotRevocationOfTheOtherDirection(t *testing.T)
 	holdExpiredBinding(t, svc, dave.ID, expired)
 	unbound := mintCert(t, "dave", "acme", nil, "")
 
-	m := mtlsMiddleware(svc)
+	// This test specifically covers the "enrolled" opt-out (go-qrdb#548): the
+	// reopen-on-empty-set it asserts does not occur under "required".
+	m := mtlsMiddleware(svc, WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
 
 	// An expired binding is still a binding SET: the account stays closed.
 	if _, _, err := m.authenticate(mtlsContext(unbound)); err == nil {

@@ -128,7 +128,6 @@ func TestWithUserServiceFallback_SetsField(t *testing.T) {
 }
 
 func TestWithUserServiceFallback_PrimaryFails_FallbackSucceeds(t *testing.T) {
-	// Primary user service fails with a transient error; fallback returns
 	// the user so the middleware can enrich the identity. The fallback holds
 	// the system tenant only, so the identity is a system-tenant one.
 	id := &auth.Identity{Subject: "alice", TenantID: "system", Roles: []string{"base"}}
@@ -335,7 +334,7 @@ func TestLookupUser_PrimaryTransient_NoFallback(t *testing.T) {
 
 func TestAuthenticateQUIC_Success(t *testing.T) {
 	id := &auth.Identity{Subject: "alice", TenantID: "t1"}
-	authn := &mockAuthenticator{name: "mtls", identity: id}
+	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{}
 
 	m := New(authz, WithAuthenticator(authn))
@@ -359,7 +358,7 @@ func TestAuthenticateQUIC_Success(t *testing.T) {
 }
 
 func TestAuthenticateQUIC_Unauthenticated(t *testing.T) {
-	authn := &mockAuthenticator{name: "mtls", err: auth.ErrUnauthenticated}
+	authn := &mockAuthenticator{name: "test-authn", err: auth.ErrUnauthenticated}
 	authz := &mockAuthorizer{}
 
 	m := New(authz, WithAuthenticator(authn))
@@ -388,7 +387,7 @@ func TestAuthenticateQUIC_NoAuthenticators(t *testing.T) {
 
 func TestAuthenticateQUIC_UserEnrichment(t *testing.T) {
 	id := &auth.Identity{Subject: "charlie", TenantID: "t1", Roles: []string{"base"}}
-	authn := &mockAuthenticator{name: "mtls", identity: id}
+	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{}
 	users := &mockUserServicer{
 		user: &user.User{
@@ -583,7 +582,7 @@ func TestWriteJSONError_VariousStatusCodes(t *testing.T) {
 
 func TestStreamInterceptor_Unauthorized(t *testing.T) {
 	id := &auth.Identity{Subject: "bob", TenantID: "t1"}
-	authn := &mockAuthenticator{name: "mtls", identity: id}
+	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{err: auth.ErrUnauthorized}
 
 	m := New(authz, WithAuthenticator(authn))
@@ -611,7 +610,7 @@ func TestStreamInterceptor_Unauthorized(t *testing.T) {
 
 func TestStreamInterceptor_UserDisabled(t *testing.T) {
 	id := &auth.Identity{Subject: "disabled-user", TenantID: "t1"}
-	authn := &mockAuthenticator{name: "mtls", identity: id}
+	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{}
 	users := &mockUserServicer{
 		user: &user.User{
@@ -729,7 +728,7 @@ func TestAuthorize_AuditLogFailure_FailOpen(t *testing.T) {
 
 func TestRESTMiddleware_StoreUnavailable(t *testing.T) {
 	id := &auth.Identity{Subject: "alice", TenantID: "t1"}
-	authn := &mockAuthenticator{name: "mtls", identity: id}
+	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{}
 	users := &mockUserServicer{err: errors.New("raft not ready")}
 
@@ -776,11 +775,13 @@ func TestRESTMiddleware_TLSInjection(t *testing.T) {
 		VerifiedChains:   [][]*x509.Certificate{{cert}},
 	}
 
-	// Use a real mTLS authenticator to verify the full pipeline.
+	// Use a real mTLS authenticator to verify the full pipeline. This test is
+	// about TLS-state injection into the request context, with no user store
+	// wired at all, so "enrolled" is the correct, explicit choice (go-qrdb#548).
 	authn := auth.NewMTLSAuthenticator()
 	authz := &mockAuthorizer{}
 
-	m := New(authz, WithAuthenticator(authn))
+	m := New(authz, WithAuthenticator(authn), WithMTLSBindingPolicy(auth.MTLSBindingEnrolled))
 
 	handlerCalled := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -817,7 +818,7 @@ func TestRESTMiddleware_TLSInjection(t *testing.T) {
 
 func TestUnaryInterceptor_StoreUnavailable(t *testing.T) {
 	id := &auth.Identity{Subject: "alice", TenantID: "t1"}
-	authn := &mockAuthenticator{name: "mtls", identity: id}
+	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{}
 	users := &mockUserServicer{err: errors.New("raft not ready")}
 
@@ -850,7 +851,7 @@ func TestUnaryInterceptor_StoreUnavailable(t *testing.T) {
 
 func TestStreamInterceptor_StoreUnavailable(t *testing.T) {
 	id := &auth.Identity{Subject: "alice", TenantID: "t1"}
-	authn := &mockAuthenticator{name: "mtls", identity: id}
+	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{}
 	users := &mockUserServicer{err: errors.New("raft not ready")}
 
@@ -918,7 +919,7 @@ func TestAuthenticateQUIC_FallbackUsed(t *testing.T) {
 
 func TestAuthenticateQUIC_UserDisabled(t *testing.T) {
 	id := &auth.Identity{Subject: "disabled", TenantID: "t1"}
-	authn := &mockAuthenticator{name: "mtls", identity: id}
+	authn := &mockAuthenticator{name: "test-authn", identity: id}
 	authz := &mockAuthorizer{}
 	users := &mockUserServicer{
 		user: &user.User{

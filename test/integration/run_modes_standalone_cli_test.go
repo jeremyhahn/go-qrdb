@@ -106,7 +106,7 @@ func startStandaloneModeNode(t *testing.T, backend string) *multiProtoNode {
 
 	waitForAdmin(t, ca.Pool, restPort, 90*time.Second)
 
-	clientCert, clientKey := ca.generateAdminClientCert(t, dataDir)
+	clientCert, clientKey := ca.boundAdminCert(t, dataDir)
 
 	n := &multiProtoNode{
 		cli:        cli,

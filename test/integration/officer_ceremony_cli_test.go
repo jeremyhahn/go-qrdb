@@ -94,10 +94,11 @@ import (
 
 // selfGenCANode holds the connection details for a qrdbd node booted
 // WITHOUT --tls-* flags, so the daemon generates and persists its own CA
-// (ca.pem + ca-key.pem) alongside a ready-made admin mTLS identity
-// (admin-cert.pem/admin-key.pem, CN=admin OU=system) written by
-// cmd/qrdbd/tls.go generateAdminClientCert during boot. Retaining the CA
-// private key is what lets the ceremony sign officer CSRs.
+// (ca.pem + ca-key.pem). Retaining the CA private key is what lets the
+// ceremony sign officer CSRs. adminCertPath/adminKeyPath name where this
+// test's OWN call to bootAdminIdentity (ceremony-initialize, run against
+// restArgsNoAuth before any barrier unseal) writes the bootstrap admin's
+// certificate and key; nothing writes them until a test does that.
 type selfGenCANode struct {
 	dataDir       string
 	adminPort     int
@@ -138,13 +139,16 @@ func waitForFile(t *testing.T, path string, timeout time.Duration) {
 
 // bootSelfGenCANode starts a fresh single-node qrdbd with the given seal
 // YAML config and NO --tls-* flags, so the daemon self-generates its CA
-// (retaining the private key) and, because --auth-enabled defaults true,
-// writes a ready-made admin mTLS client certificate into its data
-// directory before the sealed-window listener comes up. It blocks until
-// ca.pem exists (i.e. TLS resolution has completed) and returns the
-// connection details; it does NOT wait for the barrier to be
-// initialized or for full boot -- callers drive that explicitly so they
-// can interact with the sealed-window listener first.
+// (retaining the private key). It blocks until ca.pem exists (i.e. TLS
+// resolution has completed) and returns the connection details; it does
+// NOT wait for the barrier to be initialized, for full boot, or for an
+// admin identity to exist -- callers drive the sealed-window listener and
+// bootAdmin explicitly (go-qrdb#548): "qrdb init" is the only system
+// bootstrap, bringing the system barrier up itself (via --barrier-strategy
+// and, when the strategy needs one, --passphrase) in the same call that
+// runs the ceremony, so no separate barrier-init call precedes it. First
+// boot's bounded wait for the pending-admin-cert record that call writes
+// covers the gap until the raft host comes up.
 func bootSelfGenCANode(t *testing.T, bin, sealYAML, prefix string) *selfGenCANode {
 	t.Helper()
 
@@ -184,9 +188,22 @@ func bootSelfGenCANode(t *testing.T, bin, sealYAML, prefix string) *selfGenCANod
 		adminKeyPath:  filepath.Join(dataDir, "admin-key.pem"),
 	}
 	waitForFile(t, n.caPath, 30*time.Second)
-	waitForFile(t, n.adminCertPath, 30*time.Second)
-	waitForFile(t, n.adminKeyPath, 30*time.Second)
 	return n
+}
+
+// bootAdmin runs bootAdminIdentity (ceremony-initialize, generate path)
+// against n's sealed-window listener -- reachable with no client
+// certificate, since no admin exists yet -- and writes the result to
+// n.adminCertPath/n.adminKeyPath, so n.restArgsAdmin() works once first
+// boot has bound it. "qrdb init" is the only system bootstrap
+// (go-qrdb#548): this call brings the system barrier up itself (pass
+// --barrier-strategy, and --passphrase when the strategy needs one, via
+// extraArgs) in the same request that runs the ceremony. First boot runs
+// in the background once the barrier unseals and waits (bounded) for the
+// pending-admin-cert record this call writes, so there is no race.
+func (n *selfGenCANode) bootAdmin(t *testing.T, cli, soPin, userPin string, extraArgs ...string) string {
+	t.Helper()
+	return bootAdminIdentity(t, cli, n.caPath, n.adminPort, soPin, userPin, n.adminCertPath, n.adminKeyPath, "", extraArgs...)
 }
 
 // restArgsNoAuth returns qrdb CLI connection flags for the REST transport
@@ -367,9 +384,15 @@ type ceremonyStatusJSON struct {
 }
 
 // decodeJSON unmarshals out (the CLI's stdout+stderr, `--output json`)
-// into dest, failing the test with a useful message on error.
+// into dest, failing the test with a useful message on error. Content
+// before the first '{' is dropped: `qrdb init`'s generate-path warning
+// (go-qrdb#548) is operator-facing prose on stderr, interleaved ahead of
+// the JSON payload in CombinedOutput, not part of the response.
 func decodeJSON(t *testing.T, out string, dest any) {
 	t.Helper()
+	if i := strings.IndexByte(out, '{'); i > 0 {
+		out = out[i:]
+	}
 	if err := json.Unmarshal([]byte(out), dest); err != nil {
 		t.Fatalf("decodeJSON: %v\noutput: %s", err, out)
 	}
@@ -379,16 +402,18 @@ func decodeJSON(t *testing.T, out string, dest any) {
 // 1. `qrdb init` -- one-shot bootstrap ceremony.
 // ---------------------------------------------------------------------------
 
-// TestCLI_Init_PassphraseHappyPath drives the full happy path: a fresh
-// node boots sealed, the operator initializes the barrier with the
-// software "none" strategy (`barrier init`) so the daemon reaches full
-// boot quickly, then `qrdb init` runs the ceremony.
+// TestCLI_Init_PassphraseHappyPath drives the full happy path: `qrdb init`
+// is the only system bootstrap (go-qrdb#548) -- it brings the system barrier
+// up itself (strategy "none" here, via --barrier-strategy) in the same call
+// that runs the ceremony against the sealed-window listener (no admin exists
+// yet to authenticate as), and first boot binds the certificate init already
+// minted.
 //
 // The SO identity is CSR-based; the server never holds officer private
 // keys, so init returns no credential bundle. Post-init usability is
-// verified with the daemon's own pre-generated admin-cert.pem /
-// admin-key.pem (CN=admin, OU=system), exactly as drain_test.go's
-// startDrainNode does for the existing `qrdb admin drain` coverage.
+// verified with the certificate bootAdminIdentity obtained from init
+// itself -- the admin's ACTUAL credential, now that it is bound rather
+// than merely matching CN=admin, OU=system by convention.
 func TestCLI_Init_PassphraseHappyPath(t *testing.T) {
 	bin := buildBinary(t)
 	cli := buildCLIBinary(t)
@@ -396,45 +421,38 @@ func TestCLI_Init_PassphraseHappyPath(t *testing.T) {
 	node := bootSelfGenCANode(t, bin, "seal:\n  enabled: true\n  strategy: none\n", "[init-happy] ")
 	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
 
-	if out, err := runQRDB(t, cli, node.restArgsNoAuth(), "barrier", "init", "--barrier-strategy", "none"); err != nil {
-		t.Fatalf("barrier init: %v\noutput: %s", err, out)
+	out := node.bootAdmin(t, cli, "SOPIN12345", "USERPIN12345", "--barrier-strategy", "none")
+	if !strings.Contains(out, `"state":"operational"`) {
+		t.Errorf("qrdb init output should report state operational, got: %s", out)
 	}
 
 	waitForHealthy(t, node.dataDir, 60*time.Second)
 	pollUntilCLISucceeds(t, cli, node.restArgsAdmin(), 60*time.Second)
 
-	out, err := runQRDB(t, cli, node.restArgsAdmin(),
-		"init", "--so-pin", "SOPIN12345", "--user-pin", "USERPIN12345")
-	if err != nil {
-		t.Fatalf("qrdb init: %v\noutput: %s", err, out)
-	}
-
-	if !strings.Contains(out, "State:       operational") {
-		t.Errorf("qrdb init output should report State: operational, got: %s", out)
-	}
-
 	// Post-init usability: the node must still serve ordinary data-plane
-	// traffic. `qrdb init` does not mint a data-plane identity itself (see
-	// above), so this uses the daemon's own admin identity.
+	// traffic, authenticated with the certificate `qrdb init` minted and
+	// first boot bound.
 	if out, err := runQRDB(t, cli, node.restArgsAdmin(), "kv", "put", "hello", "world"); err != nil {
 		t.Fatalf("kv put after init: %v\noutput: %s", err, out)
 	}
-	out, err = runQRDB(t, cli, node.restArgsAdmin(), "kv", "get", "hello")
+	getOut, err := runQRDB(t, cli, node.restArgsAdmin(), "kv", "get", "hello")
 	if err != nil {
-		t.Fatalf("kv get after init: %v\noutput: %s", err, out)
+		t.Fatalf("kv get after init: %v\noutput: %s", err, getOut)
 	}
-	if !strings.Contains(out, "world") {
-		t.Errorf("kv get after init: expected 'world', got: %s", out)
+	if !strings.Contains(getOut, "world") {
+		t.Errorf("kv get after init: expected 'world', got: %s", getOut)
 	}
 
-	// A second `qrdb init` must fail with the typed ceremony.ErrAlreadyInitialized.
-	out, err = runQRDB(t, cli, node.restArgsAdmin(),
-		"init", "--so-pin", "SOPIN12345", "--user-pin", "USERPIN12345")
+	// A second `qrdb init`, now that the admin already holds a live
+	// binding, is refused as a redundant retry (service.AdminAlreadyBoundError)
+	// rather than re-running the whole ceremony.
+	retryOut, err := runQRDB(t, cli, node.restArgsAdmin(),
+		"init", "--so-pin", "SOPIN12345", "--user-pin", "USERPIN12345", "--barrier-strategy", "none")
 	if err == nil {
-		t.Fatalf("second qrdb init should have failed; output: %s", out)
+		t.Fatalf("second qrdb init should have failed; output: %s", retryOut)
 	}
-	if !strings.Contains(out, "already completed") {
-		t.Errorf("second qrdb init: expected 'already completed' (ceremony.ErrAlreadyInitialized), got: %s", out)
+	if !strings.Contains(retryOut, "already holds a certificate binding") {
+		t.Errorf("second qrdb init: expected the admin-already-bound refusal, got: %s", retryOut)
 	}
 }
 
@@ -458,13 +476,10 @@ func TestCLI_Init_ShamirFlags_RequiresOfficers(t *testing.T) {
 	node := bootSelfGenCANode(t, bin, "seal:\n  enabled: true\n  strategy: none\n", "[init-shamir-flags] ")
 	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
 
-	if out, err := runQRDB(t, cli, node.restArgsNoAuth(), "barrier", "init", "--barrier-strategy", "none"); err != nil {
-		t.Fatalf("barrier init: %v\noutput: %s", err, out)
-	}
-	waitForHealthy(t, node.dataDir, 60*time.Second)
-	pollUntilCLISucceeds(t, cli, node.restArgsAdmin(), 60*time.Second)
-
-	out, err := runQRDB(t, cli, node.restArgsAdmin(),
+	// No admin identity is needed: ceremony-initialize runs against the
+	// sealed-window listener, before any barrier unseal, and this test
+	// never reaches a successful ceremony.
+	out, err := runQRDB(t, cli, node.restArgsNoAuth(),
 		"init",
 		"--so-pin", "SOPIN12345", "--user-pin", "USERPIN12345",
 		"--barrier-strategy", "shamir", "--shares", "5", "--threshold", "3")
@@ -478,7 +493,7 @@ func TestCLI_Init_ShamirFlags_RequiresOfficers(t *testing.T) {
 	// The ceremony must not be left half-initialized: Initialize's own
 	// validateConfig failure must leave the state machine at
 	// awaiting_init, not silently advance it.
-	out, err = runQRDB(t, cli, node.restArgsAdmin(), "ceremony", "status", "--output", "json")
+	out, err = runQRDB(t, cli, node.restArgsNoAuth(), "ceremony", "status", "--output", "json")
 	if err != nil {
 		t.Fatalf("ceremony status after the failed shamir attempt: %v\noutput: %s", err, out)
 	}
@@ -605,6 +620,12 @@ func TestCLI_Init_ShamirWithOfficers_EndToEnd(t *testing.T) {
 // validation runs (see newRootCmd), so even purely local validation
 // requires a reachable server; a "none"-strategy node satisfies that
 // cheaply.
+// TestCLI_Init_LocalFlagValidation exercises the CLI-local flag
+// validation in cmd/qrdb/init.go resolveAndValidateInitFlags. cobra's
+// PersistentPreRunE connects the SDK client before any subcommand-level
+// validation runs (see newRootCmd), so even purely local validation
+// requires a reachable server; a "none"-strategy node satisfies that
+// cheaply.
 func TestCLI_Init_LocalFlagValidation(t *testing.T) {
 	bin := buildBinary(t)
 	cli := buildCLIBinary(t)
@@ -681,11 +702,13 @@ func TestCLI_BarrierOfficerRegister_SealedWindow(t *testing.T) {
 	csrPath := writeTempFile(t, "off1.csr", csrPEM)
 
 	// gRPC reaches the sealed-window listener (Health answers "sealed"
-	// rather than erroring) and registers the first officer.
+	// rather than erroring) and registers the first officer. No client
+	// certificate is presented: the sealed-window listener runs without
+	// authentication (see the officer-list assertion below), and this test
+	// never boots far enough for an admin identity to exist.
 	grpcArgs := []string{
 		"--server", fmt.Sprintf("grpcs://127.0.0.1:%d", node.grpcPort),
 		"--ca-file", node.caPath,
-		"--cert-file", node.adminCertPath, "--key-file", node.adminKeyPath,
 		"--timeout", "5s",
 	}
 	out, err := runQRDB(t, cli, grpcArgs, "barrier", "officer", "register",
@@ -865,13 +888,12 @@ func TestCLI_RecoveryOfficerFlow_EndToEnd(t *testing.T) {
 		adminKeyPath:  filepath.Join(dataDir, "admin-key.pem"),
 	}
 	waitForFile(t, node.caPath, 30*time.Second)
-	waitForFile(t, node.adminCertPath, 30*time.Second)
-	waitForFile(t, node.adminKeyPath, 30*time.Second)
 
 	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
-	if out, err := runQRDB(t, cli, node.restArgsNoAuth(), "barrier", "init", "--barrier-strategy", "none"); err != nil {
-		t.Fatalf("barrier init: %v\noutput: %s", err, out)
-	}
+	// "qrdb init" is the only system bootstrap (go-qrdb#548): it brings the
+	// system barrier up itself (strategy "none" here), so no separate
+	// barrier-init call precedes it.
+	node.bootAdmin(t, cli, "SOPIN12345", "USERPIN12345", "--barrier-strategy", "none")
 	waitForHealthy(t, dataDir, 60*time.Second)
 	pollUntilCLISucceeds(t, cli, node.restArgsAdmin(), 60*time.Second)
 
@@ -959,13 +981,8 @@ func TestCLI_Ceremony_StatusAndSubcommands(t *testing.T) {
 
 	node := bootSelfGenCANode(t, bin, "seal:\n  enabled: true\n  strategy: none\n", "[ceremony] ")
 	pollUntilCLISucceeds(t, cli, node.restArgsNoAuth(), 30*time.Second)
-	if out, err := runQRDB(t, cli, node.restArgsNoAuth(), "barrier", "init", "--barrier-strategy", "none"); err != nil {
-		t.Fatalf("barrier init: %v\noutput: %s", err, out)
-	}
-	waitForHealthy(t, node.dataDir, 60*time.Second)
-	pollUntilCLISucceeds(t, cli, node.restArgsAdmin(), 60*time.Second)
 
-	out, err := runQRDB(t, cli, node.restArgsAdmin(), "ceremony", "status", "--output", "json")
+	out, err := runQRDB(t, cli, node.restArgsNoAuth(), "ceremony", "status", "--output", "json")
 	if err != nil {
 		t.Fatalf("ceremony status (pre-init): %v\noutput: %s", err, out)
 	}
@@ -975,12 +992,15 @@ func TestCLI_Ceremony_StatusAndSubcommands(t *testing.T) {
 		t.Errorf("ceremony status pre-init: state = %q, want %q", status.State, "awaiting_init")
 	}
 
+	// "qrdb init" is the only system bootstrap (go-qrdb#548): it brings the
+	// system barrier up itself (strategy "none" here, via
+	// --barrier-strategy) in the same call that runs the ceremony, so no
+	// separate barrier-init call precedes it.
 	const soPin = "SOPIN12345"
-	out, err = runQRDB(t, cli, node.restArgsAdmin(),
-		"init", "--so-pin", soPin, "--user-pin", "USERPIN12345")
-	if err != nil {
-		t.Fatalf("qrdb init: %v\noutput: %s", err, out)
-	}
+	node.bootAdmin(t, cli, soPin, "USERPIN12345", "--barrier-strategy", "none")
+
+	waitForHealthy(t, node.dataDir, 60*time.Second)
+	pollUntilCLISucceeds(t, cli, node.restArgsAdmin(), 60*time.Second)
 
 	out, err = runQRDB(t, cli, node.restArgsAdmin(), "ceremony", "status", "--output", "json")
 	if err != nil {
@@ -999,7 +1019,7 @@ func TestCLI_Ceremony_StatusAndSubcommands(t *testing.T) {
 
 	out, err = runQRDB(t, cli, node.restArgsAdmin(),
 		"ceremony", "sign-csr", "--username", "svc1", "--so-pin", soPin,
-		"--csr-file", csrPath, "--role", "operator")
+		"--csr-file", csrPath, "--role", "custodian")
 	if err != nil {
 		t.Fatalf("ceremony sign-csr with the correct SO PIN should succeed: %v\noutput: %s", err, out)
 	}
@@ -1009,7 +1029,7 @@ func TestCLI_Ceremony_StatusAndSubcommands(t *testing.T) {
 
 	out, err = runQRDB(t, cli, node.restArgsAdmin(),
 		"ceremony", "sign-csr", "--username", "svc2", "--so-pin", "wrong-pin",
-		"--csr-file", csrPath, "--role", "operator")
+		"--csr-file", csrPath, "--role", "custodian")
 	if err == nil {
 		t.Fatalf("ceremony sign-csr with the wrong SO PIN should fail; output: %s", out)
 	}

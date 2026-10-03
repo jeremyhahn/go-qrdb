@@ -19,9 +19,14 @@ package integration_test
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
@@ -58,13 +63,21 @@ const (
 type testCA struct {
 	*qrdbdharness.CA
 
-	// adminOnce guards the admin client certificate mtlsHTTPClient presents.
-	// It is minted once per CA and reused: the HTTP helpers build a fresh
-	// client per request, and minting a new key pair for every KV round trip
-	// would dominate their cost.
-	adminOnce sync.Once
-	adminCert tls.Certificate
-	adminErr  error
+	// adminOnce guards the ONE bootstrap admin client certificate this CA's
+	// callers share (go-qrdb#548): mtlsHTTPClient's cached client,
+	// generateAdminClientCert's returned file paths, and
+	// initAndUnsealBarrier's ceremony admin_cert_pem BYOC input all resolve
+	// to this same mint via adminIdentity. Minting two independent
+	// "CN=admin, OU=system" certificates -- interchangeable back when
+	// auth.mtls_binding_policy's default was "enrolled" -- stopped working
+	// the moment the default became "required": only the certificate the
+	// ceremony actually binds authenticates, so every caller in this
+	// package needs the SAME one.
+	adminOnce     sync.Once
+	adminCert     tls.Certificate
+	adminCertPath string
+	adminKeyPath  string
+	adminErr      error
 }
 
 // generateTestCA creates an ephemeral ECDSA P-256 CA certificate for
@@ -105,14 +118,193 @@ func (ca *testCA) generateNodeCert(t *testing.T) (certPath, keyPath string) {
 	return kp.CertPath, kp.KeyPath
 }
 
-// generateAdminClientCert creates a client-only certificate signed by this
-// CA with CN=admin and OU=system. This matches the admin user created by
-// firstboot.Initialize so the mTLS authenticator recognizes it. The cert
-// and key are written to {dataDir}/admin-cert.pem and admin-key.pem.
+// adminIdentity mints, once per CA and cached thereafter, the bootstrap
+// admin's bring-your-own client certificate (CN=admin, OU=system) and
+// returns its parsed tls.Certificate plus the cert/key file paths it was
+// written to. Every admin-identity consumer in this package --
+// mtlsHTTPClient's cached client, generateAdminClientCert's returned paths,
+// and initAndUnsealBarrier's ceremony admin_cert_pem BYOC input -- goes
+// through this one mint (go-qrdb#548), so the certificate ceremony-initialize
+// actually binds is the exact one every later request in the test presents.
+// dataDir is used only the first time; later callers (with a different
+// dataDir) still get the SAME already-minted identity.
+func (ca *testCA) adminIdentity(t *testing.T, dataDir string) (cert tls.Certificate, certPath, keyPath string) {
+	t.Helper()
+	ca.adminOnce.Do(func() {
+		kp := ca.issue(t, dataDir, qrdbdharness.WithSubject(adminUser, adminTenant))
+		ca.adminCertPath, ca.adminKeyPath = kp.CertPath, kp.KeyPath
+		ca.adminCert, ca.adminErr = kp.TLSCertificate()
+	})
+	if ca.adminErr != nil {
+		t.Fatalf("adminIdentity: %v", ca.adminErr)
+	}
+	return ca.adminCert, ca.adminCertPath, ca.adminKeyPath
+}
+
+// generateAdminClientCert creates a FRESH client-only certificate signed by
+// this CA with CN=admin and OU=system, distinct (different key, different
+// serial) from every other certificate this method or adminIdentity ever
+// returns. It does not authenticate as the bootstrap admin to any node
+// under the default auth.mtls_binding_policy "required" -- no ceremony ever
+// binds it -- so it is only for a caller that needs CN=admin-shaped
+// certificate MATERIAL rather than a working identity: e.g. auth_cli_test.go
+// feeds two of these to `auth factor add --cert`/`--cert` as distinct mTLS
+// factor payloads for an unrelated user, where what matters is that the two
+// calls return different keys, not that either one logs in as admin. A
+// caller that needs to actually authenticate as the bootstrap admin wants
+// boundAdminCert instead.
 func (ca *testCA) generateAdminClientCert(t *testing.T, dataDir string) (certPath, keyPath string) {
 	t.Helper()
 	kp := ca.issue(t, dataDir, qrdbdharness.WithSubject(adminUser, adminTenant))
 	return kp.CertPath, kp.KeyPath
+}
+
+// boundAdminCert returns the file paths of this CA's one shared bootstrap
+// admin identity (see adminIdentity) -- the exact certificate
+// ceremony-initialize binds (via initAndUnsealBarrier's admin_cert_pem BYOC
+// input), usable to authenticate to a node once first boot completes.
+// Unlike generateAdminClientCert, every call returns the SAME identity.
+func (ca *testCA) boundAdminCert(t *testing.T, dataDir string) (certPath, keyPath string) {
+	t.Helper()
+	_, certPath, keyPath = ca.adminIdentity(t, dataDir)
+	return certPath, keyPath
+}
+
+// noAuthConnArgs returns qrdb CLI connection flags reaching the node at
+// adminPort with no client certificate presented -- the only combination
+// that can reach the pre-host sealed-window listener (gRPC and Unix both
+// probe a Health RPC on Connect() the sealed-window listener does not
+// implement; REST's reachability probe accepts the always-public GET
+// /health's 200 or 503). It is also valid against a fully-booted node: an
+// unauthenticated request to an endpoint that requires none (ceremony
+// status/initialize) succeeds there too.
+func noAuthConnArgs(caCertPath string, adminPort int) []string {
+	return []string{
+		"--server", fmt.Sprintf("https://127.0.0.1:%d", adminPort),
+		"--transport", "rest",
+		"--ca-file", caCertPath,
+		"--timeout", "20s",
+	}
+}
+
+// bootAdminIdentity runs `qrdb init` (the ceremony-initialize entry point,
+// pkg/ceremony.CeremonyService.Initialize) against the node at adminPort,
+// reachable with no client certificate because no admin account exists yet,
+// and writes the bootstrap admin's resulting certificate and key to
+// certPath/keyPath -- the credential cmd/qrdbd's own first boot binds to
+// the admin account it creates, and the one every integration test now
+// authenticates the "admin" identity with.
+//
+// This replaces the removed cmd/qrdbd/tls.go generateAdminClientCert: a
+// per-node admin private key file the daemon wrote itself, independent of
+// any ceremony or enrollment, which worked only because
+// auth.mtls_binding_policy defaulted to "enrolled" (any certificate
+// presenting as CN=admin, OU=system admitted). Under the new default
+// "required" an admin credential must be the one the ceremony issued and
+// first boot bound; this helper is the one place that credential comes
+// from.
+//
+// "qrdb init" is the only system bootstrap (go-qrdb#548): this call brings
+// the system barrier up itself -- strategy "none" needs nothing further,
+// "passphrase" needs --passphrase, M-of-N ("shamir") leaves the barrier
+// sealed through officer enrollment -- in the same request that runs the
+// ceremony, so no separate barrier-init call precedes it. There is no race
+// with first boot either way: first boot does not run until the raft host
+// comes up in the background, and waits (bounded,
+// firstboot.AdminBindingLookupTimeout) for the pending-admin-cert record
+// this call writes, so it reaches the server comfortably before that wait
+// would time out.
+//
+// csrPath/keyPath select the credential path: an empty csrPath runs the
+// generate path (the server mints and returns the key pair; this is a
+// test-only use of a path cmd/qrdb's own --help flags it as non-production)
+// and keyPath receives the returned key. A non-empty csrPath instead runs
+// the CSR-sign path: keyPath must already hold the CSR's own private key
+// (generated by the caller, e.g. via generateAdminCSR), which this function
+// leaves untouched -- the server never sees it.
+//
+// extraArgs are appended after --so-pin/--user-pin/(--admin-csr), for a
+// caller that also needs --barrier-strategy, --passphrase, --shares,
+// --threshold or --officers. It returns the raw JSON output so a caller
+// that asserts on more of the response than the admin credential (State,
+// SPKIPin, ShareCount, ...) can decode it into its own richer struct.
+func bootAdminIdentity(t *testing.T, cli, caCertPath string, adminPort int, soPin, userPin, certPath, keyPath, csrPath string, extraArgs ...string) string {
+	t.Helper()
+	args := []string{"--output", "json", "init", "--so-pin", soPin, "--user-pin", userPin}
+	if csrPath != "" {
+		args = append(args, "--admin-csr", csrPath)
+	}
+	args = append(args, extraArgs...)
+
+	// Retry transient failures in the narrow window around the barrier
+	// unseal this call must run after: the sealed-window listener tears
+	// down once the barrier unseals and the full post-boot listener (same
+	// port) is not yet bound, so a connection refused or a 503 "sealed-
+	// window listener closed" is expected here, not a real failure, for up
+	// to a few seconds.
+	var out string
+	var err error
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		out, err = runQRDB(t, cli, noAuthConnArgs(caCertPath, adminPort), args...)
+		if err == nil || !time.Now().Before(deadline) {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("bootAdminIdentity: qrdb init: %v\noutput: %s", err, out)
+	}
+	var resp struct {
+		AdminCertPEM string `json:"admin_cert_pem"`
+		AdminKeyPEM  string `json:"admin_key_pem"`
+	}
+	decodeJSON(t, out, &resp)
+	if resp.AdminCertPEM == "" {
+		t.Fatalf("bootAdminIdentity: qrdb init returned no admin_cert_pem: %s", out)
+	}
+	if err := os.WriteFile(certPath, []byte(resp.AdminCertPEM), 0o600); err != nil {
+		t.Fatalf("bootAdminIdentity: write %s: %v", certPath, err)
+	}
+	if csrPath == "" {
+		if resp.AdminKeyPEM == "" {
+			t.Fatalf("bootAdminIdentity: generate path returned no admin_key_pem: %s", out)
+		}
+		if err := os.WriteFile(keyPath, []byte(resp.AdminKeyPEM), 0o600); err != nil {
+			t.Fatalf("bootAdminIdentity: write %s: %v", keyPath, err)
+		}
+	}
+	return out
+}
+
+// generateAdminCSR generates an ECDSA P-256 key pair and a self-signed CSR
+// for it (CN=admin: the subject the server's CSR-sign path renames to the
+// bootstrap admin regardless of what the CSR itself carries), writing the
+// private key to keyPath and returning the CSR's path. Pairs with
+// bootAdminIdentity's CSR-sign path: the server never sees keyPath.
+func generateAdminCSR(t *testing.T, dir, keyPath string) (csrPath string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generateAdminCSR: generate key: %v", err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatalf("generateAdminCSR: marshal key: %v", err)
+	}
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+		t.Fatalf("generateAdminCSR: write key: %v", err)
+	}
+	csrTemplate := &x509.CertificateRequest{Subject: pkix.Name{CommonName: "admin"}}
+	csrDER, err := x509.CreateCertificateRequest(rand.Reader, csrTemplate, key)
+	if err != nil {
+		t.Fatalf("generateAdminCSR: create CSR: %v", err)
+	}
+	csrPath = filepath.Join(dir, "admin-csr.pem")
+	if err := os.WriteFile(csrPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER}), 0o600); err != nil {
+		t.Fatalf("generateAdminCSR: write CSR: %v", err)
+	}
+	return csrPath
 }
 
 // tlsFlags returns the CLI flags for TLS cert files for a single node.
@@ -139,23 +331,8 @@ func caHTTPClient(pool *x509.CertPool, timeout time.Duration) *http.Client {
 // system-tenant rule.
 func mtlsHTTPClient(t *testing.T, ca *testCA, timeout time.Duration) *http.Client {
 	t.Helper()
-	ca.adminOnce.Do(func() {
-		kp, err := ca.Issue(t.TempDir(),
-			qrdbdharness.WithCertOrganization(testOrganization),
-			qrdbdharness.WithSubject(adminUser, adminTenant),
-		)
-		if err != nil {
-			ca.adminErr = err
-			return
-		}
-		// Only the parsed certificate is kept, so the files may be reaped
-		// with the temp directory of whichever test minted it first.
-		ca.adminCert, ca.adminErr = kp.TLSCertificate()
-	})
-	if ca.adminErr != nil {
-		t.Fatalf("mtlsHTTPClient: %v", ca.adminErr)
-	}
-	return qrdbdharness.HTTPSClient(ca.Pool, &ca.adminCert, timeout)
+	cert, _, _ := ca.adminIdentity(t, t.TempDir())
+	return qrdbdharness.HTTPSClient(ca.Pool, &cert, timeout)
 }
 
 // buildBinary compiles the qrdbd daemon binary and returns its path. The
@@ -2093,64 +2270,74 @@ func waitForBarrierStatusReachable(t *testing.T, ca *testCA, port int, timeout t
 	t.Fatalf("timed out after %v waiting for barrier status at port %d", timeout, port)
 }
 
-// initAndUnsealBarrier initializes and unseals the system barrier on the
-// given admin port. It calls POST /v1/barrier/initialize followed by
-// POST /v1/barrier/unseal with the provided passphrase. The sealed-window
-// server (which starts before the Raft host when seal.enabled=true) accepts
-// these calls without RBAC because auth middleware is absent there — the
-// barrier credential itself is the authorization.
-func initAndUnsealBarrier(t *testing.T, ca *testCA, port int, passphrase string) {
+// initAndUnsealBarrier brings up the system barrier on the given admin port
+// and returns this CA's one shared bootstrap admin identity's certificate
+// and key paths (see adminIdentity). "qrdb init" is the only system
+// bootstrap (go-qrdb#548): this calls POST /v1/ceremony/initialize, which
+// brings the barrier up itself (secret, when passphrase is non-empty -- the
+// daemon's own seal.strategy YAML decides whether one is required, exactly
+// as it always has) in the same request that runs the ceremony. The admin
+// credential is bring-your-own-certificate: adminIdentity's cert, the SAME
+// one mtlsHTTPClient presents and generateAdminClientCert's callers hold a
+// path to, rather than generated. That matters most for a multi-node
+// cluster, where each node runs its own independent, local ceremony during
+// its own sealed window (since each node's barrier is local) -- calling
+// this function once per node, all with the same ca, hands every one of
+// them the identical certificate: first boot on whichever node's write
+// lands first binds it, and the others' writes are idempotent no-ops, so it
+// authenticates against every node once all of them have reached full
+// boot. The sealed-window server (which starts before the Raft host when
+// seal.enabled=true) accepts this call without RBAC because auth
+// middleware is absent there — the SO/user PIN pair is this helper's own
+// fixed constant, not a caller-supplied secret, because no caller in this
+// package asserts on it.
+func initAndUnsealBarrier(t *testing.T, ca *testCA, port int, passphrase string) (certPath, keyPath string) {
 	t.Helper()
 
-	client := mtlsHTTPClient(t, ca, 10*time.Second)
-
-	// Initialize the barrier.
-	initBody, initStatus := iraftAPIPost(t, client,
-		fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/initialize", port),
-		map[string]interface{}{"secret": []byte(passphrase)},
-	)
-	if initStatus != http.StatusNoContent {
-		t.Fatalf("barrier init on port %d: status %d, body: %s", port, initStatus, initBody)
-	}
-
-	// Unseal the barrier. A successful Initialize already transitions the
-	// barrier to the unsealed state (pkg/seal: StorageBarrier.Initialize sets
-	// stateUnsealed), so this explicit unseal is redundant on the first boot and
-	// the daemon answers 409 ErrAlreadyUnsealed. Accept that as success: the
-	// only goal here is to guarantee the barrier ends up unsealed. A genuine
-	// unseal failure (wrong passphrase, sealed without init) still surfaces.
-	//
-	// Because Initialize already unseals the barrier, the daemon's boot
-	// goroutine can start (and even finish) tearing down the pre-host
-	// sealed-window listener before this explicit call lands, so a
-	// "connection refused" here is the same benign race as the 409 case
-	// above rather than a genuine failure -- retry briefly to absorb it,
-	// and tolerate the connection continuing to be refused (the listener
-	// really is gone because the barrier really is unsealed). A listener
-	// that has not stopped yet answers 503 SEALED_WINDOW_CLOSED: it refuses
-	// everything once the barrier is unsealed, which is the same fact.
-	body, err := json.Marshal(map[string]interface{}{"secret": []byte(passphrase)})
+	_, certPath, keyPath = ca.adminIdentity(t, t.TempDir())
+	adminCertPEM, err := os.ReadFile(certPath)
 	if err != nil {
-		t.Fatalf("initAndUnsealBarrier: marshal unseal body: %v", err)
+		t.Fatalf("initAndUnsealBarrier: read %s: %v", certPath, err)
 	}
-	unsealURL := fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/unseal", port)
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		resp, postErr := client.Post(unsealURL, "application/json", bytes.NewReader(body))
-		if postErr == nil {
-			respBody, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			closed := resp.StatusCode == http.StatusServiceUnavailable && bytes.Contains(respBody, []byte(`"SEALED_WINDOW_CLOSED"`))
-			if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusConflict && !closed {
-				t.Fatalf("barrier unseal on port %d: status %d, body: %s", port, resp.StatusCode, respBody)
-			}
-			return
-		}
-		if time.Now().After(deadline) {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
+
+	client := mtlsHTTPClient(t, ca, 10*time.Second)
+	body, err := json.Marshal(map[string]any{
+		"so_pin":         "integration-harness-so-pin",
+		"user_pin":       "integration-harness-user-pin",
+		"admin_cert_pem": string(adminCertPEM),
+		"secret":         passphrase,
+	})
+	if err != nil {
+		t.Fatalf("initAndUnsealBarrier: marshal: %v", err)
 	}
+
+	url := fmt.Sprintf("https://127.0.0.1:%d/v1/ceremony/initialize", port)
+	deadline := time.Now().Add(15 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		resp, postErr := client.Post(url, "application/json", bytes.NewReader(body))
+		if postErr != nil {
+			lastErr = postErr
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode < 300 {
+			return certPath, keyPath
+		}
+		// A retry after the ceremony already completed on this node (e.g. a
+		// second call racing the same node) is the same fact as success for
+		// this helper's purpose: the barrier is unsealed and an admin is
+		// bound either way.
+		if bytes.Contains(respBody, []byte("already")) {
+			return certPath, keyPath
+		}
+		lastErr = fmt.Errorf("status %d, body: %s", resp.StatusCode, respBody)
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("ceremony initialize on port %d never succeeded within 15s: %v", port, lastErr)
+	return "", ""
 }
 
 // iraftAPIPost sends a JSON POST to the given URL using the provided client and
