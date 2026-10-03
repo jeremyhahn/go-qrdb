@@ -2328,8 +2328,13 @@ TEST_TAGS_SETS := $(LINT_TAGS) $(NOMYSQL_TAGS) $(NOPGSQL_TAGS) $(NOSQLFAMILY_TAG
 # and CLI main packages, whose registered flags and subcommands are exactly
 # what varies underneath a protocol-family build tag (see
 # scripts/test-tags.sh for why this is narrower than a repository-wide
-# sweep).
-TEST_TAGS_PKGS := ./cmd/qrdbd/... ./cmd/qrdb/...
+# sweep), plus pkg/service (non-recursive: its subpackages backupsink and
+# servicetest do not vary by protocol tag). pkg/service carries
+# database_etcd_capability_test.go, tagged !qrdb_etcd, which proves an etcd
+# config is refused before persistence on a binary without the tag -- a
+# property the command-surface packages alone cannot exercise, since the
+# refusal lives in the service layer every transport shares.
+TEST_TAGS_PKGS := ./cmd/qrdbd/... ./cmd/qrdb/... ./pkg/service
 
 # vet-tags sweeps EVERY Go module in the tree, each with its own tag sets.
 #

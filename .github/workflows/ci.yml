@@ -576,6 +576,19 @@ jobs:
       - name: Unit tests (race) + coverage gate
         run: make coverage
 
+      # make test-tags RUNS (not merely vets) ./cmd/qrdbd/... and
+      # ./cmd/qrdb/... under the default build plus the four reduced
+      # protocol-family rungs (scripts/test-tags.sh). vet-tags (Lint job)
+      # proves the tree TYPECHECKS under every declared combination; it has
+      # no opinion on whether a test that compiles there also PASSES, which
+      # is exactly how a hard-coded subcommand count and two tests
+      # expecting a reduced-build-only subcommand to succeed went
+      # undetected. Belongs in Test, not Lint: it asserts runtime behavior,
+      # not static shape, and Lint already carries vet-tags's 31-sweep
+      # static check.
+      - name: Protocol-family build tags (runtime)
+        run: make test-tags
+
   test-sdk:
     name: Test (sdk/go module)
     runs-on: ubuntu-latest

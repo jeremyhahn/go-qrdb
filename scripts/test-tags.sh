@@ -36,17 +36,21 @@
 # scripts/vet-modules.sh takes TAG_SETS as data rather than declaring its
 # own: one declaration (go-qrdb#263).
 #
-# SCOPE: only ./cmd/qrdbd/... and ./cmd/qrdb/... (PACKAGES), not a
-# repository-wide sweep. Running the full suite under every combination
-# multiplies an already-long test run by the combination count; the command
-# surface is where a build tag changes observable BEHAVIOR a test can get
-# wrong (a flag or subcommand appearing or vanishing), so that is what this
-# gate exists to catch. pkg/sql, pkg/api/etcd and the other tag-gated
-# packages are already covered for THEIR OWN reduced builds by
+# SCOPE: the command surface (./cmd/qrdbd/..., ./cmd/qrdb/...) plus
+# pkg/service (PACKAGES), not a repository-wide sweep. Running the full
+# suite under every combination multiplies an already-long test run by the
+# combination count; the command surface is where a build tag changes
+# observable BEHAVIOR a test can get wrong (a flag or subcommand appearing
+# or vanishing), so that is what this gate exists to catch. pkg/service is
+# included non-recursively because it carries the service-layer capability
+# refusals (e.g. database_etcd_capability_test.go, tagged !qrdb_etcd) that
+# every transport shares -- a property the command surface alone cannot
+# exercise. pkg/sql, pkg/api/etcd and the other tag-gated packages
+# themselves are already covered for THEIR OWN reduced builds by
 # `make vet-tags` (they typecheck or vanish entirely) and by
-# `test/buildgates` (their dependency graph is absent) -- this script does
-# not re-check that; it checks the command surface that is ALWAYS present
-# but whose registered flags and subcommands vary underneath it.
+# `test/buildgates` (their dependency graph is absent, and -- since
+# sql_etcd_tag_coverage_test.go -- every file in them carries the matching
+# constraint) -- this script does not re-check that.
 #
 # The +integration rungs are deliberately excluded by the caller (Make):
 # running them here would need the real infrastructure integration tests
@@ -62,12 +66,12 @@ ROOT="${TEST_TAGS_ROOT:-.}"
 GOTEST="${GOTEST:-go test}"
 GOLIST="${GOLIST:-go list}"
 
-# MIN_PACKAGES is the discovery floor. ./cmd/qrdbd and ./cmd/qrdb exist
-# under every combination this script is ever called with -- they are the
-# two daemon/CLI main packages, never themselves behind a build tag -- so a
-# count below this is discovery silently matching nothing, the same hazard
+# MIN_PACKAGES is the discovery floor. ./cmd/qrdbd, ./cmd/qrdb and
+# pkg/service exist under every combination this script is ever called
+# with -- none of the three is itself behind a build tag -- so a count
+# below this is discovery silently matching nothing, the same hazard
 # vet-modules.sh's packages_under names, not a measurement of a clean run.
-MIN_PACKAGES=2
+MIN_PACKAGES=3
 
 die() { printf '%s\n' "$@" >&2; exit 1; }
 
