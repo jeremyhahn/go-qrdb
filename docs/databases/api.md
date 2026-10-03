@@ -334,7 +334,13 @@ Owner, and these follow it.)
 
 Initialization request: `{"policy": "designated"}` — the M-of-N is the
 `sharesRequired`/`sharesTotal` the database was created with, and exactly
-`sharesTotal` holders must be enrolled. (Correction: the contract first carried
+`sharesTotal` holders must be enrolled. Until initialization no more than
+`sharesTotal` can be: one more is refused with
+`ceremony.HolderLimitReachedError` (409, `FAILED_PRECONDITION`).
+`GET /v1/databases/{name}/barrier/status` reports `initialized_at` once the
+custody is initialized and omits it until then; the TypeScript SDK's
+`database.barrierStatus(name)` reports it as `initializedAt` on both of its
+transports. (Correction: the contract first carried
 `threshold` and `total_shares` here; the create already fixes them, and a
 second copy could only disagree.) The response is share-free:
 `{"threshold", "total_shares", "share_count"}`. A create with `mode: "shamir"`
@@ -366,6 +372,7 @@ with `DatabaseNameRequiredError` before it is sent.
 | A `secret` on a `shamir` create (`ShamirSecretNotAllowedError`) | 400 | `INVALID_ARGUMENT` |
 | A holder operation on a database with no Shamir barrier (`NotShamirBarrierError`) | 409 | `FAILED_PRECONDITION` |
 | A `shamir` create on a node with no holder CA (`ShamirCustodyNotConfiguredError`) | 409 | `FAILED_PRECONDITION` |
+| A holder enrolled past `sharesTotal` before initialization (`ceremony.HolderLimitReachedError`) | 409 | `FAILED_PRECONDITION` |
 | Changing a Shamir barrier's strategy or M-of-N by update (`BarrierMigrationNotSupportedError`) | 409 | `FAILED_PRECONDITION` — rekey instead |
 | Turning an existing database's barrier on or off (`BarrierMigrationNotSupportedError`) | 409 | `FAILED_PRECONDITION` |
 | `cluster_mode` / `replicas` on a non-raft backend | 400 | `INVALID_ARGUMENT` |

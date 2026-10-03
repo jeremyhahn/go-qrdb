@@ -13,6 +13,7 @@
 // limitations under the License.
 
 import type {
+    DatabaseBarrierStatus,
     DistanceMetric,
     MVCCKeyValue,
     OfficerRegisterRequest,
@@ -420,6 +421,20 @@ export function holderEnrolmentWire(req: OfficerRegisterRequest): Record<string,
     }
     if (req.designated) wire.designated = req.designated;
     return wire;
+}
+
+/**
+ * Normalizes a database barrier status decoded from either transport: a
+ * barrier never initialized arrives without the time (REST) or with the zero
+ * timestamp of the server's time type, "0001-01-01T00:00:00Z" (the desktop
+ * binding), and is reported without `initializedAt` either way.
+ */
+export function normalizeDatabaseBarrierStatus(status: DatabaseBarrierStatus): DatabaseBarrierStatus {
+    if (status.initializedAt !== undefined && status.initializedAt !== '' && !status.initializedAt.startsWith('0001-01-01')) {
+        return status;
+    }
+    const { initializedAt: _never, ...rest } = status;
+    return rest;
 }
 
 /**

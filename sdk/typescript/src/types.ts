@@ -2308,6 +2308,21 @@ export interface DatabaseBarrierConfig {
     readonly sharesTotal?: number;
 }
 
+/** A database barrier's state: whether it is sealed, the strategy protecting
+ * its root key, and when it was first initialized. A Shamir database's custody
+ * is initialized exactly when `initializedAt` is present. The Go SDK's
+ * `DatabaseBarrierStatus`. */
+export interface DatabaseBarrierStatus {
+    /** Whether the barrier is sealed. */
+    readonly sealed: boolean;
+    /** The strategy protecting the root key ("passphrase", "shamir", ...). */
+    readonly strategy: string;
+    /** Whether the strategy uses dedicated hardware. */
+    readonly hardwareBacked: boolean;
+    /** RFC 3339 time the barrier was first initialized; absent until then. */
+    readonly initializedAt?: string;
+}
+
 /** Encryption barrier settings a create request sets. The secret
  * initialises the barrier; it is write-only and no response returns it. The
  * Go SDK's `DatabaseBarrierConfig`. */

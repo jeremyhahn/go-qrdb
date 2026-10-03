@@ -76,8 +76,9 @@ management, feature errors), watch streaming and npm packaging are documented in
   `enabled` and with no secret, so the server never created a barrier and the
   barrier step had no effect.)*
 - **The database wizard enrols a Shamir database's share holders.** Choosing
-  the Shamir barrier asks for M of N, 2 <= M <= N, the bound the server
-  enforces. The create request carries `barrier: { enabled: true, mode:
+  the Shamir barrier asks for M of N as whole numbers, 2 <= M <= N <= 255,
+  the bounds the server's seal enforces (a share's x-coordinate is a non-zero
+  byte, so a key splits to at most 255 shares). The create request carries `barrier: { enabled: true, mode:
   "shamir", sharesRequired: M, sharesTotal: N }` and no secret: the server
   creates the database sealed, with its custody not yet initialized. A
   **holders** step follows the create, for a Shamir database only. It enrols
@@ -112,14 +113,20 @@ management, feature errors), watch streaming and npm packaging are documented in
   register` and `qrdb database barrier-init-shamir`, or by dropping the
   database.
 - **The database view resumes a pending custody.** `DatabaseHoldersPanel`
-  treats a Shamir database as not yet initialized when none of its holders
-  holds a share: share indices are assigned at initialization and never
-  before. Such a database shows the enrolled holders, `HolderEnrolmentForms`
-  for the N less those already enrolled (N is the database's `sharesTotal`),
-  and **Initialize**, enabled only once exactly N are enrolled; the rekey and
+  reads the database barrier's status (`database.barrierStatus`) and treats a
+  Shamir database as not yet initialized while it reports no `initializedAt`.
+  Such a database shows the enrolled holders, `HolderEnrolmentForms` for the
+  N less those already enrolled (N is the database's `sharesTotal`), and
+  **Initialize**, enabled only once exactly N are enrolled; the rekey and
   revocation rounds appear only once custody is initialized. The same rule
   holds as in the wizard: holder admin only, no share, envelope or holder key
-  in the page.
+  in the page. *(Changed: the panel inferred initialization from the holders'
+  share indices.)*
+- **Enrolment stops at N.** The server refuses a holder past N before
+  initialization (`HolderLimitReachedError`), so two tabs, the wizard beside
+  the database view, or the CLI cannot overfill a database. A database
+  enrolled past N before that refusal existed shows why **Initialize** cannot
+  run (`db-holders-over-limit`) and offers no further enrolment.
 
 ## App shell states
 

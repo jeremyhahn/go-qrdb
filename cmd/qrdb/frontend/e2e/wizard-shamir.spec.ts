@@ -135,16 +135,26 @@ async function mockDatabases(page: Page): Promise<{ names: string[]; holders: Re
 test.describe("Database wizard — Shamir custody", () => {
   test.use({ mockState: secondLaunchEmbeddedState });
 
-  test("Shamir is offered, and its M-of-N is held to 2 <= M <= N before Next", async ({ page }) => {
+  test("Shamir is offered, and its M-of-N is held to whole numbers with 2 <= M <= N <= 255 before Next", async ({ page }) => {
     await toBarrierStep(page, "shamir-validate");
     const shamir = page.getByTestId("db-seal-mode-shamir");
     await expect(shamir).toBeEnabled();
     await expect(shamir).not.toHaveAttribute("title", /.+/);
     const next = page.getByRole("button", { name: "Next" });
-    for (const [m, n] of [[1, 3], [4, 3]] as const) {
+    for (const [m, n, message] of [
+      [1, 3, "At least 2 shares must be required."],
+      [4, 3, "Shares required cannot exceed total shares."],
+      [2.5, 3, "Shares must be whole numbers."],
+      [2, 3.5, "Shares must be whole numbers."],
+      // The server's seal splits a key to at most 255 shares.
+      [2, 256, "Total shares cannot exceed 255."],
+    ] as const) {
       await chooseShamir(page, m, n);
       await expect(next).toBeDisabled();
+      await expect(page.locator("main")).toContainText(message);
     }
+    await chooseShamir(page, 2, 255);
+    await expect(next).toBeEnabled();
     await chooseShamir(page, 2, 3);
     await expect(next).toBeEnabled();
   });
@@ -290,6 +300,7 @@ const shamirDbState: MockState = {
       barrier: { enabled: true, mode: "shamir", sharesRequired: 2, sharesTotal: 2 },
     },
   ],
+  databaseBarrierInitializedAt: { vault: "2026-09-30T00:00:00Z" },
   databaseOfficers: {
     vault: ["alice", "bob"].map((username, i) => ({
       username,
@@ -329,5 +340,116 @@ test.describe("Database view — Shamir holders", () => {
     await expect(page.getByText("qrdb database barrier-quorum submit --database vault --op rekey")).toBeVisible();
     await page.getByTestId("rekey-panel").getByRole("button", { name: /Start Rekey/i }).click();
     await expect(page.getByText(/Rekey round opened/)).toBeVisible({ timeout: INIT_TIMEOUT });
+  });
+});
+
+/**
+ * A sealed 2-of-2 database with three holders enrolled and custody not
+ * initialized: possible before the server refused enrolment past N.
+ */
+const overLimitState: MockState = {
+  ...secondLaunchEmbeddedState,
+  databases: [
+    {
+      name: "vault-over",
+      engine: "kv",
+      backend: "file",
+      status: "sealed",
+      data_dir: "/var/lib/qrdb/vault-over",
+      barrier: { enabled: true, mode: "shamir", sharesRequired: 2, sharesTotal: 2 },
+    },
+  ],
+  databaseOfficers: {
+    "vault-over": ["alice", "bob", "carol"].map((username) => ({
+      username,
+      role: "so" as const,
+      cert_thumbprint: `mock${username}`,
+      share_index: 0,
+      designated: "mtls",
+      factors: ["mtls"],
+      encryption_kem: "dhkem-p256",
+      enrolled_at: "2026-09-30T00:00:00Z",
+      claimed_at: "0001-01-01T00:00:00Z",
+      share_pending: false,
+    })),
+  },
+};
+
+test.describe("Database view — more holders than N", () => {
+  test.use({ mockState: overLimitState });
+
+  test("says why Initialize cannot run, and offers no more enrolment", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.locator(".breadcrumbs").getByText("Dashboard")).toBeVisible({ timeout: INIT_TIMEOUT });
+    await openDatabaseView(page, "vault-over");
+    const panel = page.getByTestId("db-holders-panel");
+    const over = panel.getByTestId("db-holders-over-limit");
+    await expect(over).toContainText("3 holders are enrolled");
+    await expect(over).toContainText("split to exactly 2");
+    await expect(over).toContainText("remove 1 holder before initializing");
+    await expect(panel.getByTestId("db-holders-panel-initialize")).toBeDisabled();
+    await expect(panel.getByTestId("officer-username-0")).toHaveCount(0);
+  });
+});
+
+test.describe("Wails mock — a Shamir database, as the server answers", () => {
+  test.use({ mockState: { ...secondLaunchEmbeddedState, databaseShamirCustody: false } });
+
+  type Bindings = Record<string, Record<string, (...args: unknown[]) => Promise<unknown>>>;
+
+  async function call(page: Page, binding: string, method: string, ...args: unknown[]): Promise<string> {
+    return page.evaluate(
+      async ({ binding, method, args }) => {
+        const main = (window as unknown as { go: { main: Bindings } }).go.main;
+        try {
+          await main[binding]![method]!(...args);
+          return "ok";
+        } catch (err) {
+          return err instanceof Error ? err.message : String(err);
+        }
+      },
+      { binding, method, args },
+    );
+  }
+
+  test("refuses a secret before custody, and wraps an M-of-N the seal cannot split", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.locator(".breadcrumbs").getByText("Dashboard")).toBeVisible({ timeout: INIT_TIMEOUT });
+    const create = (barrier: Record<string, unknown>) =>
+      call(page, "DatabaseBinding", "Create", { name: "v", engine: "kv", backend: "file", barrier });
+    // The secret is refused first, even on a node with no custody.
+    expect(await create({ enabled: true, mode: "shamir", secret: "s", sharesRequired: 2, sharesTotal: 2 })).toBe(
+      'database: the shamir barrier of database "v" takes no secret: its key is split to its share holders',
+    );
+    expect(await create({ enabled: true, mode: "shamir", sharesRequired: 2, sharesTotal: 2 })).toBe(
+      'database: no share-holder custody is configured for the shamir barrier of database "v"',
+    );
+    await page.evaluate(() => {
+      (window as unknown as { __QRDB_MOCK_STATE__: { databaseShamirCustody?: boolean } }).__QRDB_MOCK_STATE__.databaseShamirCustody = true;
+    });
+    expect(await create({ enabled: true, mode: "shamir", sharesRequired: 3, sharesTotal: 2 })).toBe(
+      'database: failed to create barrier for database "v": quicraft/seal: shamir threshold must be >= 2 and <= total shares',
+    );
+  });
+
+  test("refuses a holder past N and a second initialization", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.locator(".breadcrumbs").getByText("Dashboard")).toBeVisible({ timeout: INIT_TIMEOUT });
+    await page.evaluate(() => {
+      (window as unknown as { __QRDB_MOCK_STATE__: { databaseShamirCustody?: boolean } }).__QRDB_MOCK_STATE__.databaseShamirCustody = true;
+    });
+    expect(await call(page, "DatabaseBinding", "Create", {
+      name: "v", engine: "kv", backend: "file", barrier: { enabled: true, mode: "shamir", sharesRequired: 2, sharesTotal: 2 },
+    })).toBe("ok");
+    for (const username of ["alice", "bob"]) {
+      expect(await call(page, "OfficerBinding", "RegisterHolder", { database: "v" }, { username, csr_pem: "CSR" })).toBe("ok");
+    }
+    expect(await call(page, "OfficerBinding", "RegisterHolder", { database: "v" }, { username: "carol", csr_pem: "CSR" })).toBe(
+      "ceremony: all 2 share holders the barrier is split to are enrolled; no more can be enrolled before it is initialized",
+    );
+    expect(await call(page, "OfficerBinding", "InitializeDatabaseShamir", "v", "")).toBe("ok");
+    expect(await call(page, "OfficerBinding", "InitializeDatabaseShamir", "v", "")).toBe("qrdb/seal: barrier already initialized");
+    // Once initialized, a new holder enrols and joins at the next rekey.
+    expect(await call(page, "OfficerBinding", "RegisterHolder", { database: "v" }, { username: "carol", csr_pem: "CSR" })).toBe("ok");
   });
 });

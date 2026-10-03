@@ -23,6 +23,7 @@ import {
     distanceMetricToRestWire,
     encodeBase64Utf8,
     holderEnrolmentWire,
+    normalizeDatabaseBarrierStatus,
     normalizeOfficerStatus,
     indexTypeToRestWire,
     normalizeVectorEnumFields,
@@ -80,6 +81,7 @@ import type {
     CreateNamespaceRequest,
     DaemonStatus,
     DatabaseBarrierConfig,
+    DatabaseBarrierStatus,
     DatabaseConnectionConfig,
     DatabaseRaftConfig,
     DatabaseProtocolConfig,
@@ -1756,6 +1758,12 @@ export class RestClient implements Client {
                         body: JSON.stringify(barrier),
                     },
                 );
+            },
+            barrierStatus: async (name: string): Promise<DatabaseBarrierStatus> => {
+                this.ensureConnected();
+                return normalizeDatabaseBarrierStatus(await this.fetchJSON<DatabaseBarrierStatus>(
+                    `/v1/databases/${encodeURIComponent(name)}/barrier/status`,
+                ));
             },
             updateConnection: async (name: string, connection: DatabaseConnectionConfig): Promise<DatabaseInfo> => {
                 this.ensureConnected();

@@ -88,6 +88,18 @@ the name nor persist the record. A record cached unchecked would otherwise be
 written over the persisted holder of the same name at the next unseal, giving
 the registrant that holder's identity.
 
+**Before initialization a database barrier takes at most N holders.** A
+database barrier's M-of-N is fixed at its create, and its initialization
+splits to exactly that N, so registration past N on a database barrier not
+yet initialized is refused with `*ceremony.HolderLimitReachedError`
+(`FAILED_PRECONDITION`). No holder can be revoked before initialization, so an
+N+1th holder -- from a second browser tab, the database view beside the
+wizard, or the CLI -- would leave the database with no way forward. Once the
+barrier is initialized a new holder enrols freely and joins the holder set at
+the next rekey. No other scope fixes N beforehand: the system barrier's and a
+tenant's initialization take the M-of-N with the request, and a recovery key
+is split to every recovery holder enrolled.
+
 The reconciliation on the first unsealed access never overwrites a persisted
 holder:
 
@@ -370,6 +382,7 @@ per domain may be open (`ErrQuorumRoundInProgress`).
 | `HolderNotInRosterError`, `HolderRevokedError`, `HolderAlreadySubmittedError`, `ShareIndexMismatchError`, `FactorNotAdmittedError`, `HolderAuthenticationError` | admission refusals |
 | `QuorumOpInvalidError` | op not valid in the domain or state |
 | `RevocationBreaksQuorumError`, `HolderCountMismatchError`, `InvalidRosterError` | distribution refusals |
+| `ceremony.HolderLimitReachedError` | registration past a database barrier's N before initialization |
 | `ceremony.ErrSelfEnrolment`, `ErrDuplicateUsername`, `ErrDuplicateHolderKey`, `ErrInvalidHolderRole`, `InvalidHolderNameError`, `EncryptionKeyRequiredError`, `FactorNotEnrolledError`, `DuplicateFactorError`, `HolderFactorEnrollmentError` | enrolment refusals |
 | `ceremony.ErrShareAlreadyClaimed`, `ErrShareExpired`, `ErrNoPendingShare`, `ErrCertThumbprintMismatch`, `ErrChallengeExpired`, `ErrChallengeVerificationFailed` | claim refusals |
 | `ceremony.ErrQuorumChallengeNotFound`, `ErrQuorumChallengeMismatch`, `*QuorumRateLimitedError` | challenge refusals (`ErrTooManyPendingChallenges` is internal: a request it would refuse gets a challenge stored in the decoy table, which verifies when answered) |

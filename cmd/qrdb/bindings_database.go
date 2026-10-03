@@ -173,6 +173,26 @@ func (b *DatabaseBinding) UpdateBarrier(name string, req *transport.UpdateDataba
 	return info, nil
 }
 
+// BarrierStatus reports a database barrier's sealed state, its strategy and
+// when it was first initialized. A Shamir database's custody is initialized
+// once InitializedAt is set: before, it is sealed and its holders hold no
+// share.
+func (b *DatabaseBinding) BarrierStatus(name string) (*transport.DatabaseBarrierStatus, error) {
+	b.logger.Debug("BarrierStatus called", "name", name)
+	cl, err := b.conn.loadClient()
+	if err != nil {
+		b.logger.Error("BarrierStatus failed", "error", err)
+		return nil, err
+	}
+	status, err := cl.Database().DatabaseBarrierStatus(context.Background(), name)
+	if err != nil {
+		b.logger.Error("BarrierStatus failed", "name", name, "error", err)
+		return nil, err
+	}
+	b.logger.Debug("BarrierStatus completed", "name", name, "sealed", status.Sealed)
+	return status, nil
+}
+
 // UpdateEtcd updates the etcd wire protocol configuration for a database.
 func (b *DatabaseBinding) UpdateEtcd(name string, req *transport.UpdateDatabaseEtcdRequest) (*transport.DatabaseInfo, error) {
 	b.logger.Debug("UpdateEtcd called", "name", name)

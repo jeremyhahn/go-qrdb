@@ -119,6 +119,13 @@ export interface MockState {
    */
   databaseShamirCustody?: boolean;
   /**
+   * When each database barrier was first initialized, keyed by database: a
+   * passphrase barrier at its create, a Shamir barrier when its custody is
+   * initialized. A database absent here has never been initialized, and
+   * DatabaseBinding.BarrierStatus reports the Go zero time for it.
+   */
+  databaseBarrierInitializedAt?: Record<string, string>;
+  /**
    * Per-tenant barrier state keyed by tenant ID (for the per-tenant unseal
    * tests). Tenants without an entry report "barrier not initialized" from
    * BarrierStatus / BarrierUnseal.
@@ -638,6 +645,19 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               if (holders.some((h) => h.username === req.username)) {
                 throw new Error(`ceremony: holder "${req.username}" already enrolled`);
               }
+              // Mirrors holderScope.refuseOverCapacity: before initialization
+              // a database barrier takes exactly N holders and no more.
+              if (scope.database) {
+                const db = shamirDatabase(scope.database) as Record<string, unknown> & {
+                  barrier: { sharesTotal: number };
+                };
+                const initialized = getState().databaseBarrierInitializedAt?.[scope.database] !== undefined;
+                if (!initialized && holders.length >= db.barrier.sharesTotal) {
+                  throw new Error(
+                    `ceremony: all ${db.barrier.sharesTotal} share holders the barrier is split to are enrolled; no more can be enrolled before it is initialized`,
+                  );
+                }
+              }
               const role = req.role === "custodian" ? "custodian" : "so";
               const factors = ["mtls", ...(req.factors ?? []).map((f) => f.name)];
               holders.push({
@@ -684,20 +704,27 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               }
               return round(req, req.threshold, "", [req.username]);
             },
-            // Mirrors DatabaseService.DatabaseBarrierShamirInitialize: exactly
-            // sharesTotal holders must be enrolled; the split is the M-of-N
-            // the database was created with, and the barrier is left unsealed.
+            // Mirrors DatabaseService.DatabaseBarrierShamirInitialize: a
+            // barrier is initialized once (seal.ErrAlreadyInitialized), with
+            // exactly sharesTotal holders enrolled (seal.HolderCountMismatchError);
+            // the split is the M-of-N the database was created with, and the
+            // barrier is left unsealed.
             InitializeDatabaseShamir: async (database: string, _policy: string) => {
               maybeReject("OfficerBinding.InitializeDatabaseShamir");
               const db = shamirDatabase(database) as Record<string, unknown> & {
                 barrier: { sharesRequired: number; sharesTotal: number };
               };
+              const s = getState();
+              if (s.databaseBarrierInitializedAt?.[database] !== undefined) {
+                throw new Error("qrdb/seal: barrier already initialized");
+              }
               const holders = holdersOf({ database });
               if (holders.length !== db.barrier.sharesTotal) {
                 throw new Error(
-                  `seal: shamir initialization needs ${db.barrier.sharesTotal} enrolled holders, have ${holders.length}`,
+                  `qrdb/seal: ${db.barrier.sharesTotal} shares were requested but ${holders.length} holders are enrolled`,
                 );
               }
+              s.databaseBarrierInitializedAt = { ...(s.databaseBarrierInitializedAt ?? {}), [database]: new Date().toISOString() };
               holders.forEach((h, i) => {
                 h.share_index = i + 1;
                 h.share_pending = true;
@@ -1692,23 +1719,30 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               status: "open",
             };
             // Mirrors DatabaseBarrierManager.EnsureBarrier for a Shamir
-            // barrier: refused, with nothing created, on a node with no
-            // share-holder custody, with a secret, or with an M-of-N the seal
-            // cannot split; otherwise registered sealed at its M-of-N until
-            // its holders' custody is initialized. No secret is stored.
+            // barrier, in its order: refused, with nothing created, when it
+            // carries a secret (ShamirSecretNotAllowedError), on a node with
+            // no share-holder custody (ShamirCustodyNotConfiguredError), or
+            // with an M-of-N the seal cannot split (BarrierCreateError
+            // wrapping seal.ErrShamirThresholdInvalid); otherwise registered
+            // sealed at its M-of-N until its holders' custody is initialized.
+            // No secret is stored.
             if (req.barrier?.enabled === true && req.barrier.mode === "shamir") {
+              if (req.barrier.secret) {
+                throw new Error(
+                  `database: the shamir barrier of database "${req.name}" takes no secret: its key is split to its share holders`,
+                );
+              }
               if (s.databaseShamirCustody === false) {
                 throw new Error(
                   `database: no share-holder custody is configured for the shamir barrier of database "${req.name}"`,
                 );
               }
-              if (req.barrier.secret) {
-                throw new Error(`database: a shamir barrier takes no secret: database "${req.name}"`);
-              }
               const m = req.barrier.sharesRequired ?? 0;
               const n = req.barrier.sharesTotal ?? 0;
               if (m < 2 || m > n) {
-                throw new Error("quicraft/seal: shamir threshold must be >= 2 and <= total shares");
+                throw new Error(
+                  `database: failed to create barrier for database "${req.name}": quicraft/seal: shamir threshold must be >= 2 and <= total shares`,
+                );
               }
               db.barrier = { enabled: true, mode: "shamir", sharesRequired: m, sharesTotal: n };
               db.status = "sealed";
@@ -1726,6 +1760,24 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             const db = s.databases.find((d: { name: string }) => d.name === name);
             if (!db) throw new Error(`database "${name}" not found`);
             return db;
+          },
+          // Mirrors DatabaseService.DatabaseBarrierStatus through the desktop
+          // binding: a database with no barrier is unknown to the barrier
+          // registry, and a barrier never initialized carries the Go zero time.
+          BarrierStatus: async (name: string) => {
+            maybeReject("DatabaseBinding.BarrierStatus");
+            const s = getState();
+            const db = s.databases.find((d: { name: string }) => d.name === name) as
+              | (Record<string, unknown> & { status?: string; barrier?: { enabled?: boolean; mode?: string } })
+              | undefined;
+            if (!db) throw new Error(`database "${name}" not found`);
+            if (db.barrier?.enabled !== true) throw new Error("qrdb/seal: tenant not found");
+            return {
+              sealed: db.status === "sealed",
+              strategy: db.barrier.mode === "shamir" ? "shamir" : "passphrase",
+              hardware_backed: false,
+              initialized_at: s.databaseBarrierInitializedAt?.[name] ?? "0001-01-01T00:00:00Z",
+            };
           },
           List: async () => {
             maybeReject("DatabaseBinding.List");

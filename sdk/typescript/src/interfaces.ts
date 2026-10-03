@@ -145,6 +145,7 @@ import type {
     DatabaseCompactionConfig,
     DatabaseRaftConfig,
     DatabaseBarrierConfig,
+    DatabaseBarrierStatus,
     DatabaseConnectionConfig,
     DaemonStatus,
     SQLQueryResult,
@@ -1302,6 +1303,16 @@ export interface DatabaseClient {
      * @returns The updated database information.
      */
     updateBarrier(name: string, barrier: DatabaseBarrierConfig): Promise<DatabaseInfo>;
+
+    /**
+     * Reports a database barrier's state: sealed or not, its strategy and
+     * when it was first initialized. A Shamir database's custody is
+     * initialized exactly when `initializedAt` is present.
+     *
+     * @param name - Database name.
+     * @returns The barrier's status.
+     */
+    barrierStatus(name: string): Promise<DatabaseBarrierStatus>;
 
     /**
      * Updates the remote connection configuration for a database.

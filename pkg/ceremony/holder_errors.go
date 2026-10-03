@@ -101,6 +101,24 @@ func (e *HolderRecordConflictError) Error() string {
 	return "ceremony: share holder " + strconv.Quote(e.Username) + " is already enrolled with a different identity"
 }
 
+// HolderLimitReachedError is returned when a holder is registered on a scope
+// that fixes N before initialization -- a database barrier, at its create --
+// whose barrier is not yet initialized and already has every holder its
+// unseal key will be split to. Initialization needs exactly Total holders, so
+// one more could only be refused there -- after the holders had enrolled --
+// and no holder can be revoked before initialization. Remove an enrolled
+// holder first, or initialize.
+type HolderLimitReachedError struct {
+	// Total is the number of holders the unseal key is split to (N).
+	Total int
+}
+
+// Error returns a human-readable description.
+func (e *HolderLimitReachedError) Error() string {
+	return "ceremony: all " + strconv.Itoa(e.Total) + " share holders the barrier is split to are enrolled; " +
+		"no more can be enrolled before it is initialized"
+}
+
 // InvalidHolderNameError is returned for a username that cannot be a
 // certificate CN.
 type InvalidHolderNameError struct {

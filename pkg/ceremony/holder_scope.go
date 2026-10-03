@@ -166,6 +166,10 @@ type holderScope struct {
 	// that is not a barrier (the tenant service store before the tenant
 	// barrier exists) is never sealed, so it is never consulted.
 	initialized func(context.Context) (bool, error)
+	// capacity reports N, the number of holders the backing barrier's unseal
+	// key is split to at initialization, when the scope fixes it before
+	// initialization; zero when the initialization chooses it (capacityProbe).
+	capacity func() int
 	// audit records a security event on the backing barrier's audit log. A
 	// backend that is not a barrier has none, and the event is only logged.
 	audit  func(action, outcome string, details map[string]string)
@@ -194,6 +198,7 @@ func newHolderScope(scope BarrierScope, domain seal.QuorumDomain, tenantID strin
 		sealed:      sealed,
 		roster:      rosterProbe(backend),
 		initialized: initializedProbe(backend),
+		capacity:    capacityProbe(scope, backend),
 		audit:       auditProbe(backend),
 		logger:      logger,
 	}, nil
@@ -221,6 +226,26 @@ func auditProbe(backend seal.StorageBackend) func(action, outcome string, detail
 		return b.Audit
 	}
 	return func(string, string, map[string]string) {}
+}
+
+// capacityProbe returns the number of holders backend's unseal key will be
+// split to, when scope fixes it before initialization: a database barrier's
+// M-of-N is fixed at its create, in its Shamir configuration, and its
+// initialization splits to exactly that N. Every other scope's initialization
+// chooses N -- the system barrier's and a tenant's take the threshold and
+// total with the request, and a recovery key is split to every recovery
+// holder enrolled -- so none is fixed beforehand, and the probe reports zero.
+func capacityProbe(scope BarrierScope, backend seal.StorageBackend) func() int {
+	b, ok := backend.(interface{ Config() seal.BarrierConfig })
+	if !ok || scope.kind != scopeDatabase {
+		return func() int { return 0 }
+	}
+	return func() int {
+		if c := b.Config(); c.Shamir != nil {
+			return c.Shamir.TotalShares
+		}
+		return 0
+	}
 }
 
 // initializedProbe returns backend's initialization probe. A backend that is
@@ -301,6 +326,7 @@ func (h *holderScope) rebind(barrier *seal.StorageBarrier) {
 	h.sealed = barrier.IsSealed
 	h.roster = barrier.HolderRoster
 	h.initialized = barrier.Initialized
+	h.capacity = capacityProbe(h.scope, barrier)
 	h.audit = barrier.Audit
 	h.synced = false
 }
@@ -372,6 +398,9 @@ func (h *holderScope) enrol(ctx context.Context, d *HolderDeps, req RegisterOffi
 		return nil, err
 	}
 	if err := h.nameFree(ctx, req.Username); err != nil {
+		return nil, err
+	}
+	if err := h.refuseOverCapacity(ctx); err != nil {
 		return nil, err
 	}
 
@@ -474,6 +503,27 @@ func (h *holderScope) enrol(ctx context.Context, d *HolderDeps, req RegisterOffi
 		EncryptionKEM: encKEM,
 		Factors:       names,
 	}, nil
+}
+
+// refuseOverCapacity refuses an enrolment past N on a scope that fixes N
+// (capacityProbe) and whose barrier is not yet initialized: initialization
+// needs exactly N holders and refuses any other count, and before it no
+// holder can be revoked, so an N+1th holder would leave the scope with no way
+// forward. Once the barrier is initialized a new holder joins at the next
+// rekey, and nothing is refused here.
+func (h *holderScope) refuseOverCapacity(ctx context.Context) error {
+	n := h.capacity()
+	if n == 0 {
+		return nil
+	}
+	initialized, err := h.initialized(ctx)
+	if err != nil {
+		return err
+	}
+	if !initialized && len(h.registry.Cached()) >= n {
+		return &HolderLimitReachedError{Total: n}
+	}
+	return nil
 }
 
 // nameFree reports whether username can be enrolled, failing closed.

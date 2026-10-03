@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service/servicetest"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -126,6 +127,26 @@ func TestBindings_WizardShamirSequence(t *testing.T) {
 			t.Fatalf("RegisterHolder(%s): %v", name, err)
 		}
 	}
+	// A fourth holder -- a second tab, the database view, the CLI -- is
+	// refused: initialization needs exactly N, and before it no holder can
+	// be revoked.
+	extra := servicetest.NewHolder(t, "dave")
+	_, err = officers.RegisterHolder(scope, &transport.OfficerRegisterRequest{Username: "dave", Role: transport.RoleCustodian, CSRPEM: extra.CSRPEM})
+	var limit *ceremony.HolderLimitReachedError
+	if !errors.As(err, &limit) || limit.Total != 3 {
+		t.Fatalf("RegisterHolder past N = %v (%T), want HolderLimitReachedError{Total: 3}", err, err)
+	}
+	if got := errclass.Classify(err); got != errclass.FailedPrecondition {
+		t.Fatalf("the refusal classifies as %v, want FailedPrecondition", got)
+	}
+
+	before, err := dbs.BarrierStatus("wizard-vault")
+	if err != nil {
+		t.Fatalf("BarrierStatus before initialization = %v", err)
+	}
+	if !before.InitializedAt.IsZero() || !before.Sealed {
+		t.Fatalf("status before initialization = %+v, want sealed and never initialized", before)
+	}
 	split, err := officers.InitializeDatabaseShamir("wizard-vault", "")
 	if err != nil {
 		t.Fatalf("InitializeDatabaseShamir = %v", err)
@@ -141,5 +162,30 @@ func TestBindings_WizardShamirSequence(t *testing.T) {
 		if h.ShareIndex == 0 || !h.SharePending {
 			t.Fatalf("holder %s after initialization: share %d, pending %v; want a share awaiting its claim", h.Username, h.ShareIndex, h.SharePending)
 		}
+	}
+	after, err := dbs.BarrierStatus("wizard-vault")
+	if err != nil {
+		t.Fatalf("BarrierStatus after initialization = %v", err)
+	}
+	if after.InitializedAt.IsZero() || after.Sealed || after.Strategy != "shamir" {
+		t.Fatalf("status after initialization = %+v, want an initialized, unsealed shamir barrier", after)
+	}
+	if _, err := officers.InitializeDatabaseShamir("wizard-vault", ""); err == nil {
+		t.Fatal("a second initialization was admitted")
+	}
+}
+
+// BarrierStatus reports the binding's connection failure and the service's
+// refusal unchanged.
+func TestDatabaseBinding_BarrierStatusRefusals(t *testing.T) {
+	notConnected := NewDatabaseBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
+	if _, err := notConnected.BarrierStatus("vault"); err == nil {
+		t.Fatal("BarrierStatus without a connection succeeded")
+	}
+	fx := servicetest.NewShamirDatabase(t, "vault", 2, 2)
+	b := NewDatabaseBinding(testLogger(t), newTestConnectionBinding(t, newMockKVService(), newMockAdminService(),
+		embedded.WithDatabaseService(fx.Service)))
+	if _, err := b.BarrierStatus("missing"); err == nil {
+		t.Fatal("BarrierStatus of a missing database succeeded")
 	}
 }

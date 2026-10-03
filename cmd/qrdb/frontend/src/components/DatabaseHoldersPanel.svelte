@@ -20,14 +20,20 @@
   claimed it, and the rekey and revocation rounds (HolderRekeyPanel) a quorum
   of them completes from the qrdb CLI.
 
-  A database whose custody is not yet initialized -- its holders hold no
-  share yet, as after the database wizard's "Finish later" -- shows instead
-  the enrolment of its remaining holders (HolderEnrolmentForms) and
-  Initialize, enabled only once exactly N are enrolled. Holder admin only: no
-  share, no envelope and no holder key enters this page.
+  A database whose custody is not yet initialized -- its barrier status has
+  no initialization time, as after the database wizard's "Finish later" --
+  shows instead the enrolment of its remaining holders (HolderEnrolmentForms)
+  and Initialize, enabled only once exactly N are enrolled. Holder admin only:
+  no share, no envelope and no holder key enters this page.
 -->
 <script lang="ts">
-  import type { Client, DatabaseShamirInitializeResponse, OfficerRegisterRequest, OfficerStatus } from "@qrdb/sdk";
+  import type {
+    Client,
+    DatabaseBarrierStatus,
+    DatabaseShamirInitializeResponse,
+    OfficerRegisterRequest,
+    OfficerStatus,
+  } from "@qrdb/sdk";
   import { onMount } from "svelte";
   import HolderEnrolmentForms from "./wizard/HolderEnrolmentForms.svelte";
   import HolderRekeyPanel from "./HolderRekeyPanel.svelte";
@@ -47,6 +53,7 @@
   } = $props();
 
   let holders: OfficerStatus[] = $state([]);
+  let barrier = $state<DatabaseBarrierStatus | null>(null);
   let loading: boolean = $state(true);
   let error: string = $state("");
 
@@ -57,21 +64,27 @@
   let split = $state<DatabaseShamirInitializeResponse | null>(null);
 
   /**
-   * Custody is initialized once a split has assigned the holders their
-   * shares: share indices are given at initialization and never before, so a
-   * database whose holders all have none -- or that has no holders -- has not
-   * been initialized.
+   * Custody is initialized exactly when the database barrier reports when it
+   * was first initialized.
    */
-  let initialized = $derived(holders.some((h) => h.shareIndex > 0));
+  let initialized = $derived(barrier?.initializedAt !== undefined);
   /** Holders still to enrol before Initialize: N less those enrolled. */
   let remaining = $derived(Math.max(0, sharesTotal - holders.length));
   let enrolled = $derived(holders.length + registered);
+  /**
+   * More holders than N are enrolled -- possible before the server refused
+   * enrolment past N -- so Initialize, which needs exactly N, cannot run.
+   */
+  let overLimit = $derived(!initialized && sharesTotal > 0 && holders.length > sharesTotal);
 
   async function load(): Promise<void> {
     loading = true;
     error = "";
     try {
-      holders = await client.officers.listDatabaseOfficers(database);
+      [holders, barrier] = await Promise.all([
+        client.officers.listDatabaseOfficers(database),
+        client.database.barrierStatus(database),
+      ]);
     } catch (err: unknown) {
       error = err instanceof Error ? err.message : String(err);
     } finally {
@@ -167,6 +180,17 @@
               {sharesRequired} of them unseal it together.
             </span>
           </div>
+          {#if overLimit}
+            <div role="alert" class="alert alert-error text-sm" data-testid="db-holders-over-limit">
+              <span>
+                {holders.length} holders are enrolled, but the key of
+                <span class="font-mono">{database}</span> is split to exactly {sharesTotal}.
+                Initialization needs exactly {sharesTotal}: remove
+                {holders.length - sharesTotal} holder{holders.length - sharesTotal === 1 ? "" : "s"}
+                before initializing.
+              </span>
+            </div>
+          {/if}
           {#if remaining > 0}
             <HolderEnrolmentForms {client} count={remaining} bind:registeredCount={registered} {enrol} />
           {/if}

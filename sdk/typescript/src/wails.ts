@@ -66,6 +66,7 @@ import type {
     DaemonStatus,
     DocumentResponse,
     DatabaseBarrierConfig,
+    DatabaseBarrierStatus,
     DatabaseConnectionConfig,
     DatabaseRaftConfig,
     DatabaseProtocolConfig,
@@ -226,6 +227,7 @@ import {
     distanceMetricToIpcWire,
     encodeBase64Utf8,
     holderEnrolmentWire,
+    normalizeDatabaseBarrierStatus,
     normalizeOfficerStatus,
     indexTypeToIpcWire,
     normalizeVectorEnumFields,
@@ -1115,6 +1117,9 @@ export class WailsClient implements Client {
             },
             updateBarrier: async (name: string, barrier: DatabaseBarrierConfig): Promise<DatabaseInfo> => {
                 return b.UpdateBarrier(name, barrier) as Promise<DatabaseInfo>;
+            },
+            barrierStatus: async (name: string): Promise<DatabaseBarrierStatus> => {
+                return normalizeDatabaseBarrierStatus(await b.BarrierStatus(name) as DatabaseBarrierStatus);
             },
             updateConnection: async (name: string, connection: DatabaseConnectionConfig): Promise<DatabaseInfo> => {
                 return b.UpdateConnection(name, connection) as Promise<DatabaseInfo>;

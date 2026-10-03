@@ -42,8 +42,8 @@ settings on a Raft server, wire protocols, the encryption barrier, a summary,
 then creation.
 
 The barrier is off unless you choose one. Choosing **Shamir** asks how many
-holders there will be (N) and how many of them unseal the database together
-(M, at least 2). After the database is created, sealed, the wizard asks you to
+holders there will be (N, at most 255) and how many of them unseal the
+database together (M, at least 2), both whole numbers. After the database is created, sealed, the wizard asks you to
 enrol its N holders: for each, a username, a role and the certificate request
 the holder generated on their own machine. The wizard shows each holder's
 issued certificate for you to pass on, and once all N are enrolled,
@@ -55,7 +55,9 @@ share-holder custody configured -- the create step shows the server's reason
 and no database is created. Closing the wizard before **Initialize** leaves
 the database sealed until you finish enrolling its holders: open the
 database's view, where **Share Holders** shows who is enrolled, the forms for
-the rest and **Initialize**, or use the CLI.
+the rest and **Initialize**, or use the CLI. A database takes exactly N
+holders before it is initialized: the server refuses one more, wherever it is
+enrolled from.
 Choosing **Passphrase** asks for the
 passphrase twice; it is sent once, when the database is created, and the
 application does not keep it or show it again. You need it to unseal the

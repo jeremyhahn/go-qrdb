@@ -47,6 +47,8 @@ func TestClassify_HolderConditions(t *testing.T) {
 		// A failed rollback outranks the distribution failure it wraps.
 		{&seal.ShamirInitRollbackError{Distribution: &seal.HolderCountMismatchError{Want: 3, Enrolled: 2}, Rollback: errors.New("x")}, Internal},
 		{ceremony.ErrSelfEnrolment, PermissionDenied},
+		// Every holder the uninitialized barrier is split to is enrolled.
+		{&ceremony.HolderLimitReachedError{Total: 3}, FailedPrecondition},
 		{ceremony.ErrNoPendingShare, NotFound},
 		{ceremony.ErrShareExpired, Gone},
 		{ceremony.ErrTooManyPendingChallenges, ResourceExhausted},

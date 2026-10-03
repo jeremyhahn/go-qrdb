@@ -72,14 +72,28 @@
     },
   ];
 
-  /** Validation: when Shamir is selected, 2 <= sharesRequired <= sharesTotal,
-   * the bound the server's seal enforces (one share would be the key). Every
+  /** The most shares the server's seal can split a key to: a share's
+   * x-coordinate is a non-zero byte of GF(2^8), so it refuses more than 255. */
+  const SHAMIR_MAX_SHARES = 255;
+
+  /** Validation of a Shamir M-of-N: whole numbers with 2 <= M <= N <= 255,
+   * the bounds the server's seal enforces (one share would be the key). Every
    * mode is offered: whether the server can build the barrier is its answer to
    * the create, not a list kept here. */
-  let shamirValid = $derived(
-    sealMode !== "shamir" ||
-      (sharesRequired >= 2 && sharesRequired <= sharesTotal),
+  let shamirError = $derived<string | null>(
+    sealMode !== "shamir"
+      ? null
+      : !Number.isInteger(sharesRequired) || !Number.isInteger(sharesTotal)
+        ? "Shares must be whole numbers."
+        : sharesRequired < 2
+          ? "At least 2 shares must be required."
+          : sharesTotal > SHAMIR_MAX_SHARES
+            ? `Total shares cannot exceed ${SHAMIR_MAX_SHARES}.`
+            : sharesRequired > sharesTotal
+              ? "Shares required cannot exceed total shares."
+              : null,
   );
+  let shamirValid = $derived(shamirError === null);
 
   /** Validation error for the passphrase, when the passphrase mode is selected. */
   let passphraseError = $derived<string | null>(
@@ -100,15 +114,7 @@
   let isValid = $derived(shamirValid && passphraseError === null);
 
   /** Validation error message for Shamir configuration. */
-  let validationError = $derived<string | null>(
-    sealMode !== "shamir"
-      ? null
-      : sharesRequired < 2
-        ? "At least 2 shares must be required."
-        : sharesRequired > sharesTotal
-          ? "Shares required cannot exceed total shares."
-          : null,
-  );
+  let validationError = $derived<string | null>(shamirError);
 
   function handleNext(): void {
     if (!isValid) return;
@@ -253,7 +259,8 @@
               type="number"
               class="input input-bordered w-full"
               min="2"
-              max="10"
+              max={SHAMIR_MAX_SHARES}
+              step="1"
               bind:value={sharesRequired}
             />
             <label class="label" for="db-shares-required">
@@ -271,7 +278,8 @@
               type="number"
               class="input input-bordered w-full"
               min="2"
-              max="10"
+              max={SHAMIR_MAX_SHARES}
+              step="1"
               bind:value={sharesTotal}
             />
             <label class="label" for="db-shares-total">

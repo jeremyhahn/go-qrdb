@@ -42,6 +42,34 @@ are not reconstructed here — their history is in the git log.
   `seal.RekeyParams.Admit` is the hook the barrier calls once a rekey is
   validated and before its round opens.
 
+- **`database.barrierStatus(name)` in the TypeScript SDK**, on REST and the
+  desktop binding (`DatabaseBinding.BarrierStatus`): a database barrier's
+  sealed state, strategy and `initializedAt`, absent until the barrier is
+  first initialized. The database view's share-holder panel reads it to tell
+  a Shamir database's pending custody from an initialized one, instead of
+  inferring it from the holders' share indices.
+
+### Fixed
+
+- **A Shamir database can no longer be enrolled past N before
+  initialization.** Two browser tabs, the database wizard beside the database
+  view, or the CLI could enrol more holders than the M-of-N fixed at create;
+  initialization then refused the count, and no holder can be revoked before
+  initialization, so the database was stuck sealed. Registration past N on a
+  database barrier not yet initialized is now refused with
+  `ceremony.HolderLimitReachedError` (`FAILED_PRECONDITION` on every
+  transport); once initialized, a new holder enrols and joins at the next
+  rekey. The system barrier's and a tenant's initialization take the M-of-N
+  with the request, so they are not limited. The database view says why
+  **Initialize** cannot run for a database enrolled past N before this fix.
+- **The database wizard holds a Shamir M-of-N to whole numbers and N <= 255**,
+  the bound the server's seal enforces, instead of letting a fractional or
+  oversized split through to a refusal at initialization.
+- **The desktop app's mocked test tier answers a Shamir database as the server
+  does:** a secret is refused before missing custody, an M-of-N the seal
+  cannot split is wrapped as `BarrierCreateError`, a second initialization is
+  refused, and the error texts are the server's.
+
 ### Changed
 
 - **`qrdbd` opens its compliance audit trail before the sealed window.** The
