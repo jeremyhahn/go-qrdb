@@ -13,6 +13,21 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **`make coverage`'s package discovery now carries the same build tags its
+  own `go test` call does.** `BULK_PKGS` was computed with an untagged
+  `go list ./pkg/... ./cmd/...`, so a package whose every file carries a
+  build tag has no buildable source under it and `go list` drops it from
+  `./pkg/...` silently — not an error, just absent from the list `go test`
+  is handed. `pkg/sql/mysql` and `pkg/sql/pgsql` have been in that state
+  since they were first tagged, and were simply never added to
+  `test/coverage-baseline.txt`, so the ratchet's MISSING check — which
+  fires only for a package the baseline names — had nothing to compare
+  against and stayed quiet: the coverage gate has never measured either
+  package. Tagging `pkg/sql`'s other eight packages and `pkg/api/etcd` the
+  same way (below) hit the same discovery bug on packages the baseline
+  already named, turning eight more silent gaps into eight loud MISSING
+  failures — the exposure, not a new defect. Fixed by adding `$(TAG_FLAG)`
+  to the `go list` call.
 - **`pkg/api/errclass` no longer links vitess into every build.** It
   imported `github.com/dolthub/vitess/go/mysql` with no build constraint,
   solely to build two numbered-error samples for a classifier parity test —
@@ -101,6 +116,51 @@ are not reconstructed here — their history is in the git log.
   single site that constructs the MySQL wire listener
   (`pkg/sql/mysql/server.go`'s call into `go-mysql-server/server.NewServer`,
   which is what calls vitess's listener constructor).
+- **PostgreSQL, and etcd, get the same build-tag treatment as MySQL.**
+  Every file under `pkg/sql/` (eight packages beyond `mysql/` and `pgsql/`:
+  `catalog`, `engine`, `infoschema`, `lockclause`, `pgcatalog`, `privilege`,
+  `provider`, `query`, plus the `internal/sqltest` harness they share) now
+  carries `//go:build qrdb_sql` directly, and every file under
+  `pkg/api/etcd/` carries `//go:build qrdb_etcd` directly — the whole SQL
+  core and the whole etcd wire server are absent from a build without their
+  tag at their own declaration, not merely at their callers'. Two more
+  build-tag rungs, `NOPGSQL` and `NOETCD`, join `NOMYSQL` and `NOSQLFAMILY`
+  in `make print-tag-sets` / `make vet-tags`, and
+  `test/buildgates/{pgsql,etcd}_dependency_test.go` check the dependency
+  graph the same way `mysql_dependency_test.go` does: under the default
+  tags, both binaries reach psql-wire / go.etcd.io (the discovery floor);
+  with the tag off, neither the qrdb package nor the upstream dependency is
+  reachable from either binary.
+- **`qrdbd` refuses `protocol.etcd.enabled: true` on a binary without
+  `qrdb_etcd`, instead of accepting it and never starting a listener.**
+  `(*server.Server).StartEtcd`'s doc comment used to say exactly that: "if
+  etcd support is not compiled in, it returns nil silently." It now returns
+  the same `service.CapabilityUnsupportedError` every transport already
+  maps to Unimplemented, naming the missing build tag.
+
+### Changed — BREAKING
+
+- **`--enable-mysql` / `--mysql-port`, `--enable-pgsql` / `--pgsql-port`,
+  `qrdb sql`, `qrdb database update-protocol`, `qrdb database
+  update-etcd`, and `database create`'s `--etcd`, `--etcd-listen-addr`,
+  `--etcd-advertise-urls` flags now exist only on a binary built with the
+  matching tag** (`qrdb_mysql`, `qrdb_pgsql`, `qrdb_sql`, `qrdb_etcd`
+  respectively — all on by default). A build with the tag off has no such
+  flag or subcommand at all; cobra reports `unknown flag` / `unknown
+  command` rather than silently accepting a setting the binary can never
+  act on. Anyone building a custom `qrdbd` or `qrdb` with one of these
+  tags off and scripting against the now-removed flag needs to drop it
+  from the script, not from the daemon's behavior — the flag never did
+  anything on that build anyway.
+- **`WITH_QRDB_SQL=0` alone now removes MySQL and PostgreSQL too.** The
+  Makefile forces `WITH_QRDB_MYSQL` and `WITH_QRDB_PGSQL` to `0` whenever
+  `WITH_QRDB_SQL=0` is given, even if either was left at its own default of
+  `1`. Before this, `make build WITH_QRDB_SQL=0` with no other flag named
+  left `WITH_QRDB_MYSQL`/`WITH_QRDB_PGSQL` at `1`, which forced
+  `WITH_QRDB_SQL` straight back to `1` — removing the SQL layer required
+  naming all three flags, silently, with no build-time signal that the one
+  flag given had no effect. Naming all three explicitly still works
+  identically; only the one-flag case changes.
 
 ### Changed — BREAKING
 

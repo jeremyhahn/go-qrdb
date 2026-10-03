@@ -372,9 +372,29 @@ ifeq ($(WITH_AZURE),1)
   WITH_AZURE_ARCHIVE := 1
 endif
 
-# The MySQL and PostgreSQL wire protocols are engines layered over the
-# shared pkg/sql core (qrdb_sql), so enabling either implies qrdb_sql.
-# "override" wins even when WITH_QRDB_SQL=0 is passed on the command line.
+# SQL is the umbrella capability the wire protocols are layered over --
+# `pkg/sql/{catalog,engine,provider,...}` is what MySQL and PostgreSQL both
+# run on, so neither protocol can exist without it. WITH_QRDB_SQL=0
+# therefore forces both wire protocols off too, whatever WITH_QRDB_MYSQL /
+# WITH_QRDB_PGSQL were set to -- their own default (1) included, which is
+# what made "WITH_QRDB_SQL=0 alone" a no-op before this block existed: the
+# wire-protocol-implies-SQL rule immediately below would see MySQL and
+# PostgreSQL still at their default of 1 and force qrdb_sql straight back
+# on, so the only way to actually remove the SQL layer was to name all
+# three flags. This is the chosen fix over documenting that trap: turning
+# the umbrella off now turns off what sits under it, so WITH_QRDB_SQL=0 by
+# itself is sufficient, and naming WITH_QRDB_MYSQL=0 / WITH_QRDB_PGSQL=0
+# alongside it is harmless but no longer required.
+ifeq ($(WITH_QRDB_SQL),0)
+  override WITH_QRDB_MYSQL := 0
+  override WITH_QRDB_PGSQL := 0
+endif
+
+# The reverse direction: either wire protocol implies the shared pkg/sql
+# core it is an engine over. "override" wins even when WITH_QRDB_SQL=0 was
+# passed on the command line -- unless the block above already forced
+# MySQL/PostgreSQL off because SQL itself was off, in which case this has
+# nothing left to re-enable.
 ifeq ($(WITH_QRDB_MYSQL),1)
   override WITH_QRDB_SQL := 1
 endif
@@ -1250,11 +1270,26 @@ COVER_RATCHET       = $(GO) run ./test/tools/coverratchet -profile $(COVER_DIR)/
 # place that can be correct, since only code that is ITSELF shell source can
 # emit shell quoting -- a value round-tripped through a Make variable and an
 # environment variable cannot.
+#
+# BULK_PKGS' `go list` carries $(TAG_FLAG), the same tags the `go test` line
+# right below it uses -- it did not, until the measurement that caught this.
+# A package whose every file carries a build tag has NO buildable source
+# under an untagged `go list`, so go list silently drops it from `./pkg/...`
+# -- not an error, not a warning, just absent from BULK_PKGS, which is
+# `go test`'s own package LIST, not a filter over something `go test`
+# computes independently. `pkg/sql/mysql` and `pkg/sql/pgsql` have been in
+# that state since they were first tagged and were simply never in
+# test/coverage-baseline.txt, so the ratchet's MISSING check -- which fires
+# only for a package the baseline NAMES -- had nothing to compare against and
+# stayed quiet. Tagging `pkg/sql`'s other eight packages and `pkg/api/etcd`
+# the same way made the SAME discovery bug hit packages the baseline already
+# named, which is what turned eight silent gaps into eight loud MISSING
+# failures -- the exposure, not a new defect.
 define COVERAGE_MERGE_SUBPROCESS
 	set -e; \
 	SUBPROCESS_PKGS=$$(./scripts/coverage-merge-subprocess.sh --list); \
 	EXCLUDE_PATTERN=$$(printf '%s\n' "$$SUBPROCESS_PKGS" | paste -sd '|' -); \
-	BULK_PKGS=$$($(GO) list ./pkg/... ./cmd/... | grep -v '/proto/' | grep -vE "^($$EXCLUDE_PATTERN)\$$"); \
+	BULK_PKGS=$$($(GO) list $(TAG_FLAG) ./pkg/... ./cmd/... | grep -v '/proto/' | grep -vE "^($$EXCLUDE_PATTERN)\$$"); \
 	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/bulk.out $$BULK_PKGS; \
 	COVERAGE_MERGE_TAGS="$(strip $(BUILD_TAGS))" COVERAGE_MERGE_TIMEOUT="$(GOTEST_TIMEOUT)" ./scripts/coverage-merge-subprocess.sh --run $(COVER_DIR)/subprocess.out; \
 	head -1 $(COVER_DIR)/bulk.out > $(COVER_DIR)/total.out; \
@@ -1641,10 +1676,11 @@ LINT_TAGS  := $(subst $(space),$(comma),$(strip $(BUILD_TAGS)))
 # The same join applied to the mandatory floor. Used by SUPPORTED_TAG_SETS.
 MIN_TAGS   := $(subst $(space),$(comma),$(strip $(REQUIRED_TAGS)))
 
-# The two SQL-reduced rungs, computed by filtering the DEFAULT tag set rather
-# than recomputing it from the WITH_* flags: BUILD_TAGS is already the single
-# place those flags resolve to tags (#263's whole point), so filtering it is
-# the one way to vary a rung without a second, driftable copy of that logic.
+# The per-family reduced rungs, computed by filtering the DEFAULT tag set
+# rather than recomputing it from the WITH_* flags: BUILD_TAGS is already the
+# single place those flags resolve to tags (#263's whole point), so filtering
+# it is the one way to vary a rung without a second, driftable copy of that
+# logic.
 #
 #   NOMYSQL_TAGS      default minus qrdb_mysql only. The MySQL wire protocol
 #                     is compiled out; qrdb_sql and qrdb_pgsql (and therefore
@@ -1654,13 +1690,28 @@ MIN_TAGS   := $(subst $(space),$(comma),$(strip $(REQUIRED_TAGS)))
 #                     exactly that boundary checkable: a pkg/sql/mysql file,
 #                     or a vitess listener/handler symbol, reachable under
 #                     this rung is the regression.
+#   NOPGSQL_TAGS      default minus qrdb_pgsql only. The mirror of NOMYSQL_TAGS:
+#                     the PostgreSQL wire protocol is compiled out, qrdb_sql
+#                     and qrdb_mysql (and therefore go-mysql-server and
+#                     vitess) stay, since MySQL is still an engine over the
+#                     same shared SQL core.
 #   NOSQLFAMILY_TAGS  default minus qrdb_mysql, qrdb_pgsql AND qrdb_sql. This
 #                     is the rung where the hard limit applies: go-mysql-
 #                     server and vitess must be absent from the dependency
 #                     graph of cmd/qrdbd and cmd/qrdb entirely, not merely
-#                     from the wire-protocol packages.
+#                     from the wire-protocol packages. WITH_QRDB_SQL=0 forces
+#                     WITH_QRDB_MYSQL / WITH_QRDB_PGSQL to 0 as well (see the
+#                     override block above BUILD_TAGS), so this rung is also
+#                     exactly what `WITH_QRDB_SQL=0` alone now produces.
+#   NOETCD_TAGS       default minus qrdb_etcd only. pkg/api/etcd (the etcd
+#                     wire server, every file in it tagged qrdb_etcd
+#                     directly) and go.etcd.io/* must both be absent from
+#                     the dependency graph of cmd/qrdbd and cmd/qrdb under
+#                     this rung.
 NOMYSQL_TAGS      := $(subst $(space),$(comma),$(strip $(filter-out qrdb_mysql,$(BUILD_TAGS))))
+NOPGSQL_TAGS      := $(subst $(space),$(comma),$(strip $(filter-out qrdb_pgsql,$(BUILD_TAGS))))
 NOSQLFAMILY_TAGS  := $(subst $(space),$(comma),$(strip $(filter-out qrdb_mysql qrdb_pgsql qrdb_sql,$(BUILD_TAGS))))
+NOETCD_TAGS       := $(subst $(space),$(comma),$(strip $(filter-out qrdb_etcd,$(BUILD_TAGS))))
 
 .PHONY: lint
 lint:
@@ -2245,18 +2296,19 @@ vet:
 # to expose. The sweep prints the tag set beside every invocation and beside
 # every failure for that reason; keep it that way.
 #
-# NOMYSQL and NOSQLFAMILY are declared rungs too, so the MySQL build-tag
-# boundary is checked by compilation and not merely by review. Both are
-# DEFAULT with one or three tags removed (NOMYSQL_TAGS /
-# NOSQLFAMILY_TAGS above), the same shape as the qrdb_fts rung, for the same
-# reason: `pkg/sql/mysql`, a vitess listener symbol, or (under NOSQLFAMILY)
-# go-mysql-server and vitess themselves reachable from `cmd/qrdbd` or
-# `cmd/qrdb` under either rung is a leak these two exist to catch, not a
-# hypothetical -- that is exactly how `pkg/api/errclass` linked
-# `github.com/dolthub/vitess/go/mysql` into every build before it was fixed.
-# `test/buildgates` asserts the dependency-graph half of the same claim with
-# `go list -deps`; these rungs are what makes the claim typecheck as well.
-SUPPORTED_TAG_SETS := $(MIN_TAGS) $(MIN_TAGS),integration $(LINT_TAGS) $(LINT_TAGS),integration $(LINT_TAGS),qrdb_fts $(NOMYSQL_TAGS) $(NOMYSQL_TAGS),integration $(NOSQLFAMILY_TAGS) $(NOSQLFAMILY_TAGS),integration
+# NOMYSQL, NOPGSQL, NOSQLFAMILY and NOETCD are declared rungs too, so each
+# protocol family's build-tag boundary is checked by compilation and not
+# merely by review. Each is DEFAULT with its own tag (or, for NOSQLFAMILY,
+# all three SQL-family tags) removed (NOMYSQL_TAGS / NOPGSQL_TAGS /
+# NOSQLFAMILY_TAGS / NOETCD_TAGS above), the same shape as the qrdb_fts rung,
+# for the same reason: a package the family owns, or a symbol from its
+# upstream dependency, reachable from `cmd/qrdbd` or `cmd/qrdb` under its own
+# rung is a leak these four exist to catch, not a hypothetical -- that is
+# exactly how `pkg/api/errclass` linked `github.com/dolthub/vitess/go/mysql`
+# into every build before it was fixed. `test/buildgates` asserts the
+# dependency-graph half of the same claim with `go list -deps`; these rungs
+# are what makes the claim typecheck as well.
+SUPPORTED_TAG_SETS := $(MIN_TAGS) $(MIN_TAGS),integration $(LINT_TAGS) $(LINT_TAGS),integration $(LINT_TAGS),qrdb_fts $(NOMYSQL_TAGS) $(NOMYSQL_TAGS),integration $(NOPGSQL_TAGS) $(NOPGSQL_TAGS),integration $(NOSQLFAMILY_TAGS) $(NOSQLFAMILY_TAGS),integration $(NOETCD_TAGS) $(NOETCD_TAGS),integration
 
 # vet-tags sweeps EVERY Go module in the tree, each with its own tag sets.
 #

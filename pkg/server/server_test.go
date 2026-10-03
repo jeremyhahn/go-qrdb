@@ -2149,9 +2149,13 @@ func TestStartEtcd_NilFn(t *testing.T) {
 	cfg := testConfig(t, false, false)
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
-	// StartEtcd should return nil silently when startEtcdServerFn is nil.
-	if err := srv.StartEtcd("testdb", &database.EtcdConfig{}); err != nil {
-		t.Fatalf("expected nil error when startEtcdServerFn is nil, got: %v", err)
+	// StartEtcd refuses with a typed capability error when startEtcdServerFn
+	// is nil (etcd support not compiled in), rather than silently accepting
+	// a configuration it can never serve.
+	err := srv.StartEtcd("testdb", &database.EtcdConfig{})
+	var capErr *service.CapabilityUnsupportedError
+	if !errors.As(err, &capErr) {
+		t.Fatalf("StartEtcd() error = %v, want *service.CapabilityUnsupportedError", err)
 	}
 
 	// EtcdAddr should still return empty.

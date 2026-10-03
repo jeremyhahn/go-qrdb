@@ -1,4 +1,4 @@
-//go:build !integration
+//go:build qrdb_sql && !integration
 
 // Copyright 2026 Jeremy Hahn
 //

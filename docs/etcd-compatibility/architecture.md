@@ -179,6 +179,34 @@ pkg/api/etcd/
   errors.go        Typed errors
 ```
 
+Every file above — production and test alike — carries `//go:build qrdb_etcd`
+directly, the same treatment [sql/architecture.md](../sql/architecture.md)
+gives `pkg/sql`: the whole etcd wire server is absent from a build without
+the tag at its own declaration, not merely at `pkg/server/server_etcd.go`
+(its one caller, also tagged).
+
+## Build Tags
+
+| `WITH_QRDB_ETCD=0` removes | Stays |
+|---|---|
+| `pkg/api/etcd` (this whole package) | The per-database `EtcdConfig` schema (`pkg/database`) — configuring etcd on a binary without the tag is refused with a typed `service.CapabilityUnsupportedError`, naming the missing build tag, not silently accepted |
+| `go.etcd.io/*` (the etcd protobuf/client dependency) | `pkg/mvcc`, `pkg/watch`, `pkg/lease` — serve every transport, not etcd-specific |
+| `qrdb database update-etcd`, and `database create`'s `--etcd*` flags | `qrdb database create`'s other flags; `qrdb admin capabilities` still reports `etcd: false` |
+
+`go.etcd.io/*` is reached from nowhere else in this module: unlike the SQL
+wire protocols, where go-mysql-server remains as PostgreSQL's engine even
+with MySQL off, etcd has no shared core another family depends on, so
+removing it removes the upstream dependency entirely. `test/buildgates`
+(`etcd_dependency_test.go`) checks this with `go list -deps` over `cmd/qrdbd`
+and `cmd/qrdb`: under the default tags both reach `pkg/api/etcd` and at least
+one `go.etcd.io` package (the discovery floor); with `qrdb_etcd` off, neither
+is reachable from either binary.
+
+`test/performance/etcd-benchmark` pins its own `go.etcd.io/etcd/client/v3` in
+a **separate** `go.mod`, against a released qrdb version, to benchmark this
+feature from the outside — deliberately not part of this module's dependency
+graph, and not affected by `WITH_QRDB_ETCD`.
+
 
 ## Component boundaries
 

@@ -143,13 +143,31 @@ ad-hoc `/sql/query` service and the in-process driver, both backed by the
 same go-mysql-server engine; every transport answers `/sql/query` with its
 nil-service error only once `qrdb_sql` itself is off.
 
-`test/buildgates` (`mysql_dependency_test.go`) checks this with
-`go list -deps` over `cmd/qrdbd` and `cmd/qrdb`, not by inspection: it
-proves go-mysql-server's listener package
-(`github.com/dolthub/go-mysql-server/server`, the one package that
-constructs a vitess MySQL listener) is unreachable under
-`WITH_QRDB_MYSQL=0`, and that vitess and go-mysql-server are unreachable
-entirely under `WITH_QRDB_SQL=0`.
+**`WITH_QRDB_SQL=0` alone is sufficient** — the Makefile forces
+`WITH_QRDB_MYSQL` and `WITH_QRDB_PGSQL` to `0` as well, whatever either was
+set to, including their own default of `1`. That is the fix for a
+footgun the override direction above creates on its own: without it,
+`make build WITH_QRDB_SQL=0` with no other flags named left `WITH_QRDB_MYSQL`
+and `WITH_QRDB_PGSQL` at their default of `1`, which then forced
+`WITH_QRDB_SQL` straight back to `1` — so removing the SQL layer required
+naming all three flags, silently, with no error telling the caller their
+one flag had no effect. The alternative considered was documenting that
+trap instead of fixing it; this was rejected because a build flag that
+needs two companion flags to do what its name says is the trap, not
+whatever paragraph could have explained it. Naming
+`WITH_QRDB_MYSQL=0 WITH_QRDB_PGSQL=0` alongside `WITH_QRDB_SQL=0` is still
+accepted — harmless, not required.
+
+`test/buildgates` (`mysql_dependency_test.go` and its PostgreSQL mirror,
+`pgsql_dependency_test.go`) checks this with `go list -deps` over
+`cmd/qrdbd` and `cmd/qrdb`, not by inspection: it proves go-mysql-server's
+listener package (`github.com/dolthub/go-mysql-server/server`, the one
+package that constructs a vitess MySQL listener) is unreachable under
+`WITH_QRDB_MYSQL=0`, that psql-wire is unreachable under `WITH_QRDB_PGSQL=0`,
+and that vitess, go-mysql-server and psql-wire are all unreachable entirely
+under `WITH_QRDB_SQL=0`. `make vet-tags` sweeps the matching rungs
+(`NOMYSQL_TAGS`, `NOPGSQL_TAGS`, `NOSQLFAMILY_TAGS` in the Makefile) so the
+same claim is checked by compilation, not only by the dependency-graph gate.
 
 
 ### Alternatives rejected
@@ -298,47 +316,49 @@ prevents.
 ```
 pkg/sql/
   provider/       # DatabaseProvider, Database, KVTable, RelationalTable,
-                  #   WriteSet, QRDBSession (no build tag)
-  catalog/        # TableDef <-> sql.Type mapping, RowCodec, KeyCodec (no build tag)
+                  #   WriteSet, QRDBSession (qrdb_sql build tag)
+  catalog/        # TableDef <-> sql.Type mapping, RowCodec, KeyCodec (qrdb_sql build tag)
   engine/         # Shared SQL engine factory (default analyzer + the privilege
-                  #   post-analyze rule), PG translator + lexer (no build tag)
+                  #   post-analyze rule), PG translator + lexer (qrdb_sql build tag)
   privilege/      # SQL table privileges: the authorization handler every engine
-                  #   installs, and the GRANT/REVOKE/SHOW GRANTS rewrite (no build tag)
+                  #   installs, and the GRANT/REVOKE/SHOW GRANTS rewrite (qrdb_sql build tag)
+  infoschema/     # information_schema additions (qrdb_sql build tag)
+  lockclause/     # FOR UPDATE / FOR SHARE tokenizing and rewrite (qrdb_sql build tag)
+  pgcatalog/      # pg_catalog subset (qrdb_sql build tag)
+  query/          # ad-hoc /sql/query service (qrdb_sql build tag)
+  internal/sqltest/ # SQL test harness, used only by the packages above (qrdb_sql build tag)
   mysql/          # MySQL wire server (qrdb_mysql build tag)
   pgsql/          # PostgreSQL wire server (qrdb_pgsql build tag)
 ```
 
-The untagged packages carry no build constraint themselves; they are gated
-at their import sites instead. Every consumer outside `pkg/sql` — the
-server's ad-hoc `/sql/query` service (`pkg/server/server_sql.go`), the
-desktop SQL binding (`cmd/qrdb/bindings_sql.go`), the SDK's embedded SQL
-transport (`sdk/go/transport/embedded/transport_sql.go`), and the
-`sdk/go/driver` / `sdk/go/gorm` packages — compiles only under `qrdb_sql`,
-so a build without the tag links none of the SQL layer. The same holds for
-`query` and three more untagged packages the diagram above omits for
-brevity — `infoschema`, `lockclause`, and `pgcatalog` — on top of the four
-it names (`provider`, `catalog`, `engine`, `privilege`). Every one of
-these eight packages is reached, outside `pkg/sql` itself, only from files
-already behind `qrdb_sql` (directly, or transitively through `qrdb_mysql`
-/ `qrdb_pgsql`, both of which imply it); re-verified go-qrdb-wide while
-closing the MySQL build-tag audit below.
+Every file under `pkg/sql/` — production and test alike, in all nine
+packages above `mysql/` and `pgsql/` — carries `//go:build qrdb_sql`
+directly, so the whole SQL core is absent from a build without the tag at
+its own declaration, not merely at its callers'. This supersedes an earlier
+version of this section, which left those nine packages untagged on the
+strength of an import-site audit: every outside importer was itself behind
+`qrdb_sql` (directly, or transitively through `qrdb_mysql` / `qrdb_pgsql`,
+both of which imply it), so the binary-level guarantee held either way. The
+owner's ruling was to make the guarantee structural at the package's own
+declaration as well — retagging every file, including each package's own
+tests, rather than relying solely on the audit. Every consumer outside
+`pkg/sql` — the server's ad-hoc `/sql/query` service
+(`pkg/server/server_sql.go`), the desktop SQL binding
+(`cmd/qrdb/bindings_sql.go`), the SDK's embedded SQL transport
+(`sdk/go/transport/embedded/transport_sql.go`), and the `sdk/go/driver` /
+`sdk/go/gorm` packages — still compiles only under `qrdb_sql`, so a build
+without the tag links none of the SQL layer from either direction now.
 
-**This is a design choice, not an oversight, and it was re-checked rather
-than re-assumed.** The alternative — tagging all eight packages
-`//go:build qrdb_sql` directly — would make the same guarantee structural
-at their own declaration instead of only at their callers', at the cost of
-retagging every file (and every one of their own test files) in a tree
-that has grown around the current shape since #17. The audit that
-motivated this note found exactly ONE leak, and it was not in these eight
-packages: `pkg/api/errclass` — reached by every transport — imported
+A separate audit of this tree, run while closing the MySQL build-tag
+boundary, found exactly one real leak, and it was outside `pkg/sql`
+entirely: `pkg/api/errclass` — reached by every transport — imported
 `github.com/dolthub/vitess/go/mysql` directly, with no build constraint of
 its own, to build two SQL-error samples for a parity test. That linked
 vitess into every binary regardless of `qrdb_sql`, caught only by
 `test/buildgates`' dependency-graph gate (below), not by any check scoped
 to the package itself. It is fixed by a dependency-free local sample type
 (`numberedSampleError`) carrying just the `Number() int` shape the
-classifier matches on, which needed no doc change because `pkg/api/errclass`
-was never one of the packages this section describes.
+classifier matches on.
 
 For in-process SQL, see [gorm.md](gorm.md) — it covers the two in-process DSN schemes (`node://` and `embedded://`), which differ in exactly whether the relational catalog is reachable.
 

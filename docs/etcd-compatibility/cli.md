@@ -29,6 +29,15 @@ The other `qrdb database` flags apply as normal: the database must be
 `--engine kv` (any `--backend`), the node must run in mode `raft`, and for
 Kubernetes the daemon's `sm_type` must be `mvcc`.
 
+**All three etcd flags, and `database update-etcd` itself, exist only on a
+`qrdb` built with `WITH_QRDB_ETCD=1` (the default).** A build with
+`WITH_QRDB_ETCD=0` has no `database update-etcd` subcommand at all — cobra
+reports `unknown command` — and `database create` has no `--etcd`,
+`--etcd-listen-addr` or `--etcd-advertise-urls` flag. The daemon side mirrors
+this: `qrdbd` built the same way refuses `protocol.etcd.enabled: true` on any
+database with a typed `not implemented: requires build tag qrdb_etcd` error,
+rather than accepting the setting and never actually starting a listener.
+
 ## Driving it with etcd's own tools
 
 Once a database has etcd enabled, its endpoint is an etcd v3 endpoint. Use

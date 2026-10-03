@@ -211,7 +211,9 @@ Supported transports:
 	rootCmd.AddCommand(newIndexCmd())
 	rootCmd.AddCommand(newDatabaseCmd())
 	rootCmd.AddCommand(newCollectionCmd())
-	rootCmd.AddCommand(newSQLCmd())
+	if cmd := newSQLCmd(); cmd != nil {
+		rootCmd.AddCommand(cmd)
+	}
 	rootCmd.AddCommand(newAuditCmd())
 	rootCmd.AddCommand(newUsersCmd())
 	rootCmd.AddCommand(newRolesCmd())

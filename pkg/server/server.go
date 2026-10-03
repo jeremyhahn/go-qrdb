@@ -2317,11 +2317,14 @@ func (s *Server) PgSQLAddr() string {
 	return ""
 }
 
-// StartEtcd starts an etcd protocol server for the named database. If
-// etcd support is not compiled in, it returns nil silently.
+// StartEtcd starts an etcd protocol server for the named database. If etcd
+// support is not compiled into this binary, it refuses with the same
+// service.CapabilityUnsupportedError every transport already maps to
+// Unimplemented, naming the missing build tag, rather than silently
+// accepting a configuration it can never serve.
 func (s *Server) StartEtcd(dbName string, cfg *database.EtcdConfig) error {
 	if startEtcdServerFn == nil {
-		return nil
+		return notImplemented("etcd", "requires build tag qrdb_etcd")
 	}
 	_, err := startEtcdServerFn(s, dbName, cfg)
 	return err

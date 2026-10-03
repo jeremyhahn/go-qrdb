@@ -40,8 +40,6 @@ func newDatabaseCmd() *cobra.Command {
 		newDatabaseListCmd(),
 		newDatabaseInfoCmd(),
 		newDatabaseDropCmd(),
-		newDatabaseUpdateProtocolCmd(),
-		newDatabaseUpdateEtcdCmd(),
 		newDatabaseUpdateRaftCmd(),
 		newDatabaseScaleCmd(),
 		newDatabaseUpdateBarrierCmd(),
@@ -53,6 +51,14 @@ func newDatabaseCmd() *cobra.Command {
 		newDatabaseBarrierStatusCmd(),
 	)
 	cmd.AddCommand(newDatabaseBarrierHolderCmds()...)
+	// database update-protocol (qrdb_sql) and database update-etcd
+	// (qrdb_etcd) are whole subcommands that configure a wire protocol this
+	// build may not have compiled in; each add-function is a no-op on a
+	// build without the matching tag, so the subcommand simply does not
+	// exist there. See database_protocol_cmd.go / database_etcd_cmd.go and
+	// their _stub counterparts.
+	addDatabaseUpdateProtocolCmd(cmd)
+	addDatabaseUpdateEtcdCmd(cmd)
 
 	return cmd
 }
@@ -60,14 +66,11 @@ func newDatabaseCmd() *cobra.Command {
 // newDatabaseCreateCmd creates the "database create" subcommand.
 func newDatabaseCreateCmd() *cobra.Command {
 	var (
-		engine            string
-		backend           string
-		dataDir           string
-		replicas          int
-		clusterMode       string
-		etcd              bool
-		etcdListenAddr    string
-		etcdAdvertiseURLs []string
+		engine      string
+		backend     string
+		dataDir     string
+		replicas    int
+		clusterMode string
 
 		barrierEnabled         bool
 		barrierStrategy        string
@@ -88,53 +91,6 @@ func newDatabaseCreateCmd() *cobra.Command {
 			"IsolationVolume/IsolationRaft tenant. Enabling a barrier on a database that " +
 			"shares the default store is rejected.",
 		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			name := args[0]
-
-			req := transport.CreateDatabaseRequest{
-				Name:     name,
-				Engine:   engine,
-				Backend:  backend,
-				DataDir:  dataDir,
-				Replicas: replicas,
-			}
-
-			// Raft topology (cluster mode) is meaningful only for a
-			// dedicated-raft (--backend raft) database; only send it when the
-			// operator explicitly requested one so a plain create is unaffected.
-			if clusterMode != "" {
-				req.Raft = &transport.DatabaseRaftConfig{ClusterMode: clusterMode}
-			}
-
-			if etcd {
-				req.Protocol.Etcd = &transport.EtcdProtocolConfig{
-					Enabled:             true,
-					ListenAddr:          etcdListenAddr,
-					AdvertiseClientURLs: etcdAdvertiseURLs,
-				}
-			}
-
-			if barrierEnabled {
-				req.Barrier = &transport.DatabaseBarrierConfig{
-					Enabled:        true,
-					Mode:           barrierStrategy,
-					SharesRequired: barrierShamirThreshold,
-					SharesTotal:    barrierShamirTotal,
-					Secret:         barrierPassphrase,
-				}
-			}
-
-			if sqlConcurrency != "" {
-				req.SQL = &transport.DatabaseSQLConfig{Concurrency: sqlConcurrency}
-			}
-
-			info, err := client.Database().CreateDatabase(cmd.Context(), req)
-			if err != nil {
-				return err
-			}
-
-			return printDatabaseInfo(info)
-		},
 	}
 
 	cmd.Flags().StringVar(&engine, "engine", "kv", "Database engine type (kv, timeseries)")
@@ -142,9 +98,7 @@ func newDatabaseCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&dataDir, "data-dir", "", "Dedicated data directory for this database (required for a real per-database encryption barrier)")
 	cmd.Flags().IntVar(&replicas, "replicas", 0, "Replication factor for a dedicated-raft database (raft backend only; defaults to 1)")
 	cmd.Flags().StringVar(&clusterMode, "cluster-mode", "", "Raft cluster topology for a dedicated-raft database (local, distributed; raft backend only, defaults to local)")
-	cmd.Flags().BoolVar(&etcd, "etcd", false, "Enable etcd wire protocol compatibility")
-	cmd.Flags().StringVar(&etcdListenAddr, "etcd-listen-addr", "localhost:2379", "Etcd listen address")
-	cmd.Flags().StringSliceVar(&etcdAdvertiseURLs, "etcd-advertise-urls", nil, "Etcd advertise client URLs")
+	applyEtcd := addDatabaseCreateEtcdFlags(cmd)
 
 	cmd.Flags().BoolVar(&barrierEnabled, "barrier-enabled", false, "Enable a per-database encryption barrier (requires a dedicated store)")
 	cmd.Flags().StringVar(&barrierStrategy, "barrier-strategy", "passphrase", "Barrier sealing strategy (passphrase, shamir)")
@@ -153,6 +107,48 @@ func newDatabaseCreateCmd() *cobra.Command {
 	cmd.Flags().IntVar(&barrierShamirTotal, "barrier-shamir-total", 0, "Shamir total share count (barrier-strategy=shamir)")
 
 	cmd.Flags().StringVar(&sqlConcurrency, "sql-concurrency", "", "The database's SQL concurrency mode (optimistic, pessimistic; defaults to optimistic)")
+
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+
+		req := transport.CreateDatabaseRequest{
+			Name:     name,
+			Engine:   engine,
+			Backend:  backend,
+			DataDir:  dataDir,
+			Replicas: replicas,
+		}
+
+		// Raft topology (cluster mode) is meaningful only for a
+		// dedicated-raft (--backend raft) database; only send it when the
+		// operator explicitly requested one so a plain create is unaffected.
+		if clusterMode != "" {
+			req.Raft = &transport.DatabaseRaftConfig{ClusterMode: clusterMode}
+		}
+
+		applyEtcd(&req)
+
+		if barrierEnabled {
+			req.Barrier = &transport.DatabaseBarrierConfig{
+				Enabled:        true,
+				Mode:           barrierStrategy,
+				SharesRequired: barrierShamirThreshold,
+				SharesTotal:    barrierShamirTotal,
+				Secret:         barrierPassphrase,
+			}
+		}
+
+		if sqlConcurrency != "" {
+			req.SQL = &transport.DatabaseSQLConfig{Concurrency: sqlConcurrency}
+		}
+
+		info, err := client.Database().CreateDatabase(cmd.Context(), req)
+		if err != nil {
+			return err
+		}
+
+		return printDatabaseInfo(info)
+	}
 
 	return cmd
 }
@@ -326,81 +322,6 @@ func newDatabaseDropCmd() *cobra.Command {
 			return nil
 		},
 	}
-}
-
-// newDatabaseUpdateProtocolCmd creates the "database update-protocol" subcommand.
-func newDatabaseUpdateProtocolCmd() *cobra.Command {
-	var (
-		mysql      bool
-		postgresql bool
-	)
-
-	cmd := &cobra.Command{
-		Use:   "update-protocol <name>",
-		Short: "Update wire protocol configuration",
-		Long:  "Update the wire protocol configuration for a database.",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			name := args[0]
-			req := transport.UpdateDatabaseProtocolRequest{
-				Name:       name,
-				MySQL:      mysql,
-				PostgreSQL: postgresql,
-			}
-			info, err := client.Database().UpdateDatabaseProtocol(cmd.Context(), req)
-			if err != nil {
-				return err
-			}
-			return printDatabaseInfo(info)
-		},
-	}
-
-	cmd.Flags().BoolVar(&mysql, "mysql", false, "Enable MySQL wire protocol")
-	cmd.Flags().BoolVar(&postgresql, "postgresql", false, "Enable PostgreSQL wire protocol")
-
-	return cmd
-}
-
-// newDatabaseUpdateEtcdCmd creates the "database update-etcd" subcommand.
-func newDatabaseUpdateEtcdCmd() *cobra.Command {
-	var (
-		enabled       bool
-		disabled      bool
-		listenAddr    string
-		advertiseURLs []string
-	)
-
-	cmd := &cobra.Command{
-		Use:   "update-etcd <name>",
-		Short: "Update etcd protocol configuration",
-		Long:  "Update the etcd wire protocol configuration for a database.",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			name := args[0]
-
-			req := transport.UpdateDatabaseEtcdRequest{
-				Name:                name,
-				Enabled:             enabled,
-				ListenAddr:          listenAddr,
-				AdvertiseClientURLs: advertiseURLs,
-			}
-
-			info, err := client.Database().UpdateDatabaseEtcd(cmd.Context(), req)
-			if err != nil {
-				return err
-			}
-
-			return printDatabaseInfo(info)
-		},
-	}
-
-	cmd.Flags().BoolVar(&enabled, "enabled", false, "Enable etcd wire protocol")
-	cmd.Flags().BoolVar(&disabled, "disabled", false, "Disable etcd wire protocol")
-	cmd.Flags().StringVar(&listenAddr, "listen-addr", "", "Etcd listen address")
-	cmd.Flags().StringSliceVar(&advertiseURLs, "advertise-urls", nil, "Etcd advertise client URLs")
-	cmd.MarkFlagsMutuallyExclusive("enabled", "disabled")
-
-	return cmd
 }
 
 // newDatabaseUpdateRaftCmd creates the "database update-raft" subcommand.

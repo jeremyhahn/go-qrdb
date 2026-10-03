@@ -66,6 +66,11 @@ const (
 	gmsServerPkg = "github.com/dolthub/go-mysql-server/server"
 	// qrdbMySQLPkg is qrdb's own MySQL wire server.
 	qrdbMySQLPkg = "github.com/jeremyhahn/go-qrdb/pkg/sql/mysql"
+	// qrdbSQLCorePkgPrefix is every package under pkg/sql/ other than
+	// mysql/ and pgsql/ (which have their own narrower constants and their
+	// own qrdb_mysql / qrdb_pgsql tags): catalog, engine, provider and the
+	// rest, all tagged qrdb_sql directly.
+	qrdbSQLCorePkgPrefix = "github.com/jeremyhahn/go-qrdb/pkg/sql/"
 
 	// minVitessPackages is the floor for how many vitess packages the full
 	// tag set must reach through cmd/qrdbd. Measured at 20 (go.mod pins
@@ -267,6 +272,14 @@ func TestNoSQLBuildHasNoVitessOrMySQLServer(t *testing.T) {
 		}
 		if contains(deps, qrdbMySQLPkg) {
 			t.Errorf("%s with SQL off still reaches %s", target, qrdbMySQLPkg)
+		}
+		if contains(deps, qrdbPgSQLPkg) {
+			t.Errorf("%s with SQL off still reaches %s", target, qrdbPgSQLPkg)
+		}
+		if containsPrefix(deps, qrdbSQLCorePkgPrefix) {
+			t.Errorf("%s with SQL off still reaches a %s package -- every file "+
+				"in pkg/sql/{catalog,engine,provider,...} is tagged qrdb_sql directly, "+
+				"so this is the leak that tagging exists to catch", target, qrdbSQLCorePkgPrefix)
 		}
 	}
 }
