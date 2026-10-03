@@ -11,6 +11,23 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Changed
+
+- **The database wizard offers Shamir and enrols the database's share
+  holders.** The web UI's and the desktop app's database wizard creates a
+  Shamir database sealed (`barrier: {enabled: true, mode: "shamir",
+  sharesRequired, sharesTotal}`, no secret), then a holders step enrols exactly
+  N holders through the unified holder model (`registerDatabaseOfficer`, each
+  from the holder's own CSR) and initializes custody
+  (`initializeDatabaseShamir`). The wizard administers holders only: claims
+  and quorum submissions stay with the holders' own keys in the qrdb CLI or
+  the desktop app, and no share, envelope or holder key enters the page. The
+  wizard no longer withholds Shamir itself -- the client-side
+  `unavailableSealModes` map and `SealModeUnavailableError` are removed -- and
+  refuses it only on the server's answer, such as
+  `ShamirCustodyNotConfiguredError` from a node with no share-holder custody
+  wired, which leaves no database behind.
+
 ## [0.34.1-alpha] - 2026-10-03
 
 Sealed-node hardening. Highlights:

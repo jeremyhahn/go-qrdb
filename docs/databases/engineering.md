@@ -1227,10 +1227,15 @@ Breaking rows land in one MINOR release, recorded in the CHANGELOG.
   `holderKind` (system, tenant, database) selects the scope flag and target by
   map. The desktop `OfficerBinding` takes `HolderScope.Database` and adds
   `InitializeDatabaseShamir`.
-- Web UI: the database wizard offers Shamir with a dedicated store, then a
-  holders step enrols N holders (`HolderEnrolmentForms` with an `enrol`
-  callback) and initializes; the admin database view shows
-  `DatabaseHoldersPanel` (holders, `HolderRekeyPanel`) for a Shamir database.
+- Web UI and desktop app: the database wizard offers Shamir, creates the
+  database sealed, then a holders step enrols exactly N holders
+  (`HolderEnrolmentForms` with an `enrol` callback that calls
+  `registerDatabaseOfficer`) and initializes (`initializeDatabaseShamir`). It
+  withholds Shamir only on the server's refusal at create
+  (`ShamirCustodyNotConfiguredError` where no holder custody is wired); see
+  [../desktop-gui/engineering.md](../desktop-gui/engineering.md). The admin
+  database view shows `DatabaseHoldersPanel` (holders, `HolderRekeyPanel`)
+  for a Shamir database.
 - Tests: `pkg/service/servicetest.NewShamirDatabase` is a real database service
   with one Shamir database; every server transport drives a lifecycle through
   its handlers with it, and `sdk/go/transport/internal/dbholdertest` runs the

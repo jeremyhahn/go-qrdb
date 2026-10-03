@@ -72,15 +72,44 @@ management, feature errors), watch streaming and npm packaging are documented in
   request -- and the summary step shows only that it is set. Returning to the
   barrier step asks for it again, and tearing the wizard down by any route
   (`onDestroy` → `clearBarrierPassphrase`) clears it. The barrier defaults to
-  none, so the barrier is opt-in. The Shamir card is shown disabled, with a
-  tooltip, until per-database Shamir share holders ship: the server refuses a
-  per-database Shamir barrier until then. The unavailable modes and their
-  reasons live in one map, `unavailableSealModes` in the wizard store: the
-  barrier step disables those cards from it, and the create step refuses a
-  listed mode with `SealModeUnavailableError` before any request is built, as a
-  backstop should the barrier step ever let one through. *(Changed: the wizard sent the barrier block without
+  none, so the barrier is opt-in. *(Changed: the wizard sent the barrier block without
   `enabled` and with no secret, so the server never created a barrier and the
   barrier step had no effect.)*
+- **The database wizard enrols a Shamir database's share holders.** Choosing
+  the Shamir barrier asks for M of N, 2 <= M <= N, the bound the server
+  enforces. The create request carries `barrier: { enabled: true, mode:
+  "shamir", sharesRequired: M, sharesTotal: N }` and no secret: the server
+  creates the database sealed, with its custody not yet initialized. A
+  **holders** step follows the create, for a Shamir database only. It enrols
+  exactly N holders through the unified holder model -- one
+  `HolderEnrolmentForms` entry per holder (username, role, the holder's own
+  CSR), each sent as `officers.registerDatabaseOfficer` -- and shows each
+  CA-issued certificate to hand to its holder. Once all N are enrolled,
+  **Initialize** calls `officers.initializeDatabaseShamir`, which splits the
+  database's key at the M-of-N the create fixed and seals one envelope to
+  each holder. The step then shows the CLI commands with which holders claim
+  and unseal. **The wizard administers holders; it never claims or submits.**
+  No share, no envelope and no holder private key passes through it: claims
+  and quorum submissions are made with the holder's own keys from the qrdb
+  CLI or the desktop app's holder bindings, which keep the keys in Go, and
+  the wizard runs no cryptography in the page.
+- **The wizard refuses Shamir only when the server cannot serve it.** It keeps
+  no list of seal modes it withholds: the Shamir card is always selectable,
+  and whether the server can build the barrier is the server's answer to the
+  create. A server whose database barrier manager has no share-holder custody
+  wired refuses with `ShamirCustodyNotConfiguredError` (FailedPrecondition),
+  an M-of-N it cannot split with `ErrShamirThresholdInvalid`, and a database
+  without its own store with `SharedStoreBarrierUnsupportedError`. The create
+  step shows the server's refusal, and a refused create leaves no database
+  behind. *(Changed: the Shamir card was disabled, and the create step
+  refused it from a client-side `unavailableSealModes` map, while the server
+  could not yet serve per-database Shamir. It can; the map and
+  `SealModeUnavailableError` are removed.)*
+- **Leaving the holders step before Initialize** leaves the database created,
+  sealed and without custody; nothing it holds is usable until custody is
+  initialized. The step says so before the wizard closes. Custody is
+  completed with `qrdb database barrier-officer register` and `qrdb database
+  barrier-init-shamir`, or the database is dropped.
 
 ## App shell states
 
@@ -144,12 +173,11 @@ closed.)* The Playwright suites under `cmd/qrdb/frontend/e2e/` are not in CI.
   (above). The wizard's barrier passphrase is covered by
   `e2e/database-wizard-barrier-passphrase.spec.ts` (mocked tier): validation,
   the exact create request, and that the passphrase appears on no page and in
-  no console message after a successful or a failed create. The Shamir card's
-  disabled state is covered in `wizard-encryption.spec.ts` and
-  `database-wizard-full-flow.spec.ts`; `wizard-encryption.spec.ts` also drives
-  the create step's backstop, writing Shamir into the store after a valid
-  barrier step and asserting that no create is sent and the passphrase is
-  still cleared. The specs that assert on the create request share
+  no console message after a successful or a failed create. The Shamir path
+  is covered by `e2e/wizard-shamir.spec.ts` (mocked tier): the exact create
+  request, enrolment of exactly N holders through the database scope,
+  initialization, that no claim or submission is made from the page, and that
+  the server's refusal of a Shamir barrier is shown and leaves no database. The specs that assert on the create request share
   `e2e/fixtures/database-create-capture.ts`. On the Go side,
   `TestDatabaseBinding_CreateWithBarrierInitialisesIt` drives a barrier create
   through the binding into a real barrier manager and proves the passphrase it

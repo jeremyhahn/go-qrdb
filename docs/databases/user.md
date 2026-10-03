@@ -111,7 +111,9 @@ initialized. Enrol exactly as many holders as there will be shares (each from
 a CSR they generated themselves), initialize, and have every holder claim
 their envelope with the CLI or the desktop app, never in the browser. From
 then on M holders unseal it with `barrier-quorum submit`; rekey and
-revocation work as they do for a tenant barrier.
+revocation work as they do for a tenant barrier. The web UI's and the desktop
+app's database wizard does the create, the enrolment and the initialization;
+the claims and the unseal stay with the holders.
 
 **Seal and unseal it.**
 

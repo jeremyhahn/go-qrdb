@@ -41,8 +41,19 @@ the full application.
 settings on a Raft server, wire protocols, the encryption barrier, a summary,
 then creation.
 
-The barrier is off unless you choose one. **Shamir** is shown but not yet
-selectable: it becomes available once per-database Shamir share holders ship.
+The barrier is off unless you choose one. Choosing **Shamir** asks how many
+holders there will be (N) and how many of them unseal the database together
+(M, at least 2). After the database is created, sealed, the wizard asks you to
+enrol its N holders: for each, a username, a role and the certificate request
+the holder generated on their own machine. The wizard shows each holder's
+issued certificate for you to pass on, and once all N are enrolled,
+**Initialize** splits the key and seals one envelope to each holder. Holders
+then claim their envelopes, and later unseal the database, from the qrdb CLI
+or the desktop app with their own keys; the wizard never handles a share or
+a holder's key. If the server cannot build a Shamir barrier -- it has no
+share-holder custody configured -- the create step shows the server's reason
+and no database is created. Closing the wizard before **Initialize** leaves
+the database sealed until you finish enrolling its holders with the CLI.
 Choosing **Passphrase** asks for the
 passphrase twice; it is sent once, when the database is created, and the
 application does not keep it or show it again. You need it to unseal the
