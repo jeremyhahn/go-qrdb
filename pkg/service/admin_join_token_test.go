@@ -17,6 +17,7 @@ package service
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -88,5 +89,59 @@ func TestAdminService_MintJoinToken_InvalidTTLSurfacesTypedError(t *testing.T) {
 	var ttlErr *clusterenroll.JoinTokenTTLError
 	if !errors.As(err, &ttlErr) {
 		t.Fatalf("MintJoinToken with a too-short TTL = %v, want *clusterenroll.JoinTokenTTLError", err)
+	}
+}
+
+// TestParseJoinTokenTTLSeconds covers every transport's conversion of a
+// wire-supplied ttl_seconds int64 to a time.Duration: the ordinary range,
+// the zero/negative "use the default" convention, exactly at the overflow
+// boundary, and just past it.
+func TestParseJoinTokenTTLSeconds(t *testing.T) {
+	cases := []struct {
+		name       string
+		ttlSeconds int64
+		want       time.Duration
+		wantErr    bool
+	}{
+		{name: "ordinary value", ttlSeconds: 3600, want: time.Hour},
+		{name: "zero means use the default", ttlSeconds: 0, want: 0},
+		{name: "negative means use the default", ttlSeconds: -1, want: 0},
+		{name: "exactly at the overflow boundary", ttlSeconds: MaxJoinTokenTTLSeconds, want: time.Duration(MaxJoinTokenTTLSeconds) * time.Second},
+		{name: "one second past the boundary overflows", ttlSeconds: MaxJoinTokenTTLSeconds + 1, wantErr: true},
+		{name: "math.MaxInt64 overflows", ttlSeconds: math.MaxInt64, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ParseJoinTokenTTLSeconds(tc.ttlSeconds)
+			if tc.wantErr {
+				var overflow *JoinTokenTTLOverflowError
+				if !errors.As(err, &overflow) {
+					t.Fatalf("ParseJoinTokenTTLSeconds(%d) = %v, want *JoinTokenTTLOverflowError", tc.ttlSeconds, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseJoinTokenTTLSeconds(%d): %v", tc.ttlSeconds, err)
+			}
+			if got != tc.want {
+				t.Fatalf("ParseJoinTokenTTLSeconds(%d) = %v, want %v", tc.ttlSeconds, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseJoinTokenTTLSeconds_NeverWrapsNegative proves the specific
+// failure mode this guards against cannot happen: every ttlSeconds this
+// function accepts (does not refuse) converts to a NON-NEGATIVE duration,
+// never a value that silently wrapped around int64.
+func TestParseJoinTokenTTLSeconds_NeverWrapsNegative(t *testing.T) {
+	for _, ttlSeconds := range []int64{0, 1, time.Hour.Nanoseconds() / int64(time.Second), MaxJoinTokenTTLSeconds} {
+		got, err := ParseJoinTokenTTLSeconds(ttlSeconds)
+		if err != nil {
+			t.Fatalf("ParseJoinTokenTTLSeconds(%d): %v", ttlSeconds, err)
+		}
+		if got < 0 {
+			t.Fatalf("ParseJoinTokenTTLSeconds(%d) = %v, a wrapped negative duration", ttlSeconds, got)
+		}
 	}
 }

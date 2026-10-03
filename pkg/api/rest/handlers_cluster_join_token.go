@@ -63,14 +63,24 @@ func (s *Server) handleMintJoinToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), mintJoinTokenRequestTimeout)
-	defer cancel()
-	token, expiresAt, err := minter.MintJoinToken(ctx, req.NodeID, time.Duration(req.TTLSeconds)*time.Second)
+	ttl, err := service.ParseJoinTokenTTLSeconds(req.TTLSeconds)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
+	ctx, cancel := context.WithTimeout(r.Context(), mintJoinTokenRequestTimeout)
+	defer cancel()
+	token, expiresAt, err := minter.MintJoinToken(ctx, req.NodeID, ttl)
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+
+	// The response carries a single-use admission secret returned exactly
+	// once; an intermediary or browser cache holding onto it would be a
+	// second place it could leak from, so it must never be cached.
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(mintJoinTokenResponse{Token: token, ExpiresAt: expiresAt})

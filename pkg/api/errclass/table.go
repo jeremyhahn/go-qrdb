@@ -581,6 +581,7 @@ var clusterJoinTokenRules = []rule{
 	// Not configured for member-side CSR join at all (no store/trust
 	// domain bound): the node was never built or set up for this.
 	as(&service.ClusterJoinTokenNotConfiguredError{}, Unimplemented),
+	as(&service.JoinTokenTTLOverflowError{}, InvalidArgument),
 	as(&clusterenroll.InvalidJoinIdentityError{}, InvalidArgument),
 	as(&clusterenroll.JoinTokenTTLError{}, InvalidArgument),
 	// A vanishingly unlikely digest collision with an already-minted

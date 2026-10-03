@@ -348,7 +348,11 @@ func (s *Server) handleMintJoinToken(ctx context.Context, payload []byte) ([]byt
 	if !ok {
 		return nil, &service.ClusterJoinTokenNotConfiguredError{}
 	}
-	token, expiresAt, err := minter.MintJoinToken(ctx, req.GetNodeId(), time.Duration(req.GetTtlSeconds())*time.Second)
+	ttl, err := service.ParseJoinTokenTTLSeconds(req.GetTtlSeconds())
+	if err != nil {
+		return nil, err
+	}
+	token, expiresAt, err := minter.MintJoinToken(ctx, req.GetNodeId(), ttl)
 	if err != nil {
 		return nil, err
 	}

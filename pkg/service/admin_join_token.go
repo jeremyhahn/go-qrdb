@@ -16,12 +16,57 @@ package service
 
 import (
 	"context"
+	"math"
 	"sync"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
+
+// MaxJoinTokenTTLSeconds is the largest wire-supplied ttl_seconds value
+// ParseJoinTokenTTLSeconds accepts: the largest value that, multiplied by
+// time.Second, does not overflow int64 nanoseconds. It is far larger than
+// clusterenroll.MaxJoinTokenTTL (24h = 86400s) -- that range check still
+// decides what counts as "too long" for a join token; this guards a
+// different failure, the raw arithmetic overflow that would otherwise
+// silently wrap a huge ttl_seconds into a small or negative
+// time.Duration before clusterenroll.MintJoinToken ever sees it.
+const MaxJoinTokenTTLSeconds = math.MaxInt64 / int64(time.Second)
+
+// ParseJoinTokenTTLSeconds converts a wire-supplied ttl_seconds value --
+// every transport's MintJoinToken request carries one as a plain int64 --
+// to a time.Duration, refusing a value whose conversion would overflow
+// instead of silently wrapping. Every transport binding (gRPC, QUIC, MCP,
+// REST) calls this before AdminService.MintJoinToken rather than
+// converting inline, so the guard cannot be present on some transports and
+// missing on others.
+//
+// ttlSeconds <= 0 converts to 0, which MintJoinToken (via
+// clusterenroll.MintJoinToken) already treats as "use the default TTL" --
+// this function does not duplicate that default, it only guards the
+// multiplication.
+func ParseJoinTokenTTLSeconds(ttlSeconds int64) (time.Duration, error) {
+	if ttlSeconds > MaxJoinTokenTTLSeconds {
+		return 0, &JoinTokenTTLOverflowError{TTLSeconds: ttlSeconds}
+	}
+	if ttlSeconds <= 0 {
+		return 0, nil
+	}
+	return time.Duration(ttlSeconds) * time.Second, nil
+}
+
+// JoinTokenTTLOverflowError is returned by ParseJoinTokenTTLSeconds when a
+// wire-supplied ttl_seconds value is too large to convert to a
+// time.Duration without overflowing int64 nanoseconds.
+type JoinTokenTTLOverflowError struct {
+	TTLSeconds int64
+}
+
+// Error returns a human-readable description.
+func (e *JoinTokenTTLOverflowError) Error() string {
+	return "service: ttl_seconds exceeds the maximum convertible to a duration"
+}
 
 // ClusterJoinTokenMinter mints single-use, identity-bound member-side CSR
 // join tokens (see pkg/clusterenroll.MintJoinToken) into the replicated

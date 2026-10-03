@@ -82,6 +82,47 @@ func TestHandleMintJoinToken_Success(t *testing.T) {
 	}
 }
 
+// TestHandleMintJoinToken_SetsCacheControlNoStore proves the response
+// carrying the single-use token is never cacheable: an intermediary or
+// browser cache holding onto it would be a second place it could leak
+// from.
+func TestHandleMintJoinToken_SetsCacheControlNoStore(t *testing.T) {
+	admin := newDefaultAdminSvc()
+	admin.mintJoinTokenFn = func(context.Context, string, time.Duration) (string, time.Time, error) {
+		return "s3cr3t-token", time.Now().Add(time.Hour), nil
+	}
+	s := NewServer(&mockKVService{}, admin, ":0")
+	req := httptest.NewRequest(http.MethodPost, "/v1/cluster/join-tokens", strings.NewReader(`{"node_id":"node-1"}`))
+	rec := httptest.NewRecorder()
+	s.handleMintJoinToken(rec, req)
+	assertStatus(t, rec, http.StatusCreated)
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want %q", got, "no-store")
+	}
+}
+
+// TestHandleMintJoinToken_TTLOverflowRefused proves a ttl_seconds value
+// large enough to overflow the seconds-to-duration conversion is refused
+// with a typed error BEFORE ever reaching the minter -- not silently
+// wrapped into a small or negative duration.
+func TestHandleMintJoinToken_TTLOverflowRefused(t *testing.T) {
+	admin := newDefaultAdminSvc()
+	called := false
+	admin.mintJoinTokenFn = func(context.Context, string, time.Duration) (string, time.Time, error) {
+		called = true
+		return "tok", time.Now(), nil
+	}
+	s := NewServer(&mockKVService{}, admin, ":0")
+	req := httptest.NewRequest(http.MethodPost, "/v1/cluster/join-tokens",
+		strings.NewReader(`{"node_id":"node-1","ttl_seconds":9223372036854775807}`))
+	rec := httptest.NewRecorder()
+	s.handleMintJoinToken(rec, req)
+	assertStatus(t, rec, http.StatusBadRequest)
+	if called {
+		t.Error("minter was called with an overflowing ttl_seconds; the guard did not refuse it first")
+	}
+}
+
 func TestHandleMintJoinToken_ServiceErrorMapsToClass(t *testing.T) {
 	admin := newDefaultAdminSvc()
 	admin.mintJoinTokenFn = func(context.Context, string, time.Duration) (string, time.Time, error) {

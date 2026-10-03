@@ -748,7 +748,11 @@ func (s *qrdbServiceServer) MintJoinToken(ctx context.Context, req *pb.MintJoinT
 	if !ok {
 		return nil, mapServiceError(&service.ClusterJoinTokenNotConfiguredError{})
 	}
-	token, expiresAt, err := minter.MintJoinToken(ctx, req.GetNodeId(), time.Duration(req.GetTtlSeconds())*time.Second)
+	ttl, err := service.ParseJoinTokenTTLSeconds(req.GetTtlSeconds())
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	token, expiresAt, err := minter.MintJoinToken(ctx, req.GetNodeId(), ttl)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}

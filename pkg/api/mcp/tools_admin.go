@@ -540,7 +540,12 @@ func handleMintJoinToken(adminSvc service.AdminServicer) mcpserver.ToolHandlerFu
 		nodeID := mcp.ParseString(req, "node_id", "")
 		ttlSeconds := mcp.ParseInt(req, "ttl_seconds", 0)
 
-		token, expiresAt, err := minter.MintJoinToken(ctx, nodeID, time.Duration(ttlSeconds)*time.Second)
+		ttl, err := service.ParseJoinTokenTTLSeconds(int64(ttlSeconds))
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_mint_join_token", Err: err}
+		}
+
+		token, expiresAt, err := minter.MintJoinToken(ctx, nodeID, ttl)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_mint_join_token", Err: err}
 		}
