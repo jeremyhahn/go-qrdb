@@ -28,6 +28,7 @@ import (
 	"io"
 	"math/big"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -94,6 +95,17 @@ type SoftwareProvider struct {
 	mu   sync.RWMutex
 	key  *ecdsa.PrivateKey
 	cert *x509.Certificate
+
+	// gen counts Seal calls. Every barrierCheckedSigner captures the
+	// generation current when Signer handed it out; Seal bumps it, so a
+	// Signer obtained before a Seal call refuses on its next Sign even
+	// though the caller is still holding the same crypto.Signer value and
+	// the barrier itself may still be unsealed (Seal and barrier.IsSealed
+	// are two independent facts -- this provider's own key can be
+	// revoked without the barrier resealing). Lock-free: read on every
+	// Sign call, so a mutex here would serialize concurrent signing for
+	// no reason.
+	gen atomic.Uint64
 }
 
 // Compile-time interface check.
@@ -418,10 +430,30 @@ func (p *SoftwareProvider) load(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := checkKeyMatchesCert(key, cert); err != nil {
+		return err
+	}
 	p.mu.Lock()
 	p.key = key
 	p.cert = cert
 	p.mu.Unlock()
+	return nil
+}
+
+// checkKeyMatchesCert refuses with *KeyCertMismatchError when key's public
+// half does not match cert's -- a stored key and certificate that do not
+// belong together, which the atomic batch write (Initialize/AdoptIfAbsent)
+// should make impossible in normal operation, but a corrupted store, a
+// manually edited record, or a bug elsewhere is not a condition this
+// provider should ever sign under without noticing. Called by every path
+// that loads the key record and is about to trust it against a
+// (cached or freshly loaded) certificate: load, and signingKey's
+// cert-only-cached tail.
+func checkKeyMatchesCert(key *ecdsa.PrivateKey, cert *x509.Certificate) error {
+	certPub, ok := cert.PublicKey.(*ecdsa.PublicKey)
+	if !ok || !certPub.Equal(&key.PublicKey) {
+		return &KeyCertMismatchError{}
+	}
 	return nil
 }
 
@@ -459,26 +491,32 @@ func (p *SoftwareProvider) loadCertRecord(ctx context.Context) (*x509.Certificat
 	return cert, data, nil
 }
 
-// Seal destroys the in-memory key. Certificate, like cert.CertProvider's
-// CACertPEM, remains cached: it is public data.
+// Seal destroys the in-memory key and revokes every crypto.Signer Signer
+// has already handed out: it bumps gen, which every barrierCheckedSigner
+// compares its own captured generation against on each Sign call. A caller
+// holding a Signer obtained before this call cannot sign again, even
+// though it never goes back through this provider to find out. Certificate,
+// like cert.CertProvider's CACertPEM, remains cached: it is public data.
 func (p *SoftwareProvider) Seal() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.key = nil
+	p.mu.Unlock()
+	p.gen.Add(1)
 }
 
 // Signer returns a crypto.Signer backed by the cached key, auto-initializing
 // from the store first when the barrier is unsealed but nothing has been
 // loaded into memory yet (the ordinary case on every boot after the first,
 // or right after Seal). The returned Signer is opaque: it cannot be type-
-// asserted back to *ecdsa.PrivateKey, and it re-checks the barrier on every
-// Sign call, not only at the time Signer was fetched.
+// asserted back to *ecdsa.PrivateKey, re-checks the barrier on every Sign
+// call rather than only at the time Signer was fetched, and is revoked by
+// Seal -- see barrierCheckedSigner's own doc comment.
 func (p *SoftwareProvider) Signer(ctx context.Context) (crypto.Signer, error) {
 	key, err := p.signingKey(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &barrierCheckedSigner{key: key, barrier: p.barrier}, nil
+	return &barrierCheckedSigner{provider: p, key: key, gen: p.gen.Load()}, nil
 }
 
 // signingKey returns the cached private key, loading it from the store
@@ -515,6 +553,15 @@ func (p *SoftwareProvider) signingKey(ctx context.Context) (*ecdsa.PrivateKey, e
 	// AdoptIfAbsent, so this cannot loop.
 	key, err := p.loadKeyRecord(ctx)
 	if err != nil {
+		return nil, err
+	}
+	// p.cert is guaranteed non-nil here: every path that reaches this line
+	// already confirmed establishment (ensureEstablished above), which
+	// always caches the certificate even when it does not cache the key.
+	p.mu.RLock()
+	cert := p.cert
+	p.mu.RUnlock()
+	if err := checkKeyMatchesCert(key, cert); err != nil {
 		return nil, err
 	}
 	p.mu.Lock()
@@ -580,37 +627,62 @@ func isNotInitialized(err error) bool {
 	return errors.As(err, &notInit)
 }
 
-// barrierCheckedSigner is the crypto.Signer SoftwareProvider.Signer returns.
-// It holds the *ecdsa.PrivateKey privately -- there is no exported accessor,
-// and *ecdsa.PrivateKey itself does not implement crypto.Signer's Sign
-// method on a value a caller could extract and reuse outside this type --
-// so nothing outside this struct's own Sign method can ever read the key
-// bytes back out of a Signer a caller was handed. It also re-checks the
-// barrier on EVERY Sign, not only when Signer was fetched: a Signer obtained
-// before Seal must refuse once Seal (or an external reseal) has run, even
+// barrierCheckedSigner is the crypto.Signer SoftwareProvider.Signer
+// returns. It holds the *ecdsa.PrivateKey privately -- there is no
+// exported accessor, and its dynamic type is never *ecdsa.PrivateKey, so a
+// type assertion against the Signer a caller was handed cannot recover it,
+// and Public returns a deep copy rather than a pointer into the key, so a
+// caller cannot corrupt (or, via the embedded-struct layout
+// *ecdsa.PrivateKey.Public relies on, read back D from) the live key by
+// mutating what Public returned. That is the guarantee: ordinary use
+// through this type's exported surface cannot extract or corrupt the key.
+// It is NOT a guarantee against unsafe.Pointer or reflection reaching into
+// this struct's own fields from elsewhere in the SAME process -- no
+// exported Go API defends against that, and this type does not claim to.
+//
+// It also re-checks the barrier on EVERY Sign, not only when Signer was
+// fetched, and compares its own captured generation against the
+// provider's current one (bumped by Seal): a Signer obtained before
+// either Seal or an external reseal refuses once either has run, even
 // though the caller is still holding the same crypto.Signer value.
 type barrierCheckedSigner struct {
-	key     *ecdsa.PrivateKey
-	barrier seal.EncryptionBarrier
+	provider *SoftwareProvider
+	key      *ecdsa.PrivateKey
+	gen      uint64
 }
 
 // Compile-time interface check.
 var _ crypto.Signer = (*barrierCheckedSigner)(nil)
 
-// Public returns the signer's public key. Unlike Sign, this is not secret
-// and is served regardless of barrier state, mirroring Certificate's own
-// seal-independent contract for public data.
+// Public returns a deep copy of the signer's public key. Unlike Sign, this
+// is not secret and is served regardless of barrier or revocation state,
+// mirroring Certificate's own seal-independent contract for public data --
+// but it is a COPY, never a pointer into the live *ecdsa.PrivateKey: the
+// stdlib's own PrivateKey.Public returns `&priv.PublicKey`, a pointer into
+// the same struct the private scalar D lives in, so handing that out
+// directly would let a caller corrupt the signer's key by mutating the
+// "public" key it received, or walk the embedded-struct layout to reach D.
 func (s *barrierCheckedSigner) Public() crypto.PublicKey {
-	return s.key.Public()
+	pub := s.key.PublicKey
+	return &ecdsa.PublicKey{
+		Curve: pub.Curve,
+		X:     new(big.Int).Set(pub.X),
+		Y:     new(big.Int).Set(pub.Y),
+	}
 }
 
 // Sign produces a signature over digest, refusing with *BarrierSealedError
-// if the barrier has been sealed since this Signer was obtained. Every
-// other Provider implementation (Adapter, StaticProvider) is trusted to
-// enforce its own equivalent policy; this is SoftwareProvider's.
+// if the barrier has been sealed since this Signer was obtained, or
+// *SignerRevokedError if the provider's Seal has run since -- an
+// independent fact from the barrier's own sealed state. Every other
+// Provider implementation (Adapter, StaticProvider) is trusted to enforce
+// its own equivalent policy; this is SoftwareProvider's.
 func (s *barrierCheckedSigner) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
-	if s.barrier.IsSealed() {
+	if s.provider.barrier.IsSealed() {
 		return nil, &BarrierSealedError{}
+	}
+	if s.provider.gen.Load() != s.gen {
+		return nil, &SignerRevokedError{}
 	}
 	return s.key.Sign(rand, digest, opts)
 }

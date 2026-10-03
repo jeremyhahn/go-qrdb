@@ -135,6 +135,18 @@ func (e *NotInitializedError) Error() string {
 	return "cakey: provider has not been initialized"
 }
 
+// SignerRevokedError is returned by a crypto.Signer SoftwareProvider.Signer
+// issued, when SoftwareProvider.Seal has run since that specific Signer was
+// obtained. It is distinct from BarrierSealedError: Seal can run (an
+// explicit key revocation) while the barrier itself remains unsealed, and
+// the two are checked independently on every Sign call.
+type SignerRevokedError struct{}
+
+// Error returns a human-readable description.
+func (e *SignerRevokedError) Error() string {
+	return "cakey: signer was revoked (Seal was called after it was obtained)"
+}
+
 // NilProviderError is returned when a nil Provider is supplied to a
 // constructor that requires one (e.g. ceremony.NewProviderCA, an issuance
 // adapter). A nil seam is refused rather than silently falling back to a

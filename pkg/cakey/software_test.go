@@ -22,6 +22,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -591,6 +592,95 @@ func TestSoftwareProvider_LoadFailures(t *testing.T) {
 			t.Fatalf("Unseal = %v, want *MaterialCorruptError", err)
 		}
 	})
+
+	// TestSoftwareProvider_LoadFailures/key-cert mismatch is the
+	// owner-required proof that load (Unseal's own tail) refuses to trust
+	// a key and certificate that parse fine individually but do not
+	// belong together -- a key record from one pair beside a certificate
+	// record from another, which the atomic batch write should make
+	// impossible in normal operation but which this provider must not
+	// sign under if it ever happens anyway (a corrupted store, a manually
+	// edited record).
+	t.Run("stored key does not match stored certificate", func(t *testing.T) {
+		backing := newGuardedMemoryStore()
+		keyOne, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatalf("GenerateKey (one): %v", err)
+		}
+		keyOneDER, err := x509.MarshalECPrivateKey(keyOne)
+		if err != nil {
+			t.Fatalf("MarshalECPrivateKey: %v", err)
+		}
+		keyTwo, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatalf("GenerateKey (two): %v", err)
+		}
+		certTwo := selfSignedTestCert(t, keyTwo)
+
+		if err := backing.Put(context.Background(), "__sys:cluster_ca/material", keyOneDER); err != nil {
+			t.Fatalf("Put (material): %v", err)
+		}
+		if err := backing.Put(context.Background(), "__sys:cluster_ca/certificate", certTwo.Raw); err != nil {
+			t.Fatalf("Put (certificate): %v", err)
+		}
+
+		p := NewSoftwareProvider(backing, newMockBarrier(), "__sys:cluster_ca/", testSubject(), time.Hour)
+		var mismatchErr *KeyCertMismatchError
+		if err := p.Unseal(context.Background()); !errors.As(err, &mismatchErr) {
+			t.Fatalf("Unseal with a mismatched key/certificate pair = %v, want *KeyCertMismatchError", err)
+		}
+	})
+}
+
+// TestSoftwareProvider_SigningKeyTailDetectsMismatch proves the OTHER
+// path that loads the key record -- signingKey's cert-already-cached
+// tail, reached after AdoptIfAbsent's "lost the race, but it is ours"
+// branch caches only the certificate -- also refuses a key that does not
+// match the already-cached certificate, not only load's combined path.
+//
+// AdoptIfAbsent's lost-race branch caches p.cert WITHOUT ever touching
+// p.key, so signingKey's tail (not load's combined read) is reached only
+// through WithAdoptMaterial: an adopt candidate whose key and certificate
+// match EACH OTHER, but whose certificate happens to equal what is
+// already stored while the STORED key record belongs to a different
+// pair entirely -- the torn-store condition checkKeyMatchesCert exists
+// to catch at this second call site too.
+func TestSoftwareProvider_SigningKeyTailDetectsMismatch(t *testing.T) {
+	backing := newGuardedMemoryStore()
+	keyOne, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey (one): %v", err)
+	}
+	keyOneDER, err := x509.MarshalECPrivateKey(keyOne)
+	if err != nil {
+		t.Fatalf("MarshalECPrivateKey: %v", err)
+	}
+	keyTwo, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey (two): %v", err)
+	}
+	certTwo := selfSignedTestCert(t, keyTwo)
+	if err := backing.Put(context.Background(), "__sys:cluster_ca/material", keyOneDER); err != nil {
+		t.Fatalf("Put (material): %v", err)
+	}
+	if err := backing.Put(context.Background(), "__sys:cluster_ca/certificate", certTwo.Raw); err != nil {
+		t.Fatalf("Put (certificate): %v", err)
+	}
+
+	keyTwoDER, err := x509.MarshalECPrivateKey(keyTwo)
+	if err != nil {
+		t.Fatalf("MarshalECPrivateKey (two): %v", err)
+	}
+	keyTwoPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyTwoDER})
+	certTwoPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certTwo.Raw})
+
+	p := NewSoftwareProvider(backing, newMockBarrier(), "__sys:cluster_ca/", testSubject(), time.Hour,
+		WithAdoptMaterial(keyTwoPEM, certTwoPEM))
+
+	var mismatchErr *KeyCertMismatchError
+	if _, err := p.Signer(context.Background()); !errors.As(err, &mismatchErr) {
+		t.Fatalf("Signer with an adopted certificate matching the store and a mismatched stored key = %v, want *KeyCertMismatchError", err)
+	}
 }
 
 func TestSoftwareProvider_UnsealWhileSealedRefuses(t *testing.T) {
@@ -1264,5 +1354,103 @@ func TestSoftwareProvider_SignerObtainedBeforeSealRefusesAfter(t *testing.T) {
 	// seal-independent contract for public data.
 	if signer.Public() == nil {
 		t.Fatal("Public() returned nil after reseal; want the cached public key regardless of barrier state")
+	}
+}
+
+// TestSoftwareProvider_SealRevokesAnAlreadyIssuedSigner is the
+// owner-required proof, distinct from the barrier.seal() test above: a
+// Signer obtained before p.Seal() must refuse on Sign after Seal, even
+// though the BARRIER remains unsealed throughout -- Seal is this
+// provider's own key revocation, independent of the barrier's sealed
+// state, and the earlier test alone could not catch a signer that only
+// checked the barrier.
+func TestSoftwareProvider_SealRevokesAnAlreadyIssuedSigner(t *testing.T) {
+	store := newGuardedMemoryStore()
+	barrier := newMockBarrier()
+	p := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
+	if err := p.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	signer, err := p.Signer(context.Background())
+	if err != nil {
+		t.Fatalf("Signer: %v", err)
+	}
+	if _, err := signer.Sign(rand.Reader, make([]byte, 32), crypto.SHA256); err != nil {
+		t.Fatalf("Sign before Seal: %v", err)
+	}
+
+	p.Seal()
+	// The barrier itself is UNSEALED throughout this test -- only the
+	// provider's own key was revoked.
+	if barrier.IsSealed() {
+		t.Fatal("test barrier unexpectedly sealed; this test needs it unsealed to isolate Seal's own revocation")
+	}
+
+	var revokedErr *SignerRevokedError
+	if _, err := signer.Sign(rand.Reader, make([]byte, 32), crypto.SHA256); !errors.As(err, &revokedErr) {
+		t.Fatalf("Sign on a Signer obtained before p.Seal() = %v (%T), want *SignerRevokedError", err, err)
+	}
+
+	// A FRESH Signer obtained after Seal (and the automatic reload it
+	// triggers) must still work normally.
+	fresh, err := p.Signer(context.Background())
+	if err != nil {
+		t.Fatalf("Signer after Seal: %v", err)
+	}
+	if _, err := fresh.Sign(rand.Reader, make([]byte, 32), crypto.SHA256); err != nil {
+		t.Fatalf("Sign on a Signer obtained after Seal: %v", err)
+	}
+}
+
+// TestSoftwareProvider_PublicReturnsIndependentCopy proves Public does not
+// return a pointer into the live private key: mutating the returned
+// *ecdsa.PublicKey must not corrupt the signer's own key, and two calls to
+// Public must return distinct pointers.
+func TestSoftwareProvider_PublicReturnsIndependentCopy(t *testing.T) {
+	store := newGuardedMemoryStore()
+	barrier := newMockBarrier()
+	p := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
+	if err := p.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	signer, err := p.Signer(context.Background())
+	if err != nil {
+		t.Fatalf("Signer: %v", err)
+	}
+
+	pub1, ok := signer.Public().(*ecdsa.PublicKey)
+	if !ok {
+		t.Fatalf("Public() = %T, want *ecdsa.PublicKey", signer.Public())
+	}
+	pub2, ok := signer.Public().(*ecdsa.PublicKey)
+	if !ok {
+		t.Fatalf("second Public() = %T, want *ecdsa.PublicKey", signer.Public())
+	}
+	if pub1 == pub2 {
+		t.Fatal("two calls to Public() returned the SAME pointer; it is not an independent copy")
+	}
+
+	// Corrupt the returned public key. If Public() had returned a pointer
+	// into the live *ecdsa.PrivateKey (the stdlib's own
+	// PrivateKey.Public behavior: &priv.PublicKey), this would corrupt the
+	// signer's own key and break every subsequent signature.
+	origX := new(big.Int).Set(pub1.X)
+	pub1.X.SetInt64(0)
+
+	digest := sha256.Sum256([]byte("message to sign"))
+	sig, err := signer.Sign(rand.Reader, digest[:], crypto.SHA256)
+	if err != nil {
+		t.Fatalf("Sign after mutating a Public() result: %v", err)
+	}
+	pub3, ok := signer.Public().(*ecdsa.PublicKey)
+	if !ok {
+		t.Fatalf("Public() after mutation = %T, want *ecdsa.PublicKey", signer.Public())
+	}
+	if pub3.X.Cmp(origX) != 0 {
+		t.Fatal("mutating an earlier Public() result changed what Public() now returns; the key was corrupted")
+	}
+	if !ecdsa.VerifyASN1(pub3, digest[:], sig) {
+		t.Fatal("signature from the (allegedly uncorrupted) key does not verify against the current public key")
 	}
 }
