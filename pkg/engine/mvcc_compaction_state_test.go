@@ -197,4 +197,17 @@ func TestMVCCEngine_CompactionState_IsNotAUserKey(t *testing.T) {
 	if err != nil || len(kvs) != 0 {
 		t.Fatalf("a range over every user key = %v, %v", kvs, err)
 	}
+
+	// The record is at the documented raw key, spelled out here rather than
+	// built with compaction.RecordKey, so a change to the key's layout -- a
+	// change to what snapshots, backups and the node-local filter see --
+	// fails this test instead of moving with it.
+	raw, err := stg.Get([]byte("\x00qrdb.compaction/acme/app/"))
+	if err != nil || len(raw) == 0 {
+		t.Fatalf("point Get of \"\\x00qrdb.compaction/acme/app/\" = %q, %v; want the record", raw, err)
+	}
+	st, err := compaction.DecodeState(raw)
+	if err != nil || st.Policy == nil || st.Policy.RetainRevisions != 3 {
+		t.Fatalf("the record at the literal key = %+v, %v; want the revision policy", st, err)
+	}
 }
