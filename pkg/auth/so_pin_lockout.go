@@ -405,6 +405,14 @@ func (l *SOPINLockout) loadKnownGood(ctx context.Context, key string, state *soP
 // mergeKnownGood folds stored, an older set read from the store, under k's
 // own entries: the result keeps k's entries as the most recent, and the cap
 // drops the oldest. The caller holds k.mu.
+//
+// Under cap pressure -- more than SOPINMaxKnownGood distinct known-good
+// principals among the nodes sharing one record -- the stored entries are
+// the ones dropped first, because the record carries no times and this
+// lockout's own entries are the only ones it knows to be recent. A principal
+// known-good only through another node can therefore fall out of the set; it
+// is then held to the aggregate cap, never refused outright, until its next
+// successful check, which records it again.
 func (k *soPINKeyState) mergeKnownGood(stored []string) {
 	own := k.knownGood
 	k.knownGood = nil

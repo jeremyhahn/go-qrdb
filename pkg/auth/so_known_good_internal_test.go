@@ -107,14 +107,41 @@ func TestSOPINLockout_KnownGoodStoreFaultsNeverRefuseAGoodPIN(t *testing.T) {
 	}
 }
 
-// countingStore counts loads and fails every one.
-type countingStore struct{ loads int }
+// countingStore fails every load and counts the loads and the writes made
+// against it.
+type countingStore struct{ loads, writes int }
 
 func (c *countingStore) LoadKnownGood(context.Context, string) ([]string, error) {
 	c.loads++
 	return nil, errors.New("store down")
 }
-func (c *countingStore) SaveKnownGood(context.Context, string, []string) error { return nil }
+
+func (c *countingStore) SaveKnownGood(context.Context, string, []string) error {
+	c.writes++
+	return nil
+}
+
+// TestSOPINLockout_ASaveWhoseReadFailsWritesNothing: a save merges with what
+// the store holds, so when that read fails it writes nothing -- overwriting a
+// set it could not read might drop other nodes' entries -- and the principal
+// stays known-good in memory: a successful check is never undone by its
+// bookkeeping.
+func TestSOPINLockout_ASaveWhoseReadFailsWritesNothing(t *testing.T) {
+	store := &countingStore{}
+	l := NewSOPINLockout(nil, WithKnownGoodStore(store))
+	if err := l.Check(context.Background(), "node", "id:system/officer", func() error { return nil }, func(error) bool { return false }); err != nil {
+		t.Fatalf("a right PIN with a failing store = %v", err)
+	}
+	if store.writes != 0 {
+		t.Fatalf("writes = %d after a save whose read failed, want 0", store.writes)
+	}
+	if store.loads != 2 {
+		t.Fatalf("loads = %d, want 2 (the check's load and the save's read)", store.loads)
+	}
+	if !l.keys["node"].isKnownGood(knownGoodDigest("node", "id:system/officer")) {
+		t.Fatal("the principal is not known-good in memory after its save could not read the store")
+	}
+}
 
 // TestSOPINLockout_FailingLoadIsNotRetriedEveryCheck: a load that failed is
 // retried only after SOPINKnownGoodRetry, not on every check. The first

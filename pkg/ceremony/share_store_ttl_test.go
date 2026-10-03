@@ -86,10 +86,16 @@ func TestSealedShareStore_OverwriteDisarmsThePriorTimer(t *testing.T) {
 	assert.Equal(t, []byte(`share-v2`), claimed)
 }
 
+// expiryTestTTL is the TTL the real-timer expiry test runs with: long enough
+// that the entry is still held when the test inspects it straight after
+// Store -- a 1 ms TTL could fire first under load, and the test then saw no
+// entry at all -- and short enough to keep the test quick.
+const expiryTestTTL = 250 * time.Millisecond
+
 // TestSealedShareStore_ExpiryWipesAndReportsExpired drives the real timer: a
 // share nobody claims is gone at its deadline, and a late claim is told why.
 func TestSealedShareStore_ExpiryWipesAndReportsExpired(t *testing.T) {
-	store := newSealedShareStore(time.Millisecond)
+	store := newSealedShareStore(expiryTestTTL)
 	defer store.DestroyAll()
 
 	require.NoError(t, store.Store("alice", []byte(`share`)))
@@ -97,7 +103,7 @@ func TestSealedShareStore_ExpiryWipesAndReportsExpired(t *testing.T) {
 	require.NotNil(t, held)
 
 	require.Eventually(t, func() bool { return !store.Exists("alice") },
-		2*time.Second, time.Millisecond, "an unclaimed share must be wiped at its deadline")
+		20*expiryTestTTL, 5*time.Millisecond, "an unclaimed share must be wiped at its deadline")
 
 	assertDestroyed(t, held.secret, "expiry must destroy the enclave, not merely forget it")
 

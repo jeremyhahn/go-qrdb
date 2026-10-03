@@ -551,3 +551,34 @@ func TestSOPINLockout_AnUnusedKeyLeavesNoState(t *testing.T) {
 		t.Fatalf("Status of an absent key = %d, %v", failures, until)
 	}
 }
+
+// TestSOPINLockout_MergeUnderCapPressureKeepsOwnEntries pins the documented
+// cap-pressure behaviour: when the stored set and this lockout's own together
+// exceed SOPINMaxKnownGood, the merge keeps every one of this lockout's own
+// entries and drops stored ones, oldest first.
+func TestSOPINLockout_MergeUnderCapPressureKeepsOwnEntries(t *testing.T) {
+	k := &soPINKeyState{}
+	own := []string{"own-1", "own-2", "own-3"}
+	for _, d := range own {
+		k.addKnownGood(d)
+	}
+	var stored []string
+	for i := 0; i < SOPINMaxKnownGood; i++ {
+		stored = append(stored, "stored-"+string(rune('a'+i)))
+	}
+	k.mergeKnownGood(stored)
+	if len(k.knownGood) != SOPINMaxKnownGood {
+		t.Fatalf("merged set has %d entries, want the cap %d", len(k.knownGood), SOPINMaxKnownGood)
+	}
+	for _, d := range own {
+		if !k.isKnownGood(d) {
+			t.Fatalf("own entry %s dropped under cap pressure: %v", d, k.knownGood)
+		}
+	}
+	dropped := stored[:len(own)]
+	for _, d := range dropped {
+		if k.isKnownGood(d) {
+			t.Fatalf("the oldest stored entry %s survived while the set was over the cap: %v", d, k.knownGood)
+		}
+	}
+}

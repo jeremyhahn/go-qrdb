@@ -144,7 +144,11 @@ the last initial holder claims.
     shard -- delays only the check that asked, never another key's. A save
     reads the stored set and writes the union with its own, so nodes sharing
     the tenant record do not drop each other's entries; a save whose read
-    fails writes nothing. A load that fails is not retried for 30 s
+    fails writes nothing. The record carries no times, so when more than 8
+    principals are known-good across the nodes sharing it, a merge keeps the
+    saving node's own entries and drops the stored ones first: a principal
+    known-good only through another node can fall out, and is then held to
+    the cap (never refused outright) until its next successful check. A load that fails is not retried for 30 s
     (`auth.SOPINKnownGoodRetry`); until then the key's principals are simply
     held to the cap. Each key -- the node, each tenant -- has its own lock,
     held across that key's PIN verification so a failure is counted before
