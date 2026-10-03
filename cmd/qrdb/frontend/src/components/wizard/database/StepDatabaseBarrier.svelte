@@ -15,7 +15,7 @@
   limitations under the License.
 -->
 <script lang="ts">
-  import { dbWizardStore, unavailableSealModes } from "$stores/database-wizard.svelte.ts";
+  import { dbWizardStore } from "$stores/database-wizard.svelte.ts";
   import type { SealMode } from "@qrdb/sdk";
 
   let { onNext, onBack }: { onNext: () => void; onBack: () => void } = $props();
@@ -72,19 +72,13 @@
     },
   ];
 
-  /** The cards. A mode listed in unavailableSealModes is shown, disabled, with
-   * its reason as the tooltip. */
-  const sealModes = sealModeOptions.map((mode) => ({
-    ...mode,
-    unavailable: unavailableSealModes[mode.id],
-  }));
-
-  /** Validation: when Shamir is selected, sharesRequired must be <= sharesTotal, both > 0. */
+  /** Validation: when Shamir is selected, 2 <= sharesRequired <= sharesTotal,
+   * the bound the server's seal enforces (one share would be the key). Every
+   * mode is offered: whether the server can build the barrier is its answer to
+   * the create, not a list kept here. */
   let shamirValid = $derived(
     sealMode !== "shamir" ||
-      (sharesRequired > 0 &&
-        sharesTotal > 0 &&
-        sharesRequired <= sharesTotal),
+      (sharesRequired >= 2 && sharesRequired <= sharesTotal),
   );
 
   /** Validation error for the passphrase, when the passphrase mode is selected. */
@@ -109,8 +103,8 @@
   let validationError = $derived<string | null>(
     sealMode !== "shamir"
       ? null
-      : sharesRequired <= 0 || sharesTotal <= 0
-        ? "Both values must be greater than zero."
+      : sharesRequired < 2
+        ? "At least 2 shares must be required."
         : sharesRequired > sharesTotal
           ? "Shares required cannot exceed total shares."
           : null,
@@ -147,21 +141,15 @@
     <div>
       <p class="text-sm font-semibold text-base-content/80 mb-3">Per-Database Barrier</p>
       <div class="grid grid-cols-3 gap-4">
-        {#each sealModes as mode (mode.id)}
+        {#each sealModeOptions as mode (mode.id)}
           <button
             type="button"
             data-testid={`db-seal-mode-${mode.id}`}
-            disabled={mode.unavailable !== undefined}
-            title={mode.unavailable}
-            class="card border-2 p-4 text-left transition-colors
-              {mode.unavailable !== undefined
-                ? 'border-base-300 cursor-not-allowed opacity-50'
-                : sealMode === mode.id
-                  ? 'border-primary bg-primary/5 cursor-pointer'
-                  : 'border-base-300 hover:border-primary/50 cursor-pointer'}"
-            onclick={() => {
-              if (mode.unavailable === undefined) sealMode = mode.id;
-            }}
+            class="card border-2 p-4 text-left transition-colors cursor-pointer
+              {sealMode === mode.id
+                ? 'border-primary bg-primary/5'
+                : 'border-base-300 hover:border-primary/50'}"
+            onclick={() => (sealMode = mode.id)}
           >
             <div class="flex items-start gap-3">
               <input
@@ -170,19 +158,13 @@
                 class="radio radio-primary mt-1"
                 value={mode.id}
                 checked={sealMode === mode.id}
-                disabled={mode.unavailable !== undefined}
-                onchange={() => {
-                  if (mode.unavailable === undefined) sealMode = mode.id;
-                }}
+                onchange={() => (sealMode = mode.id)}
               />
               <div>
                 <span class="font-semibold">{mode.label}</span>
                 <p class="text-base-content/60 mt-1 text-sm">
                   {mode.description}
                 </p>
-                {#if mode.unavailable !== undefined}
-                  <p class="text-base-content/60 mt-1 text-xs italic">{mode.unavailable}</p>
-                {/if}
               </div>
             </div>
           </button>
@@ -252,9 +234,12 @@
             />
           </svg>
           <span class="text-sm">
-            The database encryption key is split into <strong>N</strong> shares.
-            Any <strong>M</strong> of those shares can reconstruct the key.
-            Distribute shares to different operators for operational security.
+            The database encryption key is split into <strong>N</strong> shares,
+            one per share holder, and any <strong>M</strong> of them unseal the
+            database together. The database is created sealed; you then enrol
+            its <strong>N</strong> holders here, each from a certificate request
+            they generated, and initialize. Holders claim their shares, and
+            later unseal, with their own keys and the qrdb CLI.
           </span>
         </div>
 
@@ -267,7 +252,7 @@
               id="db-shares-required"
               type="number"
               class="input input-bordered w-full"
-              min="1"
+              min="2"
               max="10"
               bind:value={sharesRequired}
             />
@@ -285,7 +270,7 @@
               id="db-shares-total"
               type="number"
               class="input input-bordered w-full"
-              min="1"
+              min="2"
               max="10"
               bind:value={sharesTotal}
             />

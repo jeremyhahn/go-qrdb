@@ -112,6 +112,13 @@ export interface MockState {
   /** Enrolled holders of each Shamir database barrier, keyed by database. */
   databaseOfficers?: Record<string, MockOfficerStatus[]>;
   /**
+   * Whether the server can build a per-database Shamir barrier: false models a
+   * node whose database barrier manager has no share-holder custody wired,
+   * which refuses a Shamir create with ShamirCustodyNotConfiguredError.
+   * Absent means it can.
+   */
+  databaseShamirCustody?: boolean;
+  /**
    * Per-tenant barrier state keyed by tenant ID (for the per-tenant unseal
    * tests). Tenants without an entry report "barrier not initialized" from
    * BarrierStatus / BarrierUnseal.
@@ -1669,7 +1676,13 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
         },
         DatabaseBinding: {
-          Create: async (req: { name: string; engine: string; backend: string; protocol?: { mysql: boolean; postgresql: boolean } }) => {
+          Create: async (req: {
+            name: string;
+            engine: string;
+            backend: string;
+            protocol?: { mysql: boolean; postgresql: boolean };
+            barrier?: { enabled: boolean; mode?: string; secret?: string; sharesRequired?: number; sharesTotal?: number };
+          }) => {
             maybeReject("DatabaseBinding.Create");
             const s = getState();
             const db: Record<string, unknown> = {
@@ -1678,6 +1691,28 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               backend: req.backend || "pebble",
               status: "open",
             };
+            // Mirrors DatabaseBarrierManager.EnsureBarrier for a Shamir
+            // barrier: refused, with nothing created, on a node with no
+            // share-holder custody, with a secret, or with an M-of-N the seal
+            // cannot split; otherwise registered sealed at its M-of-N until
+            // its holders' custody is initialized. No secret is stored.
+            if (req.barrier?.enabled === true && req.barrier.mode === "shamir") {
+              if (s.databaseShamirCustody === false) {
+                throw new Error(
+                  `database: no share-holder custody is configured for the shamir barrier of database "${req.name}"`,
+                );
+              }
+              if (req.barrier.secret) {
+                throw new Error(`database: a shamir barrier takes no secret: database "${req.name}"`);
+              }
+              const m = req.barrier.sharesRequired ?? 0;
+              const n = req.barrier.sharesTotal ?? 0;
+              if (m < 2 || m > n) {
+                throw new Error("quicraft/seal: shamir threshold must be >= 2 and <= total shares");
+              }
+              db.barrier = { enabled: true, mode: "shamir", sharesRequired: m, sharesTotal: n };
+              db.status = "sealed";
+            }
             // Preserve protocol field so DatabaseInfo.protocol is populated.
             if (req.protocol !== undefined) {
               db.protocol = { ...req.protocol };

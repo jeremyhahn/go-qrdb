@@ -16,8 +16,9 @@
 /**
  * Database wizard encryption barrier tests.
  *
- * Covers all storage + encryption combinations; Shamir is shown disabled until
- * per-database share holders ship.
+ * Covers the storage + none/passphrase encryption combinations. The Shamir
+ * barrier, its holders step and the server's refusal of it are covered in
+ * wizard-shamir.spec.ts.
  *
  * The wizard step sequence for standalone servers:
  *   Name → Storage → SQL → Barrier → Summary → Creating → sidebar
@@ -31,11 +32,6 @@ import {
   expect,
   secondLaunchEmbeddedState,
 } from "./fixtures/wails-mock.ts";
-import {
-  captureDatabaseCreates,
-  capturedDatabaseCreates,
-  databaseCreatesSoFar,
-} from "./fixtures/database-create-capture.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -205,64 +201,6 @@ test.describe("Wizard Encryption Combinations", () => {
     await expect(page.getByText("Passphrase", { exact: true })).toBeVisible();
 
     await createAndVerifyComplete(page, "enc-file-pass");
-  });
-
-
-  // Per-database Shamir is refused by the server until per-database share
-  // holders ship (database.UnsupportedBarrierStrategyError, 400), so the
-  // wizard does not offer it: the card is disabled and says why. A Shamir
-  // create request is never sent.
-  test("File + Shamir is not offered: the card is disabled and no Shamir create is sent", async ({ page }) => {
-    await captureDatabaseCreates(page);
-    await openCreateWizard(page);
-    await fillNameAndAdvance(page, "enc-file-shamir");
-    await selectStorageAndAdvance(page, "File");
-    await advanceThroughSQL(page);
-    await expect(page.getByRole("heading", { name: "Database Encryption Barrier" })).toBeVisible();
-
-    const shamir = page.getByTestId("db-seal-mode-shamir");
-    await expect(shamir).toBeDisabled();
-    await expect(shamir).toHaveAttribute("title", /per-database Shamir share holders/);
-    await shamir.click({ force: true });
-    await expect(page.locator("input[name='db-seal-mode'][value='shamir']")).not.toBeChecked();
-    await expect(page.locator("#db-shares-required")).toHaveCount(0);
-
-    // The wizard can still finish -- without a Shamir barrier.
-    await page.getByRole("button", { name: "Next" }).click();
-    await createAndVerifyComplete(page, "enc-file-shamir");
-    const creates = await capturedDatabaseCreates(page);
-    expect(creates).toHaveLength(1);
-    expect((creates[0] as { barrier?: { mode?: string } }).barrier?.mode).not.toBe("shamir");
-  });
-
-  // The create step refuses a seal mode the wizard cannot offer even when the
-  // barrier step lets one through. The barrier step cannot be made to, so the
-  // spec stands in for that regression by writing the store directly -- the
-  // same module instance the app runs -- after a valid barrier step.
-  test("the create step refuses an unavailable seal mode the barrier step let through", async ({ page }) => {
-    await captureDatabaseCreates(page);
-    await navigateToSummaryWithConfig(page, "enc-backstop", "File", "Passphrase");
-
-    await page.evaluate(async () => {
-      const storeModule = "/src/stores/database-wizard.svelte.ts";
-      const { dbWizardStore } = await import(/* @vite-ignore */ storeModule);
-      dbWizardStore.sealMode = "shamir";
-      dbWizardStore.sealConfig = { mode: "shamir", sharesRequired: 2, sharesTotal: 3 };
-    });
-
-    await page.locator("main").getByRole("button", { name: "Create Database" }).click();
-    await expect(
-      page.getByText(/The shamir barrier is not available: Available once per-database Shamir share holders ship\./),
-    ).toBeVisible({ timeout: INIT_TIMEOUT });
-    expect(await databaseCreatesSoFar(page)).toHaveLength(0);
-
-    // The refusal still takes the passphrase out of the store.
-    const left = await page.evaluate(async () => {
-      const storeModule = "/src/stores/database-wizard.svelte.ts";
-      const { dbWizardStore } = await import(/* @vite-ignore */ storeModule);
-      return dbWizardStore.barrierPassphrase as string;
-    });
-    expect(left).toBe("");
   });
 });
 

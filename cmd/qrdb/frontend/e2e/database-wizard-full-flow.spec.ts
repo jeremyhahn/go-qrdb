@@ -21,9 +21,9 @@
  *   - The Barrier (step 4) Next button is specifically reachable without
  *     any scroll/layout clipping.
  *   - Both standalone and raft mock server modes are covered.
- *   - The none and passphrase barrier modes allow the user to advance past
- *     the barrier step; Shamir is shown disabled until per-database share
- *     holders ship.
+ *   - The none, passphrase and Shamir barrier modes allow the user to advance
+ *     past the barrier step (wizard-shamir.spec.ts drives the Shamir create
+ *     and its holders step).
  */
 
 import {
@@ -289,13 +289,16 @@ test.describe("Database Wizard - Barrier Step Modes", () => {
     ).toBeVisible({ timeout: STEP_TIMEOUT });
   });
 
-  test("barrier mode: shamir — unavailable until per-database share holders ship", async ({ page }) => {
+  test("barrier mode: shamir — a valid M-of-N advances to Review", async ({ page }) => {
     await navigateToBarrier(page, "barrier-shamir-db");
 
-    const shamir = page.getByTestId("db-seal-mode-shamir");
-    await expect(shamir).toBeDisabled();
-    await expect(shamir).toHaveAttribute("title", /per-database Shamir share holders/);
-    await expect(page.locator("#db-shares-required")).toHaveCount(0);
+    await page.getByTestId("db-seal-mode-shamir").click();
+    await page.locator("#db-shares-required").fill("2");
+    await page.locator("#db-shares-total").fill("3");
+    await page.locator("main").getByRole("button", { name: "Next" }).click();
+    await expect(
+      page.getByRole("heading", { name: "Review Configuration" }),
+    ).toBeVisible({ timeout: STEP_TIMEOUT });
   });
 
   test("barrier step: Next button is within viewport without scrolling", async ({ page }) => {

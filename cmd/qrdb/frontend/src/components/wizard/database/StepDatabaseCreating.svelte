@@ -17,12 +17,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import type { Client } from "@qrdb/sdk";
-  import {
-    dbWizardStore,
-    takeBarrierPassphrase,
-    unavailableSealModes,
-    SealModeUnavailableError,
-  } from "$stores/database-wizard.svelte.ts";
+  import { dbWizardStore, takeBarrierPassphrase } from "$stores/database-wizard.svelte.ts";
 
   let {
     client,
@@ -59,7 +54,10 @@
     ];
     if (dbWizardStore.barrierEnabled) {
       steps.push({
-        label: "Configuring encryption barrier...",
+        label:
+          dbWizardStore.sealMode === "shamir"
+            ? "Registering the sealed Shamir barrier..."
+            : "Configuring encryption barrier...",
         status: "pending",
       });
     }
@@ -118,16 +116,12 @@
     // Phase 1: Save configuration.
     advancePhase(phaseIdx);
     // Taken (and cleared from the store) before anything can fail, so the
-    // passphrase outlives neither a successful nor a failed request.
+    // passphrase outlives neither a successful nor a failed request. A Shamir
+    // barrier has none: the database is created sealed and its holders'
+    // custody, initialized in the holders step, provides its key. Whether the
+    // server can build the barrier at all is its answer to this request; the
+    // wizard withholds no mode itself.
     const barrierSecret = takeBarrierPassphrase();
-    // Backstop for the barrier step: a seal mode the wizard cannot offer is
-    // refused here, before any request is built or sent.
-    const unavailable = dbWizardStore.barrierEnabled
-      ? unavailableSealModes[dbWizardStore.sealMode]
-      : undefined;
-    if (unavailable !== undefined) {
-      throw new SealModeUnavailableError(dbWizardStore.sealMode, unavailable);
-    }
     const req = {
       name: dbWizardStore.name,
       engine: dbWizardStore.engine,
@@ -175,8 +169,9 @@
             },
           }
         : {}),
-      // The barrier is enabled at create and initialised with the passphrase
-      // collected in the barrier step.
+      // The barrier is enabled at create: a passphrase barrier is initialised
+      // with the passphrase collected in the barrier step, a Shamir barrier is
+      // registered sealed at its M-of-N.
       ...(dbWizardStore.barrierEnabled
         ? {
             barrier: {

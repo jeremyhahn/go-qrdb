@@ -38,6 +38,7 @@ export type DatabaseWizardStep =
     | 'barrier'
     | 'summary'
     | 'creating'
+    | 'holders'
     | 'complete';
 
 /** Whether the database is embedded locally or connects to a remote server. */
@@ -145,6 +146,7 @@ const standaloneSteps: readonly DatabaseWizardStep[] = [
     'barrier',
     'summary',
     'creating',
+    'holders',
     'complete',
 ] as const;
 
@@ -157,16 +159,27 @@ const raftSteps: readonly DatabaseWizardStep[] = [
     'barrier',
     'summary',
     'creating',
+    'holders',
     'complete',
 ] as const;
 
 /**
+ * Whether the wizard is creating a Shamir database, whose share holders the
+ * `holders` step enrols after the create.
+ */
+export function isShamirDatabase(): boolean {
+    return dbWizardStore.barrierEnabled && dbWizardStore.sealMode === 'shamir';
+}
+
+/**
  * Returns the active step sequence based on the server's topology. Standalone
  * servers skip the Raft step entirely. The server mode is stored on the
- * wizard state itself (set by MainApp before opening the wizard).
+ * wizard state itself (set by MainApp before opening the wizard). The
+ * `holders` step is part of the sequence only for a Shamir database.
  */
 export function activeSteps(): readonly DatabaseWizardStep[] {
-    return dbWizardStore.serverMode === 'raft' ? raftSteps : standaloneSteps;
+    const steps = dbWizardStore.serverMode === 'raft' ? raftSteps : standaloneSteps;
+    return isShamirDatabase() ? steps : steps.filter((s) => s !== 'holders');
 }
 
 // ---------------------------------------------------------------------------
@@ -290,31 +303,4 @@ export function takeBarrierPassphrase(): string {
     const passphrase = dbWizardStore.barrierPassphrase;
     dbWizardStore.barrierPassphrase = '';
     return passphrase;
-}
-
-/**
- * Per-database seal modes the wizard cannot offer yet, each with the reason it
- * shows. A mode absent from the map is available. The barrier step disables
- * these cards and the create step refuses them, so both read this one map.
- * Shamir waits for per-database share holders: the server refuses a
- * per-database Shamir barrier until they ship.
- */
-export const unavailableSealModes: Readonly<Partial<Record<SealMode, string>>> = {
-    shamir: 'Available once per-database Shamir share holders ship.',
-};
-
-/**
- * SealModeUnavailableError is the create step's refusal of a seal mode listed
- * in unavailableSealModes. It is a backstop: the barrier step never lets such
- * a mode through, and this keeps a regression there from sending a request
- * the server can only refuse.
- */
-export class SealModeUnavailableError extends Error {
-    readonly mode: SealMode;
-
-    constructor(mode: SealMode, reason: string) {
-        super(`The ${mode} barrier is not available: ${reason}`);
-        this.name = 'SealModeUnavailableError';
-        this.mode = mode;
-    }
 }

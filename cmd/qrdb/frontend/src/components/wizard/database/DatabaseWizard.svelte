@@ -36,6 +36,7 @@
   import StepDatabaseBarrier from "./StepDatabaseBarrier.svelte";
   import StepDatabaseSummary from "./StepDatabaseSummary.svelte";
   import StepDatabaseCreating from "./StepDatabaseCreating.svelte";
+  import StepDatabaseHolders from "./StepDatabaseHolders.svelte";
 
   let {
     client,
@@ -62,6 +63,7 @@
     barrier: "Barrier",
     summary: "Summary",
     creating: "Create",
+    holders: "Holders",
     complete: "Complete",
   } as const;
 
@@ -99,6 +101,21 @@
 
   function handleCreatingComplete(): void {
     nextStep();
+    // A Shamir database goes on to enrol its holders; any other is done.
+    if (dbWizardStore.currentStep !== "holders") {
+      onComplete();
+    }
+  }
+
+  function handleHoldersDone(): void {
+    nextStep();
+    onComplete();
+  }
+
+  // The database exists either way: closing before Initialize leaves it
+  // sealed, and the caller refreshes its databases and opens it as for a
+  // completed create.
+  function handleHoldersLeave(): void {
     onComplete();
   }
 </script>
@@ -139,6 +156,8 @@
           <StepDatabaseSummary onNext={handleNext} onBack={handleBack} />
         {:else if dbWizardStore.currentStep === "creating"}
           <StepDatabaseCreating {client} onComplete={handleCreatingComplete} />
+        {:else if dbWizardStore.currentStep === "holders"}
+          <StepDatabaseHolders {client} onDone={handleHoldersDone} onLeave={handleHoldersLeave} />
         {:else if dbWizardStore.currentStep === "complete"}
           <div class="flex flex-col items-center gap-4 py-8">
             <svg

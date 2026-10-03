@@ -48,9 +48,9 @@ enrol its N holders: for each, a username, a role and the certificate request
 the holder generated on their own machine. The wizard shows each holder's
 issued certificate for you to pass on, and once all N are enrolled,
 **Initialize** splits the key and seals one envelope to each holder. Holders
-then claim their envelopes, and later unseal the database, from the qrdb CLI
-or the desktop app with their own keys; the wizard never handles a share or
-a holder's key. If the server cannot build a Shamir barrier -- it has no
+then claim their envelopes, and later unseal the database, on their own
+machines with their own keys and the qrdb CLI; the wizard never handles a
+share or a holder's key. If the server cannot build a Shamir barrier -- it has no
 share-holder custody configured -- the create step shows the server's reason
 and no database is created. Closing the wizard before **Initialize** leaves
 the database sealed until you finish enrolling its holders with the CLI.
