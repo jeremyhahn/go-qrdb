@@ -124,6 +124,9 @@ func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRI
 	if t.ceremonySvc == nil {
 		return nil, &NilServiceError{Service: "CeremonyServicer"}
 	}
+	if req == nil {
+		return nil, &InvalidRequestError{Method: "CeremonySignCSR"}
+	}
 	result, err := t.ceremonySvc.CeremonySignCSR(ctx, req.Username, req.SOPin, req.CSRPEM, req.Role)
 	if err != nil {
 		return nil, delayed("CeremonySignCSR", err)

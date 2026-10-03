@@ -163,3 +163,102 @@ func TestNewServer_AuditTrailFailsClosed(t *testing.T) {
 		t.Fatalf("the absolute trail was not opened: %v", err)
 	}
 }
+
+// A start refused for a wrong passphrase leaves the refused unseal on the
+// trail, so a guess at the passphrase is on the record, and it releases the
+// trail and the seal store: the right passphrase then starts the server.
+func TestNewServer_AuditTrailRecordsARefusedUnseal(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	cfg := func(passphrase string) *ServerConfig {
+		return &ServerConfig{
+			Backend:    database.BackendPebble,
+			DataDir:    dataDir,
+			Barrier:    &BarrierConfig{Strategy: seal.StrategyPassphrase, AutoUnseal: true, Passphrase: barrierPassphrase(t, passphrase)},
+			AuditTrail: audit.DefaultTrailFile,
+		}
+	}
+	srv, err := NewServer(ctx, cfg("the-right-passphrase"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	const guess = "a-wrong-passphrase-guess"
+	_, err = NewServer(ctx, cfg(guess))
+	var unsealErr *BarrierUnsealError
+	if !errors.As(err, &unsealErr) {
+		t.Fatalf("a start with the wrong passphrase = %v (%T), want BarrierUnsealError", err, err)
+	}
+	path := filepath.Join(dataDir, audit.DefaultTrailFile)
+	refused := false
+	for _, ev := range readServerTrail(t, path) {
+		if ev.Resource == seal.BarrierAuditResource && ev.Action == "unseal" && ev.Outcome != audit.OutcomeSuccess {
+			refused = true
+		}
+	}
+	if !refused {
+		t.Fatal("the refused unseal is not on the trail")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), guess) {
+		t.Fatal("the guessed passphrase reached the trail")
+	}
+
+	srv, err = NewServer(ctx, cfg("the-right-passphrase"))
+	if err != nil {
+		t.Fatalf("the right passphrase after a refused start = %v", err)
+	}
+	if err := srv.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A start that fails once the barrier is up -- here the data plane cannot
+// be opened -- closes the seal store and the trail it opened before failing,
+// so the next start on the same data directory opens both again.
+func TestNewServer_StorageFailureReleasesTheSealStore(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	cfg := &ServerConfig{
+		Backend:    database.BackendPebble,
+		DataDir:    dataDir,
+		Barrier:    &BarrierConfig{Strategy: seal.StrategyPassphrase, AutoUnseal: true, Passphrase: barrierPassphrase(t, "storage-failure-passphrase")},
+		AuditTrail: audit.DefaultTrailFile,
+	}
+	// The data plane's directory is a regular file: Pebble cannot open it.
+	blocker := filepath.Join(dataDir, "pebble")
+	if err := os.WriteFile(blocker, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := NewServer(ctx, cfg)
+	var storageErr *StorageCreateError
+	if !errors.As(err, &storageErr) || storageErr.Backend != database.BackendPebble {
+		t.Fatalf("a start whose data plane cannot open = %v (%T), want StorageCreateError", err, err)
+	}
+	seen := false
+	for _, ev := range readServerTrail(t, filepath.Join(dataDir, audit.DefaultTrailFile)) {
+		if ev.Resource == seal.BarrierAuditResource && ev.Action == "initialize" && ev.Outcome == audit.OutcomeSuccess {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Fatal("the barrier's initialize before the failure is not on the trail")
+	}
+
+	if err := os.Remove(blocker); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := NewServer(ctx, cfg)
+	if err != nil {
+		t.Fatalf("a start after the failed one = %v: the seal store was not released", err)
+	}
+	if err := srv.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+}

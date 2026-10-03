@@ -98,6 +98,10 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **The embedded transport's `CeremonySignCSR` refuses a nil request** with
+  `*embedded.InvalidRequestError`, as `CeremonyInitialize` does, instead of
+  dereferencing it -- directly, and through `Request`, where a typed nil
+  passed the request type check.
 - **A symbolic link can no longer carry the compliance trail out of its data
   directory.** The trail followed links: one at the trail's name, or at a
   directory on its path, sent the desktop's, the SDK embedded server's and
