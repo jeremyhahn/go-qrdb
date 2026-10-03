@@ -1022,10 +1022,18 @@ func runStart(f *startFlags) (err error) {
 	// the per-protocol flag/YAML precedence resolved in resolveStartFlags,
 	// makes the refusal reach every invocation shape rather than only the
 	// --config one.
-	if capCheckCfg, cerr := buildServerConfig(f); cerr == nil {
-		if err := capCheckCfg.ValidateCapabilities(); err != nil {
-			return err
-		}
+	//
+	// buildServerConfig failing here is itself reported, not swallowed: its
+	// one failure mode (MissingBindHostError) is a real misconfiguration
+	// that deserves to surface at the earliest point it is detected, not be
+	// silently skipped past so the capability gate quietly lets the request
+	// through unexamined and some later step fails on it indirectly.
+	capCheckCfg, cerr := buildServerConfig(f)
+	if cerr != nil {
+		return cerr
+	}
+	if err := capCheckCfg.ValidateCapabilities(); err != nil {
+		return err
 	}
 
 	budgetMiB := f.secureMemoryBudgetMiB
