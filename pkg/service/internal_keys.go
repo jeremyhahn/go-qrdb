@@ -239,9 +239,15 @@ func SkipInternalKeyFilter(prefix string) bool {
 // must therefore apply the guard itself, to the keys and the requested prefix
 // as the CALLER wrote them — which it can only do by calling the canonical
 // filter rather than reimplementing it.
+// The owner-enumerates escape is not unconditional: a hard-confined key
+// (see hard_confined_keys.go) is stripped even when the requested prefix
+// would otherwise see everything under "__sys:" unfiltered, because that
+// escape exists for a subsystem reading its OWN bookkeeping back, and
+// "__sys:cluster_ca/" is secret material no data-plane caller -- including
+// one naming "__sys:" outright -- has a legitimate reason to receive.
 func FilterInternalKeys(keys []string, prefix string) []string {
 	if SkipInternalKeyFilter(prefix) {
-		return keys
+		return filterHardConfinedKeys(keys)
 	}
 	filtered := make([]string, 0, len(keys))
 	for _, k := range keys {
@@ -258,7 +264,7 @@ func FilterInternalKeys(keys []string, prefix string) []string {
 // reason given on FilterInternalKeys.
 func FilterInternalMap(data map[string][]byte, prefix string) map[string][]byte {
 	if SkipInternalKeyFilter(prefix) {
-		return data
+		return filterHardConfinedMap(data)
 	}
 	for k := range data {
 		if IsInternalKey(k) {

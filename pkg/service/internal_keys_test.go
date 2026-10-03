@@ -264,3 +264,43 @@ func TestFilterInternalMap_PassesTheOwningNamespaceThrough(t *testing.T) {
 		t.Fatalf("FilterInternalMap over the owning prefix = %v, want the entry back", got)
 	}
 }
+
+// TestFilterInternalKeys_StripsTheHardConfinedKeyEvenUnderTheOwnerEscape
+// proves the owner-enumerates escape InternalKeyPrefixSystem grants to
+// "__sys:" is not unconditional (go-qrdb#555): a caller naming "__sys:"
+// outright -- or the system namespace's own subsystems reading their
+// bookkeeping back the same way -- must still never see
+// "__sys:cluster_ca/..." in the result, because that escape exists for a
+// subsystem reading its OWN records, not for the cluster CA's private key
+// material.
+func TestFilterInternalKeys_StripsTheHardConfinedKeyEvenUnderTheOwnerEscape(t *testing.T) {
+	keys := []string{
+		InternalKeyPrefixSystem + "roles/admin",
+		InternalKeyPrefixSystem + "cluster_ca/material",
+		InternalKeyPrefixSystem + "cluster_ca/certificate",
+	}
+	got := FilterInternalKeys(keys, InternalKeyPrefixSystem)
+	want := []string{InternalKeyPrefixSystem + "roles/admin"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("FilterInternalKeys(_, %q) = %q, want %q", InternalKeyPrefixSystem, got, want)
+	}
+}
+
+// TestFilterInternalMap_StripsTheHardConfinedKeyEvenUnderTheOwnerEscape is
+// FilterInternalMap's counterpart to the test above.
+func TestFilterInternalMap_StripsTheHardConfinedKeyEvenUnderTheOwnerEscape(t *testing.T) {
+	data := map[string][]byte{
+		InternalKeyPrefixSystem + "roles/admin":         []byte("1"),
+		InternalKeyPrefixSystem + "cluster_ca/material": []byte("the private key"),
+	}
+	got := FilterInternalMap(data, InternalKeyPrefixSystem)
+	if len(got) != 1 {
+		t.Fatalf("FilterInternalMap(_, %q) = %v, want only the non-confined key", InternalKeyPrefixSystem, got)
+	}
+	if _, ok := got[InternalKeyPrefixSystem+"roles/admin"]; !ok {
+		t.Fatalf("FilterInternalMap dropped the legitimate owner-escaped key: %v", got)
+	}
+	if _, ok := got[InternalKeyPrefixSystem+"cluster_ca/material"]; ok {
+		t.Fatal("FilterInternalMap did not strip the hard-confined key despite the owner escape")
+	}
+}

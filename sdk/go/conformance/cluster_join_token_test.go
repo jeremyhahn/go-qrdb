@@ -16,6 +16,7 @@ package conformance
 
 import (
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -223,6 +224,16 @@ func bootJoinTokenCellWithExplicitGrant(t *testing.T, tk transportKind, callerTe
 		})
 		if err != nil {
 			t.Fatalf("CreateRole(explicit-grant, %s): %v", callerTenant, err)
+		}
+		// The whole point of this role is the grant it carries: confirm
+		// CreateRole actually stored cluster:join_token rather than
+		// silently dropping or substituting it, which would make the
+		// refusal below prove nothing -- a role that never held the
+		// permission is refused for a reason that has nothing to do with
+		// ScopeCross.
+		if !slices.Contains(created.Permissions, permission.ClusterJoinToken) {
+			t.Fatalf("CreateRole(explicit-grant, %s).Permissions = %v, want it to contain %s",
+				callerTenant, created.Permissions, permission.ClusterJoinToken)
 		}
 
 		if _, err := svc.User.CreateUser(ctx, &user.CreateUserRequest{
