@@ -16,11 +16,13 @@ package service
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -29,6 +31,7 @@ import (
 // node's (inactive) cluster sealer with its stream registry.
 type wholeNodeFixture struct {
 	reg      *seal.BarrierRegistry
+	dbs      *database.Manager
 	deferred *clusterseal.Deferred
 	svc      BarrierServicer
 }
@@ -64,9 +67,10 @@ func newWholeNodeFixture(t *testing.T) *wholeNodeFixture {
 	if err := reg.InitializeTenant(ctx, "self", seal.MustCredentials([]byte("self-pass"))); err != nil {
 		t.Fatal(err)
 	}
+	dbs := newPassphraseDatabases(t, sys)
 	deferred := clusterseal.NewDeferred()
-	svc := NewBarrierService(sys, WithClusterSealer(deferred), WithBarrierRegistry(reg))
-	return &wholeNodeFixture{reg: reg, deferred: deferred, svc: svc}
+	svc := NewBarrierService(sys, WithClusterSealer(deferred), WithBarrierRegistry(reg), WithBarrierDatabases(dbs))
+	return &wholeNodeFixture{reg: reg, dbs: dbs, deferred: deferred, svc: svc}
 }
 
 // requireAllSealed fails unless the node barrier and every tenant barrier are
@@ -91,6 +95,9 @@ func (f *wholeNodeFixture) requireAllSealed(t *testing.T) {
 		if !tb.Barrier().EpochBarrier().IsSealed() {
 			t.Fatalf("tenant %s still holds its keys in memory after the system seal", id)
 		}
+	}
+	if !databaseKeyWiped(t, f.dbs, "secure") {
+		t.Fatal("the database still holds its key in memory after the system seal")
 	}
 }
 
@@ -136,4 +143,45 @@ func TestBarrierSeal_SealsTheWholeNode(t *testing.T) {
 	if !self.IsSealed() {
 		t.Fatal("the self-managed tenant was unsealed by the system unseal")
 	}
+	if !databaseKeyWiped(t, f.dbs, "secure") {
+		t.Fatal("the passphrase database was unsealed by the system unseal")
+	}
+	if err := f.dbs.BarrierManager().UnsealDatabase(ctx, "secure", seal.MustCredentials([]byte("db-pass"))); err != nil {
+		t.Fatalf("owner unseal of the database after the node unseal: %v", err)
+	}
+	if databaseKeyWiped(t, f.dbs, "secure") {
+		t.Fatal("the database stayed sealed after its owner's unseal")
+	}
 }
+
+// TestSealWholeNode_SealsEveryPartAndJoinsErrors: the one whole-node seal
+// seals the databases and the system barrier when there is no registry, and
+// runs every part when one fails.
+func TestSealWholeNode_SealsEveryPartAndJoinsErrors(t *testing.T) {
+	f := newWholeNodeFixture(t)
+	sys := f.reg.SystemBarrier()
+	if err := SealWholeNode(nil, sys, f.dbs); err != nil {
+		t.Fatalf("SealWholeNode: %v", err)
+	}
+	if !sys.IsSealed() || !databaseKeyWiped(t, f.dbs, "secure") {
+		t.Fatal("the system barrier or the database kept its key")
+	}
+
+	boom := errors.New("boom")
+	g := newWholeNodeFixture(t)
+	err := SealWholeNode(g.reg, nil, failingDatabases{err: boom})
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want the database half's error", err)
+	}
+	if !g.reg.SystemBarrier().IsSealed() {
+		t.Fatal("a failing database half stopped the rest of the node seal")
+	}
+	if err := SealWholeNode(nil, nil, nil); err != nil {
+		t.Fatalf("SealWholeNode with nothing to seal: %v", err)
+	}
+}
+
+// failingDatabases is a database half whose seal fails.
+type failingDatabases struct{ err error }
+
+func (f failingDatabases) SealBarrierDatabases() error { return f.err }

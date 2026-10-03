@@ -21,6 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
@@ -138,6 +139,21 @@ func (m *DatabaseBarrierManager) Holders(dbName string) (*ceremony.ScopedCeremon
 		return nil, nil, &NotShamirBarrierError{Name: dbName}
 	}
 	return svc, tb.Barrier(), nil
+}
+
+// SubmitHolderShare counts one authenticated holder's share toward dbName's
+// Shamir barrier round; a completed seal round runs seal
+// (seal.BarrierRegistry.SubmitTenantHolderShare). An unseal submission is
+// ordered against the node seal, and an unseal it completes clears the
+// database's pending node unseal.
+func (m *DatabaseBarrierManager) SubmitHolderShare(ctx context.Context, dbName string, sub *seal.HolderSubmission, sealFn func() error) (*seal.QuorumOutcome, error) {
+	if _, ok := m.holders.Get(dbName); !ok {
+		if sub != nil {
+			secure.Wipe(sub.Share)
+		}
+		return nil, &NotShamirBarrierError{Name: dbName}
+	}
+	return m.registry.SubmitTenantHolderShare(ctx, dbName, sub, sealFn)
 }
 
 // InitializeShamir initializes dbName's Shamir barrier: it generates the root

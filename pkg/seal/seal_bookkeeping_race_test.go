@@ -200,3 +200,23 @@ func TestUnsealTenant_ClearsItsPendingNodeUnseal(t *testing.T) {
 		t.Fatalf("PendingTenantUnseals = %v after the tenant's own unseal, want none", pending)
 	}
 }
+
+// TestSealTenants_LeavesTheSystemBarrierAndRecordsSystemManaged: SealTenants
+// is SealAll without the system barrier -- the half a registry that shares
+// another's system barrier contributes -- with the same bookkeeping.
+func TestSealTenants_LeavesTheSystemBarrierAndRecordsSystemManaged(t *testing.T) {
+	reg := registryWithBothTenantKinds(t)
+	if err := reg.SealTenants(); err != nil {
+		t.Fatal(err)
+	}
+	if reg.SystemBarrier().IsSealed() {
+		t.Fatal("SealTenants sealed the system barrier")
+	}
+	if !tenantSealed(t, reg, "auto") || !tenantSealed(t, reg, "self") {
+		t.Fatal("a tenant is unsealed after SealTenants")
+	}
+	pending := reg.PendingTenantUnseals()
+	if _, ok := pending["auto"]; !ok || len(pending) != 1 {
+		t.Fatalf("PendingTenantUnseals = %v, want only auto", pending)
+	}
+}

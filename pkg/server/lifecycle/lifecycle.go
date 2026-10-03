@@ -54,6 +54,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	vectorstorage "github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
@@ -522,6 +523,19 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 			return nil, &DatabaseBarrierManagerError{Err: err}
 		}
 		dbManager.SetBarrierManager(bm)
+	}
+	// The node unseal brings back only the system-managed databases the node
+	// seal sealed, and never one whose own cluster seal record refuses it --
+	// or that this node cannot name an owner for.
+	if bm := dbManager.BarrierManager(); bm != nil && infra.ClusterSealer != nil {
+		sealer := infra.ClusterSealer
+		bm.SetUnsealGate(func(name string) bool {
+			db, err := dbManager.Get(name)
+			if err != nil {
+				return true
+			}
+			return sealer.Refuses(clusterseal.DatabaseBarrier(tenantid.Normalize(db.TenantID()), name))
+		})
 	}
 
 	// Replicated placement table (Phase 4c) over the shared system KV, plus the

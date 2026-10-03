@@ -303,20 +303,33 @@ services and to the server, which wraps the node's sealed-window probe with
 - **Sealing the node barrier seals the whole node.** Every system-barrier seal
   -- `BarrierSeal`, a completed share-holder seal quorum (`service.WithBarrierRegistry`
   wires the registry into `BarrierService`), and `SealEnforcer.SealNode` for a
-  cluster record -- goes through `BarrierRegistry.SealAll`: every tenant
-  barrier, then the node barrier, then every stream ends. The registry is an
-  `OnUnsealed` observer of the node barrier and unseals, when it unseals, only
-  the system-managed (`StrategySystemBarrier`) tenants the last `SealAll`
-  moved from unsealed to sealed. `SealTenant` drops a tenant from that set, and
+  cluster record -- and the node's own shutdown and failed-boot paths, go
+  through the one whole-node seal, `service.SealWholeNode`: every database
+  barrier (`database.Manager.SealBarrierDatabases`, which seals the database
+  barrier manager's own registry through `DatabaseBarrierManager.SealAll` --
+  `BarrierRegistry.SealTenants` -- and marks the databases sealed), then every
+  tenant barrier and the node barrier (`BarrierRegistry.SealAll`), then every
+  stream ends. There is no second node-seal path to drift from it. Each
+  registry is an `OnUnsealed` observer of the node barrier and unseals, when it
+  unseals, only the system-managed (`StrategySystemBarrier`) barriers its last
+  node seal moved from unsealed to sealed; no database barrier is
+  system-managed today, so a passphrase or Shamir database stays sealed for its
+  owner or quorum. The database registry's gate
+  (`DatabaseBarrierManager.SetUnsealGate`, wired by lifecycle) vetoes a
+  database whose record is sealed or whose owner this node cannot name. `SealTenant` drops a tenant from that set, and
   `WithTenantUnsealGate` (wired by lifecycle to the cluster sealer's `Refuses`)
   vetoes one whose record is sealed or unreadable. One registry mutex
   serializes `SealAll` against the observer and against the registry's own
   tenant seal and unseal (`SealTenant`, `UnsealTenant`,
-  `UnsealTenantWithShare`), each of which does its bookkeeping and the
+  `SubmitTenantHolderShare` for an unseal), each of which does its bookkeeping and the
   barrier transition as one step: a node seal never finds a tenant mid-change
   and records the wrong side of it. A failed re-unseal stays pending
-  (`PendingTenantUnseals`) until the next node unseal or the tenant's own
-  unseal. A self-managed tenant is never unsealed for it. A cut-off seals
+  (`PendingTenantUnseals`, `DatabaseBarrierManager.PendingUnseals`) until the
+  next node unseal or the barrier's own unseal. The database barrier manager's
+  registry keeps the same discipline: an owner seal or a record's enforcement
+  (`SealAuthorized`) drops a database from the set, and an owner or quorum
+  unseal (`UnsealDatabase`, `DatabaseBarrierManager.SubmitHolderShare`) is
+  ordered against the node seal. A self-managed tenant is never unsealed for it. A cut-off seals
   nothing.
 - **A seal quorum seals through its caller.** The share-holder quorum engine
   knows nothing of the cluster: `StorageBarrier.SubmitHolderShareWith` takes

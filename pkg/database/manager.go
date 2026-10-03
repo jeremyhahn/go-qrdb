@@ -1164,13 +1164,20 @@ func (m *Manager) List() []DatabaseInfo {
 	return infos
 }
 
-// MarkBarrierDatabasesSealed marks every open database with barrier
-// encryption sealed. A node seal calls it after sealing every barrier on the
-// node (BarrierRegistry.SealAll): the mark is what refuses a database whose
-// store does not refuse by itself, and it holds until the database's owner
-// unseals it -- a database barrier is credential-held, never system-managed,
-// so the node's own unseal does not reopen it.
-func (m *Manager) MarkBarrierDatabasesSealed() {
+// SealBarrierDatabases is the database half of a whole-node seal: it seals
+// every database barrier on this node, wiping each root key and DEK
+// (DatabaseBarrierManager.SealAll), then marks every open database with
+// barrier encryption sealed. The mark is what refuses a database whose store
+// does not refuse by itself, and it holds until the database's owner -- or,
+// for a Shamir barrier, its holder quorum -- unseals it: no database barrier
+// is system-managed today, so the node's own unseal reopens none. Every
+// database is marked even when a barrier fails to seal; the first error is
+// returned.
+func (m *Manager) SealBarrierDatabases() error {
+	var err error
+	if bm := m.BarrierManager(); bm != nil {
+		err = bm.SealAll()
+	}
 	m.databases.Range(func(_, value any) bool {
 		db := value.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
 		if db.BarrierEnabled() && db.Status() == StatusOpen {
@@ -1178,6 +1185,7 @@ func (m *Manager) MarkBarrierDatabasesSealed() {
 		}
 		return true
 	})
+	return err
 }
 
 // Close shuts down all open databases and the backend factory.

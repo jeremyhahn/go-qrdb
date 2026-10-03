@@ -219,8 +219,11 @@ func (f *fakeDatabases) SealDatabaseLocal(tenantID, name string) error {
 	return f.err
 }
 
-// MarkBarrierDatabasesSealed counts the node seal's database marking.
-func (f *fakeDatabases) MarkBarrierDatabasesSealed() { f.marked++ }
+// SealBarrierDatabases counts the node seal's database half.
+func (f *fakeDatabases) SealBarrierDatabases() error {
+	f.marked++
+	return nil
+}
 
 // newEnforcerRegistry returns a registry whose node barrier is initialized and
 // unsealed and which holds an unsealed tenant barrier "acme".

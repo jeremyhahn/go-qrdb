@@ -284,9 +284,8 @@ type tenantHosts interface {
 // service.DatabaseService satisfies it.
 type databaseSealer interface {
 	SealDatabaseLocal(tenantID, name string) error
-	// MarkBarrierDatabasesSealed marks every barrier-enabled database on
-	// this node sealed, once a node seal has sealed every barrier.
-	MarkBarrierDatabasesSealed()
+	// The database half of a whole-node seal (service.SealWholeNode).
+	service.BarrierDatabases
 }
 
 // NewClusterSealMonitor finds databaseSealer by type assertion on a
@@ -311,14 +310,14 @@ type SealEnforcer struct {
 var _ clusterseal.Enforcer = (*SealEnforcer)(nil)
 
 // SealNode wipes this node's node key and every tenant and database key held
-// on it. Nothing on a sealed node can be served, and its system shard stops
-// with its key.
+// on it, through the one whole-node seal (service.SealWholeNode). Nothing on
+// a sealed node can be served, and its system shard stops with its key.
 func (e *SealEnforcer) SealNode(context.Context) error {
-	err := e.Barriers.SealAll()
+	var dbs service.BarrierDatabases
 	if e.Databases != nil {
-		e.Databases.MarkBarrierDatabasesSealed()
+		dbs = e.Databases
 	}
-	return err
+	return service.SealWholeNode(e.Barriers, nil, dbs)
 }
 
 // SealTenant stops tenantID's dedicated shards and volume host on this node

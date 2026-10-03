@@ -1716,6 +1716,25 @@ var (
 func (r *BarrierRegistry) SealAll() error {
 	r.sealMu.Lock()
 	defer r.sealMu.Unlock()
+	return errors.Join(r.sealTenantsLocked(), r.system.Seal())
+}
+
+// SealTenants seals every registered tenant barrier, leaving the system
+// barrier to the caller: the half of SealAll a registry that shares another
+// registry's system barrier -- the database barrier manager's -- contributes
+// to a whole-node seal. The system-managed tenants it moves from unsealed to
+// sealed are recorded, under sealMu, as the node seal's to bring back when
+// the system barrier unseals (unsealSystemManagedTenants); a tenant already
+// sealed stays the way it was sealed. It accumulates errors so a single
+// failing tenant does not prevent the rest from being sealed.
+func (r *BarrierRegistry) SealTenants() error {
+	r.sealMu.Lock()
+	defer r.sealMu.Unlock()
+	return r.sealTenantsLocked()
+}
+
+// sealTenantsLocked is SealTenants; sealMu is held.
+func (r *BarrierRegistry) sealTenantsLocked() error {
 	var errs []error
 	r.tenants.Range(func(key, val any) bool {
 		tb := val.(*TenantBarrier) //nolint:errcheck // type assertion on a value this container only ever holds
@@ -1728,18 +1747,11 @@ func (r *BarrierRegistry) SealAll() error {
 			errs = append(errs, err)
 			return true
 		}
-		// The node seal moved this system-managed tenant from unsealed to
-		// sealed: the node unseal brings it back
-		// (unsealSystemManagedTenants). A tenant already sealed stays the
-		// way it was sealed.
 		if tenantID, ok := key.(string); ok && systemManaged {
 			r.nodeSealed[tenantID] = nil
 		}
 		return true
 	})
-	if err := r.system.Seal(); err != nil {
-		errs = append(errs, err)
-	}
 	return errors.Join(errs...)
 }
 

@@ -1373,18 +1373,13 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	// auto-unseal tenant barrier (via RestoreVolumeTenants) before this
 	// function can fail, so sealing only the system barrier here would leave
 	// those tenant DEKs live in memory while IsSealed() reports true. Seal
-	// through the BarrierRegistry (as Close and closeSeal do) when one is
-	// present, so every registered tenant barrier is sealed alongside the
-	// system one; fall back to the bare barrier when there is no registry.
+	// the whole node (service.SealWholeNode, as Close and closeSeal do), so
+	// every database and tenant barrier is sealed alongside the system one.
 	defer func() {
 		if err != nil {
-			if barrierRegistry := n.barrierRegistry.Load(); barrierRegistry != nil {
-				if serr := barrierRegistry.SealAll(); serr != nil {
-					n.logger.Error("node: failed to seal every barrier after a cancelled or failed clustered boot",
-						slog.Any("error", serr))
-				}
-			} else if b := n.barrier.Load(); b != nil {
-				_ = b.Seal()
+			if serr := service.SealWholeNode(n.barrierRegistry.Load(), n.barrier.Load(), n.wholeNodeDatabases()); serr != nil {
+				n.logger.Error("node: failed to seal every barrier after a cancelled or failed clustered boot",
+					slog.Any("error", serr))
 			}
 			n.pendingClustered = pending
 			// Clear the components this attempt built so a retried Unseal's
@@ -1740,6 +1735,15 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 // boot exactly where tenant keys are live and the node is not yet serving.
 var tenantInfraBuiltHook = func() {}
 
+// wholeNodeDatabases is the database half of this node's whole-node seal
+// (service.SealWholeNode): its database manager, or nil when none is open.
+func (n *Node) wholeNodeDatabases() service.BarrierDatabases {
+	if n.dbManager == nil {
+		return nil
+	}
+	return n.dbManager
+}
+
 // bindReplicatedVolumePool wires the cluster-wide volume-pool state (Phase 2)
 // once the replicated system KV is available: it binds the pool's round-robin
 // cursor store to the replicated KV and attaches the replicated tenant→slot
@@ -1907,17 +1911,13 @@ func (n *Node) Close() error {
 	}
 	// Seal before dropping references: Seal zeroes the EpochBarrier root
 	// key and DEKs and is idempotent, so a still-sealed barrier is a no-op.
-	// SealAll covers the system barrier registered in the registry; the
-	// direct barrier seal handles registry-less configurations.
+	// service.SealWholeNode seals every database barrier, every tenant
+	// barrier and the system barrier, or the bare barrier without a registry.
 	// Retract the seal handles BEFORE sealing, so an accessor racing Close
 	// cannot hand out a barrier that is about to have its key material wiped.
 	barrierRegistry := n.barrierRegistry.Swap(nil)
 	barrier := n.barrier.Swap(nil)
-	if barrierRegistry != nil {
-		record(barrierRegistry.SealAll())
-	} else if barrier != nil {
-		record(barrier.Seal())
-	}
+	record(service.SealWholeNode(barrierRegistry, barrier, n.wholeNodeDatabases()))
 	n.credCoreSvc = nil
 	// Drain per-tenant Pebble instances before closing the volume-pool state
 	// store. Mirrors cmd/qrdbd/start.go shutdown ordering.
@@ -3610,11 +3610,7 @@ func buildNodeServerConfig(cfg *qrdbconfig.Config) *qrdbconfig.Config {
 func (n *Node) closeSeal() {
 	barrierRegistry := n.barrierRegistry.Swap(nil)
 	barrier := n.barrier.Swap(nil)
-	if barrierRegistry != nil {
-		_ = barrierRegistry.SealAll()
-	} else if barrier != nil {
-		_ = barrier.Seal()
-	}
+	_ = service.SealWholeNode(barrierRegistry, barrier, n.wholeNodeDatabases())
 	n.credCoreSvc = nil
 	if n.volumePool != nil {
 		if n.volumePool.PerTenantRegistry != nil {

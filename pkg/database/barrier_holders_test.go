@@ -135,10 +135,10 @@ func submitDB(t *testing.T, bm *DatabaseBarrierManager, dbName string, op seal.Q
 	if err != nil {
 		t.Fatal(err)
 	}
-	return barrier.SubmitHolderShare(ctx, &seal.HolderSubmission{
+	return bm.SubmitHolderShare(ctx, dbName, &seal.HolderSubmission{
 		Domain: seal.DomainUnseal, Op: op, Holder: h.name, Share: share,
 		Proof: seal.HolderProof{ChallengeID: ch.ChallengeID, Factor: ch.Factor, Response: sig},
-	})
+	}, nil)
 }
 
 // TestShamirDatabase_Lifecycle drives a database barrier under Shamir

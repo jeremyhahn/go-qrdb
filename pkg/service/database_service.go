@@ -1233,11 +1233,11 @@ func (s *DatabaseService) SealDatabaseLocal(tenantID, name string) error {
 	return s.sealDatabaseHere(name)
 }
 
-// MarkBarrierDatabasesSealed marks every barrier-enabled database on this
-// node sealed; a node seal calls it once every barrier is sealed. See
-// database.Manager.MarkBarrierDatabasesSealed.
-func (s *DatabaseService) MarkBarrierDatabasesSealed() {
-	s.manager.MarkBarrierDatabasesSealed()
+// SealBarrierDatabases seals every database barrier on this node and marks
+// the databases sealed: the database half of SealWholeNode. See
+// database.Manager.SealBarrierDatabases.
+func (s *DatabaseService) SealBarrierDatabases() error {
+	return s.manager.SealBarrierDatabases()
 }
 
 // sealDatabaseHere seals name's barrier on this node and marks the database

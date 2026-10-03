@@ -177,9 +177,10 @@ A seal of the node (system) barrier is a seal of **everything that node
 holds**. Every path that seals it -- the single-admin seal on every transport
 (REST, gRPC, unix, QUIC, MCP, embedded, desktop), a share-holder seal
 quorum's completion, and a cluster seal record for the node barrier applied by each node's
-monitor -- seals every registered tenant barrier first and then the node
-barrier (`BarrierRegistry.SealAll`, the same seal shutdown performs), so no
-tenant root key or DEK stays in memory while the node reports sealed. Every
+monitor -- goes through one whole-node seal (`service.SealWholeNode`, the
+same seal shutdown performs): every database barrier, then every tenant
+barrier, then the node barrier, so no database or tenant root key or DEK stays
+in memory while the node reports sealed. Every
 open stream ends with the node's sealed refusal, through the stream registry,
 exactly as a tenant seal ends that tenant's. Sealing the node barrier alone, as
 before, left every unsealed tenant's keys in memory behind a gate that only
@@ -194,8 +195,12 @@ it can read them again.
 it, credential-free -- but only one **the node seal itself sealed**. The node
 seal records each system-managed tenant it moves from unsealed to sealed, and
 the node barrier's unseal (`StorageBarrier.OnUnsealed`, by passphrase, Shamir
-quorum or recovery keys) brings back exactly those. A tenant sealed for its own
-reasons stays sealed: one its admin sealed, before the node seal or since; one
+quorum or recovery keys) brings back exactly those. Databases follow the same rule:
+the node unseal brings back only a system-managed database the node seal
+sealed, and no database barrier is system-managed today -- a passphrase
+database stays sealed until its owner unseals it, a Shamir database until its
+holder quorum does, and either unseal then works as it always does. A tenant
+or database sealed for its own reasons stays sealed: one its admin sealed, before the node seal or since; one
 whose cluster seal record is sealed or cannot be read. The re-unseal runs on a
 context detached from the unseal request; a tenant that fails to come back
 stays sealed, is retried at the next node unseal, and its own unseal recovers

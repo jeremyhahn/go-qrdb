@@ -89,15 +89,19 @@ Everything stops — on every node of the cluster, once the cluster has
 activated cluster sealing. That is the point. See *Sealing in a cluster*
 below.
 
-Sealing the node barrier seals **every tenant on the node** with it: each
-tenant barrier is sealed and its keys are wiped from memory, and every open
-watch and SQL connection ends. When you unseal the node:
+Sealing the node barrier seals **every tenant and every encrypted database on
+the node** with it: each tenant and database barrier is sealed and its keys
+are wiped from memory, and every open watch and SQL connection ends. When you
+unseal the node:
 
 - tenants whose key the node manages (*system-managed*, the auto-unseal
   default) come back on their own -- unless they were sealed for their own
   reasons (by their admin, or cluster-wide), which still holds;
 - tenants that manage their own key (*self-managed*) stay sealed until their
-  own admins unseal them -- tell them before you seal.
+  own admins unseal them -- tell them before you seal;
+- encrypted databases stay sealed until their owners unseal them -- with the
+  database passphrase, or, for a Shamir database, by its holders' quorum --
+  so tell their owners too.
 
 A node that loses touch with the cluster is different: it stops serving but
 keeps its keys (see below).

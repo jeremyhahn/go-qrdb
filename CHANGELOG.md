@@ -25,10 +25,18 @@ are not reconstructed here — their history is in the git log.
   seal itself sealed, never one sealed by its own admin or its cluster record
   (`seal.WithTenantUnsealGate`, `BarrierRegistry.PendingTenantUnseals`); a
   self-managed tenant stays sealed until its own admin unseals it, which
-  operators must now plan for. A tenant's own seal or unseal is ordered
+  operators must now plan for. Every encrypted database is sealed with the
+  node, its keys wiped, and stays sealed through the node unseal until its
+  owner -- or its Shamir holder quorum -- unseals it; every node-seal path
+  (the single-admin seal, a holder seal quorum, a node seal record, and the
+  embedded node's shutdown and failed-boot seals) goes through one function,
+  `service.SealWholeNode`. A tenant's own seal or unseal is ordered
   against the node seal, so neither can land between the node seal's check
   of a tenant and its seal of it. A cut-off still keeps every key. New:
-  `service.WithBarrierRegistry`.
+  `service.WithBarrierRegistry`, `service.SealWholeNode`,
+  `seal.BarrierRegistry.SealTenants`, `database.Manager.SealBarrierDatabases`,
+  `DatabaseBarrierManager.SealAll`,
+  `SetUnsealGate`, `PendingUnseals` and `SubmitHolderShare`.
 - **Database barrier operations are owner-only, the system tenant included.**
   `databases:seal`, `databases:unseal` and `databases:barrier_status` are now
   `ScopeSelfStrict`, and `DatabaseService` resolves the database through the

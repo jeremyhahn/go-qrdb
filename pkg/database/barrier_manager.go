@@ -192,6 +192,32 @@ func (m *DatabaseBarrierManager) SealDatabase(dbName string) error {
 	return m.SealAuthorized(dbName)
 }
 
+// SealAll seals every database barrier this manager holds -- the database
+// half of a whole-node seal -- leaving the shared system barrier to the
+// node's own registry. It records, under the registry's lock, the
+// system-managed database barriers it moves from unsealed to sealed as the
+// node seal's to bring back when the system barrier unseals; an
+// owner-managed (passphrase) or Shamir barrier is never brought back, and a
+// barrier already sealed -- by its owner, its quorum or its cluster seal
+// record -- stays the way it was sealed (seal.BarrierRegistry.SealTenants).
+func (m *DatabaseBarrierManager) SealAll() error {
+	return m.registry.SealTenants()
+}
+
+// SetUnsealGate makes the node unseal leave sealed every database for which
+// refuses reports true -- the composer passes the cluster seal's verdict on
+// the database's record -- as seal.WithTenantUnsealGate does for tenants.
+func (m *DatabaseBarrierManager) SetUnsealGate(refuses func(dbName string) bool) {
+	m.registry.Attach(seal.WithTenantUnsealGate(refuses))
+}
+
+// PendingUnseals returns the databases the last node seal sealed whose
+// unseal with the node barrier has not succeeded, each with the error of its
+// last attempt (seal.BarrierRegistry.PendingTenantUnseals).
+func (m *DatabaseBarrierManager) PendingUnseals() map[string]error {
+	return m.registry.PendingTenantUnseals()
+}
+
 // RequiresQuorum reports whether dbName's barrier is sealed only by a quorum
 // of its share holders (a Shamir barrier), not by one caller.
 func (m *DatabaseBarrierManager) RequiresQuorum(dbName string) bool {

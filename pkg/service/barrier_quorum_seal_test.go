@@ -23,6 +23,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal/clustersealtest"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -34,6 +35,7 @@ import (
 type quorumSealNode struct {
 	env     *holderSvcEnv
 	reg     *seal.BarrierRegistry
+	dbs     *database.Manager
 	holders []*svcHolder
 }
 
@@ -59,9 +61,11 @@ func newQuorumSealNode(t *testing.T, sealer *clustersealtest.Sealer) *quorumSeal
 	require.NoError(t, err)
 	require.NoError(t, reg.InitializeTenant(ctx, "self", seal.MustCredentials([]byte("self-pass"))))
 
-	sealer.OnSeal(func(clusterseal.Barrier) error { return reg.SealAll() })
-	e.svc = NewBarrierServiceWithCeremony(e.barrier, e.core, WithClusterSealer(sealer), WithBarrierRegistry(reg))
-	return &quorumSealNode{env: e, reg: reg, holders: hs}
+	dbs := newPassphraseDatabases(t, e.barrier)
+
+	sealer.OnSeal(func(clusterseal.Barrier) error { return SealWholeNode(reg, nil, dbs) })
+	e.svc = NewBarrierServiceWithCeremony(e.barrier, e.core, WithClusterSealer(sealer), WithBarrierRegistry(reg), WithBarrierDatabases(dbs))
+	return &quorumSealNode{env: e, reg: reg, dbs: dbs, holders: hs}
 }
 
 // sealQuorum submits a seal share from the first two holders and returns the
@@ -111,6 +115,9 @@ func TestBarrierQuorumSeal_ActiveRecordsAndSealsTheWholeNode(t *testing.T) {
 	if _, pending := n.reg.PendingTenantUnseals()["auto"]; !pending {
 		t.Fatal("the system-managed tenant is not recorded as the node seal's to bring back")
 	}
+	if !databaseKeyWiped(t, n.dbs, "secure") {
+		t.Fatal("the database kept its key after the seal quorum")
+	}
 }
 
 // TestBarrierQuorumSeal_RecordRefusedLeavesTheNodeUnsealed: when the record
@@ -138,6 +145,9 @@ func TestBarrierQuorumSeal_RecordRefusedLeavesTheNodeUnsealed(t *testing.T) {
 	if rec := sealer.Record(clusterseal.NodeBarrier()); rec.Sealed {
 		t.Fatalf("node record = %+v, want none", rec)
 	}
+	if databaseKeyWiped(t, n.dbs, "secure") {
+		t.Fatal("the database lost its key although the record was not written")
+	}
 }
 
 // TestBarrierQuorumSeal_InactiveSealsTheWholeNode: before activation a seal
@@ -161,4 +171,37 @@ func TestBarrierQuorumSeal_InactiveSealsTheWholeNode(t *testing.T) {
 			t.Fatalf("tenant %s is unsealed after the seal quorum", id)
 		}
 	}
+	if !databaseKeyWiped(t, n.dbs, "secure") {
+		t.Fatal("the database kept its key after the seal quorum")
+	}
+	if db, _ := n.dbs.Get("secure"); db.Status() != database.StatusSealed {
+		t.Fatalf("database status = %q, want sealed", db.Status())
+	}
+}
+
+// newPassphraseDatabases is a database manager whose barrier manager shares
+// system, holding one unsealed passphrase database "secure".
+func newPassphraseDatabases(t *testing.T, system *seal.StorageBarrier) *database.Manager {
+	t.Helper()
+	bm, err := database.NewDatabaseBarrierManager(testLogger(), system)
+	require.NoError(t, err)
+	mgr := database.NewManager(nil, t.TempDir(), database.WithBarrierManager(bm))
+	t.Cleanup(func() { _ = mgr.Close() })
+	_, err = mgr.CreateWithCredentials(context.Background(), database.DatabaseConfig{
+		TenantID: "acme", Name: "secure", Engine: database.EngineKV, Backend: database.BackendMemory,
+		DataDir: t.TempDir(),
+		Barrier: &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase},
+	}, seal.MustCredentials([]byte("db-pass")))
+	require.NoError(t, err)
+	return mgr
+}
+
+// databaseKeyWiped reports whether name's barrier holds no key.
+func databaseKeyWiped(t *testing.T, mgr *database.Manager, name string) bool {
+	t.Helper()
+	bm := mgr.BarrierManager()
+	st, err := bm.BarrierStatus(name)
+	require.NoError(t, err)
+	enc := bm.GetBarrier(name)
+	return st.Sealed && enc != nil && enc.IsSealed()
 }

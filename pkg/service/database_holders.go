@@ -170,14 +170,15 @@ func (s *DatabaseService) DatabaseBarrierQuorumSubmit(ctx context.Context, name 
 	if req != nil {
 		defer secure.Wipe(req.Share)
 	}
-	_, barrier, err := s.databaseHolders(ctx, name)
-	if err != nil {
+	if _, _, err := s.databaseHolders(ctx, name); err != nil {
 		return nil, err
 	}
 	if req == nil || len(req.Share) == 0 {
 		return nil, ErrNilRequest
 	}
-	out, err := barrier.SubmitHolderShareWith(ctx, &seal.HolderSubmission{
+	// Through the barrier manager's registry: an unseal is ordered against
+	// the node seal and clears the database's pending node unseal.
+	out, err := s.barrierMgr.SubmitHolderShare(ctx, name, &seal.HolderSubmission{
 		Domain: seal.DomainUnseal,
 		Op:     req.Op,
 		Holder: req.Username,

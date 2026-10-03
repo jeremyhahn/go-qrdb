@@ -16,6 +16,7 @@ package service
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -47,15 +48,40 @@ func WithBarrierRegistry(reg *seal.BarrierRegistry) BarrierServiceOption {
 	return func(b *BarrierService) { b.registry = reg }
 }
 
-// BarrierDatabases marks a node's barrier-enabled databases sealed after a
-// node seal. *database.Manager satisfies it.
+// BarrierDatabases is the database half of a whole-node seal: it seals every
+// database barrier on the node -- wiping each key -- and marks the databases
+// sealed. *database.Manager satisfies it.
 type BarrierDatabases interface {
-	MarkBarrierDatabasesSealed()
+	SealBarrierDatabases() error
 }
 
-// WithBarrierDatabases makes a node seal mark every barrier-enabled database
-// sealed once every barrier is sealed: the mark is what refuses a database
-// whose store does not refuse by itself.
+// SealWholeNode is the one whole-node seal. Every path that seals a node --
+// the single-admin seal, a share-holder seal quorum (BarrierService.seal),
+// and a node seal record's enforcement (server.SealEnforcer.SealNode) --
+// calls it, so they cannot diverge. It seals every database barrier
+// (databases, through the database barrier manager's own registry), then
+// every tenant barrier and the system barrier (registry.SealAll), or the
+// system barrier alone when there is no registry. Each registry records the
+// system-managed barriers it moved from unsealed to sealed, the only ones the
+// node unseal brings back. Every part runs even when another fails; the
+// errors are joined. Ending the node's streams is the caller's.
+func SealWholeNode(registry *seal.BarrierRegistry, system *seal.StorageBarrier, databases BarrierDatabases) error {
+	var errs []error
+	if databases != nil {
+		errs = append(errs, databases.SealBarrierDatabases())
+	}
+	switch {
+	case registry != nil:
+		errs = append(errs, registry.SealAll())
+	case system != nil:
+		errs = append(errs, system.Seal())
+	}
+	return errors.Join(errs...)
+}
+
+// WithBarrierDatabases makes a node seal seal every database barrier and mark
+// every barrier-enabled database sealed (SealWholeNode): the mark is what
+// refuses a database whose store does not refuse by itself.
 func WithBarrierDatabases(dbs BarrierDatabases) BarrierServiceOption {
 	return func(b *BarrierService) { b.databases = dbs }
 }
@@ -73,15 +99,7 @@ func (s *BarrierService) seal(ctx context.Context) error {
 		_, err := s.sealer.Seal(ctx, clusterseal.NodeBarrier(), clusterseal.PrincipalFrom(ctx))
 		return err
 	}
-	var err error
-	if s.registry != nil {
-		err = s.registry.SealAll()
-	} else {
-		err = s.barrier.Seal()
-	}
-	if s.databases != nil {
-		s.databases.MarkBarrierDatabasesSealed()
-	}
+	err := SealWholeNode(s.registry, s.barrier, s.databases)
 	if streams := clusterseal.StreamsOf(s.sealer); streams != nil {
 		streams.EndAll(&clusterseal.SealedError{Barrier: clusterseal.NodeBarrier()})
 	}
