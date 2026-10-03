@@ -38,6 +38,21 @@ sanctioned invitation seam, and it applies to tenant admins only.
 
 ## Admin credential paths
 
+**This section describes `firstboot.Initialize`'s own general-purpose
+resolution — the seam a composer uses when it drives first boot directly**
+(`Node.FirstBoot`, or `sdk.FirstBootInitialize`/`sdk.CertProvider`/
+`sdk.CertSigner`, all re-exports of this package per `sdk/go/types_firstboot.go`),
+**supplying its own `CA`/`Signer` so first boot issues the admin's
+certificate itself.** This is LIVE and part of the exported SDK composition
+API precisely for that caller — go-xkms's own CA adapter is the documented
+implementation of both interfaces. It is NOT how go-qrdb's own compositions
+work: `qrdbd`, `sdk/go/node`'s `Node.FirstBootWithCeremony`, and the embedded
+composition never populate `CA` or `Signer` — they resolve the admin's
+certificate through the ceremony instead and always land on Path C below,
+fed the ceremony's own output rather than an externally-supplied CA. See
+"How go-qrdb's own compositions wire the three paths" further down for that
+path.
+
 `firstboot.Initialize` binds the admin's SPKI thumbprint by one of three
 mutually-exclusive paths, selected by which `Dependencies` inputs it receives:
 
