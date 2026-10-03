@@ -528,14 +528,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// seal sealed, and never one whose own cluster seal record refuses it --
 	// or that this node cannot name an owner for.
 	if bm := dbManager.BarrierManager(); bm != nil && infra.ClusterSealer != nil {
-		sealer := infra.ClusterSealer
-		bm.SetUnsealGate(func(name string) bool {
-			db, err := dbManager.Get(name)
-			if err != nil {
-				return true
-			}
-			return sealer.Refuses(clusterseal.DatabaseBarrier(tenantid.Normalize(db.TenantID()), name))
-		})
+		bm.SetUnsealGate(databaseUnsealGate(dbManager, infra.ClusterSealer))
 	}
 
 	// Replicated placement table (Phase 4c) over the shared system KV, plus the
@@ -1116,6 +1109,19 @@ func buildTenantServiceOpts(infra Infra) []tenant.TenantServiceOption {
 		opts = append(opts, tenant.WithClusterSealer(infra.ClusterSealer))
 	}
 	return opts
+}
+
+// databaseUnsealGate is the node unseal's veto for a database barrier: the
+// database's cluster seal record refuses it, or this node cannot name its
+// owner.
+func databaseUnsealGate(dbs *database.Manager, sealer clusterseal.Sealer) func(name string) bool {
+	return func(name string) bool {
+		db, err := dbs.Get(name)
+		if err != nil {
+			return true
+		}
+		return sealer.Refuses(clusterseal.DatabaseBarrier(tenantid.Normalize(db.TenantID()), name))
+	}
 }
 
 // barrierServiceOpts returns the BarrierService options infra asks for.
