@@ -246,8 +246,10 @@ across both**: a writer descheduled between its rename and its re-open, on a
 loaded host, for longer than all five attempts together leaves every attempt
 the same listing with the active name absent. So the logger's own verification
 (`VerifyChain`, `VerifyChainSet`) also reads the writer's rotation sequence --
-an atomic counter `rotate()` makes odd before the rename and even again once
-the replacement file is open -- before its first listing and after its second.
+an atomic counter `rotate()` makes odd before the rename and even again when it
+returns, by a deferred increment, so a failed rename, a failed reopen or a
+recovered panic cannot leave it odd and mask every later finding -- before its
+first listing and after its second.
 An attempt counts only if both reads are the same even value; any other attempt
 is a race, never an absence, and a walk that never gets a still view ends in
 `*ConcurrentRotationError`. It takes no lock. *(Corrected: the absence was

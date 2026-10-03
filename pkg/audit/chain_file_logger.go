@@ -724,8 +724,14 @@ func (l *ChainFileLogger) rotate() error {
 	archivePath := rotatedPath(l.path)
 	// From the rename until the replacement file is open the active name does
 	// not exist. Mark that window for the lock-free verifier: odd while open,
-	// even again below whatever the rename and the reopen did.
+	// and even again when rotate returns -- by a DEFER, so it is even again
+	// however rotate leaves: a failed rename, a failed reopen, or a panic in
+	// either that a caller upstream recovers. A sequence left odd would read
+	// as "mid-rotation" for the life of the process, and every verification
+	// would answer *ConcurrentRotationError, masking a deleted log or a broken
+	// link behind "the trail moved".
 	l.rotations.Add(1)
+	defer l.rotations.Add(1)
 	rotErr := l.rename(l.path, archivePath)
 
 	// Reset the SIZE for the new file, and deliberately LEAVE prevDigest where
@@ -751,7 +757,6 @@ func (l *ChainFileLogger) rotate() error {
 	// auditing on a transient rename or fsync error. Report the rotation
 	// failure, but not by disabling the log.
 	openErr := l.openFile()
-	l.rotations.Add(1)
 	if rotErr != nil || closeErr != nil {
 		// Join rather than pick: when the reopen fails too, the logger is both
 		// undurable AND dead, and reporting only the first hides the second.
