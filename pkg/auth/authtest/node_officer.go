@@ -18,12 +18,11 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // NodeOfficerTenant is the non-system tenant NodeOfficerCallers draws its

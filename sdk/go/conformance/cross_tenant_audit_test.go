@@ -25,8 +25,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
-
 	"google.golang.org/grpc/codes"
 
 	mcpwire "github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"

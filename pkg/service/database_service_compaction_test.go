@@ -21,11 +21,10 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // policyView is a database's MVCC view as the registry hands it out, holding

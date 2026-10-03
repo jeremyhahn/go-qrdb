@@ -24,8 +24,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
-
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	quicraftkv "github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 

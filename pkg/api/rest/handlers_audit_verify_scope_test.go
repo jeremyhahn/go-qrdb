@@ -33,12 +33,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 func newAuditVerifyScopeFixture(t *testing.T) (*Server, *certScopeAuthenticator) {

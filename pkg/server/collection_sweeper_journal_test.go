@@ -24,10 +24,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // TestCollectionSweeper_LeaderWithoutTheCatalogEntryFinishesTheDrop: a named

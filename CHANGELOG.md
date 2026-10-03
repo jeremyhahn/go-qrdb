@@ -447,6 +447,11 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **A completed database rekey was reported as failed when its M-of-N could
+  not be recorded.** The quorum's last submission had already retired every
+  old share when the catalog write failed, and the holder was told the
+  submission failed. The completed outcome is now returned and the failure
+  logged.
 - **Turning an existing database's barrier on or off answered 500.** The
   refusal (`BarrierMigrationNotSupportedError`) is now FailedPrecondition
   (409) on every transport: it needs a data migration that is not performed.
