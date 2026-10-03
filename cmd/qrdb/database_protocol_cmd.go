@@ -58,8 +58,8 @@ func newDatabaseUpdateProtocolCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().BoolVar(&mysql, "mysql", false, "Enable MySQL wire protocol")
-	cmd.Flags().BoolVar(&postgresql, "postgresql", false, "Enable PostgreSQL wire protocol")
+	addProtocolMySQLFlag(cmd, &mysql)
+	addProtocolPgSQLFlag(cmd, &postgresql)
 
 	return cmd
 }
