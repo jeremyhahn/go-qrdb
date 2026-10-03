@@ -848,6 +848,9 @@ func tenantPopulatedStore() *memoryKVSvc {
 	// namespace, in the shared store.
 	put(CollectionWorkPrefix + "acme/reports/events")
 	put(CollectionWorkPrefix + "acme/ledger/a/b")
+	// Key B: acme's own login CA -- must be reclaimed with the rest of the
+	// tenant (go-qrdb#560 review, non-blocking).
+	put("__sys:cert_ca/acme/material")
 
 	// Must survive.
 	put(tenant.IdentityNamespace("other") + "user/bob")
@@ -857,6 +860,10 @@ func tenantPopulatedStore() *memoryKVSvc {
 	put(CollectionWorkPrefix + "acme2/reports/events")
 	put("__sys:roles/admin")
 	put(timeseries.KeyPrefixTagIndex + "host:web1")
+	// A different tenant's Key B CA, and the cluster CA (Key A, no tenant
+	// segment at all): neither belongs to acme's reclamation.
+	put("__sys:cert_ca/other/material")
+	put("__sys:cluster_ca/material")
 	return kv
 }
 
@@ -864,6 +871,8 @@ func tenantPopulatedStore() *memoryKVSvc {
 // of "acme" may touch.
 func tenantSurvivors() []string {
 	keep := []string{
+		"__sys:cert_ca/other/material",
+		"__sys:cluster_ca/material",
 		"__sys:roles/admin",
 		CollectionWorkPrefix + "acme2/reports/events",
 		CollectionWorkPrefix + "other/reports/events",
@@ -1035,6 +1044,10 @@ func TestTenantKeyPrefixes_CoverEveryOwnedShape(t *testing.T) {
 		placement.PlacementPrefix + "acme/reports",
 		seal.TenantSharedNamespace("acme") + "__sys:dek/keyring",
 		CollectionWorkPrefix + "acme/reports/events",
+		// Key B: acme's own login CA (go-qrdb#560 review, non-blocking --
+		// tenant deletion must remove it, not leave an orphaned CA an old
+		// leaf naming acme could still authenticate against).
+		"__sys:cert_ca/acme/material",
 	}
 	for _, key := range owned {
 		assert.True(t, hasAnyPrefix(key, prefixes), "no tenant prefix covers %q", key)
@@ -1049,6 +1062,12 @@ func TestTenantKeyPrefixes_CoverEveryOwnedShape(t *testing.T) {
 		seal.TenantSharedNamespace("acmecorp") + "__sys:dek/keyring",
 		CollectionWorkPrefix + "other/reports/events",
 		CollectionWorkPrefix + "acme2/reports/events",
+		// A DIFFERENT tenant's Key B CA, and the cluster CA (Key A, which
+		// has no tenant segment at all): neither belongs to acme's
+		// reclamation.
+		"__sys:cert_ca/other/material",
+		"__sys:cert_ca/acme2/material",
+		"__sys:cluster_ca/material",
 	}
 	for _, key := range notOwned {
 		assert.False(t, hasAnyPrefix(key, prefixes), "a tenant prefix wrongly covers %q", key)

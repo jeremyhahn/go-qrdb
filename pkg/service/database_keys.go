@@ -233,6 +233,14 @@ func DatabaseIndexNamePrefixes(ns string) []string {
 // record live; a reclamation that accepted it would empty the store it was
 // asked to tidy. An empty tenantID returns nil for the same reason, since
 // tenant.IdentityNamespace canonicalizes it to the system tenant.
+//
+// It DOES return the tenant's Key B login CA material
+// (tenantCertCAPrefix's `__sys:cert_ca/{tenantID}/material`): deleting it
+// here is what makes a tenant deletion actually remove the CA a leaf naming
+// that tenant would otherwise still be able to authenticate against, and
+// what makes the dynamic client-auth trust pool (pkg/clienttrust) stop
+// widening for it once its 2-second cache next refreshes (go-qrdb#560
+// review, non-blocking).
 func TenantKeyPrefixes(tenantID string) []string {
 	if tenantID == "" || tenantid.IsSystem(tenantID) {
 		return nil
@@ -246,7 +254,18 @@ func TenantKeyPrefixes(tenantID string) []string {
 		placement.PlacementPrefix + ns,
 		seal.TenantSharedNamespace(tenantID),
 		CollectionWorkPrefix + ns,
+		tenantCertCAPrefix(tenantID),
 	}
+}
+
+// tenantCertCAPrefix duplicates pkg/cert's own unexported prefixCertCA
+// (`"__sys:cert_ca/"`) + the per-tenant `"/"` layout
+// cakey.SoftwareProvider's own prefix convention requires, rather than
+// exporting it, exactly as pkg/cert itself duplicates storage-layout
+// constants it does not own (certPEMRecordSuffix/materialRecordSuffix) --
+// the two must stay in sync.
+func tenantCertCAPrefix(tenantID string) string {
+	return "__sys:cert_ca/" + tenantID + "/"
 }
 
 // TenantIndexNamePrefixes returns every secondary-index NAME prefix a tenant
