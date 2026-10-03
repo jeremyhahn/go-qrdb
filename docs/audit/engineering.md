@@ -607,14 +607,15 @@ not authenticate and `failure:<reason>` otherwise, where `<reason>` is a
 `expired`, `verification-failed`, `limit-reached`, `duplicate`,
 `self-enrolment`, `sealed`, `invalid-request`, `factor-not-admitted`,
 `ca-unavailable`, `round-in-progress`, `breaks-quorum`, `stale-roster`,
-`roster-missing`, `audit-unavailable`, or `unknown`. An error's own text is
+`roster-missing`, `initialized`, `initialization-in-progress`,
+`audit-unavailable`, or `unknown`. An error's own text is
 never recorded: a factor's refusal (a go-xkms FIDO2, PIV, PKCS#11 or TPM
 factor's among them), an HPKE or a storage error is free text the trail could
 not redact, as the SO gate's fixed reasons (`not-set`, `locked`, `invalid`)
 already avoid.
 
-**Which records gate, and which are post-hoc.** A registration, a claim and
-a rekey opening are recorded **before** they take effect -- a registration
+**Which records gate, and which are post-hoc.** A registration, a claim, a
+rekey opening and an unenrolment are recorded **before** they take effect -- a registration
 once validated and before the CA issues the certificate, a claim once the
 holder has proved its key and before the envelope leaves the store, a rekey
 once the barrier has validated it and before its round opens

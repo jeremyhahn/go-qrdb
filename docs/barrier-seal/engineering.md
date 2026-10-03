@@ -979,8 +979,10 @@ operation's outcome stands.
 | `import-root-key` / `import-sealed-blob` | a root key or sealed blob is imported |
 | `holder-record-conflict` | a holder cached while sealed conflicts with a persisted holder |
 
-The outcome is `success` for an allowed operation, `failure:<error>` for one
-that failed and `denied:<reason>` for a refusal. **One emitter per event:** a
+The outcome is `success` for an allowed operation, `failure` for one that
+failed with an error and `denied` for any other refusal. The error's text is
+never recorded -- it is free text from a sealing strategy, an injected KMS,
+HSM or TPM strategy's among them -- and stays on the operational log. **One emitter per event:** a
 share submission and a rekey opening are the holder engine's records
 (`holder-quorum-submit`, `holder-rekey-start`; see
 [../shamir-custody/engineering.md](../shamir-custody/engineering.md)), and the

@@ -96,6 +96,30 @@ func (t *ScopedCeremonyService) RegisterOfficer(ctx context.Context, req Registe
 	return t.holder.register(ctx, &t.deps, req)
 }
 
+// InitializeShamir initializes barrier, the tenant or database barrier this
+// service is installed on, under Shamir custody
+// (seal.StorageBarrier.InitializeShamir), with the initialization marked in
+// flight: an unenrolment, or a second initialization, is refused with
+// ErrInitializationInProgress until it has finished, so the holder set the
+// barrier validates is the one it splits the key to.
+func (t *ScopedCeremonyService) InitializeShamir(ctx context.Context, barrier *seal.StorageBarrier, policy seal.FactorPolicy) (*seal.ShamirInitParams, error) {
+	t.mu.Lock()
+	if t.holder.initializing {
+		t.mu.Unlock()
+		return nil, ErrInitializationInProgress
+	}
+	t.holder.initializing = true
+	t.mu.Unlock()
+	defer func() {
+		t.mu.Lock()
+		t.holder.initializing = false
+		t.mu.Unlock()
+	}()
+	// The barrier calls back into PrepareRoster, Distribute and Committed,
+	// which take t.mu, so it is not held here.
+	return barrier.InitializeShamir(ctx, policy)
+}
+
 // UnenrolOfficer removes an enrolled holder before the barrier is
 // initialized. After initialization a holder is removed by revocation.
 func (t *ScopedCeremonyService) UnenrolOfficer(ctx context.Context, username string) error {

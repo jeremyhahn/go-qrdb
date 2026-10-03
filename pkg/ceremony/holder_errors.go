@@ -64,6 +64,14 @@ var (
 	// initialized barrier may hold a share, and only a rekey the quorum
 	// completes can take it away: remove the holder by revocation.
 	ErrUnenrolInitialized = errors.New("ceremony: a holder of an initialized barrier is removed by revocation, not unenrolment")
+
+	// ErrInitializationInProgress is returned when a holder is unenrolled, or
+	// a second initialization started, while the scope's barrier is being
+	// initialized. The barrier reads the holder set twice -- to validate the
+	// initialization and to split the key -- and a holder removed between
+	// the two would leave it initialized with no share set. Retry once the
+	// initialization has finished.
+	ErrInitializationInProgress = errors.New("ceremony: the barrier's initialization is in progress")
 )
 
 // QuorumRateLimitedError is returned when a quorum request -- a challenge

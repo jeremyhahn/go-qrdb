@@ -56,9 +56,17 @@ are not reconstructed here — their history is in the git log.
   New permission `databases:officer_unenrol` (self-scoped, like the rest of
   `databases:*`). Once initialized, unenrolment is refused with
   `ceremony.ErrUnenrolInitialized` and a holder is removed by revocation. The
-  removal is audited (`holder-unenrol`). **BREAKING** for implementers of
-  `transport.DatabaseClient` and `service.DatabaseHolderServicer`: each gains
-  the method.
+  removal is audited (`holder-unenrol`), recorded before the holder is
+  removed and refused under the `fail-closed` audit posture when the trail
+  cannot record it. An unenrolment -- or a second initialization -- while the
+  database's custody is being initialized is refused with
+  `ceremony.ErrInitializationInProgress` (`ABORTED`): the barrier reads the
+  holder set twice, and a holder removed between the reads left it
+  initialized with no share set until a restart. Database custody is now
+  initialized through `ceremony.ScopedCeremonyService.InitializeShamir`.
+  **BREAKING** for implementers of `transport.DatabaseClient` and
+  `service.DatabaseHolderServicer` in Go, and of the TypeScript SDK's
+  `OfficerClient` (`unenrolDatabaseOfficer`): each gains the method.
 - **The barriers' own events are on the compliance trail.** Every barrier --
   system, tenant, database -- records `initialize`, `unseal`, `seal`,
   `quorum-complete`, `distribute` and the rest on the node's one trail
@@ -73,7 +81,9 @@ are not reconstructed here — their history is in the git log.
   (`EmbeddedConfig.Audit`, off by default; `audit-events.ndjson` under the
   data directory unless `path` says otherwise). It is opened before the seal
   barrier and a configured trail that cannot be opened stops the start.
-- **`database.barrierStatus(name)` in the TypeScript SDK**, on REST and the
+- **`database.barrierStatus(name)` in the TypeScript SDK** (**BREAKING** for
+  implementers of the TypeScript SDK's `DatabaseClient`, which gains the
+  method), on REST and the
   desktop binding (`DatabaseBinding.BarrierStatus`): a database barrier's
   sealed state, strategy and `initializedAt`, absent until the barrier is
   first initialized. The database view's share-holder panel reads it to tell

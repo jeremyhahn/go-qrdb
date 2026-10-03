@@ -808,6 +808,8 @@ var holderRules = []rule{
 	as(&ceremony.HolderLimitReachedError{}, FailedPrecondition),
 	// An initialized barrier's holder is removed by revocation.
 	is(ceremony.ErrUnenrolInitialized, FailedPrecondition),
+	// An unenrolment racing the barrier's initialization: retry after it.
+	is(ceremony.ErrInitializationInProgress, Aborted),
 	as(&seal.QuorumOpInvalidError{}, InvalidArgument),
 	as(&seal.InvalidRosterError{}, InvalidArgument),
 	is(seal.ErrHolderRosterMissing, FailedPrecondition),

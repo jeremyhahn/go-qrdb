@@ -170,6 +170,12 @@ type holderScope struct {
 	// key is split to at initialization, when the scope fixes it before
 	// initialization; zero when the initialization chooses it (capacityProbe).
 	capacity func() int
+	// initializing marks an initialization of the backing barrier in flight
+	// (ScopedCeremonyService.InitializeShamir). Unenrolment is refused while
+	// it is set: the barrier reads the roster twice, to validate and to
+	// split, and a holder removed between the two would leave it initialized
+	// without a share set. Guarded by the owning service's lock.
+	initializing bool
 	// audit records a security event on the backing barrier's audit log. A
 	// backend that is not a barrier has none, and the event is only logged.
 	audit  func(action, outcome string, details map[string]string)
@@ -529,9 +535,18 @@ func (h *holderScope) refuseOverCapacity(ctx context.Context) error {
 // unenrol removes an enrolled holder from a scope whose barrier is not yet
 // initialized (removeEnrolled), and records the removal, or its refusal, on
 // the compliance trail.
+//
+// The removal is recorded before it takes effect (a gating record, see gate):
+// under fail-closed one the trail cannot record is refused with
+// *audit.GateError and the holder stays enrolled. A refusal is recorded
+// post-hoc.
 func (h *holderScope) unenrol(ctx context.Context, d *HolderDeps, username string) error {
-	err := h.removeEnrolled(ctx, username)
-	h.record(ctx, d, holderEvent{action: ActionHolderUnenrol, holder: username, err: err})
+	ev := holderEvent{action: ActionHolderUnenrol, holder: username}
+	err := h.removeEnrolled(ctx, username, func() error { return h.gate(ctx, d, ev) })
+	if err != nil && !isGateRefusal(err) {
+		ev.err = err
+		h.record(ctx, d, ev)
+	}
 	return err
 }
 
@@ -541,10 +556,15 @@ func (h *holderScope) unenrol(ctx context.Context, d *HolderDeps, username strin
 // holder enrolled by mistake, or one whose key is lost before it was ever
 // used). On an initialized barrier every holder may hold a share, and only a
 // revocation -- a rekey the quorum completes -- removes one
-// (ErrUnenrolInitialized).
-func (h *holderScope) removeEnrolled(ctx context.Context, username string) error {
+// (ErrUnenrolInitialized). While an initialization is in flight it is
+// refused with ErrInitializationInProgress. admit is called once the removal
+// is validated and before the record is removed; its error refuses it.
+func (h *holderScope) removeEnrolled(ctx context.Context, username string, admit func() error) error {
 	if username == "" {
 		return ErrMissingUsername
+	}
+	if h.initializing {
+		return ErrInitializationInProgress
 	}
 	initialized, err := h.initialized(ctx)
 	if err != nil {
@@ -558,6 +578,9 @@ func (h *holderScope) removeEnrolled(ctx context.Context, username string) error
 	}
 	if _, ok := h.registry.cached(username); !ok {
 		return ErrOfficerNotFound
+	}
+	if err := admit(); err != nil {
+		return err
 	}
 	if h.sealed() {
 		// Enrolled while sealed, the record is in the cache alone.

@@ -59,8 +59,11 @@ const BarrierAuditComponent = "barrier"
 // carries. Each is a name, a count, a strategy or a thumbprint -- public
 // material only. Any other detail is dropped, so a detail added to an
 // emission site later reaches the trail only once it is reviewed onto this
-// list. The failure text of a refused operation ("error", "reason") is
-// carried in the outcome instead.
+// list. The failure text of a refused operation ("error", "reason") is never
+// recorded: it is free text from a sealing strategy -- an injected go-xkms
+// KMS, HSM or TPM strategy's among them -- and the trail is tenant-readable,
+// hash-chained and cannot be redacted. The barrier's operational log carries
+// it.
 var barrierAuditAttributes = map[string]bool{
 	"domain": true, "op": true, "strategy": true, "threshold": true,
 	"removed": true, "from": true, "to": true, "rolled_back": true,
@@ -123,17 +126,14 @@ func (l *complianceAuditLogger) Log(ctx context.Context, ev *AuditEvent) error {
 func (l *complianceAuditLogger) Close() error { return nil }
 
 // barrierOutcome renders a barrier event's outcome in the compliance
-// vocabulary: "allow" is success; a refusal carrying a reason is denied, one
-// carrying an error is a failure.
+// vocabulary: "allow" is success; a refusal that failed with an error is
+// failure, any other refusal denied. Neither carries the event's text.
 func barrierOutcome(ev *AuditEvent) string {
 	if ev.Outcome == "allow" {
 		return audit.OutcomeSuccess
 	}
-	if reason := ev.Details["reason"]; reason != "" {
-		return audit.OutcomeDenied + ":" + reason
-	}
-	if msg := ev.Details["error"]; msg != "" {
-		return audit.OutcomeFailure + ":" + msg
+	if _, failed := ev.Details["error"]; failed {
+		return audit.OutcomeFailure
 	}
 	return audit.OutcomeDenied
 }

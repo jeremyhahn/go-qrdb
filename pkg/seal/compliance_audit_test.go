@@ -16,7 +16,9 @@ package seal
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
@@ -43,7 +45,7 @@ func TestComplianceAuditLogger_MapsBarrierEvents(t *testing.T) {
 	ctx := context.Background()
 	for _, ev := range []*AuditEvent{
 		{Subject: "seal", Action: "unseal", Outcome: "allow", Details: map[string]string{"strategy": "passphrase", "secret": "s3cr3t"}},
-		{Subject: "seal", Action: "unseal", Outcome: "deny", Details: map[string]string{"error": "wrong key", "strategy": "passphrase"}},
+		{Subject: "seal", Action: "unseal", Outcome: "deny", Details: map[string]string{"error": "kms: key arn:secret-CANARY denied", "strategy": "passphrase"}},
 		{Subject: "seal", Action: "holder-record-conflict", Outcome: "deny", Details: map[string]string{"reason": "conflict", "username": "bob"}},
 		{Subject: "seal", Action: "seal", Outcome: "deny"},
 		nil,
@@ -69,7 +71,14 @@ func TestComplianceAuditLogger_MapsBarrierEvents(t *testing.T) {
 	if _, ok := evs[0].Attributes["secret"]; ok {
 		t.Fatal("a detail off the allow-list reached the trail")
 	}
-	for i, want := range []string{audit.OutcomeSuccess, audit.OutcomeFailure + ":wrong key", audit.OutcomeDenied + ":conflict", audit.OutcomeDenied} {
+	raw, err := json.Marshal(evs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "CANARY") || strings.Contains(string(raw), "s3cr3t") {
+		t.Fatalf("an error's or a detail's text reached the trail: %s", raw)
+	}
+	for i, want := range []string{audit.OutcomeSuccess, audit.OutcomeFailure, audit.OutcomeDenied, audit.OutcomeDenied} {
 		if evs[i].Outcome != want {
 			t.Fatalf("event %d outcome = %q, want %q", i, evs[i].Outcome, want)
 		}

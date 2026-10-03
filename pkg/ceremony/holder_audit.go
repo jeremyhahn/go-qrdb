@@ -229,6 +229,8 @@ const (
 	reasonStaleRoster        = "stale-roster"
 	reasonRosterMissing      = "roster-missing"
 	reasonAuditUnavailable   = "audit-unavailable"
+	reasonInitialized        = "initialized"
+	reasonInitInProgress     = "initialization-in-progress"
 	reasonUnknown            = "unknown"
 )
 
@@ -255,6 +257,8 @@ var holderReasonSentinels = map[error]string{
 	ErrCANotInitialized:            reasonCAUnavailable,
 	seal.ErrQuorumRoundInProgress:  reasonRoundInProgress,
 	seal.ErrHolderRosterMissing:    reasonRosterMissing,
+	ErrUnenrolInitialized:          reasonInitialized,
+	ErrInitializationInProgress:    reasonInitInProgress,
 }
 
 // holderReasonTypes maps each typed error a holder operation refuses with to
@@ -270,6 +274,7 @@ var holderReasonTypes = []struct {
 	{isType[*factorRefusedError], reasonVerificationFailed},
 	{isType[*authfactors.VerificationFailedError], reasonVerificationFailed},
 	{isType[*QuorumRateLimitedError], reasonLimitReached},
+	{isType[*HolderLimitReachedError], reasonLimitReached},
 	{isType[*InvalidHolderNameError], reasonInvalidRequest},
 	{isType[*CSRParseError], reasonInvalidRequest},
 	{isType[*UnsupportedHolderKeyError], reasonInvalidRequest},

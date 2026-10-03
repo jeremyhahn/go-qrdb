@@ -51,6 +51,7 @@ func TestClassify_HolderConditions(t *testing.T) {
 		// Every holder the uninitialized barrier is split to is enrolled.
 		{&ceremony.HolderLimitReachedError{Total: 3}, FailedPrecondition},
 		{ceremony.ErrUnenrolInitialized, FailedPrecondition},
+		{ceremony.ErrInitializationInProgress, Aborted},
 		{&database.InvalidShamirSchemeError{SharesRequired: 2, SharesTotal: 256}, InvalidArgument},
 		{ceremony.ErrNoPendingShare, NotFound},
 		{ceremony.ErrShareExpired, Gone},

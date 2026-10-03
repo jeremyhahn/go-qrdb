@@ -173,11 +173,13 @@ func (m *DatabaseBarrierManager) SubmitHolderShare(ctx context.Context, dbName s
 // each share to its holder. The number of enrolled holders must equal the
 // barrier's share count.
 func (m *DatabaseBarrierManager) InitializeShamir(ctx context.Context, dbName string, policy seal.FactorPolicy) (*seal.ShamirInitParams, error) {
-	_, barrier, err := m.Holders(dbName)
+	holders, barrier, err := m.Holders(dbName)
 	if err != nil {
 		return nil, err
 	}
-	params, err := barrier.InitializeShamir(ctx, policy)
+	// Through the holder authority, which marks the initialization in flight
+	// so no holder is unenrolled between the barrier's two reads of the set.
+	params, err := holders.InitializeShamir(ctx, barrier, policy)
 	if err != nil {
 		return nil, err
 	}
