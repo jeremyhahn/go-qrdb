@@ -11,6 +11,16 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.31.0-alpha] - 2026-10-02
+
+Dependency release. This release contains BREAKING changes; see the entries below. Highlights:
+
+- **go-quicraft v0.16.0, go-truststrap v0.4.0-alpha, go-enclave v0.6.2-alpha.** go-enclave v0.7.0-alpha is held back: go-quicraft v0.16.0 does not compile against it. That needs a go-quicraft release built on enclave v0.7.
+- **BREAKING (wire):** go-truststrap v0.4 adds a suite header to the Noise bootstrap wire. qrdb runs the bootstrap server itself, so a mixed-version cluster cannot enroll a new member. Finish a rolling upgrade before adding nodes.
+- **Third-party patch and minor updates** (pebble 2.1.7, etcd 3.7.2, pgx 5.11, chi, mysql driver, roaring, mongo-driver, x/net, x/tools). Held back: grpc stays on v1.83.2 because v1.84.0 introduces GO-2026-6443; psql-wire and mcp-go stay at their current majors.
+- **`make vulncheck`** runs govulncheck in the root and sdk/go modules.
+- **Fix:** the file storage engine's `List` returns raw keys instead of their percent-encoded paths.
+
 ### Dependencies
 
 - **go-quicraft v0.15.0-alpha -> v0.16.0** (the project's first non-`-alpha`
