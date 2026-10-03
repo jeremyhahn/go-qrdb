@@ -20,6 +20,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+
 	googlegrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
@@ -58,6 +60,11 @@ func (f *fakeBarrierServicer) BarrierDeleteRecoveryKeys(_ context.Context) error
 // BarrierInitialized reports the double as never initialized: its
 // initialize paths answer for themselves through their canned results.
 func (f *fakeBarrierServicer) BarrierInitialized(_ context.Context) (bool, error) { return false, nil }
+
+// BarrierClusterUnseal answers as a node without cluster sealing does.
+func (f *fakeBarrierServicer) BarrierClusterUnseal(context.Context) (*clusterseal.Report, error) {
+	return nil, clusterseal.ErrInactive
+}
 
 func (f *fakeBarrierServicer) BarrierHasRecoveryKeys(_ context.Context) (bool, error) {
 	return true, nil

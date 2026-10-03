@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -38,6 +39,7 @@ type mockBarrierService struct {
 	barrierUnsealFn             func(ctx context.Context, secret []byte) error
 	barrierSealFn               func(ctx context.Context) error
 	barrierStatusFn             func(ctx context.Context) (*service.BarrierStatusInfo, error)
+	barrierClusterUnsealFn      func(ctx context.Context) (*clusterseal.Report, error)
 	barrierInitializeShamirFn   func(ctx context.Context, threshold, totalShares int, policy seal.FactorPolicy) (*service.ShamirInitInfo, error)
 	barrierUnsealWithSharesFn   func(ctx context.Context, shares []string) error
 	barrierGenRecoveryKeysFn    func(ctx context.Context, threshold int, policy seal.FactorPolicy) (*service.RecoveryKeysInfo, error)
@@ -99,6 +101,15 @@ func (m *mockBarrierService) BarrierDeleteRecoveryKeys(ctx context.Context) erro
 // BarrierInitialized reports the double as never initialized: its
 // initialize paths answer for themselves through their canned results.
 func (m *mockBarrierService) BarrierInitialized(_ context.Context) (bool, error) { return false, nil }
+
+// BarrierClusterUnseal answers as a node without cluster sealing does, unless
+// barrierClusterUnsealFn is set.
+func (m *mockBarrierService) BarrierClusterUnseal(ctx context.Context) (*clusterseal.Report, error) {
+	if m.barrierClusterUnsealFn != nil {
+		return m.barrierClusterUnsealFn(ctx)
+	}
+	return nil, clusterseal.ErrInactive
+}
 
 func (m *mockBarrierService) BarrierHasRecoveryKeys(ctx context.Context) (bool, error) {
 	if m.barrierHasRecoveryKeysFn != nil {
@@ -1016,5 +1027,40 @@ func TestEmbeddedBarrier_Request_RetiredShareVerbsAreUnknown(t *testing.T) {
 		if err := tr.Request(context.Background(), method, true, nil); !errors.As(err, &unknown) {
 			t.Errorf("Request(%s) = %v, want UnknownMethodError", method, err)
 		}
+	}
+}
+
+// TestBarrierClusterUnseal_Embedded: the embedded transport forwards cluster
+// unseal to the service and converts its report, refuses it while inactive,
+// and carries the node barrier's cluster seal on status.
+func TestBarrierClusterUnseal_Embedded(t *testing.T) {
+	at := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	tr := newBarrierTransport(t, &mockBarrierService{
+		barrierClusterUnsealFn: func(context.Context) (*clusterseal.Report, error) {
+			return &clusterseal.Report{Active: true, Epoch: 4, Principal: "ops", PrincipalTenant: "system",
+				Node: "192.0.2.1:5000", At: at, Local: clusterseal.LocalServing}, nil
+		},
+		barrierStatusFn: func(context.Context) (*service.BarrierStatusInfo, error) {
+			return &service.BarrierStatusInfo{ClusterSeal: &clusterseal.Report{Active: true, Sealed: true, Epoch: 3, Local: clusterseal.LocalHeld}}, nil
+		},
+	})
+	got, err := tr.BarrierClusterUnseal(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := transport.ClusterSeal{Active: true, Epoch: 4, Principal: "ops", PrincipalTenant: "system",
+		Node: "192.0.2.1:5000", At: "2026-10-01T12:00:00Z", Local: "serving"}
+	if *got != want {
+		t.Fatalf("got %+v, want %+v", *got, want)
+	}
+	st, err := tr.BarrierStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.ClusterSeal == nil || !st.ClusterSeal.Sealed || st.ClusterSeal.Local != "held" {
+		t.Fatalf("ClusterSeal = %+v", st.ClusterSeal)
+	}
+	if _, err := newBarrierTransport(t, &mockBarrierService{}).BarrierClusterUnseal(context.Background()); !errors.Is(err, clusterseal.ErrInactive) {
+		t.Fatalf("inactive: err = %v", err)
 	}
 }

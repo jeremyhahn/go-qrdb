@@ -84,6 +84,9 @@ func domainToUserAuthRecord(f *auth.AuthFactor) transport.AuthFactorRecord {
 
 // AddAuthFactor persists a new factor for a user via the user-side service.
 func (t *Transport) AddAuthFactor(ctx context.Context, req *transport.AuthFactorAddRequest) (*transport.AuthFactorAddResponse, error) {
+	if err := t.gate("AddAuthFactor"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -102,6 +105,9 @@ func (t *Transport) AddAuthFactor(ctx context.Context, req *transport.AuthFactor
 
 // ListAuthFactors returns every factor (active and revoked) for a user.
 func (t *Transport) ListAuthFactors(ctx context.Context, req *transport.AuthFactorListRequest) (*transport.AuthFactorListResponse, error) {
+	if err := t.gate("ListAuthFactors"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -127,6 +133,9 @@ func (t *Transport) ListAuthFactors(ctx context.Context, req *transport.AuthFact
 
 // GetAuthFactor returns the factor with the given ID.
 func (t *Transport) GetAuthFactor(ctx context.Context, req *transport.AuthFactorGetRequest) (*transport.AuthFactorGetResponse, error) {
+	if err := t.gate("GetAuthFactor"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -145,6 +154,9 @@ func (t *Transport) GetAuthFactor(ctx context.Context, req *transport.AuthFactor
 
 // RemoveAuthFactor soft-deletes a factor (honouring the force flag).
 func (t *Transport) RemoveAuthFactor(ctx context.Context, req *transport.AuthFactorRemoveRequest) (*transport.AuthFactorRemoveResponse, error) {
+	if err := t.gate("RemoveAuthFactor"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -162,6 +174,9 @@ func (t *Transport) RemoveAuthFactor(ctx context.Context, req *transport.AuthFac
 
 // RotateAuthFactor atomically adds the new factor and revokes the old one.
 func (t *Transport) RotateAuthFactor(ctx context.Context, req *transport.AuthFactorRotateRequest) (*transport.AuthFactorRotateResponse, error) {
+	if err := t.gate("RotateAuthFactor"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -180,6 +195,9 @@ func (t *Transport) RotateAuthFactor(ctx context.Context, req *transport.AuthFac
 
 // RelabelAuthFactor updates the label on a factor.
 func (t *Transport) RelabelAuthFactor(ctx context.Context, req *transport.AuthFactorRelabelRequest) (*transport.AuthFactorRelabelResponse, error) {
+	if err := t.gate("RelabelAuthFactor"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -204,6 +222,9 @@ func (t *Transport) RelabelAuthFactor(ctx context.Context, req *transport.AuthFa
 // responsibility; this only performs the database mapping, mirroring the
 // network transports' contract.
 func (t *Transport) LoginAuthFactor(ctx context.Context, req *transport.AuthFactorLoginRequest) (*transport.AuthFactorLoginResponse, error) {
+	if err := t.gate("LoginAuthFactor"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}

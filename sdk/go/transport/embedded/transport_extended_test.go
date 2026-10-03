@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -1455,7 +1456,18 @@ func (m *mockDatabaseService) SealDatabase(_ context.Context, _ string) error { 
 func (m *mockDatabaseService) UnsealDatabase(_ context.Context, _ string, _ seal.Credentials) error {
 	return nil
 }
-func (m *mockDatabaseService) DatabaseBarrierStatus(_ context.Context, _ string) (*seal.BarrierStatus, error) {
+
+// DatabaseBarrierStatus adapts databaseBarrierStatusSeal to the service
+// interface, with no cluster seal state.
+func (m *mockDatabaseService) DatabaseBarrierStatus(ctx context.Context, name string) (*service.DatabaseBarrierStatusInfo, error) {
+	st, err := m.databaseBarrierStatusSeal(ctx, name)
+	if st == nil {
+		return nil, err
+	}
+	return &service.DatabaseBarrierStatusInfo{BarrierStatus: st}, err
+}
+
+func (m *mockDatabaseService) databaseBarrierStatusSeal(_ context.Context, _ string) (*seal.BarrierStatus, error) {
 	return nil, nil
 }
 

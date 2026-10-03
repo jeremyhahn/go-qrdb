@@ -334,6 +334,8 @@ type quicTenantBarrierStatusResponse struct {
 	HardwareBacked  bool   `json:"hardware_backed"`
 	ShamirThreshold int    `json:"shamir_threshold,omitempty"`
 	ShamirTotal     int    `json:"shamir_total,omitempty"`
+
+	ClusterSeal *transport.ClusterSeal `json:"cluster_seal,omitempty"`
 }
 
 // nilTenantBarrierRequestError is returned when a per-tenant barrier method
@@ -472,6 +474,7 @@ func (t *Transport) TenantBarrierStatus(ctx context.Context, req *transport.Tena
 		HardwareBacked:  wire.HardwareBacked,
 		ShamirThreshold: wire.ShamirThreshold,
 		ShamirTotal:     wire.ShamirTotal,
+		ClusterSeal:     wire.ClusterSeal,
 	}, nil
 }
 

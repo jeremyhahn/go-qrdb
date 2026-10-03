@@ -148,3 +148,17 @@ func TestWithSealedWindowProbe_NilByDefault(t *testing.T) {
 		t.Fatal("expected sealedWindowProbe to be nil by default")
 	}
 }
+
+// TestSealedWindowRefusal_ClusterUnsealIsNeverAnonymous: cluster unseal passes
+// the regular gate while it is closed; the boot-time listener refuses it.
+func TestSealedWindowRefusal_ClusterUnsealIsNeverAnonymous(t *testing.T) {
+	probe := &fakeSealedProbe{sealed: true, enrollment: true}
+	regular := newTestServer(&mockKVService{}, &mockAdminService{}, WithSealedWindowProbe(probe))
+	listener := newTestServer(&mockKVService{}, &mockAdminService{}, WithSealedWindowListener(probe))
+	if _, refused := regular.sealedWindowRefusal(context.Background(), "barrier.ClusterUnseal"); refused {
+		t.Error("regular gate refused barrier.ClusterUnseal")
+	}
+	if r, refused := listener.sealedWindowRefusal(context.Background(), "barrier.ClusterUnseal"); !refused || r.status != wire.StatusUnavailable {
+		t.Errorf("boot-time listener: barrier.ClusterUnseal = (%+v, %v), want refused Unavailable", r, refused)
+	}
+}

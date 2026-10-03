@@ -102,9 +102,17 @@ const PrefixCompaction Feature = "prefix-compaction"
 // keyspace -- every key outside all database namespaces.
 const NodeCompaction Feature = "node-compaction"
 
+// ClusterSeal is cluster-wide sealing: every node reads the replicated seal
+// records under "__sys:cluster/seal/" and seals itself when one says so (see
+// pkg/clusterseal). A node that does not read them would keep serving after a
+// cluster seal, so the records are written and enforced only once the feature
+// is ACTIVATED -- enforcement is per node, not per Raft group, so per-group
+// enablement is not the right test.
+const ClusterSeal Feature = "cluster-seal"
+
 // supported lists the features this binary implements. A new feature is
 // added here, and to nothing else in this package.
-var supported = []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction}
+var supported = []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal}
 
 // Supported returns the features this binary implements.
 func Supported() []Feature {
@@ -222,6 +230,10 @@ type Gate struct {
 	// refusal is the activated feature this binary lacks, once
 	// CheckActivated has found one; see Refusal.
 	refusal atomic.Pointer[UnsupportedFeatureError]
+
+	// loaded is set once CheckActivated has read the activations without
+	// finding one this binary lacks; see ActivationsLoaded.
+	loaded atomic.Bool
 
 	runMu   sync.Mutex
 	started bool
@@ -446,7 +458,16 @@ func (g *Gate) CheckActivated(ctx context.Context, kv ActivationKV) error {
 		}
 		flag.Store(true)
 	}
+	g.loaded.Store(true)
 	return nil
+}
+
+// ActivationsLoaded reports whether CheckActivated has read the cluster's
+// activations, so that Activated's false means "not activated" rather than
+// "not read yet". A read that found a feature this binary lacks leaves it
+// false: this node must not serve at all.
+func (g *Gate) ActivationsLoaded() bool {
+	return g.loaded.Load()
 }
 
 // Refusal returns the *UnsupportedFeatureError CheckActivated found -- the

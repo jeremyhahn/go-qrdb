@@ -23,6 +23,7 @@ package pgsql
 import (
 	"fmt"
 	"strconv"
+	"time"
 )
 
 // ServerStartError is returned when the PostgreSQL wire protocol server
@@ -182,4 +183,15 @@ type BarrierSealedError struct{}
 // Error returns a human-readable description.
 func (e *BarrierSealedError) Error() string {
 	return "sql/pgsql: barrier sealed"
+}
+
+// QueryTimeoutError reports a statement cancelled at the query timeout
+// (WithQueryTimeout, sql.query_timeout). On the wire it is SQLSTATE 57014.
+type QueryTimeoutError struct {
+	Timeout time.Duration
+}
+
+// Error implements error.
+func (e *QueryTimeoutError) Error() string {
+	return "sql/pgsql: statement exceeded the query timeout of " + e.Timeout.String() + " (sql.query_timeout)"
 }

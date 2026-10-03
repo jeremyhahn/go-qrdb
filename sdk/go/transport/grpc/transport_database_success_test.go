@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 
 	googlegrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -66,7 +67,18 @@ func (f *fakeDatabaseServicer) SealDatabase(_ context.Context, _ string) error {
 func (f *fakeDatabaseServicer) UnsealDatabase(_ context.Context, _ string, _ seal.Credentials) error {
 	return nil
 }
-func (f *fakeDatabaseServicer) DatabaseBarrierStatus(_ context.Context, _ string) (*seal.BarrierStatus, error) {
+
+// DatabaseBarrierStatus adapts databaseBarrierStatusSeal to the service
+// interface, with no cluster seal state.
+func (f *fakeDatabaseServicer) DatabaseBarrierStatus(ctx context.Context, name string) (*service.DatabaseBarrierStatusInfo, error) {
+	st, err := f.databaseBarrierStatusSeal(ctx, name)
+	if st == nil {
+		return nil, err
+	}
+	return &service.DatabaseBarrierStatusInfo{BarrierStatus: st}, err
+}
+
+func (f *fakeDatabaseServicer) databaseBarrierStatusSeal(_ context.Context, _ string) (*seal.BarrierStatus, error) {
 	return nil, nil
 }
 func (f *fakeDatabaseServicer) CreateForTenant(_ context.Context, _ database.DatabaseConfig) (*database.DatabaseInfo, error) {

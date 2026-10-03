@@ -15,12 +15,16 @@
 package node
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
 )
 
 // featureGateRetryInterval paces startFeatureGate's attempts while the
@@ -45,7 +49,7 @@ type leaderReporter interface {
 // holding it is ever enabled by a gate that is not already activated.
 func (n *Node) startFeatureGate(host leaderReporter, activations featuregate.ActivationKV) {
 	gate := n.featureGate
-	client := n.client.Load()
+	client := n.featureClient.Load()
 	if gate == nil || client == nil || activations == nil {
 		return
 	}
@@ -92,4 +96,29 @@ func (n *Node) stopFeatureGate() error {
 		}
 	}
 	return err
+}
+
+// newConnectedEmbeddedClient builds and connects an in-process client over
+// svcNode with opts.
+func newConnectedEmbeddedClient(ctx context.Context, svcNode *lifecycle.Node, opts []embedded.Option) (*sdk.Client, error) {
+	tp, err := embedded.New(svcNode.KV, svcNode.Admin, opts...)
+	if err != nil {
+		return nil, &ClientCreateError{Err: err}
+	}
+	client, err := sdk.NewClient(tp)
+	if err != nil {
+		return nil, &ClientCreateError{Err: err}
+	}
+	if err := client.Connect(ctx); err != nil {
+		_ = client.Close()
+		return nil, &ClientCreateError{Err: err}
+	}
+	return client, nil
+}
+
+// closeFeatureClient retracts and closes the feature gate's client.
+func (n *Node) closeFeatureClient() {
+	if client := n.featureClient.Swap(nil); client != nil {
+		_ = client.Close()
+	}
 }

@@ -81,8 +81,8 @@ func TestStore_KVErrorsWrapped(t *testing.T) {
 // TestCoordinator_Request_PrevReadError surfaces a generation-probe read failure.
 func TestCoordinator_Request_PrevReadError(t *testing.T) {
 	c := NewCoordinator(NewStore(errKV{err: errBoom}),
-		fixedOwners{shardID: 1, owners: []string{"n1"}}, nil, func() bool { return true }, nil)
-	if _, err := c.Request(context.Background(), tid, db, validOpts(), nil); !errors.Is(err, errBoom) {
+		fixedOwners{shardID: 1, owners: []string{"n1"}}, func() bool { return true }, nil)
+	if _, err := c.Request(context.Background(), tid, db, validOpts()); !errors.Is(err, errBoom) {
 		t.Fatalf("Request = %v, want wrapped errBoom from prev-read", err)
 	}
 }
@@ -91,8 +91,8 @@ func TestCoordinator_Request_PrevReadError(t *testing.T) {
 // acting as leader (single-node / embedded use).
 func TestNewCoordinator_NilLeaderDefaultsLeader(t *testing.T) {
 	s := NewStore(newMemKV())
-	c := NewCoordinator(s, fixedOwners{shardID: 1, owners: []string{"n1"}}, nil, nil, nil)
-	if _, err := c.Request(context.Background(), tid, db, validOpts(), nil); err != nil {
+	c := NewCoordinator(s, fixedOwners{shardID: 1, owners: []string{"n1"}}, nil, nil)
+	if _, err := c.Request(context.Background(), tid, db, validOpts()); err != nil {
 		t.Fatalf("Request with nil isLeader = %v, want nil (defaults leader)", err)
 	}
 }

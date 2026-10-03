@@ -21,6 +21,7 @@ import (
 	"crypto/x509"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
@@ -125,6 +126,11 @@ func (m *mockBarrierService) BarrierDeleteRecoveryKeys(ctx context.Context) erro
 // BarrierInitialized reports the double as never initialized: its
 // initialize paths answer for themselves through their canned results.
 func (m *mockBarrierService) BarrierInitialized(_ context.Context) (bool, error) { return false, nil }
+
+// BarrierClusterUnseal answers as a node without cluster sealing does.
+func (m *mockBarrierService) BarrierClusterUnseal(context.Context) (*clusterseal.Report, error) {
+	return nil, clusterseal.ErrInactive
+}
 
 func (m *mockBarrierService) BarrierHasRecoveryKeys(ctx context.Context) (bool, error) {
 	if m.barrierHasRecoveryKeysFn != nil {
@@ -368,7 +374,17 @@ func (m *mockDatabaseService) UnsealDatabase(ctx context.Context, name string, c
 	return nil
 }
 
-func (m *mockDatabaseService) DatabaseBarrierStatus(_ context.Context, name string) (*seal.BarrierStatus, error) {
+// DatabaseBarrierStatus adapts databaseBarrierStatusSeal to the service
+// interface, with no cluster seal state.
+func (m *mockDatabaseService) DatabaseBarrierStatus(ctx context.Context, name string) (*service.DatabaseBarrierStatusInfo, error) {
+	st, err := m.databaseBarrierStatusSeal(ctx, name)
+	if st == nil {
+		return nil, err
+	}
+	return &service.DatabaseBarrierStatusInfo{BarrierStatus: st}, err
+}
+
+func (m *mockDatabaseService) databaseBarrierStatusSeal(_ context.Context, name string) (*seal.BarrierStatus, error) {
 	if m.databaseBarrierStatusFn != nil {
 		return m.databaseBarrierStatusFn(name)
 	}

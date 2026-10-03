@@ -46,6 +46,9 @@ func (t *Transport) databaseHolders(method, name string) (service.DatabaseHolder
 // DatabaseBarrierOfficerRegister enrols a share holder of a database's
 // barrier.
 func (t *Transport) DatabaseBarrierOfficerRegister(ctx context.Context, req *transport.DatabaseOfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
+	if err := t.gate("DatabaseBarrierOfficerRegister"); err != nil {
+		return nil, err
+	}
 	if req == nil {
 		return nil, &transport.DatabaseNameRequiredError{Method: "DatabaseBarrierOfficerRegister"}
 	}
@@ -62,6 +65,9 @@ func (t *Transport) DatabaseBarrierOfficerRegister(ctx context.Context, req *tra
 
 // DatabaseBarrierOfficerList lists a database barrier's holders.
 func (t *Transport) DatabaseBarrierOfficerList(ctx context.Context, name string) ([]*transport.OfficerStatus, error) {
+	if err := t.gate("DatabaseBarrierOfficerList"); err != nil {
+		return nil, err
+	}
 	hs, err := t.databaseHolders("DatabaseBarrierOfficerList", name)
 	if err != nil {
 		return nil, delayed("DatabaseBarrierOfficerList", err)
@@ -75,6 +81,9 @@ func (t *Transport) DatabaseBarrierOfficerList(ctx context.Context, name string)
 
 // DatabaseBarrierShamirInitialize initializes a database barrier's custody.
 func (t *Transport) DatabaseBarrierShamirInitialize(ctx context.Context, req *transport.DatabaseShamirInitializeRequest) (*transport.BarrierInitializeShamirResponse, error) {
+	if err := t.gate("DatabaseBarrierShamirInitialize"); err != nil {
+		return nil, err
+	}
 	if req == nil {
 		return nil, &transport.DatabaseNameRequiredError{Method: "DatabaseBarrierShamirInitialize"}
 	}
@@ -93,6 +102,9 @@ func (t *Transport) DatabaseBarrierShamirInitialize(ctx context.Context, req *tr
 // A ctx carrying no TLS certificate is an in-process claim, bound to the
 // holder's enrolled certificate (claimContext).
 func (t *Transport) DatabaseBarrierShareClaimBegin(ctx context.Context, req *transport.DatabaseShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
+	if err := t.gate("DatabaseBarrierShareClaimBegin"); err != nil {
+		return nil, err
+	}
 	if req == nil {
 		return nil, &transport.DatabaseNameRequiredError{Method: "DatabaseBarrierShareClaimBegin"}
 	}
@@ -111,6 +123,9 @@ func (t *Transport) DatabaseBarrierShareClaimBegin(ctx context.Context, req *tra
 // DatabaseBarrierShareClaimComplete delivers a database holder's envelope
 // exactly once.
 func (t *Transport) DatabaseBarrierShareClaimComplete(ctx context.Context, req *transport.DatabaseShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
+	if err := t.gate("DatabaseBarrierShareClaimComplete"); err != nil {
+		return nil, err
+	}
 	if req == nil {
 		return nil, &transport.DatabaseNameRequiredError{Method: "DatabaseBarrierShareClaimComplete"}
 	}
@@ -128,6 +143,9 @@ func (t *Transport) DatabaseBarrierShareClaimComplete(ctx context.Context, req *
 
 // DatabaseBarrierQuorumBegin issues a database holder's quorum challenge.
 func (t *Transport) DatabaseBarrierQuorumBegin(ctx context.Context, req *transport.DatabaseQuorumBeginRequest) (*transport.QuorumChallenge, error) {
+	if err := t.gate("DatabaseBarrierQuorumBegin"); err != nil {
+		return nil, err
+	}
 	if req == nil {
 		return nil, &transport.DatabaseNameRequiredError{Method: "DatabaseBarrierQuorumBegin"}
 	}
@@ -144,6 +162,9 @@ func (t *Transport) DatabaseBarrierQuorumBegin(ctx context.Context, req *transpo
 
 // DatabaseBarrierQuorumSubmit submits a database holder's share.
 func (t *Transport) DatabaseBarrierQuorumSubmit(ctx context.Context, req *transport.DatabaseQuorumSubmitRequest) (*transport.QuorumOutcome, error) {
+	if err := t.gate("DatabaseBarrierQuorumSubmit"); err != nil {
+		return nil, err
+	}
 	if req == nil {
 		return nil, &transport.DatabaseNameRequiredError{Method: "DatabaseBarrierQuorumSubmit"}
 	}
@@ -162,6 +183,9 @@ func (t *Transport) DatabaseBarrierQuorumSubmit(ctx context.Context, req *transp
 
 // DatabaseBarrierRekeyStart opens a rekey round on a database barrier.
 func (t *Transport) DatabaseBarrierRekeyStart(ctx context.Context, req *transport.DatabaseRekeyStartRequest) (*transport.QuorumRound, error) {
+	if err := t.gate("DatabaseBarrierRekeyStart"); err != nil {
+		return nil, err
+	}
 	if req == nil {
 		return nil, &transport.DatabaseNameRequiredError{Method: "DatabaseBarrierRekeyStart"}
 	}
@@ -178,6 +202,9 @@ func (t *Transport) DatabaseBarrierRekeyStart(ctx context.Context, req *transpor
 
 // DatabaseBarrierOfficerRevoke revokes a database holder.
 func (t *Transport) DatabaseBarrierOfficerRevoke(ctx context.Context, req *transport.DatabaseOfficerRevokeRequest) (*transport.QuorumRound, error) {
+	if err := t.gate("DatabaseBarrierOfficerRevoke"); err != nil {
+		return nil, err
+	}
 	if req == nil {
 		return nil, &transport.DatabaseNameRequiredError{Method: "DatabaseBarrierOfficerRevoke"}
 	}

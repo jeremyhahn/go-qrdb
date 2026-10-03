@@ -21,6 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -242,6 +243,36 @@ func BenchmarkClassify(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
 				_ = Classify(bc.err)
+			}
+		})
+	}
+}
+
+// TestClassify_ClusterSeal pins how every transport answers a cluster seal
+// condition, including when the tenant or database service wraps it -- a
+// tenant's BarrierError must not turn a retryable unconfirmed record into an
+// internal fault, or a lost race into one.
+func TestClassify_ClusterSeal(t *testing.T) {
+	notConfirmed := &clusterseal.RecordNotConfirmedError{Barrier: clusterseal.TenantBarrier("t"), Op: "seal", Err: errors.New("no quorum")}
+	conflict := &clusterseal.SealEpochConflictError{Barrier: clusterseal.NodeBarrier()}
+	for _, tc := range []struct {
+		name string
+		err  error
+		want Class
+	}{
+		{"seal record not confirmed", notConfirmed, Unavailable},
+		{"seal record not confirmed inside a tenant barrier error", &tenant.BarrierError{TenantID: "t", Op: "seal", Err: notConfirmed}, Unavailable},
+		{"lost seal race", conflict, Aborted},
+		{"lost seal race inside a tenant barrier error", &tenant.BarrierError{TenantID: "t", Op: "clear-cluster-seal", Err: conflict}, Aborted},
+		{"cluster sealing not active", clusterseal.ErrInactive, FailedPrecondition},
+		{"stream ended by a seal", &clusterseal.SealedError{Barrier: clusterseal.NodeBarrier()}, Unavailable},
+		{"node cut off from the seal records", &clusterseal.SealStateUnconfirmedError{}, Unavailable},
+		{"corrupt seal record", &clusterseal.CorruptRecordError{Barrier: clusterseal.NodeBarrier()}, Internal},
+		{"malformed barrier name", &clusterseal.InvalidBarrierError{Name: "x"}, InvalidArgument},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Classify(wrapped{tc.err}); got != tc.want {
+				t.Errorf("got %s, want %s", got, tc.want)
 			}
 		})
 	}

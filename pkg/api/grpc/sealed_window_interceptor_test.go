@@ -427,3 +427,27 @@ func TestSealedWindowListener_NoCallInFlightAcrossUnseal(t *testing.T) {
 		t.Fatalf("a call after the unseal: %v, want Unavailable", err)
 	}
 }
+
+// TestSealedWindowGate_ClusterUnsealIsNeverAnonymous: cluster unseal passes
+// the regular gate while it is closed, and the boot-time listener refuses it
+// on both the unary and the stream interceptor.
+func TestSealedWindowGate_ClusterUnsealIsNeverAnonymous(t *testing.T) {
+	probe := newProbe(true)
+	probe.enrollment.Store(true)
+	const method = "/qrdb.v1.QRDBService/BarrierClusterUnseal"
+	if _, err := SealedWindowUnaryInterceptor(probe, nil)(context.Background(), nil,
+		&grpc.UnaryServerInfo{FullMethod: method}, dummyHandler); err != nil {
+		t.Errorf("regular gate: %v (authentication decides)", err)
+	}
+	_, err := SealedWindowListenerUnaryInterceptor(probe, nil)(context.Background(), nil,
+		&grpc.UnaryServerInfo{FullMethod: method}, dummyHandler)
+	if st, _ := status.FromError(err); st.Code() != codes.Unavailable {
+		t.Errorf("boot-time listener: %v, want Unavailable", err)
+	}
+	stream := &ctxServerStream{ctx: context.Background()}
+	err = SealedWindowListenerStreamInterceptor(probe, nil)(nil, stream,
+		&grpc.StreamServerInfo{FullMethod: method}, func(any, grpc.ServerStream) error { return nil })
+	if st, _ := status.FromError(err); st.Code() != codes.Unavailable {
+		t.Errorf("boot-time listener stream: %v, want Unavailable", err)
+	}
+}

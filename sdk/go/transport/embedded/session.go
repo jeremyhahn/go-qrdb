@@ -33,6 +33,9 @@ var _ transport.SessionClient = (*sessionClient)(nil)
 
 // ResolveIdentity returns the Identity bound to the given bearer.
 func (c *sessionClient) ResolveIdentity(ctx context.Context, bearer string) (*transport.Identity, error) {
+	if err := c.transport.gate("SessionClient.ResolveIdentity"); err != nil {
+		return nil, err
+	}
 	if c.transport.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -51,6 +54,9 @@ func (c *sessionClient) ResolveIdentity(ctx context.Context, bearer string) (*tr
 
 // Revoke invalidates the bearer.
 func (c *sessionClient) Revoke(ctx context.Context, bearer string) error {
+	if err := c.transport.gate("SessionClient.Revoke"); err != nil {
+		return err
+	}
 	if c.transport.closed.Load() {
 		return &transport.ClosedError{}
 	}

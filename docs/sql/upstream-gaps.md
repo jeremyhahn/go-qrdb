@@ -157,3 +157,41 @@ hook Doltgres injects PostgreSQL-specific tables and views through, and
 same catalog traversal go-mysql-server's own `key_column_usage` uses. Upstream
 would still be the better home for a standard view, but nothing here is
 blocked on it.
+
+---
+
+## 5. Server-side cursors race on `Conn.StatusFlags` and are not bounded
+
+**Severity: medium — a known limitation of the MySQL wire. Present only in
+builds with the `qrdb_mysql` tag (`WITH_QRDB_MYSQL`).**
+
+A MySQL client opens a server-side cursor by sending `COM_STMT_EXECUTE` with a
+cursor flag, then reads the rows with `COM_STMT_FETCH`. That path is served
+entirely by the upstream stack: vitess runs the statement through
+go-mysql-server's handler on one goroutine, which streams rows to the
+connection goroutine, and the connection goroutine answers each
+`COM_STMT_FETCH` itself. QRDB's statement gate is not consulted for a fetch.
+
+- **A data race.** go-mysql-server's handler reads and writes vitess
+  `Conn.StatusFlags` (its autocommit and in-transaction bits, and the
+  cursor-exists check) on the goroutine running the cursor's statement, while
+  vitess sets and clears `SERVER_STATUS_CURSOR_EXISTS` and
+  `SERVER_STATUS_LAST_ROW_SENT` on the same field from the connection
+  goroutine. Nothing synchronizes the two; the race detector reports it.
+- **An idle cursor is not bounded.** `sql.query_timeout` bounds a cursor while
+  it produces rows, not while it waits: a cursor the client stops fetching
+  from holds its statement, and what that statement holds, until the client
+  fetches to the end, closes the statement or disconnects, or a seal closes
+  the session.
+
+**What clients should do.** A client that needs bounded resource use should
+not request server-side cursors. MySQL Connector/J requests one only with
+`useCursorFetch=true` and a positive fetch size: leave `useCursorFetch=false`
+(its default). With libmysqlclient, do not set `STMT_ATTR_CURSOR_TYPE` to
+`CURSOR_TYPE_READ_ONLY` through `mysql_stmt_attr_set`. go-sql-driver/mysql
+never requests one. Without a cursor flag, an execute returns its whole
+result set and is bounded by `sql.query_timeout` like any other statement.
+
+**Fix.** Synchronize `Conn.StatusFlags` between the handler and the
+connection goroutine in vitess and go-mysql-server, and give an open cursor an
+idle bound upstream. QRDB does not fork either dependency to work around it.

@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
@@ -454,7 +455,35 @@ func barrierStatusToResponse(info *service.BarrierStatusInfo) map[string]interfa
 	if info.ShamirTotal > 0 {
 		resp["shamir_total"] = info.ShamirTotal
 	}
+	resp["cluster_seal"] = clusterSealOrInactive(info.ClusterSeal)
 	return resp
+}
+
+// clusterSealOrInactive returns r, or the inactive report for a service that
+// supplied none.
+func clusterSealOrInactive(r *clusterseal.Report) *clusterseal.Report {
+	if r == nil {
+		return &clusterseal.Report{}
+	}
+	return r
+}
+
+// handleBarrierClusterUnseal handles POST /v1/barrier/cluster-unseal --
+// clears a cluster-wide seal of the node barrier and returns its cluster_seal
+// object. It unseals nothing: this node must have unsealed itself.
+// Required permission: seal:unseal (system tenant only). It is on the
+// sealed-window allowlist of the regular listener only (AuthenticatedOnly).
+func (s *Server) handleBarrierClusterUnseal(w http.ResponseWriter, r *http.Request) {
+	if s.barrierSvc == nil {
+		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "barrier"})
+		return
+	}
+	report, err := s.barrierSvc.BarrierClusterUnseal(r.Context())
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+	writeJSON(w, clusterSealOrInactive(report))
 }
 
 // shamirInitToResponse converts a ShamirInitInfo to a JSON-friendly map.

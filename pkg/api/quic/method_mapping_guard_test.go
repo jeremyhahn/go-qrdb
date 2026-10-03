@@ -160,6 +160,7 @@ var expectedMethodPerms = map[string]permission.Permission{
 	"barrier.Unseal":                     permission.SealUnseal,
 	"barrier.Seal":                       permission.SealSeal,
 	"barrier.Status":                     permission.SealStatus,
+	"barrier.ClusterUnseal":              permission.SealUnseal,
 	"barrier.ShamirInitialize":           permission.SealInitializeShamir,
 	"barrier.EnableEncryption":           permission.SealEnableEncryption,
 	"barrier.OfficerRegister":            permission.SealOfficerRegister,

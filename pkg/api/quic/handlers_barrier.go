@@ -19,6 +19,8 @@ import (
 	"log/slog"
 	"time"
 
+	grpcapi "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
+
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -118,11 +120,30 @@ func (s *Server) handleBarrierStatus(ctx context.Context, _ []byte) ([]byte, err
 		InitializedAt:   info.InitializedAt.Format(time.RFC3339Nano),
 		ShamirThreshold: int32(info.ShamirThreshold),
 		ShamirTotal:     int32(info.ShamirTotal),
+		ClusterSeal:     grpcapi.ClusterSealToProto(info.ClusterSeal),
 	})
 	if err != nil {
 		return nil, &MarshalError{Err: err}
 	}
 	return resp, nil
+}
+
+// handleBarrierClusterUnseal clears a cluster-wide seal of the node barrier
+// and answers with its ClusterSealState. It unseals nothing; this node must
+// have unsealed itself.
+func (s *Server) handleBarrierClusterUnseal(ctx context.Context, _ []byte) ([]byte, error) {
+	if s.barrierSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "barrier"}
+	}
+	report, err := s.barrierSvc.BarrierClusterUnseal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out, err := proto.Marshal(grpcapi.ClusterSealToProto(report))
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return out, nil
 }
 
 // handleBarrierShamirInitialize initializes the barrier with Shamir secret

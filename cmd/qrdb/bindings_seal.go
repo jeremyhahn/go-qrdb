@@ -169,6 +169,26 @@ func (b *SealBinding) Seal() error {
 	return nil
 }
 
+// ClusterUnseal clears the node barrier's cluster seal record once this node
+// has unsealed with its own credential, so every node that is held serves
+// again. It refuses while cluster sealing is not active, and while this
+// node's own barrier is still sealed.
+func (b *SealBinding) ClusterUnseal() (*transport.ClusterSeal, error) {
+	b.logger.Debug("ClusterUnseal called")
+	cl, err := b.conn.loadClient()
+	if err != nil {
+		b.logger.Error("ClusterUnseal failed", "error", err)
+		return nil, err
+	}
+	cs, err := cl.Barrier().BarrierClusterUnseal(context.Background())
+	if err != nil {
+		b.logger.Error("ClusterUnseal failed", "error", err)
+		return nil, err
+	}
+	b.logger.Debug("ClusterUnseal completed", "epoch", cs.Epoch)
+	return cs, nil
+}
+
 // EnableEncryption migrates a previously-unencrypted ("none") barrier to a
 // keyed strategy, re-encrypting all at-rest data. An empty TenantID targets the
 // system barrier (admin scope); a set TenantID targets that tenant's dedicated
@@ -227,6 +247,7 @@ func (b *SealBinding) Status() (*SealStatus, error) {
 		Strategy:       resp.Strategy,
 		SharesRequired: resp.ShamirThreshold,
 		SharesTotal:    resp.ShamirTotal,
+		ClusterSeal:    resp.ClusterSeal,
 	}
 	b.logger.Debug("Status completed", "sealed", status.Sealed, "initialized", status.Initialized, "strategy", status.Strategy)
 	return status, nil

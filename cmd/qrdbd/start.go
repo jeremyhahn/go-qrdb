@@ -52,6 +52,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
 	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 
@@ -1475,7 +1476,13 @@ func runStart(f *startFlags) (err error) {
 			// it. Until then, and with auth disabled, it is the built-in tokens.
 			authMethods := &middleware.AuthMethodVocabulary{}
 
+			// Cluster sealing: the services seal through clusterSeal from the
+			// start, and it seals node-locally until the monitor is set below,
+			// once the host, the services and the feature gate exist.
+			clusterSeal := clusterseal.NewDeferred()
+
 			svcNode, err := lifecycle.BuildServices(sigCtx, lifecycle.Infra{
+				ClusterSealer:        clusterSeal,
 				AuthMethodVocabulary: authMethods.IsAuthMethod,
 				Host:                 svcHost,
 				// The raft system shard runs --sm; a type without MVCC revision
@@ -1748,6 +1755,16 @@ func runStart(f *startFlags) (err error) {
 				}
 			}
 
+			// The cluster seal monitor is installed below, after the tenant
+			// registries it seals through exist. A node that installs one
+			// hands BuildTenantInfra the sealer, which then starts no tenant
+			// runtime before the monitor has read the records.
+			installsSealMonitor := host != nil && barrierRegistry != nil
+			var tenantSealer clusterseal.Sealer
+			if installsSealMonitor {
+				tenantSealer = clusterSeal
+			}
+
 			// Build per-tenant isolation infrastructure (IsolationVolume host
 			// registry, IsolationRaft factory, TenantShardReconciler). Any
 			// registries opened by the composer are closed on error before it
@@ -1769,6 +1786,7 @@ func runStart(f *startFlags) (err error) {
 				PlacementStore: svcNode.PlacementStore,
 				MultiplexLogDB: f.walMux,
 				FeatureGate:    featureGate,
+				ClusterSealer:  tenantSealer,
 			})
 			if err != nil {
 				_ = shutdownNode(nodeCloser)
@@ -1776,6 +1794,45 @@ func runStart(f *startFlags) (err error) {
 			}
 			tenantHostReg := ti.Hosts
 			raftBackendReg := ti.Raft
+
+			// The cluster seal monitor reads the replicated seal records and
+			// seals this node when they say so; until its first read, and
+			// whenever it cannot read them for the lease, the node refuses
+			// requests. It is active only once every node runs a release with
+			// cluster sealing (featuregate.ClusterSeal); a raft node with no
+			// transport has no gate and seals node-locally.
+			if installsSealMonitor {
+				timing, terr := f.sealConfig.ClusterSealTiming()
+				if terr != nil {
+					_ = shutdownNode(nodeCloser)
+					return terr
+				}
+				monitor, merr := server.NewClusterSealMonitor(server.ClusterSealParts{
+					KV:          kvSvc,
+					Gate:        featureGate,
+					Barriers:    barrierRegistry,
+					Shards:      raftBackendReg,
+					Hosts:       tenantHostReg,
+					Databases:   svcNode.Database,
+					Membership:  host,
+					SystemShard: shard.ShardKV,
+					ReplicaID:   f.replicaID,
+					RaftAddress: f.raftAddress,
+					Timing:      timing,
+					Streams:     clusterSeal.Streams(),
+					Logger:      slog.Default(),
+				})
+				if merr != nil {
+					_ = shutdownNode(nodeCloser)
+					return merr
+				}
+				clusterSeal.Set(monitor)
+				go monitor.Run(bootCtx)
+			}
+			// The reconciler starts tenant shards, holding each whose record
+			// is sealed. It asks through the sealer, which refuses nothing
+			// until the monitor is Set, so it starts only now -- and the
+			// monitor refuses every barrier until its first read.
 			if ti.Reconciler != nil {
 				go ti.Reconciler.Run(bootCtx)
 			}
@@ -1848,9 +1905,9 @@ func runStart(f *startFlags) (err error) {
 			// --cluster-trust-domain flag or YAML auth.cluster_trust_domain.
 			var ckReceiver *clusterkeys.Receiver
 			var ckSender *clusterkeys.Sender
-			// nodePriv is lifted to the boot-body scope so the Phase D cluster
-			// enable-encryption coordination (below) can reuse the node's HPKE key
-			// for sealing/opening per-node migration credentials.
+			// nodePriv is the node's HPKE key for the cluster key plane. Cluster
+			// enable-encryption does not use it: no migration credential is
+			// sealed to a node or sent to one.
 			var nodePriv *ecdsa.PrivateKey
 
 			// The cluster key plane is a THIRD certificate-authorization site,
@@ -1997,48 +2054,42 @@ func runStart(f *startFlags) (err error) {
 			}
 
 			// Phase D: cluster-wide enable-encryption coordination. Wired only when
-			// the replicated coordination store and the node HPKE key are both
-			// available (a TLS-secured, KV-backed deployment). When present, the
-			// transports write a replicated migration intent (with per-node sealed
-			// credentials) via clusterMig and every node's reconciler performs its
-			// local recycle; otherwise the direct system migrator is used unchanged.
+			// the replicated coordination store is available (a KV-backed cluster).
+			// When present, the transports write a replicated migration intent via
+			// clusterMig and every node's reconciler performs its local recycle with
+			// its own credential -- the request's, held in memory on the node that
+			// accepted it, or the node's own file under
+			// seal.migration_credentials_dir. No credential is in the intent.
+			// Otherwise the direct system migrator is used unchanged.
 			var clusterMig *clusterCoordinatorMigrator
-			if host != nil && svcNode.ClusterMigStore != nil && nodePriv != nil && barrierRegistry != nil {
+			if host != nil && svcNode.ClusterMigStore != nil && barrierRegistry != nil {
 				localMig := server.NewScopedEncryptionMigrator(
 					sysMigrator, tenantHostReg, raftBackendReg, barrierRegistry, tenantSvcInst)
 				topology := service.NewHostTopologyProvider(raftbackend.New(host), svcNode.Rebalance)
 				ownerResolver := server.NewClusterOwnerResolver(
 					svcNode.PlacementStore, topology, shard.ShardKV, f.raftAddress)
-				sealer := &daemonCredentialSealer{
-					sender: ckSender, selfNode: f.raftAddress, selfPub: &nodePriv.PublicKey,
-				}
 				localReplicaID := f.replicaID
 				isLeader := func() bool {
 					id, ok, lerr := host.GetLeaderID(shard.ShardKV)
 					return lerr == nil && ok && id == localReplicaID
 				}
-				coord := clustermig.NewCoordinator(svcNode.ClusterMigStore, ownerResolver, sealer,
+				coord := clustermig.NewCoordinator(svcNode.ClusterMigStore, ownerResolver,
 					isLeader, func() int64 { return time.Now().Unix() })
-
-				migReceiver, mrErr := keydelivery.NewReceiver(nodePriv, f.raftAddress,
-					keydelivery.WithTTL(migrationCredentialTTL), keydelivery.WithoutReplayGuard())
-				if mrErr != nil {
-					slog.Warn("cluster enable-encryption disabled: credential receiver init failed",
-						slog.Any("error", mrErr))
-				} else {
-					clusterMig = &clusterCoordinatorMigrator{
-						coord:      coord,
-						barrierReg: barrierRegistry,
-						modeCheck:  tenantSvcInst,
-					}
-					reconciler := clustermig.NewReconciler(svcNode.ClusterMigStore, f.raftAddress,
-						&daemonLocalRecycler{migrator: localMig, barrierReg: barrierRegistry},
-						&daemonCredentialOpener{receiver: migReceiver, selfNode: f.raftAddress},
-						func() int64 { return time.Now().Unix() }, slog.Default())
-					go runClusterMigReconciler(bootCtx, reconciler, coord, svcNode.ClusterMigStore)
-					slog.Info("cluster enable-encryption coordination enabled",
-						slog.String("node", f.raftAddress))
+				migCredentials := clustermig.NewLocalCredentials(f.sealConfig.MigrationCredentialsDir)
+				clusterMig = &clusterCoordinatorMigrator{
+					coord:       coord,
+					credentials: migCredentials,
+					self:        f.raftAddress,
+					barrierReg:  barrierRegistry,
+					modeCheck:   tenantSvcInst,
 				}
+				reconciler := clustermig.NewReconciler(svcNode.ClusterMigStore, f.raftAddress,
+					&daemonLocalRecycler{migrator: localMig, barrierReg: barrierRegistry},
+					migCredentials,
+					func() int64 { return time.Now().Unix() }, slog.Default())
+				go runClusterMigReconciler(bootCtx, reconciler, coord, svcNode.ClusterMigStore)
+				slog.Info("cluster enable-encryption coordination enabled",
+					slog.String("node", f.raftAddress))
 			}
 
 			// Build server configuration using the QRDB config type required by
@@ -2207,6 +2258,12 @@ func runStart(f *startFlags) (err error) {
 			// allowlists.
 			if sealBarrier != nil {
 				serverOpts = append(serverOpts, server.WithSealedWindowProbe(sealBarrier))
+			}
+			// Cluster seals: the regular listener's gate also closes while
+			// this node is held, cut off or not yet confirmed; sealed tenants
+			// and databases are refused; open streams end with their seal.
+			if host != nil && barrierRegistry != nil {
+				serverOpts = append(serverOpts, server.WithClusterSeal(clusterSeal))
 			}
 			if tenantHostReg != nil {
 				serverOpts = append(serverOpts, server.WithTenantHostRegistry(tenantHostReg))

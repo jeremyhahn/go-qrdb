@@ -33,6 +33,9 @@ func WithEmbeddingService(svc service.EmbeddingServicer) Option {
 
 // Embed generates embedding vectors by delegating to the injected service.
 func (t *Transport) Embed(ctx context.Context, req *transport.EmbedRequest) (*transport.EmbedResponse, error) {
+	if err := t.gate("Embed"); err != nil {
+		return nil, err
+	}
 	if t.embeddingSvc == nil {
 		return nil, &NilServiceError{Service: "EmbeddingServicer"}
 	}
@@ -54,6 +57,9 @@ func (t *Transport) Embed(ctx context.Context, req *transport.EmbedRequest) (*tr
 
 // BatchEmbed embeds a large set of texts by delegating to the injected service.
 func (t *Transport) BatchEmbed(ctx context.Context, req *transport.BatchEmbedRequest) (*transport.BatchEmbedResponse, error) {
+	if err := t.gate("BatchEmbed"); err != nil {
+		return nil, err
+	}
 	if t.embeddingSvc == nil {
 		return nil, &NilServiceError{Service: "EmbeddingServicer"}
 	}
@@ -75,6 +81,9 @@ func (t *Transport) BatchEmbed(ctx context.Context, req *transport.BatchEmbedReq
 
 // ListEmbeddingModels returns a provider's models by delegating to the service.
 func (t *Transport) ListEmbeddingModels(ctx context.Context, provider string) (*transport.ListEmbeddingModelsResponse, error) {
+	if err := t.gate("ListEmbeddingModels"); err != nil {
+		return nil, err
+	}
 	if t.embeddingSvc == nil {
 		return nil, &NilServiceError{Service: "EmbeddingServicer"}
 	}

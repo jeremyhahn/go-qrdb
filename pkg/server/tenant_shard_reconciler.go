@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
@@ -133,6 +134,17 @@ func WithBarrierReadiness(b BarrierReadiness) TenantShardReconcilerOption {
 	return func(r *TenantShardReconciler) { r.barriers = b }
 }
 
+// WithSealRecords makes the reconciler hold a tenant's shards while the
+// tenant's cluster seal record is sealed, and a database's shard while the
+// database's is. A system-managed tenant auto-unseals at boot, before this
+// node has read the records; its shards must not start until the record
+// allows it. s is asked on every pass, so it must be the installed monitor
+// (or a Deferred it has been Set into) by the time the reconciler runs: an
+// unset Deferred refuses nothing.
+func WithSealRecords(s clusterseal.Sealer) TenantShardReconcilerOption {
+	return func(r *TenantShardReconciler) { r.sealRecords = s }
+}
+
 // WithJoinObserver wires the JoinObserver the reconciler polls to promote a
 // locally hosted ReplicaStateObserver replica to ReplicaStateObserverReady
 // once its join bootstrap window has closed. When nil (the default),
@@ -189,6 +201,7 @@ type TenantShardReconciler struct {
 	factory         ShardLifecycle
 	selfNodeID      string
 	barriers        BarrierReadiness
+	sealRecords     clusterseal.Sealer
 	joinObserver    JoinObserver
 	promoter        Promoter
 	purgeOnDemotion bool
@@ -512,6 +525,13 @@ func (r *TenantShardReconciler) maybePromoteReadyObservers(ctx context.Context, 
 // is absent or sealed the start is deferred without error — it will be retried
 // on the next reconcile pass.
 func (r *TenantShardReconciler) ensureStarted(ctx context.Context, p *placement.Placement) {
+	if r.sealRecords != nil && (r.sealRecords.Refuses(clusterseal.TenantBarrier(p.TenantID)) ||
+		r.sealRecords.Refuses(clusterseal.DatabaseBarrier(p.TenantID, p.Database))) {
+		r.logger.Debug("placement reconciler: tenant or database sealed cluster-wide, deferring shard start",
+			slog.String("tenant", p.TenantID),
+			slog.String("database", p.Database))
+		return
+	}
 	if r.barriers != nil {
 		tb, err := r.barriers.GetTenant(p.TenantID)
 		if err != nil || tb == nil || tb.IsSealed() {

@@ -46,6 +46,10 @@ var sealedWindowTransition = sealedwindow.QUICTransition()
 // PreOperationalOnly verbs (officer and recovery-officer registration).
 var sealedWindowPreOperationalOnly = sealedwindow.QUICPreOperationalOnly()
 
+// sealedWindowAuthenticatedOnly holds the native QUIC methods of the
+// AuthenticatedOnly verbs (cluster unseal), never served anonymously.
+var sealedWindowAuthenticatedOnly = sealedwindow.QUICAuthenticatedOnly()
+
 // sealedWindowRefusal is how the QUIC gate answers one refusing Decision.
 type sealedWindowRefusal struct {
 	status uint16
@@ -67,10 +71,12 @@ func (s *Server) sealedWindowRefusal(ctx context.Context, method string) (sealed
 	if s.sealedWindowProbe == nil {
 		return sealedWindowRefusal{}, false
 	}
+	_, authOnly := sealedWindowAuthenticatedOnly[method]
 	req := sealedwindow.Request{
-		Sealed:      s.sealedWindowProbe.IsSealed(),
-		Allowlisted: sealedWindowAllowed(method),
-		Listener:    s.sealedWindowListener != nil,
+		Sealed:            s.sealedWindowProbe.IsSealed(),
+		Allowlisted:       sealedWindowAllowed(method),
+		Listener:          s.sealedWindowListener != nil,
+		AuthenticatedOnly: authOnly,
 	}
 	if _, preOp := sealedWindowPreOperationalOnly[method]; preOp && req.Listener && req.Sealed && req.Allowlisted {
 		req.PreOperationalOnly = true

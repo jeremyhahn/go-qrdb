@@ -178,7 +178,18 @@ func (s *stubMCPDBWithBarrier) SealDatabase(ctx context.Context, name string) er
 func (s *stubMCPDBWithBarrier) UnsealDatabase(ctx context.Context, name string, creds seal.Credentials) error {
 	return s.unsealFn(ctx, name, creds)
 }
-func (s *stubMCPDBWithBarrier) DatabaseBarrierStatus(_ context.Context, name string) (*seal.BarrierStatus, error) {
+
+// DatabaseBarrierStatus adapts databaseBarrierStatusSeal to the service
+// interface, with no cluster seal state.
+func (s *stubMCPDBWithBarrier) DatabaseBarrierStatus(ctx context.Context, name string) (*service.DatabaseBarrierStatusInfo, error) {
+	st, err := s.databaseBarrierStatusSeal(ctx, name)
+	if st == nil {
+		return nil, err
+	}
+	return &service.DatabaseBarrierStatusInfo{BarrierStatus: st}, err
+}
+
+func (s *stubMCPDBWithBarrier) databaseBarrierStatusSeal(_ context.Context, name string) (*seal.BarrierStatus, error) {
 	return s.barrierStatusFn(name)
 }
 

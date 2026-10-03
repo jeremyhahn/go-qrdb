@@ -24,6 +24,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal/clustersealtest"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
@@ -1548,5 +1551,66 @@ func TestTenantShardReconciler_NoJoinObserver_NoPromotion(t *testing.T) {
 	local, ok := got.ReplicaForNode("local:1")
 	if !ok || local.State != placement.ReplicaStateObserver {
 		t.Fatalf("State = %v, want ReplicaStateObserver (no observer wired, must not promote)", local.State)
+	}
+}
+
+// TestTenantShardReconciler_SealedRecordDefers proves a tenant's shard is not
+// started while the tenant's cluster seal record is sealed -- a system-managed
+// tenant auto-unseals at boot, before this node has read the records -- and
+// starts once the record is cleared.
+func TestTenantShardReconciler_SealedRecordDefers(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	p := placement1("acme", "orders", 1001)
+	sealer := clustersealtest.New(true)
+	sealer.Put(clusterseal.Record{Barrier: clusterseal.TenantBarrier("acme"), Epoch: 1, Sealed: true})
+
+	store, err := placement.NewStore(newMemKV())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.Put(context.Background(), p); err != nil {
+		t.Fatalf("store.Put: %v", err)
+	}
+	r := NewTenantShardReconciler(store, factory, "local:1", nil,
+		WithReconcilerPollInterval(10*time.Millisecond), WithSealRecords(sealer))
+
+	r.ReconcileOnce(context.Background())
+	if factory.attachCount() != 0 {
+		t.Fatalf("Attach called %d times while the tenant's record is sealed", factory.attachCount())
+	}
+	sealer.Put(clusterseal.Record{Barrier: clusterseal.TenantBarrier("acme"), Epoch: 2})
+	r.ReconcileOnce(context.Background())
+	if factory.attachCount() != 1 {
+		t.Fatalf("Attach called %d times after the record cleared, want 1", factory.attachCount())
+	}
+}
+
+// TestTenantShardReconciler_SealedDatabaseRecordDefers: a database's own
+// cluster seal record holds that database's dedicated shard -- the tenant's
+// record is clear, so only the database record can hold it -- while another
+// database of the same tenant starts.
+func TestTenantShardReconciler_SealedDatabaseRecordDefers(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	sealer := clustersealtest.New(true)
+	sealer.Put(clusterseal.Record{Barrier: clusterseal.DatabaseBarrier("acme", "orders"), Epoch: 1, Sealed: true})
+
+	store, err := placement.NewStore(newMemKV())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.Put(context.Background(), placement1("acme", "orders", 1001)); err != nil {
+		t.Fatalf("store.Put: %v", err)
+	}
+	r := NewTenantShardReconciler(store, factory, "local:1", nil,
+		WithReconcilerPollInterval(10*time.Millisecond), WithSealRecords(sealer))
+
+	r.ReconcileOnce(context.Background())
+	if factory.attachCount() != 0 {
+		t.Fatalf("Attach called %d times while the database's record is sealed", factory.attachCount())
+	}
+	sealer.Put(clusterseal.Record{Barrier: clusterseal.DatabaseBarrier("acme", "orders"), Epoch: 2})
+	r.ReconcileOnce(context.Background())
+	if factory.attachCount() != 1 {
+		t.Fatalf("Attach called %d times after the database's record cleared, want 1", factory.attachCount())
 	}
 }

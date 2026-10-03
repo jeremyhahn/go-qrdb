@@ -14,6 +14,16 @@
 
 package service
 
+// StreamRefuser is the registry capability a stream asks once it has
+// subscribed to the node's seal stream registry: why a stream on (tenantID,
+// db) may not open -- the node held, cut off or sealed; the tenant or the
+// database sealed, here or by its cluster seal record -- or nil while it may.
+// The server's registry implements it; every stream open, on every transport,
+// asks it after subscribing (clusterseal.Streams.SubscribeServing).
+type StreamRefuser interface {
+	StreamRefusal(tenantID, db string) error
+}
+
 // Registry resolves per-(tenant, database) service instances for data-plane
 // request routing. Each method returns the service scoped to the given
 // (tenant, db) pair, or a typed error when the tenant or database does not

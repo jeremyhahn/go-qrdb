@@ -73,6 +73,15 @@ func selfStrictPermissions() []Permission {
 		// compaction discarded the whole store's history, which made the
 		// platform operator the one identity able to destroy every tenant's.
 		MVCCCompact,
+		// databases (barrier)
+		//
+		// A database barrier is sealed, unsealed and inspected by the tenant
+		// that owns the database, the system tenant for its own databases
+		// included. These were ScopeSelf -- the system tenant passed the
+		// authorizer for any tenant's database barrier.
+		DatabasesSeal,
+		DatabasesUnseal,
+		DatabasesBarrierStatus,
 	}
 }
 

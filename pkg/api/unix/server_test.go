@@ -33,6 +33,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 
 	"google.golang.org/grpc"
@@ -1123,6 +1124,11 @@ func (s *stubBarrierSvc) BarrierInitialized(_ context.Context) (bool, error) { r
 
 func (s *stubBarrierSvc) BarrierHasRecoveryKeys(_ context.Context) (bool, error) { return false, nil }
 
+// BarrierClusterUnseal answers as a node without cluster sealing does.
+func (s *stubBarrierSvc) BarrierClusterUnseal(context.Context) (*clusterseal.Report, error) {
+	return nil, clusterseal.ErrInactive
+}
+
 // stubCeremonySvc satisfies service.CeremonyServicer for option propagation tests.
 type stubCeremonySvc struct{}
 
@@ -1354,7 +1360,18 @@ func (s *stubDatabaseSvc) SealDatabase(_ context.Context, _ string) error { retu
 func (s *stubDatabaseSvc) UnsealDatabase(_ context.Context, _ string, _ seal.Credentials) error {
 	return nil
 }
-func (s *stubDatabaseSvc) DatabaseBarrierStatus(_ context.Context, _ string) (*seal.BarrierStatus, error) {
+
+// DatabaseBarrierStatus adapts databaseBarrierStatusSeal to the service
+// interface, with no cluster seal state.
+func (s *stubDatabaseSvc) DatabaseBarrierStatus(ctx context.Context, name string) (*service.DatabaseBarrierStatusInfo, error) {
+	st, err := s.databaseBarrierStatusSeal(ctx, name)
+	if st == nil {
+		return nil, err
+	}
+	return &service.DatabaseBarrierStatusInfo{BarrierStatus: st}, err
+}
+
+func (s *stubDatabaseSvc) databaseBarrierStatusSeal(_ context.Context, _ string) (*seal.BarrierStatus, error) {
 	return nil, nil
 }
 func (s *stubDatabaseSvc) CreateForTenant(_ context.Context, _ database.DatabaseConfig) (*database.DatabaseInfo, error) {

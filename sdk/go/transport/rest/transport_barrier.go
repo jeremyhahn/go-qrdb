@@ -71,6 +71,20 @@ func (t *Transport) BarrierSeal(ctx context.Context) error {
 	return t.postJSONDecode(ctx, "BarrierSeal", "/v1/barrier/seal", body, nil)
 }
 
+// BarrierClusterUnseal clears a cluster-wide seal of the node barrier and
+// returns its cluster seal state. Maps to POST /v1/barrier/cluster-unseal. It
+// unseals nothing.
+func (t *Transport) BarrierClusterUnseal(ctx context.Context) (*transport.ClusterSeal, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	var out transport.ClusterSeal
+	if err := t.postJSONDecode(ctx, "BarrierClusterUnseal", "/v1/barrier/cluster-unseal", struct{}{}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // BarrierStatus returns the current state of the cryptographic barrier.
 // Maps to GET /v1/barrier/status.
 func (t *Transport) BarrierStatus(ctx context.Context) (*transport.BarrierStatusResponse, error) {

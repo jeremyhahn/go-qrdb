@@ -178,13 +178,18 @@ var sealedWindowTransition = sealedwindow.GRPCFullMethodTransition(pb.QRDBServic
 // PreOperationalOnly verbs (officer and recovery-officer registration).
 var sealedWindowPreOperationalOnly = sealedwindow.GRPCFullMethodPreOperationalOnly(pb.QRDBService_ServiceDesc.ServiceName)
 
+// sealedWindowAuthenticatedOnly holds the QRDBService methods of the
+// AuthenticatedOnly verbs (cluster unseal), never served anonymously.
+var sealedWindowAuthenticatedOnly = sealedwindow.GRPCFullMethodAuthenticatedOnly(pb.QRDBService_ServiceDesc.ServiceName)
+
 // sealedWindowAdmit returns nil when the gate admits fullMethod, and the
 // refusal status otherwise.
 func sealedWindowAdmit(ctx context.Context, barrier sealedWindowProbe, fullMethod string, allowSet map[string]struct{}, listener sealedwindow.ListenerProbe) error {
 	req := sealedwindow.Request{
-		Sealed:      barrier != nil && barrier.IsSealed(),
-		Allowlisted: methodAllowed(fullMethod, allowSet),
-		Listener:    listener != nil,
+		Sealed:            barrier != nil && barrier.IsSealed(),
+		Allowlisted:       methodAllowed(fullMethod, allowSet),
+		Listener:          listener != nil,
+		AuthenticatedOnly: methodAllowed(fullMethod, sealedWindowAuthenticatedOnly),
 	}
 	if req.Listener && req.Sealed && req.Allowlisted && methodAllowed(fullMethod, sealedWindowPreOperationalOnly) {
 		req.PreOperationalOnly = true

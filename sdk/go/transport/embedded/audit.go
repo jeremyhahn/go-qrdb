@@ -55,6 +55,9 @@ var _ transport.AuditClient = (*auditClient)(nil)
 // returned nil unconditionally, which told an embedder its compliance record
 // had landed when it had not.
 func (c *auditClient) EmitAudit(ctx context.Context, ev transport.AuditEvent) error {
+	if err := c.transport.gate("AuditClient.EmitAudit"); err != nil {
+		return err
+	}
 	if c.transport.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -70,6 +73,9 @@ func (c *auditClient) EmitAudit(ctx context.Context, ev transport.AuditEvent) er
 // identity in ctx when there is one, otherwise the tenant bound to ctx. A
 // filter naming another tenant is refused with *tenant.CrossTenantDeniedError.
 func (c *auditClient) QueryAudit(ctx context.Context, f transport.AuditFilter) (*transport.AuditPage, error) {
+	if err := c.transport.gate("AuditClient.QueryAudit"); err != nil {
+		return nil, err
+	}
 	if c.transport.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -107,6 +113,9 @@ func auditVerificationReportToTransport(r *audit.VerificationReport) *transport.
 // backend, missing file, or a rotation race); a successful result with
 // Verified=false is a TAMPER VERDICT, not an error -- see pkg/audit.Verify.
 func (c *auditClient) VerifyChain(ctx context.Context) (*transport.AuditVerifyResult, error) {
+	if err := c.transport.gate("AuditClient.VerifyChain"); err != nil {
+		return nil, err
+	}
 	if c.transport.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}

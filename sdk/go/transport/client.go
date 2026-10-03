@@ -640,6 +640,11 @@ type BarrierClient interface {
 	// BarrierStatus returns the current state of the cryptographic barrier.
 	BarrierStatus(ctx context.Context) (*BarrierStatusResponse, error)
 
+	// BarrierClusterUnseal clears a cluster-wide seal of the node barrier and
+	// returns its cluster seal state. It unseals nothing: the node it reaches
+	// must already have unsealed itself.
+	BarrierClusterUnseal(ctx context.Context) (*ClusterSeal, error)
+
 	// BarrierInitializeShamir initializes the barrier under Shamir custody
 	// and distributes one sealed share envelope to each holder enrolled in
 	// the unseal domain. Share material is never returned; each holder

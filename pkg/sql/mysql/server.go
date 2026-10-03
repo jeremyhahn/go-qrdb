@@ -20,15 +20,18 @@ import (
 	"crypto/tls"
 	"log/slog"
 	"net"
+	"time"
 
 	sqle "github.com/dolthub/go-mysql-server"
 	"github.com/dolthub/go-mysql-server/server"
 	"github.com/dolthub/go-mysql-server/sql"
 
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/engine"
+	"github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sessionguard"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/provider"
 )
 
@@ -69,6 +72,15 @@ type Server struct {
 	// sealedProbe gates new connections while the storage barrier is
 	// sealed. When nil the gate is disabled (no seal subsystem).
 	sealedProbe sealedWindowProbe
+	// sealStreams, when non-nil, is the node's cluster-seal stream registry:
+	// a cluster seal or cut-off that reaches a connection's tenant closes the
+	// connection (see WithSealStreams).
+	sealStreams *clusterseal.Streams
+	// sessions guards every open connection against a seal; nil when the
+	// server has neither a probe nor a stream registry.
+	sessions *sealedSessions
+	// queryTimeout bounds every statement (WithQueryTimeout); zero is none.
+	queryTimeout time.Duration
 	// registry resolves per-(tenant, database) services -- KV, MVCC,
 	// relational tables, and everything else service.Registry exposes --
 	// the same transport-neutral seam every other protocol (REST, gRPC,
@@ -199,6 +211,27 @@ func WithSealedWindowProbe(probe sealedWindowProbe) ServerOption {
 	}
 }
 
+// WithSealStreams subscribes every MySQL connection to the node's
+// cluster-seal stream registry when its session is built: a seal of the node,
+// of the connection's tenant or of any of its databases, or a cut-off, closes
+// the connection. The probe (WithSealedWindowProbe) closes them too, for a
+// node-local seal. Closing is what ends a server-side cursor, which vitess
+// serves without consulting the statement gate, and a transaction held
+// across the seal.
+func WithSealStreams(streams *clusterseal.Streams) ServerOption {
+	return func(s *Server) { s.sealStreams = streams }
+}
+
+// WithQueryTimeout bounds every statement -- query, multi-statement query,
+// prepare and execute, and a server-side cursor while it produces rows -- to d; a
+// statement past it is cancelled and answered ER_QUERY_TIMEOUT (3024). Zero
+// disables it. It is what bounds a statement whose client has gone away: the
+// server runs with go-mysql-server's connection watcher off (see Start), so a
+// disconnect no longer cancels an in-flight statement before its timeout.
+func WithQueryTimeout(d time.Duration) ServerOption {
+	return func(s *Server) { s.queryTimeout = d }
+}
+
 // NewServer creates a new MySQL wire protocol server that delegates SQL
 // operations to the provided KV and admin services.
 func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr string, opts ...ServerOption) *Server {
@@ -261,14 +294,32 @@ func (s *Server) Start() error {
 	s.sqlEngine = engine.New(engine.Config{Provider: prov})
 
 	// Build the session builder for connection authentication.
+	if s.sealedProbe != nil || s.sealStreams != nil {
+		guard := sessionguard.New(s.sealedProbe, s.sealStreams, sessionguard.DefaultProbeInterval)
+		guard.Start()
+		s.sessions = &sealedSessions{guard: guard}
+	}
 	sb := newSessionBuilder(s.authMW, s.sealedProbe)
+	sb.sessions = s.sessions
 
 	// Configure the go-mysql-server server.
 	cfg := server.Config{
 		Protocol:  "tcp",
 		Address:   s.addr,
 		TLSConfig: s.tlsConfig,
+		// go-mysql-server's connection watcher Peeks the socket while a
+		// statement runs, to cancel it if the client goes away. A
+		// server-side cursor keeps its statement running while vitess's
+		// command loop reads the client's COM_STMT_FETCH from the same
+		// socket: an unsynchronized concurrent read, a data race. It is off;
+		// the query timeout (WithQueryTimeout) bounds every statement
+		// instead, including one whose client has disconnected.
+		DisableConnectionWatcher: true,
 	}
+	// The sealed-window gate refuses new sessions in the session builder and
+	// every statement of an open one here; the query timeout bounds every
+	// statement.
+	cfg.Options = append(cfg.Options, handlerOptions(s.sealedProbe, s.sessions, s.queryTimeout)...)
 
 	// Bind a TCP listener so we can capture the resolved address
 	// (important when port 0 is used in tests).
@@ -314,6 +365,9 @@ func (s *Server) Start() error {
 // Stop gracefully shuts down the MySQL server by closing the protocol
 // listener.
 func (s *Server) Stop() {
+	if s.sessions != nil {
+		s.sessions.guard.Stop()
+	}
 	if s.mysqlSrv == nil {
 		return
 	}

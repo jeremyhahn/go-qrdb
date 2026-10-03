@@ -483,6 +483,7 @@ func (n *Node) teardownDataPlane() {
 	if client := n.client.Swap(nil); client != nil {
 		_ = client.Close()
 	}
+	n.closeFeatureClient()
 	if srv := n.srv.Swap(nil); srv != nil {
 		srv.Stop()
 	}

@@ -16,7 +16,9 @@
 package clustermig
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -49,10 +51,10 @@ func validOpts() seal.MigrationOptions {
 func TestCoordinator_Request_WritesIntent(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore(newMemKV())
-	c := NewCoordinator(s, fixedOwners{shardID: 7, owners: []string{"n1", "n2", "n3"}}, nil,
+	c := NewCoordinator(s, fixedOwners{shardID: 7, owners: []string{"n1", "n2", "n3"}},
 		func() bool { return true }, func() int64 { return 1000 })
 
-	m, err := c.Request(ctx, tid, db, validOpts(), nil)
+	m, err := c.Request(ctx, tid, db, validOpts())
 	if err != nil {
 		t.Fatalf("Request: %v", err)
 	}
@@ -73,14 +75,14 @@ func TestCoordinator_Request_WritesIntent(t *testing.T) {
 func TestCoordinator_Request_BumpsGeneration(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore(newMemKV())
-	c := NewCoordinator(s, fixedOwners{shardID: 7, owners: []string{"n1"}}, nil,
+	c := NewCoordinator(s, fixedOwners{shardID: 7, owners: []string{"n1"}},
 		func() bool { return true }, nil)
 
-	first, err := c.Request(ctx, tid, db, validOpts(), nil)
+	first, err := c.Request(ctx, tid, db, validOpts())
 	if err != nil || first.Generation != 1 {
 		t.Fatalf("first Request = %+v, %v", first, err)
 	}
-	second, err := c.Request(ctx, tid, db, validOpts(), nil)
+	second, err := c.Request(ctx, tid, db, validOpts())
 	if err != nil || second.Generation != 2 {
 		t.Fatalf("second Request = %+v, %v; want gen 2", second, err)
 	}
@@ -105,10 +107,10 @@ func shamirOpts(threshold, total int) seal.MigrationOptions {
 func TestCoordinator_Request_CarriesShamirFields(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore(newMemKV())
-	c := NewCoordinator(s, fixedOwners{shardID: 7, owners: []string{"n1", "n2", "n3"}}, nil,
+	c := NewCoordinator(s, fixedOwners{shardID: 7, owners: []string{"n1", "n2", "n3"}},
 		func() bool { return true }, nil)
 
-	m, err := c.Request(ctx, tid, db, shamirOpts(2, 3), nil)
+	m, err := c.Request(ctx, tid, db, shamirOpts(2, 3))
 	if err != nil {
 		t.Fatalf("Request: %v", err)
 	}
@@ -132,14 +134,14 @@ func TestCoordinator_Request_CarriesShamirFields(t *testing.T) {
 func TestCoordinator_Request_RejectsInvalidShamirThreshold(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore(newMemKV())
-	c := NewCoordinator(s, fixedOwners{owners: []string{"n1"}}, nil, func() bool { return true }, nil)
+	c := NewCoordinator(s, fixedOwners{owners: []string{"n1"}}, func() bool { return true }, nil)
 
 	// threshold(1) < 2.
-	if _, err := c.Request(ctx, tid, db, shamirOpts(1, 3), nil); !errors.Is(err, seal.ErrShamirThresholdInvalid) {
+	if _, err := c.Request(ctx, tid, db, shamirOpts(1, 3)); !errors.Is(err, seal.ErrShamirThresholdInvalid) {
 		t.Fatalf("Request(threshold=1) = %v, want ErrShamirThresholdInvalid", err)
 	}
 	// threshold(4) > total(3).
-	if _, err := c.Request(ctx, tid, db, shamirOpts(4, 3), nil); !errors.Is(err, seal.ErrShamirThresholdInvalid) {
+	if _, err := c.Request(ctx, tid, db, shamirOpts(4, 3)); !errors.Is(err, seal.ErrShamirThresholdInvalid) {
 		t.Fatalf("Request(threshold=4,total=3) = %v, want ErrShamirThresholdInvalid", err)
 	}
 	requireMigrationAbsent(t, ctx, s, "an invalid Shamir request must not write an intent record")
@@ -150,9 +152,9 @@ func TestCoordinator_Request_RejectsInvalidShamirThreshold(t *testing.T) {
 func TestCoordinator_Request_NotLeader(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore(newMemKV())
-	c := NewCoordinator(s, fixedOwners{owners: []string{"n1"}}, nil, func() bool { return false }, nil)
+	c := NewCoordinator(s, fixedOwners{owners: []string{"n1"}}, func() bool { return false }, nil)
 
-	if _, err := c.Request(ctx, tid, db, validOpts(), nil); !errors.Is(err, ErrNotLeader) {
+	if _, err := c.Request(ctx, tid, db, validOpts()); !errors.Is(err, ErrNotLeader) {
 		t.Fatalf("Request on follower = %v, want ErrNotLeader", err)
 	}
 	requireMigrationAbsent(t, ctx, s, "follower must not write an intent record")
@@ -162,9 +164,9 @@ func TestCoordinator_Request_NotLeader(t *testing.T) {
 func TestCoordinator_Request_NoOwners(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore(newMemKV())
-	c := NewCoordinator(s, fixedOwners{owners: nil}, nil, func() bool { return true }, nil)
+	c := NewCoordinator(s, fixedOwners{owners: nil}, func() bool { return true }, nil)
 
-	if _, err := c.Request(ctx, tid, db, validOpts(), nil); !errors.Is(err, ErrNoOwners) {
+	if _, err := c.Request(ctx, tid, db, validOpts()); !errors.Is(err, ErrNoOwners) {
 		t.Fatalf("Request with no owners = %v, want ErrNoOwners", err)
 	}
 }
@@ -174,9 +176,9 @@ func TestCoordinator_Request_NoOwners(t *testing.T) {
 func TestCoordinator_Request_InvalidOpts(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore(newMemKV())
-	c := NewCoordinator(s, fixedOwners{owners: []string{"n1"}}, nil, func() bool { return true }, nil)
+	c := NewCoordinator(s, fixedOwners{owners: []string{"n1"}}, func() bool { return true }, nil)
 
-	if _, err := c.Request(ctx, tid, db, seal.MigrationOptions{TargetStrategy: seal.StrategyNone}, nil); err == nil {
+	if _, err := c.Request(ctx, tid, db, seal.MigrationOptions{TargetStrategy: seal.StrategyNone}); err == nil {
 		t.Fatal("Request with none target must error")
 	}
 	requireMigrationAbsent(t, ctx, s, "invalid request must not write an intent record")
@@ -187,72 +189,47 @@ func TestCoordinator_Request_OwnerResolveError(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore(newMemKV())
 	sentinel := errors.New("placement unavailable")
-	c := NewCoordinator(s, fixedOwners{err: sentinel}, nil, func() bool { return true }, nil)
+	c := NewCoordinator(s, fixedOwners{err: sentinel}, func() bool { return true }, nil)
 
-	if _, err := c.Request(ctx, tid, db, validOpts(), nil); !errors.Is(err, sentinel) {
+	if _, err := c.Request(ctx, tid, db, validOpts()); !errors.Is(err, sentinel) {
 		t.Fatalf("Request = %v, want wrapped resolver error", err)
 	}
 }
 
-// recordingSealer seals each owner to a deterministic per-node blob and records
-// the owners + credential it was given.
-type recordingSealer struct {
-	owners []string
-	cred   []byte
-}
-
-func (s *recordingSealer) SealFor(_ context.Context, _ *ClusterMigration, owners []string, credential []byte) (map[string][]byte, error) {
-	s.owners = append([]string(nil), owners...)
-	s.cred = append([]byte(nil), credential...)
-	out := make(map[string][]byte, len(owners))
-	for _, o := range owners {
-		out[o] = []byte("sealed-for-" + o)
-	}
-	return out, nil
-}
-
-// TestCoordinator_Request_SealsCredentialPerOwner proves the credential is sealed
-// per owner and the per-node ciphertext blobs are stored in the record (never the
-// plaintext).
-func TestCoordinator_Request_SealsCredentialPerOwner(t *testing.T) {
+// TestCoordinator_Request_RecordCarriesNoCredential proves the replicated
+// intent record carries no credential in any form -- not the operator's
+// passphrase, and no per-node envelope of it either. Each owner supplies its
+// own credential locally. The encoded field set is pinned, so a field that
+// could carry one fails here rather than in review.
+func TestCoordinator_Request_RecordCarriesNoCredential(t *testing.T) {
 	ctx := context.Background()
-	s := NewStore(newMemKV())
-	sealer := &recordingSealer{}
-	c := NewCoordinator(s, fixedOwners{shardID: 7, owners: []string{"n1", "n2"}}, sealer,
+	kv := newMemKV()
+	s := NewStore(kv)
+	c := NewCoordinator(s, fixedOwners{shardID: 7, owners: []string{"n1", "n2"}},
 		func() bool { return true }, nil)
-
-	m, err := c.Request(ctx, tid, db, validOpts(), []byte("operator-passphrase"))
-	if err != nil {
+	if _, err := c.Request(ctx, tid, db, validOpts()); err != nil {
 		t.Fatalf("Request: %v", err)
 	}
-	if string(sealer.cred) != "operator-passphrase" || len(sealer.owners) != 2 {
-		t.Fatalf("sealer saw cred=%q owners=%v", sealer.cred, sealer.owners)
+	raw, err := kv.Get(ctx, migrationKey(tid, db))
+	if err != nil || len(raw) == 0 {
+		t.Fatalf("record not written: %v", err)
 	}
-	if len(m.Credentials) != 2 || string(m.Credentials["n1"]) != "sealed-for-n1" {
-		t.Fatalf("record credentials = %v, want per-owner sealed blobs", m.Credentials)
+	if bytes.Contains(raw, []byte("hunter2")) {
+		t.Fatal("the operator's credential is in the replicated record")
 	}
-	// The plaintext credential must not appear anywhere in the persisted record.
-	got, _ := s.GetMigration(ctx, tid, db)
-	for node, blob := range got.Credentials {
-		if string(blob) == "operator-passphrase" {
-			t.Fatalf("plaintext credential leaked into record for %s", node)
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatal(err)
+	}
+	allowed := map[string]bool{
+		"tenant_id": true, "database": true, "shard_id": true, "target": true,
+		"mechanism": true, "shamir_threshold": true, "shamir_total": true,
+		"owners": true, "generation": true, "requested_at_unix": true,
+	}
+	for k := range fields {
+		if !allowed[k] {
+			t.Errorf("record field %q is not in the pinned set", k)
 		}
-	}
-}
-
-// TestCoordinator_Request_NoSealerNoCredentials proves the record carries no
-// credentials when no sealer is wired (out-of-band credential deployments).
-func TestCoordinator_Request_NoSealerNoCredentials(t *testing.T) {
-	ctx := context.Background()
-	s := NewStore(newMemKV())
-	c := NewCoordinator(s, fixedOwners{shardID: 7, owners: []string{"n1"}}, nil,
-		func() bool { return true }, nil)
-	m, err := c.Request(ctx, tid, db, validOpts(), []byte("ignored-without-sealer"))
-	if err != nil {
-		t.Fatalf("Request: %v", err)
-	}
-	if len(m.Credentials) != 0 {
-		t.Fatalf("record credentials = %v, want empty without a sealer", m.Credentials)
 	}
 }
 
@@ -260,10 +237,10 @@ func TestCoordinator_Request_NoSealerNoCredentials(t *testing.T) {
 func TestCoordinator_Reap(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore(newMemKV())
-	c := NewCoordinator(s, fixedOwners{shardID: 7, owners: []string{"n1"}}, nil,
+	c := NewCoordinator(s, fixedOwners{shardID: 7, owners: []string{"n1"}},
 		func() bool { return true }, nil)
 
-	if _, err := c.Request(ctx, tid, db, validOpts(), nil); err != nil {
+	if _, err := c.Request(ctx, tid, db, validOpts()); err != nil {
 		t.Fatalf("Request: %v", err)
 	}
 	// Incomplete -> no reap.
@@ -282,18 +259,80 @@ func TestCoordinator_Reap(t *testing.T) {
 func TestCoordinator_Reap_NotLeader(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore(newMemKV())
-	leader := NewCoordinator(s, fixedOwners{shardID: 7, owners: []string{"n1"}}, nil,
+	leader := NewCoordinator(s, fixedOwners{shardID: 7, owners: []string{"n1"}},
 		func() bool { return true }, nil)
-	if _, err := leader.Request(ctx, tid, db, validOpts(), nil); err != nil {
+	if _, err := leader.Request(ctx, tid, db, validOpts()); err != nil {
 		t.Fatalf("Request: %v", err)
 	}
 	ack(t, s, "n1", 1, seal.PhaseComplete)
 
-	follower := NewCoordinator(s, fixedOwners{}, nil, func() bool { return false }, nil)
+	follower := NewCoordinator(s, fixedOwners{}, func() bool { return false }, nil)
 	if reaped, err := follower.Reap(ctx, tid, db); reaped || err != nil {
 		t.Fatalf("follower Reap = %v, %v; want false, nil", reaped, err)
 	}
 	if m, _ := s.GetMigration(ctx, tid, db); m == nil {
 		t.Fatal("follower must not delete the intent record")
+	}
+}
+
+// TestCoordinator_IsLeader reports the configured probe.
+func TestCoordinator_IsLeader(t *testing.T) {
+	s := NewStore(newMemKV())
+	if !NewCoordinator(s, fixedOwners{}, func() bool { return true }, nil).IsLeader() {
+		t.Fatal("leader probe true, IsLeader false")
+	}
+	if NewCoordinator(s, fixedOwners{}, func() bool { return false }, nil).IsLeader() {
+		t.Fatal("leader probe false, IsLeader true")
+	}
+}
+
+// TestCoordinator_Request_PreparesBeforeTheRecordExists pins the order the
+// accepting node's credential depends on: the prepare hook sees the complete
+// record -- generation included -- before any owner can, because nothing is
+// written until it returns. Its failure writes nothing.
+func TestCoordinator_Request_PreparesBeforeTheRecordExists(t *testing.T) {
+	ctx := context.Background()
+	s := NewStore(newMemKV())
+	c := NewCoordinator(s, fixedOwners{shardID: 7, owners: []string{"n1"}}, func() bool { return true }, nil)
+	if _, err := c.Request(ctx, tid, db, validOpts()); err != nil {
+		t.Fatal(err)
+	}
+	var seen *ClusterMigration
+	m, err := c.Request(ctx, tid, db, validOpts(), WithPrepare(func(m *ClusterMigration) (func(), error) {
+		seen = m
+		if got, _ := s.GetMigration(ctx, tid, db); got == nil || got.Generation != 1 {
+			t.Errorf("record at prepare = %+v, want generation 1 still in place", got)
+		}
+		return func() {}, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seen == nil || seen.Generation != 2 || m.Generation != 2 {
+		t.Fatalf("prepare saw %+v, request returned %+v; want generation 2 for both", seen, m)
+	}
+
+	boom := errors.New("cannot hold")
+	if _, err := c.Request(ctx, tid, db, validOpts(), WithPrepare(func(*ClusterMigration) (func(), error) {
+		return nil, boom
+	})); !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want the prepare failure", err)
+	}
+	if got, _ := s.GetMigration(ctx, tid, db); got.Generation != 2 {
+		t.Fatalf("a failed prepare wrote generation %d", got.Generation)
+	}
+}
+
+// TestCoordinator_Request_UndoesThePrepareWhenTheWriteFails proves a
+// credential held for a record that was never written is released.
+func TestCoordinator_Request_UndoesThePrepareWhenTheWriteFails(t *testing.T) {
+	kv := &readOKWriteErrKV{inner: newMemKV(), putErr: errBoom}
+	c := NewCoordinator(NewStore(kv), fixedOwners{shardID: 7, owners: []string{"n1"}}, func() bool { return true }, nil)
+	undone := false
+	_, err := c.Request(context.Background(), tid, db, validOpts(), WithPrepare(func(*ClusterMigration) (func(), error) {
+		return func() { undone = true }, nil
+	}))
+	if !errors.Is(err, errBoom) || !undone {
+		t.Fatalf("err = %v, undone = %v; want the write failure and the prepare undone", err, undone)
 	}
 }

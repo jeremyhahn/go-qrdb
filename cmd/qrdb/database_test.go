@@ -100,7 +100,17 @@ func (m *fnDatabaseService) UnsealDatabase(_ context.Context, _ string, _ seal.C
 	return nil
 }
 
-func (m *fnDatabaseService) DatabaseBarrierStatus(_ context.Context, _ string) (*seal.BarrierStatus, error) {
+// DatabaseBarrierStatus adapts databaseBarrierStatusSeal to the service
+// interface, with no cluster seal state.
+func (m *fnDatabaseService) DatabaseBarrierStatus(ctx context.Context, name string) (*service.DatabaseBarrierStatusInfo, error) {
+	st, err := m.databaseBarrierStatusSeal(ctx, name)
+	if st == nil {
+		return nil, err
+	}
+	return &service.DatabaseBarrierStatusInfo{BarrierStatus: st}, err
+}
+
+func (m *fnDatabaseService) databaseBarrierStatusSeal(_ context.Context, _ string) (*seal.BarrierStatus, error) {
 	return &seal.BarrierStatus{Sealed: false}, nil
 }
 

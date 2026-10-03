@@ -196,8 +196,9 @@ var expectedMethods = []string{
 	// SQL (1)
 	"sql.Query",
 
-	// Barrier (23)
+	// Barrier (24)
 	"barrier.Initialize",
+	"barrier.ClusterUnseal",
 	"barrier.Unseal",
 	"barrier.Seal",
 	"barrier.Status",
@@ -250,6 +251,8 @@ func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
 func TestBuildHandlers_MethodCount(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 
+	// 172 = 171 + barrier.ClusterUnseal, the authorized cluster-unseal record
+	// (docs/barrier-seal).
 	// 171 = 162 + the 9 db.Barrier* share-holder verbs of a Shamir database
 	// barrier (docs/databases/api.md). audit.VerifyChain, the Tier-1
 	// audit-chain verification, is also outside this table: it is registered
@@ -276,7 +279,7 @@ func TestBuildHandlers_MethodCount(t *testing.T) {
 	// kv.CompareAndDelete, kv.CompareAndSwap — go-qrdb#124), and the 161 was
 	// 160 plus user.GetByEmail, the canonical login-key lookup (go-qrdb#190).
 	// The 2 watch methods remain on the streaming path, not the unary table.
-	const wantCount = 171
+	const wantCount = 172
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}
@@ -379,7 +382,7 @@ func TestBuildHandlers_CategoryCounts(t *testing.T) {
 		"user":     12,
 		"role":     11,
 		"cert":     4,
-		"barrier":  20,
+		"barrier":  21,
 		"ceremony": 3,
 		"tenant":   9,
 		"sql":      1,

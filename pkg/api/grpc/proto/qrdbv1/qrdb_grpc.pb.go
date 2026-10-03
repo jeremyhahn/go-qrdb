@@ -22,7 +22,6 @@ package qrdbv1
 
 import (
 	context "context"
-
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
@@ -166,6 +165,7 @@ const (
 	QRDBService_BarrierUnseal_FullMethodName                     = "/qrdb.v1.QRDBService/BarrierUnseal"
 	QRDBService_BarrierSeal_FullMethodName                       = "/qrdb.v1.QRDBService/BarrierSeal"
 	QRDBService_BarrierStatus_FullMethodName                     = "/qrdb.v1.QRDBService/BarrierStatus"
+	QRDBService_BarrierClusterUnseal_FullMethodName              = "/qrdb.v1.QRDBService/BarrierClusterUnseal"
 	QRDBService_BarrierShamirInitialize_FullMethodName           = "/qrdb.v1.QRDBService/BarrierShamirInitialize"
 	QRDBService_BarrierEnableEncryption_FullMethodName           = "/qrdb.v1.QRDBService/BarrierEnableEncryption"
 	QRDBService_BarrierOfficerRegister_FullMethodName            = "/qrdb.v1.QRDBService/BarrierOfficerRegister"
@@ -546,6 +546,9 @@ type QRDBServiceClient interface {
 	BarrierSeal(ctx context.Context, in *BarrierSealRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// BarrierStatus returns the current barrier state.
 	BarrierStatus(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*BarrierStatusResponse, error)
+	// BarrierClusterUnseal clears a cluster-wide seal of the node barrier. It
+	// unseals nothing: the receiving node must already have unsealed itself.
+	BarrierClusterUnseal(ctx context.Context, in *BarrierClusterUnsealRequest, opts ...grpc.CallOption) (*ClusterSealState, error)
 	// BarrierShamirInitialize initializes the barrier with Shamir secret sharing.
 	BarrierShamirInitialize(ctx context.Context, in *BarrierShamirInitializeRequest, opts ...grpc.CallOption) (*BarrierShamirOperationResponse, error)
 	// BarrierEnableEncryption migrates a previously-unencrypted barrier to a
@@ -2067,6 +2070,16 @@ func (c *qRDBServiceClient) BarrierStatus(ctx context.Context, in *emptypb.Empty
 	return out, nil
 }
 
+func (c *qRDBServiceClient) BarrierClusterUnseal(ctx context.Context, in *BarrierClusterUnsealRequest, opts ...grpc.CallOption) (*ClusterSealState, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ClusterSealState)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierClusterUnseal_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *qRDBServiceClient) BarrierShamirInitialize(ctx context.Context, in *BarrierShamirInitializeRequest, opts ...grpc.CallOption) (*BarrierShamirOperationResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(BarrierShamirOperationResponse)
@@ -3111,6 +3124,9 @@ type QRDBServiceServer interface {
 	BarrierSeal(context.Context, *BarrierSealRequest) (*emptypb.Empty, error)
 	// BarrierStatus returns the current barrier state.
 	BarrierStatus(context.Context, *emptypb.Empty) (*BarrierStatusResponse, error)
+	// BarrierClusterUnseal clears a cluster-wide seal of the node barrier. It
+	// unseals nothing: the receiving node must already have unsealed itself.
+	BarrierClusterUnseal(context.Context, *BarrierClusterUnsealRequest) (*ClusterSealState, error)
 	// BarrierShamirInitialize initializes the barrier with Shamir secret sharing.
 	BarrierShamirInitialize(context.Context, *BarrierShamirInitializeRequest) (*BarrierShamirOperationResponse, error)
 	// BarrierEnableEncryption migrates a previously-unencrypted barrier to a
@@ -3705,6 +3721,9 @@ func (UnimplementedQRDBServiceServer) BarrierSeal(context.Context, *BarrierSealR
 }
 func (UnimplementedQRDBServiceServer) BarrierStatus(context.Context, *emptypb.Empty) (*BarrierStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierStatus not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierClusterUnseal(context.Context, *BarrierClusterUnsealRequest) (*ClusterSealState, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierClusterUnseal not implemented")
 }
 func (UnimplementedQRDBServiceServer) BarrierShamirInitialize(context.Context, *BarrierShamirInitializeRequest) (*BarrierShamirOperationResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierShamirInitialize not implemented")
@@ -6300,6 +6319,24 @@ func _QRDBService_BarrierStatus_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _QRDBService_BarrierClusterUnseal_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BarrierClusterUnsealRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierClusterUnseal(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierClusterUnseal_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierClusterUnseal(ctx, req.(*BarrierClusterUnsealRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _QRDBService_BarrierShamirInitialize_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(BarrierShamirInitializeRequest)
 	if err := dec(in); err != nil {
@@ -8158,6 +8195,10 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "BarrierStatus",
 			Handler:    _QRDBService_BarrierStatus_Handler,
+		},
+		{
+			MethodName: "BarrierClusterUnseal",
+			Handler:    _QRDBService_BarrierClusterUnseal_Handler,
 		},
 		{
 			MethodName: "BarrierShamirInitialize",

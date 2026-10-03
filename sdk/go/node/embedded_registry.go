@@ -42,7 +42,10 @@ type registryForServer struct {
 	reg service.Registry
 }
 
-var _ service.Registry = (*nodeServiceRegistry)(nil)
+var (
+	_ service.Registry      = (*nodeServiceRegistry)(nil)
+	_ service.StreamRefuser = (*nodeServiceRegistry)(nil)
+)
 
 // current returns the live server's registry, or a DataPlaneRecyclingError
 // while no server is running (before it starts, or mid-recycle).
@@ -186,4 +189,19 @@ func (r *nodeServiceRegistry) LockService(tenant, db string) (service.LockServic
 		return nil, err
 	}
 	return reg.LockService(tenant, db)
+}
+
+// StreamRefusal implements service.StreamRefuser through the live server's
+// registry: a stream the embedded transport opens asks the same tenant and
+// database refusal a network listener's does. While no server runs it refuses
+// with the registry's own error.
+func (r *nodeServiceRegistry) StreamRefusal(tenantID, db string) error {
+	reg, err := r.current()
+	if err != nil {
+		return err
+	}
+	if refuser, ok := reg.(service.StreamRefuser); ok {
+		return refuser.StreamRefusal(tenantID, db)
+	}
+	return nil
 }

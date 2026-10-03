@@ -18,7 +18,11 @@ package server
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -71,5 +75,101 @@ func TestEtcdRequestAuthorizer_GuardStreamUnknownDatabase(t *testing.T) {
 	a := &etcdRequestAuthorizer{mgr: f.mgr, owner: "acme", db: "nosuchdb"}
 	if _, _, err := a.GuardStream(context.Background()); status.Code(err) != codes.NotFound {
 		t.Fatalf("GuardStream on a missing database = %v, want NotFound", err)
+	}
+}
+
+// With cluster sealing, the etcd stream guard also closes when the database's
+// tenant is sealed, or the node is cut off, and the stream ends with that
+// refusal; a database that stops serving still ends it with its own. The
+// subscription is released when the stream ends.
+func TestEtcdRequestAuthorizer_GuardStreamEndsOnClusterSeal(t *testing.T) {
+	cases := []struct {
+		name string
+		end  func(*clusterseal.Streams, *database.Database)
+		want codes.Code
+	}{
+		{"tenant sealed", func(s *clusterseal.Streams, _ *database.Database) {
+			s.EndTenant("acme", &clusterseal.SealedError{Barrier: clusterseal.TenantBarrier("acme")})
+		}, codes.Unavailable},
+		{"cut off", func(s *clusterseal.Streams, _ *database.Database) {
+			s.EndAll(&clusterseal.SealStateUnconfirmedError{})
+		}, codes.Unavailable},
+		{"database dropped", func(_ *clusterseal.Streams, db *database.Database) { _ = db.Close() }, codes.NotFound},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newEtcdScopeFixture(t, true)
+			streams := clusterseal.NewStreams()
+			a := &etcdRequestAuthorizer{mgr: f.mgr, owner: "acme", db: "app", streams: streams}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			unserved, refusal, err := a.GuardStream(ctx)
+			if err != nil {
+				t.Fatalf("GuardStream: %v", err)
+			}
+			db, _ := f.mgr.Get("app")
+			c.end(streams, db)
+			select {
+			case <-unserved:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the guard did not close")
+			}
+			if got := status.Code(refusal()); got != c.want {
+				t.Fatalf("refusal = %v, want %v", refusal(), c.want)
+			}
+		})
+	}
+	t.Run("stream end releases the subscription", func(t *testing.T) {
+		f := newEtcdScopeFixture(t, true)
+		streams := clusterseal.NewStreams()
+		a := &etcdRequestAuthorizer{mgr: f.mgr, owner: "acme", db: "app", streams: streams}
+		ctx, cancel := context.WithCancel(context.Background())
+		if _, _, err := a.GuardStream(ctx); err != nil {
+			t.Fatalf("GuardStream: %v", err)
+		}
+		if streams.Len() != 1 {
+			t.Fatalf("subscriptions = %d", streams.Len())
+		}
+		cancel()
+		deadline := time.Now().Add(5 * time.Second)
+		for streams.Len() != 0 && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+		if streams.Len() != 0 {
+			t.Fatal("the subscription outlived its stream")
+		}
+	})
+}
+
+// TestEtcdRequestAuthorizer_GuardStreamSealLandingAsItOpens: a seal that lands
+// just after the stream's open was admitted -- the node-refusal check passed,
+// the seal then closes the gate and ends every stream -- must still end the
+// stream. The refusal check below answers "serving" once and lands the seal as
+// it returns, which is the narrowest point of the window.
+func TestEtcdRequestAuthorizer_GuardStreamSealLandingAsItOpens(t *testing.T) {
+	f := newEtcdScopeFixture(t, true)
+	streams := clusterseal.NewStreams()
+	cause := &clusterseal.SealStateUnconfirmedError{}
+	var calls atomic.Int32
+	refusal := func() error {
+		if calls.Add(1) == 1 {
+			// Admitted; the seal lands right behind the check, as the
+			// monitor lands it: gate closed (later calls refuse), then End*.
+			streams.EndAll(cause)
+			return nil
+		}
+		return cause
+	}
+	a := &etcdRequestAuthorizer{mgr: f.mgr, owner: "acme", db: "app", streams: streams, nodeRefusal: refusal}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ended, _, err := a.GuardStream(ctx)
+	if err != nil {
+		return // refusing the open outright is as good as ending it
+	}
+	select {
+	case <-ended:
+	case <-time.After(5 * time.Second):
+		t.Fatal("an etcd stream opened as the seal landed outlived the seal")
 	}
 }

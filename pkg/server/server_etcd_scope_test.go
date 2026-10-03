@@ -178,7 +178,7 @@ type etcdScopeFixture struct {
 	clientTLS *tls.Config
 }
 
-func newEtcdScopeFixture(t *testing.T, withAuth bool) *etcdScopeFixture {
+func newEtcdScopeFixture(t *testing.T, withAuth bool, extra ...ServerOption) *etcdScopeFixture {
 	t.Helper()
 	shared := newSharedMVCC()
 	for _, k := range []string{"acme/app/visible", "acme/other/hidden", "globex/app/hidden", "system/system/hidden", "__sys:roles/hidden"} {
@@ -207,7 +207,7 @@ func newEtcdScopeFixture(t *testing.T, withAuth bool) *etcdScopeFixture {
 		opts = append(opts, WithAuthMiddleware(authmw.New(allowAll{},
 			authmw.WithAuthenticator(&etcdPeerIdentity{identity: &auth.Identity{Subject: "alice", TenantID: "acme"}}))))
 	}
-	srv := New(testConfig(t, false, false), newMockKVService(), &mockAdminService{}, opts...)
+	srv := New(testConfig(t, false, false), newMockKVService(), &mockAdminService{}, append(opts, extra...)...)
 	return &etcdScopeFixture{srv: srv, shared: shared, mgr: mgr, clientTLS: clientTLS}
 }
 

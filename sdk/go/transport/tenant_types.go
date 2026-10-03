@@ -364,4 +364,7 @@ type TenantBarrierStatusResponse struct {
 	// ShamirTotal is the total number of Shamir shares generated at
 	// initialization. Zero when the active strategy is not Shamir.
 	ShamirTotal int `json:"shamir_total,omitempty"`
+
+	// ClusterSeal is the tenant barrier's cluster seal state.
+	ClusterSeal *ClusterSeal `json:"cluster_seal,omitempty"`
 }

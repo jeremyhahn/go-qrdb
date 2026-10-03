@@ -274,7 +274,7 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		"sql.Query": true,
 		// Barrier
 		"barrier.Initialize": true, "barrier.Unseal": true,
-		"barrier.Seal": true, "barrier.Status": true,
+		"barrier.Seal": true, "barrier.Status": true, "barrier.ClusterUnseal": true,
 		"barrier.ShamirInitialize": true,
 		"barrier.RecoveryGenerate": true,
 		"barrier.RecoveryDelete":   true, "barrier.RecoveryStatus": true,

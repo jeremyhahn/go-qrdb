@@ -18,6 +18,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sealconv"
+
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -300,6 +302,7 @@ func (t *Transport) TenantBarrierStatus(ctx context.Context, req *transport.Tena
 		HardwareBacked:  resp.GetHardwareBacked(),
 		ShamirThreshold: int(resp.GetShamirThreshold()),
 		ShamirTotal:     int(resp.GetShamirTotal()),
+		ClusterSeal:     sealconv.FromProto(resp.GetClusterSeal()),
 	}, nil
 }
 

@@ -274,9 +274,10 @@ func (s *qrdbServiceServer) DatabaseBarrierStatus(ctx context.Context, req *pb.D
 	return databaseBarrierStatusToProto(st), nil
 }
 
-// databaseBarrierStatusToProto converts a seal.BarrierStatus to its protobuf form.
-func databaseBarrierStatusToProto(st *seal.BarrierStatus) *pb.DatabaseBarrierStatusResponse {
-	if st == nil {
+// databaseBarrierStatusToProto converts a database barrier status to its
+// protobuf form.
+func databaseBarrierStatusToProto(st *service.DatabaseBarrierStatusInfo) *pb.DatabaseBarrierStatusResponse {
+	if st == nil || st.BarrierStatus == nil {
 		return &pb.DatabaseBarrierStatusResponse{}
 	}
 	return &pb.DatabaseBarrierStatusResponse{
@@ -284,6 +285,7 @@ func databaseBarrierStatusToProto(st *seal.BarrierStatus) *pb.DatabaseBarrierSta
 		Strategy:          string(st.Strategy),
 		HardwareBacked:    st.HardwareBacked,
 		InitializedAtUnix: st.InitializedAt.Unix(),
+		ClusterSeal:       ClusterSealToProto(st.ClusterSeal),
 	}
 }
 

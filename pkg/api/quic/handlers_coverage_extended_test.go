@@ -356,7 +356,18 @@ func (m *mockDbSvc) UpdateConnection(name string, conn *database.DatabaseConnect
 }
 func (m *mockDbSvc) SealDatabase(_ context.Context, _ string) error                       { return nil }
 func (m *mockDbSvc) UnsealDatabase(_ context.Context, _ string, _ seal.Credentials) error { return nil }
-func (m *mockDbSvc) DatabaseBarrierStatus(_ context.Context, _ string) (*seal.BarrierStatus, error) {
+
+// DatabaseBarrierStatus adapts databaseBarrierStatusSeal to the service
+// interface, with no cluster seal state.
+func (m *mockDbSvc) DatabaseBarrierStatus(ctx context.Context, name string) (*service.DatabaseBarrierStatusInfo, error) {
+	st, err := m.databaseBarrierStatusSeal(ctx, name)
+	if st == nil {
+		return nil, err
+	}
+	return &service.DatabaseBarrierStatusInfo{BarrierStatus: st}, err
+}
+
+func (m *mockDbSvc) databaseBarrierStatusSeal(_ context.Context, _ string) (*seal.BarrierStatus, error) {
 	return &seal.BarrierStatus{}, nil
 }
 func (m *mockDbSvc) CreateForTenant(_ context.Context, cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {

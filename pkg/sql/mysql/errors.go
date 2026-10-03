@@ -21,6 +21,8 @@
 // chain when configured.
 package mysql
 
+import "time"
+
 // ServerStartError is returned when the MySQL server fails to start.
 type ServerStartError struct {
 	Err error
@@ -67,4 +69,15 @@ type BarrierSealedError struct{}
 // Error returns a human-readable description.
 func (e *BarrierSealedError) Error() string {
 	return "sql/mysql: barrier sealed"
+}
+
+// QueryTimeoutError reports a statement cancelled at the query timeout
+// (WithQueryTimeout, sql.query_timeout). On the wire it is ER_QUERY_TIMEOUT.
+type QueryTimeoutError struct {
+	Timeout time.Duration
+}
+
+// Error implements error.
+func (e *QueryTimeoutError) Error() string {
+	return "sql/mysql: statement exceeded the query timeout of " + e.Timeout.String() + " (sql.query_timeout)"
 }

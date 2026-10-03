@@ -47,6 +47,9 @@ func (t *Transport) collectionSvcFor(ctx context.Context, database string) (serv
 // CollectionServicer. Returns NilServiceError when no collection service
 // has been configured.
 func (t *Transport) CreateCollection(ctx context.Context, req transport.CreateCollectionRequest) (*transport.CollectionInfo, error) {
+	if err := t.gate("CreateCollection"); err != nil {
+		return nil, err
+	}
 	svc, err := t.collectionSvcFor(ctx, req.Database)
 	if err != nil {
 		return nil, err
@@ -69,6 +72,9 @@ func (t *Transport) CreateCollection(ctx context.Context, req transport.CreateCo
 // delegating to the injected CollectionServicer. Returns NilServiceError
 // when no collection service has been configured.
 func (t *Transport) GetCollectionInfo(ctx context.Context, database, name string) (*transport.CollectionInfo, error) {
+	if err := t.gate("GetCollectionInfo"); err != nil {
+		return nil, err
+	}
 	svc, err := t.collectionSvcFor(ctx, database)
 	if err != nil {
 		return nil, err
@@ -84,6 +90,9 @@ func (t *Transport) GetCollectionInfo(ctx context.Context, database, name string
 // to the injected CollectionServicer. Returns NilServiceError when no
 // collection service has been configured.
 func (t *Transport) ListCollections(ctx context.Context, database string) (*transport.ListCollectionsResponse, error) {
+	if err := t.gate("ListCollections"); err != nil {
+		return nil, err
+	}
 	svc, err := t.collectionSvcFor(ctx, database)
 	if err != nil {
 		return nil, err
@@ -107,6 +116,9 @@ func (t *Transport) ListCollections(ctx context.Context, database string) (*tran
 // the injected CollectionServicer. Returns NilServiceError when no
 // collection service has been configured.
 func (t *Transport) DropCollection(ctx context.Context, database, name string) error {
+	if err := t.gate("DropCollection"); err != nil {
+		return err
+	}
 	svc, err := t.collectionSvcFor(ctx, database)
 	if err != nil {
 		return err
@@ -121,6 +133,9 @@ func (t *Transport) DropCollection(ctx context.Context, database, name string) e
 // assigned document ID by delegating to the injected CollectionServicer.
 // Returns NilServiceError when no collection service has been configured.
 func (t *Transport) InsertDocument(ctx context.Context, req transport.InsertDocumentRequest) (*transport.InsertDocumentResponse, error) {
+	if err := t.gate("InsertDocument"); err != nil {
+		return nil, err
+	}
 	svc, err := t.collectionSvcFor(ctx, req.Database)
 	if err != nil {
 		return nil, err
@@ -142,6 +157,9 @@ func (t *Transport) InsertDocument(ctx context.Context, req transport.InsertDocu
 // injected CollectionServicer. Returns NilServiceError when no collection
 // service has been configured.
 func (t *Transport) GetDocument(ctx context.Context, database, collection string, id uint64) (*transport.DocumentResponse, error) {
+	if err := t.gate("GetDocument"); err != nil {
+		return nil, err
+	}
 	svc, err := t.collectionSvcFor(ctx, database)
 	if err != nil {
 		return nil, err
@@ -161,6 +179,9 @@ func (t *Transport) GetDocument(ctx context.Context, database, collection string
 // delegating to the injected CollectionServicer. Returns NilServiceError
 // when no collection service has been configured.
 func (t *Transport) UpdateDocument(ctx context.Context, req transport.UpdateDocumentRequest) error {
+	if err := t.gate("UpdateDocument"); err != nil {
+		return err
+	}
 	svc, err := t.collectionSvcFor(ctx, req.Database)
 	if err != nil {
 		return err
@@ -178,6 +199,9 @@ func (t *Transport) UpdateDocument(ctx context.Context, req transport.UpdateDocu
 // delegating to the injected CollectionServicer. Returns NilServiceError
 // when no collection service has been configured.
 func (t *Transport) DeleteDocument(ctx context.Context, database, collection string, id uint64) error {
+	if err := t.gate("DeleteDocument"); err != nil {
+		return err
+	}
 	svc, err := t.collectionSvcFor(ctx, database)
 	if err != nil {
 		return err
@@ -194,6 +218,9 @@ func (t *Transport) DeleteDocument(ctx context.Context, database, collection str
 // delegating to the injected CollectionServicer. Returns NilServiceError
 // when no collection service has been configured.
 func (t *Transport) ListDocuments(ctx context.Context, req transport.ListDocumentsRequest) (*transport.ListDocumentsResponse, error) {
+	if err := t.gate("ListDocuments"); err != nil {
+		return nil, err
+	}
 	svc, err := t.collectionSvcFor(ctx, req.Database)
 	if err != nil {
 		return nil, err

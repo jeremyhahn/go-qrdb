@@ -1,6 +1,6 @@
 # Barrier and Seal — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
 
 ## Exported surface
 
@@ -42,6 +42,7 @@ func NewNoneStrategy() SealingStrategy
 type KDFVersion = quicraftseal.KDFVersion // KDFArgon2id, KDFPbkdf2SHA256
 type KDFParams  = quicraftseal.KDFParams  // read off a strategy with KDFVersion() / KDFParams()
 
+func (b *StorageBarrier) OnUnsealed(fn func(context.Context)) // runs fn on every transition to unsealed
 func NewCredentials(secret []byte) (Credentials, error)  // consumes (wipes) secret
 func CredentialsFor(secret []byte) (Credentials, error)  // borrows secret; empty -> zero Credentials
 func MustCredentials(secret []byte) Credentials           // fixtures
@@ -71,6 +72,107 @@ For field documentation and the complete struct definition, see `pkg/seal/barrie
 - `initializedAt` (atomic.Value): initialization timestamp
 - `strategies` (map, RW-locked): all registered strategies
 - `strategiesMu`, `accumulatorMu` (sync.RWMutex, sync.Mutex): synchronization for concurrent access
+
+`pkg/clusterseal` — cluster-wide sealing (see
+[architecture.md](architecture.md#sealing-in-a-cluster)):
+
+```go
+type Barrier string                         // "node", "tenant/<id>", "database/<tenant>/<db>"
+func NodeBarrier() Barrier
+func TenantBarrier(tenantID string) Barrier
+func DatabaseBarrier(tenantID, database string) Barrier
+func ParseBarrier(s string) (Barrier, error)
+
+type Principal struct{ Name, Tenant string } // who wrote a record
+func PrincipalFrom(ctx context.Context) Principal
+
+type Record struct {                        // the replicated record; no key material
+	Barrier         Barrier
+	Epoch           uint64
+	Sealed          bool
+	Principal       string
+	PrincipalTenant string
+	Node            string                  // the writing node's raft address
+	At              time.Time
+}
+
+type Local string                           // serving | sealed | held | cut_off | unconfirmed
+type Status struct { Active bool; Record Record; Local Local }
+func (s Status) Report() *Report            // the wire form every transport returns
+func ReportOf(sealer Sealer, b Barrier) *Report // never nil; inactive when sealer is nil
+func ActiveIn(sealer Sealer) bool
+
+type Enforcer interface {                   // composition: seals one barrier on this node
+	SealNode(ctx context.Context) error
+	SealTenant(ctx context.Context, tenantID string) error
+	SealDatabase(ctx context.Context, tenantID, database string) error
+	NodeUnsealed() bool
+	TenantUnsealed(tenantID string) bool
+	DatabaseUnsealed(tenantID, database string) bool
+}
+
+type Sealer interface {                     // what the barrier services call
+	Active() bool
+	Seal(ctx context.Context, b Barrier, by Principal) (Record, error)
+	Clear(ctx context.Context, b Barrier, by Principal) (Record, error)
+	Status(b Barrier) Status
+	Refuses(b Barrier) bool                 // the barrier's record says sealed here
+}
+
+type Config struct {
+	KV           KV                         // the replicated system store
+	Gate         ActivationReader           // nil: never active (standalone, or no transport)
+	Enforcer     Enforcer
+	Self         string                     // this node's replica ID; it acknowledges under it
+	Node         string                     // its raft address, written into records; defaults to Self
+	Members      func(ctx context.Context) ([]string, error) // system-shard replica IDs
+	Lease        time.Duration              // default 15s
+	PollInterval time.Duration              // default 1s; at most a third of Lease
+	AckTimeout   time.Duration              // default 5s
+	Clock        Clock
+	Logger       *slog.Logger
+	Streams      *Streams                   // nil builds one; a Deferred composer passes Deferred.Streams()
+}
+
+func NewMonitor(cfg Config) (*Monitor, error)    // implements Sealer; Run polls, Refusing gates
+func (m *Monitor) Run(ctx context.Context)
+func (m *Monitor) Refusing() bool                // node gate: lease expired, unconfirmed, or node held
+func (m *Monitor) Streams() *Streams             // the stream-ending registry the transports resolve through
+
+type Deferred struct{ /* ... */ }               // a Sealer bound to its Monitor after the services exist
+func NewDeferred() *Deferred
+func (d *Deferred) Set(m *Monitor)               // until Set, every seal is node-local
+func (d *Deferred) Streams() *Streams
+func (s *Streams) SubscribeServing(tenantID, database string, refuses func() error) (*Subscription, error) // subscribe, THEN ask refuses
+func (s *Streams) GuardWatcher(tenantID, database string, refuses func() error, open func() (watch.Watcher, error)) (watch.Watcher, error) // SubscribeServing, then open; a seal ends it; Close releases
+```
+
+`pkg/server` composes it:
+
+```go
+type ClusterSealParts struct {               // what a composer hands NewClusterSealMonitor
+	KV          service.KVServicer
+	Gate        *featuregate.Gate
+	Barriers    *seal.BarrierRegistry
+	Shards      *RaftBackendFactory          // tenant raft shards, stopped before a tenant seal
+	Hosts       *TenantHostRegistry          // tenant volume hosts, likewise
+	Databases   service.DatabaseServicer     // SealDatabaseLocal seals a database here
+	Membership  featuregate.ShardMembershipReader
+	SystemShard uint64
+	ReplicaID   uint64
+	RaftAddress string
+	Timing      config.ClusterSealTiming
+	Streams     *clusterseal.Streams
+	Logger      *slog.Logger
+}
+func NewClusterSealMonitor(p ClusterSealParts) (*clusterseal.Monitor, error)
+func WithClusterSeal(cs ClusterSeal) ServerOption
+```
+
+`Monitor` is constructed by the composer (`cmd/qrdbd`, `sdk/go/node`) over the
+system KV and the feature gate, and handed to the barrier, tenant and database
+services and to the server, which wraps the node's sealed-window probe with
+`Refusing` and every resolved watch with `Streams`.
 
 ## Invariants
 
@@ -191,7 +293,31 @@ For field documentation and the complete struct definition, see `pkg/seal/barrie
   once at load (`SealConfig.CanonicalStrategy()`), so every consumer sees
   `passphrase` — and the strategy itself reports `ID() == "passphrase"`.
 - **Sealed refuses everything.** `ErrBarrierSealed` for every data-path read and
-  write until unsealed. Only the sealed-window allowlist is reachable.
+  write until unsealed. Only the sealed-window allowlist is reachable. That
+  includes what was opened before the seal: on the SQL wires every statement of
+  an open session, every Execute of a statement prepared while the node served
+  (PostgreSQL `57P03`) and MySQL `COM_INIT_DB`, and the session itself, whose
+  connection the seal closes (a MySQL server-side cursor and an open
+  transaction end with it); on every transport every open watch, which the
+  seal ends.
+- **Sealing the node barrier seals the whole node.** Every system-barrier seal
+  -- `BarrierSeal`, the Shamir seal vote's commit (`service.WithBarrierRegistry`
+  wires the registry into `BarrierService`), and `SealEnforcer.SealNode` for a
+  cluster record -- goes through `BarrierRegistry.SealAll`: every tenant
+  barrier, then the node barrier, then every stream ends. The registry is an
+  `OnUnsealed` observer of the node barrier and unseals, when it unseals, only
+  the system-managed (`StrategySystemBarrier`) tenants the last `SealAll`
+  moved from unsealed to sealed. `SealTenant` drops a tenant from that set, and
+  `WithTenantUnsealGate` (wired by lifecycle to the cluster sealer's `Refuses`)
+  vetoes one whose record is sealed or unreadable. One registry mutex
+  serializes `SealAll` against the observer and against the registry's own
+  tenant seal and unseal (`SealTenant`, `UnsealTenant`,
+  `UnsealTenantWithShare`), each of which does its bookkeeping and the
+  barrier transition as one step: a node seal never finds a tenant mid-change
+  and records the wrong side of it. A failed re-unseal stays pending
+  (`PendingTenantUnseals`) until the next node unseal or the tenant's own
+  unseal. A self-managed tenant is never unsealed for it. A cut-off seals
+  nothing.
 - **Zero hardware coupling is a hard invariant.** No TPM2 code, no PKCS#11 code,
   no `pkcs11` build tag in any qrdb Go file.
 - **Storage wrapping is conditional on `base`.** With a base backend set, the
@@ -200,9 +326,96 @@ For field documentation and the complete struct definition, see `pkg/seal/barrie
 - **PIN dual control**: `--so-pin` requires `--user-pin` and vice versa
   (FIPS 140-3 / PCI-DSS v4). PINs are rejected entirely under
   `--barrier-strategy=none` with a typed `PINsNotAllowedError`.
-- **Per-node key independence**: each node holds its own system barrier KEK; a
-  tenant root key is re-wrapped under the *receiving* node's system barrier. A
-  compromised node key does not expose tenant keys elsewhere.
+- **Per-node key independence holds for the node barrier only.** Each node
+  holds its own node-barrier key. A tenant root key is re-wrapped under the
+  *receiving* node's node barrier, but the root key itself is the same on every
+  replica of a raft tenant, so a node whose key and disk are both compromised
+  exposes the tenant key used on the other replicas. **Correction
+  (2026-10-01):** this line previously said a compromised node key does not
+  expose tenant keys elsewhere.
+- **A seal record carries no key material.** `clusterseal.Record` has no field
+  that can hold a key, a share, a credential or an envelope, and a unit test
+  pins its encoded field set.
+- **A record is written only by a guarded write.** Create-if-absent for the
+  first epoch, compare-and-swap against the exact bytes read for every later
+  one; the epoch only increases. A lost race is `SealEpochConflictError`,
+  except that a seal racing another seal, or a clear racing another clear, is
+  idempotent: the loser re-reads, finds the state it wanted, and succeeds.
+- **The receiving node writes the record before it seals itself.** If the write
+  cannot be confirmed, the node still seals itself — sealing is the safe
+  direction — and returns `RecordNotConfirmedError`.
+- **Enforcement order is fixed:** close the gate, end streams, stop the
+  barrier's shards, wipe the key. It is idempotent and keyed by epoch, so the
+  monitor never enforces one epoch twice.
+- **Every node seals on a seal, even one it missed.** Seal and clear records
+  alternate, one epoch apart. A node that finds a clear record two or more
+  epochs past the last it applied missed the seal in between -- it was cut
+  off, or the seal and the clear fell between two reads -- and wipes the key
+  then, with no acknowledgement round; its owner unseals it as every other
+  node was unsealed. The first read after a boot is exempt: that boot's keys
+  came from its own unseal.
+- **A node-barrier wipe waits for every system-shard member's acknowledgement,
+  bounded by `seal.cluster_ack_timeout`.** The gate is closed and streams are
+  ended before the wait.
+- **A node serves a barrier only when its record is clear and it has unsealed
+  the barrier itself.** A tenant or database unseal that cannot write its clear
+  record seals the barrier again before it returns.
+- **No tenant runtime starts before this node has read its record.** A
+  system-managed tenant's barrier is unsealed at boot, before the monitor
+  exists -- the monitor seals through the tenant registries, which are built
+  first. So a node that installs a monitor starts no tenant runtime at boot
+  (`TenantInfraConfig.ClusterSealer` set): the tenant shard reconciler, which
+  the composer starts only after `Deferred.Set`, and first access both consult
+  the record and start the runtime then. The reconciler holds a dedicated
+  shard while its tenant's record or its database's record is sealed. Until
+  its first read the monitor refuses every barrier.
+- **No lease, no service.** With `cluster-seal` active, the node gate refuses
+  every request outside the sealed-window allowlist until the monitor's first
+  successful read, and again whenever `seal.cluster_lease` passes without one.
+  Keys stay in memory; a successful read resumes service with no re-unseal.
+  A node whose feature gate has not yet read the cluster's activations
+  (`featuregate.Gate.ActivationsLoaded`) refuses the same way: it cannot yet
+  tell an inactive feature from one it has not learned of. Both composers
+  read them before they serve: `cmd/qrdbd` before its listeners start,
+  `sdk/go/node` in `startClusterSeal` before it installs the monitor (both
+  through `server.WhileSystemShardSettling`); a cluster that has activated a
+  feature the binary lacks fails the boot.
+- **Activation opens no window.** `Monitor.poll` reads and publishes the
+  records, and renews the lease, before `cluster-seal` is activated too; it
+  enforces nothing and cuts nothing off until it is. No record can exist
+  before activation, so the read is accurate, and the lease is already fresh
+  when the feature turns on: a cluster with no seal record never refuses for
+  the activation. The first read made while active is the one that applies
+  the records. The first-read-after-boot exemption (a node barrier found
+  sealed is held, not wiped) covers only the monitor's first read made once
+  the gate has loaded the activations: a node that was reading before
+  activation unsealed before any seal, so a node seal it reads afterwards is
+  enforced. A monitor with no gate can never activate and reads nothing.
+- **One gate, every transport.** REST, gRPC, Unix, QUIC, MCP and the
+  in-process embedded transport derive their sealed-window allowlists from
+  `sealedwindow.Table` (the embedded column is `Names.Embedded`, its derived set
+  `sealedwindow.EmbeddedAllowlist`) and decide with `sealedwindow.Decide`. The
+  embedded transport takes the node's probe through `embedded.WithSealProbe`
+  (`server.NodeSealProbe`: the node barrier, plus the cluster seal when there
+  is one), gates every request method before reading its arguments, and
+  refuses with `*embedded.BarrierSealedError` (`errors.Is(err,
+  seal.ErrSealed)`). `Connect`, `Close` and `WithDatabase` are lifecycle, not
+  requests; a database-scoped transport inherits the gate.
+  `TestSealGate_RefusesEveryRequestOutsideTheAllowlist` walks the method set
+  by reflection, so a request method added without the gate fails. The node's
+  feature gate advertises through its own ungated in-process client, as
+  `cmd/qrdbd`'s does. The per-database etcd listener, which has no
+  sealed-window middleware, refuses every request and every Watch or
+  LeaseKeepAlive open while the node refuses (`Server.nodeRefusal`): the node
+  barrier's `*clusterseal.SealedError` when held or sealed,
+  `*clusterseal.SealStateUnconfirmedError` when cut off or unconfirmed.
+- **Until `cluster-seal` is activated, sealing is node-local** and every
+  status reports `active: false`. No record is written and none is enforced;
+  the monitor still reads them, to hold a fresh lease when the feature turns
+  on.
+- **Seal authority does not cross tenants.** Node barrier: `system`-tenant
+  identities only. Tenant barrier: that tenant's identities only — the
+  `system` tenant is refused. Database barrier: the owning tenant only.
 - **The CA key is a plain `[]byte` (DER-encoded), not a `secure.Buffer`.**
   `DefaultCertProvider.caKey` is decrypted from its wrapped form on demand and
   held only until the next `Seal()`, which zero-fills it with `secure.Wipe`
@@ -276,6 +489,71 @@ that sentinel through `errors.Is`. A failure after the node has accepted the
 migration is a different error, `MigrationReopenError`, and is not reported as
 "not available".
 
+### In a cluster, every node supplies its own credential
+
+The replicated `__sys:encmig/` intent record carries the target strategy, the
+mechanism, the Shamir M/N, the owner set and the generation — **and no
+credential**, not even an encrypted one. Each owning node obtains its own
+unlock credential locally:
+
+| Node | Credential source |
+|---|---|
+| The node that accepted the request (the leader) | the request's passphrase, held in protected memory for this node's own recycle and destroyed after it; never written anywhere |
+| Every other owner | the file `<seal.migration_credentials_dir>/system` (node barrier) or `<seal.migration_credentials_dir>/tenant-<id>` (a tenant barrier), read when its recycle starts and wiped after use |
+| Any owner, Shamir target | none: each node mints its own key and seals a fresh share set to its own enrolled officers |
+
+An owner whose credential file is absent records phase `awaiting-credential`
+and retries on every reconciler pass; it is not counted as a failed attempt.
+The directory must be a real directory (not a symlink) owned by the daemon's
+user and writable by no one else. It is opened once, `O_RDONLY|O_DIRECTORY|
+O_NOFOLLOW|O_CLOEXEC`, and vetted on that descriptor; the file is opened
+relative to it (`openat`), so a directory moved away and replaced at the same
+path after the vetting is never the one read. The file is opened `O_RDONLY|
+O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC` and checked on the open descriptor: a regular file,
+mode `0600` or stricter, owned by the daemon's user, non-empty and at most
+64 KiB. Anything else is refused (`clustermig.MigrationCredentialFileError`,
+naming the directory or the file); off unix, where the file cannot be opened
+without following a symlink, every credential file is refused. The trimmed
+newline is wiped with the rest of the buffer; a refused file also
+leaves the owner in `awaiting-credential`, with the reason as the status
+detail, so fixing the file is enough. One trailing newline is not part of the
+credential. A tenant ID that is not a plain file name is refused.
+
+```go
+// pkg/clustermig
+type CredentialSource interface {
+	Credential(ctx context.Context, m *ClusterMigration) ([]byte, error) // any error: awaiting-credential
+	Release(m *ClusterMigration)                                           // the generation completed or was abandoned
+}
+type LocalCredentials struct{ /* ... */ }                                // the source every node runs
+func NewLocalCredentials(dir string) *LocalCredentials                   // dir = seal.migration_credentials_dir
+func (l *LocalCredentials) Hold(m *ClusterMigration, credential []byte) error // the accepting node's request credential, copied to protected memory
+const PhaseAwaitingCredential seal.MigrationPhase = "awaiting-credential"
+var ErrCredentialAwaited error
+func NewCoordinator(store *Store, owners OwnerResolver, isLeader func() bool, nowUnix func() int64) *Coordinator
+func (c *Coordinator) Request(ctx context.Context, tenantID, database string, opts seal.MigrationOptions, ropts ...RequestOption) (*ClusterMigration, error)
+type Prepare func(m *ClusterMigration) (undo func(), err error)
+func WithPrepare(p Prepare) RequestOption // the accepting node Holds its credential before the record is written
+```
+
+Earlier releases sealed the credential to each owner with HPKE and stored the
+envelopes in the record; that path is gone, together with the per-node
+migration receiver.
+
+**An indeterminate record write leaves the accepting node awaiting its
+credential.** The accepting node holds the request's credential through
+`WithPrepare` before the record is written, and the prepare's undo releases
+it -- destroying the protected copy -- when `PutMigration` returns an error.
+A write can fail and still commit: a proposal that times out, or whose
+leader is lost after it was appended, may be applied afterwards. The undo has
+run by then, so the record exists while this node holds no credential for its
+generation. That node reports `awaiting-credential` like an owner without its
+file, and is satisfied the same way -- the credential file in
+`seal.migration_credentials_dir`, or a new request, whose generation
+supersedes the stranded one. No other node is affected, and nothing proceeds
+on a credential this node no longer holds. The request's caller saw an error
+and, retrying, issues exactly that new request.
+
 > **Correction to `seal/README.md`.** That document states the strategy is fixed
 > at initialization and that moving off `none` is "a planned backup/restore
 > migration into a freshly-keyed instance". `barrier enable-encryption` has
@@ -298,6 +576,17 @@ migration is a different error, `MigrationReopenError`, and is not reported as
 | tenant `enable-encryption` while a system migration is rebuilding the data plane | `DataPlaneRecyclingError`, `503` / `Unavailable`; retry | **yes** |
 | `enable-encryption` queued on an embedded node when `Close` begins | refused, not queued: `service.ErrNodeClosed`, `503` / `Unavailable` | **yes** |
 | Wrong passphrase on unseal | refused; barrier stays sealed | **yes** |
+| Seal record not confirmed | the receiving node is sealed; `RecordNotConfirmedError` | **yes** |
+| Tenant or database unseal whose clear record cannot be written | the barrier is sealed again; `RecordNotConfirmedError` | **yes** |
+| Two seal/clear requests race | the loser re-reads; opposite intent → `SealEpochConflictError` | **yes** |
+| Cluster unseal on a node that has not unsealed itself | `ErrSealed` | **yes** |
+| Cluster unseal before `cluster-seal` is activated | `ErrInactive` | **yes** |
+| Node lease expired, or no read since start | node gate refuses; streams end with `SealStateUnconfirmedError`; keys kept | **yes** |
+| Enforcement step fails on a node (shard close, key wipe) | logged and retried on the next poll; the gate stays closed | **yes** |
+| Platform operator seals or unseals a tenant's barrier | `403` (`tenant_barrier:*` are tenant-only) and `TenantScopeError` in the service | **yes** |
+| A tenant seals another tenant's database, or the `system` tenant a tenant's | refused as not found (`databases:*` seal permissions are owner-only) | **yes** |
+| Migration owner without its credential file | phase `awaiting-credential`, retried | **yes** |
+| Request's record write fails but commits (timeout, lost leader) | the accepting node's held credential was released by the undo; that node reports `awaiting-credential` until its file is placed or a new request supersedes the generation | **yes** |
 
 ## Permission model
 
@@ -337,6 +626,19 @@ checked against the roster. Unseal, seal, root token, recovery and rekey
 completion on a Shamir barrier are quorum operations, not permissions. See
 [../shamir-custody/api.md](../shamir-custody/api.md).
 
+`seal:unseal` also gates **cluster unseal** (`/v1/barrier/cluster-unseal`),
+which is on the sealed-window allowlist.
+
+**Tenant and database barriers.** The `tenant_barrier:*` permissions are
+`ScopeTenantOnly`: the `system` tenant is refused for another tenant's barrier,
+and `TenantService` repeats the refusal for seal, seal vote, unseal and unseal
+share. `databases:seal`, `databases:unseal` and `databases:barrier_status` are
+`ScopeSelfStrict`, and `DatabaseService` resolves the database through the
+caller's own tenant for these three operations, the `system` tenant included.
+**Correction (2026-10-01):** these three were `ScopeSelf`, which the
+system-tenant rule lifts across tenants, and `DatabaseService` let the `system`
+tenant act on any tenant's database.
+
 ## Configuration
 
 ```yaml
@@ -344,6 +646,22 @@ seal:
   enabled: true          # false (the default) runs with no barrier at all
   strategy: passphrase   # passphrase | none | shamir  ("software" = deprecated alias)
 ```
+
+Cluster sealing and cluster enable-encryption add:
+
+```yaml
+seal:
+  cluster_lease: 15s           # serve only while the seal records were read within this
+  cluster_poll_interval: 1s    # how often the monitor reads the records; at most a third of the lease
+  cluster_ack_timeout: 5s      # node-barrier seal: how long to wait for every node's acknowledgement
+  migration_credentials_dir: "" # this node's own enable-encryption credentials (see above)
+```
+
+All three durations must be positive; `cluster_lease` at most 60s, because a
+cut-off node serves until its lease runs out; `cluster_poll_interval` at most
+a third of `cluster_lease`; and `cluster_ack_timeout` at most half of it. A
+config that breaks any of these is refused at load with a
+`config.ValidationError` naming the field.
 
 `SealConfig.CanonicalStrategy()` canonicalizes the alias at load. Per-database
 and per-tenant barrier configuration lives in
@@ -359,6 +677,20 @@ and per-tenant barrier configuration lives in
   `__sys:cert_ca/{tenantID}/cert_pem`.
 - **Compatibility**: the sealed blob format carries a version sentinel — see
   [seal/sealed-window.md](../seal/sealed-window.md).
+- **Cluster seal records** live in the replicated system store under
+  `__sys:cluster/seal/records/<barrier>`, and node-barrier acknowledgements
+  under `__sys:cluster/seal/acks/<node>`. Records are never deleted: a barrier's
+  epoch must keep increasing across database re-creation. Creating a database
+  clears the record a dropped predecessor of the same name and owner left
+  sealed, so the new database starts from a clear record and its first seal
+  takes the next epoch; if that clear cannot be written the create is rolled
+  back. Another tenant's record for the same name is a different barrier and is
+  never touched. A tenant ID is retired on delete and never reissued, so a
+  tenant record has no successor.
+- **A database seal record seals only its owner's database.** The node
+  enforcer seals the database the record names for the tenant it names; a
+  database another tenant holds under that name is left alone. A database with
+  no barrier of its own is never recorded sealed.
 
 ### A per-tenant barrier has durable records beyond the sealed blob
 
@@ -559,6 +891,18 @@ distinguishes them.
   hardware, so integration tests need no hardware coupling. That is the point of
   the seam.
 - **No `time.Sleep`** anywhere in the coordinator or its tests.
+- **Cluster seal, unit**: `pkg/clusterseal` drives the monitor with an
+  injected clock and an in-memory guarded KV: guarded writes and their races,
+  epoch-keyed idempotent enforcement, the acknowledgement wait and its timeout,
+  lease expiry and resumption with keys kept, restart, held, and the inactive
+  gate. Each transport proves the cluster-unseal route, the `cluster_seal`
+  status object and a watch ended by a seal.
+- **Cluster seal, integration** (cluster stage): a 3-node cluster in which a
+  seal through one node makes the other two refuse requests and end their
+  watches; each node unseals with its own credential; no key bytes appear in
+  the replicated records or the Raft log; a tenant administrator's seal reaches
+  every replica; a cut-off node stops serving and resumes; a restarted node
+  reads the record before serving.
 - **Integration**: `cluster_enable_encryption_test.go` lives in the **cluster
   stage** (`make integration-test-cluster`), which is **not currently wired into
   CI**.

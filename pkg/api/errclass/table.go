@@ -30,6 +30,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
@@ -110,6 +111,20 @@ var dominantRules = []rule{
 	// returned a store and BEFORE that store's own Get/Put ran, which reports
 	// the barrier's sentinel unwrapped (go-qrdb#464 round 6).
 	is(seal.ErrSealed, Unavailable),
+
+	// Cluster sealing. Dominant, because the tenant and database services
+	// wrap them in their own barrier errors: a seal or clear record whose
+	// outcome is unknown, and a node that cannot confirm the seal records,
+	// are retryable; a stream a seal ended is the sealed refusal; a lost race
+	// is a conflict the caller re-reads; acting before the cluster activated
+	// cluster-seal is a precondition.
+	as(&clusterseal.RecordNotConfirmedError{}, Unavailable),
+	as(&clusterseal.SealStateUnconfirmedError{}, Unavailable),
+	as(&clusterseal.SealedError{}, Unavailable),
+	as(&clusterseal.SealEpochConflictError{}, Aborted),
+	is(clusterseal.ErrInactive, FailedPrecondition),
+	as(&clusterseal.CorruptRecordError{}, Internal),
+	as(&clusterseal.InvalidBarrierError{}, InvalidArgument),
 
 	// A system-scope encryption migration is rebuilding the data plane; the
 	// service is back once it finishes. It can arrive wrapped in whatever

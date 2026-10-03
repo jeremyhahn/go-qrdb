@@ -25,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/secure"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sealconv"
 )
 
 // Compile-time interface assertion.
@@ -40,6 +41,9 @@ var _ transport.BarrierClient = (*Transport)(nil)
 // via WithPINBackend, the PINs are persisted on the backend before the
 // barrier is initialized.
 func (t *Transport) BarrierInitialize(ctx context.Context, req *transport.BarrierInitializeRequest) error {
+	if err := t.gate("BarrierInitialize"); err != nil {
+		return err
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -55,6 +59,9 @@ func (t *Transport) BarrierInitialize(ctx context.Context, req *transport.Barrie
 // BarrierUnseal unseals the barrier using the master key by delegating
 // to the injected BarrierServicer.
 func (t *Transport) BarrierUnseal(ctx context.Context, req *transport.BarrierUnsealRequest) error {
+	if err := t.gate("BarrierUnseal"); err != nil {
+		return err
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -67,6 +74,9 @@ func (t *Transport) BarrierUnseal(ctx context.Context, req *transport.BarrierUns
 // BarrierSeal transitions the barrier to the sealed state by delegating
 // to the injected BarrierServicer.
 func (t *Transport) BarrierSeal(ctx context.Context) error {
+	if err := t.gate("BarrierSeal"); err != nil {
+		return err
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -76,9 +86,31 @@ func (t *Transport) BarrierSeal(ctx context.Context) error {
 	return t.barrierSvc.BarrierSeal(ctx)
 }
 
+// BarrierClusterUnseal clears a cluster-wide seal of the node barrier and
+// returns its cluster seal state. It unseals nothing.
+func (t *Transport) BarrierClusterUnseal(ctx context.Context) (*transport.ClusterSeal, error) {
+	if err := t.gate("BarrierClusterUnseal"); err != nil {
+		return nil, err
+	}
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.barrierSvc == nil {
+		return nil, &NilServiceError{Service: "BarrierServicer"}
+	}
+	report, err := t.barrierSvc.BarrierClusterUnseal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return sealconv.FromReport(report), nil
+}
+
 // BarrierStatus returns the current state of the cryptographic barrier
 // by delegating to the injected BarrierServicer.
 func (t *Transport) BarrierStatus(ctx context.Context) (*transport.BarrierStatusResponse, error) {
+	if err := t.gate("BarrierStatus"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -95,6 +127,7 @@ func (t *Transport) BarrierStatus(ctx context.Context) (*transport.BarrierStatus
 		HardwareBacked:  info.HardwareBacked,
 		ShamirThreshold: info.ShamirThreshold,
 		ShamirTotal:     info.ShamirTotal,
+		ClusterSeal:     sealconv.FromReport(info.ClusterSeal),
 	}
 	if !info.InitializedAt.IsZero() {
 		resp.InitializedAt = info.InitializedAt.Format(time.RFC3339)
@@ -108,6 +141,9 @@ func (t *Transport) BarrierStatus(ctx context.Context) (*transport.BarrierStatus
 // and a pin.PINBackend has been injected via WithPINBackend, the PINs
 // are persisted on the backend before initialization.
 func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.BarrierInitializeShamirRequest) (*transport.BarrierInitializeShamirResponse, error) {
+	if err := t.gate("BarrierInitializeShamir"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -159,6 +195,9 @@ const embeddedMigrationAcceptWindow = 750 * time.Millisecond
 // specific NotImplementedError this method returned unconditionally before
 // sdk/go/node started wiring its own migrator through here.
 func (t *Transport) BarrierEnableEncryption(ctx context.Context, req *transport.BarrierEnableEncryptionRequest) (*transport.BarrierEnableEncryptionResponse, error) {
+	if err := t.gate("BarrierEnableEncryption"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -248,6 +287,9 @@ func (t *Transport) BarrierEnableEncryption(ctx context.Context, req *transport.
 }
 
 func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transport.BarrierGenerateRecoveryKeysRequest) (*transport.BarrierRecoveryKeysResponse, error) {
+	if err := t.gate("BarrierGenerateRecoveryKeys"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -271,6 +313,9 @@ func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transp
 // BarrierDeleteRecoveryKeys deletes all stored recovery keys by delegating
 // to the injected BarrierServicer.
 func (t *Transport) BarrierDeleteRecoveryKeys(ctx context.Context) error {
+	if err := t.gate("BarrierDeleteRecoveryKeys"); err != nil {
+		return err
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -283,6 +328,9 @@ func (t *Transport) BarrierDeleteRecoveryKeys(ctx context.Context) error {
 // BarrierHasRecoveryKeys checks whether recovery keys have been generated
 // by delegating to the injected BarrierServicer.
 func (t *Transport) BarrierHasRecoveryKeys(ctx context.Context) (*transport.BarrierHasRecoveryKeysResponse, error) {
+	if err := t.gate("BarrierHasRecoveryKeys"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -431,6 +479,9 @@ func (t *Transport) RecoveryOfficerRegister(ctx context.Context, req *transport.
 
 // OfficerList lists the unseal key's holders and their claim state.
 func (t *Transport) OfficerList(ctx context.Context) ([]*transport.OfficerStatus, error) {
+	if err := t.gate("OfficerList"); err != nil {
+		return nil, err
+	}
 	svc, err := t.barrierService()
 	if err != nil {
 		return nil, delayed("OfficerList", err)
@@ -519,6 +570,9 @@ func (t *Transport) BarrierQuorumSubmit(ctx context.Context, req *transport.Quor
 
 // BarrierRekeyStart opens a rekey round under SO PIN authorization.
 func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyStartRequest) (*transport.QuorumRound, error) {
+	if err := t.gate("BarrierRekeyStart"); err != nil {
+		return nil, err
+	}
 	svc, err := t.barrierService()
 	if err != nil {
 		return nil, delayed("BarrierRekeyStart", err)
@@ -533,6 +587,9 @@ func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyS
 // BarrierOfficerRevoke revokes a holder through a quorum-gated rekey, under
 // SO PIN authorization.
 func (t *Transport) BarrierOfficerRevoke(ctx context.Context, req *transport.OfficerRevokeRequest) (*transport.QuorumRound, error) {
+	if err := t.gate("BarrierOfficerRevoke"); err != nil {
+		return nil, err
+	}
 	svc, err := t.barrierService()
 	if err != nil {
 		return nil, delayed("BarrierOfficerRevoke", err)

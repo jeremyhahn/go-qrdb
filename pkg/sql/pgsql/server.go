@@ -21,6 +21,7 @@ import (
 	"crypto/tls"
 	"log/slog"
 	"net"
+	"time"
 
 	sqle "github.com/dolthub/go-mysql-server"
 	wire "github.com/jeroenrinzema/psql-wire"
@@ -28,10 +29,12 @@ import (
 	psqlerr "github.com/jeroenrinzema/psql-wire/errors"
 
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/infoschema"
+	"github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sessionguard"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/provider"
 )
 
@@ -75,6 +78,14 @@ type Server struct {
 	// sealedProbe gates connections and queries while the storage
 	// barrier is sealed. When nil the gate is disabled.
 	sealedProbe sealedWindowProbe
+	// sealStreams, when non-nil, is the node's cluster-seal stream registry
+	// every session subscribes to (WithSealStreams).
+	sealStreams *clusterseal.Streams
+	// guard closes a session's connection when a seal reaches it; nil when
+	// the server has neither a probe nor a stream registry.
+	guard *sessionguard.Guard
+	// queryTimeout bounds every statement (WithQueryTimeout); zero is none.
+	queryTimeout time.Duration
 	// registry resolves per-(tenant, database) services -- KV, MVCC,
 	// relational tables, and everything else service.Registry exposes --
 	// the same transport-neutral seam every other protocol (REST, gRPC,
@@ -96,6 +107,24 @@ type Server struct {
 
 // ServerOption configures the Server.
 type ServerOption func(*Server)
+
+// WithSealStreams subscribes every PostgreSQL session to the node's
+// cluster-seal stream registry: a seal of the node, of the session's tenant or
+// of any of its databases, or a cut-off, closes the connection -- ending any
+// transaction held across it, as the MySQL listener does. The probe
+// (WithSealedWindowProbe) closes sessions too, for a node-local seal.
+func WithSealStreams(streams *clusterseal.Streams) ServerOption {
+	return func(s *Server) { s.sealStreams = streams }
+}
+
+// WithQueryTimeout bounds every statement -- a simple query, and each
+// extended-protocol statement's execution, whether at Parse (no parameters)
+// or at each Bind/Execute of its portal -- to d; a statement past it is
+// cancelled and answered SQLSTATE 57014 (query_canceled), as PostgreSQL's
+// statement_timeout is. Zero disables it.
+func WithQueryTimeout(d time.Duration) ServerOption {
+	return func(s *Server) { s.queryTimeout = d }
+}
 
 // WithTLS configures TLS for the PostgreSQL wire protocol server.
 func WithTLS(cfg *tls.Config) ServerOption {
@@ -287,6 +316,7 @@ func (s *Server) Start() error {
 	translator := engine.NewTranslator()
 	parseHandler := NewParseHandler(sqlEngine, translator, s.dbName)
 	parseHandler.sealedProbe = s.sealedProbe
+	parseHandler.queryTimeout = s.queryTimeout
 
 	// Build psql-wire server options. The sealed-window session gate is
 	// registered FIRST so it runs before the auth session middleware:
@@ -358,6 +388,17 @@ func (s *Server) Start() error {
 	// clears authentication state.
 	wireOpts = append(wireOpts, wire.CloseConn(closeHandler(authenticator)))
 
+	// The seal guard registers each session's connection after
+	// authentication, so it knows the session's tenant, and closes it when a
+	// seal reaches it. The listener tracks every accepted connection so the
+	// guard can close one psql-wire hands it only as a context.
+	var tracking *trackingListener
+	if s.sealedProbe != nil || s.sealStreams != nil {
+		s.guard = sessionguard.New(s.sealedProbe, s.sealStreams, sessionguard.DefaultProbeInterval)
+		tracking = &trackingListener{}
+		wireOpts = append(wireOpts, wire.SessionMiddleware(guardSessionHandler(s.guard, tracking)))
+	}
+
 	// Register the per-connection QRDBSession handler LAST (after any auth
 	// middleware above), so it sees whatever identity authentication
 	// established. This is what lets BEGIN/COMMIT/ROLLBACK/SAVEPOINT state
@@ -376,6 +417,11 @@ func (s *Server) Start() error {
 	listener, err := net.Listen("tcp", s.addr)
 	if err != nil {
 		return &ServerStartError{Err: err}
+	}
+	if tracking != nil {
+		tracking.Listener = listener
+		listener = tracking
+		s.guard.Start()
 	}
 	s.listener = listener
 
@@ -417,6 +463,9 @@ func (s *Server) serve(ctx context.Context, listener net.Listener) {
 func (s *Server) Stop() {
 	if s.cancel != nil {
 		s.cancel()
+	}
+	if s.guard != nil {
+		s.guard.Stop()
 	}
 	// Close listener to unblock the Serve accept loop.
 	if s.listener != nil {
@@ -510,6 +559,7 @@ func sealedWireError(severity psqlerr.Severity) error {
 // address.
 func closeHandler(authenticator *Authenticator) wire.CloseFn {
 	return func(ctx context.Context) error {
+		releaseGuardSession(ctx)
 		if session := connectionSessionFromContext(ctx); session != nil {
 			session.SessionEnd()
 		}

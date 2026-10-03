@@ -31,54 +31,62 @@ type OwnerResolver interface {
 	Owners(ctx context.Context, tenantID, database string) (shardID uint64, owners []string, err error)
 }
 
-// CredentialSealer seals a migration's unlock credential individually to each
-// owning node, returning a map of NodeID -> opaque per-recipient ciphertext
-// (e.g. an HPKE envelope). It is the seam through which the daemon injects the
-// node public keys + crypto, keeping clustermig free of key material: the
-// coordinator only stores the sealed blobs it returns. credential is the
-// plaintext unlock secret (passphrase / Shamir U) the operator supplied; it
-// MUST NOT be persisted anywhere except sealed. A nil sealer leaves the record's
-// Credentials empty (deployments that supply credentials out of band).
-type CredentialSealer interface {
-	SealFor(ctx context.Context, m *ClusterMigration, owners []string, credential []byte) (map[string][]byte, error)
-}
-
 // Coordinator runs on the cluster leader. When an enable-encryption is requested
-// for a scope it resolves the owner set, allocates the next generation, seals the
-// unlock credential to each owner, and writes the replicated ClusterMigration
-// intent record. It performs no crypto itself (the CredentialSealer seam does)
-// and moves no data; per-node execution is the Reconciler's job. The coordinator
-// is safe to call on any node — Request is a no-op-with-error when this node is
-// not the leader, so the transport layer can route blindly and let the seam gate.
+// for a scope it resolves the owner set, allocates the next generation, and
+// writes the replicated ClusterMigration intent record. The record carries no
+// credential: each owner supplies its own (CredentialSource). It moves no data;
+// per-node execution is the Reconciler's job. The coordinator is safe to call
+// on any node — Request is a no-op-with-error when this node is not the leader,
+// so the transport layer can route blindly and let the seam gate.
 type Coordinator struct {
 	store    *Store
 	owners   OwnerResolver
-	sealer   CredentialSealer
 	isLeader func() bool
 	nowUnix  func() int64
 }
 
 // NewCoordinator constructs a Coordinator. isLeader gates intent writes to the
 // leader (the replicated record must be written exactly once per request).
-// sealer seals the unlock credential per owner; pass nil for deployments that
-// supply credentials out of band. nowUnix stamps the request time; pass nil to
-// omit the timestamp (the state machine has no wall clock, so callers supply one).
-func NewCoordinator(store *Store, owners OwnerResolver, sealer CredentialSealer, isLeader func() bool, nowUnix func() int64) *Coordinator {
+// nowUnix stamps the request time; pass nil to omit the timestamp (the state
+// machine has no wall clock, so callers supply one).
+func NewCoordinator(store *Store, owners OwnerResolver, isLeader func() bool, nowUnix func() int64) *Coordinator {
 	if isLeader == nil {
 		isLeader = func() bool { return true }
 	}
-	return &Coordinator{store: store, owners: owners, sealer: sealer, isLeader: isLeader, nowUnix: nowUnix}
+	return &Coordinator{store: store, owners: owners, isLeader: isLeader, nowUnix: nowUnix}
+}
+
+// Prepare runs with a request's complete record -- generation included --
+// before the record is written, so nothing the record starts can run ahead
+// of it. A returned error aborts the request; undo, when not nil, runs if the
+// write then fails.
+type Prepare func(m *ClusterMigration) (undo func(), err error)
+
+// RequestOption configures one Request.
+type RequestOption func(*requestOptions)
+
+type requestOptions struct {
+	prepare Prepare
+}
+
+// WithPrepare runs p before the request's record is written. The node that
+// accepts a request holds the request's credential this way, so its own
+// reconciler can never read the record before the credential is held.
+func WithPrepare(p Prepare) RequestOption {
+	return func(o *requestOptions) { o.prepare = p }
 }
 
 // Request begins a cluster-wide enable-encryption for a scope. It resolves the
-// owners, bumps the generation past any prior request for the same scope, seals
-// the unlock credential to each owner, and writes the intent record. Only the
-// leader writes; a follower returns ErrNotLeader so the caller can forward to
-// the leader. An empty tenantID with empty database denotes the system scope.
-// credential is the plaintext unlock secret (passphrase / Shamir U) the operator
-// supplied; it is sealed per owner via the CredentialSealer and never persisted
-// in the clear. credential may be empty when no sealer is wired.
-func (c *Coordinator) Request(ctx context.Context, tenantID, database string, opts seal.MigrationOptions, credential []byte) (*ClusterMigration, error) {
+// owners, bumps the generation past any prior request for the same scope, and
+// writes the intent record. Only the leader writes; a follower returns
+// ErrNotLeader so the caller can forward to the leader. An empty tenantID with
+// empty database denotes the system scope. opts.Credentials is not read: the
+// caller holds it for this node's own recycle (LocalCredentials.Hold).
+func (c *Coordinator) Request(ctx context.Context, tenantID, database string, opts seal.MigrationOptions, ropts ...RequestOption) (*ClusterMigration, error) {
+	var ro requestOptions
+	for _, o := range ropts {
+		o(&ro)
+	}
 	if err := opts.Validate(); err != nil {
 		return nil, err
 	}
@@ -123,17 +131,18 @@ func (c *Coordinator) Request(ctx context.Context, tenantID, database string, op
 		m.RequestedAtUnix = c.nowUnix()
 	}
 
-	// Seal the unlock credential individually to each owner. The plaintext is
-	// dropped here; only the per-recipient ciphertext is stored in the record.
-	if c.sealer != nil && len(credential) > 0 {
-		sealed, serr := c.sealer.SealFor(ctx, m, owners, credential)
-		if serr != nil {
-			return nil, &StoreError{Op: "seal-credentials", Err: serr}
+	var undo func()
+	if ro.prepare != nil {
+		u, err := ro.prepare(m)
+		if err != nil {
+			return nil, err
 		}
-		m.Credentials = sealed
+		undo = u
 	}
-
 	if perr := c.store.PutMigration(ctx, m); perr != nil {
+		if undo != nil {
+			undo()
+		}
 		return nil, perr
 	}
 	return m, nil

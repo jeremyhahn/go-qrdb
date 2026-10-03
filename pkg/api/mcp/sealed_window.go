@@ -59,10 +59,12 @@ func (s *Server) sealedWindowMiddleware() mcpserver.ToolHandlerMiddleware {
 				defer s.sealedWindowListener.Admit(transition)()
 			}
 			_, allowlisted := SealedWindowAllowlist[name]
+			_, authOnly := sealedWindowAuthenticatedOnly[name]
 			decision := sealedwindow.Request{
-				Sealed:      s.sealedWindowSealed(),
-				Allowlisted: allowlisted,
-				Listener:    s.sealedWindowListener != nil,
+				Sealed:            s.sealedWindowSealed(),
+				Allowlisted:       allowlisted,
+				Listener:          s.sealedWindowListener != nil,
+				AuthenticatedOnly: authOnly,
 			}
 			if _, preOp := sealedWindowPreOperationalOnly[name]; preOp && decision.Listener && decision.Sealed && decision.Allowlisted {
 				decision.PreOperationalOnly = true
@@ -86,6 +88,10 @@ func (s *Server) sealedWindowMiddleware() mcpserver.ToolHandlerMiddleware {
 		}
 	}
 }
+
+// sealedWindowAuthenticatedOnly holds the MCP tools of the AuthenticatedOnly
+// verbs (cluster unseal), never served anonymously.
+var sealedWindowAuthenticatedOnly = sealedwindow.MCPAuthenticatedOnly()
 
 // sealedWindowTransition holds the MCP tools of the Transition verbs
 // (initialize and unseal), which run alone on the boot-time listener.

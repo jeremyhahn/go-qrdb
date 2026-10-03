@@ -29,6 +29,9 @@ import (
 // EnrollFactor enrolls a custodian in the given auth factor type by
 // delegating to the injected AuthFactorServicer.
 func (t *Transport) EnrollFactor(ctx context.Context, req *transport.EnrollFactorRequest) (*transport.EnrollFactorResponse, error) {
+	if err := t.gate("EnrollFactor"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -68,6 +71,9 @@ func (t *Transport) EnrollFactor(ctx context.Context, req *transport.EnrollFacto
 // ChallengeFactor issues a challenge for a previously enrolled factor by
 // delegating to the injected AuthFactorServicer.
 func (t *Transport) ChallengeFactor(ctx context.Context, req *transport.ChallengeFactorRequest) (*transport.ChallengeFactorResponse, error) {
+	if err := t.gate("ChallengeFactor"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -92,6 +98,9 @@ func (t *Transport) ChallengeFactor(ctx context.Context, req *transport.Challeng
 // VerifyFactor verifies the custodian's challenge response by delegating
 // to the injected AuthFactorServicer.
 func (t *Transport) VerifyFactor(ctx context.Context, req *transport.VerifyFactorRequest) error {
+	if err := t.gate("VerifyFactor"); err != nil {
+		return err
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -113,6 +122,9 @@ func (t *Transport) VerifyFactor(ctx context.Context, req *transport.VerifyFacto
 // ListFactors lists enrolled auth factors by delegating to the injected
 // AuthFactorServicer.
 func (t *Transport) ListFactors(ctx context.Context, req *transport.ListFactorsRequest) (*transport.ListFactorsResponse, error) {
+	if err := t.gate("ListFactors"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -160,6 +172,9 @@ func (t *Transport) ListFactors(ctx context.Context, req *transport.ListFactorsR
 // RevokeFactor permanently revokes an enrollment by delegating to the
 // injected AuthFactorServicer.
 func (t *Transport) RevokeFactor(ctx context.Context, req *transport.RevokeFactorRequest) error {
+	if err := t.gate("RevokeFactor"); err != nil {
+		return err
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}

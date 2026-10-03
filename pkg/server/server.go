@@ -268,6 +268,9 @@ type serverOptions struct {
 	// is unsealed, and it serves no SQL wire protocol.
 	sealedWindowListener bool
 
+	// clusterSeal enforces cluster seals on this node; see WithClusterSeal.
+	clusterSeal ClusterSeal
+
 	// clusterKeyReceiver handles the /v1/cluster/keydelivery and
 	// /v1/cluster/nodekey endpoints. When nil the routes are not registered.
 	clusterKeyReceiver rest.ClusterKeyReceiver
@@ -956,6 +959,7 @@ func New(cfg *config.Config, kvSvc service.KVServicer, adminSvc service.AdminSer
 	for _, opt := range opts {
 		opt(&s.opts)
 	}
+	s.opts.applyClusterSeal()
 
 	// Option-based kvSvc/adminSvc override the positional parameters, allowing
 	// nil to be passed as a positional param when using option functions instead.
@@ -1701,6 +1705,9 @@ func (s *Server) restRegistryOptions() []RESTRegistryOption {
 	}
 	if s.config.SQL.DefaultDatabase != "" {
 		regOpts = append(regOpts, WithSharedSQLDefaultDatabase(s.config.SQL.DefaultDatabase))
+	}
+	if s.opts.clusterSeal != nil {
+		regOpts = append(regOpts, withClusterSealRegistry(s.opts.clusterSeal))
 	}
 	return regOpts
 }

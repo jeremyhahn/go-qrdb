@@ -781,6 +781,12 @@ service QRDBService {
         option (qrdb.v1.permission) = "seal:status";
     }
 
+    // BarrierClusterUnseal clears a cluster-wide seal of the node barrier. It
+    // unseals nothing: the receiving node must already have unsealed itself.
+    rpc BarrierClusterUnseal(BarrierClusterUnsealRequest) returns (ClusterSealState) {
+        option (qrdb.v1.permission) = "seal:unseal";
+    }
+
     // BarrierShamirInitialize initializes the barrier with Shamir secret sharing.
     rpc BarrierShamirInitialize(BarrierShamirInitializeRequest) returns (BarrierShamirOperationResponse) {
         option (qrdb.v1.permission) = "seal:initialize_shamir";
@@ -3360,7 +3366,34 @@ message BarrierStatusResponse {
     string initialized_at = 4;
     int32 shamir_threshold = 5;
     int32 shamir_total = 6;
+    // cluster_seal is the node barrier's cluster seal state.
+    ClusterSealState cluster_seal = 7;
 }
+
+// ClusterSealState is one barrier's cluster seal state as the receiving node
+// sees it (docs/barrier-seal/api.md, "The cluster_seal status object"). It
+// carries no key material.
+message ClusterSealState {
+    // active is true once the cluster has activated cluster-seal; when false
+    // every seal is node-local and the other fields are empty.
+    bool active = 1;
+    // sealed and epoch are the barrier's record; epoch 0 means none exists.
+    bool sealed = 2;
+    uint64 epoch = 3;
+    // principal, principal_tenant, node and at say who wrote the record, from
+    // which tenant, through which node, and when (RFC 3339, UTC).
+    string principal = 4;
+    string principal_tenant = 5;
+    string node = 6;
+    string at = 7;
+    // local is this node's own state: serving, sealed, held, cut_off or
+    // unconfirmed.
+    string local = 8;
+}
+
+// BarrierClusterUnsealRequest clears a cluster-wide seal of the node barrier.
+// It has no fields.
+message BarrierClusterUnsealRequest {}
 
 // BarrierEnableEncryptionRequest migrates a barrier from none to a keyed
 // strategy. tenant_id, when set, scopes the migration to that tenant's
@@ -4444,6 +4477,8 @@ message DatabaseBarrierStatusResponse {
     string strategy            = 2;
     bool   hardware_backed     = 3;
     int64  initialized_at_unix = 4;
+    // cluster_seal is the database barrier's cluster seal state.
+    ClusterSealState cluster_seal = 5;
 }
 
 // ===========================================================================
@@ -4615,6 +4650,8 @@ message TenantBarrierStatusResponse {
     bool   hardware_backed  = 5;
     int32  shamir_threshold = 6;
     int32  shamir_total     = 7;
+    // cluster_seal is the tenant barrier's cluster seal state.
+    ClusterSealState cluster_seal = 8;
 }
 
 // TenantBarrierOfficerRegisterRequest enrolls a Security Officer for a

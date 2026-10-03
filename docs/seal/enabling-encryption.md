@@ -171,20 +171,24 @@ qrdb barrier enable-encryption --tenant acme --strategy passphrase --passphrase 
 
 1. **Coordinator (leader only):** Routes the request to a cluster coordinator if
    the scope has `RF > 1`. The leader resolves the owning nodes (system scope =
-   all cluster members; tenant scope = the placement Replicas), seals the unlock
-   credential individually to each owner's public key via HPKE envelopes, writes
-   a **replicated migration intent** record under `__sys:encmig/{tenant}/{db}` to
+   all cluster members; tenant scope = the placement Replicas), writes a
+   **replicated migration intent** record under `__sys:encmig/{tenant}/{db}` to
    the system KV, and returns `202 Accepted` immediately.
 
-2. **Per-node credential delivery (no secret in the Raft log):** The migration
-   intent record carries a `Credentials: map[nodeID][]byte` field holding, for each
-   owner, that node's private HPKE-sealed unlock credential. No plaintext secret
-   ever appears in the replicated state or the Raft log — only the per-recipient
-   ciphertext blobs. Each node can open only its own entry with its private key.
+2. **Each node supplies its own credential (none in the record):** The intent
+   record carries the target, the mechanism, the Shamir M/N, the owners and the
+   generation — no credential, sealed or otherwise. The leader keeps the
+   request's passphrase in protected memory for its own recycle; every other
+   owner reads its own from `<seal.migration_credentials_dir>/system` or
+   `<seal.migration_credentials_dir>/tenant-<id>`, and waits in phase
+   `awaiting-credential` until the file is there. A Shamir target needs none:
+   each node seals a fresh share set to its own officers. **Correction
+   (2026-10-01):** earlier releases sealed the credential to each owner with
+   HPKE and stored the envelopes in the record; that path is removed.
 
 3. **Per-node reconciler (all nodes):** Each owning node detects the replicated
-   intent (either immediately via change-feed or on reboot). It opens its own
-   sealed credential, runs the **proven single-node recycle** on its local replica,
+   intent (either immediately via change-feed or on reboot). It obtains its own
+   credential, runs the **proven single-node recycle** on its local replica,
    and writes back a per-node status. The migration is complete when all owners
    ack the current `Generation` with a terminal-success phase.
 
@@ -208,7 +212,9 @@ qrdb barrier enable-encryption --tenant acme --strategy passphrase --passphrase 
 - **Node down during migration:** The replicated intent record lives in the system
   KV, so the node discovers it on reboot (or the next reconciler pass). It reads
   the replicated intent, checks that it hasn't acked the current `Generation`,
-  opens its sealed credential, and resumes the recycle. The `Generation` guard
+  reads its credential file, and resumes the recycle. A leader that restarts
+  mid-migration no longer holds the request's passphrase: it, too, reads its
+  credential file. The `Generation` guard
   ensures idempotency — a node cannot be re-cycled for the same generation twice.
 
 - **Leader change:** The intent and per-node statuses live in replicated state.

@@ -652,11 +652,15 @@ must hold, at the entry's own log position, for it to apply:
   a database the caller owns whose status is `sealed`. Another tenant naming it
   gets the ordinary not-found answer. A watch or etcd stream already open ends
   with the same refusal when the database is sealed, and with the not-found
-  when it is dropped (`database.Database.Unserved`). **The refusal is enforced per node.** A
-  database's barrier and its `sealed` status live on the node that sealed it,
-  not in replicated state: in a cluster, sealing a database on one node does
-  not seal it on the others, and a node on which it is unsealed keeps serving
-  it. Seal it on every node that serves it.
+  when it is dropped (`database.Database.Unserved`). **The refusal is enforced on every node
+  once the cluster has activated `cluster-seal`.** A database seal then writes
+  the database's cluster seal record, and every node holding the database's
+  barrier seals it there and ends its open streams; see
+  [../barrier-seal/architecture.md](../barrier-seal/architecture.md#sealing-in-a-cluster).
+  Before activation the refusal is per node: a database's barrier and its
+  `sealed` status live on the node that sealed it, and a node on which it is
+  unsealed keeps serving it. Only the tenant that owns a database may seal or
+  unseal it, the `system` tenant included.
 - **Every local backend offers the guarded writes; only the remote proxy does
   not.** `PutIfAbsent`, `CompareAndSwap` and `CompareAndDelete` are available on
   a database backed by `memory`, `file` or `pebble` — with or without a

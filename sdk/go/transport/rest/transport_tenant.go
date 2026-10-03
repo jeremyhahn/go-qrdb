@@ -84,6 +84,8 @@ type restTenantBarrierStatus struct {
 	HardwareBacked  bool   `json:"hardware_backed"`
 	ShamirThreshold int    `json:"shamir_threshold,omitempty"`
 	ShamirTotal     int    `json:"shamir_total,omitempty"`
+
+	ClusterSeal *transport.ClusterSeal `json:"cluster_seal,omitempty"`
 }
 
 // toTenantInfo converts the flat REST payload into the transport-side
@@ -488,6 +490,7 @@ func (t *Transport) TenantBarrierStatus(ctx context.Context, req *transport.Tena
 		HardwareBacked:  wire.HardwareBacked,
 		ShamirThreshold: wire.ShamirThreshold,
 		ShamirTotal:     wire.ShamirTotal,
+		ClusterSeal:     wire.ClusterSeal,
 	}, nil
 }
 

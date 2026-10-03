@@ -6,6 +6,15 @@ Licensed under the Apache License, Version 2.0
 # Per-Node Barrier Architecture
 
 **Status:** IMPLEMENTED — Phases A, C, D shipped + validated (2026-06-20). Phase B deferred pending xkms integration; Phase E in progress.
+**Correction (2026-10-01):** read this record against
+[../barrier-seal/architecture.md](../barrier-seal/architecture.md#sealing-in-a-cluster).
+§1's "no at-rest encryption key is shared across nodes" does not hold for
+tenant raft replicas, which import the same tenant root key and derive
+identical keys. §3's Shamir row and §8's "one quorum is distributed to
+officers" describe the deferred Phase B: each node's node barrier has its own
+share set. Phase D's in-record HPKE credential envelopes are removed: the
+migration record carries no credential, and each node supplies its own (§8).
+
 **Supersedes:** the cluster-specific draft in
 `cluster-enable-encryption-design.md` (now a pointer to this doc).
 
@@ -215,12 +224,13 @@ completion record**:
   §4) and resumes from the replicated record on recovery; leader change is
   survived because intent lives in replicated state.
 
-Per-node credential delivery uses in-record HPKE-sealed envelopes: the
-coordinator seals the unlock credential (passphrase / Shamir secret) individually
-to each owner's public key via `keydelivery.Seal`; the per-node ciphertext blobs
-are stored in the replicated migration record and each node opens only its own
-entry with its private key. The plaintext credential never appears in the Raft
-log. For Shamir M-of-N clusters, one quorum is distributed to officers; each
+Each node supplies its own credential: the replicated migration record
+carries intent only. The node that accepted the request uses the request's
+credential from memory; every other owner reads its own from
+`seal.migration_credentials_dir`; a Shamir target needs none, because each node
+seals a fresh share set to its own officers. **Correction (2026-10-01):** this
+section previously described HPKE-sealed credential envelopes stored in the
+record; they are removed. For Shamir M-of-N clusters, one quorum is distributed to officers; each
 node unseals its own per-node root key with the reconstructed secret during the
 ceremony, then seals it locally and wipes the shared unlock credential `U`.
 
@@ -285,8 +295,8 @@ destabilize earlier ones.
 - **Phase D — Cluster enable-encryption.** IMPLEMENTED + VALIDATED ✔
   Replicated `__sys:encmig` record in `pkg/clustermig` (Store, Coordinator,
   Reconciler) + per-node reconciler fan-out (reuse single-node recycle) +
-  completion tracking + status surfacing. Per-node credential delivery via
-  HPKE-sealed envelopes in the replicated record. **Validated:**
+  completion tracking + status surfacing. The per-node credential envelopes it shipped
+  with have since been removed: each node supplies its own credential. **Validated:**
   `TestClusterEnableEncryption_SystemScope_RF3` (3-node, rolling, zero data loss,
   leader-change survival, resume-via-idempotency) and
   `TestClusterEnableEncryption_TenantScope_RF3` (3-node IsolationRaft, online,

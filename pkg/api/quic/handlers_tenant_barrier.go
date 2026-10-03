@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
@@ -132,6 +133,8 @@ type quicTenantBarrierStatusResponse struct {
 	HardwareBacked  bool   `json:"hardware_backed"`
 	ShamirThreshold int    `json:"shamir_threshold,omitempty"`
 	ShamirTotal     int    `json:"shamir_total,omitempty"`
+
+	ClusterSeal *clusterseal.Report `json:"cluster_seal"`
 }
 
 // missingTenantIDError is returned when a tenant-barrier frame omits the
@@ -274,6 +277,10 @@ func (s *Server) handleTenantBarrierStatus(ctx context.Context, payload []byte) 
 		HardwareBacked:  st.HardwareBacked,
 		ShamirThreshold: st.ShamirThreshold,
 		ShamirTotal:     st.ShamirTotal,
+		ClusterSeal:     st.ClusterSeal,
+	}
+	if resp.ClusterSeal == nil {
+		resp.ClusterSeal = &clusterseal.Report{}
 	}
 	out, err := json.Marshal(resp)
 	if err != nil {

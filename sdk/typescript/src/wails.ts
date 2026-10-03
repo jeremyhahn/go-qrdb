@@ -135,6 +135,7 @@ import type {
     RestoreRevisionResult,
     Role,
     SealStatus,
+    ClusterSeal,
     SearchByIDRequest,
     SearchByMetadataRequest,
     SearchByMetadataResponse,
@@ -1210,6 +1211,9 @@ export class WailsClient implements Client {
             },
             status: async (): Promise<SealStatus> => {
                 return b.Status() as Promise<SealStatus>;
+            },
+            clusterUnseal: async (): Promise<ClusterSeal> => {
+                return b.ClusterUnseal() as Promise<ClusterSeal>;
             },
             enableEncryption: async (req: EnableEncryptionRequest): Promise<EnableEncryptionResponse> => {
                 // The desktop Go SealBinding exposes a matching EnableEncryption

@@ -179,6 +179,26 @@ A claim on an ID another document already holds is refused as a duplicate key
 `INSERT … ON DUPLICATE KEY UPDATE` do the replacing. `UPDATE … SET _id = N`
 moves a document, and is refused with nothing destroyed if `N` is taken.
 
+## Known limitations
+
+**MySQL server-side cursors** (only in builds with the `qrdb_mysql` tag,
+`WITH_QRDB_MYSQL`). A cursor -- `COM_STMT_EXECUTE` with a cursor flag, then
+`COM_STMT_FETCH` -- is served by the upstream vitess and go-mysql-server stack,
+and two things follow:
+
+- There is a known upstream data race on that path: vitess `Conn.StatusFlags`
+  is accessed by go-mysql-server's handler and by the connection without
+  synchronization.
+- An idle open cursor is not bounded by `sql.query_timeout`: one the client
+  stops fetching from stays open until it is fetched to the end or closed, the
+  client disconnects, or a seal closes the session.
+
+If you need bounded resource use, do not request cursors. With MySQL
+Connector/J keep `useCursorFetch=false` (the default); with libmysqlclient do
+not set `STMT_ATTR_CURSOR_TYPE` to `CURSOR_TYPE_READ_ONLY`. go-sql-driver/mysql
+never requests one. Details:
+[upstream-gaps.md](upstream-gaps.md#5-server-side-cursors-race-on-connstatusflags-and-are-not-bounded).
+
 ## Troubleshooting
 
 **A statement fails with "another statement is still in progress on this

@@ -203,28 +203,50 @@ func TestReconciler_MultipleScopes(t *testing.T) {
 	}
 }
 
-// staticOpener returns a fixed credential and records whether it was asked, or
-// errors when err is set.
-type staticOpener struct {
-	cred []byte
-	err  error
+// staticSource is a CredentialSource that returns a fixed credential, or err
+// when set, and records what it was asked for and what was released.
+type staticSource struct {
+	mu       sync.Mutex
+	cred     []byte
+	err      error
+	asked    int
+	released []uint64
 }
 
-func (o staticOpener) Open(_ context.Context, _ *ClusterMigration) ([]byte, error) {
+func (o *staticSource) Credential(_ context.Context, _ *ClusterMigration) ([]byte, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.asked++
 	if o.err != nil {
 		return nil, o.err
 	}
 	return append([]byte(nil), o.cred...), nil
 }
 
-// TestReconciler_OpensAndPassesCredential proves the reconciler opens this node's
-// sealed credential and hands the plaintext to the recycler.
-func TestReconciler_OpensAndPassesCredential(t *testing.T) {
+func (o *staticSource) Release(m *ClusterMigration) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.released = append(o.released, m.Generation)
+}
+
+func (o *staticSource) set(cred []byte, err error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.cred, o.err = cred, err
+}
+
+var _ CredentialSource = (*staticSource)(nil)
+
+// TestReconciler_PassesThisNodesCredential proves the reconciler takes this
+// node's credential from its local source and hands it to the recycler, and
+// releases it once the recycle completes.
+func TestReconciler_PassesThisNodesCredential(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore(newMemKV())
 	seedMigration(t, s, 1, []string{"n1"})
 	rec := &recordingRecycler{}
-	r := NewReconciler(s, "n1", rec, staticOpener{cred: []byte("unlock-secret")}, nil, nil)
+	src := &staticSource{cred: []byte("unlock-secret")}
+	r := NewReconciler(s, "n1", rec, src, nil, nil)
 
 	if _, err := r.ReconcileOnce(ctx); err != nil {
 		t.Fatalf("ReconcileOnce: %v", err)
@@ -232,26 +254,107 @@ func TestReconciler_OpensAndPassesCredential(t *testing.T) {
 	if string(rec.lastCred) != "unlock-secret" {
 		t.Fatalf("recycler got credential %q, want unlock-secret", rec.lastCred)
 	}
+	if len(src.released) != 1 || src.released[0] != 1 {
+		t.Fatalf("released = %v, want [1]", src.released)
+	}
 }
 
-// TestReconciler_OpenError records PhaseFailed and does not recycle when the
-// credential cannot be opened.
-func TestReconciler_OpenError(t *testing.T) {
+// TestReconciler_AwaitsCredentialWithoutCountingAttempts proves an owner
+// without its credential records phase awaiting-credential, runs no recycle,
+// and is not charged an attempt: it waits through more passes than the retry
+// budget allows, then completes as soon as the credential is there.
+func TestReconciler_AwaitsCredentialWithoutCountingAttempts(t *testing.T) {
 	ctx := context.Background()
 	s := NewStore(newMemKV())
 	seedMigration(t, s, 1, []string{"n1"})
 	rec := &recordingRecycler{}
-	r := NewReconciler(s, "n1", rec, staticOpener{err: errors.New("decrypt failed")}, nil, nil)
+	refused := &MigrationCredentialFileError{Path: "/creds/system", Reason: "mode 0644 is readable by others"}
+	src := &staticSource{err: ErrCredentialAwaited}
+	r := NewReconciler(s, "n1", rec, src, nil, nil)
 
-	if n, err := r.ReconcileOnce(ctx); err != nil || n != 0 {
-		t.Fatalf("ReconcileOnce = %d, %v; want 0, nil (open error recorded, not fatal to pass)", n, err)
+	for i := 0; i < MaxRecycleAttempts+2; i++ {
+		if i == 2 {
+			src.set(nil, refused)
+		}
+		if n, err := r.ReconcileOnce(ctx); err != nil || n != 0 {
+			t.Fatalf("pass %d: ReconcileOnce = %d, %v; want 0, nil", i, n, err)
+		}
+		st, _ := s.GetNodeStatus(ctx, tid, db, "n1")
+		if st == nil || st.Phase != PhaseAwaitingCredential || st.Attempts != 0 {
+			t.Fatalf("pass %d: status = %+v, want awaiting-credential with 0 attempts", i, st)
+		}
+	}
+	if st, _ := s.GetNodeStatus(ctx, tid, db, "n1"); st.Detail != refused.Error() {
+		t.Fatalf("detail = %q, want the refusal %q", st.Detail, refused.Error())
 	}
 	if rec.count() != 0 {
-		t.Fatal("recycler must not run when the credential cannot be opened")
+		t.Fatal("recycled without a credential")
 	}
-	st, _ := s.GetNodeStatus(ctx, tid, db, "n1")
-	if st == nil || st.Phase != seal.PhaseFailed {
-		t.Fatalf("status = %+v, want PhaseFailed after open error", st)
+
+	src.set([]byte("arrived"), nil)
+	if n, err := r.ReconcileOnce(ctx); err != nil || n != 1 {
+		t.Fatalf("ReconcileOnce after the credential arrived = %d, %v; want 1, nil", n, err)
+	}
+	if st, _ := s.GetNodeStatus(ctx, tid, db, "n1"); st.Phase != seal.PhaseComplete {
+		t.Fatalf("status = %+v, want complete", st)
+	}
+}
+
+// TestReconciler_ShamirTargetNeedsNoCredential proves a Shamir target never
+// asks for a credential: each node mints its own key and seals a fresh share
+// set to its own officers.
+func TestReconciler_ShamirTargetNeedsNoCredential(t *testing.T) {
+	ctx := context.Background()
+	s := NewStore(newMemKV())
+	if err := s.PutMigration(ctx, &ClusterMigration{
+		TenantID: tid, Database: db, Target: seal.StrategyShamir, Mechanism: seal.MechanismSwap,
+		ShamirThreshold: 2, ShamirTotal: 3, Owners: []string{"n1"}, Generation: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := &recordingRecycler{}
+	src := &staticSource{err: ErrCredentialAwaited}
+	r := NewReconciler(s, "n1", rec, src, nil, nil)
+	if n, err := r.ReconcileOnce(ctx); err != nil || n != 1 {
+		t.Fatalf("ReconcileOnce = %d, %v; want 1, nil", n, err)
+	}
+	if src.asked != 0 || len(rec.lastCred) != 0 {
+		t.Fatalf("asked %d times, recycler got %q; a Shamir target takes no credential", src.asked, rec.lastCred)
+	}
+}
+
+// TestReconciler_ReleasesCredentialWhenAbandoned proves the credential is
+// released when the retry budget runs out, not held for a recycle that will
+// never run again.
+func TestReconciler_ReleasesCredentialWhenAbandoned(t *testing.T) {
+	ctx := context.Background()
+	s := NewStore(newMemKV())
+	seedMigration(t, s, 1, []string{"n1"})
+	rec := &recordingRecycler{failFirst: 1, failErr: seal.ErrMigrationInvalidMechanism}
+	src := &staticSource{cred: []byte("unlock-secret")}
+	r := NewReconciler(s, "n1", rec, src, nil, nil)
+	if _, err := r.ReconcileOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(src.released) != 1 {
+		t.Fatalf("released = %v, want the abandoned generation released", src.released)
+	}
+}
+
+// TestReconciler_KeepsCredentialForARetry proves a retryable failure keeps the
+// credential: the next pass needs it.
+func TestReconciler_KeepsCredentialForARetry(t *testing.T) {
+	ctx := context.Background()
+	s := NewStore(newMemKV())
+	seedMigration(t, s, 1, []string{"n1"})
+	rec := &recordingRecycler{failFirst: 1}
+	src := &staticSource{cred: []byte("unlock-secret")}
+	r := NewReconciler(s, "n1", rec, src, nil, nil)
+	if _, err := r.ReconcileOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(src.released) != 0 {
+		t.Fatalf("released = %v after a retryable failure", src.released)
 	}
 }
 
@@ -403,7 +506,7 @@ func (f recycleFunc) Recycle(ctx context.Context, m *ClusterMigration, credentia
 // lands before Recycle runs, so it is the last-persisted status if the node
 // crashes mid-recycle. Zeroing it there would let a reliably-crashing recycle
 // retry forever across reboots: each restart would read Attempts=0 from this
-// checkpoint (via priorAttempts) and reopen a fresh MaxRecycleAttempts
+// checkpoint (via currentStatus) and reopen a fresh MaxRecycleAttempts
 // budget, forever defeating the bound recordFailure/owedByThisNode rely on.
 func TestReconciler_CopyingCheckpoint_CarriesPriorAttempts(t *testing.T) {
 	ctx := context.Background()
@@ -464,5 +567,54 @@ func TestReconciler_RollingTwoNodes(t *testing.T) {
 	}
 	if ok, _ := s.IsComplete(ctx, tid, db); !ok {
 		t.Fatal("scope must complete after both nodes done")
+	}
+}
+
+// TestAwaitingCredentialError names the wait and unwraps to its reason.
+func TestAwaitingCredentialError(t *testing.T) {
+	err := &awaitingCredentialError{Err: ErrCredentialAwaited}
+	if !errors.Is(err, ErrCredentialAwaited) || err.Error() == "" {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// countingKV counts the writes made through it.
+type countingKV struct {
+	*memKV
+	puts int
+}
+
+func (k *countingKV) Put(ctx context.Context, key string, v []byte) error {
+	k.puts++
+	return k.memKV.Put(ctx, key, v)
+}
+
+// TestReconciler_AwaitingStatusIsWrittenOnlyWhenItChanges proves an owner
+// waiting for its credential writes its awaiting-credential status once, and
+// again only when the reason changes -- not on every pass, which would put a
+// Raft proposal per owner per poll into the log for as long as it waits.
+func TestReconciler_AwaitingStatusIsWrittenOnlyWhenItChanges(t *testing.T) {
+	ctx := context.Background()
+	kv := &countingKV{memKV: newMemKV()}
+	s := NewStore(kv)
+	seedMigration(t, s, 1, []string{"n1"})
+	src := &staticSource{err: ErrCredentialAwaited}
+	r := NewReconciler(s, "n1", &recordingRecycler{}, src, nil, nil)
+
+	before := kv.puts
+	for range 3 {
+		if _, err := r.ReconcileOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := kv.puts - before; got != 1 {
+		t.Fatalf("%d status writes over three passes with the same reason, want 1", got)
+	}
+	src.set(nil, &MigrationCredentialFileError{Path: "/c/system", Reason: "mode 0644"})
+	if _, err := r.ReconcileOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := kv.puts - before; got != 2 {
+		t.Fatalf("%d status writes after the reason changed, want 2", got)
 	}
 }

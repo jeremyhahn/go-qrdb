@@ -17,21 +17,14 @@ package main
 
 import (
 	"context"
-	"errors"
 	"io"
 	"log/slog"
-	"time"
-
-	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 )
-
-// featureGateReadyDeadline bounds how long startFeatureGate waits out the
-// ReadIndex warm-up of a freshly elected leader.
-const featureGateReadyDeadline = 15 * time.Second
 
 // startFeatureGate refuses -- with *featuregate.UnsupportedFeatureError --
 // to run under a cluster that has activated a feature this binary lacks.
@@ -40,7 +33,7 @@ const featureGateReadyDeadline = 15 * time.Second
 // withdraws the advertisement and stops the gate.
 func startFeatureGate(ctx context.Context, gate *featuregate.Gate, svc *lifecycle.Node) (io.Closer, error) {
 	if gate == nil {
-		err := whileReadIndexNotReady(ctx, func() error {
+		err := server.WhileSystemShardSettling(ctx, func() error {
 			return featuregate.CheckActivated(ctx, svc.KV)
 		})
 		return nopCloser{}, err
@@ -50,7 +43,7 @@ func startFeatureGate(ctx context.Context, gate *featuregate.Gate, svc *lifecycl
 		return nil, err
 	}
 	var adv *cluster.Advertiser
-	err = whileReadIndexNotReady(ctx, func() error {
+	err = server.WhileSystemShardSettling(ctx, func() error {
 		var serr error
 		adv, serr = client.StartFeatureGate(ctx, gate, svc.KV)
 		return serr
@@ -59,24 +52,6 @@ func startFeatureGate(ctx context.Context, gate *featuregate.Gate, svc *lifecycl
 		return nil, err
 	}
 	return featureGateCloser{adv: adv, gate: gate}, nil
-}
-
-// whileReadIndexNotReady runs fn until it succeeds, fails with anything but
-// the ReadIndex warm-up of a freshly elected leader, or the warm-up outlasts
-// featureGateReadyDeadline.
-func whileReadIndexNotReady(ctx context.Context, fn func() error) error {
-	deadline := time.Now().Add(featureGateReadyDeadline)
-	for {
-		err := fn()
-		if err == nil || !errors.Is(err, quicraft.ErrReadIndexNotReady) || time.Now().After(deadline) {
-			return err
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
 }
 
 // withdrawFeatures withdraws this node's feature advertisement and stops the

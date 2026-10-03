@@ -1915,6 +1915,7 @@ func (s *Server) registerRoutes() {
 	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/unseal", permission.SealUnseal, s.handleBarrierUnseal)
 	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/seal", permission.SealSeal, s.handleBarrierSeal)
 	s.routeIf(barrierOn, http.MethodGet, "/v1/barrier/status", permission.SealStatus, s.handleBarrierStatus)
+	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/cluster-unseal", permission.SealUnseal, s.handleBarrierClusterUnseal)
 	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/shamir/initialize", permission.SealInitializeShamir, s.handleBarrierShamirInitialize)
 	// Registered unconditionally, not gated on barrierOn or s.encMigrator
 	// (go-qrdb#558): the handler's own encMigrator nil-check already answers

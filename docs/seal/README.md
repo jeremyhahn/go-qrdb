@@ -188,8 +188,10 @@ qrdb uses a **per-node-independent key model** (not a shared cluster-wide DEK):
   shared across nodes and is managed per-node by the system barrier's configured strategy.
 - **Per-tenant barriers** in multi-node clusters: when a tenant database replicates across nodes,
   each replica node receives the tenant's root key over a secure channel and re-wraps it under that
-  *node's own system barrier* for storage. This preserves per-node KEK independence — a compromised
-  node key does not expose tenant keys on other nodes.
+  *node's own system barrier* for storage. **Correction (2026-10-01):** this previously said a
+  compromised node key does not expose tenant keys on other nodes. The wrapping KEK is per node, but
+  the tenant root key is the same on every replica of a raft tenant — see
+  [../barrier-seal/architecture.md](../barrier-seal/architecture.md#per-node-key-architecture).
 - **Key delivery**: `pkg/keydelivery/` implements secure cross-node transport of tenant root keys
   over the cluster mTLS control plane, with HPKE encryption to bind the payload to the recipient
   node's certificate. `pkg/clusterkeys/` handles node-identity authentication — chain validity, the

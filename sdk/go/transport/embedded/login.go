@@ -207,6 +207,9 @@ func mergeLoginMetadata(stored, req map[string]string) map[string]string {
 // ResolveIdentity returns the identity bound to the given session
 // token. Delegates to the configured SessionIssuer.
 func (c *loginClient) ResolveIdentity(ctx context.Context, sessionToken string) (*transport.Identity, error) {
+	if err := c.transport.gate("LoginClient.ResolveIdentity"); err != nil {
+		return nil, err
+	}
 	if c.transport.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -225,6 +228,9 @@ func (c *loginClient) ResolveIdentity(ctx context.Context, sessionToken string) 
 
 // BeginLogin opens a login attempt and returns a server-issued nonce.
 func (c *loginClient) BeginLogin(ctx context.Context, req transport.BeginLoginRequest) (*transport.BeginLoginResponse, error) {
+	if err := c.transport.gate("LoginClient.BeginLogin"); err != nil {
+		return nil, err
+	}
 	if c.transport.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -285,6 +291,9 @@ func (c *loginClient) BeginLogin(ctx context.Context, req transport.BeginLoginRe
 // LookupKey) tuple to a user, mints a bearer, and returns the resolved
 // identity.
 func (c *loginClient) FinishLogin(ctx context.Context, req transport.FinishLoginRequest) (*transport.FinishLoginResponse, error) {
+	if err := c.transport.gate("LoginClient.FinishLogin"); err != nil {
+		return nil, err
+	}
 	if c.transport.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -391,6 +400,9 @@ func (c *loginClient) FinishLogin(ctx context.Context, req transport.FinishLogin
 
 // Logout invalidates the given bearer.
 func (c *loginClient) Logout(ctx context.Context, sessionToken string) error {
+	if err := c.transport.gate("LoginClient.Logout"); err != nil {
+		return err
+	}
 	if c.transport.closed.Load() {
 		return &transport.ClosedError{}
 	}

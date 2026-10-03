@@ -26,6 +26,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
@@ -354,6 +355,10 @@ type TenantBarrierStatus struct {
 	// ShamirTotal is the total number of Shamir shares generated at
 	// initialization. Zero when the active strategy is not Shamir.
 	ShamirTotal int `json:"shamir_total,omitempty"`
+
+	// ClusterSeal is the tenant barrier's cluster seal state as this node
+	// sees it. Never nil.
+	ClusterSeal *clusterseal.Report `json:"cluster_seal"`
 }
 
 // TenantBarrierInitResult reports the outcome of a per-tenant barrier
@@ -412,6 +417,10 @@ type TenantService struct {
 	// runtimeCloser stops what this node runs for a tenant before
 	// ReconcileDeletedTenants removes its directories; see ResidueWiring.
 	runtimeCloser atomic.Pointer[runtimeCloserBox]
+
+	// sealer makes a tenant seal cluster-wide once the cluster has activated
+	// cluster-seal; nil seals on this node only. See WithClusterSealer.
+	sealer clusterseal.Sealer
 
 	// removeAll removes one reclaimed directory; the registry's
 	// RemoveDataRoot in every composition, which empties a mount point rather
@@ -1825,7 +1834,7 @@ func (s *TenantService) TenantBarrierUnseal(ctx context.Context, tenantID string
 	if tenantID == "" {
 		return ErrEmptyTenantID
 	}
-	if err := enforceTenantScope(ctx, tenantID, "unseal"); err != nil {
+	if err := enforceTenantOwner(ctx, tenantID, "unseal"); err != nil {
 		return err
 	}
 
@@ -1851,6 +1860,9 @@ func (s *TenantService) TenantBarrierUnseal(ctx context.Context, tenantID string
 	if err := s.registry.UnsealTenant(ctx, tenantID, creds); err != nil {
 		return &BarrierError{TenantID: tenantID, Op: "unseal", Err: err}
 	}
+	if err := s.clearClusterSeal(ctx, tenantID); err != nil {
+		return err
+	}
 
 	s.logger.Info("tenant barrier unsealed", slog.String("tenant_id", tenantID))
 
@@ -1869,7 +1881,7 @@ func (s *TenantService) TenantBarrierSeal(ctx context.Context, tenantID string) 
 	if tenantID == "" {
 		return ErrEmptyTenantID
 	}
-	if err := enforceTenantScope(ctx, tenantID, "seal"); err != nil {
+	if err := enforceTenantOwner(ctx, tenantID, "seal"); err != nil {
 		return err
 	}
 
@@ -1888,7 +1900,7 @@ func (s *TenantService) TenantBarrierSeal(ctx context.Context, tenantID string) 
 		}
 	}
 
-	if err := s.registry.SealTenant(tenantID); err != nil {
+	if err := s.sealTenant(ctx, tenantID); err != nil {
 		return &BarrierError{TenantID: tenantID, Op: "seal", Err: err}
 	}
 
@@ -1922,6 +1934,7 @@ func (s *TenantService) TenantBarrierStatus(ctx context.Context, tenantID string
 			TenantID:    tenantID,
 			Sealed:      true,
 			Initialized: false,
+			ClusterSeal: clusterseal.ReportOf(s.sealer, clusterseal.TenantBarrier(tenantID)),
 		}, nil
 	}
 
@@ -1938,6 +1951,7 @@ func (s *TenantService) TenantBarrierStatus(ctx context.Context, tenantID string
 		HardwareBacked:  st.HardwareBacked,
 		ShamirThreshold: st.ShamirThreshold,
 		ShamirTotal:     st.ShamirTotal,
+		ClusterSeal:     clusterseal.ReportOf(s.sealer, clusterseal.TenantBarrier(tenantID)),
 	}, nil
 }
 

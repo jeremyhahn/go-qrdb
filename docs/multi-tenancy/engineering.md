@@ -245,9 +245,15 @@ Server option: `WithTenantBarrierService(svc tenant.TenantServicer)`.
   already exists at one boundary: `sdk/go/transport/embedded`'s RBAC surface
   REFUSES an identity with an empty `TenantID` (`InvalidIdentityError`) rather
   than folding it.
-- **Per-node key independence**: the tenant root key is transported over
-  authenticated mTLS with HPKE and **re-wrapped under each receiving node's own
-  system barrier** (system-managed) or the tenant's strategy (self-managed).
+- **Per-node key wrapping, shared tenant key**: the tenant root key is
+  transported over authenticated mTLS with HPKE and **re-wrapped under each
+  receiving node's own node barrier** (system-managed) or the tenant's strategy
+  (self-managed). The wrapping is per node; the tenant root key is the same on
+  every replica. **Correction (2026-10-01):** this was described as per-node key
+  independence.
+- **A tenant seal reaches every replica**, and only the tenant's own
+  administrators may issue it — see
+  [../barrier-seal/architecture.md](../barrier-seal/architecture.md#sealing-in-a-cluster).
 - **Replica placement is quota-checked and spread across distinct healthy
   nodes**; `TenantShardReconciler` converges each node's assigned replicas and
   they survive restarts via the persistent placement table.

@@ -37,6 +37,9 @@ import (
 // precedence over any construction-time configuration; when both are absent
 // the ceremony fails closed at the service layer.
 func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.CeremonyInitializeRequest) (*transport.CeremonyInitializeResponse, error) {
+	if err := t.gate("CeremonyInitialize"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -59,6 +62,9 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 // CeremonyStatus returns the current ceremony state by delegating to the
 // injected CeremonyServicer.
 func (t *Transport) CeremonyStatus(ctx context.Context) (*transport.CeremonyStatusResponse, error) {
+	if err := t.gate("CeremonyStatus"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -109,6 +115,9 @@ func claimContext(ctx context.Context) (context.Context, string) {
 // CeremonySignCSR submits a CSR for signing during or after the ceremony
 // by delegating to the injected CeremonyServicer.
 func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRInitRequest) (*transport.SignCSRInitResponse, error) {
+	if err := t.gate("CeremonySignCSR"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}

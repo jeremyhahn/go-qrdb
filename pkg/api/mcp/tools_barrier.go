@@ -23,6 +23,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -54,6 +55,7 @@ func barrierTools(svc service.BarrierServicer, pinBackend pin.PINBackend, encMig
 		{Tool: toolBarrierUnseal(), Perm: permission.SealUnseal, Handler: handleBarrierUnseal(svc)},
 		{Tool: toolBarrierSeal(), Perm: permission.SealSeal, Handler: handleBarrierSeal(svc, pinBackend)},
 		{Tool: toolBarrierStatus(), Perm: permission.SealStatus, Handler: handleBarrierStatus(svc)},
+		{Tool: toolBarrierClusterUnseal(), Perm: permission.SealUnseal, Handler: handleBarrierClusterUnseal(svc)},
 		{Tool: toolBarrierShamirInitialize(), Perm: permission.SealInitializeShamir, Handler: handleBarrierShamirInitialize(svc, pinBackend)},
 		{Tool: toolBarrierRecoveryGenerate(), Perm: permission.SealGenerateRecovery, Handler: handleBarrierRecoveryGenerate(svc, pinBackend)},
 		{Tool: toolBarrierRecoveryDelete(), Perm: permission.SealGenerateRecovery, Handler: handleBarrierRecoveryDelete(svc)},
@@ -364,6 +366,7 @@ func handleBarrierStatus(svc service.BarrierServicer) mcpserver.ToolHandlerFunc 
 		if status.ShamirTotal > 0 {
 			resp["shamir_total"] = status.ShamirTotal
 		}
+		resp["cluster_seal"] = clusterSealOrInactive(status.ClusterSeal)
 
 		data, jsonErr := json.Marshal(resp)
 		if jsonErr != nil {
@@ -371,6 +374,35 @@ func handleBarrierStatus(svc service.BarrierServicer) mcpserver.ToolHandlerFunc 
 		}
 
 		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// clusterSealOrInactive returns r, or the inactive report for a service that
+// supplied none.
+func clusterSealOrInactive(r *clusterseal.Report) *clusterseal.Report {
+	if r == nil {
+		return &clusterseal.Report{}
+	}
+	return r
+}
+
+// toolBarrierClusterUnseal defines the qrdb_barrier_cluster_unseal tool
+// schema. It takes no arguments.
+func toolBarrierClusterUnseal() mcp.Tool {
+	return mcp.NewTool("qrdb_barrier_cluster_unseal",
+		mcp.WithDescription("Clear a cluster-wide seal of the node barrier. Unseals nothing: this node must already have unsealed itself."),
+	)
+}
+
+// handleBarrierClusterUnseal returns a tool handler that delegates to
+// svc.BarrierClusterUnseal and renders the node barrier's cluster_seal object.
+func handleBarrierClusterUnseal(svc service.BarrierServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		report, err := svc.BarrierClusterUnseal(ctx)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_cluster_unseal", Err: err}
+		}
+		return marshalToolResult("qrdb_barrier_cluster_unseal", clusterSealOrInactive(report))
 	}
 }
 

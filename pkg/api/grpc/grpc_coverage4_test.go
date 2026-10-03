@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 
 	"google.golang.org/grpc/codes"
@@ -89,6 +90,11 @@ func (m *barrierSvcMini) BarrierDeleteRecoveryKeys(_ context.Context) error {
 // BarrierInitialized reports the double as never initialized: its
 // initialize paths answer for themselves through their canned results.
 func (m *barrierSvcMini) BarrierInitialized(_ context.Context) (bool, error) { return false, nil }
+
+// BarrierClusterUnseal answers as a node without cluster sealing does.
+func (m *barrierSvcMini) BarrierClusterUnseal(context.Context) (*clusterseal.Report, error) {
+	return nil, clusterseal.ErrInactive
+}
 
 func (m *barrierSvcMini) BarrierHasRecoveryKeys(_ context.Context) (bool, error) {
 	return m.recoveryHasResult, m.recoveryHasErr
@@ -188,7 +194,18 @@ func (m *databaseSvcMini) SealDatabase(_ context.Context, _ string) error { retu
 func (m *databaseSvcMini) UnsealDatabase(_ context.Context, _ string, _ seal.Credentials) error {
 	return nil
 }
-func (m *databaseSvcMini) DatabaseBarrierStatus(_ context.Context, _ string) (*seal.BarrierStatus, error) {
+
+// DatabaseBarrierStatus adapts databaseBarrierStatusSeal to the service
+// interface, with no cluster seal state.
+func (m *databaseSvcMini) DatabaseBarrierStatus(ctx context.Context, name string) (*service.DatabaseBarrierStatusInfo, error) {
+	st, err := m.databaseBarrierStatusSeal(ctx, name)
+	if st == nil {
+		return nil, err
+	}
+	return &service.DatabaseBarrierStatusInfo{BarrierStatus: st}, err
+}
+
+func (m *databaseSvcMini) databaseBarrierStatusSeal(_ context.Context, _ string) (*seal.BarrierStatus, error) {
 	return nil, nil
 }
 func (m *databaseSvcMini) CreateForTenant(_ context.Context, _ database.DatabaseConfig) (*database.DatabaseInfo, error) {

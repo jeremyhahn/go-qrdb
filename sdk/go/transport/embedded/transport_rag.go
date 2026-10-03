@@ -28,6 +28,9 @@ var _ transport.RAGClient = (*Transport)(nil)
 
 // RAGIngestDocument chunks, embeds, and stores a document via the injected service.
 func (t *Transport) RAGIngestDocument(ctx context.Context, req *transport.RAGIngestRequest) (*transport.RAGIngestResponse, error) {
+	if err := t.gate("RAGIngestDocument"); err != nil {
+		return nil, err
+	}
 	if t.ragSvc == nil {
 		return nil, &NilServiceError{Service: "RAGServicer"}
 	}
@@ -52,6 +55,9 @@ func (t *Transport) RAGIngestDocument(ctx context.Context, req *transport.RAGIng
 
 // Query retrieves semantically similar passages via the injected service.
 func (t *Transport) RAGQuery(ctx context.Context, req *transport.RAGQueryRequest) (*transport.RAGQueryResponse, error) {
+	if err := t.gate("RAGQuery"); err != nil {
+		return nil, err
+	}
 	if t.ragSvc == nil {
 		return nil, &NilServiceError{Service: "RAGServicer"}
 	}
@@ -81,6 +87,9 @@ func (t *Transport) RAGQuery(ctx context.Context, req *transport.RAGQueryRequest
 
 // DeleteDocument removes a document via the injected service.
 func (t *Transport) RAGDeleteDocument(ctx context.Context, req *transport.RAGDeleteDocumentRequest) (*transport.RAGDeleteDocumentResponse, error) {
+	if err := t.gate("RAGDeleteDocument"); err != nil {
+		return nil, err
+	}
 	if t.ragSvc == nil {
 		return nil, &NilServiceError{Service: "RAGServicer"}
 	}
@@ -99,6 +108,9 @@ func (t *Transport) RAGDeleteDocument(ctx context.Context, req *transport.RAGDel
 
 // ListDocuments returns ingested-document metadata via the injected service.
 func (t *Transport) RAGListDocuments(ctx context.Context, req *transport.RAGListDocumentsRequest) (*transport.RAGListDocumentsResponse, error) {
+	if err := t.gate("RAGListDocuments"); err != nil {
+		return nil, err
+	}
 	if t.ragSvc == nil {
 		return nil, &NilServiceError{Service: "RAGServicer"}
 	}

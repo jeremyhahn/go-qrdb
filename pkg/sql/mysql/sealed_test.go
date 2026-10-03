@@ -18,11 +18,18 @@ package mysql
 
 import (
 	"context"
+	"database/sql"
+	"io"
+	"log/slog"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	gomysql "github.com/go-sql-driver/mysql"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest"
 )
 
 // fakeSealedProbe is a deterministic sealedWindowProbe for tests.
@@ -84,4 +91,58 @@ func TestWithSealedWindowProbe_Option(t *testing.T) {
 // identifies its origin.
 func TestBarrierSealedError_Message(t *testing.T) {
 	assert.Equal(t, "sql/mysql: barrier sealed", (&BarrierSealedError{}).Error())
+}
+
+// TestOpenSession_RefusedOnItsNextQueryOnceSealed pins the per-query half of
+// the sealed-window gate, as pgsql has it: a session established while the
+// node served is refused on its very next query once the node stops serving
+// -- its barrier sealed, or a cluster seal holding it, cutting it off or not
+// yet confirmed -- for a plain query and a prepared statement alike, and it
+// serves again once the node does.
+func TestOpenSession_RefusedOnItsNextQueryOnceSealed(t *testing.T) {
+	h, closeFn, err := sqltest.NewLockingHarness()
+	require.NoError(t, err)
+	t.Cleanup(closeFn)
+	probe := &fakeSealedProbe{}
+	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0",
+		WithDatabaseName("qrdb"),
+		WithServiceRegistry(h.Registry),
+		WithSealedWindowProbe(probe),
+		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
+	)
+	require.NoError(t, srv.Start())
+	t.Cleanup(srv.Stop)
+
+	cfg := gomysql.NewConfig()
+	cfg.Net = "tcp"
+	cfg.Addr = srv.Addr()
+	cfg.User = "qrdb"
+	cfg.DBName = "qrdb"
+	cfg.AllowNativePasswords = true
+	cfg.Timeout = 30 * time.Second
+	db, err := sql.Open("mysql", cfg.FormatDSN())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	_, err = conn.ExecContext(ctx, "CREATE TABLE t (id BIGINT PRIMARY KEY)")
+	require.NoError(t, err)
+	stmt, err := conn.PrepareContext(ctx, "SELECT id FROM t WHERE id = ?")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stmt.Close() })
+
+	probe.sealed.Store(true)
+	_, err = conn.ExecContext(ctx, "INSERT INTO t VALUES (1)")
+	require.ErrorContains(t, err, (&BarrierSealedError{}).Error(), "a query on an open session ran while the node was sealed")
+	rows, err := stmt.QueryContext(ctx, 1)
+	if err == nil {
+		_ = rows.Close()
+	}
+	require.ErrorContains(t, err, (&BarrierSealedError{}).Error(), "a prepared statement on an open session ran while the node was sealed")
+
+	probe.sealed.Store(false)
+	_, err = conn.ExecContext(ctx, "INSERT INTO t VALUES (1)")
+	require.NoError(t, err, "the session did not serve again once the node did")
 }

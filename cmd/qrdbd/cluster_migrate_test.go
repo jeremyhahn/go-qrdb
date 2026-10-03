@@ -17,9 +17,6 @@ package main
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"errors"
 	"log/slog"
 	"strings"
@@ -28,7 +25,6 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
-	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -74,91 +70,6 @@ func (k *cmMemKV) Scan(_ context.Context, prefix string, fn func(string, []byte)
 		}
 	}
 	return nil
-}
-
-// newP256 returns a fresh ECDSA P-256 key for HPKE round-trip tests.
-func newP256(t *testing.T) *ecdsa.PrivateKey {
-	t.Helper()
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("GenerateKey: %v", err)
-	}
-	return priv
-}
-
-// TestDaemonCredential_SealOpenRoundTrip proves the sealer seals the credential
-// to the local node's key and the opener recovers exactly the plaintext — the
-// in-record HPKE envelope flow (self path), for both system and tenant scopes.
-func TestDaemonCredential_SealOpenRoundTrip(t *testing.T) {
-	ctx := context.Background()
-	priv := newP256(t)
-	const node = "127.0.0.1:7000"
-
-	recv, err := keydelivery.NewReceiver(priv, node, keydelivery.WithTTL(migrationCredentialTTL))
-	if err != nil {
-		t.Fatalf("NewReceiver: %v", err)
-	}
-	sealer := &daemonCredentialSealer{selfNode: node, selfPub: &priv.PublicKey}
-	opener := &daemonCredentialOpener{receiver: recv, selfNode: node}
-
-	for _, m := range []*clustermig.ClusterMigration{
-		{ShardID: 1, Target: seal.StrategyPassphrase, Owners: []string{node}},                                    // system scope
-		{TenantID: "acme", Database: "db", ShardID: 42, Target: seal.StrategyPassphrase, Owners: []string{node}}, // tenant scope
-	} {
-		secret := []byte("operator-unlock-secret")
-		sealed, serr := sealer.SealFor(ctx, m, m.Owners, secret)
-		if serr != nil {
-			t.Fatalf("SealFor: %v", serr)
-		}
-		if blob, ok := sealed[node]; !ok || len(blob) == 0 {
-			t.Fatalf("no sealed envelope for %s", node)
-		}
-		// The plaintext must not appear in the sealed blob.
-		if strings.Contains(string(sealed[node]), string(secret)) {
-			t.Fatal("plaintext credential leaked into the sealed envelope")
-		}
-		m.Credentials = sealed
-		got, oerr := opener.Open(ctx, m)
-		if oerr != nil {
-			t.Fatalf("Open: %v", oerr)
-		}
-		if string(got) != string(secret) {
-			t.Fatalf("round-trip credential = %q, want %q", got, secret)
-		}
-	}
-}
-
-// TestDaemonCredentialOpener_Absent covers the no-credential and no-receiver
-// short-circuits.
-func TestDaemonCredentialOpener_Absent(t *testing.T) {
-	ctx := context.Background()
-	priv := newP256(t)
-	recv, _ := keydelivery.NewReceiver(priv, "n1", keydelivery.WithTTL(time.Hour))
-
-	o := &daemonCredentialOpener{receiver: recv, selfNode: "n1"}
-	if got, err := o.Open(ctx, &clustermig.ClusterMigration{}); got != nil || err != nil {
-		t.Fatalf("Open(no creds) = %v, %v; want nil, nil", got, err)
-	}
-	if got, err := o.Open(ctx, &clustermig.ClusterMigration{Credentials: map[string][]byte{"other": {1}}}); got != nil || err != nil {
-		t.Fatalf("Open(no entry for self) = %v, %v; want nil, nil", got, err)
-	}
-	noRecv := &daemonCredentialOpener{selfNode: "n1"}
-	if got, err := noRecv.Open(ctx, &clustermig.ClusterMigration{Credentials: map[string][]byte{"n1": {1}}}); got != nil || err != nil {
-		t.Fatalf("Open(no receiver) = %v, %v; want nil, nil", got, err)
-	}
-}
-
-// TestMigrationCredMeta covers the scope→meta mapping (system sentinels vs
-// real tenant/db/shard).
-func TestMigrationCredMeta(t *testing.T) {
-	sys := migrationCredMeta(&clustermig.ClusterMigration{}, "n1")
-	if sys.TenantID != systemCredMetaTenant || sys.Database != systemCredMetaDatabase || sys.ShardID != 1 || sys.TargetNodeID != "n1" {
-		t.Fatalf("system meta = %+v", sys)
-	}
-	ten := migrationCredMeta(&clustermig.ClusterMigration{TenantID: "acme", Database: "db", ShardID: 9}, "n2")
-	if ten.TenantID != "acme" || ten.Database != "db" || ten.ShardID != 9 || ten.TargetNodeID != "n2" {
-		t.Fatalf("tenant meta = %+v", ten)
-	}
 }
 
 // recordingMigrator records the scope + credential + full options it received.
@@ -299,7 +210,7 @@ func TestDaemonLocalRecycler_AlreadyAtTarget(t *testing.T) {
 	}
 }
 
-// fixedResolver / fixedSealer satisfy the clustermig seams for the coordinator
+// fixedResolver satisfies the clustermig owner seam for the coordinator
 // migrator test.
 type fixedResolver struct {
 	shard  uint64
@@ -310,40 +221,68 @@ func (f fixedResolver) Owners(context.Context, string, string) (uint64, []string
 	return f.shard, f.owners, nil
 }
 
-type passthroughSealer struct{}
-
-func (passthroughSealer) SealFor(_ context.Context, _ *clustermig.ClusterMigration, owners []string, cred []byte) (map[string][]byte, error) {
-	out := map[string][]byte{}
-	for _, o := range owners {
-		out[o] = append([]byte(nil), cred...)
-	}
-	return out, nil
-}
-
 // TestClusterCoordinatorMigrator proves the transport migrator writes a
-// replicated intent for system and tenant scope.
+// replicated intent for system and tenant scope, and that the record carries
+// no credential: the node that accepted the request holds the request's
+// credential in memory for its own recycle, and only when it owns the scope.
 func TestClusterCoordinatorMigrator(t *testing.T) {
 	ctx := context.Background()
 	store := clustermig.NewStore(newCMMemKV())
 	coord := clustermig.NewCoordinator(store, fixedResolver{shard: 1, owners: []string{"n1"}},
-		passthroughSealer{}, func() bool { return true }, func() int64 { return 1 })
-	m := &clusterCoordinatorMigrator{coord: coord}
+		func() bool { return true }, func() int64 { return 1 })
+	local := clustermig.NewLocalCredentials("")
+	m := &clusterCoordinatorMigrator{coord: coord, credentials: local, self: "n1"}
 
-	opts := seal.MigrationOptions{
-		TargetStrategy: seal.StrategyPassphrase, Mechanism: seal.MechanismSwap,
-		Availability: seal.AvailabilityQuiesced, Credentials: seal.MustCredentials([]byte("pw")),
-	}
-	if err := m.EnableEncryption(ctx, service.BarrierScope{Kind: service.ScopeSystem}, opts); err != nil {
+	if err := m.EnableEncryption(ctx, service.BarrierScope{Kind: service.ScopeSystem}, validMigOpts()); err != nil {
 		t.Fatalf("EnableEncryption(system): %v", err)
 	}
-	if got, _ := store.GetMigration(ctx, "", ""); got == nil {
+	sys, _ := store.GetMigration(ctx, "", "")
+	if sys == nil {
 		t.Fatal("system migration intent was not written")
 	}
-	if err := m.EnableEncryption(ctx, service.BarrierScope{Kind: service.ScopeTenant, TenantID: "acme"}, opts); err != nil {
+	if got, err := local.Credential(ctx, sys); err != nil || string(got) != "pw" {
+		t.Fatalf("held credential = %q, %v; want the request's", got, err)
+	}
+	if err := m.EnableEncryption(ctx, service.BarrierScope{Kind: service.ScopeTenant, TenantID: "acme"}, validMigOpts()); err != nil {
 		t.Fatalf("EnableEncryption(tenant): %v", err)
 	}
 	if got, _ := store.GetMigration(ctx, "acme", ""); got == nil {
 		t.Fatal("tenant migration intent was not written")
+	}
+}
+
+// TestClusterCoordinatorMigrator_HoldsOnlyWhatItNeeds proves the accepting
+// node holds nothing for a scope it does not own, nor for a Shamir target.
+func TestClusterCoordinatorMigrator_HoldsOnlyWhatItNeeds(t *testing.T) {
+	ctx := context.Background()
+	cases := map[string]struct {
+		owners []string
+		opts   seal.MigrationOptions
+	}{
+		"not an owner": {[]string{"n2"}, validMigOpts()},
+		"shamir target": {[]string{"n1"}, seal.MigrationOptions{
+			TargetStrategy: seal.StrategyShamir, Mechanism: seal.MechanismSwap,
+			Availability: seal.AvailabilityQuiesced, ShamirThreshold: 2, ShamirTotal: 3,
+		}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			store := clustermig.NewStore(newCMMemKV())
+			coord := clustermig.NewCoordinator(store, fixedResolver{shard: 1, owners: tc.owners},
+				func() bool { return true }, nil)
+			local := clustermig.NewLocalCredentials("")
+			m := &clusterCoordinatorMigrator{coord: coord, credentials: local, self: "n1"}
+			if err := m.EnableEncryption(ctx, service.BarrierScope{Kind: service.ScopeSystem}, tc.opts); err != nil {
+				t.Fatal(err)
+			}
+			rec, _ := store.GetMigration(ctx, "", "")
+			if rec == nil {
+				t.Fatal("intent not written")
+			}
+			if _, err := local.Credential(ctx, rec); !errors.Is(err, clustermig.ErrCredentialAwaited) {
+				t.Fatalf("held a credential: err = %v", err)
+			}
+		})
 	}
 }
 
@@ -353,10 +292,10 @@ func TestReapCompletedMigrations(t *testing.T) {
 	ctx := context.Background()
 	store := clustermig.NewStore(newCMMemKV())
 	coord := clustermig.NewCoordinator(store, fixedResolver{shard: 1, owners: []string{"n1"}},
-		passthroughSealer{}, func() bool { return true }, func() int64 { return 1 })
+		func() bool { return true }, func() int64 { return 1 })
 
 	// Incomplete migration: not reaped.
-	if _, err := coord.Request(ctx, "acme", "", validMigOpts(), []byte("pw")); err != nil {
+	if _, err := coord.Request(ctx, "acme", "", validMigOpts()); err != nil {
 		t.Fatalf("Request: %v", err)
 	}
 	reapCompletedMigrations(ctx, coord, store)
@@ -385,7 +324,7 @@ func TestReapCompletedMigrations(t *testing.T) {
 // its context is cancelled.
 func TestRunClusterMigReconciler_StopsOnContextCancel(t *testing.T) {
 	store := clustermig.NewStore(newCMMemKV())
-	coord := clustermig.NewCoordinator(store, fixedResolver{owners: []string{"n1"}}, passthroughSealer{}, func() bool { return true }, func() int64 { return 1 })
+	coord := clustermig.NewCoordinator(store, fixedResolver{owners: []string{"n1"}}, func() bool { return true }, func() int64 { return 1 })
 	rec := clustermig.NewReconciler(store, "n1", noopRecycler{}, nil, func() int64 { return 1 }, slog.New(slog.DiscardHandler))
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -413,9 +352,9 @@ func TestRunClusterMigReconciler_Tick(t *testing.T) {
 
 	store := clustermig.NewStore(newCMMemKV())
 	coord := clustermig.NewCoordinator(store, fixedResolver{shard: 1, owners: []string{"n1"}},
-		passthroughSealer{}, func() bool { return true }, func() int64 { return 1 })
+		func() bool { return true }, func() int64 { return 1 })
 	// Seed a single-owner migration this node (n1) owes.
-	if _, err := coord.Request(context.Background(), "acme", "", validMigOpts(), []byte("pw")); err != nil {
+	if _, err := coord.Request(context.Background(), "acme", "", validMigOpts()); err != nil {
 		t.Fatalf("Request: %v", err)
 	}
 	rec := clustermig.NewReconciler(store, "n1", noopRecycler{}, nil, func() int64 { return 1 }, slog.New(slog.DiscardHandler))
@@ -439,5 +378,29 @@ func validMigOpts() seal.MigrationOptions {
 	return seal.MigrationOptions{
 		TargetStrategy: seal.StrategyPassphrase, Mechanism: seal.MechanismSwap,
 		Availability: seal.AvailabilityQuiesced, Credentials: seal.MustCredentials([]byte("pw")),
+	}
+}
+
+// failingPutKV refuses every write, as a system store that has lost quorum.
+type failingPutKV struct{ *cmMemKV }
+
+func (failingPutKV) Put(context.Context, string, []byte) error { return errors.New("no quorum") }
+
+// TestClusterCoordinatorMigrator_ReleasesWhenTheWriteFails proves the
+// credential held for a request is released when its record is never
+// written: nothing is left in memory for a migration that does not exist.
+func TestClusterCoordinatorMigrator_ReleasesWhenTheWriteFails(t *testing.T) {
+	ctx := context.Background()
+	kv := failingPutKV{newCMMemKV()}
+	coord := clustermig.NewCoordinator(clustermig.NewStore(kv), fixedResolver{shard: 1, owners: []string{"n1"}},
+		func() bool { return true }, nil)
+	local := clustermig.NewLocalCredentials("")
+	m := &clusterCoordinatorMigrator{coord: coord, credentials: local, self: "n1"}
+	if err := m.EnableEncryption(ctx, service.BarrierScope{Kind: service.ScopeSystem}, validMigOpts()); err == nil {
+		t.Fatal("EnableEncryption succeeded with an unwritable record")
+	}
+	gen1 := &clustermig.ClusterMigration{Target: seal.StrategyPassphrase, Owners: []string{"n1"}, Generation: 1}
+	if _, err := local.Credential(ctx, gen1); !errors.Is(err, clustermig.ErrCredentialAwaited) {
+		t.Fatalf("a credential is still held for a record never written: err = %v", err)
 	}
 }

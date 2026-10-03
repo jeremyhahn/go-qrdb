@@ -528,8 +528,8 @@ func TestNew_Validates(t *testing.T) {
 
 // The advertised names are exactly this binary's features.
 func TestSupported(t *testing.T) {
-	assert.Equal(t, []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction}, Supported())
-	assert.Equal(t, []string{string(GuardedWrites), string(ClusterShardIDs), string(PrefixCompaction), string(NodeCompaction)}, SupportedNames())
+	assert.Equal(t, []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal}, Supported())
+	assert.Equal(t, []string{string(GuardedWrites), string(ClusterShardIDs), string(PrefixCompaction), string(NodeCompaction), string(ClusterSeal)}, SupportedNames())
 }
 
 // fakeReader is a quicraft membership reader.
@@ -668,7 +668,8 @@ func TestGate_ActivationIsLoggedOnlyByTheNodeThatRecordsIt(t *testing.T) {
 	assert.Contains(t, created, "feature activated cluster-wide")
 	assert.NotContains(t, created, "activation observed")
 
-	// Another node activated every feature this binary supports.
+	// Another node activated every feature this binary supports; this node
+	// only observes them.
 	existing := newMemKV()
 	for _, f := range Supported() {
 		_, err := existing.PutIfAbsent(context.Background(), ActivationPrefix+string(f), []byte(`{}`))
@@ -677,4 +678,23 @@ func TestGate_ActivationIsLoggedOnlyByTheNodeThatRecordsIt(t *testing.T) {
 	observed := logs(laterActivationKV{existing})
 	assert.Contains(t, observed, "feature activation observed")
 	assert.NotContains(t, observed, "activated cluster-wide")
+}
+
+// TestGate_ActivationsLoaded reports whether the gate has read the cluster's
+// activations: not before, so a caller cannot mistake "not read yet" for "not
+// activated"; yes after a successful read; and not after a read that found a
+// feature this binary lacks, since this node must not serve at all then.
+func TestGate_ActivationsLoaded(t *testing.T) {
+	g := newGate(t, threeNodes())
+	assert.False(t, g.ActivationsLoaded(), "loaded before any read")
+	require.NoError(t, g.CheckActivated(context.Background(), newMemKV()))
+	assert.True(t, g.ActivationsLoaded(), "not loaded after a successful read")
+
+	refused := newGate(t, threeNodes())
+	kv := newMemKV()
+	_, err := kv.PutIfAbsent(context.Background(), ActivationPrefix+"feature-from-the-future", []byte(`{}`))
+	require.NoError(t, err)
+	var unsupported *UnsupportedFeatureError
+	require.ErrorAs(t, refused.CheckActivated(context.Background(), kv), &unsupported)
+	assert.False(t, refused.ActivationsLoaded(), "loaded after a refused read")
 }

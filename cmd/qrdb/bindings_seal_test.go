@@ -19,9 +19,11 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -499,5 +501,67 @@ func TestSealBinding_EnableEncryption_WipesItsOwnCopy(t *testing.T) {
 
 	if req.Passphrase != nil {
 		t.Fatalf("an absent passphrase must stay nil, got %#v", req.Passphrase)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SealBinding cluster sealing
+// ---------------------------------------------------------------------------
+
+// TestSealBinding_ClusterUnseal proves the desktop binding clears the node
+// barrier's cluster seal record through the connected client and returns the
+// record's new state.
+func TestSealBinding_ClusterUnseal(t *testing.T) {
+	at := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	svc := &mockBarrierService{
+		clusterUnsealFn: func(context.Context) (*clusterseal.Report, error) {
+			return &clusterseal.Report{Active: true, Epoch: 4, Principal: "ops", PrincipalTenant: "system",
+				Node: "192.0.2.1:5000", At: at, Local: clusterseal.LocalServing}, nil
+		},
+	}
+	b := newSealTestBinding(t, svc)
+	got, err := b.ClusterUnseal()
+	if err != nil {
+		t.Fatalf("ClusterUnseal: %v", err)
+	}
+	if !got.Active || got.Sealed || got.Epoch != 4 || got.Local != "serving" || got.At != "2026-10-02T12:00:00Z" {
+		t.Fatalf("ClusterUnseal = %+v", got)
+	}
+}
+
+// TestSealBinding_ClusterUnseal_Errors proves the binding surfaces the
+// service's refusal -- cluster sealing not active -- and refuses when no
+// client is connected.
+func TestSealBinding_ClusterUnseal_Errors(t *testing.T) {
+	b := newSealTestBinding(t, &mockBarrierService{
+		clusterUnsealFn: func(context.Context) (*clusterseal.Report, error) { return nil, clusterseal.ErrInactive },
+	})
+	if _, err := b.ClusterUnseal(); err == nil || !strings.Contains(err.Error(), "not active") {
+		t.Fatalf("ClusterUnseal while inactive: err = %v", err)
+	}
+
+	log := testLogger(t)
+	disconnected := NewSealBinding(log, nil, NewConnectionBinding(log))
+	var nce *NotConnectedError
+	if _, err := disconnected.ClusterUnseal(); !errors.As(err, &nce) {
+		t.Fatalf("ClusterUnseal not connected: err = %v, want NotConnectedError", err)
+	}
+}
+
+// TestSealBinding_Status_CarriesTheClusterSeal proves the desktop status
+// shows the node barrier's cluster seal state, held included.
+func TestSealBinding_Status_CarriesTheClusterSeal(t *testing.T) {
+	b := newSealTestBinding(t, &mockBarrierService{
+		statusFn: func(context.Context) (*service.BarrierStatusInfo, error) {
+			return &service.BarrierStatusInfo{Strategy: "passphrase", InitializedAt: time.Now(),
+				ClusterSeal: &clusterseal.Report{Active: true, Sealed: true, Epoch: 3, Local: clusterseal.LocalHeld}}, nil
+		},
+	})
+	st, err := b.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.ClusterSeal == nil || !st.ClusterSeal.Sealed || st.ClusterSeal.Local != "held" {
+		t.Fatalf("ClusterSeal = %+v, want the held record", st.ClusterSeal)
 	}
 }

@@ -14,6 +14,8 @@
 
 package main
 
+import "github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+
 // EmbeddedConfig stores configuration for the embedded server.
 type EmbeddedConfig struct {
 	StorageBackend string      `json:"storageBackend"`
@@ -52,6 +54,10 @@ type SealStatus struct {
 	SharesRequired int    `json:"sharesRequired"`
 	SharesProvided int    `json:"sharesProvided"`
 	SharesTotal    int    `json:"sharesTotal"`
+	// ClusterSeal is the node barrier's cluster seal state: whether cluster
+	// sealing is active, the record, and this node's own state -- held, cut
+	// off or serving. Nil from a server that does not report it.
+	ClusterSeal *transport.ClusterSeal `json:"clusterSeal"`
 }
 
 // BootstrapResult contains the share-free result of a barrier

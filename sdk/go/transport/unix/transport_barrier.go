@@ -17,6 +17,8 @@ package unix
 import (
 	"context"
 
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sealconv"
+
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -94,7 +96,21 @@ func (t *Transport) BarrierStatus(ctx context.Context) (*transport.BarrierStatus
 		InitializedAt:   resp.GetInitializedAt(),
 		ShamirThreshold: int(resp.GetShamirThreshold()),
 		ShamirTotal:     int(resp.GetShamirTotal()),
+		ClusterSeal:     sealconv.FromProto(resp.GetClusterSeal()),
 	}, nil
+}
+
+// BarrierClusterUnseal clears a cluster-wide seal of the node barrier and
+// returns its cluster seal state. It unseals nothing.
+func (t *Transport) BarrierClusterUnseal(ctx context.Context) (*transport.ClusterSeal, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	resp, err := t.client.BarrierClusterUnseal(ctx, &pb.BarrierClusterUnsealRequest{})
+	if err != nil {
+		return nil, mapGRPCError("BarrierClusterUnseal", err)
+	}
+	return sealconv.FromProto(resp), nil
 }
 
 // BarrierInitializeShamir initializes the barrier under Shamir custody and

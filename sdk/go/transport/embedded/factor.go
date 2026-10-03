@@ -184,6 +184,9 @@ func factorToDomain(userID uint64, f transport.Factor) *auth.AuthFactor {
 
 // Enroll persists a new factor for the given user.
 func (c *factorClient) Enroll(ctx context.Context, userID uint64, factor transport.Factor) error {
+	if err := c.transport.gate("FactorClient.Enroll"); err != nil {
+		return err
+	}
 	if c.transport.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -205,6 +208,9 @@ func (c *factorClient) Enroll(ctx context.Context, userID uint64, factor transpo
 
 // List returns every factor belonging to the user.
 func (c *factorClient) List(ctx context.Context, userID uint64) ([]transport.Factor, error) {
+	if err := c.transport.gate("FactorClient.List"); err != nil {
+		return nil, err
+	}
 	if c.transport.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -230,6 +236,9 @@ func (c *factorClient) List(ctx context.Context, userID uint64) ([]transport.Fac
 // the user-side service identifies factors by id alone. Callers passing
 // a mismatched userID still see RBAC-level isolation upstream.
 func (c *factorClient) Remove(ctx context.Context, userID uint64, factorID string) error {
+	if err := c.transport.gate("FactorClient.Remove"); err != nil {
+		return err
+	}
 	if c.transport.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -251,6 +260,9 @@ func (c *factorClient) Remove(ctx context.Context, userID uint64, factorID strin
 // Verify exercises the configured FactorVerifier for the requested
 // factor type.
 func (c *factorClient) Verify(ctx context.Context, userID uint64, challenge transport.VerifyChallenge) (*transport.FactorVerifyResult, error) {
+	if err := c.transport.gate("FactorClient.Verify"); err != nil {
+		return nil, err
+	}
 	if c.transport.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}

@@ -217,6 +217,7 @@ func (s *tenantBarrierServer) Status(ctx context.Context, req *pb.TenantBarrierS
 		HardwareBacked:  st.HardwareBacked,
 		ShamirThreshold: int32(st.ShamirThreshold), //nolint:gosec
 		ShamirTotal:     int32(st.ShamirTotal),     //nolint:gosec
+		ClusterSeal:     ClusterSealToProto(st.ClusterSeal),
 	}, nil
 }
 

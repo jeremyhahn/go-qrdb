@@ -43,6 +43,20 @@ func startMySQL(s *Server) error {
 	if s.opts.sealedWindowProbe != nil {
 		mysqlOpts = append(mysqlOpts, mysqlapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
 	}
+	// Every statement is bounded by sql.query_timeout: it is also what ends a
+	// statement whose client has gone away (the listener does not watch the
+	// socket while a statement runs).
+	queryTimeout, err := s.config.SQL.QueryTimeoutDuration()
+	if err != nil {
+		return err
+	}
+	mysqlOpts = append(mysqlOpts, mysqlapi.WithQueryTimeout(queryTimeout))
+	// A cluster seal or cut-off closes every session it reaches: a session
+	// outlives its statements, and some of what it holds is served without
+	// another statement through the gate.
+	if streams := s.clusterSealStreams(); streams != nil {
+		mysqlOpts = append(mysqlOpts, mysqlapi.WithSealStreams(streams))
+	}
 	if s.opts.dbManager != nil {
 		mysqlOpts = append(mysqlOpts, mysqlapi.WithDatabaseManager(s.opts.dbManager))
 	}

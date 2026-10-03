@@ -18,6 +18,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // validSQLConfig returns a Config that passes Validate with MySQL protocol
@@ -440,5 +441,29 @@ func TestDefaultConfig_SQLProtocolsDisabled(t *testing.T) {
 	}
 	if cfg.Protocols.PostgreSQL {
 		t.Error("Protocols.PostgreSQL: got true, want false (disabled by default)")
+	}
+}
+
+// TestSQLConfig_QueryTimeoutDuration: unset is the default, "0" disables the
+// timeout, a duration is itself, and a malformed or negative one is refused --
+// by the accessor the MySQL listener reads and by Validate alike.
+func TestSQLConfig_QueryTimeoutDuration(t *testing.T) {
+	for in, want := range map[string]time.Duration{"": DefaultSQLQueryTimeout, "0": 0, "45s": 45 * time.Second} {
+		got, err := SQLConfig{QueryTimeout: in}.QueryTimeoutDuration()
+		if err != nil || got != want {
+			t.Errorf("QueryTimeoutDuration(%q) = %v, %v; want %v", in, got, err, want)
+		}
+	}
+	for _, bad := range []string{"invalid", "-5s"} {
+		var ve *ValidationError
+		if _, err := (SQLConfig{QueryTimeout: bad}).QueryTimeoutDuration(); !errors.As(err, &ve) || ve.Field != "sql.query_timeout" {
+			t.Errorf("QueryTimeoutDuration(%q) err = %v, want a sql.query_timeout ValidationError", bad, err)
+		}
+	}
+	cfg := validSQLConfig()
+	cfg.SQL.QueryTimeout = "-1s"
+	var ve *ValidationError
+	if err := cfg.Validate(); !errors.As(err, &ve) || ve.Field != "sql.query_timeout" {
+		t.Fatalf("Validate with a negative query_timeout = %v", err)
 	}
 }

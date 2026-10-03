@@ -1,6 +1,6 @@
 # Barrier and Seal — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
 
 The barrier is what encrypts your data at rest. Sealed, the database refuses
 every read and write. Unsealed, everything works and the encryption is
@@ -85,7 +85,22 @@ qrdb barrier status --output json
 qrdb barrier seal -y
 ```
 
-Everything stops. That is the point.
+Everything stops — on every node of the cluster, once the cluster has
+activated cluster sealing. That is the point. See *Sealing in a cluster*
+below.
+
+Sealing the node barrier seals **every tenant on the node** with it: each
+tenant barrier is sealed and its keys are wiped from memory, and every open
+watch and SQL connection ends. When you unseal the node:
+
+- tenants whose key the node manages (*system-managed*, the auto-unseal
+  default) come back on their own -- unless they were sealed for their own
+  reasons (by their admin, or cluster-wide), which still holds;
+- tenants that manage their own key (*self-managed*) stay sealed until their
+  own admins unseal them -- tell them before you seal.
+
+A node that loses touch with the cluster is different: it stops serving but
+keeps its keys (see below).
 
 **Set up M-of-N custody.** Enrol the share holders first, then initialize;
 one envelope is sealed to each holder and each claims theirs once. The full
@@ -117,6 +132,22 @@ watch -n5 'qrdb barrier status --output json | jq -r .strategy'
 This re-encrypts your data in place and runs asynchronously — the command
 returns as soon as the migration starts, not when it finishes.
 
+In a cluster, the passphrase you send reaches only the node that accepts the
+command; it is never stored in the cluster or sent to another node. Give
+every other node its own copy, on that node, before or after the command:
+
+```bash
+# on each other node; seal.migration_credentials_dir points at this directory
+install -d -m 0700 <install-dir>/migration-credentials
+install -m 0600 /dev/null <install-dir>/migration-credentials/system
+printf '%s\n' 'hunter2' > <install-dir>/migration-credentials/system
+# a tenant barrier: <install-dir>/migration-credentials/tenant-<tenant-id>
+```
+
+The directory and the file must be owned by the user the daemon runs as; no
+one else may write the directory or read the file. A node without its file waits, in phase `awaiting-credential`, and
+carries on as soon as the file is there. A Shamir target needs no file.
+
 **Use PINs for dual control.** Supplying one requires the other; the pair is
 what satisfies FIPS 140-3 and PCI-DSS v4.
 
@@ -135,6 +166,73 @@ qrdb database barrier-status secure
 qrdb database seal secure
 qrdb database unseal secure --secret "$SECRET"
 ```
+
+## Sealing in a cluster
+
+**A seal reaches every node.** Once every node runs a release with cluster
+sealing (the `cluster-seal` feature is then activated automatically), sealing
+the node barrier, a tenant's barrier or a database's barrier through any node
+writes a small replicated record, and every node seals itself: it refuses new
+requests, ends open watches and lease streams, and wipes its own key. Nothing
+secret is in the record, and no key moves between nodes.
+
+```bash
+qrdb barrier seal -y                      # platform operator: every node
+qrdb tenant barrier-seal --id acme        # acme's own admins: acme on every node
+qrdb database seal secure                 # the owning tenant: that database everywhere
+```
+
+Before the cluster has activated the feature — during a rolling upgrade, say —
+a seal still acts only on the node you are connected to, and `barrier status`
+shows `cluster_seal.active: false`.
+
+**Activation does not interrupt service.** Every node reads the seal records
+on every poll (`seal.cluster_poll_interval`) even before the feature is
+active, without acting on them, so when the last node is upgraded and
+`cluster-seal` turns on, each node already holds a fresh read and keeps
+serving. No seal record can exist before activation, so a cluster that has
+never been sealed has no refusal window at all, and no MySQL or PostgreSQL
+connection is closed by the activation.
+
+A node refuses requests (outside the barrier and health endpoints) only when
+it cannot confirm the seal state: from the moment it starts until its first
+read of the records -- made as soon as its monitor starts, before it has
+anything to serve on a healthy cluster -- and whenever it cannot read them
+for `seal.cluster_lease`. Clients see the ordinary sealed/unavailable answer
+and should retry; open SQL connections are closed, since the refusal closes
+the node's seal probe, and reconnect once the node serves again. A sealed
+record is not a window: the barrier it names stays refused until it is
+unsealed.
+
+**Unsealing is per node.** Every node unseals with its own credential.
+
+- *A tenant or database:* unseal it on each node that serves it. The first
+  unseal also clears the cluster record.
+- *The node barrier:* restart each node and unseal it at boot as usual. Each
+  comes back **held** — keys loaded, Raft running, requests refused — until you
+  clear the record once, from any unsealed node:
+
+  ```bash
+  qrdb barrier cluster-unseal
+  ```
+
+**SQL connections close on a seal.** A MySQL or PostgreSQL connection
+belonging to a sealed tenant, or to any tenant on a sealed or cut-off node, is
+closed by the server: its open transaction is rolled back and an open cursor
+ends. Clients reconnect once the barrier is unsealed, as after a restart.
+
+**Auto-unseal volume tenants attach on first access.** With cluster sealing on,
+a node starts no tenant at boot -- not even a system-managed (auto-unseal)
+volume tenant, whose key it already holds -- because it has not yet read the
+seal records. Each such tenant starts on its first request once the node has
+read them, or when the placement reconciler reaches it. Expect that first
+request to take longer than the ones after it.
+
+**A node that loses touch with the cluster stops serving.** If a node cannot
+read the seal records for about 15 seconds (`seal.cluster_lease`), it refuses
+requests, ends its streams and closes every SQL connection, keeping its keys.
+When it can read them again it resumes on its own — unless something was
+sealed in the meantime, in which case it seals first. SQL clients reconnect.
 
 ## Troubleshooting
 
@@ -162,6 +260,11 @@ dedicated barrier first.
 **`enable-encryption` returned immediately and nothing looks different.** It is
 asynchronous. Poll `barrier status` until the strategy stops saying `none`.
 
+**In a cluster, one node migrated and the others did not.** They are waiting
+for their own credential file. Each node's migration status says
+`awaiting-credential`, with the reason -- the file is missing, or it was
+refused for its mode or owner. Fix the file; the node continues on its own.
+
 **Certificate operations fail after sealing.** Expected: the CA private key is
 destroyed in memory when the barrier seals, and CA calls return
 `CAKeyNotAvailableError` until you unseal.
@@ -171,10 +274,21 @@ destroyed in memory when the barrier seals, and CA calls return
 precisely so this is visible, and the go-xkms `--require-encryption` gate
 refuses such a deployment.
 
-**One node in the cluster will not unseal.** Each node holds its own key —
-there is no shared cluster DEK — so unsealing is per node. For automatic
-cluster unseal, nodes exchange shares between themselves; that is a deployment
-configuration, not something you drive by hand.
+**One node in the cluster will not unseal.** Each node's node barrier holds
+its own key — there is no shared cluster DEK — so unsealing is per node: connect
+to that node and unseal it there. Nothing unseals a node from its peers.
+(An earlier version of this page said nodes exchange shares between
+themselves; no deployment does.)
+
+**Every request on a node says "barrier sealed", but it is unsealed.** Look at
+`qrdb barrier status --output json`, field `cluster_seal.local`. `held` means
+the cluster seal is still recorded: clear it with `qrdb barrier cluster-unseal`.
+`cut_off` or `unconfirmed` means the node cannot read the seal records — check
+its connectivity to the rest of the cluster; it resumes by itself.
+
+**You sealed a tenant and it is still answering on one node.** That node has
+not activated cluster sealing yet (`cluster_seal.active: false`): it is running
+an older release. Finish the upgrade, or seal the tenant on that node too.
 
 **You lost the passphrase or too many shares.** Recovery keys are a separate,
 independent split maintained for exactly this — see

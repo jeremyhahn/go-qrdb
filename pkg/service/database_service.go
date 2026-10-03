@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
@@ -95,7 +96,7 @@ type DatabaseServicer interface {
 	// DatabaseBarrierStatus returns the barrier status for a database after
 	// verifying the caller's tenant owns it (system tenant may target any
 	// database).
-	DatabaseBarrierStatus(ctx context.Context, name string) (*seal.BarrierStatus, error)
+	DatabaseBarrierStatus(ctx context.Context, name string) (*DatabaseBarrierStatusInfo, error)
 
 	// Tenant-scoped operations (context-based tenant enforcement)
 
@@ -733,6 +734,7 @@ func resolveGroupLeader(ctx context.Context, raftHost RaftHost, selfNodeID strin
 type DatabaseService struct {
 	manager            *database.Manager
 	barrierMgr         *database.DatabaseBarrierManager
+	sealer             clusterseal.Sealer
 	quotaChecker       quota.Checker
 	entitlementChecker quota.EntitlementChecker
 	tenantInfo         TenantInfoLookup
@@ -826,6 +828,10 @@ func (s *DatabaseService) CreateWithCredentials(ctx context.Context, cfg databas
 	}
 	db, err := s.manager.CreateWithCredentials(ctx, cfg, creds)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.clearPredecessorSeal(ctx, db); err != nil {
+		s.rollBackCreate(ctx, db, err)
 		return nil, err
 	}
 	info := db.Info()
@@ -1162,7 +1168,10 @@ func (s *DatabaseService) ownedDatabase(ctx context.Context, name string) (*data
 	return s.manager.GetOwned(name, tenant.FromContext(ctx))
 }
 
-// SealDatabase seals the encryption barrier for the named database.
+// SealDatabase seals the encryption barrier for the named database. Only the
+// tenant that owns the database may seal it, the system tenant included. Once
+// the cluster has activated cluster-seal the seal is recorded and every node
+// holding the database's barrier seals it.
 func (s *DatabaseService) SealDatabase(ctx context.Context, name string) error {
 	// Authorize ownership BEFORE consulting the barrier manager: a non-owning
 	// tenant must be answered as if the database did not exist, and must never
@@ -1170,6 +1179,56 @@ func (s *DatabaseService) SealDatabase(ctx context.Context, name string) error {
 	if err := s.authorizeDatabaseTenant(ctx, name); err != nil {
 		return err
 	}
+	if s.barrierMgr == nil {
+		return &BarrierManagerNotConfiguredError{}
+	}
+	if clusterseal.ActiveIn(s.sealer) {
+		// A database with no barrier of its own has no key to wipe and none
+		// to unseal with: a record sealing it could never be cleared.
+		if _, err := s.barrierMgr.BarrierStatus(name); err != nil {
+			return err
+		}
+		_, err := s.sealer.Seal(ctx, s.databaseBarrier(ctx, name), clusterseal.PrincipalFrom(ctx))
+		return err
+	}
+	if err := s.sealDatabaseHere(name); err != nil {
+		return err
+	}
+	// A node-local seal ends the database's open streams and its tenant's
+	// SQL sessions, as a cluster seal does: after the barrier is sealed and
+	// the database marked, so a stream opening between the two finds it
+	// refused.
+	if streams := clusterseal.StreamsOf(s.sealer); streams != nil {
+		b := s.databaseBarrier(ctx, name)
+		streams.EndDatabase(b.Tenant(), b.Database(), &clusterseal.SealedError{Barrier: b})
+	}
+	return nil
+}
+
+// SealDatabaseLocal seals, on this node, the database name owned by
+// tenantID, and marks it sealed. It is the node enforcement a database seal
+// record drives, and it seals only the database the record names: a database
+// another tenant owns -- a name reused after a drop -- is answered as missing,
+// *database.NotFoundError, and left alone. It authorizes no caller.
+func (s *DatabaseService) SealDatabaseLocal(tenantID, name string) error {
+	// The drop fence does not hold back a seal: a database being dropped
+	// still has a key to wipe.
+	if _, err := s.manager.GetOwnedIgnoringFence(name, tenantID); err != nil {
+		return err
+	}
+	return s.sealDatabaseHere(name)
+}
+
+// MarkBarrierDatabasesSealed marks every barrier-enabled database on this
+// node sealed; a node seal calls it once every barrier is sealed. See
+// database.Manager.MarkBarrierDatabasesSealed.
+func (s *DatabaseService) MarkBarrierDatabasesSealed() {
+	s.manager.MarkBarrierDatabasesSealed()
+}
+
+// sealDatabaseHere seals name's barrier on this node and marks the database
+// sealed. Its callers have established whose database it is.
+func (s *DatabaseService) sealDatabaseHere(name string) error {
 	if s.barrierMgr == nil {
 		return &BarrierManagerNotConfiguredError{}
 	}
@@ -1185,7 +1244,10 @@ func (s *DatabaseService) SealDatabase(ctx context.Context, name string) error {
 	return nil
 }
 
-// UnsealDatabase unseals the encryption barrier for the named database.
+// UnsealDatabase unseals the encryption barrier for the named database on
+// this node, owner only. When the database's cluster seal record says sealed,
+// the same call clears it; if the clear cannot be written the barrier is
+// sealed again and the call fails.
 func (s *DatabaseService) UnsealDatabase(ctx context.Context, name string, creds seal.Credentials) error {
 	if err := s.authorizeDatabaseTenant(ctx, name); err != nil {
 		return err
@@ -1199,18 +1261,26 @@ func (s *DatabaseService) UnsealDatabase(ctx context.Context, name string, creds
 	if db, err := s.manager.Get(name); err == nil {
 		db.SetStatus(database.StatusOpen)
 	}
-	return nil
+	return s.clearDatabaseSeal(ctx, name)
 }
 
-// DatabaseBarrierStatus returns the barrier status for the named database.
-func (s *DatabaseService) DatabaseBarrierStatus(ctx context.Context, name string) (*seal.BarrierStatus, error) {
+// DatabaseBarrierStatus returns the barrier status for the named database,
+// owner only, with its cluster seal state.
+func (s *DatabaseService) DatabaseBarrierStatus(ctx context.Context, name string) (*DatabaseBarrierStatusInfo, error) {
 	if err := s.authorizeDatabaseTenant(ctx, name); err != nil {
 		return nil, err
 	}
 	if s.barrierMgr == nil {
 		return nil, &BarrierManagerNotConfiguredError{}
 	}
-	return s.barrierMgr.BarrierStatus(name)
+	st, err := s.barrierMgr.BarrierStatus(name)
+	if err != nil {
+		return nil, err
+	}
+	return &DatabaseBarrierStatusInfo{
+		BarrierStatus: st,
+		ClusterSeal:   clusterseal.ReportOf(s.sealer, s.databaseBarrier(ctx, name)),
+	}, nil
 }
 
 // isolationBarrierDataPath maps each tenant isolation mode that serves its
@@ -1465,6 +1535,11 @@ func (s *DatabaseService) CreateForTenantWithCredentials(ctx context.Context, cf
 
 	db, err := s.manager.CreateForTenantWithCredentials(ctx, cfg, creds)
 	if err != nil {
+		releaseReservations()
+		return nil, err
+	}
+	if err := s.clearPredecessorSeal(ctx, db); err != nil {
+		s.rollBackCreate(ctx, db, err)
 		releaseReservations()
 		return nil, err
 	}

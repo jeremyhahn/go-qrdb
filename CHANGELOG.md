@@ -11,6 +11,209 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Security
+
+- **BREAKING: sealing the node barrier seals the whole node.** A seal of the
+  system barrier sealed only that barrier: every unsealed tenant barrier kept
+  its root key and DEKs in memory while the node reported sealed. Every
+  system-barrier seal -- the single-admin seal on every transport and the
+  Shamir seal vote, and (as before) a cluster seal record applied by each
+  node -- now seals every tenant barrier first, then the system barrier
+  (`BarrierRegistry.SealAll`), and ends every open stream. On unseal the
+  system barrier unseals first and brings its system-managed (auto-unseal)
+  tenants back with it (`StorageBarrier.OnUnsealed`) -- only those the node
+  seal itself sealed, never one sealed by its own admin or its cluster record
+  (`seal.WithTenantUnsealGate`, `BarrierRegistry.PendingTenantUnseals`); a
+  self-managed tenant stays sealed until its own admin unseals it, which
+  operators must now plan for. A tenant's own seal or unseal is ordered
+  against the node seal, so neither can land between the node seal's check
+  of a tenant and its seal of it. A cut-off still keeps every key. New:
+  `service.WithBarrierRegistry`.
+- **Database barrier operations are owner-only, the system tenant included.**
+  `databases:seal`, `databases:unseal` and `databases:barrier_status` are now
+  `ScopeSelfStrict`, and `DatabaseService` resolves the database through the
+  caller's own tenant; another tenant's database answers as missing. They were
+  `ScopeSelf`, which lets a system-tenant identity act on any tenant's
+  database barrier.
+- **Tenant barrier seal, seal vote, unseal and unseal share refuse the system
+  tenant** in `TenantService` as well as in RBAC.
+- **The cluster enable-encryption record carries no credential.** The
+  replicated `__sys:encmig/` intent no longer holds per-node HPKE envelopes of
+  the operator's passphrase. The node that accepted the request recycles with
+  the request's passphrase held in protected memory; every other owner reads
+  its own from `<seal.migration_credentials_dir>/system` or `tenant-<id>`
+  (regular file, mode 0600 or stricter, owned by the daemon's user) and waits
+  in phase `awaiting-credential` -- not a failed attempt -- until it is there.
+  The directory is opened once (`O_DIRECTORY|O_NOFOLLOW`), vetted on that
+  descriptor, and the file opened relative to it, so a directory swapped in
+  after the check is never read.
+  A Shamir target needs none. Breaking for Go callers:
+  `clustermig.ClusterMigration.Credentials`, `CredentialSealer` and
+  `CredentialOpener` are gone; `NewCoordinator` and `Coordinator.Request` drop
+  their credential arguments; `NewReconciler` takes a
+  `clustermig.CredentialSource` (`clustermig.LocalCredentials`). New
+  configuration: `seal.migration_credentials_dir`.
+- **`keydelivery.WithoutReplayGuard` is removed.** Its only user was the
+  migration credential receiver, which no longer exists; every receiver now
+  keeps its replay guard.
+
+### Added
+
+- **Cluster sealing.** Once every node runs a release with the `cluster-seal`
+  feature and the cluster has activated it, a seal of the node, tenant or
+  database barrier reaches every node: the node that receives it writes a
+  replicated seal record, and every node seals the barrier with its own key --
+  gate closed, open watch streams ended, the tenant's shards stopped, the key
+  wiped. A node-barrier seal waits up to `seal.cluster_ack_timeout` for every
+  member's acknowledgement before wiping keys. The record carries no key
+  material. Each node unseals with its own credential; `qrdb barrier
+  cluster-unseal` (`POST /v1/barrier/cluster-unseal`, `BarrierClusterUnseal`,
+  `barrier.ClusterUnseal`, `qrdb_barrier_cluster_unseal`, SDK
+  `BarrierClusterUnseal`) clears the node record once the node is unsealed,
+  and a tenant or database unseal clears its own record. A node that cannot
+  read the records for `seal.cluster_lease` (15 s) stops serving, keeps its
+  keys, and resumes on the next read; a node restarted under a sealed node
+  record starts held. Every barrier status -- node, tenant and database, on
+  every transport and in the CLI -- carries a `cluster_seal` object; before
+  activation it reports `active: false` and seals stay node-local. New
+  configuration: `seal.cluster_lease`, `seal.cluster_poll_interval`,
+  `seal.cluster_ack_timeout`.
+
+### Fixed
+
+- **A node no longer exits at boot when the system shard loses its leader
+  between provisioning and the feature gate's first read.** The read now waits
+  out an election (`service.NotLeaderError` with no known leader) as it already
+  waited out a new leader's ReadIndex warm-up, up to the same 15 s. A rolling
+  enable-encryption, which restarts every node in turn, hit it.
+- **The in-process embedded client no longer serves a sealed node.** The
+  network listeners refused every request outside the sealed-window allowlist
+  while the node barrier was sealed, but `sdk/go/node`'s embedded client kept
+  serving through it. It now gates on the same probe and allowlist
+  (`embedded.WithSealProbe`, `server.NodeSealProbe`,
+  `sealedwindow.EmbeddedAllowlist`), including while a cluster seal holds the
+  node, cuts it off or is not yet confirmed. The gate covers every method of
+  every sub-client the transport hands out (audit, factor, login, RBAC,
+  session, permission, volume pool) as well, and an unscoped embedded watch
+  subscribes to the node's cluster-seal stream registry
+  (`embedded.WithSealStreams`), so a seal ends a watch opened before it, with
+  the seal's refusal as the terminal frame. The stream guard is shared with the
+  server as `watch.Guarded` and `clusterseal.Streams.GuardWatcher`.
+- **A stream opened as a seal lands no longer outlives it.** Every watch and
+  etcd stream checked its refusal, opened, and only then subscribed to the seal
+  stream registry, so a seal or cut-off that landed in between ended nothing
+  and the stream lived on (events kept flowing after a cut-off). A stream now
+  subscribes first and asks its refusal after
+  (`clusterseal.Streams.SubscribeServing`; `GuardWatcher` now takes the
+  refusal and an open function), on every transport: REST, gRPC, unix, QUIC,
+  MCP, embedded and etcd. A missed seal ends streams again after its wipe.
+- **A seal closes the SQL sessions it reaches.** A MySQL server-side cursor
+  opened before a seal kept serving rows -- vitess answers `COM_STMT_FETCH`
+  without consulting the statement gate -- and a transaction held across a seal
+  stayed open. Both SQL listeners now close a session's connection when the
+  node's seal probe closes or a cluster seal of the node, the session's tenant
+  or any of its databases, or a cut-off, reaches it
+  (`clusterseal.Streams.SubscribeTenantServing`, `mysql.WithSealStreams`,
+  `pgsql.WithSealStreams`).
+- **BREAKING: `sql.query_timeout` is enforced on the MySQL wire, and the
+  connection watcher is off.** The setting (default `30s`) was documented but
+  enforced nowhere, so it now takes effect with that default: a statement that
+  ran longer -- long DDL, a large backfill -- fails where it used to succeed;
+  raise `sql.query_timeout`, or set it to `0`, before upgrading if you run
+  such statements. Every MySQL statement -- and a server-side cursor while it
+  produces rows -- is now cancelled at it with `ER_QUERY_TIMEOUT` (3024)
+  (`mysql.WithQueryTimeout`, `config.SQLConfig.QueryTimeoutDuration`;
+  `0` disables it). go-mysql-server's connection watcher is disabled: it read
+  the socket concurrently with vitess while a cursor was open, a data race. A
+  client that disconnects therefore no longer cancels its statement before the
+  timeout.
+- **BREAKING: `sql.query_timeout` is enforced on the PostgreSQL wire too.** Every simple
+  query, extended-protocol statement executed at Parse, and Bind/Execute of a
+  parameterized statement's portal is cancelled at the timeout with SQLSTATE
+  `57014` (`query_canceled`), as PostgreSQL's `statement_timeout` is
+  (`pgsql.WithQueryTimeout`). `pg_sleep(seconds)` is now served.
+- **A seal reaches SQL statements prepared before it.** The PostgreSQL wire
+  gated Parse only, so Bind/Execute of a statement prepared while the node
+  served still ran its query (or wrote rows read before the seal); it is now
+  refused with SQLSTATE `57P03`. MySQL `COM_INIT_DB` (`USE`) is refused while
+  sealed as well, for any name, rather than reporting whether the database
+  exists.
+- **A cluster-sealed tenant's shards do not start before the node has read its
+  record.** `qrdbd` and `sdk/go/node` started the tenant shard reconciler
+  before installing the seal monitor, when the sealer it asks refuses nothing,
+  and `BuildTenantInfra` eagerly started every auto-unseal tenant at boot. The
+  reconciler now starts after the monitor is installed and also holds a shard
+  whose database record is sealed, and a node that installs a monitor starts no
+  tenant runtime at boot: the reconciler and first access start it once the
+  record allows.
+- **A clustered node does not serve before it knows whether cluster sealing is
+  active.** Until its feature gate has read the cluster's activations
+  (`featuregate.Gate.ActivationsLoaded`), the node refuses as it does while
+  unconfirmed. `sdk/go/node`, whose gate starts in the background, served in
+  that window before; it now reads the activations before it installs the
+  seal monitor and serves, as `qrdbd` does, and a cluster that has activated
+  a feature the binary lacks fails its boot. New:
+  `server.WhileSystemShardSettling`, the settling wait both share.
+- **Cluster-seal activation opens no refusal window.** The seal monitor reads
+  the records, and renews its lease, before the feature is activated too,
+  enforcing nothing; when the feature turns on the lease is already fresh, so
+  a cluster with no seal record never refuses requests, or closes SQL
+  connections, for the activation.
+
+### Changed
+
+- **Breaking:** `service.BarrierServicer` gains
+  `BarrierClusterUnseal(ctx) (*clusterseal.Report, error)`; every implementation
+  must add it.
+- **Breaking:** `service.DatabaseServicer.DatabaseBarrierStatus` returns
+  `*service.DatabaseBarrierStatusInfo` (the `*seal.BarrierStatus` embedded, plus
+  `ClusterSeal`) instead of `*seal.BarrierStatus`; every implementation and
+  caller must change.
+- **Breaking:** `clusterseal.ActivationReader` (an interface introduced in this
+  release) requires `ActivationsLoaded() bool`; `*featuregate.Gate` provides it.
+- **Breaking: the system tenant no longer seals, unseals or reads another
+  tenant's database barrier.** `databases:seal`, `databases:unseal` and
+  `databases:barrier_status` are `ScopeSelfStrict`, and `DatabaseService`
+  answers another tenant's database as missing (`*database.NotFoundError`) for
+  every caller, the system tenant included. A platform operator who drove a
+  tenant's database barrier must now do it as that tenant. The system tenant
+  keeps full control of its own databases.
+- **Upgrade: clear old enable-encryption records first.** The replicated
+  `__sys:encmig/` records written by earlier releases carry HPKE-sealed
+  per-node credentials; this release neither reads nor removes them, and
+  carries no code to. Let every in-flight cluster enable-encryption finish, or
+  delete its record, before upgrading: earlier releases are obsolete, and a
+  record of theirs left behind is not migrated.
+- **Docs: the cluster sealing contract.** `docs/barrier-seal/` now specifies
+  how a seal reaches every node of a cluster: a replicated seal record per node,
+  tenant or database barrier that carries no key material, enforcement by every
+  node on its own key (gate closed, streams ended, shards stopped, key wiped),
+  per-node unseal with an authorized cluster-unseal record, a serving lease
+  (about 15 s) that stops a cut-off node from serving while it keeps its keys,
+  seal authority that never crosses tenants, and a `cluster-seal` feature behind
+  the cluster feature gate. The enable-encryption migration record stops
+  carrying credentials: each node supplies its own.
+- **Docs corrections.** The `ShareExchangeCoordinator` was described as cluster
+  auto-unseal; nothing constructs it. Tenant raft replicas were described as
+  holding independent keys; they share the tenant root key, and only the
+  wrapping key is per node. A tenant rekey was described as available; no
+  transport exposes one. The user guide said nodes exchange shares between
+  themselves; none does. A database seal was correctly described as per node,
+  and now states when that stops being true.
+
+### Known issues
+
+- **MySQL server-side cursors** (builds with `qrdb_mysql` /
+  `WITH_QRDB_MYSQL` only). A cursor -- `COM_STMT_EXECUTE` with a cursor flag,
+  then `COM_STMT_FETCH` -- is served by the upstream vitess and
+  go-mysql-server stack, which has a known data race on vitess
+  `Conn.StatusFlags` between go-mysql-server's handler and the connection
+  goroutine, and an idle open cursor is not bounded by `sql.query_timeout`.
+  Clients that need bounded resource use should not request cursors: keep
+  `useCursorFetch=false` with MySQL Connector/J, and do not set
+  `CURSOR_TYPE_READ_ONLY` with libmysqlclient. See
+  `docs/sql/upstream-gaps.md`.
+
 ## [0.34.2-alpha] - 2026-10-03
 
 The database wizard offers Shamir custody. Highlights:

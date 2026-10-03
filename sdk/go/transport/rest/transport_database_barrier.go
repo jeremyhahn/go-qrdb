@@ -25,10 +25,11 @@ import (
 // restDatabaseBarrierStatus is the on-wire JSON shape returned by the database
 // barrier-status endpoint (initialized_at is an RFC3339 string).
 type restDatabaseBarrierStatus struct {
-	Sealed         bool   `json:"sealed"`
-	Strategy       string `json:"strategy"`
-	HardwareBacked bool   `json:"hardware_backed"`
-	InitializedAt  string `json:"initialized_at"`
+	Sealed         bool                   `json:"sealed"`
+	Strategy       string                 `json:"strategy"`
+	HardwareBacked bool                   `json:"hardware_backed"`
+	InitializedAt  string                 `json:"initialized_at"`
+	ClusterSeal    *transport.ClusterSeal `json:"cluster_seal,omitempty"`
 }
 
 // SealDatabase seals a database's barrier. Maps to POST /v1/databases/{name}/seal.
@@ -64,6 +65,7 @@ func (t *Transport) DatabaseBarrierStatus(ctx context.Context, name string) (*tr
 		Sealed:         wire.Sealed,
 		Strategy:       wire.Strategy,
 		HardwareBacked: wire.HardwareBacked,
+		ClusterSeal:    wire.ClusterSeal,
 	}
 	if wire.InitializedAt != "" {
 		if ts, err := time.Parse(time.RFC3339, wire.InitializedAt); err == nil {

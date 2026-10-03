@@ -81,6 +81,30 @@ type BarrierStatusResponse struct {
 	InitializedAt   string `json:"initialized_at,omitempty"`
 	ShamirThreshold int    `json:"shamir_threshold,omitempty"`
 	ShamirTotal     int    `json:"shamir_total,omitempty"`
+
+	// ClusterSeal is the node barrier's cluster seal state.
+	ClusterSeal *ClusterSeal `json:"cluster_seal,omitempty"`
+}
+
+// ClusterSeal is one barrier's cluster seal state as the node that answered
+// sees it -- the `cluster_seal` object of every barrier status, and the answer
+// to BarrierClusterUnseal. It carries no key material.
+type ClusterSeal struct {
+	// Active is true once the cluster has activated cluster-seal. When it is
+	// false every seal is node-local and the other fields are empty.
+	Active bool `json:"active"`
+	// Sealed and Epoch are the barrier's record; Epoch 0 means none exists.
+	Sealed bool   `json:"sealed"`
+	Epoch  uint64 `json:"epoch"`
+	// Principal, PrincipalTenant, Node and At say who wrote the record, from
+	// which tenant, through which node, and when (RFC 3339, UTC).
+	Principal       string `json:"principal,omitempty"`
+	PrincipalTenant string `json:"principal_tenant,omitempty"`
+	Node            string `json:"node,omitempty"`
+	At              string `json:"at,omitempty"`
+	// Local is the answering node's own state for the barrier: serving,
+	// sealed, held, cut_off or unconfirmed.
+	Local string `json:"local,omitempty"`
 }
 
 // BarrierSealRequest carries the Security Officer PIN supplied when sealing

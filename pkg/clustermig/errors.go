@@ -30,7 +30,26 @@ var (
 	// ErrNoOwners is returned when a migration is requested for a scope whose
 	// owner set resolves empty (no placed replicas / no cluster members).
 	ErrNoOwners = errors.New("clustermig: migration scope has no owners")
+	// ErrCredentialAwaited is returned by a CredentialSource when this node's
+	// credential is not there yet: no request credential is held for the
+	// migration and no credential file exists. The owner waits in phase
+	// awaiting-credential.
+	ErrCredentialAwaited = errors.New("clustermig: this node's migration credential is not available yet")
+	// ErrEmptyCredential is returned when an empty credential is offered.
+	ErrEmptyCredential = errors.New("clustermig: empty migration credential")
 )
+
+// MigrationCredentialFileError is returned when this node's migration
+// credential file exists but is refused: not a regular file, readable by
+// group or others, not owned by the daemon's user, empty, or too large.
+type MigrationCredentialFileError struct {
+	Path   string
+	Reason string
+}
+
+func (e *MigrationCredentialFileError) Error() string {
+	return "clustermig: migration credential file " + e.Path + " refused: " + e.Reason
+}
 
 // StoreError wraps a coordination-store operation failure, naming the step.
 type StoreError struct {

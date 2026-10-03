@@ -19,6 +19,7 @@ to [../shamir-custody/api.md](../shamir-custody/api.md).
 | Unseal (passphrase) | `POST /v1/barrier/unseal` | `BarrierUnseal` | `barrier.Unseal` | `qrdb_barrier_unseal` | `Unseal` | `seal:unseal` |
 | Seal (non-Shamir) | `POST /v1/barrier/seal` | `BarrierSeal` | `barrier.Seal` | `qrdb_barrier_seal` | `Seal` | `seal:seal` + SO PIN |
 | Enable encryption | `POST /v1/barrier/enable-encryption` | `BarrierEnableEncryption` | `barrier.EnableEncryption` | `qrdb_barrier_enable_encryption` | `EnableEncryption` | `seal:enable_encryption` |
+| Cluster unseal | `POST /v1/barrier/cluster-unseal` | `BarrierClusterUnseal` | `barrier.ClusterUnseal` | `qrdb_barrier_cluster_unseal` | `ClusterUnseal` | `seal:unseal` |
 
 A Shamir barrier is unsealed, sealed and rekeyed, and root tokens are minted,
 only by a quorum of authenticated share holders: `POST /v1/barrier/quorum/*`
@@ -125,6 +126,65 @@ its holder quorum. See
 
 **Identity-gated** means the caller's own authenticated identity authorizes the
 call rather than a named permission — a tenant acts on its own barrier.
+
+**Tenant and database barriers admit only their owner.** Every tenant barrier
+permission is tenant-only: the platform operator (an identity of the `system`
+tenant) is refused for another tenant's barrier, and the tenant service makes
+the same refusal for seal, seal vote, unseal and unseal share
+(`TenantScopeError`). `databases:seal`, `databases:unseal` and
+`databases:barrier_status` admit only the tenant that owns the database — the
+`system` tenant included: it seals its own databases and no other tenant's.
+
+## Sealing in a cluster
+
+Once the cluster has activated the `cluster-seal` feature, every seal on this
+page — node seal, node seal vote, tenant seal, tenant seal vote and database
+seal — writes the barrier's cluster seal record and is enforced on **every**
+node, on all six transports alike; see
+[architecture.md](architecture.md#sealing-in-a-cluster). Request bodies do not
+change. Before activation each seal acts on the node that receives it.
+
+Unseal stays per node. A tenant or database unseal that succeeds on a node
+also writes the clear record when the barrier's record says sealed. The node
+barrier's record is cleared by its own capability, **cluster unseal**, in the
+matrix above:
+
+- It writes the clear record and returns the barrier's `cluster_seal` object.
+- The receiving node must already have unsealed itself; otherwise
+  `ErrSealed` (`503` / `UNAVAILABLE`).
+- It is on the sealed-window allowlist, because a node held by a cluster seal
+  refuses everything else, and it is still authenticated and authorized there.
+- A record that is already clear is not rewritten; the call returns it.
+- It has no request fields. gRPC and Unix take `BarrierClusterUnsealRequest {}`
+  and return `ClusterSealState`.
+
+### The `cluster_seal` status object
+
+Node barrier status (`BarrierStatus`), tenant barrier status
+(`TenantBarrierService/Status`, `GET /v1/tenants/{id}/barrier/status`) and
+database barrier status (`DatabaseBarrierStatus`,
+`GET /v1/databases/{name}/barrier/status`) each carry a `cluster_seal` object on
+every transport, and cluster unseal returns one:
+
+```json
+"cluster_seal": {
+  "active": true,
+  "sealed": true,
+  "epoch": 7,
+  "principal": "alice",
+  "principal_tenant": "acme",
+  "node": "192.0.2.11:5000",
+  "at": "2026-10-01T12:00:00Z",
+  "local": "sealed"
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `active` | the cluster has activated `cluster-seal`. `false` means every seal on this node is node-local, and the other fields are empty |
+| `sealed`, `epoch` | the barrier's record: sealed or clear, and its epoch (`0`: never written) |
+| `principal`, `principal_tenant`, `node`, `at` | who wrote the record, from which tenant, through which node, and when |
+| `local` | this node's state for the barrier: `serving`, `sealed`, `held` (unsealed here, but the record is sealed — node barrier only), `cut_off` (lease expired), or `unconfirmed` (no successful read since this node started) |
 
 ## Schemas
 
@@ -240,6 +300,13 @@ that is deliberate, since it is how an operator finds out what to do next.
 | Migrator wired, but this node cannot migrate (no seal store, not yet unsealed, boot parameters not retained) | `501` | `UNIMPLEMENTED` — `ErrMigrationProviderUnavailable` |
 | Tenant `enable-encryption` while a system-scope migration is rebuilding the data plane | `503` | `UNAVAILABLE` — `DataPlaneRecyclingError`; retry |
 | `enable-encryption` (or unseal) on an embedded node that is closing | `503` | `UNAVAILABLE` — `service.ErrNodeClosed`; retry against another node |
+| Two seal or clear requests for one barrier race; this one lost | 409 | `ABORTED` — `clusterseal.SealEpochConflictError`; read the record and retry |
+| A seal whose record could not be confirmed. **The receiving node is sealed**; the other nodes may not be | 503 | `UNAVAILABLE` — `clusterseal.RecordNotConfirmedError`; retry through another node |
+| An unseal whose clear record could not be written. The node sealed the barrier again | 503 | `UNAVAILABLE` — `clusterseal.RecordNotConfirmedError`; retry |
+| Cluster unseal before `cluster-seal` is activated | 409 | `FAILED_PRECONDITION` — `clusterseal.ErrInactive` |
+| Any request on a node that is held, cut off, or has not yet read the records | 503 | `UNAVAILABLE` — the sealed-window refusal (`SEALED`); `barrier status` shows why in `cluster_seal.local` |
+| An open stream ended by a seal | — | the barrier's sealed error: `UNAVAILABLE` |
+| An open stream ended because this node's lease ran out | — | `UNAVAILABLE` — `clusterseal.SealStateUnconfirmedError`, retryable |
 
 Share-holder and quorum errors are classified in
 [../shamir-custody/api.md](../shamir-custody/api.md#error-classes).

@@ -52,6 +52,9 @@ func (t *Transport) sqlSvc() service.SQLServicer {
 // delegating to the in-process SQL query service. Returns
 // NilServiceError when no KV or database service has been configured.
 func (t *Transport) Query(ctx context.Context, database, query string) (*transport.SQLQueryResult, error) {
+	if err := t.gate("Query"); err != nil {
+		return nil, err
+	}
 	svc := t.sqlSvc()
 	if svc == nil {
 		return nil, &NilServiceError{Service: "SQLServicer"}

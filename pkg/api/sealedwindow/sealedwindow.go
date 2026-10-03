@@ -15,7 +15,8 @@
 // Package sealedwindow defines the canonical, transport-neutral set of
 // operations that remain reachable while the storage barrier is sealed.
 //
-// Every protocol transport (REST, gRPC, native QUIC, MCP) derives its
+// Every protocol transport (REST, gRPC, native QUIC, MCP, and the
+// in-process embedded transport) derives its
 // sealed-window allowlist from the single Table in this package, so the
 // per-transport lists can never drift apart again. A verb is present in
 // Table when at least one transport exposes the operation; a transport
@@ -81,6 +82,10 @@ const (
 	VerbCeremonyInitialize Verb = "ceremony-initialize"
 	VerbCeremonyStatus     Verb = "ceremony-status"
 	VerbCeremonySignCSR    Verb = "ceremony-sign-csr"
+
+	// VerbBarrierClusterUnseal clears a cluster-wide seal of the node
+	// barrier. It is AuthenticatedOnly.
+	VerbBarrierClusterUnseal Verb = "barrier-cluster-unseal"
 )
 
 // Names holds the per-transport wire names for one canonical verb. An
@@ -99,6 +104,10 @@ type Names struct {
 	QUIC string
 	// MCP is the MCP tool name (e.g. "qrdb_barrier_unseal").
 	MCP string
+	// Embedded is the in-process embedded transport's method name (e.g.
+	// "BarrierUnseal"). The embedded transport has no boot-time listener:
+	// it is always the regular, authenticated side of the gate.
+	Embedded string
 	// PreOperationalOnly marks a verb whose sealed-window AUTHENTICATION
 	// exemption additionally requires the init ceremony to still be
 	// pre-operational. It is the state-gate axis of this table, mirroring
@@ -125,6 +134,15 @@ type Names struct {
 	// admitted under seal is still running when the barrier unseals (see
 	// Admission).
 	Transition bool
+
+	// AuthenticatedOnly marks a verb the regular listener admits while its
+	// gate is closed -- so it still runs behind that listener's
+	// authentication -- and the boot-time sealed-window listener never
+	// serves, because every request there is anonymous. Cluster unseal is
+	// the one: a node held by a cluster seal refuses everything outside the
+	// allowlist, and clearing the seal is an authorized platform act, not a
+	// credential-possession one.
+	AuthenticatedOnly bool
 }
 
 // PreOperationalOnly reports whether verb v's sealed-window authentication
@@ -155,6 +173,7 @@ var Verbs = []Verb{
 	VerbCeremonyInitialize,
 	VerbCeremonyStatus,
 	VerbCeremonySignCSR,
+	VerbBarrierClusterUnseal,
 }
 
 // Table maps every canonical verb to its per-transport names. This is the
@@ -167,14 +186,14 @@ var Table = map[Verb]Names{
 	// server has no admin service, so a pass-through would 404; short-
 	// circuiting it in the middleware yields the documented sealed status.
 	// The gRPC/QUIC/MCP health surfaces remain allowlisted as before.
-	VerbHealth: {GRPC: "Health", QUIC: "admin.Health", MCP: "qrdb_health"},
-	VerbStatus: {REST: []string{"/status"}, GRPC: "Status", QUIC: "admin.Status", MCP: "qrdb_status"},
+	VerbHealth: {GRPC: "Health", QUIC: "admin.Health", MCP: "qrdb_health", Embedded: "Health"},
+	VerbStatus: {REST: []string{"/status"}, GRPC: "Status", QUIC: "admin.Status", MCP: "qrdb_status", Embedded: "Status"},
 
-	VerbBarrierStatus:     {REST: []string{"/v1/barrier/status"}, GRPC: "BarrierStatus", QUIC: "barrier.Status", MCP: "qrdb_barrier_status"},
-	VerbBarrierInitialize: {REST: []string{"/v1/barrier/initialize"}, GRPC: "BarrierInitialize", QUIC: "barrier.Initialize", MCP: "qrdb_barrier_initialize", Transition: true},
-	VerbBarrierUnseal:     {REST: []string{"/v1/barrier/unseal"}, GRPC: "BarrierUnseal", QUIC: "barrier.Unseal", MCP: "qrdb_barrier_unseal", Transition: true},
+	VerbBarrierStatus:     {REST: []string{"/v1/barrier/status"}, GRPC: "BarrierStatus", QUIC: "barrier.Status", MCP: "qrdb_barrier_status", Embedded: "BarrierStatus"},
+	VerbBarrierInitialize: {REST: []string{"/v1/barrier/initialize"}, GRPC: "BarrierInitialize", QUIC: "barrier.Initialize", MCP: "qrdb_barrier_initialize", Embedded: "BarrierInitialize", Transition: true},
+	VerbBarrierUnseal:     {REST: []string{"/v1/barrier/unseal"}, GRPC: "BarrierUnseal", QUIC: "barrier.Unseal", MCP: "qrdb_barrier_unseal", Embedded: "BarrierUnseal", Transition: true},
 
-	VerbShamirInitialize: {REST: []string{"/v1/barrier/shamir/initialize"}, GRPC: "BarrierShamirInitialize", QUIC: "barrier.ShamirInitialize", MCP: "qrdb_barrier_shamir_initialize", Transition: true},
+	VerbShamirInitialize: {REST: []string{"/v1/barrier/shamir/initialize"}, GRPC: "BarrierShamirInitialize", QUIC: "barrier.ShamirInitialize", MCP: "qrdb_barrier_shamir_initialize", Embedded: "BarrierInitializeShamir", Transition: true},
 
 	// GET and POST /v1/barrier/officers share one path (method-dispatched),
 	// so officer-register is method-qualified: GET, the holder list, is not
@@ -183,31 +202,33 @@ var Table = map[Verb]Names{
 	// issue a holder certificate for the caller's CSR, so its authentication
 	// exemption must lapse the moment the enrollment ceremony reaches
 	// operational (see Names.PreOperationalOnly).
-	VerbOfficerRegister: {REST: []string{"POST /v1/barrier/officers"}, GRPC: "BarrierOfficerRegister", QUIC: "barrier.OfficerRegister", MCP: "qrdb_barrier_officer_register", PreOperationalOnly: true},
+	VerbOfficerRegister: {REST: []string{"POST /v1/barrier/officers"}, GRPC: "BarrierOfficerRegister", QUIC: "barrier.OfficerRegister", MCP: "qrdb_barrier_officer_register", Embedded: "OfficerRegister", PreOperationalOnly: true},
 	// The claim routes carry the holder in a path segment. They are listed
 	// as one-segment patterns, never as an /v1/barrier/officers/ prefix: a
 	// prefix would also admit POST /v1/barrier/officers/revoke, a rekey that
 	// removes a holder, which is not a sealed-window operation.
-	VerbShareClaimBegin:    {REST: []string{"POST /v1/barrier/officers/{username}/claim/begin"}, GRPC: "BarrierShareClaimBegin", QUIC: "barrier.ShareClaimBegin", MCP: "qrdb_barrier_share_claim_begin"},
-	VerbShareClaimComplete: {REST: []string{"POST /v1/barrier/officers/{username}/claim/complete"}, GRPC: "BarrierShareClaimComplete", QUIC: "barrier.ShareClaimComplete", MCP: "qrdb_barrier_share_claim_complete"},
+	VerbShareClaimBegin:    {REST: []string{"POST /v1/barrier/officers/{username}/claim/begin"}, GRPC: "BarrierShareClaimBegin", QUIC: "barrier.ShareClaimBegin", MCP: "qrdb_barrier_share_claim_begin", Embedded: "ShareClaimBegin"},
+	VerbShareClaimComplete: {REST: []string{"POST /v1/barrier/officers/{username}/claim/complete"}, GRPC: "BarrierShareClaimComplete", QUIC: "barrier.ShareClaimComplete", MCP: "qrdb_barrier_share_claim_complete", Embedded: "ShareClaimComplete"},
 
 	// recovery-officer-register shares officer-register's PreOperationalOnly
 	// rationale: it enrols a recovery holder through the same flow.
-	VerbRecoveryOfficerRegister:    {REST: []string{"POST /v1/barrier/recovery/officers"}, GRPC: "BarrierRecoveryOfficerRegister", QUIC: "barrier.RecoveryOfficerRegister", MCP: "qrdb_barrier_recovery_officer_register", PreOperationalOnly: true},
-	VerbRecoveryShareClaimBegin:    {REST: []string{"POST /v1/barrier/recovery/officers/{username}/claim/begin"}, GRPC: "BarrierRecoveryShareClaimBegin", QUIC: "barrier.RecoveryShareClaimBegin", MCP: "qrdb_barrier_recovery_share_claim_begin"},
-	VerbRecoveryShareClaimComplete: {REST: []string{"POST /v1/barrier/recovery/officers/{username}/claim/complete"}, GRPC: "BarrierRecoveryShareClaimComplete", QUIC: "barrier.RecoveryShareClaimComplete", MCP: "qrdb_barrier_recovery_share_claim_complete"},
+	VerbRecoveryOfficerRegister:    {REST: []string{"POST /v1/barrier/recovery/officers"}, GRPC: "BarrierRecoveryOfficerRegister", QUIC: "barrier.RecoveryOfficerRegister", MCP: "qrdb_barrier_recovery_officer_register", Embedded: "RecoveryOfficerRegister", PreOperationalOnly: true},
+	VerbRecoveryShareClaimBegin:    {REST: []string{"POST /v1/barrier/recovery/officers/{username}/claim/begin"}, GRPC: "BarrierRecoveryShareClaimBegin", QUIC: "barrier.RecoveryShareClaimBegin", MCP: "qrdb_barrier_recovery_share_claim_begin", Embedded: "RecoveryShareClaimBegin"},
+	VerbRecoveryShareClaimComplete: {REST: []string{"POST /v1/barrier/recovery/officers/{username}/claim/complete"}, GRPC: "BarrierRecoveryShareClaimComplete", QUIC: "barrier.RecoveryShareClaimComplete", MCP: "qrdb_barrier_recovery_share_claim_complete", Embedded: "RecoveryShareClaimComplete"},
 
 	// The holder quorum: a holder answers a factor challenge and submits its
 	// share. Unseal and recovery happen here, so both must be reachable
 	// while sealed; the factor proof, verified against the roster the
 	// wrapped root key is sealed under, is the credential. A submission can
 	// complete an unseal, so it is a Transition.
-	VerbQuorumBegin:  {REST: []string{"/v1/barrier/quorum/begin"}, GRPC: "BarrierQuorumBegin", QUIC: "barrier.QuorumBegin", MCP: "qrdb_barrier_quorum_begin"},
-	VerbQuorumSubmit: {REST: []string{"/v1/barrier/quorum/submit"}, GRPC: "BarrierQuorumSubmit", QUIC: "barrier.QuorumSubmit", MCP: "qrdb_barrier_quorum_submit", Transition: true},
+	VerbQuorumBegin:  {REST: []string{"/v1/barrier/quorum/begin"}, GRPC: "BarrierQuorumBegin", QUIC: "barrier.QuorumBegin", MCP: "qrdb_barrier_quorum_begin", Embedded: "BarrierQuorumBegin"},
+	VerbQuorumSubmit: {REST: []string{"/v1/barrier/quorum/submit"}, GRPC: "BarrierQuorumSubmit", QUIC: "barrier.QuorumSubmit", MCP: "qrdb_barrier_quorum_submit", Embedded: "BarrierQuorumSubmit", Transition: true},
 
-	VerbCeremonyInitialize: {REST: []string{"/v1/ceremony/initialize"}, GRPC: "CeremonyInitialize", QUIC: "ceremony.Initialize", MCP: "qrdb_ceremony_initialize", Transition: true},
-	VerbCeremonyStatus:     {REST: []string{"/v1/ceremony/status"}, GRPC: "CeremonyStatus", QUIC: "ceremony.Status", MCP: "qrdb_ceremony_status"},
-	VerbCeremonySignCSR:    {REST: []string{"/v1/ceremony/sign-csr"}, GRPC: "CeremonySignCSR", QUIC: "ceremony.SignCSR", MCP: "qrdb_ceremony_sign_csr"},
+	VerbCeremonyInitialize: {REST: []string{"/v1/ceremony/initialize"}, GRPC: "CeremonyInitialize", QUIC: "ceremony.Initialize", MCP: "qrdb_ceremony_initialize", Embedded: "CeremonyInitialize", Transition: true},
+	VerbCeremonyStatus:     {REST: []string{"/v1/ceremony/status"}, GRPC: "CeremonyStatus", QUIC: "ceremony.Status", MCP: "qrdb_ceremony_status", Embedded: "CeremonyStatus"},
+	VerbCeremonySignCSR:    {REST: []string{"/v1/ceremony/sign-csr"}, GRPC: "CeremonySignCSR", QUIC: "ceremony.SignCSR", MCP: "qrdb_ceremony_sign_csr", Embedded: "CeremonySignCSR"},
+
+	VerbBarrierClusterUnseal: {REST: []string{"/v1/barrier/cluster-unseal"}, GRPC: "BarrierClusterUnseal", QUIC: "barrier.ClusterUnseal", MCP: "qrdb_barrier_cluster_unseal", Embedded: "BarrierClusterUnseal", AuthenticatedOnly: true},
 }
 
 // RESTExtra lists REST-only allowlist entries that have no
@@ -314,6 +335,18 @@ func MCPAllowlist() map[string]struct{} {
 	return out
 }
 
+// EmbeddedAllowlist returns the embedded transport's method names that
+// remain reachable while its gate is closed.
+func EmbeddedAllowlist() map[string]struct{} {
+	out := make(map[string]struct{}, len(Verbs))
+	for _, v := range Verbs {
+		if m := Table[v].Embedded; m != "" {
+			out[m] = struct{}{}
+		}
+	}
+	return out
+}
+
 // RESTEntryMatches reports whether one REST allowlist entry admits a request
 // with the given method and path. An entry is "/path" (every method) or
 // "METHOD /path". A path ending in "/" matches by prefix; a path with a
@@ -402,6 +435,53 @@ func MCPPreOperationalOnly() map[string]struct{} {
 	out := make(map[string]struct{})
 	for _, v := range Verbs {
 		if n := Table[v]; n.PreOperationalOnly && n.MCP != "" {
+			out[n.MCP] = struct{}{}
+		}
+	}
+	return out
+}
+
+// RESTAuthenticatedOnly derives the REST entries of the AuthenticatedOnly
+// verbs.
+func RESTAuthenticatedOnly() []string {
+	var out []string
+	for _, v := range Verbs {
+		if Table[v].AuthenticatedOnly {
+			out = append(out, Table[v].REST...)
+		}
+	}
+	return out
+}
+
+// GRPCFullMethodAuthenticatedOnly derives the fully-qualified gRPC methods of
+// the AuthenticatedOnly verbs on serviceName.
+func GRPCFullMethodAuthenticatedOnly(serviceName string) map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, v := range Verbs {
+		if n := Table[v]; n.AuthenticatedOnly && n.GRPC != "" {
+			out["/"+serviceName+"/"+n.GRPC] = struct{}{}
+		}
+	}
+	return out
+}
+
+// QUICAuthenticatedOnly derives the native QUIC methods of the
+// AuthenticatedOnly verbs.
+func QUICAuthenticatedOnly() map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, v := range Verbs {
+		if n := Table[v]; n.AuthenticatedOnly && n.QUIC != "" {
+			out[n.QUIC] = struct{}{}
+		}
+	}
+	return out
+}
+
+// MCPAuthenticatedOnly derives the MCP tools of the AuthenticatedOnly verbs.
+func MCPAuthenticatedOnly() map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, v := range Verbs {
+		if n := Table[v]; n.AuthenticatedOnly && n.MCP != "" {
 			out[n.MCP] = struct{}{}
 		}
 	}
@@ -543,6 +623,8 @@ type Request struct {
 	// EnrollmentOpen is ListenerProbe.EnrollmentOpen, sampled for this
 	// request. Only a PreOperationalOnly request on the listener reads it.
 	EnrollmentOpen bool
+	// AuthenticatedOnly reports whether the verb is AuthenticatedOnly.
+	AuthenticatedOnly bool
 }
 
 // Decision is a sealed-window gate's verdict on one request.
@@ -587,14 +669,14 @@ const EnrollmentClosedMessage = "officer enrollment is closed to unauthenticated
 // allowlisted or not. While sealed it also refuses a PreOperationalOnly verb
 // (officer registration) once enrollment has closed, because that exemption
 // is justified only while the enrollment ceremony can still use a new
-// officer.
+// officer, and it never serves an AuthenticatedOnly verb.
 func Decide(r Request) Decision {
 	switch {
 	case !r.Sealed && r.Listener:
 		return RefuseClosed
 	case !r.Sealed:
 		return Serve
-	case !r.Allowlisted:
+	case !r.Allowlisted, r.Listener && r.AuthenticatedOnly:
 		return RefuseSealed
 	case r.Listener && r.PreOperationalOnly && !r.EnrollmentOpen:
 		return RefuseEnrollmentClosed

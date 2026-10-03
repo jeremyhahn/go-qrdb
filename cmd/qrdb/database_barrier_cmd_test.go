@@ -25,6 +25,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
@@ -283,7 +285,17 @@ func (s *sealableDatabaseService) UnsealDatabase(ctx context.Context, name strin
 	return nil
 }
 
-func (s *sealableDatabaseService) DatabaseBarrierStatus(_ context.Context, name string) (*seal.BarrierStatus, error) {
+// DatabaseBarrierStatus adapts databaseBarrierStatusSeal to the service
+// interface, with no cluster seal state.
+func (s *sealableDatabaseService) DatabaseBarrierStatus(ctx context.Context, name string) (*service.DatabaseBarrierStatusInfo, error) {
+	st, err := s.databaseBarrierStatusSeal(ctx, name)
+	if st == nil {
+		return nil, err
+	}
+	return &service.DatabaseBarrierStatusInfo{BarrierStatus: st}, err
+}
+
+func (s *sealableDatabaseService) databaseBarrierStatusSeal(_ context.Context, name string) (*seal.BarrierStatus, error) {
 	if s.barrierStatusFn != nil {
 		return s.barrierStatusFn(name)
 	}

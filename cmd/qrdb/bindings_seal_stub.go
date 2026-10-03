@@ -53,6 +53,11 @@ func (b *SealBinding) Seal() error {
 	return &FeatureDisabledError{Feature: "embedded"}
 }
 
+// ClusterUnseal returns a FeatureDisabledError.
+func (b *SealBinding) ClusterUnseal() (*transport.ClusterSeal, error) {
+	return nil, &FeatureDisabledError{Feature: "embedded"}
+}
+
 // Status returns a FeatureDisabledError.
 func (b *SealBinding) Status() (*SealStatus, error) {
 	return nil, &FeatureDisabledError{Feature: "embedded"}

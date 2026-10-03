@@ -60,6 +60,10 @@ var sealedWindowTransition = sealedwindow.RESTTransition()
 // PreOperationalOnly verbs (officer and recovery-officer registration).
 var sealedWindowPreOperationalOnly = sealedwindow.RESTPreOperationalOnly()
 
+// sealedWindowAuthenticatedOnly holds the REST entries of the
+// AuthenticatedOnly verbs (cluster unseal), never served anonymously.
+var sealedWindowAuthenticatedOnly = sealedwindow.RESTAuthenticatedOnly()
+
 // sealedWindowRefusal is how the REST gate answers one refusing Decision.
 type sealedWindowRefusal struct {
 	status     int
@@ -119,9 +123,10 @@ func sealedWindowGate(barrier sealedWindowProbe, allowlist []string, listener se
 				defer listener.Admit(requestInAllowlist(r, sealedWindowTransition))()
 			}
 			req := sealedwindow.Request{
-				Sealed:      barrier != nil && barrier.IsSealed(),
-				Allowlisted: requestInAllowlist(r, allowlist),
-				Listener:    listener != nil,
+				Sealed:            barrier != nil && barrier.IsSealed(),
+				Allowlisted:       requestInAllowlist(r, allowlist),
+				Listener:          listener != nil,
+				AuthenticatedOnly: requestInAllowlist(r, sealedWindowAuthenticatedOnly),
 			}
 			if req.Listener && req.Sealed && req.Allowlisted && requestInAllowlist(r, sealedWindowPreOperationalOnly) {
 				req.PreOperationalOnly = true

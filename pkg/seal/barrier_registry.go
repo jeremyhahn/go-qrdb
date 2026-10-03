@@ -41,6 +41,19 @@ type BarrierRegistry struct {
 	system  *StorageBarrier
 	tenants sync.Map // map[string]*TenantBarrier
 
+	// sealMu serializes a whole-node seal (SealAll) against the node
+	// unseal's re-unseal of the tenants it sealed and against the explicit
+	// tenant seal and unseal (SealTenant, UnsealTenant,
+	// UnsealTenantWithShare), and guards nodeSealed and unsealGate.
+	sealMu sync.Mutex
+	// nodeSealed holds the system-managed tenants the last whole-node seal
+	// moved from unsealed to sealed -- the only tenants the node unseal
+	// brings back -- each with the error of its last re-unseal attempt.
+	// An explicit tenant seal removes a tenant (SealTenant).
+	nodeSealed map[string]error
+	// unsealGate, when set, vetoes a tenant's re-unseal (WithTenantUnsealGate).
+	unsealGate func(tenantID string) bool
+
 	// tenantDataRoots records the on-disk DataRoot assigned to each tenant
 	// registered via RegisterVolumeTenant. It is consulted by
 	// LocalTenantDataRoot so follower replicas can recover the DataRoot of an
@@ -96,6 +109,33 @@ type MigrationRecoverer func(ctx context.Context, backend StorageBackend, rootKe
 // Options are applied in order; later options override earlier ones
 // for fields they touch. Adding new options is non-breaking.
 type Option func(*BarrierRegistry)
+
+// WithTenantUnsealGate makes the node unseal leave sealed every tenant for
+// which refuses reports true -- the composer passes the cluster seal's
+// verdict on the tenant's record (sealed, or unreadable), so a tenant sealed
+// cluster-wide is never brought back by the node's own unseal. Nil refuses
+// none.
+func WithTenantUnsealGate(refuses func(tenantID string) bool) Option {
+	return func(r *BarrierRegistry) {
+		r.sealMu.Lock()
+		r.unsealGate = refuses
+		r.sealMu.Unlock()
+	}
+}
+
+// PendingTenantUnseals returns the system-managed tenants the last node seal
+// sealed whose unseal with the node barrier has not succeeded, each with the
+// error of its last attempt (nil if none was made yet). The node's next
+// unseal retries them; a tenant's own unseal recovers it at any time.
+func (r *BarrierRegistry) PendingTenantUnseals() map[string]error {
+	r.sealMu.Lock()
+	defer r.sealMu.Unlock()
+	out := make(map[string]error, len(r.nodeSealed))
+	for id, err := range r.nodeSealed {
+		out[id] = err
+	}
+	return out
+}
 
 // WithVolumePool attaches a volume pool manager and its state store
 // to the registry. After this option is applied, RegisterTenant calls
@@ -216,14 +256,16 @@ func NewBarrierRegistry(logger *slog.Logger, system *StorageBarrier, opts ...Opt
 		return nil, ErrNilSystemBarrier
 	}
 	r := &BarrierRegistry{
-		logger: logger,
-		system: system,
+		logger:     logger,
+		system:     system,
+		nodeSealed: map[string]error{},
 	}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(r)
 		}
 	}
+	system.OnUnsealed(r.unsealSystemManagedTenants)
 	return r, nil
 }
 
@@ -250,7 +292,12 @@ func (r *BarrierRegistry) SystemBarrier() *StorageBarrier { return r.system }
 // re-encrypted to a keyed strategy, the live none barrier is replaced with the
 // freshly-unsealed keyed barrier. The caller MUST have quiesced (torn down) the
 // data plane first so no reader observes the swap mid-flight.
-func (r *BarrierRegistry) SetSystemBarrier(b *StorageBarrier) { r.system = b }
+func (r *BarrierRegistry) SetSystemBarrier(b *StorageBarrier) {
+	r.system = b
+	if b != nil {
+		b.OnUnsealed(r.unsealSystemManagedTenants)
+	}
+}
 
 // ReplaceTenantBarrier swaps the registered barrier for an existing tenant,
 // used by the tenant-scoped encryption-migration commit once that tenant's
@@ -1478,12 +1525,23 @@ func (r *BarrierRegistry) InitializeTenantWithStrategy(ctx context.Context, tena
 // UnsealTenant unseals the tenant barrier identified by tenantID using the
 // supplied credentials. The tenant must already be registered and
 // initialized.
+//
+// The unseal runs under sealMu, ordered against a whole-node seal: one that
+// succeeded happened before the node seal, which then records the tenant as
+// its own to bring back; one that runs after it finds the system barrier
+// sealed.
 func (r *BarrierRegistry) UnsealTenant(ctx context.Context, tenantID string, creds Credentials) error {
 	tb, err := r.GetTenant(tenantID)
 	if err != nil {
 		return err
 	}
-	return tb.Unseal(ctx, creds)
+	r.sealMu.Lock()
+	defer r.sealMu.Unlock()
+	if err := tb.Unseal(ctx, creds); err != nil {
+		return err
+	}
+	delete(r.nodeSealed, tenantID)
+	return nil
 }
 
 // SealTenant seals the tenant barrier identified by tenantID, releasing its
@@ -1493,6 +1551,15 @@ func (r *BarrierRegistry) SealTenant(tenantID string) error {
 	if err != nil {
 		return err
 	}
+	// An explicit seal -- the tenant's own admin, or its cluster record --
+	// is not the node seal's to undo: the node unseal leaves it sealed. The
+	// bookkeeping and the seal are one step under sealMu, so a node seal
+	// cannot find the tenant still unsealed in between and record it as its
+	// own.
+	r.sealMu.Lock()
+	defer r.sealMu.Unlock()
+	delete(r.nodeSealed, tenantID)
+	sealTenantHook(tenantID)
 	return tb.Seal()
 }
 
@@ -1561,15 +1628,84 @@ func (r *BarrierRegistry) ListTenants() []string {
 	return ids
 }
 
+// unsealSystemManagedTenants unseals, when the system barrier unseals, the
+// system-managed (auto-unseal) tenants the last whole-node seal sealed -- and
+// only those: a tenant sealed for its own reasons, before the node seal or
+// explicitly since (SealTenant), stays sealed, as does one the unseal gate
+// refuses (its cluster record is sealed or unreadable). Each is unsealed
+// credential-free, its root key being wrapped by the system barrier.
+//
+// It runs on a context detached from the unseal request: the system unseal
+// has succeeded, and a caller that stops waiting must not leave the node's
+// own tenants half restored. A tenant that fails to unseal stays pending
+// with its error (PendingTenantUnseals) and is retried at the next system
+// unseal; the tenant's own unseal recovers it at any time.
+func (r *BarrierRegistry) unsealSystemManagedTenants(ctx context.Context) {
+	ctx = context.WithoutCancel(ctx)
+	r.sealMu.Lock()
+	defer r.sealMu.Unlock()
+	for tenantID := range r.nodeSealed {
+		tb, err := r.GetTenant(tenantID)
+		if err != nil {
+			delete(r.nodeSealed, tenantID)
+			continue
+		}
+		if r.unsealGate != nil && r.unsealGate(tenantID) {
+			r.logger.Info("registry: system-managed tenant stays sealed: its cluster seal record refuses it",
+				slog.String("tenant", tenantID))
+			delete(r.nodeSealed, tenantID)
+			continue
+		}
+		if !tb.IsSealed() {
+			delete(r.nodeSealed, tenantID)
+			continue
+		}
+		if err := tb.Unseal(ctx, Credentials{}); err != nil && !errors.Is(err, ErrAlreadyUnsealed) {
+			r.nodeSealed[tenantID] = err
+			r.logger.Error("registry: system-managed tenant did not unseal with the system barrier; it stays sealed and is retried at the next system unseal",
+				slog.String("tenant", tenantID), slog.Any("error", err))
+			continue
+		}
+		delete(r.nodeSealed, tenantID)
+	}
+}
+
+// sealTenantHook and sealAllTenantHook run inside SealTenant and SealAll,
+// between the registry's bookkeeping for a tenant and that tenant's seal,
+// still under sealMu. They are no-ops in production -- direct assignments,
+// not conditionals -- and exist so a test can land a concurrent node seal or
+// tenant unseal exactly where the bookkeeping and the barrier's state could
+// otherwise disagree.
+var (
+	sealTenantHook    = func(string) {}
+	sealAllTenantHook = func(string) {}
+)
+
 // SealAll seals every registered tenant barrier and then the system
 // barrier. It accumulates errors so a single failing tenant does not
 // prevent the remaining barriers from being sealed; the first error
 // encountered is returned.
 func (r *BarrierRegistry) SealAll() error {
+	r.sealMu.Lock()
+	defer r.sealMu.Unlock()
 	var errs []error
-	r.tenants.Range(func(_, val any) bool {
-		if err := val.(*TenantBarrier).Seal(); err != nil { //nolint:errcheck // type assertion on a value this container only ever holds
+	r.tenants.Range(func(key, val any) bool {
+		tb := val.(*TenantBarrier) //nolint:errcheck // type assertion on a value this container only ever holds
+		wasUnsealed := !tb.IsSealed()
+		systemManaged := wasUnsealed && tb.Status().Strategy == StrategySystemBarrier
+		if tenantID, ok := key.(string); ok {
+			sealAllTenantHook(tenantID)
+		}
+		if err := tb.Seal(); err != nil {
 			errs = append(errs, err)
+			return true
+		}
+		// The node seal moved this system-managed tenant from unsealed to
+		// sealed: the node unseal brings it back
+		// (unsealSystemManagedTenants). A tenant already sealed stays the
+		// way it was sealed.
+		if tenantID, ok := key.(string); ok && systemManaged {
+			r.nodeSealed[tenantID] = nil
 		}
 		return true
 	})

@@ -33,6 +33,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -77,6 +78,11 @@ func (s *embeddableBarrierService) BarrierInitializeShamir(_ context.Context, th
 
 func (s *embeddableBarrierService) BarrierDeleteRecoveryKeys(_ context.Context) error {
 	return nil
+}
+
+// BarrierClusterUnseal answers as a node without cluster sealing does.
+func (s *embeddableBarrierService) BarrierClusterUnseal(context.Context) (*clusterseal.Report, error) {
+	return nil, clusterseal.ErrInactive
 }
 
 // BarrierInitialized reports the double as never initialized: its

@@ -109,6 +109,10 @@ func (t *Transport) WithDatabase(database string) (transport.Transport, error) {
 	c.txSvc = scopedIfServed[service.TransactionServicer](t.txSvc, &scopedTransaction{scope: scope})
 	c.batchSvc = scopedIfServed[service.BatchServicer](t.batchSvc, &scopedBatch{scope: scope})
 	c.watchSvc = scopedIfServed[service.WatchServicer](t.watchSvc, &scopedWatch{scope: scope})
+	// The registry's watch service is already guarded by the seal stream
+	// registry for the scoped (tenant, database); guarding again here would
+	// subscribe every scoped watch twice.
+	c.sealStreams = nil
 	c.leaseSvc = scopedIfServed[service.LeaseServicer](t.leaseSvc, &scopedLease{scope: scope})
 	c.indexSvc = scopedIfServed[service.IndexServicer](t.indexSvc, &scopedIndex{scope: scope})
 	c.tsSvc = scopedIfServed[service.TimeSeriesServicer](t.tsSvc, &scopedTimeSeries{scope: scope})
@@ -173,6 +177,8 @@ func (t *Transport) cloneShared() *Transport {
 		authFactorSvc:     t.authFactorSvc,
 		auditLogger:       t.auditLogger,
 		encMigrator:       t.encMigrator,
+		sealProbe:         t.sealProbe,
+		sealStreams:       t.sealStreams,
 		registry:          t.registry,
 		rbacAuthz:         t.rbacAuthz,
 		authMW:            t.authMW,

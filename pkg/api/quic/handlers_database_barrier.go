@@ -17,6 +17,8 @@ package quic
 import (
 	"context"
 
+	grpcapi "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 
@@ -85,6 +87,7 @@ func (s *Server) handleDatabaseBarrierStatus(ctx context.Context, payload []byte
 		Strategy:          string(st.Strategy),
 		HardwareBacked:    st.HardwareBacked,
 		InitializedAtUnix: st.InitializedAt.Unix(),
+		ClusterSeal:       grpcapi.ClusterSealToProto(st.ClusterSeal),
 	})
 	if err != nil {
 		return nil, &MarshalError{Err: err}

@@ -36,6 +36,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
@@ -236,6 +237,13 @@ type Infra struct {
 	// recovery. The caller constructs and owns the sink's lifecycle (e.g. the
 	// storage.Storage it wraps); BuildServices only reads from it.
 	BackupSink service.BackupSink
+
+	// ClusterSealer makes node, tenant and database seals reach every node
+	// once the cluster has activated cluster-seal, and lets an unseal clear
+	// a cluster seal record. A composer passes a clusterseal.Deferred here
+	// and sets its Monitor once the host, the services and the feature gate
+	// exist. Nil, or an unset Deferred, seals this node only.
+	ClusterSealer clusterseal.Sealer
 
 	// AuthMethodVocabulary, when non-nil, is the permitted-method vocabulary of
 	// THIS node's auth chain (usually middleware.AuthMethodVocabulary's
@@ -559,6 +567,9 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// tenant-quota-opts rebuild below.
 	if bm := dbManager.BarrierManager(); bm != nil {
 		placementOpts = append(placementOpts, service.WithBarrierManager(bm))
+	}
+	if infra.ClusterSealer != nil {
+		placementOpts = append(placementOpts, service.WithDatabaseClusterSealer(infra.ClusterSealer))
 	}
 
 	n.Database = service.NewDatabaseService(dbManager, placementOpts...)
@@ -891,9 +902,18 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 			return err
 		}
 		n.Ceremony = service.NewCeremonyService(ceremonyCoreSvc)
-		n.Barrier = service.NewBarrierServiceWithCeremony(infra.SealBarrier, ceremonyCoreSvc)
+		n.Barrier = service.NewBarrierServiceWithCeremony(infra.SealBarrier, ceremonyCoreSvc, barrierServiceOpts(infra)...)
 	} else {
-		n.Barrier = service.NewBarrierService(infra.SealBarrier)
+		n.Barrier = service.NewBarrierService(infra.SealBarrier, barrierServiceOpts(infra)...)
+	}
+
+	// The node unseal brings back only the system-managed tenants the node
+	// seal sealed, and never one whose own cluster seal record refuses it.
+	if infra.BarrierRegistry != nil && infra.ClusterSealer != nil {
+		sealer := infra.ClusterSealer
+		infra.BarrierRegistry.Attach(seal.WithTenantUnsealGate(func(tenantID string) bool {
+			return sealer.Refuses(clusterseal.TenantBarrier(tenantID))
+		}))
 	}
 
 	if infra.BarrierRegistry != nil {
@@ -1077,6 +1097,26 @@ func buildTenantServiceOpts(infra Infra) []tenant.TenantServiceOption {
 	}
 	if infra.DefaultTenantEntitlements != nil {
 		opts = append(opts, tenant.WithDefaultEntitlements(infra.DefaultTenantEntitlements))
+	}
+	if infra.ClusterSealer != nil {
+		opts = append(opts, tenant.WithClusterSealer(infra.ClusterSealer))
+	}
+	return opts
+}
+
+// barrierServiceOpts returns the BarrierService options infra asks for.
+func barrierServiceOpts(infra Infra) []service.BarrierServiceOption {
+	var opts []service.BarrierServiceOption
+	if infra.ClusterSealer != nil {
+		opts = append(opts, service.WithClusterSealer(infra.ClusterSealer))
+	}
+	// A seal of the node barrier seals the whole node: every tenant barrier
+	// with it.
+	if infra.BarrierRegistry != nil {
+		opts = append(opts, service.WithBarrierRegistry(infra.BarrierRegistry))
+	}
+	if infra.DatabaseManager != nil {
+		opts = append(opts, service.WithBarrierDatabases(infra.DatabaseManager))
 	}
 	return opts
 }

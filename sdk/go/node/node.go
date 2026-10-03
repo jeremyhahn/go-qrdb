@@ -111,6 +111,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -637,9 +638,14 @@ type Node struct {
 	// to the same posture.
 	bindingPolicy atomic.Int32
 
-	srv     atomic.Pointer[server.Server]
-	client  atomic.Pointer[sdk.Client]
-	svcNode atomic.Pointer[lifecycle.Node]
+	srv    atomic.Pointer[server.Server]
+	client atomic.Pointer[sdk.Client]
+	// featureClient is the node's own in-process client for its feature
+	// gate. It is not gated on the node's seal probe: the gate's
+	// advertisement is node machinery, kept up while the node refuses
+	// requests, as cmd/qrdbd keeps it.
+	featureClient atomic.Pointer[sdk.Client]
+	svcNode       atomic.Pointer[lifecycle.Node]
 
 	// carriedCeremony is the ceremony service a data-plane teardown carried
 	// out of the stopped service graph, for the rebuild to reuse. See
@@ -848,6 +854,10 @@ type Node struct {
 	// lease-backed advertisement once startFeatureGate has brought it up, and
 	// featureWG tracks that goroutine so Close can wait it out.
 	featureGate *featuregate.Gate
+
+	// clusterSeal makes seals reach every node of the cluster once the cluster
+	// has activated cluster-seal; nil on a node with no barrier or no cluster.
+	clusterSeal *clusterseal.Deferred
 	featureAdv  atomic.Pointer[cluster.Advertiser]
 	featureWG   sync.WaitGroup
 
@@ -1509,7 +1519,13 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	}
 	profile.WarnUnencryptedAtRest(n.logger)
 
+	// Cluster sealing: the services seal through n.clusterSeal from the
+	// start, node-locally until the monitor is set once the host, the
+	// services and the tenant infrastructure exist.
+	n.clusterSeal = clusterseal.NewDeferred()
+
 	svcNode, err := lifecycle.BuildServices(ctx, n.withHolderInfra(lifecycle.Infra{
+		ClusterSealer:     n.clusterSeal,
 		Host:              hostAdapter,
 		NoRevisionHistory: !clusteredKeepsRevisionHistory(pending.cfg),
 		WatchHub:          watchHub,
@@ -1557,6 +1573,10 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	// replicated system KV is available. Mirrors cmd/qrdbd/start.go.
 	n.bindReplicatedVolumePool(svcNode)
 
+	// reconciler is started only once the cluster seal monitor is installed;
+	// see below.
+	var reconciler *server.TenantShardReconciler
+
 	// Wire the IsolationRaft + IsolationVolume tenant infrastructure when the
 	// caller opted in via WithTenantIsolation and the prerequisites are present.
 	// The guard n.tenantHosts == nil prevents a double-build on the in-process
@@ -1592,6 +1612,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 			SystemTenant:   tenantid.System,
 			PlacementStore: svcNode.PlacementStore,
 			FeatureGate:    n.featureGate,
+			ClusterSealer:  n.clusterSeal,
 		})
 		if tiErr != nil {
 			_ = svcNode.Stop(context.Background())
@@ -1609,19 +1630,8 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		if n.raftBackend != nil && svcNode.Backup != nil {
 			service.SetShardRestarter(svcNode.Backup, n.raftBackend)
 		}
-		if ti.Reconciler != nil {
-			// Use a node-lifetime context so the reconciler keeps running after
-			// the unseal/boot request ctx is cancelled. The background context is
-			// cancelled by bgCancel in Node.Close() (and in the wireClientAndServer
-			// error branch below); bgWG lets a failure path wait for this
-			// goroutine to actually exit before stopping what it calls into.
-			reconcileCtx := n.background()
-			n.bgWG.Add(1)
-			go func() {
-				defer n.bgWG.Done()
-				ti.Reconciler.Run(reconcileCtx)
-			}()
-		}
+		reconciler = ti.Reconciler
+		tenantInfraBuiltHook()
 	}
 
 	// Leader-side lease-expiry sweeper. See startLeaseExpiry: without it an
@@ -1638,6 +1648,46 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	// produces after this line, and nothing is serving traffic yet.
 	n.startLeaseExpiry(host, lr, svcNode.Lease, pending.cfg.Raft.ReplicaID)
 	n.startReclaimSweep(host, svcNode.ReclaimSweeper, pending.cfg.Raft.ReplicaID)
+	if err := n.startClusterSeal(ctx, host, svcNode, barrierRegistry, pending.cfg); err != nil {
+		// Stop the sweepers and WAIT for them to exit before tearing down
+		// what they access, as the wireClientAndServer branch below does.
+		if n.bgCancel != nil {
+			n.bgCancel()
+			n.bgCancel = nil
+		}
+		n.bgWG.Wait()
+		_ = svcNode.Stop(context.Background())
+		n.svcNode.Store(nil)
+		if n.raftBackend != nil {
+			_ = n.raftBackend.CloseAll()
+			n.raftBackend = nil
+		}
+		_ = host.Close()
+		n.host = nil
+		if n.tenantHosts != nil {
+			_ = n.tenantHosts.CloseAll()
+			n.tenantHosts = nil
+		}
+		_ = dbManager.Close()
+		n.dbManager = nil
+		return err
+	}
+	// The reconciler starts tenant shards, holding each whose record is
+	// sealed. It asks through n.clusterSeal, which refuses nothing until the
+	// monitor is Set, so it starts only now -- and the monitor refuses every
+	// barrier until its first read. A node-lifetime context keeps it running
+	// after the unseal/boot request ctx is cancelled; bgCancel in Node.Close()
+	// (and in the wireClientAndServer error branch below) stops it, and bgWG
+	// lets a failure path wait for it to actually exit before stopping what
+	// it calls into.
+	if reconciler != nil {
+		reconcileCtx := n.background()
+		n.bgWG.Add(1)
+		go func() {
+			defer n.bgWG.Done()
+			reconciler.Run(reconcileCtx)
+		}()
+	}
 
 	if err := n.wireClientAndServer(ctx, svcNode, pending.cfg, pending.serverOpts, false); err != nil {
 		// Stop the lease-expiry sweeper, the reclaim sweeper and (if tenant
@@ -1682,6 +1732,13 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	n.startFeatureGate(host, svcNode.KV)
 	return nil
 }
+
+// tenantInfraBuiltHook runs in completeClusteredBoot once BuildTenantInfra
+// has restored -- and, for an auto-unseal tenant, unsealed -- every tenant
+// barrier, before the rest of the boot. It is a no-op in production -- a
+// direct assignment, not a conditional -- and exists so a test can cancel the
+// boot exactly where tenant keys are live and the node is not yet serving.
+var tenantInfraBuiltHook = func() {}
 
 // bindReplicatedVolumePool wires the cluster-wide volume-pool state (Phase 2)
 // once the replicated system KV is available: it binds the pool's round-robin
@@ -1800,6 +1857,9 @@ func (n *Node) Close() error {
 	// "a value or nil", and after Close the honest answer is nil for all of
 	// them, not just the three with an obvious owner.
 	if client := n.client.Swap(nil); client != nil {
+		record(client.Close())
+	}
+	if client := n.featureClient.Swap(nil); client != nil {
 		record(client.Close())
 	}
 	if srv := n.srv.Swap(nil); srv != nil {
@@ -2738,18 +2798,44 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		embeddedOpts = append(embeddedOpts, embedded.WithPINBackend(pinBackend))
 	}
 
+	featureClient, err := newConnectedEmbeddedClient(ctx, svcNode, embeddedOpts)
+	if err != nil {
+		return err
+	}
+	n.featureClient.Store(featureClient)
+
+	// The caller's client refuses what the node's network listeners refuse:
+	// every request outside the sealed-window allowlist while the node
+	// barrier is sealed, or a cluster seal holds the node, cuts it off, or
+	// is not yet confirmed.
+	if barrier != nil {
+		var cs server.ClusterSeal
+		if n.clusterSeal != nil {
+			cs = n.clusterSeal
+		}
+		embeddedOpts = append(embeddedOpts, embedded.WithSealProbe(server.NodeSealProbe(barrier, cs)))
+	}
+	// The gate refuses a watch as it opens; a watch opened before a seal is
+	// a stream the seal must end, as it ends a network listener's.
+	if n.clusterSeal != nil {
+		embeddedOpts = append(embeddedOpts, embedded.WithSealStreams(n.clusterSeal.Streams()))
+	}
+
 	tp, err := embedded.New(svcNode.KV, svcNode.Admin, embeddedOpts...)
 	if err != nil {
+		n.closeFeatureClient()
 		return &ClientCreateError{Err: err}
 	}
 
 	// Create SDK client.
 	client, err := sdk.NewClient(tp)
 	if err != nil {
+		n.closeFeatureClient()
 		return &ClientCreateError{Err: err}
 	}
 	if err := client.Connect(ctx); err != nil {
 		_ = client.Close()
+		n.closeFeatureClient()
 		return &ClientCreateError{Err: err}
 	}
 	n.client.Store(client)
@@ -2765,6 +2851,9 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	}
 	if barrier != nil {
 		allOpts = append(allOpts, server.WithSealedWindowProbe(barrier))
+	}
+	if n.clusterSeal != nil {
+		allOpts = append(allOpts, server.WithClusterSeal(n.clusterSeal))
 	}
 	if p := n.authFactorSvc.Load(); p != nil {
 		allOpts = append(allOpts, server.WithAuthFactorService(*p))
@@ -2842,6 +2931,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	if err := srv.Start(); err != nil {
 		_ = client.Close()
 		n.client.Store(nil)
+		n.closeFeatureClient()
 		return &ServerCreateError{Err: err}
 	}
 	n.srv.Store(srv)

@@ -15,7 +15,7 @@
   limitations under the License.
 -->
 <script lang="ts">
-  import type { Client, UnsealProgress, SealMode, OfficerStatus, EnableEncryptionRequest, HolderRole } from "@qrdb/sdk";
+  import type { Client, UnsealProgress, SealMode, OfficerStatus, EnableEncryptionRequest, HolderRole, ClusterSeal } from "@qrdb/sdk";
   import { onMount } from "svelte";
   import { AlertTriangle, Info, RefreshCw, Lock, UserPlus, CheckCircle, Clock, AlertCircle, Copy, Download } from "lucide-svelte";
   import { sealStore, updateSealStatus, updateOfficers, setOfficersLoading } from "$stores/seal.svelte.ts";
@@ -34,6 +34,9 @@
   let sealLoading: boolean = $state(false);
   let statusLoading: boolean = $state(true);
   let showSealConfirm: boolean = $state(false);
+  // The node barrier's cluster seal state; null from a server that reports none.
+  let clusterSeal: ClusterSeal | null = $state(null);
+  let clusterUnsealLoading: boolean = $state(false);
 
   let pollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -174,6 +177,7 @@
     try {
       const status = await client.seal.status();
       updateSealStatus(status);
+      clusterSeal = status.clusterSeal ?? null;
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to fetch seal status";
       showToast("error", msg);
@@ -238,6 +242,24 @@
       showToast("error", msg);
     } finally {
       sealLoading = false;
+    }
+  }
+
+  /**
+   * Clears the node barrier's cluster seal record. Each node unseals with its
+   * own credential first; one clear then lets every held node serve again.
+   */
+  async function handleClusterUnseal(): Promise<void> {
+    try {
+      clusterUnsealLoading = true;
+      clusterSeal = await client.seal.clusterUnseal();
+      showToast("success", "Cluster seal cleared");
+      await fetchSealStatus();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to clear the cluster seal";
+      showToast("error", msg);
+    } finally {
+      clusterUnsealLoading = false;
     }
   }
 
@@ -661,6 +683,36 @@
               Seal
             </button>
           {/if}
+        {/if}
+
+        {#if clusterSeal?.active}
+          <div class="divider my-2"></div>
+          <div data-testid="cluster-seal-status">
+            <p class="text-sm">
+              Cluster seal: record {clusterSeal.sealed ? "sealed" : "clear"}
+              (epoch {clusterSeal.epoch}); this node is {clusterSeal.local ?? "unknown"}.
+            </p>
+            {#if clusterSeal.sealed}
+              <div class="alert alert-info mt-2">
+                <Info class="h-5 w-5 shrink-0" />
+                <span>
+                  The node barrier is sealed cluster-wide. Unseal each node with its own
+                  credential, then clear the seal once from any unsealed node.
+                </span>
+              </div>
+              <button
+                class="btn btn-primary btn-sm mt-3"
+                data-testid="cluster-unseal-btn"
+                onclick={() => void handleClusterUnseal()}
+                disabled={clusterUnsealLoading}
+              >
+                {#if clusterUnsealLoading}
+                  <span class="loading loading-spinner loading-xs"></span>
+                {/if}
+                Clear Cluster Seal
+              </button>
+            {/if}
+          </div>
         {/if}
       </div>
     </div>

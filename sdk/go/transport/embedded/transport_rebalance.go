@@ -39,6 +39,9 @@ func WithRebalanceService(svc service.RebalanceServicer) Option {
 // the injected RebalanceServicer. Returns NilServiceError when no
 // rebalance service has been configured.
 func (t *Transport) GetShardStats(ctx context.Context, shardID uint64) (*transport.ShardStatsResponse, error) {
+	if err := t.gate("GetShardStats"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -62,6 +65,9 @@ func (t *Transport) GetShardStats(ctx context.Context, shardID uint64) (*transpo
 // injected RebalanceServicer. Returns NilServiceError when no rebalance
 // service has been configured.
 func (t *Transport) CreateRebalancePlan(ctx context.Context, req *transport.RebalancePlanRequest) (*transport.RebalancePlan, error) {
+	if err := t.gate("CreateRebalancePlan"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -100,6 +106,9 @@ func (t *Transport) CreateRebalancePlan(ctx context.Context, req *transport.Reba
 // the injected RebalanceServicer. Returns NilServiceError when no
 // rebalance service has been configured.
 func (t *Transport) ExecuteRebalance(ctx context.Context, plan *transport.RebalancePlan) (*transport.RebalanceResult, error) {
+	if err := t.gate("ExecuteRebalance"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -139,6 +148,9 @@ func (t *Transport) ExecuteRebalance(ctx context.Context, plan *transport.Rebala
 // delegating to the injected RebalanceServicer. Returns NilServiceError
 // when no rebalance service has been configured.
 func (t *Transport) GetImbalanceReport(ctx context.Context) (*transport.ImbalanceReport, error) {
+	if err := t.gate("GetImbalanceReport"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}

@@ -1164,6 +1164,22 @@ func (m *Manager) List() []DatabaseInfo {
 	return infos
 }
 
+// MarkBarrierDatabasesSealed marks every open database with barrier
+// encryption sealed. A node seal calls it after sealing every barrier on the
+// node (BarrierRegistry.SealAll): the mark is what refuses a database whose
+// store does not refuse by itself, and it holds until the database's owner
+// unseals it -- a database barrier is credential-held, never system-managed,
+// so the node's own unseal does not reopen it.
+func (m *Manager) MarkBarrierDatabasesSealed() {
+	m.databases.Range(func(_, value any) bool {
+		db := value.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
+		if db.BarrierEnabled() && db.Status() == StatusOpen {
+			db.SetStatus(StatusSealed)
+		}
+		return true
+	})
+}
+
 // Close shuts down all open databases and the backend factory.
 func (m *Manager) Close() error {
 	var firstErr error

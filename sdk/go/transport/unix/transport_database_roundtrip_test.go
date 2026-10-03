@@ -25,6 +25,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 
 	unixserver "github.com/jeremyhahn/go-qrdb/pkg/api/unix"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -141,7 +142,17 @@ func (m *mockDatabaseSvc) UnsealDatabase(ctx context.Context, name string, creds
 	return nil
 }
 
-func (m *mockDatabaseSvc) DatabaseBarrierStatus(_ context.Context, name string) (*seal.BarrierStatus, error) {
+// DatabaseBarrierStatus adapts databaseBarrierStatusSeal to the service
+// interface, with no cluster seal state.
+func (m *mockDatabaseSvc) DatabaseBarrierStatus(ctx context.Context, name string) (*service.DatabaseBarrierStatusInfo, error) {
+	st, err := m.databaseBarrierStatusSeal(ctx, name)
+	if st == nil {
+		return nil, err
+	}
+	return &service.DatabaseBarrierStatusInfo{BarrierStatus: st}, err
+}
+
+func (m *mockDatabaseSvc) databaseBarrierStatusSeal(_ context.Context, name string) (*seal.BarrierStatus, error) {
 	if m.barrierStatusFn != nil {
 		return m.barrierStatusFn(name)
 	}

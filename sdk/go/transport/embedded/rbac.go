@@ -98,6 +98,9 @@ func validateIdentity(id *transport.Identity) error {
 
 // Authorize delegates to the wrapped auth.Authorizer.
 func (c *rbacClient) Authorize(ctx context.Context, identity *transport.Identity, resource, action string) error {
+	if err := c.transport.gate("RBACClient.Authorize"); err != nil {
+		return err
+	}
 	if c.transport.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -128,6 +131,9 @@ func (c *rbacClient) Authorize(ctx context.Context, identity *transport.Identity
 // was false for every member of the tenant-only broker data-plane families
 // the built-in Admin role grants this way.
 func (c *rbacClient) ListPermissions(ctx context.Context, identity *transport.Identity) ([]transport.PermissionInfo, error) {
+	if err := c.transport.gate("RBACClient.ListPermissions"); err != nil {
+		return nil, err
+	}
 	if c.transport.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}

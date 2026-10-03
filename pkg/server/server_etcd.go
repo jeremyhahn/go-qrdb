@@ -30,6 +30,7 @@ import (
 	grpcapi "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -85,7 +86,7 @@ func startEtcd(s *Server, dbName string, cfg *database.EtcdConfig) (EtcdProtocol
 	}
 	opts = append(opts,
 		etcd.WithTLS(s.opts.tlsConfig),
-		etcd.WithRequestAuthorizer(&etcdRequestAuthorizer{mw: s.opts.authMW, reg: reg, mgr: s.opts.dbManager, owner: owner, db: dbName, logger: s.logger}),
+		etcd.WithRequestAuthorizer(&etcdRequestAuthorizer{mw: s.opts.authMW, reg: reg, mgr: s.opts.dbManager, owner: owner, db: dbName, logger: s.logger, streams: s.clusterSealStreams(), nodeRefusal: s.nodeRefusal, streamRefusal: etcdStreamRefusal(reg, owner, dbName)}),
 	)
 	if s.adminSvc != nil {
 		opts = append(opts, etcd.WithAdmin(s.adminSvc))
@@ -155,6 +156,29 @@ type etcdRequestAuthorizer struct {
 	owner  string
 	db     string
 	logger *slog.Logger
+	// streams, when non-nil, also ends every etcd stream when the database's
+	// tenant, the database or the node barrier is sealed, or this node is cut
+	// off from the seal records.
+	streams *clusterseal.Streams
+	// nodeRefusal, when non-nil, refuses every request and stream open while
+	// the node does (Server.nodeRefusal): the etcd listener has no
+	// sealed-window middleware of its own.
+	nodeRefusal func() error
+	// streamRefusal, when non-nil, is the database's own refusal -- its
+	// tenant or itself sealed, here or by its record -- re-asked once a
+	// stream has subscribed (service.StreamRefuser).
+	streamRefusal func() error
+}
+
+// refuseIfNodeRefuses answers the node-wide refusal as a gRPC status.
+func (a *etcdRequestAuthorizer) refuseIfNodeRefuses() error {
+	if a.nodeRefusal == nil {
+		return nil
+	}
+	if err := a.nodeRefusal(); err != nil {
+		return status.Error(grpcapi.ServiceErrorCode(err), err.Error())
+	}
+	return nil
 }
 
 var (
@@ -165,7 +189,7 @@ var (
 // GuardStream implements etcd.StreamGuard: a Watch or LeaseKeepAlive stream
 // ends, with the sealed refusal or the dropped database's not-found, the
 // moment the listener's database stops serving.
-func (a *etcdRequestAuthorizer) GuardStream(context.Context) (<-chan struct{}, func() error, error) {
+func (a *etcdRequestAuthorizer) GuardStream(ctx context.Context) (<-chan struct{}, func() error, error) {
 	dbase, err := a.mgr.Get(a.db)
 	if err != nil {
 		return nil, nil, status.Error(grpcapi.ServiceErrorCode(err), err.Error())
@@ -174,11 +198,63 @@ func (a *etcdRequestAuthorizer) GuardStream(context.Context) (<-chan struct{}, f
 		e := databaseUnservedError(dbase, a.owner, a.db)
 		return status.Error(grpcapi.ServiceErrorCode(e), e.Error())
 	}
-	return dbase.Unserved(), refusal, nil
+	if a.streams == nil {
+		// A stream does not open while the node refuses.
+		if err := a.refuseIfNodeRefuses(); err != nil {
+			return nil, nil, err
+		}
+		return dbase.Unserved(), refusal, nil
+	}
+	// Subscribe FIRST, then ask the refusals: a seal closes its gate before
+	// it ends streams, so one landing before the subscription is refused
+	// here and one landing after it ends the subscription
+	// (clusterseal.Streams.SubscribeServing).
+	sub, err := a.streams.SubscribeServing(clusterSealTenant(a.owner), a.db, a.openRefusal)
+	if err != nil {
+		return nil, nil, err
+	}
+	ended := make(chan struct{})
+	// The stream ends on whichever comes first: the database stops serving,
+	// or a seal ends the subscription. ctx is the stream's own, so the
+	// merge ends with the stream.
+	go func() {
+		defer sub.Release()
+		select {
+		case <-dbase.Unserved():
+			close(ended)
+		case <-sub.Done():
+			close(ended)
+		case <-ctx.Done():
+		}
+	}()
+	sealedRefusal := func() error {
+		if cause := sub.Cause(); cause != nil {
+			return status.Error(grpcapi.ServiceErrorCode(cause), cause.Error())
+		}
+		return refusal()
+	}
+	return ended, sealedRefusal, nil
+}
+
+// openRefusal is a stream open's refusal, as a gRPC status: the node's, then
+// the database's own.
+func (a *etcdRequestAuthorizer) openRefusal() error {
+	if err := a.refuseIfNodeRefuses(); err != nil {
+		return err
+	}
+	if a.streamRefusal != nil {
+		if err := a.streamRefusal(); err != nil {
+			return status.Error(grpcapi.ServiceErrorCode(err), err.Error())
+		}
+	}
+	return nil
 }
 
 // AuthorizeRequest implements etcd.RequestAuthorizer.
 func (a *etcdRequestAuthorizer) AuthorizeRequest(ctx context.Context, perm permission.Permission) (context.Context, error) {
+	if err := a.refuseIfNodeRefuses(); err != nil {
+		return nil, err
+	}
 	ctx = withPeerTLSState(ctx)
 	ctx, identity, err := a.mw.Authenticate(ctx)
 	if err != nil {
@@ -225,4 +301,14 @@ func withPeerTLSState(ctx context.Context) context.Context {
 // stopEtcd stops a running etcd protocol server.
 func stopEtcd(srv EtcdProtocolServer) {
 	srv.Stop()
+}
+
+// etcdStreamRefusal returns reg's stream refusal for (owner, db), or nil when
+// reg has none.
+func etcdStreamRefusal(reg service.Registry, owner, db string) func() error {
+	r, ok := reg.(service.StreamRefuser)
+	if !ok {
+		return nil
+	}
+	return func() error { return r.StreamRefusal(owner, db) }
 }

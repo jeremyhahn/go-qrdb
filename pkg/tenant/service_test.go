@@ -702,17 +702,17 @@ func TestTenantService_BarrierInitSuppliedPassphraseGoverns(t *testing.T) {
 	}
 
 	// Wrong passphrase must fail.
-	if err := svc.TenantBarrierUnseal(ctx, tenantID, []byte("wrong-passphrase")); err == nil {
+	if err := svc.TenantBarrierUnseal(WithTenantID(ctx, tenantID), tenantID, []byte("wrong-passphrase")); err == nil {
 		t.Fatal("unseal with wrong passphrase succeeded, want failure")
 	}
 
 	// The previously derived credential must NOT unseal.
-	if err := svc.TenantBarrierUnseal(ctx, tenantID, []byte("tenant-init-"+tenantID)); err == nil {
+	if err := svc.TenantBarrierUnseal(WithTenantID(ctx, tenantID), tenantID, []byte("tenant-init-"+tenantID)); err == nil {
 		t.Fatal("unseal with derived credential succeeded, want failure (no derived fallback)")
 	}
 
 	// The supplied passphrase must unseal.
-	if err := svc.TenantBarrierUnseal(ctx, tenantID, []byte(passphrase)); err != nil {
+	if err := svc.TenantBarrierUnseal(WithTenantID(ctx, tenantID), tenantID, []byte(passphrase)); err != nil {
 		t.Fatalf("unseal with supplied passphrase: %v", err)
 	}
 
@@ -792,7 +792,7 @@ func TestTenantService_BarrierInitWithStrategy_ExplicitPassphrase(t *testing.T) 
 	if err := reg.SealTenant(tenantID); err != nil {
 		t.Fatalf("SealTenant: %v", err)
 	}
-	if err := svc.TenantBarrierUnseal(ctx, tenantID, []byte(passphrase)); err != nil {
+	if err := svc.TenantBarrierUnseal(WithTenantID(ctx, tenantID), tenantID, []byte(passphrase)); err != nil {
 		t.Fatalf("unseal with supplied passphrase: %v", err)
 	}
 }
@@ -992,7 +992,7 @@ func TestTenantService_BarrierUnsealEmptyKeyRejected(t *testing.T) {
 		t.Fatalf("CreateTenant: %v", err)
 	}
 
-	err := svc.TenantBarrierUnseal(ctx, "unseal-empty", nil)
+	err := svc.TenantBarrierUnseal(WithTenantID(ctx, "unseal-empty"), "unseal-empty", nil)
 	if !errors.Is(err, ErrEmptyPassphrase) {
 		t.Fatalf("expected ErrEmptyPassphrase, got %v", err)
 	}
@@ -1032,7 +1032,7 @@ func TestTenantService_BarrierUnseal(t *testing.T) {
 	// pre-registered default barrier uses a fixed software-strategy master
 	// password, so the supplied key is accepted as Credentials.Secret; the
 	// derived "tenant-init-" fallback has been removed.)
-	if err := svc.TenantBarrierUnseal(ctx, "unseal-test", []byte("unseal-test-pw")); err != nil {
+	if err := svc.TenantBarrierUnseal(WithTenantID(ctx, "unseal-test"), "unseal-test", []byte("unseal-test-pw")); err != nil {
 		t.Fatalf("TenantBarrierUnseal: %v", err)
 	}
 
@@ -1066,7 +1066,7 @@ func TestTenantService_BarrierUnsealWithExplicitKey(t *testing.T) {
 	}
 
 	// Unseal with explicit caller-supplied key material.
-	err = svc.TenantBarrierUnseal(ctx, "unseal-key", []byte("unseal-key-pw"))
+	err = svc.TenantBarrierUnseal(WithTenantID(ctx, "unseal-key"), "unseal-key", []byte("unseal-key-pw"))
 	if err != nil {
 		t.Fatalf("TenantBarrierUnseal with explicit key: %v", err)
 	}
@@ -1084,7 +1084,7 @@ func TestTenantService_BarrierUnsealNotFound(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
-	err := svc.TenantBarrierUnseal(ctx, "nonexistent", []byte("pw"))
+	err := svc.TenantBarrierUnseal(WithTenantID(ctx, "nonexistent"), "nonexistent", []byte("pw"))
 	if !errors.Is(err, ErrTenantNotFound) {
 		t.Errorf("expected ErrTenantNotFound, got %v", err)
 	}
@@ -1094,7 +1094,7 @@ func TestTenantService_BarrierUnsealEmptyID(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
-	err := svc.TenantBarrierUnseal(ctx, "", nil)
+	err := svc.TenantBarrierUnseal(WithTenantID(ctx, ""), "", nil)
 	if !errors.Is(err, ErrEmptyTenantID) {
 		t.Errorf("expected ErrEmptyTenantID, got %v", err)
 	}
@@ -1110,7 +1110,7 @@ func TestTenantService_BarrierUnsealNotInitialized(t *testing.T) {
 	}
 
 	// Unseal without initializing should fail with BarrierError.
-	err = svc.TenantBarrierUnseal(ctx, "no-init", []byte("pw"))
+	err = svc.TenantBarrierUnseal(WithTenantID(ctx, "no-init"), "no-init", []byte("pw"))
 	var be *BarrierError
 	if !errors.As(err, &be) {
 		t.Errorf("expected BarrierError, got %v", err)

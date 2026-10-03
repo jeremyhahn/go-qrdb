@@ -596,7 +596,7 @@ func TestTenantService_BarrierSeal_Success(t *testing.T) {
 	}
 
 	// Seal via service.
-	if err := svc.TenantBarrierSeal(ctx, "seal-ok"); err != nil {
+	if err := svc.TenantBarrierSeal(WithTenantID(ctx, "seal-ok"), "seal-ok"); err != nil {
 		t.Fatalf("TenantBarrierSeal: %v", err)
 	}
 
@@ -613,7 +613,7 @@ func TestTenantService_BarrierSeal_EmptyID(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
-	err := svc.TenantBarrierSeal(ctx, "")
+	err := svc.TenantBarrierSeal(WithTenantID(ctx, ""), "")
 	if !errors.Is(err, ErrEmptyTenantID) {
 		t.Errorf("expected ErrEmptyTenantID, got %v", err)
 	}
@@ -623,7 +623,7 @@ func TestTenantService_BarrierSeal_TenantNotFound(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
-	err := svc.TenantBarrierSeal(ctx, "ghost")
+	err := svc.TenantBarrierSeal(WithTenantID(ctx, "ghost"), "ghost")
 	if !errors.Is(err, ErrTenantNotFound) {
 		t.Errorf("expected ErrTenantNotFound, got %v", err)
 	}
@@ -647,7 +647,7 @@ func TestTenantService_BarrierSeal_BarrierNotRegistered(t *testing.T) {
 		t.Fatalf("store.Put: %v", err)
 	}
 
-	err = svc.TenantBarrierSeal(ctx, "no-barrier")
+	err = svc.TenantBarrierSeal(WithTenantID(ctx, "no-barrier"), "no-barrier")
 	var be *BarrierError
 	if !errors.As(err, &be) {
 		t.Errorf("expected BarrierError when barrier not registered, got %v", err)
@@ -1113,7 +1113,7 @@ func TestKVTenantBarrierSeal_NotEnabled(t *testing.T) {
 	ctx := context.Background()
 	svc := newKVService(t)
 
-	err := svc.TenantBarrierSeal(ctx, "acme")
+	err := svc.TenantBarrierSeal(WithTenantID(ctx, "acme"), "acme")
 	if !errors.Is(err, ErrBarrierNotEnabled) {
 		t.Fatalf("want ErrBarrierNotEnabled, got %v", err)
 	}

@@ -403,4 +403,7 @@ type DatabaseBarrierStatus struct {
 
 	// InitializedAt records when the barrier was first initialized.
 	InitializedAt time.Time `json:"initialized_at"`
+
+	// ClusterSeal is the database barrier's cluster seal state.
+	ClusterSeal *ClusterSeal `json:"cluster_seal,omitempty"`
 }

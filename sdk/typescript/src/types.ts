@@ -1653,6 +1653,39 @@ export interface SealStatus {
     readonly sharesProvided: number;
     /** Total number of Shamir shares generated. */
     readonly sharesTotal: number;
+    /**
+     * The node barrier's cluster seal state (docs/barrier-seal): whether
+     * cluster sealing is active, the replicated record, and this node's own
+     * state. Absent from a server that does not report it.
+     */
+    readonly clusterSeal?: ClusterSeal;
+}
+
+/**
+ * A barrier's cluster seal state. Before the cluster activates cluster
+ * sealing, `active` is false and every seal is node-local.
+ */
+export interface ClusterSeal {
+    /** Whether the cluster has activated cluster sealing. */
+    readonly active: boolean;
+    /** Whether the barrier's replicated record says sealed. */
+    readonly sealed: boolean;
+    /** The record's epoch; 0 when no record exists. */
+    readonly epoch: number;
+    /** Who wrote the record. */
+    readonly principal?: string;
+    /** The tenant of whoever wrote the record. */
+    readonly principalTenant?: string;
+    /** The node, by Raft address, the record was written through. */
+    readonly node?: string;
+    /** When the record was written (RFC 3339, UTC). */
+    readonly at?: string;
+    /**
+     * This node's own state: "serving", "sealed", "held" (unsealed here but
+     * the record is sealed), "cut_off" (cannot read the records) or
+     * "unconfirmed" (has not read them since it started).
+     */
+    readonly local?: string;
 }
 
 /**

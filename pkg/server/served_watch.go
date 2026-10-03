@@ -16,7 +16,6 @@ package server
 
 import (
 	"context"
-	"sync"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -49,7 +48,7 @@ func (s *servedWatchService) Watch(ctx context.Context, key string, opts ...watc
 	if err != nil {
 		return nil, err
 	}
-	return newServedWatcher(w, s.db.Unserved(), s.refusal), nil
+	return watch.NewGuarded(w, s.db.Unserved(), s.refusal), nil
 }
 
 // WatchPrefix opens a watch on prefix that ends when the database stops
@@ -59,7 +58,7 @@ func (s *servedWatchService) WatchPrefix(ctx context.Context, prefix string, opt
 	if err != nil {
 		return nil, err
 	}
-	return newServedWatcher(w, s.db.Unserved(), s.refusal), nil
+	return watch.NewGuarded(w, s.db.Unserved(), s.refusal), nil
 }
 
 // WatchEntity opens an entity watch whose channel closes when the database
@@ -110,89 +109,4 @@ func servedEntityEvents(in <-chan service.WatchEntityEvent, unserved <-chan stru
 		}
 	}()
 	return out
-}
-
-// servedWatcher forwards an inner watcher's events until the inner watcher
-// ends or the database stops serving; in the second case it closes the inner
-// watcher and reports the database's refusal from Err.
-type servedWatcher struct {
-	inner   watch.Watcher
-	events  chan watch.WatchResponse
-	stop    chan struct{}
-	once    sync.Once
-	errMu   sync.Mutex
-	err     error
-	refusal func() error
-}
-
-var _ watch.Watcher = (*servedWatcher)(nil)
-
-func newServedWatcher(inner watch.Watcher, unserved <-chan struct{}, refusal func() error) *servedWatcher {
-	w := &servedWatcher{
-		inner:   inner,
-		events:  make(chan watch.WatchResponse),
-		stop:    make(chan struct{}),
-		refusal: refusal,
-	}
-	go w.forward(unserved)
-	return w
-}
-
-// forward relays events until the inner watcher ends, the watcher is closed,
-// or the database stops serving.
-func (w *servedWatcher) forward(unserved <-chan struct{}) {
-	defer close(w.events)
-	for {
-		select {
-		case <-w.stop:
-			return
-		case <-unserved:
-			w.end()
-			return
-		case resp, ok := <-w.inner.Events():
-			if !ok {
-				return
-			}
-			select {
-			case w.events <- resp:
-			case <-w.stop:
-				return
-			case <-unserved:
-				w.end()
-				return
-			}
-		}
-	}
-}
-
-// end records the database's refusal and closes the inner watcher.
-func (w *servedWatcher) end() {
-	w.errMu.Lock()
-	w.err = w.refusal()
-	w.errMu.Unlock()
-	_ = w.inner.Close()
-}
-
-// Events returns the forwarded events; the channel closes when the watch
-// ends.
-func (w *servedWatcher) Events() <-chan watch.WatchResponse { return w.events }
-
-// WatchID returns the inner watcher's ID.
-func (w *servedWatcher) WatchID() int64 { return w.inner.WatchID() }
-
-// Close ends the watch.
-func (w *servedWatcher) Close() error {
-	w.once.Do(func() { close(w.stop) })
-	return w.inner.Close()
-}
-
-// Err returns the database's refusal when the database ended the watch, and
-// the inner watcher's error otherwise.
-func (w *servedWatcher) Err() error {
-	w.errMu.Lock()
-	defer w.errMu.Unlock()
-	if w.err != nil {
-		return w.err
-	}
-	return w.inner.Err()
 }

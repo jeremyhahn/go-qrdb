@@ -623,8 +623,21 @@ to each replica over the **authenticated mTLS control plane using HPKE
 encryption**, and each node **re-wraps it under its own system barrier**
 (system-managed auto-unseal) or under the tenant's own strategy (self-managed).
 
-There is no shared cluster-wide tenant key: a compromised node key does not
-expose the tenant's key on other nodes.
+The wrapping key is per node; the tenant root key is not. Every replica of a
+`raft` tenant holds the **same** tenant root key and derives the same keys from
+it (`pkg/seal/import_key.go`), so a node whose node key and disk are both
+compromised yields a key that also decrypts that tenant's data on the other
+replicas. **Correction (2026-10-01):** this section previously said a
+compromised node key does not expose the tenant's key on other nodes. A key per
+replica waits on where a dedicated tenant's identity records are stored: they
+are encrypted with the tenant key and replicated through the system shard, so
+every node serving the tenant must hold the same key today.
+
+A tenant seal is a cluster seal record once the cluster has activated
+`cluster-seal`: every node holding the tenant's barrier seals it, ends the
+tenant's open streams and stops the tenant's shards. Only the tenant's own
+administrators may seal or unseal it; the platform operator cannot. See
+[../barrier-seal/architecture.md](../barrier-seal/architecture.md#sealing-in-a-cluster).
 
 Replica placement is quota-checked and spread across distinct healthy nodes by a
 load-aware scheduler. Each node's `TenantShardReconciler` watches the replicated
@@ -659,8 +672,9 @@ restarts through the persistent placement table and per-node replica re-attach.
   tenant's KEY NAMES (not their values) to a caller holding `index:query` on
   its own tenant. See
   [../secondary-indexes/architecture.md](../secondary-indexes/architecture.md#index-key-scope--a-name-is-not-a-predicate).
-- **Per-node key independence** is the property that makes multi-node tenant
-  replication safe.
+- **Per-node KEK independence** protects each node's at-rest copy of a
+  tenant key; the tenant root key itself is shared by the tenant's replicas
+  (see *Per-node-independent key design*).
 - **Provisioning-governance permissions are distinct**:
   `tenants:set_isolation`, `tenants:set_entitlements`,
   `databases:create_raft`, `databases:create_volume`.

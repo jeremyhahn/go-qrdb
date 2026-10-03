@@ -18,6 +18,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sealconv"
+
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -58,5 +60,6 @@ func (t *Transport) DatabaseBarrierStatus(ctx context.Context, name string) (*tr
 		Strategy:       resp.GetStrategy(),
 		HardwareBacked: resp.GetHardwareBacked(),
 		InitializedAt:  time.Unix(resp.GetInitializedAtUnix(), 0),
+		ClusterSeal:    sealconv.FromProto(resp.GetClusterSeal()),
 	}, nil
 }

@@ -74,6 +74,25 @@ func dialSealedDBTransports(t *testing.T, srv *Server, db string) map[string]tra
 // returns each scoped to db, keyed by transport name.
 func dialScopedTransports(t *testing.T, srv *Server, db string) map[string]transport.Transport {
 	t.Helper()
+	out := make(map[string]transport.Transport)
+	for name, tr := range dialTransports(t, srv) {
+		scoper, ok := tr.(transport.DatabaseScoper)
+		if !ok {
+			t.Fatalf("%s transport does not implement transport.DatabaseScoper", name)
+		}
+		scoped, err := scoper.WithDatabase(db)
+		if err != nil {
+			t.Fatalf("%s WithDatabase(%q): %v", name, db, err)
+		}
+		out[name] = scoped
+	}
+	return out
+}
+
+// dialTransports connects every network SDK transport to srv, unscoped,
+// keyed by transport name.
+func dialTransports(t *testing.T, srv *Server) map[string]transport.Transport {
+	t.Helper()
 	tlsOpt := testAutoProvisionClientTLSOption(t)
 	builders := map[string]func() (transport.Transport, error){
 		"rest": func() (transport.Transport, error) {
@@ -102,15 +121,7 @@ func dialScopedTransports(t *testing.T, srv *Server, db string) map[string]trans
 			t.Fatalf("%s transport Connect: %v", name, err)
 		}
 		t.Cleanup(func() { _ = tr.Close() })
-		scoper, ok := tr.(transport.DatabaseScoper)
-		if !ok {
-			t.Fatalf("%s transport does not implement transport.DatabaseScoper", name)
-		}
-		scoped, err := scoper.WithDatabase(db)
-		if err != nil {
-			t.Fatalf("%s WithDatabase(%q): %v", name, db, err)
-		}
-		out[name] = scoped
+		out[name] = tr
 	}
 	return out
 }

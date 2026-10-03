@@ -80,6 +80,25 @@ func TestMVCCReads_RemainSelfScope(t *testing.T) {
 	}
 }
 
+// TestDatabaseBarrierIsSelfStrict pins the database barrier permissions to
+// the caller's own tenant. They were ScopeSelf, which the system-tenant rule
+// lifts across every tenant, so a system-tenant identity passed the
+// authorizer for another tenant's database barrier: sealing it, unsealing it
+// and reading its status. A database barrier is sealed by the tenant that owns
+// the database and by no one else (docs/barrier-seal).
+func TestDatabaseBarrierIsSelfStrict(t *testing.T) {
+	for _, p := range []Permission{DatabasesSeal, DatabasesUnseal, DatabasesBarrierStatus} {
+		s, err := LookupScope(p)
+		if err != nil {
+			t.Errorf("LookupScope(%q): %v", p, err)
+			continue
+		}
+		if s != ScopeSelfStrict {
+			t.Errorf("LookupScope(%q) = %v, want ScopeSelfStrict", p, s)
+		}
+	}
+}
+
 // TestSelfStrictIsDistinctFromItsNeighbours guards the one confusion this
 // scope invites: that it is a synonym for one of the two it sits between.
 func TestSelfStrictIsDistinctFromItsNeighbours(t *testing.T) {

@@ -75,9 +75,10 @@ func (s *qrdbServiceServer) BarrierUnseal(ctx context.Context, req *pb.BarrierUn
 	return &emptypb.Empty{}, nil
 }
 
-// BarrierSeal transitions the storage barrier to the sealed state under the
-// configured SO PIN, verified by the PIN backend exactly as on every other
-// transport; without a PIN backend it fails closed.
+// BarrierSeal transitions the storage barrier to the sealed state -- on every
+// node once the cluster has activated cluster-seal -- under the configured SO
+// PIN, verified by the PIN backend exactly as on every other transport;
+// without a PIN backend it fails closed.
 func (s *qrdbServiceServer) BarrierSeal(ctx context.Context, req *pb.BarrierSealRequest) (*emptypb.Empty, error) {
 	if s.barrierSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
@@ -113,6 +114,7 @@ func (s *qrdbServiceServer) BarrierStatus(ctx context.Context, _ *emptypb.Empty)
 		InitializedAt:   info.InitializedAt.Format(time.RFC3339Nano),
 		ShamirThreshold: int32(info.ShamirThreshold),
 		ShamirTotal:     int32(info.ShamirTotal),
+		ClusterSeal:     ClusterSealToProto(info.ClusterSeal),
 	}, nil
 }
 

@@ -17,10 +17,8 @@ package main
 
 import (
 	"context"
-	"errors"
 	"testing"
 
-	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -94,30 +92,4 @@ func TestStartFeatureGate_AdvertisesAndActivates(t *testing.T) {
 	_, recorded := store[featuregate.ActivationPrefix+string(featuregate.GuardedWrites)]
 	assert.True(t, recorded, "activation must be recorded in the system store")
 	require.NoError(t, closer.Close())
-}
-
-// The ReadIndex warm-up of a freshly elected leader is waited out; any
-// other failure, and a cancelled context, is returned at once.
-func TestWhileReadIndexNotReady(t *testing.T) {
-	calls := 0
-	err := whileReadIndexNotReady(context.Background(), func() error {
-		calls++
-		if calls < 3 {
-			return quicraft.ErrReadIndexNotReady
-		}
-		return nil
-	})
-	require.NoError(t, err)
-	assert.Equal(t, 3, calls)
-
-	boom := errors.New("boom")
-	calls = 0
-	err = whileReadIndexNotReady(context.Background(), func() error { calls++; return boom })
-	assert.ErrorIs(t, err, boom)
-	assert.Equal(t, 1, calls)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	err = whileReadIndexNotReady(ctx, func() error { return quicraft.ErrReadIndexNotReady })
-	assert.ErrorIs(t, err, context.Canceled)
 }

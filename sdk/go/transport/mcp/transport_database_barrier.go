@@ -51,6 +51,7 @@ func (t *Transport) DatabaseBarrierStatus(ctx context.Context, name string) (*tr
 		Strategy       string
 		HardwareBacked bool
 		InitializedAt  time.Time
+		ClusterSeal    *transport.ClusterSeal `json:"cluster_seal"`
 	}
 	if jsonErr := json.Unmarshal([]byte(text), &wire); jsonErr != nil {
 		return nil, &transport.RequestError{Method: "DatabaseBarrierStatus", Err: &jsonDecodeError{Err: jsonErr}}
@@ -60,5 +61,6 @@ func (t *Transport) DatabaseBarrierStatus(ctx context.Context, name string) (*tr
 		Strategy:       wire.Strategy,
 		HardwareBacked: wire.HardwareBacked,
 		InitializedAt:  wire.InitializedAt,
+		ClusterSeal:    wire.ClusterSeal,
 	}, nil
 }

@@ -161,6 +161,7 @@ import type {
 
     // Seal
     SealStatus,
+    ClusterSeal,
     BootstrapResult,
     UnsealProgress,
     EnableEncryptionRequest,
@@ -1395,6 +1396,16 @@ export interface SealClient {
      * @returns Seal status including share counts.
      */
     status(): Promise<SealStatus>;
+
+    /**
+     * Clears the node barrier's cluster seal record once this node has
+     * unsealed with its own credential, so every node held by the seal
+     * serves again. Refused while cluster sealing is not active, and while
+     * this node's own barrier is still sealed.
+     *
+     * @returns The node barrier's cluster seal state after the clear.
+     */
+    clusterUnseal(): Promise<ClusterSeal>;
 
     /**
      * Enables at-rest encryption on a barrier that was initialized without it

@@ -164,6 +164,15 @@ func TestSealBinding_Stub_Seal(t *testing.T) {
 	}
 }
 
+func TestSealBinding_Stub_ClusterUnseal(t *testing.T) {
+	b := NewSealBinding(testLogger(t), nil, nil)
+	_, err := b.ClusterUnseal()
+	var fde *FeatureDisabledError
+	if !errors.As(err, &fde) {
+		t.Fatalf("expected FeatureDisabledError, got %T: %v", err, err)
+	}
+}
+
 func TestSealBinding_Stub_Status(t *testing.T) {
 	log := testLogger(t)
 	b := NewSealBinding(log, nil, nil)

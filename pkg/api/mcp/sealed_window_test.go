@@ -249,3 +249,28 @@ func TestSealedWindowListener_MarksToolCallsAnonymous(t *testing.T) {
 		t.Errorf("listener tool call: anonymous=%v err=%v", anonymous, err)
 	}
 }
+
+// TestSealedWindowListener_ClusterUnsealIsNeverAnonymous: the boot-time
+// listener refuses the cluster-unseal tool; the regular gate admits it while
+// closed, leaving the decision to authentication.
+func TestSealedWindowListener_ClusterUnsealIsNeverAnonymous(t *testing.T) {
+	probe := &fakeMCPSealedProbe{sealed: true, enrollment: true}
+	called := false
+	next := func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		called = true
+		return mcpgo.NewToolResultText("ok"), nil
+	}
+	listener := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0", WithSealedWindowListener(probe))
+	result, err := listener.sealedWindowMiddleware()(next)(context.Background(), buildCallToolRequest(t, "qrdb_barrier_cluster_unseal", map[string]any{}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	payload, ok := wire.DecodeErrorPayload(result.StructuredContent)
+	if called || !ok || payload.Code != wire.CodeUnavailable {
+		t.Errorf("boot-time listener: called=%v payload=%+v, want UNAVAILABLE", called, payload)
+	}
+	regular := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0", WithSealedWindowProbe(probe))
+	if _, err := regular.sealedWindowMiddleware()(next)(context.Background(), buildCallToolRequest(t, "qrdb_barrier_cluster_unseal", map[string]any{})); err != nil || !called {
+		t.Errorf("regular gate: called=%v err=%v", called, err)
+	}
+}

@@ -21,6 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -40,8 +41,16 @@ type BarrierServicer interface {
 
 	// BarrierSeal transitions the barrier to the sealed state. Returns
 	// ErrShamirBarrierRequiresQuorum when the active strategy is Shamir; a
-	// seal quorum (BarrierQuorumSubmit, seal.OpSeal) seals instead.
+	// seal quorum (BarrierQuorumSubmit, seal.OpSeal) seals instead. Once the cluster has
+	// activated cluster-seal it records the node seal and every node seals
+	// its own node barrier.
 	BarrierSeal(ctx context.Context) error
+
+	// BarrierClusterUnseal clears a cluster-wide seal of the node barrier.
+	// It unseals nothing: this node must already have unsealed itself
+	// (seal.ErrSealed otherwise). It returns clusterseal.ErrInactive before
+	// the cluster has activated cluster-seal.
+	BarrierClusterUnseal(ctx context.Context) (*clusterseal.Report, error)
 
 	// BarrierStatus returns the current barrier status.
 	BarrierStatus(ctx context.Context) (*BarrierStatusInfo, error)
@@ -131,6 +140,9 @@ type BarrierStatusInfo struct {
 	// ShamirTotal is the total number of Shamir shares generated at
 	// initialization or last rekey. Zero when the active strategy is not Shamir.
 	ShamirTotal int
+
+	// ClusterSeal is the node barrier's cluster seal state. Never nil.
+	ClusterSeal *clusterseal.Report
 }
 
 // ShamirInitInfo contains the output of a Shamir initialization or rekey
@@ -285,6 +297,13 @@ type QuorumRoundInfo = seal.QuorumRoundInfo
 type BarrierService struct {
 	barrier  *seal.StorageBarrier
 	ceremony *ceremony.CeremonyService
+	sealer   clusterseal.Sealer
+	// registry, when set, makes a seal of the node barrier seal the whole
+	// node: every tenant barrier with it (WithBarrierRegistry).
+	registry *seal.BarrierRegistry
+	// databases, when set, has a node seal mark every barrier-enabled
+	// database sealed (WithBarrierDatabases).
+	databases BarrierDatabases
 }
 
 // Compile-time interface check.
@@ -292,16 +311,24 @@ var _ BarrierServicer = (*BarrierService)(nil)
 
 // NewBarrierService creates a new BarrierServicer backed by the given
 // StorageBarrier.
-func NewBarrierService(barrier *seal.StorageBarrier) BarrierServicer {
-	return &BarrierService{barrier: barrier}
+func NewBarrierService(barrier *seal.StorageBarrier, opts ...BarrierServiceOption) BarrierServicer {
+	s := &BarrierService{barrier: barrier}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }
 
 // NewBarrierServiceWithCeremony creates a new BarrierServicer backed by the
 // given StorageBarrier and its share-holder authority. The CeremonyService
 // installed itself as the barrier's distributor and holder verifier when it
 // was constructed.
-func NewBarrierServiceWithCeremony(barrier *seal.StorageBarrier, svc *ceremony.CeremonyService) BarrierServicer {
-	return &BarrierService{barrier: barrier, ceremony: svc}
+func NewBarrierServiceWithCeremony(barrier *seal.StorageBarrier, svc *ceremony.CeremonyService, opts ...BarrierServiceOption) BarrierServicer {
+	s := &BarrierService{barrier: barrier, ceremony: svc}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }
 
 // BarrierInitialize initializes the barrier with a secret credential by
@@ -333,11 +360,15 @@ func (s *BarrierService) BarrierUnseal(ctx context.Context, secret []byte) error
 // BarrierSeal transitions the barrier to the sealed state. For Shamir-protected
 // barriers the single-admin seal path is blocked; a seal quorum of holders
 // (BarrierQuorumSubmit with seal.OpSeal) seals instead.
-func (s *BarrierService) BarrierSeal(_ context.Context) error {
+//
+// Once the cluster has activated cluster-seal the seal is recorded first and
+// then enforced -- on this node by the sealer, on every other node by its own
+// monitor. Before activation only this node is sealed.
+func (s *BarrierService) BarrierSeal(ctx context.Context) error {
 	if s.barrier.ActiveStrategy() == seal.StrategyShamir {
 		return seal.ErrShamirBarrierRequiresQuorum
 	}
-	return s.barrier.Seal()
+	return s.seal(ctx)
 }
 
 // BarrierInitialized reports whether the barrier has been initialized,
@@ -359,6 +390,7 @@ func (s *BarrierService) BarrierStatus(_ context.Context) (*BarrierStatusInfo, e
 		InitializedAt:   status.InitializedAt,
 		ShamirThreshold: status.ShamirThreshold,
 		ShamirTotal:     status.ShamirTotal,
+		ClusterSeal:     clusterseal.ReportOf(s.sealer, clusterseal.NodeBarrier()),
 	}, nil
 }
 

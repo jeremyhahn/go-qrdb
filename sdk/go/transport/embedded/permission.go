@@ -80,6 +80,9 @@ func permissionToTransport(p permission.Permission) (transport.PermissionInfo, e
 
 // List returns every registered permission, sorted by name.
 func (c *permissionClient) List(ctx context.Context) ([]transport.PermissionInfo, error) {
+	if err := c.transport.gate("PermissionClient.List"); err != nil {
+		return nil, err
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -101,6 +104,9 @@ func (c *permissionClient) List(ctx context.Context) ([]transport.PermissionInfo
 // Lookup returns the permission with the given name. Returns
 // PermissionNotFoundError when the name is not registered.
 func (c *permissionClient) Lookup(ctx context.Context, name string) (transport.PermissionInfo, error) {
+	if err := c.transport.gate("PermissionClient.Lookup"); err != nil {
+		return transport.PermissionInfo{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return transport.PermissionInfo{}, err
 	}
@@ -124,6 +130,9 @@ func (c *permissionClient) Lookup(ctx context.Context, name string) (transport.P
 // nothing. The error names the permission; a caller that wants a registration
 // check has one.
 func (c *permissionClient) LookupScope(ctx context.Context, name string) (transport.PermissionScope, error) {
+	if err := c.transport.gate("PermissionClient.LookupScope"); err != nil {
+		return "", err
+	}
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}

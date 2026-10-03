@@ -83,6 +83,7 @@ func TestRESTAllowlistContents(t *testing.T) {
 		"/v1/ceremony/initialize",
 		"/v1/ceremony/status",
 		"/v1/ceremony/sign-csr",
+		"/v1/barrier/cluster-unseal",
 		"/v1/cluster/",
 	}
 	for _, p := range want {
@@ -116,13 +117,14 @@ func TestGRPCAllowlistContents(t *testing.T) {
 		"BarrierRecoveryOfficerRegister", "BarrierRecoveryShareClaimBegin", "BarrierRecoveryShareClaimComplete",
 		"BarrierQuorumBegin", "BarrierQuorumSubmit",
 		"CeremonyInitialize", "CeremonyStatus", "CeremonySignCSR",
+		"BarrierClusterUnseal",
 	} {
 		if _, ok := set[m]; !ok {
 			t.Errorf("gRPC allowlist missing %q", m)
 		}
 	}
-	if len(list) != 17 {
-		t.Errorf("gRPC allowlist has %d entries, want 17: %v", len(list), list)
+	if len(list) != 18 {
+		t.Errorf("gRPC allowlist has %d entries, want 18: %v", len(list), list)
 	}
 }
 
@@ -170,13 +172,14 @@ func TestQUICAllowlistContents(t *testing.T) {
 		"barrier.RecoveryOfficerRegister", "barrier.RecoveryShareClaimBegin", "barrier.RecoveryShareClaimComplete",
 		"barrier.QuorumBegin", "barrier.QuorumSubmit",
 		"ceremony.Initialize", "ceremony.Status", "ceremony.SignCSR",
+		"barrier.ClusterUnseal",
 	} {
 		if _, ok := set[m]; !ok {
 			t.Errorf("QUIC allowlist missing %q", m)
 		}
 	}
-	if len(set) != 17 {
-		t.Errorf("QUIC allowlist has %d entries, want 17", len(set))
+	if len(set) != 18 {
+		t.Errorf("QUIC allowlist has %d entries, want 18", len(set))
 	}
 }
 
@@ -194,13 +197,14 @@ func TestMCPAllowlistContents(t *testing.T) {
 		"qrdb_barrier_recovery_share_claim_begin", "qrdb_barrier_recovery_share_claim_complete",
 		"qrdb_barrier_quorum_begin", "qrdb_barrier_quorum_submit",
 		"qrdb_ceremony_initialize", "qrdb_ceremony_status", "qrdb_ceremony_sign_csr",
+		"qrdb_barrier_cluster_unseal",
 	} {
 		if _, ok := set[m]; !ok {
 			t.Errorf("MCP allowlist missing %q", m)
 		}
 	}
-	if len(set) != 17 {
-		t.Errorf("MCP allowlist has %d entries, want 17", len(set))
+	if len(set) != 18 {
+		t.Errorf("MCP allowlist has %d entries, want 18", len(set))
 	}
 	// shamir-verify has no MCP tool.
 	for _, m := range []string{"qrdb_barrier_shamir_verify"} {
@@ -375,6 +379,12 @@ func TestDecide(t *testing.T) {
 		{R{Sealed: true, Allowlisted: true, PreOperationalOnly: true, Listener: true, EnrollmentOpen: true}, sealedwindow.Serve},
 		{R{Sealed: true, Allowlisted: true, PreOperationalOnly: true, Listener: true}, sealedwindow.RefuseEnrollmentClosed},
 		{R{Allowlisted: true, PreOperationalOnly: true, Listener: true, EnrollmentOpen: true}, sealedwindow.RefuseClosed},
+		// An AuthenticatedOnly verb (cluster unseal) passes the regular
+		// listener's gate while sealed -- its authentication still decides --
+		// and is never served anonymously by the boot-time listener.
+		{R{Sealed: true, Allowlisted: true, AuthenticatedOnly: true}, sealedwindow.Serve},
+		{R{Sealed: true, Allowlisted: true, AuthenticatedOnly: true, Listener: true}, sealedwindow.RefuseSealed},
+		{R{Allowlisted: true, AuthenticatedOnly: true, Listener: true}, sealedwindow.RefuseClosed},
 	}
 	for _, c := range cases {
 		if got := sealedwindow.Decide(c.req); got != c.want {
@@ -570,5 +580,57 @@ func TestRESTAllowlistDeduplicatesExtra(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("/v1/barrier/status appears %d times, want once", n)
+	}
+}
+
+// TestAuthenticatedOnlyDerivations: every transport's derivation names exactly
+// cluster unseal, the one verb the regular listener admits while held and the
+// boot-time listener never serves.
+func TestAuthenticatedOnlyDerivations(t *testing.T) {
+	rest := sealedwindow.RESTAuthenticatedOnly()
+	if len(rest) != 1 || rest[0] != "/v1/barrier/cluster-unseal" {
+		t.Errorf("RESTAuthenticatedOnly = %v", rest)
+	}
+	grpc := sealedwindow.GRPCFullMethodAuthenticatedOnly("qrdb.v1.QRDBService")
+	if _, ok := grpc["/qrdb.v1.QRDBService/BarrierClusterUnseal"]; !ok || len(grpc) != 1 {
+		t.Errorf("GRPCFullMethodAuthenticatedOnly = %v", grpc)
+	}
+	if q := sealedwindow.QUICAuthenticatedOnly(); len(q) != 1 {
+		t.Errorf("QUICAuthenticatedOnly = %v", q)
+	} else if _, ok := q["barrier.ClusterUnseal"]; !ok {
+		t.Errorf("QUICAuthenticatedOnly = %v", q)
+	}
+	if m := sealedwindow.MCPAuthenticatedOnly(); len(m) != 1 {
+		t.Errorf("MCPAuthenticatedOnly = %v", m)
+	} else if _, ok := m["qrdb_barrier_cluster_unseal"]; !ok {
+		t.Errorf("MCPAuthenticatedOnly = %v", m)
+	}
+	if !sealedwindow.Table[sealedwindow.VerbBarrierClusterUnseal].AuthenticatedOnly {
+		t.Error("cluster unseal is not AuthenticatedOnly")
+	}
+	for _, v := range sealedwindow.Verbs {
+		if n := sealedwindow.Table[v]; n.AuthenticatedOnly && n.Transition {
+			t.Errorf("%s is both AuthenticatedOnly and Transition: a Transition verb runs on the boot-time listener", v)
+		}
+	}
+}
+
+// TestEmbeddedAllowlistContents verifies the embedded derivation: every verb
+// has an in-process method, and the set is exactly those methods. The
+// embedded transport gates against it (sdk/go/transport/embedded).
+func TestEmbeddedAllowlistContents(t *testing.T) {
+	set := sealedwindow.EmbeddedAllowlist()
+	for _, v := range sealedwindow.Verbs {
+		name := sealedwindow.Table[v].Embedded
+		if name == "" {
+			t.Errorf("verb %q has no embedded method", v)
+			continue
+		}
+		if _, ok := set[name]; !ok {
+			t.Errorf("embedded allowlist missing %q", name)
+		}
+	}
+	if len(set) != len(sealedwindow.Verbs) {
+		t.Errorf("embedded allowlist has %d entries, want %d", len(set), len(sealedwindow.Verbs))
 	}
 }

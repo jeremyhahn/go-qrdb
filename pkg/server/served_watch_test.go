@@ -58,6 +58,9 @@ func (w *queuedWatcher) Close() error {
 // queuedWatchService opens queuedWatchers and entity channels it keeps for
 // the test to drive, or fails every open with err.
 type queuedWatchService struct {
+	// onOpen, when set, runs as each watch opens, before it is returned: a
+	// test lands a seal there, mid-open.
+	onOpen    func()
 	err       error
 	watcher   *queuedWatcher
 	entities  chan service.WatchEntityEvent
@@ -75,6 +78,9 @@ func (s *queuedWatchService) WatchPrefix(context.Context, string, ...watch.Watch
 }
 
 func (s *queuedWatchService) open() (watch.Watcher, error) {
+	if s.onOpen != nil {
+		s.onOpen()
+	}
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -91,6 +97,9 @@ func (s *queuedWatchService) WatchEntityType(ctx context.Context, _ *service.Wat
 }
 
 func (s *queuedWatchService) openEntities(ctx context.Context) (<-chan service.WatchEntityEvent, error) {
+	if s.onOpen != nil {
+		s.onOpen()
+	}
 	if s.err != nil {
 		return nil, s.err
 	}

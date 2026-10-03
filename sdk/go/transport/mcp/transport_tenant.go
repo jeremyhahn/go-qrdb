@@ -60,6 +60,8 @@ type mcpTenantBarrierStatus struct {
 	HardwareBacked  bool   `json:"hardware_backed"`
 	ShamirThreshold int    `json:"shamir_threshold,omitempty"`
 	ShamirTotal     int    `json:"shamir_total,omitempty"`
+
+	ClusterSeal *transport.ClusterSeal `json:"cluster_seal,omitempty"`
 }
 
 // CreateTenant creates a new tenant by calling the qrdb_tenant_create MCP tool.
@@ -420,6 +422,7 @@ func (t *Transport) TenantBarrierStatus(ctx context.Context, req *transport.Tena
 		HardwareBacked:  raw.HardwareBacked,
 		ShamirThreshold: raw.ShamirThreshold,
 		ShamirTotal:     raw.ShamirTotal,
+		ClusterSeal:     raw.ClusterSeal,
 	}, nil
 }
 

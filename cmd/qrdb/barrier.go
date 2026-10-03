@@ -94,6 +94,7 @@ CLI binary in the stack (qrdb, xkmsctl, quicbaasctl, platformctl):
 		newBarrierInitShamirCmd(),
 		newBarrierUnsealCmd(),
 		newBarrierSealCmd(),
+		newBarrierClusterUnsealCmd(),
 		newHolderRekeyCmd("rekey", holderSystem),
 		newBarrierEnableEncryptionCmd(),
 		newBarrierRecoveryCmd(),
@@ -146,6 +147,7 @@ func renderBarrierStatus(resp *transport.BarrierStatusResponse) error {
 		_, _ = fmt.Fprintf(outputWriter, "Strategy:        %s\n", resp.Strategy)
 		_, _ = fmt.Fprintf(outputWriter, "HardwareBacked:  %t\n", resp.HardwareBacked)
 		_, _ = fmt.Fprintf(outputWriter, "InitializedAt:   %s\n", resp.InitializedAt)
+		printClusterSeal(resp.ClusterSeal)
 		return nil
 	}
 }

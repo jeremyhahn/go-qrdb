@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/provider"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // sessionBuilder creates a QRDBSession for each MySQL connection by
@@ -36,6 +37,9 @@ type sessionBuilder struct {
 	// sealedProbe gates session creation while the storage barrier is
 	// sealed. Nil disables the gate.
 	sealedProbe sealedWindowProbe
+	// sessions registers every built session's connection with the seal
+	// guard, which closes it when a seal reaches it. Nil guards nothing.
+	sessions *sealedSessions
 }
 
 // newSessionBuilder creates a session builder with auth middleware and
@@ -64,6 +68,9 @@ func (b *sessionBuilder) Build(ctx context.Context, conn *mysql.Conn, addr strin
 
 	// No auth middleware: return a default tenant session.
 	if b.authMW == nil {
+		if err := b.sessions.openConn(conn, tenantid.System); err != nil {
+			return nil, err
+		}
 		return provider.NewSession(base, nil), nil
 	}
 
@@ -81,6 +88,9 @@ func (b *sessionBuilder) Build(ctx context.Context, conn *mysql.Conn, addr strin
 	_, identity, err := b.authMW.Authenticate(ctx)
 	if err != nil {
 		return nil, &AuthenticationError{Err: err}
+	}
+	if err := b.sessions.openConn(conn, tenantid.Normalize(identity.TenantID)); err != nil {
+		return nil, err
 	}
 
 	return provider.NewSession(base, identity), nil

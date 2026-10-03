@@ -117,6 +117,7 @@ func (b *StorageBarrier) unsealFromRootKey(ctx context.Context, rootKey *secure.
 
 	b.activeStrategy.Store(active)
 	b.state.Store(stateUnsealed)
+	b.notifyUnsealed(ctx)
 	b.restoreInitializedAt(ctx)
 	emitAudit(b.config.AuditLogger, "unseal", "barrier", b.config.RootKeyPath,
 		"allow", map[string]string{"strategy": string(active)})

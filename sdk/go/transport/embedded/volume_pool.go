@@ -77,6 +77,9 @@ func poolToTransport(p objpool.Pool) transport.VolumePool {
 
 // List returns every registered pool sorted by name.
 func (c *volumePoolClient) List(ctx context.Context) ([]transport.VolumePool, error) {
+	if err := c.transport.gate("VolumePoolClient.List"); err != nil {
+		return nil, err
+	}
 	if c.transport.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -96,6 +99,9 @@ func (c *volumePoolClient) List(ctx context.Context) ([]transport.VolumePool, er
 
 // Pick returns one backend from the named pool.
 func (c *volumePoolClient) Pick(ctx context.Context, poolName string, hint transport.VolumePoolHint) (*transport.VolumePoolBackend, error) {
+	if err := c.transport.gate("VolumePoolClient.Pick"); err != nil {
+		return nil, err
+	}
 	if c.transport.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -129,6 +135,9 @@ func (c *volumePoolClient) Pick(ctx context.Context, poolName string, hint trans
 // it does not exist — matching the daemon's normal volume-pool
 // initialisation.
 func (c *volumePoolClient) RegisterPool(ctx context.Context, req transport.RegisterVolumePoolRequest) error {
+	if err := c.transport.gate("VolumePoolClient.RegisterPool"); err != nil {
+		return err
+	}
 	if c.transport.closed.Load() {
 		return &transport.ClosedError{}
 	}

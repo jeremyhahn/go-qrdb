@@ -157,6 +157,7 @@ import type {
     RestoreRevisionResult,
     Role,
     SealStatus,
+    ClusterSeal,
     SearchByIDRequest,
     SearchByMetadataRequest,
     SearchByMetadataResponse,
@@ -1939,6 +1940,8 @@ export class RestClient implements Client {
                     // Shamir scheme, present only for strategy === "shamir".
                     readonly shamirThreshold?: number;
                     readonly shamirTotal?: number;
+                    // The node barrier's cluster seal state; camel-cased by fetchJSON.
+                    readonly clusterSeal?: ClusterSeal;
                 }
                 try {
                     const resp = await this.fetchJSON<BarrierStatusResponse>('/v1/barrier/status',
@@ -1953,6 +1956,7 @@ export class RestClient implements Client {
                         sharesRequired: resp.shamirThreshold ?? 0,
                         sharesProvided: 0,
                         sharesTotal: resp.shamirTotal ?? 0,
+                        ...(resp.clusterSeal ? { clusterSeal: resp.clusterSeal } : {}),
                     };
                 } catch (err: unknown) {
                     if (err instanceof TransportError && err.statusCode === 404) {
@@ -1968,6 +1972,10 @@ export class RestClient implements Client {
                     }
                     throw err;
                 }
+            },
+            clusterUnseal: async (): Promise<ClusterSeal> => {
+                this.ensureConnected();
+                return this.fetchJSON<ClusterSeal>('/v1/barrier/cluster-unseal', { method: 'POST' });
             },
             enableEncryption: async (req: EnableEncryptionRequest): Promise<EnableEncryptionResponse> => {
                 this.ensureConnected();

@@ -52,6 +52,18 @@ justified as an anonymous verb, and belongs to one of these classes:
   so these are how a sealed node is unsealed), and `ceremony-sign-csr` (SO
   PIN). `ceremony-status` reports the ceremony state.
 
+**One verb is allowlisted on the regular listener only**:
+`barrier-cluster-unseal` (`POST /v1/barrier/cluster-unseal`), which clears a
+cluster-wide seal of the node barrier (see
+[../barrier-seal/architecture.md](../barrier-seal/architecture.md#sealing-in-a-cluster)).
+A node held by a cluster seal refuses everything outside the allowlist, so the
+verb must pass the gate there; it is still authenticated and authorized by
+`seal:unseal`. It is marked `AuthenticatedOnly` in the table, and the boot-time
+listener's allowlist is derived without it, so it is never anonymous. The
+regular listener's gate also closes, beyond a sealed barrier, while the node
+is held by a cluster seal, has no fresh lease on the seal records, or has not
+read them since it started.
+
 The full per-transport names are in `sealedwindow.Table`.
 
 REST entries are paths, or method-qualified `METHOD /path` entries where
@@ -173,14 +185,15 @@ When `server.WithSealedWindowProbe` is threaded (the same option that
 drives the other transports):
 
 - **MySQL** refuses every new connection during the handshake with the
-  typed `sql/mysql: barrier sealed` error.
-- **PostgreSQL** refuses new sessions (FATAL) and rejects every query
+  typed `sql/mysql: barrier sealed` error, and on a surviving session every
+  query, prepare, execute and `COM_INIT_DB` with the same error.
+- **PostgreSQL** refuses new sessions (FATAL) and rejects every Parse and
+  every Bind/Execute -- including of a statement prepared before the seal --
   on surviving sessions (ERROR), both with SQLSTATE `57P03`
   (`cannot_connect_now`) and message `sql/pgsql: barrier sealed`.
 
 Once the barrier is unsealed both gates are passthrough; on re-seal
-they engage again (MySQL for new connections; established MySQL
-sessions fail at the storage layer with `seal.ErrSealed`).
+they engage again, for new connections and open sessions alike.
 
 The boot-time sealed-window listener does not start either protocol.
 

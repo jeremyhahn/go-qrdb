@@ -1,0 +1,178 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package service
+
+import (
+	"context"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+)
+
+// This file holds the cluster sealing half of the barrier and database
+// services: how a node or database seal reaches every node once the cluster
+// has activated cluster-seal (docs/barrier-seal/architecture.md, "Sealing in
+// a cluster").
+
+// BarrierServiceOption configures a BarrierService.
+type BarrierServiceOption func(*BarrierService)
+
+// WithClusterSealer makes the node barrier's seal, seal vote and cluster
+// unseal cluster-wide once the cluster has activated cluster-seal. Without
+// it every seal is node-local.
+func WithClusterSealer(s clusterseal.Sealer) BarrierServiceOption {
+	return func(b *BarrierService) { b.sealer = s }
+}
+
+// WithBarrierRegistry makes a seal of the node barrier seal the whole node:
+// every registered tenant barrier, then the node barrier
+// (BarrierRegistry.SealAll, the shutdown seal), wiping every tenant's keys.
+// Without it only the node barrier is sealed.
+func WithBarrierRegistry(reg *seal.BarrierRegistry) BarrierServiceOption {
+	return func(b *BarrierService) { b.registry = reg }
+}
+
+// BarrierDatabases marks a node's barrier-enabled databases sealed after a
+// node seal. *database.Manager satisfies it.
+type BarrierDatabases interface {
+	MarkBarrierDatabasesSealed()
+}
+
+// WithBarrierDatabases makes a node seal mark every barrier-enabled database
+// sealed once every barrier is sealed: the mark is what refuses a database
+// whose store does not refuse by itself.
+func WithBarrierDatabases(dbs BarrierDatabases) BarrierServiceOption {
+	return func(b *BarrierService) { b.databases = dbs }
+}
+
+// seal seals the node barrier: cluster-wide through the sealer when active,
+// this node only otherwise. Once active, the sealer records the seal before
+// it wipes this node's key, because the key protects this node's Raft log;
+// every node's monitor then seals the whole node (SealEnforcer.SealNode).
+// Before activation this node is sealed here the same way: every tenant
+// barrier and the node barrier, then every open stream ends -- after the
+// barriers, so the sealed node barrier is the gate a stream opening between
+// the two finds closed.
+func (s *BarrierService) seal(ctx context.Context) error {
+	if clusterseal.ActiveIn(s.sealer) {
+		_, err := s.sealer.Seal(ctx, clusterseal.NodeBarrier(), clusterseal.PrincipalFrom(ctx))
+		return err
+	}
+	var err error
+	if s.registry != nil {
+		err = s.registry.SealAll()
+	} else {
+		err = s.barrier.Seal()
+	}
+	if s.databases != nil {
+		s.databases.MarkBarrierDatabasesSealed()
+	}
+	if streams := clusterseal.StreamsOf(s.sealer); streams != nil {
+		streams.EndAll(&clusterseal.SealedError{Barrier: clusterseal.NodeBarrier()})
+	}
+	return err
+}
+
+// BarrierClusterUnseal clears a cluster-wide seal of the node barrier. See
+// BarrierServicer.
+func (s *BarrierService) BarrierClusterUnseal(ctx context.Context) (*clusterseal.Report, error) {
+	if !clusterseal.ActiveIn(s.sealer) {
+		return nil, clusterseal.ErrInactive
+	}
+	if _, err := s.sealer.Clear(ctx, clusterseal.NodeBarrier(), clusterseal.PrincipalFrom(ctx)); err != nil {
+		return nil, err
+	}
+	return clusterseal.ReportOf(s.sealer, clusterseal.NodeBarrier()), nil
+}
+
+// DatabaseBarrierStatusInfo is a database barrier's status with its cluster
+// seal state.
+type DatabaseBarrierStatusInfo struct {
+	*seal.BarrierStatus
+	// ClusterSeal is the database barrier's cluster seal state. Never nil.
+	ClusterSeal *clusterseal.Report `json:"cluster_seal"`
+}
+
+// WithDatabaseClusterSealer makes a database seal reach every node once the
+// cluster has activated cluster-seal, and makes an unseal clear the
+// database's cluster seal record. Without it every seal is node-local.
+func WithDatabaseClusterSealer(s clusterseal.Sealer) DatabaseServiceOption {
+	return func(d *DatabaseService) { d.sealer = s }
+}
+
+// databaseBarrier names the cluster seal barrier of name, owned by the
+// caller's tenant (authorizeDatabaseTenant has checked that).
+func (s *DatabaseService) databaseBarrier(ctx context.Context, name string) clusterseal.Barrier {
+	owner := tenant.FromContext(ctx)
+	owner = tenantid.Normalize(owner)
+	return clusterseal.DatabaseBarrier(owner, name)
+}
+
+// clearPredecessorSeal clears the record a dropped database of the same name
+// and owner left sealed, so the database just created starts from a clear
+// record. Records are never deleted -- a barrier's epoch keeps increasing
+// across re-creation -- and without this the new database would be refused
+// from birth and could never be unsealed, its barrier being unsealed already.
+// The create itself proved the name was free; another tenant's record is a
+// different barrier and is never touched.
+func (s *DatabaseService) clearPredecessorSeal(ctx context.Context, db *database.Database) error {
+	owner := db.TenantID()
+	owner = tenantid.Normalize(owner)
+	b := clusterseal.DatabaseBarrier(owner, db.Name())
+	if !clusterseal.ActiveIn(s.sealer) {
+		return nil
+	}
+	_, err := s.sealer.Clear(ctx, b, clusterseal.PrincipalFrom(ctx))
+	return err
+}
+
+// rollBackCreate seals and drops a database whose create cannot complete, so
+// it is never served and a failed create leaves nothing behind.
+func (s *DatabaseService) rollBackCreate(ctx context.Context, db *database.Database, cause error) {
+	name := db.Name()
+	if s.barrierMgr != nil {
+		if _, err := s.barrierMgr.BarrierStatus(name); err == nil {
+			if serr := s.sealDatabaseHere(name); serr != nil {
+				s.logger.Error("failed to seal database while rolling back its create",
+					"database", name, "cause", cause, "error", serr)
+			}
+		}
+	}
+	if err := s.manager.Drop(ctx, name); err != nil {
+		s.logger.Error("failed to roll back database create",
+			"database", name, "cause", cause, "error", err)
+	}
+}
+
+// clearDatabaseSeal ends a cluster seal of name after this node has unsealed
+// it. If the clear record cannot be written the database is sealed again
+// here, so this node never serves a database whose record still says sealed.
+func (s *DatabaseService) clearDatabaseSeal(ctx context.Context, name string) error {
+	b := s.databaseBarrier(ctx, name)
+	if !clusterseal.ActiveIn(s.sealer) {
+		return nil
+	}
+	if _, err := s.sealer.Clear(ctx, b, clusterseal.PrincipalFrom(ctx)); err != nil {
+		if serr := s.sealDatabaseHere(name); serr != nil {
+			s.logger.Error("database barrier could not be sealed again after a failed cluster unseal",
+				"database", name, "error", serr)
+		}
+		return err
+	}
+	return nil
+}

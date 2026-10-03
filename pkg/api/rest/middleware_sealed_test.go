@@ -375,3 +375,23 @@ func TestSealedWindow_HolderRoutesAdmitOnlyTheClaims(t *testing.T) {
 		})
 	}
 }
+
+// TestSealedWindowGate_ClusterUnsealIsNeverAnonymous: cluster unseal passes
+// the regular listener's closed gate -- a node held by a cluster seal must be
+// able to clear it, behind authentication -- and the boot-time listener,
+// whose every request is anonymous, refuses it.
+func TestSealedWindowGate_ClusterUnsealIsNeverAnonymous(t *testing.T) {
+	probe := newFakeSealed(true)
+	probe.enrollment.Store(true)
+	send := func(h http.Handler) *httptest.ResponseRecorder {
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/barrier/cluster-unseal", nil))
+		return rr
+	}
+	if rr := send(SealedWindowMiddleware(probe, nil)(okHandler)); rr.Code != http.StatusOK {
+		t.Errorf("regular gate: status %d, want 200 (authentication decides)", rr.Code)
+	}
+	if rr := send(SealedWindowListenerMiddleware(probe, nil)(okHandler)); rr.Code != http.StatusServiceUnavailable || !strings.Contains(rr.Body.String(), `"code":"SEALED"`) {
+		t.Errorf("boot-time listener: status %d body %q, want 503 SEALED", rr.Code, rr.Body.String())
+	}
+}

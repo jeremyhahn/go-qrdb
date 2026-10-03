@@ -679,6 +679,7 @@ func newDatabaseBarrierStatusCmd() *cobra.Command {
 				if !st.InitializedAt.IsZero() {
 					_, _ = fmt.Fprintf(outputWriter, "initialized_at:  %s\n", st.InitializedAt.UTC().Format("2006-01-02T15:04:05Z07:00"))
 				}
+				printClusterSeal(st.ClusterSeal)
 				return nil
 			}
 		},

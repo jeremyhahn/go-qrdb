@@ -77,19 +77,22 @@ func (w *idleWatcher) Close() error {
 // open kept delivering the database's events -- a stream outlived the
 // refusal every new request got.
 func TestOpenWatch_EndsWhenTheDatabaseIsSealed(t *testing.T) {
-	assertOpenWatchesEnd(t, func(db *database.Database) { db.SetStatus(database.StatusSealed) }, "barrier sealed")
+	assertOpenWatchesEnd(t, nil, func(db *database.Database) { db.SetStatus(database.StatusSealed) }, "barrier sealed")
 }
 
 // A watch opened before its database is dropped ends with the drop.
 func TestOpenWatch_EndsWhenTheDatabaseIsDropped(t *testing.T) {
-	assertOpenWatchesEnd(t, func(db *database.Database) {
+	assertOpenWatchesEnd(t, nil, func(db *database.Database) {
 		if err := db.Close(); err != nil {
 			t.Fatalf("Close: %v", err)
 		}
 	}, "database not found")
 }
 
-func assertOpenWatchesEnd(t *testing.T, stop func(*database.Database), reason string) {
+// assertOpenWatchesEnd opens an idle watch on every streaming transport of a
+// server built with opts, runs stop, and requires every watch to end with
+// reason.
+func assertOpenWatchesEnd(t *testing.T, opts []ServerOption, stop func(*database.Database), reason string) {
 	t.Helper()
 	mgr, db := openLegacyVault(t)
 	db.SetStatus(database.StatusOpen)
@@ -103,11 +106,12 @@ func assertOpenWatchesEnd(t *testing.T, stop func(*database.Database), reason st
 
 	socketPath := filepath.Join(t.TempDir(), "qrdb.sock")
 	cfg := testConfigFull(t, protocolFlags{rest: true, grpc: true, quic: true, unix: true, mcp: true}, socketPath)
-	srv := New(cfg, newMockKVService(), &mockAdminService{},
+	opts = append([]ServerOption{
 		WithCeremonyCA(testServerCA),
 		WithDatabaseServiceRegistry(dbReg),
 		WithDatabaseManager(mgr),
-	)
+	}, opts...)
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, opts...)
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}

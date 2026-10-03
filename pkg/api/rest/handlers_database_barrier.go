@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -29,10 +30,11 @@ type unsealDatabaseRequest struct {
 // databaseBarrierStatusResponse is the JSON representation of a database
 // barrier's status.
 type databaseBarrierStatusResponse struct {
-	Sealed         bool   `json:"sealed"`
-	Strategy       string `json:"strategy"`
-	HardwareBacked bool   `json:"hardware_backed"`
-	InitializedAt  string `json:"initialized_at,omitempty"`
+	Sealed         bool                `json:"sealed"`
+	Strategy       string              `json:"strategy"`
+	HardwareBacked bool                `json:"hardware_backed"`
+	InitializedAt  string              `json:"initialized_at,omitempty"`
+	ClusterSeal    *clusterseal.Report `json:"cluster_seal"`
 }
 
 // handleSealDatabase handles POST /v1/databases/{name}/seal -- seals the
@@ -81,6 +83,7 @@ func (s *Server) handleDatabaseBarrierStatus(w http.ResponseWriter, r *http.Requ
 		Sealed:         st.Sealed,
 		Strategy:       string(st.Strategy),
 		HardwareBacked: st.HardwareBacked,
+		ClusterSeal:    clusterSealOrInactive(st.ClusterSeal),
 	}
 	if !st.InitializedAt.IsZero() {
 		resp.InitializedAt = st.InitializedAt.UTC().Format("2006-01-02T15:04:05Z07:00")

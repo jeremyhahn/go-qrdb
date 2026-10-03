@@ -41,6 +41,9 @@ var (
 
 // CreateUser creates a new passwordless user via the embedded user service.
 func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserRequest) (*transport.User, error) {
+	if err := t.gate("CreateUser"); err != nil {
+		return nil, err
+	}
 	if t.userSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "CreateUser"}
 	}
@@ -68,6 +71,9 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 
 // GetUser retrieves a user by ID via the embedded user service.
 func (t *Transport) GetUser(ctx context.Context, id uint64) (*transport.User, error) {
+	if err := t.gate("GetUser"); err != nil {
+		return nil, err
+	}
 	if t.userSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "GetUser"}
 	}
@@ -81,6 +87,9 @@ func (t *Transport) GetUser(ctx context.Context, id uint64) (*transport.User, er
 // GetUserByUsername retrieves a user by tenant-scoped username via the
 // embedded user service.
 func (t *Transport) GetUserByUsername(ctx context.Context, tenantID, username string) (*transport.User, error) {
+	if err := t.gate("GetUserByUsername"); err != nil {
+		return nil, err
+	}
 	if t.userSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "GetUserByUsername"}
 	}
@@ -93,6 +102,9 @@ func (t *Transport) GetUserByUsername(ctx context.Context, tenantID, username st
 
 // GetUserByEmail resolves the canonical login key through the embedded service.
 func (t *Transport) GetUserByEmail(ctx context.Context, tenantID, email string) (*transport.User, error) {
+	if err := t.gate("GetUserByEmail"); err != nil {
+		return nil, err
+	}
 	if t.userSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "GetUserByEmail"}
 	}
@@ -106,6 +118,9 @@ func (t *Transport) GetUserByEmail(ctx context.Context, tenantID, email string) 
 // GetUserByCertThumbprint resolves a user by mTLS SPKI thumbprint via the
 // embedded user service.
 func (t *Transport) GetUserByCertThumbprint(ctx context.Context, thumbprint string) (*transport.User, error) {
+	if err := t.gate("GetUserByCertThumbprint"); err != nil {
+		return nil, err
+	}
 	if t.userSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "GetUserByCertThumbprint"}
 	}
@@ -119,6 +134,9 @@ func (t *Transport) GetUserByCertThumbprint(ctx context.Context, thumbprint stri
 // AddCertBinding binds an mTLS SPKI thumbprint to a user via the embedded
 // user service.
 func (t *Transport) AddCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*transport.User, error) {
+	if err := t.gate("AddCertBinding"); err != nil {
+		return nil, err
+	}
 	if t.userSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "AddCertBinding"}
 	}
@@ -132,6 +150,9 @@ func (t *Transport) AddCertBinding(ctx context.Context, userID uint64, thumbprin
 // RemoveCertBinding withdraws an mTLS SPKI thumbprint from a user via the
 // embedded user service.
 func (t *Transport) RemoveCertBinding(ctx context.Context, userID uint64, thumbprint string) (*transport.User, error) {
+	if err := t.gate("RemoveCertBinding"); err != nil {
+		return nil, err
+	}
 	if t.userSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "RemoveCertBinding"}
 	}
@@ -144,6 +165,9 @@ func (t *Transport) RemoveCertBinding(ctx context.Context, userID uint64, thumbp
 
 // UpdateUser applies partial updates to a user via the embedded user service.
 func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserRequest) (*transport.User, error) {
+	if err := t.gate("UpdateUser"); err != nil {
+		return nil, err
+	}
 	if t.userSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "UpdateUser"}
 	}
@@ -180,6 +204,9 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 
 // DeleteUser removes a non-system user by ID via the embedded user service.
 func (t *Transport) DeleteUser(ctx context.Context, id uint64) error {
+	if err := t.gate("DeleteUser"); err != nil {
+		return err
+	}
 	if t.userSvc == nil {
 		return &transport.NotImplementedError{Method: "DeleteUser"}
 	}
@@ -188,6 +215,9 @@ func (t *Transport) DeleteUser(ctx context.Context, id uint64) error {
 
 // ListUsers returns a paginated user list via the embedded user service.
 func (t *Transport) ListUsers(ctx context.Context, req *transport.ListUsersRequest) (*transport.ListUsersResponse, error) {
+	if err := t.gate("ListUsers"); err != nil {
+		return nil, err
+	}
 	if t.userSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "ListUsers"}
 	}
@@ -214,6 +244,9 @@ func (t *Transport) ListUsers(ctx context.Context, req *transport.ListUsersReque
 
 // EnableUser activates a user account via the embedded user service.
 func (t *Transport) EnableUser(ctx context.Context, id uint64) error {
+	if err := t.gate("EnableUser"); err != nil {
+		return err
+	}
 	if t.userSvc == nil {
 		return &transport.NotImplementedError{Method: "EnableUser"}
 	}
@@ -222,6 +255,9 @@ func (t *Transport) EnableUser(ctx context.Context, id uint64) error {
 
 // DisableUser deactivates a user account via the embedded user service.
 func (t *Transport) DisableUser(ctx context.Context, id uint64) error {
+	if err := t.gate("DisableUser"); err != nil {
+		return err
+	}
 	if t.userSvc == nil {
 		return &transport.NotImplementedError{Method: "DisableUser"}
 	}
@@ -234,6 +270,9 @@ func (t *Transport) DisableUser(ctx context.Context, id uint64) error {
 
 // CreateRole creates a new role via the embedded role service.
 func (t *Transport) CreateRole(ctx context.Context, req *transport.CreateRoleRequest) (*transport.Role, error) {
+	if err := t.gate("CreateRole"); err != nil {
+		return nil, err
+	}
 	if t.roleSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "CreateRole"}
 	}
@@ -252,6 +291,9 @@ func (t *Transport) CreateRole(ctx context.Context, req *transport.CreateRoleReq
 
 // GetRole retrieves a role by ID via the embedded role service.
 func (t *Transport) GetRole(ctx context.Context, id string) (*transport.Role, error) {
+	if err := t.gate("GetRole"); err != nil {
+		return nil, err
+	}
 	if t.roleSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "GetRole"}
 	}
@@ -264,6 +306,9 @@ func (t *Transport) GetRole(ctx context.Context, id string) (*transport.Role, er
 
 // UpdateRole applies partial updates to a role via the embedded role service.
 func (t *Transport) UpdateRole(ctx context.Context, req *transport.UpdateRoleRequest) (*transport.Role, error) {
+	if err := t.gate("UpdateRole"); err != nil {
+		return nil, err
+	}
 	if t.roleSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "UpdateRole"}
 	}
@@ -281,6 +326,9 @@ func (t *Transport) UpdateRole(ctx context.Context, req *transport.UpdateRoleReq
 
 // DeleteRole removes a non-system role by ID via the embedded role service.
 func (t *Transport) DeleteRole(ctx context.Context, id string) error {
+	if err := t.gate("DeleteRole"); err != nil {
+		return err
+	}
 	if t.roleSvc == nil {
 		return &transport.NotImplementedError{Method: "DeleteRole"}
 	}
@@ -289,6 +337,9 @@ func (t *Transport) DeleteRole(ctx context.Context, id string) error {
 
 // ListRoles returns a paginated role list via the embedded role service.
 func (t *Transport) ListRoles(ctx context.Context, req *transport.ListRolesRequest) (*transport.ListRolesResponse, error) {
+	if err := t.gate("ListRoles"); err != nil {
+		return nil, err
+	}
 	if t.roleSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "ListRoles"}
 	}
@@ -313,6 +364,9 @@ func (t *Transport) ListRoles(ctx context.Context, req *transport.ListRolesReque
 
 // AssignRole adds a role to a user's role set via the embedded services.
 func (t *Transport) AssignRole(ctx context.Context, userID uint64, roleID string) error {
+	if err := t.gate("AssignRole"); err != nil {
+		return err
+	}
 	if t.roleSvc == nil {
 		return &transport.NotImplementedError{Method: "AssignRole"}
 	}
@@ -347,6 +401,9 @@ func (t *Transport) AssignRole(ctx context.Context, userID uint64, roleID string
 
 // UnassignRole removes a role from a user's role set via the embedded services.
 func (t *Transport) UnassignRole(ctx context.Context, userID uint64, roleID string) error {
+	if err := t.gate("UnassignRole"); err != nil {
+		return err
+	}
 	if t.roleSvc == nil {
 		return &transport.NotImplementedError{Method: "UnassignRole"}
 	}
@@ -376,6 +433,9 @@ func (t *Transport) UnassignRole(ctx context.Context, userID uint64, roleID stri
 
 // ListPermissions returns all registered permission categories.
 func (t *Transport) ListPermissions(_ context.Context) (*transport.ListPermissionsResponse, error) {
+	if err := t.gate("ListPermissions"); err != nil {
+		return nil, err
+	}
 	cats := permission.Categories()
 	result := make([]*transport.PermissionCategory, len(cats))
 	for i, cat := range cats {
@@ -404,6 +464,9 @@ func (t *Transport) ListPermissions(_ context.Context) (*transport.ListPermissio
 // tenant included -- the rule certs:generate's ScopeSelfStrict enforces on the
 // network transports.
 func (t *Transport) GenerateCert(ctx context.Context, req *transport.GenerateCertRequest) (*transport.CertBundle, error) {
+	if err := t.gate("GenerateCert"); err != nil {
+		return nil, err
+	}
 	if t.certProv == nil {
 		return nil, &transport.NotImplementedError{Method: "GenerateCert"}
 	}
@@ -434,6 +497,9 @@ func (t *Transport) GenerateCert(ctx context.Context, req *transport.GenerateCer
 
 // ExportCert exports a certificate as PKCS#12 via the embedded cert provider.
 func (t *Transport) ExportCert(ctx context.Context, req *transport.ExportCertRequest) (*transport.ExportCertResponse, error) {
+	if err := t.gate("ExportCert"); err != nil {
+		return nil, err
+	}
 	if t.certProv == nil {
 		return nil, &transport.NotImplementedError{Method: "ExportCert"}
 	}
@@ -457,6 +523,9 @@ func (t *Transport) ExportCert(ctx context.Context, req *transport.ExportCertReq
 // caller may write it -- the rule certs:revoke and certs:revoke:cross enforce
 // on the network transports. Either refusal is *tenant.CrossTenantDeniedError.
 func (t *Transport) RevokeCert(ctx context.Context, serial string) (*transport.RevokeResult, error) {
+	if err := t.gate("RevokeCert"); err != nil {
+		return nil, err
+	}
 	if t.certProv == nil {
 		return nil, &transport.NotImplementedError{Method: "RevokeCert"}
 	}
@@ -481,6 +550,9 @@ func (t *Transport) RevokeCert(ctx context.Context, serial string) (*transport.R
 // provider. Only the caller's own tenant may be listed (tenant.Confine); any
 // other is refused with *tenant.CrossTenantDeniedError.
 func (t *Transport) ListCerts(ctx context.Context, tenantID string) (*transport.ListCertsResponse, error) {
+	if err := t.gate("ListCerts"); err != nil {
+		return nil, err
+	}
 	if t.certProv == nil {
 		return nil, &transport.NotImplementedError{Method: "ListCerts"}
 	}

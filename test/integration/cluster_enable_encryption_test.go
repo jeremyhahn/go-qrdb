@@ -21,15 +21,18 @@ package integration_test
 // real 3-node cluster: a system barrier that boots UNENCRYPTED (strategy "none")
 // is migrated to a passphrase strategy cluster-wide via a single
 // POST /v1/barrier/enable-encryption to the leader. The leader writes a
-// replicated migration intent with the unlock credential HPKE-sealed per node;
-// every node's reconciler opens its own sealed credential and recycles its local
-// at-rest stores in place. After each node comes back up keyed-and-sealed and is
-// unsealed with the new passphrase, ALL pre-migration data survives on every node
-// and the barrier reports the passphrase strategy — proving rolling, per-node,
-// zero-data-loss cluster encryption with no secret ever in the Raft log.
+// replicated migration intent that carries no credential: the leader recycles
+// with the request's passphrase, held in memory, and every other node waits in
+// awaiting-credential until its own credential file appears under
+// seal.migration_credentials_dir, then recycles its local at-rest stores in
+// place. After each node comes back up keyed-and-sealed and is unsealed with
+// the new passphrase, ALL pre-migration data survives on every node and the
+// barrier reports the passphrase strategy — proving rolling, per-node,
+// zero-data-loss cluster encryption with no secret in the Raft log and none
+// sent between nodes.
 //
-// Uses real qrdbd daemon processes with SPIFFE-SAN node certificates (required
-// for the per-node credential sealing) and per-node volume pools.
+// Uses real qrdbd daemon processes with SPIFFE-SAN node certificates and
+// per-node volume pools.
 
 import (
 	"encoding/json"
@@ -44,9 +47,8 @@ import (
 
 // writeNoneSealClusterConfig writes a daemon config whose system barrier is
 // ENABLED but UNENCRYPTED (strategy none) — the migratable source state — with
-// the peer admin URL map required so the leader can fetch + authenticate each
-// follower's delivery cert when sealing the per-node migration credential.
-func writeNoneSealClusterConfig(t *testing.T, volumePoolDir string, peerAdminURLs map[string]string) string {
+// the peer admin URL map and this node's migration credentials directory.
+func writeNoneSealClusterConfig(t *testing.T, volumePoolDir, credDir string, peerAdminURLs map[string]string) string {
 	t.Helper()
 	peerAdminSection := ""
 	if len(peerAdminURLs) > 0 {
@@ -59,13 +61,14 @@ func writeNoneSealClusterConfig(t *testing.T, volumePoolDir string, peerAdminURL
 	yaml := fmt.Sprintf(`seal:
   enabled: true
   strategy: none
+  migration_credentials_dir: %q
 storage:
   volume_pools:
     - name: default
       paths:
         - %s
       strategy: round_robin
-%s`, volumePoolDir, peerAdminSection)
+%s`, credDir, volumePoolDir, peerAdminSection)
 
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "qrdbd.yaml")
@@ -81,7 +84,7 @@ storage:
 // system barrier is required so a self-managed tenant barrier can be initialized
 // as none (a passphrase system barrier forces the deferred-passphrase strategy on
 // tenant init, which rejects an empty secret).
-func writeNoneSealRaftClusterConfig(t *testing.T, volumePoolDir string, peerAdminURLs map[string]string) string {
+func writeNoneSealRaftClusterConfig(t *testing.T, volumePoolDir, credDir string, peerAdminURLs map[string]string) string {
 	t.Helper()
 	peerAdminSection := ""
 	if len(peerAdminURLs) > 0 {
@@ -94,6 +97,7 @@ func writeNoneSealRaftClusterConfig(t *testing.T, volumePoolDir string, peerAdmi
 	yaml := fmt.Sprintf(`seal:
   enabled: true
   strategy: none
+  migration_credentials_dir: %q
 storage:
   volume_pools:
     - name: default
@@ -114,7 +118,7 @@ tenant:
     max_replicas_per_group: -1
     max_total_replicas: -1
     max_dedicated_wal_groups: -1
-%s`, volumePoolDir, peerAdminSection)
+%s`, credDir, volumePoolDir, peerAdminSection)
 
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "qrdbd.yaml")
@@ -146,9 +150,11 @@ func TestClusterEnableEncryption_SystemScope_RF3(t *testing.T) {
 
 	dataDirs := make([]string, 3)
 	configPaths := make([]string, 3)
+	credDirs := make([]string, 3)
 	for i := range 3 {
 		dataDirs[i] = t.TempDir()
-		configPaths[i] = writeNoneSealClusterConfig(t, t.TempDir(), peerAdminURLs)
+		credDirs[i] = migrationCredentialsDir(t)
+		configPaths[i] = writeNoneSealClusterConfig(t, t.TempDir(), credDirs[i], peerAdminURLs)
 	}
 
 	startNodeR1 := func(i int) {
@@ -216,7 +222,9 @@ func TestClusterEnableEncryption_SystemScope_RF3(t *testing.T) {
 	}
 
 	// Trigger the cluster-wide system enable-encryption on the LEADER. The
-	// coordinator writes the replicated intent with per-node sealed credentials.
+	// coordinator writes the replicated intent, which carries no credential;
+	// the leader holds the request's passphrase for its own recycle. No node
+	// has a credential file yet.
 	const newPassphrase = "cluster-enable-encryption-system-pass"
 	sysClient := mtlsHTTPClient(t, ca, 15*time.Second)
 	body, status := iraftAPIPost(t, sysClient,
@@ -227,6 +235,21 @@ func TestClusterEnableEncryption_SystemScope_RF3(t *testing.T) {
 		t.Fatalf("enable-encryption: status %d, body: %s", status, body)
 	}
 	t.Logf("cluster enable-encryption requested on leader (status %d)", status)
+
+	// Every other node waits for its own credential: it must still be
+	// serving the none barrier. Then each receives its own file; the leader
+	// never gets one.
+	leaderIdx := adminPortIndex(t, adminPorts, leaderPort)
+	time.Sleep(3 * time.Second)
+	for i := range 3 {
+		if i == leaderIdx {
+			continue
+		}
+		if strategy, _, ok := barrierStatusJSON(t, ca, adminPorts[i]); !ok || strategy != "none" {
+			t.Fatalf("node %d migrated (strategy %q) before it had its own credential", i+1, strategy)
+		}
+		writeMigrationCredential(t, credDirs[i], "system", newPassphrase)
+	}
 
 	// Each node's reconciler picks up the intent, opens its sealed credential, and
 	// recycles its data plane in process — coming back up keyed-and-SEALED. Wait
@@ -285,8 +308,9 @@ func TestClusterEnableEncryption_SystemScope_RF3(t *testing.T) {
 // migrated to a passphrase barrier cluster-wide via a single
 // POST /v1/barrier/enable-encryption{tenant_id} to the leader. Every node hosting
 // a replica recycles its own shard ONLINE (no reboot — the tenant barrier reopens
-// keyed-and-unsealed), the credential is HPKE-sealed per node, and all tenant data
-// survives on every replica. The system barrier is untouched.
+// keyed-and-unsealed) with its own credential -- the request's on the leader,
+// its own file on every other node -- and all tenant data survives on every
+// replica. The system barrier is untouched.
 func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 	const tenantID = "rt1"
 	const dbName = "tdb1"
@@ -311,9 +335,11 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 
 	dataDirs := make([]string, 3)
 	configPaths := make([]string, 3)
+	credDirs := make([]string, 3)
 	for i := range 3 {
 		dataDirs[i] = t.TempDir()
-		configPaths[i] = writeNoneSealRaftClusterConfig(t, t.TempDir(), peerAdminURLs)
+		credDirs[i] = migrationCredentialsDir(t)
+		configPaths[i] = writeNoneSealRaftClusterConfig(t, t.TempDir(), credDirs[i], peerAdminURLs)
 	}
 
 	for i := range 3 {
@@ -393,6 +419,7 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 				"databases:create", "databases:create_raft", "databases:read", "databases:list",
 				"kv:put", "kv:get",
 				"tenant_barrier:status", "tenant_barrier:init", "tenant_barrier:unseal",
+				"tenant_barrier:seal",
 			},
 		},
 	)
@@ -491,6 +518,15 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 	}
 	t.Log("tenant cluster enable-encryption requested on leader")
 
+	// The leader recycles with the request's credential; every other replica
+	// reads its own file, written now.
+	tenantLeaderIdx := adminPortIndex(t, adminPorts, leaderPort)
+	for i := range 3 {
+		if i != tenantLeaderIdx {
+			writeMigrationCredential(t, credDirs[i], "tenant-"+tenantID, tenantPass)
+		}
+	}
+
 	// Every node's reconciler recycles its tenant shard ONLINE; the tenant barrier
 	// transitions to passphrase and stays UNSEALED (no re-unseal needed).
 	for i := range 3 {
@@ -534,4 +570,89 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 		}
 	}
 	t.Log("Phase D tenant-scope RF=3 cluster enable-encryption: all tenant data survived, tenant barrier keyed on all replicas")
+
+	// Cluster sealing (docs/barrier-seal): the tenant's own admin seals its
+	// barrier through ONE node, a follower, and the seal reaches every
+	// replica. Each replica is then unsealed with the tenant's passphrase on
+	// that replica; the first unseal clears the cluster record.
+	sealIdx := (adminPortIndex(t, adminPorts, newLeaderPort) + 1) % 3
+	if b, s := iraftAPIPost(t, tenantClient,
+		fmt.Sprintf("https://127.0.0.1:%d/v1/tenants/%s/barrier/seal", adminPorts[sealIdx], tenantID),
+		map[string]interface{}{},
+	); s != http.StatusOK && s != http.StatusNoContent {
+		t.Fatalf("tenant barrier seal via node %d: status %d, body: %s", sealIdx+1, s, b)
+	}
+	for i := range 3 {
+		deadline := time.Now().Add(30 * time.Second)
+		for {
+			if _, sealed, ok := tenantBarrierStatusJSON(t, tenantClient, adminPorts[i], tenantID); ok && sealed {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("node %d: the tenant's seal through node %d did not reach it", i+1, sealIdx+1)
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
+		if _, st := dbScopedGetTolerant(t, tenantClient, adminPorts[i], dbName, "k1"); st == http.StatusOK {
+			t.Fatalf("node %d served the sealed tenant's data", i+1)
+		}
+	}
+	t.Logf("tenant seal through node %d reached every replica", sealIdx+1)
+	for i := range 3 {
+		if b, s := iraftAPIPost(t, tenantClient,
+			fmt.Sprintf("https://127.0.0.1:%d/v1/tenants/%s/barrier/unseal", adminPorts[i], tenantID),
+			map[string]interface{}{"key": []byte(tenantPass)},
+		); s != http.StatusOK && s != http.StatusNoContent {
+			t.Fatalf("node %d tenant unseal: status %d, body: %s", i+1, s, b)
+		}
+	}
+	finalLeader := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
+	for k, v := range seed {
+		var data []byte
+		var st int
+		rd := time.Now().Add(60 * time.Second)
+		for time.Now().Before(rd) {
+			data, st = dbScopedGetTolerant(t, tenantClient, finalLeader, dbName, k)
+			if st == http.StatusOK {
+				break
+			}
+			time.Sleep(300 * time.Millisecond)
+		}
+		if st != http.StatusOK || string(data) != v {
+			t.Fatalf("after the tenant unseal %q = %q (status %d), want %q", k, string(data), st, v)
+		}
+	}
+}
+
+// adminPortIndex returns the index of port in ports.
+func adminPortIndex(t *testing.T, ports []int, port int) int {
+	t.Helper()
+	for i, p := range ports {
+		if p == port {
+			return i
+		}
+	}
+	t.Fatalf("admin port %d is not one of %v", port, ports)
+	return -1
+}
+
+// migrationCredentialsDir returns a node's seal.migration_credentials_dir as
+// an operator makes one: owned by the daemon's user and writable by no one
+// else, which the daemon requires.
+func migrationCredentialsDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatalf("migrationCredentialsDir: %v", err)
+	}
+	return dir
+}
+
+// writeMigrationCredential writes a node's own enable-encryption credential
+// file, mode 0600, as an operator would.
+func writeMigrationCredential(t *testing.T, dir, name, credential string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(credential+"\n"), 0o600); err != nil {
+		t.Fatalf("writeMigrationCredential: %v", err)
+	}
 }

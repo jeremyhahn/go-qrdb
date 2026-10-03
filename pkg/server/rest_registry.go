@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
@@ -103,6 +104,17 @@ type restServiceRegistry struct {
 	// generators, so its lifetime is observable -- see
 	// compositeCollectionCache and Server.buildServiceRegistry.
 	collections *compositeCollectionCache
+
+	// clusterSeal refuses a tenant or database whose cluster seal record is
+	// sealed, and ends a watch when its barrier is sealed or this node is cut
+	// off. nil when the server enforces no cluster seals.
+	clusterSeal ClusterSeal
+}
+
+// withClusterSealRegistry makes the registry enforce cluster seals; see
+// WithClusterSeal.
+func withClusterSealRegistry(cs ClusterSeal) RESTRegistryOption {
+	return func(r *restServiceRegistry) { r.clusterSeal = cs }
 }
 
 // NewRESTServiceRegistry creates a rest.ServiceRegistry that resolves
@@ -471,6 +483,38 @@ func (r *restServiceRegistry) ownedDatabase(tenantID, db string) (*database.Data
 	return dbase, true
 }
 
+// StreamRefusal implements service.StreamRefuser: why a stream on
+// (tenantID, db) may not open, or nil
+// while it may: the node is held, cut off or not yet confirmed, or its node
+// barrier is sealed; the tenant's barrier is sealed here or by its record; the
+// database is sealed here or by its record. It is re-asked once the stream has
+// subscribed to the seal stream registry (clusterseal.Streams.SubscribeServing),
+// so a seal that lands between the request's resolution and the subscription
+// refuses the stream rather than leaving it open.
+var _ service.StreamRefuser = (*restServiceRegistry)(nil)
+
+func (r *restServiceRegistry) StreamRefusal(tenantID, db string) error {
+	if err := clusterSealNodeRefusal(r.clusterSeal); err != nil {
+		return err
+	}
+	if r.barrierReg != nil {
+		if sb := r.barrierReg.SystemBarrier(); sb != nil && sb.IsSealed() {
+			return &clusterseal.SealedError{Barrier: clusterseal.NodeBarrier()}
+		}
+	}
+	if t := clusterSealTenant(tenantID); t != r.systemTenant {
+		if r.clusterSeal != nil && r.clusterSeal.Refuses(clusterseal.TenantBarrier(t)) {
+			return &rest.BarrierSealedError{TenantID: tenantID}
+		}
+		if r.barrierReg != nil {
+			if tb, err := r.barrierReg.GetTenant(t); err == nil && tb.IsSealed() {
+				return &rest.BarrierSealedError{TenantID: tenantID}
+			}
+		}
+	}
+	return r.refuseSealedDatabase(tenantID, db)
+}
+
 // refuseSealedDatabase returns a *service.BarrierSealedError naming db when
 // the caller's database is sealed, and nil otherwise. It is the data-plane
 // half of database seal: DatabaseService.SealDatabase marks the database
@@ -481,10 +525,14 @@ func (r *restServiceRegistry) ownedDatabase(tenantID, db string) (*database.Data
 // unseals it.
 func (r *restServiceRegistry) refuseSealedDatabase(tenantID, db string) error {
 	dbase, ok := r.ownedDatabase(tenantID, db)
-	if !ok || dbase.Status() != database.StatusSealed {
+	if !ok {
 		return nil
 	}
-	return &rest.BarrierSealedError{TenantID: tenantID, Database: db}
+	if dbase.Status() == database.StatusSealed ||
+		(r.clusterSeal != nil && r.clusterSeal.Refuses(clusterseal.DatabaseBarrier(clusterSealTenant(tenantID), db))) {
+		return &rest.BarrierSealedError{TenantID: tenantID, Database: db}
+	}
+	return nil
 }
 
 // applyQuota wraps the resolved KV and MVCC servicers with storage-byte quota
@@ -694,7 +742,7 @@ func (r *restServiceRegistry) checkTenantBarrier(tenantID string) error {
 		}
 		return &rest.TenantNotFoundError{TenantID: tenantID}
 	}
-	if tb.IsSealed() {
+	if tb.IsSealed() || (r.clusterSeal != nil && r.clusterSeal.Refuses(clusterseal.TenantBarrier(tenantID))) {
 		return &rest.BarrierSealedError{TenantID: tenantID}
 	}
 	return nil
@@ -949,12 +997,18 @@ func (r *restServiceRegistry) WatchService(tenantID, db string) (service.WatchSe
 	// catalogued database ends when the database is sealed or dropped,
 	// rather than delivering its events after the refusal every new request
 	// gets.
+	watchSvc := svcs.Watch
 	if dbase, ok := r.ownedDatabase(tenantID, db); ok {
-		return newServedWatchService(svcs.Watch, dbase, func() error {
+		watchSvc = newServedWatchService(watchSvc, dbase, func() error {
 			return databaseUnservedError(dbase, tenantID, db)
-		}), nil
+		})
 	}
-	return svcs.Watch, nil
+	if r.clusterSeal != nil {
+		watchSvc = newSealedWatchService(watchSvc, r.clusterSeal.Streams(), tenantID, db, func() error {
+			return r.StreamRefusal(tenantID, db)
+		})
+	}
+	return watchSvc, nil
 }
 
 // databaseUnservedError is the refusal a stream on dbase ends with once the

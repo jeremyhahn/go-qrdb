@@ -80,6 +80,9 @@ var functionsByDialect = map[Dialect][]sql.Function{
 		// gen_random_uuid().
 		pgcatalog.NewGenRandomUUID(),
 		pgcatalog.NewUUIDGenerateV4(),
+		// pg_sleep(seconds), the statement-timeout probe every PostgreSQL
+		// client and operator reaches for.
+		pgcatalog.NewPgSleep(),
 	},
 }
 

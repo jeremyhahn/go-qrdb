@@ -226,3 +226,39 @@ func TestCLIMultiProtocolBarrierRecoveryStatus(t *testing.T) {
 		})
 	}
 }
+
+// TestCLIMultiProtocolBarrierClusterUnseal tests `barrier cluster-unseal` and
+// the cluster_seal object of `barrier status` across all protocols. The
+// compose server is a single node, so cluster sealing is not active there:
+// status reports it inactive, and cluster-unseal is refused with the typed
+// not-active error on every protocol rather than pretending to clear a record.
+func TestCLIMultiProtocolBarrierClusterUnseal(t *testing.T) {
+	cfg := LoadTestConfig()
+	requireCLI(t, cfg)
+
+	for _, proto := range barrierSupportedProtocols() {
+		t.Run(string(proto), func(t *testing.T) {
+			if !cfg.IsProtocolAvailable(t, proto) {
+				t.Fatalf("server not available for protocol %s", proto)
+			}
+
+			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto,
+				"barrier", "status", "--output", "json")
+			if err != nil {
+				t.Fatalf("[%s] barrier status failed: %v\nstdout: %s\nstderr: %s", proto, err, stdout, stderr)
+			}
+			assertContains(t, stdout+stderr, `"cluster_seal"`,
+				fmt.Sprintf("[%s] barrier status should carry cluster_seal", proto))
+
+			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
+				"barrier", "cluster-unseal", "--output", "json")
+			if err == nil {
+				t.Fatalf("[%s] cluster-unseal succeeded on a node without cluster sealing\nstdout: %s", proto, stdout)
+			}
+			assertContains(t, stdout+stderr, "not active",
+				fmt.Sprintf("[%s] cluster-unseal should report cluster sealing not active", proto))
+
+			t.Logf("[%s] barrier cluster-unseal passed", proto)
+		})
+	}
+}

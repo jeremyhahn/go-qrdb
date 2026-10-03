@@ -114,3 +114,37 @@ func TestAuthorize_SelfStrict_EmptyTenantIdentity_DeniedForAnotherTenant(t *test
 		t.Fatalf("expected *PermissionDeniedError, got %T: %v", err, err)
 	}
 }
+
+// TestAuthorize_SelfStrict_DatabaseBarrier pins the authorization outcome for
+// the database barrier permissions: a system-tenant identity reaches its own
+// databases' barriers and is denied another tenant's. Under ScopeSelf the
+// denied half passed.
+func TestAuthorize_SelfStrict_DatabaseBarrier(t *testing.T) {
+	for _, tc := range []struct {
+		perm   permission.Permission
+		action string
+	}{
+		{permission.DatabasesSeal, "seal"},
+		{permission.DatabasesUnseal, "unseal"},
+		{permission.DatabasesBarrierStatus, "barrier_status"},
+	} {
+		t.Run(tc.action, func(t *testing.T) {
+			authz := New(newMockRoleService(map[string][]permission.Permission{
+				"admin": {tc.perm},
+			}))
+			sys := &auth.Identity{
+				Subject:  "platform-admin",
+				TenantID: tenantid.System,
+				Roles:    []string{"admin"},
+			}
+			if err := authz.Authorize(ctxFor(tenantid.System), sys, "databases", tc.action); err != nil {
+				t.Fatalf("system identity must reach its own database barrier: %v", err)
+			}
+			err := authz.Authorize(ctxFor("acme"), sys, "databases", tc.action)
+			var denied *PermissionDeniedError
+			if !errors.As(err, &denied) {
+				t.Fatalf("system identity on another tenant's database barrier: got %T: %v, want *PermissionDeniedError", err, err)
+			}
+		})
+	}
+}

@@ -320,6 +320,7 @@ export type {
 
     // Seal
     SealStatus,
+    ClusterSeal,
     BootstrapResult,
     UnsealProgress,
     EnableEncryptionRequest,

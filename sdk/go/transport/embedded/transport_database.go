@@ -37,6 +37,9 @@ var _ transport.DatabaseClient = (*Transport)(nil)
 // DatabaseServicer. Returns NilServiceError when no database service
 // has been configured.
 func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateDatabaseRequest) (*transport.DatabaseInfo, error) {
+	if err := t.gate("CreateDatabase"); err != nil {
+		return nil, err
+	}
 	if t.dbSvc == nil {
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
 	}
@@ -84,6 +87,9 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 // policy is read from its own store. Returns NilServiceError when no database
 // service has been configured.
 func (t *Transport) GetDatabase(ctx context.Context, name string) (*transport.DatabaseInfo, error) {
+	if err := t.gate("GetDatabase"); err != nil {
+		return nil, err
+	}
 	if t.dbSvc == nil {
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
 	}
@@ -98,6 +104,9 @@ func (t *Transport) GetDatabase(ctx context.Context, name string) (*transport.Da
 // delegating to the injected DatabaseServicer's tenant-scoped list. Returns
 // NilServiceError when no database service has been configured.
 func (t *Transport) ListDatabases(ctx context.Context) ([]transport.DatabaseInfo, error) {
+	if err := t.gate("ListDatabases"); err != nil {
+		return nil, err
+	}
 	if t.dbSvc == nil {
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
 	}
@@ -112,6 +121,9 @@ func (t *Transport) ListDatabases(ctx context.Context) ([]transport.DatabaseInfo
 // the injected DatabaseServicer's tenant-scoped drop. Returns NilServiceError
 // when no database service has been configured.
 func (t *Transport) DropDatabase(ctx context.Context, name string) error {
+	if err := t.gate("DropDatabase"); err != nil {
+		return err
+	}
 	if t.dbSvc == nil {
 		return &NilServiceError{Service: "DatabaseServicer"}
 	}
@@ -122,6 +134,9 @@ func (t *Transport) DropDatabase(ctx context.Context, name string) error {
 // database by delegating to the injected DatabaseServicer. Returns
 // NilServiceError when no database service has been configured.
 func (t *Transport) UpdateDatabaseProtocol(ctx context.Context, req transport.UpdateDatabaseProtocolRequest) (*transport.DatabaseInfo, error) {
+	if err := t.gate("UpdateDatabaseProtocol"); err != nil {
+		return nil, err
+	}
 	if t.dbSvc == nil {
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
 	}
@@ -139,6 +154,9 @@ func (t *Transport) UpdateDatabaseProtocol(ctx context.Context, req transport.Up
 // database by delegating to the injected DatabaseServicer. Returns
 // NilServiceError when no database service has been configured.
 func (t *Transport) UpdateDatabaseEtcd(ctx context.Context, req transport.UpdateDatabaseEtcdRequest) (*transport.DatabaseInfo, error) {
+	if err := t.gate("UpdateDatabaseEtcd"); err != nil {
+		return nil, err
+	}
 	if t.dbSvc == nil {
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
 	}
@@ -156,6 +174,9 @@ func (t *Transport) UpdateDatabaseEtcd(ctx context.Context, req transport.Update
 // UpdateDatabaseRaft updates the Raft consensus configuration for a
 // database by delegating to the injected DatabaseServicer.
 func (t *Transport) UpdateDatabaseRaft(ctx context.Context, req transport.UpdateDatabaseRaftRequest) (*transport.DatabaseInfo, error) {
+	if err := t.gate("UpdateDatabaseRaft"); err != nil {
+		return nil, err
+	}
 	if t.dbSvc == nil {
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
 	}
@@ -170,6 +191,9 @@ func (t *Transport) UpdateDatabaseRaft(ctx context.Context, req transport.Update
 // by delegating to the injected DatabaseServicer's tenant-scoped
 // ScaleForTenant, as every verb of this transport is tenant-scoped.
 func (t *Transport) ScaleDatabase(ctx context.Context, req transport.ScaleDatabaseRequest) (*transport.DatabaseInfo, error) {
+	if err := t.gate("ScaleDatabase"); err != nil {
+		return nil, err
+	}
 	if t.dbSvc == nil {
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
 	}
@@ -183,6 +207,9 @@ func (t *Transport) ScaleDatabase(ctx context.Context, req transport.ScaleDataba
 // UpdateDatabaseBarrier updates the encryption barrier configuration for
 // a database by delegating to the injected DatabaseServicer.
 func (t *Transport) UpdateDatabaseBarrier(ctx context.Context, req transport.UpdateDatabaseBarrierRequest) (*transport.DatabaseInfo, error) {
+	if err := t.gate("UpdateDatabaseBarrier"); err != nil {
+		return nil, err
+	}
 	if t.dbSvc == nil {
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
 	}
@@ -196,6 +223,9 @@ func (t *Transport) UpdateDatabaseBarrier(ctx context.Context, req transport.Upd
 // UpdateDatabaseConnection updates the remote connection configuration for
 // a database by delegating to the injected DatabaseServicer.
 func (t *Transport) UpdateDatabaseConnection(ctx context.Context, req transport.UpdateDatabaseConnectionRequest) (*transport.DatabaseInfo, error) {
+	if err := t.gate("UpdateDatabaseConnection"); err != nil {
+		return nil, err
+	}
 	if t.dbSvc == nil {
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
 	}
@@ -209,6 +239,9 @@ func (t *Transport) UpdateDatabaseConnection(ctx context.Context, req transport.
 // UpdateDatabaseSQL updates a database's SQL settings by delegating to the
 // injected DatabaseServicer.
 func (t *Transport) UpdateDatabaseSQL(ctx context.Context, req transport.UpdateDatabaseSQLRequest) (*transport.DatabaseInfo, error) {
+	if err := t.gate("UpdateDatabaseSQL"); err != nil {
+		return nil, err
+	}
 	if t.dbSvc == nil {
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
 	}
@@ -225,6 +258,9 @@ func (t *Transport) UpdateDatabaseSQL(ctx context.Context, req transport.UpdateD
 // database's history, and the service confines every caller -- the system
 // tenant an unbound context resolves to included -- to its own databases.
 func (t *Transport) UpdateDatabaseCompaction(ctx context.Context, req transport.UpdateDatabaseCompactionRequest) (*transport.DatabaseInfo, error) {
+	if err := t.gate("UpdateDatabaseCompaction"); err != nil {
+		return nil, err
+	}
 	if t.dbSvc == nil {
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
 	}

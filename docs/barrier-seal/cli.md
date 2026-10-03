@@ -1,6 +1,6 @@
 # Barrier and Seal — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
 
 Command group: `qrdb barrier`. **This is the canonical barrier surface shared by
 every CLI binary in the stack** (`qrdb`, `xkmsctl`, `quicbaasctl`,
@@ -19,6 +19,13 @@ All verbs accept the root persistent flags documented in
 
 Show the current barrier state. Read-only and **safe to call against a sealed
 barrier**. No flags.
+
+The output includes the node barrier's cluster seal: whether the cluster has
+activated `cluster-seal`, the record's state and epoch, who wrote it, and this
+node's own state — `serving`, `sealed`, `held`, `cut_off` or `unconfirmed`
+(see [api.md](api.md#the-cluster_seal-status-object)). `qrdb tenant
+barrier-status` and `qrdb database barrier-status` print the same for their
+barriers.
 
 ```bash
 qrdb barrier status
@@ -91,6 +98,13 @@ qrdb barrier unseal --passphrase '<passphrase>'
 Seal the barrier. **Once sealed, the data path returns `ErrBarrierSealed` for
 every read and write** until unsealed.
 
+**In a cluster that has activated `cluster-seal`, this seals the node barrier on
+every node**, and each node wipes its own key. Before activation it seals only
+the node you are connected to, and `barrier status` reports
+`cluster_seal.active: false`. `qrdb tenant barrier-seal` and `qrdb database
+seal` behave the same way for their barriers. See
+[architecture.md](architecture.md#sealing-in-a-cluster).
+
 | Flag | Type | Meaning |
 |---|---|---|
 | `--so-pin` | string | **required** once an SO PIN is provisioned; refused with no PIN backend |
@@ -105,6 +119,25 @@ Prompts for confirmation on a TTY; pass `-y` from scripts.
 qrdb barrier seal -y
 qrdb barrier seal --so-pin SO123 --assume-yes
 ```
+
+## `qrdb barrier cluster-unseal`
+
+End a cluster-wide seal of the node barrier. Run it, as the platform operator,
+on a node you have already unsealed — after a cluster seal, every node is
+restarted and unsealed at boot, and comes back **held** until this command
+writes the clear record. It unseals nothing by itself: every node still
+unseals itself with its own credential. No flags.
+
+```bash
+qrdb barrier unseal --passphrase '<passphrase>'   # this node, at boot
+qrdb barrier cluster-unseal                       # once: clears the record
+qrdb barrier status --output json                 # cluster_seal.local: serving
+```
+
+Refused with `FAILED_PRECONDITION` before the cluster has activated
+`cluster-seal`, and with `UNAVAILABLE` on a node that has not unsealed itself.
+Tenant and database barriers have no such verb: unsealing them on a node
+clears their record.
 
 ## `qrdb barrier rekey`
 
@@ -165,6 +198,9 @@ qrdb database barrier-status secure
 qrdb database seal secure
 qrdb database unseal secure --secret "$SECRET"
 ```
+
+A database seal, like a tenant seal, reaches every node once `cluster-seal` is
+activated; only the tenant that owns the database may seal or unseal it.
 
 ## Parity
 

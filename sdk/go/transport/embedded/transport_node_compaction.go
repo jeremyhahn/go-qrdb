@@ -25,6 +25,9 @@ import (
 // through the embedded admin service. The service refuses a context bound to
 // any tenant but the system tenant.
 func (t *Transport) NodeCompaction(ctx context.Context) (*transport.DatabaseCompactionConfig, error) {
+	if err := t.gate("NodeCompaction"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -39,6 +42,9 @@ func (t *Transport) NodeCompaction(ctx context.Context) (*transport.DatabaseComp
 // through the embedded admin service; nil turns it off. The service refuses
 // a context bound to any tenant but the system tenant.
 func (t *Transport) SetNodeCompaction(ctx context.Context, policy *transport.DatabaseCompactionConfig) (*transport.DatabaseCompactionConfig, error) {
+	if err := t.gate("SetNodeCompaction"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}

@@ -112,6 +112,24 @@ func (t *Transport) BarrierStatus(ctx context.Context) (*transport.BarrierStatus
 	return &resp, nil
 }
 
+// BarrierClusterUnseal clears a cluster-wide seal of the node barrier and
+// returns its cluster seal state. Calls the qrdb_barrier_cluster_unseal MCP
+// tool. It unseals nothing.
+func (t *Transport) BarrierClusterUnseal(ctx context.Context) (*transport.ClusterSeal, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	text, err := t.callTool(ctx, "qrdb_barrier_cluster_unseal", nil)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "BarrierClusterUnseal", Err: err}
+	}
+	var out transport.ClusterSeal
+	if jsonErr := json.Unmarshal([]byte(text), &out); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "BarrierClusterUnseal", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+	return &out, nil
+}
+
 // BarrierInitializeShamir initializes the barrier using Shamir secret sharing
 // and returns the generated key shares. Calls the
 // qrdb_barrier_shamir_initialize MCP tool.

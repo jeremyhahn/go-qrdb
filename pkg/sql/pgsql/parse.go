@@ -115,6 +115,9 @@ type ParseHandler struct {
 	// sealedProbe gates query execution while the storage barrier is
 	// sealed. Nil disables the gate.
 	sealedProbe sealedWindowProbe
+	// queryTimeout bounds every statement's execution (WithQueryTimeout);
+	// zero is none.
+	queryTimeout time.Duration
 }
 
 // NewParseHandler creates a new ParseHandler.
@@ -124,6 +127,39 @@ func NewParseHandler(sqlEngine *sqle.Engine, translator *engine.Translator, dbNa
 		translator: translator,
 		dbName:     dbName,
 	}
+}
+
+// statementContext derives the context one statement executes under: bounded
+// by the query timeout when one is set.
+func (h *ParseHandler) statementContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if h.queryTimeout <= 0 {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, h.queryTimeout)
+}
+
+// statementTimeoutError answers a statement that failed because its
+// statement context expired with SQLSTATE 57014 (query_canceled), the code
+// PostgreSQL's own statement_timeout raises, and returns any other outcome
+// unchanged. The expiry is read off ctx rather than err: an interrupted
+// expression reports its own error (go-mysql-server's sleep reports
+// context.Canceled), not the deadline.
+func (h *ParseHandler) statementTimeoutError(ctx context.Context, err error) error {
+	if err == nil || !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return err
+	}
+	return psqlerr.WithSeverity(psqlerr.WithCode(&QueryTimeoutError{Timeout: h.queryTimeout}, codes.QueryCanceled), psqlerr.LevelError)
+}
+
+// refuseWhileSealed returns the sealed-window refusal (SQLSTATE 57P03) while
+// the probe reports the barrier sealed, and nil otherwise. Every point that
+// runs or writes a query -- Parse, and each Execute of a prepared statement,
+// which a session can issue long after the Parse that admitted it -- asks it.
+func (h *ParseHandler) refuseWhileSealed() error {
+	if h.sealedProbe != nil && h.sealedProbe.IsSealed() {
+		return sealedWireError(psqlerr.LevelError)
+	}
+	return nil
 }
 
 // HandleParse implements the psql-wire ParseFn signature. It receives raw
@@ -144,8 +180,8 @@ func (h *ParseHandler) HandleParse(ctx context.Context, query string) (wire.Prep
 	// rejected with SQLSTATE 57P03 until the operator drives the unseal
 	// API, mirroring the 503 / Unavailable envelope on the other
 	// protocol transports.
-	if h.sealedProbe != nil && h.sealedProbe.IsSealed() {
-		return nil, sealedWireError(psqlerr.LevelError)
+	if err := h.refuseWhileSealed(); err != nil {
+		return nil, err
 	}
 
 	trimmed := strings.TrimSpace(query)
@@ -290,10 +326,21 @@ func (h *ParseHandler) HandleParse(ctx context.Context, query string) (wire.Prep
 // statement head.
 var createIndexStatementRe = regexp.MustCompile(`(?i)^\s*CREATE\s+(?:UNIQUE\s+)?INDEX\b`)
 
-// executeEager runs the translated query immediately during the PARSE phase.
-// This path is used for non-parameterized queries where all values are
-// available in the SQL text itself.
+// executeEager runs the translated query immediately during the PARSE phase,
+// bounded by the query timeout. This path is used for non-parameterized
+// queries where all values are available in the SQL text itself -- every
+// simple-protocol statement and every extended-protocol one without
+// parameters; their rows are collected here, so the timeout bounds the whole
+// execution and the portal's Execute only writes them.
 func (h *ParseHandler) executeEager(ctx context.Context, trimmed, translated string, preparsed sqlparser.Statement) (wire.PreparedStatements, error) {
+	ctx, cancel := h.statementContext(ctx)
+	defer cancel()
+	stmts, err := h.executeEagerUnbounded(ctx, trimmed, translated, preparsed)
+	return stmts, h.statementTimeoutError(ctx, err)
+}
+
+// executeEagerUnbounded is executeEager without the query timeout.
+func (h *ParseHandler) executeEagerUnbounded(ctx context.Context, trimmed, translated string, preparsed sqlparser.Statement) (wire.PreparedStatements, error) {
 	// Build a GMS sql.Context with the QRDB session carrying identity, and
 	// the statement text the engine runs: the SQL layer reads a
 	// statement's row-lock intent from it (see docs/row-locking/).
@@ -335,6 +382,12 @@ func (h *ParseHandler) executeEager(ctx context.Context, trimmed, translated str
 	// the collected rows to the DataWriter.
 	stmt := wire.NewStatement(
 		func(_ context.Context, writer wire.DataWriter, _ []wire.Parameter) error {
+			// A statement prepared before a seal is executed after it
+			// only if this check lets it: its rows were read while the
+			// barrier was open.
+			if err := h.refuseWhileSealed(); err != nil {
+				return err
+			}
 			return writeRows(writer, result, trimmed)
 		},
 		wire.WithColumns(columns),
@@ -487,6 +540,29 @@ func (h *ParseHandler) executeDeferredCallback(
 	paramOIDs []uint32,
 	declared wire.Columns,
 ) error {
+	// The query timeout bounds each Bind/Execute -- each portal's execution
+	// -- of a parameterized statement.
+	ctx, cancel := h.statementContext(ctx)
+	defer cancel()
+	return h.statementTimeoutError(ctx, h.executeDeferredCallbackUnbounded(ctx, writer, parameters, trimmed, translated, parsedStmt, paramOIDs, declared))
+}
+
+// executeDeferredCallbackUnbounded is executeDeferredCallback without the
+// query timeout.
+func (h *ParseHandler) executeDeferredCallbackUnbounded(
+	ctx context.Context,
+	writer wire.DataWriter,
+	parameters []wire.Parameter,
+	trimmed, translated string,
+	parsedStmt sqlparser.Statement,
+	paramOIDs []uint32,
+	declared wire.Columns,
+) error {
+	// Parse is gated, but this runs on every Bind/Execute of a statement
+	// that may have been parsed before the barrier was sealed.
+	if err := h.refuseWhileSealed(); err != nil {
+		return err
+	}
 	// Convert wire parameters to GMS binding expressions.
 	bindings, err := parametersToBindings(parameters, paramOIDs)
 	if err != nil {

@@ -24,6 +24,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
@@ -100,6 +102,11 @@ func (m *covMockBarrierSvc) BarrierDeleteRecoveryKeys(ctx context.Context) error
 // BarrierInitialized reports the double as never initialized: its
 // initialize paths answer for themselves through their canned results.
 func (m *covMockBarrierSvc) BarrierInitialized(_ context.Context) (bool, error) { return false, nil }
+
+// BarrierClusterUnseal answers as a node without cluster sealing does.
+func (m *covMockBarrierSvc) BarrierClusterUnseal(context.Context) (*clusterseal.Report, error) {
+	return nil, clusterseal.ErrInactive
+}
 
 func (m *covMockBarrierSvc) BarrierHasRecoveryKeys(ctx context.Context) (bool, error) {
 	if m.hasRecoveryKeysFn != nil {
@@ -427,6 +434,7 @@ func TestCovBarrierTools_Registration(t *testing.T) {
 		"qrdb_barrier_unseal",
 		"qrdb_barrier_seal",
 		"qrdb_barrier_status",
+		"qrdb_barrier_cluster_unseal",
 		"qrdb_barrier_shamir_initialize",
 		"qrdb_barrier_recovery_generate",
 		"qrdb_barrier_recovery_delete",

@@ -22,6 +22,7 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -68,6 +69,18 @@ type TenantInfra struct {
 type TenantInfraConfig struct {
 	// Ctx is passed to RestoreVolumeTenants and the eager reattach passes.
 	Ctx context.Context
+
+	// ClusterSealer holds a tenant's shards while its cluster seal record is
+	// sealed. Nil holds nothing.
+	//
+	// When set, BuildTenantInfra starts no tenant runtime at boot: it runs
+	// before the composer can install the seal monitor (the monitor seals
+	// through the registries returned here), so an eager re-attach would
+	// start a tenant whose record says sealed before this node has read it.
+	// The reconciler, which the composer starts only after installing the
+	// monitor, and first access both consult the record and start it then.
+	// Set it only on a node that installs a monitor.
+	ClusterSealer clusterseal.Sealer
 
 	// BarrierReg is the per-tenant barrier registry. Its presence (non-nil)
 	// AND VolumePool's presence gate the entire IsolationVolume build.
@@ -142,7 +155,9 @@ type TenantInfraConfig struct {
 //
 // The returned Reconciler (when non-nil) is NOT started; the caller starts
 // it with its own long-lived context so lifecycle ownership stays with the
-// caller:
+// caller -- and, when cfg.ClusterSealer is set, only after it has installed
+// the seal monitor the sealer forwards to, so the reconciler's record check
+// is the monitor's and not an unset Deferred's, which refuses nothing:
 //
 //	ti, err := BuildTenantInfra(cfg)
 //	if err != nil { ... }
@@ -210,7 +225,9 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 	// a restart; tenants with no local barrier are deferred to lazy attach.
 	if cfg.BarrierReg != nil && cfg.TenantSvc != nil && cfg.VolumePool != nil {
 		ti.Hosts = NewTenantHostRegistryFromLookup(cfg.BarrierReg, cfg.TenantLookup, logger)
-		if err := reattachVolumeTenants(cfg.Ctx, cfg.TenantSvc, cfg.BarrierReg, ti.Hosts, logger); err != nil {
+		if cfg.ClusterSealer != nil {
+			logger.Info("start: volume tenants attach on first access; their cluster seal records are not read yet")
+		} else if err := reattachVolumeTenants(cfg.Ctx, cfg.TenantSvc, cfg.BarrierReg, ti.Hosts, logger); err != nil {
 			_ = ti.Hosts.CloseAll()
 			return nil, err
 		}
@@ -249,7 +266,9 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 		ti.Raft = NewRaftBackendFactoryFromManager(
 			cfg.Host, cfg.ReplicaID, cfg.RaftAddr, cfg.BarrierReg, cfg.Manager, logger, raftOpts...)
 
-		if err := reattachRaftTenants(cfg.Ctx, cfg.TenantSvc, cfg.BarrierReg, ti.Raft, cfg.Manager, logger); err != nil {
+		if cfg.ClusterSealer != nil {
+			logger.Info("start: raft tenant shards start from the reconciler and on first access; their cluster seal records are not read yet")
+		} else if err := reattachRaftTenants(cfg.Ctx, cfg.TenantSvc, cfg.BarrierReg, ti.Raft, cfg.Manager, logger); err != nil {
 			_ = ti.Raft.CloseAll()
 			if ti.Hosts != nil {
 				_ = ti.Hosts.CloseAll()
@@ -268,6 +287,7 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 				cfg.RaftAddr,
 				logger,
 				WithBarrierReadiness(cfg.BarrierReg),
+				WithSealRecords(cfg.ClusterSealer),
 				WithJoinObserver(ti.Raft),
 				WithPromoter(newRaftPromoter(cfg.Host)),
 			)

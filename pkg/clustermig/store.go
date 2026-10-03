@@ -99,15 +99,15 @@ type ClusterMigration struct {
 	// has no wall clock).
 	RequestedAtUnix int64 `json:"requested_at_unix,omitempty"`
 
-	// Credentials carries, per owner NodeID, that owner's migration unlock
-	// credential (passphrase / Shamir unlock secret) SEALED to that node — an
-	// opaque per-recipient ciphertext blob (HPKE envelope) produced by the
-	// CredentialSealer seam. The plaintext credential NEVER appears here: only the
-	// holder of a node's private key can open its own entry, so the replicated
-	// record (and the Raft log) carries no secret in the clear. Empty when no
-	// sealer is wired (e.g. a deployment that supplies credentials per node).
-	Credentials map[string][]byte `json:"credentials,omitempty"`
+	// The record carries no credential in any form, encrypted or not: each
+	// owner supplies its own locally (CredentialSource). Nothing in the Raft
+	// log can unlock a node.
 }
+
+// PhaseAwaitingCredential is an owner's phase while its CredentialSource has
+// no credential for the migration yet. It is retried on every pass and never
+// counted against MaxRecycleAttempts.
+const PhaseAwaitingCredential seal.MigrationPhase = "awaiting-credential"
 
 // NodeMigrationStatus is one owning node's replicated progress for a generation.
 type NodeMigrationStatus struct {

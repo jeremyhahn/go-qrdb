@@ -17,12 +17,17 @@ package embedded
 import (
 	"context"
 
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sealconv"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // SealDatabase seals a database's encryption barrier via the injected service.
 func (t *Transport) SealDatabase(ctx context.Context, name string) error {
+	if err := t.gate("SealDatabase"); err != nil {
+		return err
+	}
 	if t.dbSvc == nil {
 		return &NilServiceError{Service: "DatabaseServicer"}
 	}
@@ -31,6 +36,9 @@ func (t *Transport) SealDatabase(ctx context.Context, name string) error {
 
 // UnsealDatabase unseals a database's encryption barrier via the injected service.
 func (t *Transport) UnsealDatabase(ctx context.Context, name, secret string) error {
+	if err := t.gate("UnsealDatabase"); err != nil {
+		return err
+	}
 	if t.dbSvc == nil {
 		return &NilServiceError{Service: "DatabaseServicer"}
 	}
@@ -44,6 +52,9 @@ func (t *Transport) UnsealDatabase(ctx context.Context, name, secret string) err
 
 // DatabaseBarrierStatus returns a database barrier's status via the injected service.
 func (t *Transport) DatabaseBarrierStatus(ctx context.Context, name string) (*transport.DatabaseBarrierStatus, error) {
+	if err := t.gate("DatabaseBarrierStatus"); err != nil {
+		return nil, err
+	}
 	if t.dbSvc == nil {
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
 	}
@@ -56,5 +67,6 @@ func (t *Transport) DatabaseBarrierStatus(ctx context.Context, name string) (*tr
 		Strategy:       string(st.Strategy),
 		HardwareBacked: st.HardwareBacked,
 		InitializedAt:  st.InitializedAt,
+		ClusterSeal:    sealconv.FromReport(st.ClusterSeal),
 	}, nil
 }

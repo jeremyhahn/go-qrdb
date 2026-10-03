@@ -33,6 +33,7 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
@@ -40,6 +41,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
@@ -118,6 +120,14 @@ type Transport struct {
 	authFactorSvc service.AuthFactorServicer
 	auditLogger   audit.AuditLogger
 	encMigrator   service.EncryptionMigrator
+
+	// sealProbe gates every request outside the sealed-window allowlist; see
+	// WithSealProbe. Nil gates nothing.
+	sealProbe SealProbe
+
+	// sealStreams is the node's cluster-seal stream registry; see
+	// WithSealStreams. Nil leaves this transport's own watches unguarded.
+	sealStreams *clusterseal.Streams
 
 	// registry is the node's per-(tenant, database) service registry, the
 	// seam WithDatabase scopes the data plane through and every named-
@@ -315,6 +325,9 @@ func (t *Transport) Healthy(_ context.Context) bool {
 // based on the method name. This is provided for interface compliance;
 // callers should prefer the typed KVClient and AdminClient methods.
 func (t *Transport) Request(ctx context.Context, method string, req, resp any) error {
+	if err := t.gate("Request"); err != nil {
+		return err
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -527,6 +540,9 @@ func resolveReadConsistency(opts []transport.ReadOption) (consistency.ReadOption
 // Put stores a key-value pair through the embedded KV service.
 // Optional WriteOption controls the durability guarantee.
 func (t *Transport) Put(ctx context.Context, key string, value []byte, opts ...transport.WriteOption) error {
+	if err := t.gate("Put"); err != nil {
+		return err
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -539,6 +555,9 @@ func (t *Transport) Put(ctx context.Context, key string, value []byte, opts ...t
 // Get retrieves a value by key through the embedded KV service.
 // Optional ReadOption controls the consistency level.
 func (t *Transport) Get(ctx context.Context, key string, opts ...transport.ReadOption) ([]byte, error) {
+	if err := t.gate("Get"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -559,6 +578,9 @@ func (t *Transport) Get(ctx context.Context, key string, opts ...transport.ReadO
 // Delete removes a key through the embedded KV service.
 // Optional WriteOption controls the durability guarantee.
 func (t *Transport) Delete(ctx context.Context, key string, opts ...transport.WriteOption) error {
+	if err := t.gate("Delete"); err != nil {
+		return err
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -574,6 +596,9 @@ func (t *Transport) Delete(ctx context.Context, key string, opts ...transport.Wr
 // GuardedKVClient capability, which the embedded transport can offer because it
 // reaches the service directly (go-qrdb#119).
 func (t *Transport) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	if err := t.gate("PutIfAbsent"); err != nil {
+		return false, err
+	}
 	if t.closed.Load() {
 		return false, &transport.ClosedError{}
 	}
@@ -585,6 +610,9 @@ func (t *Transport) PutIfAbsent(ctx context.Context, key string, value []byte) (
 // equals expected, delegating to the KV service's guarded delete. It is the
 // release half of PutIfAbsent.
 func (t *Transport) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	if err := t.gate("CompareAndDelete"); err != nil {
+		return false, err
+	}
 	if t.closed.Load() {
 		return false, &transport.ClosedError{}
 	}
@@ -597,6 +625,9 @@ func (t *Transport) CompareAndDelete(ctx context.Context, key string, expected [
 // swap. It is the edit half of the guarded set; an absent key is left absent,
 // because a swap is not a create.
 func (t *Transport) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	if err := t.gate("CompareAndSwap"); err != nil {
+		return false, err
+	}
 	if t.closed.Load() {
 		return false, &transport.ClosedError{}
 	}
@@ -607,6 +638,9 @@ func (t *Transport) CompareAndSwap(ctx context.Context, key string, expected, ne
 // List returns sorted keys matching the given prefix through the
 // embedded KV service. Optional ReadOption controls the consistency level.
 func (t *Transport) List(ctx context.Context, prefix string, opts ...transport.ReadOption) ([]string, error) {
+	if err := t.gate("List"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -627,6 +661,9 @@ func (t *Transport) List(ctx context.Context, prefix string, opts ...transport.R
 // Scan returns all key-value pairs matching the given prefix through
 // the embedded KV service. Optional ReadOption controls the consistency level.
 func (t *Transport) Scan(ctx context.Context, prefix string, opts ...transport.ReadOption) (map[string][]byte, error) {
+	if err := t.gate("Scan"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -647,6 +684,9 @@ func (t *Transport) Scan(ctx context.Context, prefix string, opts ...transport.R
 // Exists checks whether a key exists. Performs a check via Get.
 // Optional ReadOption controls the consistency level.
 func (t *Transport) Exists(ctx context.Context, key string, opts ...transport.ReadOption) (bool, error) {
+	if err := t.gate("Exists"); err != nil {
+		return false, err
+	}
 	if t.closed.Load() {
 		return false, &transport.ClosedError{}
 	}
@@ -674,6 +714,9 @@ func (t *Transport) Exists(ctx context.Context, key string, opts ...transport.Re
 
 // Health returns the health status through the embedded admin service.
 func (t *Transport) Health(ctx context.Context) (*transport.HealthResponse, error) {
+	if err := t.gate("Health"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -689,6 +732,9 @@ func (t *Transport) Health(ctx context.Context) (*transport.HealthResponse, erro
 
 // Status returns detailed node status through the embedded admin service.
 func (t *Transport) Status(ctx context.Context) (*transport.StatusResponse, error) {
+	if err := t.gate("Status"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -709,6 +755,9 @@ func (t *Transport) Status(ctx context.Context) (*transport.StatusResponse, erro
 
 // Peers returns the peer membership through the embedded admin service.
 func (t *Transport) Peers(ctx context.Context) (*transport.PeersResponse, error) {
+	if err := t.gate("Peers"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -739,6 +788,9 @@ func (t *Transport) Peers(ctx context.Context) (*transport.PeersResponse, error)
 
 // AddMember adds a new replica through the embedded admin service.
 func (t *Transport) AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error {
+	if err := t.gate("AddMember"); err != nil {
+		return err
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -747,6 +799,9 @@ func (t *Transport) AddMember(ctx context.Context, shardID, replicaID uint64, ra
 
 // RemoveMember removes a replica through the embedded admin service.
 func (t *Transport) RemoveMember(ctx context.Context, shardID, replicaID uint64) error {
+	if err := t.gate("RemoveMember"); err != nil {
+		return err
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -755,6 +810,9 @@ func (t *Transport) RemoveMember(ctx context.Context, shardID, replicaID uint64)
 
 // RequestSnapshot triggers a snapshot through the embedded admin service.
 func (t *Transport) RequestSnapshot(ctx context.Context, shardID uint64) error {
+	if err := t.gate("RequestSnapshot"); err != nil {
+		return err
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -764,6 +822,9 @@ func (t *Transport) RequestSnapshot(ctx context.Context, shardID uint64) error {
 // Drain transitions the host into drain mode through the embedded
 // admin service.
 func (t *Transport) Drain(ctx context.Context) error {
+	if err := t.gate("Drain"); err != nil {
+		return err
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -773,6 +834,9 @@ func (t *Transport) Drain(ctx context.Context) error {
 // Capabilities returns the compile-time feature set through the embedded
 // admin service.
 func (t *Transport) Capabilities(ctx context.Context) (*transport.CapabilitiesResponse, error) {
+	if err := t.gate("Capabilities"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -808,6 +872,9 @@ func (t *Transport) Capabilities(ctx context.Context) (*transport.CapabilitiesRe
 // StartShard initializes and starts a Raft group for the given shard
 // through the embedded admin service.
 func (t *Transport) StartShard(ctx context.Context, req *transport.StartShardRequest) error {
+	if err := t.gate("StartShard"); err != nil {
+		return err
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -826,6 +893,9 @@ func (t *Transport) StartShard(ctx context.Context, req *transport.StartShardReq
 // StopShard stops the Raft group for the given shard through the
 // embedded admin service.
 func (t *Transport) StopShard(ctx context.Context, shardID uint64) error {
+	if err := t.gate("StopShard"); err != nil {
+		return err
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -838,6 +908,9 @@ func (t *Transport) StopShard(ctx context.Context, shardID uint64) error {
 // GetShardState returns the Raft state for a shard through the
 // embedded admin service.
 func (t *Transport) GetShardState(ctx context.Context, shardID uint64) (*transport.ShardStateResponse, error) {
+	if err := t.gate("GetShardState"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -857,6 +930,9 @@ func (t *Transport) GetShardState(ctx context.Context, shardID uint64) (*transpo
 // GetTopology returns the full cluster topology through the embedded
 // admin service.
 func (t *Transport) GetTopology(ctx context.Context) (*transport.TopologyResponse, error) {
+	if err := t.gate("GetTopology"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -890,6 +966,9 @@ func (t *Transport) GetTopology(ctx context.Context) (*transport.TopologyRespons
 // the embedded MVCC service. Optional WriteOption controls the durability
 // guarantee.
 func (t *Transport) PutWithLease(ctx context.Context, key string, value []byte, leaseID int64, opts ...transport.WriteOption) (*transport.MVCCKeyValue, error) {
+	if err := t.gate("PutWithLease"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -914,6 +993,9 @@ func (t *Transport) PutWithLease(ctx context.Context, key string, value []byte, 
 // through the embedded MVCC service. Optional ReadOption controls the
 // consistency level.
 func (t *Transport) GetRevision(ctx context.Context, key string, opts ...transport.ReadOption) (*transport.MVCCKeyValue, error) {
+	if err := t.gate("GetRevision"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -938,6 +1020,9 @@ func (t *Transport) GetRevision(ctx context.Context, key string, opts ...transpo
 // through the embedded MVCC service. Optional ReadOption controls the
 // consistency level.
 func (t *Transport) GetAtRevision(ctx context.Context, key string, revision int64, opts ...transport.ReadOption) (*transport.MVCCKeyValue, error) {
+	if err := t.gate("GetAtRevision"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -962,6 +1047,9 @@ func (t *Transport) GetAtRevision(ctx context.Context, key string, revision int6
 // through the embedded MVCC service. Optional ReadOption controls the
 // consistency level.
 func (t *Transport) Range(ctx context.Context, start, end []byte, rangeOpts transport.RangeOptions, opts ...transport.ReadOption) (*transport.RangeResponse, error) {
+	if err := t.gate("Range"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -993,6 +1081,9 @@ func (t *Transport) Range(ctx context.Context, start, end []byte, rangeOpts tran
 // Compact discards all MVCC revisions older than the specified revision
 // through the embedded MVCC service.
 func (t *Transport) Compact(ctx context.Context, revision int64) error {
+	if err := t.gate("Compact"); err != nil {
+		return err
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -1005,6 +1096,9 @@ func (t *Transport) Compact(ctx context.Context, revision int64) error {
 // CurrentRevision returns the latest committed MVCC revision through
 // the embedded MVCC service.
 func (t *Transport) CurrentRevision(ctx context.Context) (int64, error) {
+	if err := t.gate("CurrentRevision"); err != nil {
+		return 0, err
+	}
 	if t.closed.Load() {
 		return 0, &transport.ClosedError{}
 	}
@@ -1023,6 +1117,9 @@ func (t *Transport) CurrentRevision(ctx context.Context) (int64, error) {
 // undo, never a Raft rewind. Exactly one of req.Prefix and req.Keys must be
 // set.
 func (t *Transport) RestoreToRevision(ctx context.Context, req *transport.RestoreRevisionRequest) (*transport.RestoreRevisionResult, error) {
+	if err := t.gate("RestoreToRevision"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -1048,6 +1145,9 @@ func (t *Transport) RestoreToRevision(ctx context.Context, req *transport.Restor
 // corresponding operation set through the embedded transaction service.
 // Optional WriteOption controls the durability guarantee.
 func (t *Transport) ExecuteTransaction(ctx context.Context, req *transport.TransactionRequest, opts ...transport.WriteOption) (*transport.TransactionResponse, error) {
+	if err := t.gate("ExecuteTransaction"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -1099,6 +1199,9 @@ func (t *Transport) ExecuteTransaction(ctx context.Context, req *transport.Trans
 // embedded batch service. Optional WriteOption controls the durability
 // guarantee.
 func (t *Transport) ExecuteBatch(ctx context.Context, ops []transport.Op, opts ...transport.WriteOption) (*transport.BatchResponse, error) {
+	if err := t.gate("ExecuteBatch"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -1130,6 +1233,9 @@ func (t *Transport) ExecuteBatch(ctx context.Context, ops []transport.Op, opts .
 // through the embedded batch service. The filename parameter is used
 // for format auto-detection when opts.Format is "auto" or empty.
 func (t *Transport) ImportFile(ctx context.Context, filename string, data io.Reader, opts transport.ImportOptions) (*transport.ImportResult, error) {
+	if err := t.gate("ImportFile"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -1176,6 +1282,20 @@ func (t *Transport) ImportFile(ctx context.Context, filename string, data io.Rea
 // WatchClient implementation
 // ---------------------------------------------------------------------------
 
+// streamRefusal is a stream open's refusal once it has subscribed: the node
+// gate (the probe), then the tenant's and the database's refusal through the
+// registry, when it reports one (service.StreamRefuser) -- the same refusals
+// a network listener's stream asks.
+func (t *Transport) streamRefusal(method, tenantID, db string) error {
+	if err := t.gate(method); err != nil {
+		return err
+	}
+	if refuser, ok := t.registry.(service.StreamRefuser); ok {
+		return refuser.StreamRefusal(tenantID, db)
+	}
+	return nil
+}
+
 // watchOpener opens a watcher over the embedded watch service.
 // service.WatchServicer.Watch and service.WatchServicer.WatchPrefix both have
 // this signature, so Watch and WatchPrefix differ only in the method value
@@ -1185,6 +1305,9 @@ type watchOpener func(context.Context, string, ...watch.WatchOption) (watch.Watc
 // Watch creates a watcher that delivers events for the specified key
 // through the embedded watch service.
 func (t *Transport) Watch(ctx context.Context, key string, opts transport.WatchOptions) (<-chan transport.WatchResponse, error) {
+	if err := t.gate("Watch"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -1192,12 +1315,15 @@ func (t *Transport) Watch(ctx context.Context, key string, opts transport.WatchO
 		return nil, &NilServiceError{Service: "WatchServicer"}
 	}
 
-	return t.watchStream(ctx, t.watchSvc.Watch, key, opts)
+	return t.watchStream(ctx, "Watch", t.watchSvc.Watch, key, opts)
 }
 
 // WatchPrefix creates a watcher that delivers events for all keys
 // matching the given prefix through the embedded watch service.
 func (t *Transport) WatchPrefix(ctx context.Context, prefix string, opts transport.WatchOptions) (<-chan transport.WatchResponse, error) {
+	if err := t.gate("WatchPrefix"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -1205,7 +1331,7 @@ func (t *Transport) WatchPrefix(ctx context.Context, prefix string, opts transpo
 		return nil, &NilServiceError{Service: "WatchServicer"}
 	}
 
-	return t.watchStream(ctx, t.watchSvc.WatchPrefix, prefix, opts)
+	return t.watchStream(ctx, "WatchPrefix", t.watchSvc.WatchPrefix, prefix, opts)
 }
 
 // watchStream opens a watcher for target through open and spawns the goroutine
@@ -1226,9 +1352,31 @@ func (t *Transport) WatchPrefix(ctx context.Context, prefix string, opts transpo
 // Classification runs AFTER translateError, not instead of it: it inspects the
 // message and returns its argument unchanged when nothing matches, so every
 // non-watch refusal keeps the transport type translateError maps it to.
-func (t *Transport) watchStream(ctx context.Context, open watchOpener, target string, opts transport.WatchOptions) (<-chan transport.WatchResponse, error) {
-	watcher, err := open(ctx, target, toServiceWatchOpts(opts)...)
+//
+// With a seal stream registry (WithSealStreams) the watch subscribes FIRST
+// and the gate is asked again before it opens (clusterseal.Streams.GuardWatcher):
+// a seal closes the gate before it ends streams, so one that lands after the
+// gate admitted this request either refuses it here or ends it.
+func (t *Transport) watchStream(ctx context.Context, method string, open watchOpener, target string, opts transport.WatchOptions) (<-chan transport.WatchResponse, error) {
+	openWatcher := func() (watch.Watcher, error) {
+		return open(ctx, target, toServiceWatchOpts(opts)...)
+	}
+	var (
+		watcher watch.Watcher
+		err     error
+	)
+	if t.sealStreams != nil {
+		tenantID := tenantid.Normalize(tenant.FromContext(ctx))
+		watcher, err = t.sealStreams.GuardWatcher(tenantID, tenant.DefaultDatabase,
+			func() error { return t.streamRefusal(method, tenantID, tenant.DefaultDatabase) }, openWatcher)
+	} else {
+		watcher, err = openWatcher()
+	}
 	if err != nil {
+		var sealed *BarrierSealedError
+		if errors.As(err, &sealed) {
+			return nil, err
+		}
 		return nil, transport.ClassifyWatchError(translateError(err))
 	}
 
@@ -1330,6 +1478,9 @@ func sendTerminalWatchResponse(ctx context.Context, watcher watch.Watcher, ch ch
 // LeaseGrant creates a new lease with the specified TTL through the
 // embedded lease service.
 func (t *Transport) LeaseGrant(ctx context.Context, ttl int64) (*transport.LeaseInfo, error) {
+	if err := t.gate("LeaseGrant"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -1346,6 +1497,9 @@ func (t *Transport) LeaseGrant(ctx context.Context, ttl int64) (*transport.Lease
 // LeaseRevoke immediately expires a lease and deletes attached keys
 // through the embedded lease service.
 func (t *Transport) LeaseRevoke(ctx context.Context, leaseID int64) error {
+	if err := t.gate("LeaseRevoke"); err != nil {
+		return err
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -1358,6 +1512,9 @@ func (t *Transport) LeaseRevoke(ctx context.Context, leaseID int64) error {
 // LeaseKeepAlive resets the TTL on an existing lease through the
 // embedded lease service.
 func (t *Transport) LeaseKeepAlive(ctx context.Context, leaseID int64) (*transport.LeaseInfo, error) {
+	if err := t.gate("LeaseKeepAlive"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -1374,6 +1531,9 @@ func (t *Transport) LeaseKeepAlive(ctx context.Context, leaseID int64) (*transpo
 // LeaseTimeToLive returns the current state of a lease through the
 // embedded lease service.
 func (t *Transport) LeaseTimeToLive(ctx context.Context, leaseID int64) (*transport.LeaseInfo, error) {
+	if err := t.gate("LeaseTimeToLive"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -1390,6 +1550,9 @@ func (t *Transport) LeaseTimeToLive(ctx context.Context, leaseID int64) (*transp
 // LeaseList returns all active leases through the embedded lease
 // service.
 func (t *Transport) LeaseList(ctx context.Context) ([]*transport.LeaseInfo, error) {
+	if err := t.gate("LeaseList"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -1410,6 +1573,9 @@ func (t *Transport) LeaseList(ctx context.Context) ([]*transport.LeaseInfo, erro
 // TSWrite stores a single time-series data point through the embedded
 // time-series service.
 func (t *Transport) TSWrite(ctx context.Context, point *transport.TSDataPoint) error {
+	if err := t.gate("TSWrite"); err != nil {
+		return err
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -1424,6 +1590,9 @@ func (t *Transport) TSWrite(ctx context.Context, point *transport.TSDataPoint) e
 // TSWriteBatch stores multiple time-series data points atomically
 // through the embedded time-series service.
 func (t *Transport) TSWriteBatch(ctx context.Context, points []transport.TSDataPoint) error {
+	if err := t.gate("TSWriteBatch"); err != nil {
+		return err
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -1446,6 +1615,9 @@ func (t *Transport) TSWriteBatch(ctx context.Context, points []transport.TSDataP
 // through the embedded time-series service. When req.Consistency is
 // set, it routes to QueryWithConsistency.
 func (t *Transport) TSQuery(ctx context.Context, req *transport.TSQueryRequest) (*transport.TSQueryResponse, error) {
+	if err := t.gate("TSQuery"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -1492,6 +1664,9 @@ func (t *Transport) TSQuery(ctx context.Context, req *transport.TSQueryRequest) 
 // through the embedded time-series service. When req.Consistency is
 // set, it routes to AggregateWithConsistency.
 func (t *Transport) TSAggregate(ctx context.Context, req *transport.TSAggregateRequest) (*transport.TSAggregateResponse, error) {
+	if err := t.gate("TSAggregate"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -1528,6 +1703,9 @@ func (t *Transport) TSAggregate(ctx context.Context, req *transport.TSAggregateR
 // TSWritePoint stores a single validated data point through the
 // embedded time-series service.
 func (t *Transport) TSWritePoint(ctx context.Context, point *transport.TSDataPoint) error {
+	if err := t.gate("TSWritePoint"); err != nil {
+		return err
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -1547,6 +1725,9 @@ func (t *Transport) TSWritePoint(ctx context.Context, point *transport.TSDataPoi
 // grouping through the embedded time-series service. When req.Consistency
 // is set, it routes to QueryRichWithConsistency.
 func (t *Transport) TSRichQuery(ctx context.Context, req *transport.TSRichQueryRequest) (*transport.TSRichQueryResponse, error) {
+	if err := t.gate("TSRichQuery"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -1588,6 +1769,9 @@ func (t *Transport) TSRichQuery(ctx context.Context, req *transport.TSRichQueryR
 // TSDeleteSeries deletes time-series data matching the criteria through
 // the embedded time-series service.
 func (t *Transport) TSDeleteSeries(ctx context.Context, req *transport.TSDeleteRequest) (*transport.TSDeleteResponse, error) {
+	if err := t.gate("TSDeleteSeries"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -1616,6 +1800,9 @@ func (t *Transport) TSDeleteSeries(ctx context.Context, req *transport.TSDeleteR
 // TSGetRetention retrieves the retention policy for a metric through
 // the embedded time-series service.
 func (t *Transport) TSGetRetention(ctx context.Context, req *transport.TSGetRetentionRequest) (*transport.TSGetRetentionResponse, error) {
+	if err := t.gate("TSGetRetention"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -1640,6 +1827,9 @@ func (t *Transport) TSGetRetention(ctx context.Context, req *transport.TSGetRete
 // TSSetRetention sets the retention policy for a metric through
 // the embedded time-series service.
 func (t *Transport) TSSetRetention(ctx context.Context, req *transport.TSSetRetentionRequest) error {
+	if err := t.gate("TSSetRetention"); err != nil {
+		return err
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -1659,6 +1849,9 @@ func (t *Transport) TSSetRetention(ctx context.Context, req *transport.TSSetRete
 // embedded time-series service. When req.Consistency is set, it routes
 // to ListMetricsWithConsistency.
 func (t *Transport) TSListMetrics(ctx context.Context, req *transport.TSListMetricsRequest) (*transport.TSListMetricsResponse, error) {
+	if err := t.gate("TSListMetrics"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -1697,6 +1890,9 @@ func (t *Transport) TSListMetrics(ctx context.Context, req *transport.TSListMetr
 // CreateNamespace creates a new vector namespace through the embedded
 // vector service.
 func (t *Transport) CreateNamespace(ctx context.Context, req *transport.CreateNamespaceRequest) (*transport.CreateNamespaceResponse, error) {
+	if err := t.gate("CreateNamespace"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -1727,6 +1923,9 @@ func (t *Transport) CreateNamespace(ctx context.Context, req *transport.CreateNa
 // DeleteNamespace removes a namespace and all its vectors through the
 // embedded vector service.
 func (t *Transport) DeleteNamespace(ctx context.Context, req *transport.DeleteNamespaceRequest) (*transport.DeleteNamespaceResponse, error) {
+	if err := t.gate("DeleteNamespace"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -1750,6 +1949,9 @@ func (t *Transport) DeleteNamespace(ctx context.Context, req *transport.DeleteNa
 // ListNamespaces returns all vector namespaces through the embedded
 // vector service.
 func (t *Transport) ListNamespaces(ctx context.Context, req *transport.ListNamespacesRequest) (*transport.ListNamespacesResponse, error) {
+	if err := t.gate("ListNamespaces"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -1775,6 +1977,9 @@ func (t *Transport) ListNamespaces(ctx context.Context, req *transport.ListNames
 // GetNamespaceInfo returns metadata about a namespace through the
 // embedded vector service.
 func (t *Transport) GetNamespaceInfo(ctx context.Context, req *transport.GetNamespaceInfoRequest) (*transport.GetNamespaceInfoResponse, error) {
+	if err := t.gate("GetNamespaceInfo"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -1804,6 +2009,9 @@ func (t *Transport) GetNamespaceInfo(ctx context.Context, req *transport.GetName
 // UpsertVector inserts or updates a vector through the embedded vector
 // service.
 func (t *Transport) UpsertVector(ctx context.Context, req *transport.UpsertVectorRequest) (*transport.UpsertVectorResponse, error) {
+	if err := t.gate("UpsertVector"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -1831,6 +2039,9 @@ func (t *Transport) UpsertVector(ctx context.Context, req *transport.UpsertVecto
 // GetVector retrieves a single vector by ID through the embedded vector
 // service.
 func (t *Transport) GetVector(ctx context.Context, req *transport.GetVectorRequest) (*transport.GetVectorResponse, error) {
+	if err := t.gate("GetVector"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -1862,6 +2073,9 @@ func (t *Transport) GetVector(ctx context.Context, req *transport.GetVectorReque
 // DeleteVector removes a single vector by ID through the embedded
 // vector service.
 func (t *Transport) DeleteVector(ctx context.Context, req *transport.DeleteVectorRequest) (*transport.DeleteVectorResponse, error) {
+	if err := t.gate("DeleteVector"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -1885,6 +2099,9 @@ func (t *Transport) DeleteVector(ctx context.Context, req *transport.DeleteVecto
 // BatchUpsert inserts or updates multiple vectors through the embedded
 // vector service.
 func (t *Transport) BatchUpsert(ctx context.Context, req *transport.BatchUpsertRequest) (*transport.BatchUpsertResponse, error) {
+	if err := t.gate("BatchUpsert"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -1912,6 +2129,9 @@ func (t *Transport) BatchUpsert(ctx context.Context, req *transport.BatchUpsertR
 // BatchDeleteVectors removes multiple vectors by ID through the embedded
 // vector service.
 func (t *Transport) BatchDeleteVectors(ctx context.Context, req *transport.BatchDeleteVectorsRequest) (*transport.BatchDeleteVectorsResponse, error) {
+	if err := t.gate("BatchDeleteVectors"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -1937,6 +2157,9 @@ func (t *Transport) BatchDeleteVectors(ctx context.Context, req *transport.Batch
 // ListVectors returns a paginated list of vectors through the embedded
 // vector service.
 func (t *Transport) ListVectors(ctx context.Context, req *transport.ListVectorsRequest) (*transport.ListVectorsResponse, error) {
+	if err := t.gate("ListVectors"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -1967,6 +2190,9 @@ func (t *Transport) ListVectors(ctx context.Context, req *transport.ListVectorsR
 // UpdateMetadata updates the metadata for an existing vector through
 // the embedded vector service.
 func (t *Transport) UpdateMetadata(ctx context.Context, req *transport.UpdateVectorMetadataRequest) (*transport.UpdateVectorMetadataResponse, error) {
+	if err := t.gate("UpdateMetadata"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -1995,6 +2221,9 @@ func (t *Transport) UpdateMetadata(ctx context.Context, req *transport.UpdateVec
 // SearchSimilar performs a k-nearest-neighbor search through the
 // embedded vector service.
 func (t *Transport) SearchSimilar(ctx context.Context, req *transport.SearchSimilarRequest) (*transport.SearchSimilarResponse, error) {
+	if err := t.gate("SearchSimilar"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -2026,6 +2255,9 @@ func (t *Transport) SearchSimilar(ctx context.Context, req *transport.SearchSimi
 // SearchByMetadata returns vectors matching metadata filters through
 // the embedded vector service.
 func (t *Transport) SearchByMetadata(ctx context.Context, req *transport.SearchByMetadataRequest) (*transport.SearchByMetadataResponse, error) {
+	if err := t.gate("SearchByMetadata"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -2057,6 +2289,9 @@ func (t *Transport) SearchByMetadata(ctx context.Context, req *transport.SearchB
 // HybridSearch combines vector similarity and metadata filtering
 // through the embedded vector service.
 func (t *Transport) HybridSearch(ctx context.Context, req *transport.HybridSearchRequest) (*transport.HybridSearchResponse, error) {
+	if err := t.gate("HybridSearch"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -2092,6 +2327,9 @@ func (t *Transport) HybridSearch(ctx context.Context, req *transport.HybridSearc
 // SearchByID searches using an existing vector's ID as the query
 // through the embedded vector service.
 func (t *Transport) SearchByID(ctx context.Context, req *transport.SearchByIDRequest) (*transport.SearchByIDResponse, error) {
+	if err := t.gate("SearchByID"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -2125,6 +2363,9 @@ func (t *Transport) SearchByID(ctx context.Context, req *transport.SearchByIDReq
 // RebuildIndex triggers an asynchronous index rebuild through the
 // embedded vector service.
 func (t *Transport) RebuildIndex(ctx context.Context, req *transport.RebuildIndexRequest) (*transport.RebuildIndexResponse, error) {
+	if err := t.gate("RebuildIndex"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -2155,6 +2396,9 @@ func (t *Transport) RebuildIndex(ctx context.Context, req *transport.RebuildInde
 // GetRebuildProgress returns the current progress of an index rebuild
 // through the embedded vector service.
 func (t *Transport) GetRebuildProgress(ctx context.Context, req *transport.GetRebuildProgressRequest) (*transport.GetRebuildProgressResponse, error) {
+	if err := t.gate("GetRebuildProgress"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -2186,6 +2430,9 @@ func (t *Transport) GetRebuildProgress(ctx context.Context, req *transport.GetRe
 // GetIndexStats returns statistics about a namespace's vector index
 // through the embedded vector service.
 func (t *Transport) GetIndexStats(ctx context.Context, req *transport.GetIndexStatsRequest) (*transport.GetIndexStatsResponse, error) {
+	if err := t.gate("GetIndexStats"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -2215,6 +2462,9 @@ func (t *Transport) GetIndexStats(ctx context.Context, req *transport.GetIndexSt
 // CompactNamespace triggers compaction of a namespace's storage through
 // the embedded vector service.
 func (t *Transport) CompactNamespace(ctx context.Context, req *transport.CompactNamespaceRequest) (*transport.CompactNamespaceResponse, error) {
+	if err := t.gate("CompactNamespace"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -2242,6 +2492,9 @@ func (t *Transport) CompactNamespace(ctx context.Context, req *transport.Compact
 // GetCompactionProgress returns the current progress of a compaction
 // through the embedded vector service.
 func (t *Transport) GetCompactionProgress(ctx context.Context, req *transport.GetCompactionProgressRequest) (*transport.GetCompactionProgressResponse, error) {
+	if err := t.gate("GetCompactionProgress"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}

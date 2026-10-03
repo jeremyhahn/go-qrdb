@@ -643,71 +643,35 @@ func TestClusteredNode_UnsealRetriesAfterACancelledBoot_TenantBarriersSealed(t *
 	// Re-open the same data directory: the system barrier is sealed again
 	// (NewClusteredNode never auto-unseals a passphrase barrier), so this
 	// Unseal re-runs completeClusteredBoot from scratch, including
-	// BuildTenantInfra's restore-and-reattach of the tenants just created.
+	// BuildTenantInfra's restore of the tenants just created, which unseals
+	// every auto-unseal tenant barrier in one pass.
 	//
-	// The cancellation delay is searched for, in both directions, rather
-	// than fixed or monotonically grown: this machine's single-node election
-	// latency varies by more than 10x between runs (observed ~150ms-900ms
-	// per election under light load in this suite, and well over a second
-	// under the load a full package run adds), so a fixed delay sometimes
-	// lands before RestoreVolumeTenants has registered any tenant barrier
-	// (too fast) and sometimes after the whole boot has already succeeded
-	// (too slow). The search exponentially grows or shrinks the delay while
-	// only one bound is known (so it reaches the right order of magnitude in
-	// a handful of steps regardless of how slow this run is) and bisects
-	// once both a too-fast and a too-slow delay have been seen. Landing is
-	// judged by a signal that does not depend on the fix under test:
-	// RestoreVolumeTenants registers every tenant barrier it finds in one
-	// synchronous pass BEFORE the per-tenant Host reattach loop even starts,
-	// so "at least one tenant is registered" means that pass ran to
-	// completion regardless of what happens to a registered barrier's
-	// sealed state afterward -- which is exactly the question this test asks.
-	var (
-		n2                  *Node
-		unsealErr           error
-		low, high           time.Duration
-		lowKnown, highKnown bool
-	)
-	delay := 400 * time.Millisecond
-	const maxAttempts = 16
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		n2, err = NewClusteredNode(ctx, cfg, raftMembers(), nil,
-			WithTenantIsolation(), WithDefaultTenantEntitlements(volumeEntitlements()))
-		if err != nil {
-			t.Fatalf("NewClusteredNode (second boot, attempt %d): %v", attempt, err)
-		}
-		cancelCtx, cancel := context.WithCancel(context.Background())
-		timer := time.AfterFunc(delay, cancel)
-		unsealErr = n2.Unseal(cancelCtx, creds())
-		timer.Stop()
-		cancel()
-
-		registered := len(n2.BarrierRegistry().ListTenants()) > 0
-		if unsealErr != nil && registered {
-			break // landed inside tenant reattach: exactly the window this test needs.
-		}
-		_ = n2.Close()
-		n2 = nil
-		if unsealErr == nil {
-			// Too slow: the whole boot finished before the cancel fired.
-			high, highKnown = delay, true
-			if lowKnown {
-				delay = (low + high) / 2
-			} else {
-				delay /= 2
-			}
-		} else {
-			// Too fast: cancelled before any tenant was even registered.
-			low, lowKnown = delay, true
-			if highKnown {
-				delay = (low + high) / 2
-			} else {
-				delay *= 2
-			}
-		}
+	// The cancellation lands through tenantInfraBuiltHook, right after that
+	// pass and before the rest of the boot, rather than by timing: a node
+	// that installs a cluster seal monitor re-attaches no tenant Host at boot
+	// (the reconciler and first access do, once the record allows), so what
+	// remains of the boot after the restore is too short to land a timed
+	// cancellation in reliably.
+	n2, err := NewClusteredNode(ctx, cfg, raftMembers(), nil,
+		WithTenantIsolation(), WithDefaultTenantEntitlements(volumeEntitlements()))
+	if err != nil {
+		t.Fatalf("NewClusteredNode (second boot): %v", err)
 	}
-	if n2 == nil {
-		t.Fatalf("could not land a cancellation inside tenant reattach after %d attempts", maxAttempts)
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	registeredAtCancel := -1
+	prevHook := tenantInfraBuiltHook
+	tenantInfraBuiltHook = func() {
+		registeredAtCancel = len(n2.BarrierRegistry().ListTenants())
+		cancel()
+	}
+	unsealErr := n2.Unseal(cancelCtx, creds())
+	tenantInfraBuiltHook = prevHook
+	if unsealErr == nil {
+		t.Fatalf("Unseal cancelled after the tenant restore completed the boot (hook saw %d tenants)", registeredAtCancel)
+	}
+	if registeredAtCancel != tenantCount {
+		t.Fatalf("tenants registered when the boot was cancelled = %d, want %d", registeredAtCancel, tenantCount)
 	}
 	t.Cleanup(func() { _ = n2.Close() })
 

@@ -37,6 +37,9 @@ func WithLockService(svc service.LockServicer) Option {
 // LockAcquire acquires a distributed lock, blocking until acquired or the
 // context is cancelled. Delegates to the injected LockServicer.
 func (t *Transport) LockAcquire(ctx context.Context, req *transport.LockAcquireRequest) (*transport.LockInfo, error) {
+	if err := t.gate("LockAcquire"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -55,6 +58,9 @@ func (t *Transport) LockAcquire(ctx context.Context, req *transport.LockAcquireR
 // LockTryLock attempts to acquire the lock without blocking. Returns an
 // error immediately when the lock is held by another owner.
 func (t *Transport) LockTryLock(ctx context.Context, req *transport.LockAcquireRequest) (*transport.LockInfo, error) {
+	if err := t.gate("LockTryLock"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -72,6 +78,9 @@ func (t *Transport) LockTryLock(ctx context.Context, req *transport.LockAcquireR
 
 // LockRelease releases the distributed lock identified by key and fencing token.
 func (t *Transport) LockRelease(ctx context.Context, req *transport.LockReleaseRequest) error {
+	if err := t.gate("LockRelease"); err != nil {
+		return err
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -84,6 +93,9 @@ func (t *Transport) LockRelease(ctx context.Context, req *transport.LockReleaseR
 
 // LockExtend refreshes the TTL of an existing lock via lease keepalive.
 func (t *Transport) LockExtend(ctx context.Context, req *transport.LockExtendRequest) (*transport.LockInfo, error) {
+	if err := t.gate("LockExtend"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -102,6 +114,9 @@ func (t *Transport) LockExtend(ctx context.Context, req *transport.LockExtendReq
 // LockStatus returns the current lock state for the given key, or nil
 // when the key is not currently locked.
 func (t *Transport) LockStatus(ctx context.Context, key string) (*transport.LockInfo, error) {
+	if err := t.gate("LockStatus"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -123,6 +138,9 @@ func (t *Transport) LockStatus(ctx context.Context, key string) (*transport.Lock
 // LockList returns all active locks whose keys start with the given prefix.
 // An empty prefix returns all active locks.
 func (t *Transport) LockList(ctx context.Context, prefix string) (*transport.LockListResponse, error) {
+	if err := t.gate("LockList"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}

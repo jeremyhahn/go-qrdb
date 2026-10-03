@@ -140,8 +140,8 @@ func selfScopedPermissions() []Permission {
 		CollectionsRead,
 		CollectionsUpdate,
 
-		// databases
-		DatabasesBarrierStatus,
+		// databases. The barrier permissions (seal, unseal, barrier_status)
+		// are ScopeSelfStrict -- see self_strict_scope.go.
 		DatabasesCreate,
 		DatabasesCreateRaft,
 		DatabasesCreateVolume,
@@ -149,8 +149,6 @@ func selfScopedPermissions() []Permission {
 		DatabasesList,
 		DatabasesRead,
 		DatabasesScale,
-		DatabasesSeal,
-		DatabasesUnseal,
 		DatabasesUpdate,
 		DatabasesOfficerRegister,
 		DatabasesOfficerList,

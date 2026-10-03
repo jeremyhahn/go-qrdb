@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -136,6 +137,10 @@ type StorageBarrier struct {
 	// the barrier is published to any other goroutine).
 	strategiesMu sync.RWMutex
 	strategies   map[StrategyID]SealingStrategy
+
+	// unsealedObservers run each time the barrier unseals (OnUnsealed).
+	unsealedMu        sync.Mutex
+	unsealedObservers []func(context.Context)
 
 	// state: 0 = sealed, 1 = unsealed
 	state atomic.Int32
@@ -387,6 +392,7 @@ func (b *StorageBarrier) initializeWithStrategy(ctx context.Context, strategy Se
 	// Transition to unsealed.
 	b.activeStrategy.Store(strategy.ID())
 	b.state.Store(stateUnsealed)
+	b.notifyUnsealed(ctx)
 	initAt := time.Now().UTC()
 	b.initializedAt.Store(initAt)
 
@@ -451,6 +457,7 @@ func (b *StorageBarrier) Unseal(ctx context.Context, creds Credentials) error {
 
 	b.activeStrategy.Store(sealed.Strategy)
 	b.state.Store(stateUnsealed)
+	b.notifyUnsealed(ctx)
 	// Recover the initialization timestamp. The original timestamp is
 	// persisted in the barrier metadata (not in the sealed root key blob),
 	// so a warm-booted barrier reports the real InitializedAt. If no
@@ -1233,4 +1240,25 @@ func (m *MemoryBackend) Exists(_ context.Context, key string) (bool, error) {
 // Close is a no-op for the in-memory backend.
 func (m *MemoryBackend) Close() error {
 	return nil
+}
+
+// OnUnsealed registers fn to run each time this barrier transitions to
+// unsealed -- by credential, Shamir quorum, recovery keys or initialization
+// -- with the context of the operation that unsealed it. The barrier
+// registry uses it on the system barrier: a system unseal brings back the
+// system-managed tenants whose keys the system barrier wraps.
+func (b *StorageBarrier) OnUnsealed(fn func(context.Context)) {
+	b.unsealedMu.Lock()
+	b.unsealedObservers = append(b.unsealedObservers, fn)
+	b.unsealedMu.Unlock()
+}
+
+// notifyUnsealed runs the OnUnsealed observers.
+func (b *StorageBarrier) notifyUnsealed(ctx context.Context) {
+	b.unsealedMu.Lock()
+	observers := slices.Clone(b.unsealedObservers)
+	b.unsealedMu.Unlock()
+	for _, fn := range observers {
+		fn(ctx)
+	}
 }

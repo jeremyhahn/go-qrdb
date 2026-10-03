@@ -24,6 +24,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+
 	quicraftseal "github.com/jeremyhahn/go-quicraft/pkg/seal"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -141,6 +143,11 @@ func (m *mockBarrierService) BarrierOfficerList(ctx context.Context, domain seal
 		return m.officerListFn(ctx, domain)
 	}
 	return nil, errMockUnset
+}
+
+// BarrierClusterUnseal answers as a node without cluster sealing does.
+func (m *mockBarrierService) BarrierClusterUnseal(context.Context) (*clusterseal.Report, error) {
+	return nil, clusterseal.ErrInactive
 }
 
 func (m *mockBarrierService) BarrierShareClaimBegin(ctx context.Context, domain seal.QuorumDomain, username, thumbprint string) (*service.BarrierShareClaimChallenge, error) {

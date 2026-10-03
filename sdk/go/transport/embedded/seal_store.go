@@ -23,6 +23,9 @@ import (
 
 // SealStorePut stores a secret in the seal store.
 func (t *Transport) SealStorePut(ctx context.Context, req *transport.SealStorePutRequest) error {
+	if err := t.gate("SealStorePut"); err != nil {
+		return err
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -34,6 +37,9 @@ func (t *Transport) SealStorePut(ctx context.Context, req *transport.SealStorePu
 
 // SealStoreGet retrieves a secret from the seal store.
 func (t *Transport) SealStoreGet(ctx context.Context, req *transport.SealStoreGetRequest) (*transport.SealStoreGetResponse, error) {
+	if err := t.gate("SealStoreGet"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -52,6 +58,9 @@ func (t *Transport) SealStoreGet(ctx context.Context, req *transport.SealStoreGe
 
 // SealStoreDelete deletes a secret from the seal store.
 func (t *Transport) SealStoreDelete(ctx context.Context, req *transport.SealStoreDeleteRequest) error {
+	if err := t.gate("SealStoreDelete"); err != nil {
+		return err
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -63,6 +72,9 @@ func (t *Transport) SealStoreDelete(ctx context.Context, req *transport.SealStor
 
 // SealStoreList lists all stored secret names.
 func (t *Transport) SealStoreList(ctx context.Context) (*transport.SealStoreListResponse, error) {
+	if err := t.gate("SealStoreList"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -80,6 +92,9 @@ func (t *Transport) SealStoreList(ctx context.Context) (*transport.SealStoreList
 
 // SealStoreReseal reseals a secret with the current sealing key.
 func (t *Transport) SealStoreReseal(ctx context.Context, req *transport.SealStoreResealRequest) error {
+	if err := t.gate("SealStoreReseal"); err != nil {
+		return err
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -91,6 +106,9 @@ func (t *Transport) SealStoreReseal(ctx context.Context, req *transport.SealStor
 
 // SealStoreStatus returns the seal store status.
 func (t *Transport) SealStoreStatus(ctx context.Context) (*transport.SealStoreStatusResponse, error) {
+	if err := t.gate("SealStoreStatus"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}

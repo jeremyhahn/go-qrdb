@@ -72,6 +72,32 @@ includes the query service's engine and SQL-settings lookups. Another tenant's
 database is answered as missing, and its settings are never applied to your
 session.
 
+**`sql.query_timeout`** (default `30s`, `0` disables it) bounds every statement
+on both wires. On MySQL: a query, a multi-statement query, a prepare and an
+execute, and a server-side cursor while it produces rows (an open cursor
+waiting for the client's next `COM_STMT_FETCH` is not bounded); a statement
+past it is
+cancelled and answered `ER_QUERY_TIMEOUT` (3024), the code MySQL's own
+`max_execution_time` raises. On PostgreSQL: a simple query, an
+extended-protocol statement executed at Parse (no parameters), and each
+Bind/Execute of a parameterized statement's portal; a statement past it is
+answered SQLSTATE `57014` (`query_canceled`), the code PostgreSQL's own
+`statement_timeout` raises. `pg_sleep(seconds)` is served (by the engine's
+`SLEEP`, returning 0 rather than void) and ends with the statement. **A client that disconnects no longer cancels its
+statement before the timeout:** the listener runs with go-mysql-server's
+connection watcher off, because the watcher reads the socket while a cursor's
+statement runs and vitess reads the client's `COM_STMT_FETCH` from the same
+socket -- a data race. The timeout is therefore what ends a statement whose
+client has gone away.
+
+**Known limitation: server-side cursors** (`qrdb_mysql` builds only). A cursor
+(`COM_STMT_EXECUTE` with a cursor flag, then `COM_STMT_FETCH`) is served by
+vitess and go-mysql-server: it carries an upstream data race on vitess
+`Conn.StatusFlags` between go-mysql-server's handler and the connection
+goroutine, and an idle open cursor is not bounded by `sql.query_timeout`.
+Clients that need bounded resource use should not request cursors. See
+[upstream-gaps.md](upstream-gaps.md#5-server-side-cursors-race-on-connstatusflags-and-are-not-bounded).
+
 
 ## KV Table Schema
 
@@ -719,6 +745,29 @@ statement text alone cannot express:
   message execute in order; the last one's result is returned.
 - **`uuid_generate_v4()` / `gen_random_uuid()`** are built in;
   `CREATE EXTENSION` is a no-op.
+- **A seal reaches sessions and statements opened before it.** While the
+  node's sealed-window probe is closed (its barrier sealed, or a cluster seal
+  holding it, cutting it off or not yet confirmed), a new session is refused
+  at startup and every Parse is refused, and so is every Bind/Execute of a
+  statement prepared while the node still served -- a parameterized statement
+  would run its query, a parameterless one would write rows it read before
+  the seal. Each is refused with SQLSTATE `57P03` and serves again once the
+  probe reopens. The MySQL wire matches: every query, prepare, execute and
+  `COM_INIT_DB` (the protocol's `USE`) of an open session is refused, the
+  last for any database name, so the refusal does not reveal which databases
+  exist.
+- **A seal closes the sessions it reaches.** Refusing the next statement does
+  not end what a session already holds: a MySQL server-side cursor is fetched
+  inside the protocol library (`COM_STMT_FETCH` never reaches the statement
+  gate), and a transaction holds its locks across statements. So both wires
+  register every connection when its session is built
+  (`pkg/sql/internal/sessionguard`) and close it when the node's seal probe
+  closes -- polled every 250 ms, for a node-local seal -- or when a cluster seal
+  of the node, of the session's tenant or of any of that tenant's databases, or
+  a cut-off, ends its subscription (`clusterseal.Streams.SubscribeTenantServing`;
+  a session can switch databases, so it is bound to its tenant). The open
+  transaction is rolled back with the connection, and the client sees a closed
+  connection, as after a server restart.
 
 
 ## Error code summary
@@ -735,6 +784,7 @@ QRDB-specific string:
 | Table access denied | MySQL **1142** | `ER_TABLEACCESS_DENIED_ERROR` |
 | Column access denied | MySQL **1143** | `ER_COLUMNACCESS_DENIED_ERROR` |
 | Cached plan result-type change | SQLSTATE **0A000** | `cached plan must not change result type` |
+| Node sealed (new session, or any statement of an open one) | SQLSTATE **57P03**; MySQL `sql/mysql: barrier sealed` | including Execute of a statement prepared before the seal, and MySQL `COM_INIT_DB` |
 | Foreign key violations | MySQL **1451** / **1452** | see [gorm.md](gorm.md) |
 
 Named Go error types on the QRDB side: `RowKeyTooLargeError`,

@@ -1042,9 +1042,29 @@ type SQLConfig struct {
 	// across all SQL protocol servers. Zero means unlimited.
 	MaxConnections int `yaml:"max_connections"`
 
-	// QueryTimeout is the maximum duration for a single SQL query.
-	// Parsed as a Go duration string. Default: "30s".
+	// QueryTimeout is the maximum duration for a single SQL statement on the
+	// MySQL wire, enforced by the server; a statement past it is cancelled
+	// and answered ER_QUERY_TIMEOUT (3024). It is also what bounds a
+	// statement whose client has disconnected: the server does not watch the
+	// socket while a statement runs. Parsed as a Go duration string; "0"
+	// disables it. Default: "30s".
 	QueryTimeout string `yaml:"query_timeout"`
+}
+
+// DefaultSQLQueryTimeout is sql.query_timeout's default.
+const DefaultSQLQueryTimeout = 30 * time.Second
+
+// QueryTimeoutDuration returns sql.query_timeout as a duration:
+// DefaultSQLQueryTimeout when unset, zero when it is "0" (no timeout).
+func (c SQLConfig) QueryTimeoutDuration() (time.Duration, error) {
+	if c.QueryTimeout == "" {
+		return DefaultSQLQueryTimeout, nil
+	}
+	d, err := parseDuration(c.QueryTimeout)
+	if err != nil || d < 0 {
+		return 0, &ValidationError{Field: "sql.query_timeout", Reason: "must be a valid Go duration string, zero or more"}
+	}
+	return d, nil
 }
 
 // BootstrapConfig configures TLS bootstrap for cluster enrollment.
@@ -1119,6 +1139,27 @@ type SealConfig struct {
 	// CredentialStrategy selects the credential storage strategy:
 	// "manual" or "barrier". Default: "barrier".
 	CredentialStrategy string `yaml:"credential_strategy"`
+
+	// ClusterLease is how long a successful read of the cluster seal records
+	// lets this node serve; a node that cannot read them for longer stops
+	// serving, keeping its keys. Go duration; default "15s".
+	ClusterLease string `yaml:"cluster_lease"`
+
+	// ClusterPollInterval is how often this node reads the cluster seal
+	// records. At most a third of ClusterLease. Go duration; default "1s".
+	ClusterPollInterval string `yaml:"cluster_poll_interval"`
+
+	// ClusterAckTimeout bounds how long a node waits for every node to
+	// acknowledge a node-barrier seal before wiping its own key. Go duration;
+	// default "5s".
+	ClusterAckTimeout string `yaml:"cluster_ack_timeout"`
+
+	// MigrationCredentialsDir holds this node's own credentials for a
+	// cluster enable-encryption migration it did not accept the request for:
+	// "system" for the node barrier and "tenant-<id>" for a tenant barrier.
+	// Each file must be mode 0600 or stricter. Empty: the node can only take
+	// part in migrations whose credential it holds by other means.
+	MigrationCredentialsDir string `yaml:"migration_credentials_dir"`
 }
 
 // DefaultShareTTLString is the default seal.share_ttl when unset.
@@ -1821,10 +1862,8 @@ func (c *Config) Validate() error {
 	if c.SQL.MaxConnections < 0 {
 		return &ValidationError{Field: "sql.max_connections", Reason: "must not be negative"}
 	}
-	if c.SQL.QueryTimeout != "" {
-		if _, err := parseDuration(c.SQL.QueryTimeout); err != nil {
-			return &ValidationError{Field: "sql.query_timeout", Reason: "must be a valid Go duration string"}
-		}
+	if _, err := c.SQL.QueryTimeoutDuration(); err != nil {
+		return err
 	}
 
 	// SQL protocols require TLS and auth.
@@ -1893,6 +1932,9 @@ func (c *Config) Validate() error {
 			if d <= 0 {
 				return &ValidationError{Field: "seal.share_ttl", Reason: "must be greater than zero"}
 			}
+		}
+		if _, err := c.Seal.ClusterSealTiming(); err != nil {
+			return err
 		}
 	}
 

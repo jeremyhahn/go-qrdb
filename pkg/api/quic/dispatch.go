@@ -309,6 +309,7 @@ func (s *Server) buildHandlers() {
 	s.handle("barrier.Unseal", permission.SealUnseal, s.handleBarrierUnseal)
 	s.handle("barrier.Seal", permission.SealSeal, s.handleBarrierSeal)
 	s.handle("barrier.Status", permission.SealStatus, s.handleBarrierStatus)
+	s.handle("barrier.ClusterUnseal", permission.SealUnseal, s.handleBarrierClusterUnseal)
 	s.handle("barrier.ShamirInitialize", permission.SealInitializeShamir, s.handleBarrierShamirInitialize)
 	s.handle("barrier.RecoveryGenerate", permission.SealGenerateRecovery, s.handleBarrierRecoveryGenerate)
 	s.handle("barrier.RecoveryDelete", permission.SealGenerateRecovery, s.handleBarrierRecoveryDelete)

@@ -531,6 +531,7 @@ func printTenantBarrierStatus(status *transport.TenantBarrierStatusResponse) err
 		if status.ShamirThreshold > 0 {
 			_, _ = fmt.Fprintf(outputWriter, "Threshold:   %d of %d\n", status.ShamirThreshold, status.ShamirTotal)
 		}
+		printClusterSeal(status.ClusterSeal)
 		return nil
 	}
 }

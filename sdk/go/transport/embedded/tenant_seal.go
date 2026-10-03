@@ -17,12 +17,17 @@ package embedded
 import (
 	"context"
 
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sealconv"
+
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // TenantBarrierSeal seals a per-tenant barrier by delegating to the
 // configured TenantServicer.
 func (t *Transport) TenantBarrierSeal(ctx context.Context, req *transport.TenantBarrierSealRequest) error {
+	if err := t.gate("TenantBarrierSeal"); err != nil {
+		return err
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -38,6 +43,9 @@ func (t *Transport) TenantBarrierSeal(ctx context.Context, req *transport.Tenant
 // TenantBarrierStatus reports the current sealed/initialized state for a
 // per-tenant barrier by delegating to the configured TenantServicer.
 func (t *Transport) TenantBarrierStatus(ctx context.Context, req *transport.TenantBarrierStatusRequest) (*transport.TenantBarrierStatusResponse, error) {
+	if err := t.gate("TenantBarrierStatus"); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -59,5 +67,6 @@ func (t *Transport) TenantBarrierStatus(ctx context.Context, req *transport.Tena
 		HardwareBacked:  status.HardwareBacked,
 		ShamirThreshold: status.ShamirThreshold,
 		ShamirTotal:     status.ShamirTotal,
+		ClusterSeal:     sealconv.FromReport(status.ClusterSeal),
 	}, nil
 }

@@ -77,7 +77,7 @@ func gatedNode(t *testing.T, kv service.KVServicer) *Node {
 	client, err := sdk.NewClient(tr)
 	require.NoError(t, err)
 	n := &Node{featureGate: gate}
-	n.client.Store(client)
+	n.featureClient.Store(client)
 	return n
 }
 
