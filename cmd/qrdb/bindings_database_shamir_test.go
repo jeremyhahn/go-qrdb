@@ -24,31 +24,60 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
 )
 
-// A per-database Shamir barrier is not built yet, so a create asking for one
-// is refused -- and refused as the caller's error (InvalidArgument, 400 on
-// REST), not as a server fault, on every transport that classifies through
-// errclass. The wizard does not offer it until per-database share holders
-// ship; this is what any other client meets.
-func TestDatabaseBinding_CreateWithShamirBarrierIsRefused(t *testing.T) {
-	svc := barrierDatabaseService(t)
-	b := NewDatabaseBinding(testLogger(t), newTestConnectionBinding(t, newMockKVService(), newMockAdminService(),
-		embedded.WithDatabaseService(svc)))
-
-	_, err := b.Create(&transport.CreateDatabaseRequest{
-		Name:    "shamir-db",
-		Engine:  "kv",
-		Backend: "pebble",
-		DataDir: t.TempDir(),
-		Barrier: &transport.DatabaseBarrierConfig{Enabled: true, Mode: "shamir", SharesRequired: 2, SharesTotal: 3},
-	})
-	var unsupported *database.UnsupportedBarrierStrategyError
-	if !errors.As(err, &unsupported) || unsupported.Mode != "shamir" {
-		t.Fatalf("create with a Shamir barrier = %v, want *database.UnsupportedBarrierStrategyError", err)
-	}
-	if got := errclass.Classify(err); got != errclass.InvalidArgument {
-		t.Fatalf("a Shamir barrier refusal classifies as %v, want InvalidArgument", got)
-	}
-	if _, getErr := svc.Get("shamir-db"); getErr == nil {
-		t.Fatal("the refused create left the database behind")
+// A create's barrier is refused as the caller's error, not a server fault, on
+// every transport that classifies through errclass, and the refused create
+// leaves no database behind:
+//
+//   - a strategy per-database barriers do not implement is InvalidArgument
+//     (*database.UnsupportedBarrierStrategyError);
+//   - a Shamir barrier on a node whose barrier manager has no share-holder
+//     custody wired is FailedPrecondition
+//     (*database.ShamirCustodyNotConfiguredError). Per-database Shamir is
+//     served where custody is wired (docs/databases); the desktop wizard does
+//     not offer it, so this is what any other client meets on such a node.
+func TestDatabaseBinding_CreateWithAnUnservedBarrierIsRefused(t *testing.T) {
+	for name, tc := range map[string]struct {
+		barrier *transport.DatabaseBarrierConfig
+		want    errclass.Class
+		check   func(error) bool
+	}{
+		"unknown strategy": {
+			barrier: &transport.DatabaseBarrierConfig{Enabled: true, Mode: "tpm"},
+			want:    errclass.InvalidArgument,
+			check: func(err error) bool {
+				var unsupported *database.UnsupportedBarrierStrategyError
+				return errors.As(err, &unsupported) && unsupported.Mode == "tpm"
+			},
+		},
+		"shamir without custody": {
+			barrier: &transport.DatabaseBarrierConfig{Enabled: true, Mode: "shamir", SharesRequired: 2, SharesTotal: 3},
+			want:    errclass.FailedPrecondition,
+			check: func(err error) bool {
+				var custody *database.ShamirCustodyNotConfiguredError
+				return errors.As(err, &custody)
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			svc := barrierDatabaseService(t)
+			b := NewDatabaseBinding(testLogger(t), newTestConnectionBinding(t, newMockKVService(), newMockAdminService(),
+				embedded.WithDatabaseService(svc)))
+			_, err := b.Create(&transport.CreateDatabaseRequest{
+				Name:    "refused-db",
+				Engine:  "kv",
+				Backend: "pebble",
+				DataDir: t.TempDir(),
+				Barrier: tc.barrier,
+			})
+			if !tc.check(err) {
+				t.Fatalf("create = %v (%T)", err, err)
+			}
+			if got := errclass.Classify(err); got != tc.want {
+				t.Fatalf("the refusal classifies as %v, want %v", got, tc.want)
+			}
+			if _, getErr := svc.Get("refused-db"); getErr == nil {
+				t.Fatal("the refused create left the database behind")
+			}
+		})
 	}
 }

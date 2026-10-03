@@ -46,11 +46,10 @@ func barrierDatabaseService(t *testing.T) *service.DatabaseService {
 	if err := sys.Initialize(context.Background(), seal.Credentials{}); err != nil {
 		t.Fatalf("initialize system barrier: %v", err)
 	}
-	reg, err := seal.NewBarrierRegistry(logger, sys)
+	bm, err := database.NewDatabaseBarrierManager(logger, sys)
 	if err != nil {
-		t.Fatalf("barrier registry: %v", err)
+		t.Fatalf("database barrier manager: %v", err)
 	}
-	bm := database.NewDatabaseBarrierManager(logger, reg)
 	mgr.SetBarrierManager(bm)
 	svc, ok := service.NewDatabaseService(mgr, service.WithBarrierManager(bm)).(*service.DatabaseService)
 	if !ok {
