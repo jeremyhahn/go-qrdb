@@ -1899,6 +1899,54 @@ export interface TenantOfficerRevokeRequest {
     readonly threshold?: number;
 }
 
+/** Request to enrol a holder of a database's barrier. */
+export interface DatabaseOfficerRegisterRequest extends OfficerRegisterRequest {
+    /** The database, resolved in the caller's tenant. */
+    readonly database: string;
+}
+
+/**
+ * Request to initialize a Shamir database barrier's custody. The M-of-N is the
+ * one the database was created with (`sharesRequired`/`sharesTotal`); exactly
+ * `sharesTotal` holders must be enrolled.
+ */
+export interface DatabaseShamirInitializeRequest {
+    /** The database, resolved in the caller's tenant. */
+    readonly database: string;
+    /** Factor policy of the share set; the server defaults it to "designated". */
+    readonly policy?: FactorPolicy;
+}
+
+/** The share-free result of a Shamir database barrier's initialization. */
+export interface DatabaseShamirInitializeResponse {
+    /** Shares required to unseal (M). */
+    readonly threshold: number;
+    /** Share count (N). */
+    readonly totalShares: number;
+    /** Envelopes the holders now claim. */
+    readonly shareCount: number;
+}
+
+/** Request to open a rekey round on a database's barrier. */
+export interface DatabaseRekeyStartRequest {
+    /** The database, resolved in the caller's tenant. */
+    readonly database: string;
+    /** Threshold of the new share set. */
+    readonly threshold: number;
+    /** Factor policy of the new share set. */
+    readonly policy?: FactorPolicy;
+}
+
+/** Request to revoke a holder of a database's barrier. */
+export interface DatabaseOfficerRevokeRequest {
+    /** The database, resolved in the caller's tenant. */
+    readonly database: string;
+    /** The holder to remove. */
+    readonly username: string;
+    /** Threshold of the new share set; omitted or 0 keeps the current one. */
+    readonly threshold?: number;
+}
+
 /**
  * Request to initialize the system barrier under Shamir custody. The unseal
  * key is split to the enrolled unseal-domain holders; there is no secret.

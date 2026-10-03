@@ -176,6 +176,11 @@ import type {
     ShamirInitializeRequest,
     TenantOfficerRegisterRequest,
     TenantOfficerRevokeRequest,
+    DatabaseOfficerRegisterRequest,
+    DatabaseOfficerRevokeRequest,
+    DatabaseRekeyStartRequest,
+    DatabaseShamirInitializeRequest,
+    DatabaseShamirInitializeResponse,
     TenantRekeyStartRequest,
 
     // Tenant
@@ -1508,6 +1513,48 @@ export interface OfficerClient {
      * @returns The open round.
      */
     revokeTenantOfficer(req: TenantOfficerRevokeRequest): Promise<QuorumRound>;
+
+    /**
+     * Enrols a holder of a database's Shamir barrier.
+     *
+     * @param req - The database and the enrolment.
+     * @returns The issued certificate and what was enrolled.
+     */
+    registerDatabaseOfficer(req: DatabaseOfficerRegisterRequest): Promise<OfficerRegisterResponse>;
+
+    /**
+     * Lists the holders of a database's barrier.
+     *
+     * @param database - The database, resolved in the caller's tenant.
+     * @returns Holder status records; never a share.
+     */
+    listDatabaseOfficers(database: string): Promise<OfficerStatus[]>;
+
+    /**
+     * Splits a Shamir database's root key to its enrolled holders, at the
+     * M-of-N the database was created with. Each holder then claims its
+     * envelope from the CLI or the desktop app.
+     *
+     * @param req - The database and the factor policy.
+     * @returns The share-free split.
+     */
+    initializeDatabaseShamir(req: DatabaseShamirInitializeRequest): Promise<DatabaseShamirInitializeResponse>;
+
+    /**
+     * Opens a rekey round on a database's barrier.
+     *
+     * @param req - The database, new threshold and policy.
+     * @returns The open round.
+     */
+    startDatabaseRekey(req: DatabaseRekeyStartRequest): Promise<QuorumRound>;
+
+    /**
+     * Revokes a holder of a database's barrier.
+     *
+     * @param req - The database, the holder and an optional new threshold.
+     * @returns The open round.
+     */
+    revokeDatabaseOfficer(req: DatabaseOfficerRevokeRequest): Promise<QuorumRound>;
 }
 
 // ---------------------------------------------------------------------------

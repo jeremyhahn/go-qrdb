@@ -339,6 +339,82 @@ describe('holders – tenant barrier', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Database barrier holders (docs/databases/api.md)
+// ---------------------------------------------------------------------------
+
+describe('holders – database barrier', () => {
+    beforeEach(() => vi.unstubAllGlobals());
+
+    it('registerDatabaseOfficer POSTs the enrolment to /v1/databases/{name}/barrier/officers', async () => {
+        const client = await connectedClient();
+        const { calls } = installRouter({ 'POST /v1/databases/vault/barrier/officers': { body: REGISTERED } });
+
+        const result = await client.officers.registerDatabaseOfficer({ database: 'vault', ...ENROLMENT });
+
+        const req = calls.find((c) => c.path === '/v1/databases/vault/barrier/officers');
+        expect(req?.method).toBe('POST');
+        // The database travels in the path, never in the body.
+        expect(req?.body).toEqual(ENROLMENT_WIRE);
+        expect(result.certPem).toBe(REGISTERED.cert_pem);
+    });
+
+    it('listDatabaseOfficers GETs /v1/databases/{name}/barrier/officers', async () => {
+        const client = await connectedClient();
+        installRouter({ 'GET /v1/databases/vault/barrier/officers': { body: { officers: [HOLDER_STATUS] } } });
+
+        const list = await client.officers.listDatabaseOfficers('vault');
+
+        expect(list.map((h) => h.username)).toEqual(['alice']);
+        expectNoShareMaterial(list);
+    });
+
+    it('initializeDatabaseShamir POSTs only the policy and returns the share-free split', async () => {
+        const client = await connectedClient();
+        const { calls } = installRouter({
+            'POST /v1/databases/vault/barrier/shamir/initialize': {
+                body: { threshold: 2, total_shares: 3, share_count: 3 },
+            },
+        });
+
+        const result = await client.officers.initializeDatabaseShamir({ database: 'vault', policy: 'designated' });
+
+        expect(calls.find((c) => c.path === '/v1/databases/vault/barrier/shamir/initialize')?.body)
+            .toEqual({ policy: 'designated' });
+        expect(result).toEqual({ threshold: 2, totalShares: 3, shareCount: 3 });
+        expectNoShareMaterial(result);
+    });
+
+    it('startDatabaseRekey POSTs to /v1/databases/{name}/barrier/rekey/start', async () => {
+        const client = await connectedClient();
+        const { calls } = installRouter({ 'POST /v1/databases/vault/barrier/rekey/start': { body: OPEN_ROUND } });
+
+        await client.officers.startDatabaseRekey({ database: 'vault', threshold: 3, policy: 'designated' });
+
+        expect(calls.find((c) => c.path === '/v1/databases/vault/barrier/rekey/start')?.body)
+            .toEqual({ threshold: 3, policy: 'designated' });
+    });
+
+    it('revokeDatabaseOfficer POSTs to /v1/databases/{name}/barrier/officers/revoke', async () => {
+        const client = await connectedClient();
+        const { calls } = installRouter({ 'POST /v1/databases/vault/barrier/officers/revoke': { body: OPEN_ROUND } });
+
+        await client.officers.revokeDatabaseOfficer({ database: 'vault', username: 'erin', threshold: 2 });
+
+        expect(calls.find((c) => c.path === '/v1/databases/vault/barrier/officers/revoke')?.body)
+            .toEqual({ username: 'erin', threshold: 2 });
+    });
+
+    it('database names are path-escaped', async () => {
+        const client = await connectedClient();
+        const { calls } = installRouter({});
+
+        await client.officers.listDatabaseOfficers('a/b');
+
+        expect(calls.some((c) => c.url.endsWith('/v1/databases/a%2Fb/barrier/officers'))).toBe(true);
+    });
+});
+
+// ---------------------------------------------------------------------------
 // Shamir initialization
 // ---------------------------------------------------------------------------
 

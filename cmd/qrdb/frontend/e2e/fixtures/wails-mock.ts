@@ -13,6 +13,10 @@ export interface MockDatabaseInfo {
   protocol?: { mysql: boolean; postgresql: boolean };
   /** Replication factor of a dedicated-raft database. Absent/zero for non-raft. */
   replicas?: number;
+  /** The database's dedicated store, which a barrier needs. */
+  data_dir?: string;
+  /** The per-database barrier, as DatabaseInfo carries it; never a secret. */
+  barrier?: { enabled: boolean; mode: string; sharesRequired?: number; sharesTotal?: number };
 }
 
 /** Minimal tenant info for mock responses. */
@@ -105,6 +109,8 @@ export interface MockState {
   recoveryOfficers?: MockOfficerStatus[];
   /** Enrolled holders of each tenant barrier, keyed by tenant ID. */
   tenantOfficers?: Record<string, MockOfficerStatus[]>;
+  /** Enrolled holders of each Shamir database barrier, keyed by database. */
+  databaseOfficers?: Record<string, MockOfficerStatus[]>;
   /**
    * Per-tenant barrier state keyed by tenant ID (for the per-tenant unseal
    * tests). Tenants without an entry report "barrier not initialized" from
@@ -566,12 +572,33 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
         OfficerBinding: (() => {
           // Mirrors the Go OfficerBinding: RegisterHolder, ListHolders,
           // ClaimEnvelope, SubmitShare, StartRekey and RevokeHolder, each over
-          // a HolderScope ({tenant_id} or {domain}). Arguments arrive
-          // snake_case, as the SDK sends them; results are the snake_case
-          // transport structs the real binding returns.
-          type Scope = { tenant_id?: string; domain?: string };
+          // a HolderScope ({tenant_id}, {database} or {domain}), and
+          // InitializeDatabaseShamir. Arguments arrive snake_case, as the SDK
+          // sends them; results are the snake_case transport structs the
+          // real binding returns.
+          type Scope = { tenant_id?: string; database?: string; domain?: string };
+          // A database scope names a Shamir database, as the database
+          // service's holder custody requires.
+          const shamirDatabase = (name: string): Record<string, unknown> => {
+            const db = getState().databases.find((d: { name: string }) => d.name === name) as
+              | (Record<string, unknown> & { barrier?: { mode?: string } })
+              | undefined;
+            if (!db || db.barrier?.mode !== "shamir") {
+              throw new Error(`database: database "${name}" has no shamir barrier`);
+            }
+            return db;
+          };
           const holdersOf = (scope: Scope): MockOfficerStatus[] => {
             const s = getState();
+            if (scope.tenant_id && scope.database) {
+              throw new Error("invalid scope: names both a tenant and a database");
+            }
+            if (scope.database) {
+              shamirDatabase(scope.database);
+              s.databaseOfficers = s.databaseOfficers ?? {};
+              s.databaseOfficers[scope.database] = s.databaseOfficers[scope.database] ?? [];
+              return s.databaseOfficers[scope.database]!;
+            }
             if (scope.tenant_id) {
               s.tenantOfficers = s.tenantOfficers ?? {};
               s.tenantOfficers[scope.tenant_id] = s.tenantOfficers[scope.tenant_id] ?? [];
@@ -584,7 +611,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             return s.officers;
           };
           const round = (scope: Scope, threshold: number, policy: string, remove: string[]) => ({
-            domain: scope.tenant_id ? "unseal" : (scope.domain ?? "unseal"),
+            domain: scope.tenant_id || scope.database ? "unseal" : (scope.domain ?? "unseal"),
             op: "rekey",
             required: getState().sealStatus.sharesRequired || 2,
             submitted: 0,
@@ -649,6 +676,31 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
                 throw new Error(`ceremony: holder "${req.username}" not found`);
               }
               return round(req, req.threshold, "", [req.username]);
+            },
+            // Mirrors DatabaseService.DatabaseBarrierShamirInitialize: exactly
+            // sharesTotal holders must be enrolled; the split is the M-of-N
+            // the database was created with, and the barrier is left unsealed.
+            InitializeDatabaseShamir: async (database: string, _policy: string) => {
+              maybeReject("OfficerBinding.InitializeDatabaseShamir");
+              const db = shamirDatabase(database) as Record<string, unknown> & {
+                barrier: { sharesRequired: number; sharesTotal: number };
+              };
+              const holders = holdersOf({ database });
+              if (holders.length !== db.barrier.sharesTotal) {
+                throw new Error(
+                  `seal: shamir initialization needs ${db.barrier.sharesTotal} enrolled holders, have ${holders.length}`,
+                );
+              }
+              holders.forEach((h, i) => {
+                h.share_index = i + 1;
+                h.share_pending = true;
+              });
+              db.status = "open";
+              return {
+                threshold: db.barrier.sharesRequired,
+                total_shares: db.barrier.sharesTotal,
+                share_count: holders.length,
+              };
             },
           };
         })(),

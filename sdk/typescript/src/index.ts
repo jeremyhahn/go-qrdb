@@ -338,6 +338,11 @@ export type {
     ShamirInitializeRequest,
     TenantOfficerRegisterRequest,
     TenantOfficerRevokeRequest,
+    DatabaseOfficerRegisterRequest,
+    DatabaseOfficerRevokeRequest,
+    DatabaseRekeyStartRequest,
+    DatabaseShamirInitializeRequest,
+    DatabaseShamirInitializeResponse,
     TenantRekeyStartRequest,
 
     // Tenant management

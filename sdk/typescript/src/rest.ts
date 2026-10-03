@@ -228,6 +228,11 @@ import type {
     ShamirInitializeRequest,
     TenantOfficerRegisterRequest,
     TenantOfficerRevokeRequest,
+    DatabaseOfficerRegisterRequest,
+    DatabaseOfficerRevokeRequest,
+    DatabaseRekeyStartRequest,
+    DatabaseShamirInitializeRequest,
+    DatabaseShamirInitializeResponse,
     TenantRekeyStartRequest,
     CredentialVersionInfo,
     CredentialRotateResult,
@@ -1993,6 +1998,8 @@ export class RestClient implements Client {
     get officers(): OfficerClient {
         const tenantPath = (tenantId: string, rest: string): string =>
             `/v1/tenants/${encodeURIComponent(tenantId)}/barrier${rest}`;
+        const databasePath = (database: string, rest: string): string =>
+            `/v1/databases/${encodeURIComponent(database)}/barrier${rest}`;
         const list = async (path: string): Promise<OfficerStatus[]> => {
             interface ListResponse { readonly officers?: OfficerStatus[] }
             const resp = await this.fetchJSON<ListResponse>(path);
@@ -2048,6 +2055,37 @@ export class RestClient implements Client {
                 this.ensureConnected();
                 const { tenantId, ...body } = req;
                 return this.fetchJSON<QuorumRound>(tenantPath(tenantId, '/officers/revoke'),
+                    { method: 'POST', ...jsonBody(body) },
+                );
+            },
+            registerDatabaseOfficer: async (req: DatabaseOfficerRegisterRequest): Promise<OfficerRegisterResponse> => {
+                this.ensureConnected();
+                return this.fetchJSON<OfficerRegisterResponse>(databasePath(req.database, '/officers'),
+                    { method: 'POST', ...wireBody(holderEnrolmentWire(req)) },
+                );
+            },
+            listDatabaseOfficers: async (database: string): Promise<OfficerStatus[]> => {
+                this.ensureConnected();
+                return list(databasePath(database, '/officers'));
+            },
+            initializeDatabaseShamir: async (req: DatabaseShamirInitializeRequest): Promise<DatabaseShamirInitializeResponse> => {
+                this.ensureConnected();
+                const { database, ...body } = req;
+                return this.fetchJSON<DatabaseShamirInitializeResponse>(databasePath(database, '/shamir/initialize'),
+                    { method: 'POST', ...jsonBody(body) },
+                );
+            },
+            startDatabaseRekey: async (req: DatabaseRekeyStartRequest): Promise<QuorumRound> => {
+                this.ensureConnected();
+                const { database, ...body } = req;
+                return this.fetchJSON<QuorumRound>(databasePath(database, '/rekey/start'),
+                    { method: 'POST', ...jsonBody(body) },
+                );
+            },
+            revokeDatabaseOfficer: async (req: DatabaseOfficerRevokeRequest): Promise<QuorumRound> => {
+                this.ensureConnected();
+                const { database, ...body } = req;
+                return this.fetchJSON<QuorumRound>(databasePath(database, '/officers/revoke'),
                     { method: 'POST', ...jsonBody(body) },
                 );
             },

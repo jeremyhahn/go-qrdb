@@ -18,8 +18,9 @@
   =======================
   Opens a rekey round, or a revocation (a rekey that removes one holder), on
   a Shamir barrier, and shows the round it opened. It serves the system
-  barrier (with a domain and the SO PIN) and a tenant barrier (unseal domain
-  only, authorized by RBAC) through the two callbacks its owner supplies.
+  barrier (with a domain and the SO PIN) and a tenant or database barrier
+  (unseal domain only, authorized by RBAC) through the two callbacks its
+  owner supplies.
 
   Opening a round is all this does: a quorum of the current holders
   completes it from the qrdb CLI or the desktop app, with keys that never
@@ -110,7 +111,7 @@
 <div class="space-y-3" data-testid="rekey-panel">
   <h3 class="font-semibold text-sm">Rekey or Revoke</h3>
   <p class="text-base-content/60 text-xs">
-    {systemScope ? "Opening a round needs the SO PIN." : "Opening a round needs the tenant barrier's rekey permission."}
+    {systemScope ? "Opening a round needs the SO PIN." : "Opening a round needs the barrier's rekey permission."}
     A quorum of the current holders completes it
     (<span class="font-mono">{submitCommand}</span>); each holder in the new share
     set then claims a new envelope.

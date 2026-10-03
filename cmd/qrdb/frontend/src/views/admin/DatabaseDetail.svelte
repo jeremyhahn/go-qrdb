@@ -20,6 +20,7 @@
   import { onMount } from "svelte";
   import { showToast } from "$stores/toast.svelte.ts";
   import StatusBadge from "../../components/StatusBadge.svelte";
+  import DatabaseHoldersPanel from "../../components/DatabaseHoldersPanel.svelte";
 
   let {
     client,
@@ -524,6 +525,10 @@
         </div>
       </div>
     </div>
+
+    {#if existingDb.barrier?.enabled && existingDb.barrier.mode === "shamir"}
+      <DatabaseHoldersPanel {client} database={existingDb.name} />
+    {/if}
 
     <!-- SQL Wire Protocol Toggles -->
     <div class="card bg-base-200 shadow">

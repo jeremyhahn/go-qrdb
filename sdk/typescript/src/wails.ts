@@ -205,6 +205,11 @@ import type {
     ShamirInitializeRequest,
     TenantOfficerRegisterRequest,
     TenantOfficerRevokeRequest,
+    DatabaseOfficerRegisterRequest,
+    DatabaseOfficerRevokeRequest,
+    DatabaseRekeyStartRequest,
+    DatabaseShamirInitializeRequest,
+    DatabaseShamirInitializeResponse,
     TenantRekeyStartRequest,
     CredentialVersionInfo,
     CredentialRotateResult,
@@ -1500,9 +1505,10 @@ export class WailsClient implements Client {
     get officers(): OfficerClient {
         const b = wrapBindings(getBindings().main.OfficerBinding);
         // A HolderScope selects the barrier: the system barrier in a domain,
-        // or a tenant's barrier.
+        // a tenant's barrier, or a database's barrier.
         const system = (domain?: string): Record<string, unknown> => ({ domain: domain ?? 'unseal' });
         const tenant = (tenantId: string): Record<string, unknown> => ({ tenant_id: tenantId });
+        const database = (name: string): Record<string, unknown> => ({ database: name });
         const list = async (scope: Record<string, unknown>): Promise<OfficerStatus[]> =>
             (((await b.ListHolders(scope)) ?? []) as OfficerStatus[]).map(normalizeOfficerStatus);
         return {
@@ -1528,6 +1534,19 @@ export class WailsClient implements Client {
             },
             revokeTenantOfficer: async (req: TenantOfficerRevokeRequest): Promise<QuorumRound> => {
                 return b.RevokeHolder({ ...tenant(req.tenantId), username: req.username, threshold: req.threshold ?? 0 }) as Promise<QuorumRound>;
+            },
+            registerDatabaseOfficer: async (req: DatabaseOfficerRegisterRequest): Promise<OfficerRegisterResponse> => {
+                return b.RegisterHolder(database(req.database), holderEnrolmentWire(req)) as Promise<OfficerRegisterResponse>;
+            },
+            listDatabaseOfficers: async (name: string): Promise<OfficerStatus[]> => list(database(name)),
+            initializeDatabaseShamir: async (req: DatabaseShamirInitializeRequest): Promise<DatabaseShamirInitializeResponse> => {
+                return b.InitializeDatabaseShamir(req.database, req.policy ?? '') as Promise<DatabaseShamirInitializeResponse>;
+            },
+            startDatabaseRekey: async (req: DatabaseRekeyStartRequest): Promise<QuorumRound> => {
+                return b.StartRekey({ ...database(req.database), threshold: req.threshold, policy: req.policy }) as Promise<QuorumRound>;
+            },
+            revokeDatabaseOfficer: async (req: DatabaseOfficerRevokeRequest): Promise<QuorumRound> => {
+                return b.RevokeHolder({ ...database(req.database), username: req.username, threshold: req.threshold ?? 0 }) as Promise<QuorumRound>;
             },
         };
     }

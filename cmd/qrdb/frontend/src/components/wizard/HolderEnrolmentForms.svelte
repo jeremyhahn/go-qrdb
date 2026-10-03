@@ -19,27 +19,32 @@
   Enrols the unseal-domain share holders a Shamir initialization splits the
   unseal key to: one form per holder (username, role, CSR), each registered
   with the server, which returns the CA-issued certificate the admin hands to
-  the holder. Shamir initialization requires exactly `count` enrolled holders,
-  so the caller gates its "Initialize" action on `registeredCount === count`.
+  the holder. The system barrier's holders are enrolled by default; a caller
+  enrolling a database's holders passes `enrol`. Shamir initialization
+  requires exactly `count` enrolled holders, so the caller gates its
+  "Initialize" action on `registeredCount === count`.
 
   No share and no holder private key ever passes through this component: a
   holder claims its sealed envelope later, with its own keys, from the qrdb
   CLI or the desktop app.
 -->
 <script lang="ts">
-  import type { Client, HolderRole, OfficerRegisterResponse } from "@qrdb/sdk";
+  import type { Client, HolderRole, OfficerRegisterRequest, OfficerRegisterResponse } from "@qrdb/sdk";
   import { AlertCircle, CheckCircle, Copy, Download, UserPlus } from "lucide-svelte";
 
   let {
     client,
     count,
     registeredCount = $bindable(0),
+    enrol = (req: OfficerRegisterRequest) => client.officers.registerOfficer(req),
   }: {
     client: Client;
     /** Number of holders to enrol: the Shamir share count (N). */
     count: number;
     /** How many of the holders are enrolled; bound by the caller. */
     registeredCount?: number;
+    /** Enrols one holder; the system barrier's unseal domain by default. */
+    enrol?: (req: OfficerRegisterRequest) => Promise<OfficerRegisterResponse>;
   } = $props();
 
   /** Per-holder enrolment form state. */
@@ -87,7 +92,7 @@
     }
     forms[index] = { ...form, loading: true, error: "" };
     try {
-      const result = await client.officers.registerOfficer({ username, role: form.role, csrPem });
+      const result = await enrol({ username, role: form.role, csrPem });
       forms[index] = { ...forms[index]!, loading: false, result, error: "" };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Registration failed";
