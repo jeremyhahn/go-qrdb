@@ -1188,9 +1188,16 @@ func (m *Manager) SealBarrierDatabases() error {
 	return err
 }
 
-// Close shuts down all open databases and the backend factory.
+// Close shuts down all open databases and the backend factory. It first
+// seals every database barrier its barrier manager holds, wiping each root
+// key and DEK, so no close -- a shutdown, a failed boot, a data-plane
+// teardown -- leaves a database key in memory: the manager's close is the one
+// owner of that wipe, and every path that drops the manager closes it.
 func (m *Manager) Close() error {
 	var firstErr error
+	if bm := m.BarrierManager(); bm != nil {
+		firstErr = bm.SealAll()
+	}
 	m.databases.Range(func(key, value any) bool {
 		db := value.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
 		status := db.Status()

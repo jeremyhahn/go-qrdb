@@ -196,3 +196,30 @@ func TestDatabaseBarrierManager_SubmitHolderShareRefusesANonShamirDatabase(t *te
 		}
 	}
 }
+
+// TestManagerClose_WipesEveryDatabaseKey: closing the manager -- a shutdown,
+// a failed boot, a data-plane teardown -- leaves no database key in memory,
+// whatever the barrier's mode.
+func TestManagerClose_WipesEveryDatabaseKey(t *testing.T) {
+	f := newNodeSealDatabases(t)
+	if err := f.mgr.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	for _, name := range []string{"pass", "vault", "auto"} {
+		if !f.keyWiped(t, name) {
+			t.Fatalf("database %s kept its key through the manager's close", name)
+		}
+	}
+}
+
+// TestManagerClose_WithoutABarrierManager closes a manager that holds no
+// barrier at all.
+func TestManagerClose_WithoutABarrierManager(t *testing.T) {
+	mgr := NewManager(nil, t.TempDir())
+	if _, err := mgr.Create(validMemoryConfig("plain")); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}

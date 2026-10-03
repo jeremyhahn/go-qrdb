@@ -30,7 +30,9 @@ are not reconstructed here — their history is in the git log.
   owner -- or its Shamir holder quorum -- unseals it; every node-seal path
   (the single-admin seal, a holder seal quorum, a node seal record, and the
   embedded node's shutdown and failed-boot seals) goes through one function,
-  `service.SealWholeNode`. A tenant's own seal or unseal is ordered
+  `service.SealWholeNode`. Closing the database manager wipes every database
+  barrier first, so no shutdown, failed boot or teardown leaves a database
+  key in memory. A tenant's own seal or unseal is ordered
   against the node seal, so neither can land between the node seal's check
   of a tenant and its seal of it. A cut-off still keeps every key. New:
   `service.WithBarrierRegistry`, `service.SealWholeNode`,
