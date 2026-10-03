@@ -1051,3 +1051,33 @@ describe('Active-database scope — X-QRDB-Database header injection', () => {
         expect(calls[0].headers['x-qrdb-database']).toBeUndefined();
     });
 });
+
+// ---------------------------------------------------------------------------
+// database.create carries the per-database barrier passphrase: the server
+// initializes the barrier from barrier.secret when barrier.enabled is set.
+// ---------------------------------------------------------------------------
+
+describe('Outbound — database.create sends the barrier secret', () => {
+    beforeEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('posts barrier.enabled, mode and secret to /v1/databases', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({ name: 'orders', engine: 'kv', backend: 'pebble', status: 'open' });
+
+        await client.database.create({
+            name: 'orders',
+            engine: 'kv',
+            backend: 'pebble',
+            dataDir: '/var/lib/qrdb/orders',
+            barrier: { enabled: true, mode: 'passphrase', secret: 'correct horse' },
+        });
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0].url).toBe('https://localhost:63002/v1/databases');
+        expect(calls[0].method).toBe('POST');
+        const body = calls[0].body as { barrier: Record<string, unknown> };
+        expect(body.barrier).toEqual({ enabled: true, mode: 'passphrase', secret: 'correct horse' });
+    });
+});
