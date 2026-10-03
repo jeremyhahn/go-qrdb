@@ -261,8 +261,29 @@ wired on all six transports — REST (`POST /v1/cluster/join-tokens`), gRPC
 enforced the same way every other gRPC verb's permission is), QUIC
 (`admin.MintJoinToken`), Unix (served by the same `qrdbServiceServer` gRPC
 implementation Unix already rides), MCP (the `qrdb_mint_join_token` tool),
-and the embedded transport — each refusing a tenant-scoped caller with the
-identical `ScopeCross` denial REST does.
+and the embedded transport.
+
+**Five of those six enforce the `ScopeCross` denial; the embedded transport
+does not, and this is a property of the transport, not a gap in this
+verb.** `service.AdminService.MintJoinToken` — like every other
+`AdminServicer` verb (`AddMember`, `RemoveMember`, `Drain`, ...) — performs
+no permission check of its own; enforcement lives entirely in the
+transport/handler layer: REST middleware, the gRPC interceptor reading the
+proto method's permission option, QUIC's `handleIf`, MCP's `Perm` field.
+The embedded transport calls the service directly, with no handler in
+between, so it skips all of that by construction. An embedding process is
+its own admission control — the same trust assumption every other admin
+verb already makes for it — but that assumption only holds when the
+embedder's OWN callers are equally trusted. **Embedded is a fully trusted,
+in-process surface with no authorization of its own, and an admin verb
+reachable through it must never be exposed through a less-trusted binding
+on top** — a desktop webview, a browser extension, anything that accepts
+input from a party the embedding process does not itself fully trust. See
+[../embedding.md](../embedding.md) for the general statement of this rule
+and `sdk/typescript/src/wails.ts`'s `admin.mintJoinToken` for a concrete
+instance: the desktop binding deliberately throws `NotImplementedError`
+rather than wiring this verb through to the embedded transport its webview
+talks to.
 
 **Wire transport (Noise, shipped).** The one-shot `get_ca_bundle`
 request/response the Noise bootstrap `Handler` in go-truststrap dispatches

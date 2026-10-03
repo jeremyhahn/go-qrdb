@@ -191,10 +191,21 @@ see [cli.md](cli.md)):
 | MCP | the `qrdb_mint_join_token` tool |
 | Embedded | direct in-process call, no serialization |
 
-Every binding reports the identical `ScopeCross` permission denial for a
-tenant-scoped caller, and the identical typed errors above for every other
-failure — there is exactly one implementation of the mint logic
-(`service.AdminService.MintJoinToken`), never one per transport.
+The five REMOTE bindings (REST, gRPC, QUIC, Unix, MCP) report the identical
+`ScopeCross` permission denial for a tenant-scoped caller, and the
+identical typed errors above for every other failure — there is exactly one
+implementation of the mint logic (`service.AdminService.MintJoinToken`),
+never one per transport.
+
+**Embedded does not enforce `ScopeCross` at all**, because
+`AdminService.MintJoinToken` carries no permission check of its own — like
+every other `AdminServicer` verb, enforcement lives in the transport
+handler, and the embedded transport has none. Embedded is a fully trusted,
+in-process surface: the embedding process IS its own admission control.
+That only holds when everything upstream of the embedder is equally
+trusted, so an admin verb reached through embedded must never be exposed
+through a less-trusted binding layered on top of it — see
+[../embedding.md](../embedding.md).
 
 The Noise_NK join transport and the trust-anchor fetch have no HTTP surface of
 their own; their Go surface is in `pkg/clusterenroll`, re-exported from

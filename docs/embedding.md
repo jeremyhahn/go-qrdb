@@ -35,6 +35,50 @@ func (n *Node) Close() error
 
 ---
 
+## Trust model
+
+**The embedded transport (`n.Client()`, `n.AdminService()`, and every
+service accessible through `n.Services()`) is a fully trusted, in-process
+surface with no authorization of its own.** Every remote transport (REST,
+gRPC, QUIC, Unix, MCP) enforces permissions in its own handler or
+middleware layer — REST middleware, the gRPC interceptor reading a proto
+method's permission option, QUIC's `handleIf`, MCP's `Perm` field — and
+every one of those sits in front of the SAME service methods embedded
+calls directly, with nothing in between. A service method like
+`AdminService.AddMember` or `AdminService.MintJoinToken` performs no
+permission check of its own; authorization is a property of the HANDLER
+a remote transport interposes, and embedded has none.
+
+This is intentional and correct for its actual use: an embedding Go
+process calling `n.Client()` or `n.Services()` IS its own admission
+control, the same way a library call is not expected to re-authenticate
+its caller. The rule this implies, and the reason it is written down
+here rather than left implicit:
+
+**Never expose an admin verb reached through the embedded transport to a
+party less trusted than the embedding process itself.** A desktop
+application's webview is the canonical example: the webview's JavaScript
+runs content the desktop process does not fully control (a loaded page,
+a plugin, in some architectures even remote content), so a Wails/Electron
+binding that forwards a webview call straight through to the embedded
+transport grants the webview everything an in-process caller has —
+including verbs gated `ScopeCross`/platform-only on every remote
+transport. `sdk/typescript/src/wails.ts`'s `admin.mintJoinToken` is the
+concrete instance of this rule: minting a cluster join token is
+`ScopeCross` (see [clustering/architecture.md](clustering/architecture.md)),
+and the desktop binding deliberately throws `NotImplementedError` instead
+of wiring a new `AdminBinding` method for it, rather than let the
+interface's own TypeScript structural typing silently reopen a gap that
+every remote transport closes.
+
+If a desktop or other less-trusted surface genuinely needs an admin verb,
+the fix is authorization IN FRONT of embedded for that surface — not
+routing around the remote transports that already have it, and not
+assuming "it's in-process" extends past the embedding process's own code
+to whatever that process chooses to expose a user interface to.
+
+---
+
 ## Standalone node
 
 A standalone node is engine-direct: writes are applied immediately to an in-memory or on-disk MVCC/KV engine under a `LocalBackend`. No quicraft host is created, no `StartShard` is called, and no Raft WAL or nodehost directory is written.
