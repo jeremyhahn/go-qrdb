@@ -130,7 +130,12 @@ call rather than a named permission — a tenant acts on its own barrier.
 **Tenant and database barriers admit only their owner.** Every tenant barrier
 permission is tenant-only: the platform operator (an identity of the `system`
 tenant) is refused for another tenant's barrier, and the tenant service makes
-the same refusal for seal and unseal (`TenantScopeError`). `databases:seal`, `databases:unseal` and
+the same refusal for seal and unseal (`TenantScopeError`). A Shamir tenant
+barrier's holder quorum is scoped differently: opening a round and submitting
+to it (`tenant_barrier` quorum begin and submit) admit the `system` tenant as
+well as the tenant itself, because a round completes only with the shares of
+the tenant's own authenticated holders -- the platform operator can open a
+round, never complete one. `databases:seal`, `databases:unseal` and
 `databases:barrier_status` admit only the tenant that owns the database — the
 `system` tenant included: it seals its own databases and no other tenant's.
 

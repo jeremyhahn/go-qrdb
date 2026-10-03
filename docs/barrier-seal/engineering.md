@@ -645,7 +645,12 @@ which is on the sealed-window allowlist.
 
 **Tenant and database barriers.** The `tenant_barrier:*` permissions are
 `ScopeTenantOnly`: the `system` tenant is refused for another tenant's barrier,
-and `TenantService` repeats the refusal for its seal and unseal. `databases:seal`, `databases:unseal` and `databases:barrier_status` are
+and `TenantService` repeats the refusal for its seal and unseal
+(`enforceTenantOwner`, no system-tenant lift). The tenant holder quorum keeps
+`enforceTenantScope` (the system tenant is admitted) for quorum begin and
+submit: every share is verified against the tenant's holder roster
+(`HolderVerifier.VerifyHolder`), so the system tenant can open a round but only
+the tenant's holders can complete one. `databases:seal`, `databases:unseal` and `databases:barrier_status` are
 `ScopeSelfStrict`, and `DatabaseService` resolves the database through the
 caller's own tenant for these three operations, the `system` tenant included.
 **Correction (2026-10-01):** these three were `ScopeSelf`, which the
