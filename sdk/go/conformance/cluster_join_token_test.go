@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/node"
@@ -65,7 +66,7 @@ func seedJoinTokenFixtures(t *testing.T, n *node.Node, callerTenant, roleName st
 	t.Helper()
 	svc := n.Services()
 	ctx := boundedCtx(t)
-	if callerTenant != tenant.SystemTenantID {
+	if callerTenant != tenantid.System {
 		if _, err := svc.Tenant.CreateTenant(ctx, callerTenant, "Tenant "+callerTenant, tenant.IsolationPrefix); err != nil {
 			t.Fatalf("CreateTenant(%s): %v", callerTenant, err)
 		}
@@ -161,7 +162,7 @@ func TestMintJoinToken_SystemOwnerSucceeds_TenantAdminRefused(t *testing.T) {
 		}
 
 		t.Run(string(tk)+"/system-owner", func(t *testing.T) {
-			client := bootJoinTokenCell(t, tk, tenant.SystemTenantID, role.RoleNameOwner)
+			client := bootJoinTokenCell(t, tk, tenantid.System, role.RoleNameOwner)
 			minter := requireMinter(t, tk, client)
 
 			resp, err := minter.MintJoinToken(boundedCtx(t), &transport.MintJoinTokenRequest{NodeID: "node-owner-" + string(tk)})
@@ -284,7 +285,7 @@ func TestMintJoinToken_ExplicitTenantGrantStillRefused(t *testing.T) {
 // verb, and a caller presumed privileged (an in-process embedder is its own
 // admission control, same as for AddMember) can use it.
 func TestMintJoinToken_EmbeddedCapabilityExists(t *testing.T) {
-	client := bootJoinTokenCell(t, embeddedTransport, tenant.SystemTenantID, role.RoleNameOwner)
+	client := bootJoinTokenCell(t, embeddedTransport, tenantid.System, role.RoleNameOwner)
 	minter := requireMinter(t, embeddedTransport, client)
 
 	resp, err := minter.MintJoinToken(boundedCtx(t), &transport.MintJoinTokenRequest{NodeID: "node-embedded"})
