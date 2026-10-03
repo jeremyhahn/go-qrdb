@@ -168,8 +168,8 @@ func TestDefaultCertProvider_WithKeyProvider_InitializeAndUnseal(t *testing.T) {
 	if err := p.Initialize(ctx); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if got := p.CACertPEM(); len(got) == 0 {
-		t.Error("expected CACertPEM to be warmed from the injected provider after Initialize")
+	if pems, err := p.CACertPEMs(ctx); err != nil || len(pems) != 1 || len(pems[0]) == 0 {
+		t.Errorf("expected the injected provider's certificate after Initialize, got %v, err=%v", pems, err)
 	}
 
 	if err := p.Seal(); err != nil {
@@ -308,6 +308,83 @@ func TestDefaultCertProvider_CACertPEMs_InjectedProviderError(t *testing.T) {
 	}
 }
 
+// TestDefaultCertProvider_CACertPEMs_SkipsNonMaterialKeys proves the scan
+// callback ignores any key under the CA prefix that is not itself a
+// "/material" record -- e.g. a future sibling record type sharing the same
+// tenant prefix -- rather than mis-parsing it as a tenant ID.
+func TestDefaultCertProvider_CACertPEMs_SkipsNonMaterialKeys(t *testing.T) {
+	kv := newMockKVStore()
+	p := NewDefaultProvider(kv, newMockBarrier())
+	ctx := context.Background()
+
+	if _, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "alice", TenantID: "acme"}); err != nil {
+		t.Fatalf("GenerateClientCert: %v", err)
+	}
+	// A sibling record under the same tenant's CA prefix that is NOT the
+	// "/material" record.
+	if err := kv.Put(ctx, prefixCertCA+"acme/some-other-record", []byte("irrelevant")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	pems, err := p.CACertPEMs(ctx)
+	if err != nil {
+		t.Fatalf("CACertPEMs: %v", err)
+	}
+	if len(pems) != 1 {
+		t.Fatalf("CACertPEMs returned %d entries, want 1 (the sibling record must be skipped, not double-counted or mis-parsed)", len(pems))
+	}
+}
+
+// TestDefaultCertProvider_CACertPEMs_SkipsEmptyTenantIDKey proves the scan
+// callback ignores a key that reduces to an empty tenant ID -- the
+// degenerate "__sys:cert_ca//material" shape, with no tenant segment
+// between the prefix and the suffix -- rather than resolving a key
+// provider for "".
+func TestDefaultCertProvider_CACertPEMs_SkipsEmptyTenantIDKey(t *testing.T) {
+	kv := newMockKVStore()
+	p := NewDefaultProvider(kv, newMockBarrier())
+	ctx := context.Background()
+
+	if err := kv.Put(ctx, prefixCertCA+materialRecordSuffix, []byte("irrelevant")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	pems, err := p.CACertPEMs(ctx)
+	if err != nil {
+		t.Fatalf("CACertPEMs: %v", err)
+	}
+	if len(pems) != 0 {
+		t.Fatalf("CACertPEMs returned %d entries, want 0 (the empty-tenant-ID key must be skipped)", len(pems))
+	}
+}
+
+// TestDefaultCertProvider_CACertPEMs_DiscoveredTenantLoadFails proves
+// CACertPEMs propagates a failure to load a DISCOVERED tenant's
+// certificate -- rather than silently omitting it or returning a partial,
+// unsorted result -- when the scan finds a material record that no longer
+// decodes.
+func TestDefaultCertProvider_CACertPEMs_DiscoveredTenantLoadFails(t *testing.T) {
+	kv := newMockKVStore()
+	p := NewDefaultProvider(kv, newMockBarrier())
+	ctx := context.Background()
+
+	// A material record the scan will discover, naming tenant "ghost", that
+	// is not valid JSON -- the same corruption technique
+	// TestDefaultCertProvider_Unseal_LoadCA_MaterialNotJSON uses.
+	if err := kv.Put(ctx, prefixCertCA+"ghost/material", []byte("not-json")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	_, err := p.CACertPEMs(ctx)
+	if err == nil {
+		t.Fatal("expected CACertPEMs to fail when a discovered tenant's material record does not decode")
+	}
+	var genErr *CertGenerateError
+	if !errors.As(err, &genErr) {
+		t.Fatalf("expected *CertGenerateError, got %T: %v", err, err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // IsTenantIssuer -- the mTLS authenticator's issuer-tenant binding seam
 // ---------------------------------------------------------------------------
@@ -386,6 +463,37 @@ func TestDefaultCertProvider_IsTenantIssuer_EmptyTenantFoldsToSystem(t *testing.
 	}
 	if !ok {
 		t.Error("expected an empty tenantID to fold to the system tenant")
+	}
+}
+
+// TestDefaultCertProvider_IsTenantIssuer_LoadFailurePropagates proves
+// IsTenantIssuer propagates a load failure that is NOT
+// *CAKeyNotAvailableError -- a tenant that DOES have a material record, but
+// one that no longer decodes -- rather than folding every loadOnlyCertificate
+// failure into the load-only "no CA yet" (false, nil) answer.
+// TestDefaultCertProvider_IsTenantIssuer_UnknownTenantNeverCreatesACA already
+// covers the "never established" case; this covers "established, but
+// corrupt."
+func TestDefaultCertProvider_IsTenantIssuer_LoadFailurePropagates(t *testing.T) {
+	kv := newMockKVStore()
+	p := NewDefaultProvider(kv, newMockBarrier())
+	ctx := context.Background()
+
+	if err := kv.Put(ctx, prefixCertCA+"ghost2/material", []byte("not-json")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	someCert := newHSMDouble(t).cert
+
+	ok, err := p.IsTenantIssuer(ctx, "ghost2", someCert)
+	if err == nil {
+		t.Fatal("expected IsTenantIssuer to propagate a corrupt material record's load failure")
+	}
+	if ok {
+		t.Error("expected false alongside the error")
+	}
+	var genErr *CertGenerateError
+	if !errors.As(err, &genErr) {
+		t.Fatalf("expected *CertGenerateError, got %T: %v", err, err)
 	}
 }
 

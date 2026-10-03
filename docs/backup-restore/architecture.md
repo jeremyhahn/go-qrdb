@@ -76,28 +76,26 @@ This holds only for qrdb's built-in `cakey.SoftwareProvider`; a CA key held
 by an injected HSM/TPM/KMS provider lives on that device and is out of scope
 for a qrdb backup by construction — qrdb never held it to begin with.
 
-**Key A and Key B are protected differently, and a backup inherits whichever
-applies to the record it captured.** Key B (the per-tenant login CA) is
-barrier-encrypted by `pkg/cert` before the record is written, the same way
-every other tenant secret is: a raw copy of `__sys:cert_ca/{tenantID}/` is
-ciphertext without that tenant's barrier. Key A (the cluster CA) is stored as
-generated or adopted, with no additional AEAD wrap of its own layered on top
-by `pkg/cakey` — the earlier design wrapped it with the writing node's own
-`seal.EncryptionBarrier` first, which made the replicated record undecryptable
-on every OTHER node (barriers are per-node, not shared cluster-wide) and is
-not how Key A is protected now. What protects Key A instead: this node's own
-at-rest storage encryption, when the deployment configures one
-(`pkg/seal/encfs`, transparent below the `kvstore.KVStore` this package
-writes through) protects the on-disk copy; cluster mTLS protects it while
-Raft replicates the write; and under seal strategy `none`, Key A is
-unencrypted at rest in the system shard, exactly like every other record in
-that mode. **A raw snapshot of the system shard taken under `none`, or taken
-by reading the underlying storage engine directly rather than through a
-sealed `encfs`-protected mount, is Key A in the clear.** Encrypt such a
-backup in transit and at rest by the same policy as any other sensitive
-export (see Trust boundaries below); this is not a gap specific to Key A so
-much as a reminder that Key A is now AS protected as the rest of the system
-shard, not MORE protected the way the old per-record wrap made it look.
+**Key A and Key B are protected the SAME way now, and a backup inherits it
+either way.** Both are stored as generated or adopted, with no additional
+AEAD wrap of their own layered on top by `pkg/cakey` — an earlier design
+wrapped each with the writing node's own `seal.EncryptionBarrier` first,
+which made the replicated record undecryptable on every OTHER node
+(barriers are per-node, not shared cluster-wide) and is not how either key
+is protected now (the owner's CA-at-rest ruling). What protects both
+instead: this node's own at-rest storage encryption, when the deployment
+configures one (`pkg/seal/encfs`, transparent below the `kvstore.KVStore`
+this package writes through) protects the on-disk copy; cluster mTLS
+protects it while Raft replicates the write; and under seal strategy
+`none`, both keys are unencrypted at rest in the system shard, exactly like
+every other record in that mode. **A raw snapshot of the system shard taken
+under `none`, or taken by reading the underlying storage engine directly
+rather than through a sealed `encfs`-protected mount, is Key A AND Key B in
+the clear.** Encrypt such a backup in transit and at rest by the same
+policy as any other sensitive export (see Trust boundaries below); this is
+not a gap specific to either key so much as a reminder that neither is MORE
+protected than the rest of the system shard, the way an earlier per-record
+wrap made it look.
 
 ## Trust boundaries
 

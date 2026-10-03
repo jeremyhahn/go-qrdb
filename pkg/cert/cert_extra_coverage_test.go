@@ -293,6 +293,8 @@ func (s *putSucceedsScanFailsKVStore) PutAllIfAllUnchanged(ctx context.Context, 
 	return s.inner.PutAllIfAllUnchanged(ctx, guards, writes)
 }
 
+var _ kvstore.MultiGuardedBatchKVStore = (*putSucceedsScanFailsKVStore)(nil)
+
 // ---------------------------------------------------------------------------
 // encodePKCS12 — invalid cert DER in cert block
 // ---------------------------------------------------------------------------

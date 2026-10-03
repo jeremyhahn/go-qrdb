@@ -447,12 +447,20 @@ services and to the server, which wraps the node's sealed-window probe with
 - **Seal authority does not cross tenants.** Node barrier: `system`-tenant
   identities only. Tenant barrier: that tenant's identities only — the
   `system` tenant is refused. Database barrier: the owning tenant only.
-- **The CA key is a plain `[]byte` (DER-encoded), not a `secure.Buffer`.**
-  `DefaultCertProvider.caKey` is decrypted from its wrapped form on demand and
-  held only until the next `Seal()`, which zero-fills it with `secure.Wipe`
-  (a plain overwrite, not a go-enclave locked-memory enclave) and drops the
-  reference. After sealing, `GenerateClientCert()` returns
-  `CAKeyNotAvailableError`.
+- **The CA key is never a plain `[]byte` or `*ecdsa.PrivateKey`; it is reached
+  only through an opaque, barrier-checked `crypto.Signer`.** Both Key A and
+  Key B are `cakey.SoftwareProvider` instances now; neither `pkg/clusterca`
+  nor `pkg/cert` holds key material in a field of its own. `Signer` cannot be
+  type-asserted back to the concrete key and re-checks the barrier's sealed
+  state and the provider's own `Seal` generation on every `Sign` call, so a
+  `Signer` obtained before a `Seal()` refuses afterward even though the
+  caller is still holding it. The stored record itself carries no additional
+  barrier encryption (the owner's CA-at-rest ruling) — the barrier only gates
+  whether this process will touch the key at all. The decrypted key is held
+  in memory only until the next `Seal()`, which zero-fills it with
+  `secure.Wipe` (a plain overwrite, not a go-enclave locked-memory enclave)
+  and drops the reference. After sealing, every `Signer`/`Certificate` call
+  returns `BarrierSealedError`.
 - **Reads of protected key material hold the borrow across the read**, not just
   across the accessor. A tenant DEK served from cache and the recovery
   strategy's root key are both copied inside one coordinated borrow
@@ -706,9 +714,9 @@ Per-database and per-tenant barrier configuration lives in
 
 - The sealed root-key blob records the strategy that sealed it
   (`persistedStrategyCache`).
-- The CA private key is stored wrapped at
-  `__sys:cert_ca/{tenantID}/wrapped_key`, with the certificate PEM at
-  `__sys:cert_ca/{tenantID}/cert_pem`.
+- Each tenant's Key B CA (key and certificate together, as one JSON record
+  with no additional barrier encryption of its own — the owner's
+  CA-at-rest ruling) is stored at `__sys:cert_ca/{tenantID}/material`.
 - **Compatibility**: the sealed blob format carries a version sentinel — see
   [seal/sealed-window.md](../seal/sealed-window.md).
 - **Cluster seal records** live in the replicated system store under

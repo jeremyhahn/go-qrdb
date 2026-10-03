@@ -20,6 +20,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"math/big"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -178,6 +179,23 @@ func TestRevocationCache_SealedBarrierIsUnavailableNotDenial(t *testing.T) {
 	if !errors.As(err, &sealed) {
 		t.Error("the sealed-barrier cause did not survive wrapping")
 	}
+}
+
+func TestRevocationStateUnavailableError_Error(t *testing.T) {
+	t.Run("without an underlying error", func(t *testing.T) {
+		err := &RevocationStateUnavailableError{}
+		if !strings.Contains(err.Error(), "barrier is sealed") {
+			t.Errorf("unexpected message: %q", err.Error())
+		}
+	})
+
+	t.Run("with an underlying error", func(t *testing.T) {
+		cause := errors.New("decode failed")
+		err := &RevocationStateUnavailableError{Err: cause}
+		if !strings.Contains(err.Error(), "decode failed") {
+			t.Errorf("expected the underlying cause in the message, got %q", err.Error())
+		}
+	})
 }
 
 func TestRevocationCache_LookupFailureIsNotCached(t *testing.T) {

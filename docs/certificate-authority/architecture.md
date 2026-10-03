@@ -27,15 +27,16 @@ type CertProvider interface {
 	RevokeCert(ctx context.Context, serial string) (*RevokeResult, error)
 	IsRevoked(ctx context.Context, serial string) (bool, error)
 	ListCerts(ctx context.Context, tenantID string) ([]*CertRecord, error)
-	CACertPEM() []byte
 }
 ```
 
 `DefaultCertProvider` issues ECDSA P-256 client certificates with the Go
-standard library, keeps the CA private key barrier-encrypted at rest and
-wiped (`secure.Wipe`) as soon as it is no longer needed in plaintext while
-unsealed, and enforces revocation from replicated state on every
-authenticated request.
+standard library, stores the CA key like every other replicated system
+record — no additional per-record encryption of its own; this node's own
+at-rest storage encryption, when configured, protects the on-disk copy,
+exactly as for the cluster CA (Key A) — wipes client key material
+(`secure.Wipe`) as soon as it is no longer needed in plaintext, and
+enforces revocation from replicated state on every authenticated request.
 
 **go-xkms provides the production alternative** — full CRL generation, OCSP,
 HSM-backed CA keys (TPM2, PKCS#11, cloud KMS), extended certificate profiles,
@@ -54,8 +55,11 @@ directly.**
   generate a CRL. That is a real limitation, and it is the main reason a
   deployment with external relying parties wants the go-xkms provider.
 - **Leaving the CA key outside the barrier.** Rejected: the CA key is the most
-  valuable secret in the system. It is barrier-encrypted at rest and destroyed
-  in memory on seal.
+  valuable secret in the system. The barrier gates whether this process will
+  touch it at all — every Signer/Certificate call checks `IsSealed()` first —
+  and the in-memory key is destroyed on seal, even though the stored record
+  itself carries no additional encryption of its own (see "Trust boundaries"
+  below).
 
 ## Why this CA exists alongside the product CA
 
@@ -503,28 +507,32 @@ recorded — see "Where revocation is enforced".
 
 ## CA key lifecycle
 
-The CA key follows the barrier seal/unseal lifecycle:
+The CA key follows the barrier seal/unseal lifecycle. The barrier GATES
+every step below — IsSealed() is checked first, and every operation
+returns BarrierSealedError while sealed — but, per the owner's CA-at-rest
+ruling, no longer ENCRYPTS the stored record itself; see "The CA key
+provider seam" below and "Trust boundaries" for what actually protects it
+at rest:
 
 ```
 Bootstrap (barrier unsealed)
   ├─ Generate ECDSA P-256 CA key pair
-  ├─ barrier.Encrypt(caKeyDER) → wrapped blob
-  ├─ Store wrapped blob at __sys:cert_ca/{tenantID}/wrapped_key
-  ├─ Store CA cert PEM at __sys:cert_ca/{tenantID}/cert_pem
-  └─ Cache CA key in memory
+  ├─ Encode key + self-signed cert together as ONE JSON record
+  ├─ kvStore.PutIfAbsent(__sys:cert_ca/{tenantID}/material, record)
+  └─ Cache CA key + cert in memory
 
 Unseal
-  ├─ Load wrapped blob from KVStore
-  ├─ barrier.Decrypt(wrappedBlob) → caKeyDER
-  └─ Cache CA key in memory
+  ├─ Load the material record from KVStore
+  ├─ Decode key + cert from it
+  └─ Cache CA key + cert in memory
 
 Seal
   ├─ secure.Wipe(caKey) → zero memory
-  ├─ nil CA key and cert references
+  ├─ nil CA key reference (the cached certificate, public data, is NOT cleared)
   └─ All operations return BarrierSealedError
 
 Generate Certificate (barrier unsealed)
-  ├─ getCAMaterial() → copy of cached CA key + cert
+  ├─ getCAMaterial() → this tenant's own crypto.Signer + cert, resolved fresh
   ├─ Generate ECDSA P-256 client key pair
   ├─ x509.CreateCertificate(CA signs client)
   ├─ Persist CertRecord to KVStore
@@ -572,12 +580,13 @@ outside `pkg/cakey` ever holds `*ecdsa.PrivateKey` for a CA key again.
 `cakey.SoftwareProvider` is what runs when nothing is injected: an ECDSA
 P-256 key, persisted through `kvstore.MultiGuardedBatchKVStore` — qrdb's
 atomic multi-key batch capability, not the Raft log specifically — under a
-prefix the caller supplies. It currently backs **Key A, the cluster CA**,
-under `__sys:cluster_ca/` — no tenant, one per cluster. (Key B, the
-per-tenant login CA under `__sys:cert_ca/{tenantID}/`, is
-`pkg/cert.DefaultCertProvider` today, a separate implementation; see that
-package's own docs for its record shape and barrier handling, which this
-document does not claim.)
+prefix the caller supplies. It backs BOTH CA keys: **Key A, the cluster CA**,
+under `__sys:cluster_ca/` — no tenant, one per cluster — and **Key B, the
+per-tenant login CA**, one `cakey.SoftwareProvider` instance per tenant
+under `__sys:cert_ca/{tenantID}/`, resolved and cached lazily by
+`pkg/cert.DefaultCertProvider.resolveKeyProvider`. Both read and write the
+identical record shape this section describes; neither is a separate
+implementation any more.
 
 The key and certificate are now TWO SEPARATE records
 (`{prefix}material` for the private key, `{prefix}certificate` for the
@@ -917,10 +926,17 @@ the other:
      independent of Key A/Key B entirely); Key B's dynamic widening is
      additive to it, and the binding exists to police THAT addition, not
      to retroactively impose tenant-matching on a CA trusted before Key B
-     was ever in the picture. Scoped tightly: it reflects only the base
-     pool observed on the connection's own handshake, and never lets a
-     genuinely cross-tenant Key B CA escape its own per-tenant check just
-     because some unrelated CA also happens to be in the static base;
+     was ever in the picture. The static pool is captured ONCE, at `Wire`
+     time — a fixed snapshot of THIS listener's own configuration, never
+     resampled per connection or per handshake, so one connection's view of
+     a concurrently-mutated config can never leak into another's
+     authentication decision. Scoped tightly in a second way too: the
+     exemption is refused outright when the issuer is ALSO a registered Key
+     B CA for some tenant, regardless of which — an operator (or a test
+     harness) that accidentally adds a tenant's Key B CA to the static
+     `ClientCAs` must not thereby grant that CA a blanket, any-tenant pass;
+     it stays scoped to its own tenant via the ordinary per-tenant check
+     below, exactly as if the static pool had never contained it;
   3. the Key B CA **registered for the tenant the leaf's own Subject
      names** (`VerifyIssuer`, which reads
      `cert.DefaultCertProvider.IsTenantIssuer` — a byte-identical DER
@@ -955,35 +971,36 @@ provider.
 
 ## Trust boundaries
 
-- **Each tenant's CA private key is barrier-encrypted at rest** and lives in
-  protected memory while unsealed. Sealing destroys the in-memory key (not
-  the cached certificate — see `CACertPEM()` below); every mutating
-  operation then returns `BarrierSealedError`.
+- **Each tenant's CA key is stored like every other replicated system
+  record — no additional per-record encryption of its own** (the owner's
+  CA-at-rest ruling; see "Trust boundaries" in the backup-restore feature
+  for what actually protects it). The in-memory key lives in protected
+  memory only while unsealed: sealing destroys it (not the cached
+  certificate, public data); every mutating operation then returns
+  `BarrierSealedError`.
 - **`getCAMaterial()` resolves the SPECIFIC tenant's CA directly** through
-  the `cakey.Provider` it just resolved (`prov.Certificate`), never through
-  the single process-wide "most recently resolved" cache `CACertPEM()`
-  reads. Two different tenants' calls can interleave — `getCAMaterial` is
-  called from `GenerateClientCert` and `ExportPKCS12`, neither of which
-  holds any lock across the call — and reading that shared cache back after
-  resolving a DIFFERENT tenant's provider would hand that tenant the wrong
-  CA certificate whenever another tenant's resolution landed in between.
+  the `cakey.Provider` it just resolved (`prov.Signer`/`prov.Certificate`),
+  never through any shared, process-wide cache. Two different tenants'
+  calls can interleave — `getCAMaterial` is called from `GenerateClientCert`
+  and `ExportPKCS12`, neither of which holds any lock across the call — so
+  returning anything other than THIS resolution's own answer would risk
+  handing one tenant's caller a different tenant's CA certificate.
   `ExportPKCS12` resolves the exporting leaf's OWN tenant (from its Subject
-  OU) the same way, for the same reason, rather than reading the shared
-  cache.
+  OU) the same way, for the same reason.
 - **The built-in per-tenant CA key is never auto-created by a read.**
   `IsTenantIssuer` — reached on the authentication path for whatever tenant
   a presented leaf CLAIMS to be, including tenants that do not exist — is
   LOAD-ONLY: it calls the built-in `cakey.SoftwareProvider`'s `Unseal`
   (load-only) before `Certificate`, so a tenant with no established CA
   answers `false`, never minting one as a side effect of being asked about.
-  `Initialize`/`Unseal`/`getCAMaterial`'s own auto-init-on-first-use path
-  are serialized per tenant (`tenantInitLocked`), so two callers racing the
-  first-ever issuance for a brand-new tenant cannot both generate and
-  persist a competing CA key.
+  `Initialize`'s own auto-init-on-first-use path is safe under concurrency
+  without any lock of `pkg/cert`'s own: `cakey.SoftwareProvider.Initialize`
+  writes its material through `kvStore.PutIfAbsent`, the atomic primitive
+  that makes "does it already exist" and "write it" one indivisible step,
+  so two callers racing the first-ever issuance for a brand-new tenant
+  converge on exactly one CA rather than each writing its own candidate.
 - **Client private key DER is wiped immediately after PEM encoding.**
-- **`CACertPEM()` needs no barrier check** — the CA certificate is public data
-  and is deliberately still served while sealed. **`CACertPEMs()` (plural,
-  every tenant) checks the barrier explicitly anyway** and refuses with
+- **`CACertPEMs()` checks the barrier explicitly** and refuses with
   `BarrierSealedError` while sealed: outside Raft mode the plaintext
   records are reachable even while sealed, and a runtime reseal must make
   the dynamic client-auth trust pool drop Key B immediately, not merely

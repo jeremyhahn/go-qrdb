@@ -298,8 +298,7 @@ type AuthMiddlewareConfig struct {
 
 | Key | Value | Purpose |
 |---|---|---|
-| `__sys:cert_ca/{tenantID}/wrapped_key` | barrier-encrypted CA private key (DER) | CA key material |
-| `__sys:cert_ca/{tenantID}/cert_pem` | PEM-encoded CA certificate | CA certificate |
+| `__sys:cert_ca/{tenantID}/material` | `{"key_der":...,"cert_der":...}` JSON, both DER, written together as one atomic `PutIfAbsent` | CA key + certificate, together (`cakey.SoftwareProvider`'s `storedMaterial` envelope — no per-record encryption of its own; see "Trust boundaries") |
 | `__sys:certs/{tenantID}/{serial}` | `CertRecord` JSON | issued certificate records |
 | `__sys:certs_revoked/{serial}` | revocation-entry JSON | revocation markers |
 

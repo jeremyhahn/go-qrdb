@@ -51,8 +51,4 @@ type CertProvider interface {
 
 	// ListCerts lists all issued client certificates for a tenant.
 	ListCerts(ctx context.Context, tenantID string) ([]*CertRecord, error)
-
-	// CACertPEM returns the PEM-encoded CA certificate for client
-	// verification.
-	CACertPEM() []byte
 }

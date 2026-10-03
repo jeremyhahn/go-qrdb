@@ -148,6 +148,25 @@ func TestCertExportError_Unwrap(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// PKCS12FIPSUnavailableError
+// ---------------------------------------------------------------------------
+
+func TestPKCS12FIPSUnavailableError_Message(t *testing.T) {
+	err := &PKCS12FIPSUnavailableError{}
+	if !strings.Contains(err.Error(), "fips140=only") {
+		t.Errorf("expected 'fips140=only' in error, got: %s", err.Error())
+	}
+}
+
+func TestPKCS12FIPSUnavailableError_As(t *testing.T) {
+	var err error = &PKCS12FIPSUnavailableError{}
+	var target *PKCS12FIPSUnavailableError
+	if !errors.As(err, &target) {
+		t.Fatal("errors.As should match *PKCS12FIPSUnavailableError")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // CAKeyNotAvailableError
 // ---------------------------------------------------------------------------
 

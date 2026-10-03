@@ -30,6 +30,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -77,10 +78,16 @@ func parsePEMCert(t *testing.T, certPEM []byte) *x509.Certificate {
 // would really be handed.
 func verifiedState(t *testing.T, p *DefaultCertProvider, leaf *x509.Certificate) *tls.ConnectionState {
 	t.Helper()
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(p.CACertPEM()) {
-		t.Fatal("CA PEM did not load into a pool")
+	tenantID := tenantid.System
+	if len(leaf.Subject.OrganizationalUnit) > 0 && leaf.Subject.OrganizationalUnit[0] != "" {
+		tenantID = leaf.Subject.OrganizationalUnit[0]
 	}
+	_, caCert, err := p.getCAMaterial(context.Background(), tenantID)
+	if err != nil {
+		t.Fatalf("getCAMaterial(%s): %v", tenantID, err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(caCert)
 	chains, err := leaf.Verify(x509.VerifyOptions{
 		Roots:     pool,
 		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},

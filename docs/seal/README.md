@@ -220,35 +220,39 @@ authenticated share holders; nodes never exchange shares.
 
 ## CA Key Lifecycle
 
-The `DefaultCertProvider` (`pkg/cert/default_provider.go`) stores its ECDSA
-P-256 CA private key encrypted at rest via the `EncryptionBarrier`. While
-unsealed, the decrypted key is held as a plain `[]byte` (`p.caKey`) — not a
-`secure.Buffer` or any other locked-memory enclave — and is zero-filled with
-`secure.Wipe` (a plain, compiler-optimization-resistant overwrite, not an
-mlock'd page) whenever it is replaced or on `Seal()`.
+Both CA keys — Key A (the cluster CA) and Key B (the per-tenant login CA,
+resolved lazily by `pkg/cert.DefaultCertProvider`) — are
+`cakey.SoftwareProvider` instances. Per the owner's CA-at-rest ruling, the
+stored record carries no additional barrier encryption of its own; the
+barrier GATES whether this process will touch the key at all
+(`IsSealed()`), not an AEAD wrap of the record. While unsealed, the key is
+held as an ordinary `*ecdsa.PrivateKey` — not a `secure.Buffer` or any
+other locked-memory enclave — and is zero-filled with `secure.Wipe` (a
+plain, compiler-optimization-resistant overwrite, not an mlock'd page)
+whenever it is replaced or on `Seal()`.
 
 ### Bootstrap
 
 1. Generate ECDSA P-256 CA key pair (`crypto/rand`)
-2. Encrypt private key via `EncryptionBarrier.Encrypt()`
-3. Store wrapped blob in KVStore at `__sys:cert_ca/{tenantID}/wrapped_key`
-4. Store CA cert PEM in KVStore at `__sys:cert_ca/{tenantID}/cert_pem`
-5. Zero plaintext key (`secure.Wipe`)
+2. Encode the key and a self-signed certificate for it TOGETHER as one JSON
+   record (no barrier encryption of the record itself)
+3. `kvStore.PutIfAbsent(__sys:cert_ca/{tenantID}/material, record)` — the
+   atomic primitive that makes two callers racing a brand-new tenant's
+   first-ever boot converge on exactly one CA
+4. Cache the key and certificate in memory
 
 ### Unseal to Operational
 
-1. Load wrapped blob from KVStore
-2. Decrypt via `EncryptionBarrier.Decrypt()`
-3. Hold the decrypted DER bytes in `p.caKey` (`[]byte`), wiping any previous
-   value first
-4. Parse the ECDSA private key from those bytes
-5. Cache the parsed signer (`crypto.Signer`) for signing operations
+1. Load the material record from KVStore
+2. Decode the key and certificate from it
+3. Cache both in memory
 
 ### Seal
 
-1. `secure.Wipe(p.caKey)`, then `p.caKey = nil`
-2. Nil the cached signer
-3. All `GenerateClientCert()` calls return `CAKeyNotAvailableError`
+1. `secure.Wipe` the in-memory key, then nil the cached key reference
+2. The cached certificate (public data) is NOT cleared
+3. Every `Signer`/`Certificate` call returns `BarrierSealedError` until
+   `Unseal` runs again
 
 ## Audit Logging
 

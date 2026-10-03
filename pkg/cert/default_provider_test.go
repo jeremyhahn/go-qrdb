@@ -176,6 +176,8 @@ func (m *mockKVStore) PutAllIfAllUnchanged(_ context.Context, guards []kvstore.G
 	return true, nil
 }
 
+var _ kvstore.MultiGuardedBatchKVStore = (*mockKVStore)(nil)
+
 // mockBarrier implements seal.EncryptionBarrier using AES-GCM for real
 // encrypt/decrypt round-trips in tests.
 type mockBarrier struct {
@@ -314,6 +316,8 @@ func (e *errorKVStore) PutAllIfAllUnchanged(_ context.Context, _ []kvstore.Guard
 	return false, e.err
 }
 
+var _ kvstore.MultiGuardedBatchKVStore = (*errorKVStore)(nil)
+
 // newTestProvider creates a DefaultCertProvider with mocks, ready for
 // Initialize.
 func newTestProvider(opts ...ProviderOption) (*DefaultCertProvider, *mockKVStore, *mockBarrier) {
@@ -351,20 +355,22 @@ func TestDefaultCertProvider_Initialize_NewCA(t *testing.T) {
 		t.Fatalf("Get material: %v", err)
 	}
 	if material == nil {
-		t.Fatal("material should exist after Initialize")
+		t.Fatal("material record should exist after Initialize")
 	}
 
-	// Verify the certificate record was stored, as raw DER (cakey's own
-	// record shape -- never PEM).
-	certDER, err := kv.Get(ctx, "__sys:cert_ca/system/certificate")
-	if err != nil {
-		t.Fatalf("Get certificate: %v", err)
+	// Verify the certificate Initialize cached is valid and well-formed --
+	// read back through the provider, never by decoding the stored record
+	// directly, since this package does not duplicate cakey's own envelope
+	// format.
+	pems, err := p.CACertPEMs(ctx)
+	if err != nil || len(pems) != 1 {
+		t.Fatalf("CACertPEMs: %v (len=%d)", err, len(pems))
 	}
-	if certDER == nil {
-		t.Fatal("certificate should exist after Initialize")
+	block, _ := pem.Decode(pems[0])
+	if block == nil {
+		t.Fatal("CACertPEMs entry should be valid PEM")
 	}
-
-	cert, err := x509.ParseCertificate(certDER)
+	cert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
 		t.Fatalf("ParseCertificate: %v", err)
 	}
@@ -386,7 +392,11 @@ func TestDefaultCertProvider_Initialize_ExistingCA(t *testing.T) {
 	}
 
 	// Capture state.
-	firstCACertPEM := p.CACertPEM()
+	firstPEMs, err := p.CACertPEMs(ctx)
+	if err != nil || len(firstPEMs) != 1 {
+		t.Fatalf("CACertPEMs: %v (len=%d)", err, len(firstPEMs))
+	}
+	firstCACertPEM := firstPEMs[0]
 
 	// Re-initialize should load existing CA, not create new.
 	p2, _, _ := newTestProvider()
@@ -399,7 +409,11 @@ func TestDefaultCertProvider_Initialize_ExistingCA(t *testing.T) {
 	}
 
 	// Should have the same CA cert.
-	if !bytes.Equal(p2.CACertPEM(), firstCACertPEM) {
+	secondPEMs, err := p2.CACertPEMs(ctx)
+	if err != nil || len(secondPEMs) != 1 {
+		t.Fatalf("CACertPEMs: %v (len=%d)", err, len(secondPEMs))
+	}
+	if !bytes.Equal(secondPEMs[0], firstCACertPEM) {
 		t.Error("second Initialize should load the same CA cert")
 	}
 }
@@ -426,14 +440,13 @@ func TestDefaultCertProvider_Initialize_TenantFromContext(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 
-	// Verify the key material record was stored under the correct tenant
-	// prefix.
+	// Verify the material record was stored under the correct tenant prefix.
 	material, err := kv.Get(ctx, "__sys:cert_ca/org-42/material")
 	if err != nil {
 		t.Fatalf("Get material: %v", err)
 	}
 	if material == nil {
-		t.Fatal("material should exist under tenant org-42")
+		t.Fatal("material record should exist under tenant org-42")
 	}
 }
 
@@ -458,34 +471,26 @@ func TestDefaultCertProvider_Initialize_StoreError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDefaultCertProvider_Unseal(t *testing.T) {
-	p, _, _ := initializeProvider(t)
+	p, _, barrier := initializeProvider(t)
 	ctx := context.Background()
 
-	// Seal the provider.
+	// Seal the provider: the in-memory key is destroyed, and the barrier
+	// itself is sealed too so a subsequent material() auto-init cannot
+	// silently paper over the destroyed key by reloading it.
 	if err := p.Seal(); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
+	barrier.seal()
 
-	// Verify the public CA-certificate cache is cleared.
-	p.mu.RLock()
-	certNil := p.caCert == nil
-	p.mu.RUnlock()
-	if !certNil {
-		t.Error("CA cert cache should be nil after Seal")
+	if _, err := p.GenerateClientCert(ctx, &GenerateRequest{Username: "while-sealed", TenantID: "system"}); err == nil {
+		t.Fatal("expected GenerateClientCert to fail while sealed")
 	}
 
 	// Unseal should reload the CA material (resolving tenant.FromContext(ctx)
 	// through the built-in per-tenant cakey.SoftwareProvider).
+	barrier.unseal()
 	if err := p.Unseal(ctx); err != nil {
 		t.Fatalf("Unseal: %v", err)
-	}
-
-	// Verify the CA cert is cached again.
-	p.mu.RLock()
-	certNil = p.caCert == nil
-	p.mu.RUnlock()
-	if certNil {
-		t.Error("CA cert should be cached after Unseal")
 	}
 
 	// And the underlying key is actually usable again: GenerateClientCert
@@ -1180,49 +1185,40 @@ func TestDefaultCertProvider_ListCerts_CrossTenantIsolation(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// CACertPEM tests
+// CACertPEMs tests (the single-cert cache CACertPEM() used to answer from is
+// gone entirely -- removed as cruft once nothing but these tests called it;
+// see CACertPEMs' own tests for the per-tenant, multi-tenant-aware seam that
+// replaces it).
 // ---------------------------------------------------------------------------
 
-func TestDefaultCertProvider_CACertPEM(t *testing.T) {
+func TestDefaultCertProvider_CACertPEMs_IsValidPEM(t *testing.T) {
 	p, _, _ := initializeProvider(t)
+	ctx := context.Background()
 
-	certPEM := p.CACertPEM()
-	if len(certPEM) == 0 {
-		t.Fatal("CACertPEM should not be empty after Initialize")
+	pems, err := p.CACertPEMs(ctx)
+	if err != nil || len(pems) != 1 {
+		t.Fatalf("CACertPEMs: %v (len=%d)", err, len(pems))
 	}
 
-	block, _ := pem.Decode(certPEM)
+	block, _ := pem.Decode(pems[0])
 	if block == nil {
-		t.Fatal("CACertPEM should be valid PEM")
+		t.Fatal("CACertPEMs entry should be valid PEM")
 	}
 	if block.Type != "CERTIFICATE" {
 		t.Errorf("PEM type: got %q, want %q", block.Type, "CERTIFICATE")
 	}
 }
 
-func TestDefaultCertProvider_CACertPEM_ReturnsCopy(t *testing.T) {
-	p, _, _ := initializeProvider(t)
-
-	pem1 := p.CACertPEM()
-	pem2 := p.CACertPEM()
-
-	if !bytes.Equal(pem1, pem2) {
-		t.Error("CACertPEM should return equal values")
-	}
-
-	// Mutating one should not affect the other.
-	pem1[0] = 0xFF
-	pem3 := p.CACertPEM()
-	if pem3[0] == 0xFF {
-		t.Error("CACertPEM should return independent copies")
-	}
-}
-
-func TestDefaultCertProvider_CACertPEM_BeforeInitialize(t *testing.T) {
+func TestDefaultCertProvider_CACertPEMs_BeforeInitialize(t *testing.T) {
 	p, _, _ := newTestProvider()
-	certPEM := p.CACertPEM()
-	if len(certPEM) != 0 {
-		t.Error("CACertPEM should be empty before Initialize")
+	ctx := context.Background()
+
+	pems, err := p.CACertPEMs(ctx)
+	if err != nil {
+		t.Fatalf("CACertPEMs: %v", err)
+	}
+	if len(pems) != 0 {
+		t.Errorf("expected no CA certificates before Initialize, got %d", len(pems))
 	}
 }
 
@@ -1715,7 +1711,7 @@ func TestEncodePKCS12_InvalidCACertPEM(t *testing.T) {
 	}
 }
 
-func TestEncodePKCS12_NoCACertPEM(t *testing.T) {
+func TestExportPKCS12_OrdinaryExportSucceeds(t *testing.T) {
 	p, _, _ := initializeProvider(t)
 	ctx := context.Background()
 
@@ -1725,12 +1721,9 @@ func TestEncodePKCS12_NoCACertPEM(t *testing.T) {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
 
-	// Clear the CA cert PEM.
-	p.mu.Lock()
-	p.caCertPEM = nil
-	p.mu.Unlock()
-
-	// Should still work without CA chain -- except under
+	// ExportPKCS12 resolves its CA directly from getCAMaterial, never from a
+	// shared cache, so there is nothing to clear here any more -- this now
+	// just proves the ordinary export succeeds, except under
 	// GODEBUG=fips140=only, where the export is refused for every input
 	// because of the format's SHA-1 localKeyId attribute.
 	p12Data, err := p.ExportPKCS12(ctx, bundle.CertPEM, bundle.KeyPEM, "pw")

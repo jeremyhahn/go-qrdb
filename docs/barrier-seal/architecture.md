@@ -482,14 +482,21 @@ bound, and it falls on nodes that already cannot serve linearizable reads.
 
 ## CA key lifecycle
 
-The CA private key is one of the things the barrier protects, and its lifecycle
-is the clearest illustration of what sealing means:
+The CA private key is one of the things the barrier GATES, and its
+lifecycle is the clearest illustration of what sealing means — though, per
+the owner's CA-at-rest ruling, the barrier no longer ENCRYPTS the stored
+record itself the way an earlier revision did; see
+[../certificate-authority/architecture.md](../certificate-authority/architecture.md)
+for the normative description and this section's own correction below.
 
-The `DefaultCertProvider` (`pkg/cert/default_provider.go`) stores its ECDSA
-P-256 CA private key using the encryption barrier for at-rest protection.
-**The live DER-encoded key is an ordinary `[]byte` field (`p.caKey`), not an
-mlocked enclave** — `pkg/cert` does not currently hold it in a `secure.Buffer`
-or `secure.Secret`. It is wiped with `secure.Wipe` on every construction
+Both CA keys — Key A (the cluster CA, `__sys:cluster_ca/`) and Key B (the
+per-tenant login CA, `__sys:cert_ca/{tenantID}/`, resolved lazily by
+`pkg/cert.DefaultCertProvider`) — are `cakey.SoftwareProvider` instances
+now, not key material `pkg/cert` or `pkg/clusterca` holds directly: neither
+package has a `caKey` field of its own any more. `cakey.SoftwareProvider`
+caches the live key as an ordinary `*ecdsa.PrivateKey` in memory, not an
+mlocked enclave — it does not currently hold it in a `secure.Buffer` or
+`secure.Secret`. It is wiped with `secure.Wipe` on every construction
 failure path and on `Seal`, which bounds how long the plaintext survives on
 the Go heap, but does not lock it out of swap or exclude it from a core dump
 while it is live. Moving it into a `secure.Buffer` is tracked as a gap, not
@@ -498,25 +505,25 @@ implemented here; do not describe this as enclave-protected until it is.
 ### Bootstrap
 
 1. Generate ECDSA P-256 CA key pair (`crypto/rand`)
-2. Encrypt private key via `EncryptionBarrier.Encrypt()`
-3. Store wrapped blob in KVStore at `__sys:cert_ca/{tenantID}/wrapped_key`
-4. Store CA cert PEM in KVStore at `__sys:cert_ca/{tenantID}/cert_pem`
-5. Zero the DER-encoding scratch slice (`secure.Wipe`) on every error path;
-   on success, the DER bytes are retained as `p.caKey` (see above) for signing
+2. Encode the key and a self-signed certificate for it TOGETHER as one JSON
+   record (no barrier encryption of the record itself)
+3. `kvStore.PutIfAbsent(__sys:cert_ca/{tenantID}/material, record)` — the
+   atomic primitive that makes two callers racing a brand-new tenant's
+   first-ever boot converge on exactly one CA
+4. Cache the key and certificate in memory
 
 ### Unseal to Operational
 
-1. Load wrapped blob from KVStore
-2. Decrypt via `EncryptionBarrier.Decrypt()`
-3. Cache the decrypted DER bytes as `p.caKey`
-4. Parse the ECDSA private key from `p.caKey` on each `GenerateClientCert` call
-5. Wipe and replace `p.caKey` when `loadCA` re-caches it
+1. Load the material record from KVStore
+2. Decode the key and certificate from it
+3. Cache both in memory
 
 ### Seal
 
-1. `secure.Wipe(p.caKey)`, then `p.caKey = nil`
-2. Nil the cached CA certificate
-3. All `GenerateClientCert()` calls return `CAKeyNotAvailableError`
+1. `secure.Wipe` the in-memory key, then nil the cached key reference
+2. The cached certificate (public data) is NOT cleared
+3. Every `Signer`/`Certificate` call returns `BarrierSealedError` until
+   `Unseal` runs again
 
 
 ## Trust boundaries
@@ -533,9 +540,9 @@ implemented here; do not describe this as enclave-protected until it is.
   `secure.Buffer` / `secure.Secret` (go-enclave-backed), mlocked
   and wiped on seal. The system barrier's own root key and tenant DEKs
   (`pkg/dek`, `pkg/seal`'s tenant key manager) go through `pkg/secure`. The
-  CA private key in `pkg/cert.DefaultCertProvider` is the current exception —
-  see its own lifecycle section above — and is wiped (`secure.Wipe`) but not
-  mlocked while live.
+  CA private key, for both Key A and Key B (`cakey.SoftwareProvider`), is the
+  current exception — see its own lifecycle section above — and is wiped
+  (`secure.Wipe`) but not mlocked while live.
 - **Protected memory is not readable from outside the process.** `qrdbd
   start` and the `qrdb` desktop/CLI binary mark themselves non-dumpable (Linux) or denies debugger attach (macOS)
   before it holds any key, so a same-user process cannot read the mlocked pages
