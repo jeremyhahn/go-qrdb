@@ -35,6 +35,7 @@ import (
 	noiseboot "github.com/jeremyhahn/go-truststrap/pkg/noiseproto/bootstrap"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
 
 // errInjectedFault is what faultyConn returns in place of the real Read or
@@ -72,15 +73,25 @@ func (c *faultyConn) Write(p []byte) (int, error) {
 }
 
 // newTestJoinServer builds a *JoinServer directly, without a real listener,
-// for driving handle against a net.Pipe() end.
-func newTestJoinServer(t *testing.T, provider cakey.Provider, token string) *JoinServer {
+// for driving handle against a net.Pipe() end. It carries its own throwaway
+// token store and trust domain: every fault test in this file targets a
+// transport-level failure (a Read/Write that never completes), which is
+// reached before -- or regardless of -- whether the presented token is
+// valid, so none of them need a token actually minted into it.
+func newTestJoinServer(t *testing.T, provider cakey.Provider) *JoinServer {
 	t.Helper()
 	key, err := noiseproto.GenerateStaticKey()
 	if err != nil {
 		t.Fatalf("GenerateStaticKey: %v", err)
 	}
 	t.Cleanup(key.Destroy)
-	return &JoinServer{key: key, token: token, provider: provider, logger: discardLogger()}
+	return &JoinServer{
+		key:         key,
+		store:       kvstore.NewMemoryKVStore(),
+		trustDomain: testTrustDomain,
+		provider:    provider,
+		logger:      discardLogger(),
+	}
 }
 
 // clientSendMsg1 builds a fresh initiator session against serverPub, writes
@@ -131,7 +142,7 @@ func clientCompleteHandshake(conn net.Conn, sess *noiseproto.Session, deadline t
 // data has moved in either direction.
 func TestHandle_ReadMsg1Fails(t *testing.T) {
 	provider := newTestClusterCAProvider(t)
-	js := newTestJoinServer(t, provider, "tok")
+	js := newTestJoinServer(t, provider)
 
 	_, serverConn := net.Pipe()
 	fc := &faultyConn{Conn: serverConn, failReadAfter: 0, failWriteAfter: -1}
@@ -153,7 +164,7 @@ func TestHandle_ReadMsg1Fails(t *testing.T) {
 // (message 2) fails.
 func TestHandle_WriteMsg2Fails(t *testing.T) {
 	provider := newTestClusterCAProvider(t)
-	js := newTestJoinServer(t, provider, "tok")
+	js := newTestJoinServer(t, provider)
 
 	clientConn, serverConn := net.Pipe()
 	fc := &faultyConn{Conn: serverConn, failReadAfter: -1, failWriteAfter: 0}
@@ -183,7 +194,7 @@ func TestHandle_WriteMsg2Fails(t *testing.T) {
 // succeed), then the server's next Read (the encrypted request frame) fails.
 func TestHandle_ReadRequestFails(t *testing.T) {
 	provider := newTestClusterCAProvider(t)
-	js := newTestJoinServer(t, provider, "tok")
+	js := newTestJoinServer(t, provider)
 
 	clientConn, serverConn := net.Pipe()
 	// Two reads (header+payload) complete handshake message 1; the third
@@ -226,7 +237,7 @@ func TestHandle_ReadRequestFails(t *testing.T) {
 // then the server's response write fails.
 func TestHandle_WriteResponseFails(t *testing.T) {
 	provider := newTestClusterCAProvider(t)
-	js := newTestJoinServer(t, provider, "tok")
+	js := newTestJoinServer(t, provider)
 
 	clientConn, serverConn := net.Pipe()
 	// Writes 1-2 are handshake message 2; write 3 (the response header) is
@@ -276,7 +287,7 @@ func TestHandle_WriteResponseFails(t *testing.T) {
 // "write handshake message 1" failure branch.
 func TestJoinClientExchange_WriteMsg1Fails(t *testing.T) {
 	provider := newTestClusterCAProvider(t)
-	js := newTestJoinServer(t, provider, "tok")
+	js := newTestJoinServer(t, provider)
 
 	clientConn, serverConn := net.Pipe()
 	fc := &faultyConn{Conn: clientConn, failReadAfter: -1, failWriteAfter: 0}
@@ -306,7 +317,7 @@ func TestJoinClientExchange_WriteMsg1Fails(t *testing.T) {
 // read fails.
 func TestJoinClientExchange_ReadMsg2Fails(t *testing.T) {
 	provider := newTestClusterCAProvider(t)
-	js := newTestJoinServer(t, provider, "tok")
+	js := newTestJoinServer(t, provider)
 
 	clientConn, serverConn := net.Pipe()
 	fc := &faultyConn{Conn: clientConn, failReadAfter: 0, failWriteAfter: -1}
@@ -337,7 +348,7 @@ func TestJoinClientExchange_ReadMsg2Fails(t *testing.T) {
 // then the client's next write (the request frame) fails.
 func TestJoinClientExchange_WriteRequestFails(t *testing.T) {
 	provider := newTestClusterCAProvider(t)
-	js := newTestJoinServer(t, provider, "tok")
+	js := newTestJoinServer(t, provider)
 
 	clientConn, serverConn := net.Pipe()
 	fc := &faultyConn{Conn: clientConn, failReadAfter: -1, failWriteAfter: 2}
@@ -367,7 +378,7 @@ func TestJoinClientExchange_WriteRequestFails(t *testing.T) {
 // write complete, then the client's read of the response fails.
 func TestJoinClientExchange_ReadResponseFails(t *testing.T) {
 	provider := newTestClusterCAProvider(t)
-	js := newTestJoinServer(t, provider, "tok")
+	js := newTestJoinServer(t, provider)
 
 	clientConn, serverConn := net.Pipe()
 	fc := &faultyConn{Conn: clientConn, failReadAfter: 2, failWriteAfter: -1}

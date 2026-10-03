@@ -143,6 +143,7 @@ var rules = slices.Concat(
 	ragRules,
 	embeddingRules,
 	backupRules,
+	clusterJoinTokenRules,
 	identityRules,
 	tenantRules,
 	holderRules,

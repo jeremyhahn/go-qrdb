@@ -112,6 +112,19 @@ func (e *MaterialMismatchError) Error() string {
 		"refusing to silently resolve a split-brain"
 }
 
+// KeyCertMismatchError is returned when AdoptIfAbsent is offered a key and
+// certificate whose public keys do not match -- the certificate was not
+// issued for the private key it is being adopted alongside. Accepting the
+// pair anyway would persist material this provider could never sign with
+// using the key it claims to hold, discovered only the next time something
+// tries.
+type KeyCertMismatchError struct{}
+
+// Error returns a human-readable description.
+func (e *KeyCertMismatchError) Error() string {
+	return "cakey: the offered key does not match the offered certificate's public key"
+}
+
 // NotInitializedError is returned when Signer or Certificate is called on a
 // SoftwareProvider that has never been Initialize'd and has no material in
 // its store.

@@ -50,6 +50,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -212,14 +213,18 @@ type Server struct {
 	caBootstrap        func(context.Context) ([]byte, error)
 	caBootstrapSources int
 
-	// clusterJoinProvider and clusterJoinToken configure the SPKI/Direct
-	// member-side CSR-sign route (/v1/enroll/join, WithClusterJoin). Both
-	// nil/empty means the route is not registered. The Noise_NK transport
+	// clusterJoinProvider, clusterJoinStore and clusterJoinTrustDomain
+	// configure the SPKI/Direct member-side CSR-sign route
+	// (/v1/enroll/join, WithClusterJoin). clusterJoinProvider nil means
+	// the route is not registered. The Noise_NK transport
 	// (clusterenroll.JoinServer) is a separate listener entirely; this is
 	// the SAME wire contract (clusterenroll.JoinRequest/JoinResponse,
-	// HandleJoinRequest) over the admin HTTPS listener instead.
-	clusterJoinProvider cakey.Provider
-	clusterJoinToken    string
+	// HandleJoinRequest) over the admin HTTPS listener instead, consuming
+	// single-use join tokens from the SAME replicated store
+	// (clusterenroll.ConsumeJoinToken) rather than a static shared secret.
+	clusterJoinProvider    cakey.Provider
+	clusterJoinStore       kvstore.AtomicKVStore
+	clusterJoinTrustDomain string
 
 	onEtcdUpdated func(dbName string, cfg *database.EtcdConfig) error
 	webUI         http.Handler      // optional embedded web UI file server
@@ -688,13 +693,18 @@ func (s *Server) addCABootstrap(source func(context.Context) ([]byte, error)) {
 // It is public (no mTLS authentication: the joiner has no credentials yet)
 // and NOT on the sealed-window allowlist -- it exists only on the regular,
 // post-unseal server, because provider (the cluster CA, Key A) is only
-// reachable once unsealed. A nil provider or an empty token configures
-// nothing; configuring one without the other is refused at Start
-// (*ClusterJoinMissingTokenError).
-func WithClusterJoin(provider cakey.Provider, token string) ServerOption {
+// reachable once unsealed. store is the replicated kvstore join tokens are
+// minted into and consumed from (clusterenroll.MintJoinToken /
+// ConsumeJoinToken); trustDomain is this member's own pinned cluster trust
+// domain. A nil provider configures nothing; configuring one without a
+// store or trust domain is refused at Start
+// (*ClusterJoinMissingTokenError, its name kept for the config-conflict
+// shape even though the missing piece is no longer a static token).
+func WithClusterJoin(provider cakey.Provider, store kvstore.AtomicKVStore, trustDomain string) ServerOption {
 	return func(s *Server) {
 		s.clusterJoinProvider = provider
-		s.clusterJoinToken = token
+		s.clusterJoinStore = store
+		s.clusterJoinTrustDomain = trustDomain
 	}
 }
 
@@ -1004,7 +1014,7 @@ func (s *Server) Start() error {
 		s.closePrebound()
 		return &CABootstrapConflictError{}
 	}
-	if (s.clusterJoinProvider != nil) != (s.clusterJoinToken != "") {
+	if s.clusterJoinProvider != nil && (s.clusterJoinStore == nil || s.clusterJoinTrustDomain == "") {
 		s.closePrebound()
 		return &ClusterJoinMissingTokenError{}
 	}
@@ -1561,6 +1571,15 @@ func (s *Server) registerRoutes() {
 	s.route(http.MethodDelete, "/admin/shards/{id}", permission.AdminStopShard, s.handleAdminShardByID)
 	s.route(http.MethodGet, "/admin/shards/{id}/state", permission.AdminShardState, s.handleAdminShardByID)
 
+	// Mints a single-use, identity-bound member-side CSR join token (see
+	// clusterenroll.MintJoinToken), consumed at /v1/enroll/join
+	// (WithClusterJoin) or over the Noise_NK transport. permission.
+	// ClusterJoinToken is ScopeCross and platform-only. The handler itself
+	// reports 501 when s.adminSvc does not implement
+	// service.ClusterJoinTokenMinter (not configured for member-side CSR
+	// join), so it is attached whenever an admin service exists at all.
+	s.routeIf(adminOn, http.MethodPost, "/v1/cluster/join-tokens", permission.ClusterJoinToken, s.handleMintJoinToken)
+
 	// /metrics requires authentication but no specific permission: any
 	// authenticated peer may scrape.
 	s.authenticatedIf(s.gatherer != nil, http.MethodGet, "/metrics", s.handleMetrics)
@@ -2088,14 +2107,22 @@ func (s *Server) handleCABootstrap(w http.ResponseWriter, r *http.Request) {
 // second implementation of the admission check, the CSR validation, or the
 // issuance call to drift from it. Trust in THIS request's transport is TLS
 // itself (SPKI-pinned or Direct, whichever the joiner's client used to
-// reach this listener); the join token inside the body is the admission
-// control, checked in constant time by HandleJoinRequest before anything
-// else runs.
+// reach this listener); the single-use join token inside the body is the
+// admission control, consumed by HandleJoinRequest before anything else
+// runs. The rate-limit/lockout guard is shared with the Noise_NK listener
+// (clusterenroll.AllowJoinAttempt), keyed by remote address, so an attacker
+// gains nothing by switching transports mid-attack.
 func (s *Server) handleClusterJoin(w http.ResponseWriter, r *http.Request) {
 	if s.clusterJoinProvider == nil {
 		// Unreachable through the router (the route is registered only
 		// when configured), but a direct call must not dereference nil.
 		http.Error(w, "cluster join not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	source := clusterJoinSourceAddr(r)
+	if !clusterenroll.AllowJoinAttempt(source) {
+		http.Error(w, "too many join attempts", http.StatusTooManyRequests)
 		return
 	}
 
@@ -2110,7 +2137,13 @@ func (s *Server) handleClusterJoin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := clusterenroll.HandleJoinRequest(r.Context(), s.clusterJoinProvider, s.clusterJoinToken, &req)
+	resp := clusterenroll.HandleJoinRequest(r.Context(), s.clusterJoinProvider, s.clusterJoinStore, s.clusterJoinTrustDomain, &req)
+	if resp.Error != "" {
+		clusterenroll.RecordJoinAttemptFailure(source)
+	} else {
+		clusterenroll.RecordJoinAttemptSuccess(source)
+	}
+
 	respBody, err := json.Marshal(resp)
 	if err != nil {
 		slog.Error("rest: cluster join response marshal failed", slog.Any("error", err))
@@ -2125,6 +2158,17 @@ func (s *Server) handleClusterJoin(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}
 	_, _ = w.Write(respBody)
+}
+
+// clusterJoinSourceAddr extracts the caller's host (never the ephemeral
+// port) from r, for attempt-guard keying -- the same property
+// clusterenroll's own sourceAddr enforces for the Noise_NK transport.
+func clusterJoinSourceAddr(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 // maxClusterJoinRequestSize bounds the /v1/enroll/join request body: a

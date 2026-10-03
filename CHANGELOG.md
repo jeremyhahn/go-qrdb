@@ -34,6 +34,43 @@ Recovery train: stranded fixes brought onto main. Highlights:
   CA) obtain their signing key only through this interface, so an embedder
   (go-xkms) can inject an HSM/TPM/KMS-backed provider with no glue code and
   qrdb never holds the key.
+- **Member-side CSR join uses single-use, identity-bound join tokens**,
+  replacing the earlier static shared admission secret. An admin mints a
+  token bound to a joining node's SPIFFE node identity and an expiry
+  (`clusterenroll.MintJoinToken`); only its SHA-256 digest is stored in the
+  replicated join-token store, and it is consumed atomically on first use
+  (compare-and-delete) — a second presentation, an expired token, or one
+  bound to a foreign trust domain, a tenant path, or an already-admitted
+  identity is refused identically to an unknown token, so the response
+  carries no token-validity oracle. The issued leaf carries the token's
+  bound identity as its sole URI SAN, never the joiner's self-reported
+  `node_uri` and never the signing member's own SANs. Join attempts are
+  rate-limited and locked out per source address, shared across the Noise_NK
+  and SPKI/Direct transports so switching transports mid-attack gains
+  nothing; `JoinServer` also bounds concurrent in-flight Noise_NK
+  handshakes.
+- An admin mints a join token through `POST /v1/cluster/join-tokens` (REST)
+  or `qrdb admin join-token mint <node-id>` (CLI), both backed by a new
+  `service.ClusterJoinTokenMinter` interface and permission
+  `cluster:join_token` (`ScopeCross`, platform-only — no built-in role
+  carries it by default). Implemented on the REST and embedded SDK
+  transports; gRPC, QUIC, Unix and MCP do not yet implement
+  `transport.ClusterJoinTokenMinter`.
+- `pkg/config.ResolveJoinToken` refuses a group- or world-readable
+  `--bootstrap-join-token-file`, one not owned by the process's own user, or
+  a resolved token shorter than `MinJoinTokenLength`, each with a typed
+  error.
+- The joiner verifies the leaf a signing member returns actually chains to
+  the anchor it fetched and carries its own public key
+  (`*clusterenroll.JoinedLeafVerifyError` otherwise), `cakey.AdoptIfAbsent`
+  refuses a key and certificate that do not belong to each other
+  (`*cakey.KeyCertMismatchError`), and `--bootstrap-join-url` /
+  `bootstrap.join_http_url` must use `https://`.
+- A sealed signing member refuses every join attempt — valid token or
+  not — with the same generic message, checked before the token is ever
+  consumed: consuming it first and discovering the seal only at issuance
+  would both burn a legitimately minted single-use token for nothing and
+  leak "this token was valid" to a prober.
 - **The multi-node tenant suites gate every push.** CI's new
   `integration-cluster-tenancy` job runs `make integration-test-cluster-tenancy`,
   the cluster stage narrowed to the tenant suites by `CLUSTER_TENANCY_RUN`, and the
@@ -161,21 +198,54 @@ Recovery train: stranded fixes brought onto main. Highlights:
   Both now hold the batch lock exclusively for the whole recovery, the same
   way `GetHash` itself does.
 
-### Changed (contract; implementation lands incrementally)
+### Changed
 
-- The cluster CA key (Key A) is barrier-encrypted and persisted through
-  `kvstore.KVStore` (`__sys:cluster_ca/`) instead of `{dataDir}/ca-key.pem`.
-  No node ever writes a CA private key to a local file again.
+- **The cluster CA key (Key A) is stored like every other replicated system
+  record — no additional encryption layered on by `pkg/cakey` itself.** An
+  earlier revision wrapped it with the writing node's own
+  `seal.EncryptionBarrier` before persisting it; because the record is
+  REPLICATED and every node's barrier is its own, not shared cluster-wide,
+  every node other than the one that wrote it failed to decrypt its own
+  copy. Key A is now protected by whatever protects every other system-shard
+  record on that node: its own at-rest storage encryption when one is
+  configured, cluster mTLS while Raft replicates the write, and nothing at
+  all under seal strategy `none`. It is persisted through
+  `kvstore.AtomicKVStore` (`__sys:cluster_ca/`) as one record, written with
+  an atomic `PutIfAbsent` rather than two separate writes, closing a
+  torn-write window between the key and the certificate. `AdoptIfAbsent`
+  refuses with a typed mismatch error, rather than silently discarding the
+  loser, when the stored certificate differs from the one supplied to it.
+  No node ever writes a CA private key to `{dataDir}/ca-key.pem` as its
+  durable copy again — see `docs/certificate-authority/architecture.md`.
 - Client-facing listeners (REST, gRPC, Unix, QUIC, MCP) trust the login CA
   (Key B) dynamically, loaded from the replicated store after unseal, in
   addition to the cluster CA; the peer/Raft/enrollment transport continues
   to trust the cluster CA only.
 - `ceremony-sign-csr` is `PreOperationalOnly`, matching `officer-register`:
   minting a new CSR-signed certificate requires the barrier to be unsealed
-  once the init ceremony is operational.
+  once the init ceremony is operational. The ceremony CA now goes through
+  the `cakey.Provider` seam on both sides of unseal (`NewProviderCA` over a
+  `StaticProvider` before persist, and over the replicated `ClusterCAProv`
+  after), rather than a raw `LocalCA` built directly from `CAKeyPEM`.
 - Member-side CSR issuance ships: `clusterenroll.Join` no longer refuses
   unconditionally with `*EnrollmentUnavailableError`. See
   `docs/clustering/architecture.md`.
+- The first node's resumed enrollment listener requires only `ca.pem` to
+  restart, not `ca-key.pem` — which `cmd/qrdbd` deletes from disk once Key A
+  is confirmed durable in the replicated store, on every boot after the
+  first successful one. Requiring it made a first node's own second
+  restart fail closed forever; see `docs/clustering/engineering.md`.
+
+### Removed
+
+- The static, shared `--cluster-join-token-file` / `--cluster-join-token-env`
+  flags and YAML config (`cluster_join.token_file` / `cluster_join.token_env`)
+  on the signing-member side. A signing member now validates a presented
+  token against the single-use, identity-bound tokens an admin mints into
+  the replicated store, not a value it was configured with. The joiner-side
+  `--bootstrap-join-token-file` / `--bootstrap-join-token-env` flags are
+  unchanged in shape; they now carry a minted single-use token instead of a
+  static shared secret.
 
 ## [0.38.0-alpha] - 2026-10-03
 

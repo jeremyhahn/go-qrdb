@@ -561,7 +561,8 @@ func TestAll_TotalCount(t *testing.T) {
 	//   audit-verification perm (audit:verify) = 375 total.
 	// + 1 databases:officer_unenrol, removing a database holder before its
 	//   custody is initialized = 376.
-	const expectedTotal = 376
+	// + 1 cluster join-token minting perm (cluster:join_token) = 377 total.
+	const expectedTotal = 377
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)

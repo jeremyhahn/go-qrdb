@@ -1119,6 +1119,14 @@ type AdminService struct {
 	// nodeCompaction is the shared store's compaction table, which holds
 	// the platform's node-keyspace policy (WithNodeCompaction).
 	nodeCompaction CompactionStateStore
+
+	// joinToken is AdminService's member-side CSR join-token minting
+	// configuration (see admin_join_token.go, ClusterJoinTokenMinter). It
+	// is its own mutex-guarded value, not plain fields on AdminService,
+	// because it is set late (SetClusterJoinTokenStore, after the
+	// replicated KV store exists) and must be safe to read concurrently
+	// with that bind.
+	joinToken clusterJoinTokenState
 }
 
 // NewAdminService creates a new AdminServicer backed by the given host.

@@ -1147,14 +1147,17 @@ type BootstrapConfig struct {
 	// the anchor fetch.
 	JoinHTTPURL string `yaml:"join_http_url"`
 
-	// JoinTokenFile is the path to a file holding the member-side join
-	// admission secret. Mutually exclusive with JoinTokenEnv; the token is
-	// never configured inline in YAML. See ResolveJoinToken.
+	// JoinTokenFile is the path to a file holding the single-use,
+	// identity-bound join token an admin minted for this node
+	// (clusterenroll.MintJoinToken), not a static shared secret. Mutually
+	// exclusive with JoinTokenEnv; the token is never configured inline in
+	// YAML. ResolveJoinToken refuses a group- or world-readable file, one
+	// not owned by this process's own user, or a value shorter than
+	// MinJoinTokenLength.
 	JoinTokenFile string `yaml:"join_token_file"`
 
 	// JoinTokenEnv is the name of an environment variable holding the
-	// member-side join admission secret. Mutually exclusive with
-	// JoinTokenFile.
+	// single-use join token. Mutually exclusive with JoinTokenFile.
 	JoinTokenEnv string `yaml:"join_token_env"`
 }
 
@@ -1177,16 +1180,13 @@ type ClusterJoinConfig struct {
 
 	// ListenPort is the TCP port for the Noise_NK join listener. Zero
 	// defaults to clusterenroll.DefaultJoinPort.
+	//
+	// There is no admission-token field here: a signing member validates
+	// presented join tokens against the single-use, identity-bound tokens
+	// an admin mints into the replicated store
+	// (clusterenroll.MintJoinToken/ConsumeJoinToken), not a static shared
+	// secret this node would otherwise need configured.
 	ListenPort int `yaml:"listen_port"`
-
-	// TokenFile is the path to a file holding the join admission secret.
-	// Mutually exclusive with TokenEnv; the token is never configured
-	// inline in YAML. See ResolveJoinToken.
-	TokenFile string `yaml:"token_file"`
-
-	// TokenEnv is the name of an environment variable holding the join
-	// admission secret. Mutually exclusive with TokenFile.
-	TokenEnv string `yaml:"token_env"`
 }
 
 // SealConfig configures the cryptographic barrier that encrypts data at rest.
@@ -2085,6 +2085,9 @@ func (c *Config) Validate() error {
 	if c.Bootstrap.JoinKey != "" && c.Bootstrap.JoinAddr == "" {
 		return &ValidationError{Field: "bootstrap.join_addr", Reason: "required when bootstrap.join_key is set"}
 	}
+	if c.Bootstrap.JoinHTTPURL != "" && !strings.HasPrefix(c.Bootstrap.JoinHTTPURL, "https://") {
+		return &ValidationError{Field: "bootstrap.join_http_url", Reason: "must use https://; the SPKI/Direct join transport carries the join token and the issued leaf under TLS only"}
+	}
 
 	// Cluster join (member-side CSR signing surface) validation.
 	if c.ClusterJoin.Enabled {
@@ -2094,12 +2097,18 @@ func (c *Config) Validate() error {
 		if c.ClusterJoin.ListenPort < 0 || c.ClusterJoin.ListenPort > 65535 {
 			return &ValidationError{Field: "cluster_join.listen_port", Reason: "must be between 0 and 65535"}
 		}
-		if c.ClusterJoin.TokenFile == "" && c.ClusterJoin.TokenEnv == "" {
-			return &ValidationError{Field: "cluster_join.token_file", Reason: "required when cluster_join.enabled is true; configure cluster_join.token_file or cluster_join.token_env"}
+		// The replicated join-token store this node validates presented
+		// tokens against is only reachable once the barrier is unsealed,
+		// and cakey.SoftwareProvider's own IsSealed gate refuses Key A
+		// itself while sealed either way -- but a deployment with seal
+		// disabled entirely has no barrier state machine to ever leave
+		// "sealed", which would make every sealed-state assumption in the
+		// join path (and in confirmClusterCAPersisted's own) silently
+		// vacuous rather than enforced. Refused at config load, not
+		// discovered at the first join attempt.
+		if !c.Seal.Enabled {
+			return &ValidationError{Field: "cluster_join.enabled", Reason: "requires seal.enabled; member-side CSR signing has no meaning without a barrier to gate Key A behind"}
 		}
-	}
-	if c.ClusterJoin.TokenFile != "" && c.ClusterJoin.TokenEnv != "" {
-		return &ValidationError{Field: "cluster_join.token_file", Reason: "mutually exclusive with cluster_join.token_env; configure exactly one"}
 	}
 
 	return nil

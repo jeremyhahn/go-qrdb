@@ -29,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -571,6 +572,22 @@ var backupRules = []rule{
 	as(&service.OnlineRestoreReplicatedShardError{}, FailedPrecondition),
 	as(&service.BackupUnsupportedError{}, Unimplemented),
 	as(&service.OnlineRestoreUnsupportedError{}, Unimplemented),
+}
+
+// clusterJoinTokenRules are the member-side CSR join-token minting
+// conditions (service.AdminService.MintJoinToken, which delegates to
+// pkg/clusterenroll.MintJoinToken).
+var clusterJoinTokenRules = []rule{
+	// Not configured for member-side CSR join at all (no store/trust
+	// domain bound): the node was never built or set up for this.
+	as(&service.ClusterJoinTokenNotConfiguredError{}, Unimplemented),
+	as(&clusterenroll.InvalidJoinIdentityError{}, InvalidArgument),
+	as(&clusterenroll.JoinTokenTTLError{}, InvalidArgument),
+	// A vanishingly unlikely digest collision with an already-minted
+	// token: the caller's request itself was fine, just lost the race.
+	as(&clusterenroll.JoinTokenCollisionError{}, Aborted),
+	as(&clusterenroll.JoinTokenGenerateError{}, Internal),
+	as(&clusterenroll.JoinTokenStoreError{}, Internal),
 }
 
 // identityRules are the user, role and certificate conditions.

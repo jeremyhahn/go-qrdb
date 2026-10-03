@@ -808,6 +808,31 @@ func (t *Transport) RemoveMember(ctx context.Context, shardID, replicaID uint64)
 	return translateError(t.adminSvc.RemoveMember(ctx, shardID, replicaID))
 }
 
+// MintJoinToken mints a single-use, identity-bound member-side CSR join
+// token through the embedded admin service. Implements
+// transport.ClusterJoinTokenMinter. Returns
+// *service.ClusterJoinTokenNotConfiguredError (translated) when adminSvc
+// does not implement service.ClusterJoinTokenMinter at all -- an embedded
+// node built without member-side CSR join wired at all, rather than one
+// configured with no store, but the two are indistinguishable to a caller
+// and the real AdminService answers the same error for both.
+func (t *Transport) MintJoinToken(ctx context.Context, req *transport.MintJoinTokenRequest) (*transport.MintJoinTokenResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	minter, ok := t.adminSvc.(service.ClusterJoinTokenMinter)
+	if !ok {
+		return nil, translateError(&service.ClusterJoinTokenNotConfiguredError{})
+	}
+	token, expiresAt, err := minter.MintJoinToken(ctx, req.NodeID, time.Duration(req.TTLSeconds)*time.Second)
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return &transport.MintJoinTokenResponse{Token: token, ExpiresAt: expiresAt}, nil
+}
+
+var _ transport.ClusterJoinTokenMinter = (*Transport)(nil)
+
 // RequestSnapshot triggers a snapshot through the embedded admin service.
 func (t *Transport) RequestSnapshot(ctx context.Context, shardID uint64) error {
 	if err := t.gate("RequestSnapshot"); err != nil {

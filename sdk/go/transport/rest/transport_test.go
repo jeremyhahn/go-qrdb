@@ -149,6 +149,22 @@ func newTestServer(t *testing.T) *httptest.Server {
 			return
 		}
 
+		// Cluster join-token mint endpoint.
+		if r.URL.Path == "/v1/cluster/join-tokens" && r.Method == http.MethodPost {
+			var req transport.MintJoinTokenRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(transport.MintJoinTokenResponse{
+				Token:     "test-token",
+				ExpiresAt: time.Now().Add(time.Hour),
+			})
+			return
+		}
+
 		// KV prefix listing: GET /kv or GET /kv?prefix=X
 		if r.URL.Path == "/kv" && r.Method == http.MethodGet {
 			prefix := r.URL.Query().Get("prefix")
@@ -1266,6 +1282,68 @@ func TestAddMember_AfterClose(t *testing.T) {
 	var closedErr *transport.ClosedError
 	if !errors.As(err, &closedErr) {
 		t.Errorf("expected ClosedError, got %T", err)
+	}
+}
+
+func TestMintJoinToken_Success(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	rt := newTestTransport(t, srv.URL)
+	defer rt.Close()
+
+	resp, err := rt.MintJoinToken(context.Background(), &transport.MintJoinTokenRequest{NodeID: "node-1"})
+	if err != nil {
+		t.Fatalf("MintJoinToken failed: %v", err)
+	}
+	if resp.Token != "test-token" {
+		t.Errorf("Token = %q, want test-token", resp.Token)
+	}
+	if !resp.ExpiresAt.After(time.Now()) {
+		t.Errorf("ExpiresAt = %v, want a future time", resp.ExpiresAt)
+	}
+}
+
+func TestMintJoinToken_AfterClose(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	rt := newTestTransport(t, srv.URL)
+	_ = rt.Close()
+
+	_, err := rt.MintJoinToken(context.Background(), &transport.MintJoinTokenRequest{NodeID: "node-1"})
+	if err == nil {
+		t.Fatal("expected error after close")
+	}
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Errorf("expected ClosedError, got %T", err)
+	}
+}
+
+func TestMintJoinToken_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(transport.HealthResponse{Status: "ok"})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(transport.ErrorResponse{Error: "invalid identity"})
+	}))
+	defer srv.Close()
+
+	rt := newTestTransport(t, srv.URL)
+	defer rt.Close()
+
+	_, err := rt.MintJoinToken(context.Background(), &transport.MintJoinTokenRequest{NodeID: "bad id"})
+	if err == nil {
+		t.Fatal("expected error from server error response")
+	}
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Errorf("expected RequestError, got %T: %v", err, err)
 	}
 }
 

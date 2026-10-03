@@ -45,6 +45,11 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
 
+// testTrustDomain is the SPIFFE trust domain every join test in this
+// package pins. Minted tokens are bound to spiffe://testTrustDomain/node/*
+// identities, and every JoinServerOptions here configures the same domain.
+const testTrustDomain = "test.cluster"
+
 // mockBarrier implements seal.EncryptionBarrier with real AES-GCM
 // round-trips, mirroring pkg/cakey's own test double.
 type mockBarrier struct {
@@ -92,11 +97,24 @@ func (b *mockBarrier) IsSealed() bool {
 	return b.sealed
 }
 
+// seal marks the barrier sealed, for a test proving behavior while Key A is
+// unreachable.
+func (b *mockBarrier) seal() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.sealed = true
+}
+
 // newTestClusterCAProvider returns an initialized Key-A provider over a
 // fresh in-memory store, standing in for "the replicated store, already
-// unsealed" every admitted member reads Key A through.
+// unsealed" every admitted member reads Key A through. It also resets the
+// package-level join-attempt guard (see resetJoinAttemptGuardForTest):
+// every test in this file that dials a real JoinServer calls this first,
+// so folding the reset in here means one edit covers all of them rather
+// than each test remembering to call it separately.
 func newTestClusterCAProvider(t *testing.T) *cakey.SoftwareProvider {
 	t.Helper()
+	resetJoinAttemptGuardForTest(t)
 	p := clusterca.NewProvider(kvstore.NewMemoryKVStore(), newMockBarrier())
 	if err := p.Initialize(context.Background()); err != nil {
 		t.Fatalf("Initialize cluster CA: %v", err)
@@ -104,22 +122,54 @@ func newTestClusterCAProvider(t *testing.T) *cakey.SoftwareProvider {
 	return p
 }
 
+// resetJoinAttemptGuardForTest installs a fresh package-level join-attempt
+// guard for the duration of one test and restores the previous one on
+// cleanup. Every test here that dials a real JoinServer over loopback TCP
+// shares testBindHost as its source address, so without this reset they
+// would exhaust each other's rate-limit/lockout state across the whole
+// package's test run (AllowJoinAttempt/RecordJoinAttemptFailure are a
+// process-wide singleton by design -- see join_attempt_guard.go) rather
+// than each test getting a clean slate.
+func resetJoinAttemptGuardForTest(t *testing.T) {
+	t.Helper()
+	t.Cleanup(ResetJoinAttemptGuardForTest())
+}
+
+// mintTestJoinToken mints a real, single-use join token bound to
+// spiffe://testTrustDomain/node/nodeID into store, for a test's client side
+// to present. It fails the test outright on a mint error, since every
+// caller needs a usable token to continue.
+func mintTestJoinToken(t *testing.T, store kvstore.AtomicKVStore, nodeID string) string {
+	t.Helper()
+	token, _, err := MintJoinToken(context.Background(), store, testTrustDomain, nodeID, time.Hour)
+	if err != nil {
+		t.Fatalf("MintJoinToken: %v", err)
+	}
+	return token
+}
+
 func TestJoinServer_SignsAValidCSR(t *testing.T) {
 	provider := newTestClusterCAProvider(t)
+	store := kvstore.NewMemoryKVStore()
 	port := freePort(t)
 	js, err := StartJoinServer(provider, JoinServerOptions{
-		Host: testBindHost, Port: port, Token: "s3cret-token",
+		Host: testBindHost, Port: port, Store: store, TrustDomain: testTrustDomain,
 	}, t.TempDir(), discardLogger())
 	if err != nil {
 		t.Fatalf("StartJoinServer: %v", err)
 	}
 	t.Cleanup(js.Stop)
 
+	token := mintTestJoinToken(t, store, "127.0.0.1:9100")
+
 	nodeKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	csrDER, err := buildJoinCSR(nodeKey, "spiffe://test.cluster/node/127.0.0.1:9100")
+	// The CSR's own URI is advisory only -- IssueLeafForKey's template
+	// takes nothing from it but the public key (clusterca.IssueLeafForKey's
+	// own doc comment); the leaf's actual identity comes from the token.
+	csrDER, err := buildJoinCSR(nodeKey, "spiffe://attacker.example/node/anything")
 	if err != nil {
 		t.Fatalf("buildJoinCSR: %v", err)
 	}
@@ -127,8 +177,8 @@ func TestJoinServer_SignsAValidCSR(t *testing.T) {
 	certPEM, err := JoinCSR(context.Background(), &JoinClientOptions{
 		ServerAddr: js.Addr(),
 		ServerKey:  js.PublicKey(),
-		Token:      "s3cret-token",
-	}, csrDER, "spiffe://test.cluster/node/127.0.0.1:9100")
+		Token:      token,
+	}, csrDER, "spiffe://attacker.example/node/anything")
 	if err != nil {
 		t.Fatalf("JoinCSR: %v", err)
 	}
@@ -152,21 +202,29 @@ func TestJoinServer_SignsAValidCSR(t *testing.T) {
 	if !ok || !gotPub.Equal(&nodeKey.PublicKey) {
 		t.Fatal("issued leaf does not carry the joiner's own public key")
 	}
-	if len(cert.URIs) != 1 || cert.URIs[0].String() != "spiffe://test.cluster/node/127.0.0.1:9100" {
-		t.Fatalf("leaf URIs = %v, want the joiner's SPIFFE node URI", cert.URIs)
+	// B5/B6: the leaf carries the TOKEN'S bound identity, never the
+	// request's self-reported NodeURI (which named a different, bogus
+	// identity above).
+	if len(cert.URIs) != 1 || cert.URIs[0].String() != "spiffe://"+testTrustDomain+"/node/127.0.0.1:9100" {
+		t.Fatalf("leaf URIs = %v, want exactly the token's bound identity", cert.URIs)
 	}
 }
 
 func TestJoinServer_WrongTokenRefused(t *testing.T) {
 	provider := newTestClusterCAProvider(t)
+	store := kvstore.NewMemoryKVStore()
 	port := freePort(t)
 	js, err := StartJoinServer(provider, JoinServerOptions{
-		Host: testBindHost, Port: port, Token: "correct-token",
+		Host: testBindHost, Port: port, Store: store, TrustDomain: testTrustDomain,
 	}, t.TempDir(), discardLogger())
 	if err != nil {
 		t.Fatalf("StartJoinServer: %v", err)
 	}
 	t.Cleanup(js.Stop)
+
+	// A real token exists in the store, but the client presents a
+	// different (never-minted) one.
+	mintTestJoinToken(t, store, "127.0.0.1:9101")
 
 	nodeKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	csrDER, err := buildJoinCSR(nodeKey, "")
@@ -177,7 +235,7 @@ func TestJoinServer_WrongTokenRefused(t *testing.T) {
 	_, err = JoinCSR(context.Background(), &JoinClientOptions{
 		ServerAddr: js.Addr(),
 		ServerKey:  js.PublicKey(),
-		Token:      "wrong-token",
+		Token:      "never-minted-token",
 	}, csrDER, "")
 	var refused *JoinRefusedError
 	if !errors.As(err, &refused) {
@@ -185,21 +243,63 @@ func TestJoinServer_WrongTokenRefused(t *testing.T) {
 	}
 }
 
-func TestJoinServer_InvalidCSRRefused(t *testing.T) {
+func TestJoinServer_TokenCannotBeReused(t *testing.T) {
 	provider := newTestClusterCAProvider(t)
+	store := kvstore.NewMemoryKVStore()
 	port := freePort(t)
 	js, err := StartJoinServer(provider, JoinServerOptions{
-		Host: testBindHost, Port: port, Token: "tok",
+		Host: testBindHost, Port: port, Store: store, TrustDomain: testTrustDomain,
 	}, t.TempDir(), discardLogger())
 	if err != nil {
 		t.Fatalf("StartJoinServer: %v", err)
 	}
 	t.Cleanup(js.Stop)
 
+	token := mintTestJoinToken(t, store, "127.0.0.1:9102")
+
+	nodeKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	csrDER, err := buildJoinCSR(nodeKey, "")
+	if err != nil {
+		t.Fatalf("buildJoinCSR: %v", err)
+	}
+
+	if _, err := JoinCSR(context.Background(), &JoinClientOptions{
+		ServerAddr: js.Addr(), ServerKey: js.PublicKey(), Token: token,
+	}, csrDER, ""); err != nil {
+		t.Fatalf("first JoinCSR (token must be accepted once): %v", err)
+	}
+
+	otherKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	otherCSR, err := buildJoinCSR(otherKey, "")
+	if err != nil {
+		t.Fatalf("buildJoinCSR: %v", err)
+	}
+	_, err = JoinCSR(context.Background(), &JoinClientOptions{
+		ServerAddr: js.Addr(), ServerKey: js.PublicKey(), Token: token,
+	}, otherCSR, "")
+	var refused *JoinRefusedError
+	if !errors.As(err, &refused) {
+		t.Fatalf("second JoinCSR with the SAME (already-consumed) token = %v, want *JoinRefusedError", err)
+	}
+}
+
+func TestJoinServer_InvalidCSRRefused(t *testing.T) {
+	provider := newTestClusterCAProvider(t)
+	store := kvstore.NewMemoryKVStore()
+	port := freePort(t)
+	js, err := StartJoinServer(provider, JoinServerOptions{
+		Host: testBindHost, Port: port, Store: store, TrustDomain: testTrustDomain,
+	}, t.TempDir(), discardLogger())
+	if err != nil {
+		t.Fatalf("StartJoinServer: %v", err)
+	}
+	t.Cleanup(js.Stop)
+
+	token := mintTestJoinToken(t, store, "127.0.0.1:9103")
 	_, err = JoinCSR(context.Background(), &JoinClientOptions{
 		ServerAddr: js.Addr(),
 		ServerKey:  js.PublicKey(),
-		Token:      "tok",
+		Token:      token,
 	}, []byte("not a csr"), "")
 	var refused *JoinRefusedError
 	if !errors.As(err, &refused) {
@@ -207,18 +307,29 @@ func TestJoinServer_InvalidCSRRefused(t *testing.T) {
 	}
 }
 
-func TestStartJoinServer_RequiresToken(t *testing.T) {
+func TestStartJoinServer_RequiresTokenStore(t *testing.T) {
 	provider := newTestClusterCAProvider(t)
-	_, err := StartJoinServer(provider, JoinServerOptions{Host: testBindHost}, t.TempDir(), discardLogger())
-	var tokenErr *MissingJoinTokenError
-	if !errors.As(err, &tokenErr) {
-		t.Fatalf("StartJoinServer with no token = %v, want *MissingJoinTokenError", err)
+	_, err := StartJoinServer(provider, JoinServerOptions{Host: testBindHost, TrustDomain: testTrustDomain}, t.TempDir(), discardLogger())
+	var storeErr *MissingJoinTokenStoreError
+	if !errors.As(err, &storeErr) {
+		t.Fatalf("StartJoinServer with no token store = %v, want *MissingJoinTokenStoreError", err)
+	}
+}
+
+func TestStartJoinServer_RequiresTrustDomain(t *testing.T) {
+	provider := newTestClusterCAProvider(t)
+	store := kvstore.NewMemoryKVStore()
+	_, err := StartJoinServer(provider, JoinServerOptions{Host: testBindHost, Store: store}, t.TempDir(), discardLogger())
+	var tdErr *MissingTrustDomainError
+	if !errors.As(err, &tdErr) {
+		t.Fatalf("StartJoinServer with no trust domain = %v, want *MissingTrustDomainError", err)
 	}
 }
 
 func TestStartJoinServer_RequiresHost(t *testing.T) {
 	provider := newTestClusterCAProvider(t)
-	_, err := StartJoinServer(provider, JoinServerOptions{Token: "tok"}, t.TempDir(), discardLogger())
+	store := kvstore.NewMemoryKVStore()
+	_, err := StartJoinServer(provider, JoinServerOptions{Store: store, TrustDomain: testTrustDomain}, t.TempDir(), discardLogger())
 	var hostErr *MissingBindHostError
 	if !errors.As(err, &hostErr) {
 		t.Fatalf("StartJoinServer with no host = %v, want *MissingBindHostError", err)
@@ -226,7 +337,8 @@ func TestStartJoinServer_RequiresHost(t *testing.T) {
 }
 
 func TestStartJoinServer_RequiresProvider(t *testing.T) {
-	_, err := StartJoinServer(nil, JoinServerOptions{Host: testBindHost, Token: "tok"}, t.TempDir(), discardLogger())
+	store := kvstore.NewMemoryKVStore()
+	_, err := StartJoinServer(nil, JoinServerOptions{Host: testBindHost, Store: store, TrustDomain: testTrustDomain}, t.TempDir(), discardLogger())
 	var nilErr *NilProviderError
 	if !errors.As(err, &nilErr) {
 		t.Fatalf("StartJoinServer with nil provider = %v, want *NilProviderError", err)
@@ -247,6 +359,8 @@ func TestJoinCSR_ErrorStrings(t *testing.T) {
 		err  error
 	}{
 		{"MissingJoinTokenError", &MissingJoinTokenError{}},
+		{"MissingJoinTokenStoreError", &MissingJoinTokenStoreError{}},
+		{"MissingTrustDomainError", &MissingTrustDomainError{Component: "test"}},
 		{"NilProviderError", &NilProviderError{}},
 		{"JoinRefusedError", &JoinRefusedError{Reason: "bad token"}},
 		{"handshakeIncompleteError", ErrHandshakeIncomplete},
@@ -262,7 +376,8 @@ func TestJoinCSR_ErrorStrings(t *testing.T) {
 
 func TestJoinServerOptions_PortDefault(t *testing.T) {
 	provider := newTestClusterCAProvider(t)
-	js, err := StartJoinServer(provider, JoinServerOptions{Host: testBindHost, Token: "tok"}, t.TempDir(), discardLogger())
+	store := kvstore.NewMemoryKVStore()
+	js, err := StartJoinServer(provider, JoinServerOptions{Host: testBindHost, Store: store, TrustDomain: testTrustDomain}, t.TempDir(), discardLogger())
 	if err != nil {
 		t.Fatalf("StartJoinServer: %v", err)
 	}
@@ -285,10 +400,11 @@ func TestJoinServer_NilReceiver(t *testing.T) {
 
 func TestLoadOrGenerateJoinKey_ReusesExistingKey(t *testing.T) {
 	provider := newTestClusterCAProvider(t)
+	store := kvstore.NewMemoryKVStore()
 	dir := t.TempDir()
 
 	port1 := freePort(t)
-	js1, err := StartJoinServer(provider, JoinServerOptions{Host: testBindHost, Port: port1, Token: "tok"}, dir, discardLogger())
+	js1, err := StartJoinServer(provider, JoinServerOptions{Host: testBindHost, Port: port1, Store: store, TrustDomain: testTrustDomain}, dir, discardLogger())
 	if err != nil {
 		t.Fatalf("StartJoinServer (first): %v", err)
 	}
@@ -298,7 +414,7 @@ func TestLoadOrGenerateJoinKey_ReusesExistingKey(t *testing.T) {
 	js1.Stop()
 
 	port2 := freePort(t)
-	js2, err := StartJoinServer(provider, JoinServerOptions{Host: testBindHost, Port: port2, Token: "tok"}, dir, discardLogger())
+	js2, err := StartJoinServer(provider, JoinServerOptions{Host: testBindHost, Port: port2, Store: store, TrustDomain: testTrustDomain}, dir, discardLogger())
 	if err != nil {
 		t.Fatalf("StartJoinServer (second, same dir): %v", err)
 	}
@@ -367,8 +483,9 @@ func TestJoinKeyDecodeError_ErrorAndUnwrap(t *testing.T) {
 
 func TestJoinServer_GarbageBeforeHandshakeDoesNotPanic(t *testing.T) {
 	provider := newTestClusterCAProvider(t)
+	store := kvstore.NewMemoryKVStore()
 	port := freePort(t)
-	js, err := StartJoinServer(provider, JoinServerOptions{Host: testBindHost, Port: port, Token: "tok"}, t.TempDir(), discardLogger())
+	js, err := StartJoinServer(provider, JoinServerOptions{Host: testBindHost, Port: port, Store: store, TrustDomain: testTrustDomain}, t.TempDir(), discardLogger())
 	if err != nil {
 		t.Fatalf("StartJoinServer: %v", err)
 	}
@@ -393,8 +510,9 @@ func TestJoinServer_GarbageBeforeHandshakeDoesNotPanic(t *testing.T) {
 
 func TestJoinCSR_WrongServerKeyLength(t *testing.T) {
 	provider := newTestClusterCAProvider(t)
+	store := kvstore.NewMemoryKVStore()
 	port := freePort(t)
-	js, err := StartJoinServer(provider, JoinServerOptions{Host: testBindHost, Port: port, Token: "tok"}, t.TempDir(), discardLogger())
+	js, err := StartJoinServer(provider, JoinServerOptions{Host: testBindHost, Port: port, Store: store, TrustDomain: testTrustDomain}, t.TempDir(), discardLogger())
 	if err != nil {
 		t.Fatalf("StartJoinServer: %v", err)
 	}
@@ -424,16 +542,17 @@ func TestBuildJoinCSR_InvalidNodeURI(t *testing.T) {
 
 func TestStartJoinServer_PortInUse(t *testing.T) {
 	provider := newTestClusterCAProvider(t)
+	store := kvstore.NewMemoryKVStore()
 	port := freePort(t)
 	dir := t.TempDir()
 
-	js1, err := StartJoinServer(provider, JoinServerOptions{Host: testBindHost, Port: port, Token: "tok"}, dir, discardLogger())
+	js1, err := StartJoinServer(provider, JoinServerOptions{Host: testBindHost, Port: port, Store: store, TrustDomain: testTrustDomain}, dir, discardLogger())
 	if err != nil {
 		t.Fatalf("StartJoinServer (first): %v", err)
 	}
 	defer js1.Stop()
 
-	_, err = StartJoinServer(provider, JoinServerOptions{Host: testBindHost, Port: port, Token: "tok"}, t.TempDir(), discardLogger())
+	_, err = StartJoinServer(provider, JoinServerOptions{Host: testBindHost, Port: port, Store: store, TrustDomain: testTrustDomain}, t.TempDir(), discardLogger())
 	var serverErr *ServerError
 	if !errors.As(err, &serverErr) {
 		t.Fatalf("StartJoinServer on an in-use port = %v, want *ServerError", err)
@@ -507,6 +626,48 @@ func (p *signingFailureProvider) Certificate(context.Context) (*x509.Certificate
 	return p.cert, nil
 }
 
+// TestHandleJoinRequest_SealedRefusesBeforeConsumingToken proves a sealed
+// node refuses a join BEFORE it ever consumes the presented token: if the
+// token were consumed first and the seal check discovered only afterward
+// (at IssueLeafForKey), a legitimately minted single-use token would be
+// burned for a join that could never succeed, and the response would leak
+// "this token was valid" to anything probing a sealed node -- a
+// token-validity oracle. Checking provider.Signer readiness first means a
+// sealed node answers every join attempt identically, valid token or not,
+// and the token survives to be presented again once unsealed.
+func TestHandleJoinRequest_SealedRefusesBeforeConsumingToken(t *testing.T) {
+	store := kvstore.NewMemoryKVStore()
+	barrier := newMockBarrier()
+	provider := clusterca.NewProvider(store, barrier)
+	if err := provider.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	barrier.seal()
+
+	token := mintTestJoinToken(t, store, "sealed-node-test")
+	nodeKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	csrDER, err := buildJoinCSR(nodeKey, "")
+	if err != nil {
+		t.Fatalf("buildJoinCSR: %v", err)
+	}
+
+	resp := HandleJoinRequest(context.Background(), provider, store, testTrustDomain, &JoinRequest{
+		Token:  token,
+		CSRDER: csrDER,
+	})
+	if resp.Error != "join request could not be processed" {
+		t.Fatalf("sealed node response = %q, want the generic infrastructure-failure message", resp.Error)
+	}
+
+	// The token must still be usable: a sealed node must not have consumed
+	// it. ConsumeJoinToken on an UNSEALED check of the same store proves it
+	// is still present (consuming it here, which is fine -- this test is
+	// done with it).
+	if _, err := ConsumeJoinToken(context.Background(), store, testTrustDomain, token); err != nil {
+		t.Fatalf("ConsumeJoinToken after a sealed-node refusal = %v, want the token to still be present", err)
+	}
+}
+
 func TestJoinServer_SigningFailureRefused(t *testing.T) {
 	realProvider := newTestClusterCAProvider(t)
 	caCert, err := realProvider.Certificate(context.Background())
@@ -514,15 +675,17 @@ func TestJoinServer_SigningFailureRefused(t *testing.T) {
 		t.Fatalf("Certificate: %v", err)
 	}
 
+	store := kvstore.NewMemoryKVStore()
 	port := freePort(t)
 	js, err := StartJoinServer(&signingFailureProvider{cert: caCert}, JoinServerOptions{
-		Host: testBindHost, Port: port, Token: "tok",
+		Host: testBindHost, Port: port, Store: store, TrustDomain: testTrustDomain,
 	}, t.TempDir(), discardLogger())
 	if err != nil {
 		t.Fatalf("StartJoinServer: %v", err)
 	}
 	defer js.Stop()
 
+	token := mintTestJoinToken(t, store, "127.0.0.1:9104")
 	nodeKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	csrDER, err := buildJoinCSR(nodeKey, "")
 	if err != nil {
@@ -532,7 +695,7 @@ func TestJoinServer_SigningFailureRefused(t *testing.T) {
 	_, err = JoinCSR(context.Background(), &JoinClientOptions{
 		ServerAddr: js.Addr(),
 		ServerKey:  js.PublicKey(),
-		Token:      "tok",
+		Token:      token,
 	}, csrDER, "")
 	var refused *JoinRefusedError
 	if !errors.As(err, &refused) {
@@ -545,8 +708,9 @@ func TestJoinServer_SigningFailureRefused(t *testing.T) {
 // ciphertext frame, exercising handle's Decrypt-failure branch.
 func TestJoinServer_GarbageAfterHandshakeDoesNotPanic(t *testing.T) {
 	provider := newTestClusterCAProvider(t)
+	store := kvstore.NewMemoryKVStore()
 	port := freePort(t)
-	js, err := StartJoinServer(provider, JoinServerOptions{Host: testBindHost, Port: port, Token: "tok"}, t.TempDir(), discardLogger())
+	js, err := StartJoinServer(provider, JoinServerOptions{Host: testBindHost, Port: port, Store: store, TrustDomain: testTrustDomain}, t.TempDir(), discardLogger())
 	if err != nil {
 		t.Fatalf("StartJoinServer: %v", err)
 	}

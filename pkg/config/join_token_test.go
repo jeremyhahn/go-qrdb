@@ -18,32 +18,92 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
+
+// testJoinToken is long enough to clear MinJoinTokenLength, standing in for
+// a real clusterenroll.MintJoinToken value in tests that do not need the
+// token to be cryptographically real, only long enough.
+const testJoinToken = "s3cret-token-well-over-the-floor"
 
 func TestResolveJoinToken_FromFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "token")
-	if err := os.WriteFile(path, []byte("  s3cret-token\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("  "+testJoinToken+"\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	got, err := ResolveJoinToken(path, "")
 	if err != nil {
 		t.Fatalf("ResolveJoinToken: %v", err)
 	}
-	if got != "s3cret-token" {
-		t.Fatalf("token = %q, want %q (trimmed)", got, "s3cret-token")
+	if got != testJoinToken {
+		t.Fatalf("token = %q, want %q (trimmed)", got, testJoinToken)
 	}
 }
 
 func TestResolveJoinToken_FromEnv(t *testing.T) {
-	t.Setenv("QRDB_TEST_JOIN_TOKEN", "env-token")
+	t.Setenv("QRDB_TEST_JOIN_TOKEN", testJoinToken)
 	got, err := ResolveJoinToken("", "QRDB_TEST_JOIN_TOKEN")
 	if err != nil {
 		t.Fatalf("ResolveJoinToken: %v", err)
 	}
-	if got != "env-token" {
-		t.Fatalf("token = %q, want %q", got, "env-token")
+	if got != testJoinToken {
+		t.Fatalf("token = %q, want %q", got, testJoinToken)
+	}
+}
+
+func TestResolveJoinToken_FileTooShortRefused(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "token")
+	if err := os.WriteFile(path, []byte("short"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	_, err := ResolveJoinToken(path, "")
+	var tooShort *JoinTokenTooShortError
+	if !errors.As(err, &tooShort) {
+		t.Fatalf("ResolveJoinToken with a short file = %v, want *JoinTokenTooShortError", err)
+	}
+}
+
+func TestResolveJoinToken_EnvTooShortRefused(t *testing.T) {
+	t.Setenv("QRDB_TEST_JOIN_TOKEN_SHORT", "short")
+	_, err := ResolveJoinToken("", "QRDB_TEST_JOIN_TOKEN_SHORT")
+	var tooShort *JoinTokenTooShortError
+	if !errors.As(err, &tooShort) {
+		t.Fatalf("ResolveJoinToken with a short env value = %v, want *JoinTokenTooShortError", err)
+	}
+}
+
+func TestResolveJoinToken_GroupReadableFileRefused(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file modes do not apply on windows")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "token")
+	if err := os.WriteFile(path, []byte(testJoinToken), 0o640); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	_, err := ResolveJoinToken(path, "")
+	var modeErr *JoinTokenFileModeError
+	if !errors.As(err, &modeErr) {
+		t.Fatalf("ResolveJoinToken with a group-readable file = %v, want *JoinTokenFileModeError", err)
+	}
+}
+
+func TestResolveJoinToken_WorldReadableFileRefused(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file modes do not apply on windows")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "token")
+	if err := os.WriteFile(path, []byte(testJoinToken), 0o604); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	_, err := ResolveJoinToken(path, "")
+	var modeErr *JoinTokenFileModeError
+	if !errors.As(err, &modeErr) {
+		t.Fatalf("ResolveJoinToken with a world-readable file = %v, want *JoinTokenFileModeError", err)
 	}
 }
 
@@ -99,6 +159,9 @@ func TestJoinTokenErrors_ErrorStrings(t *testing.T) {
 		&JoinTokenNotConfiguredError{},
 		&JoinTokenFileError{Path: "/tmp/x", Err: errors.New("boom")},
 		&JoinTokenEmptyError{Source: "file:/tmp/x"},
+		&JoinTokenFileModeError{Path: "/tmp/x", Mode: 0o640},
+		&JoinTokenFileOwnerError{Path: "/tmp/x"},
+		&JoinTokenTooShortError{Source: "file:/tmp/x", Length: 5},
 	}
 	for _, err := range tests {
 		if err.Error() == "" {
@@ -126,15 +189,7 @@ func TestValidate_ClusterJoinAndBootstrapJoin(t *testing.T) {
 			name: "cluster join enabled with no host",
 			mutate: func(c *Config) {
 				c.ClusterJoin.Enabled = true
-				c.ClusterJoin.TokenFile = "/tmp/tok"
-			},
-			wantErr: true,
-		},
-		{
-			name: "cluster join enabled with no token source",
-			mutate: func(c *Config) {
-				c.ClusterJoin.Enabled = true
-				c.ClusterJoin.ListenHost = "127.0.0.1"
+				c.Seal.Enabled = true
 			},
 			wantErr: true,
 		},
@@ -143,15 +198,18 @@ func TestValidate_ClusterJoinAndBootstrapJoin(t *testing.T) {
 			mutate: func(c *Config) {
 				c.ClusterJoin.Enabled = true
 				c.ClusterJoin.ListenHost = "127.0.0.1"
-				c.ClusterJoin.TokenFile = "/tmp/tok"
+				c.Seal.Enabled = true
 			},
 			wantErr: false,
 		},
 		{
-			name: "cluster join token file and env both set",
+			name: "cluster join enabled with seal disabled",
 			mutate: func(c *Config) {
-				c.ClusterJoin.TokenFile = "/tmp/tok"
-				c.ClusterJoin.TokenEnv = "SOME_ENV"
+				c.ClusterJoin.Enabled = true
+				c.ClusterJoin.ListenHost = "127.0.0.1"
+				// Seal.Enabled left at its default (false): member-side CSR
+				// signing has no meaning with no barrier to gate Key A
+				// behind.
 			},
 			wantErr: true,
 		},
@@ -160,7 +218,7 @@ func TestValidate_ClusterJoinAndBootstrapJoin(t *testing.T) {
 			mutate: func(c *Config) {
 				c.ClusterJoin.Enabled = true
 				c.ClusterJoin.ListenHost = "127.0.0.1"
-				c.ClusterJoin.TokenFile = "/tmp/tok"
+				c.Seal.Enabled = true
 				c.ClusterJoin.ListenPort = 70000
 			},
 			wantErr: true,
@@ -205,6 +263,22 @@ func TestValidate_ClusterJoinAndBootstrapJoin(t *testing.T) {
 				c.Bootstrap.JoinTokenEnv = "SOME_ENV"
 			},
 			wantErr: true,
+		},
+		{
+			name: "bootstrap join http url without https is refused",
+			mutate: func(c *Config) {
+				c.Bootstrap.JoinHTTPURL = "http://member1.example.com:8443"
+				c.Bootstrap.JoinTokenFile = "/tmp/tok"
+			},
+			wantErr: true,
+		},
+		{
+			name: "bootstrap join http url with https is valid",
+			mutate: func(c *Config) {
+				c.Bootstrap.JoinHTTPURL = "https://member1.example.com:8443"
+				c.Bootstrap.JoinTokenFile = "/tmp/tok"
+			},
+			wantErr: false,
 		},
 	}
 

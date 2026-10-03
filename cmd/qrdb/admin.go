@@ -19,8 +19,11 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // newAdminCmd returns the admin parent command with subcommands for
@@ -43,6 +46,7 @@ func newAdminCmd() *cobra.Command {
 		newAdminCapabilitiesCmd(),
 		newAdminNodeCompactionCmd(),
 		newAdminUpdateNodeCompactionCmd(),
+		newAdminJoinTokenCmd(),
 	)
 
 	return cmd
@@ -375,4 +379,69 @@ type InvalidReplicaIDError struct {
 // Error returns a human-readable description.
 func (e *InvalidReplicaIDError) Error() string {
 	return "invalid replica ID: " + e.Input + ": must be a positive integer"
+}
+
+// newAdminJoinTokenCmd returns the admin join-token parent command.
+func newAdminJoinTokenCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "join-token",
+		Short: "Manage member-side CSR join tokens",
+		Long:  "Mint single-use, identity-bound tokens admitting a new node to the cluster (permission cluster:join_token).",
+	}
+
+	cmd.AddCommand(newAdminJoinTokenMintCmd())
+
+	return cmd
+}
+
+// JoinTokenMintUnsupportedError is returned when the connected transport
+// does not implement transport.ClusterJoinTokenMinter: see each SDK
+// transport package's own doc comment for which do.
+type JoinTokenMintUnsupportedError struct{}
+
+// Error returns a human-readable description.
+func (e *JoinTokenMintUnsupportedError) Error() string {
+	return "admin join-token mint: the connected transport does not support minting join tokens"
+}
+
+// newAdminJoinTokenMintCmd returns the admin join-token mint subcommand.
+func newAdminJoinTokenMintCmd() *cobra.Command {
+	var ttl time.Duration
+
+	cmd := &cobra.Command{
+		Use:   "mint <node-id>",
+		Short: "Mint a single-use join token bound to a node identity",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			nodeID := args[0]
+
+			minter, ok := client.Admin().(transport.ClusterJoinTokenMinter)
+			if !ok {
+				return &JoinTokenMintUnsupportedError{}
+			}
+
+			resp, err := minter.MintJoinToken(cmd.Context(), &transport.MintJoinTokenRequest{
+				NodeID:     nodeID,
+				TTLSeconds: int64(ttl.Seconds()),
+			})
+			if err != nil {
+				return err
+			}
+
+			switch outputFormat {
+			case "json":
+				return printJSON(resp)
+			case "yaml":
+				return printYAML(resp)
+			default:
+				_, _ = fmt.Fprintf(outputWriter, "Token:      %s\n", resp.Token)
+				_, _ = fmt.Fprintf(outputWriter, "ExpiresAt:  %s\n", resp.ExpiresAt.Format(time.RFC3339))
+				return nil
+			}
+		},
+	}
+
+	cmd.Flags().DurationVar(&ttl, "ttl", 0, "Token time-to-live (default: the server's default TTL)")
+
+	return cmd
 }

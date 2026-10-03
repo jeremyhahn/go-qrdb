@@ -187,6 +187,19 @@ type mockAdminService struct {
 	stopShardFn       func(ctx context.Context, shardID uint64) error
 	getShardStateFn   func(ctx context.Context, shardID uint64) (*service.ShardStateResponse, error)
 	getTopologyFn     func(ctx context.Context) (*service.TopologyResponse, error)
+	mintJoinTokenFn   func(ctx context.Context, nodeID string, ttl time.Duration) (string, time.Time, error)
+}
+
+// MintJoinToken implements service.ClusterJoinTokenMinter. A mockAdminService
+// with no mintJoinTokenFn behaves exactly like the real AdminService with no
+// join-token store configured (*service.ClusterJoinTokenNotConfiguredError),
+// so existing tests built against newDefaultAdminSvc see no behavior change
+// from this mock additionally satisfying the interface.
+func (m *mockAdminService) MintJoinToken(ctx context.Context, nodeID string, ttl time.Duration) (string, time.Time, error) {
+	if m.mintJoinTokenFn != nil {
+		return m.mintJoinTokenFn(ctx, nodeID, ttl)
+	}
+	return "", time.Time{}, &service.ClusterJoinTokenNotConfiguredError{}
 }
 
 func (m *mockAdminService) Health(ctx context.Context) (*service.HealthStatus, error) {

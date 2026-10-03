@@ -27,12 +27,17 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterca"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
+
+// clusterJoinTestTrustDomain is the SPIFFE trust domain every cluster-join
+// REST test pins, mirroring pkg/clusterenroll's own test constant.
+const clusterJoinTestTrustDomain = "test.cluster"
 
 // clusterJoinTestBarrier is a trivial in-memory seal.EncryptionBarrier
 // (no actual encryption -- this is a unit test of the REST binding, not of
@@ -44,15 +49,32 @@ func (clusterJoinTestBarrier) Encrypt(p []byte) ([]byte, error) { return p, nil 
 func (clusterJoinTestBarrier) Decrypt(c []byte) ([]byte, error) { return c, nil }
 func (clusterJoinTestBarrier) IsSealed() bool                   { return false }
 
-// newTestClusterCAProvider returns an initialized cluster-CA provider for
-// the cluster-join REST tests.
-func newTestClusterCAProvider(t *testing.T) *cakey.SoftwareProvider {
+// newTestClusterCAProvider returns an initialized cluster-CA provider, and
+// the replicated kvstore it (and join tokens) live in, for the cluster-join
+// REST tests. It also resets the package-level join-attempt guard shared
+// with pkg/clusterenroll's own Noise_NK tests: every request in this file
+// arrives from httptest's fixed remote address, so without a fresh guard
+// per test these would exhaust each other's rate-limit/lockout budget.
+func newTestClusterCAProvider(t *testing.T) (*cakey.SoftwareProvider, kvstore.AtomicKVStore) {
 	t.Helper()
-	p := clusterca.NewProvider(kvstore.NewMemoryKVStore(), clusterJoinTestBarrier{})
+	t.Cleanup(clusterenroll.ResetJoinAttemptGuardForTest())
+	store := kvstore.NewMemoryKVStore()
+	p := clusterca.NewProvider(store, clusterJoinTestBarrier{})
 	if err := p.Initialize(context.Background()); err != nil {
 		t.Fatalf("Initialize cluster CA: %v", err)
 	}
-	return p
+	return p, store
+}
+
+// mintTestJoinToken mints a real, single-use join token bound to
+// spiffe://clusterJoinTestTrustDomain/node/nodeID into store.
+func mintTestJoinToken(t *testing.T, store kvstore.AtomicKVStore, nodeID string) string {
+	t.Helper()
+	token, _, err := clusterenroll.MintJoinToken(context.Background(), store, clusterJoinTestTrustDomain, nodeID, time.Hour)
+	if err != nil {
+		t.Fatalf("MintJoinToken: %v", err)
+	}
+	return token
 }
 
 // newTestJoinCSR builds a self-signed CSR for a fresh ECDSA P-256 key pair,
@@ -78,12 +100,13 @@ func postClusterJoin(srv *Server, req clusterenroll.JoinRequest) *httptest.Respo
 }
 
 func TestClusterJoin_SignsAValidCSR(t *testing.T) {
-	provider := newTestClusterCAProvider(t)
+	provider, store := newTestClusterCAProvider(t)
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
-		WithClusterJoin(provider, "s3cret-token"))
+		WithClusterJoin(provider, store, clusterJoinTestTrustDomain))
+	token := mintTestJoinToken(t, store, "member-1")
 
 	csrDER := newTestJoinCSR(t)
-	rec := postClusterJoin(srv, clusterenroll.JoinRequest{Token: "s3cret-token", CSRDER: csrDER})
+	rec := postClusterJoin(srv, clusterenroll.JoinRequest{Token: token, CSRDER: csrDER})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 	}
@@ -113,9 +136,10 @@ func TestClusterJoin_SignsAValidCSR(t *testing.T) {
 }
 
 func TestClusterJoin_WrongTokenRefused(t *testing.T) {
-	provider := newTestClusterCAProvider(t)
+	provider, store := newTestClusterCAProvider(t)
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
-		WithClusterJoin(provider, "correct-token"))
+		WithClusterJoin(provider, store, clusterJoinTestTrustDomain))
+	mintTestJoinToken(t, store, "member-1")
 
 	rec := postClusterJoin(srv, clusterenroll.JoinRequest{Token: "wrong-token", CSRDER: newTestJoinCSR(t)})
 	if rec.Code != http.StatusForbidden {
@@ -131,20 +155,21 @@ func TestClusterJoin_WrongTokenRefused(t *testing.T) {
 }
 
 func TestClusterJoin_InvalidCSRRefused(t *testing.T) {
-	provider := newTestClusterCAProvider(t)
+	provider, store := newTestClusterCAProvider(t)
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
-		WithClusterJoin(provider, "tok"))
+		WithClusterJoin(provider, store, clusterJoinTestTrustDomain))
+	token := mintTestJoinToken(t, store, "member-1")
 
-	rec := postClusterJoin(srv, clusterenroll.JoinRequest{Token: "tok", CSRDER: []byte("not a csr")})
+	rec := postClusterJoin(srv, clusterenroll.JoinRequest{Token: token, CSRDER: []byte("not a csr")})
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status %d, want 403: %s", rec.Code, rec.Body.String())
 	}
 }
 
 func TestClusterJoin_MalformedBody(t *testing.T) {
-	provider := newTestClusterCAProvider(t)
+	provider, store := newTestClusterCAProvider(t)
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
-		WithClusterJoin(provider, "tok"))
+		WithClusterJoin(provider, store, clusterJoinTestTrustDomain))
 
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, httptest.NewRequest(http.MethodPost, clusterenroll.JoinHTTPPath, bytes.NewReader([]byte("not json"))))
@@ -163,12 +188,25 @@ func TestClusterJoin_UnconfiguredLeavesThePathFree(t *testing.T) {
 	}
 }
 
-// A provider with no token (or vice versa) is refused at Start, not served
-// with no admission control.
-func TestClusterJoin_MissingTokenRefusedAtStart(t *testing.T) {
-	provider := newTestClusterCAProvider(t)
+// A provider with no token store (or no trust domain) is refused at Start,
+// not served with no admission control.
+func TestClusterJoin_MissingTokenStoreRefusedAtStart(t *testing.T) {
+	provider, _ := newTestClusterCAProvider(t)
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
-		WithClusterJoin(provider, ""))
+		WithClusterJoin(provider, nil, clusterJoinTestTrustDomain))
+	var missingToken *ClusterJoinMissingTokenError
+	if err := srv.Start(); !errors.As(err, &missingToken) {
+		srv.Stop()
+		t.Fatalf("Start err = %T (%v), want *ClusterJoinMissingTokenError", err, err)
+	}
+}
+
+// A provider with a store but no trust domain is refused at Start for the
+// same reason: the configuration is incomplete, not merely unconfigured.
+func TestClusterJoin_MissingTrustDomainRefusedAtStart(t *testing.T) {
+	provider, store := newTestClusterCAProvider(t)
+	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
+		WithClusterJoin(provider, store, ""))
 	var missingToken *ClusterJoinMissingTokenError
 	if err := srv.Start(); !errors.As(err, &missingToken) {
 		srv.Stop()

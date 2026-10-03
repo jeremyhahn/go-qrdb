@@ -44,10 +44,15 @@ type kvServiceAdapter struct {
 	lookup     kvstore.LookupFunc
 }
 
-// newKVServiceAdapter creates a kvstore.KVStore backed by a Raft-replicated
-// KVServicer. All writes are proposed through Raft consensus; all reads are
-// linearizable. The optional registerer and lookup enable index operations.
-func newKVServiceAdapter(svc service.KVServicer, registerer kvstore.EntityRegisterer, lookup kvstore.LookupFunc) kvstore.KVStore {
+// newKVServiceAdapter creates a kvstore.AtomicKVStore backed by a
+// Raft-replicated KVServicer. All writes are proposed through Raft
+// consensus; all reads are linearizable. The optional registerer and
+// lookup enable index operations. The widened (atomic) return type costs
+// nothing -- *kvServiceAdapter already implements PutIfAbsent/
+// CompareAndSwap/CompareAndDelete natively, every engine offers them -- and
+// lets a caller needing the atomic capability (clusterenroll's
+// MintJoinToken/ConsumeJoinToken, in particular) use this adapter directly.
+func newKVServiceAdapter(svc service.KVServicer, registerer kvstore.EntityRegisterer, lookup kvstore.LookupFunc) kvstore.AtomicKVStore {
 	return &kvServiceAdapter{
 		svc:        svc,
 		registerer: registerer,

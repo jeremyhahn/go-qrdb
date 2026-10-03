@@ -338,6 +338,10 @@ func (p *SoftwareProvider) AdoptIfAbsent(ctx context.Context, keyPEM, certPEM []
 	if err != nil {
 		return &GenerateError{Err: err}
 	}
+	certPub, ok := cert.PublicKey.(*ecdsa.PublicKey)
+	if !ok || !certPub.Equal(&key.PublicKey) {
+		return &KeyCertMismatchError{}
+	}
 
 	keyDER, err := x509.MarshalECPrivateKey(key)
 	if err != nil {

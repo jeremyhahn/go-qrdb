@@ -934,6 +934,51 @@ func TestSoftwareProvider_WithAdoptMaterial(t *testing.T) {
 	}
 }
 
+// TestSoftwareProvider_AdoptIfAbsent_KeyCertMismatchRefused proves
+// AdoptIfAbsent refuses a key and certificate that do not belong together
+// -- the certificate's public key does not match the offered private key --
+// BEFORE ever attempting to persist them, distinct from
+// TestSoftwareProvider_WithAdoptMaterial's split-brain case (two
+// internally-consistent key/cert pairs that disagree with each other).
+func TestSoftwareProvider_AdoptIfAbsent_KeyCertMismatchRefused(t *testing.T) {
+	store := kvstore.NewMemoryKVStore()
+	barrier := newMockBarrier()
+	p := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
+
+	certKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey (cert): %v", err)
+	}
+	cert := selfSignedTestCert(t, certKey)
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
+
+	// A DIFFERENT key than the one cert was issued for.
+	wrongKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey (wrong): %v", err)
+	}
+	wrongKeyDER, err := x509.MarshalECPrivateKey(wrongKey)
+	if err != nil {
+		t.Fatalf("MarshalECPrivateKey: %v", err)
+	}
+	wrongKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: wrongKeyDER})
+
+	err = p.AdoptIfAbsent(context.Background(), wrongKeyPEM, certPEM)
+	var mismatch *KeyCertMismatchError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("AdoptIfAbsent(wrong key, cert) = %v, want *KeyCertMismatchError", err)
+	}
+
+	// Nothing was persisted: the store is untouched by the refused adopt.
+	keys, listErr := store.List(context.Background(), "__sys:cluster_ca/")
+	if listErr != nil {
+		t.Fatalf("List: %v", listErr)
+	}
+	if len(keys) != 0 {
+		t.Fatalf("AdoptIfAbsent persisted material despite refusing the mismatch, found %v", keys)
+	}
+}
+
 func TestStaticProvider(t *testing.T) {
 	store := kvstore.NewMemoryKVStore()
 	barrier := newMockBarrier()

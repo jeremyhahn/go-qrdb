@@ -185,22 +185,56 @@ reachable (barrier-encrypted, replicated — see
 [../certificate-authority/architecture.md](../certificate-authority/architecture.md#the-ca-key-provider-seam-pkgcakey))
 from **any** admitted, unsealed member, not only the first node.
 
-1. The joiner fetches the trust anchor (the CA **certificate** only) exactly
+1. Before the joiner does anything, an admin mints it a **single-use,
+   identity-bound join token**: `clusterenroll.MintJoinToken` binds the
+   token to `spiffe://<trust domain>/node/<nodeID>` and an expiry, stores
+   only the token's SHA-256 digest in the replicated store (never the
+   plaintext), and returns the plaintext exactly once. See "Join-token
+   minting" below for the admin-facing verb.
+2. The joiner fetches the trust anchor (the CA **certificate** only) exactly
    as today — `clusterenroll.FetchAnchor` over Noise/SPKI/DANE/Direct,
    unchanged.
-2. The joiner generates its own node key pair (the private key never leaves
+3. The joiner generates its own node key pair (the private key never leaves
    it) and builds a self-signed PKCS#10 CSR for that key.
-3. It submits the CSR to an admitted member's dedicated join listener
-   (`clusterenroll.JoinServer`). After admission — a shared join token
-   today, matching the operator-PSK pattern multicast discovery already
-   uses; a stronger per-node approval workflow is a future extension of the
-   same admission point — the member signs the CSR with Key A
+4. It submits the CSR, with the minted token, to an admitted member's
+   dedicated join listener (`clusterenroll.JoinServer`).
+   `HandleJoinRequest` checks the cluster CA provider is actually ready to
+   sign (`provider.Signer`) BEFORE touching the token at all: a sealed
+   member refuses every join attempt with the same generic message,
+   whether the presented token is valid or not, so a sealed node answers no
+   differently to a prober holding a real token than to one holding
+   garbage, and a legitimately minted single-use token is never burned on
+   a join that could never have succeeded. Only once that check passes does
+   `clusterenroll.ConsumeJoinToken` consume the token atomically
+   (compare-and-delete): a second presentation of
+   the same token, concurrent or not, is refused exactly as an unknown
+   token is, and a token whose trust domain does not match this member's
+   own, or that names a tenant path or an already-admitted identity, is
+   refused the same cause-independent way (no token-validity oracle). Only
+   then does the member sign the CSR with Key A
    (`clusterca.IssueLeafForKey`, reading the cluster CA through whichever
    `cakey.Provider` that member was built with: the built-in
    `SoftwareProvider` over the replicated store, or an injected HSM/TPM/KMS
-   one) and returns the leaf.
-4. The joiner now holds a Key-A-chained leaf and can present it for Raft
+   one) — **for the token's bound identity, never the joiner's
+   self-reported `node_uri`** — and returns the leaf.
+5. The joiner now holds a Key-A-chained leaf and can present it for Raft
    peer TLS like any other member.
+
+**The leaf carries the bound identity only.** `IssueLeafForKey` builds the
+leaf from `clustertls.IdentityLeafTemplate`, a single URI SAN for the bound
+identity, not `clustertls.NodeLeafTemplate`'s `LocalSANs()` — the signing
+member's own DNS/IP SANs never leak onto a joiner's certificate. Peers
+verify a joined member by SPIFFE ID, not by hostname SAN.
+
+**Admission attempts are rate-limited and locked out per source address**,
+on both transports, through one package-level guard shared by Noise\_NK and
+SPKI/Direct: a sustained-rate token bucket bounds brute-force guessing, and
+`joinLockoutThreshold` consecutive bad-token attempts from one source trip a
+`joinLockoutDuration` lockout independent of the rate limit. Switching
+transports mid-attack gains an attacker nothing. `JoinServer` additionally
+bounds concurrent in-flight Noise\_NK handshakes
+(`joinServerMaxConcurrentConns`), refusing (closing the connection) rather
+than queuing behind a potential flood once at capacity.
 
 This removes `clusterenroll.Join`'s hard `*EnrollmentUnavailableError`
 refusal, for a node configured with a join listener address, public key and
@@ -209,6 +243,21 @@ token (`BootstrapOptions.JoinConfigured`) — the CSR-sign exchange is what
 turns out to be. A node that is not configured with a join listener (e.g.
 one meant to be enrolled via explicit TLS files) still refuses with
 `*EnrollmentUnavailableError`, unchanged.
+
+### Join-token minting
+
+An admin mints a token through `POST /v1/cluster/join-tokens` (REST) or the
+`qrdb admin join-token mint <node-id>` CLI, both reaching
+`service.AdminService.MintJoinToken` — a distinct interface
+(`service.ClusterJoinTokenMinter`), not a method on the broader
+`AdminServicer`, so every existing `AdminServicer` test double in this repo
+continues to compile unchanged; a caller type-asserts for the capability.
+Permission `cluster:join_token` is `ScopeCross` and deliberately absent from
+every built-in role's default grant (mirroring `clusterAdminPermissions`'
+own platform-only precedent): minting a token admits a node to the whole
+cluster, not to one tenant, so only `Owner` may mint by default. As of this
+release the verb is wired on the REST and embedded SDK transports; gRPC,
+QUIC, Unix and MCP do not yet implement `transport.ClusterJoinTokenMinter`.
 
 **Wire transport (Noise, shipped).** The one-shot `get_ca_bundle`
 request/response the Noise bootstrap `Handler` in go-truststrap dispatches

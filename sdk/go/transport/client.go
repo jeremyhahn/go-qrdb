@@ -167,6 +167,23 @@ type AdminClient interface {
 	SetNodeCompaction(ctx context.Context, policy *DatabaseCompactionConfig) (*DatabaseCompactionConfig, error)
 }
 
+// ClusterJoinTokenMinter mints a single-use, identity-bound member-side CSR
+// join token, for an admin to hand to a joining node (see
+// pkg/clusterenroll.MintJoinToken). It is a distinct interface from
+// AdminClient, not a method on it, mirroring service.ClusterJoinTokenMinter
+// on the server side: minting a token is an admission decision available
+// only on a transport that has wired it, not a capability every AdminClient
+// implementation must carry. A caller type-asserts for it
+// (client.Admin().(transport.ClusterJoinTokenMinter)) rather than every
+// transport needing a method it has no server-side route to call; see each
+// transport package's own doc comment for which have.
+//
+// permission.ClusterJoinToken (ScopeCross, platform-only) gates the
+// server-side route on every transport that implements this.
+type ClusterJoinTokenMinter interface {
+	MintJoinToken(ctx context.Context, req *MintJoinTokenRequest) (*MintJoinTokenResponse, error)
+}
+
 // ---------------------------------------------------------------------------
 // MVCC operations
 // ---------------------------------------------------------------------------

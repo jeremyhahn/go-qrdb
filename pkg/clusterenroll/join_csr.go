@@ -17,9 +17,9 @@ package clusterenroll
 import (
 	"bytes"
 	"context"
-	"crypto/subtle"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net"
 	"os"
@@ -35,6 +35,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterca"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
 
 // DefaultJoinPort is the default TCP port for the member-side CSR-sign
@@ -62,11 +63,16 @@ type JoinServerOptions struct {
 	// Port is the TCP port. Zero defaults to DefaultJoinPort.
 	Port int
 
-	// Token is the operator-chosen join-admission secret, checked inside
-	// the Noise-encrypted channel before any CSR is parsed. Required --
-	// there is no default, mirroring multicast discovery's PSK rule
-	// (go-qrdb's "no default secret" convention).
-	Token string
+	// Store is the replicated kvstore join tokens are minted into
+	// (MintJoinToken) and consumed from (ConsumeJoinToken) -- the same
+	// store cakey.SoftwareProvider persists Key A through. Required: a
+	// join listener with no token store to check against can admit
+	// nothing and would not fail closed on its own.
+	Store kvstore.AtomicKVStore
+
+	// TrustDomain is this member's own pinned cluster trust domain. A
+	// presented token bound to any other trust domain is refused. Required.
+	TrustDomain string
 
 	// AdminPort is logged alongside the listener address for operator
 	// convenience. Zero means unconfigured.
@@ -78,10 +84,34 @@ func (o JoinServerOptions) validate() error {
 	if o.Host == "" {
 		return &MissingBindHostError{Component: "member-join server"}
 	}
-	if o.Token == "" {
-		return &MissingJoinTokenError{}
+	if o.Store == nil {
+		return &MissingJoinTokenStoreError{}
+	}
+	if o.TrustDomain == "" {
+		return &MissingTrustDomainError{Component: "member-join server"}
 	}
 	return nil
+}
+
+// MissingJoinTokenStoreError is returned when a member-join server is
+// configured with no token store to validate presented tokens against.
+type MissingJoinTokenStoreError struct{}
+
+// Error returns a human-readable description.
+func (e *MissingJoinTokenStoreError) Error() string {
+	return "clusterenroll: no join token store configured; member-side CSR join requires " +
+		"the replicated kvstore join tokens are minted into and consumed from"
+}
+
+// MissingTrustDomainError is returned when a component that must pin a
+// cluster trust domain is configured with none.
+type MissingTrustDomainError struct {
+	Component string
+}
+
+// Error returns a human-readable description.
+func (e *MissingTrustDomainError) Error() string {
+	return "clusterenroll: no trust domain configured for the " + e.Component
 }
 
 // port returns the configured port or DefaultJoinPort.
@@ -139,14 +169,46 @@ type JoinResponse struct {
 
 // HandleJoinRequest is the transport-agnostic core of member-side CSR
 // signing, shared by every transport binding (Noise_NK's JoinServer, the
-// SPKI/Direct HTTPS route in pkg/api/rest): constant-time token check, CSR
-// parse and proof-of-possession check, then issuance through the cluster CA
-// provider. It never reads a private key out of provider -- IssueLeafForKey
-// signs with it, nothing more -- and the only error detail returned to the
-// wire is a short, key-material-free reason.
-func HandleJoinRequest(ctx context.Context, provider cakey.Provider, token string, req *JoinRequest) *JoinResponse {
-	if subtle.ConstantTimeCompare([]byte(token), []byte(req.Token)) != 1 {
-		return &JoinResponse{Error: "join token rejected"}
+// SPKI/Direct HTTPS route in pkg/api/rest): single-use token consumption
+// (ConsumeJoinToken), CSR parse and proof-of-possession check, then
+// issuance through the cluster CA provider FOR THE TOKEN'S BOUND IDENTITY
+// -- req.NodeURI is never consulted; a token binds the identity, the
+// joiner does not get to assert one of its own choosing. It never reads a
+// private key out of provider -- IssueLeafForKey signs with it, nothing
+// more -- and the only error detail returned to the wire is the single,
+// cause-independent reason ConsumeJoinToken reports (no token-validity
+// oracle).
+//
+// store is the replicated kvstore the signing member's join tokens are
+// minted into (see MintJoinToken) -- the SAME store cakey.SoftwareProvider
+// persists Key A through, reached via the same kvstore.AtomicKVStore seam.
+// trustDomain is this member's own pinned cluster trust domain: a token
+// bound to any other trust domain is refused by ConsumeJoinToken.
+func HandleJoinRequest(ctx context.Context, provider cakey.Provider, store kvstore.AtomicKVStore, trustDomain string, req *JoinRequest) *JoinResponse {
+	// Checked BEFORE the token is consumed, and on failure reported with
+	// the SAME generic message the infrastructure-failure branch below
+	// uses: a sealed node (or any other reason provider cannot currently
+	// sign) must refuse identically whether the presented token is valid
+	// or not. Consuming a token first and discovering only afterward that
+	// signing is unavailable would both burn a legitimately minted
+	// single-use token for nothing, and -- the actual oracle -- let a
+	// prober learn "my token was accepted" from a response distinguishable
+	// from "token rejected," with no join to show for it either way.
+	if _, err := provider.Signer(ctx); err != nil {
+		return &JoinResponse{Error: "join request could not be processed"}
+	}
+
+	boundNodeURI, err := ConsumeJoinToken(ctx, store, trustDomain, req.Token)
+	if err != nil {
+		var refused *JoinRefusedError
+		if errors.As(err, &refused) {
+			return &JoinResponse{Error: refused.Reason}
+		}
+		// A JoinTokenStoreError (or anything else ConsumeJoinToken might
+		// return): a genuine infrastructure failure, not a refusal -- it
+		// carries no information about the presented token, so reporting
+		// it distinctly from "join token rejected" is not an oracle.
+		return &JoinResponse{Error: "join request could not be processed"}
 	}
 
 	csr, err := x509.ParseCertificateRequest(req.CSRDER)
@@ -157,27 +219,36 @@ func HandleJoinRequest(ctx context.Context, provider cakey.Provider, token strin
 		return &JoinResponse{Error: "certificate signing request: proof of possession failed"}
 	}
 
-	var nodeURI []string
-	if req.NodeURI != "" {
-		nodeURI = []string{req.NodeURI}
-	}
-	certPEM, err := clusterca.IssueLeafForKey(ctx, provider, csr.PublicKey, nodeURI...)
+	certPEM, err := clusterca.IssueLeafForKey(ctx, provider, csr.PublicKey, boundNodeURI)
 	if err != nil {
 		return &JoinResponse{Error: "signing failed"}
 	}
 	return &JoinResponse{CertPEM: certPEM}
 }
 
+// joinServerMaxConcurrentConns bounds how many Noise_NK handshakes a
+// JoinServer services at once. An attacker that can open connections
+// faster than they are serviced would otherwise grow one goroutine per
+// connection without limit; this caps that at a number generously above any
+// legitimate join burst (a fleet bringing up many nodes at once) while
+// still bounding worst-case resource use.
+const joinServerMaxConcurrentConns = 64
+
 // JoinServer is a running member-side CSR-sign listener. It must be stopped
 // during graceful shutdown.
 type JoinServer struct {
-	ln       net.Listener
-	key      *noiseproto.StaticKey
-	token    string
-	provider cakey.Provider
-	logger   *slog.Logger
-	stopOnce sync.Once
-	wg       sync.WaitGroup
+	ln          net.Listener
+	key         *noiseproto.StaticKey
+	store       kvstore.AtomicKVStore
+	trustDomain string
+	provider    cakey.Provider
+	logger      *slog.Logger
+	stopOnce    sync.Once
+	wg          sync.WaitGroup
+
+	// conns bounds concurrent in-flight handshakes; see
+	// joinServerMaxConcurrentConns.
+	conns chan struct{}
 }
 
 // StartJoinServer starts the member-side CSR-sign listener. provider is the
@@ -211,7 +282,15 @@ func StartJoinServer(provider cakey.Provider, opts JoinServerOptions, dataDir st
 		return nil, &ServerError{Protocol: "join", Err: err}
 	}
 
-	js := &JoinServer{ln: ln, key: key, token: opts.Token, provider: provider, logger: logger}
+	js := &JoinServer{
+		ln:          ln,
+		key:         key,
+		store:       opts.Store,
+		trustDomain: opts.TrustDomain,
+		provider:    provider,
+		logger:      logger,
+		conns:       make(chan struct{}, joinServerMaxConcurrentConns),
+	}
 	js.wg.Add(1)
 	go js.serve()
 
@@ -262,6 +341,22 @@ func (s *JoinServer) Stop() {
 	})
 }
 
+// sourceAddr extracts the host portion of addr for attempt-guard keying,
+// so a rate limit or lockout scopes to a source IP rather than to one
+// ephemeral port of a many-port attacker. addr may be nil (an already-
+// closed or unusual connection); the zero value groups those together
+// rather than panicking.
+func sourceAddr(addr net.Addr) string {
+	if addr == nil {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return addr.String()
+	}
+	return host
+}
+
 // serve accepts connections until the listener is closed.
 func (s *JoinServer) serve() {
 	defer s.wg.Done()
@@ -273,6 +368,18 @@ func (s *JoinServer) serve() {
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
+			select {
+			case s.conns <- struct{}{}:
+				defer func() { <-s.conns }()
+			default:
+				// At joinServerMaxConcurrentConns already: refuse rather
+				// than queue behind a potentially unbounded flood, or stall
+				// Accept for every other caller.
+				s.logger.Debug("join: refused, at max concurrent connections",
+					"max", joinServerMaxConcurrentConns)
+				_ = conn.Close()
+				return
+			}
 			s.handle(conn)
 		}()
 	}
@@ -286,6 +393,12 @@ func (s *JoinServer) serve() {
 func (s *JoinServer) handle(conn net.Conn) {
 	defer conn.Close()
 	deadline := time.Now().Add(DefaultTimeout)
+	source := sourceAddr(conn.RemoteAddr())
+
+	if !AllowJoinAttempt(source) {
+		s.logger.Debug("join: refused, source is rate-limited or locked out", "source", source)
+		return
+	}
 
 	sess, err := noiseproto.NewSession(&noiseproto.SessionConfig{
 		Pattern:        noise.HandshakeNK,
@@ -332,7 +445,12 @@ func (s *JoinServer) handle(conn net.Conn) {
 	if err := json.Unmarshal(plaintext, &req); err != nil {
 		resp.Error = "invalid request"
 	} else {
-		resp = HandleJoinRequest(context.Background(), s.provider, s.token, &req)
+		resp = HandleJoinRequest(context.Background(), s.provider, s.store, s.trustDomain, &req)
+	}
+	if resp.Error != "" {
+		RecordJoinAttemptFailure(source)
+	} else {
+		RecordJoinAttemptSuccess(source)
 	}
 
 	respData, err := json.Marshal(resp)

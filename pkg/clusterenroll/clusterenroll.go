@@ -702,6 +702,10 @@ func Join(ctx context.Context, opts *Options, logger *slog.Logger) (*clustertls.
 		}
 	}
 
+	if err := verifyJoinedLeaf(anchorPEM, certPEM, &nodeKey.PublicKey); err != nil {
+		return nil, err
+	}
+
 	keyDER, err := x509.MarshalECPrivateKey(nodeKey)
 	if err != nil {
 		return nil, &clustertls.GenerateError{Err: err}
@@ -724,6 +728,58 @@ func Join(ctx context.Context, opts *Options, logger *slog.Logger) (*clustertls.
 	}
 	logger.Info("joined existing cluster", "dir", opts.DataDir)
 	return mat, nil
+}
+
+// verifyJoinedLeaf proves the leaf a signing member returned is the one
+// this joiner actually asked for: it chains to the SAME anchor this joiner
+// fetched (anchorPEM, step 1 of the join), and carries the public half of
+// the private key generated for it (pub) -- never a leaf for a different
+// key the signing member (or a man in the middle that reached the join
+// transport but not the anchor fetch) substituted. Member-side CSR signing
+// takes nothing but the public key from the CSR (buildJoinCSR's own doc
+// comment), so this is the joiner's only check that what came back actually
+// answers what it asked.
+func verifyJoinedLeaf(anchorPEM, leafPEM []byte, pub *ecdsa.PublicKey) error {
+	anchorBlock, _ := pem.Decode(anchorPEM)
+	if anchorBlock == nil {
+		return &JoinedLeafVerifyError{Reason: "anchor certificate is not valid PEM"}
+	}
+	anchorCert, err := x509.ParseCertificate(anchorBlock.Bytes)
+	if err != nil {
+		return &JoinedLeafVerifyError{Reason: "anchor certificate: " + err.Error()}
+	}
+
+	leafBlock, _ := pem.Decode(leafPEM)
+	if leafBlock == nil {
+		return &JoinedLeafVerifyError{Reason: "issued leaf is not valid PEM"}
+	}
+	leafCert, err := x509.ParseCertificate(leafBlock.Bytes)
+	if err != nil {
+		return &JoinedLeafVerifyError{Reason: "issued leaf: " + err.Error()}
+	}
+
+	if err := leafCert.CheckSignatureFrom(anchorCert); err != nil {
+		return &JoinedLeafVerifyError{Reason: "issued leaf does not chain to the fetched anchor: " + err.Error()}
+	}
+	leafPub, ok := leafCert.PublicKey.(*ecdsa.PublicKey)
+	if !ok || !leafPub.Equal(pub) {
+		return &JoinedLeafVerifyError{Reason: "issued leaf does not carry this joiner's own public key"}
+	}
+	return nil
+}
+
+// JoinedLeafVerifyError is returned when the leaf a signing member returns
+// does not chain to the anchor this joiner fetched, or does not carry the
+// public key generated for the join -- a signing-member or transport
+// defect, never persisted to disk (clustertls.PersistMaterial is not
+// reached).
+type JoinedLeafVerifyError struct {
+	Reason string
+}
+
+// Error returns a human-readable description.
+func (e *JoinedLeafVerifyError) Error() string {
+	return "clusterenroll: issued leaf verification failed: " + e.Reason
 }
 
 // buildJoinCSR creates a PKCS#10 CertificateRequest for key, self-signed to

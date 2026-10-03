@@ -43,15 +43,21 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterca"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
-	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
+
+// clusterJoinFlagsTestTrustDomain is the SPIFFE trust domain this file's
+// tests pin on both the signing-member and joiner sides, matching
+// --cluster-trust-domain so a minted token's bound domain always equals the
+// domain the consuming side validates against.
+const clusterJoinFlagsTestTrustDomain = "qrdb.cluster"
 
 // clusterJoinFlagsTestBarrier is a trivial in-memory seal.EncryptionBarrier.
 // This file tests the CLI/YAML operator-wiring surface, not
@@ -89,18 +95,20 @@ func buildClusterJoinFlagsTestCSR(t *testing.T) []byte {
 // TestClusterJoinFlags_NoiseListenerSignsAValidCSR drives the signing
 // member's side of operator wiring: --cluster-join-enabled,
 // --cluster-join-listen-host, --cluster-join-listen-port and
-// --cluster-join-token-file resolved through the real cobra parse + YAML
-// merge (resolveStartFlags), then fed into clusterenroll.StartJoinServer
-// exactly as runStart does, and dialed with a real Noise_NK join client to
-// prove the resolved values describe a listener that actually signs.
+// --cluster-trust-domain resolved through the real cobra parse + YAML merge
+// (resolveStartFlags), then fed into clusterenroll.StartJoinServer exactly
+// as runStart does, and dialed with a real Noise_NK join client -- presenting
+// a single-use, identity-bound token minted into the replicated store, the
+// SAME store the listener validates against -- to prove the resolved values
+// describe a listener that actually signs. There is no token-file/-env flag
+// on this side any more (see startFlags.clusterJoinEnabled's doc comment):
+// an admin mints join tokens into the store out of band
+// (clusterenroll.MintJoinToken), which is what this test does directly.
 func TestClusterJoinFlags_NoiseListenerSignsAValidCSR(t *testing.T) {
 	provider := newClusterJoinFlagsTestCA(t)
 	caCert, err := provider.Certificate(context.Background())
 	require.NoError(t, err)
-
-	const token = "member-join-secret"
-	tokenPath := filepath.Join(t.TempDir(), "join-token")
-	require.NoError(t, os.WriteFile(tokenPath, []byte(token), 0o600))
+	store := kvstore.NewMemoryKVStore()
 
 	port, err := freePortOn(testBindHost, networkTCP)
 	require.NoError(t, err)
@@ -109,21 +117,19 @@ func TestClusterJoinFlags_NoiseListenerSignsAValidCSR(t *testing.T) {
 		"--cluster-join-enabled",
 		"--cluster-join-listen-host", testBindHost,
 		"--cluster-join-listen-port", strconv.Itoa(port),
-		"--cluster-join-token-file", tokenPath,
 	)
 	require.True(t, f.clusterJoinEnabled, "--cluster-join-enabled must resolve true")
 	require.Equal(t, testBindHost, f.clusterJoinListenHost)
 	require.Equal(t, port, f.clusterJoinListenPort)
-	require.Equal(t, tokenPath, f.clusterJoinTokenFile)
 
-	resolvedToken, err := qrdbconfig.ResolveJoinToken(f.clusterJoinTokenFile, f.clusterJoinTokenEnv)
+	token, _, err := clusterenroll.MintJoinToken(context.Background(), store, f.clusterTrustDomain, "member-1", time.Hour)
 	require.NoError(t, err)
-	require.Equal(t, token, resolvedToken)
 
 	js, err := clusterenroll.StartJoinServer(provider, clusterenroll.JoinServerOptions{
-		Host:  f.clusterJoinListenHost,
-		Port:  f.clusterJoinListenPort,
-		Token: resolvedToken,
+		Host:        f.clusterJoinListenHost,
+		Port:        f.clusterJoinListenPort,
+		Store:       store,
+		TrustDomain: f.clusterTrustDomain,
 	}, t.TempDir(), testLogger())
 	require.NoError(t, err)
 	t.Cleanup(js.Stop)
@@ -132,7 +138,7 @@ func TestClusterJoinFlags_NoiseListenerSignsAValidCSR(t *testing.T) {
 	certPEM, err := clusterenroll.JoinCSR(context.Background(), &clusterenroll.JoinClientOptions{
 		ServerAddr: js.Addr(),
 		ServerKey:  js.PublicKey(),
-		Token:      resolvedToken,
+		Token:      token,
 	}, csrDER, "")
 	require.NoError(t, err)
 
@@ -144,15 +150,13 @@ func TestClusterJoinFlags_NoiseListenerSignsAValidCSR(t *testing.T) {
 		"the listener started from resolved cluster-join-* flags signed with the wrong CA")
 }
 
-// TestClusterJoinFlags_WrongTokenFileRefused proves a joiner pointed at the
-// wrong token file -- the operator-wiring failure mode that matters, since a
-// typo'd path is silent until the join is attempted -- is refused by the
-// listener rather than silently signing.
-func TestClusterJoinFlags_WrongTokenFileRefused(t *testing.T) {
+// TestClusterJoinFlags_WrongTokenRefused proves a joiner presenting a token
+// it was never minted -- the operator-wiring failure mode that matters, since
+// a mistaken or stale value is silent until the join is attempted -- is
+// refused by the listener rather than silently signing.
+func TestClusterJoinFlags_WrongTokenRefused(t *testing.T) {
 	provider := newClusterJoinFlagsTestCA(t)
-
-	tokenPath := filepath.Join(t.TempDir(), "join-token")
-	require.NoError(t, os.WriteFile(tokenPath, []byte("right-secret"), 0o600))
+	store := kvstore.NewMemoryKVStore()
 
 	port, err := freePortOn(testBindHost, networkTCP)
 	require.NoError(t, err)
@@ -161,15 +165,15 @@ func TestClusterJoinFlags_WrongTokenFileRefused(t *testing.T) {
 		"--cluster-join-enabled",
 		"--cluster-join-listen-host", testBindHost,
 		"--cluster-join-listen-port", strconv.Itoa(port),
-		"--cluster-join-token-file", tokenPath,
 	)
-	resolvedToken, err := qrdbconfig.ResolveJoinToken(f.clusterJoinTokenFile, f.clusterJoinTokenEnv)
+	_, _, err = clusterenroll.MintJoinToken(context.Background(), store, f.clusterTrustDomain, "member-1", time.Hour)
 	require.NoError(t, err)
 
 	js, err := clusterenroll.StartJoinServer(provider, clusterenroll.JoinServerOptions{
-		Host:  f.clusterJoinListenHost,
-		Port:  f.clusterJoinListenPort,
-		Token: resolvedToken,
+		Host:        f.clusterJoinListenHost,
+		Port:        f.clusterJoinListenPort,
+		Store:       store,
+		TrustDomain: f.clusterTrustDomain,
 	}, t.TempDir(), testLogger())
 	require.NoError(t, err)
 	t.Cleanup(js.Stop)
@@ -178,7 +182,7 @@ func TestClusterJoinFlags_WrongTokenFileRefused(t *testing.T) {
 	_, err = clusterenroll.JoinCSR(context.Background(), &clusterenroll.JoinClientOptions{
 		ServerAddr: js.Addr(),
 		ServerKey:  js.PublicKey(),
-		Token:      "wrong-secret",
+		Token:      "never-minted-token",
 	}, csrDER, "")
 	var refused *clusterenroll.JoinRefusedError
 	require.ErrorAs(t, err, &refused, "a wrong-token join must be refused, not signed")
@@ -201,8 +205,7 @@ func TestBootstrapJoinFlags_SPKIDirectEndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	caCertPEM, err := clusterca.CACertPEM(context.Background(), provider)
 	require.NoError(t, err)
-
-	const token = "member-join-secret"
+	store := kvstore.NewMemoryKVStore()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/ca/bootstrap", func(w http.ResponseWriter, _ *http.Request) {
@@ -220,7 +223,7 @@ func TestBootstrapJoinFlags_SPKIDirectEndToEnd(t *testing.T) {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
-		resp := clusterenroll.HandleJoinRequest(r.Context(), provider, token, &req)
+		resp := clusterenroll.HandleJoinRequest(r.Context(), provider, store, clusterJoinFlagsTestTrustDomain, &req)
 		respBody, err := json.Marshal(resp)
 		if err != nil {
 			http.Error(w, "failed to marshal response", http.StatusInternalServerError)
@@ -239,6 +242,8 @@ func TestBootstrapJoinFlags_SPKIDirectEndToEnd(t *testing.T) {
 	pin := hex.EncodeToString(sum[:])
 	serverAddr := strings.TrimPrefix(srv.URL, "https://")
 
+	token, _, err := clusterenroll.MintJoinToken(context.Background(), store, clusterJoinFlagsTestTrustDomain, "joiner-1", time.Hour)
+	require.NoError(t, err)
 	tokenPath := filepath.Join(t.TempDir(), "join-token")
 	require.NoError(t, os.WriteFile(tokenPath, []byte(token), 0o600))
 
@@ -246,6 +251,7 @@ func TestBootstrapJoinFlags_SPKIDirectEndToEnd(t *testing.T) {
 	f := resolveWithArgs(t,
 		"--data-dir", dataDir,
 		"--host", testBindHost,
+		"--cluster-trust-domain", clusterJoinFlagsTestTrustDomain,
 		"--bootstrap-spki-pin", pin,
 		"--bootstrap-addr", serverAddr,
 		"--bootstrap-join-url", srv.URL,
@@ -279,8 +285,8 @@ func TestBootstrapJoinFlags_SPKIDirectEndToEnd(t *testing.T) {
 // certificate or any persisted material.
 func TestBootstrapJoinFlags_WrongTokenFileRefused(t *testing.T) {
 	provider := newClusterJoinFlagsTestCA(t)
+	store := kvstore.NewMemoryKVStore()
 
-	const token = "member-join-secret"
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/ca/bootstrap", func(w http.ResponseWriter, _ *http.Request) {
 		caCertPEM, err := clusterca.CACertPEM(context.Background(), provider)
@@ -293,7 +299,7 @@ func TestBootstrapJoinFlags_WrongTokenFileRefused(t *testing.T) {
 		require.NoError(t, err)
 		var req clusterenroll.JoinRequest
 		require.NoError(t, json.Unmarshal(body, &req))
-		resp := clusterenroll.HandleJoinRequest(r.Context(), provider, token, &req)
+		resp := clusterenroll.HandleJoinRequest(r.Context(), provider, store, clusterJoinFlagsTestTrustDomain, &req)
 		respBody, err := json.Marshal(resp)
 		require.NoError(t, err)
 		w.Header().Set("Content-Type", "application/json")
@@ -309,13 +315,17 @@ func TestBootstrapJoinFlags_WrongTokenFileRefused(t *testing.T) {
 	pin := hex.EncodeToString(sum[:])
 	serverAddr := strings.TrimPrefix(srv.URL, "https://")
 
+	// This token is never minted into store, so ConsumeJoinToken refuses it
+	// -- the operator-wiring failure mode that matters, since a stale or
+	// mistaken token-file value is silent until the join is attempted.
 	tokenPath := filepath.Join(t.TempDir(), "join-token")
-	require.NoError(t, os.WriteFile(tokenPath, []byte("wrong-secret"), 0o600))
+	require.NoError(t, os.WriteFile(tokenPath, []byte("never-minted-token-value"), 0o600))
 
 	dataDir := t.TempDir()
 	f := resolveWithArgs(t,
 		"--data-dir", dataDir,
 		"--host", testBindHost,
+		"--cluster-trust-domain", clusterJoinFlagsTestTrustDomain,
 		"--bootstrap-spki-pin", pin,
 		"--bootstrap-addr", serverAddr,
 		"--bootstrap-join-url", srv.URL,

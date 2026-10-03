@@ -220,10 +220,12 @@ func (m *clusterMember) bootstrap(token string) BootstrapOptions {
 }
 
 // startClusterMember starts one admitted member's enrollment surface over
-// the shared cluster CA provider. caCertPEM is the anchor it advertises --
-// every member advertises the SAME certificate, exactly as every member of a
-// real cluster does.
-func startClusterMember(t *testing.T, provider cakey.Provider, caCertPEM []byte, token string) *clusterMember {
+// the shared cluster CA provider and the shared join-token store (the SAME
+// replicated store a real cluster's members read Key A and join tokens
+// through). caCertPEM is the anchor it advertises -- every member
+// advertises the SAME certificate, exactly as every member of a real
+// cluster does.
+func startClusterMember(t *testing.T, provider cakey.Provider, caCertPEM []byte, store kvstore.AtomicKVStore) *clusterMember {
 	t.Helper()
 
 	anchorPort := freePort(t)
@@ -233,7 +235,7 @@ func startClusterMember(t *testing.T, provider cakey.Provider, caCertPEM []byte,
 	}
 
 	joinPort := freePort(t)
-	js, err := StartJoinServer(provider, JoinServerOptions{Host: testBindHost, Port: joinPort, Token: token}, t.TempDir(), discardLogger())
+	js, err := StartJoinServer(provider, JoinServerOptions{Host: testBindHost, Port: joinPort, Store: store, TrustDomain: testTrustDomain}, t.TempDir(), discardLogger())
 	if err != nil {
 		adv.Stop()
 		t.Fatalf("StartJoinServer: %v", err)
@@ -250,14 +252,14 @@ func startClusterMember(t *testing.T, provider cakey.Provider, caCertPEM []byte,
 // leaf that chains to the SAME cluster CA the (now dead) first node
 // originally generated.
 func TestJoin_SurvivesFirstNodeLoss(t *testing.T) {
-	const joinToken = "cluster-join-secret"
+	resetJoinAttemptGuardForTest(t)
 
-	// The replicated store every admitted member reads Key A through.
-	// Standing in for Raft consensus across real nodes, as the rest of this
-	// package's tests already do for "the replicated store" (see
-	// pkg/cakey and pkg/clusterca's own mode-agnostic coverage) -- the
-	// property under test is that ANY member holding this provider can
-	// serve a join, not that Raft replication itself works, which is
+	// The replicated store every admitted member reads Key A AND join
+	// tokens through. Standing in for Raft consensus across real nodes, as
+	// the rest of this package's tests already do for "the replicated
+	// store" (see pkg/cakey and pkg/clusterca's own mode-agnostic coverage)
+	// -- the property under test is that ANY member holding this provider
+	// can serve a join, not that Raft replication itself works, which is
 	// go-quicraft's own test surface.
 	store := kvstore.NewMemoryKVStore()
 	barrier := newMockBarrier()
@@ -277,16 +279,21 @@ func TestJoin_SurvivesFirstNodeLoss(t *testing.T) {
 	// Two already-admitted members: the first node, and a second member
 	// that joined it at some point in the past (that join is not
 	// re-exercised here; what matters is that it is ALSO backed by the
-	// shared provider, exactly as a real second member reading the
-	// replicated store would be).
-	firstNode := startClusterMember(t, provider, caCertPEM, joinToken)
-	secondMember := startClusterMember(t, provider, caCertPEM, joinToken)
+	// shared provider and store, exactly as a real second member reading
+	// the replicated store would be).
+	firstNode := startClusterMember(t, provider, caCertPEM, store)
+	secondMember := startClusterMember(t, provider, caCertPEM, store)
 
 	// Kill the first node.
 	firstNode.stop()
 	if _, err := net.DialTimeout("tcp", firstNode.js.Addr(), 200*time.Millisecond); err == nil {
 		t.Fatal("first node's join listener is still reachable after Stop; the kill was not real")
 	}
+
+	// An admin mints a single-use token bound to the new node's identity
+	// before it ever dials anyone -- the SAME replicated store either
+	// surviving member would check it against.
+	joinToken := mintTestJoinToken(t, store, "127.0.0.1:63099")
 
 	// A brand-new, third node joins through the SURVIVING member only.
 	opts := &Options{
@@ -347,7 +354,7 @@ func TestJoin_SPKIDirectEndToEnd(t *testing.T) {
 		t.Fatalf("CACertPEM: %v", err)
 	}
 
-	const token = "spki-direct-join-secret"
+	store := kvstore.NewMemoryKVStore()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/ca/bootstrap", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/pem-certificate-chain")
@@ -359,7 +366,7 @@ func TestJoin_SPKIDirectEndToEnd(t *testing.T) {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
-		resp := HandleJoinRequest(r.Context(), provider, token, &req)
+		resp := HandleJoinRequest(r.Context(), provider, store, testTrustDomain, &req)
 		respBody, err := json.Marshal(resp)
 		if err != nil {
 			http.Error(w, "marshal failed", http.StatusInternalServerError)
@@ -375,6 +382,7 @@ func TestJoin_SPKIDirectEndToEnd(t *testing.T) {
 	sum := sha256.Sum256(srv.Certificate().RawSubjectPublicKeyInfo)
 	pin := hex.EncodeToString(sum[:])
 	serverAddr := strings.TrimPrefix(srv.URL, "https://")
+	token := mintTestJoinToken(t, store, "127.0.0.1:63098")
 
 	opts := &Options{
 		RaftAddress: "127.0.0.1:63098",
@@ -413,5 +421,74 @@ func TestJoin_SPKIDirectEndToEnd(t *testing.T) {
 	}
 	if !found || role != RoleJoined {
 		t.Fatalf("role = %q (found=%v), want %q", role, found, RoleJoined)
+	}
+}
+
+// TestJoin_RefusesLeafForWrongAnchor proves Join verifies the returned leaf
+// actually chains to the anchor THIS joiner fetched: the join route here
+// signs with a DIFFERENT cluster CA than the one served at /v1/ca/bootstrap
+// -- standing in for a signing-member or transport defect that answers a
+// join with a leaf for a different cluster entirely -- and Join must refuse
+// it with *JoinedLeafVerifyError rather than persisting it.
+func TestJoin_RefusesLeafForWrongAnchor(t *testing.T) {
+	anchorProvider := newTestClusterCAProvider(t)
+	anchorCertPEM, err := clusterca.CACertPEM(context.Background(), anchorProvider)
+	if err != nil {
+		t.Fatalf("CACertPEM (anchor): %v", err)
+	}
+
+	// A second, unrelated cluster CA: the join route signs with THIS one,
+	// never the anchor served above.
+	wrongProvider := newTestClusterCAProvider(t)
+	store := kvstore.NewMemoryKVStore()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/ca/bootstrap", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/pem-certificate-chain")
+		_, _ = w.Write(anchorCertPEM)
+	})
+	mux.HandleFunc(JoinHTTPPath, func(w http.ResponseWriter, r *http.Request) {
+		var req JoinRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		resp := HandleJoinRequest(r.Context(), wrongProvider, store, testTrustDomain, &req)
+		respBody, err := json.Marshal(resp)
+		if err != nil {
+			http.Error(w, "marshal failed", http.StatusInternalServerError)
+			return
+		}
+		if resp.Error != "" {
+			w.WriteHeader(http.StatusForbidden)
+		}
+		_, _ = w.Write(respBody)
+	})
+	srv := httptest.NewTLSServer(mux)
+	defer srv.Close()
+	sum := sha256.Sum256(srv.Certificate().RawSubjectPublicKeyInfo)
+	pin := hex.EncodeToString(sum[:])
+	serverAddr := strings.TrimPrefix(srv.URL, "https://")
+	token := mintTestJoinToken(t, store, "127.0.0.1:63099")
+
+	opts := &Options{
+		RaftAddress: "127.0.0.1:63099",
+		TrustDomain: "test.cluster",
+		DataDir:     t.TempDir(),
+		Bootstrap: BootstrapOptions{
+			SPKIPin:     pin,
+			ServerAddr:  serverAddr,
+			JoinHTTPURL: srv.URL,
+			JoinToken:   token,
+		},
+	}
+	_, err = Join(context.Background(), opts, discardLogger())
+	var verifyErr *JoinedLeafVerifyError
+	if !errors.As(err, &verifyErr) {
+		t.Fatalf("Join with a leaf signed by the wrong CA = %v, want *JoinedLeafVerifyError", err)
+	}
+
+	if _, found, _ := loadRole(opts.DataDir); found {
+		t.Fatal("a refused join must not persist a role file")
 	}
 }

@@ -593,6 +593,22 @@ func (t *Transport) RequestSnapshot(ctx context.Context, shardID uint64) error {
 	return t.postJSON(ctx, "RequestSnapshot", "/snapshot", payload)
 }
 
+// MintJoinToken mints a single-use, identity-bound member-side CSR join
+// token. Maps to POST /v1/cluster/join-tokens.
+var _ transport.ClusterJoinTokenMinter = (*Transport)(nil)
+
+func (t *Transport) MintJoinToken(ctx context.Context, req *transport.MintJoinTokenRequest) (*transport.MintJoinTokenResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	var resp transport.MintJoinTokenResponse
+	if err := t.postJSONDecode(ctx, "MintJoinToken", "/v1/cluster/join-tokens", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // Capabilities returns the compile-time feature set of the QRDB node.
 // Maps to GET /capabilities.
 func (t *Transport) Capabilities(ctx context.Context) (*transport.CapabilitiesResponse, error) {

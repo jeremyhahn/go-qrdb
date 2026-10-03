@@ -782,6 +782,14 @@ const (
 	RebalanceReport  Permission = "rebalance:report"
 )
 
+// ClusterJoinToken mints a single-use, identity-bound member-side CSR join
+// token (see pkg/clusterenroll.MintJoinToken). It is ScopeCross and
+// platform-only: minting a token binds a SPIFFE node identity under the
+// cluster's pinned trust domain, admitting that node to the cluster
+// entirely, which is a platform decision no tenant's role may hold. See
+// pkg/permission/cluster_join_token_scope.go.
+const ClusterJoinToken Permission = "cluster:join_token"
+
 // Embedding permissions (text→vector embedding service).
 const (
 	EmbeddingEmbed      Permission = "embedding:embed"
@@ -1097,6 +1105,13 @@ var categories = []Category{
 		Group: "Admin Services",
 		Permissions: []Permission{
 			RebalanceStats, RebalancePlan, RebalanceExecute, RebalanceReport,
+		},
+	},
+	{
+		Name:  "Cluster Join Tokens",
+		Group: "Admin Services",
+		Permissions: []Permission{
+			ClusterJoinToken,
 		},
 	},
 	{

@@ -243,7 +243,9 @@ validated, and open no listener. See
 
 The joining node generates its own node key locally and submits a PKCS#10 CSR
 to an admitted member's join listener; that member signs it with the
-replicated cluster CA (Key A) and returns only the signed leaf. Neither
+replicated cluster CA (Key A) and returns only the signed leaf, carrying the
+**token's bound identity** as its sole URI SAN — never the joiner's
+self-reported node URI, and never the signing member's own SANs. Neither
 private key ever crosses the wire. Exactly one transport is configured per
 joining node:
 
@@ -254,7 +256,7 @@ joining node:
 
 | Flag | Meaning |
 |---|---|
-| `--bootstrap-join-token-file` | path to a file holding the join-admission secret |
+| `--bootstrap-join-token-file` | path to a file holding the single-use join token an admin minted for this node's identity (below). Refused with a typed error if group- or world-readable, or shorter than the minimum token length. |
 | `--bootstrap-join-token-env` | name of an environment variable holding it (mutually exclusive with the file flag) |
 
 ### Signing a join: `--cluster-join-enabled`
@@ -266,8 +268,11 @@ An admitted, unsealed member signs CSRs for joining nodes when started with:
 | `--cluster-join-enabled` | `false` | run the Noise_NK join listener and register the SPKI/Direct `/v1/enroll/join` route on the admin listener |
 | `--cluster-join-listen-host` | `--host` | bind host for the Noise_NK join listener |
 | `--cluster-join-listen-port` | `63007` | TCP port for the Noise_NK join listener |
-| `--cluster-join-token-file` | — | path to a file holding the admission secret this node checks |
-| `--cluster-join-token-env` | — | name of an environment variable holding it (mutually exclusive with the file flag) |
+
+There is no admission-token flag on this side any more. A signing member
+validates a presented token against the single-use, identity-bound join
+tokens an admin mints into the replicated store — see "Minting a join
+token" below — not a static shared secret it was configured with.
 
 The SPKI/Direct route needs no separate port or flag of its own: it registers
 on the same admin HTTPS listener `/v1/ca/bootstrap` already uses, and only
@@ -275,9 +280,36 @@ once the barrier is unsealed — the cluster CA is not available before that, so
 the route is never a member of the sealed-window allowlist.
 
 ```bash
-qrdbd start ... --cluster-join-enabled \
-  --cluster-join-token-file /etc/qrdb/join-token.secret
+qrdbd start ... --cluster-join-enabled
 ```
+
+### Minting a join token: `qrdb admin join-token mint`
+
+An admin mints a single-use token bound to the joining node's SPIFFE node ID
+under the cluster's pinned trust domain, before the node ever attempts to
+join:
+
+```bash
+qrdb admin join-token mint node-7 --ttl 1h
+```
+
+```
+Token:      <opaque single-use token>
+ExpiresAt:  2026-10-03T18:00:00Z
+```
+
+The token is printed exactly once — there is no "list minted tokens" read
+path — and is consumed atomically on first use; a second presentation, or one
+past its expiry, is refused identically to an unknown token (no
+token-validity oracle). Copy it into the joining node's
+`--bootstrap-join-token-file` (or `--bootstrap-join-token-env`). Minting
+requires permission `cluster:join_token` (`ScopeCross`, platform-only: no
+built-in role carries it by default, only `Owner`) — see
+[api.md](api.md#post-v1clusterjoin-tokens). As of this release the verb is
+wired on the REST transport (and the CLI above, which uses it) and the
+embedded transport; gRPC, QUIC, Unix and MCP do not yet implement
+`transport.ClusterJoinTokenMinter` — an admin using one of those transports
+mints through the REST API directly in the meantime.
 
 ## Startup refusal under an activated feature
 

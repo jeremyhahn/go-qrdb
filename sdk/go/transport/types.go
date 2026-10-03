@@ -14,6 +14,8 @@
 
 package transport
 
+import "time"
+
 // ---------------------------------------------------------------------------
 // Health and status responses
 // ---------------------------------------------------------------------------
@@ -98,6 +100,21 @@ type RemoveMemberRequest struct {
 // SnapshotRequest is the JSON payload for requesting a shard snapshot.
 type SnapshotRequest struct {
 	ShardID uint64 `json:"shard_id"`
+}
+
+// MintJoinTokenRequest is the JSON payload for minting a member-side CSR
+// join token. TTLSeconds <= 0 uses the server's default TTL (see
+// clusterenroll.DefaultJoinTokenTTL).
+type MintJoinTokenRequest struct {
+	NodeID     string `json:"node_id"`
+	TTLSeconds int64  `json:"ttl_seconds,omitempty"`
+}
+
+// MintJoinTokenResponse is the JSON payload returned by a successful mint.
+// Token is returned exactly once; there is no "list minted tokens" read path.
+type MintJoinTokenResponse struct {
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 // CapabilitiesResponse describes the compile-time feature set of the QRDB binary.

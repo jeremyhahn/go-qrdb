@@ -252,6 +252,11 @@ const (
 	PermissionRebalanceStats = permission.RebalanceStats
 )
 
+// PermissionClusterJoinToken ("cluster:join_token") mints a single-use,
+// identity-bound member-side CSR join token: it admits a node to the whole
+// cluster, not to one tenant, so only Owner holds it by default.
+const PermissionClusterJoinToken = permission.ClusterJoinToken
+
 // The shard backup permissions are cross-scope because a backup is of shards,
 // not of a tenant: it holds every tenant's data on them, and a restore
 // overwrites every tenant's state.

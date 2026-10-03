@@ -76,9 +76,15 @@ joining node:
      HTTPS URL), pinned the same way `--bootstrap-spki-pin` pins the anchor
      fetch.
 
-   Either transport needs the join-admission secret, which is never inline in
-   YAML or on the command line: `--bootstrap-join-token-file` (a file holding
-   it) or `--bootstrap-join-token-env` (an environment variable holding it).
+   Either transport needs a join token: a single-use, identity-bound secret
+   an admin mints for this node's identity ahead of time (`qrdb admin
+   join-token mint`, below) — never inline in YAML or on the command line.
+   Pass it through `--bootstrap-join-token-file` (a file holding it) or
+   `--bootstrap-join-token-env` (an environment variable holding it). The
+   file must be owned by the user running `qrdbd` and unreadable by its
+   group or by anyone else (mode 0600 or tighter); a group- or
+   world-readable file, or a value too short to be a real token, is refused
+   with a typed error rather than silently accepted.
 
 Configuring only the first half (an anchor-fetch method with none of the
 join-transport flags) is refused at startup with `EnrollmentUnavailableError`,
@@ -86,20 +92,32 @@ before any dial or write — that error is this repository's own history: it is
 the full "joining is unavailable" refusal from the release where only the
 anchor-fetch half existed.
 
-**On the member doing the signing**, start it with `--cluster-join-enabled`
-(plus `--cluster-join-token-file` or `--cluster-join-token-env`, the same
-secret the joiner is given). This runs the Noise_NK join listener
-(`--cluster-join-listen-host` / `--cluster-join-listen-port`, defaulting to
-`--host` and `63007`) and registers the SPKI/Direct route
-(`/v1/enroll/join`) on the member's existing admin HTTPS listener — no
-separate port for that transport. The route is reachable only once the
-barrier is unsealed, because the cluster CA is: an admitted member signs
-nothing while sealed.
+**On the member doing the signing**, start it with `--cluster-join-enabled`.
+This runs the Noise_NK join listener (`--cluster-join-listen-host` /
+`--cluster-join-listen-port`, defaulting to `--host` and `63007`) and
+registers the SPKI/Direct route (`/v1/enroll/join`) on the member's existing
+admin HTTPS listener — no separate port for that transport. The route is
+reachable only once the barrier is unsealed, because the cluster CA is: an
+admitted member signs nothing while sealed. There is no admission-token flag
+here: the member validates a presented token against whatever an admin has
+minted into the replicated store, not a value it was configured with.
+
+**Minting a token for the joining node:**
+
+```bash
+qrdb admin join-token mint node-7 --ttl 1h
+# Token:      <opaque single-use token>
+# ExpiresAt:  2026-10-03T18:00:00Z
+```
+
+Copy the printed token into the joining node's `--bootstrap-join-token-file`
+(it is shown exactly once — there is no way to retrieve it again, only to
+mint a fresh one). Minting requires permission `cluster:join_token`, held by
+`Owner` by default.
 
 ```bash
 # Admitted member: sign joins over both transports
-qrdbd start ... --cluster-join-enabled \
-  --cluster-join-token-file /etc/qrdb/join-token.secret
+qrdbd start ... --cluster-join-enabled
 
 # Joining node, Noise_NK
 qrdbd start ... \

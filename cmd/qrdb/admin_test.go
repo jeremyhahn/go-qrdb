@@ -23,6 +23,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
@@ -51,6 +52,17 @@ type fnAdminService struct {
 	requestSnapshotFn func(ctx context.Context, shardID uint64) error
 	drainFn           func(ctx context.Context) error
 	capabilitiesFn    func(ctx context.Context) (*capabilities.Capabilities, error)
+	mintJoinTokenFn   func(ctx context.Context, nodeID string, ttl time.Duration) (string, time.Time, error)
+}
+
+// MintJoinToken implements service.ClusterJoinTokenMinter. Absent a
+// mintJoinTokenFn, it reports *service.ClusterJoinTokenNotConfiguredError,
+// matching the real AdminService's behavior with no join-token store bound.
+func (m *fnAdminService) MintJoinToken(ctx context.Context, nodeID string, ttl time.Duration) (string, time.Time, error) {
+	if m.mintJoinTokenFn != nil {
+		return m.mintJoinTokenFn(ctx, nodeID, ttl)
+	}
+	return "", time.Time{}, &service.ClusterJoinTokenNotConfiguredError{}
 }
 
 func (m *fnAdminService) Health(ctx context.Context) (*service.HealthStatus, error) {
@@ -663,6 +675,92 @@ func TestAdminDrain_Success(t *testing.T) {
 	}
 	if !strings.Contains(output, "OK") {
 		t.Errorf("output missing 'OK', got: %q", output)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Join-token mint tests
+// ---------------------------------------------------------------------------
+
+func TestAdminJoinTokenMint_Success(t *testing.T) {
+	var gotNodeID string
+	var gotTTL time.Duration
+	wantExpiry := time.Now().Add(2 * time.Hour).Truncate(time.Second)
+
+	adminSvc := &fnAdminService{
+		mintJoinTokenFn: func(_ context.Context, nodeID string, ttl time.Duration) (string, time.Time, error) {
+			gotNodeID, gotTTL = nodeID, ttl
+			return "minted-token-value", wantExpiry, nil
+		},
+	}
+
+	output, err := executeAdminCmd(t, adminSvc,
+		"join-token", "mint", "node-1",
+		"--ttl", "2h",
+	)
+	if err != nil {
+		t.Fatalf("admin join-token mint error: %v", err)
+	}
+
+	if gotNodeID != "node-1" {
+		t.Errorf("nodeID = %q, want node-1", gotNodeID)
+	}
+	if gotTTL != 2*time.Hour {
+		t.Errorf("ttl = %v, want 2h", gotTTL)
+	}
+	if !strings.Contains(output, "minted-token-value") {
+		t.Errorf("output missing minted token, got: %q", output)
+	}
+}
+
+// TestAdminJoinTokenMint_NotConfigured proves a signing member with
+// member-side CSR join never enabled (mintJoinTokenFn unset, matching the
+// real AdminService with no join-token store bound) still fails closed,
+// through the embedded transport's own translateError rather than this
+// command's *JoinTokenMintUnsupportedError -- which guards the OTHER case,
+// a connected SDK transport that never implements transport.
+// ClusterJoinTokenMinter at the Go type level at all (see
+// TestJoinTokenMintUnsupportedError for that type's own unit test; no SDK
+// transport in this repo's test harness exhibits it, since every wired
+// transport implements the interface and reports the server's refusal
+// through it instead). Deliberately NOT topoAdminService
+// (admin_topology_cmd_test.go): that type is declared under
+// `//go:build !integration`, a narrower constraint than this file's (none),
+// and this file's own fnAdminService -- whose MintJoinToken already answers
+// this exact error with no mintJoinTokenFn set -- needs no second mock.
+func TestAdminJoinTokenMint_NotConfigured(t *testing.T) {
+	adminSvc := &fnAdminService{}
+
+	_, err := executeAdminCmd(t, adminSvc, "join-token", "mint", "node-1")
+	var notConfigured *service.ClusterJoinTokenNotConfiguredError
+	if !errors.As(err, &notConfigured) {
+		t.Fatalf("admin join-token mint (not configured) = %v, want *service.ClusterJoinTokenNotConfiguredError", err)
+	}
+}
+
+// TestJoinTokenMintUnsupportedError pins the typed error's message, the
+// branch taken when a connected SDK transport's concrete type never
+// implements transport.ClusterJoinTokenMinter at all (grpc, quic, unix, mcp,
+// as of this change -- see client.Admin().(transport.ClusterJoinTokenMinter)
+// in newAdminJoinTokenMintCmd).
+func TestJoinTokenMintUnsupportedError(t *testing.T) {
+	err := &JoinTokenMintUnsupportedError{}
+	if !strings.Contains(err.Error(), "does not support minting join tokens") {
+		t.Errorf("Error() = %q, missing expected substring", err.Error())
+	}
+}
+
+func TestAdminJoinTokenMint_ServiceError(t *testing.T) {
+	adminSvc := &fnAdminService{
+		mintJoinTokenFn: func(context.Context, string, time.Duration) (string, time.Time, error) {
+			return "", time.Time{}, &service.ClusterJoinTokenNotConfiguredError{}
+		},
+	}
+
+	_, err := executeAdminCmd(t, adminSvc, "join-token", "mint", "node-1")
+	var notConfigured *service.ClusterJoinTokenNotConfiguredError
+	if !errors.As(err, &notConfigured) {
+		t.Fatalf("admin join-token mint (service error) = %v, want *service.ClusterJoinTokenNotConfiguredError", err)
 	}
 }
 

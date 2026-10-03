@@ -158,9 +158,30 @@ the cluster CA it signs with is available only once the barrier is unsealed.
 
 | Request / response | Meaning |
 |---|---|
-| `{"token", "csr_der", "node_uri"}` → `{"cert_pem"}` | token checked, CSR's signature verified, leaf issued from the replicated cluster CA |
-| `{"token", "csr_der", "node_uri"}` → `{"error"}`, `403` | bad token, malformed/unsigned CSR, or a signing failure |
+| `{"token", "csr_der", "node_uri"}` → `{"cert_pem"}` | the single-use token is consumed (CAS-delete) and checked, the CSR's signature verified, and the leaf is issued for the token's BOUND identity -- `node_uri` in the request is never consulted; a joiner does not get to assert an identity of its own choosing |
+| `{"token", "csr_der", "node_uri"}` → `{"error"}`, `403` | an unknown, expired, already-consumed, or wrong-trust-domain token, a malformed/unsigned CSR, or a signing failure -- one cause-independent reason, so the response carries no token-validity oracle |
 | unconfigured (`--cluster-join-enabled` unset) | the path is not registered at all — not a `404`, an absent route |
+| rate-limited or locked out | `429`, shared with the Noise_NK transport by source address — switching transports mid-attack gains nothing |
+
+### `POST /v1/cluster/join-tokens`
+
+Mints a single-use, identity-bound join token for an admin to hand to a
+joining node. Requires permission `cluster:join_token` (`ScopeCross`,
+platform-only — no built-in role carries it by default). Available whenever
+an admin service is configured; reports `501` when member-side CSR join
+itself is not configured on this node (no join-token store bound).
+
+| Request | Response |
+|---|---|
+| `{"node_id", "ttl_seconds"}` → `201` | `{"token", "expires_at"}` — the token is returned exactly once; there is no "list minted tokens" read path |
+| missing or malformed `node_id` | `400` — `*clusterenroll.InvalidJoinIdentityError` |
+| `ttl_seconds` outside `[MinJoinTokenTTL, MaxJoinTokenTTL]` | `400` — `*clusterenroll.JoinTokenTTLError` |
+| member-side CSR join not configured on this node | `501` — `*service.ClusterJoinTokenNotConfiguredError` |
+
+As of this release this verb is implemented on the REST transport (above)
+and the embedded transport (`transport.ClusterJoinTokenMinter`, consumed by
+the `qrdb admin join-token mint` CLI — see [cli.md](cli.md)); gRPC, QUIC,
+Unix and MCP do not yet implement it.
 
 The Noise_NK join transport and the trust-anchor fetch have no HTTP surface of
 their own; their Go surface is in `pkg/clusterenroll`, re-exported from

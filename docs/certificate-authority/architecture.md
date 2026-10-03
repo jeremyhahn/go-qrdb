@@ -617,10 +617,41 @@ reading the same CA.
 An embedder supplies its own `cakey.Provider` through a `With*` option on
 `qrdbd`, `sdk/go/node`, and the embedded SDK alike:
 
-- `WithClusterCAKeyProvider(cakey.Provider)` — replaces Key A: the ceremony
-  CA, node-leaf issuance, and member-side cluster-join signing.
+- `WithClusterCAKeyProvider(cakey.Provider)` — replaces Key A.
 - `WithCertKeyProvider(cakey.Provider)` — replaces Key B: `pkg/cert`'s login
   CA.
+
+**What `WithClusterCAKeyProvider` actually wires, precisely, per
+composition root.** The option itself flows into exactly one place,
+`lifecycle.Infra.ClusterCAKeyProvider`, and `lifecycle.BuildServices`
+(shared by every composition root: `cmd/qrdbd`, `sdk/go/node`, the embedded
+SDK) sets `Node.ClusterCAProv` from it unconditionally. Two of the three
+capabilities named by this seam follow from THAT alone, for every caller:
+
+- **The ceremony CA** — `ceremony.NewProviderCA(ClusterCAProv)` replaces the
+  bootstrap-window `StaticProvider` CA via `ReplaceCA` once `ClusterCAProv`
+  exists, so `ceremony-sign-csr` signs through the injected provider.
+- **Node-leaf issuance** — whatever in that composition root calls
+  `clusterca.IssueLeafForKey` reads the signing key through `ClusterCAProv`,
+  the same seam.
+
+**Member-side CSR join signing is a THIRD, separate capability that only
+`cmd/qrdbd` wires.** `cmd/qrdbd`'s `start` command starts
+`clusterenroll.StartJoinServer` (the Noise_NK listener) and registers
+`server.WithClusterJoin` (the SPKI/Direct `/v1/enroll/join` route) itself,
+in `cmd/qrdbd/start.go`, passing `svcNode.ClusterCAProv` into both — this is
+daemon-specific wiring, not something `lifecycle.BuildServices` does on any
+caller's behalf. `sdk/go/node` does not call either: a `cakey.Provider`
+injected through `WithClusterCAKeyProvider` on an `sdk/go/node` composition
+backs the ceremony CA and node-leaf issuance, but that node runs no
+join listener and registers no `/v1/enroll/join` route, so it cannot sign a
+join for another node, and `service.ClusterJoinTokenMinter` is never
+satisfied on it either (see
+[../clustering/architecture.md](../clustering/architecture.md#join-token-minting)).
+An embedder that wants its own node to admit others over member-side CSR
+join must call `clusterenroll.StartJoinServer` / wire the REST route itself,
+exactly as `cmd/qrdbd` does, passing the same `ClusterCAProv` the node
+already holds.
 
 **Two options, not one role-parameterized option.** Key A and Key B are
 separate trust domains by ruling (a leaked login CA must not mint node

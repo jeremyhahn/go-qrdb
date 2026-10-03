@@ -197,17 +197,26 @@ back the listener.** "Material present" is four files written one at a time.
 `PersistMaterial` writes `ca.pem`, `node-cert.pem`, `node-key.pem` and then
 `ca-key.pem` — each atomically, the sequence not — and `LoadFromDir` treats
 `ca-key.pem` as optional, since a node holding only a leaf legitimately has
-none. A process that stopped after `node-key.pem` therefore leaves a cache that
-loads cleanly with no CA private key, and a first node would advertise an
-enrollment endpoint that answers and serves an unusable cert-only bundle, with
-every joining node failing in `splitCABundle` — in a different process, about a
-bundle it did not create.
+none.
 
-So the resume refuses with `*IncompleteFirstNodeMaterialError`, naming the
-**first node's** directory and the missing files rather than letting the
-symptom surface on the joiner. The check is derived from what the advertiser
-serves — `CABundle` concatenates `CACertPEM` and `CAKeyPEM` — not from the
-write order, so reordering `PersistMaterial` moves nothing.
+The resume's own completeness check requires **only `ca.pem`**, now that the
+cluster CA (Key A) is persisted in the replicated store
+(`pkg/clusterca`, `cakey.SoftwareProvider`) rather than in `ca-key.pem`: the
+advertiser serves an anchor-only bundle — the CA **certificate**, never the
+private key (`StartAnchorAdvertiser`'s own doc comment) — so `ca.pem` is the
+one file its resumed listener cannot do without. Requiring `ca-key.pem` here
+was itself a standing defect, not a safeguard: `cmd/qrdbd` deletes
+`ca-key.pem` from disk once Key A's persistence to the replicated store is
+confirmed (`confirmClusterCAPersisted`), which is **every** boot after the
+first successful one, so a check that required it made the first node's own
+second restart fail closed with `*IncompleteFirstNodeMaterialError`
+forever — the opposite of what this function exists to close for every other
+first-node restart case. A missing `ca.pem` still refuses with
+`*IncompleteFirstNodeMaterialError`, naming the **first node's** directory
+and the missing file. The node's own leaf (`node-cert.pem`, `node-key.pem`)
+is not served by the advertiser either and is already required by
+`LoadFromDir`, which fails closed with `*PartialMaterialError` when any of
+its three are missing.
 
 **Every path that writes CA material records the role, including `Join`.**
 `Join` is exported and reachable without going through `Resolve`, and it

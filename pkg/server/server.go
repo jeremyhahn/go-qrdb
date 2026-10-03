@@ -51,6 +51,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -276,12 +277,14 @@ type serverOptions struct {
 	// /v1/cluster/nodekey endpoints. When nil the routes are not registered.
 	clusterKeyReceiver rest.ClusterKeyReceiver
 
-	// clusterJoinProvider and clusterJoinToken configure the member-side
-	// /v1/enroll/join route (SPKI/Direct CSR join), the plain-HTTPS twin of
-	// the Noise_NK listener clusterenroll.StartJoinServer runs. Both are set
-	// together or not at all; see WithClusterJoin.
-	clusterJoinProvider cakey.Provider
-	clusterJoinToken    string
+	// clusterJoinProvider, clusterJoinStore and clusterJoinTrustDomain
+	// configure the member-side /v1/enroll/join route (SPKI/Direct CSR
+	// join), the plain-HTTPS twin of the Noise_NK listener
+	// clusterenroll.StartJoinServer runs. All three are set together or
+	// not at all; see WithClusterJoin.
+	clusterJoinProvider    cakey.Provider
+	clusterJoinStore       kvstore.AtomicKVStore
+	clusterJoinTrustDomain string
 
 	// restListener, restPacketConn and grpcListener are sockets the embedder
 	// pre-bound (WithRESTListener, WithRESTPacketConn, WithGRPCListener,
@@ -551,16 +554,18 @@ func WithClusterKeyReceiver(rcv rest.ClusterKeyReceiver) ServerOption {
 
 // WithClusterJoin enables the /v1/enroll/join route on the REST server: the
 // SPKI/Direct plain-HTTPS twin of clusterenroll's Noise_NK join listener,
-// both bound to the same cakey.Provider and admission token so a joining
-// node may use either transport interchangeably. provider must be the
-// cluster CA (Key A) provider, available only once the barrier is unsealed
+// both bound to the same cakey.Provider, the same replicated join-token
+// store, and the same pinned trust domain, so a joining node may use
+// either transport interchangeably. provider must be the cluster CA (Key
+// A) provider, available only once the barrier is unsealed
 // (confirmClusterCAPersisted), which is why this route is never a member of
 // the sealed-window allowlist. When provider is nil the route is not
 // registered at all.
-func WithClusterJoin(provider cakey.Provider, token string) ServerOption {
+func WithClusterJoin(provider cakey.Provider, store kvstore.AtomicKVStore, trustDomain string) ServerOption {
 	return func(o *serverOptions) {
 		o.clusterJoinProvider = provider
-		o.clusterJoinToken = token
+		o.clusterJoinStore = store
+		o.clusterJoinTrustDomain = trustDomain
 	}
 }
 
@@ -1623,7 +1628,7 @@ func (s *Server) startREST() error {
 		restOpts = append(restOpts, rest.WithSODualFactor())
 	}
 	if s.opts.clusterJoinProvider != nil {
-		restOpts = append(restOpts, rest.WithClusterJoin(s.opts.clusterJoinProvider, s.opts.clusterJoinToken))
+		restOpts = append(restOpts, rest.WithClusterJoin(s.opts.clusterJoinProvider, s.opts.clusterJoinStore, s.opts.clusterJoinTrustDomain))
 	}
 	// The SO dual-factor gate reads the operator's audit failure posture from
 	// the SAME key the authorization middleware does (go-qrdb#445). It is

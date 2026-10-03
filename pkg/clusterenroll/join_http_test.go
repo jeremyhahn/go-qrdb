@@ -39,6 +39,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
 
 // generateTestCSR returns a fresh ECDSA P-256 key and a self-signed CSR for
@@ -84,8 +85,9 @@ func assertLeafChainsToCA(t *testing.T, provider *cakey.SoftwareProvider, certPE
 // joinHTTPServer starts an httptest TLS server serving JoinHTTPPath through
 // HandleJoinRequest -- the exact core pkg/api/rest's production route calls
 // -- and returns its base URL and the hex SHA-256 SPKI pin of its own
-// serving certificate.
-func joinHTTPServer(t *testing.T, provider *cakey.SoftwareProvider, token string) (serverURL, spkiPin string) {
+// serving certificate. store is the join-token store HandleJoinRequest
+// consumes presented tokens against (see MintJoinToken).
+func joinHTTPServer(t *testing.T, provider *cakey.SoftwareProvider, store kvstore.AtomicKVStore) (serverURL, spkiPin string) {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc(JoinHTTPPath, func(w http.ResponseWriter, r *http.Request) {
@@ -94,7 +96,7 @@ func joinHTTPServer(t *testing.T, provider *cakey.SoftwareProvider, token string
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
-		resp := HandleJoinRequest(r.Context(), provider, token, &req)
+		resp := HandleJoinRequest(r.Context(), provider, store, testTrustDomain, &req)
 		respBody, err := json.Marshal(resp)
 		if err != nil {
 			http.Error(w, "marshal failed", http.StatusInternalServerError)
@@ -151,15 +153,16 @@ func TestBuildJoinHTTPClient_InvalidPin(t *testing.T) {
 // TestJoinCSRHTTP_SignsAValidCSR drives the full SPKI-pinned success path.
 func TestJoinCSRHTTP_SignsAValidCSR(t *testing.T) {
 	provider := newTestClusterCAProvider(t)
-	const token = "s3cret-token"
-	serverURL, pin := joinHTTPServer(t, provider, token)
+	store := kvstore.NewMemoryKVStore()
+	serverURL, pin := joinHTTPServer(t, provider, store)
+	token := mintTestJoinToken(t, store, "127.0.0.1:9100")
 
 	nodeKey, csrDER := generateTestCSR(t)
 	certPEM, err := JoinCSRHTTP(context.Background(), &JoinHTTPClientOptions{
 		ServerURL: serverURL,
 		SPKIPin:   pin,
 		Token:     token,
-	}, csrDER, "spiffe://test.cluster/node/127.0.0.1:9100")
+	}, csrDER, "spiffe://attacker.example/node/anything")
 	if err != nil {
 		t.Fatalf("JoinCSRHTTP: %v", err)
 	}
@@ -171,14 +174,15 @@ func TestJoinCSRHTTP_SignsAValidCSR(t *testing.T) {
 // TestJoinServer_WrongTokenRefused for Noise_NK.
 func TestJoinCSRHTTP_WrongTokenRefused(t *testing.T) {
 	provider := newTestClusterCAProvider(t)
-	const token = "correct-token"
-	serverURL, pin := joinHTTPServer(t, provider, token)
+	store := kvstore.NewMemoryKVStore()
+	serverURL, pin := joinHTTPServer(t, provider, store)
+	mintTestJoinToken(t, store, "127.0.0.1:9101")
 
 	_, csrDER := generateTestCSR(t)
 	_, err := JoinCSRHTTP(context.Background(), &JoinHTTPClientOptions{
 		ServerURL: serverURL,
 		SPKIPin:   pin,
-		Token:     "wrong-token",
+		Token:     "never-minted-token",
 	}, csrDER, "")
 	var refused *JoinRefusedError
 	if !errors.As(err, &refused) {

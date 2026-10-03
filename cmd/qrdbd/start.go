@@ -227,14 +227,15 @@ type startFlags struct {
 
 	// clusterJoin* configure this node's MEMBER side of member-side CSR
 	// join: whether it signs CSRs for other nodes at all, and if so, the
-	// Noise_NK listener's bind address and the shared admission token. The
-	// SPKI/Direct transport needs no separate listener -- it rides this
-	// node's existing admin HTTPS server once enabled.
+	// Noise_NK listener's bind address. The SPKI/Direct transport needs no
+	// separate listener -- it rides this node's existing admin HTTPS server
+	// once enabled. There is no admission-token flag here any more: a
+	// signing member validates against the single-use, identity-bound join
+	// tokens an admin mints into the replicated store (clusterenroll.
+	// MintJoinToken), not a static shared secret it was configured with.
 	clusterJoinEnabled    bool
 	clusterJoinListenHost string
 	clusterJoinListenPort int
-	clusterJoinTokenFile  string
-	clusterJoinTokenEnv   string
 
 	leaseRead   bool
 	checkQuorum bool
@@ -447,6 +448,9 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 			if err := resolveAutoConfig(cmd, f); err != nil {
 				return err
 			}
+			if err := validateClusterJoinFlags(f); err != nil {
+				return err
+			}
 			return runStart(f)
 		},
 	}
@@ -532,8 +536,6 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 	cmd.Flags().BoolVar(&f.clusterJoinEnabled, "cluster-join-enabled", false, "Sign CSRs for joining nodes (Noise_NK listener + SPKI/Direct HTTPS route), as an admitted member")
 	cmd.Flags().StringVar(&f.clusterJoinListenHost, "cluster-join-listen-host", "", "Bind host for the Noise_NK join listener; defaults to --host")
 	cmd.Flags().IntVar(&f.clusterJoinListenPort, "cluster-join-listen-port", clusterenroll.DefaultJoinPort, "TCP port for the Noise_NK join listener")
-	cmd.Flags().StringVar(&f.clusterJoinTokenFile, "cluster-join-token-file", "", "Path to a file holding the join admission secret this node checks")
-	cmd.Flags().StringVar(&f.clusterJoinTokenEnv, "cluster-join-token-env", "", "Name of an environment variable holding the join admission secret this node checks")
 	cmd.Flags().BoolVar(&f.leaseRead, "lease-read", true,
 		"Enable lease-based linearizable reads (requires --check-quorum)")
 	cmd.Flags().BoolVar(&f.checkQuorum, "check-quorum", true,
@@ -806,12 +808,6 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	}
 	if !cmd.Flags().Changed("cluster-join-listen-port") && cfg.ClusterJoin.ListenPort != 0 {
 		f.clusterJoinListenPort = cfg.ClusterJoin.ListenPort
-	}
-	if !cmd.Flags().Changed("cluster-join-token-file") && cfg.ClusterJoin.TokenFile != "" {
-		f.clusterJoinTokenFile = cfg.ClusterJoin.TokenFile
-	}
-	if !cmd.Flags().Changed("cluster-join-token-env") && cfg.ClusterJoin.TokenEnv != "" {
-		f.clusterJoinTokenEnv = cfg.ClusterJoin.TokenEnv
 	}
 	// A bind host left unset defaults to --host, exactly as
 	// bootstrap-noise-host already does (go-qrdb#167): the join listener is
@@ -1173,10 +1169,12 @@ func runStart(f *startFlags) (err error) {
 	// nil receiver immediately and never see the assignment below.
 	var joinServer *clusterenroll.JoinServer
 	defer func() { joinServer.Stop() }()
-	// clusterJoinToken is resolved alongside joinServer below (cluster-join-
-	// enabled path only) and reused for server.WithClusterJoin, so the token
-	// file or env var is read exactly once rather than once per consumer.
-	var clusterJoinToken string
+	// clusterJoinStore is the replicated kvstore join tokens are minted
+	// into and consumed from (clusterenroll.MintJoinToken/ConsumeJoinToken),
+	// built alongside joinServer below (cluster-join-enabled path only) and
+	// reused for server.WithClusterJoin so both transports share the exact
+	// same store handle.
+	var clusterJoinStore kvstore.AtomicKVStore
 
 	// Enable TLS certificate hot-reload when certs are file-backed.
 	// The CertReloader watches the data directory for cert changes and
@@ -1688,23 +1686,32 @@ func runStart(f *startFlags) (err error) {
 					return err
 				}
 				if f.clusterJoinEnabled {
-					var tokenErr error
-					clusterJoinToken, tokenErr = qrdbconfig.ResolveJoinToken(f.clusterJoinTokenFile, f.clusterJoinTokenEnv)
-					if tokenErr != nil {
-						_ = svcNode.Stop(context.Background())
-						_ = shutdownNode(nodeCloser)
-						return tokenErr
-					}
+					clusterJoinStore = newKVServiceAdapter(svcNode.KV, nil, nil)
 					joinServer, err = clusterenroll.StartJoinServer(svcNode.ClusterCAProv, clusterenroll.JoinServerOptions{
-						Host:      f.clusterJoinListenHost,
-						Port:      f.clusterJoinListenPort,
-						Token:     clusterJoinToken,
-						AdminPort: f.adminPort,
+						Host:        f.clusterJoinListenHost,
+						Port:        f.clusterJoinListenPort,
+						Store:       clusterJoinStore,
+						TrustDomain: f.clusterTrustDomain,
+						AdminPort:   f.adminPort,
 					}, f.dataDir, slog.Default())
 					if err != nil {
 						_ = svcNode.Stop(context.Background())
 						_ = shutdownNode(nodeCloser)
 						return err
+					}
+					// Binds the admin:cluster:join_token verb (minted
+					// through the REST route and CLI, permission.
+					// ClusterJoinToken) to the SAME store and trust domain
+					// the listener above validates presented tokens
+					// against -- there is exactly one join-token store per
+					// node, never a second one a mint call might write into
+					// while the listener reads from the first. svcNode.Admin
+					// is always a *service.AdminService here (constructed by
+					// lifecycle.BuildServices just above); the assertion
+					// only guards against a future composition root
+					// substituting a different AdminServicer.
+					if adminSvc, ok := svcNode.Admin.(*service.AdminService); ok {
+						adminSvc.SetClusterJoinTokenStore(clusterJoinStore, f.clusterTrustDomain)
 					}
 				}
 			}
@@ -2491,7 +2498,7 @@ func runStart(f *startFlags) (err error) {
 			// so this route is deliberately never a member of the
 			// sealed-window allowlist.
 			if joinServer != nil {
-				serverOpts = append(serverOpts, server.WithClusterJoin(svcNode.ClusterCAProv, clusterJoinToken))
+				serverOpts = append(serverOpts, server.WithClusterJoin(svcNode.ClusterCAProv, clusterJoinStore, f.clusterTrustDomain))
 			}
 			if svcNode.Embedding != nil {
 				serverOpts = append(serverOpts, server.WithEmbedding(svcNode.Embedding))

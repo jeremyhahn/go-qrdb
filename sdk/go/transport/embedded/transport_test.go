@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
@@ -200,11 +201,26 @@ func (m *mockKVService) ExistsWithConsistency(ctx context.Context, key string, _
 // mockAdminService is a mock admin service for testing.
 type mockAdminService struct {
 	// addIdentity records the member identity the last AddMember received.
-	addIdentity    string
-	drainCalled    bool
-	snapshotCalled bool
-	addCalled      bool
-	removeCalled   bool
+	addIdentity     string
+	drainCalled     bool
+	snapshotCalled  bool
+	addCalled       bool
+	removeCalled    bool
+	mintJoinTokenFn func(ctx context.Context, nodeID string, ttl time.Duration) (string, time.Time, error)
+}
+
+// MintJoinToken implements service.ClusterJoinTokenMinter. A
+// mockAdminService with no mintJoinTokenFn does NOT implement
+// service.ClusterJoinTokenMinter in the type-assertion sense used by
+// Transport.MintJoinToken when this method is absent entirely; defining it
+// unconditionally here means every existing test built against
+// mockAdminService now gets a working mint path once it sets
+// mintJoinTokenFn, without needing a second mock type.
+func (m *mockAdminService) MintJoinToken(ctx context.Context, nodeID string, ttl time.Duration) (string, time.Time, error) {
+	if m.mintJoinTokenFn != nil {
+		return m.mintJoinTokenFn(ctx, nodeID, ttl)
+	}
+	return "", time.Time{}, &service.ClusterJoinTokenNotConfiguredError{}
 }
 
 func (m *mockAdminService) Health(_ context.Context) (*service.HealthStatus, error) {
@@ -601,6 +617,60 @@ func TestPeers_AfterClose(t *testing.T) {
 	_, err := tr.Peers(context.Background())
 	if err == nil {
 		t.Fatal("expected error after close")
+	}
+}
+
+func TestMintJoinToken_NotConfigured(t *testing.T) {
+	tr, _ := New(newMockKVService(), &mockAdminService{})
+
+	_, err := tr.MintJoinToken(context.Background(), &transport.MintJoinTokenRequest{NodeID: "node-1"})
+	if err == nil {
+		t.Fatal("expected error when the admin service does not implement ClusterJoinTokenMinter")
+	}
+	var notConfigured *service.ClusterJoinTokenNotConfiguredError
+	if !errors.As(err, &notConfigured) {
+		t.Errorf("expected ClusterJoinTokenNotConfiguredError, got %T: %v", err, err)
+	}
+}
+
+func TestMintJoinToken_Success(t *testing.T) {
+	wantExpiry := time.Now().Add(time.Hour)
+	adminSvc := &mockAdminService{
+		mintJoinTokenFn: func(_ context.Context, nodeID string, ttl time.Duration) (string, time.Time, error) {
+			if nodeID != "node-1" {
+				t.Errorf("nodeID = %q, want node-1", nodeID)
+			}
+			if ttl != time.Hour {
+				t.Errorf("ttl = %v, want 1h", ttl)
+			}
+			return "minted-token", wantExpiry, nil
+		},
+	}
+	tr, _ := New(newMockKVService(), adminSvc)
+
+	resp, err := tr.MintJoinToken(context.Background(), &transport.MintJoinTokenRequest{NodeID: "node-1", TTLSeconds: 3600})
+	if err != nil {
+		t.Fatalf("MintJoinToken failed: %v", err)
+	}
+	if resp.Token != "minted-token" {
+		t.Errorf("Token = %q, want minted-token", resp.Token)
+	}
+	if !resp.ExpiresAt.Equal(wantExpiry) {
+		t.Errorf("ExpiresAt = %v, want %v", resp.ExpiresAt, wantExpiry)
+	}
+}
+
+func TestMintJoinToken_AfterClose(t *testing.T) {
+	tr, _ := New(newMockKVService(), &mockAdminService{})
+	_ = tr.Close()
+
+	_, err := tr.MintJoinToken(context.Background(), &transport.MintJoinTokenRequest{NodeID: "node-1"})
+	if err == nil {
+		t.Fatal("expected error after close")
+	}
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Errorf("expected ClosedError, got %T", err)
 	}
 }
 

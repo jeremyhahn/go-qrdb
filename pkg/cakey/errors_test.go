@@ -101,6 +101,21 @@ func TestMaterialMismatchError(t *testing.T) {
 	}
 }
 
+func TestKeyCertMismatchError(t *testing.T) {
+	err := &KeyCertMismatchError{}
+	if !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("Error() = %q, want it to describe a mismatch", err.Error())
+	}
+}
+
+func TestKeyCertMismatchError_IsDistinctFromMaterialMismatch(t *testing.T) {
+	var keyCert error = &KeyCertMismatchError{}
+	var material error = &MaterialMismatchError{}
+	if keyCert.Error() == material.Error() {
+		t.Fatal("KeyCertMismatchError and MaterialMismatchError must describe distinct failures")
+	}
+}
+
 func TestNotInitializedError(t *testing.T) {
 	err := &NotInitializedError{}
 	if !strings.Contains(err.Error(), "initialized") {
