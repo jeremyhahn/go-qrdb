@@ -36,7 +36,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/abac"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
-	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -188,19 +187,21 @@ type AuthMiddlewareConfig struct {
 	// visible at the wiring site.
 	CertProvider cert.CertProvider
 
-	// ClusterCA, when non-nil, is this node's cluster CA (Key A), used to
-	// enable the issuer-tenant binding check (auth.WithIssuerTenantBinding):
-	// a verified client certificate's issuing CA must be either ClusterCA
-	// (which legitimately signs holder and node certificates for any
-	// tenant) or the Key B CA registered for the certificate's OWN claimed
-	// tenant -- read from CertProvider when it implements
-	// auth.TenantIssuerChecker (cert.DefaultCertProvider does).
+	// IssuerVerifier, when non-nil, enables the issuer-tenant binding check
+	// (auth.WithIssuerVerifier): a verified client certificate's issuing CA
+	// must be the cluster CA (Key A, any tenant) or the Key B CA registered
+	// for the certificate's OWN claimed tenant.
 	//
-	// Nil disables the check entirely: every CA in the dynamic client-auth
-	// trust pool (pkg/clienttrust) authenticates any tenant it names, the
-	// posture before this check existed. A composer with a cluster CA
-	// available should always set this.
-	ClusterCA ceremony.CeremonyCA
+	// This MUST be the SAME *clienttrust.Pool instance the composer wired
+	// onto its listener TLS config (pkg/clienttrust.Pool.Wire) and passed
+	// to server.WithTLS -- the pool and the binding are the same object by
+	// design (go-qrdb#560 review, B2-2), so Key B is never trusted at the
+	// TLS layer without this check also being enforced here and in the
+	// on-behalf forwarding path (WithIssuerVerifier on the AuthMiddleware
+	// itself, set below). Passing a DIFFERENT Pool, or none at all, is a
+	// wiring bug: every CA in the dynamic trust pool would authenticate any
+	// tenant it names, unchecked.
+	IssuerVerifier auth.IssuerVerifier
 
 	// RevocationCacheTTL is how long a NOT-REVOKED answer is cached on the
 	// authentication path.
@@ -317,25 +318,6 @@ func revocationChecker(provider cert.CertProvider, ttl time.Duration) auth.Revoc
 	return cache
 }
 
-// issuerTenantBinding builds the mTLS authenticator's issuer-tenant binding
-// (see auth.IssuerTenantBinding) from a cluster CA and certificate provider,
-// or returns nil when neither piece needed to enforce it is available --
-// clusterCA is nil, or provider is nil or does not implement
-// auth.TenantIssuerChecker (an embedder's own CertProvider replacement via
-// server.WithCertProvider is not required to support it). A nil return
-// leaves the check unenforced, the posture before it existed.
-func issuerTenantBinding(clusterCA ceremony.CeremonyCA, provider cert.CertProvider) *auth.IssuerTenantBinding {
-	if clusterCA == nil {
-		return nil
-	}
-	clusterCACert, err := clusterCA.CACertificate()
-	if err != nil || clusterCACert == nil {
-		return nil
-	}
-	checker, _ := provider.(auth.TenantIssuerChecker)
-	return &auth.IssuerTenantBinding{ClusterCA: clusterCACert, KeyB: checker}
-}
-
 // BuildAuthMiddleware constructs the production AuthMiddleware: an mTLS
 // authenticator, the RBAC[+ABAC] authorizer built via BuildAuthorizer, and
 // user-store identity enrichment — the exact stack cmd/qrdbd/start.go
@@ -388,8 +370,8 @@ func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, 
 	// explicitly.
 	revocation := revocationChecker(cfg.CertProvider, cfg.RevocationCacheTTL)
 	mtlsOpts := []auth.MTLSOption{auth.WithRevocationChecker(revocation)}
-	if binding := issuerTenantBinding(cfg.ClusterCA, cfg.CertProvider); binding != nil {
-		mtlsOpts = append(mtlsOpts, auth.WithIssuerTenantBinding(binding))
+	if cfg.IssuerVerifier != nil {
+		mtlsOpts = append(mtlsOpts, auth.WithIssuerVerifier(cfg.IssuerVerifier))
 	}
 	mtlsAuthenticator := auth.NewMTLSAuthenticator(mtlsOpts...)
 	if cfg.SPIFFETrustDomain != "" {
@@ -412,6 +394,13 @@ func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, 
 		middleware.WithRevocationChecker(revocation),
 		middleware.WithMTLSBindingPolicy(cfg.MTLSBindingPolicy),
 		middleware.WithPeerAttestationGate(cfg.PeerAttestation),
+	}
+	if cfg.IssuerVerifier != nil {
+		// The SAME verifier gates the on-behalf forwarding path
+		// (authenticateOnBehalf), which bypasses the authenticator chain
+		// entirely and so does not inherit the mTLS authenticator's own
+		// check above (go-qrdb#560 review, B2-1).
+		opts = append(opts, middleware.WithIssuerVerifier(cfg.IssuerVerifier))
 	}
 	for _, a := range cfg.ExtraAuthenticators {
 		if a == nil {

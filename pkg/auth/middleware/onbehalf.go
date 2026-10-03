@@ -102,6 +102,32 @@ func (m *AuthMiddleware) authenticateOnBehalf(ctx context.Context, w http.Respon
 		return ctx, nil, &auth.AuthError{Code: "unauthorized", Message: "on-behalf assertion rejected"}
 	}
 
+	// forward.ClusterPeer only checks the SPIFFE SAN SHAPE (does the cert
+	// carry a node-scoped URI SAN?); it says nothing about which CA
+	// actually verified the chain. Every tenant's Key B CA is now trusted
+	// on this same listener (pkg/clienttrust), so a Key B leaf carrying a
+	// forged node SPIFFE SAN would otherwise pass the check above and
+	// present an honored assertion AS THE CLUSTER, up to and including
+	// acting as system admin. The issuer must be confirmed to be the
+	// cluster CA (Key A) here, explicitly, and unknown fails closed
+	// (go-qrdb#560 review, B2-1).
+	if m.issuerVerifier != nil {
+		chains := r.TLS.VerifiedChains
+		trusted := false
+		for _, chain := range chains {
+			if len(chain) < 2 {
+				continue
+			}
+			if m.issuerVerifier.IsClusterCA(chain[1]) {
+				trusted = true
+				break
+			}
+		}
+		if !trusted {
+			return ctx, nil, &auth.AuthError{Code: "unauthorized", Message: "on-behalf assertion rejected"}
+		}
+	}
+
 	body, err := drainAndRestoreBody(w, r, forward.MaxBodyBytes)
 	if err != nil {
 		return ctx, nil, &auth.AuthError{Code: "unauthorized", Message: "cannot read request body for on-behalf binding"}
@@ -111,9 +137,11 @@ func (m *AuthMiddleware) authenticateOnBehalf(ctx context.Context, w http.Respon
 		r.Header.Get(forward.HeaderAssertion),
 		r.Header.Get(forward.HeaderSignature),
 		peerCert,
-		"", // trust-domain pin: TLS already verified the peer chains to the
-		// cluster CA; node-SAN presence + signature binding + node-id match
-		// establish cluster-peer trust without a separate pin here.
+		"", // trust-domain pin: the issuer check above (when m.issuerVerifier
+		// is wired) already confirmed the peer chains to the cluster CA, not
+		// merely that TLS verified SOME chain; node-SAN presence + signature
+		// binding + node-id match establish cluster-peer trust without a
+		// separate pin here.
 		time.Now(),
 		r.Method,
 		r.URL.RequestURI(),

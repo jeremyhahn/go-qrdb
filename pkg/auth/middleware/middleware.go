@@ -83,6 +83,17 @@ type AuthMiddleware struct {
 	// enforced, matching the authenticator.
 	revocation auth.RevocationChecker
 
+	// issuerVerifier gates the ON-BEHALF forwarding path the same way: it
+	// bypasses the authenticator chain, so it does not inherit the mTLS
+	// authenticator's own issuer-tenant binding check either. Nil means the
+	// on-behalf path only checks that the peer certificate carries a
+	// node-scoped SPIFFE SAN (forward.ClusterPeer) -- the posture before
+	// every tenant's Key B CA was trusted on the same listener. Set this
+	// whenever the composer also wires a dynamic Key B trust pool
+	// (go-qrdb#560 review, B2-1): without it, a Key B leaf carrying a
+	// forged node SPIFFE SAN can present an honored on-behalf assertion.
+	issuerVerifier auth.IssuerVerifier
+
 	// limiter and limits together are go-qrdb#201's centralized rate-limit
 	// enforcement: limiter is the engine (see ratelimit.Limiter), limits is
 	// the single-source per-permission Policy declaration (see
@@ -250,6 +261,19 @@ func (m *AuthMiddleware) MTLSBindingPolicy() auth.MTLSBindingPolicy {
 func WithRevocationChecker(rc auth.RevocationChecker) Option {
 	return func(m *AuthMiddleware) {
 		m.revocation = rc
+	}
+}
+
+// WithIssuerVerifier gates the on-behalf forwarding path on the
+// issuer-tenant binding, the same way WithRevocationChecker gates it on
+// revocation: authenticateOnBehalf bypasses the authenticator chain
+// entirely, so it does not inherit auth.MTLSAuthenticator's own check.
+// Production wiring passes the SAME *clienttrust.Pool used for
+// auth.WithIssuerVerifier and for the listener's dynamic trust pool
+// (pkg/clienttrust.Pool.Wire) -- see pkg/auth/wiring.BuildAuthMiddleware.
+func WithIssuerVerifier(v auth.IssuerVerifier) Option {
+	return func(m *AuthMiddleware) {
+		m.issuerVerifier = v
 	}
 }
 

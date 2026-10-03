@@ -15,7 +15,6 @@
 package auth
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -67,77 +66,48 @@ type MTLSAuthenticator struct {
 	// it is visible here rather than implied.
 	revocation RevocationChecker
 
-	// issuerBinding, when non-nil, is consulted on EVERY authentication to
+	// issuerVerifier, when non-nil, is consulted on EVERY authentication to
 	// bind the certificate's claimed tenant to the CA that actually verified
 	// it. Nil means the check is not enforced -- the posture a deployment
-	// with neither a cluster CA nor a CertProvider wired has.
-	issuerBinding *IssuerTenantBinding
+	// with no dynamic Key B trust pool wired has. *clienttrust.Pool
+	// implements it: the pool and the binding are the SAME object, by
+	// design (go-qrdb#560 review, B2-2), so Key B is never trusted at the
+	// TLS layer without this check also being enforceable here.
+	issuerVerifier IssuerVerifier
 }
 
-// TenantIssuerChecker reports whether a CA certificate is the one registered
-// for a given tenant's Key B login CA. cert.DefaultCertProvider implements
-// it (CACertPEMs' sibling, go-qrdb#560).
-type TenantIssuerChecker interface {
-	// IsTenantIssuer reports whether issuer is tenantID's registered Key B
-	// CA certificate: byte-identical DER, not merely matching Subject
-	// fields.
-	IsTenantIssuer(ctx context.Context, tenantID string, issuer *x509.Certificate) (bool, error)
-}
-
-// IssuerTenantBinding binds a verified client certificate's claimed tenant
+// IssuerVerifier binds a verified client certificate's claimed tenant
 // (MTLSAuthenticator's own TenantFromCert derivation) to the CA that
-// actually verified it: the cluster CA (Key A, trusted for any tenant --
-// holder and node certificates are legitimately signed by it regardless of
-// what a Subject OU says) or the Key B CA registered for the certificate's
-// OWN claimed tenant. See
-// docs/certificate-authority/architecture.md, "Issuer-tenant binding".
+// actually verified it: the cluster CA (Key A, any tenant -- holder and
+// node certificates are legitimately signed by it regardless of what a
+// Subject OU says) or the Key B CA registered for the certificate's OWN
+// claimed tenant. See docs/certificate-authority/architecture.md,
+// "Issuer-tenant binding". *clienttrust.Pool implements it.
 //
 // Without this, every tenant's Key B CA being trusted on one shared
 // client-facing listener would let tenant A's CA mint a credential that
 // authenticates as tenant B simply by setting its Subject OU to B: the
-// dynamic trust pool (pkg/clienttrust) verifies the SIGNATURE, not which
-// tenant the signing CA was issued for.
-type IssuerTenantBinding struct {
-	// ClusterCA is the cluster CA (Key A) certificate. A verified chain
-	// whose trust anchor matches it (byte-identical DER) is exempt from the
-	// Key B check for any claimed tenant. Nil disables the exemption (every
-	// leaf is checked against KeyB, including node/holder certificates --
-	// not a configuration any composer should leave unset if ClusterCA is
-	// available).
-	ClusterCA *x509.Certificate
+// dynamic trust pool verifies the SIGNATURE, not which tenant the signing
+// CA was issued for.
+type IssuerVerifier interface {
+	// IsClusterCA reports whether issuer is the CURRENT cluster CA
+	// certificate (Key A), resolved fresh on every call. Unknown (no
+	// cluster CA configured, or a transient failure resolving it) is never
+	// a match: fail closed.
+	IsClusterCA(issuer *x509.Certificate) bool
 
-	// KeyB answers "is issuer tenantID's registered Key B CA?" for a chain
-	// whose trust anchor is not ClusterCA. Nil disables the check entirely
-	// (today's open posture: any CA in the trust pool authenticates any
-	// tenant it names).
-	KeyB TenantIssuerChecker
+	// VerifyIssuer reports whether issuer may authenticate as tenantID: the
+	// cluster CA (any tenant, via IsClusterCA) or tenantID's registered Key
+	// B CA.
+	VerifyIssuer(ctx context.Context, tenantID string, issuer *x509.Certificate) error
 }
 
-// verify returns nil when issuer is ClusterCA, or when KeyB reports issuer is
-// tenantID's registered Key B CA; otherwise *IssuerTenantMismatchError.
-func (b *IssuerTenantBinding) verify(ctx context.Context, tenantID string, issuer *x509.Certificate) error {
-	if b.ClusterCA != nil && issuer != nil && bytes.Equal(issuer.Raw, b.ClusterCA.Raw) {
-		return nil
-	}
-	if b.KeyB == nil {
-		return nil
-	}
-	ok, err := b.KeyB.IsTenantIssuer(ctx, tenantID, issuer)
-	if err != nil {
-		return &IssuerTenantMismatchError{TenantID: tenantID, Err: err}
-	}
-	if !ok {
-		return &IssuerTenantMismatchError{TenantID: tenantID}
-	}
-	return nil
-}
-
-// WithIssuerTenantBinding enables the issuer-tenant binding check: see
-// IssuerTenantBinding. A nil binding (the default) leaves the check
+// WithIssuerVerifier enables the issuer-tenant binding check: see
+// IssuerVerifier. A nil verifier (the default) leaves the check
 // unenforced.
-func WithIssuerTenantBinding(b *IssuerTenantBinding) MTLSOption {
+func WithIssuerVerifier(v IssuerVerifier) MTLSOption {
 	return func(a *MTLSAuthenticator) {
-		a.issuerBinding = b
+		a.issuerVerifier = v
 	}
 }
 
@@ -303,17 +273,15 @@ func (a *MTLSAuthenticator) Authenticate(ctx context.Context) (*Identity, error)
 		id.Metadata["tenant_source"] = "ou"
 	}
 
-	// The issuer-tenant binding: the CA that verified this chain must be
-	// either the cluster CA (Key A, which legitimately signs holder and node
-	// certificates for any tenant) or the Key B CA registered for THIS
-	// certificate's own claimed tenant. Every tenant's Key B CA is trusted on
-	// one shared listener (pkg/clienttrust), so without this check tenant A's
-	// CA could mint a leaf that authenticates as tenant B simply by setting
-	// its Subject OU to B.
-	if a.issuerBinding != nil {
-		chain := state.VerifiedChains[0]
-		issuer := chain[len(chain)-1]
-		if err := a.issuerBinding.verify(ctx, tenantID, issuer); err != nil {
+	// The issuer-tenant binding: the CA that DIRECTLY signed this leaf must
+	// be either the cluster CA (Key A, which legitimately signs holder and
+	// node certificates for any tenant) or the Key B CA registered for
+	// THIS certificate's own claimed tenant. Every tenant's Key B CA is
+	// trusted on one shared listener (pkg/clienttrust), so without this
+	// check tenant A's CA could mint a leaf that authenticates as tenant B
+	// simply by setting its Subject OU to B.
+	if a.issuerVerifier != nil {
+		if err := a.verifyIssuer(ctx, tenantID, state.VerifiedChains); err != nil {
 			return nil, err
 		}
 	}
@@ -335,4 +303,23 @@ func (a *MTLSAuthenticator) Authenticate(ctx context.Context) (*Identity, error)
 	}
 
 	return id, nil
+}
+
+// verifyIssuer checks every verified chain against a.issuerVerifier, using
+// EACH chain's DIRECT issuer (chain[1], the certificate that signed the
+// leaf) rather than whatever happens to be the last entry -- today's CAs
+// are all self-signed roots so the two coincide, but the direct issuer is
+// the precise thing being asked about. Succeeds if ANY verified chain
+// satisfies the binding; a TLS stack can present more than one verified
+// chain when multiple roots in the pool could validate the same leaf.
+func (a *MTLSAuthenticator) verifyIssuer(ctx context.Context, tenantID string, chains [][]*x509.Certificate) error {
+	for _, chain := range chains {
+		if len(chain) < 2 {
+			continue
+		}
+		if err := a.issuerVerifier.VerifyIssuer(ctx, tenantID, chain[1]); err == nil {
+			return nil
+		}
+	}
+	return &IssuerTenantMismatchError{TenantID: tenantID}
 }
