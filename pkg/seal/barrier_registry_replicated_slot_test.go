@@ -104,6 +104,14 @@ func newReplicatedNode(t *testing.T, rr *objpool.RoundRobinStrategy, slotStore S
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
+	// RegisterVolumeTenant/ReattachVolumeTenant now refuse while the system
+	// barrier is sealed (go-qrdb review: a direct call must not skip
+	// refuseClaimedRoot's overlap check the way a sealed system silently
+	// did). Every caller in this file registers a volume tenant, so the
+	// node's system barrier must be initialized up front.
+	if err := reg.SystemBarrier().Initialize(context.Background(), MustCredentials([]byte("pool-test-pass"))); err != nil {
+		t.Fatalf("system barrier Initialize: %v", err)
+	}
 	return replicatedNode{reg: reg, roots: roots}
 }
 

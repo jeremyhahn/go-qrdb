@@ -938,6 +938,23 @@ func (r *BarrierRegistry) registerVolumeTenant(ctx context.Context, tenantID, da
 		return "", nil, ErrPerTenantRegistryNotConfigured
 	}
 
+	// Refuse while the system barrier is sealed, rather than proceeding to
+	// pick a pool slot and open a Pebble store for it. refuseClaimedRoot
+	// below cannot even perform its DataRoot-overlap check in that state --
+	// it can't read the tenant-root records it compares against, so it
+	// treats "sealed" the same as "nothing is claimed" and returns nil --
+	// so without this check a sealed system barrier silently skipped that
+	// guard instead of refusing the call that needs it.
+	// TenantService.CreateTenant already fails closed here (its tombstone
+	// check reads through the system barrier itself), so this only matters
+	// for a caller on this registry directly, bypassing TenantService --
+	// which is exactly the case that must fail closed too. Checked after the
+	// wiring preconditions above (empty id, no pool, no per-tenant registry)
+	// so a misconfigured-but-unsealed call still reports ITS OWN error.
+	if r.system == nil || r.system.IsSealed() {
+		return "", nil, ErrSealed
+	}
+
 	if dataRoot == "" {
 		base, err := r.resolveTenantPoolBase(ctx, tenantID)
 		if err != nil {

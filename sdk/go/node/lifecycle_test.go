@@ -219,6 +219,62 @@ func TestNode_CloseIdempotent(t *testing.T) {
 	assertAllAccessorsNil(t, n, nodeAccessors())
 }
 
+// closeBackgroundWaitWindow is how long TestNode_Close_WaitsForBackgroundGoroutines
+// gives Close() to have reached its bgWG.Wait and genuinely blocked on it,
+// before concluding a too-early return means Close did not wait. A correct
+// Close is parked on the gate held below for this whole window and the test
+// passes regardless of its length; it exists only to give an UNSYNCHRONISED
+// Close — the defect — the chance to return before the gate opens.
+const closeBackgroundWaitWindow = 150 * time.Millisecond
+
+// TestNode_Close_WaitsForBackgroundGoroutines proves Close does not return
+// until every goroutine tracked by bgWG -- the lease-expiry sweeper, the
+// reclaim sweeper and, when tenant isolation wires one, the
+// TenantShardReconciler, all started on background() -- has actually
+// exited, not merely been told to via a cancelled context. It exercises the
+// exact Add/Done contract those callers use directly, rather than standing
+// up a full cluster to drive a real sweeper through leadership, so the
+// assertion is about the Close/bgWG contract itself and does not depend on
+// election timing.
+func TestNode_Close_WaitsForBackgroundGoroutines(t *testing.T) {
+	cfg := sealedStandaloneConfig(t, t.TempDir())
+	n, err := NewStandaloneNode(context.Background(), cfg, nil, WithSealPassphrase([]byte("close-bg-wait")))
+	require.NoError(t, err)
+
+	bgCtx := n.background()
+	release := make(chan struct{})
+	exited := make(chan struct{})
+	n.bgWG.Add(1)
+	go func() {
+		defer n.bgWG.Done()
+		<-bgCtx.Done() // Close cancels bgCancel first, same as every real caller sees.
+		<-release      // Held open deliberately; Close must not return before this closes.
+		close(exited)
+	}()
+
+	closeErr := make(chan error, 1)
+	go func() { closeErr <- n.Close() }()
+
+	select {
+	case err := <-closeErr:
+		t.Fatalf("Close returned (err=%v) while a bgWG-tracked goroutine was still held open; it must wait on bgWG before returning", err)
+	case <-time.After(closeBackgroundWaitWindow):
+	}
+
+	close(release)
+	select {
+	case <-exited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the bgWG-tracked goroutine never observed its release")
+	}
+	select {
+	case err := <-closeErr:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close never returned after the bgWG-tracked goroutine exited")
+	}
+}
+
 // closeRefusalBound bounds how long a boot or migration WAITING on the
 // lifecycle gate may take to be refused once Close begins. A failure bound: a
 // correct gate refuses at once, and the waiter the test watches is otherwise

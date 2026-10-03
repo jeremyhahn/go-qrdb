@@ -11,6 +11,31 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Security
+
+- **`BarrierRegistry.RegisterVolumeTenant`/`ReattachVolumeTenant` refuse
+  with `seal.ErrSealed` while the system barrier is sealed.** Called
+  directly on the registry (bypassing `TenantService.CreateTenant`, whose
+  own tombstone check already fails closed through the sealed barrier),
+  they previously proceeded to pick a pool slot and open a Pebble store:
+  `refuseClaimedRoot`'s DataRoot-overlap check can't read the tenant-root
+  records it compares against while sealed, so it treated "sealed" the
+  same as "nothing is claimed" and returned nil instead of refusing. The
+  check runs after the existing wiring preconditions (empty tenant ID, no
+  volume pool, no per-tenant registry configured), so a misconfigured but
+  unsealed call still reports its own error.
+
+### Fixed
+
+- **`Node.Close` now waits for the lease-expiry sweeper, the reclaim sweeper
+  and (when tenant isolation wired one) the tenant shard reconciler to
+  actually exit before stopping the services they call into.** It already
+  cancelled the shared background context first; cancelling alone does not
+  block until a goroutine's current tick notices, so `svcNode.Stop` could
+  race one of them calling back into the very service graph it was tearing
+  down. Matches the wait the wire-failure path in `completeClusteredBoot`
+  already had.
+
 ## [0.34.0-alpha] - 2026-10-03
 
 Unified share holders. This release contains BREAKING changes; see the entries below. Highlights:

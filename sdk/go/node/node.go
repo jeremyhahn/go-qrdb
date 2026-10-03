@@ -1771,12 +1771,21 @@ func (n *Node) Close() error {
 	}
 
 	// Cancel the node-lifetime background context before stopping any service
-	// so long-running goroutines (TenantShardReconciler) exit promptly rather
-	// than blocking on a placement watch or poll timer during teardown.
+	// so long-running goroutines (the lease-expiry sweeper, the reclaim
+	// sweeper, and -- when tenant isolation wired one -- the
+	// TenantShardReconciler) exit promptly rather than blocking on a
+	// placement watch or poll timer during teardown. bgWG.Wait blocks until
+	// they actually have: cancelling alone does not -- it only makes their
+	// current select wake on ctx.Done -- so without the wait, svcNode.Stop
+	// below could race one of them calling back into the very service graph
+	// it is tearing down. Mirrors the wireClientAndServer failure branch in
+	// completeClusteredBoot, which waits on the same bgWG before its own
+	// svcNode.Stop for the identical reason.
 	if n.bgCancel != nil {
 		n.bgCancel()
 		n.bgCancel = nil
 	}
+	n.bgWG.Wait()
 	// Wait for the standalone lease-expiry sweeper to exit before anything it
 	// revokes through is stopped: cancelling alone leaves a revoke in flight.
 	if n.stopLeaseExpiry != nil {

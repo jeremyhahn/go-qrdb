@@ -131,6 +131,23 @@ func newPooledRegistry(t *testing.T) (*BarrierRegistry, []string, pebblestore.Pe
 	return reg, []string{p1, p2}, perTenantReg
 }
 
+// newPooledRegistryUnsealed is newPooledRegistry with its system barrier
+// already initialized (and so unsealed): RegisterVolumeTenant/ReattachVolumeTenant
+// refuse with ErrSealed otherwise, and most volume-tenant tests are not
+// about the system barrier's own seal state. Kept separate from
+// newPooledRegistry itself because at least one caller (system-managed
+// barrier tests) initializes the returned registry's system barrier ITSELF,
+// with specific credentials; pre-initializing there too would make that
+// Initialize call fail with ErrAlreadyInitialized.
+func newPooledRegistryUnsealed(t *testing.T) (*BarrierRegistry, []string, pebblestore.PerTenantRegistry) {
+	t.Helper()
+	reg, roots, perTenantReg := newPooledRegistry(t)
+	if err := reg.SystemBarrier().Initialize(context.Background(), MustCredentials([]byte("pool-test-pass"))); err != nil {
+		t.Fatalf("system barrier Initialize: %v", err)
+	}
+	return reg, roots, perTenantReg
+}
+
 func TestRegisterTenant_PooledFlow_RoundRobinAcrossTwoPaths(t *testing.T) {
 	reg, roots, perTenantReg := newPooledRegistry(t)
 	ctx := context.Background()

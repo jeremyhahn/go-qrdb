@@ -59,7 +59,7 @@ func pebbleAbsent(t *testing.T, path string) bool {
 // as {root}/{tenantID}, and the barrier IAM Pebble lands in the dedicated
 // "barrier" subdirectory, leaving "databases" free for the per-tenant Host.
 func TestRegisterVolumeTenant_AllocatesDataRootAndBarrier(t *testing.T) {
-	reg, roots, _ := newPooledRegistry(t)
+	reg, roots, _ := newPooledRegistryUnsealed(t)
 	ctx := context.Background()
 
 	dataRoot, tb, err := reg.RegisterVolumeTenant(ctx, "vol-alpha", "", false)
@@ -102,7 +102,7 @@ func TestRegisterVolumeTenant_AllocatesDataRootAndBarrier(t *testing.T) {
 // location verbatim instead of allocating a new path from the pool. The real
 // daemon re-attach uses a fresh registry/process with the persisted DataRoot.
 func TestRegisterVolumeTenant_ExplicitDataRoot(t *testing.T) {
-	reg, _, _ := newPooledRegistry(t)
+	reg, _, _ := newPooledRegistryUnsealed(t)
 	ctx := context.Background()
 
 	explicit := t.TempDir()
@@ -172,14 +172,14 @@ func TestReattachVolumeTenant_AbsentStoreReturnsMountMissing(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("missing directory", func(t *testing.T) {
-		reg, _, _ := newPooledRegistry(t)
+		reg, _, _ := newPooledRegistryUnsealed(t)
 		dataRoot := filepath.Join(t.TempDir(), "unmounted", "vt") // never created
 		_, _, err := reg.ReattachVolumeTenant(ctx, "absent", dataRoot, false)
 		assertMountMissing(t, reg, "absent", dataRoot, err)
 	})
 
 	t.Run("empty barrier directory", func(t *testing.T) {
-		reg, _, _ := newPooledRegistry(t)
+		reg, _, _ := newPooledRegistryUnsealed(t)
 		dataRoot := t.TempDir()
 		// Simulate the mount being present but the barrier store never
 		// populated (an empty {dataRoot}/barrier directory).
@@ -213,7 +213,7 @@ func assertMountMissing(t *testing.T, reg *BarrierRegistry, tenantID, dataRoot s
 // assertion: a first-ever WithDataRoot tenant whose directory does not exist
 // yet is created normally.
 func TestRegisterVolumeTenant_FreshCreateNonExistentDirWorks(t *testing.T) {
-	reg, _, _ := newPooledRegistry(t)
+	reg, _, _ := newPooledRegistryUnsealed(t)
 	ctx := context.Background()
 	dataRoot := filepath.Join(t.TempDir(), "fresh", "vt") // does not exist yet
 
@@ -228,6 +228,47 @@ func TestRegisterVolumeTenant_FreshCreateNonExistentDirWorks(t *testing.T) {
 		t.Fatal("expected non-nil TenantBarrier")
 	}
 	assertPebbleAtPath(t, filepath.Join(dataRoot, "barrier"))
+}
+
+// TestRegisterVolumeTenant_SealedSystemBarrierRefusesClosed verifies that
+// RegisterVolumeTenant (and, by the same shared registerVolumeTenant,
+// ReattachVolumeTenant) refuses with ErrSealed while the system barrier is
+// sealed, rather than silently proceeding: refuseClaimedRoot cannot read the
+// tenant-root records it compares DataRoots against while sealed, so it
+// treats "sealed" the same as "nothing is claimed" and returns nil -- a
+// direct call on this registry (bypassing TenantService.CreateTenant, whose
+// own tombstone check already fails closed through the sealed barrier)
+// must not be able to use that to skip the DataRoot-overlap guard and open a
+// Pebble store anyway.
+func TestRegisterVolumeTenant_SealedSystemBarrierRefusesClosed(t *testing.T) {
+	// newPooledRegistry's system barrier starts sealed (never initialized);
+	// this test is the one place in the file that must NOT unseal it.
+	reg, _, _ := newPooledRegistry(t)
+	ctx := context.Background()
+	dataRoot := filepath.Join(t.TempDir(), "sealed-refusal", "vt")
+
+	_, tb, err := reg.RegisterVolumeTenant(ctx, "sealed-refusal", dataRoot, false)
+	if !errors.Is(err, ErrSealed) {
+		t.Fatalf("RegisterVolumeTenant on a sealed system barrier = %v, want ErrSealed", err)
+	}
+	if tb != nil {
+		t.Error("RegisterVolumeTenant must not return a TenantBarrier on refusal")
+	}
+	if _, gerr := reg.GetTenant("sealed-refusal"); gerr == nil {
+		t.Error("tenant must NOT be registered after a sealed-system refusal")
+	}
+	if !pebbleAbsent(t, filepath.Join(dataRoot, "barrier")) {
+		t.Error("a Pebble store was opened despite the sealed-system refusal; must fail closed before touching storage")
+	}
+
+	// ReattachVolumeTenant shares the same guard.
+	_, tb, err = reg.ReattachVolumeTenant(ctx, "sealed-refusal", dataRoot, false)
+	if !errors.Is(err, ErrSealed) {
+		t.Fatalf("ReattachVolumeTenant on a sealed system barrier = %v, want ErrSealed", err)
+	}
+	if tb != nil {
+		t.Error("ReattachVolumeTenant must not return a TenantBarrier on refusal")
+	}
 }
 
 // TestRestoreVolumeTenants_MissingMountSkipped verifies that boot restore fails
@@ -308,7 +349,7 @@ func TestRegisterVolumeTenant_SystemManagedAutoUnseal(t *testing.T) {
 // (default) volume path: the barrier is registered but NOT initialized, so it
 // stays sealed until the tenant admin drives Initialize/Unseal.
 func TestRegisterVolumeTenant_SelfManagedStaysSealed(t *testing.T) {
-	reg, _, _ := newPooledRegistry(t)
+	reg, _, _ := newPooledRegistryUnsealed(t)
 	ctx := context.Background()
 
 	_, tb, err := reg.RegisterVolumeTenant(ctx, "vol-self", "", false)
@@ -362,7 +403,7 @@ func TestRegisterVolumeTenant_NoPoolConfigured(t *testing.T) {
 // any storage. This is the BUG 1 follower path: a replica whose placement
 // DataRoot is "" calls LocalTenantDataRoot to compute its own local pool root.
 func TestLocalTenantDataRoot(t *testing.T) {
-	reg, roots, _ := newPooledRegistry(t)
+	reg, roots, _ := newPooledRegistryUnsealed(t)
 	ctx := context.Background()
 
 	// Pre-register the tenant so the pool's round-robin state advances and we
@@ -864,7 +905,7 @@ func TestLocalTenantDataRoot_NotInPersistentStoreEither(t *testing.T) {
 // path, BEFORE the barrier is registered — the seam that closes the
 // tenant-scope enable-encryption crash window.
 func TestRegisterVolumeTenant_MigrationRecoverer_RunsBeforeBarrierBuild(t *testing.T) {
-	reg, _, _ := newPooledRegistry(t)
+	reg, _, _ := newPooledRegistryUnsealed(t)
 	ctx := context.Background()
 
 	var gotRootKeyPath string
@@ -900,7 +941,7 @@ func TestRegisterVolumeTenant_MigrationRecoverer_RunsBeforeBarrierBuild(t *testi
 // failure aborts the registration with a typed MigrationRecoveryError: the
 // barrier must never be built over unreconciled (half-swapped) state.
 func TestRegisterVolumeTenant_MigrationRecoverer_FailsClosed(t *testing.T) {
-	reg, _, _ := newPooledRegistry(t)
+	reg, _, _ := newPooledRegistryUnsealed(t)
 	ctx := context.Background()
 
 	sentinel := errors.New("recovery exploded")

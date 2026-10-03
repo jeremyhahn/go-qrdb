@@ -32,6 +32,7 @@ import (
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -753,6 +754,27 @@ func TestClusteredNode_UnsealRetriesAfterACancelledBoot_TenantBarriersSealed(t *
 	}
 }
 
+// nodeAuthMethodProbeName is the method name nodeAuthMethodProbe contributes
+// to the auth-chain vocabulary. It is not a built-in token, so IsAuthMethod
+// answers true for it only while a middleware carrying this authenticator is
+// bound -- exactly the discriminator
+// TestClusteredNode_UnsealRetriesAfterACancelledBoot_DataPlaneAccessorsCleared
+// needs to prove n.authMethods.Bind(nil) actually ran: unlike a built-in
+// token, which would read true from the zero-value vocabulary too.
+const nodeAuthMethodProbeName = "node-custom-auth-probe"
+
+// nodeAuthMethodProbe is a minimal auth.Authenticator whose only purpose is
+// to name nodeAuthMethodProbeName in the AuthMiddleware's method vocabulary
+// (mirrors pkg/auth/wiring's own TestBuildAuthMiddleware_ExtraAuthenticatorJoinsTheMethodVocabulary
+// fixture); it never actually authenticates anything.
+type nodeAuthMethodProbe struct{}
+
+func (nodeAuthMethodProbe) Authenticate(context.Context) (*auth.Identity, error) {
+	return nil, auth.ErrUnauthenticated
+}
+
+func (nodeAuthMethodProbe) Name() string { return nodeAuthMethodProbeName }
+
 // TestClusteredNode_UnsealRetriesAfterACancelledBoot_DataPlaneAccessorsCleared
 // covers a boot that fails AFTER wireClientAndServer has already published
 // the data-plane service handles (AuthFactorService, UserAuthFactorService,
@@ -802,7 +824,8 @@ func TestClusteredNode_UnsealRetriesAfterACancelledBoot_DataPlaneAccessorsCleare
 	reg, _ := newPopulatedFactorRegistry(t, "piv")
 	serverOpts := []server.ServerOption{server.WithTLS(tlsCfg), server.WithFactorRegistry(reg)}
 
-	n, err := NewClusteredNode(ctx, cfg, raftMembers(), serverOpts, WithABACLiveReload())
+	n, err := NewClusteredNode(ctx, cfg, raftMembers(), serverOpts,
+		WithABACLiveReload(), WithAuthenticators(nodeAuthMethodProbe{}))
 	if err != nil {
 		t.Fatalf("NewClusteredNode: %v", err)
 	}
@@ -863,6 +886,17 @@ func TestClusteredNode_UnsealRetriesAfterACancelledBoot_DataPlaneAccessorsCleare
 		t.Fatal("bgCtx must be cleared alongside bgCancel after a failed boot, not left holding the cancelled context")
 	}
 
+	// n.authMethods was bound to the AuthMiddleware wireClientAndServer built
+	// over this attempt's svcNode (n.authMethods.Bind(authMW)); the failure
+	// defer must unbind it (Bind(nil)) so it falls back to the built-in
+	// tokens instead of consulting a middleware whose Role/User services are
+	// now stopped. nodeAuthMethodProbeName is not a built-in token, so this
+	// is false only while unbound -- a built-in token would read true either
+	// way and prove nothing.
+	if n.authMethods.IsAuthMethod(nodeAuthMethodProbeName) {
+		t.Fatal("authMethods must fall back to the built-in tokens after a failed boot, not consult the middleware built over the stopped host")
+	}
+
 	// A failed boot must not leave the node able to place or allocate a new
 	// tenant through the now-local-only path while it reports sealed. The
 	// seal-only Services().Tenant this attempt's defer restored is backed by
@@ -891,6 +925,9 @@ func TestClusteredNode_UnsealRetriesAfterACancelledBoot_DataPlaneAccessorsCleare
 	}
 	if r := n.ABACPolicyReloader(); r == nil {
 		t.Fatal("ABACPolicyReloader must be non-nil once the retried boot completes")
+	}
+	if !n.authMethods.IsAuthMethod(nodeAuthMethodProbeName) {
+		t.Fatal("authMethods must be rebound to the retried boot's middleware once it completes")
 	}
 
 	// B1: the retried boot's background goroutines must run on a live
