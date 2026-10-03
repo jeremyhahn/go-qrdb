@@ -1935,7 +1935,7 @@ func runStart(f *startFlags) (err error) {
 			// already initialized above and reused here.
 			var authResult *authBootstrapResult
 			if f.authEnabled {
-				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, f.dataDir, rnode, complianceAudit, strictSoD, f.spiffeTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir}, svcNode.CertProv, ceremonyCA, f.revocationCacheTTL, f.auditFailurePolicy, f.mtlsBindingPolicy)
+				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, f.dataDir, rnode, complianceAudit, strictSoD, f.spiffeTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir}, svcNode.CertProv, bundle.TrustPool(), f.revocationCacheTTL, f.auditFailurePolicy, f.mtlsBindingPolicy)
 				if err != nil {
 					_ = shutdownNode(nodeCloser)
 					// Context cancellation from signal is a clean shutdown, not an error.
@@ -2471,6 +2471,17 @@ func runStart(f *startFlags) (err error) {
 			}
 			if ceremonyCA != nil {
 				serverOpts = append(serverOpts, server.WithCeremonyCA(ceremonyCA))
+				// The dynamic client-auth trust pool (wireClientTrustPool,
+				// installed before any listener started) resolves the
+				// cluster CA fresh on every handshake, both to add it to the
+				// widened pool and to grant the cluster-CA exemption on the
+				// issuer-tenant binding (bundle.TrustPool, wired above as the
+				// auth.IssuerVerifier bootstrapAuthEnforcement installed).
+				// Key B is trusted via the per-tenant binding regardless of
+				// whether this call ever runs; what it adds is the cluster
+				// CA's own membership in the pool and its exemption from the
+				// per-tenant check (go-qrdb#560 review, B2-2).
+				bundle.SetClusterCA(ceremonyCA)
 			}
 			if svcNode.CertProv != nil {
 				serverOpts = append(serverOpts, server.WithCertProvider(svcNode.CertProv))
@@ -3791,7 +3802,7 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 // sdk/go/node.Node calls when wiring an embedded unified server — so a
 // daemon-run node and an embedded node (go-xkms xkmsd, go-quicbaas
 // quicbaasd) enforce authn/authz identically.
-func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, spiffeTrustDomain string, abacCfg qrdbconfig.AuthABACConfig, certProv cert.CertProvider, clusterCA ceremony.CeremonyCA, revocationCacheTTL string, auditFailurePolicy string, mtlsBindingPolicy string) (*authBootstrapResult, error) {
+func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, spiffeTrustDomain string, abacCfg qrdbconfig.AuthABACConfig, certProv cert.CertProvider, issuerVerifier auth.IssuerVerifier, revocationCacheTTL string, auditFailurePolicy string, mtlsBindingPolicy string) (*authBootstrapResult, error) {
 	_ = ctx
 	_ = node
 
@@ -3907,7 +3918,13 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, da
 		CertProvider: certProv,
 		// The issuer-tenant binding (go-qrdb#560): a Key B leaf's issuing CA
 		// must be its own claimed tenant's registered CA, or the cluster CA.
-		ClusterCA:          clusterCA,
+		// issuerVerifier is bundle.TrustPool() -- the SAME object that
+		// widens the listener's TLS ClientCAs with every tenant's Key B CA
+		// (bundle.SetKeyBProvider/SetClusterCA) -- so Key B is never
+		// trusted at the TLS layer without this binding also being
+		// enforced here and on the on-behalf forwarding path (go-qrdb#560
+		// review, B2-1/B2-2).
+		IssuerVerifier:     issuerVerifier,
 		RevocationCacheTTL: revocationTTL,
 		MTLSBindingPolicy:  bindingPolicy,
 	})

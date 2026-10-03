@@ -116,6 +116,38 @@ func (b *TLSBundle) SetKeyBProvider(p cert.CertProvider) {
 	b.trustPool.SetKeyBProvider(p)
 }
 
+// SetClusterCA installs the cluster CA (Key A) resolver the dynamic
+// client-auth trust pool checks on every handshake: to add it to the
+// widened pool and to grant the cluster-CA exemption on the issuer-tenant
+// binding (TrustPool's IsClusterCA/VerifyIssuer -- see auth.IssuerVerifier).
+// Call it once, as soon as the cluster CA exists. Must be called after
+// wireClientTrustPool.
+//
+// Key B is trusted via SetKeyBProvider ALONE, regardless of whether this is
+// ever called: the per-tenant binding (VerifyIssuer's IsTenantIssuer
+// branch) needs no cluster CA to operate, only the exemption does. What
+// this call changes is whether the cluster CA ITSELF is in the pool and
+// whether it is exempted from the per-tenant check (go-qrdb#560 review,
+// B2-2 -- see pkg/clienttrust.Pool's own doc comments for the full
+// reasoning, including why an INSTALLED resolver that starts failing is
+// treated differently from one never installed at all).
+func (b *TLSBundle) SetClusterCA(ca clienttrust.ClusterCA) {
+	b.trustPool.SetClusterCA(ca)
+}
+
+// TrustPool returns the dynamic client-auth trust pool installed by
+// wireClientTrustPool, so a caller (bootstrapAuthEnforcement) can wire it as
+// the auth.IssuerVerifier the mTLS authenticator and the on-behalf
+// forwarding path both enforce against. This MUST be the SAME *Pool
+// instance SetKeyBProvider/SetClusterCA populate and Wire installed on this
+// bundle's TLSConfig: the pool and the binding are the same object, by
+// design (go-qrdb#560 review, B2-2), so Key B is never trusted at the TLS
+// layer without the binding also being enforced at the authentication
+// layer. Returns nil until wireClientTrustPool has run.
+func (b *TLSBundle) TrustPool() *clienttrust.Pool {
+	return b.trustPool
+}
+
 // wireClientTrustPool installs TLSConfig.GetConfigForClient (via
 // pkg/clienttrust), the dynamic client-auth trust pool every client-facing
 // listener sharing this bundle's TLSConfig pointer (REST, gRPC, Unix, QUIC,

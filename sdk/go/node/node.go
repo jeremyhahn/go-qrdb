@@ -807,6 +807,17 @@ type Node struct {
 	// constructor to wireClientAndServer.
 	peerAttestation *middleware.PeerAttestationGate
 
+	// trustPool is the dynamic client-auth trust pool (pkg/clienttrust)
+	// wireClientAndServer builds, exactly once, and wires onto BOTH the
+	// auth.IssuerVerifier the mTLS authenticator and on-behalf forwarding
+	// path enforce against AND this node's own *tls.Config (when one is
+	// resolved), widening its listeners' ClientCAs with every tenant's Key
+	// B CA. The pool and the binding are the SAME object, deliberately
+	// (go-qrdb#560 review, B2-2): two independently-constructed pools here
+	// is exactly the drift that let Key B be trusted at the TLS layer
+	// without the binding being enforceable at the authentication layer.
+	trustPool *clienttrust.Pool
+
 	// authMethods is THIS node's permitted-method vocabulary, handed to every
 	// user store BuildServices creates and bound to the node's own auth
 	// middleware once wireClientAndServer builds it. Per node, never
@@ -2869,17 +2880,43 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 			return &AuthMiddlewareWiringError{Err: verr}
 		}
 	}
-	// The issuer-tenant binding (go-qrdb#560) needs the cluster CA (Key A)
-	// certificate: a Key B leaf's issuing CA must be its own claimed
-	// tenant's registered CA, or the cluster CA. The ceremony service core
-	// carries it (lifecycle.BuildServices wires infra.CeremonyCA into it),
-	// the same source cmd/qrdbd uses. A node with no ceremony service, or
-	// one whose CA is not yet established, leaves the check unenforced
-	// (wiring.issuerTenantBinding's nil-clusterCA case).
+	// The dynamic client-auth trust pool (pkg/clienttrust) is built ONCE,
+	// here, and is BOTH the auth.IssuerVerifier the mTLS authenticator and
+	// the on-behalf forwarding path enforce against below AND the object
+	// wired onto this node's own *tls.Config further down (if one is
+	// resolved) to widen its listeners' ClientCAs with every tenant's Key B
+	// CA. The pool and the binding are the SAME object, deliberately
+	// (go-qrdb#560 review, B2-2): constructing two independent pools here --
+	// one fed the cluster CA and the provider for the auth-layer check,
+	// another fed them (or not) for the TLS-layer widening -- is exactly the
+	// drift that let Key B be trusted at the TLS layer without the binding
+	// being enforceable at the authentication layer, which B2-2 ruled out.
+	//
+	// SetClusterCA/SetKeyBProvider are called unconditionally: a nil
+	// ceremony.CeremonyCA (no ceremony service, or one whose CA is not yet
+	// established) and a nil CertProvider are both the documented "leave
+	// this check unenforced" cases (clienttrust.Pool.SetClusterCA/
+	// SetKeyBProvider), not errors.
+	n.trustPool = clienttrust.New()
 	var clusterCA ceremony.CeremonyCA
 	if coreSvc, ok := service.CeremonyServiceCore(svcNode.Ceremony); ok {
 		clusterCA = coreSvc.CA()
 	}
+	n.trustPool.SetClusterCA(clusterCA)
+	n.trustPool.SetKeyBProvider(svcNode.CertProv)
+
+	// n.trustPool is ALWAYS handed to the auth layer as the enforcement
+	// source, regardless of whether a cluster CA was resolved above: that
+	// is the composer-wiring obligation SetKeyBProvider's doc comment
+	// states (go-qrdb#560 review, B2-2) -- the pool and the binding must be
+	// the SAME object, unconditionally, or Key B could be trusted at the
+	// TLS layer while the binding drifted out of sync at the auth layer.
+	// With no cluster CA at all, VerifyIssuer's cluster-CA branch simply
+	// never matches; its per-tenant branch (IsTenantIssuer) still gates
+	// every Key B certificate normally -- see pkg/clienttrust.Pool's own
+	// doc comments for exactly which of a resolver's two failure shapes
+	// still widens Key B and which does not.
+	var issuerVerifier auth.IssuerVerifier = n.trustPool
 	authMW, err := wiring.BuildAuthMiddleware(wiring.AuthMiddlewareConfig{
 		Enabled:             cfg.Auth.IsEnabled(),
 		Authorizer:          n.authorizer,
@@ -2895,8 +2932,13 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		// cert API handlers. An embedded node without this enforces nothing:
 		// it records revocations, lists them, and lets the revoked
 		// certificate keep authenticating until it expires.
-		CertProvider:       svcNode.CertProv,
-		ClusterCA:          clusterCA,
+		CertProvider: svcNode.CertProv,
+		// issuerVerifier -- nil unless a cluster CA was resolved above -- is
+		// n.trustPool, the SAME object wired onto this node's own
+		// *tls.Config further down, so Key B is never trusted at the TLS
+		// layer without this binding also being enforced here and on the
+		// on-behalf forwarding path (go-qrdb#560 review, B2-1/B2-2).
+		IssuerVerifier:     issuerVerifier,
 		RevocationCacheTTL: revocationTTL,
 		MTLSBindingPolicy:  bindingPolicy,
 		PeerAttestation:    n.peerAttestation,
@@ -3056,20 +3098,21 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		server.WithTenantAdmission(n.admitTenantMigration))
 	n.encMigrator.Store(&encMigrator)
 
-	// Wire the shared dynamic client-auth trust pool (pkg/clienttrust) onto
-	// the embedder's own *tls.Config, the same implementation
-	// cmd/qrdbd/tls.go uses, so a Key B leaf authenticates on this node's
-	// client-facing listeners too (go-qrdb#560). A node with no explicit
-	// WithTLS (relying on CeremonyCA auto-provisioning instead) has nothing
-	// to wire this onto here; that composition's listeners keep whatever
-	// trust posture ceremony.ServerTLSConfig and the auth middleware already
-	// give them.
+	// Wire n.trustPool -- built above, and already populated by
+	// SetClusterCA/SetKeyBProvider -- onto the embedder's own *tls.Config,
+	// the same implementation cmd/qrdbd/tls.go uses, so a Key B leaf
+	// authenticates on this node's client-facing listeners too
+	// (go-qrdb#560). This MUST be the SAME pool instance passed as
+	// IssuerVerifier above: a second, independently-constructed pool here
+	// is exactly the two-disconnected-pools drift B2-2 ruled out -- the TLS
+	// layer would widen ClientCAs from one pool's state while the
+	// authentication layer enforced the binding from another's. A node
+	// with no explicit WithTLS (relying on CeremonyCA auto-provisioning
+	// instead) has nothing to wire this onto here; that composition's
+	// listeners keep whatever trust posture ceremony.ServerTLSConfig and
+	// the auth middleware already give them.
 	if tlsCfg := server.ResolveTLSConfig(allOpts...); tlsCfg != nil {
-		pool := clienttrust.New()
-		pool.Wire(tlsCfg)
-		if svcNode.CertProv != nil {
-			pool.SetKeyBProvider(svcNode.CertProv)
-		}
+		n.trustPool.Wire(tlsCfg)
 	}
 
 	srv := server.New(serverCfg, svcNode.KV, svcNode.Admin, allOpts...)

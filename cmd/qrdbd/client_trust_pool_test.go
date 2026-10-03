@@ -67,6 +67,22 @@ func (f *fakeKeyBCertProvider) CACertPEMs(context.Context) ([][]byte, error) {
 	return f.pems, f.err
 }
 
+func (f *fakeKeyBCertProvider) IsTenantIssuer(context.Context, string, *x509.Certificate) (bool, error) {
+	return false, nil
+}
+
+// fakeClusterCA implements clienttrust.ClusterCA with a fixed answer, so
+// these tests can install a cluster CA without standing up a real
+// ceremony.CeremonyCA.
+type fakeClusterCA struct {
+	cert *x509.Certificate
+	err  error
+}
+
+func (f *fakeClusterCA) CACertificate() (*x509.Certificate, error) { return f.cert, f.err }
+
+var _ clienttrust.ClusterCA = (*fakeClusterCA)(nil)
+
 func testBundle(t *testing.T) *TLSBundle {
 	t.Helper()
 	bundle, err := generateCATLS()
@@ -79,6 +95,22 @@ func testBundle(t *testing.T) *TLSBundle {
 	bundle.TLSConfig.ClientCAs = bundle.ClientCACertPool
 	bundle.wireClientTrustPool()
 	return bundle
+}
+
+// bundleClusterCA parses bundle's own self-signed CA certificate and wraps
+// it as a clienttrust.ClusterCA, standing in for the cluster CA (Key A) a
+// production node resolves via ceremony.CeremonyCA.
+func bundleClusterCA(t *testing.T, bundle *TLSBundle) *fakeClusterCA {
+	t.Helper()
+	block, _ := pem.Decode(bundle.CACertPEM)
+	if block == nil {
+		t.Fatal("bundle.CACertPEM did not decode as PEM")
+	}
+	caCert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("ParseCertificate (cluster CA): %v", err)
+	}
+	return &fakeClusterCA{cert: caCert}
 }
 
 func genSecondCAPEM(t *testing.T) []byte {
@@ -102,6 +134,29 @@ func getConfigForClient(t *testing.T, bundle *TLSBundle) *tls.Config {
 	return cfg
 }
 
+// TestTLSBundle_TrustPoolIsTheWiredInstance proves bundle.TrustPool()
+// returns the SAME *clienttrust.Pool that SetKeyBProvider/SetClusterCA
+// populate and Wire installed on TLSConfig -- the object a composer passes
+// as auth.IssuerVerifier to bootstrapAuthEnforcement. A detached copy here
+// would let Key B be trusted at the TLS layer while the issuer-tenant
+// binding checked a pool that never saw the same state (go-qrdb#560
+// review, B2-2).
+func TestTLSBundle_TrustPoolIsTheWiredInstance(t *testing.T) {
+	bundle := testBundle(t)
+	keyB := genSecondCAPEM(t)
+	bundle.SetKeyBProvider(&fakeKeyBCertProvider{pems: [][]byte{keyB}})
+	clusterCA := bundleClusterCA(t, bundle)
+	bundle.SetClusterCA(clusterCA)
+
+	pool := bundle.TrustPool()
+	if pool == nil {
+		t.Fatal("TrustPool() returned nil after wireClientTrustPool")
+	}
+	if !pool.IsClusterCA(clusterCA.cert) {
+		t.Fatal("TrustPool() is not the instance SetClusterCA populated")
+	}
+}
+
 func TestWireClientTrustPool_InstallsHook(t *testing.T) {
 	bundle := testBundle(t)
 	if cfg := getConfigForClient(t, bundle); cfg != nil {
@@ -113,6 +168,10 @@ func TestWireClientTrustPool_SetKeyBProviderWidensPool(t *testing.T) {
 	bundle := testBundle(t)
 	keyB := genSecondCAPEM(t)
 	bundle.SetKeyBProvider(&fakeKeyBCertProvider{pems: [][]byte{keyB}})
+	// Key B is trusted only once BOTH SetKeyBProvider and SetClusterCA have
+	// been called (go-qrdb#560 review, B2-2): the pool and the
+	// issuer-tenant binding are the same object.
+	bundle.SetClusterCA(bundleClusterCA(t, bundle))
 
 	cfg := getConfigForClient(t, bundle)
 	if cfg == nil {
@@ -150,8 +209,45 @@ func TestWireClientTrustPool_SetKeyBProviderWidensPool(t *testing.T) {
 func TestWireClientTrustPool_ProviderErrorFallsBackToStatic(t *testing.T) {
 	bundle := testBundle(t)
 	bundle.SetKeyBProvider(&fakeKeyBCertProvider{err: errors.New("barrier is sealed")})
+	// Cluster CA IS configured here, specifically so this test exercises the
+	// CACertPEMs failure path rather than being masked by the separate
+	// "no cluster CA configured" fallback.
+	bundle.SetClusterCA(bundleClusterCA(t, bundle))
 
 	if cfg := getConfigForClient(t, bundle); cfg != nil {
 		t.Fatalf("expected (nil, nil) when CACertPEMs fails (simulating sealed), got %+v", cfg)
+	}
+}
+
+// TestWireClientTrustPool_NoClusterCA_KeyBStillWidensOnPerTenantBindingAlone
+// pins the corrected B2-2 semantics at the qrdbd wiring layer:
+// SetKeyBProvider alone, with SetClusterCA NEVER called (a deployment shape
+// with no cluster-CA concept at all), still widens the pool with Key B --
+// the issuer-tenant binding's per-tenant check (VerifyIssuer's
+// IsTenantIssuer branch) needs no cluster CA to operate, only the
+// cluster-CA EXEMPTION does. This is different from a cluster CA resolver
+// that WAS installed and is failing right now (sealed, transient): see
+// TestWireClientTrustPool_ProviderErrorFallsBackToStatic, which fails
+// closed because an installed-but-currently-broken resolver is a signal
+// this function must not paper over.
+func TestWireClientTrustPool_NoClusterCA_KeyBStillWidensOnPerTenantBindingAlone(t *testing.T) {
+	bundle := testBundle(t)
+	keyB := genSecondCAPEM(t)
+	bundle.SetKeyBProvider(&fakeKeyBCertProvider{pems: [][]byte{keyB}})
+
+	cfg := getConfigForClient(t, bundle)
+	if cfg == nil {
+		t.Fatal("expected a widened config even with no cluster CA configured")
+	}
+	block, _ := pem.Decode(keyB)
+	if block == nil {
+		t.Fatal("genSecondCAPEM did not produce valid PEM")
+	}
+	keyBCert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("ParseCertificate: %v", err)
+	}
+	if _, err := keyBCert.Verify(x509.VerifyOptions{Roots: cfg.ClientCAs, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}); err != nil {
+		t.Errorf("Key B CA certificate was not added to the widened pool: %v", err)
 	}
 }
