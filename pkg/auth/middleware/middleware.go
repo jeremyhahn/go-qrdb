@@ -242,10 +242,14 @@ func WithMTLSBindingPolicy(p auth.MTLSBindingPolicy) Option {
 }
 
 // MTLSBindingPolicy returns the enrolment posture this middleware enforces.
-// A nil middleware (auth disabled) enforces none and answers the default.
+// A nil middleware (auth disabled) enforces none and answers the default,
+// which is auth.MTLSBindingRequired (go-qrdb#548) -- the same zero value
+// m.bindingPolicy itself has when WithMTLSBindingPolicy was never applied, so
+// a nil middleware cannot disagree with a real one about what "unconfigured"
+// means.
 func (m *AuthMiddleware) MTLSBindingPolicy() auth.MTLSBindingPolicy {
 	if m == nil {
-		return auth.MTLSBindingEnrolled
+		return auth.MTLSBindingRequired
 	}
 	return m.bindingPolicy
 }
@@ -424,18 +428,23 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 	identity.Attributes = nil
 	// A holder certificate -- an officer's or custodian's, signed by the
 	// ceremony CA (auth.IsHolderIdentity) -- proves who holds a share; it is
-	// never a user login. It has no user record, no roles and no cert binding
-	// to check, and RBAC refuses it everything, so it is not resolved against
-	// the user store at all: a lookup could only ever enrich it with the roles
-	// of an unrelated account that happens to share its name ("admin"). It
-	// reaches only the identity-gated ceremony surface, whose handlers bind it
-	// by thumbprint. Like any certificate login no account resolves, it is
-	// still held to the "required" binding posture.
+	// never a user login. It has no user record and no cert binding to check,
+	// so it is not resolved against the user store at all: a lookup could
+	// only ever enrich it with the roles of an unrelated account that happens
+	// to share its name ("admin"). It is ALWAYS admitted here, with no roles,
+	// regardless of auth.mtls_binding_policy (go-qrdb#548): "required" names
+	// an ACCOUNT's certificate enrolment, and a holder is by design never an
+	// account, so the policy's rationale does not reach it -- its binding is
+	// the ceremony/officer roster, checked by thumbprint at the handler layer
+	// for every permission.IdentityGated verb (share claim begin/complete,
+	// quorum begin/submit, officer registration). decide()'s IdentityGated
+	// sentinel is what actually grants those verbs; every other permission
+	// still denies a holder identity exactly as before -- RBAC refuses an
+	// empty role set regardless of how it got here. Checking the binding
+	// policy here would refuse a holder legitimately claiming its own share
+	// before decide() is ever reached, which is the bug this fixes.
 	if auth.IsHolderIdentity(identity) {
 		identity.Roles = nil
-		if rerr := checkUnresolvedCertLogin(ctx, identity, method, m.bindingPolicy); rerr != nil {
-			return ctx, nil, rerr
-		}
 		ctx = auth.WithIdentity(ctx, identity)
 		return tenant.WithTenantID(ctx, identity.TenantID), identity, nil
 	}

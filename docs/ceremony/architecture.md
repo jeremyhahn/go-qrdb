@@ -147,14 +147,28 @@ qrdb ships only `NoopThresholdInitializer`.
 
 ## Relationship to firstboot
 
-`ceremony.Initialize` is **barrier-only**.
+`ceremony.Initialize` is barrier-and-CA custody, plus resolving
+and ISSUING the bootstrap admin's certificate — CSR-sign, BYOC, or generate,
+whichever the request selected. It is still **NOT** the canonical admin
+bootstrap: it has no admin ACCOUNT to bind the certificate to yet, because
+that account does not exist until firstboot creates it, possibly later and on
+a different cluster node (the result travels through the replicated system
+store, not in-process — see [../firstboot/architecture.md](../firstboot/architecture.md)).
 
 | Concern | Package | Function |
 |---------|---------|----------|
-| PINs, CA, server certificate, initial holders, Shamir custody | `pkg/ceremony` | `ceremony.Initialize` |
-| System tenant, built-in roles, platform admin user and client cert | `pkg/firstboot` | `firstboot.Initialize` |
+| Barrier custody (M-of-N split, custodian enrolment, Shamir share lifecycle) | `pkg/ceremony` | `ceremony.Initialize` |
+| Bootstrap admin certificate ISSUANCE (not binding) | `pkg/ceremony` | `ceremony.Initialize` / `ReissueAdminCredential` |
+| System tenant + built-in roles + platform admin user + admin cert BINDING | `pkg/firstboot` | `firstboot.Initialize` |
 
-Daemon startup runs the ceremony, then firstboot. Both are idempotent.
+Daemon startup runs them in order: ceremony (PINs → barrier → CA cert, SO cert,
+shares, admin cert ISSUED) then firstboot (system tenant → built-in roles →
+admin user → admin cert BOUND). **Both are idempotent and safe to re-run on
+cluster nodes** — leader writes propagate via Raft and follower runs are
+no-ops. Re-running the admin-credential step specifically (`qrdb init` again,
+on an already-initialized ceremony) is the retry path for a crash between
+issuance and binding; see
+[../firstboot/architecture.md](../firstboot/architecture.md).
 
 ## Alternatives rejected
 
@@ -166,9 +180,20 @@ Daemon startup runs the ceremony, then firstboot. Both are idempotent.
 - **Adopting holder certificates or bare public keys.** Enrolling an existing
   certificate or key let the enroller choose the identity. Holders are enrolled
   from a CSR only and the CA assigns the identity.
-- **Persisting shares server side.** Shares belong to holders.
-- **A single monolithic bootstrap.** Barrier custody and admin identity have
-  different trust models and different failure modes.
+- **Persisting shares server side.** Rejected: shares are secrets that belong to
+  custodians, not the system. If the ceremony is abandoned — a server restart
+  mid-enrolment — all shares are lost and it must be re-run. That is
+  intentional.
+- **Storing raw PIN bytes in the credential store.** Rejected: PIN material is
+  owned by a `pin.PINBackend`, hashed with Argon2id or PBKDF2 depending on FIPS
+  mode. Raw receive buffers are wiped (`secure.Wipe`) before the bootstrap call
+  returns. In M-of-N the User PIN *is* the Shamir secret and its bytes are wiped
+  once the shares are produced.
+- **A single monolithic bootstrap.** Rejected: barrier custody and admin
+  identity have different trust models and different failure modes. Splitting
+  them is what lets an operator run one without the other.
+- **Serving a claimed share twice.** Rejected — `Claim` destroys the enclave and
+  retains only the fact that a claim occurred, so a second attempt is refused.
 
 ## Component boundaries
 
@@ -190,6 +215,17 @@ Daemon startup runs the ceremony, then firstboot. Both are idempotent.
 - **Certificate identity is CA-assigned.**
 - **The claim is a signed-nonce challenge over a connection presenting the
   enrolled certificate.**
+- **A holder certificate always authenticates, regardless of
+  `auth.mtls_binding_policy`.** The fleet-wide posture (required by default)
+  governs ACCOUNT certificate enrolment; a holder is never an account
+  (`auth.IsHolderIdentity`), so the posture does not reach it — it
+  reaches the `permission.IdentityGated` surface (share claim begin/complete,
+  quorum begin/submit, officer registration) with no roles, and RBAC refuses
+  it every other permission. **This is not the holder's binding**: a
+  holder-shaped certificate for a username never enrolled through officer
+  registration authenticates the identical way and is refused at the roster
+  lookup those handlers make (by thumbprint), not by auth middleware. See
+  [../identity-rbac/architecture.md](../identity-rbac/architecture.md#the-fleet-wide-posture-authmtls_binding_policy).
 
 ## What this feature deliberately does not do
 

@@ -67,7 +67,11 @@ func mintHolderCert(t *testing.T, cn string, ous ...string) certKey {
 // identity-gated ceremony surface.
 func TestAuthenticate_HolderCertificateIsNeverAUserLogin(t *testing.T) {
 	svc := newRealUserStore(t)
-	createUser(t, svc, tenantid.System, "admin", []string{"admin-role"})
+	u := createUser(t, svc, tenantid.System, "admin", []string{"admin-role"})
+	// go-qrdb#548: a holder is never an account, so auth.mtls_binding_policy
+	// -- which names an ACCOUNT's certificate enrolment -- does not reach it;
+	// this runs under the default "required" to prove that directly, with no
+	// explicit override.
 	m := mtlsMiddleware(svc)
 
 	for _, profile := range []string{holderprofile.Custodian, holderprofile.SecurityOfficer} {
@@ -84,8 +88,15 @@ func TestAuthenticate_HolderCertificateIsNeverAUserLogin(t *testing.T) {
 		}
 	}
 
-	// The control: the same name without a holder profile is the user.
-	_, identity, err := m.authenticate(mtlsContext(mintHolderCert(t, "admin", tenantid.System)))
+	// The control: the same name without a holder profile is the user --
+	// enrolled here (unlike the holder certs above) because this certificate
+	// names a real account, and "required" means exactly that account's
+	// certificate enrolment: without a binding this leg would be refused for
+	// the ordinary reason TestCheckCertBinding_* already covers, which is not
+	// what this test is about.
+	control := mintHolderCert(t, "admin", tenantid.System)
+	enroll(t, svc, u.ID, control)
+	_, identity, err := m.authenticate(mtlsContext(control))
 	if err != nil {
 		t.Fatalf("user certificate refused: %v", err)
 	}
@@ -100,6 +111,9 @@ func TestAuthenticate_HolderCertificateIsNeverAUserLogin(t *testing.T) {
 func TestAuthenticate_LegacyHolderLayoutIsAHolderToo(t *testing.T) {
 	svc := newRealUserStore(t)
 	createUser(t, svc, holderprofile.Custodian, "admin", []string{"admin-role"})
+	// Same reasoning as TestAuthenticate_HolderCertificateIsNeverAUserLogin:
+	// a holder is never an account, so this runs under the default "required"
+	// too, with no explicit override.
 	m := mtlsMiddleware(svc)
 
 	_, identity, err := m.authenticate(mtlsContext(mintHolderCert(t, "admin", holderprofile.Custodian)))

@@ -476,11 +476,12 @@ func (e *holderE2E) adminClient() transport.BarrierClient {
 		if err != nil {
 			e.t.Fatalf("create role: %v", err)
 		}
-		if _, err := svc.User.CreateUser(ctx, &user.CreateUserRequest{WithoutEmailLoginKey: true,
+		adminUser, err := svc.User.CreateUser(ctx, &user.CreateUserRequest{WithoutEmailLoginKey: true,
 			Username: "holder-admin",
 			TenantID: tenantid.System,
 			RoleIDs:  []string{r.ID},
-		}); err != nil {
+		})
+		if err != nil {
 			e.t.Fatalf("create user: %v", err)
 		}
 		issued, err := e.ca.IssueCertificate(ctx, &ceremony.IssueCertRequest{
@@ -491,6 +492,13 @@ func (e *holderE2E) adminClient() transport.BarrierClient {
 		})
 		if err != nil {
 			e.t.Fatal(err)
+		}
+		// auth.mtls_binding_policy defaults to "required" (go-qrdb#548): this
+		// identity is a real RBAC account (SealOfficerRevoke etc.), not a
+		// holder, so it needs an enrolled binding to authenticate at all --
+		// the same convention enrollMatrixCert uses for "matrix".
+		if _, err := svc.User.AddCertBinding(ctx, adminUser.ID, user.ComputeSPKIThumbprint(issued.Certificate), 0); err != nil {
+			e.t.Fatalf("enrol holder-admin cert binding: %v", err)
 		}
 		cert, err := tls.X509KeyPair(issued.CertPEM, issued.KeyPEM)
 		if err != nil {
@@ -738,5 +746,72 @@ func TestShareHolders_ConformAcrossEverySDKTransport(t *testing.T) {
 				t.Fatalf("root-token quorum outcome = %+v", token)
 			}
 		})
+	}
+}
+
+// TestShareHolders_RefusedForNonHolderVerb is the other half of the
+// go-qrdb#548 carve-out: a holder certificate authenticates (it is ALWAYS
+// admitted, regardless of auth.mtls_binding_policy -- a holder is by design
+// never an account, so the "required" default's account-enrolment rationale
+// does not reach it), but it carries no roles, so RBAC refuses it every
+// permission that is not permission.IdentityGated. AdminStatus is an
+// arbitrary ordinary example, not a holder verb.
+func TestShareHolders_RefusedForNonHolderVerb(t *testing.T) {
+	e := newHolderE2E(t, restTransport)
+	e.boot()
+	e.enrolAndInitialize()
+	if err := e.n.Unseal(boundedCtx(t), seal.Credentials{}); err != nil {
+		t.Fatalf("complete boot: %v", err)
+	}
+	h := e.holders["so-alice"]
+	client := e.dial(h.tlsConfig(e.pool))
+	_, err := client.Admin().Status(boundedCtx(t))
+	if err == nil {
+		t.Fatal("a holder certificate was admitted for admin:status, a non-holder verb")
+	}
+	t.Logf("admin:status refused as expected: %v", err)
+}
+
+// TestShareHolders_UnregisteredHolderCertRefusedByRoster proves the
+// go-qrdb#548 carve-out is not a bypass: it only ever admits the identity
+// into the middleware chain. A certificate the ceremony CA signs with a
+// holder profile, for a username NEVER enrolled through
+// BarrierOfficerRegister, authenticates exactly like any other holder
+// certificate -- then the officer-registry lookup ShareClaimBegin makes
+// refuses it, because possession of a holder-shaped certificate is not
+// possession of an enrolled share; the roster entry (by thumbprint) is the
+// actual binding, same as the existing claim/revocation refusals this test
+// package already covers for a REVOKED holder (TestShareHolders_
+// ConformAcrossEverySDKTransport's "cust-erin" assertions). This is the
+// unregistered case: an officer that was never on the roster at all.
+func TestShareHolders_UnregisteredHolderCertRefusedByRoster(t *testing.T) {
+	e := newHolderE2E(t, restTransport)
+	e.boot()
+	e.enrolAndInitialize()
+	if err := e.n.Unseal(boundedCtx(t), seal.Credentials{}); err != nil {
+		t.Fatalf("complete boot: %v", err)
+	}
+
+	mallory := newE2EHolder(t, "so-mallory", transport.RoleSecurityOfficer, elliptic.P256(), "", false)
+	block, _ := pem.Decode([]byte(mallory.csrPEM))
+	if block == nil {
+		t.Fatal("mallory's own CSR did not encode")
+	}
+	cert, err := e.ca.SignCSR(boundedCtx(t), []byte(mallory.csrPEM), &ceremony.SignCSROptions{
+		TenantID:     tenantid.System,
+		Username:     mallory.name,
+		Profile:      "security-officer",
+		ValidityDays: 1,
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	})
+	if err != nil {
+		t.Fatalf("sign mallory's holder certificate directly, bypassing BarrierOfficerRegister: %v", err)
+	}
+	mallory.cert = cert
+	mallory.certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
+
+	if err := e.claim(mallory); err == nil {
+		t.Fatal("a holder certificate for a username never enrolled through BarrierOfficerRegister claimed an envelope")
 	}
 }

@@ -96,24 +96,30 @@ account stays closed and authenticates on its other keys. Withdrawal removes
 the entry, and when it was the last one the set becomes empty and the account
 reopens. Both are correct; they are not interchangeable.
 
-By default this is **fail-closed per account rather than per fleet**
-(`auth.mtls_binding_policy: enrolled`). Requiring a binding of everyone locks
-out every account nobody has enrolled, including the bootstrap admin on a node
-whose first boot wired no `CertBinder` (there is then no certificate in
-existence to have enrolled), and the way back in needs a permission that needs a
-login. Refusing to admit an unenrolled account is therefore a migration event;
-admitting it is not, and the cost of admitting it is stated above rather than
-hidden.
+**By default this is fail-closed per FLEET** (`auth.mtls_binding_policy:
+required`): FedRAMP, HIPAA and PCI DSS 4.0 require
+possession-based authentication of every account, not only the ones an
+operator happened to enrol. `auth.mtls_binding_policy: enrolled` is the
+explicit, visible opt-out for a fleet still migrating — it does NOT meet those
+controls, because an account with no bindings under it is exactly as
+impersonable as the CA's issuance paths make it. Every composition in this
+module (`qrdbd`, `sdk/go/node`, embedded) enrols the bootstrap admin's
+certificate as part of first boot, so the default does not lock a fresh node
+out of itself; see "The fleet-wide posture" below for how.
 
 ### The fleet-wide posture: `auth.mtls_binding_policy`
 
-A deployment that has enrolled everybody can say so, and have the server
-enforce it:
+A fleet still migrating accounts onto certificate enrolment can say so, and
+have the server relax to match:
 
 | `auth.mtls_binding_policy` | An account with bindings | An account with none | A certificate naming no account |
 |---|---|---|---|
-| `enrolled` (default) | admits only a matching, unexpired key | admits on the CA's assertion | admits, unenriched — no roles, so RBAC denies |
-| `required` | admits only a matching, unexpired key | **refused** — `*CertBindingRequiredError`, 401 | **refused** — `*CertBindingRequiredError`, 401 |
+| `required` (default) | admits only a matching, unexpired key | **refused** — `*CertBindingRequiredError`, 401 | **refused** — `*CertBindingRequiredError`, 401¹ |
+| `enrolled` (non-compliant opt-out) | admits only a matching, unexpired key | admits on the CA's assertion | admits, unenriched — no roles, so RBAC denies |
+
+¹ Except a holder certificate, which this column would otherwise describe: it
+names no account by design, so it is excepted from the refusal under BOTH
+postures — see "What `required` does not reach" below.
 
 Under `required` **possession is the only way a certificate identifies anyone**,
 so the residual hole above closes: an unguarded issuance path can no longer
@@ -140,9 +146,13 @@ admin:
   StaleRead copy may not yet hold a binding the leader enrolled, and judging it
   would refuse a boot that should succeed. A read that cannot be served yet is
   retried for up to 30 seconds (`firstboot.VerifyAdminCertBindingWithin`), then
-  refuses. The daemon's own first boot wires no `CertBinder`, so a fresh daemon
-  under `required` stops here — the posture is reached by migration, never by
-  default.
+  refuses. **The daemon's own first boot DOES wire a `CertBinder`**
+  (`firstboot.UserCertBinder` over its own user store) and an
+  admin certificate path (the one `qrdb init` resolved through
+  `--admin-csr`/`--admin-cert`/generate, carried from the ceremony to first
+  boot through the replicated system store — see
+  [../firstboot/architecture.md](../firstboot/architecture.md)), so a fresh
+  daemon under the `required` default boots cleanly rather than refusing.
 - **The SDK node** checks at start: it refuses to boot when an existing admin
   holds no live binding (with the same bounded wait), and defers a missing
   admin to first boot. `Node.FirstBoot` runs first-boot under the node's own
@@ -222,15 +232,35 @@ cannot be shown to hold, and starting anyway is the lockout the check prevents.
   identity proceeds unenriched to the `IdentityGated` barrier surface exactly as
   under `enrolled`. Refusing it would make the tenant's own unseal unreachable
   by certificate.
+- **A holder certificate.** `auth.mtls_binding_policy` names an ACCOUNT's
+  certificate enrolment, and a share holder (`auth.IsHolderIdentity`, a
+  Security Officer or custodian the ceremony CA signed — see
+  [../ceremony/architecture.md](../ceremony/architecture.md)) is by design
+  never an account: it has no user record and no binding to check, so the
+  posture's rationale does not reach it. It is ALWAYS admitted, with no roles,
+  regardless of `required`/`enrolled` — the same as every certificate login no
+  account resolves to, it still reaches only the `IdentityGated` surface
+  (share claim begin/complete, quorum begin/submit, officer registration);
+  RBAC refuses it every other permission on its empty role set, holder or not.
+  Its binding is the ceremony/officer roster, checked by thumbprint at the
+  handler layer — a holder-shaped certificate for a username never enrolled
+  through officer registration authenticates exactly like an enrolled one and
+  is refused at that roster check, not here.
 - **Non-certificate methods.** The posture is about certificate logins; other
   methods are governed by the account's permitted-method policy.
 
-**Migration and rollback.** Enrol every account's certificate under `enrolled`
-first — the pre-flight is listing the accounts whose `cert_bindings` are empty
-(see [user.md](user.md#moving-a-fleet-to-required-certificate-enrolment)) — then
-set `required` on every node. Rolling back is setting `enrolled` and restarting;
-nothing is migrated in either direction, because the policy is read at boot and
-stored nowhere.
+**Migration and rollback (the direction reversed from an earlier release).** `required` is
+the default, so a FRESH fleet needs no migration at all — every composition
+enrols the bootstrap admin as part of first boot, and every other account is
+enrolled the ordinary way (`POST /users/{id}/cert-bindings`) before it ever
+logs in. An EXISTING fleet upgrading from a release that defaulted to
+`enrolled` sets `auth.mtls_binding_policy: enrolled` explicitly first — the
+pre-flight is listing the accounts whose `cert_bindings` are empty (see
+[user.md](user.md#moving-a-fleet-to-required-certificate-enrolment)) — enrols
+every one, then removes the explicit `enrolled` setting (or sets `required`
+explicitly) on every node. Rolling back to the non-compliant opt-out is
+setting `enrolled` and restarting; nothing is migrated in either direction,
+because the policy is read at boot and stored nowhere.
 
 **The consequence for certificate issuance** is that every path that mints a
 certificate remains security-relevant for unenrolled accounts — an unguarded
