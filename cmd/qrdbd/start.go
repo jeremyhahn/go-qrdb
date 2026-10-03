@@ -998,6 +998,25 @@ func recordSecureMemoryWipe(err *error) {
 // silent-budget-loss go-qrdb#114's review flagged (round 3) — so a mismatch
 // is fatal precisely because a MATCH is what makes the non-fatal case safe.
 func runStart(f *startFlags) (err error) {
+	// Refuse a protocol the config enables but this binary was not built
+	// with, before any resource is allocated -- the secure-memory budget,
+	// the TLS bootstrap material, a bound listener. resolveStartFlags
+	// already calls this when --config names a YAML file; flags given
+	// directly on the command line never went through that path, so
+	// --enable-mysql (or --enable-pgsql) on a binary built without the
+	// matching tag would otherwise fall through to startMySQLFn / startPgSQLFn
+	// staying nil and the flag being silently dropped, which is exactly the
+	// "silently ignored" outcome config.ValidateCapabilities exists to
+	// prevent (pkg/config/mode.go). Calling it unconditionally here, ahead of
+	// the per-protocol flag/YAML precedence resolved in resolveStartFlags,
+	// makes the refusal reach every invocation shape rather than only the
+	// --config one.
+	if capCheckCfg, cerr := buildServerConfig(f); cerr == nil {
+		if err := capCheckCfg.ValidateCapabilities(); err != nil {
+			return err
+		}
+	}
+
 	budgetMiB := f.secureMemoryBudgetMiB
 	resolved, rerr := resolveSecureMemoryBudget(budgetMiB)
 	if rerr != nil {

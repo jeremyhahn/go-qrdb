@@ -1641,6 +1641,27 @@ LINT_TAGS  := $(subst $(space),$(comma),$(strip $(BUILD_TAGS)))
 # The same join applied to the mandatory floor. Used by SUPPORTED_TAG_SETS.
 MIN_TAGS   := $(subst $(space),$(comma),$(strip $(REQUIRED_TAGS)))
 
+# The two SQL-reduced rungs, computed by filtering the DEFAULT tag set rather
+# than recomputing it from the WITH_* flags: BUILD_TAGS is already the single
+# place those flags resolve to tags (#263's whole point), so filtering it is
+# the one way to vary a rung without a second, driftable copy of that logic.
+#
+#   NOMYSQL_TAGS      default minus qrdb_mysql only. The MySQL wire protocol
+#                     is compiled out; qrdb_sql and qrdb_pgsql (and therefore
+#                     go-mysql-server and vitess) are still present, because
+#                     disabling MySQL alone does not disable the SQL engine
+#                     PostgreSQL also runs on. This rung exists to make
+#                     exactly that boundary checkable: a pkg/sql/mysql file,
+#                     or a vitess listener/handler symbol, reachable under
+#                     this rung is the regression.
+#   NOSQLFAMILY_TAGS  default minus qrdb_mysql, qrdb_pgsql AND qrdb_sql. This
+#                     is the rung where the hard limit applies: go-mysql-
+#                     server and vitess must be absent from the dependency
+#                     graph of cmd/qrdbd and cmd/qrdb entirely, not merely
+#                     from the wire-protocol packages.
+NOMYSQL_TAGS      := $(subst $(space),$(comma),$(strip $(filter-out qrdb_mysql,$(BUILD_TAGS))))
+NOSQLFAMILY_TAGS  := $(subst $(space),$(comma),$(strip $(filter-out qrdb_mysql qrdb_pgsql qrdb_sql,$(BUILD_TAGS))))
+
 .PHONY: lint
 lint:
 	$(GOLINT) run --build-tags "$(LINT_TAGS)" ./...
@@ -2223,7 +2244,19 @@ vet:
 # finding -- so a union of runs hides exactly what the extra rungs were added
 # to expose. The sweep prints the tag set beside every invocation and beside
 # every failure for that reason; keep it that way.
-SUPPORTED_TAG_SETS := $(MIN_TAGS) $(MIN_TAGS),integration $(LINT_TAGS) $(LINT_TAGS),integration $(LINT_TAGS),qrdb_fts
+#
+# NOMYSQL and NOSQLFAMILY are declared rungs too, so the MySQL build-tag
+# boundary is checked by compilation and not merely by review. Both are
+# DEFAULT with one or three tags removed (NOMYSQL_TAGS /
+# NOSQLFAMILY_TAGS above), the same shape as the qrdb_fts rung, for the same
+# reason: `pkg/sql/mysql`, a vitess listener symbol, or (under NOSQLFAMILY)
+# go-mysql-server and vitess themselves reachable from `cmd/qrdbd` or
+# `cmd/qrdb` under either rung is a leak these two exist to catch, not a
+# hypothetical -- that is exactly how `pkg/api/errclass` linked
+# `github.com/dolthub/vitess/go/mysql` into every build before it was fixed.
+# `test/buildgates` asserts the dependency-graph half of the same claim with
+# `go list -deps`; these rungs are what makes the claim typecheck as well.
+SUPPORTED_TAG_SETS := $(MIN_TAGS) $(MIN_TAGS),integration $(LINT_TAGS) $(LINT_TAGS),integration $(LINT_TAGS),qrdb_fts $(NOMYSQL_TAGS) $(NOMYSQL_TAGS),integration $(NOSQLFAMILY_TAGS) $(NOSQLFAMILY_TAGS),integration
 
 # vet-tags sweeps EVERY Go module in the tree, each with its own tag sets.
 #

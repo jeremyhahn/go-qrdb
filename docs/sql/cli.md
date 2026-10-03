@@ -68,6 +68,15 @@ qrdbd start \
 TLS and auth must both be enabled when either protocol is active; the daemon
 refuses to start otherwise.
 
+Both flags exist in every build — `qrdbd start --help` always lists
+`--enable-mysql` and `--enable-pgsql` — but starting the daemon with
+`--enable-mysql` (or `protocols.mysql: true` in the config file) on a binary
+built with `WITH_QRDB_MYSQL=0` is refused at startup, before any listener is
+attempted, with a typed configuration error naming the missing build tag
+(`protocols.mysql: not compiled in: requires build tag qrdb_mysql`); the
+same applies to `--enable-pgsql` and `WITH_QRDB_PGSQL=0`. It is never
+silently ignored.
+
 ## Connecting with a SQL client
 
 ### MySQL

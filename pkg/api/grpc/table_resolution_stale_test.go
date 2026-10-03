@@ -17,7 +17,6 @@ package grpc
 import (
 	"testing"
 
-	sqle "github.com/dolthub/go-mysql-server/sql"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -40,17 +39,21 @@ func TestMapServiceError_TableResolutionStaleIsAborted(t *testing.T) {
 }
 
 // staleResolutionErrors is every shape a stale table resolution reaches a
-// transport in: bare, as the SQL engine's serialization failure (whose
-// cause is reachable only through Cause()) inside a SQL execution failure,
-// and wrapped by a read.
+// transport in: bare, wrapped by a read, and -- under a qrdb_sql build --
+// as the SQL engine's serialization failure (whose cause is reachable only
+// through Cause()) inside a SQL execution failure. sqlEngineStaleResolutionErrors
+// supplies the latter two only when the SQL engine is compiled in; see
+// table_resolution_stale_sql_test.go and its !qrdb_sql counterpart.
 func staleResolutionErrors() map[string]error {
 	generation := &service.TableGenerationStaleError{Database: "shop", Name: "orders", Expected: 0, Actual: 1}
 	definition := &service.TableDefinitionStaleError{Database: "shop", Name: "orders", Reason: "index idx_sku was dropped"}
-	return map[string]error{
-		"generation":            generation,
-		"definition":            definition,
-		"sql engine generation": &service.SQLExecutionError{Err: sqle.ErrLockDeadlock.Wrap(generation, generation.Error())},
-		"sql engine definition": &service.SQLExecutionError{Err: sqle.ErrLockDeadlock.Wrap(definition, definition.Error())},
-		"read":                  &service.ReadError{Err: generation},
+	errs := map[string]error{
+		"generation": generation,
+		"definition": definition,
+		"read":       &service.ReadError{Err: generation},
 	}
+	for name, err := range sqlEngineStaleResolutionErrors(generation, definition) {
+		errs[name] = err
+	}
+	return errs
 }

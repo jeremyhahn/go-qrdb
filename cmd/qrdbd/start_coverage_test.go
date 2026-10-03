@@ -33,6 +33,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
@@ -1541,6 +1542,51 @@ func TestRunStart_TLSLoadError(t *testing.T) {
 	require.Error(t, err)
 	var loadErr *TLSLoadError
 	require.True(t, errors.As(err, &loadErr))
+}
+
+// ---------------------------------------------------------------------------
+// runStart: the capability gate fires on CLI flags, not only --config
+//
+// resolveStartFlags already calls Config.ValidateCapabilities when --config
+// names a YAML file; a protocol enabled by flag alone (no --config) went
+// through runStart without that check, so --enable-mysql on a binary built
+// without qrdb_mysql silently started with startMySQLFn staying nil instead
+// of refusing. runStart now calls ValidateCapabilities itself, before TLS
+// bootstrap or any other resource is touched, so this covers both outcomes
+// this test binary's own build tags can produce: refused with the typed
+// error naming the missing tag when the tag is absent, or -- as it is for
+// this binary, built with the default tag set -- waved through to fail on
+// the next thing runStart needs that this minimal *startFlags does not
+// supply (the same TLSLoadError TestRunStart_TLSLoadError exercises).
+// ---------------------------------------------------------------------------
+
+func TestRunStart_MySQLCapabilityGate(t *testing.T) {
+	dir := t.TempDir()
+	f := &startFlags{
+		tlsCAFile:   filepath.Join(dir, "nonexistent-ca.pem"),
+		tlsCertFile: filepath.Join(dir, "nonexistent-cert.pem"),
+		tlsKeyFile:  filepath.Join(dir, "nonexistent-key.pem"),
+		dataDir:     dir,
+		smType:      "memory",
+		host:        testBindHost,
+		enableMySQL: true,
+	}
+
+	err := runStart(f)
+	require.Error(t, err)
+
+	var verr *qrdbconfig.ValidationError
+	if !capabilities.Has("mysql") {
+		require.True(t, errors.As(err, &verr), "want *config.ValidationError, got %T: %v", err, err)
+		assert.Contains(t, verr.Reason, "qrdb_mysql")
+		return
+	}
+	if errors.As(err, &verr) {
+		t.Fatalf("got a capability ValidationError (%v) on a binary built with qrdb_mysql -- "+
+			"the gate must not refuse a protocol this binary actually has", verr)
+	}
+	var loadErr *TLSLoadError
+	require.True(t, errors.As(err, &loadErr), "want *TLSLoadError once the capability gate passes, got %T: %v", err, err)
 }
 
 // ---------------------------------------------------------------------------

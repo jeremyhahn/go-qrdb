@@ -11,6 +11,109 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`pkg/api/errclass` no longer links vitess into every build.** It
+  imported `github.com/dolthub/vitess/go/mysql` with no build constraint,
+  solely to build two numbered-error samples for a classifier parity test —
+  linking vitess into every binary, including one built with
+  `WITH_QRDB_SQL=0`, because `pkg/api/errclass` sits in every transport's
+  import graph. Replaced with a local, dependency-free sample type
+  (`numberedSampleError`) carrying only the `Number() int` shape the
+  classifier matches on. Three test files making the same mistake at a
+  smaller scale (`pkg/api/{grpc,quic,rest}/table_resolution_stale_test.go`,
+  `pkg/api/rest/handlers_sql_test.go`, `pkg/api/rest/route_mapping_guard_test.go`)
+  are split so the `qrdb_sql`-only part of each lives in its own
+  `qrdb_sql`-tagged file, with a `!qrdb_sql` counterpart, rather than
+  carrying no constraint at all.
+- **`qrdbd start --enable-mysql` / `--enable-pgsql` on a binary built
+  without the matching tag is refused, not silently dropped.**
+  `resolveStartFlags` already called `Config.ValidateCapabilities` when
+  `--config` named a YAML file; a protocol enabled by flag alone, with no
+  `--config`, skipped that call entirely, so `startMySQLFn` / `startPgSQLFn`
+  stayed `nil` and the daemon started anyway with the flag quietly having
+  no effect. `runStart` now calls `ValidateCapabilities` itself, before the
+  secure-memory budget or TLS bootstrap material is touched, so the typed
+  `config.ValidationError` fires for every invocation shape, not only
+  `--config`.
+- **`StartEtcd` refuses with the same typed `service.CapabilityUnsupportedError`
+  every transport maps to Unimplemented when etcd support is not compiled
+  in**, naming the missing `qrdb_etcd` build tag, instead of silently
+  returning `nil` and accepting a configuration it could never serve.
+- **The coverage gate's package-discovery `go list` now passes the same
+  `-tags` the `go test` call beneath it already used.** Without it, any
+  package whose every file carries a build tag (`pkg/sql/mysql`,
+  `pkg/sql/pgsql`, and later every package under `pkg/sql/*` and
+  `pkg/api/etcd` once those were tagged too) silently dropped out of
+  `BULK_PKGS` discovery: "build constraints exclude all Go files" is not an
+  error `go list` reports, it just shrinks the package set. Those packages
+  were never in `test/coverage-baseline.txt`, so the ratchet's MISSING check
+  never fired — a pre-existing gap this change exposed rather than
+  introduced, now closed.
+
+### Added
+
+- **Two more declared build-tag rungs: NOMYSQL and NOSQLFAMILY**
+  (`make print-tag-sets`), swept by `make vet-tags` like every other
+  declared combination: the default tag set with `qrdb_mysql` alone
+  removed, and with `qrdb_mysql`, `qrdb_pgsql` and `qrdb_sql` all removed.
+  They exist because "the package compiles" was never the property that
+  mattered for the MySQL build-tag boundary — "what is in the binary's
+  dependency graph" is, and nothing short of vetting these exact
+  combinations checks it.
+- **`test/buildgates/mysql_dependency_test.go`** asserts that property
+  directly with `go list -deps` over `cmd/qrdbd` and `cmd/qrdb`: under the
+  default tags, both reach vitess, go-mysql-server and `pkg/sql/mysql`
+  (the discovery floor, so an empty scan cannot read as clean); with
+  `qrdb_mysql` off, `pkg/sql/mysql` and go-mysql-server's listener package
+  are gone while the SQL engine (and vitess underneath it) legitimately
+  remains if SQL or PostgreSQL is still on; with `qrdb_sql`, `qrdb_mysql`
+  and `qrdb_pgsql` all off, vitess and go-mysql-server are absent from both
+  binaries entirely.
+- **PostgreSQL and etcd get the same build-tag treatment as MySQL.** Every
+  non-test and test file under `pkg/sql/{catalog,engine,infoschema,
+  lockclause,pgcatalog,privilege,provider,query}` now carries
+  `//go:build qrdb_sql` directly, rather than being gated only at import
+  sites; every file under `pkg/api/etcd` carries `//go:build qrdb_etcd`.
+  `test/buildgates/pgsql_dependency_test.go` and
+  `test/buildgates/etcd_dependency_test.go` prove `jeroenrinzema/psql-wire`
+  and `go.etcd.io/etcd/*` are absent from both binaries' dependency graphs
+  with the matching flag off, the same way the MySQL test proves it for
+  vitess. `WITH_QRDB_SQL=0` now forces `WITH_QRDB_MYSQL` and
+  `WITH_QRDB_PGSQL` to `0` as well (the clearer of the two directions: a
+  binary with no SQL engine cannot serve either wire protocol, so leaving
+  them independently settable would let the Makefile accept a
+  configuration the build can't honor); either `WITH_QRDB_MYSQL=1` or
+  `WITH_QRDB_PGSQL=1` forces `WITH_QRDB_SQL=1`. New declared rungs NOPGSQL
+  and NOETCD (plus their `+integration` variants) are swept by
+  `make vet-tags`.
+- **`--enable-mysql`/`--mysql-port` and `--enable-pgsql`/`--pgsql-port`
+  flags, and the `qrdb sql` / `qrdb database update-protocol` /
+  `qrdb database update-etcd` subcommands and `--etcd*` create flags, are
+  registered only from files carrying the matching build tag**, with a
+  `_stub.go` no-op counterpart under the negated tag — the same pattern
+  `cmd/qrdb/timeseries_enabled.go`/`timeseries_stub.go` already established.
+  A binary built without a protocol no longer exposes a flag or subcommand
+  for it that would do nothing (or crash) if used.
+- **`docs/sql/architecture.md`, `docs/sql/cli.md`, `docs/sql/engineering.md`,
+  `docs/etcd-compatibility/architecture.md` and `docs/etcd-compatibility/cli.md`**
+  now spell out exactly what each `WITH_QRDB_*` flag removes, and the
+  single site that constructs the MySQL wire listener
+  (`pkg/sql/mysql/server.go`'s call into `go-mysql-server/server.NewServer`,
+  which is what calls vitess's listener constructor).
+
+### Changed — BREAKING
+
+- **A binary built with `WITH_QRDB_MYSQL=0`, `WITH_QRDB_PGSQL=0` or
+  `WITH_QRDB_ETCD=0` no longer registers that protocol's CLI surface at
+  all.** `qrdbd start --enable-mysql`/`--mysql-port`,
+  `--enable-pgsql`/`--pgsql-port`; `qrdb sql`; `qrdb database
+  update-protocol`'s `--mysql`/`--postgresql`; and `qrdb database
+  update-etcd` plus `create`'s `--etcd*` flags do not exist (not merely
+  refuse) when the corresponding tag is off. Scripts that pass these flags
+  unconditionally to a reduced build must branch on the build's declared
+  capabilities first.
+
 ## [0.36.0-alpha] - 2026-10-03
 
 Holder audit and Shamir custody follow-ups. This release contains BREAKING changes; see the entries below. Highlights:

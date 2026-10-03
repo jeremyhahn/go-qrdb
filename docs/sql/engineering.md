@@ -98,6 +98,29 @@ goroutine, and an idle open cursor is not bounded by `sql.query_timeout`.
 Clients that need bounded resource use should not request cursors. See
 [upstream-gaps.md](upstream-gaps.md#5-server-side-cursors-race-on-connstatusflags-and-are-not-bounded).
 
+`protocols.mysql: true` / `protocols.postgresql: true` are additionally
+refused, with a typed `config.ValidationError`, on a binary built without
+the matching tag (`Config.ValidateCapabilities`, `pkg/config/mode.go`) — a
+daemon built with `WITH_QRDB_MYSQL=0` never silently drops the setting.
+
+### MySQL listener construction
+
+`pkg/sql/mysql/server.go`'s `(*Server).Start`, specifically its call to
+`github.com/dolthub/go-mysql-server/server.NewServer(cfg, s.sqlEngine,
+sql.NewContext, sb.Build, nil)`, is the ONE site in this module that
+constructs the MySQL wire listener: GMS's `server.NewServer` is what calls
+vitess's `mysql.NewListenerWithConfig` internally. It is also the only
+caller of `github.com/dolthub/go-mysql-server/server` in this tree —
+confirmed by `test/buildgates/mysql_dependency_test.go`, which asserts that
+package is unreachable from `cmd/qrdbd` / `cmd/qrdb` under
+`WITH_QRDB_MYSQL=0`. Nothing else in qrdb constructs a MySQL listener, and
+this file compiles only under `qrdb_mysql`.
+
+GMS exposes one hook over that construction: `server.Config.ProtocolListenerFactory`,
+left nil today so GMS defaults it to its own `MySQLProtocolListenerFactory`.
+Any future listener-level option is a `(*Server).Start` change through that
+field, not a new construction site.
+
 
 ## KV Table Schema
 

@@ -115,12 +115,41 @@ The SQL layer is opt-in via build tags (enabled by default in the Makefile):
 | `WITH_QRDB_MYSQL=1` | `qrdb_mysql` | MySQL wire protocol (implies `qrdb_sql`) |
 | `WITH_QRDB_PGSQL=1` | `qrdb_pgsql` | PostgreSQL wire protocol (implies `qrdb_sql`) |
 
-Disable with `WITH_QRDB_MYSQL=0` or `WITH_QRDB_PGSQL=0`. Setting
-`WITH_QRDB_SQL=0` as well removes the entire SQL layer — go-mysql-server
-and vitess no longer link into the binary, and every transport answers
-`/sql/query` with its nil-service error. The Makefile forces
-`WITH_QRDB_SQL=1` whenever either wire protocol is enabled, since both
-are engines over the shared `pkg/sql` core.
+Disable with `WITH_QRDB_MYSQL=0` or `WITH_QRDB_PGSQL=0`. What each removes,
+precisely:
+
+| Flag off | `pkg/sql/mysql` | `pkg/sql/pgsql` | go-mysql-server, vitess |
+|---|---|---|---|
+| `WITH_QRDB_MYSQL=0` (SQL or PG still on) | absent | present (if on) | present — GMS is PostgreSQL's engine too |
+| `WITH_QRDB_PGSQL=0` (SQL or MySQL still on) | present (if on) | absent | present — GMS is MySQL's engine too |
+| `WITH_QRDB_SQL=0` (forces MySQL and PG off too) | absent | absent | **absent** |
+
+MySQL and PostgreSQL are two wire protocols over ONE SQL engine
+(go-mysql-server), and go-mysql-server's own parser and error types come
+from vitess — so disabling MySQL alone does not remove vitess from the
+binary while PostgreSQL (or the ad-hoc `/sql/query` path) is still compiled
+in: go-mysql-server keeps pulling it in regardless of which wire protocol,
+if any, sits on top. `WITH_QRDB_MYSQL=0` removes qrdb's own `pkg/sql/mysql`
+package, the MySQL listener, and the MySQL-specific config wiring — a
+config that sets `protocols.mysql: true` on a binary built this way is
+refused at startup with a typed `ValidationError` (`pkg/config/mode.go`),
+the same pattern `protocols.postgresql` uses for `WITH_QRDB_PGSQL=0`. Only
+`WITH_QRDB_SQL=0` removes go-mysql-server and vitess themselves: the
+Makefile forces `WITH_QRDB_SQL=1` whenever either wire protocol is
+enabled, since both are engines over the shared `pkg/sql` core, so this is
+the only configuration where the SQL engine's own dependencies are absent.
+With SQL on and PG off and MySQL off, `qrdb_sql` alone still compiles the
+ad-hoc `/sql/query` service and the in-process driver, both backed by the
+same go-mysql-server engine; every transport answers `/sql/query` with its
+nil-service error only once `qrdb_sql` itself is off.
+
+`test/buildgates` (`mysql_dependency_test.go`) checks this with
+`go list -deps` over `cmd/qrdbd` and `cmd/qrdb`, not by inspection: it
+proves go-mysql-server's listener package
+(`github.com/dolthub/go-mysql-server/server`, the one package that
+constructs a vitess MySQL listener) is unreachable under
+`WITH_QRDB_MYSQL=0`, and that vitess and go-mysql-server are unreachable
+entirely under `WITH_QRDB_SQL=0`.
 
 
 ### Alternatives rejected
@@ -285,7 +314,31 @@ server's ad-hoc `/sql/query` service (`pkg/server/server_sql.go`), the
 desktop SQL binding (`cmd/qrdb/bindings_sql.go`), the SDK's embedded SQL
 transport (`sdk/go/transport/embedded/transport_sql.go`), and the
 `sdk/go/driver` / `sdk/go/gorm` packages — compiles only under `qrdb_sql`,
-so a build without the tag links none of the SQL layer.
+so a build without the tag links none of the SQL layer. The same holds for
+`query` and three more untagged packages the diagram above omits for
+brevity — `infoschema`, `lockclause`, and `pgcatalog` — on top of the four
+it names (`provider`, `catalog`, `engine`, `privilege`). Every one of
+these eight packages is reached, outside `pkg/sql` itself, only from files
+already behind `qrdb_sql` (directly, or transitively through `qrdb_mysql`
+/ `qrdb_pgsql`, both of which imply it); re-verified go-qrdb-wide while
+closing the MySQL build-tag audit below.
+
+**This is a design choice, not an oversight, and it was re-checked rather
+than re-assumed.** The alternative — tagging all eight packages
+`//go:build qrdb_sql` directly — would make the same guarantee structural
+at their own declaration instead of only at their callers', at the cost of
+retagging every file (and every one of their own test files) in a tree
+that has grown around the current shape since #17. The audit that
+motivated this note found exactly ONE leak, and it was not in these eight
+packages: `pkg/api/errclass` — reached by every transport — imported
+`github.com/dolthub/vitess/go/mysql` directly, with no build constraint of
+its own, to build two SQL-error samples for a parity test. That linked
+vitess into every binary regardless of `qrdb_sql`, caught only by
+`test/buildgates`' dependency-graph gate (below), not by any check scoped
+to the package itself. It is fixed by a dependency-free local sample type
+(`numberedSampleError`) carrying just the `Number() int` shape the
+classifier matches on, which needed no doc change because `pkg/api/errclass`
+was never one of the packages this section describes.
 
 For in-process SQL, see [gorm.md](gorm.md) — it covers the two in-process DSN schemes (`node://` and `embedded://`), which differ in exactly whether the relational catalog is reachable.
 

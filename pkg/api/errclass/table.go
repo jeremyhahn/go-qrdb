@@ -20,8 +20,6 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 
-	"github.com/dolthub/vitess/go/mysql"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
@@ -1022,6 +1020,22 @@ var tableResolutionStaleRule = rule{
 	},
 }
 
+// numberedSampleError is a minimal, dependency-free stand-in for the
+// numbered SQL errors the wire protocols produce at runtime (vitess's
+// *mysql.SQLError, reached only under the qrdb_mysql / qrdb_pgsql build
+// tags). rowLockRule and rowLockUnsupportedRule classify by the
+// `interface{ Number() int }` shape alone, so a parity sample only needs to
+// satisfy that shape -- it never needs the real vitess type, and importing
+// it here would link vitess into every build, including one without SQL.
+type numberedSampleError struct {
+	number int
+	msg    string
+}
+
+func (e *numberedSampleError) Error() string { return e.msg }
+
+func (e *numberedSampleError) Number() int { return e.number }
+
 // rowLockConflicts are the row-lock refusals rowLockRule recognises by type,
 // anywhere in the chain including through Cause() links.
 var rowLockConflicts = []func(error) bool{
@@ -1055,8 +1069,8 @@ var rowLockRule = rule{
 		&rowlock.LockNotAvailableError{Key: "k", Mode: rowlock.ModeShared},
 		&rowlock.DeadlockError{Key: "k", Mode: rowlock.ModeExclusive},
 		&rowlock.LockLostError{Key: "k"},
-		mysql.NewSQLError(rowlock.SQLCodeLockWaitTimeout, "HY000", "%s", "Lock wait timeout exceeded"),
-		mysql.NewSQLError(rowlock.SQLCodeLockNowait, "HY000", "%s", "NOWAIT"),
+		&numberedSampleError{number: rowlock.SQLCodeLockWaitTimeout, msg: "Lock wait timeout exceeded"},
+		&numberedSampleError{number: rowlock.SQLCodeLockNowait, msg: "NOWAIT"},
 	},
 }
 
@@ -1072,7 +1086,7 @@ var rowLockUnsupportedRule = rule{
 		return Unimplemented, errors.As(err, &numbered) && numbered.Number() == sqlCodeNotSupportedYet
 	},
 	samples: []error{
-		mysql.NewSQLError(sqlCodeNotSupportedYet, "42000", "%s", "SKIP LOCKED is not supported"),
+		&numberedSampleError{number: sqlCodeNotSupportedYet, msg: "SKIP LOCKED is not supported"},
 	},
 }
 

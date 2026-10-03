@@ -52,7 +52,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	sqlquery "github.com/jeremyhahn/go-qrdb/pkg/sql/query"
 )
 
 // guardEncMigrator is a minimal no-op service.EncryptionMigrator, wired
@@ -79,7 +78,7 @@ func newFullyWiredGuardServer(t *testing.T) *Server {
 	adminSvc := newDefaultAdminSvc()
 	dbSvc := &mockDatabaseService{}
 
-	return NewServer(kvSvc, adminSvc, "127.0.0.1:0",
+	opts := []ServerOption{
 		WithMVCC(&mockMVCCService{}),
 		WithTransaction(&mockTransactionService{}),
 		WithBatch(&mockBatchService{}),
@@ -89,13 +88,12 @@ func newFullyWiredGuardServer(t *testing.T) *Server {
 		WithIndex(&mockIndexService{}),
 		WithTimeSeries(&mockTimeSeriesService{}),
 		WithVector(&mockVectorService{}),
-		WithEmbedding(&mockEmbeddingService{}),            // gates /v1/embeddings*
-		WithRAG(&mockRAGService{}),                        // gates /v1/rag/*
-		WithDatabaseService(dbSvc),                        // gates /v1/databases*
-		WithCollectionService(&mockCollectionService{}),   // gates /v1/collections*
-		WithSQLService(sqlquery.NewService(kvSvc, dbSvc)), // gates /sql/query, /v1/sql/query
-		WithUserService(&mockUserService{}),               // gates /users, /users/list
-		WithRoleService(&mockRoleService{}),               // gates /roles*
+		WithEmbedding(&mockEmbeddingService{}),          // gates /v1/embeddings*
+		WithRAG(&mockRAGService{}),                      // gates /v1/rag/*
+		WithDatabaseService(dbSvc),                      // gates /v1/databases*
+		WithCollectionService(&mockCollectionService{}), // gates /v1/collections*
+		WithUserService(&mockUserService{}),             // gates /users, /users/list
+		WithRoleService(&mockRoleService{}),             // gates /roles*
 		WithTenantService(&mockTenantService{}),
 		WithBackupService(&stubBackupService{}),       // gates /v1/backups*
 		WithRebalanceService(&stubRebalanceService{}), // gates /v1/rebalance/*
@@ -111,7 +109,10 @@ func newFullyWiredGuardServer(t *testing.T) *Server {
 		WithCredentialService(newCoverageCredentialService()), // gates /v1/credentials*
 		WithAuditLogger(&stubAuditLogger{}),                   // gates /v1/audit/events
 		WithGatherer(prometheus.NewRegistry()),                // gates /metrics
-	)
+	}
+	opts = append(opts, sqlGuardOptions(kvSvc, dbSvc)...) // gates /sql/query, /v1/sql/query (qrdb_sql only)
+
+	return NewServer(kvSvc, adminSvc, "127.0.0.1:0", opts...)
 }
 
 // guardProbePath derives a concrete request path from a chi route pattern by
