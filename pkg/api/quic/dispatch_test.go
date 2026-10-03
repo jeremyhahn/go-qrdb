@@ -251,7 +251,9 @@ func TestBuildHandlers_MethodCount(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 
 	// 171 = 162 + the 9 db.Barrier* share-holder verbs of a Shamir database
-	// barrier (docs/databases/api.md).
+	// barrier (docs/databases/api.md). audit.VerifyChain, the Tier-1
+	// audit-chain verification, is also outside this table: it is registered
+	// only when the server has an audit logger, and this one has none.
 	// 162 = 172 - 14 share verbs retired by the unified share-holder quorum
 	// (7 barrier, 7 ceremony; 3 tenant ones sat outside this table) + the 4
 	// barrier quorum/rekey/revoke verbs that replace them. Every share is now
