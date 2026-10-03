@@ -21,6 +21,7 @@ import (
 	"log/slog"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 )
 
@@ -55,6 +56,9 @@ func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisio
 		return &DatabaseProvisionError{Step: "wait for leader", Err: err}
 	}
 	for _, cfg := range configuredDatabases(f) {
+		if err := service.RefuseEtcdNotCompiled(cfg.Protocol.Etcd); err != nil {
+			return err
+		}
 		if _, err := dbs.Provision(ctx, cfg); err != nil {
 			return err
 		}
@@ -97,16 +101,32 @@ func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisio
 }
 
 // configuredDatabases returns the database configurations the daemon's
-// configuration lists.
+// configuration lists. MySQL, PostgreSQL and Etcd carry through to each
+// database's Protocol -- previously only the SQL settings did, so a
+// `databases:` entry's own `mysql`/`postgresql`/`etcd` block was silently
+// dropped at provisioning time regardless of build tags, the same class of
+// defect the etcd-specific case of it was named for (go-qrdb review).
 func configuredDatabases(f *startFlags) []database.DatabaseConfig {
 	cfgs := make([]database.DatabaseConfig, 0, len(f.databases))
 	for _, dbCfg := range f.databases {
-		cfgs = append(cfgs, database.DatabaseConfig{
+		cfg := database.DatabaseConfig{
 			Name:    dbCfg.Name,
 			Engine:  database.EngineType(dbCfg.Engine),
 			Backend: database.BackendType(dbCfg.Backend),
-			SQL:     databaseSQLConfig(dbCfg.SQL),
-		})
+			Protocol: database.ProtocolConfig{
+				MySQL:      dbCfg.MySQL,
+				PostgreSQL: dbCfg.PostgreSQL,
+			},
+			SQL: databaseSQLConfig(dbCfg.SQL),
+		}
+		if dbCfg.Etcd != nil {
+			cfg.Protocol.Etcd = &database.EtcdConfig{
+				Enabled:             dbCfg.Etcd.Enabled,
+				ListenAddr:          dbCfg.Etcd.ListenAddr,
+				AdvertiseClientURLs: dbCfg.Etcd.AdvertiseClientURLs,
+			}
+		}
+		cfgs = append(cfgs, cfg)
 	}
 	return cfgs
 }

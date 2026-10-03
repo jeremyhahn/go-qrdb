@@ -219,10 +219,30 @@ type DatabaseConfig struct {
 	// PostgreSQL enables the PostgreSQL wire protocol for this database.
 	PostgreSQL bool `yaml:"postgresql,omitempty" json:"postgresql,omitempty"`
 
+	// Etcd enables the etcd wire protocol for this database. On a binary
+	// without the qrdb_etcd build tag, a non-nil, enabled Etcd block is
+	// refused at provisioning time (service.RefuseEtcdNotCompiled) rather
+	// than silently accepted.
+	Etcd *DatabaseEtcdConfig `yaml:"etcd,omitempty" json:"etcd,omitempty"`
+
 	// SQL holds the database's SQL settings. When set, it is applied at
 	// every start -- the file is the declaration -- and a database it is
 	// absent from keeps whatever was last set through UpdateDatabaseSQL.
 	SQL *DatabaseSQLConfig `yaml:"sql,omitempty" json:"sql,omitempty"`
+}
+
+// DatabaseEtcdConfig is a database's etcd wire protocol configuration in the
+// configuration file.
+type DatabaseEtcdConfig struct {
+	// Enabled turns the etcd wire protocol on for this database.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// ListenAddr is the etcd gRPC server's listen address (e.g. ":2379").
+	ListenAddr string `yaml:"listen_addr,omitempty" json:"listen_addr,omitempty"`
+
+	// AdvertiseClientURLs are the client URLs advertised for etcd endpoint
+	// discovery.
+	AdvertiseClientURLs []string `yaml:"advertise_client_urls,omitempty" json:"advertise_client_urls,omitempty"`
 }
 
 // DatabaseSQLConfig is a database's SQL settings in the configuration file.
