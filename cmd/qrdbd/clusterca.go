@@ -16,11 +16,16 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"log/slog"
 	"os"
 	"path/filepath"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
 
 // confirmClusterCAPersisted triggers the cluster CA (Key A) provider's
@@ -60,6 +65,61 @@ func confirmClusterCAPersisted(ctx context.Context, provider cakey.Provider, dat
 		return nil
 	}
 	slog.Info("cluster CA key persisted to the replicated store; local file cache removed", slog.String("path", keyPath))
+	return nil
+}
+
+// recordOwnJoinIdentity marks this node's own SPIFFE node identity admitted
+// in the replicated join-identity ledger (clusterenroll's
+// __sys:cluster_join_identities/ records), the same ledger MintJoinToken
+// consults to refuse minting for an identity already in the cluster. It is
+// what makes "existing member" mean "the cluster CA has issued this node
+// identity" for every founder and first-boot node, not only for nodes that
+// arrived through the token path (which already records on successful
+// issuance; see clusterenroll.HandleJoinRequest).
+//
+// Called on every boot that reaches a durable ClusterCAProv -- idempotent
+// (PutIfAbsent, like every other call site of
+// clusterenroll.MarkJoinIdentityAdmitted), so a restart after the first
+// successful call is a cheap no-op, not a second write.
+//
+// certPEM is this node's own leaf, whose URI SAN is read back rather than
+// recomputed from configuration: the committed identity is whatever was
+// baked into the certificate at generation (Resolve's single-node/first-
+// node paths, or Join's token path), which must not silently drift from a
+// later change to --raft-address or --cluster-trust-domain.
+//
+// A leaf with no node SPIFFE URI SAN at all -- an operator-supplied
+// certificate from explicit TLS files (--tls-ca/--tls-cert/--tls-key),
+// signed outside this package's control -- has no identity to record here.
+// That is a known, documented gap: such a node's own identity is never
+// entered into the ledger, so MintJoinToken cannot refuse re-minting a
+// token for whatever node ID an admin later chooses to name it. Closing
+// that gap requires recording the identity at WHATEVER point such a node
+// is admitted to the cluster (e.g. the admin's AddMember call), which no
+// current admission path threads a SPIFFE node URI through -- AddMember
+// takes an spki:<hex> Raft identity, a different namespace entirely (see
+// pkg/cluster/member_identity.go). Closing it needs a decision on which
+// admission call gains a node-URI parameter, which is why it is documented
+// here rather than guessed at.
+func recordOwnJoinIdentity(ctx context.Context, store kvstore.AtomicKVStore, certPEM []byte, trustDomain string) error {
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return nil
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil
+	}
+	identity, err := spiffe.NodeFromCert(cert, trustDomain)
+	if err != nil {
+		// No node SPIFFE URI SAN (or one for a foreign trust domain): the
+		// documented BYO-TLS gap above. Not an error -- this node's
+		// certificate was never going to carry a cluster-join identity.
+		return nil
+	}
+	if err := clusterenroll.MarkJoinIdentityAdmitted(ctx, store, identity.String()); err != nil {
+		return &ClusterCAPersistError{Err: err}
+	}
 	return nil
 }
 

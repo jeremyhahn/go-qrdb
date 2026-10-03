@@ -584,6 +584,9 @@ var clusterJoinTokenRules = []rule{
 	as(&service.JoinTokenTTLOverflowError{}, InvalidArgument),
 	as(&clusterenroll.InvalidJoinIdentityError{}, InvalidArgument),
 	as(&clusterenroll.JoinTokenTTLError{}, InvalidArgument),
+	// The node identity is already in the cluster's join-identity ledger --
+	// the cluster CA has already issued (or recorded) a certificate for it.
+	as(&clusterenroll.ExistingMemberError{}, AlreadyExists),
 	// A vanishingly unlikely digest collision with an already-minted
 	// token: the caller's request itself was fine, just lost the race.
 	as(&clusterenroll.JoinTokenCollisionError{}, Aborted),

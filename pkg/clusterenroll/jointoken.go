@@ -99,12 +99,30 @@ type joinTokenRecord struct {
 // write-only-credential reasoning every other admission secret in this
 // codebase follows.
 //
+// Refuses with *ExistingMemberError when nodeID already has a record in
+// the join-identity ledger (joinIdentityPrefix): the cluster CA has
+// already issued (or, for a founder or first-boot node, recorded without
+// re-issuing -- see cmd/qrdbd's recordOwnJoinIdentity) a certificate for
+// this node identity, so minting a second token for it is never a correct
+// admin action -- the identity is either already a member or already
+// holds an unconsumed token from an earlier mint that was never for this
+// check to second-guess.
+//
 // ttl <= 0 uses DefaultJoinTokenTTL; a ttl outside
 // [MinJoinTokenTTL, MaxJoinTokenTTL] is refused with *JoinTokenTTLError.
 func MintJoinToken(ctx context.Context, store kvstore.AtomicKVStore, trustDomain, nodeID string, ttl time.Duration) (token string, expiresAt time.Time, err error) {
 	identity := spiffe.NodeIdentity{TrustDomain: trustDomain, NodeID: nodeID}
 	if err := identity.Validate(); err != nil {
 		return "", time.Time{}, &InvalidJoinIdentityError{Err: err}
+	}
+
+	identityKey := joinIdentityPrefix + identity.String()
+	admitted, err := store.Exists(ctx, identityKey)
+	if err != nil {
+		return "", time.Time{}, &JoinTokenStoreError{Op: "exists", Detail: identityKey, Err: err}
+	}
+	if admitted {
+		return "", time.Time{}, &ExistingMemberError{NodeURI: identity.String()}
 	}
 
 	if ttl <= 0 {
@@ -315,4 +333,19 @@ type JoinTokenCollisionError struct{}
 // Error returns a human-readable description.
 func (e *JoinTokenCollisionError) Error() string {
 	return "clusterenroll: join token digest collision"
+}
+
+// ExistingMemberError is returned by MintJoinToken when NodeURI already has
+// a record in the join-identity ledger: the cluster CA has already issued
+// (or a founder/first-boot node has had recorded, without re-issuing) a
+// certificate for this node identity. Minting a token for an identity
+// already in the cluster is always wrong, whether that identity is live
+// right now or holds an unconsumed token from an earlier mint.
+type ExistingMemberError struct {
+	NodeURI string
+}
+
+// Error returns a human-readable description.
+func (e *ExistingMemberError) Error() string {
+	return "clusterenroll: node identity already admitted to the cluster: " + e.NodeURI
 }

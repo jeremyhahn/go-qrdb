@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/invite"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
@@ -245,15 +246,52 @@ func TestConsumeJoinToken_WrongTrustDomainRefused(t *testing.T) {
 // ConsumeJoinToken's read-only "already admitted" check surfaces a genuine
 // store failure as *JoinTokenStoreError, distinct from a refusal.
 func TestConsumeJoinToken_IdentityAdmissionExistsErrorSurfacesTyped(t *testing.T) {
-	store := &faultyJoinStore{AtomicKVStore: kvstore.NewMemoryKVStore(), failExistsOnPrefix: joinIdentityPrefix}
-	token, _, err := MintJoinToken(context.Background(), store, "test.cluster", "node-1", time.Hour)
+	// Minted against the clean backing store: MintJoinToken now runs its
+	// OWN Exists check against the identity ledger too (see
+	// TestMintJoinToken_IdentityAdmissionExistsErrorSurfacesTyped), so the
+	// fault must be injected only for the Consume call below, not the mint
+	// above.
+	backing := kvstore.NewMemoryKVStore()
+	token, _, err := MintJoinToken(context.Background(), backing, "test.cluster", "node-1", time.Hour)
 	if err != nil {
 		t.Fatalf("MintJoinToken: %v", err)
 	}
-	_, err = ConsumeJoinToken(context.Background(), store, "test.cluster", token)
+	faulty := &faultyJoinStore{AtomicKVStore: backing, failExistsOnPrefix: joinIdentityPrefix}
+	_, err = ConsumeJoinToken(context.Background(), faulty, "test.cluster", token)
 	var storeErr *JoinTokenStoreError
 	if !errors.As(err, &storeErr) {
 		t.Fatalf("ConsumeJoinToken with a failing identity Exists check = %v, want *JoinTokenStoreError", err)
+	}
+}
+
+// TestMintJoinToken_IdentityAdmissionExistsErrorSurfacesTyped proves
+// MintJoinToken's own already-admitted check (run before any token is
+// generated) surfaces a genuine store failure as *JoinTokenStoreError.
+func TestMintJoinToken_IdentityAdmissionExistsErrorSurfacesTyped(t *testing.T) {
+	store := &faultyJoinStore{AtomicKVStore: kvstore.NewMemoryKVStore(), failExistsOnPrefix: joinIdentityPrefix}
+	_, _, err := MintJoinToken(context.Background(), store, "test.cluster", "node-1", time.Hour)
+	var storeErr *JoinTokenStoreError
+	if !errors.As(err, &storeErr) {
+		t.Fatalf("MintJoinToken with a failing identity Exists check = %v, want *JoinTokenStoreError", err)
+	}
+}
+
+// TestMintJoinToken_ExistingMemberRefused proves MintJoinToken itself
+// refuses to mint a second token for a node identity already recorded in
+// the join-identity ledger, with the typed *ExistingMemberError -- the
+// coordinator's "existing member" rule: the cluster CA has already issued
+// (or recorded) a certificate for this identity.
+func TestMintJoinToken_ExistingMemberRefused(t *testing.T) {
+	store := kvstore.NewMemoryKVStore()
+	identity := spiffe.NodeIdentity{TrustDomain: "test.cluster", NodeID: "node-1"}
+	if err := MarkJoinIdentityAdmitted(context.Background(), store, identity.String()); err != nil {
+		t.Fatalf("MarkJoinIdentityAdmitted: %v", err)
+	}
+
+	_, _, err := MintJoinToken(context.Background(), store, "test.cluster", "node-1", time.Hour)
+	var existing *ExistingMemberError
+	if !errors.As(err, &existing) {
+		t.Fatalf("MintJoinToken for an already-admitted identity = %v, want *ExistingMemberError", err)
 	}
 }
 
@@ -272,10 +310,21 @@ func TestMarkJoinIdentityAdmitted_PutIfAbsentErrorSurfacesTyped(t *testing.T) {
 
 func TestConsumeJoinToken_AlreadyAdmittedIdentityRefused(t *testing.T) {
 	store := kvstore.NewMemoryKVStore()
+	// Both tokens are minted while node-1 is NOT YET admitted: MintJoinToken
+	// now refuses outright once an identity is admitted (see
+	// TestMintJoinToken_ExistingMemberRefused), so the only way a second,
+	// otherwise-valid token can exist for an identity that becomes admitted
+	// is for both to have been minted before either was consumed -- the
+	// race ConsumeJoinToken's own check protects against.
 	tokenOne, _, err := MintJoinToken(context.Background(), store, "test.cluster", "node-1", time.Hour)
 	if err != nil {
 		t.Fatalf("MintJoinToken (first): %v", err)
 	}
+	tokenTwo, _, err := MintJoinToken(context.Background(), store, "test.cluster", "node-1", time.Hour)
+	if err != nil {
+		t.Fatalf("MintJoinToken (second): %v", err)
+	}
+
 	boundNodeURI, err := ConsumeJoinToken(context.Background(), store, "test.cluster", tokenOne)
 	if err != nil {
 		t.Fatalf("ConsumeJoinToken (first, should succeed): %v", err)
@@ -287,13 +336,8 @@ func TestConsumeJoinToken_AlreadyAdmittedIdentityRefused(t *testing.T) {
 		t.Fatalf("MarkJoinIdentityAdmitted: %v", err)
 	}
 
-	// A SECOND token minted for the SAME node identity: the identity is
-	// already admitted, so this presentation must be refused even though
-	// the token itself is freshly minted and otherwise valid.
-	tokenTwo, _, err := MintJoinToken(context.Background(), store, "test.cluster", "node-1", time.Hour)
-	if err != nil {
-		t.Fatalf("MintJoinToken (second): %v", err)
-	}
+	// The SECOND token, minted earlier for the SAME node identity before it
+	// was admitted, must now be refused on presentation.
 	_, err = ConsumeJoinToken(context.Background(), store, "test.cluster", tokenTwo)
 	assertJoinRefused(t, err)
 }

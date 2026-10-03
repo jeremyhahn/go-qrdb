@@ -1685,6 +1685,18 @@ func runStart(f *startFlags) (err error) {
 					_ = shutdownNode(nodeCloser)
 					return err
 				}
+				// Record this node's own identity as admitted, independent
+				// of whether member-side CSR join is enabled on THIS boot:
+				// an admin who enables it later must find every existing
+				// member -- founders included -- already refusing a token
+				// minted for their node ID. See recordOwnJoinIdentity's own
+				// doc comment for the documented BYO-TLS gap this cannot
+				// close.
+				if err := recordOwnJoinIdentity(sigCtx, newKVServiceAdapter(svcNode.KV, nil, nil), bundle.CertPEM, f.clusterTrustDomain); err != nil {
+					_ = svcNode.Stop(context.Background())
+					_ = shutdownNode(nodeCloser)
+					return err
+				}
 				if f.clusterJoinEnabled {
 					clusterJoinStore = newKVServiceAdapter(svcNode.KV, nil, nil)
 					joinServer, err = clusterenroll.StartJoinServer(svcNode.ClusterCAProv, clusterenroll.JoinServerOptions{
