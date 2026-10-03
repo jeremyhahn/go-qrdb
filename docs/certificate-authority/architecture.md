@@ -617,7 +617,11 @@ own at-rest storage encryption when one is configured (`pkg/seal/encfs`,
 transparent below `kvstore.KVStore`), cluster mTLS while Raft replicates the
 write, and nothing at all under seal strategy `none` — see
 [../backup-restore/architecture.md](../backup-restore/architecture.md#ca-key-material)
-for what that means for a backup. `seal.EncryptionBarrier` is still a
+for what that means for a backup, and that document's [Trust
+boundaries](../backup-restore/architecture.md#trust-boundaries) section for
+why `backup:create`/`backup:read` are full access to this key material, not
+a narrower "backup data" scope, and belong only to fully trusted operators.
+`seal.EncryptionBarrier` is still a
 constructor argument, but `SoftwareProvider` now consults it only for
 `IsSealed()`: CA material is generated, adopted, signed with, or read only
 while unsealed, exactly as before, but that gate no longer performs any

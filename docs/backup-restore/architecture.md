@@ -101,10 +101,40 @@ shard, not MORE protected the way the old per-record wrap made it look.
 
 ## Trust boundaries
 
-- **A backup leaves the process and usually the machine.** Encryption is
-  therefore a data-classification decision, not a performance one: an
+- **`backup:*` is full-data trust, not a narrower "backup data" scope.** A
+  shard snapshot that includes the system shard captures both CA keys in the
+  clear-or-not state they were stored in (see [CA key
+  material](#ca-key-material) above): the cluster CA (Key A) and every
+  tenant's login CA (Key B). Whoever can `backup:create` or `backup:read` a
+  backup containing the system shard can extract both CAs' private key
+  material from it — there is no way to grant backup access to a shard's
+  ordinary data without also granting it to whatever CA material that shard
+  holds. **These permissions belong only to fully trusted operators**, not to
+  a role scoped to "day-to-day database administration": granting
+  `backup:create`/`backup:read` is operationally equivalent to granting
+  direct access to the cluster's and every tenant's signing keys. This is a
+  property of what a shard snapshot IS, not a gap this feature's RBAC design
+  closes — see `clusterBackupPermissions`'s own doc comment in
+  `pkg/permission` for why these are `ScopeCross` (system tenant only) and
+  not `ScopeSelf`, and note that `ScopeCross` is NOT the same promise as
+  "Admin-only": a system-tenant role explicitly granted only
+  `backup:create`/`backup:read`, without the Admin role, can still extract a
+  full snapshot by this same reasoning.
+- **A backup leaves the process and usually the machine, and is NOT
+  encrypted by default.** `--encryption none` is the default (see
+  "Alternatives rejected" above): creating a backup with no `--encryption`
+  flag writes it in whatever state its captured records were already in,
+  CA key material included, with no additional protection of its own. An
+  operator who has not explicitly passed `--encryption aes256
+  --encryption-key …` (or the API/SDK equivalent) IS writing an unencrypted
+  backup today, and if that backup's source shard held Key A or Key B under
+  seal strategy `none`, the backup holds them in the clear. Treat encryption
+  at rest and in transit for every backup containing the system shard as
+  mandatory operational policy, not an optional hardening step: an
   unencrypted backup of a barrier-encrypted store is plaintext outside the
-  barrier.
+  barrier, and the CA keys it also carries have no barrier of their own to
+  have been outside of in the first place (see [CA key
+  material](#ca-key-material)).
 - **Restore is the most destructive operation in the system** — it overwrites
   shard state. `backup:restore` is a distinct permission from
   `backup:create`/`backup:read` for exactly that reason, and `backup:delete` is
