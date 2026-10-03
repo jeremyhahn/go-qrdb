@@ -195,6 +195,83 @@ func TestMintJoinToken_SystemOwnerSucceeds_TenantAdminRefused(t *testing.T) {
 	}
 }
 
+// bootJoinTokenCellWithExplicitGrant is bootJoinTokenCell's sibling for the
+// explicit-grant proof: callerTenant's caller holds a CUSTOM role --
+// "explicit-grant", not a built-in -- whose permission set is exactly
+// {cluster:join_token}, created directly rather than resolved by name. The
+// RBAC authorizer's ScopeCross check runs independently of what permissions
+// a role carries: it also requires the CALLER's tenant to be the system
+// tenant, so this role existing and holding the permission must still not
+// be enough for a tenant caller.
+func bootJoinTokenCellWithExplicitGrant(t *testing.T, tk transportKind, callerTenant string) *sdk.Client {
+	t.Helper()
+	return bootCellAs(t, tk, callerTenant, nil, func(n *node.Node) {
+		svc := n.Services()
+		ctx := boundedCtx(t)
+		if _, err := svc.Tenant.CreateTenant(ctx, callerTenant, "Tenant "+callerTenant, tenant.IsolationPrefix); err != nil {
+			t.Fatalf("CreateTenant(%s): %v", callerTenant, err)
+		}
+		if _, err := svc.Role.ReconcileBuiltInRoles(ctx, callerTenant); err != nil {
+			t.Fatalf("ReconcileBuiltInRoles(%s): %v", callerTenant, err)
+		}
+
+		created, err := svc.Role.CreateRole(ctx, &role.CreateRoleRequest{
+			Name:        "explicit-grant",
+			TenantID:    callerTenant,
+			Permissions: []permission.Permission{permission.ClusterJoinToken},
+		})
+		if err != nil {
+			t.Fatalf("CreateRole(explicit-grant, %s): %v", callerTenant, err)
+		}
+
+		if _, err := svc.User.CreateUser(ctx, &user.CreateUserRequest{
+			WithoutEmailLoginKey: true,
+			Username:             "matrix",
+			TenantID:             callerTenant,
+			RoleIDs:              []string{created.ID},
+		}); err != nil {
+			t.Fatalf("create user in %s with explicit-grant role: %v", callerTenant, err)
+		}
+
+		adminSvc, ok := n.Services().Admin.(*service.AdminService)
+		if !ok {
+			t.Fatalf("%s: node's AdminService is not *service.AdminService", tk)
+		}
+		adminSvc.SetClusterJoinTokenStore(kvstore.NewMemoryKVStore(), joinTokenTestTrustDomain)
+	})
+}
+
+// TestMintJoinToken_ExplicitTenantGrantStillRefused is the strengthened
+// scope proof: a tenant role holding cluster:join_token not by omission
+// but by EXPLICIT grant is still refused, end to end, on every remote
+// transport. This is what distinguishes a genuine ScopeCross confinement
+// from a merely-absent-by-default permission -- the built-in-role test
+// above (tenant Admin, which simply never carries the permission) could
+// not tell the two apart on its own.
+func TestMintJoinToken_ExplicitTenantGrantStillRefused(t *testing.T) {
+	for _, tk := range transportKinds {
+		if !tk.remote() {
+			continue
+		}
+		t.Run(string(tk), func(t *testing.T) {
+			client := bootJoinTokenCellWithExplicitGrant(t, tk, confineAcme)
+			minter := requireMinter(t, tk, client)
+
+			_, err := minter.MintJoinToken(boundedCtx(t), &transport.MintJoinTokenRequest{NodeID: "node-explicit-grant-" + string(tk)})
+			if err == nil {
+				t.Fatalf("%s: MintJoinToken succeeded for a tenant role explicitly granted cluster:join_token, want a ScopeCross refusal", tk)
+			}
+			refused, ok := clusterJoinTokenRefusals[tk]
+			if !ok {
+				t.Fatalf("%s declares no permission-denied refusal", tk)
+			}
+			if !refused(err) {
+				t.Fatalf("%s: explicit-grant MintJoinToken error = %T (%v), want the ScopeCross permission-denied refusal", tk, err, err)
+			}
+		})
+	}
+}
+
 // TestMintJoinToken_EmbeddedCapabilityExists proves the capability itself --
 // the verb is callable and configured -- on the embedded transport too, the
 // sixth of "every capability on all six transports". It does NOT assert a
