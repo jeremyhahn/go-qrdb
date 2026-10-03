@@ -68,9 +68,10 @@ are not reconstructed here — their history is in the git log.
   (username, role, CSR; the issued certificate is shown to hand back), and
   only then initializes. The enrolment forms are one component shared with
   the setup wizard.
-- **A frontend CI job.** The `frontend` job (`make test-frontend`) runs the
-  TypeScript SDK's type check and vitest suite, svelte-check over the web UI
-  and the mocked Playwright tier, and gates `ci-gate`. The Playwright specs
+- **The mocked Playwright tier joins the TypeScript CI job.** The
+  `test-typescript` job (`make test-typescript`) runs the mocked Playwright
+  tier after the TypeScript SDK's type check, tests and build and
+  svelte-check over the web UI. The Playwright specs
   that encoded the retired custody model are ported to share holders; the
   real-backend tier claims and submits with a headless `qrdb` CLI
   (`QRDB_BIN`, built by `make build-cli-headless`).

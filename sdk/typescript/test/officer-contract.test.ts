@@ -26,8 +26,7 @@
  * in any administration response.
  */
 
-import { readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+/// <reference types="vite/client" />
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { RestClient } from '../src/rest.js';
 
@@ -484,9 +483,18 @@ describe('retired holder routes', () => {
     ];
 
     it('no SDK source file names a retired route', () => {
-        const dir = join(__dirname, '..', 'src');
-        for (const name of readdirSync(dir).filter((f) => f.endsWith('.ts'))) {
-            const src = readFileSync(join(dir, name), 'utf8');
+        // Every SDK source file, read as text by the test runner. The SDK's
+        // tests are typechecked without Node's types, so the file system is
+        // not read directly.
+        const sources = import.meta.glob<string>('../src/*.ts', { query: '?raw', import: 'default', eager: true });
+        const names = Object.keys(sources);
+        // A discovery floor: an empty glob would pass every assertion below.
+        for (const required of ['../src/rest.ts', '../src/types.ts', '../src/interfaces.ts']) {
+            expect(names).toContain(required);
+        }
+        for (const name of names) {
+            const src = sources[name];
+            expect(src).toContain('export');
             for (const route of retired) {
                 expect(src.includes(route), `${name} names the retired route ${route}`).toBe(false);
             }

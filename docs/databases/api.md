@@ -289,7 +289,9 @@ discovery on any transport; the Go SDK's MCP transport also dropped `peers` and
 `DatabaseBarrierConfig` fields: `enabled`, `mode` (`passphrase|shamir`),
 `sharesRequired`, `sharesTotal`, `secret`. On a create with `enabled` and
 `mode: "passphrase"`, the server initializes the barrier from `secret` in the
-same call; `secret` is request-only, never persisted and never returned. A
+same call; `secret` is request-only, never persisted and never returned. The
+TypeScript SDK types it only on the create request's `DatabaseBarrierRequest`,
+so the `DatabaseBarrierConfig` a `DatabaseInfo` reports cannot carry it. A
 create with `mode: "shamir"` registers an uninitialized barrier at
 `sharesRequired`-of-`sharesTotal` that its share holders' custody initializes —
 see the share-holder matrix below. Either strategy is accepted only where the
