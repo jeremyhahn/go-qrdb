@@ -11,6 +11,12 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.33.2-alpha] - 2026-10-03
+
+The audit chain verifier no longer reports a missing log on an honest trail while the log rotates. Highlights:
+
+- **Fixed a false tamper result during rotation.** Rotation now carries a sequence counter, and verification retries while a rotation is in progress. A rotation that stalls, fails or panics can no longer hide a deleted log or a broken link.
+
 ### Fixed
 
 - **Audit chain verification no longer reports a stalled rotation as a missing log.**
