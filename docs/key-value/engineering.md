@@ -824,6 +824,26 @@ catalog and its samples in memory, then in a file in the node's data
 directory -- run by whichever node's catalog held the database, lost with
 that node, and reset by a restart. It is now replicated state.)*
 
+**Clock skew between leaders.** A sample's time is the wall clock of the
+leader that took it, and a period policy's target is read against the wall
+clock of the leader running it. When leadership moves between nodes whose
+clocks disagree by `d`:
+
+- **The new leader's clock is behind.** The newest sample is in its future,
+  so the series is unusable (`compaction.State.UsableSamples`: a
+  future-stamped sample is never a target) and a new sample is not newer than
+  the newest, so it is not kept. Sampling and period compaction pause until
+  the new leader's clock passes the newest sample -- at most `d` -- and then
+  resume from the same series. Nothing is compacted early.
+- **The new leader's clock is ahead.** The samples look `d` older than they
+  are, so the target can move up to `d` sooner: the database keeps up to `d`
+  less history than `retain_period` asks for.
+- **A `revision` policy** reads no clock and is unaffected.
+
+Keep the nodes' clocks synchronised (NTP) well inside the retention a period
+policy is configured with; skew is bounded by how far apart the clocks are,
+not by how often leadership moves.
+
 ## Persistence
 
 - **Key layout** is owned by the state machine. The MVCC engine encodes
