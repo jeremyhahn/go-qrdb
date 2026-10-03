@@ -87,15 +87,27 @@ func TestInitialize_BYOTLS_SPKIPinFromServerCert(t *testing.T) {
 // BYO-TLS node (nil CeremonyCA) whose composer never set
 // CeremonyConfig.ServerCertPEM has nothing to compute a pin from and is
 // refused with a typed error rather than panicking or silently returning
-// an empty pin.
+// an empty pin. The admin-credential selection itself must be a VALID BYOC
+// certificate chaining to ClientCACertPEM, not a placeholder: Initialize
+// validates admin-credential inputs before resolving the TLS certificate
+// (go-qrdb#548 review: B3, "init is atomic"), so a bogus certificate would
+// be refused there first and this test would never reach the check it is
+// actually about.
 func TestInitialize_BYOTLS_NoServerCertRefuses(t *testing.T) {
-	cfg := byoTLSConfig(nil, nil)
+	operatorCA := newMockCA(t)
+	clientCACertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operatorCA.certDER})
+	adminLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
+		CommonName: "admin", KeyUsage: x509.KeyUsageDigitalSignature, ValidityDays: 30,
+	})
+	require.NoError(t, err)
+
+	cfg := byoTLSConfig(nil, clientCACertPEM)
 	svc := newTestCeremonyService(t, cfg, testBarrier(t))
 
-	_, err := svc.Initialize(context.Background(), nil, &InitializeOptions{
+	_, err = svc.Initialize(context.Background(), nil, &InitializeOptions{
 		SOPin:        "test-so-pin",
 		UserPin:      "test-user-pin",
-		AdminCertPEM: []byte("irrelevant: never reached"),
+		AdminCertPEM: adminLeaf.CertPEM,
 	})
 	var noCert *NoServerCertificateError
 	require.ErrorAs(t, err, &noCert)

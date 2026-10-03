@@ -16,6 +16,7 @@ package ceremony
 
 import (
 	"context"
+	"crypto/x509"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -143,8 +144,24 @@ func TestInitialize_ValidationRefusals(t *testing.T) {
 	// go-qrdb#548: a nil CeremonyCA is no longer refused outright -- it
 	// selects the BYO-TLS path, which here has no configured
 	// CeremonyConfig.ServerCertPEM to pin, so it is refused with
-	// *NoServerCertificateError instead of the old ErrNilCA.
-	_, err := svc.Initialize(ctx, nil, initOpts(0))
+	// *NoServerCertificateError instead of the old ErrNilCA. The
+	// admin-credential selection must be a VALID BYOC certificate (the
+	// only path available with ca == nil): AdminGenerate -- what initOpts
+	// sets -- requires a CA and would be refused by admin-credential
+	// validation before ever reaching the server-certificate check this
+	// case is about (go-qrdb#548 review: B3 validates admin-credential
+	// inputs first).
+	adminLeaf, ierr := ca.IssueCertificate(ctx, &IssueCertRequest{
+		CommonName: "admin", KeyUsage: x509.KeyUsageDigitalSignature, ValidityDays: 30,
+	})
+	require.NoError(t, ierr)
+	caBundle, berr := ca.CABundle()
+	require.NoError(t, berr)
+	_, err := svc.Initialize(ctx, nil, &InitializeOptions{
+		SOPin: "test-so-pin", UserPin: "test-user-pin",
+		AdminCertPEM:     adminLeaf.CertPEM,
+		AdminCertPoolPEM: caBundle,
+	})
 	var noCert *NoServerCertificateError
 	assert.ErrorAs(t, err, &noCert)
 }

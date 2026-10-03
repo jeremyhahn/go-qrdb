@@ -109,3 +109,57 @@ func TestInitialize_SystemBarrier_MofNLeavesItSealed(t *testing.T) {
 	restarted := shamirBarrier(t, backend, 2, 2)
 	assert.True(t, restarted.IsSealed(), "a restart over the same storage must stay sealed until officers reconstruct the key from their shares")
 }
+
+// TestInitialize_RefusedAdminCredential_NoSideEffects proves B3 (go-qrdb#548
+// review: "init is atomic"): a request whose admin-credential selection is
+// invalid -- conflicting, none selected, or a BYOC certificate that does not
+// chain -- is refused before Initialize provisions the SO/user PINs or
+// brings the system barrier up. Before this fix, all three ran only AFTER
+// those side effects (and after issuing the TLS certificate), so a
+// corrected retry was merely tolerated by their own idempotence rather than
+// never having needed it: this test pins that the barrier and the PINs are
+// untouched, not just that a retry eventually converges.
+func TestInitialize_RefusedAdminCredential_NoSideEffects(t *testing.T) {
+	cases := map[string]struct {
+		opts *InitializeOptions
+		want any
+	}{
+		"conflicting": {
+			&InitializeOptions{
+				SOPin: "test-so-pin", UserPin: "test-user-pin",
+				AdminCSRPEM: []byte("csr"), AdminGenerate: true,
+			},
+			&ConflictingAdminCredentialInputsError{},
+		},
+		"none selected": {
+			&InitializeOptions{SOPin: "test-so-pin", UserPin: "test-user-pin"},
+			&NoAdminCredentialSelectedError{},
+		},
+		"byoc untrusted": {
+			&InitializeOptions{
+				SOPin: "test-so-pin", UserPin: "test-user-pin",
+				AdminCertPEM: []byte("not-a-cert"),
+			},
+			&AdminCredentialRejectedError{},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			barrier := testBarrier(t)
+			require.True(t, barrier.IsSealed())
+			svc := newTestCeremonyService(t, defaultConfig(), barrier)
+
+			_, err := svc.Initialize(context.Background(), newMockCA(t), tc.opts)
+			require.Error(t, err)
+			assert.IsType(t, tc.want, err)
+			assert.True(t, barrier.IsSealed(),
+				"a refused admin-credential request must not bring the system barrier up")
+			assert.False(t, svc.pins.SOPINSet(),
+				"a refused admin-credential request must not provision the SO PIN")
+			assert.False(t, svc.pins.UserPINSet(),
+				"a refused admin-credential request must not provision the user PIN")
+			assert.Equal(t, StateAwaitingInit, svc.State(),
+				"a refused admin-credential request must leave the ceremony retriable from scratch")
+		})
+	}
+}

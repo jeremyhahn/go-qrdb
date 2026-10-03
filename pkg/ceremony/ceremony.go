@@ -286,6 +286,24 @@ func (s *CeremonyService) scope(domain seal.QuorumDomain) (*holderScope, error) 
 	}
 }
 
+// resolveCABundlePEM returns the trust bundle a presented BYOC admin
+// certificate validates against when AdminCertPoolPEM is empty: a
+// configured CeremonyCA's own bundle, or this node's configured client-CA
+// trust anchor on a BYO-TLS node (ca == nil). Read-only -- ca.CABundle() has
+// no side effect on the CA or this node -- so Initialize can call it before
+// provisioning the PINs or bringing the system barrier up (go-qrdb#548
+// review: B3).
+func (s *CeremonyService) resolveCABundlePEM(ca CeremonyCA) ([]byte, error) {
+	if ca == nil {
+		return s.config.ClientCACertPEM, nil
+	}
+	caBundle, err := ca.CABundle()
+	if err != nil {
+		return nil, &CABundleError{Err: err}
+	}
+	return caBundle, nil
+}
+
 // Initialize performs the initialization ceremony: it establishes the SO and
 // User PINs through the PINBackend (verifying them instead when barrier
 // initialization already did), brings the system barrier up for the
@@ -302,6 +320,23 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		return nil, ErrInvalidSOPIN
 	}
 	if err := validateInitOptions(opts); err != nil {
+		return nil, err
+	}
+
+	// Resolve the CA bundle BYOC validates against, and validate every
+	// admin-credential input against it -- selection conflicts,
+	// none-selected, the BYOC chain, and requires-a-CA -- BEFORE this call
+	// provisions the PINs, brings the system barrier up, or issues the TLS
+	// certificate (go-qrdb#548 review: B3, "init is atomic"). Both calls are
+	// read-only/pure: ca.CABundle() reads the CA's own bundle with no side
+	// effect, and validateAdminCredentialInputs never signs or generates
+	// anything. caBundle is reused below rather than refetched once the TLS
+	// certificate is actually issued.
+	caBundle, err := s.resolveCABundlePEM(ca)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateAdminCredentialInputs(ca, opts, caBundle); err != nil {
 		return nil, err
 	}
 
@@ -347,7 +382,10 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	// different one with -- so it pins THAT leaf's own public key
 	// instead, and returns it, and the node's configured client-CA trust
 	// anchor, unchanged rather than self-issuing or deriving anything.
-	var tlsCertPEM, caBundle []byte
+	// caBundle was already resolved (and used to validate any BYOC admin
+	// certificate) above, before the lock -- reused here rather than
+	// refetched, so ca.CABundle() is called at most once per Initialize.
+	var tlsCertPEM []byte
 	var spkiPin string
 	if ca != nil {
 		tlsCert, err := ca.IssueCertificate(ctx, &IssueCertRequest{
@@ -374,11 +412,6 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 			s.mu.Unlock()
 			return nil, err
 		}
-		caBundle, err = ca.CABundle()
-		if err != nil {
-			s.mu.Unlock()
-			return nil, &CABundleError{Err: err}
-		}
 	} else {
 		block, _ := pem.Decode(s.config.ServerCertPEM)
 		if block == nil {
@@ -397,7 +430,6 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 			return nil, ErrInitFailed
 		}
 		tlsCertPEM = s.config.ServerCertPEM
-		caBundle = s.config.ClientCACertPEM
 	}
 
 	result := &InitResult{SPKIPin: spkiPin, CACertPEM: caBundle, TLSCertPEM: tlsCertPEM}

@@ -74,25 +74,7 @@ var adminCertProfile = &roleProfile{
 //     docs/firstboot/user.md. Refused with *AdminCredentialRequiresCAError
 //     when ca is nil, for the same reason as CSR-sign.
 func issueAdminCredential(ctx context.Context, ca CeremonyCA, opts *InitializeOptions, caBundlePEM []byte) (certPEM, keyPEM []byte, source AdminCredentialSource, err error) {
-	var csrPEM, certInPEM, poolPEM []byte
-	var generate bool
-	if opts != nil {
-		csrPEM = opts.AdminCSRPEM
-		certInPEM = opts.AdminCertPEM
-		poolPEM = opts.AdminCertPoolPEM
-		generate = opts.AdminGenerate
-	}
-
-	selected := 0
-	if len(csrPEM) > 0 {
-		selected++
-	}
-	if len(certInPEM) > 0 {
-		selected++
-	}
-	if generate {
-		selected++
-	}
+	csrPEM, certInPEM, poolPEM, _, selected := adminCredentialSelection(opts)
 
 	switch {
 	case selected > 1:
@@ -102,16 +84,7 @@ func issueAdminCredential(ctx context.Context, ca CeremonyCA, opts *InitializeOp
 		return nil, nil, AdminCredentialNone, &NoAdminCredentialSelectedError{}
 
 	case len(certInPEM) > 0:
-		if len(poolPEM) == 0 {
-			poolPEM = caBundlePEM
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(poolPEM) {
-			return nil, nil, AdminCredentialNone, &AdminCredentialRejectedError{
-				Cause: errors.New("trust pool contains no usable certificates"),
-			}
-		}
-		adopted, aerr := adoptAdminCert(certInPEM, pool)
+		adopted, aerr := adoptPresentedAdminCert(certInPEM, poolPEM, caBundlePEM)
 		if aerr != nil {
 			return nil, nil, AdminCredentialNone, aerr
 		}
@@ -141,6 +114,99 @@ func issueAdminCredential(ctx context.Context, ca CeremonyCA, opts *InitializeOp
 			return nil, nil, AdminCredentialNone, serr
 		}
 		return signed, genKey, AdminCredentialGenerated, nil
+	}
+}
+
+// adminCredentialSelection extracts opts' three admin-credential inputs and
+// counts how many are set, the one computation issueAdminCredential and
+// validateAdminCredentialInputs must agree on exactly -- a drift between
+// two independent counts would let one accept a shape the other refuses.
+func adminCredentialSelection(opts *InitializeOptions) (csrPEM, certInPEM, poolPEM []byte, generate bool, selected int) {
+	if opts != nil {
+		csrPEM = opts.AdminCSRPEM
+		certInPEM = opts.AdminCertPEM
+		poolPEM = opts.AdminCertPoolPEM
+		generate = opts.AdminGenerate
+	}
+	if len(csrPEM) > 0 {
+		selected++
+	}
+	if len(certInPEM) > 0 {
+		selected++
+	}
+	if generate {
+		selected++
+	}
+	return csrPEM, certInPEM, poolPEM, generate, selected
+}
+
+// adoptPresentedAdminCert resolves the BYOC trust pool (poolPEM, or
+// caBundlePEM as its fallback) and adopts certInPEM through it. Factored out
+// of issueAdminCredential's BYOC case so validateAdminCredentialInputs can
+// run the IDENTICAL check: adoptAdminCert is pure (parsing and chain
+// verification only, no CA interaction), so calling it ahead of time to
+// validate costs nothing and cannot drift from the value issueAdminCredential
+// goes on to use.
+func adoptPresentedAdminCert(certInPEM, poolPEM, caBundlePEM []byte) ([]byte, error) {
+	if len(poolPEM) == 0 {
+		poolPEM = caBundlePEM
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(poolPEM) {
+		return nil, &AdminCredentialRejectedError{
+			Cause: errors.New("trust pool contains no usable certificates"),
+		}
+	}
+	return adoptAdminCert(certInPEM, pool)
+}
+
+// validateAdminCredentialInputs performs every admin-credential input check
+// that does not require actually signing or generating anything: the
+// selection-conflict/none-selected count (adminCredentialSelection, shared
+// with issueAdminCredential), the BYOC chain validation
+// (adoptPresentedAdminCert, pure), and the requires-a-CA refusal for
+// CSR-sign/generate. Initialize calls it BEFORE provisioning the PINs,
+// bringing the system barrier up, or issuing the TLS certificate (go-qrdb#548
+// review: B3, "init is atomic" -- a malformed admin-credential request must
+// be refused before any of those side effects, not after them). A caller
+// that passes this check is guaranteed issueAdminCredential, called later,
+// will not fail on input shape -- only on a signing/generation failure
+// specific to the CSR-sign or generate path, which has no cheaper way to
+// detect ahead of time.
+func validateAdminCredentialInputs(ca CeremonyCA, opts *InitializeOptions, caBundlePEM []byte) error {
+	csrPEM, certInPEM, poolPEM, generate, selected := adminCredentialSelection(opts)
+
+	switch {
+	case selected > 1:
+		return &ConflictingAdminCredentialInputsError{}
+
+	case selected == 0:
+		return &NoAdminCredentialSelectedError{}
+
+	case len(certInPEM) > 0:
+		if _, err := adoptPresentedAdminCert(certInPEM, poolPEM, caBundlePEM); err != nil {
+			return err
+		}
+		return nil
+
+	case len(csrPEM) > 0:
+		if ca == nil {
+			return &AdminCredentialRequiresCAError{Path: "csr-sign"}
+		}
+		return nil
+
+	default: // generate -- the only remaining case once selected == 1
+		if !generate {
+			// Unreachable: selected == 1 and neither csrPEM nor certInPEM is
+			// set, so generate must be true. Guard kept explicit rather than
+			// silently falling through, matching issueAdminCredential's own
+			// "default: // generate" comment.
+			return &NoAdminCredentialSelectedError{}
+		}
+		if ca == nil {
+			return &AdminCredentialRequiresCAError{Path: "generate"}
+		}
+		return nil
 	}
 }
 
