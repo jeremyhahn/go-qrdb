@@ -114,10 +114,16 @@ func (a *auditScope) submit(t *testing.T, sec *secrets, op seal.QuorumOp, h *tes
 
 // auditScopes builds each scope with ring as its audit trail.
 func auditScopes(t *testing.T, ring audit.AuditLogger) map[string]func(t *testing.T) *auditScope {
+	return auditScopesWithPolicy(t, ring, audit.FailClosed)
+}
+
+// auditScopesWithPolicy builds each scope with ring as its audit trail under
+// the audit failure posture policy.
+func auditScopesWithPolicy(t *testing.T, ring audit.AuditLogger, policy audit.FailurePolicy) map[string]func(t *testing.T) *auditScope {
 	scoped := func(tenantID, scope string, build func(*seal.StorageBarrier, HolderDeps) (*ScopedCeremonyService, error)) func(t *testing.T) *auditScope {
 		return func(t *testing.T) *auditScope {
 			barrier := shamirBarrier(t, seal.NewMemoryBackend(), 2, 3)
-			svc, err := build(barrier, HolderDeps{CA: testCA(t), Factors: testFactors(t), Audit: ring})
+			svc, err := build(barrier, HolderDeps{CA: testCA(t), Factors: testFactors(t), Audit: ring, AuditPolicy: policy})
 			require.NoError(t, err)
 			barrier.SetCeremonyDistributor(svc)
 			barrier.SetHolderVerifier(svc)
@@ -154,6 +160,7 @@ func auditScopes(t *testing.T, ring audit.AuditLogger) map[string]func(t *testin
 				e.initShamir("", newHolder(t, "so-1", ""), newHolder(t, "so-2", ""), newHolder(t, "so-3", ""))
 			}
 			e.svc.SetAuditLogger(ring)
+			e.svc.SetAuditFailurePolicy(policy)
 			a := &auditScope{
 				tenantID:   tenantid.System,
 				scope:      ScopeSystem.String(),
@@ -463,14 +470,15 @@ func (l *refusingAuditLogger) Query(context.Context, audit.Filter) (*audit.Page,
 
 func (l *refusingAuditLogger) Close() error { return nil }
 
-// TestHolderAudit_RecordsArePostHoc pins that a holder record is written
-// after the operation it describes: a trail that refuses it leaves the
-// operation's outcome as it was, in every scope.
-func TestHolderAudit_RecordsArePostHoc(t *testing.T) {
+// TestHolderAudit_FailOpenProceeds pins the fail-open posture in every scope:
+// a trail that refuses every record -- the gating records of a registration,
+// a claim and a rekey opening as much as the post-hoc ones -- leaves each
+// operation to proceed, the failure counted rather than returned.
+func TestHolderAudit_FailOpenProceeds(t *testing.T) {
 	for name := range auditScopes(t, nil) {
 		t.Run(name, func(t *testing.T) {
 			sink := &refusingAuditLogger{err: errors.New("disk full")}
-			a := auditScopes(t, sink)[name](t)
+			a := auditScopesWithPolicy(t, sink, audit.FailOpen)[name](t)
 			ctx := context.Background()
 			hs := a.enrol(t, ctx, newHolder(t, "alice", ""), newHolder(t, "bob", ""), newHolder(t, "carol", ""))
 			alice, bob := hs[0], hs[1]
@@ -485,6 +493,8 @@ func TestHolderAudit_RecordsArePostHoc(t *testing.T) {
 			require.NoError(t, err)
 			assert.True(t, out.Complete)
 			assert.False(t, a.barrier.IsSealed())
+			_, err = a.revoke(ctx, "carol")
+			require.NoError(t, err, "under fail-open an unrecorded rekey opening proceeds")
 			assert.Positive(t, sink.calls, "the records were attempted")
 		})
 	}
@@ -540,6 +550,44 @@ func TestHolderActor(t *testing.T) {
 func TestHolderOutcome(t *testing.T) {
 	err := errors.New("boom")
 	assert.Equal(t, audit.OutcomeSuccess, holderOutcome(nil, true))
-	assert.Equal(t, audit.OutcomeDenied+":boom", holderOutcome(err, true))
-	assert.Equal(t, audit.OutcomeFailure+":boom", holderOutcome(err, false))
+	assert.Equal(t, audit.OutcomeDenied+":unknown", holderOutcome(err, true), "an unrecognised error's text never reaches the trail")
+	assert.Equal(t, audit.OutcomeFailure+":unknown", holderOutcome(err, false))
+	assert.Equal(t, audit.OutcomeDenied+":verification-failed", holderOutcome(&factorRefusedError{err: err}, true))
+}
+
+// Every refusal a holder operation records maps to a fixed token.
+func TestHolderReason(t *testing.T) {
+	for err, want := range map[error]string{
+		ErrOfficerNotFound:                                     reasonNotFound,
+		ErrQuorumChallengeNotFound:                             reasonNotFound,
+		&seal.HolderNotInRosterError{Holder: "x"}:              reasonNotFound,
+		ErrQuorumChallengeMismatch:                             reasonChallengeMismatch,
+		ErrCertThumbprintMismatch:                              reasonChallengeMismatch,
+		ErrChallengeExpired:                                    reasonExpired,
+		ErrChallengeVerificationFailed:                         reasonVerificationFailed,
+		&factorRefusedError{err: errors.New("pin=1234")}:       reasonVerificationFailed,
+		&QuorumRateLimitedError{}:                              reasonLimitReached,
+		ErrDuplicateUsername:                                   reasonDuplicate,
+		ErrSelfEnrolment:                                       reasonSelfEnrolment,
+		ErrRegistrationWhileSealed:                             reasonSealed,
+		&InvalidHolderNameError{Name: "a/b"}:                   reasonInvalidRequest,
+		&FactorNotEnrolledError{Factor: "x"}:                   reasonFactorNotAdmitted,
+		ErrCANotInitialized:                                    reasonCAUnavailable,
+		seal.ErrQuorumRoundInProgress:                          reasonRoundInProgress,
+		&seal.RevocationBreaksQuorumError{}:                    reasonBreaksQuorum,
+		&audit.GateError{Err: errors.New("x")}:                 reasonAuditUnavailable,
+		&OfficerRegistryError{Err: errors.New("disk: /var/x")}: reasonUnknown,
+	} {
+		assert.Equal(t, want, holderReason(err), "%T %v", err, err)
+	}
+	assert.Equal(t, reasonExpired, holderReason(&ShareStoreError{Err: ErrShareExpired}), "a wrapped sentinel is found")
+}
+
+// A holder name that is not a valid principal name -- caller-chosen on a
+// refusal -- never reaches the trail.
+func TestHolderName(t *testing.T) {
+	assert.Equal(t, "alice", holderName("alice"))
+	assert.Equal(t, "", holderName(""))
+	assert.Equal(t, holderInvalidName, holderName(strings.Repeat("x", 65)))
+	assert.Equal(t, holderInvalidName, holderName("a b\n<script>"))
 }

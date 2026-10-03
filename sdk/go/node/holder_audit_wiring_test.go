@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 )
@@ -39,5 +40,23 @@ func TestWithHolderInfra_NoTrailCarriesNone(t *testing.T) {
 	n := &Node{}
 	if infra := n.withHolderInfra(lifecycle.Infra{}, nil, nil); infra.AuditLogger != nil {
 		t.Fatalf("Infra.AuditLogger = %T, want nil", infra.AuditLogger)
+	}
+}
+
+// The holder authority follows the node's auth.audit_failure_policy; an
+// absent or unrecognised value is the secure default, fail-closed.
+func TestWithHolderInfra_CarriesTheAuditPosture(t *testing.T) {
+	n := &Node{}
+	for value, want := range map[string]audit.FailurePolicy{
+		"":            audit.FailClosed,
+		"fail-open":   audit.FailOpen,
+		"fail-closed": audit.FailClosed,
+		"fail_open":   audit.FailClosed,
+	} {
+		cfg := qrdbconfig.DefaultConfig()
+		cfg.Auth.AuditFailurePolicy = value
+		if got := n.withHolderInfra(lifecycle.Infra{}, cfg, nil).AuditFailurePolicy; got != want {
+			t.Fatalf("policy %q = %v, want %v", value, got, want)
+		}
 	}
 }

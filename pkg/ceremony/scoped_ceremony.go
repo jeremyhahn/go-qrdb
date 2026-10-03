@@ -135,9 +135,9 @@ func (t *ScopedCeremonyService) StartRekey(ctx context.Context, barrier *seal.St
 	t.mu.Lock()
 	deps := t.deps
 	t.mu.Unlock()
-	info, err := barrier.StartRekey(ctx, seal.DomainUnseal, params)
-	t.holder.recordRekeyStart(ctx, &deps, params, err)
-	return info, err
+	return t.holder.startRekey(ctx, &deps, params, func(p seal.RekeyParams) (*seal.QuorumRoundInfo, error) {
+		return barrier.StartRekey(ctx, seal.DomainUnseal, p)
+	})
 }
 
 // PrepareRoster implements seal.CeremonyDistributor.

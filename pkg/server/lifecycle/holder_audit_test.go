@@ -87,3 +87,23 @@ func TestBuildSealServicesOnly_ThreadedCeremonyAdoptsTheTrail(t *testing.T) {
 		t.Fatalf("HolderDeps().Audit = %p, want the adopting graph's trail %p", got, second)
 	}
 }
+
+// The sealed-window graph hands the node's audit failure posture to the
+// holder authority with the trail.
+func TestBuildSealServicesOnly_HandsThePostureToTheHolderAuthority(t *testing.T) {
+	for _, policy := range []audit.FailurePolicy{audit.FailClosed, audit.FailOpen} {
+		barrier, registry, credSvc := newTestBarrier(t)
+		core := sealCeremonyCore(t, lifecycle.Infra{
+			DataDir:            t.TempDir(),
+			SealBarrier:        barrier,
+			BarrierRegistry:    registry,
+			CredentialCoreSvc:  credSvc,
+			AuditLogger:        audit.NewRingBuffer(4),
+			AuditFailurePolicy: policy,
+			Logger:             slog.Default(),
+		})
+		if got := core.HolderDeps().AuditPolicy; got != policy {
+			t.Fatalf("HolderDeps().AuditPolicy = %v, want %v", got, policy)
+		}
+	}
+}

@@ -372,11 +372,18 @@ Every holder scope -- system, recovery, tenant and database -- records five
 events on the trail through the one holder engine, keyed by the scope's
 owning tenant. Each names the scope, the holder and the outcome; quorum
 events name the operation. **None carries a share, an envelope, a PIN, a
-claim signature, a factor response or a key.** They are post-hoc records: by
-the time one is written the operation has happened or been refused, so a
-trail that refuses the record is counted on
-`qrdb_audit_write_failures_total{component="share-holder"}` and logged, and
-does not change the operation's outcome.
+claim signature, a factor response or a key**, and a refusal's reason is a
+fixed token, never an error's text.
+
+**They follow the node's one audit failure posture.** A registration, a claim
+and a rekey opening are recorded before they take effect and, under
+`auth.audit_failure_policy: "fail-closed"` (the default), refused when the
+trail cannot record them -- the holder is not enrolled, the envelope stays
+held and claimable, no round opens -- exactly as the authorization and SO
+gates refuse. Refusals, quorum submissions and revocations are post-hoc
+records: the operation has already been refused or completed, so a trail
+that refuses one is counted on
+`qrdb_audit_write_failures_total{component="share-holder"}` and logged.
 
 | Event | Recorded when |
 |---|---|

@@ -324,9 +324,14 @@ func ceremonyCAFromBundle(bundle *TLSBundle) (ceremony.CeremonyCA, error) {
 // holder events of the window -- envelope claims, quorum submissions -- are
 // recorded on it.
 func awaitUnseal(sigCtx context.Context, f *startFlags, bundle *TLSBundle, sub *sealSubsystem, ceremonyCA ceremony.CeremonyCA, carried *ceremony.CeremonyService, complianceAudit audit.AuditLogger) (*lifecycle.Node, error) {
+	auditPolicy, err := audit.ParseFailurePolicy(f.auditFailurePolicy)
+	if err != nil {
+		return nil, err
+	}
 	sealNode, err := lifecycle.BuildSealServicesOnly(sigCtx, lifecycle.Infra{
 		CeremonyCoreSvc:           carried,
 		AuditLogger:               complianceAudit,
+		AuditFailurePolicy:        auditPolicy,
 		DataDir:                   f.dataDir,
 		SealBarrier:               sub.SealBarrier,
 		BarrierRegistry:           sub.BarrierRegistry,

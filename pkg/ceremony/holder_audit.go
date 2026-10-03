@@ -16,9 +16,11 @@ package ceremony
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -54,6 +56,11 @@ const (
 	ActionHolderRevoked = "holder-revoked"
 )
 
+// holderInvalidName stands in the trail for a holder name that is not a
+// valid principal name: the name comes from the caller, unauthenticated on a
+// refusal, and the trail records no caller-chosen text but a valid name.
+const holderInvalidName = "(invalid-name)"
+
 // Actors recorded when no authenticated identity performed the operation.
 const (
 	// holderActorAnonymous is a sealed-window caller that has not proved
@@ -84,15 +91,9 @@ type holderEvent struct {
 	denied bool
 }
 
-// record writes ev on the scope's compliance trail, keyed by the scope's
-// owning tenant. A holder operation has already happened -- or been refused --
-// by the time it is recorded, so a sink that refuses the record is counted
-// and logged (audit.EmitBestEffort), never returned as the operation's
-// failure. Without a sink it records nothing.
-func (h *holderScope) record(ctx context.Context, d *HolderDeps, ev holderEvent) {
-	if d == nil || d.Audit == nil {
-		return
-	}
+// event renders ev as the compliance record of the scope, keyed by the
+// scope's owning tenant.
+func (h *holderScope) event(ctx context.Context, ev holderEvent) audit.AuditEvent {
 	attrs := make(map[string]any, len(ev.attrs)+3)
 	for k, v := range ev.attrs {
 		attrs[k] = v
@@ -100,16 +101,61 @@ func (h *holderScope) record(ctx context.Context, d *HolderDeps, ev holderEvent)
 	attrs["scope"] = h.scope.String()
 	attrs["domain"] = string(h.domain)
 	if ev.holder != "" {
-		attrs["holder"] = ev.holder
+		attrs["holder"] = holderName(ev.holder)
 	}
-	audit.EmitBestEffort(ctx, d.Audit, HolderAuditComponent, audit.AuditEvent{
-		Actor:      holderActor(ctx, ev.actor),
+	return audit.AuditEvent{
+		Actor:      holderActor(ctx, holderName(ev.actor)),
 		TenantID:   tenantid.Normalize(h.tenantID),
 		Resource:   HolderAuditResource,
 		Action:     ev.action,
 		Outcome:    holderOutcome(ev.err, ev.denied),
 		Attributes: attrs,
-	})
+	}
+}
+
+// record writes ev on the scope's compliance trail as a POST-HOC record: the
+// operation has already happened -- or been refused -- so a sink that refuses
+// the record is counted and logged (audit.EmitBestEffort), never returned as
+// the operation's failure. Refusals, quorum submissions and revocations are
+// recorded so. Without a sink it records nothing.
+func (h *holderScope) record(ctx context.Context, d *HolderDeps, ev holderEvent) {
+	if d == nil || d.Audit == nil {
+		return
+	}
+	audit.EmitBestEffort(ctx, d.Audit, HolderAuditComponent, h.event(ctx, ev))
+}
+
+// gate writes ev on the scope's compliance trail as a GATING record, before
+// the operation it describes takes effect: a registration before the
+// certificate is issued, a claim before the envelope leaves the store, a rekey
+// before its round opens. It follows the node's one audit failure posture
+// (HolderDeps.AuditPolicy, auth.audit_failure_policy): fail-closed -- the
+// default -- returns *audit.GateError when the record cannot be written, and
+// the caller refuses the operation with nothing changed; fail-open lets it
+// proceed, counting the gap. Without a sink it records nothing.
+func (h *holderScope) gate(ctx context.Context, d *HolderDeps, ev holderEvent) error {
+	if d == nil || d.Audit == nil {
+		return nil
+	}
+	return audit.EmitGated(ctx, d.Audit, HolderAuditComponent, d.AuditPolicy, h.event(ctx, ev))
+}
+
+// isGateRefusal reports whether err is the trail's refusal of a gating
+// record: the operation did not take effect and there is nothing more to
+// record (the sink that refused would refuse again).
+func isGateRefusal(err error) bool {
+	var gate *audit.GateError
+	return errors.As(err, &gate)
+}
+
+// holderName returns name when it is a valid principal name and
+// holderInvalidName otherwise, so a caller-chosen string of any length or
+// alphabet never reaches the trail.
+func holderName(name string) string {
+	if name == "" || validPrincipalName(name) {
+		return name
+	}
+	return holderInvalidName
 }
 
 // holderActor names who performed a holder operation: the authenticated
@@ -124,30 +170,172 @@ func holderActor(ctx context.Context, fallback string) string {
 	return holderActorAnonymous
 }
 
-// holderOutcome renders err as an audit outcome.
+// holderOutcome renders err as an audit outcome: success, or the denied or
+// failure class with a FIXED reason token (holderReason). An error's own text
+// never reaches the trail: a factor, HPKE or storage error is free text from
+// code outside this package -- a go-xkms FIDO2, PIV, PKCS#11 or TPM factor
+// among it -- and the trail is tenant-readable, hash-chained and cannot be
+// redacted.
 func holderOutcome(err error, denied bool) string {
 	switch {
 	case err == nil:
 		return audit.OutcomeSuccess
 	case denied:
-		return audit.OutcomeDenied + ":" + err.Error()
+		return audit.OutcomeDenied + ":" + holderReason(err)
 	default:
-		return audit.OutcomeFailure + ":" + err.Error()
+		return audit.OutcomeFailure + ":" + holderReason(err)
 	}
 }
 
-// recordRekeyStart records the opening of a rekey round on the scope's
-// domain with params, and its outcome.
-func (h *holderScope) recordRekeyStart(ctx context.Context, d *HolderDeps, params seal.RekeyParams, err error) {
+// Fixed reason tokens a refused holder operation is recorded with.
+const (
+	reasonNotFound           = "not-found"
+	reasonChallengeMismatch  = "challenge-mismatch"
+	reasonExpired            = "expired"
+	reasonVerificationFailed = "verification-failed"
+	reasonLimitReached       = "limit-reached"
+	reasonDuplicate          = "duplicate"
+	reasonSelfEnrolment      = "self-enrolment"
+	reasonSealed             = "sealed"
+	reasonInvalidRequest     = "invalid-request"
+	reasonFactorNotAdmitted  = "factor-not-admitted"
+	reasonCAUnavailable      = "ca-unavailable"
+	reasonRoundInProgress    = "round-in-progress"
+	reasonBreaksQuorum       = "breaks-quorum"
+	reasonStaleRoster        = "stale-roster"
+	reasonRosterMissing      = "roster-missing"
+	reasonAuditUnavailable   = "audit-unavailable"
+	reasonUnknown            = "unknown"
+)
+
+// holderReasonSentinels maps each sentinel a holder operation refuses with to
+// its token.
+var holderReasonSentinels = map[error]string{
+	ErrOfficerNotFound:             reasonNotFound,
+	ErrNoPendingShare:              reasonNotFound,
+	ErrChallengeNotFound:           reasonNotFound,
+	ErrQuorumChallengeNotFound:     reasonNotFound,
+	ErrQuorumChallengeMismatch:     reasonChallengeMismatch,
+	ErrCertThumbprintMismatch:      reasonChallengeMismatch,
+	ErrChallengeExpired:            reasonExpired,
+	ErrShareExpired:                reasonExpired,
+	ErrChallengeVerificationFailed: reasonVerificationFailed,
+	ErrTooManyPendingChallenges:    reasonLimitReached,
+	ErrDuplicateUsername:           reasonDuplicate,
+	ErrDuplicateHolderKey:          reasonDuplicate,
+	ErrSelfEnrolment:               reasonSelfEnrolment,
+	ErrRegistrationWhileSealed:     reasonSealed,
+	ErrMissingUsername:             reasonInvalidRequest,
+	ErrMissingCSRPEM:               reasonInvalidRequest,
+	ErrInvalidHolderRole:           reasonInvalidRequest,
+	ErrCANotInitialized:            reasonCAUnavailable,
+	seal.ErrQuorumRoundInProgress:  reasonRoundInProgress,
+	seal.ErrHolderRosterMissing:    reasonRosterMissing,
+}
+
+// holderReasonTypes maps each typed error a holder operation refuses with to
+// its token, in the order they are tested. A factor's own refusal is
+// factorRefusedError, which authenticate wraps around whatever the factor
+// returned, so an injected factor's error is verification-failed however it
+// reads.
+var holderReasonTypes = []struct {
+	is    func(error) bool
+	token string
+}{
+	{isType[*audit.GateError], reasonAuditUnavailable},
+	{isType[*factorRefusedError], reasonVerificationFailed},
+	{isType[*authfactors.VerificationFailedError], reasonVerificationFailed},
+	{isType[*QuorumRateLimitedError], reasonLimitReached},
+	{isType[*InvalidHolderNameError], reasonInvalidRequest},
+	{isType[*CSRParseError], reasonInvalidRequest},
+	{isType[*UnsupportedHolderKeyError], reasonInvalidRequest},
+	{isType[*EncryptionKeyRequiredError], reasonInvalidRequest},
+	{isType[*DuplicateFactorError], reasonInvalidRequest},
+	{isType[*FactorNotEnrolledError], reasonFactorNotAdmitted},
+	{isType[*seal.FactorNotAdmittedError], reasonFactorNotAdmitted},
+	{isType[*authfactors.FactorNotFoundError], reasonFactorNotAdmitted},
+	{isType[*seal.HolderNotInRosterError], reasonNotFound},
+	{isType[*seal.RevocationBreaksQuorumError], reasonBreaksQuorum},
+	{isType[*seal.StaleRosterError], reasonStaleRoster},
+}
+
+// isType reports whether err's chain holds a T.
+func isType[T error](err error) bool {
+	var target T
+	return errors.As(err, &target)
+}
+
+// holderReason returns err's fixed reason token; reasonUnknown for an error
+// no table names.
+func holderReason(err error) string {
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		if token, ok := holderReasonSentinels[e]; ok {
+			return token
+		}
+	}
+	for _, t := range holderReasonTypes {
+		if t.is(err) {
+			return t.token
+		}
+	}
+	return reasonUnknown
+}
+
+// factorRefusedError is a factor's refusal of a holder's response, carrying
+// the factor's own error for errors.Is and errors.As. It marks the error as
+// the factor's, so the trail records verification-failed and never the
+// factor's text.
+type factorRefusedError struct {
+	err error
+}
+
+// Error returns the factor's own description.
+func (e *factorRefusedError) Error() string { return e.err.Error() }
+
+// Unwrap returns the factor's error.
+func (e *factorRefusedError) Unwrap() error { return e.err }
+
+// rekeyStartEvents returns the holder-rekey-start events of params, with
+// err as their outcome: one per holder removed, or one for a rekey that
+// removes nobody.
+func rekeyStartEvents(params seal.RekeyParams, err error) []holderEvent {
 	attrs := map[string]any{"op": string(seal.OpRekey), "threshold": params.Threshold}
 	if params.Policy != "" {
 		attrs["policy"] = string(params.Policy)
 	}
 	if len(params.Remove) == 0 {
-		h.record(ctx, d, holderEvent{action: ActionHolderRekeyStart, attrs: attrs, err: err})
-		return
+		return []holderEvent{{action: ActionHolderRekeyStart, attrs: attrs, err: err}}
 	}
-	for _, name := range params.Remove {
-		h.record(ctx, d, holderEvent{action: ActionHolderRekeyStart, holder: name, attrs: attrs, err: err})
+	evs := make([]holderEvent, len(params.Remove))
+	for i, name := range params.Remove {
+		evs[i] = holderEvent{action: ActionHolderRekeyStart, holder: name, attrs: attrs, err: err}
 	}
+	return evs
+}
+
+// startRekey opens the rekey round of params on barrier through open
+// (seal.StorageBarrier.StartRekey) with the opening recorded on the trail as
+// a GATING record: the barrier validates the rekey, then calls back
+// (RekeyParams.Admit) and the record is written before the round opens. A
+// rekey the trail cannot record under fail-closed is refused with
+// *audit.GateError and no round is opened. A rekey the barrier refuses is
+// recorded post-hoc, as a failure.
+func (h *holderScope) startRekey(ctx context.Context, d *HolderDeps, params seal.RekeyParams, open func(seal.RekeyParams) (*seal.QuorumRoundInfo, error)) (*seal.QuorumRoundInfo, error) {
+	admitted := false
+	params.Admit = func() error {
+		for _, ev := range rekeyStartEvents(params, nil) {
+			if err := h.gate(ctx, d, ev); err != nil {
+				return err
+			}
+		}
+		admitted = true
+		return nil
+	}
+	info, err := open(params)
+	if err != nil && !admitted && !isGateRefusal(err) {
+		for _, ev := range rekeyStartEvents(params, err) {
+			h.record(ctx, d, ev)
+		}
+	}
+	return info, err
 }

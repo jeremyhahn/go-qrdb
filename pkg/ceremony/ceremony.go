@@ -179,6 +179,16 @@ func (s *CeremonyService) SetAuditLogger(l audit.AuditLogger) {
 	s.deps.Audit = l
 }
 
+// SetAuditFailurePolicy installs the node's audit failure posture
+// (HolderDeps.AuditPolicy): what a holder operation recorded before it takes
+// effect does when the trail cannot record it. It is carried to every tenant
+// and database holder authority built from HolderDeps.
+func (s *CeremonyService) SetAuditFailurePolicy(p audit.FailurePolicy) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deps.AuditPolicy = p
+}
+
 // SetPINBackend installs the PIN backend, decorated with the SO PIN lockout
 // (pin.NewLockoutBackend, idempotent: a backend the composer already
 // decorated keeps its one set of counters). Without one, every PIN-gated
@@ -541,9 +551,9 @@ func (s *CeremonyService) StartRekey(ctx context.Context, domain seal.QuorumDoma
 	if err != nil {
 		return nil, err
 	}
-	info, err := barrier.StartRekey(ctx, domain, params)
-	h.recordRekeyStart(ctx, &deps, params, err)
-	return info, err
+	return h.startRekey(ctx, &deps, params, func(p seal.RekeyParams) (*seal.QuorumRoundInfo, error) {
+		return barrier.StartRekey(ctx, domain, p)
+	})
 }
 
 // PrepareRoster implements seal.CeremonyDistributor.

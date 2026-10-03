@@ -1166,6 +1166,13 @@ func runStart(f *startFlags) (err error) {
 	// life of the process -- every boot iteration, an in-process migration's
 	// included, records on it -- and the node does not start without it
 	// (openComplianceAudit).
+	// The audit failure posture is resolved before the trail is opened: the
+	// holder operations of the sealed window follow it, and an unrecognised
+	// value fails the boot here rather than after the window.
+	auditPolicy, err := audit.ParseFailurePolicy(f.auditFailurePolicy)
+	if err != nil {
+		return err
+	}
 	complianceAudit, err := openComplianceAudit(sigCtx, f.dataDir, f.processHardening)
 	if err != nil {
 		return err
@@ -1516,6 +1523,7 @@ func runStart(f *startFlags) (err error) {
 				CeremonyCA:                ceremonyCA,
 				CeremonyCoreSvc:           ceremonyCoreSvc,
 				AuditLogger:               complianceAudit,
+				AuditFailurePolicy:        auditPolicy,
 				SPIFFETrustDomain:         f.spiffeTrustDomain,
 				MTLSBindingPolicy:         f.mtlsBindingPolicy,
 				PINBackend:                pinBackend,

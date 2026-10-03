@@ -132,7 +132,10 @@ any barrier is built. The same sink is then handed to:
   gates, and every protocol server, as before.
 
 `sdk/go/node` passes the caller's `server.WithAuditLogger` sink as
-`Infra.AuditLogger` for every graph it builds.
+`Infra.AuditLogger` for every graph it builds with a seal barrier -- the
+sealed window's and the full one -- which are the graphs that carry a holder
+authority; a node with seal disabled has no holders to record. With it goes
+the node's `auth.audit_failure_policy` as `Infra.AuditFailurePolicy`.
 
 > **Correction (now applied throughout).** Earlier revisions of this document
 > described a `New(cfg, kvStore)` factory selecting between `kvLogger`,
@@ -585,10 +588,39 @@ these attributes only: `scope` (`system`, `recovery`, `tenant:<id>`,
 `threshold` and `policy` (rekey start). The actor is the authenticated
 identity; with none, the holder once it has proved itself (a claim, a quorum
 submission), the enroller, or `share-holder-quorum` for a revocation the
-quorum completed; otherwise `anonymous`. A refusal's outcome is
-`denied:<reason>` for a claim or submission that did not authenticate and
-`failure:<reason>` otherwise. They are emitted with `EmitBestEffort`,
-component `share-holder`.
+quorum completed; otherwise `anonymous`. A holder name that is not a valid
+principal name (1-64 characters of `A-Z a-z 0-9 . _ @ -`) is recorded as
+`(invalid-name)`: on a refusal it comes from an unauthenticated caller.
+
+A refusal's outcome is `denied:<reason>` for a claim or submission that did
+not authenticate and `failure:<reason>` otherwise, where `<reason>` is a
+**fixed token** for the error's class -- `not-found`, `challenge-mismatch`,
+`expired`, `verification-failed`, `limit-reached`, `duplicate`,
+`self-enrolment`, `sealed`, `invalid-request`, `factor-not-admitted`,
+`ca-unavailable`, `round-in-progress`, `breaks-quorum`, `stale-roster`,
+`roster-missing`, `audit-unavailable`, or `unknown`. An error's own text is
+never recorded: a factor's refusal (a go-xkms FIDO2, PIV, PKCS#11 or TPM
+factor's among them), an HPKE or a storage error is free text the trail could
+not redact, as the SO gate's fixed reasons (`not-set`, `locked`, `invalid`)
+already avoid.
+
+**Which records gate, and which are post-hoc.** A registration, a claim and
+a rekey opening are recorded **before** they take effect -- a registration
+once validated and before the CA issues the certificate, a claim once the
+holder has proved its key and before the envelope leaves the store, a rekey
+once the barrier has validated it and before its round opens
+(`seal.RekeyParams.Admit`) -- with `audit.EmitGated` under the node's one
+posture, `HolderDeps.AuditPolicy` (`auth.audit_failure_policy`, the same
+value the authorization and SO gates follow). Under `fail-closed`, the
+default, a record the trail refuses refuses the operation with
+`*audit.GateError` (`Unavailable` on every transport) and nothing changes:
+no certificate is issued, the envelope stays held and claimable, no round
+opens. Under `fail-open` the operation proceeds and the gap is counted on
+`qrdb_audit_gate_failures_total{component="share-holder"}`. A failure after a
+gating record is recorded as a second record of the same event, its failure.
+Refusals, quorum submissions and revocations stay post-hoc
+(`audit.EmitBestEffort`, `qrdb_audit_write_failures_total{component="share-holder"}`):
+the operation has already been refused or completed when they are written.
 
 ## Configuration
 

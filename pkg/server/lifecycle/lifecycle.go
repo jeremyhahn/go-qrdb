@@ -196,6 +196,12 @@ type Infra struct {
 	// Nil records no holder events.
 	AuditLogger audit.AuditLogger
 
+	// AuditFailurePolicy is the node's audit failure posture
+	// (auth.audit_failure_policy). A holder registration, claim and rekey
+	// opening are recorded before they take effect and, under FailClosed --
+	// the zero value -- refused when the trail cannot record them.
+	AuditFailurePolicy audit.FailurePolicy
+
 	// Logger is used for service-level structured logging. When nil,
 	// slog.Default() is used.
 	Logger *slog.Logger
@@ -1012,6 +1018,7 @@ func ceremonyService(infra Infra, log *slog.Logger) (*ceremony.CeremonyService, 
 	svc.SetPINBackend(pin.NewLockoutBackend(infra.PINBackend))
 	svc.SetQuorumLimiter(QuorumLimit)
 	svc.SetAuditLogger(infra.AuditLogger)
+	svc.SetAuditFailurePolicy(infra.AuditFailurePolicy)
 	return svc, nil
 }
 

@@ -499,6 +499,15 @@ func (n *Node) withHolderInfra(infra lifecycle.Infra, cfg *qrdbconfig.Config, se
 	infra.FactorRegistry = crypto.FactorRegistry
 	infra.CeremonyCA = crypto.CeremonyCA
 	infra.AuditLogger = crypto.AuditLogger
+	// The holder events recorded before they take effect follow the node's
+	// one audit failure posture. An unrecognised value refuses the boot where
+	// the authorization middleware parses it; until then the secure default
+	// stands.
+	if cfg != nil {
+		if policy, err := audit.ParseFailurePolicy(cfg.Auth.AuditFailurePolicy); err == nil {
+			infra.AuditFailurePolicy = policy
+		}
+	}
 	return infra
 }
 

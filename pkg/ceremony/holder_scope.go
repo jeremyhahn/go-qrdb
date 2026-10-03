@@ -65,6 +65,13 @@ type HolderDeps struct {
 	// the claims and quorums that window serves are recorded too. Nil
 	// records nothing.
 	Audit audit.AuditLogger
+
+	// AuditPolicy is the node's one audit failure posture
+	// (auth.audit_failure_policy), the same the authorization and SO gates
+	// follow. A registration, a claim and a rekey opening are recorded
+	// before they take effect, and under FailClosed -- the zero value -- a
+	// record the trail refuses refuses the operation.
+	AuditPolicy audit.FailurePolicy
 }
 
 // QuorumLimitFunc decides whether one quorum-challenge request may
@@ -309,19 +316,28 @@ func (h *holderScope) persist(ctx context.Context, rec *PersistentOfficer) error
 
 // register enrols one holder (enrol) and records the enrolment, or its
 // refusal, on the compliance trail.
+//
+// The enrolment is recorded before it takes effect -- once it has been
+// validated, before the CA issues the certificate (a gating record, see
+// gate) -- so a registration the trail cannot record under fail-closed is
+// refused with *audit.GateError and nothing is issued or stored. A refusal,
+// or a failure after the record, is recorded post-hoc.
 func (h *holderScope) register(ctx context.Context, d *HolderDeps, req RegisterOfficerRequest) (*RegisterOfficerResult, error) {
-	res, err := h.enrol(ctx, d, req)
 	role := req.Role
 	if role == "" {
 		role = seal.RoleSecurityOfficer
 	}
-	h.record(ctx, d, holderEvent{
+	ev := holderEvent{
 		action: ActionHolderRegister,
 		holder: req.Username,
 		actor:  req.Enroller,
 		attrs:  map[string]any{"role": string(role)},
-		err:    err,
-	})
+	}
+	res, err := h.enrol(ctx, d, req, func() error { return h.gate(ctx, d, ev) })
+	if err != nil && !isGateRefusal(err) {
+		ev.err = err
+		h.record(ctx, d, ev)
+	}
 	return res, err
 }
 
@@ -329,7 +345,10 @@ func (h *holderScope) register(ctx context.Context, d *HolderDeps, req RegisterO
 // carrying a CA-assigned identity, records the envelope recipient key and
 // every enrolled factor's public material, and persists the public record.
 // No share exists at this point; shares come only from a distribution.
-func (h *holderScope) enrol(ctx context.Context, d *HolderDeps, req RegisterOfficerRequest) (*RegisterOfficerResult, error) {
+//
+// admit is called once the request is validated and before the first effect
+// (the certificate's issue); its error refuses the enrolment unchanged.
+func (h *holderScope) enrol(ctx context.Context, d *HolderDeps, req RegisterOfficerRequest, admit func() error) (*RegisterOfficerResult, error) {
 	if req.Role == "" {
 		req.Role = seal.RoleSecurityOfficer
 	}
@@ -392,6 +411,9 @@ func (h *holderScope) enrol(ctx context.Context, d *HolderDeps, req RegisterOffi
 	}
 	if !validPrincipalName(req.Username) {
 		return nil, &InvalidHolderNameError{Name: req.Username}
+	}
+	if err := admit(); err != nil {
+		return nil, err
 	}
 	// The certificate names the registered holder in the scope's tenant and
 	// carries no SAN, whatever the CSR asked for (signHolderCSR); the holder
@@ -773,25 +795,32 @@ func (h *holderScope) beginClaim(ctx context.Context, username, callerThumbprint
 	return c, nil
 }
 
-// completeClaim runs the claim (claim) and records it, or its refusal, on
-// the compliance trail. The record names the holder and the share index; the
-// envelope is never part of it.
+// completeClaim runs the claim (claim) with its record on the compliance
+// trail. The record names the holder and the share index; the envelope is
+// never part of it. A claim the holder has proved is recorded BEFORE its
+// envelope leaves the store (a gating record, see gate): under fail-closed a
+// claim the trail cannot record is refused with *audit.GateError and the
+// envelope stays held, intact and claimable. A refusal is recorded post-hoc.
 func (h *holderScope) completeClaim(ctx context.Context, d *HolderDeps, username, nonceHex string, signature []byte, callerThumbprint string) (*ShareClaimResult, error) {
-	res, err := h.claim(ctx, username, nonceHex, signature, callerThumbprint)
-	ev := holderEvent{action: ActionHolderClaim, holder: username, err: err, denied: err != nil}
-	if err == nil {
+	res, err := h.claim(ctx, username, nonceHex, signature, callerThumbprint, func(shareIndex int) error {
 		// The signature over the nonce, by the enrolled key, proved the
 		// caller is the holder.
-		ev.actor = username
-		ev.attrs = map[string]any{"share_index": res.ShareIndex}
+		return h.gate(ctx, d, holderEvent{
+			action: ActionHolderClaim, holder: username, actor: username,
+			attrs: map[string]any{"share_index": shareIndex},
+		})
+	})
+	if err != nil && !isGateRefusal(err) {
+		h.record(ctx, d, holderEvent{action: ActionHolderClaim, holder: username, err: err, denied: true})
 	}
-	h.record(ctx, d, ev)
 	return res, err
 }
 
 // claim verifies the signature over the claim nonce and delivers the
-// holder's envelope exactly once, destroying the protected copy.
-func (h *holderScope) claim(ctx context.Context, username, nonceHex string, signature []byte, callerThumbprint string) (*ShareClaimResult, error) {
+// holder's envelope exactly once, destroying the protected copy. admit is
+// called once the holder is proved and before the envelope is taken from the
+// store; its error refuses the claim with the envelope still held.
+func (h *holderScope) claim(ctx context.Context, username, nonceHex string, signature []byte, callerThumbprint string, admit func(shareIndex int) error) (*ShareClaimResult, error) {
 	if username == "" {
 		return nil, ErrMissingUsername
 	}
@@ -825,6 +854,15 @@ func (h *holderScope) claim(ctx context.Context, username, nonceHex string, sign
 	// store's protected copy is destroyed by Claim; this one has to outlive
 	// the function to be delivered.
 	//secure:unwiped HPKE ciphertext sealed to the holder's key, returned to the transport as the one-time claim response
+	if !h.store.Exists(username) {
+		if h.store.Expired(username) {
+			return nil, ErrShareExpired
+		}
+		return nil, ErrNoPendingShare
+	}
+	if err := admit(rec.ShareIndex); err != nil {
+		return nil, err
+	}
 	envelope, err := h.store.Claim(username)
 	if err != nil {
 		return nil, err
@@ -1261,7 +1299,10 @@ func (h *holderScope) authenticate(ctx context.Context, d *HolderDeps, domain se
 	if proof.PeerCertThumbprint != "" {
 		meta[authfactors.ResponseMetaPeerCertThumbprint] = proof.PeerCertThumbprint
 	}
-	return f.Verify(ctx, p.challenge, &authfactors.Response{Value: proof.Response, Metadata: meta})
+	if err := f.Verify(ctx, p.challenge, &authfactors.Response{Value: proof.Response, Metadata: meta}); err != nil {
+		return &factorRefusedError{err: err}
+	}
+	return nil
 }
 
 // status snapshots every holder's public state.

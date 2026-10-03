@@ -114,6 +114,12 @@ type RekeyParams struct {
 	// Remove names holders to revoke. They cannot contribute to the round
 	// and receive no share from it.
 	Remove []string
+
+	// Admit, when set, is called once the rekey has been validated and just
+	// before its round opens; an error refuses the rekey, unchanged, with no
+	// round opened. The holder authority records the opening here, so the
+	// record exists before the effect (ceremony's holder-rekey-start).
+	Admit func() error
 }
 
 // QuorumRoundInfo is the public state of an open round.
@@ -299,6 +305,11 @@ func (b *StorageBarrier) StartRekey(ctx context.Context, domain QuorumDomain, pa
 			return nil, ErrQuorumRoundInProgress
 		}
 		r.destroy()
+	}
+	if params.Admit != nil {
+		if err := params.Admit(); err != nil {
+			return nil, err
+		}
 	}
 	r := &quorumRound{
 		domain:       domain,

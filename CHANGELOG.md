@@ -26,6 +26,16 @@ are not reconstructed here — their history is in the git log.
   `ceremony.ScopedCeremonyService`, through which every rekey and revocation
   of a holder set now opens. `sdk/go/node` hands the caller's
   `server.WithAuditLogger` trail to the holder engine.
+  A registration, a claim and a rekey opening are recorded before they take
+  effect and follow the node's one audit failure posture
+  (`auth.audit_failure_policy`, `ceremony.HolderDeps.AuditPolicy`,
+  `lifecycle.Infra.AuditFailurePolicy`): under the default `fail-closed` a
+  record the trail refuses refuses the operation with `*audit.GateError`,
+  leaving a claimed envelope held and claimable. A refusal's reason is a
+  fixed token, never an error's text, and a caller-chosen holder name that
+  is not a valid principal name is recorded as `(invalid-name)`.
+  `seal.RekeyParams.Admit` is the hook the barrier calls once a rekey is
+  validated and before its round opens.
 
 ### Changed
 

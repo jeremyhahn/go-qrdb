@@ -433,7 +433,12 @@ Every holder scope records its holder events on the node's compliance trail
 `holder-claim`, `holder-quorum-submit`, `holder-rekey-start` and
 `holder-revoked`, refusals included, with the scope, the holder and the
 operation and never a share, an envelope, a PIN, a signature, a factor
-response or a key. The daemon opens the trail before the sealed window, so
+response or a key; a refusal's reason is a fixed token, never an error's
+text. A registration, a claim and a rekey opening are recorded before they
+take effect and, under the node's `fail-closed` audit posture, refused with
+`*audit.GateError` when the trail cannot record them -- a refused claim
+leaves the envelope held and claimable. See
+[../audit/engineering.md](../audit/engineering.md#audited-events). The daemon opens the trail before the sealed window, so
 the claims and unseal quorums served there are recorded; see
 [../audit/architecture.md](../audit/architecture.md#the-trail-exists-before-the-sealed-window).
 
