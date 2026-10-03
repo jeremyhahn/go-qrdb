@@ -36,7 +36,14 @@ const (
 	// test/performance/etcd-benchmark pins its own go.etcd.io/etcd/client/v3
 	// in a SEPARATE go.mod, deliberately against a released version, and is
 	// not part of this module's dependency graph.
-	etcdPkgPrefix = "go.etcd.io/etcd/"
+	//
+	// Deliberately the ORG prefix ("go.etcd.io/"), not the narrower
+	// "go.etcd.io/etcd/": the claim this test checks is "nothing under the
+	// go.etcd.io organization is reachable without qrdb_etcd", and a
+	// go.etcd.io module outside the etcd/ path (go.etcd.io/bbolt, were it
+	// ever pulled in transitively) would silently pass a check scoped to
+	// "go.etcd.io/etcd/" while violating that claim.
+	etcdPkgPrefix = "go.etcd.io/"
 	// qrdbEtcdPkg is qrdb's own etcd wire server.
 	qrdbEtcdPkg = "github.com/jeremyhahn/go-qrdb/pkg/api/etcd"
 	// minEtcdPackages is the floor for how many go.etcd.io packages the full
