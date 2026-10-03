@@ -2310,6 +2310,27 @@ vet:
 # are what makes the claim typecheck as well.
 SUPPORTED_TAG_SETS := $(MIN_TAGS) $(MIN_TAGS),integration $(LINT_TAGS) $(LINT_TAGS),integration $(LINT_TAGS),qrdb_fts $(NOMYSQL_TAGS) $(NOMYSQL_TAGS),integration $(NOPGSQL_TAGS) $(NOPGSQL_TAGS),integration $(NOSQLFAMILY_TAGS) $(NOSQLFAMILY_TAGS),integration $(NOETCD_TAGS) $(NOETCD_TAGS),integration
 
+# TEST_TAGS_SETS is the subset of SUPPORTED_TAG_SETS that `make test-tags`
+# actually RUNS (not merely typechecks): the default set and the four
+# protocol-family reduced rungs, each without its own +integration variant.
+# `go vet` (SUPPORTED_TAG_SETS, above) cannot tell a test that COMPILES under
+# a reduced build from one that also PASSES there -- a hard-coded subcommand
+# count, or a test asserting success on a flag/subcommand a reduced build
+# never registers, typechecks fine and fails only at run time. The
+# +integration rungs are excluded here because running them needs the real
+# infrastructure `make integration-test` (test/integration/) assumes, which
+# is a different gate with a different cost; MIN_TAGS and the qrdb_fts rung
+# are excluded because neither varies the command surface this gate exists
+# to exercise.
+TEST_TAGS_SETS := $(LINT_TAGS) $(NOMYSQL_TAGS) $(NOPGSQL_TAGS) $(NOSQLFAMILY_TAGS) $(NOETCD_TAGS)
+
+# TEST_TAGS_PKGS is the command surface `make test-tags` runs: the daemon
+# and CLI main packages, whose registered flags and subcommands are exactly
+# what varies underneath a protocol-family build tag (see
+# scripts/test-tags.sh for why this is narrower than a repository-wide
+# sweep).
+TEST_TAGS_PKGS := ./cmd/qrdbd/... ./cmd/qrdb/...
+
 # vet-tags sweeps EVERY Go module in the tree, each with its own tag sets.
 #
 # The logic lives in scripts/vet-modules.sh, not here, and that is the point:
@@ -2347,6 +2368,19 @@ vet-tags:
 	@$(stage-gomodauth) \
 	eval "$${GOMODAUTH:-}"; \
 	GOVET="$(GOVET)" GOLIST="$(GO) list" ./scripts/vet-modules.sh --vet "$(SUPPORTED_TAG_SETS)" "$(GORM_TAGS)"
+
+# test-tags RUNS (not merely typechecks) the daemon and CLI test suites
+# under every rung in TEST_TAGS_SETS, so a test that only fails at run time
+# under a reduced build -- a hard-coded subcommand count, a test expecting
+# a flag a reduced build never registers -- is caught here rather than by
+# `make vet-tags`, which cannot see it. See scripts/test-tags.sh for the
+# full rationale and why this is scoped to ./cmd/... rather than the whole
+# tree. Runs with `go test` directly (no -race): TEST_TAGS_SETS already
+# multiplies the command-surface suite by five, and the packages it covers
+# are raced on their own by `make test`/CI's existing race job.
+.PHONY: test-tags
+test-tags:
+	GOTEST="$(GO) test" GOLIST="$(GO) list" ./scripts/test-tags.sh "$(TEST_TAGS_SETS)" "$(TEST_TAGS_PKGS)"
 
 # print-tag-sets prints the declared combinations, one per line, so that
 # anything needing them -- a CI matrix, a doc, a one-off sweep -- READS the

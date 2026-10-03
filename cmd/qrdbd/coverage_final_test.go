@@ -27,6 +27,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -528,6 +529,14 @@ func TestRunStart_SQLDatabase_GetReturnsOtherError(t *testing.T) {
 	}
 	err := runStart(f1)
 	require.Error(t, err)
+	// On a binary without qrdb_mysql, the capability gate refuses
+	// --enable-mysql before the SQL database creation path this test
+	// targets is ever reached.
+	if !capabilities.Has("mysql") {
+		var verr1 *qrdbconfig.ValidationError
+		require.True(t, errors.As(err, &verr1), "want *config.ValidationError, got %T: %v", err, err)
+		return
+	}
 	var smErr1 *UnknownSMError
 	require.True(t, errors.As(err, &smErr1))
 
@@ -547,6 +556,14 @@ func TestRunStart_SQLDatabase_GetReturnsOtherError(t *testing.T) {
 	}
 	err = runStart(f2)
 	require.Error(t, err)
+	// f2 adds --enable-pgsql; on a binary without qrdb_pgsql the capability
+	// gate refuses that flag the same way, before the UpdateProtocol path
+	// this run targets is reached.
+	if !capabilities.Has("pgsql") {
+		var verr2 *qrdbconfig.ValidationError
+		require.True(t, errors.As(err, &verr2), "want *config.ValidationError, got %T: %v", err, err)
+		return
+	}
 	var smErr2 *UnknownSMError
 	require.True(t, errors.As(err, &smErr2))
 }

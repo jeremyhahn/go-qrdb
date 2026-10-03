@@ -786,23 +786,24 @@ func TestDatabaseCmd_HasAlias(t *testing.T) {
 func TestDatabaseCmd_SubcommandCount(t *testing.T) {
 	cmd := newDatabaseCmd()
 	subs := cmd.Commands()
-	// 15 database verbs + the 4 share-holder verbs of a Shamir barrier.
-	if len(subs) != 19 {
-		t.Errorf("expected 19 subcommands, got %d", len(subs))
-	}
 
+	// 11 database verbs present on every build, plus the 4 share-holder
+	// verbs of a Shamir barrier. update-etcd (qrdb_etcd) and
+	// update-protocol/update-sql (both qrdb_sql) exist only on a binary
+	// built with the matching tag -- see database_etcd_cmd.go,
+	// database_protocol_cmd.go and database_sql_cmd.go and their _stub
+	// counterparts -- so the expected set and count are computed from this
+	// binary's own capabilities rather than hard-coded, the same way
+	// TestRunStart_MySQLCapabilityGate (cmd/qrdbd) branches on them.
 	wantNames := map[string]bool{
 		"create":              false,
 		"list":                false,
 		"info":                false,
 		"drop":                false,
-		"update-etcd":         false,
-		"update-protocol":     false,
 		"update-raft":         false,
 		"scale":               false,
 		"update-barrier":      false,
 		"update-connection":   false,
-		"update-sql":          false,
 		"update-compaction":   false,
 		"seal":                false,
 		"unseal":              false,
@@ -812,6 +813,18 @@ func TestDatabaseCmd_SubcommandCount(t *testing.T) {
 		"barrier-quorum":      false,
 		"barrier-rekey":       false,
 	}
+	if capabilities.Has("etcd") {
+		wantNames["update-etcd"] = false
+	}
+	if capabilities.Has("sql") {
+		wantNames["update-protocol"] = false
+		wantNames["update-sql"] = false
+	}
+
+	if len(subs) != len(wantNames) {
+		t.Errorf("expected %d subcommands, got %d", len(wantNames), len(subs))
+	}
+
 	for _, sub := range subs {
 		if _, ok := wantNames[sub.Name()]; ok {
 			wantNames[sub.Name()] = true

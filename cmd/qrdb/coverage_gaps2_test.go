@@ -977,66 +977,9 @@ func TestDatabaseUpdateBarrier_MissingArg(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// update-etcd
-// ---------------------------------------------------------------------------
-
-func TestDatabaseUpdateEtcd_EnabledWithListenAddr(t *testing.T) {
-	svc := newFullFnDatabaseService()
-	svc.updateEtcdFn = func(name string, cfg *database.EtcdConfig) (*database.DatabaseInfo, error) {
-		return &database.DatabaseInfo{
-			Name:    name,
-			Engine:  "kv",
-			Backend: "pebble",
-			Status:  "open",
-			Protocol: database.ProtocolConfig{
-				Etcd: &database.EtcdConfig{Enabled: true, ListenAddr: cfg.ListenAddr},
-			},
-		}, nil
-	}
-
-	output, err := executeDatabaseCmd(t, svc, "update-etcd", "mydb",
-		"--enabled",
-		"--listen-addr", "localhost:2379",
-	)
-	if err != nil {
-		t.Fatalf("update-etcd --enabled error: %v", err)
-	}
-	if !strings.Contains(output, "Etcd:") {
-		t.Errorf("output missing Etcd:, got: %q", output)
-	}
-}
-
-func TestDatabaseUpdateEtcd_JSONFormat(t *testing.T) {
-	oldFormat := outputFormat
-	outputFormat = "json"
-	t.Cleanup(func() { outputFormat = oldFormat })
-
-	svc := newFullFnDatabaseService()
-	svc.updateEtcdFn = func(name string, _ *database.EtcdConfig) (*database.DatabaseInfo, error) {
-		return &database.DatabaseInfo{Name: name, Engine: "kv", Backend: "pebble", Status: "open"}, nil
-	}
-
-	output, err := executeDatabaseCmd(t, svc, "update-etcd", "mydb", "--enabled")
-	if err != nil {
-		t.Fatalf("update-etcd json error: %v", err)
-	}
-	if !strings.Contains(output, `"name"`) {
-		t.Errorf("JSON output missing name, got: %q", output)
-	}
-}
-
-func TestDatabaseUpdateEtcd_ServiceError(t *testing.T) {
-	svc := newFullFnDatabaseService()
-	svc.updateEtcdFn = func(name string, _ *database.EtcdConfig) (*database.DatabaseInfo, error) {
-		return nil, &database.NotFoundError{Name: name}
-	}
-
-	_, err := executeDatabaseCmd(t, svc, "update-etcd", "nonexistent")
-	if err == nil {
-		t.Fatal("expected error from update-etcd when database not found")
-	}
-}
+// update-etcd is tagged qrdb_etcd: the subcommand only exists on a binary
+// built with that tag, so the tests exercising it live in their own file
+// with a matching build constraint. See coverage_gaps2_etcd_test.go.
 
 // ---------------------------------------------------------------------------
 // update-connection

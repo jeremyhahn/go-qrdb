@@ -1973,7 +1973,15 @@ func TestRunStart_SQLDatabaseCreated(t *testing.T) {
 
 	err := runStart(f)
 	require.Error(t, err)
-	// The SQL database creation path is exercised (smType fails after).
+	// On a binary without qrdb_mysql, the capability gate refuses
+	// --enable-mysql before the SQL database creation path this test
+	// targets is ever reached; on one with it, the SQL database creation
+	// path is exercised (smType fails after).
+	if !capabilities.Has("mysql") {
+		var verr *qrdbconfig.ValidationError
+		require.True(t, errors.As(err, &verr), "want *config.ValidationError, got %T: %v", err, err)
+		return
+	}
 	var smErr *UnknownSMError
 	require.True(t, errors.As(err, &smErr))
 }
@@ -2003,6 +2011,15 @@ func TestRunStart_SQLDatabaseConcurrentMemoryBackend(t *testing.T) {
 
 	err := runStart(f)
 	require.Error(t, err)
+	// On a binary without qrdb_pgsql, the capability gate refuses
+	// --enable-pgsql before the SQL database creation path this test
+	// targets is ever reached; on one with it, the SQL database creation
+	// path is exercised (smType fails after).
+	if !capabilities.Has("pgsql") {
+		var verr *qrdbconfig.ValidationError
+		require.True(t, errors.As(err, &verr), "want *config.ValidationError, got %T: %v", err, err)
+		return
+	}
 	var smErr *UnknownSMError
 	require.True(t, errors.As(err, &smErr))
 }
