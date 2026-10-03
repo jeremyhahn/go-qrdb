@@ -316,7 +316,9 @@ services and to the server, which wraps the node's sealed-window probe with
   system-managed today, so a passphrase or Shamir database stays sealed for its
   owner or quorum. The database registry's gate
   (`DatabaseBarrierManager.SetUnsealGate`, wired by lifecycle) vetoes a
-  database whose record is sealed or whose owner this node cannot name.
+  database whose record is sealed or whose owner this node cannot name;
+  `DatabaseBarrierManager.UnsealRefused` (`BarrierRegistry.TenantUnsealRefused`
+  for tenants) reports the gate's verdict for one barrier.
   Closing the database manager (`database.Manager.Close`) wipes every
   database barrier before it closes the databases, so no close -- shutdown,
   a failed boot, a data-plane teardown -- leaves a database key in memory; it

@@ -124,6 +124,17 @@ func WithTenantUnsealGate(refuses func(tenantID string) bool) Option {
 	}
 }
 
+// TenantUnsealRefused reports whether the node unseal would leave tenantID
+// sealed because the registry's unseal gate refuses it
+// (WithTenantUnsealGate): its cluster seal record is sealed or cannot be
+// read. Without a gate it refuses none.
+func (r *BarrierRegistry) TenantUnsealRefused(tenantID string) bool {
+	r.sealMu.Lock()
+	gate := r.unsealGate
+	r.sealMu.Unlock()
+	return gate != nil && gate(tenantID)
+}
+
 // PendingTenantUnseals returns the system-managed tenants the last node seal
 // sealed whose unseal with the node barrier has not succeeded, each with the
 // error of its last attempt (nil if none was made yet). The node's next

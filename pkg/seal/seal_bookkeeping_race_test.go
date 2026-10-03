@@ -220,3 +220,19 @@ func TestSealTenants_LeavesTheSystemBarrierAndRecordsSystemManaged(t *testing.T)
 		t.Fatalf("PendingTenantUnseals = %v, want only auto", pending)
 	}
 }
+
+// TestTenantUnsealRefused_FollowsTheGate: the gate's verdict is reported per
+// tenant, and a registry without a gate refuses none.
+func TestTenantUnsealRefused_FollowsTheGate(t *testing.T) {
+	reg := registryWithBothTenantKinds(t)
+	if reg.TenantUnsealRefused("auto") {
+		t.Fatal("a registry without a gate refused a tenant")
+	}
+	reg.Attach(WithTenantUnsealGate(func(id string) bool { return id == "auto" }))
+	if !reg.TenantUnsealRefused("auto") {
+		t.Fatal("the gate's refusal was not reported")
+	}
+	if reg.TenantUnsealRefused("self") {
+		t.Fatal("a tenant the gate admits was reported refused")
+	}
+}

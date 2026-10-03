@@ -211,6 +211,13 @@ func (m *DatabaseBarrierManager) SetUnsealGate(refuses func(dbName string) bool)
 	m.registry.Attach(seal.WithTenantUnsealGate(refuses))
 }
 
+// UnsealRefused reports whether the node unseal would leave dbName sealed
+// because the unseal gate refuses it (SetUnsealGate). Without a gate it
+// refuses none.
+func (m *DatabaseBarrierManager) UnsealRefused(dbName string) bool {
+	return m.registry.TenantUnsealRefused(dbName)
+}
+
 // PendingUnseals returns the databases the last node seal sealed whose
 // unseal with the node barrier has not succeeded, each with the error of its
 // last attempt (seal.BarrierRegistry.PendingTenantUnseals).

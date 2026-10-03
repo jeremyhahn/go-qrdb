@@ -223,3 +223,16 @@ func TestManagerClose_WithoutABarrierManager(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 }
+
+// TestDatabaseBarrierManager_UnsealRefusedFollowsTheGate: the database gate's
+// verdict is reported per database; without a gate none is refused.
+func TestDatabaseBarrierManager_UnsealRefusedFollowsTheGate(t *testing.T) {
+	f := newNodeSealDatabases(t)
+	if f.bm.UnsealRefused("auto") {
+		t.Fatal("a manager without a gate refused a database")
+	}
+	f.bm.SetUnsealGate(func(name string) bool { return name == "auto" })
+	if !f.bm.UnsealRefused("auto") || f.bm.UnsealRefused("pass") {
+		t.Fatal("UnsealRefused does not follow the gate")
+	}
+}

@@ -11,6 +11,13 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Added
+
+- `seal.BarrierRegistry.TenantUnsealRefused` and
+  `database.DatabaseBarrierManager.UnsealRefused` report whether the node
+  unseal's gate refuses a tenant or a database -- its cluster seal record is
+  sealed or cannot be read -- so the verdict is observable, not only applied.
+
 ## [0.35.0-alpha] - 2026-10-03
 
 Cluster-wide sealing. This release contains BREAKING changes; see the entries below. Highlights:
