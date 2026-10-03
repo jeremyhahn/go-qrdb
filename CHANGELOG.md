@@ -26,6 +26,10 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **etcd listener: a compaction before activation is retryable.** A `Compact` refused because the
+  cluster had not yet activated `prefix-compaction` (`featuregate.NotActiveError`) answered
+  `codes.Internal`, which kube-apiserver's compactor does not retry. It is `codes.Unavailable`
+  now, as every other transport classifies it.
 - **A slow user lookup no longer denies a tenant's users.** When the
   linearizable user lookup missed its 500 ms budget, the auth middleware consulted
   its StaleRead fallback. That store holds the system tenant only, so for any

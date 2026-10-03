@@ -26,6 +26,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -337,8 +338,12 @@ func keepsRevisionHistory(svc service.MVCCKVServicer) bool {
 // etcd client -- kube-apiserver's compactor and its watch-cache relist among
 // them -- reads it exactly as it would from etcd: a revision at or below the
 // database's compaction floor is rpctypes.ErrGRPCCompacted, and a compaction
-// above the current revision rpctypes.ErrGRPCFutureRev. Any other failure
-// keeps the listener's existing Internal answer, prefixed with op.
+// above the current revision rpctypes.ErrGRPCFutureRev. A compaction before
+// the cluster activated the feature it needs (featuregate.NotActiveError) is
+// codes.Unavailable: it clears once every node runs a supporting release, and
+// the compactor retries Unavailable where it would give up on Internal. Any
+// other failure keeps the listener's existing Internal answer, prefixed with
+// op.
 func revisionStatus(op string, err error) error {
 	var compacted *service.RevisionCompactedError
 	if errors.As(err, &compacted) {
@@ -347,6 +352,10 @@ func revisionStatus(op string, err error) error {
 	var future *service.CompactRevisionFutureError
 	if errors.As(err, &future) {
 		return rpctypes.ErrGRPCFutureRev
+	}
+	var inactive *featuregate.NotActiveError
+	if errors.As(err, &inactive) {
+		return status.Error(codes.Unavailable, op+": "+err.Error())
 	}
 	return status.Error(codes.Internal, op+": "+err.Error())
 }
