@@ -113,6 +113,12 @@ const (
 	// OutcomeDenied is the prefix for a denied outcome (append ":<reason>").
 	OutcomeDenied = "denied"
 
+	// OutcomePermitted is the outcome of a GATING record (EmitGated): the
+	// operation was admitted and is about to take effect, and has not yet.
+	// It is never the operation's result; a later record carries that, as
+	// OutcomeSuccess or OutcomeFailure.
+	OutcomePermitted = "permitted"
+
 	// defaultLimit is the default page size for audit queries.
 	defaultLimit = 100
 

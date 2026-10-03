@@ -315,18 +315,18 @@ func TestTenantBarrierHolders_RekeyStartsAreAudited(t *testing.T) {
 			starts = append(starts, ev)
 		}
 	}
-	if len(starts) != 2 {
-		t.Fatalf("rekey-start records = %d, want 2: %+v", len(starts), starts)
+	if len(starts) != 3 {
+		t.Fatalf("rekey-start records = %d, want 3 (permitted, opened, refused): %+v", len(starts), starts)
 	}
 	for _, ev := range starts {
 		if ev.TenantID != tenantID || ev.Attributes["scope"] != ceremony.ScopeTenant(tenantID).String() || ev.Actor != "tenant-admin" {
 			t.Fatalf("record = %+v, want tenant %q, scope tenant:%s, actor tenant-admin", ev, tenantID, tenantID)
 		}
 	}
-	if starts[0].Outcome != audit.OutcomeSuccess {
-		t.Fatalf("rekey start outcome = %q", starts[0].Outcome)
+	if starts[0].Outcome != audit.OutcomePermitted || starts[1].Outcome != audit.OutcomeSuccess {
+		t.Fatalf("rekey start outcomes = %q, %q, want permitted then success", starts[0].Outcome, starts[1].Outcome)
 	}
-	if !strings.HasPrefix(starts[1].Outcome, audit.OutcomeFailure+":") || starts[1].Attributes["holder"] != "bob" {
-		t.Fatalf("refused revocation record = %+v", starts[1])
+	if !strings.HasPrefix(starts[2].Outcome, audit.OutcomeFailure+":") || starts[2].Attributes["holder"] != "bob" {
+		t.Fatalf("refused revocation record = %+v", starts[2])
 	}
 }

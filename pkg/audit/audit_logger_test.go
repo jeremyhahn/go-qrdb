@@ -261,6 +261,10 @@ func TestAuditEvent_OutcomeConstants(t *testing.T) {
 	if OutcomeDenied != "denied" {
 		t.Fatalf("OutcomeDenied = %q, want %q", OutcomeDenied, "denied")
 	}
+	// The gating record's word is the gate's own (gateOutcomePermitted).
+	if OutcomePermitted != gateOutcomePermitted {
+		t.Fatalf("OutcomePermitted = %q, want %q", OutcomePermitted, gateOutcomePermitted)
+	}
 }
 
 func TestNormalizeLimit_Defaults(t *testing.T) {

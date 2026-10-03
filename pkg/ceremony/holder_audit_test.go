@@ -310,12 +310,29 @@ func TestHolderAudit_EveryScopeRecordsEveryEvent(t *testing.T) {
 			require.NoError(t, err)
 			require.True(t, out.Complete)
 
-			evs := scopeEvents(ring, a.scope)
-			for _, ev := range evs {
+			all := scopeEvents(ring, a.scope)
+			for _, ev := range all {
 				assert.Equal(t, a.tenantID, ev.TenantID, "%s is keyed by the scope's owning tenant", ev.Action)
 				assert.Equal(t, HolderAuditResource, ev.Resource)
 				assert.Equal(t, string(a.domain), ev.Attributes["domain"])
+			}
+			// A gated operation is recorded as permitted before its effect and
+			// as a success after it; every other record is the success itself.
+			gated := map[string]bool{ActionHolderRegister: true, ActionHolderClaim: true, ActionHolderRekeyStart: true}
+			var evs []audit.AuditEvent
+			for i, ev := range all {
+				if ev.Outcome == audit.OutcomePermitted {
+					require.True(t, gated[ev.Action], "%s was recorded as permitted", ev.Action)
+					require.Less(t, i+1, len(all), "%s was permitted and never settled", ev.Action)
+					continue
+				}
 				assert.Equal(t, audit.OutcomeSuccess, ev.Outcome, ev.Action)
+				if gated[ev.Action] {
+					assert.Equal(t, audit.OutcomePermitted, all[i-1].Outcome, "%s succeeded without being permitted first", ev.Action)
+					assert.Equal(t, ev.Action, all[i-1].Action)
+					assert.Equal(t, ev.Attributes["holder"], all[i-1].Attributes["holder"])
+				}
+				evs = append(evs, ev)
 			}
 
 			reg := eventsOf(evs, ActionHolderRegister)
@@ -354,7 +371,7 @@ func TestHolderAudit_EveryScopeRecordsEveryEvent(t *testing.T) {
 			assert.Equal(t, "carol", revoked[0].Attributes["holder"])
 			assert.Equal(t, holderActorQuorum, revoked[0].Actor)
 
-			assertNoSecretMaterial(t, evs, sec, holders...)
+			assertNoSecretMaterial(t, all, sec, holders...)
 		})
 	}
 }
@@ -413,7 +430,7 @@ func TestHolderAudit_RefusalsAreRecorded(t *testing.T) {
 			failed := func(action string) []audit.AuditEvent {
 				var out []audit.AuditEvent
 				for _, ev := range eventsOf(evs, action) {
-					if ev.Outcome != audit.OutcomeSuccess {
+					if ev.Outcome != audit.OutcomeSuccess && ev.Outcome != audit.OutcomePermitted {
 						out = append(out, ev)
 					}
 				}
@@ -529,7 +546,7 @@ func TestCeremonyService_SetAuditLoggerReplacesAndPropagates(t *testing.T) {
 	_, err := e.svc.RegisterOfficer(context.Background(), seal.DomainUnseal, h.request("admin"))
 	require.NoError(t, err)
 	assert.Empty(t, first.Snapshot())
-	require.Len(t, second.Snapshot(), 1)
+	require.Len(t, second.Snapshot(), 2, "the registration, permitted then settled")
 
 	e.svc.SetAuditLogger(nil)
 	assert.Nil(t, e.svc.HolderDeps().Audit, "nil removes the trail")

@@ -497,7 +497,7 @@ Target compliance schema (`pkg/audit/types.go`):
 | `Role` | the actor's role **at the time of the event** |
 | `Resource` | barrier, ceremony, keys, user, role, … |
 | `Action` | initialize, unseal, sign, create, delete, … |
-| `Outcome` | `success`, `failure:<reason>`, `denied:<reason>` |
+| `Outcome` | `success`, `failure:<reason>`, `denied:<reason>`, or `permitted` -- a gating record written before its effect, settled by a later `success` or `failure:<reason>` |
 | `Attributes` | JSON-serializable custom attributes |
 | `ClientIP` | from `X-Forwarded-For` or the remote address |
 | `RequestID` | for tracing across logs |
@@ -616,8 +616,24 @@ default, a record the trail refuses refuses the operation with
 `*audit.GateError` (`Unavailable` on every transport) and nothing changes:
 no certificate is issued, the envelope stays held and claimable, no round
 opens. Under `fail-open` the operation proceeds and the gap is counted on
-`qrdb_audit_gate_failures_total{component="share-holder"}`. A failure after a
-gating record is recorded as a second record of the same event, its failure.
+`qrdb_audit_gate_failures_total{component="share-holder"}`.
+
+**A gating record says `permitted`, never `success`.** It is written before
+the effect, so it cannot know whether the effect will happen, and the trail is
+hash-chained: a `success` written there would stay on it whatever followed.
+Each gated operation therefore leaves its records in one of three sequences:
+
+| Sequence | Meaning |
+|---|---|
+| `permitted`, then `success` | admitted, and the effect completed -- the holder stored, the envelope delivered, the round opened |
+| `permitted`, then `failure:<reason>` | admitted, and the effect then failed -- the CA, a factor's enrolment, the store |
+| `failure:<reason>` or `denied:<reason>` alone | refused before the gate, so nothing was permitted -- invalid input, a duplicate, an unproven claimant, a rekey the barrier refused |
+
+The second record is post-hoc (`audit.EmitBestEffort`): the operation has run
+when it is written. A gate refusal under `fail-closed` leaves neither record
+-- the sink that refused the first would refuse the second, and the
+operation did not run. Input validation runs before the gate, a registration's
+designated factor included, so invalid input is never `permitted`.
 Refusals, quorum submissions and revocations stay post-hoc
 (`audit.EmitBestEffort`, `qrdb_audit_write_failures_total{component="share-holder"}`):
 the operation has already been refused or completed when they are written.

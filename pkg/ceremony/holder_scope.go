@@ -317,11 +317,12 @@ func (h *holderScope) persist(ctx context.Context, rec *PersistentOfficer) error
 // register enrols one holder (enrol) and records the enrolment, or its
 // refusal, on the compliance trail.
 //
-// The enrolment is recorded before it takes effect -- once it has been
-// validated, before the CA issues the certificate (a gating record, see
-// gate) -- so a registration the trail cannot record under fail-closed is
-// refused with *audit.GateError and nothing is issued or stored. A refusal,
-// or a failure after the record, is recorded post-hoc.
+// The enrolment is recorded as permitted before it takes effect -- once it
+// has been validated, before the CA issues the certificate (a gating record,
+// see gate) -- so a registration the trail cannot record under fail-closed is
+// refused with *audit.GateError and nothing is issued or stored. Its outcome
+// is recorded once it has run (settle): success once the holder is stored, or
+// the failure -- a refusal before the gate, or a failure after it.
 func (h *holderScope) register(ctx context.Context, d *HolderDeps, req RegisterOfficerRequest) (*RegisterOfficerResult, error) {
 	role := req.Role
 	if role == "" {
@@ -334,10 +335,7 @@ func (h *holderScope) register(ctx context.Context, d *HolderDeps, req RegisterO
 		attrs:  map[string]any{"role": string(role)},
 	}
 	res, err := h.enrol(ctx, d, req, func() error { return h.gate(ctx, d, ev) })
-	if err != nil && !isGateRefusal(err) {
-		ev.err = err
-		h.record(ctx, d, ev)
-	}
+	h.settle(ctx, d, ev, err)
 	return res, err
 }
 
@@ -412,6 +410,10 @@ func (h *holderScope) enrol(ctx context.Context, d *HolderDeps, req RegisterOffi
 	if !validPrincipalName(req.Username) {
 		return nil, &InvalidHolderNameError{Name: req.Username}
 	}
+	designated, err := designatedFactor(req)
+	if err != nil {
+		return nil, err
+	}
 	if err := admit(); err != nil {
 		return nil, err
 	}
@@ -434,17 +436,6 @@ func (h *holderScope) enrol(ctx context.Context, d *HolderDeps, req RegisterOffi
 	factors, err := h.enrolFactors(ctx, d, req, cert)
 	if err != nil {
 		return nil, err
-	}
-	designated := req.Designated
-	if designated == "" {
-		designated = mtls.Name
-	}
-	enrolled := false
-	for _, f := range factors {
-		enrolled = enrolled || f.Name == designated
-	}
-	if !enrolled {
-		return nil, &FactorNotEnrolledError{Factor: designated}
 	}
 
 	pubPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: spki}))
@@ -548,6 +539,22 @@ func (h *holderScope) enrolFactors(ctx context.Context, d *HolderDeps, req Regis
 		out = append(out, seal.RosterFactor{Name: fe.Name, EnrollmentID: e.EnrollmentID, PublicKey: e.PublicKey, Metadata: e.Metadata})
 	}
 	return out, nil
+}
+
+// designatedFactor returns the factor req designates -- mtls when it names
+// none -- or *FactorNotEnrolledError when req does not enrol it. It reads the
+// request alone, so a registration is refused for it before the gate:
+// enrolFactors enrols mtls and every factor req names, or fails.
+func designatedFactor(req RegisterOfficerRequest) (string, error) {
+	if req.Designated == "" || req.Designated == mtls.Name {
+		return mtls.Name, nil
+	}
+	for _, fe := range req.Factors {
+		if fe.Name == req.Designated {
+			return req.Designated, nil
+		}
+	}
+	return "", &FactorNotEnrolledError{Factor: req.Designated}
 }
 
 // enrolmentEncryptionKey resolves the holder's envelope recipient key: the
@@ -797,22 +804,23 @@ func (h *holderScope) beginClaim(ctx context.Context, username, callerThumbprint
 
 // completeClaim runs the claim (claim) with its record on the compliance
 // trail. The record names the holder and the share index; the envelope is
-// never part of it. A claim the holder has proved is recorded BEFORE its
-// envelope leaves the store (a gating record, see gate): under fail-closed a
-// claim the trail cannot record is refused with *audit.GateError and the
-// envelope stays held, intact and claimable. A refusal is recorded post-hoc.
+// never part of it. A claim the holder has proved is recorded as permitted
+// BEFORE its envelope leaves the store (a gating record, see gate): under
+// fail-closed a claim the trail cannot record is refused with
+// *audit.GateError and the envelope stays held, intact and claimable. Its
+// outcome is recorded once it has run (settle): success once the envelope is
+// delivered, a failure after the gate, or -- before it -- a denial, the
+// claimant not having proved itself the holder.
 func (h *holderScope) completeClaim(ctx context.Context, d *HolderDeps, username, nonceHex string, signature []byte, callerThumbprint string) (*ShareClaimResult, error) {
+	ev := holderEvent{action: ActionHolderClaim, holder: username, denied: true}
 	res, err := h.claim(ctx, username, nonceHex, signature, callerThumbprint, func(shareIndex int) error {
 		// The signature over the nonce, by the enrolled key, proved the
 		// caller is the holder.
-		return h.gate(ctx, d, holderEvent{
-			action: ActionHolderClaim, holder: username, actor: username,
-			attrs: map[string]any{"share_index": shareIndex},
-		})
+		ev.actor, ev.denied = username, false
+		ev.attrs = map[string]any{"share_index": shareIndex}
+		return h.gate(ctx, d, ev)
 	})
-	if err != nil && !isGateRefusal(err) {
-		h.record(ctx, d, holderEvent{action: ActionHolderClaim, holder: username, err: err, denied: true})
-	}
+	h.settle(ctx, d, ev, err)
 	return res, err
 }
 

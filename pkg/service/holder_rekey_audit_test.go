@@ -60,16 +60,17 @@ func TestBarrierService_RekeyStartsAreAudited(t *testing.T) {
 	require.ErrorIs(t, err, seal.ErrQuorumRoundInProgress)
 
 	starts := rekeyStarts(ring)
-	require.Len(t, starts, 2)
+	require.Len(t, starts, 3, "the rekey permitted then opened, and the refused revocation")
 	for _, ev := range starts {
 		assert.Equal(t, tenantid.System, ev.TenantID)
 		assert.Equal(t, "system", ev.Attributes["scope"])
 		assert.Equal(t, "admin", ev.Actor)
 	}
-	assert.Equal(t, audit.OutcomeSuccess, starts[0].Outcome)
-	assert.Equal(t, string(seal.FactorPolicyAnyEnrolled), starts[0].Attributes["policy"])
-	assert.True(t, strings.HasPrefix(starts[1].Outcome, audit.OutcomeFailure+":"), starts[1].Outcome)
-	assert.Equal(t, "carol", starts[1].Attributes["holder"])
+	assert.Equal(t, audit.OutcomePermitted, starts[0].Outcome)
+	assert.Equal(t, audit.OutcomeSuccess, starts[1].Outcome)
+	assert.Equal(t, string(seal.FactorPolicyAnyEnrolled), starts[1].Attributes["policy"])
+	assert.True(t, strings.HasPrefix(starts[2].Outcome, audit.OutcomeFailure+":"), starts[2].Outcome)
+	assert.Equal(t, "carol", starts[2].Attributes["holder"])
 }
 
 // TestDatabaseHolders_RekeyStartsAreAudited pins that the database service's
@@ -95,13 +96,14 @@ func TestDatabaseHolders_RekeyStartsAreAudited(t *testing.T) {
 	require.True(t, errors.As(err, &breaks), err)
 
 	starts := rekeyStarts(ring)
-	require.Len(t, starts, 2)
+	require.Len(t, starts, 3, "the rekey permitted then opened, and the refused revocation")
 	for _, ev := range starts {
 		assert.Equal(t, "acme", ev.TenantID, "a database's holder events belong to its tenant")
 		assert.Equal(t, ceremony.ScopeDatabase("acme", "vault").String(), ev.Attributes["scope"])
 		assert.Equal(t, "db-admin", ev.Actor)
 	}
-	assert.Equal(t, audit.OutcomeSuccess, starts[0].Outcome)
-	assert.True(t, strings.HasPrefix(starts[1].Outcome, audit.OutcomeFailure+":"), starts[1].Outcome)
-	assert.Equal(t, "bob", starts[1].Attributes["holder"])
+	assert.Equal(t, audit.OutcomePermitted, starts[0].Outcome)
+	assert.Equal(t, audit.OutcomeSuccess, starts[1].Outcome)
+	assert.True(t, strings.HasPrefix(starts[2].Outcome, audit.OutcomeFailure+":"), starts[2].Outcome)
+	assert.Equal(t, "bob", starts[2].Attributes["holder"])
 }

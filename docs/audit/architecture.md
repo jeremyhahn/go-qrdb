@@ -376,11 +376,14 @@ claim signature, a factor response or a key**, and a refusal's reason is a
 fixed token, never an error's text.
 
 **They follow the node's one audit failure posture.** A registration, a claim
-and a rekey opening are recorded before they take effect and, under
-`auth.audit_failure_policy: "fail-closed"` (the default), refused when the
-trail cannot record them -- the holder is not enrolled, the envelope stays
+and a rekey opening are recorded as `permitted` before they take effect and,
+under `auth.audit_failure_policy: "fail-closed"` (the default), refused when
+the trail cannot record them -- the holder is not enrolled, the envelope stays
 held and claimable, no round opens -- exactly as the authorization and SO
-gates refuse. Refusals, quorum submissions and revocations are post-hoc
+gates refuse. Once the operation has run, a second record carries its
+`success` or `failure`; a gating record never says `success`, so the
+hash-chained trail cannot hold one for an effect that did not happen.
+Refusals, quorum submissions and revocations are post-hoc
 records: the operation has already been refused or completed, so a trail
 that refuses one is counted on
 `qrdb_audit_write_failures_total{component="share-holder"}` and logged.

@@ -31,7 +31,12 @@ are not reconstructed here — their history is in the git log.
   (`auth.audit_failure_policy`, `ceremony.HolderDeps.AuditPolicy`,
   `lifecycle.Infra.AuditFailurePolicy`): under the default `fail-closed` a
   record the trail refuses refuses the operation with `*audit.GateError`,
-  leaving a claimed envelope held and claimable. A refusal's reason is a
+  leaving a claimed envelope held and claimable. That gating record's outcome
+  is the new `audit.OutcomePermitted` (`permitted`), never `success`: a second
+  record carries the operation's `success` or `failure` once it has run, so
+  the hash-chained trail never holds a success for an effect that did not
+  happen. Input validation, a registration's designated factor included, runs
+  before the gate. A refusal's reason is a
   fixed token, never an error's text, and a caller-chosen holder name that
   is not a valid principal name is recorded as `(invalid-name)`.
   `seal.RekeyParams.Admit` is the hook the barrier calls once a rekey is

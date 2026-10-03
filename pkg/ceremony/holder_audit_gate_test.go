@@ -105,11 +105,12 @@ func TestHolderAudit_FailClosedRefusesUnrecordedOperations(t *testing.T) {
 			_, err = a.revoke(ctx, "carol")
 			require.NoError(t, err)
 
-			starts := eventsOf(scopeEvents(trail.ring, a.scope), ActionHolderRekeyStart)
-			require.Len(t, starts, 1, "the opening is recorded once, when it was admitted")
-			assert.Equal(t, audit.OutcomeSuccess, starts[0].Outcome)
-			claims := eventsOf(scopeEvents(trail.ring, a.scope), ActionHolderClaim)
-			require.Len(t, claims, 2)
+			// The refused opening left nothing: only the admitted one is
+			// recorded, permitted and then opened.
+			assert.Equal(t, []string{audit.OutcomePermitted, audit.OutcomeSuccess},
+				outcomesOf(trail.ring, a.scope, ActionHolderRekeyStart, "carol"))
+			assert.Equal(t, []string{audit.OutcomePermitted, audit.OutcomeSuccess},
+				outcomesOf(trail.ring, a.scope, ActionHolderClaim, "alice"), "the refused claim left nothing")
 		})
 	}
 }
@@ -195,4 +196,94 @@ func TestHolderAudit_FactorErrorTextNeverReachesTheTrail(t *testing.T) {
 	assert.Equal(t, "alice", denied[0].Attributes["holder"])
 	assert.Equal(t, audit.OutcomeDenied+":not-found", denied[1].Outcome)
 	assert.Equal(t, holderInvalidName, denied[1].Attributes["holder"])
+}
+
+// outcomesOf returns the outcomes of ring's action events about holder in
+// scope, in order.
+func outcomesOf(ring *audit.RingBuffer, scope, action, holder string) []string {
+	var out []string
+	for _, ev := range eventsOf(scopeEvents(ring, scope), action) {
+		if ev.Attributes["holder"] == holder {
+			out = append(out, ev.Outcome)
+		}
+	}
+	return out
+}
+
+// TestHolderAudit_GatedRegisterFailingAfterTheGate pins, in every scope,
+// that the gating record of a registration says only that it was permitted:
+// a registration that fails after the gate -- here the factor refuses the
+// enrolment, after the certificate was issued -- leaves "permitted" followed
+// by the failure on the hash-chained trail, and never "success".
+func TestHolderAudit_GatedRegisterFailingAfterTheGate(t *testing.T) {
+	for name := range auditScopes(t, nil) {
+		t.Run(name, func(t *testing.T) {
+			ring := audit.NewRingBuffer(64)
+			a := auditScopes(t, ring)[name](t)
+			req := newHolder(t, "alice", "").request("admin-1")
+			req.Factors = []FactorEnrolment{{Name: testFactorName, Params: map[string]any{"public_key": "not-an-ed25519-key"}}}
+			_, err := a.register(context.Background(), req)
+			var enrolErr *HolderFactorEnrollmentError
+			require.True(t, errors.As(err, &enrolErr), "the factor refused the enrolment: %v", err)
+
+			got := outcomesOf(ring, a.scope, ActionHolderRegister, "alice")
+			require.Len(t, got, 2, "the gate's record and the outcome's: %v", got)
+			assert.Equal(t, audit.OutcomePermitted, got[0])
+			assert.True(t, strings.HasPrefix(got[1], audit.OutcomeFailure+":"), got[1])
+			assert.NotContains(t, got, audit.OutcomeSuccess, "a registration that failed was recorded as a success")
+		})
+	}
+}
+
+// TestHolderAudit_GatedOperationsRecordPermittedThenSuccess pins, in every
+// scope, that each gated operation that completes leaves two records: the
+// gate's "permitted", written before the effect, then "success", written
+// after it.
+func TestHolderAudit_GatedOperationsRecordPermittedThenSuccess(t *testing.T) {
+	for name := range auditScopes(t, nil) {
+		t.Run(name, func(t *testing.T) {
+			ring := audit.NewRingBuffer(256)
+			a := auditScopes(t, ring)[name](t)
+			ctx := context.Background()
+			hs := a.enrol(t, ctx, newHolder(t, "alice", ""), newHolder(t, "bob", ""), newHolder(t, "carol", ""))
+			require.NoError(t, a.distribute(ctx))
+			var sec secrets
+			a.claim(t, &sec, hs[0])
+			_, err := a.revoke(ctx, "carol")
+			require.NoError(t, err)
+
+			want := []string{audit.OutcomePermitted, audit.OutcomeSuccess}
+			assert.Equal(t, want, outcomesOf(ring, a.scope, ActionHolderRegister, "alice"), "register")
+			assert.Equal(t, want, outcomesOf(ring, a.scope, ActionHolderClaim, "alice"), "claim")
+			assert.Equal(t, want, outcomesOf(ring, a.scope, ActionHolderRekeyStart, "carol"), "rekey start")
+		})
+	}
+}
+
+// TestHolderAudit_DesignatedFactorValidatedBeforeTheGate pins, in every
+// scope, that naming a designated factor the registration does not enrol is
+// refused as invalid input before the gate: nothing is permitted, a trail
+// that refuses every record does not turn it into a gate refusal, and the
+// trail carries the refusal alone.
+func TestHolderAudit_DesignatedFactorValidatedBeforeTheGate(t *testing.T) {
+	for name := range auditScopes(t, nil) {
+		t.Run(name, func(t *testing.T) {
+			trail := &switchableTrail{ring: audit.NewRingBuffer(64)}
+			a := auditScopes(t, trail)[name](t)
+			req := newHolder(t, "alice", "").request("admin-1")
+			req.Designated = testFactorName
+
+			trail.refuse = true
+			_, err := a.register(context.Background(), req)
+			var notEnrolled *FactorNotEnrolledError
+			require.True(t, errors.As(err, &notEnrolled), "an undesignatable factor under a refusing trail = %v (%T), want FactorNotEnrolledError", err, err)
+			trail.refuse = false
+
+			_, err = a.register(context.Background(), req)
+			require.True(t, errors.As(err, &notEnrolled), err)
+			got := outcomesOf(trail.ring, a.scope, ActionHolderRegister, "alice")
+			require.Len(t, got, 1, "the refusal alone: %v", got)
+			assert.True(t, strings.HasPrefix(got[0], audit.OutcomeFailure+":"), got[0])
+		})
+	}
 }

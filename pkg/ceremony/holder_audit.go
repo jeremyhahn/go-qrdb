@@ -128,16 +128,36 @@ func (h *holderScope) record(ctx context.Context, d *HolderDeps, ev holderEvent)
 // gate writes ev on the scope's compliance trail as a GATING record, before
 // the operation it describes takes effect: a registration before the
 // certificate is issued, a claim before the envelope leaves the store, a rekey
-// before its round opens. It follows the node's one audit failure posture
-// (HolderDeps.AuditPolicy, auth.audit_failure_policy): fail-closed -- the
-// default -- returns *audit.GateError when the record cannot be written, and
-// the caller refuses the operation with nothing changed; fail-open lets it
-// proceed, counting the gap. Without a sink it records nothing.
+// before its round opens. The record's outcome is audit.OutcomePermitted --
+// the operation was admitted, not that it succeeded -- and the caller writes
+// the operation's own outcome after the effect (settle), so a gated operation
+// leaves "permitted" followed by "success" or "failure", and the
+// hash-chained trail never carries a success that did not happen.
+//
+// It follows the node's one audit failure posture (HolderDeps.AuditPolicy,
+// auth.audit_failure_policy): fail-closed -- the default -- returns
+// *audit.GateError when the record cannot be written, and the caller refuses
+// the operation with nothing changed; fail-open lets it proceed, counting the
+// gap. Without a sink it records nothing.
 func (h *holderScope) gate(ctx context.Context, d *HolderDeps, ev holderEvent) error {
 	if d == nil || d.Audit == nil {
 		return nil
 	}
-	return audit.EmitGated(ctx, d.Audit, HolderAuditComponent, d.AuditPolicy, h.event(ctx, ev))
+	rec := h.event(ctx, ev)
+	rec.Outcome = audit.OutcomePermitted
+	return audit.EmitGated(ctx, d.Audit, HolderAuditComponent, d.AuditPolicy, rec)
+}
+
+// settle records the outcome of a gated operation once it has run: its
+// success or its failure, after the gate's "permitted", or a refusal before
+// the gate. A gate refusal is not recorded again -- the sink that refused the
+// gating record would refuse this one too, and the operation did not run.
+func (h *holderScope) settle(ctx context.Context, d *HolderDeps, ev holderEvent, err error) {
+	if isGateRefusal(err) {
+		return
+	}
+	ev.err = err
+	h.record(ctx, d, ev)
 }
 
 // isGateRefusal reports whether err is the trail's refusal of a gating
@@ -295,20 +315,19 @@ func (e *factorRefusedError) Error() string { return e.err.Error() }
 // Unwrap returns the factor's error.
 func (e *factorRefusedError) Unwrap() error { return e.err }
 
-// rekeyStartEvents returns the holder-rekey-start events of params, with
-// err as their outcome: one per holder removed, or one for a rekey that
-// removes nobody.
-func rekeyStartEvents(params seal.RekeyParams, err error) []holderEvent {
+// rekeyStartEvents returns the holder-rekey-start events of params: one per
+// holder removed, or one for a rekey that removes nobody.
+func rekeyStartEvents(params seal.RekeyParams) []holderEvent {
 	attrs := map[string]any{"op": string(seal.OpRekey), "threshold": params.Threshold}
 	if params.Policy != "" {
 		attrs["policy"] = string(params.Policy)
 	}
 	if len(params.Remove) == 0 {
-		return []holderEvent{{action: ActionHolderRekeyStart, attrs: attrs, err: err}}
+		return []holderEvent{{action: ActionHolderRekeyStart, attrs: attrs}}
 	}
 	evs := make([]holderEvent, len(params.Remove))
 	for i, name := range params.Remove {
-		evs[i] = holderEvent{action: ActionHolderRekeyStart, holder: name, attrs: attrs, err: err}
+		evs[i] = holderEvent{action: ActionHolderRekeyStart, holder: name, attrs: attrs}
 	}
 	return evs
 }
@@ -316,26 +335,23 @@ func rekeyStartEvents(params seal.RekeyParams, err error) []holderEvent {
 // startRekey opens the rekey round of params on barrier through open
 // (seal.StorageBarrier.StartRekey) with the opening recorded on the trail as
 // a GATING record: the barrier validates the rekey, then calls back
-// (RekeyParams.Admit) and the record is written before the round opens. A
+// (RekeyParams.Admit) and "permitted" is written before the round opens. A
 // rekey the trail cannot record under fail-closed is refused with
-// *audit.GateError and no round is opened. A rekey the barrier refuses is
-// recorded post-hoc, as a failure.
+// *audit.GateError and no round is opened. Once open returns, its outcome is
+// recorded (settle): "success" for an opened round, or the failure -- of a
+// rekey the barrier refused before admitting it, or one that failed after.
 func (h *holderScope) startRekey(ctx context.Context, d *HolderDeps, params seal.RekeyParams, open func(seal.RekeyParams) (*seal.QuorumRoundInfo, error)) (*seal.QuorumRoundInfo, error) {
-	admitted := false
 	params.Admit = func() error {
-		for _, ev := range rekeyStartEvents(params, nil) {
+		for _, ev := range rekeyStartEvents(params) {
 			if err := h.gate(ctx, d, ev); err != nil {
 				return err
 			}
 		}
-		admitted = true
 		return nil
 	}
 	info, err := open(params)
-	if err != nil && !admitted && !isGateRefusal(err) {
-		for _, ev := range rekeyStartEvents(params, err) {
-			h.record(ctx, d, ev)
-		}
+	for _, ev := range rekeyStartEvents(params) {
+		h.settle(ctx, d, ev, err)
 	}
 	return info, err
 }
