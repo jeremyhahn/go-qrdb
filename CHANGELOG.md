@@ -49,13 +49,13 @@ Recovery train: stranded fixes brought onto main. Highlights:
   and SPKI/Direct transports so switching transports mid-attack gains
   nothing; `JoinServer` also bounds concurrent in-flight Noise_NK
   handshakes.
-- An admin mints a join token through `POST /v1/cluster/join-tokens` (REST)
-  or `qrdb admin join-token mint <node-id>` (CLI), both backed by a new
+- An admin mints a join token through `POST /v1/cluster/join-tokens` (REST),
+  `qrdb admin join-token mint <node-id>` (CLI), the gRPC `MintJoinToken` RPC,
+  QUIC, Unix, or the `qrdb_mint_join_token` MCP tool, all backed by a new
   `service.ClusterJoinTokenMinter` interface and permission
   `cluster:join_token` (`ScopeCross`, platform-only — no built-in role
-  carries it by default). Implemented on the REST and embedded SDK
-  transports; gRPC, QUIC, Unix and MCP do not yet implement
-  `transport.ClusterJoinTokenMinter`.
+  carries it by default). Implemented on all six transports (REST, gRPC,
+  QUIC, Unix, MCP, embedded) and their SDK clients.
 - `pkg/config.ResolveJoinToken` refuses a group- or world-readable
   `--bootstrap-join-token-file`, one not owned by the process's own user, or
   a resolved token shorter than `MinJoinTokenLength`, each with a typed

@@ -75,6 +75,7 @@ import type {
     UpdateDatabaseCompactionRequest,
     UpdateDatabaseProtocolRequest,
     UpdateDatabaseSQLRequest,
+    MintJoinTokenResponse,
     CreateNamespaceResponse,
     CreateRoleRequest,
     CreateUserRequest,
@@ -218,6 +219,7 @@ import type {
     CredentialRotateResult,
 } from './types.js';
 import type { AuditFilter, AuditPage } from './audit.js';
+import { NotImplementedError } from './errors.js';
 
 import {
     decodeMVCCKV,
@@ -479,6 +481,18 @@ export class WailsClient implements Client {
                 // *DatabaseCompactionConfig: null turns the policy off.
                 const policy = (await b.SetNodeCompaction(compaction ?? null)) as DatabaseCompactionConfig | null;
                 return policy ?? undefined;
+            },
+            mintJoinToken: async (_nodeId: string, _ttlSeconds?: number): Promise<MintJoinTokenResponse> => {
+                // Deliberately unimplemented: the desktop webview talks to
+                // the embedded transport, which carries no authorization of
+                // its own (every AdminServicer verb skips enforcement
+                // there; see docs/embedded's trust-model note). Minting a
+                // cluster join token is ScopeCross and platform-only --
+                // exactly the kind of admin verb that must never be
+                // reachable through a less-trusted binding than the
+                // authenticated remote transports (REST, gRPC, QUIC, Unix,
+                // MCP) it IS implemented on.
+                throw new NotImplementedError('admin.mintJoinToken');
             },
             addMember: async (
                 shardId: number,

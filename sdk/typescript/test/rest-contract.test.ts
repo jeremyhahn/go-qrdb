@@ -574,6 +574,52 @@ describe('admin node-keyspace compaction policy', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Minting a member-side CSR join token: POST /v1/cluster/join-tokens with a
+// {"node_id": ..., "ttl_seconds": ...} body, snake_case as the Go REST
+// handler (handleMintJoinToken) decodes it, and a {"token", "expires_at"}
+// response the SDK converts back to camelCase.
+// ---------------------------------------------------------------------------
+
+describe('admin.mintJoinToken', () => {
+    beforeEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('mints with POST /v1/cluster/join-tokens, snake_case body', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({ token: 'tok_abc123', expires_at: '2026-01-01T00:00:00Z' });
+
+        const resp = await client.admin.mintJoinToken('node-7', 3600);
+
+        expect(calls).toHaveLength(1);
+        expect(new URL(calls[0].url).pathname).toBe('/v1/cluster/join-tokens');
+        expect(calls[0].method).toBe('POST');
+        expect(calls[0].body).toEqual({ node_id: 'node-7', ttl_seconds: 3600 });
+        expect(resp).toEqual({ token: 'tok_abc123', expiresAt: '2026-01-01T00:00:00Z' });
+    });
+
+    it('omitting ttlSeconds sends 0, letting the server apply its default TTL', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({ token: 'tok_def456', expires_at: '2026-01-01T01:00:00Z' });
+
+        await client.admin.mintJoinToken('node-8');
+
+        expect(calls[0].body).toEqual({ node_id: 'node-8', ttl_seconds: 0 });
+    });
+
+    it('surfaces a tenant caller\'s ScopeCross refusal as a transport error carrying the status', async () => {
+        const client = await connectedClient();
+        vi.stubGlobal('fetch', vi.fn(async () => new Response(
+            JSON.stringify({ error: 'permission denied' }),
+            { status: 403, headers: { 'Content-Type': 'application/json' } },
+        )));
+
+        await expect(client.admin.mintJoinToken('node-9', 60))
+            .rejects.toMatchObject({ statusCode: 403 });
+    });
+});
+
+// ---------------------------------------------------------------------------
 // Outbound snake_case transform — camelCase SDK fields must arrive as
 // snake_case in the serialized JSON body that the Go server receives.
 // These are the request types that were silently broken before jsonBody()

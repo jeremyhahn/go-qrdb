@@ -90,6 +90,7 @@ import type {
     DatabaseCompactionConfig,
     UpdateDatabaseCompactionRequest,
     NodeCompactionBody,
+    MintJoinTokenResponse,
     CreateNamespaceResponse,
     CreateRoleRequest,
     CreateUserRequest,
@@ -638,6 +639,13 @@ export class RestClient implements Client {
                     body: JSON.stringify(req),
                 });
                 return resp.compaction;
+            },
+            mintJoinToken: async (nodeId: string, ttlSeconds?: number): Promise<MintJoinTokenResponse> => {
+                this.ensureConnected();
+                return this.fetchJSON<MintJoinTokenResponse>('/v1/cluster/join-tokens', {
+                    method: 'POST',
+                    ...jsonBody({ node_id: nodeId, ttl_seconds: ttlSeconds ?? 0 }),
+                });
             },
             addMember: async (
                 shardId: number,

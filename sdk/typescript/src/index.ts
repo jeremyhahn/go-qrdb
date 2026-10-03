@@ -109,6 +109,7 @@ export type {
     ShardInfo,
     OKResponse,
     ErrorResponse,
+    MintJoinTokenResponse,
 
     // KV
     KVListResponse,

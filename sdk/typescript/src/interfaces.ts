@@ -19,6 +19,7 @@ import type {
     PeersResponse,
     TopologyResponse,
     CapabilitiesResponse,
+    MintJoinTokenResponse,
 
     // MVCC
     MVCCKeyValue,
@@ -361,6 +362,20 @@ export interface AdminClient {
      * /admin/node-compaction.
      */
     setNodeCompaction(compaction?: DatabaseCompactionConfig): Promise<DatabaseCompactionConfig | undefined>;
+
+    /**
+     * Mints a single-use, identity-bound member-side CSR join token for
+     * `nodeId`. Requires `cluster:join_token` (`ScopeCross`, platform-only
+     * -- no built-in role carries it by default, so a tenant caller is
+     * always refused). The token is returned exactly once; losing it means
+     * minting a fresh one. Maps to `POST /v1/cluster/join-tokens`.
+     *
+     * @param nodeId - The joining node's SPIFFE node identity to bind the
+     * token to.
+     * @param ttlSeconds - Token lifetime in seconds. Omitted or `<= 0` uses
+     * the server's default TTL.
+     */
+    mintJoinToken(nodeId: string, ttlSeconds?: number): Promise<MintJoinTokenResponse>;
 
     /**
      * Adds a new replica to the specified shard.

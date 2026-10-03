@@ -2164,6 +2164,18 @@ export interface NodeCompactionBody {
     readonly compaction?: DatabaseCompactionConfig;
 }
 
+/** The response to minting a member-side CSR join token: `POST
+ * /v1/cluster/join-tokens`, the gRPC `MintJoinToken` RPC, QUIC, Unix, or the
+ * `qrdb_mint_join_token` MCP tool. The token is returned exactly once --
+ * there is no "list minted tokens" read path -- so a caller that loses this
+ * response has to mint a fresh token. */
+export interface MintJoinTokenResponse {
+    /** The single-use join token, bound to the requested node identity. */
+    readonly token: string;
+    /** When the token expires, as an ISO 8601 / RFC 3339 timestamp. */
+    readonly expiresAt: string;
+}
+
 /**
  * Raft consensus configuration as a request sets it on a database. There is no
  * shard ID: the cluster issues it when the database is created, it never
