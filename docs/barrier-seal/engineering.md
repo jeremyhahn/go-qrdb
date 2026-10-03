@@ -301,7 +301,7 @@ services and to the server, which wraps the node's sealed-window probe with
   transaction end with it); on every transport every open watch, which the
   seal ends.
 - **Sealing the node barrier seals the whole node.** Every system-barrier seal
-  -- `BarrierSeal`, the Shamir seal vote's commit (`service.WithBarrierRegistry`
+  -- `BarrierSeal`, a completed share-holder seal quorum (`service.WithBarrierRegistry`
   wires the registry into `BarrierService`), and `SealEnforcer.SealNode` for a
   cluster record -- goes through `BarrierRegistry.SealAll`: every tenant
   barrier, then the node barrier, then every stream ends. The registry is an
@@ -318,6 +318,20 @@ services and to the server, which wraps the node's sealed-window probe with
   (`PendingTenantUnseals`) until the next node unseal or the tenant's own
   unseal. A self-managed tenant is never unsealed for it. A cut-off seals
   nothing.
+- **A seal quorum seals through its caller.** The share-holder quorum engine
+  knows nothing of the cluster: `StorageBarrier.SubmitHolderShareWith` takes
+  the seal a completed `OpSeal` round runs, and the `OpSeal` finisher only
+  calls it (`SubmitHolderShare` passes `Seal`). Each service passes its own
+  cluster seal -- `BarrierService.seal` for the node barrier,
+  `TenantService.sealTenant` (through `BarrierRegistry.SubmitTenantHolderShare`)
+  for a tenant, `DatabaseService.sealOwnedDatabase` for a database -- so the
+  record is written before any key is wiped, and a record refused outright
+  (`SealEpochConflictError`) wipes nothing. A tenant's unseal submission runs
+  under the registry's mutex, ordered against the node seal; a seal
+  submission does not, because its seal takes that mutex itself. A Shamir
+  database barrier refuses a single caller's seal
+  (`DatabaseBarrierManager.RequiresQuorum`), while the authorized seal a
+  quorum or a seal record drives (`SealAuthorized`) seals it on every node.
 - **Zero hardware coupling is a hard invariant.** No TPM2 code, no PKCS#11 code,
   no `pkcs11` build tag in any qrdb Go file.
 - **Storage wrapping is conditional on `base`.** With a base backend set, the
@@ -631,8 +645,7 @@ which is on the sealed-window allowlist.
 
 **Tenant and database barriers.** The `tenant_barrier:*` permissions are
 `ScopeTenantOnly`: the `system` tenant is refused for another tenant's barrier,
-and `TenantService` repeats the refusal for seal, seal vote, unseal and unseal
-share. `databases:seal`, `databases:unseal` and `databases:barrier_status` are
+and `TenantService` repeats the refusal for its seal and unseal. `databases:seal`, `databases:unseal` and `databases:barrier_status` are
 `ScopeSelfStrict`, and `DatabaseService` resolves the database through the
 caller's own tenant for these three operations, the `system` tenant included.
 **Correction (2026-10-01):** these three were `ScopeSelf`, which the

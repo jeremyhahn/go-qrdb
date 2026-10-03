@@ -22,6 +22,7 @@ import (
 	"github.com/jeremyhahn/go-objstore/pkg/common"
 	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/validation"
 )
@@ -1542,6 +1543,33 @@ func (r *BarrierRegistry) UnsealTenant(ctx context.Context, tenantID string, cre
 	}
 	delete(r.nodeSealed, tenantID)
 	return nil
+}
+
+// SubmitTenantHolderShare counts one authenticated holder's share toward the
+// tenant barrier's round (StorageBarrier.SubmitHolderShareWith); a completed
+// seal round runs seal. An unseal submission runs under sealMu, ordered
+// against a whole-node seal as UnsealTenant is, and an unseal it completes
+// clears the tenant's pending node unseal. A seal submission takes no lock:
+// its seal -- SealTenant, directly or through a cluster seal's enforcement --
+// takes sealMu itself.
+func (r *BarrierRegistry) SubmitTenantHolderShare(ctx context.Context, tenantID string, sub *HolderSubmission, seal func() error) (*QuorumOutcome, error) {
+	tb, err := r.GetTenant(tenantID)
+	if err != nil {
+		if sub != nil {
+			secure.Wipe(sub.Share)
+		}
+		return nil, err
+	}
+	if sub == nil || sub.Op != OpUnseal {
+		return tb.Barrier().SubmitHolderShareWith(ctx, sub, seal)
+	}
+	r.sealMu.Lock()
+	defer r.sealMu.Unlock()
+	out, err := tb.Barrier().SubmitHolderShareWith(ctx, sub, seal)
+	if err == nil && out.Complete {
+		delete(r.nodeSealed, tenantID)
+	}
+	return out, err
 }
 
 // SealTenant seals the tenant barrier identified by tenantID, releasing its

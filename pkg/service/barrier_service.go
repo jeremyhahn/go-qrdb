@@ -511,12 +511,15 @@ func (s *BarrierService) BarrierQuorumBegin(ctx context.Context, req *QuorumBegi
 	return s.ceremony.BeginQuorum(ctx, req.Domain, req.Op, req.Username, req.Factor)
 }
 
-// BarrierQuorumSubmit counts one authenticated holder's share.
+// BarrierQuorumSubmit counts one authenticated holder's share. A completed
+// seal round seals the node barrier as BarrierSeal does (seal): once the
+// cluster has activated cluster-seal the seal is recorded first and every
+// node seals the whole node; before activation this node is sealed whole.
 func (s *BarrierService) BarrierQuorumSubmit(ctx context.Context, req *QuorumSubmitRequest) (*QuorumOutcomeInfo, error) {
 	if req == nil {
 		return nil, ErrNilRequest
 	}
-	out, err := s.barrier.SubmitHolderShare(ctx, &seal.HolderSubmission{
+	out, err := s.barrier.SubmitHolderShareWith(ctx, &seal.HolderSubmission{
 		Domain: req.Domain,
 		Op:     req.Op,
 		Holder: req.Username,
@@ -528,7 +531,7 @@ func (s *BarrierService) BarrierQuorumSubmit(ctx context.Context, req *QuorumSub
 			PeerCertThumbprint: req.PeerCertThumbprint,
 		},
 		Share: req.Share,
-	})
+	}, func() error { return s.seal(ctx) })
 	if err != nil {
 		return nil, err
 	}

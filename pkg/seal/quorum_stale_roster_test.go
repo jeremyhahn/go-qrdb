@@ -53,7 +53,7 @@ func TestQuorum_StaleRosterSubmissionNeverDestroysANewerRound(t *testing.T) {
 		Domain: DomainUnseal, Op: OpSeal, Holder: "h3",
 		Proof: f.verifier.issue(DomainUnseal, OpSeal, "h3", staleDigest),
 		Share: []byte(f.dist.share(DomainUnseal, "h3")),
-	}, staleRoster, staleDigest)
+	}, staleRoster, staleDigest, nil)
 	var stale *StaleRosterError
 	if !errors.As(err, &stale) || stale.Domain != DomainUnseal {
 		t.Fatalf("stale submission = %v, want *StaleRosterError", err)

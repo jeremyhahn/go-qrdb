@@ -186,9 +186,23 @@ func (m *DatabaseBarrierManager) GetBarrier(dbName string) BarrierEncryptor {
 func (m *DatabaseBarrierManager) SealDatabase(dbName string) error {
 	// A Shamir barrier is sealed by a quorum of its holders, never by one
 	// caller, as the system barrier is.
-	if _, ok := m.holders.Get(dbName); ok {
+	if m.RequiresQuorum(dbName) {
 		return &BarrierSealError{Name: dbName, Err: seal.ErrShamirBarrierRequiresQuorum}
 	}
+	return m.SealAuthorized(dbName)
+}
+
+// RequiresQuorum reports whether dbName's barrier is sealed only by a quorum
+// of its share holders (a Shamir barrier), not by one caller.
+func (m *DatabaseBarrierManager) RequiresQuorum(dbName string) bool {
+	_, ok := m.holders.Get(dbName)
+	return ok
+}
+
+// SealAuthorized seals dbName's barrier whatever its strategy. Its callers
+// carry the authority themselves: a completed holder quorum, or the cluster
+// seal record a node enforces. A single caller seals through SealDatabase.
+func (m *DatabaseBarrierManager) SealAuthorized(dbName string) error {
 	if err := m.registry.SealTenant(dbName); err != nil {
 		return &BarrierSealError{Name: dbName, Err: err}
 	}

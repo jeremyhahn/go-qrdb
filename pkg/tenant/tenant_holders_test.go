@@ -104,18 +104,11 @@ func submitTenant(t *testing.T, svc *TenantService, ctx context.Context, tenantI
 	})
 }
 
-// TestTenantBarrierHolders_Lifecycle drives a tenant barrier's holders end
-// to end: enrolment before initialization, the Shamir split, claims, a
-// quorum seal and unseal, and revocation's quorum check.
-func TestTenantBarrierHolders_Lifecycle(t *testing.T) {
-	const tenantID = "acme"
-	svc := newHolderTenantService(t)
-	ctx := tenantAdminCtx(tenantID)
-	if _, err := svc.CreateTenant(context.Background(), tenantID, "Acme", ""); err != nil {
-		t.Fatalf("CreateTenant: %v", err)
-	}
-
-	holders := []*tenantHolder{newTenantHolder(t, "alice"), newTenantHolder(t, "bob")}
+// shamirTenantWithClaimedHolders enrols holders on tenantID's barrier,
+// initializes it under Shamir with every holder required, and has each holder
+// claim its envelope.
+func shamirTenantWithClaimedHolders(t *testing.T, svc *TenantService, ctx context.Context, tenantID string, holders []*tenantHolder) {
+	t.Helper()
 	for _, h := range holders {
 		res, err := svc.TenantBarrierOfficerRegister(ctx, tenantID, &ceremony.RegisterOfficerRequest{Username: h.name, Role: seal.RoleCustodian, CSRPEM: h.csr})
 		if err != nil {
@@ -127,20 +120,17 @@ func TestTenantBarrierHolders_Lifecycle(t *testing.T) {
 		}
 		h.thumb = mtls.Thumbprint(cert.Raw)
 	}
-	if _, err := svc.TenantBarrierOfficerRegister(tenantAdminCtx(tenantID), tenantID, nil); err == nil {
-		t.Fatal("a nil registration must be refused")
-	}
 
-	res, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, nil, 2, 2, seal.StrategyShamir)
+	res, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, nil, len(holders), len(holders), seal.StrategyShamir)
 	if err != nil {
 		t.Fatalf("init shamir: %v", err)
 	}
-	if res.ShareCount != 2 {
-		t.Fatalf("ShareCount = %d, want 2", res.ShareCount)
+	if res.ShareCount != len(holders) {
+		t.Fatalf("ShareCount = %d, want %d", res.ShareCount, len(holders))
 	}
 
 	list, err := svc.TenantBarrierOfficerList(ctx, tenantID)
-	if err != nil || len(list) != 2 {
+	if err != nil || len(list) != len(holders) {
 		t.Fatalf("OfficerList = %v, %v", list, err)
 	}
 	for _, h := range holders {
@@ -157,6 +147,24 @@ func TestTenantBarrierHolders_Lifecycle(t *testing.T) {
 			t.Fatalf("claim complete %s: %v", h.name, err)
 		}
 		h.envelope = cr.Envelope
+	}
+}
+
+// TestTenantBarrierHolders_Lifecycle drives a tenant barrier's holders end
+// to end: enrolment before initialization, the Shamir split, claims, a
+// quorum seal and unseal, and revocation's quorum check.
+func TestTenantBarrierHolders_Lifecycle(t *testing.T) {
+	const tenantID = "acme"
+	svc := newHolderTenantService(t)
+	ctx := tenantAdminCtx(tenantID)
+	if _, err := svc.CreateTenant(context.Background(), tenantID, "Acme", ""); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+
+	holders := []*tenantHolder{newTenantHolder(t, "alice"), newTenantHolder(t, "bob")}
+	shamirTenantWithClaimedHolders(t, svc, ctx, tenantID, holders)
+	if _, err := svc.TenantBarrierOfficerRegister(tenantAdminCtx(tenantID), tenantID, nil); err == nil {
+		t.Fatal("a nil registration must be refused")
 	}
 
 	if _, err := submitTenant(t, svc, ctx, tenantID, seal.OpSeal, holders[0]); err != nil {

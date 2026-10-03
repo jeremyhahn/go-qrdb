@@ -1179,6 +1179,20 @@ func (s *DatabaseService) SealDatabase(ctx context.Context, name string) error {
 	if err := s.authorizeDatabaseTenant(ctx, name); err != nil {
 		return err
 	}
+	// A Shamir barrier is sealed by a quorum of its holders
+	// (DatabaseBarrierQuorumSubmit), never by one caller -- refused before
+	// anything is recorded.
+	if s.barrierMgr != nil && s.barrierMgr.RequiresQuorum(name) {
+		return &database.BarrierSealError{Name: name, Err: seal.ErrShamirBarrierRequiresQuorum}
+	}
+	return s.sealOwnedDatabase(ctx, name)
+}
+
+// sealOwnedDatabase seals name, which the caller's tenant owns
+// (authorizeDatabaseTenant has checked that): cluster-wide through the sealer
+// when active -- the record first, then every node holding the database's
+// barrier seals it -- on this node only otherwise, ending its streams.
+func (s *DatabaseService) sealOwnedDatabase(ctx context.Context, name string) error {
 	if s.barrierMgr == nil {
 		return &BarrierManagerNotConfiguredError{}
 	}
@@ -1227,12 +1241,14 @@ func (s *DatabaseService) MarkBarrierDatabasesSealed() {
 }
 
 // sealDatabaseHere seals name's barrier on this node and marks the database
-// sealed. Its callers have established whose database it is.
+// sealed. Its callers have established whose database it is and carry the
+// authority to seal it: an owner's seal of a non-Shamir barrier, a completed
+// holder quorum, or a cluster seal record.
 func (s *DatabaseService) sealDatabaseHere(name string) error {
 	if s.barrierMgr == nil {
 		return &BarrierManagerNotConfiguredError{}
 	}
-	if err := s.barrierMgr.SealDatabase(name); err != nil {
+	if err := s.barrierMgr.SealAuthorized(name); err != nil {
 		return err
 	}
 	// Reflect the sealed state on the Database's own status so

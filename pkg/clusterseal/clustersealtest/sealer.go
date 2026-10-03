@@ -31,16 +31,19 @@ import (
 // enforces through its Enforcer; Clear records a clear epoch and unseals
 // nothing -- and, as the monitor does, refuses the node barrier with
 // seal.ErrSealed while this node's own node barrier is sealed (SetNodeSealed);
-// Refuses reports a sealed record. SealErr and ClearErr inject the failures
-// the monitor can return.
+// Refuses reports a sealed record. SealErr, SealRefusal and ClearErr inject
+// the failures the monitor can return.
 type Sealer struct {
-	mu       sync.Mutex
-	active   bool
-	records  map[clusterseal.Barrier]clusterseal.Record
-	sealErr  error
-	clearErr error
-	onSeal   func(clusterseal.Barrier) error
-	local    clusterseal.Local
+	mu      sync.Mutex
+	active  bool
+	records map[clusterseal.Barrier]clusterseal.Record
+	sealErr error
+	// sealRefusal is a definite refusal: the record is not written and
+	// nothing is enforced, as the monitor answers a lost seal-epoch race.
+	sealRefusal error
+	clearErr    error
+	onSeal      func(clusterseal.Barrier) error
+	local       clusterseal.Local
 	// nodeSealed is this node's own node barrier state, which the monitor
 	// reads through its Enforcer before clearing the node record.
 	nodeSealed bool
@@ -76,6 +79,15 @@ func (s *Sealer) SetSealErr(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sealErr = err
+}
+
+// SetSealRefusal makes Seal refuse with err before it writes a record or
+// enforces anything, as the monitor does when the record definitely was not
+// written (*clusterseal.SealEpochConflictError): this node keeps its keys.
+func (s *Sealer) SetSealRefusal(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sealRefusal = err
 }
 
 // SetClearErr makes Clear fail with err and record nothing.
@@ -143,6 +155,11 @@ func (s *Sealer) Seal(_ context.Context, b clusterseal.Barrier, by clusterseal.P
 	}
 	s.seals = append(s.seals, b)
 	s.by = append(s.by, by)
+	if s.sealRefusal != nil {
+		err := s.sealRefusal
+		s.mu.Unlock()
+		return clusterseal.Record{}, err
+	}
 	rec := s.records[b]
 	if !rec.Sealed {
 		rec = clusterseal.Record{Barrier: b, Epoch: rec.Epoch + 1, Sealed: true, Principal: by.Name, PrincipalTenant: by.Tenant}

@@ -175,8 +175,8 @@ qrdb uses a **per-node-independent key model** (not a shared cluster-wide DEK):
 
 A seal of the node (system) barrier is a seal of **everything that node
 holds**. Every path that seals it -- the single-admin seal on every transport
-(REST, gRPC, unix, QUIC, MCP, embedded, desktop), the Shamir seal vote's
-commit, and a cluster seal record for the node barrier applied by each node's
+(REST, gRPC, unix, QUIC, MCP, embedded, desktop), a share-holder seal
+quorum's completion, and a cluster seal record for the node barrier applied by each node's
 monitor -- seals every registered tenant barrier first and then the node
 barrier (`BarrierRegistry.SealAll`, the same seal shutdown performs), so no
 tenant root key or DEK stays in memory while the node reports sealed. Every
@@ -236,8 +236,8 @@ each barrier level reaches every node of a cluster.
 
 | Level | What it protects | Who may seal it | Who may clear a cluster seal |
 |---|---|---|---|
-| **Node barrier** | one node's whole data plane: the system shard, the Raft log, the identity plane | the platform operator — an identity of the `system` tenant holding `seal:seal`; a Shamir node barrier needs its M-of-N seal vote | the platform operator, `seal:unseal`, on a node that has unsealed itself |
-| **Tenant barrier** | one tenant's dedicated data, on every node that holds it | that tenant's own administrators (`tenant_barrier:seal`); a Shamir tenant barrier needs its seal vote. **The platform operator cannot seal a tenant's barrier** | the tenant's administrators, by unsealing the tenant on a node |
+| **Node barrier** | one node's whole data plane: the system shard, the Raft log, the identity plane | the platform operator — an identity of the `system` tenant holding `seal:seal`; a Shamir node barrier needs an M-of-N seal quorum of its share holders | the platform operator, `seal:unseal`, on a node that has unsealed itself |
+| **Tenant barrier** | one tenant's dedicated data, on every node that holds it | that tenant's own administrators (`tenant_barrier:seal`); a Shamir tenant barrier needs a seal quorum of its share holders. **The platform operator cannot seal a tenant's barrier** | the tenant's administrators, by unsealing the tenant on a node |
 | **Database barrier** | one database's own store | the tenant that owns the database (`databases:seal`) | the owning tenant, by unsealing the database on a node |
 
 No level gives anyone access across tenants. A platform operator acts on node
@@ -251,7 +251,7 @@ on a single node.
 per node.**
 
 ```
-operator ──seal──▶ any node N (authorizes the caller; Shamir: completes the seal vote)
+operator ──seal──▶ any node N (authorizes the caller; Shamir: completes the holder seal quorum)
    N: 1. writes the seal record for the barrier: epoch + 1, sealed      (system shard, guarded write)
       2. seals itself: closes the gate, ends open streams,
          stops the barrier's shards, wipes ITS OWN key from memory

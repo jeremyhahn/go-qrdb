@@ -2129,14 +2129,18 @@ func (s *TenantService) TenantBarrierQuorumSubmit(ctx context.Context, tenantID 
 	if sub == nil || len(sub.Share) == 0 {
 		return nil, ErrEmptyShare
 	}
-	tb, err := s.registry.GetTenant(tenantID)
+	sub.Domain = seal.DomainUnseal
+	out, err := s.registry.SubmitTenantHolderShare(ctx, tenantID, sub, func() error { return s.sealTenant(ctx, tenantID) })
 	if err != nil {
 		return nil, &BarrierError{TenantID: tenantID, Op: "quorum-submit", Err: err}
 	}
-	sub.Domain = seal.DomainUnseal
-	out, err := tb.Barrier().SubmitHolderShare(ctx, sub)
-	if err != nil {
-		return nil, &BarrierError{TenantID: tenantID, Op: "quorum-submit", Err: err}
+	// An unseal quorum clears the tenant's cluster seal record, as
+	// TenantBarrierUnseal does; if the clear cannot be written the barrier is
+	// sealed again here.
+	if out.Complete && out.Op == seal.OpUnseal {
+		if err := s.clearClusterSeal(ctx, tenantID); err != nil {
+			return nil, err
+		}
 	}
 	if out.Complete {
 		s.logger.Info("tenant barrier holder quorum complete",

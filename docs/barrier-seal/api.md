@@ -130,16 +130,15 @@ call rather than a named permission — a tenant acts on its own barrier.
 **Tenant and database barriers admit only their owner.** Every tenant barrier
 permission is tenant-only: the platform operator (an identity of the `system`
 tenant) is refused for another tenant's barrier, and the tenant service makes
-the same refusal for seal, seal vote, unseal and unseal share
-(`TenantScopeError`). `databases:seal`, `databases:unseal` and
+the same refusal for seal and unseal (`TenantScopeError`). `databases:seal`, `databases:unseal` and
 `databases:barrier_status` admit only the tenant that owns the database — the
 `system` tenant included: it seals its own databases and no other tenant's.
 
 ## Sealing in a cluster
 
 Once the cluster has activated the `cluster-seal` feature, every seal on this
-page — node seal, node seal vote, tenant seal, tenant seal vote and database
-seal — writes the barrier's cluster seal record and is enforced on **every**
+page — node seal, tenant seal and database seal, each by one caller or by a
+Shamir barrier's share-holder seal quorum — writes the barrier's cluster seal record and is enforced on **every**
 node, on all six transports alike; see
 [architecture.md](architecture.md#sealing-in-a-cluster). Request bodies do not
 change. Before activation each seal acts on the node that receives it.

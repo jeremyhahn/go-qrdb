@@ -161,7 +161,9 @@ func (s *DatabaseService) DatabaseBarrierQuorumBegin(ctx context.Context, name s
 }
 
 // DatabaseBarrierQuorumSubmit implements DatabaseHolderServicer. A completed
-// seal or unseal round is reflected on the database's status, and a
+// seal round seals the database as SealDatabase does -- recorded cluster-wide
+// first once the cluster has activated cluster-seal -- and a completed unseal
+// round clears its record. Either is reflected on the database's status, and a
 // completed rekey records the M-of-N it left, so the database reopens with
 // the scheme its holders hold.
 func (s *DatabaseService) DatabaseBarrierQuorumSubmit(ctx context.Context, name string, req *QuorumSubmitRequest) (*QuorumOutcomeInfo, error) {
@@ -175,7 +177,7 @@ func (s *DatabaseService) DatabaseBarrierQuorumSubmit(ctx context.Context, name 
 	if req == nil || len(req.Share) == 0 {
 		return nil, ErrNilRequest
 	}
-	out, err := barrier.SubmitHolderShare(ctx, &seal.HolderSubmission{
+	out, err := barrier.SubmitHolderShareWith(ctx, &seal.HolderSubmission{
 		Domain: seal.DomainUnseal,
 		Op:     req.Op,
 		Holder: req.Username,
@@ -187,7 +189,7 @@ func (s *DatabaseService) DatabaseBarrierQuorumSubmit(ctx context.Context, name 
 			PeerCertThumbprint: req.PeerCertThumbprint,
 		},
 		Share: req.Share,
-	})
+	}, func() error { return s.sealOwnedDatabase(ctx, name) })
 	if err != nil {
 		return nil, err
 	}
@@ -195,6 +197,12 @@ func (s *DatabaseService) DatabaseBarrierQuorumSubmit(ctx context.Context, name 
 		switch out.Op {
 		case seal.OpUnseal:
 			s.setDatabaseStatus(name, database.StatusOpen)
+			// An unseal quorum clears the database's cluster seal record, as
+			// UnsealDatabase does; if the clear cannot be written the barrier
+			// is sealed again here.
+			if err := s.clearDatabaseSeal(ctx, name); err != nil {
+				return nil, err
+			}
 		case seal.OpSeal:
 			s.setDatabaseStatus(name, database.StatusSealed)
 		case seal.OpRekey:

@@ -16,9 +16,9 @@ are not reconstructed here — their history is in the git log.
 - **BREAKING: sealing the node barrier seals the whole node.** A seal of the
   system barrier sealed only that barrier: every unsealed tenant barrier kept
   its root key and DEKs in memory while the node reported sealed. Every
-  system-barrier seal -- the single-admin seal on every transport and the
-  Shamir seal vote, and (as before) a cluster seal record applied by each
-  node -- now seals every tenant barrier first, then the system barrier
+  system-barrier seal -- the single-admin seal on every transport and a
+  share-holder seal quorum, and (as before) a cluster seal record applied by
+  each node -- now seals every tenant barrier first, then the system barrier
   (`BarrierRegistry.SealAll`), and ends every open stream. On unseal the
   system barrier unseals first and brings its system-managed (auto-unseal)
   tenants back with it (`StorageBarrier.OnUnsealed`) -- only those the node
@@ -35,8 +35,22 @@ are not reconstructed here — their history is in the git log.
   caller's own tenant; another tenant's database answers as missing. They were
   `ScopeSelf`, which lets a system-tenant identity act on any tenant's
   database barrier.
-- **Tenant barrier seal, seal vote, unseal and unseal share refuse the system
-  tenant** in `TenantService` as well as in RBAC.
+- **Tenant barrier seal and unseal refuse the system tenant** in
+  `TenantService` as well as in RBAC.
+- **A share-holder seal quorum seals cluster-wide, recording first.** Once the
+  cluster has activated cluster-seal, a completed seal quorum of a Shamir
+  node, tenant or database barrier writes the barrier's cluster seal record
+  before any key is wiped, then every node seals it -- the node barrier's
+  as the whole node. A record that definitely was not written leaves every
+  key in place and returns the sealer's typed error
+  (`*clusterseal.SealEpochConflictError`); one whose write cannot be
+  confirmed seals this node anyway (`*clusterseal.RecordNotConfirmedError`),
+  as a single caller's seal does. A tenant or database unseal quorum clears
+  the record, sealing again if the clear cannot be written, and a tenant's
+  unseal quorum is ordered against the node seal. Before activation a node
+  seal quorum seals this node whole. New: `seal.StorageBarrier.SubmitHolderShareWith`,
+  `seal.BarrierRegistry.SubmitTenantHolderShare`,
+  `database.DatabaseBarrierManager.SealAuthorized` and `RequiresQuorum`.
 - **The cluster enable-encryption record carries no credential.** The
   replicated `__sys:encmig/` intent no longer holds per-node HPKE envelopes of
   the operator's passphrase. The node that accepted the request recycles with

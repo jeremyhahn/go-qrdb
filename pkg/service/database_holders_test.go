@@ -109,14 +109,10 @@ func submitDBSvc(t *testing.T, svc *DatabaseService, ctx context.Context, op sea
 	})
 }
 
-// TestDatabaseHolders_Lifecycle drives a Shamir database's holders through
-// the database service: enrolment, initialization, claims, a quorum seal and
-// unseal reflected on the database's status, and a rekey whose scheme is
-// recorded.
-func TestDatabaseHolders_Lifecycle(t *testing.T) {
-	svc, mgr := newHolderDatabaseService(t)
-	ctx := dbAdminCtx("acme")
-
+// claimedDatabaseHolders enrols alice and bob on "vault", initializes it
+// 2-of-2 and has both claim their envelopes.
+func claimedDatabaseHolders(t *testing.T, svc *DatabaseService, ctx context.Context) []*dbSvcHolder {
+	t.Helper()
 	holders := []*dbSvcHolder{newDBSvcHolder(t, "alice"), newDBSvcHolder(t, "bob")}
 	for _, h := range holders {
 		res, err := svc.DatabaseBarrierOfficerRegister(ctx, "vault", &BarrierOfficerRegisterRequest{Username: h.name, Role: seal.RoleCustodian, CSRPEM: h.csr})
@@ -157,6 +153,18 @@ func TestDatabaseHolders_Lifecycle(t *testing.T) {
 		}
 		h.envelope = res.Envelope
 	}
+	return holders
+}
+
+// TestDatabaseHolders_Lifecycle drives a Shamir database's holders through
+// the database service: enrolment, initialization, claims, a quorum seal and
+// unseal reflected on the database's status, and a rekey whose scheme is
+// recorded.
+func TestDatabaseHolders_Lifecycle(t *testing.T) {
+	svc, mgr := newHolderDatabaseService(t)
+	ctx := dbAdminCtx("acme")
+
+	holders := claimedDatabaseHolders(t, svc, ctx)
 
 	if err := svc.SealDatabase(ctx, "vault"); !errors.Is(err, seal.ErrShamirBarrierRequiresQuorum) {
 		t.Fatalf("single-caller seal = %v, want ErrShamirBarrierRequiresQuorum", err)

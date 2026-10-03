@@ -302,3 +302,43 @@ func TestShamirDatabase_CreatedSealed(t *testing.T) {
 		t.Fatalf("a created shamir database reports %q, want %q", got, StatusSealed)
 	}
 }
+
+// TestDatabaseBarrierManager_SealAuthorizedSealsAQuorumBarrier: a Shamir
+// database barrier requires a quorum for a single caller's seal, but the
+// authorized seal -- a completed quorum's, or a cluster seal record's
+// enforcement on every node holding the barrier -- seals it.
+func TestDatabaseBarrierManager_SealAuthorizedSealsAQuorumBarrier(t *testing.T) {
+	ctx := context.Background()
+	ca, _ := ceremonytest.NewCA(t, "Database Holder CA")
+	bm := holderBarrierManager(t, ca)
+	mgr := NewManager(nil, t.TempDir(), WithBarrierManager(bm))
+	t.Cleanup(func() { _ = mgr.Close() })
+	db, err := mgr.CreateWithCredentials(ctx, shamirDBConfig(t, "vault"), seal.Credentials{})
+	if err != nil {
+		t.Fatalf("CreateWithCredentials: %v", err)
+	}
+	enrolAndClaim(t, bm, "vault", newDBHolder(t, "alice"), newDBHolder(t, "bob"))
+
+	if !bm.RequiresQuorum("vault") {
+		t.Fatal("a shamir database barrier does not require a quorum")
+	}
+	if err := bm.SealAuthorized("vault"); err != nil {
+		t.Fatalf("SealAuthorized: %v", err)
+	}
+	if _, err := db.Backend().Get(ctx, []byte("k")); err == nil {
+		t.Fatal("a read reached a database whose barrier was sealed")
+	}
+}
+
+// TestDatabaseBarrierManager_RequiresQuorumOnlyForShamir: a database barrier
+// with no holders is sealed by one caller.
+func TestDatabaseBarrierManager_RequiresQuorumOnlyForShamir(t *testing.T) {
+	ca, _ := ceremonytest.NewCA(t, "Database Holder CA")
+	bm := holderBarrierManager(t, ca)
+	if bm.RequiresQuorum("absent") {
+		t.Fatal("a database with no holders requires a quorum")
+	}
+	if err := bm.SealAuthorized("absent"); err == nil {
+		t.Fatal("sealing a database with no barrier succeeded")
+	}
+}

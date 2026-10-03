@@ -69,6 +69,11 @@ type quorumRound struct {
 	contributors map[string]bool
 	indexes      map[int]bool
 	shares       []*shamir.ProtectedShare
+
+	// seal is what a completed OpSeal round runs: the completing
+	// submission's seal function (SubmitHolderShareWith), set once the
+	// round is detached.
+	seal func() error
 }
 
 // destroy wipes every accumulated share.
@@ -315,7 +320,23 @@ func (b *StorageBarrier) StartRekey(ctx context.Context, domain QuorumDomain, pa
 // SubmitHolderShare counts one authenticated holder's share toward the
 // domain's round for the operation, and runs the operation when the round
 // reaches its threshold. sub.Share is wiped before return whatever happens.
+// A completed OpSeal round seals this barrier (Seal); SubmitHolderShareWith
+// supplies the seal instead.
 func (b *StorageBarrier) SubmitHolderShare(ctx context.Context, sub *HolderSubmission) (*QuorumOutcome, error) {
+	return b.SubmitHolderShareWith(ctx, sub, b.Seal)
+}
+
+// SubmitHolderShareWith is SubmitHolderShare with the seal a completed OpSeal
+// round runs supplied by the caller: once the quorum is met and its shares
+// have reconstructed this barrier's root key, seal runs in place of Seal and
+// its error is returned. A cluster seal passes a function that records the
+// seal cluster-wide before it wipes any key; below quorum, with shares that
+// do not authenticate, and for every other operation, seal never runs. A nil
+// seal is Seal.
+func (b *StorageBarrier) SubmitHolderShareWith(ctx context.Context, sub *HolderSubmission, seal func() error) (*QuorumOutcome, error) {
+	if seal == nil {
+		seal = b.Seal
+	}
 	if sub == nil {
 		return nil, ErrShamirCombineFailed
 	}
@@ -336,12 +357,13 @@ func (b *StorageBarrier) SubmitHolderShare(ctx context.Context, sub *HolderSubmi
 	if err != nil {
 		return nil, err
 	}
-	return b.submitAgainst(ctx, sub, roster, digest)
+	return b.submitAgainst(ctx, sub, roster, digest, seal)
 }
 
 // submitAgainst admits sub against roster, the domain's roster as read at
-// digest, and finishes the round when it completes.
-func (b *StorageBarrier) submitAgainst(ctx context.Context, sub *HolderSubmission, roster *HolderRoster, digest []byte) (*QuorumOutcome, error) {
+// digest, and finishes the round when it completes; a completed OpSeal round
+// runs seal.
+func (b *StorageBarrier) submitAgainst(ctx context.Context, sub *HolderSubmission, roster *HolderRoster, digest []byte, seal func() error) (*QuorumOutcome, error) {
 	b.quorumMu.Lock()
 	if err := b.refuseStaleRosterLocked(ctx, quorumRoundKey{domain: sub.Domain, op: sub.Op}, digest); err != nil {
 		b.quorumMu.Unlock()
@@ -355,6 +377,7 @@ func (b *StorageBarrier) submitAgainst(ctx context.Context, sub *HolderSubmissio
 	// The round is detached: finishing it (an unseal, a redistribution) can
 	// be slow and must not hold other submissions up.
 	defer round.destroy()
+	round.seal = seal
 	return b.finishRound(ctx, round, outcome)
 }
 
@@ -537,8 +560,8 @@ var quorumFinishers = map[QuorumOp]quorumFinisher{
 	OpRecover: func(ctx context.Context, b *StorageBarrier, _ *quorumRound, rootKey *secure.Buffer, _ *QuorumOutcome) error {
 		return b.unsealFromRootKey(ctx, rootKey, StrategyID("recovery"))
 	},
-	OpSeal: func(_ context.Context, b *StorageBarrier, _ *quorumRound, _ *secure.Buffer, _ *QuorumOutcome) error {
-		return b.Seal()
+	OpSeal: func(_ context.Context, _ *StorageBarrier, round *quorumRound, _ *secure.Buffer, _ *QuorumOutcome) error {
+		return round.seal()
 	},
 	OpRootToken: func(_ context.Context, _ *StorageBarrier, _ *quorumRound, rootKey *secure.Buffer, outcome *QuorumOutcome) error {
 		token, err := deriveRootToken(rootKey)
