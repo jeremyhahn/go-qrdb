@@ -641,6 +641,7 @@ func TestServer_ToolRegistration(t *testing.T) {
 		"qrdb_topology",
 		"qrdb_node_compaction",
 		"qrdb_update_node_compaction",
+		"qrdb_mint_join_token",
 		// Registered unconditionally, like the kv/admin tools above, not
 		// gated behind a barrier service or migrator (go-qrdb#558): the
 		// handler itself refuses with a typed error when no

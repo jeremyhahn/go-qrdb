@@ -33,7 +33,7 @@ var expectedMethods = []string{
 	"kv.CompareAndDelete",
 	"kv.CompareAndSwap",
 
-	// Admin (14)
+	// Admin (15)
 	"admin.Health",
 	"admin.Status",
 	"admin.Peers",
@@ -48,6 +48,7 @@ var expectedMethods = []string{
 	"admin.GetTopology",
 	"admin.GetNodeCompaction",
 	"admin.SetNodeCompaction",
+	"admin.MintJoinToken",
 
 	// MVCC (7)
 	"mvcc.PutWithLease",
@@ -252,10 +253,13 @@ func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
 func TestBuildHandlers_MethodCount(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 
-	// 173 = 172 + db.BarrierOfficerUnenrol, removing a database holder before
-	// its custody is initialized (docs/databases/api.md).
-	// 172 = 171 + barrier.ClusterUnseal, the authorized cluster-unseal record
-	// (docs/barrier-seal).
+	// 174 = 171 + 3 verbs added independently on top of the shared 171
+	// baseline below, none of which replaces another: barrier.ClusterUnseal,
+	// the authorized cluster-unseal record (docs/barrier-seal);
+	// db.BarrierOfficerUnenrol, removing a database holder before its
+	// custody is initialized (docs/databases/api.md); and
+	// admin.MintJoinToken, the member-side CSR join-token mint verb (B5/B7,
+	// go-qrdb cluster-join-token work).
 	// 171 = 162 + the 9 db.Barrier* share-holder verbs of a Shamir database
 	// barrier (docs/databases/api.md). audit.VerifyChain, the Tier-1
 	// audit-chain verification, is also outside this table: it is registered
@@ -266,9 +270,9 @@ func TestBuildHandlers_MethodCount(t *testing.T) {
 	// submitted by an authenticated holder through barrier.QuorumSubmit.
 	// The 172 was 170 + admin.GetNodeCompaction and admin.SetNodeCompaction,
 	// the platform's node-keyspace compaction policy (docs/key-value).
-	// 170 = 169 + db.UpdateCompaction, a database's scheduled-compaction
+	// The 170 was 169 + db.UpdateCompaction, a database's scheduled-compaction
 	// policy (docs/key-value).
-	// 169 = 168 + db.UpdateSQL, a database's SQL concurrency mode
+	// The 169 was 168 + db.UpdateSQL, a database's SQL concurrency mode
 	// (docs/row-locking).
 	// The 168 was 166 + tenant.ListDeleted and tenant.ReconcileDeleted, the retired
 	// tenant id listing and the node-local residue reconcile (go-qrdb#470,
@@ -282,7 +286,7 @@ func TestBuildHandlers_MethodCount(t *testing.T) {
 	// kv.CompareAndDelete, kv.CompareAndSwap — go-qrdb#124), and the 161 was
 	// 160 plus user.GetByEmail, the canonical login-key lookup (go-qrdb#190).
 	// The 2 watch methods remain on the streaming path, not the unary table.
-	const wantCount = 173
+	const wantCount = 174
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}
@@ -373,7 +377,7 @@ func TestBuildHandlers_CategoryCounts(t *testing.T) {
 
 	expectedCounts := map[string]int{
 		"kv":       8,
-		"admin":    14,
+		"admin":    15,
 		"mvcc":     7,
 		"tx":       1,
 		"batch":    2,

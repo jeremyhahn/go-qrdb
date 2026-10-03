@@ -138,6 +138,7 @@ var expectedToolPerms = map[string]permission.Permission{
 	"qrdb_topology":                       permission.AdminTopology,
 	"qrdb_node_compaction":                permission.AdminNodeCompaction,
 	"qrdb_update_node_compaction":         permission.AdminNodeCompaction,
+	"qrdb_mint_join_token":                permission.ClusterJoinToken,
 	"qrdb_user_create":                    permission.UsersCreate,
 	"qrdb_user_get":                       permission.UsersRead,
 	"qrdb_user_get_by_username":           permission.UsersRead,
