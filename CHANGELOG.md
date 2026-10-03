@@ -55,16 +55,54 @@ are not reconstructed here — their history is in the git log.
   every transport maps to Unimplemented when etcd support is not compiled
   in**, naming the missing `qrdb_etcd` build tag, instead of silently
   returning `nil` and accepting a configuration it could never serve.
-- **The coverage gate's package-discovery `go list` now passes the same
-  `-tags` the `go test` call beneath it already used.** Without it, any
-  package whose every file carries a build tag (`pkg/sql/mysql`,
-  `pkg/sql/pgsql`, and later every package under `pkg/sql/*` and
-  `pkg/api/etcd` once those were tagged too) silently dropped out of
-  `BULK_PKGS` discovery: "build constraints exclude all Go files" is not an
-  error `go list` reports, it just shrinks the package set. Those packages
-  were never in `test/coverage-baseline.txt`, so the ratchet's MISSING check
-  never fired — a pre-existing gap this change exposed rather than
-  introduced, now closed.
+- **An etcd configuration is now refused before it is ever persisted, on
+  every transport.** `DatabaseService.Create`, `CreateForTenant`,
+  `UpdateEtcd` and `UpdateEtcdForTenant` all call a new
+  `refuseEtcdNotCompiled` guard before reaching the manager: a request
+  enabling etcd on a binary without `qrdb_etcd` gets the typed
+  `*service.CapabilityUnsupportedError` and nothing is written, rather
+  than writing the config and simply never starting a listener for it (the
+  previous commit's `StartEtcd` fix covers the node-level config path;
+  this closes the same gap at the per-database config path). Chose
+  refusal over tagging the service methods out entirely: this project's
+  transports are tier-1 on every binary — the RPC/REST surface is
+  identical regardless of build tags, with capability differences
+  expressed as typed refusals rather than absent endpoints — so removing
+  `UpdateEtcd`'s signature under `!qrdb_etcd` would also require tagging
+  every handler above it in `pkg/api/{rest,grpc,quic,mcp,unix}` and would
+  make transport discovery disagree between binaries for no server-side
+  benefit.
+- **`qrdbd start`'s capability gate now reports `buildServerConfig`'s own
+  error instead of silently skipping itself.** It only ran
+  `ValidateCapabilities` when `buildServerConfig` succeeded; a failure
+  there (its one failure mode is an unset bind host) used to fall through
+  the gate unexamined rather than surface, the same silent-skip class of
+  bug `ValidateCapabilities` exists to close one line above.
+- **`sql/query/owner_check_test.go` picked up the `qrdb_sql` tag every
+  other file in that package already carries.** It arrived untagged
+  through a `main` merge (a new file in an already-tagged directory, not
+  touched by the original bulk-tagging pass), and `make vet-tags` caught
+  it: `undefined: mockDB` under any combination lacking `qrdb_sql`.
+- **Three `cmd/qrdbd`/`cmd/qrdb` tests that only failed at RUN TIME under a
+  reduced build, not at compile time** — `make vet-tags` could not see
+  any of them: two `TestRunStart_SQLDatabase*` tests asserted
+  `*UnknownSMError` unconditionally after setting
+  `--enable-mysql`/`--enable-pgsql`, not accounting for the capability
+  gate refusing first on a binary without the tag;
+  `TestDatabaseCmd_SubcommandCount` hard-coded a count and name set that
+  includes `update-etcd`/`update-protocol`/`update-sql`, all three
+  tag-conditional. See Added, below, for the gate that now catches this
+  class going forward.
+- **`qrdb database update-protocol` registered both `--mysql` and
+  `--postgresql` unconditionally inside its own `qrdb_sql` tag**, so a
+  `qrdb_sql` build with only one wire protocol compiled in (the
+  NOMYSQL/NOPGSQL rungs) still exposed a flag for the protocol it does not
+  have. Each flag now carries its own tag.
+- **`test/buildgates/etcd_dependency_test.go`'s dependency prefix widened
+  from `go.etcd.io/etcd/` to the whole `go.etcd.io/` organization** — the
+  claim being checked is "nothing under go.etcd.io is reachable without
+  qrdb_etcd," and the narrower prefix would have missed a go.etcd.io
+  module outside the `etcd/` path.
 
 ### Added
 
@@ -116,42 +154,52 @@ are not reconstructed here — their history is in the git log.
   single site that constructs the MySQL wire listener
   (`pkg/sql/mysql/server.go`'s call into `go-mysql-server/server.NewServer`,
   which is what calls vitess's listener constructor).
-- **PostgreSQL, and etcd, get the same build-tag treatment as MySQL.**
-  Every file under `pkg/sql/` (eight packages beyond `mysql/` and `pgsql/`:
-  `catalog`, `engine`, `infoschema`, `lockclause`, `pgcatalog`, `privilege`,
-  `provider`, `query`, plus the `internal/sqltest` harness they share) now
-  carries `//go:build qrdb_sql` directly, and every file under
-  `pkg/api/etcd/` carries `//go:build qrdb_etcd` directly — the whole SQL
-  core and the whole etcd wire server are absent from a build without their
-  tag at their own declaration, not merely at their callers'. Two more
-  build-tag rungs, `NOPGSQL` and `NOETCD`, join `NOMYSQL` and `NOSQLFAMILY`
-  in `make print-tag-sets` / `make vet-tags`, and
-  `test/buildgates/{pgsql,etcd}_dependency_test.go` check the dependency
-  graph the same way `mysql_dependency_test.go` does: under the default
-  tags, both binaries reach psql-wire / go.etcd.io (the discovery floor);
-  with the tag off, neither the qrdb package nor the upstream dependency is
-  reachable from either binary.
-- **`qrdbd` refuses `protocol.etcd.enabled: true` on a binary without
-  `qrdb_etcd`, instead of accepting it and never starting a listener.**
-  `(*server.Server).StartEtcd`'s doc comment used to say exactly that: "if
-  etcd support is not compiled in, it returns nil silently." It now returns
-  the same `service.CapabilityUnsupportedError` every transport already
-  maps to Unimplemented, naming the missing build tag.
+- **Every SQL-only CLI surface is tagged `qrdb_sql`**: `qrdbd start
+  --sql-database` (`start_sql_flags.go`/`_stub.go`), `qrdb database
+  update-sql` and `database create`'s `--sql-concurrency`
+  (`database_sql_cmd.go`/`_stub.go`, the same apply-closure shape
+  `database_etcd_cmd.go` uses for `--etcd*`), and `database
+  update-protocol`'s `--mysql`/`--postgresql` further split to their own
+  `qrdb_mysql`/`qrdb_pgsql` tags. `--host`'s help text now lists only the
+  protocols this binary actually binds it to
+  (`compiledProtocolListeners`), built from the same per-protocol appender
+  functions as the flag registration.
+- **`make test-tags`** (`scripts/test-tags.sh`) RUNS, not merely vets,
+  `./cmd/qrdbd/...` and `./cmd/qrdb/...` under the default build and the
+  four NOMYSQL/NOPGSQL/NOSQLFAMILY/NOETCD rungs. `make vet-tags` proves
+  the tree typechecks under every declared combination but has no
+  opinion on whether a test that compiles there also passes — a
+  hard-coded subcommand count or a test asserting success on a flag a
+  reduced build never registers typechecks fine and only fails at run
+  time, which is exactly what surfaced writing this round's CLI changes
+  (see Fixed, above). Scoped to the command surface rather than the whole
+  tree and excludes the `+integration` rungs; see the script's header for
+  the full scoping rationale.
 
 ### Changed — BREAKING
 
-- **`--enable-mysql` / `--mysql-port`, `--enable-pgsql` / `--pgsql-port`,
-  `qrdb sql`, `qrdb database update-protocol`, `qrdb database
-  update-etcd`, and `database create`'s `--etcd`, `--etcd-listen-addr`,
-  `--etcd-advertise-urls` flags now exist only on a binary built with the
-  matching tag** (`qrdb_mysql`, `qrdb_pgsql`, `qrdb_sql`, `qrdb_etcd`
-  respectively — all on by default). A build with the tag off has no such
-  flag or subcommand at all; cobra reports `unknown flag` / `unknown
-  command` rather than silently accepting a setting the binary can never
-  act on. Anyone building a custom `qrdbd` or `qrdb` with one of these
-  tags off and scripting against the now-removed flag needs to drop it
-  from the script, not from the daemon's behavior — the flag never did
-  anything on that build anyway.
+- **A binary built with `WITH_QRDB_MYSQL=0`, `WITH_QRDB_PGSQL=0`,
+  `WITH_QRDB_SQL=0` or `WITH_QRDB_ETCD=0` no longer registers that
+  protocol's (or engine's) CLI surface at all** — cobra reports `unknown
+  flag` / `unknown command` rather than silently accepting a setting the
+  binary can never act on. Per tag:
+  - `qrdb_mysql` off: `qrdbd start --enable-mysql`/`--mysql-port`; `qrdb
+    database update-protocol`'s `--mysql` flag (the subcommand itself
+    stays if `qrdb_sql` is still on — see `qrdb_sql` below).
+  - `qrdb_pgsql` off: `qrdbd start --enable-pgsql`/`--pgsql-port`; `qrdb
+    database update-protocol`'s `--postgresql` flag.
+  - `qrdb_sql` off: `qrdbd start --sql-database`; `qrdb sql`; `qrdb
+    database update-protocol` and `update-sql` (whole subcommands); `qrdb
+    database create`'s `--sql-concurrency` flag. (Also forces
+    `qrdb_mysql`/`qrdb_pgsql` off — see Added, below.)
+  - `qrdb_etcd` off: `qrdb database update-etcd`; `database create`'s
+    `--etcd`, `--etcd-listen-addr`, `--etcd-advertise-urls` flags.
+
+  Scripts that pass these flags unconditionally to a reduced build must
+  branch on the build's declared capabilities first; anyone building a
+  custom `qrdbd`/`qrdb` with one of these tags off and scripting against
+  the now-removed flag needs to drop it from the script, not from the
+  daemon's behavior — the flag never did anything on that build anyway.
 - **`WITH_QRDB_SQL=0` alone now removes MySQL and PostgreSQL too.** The
   Makefile forces `WITH_QRDB_MYSQL` and `WITH_QRDB_PGSQL` to `0` whenever
   `WITH_QRDB_SQL=0` is given, even if either was left at its own default of
@@ -161,18 +209,6 @@ are not reconstructed here — their history is in the git log.
   naming all three flags, silently, with no build-time signal that the one
   flag given had no effect. Naming all three explicitly still works
   identically; only the one-flag case changes.
-
-### Changed — BREAKING
-
-- **A binary built with `WITH_QRDB_MYSQL=0`, `WITH_QRDB_PGSQL=0` or
-  `WITH_QRDB_ETCD=0` no longer registers that protocol's CLI surface at
-  all.** `qrdbd start --enable-mysql`/`--mysql-port`,
-  `--enable-pgsql`/`--pgsql-port`; `qrdb sql`; `qrdb database
-  update-protocol`'s `--mysql`/`--postgresql`; and `qrdb database
-  update-etcd` plus `create`'s `--etcd*` flags do not exist (not merely
-  refuse) when the corresponding tag is off. Scripts that pass these flags
-  unconditionally to a reduced build must branch on the build's declared
-  capabilities first.
 
 ## [0.36.0-alpha] - 2026-10-03
 
