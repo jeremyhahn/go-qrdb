@@ -49,7 +49,8 @@ are not reconstructed here — their history is in the git log.
   revisions cannot have produced are never a target; every scheduled proposal carries the
   database's drop fence for the incarnation the policy was set for, and dropping a database
   clears its record. On every transport: REST
-  `PATCH /v1/databases/{name}/compaction`, gRPC and the Unix socket `DatabaseUpdateCompaction`,
+  `PATCH /v1/databases/{name}/compaction`, gRPC and the Unix socket `DatabaseUpdateCompaction`
+  (the policy is `DatabaseInfoResponse.compaction`, protobuf field 17),
   QUIC `db.UpdateCompaction`, MCP `qrdb_database_update_compaction`, and the embedded
   transport; the Go SDK `DatabaseClient.UpdateDatabaseCompaction` and `DatabaseInfo.Compaction`;
   the CLI `qrdb database update-compaction --mode --retain-revisions --retain-period`; the
