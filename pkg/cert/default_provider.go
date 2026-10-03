@@ -558,7 +558,7 @@ func (p *DefaultCertProvider) ExportPKCS12(ctx context.Context, certPEM, keyPEM 
 	// happened to resolve most recently across the whole provider, not
 	// necessarily certPEM's own tenant (go-qrdb#560 review, non-blocking,
 	// "the same way" as getCAMaterial's own fix).
-	tenantID := tenant.SystemTenantID
+	tenantID := tenantid.System
 	if len(parsedCert.Subject.OrganizationalUnit) > 0 && parsedCert.Subject.OrganizationalUnit[0] != "" {
 		tenantID = parsedCert.Subject.OrganizationalUnit[0]
 	}

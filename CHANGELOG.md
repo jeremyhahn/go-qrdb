@@ -447,30 +447,72 @@ The CA key provider seam and replicated cluster CA. This release contains BREAKI
   certificate (or the single injected provider's), the seam the dynamic
   client-auth trust pool reads from.
 - `pkg/clienttrust`: the ONE shared implementation of the dynamic
-  client-auth trust pool. `Pool.Wire` installs `tls.Config.GetConfigForClient`
-  on a composer's own `*tls.Config`, verifying a presented client certificate
-  against Key A (the config's own `ClientCAs`, read fresh on every
-  connection) plus every tenant's Key B CA certificate
-  (`Pool.SetKeyBProvider`, installed once the `CertProvider` exists
-  post-unseal). A Key B CA created, or rotated to an HSM-backed one, after
-  the listener started is picked up on the next connection, with no restart.
-  `cmd/qrdbd`'s `TLSBundle.wireClientTrustPool`/`SetKeyBProvider` and
-  `sdk/go/node`'s `wireClientAndServer` both wire this package rather than
-  keeping independent copies of the logic; the `qrdb_embedded` composer opens
-  no network TLS listener, so there is nothing to wire it onto there. The
-  peer/Raft/enrollment transport is unaffected: it already built its own
-  trust pool directly from Key A's certificate PEM, never from a
-  client-facing listener's config, so a Key B leaf continues to be refused
-  there (now proven directly, `pkg/clustertls/peer_trust_domain_test.go`).
-- `auth.IssuerTenantBinding`: a verified client certificate's issuing CA must
+  client-auth trust pool AND the issuer-tenant binding (`IsClusterCA`,
+  `VerifyIssuer`, implementing the new `auth.IssuerVerifier` interface) --
+  deliberately the SAME object, so Key B is never trusted at the TLS layer
+  without the binding also being enforceable at the authentication layer.
+  `Pool.Wire` installs `tls.Config.GetConfigForClient` on a composer's own
+  `*tls.Config`, verifying a presented client certificate against Key A
+  (the config's own `ClientCAs`, read fresh on every connection) plus every
+  tenant's Key B CA certificate (`Pool.SetKeyBProvider`, installed once the
+  `CertProvider` exists post-unseal). `Pool.SetClusterCA` is resolved fresh
+  and unconditionally on every check too, for the cluster-CA EXEMPTION
+  (both at the TLS layer -- adding the cluster CA to the widened pool --
+  and the issuer-tenant binding) -- never configuring it (no cluster-CA
+  concept at all) still trusts Key B via the per-tenant binding alone;
+  an installed resolver that starts FAILING (a reseal, a transient store
+  failure) withdraws Key B trust entirely, for that call only. The widened
+  pool is cached for 2 seconds (`SetKeyBProvider`/`SetClusterCA` invalidate
+  it immediately), mitigating the per-handshake cost of scanning and
+  parsing every tenant's CA certificate (measured at ~20ms at 1,000
+  tenants uncached, ~20µs cached). A Key B CA created, or rotated to an
+  HSM-backed one, after the listener started is picked up within that
+  window, with no restart.
+  - `clienttrust.ReassertListenerTLS` is the ONE shared helper every
+    listener-specific TLS override (REST/gRPC/Unix/MCP's TLS 1.3
+    `MinVersion` floor, QUIC's exclusive ALPN protocol pin) composes with,
+    rather than each hand-rolling the same clone-and-rewrap: a bare
+    `Clone()` of a config carrying a dynamic `GetConfigForClient` hook
+    copies the hook's closure, not its effect, silently dropping the
+    override on any connection that takes the hook's widened-pool path.
+  - `cmd/qrdbd`'s `TLSBundle.wireClientTrustPool`/`SetKeyBProvider`/
+    `SetClusterCA`/`TrustPool` and `sdk/go/node`'s `wireClientAndServer`
+    (which now builds ONE pool and wires it to both the TLS layer and the
+    auth middleware) both wire this package rather than keeping independent
+    copies of the logic; the `qrdb_embedded` composer opens no network TLS
+    listener, so there is nothing to wire it onto there. The
+    peer/Raft/enrollment transport is unaffected: it already built its own
+    trust pool directly from Key A's certificate PEM, never from a
+    client-facing listener's config, so a Key B leaf continues to be refused
+    there (now proven directly, `pkg/clustertls/peer_trust_domain_test.go`).
+- `auth.IssuerVerifier`: a verified client certificate's issuing CA must
   be the cluster CA (Key A, any tenant) or the Key B CA registered for the
   tenant the certificate's own Subject names -- never a foreign tenant's Key
-  B CA. Checked in `MTLSAuthenticator.Authenticate` against the verified
-  chain; `cert.DefaultCertProvider.IsTenantIssuer` is the seam it reads Key
-  B's registered CA from. `pkg/auth/wiring.BuildAuthMiddleware` wires it
-  automatically from a new `ClusterCA` config field, giving `cmd/qrdbd` and
-  `sdk/go/node` parity in one place. A mismatch is
-  `*auth.IssuerTenantMismatchError`.
+  B CA. Checked against EVERY verified chain `MTLSAuthenticator.Authenticate`
+  is handed, succeeding if any one satisfies it, and separately in
+  `AuthMiddleware.authenticateOnBehalf` (which never runs the authenticator
+  chain, so does not inherit the first check) against the on-behalf
+  forwarding path's peer certificate, so a Key B-signed node-SAN leaf cannot
+  forward a request as the cluster. `cert.DefaultCertProvider.IsTenantIssuer`
+  is the seam it reads Key B's registered CA from, LOAD-ONLY -- a probe for
+  a nonexistent tenant answers false rather than minting a CA to answer
+  itself. `pkg/auth/wiring.BuildAuthMiddleware` wires the SAME verifier into
+  both consumers from one `IssuerVerifier` config field, giving `cmd/qrdbd`
+  and `sdk/go/node` parity in one place. A mismatch is
+  `*auth.IssuerTenantMismatchError`. `Pool.IsStaticallyTrusted` adds a third
+  exemption alongside the cluster CA: a certificate already trusted via the
+  listener's OWN static `ClientCAs` (an operator-supplied additional client
+  CA, or a deployment establishing mTLS identity through its own CA
+  independent of Key A/Key B) is pre-existing trust the binding does not
+  retroactively restrict -- Key B's dynamic widening is additive to that
+  trust, and the binding polices the addition, not what was already there.
+- `cert.DefaultCertProvider.Initialize`/`Unseal`/`getCAMaterial`'s
+  auto-init-on-first-use of a tenant's built-in CA key is now serialized per
+  tenant: two callers racing the first-ever certificate issuance for a
+  brand-new tenant previously could both observe "no CA exists yet" and both
+  generate and persist one, producing a leaf signed by whichever key lost
+  the race to be cached in memory while a DIFFERENT key was the one actually
+  persisted last.
 
 ### Changed
 
@@ -505,10 +547,6 @@ The CA key provider seam and replicated cluster CA. This release contains BREAKI
   (Key B) dynamically, loaded from the replicated store after unseal, in
   addition to the cluster CA; the peer/Raft/enrollment transport continues
   to trust the cluster CA only.
-
-- The cluster CA key (Key A) is barrier-encrypted and persisted through
-  `kvstore.KVStore` (`__sys:cluster_ca/`) instead of `{dataDir}/ca-key.pem`.
-  No node ever writes a CA private key to a local file again.
 - `ceremony-sign-csr` is `PreOperationalOnly`, matching `officer-register`:
   minting a new CSR-signed certificate requires the barrier to be unsealed
   once the init ceremony is operational. The ceremony CA now goes through
@@ -535,6 +573,88 @@ The CA key provider seam and replicated cluster CA. This release contains BREAKI
   unchanged in shape; they now carry a minted single-use token instead of a
   static shared secret.
 
+### Security
+
+- **BREAKING: per-tenant Key B CAs replace the single shared login CA.**
+  Every tenant now has its OWN registered Key B CA
+  (`__sys:cert_ca/{tenantID}/`), and the issuer-tenant binding
+  (`auth.IssuerVerifier`, above) enforces that a tenant's login certificates
+  are anchored at ITS OWN CA, not any other tenant's. **An existing tenant
+  login certificate anchored at the OLD single shared CA stops
+  authenticating once the binding is wired**, because that CA is not the
+  new per-tenant one the binding checks against. There is no migration
+  code: old systems reissue affected tenants' login certificates against
+  their own CA. This is a pre-publication breaking change with zero
+  external consumers to migrate at the time it landed.
+- **A verified on-behalf cluster-forwarding assertion now requires the
+  cluster CA as the peer certificate's issuer, not merely a node-shaped
+  SPIFFE SAN.** `forward.ClusterPeer` checks only the SAN's SHAPE; with
+  every tenant's Key B CA trusted on the same client-facing listener, a Key
+  B leaf carrying a forged node SPIFFE SAN could otherwise present an
+  honored on-behalf assertion AS THE CLUSTER. `AuthMiddleware.
+  authenticateOnBehalf` now also requires `IssuerVerifier.IsClusterCA`
+  against the verified chain's direct issuer, failing closed when unknown.
+- **The dynamic Key B trust pool and the issuer-tenant binding could
+  disagree about whether Key B was trusted at all.** Each composer wired
+  `SetKeyBProvider` without a corresponding cluster-CA resolver reaching the
+  binding (or vice versa), so Key B could be trusted at the TLS layer with
+  the binding unenforced at the authentication layer, or built as two
+  independently-constructed pools that drifted out of sync with each other.
+  `clienttrust.Pool` is now the ONE object both halves read, resolving the
+  cluster CA fresh and unconditionally on every check (see `pkg/clienttrust`
+  above); a transient resolution failure withdraws Key B trust for that
+  call only, never stickily.
+- **Every per-handshake scan of `__sys:cert_ca/` parsing every tenant's CA
+  was an unauthenticated, pre-auth cost an attacker controlled the rate
+  of**, measured at ~20ms at 1,000 tenants. The widened trust pool is now
+  cached for 2 seconds, invalidated immediately on a CA create/rotation
+  (`SetKeyBProvider`/`SetClusterCA`), cutting the measured cost to ~20µs.
+- **`IsTenantIssuer` and `CACertPEMs` could create certificate authority
+  material as a side effect of being asked about it.** `IsTenantIssuer`
+  called the built-in per-tenant provider's `Certificate` directly, which
+  auto-initializes a brand-new CA key via `cakey.SoftwareProvider.material`
+  on first use -- so an authentication-path probe for a tenant that had
+  never established a CA (including a nonexistent tenant named by a
+  presented leaf) minted one. `IsTenantIssuer` is now load-only: a tenant
+  with no established CA answers `false`, never creating one.
+  `Initialize`/`Unseal`/`getCAMaterial`'s own auto-init path is now
+  serialized per tenant for the same reason: two callers racing the
+  first-ever issuance for a brand-new tenant could both observe "nothing
+  exists" and both generate and persist a CA key, with whichever write
+  landed last silently winning over the other caller's already-cached,
+  now-orphaned in-memory key.
+
+### Fixed
+
+- **The documented Key B authentication parity gap is closed.** A Key
+  B-issued login certificate now authenticates on the client-facing
+  listeners of both the qrdbd daemon composer and an `sdk/go/node`-embedded
+  one that supplies its own TLS config via `server.WithTLS`. Proven directly
+  for all five remote transports in
+  `sdk/go/conformance/key_b_login_test.go`.
+- **A latent QUIC ALPN-negotiation bug the dynamic trust pool would have
+  triggered in production is fixed before it shipped.** `pkg/api/quic/
+  server.go` clones the shared TLS config and pins its own ALPN protocol,
+  but `Clone()` copies a `GetConfigForClient` closure's reference, not its
+  effect: the closure still cloned from the PRE-pin config, so any QUIC
+  connection that took the dynamic (Key B) path would have been served the
+  wrong ALPN list and failed the handshake. The listener now wraps the
+  dynamic hook and re-pins its ALPN list on whatever config the hook returns.
+- **The same closure-replacement hazard existed on REST, gRPC, Unix and
+  MCP's TLS 1.3 `MinVersion` floor**, not only QUIC's ALPN pin: each
+  `WithTLS` cloned and mutated the supplied config directly, so a
+  connection taking the dynamic trust-pool path would have been served
+  whatever `MinVersion` the pre-override config carried -- measured as a
+  TLS 1.2 downgrade. All four now compose with the same
+  `clienttrust.ReassertListenerTLS` helper QUIC's ALPN pin uses.
+- **`getCAMaterial` and `ExportPKCS12` could mix up two tenants' CA
+  certificates under concurrent calls.** Both read back the single
+  process-wide `p.caCertPEM`/`p.caCert` cache after resolving a specific
+  tenant's provider, so a second tenant's concurrent call landing in
+  between could hand the first tenant's caller the SECOND tenant's CA
+  certificate. Both now resolve and return the specific tenant's own
+  certificate directly from its `cakey.Provider`, never through the shared
+  cache.
 
 ## [0.39.0-alpha] - 2026-10-04
 
@@ -2787,23 +2907,6 @@ Fix release. Highlights:
   `SystemShardServingError`. The desktop bindings' `LeaderElectionTimeoutError` is
   removed; a shard that cannot serve reports `ShardStartError` wrapping the
   wait's error.
-
-### Fixed
-
-- **The documented Key B authentication parity gap is closed.** A Key
-  B-issued login certificate now authenticates on the client-facing
-  listeners of both the qrdbd daemon composer and an `sdk/go/node`-embedded
-  one that supplies its own TLS config via `server.WithTLS`. Proven directly
-  for all five remote transports in
-  `sdk/go/conformance/key_b_login_test.go`.
-- **A latent QUIC ALPN-negotiation bug the dynamic trust pool would have
-  triggered in production is fixed before it shipped.** `pkg/api/quic/
-  server.go` clones the shared TLS config and pins its own ALPN protocol,
-  but `Clone()` copies a `GetConfigForClient` closure's reference, not its
-  effect: the closure still cloned from the PRE-pin config, so any QUIC
-  connection that took the dynamic (Key B) path would have been served the
-  wrong ALPN list and failed the handshake. The listener now wraps the
-  dynamic hook and re-pins its ALPN list on whatever config the hook returns.
 
 ## [0.30.0-alpha] - 2026-10-02
 

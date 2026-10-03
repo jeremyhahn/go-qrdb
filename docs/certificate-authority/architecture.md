@@ -788,7 +788,7 @@ copies of the same logic:
 
 - **Client-facing listeners (REST, gRPC, Unix, QUIC, MCP)** verify a
   presented client certificate against Key A **and** every tenant's Key B CA
-  certificate, read fresh on every connection via
+  certificate, read fresh (subject to a short cache, below) via
   `DefaultCertProvider.CACertPEMs`. `clienttrust.Pool.Wire` installs
   `tls.Config.GetConfigForClient` on the composer's own `*tls.Config`, reading
   its `ClientCAs` field fresh on every connection (not captured at Wire time)
@@ -801,15 +801,58 @@ copies of the same logic:
   `SetKeyBProvider` call, and on every call where `CACertPEMs` fails — the
   ordinary outcome while sealed in Raft mode, where the replicated store
   cannot be opened at all.
-  - **qrdbd**: `TLSBundle.wireClientTrustPool`/`SetKeyBProvider`
-    (`cmd/qrdbd/tls.go`) delegate to `clienttrust.Pool` directly.
-  - **sdk/go/node**: `wireClientAndServer` calls `clienttrust.New().Wire` on
-    whatever `*tls.Config` the embedder supplied via `server.WithTLS`
-    (resolved with `server.ResolveTLSConfig`), and `SetKeyBProvider` once
-    `svcNode.CertProv` exists. An embedder that instead relies on
-    `WithCeremonyCA` auto-provisioning (no explicit `WithTLS`) has no config
-    to wire this onto; that composition's listeners keep whatever posture
-    `ceremony.ServerTLSConfig` and the auth middleware already give them.
+  - **The pool and the issuer-tenant binding are the SAME object.**
+    `clienttrust.Pool` is both the TLS-layer widening decision and the
+    authentication-layer binding check (`IsClusterCA`, `VerifyIssuer` —
+    see "Issuer-tenant binding"). `SetClusterCA` installs the resolver BOTH
+    halves check, resolved fresh, FIRST, and unconditionally on every call
+    — but its absence is not one thing: a deployment with no cluster-CA
+    concept at all (`SetClusterCA` never called, or called with `nil`)
+    still trusts Key B once `SetKeyBProvider` is called, gated purely by
+    the per-tenant check (`VerifyIssuer`'s `IsTenantIssuer` branch, which
+    needs no cluster CA to operate — only the cluster-CA EXEMPTION does);
+    a resolver that WAS installed and is CURRENTLY failing (a reseal, a
+    transient store failure) withdraws Key B trust entirely, for that call
+    only, never stickily. The composer's obligation — unconditionally
+    wiring this SAME pool as the `auth.IssuerVerifier` at the
+    authentication layer, regardless of whether a cluster CA happens to
+    exist — is what actually closes the gap a security review found: Key B
+    trusted at the TLS layer with the binding unenforced at the
+    authentication layer. `Pool` cannot verify that obligation for itself;
+    see `SetKeyBProvider`'s own doc comment.
+  - **The widened pool is cached for 2 seconds** (`poolCacheTTL`), the
+    current mitigation for the per-handshake cost of scanning and parsing
+    every tenant's CA certificate (measured at ~20ms at 1,000 tenants
+    without the cache, ~20µs with it). `SetKeyBProvider` and `SetClusterCA`
+    both invalidate the cache immediately, so a provider or cluster-CA swap
+    is never subject to this staleness window; a newly created or rotated
+    Key B CA otherwise is, for up to the TTL.
+  - **Every listener-specific TLS override composes with
+    `clienttrust.ReassertListenerTLS`**, not a bare clone-and-mutate:
+    `GetConfigForClient`'s returned config REPLACES the connection's
+    effective `tls.Config` wholesale, so REST/gRPC/Unix/MCP's TLS 1.3
+    `MinVersion` floor and QUIC's exclusive ALPN protocol pin would
+    otherwise be silently lost on any connection that takes the dynamic
+    (widened) path — proven as a measured TLS 1.2 downgrade and an ALPN
+    mismatch before this helper existed. `ReassertListenerTLS` clones the
+    base config, applies the override, and — when the base already carries
+    a dynamic hook — wraps it so the SAME override is reasserted on
+    whatever config the hook returns.
+  - **qrdbd**: `TLSBundle.wireClientTrustPool`/`SetKeyBProvider`/
+    `SetClusterCA` (`cmd/qrdbd/tls.go`) delegate to `clienttrust.Pool`
+    directly; `TLSBundle.TrustPool()` exposes the same instance as the
+    `auth.IssuerVerifier` `bootstrapAuthEnforcement` wires into the auth
+    middleware.
+  - **sdk/go/node**: `wireClientAndServer` builds ONE `clienttrust.Pool`,
+    calls `SetClusterCA`/`SetKeyBProvider` on it, passes it as the
+    `auth.IssuerVerifier` to `wiring.BuildAuthMiddleware`, and later calls
+    `Wire` on whatever `*tls.Config` the embedder supplied via
+    `server.WithTLS` (resolved with `server.ResolveTLSConfig`) — the SAME
+    pool object, not two independently-constructed ones. An embedder that
+    instead relies on `WithCeremonyCA` auto-provisioning (no explicit
+    `WithTLS`) has no config to wire this onto; that composition's
+    listeners keep whatever posture `ceremony.ServerTLSConfig` and the auth
+    middleware already give them.
   - **`qrdb_embedded`** (the Wails binding, `cmd/qrdb/bindings_server.go`)
     opens no network TLS listener at all — only the in-process embedded
     transport — so there is nothing for this seam to widen there.
@@ -819,6 +862,17 @@ copies of the same logic:
     issued through a node's own Key B `CertProvider`, with NO client CA
     seeded into the listener ahead of time, authenticates and completes an
     authorized call.
+- **The on-behalf cluster-forwarding path is gated the same way.** A
+  follower's forwarded write is authenticated by `forward.ClusterPeer`,
+  which checks only that the peer certificate carries a node-scoped SPIFFE
+  SAN — a SHAPE check, not an issuer check. With every tenant's Key B CA now
+  trusted on the same listener, a Key B leaf carrying a forged node SPIFFE
+  SAN would otherwise pass that check and present an honored assertion AS
+  THE CLUSTER. `AuthMiddleware.authenticateOnBehalf` additionally requires
+  the verified chain's direct issuer to satisfy `IssuerVerifier.IsClusterCA`
+  — the SAME `clienttrust.Pool` the listener's TLS layer and the mTLS
+  authenticator use — before honoring the assertion, failing closed when no
+  verifier is wired.
 - **The peer/Raft/enrollment transport trusts Key A only, never Key B.** It
   never shares the client-facing listeners' `*tls.Config`: `buildHostConfig`
   constructs `quicraftconfig.MTLSConfig` directly from `bundle.CACertPEM`
@@ -839,38 +893,118 @@ Without an answer, tenant A's Key B CA could mint a leaf naming tenant B in
 its OU, and it would authenticate as B — the dynamic pool verifies the
 signature, not which tenant the signing CA was ever issued for.
 
-`auth.IssuerTenantBinding`, checked in `MTLSAuthenticator.Authenticate` where
-the verified chain (`tls.ConnectionState.VerifiedChains[0]`) is available,
-closes this: the chain's trust anchor (the CA that actually verified the
-leaf) must be either the cluster CA (Key A — which legitimately signs holder
-and node certificates for any tenant, checked first and exempted) or the Key
-B CA **registered for the tenant the leaf's own Subject names**
-(`cert.DefaultCertProvider.IsTenantIssuer`, a byte-identical DER comparison,
-not a Subject-field comparison). A mismatch is
-`*auth.IssuerTenantMismatchError`, matching `ErrInvalidCertificate` like
-`CertificateTenantError`.
+`auth.IssuerVerifier` — a two-method interface (`IsClusterCA`,
+`VerifyIssuer`) implemented by `clienttrust.Pool`, the SAME object that
+widens the listener's TLS `ClientCAs` — closes this. It is checked in two
+places, because the chain's trust anchor is only reliably available in one
+of them from the TLS handshake state and has to be threaded separately into
+the other:
+
+- `MTLSAuthenticator.Authenticate` calls `verifyIssuer`, which tries EVERY
+  verified chain `tls.ConnectionState.VerifiedChains` reports (a TLS stack
+  can present more than one when multiple roots in the pool could validate
+  the same leaf) and succeeds if ANY chain's direct issuer (`chain[1]`, the
+  certificate that actually signed the leaf) is ONE OF THREE things:
+  1. the cluster CA (Key A — which legitimately signs holder and node
+     certificates for any tenant, checked first and exempted via
+     `IsClusterCA`);
+  2. already present in the listener's OWN static `ClientCAs` pool —
+     whatever the composer put there directly via its own `WithTLS`, BEFORE
+     Key B ever widened it (`Pool.IsStaticallyTrusted`). This is
+     pre-existing trust the composer already explicitly granted (an
+     operator-supplied additional client CA file, or a deployment/test
+     harness establishing real mTLS identity through its own CA,
+     independent of Key A/Key B entirely); Key B's dynamic widening is
+     additive to it, and the binding exists to police THAT addition, not
+     to retroactively impose tenant-matching on a CA trusted before Key B
+     was ever in the picture. Scoped tightly: it reflects only the base
+     pool observed on the connection's own handshake, and never lets a
+     genuinely cross-tenant Key B CA escape its own per-tenant check just
+     because some unrelated CA also happens to be in the static base;
+  3. the Key B CA **registered for the tenant the leaf's own Subject
+     names** (`VerifyIssuer`, which reads
+     `cert.DefaultCertProvider.IsTenantIssuer` — a byte-identical DER
+     comparison, not a Subject-field comparison, and LOAD-ONLY: a tenant
+     with no established CA answers false, never auto-creating one just to
+     answer the probe).
+
+  A mismatch is `*auth.IssuerTenantMismatchError`, matching
+  `ErrInvalidCertificate` like `CertificateTenantError`.
+- `AuthMiddleware.authenticateOnBehalf` calls `IsClusterCA` directly against
+  every verified chain's direct issuer — see "the on-behalf cluster-forwarding
+  path is gated the same way" above — because that path never runs the
+  authenticator chain at all, and so does not inherit the check above.
 
 `pkg/auth/wiring.BuildAuthMiddleware` — the single constructor `cmd/qrdbd`
-and `sdk/go/node` both call — builds the binding automatically from a new
-`ClusterCA` config field (a `ceremony.CeremonyCA`, the same cluster CA each
-composer already threads through for TLS auto-provisioning) and
-`CertProvider` (already present for revocation enforcement), which is what
-gives this parity across both composers in one place. A nil `ClusterCA`, or
-a `CertProvider` that does not implement the capability, leaves the check
-unenforced — the posture before it existed — so this is purely additive and
-never a regression for a composer that has not wired a cluster CA.
+and `sdk/go/node` both call — wires the SAME `IssuerVerifier` into both
+consumers from one `IssuerVerifier` config field: a composer passes its
+`clienttrust.Pool` (already populated via `SetClusterCA`/`SetKeyBProvider`
+for the TLS layer), and `BuildAuthMiddleware` installs it as
+`auth.WithIssuerVerifier` on the mTLS authenticator AND as
+`middleware.WithIssuerVerifier` on the on-behalf path. **This is NOT purely
+additive**: wiring the pool at all makes `VerifyIssuer` fail closed for any
+certificate whose issuer is neither the cluster CA nor a Key B CA the
+provider can confirm — including, deliberately, a certificate signed by an
+operator-supplied additional client CA that is neither — which is why the
+pool must be wired consistently with whatever the listener's TLS layer
+actually trusts (see `SetClusterCA`/`SetKeyBProvider` above). A `nil`
+`IssuerVerifier` (a composer with no cluster CA resolved at all) leaves the
+check unenforced on both paths, matching the posture before it existed —
+but that is the ONLY case left unenforced, not every case lacking a Key B
+provider.
 
 ## Trust boundaries
 
-- **The CA private key is barrier-encrypted at rest** and lives in protected
-  memory while unsealed. Sealing destroys it; every mutating operation then
-  returns `BarrierSealedError`.
-- **`getCAMaterial()` returns a copy** to prevent aliasing the cached key.
+- **Each tenant's CA private key is barrier-encrypted at rest** and lives in
+  protected memory while unsealed. Sealing destroys the in-memory key (not
+  the cached certificate — see `CACertPEM()` below); every mutating
+  operation then returns `BarrierSealedError`.
+- **`getCAMaterial()` resolves the SPECIFIC tenant's CA directly** through
+  the `cakey.Provider` it just resolved (`prov.Certificate`), never through
+  the single process-wide "most recently resolved" cache `CACertPEM()`
+  reads. Two different tenants' calls can interleave — `getCAMaterial` is
+  called from `GenerateClientCert` and `ExportPKCS12`, neither of which
+  holds any lock across the call — and reading that shared cache back after
+  resolving a DIFFERENT tenant's provider would hand that tenant the wrong
+  CA certificate whenever another tenant's resolution landed in between.
+  `ExportPKCS12` resolves the exporting leaf's OWN tenant (from its Subject
+  OU) the same way, for the same reason, rather than reading the shared
+  cache.
+- **The built-in per-tenant CA key is never auto-created by a read.**
+  `IsTenantIssuer` — reached on the authentication path for whatever tenant
+  a presented leaf CLAIMS to be, including tenants that do not exist — is
+  LOAD-ONLY: it calls the built-in `cakey.SoftwareProvider`'s `Unseal`
+  (load-only) before `Certificate`, so a tenant with no established CA
+  answers `false`, never minting one as a side effect of being asked about.
+  `Initialize`/`Unseal`/`getCAMaterial`'s own auto-init-on-first-use path
+  are serialized per tenant (`tenantInitLocked`), so two callers racing the
+  first-ever issuance for a brand-new tenant cannot both generate and
+  persist a competing CA key.
 - **Client private key DER is wiped immediately after PEM encoding.**
 - **`CACertPEM()` needs no barrier check** — the CA certificate is public data
-  and is deliberately still served while sealed.
+  and is deliberately still served while sealed. **`CACertPEMs()` (plural,
+  every tenant) checks the barrier explicitly anyway** and refuses with
+  `BarrierSealedError` while sealed: outside Raft mode the plaintext
+  records are reachable even while sealed, and a runtime reseal must make
+  the dynamic client-auth trust pool drop Key B immediately, not merely
+  whenever the underlying store happens to become unreadable.
 - Issuance, revocation and listing are separately permissioned
   (`certs:generate`, `certs:revoke`, `certs:list`).
+- **An injected `cakey.Provider` (`WithKeyProvider`/`WithCertKeyProvider`)
+  replaces the built-in per-tenant default ENTIRELY: one CA serves every
+  tenant.** There is no per-tenant isolation on that path — `CACertPEMs`
+  returns the single injected provider's one certificate, and
+  `IsTenantIssuer` is unreachable in any tenant-distinguishing sense,
+  because there is only ever one CA to compare against regardless of which
+  tenant is asked about. **Switching an already-running deployment from the
+  built-in default to an injected provider (or back) drops every per-tenant
+  CA it is switching away from**: nothing migrates existing tenants' Key B
+  CAs onto the newly injected provider, and the built-in per-tenant
+  material under `__sys:cert_ca/{tenantID}/` is not deleted but is also no
+  longer consulted — any login certificate still anchored at a now-orphaned
+  per-tenant CA stops authenticating. This is a deliberate, operator-chosen
+  transition, not an upgrade path; see the BREAKING entry in the changelog
+  for the inverse direction (adopting per-tenant CAs for the first time).
 
 ## What this feature deliberately does not do
 
