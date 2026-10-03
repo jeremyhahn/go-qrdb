@@ -11,6 +11,18 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.35.0-alpha] - 2026-10-03
+
+Cluster-wide sealing. This release contains BREAKING changes; see the entries below. Highlights:
+
+- **A replicated seal record seals the cluster.** Each node keeps its own seal key and keys are never transported. A seal writes the cluster record before any key is wiped, and every node enforces it. A node cut off from the record stops serving but keeps its key.
+- **A system seal seals the whole node:** every database barrier, every tenant barrier and the system barrier, through one node-seal path. On unseal, system-managed tenants and databases that the node seal sealed come back. Self-managed tenants, passphrase databases and Shamir databases stay sealed until their owner or quorum unseals them, and an owner's explicit seal is never undone.
+- **Share-holder quorum seals go through the cluster seal,** writing the record first, for node, tenant and database barriers.
+- **A fresh cluster serves immediately,** with no refusal window while the feature activates.
+- **Sealing ends the affected watches and SQL sessions.** MySQL `COM_RESET_CONNECTION` no longer leaks a session.
+- **BREAKING:** `sql.query_timeout` now defaults to 30s.
+- **Known issue:** MySQL server-side cursors (`qrdb_mysql` builds) have an upstream data race, and an idle cursor isn't bounded by the timeout. See docs/sql.
+
 ### Security
 
 - **BREAKING: sealing the node barrier seals the whole node.** A seal of the
