@@ -135,14 +135,24 @@ the last initial holder claims.
     principals are kept per key, persisted with the PIN backend (the software
     backend's storage) and, for a tenant SO PIN, in the authenticator's store,
     so the exemption survives a restart. What is persisted is a
-    domain-separated SHA-256 digest of the key and the principal, never the
-    principal id, so the record does not say who has held the SO PIN. The
-    store is never called under the lockout's lock: the set is loaded before
-    the check and saved after it, each call bounded to 5 s
-    (`auth.SOPINKnownGoodTimeout`), so a slow store -- a degraded Raft shard --
-    delays only the check that asked, never another key's. A load that fails
-    is not retried for 30 s (`auth.SOPINKnownGoodRetry`); until then the
-    key's principals are simply held to the cap. A principal authenticated by
+    domain-separated SHA-256 digest of the key and the principal, so the
+    record does not store principal ids. The digest is unkeyed and so not a
+    secret: principal ids are guessable, and whoever can read the record can
+    confirm a guessed one offline. No lock is held across a store call: the
+    set is loaded before the check and saved after it, each call bounded to
+    5 s (`auth.SOPINKnownGoodTimeout`), so a slow store -- a degraded Raft
+    shard -- delays only the check that asked, never another key's. A save
+    reads the stored set and writes the union with its own, so nodes sharing
+    the tenant record do not drop each other's entries; a save whose read
+    fails writes nothing. A load that fails is not retried for 30 s
+    (`auth.SOPINKnownGoodRetry`); until then the key's principals are simply
+    held to the cap. Each key -- the node, each tenant -- has its own lock,
+    held across that key's PIN verification so a failure is counted before
+    the key's next check; one tenant's verification never waits on
+    another's. An anonymous success resets only the anonymous counter: it
+    neither clears the aggregate cap nor makes anyone known-good, so an
+    officer that has presented the PIN only anonymously is not exempt from
+    the cap until it succeeds once authenticated. A principal authenticated by
     a holder certificate is `holder:<tenant>/<subject>`, never the user of the
     same name (`id:<tenant>/<subject>`): the two share neither a counter nor
     known-good status. A known-good principal still has its

@@ -19,6 +19,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -438,5 +439,115 @@ func TestSOPINLockout_StoreHoldsDigestsNotPrincipals(t *testing.T) {
 		if got != knownGoodDigest(key, so) || len(got) != 64 || strings.Contains(got, "officer") {
 			t.Fatalf("%s stored %q, want the 64-hex digest of the principal", key, got)
 		}
+	}
+}
+
+// TestSOPINLockout_SlowVerifyHoldsUpOnlyItsOwnKey: a check whose
+// verification is slow -- the SO PIN's KDF -- holds its own key's lock, not
+// the lockout's: another key's check completes meanwhile, and the slow key's
+// next check waits for the first, so its failure is counted before the next
+// verification starts.
+func TestSOPINLockout_SlowVerifyHoldsUpOnlyItsOwnKey(t *testing.T) {
+	l := NewSOPINLockout(nil)
+	entered, release := make(chan struct{}, 2), make(chan struct{})
+	slowWrong := func() error {
+		entered <- struct{}{}
+		<-release
+		return errWrong
+	}
+	isWrong := func(err error) bool { return errors.Is(err, errWrong) }
+	first := make(chan error, 1)
+	go func() { first <- l.Check(context.Background(), "acme", "id:acme/so", slowWrong, isWrong) }()
+	<-entered
+
+	other := make(chan error, 1)
+	go func() {
+		other <- l.Check(context.Background(), "globex", "id:globex/so", func() error { return nil }, isWrong)
+	}()
+	select {
+	case err := <-other:
+		if err != nil {
+			t.Fatalf("globex check = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("another key's check waited on acme's slow verification")
+	}
+
+	// acme's second check may not verify until the first has counted.
+	second := make(chan int, 1)
+	go func() {
+		_ = l.Check(context.Background(), "acme", "id:acme/so", func() error {
+			failures, _ := l.statusLockedForTest("acme", "id:acme/so")
+			second <- failures
+			return nil
+		}, isWrong)
+	}()
+	close(release)
+	if err := <-first; !errors.Is(err, errWrong) {
+		t.Fatalf("first acme check = %v", err)
+	}
+	if failures := <-second; failures != 1 {
+		t.Fatalf("acme's second verification saw %d counted failures, want 1", failures)
+	}
+}
+
+// statusLockedForTest reads principal's failures for key from inside a verify
+// callback, where the key's lock is already held by the calling check.
+func (l *SOPINLockout) statusLockedForTest(key, principal string) (int, bool) {
+	l.mu.Lock()
+	state, ok := l.keys[key]
+	l.mu.Unlock()
+	if !ok {
+		return 0, false
+	}
+	c, ok := state.principals[principal]
+	if !ok {
+		return 0, true
+	}
+	return c.failures, true
+}
+
+// TestSOPINLockout_SaveMergesOtherNodesEntries: a save folds in what the
+// store holds now -- an entry another node sharing the store wrote after this
+// lockout loaded -- instead of overwriting it with this lockout's own set.
+func TestSOPINLockout_SaveMergesOtherNodesEntries(t *testing.T) {
+	store := &memKnownGood{}
+	l := NewSOPINLockout(nil, WithKnownGoodStore(store))
+	right := func() error { return nil }
+	never := func(error) bool { return false }
+	if err := l.Check(context.Background(), "node", "id:system/alice", right, never); err != nil {
+		t.Fatal(err)
+	}
+	otherNode := knownGoodDigest("node", "id:system/bob")
+	store.sets["node"] = append(store.sets["node"], otherNode)
+
+	if err := l.Check(context.Background(), "node", "id:system/carol", right, never); err != nil {
+		t.Fatal(err)
+	}
+	got := store.sets["node"]
+	for _, want := range []string{knownGoodDigest("node", "id:system/alice"), otherNode, knownGoodDigest("node", "id:system/carol")} {
+		if !slices.Contains(got, want) {
+			t.Fatalf("stored set %v lost %s", got, want)
+		}
+	}
+	if !l.keys["node"].isKnownGood(otherNode) {
+		t.Fatal("the merged entry from another node is not known-good in memory")
+	}
+}
+
+// TestSOPINLockout_AnUnusedKeyLeavesNoState: a key whose only check was an
+// anonymous success records nothing, and once no check holds it its state is
+// gone from the map.
+func TestSOPINLockout_AnUnusedKeyLeavesNoState(t *testing.T) {
+	l := NewSOPINLockout(nil)
+	if err := l.Check(context.Background(), "acme", "", func() error { return nil }, func(error) bool { return false }); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := l.keys["acme"]; ok {
+		t.Fatal("an empty key's state outlived its check")
+	}
+	if failures, until := l.Status("acme", ""); failures != 0 || !until.IsZero() {
+		t.Fatalf("Status of an absent key = %d, %v", failures, until)
 	}
 }

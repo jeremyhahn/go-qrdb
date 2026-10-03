@@ -117,7 +117,11 @@ func (c *countingStore) LoadKnownGood(context.Context, string) ([]string, error)
 func (c *countingStore) SaveKnownGood(context.Context, string, []string) error { return nil }
 
 // TestSOPINLockout_FailingLoadIsNotRetriedEveryCheck: a load that failed is
-// retried only after SOPINKnownGoodRetry, not on every check.
+// retried only after SOPINKnownGoodRetry, not on every check. The first
+// check makes two reads -- its load, and the read its save merges with (the
+// principal became known-good) -- and the save, its read failing, writes
+// nothing; later checks of the same principal change nothing and read
+// nothing until the retry interval has passed.
 func TestSOPINLockout_FailingLoadIsNotRetriedEveryCheck(t *testing.T) {
 	now := time.Unix(1_000_000, 0)
 	store := &countingStore{}
@@ -127,13 +131,13 @@ func TestSOPINLockout_FailingLoadIsNotRetriedEveryCheck(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		_ = l.Check(context.Background(), "node", "id:system/officer", right, never)
 	}
-	if store.loads != 1 {
-		t.Fatalf("loads = %d within the retry interval, want 1", store.loads)
+	if store.loads != 2 {
+		t.Fatalf("loads = %d within the retry interval, want 2 (the load and the save's read)", store.loads)
 	}
 	now = now.Add(SOPINKnownGoodRetry)
 	_ = l.Check(context.Background(), "node", "id:system/officer", right, never)
-	if store.loads != 2 {
-		t.Fatalf("loads = %d after the retry interval, want 2", store.loads)
+	if store.loads != 3 {
+		t.Fatalf("loads = %d after the retry interval, want 3", store.loads)
 	}
 }
 
@@ -181,14 +185,17 @@ func TestSOPINLockout_SlowStoreHoldsUpOnlyItsOwnCheck(t *testing.T) {
 				_ = l.Check(context.Background(), "acme", "id:acme/so", right, never)
 			}()
 			// The acme check's load blocks; for the save case let the load
-			// through and wait for the save to block instead.
+			// and the save's merge read through, and wait for the write to
+			// block instead.
 			if got := <-store.entered; got != "load acme" {
 				t.Fatalf("first store call = %q", got)
 			}
 			if stuck == "save" {
-				store.release <- struct{}{}
-				if got := <-store.entered; got != "save acme" {
-					t.Fatalf("second store call = %q", got)
+				for _, want := range []string{"load acme", "save acme"} {
+					store.release <- struct{}{}
+					if got := <-store.entered; got != want {
+						t.Fatalf("store call = %q, want %q", got, want)
+					}
 				}
 			}
 

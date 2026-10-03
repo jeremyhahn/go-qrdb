@@ -112,14 +112,19 @@ const (
 // the correct SO PIN, so their exemption from the aggregate cap survives a
 // restart. A lockout without one keeps the set in memory only.
 //
-// What is stored is never a principal id: each entry is a domain-separated
-// SHA-256 digest of the key and the principal (knownGoodDigest), so the
-// store reveals neither which identities nor which certificates have ever
-// presented an SO PIN.
+// The store does not hold principal ids: each entry is a domain-separated
+// SHA-256 digest of the key and the principal (knownGoodDigest). The digest
+// is unkeyed, so it is not a secret: principal ids are guessable ("id:" plus
+// a tenant and a user name), and whoever can read the record can confirm a
+// guessed principal offline. It keeps the ids out of the record, not out of
+// reach of someone who already suspects one.
 //
-// The lockout never calls a store while holding its lock, and bounds each
-// call with SOPINKnownGoodTimeout, so a slow store -- a degraded Raft shard
-// -- delays at most the check that asked, never another key's.
+// The lockout never calls a store while holding a lock, and bounds each call
+// with SOPINKnownGoodTimeout, so a slow store -- a degraded Raft shard --
+// delays at most the check that asked, never another key's. A save loads the
+// stored set and writes the union with this lockout's own (see
+// saveKnownGood), so nodes sharing one store do not drop each other's
+// entries.
 type SOPINKnownGoodStore interface {
 	// LoadKnownGood returns key's persisted known-good digests, oldest
 	// first; none is not an error.
@@ -137,7 +142,9 @@ const (
 )
 
 // knownGoodDigest is the stored form of principal's known-good status for
-// key: a SHA-256 digest under a domain separator, never the principal itself.
+// key: an unkeyed SHA-256 digest under a domain separator, so the record does
+// not carry the principal id (see SOPINKnownGoodStore for what it does not
+// protect).
 func knownGoodDigest(key, principal string) string {
 	sum := sha256.Sum256([]byte("qrdb/so-pin-known-good/v1\x00" + key + "\x00" + principal))
 	return hex.EncodeToString(sum[:])
@@ -254,8 +261,16 @@ func (a *soPINAggregate) fail(now time.Time) {
 	a.failures++
 }
 
-// soPINKeyState is one key's counters.
+// soPINKeyState is one key's counters. Its fields are guarded by mu, which a
+// check holds across its verify, so the checks of one key run one at a time
+// while other keys' checks proceed.
 type soPINKeyState struct {
+	mu sync.Mutex
+	// refs counts the calls holding this state (acquire to release); it is
+	// guarded by the lockout's map lock, and a state is removed from the map
+	// only when no call holds it, so one key never has two live states.
+	refs int
+
 	anonymous  soPINCounter
 	principals map[string]*soPINCounter
 	aggregate  soPINAggregate
@@ -267,8 +282,9 @@ type soPINKeyState struct {
 	// tried again; neither is ever waited on.
 	loading  bool
 	nextLoad time.Time
-	// saveMu serializes this key's saves, outside the lockout's lock.
-	saveMu *sync.Mutex
+	// saveMu serializes this key's saves. It is never held with mu across a
+	// store call.
+	saveMu sync.Mutex
 }
 
 // empty reports whether the state holds nothing worth keeping.
@@ -301,11 +317,13 @@ func (k *soPINKeyState) addKnownGood(digest string) bool {
 }
 
 // SOPINLockout counts failed SO PIN checks per key, in the counters described
-// above. Checks of one lockout run one at a time and a failure is counted
-// before the next check starts, so guesses fired concurrently are no cheaper
-// than guesses fired in turn. The zero value is not usable; use
-// NewSOPINLockout.
+// above. Checks of one KEY run one at a time and a failure is counted before
+// that key's next check starts, so guesses fired concurrently are no cheaper
+// than guesses fired in turn; checks of different keys -- the node and each
+// tenant -- run concurrently, so one tenant's slow verification (a KDF) never
+// holds up another's. The zero value is not usable; use NewSOPINLockout.
 type SOPINLockout struct {
+	// mu guards keys and each state's refs; it is held only for map lookups.
 	mu        sync.Mutex
 	keys      map[string]*soPINKeyState
 	now       func() time.Time
@@ -325,82 +343,107 @@ func NewSOPINLockout(clock func() time.Time, opts ...SOPINLockoutOption) *SOPINL
 	return l
 }
 
-// stateLocked returns key's state, creating it. The caller holds l.mu.
-func (l *SOPINLockout) stateLocked(key string) *soPINKeyState {
+// acquire returns key's state, creating it, and holds it until release: a
+// held state stays in the map. It takes only the map lock.
+func (l *SOPINLockout) acquire(key string) *soPINKeyState {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	state, ok := l.keys[key]
 	if !ok {
 		state = &soPINKeyState{}
 		l.keys[key] = state
 	}
+	state.refs++
 	return state
 }
 
-// loadKnownGood reads key's persisted known-good set, once, WITHOUT holding
-// l.mu across the read: the read is bounded by SOPINKnownGoodTimeout and a
-// slow store therefore delays only this check. A check that finds a load
-// already in flight, or a failed load too recent to retry
-// (SOPINKnownGoodRetry), does not wait: its principal is held to the cap.
-// Entries the store returns are merged with any recorded meanwhile.
-func (l *SOPINLockout) loadKnownGood(ctx context.Context, key string) {
+// release gives up a state acquire returned, removing it from the map when no
+// call holds it and it records nothing worth keeping. The caller does not
+// hold state.mu; with no holder left, nothing else can be touching it.
+func (l *SOPINLockout) release(key string, state *soPINKeyState) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	state.refs--
+	if state.refs == 0 && state.empty() && !state.loading && l.keys[key] == state {
+		delete(l.keys, key)
+	}
+}
+
+// loadKnownGood reads key's persisted known-good set, once, holding no lock
+// across the read: the read is bounded by SOPINKnownGoodTimeout and a slow
+// store therefore delays only this check. A check that finds a load already
+// in flight, or a failed load too recent to retry (SOPINKnownGoodRetry), does
+// not wait: its principal is held to the cap. Entries the store returns are
+// merged with any recorded meanwhile.
+func (l *SOPINLockout) loadKnownGood(ctx context.Context, key string, state *soPINKeyState) {
 	if l.knownGood == nil {
 		return
 	}
-	l.mu.Lock()
-	state := l.stateLocked(key)
+	state.mu.Lock()
 	if state.knownGoodLoaded || state.loading || l.now().Before(state.nextLoad) {
-		l.mu.Unlock()
+		state.mu.Unlock()
 		return
 	}
 	state.loading = true
-	l.mu.Unlock()
+	state.mu.Unlock()
 
 	lctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), SOPINKnownGoodTimeout)
 	digests, err := l.knownGood.LoadKnownGood(lctx, key)
 	cancel()
 
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	state = l.stateLocked(key)
+	state.mu.Lock()
+	defer state.mu.Unlock()
 	state.loading = false
 	if err != nil {
 		state.nextLoad = l.now().Add(SOPINKnownGoodRetry)
 		return
 	}
-	recorded := state.knownGood
-	state.knownGood = nil
-	for _, d := range digests {
-		state.addKnownGood(d)
-	}
-	for _, d := range recorded {
-		state.addKnownGood(d)
-	}
+	state.mergeKnownGood(digests)
 	state.knownGoodLoaded = true
 }
 
-// saveKnownGood persists key's current known-good set, WITHOUT holding l.mu
-// across the write. Saves of one key run one at a time and each writes the
-// set as it is when its turn comes, so the last write is the newest set. A
-// save that fails keeps the exemption in memory: a successful SO PIN check is
-// never turned into a refusal by its bookkeeping.
-func (l *SOPINLockout) saveKnownGood(ctx context.Context, key string) {
+// mergeKnownGood folds stored, an older set read from the store, under k's
+// own entries: the result keeps k's entries as the most recent, and the cap
+// drops the oldest. The caller holds k.mu.
+func (k *soPINKeyState) mergeKnownGood(stored []string) {
+	own := k.knownGood
+	k.knownGood = nil
+	for _, d := range stored {
+		k.addKnownGood(d)
+	}
+	for _, d := range own {
+		k.addKnownGood(d)
+	}
+}
+
+// saveKnownGood persists key's known-good set, holding no lock across a store
+// call. It MERGES rather than overwrites: it reads the stored set, folds it
+// under this lockout's own (adopting the entries other nodes sharing the
+// store have written since this one loaded), and writes the union, so one
+// node's save does not drop another's digests. Saves of one key run one at a
+// time. A save whose read fails writes nothing -- overwriting a set it could
+// not read might drop other nodes' entries -- and like a failed write keeps
+// the exemption in memory: a successful SO PIN check is never turned into a
+// refusal by its bookkeeping. Two nodes saving the same key at the same
+// moment can still each miss the other's newest entry; it is written again
+// on that principal's next successful check.
+func (l *SOPINLockout) saveKnownGood(ctx context.Context, key string, state *soPINKeyState) {
 	if l.knownGood == nil {
 		return
 	}
-	l.mu.Lock()
-	state := l.stateLocked(key)
-	if state.saveMu == nil {
-		state.saveMu = &sync.Mutex{}
-	}
-	saveMu := state.saveMu
-	l.mu.Unlock()
+	state.saveMu.Lock()
+	defer state.saveMu.Unlock()
 
-	saveMu.Lock()
-	defer saveMu.Unlock()
-	l.mu.Lock()
-	digests := slices.Clone(l.stateLocked(key).knownGood)
-	l.mu.Unlock()
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), SOPINKnownGoodTimeout)
 	defer cancel()
+	stored, err := l.knownGood.LoadKnownGood(sctx, key)
+	if err != nil {
+		return
+	}
+	state.mu.Lock()
+	state.mergeKnownGood(stored)
+	digests := slices.Clone(state.knownGood)
+	state.mu.Unlock()
 	_ = l.knownGood.SaveKnownGood(sctx, key, digests)
 }
 
@@ -445,21 +488,32 @@ func (k *soPINKeyState) principalCounter(principal string, create bool, now time
 // answer is not a guess. ctx bounds the known-good store calls the check
 // makes (see SOPINKnownGoodStore), which never run under the lockout's lock.
 func (l *SOPINLockout) Check(ctx context.Context, key, principal string, verify func() error, mismatch func(error) bool) error {
+	state := l.acquire(key)
+	defer l.release(key, state)
 	if principal != "" {
-		l.loadKnownGood(ctx, key)
+		l.loadKnownGood(ctx, key, state)
 	}
-	changed, err := l.check(key, principal, verify, mismatch)
+	changed, err := l.check(state, key, principal, verify, mismatch)
 	if changed {
-		l.saveKnownGood(ctx, key)
+		l.saveKnownGood(ctx, key, state)
 	}
 	return err
 }
 
-// check is Check under l.mu; changed reports that the known-good set grew.
-func (l *SOPINLockout) check(key, principal string, verify func() error, mismatch func(error) bool) (changed bool, _ error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	state := l.stateLocked(key)
+// check is Check under the key's lock, which it holds across verify so that
+// a failure is counted before the key's next check; changed reports that the
+// known-good set grew.
+//
+// A success resets the counter it was checked against. An AUTHENTICATED
+// success also clears the aggregate cap and records the principal as
+// known-good. An ANONYMOUS success -- the sealed-window caller -- does
+// neither: there is no principal to record, and an unauthenticated caller
+// must not be able to lift a cap other callers' guesses engaged. So an
+// officer who has only ever presented the PIN anonymously is not exempt from
+// the cap when it later authenticates, until it succeeds once authenticated.
+func (l *SOPINLockout) check(state *soPINKeyState, key, principal string, verify func() error, mismatch func(error) bool) (changed bool, _ error) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
 	now := l.now()
 	c := &state.anonymous
 	capped := false
@@ -486,9 +540,6 @@ func (l *SOPINLockout) check(key, principal string, verify func() error, mismatc
 			state.aggregate = soPINAggregate{}
 			changed = state.addKnownGood(digest)
 		}
-		if state.empty() && !state.loading && state.saveMu == nil {
-			delete(l.keys, key)
-		}
 		return changed, nil
 	}
 	if !mismatch(err) {
@@ -506,11 +557,15 @@ func (l *SOPINLockout) check(key, principal string, verify func() error, mismatc
 // principal the aggregate cap -- is locked, the time the lockout ends.
 func (l *SOPINLockout) Status(key, principal string) (failures int, lockedUntil time.Time) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
-	state, ok := l.keys[key]
+	_, ok := l.keys[key]
+	l.mu.Unlock()
 	if !ok {
 		return 0, time.Time{}
 	}
+	state := l.acquire(key)
+	defer l.release(key, state)
+	state.mu.Lock()
+	defer state.mu.Unlock()
 	now := l.now()
 	c := &state.anonymous
 	if principal != "" {

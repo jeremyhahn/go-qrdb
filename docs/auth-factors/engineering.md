@@ -122,9 +122,11 @@ Storage keys: `so-pin` and `user-pin`, each a JSON-encoded `PINRecord`.
   only several principals guessing together can engage the cap, for one
   window, and never against a known-good principal (one that has presented
   the correct PIN before, persisted through `auth.SOPINKnownGoodStore` --
-  `SoftwareBackend` implements it -- as domain-separated digests, never
-  principal ids, and never read or written under the lockout's lock; each
-  store call is bounded by `auth.SOPINKnownGoodTimeout`). A holder
+  `SoftwareBackend` implements it -- as unkeyed domain-separated digests, so
+  the record does not store principal ids, read and written under no lock and
+  merged with the stored set on save; each store call is bounded by
+  `auth.SOPINKnownGoodTimeout`). Checks of different keys run concurrently;
+  one key's checks run one at a time. A holder
   certificate's principal (`holder:<tenant>/<subject>`) is distinct from the
   user of the same name. Stale per-principal counters are evicted
   before new principals fall back to the shared overflow counter, and
