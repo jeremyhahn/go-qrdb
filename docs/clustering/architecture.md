@@ -255,9 +255,14 @@ continues to compile unchanged; a caller type-asserts for the capability.
 Permission `cluster:join_token` is `ScopeCross` and deliberately absent from
 every built-in role's default grant (mirroring `clusterAdminPermissions`'
 own platform-only precedent): minting a token admits a node to the whole
-cluster, not to one tenant, so only `Owner` may mint by default. As of this
-release the verb is wired on the REST and embedded SDK transports; gRPC,
-QUIC, Unix and MCP do not yet implement `transport.ClusterJoinTokenMinter`.
+cluster, not to one tenant, so only `Owner` may mint by default. The verb is
+wired on all six transports — REST (`POST /v1/cluster/join-tokens`), gRPC
+(`MintJoinToken`, permission carried as a method option on the proto RPC and
+enforced the same way every other gRPC verb's permission is), QUIC
+(`admin.MintJoinToken`), Unix (served by the same `qrdbServiceServer` gRPC
+implementation Unix already rides), MCP (the `qrdb_mint_join_token` tool),
+and the embedded transport — each refusing a tenant-scoped caller with the
+identical `ScopeCross` denial REST does.
 
 **Wire transport (Noise, shipped).** The one-shot `get_ca_bundle`
 request/response the Noise bootstrap `Handler` in go-truststrap dispatches

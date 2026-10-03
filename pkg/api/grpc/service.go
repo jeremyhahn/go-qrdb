@@ -736,6 +736,28 @@ func (s *qrdbServiceServer) GetTopology(ctx context.Context, _ *emptypb.Empty) (
 	}, nil
 }
 
+// MintJoinToken mints a single-use, identity-bound member-side CSR join
+// token. s.adminSvc not implementing service.ClusterJoinTokenMinter (member-
+// side CSR join never configured on this node) reports the same typed error
+// the REST and embedded transports do.
+func (s *qrdbServiceServer) MintJoinToken(ctx context.Context, req *pb.MintJoinTokenRequest) (*pb.MintJoinTokenResponse, error) {
+	if s.adminSvc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "admin"})
+	}
+	minter, ok := s.adminSvc.(service.ClusterJoinTokenMinter)
+	if !ok {
+		return nil, mapServiceError(&service.ClusterJoinTokenNotConfiguredError{})
+	}
+	token, expiresAt, err := minter.MintJoinToken(ctx, req.GetNodeId(), time.Duration(req.GetTtlSeconds())*time.Second)
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &pb.MintJoinTokenResponse{
+		Token:     token,
+		ExpiresAt: expiresAt.UTC().Format(time.RFC3339),
+	}, nil
+}
+
 // ---------------------------------------------------------------------------
 // MVCC handlers
 // ---------------------------------------------------------------------------

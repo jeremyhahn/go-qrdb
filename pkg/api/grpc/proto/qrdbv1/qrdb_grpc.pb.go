@@ -113,6 +113,7 @@ const (
 	QRDBService_GetTopology_FullMethodName                       = "/qrdb.v1.QRDBService/GetTopology"
 	QRDBService_GetNodeCompaction_FullMethodName                 = "/qrdb.v1.QRDBService/GetNodeCompaction"
 	QRDBService_SetNodeCompaction_FullMethodName                 = "/qrdb.v1.QRDBService/SetNodeCompaction"
+	QRDBService_MintJoinToken_FullMethodName                     = "/qrdb.v1.QRDBService/MintJoinToken"
 	QRDBService_CreateUser_FullMethodName                        = "/qrdb.v1.QRDBService/CreateUser"
 	QRDBService_GetUser_FullMethodName                           = "/qrdb.v1.QRDBService/GetUser"
 	QRDBService_GetUserByUsername_FullMethodName                 = "/qrdb.v1.QRDBService/GetUserByUsername"
@@ -428,6 +429,10 @@ type QRDBServiceClient interface {
 	// SetNodeCompaction sets the platform's node-keyspace compaction policy;
 	// an unset compaction turns it off. System tenant only.
 	SetNodeCompaction(ctx context.Context, in *SetNodeCompactionRequest, opts ...grpc.CallOption) (*NodeCompactionResponse, error)
+	// MintJoinToken mints a single-use, identity-bound member-side CSR join
+	// token (see pkg/clusterenroll.MintJoinToken). ScopeCross, platform-only:
+	// no built-in role carries cluster:join_token by default.
+	MintJoinToken(ctx context.Context, in *MintJoinTokenRequest, opts ...grpc.CallOption) (*MintJoinTokenResponse, error)
 	// CreateUser creates a new passwordless user.
 	CreateUser(ctx context.Context, in *CreateUserRequest, opts ...grpc.CallOption) (*UserResponse, error)
 	// GetUser retrieves a user by ID.
@@ -1549,6 +1554,16 @@ func (c *qRDBServiceClient) SetNodeCompaction(ctx context.Context, in *SetNodeCo
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(NodeCompactionResponse)
 	err := c.cc.Invoke(ctx, QRDBService_SetNodeCompaction_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) MintJoinToken(ctx context.Context, in *MintJoinTokenRequest, opts ...grpc.CallOption) (*MintJoinTokenResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(MintJoinTokenResponse)
+	err := c.cc.Invoke(ctx, QRDBService_MintJoinToken_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -3020,6 +3035,10 @@ type QRDBServiceServer interface {
 	// SetNodeCompaction sets the platform's node-keyspace compaction policy;
 	// an unset compaction turns it off. System tenant only.
 	SetNodeCompaction(context.Context, *SetNodeCompactionRequest) (*NodeCompactionResponse, error)
+	// MintJoinToken mints a single-use, identity-bound member-side CSR join
+	// token (see pkg/clusterenroll.MintJoinToken). ScopeCross, platform-only:
+	// no built-in role carries cluster:join_token by default.
+	MintJoinToken(context.Context, *MintJoinTokenRequest) (*MintJoinTokenResponse, error)
 	// CreateUser creates a new passwordless user.
 	CreateUser(context.Context, *CreateUserRequest) (*UserResponse, error)
 	// GetUser retrieves a user by ID.
@@ -3584,6 +3603,9 @@ func (UnimplementedQRDBServiceServer) GetNodeCompaction(context.Context, *emptyp
 }
 func (UnimplementedQRDBServiceServer) SetNodeCompaction(context.Context, *SetNodeCompactionRequest) (*NodeCompactionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetNodeCompaction not implemented")
+}
+func (UnimplementedQRDBServiceServer) MintJoinToken(context.Context, *MintJoinTokenRequest) (*MintJoinTokenResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method MintJoinToken not implemented")
 }
 func (UnimplementedQRDBServiceServer) CreateUser(context.Context, *CreateUserRequest) (*UserResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateUser not implemented")
@@ -5401,6 +5423,24 @@ func _QRDBService_SetNodeCompaction_Handler(srv interface{}, ctx context.Context
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QRDBServiceServer).SetNodeCompaction(ctx, req.(*SetNodeCompactionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_MintJoinToken_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(MintJoinTokenRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).MintJoinToken(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_MintJoinToken_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).MintJoinToken(ctx, req.(*MintJoinTokenRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -8027,6 +8067,10 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetNodeCompaction",
 			Handler:    _QRDBService_SetNodeCompaction_Handler,
+		},
+		{
+			MethodName: "MintJoinToken",
+			Handler:    _QRDBService_MintJoinToken_Handler,
 		},
 		{
 			MethodName: "CreateUser",

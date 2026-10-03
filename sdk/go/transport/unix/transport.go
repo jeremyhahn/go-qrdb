@@ -26,6 +26,7 @@ import (
 	"errors"
 	"strconv"
 	"sync/atomic"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -647,6 +648,32 @@ func (t *Transport) GetTopology(ctx context.Context) (*transport.TopologyRespons
 		Shards:      shards,
 	}, nil
 }
+
+// MintJoinToken mints a single-use, identity-bound member-side CSR join
+// token. Implements transport.ClusterJoinTokenMinter.
+func (t *Transport) MintJoinToken(ctx context.Context, req *transport.MintJoinTokenRequest) (*transport.MintJoinTokenResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	resp, err := t.client.MintJoinToken(ctx, &pb.MintJoinTokenRequest{
+		NodeId:     req.NodeID,
+		TtlSeconds: req.TTLSeconds,
+	})
+	if err != nil {
+		return nil, mapGRPCError("MintJoinToken", err)
+	}
+	expiresAt, parseErr := time.Parse(time.RFC3339, resp.GetExpiresAt())
+	if parseErr != nil {
+		return nil, &transport.RequestError{Method: "MintJoinToken", Err: parseErr}
+	}
+	return &transport.MintJoinTokenResponse{
+		Token:     resp.GetToken(),
+		ExpiresAt: expiresAt,
+	}, nil
+}
+
+var _ transport.ClusterJoinTokenMinter = (*Transport)(nil)
 
 // ---------------------------------------------------------------------------
 // Internal helpers

@@ -483,6 +483,13 @@ service QRDBService {
         option (qrdb.v1.permission) = "admin:node_compaction";
     }
 
+    // MintJoinToken mints a single-use, identity-bound member-side CSR join
+    // token (see pkg/clusterenroll.MintJoinToken). ScopeCross, platform-only:
+    // no built-in role carries cluster:join_token by default.
+    rpc MintJoinToken(MintJoinTokenRequest) returns (MintJoinTokenResponse) {
+        option (qrdb.v1.permission) = "cluster:join_token";
+    }
+
     // -----------------------------------------------------------------------
     // User management
     // -----------------------------------------------------------------------
@@ -2084,6 +2091,20 @@ message RemoveMemberRequest {
 // RequestSnapshotMessage is the request payload for RequestSnapshot.
 message RequestSnapshotMessage {
     uint64 shard_id = 1;
+}
+
+// MintJoinTokenRequest is the request payload for MintJoinToken.
+// ttl_seconds <= 0 uses the server's default TTL.
+message MintJoinTokenRequest {
+    string node_id    = 1;
+    int64  ttl_seconds = 2;
+}
+
+// MintJoinTokenResponse is returned by MintJoinToken. token is returned
+// exactly once; there is no "list minted tokens" read path.
+message MintJoinTokenResponse {
+    string token      = 1;
+    string expires_at = 2;  // RFC3339
 }
 
 // CapabilitiesRequest is the request payload for Capabilities.

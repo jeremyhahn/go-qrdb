@@ -697,6 +697,42 @@ func (t *Transport) GetTopology(ctx context.Context) (*transport.TopologyRespons
 	}, nil
 }
 
+// MintJoinToken mints a single-use, identity-bound member-side CSR join
+// token. Implements transport.ClusterJoinTokenMinter.
+func (t *Transport) MintJoinToken(ctx context.Context, req *transport.MintJoinTokenRequest) (*transport.MintJoinTokenResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	payload, err := proto.Marshal(&pb.MintJoinTokenRequest{
+		NodeId:     req.NodeID,
+		TtlSeconds: req.TTLSeconds,
+	})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "MintJoinToken", Err: err}
+	}
+
+	respPayload, err := t.call(ctx, "admin.MintJoinToken", payload)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp pb.MintJoinTokenResponse
+	if err := proto.Unmarshal(respPayload, &resp); err != nil {
+		return nil, &transport.RequestError{Method: "MintJoinToken", Err: err}
+	}
+	expiresAt, err := time.Parse(time.RFC3339, resp.GetExpiresAt())
+	if err != nil {
+		return nil, &transport.RequestError{Method: "MintJoinToken", Err: err}
+	}
+	return &transport.MintJoinTokenResponse{
+		Token:     resp.GetToken(),
+		ExpiresAt: expiresAt,
+	}, nil
+}
+
+var _ transport.ClusterJoinTokenMinter = (*Transport)(nil)
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------

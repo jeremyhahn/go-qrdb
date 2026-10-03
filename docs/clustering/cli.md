@@ -305,11 +305,9 @@ token-validity oracle). Copy it into the joining node's
 `--bootstrap-join-token-file` (or `--bootstrap-join-token-env`). Minting
 requires permission `cluster:join_token` (`ScopeCross`, platform-only: no
 built-in role carries it by default, only `Owner`) — see
-[api.md](api.md#post-v1clusterjoin-tokens). As of this release the verb is
-wired on the REST transport (and the CLI above, which uses it) and the
-embedded transport; gRPC, QUIC, Unix and MCP do not yet implement
-`transport.ClusterJoinTokenMinter` — an admin using one of those transports
-mints through the REST API directly in the meantime.
+[api.md](api.md#post-v1clusterjoin-tokens). The verb is implemented on all
+six transports (REST, gRPC, QUIC, Unix, MCP and embedded); the CLI above
+reaches it through whichever transport `qrdb` is connected with.
 
 ## Startup refusal under an activated feature
 

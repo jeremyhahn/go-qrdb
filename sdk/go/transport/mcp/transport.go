@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	mcptransport "github.com/mark3labs/mcp-go/client/transport"
@@ -733,6 +734,42 @@ func (t *Transport) GetTopology(ctx context.Context) (*transport.TopologyRespons
 		Shards:      shards,
 	}, nil
 }
+
+// MintJoinToken mints a single-use, identity-bound member-side CSR join
+// token. Calls the qrdb_mint_join_token MCP tool. Implements
+// transport.ClusterJoinTokenMinter.
+func (t *Transport) MintJoinToken(ctx context.Context, req *transport.MintJoinTokenRequest) (*transport.MintJoinTokenResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	args := map[string]any{"node_id": req.NodeID}
+	if req.TTLSeconds > 0 {
+		args["ttl_seconds"] = req.TTLSeconds
+	}
+	text, err := t.callTool(ctx, "qrdb_mint_join_token", args)
+	if err != nil {
+		return nil, err
+	}
+
+	var raw struct {
+		Token     string `json:"token"`
+		ExpiresAt string `json:"expires_at"`
+	}
+	if jsonErr := json.Unmarshal([]byte(text), &raw); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "MintJoinToken", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+	expiresAt, parseErr := time.Parse(time.RFC3339, raw.ExpiresAt)
+	if parseErr != nil {
+		return nil, &transport.RequestError{Method: "MintJoinToken", Err: parseErr}
+	}
+	return &transport.MintJoinTokenResponse{
+		Token:     raw.Token,
+		ExpiresAt: expiresAt,
+	}, nil
+}
+
+var _ transport.ClusterJoinTokenMinter = (*Transport)(nil)
 
 // ---------------------------------------------------------------------------
 // Server-side JSON decode types

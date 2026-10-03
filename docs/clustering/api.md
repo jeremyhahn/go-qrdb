@@ -178,10 +178,23 @@ itself is not configured on this node (no join-token store bound).
 | `ttl_seconds` outside `[MinJoinTokenTTL, MaxJoinTokenTTL]` | `400` — `*clusterenroll.JoinTokenTTLError` |
 | member-side CSR join not configured on this node | `501` — `*service.ClusterJoinTokenNotConfiguredError` |
 
-As of this release this verb is implemented on the REST transport (above)
-and the embedded transport (`transport.ClusterJoinTokenMinter`, consumed by
-the `qrdb admin join-token mint` CLI — see [cli.md](cli.md)); gRPC, QUIC,
-Unix and MCP do not yet implement it.
+This verb is implemented on all six transports (`transport.
+ClusterJoinTokenMinter`, consumed by the `qrdb admin join-token mint` CLI —
+see [cli.md](cli.md)):
+
+| Transport | Binding |
+|---|---|
+| REST | `POST /v1/cluster/join-tokens`, above |
+| gRPC | `QRDBService.MintJoinToken`, permission carried as a `(qrdb.v1.permission)` method option exactly like every other gRPC verb |
+| QUIC | `admin.MintJoinToken` verb |
+| Unix | served by the same `qrdbServiceServer` gRPC implementation the TCP gRPC listener uses |
+| MCP | the `qrdb_mint_join_token` tool |
+| Embedded | direct in-process call, no serialization |
+
+Every binding reports the identical `ScopeCross` permission denial for a
+tenant-scoped caller, and the identical typed errors above for every other
+failure — there is exactly one implementation of the mint logic
+(`service.AdminService.MintJoinToken`), never one per transport.
 
 The Noise_NK join transport and the trust-anchor fetch have no HTTP surface of
 their own; their Go surface is in `pkg/clusterenroll`, re-exported from

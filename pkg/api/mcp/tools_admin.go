@@ -17,6 +17,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -98,6 +99,11 @@ func adminTools(adminSvc service.AdminServicer) []serverTool {
 			Tool:    toolUpdateNodeCompaction(),
 			Perm:    permission.AdminNodeCompaction,
 			Handler: handleUpdateNodeCompaction(adminSvc),
+		},
+		{
+			Tool:    toolMintJoinToken(),
+			Perm:    permission.ClusterJoinToken,
+			Handler: handleMintJoinToken(adminSvc),
 		},
 	}
 }
@@ -497,6 +503,54 @@ func handleGetTopology(adminSvc service.AdminServicer) mcpserver.ToolHandlerFunc
 		data, jsonErr := json.Marshal(topo)
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_topology", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolMintJoinToken defines the qrdb_mint_join_token tool schema.
+func toolMintJoinToken() mcp.Tool {
+	return mcp.NewTool("qrdb_mint_join_token",
+		mcp.WithDescription("Mint a single-use, identity-bound member-side CSR join token for a joining node. "+
+			"Requires permission cluster:join_token (ScopeCross, platform-only)."),
+		mcp.WithString("node_id",
+			mcp.Required(),
+			mcp.Description("The joining node's identity (bound into spiffe://<trust domain>/node/<node_id>)."),
+		),
+		mcp.WithNumber("ttl_seconds",
+			mcp.Description("Token time-to-live in seconds. Zero or omitted uses the server's default TTL."),
+		),
+	)
+}
+
+// handleMintJoinToken returns a tool handler that delegates to
+// adminSvc.MintJoinToken when adminSvc implements
+// service.ClusterJoinTokenMinter, and reports
+// *service.ClusterJoinTokenNotConfiguredError otherwise (member-side CSR
+// join never configured on this node) -- the same typed error the REST,
+// gRPC, QUIC and embedded transports report.
+func handleMintJoinToken(adminSvc service.AdminServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		minter, ok := adminSvc.(service.ClusterJoinTokenMinter)
+		if !ok {
+			return nil, &ToolError{Tool: "qrdb_mint_join_token", Err: &service.ClusterJoinTokenNotConfiguredError{}}
+		}
+
+		nodeID := mcp.ParseString(req, "node_id", "")
+		ttlSeconds := mcp.ParseInt(req, "ttl_seconds", 0)
+
+		token, expiresAt, err := minter.MintJoinToken(ctx, nodeID, time.Duration(ttlSeconds)*time.Second)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_mint_join_token", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(struct {
+			Token     string `json:"token"`
+			ExpiresAt string `json:"expires_at"`
+		}{Token: token, ExpiresAt: expiresAt.UTC().Format(time.RFC3339)})
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_mint_join_token", Err: jsonErr}
 		}
 
 		return mcp.NewToolResultText(string(data)), nil

@@ -143,6 +143,7 @@ func (s *Server) buildHandlers() {
 	s.handleIf(adminOn, "admin.GetTopology", permission.AdminTopology, s.handleGetTopology)
 	s.handleIf(adminOn, "admin.GetNodeCompaction", permission.AdminNodeCompaction, s.handleGetNodeCompaction)
 	s.handleIf(adminOn, "admin.SetNodeCompaction", permission.AdminNodeCompaction, s.handleSetNodeCompaction)
+	s.handleIf(adminOn, "admin.MintJoinToken", permission.ClusterJoinToken, s.handleMintJoinToken)
 
 	// MVCC
 	s.handle("mvcc.PutWithLease", permission.MVCCPutWithLease, s.handlePutWithLease)

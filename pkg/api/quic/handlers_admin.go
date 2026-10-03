@@ -16,6 +16,7 @@ package quic
 
 import (
 	"context"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -324,6 +325,37 @@ func (s *Server) handleGetTopology(ctx context.Context, _ []byte) ([]byte, error
 		RaftAddress: topo.RaftAddress,
 		ShardCount:  int32(topo.ShardCount),
 		Shards:      shards,
+	})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
+// handleMintJoinToken unmarshals a MintJoinTokenRequest, mints a single-use
+// join token via the admin service, and returns a serialized
+// MintJoinTokenResponse. s.adminSvc not implementing
+// service.ClusterJoinTokenMinter (member-side CSR join never configured on
+// this node) reports the same typed error the REST, gRPC and embedded
+// transports do.
+func (s *Server) handleMintJoinToken(ctx context.Context, payload []byte) ([]byte, error) {
+	var req pb.MintJoinTokenRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	minter, ok := s.adminSvc.(service.ClusterJoinTokenMinter)
+	if !ok {
+		return nil, &service.ClusterJoinTokenNotConfiguredError{}
+	}
+	token, expiresAt, err := minter.MintJoinToken(ctx, req.GetNodeId(), time.Duration(req.GetTtlSeconds())*time.Second)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := proto.Marshal(&pb.MintJoinTokenResponse{
+		Token:     token,
+		ExpiresAt: expiresAt.UTC().Format(time.RFC3339),
 	})
 	if err != nil {
 		return nil, &MarshalError{Err: err}
