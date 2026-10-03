@@ -41,7 +41,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
-	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -115,7 +115,7 @@ type revocationFixture struct {
 func newRevocationFixture(t *testing.T, username, tenantID string) *revocationFixture {
 	t.Helper()
 	barrier := newTestBarrier(t)
-	provider := cert.NewDefaultProvider(kvstore.NewMemoryKVStore(), barrier)
+	provider := cert.NewDefaultProvider(kvstoretest.NewGuardedMemoryStore(), barrier)
 	ctx := context.Background()
 	require.NoError(t, provider.Initialize(ctx))
 

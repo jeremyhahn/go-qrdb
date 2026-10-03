@@ -39,6 +39,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 const (
@@ -787,7 +788,7 @@ func (p *DefaultCertProvider) IsTenantIssuer(ctx context.Context, tenantID strin
 		return false, nil
 	}
 	if tenantID == "" {
-		tenantID = tenant.SystemTenantID
+		tenantID = tenantid.System
 	}
 	if p.barrier.IsSealed() {
 		return false, &BarrierSealedError{}

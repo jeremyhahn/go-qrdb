@@ -47,6 +47,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -335,20 +336,30 @@ func WithPacketConn(pc net.PacketConn) ServerOption {
 // only" posture holds on every transport, not just the mTLS ones. A nil cfg
 // leaves TLS unconfigured; because the transport is TLS-only, Start then
 // fails closed with *TLSNotConfiguredError.
+//
+// The floor is applied through clienttrust.ReassertListenerTLS rather than
+// a bare clone-and-mutate: when cfg already carries a GetConfigForClient
+// hook (installed by a shared *clienttrust.Pool across every client-facing
+// listener, to trust every tenant's Key B CA), a bare clone's MinVersion
+// change is lost on any connection that takes the hook's dynamic path --
+// tls.Config.Clone() copies the hook's closure, not its effect, and the
+// closure still clones from the config captured when the hook was
+// installed, before this floor ever ran. Measured as a TLS 1.2 downgrade on
+// exactly that path (go-qrdb#560 review, B2-3).
 func WithTLS(cfg *tls.Config) ServerOption {
 	return func(s *Server) {
 		if cfg == nil {
 			return
 		}
-		clone := cfg.Clone()
-		switch {
-		case clone.MinVersion == 0:
-			clone.MinVersion = tls.VersionTLS13
-		case clone.MinVersion < tls.VersionTLS13:
-			s.tlsErr = &WeakTLSVersionError{MinVersion: clone.MinVersion}
+		if cfg.MinVersion != 0 && cfg.MinVersion < tls.VersionTLS13 {
+			s.tlsErr = &WeakTLSVersionError{MinVersion: cfg.MinVersion}
 			return
 		}
-		s.tlsConfig = clone
+		s.tlsConfig = clienttrust.ReassertListenerTLS(cfg, func(c *tls.Config) {
+			if c.MinVersion < tls.VersionTLS13 {
+				c.MinVersion = tls.VersionTLS13
+			}
+		})
 	}
 }
 

@@ -32,8 +32,8 @@ import (
 func TestQuicOnlyTLSConfig_PinsALPNWithNoDynamicHook(t *testing.T) {
 	base := &tls.Config{NextProtos: []string{"h3", "h2", "http/1.1"}}
 	got := quicOnlyTLSConfig(base)
-	if len(got.NextProtos) != 1 || got.NextProtos[0] != wire.ProtocolV2 {
-		t.Fatalf("NextProtos = %v, want [%s]", got.NextProtos, wire.ProtocolV2)
+	if len(got.NextProtos) != 1 || got.NextProtos[0] != wire.ProtocolV3 {
+		t.Fatalf("NextProtos = %v, want [%s]", got.NextProtos, wire.ProtocolV3)
 	}
 	// base itself must be untouched: this listener's ALPN pin must never leak
 	// back onto the config shared with REST/gRPC/Unix/MCP.
@@ -63,9 +63,9 @@ func TestQuicOnlyTLSConfig_WrapsDynamicHookAndReassertsALPN(t *testing.T) {
 	if got != keyBPool {
 		t.Fatal("expected the wrapped hook to return the SAME config the dynamic hook produced (not a fresh copy)")
 	}
-	if len(got.NextProtos) != 1 || got.NextProtos[0] != wire.ProtocolV2 {
+	if len(got.NextProtos) != 1 || got.NextProtos[0] != wire.ProtocolV3 {
 		t.Fatalf("the config returned by the dynamic hook must have its ALPN re-pinned to %s, got %v",
-			wire.ProtocolV2, got.NextProtos)
+			wire.ProtocolV3, got.NextProtos)
 	}
 }
 

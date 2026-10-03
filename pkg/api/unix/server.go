@@ -44,6 +44,7 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
@@ -129,20 +130,28 @@ type ServerOption func(*Server)
 // listener simply by forgetting to wire TLS. The orchestrator (pkg/server)
 // auto-provisions a certificate from the node's CeremonyCA so this is
 // transparent for every normal deployment shape.
+//
+// The floor is applied through clienttrust.ReassertListenerTLS rather than
+// a bare clone-and-mutate: when cfg already carries a GetConfigForClient
+// hook (installed by a shared *clienttrust.Pool across every client-facing
+// listener, to trust every tenant's Key B CA), a bare clone's MinVersion
+// change is lost on any connection that takes the hook's dynamic path --
+// tls.Config.Clone() copies the hook's closure, not its effect. Measured as
+// a TLS 1.2 downgrade on exactly that path (go-qrdb#560 review, B2-3).
 func WithTLS(cfg *tls.Config) ServerOption {
 	return func(s *Server) {
 		if cfg == nil {
 			return
 		}
-		clone := cfg.Clone()
-		switch {
-		case clone.MinVersion == 0:
-			clone.MinVersion = tls.VersionTLS13
-		case clone.MinVersion < tls.VersionTLS13:
-			s.tlsErr = &WeakTLSVersionError{MinVersion: clone.MinVersion}
+		if cfg.MinVersion != 0 && cfg.MinVersion < tls.VersionTLS13 {
+			s.tlsErr = &WeakTLSVersionError{MinVersion: cfg.MinVersion}
 			return
 		}
-		s.tls = clone
+		s.tls = clienttrust.ReassertListenerTLS(cfg, func(c *tls.Config) {
+			if c.MinVersion < tls.VersionTLS13 {
+				c.MinVersion = tls.VersionTLS13
+			}
+		})
 	}
 }
 

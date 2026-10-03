@@ -472,6 +472,36 @@ func TestNewServer_WithTLS(t *testing.T) {
 	}
 }
 
+// TestNewServer_WithTLS_MinVersionFloorSurvivesDynamicTrustPoolHook is the
+// TLS 1.2 downgrade proof (go-qrdb#560 review, B2-3): tlsCfg already carries
+// a GetConfigForClient hook -- standing in for pkg/clienttrust.Pool.Wire,
+// shared across every client-facing listener to trust every tenant's Key B
+// CA -- whose returned config was cloned from a TLS-1.2-floor snapshot
+// taken before this listener's TLS 1.3 floor was ever applied. A bare
+// clone-and-mutate (the pre-fix WithTLS) loses the floor on exactly the
+// connections that take this dynamic path; WithTLS must re-assert it.
+func TestNewServer_WithTLS_MinVersionFloorSurvivesDynamicTrustPoolHook(t *testing.T) {
+	kvSvc := newMockKVService()
+	adminSvc := newMockAdminService()
+	tlsCfg := testTLSConfig(t)
+	keyBPool := &tls.Config{MinVersion: tls.VersionTLS12}
+	tlsCfg.GetConfigForClient = func(*tls.ClientHelloInfo) (*tls.Config, error) {
+		return keyBPool, nil
+	}
+
+	s := NewServer(kvSvc, adminSvc, ":0", WithTLS(tlsCfg))
+	if s.tlsConfig == nil || s.tlsConfig.GetConfigForClient == nil {
+		t.Fatal("expected the dynamic hook to be preserved, not dropped")
+	}
+	got, err := s.tlsConfig.GetConfigForClient(&tls.ClientHelloInfo{})
+	if err != nil {
+		t.Fatalf("GetConfigForClient: %v", err)
+	}
+	if got.MinVersion != tls.VersionTLS13 {
+		t.Fatalf("the config returned by the dynamic hook was NOT reasserted: MinVersion = %#x, want TLS 1.3", got.MinVersion)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Server lifecycle tests
 // ---------------------------------------------------------------------------

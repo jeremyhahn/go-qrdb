@@ -47,7 +47,7 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
-	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -111,7 +111,7 @@ type certScopeGRPCFixture struct {
 func newCertScopeGRPCFixture(t *testing.T) *certScopeGRPCFixture {
 	t.Helper()
 
-	prov := cert.NewDefaultProvider(kvstore.NewMemoryKVStore(), newCertScopeBarrier(t))
+	prov := cert.NewDefaultProvider(kvstoretest.NewGuardedMemoryStore(), newCertScopeBarrier(t))
 	if err := prov.Initialize(context.Background()); err != nil {
 		t.Fatalf("Initialize CA: %v", err)
 	}

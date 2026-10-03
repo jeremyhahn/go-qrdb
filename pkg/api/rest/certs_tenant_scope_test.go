@@ -46,7 +46,7 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
-	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -132,7 +132,7 @@ func (b *certScopeBarrier) IsSealed() bool { return false }
 type certScopeFixture struct {
 	srv    *Server
 	prov   *cert.DefaultCertProvider
-	store  *kvstore.MemoryKVStore
+	store  *kvstoretest.GuardedMemoryStore
 	caller *certScopeAuthenticator
 }
 
@@ -150,7 +150,7 @@ type certScopeFixture struct {
 func newCertScopeFixture(t *testing.T) *certScopeFixture {
 	t.Helper()
 
-	store := kvstore.NewMemoryKVStore()
+	store := kvstoretest.NewGuardedMemoryStore()
 	prov := cert.NewDefaultProvider(store, newCertScopeBarrier(t))
 	if err := prov.Initialize(context.Background()); err != nil {
 		t.Fatalf("Initialize CA: %v", err)

@@ -37,6 +37,7 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
@@ -500,31 +501,23 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 // does not offer it fails the handshake here rather than connecting under a
 // label it will not be served by.
 //
-// A dynamic GetConfigForClient hook shared with the other listeners
-// (pkg/clienttrust's trust-pool widening) was installed on base BEFORE this
-// clone, so Clone copied the closure itself, not its effect: the closure
-// still clones from the ORIGINAL base it closed over, whose NextProtos is
+// The reassertion is delegated to clienttrust.ReassertListenerTLS -- the ONE
+// shared helper every listener-specific TLS override (this ALPN pin, and
+// REST/gRPC/Unix/MCP's TLS 1.3 MinVersion floor) composes with, rather than
+// each hand-rolling the same clone-and-rewrap: a dynamic GetConfigForClient
+// hook shared with the other listeners (pkg/clienttrust's trust-pool
+// widening) may be installed on base BEFORE this clone runs, and a bare
+// Clone copies the hook's closure, not its effect -- the closure still
+// clones from the ORIGINAL base it closed over, whose NextProtos is
 // whatever the shared config carries for REST/gRPC/Unix/MCP, not
 // wire.ProtocolV3. Left unwrapped, a connection that exercises the dynamic
-// path (any Key B certificate login, once one exists) would be served the
-// WRONG ALPN list and fail the handshake with "tls: server did not select an
-// ALPN protocol" -- every other field the hook widens (ClientCAs) is
-// correct; only this listener-specific override needs reasserting on top of
-// whatever the hook returns.
+// path (any Key B certificate login) would be served the WRONG ALPN list
+// and fail the handshake with "tls: server did not select an ALPN protocol"
+// (go-qrdb#560 review, B2-3).
 func quicOnlyTLSConfig(base *tls.Config) *tls.Config {
-	cfg := base.Clone()
-	cfg.NextProtos = []string{wire.ProtocolV3}
-	if dynamic := cfg.GetConfigForClient; dynamic != nil {
-		cfg.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
-			got, err := dynamic(hello)
-			if err != nil || got == nil {
-				return got, err
-			}
-			got.NextProtos = []string{wire.ProtocolV3}
-			return got, nil
-		}
-	}
-	return cfg
+	return clienttrust.ReassertListenerTLS(base, func(c *tls.Config) {
+		c.NextProtos = []string{wire.ProtocolV3}
+	})
 }
 
 // Start begins listening for QUIC connections and serving requests.
