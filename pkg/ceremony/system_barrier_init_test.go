@@ -16,6 +16,7 @@ package ceremony
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -70,6 +71,43 @@ func TestInitialize_SystemBarrier_RetryAfterCrashConverges(t *testing.T) {
 	assert.False(t, barrier.IsSealed())
 }
 
+// TestInitialize_SystemBarrier_WrongSecretOnRetryFails is
+// RetryAfterCrashConverges' failure half: a barrier already initialized by
+// an earlier attempt falls through to Unseal on retry (the SAME path that
+// converges when the secret matches), but a retry with the WRONG secret
+// fails that Unseal and is refused with *SystemBarrierInitError, naming the
+// barrier's own decryption failure as the cause, not silently treated as a
+// fresh initialization.
+func TestInitialize_SystemBarrier_WrongSecretOnRetryFails(t *testing.T) {
+	// A DEFERRED strategy, unlike testBarrier's bound one, actually
+	// validates Credentials.Secret against the stored encrypted key on
+	// every Unseal rather than ignoring it (the passphrase was never bound
+	// at construction to ignore) -- the one strategy shape where "wrong
+	// secret" is a real, checkable failure rather than a no-op parameter.
+	barrier, err := seal.NewStorageBarrier(testLogger(), seal.NewMemoryBackend(),
+		seal.BarrierConfig{RootKeyPath: "test/root-key"}, seal.NewDeferredSoftwareStrategy())
+	require.NoError(t, err)
+	secret := []byte("test-master-password")
+
+	require.NoError(t, barrier.Initialize(context.Background(), seal.MustCredentials(secret)))
+	require.NoError(t, barrier.Seal())
+	require.True(t, barrier.IsSealed())
+
+	svc := newTestCeremonyService(t, defaultConfig(), barrier)
+
+	_, err = svc.Initialize(context.Background(), newMockCA(t), &InitializeOptions{
+		SOPin:         "test-so-pin",
+		UserPin:       "test-user-pin",
+		Secret:        []byte("a-completely-different-password"),
+		AdminGenerate: true,
+	})
+	var barrierErr *SystemBarrierInitError
+	require.ErrorAs(t, err, &barrierErr)
+	assert.Contains(t, barrierErr.Error(), "system barrier initialization failed")
+	assert.NotNil(t, errors.Unwrap(barrierErr))
+	assert.True(t, barrier.IsSealed(), "a failed retry must leave the barrier exactly as it found it")
+}
+
 // TestInitialize_SystemBarrier_AlreadyUnsealedIsANoOp covers a barrier that
 // is already unsealed by the time Initialize runs: nothing to do, no error.
 func TestInitialize_SystemBarrier_AlreadyUnsealedIsANoOp(t *testing.T) {
@@ -121,8 +159,10 @@ func TestInitialize_SystemBarrier_MofNLeavesItSealed(t *testing.T) {
 // untouched, not just that a retry eventually converges.
 func TestInitialize_RefusedAdminCredential_NoSideEffects(t *testing.T) {
 	cases := map[string]struct {
-		opts *InitializeOptions
-		want any
+		opts      *InitializeOptions
+		want      any
+		wantMsg   string
+		wantWraps bool
 	}{
 		"conflicting": {
 			&InitializeOptions{
@@ -130,10 +170,14 @@ func TestInitialize_RefusedAdminCredential_NoSideEffects(t *testing.T) {
 				AdminCSRPEM: []byte("csr"), AdminGenerate: true,
 			},
 			&ConflictingAdminCredentialInputsError{},
+			"mutually exclusive",
+			false,
 		},
 		"none selected": {
 			&InitializeOptions{SOPin: "test-so-pin", UserPin: "test-user-pin"},
 			&NoAdminCredentialSelectedError{},
+			"no admin credential path selected",
+			false,
 		},
 		"byoc untrusted": {
 			&InitializeOptions{
@@ -141,6 +185,8 @@ func TestInitialize_RefusedAdminCredential_NoSideEffects(t *testing.T) {
 				AdminCertPEM: []byte("not-a-cert"),
 			},
 			&AdminCredentialRejectedError{},
+			"bootstrap admin credential rejected",
+			true,
 		},
 	}
 	for name, tc := range cases {
@@ -152,6 +198,10 @@ func TestInitialize_RefusedAdminCredential_NoSideEffects(t *testing.T) {
 			_, err := svc.Initialize(context.Background(), newMockCA(t), tc.opts)
 			require.Error(t, err)
 			assert.IsType(t, tc.want, err)
+			assert.Contains(t, err.Error(), tc.wantMsg)
+			if tc.wantWraps {
+				assert.NotNil(t, errors.Unwrap(err), "%s must wrap its cause", name)
+			}
 			assert.True(t, barrier.IsSealed(),
 				"a refused admin-credential request must not bring the system barrier up")
 			assert.False(t, svc.pins.SOPINSet(),

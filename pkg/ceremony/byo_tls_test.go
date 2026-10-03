@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -111,6 +112,39 @@ func TestInitialize_BYOTLS_NoServerCertRefuses(t *testing.T) {
 	})
 	var noCert *NoServerCertificateError
 	require.ErrorAs(t, err, &noCert)
+	assert.Contains(t, noCert.Error(), "no CeremonyCA configured and no server certificate available")
+	assert.Nil(t, errors.Unwrap(noCert), "an absent (not malformed) ServerCertPEM carries no Cause")
+}
+
+// TestInitialize_BYOTLS_UnparseableServerCertRefuses covers the OTHER half
+// of NoServerCertificateError: a BYO-TLS node whose ServerCertPEM is PRESENT
+// but does not parse as a certificate is refused the same way, with the
+// parse failure as its Cause -- distinct from the empty-ServerCertPEM case
+// TestInitialize_BYOTLS_NoServerCertRefuses covers.
+func TestInitialize_BYOTLS_UnparseableServerCertRefuses(t *testing.T) {
+	operatorCA := newMockCA(t)
+	clientCACertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operatorCA.certDER})
+	adminLeaf, err := operatorCA.IssueCertificate(context.Background(), &IssueCertRequest{
+		CommonName: "admin", KeyUsage: x509.KeyUsageDigitalSignature, ValidityDays: 30,
+	})
+	require.NoError(t, err)
+
+	// A well-formed PEM CERTIFICATE block whose DER payload is garbage:
+	// pem.Decode succeeds (block != nil) but x509.ParseCertificate fails,
+	// reaching the Cause-wrapping branch rather than the empty-input one.
+	malformed := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("not valid DER")})
+	cfg := byoTLSConfig(malformed, clientCACertPEM)
+	svc := newTestCeremonyService(t, cfg, testBarrier(t))
+
+	_, err = svc.Initialize(context.Background(), nil, &InitializeOptions{
+		SOPin:        "test-so-pin",
+		UserPin:      "test-user-pin",
+		AdminCertPEM: adminLeaf.CertPEM,
+	})
+	var noCert *NoServerCertificateError
+	require.ErrorAs(t, err, &noCert)
+	assert.Contains(t, noCert.Error(), "configured server certificate could not be parsed")
+	assert.NotNil(t, errors.Unwrap(noCert))
 }
 
 // TestInitialize_BYOTLS_CSRSignRefused covers the coordinator decision that
@@ -136,6 +170,7 @@ func TestInitialize_BYOTLS_CSRSignRefused(t *testing.T) {
 	var needsCA *AdminCredentialRequiresCAError
 	require.ErrorAs(t, err, &needsCA)
 	assert.Equal(t, "csr-sign", needsCA.Path)
+	assert.Contains(t, needsCA.Error(), "csr-sign admin-credential path requires a configured CeremonyCA")
 }
 
 // TestInitialize_BYOTLS_GenerateRefused covers the same decision for the
