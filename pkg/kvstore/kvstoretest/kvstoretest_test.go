@@ -16,10 +16,31 @@ package kvstoretest
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
+
+// countingErrContext wraps a real context.Context, returning nil from Err()
+// for the first callsUntilErr calls and err thereafter -- for exercising
+// PutAllIfAllUnchanged's three store-failure branches (the guard's Exists
+// check, the guard's Get check, and a write's Put) independently, since
+// GuardedMemoryStore's underlying MemoryKVStore only ever fails Get/Exists/
+// Put via ctx.Err().
+type countingErrContext struct {
+	context.Context
+	callsUntilErr int
+	err           error
+}
+
+func (c *countingErrContext) Err() error {
+	if c.callsUntilErr <= 0 {
+		return c.err
+	}
+	c.callsUntilErr--
+	return nil
+}
 
 func TestGuardedMemoryStore_PutAllIfAllUnchanged_AppliesWhenAllAbsent(t *testing.T) {
 	s := NewGuardedMemoryStore()
@@ -104,6 +125,54 @@ func TestGuardedMemoryStore_PutAllIfUnchanged_SingleGuard(t *testing.T) {
 	v2, err := s.Get(ctx, "p")
 	if err != nil || string(v2) != "updated" {
 		t.Fatalf("Get(p) after guarded update = %q, %v; want %q, nil", v2, err, "updated")
+	}
+}
+
+// TestGuardedMemoryStore_PutAllIfAllUnchanged_GuardExistsErrorPropagates
+// proves a failure in the absence-guard's Exists check propagates as an
+// error, not a silent refusal.
+func TestGuardedMemoryStore_PutAllIfAllUnchanged_GuardExistsErrorPropagates(t *testing.T) {
+	s := NewGuardedMemoryStore()
+	boom := errors.New("boom")
+	ctx := &countingErrContext{Context: context.Background(), callsUntilErr: 0, err: boom}
+
+	_, err := s.PutAllIfAllUnchanged(ctx, []kvstore.Guard{{Key: "a"}}, []kvstore.KV{{Key: "a", Value: []byte("1")}})
+	if !errors.Is(err, boom) {
+		t.Fatalf("PutAllIfAllUnchanged = %v, want %v", err, boom)
+	}
+}
+
+// TestGuardedMemoryStore_PutAllIfAllUnchanged_GuardGetErrorPropagates
+// proves a failure in the present-value guard's Get check (reached only
+// after its Exists check already succeeded) propagates as an error.
+func TestGuardedMemoryStore_PutAllIfAllUnchanged_GuardGetErrorPropagates(t *testing.T) {
+	s := NewGuardedMemoryStore()
+	if err := s.Put(context.Background(), "a", []byte("1")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	boom := errors.New("boom")
+	// First ctx.Err() call is the guard's Exists check (must succeed, so
+	// the Get check is reached); the second is that Get check itself.
+	ctx := &countingErrContext{Context: context.Background(), callsUntilErr: 1, err: boom}
+
+	_, err := s.PutAllIfAllUnchanged(ctx, []kvstore.Guard{{Key: "a", Value: []byte("1")}}, []kvstore.KV{{Key: "b", Value: []byte("2")}})
+	if !errors.Is(err, boom) {
+		t.Fatalf("PutAllIfAllUnchanged = %v, want %v", err, boom)
+	}
+}
+
+// TestGuardedMemoryStore_PutAllIfAllUnchanged_WritePutErrorPropagates
+// proves a failure applying one of the writes (reached only after every
+// guard already held) propagates as an error, with no guard to fail
+// first.
+func TestGuardedMemoryStore_PutAllIfAllUnchanged_WritePutErrorPropagates(t *testing.T) {
+	s := NewGuardedMemoryStore()
+	boom := errors.New("boom")
+	ctx := &countingErrContext{Context: context.Background(), callsUntilErr: 0, err: boom}
+
+	_, err := s.PutAllIfAllUnchanged(ctx, nil, []kvstore.KV{{Key: "a", Value: []byte("1")}})
+	if !errors.Is(err, boom) {
+		t.Fatalf("PutAllIfAllUnchanged = %v, want %v", err, boom)
 	}
 }
 
