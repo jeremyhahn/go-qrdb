@@ -188,7 +188,7 @@ func TestRunStart_ExplicitSecureMemoryBudgetWithinLimitInstallsIt(t *testing.T) 
 		return nil, errStopEarly
 	}, nil, nil, nil)
 
-	_ = runStart(&startFlags{secureMemoryBudgetMiB: 4})
+	_ = runStart(&startFlags{secureMemoryBudgetMiB: 4, host: testBindHost})
 	if got != 4<<20 {
 		t.Fatalf("newSecureAllocator got %d bytes, want %d", got, 4<<20)
 	}
@@ -202,7 +202,7 @@ func TestRunStart_ExplicitSecureMemoryBudgetOverLimitNamesTheRemedy(t *testing.T
 		return nil, &secure.RLimitError{Requested: maxBytes, Limit: limit}
 	}, nil, nil, nil)
 
-	err := runStart(&startFlags{secureMemoryBudgetMiB: 64})
+	err := runStart(&startFlags{secureMemoryBudgetMiB: 64, host: testBindHost})
 	var budgetErr *SecureMemoryBudgetError
 	if !errors.As(err, &budgetErr) {
 		t.Fatalf("runStart error = %v (%T), want *SecureMemoryBudgetError", err, err)
@@ -232,7 +232,7 @@ func TestRunStart_UnconfiguredSecureMemoryBudgetIsDerived(t *testing.T) {
 		return nil, errStopEarly
 	}, nil, nil, nil)
 
-	_ = runStart(&startFlags{})
+	_ = runStart(&startFlags{host: testBindHost})
 	if want := int64(8<<20) - secureMemoryHeadroomBytes; got != want {
 		t.Fatalf("newSecureAllocator got %d bytes, want the derived %d", got, want)
 	}
