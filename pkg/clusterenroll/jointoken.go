@@ -37,6 +37,7 @@ package clusterenroll
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/url"
 	"time"
 
@@ -64,6 +65,15 @@ const joinTokenPrefix = "__sys:cluster_join_tokens/"
 // admitted one" from here; an operator re-admitting a genuinely lost node
 // mints a token for a NEW node id, which is a deliberate, auditable action.
 const joinIdentityPrefix = "__sys:cluster_join_identities/"
+
+// joinIdentityPending is the value ReserveJoinIdentity writes: a sentinel
+// claiming nodeURI for an issuance in progress, before that issuance is
+// known to succeed. PromoteJoinIdentityAdmitted swaps it for a real
+// timestamp once IssueLeafForKey has actually signed a leaf;
+// ReleaseJoinIdentityReservation removes it if issuance fails instead.
+// Distinct from any valid RFC 3339 timestamp (what an admitted record
+// holds), so a reader can tell the two states apart if it ever needs to.
+var joinIdentityPending = []byte("pending")
 
 // Join-token TTL bounds. A token with no expiry would be the static
 // secret's own defect restated; one bounded to seconds would make an
@@ -125,7 +135,17 @@ func MintJoinToken(ctx context.Context, store kvstore.AtomicKVStore, trustDomain
 		return "", time.Time{}, &ExistingMemberError{NodeURI: identity.String()}
 	}
 
-	if ttl <= 0 {
+	// A negative ttl is refused outright, typed, rather than silently
+	// treated as "use the default": it is never a value any caller meant
+	// to send, and defaulting it would hide a caller bug (a bad
+	// subtraction, an unconverted unit) behind an ordinary-looking token.
+	// Only EXACTLY zero means "use the default" -- the documented contract
+	// MintJoinToken and service.ParseJoinTokenTTLSeconds (ttlSeconds <= 0
+	// -> 0 duration) both share.
+	if ttl < 0 {
+		return "", time.Time{}, &JoinTokenTTLError{TTL: ttl}
+	}
+	if ttl == 0 {
 		ttl = DefaultJoinTokenTTL
 	}
 	if ttl < MinJoinTokenTTL || ttl > MaxJoinTokenTTL {
@@ -172,11 +192,12 @@ func MintJoinToken(ctx context.Context, store kvstore.AtomicKVStore, trustDomain
 // a different trust domain or after waiting out a clock skew gains an
 // attacker nothing.
 //
-// This does NOT mark the identity admitted -- it only refuses a token
-// bound to an identity ALREADY marked (a read-only check). Call
-// MarkJoinIdentityAdmitted once the caller has actually issued a leaf; see
-// HandleJoinRequest's doc comment for why that is deliberately a separate,
-// later step.
+// This does NOT reserve or mark the identity admitted -- it only refuses a
+// token bound to an identity ALREADY admitted or already reserved for an
+// in-flight issuance (a read-only check against the same ledger
+// ReserveJoinIdentity/PromoteJoinIdentityAdmitted write to). See
+// HandleJoinRequest's doc comment for the full reserve-then-promote-or-
+// release sequence that runs after this returns.
 func ConsumeJoinToken(ctx context.Context, store kvstore.AtomicKVStore, trustDomain, token string) (boundNodeURI string, err error) {
 	if token == "" {
 		return "", errJoinTokenRejected
@@ -241,26 +262,102 @@ func ConsumeJoinToken(ctx context.Context, store kvstore.AtomicKVStore, trustDom
 	return identity.String(), nil
 }
 
-// MarkJoinIdentityAdmitted records that nodeURI has been admitted through
-// the member-side CSR join mechanism, so a later join attempt presenting a
-// (new, validly minted) token for the same identity is refused by
-// ConsumeJoinToken rather than silently re-admitted. Called by
-// HandleJoinRequest ONLY after IssueLeafForKey has actually issued a leaf
-// -- never bundled with ConsumeJoinToken's token consumption -- so that a
-// signing failure after the token is consumed leaves the identity free for
-// a retry with a freshly minted token. See HandleJoinRequest's doc comment
-// for the full reasoning and the narrow race this ordering accepts.
+// MarkJoinIdentityAdmitted records that nodeURI has been admitted WITHOUT
+// going through a reservation first -- the founder/first-boot path
+// (cmd/qrdbd's recordOwnJoinIdentity), where there is no concurrent-token
+// race to protect against and no signing step that can fail after the
+// write: the certificate this records already exists, generated directly,
+// not issued against a presented token. The member-side CSR join path
+// (HandleJoinRequest) does NOT use this -- it goes through
+// ReserveJoinIdentity / PromoteJoinIdentityAdmitted /
+// ReleaseJoinIdentityReservation instead, so that a signing failure
+// between consuming a token and recording admission cannot either retire
+// the node ID forever or leave two concurrent tokens for one identity both
+// believing they won.
 //
-// A false return (no error, not admitted) means a concurrent caller won
-// the race to mark this identity first -- both callers had already issued
-// a leaf by this point, so this is reported for logging, not as a failure
-// requiring either leaf to be revoked.
+// Idempotent by design: called on every boot, not only the first, so a
+// restart presenting the SAME leaf must not error just because the record
+// already exists. A false return (no error, not admitted) therefore means
+// exactly that -- reported at INFO rather than silently discarded, since
+// it is also the shape a genuine split-brain (two different processes
+// both believing they are THIS node) would take, which an operator
+// watching logs should be able to notice even though this call does not
+// fail on it.
 func MarkJoinIdentityAdmitted(ctx context.Context, store kvstore.AtomicKVStore, nodeURI string) error {
 	identityKey := joinIdentityPrefix + nodeURI
-	if _, err := store.PutIfAbsent(ctx, identityKey, []byte(time.Now().UTC().Format(time.RFC3339))); err != nil {
+	stored, err := store.PutIfAbsent(ctx, identityKey, []byte(time.Now().UTC().Format(time.RFC3339)))
+	if err != nil {
 		return &JoinTokenStoreError{Op: "putifabsent", Detail: identityKey, Err: err}
 	}
+	if !stored {
+		slog.InfoContext(ctx, "member-side CSR join: identity already recorded admitted",
+			"node_uri", nodeURI)
+	}
 	return nil
+}
+
+// ReserveJoinIdentity atomically claims nodeURI in the join-identity
+// ledger for an issuance about to be attempted, BEFORE IssueLeafForKey
+// ever runs. It shares the same ledger key MintJoinToken's own
+// already-admitted check reads, so a second, independently-and-validly
+// minted token for the SAME identity -- two concurrent join attempts
+// racing each other -- is refused HERE, at the reservation, rather than
+// both reaching IssueLeafForKey and each believing it will win.
+//
+// reserved=false (no error) means nodeURI is already reserved or already
+// admitted; the caller must refuse the join without ever calling
+// IssueLeafForKey.
+func ReserveJoinIdentity(ctx context.Context, store kvstore.AtomicKVStore, nodeURI string) (reserved bool, err error) {
+	identityKey := joinIdentityPrefix + nodeURI
+	reserved, err = store.PutIfAbsent(ctx, identityKey, joinIdentityPending)
+	if err != nil {
+		return false, &JoinTokenStoreError{Op: "putifabsent", Detail: identityKey, Err: err}
+	}
+	return reserved, nil
+}
+
+// PromoteJoinIdentityAdmitted swaps nodeURI's PENDING reservation
+// (ReserveJoinIdentity) for a durable admitted record, called ONLY after
+// IssueLeafForKey has actually signed a leaf for it. The caller MUST
+// refuse the whole issue -- never return the leaf it already signed --
+// when this returns an error: a non-nil error means the swap's outcome is
+// unknown, and swapped=false means the reservation was not there in the
+// PENDING state this call expected, an inconsistency this package cannot
+// explain away well enough to hand out a certificate anyway.
+func PromoteJoinIdentityAdmitted(ctx context.Context, store kvstore.AtomicKVStore, nodeURI string) error {
+	identityKey := joinIdentityPrefix + nodeURI
+	admitted := []byte(time.Now().UTC().Format(time.RFC3339))
+	swapped, err := store.CompareAndSwap(ctx, identityKey, joinIdentityPending, admitted)
+	if err != nil {
+		return &JoinTokenStoreError{Op: "compareandswap", Detail: identityKey, Err: err}
+	}
+	if !swapped {
+		return &JoinIdentityReservationLostError{NodeURI: nodeURI}
+	}
+	return nil
+}
+
+// ReleaseJoinIdentityReservation removes nodeURI's PENDING reservation
+// (ReserveJoinIdentity), called when issuance fails AFTER the reservation
+// succeeded: the identity was never actually admitted, so the reservation
+// must not survive forever and block every later join attempt for it.
+//
+// released=false (no error) means the reservation was not there, or no
+// longer held the PENDING value this call expected -- reported at WARN,
+// the lost-race case the earlier, discarding implementation of this
+// cleanup did not surface at all, rather than silently treated as
+// "nothing to do."
+func ReleaseJoinIdentityReservation(ctx context.Context, store kvstore.AtomicKVStore, nodeURI string) (released bool, err error) {
+	identityKey := joinIdentityPrefix + nodeURI
+	released, err = store.CompareAndDelete(ctx, identityKey, joinIdentityPending)
+	if err != nil {
+		return false, &JoinTokenStoreError{Op: "compareanddelete", Detail: identityKey, Err: err}
+	}
+	if !released {
+		slog.WarnContext(ctx, "member-side CSR join: reservation already gone when releasing it after a signing failure",
+			"node_uri", nodeURI)
+	}
+	return released, nil
 }
 
 // errJoinTokenRejected is the one wire-visible reason every ConsumeJoinToken
@@ -333,6 +430,19 @@ type JoinTokenCollisionError struct{}
 // Error returns a human-readable description.
 func (e *JoinTokenCollisionError) Error() string {
 	return "clusterenroll: join token digest collision"
+}
+
+// JoinIdentityReservationLostError is returned by
+// PromoteJoinIdentityAdmitted when NodeURI's PENDING reservation was not
+// there in the state the promotion expected -- HandleJoinRequest's
+// signal to refuse the issue it already signed rather than hand it out.
+type JoinIdentityReservationLostError struct {
+	NodeURI string
+}
+
+// Error returns a human-readable description.
+func (e *JoinIdentityReservationLostError) Error() string {
+	return "clusterenroll: join identity reservation lost before it could be promoted to admitted: " + e.NodeURI
 }
 
 // ExistingMemberError is returned by MintJoinToken when NodeURI already has

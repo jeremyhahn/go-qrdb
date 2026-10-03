@@ -39,6 +39,8 @@ func TestJoinTokenErrors_ErrorStrings(t *testing.T) {
 		&JoinTokenGenerateError{Err: cause},
 		&JoinTokenStoreError{Op: "get", Detail: "k", Err: cause},
 		&JoinTokenCollisionError{},
+		&JoinIdentityReservationLostError{NodeURI: "spiffe://qrdb.cluster/node/10.0.0.1:9000"},
+		&ExistingMemberError{NodeURI: "spiffe://qrdb.cluster/node/10.0.0.1:9000"},
 	}
 	for _, err := range tests {
 		if err.Error() == "" {
@@ -370,6 +372,130 @@ func TestConsumeJoinToken_SignFailureAfterConsumeLeavesIdentityRetryable(t *test
 	}
 }
 
+// ---------------------------------------------------------------------------
+// ReserveJoinIdentity / PromoteJoinIdentityAdmitted / ReleaseJoinIdentityReservation
+// ---------------------------------------------------------------------------
+
+func TestReserveJoinIdentity_FirstCallReserves(t *testing.T) {
+	store := kvstore.NewMemoryKVStore()
+	reserved, err := ReserveJoinIdentity(context.Background(), store, "node-1")
+	if err != nil {
+		t.Fatalf("ReserveJoinIdentity: %v", err)
+	}
+	if !reserved {
+		t.Fatal("ReserveJoinIdentity = false on a fresh identity, want true")
+	}
+}
+
+func TestReserveJoinIdentity_SecondCallRefused(t *testing.T) {
+	store := kvstore.NewMemoryKVStore()
+	if _, err := ReserveJoinIdentity(context.Background(), store, "node-1"); err != nil {
+		t.Fatalf("ReserveJoinIdentity (first): %v", err)
+	}
+	reserved, err := ReserveJoinIdentity(context.Background(), store, "node-1")
+	if err != nil {
+		t.Fatalf("ReserveJoinIdentity (second): %v", err)
+	}
+	if reserved {
+		t.Fatal("ReserveJoinIdentity (second) = true, want false: the identity is already reserved")
+	}
+}
+
+func TestReserveJoinIdentity_StoreErrorSurfacesTyped(t *testing.T) {
+	store := &faultyJoinStore{AtomicKVStore: kvstore.NewMemoryKVStore(), failPutIfAbsentOnPrefix: joinIdentityPrefix}
+	_, err := ReserveJoinIdentity(context.Background(), store, "node-1")
+	var storeErr *JoinTokenStoreError
+	if !errors.As(err, &storeErr) {
+		t.Fatalf("ReserveJoinIdentity (store error) = %v, want *JoinTokenStoreError", err)
+	}
+}
+
+func TestPromoteJoinIdentityAdmitted_SwapsAReservation(t *testing.T) {
+	store := kvstore.NewMemoryKVStore()
+	if _, err := ReserveJoinIdentity(context.Background(), store, "node-1"); err != nil {
+		t.Fatalf("ReserveJoinIdentity: %v", err)
+	}
+	if err := PromoteJoinIdentityAdmitted(context.Background(), store, "node-1"); err != nil {
+		t.Fatalf("PromoteJoinIdentityAdmitted: %v", err)
+	}
+	// A second reservation attempt must now be refused: the identity is
+	// admitted, not merely pending.
+	reserved, err := ReserveJoinIdentity(context.Background(), store, "node-1")
+	if err != nil {
+		t.Fatalf("ReserveJoinIdentity (after promotion): %v", err)
+	}
+	if reserved {
+		t.Fatal("ReserveJoinIdentity after promotion = true, want false: the identity is already admitted")
+	}
+}
+
+func TestPromoteJoinIdentityAdmitted_LostReservationRefused(t *testing.T) {
+	store := kvstore.NewMemoryKVStore()
+	// No ReserveJoinIdentity call: the PENDING record this promotion
+	// expects was never written (or was already released/promoted by
+	// someone else).
+	err := PromoteJoinIdentityAdmitted(context.Background(), store, "node-1")
+	var lostErr *JoinIdentityReservationLostError
+	if !errors.As(err, &lostErr) {
+		t.Fatalf("PromoteJoinIdentityAdmitted (no reservation) = %v, want *JoinIdentityReservationLostError", err)
+	}
+	if lostErr.NodeURI != "node-1" {
+		t.Fatalf("JoinIdentityReservationLostError.NodeURI = %q, want %q", lostErr.NodeURI, "node-1")
+	}
+}
+
+func TestPromoteJoinIdentityAdmitted_StoreErrorSurfacesTyped(t *testing.T) {
+	store := &faultyJoinStore{AtomicKVStore: kvstore.NewMemoryKVStore(), failCompareAndSwapOnPrefix: joinIdentityPrefix}
+	err := PromoteJoinIdentityAdmitted(context.Background(), store, "node-1")
+	var storeErr *JoinTokenStoreError
+	if !errors.As(err, &storeErr) {
+		t.Fatalf("PromoteJoinIdentityAdmitted (store error) = %v, want *JoinTokenStoreError", err)
+	}
+}
+
+func TestReleaseJoinIdentityReservation_ReleasesAReservation(t *testing.T) {
+	store := kvstore.NewMemoryKVStore()
+	if _, err := ReserveJoinIdentity(context.Background(), store, "node-1"); err != nil {
+		t.Fatalf("ReserveJoinIdentity: %v", err)
+	}
+	released, err := ReleaseJoinIdentityReservation(context.Background(), store, "node-1")
+	if err != nil {
+		t.Fatalf("ReleaseJoinIdentityReservation: %v", err)
+	}
+	if !released {
+		t.Fatal("ReleaseJoinIdentityReservation = false, want true: a PENDING reservation was there to release")
+	}
+	// A fresh reservation attempt must now succeed again.
+	reserved, err := ReserveJoinIdentity(context.Background(), store, "node-1")
+	if err != nil {
+		t.Fatalf("ReserveJoinIdentity (after release): %v", err)
+	}
+	if !reserved {
+		t.Fatal("ReserveJoinIdentity after release = false, want true: the reservation should have been cleared")
+	}
+}
+
+func TestReleaseJoinIdentityReservation_AlreadyGoneLogsAndReportsFalse(t *testing.T) {
+	store := kvstore.NewMemoryKVStore()
+	// No reservation was ever made for this identity.
+	released, err := ReleaseJoinIdentityReservation(context.Background(), store, "node-1")
+	if err != nil {
+		t.Fatalf("ReleaseJoinIdentityReservation: %v", err)
+	}
+	if released {
+		t.Fatal("ReleaseJoinIdentityReservation = true, want false: there was nothing to release")
+	}
+}
+
+func TestReleaseJoinIdentityReservation_StoreErrorSurfacesTyped(t *testing.T) {
+	store := &faultyJoinStore{AtomicKVStore: kvstore.NewMemoryKVStore(), failCompareAndDeleteOnPrefix: joinIdentityPrefix}
+	_, err := ReleaseJoinIdentityReservation(context.Background(), store, "node-1")
+	var storeErr *JoinTokenStoreError
+	if !errors.As(err, &storeErr) {
+		t.Fatalf("ReleaseJoinIdentityReservation (store error) = %v, want *JoinTokenStoreError", err)
+	}
+}
+
 // assertJoinRefused fails the test unless err is *JoinRefusedError.
 func assertJoinRefused(t *testing.T, err error) {
 	t.Helper()
@@ -393,9 +519,11 @@ type faultyJoinStore struct {
 	failExistsOnPrefix           string
 	failPutIfAbsentOnPrefix      string
 	failCompareAndDeleteOnPrefix string
+	failCompareAndSwapOnPrefix   string
 
 	forcePutIfAbsentFalseOnPrefix      string
 	forceCompareAndDeleteFalseOnPrefix string
+	forceCompareAndSwapFalseOnPrefix   string
 }
 
 func (f *faultyJoinStore) Get(ctx context.Context, key string) ([]byte, error) {
@@ -430,4 +558,14 @@ func (f *faultyJoinStore) CompareAndDelete(ctx context.Context, key string, expe
 		return false, nil
 	}
 	return f.AtomicKVStore.CompareAndDelete(ctx, key, expected)
+}
+
+func (f *faultyJoinStore) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	if f.failCompareAndSwapOnPrefix != "" && strings.HasPrefix(key, f.failCompareAndSwapOnPrefix) {
+		return false, errInjectedFault
+	}
+	if f.forceCompareAndSwapFalseOnPrefix != "" && strings.HasPrefix(key, f.forceCompareAndSwapFalseOnPrefix) {
+		return false, nil
+	}
+	return f.AtomicKVStore.CompareAndSwap(ctx, key, expected, next)
 }

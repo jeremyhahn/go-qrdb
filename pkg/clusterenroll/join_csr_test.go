@@ -836,6 +836,71 @@ func TestHandleJoinRequest_SignFailureAfterConsumeLeavesIdentityRetryable(t *tes
 	}
 }
 
+// TestHandleJoinRequest_ConcurrentTokensForOneIdentityYieldExactlyOneLeaf
+// is the owner-required concurrency proof for the reservation ordering:
+// two tokens independently and validly minted for the SAME node identity
+// -- both still unconsumed, so both pass ConsumeJoinToken -- race each
+// other into HandleJoinRequest at once. ReserveJoinIdentity's atomic
+// claim, not an unordered consume-then-mark, is what must make exactly
+// ONE of them win.
+func TestHandleJoinRequest_ConcurrentTokensForOneIdentityYieldExactlyOneLeaf(t *testing.T) {
+	provider := newTestClusterCAProvider(t)
+	store := kvstore.NewMemoryKVStore()
+
+	const nodeID = "node-race-1"
+	tokenOne := mintTestJoinToken(t, store, nodeID)
+	tokenTwo := mintTestJoinToken(t, store, nodeID)
+
+	keyOne, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	keyTwo, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	csrOne, err := buildJoinCSR(keyOne, "")
+	if err != nil {
+		t.Fatalf("buildJoinCSR (one): %v", err)
+	}
+	csrTwo, err := buildJoinCSR(keyTwo, "")
+	if err != nil {
+		t.Fatalf("buildJoinCSR (two): %v", err)
+	}
+
+	var wg sync.WaitGroup
+	responses := make([]*JoinResponse, 2)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		responses[0] = HandleJoinRequest(context.Background(), provider, store, testTrustDomain, &JoinRequest{
+			Token:  tokenOne,
+			CSRDER: csrOne,
+		})
+	}()
+	go func() {
+		defer wg.Done()
+		responses[1] = HandleJoinRequest(context.Background(), provider, store, testTrustDomain, &JoinRequest{
+			Token:  tokenTwo,
+			CSRDER: csrTwo,
+		})
+	}()
+	wg.Wait()
+
+	leaves := 0
+	refusals := 0
+	for i, resp := range responses {
+		switch {
+		case len(resp.CertPEM) > 0 && resp.Error == "":
+			leaves++
+		case resp.Error != "":
+			refusals++
+		default:
+			t.Fatalf("response %d = %+v, want either a leaf or an error, not both/neither", i, resp)
+		}
+	}
+	if leaves != 1 {
+		t.Fatalf("got %d issued leaves for two concurrent tokens on one identity, want exactly 1 (refusals=%d)", leaves, refusals)
+	}
+	if refusals != 1 {
+		t.Fatalf("got %d refusals, want exactly 1 (leaves=%d)", refusals, leaves)
+	}
+}
+
 func TestJoinServer_SigningFailureRefused(t *testing.T) {
 	realProvider := newTestClusterCAProvider(t)
 	caCert, err := realProvider.Certificate(context.Background())
