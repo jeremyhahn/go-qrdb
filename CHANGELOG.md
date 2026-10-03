@@ -103,6 +103,39 @@ are not reconstructed here — their history is in the git log.
   claim being checked is "nothing under go.etcd.io is reachable without
   qrdb_etcd," and the narrower prefix would have missed a go.etcd.io
   module outside the `etcd/` path.
+- **`pkg/sql/internal/sessionguard/sessionguard.go` and
+  `pkg/sql/pgcatalog/sleep.go`** (plus their tests) arrived through a
+  `main` merge with no build constraint at all — new files in
+  already-tagged directories, added by a change that never touched the
+  tagging convention and so never tripped `make vet-tags` (both
+  typecheck fine under every declared combination, tagged or not).
+  Tagged all four `qrdb_sql`.
+- **REST's and MCP's `database create` silently dropped an etcd
+  protocol block on every build.** `pkg/api/rest/handlers_database.go`'s
+  `createDatabaseRequest.Protocol` had no `Etcd` field at all; MCP's
+  `qrdb_database_create` tool had no `etcd`/`etcd_listen_addr`/
+  `etcd_advertise_urls` arguments; the MCP and embedded SDK clients
+  (`sdk/go/transport/{mcp,embedded}/transport_database.go`) silently
+  dropped `req.Protocol.Etcd` even where the request type already
+  carried it. gRPC, QUIC and Unix were already correct on inspection,
+  both server and client side.
+- **`databases:` YAML entries' own `mysql`/`postgresql` flags were
+  silently dropped at provisioning time, regardless of build tags,
+  every boot.** `configuredDatabases` (`cmd/qrdbd/provision.go`) built
+  each entry's `Protocol` from nothing; only the separate
+  `--sql-database` special case ever applied one. Found while adding
+  the equivalent `etcd` field to the same function.
+- **A `databases:` YAML entry enabling etcd on a binary without
+  `qrdb_etcd` provisioned silently instead of refusing.** Boot-time
+  provisioning creates databases through `*database.Manager` directly,
+  bypassing `pkg/service` entirely, so the capability check added for
+  `Create`/`CreateForTenant`/`UpdateEtcd`/`UpdateEtcdForTenant` never
+  ran for it. `provisionDatabases` now calls the same
+  `service.RefuseEtcdNotCompiled` (exported for this purpose) before
+  provisioning.
+- **`docs/etcd-compatibility/cli.md`** quoted a refusal message
+  (`not implemented: requires build tag qrdb_etcd`) that was never the
+  actual error text. Now quotes the real one.
 
 ### Added
 
@@ -174,7 +207,29 @@ are not reconstructed here — their history is in the git log.
   time, which is exactly what surfaced writing this round's CLI changes
   (see Fixed, above). Scoped to the command surface rather than the whole
   tree and excludes the `+integration` rungs; see the script's header for
-  the full scoping rationale.
+  the full scoping rationale. Now also runs in CI's Test job
+  (`.github/workflows/ci.yml`, after the coverage gate) rather than only
+  on demand, and its scope (`TEST_TAGS_PKGS`) covers `pkg/service`
+  (non-recursive) in addition to the command surface, so
+  `database_etcd_capability_test.go`'s `!qrdb_etcd` refusal tests
+  actually run under the NOETCD rung.
+- **`test/buildgates/sql_etcd_tag_coverage_test.go`** asserts that EVERY
+  `.go` file under `pkg/sql/` carries a build constraint satisfiable
+  only when `qrdb_sql`, `qrdb_mysql` or `qrdb_pgsql` is on (the SQL
+  family — `pkg/sql/mysql`/`pgsql` carry their own narrower tag, not a
+  compound with `qrdb_sql`), and every file under `pkg/api/etcd/` one
+  satisfiable only when `qrdb_etcd` is on. Uses `go/build/constraint`
+  to parse and evaluate each file's `//go:build` line rather than
+  substring-matching the tag name, with a measured discovery floor so
+  an empty walk cannot read as clean — the enforcement
+  `pkg/sql/internal/sessionguard/sessionguard.go` and
+  `pkg/sql/pgcatalog/sleep.go` (see Fixed, above) should have tripped
+  and did not.
+- **`sdk/go/conformance/database_create_etcd_test.go`** walks all six
+  SDK transports and asserts `CreateDatabase` with `Protocol.Etcd` set
+  actually enables it end to end, through a real node over real mTLS
+  for the remote ones — the cross-transport conformance check for the
+  REST/MCP etcd parity bug (see Fixed, above).
 
 ### Changed — BREAKING
 
