@@ -11,6 +11,13 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.34.1-alpha] - 2026-10-03
+
+Sealed-node hardening. Highlights:
+
+- **Registering a tenant volume fails closed while the system barrier is sealed.** Before, a direct registry call skipped its claimed-root overlap guard.
+- **`Node.Close` waits for the background sweepers to exit** before stopping the services they call into.
+
 ### Security
 
 - **`BarrierRegistry.RegisterVolumeTenant`/`ReattachVolumeTenant` refuse
