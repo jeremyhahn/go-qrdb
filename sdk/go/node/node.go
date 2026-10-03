@@ -1285,19 +1285,39 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	defer func() {
 		if err != nil {
 			if barrierRegistry := n.barrierRegistry.Load(); barrierRegistry != nil {
-				_ = barrierRegistry.SealAll()
+				if serr := barrierRegistry.SealAll(); serr != nil {
+					n.logger.Error("node: failed to seal every barrier after a cancelled or failed clustered boot",
+						slog.Any("error", serr))
+				}
 			} else if b := n.barrier.Load(); b != nil {
 				_ = b.Seal()
 			}
 			n.pendingClustered = pending
 			// Clear the components this attempt built so a retried Unseal's
-			// accessors cannot hand out a host or feature gate that this
-			// failed boot already closed, and restore svcNode to its
-			// pre-attempt (seal-only, or an earlier failed attempt's)
-			// snapshot rather than the full node this attempt stopped.
+			// accessors cannot hand out a host, feature gate, or data-plane
+			// service (AuthFactorService, UserAuthFactorService,
+			// ABACPolicyReloader, the scoped encryption migrator) built over
+			// this failed attempt's now-stopped svcNode and host -- mirroring
+			// what Close does for the same handles. svcNode itself is
+			// restored to its pre-attempt (seal-only, or an earlier failed
+			// attempt's) snapshot rather than the full node this attempt
+			// stopped.
 			n.host = nil
 			n.featureGate = nil
 			n.svcNode.Store(preBootSvcNode)
+			n.retractDataPlaneServices()
+			n.encMigrator.Store(nil)
+			// The replicated volume-pool cursor and the cluster-wide slot
+			// store were, if this attempt got that far, bound/attached over
+			// the svcNode just stopped above; detach them so a tenant
+			// provisioned during the retry window falls back to node-local
+			// Pick instead of reaching the stopped replicated KV.
+			if n.volumePool != nil && n.volumePool.ReplicatedState != nil {
+				n.volumePool.ReplicatedState.Unbind()
+			}
+			if barrierRegistry := n.barrierRegistry.Load(); barrierRegistry != nil {
+				barrierRegistry.DetachReplicatedSlotStore()
+			}
 		}
 	}()
 
@@ -1371,6 +1391,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	if err != nil {
 		_ = host.Close()
 		_ = dbManager.Close()
+		n.dbManager = nil
 		return err
 	}
 	profile.WarnUnencryptedAtRest(n.logger)

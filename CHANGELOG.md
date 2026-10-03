@@ -37,7 +37,19 @@ are not reconstructed here — their history is in the git log.
   barrier seal otherwise, and clears the host and feature gate a failed
   attempt built (restoring the pre-attempt services node rather than the
   stopped post-boot one) so a retried `Unseal` never hands out a component
-  the failed attempt already closed.
+  the failed attempt already closed. `wireClientAndServer` publishes the
+  `AuthFactorService`, `UserAuthFactorService` and `ABACPolicyReloader`
+  handles, and the scoped encryption migrator, before steps that can still
+  fail -- an admin-binding check honouring `ctx`, or the multi-protocol
+  server failing to start -- so the same failure left those accessors
+  handing out services built over the stopped host too. The defer now also
+  calls `retractDataPlaneServices` and clears the migrator, mirroring
+  `Close`, and detaches the replicated volume-pool cursor and the
+  cluster-wide tenant-slot store (new `ReplicatedStateStore.Unbind` and
+  `BarrierRegistry.DetachReplicatedSlotStore`) so a tenant provisioned
+  during the retry window falls back to node-local placement instead of
+  reaching the stopped replicated KV. A `SealAll` failure is now logged
+  rather than discarded.
 
 ## [0.33.0-alpha] - 2026-10-03
 

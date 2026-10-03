@@ -157,6 +157,19 @@ func WithReplicatedSlotStore(store StorageBackend) Option {
 	}
 }
 
+// DetachReplicatedSlotStore clears the replicated slot store attached by
+// WithReplicatedSlotStore, returning the registry to node-local Pick.
+// Callers retract the attachment when the store it wraps (the replicated
+// system KV) has been stopped -- a boot attempt that attached it and then
+// failed -- so a tenant provisioned during the resulting window resolves a
+// slot locally instead of reaching the stopped backend. Idempotent: calling
+// it when no slot store is attached is a no-op.
+func (r *BarrierRegistry) DetachReplicatedSlotStore() {
+	r.poolMu.Lock()
+	defer r.poolMu.Unlock()
+	r.slotStore = nil
+}
+
 // WithMigrationRecoverer attaches the crash-recovery hook RegisterVolumeTenant
 // runs over a tenant's freshly-opened barrier backend before building the
 // barrier. It closes the tenant-scope enable-encryption crash window: a node

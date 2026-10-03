@@ -438,3 +438,46 @@ func TestReplicatedSlot_StandaloneUsesNodeLocalPick(t *testing.T) {
 		t.Fatalf("standalone node B t1 slot = %d, want 0 (node-local pick)", got)
 	}
 }
+
+// TestReplicatedSlot_DetachReturnsToNodeLocalPick proves DetachReplicatedSlotStore
+// clears the attachment made by WithReplicatedSlotStore, idempotently, and
+// that provisioning afterward falls back to node-local Pick exactly as a
+// registry that was never given a slot store does (go-qrdb#rr-followups: a
+// failed clustered boot that attached the replicated store over the now-
+// stopped system KV must not leave it reachable on retry).
+func TestReplicatedSlot_DetachReturnsToNodeLocalPick(t *testing.T) {
+	ctx := context.Background()
+	slotStore := NewMemoryBackend()
+
+	store, _, _ := newStateStore(t)
+	rr := &objpool.RoundRobinStrategy{State: store}
+	node := newReplicatedNode(t, rr, slotStore)
+
+	node.reg.poolMu.RLock()
+	attached := node.reg.slotStore
+	node.reg.poolMu.RUnlock()
+	if attached == nil {
+		t.Fatal("slot store must be attached before Detach")
+	}
+
+	node.reg.DetachReplicatedSlotStore()
+	node.reg.poolMu.RLock()
+	after := node.reg.slotStore
+	node.reg.poolMu.RUnlock()
+	if after != nil {
+		t.Fatal("slot store must be nil after DetachReplicatedSlotStore")
+	}
+
+	// Idempotent: detaching an already-detached registry is a no-op, not an error.
+	node.reg.DetachReplicatedSlotStore()
+
+	// Provisioning after detach uses node-local Pick (slot 0, the cursor's
+	// start), exactly as TestReplicatedSlot_StandaloneUsesNodeLocalPick shows
+	// for a registry that never had a slot store.
+	if _, err := node.reg.RegisterTenant(ctx, "t1", nil, BarrierConfig{}, newPoolSoftwareStrategy(t)); err != nil {
+		t.Fatalf("RegisterTenant after detach: %v", err)
+	}
+	if got := node.slotOf("t1"); got != 0 {
+		t.Fatalf("post-detach t1 slot = %d, want 0 (node-local pick)", got)
+	}
+}

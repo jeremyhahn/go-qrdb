@@ -86,6 +86,16 @@ func (s *ReplicatedStateStore) Bind(kv ReplicatedKV) error {
 	return nil
 }
 
+// Unbind detaches the replicated KV, returning the store to its unbound
+// state. It is lock-free and idempotent -- unbinding an already-unbound
+// store is a no-op. Callers retract the binding when the service graph that
+// backed it (the replicated system KV) has been stopped, such as a boot
+// attempt that failed after Bind ran: an unbound Get/Put fails closed with
+// ReplicatedStateStoreUnboundError instead of reaching the stopped backend.
+func (s *ReplicatedStateStore) Unbind() {
+	s.holder.Store(nil)
+}
+
 // Bound reports whether a replicated KV has been bound.
 func (s *ReplicatedStateStore) Bound() bool {
 	_, ok := s.backend()

@@ -126,6 +126,44 @@ func TestReplicatedStateStore_Unbound(t *testing.T) {
 	}
 }
 
+// TestReplicatedStateStore_Unbind proves Unbind returns a bound store to its
+// unbound, fail-closed state, and that it is idempotent on an already-unbound
+// store.
+func TestReplicatedStateStore_Unbind(t *testing.T) {
+	store := qrdbpool.NewReplicatedStateStore()
+	ctx := context.Background()
+
+	// Unbinding a fresh (never-bound) store is a no-op, not an error.
+	store.Unbind()
+	if store.Bound() {
+		t.Fatal("Unbind on a fresh store must leave it unbound")
+	}
+
+	if err := store.Bind(newFakeReplicatedKV()); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	if !store.Bound() {
+		t.Fatal("store should report Bound() == true after Bind")
+	}
+
+	store.Unbind()
+	if store.Bound() {
+		t.Fatal("store should report Bound() == false after Unbind")
+	}
+	var unbound *qrdbpool.ReplicatedStateStoreUnboundError
+	if _, _, err := store.Get(ctx, "k"); !errors.As(err, &unbound) {
+		t.Fatalf("Get after Unbind = %v, want ReplicatedStateStoreUnboundError", err)
+	}
+
+	// Re-binding after Unbind works, exactly like binding fresh.
+	if err := store.Bind(newFakeReplicatedKV()); err != nil {
+		t.Fatalf("Bind after Unbind: %v", err)
+	}
+	if err := store.Put(ctx, "k", []byte("v")); err != nil {
+		t.Fatalf("Put after re-Bind: %v", err)
+	}
+}
+
 // TestReplicatedStateStore_NilBind proves nil KVs are rejected with a typed
 // error from both the constructor and Bind.
 func TestReplicatedStateStore_NilBind(t *testing.T) {

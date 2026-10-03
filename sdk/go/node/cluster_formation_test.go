@@ -18,8 +18,10 @@ package node
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -642,23 +644,31 @@ func TestClusteredNode_UnsealRetriesAfterACancelledBoot_TenantBarriersSealed(t *
 	// Unseal re-runs completeClusteredBoot from scratch, including
 	// BuildTenantInfra's restore-and-reattach of the tenants just created.
 	//
-	// The cancellation delay is retried with an increasing budget rather than
-	// fixed: this machine's single-node election latency varies enough
-	// (observed ~150ms-900ms per election in this suite) that a single fixed
-	// delay sometimes lands before RestoreVolumeTenants has registered any
-	// tenant barrier, and sometimes after the whole boot has already
-	// succeeded. Landing is judged by a signal that does not depend on the
-	// fix under test: RestoreVolumeTenants registers every tenant barrier it
-	// finds in one synchronous pass BEFORE the per-tenant Host reattach loop
-	// even starts, so "at least one tenant is registered" means that pass
-	// ran to completion regardless of what happens to a registered barrier's
+	// The cancellation delay is searched for, in both directions, rather
+	// than fixed or monotonically grown: this machine's single-node election
+	// latency varies by more than 10x between runs (observed ~150ms-900ms
+	// per election under light load in this suite, and well over a second
+	// under the load a full package run adds), so a fixed delay sometimes
+	// lands before RestoreVolumeTenants has registered any tenant barrier
+	// (too fast) and sometimes after the whole boot has already succeeded
+	// (too slow). The search exponentially grows or shrinks the delay while
+	// only one bound is known (so it reaches the right order of magnitude in
+	// a handful of steps regardless of how slow this run is) and bisects
+	// once both a too-fast and a too-slow delay have been seen. Landing is
+	// judged by a signal that does not depend on the fix under test:
+	// RestoreVolumeTenants registers every tenant barrier it finds in one
+	// synchronous pass BEFORE the per-tenant Host reattach loop even starts,
+	// so "at least one tenant is registered" means that pass ran to
+	// completion regardless of what happens to a registered barrier's
 	// sealed state afterward -- which is exactly the question this test asks.
 	var (
-		n2        *Node
-		unsealErr error
+		n2                  *Node
+		unsealErr           error
+		low, high           time.Duration
+		lowKnown, highKnown bool
 	)
 	delay := 400 * time.Millisecond
-	const maxAttempts = 6
+	const maxAttempts = 16
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		n2, err = NewClusteredNode(ctx, cfg, raftMembers(), nil,
 			WithTenantIsolation(), WithDefaultTenantEntitlements(volumeEntitlements()))
@@ -670,12 +680,30 @@ func TestClusteredNode_UnsealRetriesAfterACancelledBoot_TenantBarriersSealed(t *
 		unsealErr = n2.Unseal(cancelCtx, creds())
 		timer.Stop()
 		cancel()
-		if unsealErr != nil && len(n2.BarrierRegistry().ListTenants()) > 0 {
-			break
+
+		registered := len(n2.BarrierRegistry().ListTenants()) > 0
+		if unsealErr != nil && registered {
+			break // landed inside tenant reattach: exactly the window this test needs.
 		}
 		_ = n2.Close()
 		n2 = nil
-		delay += 300 * time.Millisecond
+		if unsealErr == nil {
+			// Too slow: the whole boot finished before the cancel fired.
+			high, highKnown = delay, true
+			if lowKnown {
+				delay = (low + high) / 2
+			} else {
+				delay /= 2
+			}
+		} else {
+			// Too fast: cancelled before any tenant was even registered.
+			low, lowKnown = delay, true
+			if highKnown {
+				delay = (low + high) / 2
+			} else {
+				delay *= 2
+			}
+		}
 	}
 	if n2 == nil {
 		t.Fatalf("could not land a cancellation inside tenant reattach after %d attempts", maxAttempts)
@@ -722,5 +750,99 @@ func TestClusteredNode_UnsealRetriesAfterACancelledBoot_TenantBarriersSealed(t *
 		if tb.IsSealed() {
 			t.Fatalf("tenant %s barrier must be unsealed after the retried boot completes", id)
 		}
+	}
+}
+
+// TestClusteredNode_UnsealRetriesAfterACancelledBoot_DataPlaneAccessorsCleared
+// covers a boot that fails AFTER wireClientAndServer has already published
+// the data-plane service handles (AuthFactorService, UserAuthFactorService,
+// ABACPolicyReloader) but before srv.Start succeeds: all three are stored
+// early in wireClientAndServer (via WithFactorRegistry, buildLoginOpts and
+// decorateABAC, which run before verifyExistingAdminBinding and srv.Start),
+// so a failure at either of those later steps must not leave them handing
+// out services built over the stopped svcNode and host. The failure is
+// forced deterministically by pre-binding the REST port srv.Start needs.
+func TestClusteredNode_UnsealRetriesAfterACancelledBoot_DataPlaneAccessorsCleared(t *testing.T) {
+	ctx := context.Background()
+	certDir := t.TempDir()
+
+	ca, err := qrdbdharness.NewCA(certDir)
+	if err != nil {
+		t.Fatalf("NewCA: %v", err)
+	}
+	serverKP, err := ca.Issue(certDir, qrdbdharness.WithSubject("node", ""), qrdbdharness.WithServerAuth())
+	if err != nil {
+		t.Fatalf("Issue server cert: %v", err)
+	}
+	serverCert, err := serverKP.TLSCertificate()
+	if err != nil {
+		t.Fatalf("TLSCertificate: %v", err)
+	}
+	tlsCfg := &tls.Config{
+		Certificates: []tls.Certificate{serverCert},
+		ClientAuth:   tls.NoClientCert,
+		MinVersion:   tls.VersionTLS13,
+	}
+
+	// Reserve a free TCP port and keep it bound for the whole first Unseal
+	// attempt: srv.Start's startREST binds exactly this cfg.Server.Host:
+	// cfg.Server.AdminPort pair, so it fails with "address already in use"
+	// deterministically, no timing involved.
+	blocker, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve a port: %v", err)
+	}
+	port := blocker.Addr().(*net.TCPAddr).Port
+
+	cfg := sealClustered(newRaftIsolationConfig(t))
+	cfg.Protocols.REST = true
+	cfg.Server.Host = "127.0.0.1"
+	cfg.Server.AdminPort = port
+
+	reg, _ := newPopulatedFactorRegistry(t, "piv")
+	serverOpts := []server.ServerOption{server.WithTLS(tlsCfg), server.WithFactorRegistry(reg)}
+
+	n, err := NewClusteredNode(ctx, cfg, raftMembers(), serverOpts, WithABACLiveReload())
+	if err != nil {
+		t.Fatalf("NewClusteredNode: %v", err)
+	}
+	t.Cleanup(func() { _ = n.Close() })
+
+	creds := func() seal.Credentials { return seal.MustCredentials([]byte("accessor-cancel-test")) }
+
+	if err := n.Unseal(ctx, creds()); err == nil {
+		_ = blocker.Close()
+		t.Fatal("Unseal must fail while the REST port is already bound")
+	}
+	if err := blocker.Close(); err != nil {
+		t.Fatalf("release the blocking listener: %v", err)
+	}
+
+	if !n.IsSealed() {
+		t.Fatal("a boot that fails after publishing data-plane services must leave the node sealed")
+	}
+	if svc := n.AuthFactorService(); svc != nil {
+		t.Fatal("AuthFactorService must be nil after a failed boot, not a service built over the stopped host")
+	}
+	if svc := n.UserAuthFactorService(); svc != nil {
+		t.Fatal("UserAuthFactorService must be nil after a failed boot, not a service built over the stopped host")
+	}
+	if r := n.ABACPolicyReloader(); r != nil {
+		t.Fatal("ABACPolicyReloader must be nil after a failed boot, not a reloader built over the stopped host")
+	}
+
+	// The retried Unseal, with the port now free, must complete the boot and
+	// republish all three accessors.
+	if err := n.Unseal(context.Background(), creds()); err != nil {
+		t.Fatalf("retried Unseal: %v", err)
+	}
+	if svc := n.AuthFactorService(); svc == nil {
+		t.Fatal("AuthFactorService must be non-nil once the retried boot completes")
+	}
+	if svc := n.UserAuthFactorService(); svc == nil {
+		t.Fatal("UserAuthFactorService must be non-nil once the retried boot completes")
+	}
+	if r := n.ABACPolicyReloader(); r == nil {
+		t.Fatal("ABACPolicyReloader must be non-nil once the retried boot completes")
 	}
 }
