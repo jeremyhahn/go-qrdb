@@ -37,8 +37,13 @@ awaiting_init --> enrolling --> operational
 3. CeremonyStatus              -- operational once every holder has claimed
 ```
 
-`CeremonySignCSR` issues a login certificate under the SO PIN at any time after
-initialization.
+`CeremonySignCSR` issues a login certificate under the SO PIN, but only
+BEFORE the ceremony reaches `operational` (`PreOperationalOnly`): minting a
+brand-new CA-signed certificate needs the cluster CA key, which exists only
+as the in-memory bootstrap key during `awaiting_init`/`enrolling`. Once
+`operational`, `CeremonySignCSR` is refused regardless of PIN -- an officer
+who already holds a certificate unseals with it on every later restart
+instead.
 
 ## SDK CeremonyClient Interface
 

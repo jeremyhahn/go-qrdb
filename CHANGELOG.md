@@ -210,13 +210,23 @@ Recovery train: stranded fixes brought onto main. Highlights:
   record on that node: its own at-rest storage encryption when one is
   configured, cluster mTLS while Raft replicates the write, and nothing at
   all under seal strategy `none`. It is persisted through
-  `kvstore.AtomicKVStore` (`__sys:cluster_ca/`) as one record, written with
-  an atomic `PutIfAbsent` rather than two separate writes, closing a
-  torn-write window between the key and the certificate. `AdoptIfAbsent`
-  refuses with a typed mismatch error, rather than silently discarding the
-  loser, when the stored certificate differs from the one supplied to it.
-  No node ever writes a CA private key to `{dataDir}/ca-key.pem` as its
-  durable copy again — see `docs/certificate-authority/architecture.md`.
+  `kvstore.MultiGuardedBatchKVStore` (`__sys:cluster_ca/`) as two separate
+  records -- the private key and the public certificate -- written
+  together in one atomic batch (`PutAllIfAllUnchanged`, guarded on both
+  being absent), closing the same torn-write window a single combined
+  record once did, while letting `Certificate(ctx)` read only the
+  certificate record on a cold cache: the key record is never fetched, let
+  alone parsed, unless something calls `Signer`. The `crypto.Signer`
+  `Signer` returns is opaque (cannot be type-asserted back to
+  `*ecdsa.PrivateKey`, and `Public()` returns a copy, not a pointer into
+  the live key) and re-checks both the barrier's sealed state and the
+  provider's own `Seal` generation on every `Sign` call, so a `Signer`
+  obtained before either refuses afterward even though the caller is still
+  holding it. `AdoptIfAbsent` refuses with a typed mismatch error, rather
+  than silently discarding the loser, when the stored certificate differs
+  from the one supplied to it. No node ever writes a CA private key to
+  `{dataDir}/ca-key.pem` as its durable copy again — see
+  `docs/certificate-authority/architecture.md`.
 - Client-facing listeners (REST, gRPC, Unix, QUIC, MCP) trust the login CA
   (Key B) dynamically, loaded from the replicated store after unseal, in
   addition to the cluster CA; the peer/Raft/enrollment transport continues

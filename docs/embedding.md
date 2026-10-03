@@ -55,27 +55,38 @@ control, the same way a library call is not expected to re-authenticate
 its caller. The rule this implies, and the reason it is written down
 here rather than left implicit:
 
-**Never expose an admin verb reached through the embedded transport to a
-party less trusted than the embedding process itself.** A desktop
-application's webview is the canonical example: the webview's JavaScript
-runs content the desktop process does not fully control (a loaded page,
-a plugin, in some architectures even remote content), so a Wails/Electron
-binding that forwards a webview call straight through to the embedded
-transport grants the webview everything an in-process caller has —
-including verbs gated `ScopeCross`/platform-only on every remote
-transport. `sdk/typescript/src/wails.ts`'s `admin.mintJoinToken` is the
-concrete instance of this rule: minting a cluster join token is
-`ScopeCross` (see [clustering/architecture.md](clustering/architecture.md)),
-and the desktop binding deliberately throws `NotImplementedError` instead
-of wiring a new `AdminBinding` method for it, rather than let the
-interface's own TypeScript structural typing silently reopen a gap that
-every remote transport closes.
+**The desktop webview is the operator's own local UI, not an untrusted
+party** -- it is the one surface this specific embedder exposes a human
+operator through, on a machine that operator already controls. Ordinary
+cluster admin verbs (`addMember`, `removeMember`, `setNodeCompaction`, and
+their siblings) may stay wired through it: an operator clicking a button
+in their own desktop app is exercising the same authority they would have
+from the CLI on the same machine, and refusing those verbs there would not
+add security, only friction.
 
-If a desktop or other less-trusted surface genuinely needs an admin verb,
-the fix is authorization IN FRONT of embedded for that surface — not
-routing around the remote transports that already have it, and not
-assuming "it's in-process" extends past the embedding process's own code
-to whatever that process chooses to expose a user interface to.
+**The rule that stays is narrower, and about what a response CARRIES, not
+which verb it names: a secret-bearing output must never be returned
+through the webview.** Today that means exactly one thing --
+`admin.mintJoinToken`'s minted token, a credential good for admitting a
+new node to the whole cluster (`ScopeCross`; see
+[clustering/architecture.md](clustering/architecture.md)) -- is never
+wired through, no matter how convenient a "mint a join token" button
+would be. `sdk/typescript/src/wails.ts`'s `admin.mintJoinToken`
+deliberately throws `NotImplementedError` instead of wiring a new
+`AdminBinding` method for it, rather than let the interface's own
+TypeScript structural typing silently reopen the gap: a token minted
+there would appear in the webview's own JavaScript heap, on a surface
+whose whole point is rendering content (including, on some platforms, a
+loaded remote page or a plugin) that the desktop process does not fully
+control -- exactly the condition a write-only credential like this one
+exists to never be exposed to.
+
+If a desktop or other local-UI surface genuinely needs to mint a join
+token, the fix is a narrower, dedicated binding that keeps the token off
+the webview's own JavaScript entirely (written to a file the operator
+copies by hand, for instance) -- not a general exception to this rule,
+and not an assumption that "the operator's own machine" extends to
+whatever that webview happens to be rendering at the time.
 
 ---
 

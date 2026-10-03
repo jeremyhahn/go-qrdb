@@ -1266,10 +1266,13 @@ func barrierServiceOpts(infra Infra) []service.BarrierServiceOption {
 // KVServicer. Writes are proposed through the service; reads are
 // linearizable. Every engine implements PutIfAbsent/CompareAndSwap/
 // CompareAndDelete natively (kvStoreAdapter's own doc comment), so the
-// widened return type costs nothing and lets a caller needing the atomic
-// capability -- cakey.NewSoftwareProvider's PutIfAbsent-arbitrated
-// generate-or-adopt, in particular -- use this adapter directly rather
-// than re-asserting for a capability it already has.
+// widened return type costs nothing and lets a caller needing only the
+// single-key atomic capability use this adapter directly rather than
+// re-asserting for a capability it already has. A caller that needs
+// MULTI-key atomic batches instead -- cakey.NewSoftwareProvider's split
+// key/certificate records, in particular -- needs
+// kvstore.MultiGuardedBatchKVStore, which this adapter does NOT provide;
+// see NewGuardedKVStoreAdapter below.
 //
 // idx is the IndexServicer for the SAME shard, which is what makes the
 // returned store's secondary indexes real. Pass nil only where no index

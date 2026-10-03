@@ -202,10 +202,12 @@ never one per transport.
 every other `AdminServicer` verb, enforcement lives in the transport
 handler, and the embedded transport has none. Embedded is a fully trusted,
 in-process surface: the embedding process IS its own admission control.
-That only holds when everything upstream of the embedder is equally
-trusted, so an admin verb reached through embedded must never be exposed
-through a less-trusted binding layered on top of it — see
-[../embedding.md](../embedding.md).
+The rule this implies is about what a response CARRIES, not which verb it
+names: a secret-bearing output -- `MintJoinToken`'s minted token, in
+particular -- must never be returned through a less-trusted local surface
+such as a desktop webview, even though ordinary admin verbs with no
+secret in their response may stay wired through one as the operator's own
+local UI — see [../embedding.md](../embedding.md).
 
 The Noise_NK join transport and the trust-anchor fetch have no HTTP surface of
 their own; their Go surface is in `pkg/clusterenroll`, re-exported from

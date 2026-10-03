@@ -273,17 +273,19 @@ proto method's permission option, QUIC's `handleIf`, MCP's `Perm` field.
 The embedded transport calls the service directly, with no handler in
 between, so it skips all of that by construction. An embedding process is
 its own admission control — the same trust assumption every other admin
-verb already makes for it — but that assumption only holds when the
-embedder's OWN callers are equally trusted. **Embedded is a fully trusted,
-in-process surface with no authorization of its own, and an admin verb
-reachable through it must never be exposed through a less-trusted binding
-on top** — a desktop webview, a browser extension, anything that accepts
-input from a party the embedding process does not itself fully trust. See
-[../embedding.md](../embedding.md) for the general statement of this rule
-and `sdk/typescript/src/wails.ts`'s `admin.mintJoinToken` for a concrete
-instance: the desktop binding deliberately throws `NotImplementedError`
-rather than wiring this verb through to the embedded transport its webview
-talks to.
+verb already makes for it. **Embedded is a fully trusted, in-process
+surface with no authorization of its own**, but the rule that follows
+from that is about what a response CARRIES, not which verb it names: a
+secret-bearing output -- today, exactly `MintJoinToken`'s minted token,
+good for admitting a new node to the whole cluster -- must never be
+returned through a less-trusted local surface such as a desktop webview,
+even though ordinary admin verbs with no secret in their response
+(`AddMember`, `setNodeCompaction`, ...) may stay wired through it as the
+operator's own local UI. See [../embedding.md](../embedding.md) for the
+full statement of this rule and `sdk/typescript/src/wails.ts`'s
+`admin.mintJoinToken` for the concrete instance: the desktop binding
+deliberately throws `NotImplementedError` rather than wiring this one
+verb through to the embedded transport its webview talks to.
 
 **Wire transport (Noise, shipped).** The one-shot `get_ca_bundle`
 request/response the Noise bootstrap `Handler` in go-truststrap dispatches

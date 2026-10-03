@@ -570,23 +570,41 @@ outside `pkg/cakey` ever holds `*ecdsa.PrivateKey` for a CA key again.
 ### `cakey.SoftwareProvider` — the built-in backend
 
 `cakey.SoftwareProvider` is what runs when nothing is injected: an ECDSA
-P-256 key, persisted through `kvstore.AtomicKVStore` — qrdb's storage
-abstraction, not the Raft log specifically — under a prefix the caller
-supplies. It currently backs **Key A, the cluster CA**, under
-`__sys:cluster_ca/` — no tenant, one per cluster. (Key B, the per-tenant
-login CA under `__sys:cert_ca/{tenantID}/`, is `pkg/cert.DefaultCertProvider`
-today, a separate implementation; see that package's own docs for its
-record shape and barrier handling, which this document does not claim.)
+P-256 key, persisted through `kvstore.MultiGuardedBatchKVStore` — qrdb's
+atomic multi-key batch capability, not the Raft log specifically — under a
+prefix the caller supplies. It currently backs **Key A, the cluster CA**,
+under `__sys:cluster_ca/` — no tenant, one per cluster. (Key B, the
+per-tenant login CA under `__sys:cert_ca/{tenantID}/`, is
+`pkg/cert.DefaultCertProvider` today, a separate implementation; see that
+package's own docs for its record shape and barrier handling, which this
+document does not claim.)
 
-The key and certificate are written and read together as ONE record
-(`{prefix}material`), never as two separate Puts: a design that split them
-into `{prefix}wrapped_key` and `{prefix}cert_pem` left a window in which a
-crash, or two callers racing to generate or adopt, could leave the key from
-one write beside the certificate from another. `kvStore.PutIfAbsent` makes
-"does material already exist" and "write it" one indivisible step, so
-concurrent generation (several nodes racing to become the cluster's first)
-converges on exactly one CA rather than each writing its own candidate over
-the other's.
+The key and certificate are now TWO SEPARATE records
+(`{prefix}material` for the private key, `{prefix}certificate` for the
+public CA certificate), written together in ONE atomic batch
+(`kvstore.MultiGuardedBatchKVStore.PutAllIfAllUnchanged`, guarded on both
+being absent) rather than one combined record written with a single
+`PutIfAbsent`. An earlier revision combined them into one JSON-encoded
+record specifically to make their creation atomic with a single
+`PutIfAbsent`; splitting them back out without losing that atomicity is
+exactly what the guarded-batch primitive is for, and it buys something the
+combined record could not: `Certificate(ctx)` on a cold cache now reads and
+parses ONLY the certificate record — the private-key record is never
+fetched, let alone parsed, unless something actually calls `Signer`. The
+guarded batch still makes "does either record already exist" and "write
+both" one indivisible step, so concurrent generation (several nodes racing
+to become the cluster's first) converges on exactly one CA, and a crash (or
+a write failure) between what would have been two separate writes cannot
+leave one record without the other.
+
+The `crypto.Signer` `Signer` returns is opaque (`cakey.barrierCheckedSigner`
+internally): it cannot be type-asserted back to `*ecdsa.PrivateKey`, its
+`Public()` returns a deep copy rather than a pointer into the live key, and
+it re-checks both the barrier's sealed state AND the provider's own `Seal`
+generation on every `Sign` call — a `Signer` obtained before either `Seal`
+(an explicit, provider-local key revocation, independent of the barrier)
+or an external reseal refuses on its next `Sign`, even though the caller
+never goes back through the provider to find out.
 
 **The record carries no additional encryption of its own layered on by this
 package.** An earlier revision wrapped the key with the writing node's
@@ -605,12 +623,14 @@ constructor argument, but `SoftwareProvider` now consults it only for
 while unsealed, exactly as before, but that gate no longer performs any
 encryption of its own.
 
-Because `kvstore.AtomicKVStore` is the same interface in standalone mode
-(the local store) and Raft mode (the replicated store), `SoftwareProvider`
-has no mode-specific branch and is tested against both, including two
-providers with two INDEPENDENT barriers over one shared store -- standing in
-for two cluster nodes with their own, unrelated at-rest encryption -- both
-reading the same CA.
+Because `kvstore.MultiGuardedBatchKVStore` is the same interface in
+standalone mode (the local store, backed by the same in-process
+transaction plane every other guarded store in this tree uses) and Raft
+mode (the replicated store), `SoftwareProvider` has no mode-specific
+branch and is tested against both, including two providers with two
+INDEPENDENT barriers over one shared store -- standing in for two cluster
+nodes with their own, unrelated at-rest encryption -- both reading the
+same CA.
 
 ### Injection
 
