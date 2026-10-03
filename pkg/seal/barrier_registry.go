@@ -22,6 +22,7 @@ import (
 	"github.com/jeremyhahn/go-objstore/pkg/common"
 	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/validation"
@@ -90,6 +91,10 @@ type BarrierRegistry struct {
 	// built (see MigrationRecoverer). Guarded by poolMu like the other
 	// boot-wired composition fields.
 	migrationRecoverer MigrationRecoverer
+
+	// auditTrail is the compliance trail every tenant barrier records on
+	// (WithAuditTrail). Guarded by poolMu.
+	auditTrail audit.AuditLogger
 }
 
 // MigrationRecoverer reconciles an interrupted encryption migration whose
@@ -373,6 +378,11 @@ func (r *BarrierRegistry) RegisterTenant(
 		}
 	}
 
+	if config.AuditLogger == nil {
+		r.poolMu.RLock()
+		config.AuditLogger = NewComplianceAuditLogger(r.auditTrail, tenantID, TenantBarrierAuditName(tenantID))
+		r.poolMu.RUnlock()
+	}
 	tb, err := NewTenantBarrier(tenantID, r.logger, base, config, strategies...)
 	if err != nil {
 		return nil, err

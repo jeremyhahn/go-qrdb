@@ -461,6 +461,8 @@ func (b *StorageBarrier) MintKeyedSibling(ctx context.Context, stagingSuffix str
 	cfg := BarrierConfig{
 		RootKeyPath:  b.config.RootKeyPath + stagingSuffix,
 		DeploymentID: b.config.DeploymentID,
+		// The migration's barriers record on the same trail as b.
+		AuditLogger: b.config.AuditLogger,
 	}
 	sib, err := NewStorageBarrier(b.logger, b.base, cfg, strategy)
 	if err != nil {
@@ -531,6 +533,8 @@ func (b *StorageBarrier) MintKeyedShamirSibling(ctx context.Context, stagingSuff
 	cfg := BarrierConfig{
 		RootKeyPath:  b.config.RootKeyPath + stagingSuffix,
 		DeploymentID: b.config.DeploymentID,
+		// The migration's barriers record on the same trail as b.
+		AuditLogger: b.config.AuditLogger,
 	}
 	sib, err := NewStorageBarrier(b.logger, b.base, cfg, strategy)
 	if err != nil {
@@ -585,6 +589,7 @@ func (b *StorageBarrier) ReopenKeyed(ctx context.Context, strategy SealingStrate
 	cfg := BarrierConfig{
 		RootKeyPath:  b.config.RootKeyPath,
 		DeploymentID: b.config.DeploymentID,
+		AuditLogger:  b.config.AuditLogger,
 	}
 	nb, err := NewStorageBarrier(b.logger, b.base, cfg, strategy)
 	if err != nil {

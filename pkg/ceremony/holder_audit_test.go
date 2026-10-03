@@ -608,3 +608,79 @@ func TestHolderName(t *testing.T) {
 	assert.Equal(t, holderInvalidName, holderName(strings.Repeat("x", 65)))
 	assert.Equal(t, holderInvalidName, holderName("a b\n<script>"))
 }
+
+// TestHolderAudit_OneEmitterPerEvent pins that a barrier wired to the same
+// trail as its holder authority does not record a second copy of a holder
+// event: a quorum submission is holder-quorum-submit alone, a rekey opening
+// holder-rekey-start alone, while the round's completion and the barrier's
+// unseal are the barrier's own records.
+func TestHolderAudit_OneEmitterPerEvent(t *testing.T) {
+	ctx := context.Background()
+	ring := audit.NewRingBuffer(256)
+	strategy, err := seal.NewShamirStrategy(2, 2)
+	require.NoError(t, err)
+	barrier, err := seal.NewStorageBarrier(testLogger(), seal.NewMemoryBackend(), seal.BarrierConfig{
+		RootKeyPath: "test/root-key",
+		Shamir:      &seal.ShamirConfig{Threshold: 2, TotalShares: 2},
+		AuditLogger: seal.NewComplianceAuditLogger(ring, tenantid.System, seal.SystemBarrierAuditName),
+	}, strategy)
+	require.NoError(t, err)
+	svc, err := NewCeremonyService(&CeremonyConfig{DataDir: t.TempDir()}, barrier, testLogger())
+	require.NoError(t, err)
+	svc.SetCA(testCA(t))
+	svc.SetAuditLogger(ring)
+
+	holders := []*testHolder{newHolder(t, "alice", ""), newHolder(t, "bob", "")}
+	for _, h := range holders {
+		res, err := svc.RegisterOfficer(ctx, seal.DomainUnseal, h.request("admin"))
+		require.NoError(t, err)
+		h.recordCert(t, res.CertPEM)
+	}
+	_, err = barrier.InitializeShamir(ctx, "")
+	require.NoError(t, err)
+	for _, h := range holders {
+		ch, err := svc.BeginClaimShare(ctx, seal.DomainUnseal, h.username, h.thumb)
+		require.NoError(t, err)
+		sig, err := SignShareClaim(h.certKey, ScopeSystem.ClaimLabel(), h.username, ch.Nonce)
+		require.NoError(t, err)
+		res, err := svc.CompleteClaimShare(ctx, seal.DomainUnseal, h.username, hex.EncodeToString(ch.Nonce), sig, h.thumb)
+		require.NoError(t, err)
+		h.envelope = res.Envelope
+	}
+	require.NoError(t, barrier.Seal())
+	submit := func(op seal.QuorumOp, h *testHolder) {
+		t.Helper()
+		ch, err := svc.BeginQuorum(ctx, seal.DomainUnseal, op, h.username, "")
+		require.NoError(t, err)
+		_, err = barrier.SubmitHolderShare(ctx, &seal.HolderSubmission{
+			Domain: seal.DomainUnseal, Op: op, Holder: h.username,
+			Proof: seal.HolderProof{ChallengeID: ch.ChallengeID, Factor: ch.Factor, Response: h.answer(t, ch)},
+			Share: h.openShare(t),
+		})
+		require.NoError(t, err)
+	}
+	for _, h := range holders {
+		submit(seal.OpUnseal, h)
+	}
+	_, err = svc.StartRekey(ctx, seal.DomainUnseal, seal.RekeyParams{})
+	require.NoError(t, err)
+
+	count := func(action string) int {
+		n := 0
+		for _, ev := range ring.Snapshot() {
+			if ev.Action == action {
+				n++
+			}
+		}
+		return n
+	}
+	assert.Equal(t, 2, count(ActionHolderQuorumSubmit))
+	assert.Zero(t, count("quorum-share"), "the barrier records no second copy of a submission")
+	assert.Equal(t, 1, count(ActionHolderRekeyStart))
+	assert.Zero(t, count("rekey-start"), "the barrier records no second copy of a rekey opening")
+	assert.Equal(t, 1, count("quorum-complete"))
+	assert.Positive(t, count("unseal"))
+	for _, ev := range ring.Snapshot() {
+		assert.Equal(t, tenantid.System, ev.TenantID, ev.Action)
+	}
+}

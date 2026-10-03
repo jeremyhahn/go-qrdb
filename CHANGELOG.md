@@ -59,6 +59,20 @@ are not reconstructed here — their history is in the git log.
   removal is audited (`holder-unenrol`). **BREAKING** for implementers of
   `transport.DatabaseClient` and `service.DatabaseHolderServicer`: each gains
   the method.
+- **The barriers' own events are on the compliance trail.** Every barrier --
+  system, tenant, database -- records `initialize`, `unseal`, `seal`,
+  `quorum-complete`, `distribute` and the rest on the node's one trail
+  through `seal.NewComplianceAuditLogger`, keyed by the owning tenant, naming
+  the barrier, with allow-listed details and no key material. qrdbd and the
+  SDK node wire the system barrier and their tenant registry
+  (`seal.WithAuditTrail`) to the sink opened before the sealed window; the
+  database barrier manager takes it through `database.WithBarrierAuditTrail`.
+  Before, `seal.BarrierConfig.AuditLogger` was never configured, so these
+  events reached no trail. `audit.OpenTrail` is the one trail composition.
+- **The desktop's embedded server keeps a compliance trail when enabled**
+  (`EmbeddedConfig.Audit`, off by default; `audit-events.ndjson` under the
+  data directory unless `path` says otherwise). It is opened before the seal
+  barrier and a configured trail that cannot be opened stops the start.
 - **`database.barrierStatus(name)` in the TypeScript SDK**, on REST and the
   desktop binding (`DatabaseBinding.BarrierStatus`): a database barrier's
   sealed state, strategy and `initializedAt`, absent until the barrier is
@@ -94,6 +108,11 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- **One emitter per audit event.** The barrier no longer emits `quorum-share`
+  or `rekey-start`: a share submission is the holder engine's
+  `holder-quorum-submit` and a rekey opening its `holder-rekey-start`, so a
+  barrier and its holder authority on the same trail do not record the same
+  event twice.
 - **`qrdbd` opens its compliance audit trail before the sealed window.** The
   trail used to be opened after unseal, so the envelope claims and unseal
   quorums a sealed node serves were recorded nowhere. It is now opened before

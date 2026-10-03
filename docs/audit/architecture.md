@@ -364,7 +364,21 @@ written the moment the trail exists -- now before the seal subsystem rather
 than after unseal -- and a node that cannot record it does not run.
 
 The SDK node records on the trail its caller supplies (`server.WithAuditLogger`),
-which exists before the node does, so its sealed window is recorded too.
+which exists before the node does, so its sealed window is recorded too. The
+desktop's embedded server keeps the same trail when it is enabled
+(`EmbeddedConfig.Audit`, off by default), on the same rules: opened before the
+seal barrier, and a configured trail that cannot be opened stops the start.
+
+### Barrier events
+
+The barriers record on the same trail, not a second one: the system barrier,
+every tenant barrier and every database barrier, through the adapter
+`seal.NewComplianceAuditLogger`, keyed by the owning tenant and naming the
+barrier. A Shamir unseal therefore leaves the holders' submissions and the
+barrier's `quorum-complete` and `unseal` side by side. **Each event has one
+emitter:** a submission and a rekey opening are the holder engine's records,
+and the barrier emits no copy. The list is in
+[../barrier-seal/engineering.md](../barrier-seal/engineering.md#observability).
 
 ### Share-holder events
 

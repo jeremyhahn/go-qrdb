@@ -30,6 +30,7 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -85,7 +86,10 @@ type EmbeddedServerBinding struct {
 	watchHub     *watch.Hub
 	svcNode      *lifecycle.Node      // owns all service lifecycle (vector, db, etc.)
 	sealBarrier  *seal.StorageBarrier // owns the persistent seal store; closed on stop to release its file lock
-	registry     *DatabaseInstanceRegistry
+	// auditTrail is the compliance audit trail, when EmbeddedConfig.Audit
+	// enables one; closed on stop.
+	auditTrail audit.AuditLogger
+	registry   *DatabaseInstanceRegistry
 
 	// lessor is the local MVCC engine's lease table, and stopLeaseExpiry
 	// ends (and waits for) the sweeper that expires its leases. Both are
@@ -144,6 +148,25 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 		return &EmbeddedServerError{Op: "start", Err: &AlreadyRunningError{}}
 	}
 
+	// The compliance trail, when enabled, is opened before anything else --
+	// before the node and before the seal barrier -- so it records from the
+	// first sealed moment, and a trail that cannot be opened stops the start
+	// with nothing running (openEmbeddedAudit). A start that fails later
+	// closes it again.
+	trail, auditErr := b.openEmbeddedAudit(cfg)
+	if auditErr != nil {
+		b.logger.Error("StartEmbedded failed", "error", auditErr)
+		return &EmbeddedServerError{Op: "start", Err: auditErr}
+	}
+	started := false
+	defer func() {
+		if !started && trail != nil {
+			_ = trail.Close()
+			b.auditTrail = nil
+		}
+	}()
+	b.auditTrail = trail
+
 	// Create the watch hub early so it can be shared between the state
 	// machine (to emit change notifications) and the watch service (to
 	// deliver them to subscribers).
@@ -185,7 +208,7 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 	// initialized on a fresh data dir and unsealed on restart, so the
 	// persistent data-plane store decrypts cleanly across restarts.
 	embeddedBarrier, embeddedRegistry, embeddedCred, embeddedCeremonyDir, barrierErr :=
-		initEmbeddedBarrier(dataDir, cfg.SealConfig)
+		initEmbeddedBarrier(dataDir, cfg.SealConfig, trail)
 	if barrierErr != nil {
 		b.logger.Warn("embedded: seal barrier unavailable, tenant/ceremony services disabled",
 			"error", barrierErr)
@@ -215,6 +238,7 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 		BarrierRegistry:   embeddedRegistry,
 		CredentialCoreSvc: embeddedCred,
 		CeremonyDataDir:   embeddedCeremonyDir,
+		AuditLogger:       trail,
 		Logger:            slog.Default(),
 	})
 	if svcErr != nil {
@@ -274,6 +298,9 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 
 	// Collection service uses KV + index from the node.
 	opts = append(opts, embedded.WithCollectionService(svcNode.Collection))
+	if trail != nil {
+		opts = append(opts, embedded.WithAuditLogger(trail))
+	}
 
 	// Wire SQL services so the SQL browser can execute queries.
 	if b.sqlBinding != nil {
@@ -333,8 +360,37 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 		b.logger.Warn("embedded: failed to save config", "error", err)
 	}
 
+	started = true
 	b.logger.Debug("StartEmbedded completed")
 	return nil
+}
+
+// openEmbeddedAudit opens the compliance trail cfg.Audit enables, under the
+// data directory, or returns nil when it is off. A path that leaves the data
+// directory is refused with *AuditPathOutsideDataDirError, and a trail that
+// cannot be opened with *EmbeddedAuditError: either way the server does not
+// start.
+func (b *EmbeddedServerBinding) openEmbeddedAudit(cfg *EmbeddedConfig) (audit.AuditLogger, error) {
+	if cfg.Audit == nil || !cfg.Audit.Enabled {
+		return nil, nil
+	}
+	rel := cfg.Audit.Path
+	if rel == "" {
+		rel = audit.DefaultTrailFile
+	}
+	if filepath.IsAbs(rel) || !filepath.IsLocal(rel) {
+		return nil, &AuditPathOutsideDataDirError{Path: cfg.Audit.Path}
+	}
+	dataDir, err := b.resolveDataDir(cfg)
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(dataDir, rel)
+	trail, err := audit.OpenTrail(path)
+	if err != nil {
+		return nil, &EmbeddedAuditError{Path: path, Err: err}
+	}
+	return trail, nil
 }
 
 // StopEmbedded shuts down the embedded host or local backend, cancels
@@ -381,6 +437,13 @@ func (b *EmbeddedServerBinding) StopEmbedded() error {
 			b.logger.Warn("embedded: seal barrier close failed", "error", err)
 		}
 		b.sealBarrier = nil
+	}
+	// The trail closes last: everything above may still record on it.
+	if b.auditTrail != nil {
+		if err := b.auditTrail.Close(); err != nil {
+			b.logger.Warn("embedded: compliance audit trail close failed", "error", err)
+		}
+		b.auditTrail = nil
 	}
 	if b.cancelFn != nil {
 		b.cancelFn()

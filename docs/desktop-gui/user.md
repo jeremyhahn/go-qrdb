@@ -35,6 +35,13 @@ The setup wizard walks you through it:
 After the wizard, if the server is sealed you get an unseal prompt; otherwise
 the full application.
 
+**Keeping an audit trail.** The embedded server can keep the same compliance
+audit trail as a qrdbd node: set `audit` to `{"enabled": true}` in its saved
+configuration, and it records to `audit-events.ndjson` in the data directory
+(or `path`, relative to the data directory). It is off by default. Once it is
+on, a trail that cannot be opened -- a full disk, a directory in its place --
+stops the server from starting rather than running without it.
+
 ## Creating a database
 
 **New Database** opens the database wizard: name and engine, storage, Raft

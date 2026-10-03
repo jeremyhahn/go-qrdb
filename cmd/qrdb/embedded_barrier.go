@@ -23,9 +23,11 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // initEmbeddedBarrier creates an in-process seal barrier for embedded GUI
@@ -55,7 +57,7 @@ import (
 // Returns the barrier, registry, credential service, ceremony data dir, and
 // any initialization error. On error all returned pointers are nil and the
 // caller should log a warning and proceed without seal services.
-func initEmbeddedBarrier(dataDir string, sealCfg *SealConfig) (
+func initEmbeddedBarrier(dataDir string, sealCfg *SealConfig, trail audit.AuditLogger) (
 	barrier *seal.StorageBarrier,
 	registry *seal.BarrierRegistry,
 	cred *credentials.CredentialService,
@@ -80,6 +82,8 @@ func initEmbeddedBarrier(dataDir string, sealCfg *SealConfig) (
 	barrierCfg := seal.BarrierConfig{
 		RootKeyPath: "root-key",
 		// DeploymentID 0 is acceptable for single-process embedded mode.
+		// The barrier records on the compliance trail, when one is kept.
+		AuditLogger: seal.NewComplianceAuditLogger(trail, tenantid.System, seal.SystemBarrierAuditName),
 	}
 
 	// Select the sealing strategy from the operator's SealConfig. Default to
@@ -164,7 +168,7 @@ func initEmbeddedBarrier(dataDir string, sealCfg *SealConfig) (
 		}
 	}
 
-	reg, regErr := seal.NewBarrierRegistry(slog.Default(), b)
+	reg, regErr := seal.NewBarrierRegistry(slog.Default(), b, seal.WithAuditTrail(trail))
 	if regErr != nil {
 		_ = sealStore.Close()
 		return nil, nil, nil, "", &EmbeddedBarrierError{Step: "registry", Err: regErr}

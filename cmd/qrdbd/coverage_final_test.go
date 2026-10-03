@@ -51,7 +51,7 @@ func TestInitSealSubsystem_InvalidCredentialStrategy_Error(t *testing.T) {
 		},
 	}
 
-	_, err := initSealSubsystem(f, context.Background())
+	_, err := initSealSubsystem(f, context.Background(), nil)
 	require.Error(t, err)
 	var credErr *CredentialServiceError
 	require.True(t, errors.As(err, &credErr),
@@ -74,7 +74,7 @@ func TestInitSealSubsystem_CanceledContextOnList(t *testing.T) {
 		sealConfig:   qrdbconfig.SealConfig{Strategy: ""},
 	}
 
-	_, err := initSealSubsystem(f, ctx)
+	_, err := initSealSubsystem(f, ctx, nil)
 	// A canceled context may cause List to fail → SealBarrierError, or it
 	// may succeed before context is checked. Either is acceptable here; we
 	// just verify the function does not panic.
@@ -99,7 +99,7 @@ func TestInitSealSubsystem_ManualCredentialStrategy(t *testing.T) {
 		},
 	}
 
-	sub, err := initSealSubsystem(f, context.Background())
+	sub, err := initSealSubsystem(f, context.Background(), nil)
 	require.NoError(t, err)
 	require.NotNil(t, sub)
 	require.NoError(t, sub.Close())
@@ -122,7 +122,7 @@ func TestRunFirstBoot_WithBarriers_AdminAlreadyExists(t *testing.T) {
 		deploymentID: 1,
 		sealConfig:   qrdbconfig.SealConfig{Strategy: ""},
 	}
-	sub, err := initSealSubsystem(f, context.Background())
+	sub, err := initSealSubsystem(f, context.Background(), nil)
 	require.NoError(t, err)
 	defer func() { _ = sub.Close() }()
 
@@ -156,7 +156,7 @@ func TestRunFirstBoot_WithBarriers_FreshBoot_ThenFirstBootError(t *testing.T) {
 		deploymentID: 1,
 		sealConfig:   qrdbconfig.SealConfig{Strategy: ""},
 	}
-	sub, err := initSealSubsystem(f, context.Background())
+	sub, err := initSealSubsystem(f, context.Background(), nil)
 	require.NoError(t, err)
 	defer func() { _ = sub.Close() }()
 
@@ -804,7 +804,7 @@ func TestAwaitUnseal_BuildSealServicesOnlyError(t *testing.T) {
 		sealConfig:   qrdbconfig.SealConfig{Strategy: ""},
 	}
 
-	sub, err := initSealSubsystem(f, context.Background())
+	sub, err := initSealSubsystem(f, context.Background(), nil)
 	require.NoError(t, err)
 	defer func() { _ = sub.Close() }()
 

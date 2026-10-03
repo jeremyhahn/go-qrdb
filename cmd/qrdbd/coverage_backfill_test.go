@@ -299,7 +299,7 @@ func TestInitSealSubsystem_ShamirInvalidTTL(t *testing.T) {
 		},
 	}
 
-	_, err := initSealSubsystem(f, context.Background())
+	_, err := initSealSubsystem(f, context.Background(), nil)
 	require.Error(t, err)
 	var stratErr *SealStrategyError
 	require.True(t, errors.As(err, &stratErr),
@@ -323,7 +323,7 @@ func TestInitSealSubsystem_ShamirInvalidThreshold(t *testing.T) {
 		},
 	}
 
-	_, err := initSealSubsystem(f, context.Background())
+	_, err := initSealSubsystem(f, context.Background(), nil)
 	require.Error(t, err)
 	var stratErr *SealStrategyError
 	require.True(t, errors.As(err, &stratErr),
@@ -349,7 +349,7 @@ func TestInitSealSubsystem_SealStorageMkdirError(t *testing.T) {
 		sealConfig:   qrdbconfig.SealConfig{Strategy: ""},
 	}
 
-	_, err := initSealSubsystem(f, context.Background())
+	_, err := initSealSubsystem(f, context.Background(), nil)
 	require.Error(t, err)
 	var storageErr *SealStorageError
 	require.True(t, errors.As(err, &storageErr),
@@ -852,7 +852,7 @@ func TestAwaitUnseal_ServerStartFails(t *testing.T) {
 		host:         testBindHost,
 	}
 
-	sub, err := initSealSubsystem(f, context.Background())
+	sub, err := initSealSubsystem(f, context.Background(), nil)
 	require.NoError(t, err)
 	defer func() { _ = sub.Close() }()
 

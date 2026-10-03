@@ -2032,6 +2032,24 @@ export interface EmbeddedConfig {
     readonly raftConfig?: EmbeddedRaftConfig;
     /** Seal configuration. */
     readonly sealConfig?: EmbeddedSealConfig;
+    /** Compliance audit trail. Off unless enabled. */
+    readonly audit?: EmbeddedAuditConfig;
+}
+
+/**
+ * The embedded server's compliance audit trail: the same hash-chained file,
+ * ring and operational log qrdbd keeps. Off by default. When enabled it is
+ * opened before the seal barrier, and a trail that cannot be opened stops the
+ * server from starting.
+ */
+export interface EmbeddedAuditConfig {
+    /** Turns the trail on. */
+    readonly enabled: boolean;
+    /**
+     * The trail file, relative to the data directory; omitted is qrdbd's
+     * default, "audit-events.ndjson". It may not leave the data directory.
+     */
+    readonly path?: string;
 }
 
 /** Raft cluster configuration for the embedded server. */

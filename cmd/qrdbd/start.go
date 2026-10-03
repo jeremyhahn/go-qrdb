@@ -1212,7 +1212,7 @@ func runStart(f *startFlags) (err error) {
 			var sealSub *sealSubsystem
 			if f.sealConfig.Enabled {
 				var subErr error
-				sealSub, subErr = initSealSubsystem(f, sigCtx)
+				sealSub, subErr = initSealSubsystem(f, sigCtx, complianceAudit)
 				if subErr != nil {
 					return subErr
 				}

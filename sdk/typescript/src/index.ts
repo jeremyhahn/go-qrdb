@@ -270,6 +270,7 @@ export type {
     EmbeddedRaftConfig,
     SealMode,
     EmbeddedSealConfig,
+    EmbeddedAuditConfig,
 
     // Collection management
     CollectionInfo,

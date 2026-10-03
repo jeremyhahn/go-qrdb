@@ -158,7 +158,7 @@ func TestInitSealSubsystem_SoftwareStrategy(t *testing.T) {
 		},
 	}
 
-	sub, err := initSealSubsystem(f, context.Background())
+	sub, err := initSealSubsystem(f, context.Background(), nil)
 	require.NoError(t, err)
 	require.NotNil(t, sub)
 	require.NotNil(t, sub.SealStore)
@@ -183,12 +183,12 @@ func TestInitSealSubsystem_SecondBootIdempotent(t *testing.T) {
 	}
 
 	// First boot.
-	sub1, err := initSealSubsystem(f, context.Background())
+	sub1, err := initSealSubsystem(f, context.Background(), nil)
 	require.NoError(t, err)
 	require.NoError(t, sub1.Close())
 
 	// Second boot on same dataDir must succeed (format sentinel already written).
-	sub2, err := initSealSubsystem(f, context.Background())
+	sub2, err := initSealSubsystem(f, context.Background(), nil)
 	require.NoError(t, err)
 	require.NotNil(t, sub2)
 	require.NoError(t, sub2.Close())
@@ -208,7 +208,7 @@ func TestInitSealSubsystem_ShamirStrategy(t *testing.T) {
 		},
 	}
 
-	sub, err := initSealSubsystem(f, context.Background())
+	sub, err := initSealSubsystem(f, context.Background(), nil)
 	require.NoError(t, err)
 	require.NotNil(t, sub)
 	require.NoError(t, sub.Close())
@@ -228,7 +228,7 @@ func TestInitSealSubsystem_InvalidShamirReturnsError(t *testing.T) {
 		},
 	}
 
-	_, err := initSealSubsystem(f, context.Background())
+	_, err := initSealSubsystem(f, context.Background(), nil)
 	require.Error(t, err)
 	var stratErr *SealStrategyError
 	require.True(t, errors.As(err, &stratErr))
@@ -250,7 +250,7 @@ func TestInitSealSubsystem_SealStore_ClosedAfterError(t *testing.T) {
 		sealConfig:   qrdbconfig.SealConfig{Strategy: ""},
 	}
 
-	_, err := initSealSubsystem(f, context.Background())
+	_, err := initSealSubsystem(f, context.Background(), nil)
 	require.Error(t, err)
 	var storErr *SealStorageError
 	require.True(t, errors.As(err, &storErr))
@@ -281,7 +281,7 @@ func TestInitSealSubsystem_SealPebbleDirectoryLocked(t *testing.T) {
 	// Second pebble.Open on the same sealDir must fail ("lock held by current
 	// process"), causing initSealSubsystem to return *SealStorageError at
 	// seal_subsystem.go:97-99.
-	_, err = initSealSubsystem(f, context.Background())
+	_, err = initSealSubsystem(f, context.Background(), nil)
 	require.Error(t, err, "initSealSubsystem must fail when seal directory is locked")
 	var storErr *SealStorageError
 	require.True(t, errors.As(err, &storErr),
@@ -312,7 +312,7 @@ func TestInitSealSubsystem_SealPebbleOpenFails(t *testing.T) {
 
 	// pebblestore.New may succeed even with an existing file — so this test
 	// verifies there's no panic and handles both success and error.
-	sub, err := initSealSubsystem(f, context.Background())
+	sub, err := initSealSubsystem(f, context.Background(), nil)
 	if err != nil {
 		var storErr *SealStorageError
 		// If it fails, must be SealStorageError.
@@ -342,7 +342,7 @@ func TestInitSealSubsystem_LegacyDataDir_ReturnsError(t *testing.T) {
 		sealConfig:   qrdbconfig.SealConfig{Strategy: ""},
 	}
 
-	_, err = initSealSubsystem(f, context.Background())
+	_, err = initSealSubsystem(f, context.Background(), nil)
 	require.Error(t, err)
 
 	// A pre-encfs data dir is an operator-actionable refusal, not a generic
@@ -378,7 +378,7 @@ func TestSealSubsystem_Close_WithRealSealStore(t *testing.T) {
 		sealConfig:   qrdbconfig.SealConfig{Strategy: ""},
 	}
 
-	sub, err := initSealSubsystem(f, context.Background())
+	sub, err := initSealSubsystem(f, context.Background(), nil)
 	require.NoError(t, err)
 	// Close must succeed.
 	require.NoError(t, sub.Close())

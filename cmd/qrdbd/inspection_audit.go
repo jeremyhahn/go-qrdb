@@ -24,11 +24,7 @@ import (
 
 // complianceAuditFile is the hash-chained compliance audit trail's file name
 // under the data directory.
-const complianceAuditFile = "audit-events.ndjson"
-
-// complianceAuditRingSize is how many recent events the in-memory ring keeps
-// for queries.
-const complianceAuditRingSize = 10000
+const complianceAuditFile = audit.DefaultTrailFile
 
 // openComplianceAudit opens the node's compliance audit trail -- the
 // hash-chained file under dataDir, an in-memory ring and the operational log
@@ -43,11 +39,10 @@ const complianceAuditRingSize = 10000
 // cannot record is *InspectionOptOutAuditError, after which the trail is
 // closed. Either way start returns before any barrier is built.
 func openComplianceAudit(ctx context.Context, dataDir string, hardening secure.ProcessHardening) (audit.AuditLogger, error) {
-	chainFile, err := audit.NewFileLogger(filepath.Join(dataDir, complianceAuditFile))
+	sink, err := audit.OpenTrail(filepath.Join(dataDir, complianceAuditFile))
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "compliance audit file", Err: err}
 	}
-	sink := audit.NewAggregateLogger(chainFile, audit.NewRingBuffer(complianceAuditRingSize), audit.NewSlogSink())
 	// A node that runs inspectable does so on the record: the opt-out
 	// honoured at the top of start is the trail's first record, written the
 	// moment the trail exists, and a node that cannot record it does not run.

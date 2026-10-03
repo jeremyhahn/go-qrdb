@@ -122,7 +122,7 @@ func TestAwaitUnseal_SuccessPath(t *testing.T) {
 		host: testBindHost,
 	}
 
-	sub, err := initSealSubsystem(f, context.Background())
+	sub, err := initSealSubsystem(f, context.Background(), nil)
 	require.NoError(t, err)
 	defer func() { _ = sub.Close() }()
 
@@ -229,7 +229,7 @@ func TestRunFirstBoot_WithBarriers_UnsealedBarrier_FirstBootError(t *testing.T) 
 			RootKeyPath: "__sys:seal/root_key",
 		},
 	}
-	sub, err := initSealSubsystem(f, context.Background())
+	sub, err := initSealSubsystem(f, context.Background(), nil)
 	require.NoError(t, err)
 	defer func() { _ = sub.Close() }()
 

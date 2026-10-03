@@ -32,6 +32,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // sealSubsystem aggregates the storage barrier, credential service, and
@@ -87,10 +88,15 @@ func (s *sealSubsystem) Close() error {
 // instance can later be opened with store.WithEncryptingFS pointing at
 // the returned barrier.
 //
+// complianceAudit is the node's compliance trail, opened before this
+// subsystem: the system barrier records its events on it (keyed by the
+// system tenant), and so does every tenant barrier the registry builds
+// (keyed by its tenant). Nil records nothing.
+//
 // The caller is responsible for invoking Close on the returned
 // subsystem when the daemon is shutting down. On error the function
 // closes any partially-allocated resources before returning.
-func initSealSubsystem(f *startFlags, sigCtx context.Context) (*sealSubsystem, error) {
+func initSealSubsystem(f *startFlags, sigCtx context.Context, complianceAudit audit.AuditLogger) (*sealSubsystem, error) {
 	sealDataDir := filepath.Join(f.dataDir, "seal")
 	if err := os.MkdirAll(sealDataDir, 0o700); err != nil {
 		return nil, &SealStorageError{Err: err}
@@ -110,6 +116,7 @@ func initSealSubsystem(f *startFlags, sigCtx context.Context) (*sealSubsystem, e
 	barrierCfg := seal.BarrierConfig{
 		RootKeyPath:  f.sealConfig.RootKeyPath,
 		DeploymentID: f.deploymentID,
+		AuditLogger:  seal.NewComplianceAuditLogger(complianceAudit, tenantid.System, seal.SystemBarrierAuditName),
 	}
 
 	// Reconcile a system-scope enable-encryption interrupted by a crash, BEFORE
@@ -248,7 +255,7 @@ func initSealSubsystem(f *startFlags, sigCtx context.Context) (*sealSubsystem, e
 	// Initialize barrier registry for multi-tenant encryption isolation.
 	// The system barrier is the root; tenant barriers are created on
 	// demand when tenants are provisioned via the TenantService API.
-	barrierRegistry, regErr := seal.NewBarrierRegistry(slog.Default(), sealBarrier)
+	barrierRegistry, regErr := seal.NewBarrierRegistry(slog.Default(), sealBarrier, seal.WithAuditTrail(complianceAudit))
 	if regErr != nil {
 		_ = sealStore.Close()
 		return nil, &BarrierRegistryError{Err: regErr}

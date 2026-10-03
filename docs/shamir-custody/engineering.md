@@ -468,9 +468,11 @@ leaves the envelope held and claimable. See
 the claims and unseal quorums served there are recorded; see
 [../audit/architecture.md](../audit/architecture.md#the-trail-exists-before-the-sealed-window).
 
-The barrier also emits its own events `distribute`, `rekey-start`,
-`quorum-share` (allow / deny, with the holder and op) and `quorum-complete`,
-alongside `initialize`, `unseal` and `seal`, to a `seal.AuditLogger` when its
-configuration carries one. The ceremony service logs enrolment (holder, role,
+The barrier records its own events -- `distribute`, `quorum-complete`,
+`initialize`, `unseal` and `seal` among them -- on the same trail
+([../barrier-seal/engineering.md](../barrier-seal/engineering.md#observability)).
+Each event has one emitter: a submission is `holder-quorum-submit` and a rekey
+opening `holder-rekey-start`, from the holder engine; the barrier no longer
+emits `quorum-share` or `rekey-start`. The ceremony service logs enrolment (holder, role,
 designated factor, KEM) and claims.
 Holder status is available from the list operation and never includes a share.

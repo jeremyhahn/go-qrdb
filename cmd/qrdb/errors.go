@@ -350,3 +350,32 @@ type InvalidFlagValueError struct {
 func (e *InvalidFlagValueError) Error() string {
 	return "qrdb: invalid --" + e.Flag + " value " + strconv.Quote(e.Value) + ": want " + e.Want
 }
+
+// EmbeddedAuditError is returned by StartEmbedded when the compliance audit
+// trail is enabled and cannot be opened. The server does not start: a node
+// configured to keep a trail does not run without one.
+type EmbeddedAuditError struct {
+	Path string
+	Err  error
+}
+
+// Error returns a human-readable description.
+func (e *EmbeddedAuditError) Error() string {
+	return "embedded: compliance audit trail " + strconv.Quote(e.Path) + " cannot be opened: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *EmbeddedAuditError) Unwrap() error {
+	return e.Err
+}
+
+// AuditPathOutsideDataDirError is returned when the embedded server's audit
+// trail path is absolute or leaves the data directory.
+type AuditPathOutsideDataDirError struct {
+	Path string
+}
+
+// Error returns a human-readable description.
+func (e *AuditPathOutsideDataDirError) Error() string {
+	return "embedded: audit trail path " + strconv.Quote(e.Path) + " must be relative to the data directory and stay inside it"
+}

@@ -137,6 +137,15 @@ sealed window's and the full one -- which are the graphs that carry a holder
 authority; a node with seal disabled has no holders to record. With it goes
 the node's `auth.audit_failure_policy` as `Infra.AuditFailurePolicy`.
 
+The composition itself is `audit.OpenTrail(path)` -- the chain file, a ring of
+`audit.TrailRingSize` events and the operational log -- shared by the daemon
+and the desktop's embedded server, at `audit.DefaultTrailFile` under the data
+directory. The same sink reaches every barrier's own events through
+`seal.NewComplianceAuditLogger`: the system barrier's configuration, the
+tenant registry (`seal.WithAuditTrail`) and the database barrier manager
+(`database.WithBarrierAuditTrail`). There is one trail and one emitter per
+event.
+
 > **Correction (now applied throughout).** Earlier revisions of this document
 > described a `New(cfg, kvStore)` factory selecting between `kvLogger`,
 > `fileLogger`, `multiLogger` and `noopLogger` on `audit.enabled` /
@@ -574,7 +583,7 @@ With metadata, as a nested group:
 | `user.create` / `update` / `delete` / `enable` / `disable` | `user:{username}` | user management |
 | `role.create` / `update` / `delete` / `assign` / `unassign` | `role:{name}` | role management |
 | `cert.generate` / `cert.revoke` | `cert:{serial}` | certificate management |
-| `seal.initialize` / `unseal` / `seal` / `rotate` / `rekey` | `barrier` | seal subsystem |
+| `initialize` / `unseal` / `seal` / `quorum-complete` / `distribute` / `change_password` / `enable_encryption` / `import-root-key` / `import-sealed-blob` / `holder-record-conflict` | `barrier` | every barrier -- system, tenant, database -- through `seal.NewComplianceAuditLogger`; see [../barrier-seal/engineering.md](../barrier-seal/engineering.md#observability) |
 | `admin.drain` | `node:{id}` | admin operations |
 | `admin.snapshot` | `shard:{id}` | admin operations |
 | `admin.member.add` / `admin.member.remove` | `shard:{id}` | membership management |

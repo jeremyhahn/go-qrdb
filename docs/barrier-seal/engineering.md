@@ -947,20 +947,47 @@ distinguishes them.
 
 ## Observability
 
-Every barrier operation emits an audit event when an `AuditLogger` is
-configured:
+Every barrier operation records an event on the node's compliance audit
+trail. A barrier's `BarrierConfig.AuditLogger` is
+`seal.NewComplianceAuditLogger(trail, tenant, name)`, the adapter onto the
+one trail (`pkg/audit`): the daemon and the SDK node give it to the system
+barrier and, through `seal.WithAuditTrail`, to every tenant barrier their
+registry builds; the database barrier manager
+(`database.WithBarrierAuditTrail`) to every database barrier; and the
+desktop's embedded server to both when its trail is enabled. Each record is
+keyed by the tenant that owns the barrier -- the system tenant for the system
+barrier, the tenant for a tenant barrier, the database's tenant for a
+database barrier -- and names the barrier in the attribute `barrier`
+(`system`, `tenant:<id>`, `database:<tenant>/<name>`). Only allow-listed
+details reach the trail (`domain`, `op`, `strategy`, `threshold`, `from`,
+`to`, `rolled_back`, `submitted`, `required`, and the holder record
+conflict's `scope`, `username`, `cached_cert`); no key material is among
+them, and any other detail is dropped. The records are post-hoc: a trail
+that refuses one is counted on
+`qrdb_audit_write_failures_total{component="barrier"}` and logged, and the
+operation's outcome stands.
 
-All barrier operations emit audit events when an `AuditLogger` is configured:
+| Action | Recorded when |
+|--------|---------------|
+| `initialize` | the barrier is initialized, or the initialization refused |
+| `unseal` | the barrier is unsealed, by a credential or a completed quorum, or the unseal refused |
+| `seal` | the barrier is sealed |
+| `quorum-complete` | a holder quorum's round completes and its operation runs, or the reconstructed key is refused |
+| `distribute` | a domain's key is split to its holders |
+| `change_password` | a passphrase barrier's passphrase is changed |
+| `enable_encryption` | a barrier is migrated to a keyed strategy |
+| `import-root-key` / `import-sealed-blob` | a root key or sealed blob is imported |
+| `holder-record-conflict` | a holder cached while sealed conflicts with a persisted holder |
 
-| Action | Resource | Outcome |
-|--------|----------|---------|
-| `initialize` | `barrier` | `allow` / `deny` |
-| `unseal` | `barrier` | `allow` / `deny` |
-| `seal` | `barrier` | `allow` |
-| `rotate` | `barrier` | `allow` / `deny` |
-| `rekey` | `barrier` | `allow` / `deny` |
-| `recovery_generate` | `barrier` | `allow` / `deny` |
-| `tenant_init` | `tenant:{id}` | `allow` / `deny` |
+The outcome is `success` for an allowed operation, `failure:<error>` for one
+that failed and `denied:<reason>` for a refusal. **One emitter per event:** a
+share submission and a rekey opening are the holder engine's records
+(`holder-quorum-submit`, `holder-rekey-start`; see
+[../shamir-custody/engineering.md](../shamir-custody/engineering.md)), and the
+barrier records no copy of them. *(Corrected: this table listed `rotate`,
+`rekey`, `recovery_generate` and `tenant_init`, which no barrier emits, and
+said events were emitted "when an AuditLogger is configured" -- no composer
+configured one, so none reached any trail.)*
 
 
 With strategy `none`, every one of those events is marked `strategy: none`, so

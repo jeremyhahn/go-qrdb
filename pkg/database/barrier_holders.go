@@ -118,10 +118,8 @@ func (m *DatabaseBarrierManager) registerShamir(ctx context.Context, dbName, ten
 	if err != nil {
 		return &BarrierCreateError{Name: dbName, Err: err}
 	}
-	barrierCfg := seal.BarrierConfig{
-		RootKeyPath: "db/" + dbName + "/root-key",
-		Shamir:      &seal.ShamirConfig{Threshold: cfg.SharesRequired, TotalShares: cfg.SharesTotal},
-	}
+	barrierCfg := m.barrierConfig(dbName, tenantID)
+	barrierCfg.Shamir = &seal.ShamirConfig{Threshold: cfg.SharesRequired, TotalShares: cfg.SharesTotal}
 	tb, err := m.registry.RegisterTenant(ctx, dbName, storage, barrierCfg, strategy)
 	if err != nil {
 		return &BarrierCreateError{Name: dbName, Err: err}

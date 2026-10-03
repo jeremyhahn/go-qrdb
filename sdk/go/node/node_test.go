@@ -778,7 +778,7 @@ func TestBuildNodeSealSubsystem_CreatesBarrierAndRegistry(t *testing.T) {
 	cfg.Seal.RootKeyPath = "root-key"
 	cfg.Seal.CredentialStrategy = "barrier"
 
-	sub, err := buildNodeSealSubsystem(context.Background(), cfg, dataDir, slog.Default(), nil, false)
+	sub, err := buildNodeSealSubsystem(context.Background(), cfg, dataDir, slog.Default(), nil, false, nil)
 	require.NoError(t, err)
 	require.NotNil(t, sub)
 	assert.NotNil(t, sub.barrier)
@@ -798,7 +798,7 @@ func TestBuildNodeSealSubsystem_StrategyNone(t *testing.T) {
 	cfg.Seal.Strategy = string(seal.StrategyNone)
 	cfg.Seal.RootKeyPath = "root-key"
 
-	sub, err := buildNodeSealSubsystem(context.Background(), cfg, dataDir, slog.Default(), nil, false)
+	sub, err := buildNodeSealSubsystem(context.Background(), cfg, dataDir, slog.Default(), nil, false, nil)
 	require.NoError(t, err)
 	require.NotNil(t, sub)
 	require.NoError(t, sub.close())
@@ -814,7 +814,7 @@ func TestBuildNodeSealSubsystem_InvalidShamirConfig(t *testing.T) {
 	cfg.Seal.ShamirThreshold = 5 // threshold > total is invalid
 	cfg.Seal.ShamirTotal = 3
 
-	_, err := buildNodeSealSubsystem(context.Background(), cfg, dataDir, nil, nil, false)
+	_, err := buildNodeSealSubsystem(context.Background(), cfg, dataDir, nil, nil, false, nil)
 	require.Error(t, err, "invalid Shamir params must return an error")
 	var sce *StorageCreateError
 	require.True(t, errors.As(err, &sce))

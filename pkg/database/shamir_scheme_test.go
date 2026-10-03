@@ -23,6 +23,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -78,5 +79,43 @@ func TestManager_CreateRefusesAnUnsplittableShamirScheme(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "databases", "vault")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the refused create wrote to disk: %v", err)
+	}
+}
+
+// A database barrier built by a manager with an audit trail records its
+// events on it, keyed by the database's tenant and naming the database.
+func TestDatabaseBarrierManager_WithBarrierAuditTrail(t *testing.T) {
+	ring := audit.NewRingBuffer(16)
+	mgr, err := NewDatabaseBarrierManager(testBarrierLogger(), newTestSystemBarrier(t), WithBarrierAuditTrail(ring), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &DatabaseBarrierConfig{Enabled: true, Mode: BarrierModePassphrase}
+	if err := mgr.EnsureBarrier(context.Background(), "vault", "acme", cfg, seal.NewMemoryBackend(), seal.MustCredentials([]byte("database-passphrase"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.SealDatabase("vault"); err != nil {
+		t.Fatal(err)
+	}
+	actions := map[string]audit.AuditEvent{}
+	for _, ev := range ring.Snapshot() {
+		actions[ev.Action] = ev
+	}
+	for _, action := range []string{"initialize", "seal"} {
+		ev, ok := actions[action]
+		if !ok {
+			t.Fatalf("no %s record: %+v", action, ring.Snapshot())
+		}
+		if ev.TenantID != "acme" || ev.Attributes["barrier"] != "database:acme/vault" || ev.Outcome != audit.OutcomeSuccess {
+			t.Fatalf("%s record = %+v", action, ev)
+		}
+	}
+
+	quiet, err := NewDatabaseBarrierManager(testBarrierLogger(), newTestSystemBarrier(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := quiet.EnsureBarrier(context.Background(), "vault", "acme", cfg, seal.NewMemoryBackend(), seal.MustCredentials([]byte("database-passphrase"))); err != nil {
+		t.Fatalf("a manager without a trail = %v", err)
 	}
 }

@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
@@ -45,20 +46,49 @@ type DatabaseBarrierManager struct {
 	// holders is the holder authority of every Shamir database barrier,
 	// keyed by database name.
 	holders *ceremony.ScopedCeremonyRegistry
+	// auditTrail is the compliance trail every database barrier records its
+	// events on, keyed by the database's tenant (WithBarrierAuditTrail).
+	auditTrail audit.AuditLogger
+}
+
+// BarrierManagerOption configures a DatabaseBarrierManager.
+type BarrierManagerOption func(*DatabaseBarrierManager)
+
+// WithBarrierAuditTrail records the events of every database barrier the
+// manager builds -- initialize, unseal, seal, quorum-complete and the rest --
+// on sink, the node's compliance trail, keyed by the database's tenant and
+// naming the database (seal.NewComplianceAuditLogger). Nil records nothing.
+func WithBarrierAuditTrail(sink audit.AuditLogger) BarrierManagerOption {
+	return func(m *DatabaseBarrierManager) { m.auditTrail = sink }
 }
 
 // NewDatabaseBarrierManager creates a DatabaseBarrierManager whose barriers
 // live in a registry of its own over system, the node's system barrier.
-func NewDatabaseBarrierManager(logger *slog.Logger, system *seal.StorageBarrier) (*DatabaseBarrierManager, error) {
+func NewDatabaseBarrierManager(logger *slog.Logger, system *seal.StorageBarrier, opts ...BarrierManagerOption) (*DatabaseBarrierManager, error) {
 	registry, err := seal.NewBarrierRegistry(logger, system)
 	if err != nil {
 		return nil, err
 	}
-	return &DatabaseBarrierManager{
+	m := &DatabaseBarrierManager{
 		logger:   logger,
 		registry: registry,
 		holders:  ceremony.NewScopedCeremonyRegistry(),
-	}, nil
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(m)
+		}
+	}
+	return m, nil
+}
+
+// barrierConfig is the BarrierConfig of dbName's barrier in tenantID: its
+// root-key path, and its trail on the compliance audit.
+func (m *DatabaseBarrierManager) barrierConfig(dbName, tenantID string) seal.BarrierConfig {
+	return seal.BarrierConfig{
+		RootKeyPath: "db/" + dbName + "/root-key",
+		AuditLogger: seal.NewComplianceAuditLogger(m.auditTrail, tenantID, seal.DatabaseBarrierAuditName(tenantID, dbName)),
+	}
 }
 
 // EnsureBarrier creates and initializes an encryption barrier for the
@@ -93,9 +123,7 @@ func (m *DatabaseBarrierManager) EnsureBarrier(
 		return &UnsupportedBarrierStrategyError{Mode: cfg.Mode}
 	}
 
-	barrierCfg := seal.BarrierConfig{
-		RootKeyPath: "db/" + dbName + "/root-key",
-	}
+	barrierCfg := m.barrierConfig(dbName, tenantID)
 
 	// NewDeferredSoftwareStrategy defers passphrase binding to each
 	// Seal/Unseal call (it reads Credentials.Secret at call time instead of
@@ -144,9 +172,7 @@ func (m *DatabaseBarrierManager) RegisterBarrier(
 		return m.registerShamir(context.Background(), dbName, tenantID, cfg, storage)
 	}
 
-	barrierCfg := seal.BarrierConfig{
-		RootKeyPath: "db/" + dbName + "/root-key",
-	}
+	barrierCfg := m.barrierConfig(dbName, tenantID)
 
 	// Deferred strategy: RegisterBarrier never has the real passphrase (the
 	// database is only being re-opened, not created), so the strategy must

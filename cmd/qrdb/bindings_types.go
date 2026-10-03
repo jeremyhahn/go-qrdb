@@ -24,6 +24,24 @@ type EmbeddedConfig struct {
 	RaftEnabled    bool        `json:"raftEnabled"`
 	RaftConfig     *RaftConfig `json:"raftConfig,omitempty"`
 	SealConfig     *SealConfig `json:"sealConfig,omitempty"`
+	// Audit is the embedded server's compliance audit trail. Off unless
+	// enabled.
+	Audit *EmbeddedAuditConfig `json:"audit,omitempty"`
+}
+
+// EmbeddedAuditConfig configures the embedded server's compliance audit
+// trail: the same hash-chained file, ring and operational log qrdbd keeps
+// (audit.OpenTrail). Off by default. When enabled the trail is opened before
+// the seal barrier is built -- so the barrier's and the share holders' events
+// from the first sealed moment are recorded -- and a trail that cannot be
+// opened stops the server from starting.
+type EmbeddedAuditConfig struct {
+	// Enabled turns the trail on.
+	Enabled bool `json:"enabled"`
+	// Path is the trail file, relative to the data directory; empty is
+	// qrdbd's default, audit.DefaultTrailFile. It may not leave the data
+	// directory.
+	Path string `json:"path,omitempty"`
 }
 
 // RaftConfig stores Raft cluster configuration for the embedded server.

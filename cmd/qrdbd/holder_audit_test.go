@@ -204,9 +204,10 @@ func newDaemonHolder(t *testing.T, name string) *daemonHolder {
 }
 
 // An unseal quorum gathered in the daemon's sealed window is on the
-// compliance trail awaitUnseal is given: one record per holder submission,
-// keyed by the system tenant, naming the holder and the operation, and
-// carrying none of the shares, factor responses or keys.
+// compliance trail the seal subsystem and awaitUnseal are given: one record
+// per holder submission from the holder engine, and the barrier's own
+// quorum-complete and unseal records -- each event from one emitter, keyed by
+// the system tenant, carrying none of the shares, factor responses or keys.
 func TestAwaitUnseal_UnsealQuorumIsAudited(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -222,7 +223,8 @@ func TestAwaitUnseal_UnsealQuorumIsAudited(t *testing.T) {
 		},
 		host: testBindHost,
 	}
-	sub, err := initSealSubsystem(f, ctx)
+	trail := audit.NewRingBuffer(64)
+	sub, err := initSealSubsystem(f, ctx, trail)
 	require.NoError(t, err)
 	defer func() { _ = sub.Close() }()
 	bundle, err := generateCATLS()
@@ -256,8 +258,8 @@ func TestAwaitUnseal_UnsealQuorumIsAudited(t *testing.T) {
 		h.envelope = res.Envelope
 	}
 	require.NoError(t, sub.SealBarrier.Seal())
+	sealedAt := len(trail.Snapshot())
 
-	trail := audit.NewRingBuffer(64)
 	sigCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	done := make(chan error, 1)
@@ -301,11 +303,26 @@ func TestAwaitUnseal_UnsealQuorumIsAudited(t *testing.T) {
 	}
 
 	var submits []audit.AuditEvent
-	for _, ev := range trail.Snapshot() {
+	byAction := map[string][]audit.AuditEvent{}
+	for _, ev := range trail.Snapshot()[sealedAt:] {
+		byAction[ev.Action] = append(byAction[ev.Action], ev)
 		if ev.Action == ceremony.ActionHolderQuorumSubmit {
 			submits = append(submits, ev)
 		}
 	}
+	// The barrier's own records of the unseal, on the same trail: the round
+	// completing and the barrier opening, once each. A submission is recorded
+	// once, by the holder engine: the barrier emits no quorum-share of its own.
+	for _, action := range []string{"quorum-complete", "unseal"} {
+		require.Len(t, byAction[action], 1, action)
+		ev := byAction[action][0]
+		assert.Equal(t, tenantid.System, ev.TenantID, action)
+		assert.Equal(t, seal.BarrierAuditResource, ev.Resource, action)
+		assert.Equal(t, seal.SystemBarrierAuditName, ev.Attributes["barrier"], action)
+		assert.Equal(t, audit.OutcomeSuccess, ev.Outcome, action)
+	}
+	assert.Equal(t, string(seal.OpUnseal), byAction["quorum-complete"][0].Attributes["op"])
+	assert.Empty(t, byAction["quorum-share"], "a submission has one emitter")
 	require.Len(t, submits, 2, "each holder's unseal submission is recorded")
 	for i, ev := range submits {
 		assert.Equal(t, tenantid.System, ev.TenantID)

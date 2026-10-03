@@ -2076,7 +2076,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 	// Standalone nodes run on a LocalBackend (no replicated KV), so the volume
 	// pool cursor stays node-local (clustered=false).
 	if cfg.Seal.Enabled {
-		sub, err := buildNodeSealSubsystem(ctx, cfg, dataDir, log, nOpts, false)
+		sub, err := buildNodeSealSubsystem(ctx, cfg, dataDir, log, nOpts, false, server.ResolveCryptoOptions(serverOpts...).AuditLogger)
 		if err != nil {
 			return nil, err
 		}
@@ -2264,7 +2264,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 	// nodes run on a Raft host, so the volume pool cursor lives in the
 	// replicated system KV (clustered=true), bound once the data plane is up.
 	if cfg.Seal.Enabled {
-		sub, err := buildNodeSealSubsystem(ctx, cfg, dataDir, log, nOpts, true)
+		sub, err := buildNodeSealSubsystem(ctx, cfg, dataDir, log, nOpts, true, server.ResolveCryptoOptions(serverOpts...).AuditLogger)
 		if err != nil {
 			return nil, err
 		}
@@ -2408,7 +2408,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 // with the barrier instead of the built-in deferred-software fallback. This
 // is the injection path for cloud KMS (awskms, vault, gcpkms, azurekv) and
 // hardware (tpm2, pkcs11) strategies constructed by higher-level composers.
-func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir string, log *slog.Logger, nOpts *nodeOptions, clustered bool) (*nodeSealSubsystem, error) {
+func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir string, log *slog.Logger, nOpts *nodeOptions, clustered bool, trail audit.AuditLogger) (*nodeSealSubsystem, error) {
 	sealDataDir := filepath.Join(dataDir, "seal")
 	// SyncWrites is forced on for the seal store: DefaultConfig defaults it
 	// to false on the premise that the Raft WAL provides durability, but the
@@ -2435,8 +2435,12 @@ func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir
 	}
 
 	var strategies []seal.SealingStrategy
+	// The system barrier, and every tenant barrier the registry builds,
+	// record their events on the caller's compliance trail
+	// (server.WithAuditLogger), which exists before the node does.
 	barrierCfg := seal.BarrierConfig{
 		RootKeyPath: cfg.Seal.RootKeyPath,
+		AuditLogger: seal.NewComplianceAuditLogger(trail, tenantid.System, seal.SystemBarrierAuditName),
 	}
 	if barrierCfg.RootKeyPath == "" {
 		barrierCfg.RootKeyPath = "root-key"
@@ -2518,7 +2522,7 @@ func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir
 		return nil, &StorageCreateError{Backend: "seal-credentials", Err: credErr}
 	}
 
-	barrierRegistry, regErr := seal.NewBarrierRegistry(log, barrier)
+	barrierRegistry, regErr := seal.NewBarrierRegistry(log, barrier, seal.WithAuditTrail(trail))
 	if regErr != nil {
 		_ = sealStore.Close()
 		return nil, &StorageCreateError{Backend: "seal-registry", Err: regErr}

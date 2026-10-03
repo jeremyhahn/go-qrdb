@@ -323,8 +323,8 @@ func (b *StorageBarrier) StartRekey(ctx context.Context, domain QuorumDomain, pa
 	}
 	b.rounds[key] = r
 
-	emitAudit(b.config.AuditLogger, "rekey-start", "barrier", b.config.RootKeyPath, "allow",
-		map[string]string{"domain": string(domain), "threshold": itoa(resolved.Threshold), "removed": itoa(len(remove))})
+	// The opening is recorded by the holder authority that opened it
+	// (ceremony's holder-rekey-start), the one emitter of that event.
 	return r.info(), nil
 }
 
@@ -438,8 +438,8 @@ func (b *StorageBarrier) admitLocked(ctx context.Context, sub *HolderSubmission,
 		b.logger.Warn("share holder authentication refused",
 			slog.String("domain", string(sub.Domain)), slog.String("op", string(sub.Op)),
 			slog.String("holder", sub.Holder), slog.String("error", err.Error()))
-		emitAudit(b.config.AuditLogger, "quorum-share", "barrier", b.config.RootKeyPath, "deny",
-			map[string]string{"domain": string(sub.Domain), "op": string(sub.Op), "holder": sub.Holder, "reason": err.Error()})
+		// The refusal is recorded by the holder verifier that refused it
+		// (ceremony's holder-quorum-submit), the one emitter of that event.
 		return nil, nil, &HolderAuthenticationError{Holder: sub.Holder, Err: err}
 	}
 	holder, ok := round.roster.Holder(sub.Holder)
@@ -483,9 +483,9 @@ func (b *StorageBarrier) admitLocked(ctx context.Context, sub *HolderSubmission,
 		Required:  round.roster.Threshold,
 		Submitted: len(round.shares),
 	}
-	emitAudit(b.config.AuditLogger, "quorum-share", "barrier", b.config.RootKeyPath, "allow",
-		map[string]string{"domain": string(sub.Domain), "op": string(sub.Op), "holder": sub.Holder,
-			"submitted": itoa(outcome.Submitted), "required": itoa(outcome.Required)})
+	// The submission is recorded by the holder verifier that authenticated it
+	// (ceremony's holder-quorum-submit); the round's completion is recorded
+	// here, as quorum-complete.
 	if outcome.Submitted < outcome.Required {
 		return round, outcome, nil
 	}

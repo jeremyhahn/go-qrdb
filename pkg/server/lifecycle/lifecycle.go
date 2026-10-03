@@ -534,7 +534,8 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// barrier, never in infra.BarrierRegistry's tenant namespace: a database
 	// named like a tenant would otherwise resolve to that tenant's barrier.
 	if infra.BarrierRegistry != nil && dbManager.BarrierManager() == nil {
-		bm, err := database.NewDatabaseBarrierManager(log, infra.BarrierRegistry.SystemBarrier())
+		bm, err := database.NewDatabaseBarrierManager(log, infra.BarrierRegistry.SystemBarrier(),
+			database.WithBarrierAuditTrail(infra.AuditLogger))
 		if err != nil {
 			return nil, &DatabaseBarrierManagerError{Err: err}
 		}

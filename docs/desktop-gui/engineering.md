@@ -158,6 +158,7 @@ management, feature errors), watch streaming and npm packaging are documented in
 | Server sealed | the shell shows the unseal state; no data views | **yes** |
 | Capability absent on the server | its view is not shown | **yes** |
 | No client certificate | the TLS handshake fails — there is no fallback | **yes** |
+| Compliance trail enabled (`EmbeddedConfig.Audit`) but it cannot be opened, or its path leaves the data directory | `StartEmbedded` fails with `EmbeddedAuditError` / `AuditPathOutsideDataDirError`; nothing is started | **yes** |
 
 The TypeScript SDK's error hierarchy separates transport, service, vector,
 management and feature errors so a frontend can distinguish "the server said
@@ -206,6 +207,17 @@ closed.)* The Playwright suites under `cmd/qrdb/frontend/e2e/` are not in CI.
   sent is the one that unseals the database.
 
 ## Observability
+
+**The embedded server keeps qrdbd's compliance trail when it is enabled.**
+`EmbeddedConfig.Audit` (`{"enabled": true, "path": "..."}`, `audit` in the
+TypeScript SDK's `EmbeddedConfig`) is off by default. Enabled, the trail is
+`audit.OpenTrail` at `path` relative to the data directory -- qrdbd's
+`audit-events.ndjson` when the path is omitted -- opened before anything else
+in `StartEmbedded`, so the seal barrier records from its first moment. It is
+handed to the system barrier, the tenant registry, the service graph (holder
+and database barrier events) and the embedded transport (the audit query), and
+closed by `StopEmbedded`. A path that is absolute or leaves the data directory
+is refused.
 
 The GUI's own state machine is the operator-visible signal: `unseal` means the
 server is sealed, and a missing view means the capability is absent. Neither is
