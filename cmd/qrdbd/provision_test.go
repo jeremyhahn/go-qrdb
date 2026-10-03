@@ -23,8 +23,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // provisionReclaimer is a keyspace reclaimer whose fence marker behaves the
@@ -122,6 +124,59 @@ func TestProvisionDatabases_SkipsTheSQLDatabaseWithoutASQLProtocol(t *testing.T)
 	var notFound *database.NotFoundError
 	_, err := mgr.Get("shop")
 	assert.ErrorAs(t, err, &notFound)
+}
+
+// A databases[] entry's own mysql/postgresql flags carry through to the
+// provisioned database -- previously configuredDatabases built Name/
+// Engine/Backend/SQL only, silently dropping them regardless of build
+// tags, every boot.
+func TestProvisionDatabases_ConfiguredEntryCarriesItsOwnProtocol(t *testing.T) {
+	mgr := database.NewManager(nil, t.TempDir())
+	t.Cleanup(func() { _ = mgr.Close() })
+	f := &startFlags{
+		databases: []qrdbconfig.DatabaseConfig{
+			{Name: "orders", Engine: "kv", Backend: "memory", MySQL: true, PostgreSQL: true},
+		},
+		smType: "memory",
+	}
+	require.NoError(t, provisionDatabases(context.Background(), f, mgr, electedLeader{}))
+	db, err := mgr.Get("orders")
+	require.NoError(t, err)
+	assert.True(t, db.ProtocolConfig().MySQL, "configured mysql: true was dropped")
+	assert.True(t, db.ProtocolConfig().PostgreSQL, "configured postgresql: true was dropped")
+}
+
+// A databases[] entry enabling etcd on a binary without qrdb_etcd is
+// refused at boot, before anything is provisioned -- the one caller
+// service.RefuseEtcdNotCompiled's placement in pkg/service cannot reach on
+// its own, because this path creates databases through *database.Manager
+// directly.
+func TestProvisionDatabases_ConfiguredEtcdCapabilityGate(t *testing.T) {
+	mgr := database.NewManager(nil, t.TempDir())
+	t.Cleanup(func() { _ = mgr.Close() })
+	f := &startFlags{
+		databases: []qrdbconfig.DatabaseConfig{
+			{Name: "locks", Engine: "kv", Backend: "memory", Etcd: &qrdbconfig.DatabaseEtcdConfig{
+				Enabled: true, ListenAddr: "127.0.0.1:2379",
+			}},
+		},
+		smType: "memory",
+	}
+	err := provisionDatabases(context.Background(), f, mgr, electedLeader{})
+
+	if !capabilities.Has("etcd") {
+		var capErr *service.CapabilityUnsupportedError
+		require.ErrorAs(t, err, &capErr, "want *service.CapabilityUnsupportedError, got %T: %v", err, err)
+		var notFound *database.NotFoundError
+		_, getErr := mgr.Get("locks")
+		assert.ErrorAs(t, getErr, &notFound, "the refused database must not have been provisioned")
+		return
+	}
+	require.NoError(t, err)
+	db, getErr := mgr.Get("locks")
+	require.NoError(t, getErr)
+	require.NotNil(t, db.ProtocolConfig().Etcd)
+	assert.True(t, db.ProtocolConfig().Etcd.Enabled)
 }
 
 // A --sql-database a drop is fencing does not fail boot; it stays fenced.
