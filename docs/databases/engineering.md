@@ -1235,7 +1235,8 @@ Breaking rows land in one MINOR release, recorded in the CHANGELOG.
   (`ShamirCustodyNotConfiguredError` where no holder custody is wired); see
   [../desktop-gui/engineering.md](../desktop-gui/engineering.md). The admin
   database view shows `DatabaseHoldersPanel` (holders, `HolderRekeyPanel`)
-  for a Shamir database.
+  for a Shamir database, and for one whose custody is not yet initialized the
+  enrolment of its remaining holders and **Initialize**.
 - Tests: `pkg/service/servicetest.NewShamirDatabase` is a real database service
   with one Shamir database; every server transport drives a lifecycle through
   its handlers with it, and `sdk/go/transport/internal/dbholdertest` runs the

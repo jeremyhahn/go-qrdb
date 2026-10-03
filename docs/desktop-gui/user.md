@@ -53,7 +53,9 @@ machines with their own keys and the qrdb CLI; the wizard never handles a
 share or a holder's key. If the server cannot build a Shamir barrier -- it has no
 share-holder custody configured -- the create step shows the server's reason
 and no database is created. Closing the wizard before **Initialize** leaves
-the database sealed until you finish enrolling its holders with the CLI.
+the database sealed until you finish enrolling its holders: open the
+database's view, where **Share Holders** shows who is enrolled, the forms for
+the rest and **Initialize**, or use the CLI.
 Choosing **Passphrase** asks for the
 passphrase twice; it is sent once, when the database is created, and the
 application does not keep it or show it again. You need it to unseal the

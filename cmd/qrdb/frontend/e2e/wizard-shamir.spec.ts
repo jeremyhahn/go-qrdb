@@ -85,6 +85,15 @@ async function enrolHolders(page: Page, n: number): Promise<void> {
   }
 }
 
+/** Opens a database's admin view from the sidebar's Databases list. */
+async function openDatabaseView(page: Page, name: string): Promise<void> {
+  await page.locator('aside button[title="Databases"]').click();
+  const main = page.locator("main");
+  await expect(main.getByText(name, { exact: true })).toBeVisible({ timeout: INIT_TIMEOUT });
+  await main.getByText(name, { exact: true }).click();
+  await expect(page.getByTestId("db-holders-panel")).toBeVisible({ timeout: INIT_TIMEOUT });
+}
+
 /**
  * Records every call the page makes to the holder bindings that use a
  * holder's own key, so a spec can assert the wizard makes none.
@@ -218,6 +227,53 @@ test.describe("Database wizard — a server that cannot serve Shamir", () => {
     await expect(page.getByRole("heading", { name: "Share Holders" })).toHaveCount(0);
     expect(await capturedDatabaseCreates(page)).toHaveLength(1);
     expect((await mockDatabases(page)).names).not.toContain("vault-nocustody");
+  });
+});
+
+test.describe("Database view — resuming a Shamir database's enrolment", () => {
+  test.use({ mockState: secondLaunchEmbeddedState });
+
+  test("a database left sealed by Finish later resumes enrolment in the database view and initializes once exactly N are enrolled", async ({ page }) => {
+    await recordKeyBindingCalls(page);
+    await createShamir(page, "vault-resume", 2, 3);
+    await expect(page.getByRole("heading", { name: "Share Holders" })).toBeVisible({ timeout: INIT_TIMEOUT });
+    await enrolHolders(page, 1);
+    await page.getByTestId("db-holders-leave").click();
+    await page.getByTestId("db-holders-leave-confirm").click();
+    await expect(page.locator("aside").getByText("vault-resume")).toBeVisible({ timeout: INIT_TIMEOUT });
+
+    await openDatabaseView(page, "vault-resume");
+    const panel = page.getByTestId("db-holders-panel");
+    const resume = panel.getByTestId("db-holders-resume");
+    await expect(resume).toContainText("Custody is not initialized");
+    await expect(panel.getByTestId("db-holders-table")).toContainText("holder-0");
+    // The rekey and revocation rounds need an initialized custody.
+    await expect(panel.getByTestId("rekey-panel")).toHaveCount(0);
+
+    // One holder is enrolled: two forms remain, and Initialize waits for them.
+    const initialize = panel.getByTestId("db-holders-panel-initialize");
+    await expect(resume.getByTestId("officer-registration-count")).toHaveText(/0 \/ 2/);
+    await expect(initialize).toBeDisabled();
+    await expect(initialize).toContainText("(1/3)");
+    for (const [form, name] of [[0, "holder-1"], [1, "holder-2"]] as const) {
+      await expect(initialize).toBeDisabled();
+      await resume.getByTestId(`officer-username-${form}`).fill(name);
+      await resume.getByTestId(`officer-csr-${form}`).fill(CSR);
+      await resume.getByTestId(`register-officer-btn-${form}`).click();
+      await expect(resume.getByTestId(`officer-cert-${form}`)).toBeVisible({ timeout: INIT_TIMEOUT });
+      if (form === 0) await expect(initialize).toContainText("(2/3)");
+    }
+    await expect(initialize).toBeEnabled();
+    await initialize.click();
+
+    await expect(panel.getByTestId("db-holders-initialized")).toContainText("2-of-3, 3");
+    await expect(panel.getByTestId("db-holders-resume")).toHaveCount(0);
+    await expect(panel.getByTestId("rekey-panel")).toBeVisible();
+    const state = await mockDatabases(page);
+    expect(state.holders["vault-resume"]).toEqual([["holder-0", 1], ["holder-1", 2], ["holder-2", 3]]);
+    // Holder admin only: no claim or submission was made from the page.
+    expect(await page.evaluate(() => (window as unknown as { __keyBindingCalls: string[] }).__keyBindingCalls)).toEqual([]);
+    await expect(page.locator("body")).not.toContainText("PRIVATE KEY");
   });
 });
 

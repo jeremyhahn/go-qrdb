@@ -26,7 +26,10 @@ are not reconstructed here — their history is in the git log.
   `unavailableSealModes` map and `SealModeUnavailableError` are removed -- and
   refuses it only on the server's answer, such as
   `ShamirCustodyNotConfiguredError` from a node with no share-holder custody
-  wired, which leaves no database behind.
+  wired, which leaves no database behind. A database left sealed by the
+  wizard's "Finish later" resumes its enrolment in the database view
+  (`DatabaseHoldersPanel`): the remaining holders' forms and Initialize,
+  enabled once exactly N are enrolled.
 
 ## [0.34.1-alpha] - 2026-10-03
 

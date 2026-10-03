@@ -108,8 +108,18 @@ management, feature errors), watch streaming and npm packaging are documented in
 - **Leaving the holders step before Initialize** leaves the database created,
   sealed and without custody; nothing it holds is usable until custody is
   initialized. The step says so before the wizard closes. Custody is
-  completed with `qrdb database barrier-officer register` and `qrdb database
-  barrier-init-shamir`, or the database is dropped.
+  completed in the database's admin view, with `qrdb database barrier-officer
+  register` and `qrdb database barrier-init-shamir`, or by dropping the
+  database.
+- **The database view resumes a pending custody.** `DatabaseHoldersPanel`
+  treats a Shamir database as not yet initialized when none of its holders
+  holds a share: share indices are assigned at initialization and never
+  before. Such a database shows the enrolled holders, `HolderEnrolmentForms`
+  for the N less those already enrolled (N is the database's `sharesTotal`),
+  and **Initialize**, enabled only once exactly N are enrolled; the rekey and
+  revocation rounds appear only once custody is initialized. The same rule
+  holds as in the wizard: holder admin only, no share, envelope or holder key
+  in the page.
 
 ## App shell states
 
@@ -176,8 +186,10 @@ closed.)* The Playwright suites under `cmd/qrdb/frontend/e2e/` are not in CI.
   no console message after a successful or a failed create. The Shamir path
   is covered by `e2e/wizard-shamir.spec.ts` (mocked tier): the exact create
   request, enrolment of exactly N holders through the database scope,
-  initialization, that no claim or submission is made from the page, and that
-  the server's refusal of a Shamir barrier is shown and leaves no database. The specs that assert on the create request share
+  initialization, that no claim or submission is made from the page, that
+  the server's refusal of a Shamir barrier is shown and leaves no database,
+  and that a database left by "Finish later" resumes its enrolment in the
+  database view and initializes once exactly N are enrolled. The specs that assert on the create request share
   `e2e/fixtures/database-create-capture.ts`. On the Go side,
   `TestDatabaseBinding_CreateWithBarrierInitialisesIt` drives a barrier create
   through the binding into a real barrier manager and proves the passphrase it

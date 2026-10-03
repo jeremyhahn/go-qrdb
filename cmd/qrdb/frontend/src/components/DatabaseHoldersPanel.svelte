@@ -18,18 +18,54 @@
   ===========================
   A Shamir database's share holders: who holds a share and whether they have
   claimed it, and the rekey and revocation rounds (HolderRekeyPanel) a quorum
-  of them completes from the qrdb CLI or the desktop app.
+  of them completes from the qrdb CLI.
+
+  A database whose custody is not yet initialized -- its holders hold no
+  share yet, as after the database wizard's "Finish later" -- shows instead
+  the enrolment of its remaining holders (HolderEnrolmentForms) and
+  Initialize, enabled only once exactly N are enrolled. Holder admin only: no
+  share, no envelope and no holder key enters this page.
 -->
 <script lang="ts">
-  import type { Client, OfficerStatus } from "@qrdb/sdk";
+  import type { Client, DatabaseShamirInitializeResponse, OfficerRegisterRequest, OfficerStatus } from "@qrdb/sdk";
   import { onMount } from "svelte";
+  import HolderEnrolmentForms from "./wizard/HolderEnrolmentForms.svelte";
   import HolderRekeyPanel from "./HolderRekeyPanel.svelte";
 
-  let { client, database }: { client: Client; database: string } = $props();
+  let {
+    client,
+    database,
+    sharesTotal = 0,
+    sharesRequired = 0,
+  }: {
+    client: Client;
+    database: string;
+    /** N: the share count the database was created with. */
+    sharesTotal?: number;
+    /** M: shares required to unseal. */
+    sharesRequired?: number;
+  } = $props();
 
   let holders: OfficerStatus[] = $state([]);
   let loading: boolean = $state(true);
   let error: string = $state("");
+
+  // Enrolment and initialization of a database whose custody is pending.
+  let registered: number = $state(0);
+  let initializing: boolean = $state(false);
+  let initError: string = $state("");
+  let split = $state<DatabaseShamirInitializeResponse | null>(null);
+
+  /**
+   * Custody is initialized once a split has assigned the holders their
+   * shares: share indices are given at initialization and never before, so a
+   * database whose holders all have none -- or that has no holders -- has not
+   * been initialized.
+   */
+  let initialized = $derived(holders.some((h) => h.shareIndex > 0));
+  /** Holders still to enrol before Initialize: N less those enrolled. */
+  let remaining = $derived(Math.max(0, sharesTotal - holders.length));
+  let enrolled = $derived(holders.length + registered);
 
   async function load(): Promise<void> {
     loading = true;
@@ -40,6 +76,25 @@
       error = err instanceof Error ? err.message : String(err);
     } finally {
       loading = false;
+    }
+  }
+
+  /** Enrols one more holder of this database's barrier. */
+  function enrol(req: OfficerRegisterRequest) {
+    return client.officers.registerDatabaseOfficer({ database, ...req });
+  }
+
+  async function initialize(): Promise<void> {
+    initializing = true;
+    initError = "";
+    try {
+      split = await client.officers.initializeDatabaseShamir({ database });
+      registered = 0;
+      await load();
+    } catch (err: unknown) {
+      initError = err instanceof Error ? err.message : String(err);
+    } finally {
+      initializing = false;
     }
   }
 
@@ -61,51 +116,99 @@
       <div role="alert" class="alert alert-error text-sm" data-testid="db-holders-load-error">
         <span>{error}</span>
       </div>
-    {:else if holders.length === 0}
-      <div class="bg-base-300 rounded-lg p-4 text-center text-sm text-base-content/60">
-        No share holders enrolled.
-      </div>
     {:else}
-      <div class="overflow-x-auto">
-        <table class="table table-sm" data-testid="db-holders-table">
-          <thead>
-            <tr>
-              <th>Holder</th>
-              <th>Role</th>
-              <th>Share #</th>
-              <th>Claim</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each holders as holder (holder.username)}
-              <tr>
-                <td class="font-mono text-sm">{holder.username}</td>
-                <td class="text-xs">{holder.role}</td>
-                <td class="text-center">{holder.shareIndex}</td>
-                <td class="text-xs">
-                  {holder.claimedAt ? "Claimed" : holder.sharePending ? "Pending" : "Not claimed"}
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
-    {/if}
+      {#if split !== null}
+        <div class="alert alert-success text-sm" data-testid="db-holders-initialized">
+          <span>
+            Custody initialized: {split.threshold}-of-{split.totalShares}, {split.shareCount}
+            sealed envelopes waiting to be claimed. Each holder claims theirs with
+            <code>qrdb database barrier-officer claim --database {database}</code>.
+          </span>
+        </div>
+      {/if}
 
-    <div class="border-t border-base-300 pt-4">
-      <HolderRekeyPanel
-        submitCommand="qrdb database barrier-quorum submit --database {database} --op rekey"
-        onStartRekey={(r) => client.officers.startDatabaseRekey({
-          database,
-          threshold: r.threshold,
-          policy: r.policy,
-        })}
-        onRevoke={(r) => client.officers.revokeDatabaseOfficer({
-          database,
-          username: r.username,
-          ...(r.threshold > 0 ? { threshold: r.threshold } : {}),
-        })}
-      />
-    </div>
+      {#if holders.length === 0}
+        <div class="bg-base-300 rounded-lg p-4 text-center text-sm text-base-content/60">
+          No share holders enrolled.
+        </div>
+      {:else}
+        <div class="overflow-x-auto">
+          <table class="table table-sm" data-testid="db-holders-table">
+            <thead>
+              <tr>
+                <th>Holder</th>
+                <th>Role</th>
+                <th>Share #</th>
+                <th>Claim</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each holders as holder (holder.username)}
+                <tr>
+                  <td class="font-mono text-sm">{holder.username}</td>
+                  <td class="text-xs">{holder.role}</td>
+                  <td class="text-center">{holder.shareIndex}</td>
+                  <td class="text-xs">
+                    {holder.claimedAt ? "Claimed" : holder.sharePending ? "Pending" : "Not claimed"}
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {/if}
+
+      {#if !initialized && sharesTotal > 0}
+        <div class="border-t border-base-300 space-y-4 pt-4" data-testid="db-holders-resume">
+          <div role="alert" class="alert alert-warning text-sm">
+            <span>
+              Custody is not initialized: <span class="font-mono">{database}</span> stays sealed
+              until all {sharesTotal} holders are enrolled and you initialize; then any
+              {sharesRequired} of them unseal it together.
+            </span>
+          </div>
+          {#if remaining > 0}
+            <HolderEnrolmentForms {client} count={remaining} bind:registeredCount={registered} {enrol} />
+          {/if}
+          {#if initError}
+            <div role="alert" class="alert alert-error text-sm" data-testid="db-holders-init-error">
+              <span>{initError}</span>
+            </div>
+          {/if}
+          <div class="flex justify-end">
+            <button
+              class="btn btn-primary btn-sm"
+              disabled={enrolled !== sharesTotal || initializing}
+              onclick={() => void initialize()}
+              data-testid="db-holders-panel-initialize"
+            >
+              {#if initializing}
+                <span class="loading loading-spinner loading-xs"></span>
+              {/if}
+              Initialize
+              {#if enrolled !== sharesTotal}
+                <span class="text-xs opacity-70">({enrolled}/{sharesTotal})</span>
+              {/if}
+            </button>
+          </div>
+        </div>
+      {:else if initialized}
+        <div class="border-t border-base-300 pt-4">
+          <HolderRekeyPanel
+            submitCommand="qrdb database barrier-quorum submit --database {database} --op rekey"
+            onStartRekey={(r) => client.officers.startDatabaseRekey({
+              database,
+              threshold: r.threshold,
+              policy: r.policy,
+            })}
+            onRevoke={(r) => client.officers.revokeDatabaseOfficer({
+              database,
+              username: r.username,
+              ...(r.threshold > 0 ? { threshold: r.threshold } : {}),
+            })}
+          />
+        </div>
+      {/if}
+    {/if}
   </div>
 </div>

@@ -527,7 +527,12 @@
     </div>
 
     {#if existingDb.barrier?.enabled && existingDb.barrier.mode === "shamir"}
-      <DatabaseHoldersPanel {client} database={existingDb.name} />
+      <DatabaseHoldersPanel
+        {client}
+        database={existingDb.name}
+        sharesTotal={existingDb.barrier.sharesTotal ?? 0}
+        sharesRequired={existingDb.barrier.sharesRequired ?? 0}
+      />
     {/if}
 
     <!-- SQL Wire Protocol Toggles -->

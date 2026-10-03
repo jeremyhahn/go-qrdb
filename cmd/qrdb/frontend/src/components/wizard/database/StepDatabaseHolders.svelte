@@ -93,7 +93,8 @@
           <span class="text-sm">
             <span class="font-mono">{database}</span> stays sealed, and nothing it holds is usable,
             until all {total} holders are enrolled and its custody is initialized. You can finish
-            later with <code>qrdb database barrier-officer register --database {database}</code>
+            later in the database's view, under Share Holders, or with
+            <code>qrdb database barrier-officer register --database {database}</code>
             and <code>qrdb database barrier-init-shamir --database {database}</code>.
           </span>
         </div>
