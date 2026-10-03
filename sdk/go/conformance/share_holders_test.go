@@ -772,6 +772,34 @@ func TestShareHolders_RefusedForNonHolderVerb(t *testing.T) {
 	t.Logf("admin:status refused as expected: %v", err)
 }
 
+// TestShareHolders_CannotRegisterAnotherHolder proves the go-qrdb#548
+// carve-out does not extend registration to a holder cert. Enrolling a NEW
+// holder (OfficerRegister) is a real, registered RBAC permission
+// (seal:officer_register) requiring an Admin or Security Officer role grant
+// -- never permission.IdentityGated -- so a holder certificate, which always
+// authenticates but always carries an empty role set, must be refused here
+// exactly as for any other non-holder verb (TestShareHolders_
+// RefusedForNonHolderVerb). A holder can only ever complete its own
+// enrolment or claim its own share; it must never be able to seat a second
+// holder on the roster.
+func TestShareHolders_CannotRegisterAnotherHolder(t *testing.T) {
+	e := newHolderE2E(t, restTransport)
+	e.boot()
+	e.enrolAndInitialize()
+	if err := e.n.Unseal(boundedCtx(t), seal.Credentials{}); err != nil {
+		t.Fatalf("complete boot: %v", err)
+	}
+	h := e.holders["so-alice"]
+	client := e.dial(h.tlsConfig(e.pool))
+
+	intruder := newE2EHolder(t, "so-mallory", transport.RoleSecurityOfficer, elliptic.P256(), "", false)
+	_, err := client.Barrier().OfficerRegister(boundedCtx(t), intruder.registerRequest())
+	if err == nil {
+		t.Fatal("a holder certificate registered a new holder; OfficerRegister must require an Admin or SO role, never IdentityGated")
+	}
+	t.Logf("officer:register refused as expected: %v", err)
+}
+
 // TestShareHolders_UnregisteredHolderCertRefusedByRoster proves the
 // go-qrdb#548 carve-out is not a bypass: it only ever admits the identity
 // into the middleware chain. A certificate the ceremony CA signs with a

@@ -240,12 +240,18 @@ cannot be shown to hold, and starting anyway is the lockout the check prevents.
   posture's rationale does not reach it. It is ALWAYS admitted, with no roles,
   regardless of `required`/`enrolled` — the same as every certificate login no
   account resolves to, it still reaches only the `IdentityGated` surface
-  (share claim begin/complete, quorum begin/submit, officer registration);
-  RBAC refuses it every other permission on its empty role set, holder or not.
-  Its binding is the ceremony/officer roster, checked by thumbprint at the
-  handler layer — a holder-shaped certificate for a username never enrolled
-  through officer registration authenticates exactly like an enrolled one and
-  is refused at that roster check, not here.
+  (share claim begin/complete, quorum begin/submit). RBAC refuses it every
+  other permission on its empty role set, holder or not — **including officer
+  registration itself**: enrolling a NEW holder (`seal:officer_register`,
+  `tenant_barrier:officer_register`, `databases:officer_register`) is a real,
+  registered RBAC permission requiring an Admin or Security Officer role
+  grant, never `IdentityGated`, on every transport. A holder certificate can
+  only ever complete its own enrolment or claim its own share; it cannot
+  register another holder. Its binding for the verbs it CAN reach is the
+  ceremony/officer roster, checked by thumbprint at the handler layer — a
+  holder-shaped certificate for a username never enrolled through officer
+  registration authenticates exactly like an enrolled one and is refused when
+  it tries to claim, at that roster check, not here.
 - **Non-certificate methods.** The posture is about certificate logins; other
   methods are governed by the account's permitted-method policy.
 

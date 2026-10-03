@@ -437,12 +437,18 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 	// account, so the policy's rationale does not reach it -- its binding is
 	// the ceremony/officer roster, checked by thumbprint at the handler layer
 	// for every permission.IdentityGated verb (share claim begin/complete,
-	// quorum begin/submit, officer registration). decide()'s IdentityGated
-	// sentinel is what actually grants those verbs; every other permission
-	// still denies a holder identity exactly as before -- RBAC refuses an
-	// empty role set regardless of how it got here. Checking the binding
-	// policy here would refuse a holder legitimately claiming its own share
-	// before decide() is ever reached, which is the bug this fixes.
+	// quorum begin/submit). decide()'s IdentityGated sentinel is what
+	// actually grants those verbs; every other permission still denies a
+	// holder identity exactly as before -- RBAC refuses an empty role set
+	// regardless of how it got here. That includes officer registration
+	// itself (seal:officer_register / tenant_barrier:officer_register /
+	// databases:officer_register): enrolling a NEW holder is a real,
+	// registered RBAC permission requiring an Admin or SO role grant, never
+	// IdentityGated, on every transport -- a holder cert's empty role set
+	// cannot reach it, so a holder can only ever complete its own enrolment
+	// or claim, never register another holder. Checking the binding policy
+	// here would refuse a holder legitimately claiming its own share before
+	// decide() is ever reached, which is the bug this fixes.
 	if auth.IsHolderIdentity(identity) {
 		identity.Roles = nil
 		ctx = auth.WithIdentity(ctx, identity)

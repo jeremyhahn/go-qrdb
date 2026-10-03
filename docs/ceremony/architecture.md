@@ -220,11 +220,18 @@ issuance and binding; see
   governs ACCOUNT certificate enrolment; a holder is never an account
   (`auth.IsHolderIdentity`), so the posture does not reach it — it
   reaches the `permission.IdentityGated` surface (share claim begin/complete,
-  quorum begin/submit, officer registration) with no roles, and RBAC refuses
-  it every other permission. **This is not the holder's binding**: a
+  quorum begin/submit) with no roles, and RBAC refuses it every other
+  permission. **Registering a NEW holder is not on that surface**: enrolment
+  (`seal:officer_register`, `tenant_barrier:officer_register`,
+  `databases:officer_register`) is a real, registered RBAC permission on
+  every transport, requiring an Admin or Security Officer role grant — a
+  holder certificate's empty role set cannot reach it, so a holder can only
+  ever complete its own enrolment or claim its own share, never register
+  another holder. **Claiming is not the holder's binding either**: a
   holder-shaped certificate for a username never enrolled through officer
-  registration authenticates the identical way and is refused at the roster
-  lookup those handlers make (by thumbprint), not by auth middleware. See
+  registration authenticates the identical way and is refused when it tries
+  to claim, at the roster lookup the claim handler makes (by thumbprint), not
+  by auth middleware. See
   [../identity-rbac/architecture.md](../identity-rbac/architecture.md#the-fleet-wide-posture-authmtls_binding_policy).
 
 ## What this feature deliberately does not do
