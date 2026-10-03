@@ -72,14 +72,17 @@ client certificate, mapped to an identity and enriched from the user store —
 and authorized against the database's owning tenant:
 
 - A caller from **another tenant** is refused (`PERMISSION_DENIED`, message
-  `etcd: permission denied`); the system tenant, the store-global
-  administrator, is admitted. The refusal names neither the database nor its
-  owning tenant, so it does not tell a stranger what the port serves; the
-  caller, its tenant, the owner and the database are logged on the server.
+  `etcd: permission denied`) -- the system tenant included: no tenant has
+  access to another tenant's databases on any surface (see
+  [../databases/architecture.md](../databases/architecture.md)). The refusal
+  names neither the database nor its owning tenant, so it does not tell a
+  stranger what the port serves; the caller, its tenant, the owner and the
+  database are logged on the server. *(Corrected: this said the system tenant
+  was admitted as the store-global administrator; the listener has refused it
+  since database ownership became one rule for every tenant.)*
 - The RPC's permission (table below) is checked for the owning tenant. For
   `Compact` that admits only the owning tenant's own identities:
-  `mvcc:compact` is `ScopeSelfStrict`, so the system tenant cannot compact
-  another tenant's database through its listener.
+  `mvcc:compact` is `ScopeSelfStrict`.
 - A client that presents **no certificate** is refused (`UNAUTHENTICATED`).
 
 The listener **refuses to start** (`etcd.AuthRequiredError`) unless the node has

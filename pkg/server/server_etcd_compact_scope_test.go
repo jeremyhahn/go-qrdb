@@ -31,12 +31,11 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
-// An etcd listener admits a system-tenant caller to another tenant's
-// database -- the system tenant is the store-global administrator, and the
-// RPC's permission is checked for the owning tenant, where ScopeSelf lifts
-// it. Compaction is the exception: mvcc:compact is ScopeSelfStrict, so the
-// system tenant cannot compact a database another tenant owns through that
-// tenant's listener, while the owner's own identity can.
+// Compaction through a database's etcd listener is the owning tenant's
+// alone: mvcc:compact is ScopeSelfStrict, and the listener admits no other
+// tenant -- the system tenant included, which has no cross-tenant database
+// access on any surface (docs/databases). The owner's identity is admitted to
+// compact and to a ScopeSelf verb; the system tenant to neither.
 func TestEtcdRequestAuthorizer_CompactIsTheOwningTenantsAlone(t *testing.T) {
 	f := newEtcdScopeFixture(t, false)
 	roles := authtest.BuiltInRoles(t, tenantid.System, "acme")
@@ -57,16 +56,16 @@ func TestEtcdRequestAuthorizer_CompactIsTheOwningTenantsAlone(t *testing.T) {
 		return err
 	}
 
-	if err := authorize(operator, permission.MVCCCompact); status.Code(err) != codes.PermissionDenied {
-		t.Fatalf("the system tenant compacting acme's database through acme's listener = %v, want PermissionDenied", err)
+	for _, perm := range []permission.Permission{permission.MVCCCompact, permission.KVRange} {
+		if err := authorize(operator, perm); status.Code(err) != codes.PermissionDenied {
+			t.Fatalf("the system tenant's %s through acme's listener = %v, want PermissionDenied", perm, err)
+		}
 	}
-	// The control: the same identity is still admitted to a ScopeSelf verb on
-	// that listener, so the refusal above is the compaction scope and not a
-	// fixture that refuses everything.
-	if err := authorize(operator, permission.KVRange); err != nil {
-		t.Fatalf("the system tenant's kv:range on acme's listener = %v, want admitted", err)
-	}
-	if err := authorize(owner, permission.MVCCCompact); err != nil {
-		t.Fatalf("acme compacting its own database = %v, want admitted", err)
+	// The control: the owner is admitted to both, so the refusals above are
+	// the tenancy rule and not a fixture that refuses everything.
+	for _, perm := range []permission.Permission{permission.MVCCCompact, permission.KVRange} {
+		if err := authorize(owner, perm); err != nil {
+			t.Fatalf("acme's %s on its own database = %v, want admitted", perm, err)
+		}
 	}
 }
