@@ -201,6 +201,18 @@ are not reconstructed here — their history is in the git log.
   serialized (gRPC forbids concurrent sends on a stream, and each watch is forwarded on its own
   goroutine). Proved against the etcd client itself (`TestEtcdClient_*` in `pkg/api/etcd`).
 
+### Security
+
+- **A kept static discovery secret stays with the top-level peers too.**
+  Static discovery reaches a database's top-level Raft `peers` as well as the
+  static block's, but a Raft update compared only the static block's, so
+  re-pointing the top-level `peers` without the secret kept the stored secret
+  for the new peers. The static destination is now the union of both lists
+  (when `discovery` is `static` or unset), compared as a set; changing it
+  without the secret is refused with `database.DiscoverySecretRebindError`.
+  Destinations compare literally -- no name resolution or normalisation --
+  which `docs/databases/api.md` now states.
+
 ## [0.32.0-alpha] - 2026-10-02
 
 Strict tenant isolation, phase 2: cluster-wide shard IDs. This release contains BREAKING changes; see the entries below. Highlights:

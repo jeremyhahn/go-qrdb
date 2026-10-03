@@ -137,12 +137,23 @@ secrets to send. So in an update:
   including where validation needs one, as for multicast and token discovery;
 - a discovery block **left out** is removed, secret and all (this is how a
   secret is removed: disable that discovery method);
-- a kept secret stays with **what it authenticates** -- the static peer set
-  (in any order), the multicast group and interface, the token endpoint. An
-  update that changes that destination without sending the secret is refused
-  with `database.DiscoverySecretRebindError` (400 / `INVALID_ARGUMENT`):
-  keeping the secret would hand it, unseen, to a destination the caller chose.
-  Send the secret with the new destination.
+- a kept secret stays with **what it authenticates** -- the static peer set,
+  the multicast group and interface, the token endpoint. An update that
+  changes that destination without sending the secret is refused with
+  `database.DiscoverySecretRebindError` (400 / `INVALID_ARGUMENT`): keeping
+  the secret would hand it, unseen, to a destination the caller chose. Send
+  the secret with the new destination.
+  - The static peer set is the static block's `peers` together with the
+    top-level `peers` when `discovery` is `static` or unset (static discovery
+    reaches both). It is a set: order, duplicates, and which of the two lists
+    holds an address do not matter. Under another discovery method the
+    top-level `peers` are not part of it.
+  - Destinations compare **literally**. No name is resolved and no address is
+    normalised, so `db.example.com:63001` and `DB.example.com:63001`, or a
+    host name and its IP address, are different destinations: rewriting one
+    as the other needs the secret.
+  *(Changed: the top-level `peers` were not treated as a static destination,
+  so re-pointing them under static discovery kept the stored secret.)*
 
 The response to the update reports each kept secret as set. *(Changed: an
 update without the secrets cleared the static shared secret and failed

@@ -890,8 +890,9 @@ func (m *Manager) UpdateRaft(name string, raft *DatabaseRaftConfig) error {
 // blocks are copied before they are filled, so the caller's request is never
 // written to.
 //
-// A kept secret stays bound to what it authenticates: the static peer set,
-// the multicast group and interface, the token endpoint. An update that
+// A kept secret stays bound to what it authenticates: the static peer set
+// (staticDestination), the multicast group and interface, the token endpoint.
+// Destinations compare literally. An update that
 // changes that destination without sending the secret is refused with
 // *DiscoverySecretRebindError -- keeping it would hand a secret the caller
 // never knew to a destination the caller chose.
@@ -900,7 +901,7 @@ func keepStoredSecrets(update, stored *DatabaseRaftConfig) error {
 		return nil
 	}
 	if update.Static != nil && update.Static.SharedSecret == "" && stored.Static != nil && stored.Static.SharedSecret != "" {
-		if !samePeers(update.Static.Peers, stored.Static.Peers) {
+		if !sameAddresses(staticDestination(update), staticDestination(stored)) {
 			return &DiscoverySecretRebindError{Method: string(DiscoveryStatic), Field: "peers"}
 		}
 		s := *update.Static
@@ -929,20 +930,33 @@ func keepStoredSecrets(update, stored *DatabaseRaftConfig) error {
 	return nil
 }
 
-// samePeers reports whether two peer lists name the same set of addresses.
-func samePeers(a, b []string) bool {
+// staticDestination returns the addresses the static discovery secret is sent
+// to: the static block's peers and, when discovery is static or unset (which
+// Validate reads as static), the top-level peers too.
+func staticDestination(r *DatabaseRaftConfig) map[string]struct{} {
+	dest := make(map[string]struct{}, len(r.Static.Peers)+len(r.Peers))
+	for _, p := range r.Static.Peers {
+		dest[p] = struct{}{}
+	}
+	if r.Discovery == DiscoveryStatic || r.Discovery == "" {
+		for _, p := range r.Peers {
+			dest[p] = struct{}{}
+		}
+	}
+	return dest
+}
+
+// sameAddresses reports whether two address sets are equal. Addresses compare
+// literally: no name is resolved and no form is normalised, so the same host
+// written two ways is two destinations.
+func sameAddresses(a, b map[string]struct{}) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	want := make(map[string]int, len(b))
-	for _, p := range b {
-		want[p]++
-	}
-	for _, p := range a {
-		if want[p] == 0 {
+	for p := range a {
+		if _, ok := b[p]; !ok {
 			return false
 		}
-		want[p]--
 	}
 	return true
 }
