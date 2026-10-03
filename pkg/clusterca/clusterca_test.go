@@ -163,6 +163,22 @@ func TestIssueLeafForKey(t *testing.T) {
 	if !ok || !gotPub.Equal(&nodeKey.PublicKey) {
 		t.Fatal("issued leaf does not carry the caller-supplied public key")
 	}
+
+	// B6: the leaf must carry ONLY the bound identity's URI SAN, never the
+	// SIGNING member's own hostnames/interface IPs (clustertls.LocalSANs).
+	// A join leaf with the signer's addresses on it would let a peer that
+	// trusts "any SAN this CA ever signed" treat the joiner as reachable at
+	// addresses that are actually the admitted member that happened to
+	// process its join request.
+	if len(cert.DNSNames) != 0 {
+		t.Fatalf("join leaf carries DNS SANs %v, want none (identity-only)", cert.DNSNames)
+	}
+	if len(cert.IPAddresses) != 0 {
+		t.Fatalf("join leaf carries IP SANs %v, want none (identity-only)", cert.IPAddresses)
+	}
+	if len(cert.URIs) != 1 || cert.URIs[0].String() != "spiffe://qrdb.cluster/node/10.0.0.2:9000" {
+		t.Fatalf("join leaf URIs = %v, want exactly the bound SPIFFE identity", cert.URIs)
+	}
 }
 
 func TestIssueLeafForKey_NilProvider(t *testing.T) {

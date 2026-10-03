@@ -106,21 +106,25 @@ func IssueNodeLeaf(ctx context.Context, provider cakey.Provider, nodeURI ...stri
 }
 
 // IssueLeafForKey signs a node leaf certificate for a caller-supplied public
-// key (e.g. a hardware-resident key, or a joining node's own CSR-derived
-// key during member-side cluster join) using provider -- the cluster CA's
-// private key is never read out of provider, only used to sign. The leaf
-// carries the same template as GenerateNodeCert: CN "qrdb-node", SANs from
-// clustertls.LocalSANs, KeyUsage DigitalSignature|KeyEncipherment,
-// ExtKeyUsage ServerAuth+ClientAuth, clustertls.NodeValidity lifetime.
-// nodeURI is an optional SPIFFE node URI SAN; a non-empty URI that fails to
-// parse returns a *clustertls.GenerateError.
+// key -- a joining node's own CSR-derived key during member-side cluster
+// join -- using provider; the cluster CA's private key is never read out
+// of provider, only used to sign. The leaf carries
+// clustertls.IdentityLeafTemplate, NOT GenerateNodeCert's NodeLeafTemplate:
+// CN "qrdb-node", NO DNS/IP SANs (this process's own hostnames and
+// interface IPs belong on a leaf THIS node will serve from, never on one
+// signed for a different node entirely -- B6, go-qrdb review), KeyUsage
+// DigitalSignature|KeyEncipherment, ExtKeyUsage ServerAuth+ClientAuth,
+// clustertls.NodeValidity lifetime. nodeURI is the joining node's SPIFFE
+// node ID, carried as the leaf's one URI SAN; peers verify the leaf by that
+// identity. A non-empty URI that fails to parse returns a
+// *clustertls.GenerateError.
 func IssueLeafForKey(ctx context.Context, provider cakey.Provider, pub crypto.PublicKey, nodeURI ...string) (certPEM []byte, err error) {
 	caCert, caKey, err := material(ctx, provider)
 	if err != nil {
 		return nil, err
 	}
 
-	leafTemplate, err := clustertls.NodeLeafTemplate(clustertls.NodeValidity, nodeURI...)
+	leafTemplate, err := clustertls.IdentityLeafTemplate(clustertls.NodeValidity, nodeURI...)
 	if err != nil {
 		return nil, err
 	}

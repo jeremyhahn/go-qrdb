@@ -240,22 +240,50 @@ func GenerateCA(validity time.Duration) (caCertPEM, caKeyPEM []byte, caCert *x50
 	return caCertPEM, caKeyPEM, caCert, caKey, nil
 }
 
-// NodeLeafTemplate builds the x509 certificate template used for cluster node
-// leaf certificates. It is shared by GenerateNodeCert (which generates the key
-// itself), IssueLeafForKey (which signs a caller-supplied public key), and
-// provider-backed issuance in pkg/clusterca. The template carries SANs for
-// all local hostnames and interface IPs, the DigitalSignature+KeyEncipherment
-// key usages, and both ServerAuth and ClientAuth extended key usages for
-// mutual TLS. When nodeURI is provided and non-empty it is parsed as a URI
-// and appended as a URI SAN so the node carries its SPIFFE identity. A
-// non-empty URI that fails to parse returns a GenerateError.
+// NodeLeafTemplate builds the x509 certificate template used for a node's
+// OWN cluster leaf certificate: GenerateNodeCert and the raw-PEM
+// IssueLeafForKey below, both of which issue a leaf for the SAME node that
+// is doing the issuing (an auto-generated first node, or a caller supplying
+// its own hardware-resident key). The template therefore carries this
+// node's own SANs -- all local hostnames and interface IPs, from LocalSANs
+// -- alongside the DigitalSignature+KeyEncipherment key usages and both
+// ServerAuth and ClientAuth extended key usages for mutual TLS. When
+// nodeURI is provided and non-empty it is parsed as a URI and appended as a
+// URI SAN so the node carries its SPIFFE identity. A non-empty URI that
+// fails to parse returns a GenerateError.
+//
+// This is NOT the template for a leaf issued to a DIFFERENT node -- see
+// IdentityLeafTemplate, used by member-side cluster join, where LocalSANs
+// would carry the SIGNING member's own hostnames and IPs onto a certificate
+// a completely different node is about to start serving traffic from.
 func NodeLeafTemplate(validity time.Duration, nodeURI ...string) (*x509.Certificate, error) {
+	dnsNames, ipAddrs := LocalSANs()
+	return leafTemplate(validity, dnsNames, ipAddrs, nodeURI...)
+}
+
+// IdentityLeafTemplate builds the x509 certificate template for a leaf
+// issued to ANOTHER node's key -- member-side cluster join's
+// clusterca.IssueLeafForKey, reached through HandleJoinRequest on both
+// transports. It carries NO DNS/IP SANs of the signing member's own: unlike
+// NodeLeafTemplate, the certificate is for a node this process is not and
+// has no address information for, so a signer's own hostnames and
+// interface IPs on it would be actively wrong, not merely redundant. The
+// joining node's identity is carried ONLY as the URI SAN nodeURI supplies
+// (its SPIFFE node ID); peers verify this certificate by that identity, not
+// by any SAN enumerating addresses. A non-empty URI that fails to parse
+// returns a GenerateError.
+func IdentityLeafTemplate(validity time.Duration, nodeURI ...string) (*x509.Certificate, error) {
+	return leafTemplate(validity, nil, nil, nodeURI...)
+}
+
+// leafTemplate is the shared builder behind NodeLeafTemplate and
+// IdentityLeafTemplate: identical certificate shape, differing only in
+// whether dnsNames/ipAddrs carry the signer's own LocalSANs or nothing.
+func leafTemplate(validity time.Duration, dnsNames []string, ipAddrs []net.IP, nodeURI ...string) (*x509.Certificate, error) {
 	leafSerial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
 		return nil, &GenerateError{Err: err}
 	}
-
-	dnsNames, ipAddrs := LocalSANs()
 
 	template := &x509.Certificate{
 		SerialNumber: leafSerial,
