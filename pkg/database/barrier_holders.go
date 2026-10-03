@@ -44,6 +44,20 @@ func (e *ShamirSecretNotAllowedError) Error() string {
 		" takes no secret: its key is split to its share holders"
 }
 
+// InvalidShamirSchemeError is returned when a database is created with a
+// Shamir barrier whose M-of-N the seal cannot split: it needs
+// 2 <= SharesRequired <= SharesTotal <= MaxShamirShares.
+type InvalidShamirSchemeError struct {
+	SharesRequired int
+	SharesTotal    int
+}
+
+// Error returns a human-readable description.
+func (e *InvalidShamirSchemeError) Error() string {
+	return "database: a shamir barrier of " + strconv.Itoa(e.SharesRequired) + "-of-" + strconv.Itoa(e.SharesTotal) +
+		" cannot be split: it needs 2 <= shares required <= shares total <= " + strconv.Itoa(MaxShamirShares)
+}
+
 // ShamirCustodyNotConfiguredError is returned when a database's barrier is
 // a Shamir barrier but the node has no holder authority to give it: no
 // ceremony CA is wired (SetHolderDeps).

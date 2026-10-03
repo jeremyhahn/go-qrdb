@@ -376,6 +376,7 @@ with `DatabaseNameRequiredError` before it is sent.
 | Barrier enabled off the data path (raft backend, volume/raft-isolated tenant) | 422 | `FAILED_PRECONDITION` — `database.BarrierOffDataPathError` |
 | Barrier strategy other than `passphrase` or `shamir` (`UnsupportedBarrierStrategyError`) | 400 | `INVALID_ARGUMENT` |
 | A `secret` on a `shamir` create (`ShamirSecretNotAllowedError`) | 400 | `INVALID_ARGUMENT` |
+| A `shamir` create whose M-of-N is outside 2 <= `sharesRequired` <= `sharesTotal` <= 255 (`InvalidShamirSchemeError`), refused before anything is created | 400 | `INVALID_ARGUMENT` |
 | A holder operation on a database with no Shamir barrier (`NotShamirBarrierError`) | 409 | `FAILED_PRECONDITION` |
 | A `shamir` create on a node with no holder CA (`ShamirCustodyNotConfiguredError`) | 409 | `FAILED_PRECONDITION` |
 | A holder enrolled past `sharesTotal` before initialization (`ceremony.HolderLimitReachedError`) | 409 | `FAILED_PRECONDITION` |

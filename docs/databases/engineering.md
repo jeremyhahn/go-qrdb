@@ -1202,8 +1202,12 @@ Breaking rows land in one MINOR release, recorded in the CHANGELOG.
   and keeps its records under that barrier.
 - `pkg/database`: `DatabaseBarrierManager` keeps its own `BarrierRegistry` over
   the system barrier, so a database name can never collide with a tenant id.
-  `SetHolderDeps` (the CA and factor registry, wired by the server lifecycle from
-  the ceremony service) enables Shamir; without it a `shamir` create is refused
+  `DatabaseConfig.Validate` (and the database service, before any
+  reservation) refuses a Shamir M-of-N outside 2 <= M <= N <=
+  `MaxShamirShares` (255, the seal's GF(2^8) split limit) with
+  `InvalidShamirSchemeError`, so an unsplittable scheme never reaches the
+  catalog. `SetHolderDeps` (the CA and factor registry, wired by the server
+  lifecycle from the ceremony service) enables Shamir; without it a `shamir` create is refused
   (`ShamirCustodyNotConfiguredError`). A create registers the barrier
   uninitialized and marks the database `sealed`; `InitializeShamir` splits
   through the holder authority; a reopen re-installs it; drop destroys the

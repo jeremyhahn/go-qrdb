@@ -16,6 +16,7 @@ package rest
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -61,5 +62,25 @@ func TestDatabaseBarrierOfficerUnenrol_REST(t *testing.T) {
 	}
 	if code := unenrol(""); code != http.StatusBadRequest {
 		t.Fatalf("unenrol without a username = %d, want 400", code)
+	}
+}
+
+// POST /v1/databases with a Shamir M-of-N the seal cannot split is refused
+// with 400 before anything is created, on a node with share-holder custody.
+func TestCreateDatabase_RefusesAnUnsplittableShamirScheme_REST(t *testing.T) {
+	srv := newDBHolderServer(t)
+	for _, scheme := range [][2]int{{2, 256}, {1, 3}, {4, 3}} {
+		rec := postJSON(t, srv, "/v1/databases", map[string]any{
+			"name": "split", "engine": "kv", "backend": "memory", "dataDir": t.TempDir(),
+			"barrier": map[string]any{"enabled": true, "mode": "shamir", "sharesRequired": scheme[0], "sharesTotal": scheme[1]},
+		}, nil)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%d-of-%d create = %d: %s", scheme[0], scheme[1], rec.Code, rec.Body.String())
+		}
+	}
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, httptest.NewRequest(http.MethodGet, "/v1/databases/split", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("a refused create left a database: GET = %d", rec.Code)
 	}
 }

@@ -51,6 +51,32 @@ func TestDatabaseBinding_CreateWithAnUnservedBarrierIsRefused(t *testing.T) {
 				return errors.As(err, &unsupported) && unsupported.Mode == "tpm"
 			},
 		},
+		// The scheme is checked before custody: a node without it refuses
+		// an unsplittable M-of-N as the caller's error all the same.
+		"shamir 2-of-256": {
+			barrier: &transport.DatabaseBarrierConfig{Enabled: true, Mode: "shamir", SharesRequired: 2, SharesTotal: 256},
+			want:    errclass.InvalidArgument,
+			check: func(err error) bool {
+				var scheme *database.InvalidShamirSchemeError
+				return errors.As(err, &scheme)
+			},
+		},
+		"shamir 1-of-3": {
+			barrier: &transport.DatabaseBarrierConfig{Enabled: true, Mode: "shamir", SharesRequired: 1, SharesTotal: 3},
+			want:    errclass.InvalidArgument,
+			check: func(err error) bool {
+				var scheme *database.InvalidShamirSchemeError
+				return errors.As(err, &scheme)
+			},
+		},
+		"shamir 4-of-3": {
+			barrier: &transport.DatabaseBarrierConfig{Enabled: true, Mode: "shamir", SharesRequired: 4, SharesTotal: 3},
+			want:    errclass.InvalidArgument,
+			check: func(err error) bool {
+				var scheme *database.InvalidShamirSchemeError
+				return errors.As(err, &scheme)
+			},
+		},
 		"shamir without custody": {
 			barrier: &transport.DatabaseBarrierConfig{Enabled: true, Mode: "shamir", SharesRequired: 2, SharesTotal: 3},
 			want:    errclass.FailedPrecondition,

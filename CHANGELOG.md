@@ -79,6 +79,11 @@ are not reconstructed here — their history is in the git log.
   rekey. The system barrier's and a tenant's initialization take the M-of-N
   with the request, so they are not limited. The database view says why
   **Initialize** cannot run for a database enrolled past N before this fix.
+- **A database create with a Shamir M-of-N the seal cannot split is refused
+  at create.** Outside 2 <= M <= N <= 255 the create answers
+  `database.InvalidShamirSchemeError` (`INVALID_ARGUMENT`, 400 on REST) on
+  every transport, before anything is reserved or persisted; before, N > 255
+  was accepted and refused only when custody was initialized.
 - **The database wizard holds a Shamir M-of-N to whole numbers and N <= 255**,
   the bound the server's seal enforces, instead of letting a fractional or
   oversized split through to a refusal at initialization.

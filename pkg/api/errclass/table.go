@@ -407,6 +407,7 @@ var databaseRules = []rule{
 	// on a node with no holder custody configured; or a holder operation on
 	// a database whose barrier is not a Shamir barrier.
 	as(&database.ShamirSecretNotAllowedError{}, InvalidArgument),
+	as(&database.InvalidShamirSchemeError{}, InvalidArgument),
 	as(&database.ShamirCustodyNotConfiguredError{}, FailedPrecondition),
 	as(&database.NotShamirBarrierError{}, FailedPrecondition),
 }

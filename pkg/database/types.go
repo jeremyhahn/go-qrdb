@@ -353,6 +353,26 @@ type DatabaseBarrierConfig struct {
 	SharesTotal    int    `yaml:"sharesTotal"    json:"sharesTotal,omitempty"`    // shamir total shares
 }
 
+// MaxShamirShares is the most shares a database barrier's key can be split
+// to: a share's x-coordinate is a non-zero byte of GF(2^8), so the seal
+// splits a key to at most 255 shares.
+const MaxShamirShares = 255
+
+// Validate checks a Shamir barrier's M-of-N against the bounds the seal
+// splits a key under, 2 <= SharesRequired <= SharesTotal <= MaxShamirShares,
+// so a scheme the seal cannot split is refused at create, before anything is
+// persisted, rather than at initialization. It checks nothing for a barrier
+// that is disabled or not Shamir.
+func (b *DatabaseBarrierConfig) Validate() error {
+	if b == nil || !b.Enabled || b.Mode != BarrierModeShamir {
+		return nil
+	}
+	if b.SharesRequired < 2 || b.SharesRequired > b.SharesTotal || b.SharesTotal > MaxShamirShares {
+		return &InvalidShamirSchemeError{SharesRequired: b.SharesRequired, SharesTotal: b.SharesTotal}
+	}
+	return nil
+}
+
 // DatabaseConnectionConfig holds connection settings for a remote database.
 type DatabaseConnectionConfig struct {
 	Transport string `yaml:"transport" json:"transport"` // "unix", "grpc", "rest", "quic"
@@ -607,6 +627,10 @@ func (c *DatabaseConfig) Validate() error {
 		if err := c.SQL.Validate(); err != nil {
 			return err
 		}
+	}
+
+	if err := c.Barrier.Validate(); err != nil {
+		return err
 	}
 
 	// Validate per-database storage codec when specified.

@@ -20,6 +20,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -50,6 +51,7 @@ func TestClassify_HolderConditions(t *testing.T) {
 		// Every holder the uninitialized barrier is split to is enrolled.
 		{&ceremony.HolderLimitReachedError{Total: 3}, FailedPrecondition},
 		{ceremony.ErrUnenrolInitialized, FailedPrecondition},
+		{&database.InvalidShamirSchemeError{SharesRequired: 2, SharesTotal: 256}, InvalidArgument},
 		{ceremony.ErrNoPendingShare, NotFound},
 		{ceremony.ErrShareExpired, Gone},
 		{ceremony.ErrTooManyPendingChallenges, ResourceExhausted},

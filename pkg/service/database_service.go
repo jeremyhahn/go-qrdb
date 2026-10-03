@@ -823,6 +823,11 @@ func (s *DatabaseService) Create(cfg database.DatabaseConfig) (*database.Databas
 // --barrier-passphrase) should type-assert the resolved DatabaseServicer for
 // DatabaseCredentialCreator before falling back to plain Create.
 func (s *DatabaseService) CreateWithCredentials(ctx context.Context, cfg database.DatabaseConfig, creds seal.Credentials) (*database.DatabaseInfo, error) {
+	// A Shamir M-of-N the seal cannot split is refused before anything is
+	// reserved or persisted; the manager checks it again in Validate.
+	if err := cfg.Barrier.Validate(); err != nil {
+		return nil, err
+	}
 	if err := s.validateRaftTopology(cfg.Name, &cfg); err != nil {
 		return nil, err
 	}
@@ -1325,6 +1330,9 @@ func (s *DatabaseService) CreateForTenant(ctx context.Context, cfg database.Data
 // This method is additive to DatabaseServicer (not part of the interface);
 // see CreateWithCredentials and DatabaseCredentialCreator.
 func (s *DatabaseService) CreateForTenantWithCredentials(ctx context.Context, cfg database.DatabaseConfig, creds seal.Credentials) (*database.DatabaseInfo, error) {
+	if err := cfg.Barrier.Validate(); err != nil {
+		return nil, err
+	}
 	if tenantid.IsSystem(tenant.FromContext(ctx)) {
 		// The system tenant creates its own databases. A tenant named in
 		// the request is discarded, as a tenant caller's is: no caller
