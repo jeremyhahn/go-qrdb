@@ -33,6 +33,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -450,12 +451,20 @@ func TestBarrier_Unseal_Error(t *testing.T) {
 	}
 }
 
+// startSealTestServer starts a server whose BarrierSeal is gated as a
+// composer gates it: a PIN backend holding the SO PIN, which WithPINBackend
+// decorates with the SO PIN lockout.
+func startSealTestServer(t *testing.T, svc service.BarrierServicer) (pb.QRDBServiceClient, func()) {
+	t.Helper()
+	return startTestServerFull(t, WithBarrierService(svc), WithPINBackend(pintest.NewSOPINBackend(t)))
+}
+
 func TestBarrier_Seal_Success(t *testing.T) {
 	svc := newBarrierSvcMini()
-	client, cleanup := startTestServerFull(t, WithBarrierService(svc))
+	client, cleanup := startSealTestServer(t, svc)
 	defer cleanup()
 
-	_, err := client.BarrierSeal(context.Background(), &pb.BarrierSealRequest{})
+	_, err := client.BarrierSeal(context.Background(), &pb.BarrierSealRequest{SoPin: pintest.ThrottledSOPIN})
 	if err != nil {
 		t.Fatalf("BarrierSeal failed: %v", err)
 	}
@@ -464,12 +473,27 @@ func TestBarrier_Seal_Success(t *testing.T) {
 func TestBarrier_Seal_Error(t *testing.T) {
 	svc := newBarrierSvcMini()
 	svc.sealErr = errors.New("seal failed")
-	client, cleanup := startTestServerFull(t, WithBarrierService(svc))
+	client, cleanup := startSealTestServer(t, svc)
 	defer cleanup()
 
-	_, err := client.BarrierSeal(context.Background(), &pb.BarrierSealRequest{})
+	// The SO PIN is right, so the error is the barrier service's, not the
+	// PIN gate's.
+	_, err := client.BarrierSeal(context.Background(), &pb.BarrierSealRequest{SoPin: pintest.ThrottledSOPIN})
 	if err == nil {
 		t.Fatal("expected error, got nil")
+	}
+	if st, _ := status.FromError(err); st.Code() == codes.FailedPrecondition || st.Code() == codes.PermissionDenied || st.Code() == codes.Unauthenticated {
+		t.Fatalf("BarrierSeal = %v, want the barrier service's error, not a PIN refusal", err)
+	}
+}
+
+func TestBarrier_Seal_WrongSOPINRefused(t *testing.T) {
+	svc := newBarrierSvcMini()
+	client, cleanup := startSealTestServer(t, svc)
+	defer cleanup()
+
+	if _, err := client.BarrierSeal(context.Background(), &pb.BarrierSealRequest{SoPin: "wrong-pin-0000"}); err == nil {
+		t.Fatal("BarrierSeal with a wrong SO PIN succeeded")
 	}
 }
 
