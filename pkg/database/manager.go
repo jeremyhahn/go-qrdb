@@ -734,7 +734,7 @@ func (m *Manager) Drop(ctx context.Context, name string) error {
 			rolledBack := m.rollbackDropFence(ctx, name, db)
 			return &KeyspaceFenceError{Name: name, TenantID: db.TenantID(), Err: err, RolledBack: rolledBack}
 		}
-		if err := m.reclaimer.ReclaimDatabaseKeyspace(ctx, db.TenantID(), name); err != nil {
+		if err := m.reclaimer.ReclaimDatabaseKeyspace(ctx, db.TenantID(), name, db.Incarnation()); err != nil {
 			rolledBack := m.rollbackDropFence(ctx, name, db)
 			return &KeyspaceReclaimError{Name: name, TenantID: db.TenantID(), Err: err, RolledBack: rolledBack}
 		}

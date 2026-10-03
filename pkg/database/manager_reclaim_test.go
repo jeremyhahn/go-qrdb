@@ -40,8 +40,10 @@ type spyReclaimer struct {
 	mu      sync.Mutex
 	tenants []string
 	names   []string
-	err     error
-	before  func()
+	// incarnations records the incarnation each reclamation named.
+	incarnations []string
+	err          error
+	before       func()
 
 	// fenced and unfenced record FenceDatabaseKeyspace and
 	// UnfenceDatabaseKeyspace calls as "<tenant>/<database>"; fenceErr and
@@ -122,8 +124,9 @@ func (s *spyReclaimer) fenceCalls() (fenced, unfenced, events []string) {
 	return append([]string(nil), s.fenced...), append([]string(nil), s.unfenced...), append([]string(nil), s.events...)
 }
 
-func (s *spyReclaimer) ReclaimDatabaseKeyspace(_ context.Context, tenantID, database string) error {
+func (s *spyReclaimer) ReclaimDatabaseKeyspace(_ context.Context, tenantID, database, incarnation string) error {
 	s.mu.Lock()
+	s.incarnations = append(s.incarnations, incarnation)
 	s.events = append(s.events, "reclaim")
 	s.tenants = append(s.tenants, tenantID)
 	s.names = append(s.names, database)
@@ -166,6 +169,23 @@ func TestManager_Drop_ReclaimsTheSharedStoreKeyspace(t *testing.T) {
 	_, names := spy.calls()
 	assert.Equal(t, []string{"reports"}, names,
 		"dropping a database must reclaim the data it owns in the shared store, not only its directory")
+}
+
+// TestManager_Drop_ReclaimsTheDroppedIncarnation: the reclamation names the
+// incarnation being dropped, so it clears only what that incarnation set --
+// never a record a database created again under the name wrote.
+func TestManager_Drop_ReclaimsTheDroppedIncarnation(t *testing.T) {
+	mgr, spy := newReclaimManager(t, "reports")
+	db, err := mgr.Get("reports")
+	require.NoError(t, err)
+	want := db.Incarnation()
+	require.NotEmpty(t, want)
+
+	require.NoError(t, mgr.Drop(context.Background(), "reports"))
+
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	assert.Equal(t, []string{want}, spy.incarnations)
 }
 
 // TestManager_Drop_ReclaimsUnderTheDatabasesOwnTenant pins the scope. The

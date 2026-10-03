@@ -52,7 +52,7 @@ func (r *provisionReclaimer) UnfenceDatabaseKeyspace(_ context.Context, tenantID
 	return nil
 }
 
-func (r *provisionReclaimer) ReclaimDatabaseKeyspace(context.Context, string, string) error {
+func (r *provisionReclaimer) ReclaimDatabaseKeyspace(context.Context, string, string, string) error {
 	return nil
 }
 

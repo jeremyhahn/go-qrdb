@@ -44,9 +44,10 @@ import "context"
 type KeyspaceReclaimer interface {
 	// ReclaimDatabaseKeyspace deletes every key, index-catalog entry and
 	// vector namespace the (tenantID, database) pair owns in the store
-	// serving it. An empty tenantID means the system tenant, matching
-	// tenant.ComposeNamespace.
-	ReclaimDatabaseKeyspace(ctx context.Context, tenantID, database string) error
+	// serving it, and the scheduled-compaction record the dropped
+	// incarnation of the database set there. An empty tenantID means the
+	// system tenant, matching tenant.ComposeNamespace.
+	ReclaimDatabaseKeyspace(ctx context.Context, tenantID, database, incarnation string) error
 
 	// FenceDatabaseKeyspace fences the (tenantID, database) database in the
 	// Raft group that holds its data, before any of it is reclaimed. Every

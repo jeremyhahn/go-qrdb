@@ -764,9 +764,12 @@ consumes no revision, fires no watch and is never itself compacted.
 - **Bound to the database's incarnation.** Setting a policy writes a
   `compaction.Binding`: the policy, the owning tenant, the database and its
   incarnation. The write goes through the database's own view, so it carries
-  the database's drop fence. A drop's keyspace reclamation clears the record,
-  and a policy bound to another incarnation replaces the record outright,
-  samples included.
+  the database's drop fence. A drop's keyspace reclamation clears the record
+  the dropped incarnation set -- never one bound to another incarnation, which
+  a database created again under the name wrote and a re-issued drop of the
+  old one must leave alone -- and a policy bound to another incarnation
+  replaces the record outright, samples included. *(Corrected: the drop
+  cleared the name's record whatever incarnation had set it.)*
 - **Read back** through `database info`/`GetDatabase`
   (`DatabaseInfo.compaction`), from the same record. A sealed database's
   policy is not reported while it is sealed -- its views are refused by

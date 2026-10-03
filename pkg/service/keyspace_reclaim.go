@@ -231,7 +231,8 @@ func (s *KeyspaceReclaimService) SetStoreResolver(r StoreResolver) {
 }
 
 // ReclaimDatabaseKeyspace deletes everything the (tenantID, database) pair
-// owns in the store serving it.
+// owns in the store serving it, and the scheduled-compaction record that
+// incarnation of the database set there.
 //
 // The order within a single reclamation does not matter -- every step removes
 // data nothing else names -- but the order RELATIVE to the catalog record
@@ -263,7 +264,7 @@ func (s *KeyspaceReclaimService) SetStoreResolver(r StoreResolver) {
 // It is idempotent. A keyspace that is already empty is the success case, not
 // a not-found error, which is what lets a re-issued drop finish an
 // interrupted one.
-func (s *KeyspaceReclaimService) ReclaimDatabaseKeyspace(ctx context.Context, tenantID, db string) error {
+func (s *KeyspaceReclaimService) ReclaimDatabaseKeyspace(ctx context.Context, tenantID, db, incarnation string) error {
 	if db == "" {
 		return &ReclaimScopeError{TenantID: tenantID, Database: db}
 	}
@@ -281,8 +282,13 @@ func (s *KeyspaceReclaimService) ReclaimDatabaseKeyspace(ctx context.Context, te
 		return err
 	}
 	// The database's compaction record goes with it, so a database created
-	// again under the name starts with no policy and no samples.
-	return clearCompactionRecords(ctx, target.Compaction, func(scope string, _ *compaction.State) bool { return scope == ns })
+	// again under the name starts with no policy and no samples. Only the
+	// record this incarnation set: a record bound to another incarnation was
+	// written by a database created again under the name, and a re-issued
+	// drop of the old one must not take it.
+	return clearCompactionRecords(ctx, target.Compaction, func(scope string, st *compaction.State) bool {
+		return scope == ns && st.Incarnation == incarnation
+	})
 }
 
 // FenceDatabaseKeyspace fences the (tenantID, db) database in the store

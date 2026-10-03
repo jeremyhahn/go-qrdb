@@ -212,7 +212,7 @@ func TestServer_WiresTheVolumeStoreResolver(t *testing.T) {
 
 	// The resolver is installed, so a volume-isolated tenant now routes to the
 	// (here unavailable) Host rather than silently to the system store.
-	err := reclaim.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports")
+	err := reclaim.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports", "")
 	var want *service.ReclaimStoreUnavailableError
 	if !errors.As(err, &want) {
 		t.Fatalf("error = %v (%T), want the resolver to have been wired and to fail closed", err, err)
@@ -227,7 +227,7 @@ func TestServer_WithoutATenantHostRegistryLeavesTheResolverUnset(t *testing.T) {
 
 	_ = New(&config.Config{}, nil, nil, WithKeyspaceReclaimService(reclaim))
 
-	if err := reclaim.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports"); err != nil {
+	if err := reclaim.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports", ""); err != nil {
 		t.Fatalf("with no resolver the system store is the answer: %v", err)
 	}
 }

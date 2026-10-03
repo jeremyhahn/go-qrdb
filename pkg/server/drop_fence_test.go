@@ -343,7 +343,7 @@ type failingReclaimAfterFence struct {
 	*service.KeyspaceReclaimService
 }
 
-func (f *failingReclaimAfterFence) ReclaimDatabaseKeyspace(context.Context, string, string) error {
+func (f *failingReclaimAfterFence) ReclaimDatabaseKeyspace(context.Context, string, string, string) error {
 	return errors.New("simulated reclamation failure")
 }
 

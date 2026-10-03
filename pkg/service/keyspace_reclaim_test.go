@@ -288,7 +288,7 @@ func TestKeyspaceReclaim_ReclaimsEveryShapeADatabaseOwns(t *testing.T) {
 	kv := populatedStore()
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
 
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports"))
+	require.NoError(t, svc.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports", ""))
 
 	assert.Equal(t, survivors(), allKeys(t, kv),
 		"dropping a shared-store database must leave exactly the keys that belong to other databases and other tenants")
@@ -308,7 +308,7 @@ func TestKeyspaceReclaim_ReclaimsTheNamespacedCollectionSurface(t *testing.T) {
 	require.NotEmpty(t, before, "fixture must carry a namespaced collection document")
 
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports"))
+	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", ""))
 
 	for _, prefix := range []string{ns + collectionMetadataPrefix, ns + collectionDataPrefix} {
 		keys, lErr := kv.ListAll(ctx, prefix)
@@ -356,7 +356,7 @@ func TestKeyspaceReclaim_LeavesUnattributableCollectionResidue(t *testing.T) {
 	catalog := newReclaimIndexCatalog(nsA+"by_region", nsB+"by_region", "reports.orders.sku")
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv, Index: catalog})
 
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports"))
+	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", ""))
 
 	// 1. The unattributable residue is untouched -- all of it, including the
 	//    dropping tenant's share of it, because there is no such thing as a
@@ -422,7 +422,7 @@ func TestKeyspaceReclaim_ReclaimsEverySequenceUnderTheDatabase(t *testing.T) {
 	require.Len(t, before, 5, "fixture must carry __tableid, __autoinc, __rowid, __usq and __collection")
 
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports"))
+	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", ""))
 
 	after, err := kv.ListAll(ctx, ns+"__seq:")
 	require.NoError(t, err)
@@ -445,7 +445,7 @@ func TestKeyspaceReclaim_ReclaimsBothIndexNameShapes(t *testing.T) {
 	)
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: newMemoryKVSvc(), Index: catalog})
 
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports"))
+	require.NoError(t, svc.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports", ""))
 
 	assert.Equal(t, []string{
 		"__sys_internal",
@@ -469,7 +469,7 @@ func TestKeyspaceReclaim_ReclaimsVectorNamespaces(t *testing.T) {
 	)
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: newMemoryKVSvc(), Vector: vec})
 
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports"))
+	require.NoError(t, svc.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports", ""))
 
 	assert.Equal(t, []string{
 		tenant.ComposeNamespace("acme", "ledger") + "docs",
@@ -494,7 +494,7 @@ func TestKeyspaceReclaim_RecreatedNameInheritsNothing(t *testing.T) {
 	kv := populatedStore()
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
 
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports"))
+	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", ""))
 
 	// Everything a database of that name would address, from a fresh create.
 	// The legacy root-keyed prefixes are NOT in this list, and that is not a
@@ -522,10 +522,10 @@ func TestKeyspaceReclaim_IsIdempotent(t *testing.T) {
 	vec := newReclaimVectorStore(tenant.ComposeNamespace("acme", "reports") + "docs")
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv, Index: catalog, Vector: vec})
 
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports"))
+	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", ""))
 	first := allKeys(t, kv)
 
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports"),
+	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", ""),
 		"reclaiming an already-empty keyspace must succeed so a re-issued drop can finish an interrupted one")
 	assert.Equal(t, first, allKeys(t, kv))
 	assert.Empty(t, catalog.remaining())
@@ -542,7 +542,7 @@ func TestKeyspaceReclaim_RetryAfterAFailureCompletes(t *testing.T) {
 	catalog.dropErr = errors.New("index catalog unavailable")
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv, Index: catalog})
 
-	err := svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports")
+	err := svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", "")
 	var idxErr *ReclaimIndexError
 	require.ErrorAs(t, err, &idxErr, "an index that cannot be dropped must fail the reclamation, not be skipped")
 
@@ -550,7 +550,7 @@ func TestKeyspaceReclaim_RetryAfterAFailureCompletes(t *testing.T) {
 	assert.NotEmpty(t, catalog.remaining())
 
 	catalog.dropErr = nil
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports"))
+	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", ""))
 	assert.Equal(t, survivors(), allKeys(t, kv))
 	assert.Empty(t, catalog.remaining())
 }
@@ -639,7 +639,7 @@ func TestKeyspaceReclaim_FailuresAreTyped(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			svc := NewKeyspaceReclaimService(tc.target())
-			err := svc.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports")
+			err := svc.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports", "")
 			require.Error(t, err)
 			tc.assert(t, err)
 		})
@@ -690,7 +690,7 @@ func TestKeyspaceReclaim_RefusesAnUnscopedRequest(t *testing.T) {
 	before := allKeys(t, kv)
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
 
-	err := svc.ReclaimDatabaseKeyspace(context.Background(), "acme", "")
+	err := svc.ReclaimDatabaseKeyspace(context.Background(), "acme", "", "")
 
 	var want *ReclaimScopeError
 	require.ErrorAs(t, err, &want)
@@ -708,7 +708,7 @@ func TestKeyspaceReclaim_EmptyTenantIsTheSystemTenant(t *testing.T) {
 	require.NoError(t, kv.Put(ctx, ns+"k", []byte("v")))
 
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "", "bootstrap"))
+	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "", "bootstrap", ""))
 
 	assert.Empty(t, allKeys(t, kv))
 }
@@ -725,7 +725,7 @@ func TestKeyspaceReclaim_DeletesEveryKeyIndividually(t *testing.T) {
 	kv := populatedStore()
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
 
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports"))
+	require.NoError(t, svc.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports", ""))
 
 	assert.Equal(t, survivors(), allKeys(t, kv))
 }
@@ -748,7 +748,7 @@ func TestKeyspaceReclaim_RoutesToTheTenantsOwnStore(t *testing.T) {
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: system})
 	svc.SetStoreResolver(resolver)
 
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports"))
+	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", ""))
 
 	assert.Empty(t, allKeys(t, volume), "the tenant's own store must be reclaimed")
 	// The system store is not touched at all. Everything the drop owns is
@@ -769,7 +769,7 @@ func TestKeyspaceReclaim_UsesTheSystemStoreForANonDedicatedTenant(t *testing.T) 
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
 	svc.SetStoreResolver(resolver)
 
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports"))
+	require.NoError(t, svc.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports", ""))
 
 	assert.Equal(t, survivors(), allKeys(t, kv))
 }
@@ -785,7 +785,7 @@ func TestKeyspaceReclaim_ResolverFailureFailsTheDrop(t *testing.T) {
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
 	svc.SetStoreResolver(resolver)
 
-	err := svc.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports")
+	err := svc.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports", "")
 
 	var want *ReclaimStoreUnavailableError
 	require.ErrorAs(t, err, &want)
@@ -802,7 +802,7 @@ func TestKeyspaceReclaim_ResolverFailureFailsTheDrop(t *testing.T) {
 // no indexes or vectors: the reclamation must not panic or refuse.
 func TestKeyspaceReclaim_NilEnginesAreSkipped(t *testing.T) {
 	svc := NewKeyspaceReclaimService(ReclaimTarget{})
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports"))
+	require.NoError(t, svc.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports", ""))
 }
 
 // ListAll mirrors List on this double: it applies no internal-key guard,

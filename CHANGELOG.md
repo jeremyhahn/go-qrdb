@@ -1706,6 +1706,11 @@ A clustered SDK boot that fails can now be retried cleanly. Highlights:
   any store; it is refused now (`service.CompactPrefixInvalidError`, nothing proposed) unless the
   service is built with the new `service.WithDedicatedKeyspace`, which only dedicated raft
   groups' services are.
+- **A drop clears only its own incarnation's compaction record.** Reclaiming a dropped
+  database's keyspace cleared the compaction record under the database's name whatever
+  incarnation had set it, so a re-issued drop of an old incarnation could take the policy of a
+  database created again under the name. `database.KeyspaceReclaimer.ReclaimDatabaseKeyspace`
+  takes the dropped incarnation, and only a record bound to it is cleared.
 
 ## [0.33.0-alpha] - 2026-10-03
 

@@ -698,7 +698,7 @@ type alwaysFailReclaimer struct {
 	unfenceErr error
 }
 
-func (r *alwaysFailReclaimer) ReclaimDatabaseKeyspace(_ context.Context, _, _ string) error {
+func (r *alwaysFailReclaimer) ReclaimDatabaseKeyspace(_ context.Context, _, _, _ string) error {
 	return r.err
 }
 
