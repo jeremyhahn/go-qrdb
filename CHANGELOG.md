@@ -11,6 +11,13 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.34.2-alpha] - 2026-10-03
+
+The database wizard offers Shamir custody. Highlights:
+
+- **The desktop and web database wizard offers Shamir M-of-N.** It creates the database sealed, enrols exactly N share holders through the unified holder model, then initializes. The page administers holders only: claims and share submissions stay in the CLI and desktop Go, and no share or key ever enters the page.
+- **"Finish later" resumes from the database view.** Enrolment and initialization continue where they stopped.
+
 ### Changed
 
 - **The database wizard offers Shamir and enrols the database's share
