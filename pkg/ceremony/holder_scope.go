@@ -536,17 +536,15 @@ func (h *holderScope) refuseOverCapacity(ctx context.Context) error {
 // initialized (removeEnrolled), and records the removal, or its refusal, on
 // the compliance trail.
 //
-// The removal is recorded before it takes effect (a gating record, see gate):
-// under fail-closed one the trail cannot record is refused with
-// *audit.GateError and the holder stays enrolled. A refusal is recorded
-// post-hoc.
+// The removal is recorded as permitted before it takes effect (a gating
+// record, see gate): under fail-closed one the trail cannot record is refused
+// with *audit.GateError and the holder stays enrolled. Its outcome is recorded
+// once it has run (settle): success once the record is removed, or the
+// failure -- a refusal before the gate, or a failure after it.
 func (h *holderScope) unenrol(ctx context.Context, d *HolderDeps, username string) error {
 	ev := holderEvent{action: ActionHolderUnenrol, holder: username}
 	err := h.removeEnrolled(ctx, username, func() error { return h.gate(ctx, d, ev) })
-	if err != nil && !isGateRefusal(err) {
-		ev.err = err
-		h.record(ctx, d, ev)
-	}
+	h.settle(ctx, d, ev, err)
 	return err
 }
 

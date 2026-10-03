@@ -635,7 +635,7 @@ Each gated operation therefore leaves its records in one of three sequences:
 
 | Sequence | Meaning |
 |---|---|
-| `permitted`, then `success` | admitted, and the effect completed -- the holder stored, the envelope delivered, the round opened |
+| `permitted`, then `success` | admitted, and the effect completed -- the holder stored, the envelope delivered, the round opened, the unenrolled holder removed |
 | `permitted`, then `failure:<reason>` | admitted, and the effect then failed -- the CA, a factor's enrolment, the store |
 | `failure:<reason>` or `denied:<reason>` alone | refused before the gate, so nothing was permitted -- invalid input, a duplicate, an unproven claimant, a rekey the barrier refused |
 

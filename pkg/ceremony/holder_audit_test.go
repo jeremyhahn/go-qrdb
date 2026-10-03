@@ -676,7 +676,12 @@ func TestHolderAudit_OneEmitterPerEvent(t *testing.T) {
 	}
 	assert.Equal(t, 2, count(ActionHolderQuorumSubmit))
 	assert.Zero(t, count("quorum-share"), "the barrier records no second copy of a submission")
-	assert.Equal(t, 1, count(ActionHolderRekeyStart))
+	var starts []string
+	for _, ev := range eventsOf(ring.Snapshot(), ActionHolderRekeyStart) {
+		starts = append(starts, ev.Outcome)
+	}
+	assert.Equal(t, []string{audit.OutcomePermitted, audit.OutcomeSuccess}, starts,
+		"the holder engine records the opening, permitted then settled")
 	assert.Zero(t, count("rekey-start"), "the barrier records no second copy of a rekey opening")
 	assert.Equal(t, 1, count("quorum-complete"))
 	assert.Positive(t, count("unseal"))

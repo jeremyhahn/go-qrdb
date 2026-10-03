@@ -391,8 +391,8 @@ events name the operation. **None carries a share, an envelope, a PIN, a
 claim signature, a factor response or a key**, and a refusal's reason is a
 fixed token, never an error's text.
 
-**They follow the node's one audit failure posture.** A registration, a claim
-and a rekey opening are recorded as `permitted` before they take effect and,
+**They follow the node's one audit failure posture.** A registration, a claim,
+a rekey opening and an unenrolment are recorded as `permitted` before they take effect and,
 under `auth.audit_failure_policy: "fail-closed"` (the default), refused when
 the trail cannot record them -- the holder is not enrolled, the envelope stays
 held and claimable, no round opens -- exactly as the authorization and SO

@@ -138,10 +138,13 @@ func TestUnenrol_BeforeInitializationFreesTheSlot(t *testing.T) {
 	require.NoError(t, a.distribute(ctx))
 
 	removed := eventsOf(scopeEvents(ring, a.scope), ActionHolderUnenrol)
-	require.Len(t, removed, 1)
-	assert.Equal(t, "bob", removed[0].Attributes["holder"])
-	assert.Equal(t, audit.OutcomeSuccess, removed[0].Outcome)
-	assert.Equal(t, "acme", removed[0].TenantID)
+	require.Len(t, removed, 2, "permitted before the removal, success after it")
+	assert.Equal(t, audit.OutcomePermitted, removed[0].Outcome)
+	assert.Equal(t, audit.OutcomeSuccess, removed[1].Outcome)
+	for _, ev := range removed {
+		assert.Equal(t, "bob", ev.Attributes["holder"])
+		assert.Equal(t, "acme", ev.TenantID)
+	}
 }
 
 // TestUnenrol_Refusals pins the refusals: no name, a name never enrolled,

@@ -143,7 +143,11 @@ func TestDatabaseHolders_UnenrolBeforeInitialization(t *testing.T) {
 			unenrols = append(unenrols, ev)
 		}
 	}
-	require.Len(t, unenrols, 2, "the removal and the refusal are recorded; the other tenant was refused before the holder authority")
-	assert.Equal(t, audit.OutcomeSuccess, unenrols[0].Outcome)
-	assert.Equal(t, "acme", unenrols[0].TenantID)
+	require.Len(t, unenrols, 3, "the removal permitted then done, and the refusal; the other tenant was refused before the holder authority")
+	assert.Equal(t, audit.OutcomePermitted, unenrols[0].Outcome)
+	assert.Equal(t, audit.OutcomeSuccess, unenrols[1].Outcome)
+	assert.True(t, strings.HasPrefix(unenrols[2].Outcome, audit.OutcomeFailure+":"), unenrols[2].Outcome)
+	for _, ev := range unenrols {
+		assert.Equal(t, "acme", ev.TenantID)
+	}
 }
