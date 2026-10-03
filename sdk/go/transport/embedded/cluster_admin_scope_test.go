@@ -29,7 +29,8 @@ import (
 
 // TestClusterAdminScope: over the REAL built-in roles, the embedded
 // RBACClient admits the system tenant's Admin to add or remove a replica,
-// request a snapshot and drain the node, and denies a tenant's Admin and SO,
+// request a snapshot, drain the node and read or set the node keyspace's
+// compaction policy, and denies a tenant's Admin and SO,
 // whose built-in roles carry the same grants. It pins the authorization
 // decision an embedder asks for, not a gate: the embedded transport's own
 // admin methods run in-process for a trusted embedder and authorize nothing
@@ -40,6 +41,10 @@ func TestClusterAdminScope(t *testing.T) {
 	for _, perm := range []permission.Permission{
 		permission.AdminAddMember, permission.AdminRemoveMember,
 		permission.AdminSnapshot, permission.AdminDrain,
+		// The node keyspace's compaction policy: the built-in Admin role
+		// carries it in every tenant, and only the system tenant's holder
+		// may use it.
+		permission.AdminNodeCompaction,
 	} {
 		for _, c := range authtest.ClusterAdminCallers(t) {
 			t.Run(string(perm)+"/"+c.Name, func(t *testing.T) {
