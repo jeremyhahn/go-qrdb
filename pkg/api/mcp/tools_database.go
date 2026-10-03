@@ -115,7 +115,7 @@ func databaseTools(dbSvc service.DatabaseServicer) []serverTool {
 
 // toolDatabaseCreate defines the qrdb_database_create tool schema.
 func toolDatabaseCreate() mcp.Tool {
-	return mcp.NewTool("qrdb_database_create",
+	opts := []mcp.ToolOption{
 		mcp.WithDescription("Create a new database with the specified name, engine, and backend."),
 		mcp.WithString("name",
 			mcp.Required(),
@@ -138,58 +138,6 @@ func toolDatabaseCreate() mcp.Tool {
 		mcp.WithBoolean("postgresql",
 			mcp.Description("Enable PostgreSQL wire protocol for this database."),
 		),
-		mcp.WithString("raft_cluster_mode",
-			mcp.Description("Raft cluster mode: none, local, or distributed."),
-		),
-		mcp.WithNumber("raft_replica_id",
-			mcp.Description("Raft replica ID for distributed mode."),
-		),
-		mcp.WithString("raft_address",
-			mcp.Description("This node's Raft address (host:port) for distributed mode."),
-		),
-		mcp.WithString("discovery_method",
-			mcp.Description("Peer discovery method: static, multicast, dns, or token."),
-		),
-		// Static discovery
-		mcp.WithArray("static_peers",
-			mcp.Description("Static peer addresses (host:port) for static discovery."),
-		),
-		mcp.WithString("static_shared_secret",
-			mcp.Description("Shared secret for static peer authentication. Omitted on an update, the stored secret is kept while the peers are unchanged."),
-		),
-		// Multicast discovery
-		mcp.WithString("multicast_shared_secret",
-			mcp.Description("HMAC shared secret for multicast peer authentication (required for multicast)."),
-		),
-		mcp.WithString("multicast_group",
-			mcp.Description("Multicast group address (default: 239.255.77.77:63777)."),
-		),
-		mcp.WithString("multicast_interface",
-			mcp.Description("Network interface for multicast discovery."),
-		),
-		mcp.WithNumber("multicast_min_peers",
-			mcp.Description("Minimum number of peers to discover via multicast."),
-		),
-		// DNS discovery
-		mcp.WithString("dns_domain",
-			mcp.Description("DNS domain for SRV record lookup (required for dns)."),
-		),
-		mcp.WithString("dns_service",
-			mcp.Description("SRV service name (default: qrdb)."),
-		),
-		mcp.WithString("dns_proto",
-			mcp.Description("SRV protocol (default: udp)."),
-		),
-		// Token discovery
-		mcp.WithString("token_endpoint",
-			mcp.Description("Discovery service endpoint URL (required for token)."),
-		),
-		mcp.WithString("token_value",
-			mcp.Description("Bootstrap token for cluster discovery (required for token)."),
-		),
-		mcp.WithNumber("token_cluster_size",
-			mcp.Description("Expected cluster size for token discovery (required for token)."),
-		),
 		mcp.WithBoolean("barrier_enabled",
 			mcp.Description("Bootstrap the database's encryption barrier at creation time."),
 		),
@@ -208,7 +156,8 @@ func toolDatabaseCreate() mcp.Tool {
 		mcp.WithString("sql_concurrency",
 			mcp.Description("The database's SQL concurrency mode: \"optimistic\" (the default) or \"pessimistic\"."),
 		),
-	)
+	}
+	return mcp.NewTool("qrdb_database_create", append(opts, raftToolOptions(createRaftArgs)...)...)
 }
 
 // handleDatabaseCreate returns a tool handler that delegates to
@@ -247,9 +196,8 @@ func handleDatabaseCreate(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerF
 		}
 
 		// Build raft config if cluster mode is specified.
-		raftMode := mcp.ParseString(req, "raft_cluster_mode", "")
-		if raftMode != "" {
-			raftCfg, err := buildRaftConfigFromRequest(req, raftMode)
+		if mcp.ParseString(req, createRaftArgs.clusterMode, "") != "" {
+			raftCfg, err := buildRaftConfig(req, createRaftArgs)
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
@@ -461,65 +409,14 @@ func handleDatabaseUpdateEtcd(dbSvc service.DatabaseServicer) mcpserver.ToolHand
 
 // toolDatabaseUpdateRaft defines the qrdb_database_update_raft tool schema.
 func toolDatabaseUpdateRaft() mcp.Tool {
-	return mcp.NewTool("qrdb_database_update_raft",
-		mcp.WithDescription("Update the Raft consensus configuration for a database."),
+	opts := []mcp.ToolOption{
+		mcp.WithDescription("Update the Raft consensus configuration for a database. The update replaces the whole Raft configuration: a discovery block is sent when discovery_method names it or any of its arguments is given, and a block not sent is removed with its secret. A block sent without its secret keeps the stored one while the block's destination is unchanged."),
 		mcp.WithString("name",
 			mcp.Required(),
 			mcp.Description("The database name to update."),
 		),
-		mcp.WithString("cluster_mode",
-			mcp.Description("Raft cluster mode: none, local, or distributed."),
-		),
-		mcp.WithNumber("replica_id",
-			mcp.Description("Raft replica ID for distributed mode."),
-		),
-		mcp.WithString("raft_address",
-			mcp.Description("This node's Raft address (host:port) for distributed mode."),
-		),
-		mcp.WithString("discovery_method",
-			mcp.Description("Peer discovery method: static, multicast, dns, or token."),
-		),
-		// Static discovery
-		mcp.WithArray("static_peers",
-			mcp.Description("Static peer addresses (host:port) for static discovery."),
-		),
-		mcp.WithString("static_shared_secret",
-			mcp.Description("Shared secret for static peer authentication. Omitted on an update, the stored secret is kept while the peers are unchanged."),
-		),
-		// Multicast discovery
-		mcp.WithString("multicast_shared_secret",
-			mcp.Description("HMAC shared secret for multicast peer authentication (required for multicast)."),
-		),
-		mcp.WithString("multicast_group",
-			mcp.Description("Multicast group address (default: 239.255.77.77:63777)."),
-		),
-		mcp.WithString("multicast_interface",
-			mcp.Description("Network interface for multicast discovery."),
-		),
-		mcp.WithNumber("multicast_min_peers",
-			mcp.Description("Minimum number of peers to discover via multicast."),
-		),
-		// DNS discovery
-		mcp.WithString("dns_domain",
-			mcp.Description("DNS domain for SRV record lookup (required for dns)."),
-		),
-		mcp.WithString("dns_service",
-			mcp.Description("SRV service name (default: qrdb)."),
-		),
-		mcp.WithString("dns_proto",
-			mcp.Description("SRV protocol (default: udp)."),
-		),
-		// Token discovery
-		mcp.WithString("token_endpoint",
-			mcp.Description("Discovery service endpoint URL (required for token)."),
-		),
-		mcp.WithString("token_value",
-			mcp.Description("Bootstrap token for cluster discovery (required for token)."),
-		),
-		mcp.WithNumber("token_cluster_size",
-			mcp.Description("Expected cluster size for token discovery (required for token)."),
-		),
-	)
+	}
+	return mcp.NewTool("qrdb_database_update_raft", append(opts, raftToolOptions(updateRaftArgs)...)...)
 }
 
 // handleDatabaseUpdateRaft returns a tool handler that delegates to
@@ -531,8 +428,7 @@ func handleDatabaseUpdateRaft(dbSvc service.DatabaseServicer) mcpserver.ToolHand
 			return mcp.NewToolResultError("name is required"), nil
 		}
 
-		clusterMode := mcp.ParseString(req, "cluster_mode", "")
-		raftCfg, err := buildRaftConfigFromUpdateRequest(req, clusterMode)
+		raftCfg, err := buildRaftConfig(req, updateRaftArgs)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -808,91 +704,228 @@ func handleDatabaseUpdateCompaction(dbSvc service.DatabaseServicer) mcpserver.To
 // Raft config helpers
 // ---------------------------------------------------------------------------
 
-// buildRaftConfigFromRequest builds a DatabaseRaftConfig from MCP request
-// parameters used by the database create tool. The raft-specific parameters
-// use the "raft_" prefix (e.g., "raft_replica_id"). There is no shard ID
-// parameter: the cluster issues a database's shard ID at create.
-func buildRaftConfigFromRequest(req mcp.CallToolRequest, raftMode string) (*database.DatabaseRaftConfig, error) {
-	raftCfg := &database.DatabaseRaftConfig{
-		ClusterMode: database.RaftClusterMode(raftMode),
-		ReplicaID:   mcp.ParseUInt64(req, "raft_replica_id", 0),
-		RaftAddress: mcp.ParseString(req, "raft_address", ""),
-	}
+// raftArgs names a Raft tool's top-level arguments. The create tool prefixes
+// them with raft_ beside its other arguments; the update tool does not. The
+// discovery arguments are named alike in both.
+type raftArgs struct {
+	clusterMode    string
+	replicaID      string
+	address        string
+	peers          string
+	localNodeCount string
+}
 
-	discoveryMethod := mcp.ParseString(req, "discovery_method", "")
-	if discoveryMethod != "" {
-		raftCfg.Discovery = database.DiscoveryMethod(discoveryMethod)
+var (
+	createRaftArgs = raftArgs{
+		clusterMode:    "raft_cluster_mode",
+		replicaID:      "raft_replica_id",
+		address:        "raft_address",
+		peers:          "raft_peers",
+		localNodeCount: "raft_local_node_count",
 	}
+	updateRaftArgs = raftArgs{
+		clusterMode:    "cluster_mode",
+		replicaID:      "replica_id",
+		address:        "raft_address",
+		peers:          "peers",
+		localNodeCount: "local_node_count",
+	}
+)
 
-	if err := parseDiscoveryConfig(req, raftCfg, discoveryMethod); err != nil {
+// raftToolOptions declares every Raft argument a tool takes: the top-level
+// fields under names, then the discovery blocks. Together they reach every
+// field of database.DatabaseRaftConfig a caller sets on REST, gRPC and QUIC;
+// the shard ID is issued, never sent.
+func raftToolOptions(names raftArgs) []mcp.ToolOption {
+	return []mcp.ToolOption{
+		mcp.WithString(names.clusterMode,
+			mcp.Description("Raft cluster mode: none, local, or distributed."),
+		),
+		mcp.WithNumber(names.replicaID,
+			mcp.Description("Raft replica ID for distributed mode."),
+		),
+		mcp.WithString(names.address,
+			mcp.Description("This node's Raft address (host:port) for distributed mode."),
+		),
+		mcp.WithArray(names.peers,
+			mcp.Description("Raft peer addresses (host:port). Static discovery reaches these as well as static_peers."),
+		),
+		mcp.WithNumber(names.localNodeCount,
+			mcp.Description("Number of replicas on this node in local cluster mode."),
+		),
+		mcp.WithString("discovery_method",
+			mcp.Description("Peer discovery method: static, multicast, dns, or token."),
+		),
+		// Static discovery
+		mcp.WithArray("static_peers",
+			mcp.Description("Static peer addresses (host:port) for static discovery."),
+		),
+		mcp.WithString("static_shared_secret",
+			mcp.Description("Shared secret for static peer authentication. Omitted on an update, the stored secret is kept while the static peers are unchanged."),
+		),
+		// Multicast discovery
+		mcp.WithString("multicast_shared_secret",
+			mcp.Description("HMAC shared secret for multicast peer authentication (required for multicast). Omitted on an update, the stored secret is kept while the group and interface are unchanged."),
+		),
+		mcp.WithString("multicast_group",
+			mcp.Description("Multicast group address (default: 239.255.77.77:63777)."),
+		),
+		mcp.WithString("multicast_interface",
+			mcp.Description("Network interface for multicast discovery."),
+		),
+		mcp.WithNumber("multicast_min_peers",
+			mcp.Description("Minimum number of peers to discover via multicast."),
+		),
+		mcp.WithString("multicast_announce_interval",
+			mcp.Description("Interval between multicast announcements, as a Go duration (e.g. 2s)."),
+		),
+		mcp.WithString("multicast_discover_timeout",
+			mcp.Description("How long multicast discovery waits for peers, as a Go duration (e.g. 30s)."),
+		),
+		// DNS discovery
+		mcp.WithString("dns_domain",
+			mcp.Description("DNS domain for SRV record lookup (required for dns)."),
+		),
+		mcp.WithString("dns_service",
+			mcp.Description("SRV service name (default: qrdb)."),
+		),
+		mcp.WithString("dns_proto",
+			mcp.Description("SRV protocol (default: udp)."),
+		),
+		mcp.WithString("dns_lookup_timeout",
+			mcp.Description("Timeout for each SRV lookup, as a Go duration (e.g. 5s)."),
+		),
+		// Token discovery
+		mcp.WithString("token_endpoint",
+			mcp.Description("Discovery service endpoint URL (required for token)."),
+		),
+		mcp.WithString("token_value",
+			mcp.Description("Bootstrap token for cluster discovery (required for token). Omitted on an update, the stored token is kept while the endpoint is unchanged."),
+		),
+		mcp.WithNumber("token_cluster_size",
+			mcp.Description("Expected cluster size for token discovery (required for token)."),
+		),
+		mcp.WithString("token_timeout",
+			mcp.Description("How long token discovery waits for the cluster, as a Go duration (e.g. 60s)."),
+		),
+	}
+}
+
+// buildRaftConfig builds a DatabaseRaftConfig from a Raft tool's arguments,
+// named by names. There is no shard ID argument: the cluster issues a
+// database's shard ID at create, and it never changes.
+func buildRaftConfig(req mcp.CallToolRequest, names raftArgs) (*database.DatabaseRaftConfig, error) {
+	peers, err := stringListArg(req, names.peers)
+	if err != nil {
 		return nil, err
 	}
-
+	raftCfg := &database.DatabaseRaftConfig{
+		ClusterMode:    database.RaftClusterMode(mcp.ParseString(req, names.clusterMode, "")),
+		ReplicaID:      mcp.ParseUInt64(req, names.replicaID, 0),
+		RaftAddress:    mcp.ParseString(req, names.address, ""),
+		Peers:          peers,
+		LocalNodeCount: mcp.ParseInt(req, names.localNodeCount, 0),
+		Discovery:      database.DiscoveryMethod(mcp.ParseString(req, "discovery_method", "")),
+	}
+	if err := parseDiscoveryConfig(req, raftCfg); err != nil {
+		return nil, err
+	}
 	return raftCfg, nil
 }
 
-// buildRaftConfigFromUpdateRequest builds a DatabaseRaftConfig from MCP
-// request parameters used by the raft update tool. The raft-specific
-// parameters use direct names (e.g., "replica_id") without the "raft_"
-// prefix. There is no shard ID parameter: a database's shard ID never changes.
-func buildRaftConfigFromUpdateRequest(req mcp.CallToolRequest, clusterMode string) (*database.DatabaseRaftConfig, error) {
-	raftCfg := &database.DatabaseRaftConfig{
-		ClusterMode: database.RaftClusterMode(clusterMode),
-		ReplicaID:   mcp.ParseUInt64(req, "replica_id", 0),
-		RaftAddress: mcp.ParseString(req, "raft_address", ""),
-	}
-
-	discoveryMethod := mcp.ParseString(req, "discovery_method", "")
-	if discoveryMethod != "" {
-		raftCfg.Discovery = database.DiscoveryMethod(discoveryMethod)
-	}
-
-	if err := parseDiscoveryConfig(req, raftCfg, discoveryMethod); err != nil {
-		return nil, err
-	}
-
-	return raftCfg, nil
+// discoveryBlock is one discovery method's block: the arguments that carry it
+// and how it is built from them.
+type discoveryBlock struct {
+	args  []string
+	build func(mcp.CallToolRequest, *database.DatabaseRaftConfig) error
 }
 
-// parseDiscoveryConfig populates discovery-specific sub-configs on a
-// DatabaseRaftConfig based on the discovery method. The discovery parameter
-// field names are shared between create and update tools.
-//
-// Every method builds its block, with or without a secret: an update that
-// leaves the secret out keeps the stored one while the block's destination is
-// unchanged (database.Manager.UpdateRaft), as on every other transport.
-func parseDiscoveryConfig(req mcp.CallToolRequest, raftCfg *database.DatabaseRaftConfig, discoveryMethod string) error {
-	switch database.DiscoveryMethod(discoveryMethod) {
-	case database.DiscoveryStatic:
-		peers, err := stringListArg(req, "static_peers")
-		if err != nil {
+// discoveryBlocks holds every discovery block a Raft tool can send.
+var discoveryBlocks = map[database.DiscoveryMethod]discoveryBlock{
+	database.DiscoveryStatic: {
+		args: []string{"static_peers", "static_shared_secret"},
+		build: func(req mcp.CallToolRequest, raftCfg *database.DatabaseRaftConfig) error {
+			peers, err := stringListArg(req, "static_peers")
+			if err != nil {
+				return err
+			}
+			raftCfg.Static = &database.StaticDiscoveryConfig{
+				Peers:        peers,
+				SharedSecret: mcp.ParseString(req, "static_shared_secret", ""),
+			}
+			return nil
+		},
+	},
+	database.DiscoveryMulticast: {
+		args: []string{"multicast_shared_secret", "multicast_group", "multicast_interface",
+			"multicast_min_peers", "multicast_announce_interval", "multicast_discover_timeout"},
+		build: func(req mcp.CallToolRequest, raftCfg *database.DatabaseRaftConfig) error {
+			raftCfg.Multicast = &database.MulticastDiscoveryConfig{
+				SharedSecret:     mcp.ParseString(req, "multicast_shared_secret", ""),
+				MulticastGroup:   mcp.ParseString(req, "multicast_group", ""),
+				Interface:        mcp.ParseString(req, "multicast_interface", ""),
+				MinPeers:         mcp.ParseInt(req, "multicast_min_peers", 0),
+				AnnounceInterval: mcp.ParseString(req, "multicast_announce_interval", ""),
+				DiscoverTimeout:  mcp.ParseString(req, "multicast_discover_timeout", ""),
+			}
+			return nil
+		},
+	},
+	database.DiscoveryDNS: {
+		args: []string{"dns_domain", "dns_service", "dns_proto", "dns_lookup_timeout"},
+		build: func(req mcp.CallToolRequest, raftCfg *database.DatabaseRaftConfig) error {
+			raftCfg.DNS = &database.DNSDiscoveryConfig{
+				Domain:        mcp.ParseString(req, "dns_domain", ""),
+				Service:       mcp.ParseString(req, "dns_service", ""),
+				Proto:         mcp.ParseString(req, "dns_proto", ""),
+				LookupTimeout: mcp.ParseString(req, "dns_lookup_timeout", ""),
+			}
+			return nil
+		},
+	},
+	database.DiscoveryToken: {
+		args: []string{"token_endpoint", "token_value", "token_cluster_size", "token_timeout"},
+		build: func(req mcp.CallToolRequest, raftCfg *database.DatabaseRaftConfig) error {
+			raftCfg.Token = &database.TokenDiscoveryConfig{
+				Endpoint:    mcp.ParseString(req, "token_endpoint", ""),
+				Token:       mcp.ParseString(req, "token_value", ""),
+				ClusterSize: mcp.ParseInt(req, "token_cluster_size", 0),
+				Timeout:     mcp.ParseString(req, "token_timeout", ""),
+			}
+			return nil
+		},
+	},
+}
+
+// parseDiscoveryConfig sets each discovery block the request sends. Other
+// transports send a block by including it; MCP's arguments are flat, so a
+// block is sent when discovery_method names it or any of its arguments is
+// given, and only then. A block not sent is absent from the update, and the
+// update removes it with its secret, as on every other transport. A block
+// sent without its secret keeps the stored one while the block's destination
+// is unchanged (database.Manager.UpdateRaft).
+func parseDiscoveryConfig(req mcp.CallToolRequest, raftCfg *database.DatabaseRaftConfig) error {
+	for method, block := range discoveryBlocks {
+		if raftCfg.Discovery != method && !anyArgument(req, block.args) {
+			continue
+		}
+		if err := block.build(req, raftCfg); err != nil {
 			return err
-		}
-		raftCfg.Static = &database.StaticDiscoveryConfig{
-			Peers:        peers,
-			SharedSecret: mcp.ParseString(req, "static_shared_secret", ""),
-		}
-	case database.DiscoveryMulticast:
-		raftCfg.Multicast = &database.MulticastDiscoveryConfig{
-			SharedSecret:   mcp.ParseString(req, "multicast_shared_secret", ""),
-			MulticastGroup: mcp.ParseString(req, "multicast_group", ""),
-			Interface:      mcp.ParseString(req, "multicast_interface", ""),
-			MinPeers:       mcp.ParseInt(req, "multicast_min_peers", 0),
-		}
-	case database.DiscoveryDNS:
-		raftCfg.DNS = &database.DNSDiscoveryConfig{
-			Domain:  mcp.ParseString(req, "dns_domain", ""),
-			Service: mcp.ParseString(req, "dns_service", ""),
-			Proto:   mcp.ParseString(req, "dns_proto", ""),
-		}
-	case database.DiscoveryToken:
-		raftCfg.Token = &database.TokenDiscoveryConfig{
-			Endpoint:    mcp.ParseString(req, "token_endpoint", ""),
-			Token:       mcp.ParseString(req, "token_value", ""),
-			ClusterSize: mcp.ParseInt(req, "token_cluster_size", 0),
 		}
 	}
 	return nil
+}
+
+// anyArgument reports whether the request gives any of the named arguments.
+// A null argument is not given, as mcp.ParseArgument reads it.
+func anyArgument(req mcp.CallToolRequest, names []string) bool {
+	args := req.GetArguments()
+	for _, name := range names {
+		if v, ok := args[name]; ok && v != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // stringListArg reads an optional array-of-strings argument. Absent is nil; an

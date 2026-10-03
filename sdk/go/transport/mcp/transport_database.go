@@ -398,22 +398,26 @@ func (t *Transport) UpdateDatabaseConnection(ctx context.Context, req transport.
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-// applyRaftArgs adds Raft configuration fields to an MCP tool argument map.
-// The prefix is used to namespace the shard/replica ID fields: the create
-// tool uses "raft_" (e.g., "raft_shard_id") while the update tool uses no
-// prefix (e.g., "shard_id").
+// applyRaftArgs adds Raft configuration fields to an MCP tool argument map,
+// every field the other transports send. The prefix namespaces the top-level
+// fields as the server's tools name them: the create tool uses "raft_" (e.g.
+// "raft_replica_id", "raft_peers") while the update tool uses none (e.g.
+// "replica_id", "peers"). raft_address is named alike in both. No shard ID is
+// sent: the cluster issues it.
 func applyRaftArgs(args map[string]any, raft *transport.DatabaseRaftConfig, prefix string) {
 	if raft.ClusterMode != "" {
-		if prefix == "raft_" {
-			args["raft_cluster_mode"] = raft.ClusterMode
-		} else {
-			args["cluster_mode"] = raft.ClusterMode
-		}
+		args[prefix+"cluster_mode"] = raft.ClusterMode
 	}
 	if raft.ReplicaID != 0 {
 		args[prefix+"replica_id"] = raft.ReplicaID
 	}
 	if raft.RaftAddress != "" {
 		args["raft_address"] = raft.RaftAddress
+	}
+	if len(raft.Peers) > 0 {
+		args[prefix+"peers"] = raft.Peers
+	}
+	if raft.LocalNodeCount != 0 {
+		args[prefix+"local_node_count"] = raft.LocalNodeCount
 	}
 }

@@ -243,6 +243,35 @@ not a field and is ignored. See
 was a request field on every transport, and a caller-chosen ID was accepted
 unchecked.)*
 
+On MCP the Raft configuration is flat tool arguments, reaching every field the
+other transports carry. `qrdb_database_create` names the top-level fields with
+a `raft_` prefix; `qrdb_database_update_raft` names them bare. The discovery
+arguments are named alike in both.
+
+| Field | `qrdb_database_create` | `qrdb_database_update_raft` |
+|---|---|---|
+| `clusterMode` | `raft_cluster_mode` | `cluster_mode` |
+| `replicaId` | `raft_replica_id` | `replica_id` |
+| `raftAddress` | `raft_address` | `raft_address` |
+| `peers` | `raft_peers` (array) | `peers` (array) |
+| `localNodeCount` | `raft_local_node_count` | `local_node_count` |
+| `discovery` | `discovery_method` | `discovery_method` |
+| `static` | `static_peers` (array), `static_shared_secret` | same |
+| `multicast` | `multicast_shared_secret`, `multicast_group`, `multicast_interface`, `multicast_min_peers`, `multicast_announce_interval`, `multicast_discover_timeout` | same |
+| `dns` | `dns_domain`, `dns_service`, `dns_proto`, `dns_lookup_timeout` | same |
+| `token` | `token_endpoint`, `token_value`, `token_cluster_size`, `token_timeout` | same |
+
+A discovery block is sent when `discovery_method` names it or any of its
+arguments is given -- an empty string counts, which is how a block whose only
+stored field is its secret is sent back without the secret. A block not sent
+is absent from the request, so an update removes it with its secret, as
+leaving a block out does on every other transport. *(Changed: MCP built only
+the block `discovery_method` named, so every MCP Raft update removed the other
+blocks and their secrets, and it had no arguments for `peers`,
+`localNodeCount`, `announceInterval`, `discoverTimeout`, `lookupTimeout` or the
+token `timeout`. The Go SDK's MCP transport now sends `peers` and
+`localNodeCount` too.)*
+
 `DatabaseBarrierConfig` fields: `enabled`, `mode` (`passphrase|shamir`),
 `sharesRequired`, `sharesTotal`, `secret`. A per-database barrier is built in
 `passphrase` mode only: `shamir` is refused with

@@ -201,6 +201,19 @@ are not reconstructed here — their history is in the git log.
   serialized (gRPC forbids concurrent sends on a stream, and each watch is forwarded on its own
   goroutine). Proved against the etcd client itself (`TestEtcdClient_*` in `pkg/api/etcd`).
 
+- **MCP reaches every Raft field, and a Raft update keeps the blocks it sends
+  back.** `qrdb_database_create` and `qrdb_database_update_raft` built only the
+  discovery block `discovery_method` named, so every MCP Raft update removed the
+  other blocks and their secrets, and MCP had no arguments for the top-level
+  `peers` or `localNodeCount`, the multicast `announceInterval` and
+  `discoverTimeout`, the DNS `lookupTimeout` or the token `timeout`. Both tools
+  now take all of them (`raft_peers` / `peers`, `raft_local_node_count` /
+  `local_node_count`, `multicast_announce_interval`,
+  `multicast_discover_timeout`, `dns_lookup_timeout`, `token_timeout`), and a
+  block is sent when `discovery_method` names it or any of its arguments is
+  given. The Go SDK's MCP transport now sends `peers` and `localNodeCount`, as
+  its other transports do.
+
 ### Security
 
 - **A kept static discovery secret stays with the top-level peers too.**

@@ -453,10 +453,10 @@ func TestHandleDatabaseUpdateConnection_ServiceError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// buildRaftConfigFromUpdateRequest
+// buildRaftConfig (update tool arguments)
 // ---------------------------------------------------------------------------
 
-func TestBuildRaftConfigFromUpdateRequest_Static(t *testing.T) {
+func TestBuildRaftConfig_UpdateStatic(t *testing.T) {
 	req := buildCallToolRequest(t, "qrdb_database_update_raft", map[string]any{
 		"name":                 "mydb",
 		"cluster_mode":         "distributed",
@@ -464,7 +464,7 @@ func TestBuildRaftConfigFromUpdateRequest_Static(t *testing.T) {
 		"static_shared_secret": "mysecret",
 	})
 
-	cfg, err := buildRaftConfigFromUpdateRequest(req, "distributed")
+	cfg, err := buildRaftConfig(req, updateRaftArgs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -479,7 +479,7 @@ func TestBuildRaftConfigFromUpdateRequest_Static(t *testing.T) {
 	}
 }
 
-func TestBuildRaftConfigFromUpdateRequest_Multicast(t *testing.T) {
+func TestBuildRaftConfig_UpdateMulticast(t *testing.T) {
 	req := buildCallToolRequest(t, "qrdb_database_update_raft", map[string]any{
 		"name":                    "mydb",
 		"discovery_method":        "multicast",
@@ -489,7 +489,7 @@ func TestBuildRaftConfigFromUpdateRequest_Multicast(t *testing.T) {
 		"multicast_min_peers":     float64(3),
 	})
 
-	cfg, err := buildRaftConfigFromUpdateRequest(req, "distributed")
+	cfg, err := buildRaftConfig(req, updateRaftArgs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -504,7 +504,7 @@ func TestBuildRaftConfigFromUpdateRequest_Multicast(t *testing.T) {
 	}
 }
 
-func TestBuildRaftConfigFromUpdateRequest_DNS(t *testing.T) {
+func TestBuildRaftConfig_UpdateDNS(t *testing.T) {
 	req := buildCallToolRequest(t, "qrdb_database_update_raft", map[string]any{
 		"name":             "mydb",
 		"discovery_method": "dns",
@@ -513,7 +513,7 @@ func TestBuildRaftConfigFromUpdateRequest_DNS(t *testing.T) {
 		"dns_proto":        "tcp",
 	})
 
-	cfg, err := buildRaftConfigFromUpdateRequest(req, "distributed")
+	cfg, err := buildRaftConfig(req, updateRaftArgs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -528,7 +528,7 @@ func TestBuildRaftConfigFromUpdateRequest_DNS(t *testing.T) {
 	}
 }
 
-func TestBuildRaftConfigFromUpdateRequest_Token(t *testing.T) {
+func TestBuildRaftConfig_UpdateToken(t *testing.T) {
 	req := buildCallToolRequest(t, "qrdb_database_update_raft", map[string]any{
 		"name":               "mydb",
 		"discovery_method":   "token",
@@ -537,7 +537,7 @@ func TestBuildRaftConfigFromUpdateRequest_Token(t *testing.T) {
 		"token_cluster_size": float64(3),
 	})
 
-	cfg, err := buildRaftConfigFromUpdateRequest(req, "distributed")
+	cfg, err := buildRaftConfig(req, updateRaftArgs)
 	if err != nil {
 		t.Fatal(err)
 	}
