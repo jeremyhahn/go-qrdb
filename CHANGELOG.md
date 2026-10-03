@@ -1693,6 +1693,13 @@ A clustered SDK boot that fails can now be retried cleanly. Highlights:
   actually exit before `svcNode.Stop` -- cancelling alone does not block
   until a goroutine's current tick notices, so a bare cancel raced
   `svcNode.Stop` against whichever of them woke up last.
+- **A database stays inspectable when its compaction policy cannot be read.** `GetDatabase`
+  failed outright when the policy read from the database's store failed, so a degraded raft
+  database could not be inspected, and every `Update*` reported a failure after its change had
+  committed. The rest of the information is now reported with the policy marked unavailable --
+  `DatabaseInfo.compactionUnavailable` (gRPC `compaction_unavailable`, field 18; the CLI shows
+  "Compaction: unavailable"), unknown rather than off -- and the cause is logged as
+  `service.CompactionPolicyReadError`.
 
 ## [0.33.0-alpha] - 2026-10-03
 

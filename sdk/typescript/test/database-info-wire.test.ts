@@ -53,6 +53,7 @@ const databaseInfoKeys = {
     protocol: true,
     sql: true,
     compaction: true,
+    compactionUnavailable: true,
     dataDir: true,
     shardId: true,
     mode: true,

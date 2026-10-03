@@ -766,7 +766,15 @@ consumes no revision, fires no watch and is never itself compacted.
 - **Read back** through `database info`/`GetDatabase`
   (`DatabaseInfo.compaction`), from the same record. A sealed database's
   policy is not reported while it is sealed -- its views are refused by
-  design -- and `list` does not report policies.
+  design -- and `list` does not report policies. A store that cannot be
+  read -- a degraded raft database -- does not fail the call: the rest of
+  the information is reported, `compaction` is absent and
+  `compactionUnavailable` is true (gRPC `compaction_unavailable`), meaning
+  unknown rather than off; the service logs the cause
+  (`service.CompactionPolicyReadError`). An update that committed is
+  reported as done the same way. *(Corrected: a failed read failed the
+  whole `GetDatabase`, and every `Update*` reported a failure after its
+  change had committed.)*
 
 The compaction scheduler (`pkg/server`, every
 `server.DefaultCompactionInterval`, one minute) runs on every node and holds

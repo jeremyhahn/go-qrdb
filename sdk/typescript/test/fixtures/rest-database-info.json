@@ -73,6 +73,7 @@
   "sql": {
     "concurrency": "pessimistic"
   },
+  "compactionUnavailable": true,
   "compaction": {
     "mode": "period",
     "retainRevisions": 500,

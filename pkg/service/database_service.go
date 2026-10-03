@@ -2051,7 +2051,16 @@ func (s *DatabaseService) withCompactionPolicy(ctx context.Context, info *databa
 	}
 	policy, err := s.compactionPolicies.CompactionPolicy(ctx, owner, info.Name)
 	if err != nil {
-		return nil, err
+		// A store that cannot be read -- a degraded raft database, say --
+		// must not make the database uninspectable, nor turn an update that
+		// committed into a reported failure. The policy is reported unknown,
+		// never as off, and the cause is logged.
+		readErr := &CompactionPolicyReadError{Tenant: owner, Database: info.Name, Err: err}
+		s.logger.Warn("database info: compaction policy unavailable",
+			slog.String("tenant", owner), slog.String("database", info.Name), slog.Any("error", readErr))
+		info.Compaction = nil
+		info.CompactionUnavailable = true
+		return info, nil
 	}
 	info.Compaction = policy
 	return info, nil

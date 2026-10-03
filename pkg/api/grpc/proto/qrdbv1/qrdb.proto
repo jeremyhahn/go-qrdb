@@ -3092,6 +3092,9 @@ message DatabaseInfoResponse {
     // compaction is the database's scheduled-compaction policy; unset means
     // off.
     DatabaseCompactionConfig compaction = 17;
+    // compaction_unavailable reports that the database's store could not be
+    // read for its policy: compaction is unknown, not off.
+    bool compaction_unavailable = 18;
 }
 
 // DatabaseRaftInfo is a database's Raft configuration as a response reports

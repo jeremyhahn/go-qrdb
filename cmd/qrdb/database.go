@@ -505,7 +505,11 @@ func printDatabaseInfo(info *transport.DatabaseInfo) error {
 			_, _ = fmt.Fprintf(outputWriter, "SQL:\n")
 			_, _ = fmt.Fprintf(outputWriter, "  Concurrency: %s\n", info.SQL.Concurrency)
 		}
-		printCompactionPolicy(info.Compaction)
+		if info.CompactionUnavailable {
+			_, _ = fmt.Fprintf(outputWriter, "Compaction: unavailable (the policy could not be read from the database's store)\n")
+		} else {
+			printCompactionPolicy(info.Compaction)
+		}
 		return nil
 	}
 }

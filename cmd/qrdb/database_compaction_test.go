@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 )
 
 func TestDatabaseUpdateCompaction_Command(t *testing.T) {
@@ -62,5 +63,22 @@ func TestDatabaseUpdateCompaction_Command(t *testing.T) {
 	output, err = executeDatabaseCmd(t, svc, "update-compaction", "events", "--mode", "off")
 	if err != nil || strings.Contains(output, "Compaction:") {
 		t.Fatalf("turning it off = %q, %v", output, err)
+	}
+}
+
+// A database whose policy could not be read is shown with the rest of its
+// information and the policy marked unavailable -- never as off.
+func TestDatabaseInfo_CompactionUnavailable(t *testing.T) {
+	dbSvc := &fnDatabaseService{
+		getFn: func(name string) (*database.DatabaseInfo, error) {
+			return &database.DatabaseInfo{Name: name, Engine: "kv", Backend: "pebble", Status: "open", CompactionUnavailable: true}, nil
+		},
+	}
+	output, err := executeDatabaseCmd(t, dbSvc, "info", "events")
+	if err != nil {
+		t.Fatalf("database info: %v", err)
+	}
+	if !strings.Contains(output, "Name:") || !strings.Contains(output, "Compaction: unavailable") {
+		t.Fatalf("output = %q; want the database and its policy marked unavailable", output)
 	}
 }

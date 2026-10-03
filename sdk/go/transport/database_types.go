@@ -58,6 +58,10 @@ type DatabaseInfo struct {
 	Connection   *DatabaseConnectionConfig `json:"connection,omitempty"`
 	SQL          *DatabaseSQLConfig        `json:"sql,omitempty"`
 	Compaction   *DatabaseCompactionConfig `json:"compaction,omitempty"`
+	// CompactionUnavailable reports that the server could not read the
+	// database's scheduled-compaction policy from its store: Compaction is
+	// unknown, not off. The rest of the information stands.
+	CompactionUnavailable bool `json:"compactionUnavailable,omitempty"`
 }
 
 // DatabaseRaftInfo is a database's Raft configuration as a response reports

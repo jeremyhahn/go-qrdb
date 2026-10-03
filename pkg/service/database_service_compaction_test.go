@@ -151,15 +151,36 @@ func TestDatabaseService_UpdateCompactionForTenant_Refusals(t *testing.T) {
 	}
 }
 
-// GetForTenant reports the policy from the database's store; a store that
-// cannot be read fails the call, except a sealed database, whose views are
-// refused by design and whose policy is not reported while it is sealed.
+// GetForTenant reports the policy from the database's store. A store that
+// cannot be read -- a degraded raft database -- does not fail the call: the
+// rest of the database's information is still reported, with the policy
+// marked unavailable rather than reported as off. A sealed database's views
+// are refused by design, so its policy is not reported while it is sealed.
 func TestDatabaseService_GetForTenant_ReportsThePolicy(t *testing.T) {
 	svc, reg, mgr := newCompactionDatabaseService(t)
 	acme := tenant.WithTenantID(context.Background(), "acme")
 	reg.views["acme/acme-db"].readErr = errors.New("unavailable")
-	if _, err := svc.GetForTenant(acme, "acme-db"); err == nil {
-		t.Fatal("an unreadable store reported no error")
+	info, err := svc.GetForTenant(acme, "acme-db")
+	if err != nil {
+		t.Fatalf("an unreadable store failed the whole call: %v", err)
+	}
+	if info.Name != "acme-db" || info.Compaction != nil || !info.CompactionUnavailable {
+		t.Fatalf("info = %+v; want the database reported with its policy unavailable", info)
+	}
+
+	// An update that committed is reported as done, with the same marker.
+	reg.views["acme/acme-db"].readErr = nil
+	if _, err := svc.UpdateCompactionForTenant(acme, "acme-db", &compaction.Policy{Mode: compaction.Revision, RetainRevisions: 2}); err != nil {
+		t.Fatalf("UpdateCompactionForTenant: %v", err)
+	}
+	reg.views["acme/acme-db"].readErr = errors.New("unavailable")
+	if _, err := svc.UpdateCompactionForTenant(acme, "acme-db", &compaction.Policy{Mode: compaction.Revision, RetainRevisions: 3}); err != nil {
+		t.Fatalf("a committed update reported a failure because the read-back failed: %v", err)
+	}
+
+	reg.views["acme/acme-db"].readErr = nil
+	if info, err := svc.GetForTenant(acme, "acme-db"); err != nil || info.CompactionUnavailable || info.Compaction == nil {
+		t.Fatalf("a readable store = %+v, %v; want the policy and no marker", info, err)
 	}
 
 	db, _ := mgr.Get("acme-db")

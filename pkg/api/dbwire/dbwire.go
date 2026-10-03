@@ -78,6 +78,7 @@ func Info(info *database.DatabaseInfo) *transport.DatabaseInfo {
 		out.SQL = &transport.DatabaseSQLConfig{Concurrency: string(s.Concurrency)}
 	}
 	out.Compaction = Compaction(info.Compaction)
+	out.CompactionUnavailable = info.CompactionUnavailable
 	return out
 }
 
@@ -197,6 +198,7 @@ func InfoProto(info *database.DatabaseInfo) *pb.DatabaseInfoResponse {
 		out.Sql = &pb.DatabaseSQLConfig{Concurrency: string(s.Concurrency)}
 	}
 	out.Compaction = compactionpb.ToProto(info.Compaction)
+	out.CompactionUnavailable = info.CompactionUnavailable
 	return out
 }
 

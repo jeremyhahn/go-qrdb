@@ -2420,8 +2420,11 @@ export interface DatabaseInfo {
     /** SQL settings (concurrency mode). Absent means the defaults. */
     readonly sql?: DatabaseSQLConfig;
     /** Scheduled-compaction policy. Absent means off: the database is never
-     * compacted implicitly. */
+     * compacted implicitly -- unless `compactionUnavailable` is set. */
     readonly compaction?: DatabaseCompactionConfig;
+    /** True when the server could not read the database's policy from its
+     * store: `compaction` is then unknown, not off. */
+    readonly compactionUnavailable?: boolean;
     /** Data directory path, if applicable. */
     readonly dataDir?: string;
     /** Raft shard ID the cluster issued at create; absent for non-raft

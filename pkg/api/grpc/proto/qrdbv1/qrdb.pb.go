@@ -13553,9 +13553,12 @@ type DatabaseInfoResponse struct {
 	StorageCodec string `protobuf:"bytes,16,opt,name=storage_codec,json=storageCodec,proto3" json:"storage_codec,omitempty"`
 	// compaction is the database's scheduled-compaction policy; unset means
 	// off.
-	Compaction    *DatabaseCompactionConfig `protobuf:"bytes,17,opt,name=compaction,proto3" json:"compaction,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Compaction *DatabaseCompactionConfig `protobuf:"bytes,17,opt,name=compaction,proto3" json:"compaction,omitempty"`
+	// compaction_unavailable reports that the database's store could not be
+	// read for its policy: compaction is unknown, not off.
+	CompactionUnavailable bool `protobuf:"varint,18,opt,name=compaction_unavailable,json=compactionUnavailable,proto3" json:"compaction_unavailable,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *DatabaseInfoResponse) Reset() {
@@ -13705,6 +13708,13 @@ func (x *DatabaseInfoResponse) GetCompaction() *DatabaseCompactionConfig {
 		return x.Compaction
 	}
 	return nil
+}
+
+func (x *DatabaseInfoResponse) GetCompactionUnavailable() bool {
+	if x != nil {
+		return x.CompactionUnavailable
+	}
+	return false
 }
 
 // DatabaseRaftInfo is a database's Raft configuration as a response reports
@@ -28353,7 +28363,7 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x13DatabaseDropRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"S\n" +
 	"\x14DatabaseListResponse\x12;\n" +
-	"\tdatabases\x18\x01 \x03(\v2\x1d.qrdb.v1.DatabaseInfoResponseR\tdatabases\"\x99\x05\n" +
+	"\tdatabases\x18\x01 \x03(\v2\x1d.qrdb.v1.DatabaseInfoResponseR\tdatabases\"\xd0\x05\n" +
 	"\x14DatabaseInfoResponse\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
 	"\x06engine\x18\x02 \x01(\tR\x06engine\x12\x18\n" +
@@ -28376,7 +28386,8 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\rstorage_codec\x18\x10 \x01(\tR\fstorageCodec\x12A\n" +
 	"\n" +
 	"compaction\x18\x11 \x01(\v2!.qrdb.v1.DatabaseCompactionConfigR\n" +
-	"compaction\"\xd6\x03\n" +
+	"compaction\x125\n" +
+	"\x16compaction_unavailable\x18\x12 \x01(\bR\x15compactionUnavailable\"\xd6\x03\n" +
 	"\x10DatabaseRaftInfo\x12!\n" +
 	"\fcluster_mode\x18\x01 \x01(\tR\vclusterMode\x12\x1d\n" +
 	"\n" +

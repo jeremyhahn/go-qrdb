@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -247,5 +248,16 @@ func TestCompactionScheduleGuard(t *testing.T) {
 func TestCompactionPolicyUnavailableError(t *testing.T) {
 	if (&CompactionPolicyUnavailableError{Database: "app"}).Error() == "" {
 		t.Fatal("empty message")
+	}
+}
+
+func TestCompactionPolicyReadError(t *testing.T) {
+	cause := errors.New("store unreachable")
+	err := &CompactionPolicyReadError{Tenant: "acme", Database: "events", Err: cause}
+	if !errors.Is(err, cause) {
+		t.Fatal("CompactionPolicyReadError does not unwrap to its cause")
+	}
+	if msg := err.Error(); !strings.Contains(msg, "events") || !strings.Contains(msg, "acme") || !strings.Contains(msg, "store unreachable") {
+		t.Fatalf("message = %q", msg)
 	}
 }

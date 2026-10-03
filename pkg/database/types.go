@@ -750,4 +750,8 @@ type DatabaseInfo struct {
 	Connection   *DatabaseConnectionConfig `json:"connection,omitempty"`
 	SQL          *SQLConfig                `json:"sql,omitempty"`
 	Compaction   *compaction.Policy        `json:"compaction,omitempty"`
+	// CompactionUnavailable reports that the database's store could not be
+	// read for its scheduled-compaction policy, so Compaction is unknown --
+	// not off. The rest of the information stands.
+	CompactionUnavailable bool `json:"compaction_unavailable,omitempty"`
 }

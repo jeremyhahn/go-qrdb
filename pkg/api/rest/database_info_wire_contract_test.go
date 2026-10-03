@@ -90,6 +90,8 @@ func fullDatabaseInfo() *database.DatabaseInfo {
 		// Every compaction key is set, so each is on the wire to compare:
 		// this is a wire fixture, not a valid policy.
 		Compaction: &compaction.Policy{Mode: compaction.Period, RetainRevisions: 500, RetainPeriod: "720h"},
+		// Set beside a policy only so the key is on the wire to compare.
+		CompactionUnavailable: true,
 	}
 }
 

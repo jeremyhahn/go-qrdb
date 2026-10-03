@@ -283,3 +283,21 @@ type CompactionPolicyUnavailableError struct {
 func (e *CompactionPolicyUnavailableError) Error() string {
 	return "service: database " + e.Database + " cannot hold a compaction policy: its store keeps no MVCC history"
 }
+
+// CompactionPolicyReadError records that a database's scheduled-compaction
+// policy could not be read from its store. Database information carries it
+// as DatabaseInfo.CompactionUnavailable, and the service logs it; it does not
+// fail the call that reads the information.
+type CompactionPolicyReadError struct {
+	Tenant   string
+	Database string
+	Err      error
+}
+
+// Error returns a human-readable description.
+func (e *CompactionPolicyReadError) Error() string {
+	return "service: compaction policy of database " + e.Database + " (tenant " + e.Tenant + ") is unavailable: " + e.Err.Error()
+}
+
+// Unwrap returns the read failure.
+func (e *CompactionPolicyReadError) Unwrap() error { return e.Err }
