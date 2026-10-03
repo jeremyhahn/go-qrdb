@@ -43,6 +43,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterca"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 )
 
 // testTrustDomain is the SPIFFE trust domain every join test in this
@@ -115,7 +116,7 @@ func (b *mockBarrier) seal() {
 func newTestClusterCAProvider(t *testing.T) *cakey.SoftwareProvider {
 	t.Helper()
 	resetJoinAttemptGuardForTest(t)
-	p := clusterca.NewProvider(kvstore.NewMemoryKVStore(), newMockBarrier())
+	p := clusterca.NewProvider(kvstoretest.NewGuardedMemoryStore(), newMockBarrier())
 	if err := p.Initialize(context.Background()); err != nil {
 		t.Fatalf("Initialize cluster CA: %v", err)
 	}
@@ -636,7 +637,7 @@ func (p *signingFailureProvider) Certificate(context.Context) (*x509.Certificate
 // sealed node answers every join attempt identically, valid token or not,
 // and the token survives to be presented again once unsealed.
 func TestHandleJoinRequest_SealedRefusesBeforeConsumingToken(t *testing.T) {
-	store := kvstore.NewMemoryKVStore()
+	store := kvstoretest.NewGuardedMemoryStore()
 	barrier := newMockBarrier()
 	provider := clusterca.NewProvider(store, barrier)
 	if err := provider.Initialize(context.Background()); err != nil {

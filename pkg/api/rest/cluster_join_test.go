@@ -33,6 +33,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterca"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 )
 
 // clusterJoinTestTrustDomain is the SPIFFE trust domain every cluster-join
@@ -58,7 +59,7 @@ func (clusterJoinTestBarrier) IsSealed() bool                   { return false }
 func newTestClusterCAProvider(t *testing.T) (*cakey.SoftwareProvider, kvstore.AtomicKVStore) {
 	t.Helper()
 	t.Cleanup(clusterenroll.ResetJoinAttemptGuardForTest())
-	store := kvstore.NewMemoryKVStore()
+	store := kvstoretest.NewGuardedMemoryStore()
 	p := clusterca.NewProvider(store, clusterJoinTestBarrier{})
 	if err := p.Initialize(context.Background()); err != nil {
 		t.Fatalf("Initialize cluster CA: %v", err)

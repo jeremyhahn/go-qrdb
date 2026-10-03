@@ -59,13 +59,13 @@ func Subject() pkix.Name {
 // abstraction -- the local store in standalone mode, the replicated store
 // in Raft mode -- so this provider behaves identically in either, and
 // material adopted or generated in one mode reads back correctly in the
-// other. It must support atomic conditional writes (kvstore.AtomicKVStore):
-// see cakey.NewSoftwareProvider on why.
+// other. It must support atomic multi-key batch writes
+// (kvstore.MultiGuardedBatchKVStore): see cakey.NewSoftwareProvider on why.
 //
 // Construction performs no I/O (see cakey.NewSoftwareProvider): opts is
 // typically cakey.WithAdoptMaterial when the caller holds in-memory
 // bootstrap material (the crash window), and omitted otherwise.
-func NewProvider(kvStore kvstore.AtomicKVStore, barrier seal.EncryptionBarrier, opts ...cakey.SoftwareProviderOption) *cakey.SoftwareProvider {
+func NewProvider(kvStore kvstore.MultiGuardedBatchKVStore, barrier seal.EncryptionBarrier, opts ...cakey.SoftwareProviderOption) *cakey.SoftwareProvider {
 	return cakey.NewSoftwareProvider(kvStore, barrier, Prefix, Subject(), clustertls.CAValidity, opts...)
 }
 

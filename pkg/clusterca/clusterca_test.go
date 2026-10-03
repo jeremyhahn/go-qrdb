@@ -30,8 +30,19 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
-	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 )
+
+// newGuardedMemoryStore returns a fresh kvstoretest.GuardedMemoryStore:
+// NewProvider requires kvstore.MultiGuardedBatchKVStore
+// (cakey.NewSoftwareProvider writes the key and certificate records
+// together in one atomic batch), and a plain *kvstore.MemoryKVStore
+// deliberately does not offer it. Production gets the capability from
+// lifecycle.NewGuardedKVStoreAdapter; these unit tests get it from
+// kvstoretest.
+func newGuardedMemoryStore() *kvstoretest.GuardedMemoryStore {
+	return kvstoretest.NewGuardedMemoryStore()
+}
 
 // mockBarrier mirrors pkg/cakey's test double: real AES-GCM round-trips.
 type mockBarrier struct {
@@ -83,7 +94,7 @@ func (b *mockBarrier) IsSealed() bool {
 // for Key A.
 func newRealProvider(t *testing.T) *cakey.SoftwareProvider {
 	t.Helper()
-	store := kvstore.NewMemoryKVStore()
+	store := newGuardedMemoryStore()
 	barrier := newMockBarrier()
 	p := NewProvider(store, barrier)
 	if err := p.Initialize(context.Background()); err != nil {

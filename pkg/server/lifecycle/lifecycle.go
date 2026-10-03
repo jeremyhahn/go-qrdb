@@ -973,7 +973,16 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 	if infra.BarrierRegistry != nil {
 		// CertProvider uses the KV service as its underlying store and the
 		// barrier for transparent encryption of certificate material.
-		certStore := newKVStoreAdapter(n.KV, n.Index)
+		//
+		// GUARDED: n.Transaction is already built above, unconditionally (see
+		// authStore), so certStore gets kvstore.MultiGuardedBatchKVStore
+		// capability at no extra cost -- the built-in cakey.SoftwareProvider
+		// behind ClusterCAProv, below, requires it to write its key and
+		// certificate records together in one atomic batch.
+		certStore, err := NewGuardedKVStoreAdapter(n.KV, n.Index, n.Transaction)
+		if err != nil {
+			return &CertStoreError{Err: err}
+		}
 		n.CertProv = cert.NewDefaultProvider(certStore, infra.SealBarrier,
 			cert.WithTrustDomain(infra.SPIFFETrustDomain))
 

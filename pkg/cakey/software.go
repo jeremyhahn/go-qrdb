@@ -23,8 +23,9 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/json"
 	"encoding/pem"
+	"errors"
+	"io"
 	"math/big"
 	"sync"
 	"time"
@@ -42,29 +43,43 @@ const serialBits = 128
 // whenever an embedder does not inject one of its own (go-xkms
 // HSM/TPM/PKCS#11/KMS, via cakey.Adapter).
 //
-// It persists through kvstore.AtomicKVStore, qrdb's storage abstraction --
-// the local store in standalone mode, the replicated store in Raft mode. No
-// code path here assumes Raft: a SoftwareProvider built over either store
-// behaves identically, and material written in one mode reads back
-// correctly in the other, because both are the same interface.
+// It persists through kvstore.MultiGuardedBatchKVStore, qrdb's atomic
+// multi-key batch capability -- the local store in standalone mode (backed
+// by the same in-process transaction plane every other guarded store in
+// this tree uses), the replicated store in Raft mode. No code path here
+// assumes Raft: a SoftwareProvider built over either store behaves
+// identically in either, and material adopted or generated in one mode
+// reads back correctly in the other, because both are the same interface.
 //
-// The record is stored exactly as generated or adopted -- it carries no
-// additional AEAD wrap of its own. An earlier revision wrapped the key with
-// THIS node's seal.EncryptionBarrier before the Put; that made the record
-// readable only by the node that wrote it, so every other node sharing the
-// same replicated record failed to decrypt it with ITS OWN barrier -- a
-// different key, even under the same seal strategy, because barriers are
-// not shared cluster-wide. (Owner ruling, go-qrdb review: the replicated
-// cluster CA key is protected like every other system record -- this
-// node's own at-rest storage encryption, when configured (pkg/seal/encfs),
-// protects the copy on disk; cluster mTLS protects it in flight during
-// replication; with seal strategy "none" it is unencrypted at rest, like
-// everything else in that mode.) barrier therefore gates ONLY whether this
-// provider will touch key material at all (IsSealed()), exactly as
-// cert.CertProvider's own seal gate does -- it no longer performs any
-// encryption of its own.
+// The private key and the public certificate are TWO separate records
+// ("material" and "certificate"), written together in ONE atomic batch
+// (kvstore.MultiGuardedBatchKVStore.PutAllIfAllUnchanged), never as two
+// independent Puts. An earlier revision combined them into one JSON-encoded
+// record specifically to make their creation atomic with a single
+// PutIfAbsent; splitting them back out without losing that atomicity is
+// exactly what the guarded batch primitive is for, and it buys something
+// the combined record could not: a caller that only ever needs the
+// certificate -- trust-pool building, an issuer check, CACertPEM -- now
+// reads and parses ONLY the certificate record. The private key bytes are
+// never even fetched from the store, let alone parsed, unless something
+// calls Signer.
+//
+// The records carry no additional AEAD wrap of their own. An earlier
+// revision wrapped the key with THIS node's seal.EncryptionBarrier before
+// the Put; that made the record readable only by the node that wrote it, so
+// every other node sharing the same replicated record failed to decrypt it
+// with ITS OWN barrier -- a different key, even under the same seal
+// strategy, because barriers are not shared cluster-wide. (Owner ruling,
+// go-qrdb review: the replicated cluster CA key is protected like every
+// other system record -- this node's own at-rest storage encryption, when
+// configured (pkg/seal/encfs), protects the copy on disk; cluster mTLS
+// protects it in flight during replication; with seal strategy "none" it is
+// unencrypted at rest, like everything else in that mode.) barrier
+// therefore gates ONLY whether this provider will touch key material at
+// all (IsSealed()), exactly as cert.CertProvider's own seal gate does -- it
+// no longer performs any encryption of its own.
 type SoftwareProvider struct {
-	kvStore  kvstore.AtomicKVStore
+	kvStore  kvstore.MultiGuardedBatchKVStore
 	barrier  seal.EncryptionBarrier
 	prefix   string
 	subject  pkix.Name
@@ -84,24 +99,19 @@ type SoftwareProvider struct {
 // Compile-time interface check.
 var _ Provider = (*SoftwareProvider)(nil)
 
-// keyMaterial is the KVStore key suffix for this provider's ONE combined
-// record: the key and certificate written and read together, never as two
-// separate Puts. Two separate records (an earlier revision's "wrapped_key"
-// and "cert_pem") left a window between them: a crash, or two callers
-// racing to adopt or generate, could leave the key from one write beside
-// the certificate from another -- a torn pair neither writer intended and
-// no reader could detect. One record makes that pair atomic by
-// construction: there is no state in which the key exists without its
-// matching certificate, or vice versa.
+// keyMaterial is the KVStore key suffix for this provider's private-key
+// record: the SEC1 DER-encoded EC private key, and nothing else. Reading
+// this record is reserved for paths that genuinely need to sign -- Signer,
+// and the full-material load/adopt paths used after Seal or on an ordinary
+// restart.
 const keyMaterial = "material"
 
-// storedMaterial is the JSON envelope keyMaterial holds: the CA's SEC1 EC
-// private key and self-signed certificate, both DER, written and read
-// together as one []byte value.
-type storedMaterial struct {
-	KeyDER  []byte `json:"key_der"`
-	CertDER []byte `json:"cert_der"`
-}
+// certMaterial is the KVStore key suffix for this provider's certificate
+// record: the DER-encoded CA certificate, and nothing else. It is public
+// data -- the same contract cert.CertProvider's CACertPEM documents -- and
+// every read of it (Certificate, the steady-state half of AdoptIfAbsent's
+// mismatch check) never touches keyMaterial.
+const certMaterial = "certificate"
 
 // SoftwareProviderOption configures a SoftwareProvider at construction.
 type SoftwareProviderOption func(*SoftwareProvider)
@@ -122,25 +132,26 @@ func WithAdoptMaterial(keyPEM, certPEM []byte) SoftwareProviderOption {
 }
 
 // NewSoftwareProvider returns a Provider backed by kvStore and barrier.
-// prefix is the key-value namespace this provider's one record lives under
-// (e.g. "__sys:cluster_ca/" for the cluster-wide CA, or
-// "__sys:cert_ca/<tenantID>/" for a per-tenant login CA) and must end in
-// "/". subject and validity describe the self-signed CA certificate
-// Initialize generates when the store holds none yet.
+// prefix is the key-value namespace this provider's two records (the
+// private key and the certificate) live under (e.g. "__sys:cluster_ca/" for
+// the cluster-wide CA, or "__sys:cert_ca/<tenantID>/" for a per-tenant login
+// CA) and must end in "/". subject and validity describe the self-signed CA
+// certificate Initialize generates when the store holds none yet.
 //
-// kvStore must support atomic conditional writes (PutIfAbsent): this is
-// what makes concurrent generation or adoption from several callers --
-// several nodes racing to become the cluster's first, or one node racing
-// its own retried boot -- converge on exactly one CA rather than each
-// writing its own candidate over the other's. See Initialize and
-// AdoptIfAbsent.
+// kvStore must support atomic multi-key batch writes
+// (kvstore.MultiGuardedBatchKVStore): this is what makes writing the key and
+// certificate records together, and concurrent generation or adoption from
+// several callers -- several nodes racing to become the cluster's first, or
+// one node racing its own retried boot -- converge on exactly one CA rather
+// than each writing its own candidate over the other's, or a crash tearing
+// the pair. See Initialize and AdoptIfAbsent.
 //
 // Construction performs no I/O: Initialize/AdoptIfAbsent/Signer/Certificate
 // are all lazy, consulting the store only on first use. This matters in
 // Raft mode, where the replicated store is not yet readable (no leader
 // elected) for a brief window right after the shard starts; eagerly reading
 // it at construction would race that window on every boot.
-func NewSoftwareProvider(kvStore kvstore.AtomicKVStore, barrier seal.EncryptionBarrier, prefix string, subject pkix.Name, validity time.Duration, opts ...SoftwareProviderOption) *SoftwareProvider {
+func NewSoftwareProvider(kvStore kvstore.MultiGuardedBatchKVStore, barrier seal.EncryptionBarrier, prefix string, subject pkix.Name, validity time.Duration, opts ...SoftwareProviderOption) *SoftwareProvider {
 	p := &SoftwareProvider{
 		kvStore:  kvStore,
 		barrier:  barrier,
@@ -159,18 +170,20 @@ func NewSoftwareProvider(kvStore kvstore.AtomicKVStore, barrier seal.EncryptionB
 // prefix. It is idempotent and safe to call on every boot.
 //
 // A fresh candidate key and certificate are generated on every call -- even
-// when the store already holds material -- and the single PutIfAbsent
-// below is what actually decides whether they are used. That looks
-// wasteful on the overwhelmingly common path (an ordinary restart, where
-// the candidate is immediately discarded), but an ECDSA P-256 key and a
-// small self-signed certificate cost microseconds to generate, and the
+// when the store already holds material -- and the single guarded batch
+// write below is what actually decides whether they are used. That looks
+// wasteful on the overwhelmingly common path (an ordinary restart, where the
+// candidate is immediately discarded), but an ECDSA P-256 key and a small
+// self-signed certificate cost microseconds to generate, and the
 // alternative -- check existence, then generate, then write -- is exactly
 // the race this function exists to close: two callers (two first-boot
 // nodes, or a retried boot racing its own prior attempt) could both pass
-// the existence check before either writes, and the second Put would
-// silently replace the first CA with a different one. PutIfAbsent makes
-// "does it already exist" and "write it" one indivisible step, so there is
-// no window in which two candidates can both believe they are first.
+// the existence check before either writes, and the second write would
+// silently replace the first CA with a different one. Guarding both
+// records' absence and writing both in one batch makes "do either already
+// exist" and "write both" one indivisible step, so there is no window in
+// which two candidates can both believe they are first, and no window in
+// which one record exists without the other.
 func (p *SoftwareProvider) Initialize(ctx context.Context) error {
 	if p.barrier.IsSealed() {
 		return &BarrierSealedError{}
@@ -180,18 +193,13 @@ func (p *SoftwareProvider) Initialize(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	record, err := encodeMaterial(keyDER, certDER)
-	secure.Wipe(keyDER)
+	defer secure.Wipe(keyDER)
+
+	applied, err := p.writeIfBothAbsent(ctx, keyDER, certDER)
 	if err != nil {
 		return err
 	}
-
-	materialPath := p.prefix + keyMaterial
-	stored, err := p.kvStore.PutIfAbsent(ctx, materialPath, record)
-	if err != nil {
-		return &StoreError{Op: "putifabsent", Detail: materialPath, Err: err}
-	}
-	if !stored {
+	if !applied {
 		// Lost the race, or material already existed from an earlier boot:
 		// either way, the store now holds the record that counts. Load it
 		// rather than assume our own candidate was the one written.
@@ -203,6 +211,23 @@ func (p *SoftwareProvider) Initialize(ctx context.Context) error {
 	p.cert = cert
 	p.mu.Unlock()
 	return nil
+}
+
+// writeIfBothAbsent writes keyDER and certDER to this provider's two
+// records in one atomic batch, guarded on BOTH being absent -- the
+// generalization of the single combined record's PutIfAbsent to two
+// records that must come into existence together or not at all.
+func (p *SoftwareProvider) writeIfBothAbsent(ctx context.Context, keyDER, certDER []byte) (bool, error) {
+	materialPath := p.prefix + keyMaterial
+	certPath := p.prefix + certMaterial
+	applied, err := p.kvStore.PutAllIfAllUnchanged(ctx,
+		[]kvstore.Guard{{Key: materialPath}, {Key: certPath}},
+		[]kvstore.KV{{Key: materialPath, Value: keyDER}, {Key: certPath, Value: certDER}},
+	)
+	if err != nil {
+		return false, &StoreError{Op: "putallifallunchanged", Detail: materialPath, Err: err}
+	}
+	return applied, nil
 }
 
 // generate creates a fresh ECDSA P-256 key and a self-signed CA certificate
@@ -248,36 +273,26 @@ func (p *SoftwareProvider) generate() (*ecdsa.PrivateKey, *x509.Certificate, []b
 	return key, cert, keyDER, certDER, nil
 }
 
-// encodeMaterial builds the JSON envelope Initialize/AdoptIfAbsent store.
-func encodeMaterial(keyDER, certDER []byte) ([]byte, error) {
-	data, err := json.Marshal(storedMaterial{KeyDER: keyDER, CertDER: certDER})
+// decodeKey parses a stored private-key record. A failure here means the
+// STORED record itself cannot be used -- it is not a valid SEC1 EC private
+// key -- which is reported as *MaterialCorruptError, distinct from
+// GenerateError (this node failing to CREATE material).
+func decodeKey(data []byte) (*ecdsa.PrivateKey, error) {
+	key, err := x509.ParseECPrivateKey(data)
 	if err != nil {
-		return nil, &GenerateError{Err: err}
+		return nil, &MaterialCorruptError{Err: err}
 	}
-	return data, nil
+	return key, nil
 }
 
-// decodeMaterial parses the JSON envelope load reads back. A failure here
-// means the STORED record itself cannot be used -- it is not valid JSON, or
-// its fields do not parse as the key/certificate they claim to be -- which
-// is a materially different condition from GenerateError (this node failed
-// to CREATE material) and is reported as *MaterialCorruptError instead, so
-// an operator is not told "key generation failed" about a record this
-// process never tried to generate.
-func decodeMaterial(data []byte) (*ecdsa.PrivateKey, *x509.Certificate, []byte, error) {
-	var m storedMaterial
-	if err := json.Unmarshal(data, &m); err != nil {
-		return nil, nil, nil, &MaterialCorruptError{Err: err}
-	}
-	key, err := x509.ParseECPrivateKey(m.KeyDER)
+// decodeCert parses a stored certificate record, reported as
+// *MaterialCorruptError on failure for the same reason decodeKey is.
+func decodeCert(data []byte) (*x509.Certificate, error) {
+	cert, err := x509.ParseCertificate(data)
 	if err != nil {
-		return nil, nil, nil, &MaterialCorruptError{Err: err}
+		return nil, &MaterialCorruptError{Err: err}
 	}
-	cert, err := x509.ParseCertificate(m.CertDER)
-	if err != nil {
-		return nil, nil, nil, &MaterialCorruptError{Err: err}
-	}
-	return key, cert, m.CertDER, nil
+	return cert, nil
 }
 
 // AdoptIfAbsent persists keyPEM/certPEM (SEC1 "EC PRIVATE KEY" and
@@ -289,7 +304,7 @@ func decodeMaterial(data []byte) (*ecdsa.PrivateKey, *x509.Certificate, []byte, 
 // generated in memory on the first node before the cluster or its
 // replicated store exist -- becomes this provider's permanent material
 // exactly once, on whichever boot first reaches an unsealed store: the
-// first caller's material wins and is written (via the same PutIfAbsent
+// first caller's material wins and is written (via the same guarded batch
 // Initialize uses, for the same reason); every later call, on every later
 // boot or every other node, loads the winning record instead of writing
 // again.
@@ -299,11 +314,12 @@ func decodeMaterial(data []byte) (*ecdsa.PrivateKey, *x509.Certificate, []byte, 
 // adoption: it is a *MaterialMismatchError, because two different CAs
 // claiming to be the cluster's one Key A is a split-brain the caller must
 // stop and report, not paper over by keeping whichever happened to be
-// asked about second. The caller's own on-disk cache of the rejected
-// material (if any) is left untouched -- this function has no filesystem
-// access and never deletes anything; cmd/qrdbd's cache-eviction step runs
-// only after Certificate/Signer succeeds, which a *MaterialMismatchError
-// here prevents.
+// asked about second. Checking that is a certificate-only comparison --
+// this path never loads or parses the losing side's private key. The
+// caller's own on-disk cache of the rejected material (if any) is left
+// untouched -- this function has no filesystem access and never deletes
+// anything; cmd/qrdbd's cache-eviction step runs only after
+// Certificate/Signer succeeds, which a *MaterialMismatchError here prevents.
 //
 // keyPEM/certPEM may both be empty, for a boot that holds no in-memory key
 // of its own -- an ordinary restart once the key has already been adopted,
@@ -347,18 +363,13 @@ func (p *SoftwareProvider) AdoptIfAbsent(ctx context.Context, keyPEM, certPEM []
 	if err != nil {
 		return &GenerateError{Err: err}
 	}
-	record, err := encodeMaterial(keyDER, cert.Raw)
-	secure.Wipe(keyDER)
+	defer secure.Wipe(keyDER)
+
+	applied, err := p.writeIfBothAbsent(ctx, keyDER, cert.Raw)
 	if err != nil {
 		return err
 	}
-
-	materialPath := p.prefix + keyMaterial
-	stored, err := p.kvStore.PutIfAbsent(ctx, materialPath, record)
-	if err != nil {
-		return &StoreError{Op: "putifabsent", Detail: materialPath, Err: err}
-	}
-	if stored {
+	if applied {
 		p.mu.Lock()
 		p.key = key
 		p.cert = cert
@@ -366,9 +377,10 @@ func (p *SoftwareProvider) AdoptIfAbsent(ctx context.Context, keyPEM, certPEM []
 		return nil
 	}
 
-	// Lost the race, or material already existed: load the winning record
-	// and verify it is OUR material before accepting it silently.
-	winnerKey, winnerCert, winnerCertDER, err := p.loadRecord(ctx)
+	// Lost the race, or material already existed: load the winning
+	// certificate -- cert-only, the key stays untouched -- and verify it is
+	// OUR material before accepting it silently.
+	winnerCert, winnerCertDER, err := p.loadCertRecord(ctx)
 	if err != nil {
 		return err
 	}
@@ -376,7 +388,6 @@ func (p *SoftwareProvider) AdoptIfAbsent(ctx context.Context, keyPEM, certPEM []
 		return &MaterialMismatchError{}
 	}
 	p.mu.Lock()
-	p.key = winnerKey
 	p.cert = winnerCert
 	p.mu.Unlock()
 	return nil
@@ -393,10 +404,17 @@ func (p *SoftwareProvider) Unseal(ctx context.Context) error {
 	return p.load(ctx)
 }
 
-// load reads this provider's material from the store and caches it in
-// memory.
+// load reads this provider's key AND certificate records from the store and
+// caches both in memory. Every caller of load intends to sign (Unseal, the
+// post-Seal reload inside signingKey, AdoptIfAbsent/Initialize's "already
+// exists" fallback), so loading the key here is not a violation of the
+// cert-only reads Certificate uses -- it is load's whole purpose.
 func (p *SoftwareProvider) load(ctx context.Context) error {
-	key, cert, _, err := p.loadRecord(ctx)
+	key, err := p.loadKeyRecord(ctx)
+	if err != nil {
+		return err
+	}
+	cert, _, err := p.loadCertRecord(ctx)
 	if err != nil {
 		return err
 	}
@@ -407,19 +425,38 @@ func (p *SoftwareProvider) load(ctx context.Context) error {
 	return nil
 }
 
-// loadRecord reads and decodes this provider's stored record without
-// caching it, so AdoptIfAbsent can compare it against a candidate before
-// deciding whether to accept it.
-func (p *SoftwareProvider) loadRecord(ctx context.Context) (*ecdsa.PrivateKey, *x509.Certificate, []byte, error) {
+// loadKeyRecord reads and decodes this provider's stored private-key
+// record, without touching the certificate record.
+func (p *SoftwareProvider) loadKeyRecord(ctx context.Context) (*ecdsa.PrivateKey, error) {
 	materialPath := p.prefix + keyMaterial
 	data, err := p.kvStore.Get(ctx, materialPath)
 	if err != nil {
-		return nil, nil, nil, &StoreError{Op: "get", Detail: materialPath, Err: err}
+		return nil, &StoreError{Op: "get", Detail: materialPath, Err: err}
 	}
 	if data == nil {
-		return nil, nil, nil, &NotInitializedError{}
+		return nil, &NotInitializedError{}
 	}
-	return decodeMaterial(data)
+	return decodeKey(data)
+}
+
+// loadCertRecord reads and decodes this provider's stored certificate
+// record, without touching the private-key record -- the read path every
+// certificate-only caller (Certificate, AdoptIfAbsent's mismatch check)
+// goes through.
+func (p *SoftwareProvider) loadCertRecord(ctx context.Context) (*x509.Certificate, []byte, error) {
+	certPath := p.prefix + certMaterial
+	data, err := p.kvStore.Get(ctx, certPath)
+	if err != nil {
+		return nil, nil, &StoreError{Op: "get", Detail: certPath, Err: err}
+	}
+	if data == nil {
+		return nil, nil, &NotInitializedError{}
+	}
+	cert, err := decodeCert(data)
+	if err != nil {
+		return nil, nil, err
+	}
+	return cert, data, nil
 }
 
 // Seal destroys the in-memory key. Certificate, like cert.CertProvider's
@@ -430,57 +467,152 @@ func (p *SoftwareProvider) Seal() {
 	p.key = nil
 }
 
-// Signer returns the cached key, auto-initializing from the store first
-// when the barrier is unsealed but nothing has been loaded into memory yet
-// (the ordinary case on every boot after the first).
+// Signer returns a crypto.Signer backed by the cached key, auto-initializing
+// from the store first when the barrier is unsealed but nothing has been
+// loaded into memory yet (the ordinary case on every boot after the first,
+// or right after Seal). The returned Signer is opaque: it cannot be type-
+// asserted back to *ecdsa.PrivateKey, and it re-checks the barrier on every
+// Sign call, not only at the time Signer was fetched.
 func (p *SoftwareProvider) Signer(ctx context.Context) (crypto.Signer, error) {
-	key, _, err := p.material(ctx)
+	key, err := p.signingKey(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return key, nil
+	return &barrierCheckedSigner{key: key, barrier: p.barrier}, nil
 }
 
-// Certificate returns the cached CA certificate, auto-initializing as
-// Signer does.
-func (p *SoftwareProvider) Certificate(ctx context.Context) (*x509.Certificate, error) {
-	_, cert, err := p.material(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return cert, nil
-}
-
-// material returns the cached key and certificate, loading them from the
-// store first if this is the first call since the process started (or
-// since the barrier was last unsealed).
-func (p *SoftwareProvider) material(ctx context.Context) (*ecdsa.PrivateKey, *x509.Certificate, error) {
+// signingKey returns the cached private key, loading it from the store
+// first if nothing is cached (the first call since the process started, or
+// since Seal last ran).
+func (p *SoftwareProvider) signingKey(ctx context.Context) (*ecdsa.PrivateKey, error) {
 	if p.barrier.IsSealed() {
-		return nil, nil, &BarrierSealedError{}
+		return nil, &BarrierSealedError{}
 	}
 
 	p.mu.RLock()
-	key, cert := p.key, p.cert
+	key := p.key
 	p.mu.RUnlock()
+	if key != nil {
+		return key, nil
+	}
 
-	if key == nil || cert == nil {
-		var err error
-		if len(p.adoptKeyPEM) > 0 || len(p.adoptCertPEM) > 0 {
-			err = p.AdoptIfAbsent(ctx, p.adoptKeyPEM, p.adoptCertPEM)
-		} else {
-			err = p.Initialize(ctx)
-		}
-		if err != nil {
-			return nil, nil, err
+	if err := p.ensureEstablished(ctx); err != nil {
+		return nil, err
+	}
+	p.mu.RLock()
+	key = p.key
+	p.mu.RUnlock()
+	if key != nil {
+		return key, nil
+	}
+
+	// ensureEstablished confirmed this provider's material is the one the
+	// store holds, but did not necessarily cache the key: AdoptIfAbsent's
+	// "lost the race, but it is ours" path verifies and caches the
+	// CERTIFICATE only (loadCertRecord), deliberately never touching the
+	// key record for that check. Now that establishment is confirmed, load
+	// the key directly -- one more Get, not a re-run of Initialize or
+	// AdoptIfAbsent, so this cannot loop.
+	key, err := p.loadKeyRecord(ctx)
+	if err != nil {
+		return nil, err
+	}
+	p.mu.Lock()
+	p.key = key
+	p.mu.Unlock()
+	return key, nil
+}
+
+// Certificate returns the cached CA certificate, reading ONLY the
+// certificate record on a cold cache -- the private-key record is never
+// fetched or parsed to answer this call, except on the one-time bootstrap
+// path (the store holds no certificate at all yet), where establishing a
+// self-signed CA certificate necessarily generates a key too.
+func (p *SoftwareProvider) Certificate(ctx context.Context) (*x509.Certificate, error) {
+	if p.barrier.IsSealed() {
+		return nil, &BarrierSealedError{}
+	}
+
+	p.mu.RLock()
+	cert := p.cert
+	p.mu.RUnlock()
+	if cert != nil {
+		return cert, nil
+	}
+
+	cert, _, err := p.loadCertRecord(ctx)
+	switch {
+	case err == nil:
+		p.mu.Lock()
+		p.cert = cert
+		p.mu.Unlock()
+		return cert, nil
+	case isNotInitialized(err):
+		if err := p.ensureEstablished(ctx); err != nil {
+			return nil, err
 		}
 		p.mu.RLock()
-		key, cert = p.key, p.cert
+		cert = p.cert
 		p.mu.RUnlock()
-		if key == nil || cert == nil {
-			return nil, nil, &NotInitializedError{}
+		if cert == nil {
+			return nil, &NotInitializedError{}
 		}
+		return cert, nil
+	default:
+		return nil, err
 	}
-	return key, cert, nil
+}
+
+// ensureEstablished runs this provider's one-time bootstrap -- adopting
+// in-memory material supplied through WithAdoptMaterial, or generating
+// fresh material -- if the store holds none yet. It is the shared tail of
+// signingKey's and Certificate's cold-cache paths.
+func (p *SoftwareProvider) ensureEstablished(ctx context.Context) error {
+	if len(p.adoptKeyPEM) > 0 || len(p.adoptCertPEM) > 0 {
+		return p.AdoptIfAbsent(ctx, p.adoptKeyPEM, p.adoptCertPEM)
+	}
+	return p.Initialize(ctx)
+}
+
+// isNotInitialized reports whether err is (or wraps) *NotInitializedError.
+func isNotInitialized(err error) bool {
+	var notInit *NotInitializedError
+	return errors.As(err, &notInit)
+}
+
+// barrierCheckedSigner is the crypto.Signer SoftwareProvider.Signer returns.
+// It holds the *ecdsa.PrivateKey privately -- there is no exported accessor,
+// and *ecdsa.PrivateKey itself does not implement crypto.Signer's Sign
+// method on a value a caller could extract and reuse outside this type --
+// so nothing outside this struct's own Sign method can ever read the key
+// bytes back out of a Signer a caller was handed. It also re-checks the
+// barrier on EVERY Sign, not only when Signer was fetched: a Signer obtained
+// before Seal must refuse once Seal (or an external reseal) has run, even
+// though the caller is still holding the same crypto.Signer value.
+type barrierCheckedSigner struct {
+	key     *ecdsa.PrivateKey
+	barrier seal.EncryptionBarrier
+}
+
+// Compile-time interface check.
+var _ crypto.Signer = (*barrierCheckedSigner)(nil)
+
+// Public returns the signer's public key. Unlike Sign, this is not secret
+// and is served regardless of barrier state, mirroring Certificate's own
+// seal-independent contract for public data.
+func (s *barrierCheckedSigner) Public() crypto.PublicKey {
+	return s.key.Public()
+}
+
+// Sign produces a signature over digest, refusing with *BarrierSealedError
+// if the barrier has been sealed since this Signer was obtained. Every
+// other Provider implementation (Adapter, StaticProvider) is trusted to
+// enforce its own equivalent policy; this is SoftwareProvider's.
+func (s *barrierCheckedSigner) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+	if s.barrier.IsSealed() {
+		return nil, &BarrierSealedError{}
+	}
+	return s.key.Sign(rand, digest, opts)
 }
 
 // errInvalidCertPEM is the underlying error wrapped by GenerateError when

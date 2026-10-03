@@ -330,3 +330,18 @@ func (e *DEKServiceError) Error() string {
 }
 
 func (e *DEKServiceError) Unwrap() error { return e.Err }
+
+// CertStoreError is returned when the guarded KV store backing CertProv
+// (Key B) and ClusterCAProv (Key A) cannot be built. In production this
+// never happens -- n.Transaction is wired unconditionally before
+// buildSealServices runs -- so this surfaces only a hand-rolled Node built
+// without one.
+type CertStoreError struct {
+	Err error
+}
+
+func (e *CertStoreError) Error() string {
+	return "lifecycle: build guarded cert store: " + e.Err.Error()
+}
+
+func (e *CertStoreError) Unwrap() error { return e.Err }

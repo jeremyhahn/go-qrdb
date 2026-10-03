@@ -37,6 +37,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterca"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
@@ -261,7 +262,7 @@ func TestJoin_SurvivesFirstNodeLoss(t *testing.T) {
 	// -- the property under test is that ANY member holding this provider
 	// can serve a join, not that Raft replication itself works, which is
 	// go-quicraft's own test surface.
-	store := kvstore.NewMemoryKVStore()
+	store := kvstoretest.NewGuardedMemoryStore()
 	barrier := newMockBarrier()
 	provider := clusterca.NewProvider(store, barrier)
 	if err := provider.Initialize(context.Background()); err != nil {

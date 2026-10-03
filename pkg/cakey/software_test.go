@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 )
 
 // mockBarrier implements seal.EncryptionBarrier with real AES-GCM
@@ -113,40 +114,52 @@ func (b *mockBarrier) unseal() {
 	b.sealed = false
 }
 
-// storeFactory builds a fresh kvstore.AtomicKVStore for one test's
-// duration. Running the same table against two independent factories is
-// what proves SoftwareProvider has no mode-specific assumption: the
-// standalone factory returns a bare MemoryKVStore (standalone mode's
-// store), and the "replicated" factory wraps one in an extra namespacing
+// newGuardedMemoryStore returns a fresh kvstoretest.GuardedMemoryStore:
+// NewSoftwareProvider needs kvstore.MultiGuardedBatchKVStore to write its
+// key and certificate records together in one batch, and a plain
+// *kvstore.MemoryKVStore deliberately does not offer it (see
+// kvstore.TestNewNamespacedKVStore_AtomicOnlyStillWorks). Production gets
+// the capability from lifecycle.NewGuardedKVStoreAdapter, backed by the
+// real transaction service; these unit tests get it from kvstoretest.
+func newGuardedMemoryStore() *kvstoretest.GuardedMemoryStore {
+	return kvstoretest.NewGuardedMemoryStore()
+}
+
+// storeFactory builds a fresh kvstore.MultiGuardedBatchKVStore for one
+// test's duration. Running the same table against two independent
+// factories is what proves SoftwareProvider has no mode-specific
+// assumption: the standalone factory returns a bare guardedMemoryStore
+// (standing in for standalone mode's store plus its in-process transaction
+// plane), and the "replicated" factory wraps one in an extra namespacing
 // indirection, standing in for the replicated store reached through Raft in
-// cluster mode. Both satisfy the exact same kvstore.AtomicKVStore interface
-// the provider consumes, which is the property being tested; a real
-// multi-node Raft round-trip belongs in test/integration, not here.
+// cluster mode. Both satisfy the exact same kvstore.MultiGuardedBatchKVStore
+// interface the provider consumes, which is the property being tested; a
+// real multi-node Raft round-trip belongs in test/integration, not here.
 type storeFactory struct {
 	name string
-	new  func(t *testing.T) kvstore.AtomicKVStore
+	new  func(t *testing.T) kvstore.MultiGuardedBatchKVStore
 }
 
 func storeFactories() []storeFactory {
 	return []storeFactory{
 		{
 			name: "standalone",
-			new: func(*testing.T) kvstore.AtomicKVStore {
-				return kvstore.NewMemoryKVStore()
+			new: func(*testing.T) kvstore.MultiGuardedBatchKVStore {
+				return newGuardedMemoryStore()
 			},
 		},
 		{
 			name: "raft-replicated",
-			new: func(t *testing.T) kvstore.AtomicKVStore {
-				ns, err := kvstore.NewNamespacedKVStore(kvstore.NewMemoryKVStore(), "replicated")
+			new: func(t *testing.T) kvstore.MultiGuardedBatchKVStore {
+				ns, err := kvstore.NewNamespacedKVStore(newGuardedMemoryStore(), "replicated")
 				if err != nil {
 					t.Fatalf("NewNamespacedKVStore: %v", err)
 				}
-				atomic, ok := ns.(kvstore.AtomicKVStore)
+				multi, ok := ns.(kvstore.MultiGuardedBatchKVStore)
 				if !ok {
-					t.Fatal("NewNamespacedKVStore over an atomic inner store must itself be atomic")
+					t.Fatal("NewNamespacedKVStore over a multi-guarded inner store must itself be multi-guarded")
 				}
-				return atomic
+				return multi
 			},
 		},
 	}
@@ -156,28 +169,32 @@ func testSubject() pkix.Name {
 	return pkix.Name{CommonName: "qrdb-ca-test"}
 }
 
-// faultyKVStore wraps a real kvstore.AtomicKVStore and injects a
-// configurable error from Get/PutIfAbsent, for exercising
+// faultyKVStore wraps a real kvstore.MultiGuardedBatchKVStore and injects a
+// configurable error from Get/PutAllIfAllUnchanged, for exercising
 // SoftwareProvider's *StoreError paths without a real storage failure.
 type faultyKVStore struct {
-	kvstore.AtomicKVStore
-	failGetOn         string
-	failPutIfAbsentOn string
-	failErr           error
+	kvstore.MultiGuardedBatchKVStore
+	failGetOn                  string
+	failPutAllIfAllUnchangedOn string
+	failErr                    error
 }
 
 func (f *faultyKVStore) Get(ctx context.Context, key string) ([]byte, error) {
 	if f.failGetOn != "" && key == f.failGetOn {
 		return nil, f.failErr
 	}
-	return f.AtomicKVStore.Get(ctx, key)
+	return f.MultiGuardedBatchKVStore.Get(ctx, key)
 }
 
-func (f *faultyKVStore) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
-	if f.failPutIfAbsentOn != "" && key == f.failPutIfAbsentOn {
-		return false, f.failErr
+func (f *faultyKVStore) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	if f.failPutAllIfAllUnchangedOn != "" {
+		for _, w := range writes {
+			if w.Key == f.failPutAllIfAllUnchangedOn {
+				return false, f.failErr
+			}
+		}
 	}
-	return f.AtomicKVStore.PutIfAbsent(ctx, key, value)
+	return f.MultiGuardedBatchKVStore.PutAllIfAllUnchanged(ctx, guards, writes)
 }
 
 func TestSoftwareProvider_InitializeGeneratesAndPersists(t *testing.T) {
@@ -223,32 +240,34 @@ func TestSoftwareProvider_InitializeGeneratesAndPersists(t *testing.T) {
 
 func TestSoftwareProvider_NoKeyFileOnDisk(t *testing.T) {
 	// SoftwareProvider never touches a filesystem path at all -- it is
-	// constructed over a kvstore.AtomicKVStore and a seal.EncryptionBarrier
-	// only. This test pins that by construction: there is no *os.File, no
-	// dataDir parameter, and no WriteFileAtomic call anywhere in this
-	// package (grepped: see software.go), so there is structurally no way
-	// for Initialize or load to write a CA key to the node's local disk.
-	store := kvstore.NewMemoryKVStore()
+	// constructed over a kvstore.MultiGuardedBatchKVStore and a
+	// seal.EncryptionBarrier only. This test pins that by construction:
+	// there is no *os.File, no dataDir parameter, and no WriteFileAtomic
+	// call anywhere in this package (grepped: see software.go), so there is
+	// structurally no way for Initialize or load to write a CA key to the
+	// node's local disk.
+	store := newGuardedMemoryStore()
 	barrier := newMockBarrier()
 	p := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
 	if err := p.Initialize(context.Background()); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	// The only persistence path is kvStore.PutIfAbsent, asserted indirectly
-	// by the cross-provider load test above; here we additionally confirm
-	// the one combined record (and only it) exists in the store -- key and
-	// certificate together, never as two separate records that could tear.
+	// The only persistence path is kvStore.PutAllIfAllUnchanged, asserted
+	// indirectly by the cross-provider load test above; here we additionally
+	// confirm exactly the two expected records exist in the store -- the
+	// private key and the certificate, written together in one atomic
+	// batch, never as a torn pair and never as more than these two.
 	keys, err := store.List(context.Background(), "__sys:cluster_ca/")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(keys) != 1 {
-		t.Fatalf("expected exactly 1 persisted record (key+cert together), got %d: %v", len(keys), keys)
+	if len(keys) != 2 {
+		t.Fatalf("expected exactly 2 persisted records (key, certificate), got %d: %v", len(keys), keys)
 	}
 }
 
 func TestSoftwareProvider_SealedBarrierRefusesSigning(t *testing.T) {
-	store := kvstore.NewMemoryKVStore()
+	store := newGuardedMemoryStore()
 	barrier := newMockBarrier()
 	p := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
 	if err := p.Initialize(context.Background()); err != nil {
@@ -268,7 +287,7 @@ func TestSoftwareProvider_SealedBarrierRefusesSigning(t *testing.T) {
 }
 
 func TestSoftwareProvider_UnsealAfterRestartReloadsFromStore(t *testing.T) {
-	store := kvstore.NewMemoryKVStore()
+	store := newGuardedMemoryStore()
 	barrier := newMockBarrier()
 	p1 := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
 	if err := p1.Initialize(context.Background()); err != nil {
@@ -310,7 +329,7 @@ func TestSoftwareProvider_UnsealAfterRestartReloadsFromStore(t *testing.T) {
 // barrier produced and failed every time; there is no Encrypt/Decrypt call
 // left in this package for that to happen to.
 func TestSoftwareProvider_TwoNodesDifferentBarriersLoadTheSameCA(t *testing.T) {
-	sharedStore := kvstore.NewMemoryKVStore()
+	sharedStore := newGuardedMemoryStore()
 	nodeABarrier := newMockBarrier()
 	nodeBBarrier := newMockBarrier()
 
@@ -360,7 +379,7 @@ func TestSoftwareProvider_TwoNodesDifferentBarriersLoadTheSameCA(t *testing.T) {
 // store before, reads the cluster CA an existing member already
 // established -- the member-side CSR join scenario, at the storage layer.
 func TestSoftwareProvider_NodeJoinsReadsExistingCA(t *testing.T) {
-	sharedStore := kvstore.NewMemoryKVStore()
+	sharedStore := newGuardedMemoryStore()
 	founder := NewSoftwareProvider(sharedStore, newMockBarrier(), "__sys:cluster_ca/", testSubject(), time.Hour)
 	if err := founder.Initialize(context.Background()); err != nil {
 		t.Fatalf("founder Initialize: %v", err)
@@ -389,7 +408,7 @@ func TestSoftwareProvider_NodeJoinsReadsExistingCA(t *testing.T) {
 // candidates both believe they were first.
 func TestSoftwareProvider_ConcurrentInitializeConvergesOnOneCA(t *testing.T) {
 	const n = 16
-	sharedStore := kvstore.NewMemoryKVStore()
+	sharedStore := newGuardedMemoryStore()
 
 	var wg sync.WaitGroup
 	certs := make([]*x509.Certificate, n)
@@ -419,30 +438,33 @@ func TestSoftwareProvider_ConcurrentInitializeConvergesOnOneCA(t *testing.T) {
 		}
 	}
 
-	// Exactly one record in the store, not one per racer.
+	// Exactly two records in the store (key + certificate), not two per
+	// racer.
 	keys, err := sharedStore.List(context.Background(), "__sys:cluster_ca/")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(keys) != 1 {
-		t.Fatalf("expected exactly 1 persisted record after %d concurrent Initialize calls, got %d: %v", n, len(keys), keys)
+	if len(keys) != 2 {
+		t.Fatalf("expected exactly 2 persisted records after %d concurrent Initialize calls, got %d: %v", n, len(keys), keys)
 	}
 }
 
 // TestSoftwareProvider_CrashBetweenWritesCannotTearTheRecord is the
-// owner-required "crash between writes" proof for B2. The earlier,
-// two-separate-keys design had a real window: a crash (or a non-atomic
-// write failure) between the key Put and the cert Put left one without the
-// other. The single-record design makes that window not exist -- there is
-// only one Put (PutIfAbsent) to crash between the start and end of, and
-// this test proves the record is all-or-nothing by injecting the failure
-// AT that one call: nothing is ever partially written for a reader to find.
+// owner-required "crash between writes" proof for B2, carried forward to
+// the two-record design: a crash (or a non-atomic write failure) between
+// writing the key record and writing the certificate record must not be
+// able to leave one without the other. The guarded batch
+// (PutAllIfAllUnchanged) makes that window not exist -- there is only ONE
+// call to crash during, covering both records -- and this test proves it
+// by injecting the failure at that one call: nothing is ever partially
+// written for a reader to find.
 func TestSoftwareProvider_CrashBetweenWritesCannotTearTheRecord(t *testing.T) {
-	boom := errors.New("crash during the one write")
+	boom := errors.New("crash during the one batch write")
+	backing := newGuardedMemoryStore()
 	store := &faultyKVStore{
-		AtomicKVStore:     kvstore.NewMemoryKVStore(),
-		failPutIfAbsentOn: "__sys:cluster_ca/material",
-		failErr:           boom,
+		MultiGuardedBatchKVStore:   backing,
+		failPutAllIfAllUnchangedOn: "__sys:cluster_ca/material",
+		failErr:                    boom,
 	}
 	p := NewSoftwareProvider(store, newMockBarrier(), "__sys:cluster_ca/", testSubject(), time.Hour)
 
@@ -452,20 +474,21 @@ func TestSoftwareProvider_CrashBetweenWritesCannotTearTheRecord(t *testing.T) {
 	}
 
 	// Nothing was left behind for a second provider to read as if it were
-	// real -- the underlying store (bypassing the fault injection) has no
-	// record at all, not a half-written one.
-	backing := store.AtomicKVStore.(*kvstore.MemoryKVStore)
-	data, err := backing.Get(context.Background(), "__sys:cluster_ca/material")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if data != nil {
-		t.Fatalf("a failed write left data behind: %q", data)
+	// real -- the underlying store (bypassing the fault injection) has
+	// NEITHER record, not a half-written pair.
+	for _, suffix := range []string{"material", "certificate"} {
+		data, err := backing.Get(context.Background(), "__sys:cluster_ca/"+suffix)
+		if err != nil {
+			t.Fatalf("Get(%s): %v", suffix, err)
+		}
+		if data != nil {
+			t.Fatalf("a failed batch write left %q behind: %q", suffix, data)
+		}
 	}
 }
 
 func TestSoftwareProvider_UnsealWithNoStoredMaterial(t *testing.T) {
-	store := kvstore.NewMemoryKVStore()
+	store := newGuardedMemoryStore()
 	barrier := newMockBarrier()
 	p := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
 	err := p.Unseal(context.Background())
@@ -476,7 +499,7 @@ func TestSoftwareProvider_UnsealWithNoStoredMaterial(t *testing.T) {
 }
 
 func TestSoftwareProvider_InitializeWhileSealedRefuses(t *testing.T) {
-	store := kvstore.NewMemoryKVStore()
+	store := newGuardedMemoryStore()
 	barrier := newMockBarrier()
 	barrier.seal()
 	p := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
@@ -490,8 +513,8 @@ func TestSoftwareProvider_InitializeWhileSealedRefuses(t *testing.T) {
 func TestSoftwareProvider_InitializeStoreFailures(t *testing.T) {
 	boom := errors.New("boom")
 
-	t.Run("putifabsent fails", func(t *testing.T) {
-		store := &faultyKVStore{AtomicKVStore: kvstore.NewMemoryKVStore(), failPutIfAbsentOn: "__sys:cluster_ca/material", failErr: boom}
+	t.Run("putallifallunchanged fails", func(t *testing.T) {
+		store := &faultyKVStore{MultiGuardedBatchKVStore: newGuardedMemoryStore(), failPutAllIfAllUnchangedOn: "__sys:cluster_ca/material", failErr: boom}
 		p := NewSoftwareProvider(store, newMockBarrier(), "__sys:cluster_ca/", testSubject(), time.Hour)
 		var storeErr *StoreError
 		if err := p.Initialize(context.Background()); !errors.As(err, &storeErr) {
@@ -500,7 +523,7 @@ func TestSoftwareProvider_InitializeStoreFailures(t *testing.T) {
 	})
 
 	t.Run("reload after losing the race fails", func(t *testing.T) {
-		backing := kvstore.NewMemoryKVStore()
+		backing := newGuardedMemoryStore()
 		seed := NewSoftwareProvider(backing, newMockBarrier(), "__sys:cluster_ca/", testSubject(), time.Hour)
 		if err := seed.Initialize(context.Background()); err != nil {
 			t.Fatalf("seed Initialize: %v", err)
@@ -508,7 +531,7 @@ func TestSoftwareProvider_InitializeStoreFailures(t *testing.T) {
 		// PutIfAbsent on the already-populated key reports stored=false
 		// (no error) and Initialize falls through to load(); fault THAT
 		// read.
-		faulty := &faultyKVStore{AtomicKVStore: backing, failGetOn: "__sys:cluster_ca/material", failErr: boom}
+		faulty := &faultyKVStore{MultiGuardedBatchKVStore: backing, failGetOn: "__sys:cluster_ca/material", failErr: boom}
 		p := NewSoftwareProvider(faulty, newMockBarrier(), "__sys:cluster_ca/", testSubject(), time.Hour)
 		var storeErr *StoreError
 		if err := p.Initialize(context.Background()); !errors.As(err, &storeErr) {
@@ -521,12 +544,12 @@ func TestSoftwareProvider_LoadFailures(t *testing.T) {
 	boom := errors.New("boom")
 
 	t.Run("get material fails", func(t *testing.T) {
-		backing := kvstore.NewMemoryKVStore()
+		backing := newGuardedMemoryStore()
 		seed := NewSoftwareProvider(backing, newMockBarrier(), "__sys:cluster_ca/", testSubject(), time.Hour)
 		if err := seed.Initialize(context.Background()); err != nil {
 			t.Fatalf("Initialize: %v", err)
 		}
-		faulty := &faultyKVStore{AtomicKVStore: backing, failGetOn: "__sys:cluster_ca/material", failErr: boom}
+		faulty := &faultyKVStore{MultiGuardedBatchKVStore: backing, failGetOn: "__sys:cluster_ca/material", failErr: boom}
 		p := NewSoftwareProvider(faulty, newMockBarrier(), "__sys:cluster_ca/", testSubject(), time.Hour)
 		var storeErr *StoreError
 		if err := p.Unseal(context.Background()); !errors.As(err, &storeErr) {
@@ -534,9 +557,9 @@ func TestSoftwareProvider_LoadFailures(t *testing.T) {
 		}
 	})
 
-	t.Run("stored material is not valid JSON", func(t *testing.T) {
-		backing := kvstore.NewMemoryKVStore()
-		if err := backing.Put(context.Background(), "__sys:cluster_ca/material", []byte("not json at all")); err != nil {
+	t.Run("stored key record does not parse as an EC private key", func(t *testing.T) {
+		backing := newGuardedMemoryStore()
+		if err := backing.Put(context.Background(), "__sys:cluster_ca/material", []byte("not a real DER-encoded key")); err != nil {
 			t.Fatalf("Put: %v", err)
 		}
 		p := NewSoftwareProvider(backing, newMockBarrier(), "__sys:cluster_ca/", testSubject(), time.Hour)
@@ -546,41 +569,20 @@ func TestSoftwareProvider_LoadFailures(t *testing.T) {
 		}
 	})
 
-	t.Run("stored key DER does not parse", func(t *testing.T) {
-		backing := kvstore.NewMemoryKVStore()
-		record, err := encodeMaterial([]byte("not a real DER-encoded key"), nil)
-		if err != nil {
-			t.Fatalf("encodeMaterial: %v", err)
-		}
-		if err := backing.Put(context.Background(), "__sys:cluster_ca/material", record); err != nil {
-			t.Fatalf("Put: %v", err)
-		}
-		p := NewSoftwareProvider(backing, newMockBarrier(), "__sys:cluster_ca/", testSubject(), time.Hour)
-		var corruptErr *MaterialCorruptError
-		if err := p.Unseal(context.Background()); !errors.As(err, &corruptErr) {
-			t.Fatalf("Unseal = %v, want *MaterialCorruptError", err)
-		}
-	})
-
-	t.Run("stored cert DER does not parse", func(t *testing.T) {
-		backing := kvstore.NewMemoryKVStore()
+	// TestSoftwareProvider_CertificateNeverReadsKeyMaterial below is the
+	// positive half of the cert/key split; this is the negative half: a
+	// corrupt CERTIFICATE record must be reported without ever needing to
+	// touch (and here, without disturbing) the key record, because
+	// Certificate/load read them as two independent records.
+	t.Run("stored certificate record does not parse", func(t *testing.T) {
+		backing := newGuardedMemoryStore()
 		seed := NewSoftwareProvider(backing, newMockBarrier(), "__sys:cluster_ca/", testSubject(), time.Hour)
 		if err := seed.Initialize(context.Background()); err != nil {
 			t.Fatalf("Initialize: %v", err)
 		}
-		seedKey, err := seed.Signer(context.Background())
-		if err != nil {
-			t.Fatalf("Signer: %v", err)
-		}
-		keyDER, err := x509.MarshalECPrivateKey(seedKey.(*ecdsa.PrivateKey))
-		if err != nil {
-			t.Fatalf("MarshalECPrivateKey: %v", err)
-		}
-		record, err := encodeMaterial(keyDER, []byte("not a real DER-encoded certificate"))
-		if err != nil {
-			t.Fatalf("encodeMaterial: %v", err)
-		}
-		if err := backing.Put(context.Background(), "__sys:cluster_ca/material", record); err != nil {
+		// Overwrite ONLY the certificate record; the key record, written by
+		// seed.Initialize above, is left untouched.
+		if err := backing.Put(context.Background(), "__sys:cluster_ca/certificate", []byte("not a real DER-encoded certificate")); err != nil {
 			t.Fatalf("Put: %v", err)
 		}
 		p := NewSoftwareProvider(backing, newMockBarrier(), "__sys:cluster_ca/", testSubject(), time.Hour)
@@ -592,7 +594,7 @@ func TestSoftwareProvider_LoadFailures(t *testing.T) {
 }
 
 func TestSoftwareProvider_UnsealWhileSealedRefuses(t *testing.T) {
-	store := kvstore.NewMemoryKVStore()
+	store := newGuardedMemoryStore()
 	barrier := newMockBarrier()
 	barrier.seal()
 	p := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
@@ -603,7 +605,7 @@ func TestSoftwareProvider_UnsealWhileSealedRefuses(t *testing.T) {
 }
 
 func TestSoftwareProvider_CertificateWhileSealedRefuses(t *testing.T) {
-	store := kvstore.NewMemoryKVStore()
+	store := newGuardedMemoryStore()
 	barrier := newMockBarrier()
 	p := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
 	if err := p.Initialize(context.Background()); err != nil {
@@ -617,7 +619,7 @@ func TestSoftwareProvider_CertificateWhileSealedRefuses(t *testing.T) {
 }
 
 func TestSoftwareProvider_UnsealAfterSealReloadsIntoMemory(t *testing.T) {
-	store := kvstore.NewMemoryKVStore()
+	store := newGuardedMemoryStore()
 	barrier := newMockBarrier()
 	p := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
 	if err := p.Initialize(context.Background()); err != nil {
@@ -630,7 +632,7 @@ func TestSoftwareProvider_UnsealAfterSealReloadsIntoMemory(t *testing.T) {
 }
 
 func TestSoftwareProvider_AdoptIfAbsent(t *testing.T) {
-	store := kvstore.NewMemoryKVStore()
+	store := newGuardedMemoryStore()
 	barrier := newMockBarrier()
 
 	// Generate in-memory material exactly as the bootstrap crash-window
@@ -680,7 +682,7 @@ func TestSoftwareProvider_AdoptIfAbsent(t *testing.T) {
 // already holds is a split-brain, not a race to politely lose. It must be
 // reported, not silently discarded in favor of whichever was stored first.
 func TestSoftwareProvider_AdoptIfAbsent_MismatchRefused(t *testing.T) {
-	store := kvstore.NewMemoryKVStore()
+	store := newGuardedMemoryStore()
 	barrier := newMockBarrier()
 
 	seedKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -725,7 +727,7 @@ func TestSoftwareProvider_AdoptIfAbsent_MismatchRefused(t *testing.T) {
 }
 
 func TestSoftwareProvider_AdoptIfAbsent_NoMaterialAndStoreEmpty(t *testing.T) {
-	store := kvstore.NewMemoryKVStore()
+	store := newGuardedMemoryStore()
 	barrier := newMockBarrier()
 	p := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
 
@@ -742,7 +744,7 @@ func TestSoftwareProvider_AdoptIfAbsent_NoMaterialAndStoreEmpty(t *testing.T) {
 }
 
 func TestSoftwareProvider_AdoptIfAbsent_NoMaterialButStorePopulated(t *testing.T) {
-	store := kvstore.NewMemoryKVStore()
+	store := newGuardedMemoryStore()
 	barrier := newMockBarrier()
 	seed := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
 	if err := seed.Initialize(context.Background()); err != nil {
@@ -769,7 +771,7 @@ func TestSoftwareProvider_AdoptIfAbsent_NoMaterialButStorePopulated(t *testing.T
 }
 
 func TestSoftwareProvider_AdoptIfAbsent_SealedRefuses(t *testing.T) {
-	store := kvstore.NewMemoryKVStore()
+	store := newGuardedMemoryStore()
 	barrier := newMockBarrier()
 	barrier.seal()
 	p := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
@@ -780,7 +782,7 @@ func TestSoftwareProvider_AdoptIfAbsent_SealedRefuses(t *testing.T) {
 }
 
 func TestSoftwareProvider_AdoptIfAbsent_InvalidPEM(t *testing.T) {
-	store := kvstore.NewMemoryKVStore()
+	store := newGuardedMemoryStore()
 	barrier := newMockBarrier()
 
 	t.Run("invalid key PEM", func(t *testing.T) {
@@ -792,7 +794,7 @@ func TestSoftwareProvider_AdoptIfAbsent_InvalidPEM(t *testing.T) {
 	})
 
 	t.Run("invalid cert PEM", func(t *testing.T) {
-		store2 := kvstore.NewMemoryKVStore()
+		store2 := newGuardedMemoryStore()
 		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		if err != nil {
 			t.Fatalf("GenerateKey: %v", err)
@@ -818,8 +820,8 @@ func TestSoftwareProvider_AdoptIfAbsent_StoreFailures(t *testing.T) {
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
 	boom := errors.New("boom")
 
-	t.Run("putifabsent fails", func(t *testing.T) {
-		store := &faultyKVStore{AtomicKVStore: kvstore.NewMemoryKVStore(), failPutIfAbsentOn: "__sys:cluster_ca/material", failErr: boom}
+	t.Run("putallifallunchanged fails", func(t *testing.T) {
+		store := &faultyKVStore{MultiGuardedBatchKVStore: newGuardedMemoryStore(), failPutAllIfAllUnchangedOn: "__sys:cluster_ca/material", failErr: boom}
 		p := NewSoftwareProvider(store, newMockBarrier(), "__sys:cluster_ca/", testSubject(), time.Hour)
 		var storeErr *StoreError
 		if err := p.AdoptIfAbsent(context.Background(), keyPEM, certPEM); !errors.As(err, &storeErr) {
@@ -828,12 +830,16 @@ func TestSoftwareProvider_AdoptIfAbsent_StoreFailures(t *testing.T) {
 	})
 
 	t.Run("reload after losing the race fails", func(t *testing.T) {
-		backing := kvstore.NewMemoryKVStore()
+		backing := newGuardedMemoryStore()
 		seed := NewSoftwareProvider(backing, newMockBarrier(), "__sys:cluster_ca/", testSubject(), time.Hour)
 		if err := seed.AdoptIfAbsent(context.Background(), keyPEM, certPEM); err != nil {
 			t.Fatalf("seed AdoptIfAbsent: %v", err)
 		}
-		faulty := &faultyKVStore{AtomicKVStore: backing, failGetOn: "__sys:cluster_ca/material", failErr: boom}
+		// AdoptIfAbsent's "lost the race" verification reads ONLY the
+		// certificate record (loadCertRecord) -- the key record is never
+		// touched by that check -- so the fault belongs on "certificate",
+		// not "material".
+		faulty := &faultyKVStore{MultiGuardedBatchKVStore: backing, failGetOn: "__sys:cluster_ca/certificate", failErr: boom}
 		p := NewSoftwareProvider(faulty, newMockBarrier(), "__sys:cluster_ca/", testSubject(), time.Hour)
 		var storeErr *StoreError
 		if err := p.AdoptIfAbsent(context.Background(), keyPEM, certPEM); !errors.As(err, &storeErr) {
@@ -872,7 +878,7 @@ func selfSignedTestCert(t *testing.T, key *ecdsa.PrivateKey) *x509.Certificate {
 }
 
 func TestSoftwareProvider_WithAdoptMaterial(t *testing.T) {
-	store := kvstore.NewMemoryKVStore()
+	store := newGuardedMemoryStore()
 	barrier := newMockBarrier()
 
 	seedKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -941,7 +947,7 @@ func TestSoftwareProvider_WithAdoptMaterial(t *testing.T) {
 // TestSoftwareProvider_WithAdoptMaterial's split-brain case (two
 // internally-consistent key/cert pairs that disagree with each other).
 func TestSoftwareProvider_AdoptIfAbsent_KeyCertMismatchRefused(t *testing.T) {
-	store := kvstore.NewMemoryKVStore()
+	store := newGuardedMemoryStore()
 	barrier := newMockBarrier()
 	p := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
 
@@ -980,7 +986,7 @@ func TestSoftwareProvider_AdoptIfAbsent_KeyCertMismatchRefused(t *testing.T) {
 }
 
 func TestStaticProvider(t *testing.T) {
-	store := kvstore.NewMemoryKVStore()
+	store := newGuardedMemoryStore()
 	barrier := newMockBarrier()
 	backing := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
 	if err := backing.Initialize(context.Background()); err != nil {
@@ -1018,7 +1024,7 @@ func TestStaticProvider(t *testing.T) {
 }
 
 func TestNewStaticProvider_NilInputsRefused(t *testing.T) {
-	store := kvstore.NewMemoryKVStore()
+	store := newGuardedMemoryStore()
 	barrier := newMockBarrier()
 	backing := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
 	if err := backing.Initialize(context.Background()); err != nil {
@@ -1060,7 +1066,7 @@ func TestHSMStyleProviderNeverExposesKey(t *testing.T) {
 	// The real key material is generated once, standing in for whatever
 	// lives inside the HSM/TPM/KMS; the test never extracts it from
 	// counting, only drives it through Adapter.
-	backingStore := kvstore.NewMemoryKVStore()
+	backingStore := newGuardedMemoryStore()
 	backingBarrier := newMockBarrier()
 	backing := NewSoftwareProvider(backingStore, backingBarrier, "__sys:cluster_ca/", testSubject(), time.Hour)
 	if err := backing.Initialize(context.Background()); err != nil {
@@ -1083,7 +1089,7 @@ func TestHSMStyleProviderNeverExposesKey(t *testing.T) {
 
 	// The deployment's own qrdb store: no SoftwareProvider ever touches it,
 	// because an injected Provider replaces the built-in one entirely.
-	deploymentStore := kvstore.NewMemoryKVStore()
+	deploymentStore := newGuardedMemoryStore()
 
 	signer, err := provider.Signer(context.Background())
 	if err != nil {
@@ -1130,7 +1136,7 @@ func (c *casigningIdentity) certificateFor(context.Context) (*x509.Certificate, 
 // CASigningIdentity + CACertificateAccessor pair, adapted with nothing more
 // than Adapter, satisfies cakey.Provider.
 func TestXKMSShapedTypeSatisfiesProviderViaAdapter(t *testing.T) {
-	store := kvstore.NewMemoryKVStore()
+	store := newGuardedMemoryStore()
 	barrier := newMockBarrier()
 	backing := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
 	if err := backing.Initialize(context.Background()); err != nil {
@@ -1153,5 +1159,110 @@ func TestXKMSShapedTypeSatisfiesProviderViaAdapter(t *testing.T) {
 	gotCert, err := p.Certificate(context.Background())
 	if err != nil || gotCert != cert {
 		t.Fatalf("adapted Certificate = %v, %v; want %v, nil", gotCert, err, cert)
+	}
+}
+
+// TestSoftwareProvider_CertificateNeverReadsKeyMaterial is the owner-required
+// proof for the record-shape ruling: once a certificate is persisted,
+// reading it on a cold cache must not fetch the private-key record at all.
+// A fresh provider is pointed at a store whose "material" Get is wired to
+// fail; Certificate still succeeds (it never asked), while Signer -- which
+// genuinely needs the key -- surfaces that same failure.
+func TestSoftwareProvider_CertificateNeverReadsKeyMaterial(t *testing.T) {
+	backing := newGuardedMemoryStore()
+	seed := NewSoftwareProvider(backing, newMockBarrier(), "__sys:cluster_ca/", testSubject(), time.Hour)
+	if err := seed.Initialize(context.Background()); err != nil {
+		t.Fatalf("seed Initialize: %v", err)
+	}
+	wantCert, err := seed.Certificate(context.Background())
+	if err != nil {
+		t.Fatalf("seed Certificate: %v", err)
+	}
+
+	boom := errors.New("material must not be read for a cert-only call")
+	faulty := &faultyKVStore{MultiGuardedBatchKVStore: backing, failGetOn: "__sys:cluster_ca/material", failErr: boom}
+
+	// A brand-new provider, nothing cached: Certificate is the FIRST call.
+	p := NewSoftwareProvider(faulty, newMockBarrier(), "__sys:cluster_ca/", testSubject(), time.Hour)
+	gotCert, err := p.Certificate(context.Background())
+	if err != nil {
+		t.Fatalf("Certificate must succeed without ever reading key material, got: %v", err)
+	}
+	if gotCert.SerialNumber.Cmp(wantCert.SerialNumber) != 0 {
+		t.Fatalf("Certificate returned serial %s, want %s", gotCert.SerialNumber, wantCert.SerialNumber)
+	}
+
+	// Signer, in contrast, genuinely needs the key record and must surface
+	// the same injected failure -- proving the fault was reachable at all,
+	// and that Certificate's success above was not an accident of the fault
+	// never being wired up correctly.
+	var storeErr *StoreError
+	if _, err := p.Signer(context.Background()); !errors.As(err, &storeErr) {
+		t.Fatalf("Signer = %v, want *StoreError (confirming the material fault is live)", err)
+	}
+}
+
+// TestSoftwareProvider_SignerCannotBeTypeAssertedToPrivateKey proves Signer
+// returns an opaque crypto.Signer: a caller cannot type-assert it back to
+// *ecdsa.PrivateKey (or any other concrete key type) and extract the raw
+// key material.
+func TestSoftwareProvider_SignerCannotBeTypeAssertedToPrivateKey(t *testing.T) {
+	store := newGuardedMemoryStore()
+	barrier := newMockBarrier()
+	p := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
+	if err := p.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	signer, err := p.Signer(context.Background())
+	if err != nil {
+		t.Fatalf("Signer: %v", err)
+	}
+	if _, ok := signer.(*ecdsa.PrivateKey); ok {
+		t.Fatal("Signer is type-assertable to *ecdsa.PrivateKey; the key is not opaque")
+	}
+	if _, ok := signer.(interface{ Equal(crypto.PrivateKey) bool }); ok {
+		// *ecdsa.PrivateKey implements Equal; if the returned value also
+		// does, a caller could at least compare it against a known key,
+		// which is still more than an opaque signer should expose.
+		t.Fatal("Signer exposes Equal; a caller could probe the key material by comparison")
+	}
+}
+
+// TestSoftwareProvider_SignerObtainedBeforeSealRefusesAfter proves the
+// opaque signer re-checks the barrier on every Sign call, not only once at
+// the time Signer was fetched: a caller holding an already-obtained Signer
+// across a reseal must have every subsequent Sign refused.
+func TestSoftwareProvider_SignerObtainedBeforeSealRefusesAfter(t *testing.T) {
+	store := newGuardedMemoryStore()
+	barrier := newMockBarrier()
+	p := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
+	if err := p.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	signer, err := p.Signer(context.Background())
+	if err != nil {
+		t.Fatalf("Signer: %v", err)
+	}
+
+	// Sign succeeds while unsealed.
+	if _, err := signer.Sign(rand.Reader, make([]byte, 32), crypto.SHA256); err != nil {
+		t.Fatalf("Sign before seal: %v", err)
+	}
+
+	// Reseal: the SAME crypto.Signer value the caller already holds must
+	// now refuse, even though it never called Signer again to "notice" the
+	// barrier changed.
+	barrier.seal()
+	var sealedErr *BarrierSealedError
+	if _, err := signer.Sign(rand.Reader, make([]byte, 32), crypto.SHA256); !errors.As(err, &sealedErr) {
+		t.Fatalf("Sign after reseal, same Signer value = %v, want *BarrierSealedError", err)
+	}
+
+	// Public() is unaffected -- it is not secret and mirrors Certificate's
+	// seal-independent contract for public data.
+	if signer.Public() == nil {
+		t.Fatal("Public() returned nil after reseal; want the cached public key regardless of barrier state")
 	}
 }

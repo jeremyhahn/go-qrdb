@@ -512,16 +512,18 @@ var _ kvstore.MultiGuardedBatchKVStore = (*guardedKVStoreAdapter)(nil)
 
 // NewGuardedKVStoreAdapter returns a kvstore.KVStore backed by svc (and idx,
 // for index operations — see newKVStoreAdapter), with the additional
-// PutAllIfUnchanged capability tx's transaction plane provides.
+// kvstore.MultiGuardedBatchKVStore capability tx's transaction plane
+// provides -- the static return type documents the capability directly,
+// rather than making every caller type-assert for what construction already
+// guarantees.
 //
 // Every node BuildServices constructs wires a TransactionServicer
 // unconditionally (n.Transaction, above), so tx is never unavailable for a
 // production caller — this exists so a store that DOES need atomic
-// multi-key commits (go-qrdb#555's atomic role/user creation, once an
-// embedding composer wires tenant.IdentityIndex + WithAtomicIdentity over
-// it) can get one, without every OTHER caller of newKVStoreAdapter paying
-// for a capability it has no use for.
-func NewGuardedKVStoreAdapter(svc service.KVServicer, idx service.IndexServicer, tx service.TransactionServicer) (kvstore.KVStore, error) {
+// multi-key commits (go-qrdb#555's atomic role/user creation; cakey's
+// split key/certificate records) can get one, without every OTHER caller of
+// newKVStoreAdapter paying for a capability it has no use for.
+func NewGuardedKVStoreAdapter(svc service.KVServicer, idx service.IndexServicer, tx service.TransactionServicer) (kvstore.MultiGuardedBatchKVStore, error) {
 	if tx == nil {
 		return nil, ErrTransactionServiceRequired
 	}

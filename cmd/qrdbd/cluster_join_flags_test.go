@@ -51,6 +51,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterca"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 )
 
 // clusterJoinFlagsTestTrustDomain is the SPIFFE trust domain this file's
@@ -72,7 +73,7 @@ func (clusterJoinFlagsTestBarrier) IsSealed() bool                   { return fa
 // newClusterJoinFlagsTestCA returns an initialized cluster-CA provider.
 func newClusterJoinFlagsTestCA(t *testing.T) *cakey.SoftwareProvider {
 	t.Helper()
-	p := clusterca.NewProvider(kvstore.NewMemoryKVStore(), clusterJoinFlagsTestBarrier{})
+	p := clusterca.NewProvider(kvstoretest.NewGuardedMemoryStore(), clusterJoinFlagsTestBarrier{})
 	require.NoError(t, p.Initialize(context.Background()))
 	return p
 }
