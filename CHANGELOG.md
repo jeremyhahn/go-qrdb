@@ -11,6 +11,15 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.32.0-alpha] - 2026-10-02
+
+Strict tenant isolation, phase 2: cluster-wide shard IDs. This release contains BREAKING changes; see the entries below. Highlights:
+
+- **Raft shard IDs are unique across the cluster.** They are claimed from one replicated record, in standalone and Raft modes alike. Two nodes can no longer create two Raft groups under one ID, and a dropped database's ID is never issued again. The node-local `shard-high-water` file and the per-node allocator are removed.
+- **SECURITY, BREAKING: callers can no longer choose a shard ID.** The field is gone from database create and Raft update on every transport, both SDKs and the CLI (gRPC field reserved). Raft creates are refused until the `cluster-shard-ids` feature is active. A cluster that already holds raft-isolated databases must be rebuilt rather than upgraded in place.
+- **Raft discovery secrets on update:** an omitted secret is kept only while its destination (peers, multicast group, token endpoint) is unchanged. Re-pointing a secret without resending it is refused.
+- **`storageCodec`** is reported on every transport. Database configuration validation errors are 400s, not 500s. `make test-typescript` mirrors the CI job.
+
 ### Security
 
 - **BREAKING: a database create can no longer choose its shard ID, on any
