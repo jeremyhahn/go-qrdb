@@ -19,7 +19,8 @@ are not reconstructed here — their history is in the git log.
   host, for longer than the verifier's whole retry budget -- left every attempt the same listing
   with the active name absent, and the verifier reported the audit log missing
   (`*FileError`, "file does not exist") on an honest trail. The logger now keeps a rotation
-  sequence that `rotate()` makes odd across the rename and re-open, and the verifier counts an
+  sequence that `rotate()` makes odd across the rename and re-open -- even again on every return
+  path, a failed rename or reopen and a recovered panic included -- and the verifier counts an
   attempt only if it read the same even value on both sides of its listings; a stalled rotation
   is a `*ConcurrentRotationError` ("the trail moved"), never a fault. It takes no lock, and the
   verifier no longer takes the writer's lock to read the path.

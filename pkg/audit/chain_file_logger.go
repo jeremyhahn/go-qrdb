@@ -118,8 +118,9 @@ type ChainFileLogger struct {
 	size       int64
 
 	// rotations is a sequence counter the verifier reads WITHOUT l.mu. rotate
-	// makes it odd before the rename and even again once the replacement
-	// file is open, so a verifier that reads the same even value on both
+	// makes it odd before the rename and even again when it returns -- by a
+	// deferred increment, so on every path, a recovered panic included -- so a
+	// verifier that reads the same even value on both
 	// sides of a directory listing knows no rotation was mid-stride while it
 	// listed. Without it a listing taken in the gap between the rename and
 	// the re-open -- the active name briefly does not exist -- could not be
