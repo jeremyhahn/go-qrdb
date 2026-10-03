@@ -26,6 +26,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // ---------------------------------------------------------------------------
@@ -325,6 +326,62 @@ func TestHandleDatabaseCreate_Success(t *testing.T) {
 	}
 	if info.Status != database.StatusOpen {
 		t.Errorf("status: got %q, want %q", info.Status, database.StatusOpen)
+	}
+}
+
+// TestHandleDatabaseCreate_WithEtcd pins the parity fix for a review-found
+// bug: handleDatabaseCreate never read an "etcd"/"etcd_listen_addr" tool
+// argument at all, so "database create" with etcd requested silently
+// dropped it on every build -- gRPC and QUIC already carried it through
+// their own create paths. See sdk/go/conformance's
+// TestDatabaseCreate_WithEtcd_EveryTransport for the cross-transport
+// version of this same check.
+func TestHandleDatabaseCreate_WithEtcd(t *testing.T) {
+	dbSvc := newMockDatabaseService()
+	dbSvc.createFn = func(cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
+		return &database.DatabaseInfo{
+			Name:     cfg.Name,
+			Engine:   cfg.Engine,
+			Backend:  cfg.Backend,
+			Status:   database.StatusOpen,
+			Protocol: cfg.Protocol,
+		}, nil
+	}
+	handler := handleDatabaseCreate(dbSvc)
+
+	req := buildCallToolRequest(t, "qrdb_database_create", map[string]any{
+		"name":             "etcddb",
+		"engine":           "kv",
+		"backend":          "pebble",
+		"etcd":             true,
+		"etcd_listen_addr": "127.0.0.1:2379",
+	})
+
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleDatabaseCreate: %v", err)
+	}
+
+	// Unmarshal into transport.DatabaseInfo, not database.DatabaseInfo: the
+	// handler's response goes through dbwire.Info, whose EtcdProtocolConfig
+	// carries "listenAddr" (camelCase), while database.EtcdConfig's own JSON
+	// tag is "listen_addr" -- the two types share enough field names (name,
+	// engine, backend, status) that using the wrong one still passes for
+	// those, which is what let this specific field go unnoticed.
+	text := resultText(t, result)
+	var info transport.DatabaseInfo
+	if jsonErr := json.Unmarshal([]byte(text), &info); jsonErr != nil {
+		t.Fatalf("unmarshal: %v", jsonErr)
+	}
+
+	if info.Protocol.Etcd == nil {
+		t.Fatal("protocol.Etcd is nil, want an enabled etcd config")
+	}
+	if !info.Protocol.Etcd.Enabled {
+		t.Error("protocol.Etcd.Enabled = false, want true")
+	}
+	if info.Protocol.Etcd.ListenAddr != "127.0.0.1:2379" {
+		t.Errorf("protocol.Etcd.ListenAddr = %q, want %q", info.Protocol.Etcd.ListenAddr, "127.0.0.1:2379")
 	}
 }
 

@@ -42,8 +42,9 @@ type createDatabaseRequest struct {
 	Replicas     int    `json:"replicas,omitempty"`
 	DedicatedWAL bool   `json:"dedicatedWal,omitempty"`
 	Protocol     struct {
-		MySQL      bool `json:"mysql"`
-		PostgreSQL bool `json:"postgresql"`
+		MySQL      bool            `json:"mysql"`
+		PostgreSQL bool            `json:"postgresql"`
+		Etcd       *etcdConfigJSON `json:"etcd,omitempty"`
 	} `json:"protocol"`
 	Raft    *raftConfigRequest    `json:"raft,omitempty"`
 	Barrier *barrierConfigRequest `json:"barrier,omitempty"`
@@ -170,12 +171,18 @@ type updateDatabaseProtocolRequest struct {
 	PostgreSQL bool `json:"postgresql"`
 }
 
-// updateDatabaseEtcdRequest is the JSON payload for PATCH /v1/databases/{name}/etcd.
-type updateDatabaseEtcdRequest struct {
+// etcdConfigJSON is the JSON representation of a database's etcd wire
+// protocol configuration, in requests and responses alike: both
+// "database create"'s protocol.etcd block and the dedicated
+// PATCH /v1/databases/{name}/etcd body carry the same three fields.
+type etcdConfigJSON struct {
 	Enabled             bool     `json:"enabled"`
 	ListenAddr          string   `json:"listenAddr"`
 	AdvertiseClientURLs []string `json:"advertiseClientUrls,omitempty"`
 }
+
+// updateDatabaseEtcdRequest is the JSON payload for PATCH /v1/databases/{name}/etcd.
+type updateDatabaseEtcdRequest = etcdConfigJSON
 
 // updateDatabaseRaftRequest is the JSON payload for PATCH /v1/databases/{name}/raft.
 type updateDatabaseRaftRequest struct {
@@ -247,6 +254,13 @@ func (s *Server) handleCreateDatabase(w http.ResponseWriter, r *http.Request) {
 			MySQL:      req.Protocol.MySQL,
 			PostgreSQL: req.Protocol.PostgreSQL,
 		},
+	}
+	if req.Protocol.Etcd != nil {
+		cfg.Protocol.Etcd = &database.EtcdConfig{
+			Enabled:             req.Protocol.Etcd.Enabled,
+			ListenAddr:          req.Protocol.Etcd.ListenAddr,
+			AdvertiseClientURLs: req.Protocol.Etcd.AdvertiseClientURLs,
+		}
 	}
 	if req.Raft != nil {
 		cfg.Raft = raftConfigFromRequest(req.Raft)

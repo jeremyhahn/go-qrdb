@@ -138,6 +138,15 @@ func toolDatabaseCreate() mcp.Tool {
 		mcp.WithBoolean("postgresql",
 			mcp.Description("Enable PostgreSQL wire protocol for this database."),
 		),
+		mcp.WithBoolean("etcd",
+			mcp.Description("Enable etcd wire protocol compatibility for this database."),
+		),
+		mcp.WithString("etcd_listen_addr",
+			mcp.Description("The listen address for the etcd gRPC server (e.g., :2379). Only meaningful when etcd is true."),
+		),
+		mcp.WithArray("etcd_advertise_urls",
+			mcp.Description("Etcd advertise client URLs. Only meaningful when etcd is true."),
+		),
 		mcp.WithBoolean("barrier_enabled",
 			mcp.Description("Bootstrap the database's encryption barrier at creation time."),
 		),
@@ -193,6 +202,18 @@ func handleDatabaseCreate(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerF
 
 		if concurrency := mcp.ParseString(req, "sql_concurrency", ""); concurrency != "" {
 			cfg.SQL = &database.SQLConfig{Concurrency: database.Concurrency(concurrency)}
+		}
+
+		if mcp.ParseBoolean(req, "etcd", false) {
+			advertiseURLs, err := stringListArg(req, "etcd_advertise_urls")
+			if err != nil {
+				return nil, &ToolError{Tool: "qrdb_database_create", Err: err}
+			}
+			cfg.Protocol.Etcd = &database.EtcdConfig{
+				Enabled:             true,
+				ListenAddr:          mcp.ParseString(req, "etcd_listen_addr", ""),
+				AdvertiseClientURLs: advertiseURLs,
+			}
 		}
 
 		// Build raft config if cluster mode is specified.

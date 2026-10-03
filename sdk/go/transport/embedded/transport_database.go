@@ -59,6 +59,13 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 		Connection: fromTransportConnectionConfig(req.Connection),
 		SQL:        fromTransportSQLConfig(req.SQL),
 	}
+	if req.Protocol.Etcd != nil {
+		cfg.Protocol.Etcd = &database.EtcdConfig{
+			Enabled:             req.Protocol.Etcd.Enabled,
+			ListenAddr:          req.Protocol.Etcd.ListenAddr,
+			AdvertiseClientURLs: req.Protocol.Etcd.AdvertiseClientURLs,
+		}
+	}
 
 	// The tenant-scoped create, as on every network transport: the database
 	// is owned by the context's tenant and metered against its quota, and a

@@ -81,6 +81,16 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 		args["sql_concurrency"] = req.SQL.Concurrency
 	}
 
+	if req.Protocol.Etcd != nil && req.Protocol.Etcd.Enabled {
+		args["etcd"] = true
+		if req.Protocol.Etcd.ListenAddr != "" {
+			args["etcd_listen_addr"] = req.Protocol.Etcd.ListenAddr
+		}
+		if len(req.Protocol.Etcd.AdvertiseClientURLs) > 0 {
+			args["etcd_advertise_urls"] = req.Protocol.Etcd.AdvertiseClientURLs
+		}
+	}
+
 	text, err := t.callTool(ctx, "qrdb_database_create", args)
 	if err != nil {
 		return nil, &transport.RequestError{Method: "CreateDatabase", Err: err}

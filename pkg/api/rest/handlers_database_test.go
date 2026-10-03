@@ -409,6 +409,41 @@ func TestHandleCreateDatabase_WithSQL(t *testing.T) {
 	}
 }
 
+// TestHandleCreateDatabase_WithEtcd pins the parity fix for a review-found
+// bug: createDatabaseRequest.Protocol carried MySQL and PostgreSQL but no
+// Etcd field at all, so "database create" with an etcd block silently
+// dropped it on every build -- gRPC and QUIC already carried it. See
+// sdk/go/conformance's TestDatabaseCreate_WithEtcd_EveryTransport for the
+// cross-transport version of this same check.
+func TestHandleCreateDatabase_WithEtcd(t *testing.T) {
+	dbSvc := newMockDatabaseService()
+	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
+		WithDatabaseService(dbSvc))
+
+	body := `{"name":"etcddb","engine":"kv","backend":"pebble","protocol":{"etcd":{"enabled":true,"listenAddr":"127.0.0.1:2379"}}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/databases", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusCreated)
+
+	var resp transport.DatabaseInfo
+	decodeJSON(t, rec, &resp)
+	if resp.Name != "etcddb" {
+		t.Fatalf("name = %q, want %q", resp.Name, "etcddb")
+	}
+	if resp.Protocol.Etcd == nil {
+		t.Fatal("protocol.etcd = nil, want an enabled etcd config")
+	}
+	if !resp.Protocol.Etcd.Enabled {
+		t.Fatal("protocol.etcd.enabled = false, want true")
+	}
+	if resp.Protocol.Etcd.ListenAddr != "127.0.0.1:2379" {
+		t.Fatalf("protocol.etcd.listenAddr = %q, want %q", resp.Protocol.Etcd.ListenAddr, "127.0.0.1:2379")
+	}
+}
+
 func TestHandleCreateDatabase_InvalidJSON(t *testing.T) {
 	dbSvc := newMockDatabaseService()
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
