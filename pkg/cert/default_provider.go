@@ -841,18 +841,25 @@ func (p *DefaultCertProvider) IsTenantIssuer(ctx context.Context, tenantID strin
 }
 
 // loadOnlyCertificate resolves prov's CA certificate WITHOUT ever creating
-// one. For the built-in cakey.SoftwareProvider it calls Unseal (load-only)
-// before Certificate, so a tenant with no established CA answers
-// *CAKeyNotAvailableError instead of material() auto-initializing a brand
-// new CA just to answer the probe. An injected Provider (WithKeyProvider)
-// has no such distinction -- its CA is established by construction, not by
-// this call -- so Certificate is called directly, as every other accessor
-// on that path already does.
+// one AND WITHOUT loading or decoding key material, so a trust decision
+// (CACertPEMs' tenant enumeration, IsTenantIssuer's issuer comparison) never
+// touches a private key it has no reason to. For the built-in
+// cakey.SoftwareProvider this calls CertificateOnly -- cert-only, load-only
+// -- never Certificate (which would auto-initialize a brand-new CA just to
+// answer a probe against a tenant with no established CA) and never Unseal
+// (which loads the key record into memory alongside the certificate one,
+// on every call). An injected Provider (WithKeyProvider) has no such
+// distinction -- its CA is established by construction, not by this call,
+// and this package never holds or parses its key material either way -- so
+// Certificate is called directly, as every other accessor on that path
+// already does.
 func (p *DefaultCertProvider) loadOnlyCertificate(ctx context.Context, prov cakey.Provider) (*x509.Certificate, error) {
 	if sp, ok := prov.(*cakey.SoftwareProvider); ok {
-		if err := sp.Unseal(ctx); err != nil {
+		cert, err := sp.CertificateOnly(ctx)
+		if err != nil {
 			return nil, mapProviderError(err)
 		}
+		return cert, nil
 	}
 	cert, err := prov.Certificate(ctx)
 	if err != nil {

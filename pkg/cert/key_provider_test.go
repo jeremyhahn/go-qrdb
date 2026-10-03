@@ -361,23 +361,33 @@ func TestDefaultCertProvider_CACertPEMs_SkipsEmptyTenantIDKey(t *testing.T) {
 // TestDefaultCertProvider_CACertPEMs_DiscoveredTenantLoadFails proves
 // CACertPEMs propagates a failure to load a DISCOVERED tenant's
 // certificate -- rather than silently omitting it or returning a partial,
-// unsorted result -- when the scan finds a material record that no longer
-// decodes.
+// unsorted result -- when its certificate record does not decode.
+//
+// The material record (which discovery scans for) is left intact and
+// valid-looking so "ghost" is actually discovered as a tenant; only the
+// certificate record is corrupted. This also proves the load-only,
+// cert-only read (loadOnlyCertificate -> cakey.SoftwareProvider.
+// CertificateOnly) never touches the key record for this failure to
+// surface: if it did, a corrupt KEY would have to be the one that fails
+// this call, not a corrupt certificate.
 func TestDefaultCertProvider_CACertPEMs_DiscoveredTenantLoadFails(t *testing.T) {
 	kv := newMockKVStore()
 	p := NewDefaultProvider(kv, newMockBarrier())
 	ctx := context.Background()
 
-	// A material record the scan will discover, naming tenant "ghost", that
-	// is not valid JSON -- the same corruption technique
-	// TestDefaultCertProvider_Unseal_LoadCA_MaterialNotJSON uses.
-	if err := kv.Put(ctx, prefixCertCA+"ghost/material", []byte("not-json")); err != nil {
-		t.Fatalf("Put: %v", err)
+	// Any non-empty value makes "ghost" discoverable -- discovery only
+	// checks for the key's existence, never its content.
+	if err := kv.Put(ctx, prefixCertCA+"ghost/material", []byte("irrelevant-to-discovery")); err != nil {
+		t.Fatalf("Put material: %v", err)
+	}
+	// The certificate record itself is corrupt: not valid DER.
+	if err := kv.Put(ctx, prefixCertCA+"ghost/certificate", []byte("not-der-data")); err != nil {
+		t.Fatalf("Put certificate: %v", err)
 	}
 
 	_, err := p.CACertPEMs(ctx)
 	if err == nil {
-		t.Fatal("expected CACertPEMs to fail when a discovered tenant's material record does not decode")
+		t.Fatal("expected CACertPEMs to fail when a discovered tenant's certificate record does not decode")
 	}
 	var genErr *CertGenerateError
 	if !errors.As(err, &genErr) {
@@ -468,25 +478,29 @@ func TestDefaultCertProvider_IsTenantIssuer_EmptyTenantFoldsToSystem(t *testing.
 
 // TestDefaultCertProvider_IsTenantIssuer_LoadFailurePropagates proves
 // IsTenantIssuer propagates a load failure that is NOT
-// *CAKeyNotAvailableError -- a tenant that DOES have a material record, but
-// one that no longer decodes -- rather than folding every loadOnlyCertificate
-// failure into the load-only "no CA yet" (false, nil) answer.
-// TestDefaultCertProvider_IsTenantIssuer_UnknownTenantNeverCreatesACA already
-// covers the "never established" case; this covers "established, but
-// corrupt."
+// *CAKeyNotAvailableError -- a tenant that DOES have a certificate record,
+// but one that no longer decodes -- rather than folding every
+// loadOnlyCertificate failure into the load-only "no CA yet" (false, nil)
+// answer. TestDefaultCertProvider_IsTenantIssuer_UnknownTenantNeverCreatesACA
+// already covers the "never established" case; this covers "established,
+// but corrupt." Only the certificate record is written: IsTenantIssuer's
+// load-only, cert-only read (loadOnlyCertificate ->
+// cakey.SoftwareProvider.CertificateOnly) never reads the key record at
+// all, so there is no "material" record here to corrupt in the first
+// place.
 func TestDefaultCertProvider_IsTenantIssuer_LoadFailurePropagates(t *testing.T) {
 	kv := newMockKVStore()
 	p := NewDefaultProvider(kv, newMockBarrier())
 	ctx := context.Background()
 
-	if err := kv.Put(ctx, prefixCertCA+"ghost2/material", []byte("not-json")); err != nil {
+	if err := kv.Put(ctx, prefixCertCA+"ghost2/certificate", []byte("not-der-data")); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	someCert := newHSMDouble(t).cert
 
 	ok, err := p.IsTenantIssuer(ctx, "ghost2", someCert)
 	if err == nil {
-		t.Fatal("expected IsTenantIssuer to propagate a corrupt material record's load failure")
+		t.Fatal("expected IsTenantIssuer to propagate a corrupt certificate record's load failure")
 	}
 	if ok {
 		t.Error("expected false alongside the error")

@@ -1358,6 +1358,128 @@ func TestSoftwareProvider_CertificateNeverReadsKeyMaterial(t *testing.T) {
 	}
 }
 
+// TestSoftwareProvider_CertificateOnly_WhileSealedRefuses proves
+// CertificateOnly, like Certificate and Unseal, checks the barrier before
+// doing anything else.
+func TestSoftwareProvider_CertificateOnly_WhileSealedRefuses(t *testing.T) {
+	store := newGuardedMemoryStore()
+	barrier := newMockBarrier()
+	p := NewSoftwareProvider(store, barrier, "__sys:cluster_ca/", testSubject(), time.Hour)
+	if err := p.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	barrier.seal()
+	var sealedErr *BarrierSealedError
+	if _, err := p.CertificateOnly(context.Background()); !errors.As(err, &sealedErr) {
+		t.Fatalf("CertificateOnly while sealed = %v, want *BarrierSealedError", err)
+	}
+}
+
+// TestSoftwareProvider_CertificateOnly_NoStoredMaterialNeverCreatesACA
+// proves CertificateOnly answers *NotInitializedError for a tenant with
+// nothing established yet -- unlike Certificate, which would auto-generate
+// a brand-new CA to answer the same call. The store is asserted empty
+// afterward, so a passing test cannot be explained by CertificateOnly
+// having minted a CA and then reporting success/failure on it.
+func TestSoftwareProvider_CertificateOnly_NoStoredMaterialNeverCreatesACA(t *testing.T) {
+	store := newGuardedMemoryStore()
+	p := NewSoftwareProvider(store, newMockBarrier(), "__sys:cluster_ca/", testSubject(), time.Hour)
+
+	var notInit *NotInitializedError
+	if _, err := p.CertificateOnly(context.Background()); !errors.As(err, &notInit) {
+		t.Fatalf("CertificateOnly with nothing stored = %v (%T), want *NotInitializedError", err, err)
+	}
+
+	for _, key := range []string{"__sys:cluster_ca/material", "__sys:cluster_ca/certificate"} {
+		if v, err := store.Get(context.Background(), key); err != nil || v != nil {
+			t.Fatalf("CertificateOnly must never create %q, got val=%q err=%v", key, v, err)
+		}
+	}
+}
+
+// TestSoftwareProvider_CertificateOnly_NeverReadsKeyMaterial is
+// CertificateOnly's version of TestSoftwareProvider_CertificateNeverReadsKeyMaterial:
+// a cold cache, fed a store that fails any Get on the KEY record, must still
+// resolve the certificate successfully, proving CertificateOnly -- like
+// Certificate -- never touches the key record to answer a cert-only
+// request. Signer, which genuinely needs the key, is used to confirm the
+// injected fault is actually live.
+func TestSoftwareProvider_CertificateOnly_NeverReadsKeyMaterial(t *testing.T) {
+	backing := newGuardedMemoryStore()
+	seed := NewSoftwareProvider(backing, newMockBarrier(), "__sys:cluster_ca/", testSubject(), time.Hour)
+	if err := seed.Initialize(context.Background()); err != nil {
+		t.Fatalf("seed Initialize: %v", err)
+	}
+	wantCert, err := seed.CertificateOnly(context.Background())
+	if err != nil {
+		t.Fatalf("seed CertificateOnly: %v", err)
+	}
+
+	boom := errors.New("material must not be read for a cert-only call")
+	faulty := &faultyKVStore{MultiGuardedBatchKVStore: backing, failGetOn: "__sys:cluster_ca/material", failErr: boom}
+
+	p := NewSoftwareProvider(faulty, newMockBarrier(), "__sys:cluster_ca/", testSubject(), time.Hour)
+	gotCert, err := p.CertificateOnly(context.Background())
+	if err != nil {
+		t.Fatalf("CertificateOnly must succeed without ever reading key material, got: %v", err)
+	}
+	if gotCert.SerialNumber.Cmp(wantCert.SerialNumber) != 0 {
+		t.Fatalf("CertificateOnly returned serial %s, want %s", gotCert.SerialNumber, wantCert.SerialNumber)
+	}
+
+	var storeErr *StoreError
+	if _, err := p.Signer(context.Background()); !errors.As(err, &storeErr) {
+		t.Fatalf("Signer = %v, want *StoreError (confirming the material fault is live)", err)
+	}
+}
+
+// TestSoftwareProvider_CertificateOnly_CachesAfterFirstLoad proves the
+// second call answers from the in-memory cache rather than reading the
+// store again: the store is swapped for one that fails every Get after the
+// first successful CertificateOnly call populates p.cert, and the second
+// call must still succeed.
+func TestSoftwareProvider_CertificateOnly_CachesAfterFirstLoad(t *testing.T) {
+	store := newGuardedMemoryStore()
+	p := NewSoftwareProvider(store, newMockBarrier(), "__sys:cluster_ca/", testSubject(), time.Hour)
+	if err := p.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	first, err := p.CertificateOnly(context.Background())
+	if err != nil {
+		t.Fatalf("first CertificateOnly: %v", err)
+	}
+
+	// Swap in a store that fails every Get; a second call reaching the
+	// store at all would surface this.
+	p.kvStore = &faultyKVStore{MultiGuardedBatchKVStore: store, failGetOn: "__sys:cluster_ca/certificate", failErr: errors.New("must not be reached: cert is cached")}
+
+	second, err := p.CertificateOnly(context.Background())
+	if err != nil {
+		t.Fatalf("second CertificateOnly (should answer from cache) = %v", err)
+	}
+	if second.SerialNumber.Cmp(first.SerialNumber) != 0 {
+		t.Fatalf("second CertificateOnly returned serial %s, want %s (the cached cert)", second.SerialNumber, first.SerialNumber)
+	}
+}
+
+// TestSoftwareProvider_CertificateOnly_CorruptCertificateRecord proves a
+// certificate record that does not decode is reported through
+// CertificateOnly, not silently swallowed or misreported as "not yet
+// established."
+func TestSoftwareProvider_CertificateOnly_CorruptCertificateRecord(t *testing.T) {
+	store := newGuardedMemoryStore()
+	if err := store.Put(context.Background(), "__sys:cluster_ca/certificate", []byte("not a real DER-encoded certificate")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	p := NewSoftwareProvider(store, newMockBarrier(), "__sys:cluster_ca/", testSubject(), time.Hour)
+
+	var corruptErr *MaterialCorruptError
+	if _, err := p.CertificateOnly(context.Background()); !errors.As(err, &corruptErr) {
+		t.Fatalf("CertificateOnly = %v, want *MaterialCorruptError", err)
+	}
+}
+
 // TestSoftwareProvider_SignerCannotBeTypeAssertedToPrivateKey proves Signer
 // returns an opaque crypto.Signer: a caller cannot type-assert it back to
 // *ecdsa.PrivateKey (or any other concrete key type) and extract the raw

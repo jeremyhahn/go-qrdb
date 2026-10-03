@@ -644,6 +644,44 @@ func (p *SoftwareProvider) Certificate(ctx context.Context) (*x509.Certificate, 
 	}
 }
 
+// CertificateOnly resolves this provider's certificate WITHOUT ever
+// creating one and WITHOUT loading or decoding the private key -- unlike
+// both Certificate (which auto-establishes via ensureEstablished the first
+// time the store holds no certificate at all) and Unseal (which loads the
+// key record alongside the certificate one). It answers *NotInitializedError
+// when nothing has ever been established for this tenant, exactly as
+// Unseal's load-only contract does, but reaches that answer by reading only
+// the certificate record.
+//
+// This is the seam a trust decision (CACertPEMs' tenant enumeration,
+// IsTenantIssuer's issuer comparison) must call instead of Certificate or
+// Unseal: both of those alternatives either mint a CA as a side effect of
+// being asked about one (Certificate, on a never-established tenant) or
+// parse a private key into memory for a call that was only ever going to
+// read a public certificate (Unseal, on every call regardless of whether
+// the cache already holds the certificate).
+func (p *SoftwareProvider) CertificateOnly(ctx context.Context) (*x509.Certificate, error) {
+	if p.barrier.IsSealed() {
+		return nil, &BarrierSealedError{}
+	}
+
+	p.mu.RLock()
+	cert := p.cert
+	p.mu.RUnlock()
+	if cert != nil {
+		return cert, nil
+	}
+
+	cert, _, err := p.loadCertRecord(ctx)
+	if err != nil {
+		return nil, err
+	}
+	p.mu.Lock()
+	p.cert = cert
+	p.mu.Unlock()
+	return cert, nil
+}
+
 // ensureEstablished runs this provider's one-time bootstrap -- adopting
 // in-memory material supplied through WithAdoptMaterial, or generating
 // fresh material -- if the store holds none yet. It is the shared tail of
