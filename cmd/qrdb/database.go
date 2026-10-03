@@ -44,19 +44,20 @@ func newDatabaseCmd() *cobra.Command {
 		newDatabaseScaleCmd(),
 		newDatabaseUpdateBarrierCmd(),
 		newDatabaseUpdateConnectionCmd(),
-		newDatabaseUpdateSQLCmd(),
 		newDatabaseUpdateCompactionCmd(),
 		newDatabaseSealCmd(),
 		newDatabaseUnsealCmd(),
 		newDatabaseBarrierStatusCmd(),
 	)
 	cmd.AddCommand(newDatabaseBarrierHolderCmds()...)
-	// database update-protocol (qrdb_sql) and database update-etcd
-	// (qrdb_etcd) are whole subcommands that configure a wire protocol this
-	// build may not have compiled in; each add-function is a no-op on a
-	// build without the matching tag, so the subcommand simply does not
-	// exist there. See database_protocol_cmd.go / database_etcd_cmd.go and
-	// their _stub counterparts.
+	// database update-sql and update-protocol (both qrdb_sql) and
+	// database update-etcd (qrdb_etcd) are whole subcommands that configure
+	// a wire protocol or engine setting this build may not have compiled
+	// in; each add-function is a no-op on a build without the matching
+	// tag, so the subcommand simply does not exist there. See
+	// database_sql_cmd.go / database_protocol_cmd.go / database_etcd_cmd.go
+	// and their _stub counterparts.
+	addDatabaseUpdateSQLCmd(cmd)
 	addDatabaseUpdateProtocolCmd(cmd)
 	addDatabaseUpdateEtcdCmd(cmd)
 
@@ -77,8 +78,6 @@ func newDatabaseCreateCmd() *cobra.Command {
 		barrierPassphrase      string
 		barrierShamirThreshold int
 		barrierShamirTotal     int
-
-		sqlConcurrency string
 	)
 
 	cmd := &cobra.Command{
@@ -106,7 +105,7 @@ func newDatabaseCreateCmd() *cobra.Command {
 	cmd.Flags().IntVar(&barrierShamirThreshold, "barrier-shamir-threshold", 0, "Shamir quorum threshold (barrier-strategy=shamir)")
 	cmd.Flags().IntVar(&barrierShamirTotal, "barrier-shamir-total", 0, "Shamir total share count (barrier-strategy=shamir)")
 
-	cmd.Flags().StringVar(&sqlConcurrency, "sql-concurrency", "", "The database's SQL concurrency mode (optimistic, pessimistic; defaults to optimistic)")
+	applySQLConcurrency := addDatabaseCreateSQLFlags(cmd)
 
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		name := args[0]
@@ -138,9 +137,7 @@ func newDatabaseCreateCmd() *cobra.Command {
 			}
 		}
 
-		if sqlConcurrency != "" {
-			req.SQL = &transport.DatabaseSQLConfig{Concurrency: sqlConcurrency}
-		}
+		applySQLConcurrency(&req)
 
 		info, err := client.Database().CreateDatabase(cmd.Context(), req)
 		if err != nil {
@@ -149,36 +146,6 @@ func newDatabaseCreateCmd() *cobra.Command {
 
 		return printDatabaseInfo(info)
 	}
-
-	return cmd
-}
-
-// newDatabaseUpdateSQLCmd creates the "database update-sql" subcommand.
-func newDatabaseUpdateSQLCmd() *cobra.Command {
-	var concurrency string
-
-	cmd := &cobra.Command{
-		Use:   "update-sql <name>",
-		Short: "Update a database's SQL settings",
-		Long: "Update a database's SQL concurrency mode. In pessimistic mode SQL DML takes row " +
-			"locks and concurrent writers of a row wait instead of failing at COMMIT; " +
-			"SELECT ... FOR UPDATE and FOR SHARE lock in either mode. New transactions " +
-			"pick the change up.",
-		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			info, err := client.Database().UpdateDatabaseSQL(cmd.Context(), transport.UpdateDatabaseSQLRequest{
-				Name: args[0],
-				SQL:  &transport.DatabaseSQLConfig{Concurrency: concurrency},
-			})
-			if err != nil {
-				return err
-			}
-			return printDatabaseInfo(info)
-		},
-	}
-
-	cmd.Flags().StringVar(&concurrency, "concurrency", "", "SQL concurrency mode (optimistic, pessimistic)")
-	_ = cmd.MarkFlagRequired("concurrency")
 
 	return cmd
 }

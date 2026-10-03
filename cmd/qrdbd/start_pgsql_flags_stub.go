@@ -23,3 +23,8 @@ import "github.com/spf13/cobra"
 // --pgsql-port do not exist on this binary. See start_pgsql_flags.go for
 // the qrdb_pgsql counterpart.
 func registerPgSQLFlags(_ *cobra.Command, _ *startFlags) {}
+
+// appendPgSQLListener is a no-op without qrdb_pgsql: there is no PostgreSQL
+// listener to bind to --host, so it does not appear in that flag's help
+// text. See start_pgsql_flags.go for the qrdb_pgsql counterpart.
+func appendPgSQLListener(protocols []string) []string { return protocols }

@@ -6,13 +6,20 @@ Two surfaces: the `qrdb sql` client verb group, and the `qrdbd` flags that turn
 the wire protocols on. Both require a `qrdb_sql` build; the wire servers
 additionally require `qrdb_mysql` / `qrdb_pgsql`.
 
-**`qrdb sql` and `database update-protocol` exist only on a `qrdb` built
-with `WITH_QRDB_SQL=1` (the default).** A `qrdb` built with
-`WITH_QRDB_SQL=0` has no `sql` command group and no `database
+**`qrdb sql`, `database update-protocol`, `database update-sql`, and
+`database create`'s `--sql-concurrency` flag all exist only on a `qrdb`
+built with `WITH_QRDB_SQL=1` (the default).** A `qrdb` built with
+`WITH_QRDB_SQL=0` has no `sql` command group, no `database
 update-protocol` subcommand (the one that sets `--mysql` / `--postgresql`
-on an existing database) at all. `database create`'s `--sql-concurrency`
-flag is unaffected — SQL concurrency mode is a per-database setting
-independent of the wire protocols.
+on an existing database), no `database update-sql` subcommand, and no
+`--sql-concurrency` flag on `database create` — there is no SQL engine on
+that binary for a concurrency mode to apply to. `database update-protocol`
+itself further splits its two flags: `--mysql` exists only with
+`WITH_QRDB_MYSQL=1`, `--postgresql` only with `WITH_QRDB_PGSQL=1` (both
+imply `WITH_QRDB_SQL=1`), so a build with the SQL engine but only one wire
+protocol compiled in has `update-protocol` with just that one flag.
+`qrdbd start`'s `--sql-database` flag follows the same rule as `qrdb sql`:
+present only under `WITH_QRDB_SQL=1`.
 
 ## `qrdb sql query [sql]`
 

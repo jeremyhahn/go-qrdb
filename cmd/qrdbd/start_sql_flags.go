@@ -1,0 +1,28 @@
+//go:build qrdb_sql
+
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package main
+
+import "github.com/spf13/cobra"
+
+// registerSQLFlags registers the SQL engine flags. Built only under
+// qrdb_sql, so a binary without the tag has no --sql-database flag at all --
+// cobra reports "unknown flag" rather than accepting a setting this binary
+// has no SQL engine to apply. See start_sql_flags_stub.go for the
+// !qrdb_sql counterpart.
+func registerSQLFlags(cmd *cobra.Command, f *startFlags) {
+	cmd.Flags().StringVar(&f.sqlDatabase, "sql-database", "qrdb", "Default SQL database name")
+}

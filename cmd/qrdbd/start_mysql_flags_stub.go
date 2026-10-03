@@ -23,3 +23,8 @@ import "github.com/spf13/cobra"
 // do not exist on this binary. See start_mysql_flags.go for the
 // qrdb_mysql counterpart.
 func registerMySQLFlags(_ *cobra.Command, _ *startFlags) {}
+
+// appendMySQLListener is a no-op without qrdb_mysql: there is no MySQL
+// listener to bind to --host, so it does not appear in that flag's help
+// text. See start_mysql_flags.go for the qrdb_mysql counterpart.
+func appendMySQLListener(protocols []string) []string { return protocols }

@@ -359,6 +359,19 @@ func resolveStartFlags(cmd *cobra.Command, f *startFlags) error {
 	return nil
 }
 
+// compiledProtocolListeners lists the wire protocols --host actually binds
+// on this binary: the four tier-1 transports every build carries, plus
+// MySQL and/or PgSQL only when their build tag compiled a listener for
+// them. appendMySQLListener/appendPgSQLListener are no-ops on a binary
+// without the matching tag (start_{mysql,pgsql}_flags_stub.go), so the help
+// text never names a protocol this binary cannot bind --host to.
+func compiledProtocolListeners() []string {
+	protocols := []string{"REST/HTTP3", "gRPC", "QUIC", "MCP"}
+	protocols = appendMySQLListener(protocols)
+	protocols = appendPgSQLListener(protocols)
+	return protocols
+}
+
 // newStartCmdWithFlags builds the start command together with the startFlags
 // its flags are bound to. newStartCmd is the ordinary entry point; this form
 // exists for callers that need to inspect the resolved configuration.
@@ -416,7 +429,7 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 
 	cmd.Flags().StringVar(&f.configFile, "config", "", "Path to YAML configuration file")
 	cmd.Flags().StringVar(&f.mode, "mode", "raft", "Run mode: raft (default; single- or multi-node consensus) or standalone (no raft, standard database operations only)")
-	cmd.Flags().StringVar(&f.host, "host", qrdbconfig.DefaultServerHost, "Bind host for all API listeners (REST/HTTP3, gRPC, QUIC, MCP, MySQL, PgSQL); maps to server.host / QRDB_SERVER_HOST")
+	cmd.Flags().StringVar(&f.host, "host", qrdbconfig.DefaultServerHost, "Bind host for all API listeners ("+strings.Join(compiledProtocolListeners(), ", ")+"); maps to server.host / QRDB_SERVER_HOST")
 	cmd.Flags().StringVar(&f.listen, "listen", "0.0.0.0:63001", "Listen address (host:port)")
 	cmd.Flags().StringVar(&f.raftAddress, "raft-address", "127.0.0.1:63001", "Raft address visible to peers")
 	cmd.Flags().StringVar(&f.dataDir, "data-dir", "./data", "Data directory for WAL and metadata")
@@ -474,7 +487,7 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 	cmd.Flags().StringVar(&f.tlsClientAuth, "tls-client-auth", "require_and_verify", "TLS client authentication mode (none, request, require_and_verify)")
 	registerMySQLFlags(cmd, f)
 	registerPgSQLFlags(cmd, f)
-	cmd.Flags().StringVar(&f.sqlDatabase, "sql-database", "qrdb", "Default SQL database name")
+	registerSQLFlags(cmd, f)
 	cmd.Flags().StringVar(&f.tlsCAFile, "tls-ca-file", "", "Path to CA certificate PEM file")
 	cmd.Flags().StringVar(&f.tlsCertFile, "tls-cert-file", "", "Path to TLS certificate PEM file")
 	cmd.Flags().StringVar(&f.tlsKeyFile, "tls-key-file", "", "Path to TLS private key PEM file")

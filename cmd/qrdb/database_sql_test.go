@@ -12,28 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:build qrdb_sql
+
 package main
 
 import (
 	"errors"
-	"log/slog"
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
-	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/service/servicetest"
 )
 
-func newRealCLIDatabaseService(t *testing.T) service.DatabaseServicer {
-	t.Helper()
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, t.TempDir())
-	t.Cleanup(func() { _ = mgr.Close() })
-	return servicetest.NewDatabaseService(t, mgr)
-}
-
+// TestDatabaseCreate_SQLConcurrencyFlag and TestDatabaseUpdateSQL_Command
+// exercise "database create"'s --sql-concurrency flag and the "database
+// update-sql" subcommand, both qrdb_sql-only (database_sql_cmd.go,
+// database.go), so this file carries the same tag. See
+// database_service_helper_test.go for the shared, untagged
+// newRealCLIDatabaseService helper.
 func TestDatabaseCreate_SQLConcurrencyFlag(t *testing.T) {
 	svc := newRealCLIDatabaseService(t)
 	output, err := executeDatabaseCmd(t, svc, "create", "shop", "--backend", "memory", "--sql-concurrency", "pessimistic")

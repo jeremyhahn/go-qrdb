@@ -27,3 +27,11 @@ func registerMySQLFlags(cmd *cobra.Command, f *startFlags) {
 	cmd.Flags().BoolVar(&f.enableMySQL, "enable-mysql", false, "Enable MySQL wire protocol server")
 	cmd.Flags().IntVar(&f.mysqlPort, "mysql-port", 3306, "MySQL wire protocol server port")
 }
+
+// appendMySQLListener appends "MySQL" to protocols. Built only under
+// qrdb_mysql, so --host's help text lists it only on a binary that actually
+// binds a MySQL listener to that host. See start_mysql_flags_stub.go for the
+// !qrdb_mysql counterpart.
+func appendMySQLListener(protocols []string) []string {
+	return append(protocols, "MySQL")
+}

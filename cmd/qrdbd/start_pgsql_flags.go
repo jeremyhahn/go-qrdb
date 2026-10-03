@@ -27,3 +27,11 @@ func registerPgSQLFlags(cmd *cobra.Command, f *startFlags) {
 	cmd.Flags().BoolVar(&f.enablePgSQL, "enable-pgsql", false, "Enable PostgreSQL wire protocol server")
 	cmd.Flags().IntVar(&f.pgsqlPort, "pgsql-port", 5432, "PostgreSQL wire protocol server port")
 }
+
+// appendPgSQLListener appends "PgSQL" to protocols. Built only under
+// qrdb_pgsql, so --host's help text lists it only on a binary that actually
+// binds a PostgreSQL listener to that host. See start_pgsql_flags_stub.go
+// for the !qrdb_pgsql counterpart.
+func appendPgSQLListener(protocols []string) []string {
+	return append(protocols, "PgSQL")
+}
