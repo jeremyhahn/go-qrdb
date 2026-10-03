@@ -381,7 +381,7 @@ with `DatabaseNameRequiredError` before it is sent.
 | A `shamir` create on a node with no holder CA (`ShamirCustodyNotConfiguredError`) | 409 | `FAILED_PRECONDITION` |
 | A holder enrolled past `sharesTotal` before initialization (`ceremony.HolderLimitReachedError`) | 409 | `FAILED_PRECONDITION` |
 | A holder unenrolled once the custody is initialized (`ceremony.ErrUnenrolInitialized`) | 409 | `FAILED_PRECONDITION` — revoke instead |
-| A holder unenrolled, or custody initialized, while an initialization is in flight (`ceremony.ErrInitializationInProgress`) | 409 | `ABORTED` — retry |
+| A holder registered or unenrolled, or custody initialized, while an initialization is in flight (`ceremony.ErrInitializationInProgress`) | 409 | `ABORTED` — retry |
 | Changing a Shamir barrier's strategy or M-of-N by update (`BarrierMigrationNotSupportedError`) | 409 | `FAILED_PRECONDITION` — rekey instead |
 | Turning an existing database's barrier on or off (`BarrierMigrationNotSupportedError`) | 409 | `FAILED_PRECONDITION` |
 | `cluster_mode` / `replicas` on a non-raft backend | 400 | `INVALID_ARGUMENT` |

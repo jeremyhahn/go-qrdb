@@ -1768,11 +1768,20 @@ func (s *TenantService) tenantBarrierInitShamir(
 	if s.holderDeps == nil {
 		return nil, &BarrierError{TenantID: tenantID, Op: "initialize", Err: seal.ErrCeremonyDistributorNotConfigured}
 	}
-	if _, tcErr := s.tenantCeremony(tenantID); tcErr != nil {
+	holders, tcErr := s.tenantCeremony(tenantID)
+	if tcErr != nil {
 		return nil, &BarrierError{TenantID: tenantID, Op: "ceremony-service", Err: tcErr}
 	}
+	tb, err := s.registry.GetTenant(tenantID)
+	if err != nil {
+		return nil, &BarrierError{TenantID: tenantID, Op: "initialize", Err: err}
+	}
 
-	res, err := s.registry.InitializeTenantShamir(ctx, tenantID, "")
+	// The holder authority runs the initialization, marked in flight: the
+	// barrier reads the holder set twice, to validate and to split, and a
+	// registration or unenrolment between the two is refused until it has
+	// finished (ceremony.ErrInitializationInProgress).
+	res, err := holders.InitializeShamir(ctx, tb.Barrier(), "")
 	if err != nil {
 		return nil, &BarrierError{TenantID: tenantID, Op: "initialize", Err: err}
 	}

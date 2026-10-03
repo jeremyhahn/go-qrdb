@@ -99,9 +99,11 @@ func (t *ScopedCeremonyService) RegisterOfficer(ctx context.Context, req Registe
 // InitializeShamir initializes barrier, the tenant or database barrier this
 // service is installed on, under Shamir custody
 // (seal.StorageBarrier.InitializeShamir), with the initialization marked in
-// flight: an unenrolment, or a second initialization, is refused with
-// ErrInitializationInProgress until it has finished, so the holder set the
-// barrier validates is the one it splits the key to.
+// flight: a registration, an unenrolment or a second initialization is
+// refused with ErrInitializationInProgress until it has finished, so the
+// holder set the barrier validates is the one it splits the key to. Every
+// Shamir initialization of a tenant or database barrier goes through here;
+// one made on the barrier directly is not serialized against them.
 func (t *ScopedCeremonyService) InitializeShamir(ctx context.Context, barrier *seal.StorageBarrier, policy seal.FactorPolicy) (*seal.ShamirInitParams, error) {
 	t.mu.Lock()
 	if t.holder.initializing {

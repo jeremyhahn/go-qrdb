@@ -1232,6 +1232,11 @@ func (r *BarrierRegistry) RegisterTenantPooledShamir(
 // enrolled share holders via the barrier's CeremonyDistributor. Returns
 // metadata only. The tenant must already be registered via
 // RegisterTenantPooledShamir.
+//
+// It is the barrier-level initialization and does not serialize holder
+// registrations or unenrolments against it: the tenant service initializes
+// through the tenant's holder authority (ceremony.ScopedCeremonyService
+// InitializeShamir), which does.
 func (r *BarrierRegistry) InitializeTenantShamir(ctx context.Context, tenantID string, policy FactorPolicy) (*ShamirInitParams, error) {
 	tb, err := r.GetTenant(tenantID)
 	if err != nil {

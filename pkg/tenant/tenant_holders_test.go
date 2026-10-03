@@ -330,3 +330,73 @@ func TestTenantBarrierHolders_RekeyStartsAreAudited(t *testing.T) {
 		t.Fatalf("refused revocation record = %+v", starts[2])
 	}
 }
+
+// initHookTrail is a compliance trail that runs hook, once, when the tenant
+// barrier records its initialization's key -- the barrier now reads as
+// initialized, and has yet to read the holder set again to split the key.
+type initHookTrail struct {
+	*audit.RingBuffer
+	tenantID string
+	hook     func()
+}
+
+func (h *initHookTrail) Emit(ctx context.Context, ev audit.AuditEvent) error {
+	if h.hook != nil && ev.Resource == seal.BarrierAuditResource && ev.Action == "initialize" &&
+		ev.Outcome == audit.OutcomeSuccess && ev.TenantID == h.tenantID {
+		hook := h.hook
+		h.hook = nil
+		hook()
+	}
+	return h.RingBuffer.Emit(ctx, ev)
+}
+
+// TestTenantBarrierHolders_RegisterRefusedWhileInitializing is the tenant
+// service's regression for a registration racing a Shamir initialization: the
+// barrier marks itself initialized, then reads the holder set again to split
+// the key, and a holder enrolled in between failed the split with more
+// holders than shares, leaving the barrier to need a restart. The service
+// initializes through the tenant's holder authority, which refuses the
+// registration until the initialization has finished.
+func TestTenantBarrierHolders_RegisterRefusedWhileInitializing(t *testing.T) {
+	const tenantID = "acme"
+	trail := &initHookTrail{RingBuffer: audit.NewRingBuffer(64), tenantID: tenantID}
+	svc, err := NewTenantService(seal.NewMemoryBackend(), newTestBarrierRegistry(t, seal.WithAuditTrail(trail)), testLogger(),
+		WithTenantHolderDeps(ceremony.HolderDeps{CA: newTenantHolderCA(t)}))
+	if err != nil {
+		t.Fatalf("NewTenantService: %v", err)
+	}
+	ctx := tenantAdminCtx(tenantID)
+	if _, err := svc.CreateTenant(context.Background(), tenantID, "Acme", ""); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	for _, h := range []*tenantHolder{newTenantHolder(t, "alice"), newTenantHolder(t, "bob")} {
+		if _, err := svc.TenantBarrierOfficerRegister(ctx, tenantID, &ceremony.RegisterOfficerRequest{Username: h.name, CSRPEM: h.csr}); err != nil {
+			t.Fatalf("register %s: %v", h.name, err)
+		}
+	}
+	var registerErr error
+	hooked := false
+	trail.hook = func() {
+		hooked = true
+		carol := newTenantHolder(t, "carol")
+		_, registerErr = svc.TenantBarrierOfficerRegister(ctx, tenantID, &ceremony.RegisterOfficerRequest{Username: carol.name, CSRPEM: carol.csr})
+	}
+
+	res, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, nil, 2, 2, seal.StrategyShamir)
+	if err != nil {
+		t.Fatalf("init shamir with a registration racing it: %v", err)
+	}
+	if res.ShareCount != 2 {
+		t.Fatalf("ShareCount = %d, want 2", res.ShareCount)
+	}
+	if !hooked {
+		t.Fatal("the registration never ran inside the initialization")
+	}
+	if !errors.Is(registerErr, ceremony.ErrInitializationInProgress) {
+		t.Fatalf("a registration during the initialization = %v, want ErrInitializationInProgress", registerErr)
+	}
+	list, err := svc.TenantBarrierOfficerList(ctx, tenantID)
+	if err != nil || len(list) != 2 {
+		t.Fatalf("holders after the initialization = %v, %v, want alice and bob", list, err)
+	}
+}

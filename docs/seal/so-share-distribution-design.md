@@ -364,7 +364,7 @@ func (r *TenantCeremonyRegistry) Delete(tenantID string)
 **Precondition:** Tenant-admin holds `tenant_barrier:init` (ScopeTenantOnly). `N >= threshold`
 tenant officers registered against this tenant's barrier.
 
-1. `TenantService.tenantBarrierInitShamir` calls `seal.BarrierRegistry.InitializeTenantShamir`.
+1. `TenantService.tenantBarrierInitShamir` initializes the tenant barrier through the tenant's holder authority, `ceremony.ScopedCeremonyService.InitializeShamir`, which refuses registrations and unenrolments while it runs (`ceremony.ErrInitializationInProgress`).
 2. Obtained `res` has `res.Shares` (still a `[]string` at this layer — internal only, not returned).
 3. Calls `tenantCeremonyRegistry.Get(tenantID).SealAndDistribute(ctx, ...)` with the plain share bytes.
 4. Share bytes wiped. Returns `TenantBarrierInitResult{TenantID, Strategy, Threshold, TotalShares}` — **no Shares field**.

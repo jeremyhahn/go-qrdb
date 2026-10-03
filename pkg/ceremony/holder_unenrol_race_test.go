@@ -26,22 +26,87 @@ import (
 )
 
 // hookedDistributor is the holder authority as the barrier's distributor,
-// running hook once the first PrepareRoster call has returned: the window
+// running hook once the first PrepareRoster call has returned -- the window
 // between the barrier's validation of an initialization's holder set and the
-// generation of its key, after which the set is read again to split it.
+// generation of its key -- and beforeSecond just before the second call, the
+// read that splits the key, once the barrier has marked itself initialized.
 type hookedDistributor struct {
 	seal.CeremonyDistributor
-	calls int
-	hook  func()
+	calls        int
+	hook         func()
+	beforeSecond func()
 }
 
 func (d *hookedDistributor) PrepareRoster(ctx context.Context, domain seal.QuorumDomain, threshold int, policy seal.FactorPolicy, exclude []string) (*seal.HolderRoster, error) {
 	d.calls++
+	if d.calls == 2 && d.beforeSecond != nil {
+		d.beforeSecond()
+	}
 	roster, err := d.CeremonyDistributor.PrepareRoster(ctx, domain, threshold, policy, exclude)
 	if d.calls == 1 && d.hook != nil {
 		d.hook()
 	}
 	return roster, err
+}
+
+// initRaceScopes builds the scopes whose initialization the holder authority
+// serializes, a database's and a tenant's, each 2-of-2 with the authority
+// installed on its barrier through dist, and returns the authority.
+func initRaceScopes(t *testing.T) map[string]func(dist *hookedDistributor) (*ScopedCeremonyService, *seal.StorageBarrier) {
+	build := func(newSvc func(*seal.StorageBarrier) (*ScopedCeremonyService, error)) func(dist *hookedDistributor) (*ScopedCeremonyService, *seal.StorageBarrier) {
+		return func(dist *hookedDistributor) (*ScopedCeremonyService, *seal.StorageBarrier) {
+			barrier := shamirBarrier(t, seal.NewMemoryBackend(), 2, 2)
+			svc, err := newSvc(barrier)
+			require.NoError(t, err)
+			dist.CeremonyDistributor = svc
+			barrier.SetCeremonyDistributor(dist)
+			barrier.SetHolderVerifier(svc)
+			return svc, barrier
+		}
+	}
+	return map[string]func(dist *hookedDistributor) (*ScopedCeremonyService, *seal.StorageBarrier){
+		"database": build(func(b *seal.StorageBarrier) (*ScopedCeremonyService, error) {
+			return NewDatabaseCeremonyService("acme", "orders", b, HolderDeps{CA: testCA(t)}, testLogger())
+		}),
+		"tenant": build(func(b *seal.StorageBarrier) (*ScopedCeremonyService, error) {
+			return NewTenantCeremonyService("acme", b, HolderDeps{CA: testCA(t)}, testLogger())
+		}),
+	}
+}
+
+// TestRegister_RefusedWhileInitializing is the regression for a registration
+// racing the barrier's initialization: the barrier marks itself initialized,
+// then reads the holder set again to split the key, and a holder enrolled
+// just before that second read -- admitted, the barrier now reading as
+// initialized -- made the split fail with more holders than shares, every
+// retry included. A registration is refused while the initialization is in
+// flight, in every scope that serializes it, and the initialization succeeds.
+func TestRegister_RefusedWhileInitializing(t *testing.T) {
+	for name, build := range initRaceScopes(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			dist := &hookedDistributor{}
+			svc, barrier := build(dist)
+			var registerErr error
+			dist.beforeSecond = func() {
+				_, registerErr = svc.RegisterOfficer(ctx, newHolder(t, "carol", "").request("admin-1"))
+			}
+			for _, h := range []*testHolder{newHolder(t, "alice", ""), newHolder(t, "bob", "")} {
+				_, err := svc.RegisterOfficer(ctx, h.request("admin-1"))
+				require.NoError(t, err)
+			}
+
+			params, err := svc.InitializeShamir(ctx, barrier, "")
+			require.NoError(t, err, "the initialization completes")
+			assert.Equal(t, 2, params.ShareCount)
+			require.GreaterOrEqual(t, dist.calls, 2, "the barrier read the holder set twice, the hook before the second")
+			require.ErrorIs(t, registerErr, ErrInitializationInProgress)
+
+			list, err := svc.ListOfficers(ctx)
+			require.NoError(t, err)
+			assert.Len(t, list, 2, "carol was not enrolled")
+		})
+	}
 }
 
 // TestUnenrol_RefusedWhileInitializing is the regression for an unenrolment

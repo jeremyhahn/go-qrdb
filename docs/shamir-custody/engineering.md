@@ -107,14 +107,17 @@ one whose key is lost before it was ever used, is removed without a quorum
 `DatabaseBarrierOfficerUnenrol`, on every transport); its place is free for
 another holder. On an initialized barrier every holder may hold a share and
 unenrolment is refused with `ceremony.ErrUnenrolInitialized`: removal is a
-revocation, a rekey the remaining holders complete. A database barrier is
-initialized through its holder authority
-(`ScopedCeremonyService.InitializeShamir`), which marks the initialization in
+revocation, a rekey the remaining holders complete. A database barrier, and
+a tenant barrier under Shamir custody, is initialized through its holder
+authority (`ScopedCeremonyService.InitializeShamir`; the tenant service's
+Shamir initialization goes through it too), which marks the initialization in
 flight: the barrier reads the holder set twice -- to validate it, and after
-generating the key to split it -- and an unenrolment, or a second
-initialization, between the two is refused with
-`ceremony.ErrInitializationInProgress` (`ABORTED`; retry once it finishes)
-rather than leaving the barrier initialized with no share set. The removal
+generating the key, once it already reads as initialized, to split it -- and
+a registration, an unenrolment or a second initialization between the two is
+refused with `ceremony.ErrInitializationInProgress` (`ABORTED`; retry once it
+finishes). Admitted, a registration there would be dealt a share the key was
+never sized for and fail the split, and an unenrolment would leave the
+barrier initialized with no share set. The removal
 is recorded (`holder-unenrol`) before the holder is removed and, under the
 node's `fail-closed` audit posture, refused when the trail cannot record it. The engine verb serves
 any scope; only the database scope exposes it, the one whose N is fixed
@@ -404,7 +407,7 @@ per domain may be open (`ErrQuorumRoundInProgress`).
 | `RevocationBreaksQuorumError`, `HolderCountMismatchError`, `InvalidRosterError` | distribution refusals |
 | `ceremony.HolderLimitReachedError` | registration past a database barrier's N before initialization |
 | `ceremony.ErrUnenrolInitialized` | unenrolment once the barrier is initialized; revoke instead |
-| `ceremony.ErrInitializationInProgress` | unenrolment or a second initialization while one is in flight; retry |
+| `ceremony.ErrInitializationInProgress` | a registration, an unenrolment or a second initialization while one is in flight; retry |
 | `ceremony.ErrSelfEnrolment`, `ErrDuplicateUsername`, `ErrDuplicateHolderKey`, `ErrInvalidHolderRole`, `InvalidHolderNameError`, `EncryptionKeyRequiredError`, `FactorNotEnrolledError`, `DuplicateFactorError`, `HolderFactorEnrollmentError` | enrolment refusals |
 | `ceremony.ErrShareAlreadyClaimed`, `ErrShareExpired`, `ErrNoPendingShare`, `ErrCertThumbprintMismatch`, `ErrChallengeExpired`, `ErrChallengeVerificationFailed` | claim refusals |
 | `ceremony.ErrQuorumChallengeNotFound`, `ErrQuorumChallengeMismatch`, `*QuorumRateLimitedError` | challenge refusals (`ErrTooManyPendingChallenges` is internal: a request it would refuse gets a challenge stored in the decoy table, which verifies when answered) |

@@ -217,7 +217,7 @@ one classification table every transport renders (`pkg/api/errclass`):
 | PreconditionFailed | 412 | `FAILED_PRECONDITION` | no PIN backend is configured (`pin.ErrBackendNotConfigured`); rekey start or revocation before an SO PIN is provisioned (`pin.ErrPINNotSet`) |
 | Unprocessable | 422 | `FAILED_PRECONDITION` | a Shamir barrier unsealed or sealed by one caller instead of its quorum; no ceremony service configured; too few officers |
 | ResourceExhausted | 429 | `RESOURCE_EXHAUSTED` | the SO PIN check locked out after repeated failures (`pin.SOPINLockedError`); quorum challenges requested, or shares submitted, faster than the caller's throttle allows (`QuorumRateLimitedError`). Both carry the wait as REST `Retry-After`, a gRPC / Unix `google.rpc.RetryInfo` status detail, MCP `retry_after_seconds` in the error envelope, and a `google.rpc.RetryInfo` detail in the QUIC error frame's payload |
-| Aborted | 409 | `ABORTED` | the roster was replaced while the submission or rekey was prepared (`StaleRosterError`); retry |
+| Aborted | 409 | `ABORTED` | the roster was replaced while the submission or rekey was prepared (`StaleRosterError`); a holder registered or unenrolled, or a second initialization, while a database or tenant barrier is being initialized (`ErrInitializationInProgress`); retry |
 | Unauthenticated | 401 | `UNAUTHENTICATED` | a claim over a connection without a verified client certificate (`service.ClientCertRequiredError`) |
 | Internal | 500 | `INTERNAL` | an initialization whose distribution failed could not be rolled back (`ShamirInitRollbackError`) |
 

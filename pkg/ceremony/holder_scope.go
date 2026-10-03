@@ -171,10 +171,11 @@ type holderScope struct {
 	// initialization; zero when the initialization chooses it (capacityProbe).
 	capacity func() int
 	// initializing marks an initialization of the backing barrier in flight
-	// (ScopedCeremonyService.InitializeShamir). Unenrolment is refused while
-	// it is set: the barrier reads the roster twice, to validate and to
-	// split, and a holder removed between the two would leave it initialized
-	// without a share set. Guarded by the owning service's lock.
+	// (ScopedCeremonyService.InitializeShamir). Registration and unenrolment
+	// are refused while it is set: the barrier reads the roster twice, to
+	// validate and to split, and a holder added between the two would fail
+	// the split, one removed would leave it initialized without a share set.
+	// Guarded by the owning service's lock.
 	initializing bool
 	// audit records a security event on the backing barrier's audit log. A
 	// backend that is not a barrier has none, and the event is only logged.
@@ -399,6 +400,12 @@ func (h *holderScope) enrol(ctx context.Context, d *HolderDeps, req RegisterOffi
 	}
 	if d.CA == nil {
 		return nil, ErrCANotInitialized
+	}
+	// The barrier reads the holder set twice during an initialization, the
+	// second time once it already reads as initialized, so a holder enrolled
+	// in between would be split a share the key was never sized for.
+	if h.initializing {
+		return nil, ErrInitializationInProgress
 	}
 	if err := h.sync(ctx); err != nil {
 		return nil, err
