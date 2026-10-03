@@ -224,19 +224,52 @@ func TestInitialize_Required_BindsAndBoots(t *testing.T) {
 	}
 }
 
-// TestInitialize_Required_ExistingUnboundAdminRefused: a re-run issues no
-// certificate, so an existing admin with no binding is the lockout, whatever
-// is wired.
-func TestInitialize_Required_ExistingUnboundAdminRefused(t *testing.T) {
+// TestInitialize_Required_ExistingUnboundAdminWithCredentialPathRepaired
+// (go-qrdb#548 review: B6) replaces the old assumption that a re-run issues
+// no certificate: an existing admin with no binding, but a CA and a Binder
+// wired, is REPAIRED -- the create-but-never-bound gap a crash between
+// createAdminUser and deps.Binder.BindAdminCert leaves on an earlier run --
+// rather than refused outright. See
+// TestInitialize_Required_ExistingUnboundAdminNoCredentialPathRefused for
+// the still-refused case: no credential path means nothing to repair with.
+func TestInitialize_Required_ExistingUnboundAdminWithCredentialPathRepaired(t *testing.T) {
 	users := newRealUsers(t)
-	createAdmin(t, users)
-	_, err := Initialize(context.Background(), Dependencies{
+	// Seeded exactly as createAdminUser itself would have left it (the
+	// matching admin role id, System: true) -- createAdmin's bare record
+	// (no RoleIDs) does not satisfy adminUserAlreadyExists's own check, so
+	// a real repair attempt would misclassify it as a squatter rather than
+	// the admin.
+	seedUnboundAdmin(t, users)
+	result, err := Initialize(context.Background(), Dependencies{
 		Tenants: &fakeTenants{}, Users: users, Roles: &fakeRoles{}, Logger: discardLogger(),
 		CA:                &fakeCA{cert: realCertPEM(t), key: []byte("KEY")},
 		Binder:            storeBinder{users: users},
 		MTLSBindingPolicy: auth.MTLSBindingRequired,
 	})
-	requireRefusal(t, err, AdminBindingNone)
+	if err != nil {
+		t.Fatalf("Initialize must repair the unbound admin, not refuse: %v", err)
+	}
+	if result.AdminCreated {
+		t.Error("AdminCreated = true, want false: the admin already existed")
+	}
+	if result.AdminCertThumbprint == "" {
+		t.Fatal("result carries no AdminCertThumbprint after the repair")
+	}
+}
+
+// TestInitialize_Required_ExistingUnboundAdminNoCredentialPathRefused is the
+// other half: an existing admin with no binding and NO credential path at
+// all (no CA, no Signer+CSR, no AdminCertPEM) is still refused -- nothing
+// wired for Initialize to repair the binding with.
+func TestInitialize_Required_ExistingUnboundAdminNoCredentialPathRefused(t *testing.T) {
+	users := newRealUsers(t)
+	createAdmin(t, users)
+	_, err := Initialize(context.Background(), Dependencies{
+		Tenants: &fakeTenants{}, Users: users, Roles: &fakeRoles{}, Logger: discardLogger(),
+		Binder:            storeBinder{users: users},
+		MTLSBindingPolicy: auth.MTLSBindingRequired,
+	})
+	requireRefusal(t, err, AdminBindingNoCertPath)
 }
 
 // TestInitialize_Required_UnverifiableUsersRefused: an adapter that can only

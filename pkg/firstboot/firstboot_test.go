@@ -148,6 +148,16 @@ type fakeUsers struct {
 	// own failure shape — see TestInitialize_AdminIDCollisionIsIdempotent).
 	idExists bool
 	nextID   uint64
+	// bound models an admin that already holds a live certificate binding
+	// (go-qrdb#548 review: B6) -- a test proving a pure idempotent re-run
+	// (nothing touches the CA/Signer/AdminCertPEM path a second time) sets
+	// this so GetUserByUsername's answer reports a live binding, the same
+	// way a REAL store would for an admin BindAdminCert already succeeded
+	// for. Without it, every admin this fake reports has zero CertBindings
+	// unconditionally, which Initialize's own needsBinding check would
+	// read as "still needs repair" and attempt to issue a certificate --
+	// exactly what these idempotency tests exist to prove does NOT happen.
+	bound bool
 }
 
 func (f *fakeUsers) CreateUser(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
@@ -178,7 +188,11 @@ func (f *fakeUsers) GetUser(_ context.Context, _ uint64) (*user.User, error) { r
 func (f *fakeUsers) GetUserByUsername(_ context.Context, tenantID, username string) (*user.User, error) {
 	for i := len(f.createCalls) - 1; i >= 0; i-- {
 		if r := f.createCalls[i]; r.Username == username && r.TenantID == tenantID {
-			return &user.User{ID: f.nextID, Username: username, TenantID: tenantID, RoleIDs: r.RoleIDs, Lifecycle: user.LifecycleActive}, nil
+			u := &user.User{ID: f.nextID, Username: username, TenantID: tenantID, RoleIDs: r.RoleIDs, Lifecycle: user.LifecycleActive}
+			if f.bound {
+				u.CertBindings = []user.CertBinding{{Thumbprint: "fake-thumbprint", Kind: user.CertBindingSPKIThumbprint}}
+			}
+			return u, nil
 		}
 	}
 	return nil, nil
@@ -631,7 +645,11 @@ func TestReconcileExistingAdmin_PromoteErrorReturnsTheUnpromotedRecord(t *testin
 
 func TestInitialize_AllPresentReturnsIdempotent(t *testing.T) {
 	tenants := &fakeTenants{createAlreadyErr: true}
-	users := &fakeUsers{exists: true}
+	// bound: this test's whole point is a pure idempotent re-run that
+	// touches nothing new -- the bogus ca below would fail to parse if
+	// Initialize attempted to use it, which it must not for an admin that
+	// already holds a live binding (go-qrdb#548 review: B6's needsBinding).
+	users := &fakeUsers{exists: true, bound: true}
 	roles := &fakeRoles{existsByName: map[string]bool{
 		role.RoleNameSO:       true,
 		role.RoleNameAdmin:    true,
@@ -682,7 +700,10 @@ func TestInitialize_AllPresentReturnsIdempotent(t *testing.T) {
 // committed.
 func TestInitialize_AdminIDCollisionIsIdempotent(t *testing.T) {
 	tenants := &fakeTenants{createAlreadyErr: true}
-	users := &fakeUsers{idExists: true}
+	// bound: see TestInitialize_AllPresentReturnsIdempotent -- the admin
+	// this models already holds a live binding, so Initialize must not
+	// attempt to reissue one.
+	users := &fakeUsers{idExists: true, bound: true}
 	roles := &fakeRoles{existsByName: map[string]bool{
 		role.RoleNameSO:       true,
 		role.RoleNameAdmin:    true,
@@ -760,7 +781,10 @@ func (unresolvableIDCollisionUsers) CreateUser(_ context.Context, req *user.Crea
 // it does for a name collision.
 func TestInitialize_IDCollisionVerifiedIdenticalIsIdempotent(t *testing.T) {
 	tenants := &fakeTenants{createAlreadyErr: true}
-	users := &fakeUsers{exists: true}
+	// bound: see TestInitialize_AllPresentReturnsIdempotent -- the admin
+	// this models already holds a live binding, so Initialize must not
+	// attempt to reissue one.
+	users := &fakeUsers{exists: true, bound: true}
 	roles := &fakeRoles{existsByID: map[string]role.Role{
 		role.SystemRoleID(tenantid.System, role.RoleNameSO): {
 			ID:          role.SystemRoleID(tenantid.System, role.RoleNameSO),
@@ -847,7 +871,10 @@ func TestInitialize_IDCollisionDifferentDefinitionRefused(t *testing.T) {
 // than accepted on the error type alone.
 func TestInitialize_NameCollisionVerifiedIdenticalIsIdempotent(t *testing.T) {
 	tenants := &fakeTenants{createAlreadyErr: true}
-	users := &fakeUsers{exists: true}
+	// bound: see TestInitialize_AllPresentReturnsIdempotent -- the admin
+	// this models already holds a live binding, so Initialize must not
+	// attempt to reissue one.
+	users := &fakeUsers{exists: true, bound: true}
 	roles := &fakeRoles{existsByName: map[string]bool{role.RoleNameSO: true}}
 	ca := &fakeCA{cert: []byte("CERT"), key: []byte("KEY")}
 
@@ -1489,6 +1516,181 @@ func TestInitialize_ReconciliationIsIdempotent(t *testing.T) {
 	}
 	if !secondResult.System || secondResult.ID != firstResult.ID {
 		t.Fatalf("second Initialize changed the record: got %+v, want unchanged %+v", secondResult, firstResult)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// B6: create-but-never-bound crash recovery (go-qrdb#548 review)
+// ---------------------------------------------------------------------------
+
+// seedUnboundAdmin creates the system-tenant admin directly through userSvc,
+// bypassing Initialize entirely -- simulating createAdminUser's OWN write
+// having already committed on an earlier run, and deps.Binder.BindAdminCert
+// never running (the process crashed, or the call failed, between the two).
+// System: true matches what createAdminUser itself sets, so the record this
+// test seeds is indistinguishable from one Initialize created.
+func seedUnboundAdmin(t *testing.T, userSvc user.UserServicer) *user.User {
+	t.Helper()
+	admin, err := userSvc.CreateUser(context.Background(), &user.CreateUserRequest{
+		WithoutEmailLoginKey: true,
+		Username:             adminUsername,
+		TenantID:             tenantid.System,
+		RoleIDs:              []string{role.SystemRoleID(tenantid.System, role.RoleNameAdmin)},
+		System:               true,
+	})
+	if err != nil {
+		t.Fatalf("seed CreateUser: %v", err)
+	}
+	if len(admin.CertBindings) != 0 {
+		t.Fatal("test setup: the seeded admin must start with no certificate binding")
+	}
+	return admin
+}
+
+// TestInitialize_RepairsCreateButNeverBoundAdmin is the B6 crash test: an
+// admin that already exists (System: true, exactly as createAdminUser left
+// it) but holds no certificate binding -- the state a crash between
+// createAdminUser's write and deps.Binder.BindAdminCert's write leaves --
+// is repaired by a SUBSEQUENT Initialize call that has a credential path
+// and a real Binder, rather than being skipped forever because the admin
+// "already existed". The admin converges to fully bound without a second
+// account ever being created, the same way the ceremony's own
+// admin-credential issuance converges on a retry after a crash
+// (ReissueAdminCredential) -- this is firstboot's side of that same
+// guarantee.
+func TestInitialize_RepairsCreateButNeverBoundAdmin(t *testing.T) {
+	kv := newGuardedMemoryKVStore()
+	idgen, err := dao.NewSnowflakeGenerator(1)
+	if err != nil {
+		t.Fatalf("NewSnowflakeGenerator: %v", err)
+	}
+	userSvc, err := user.NewStore(kv, idgen)
+	if err != nil {
+		t.Fatalf("user.NewStore: %v", err)
+	}
+	tenantSvc, err := tenant.NewKVTenantService(kv, slog.Default())
+	if err != nil {
+		t.Fatalf("NewKVTenantService: %v", err)
+	}
+
+	seeded := seedUnboundAdmin(t, userSvc)
+
+	certPEM := realCertPEM(t)
+	ca := &fakeCA{cert: certPEM, key: []byte("KEY")}
+	binder := UserCertBinder{Users: userSvc}
+
+	result, err := Initialize(context.Background(), Dependencies{
+		MTLSBindingPolicy: auth.MTLSBindingRequired,
+		Tenants:           tenantSvc, Users: userSvc, Roles: &fakeRoles{},
+		CA:     ca,
+		Binder: binder,
+		Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("Initialize must repair the unbound admin, not refuse: %v", err)
+	}
+	if result.AdminCreated {
+		t.Error("AdminCreated = true, want false: the admin already existed")
+	}
+	if ca.called.Load() != 1 {
+		t.Fatalf("CA.GenerateAdminCert calls = %d, want 1", ca.called.Load())
+	}
+	if result.AdminCertThumbprint == "" {
+		t.Fatal("result carries no AdminCertThumbprint after the repair")
+	}
+
+	got, gerr := userSvc.GetUserByUsername(context.Background(), tenantid.System, adminUsername)
+	if gerr != nil {
+		t.Fatalf("GetUserByUsername: %v", gerr)
+	}
+	if got.ID != seeded.ID {
+		t.Fatalf("repaired a different record: got ID %d, want the seeded admin's %d", got.ID, seeded.ID)
+	}
+	if len(got.CertBindings) == 0 {
+		t.Fatal("the seeded admin still has no certificate binding after Initialize")
+	}
+
+	// The SAME check Initialize's own pre-flight (checkBindingPosture) and
+	// post-flight (verifyRequiredOutcome) apply must now report this admin
+	// as able to log in under "required".
+	if verr := VerifyAdminCertBinding(context.Background(), userSvc, time.Now().UTC()); verr != nil {
+		t.Fatalf("VerifyAdminCertBinding after repair: %v", verr)
+	}
+}
+
+// TestInitialize_RepairsCreateButNeverBoundAdmin_Idempotent proves a SECOND
+// repair call, after the first one already bound the admin, is a no-op
+// success -- the admin is not reissued or rebound a second time.
+func TestInitialize_RepairsCreateButNeverBoundAdmin_Idempotent(t *testing.T) {
+	kv := newGuardedMemoryKVStore()
+	idgen, err := dao.NewSnowflakeGenerator(1)
+	if err != nil {
+		t.Fatalf("NewSnowflakeGenerator: %v", err)
+	}
+	userSvc, err := user.NewStore(kv, idgen)
+	if err != nil {
+		t.Fatalf("user.NewStore: %v", err)
+	}
+	tenantSvc, err := tenant.NewKVTenantService(kv, slog.Default())
+	if err != nil {
+		t.Fatalf("NewKVTenantService: %v", err)
+	}
+	seedUnboundAdmin(t, userSvc)
+
+	ca := &fakeCA{cert: realCertPEM(t), key: []byte("KEY")}
+	deps := Dependencies{
+		MTLSBindingPolicy: auth.MTLSBindingRequired,
+		Tenants:           tenantSvc, Users: userSvc, Roles: &fakeRoles{},
+		CA:     ca,
+		Binder: UserCertBinder{Users: userSvc},
+		Logger: discardLogger(),
+	}
+
+	if _, err := Initialize(context.Background(), deps); err != nil {
+		t.Fatalf("first (repair) Initialize: %v", err)
+	}
+	if ca.called.Load() != 1 {
+		t.Fatalf("after the repair, CA.GenerateAdminCert calls = %d, want 1", ca.called.Load())
+	}
+
+	if _, err := Initialize(context.Background(), deps); err != nil {
+		t.Fatalf("second Initialize after the repair: %v", err)
+	}
+	if ca.called.Load() != 1 {
+		t.Fatalf("CA.GenerateAdminCert calls after a second call = %d, want still 1: an already-bound admin must not be reissued", ca.called.Load())
+	}
+}
+
+// TestInitialize_UnboundAdminWithNoCredentialPathStillRefuses guards the
+// other half of B6: an admin that exists with no live binding and NO
+// credential path at all (no CA, no Signer+CSR, no AdminCertPEM) is still
+// refused under "required", exactly as before -- the repair above must
+// never be mistaken for "any unbound admin passes now".
+func TestInitialize_UnboundAdminWithNoCredentialPathStillRefuses(t *testing.T) {
+	kv := newGuardedMemoryKVStore()
+	idgen, err := dao.NewSnowflakeGenerator(1)
+	if err != nil {
+		t.Fatalf("NewSnowflakeGenerator: %v", err)
+	}
+	userSvc, err := user.NewStore(kv, idgen)
+	if err != nil {
+		t.Fatalf("user.NewStore: %v", err)
+	}
+	tenantSvc, err := tenant.NewKVTenantService(kv, slog.Default())
+	if err != nil {
+		t.Fatalf("NewKVTenantService: %v", err)
+	}
+	seedUnboundAdmin(t, userSvc)
+
+	_, err = Initialize(context.Background(), Dependencies{
+		MTLSBindingPolicy: auth.MTLSBindingRequired,
+		Tenants:           tenantSvc, Users: userSvc, Roles: &fakeRoles{},
+		Binder: UserCertBinder{Users: userSvc},
+		Logger: discardLogger(),
+	})
+	var refused *AdminCertBindingRequiredError
+	if !errors.As(err, &refused) {
+		t.Fatalf("err = %v, want *AdminCertBindingRequiredError (no credential path to repair with)", err)
 	}
 }
 

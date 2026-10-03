@@ -323,15 +323,34 @@ func Initialize(ctx context.Context, deps Dependencies) (*Result, error) {
 	}
 	result.AdminCreated = created
 
-	// Step 4: platform admin cert + SPKI binding. Only when the admin user was
-	// newly created in this run. Two cert-issuance paths, both ending in the
-	// SPKI thumbprint being bound to the admin user:
+	// needsBinding covers BOTH the brand-new admin (created, never bound)
+	// and the create-but-never-bound gap a crash between createAdminUser and
+	// deps.Binder.BindAdminCert leaves on an EARLIER run (go-qrdb#548
+	// review: B6) -- an admin that already exists but, per the SAME
+	// verifyAdminBindings predicate checkBindingPosture and
+	// verifyRequiredOutcome apply, holds no live certificate binding right
+	// now. Gating step 4 on this instead of only `created` means a retry
+	// repairs the gap rather than skipping binding forever because the
+	// admin "already existed" -- the account converges to fully bound
+	// exactly as the ceremony's own admin-credential issuance converges on
+	// a retry after a crash (ReissueAdminCredential).
+	//
+	// adminUser is nil when reconcileExistingAdmin's UserCreator does not
+	// implement systemPromoter (a documented, legitimate shape for a
+	// downstream composer's own adapter): there is then no ID to bind a
+	// certificate to at all, so this is never treated as "needs binding" --
+	// the same no-op `created`-only gating already applied here.
+	needsBinding := created || (adminUser != nil && verifyAdminBindings(adminUser, time.Now().UTC()) != nil)
+
+	// Step 4: platform admin cert + SPKI binding, for a brand-new admin or
+	// an existing, still-unbound one. Two cert-issuance paths, both ending
+	// in the SPKI thumbprint being bound to the admin user:
 	//   Path B (CSR-sign): AdminCSRPEM supplied -> Signer signs it; the admin
 	//     keeps their private key (AdminKeyPEM stays nil).
 	//   Path A (generate-and-distribute): else CA generates the key+cert bundle,
 	//     which must be securely distributed to the admin.
 	// There is no invite/activation token — enrollment is cert-based.
-	if created {
+	if needsBinding {
 		certPEM, keyPEM, issueErr := issueAdminCert(ctx, deps, tenantID)
 		if issueErr != nil {
 			return nil, issueErr

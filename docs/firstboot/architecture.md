@@ -195,6 +195,23 @@ paths through the ceremony instead of through `firstboot.Dependencies.CA` /
    is the ONLY way a default (`required`) boot can still refuse: no ceremony
    has ever run against any node of this cluster.
 
+**A separate crash window exists one layer up, inside `firstboot.Initialize`
+itself: creating the admin user and binding its certificate are two
+different writes, through two different interfaces (`UserCreator.CreateUser`,
+then `CertBinder.BindAdminCert`), not one transaction.** A crash between
+them leaves an admin that exists but holds no binding. `Initialize` repairs
+this on a subsequent call rather than treating "the admin already exists"
+as "nothing left to do here": it re-checks the resolved admin's current
+binding state with the identical `verifyAdminBindings` predicate
+`checkBindingPosture` and `verifyRequiredOutcome` already apply, and runs
+step 4 (issue + bind) again whenever that check fails, not only when this
+run created the account. `checkBindingPosture`'s pre-flight is adjusted to
+match: an existing, unbound admin is let through — not refused outright —
+precisely when a credential path and a `CertBinder` are wired to repair it
+with, while a refusal reason issuing a certificate cannot fix (the account's
+own lifecycle or permitted-method policy) still refuses outright, as does
+having nothing wired to repair with.
+
 ## Built-in roles
 
 Created deterministically on first init, undeletable, persisted at

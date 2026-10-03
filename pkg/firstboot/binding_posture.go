@@ -147,10 +147,17 @@ var adminBindingReasons = map[user.AdminLockoutReason]AdminCertBindingReason{
 // It runs BEFORE any write, so a configuration that would lock the admin out
 // fails without having created anything:
 //
-//   - The admin already exists: it must already hold a live binding
-//     (verifyAdminBindings), because a re-run issues no certificate.
-//   - It does not: this run creates it, so this run must be able to bind it —
-//     a CertBinder AND an admin certificate path must be wired.
+//   - The admin already exists and already holds a live binding
+//     (verifyAdminBindings): nothing to do, proceed.
+//   - The admin already exists with NO live binding: this is the
+//     create-but-never-bound gap a crash between createAdminUser and
+//     deps.Binder.BindAdminCert leaves (go-qrdb#548 review: B6) -- a
+//     CertBinder AND an admin certificate path must be wired so Initialize
+//     can repair it (binding an EXISTING unbound admin, not creating a
+//     second one), or this refuses exactly as the "does not exist yet" case
+//     below does, naming the same missing piece.
+//   - It does not exist yet: this run creates it, so this run must be able
+//     to bind it — a CertBinder AND an admin certificate path must be wired.
 //
 // Under the default posture it does nothing.
 func checkBindingPosture(ctx context.Context, deps Dependencies) error {
@@ -163,12 +170,36 @@ func checkBindingPosture(ctx context.Context, deps Dependencies) error {
 	}
 	u, err := lookup.GetUserByUsername(ctx, tenantid.System, adminUsername)
 	if err == nil {
-		return verifyAdminBindings(u, time.Now().UTC())
+		verifyErr := verifyAdminBindings(u, time.Now().UTC())
+		if verifyErr == nil {
+			return nil
+		}
+		// Only a MISSING or fully-EXPIRED binding is repairable by issuing
+		// a fresh certificate -- an account the lifecycle or
+		// permitted-method policy itself blocks (AdminBindingCannotAuthenticate,
+		// AdminBindingMTLSNotPermitted) is not fixed by a new binding, and
+		// must still refuse with that specific reason, not be papered over
+		// by a generic "no credential path" check.
+		var refusal *AdminCertBindingRequiredError
+		if errors.As(verifyErr, &refusal) && (refusal.Reason == AdminBindingNone || refusal.Reason == AdminBindingAllExpired) {
+			return checkAdminCertPathAvailable(deps)
+		}
+		return verifyErr
 	}
 	var unf *user.UserNotFoundError
 	if !errors.As(err, &unf) {
 		return &AdminLookupError{Cause: err}
 	}
+	return checkAdminCertPathAvailable(deps)
+}
+
+// checkAdminCertPathAvailable refuses when Initialize has no way to issue or
+// bind the bootstrap admin's certificate: no CertBinder wired, or no
+// admin-credential path wired. Shared by checkBindingPosture's two "this run
+// must be able to bind it" cases -- a brand-new admin and an existing,
+// still-unbound one are refused with the identical reasons for the identical
+// cause.
+func checkAdminCertPathAvailable(deps Dependencies) error {
 	if deps.Binder == nil {
 		return adminBindingRefusal(AdminBindingNoBinder)
 	}
