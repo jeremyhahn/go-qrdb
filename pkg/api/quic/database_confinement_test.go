@@ -81,7 +81,7 @@ func TestDatabaseConfinement(t *testing.T) {
 				"db.UpdateSQL":          mustJSON(t, map[string]any{"name": "vault"}),
 				"db.UpdateProtocol":     mustJSON(t, map[string]any{"name": "vault"}),
 				"db.UpdateEtcd":         mustJSON(t, map[string]any{"name": "vault"}),
-				"db.UpdateRaft":         mustJSON(t, databaseUpdateRaftRequest{Name: "vault", Raft: &database.DatabaseRaftConfig{}}),
+				"db.UpdateRaft":         mustJSON(t, databaseUpdateRaftRequest{Name: "vault", Raft: &databaseRaftRequest{}}),
 				"db.UpdateBarrier":      mustJSON(t, databaseUpdateBarrierRequest{Name: "vault", Barrier: &database.DatabaseBarrierConfig{}}),
 				"db.UpdateConnection":   mustJSON(t, databaseUpdateConnectionRequest{Name: "vault", Connection: &database.DatabaseConnectionConfig{}}),
 				"db.Seal":               mustProto(t, &pb.DatabaseSealRequest{Name: "vault"}),
