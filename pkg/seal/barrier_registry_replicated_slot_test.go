@@ -442,9 +442,9 @@ func TestReplicatedSlot_StandaloneUsesNodeLocalPick(t *testing.T) {
 // TestReplicatedSlot_DetachReturnsToNodeLocalPick proves DetachReplicatedSlotStore
 // clears the attachment made by WithReplicatedSlotStore, idempotently, and
 // that provisioning afterward falls back to node-local Pick exactly as a
-// registry that was never given a slot store does (go-qrdb#rr-followups: a
-// failed clustered boot that attached the replicated store over the now-
-// stopped system KV must not leave it reachable on retry).
+// registry that was never given a slot store does. A failed clustered boot
+// that attached the replicated store over a now-stopped system KV must not
+// leave it reachable on retry.
 func TestReplicatedSlot_DetachReturnsToNodeLocalPick(t *testing.T) {
 	ctx := context.Background()
 	slotStore := NewMemoryBackend()

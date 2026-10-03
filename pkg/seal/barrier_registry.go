@@ -161,13 +161,31 @@ func WithReplicatedSlotStore(store StorageBackend) Option {
 // WithReplicatedSlotStore, returning the registry to node-local Pick.
 // Callers retract the attachment when the store it wraps (the replicated
 // system KV) has been stopped -- a boot attempt that attached it and then
-// failed -- so a tenant provisioned during the resulting window resolves a
-// slot locally instead of reaching the stopped backend. Idempotent: calling
-// it when no slot store is attached is a no-op.
+// failed -- so neither this registry nor a caller holding a reference to it
+// is left pointing at the stopped backend. This is defensive hygiene, not a
+// fallback that serves a request on the node's behalf: a clustered SDK boot
+// that failed this far along has already re-sealed the node (see
+// Node.completeClusteredBoot's failure defer in sdk/go/node), and
+// TenantService.CreateTenant -- the supported entry point into tenant
+// provisioning -- reads through the system barrier before it reaches a slot
+// store at all, so it fails closed (seal.ErrSealed) regardless of whether a
+// slot store happens to be attached. RegisterVolumeTenant/ReattachVolumeTenant
+// on this registry do NOT carry the same check if called directly, bypassing
+// TenantService; detaching here narrows that window but does not close it.
+// Idempotent: calling it when no slot store is attached is a no-op.
 func (r *BarrierRegistry) DetachReplicatedSlotStore() {
 	r.poolMu.Lock()
 	defer r.poolMu.Unlock()
 	r.slotStore = nil
+}
+
+// HasReplicatedSlotStore reports whether a replicated slot store is
+// currently attached (via WithReplicatedSlotStore or Attach), as opposed to
+// the registry resolving a pooled tenant's slot through node-local Pick.
+// Exported for callers that need to assert the attachment state directly,
+// such as a test proving DetachReplicatedSlotStore actually cleared it.
+func (r *BarrierRegistry) HasReplicatedSlotStore() bool {
+	return r.replicatedSlotStore() != nil
 }
 
 // WithMigrationRecoverer attaches the crash-recovery hook RegisterVolumeTenant

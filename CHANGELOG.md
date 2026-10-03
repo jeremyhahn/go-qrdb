@@ -44,12 +44,30 @@ are not reconstructed here — their history is in the git log.
   server failing to start -- so the same failure left those accessors
   handing out services built over the stopped host too. The defer now also
   calls `retractDataPlaneServices` and clears the migrator, mirroring
-  `Close`, and detaches the replicated volume-pool cursor and the
-  cluster-wide tenant-slot store (new `ReplicatedStateStore.Unbind` and
-  `BarrierRegistry.DetachReplicatedSlotStore`) so a tenant provisioned
-  during the retry window falls back to node-local placement instead of
-  reaching the stopped replicated KV. A `SealAll` failure is now logged
+  `Close`, unbinds the auth-chain vocabulary (`n.authMethods`) so it falls
+  back to the built-in tokens instead of consulting a middleware built over
+  the stopped `svcNode`, and detaches the replicated volume-pool cursor and
+  the cluster-wide tenant-slot store (new `ReplicatedStateStore.Unbind` and
+  `BarrierRegistry.DetachReplicatedSlotStore`) -- defensive hygiene against a
+  dangling reference to the stopped replicated KV, not a fallback that
+  serves a request: a failed boot leaves the node in its pre-boot SEALED
+  state, and `TenantService.CreateTenant` fails closed (`seal.ErrSealed`)
+  before reaching a pool slot either way, because its first read goes
+  through the system barrier itself. A `SealAll` failure is now logged
   rather than discarded.
+- **The retried boot's background goroutines now run on a live context.**
+  The lease-expiry sweeper, the reclaim sweeper and (when tenant isolation
+  wires one) the tenant shard reconciler all run on `Node.background()`'s
+  node-lifetime context; the wire-failure branch cancelled `bgCancel` but
+  left `bgCtx` set to the now-cancelled context, and `background()` makes a
+  fresh one only when `bgCtx` is nil -- so a retried boot's sweepers and
+  reconciler ran on a context already `Done` and exited at once: no lease
+  reaping (`#174` regressing), no reclaim sweep, no reconcile. The failure
+  defer now clears `bgCtx` alongside `bgCancel`, and a new `bgWG` tracks
+  each of those goroutines so the wire-failure branch can wait for them to
+  actually exit before `svcNode.Stop` -- cancelling alone does not block
+  until a goroutine's current tick notices, so a bare cancel raced
+  `svcNode.Stop` against whichever of them woke up last.
 
 ## [0.33.0-alpha] - 2026-10-03
 

@@ -759,13 +759,25 @@ type Node struct {
 	dbManager *database.Manager
 
 	// bgCtx is the node-lifetime background context for long-running goroutines
-	// started during completeClusteredBoot (currently the TenantShardReconciler).
-	// It is cancelled by bgCancel in Close() so those goroutines exit promptly
-	// rather than blocking on a placement watch or poll timer. Nil on standalone
-	// nodes and on clustered nodes where no reconciler was started (no
-	// PlacementStore configured).
+	// started during completeClusteredBoot (the lease-expiry sweeper, the
+	// reclaim sweeper and, when tenant isolation is wired, the
+	// TenantShardReconciler -- see bgWG). It is cancelled by bgCancel in
+	// Close() so those goroutines exit promptly rather than blocking on a
+	// placement watch or poll timer. Nil on standalone nodes, on clustered
+	// nodes where no reconciler was started (no PlacementStore configured),
+	// and -- after a failed boot's defer clears it alongside bgCancel -- on a
+	// node pending a retried Unseal. background() makes a fresh one only when
+	// bgCtx is nil, so clearing both together is what lets a retry get a live
+	// context instead of silently reusing the cancelled one every goroutine
+	// above would see as already-done.
 	bgCtx    context.Context //nolint:containedctx
 	bgCancel context.CancelFunc
+	// bgWG tracks every goroutine started on bgCtx (lease-expiry sweep,
+	// reclaim sweep, tenant shard reconciler) so a failure path can wait for
+	// them to actually exit after cancelling bgCtx and before stopping the
+	// services they call into -- cancelling alone races the goroutine's next
+	// iteration against svcNode.Stop.
+	bgWG sync.WaitGroup
 
 	// stopLeaseExpiry ends the lease-expiry sweeper of the current
 	// standalone data plane (startLeaseExpiryStandalone) and waits for it to
@@ -1204,14 +1216,19 @@ func (n *Node) startLeaseExpiry(host *quicraft.Host, lr *lease.Lessor, leaseSvc 
 	if host == nil || lr == nil || leaseSvc == nil {
 		return
 	}
-	go lr.RunExpiry(n.background(), lease.DefaultExpiryInterval,
-		func() bool {
-			leaderID, ok, err := host.GetLeaderID(shard.ShardKV)
-			return err == nil && ok && leaderID == replicaID
-		},
-		leaseSvc.Revoke,
-		n.logger,
-	)
+	ctx := n.background()
+	n.bgWG.Add(1)
+	go func() {
+		defer n.bgWG.Done()
+		lr.RunExpiry(ctx, lease.DefaultExpiryInterval,
+			func() bool {
+				leaderID, ok, err := host.GetLeaderID(shard.ShardKV)
+				return err == nil && ok && leaderID == replicaID
+			},
+			leaseSvc.Revoke,
+			n.logger,
+		)
+	}()
 }
 
 // startReclaimSweep starts the reclaim-job sweeper
@@ -1232,13 +1249,18 @@ func (n *Node) startReclaimSweep(host *quicraft.Host, sweeper *service.ReclaimSw
 	if host == nil || sweeper == nil {
 		return
 	}
-	go sweeper.Run(n.background(), service.DefaultReclaimInterval,
-		func() bool {
-			leaderID, ok, err := host.GetLeaderID(shard.ShardKV)
-			return err == nil && ok && leaderID == replicaID
-		},
-		n.logger,
-	)
+	ctx := n.background()
+	n.bgWG.Add(1)
+	go func() {
+		defer n.bgWG.Done()
+		sweeper.Run(ctx, service.DefaultReclaimInterval,
+			func() bool {
+				leaderID, ok, err := host.GetLeaderID(shard.ShardKV)
+				return err == nil && ok && leaderID == replicaID
+			},
+			n.logger,
+		)
+	}()
 }
 
 // startReclaimSweepStandalone starts svcNode.ReclaimSweeper for a standalone
@@ -1307,11 +1329,40 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 			n.svcNode.Store(preBootSvcNode)
 			n.retractDataPlaneServices()
 			n.encMigrator.Store(nil)
+			// Unbind the auth-chain vocabulary too: it was bound to the
+			// AuthMiddleware wireClientAndServer built over this attempt's
+			// svcNode (n.authMethods.Bind(authMW)), and a nil binding falls
+			// back to the built-in tokens rather than consulting a
+			// middleware whose RoleService/UserService are now stopped.
+			n.authMethods.Bind(nil)
+			// Cancel and clear the background context together with the
+			// goroutines it drives, defensively: the wireClientAndServer
+			// failure branch above already does this before svcNode.Stop
+			// when THAT is the failing step, but every other fallible step
+			// in this function runs before bgCtx is ever created, so this is
+			// a no-op for them. Clearing bgCancel without also clearing
+			// bgCtx would leave the next background() call reusing this
+			// now-permanently-cancelled context -- background() only makes
+			// a fresh one when bgCtx is nil -- so every goroutine a retried
+			// boot starts on it would see it already Done and exit at once:
+			// no lease reaping, no reclaim sweep, no reconcile.
+			if n.bgCancel != nil {
+				n.bgCancel()
+				n.bgCancel = nil
+			}
+			n.bgWG.Wait()
+			n.bgCtx = nil
 			// The replicated volume-pool cursor and the cluster-wide slot
 			// store were, if this attempt got that far, bound/attached over
-			// the svcNode just stopped above; detach them so a tenant
-			// provisioned during the retry window falls back to node-local
-			// Pick instead of reaching the stopped replicated KV.
+			// the svcNode just stopped above; detach them so neither holds a
+			// dangling reference to it. This is defensive hygiene, not a
+			// fallback that serves a request: a failed boot leaves the node
+			// in its pre-boot SEALED state, and the seal-only Services()
+			// this defer restores is backed by the system barrier itself,
+			// which fails every read and write while sealed (seal.ErrSealed)
+			// -- CreateTenant's tombstone check is the first such read, so
+			// provisioning a tenant through it fails closed before any pool
+			// slot is picked or any tenant barrier is opened, local or not.
 			if n.volumePool != nil && n.volumePool.ReplicatedState != nil {
 				n.volumePool.ReplicatedState.Unbind()
 			}
@@ -1496,8 +1547,14 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 			// Use a node-lifetime context so the reconciler keeps running after
 			// the unseal/boot request ctx is cancelled. The background context is
 			// cancelled by bgCancel in Node.Close() (and in the wireClientAndServer
-			// error branch below).
-			go ti.Reconciler.Run(n.background())
+			// error branch below); bgWG lets a failure path wait for this
+			// goroutine to actually exit before stopping what it calls into.
+			reconcileCtx := n.background()
+			n.bgWG.Add(1)
+			go func() {
+				defer n.bgWG.Done()
+				ti.Reconciler.Run(reconcileCtx)
+			}()
 		}
 	}
 
@@ -1517,12 +1574,17 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	n.startReclaimSweep(host, svcNode.ReclaimSweeper, pending.cfg.Raft.ReplicaID)
 
 	if err := n.wireClientAndServer(ctx, svcNode, pending.cfg, pending.serverOpts, false); err != nil {
-		// Stop the reconciler goroutine before tearing down the resources it
-		// accesses so it does not race against CloseAll/Close below.
+		// Stop the lease-expiry sweeper, the reclaim sweeper and (if tenant
+		// isolation wired one) the reconciler goroutine, and WAIT for them to
+		// actually exit, before tearing down the resources they access:
+		// cancelling bgCancel alone does not block until the goroutine's
+		// current select wakes on ctx.Done, so a bare cancel races the
+		// goroutine's next tick against svcNode.Stop below.
 		if n.bgCancel != nil {
 			n.bgCancel()
 			n.bgCancel = nil
 		}
+		n.bgWG.Wait()
 		_ = svcNode.Stop(context.Background())
 		n.svcNode.Store(nil)
 		// Stop IsolationRaft shards BEFORE closing the shared host — mirrors

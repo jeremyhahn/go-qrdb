@@ -831,6 +831,53 @@ func TestClusteredNode_UnsealRetriesAfterACancelledBoot_DataPlaneAccessorsCleare
 		t.Fatal("ABACPolicyReloader must be nil after a failed boot, not a reloader built over the stopped host")
 	}
 
+	// Every other backing handle a failed boot built must be retracted too:
+	// the scoped encryption migrator, the replicated volume-pool cursor and
+	// the cluster-wide tenant-slot store (both bound by bindReplicatedVolumePool
+	// before wireClientAndServer -- the failing step -- ever runs), and the
+	// database manager.
+	if n.encMigrator.Load() != nil {
+		t.Fatal("encMigrator must be nil after a failed boot, not the scoped router built over the stopped host")
+	}
+	if n.volumePool == nil || n.volumePool.ReplicatedState == nil {
+		t.Fatal("this test's config must configure a clustered volume pool to exercise the cursor/slot-store detach")
+	}
+	if n.volumePool.ReplicatedState.Bound() {
+		t.Fatal("the replicated volume-pool cursor must be unbound after a failed boot")
+	}
+	if reg := n.BarrierRegistry(); reg == nil || reg.HasReplicatedSlotStore() {
+		t.Fatal("the cluster-wide tenant-slot store must be detached after a failed boot")
+	}
+	if n.dbManager != nil {
+		t.Fatal("dbManager must be nil after a failed boot, not a manager over the closed data directory")
+	}
+
+	// B1: the background context driving the lease-expiry sweeper, the
+	// reclaim sweeper and (when tenant isolation wires one) the tenant shard
+	// reconciler must be CLEARED alongside bgCancel, not merely cancelled:
+	// background() makes a fresh context only when bgCtx is nil, so leaving
+	// bgCtx set to the cancelled one would hand a retried boot's goroutines a
+	// context that is already Done, and they would exit at once -- no lease
+	// reaping (go-qrdb#174 regressing), no reclaim sweep, no reconcile.
+	if n.bgCtx != nil {
+		t.Fatal("bgCtx must be cleared alongside bgCancel after a failed boot, not left holding the cancelled context")
+	}
+
+	// A failed boot must not leave the node able to place or allocate a new
+	// tenant through the now-local-only path while it reports sealed. The
+	// seal-only Services().Tenant this attempt's defer restored is backed by
+	// the system barrier itself (tenant.NewTenantService(infra.SealBarrier,
+	// ...)), which refuses every read and write while sealed (seal.ErrSealed)
+	// -- CreateTenant's tombstone check is the first such read, so it fails
+	// closed before any pool slot is picked or any tenant barrier is opened.
+	svc := n.Services()
+	if svc == nil || svc.Tenant == nil {
+		t.Fatal("Services().Tenant must still be reachable (the seal-only snapshot) after a failed boot")
+	}
+	if _, cerr := svc.Tenant.CreateTenant(ctx, "probe-tenant", "Probe", tenant.IsolationVolume); !errors.Is(cerr, seal.ErrSealed) {
+		t.Fatalf("CreateTenant while sealed = %v, want seal.ErrSealed: nothing may place or allocate while sealed", cerr)
+	}
+
 	// The retried Unseal, with the port now free, must complete the boot and
 	// republish all three accessors.
 	if err := n.Unseal(context.Background(), creds()); err != nil {
@@ -844,5 +891,45 @@ func TestClusteredNode_UnsealRetriesAfterACancelledBoot_DataPlaneAccessorsCleare
 	}
 	if r := n.ABACPolicyReloader(); r == nil {
 		t.Fatal("ABACPolicyReloader must be non-nil once the retried boot completes")
+	}
+
+	// B1: the retried boot's background goroutines must run on a live
+	// context, not the dead one a cleared bgCancel over an uncleared bgCtx
+	// would have handed them.
+	if n.bgCtx == nil || n.bgCtx.Err() != nil {
+		t.Fatalf("bgCtx after the retried boot: got %v, want a live (non-Done) context", n.bgCtx)
+	}
+
+	// Prove the lease-expiry sweeper the retry started is actually running,
+	// not merely holding a live context: grant a 1s lease, attach a key to
+	// it, and poll for the leader-side sweep to revoke it through consensus.
+	// Without the B1 fix the sweeper exits at once on the dead bgCtx a retry
+	// would otherwise have reused, and this key would never be reaped
+	// (go-qrdb#174, the defect this whole fix chain guards against).
+	client := n.Client()
+	if client == nil {
+		t.Fatal("Client() must be non-nil once the retried boot completes")
+	}
+	leaseInfo, lerr := client.Lease().LeaseGrant(ctx, 1)
+	if lerr != nil {
+		t.Fatalf("LeaseGrant: %v", lerr)
+	}
+	const probeKey = "rr-followups/lease-sweep-probe"
+	if _, perr := client.MVCC().PutWithLease(ctx, probeKey, []byte("v"), leaseInfo.ID); perr != nil {
+		t.Fatalf("PutWithLease: %v", perr)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, gerr := client.KV().Get(ctx, probeKey); gerr != nil {
+			var notFound *transport.KeyNotFoundError
+			if errors.As(gerr, &notFound) {
+				break // the key is gone: the lease was revoked through consensus.
+			}
+			t.Fatalf("Get(%s): %v", probeKey, gerr)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the lease-expiry sweeper never reaped an expired lease's key after the retried boot -- go-qrdb#174 regressed")
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
