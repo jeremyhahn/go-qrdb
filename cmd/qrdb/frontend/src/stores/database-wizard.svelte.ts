@@ -291,3 +291,30 @@ export function takeBarrierPassphrase(): string {
     dbWizardStore.barrierPassphrase = '';
     return passphrase;
 }
+
+/**
+ * Per-database seal modes the wizard cannot offer yet, each with the reason it
+ * shows. A mode absent from the map is available. The barrier step disables
+ * these cards and the create step refuses them, so both read this one map.
+ * Shamir waits for per-database share holders: the server refuses a
+ * per-database Shamir barrier until they ship.
+ */
+export const unavailableSealModes: Readonly<Partial<Record<SealMode, string>>> = {
+    shamir: 'Available once per-database Shamir share holders ship.',
+};
+
+/**
+ * SealModeUnavailableError is the create step's refusal of a seal mode listed
+ * in unavailableSealModes. It is a backstop: the barrier step never lets such
+ * a mode through, and this keeps a regression there from sending a request
+ * the server can only refuse.
+ */
+export class SealModeUnavailableError extends Error {
+    readonly mode: SealMode;
+
+    constructor(mode: SealMode, reason: string) {
+        super(`The ${mode} barrier is not available: ${reason}`);
+        this.name = 'SealModeUnavailableError';
+        this.mode = mode;
+    }
+}

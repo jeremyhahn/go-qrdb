@@ -31,6 +31,11 @@ import {
   expect,
   secondLaunchEmbeddedState,
 } from "./fixtures/wails-mock.ts";
+import {
+  captureDatabaseCreates,
+  capturedDatabaseCreates,
+  databaseCreatesSoFar,
+} from "./fixtures/database-create-capture.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -208,23 +213,7 @@ test.describe("Wizard Encryption Combinations", () => {
   // wizard does not offer it: the card is disabled and says why. A Shamir
   // create request is never sent.
   test("File + Shamir is not offered: the card is disabled and no Shamir create is sent", async ({ page }) => {
-    const creates: unknown[] = [];
-    await page.exposeFunction("__recordCreate", (req: unknown) => {
-      creates.push(req);
-    });
-    await page.addInitScript(() => {
-      const w = window as unknown as Record<string, unknown>;
-      const db = (
-        w.go as Record<string, Record<string, Record<string, unknown>>>
-      )?.main?.DatabaseBinding;
-      if (db && typeof db.Create === "function") {
-        const orig = db.Create as (...args: unknown[]) => Promise<unknown>;
-        db.Create = async (...args: unknown[]): Promise<unknown> => {
-          await (w.__recordCreate as (r: unknown) => Promise<void>)(JSON.parse(JSON.stringify(args[0])));
-          return orig(...args);
-        };
-      }
-    });
+    await captureDatabaseCreates(page);
     await openCreateWizard(page);
     await fillNameAndAdvance(page, "enc-file-shamir");
     await selectStorageAndAdvance(page, "File");
@@ -241,10 +230,39 @@ test.describe("Wizard Encryption Combinations", () => {
     // The wizard can still finish -- without a Shamir barrier.
     await page.getByRole("button", { name: "Next" }).click();
     await createAndVerifyComplete(page, "enc-file-shamir");
-    expect(creates.length).toBeGreaterThan(0);
-    for (const req of creates) {
-      expect((req as { barrier?: { mode?: string } }).barrier?.mode).not.toBe("shamir");
-    }
+    const creates = await capturedDatabaseCreates(page);
+    expect(creates).toHaveLength(1);
+    expect((creates[0] as { barrier?: { mode?: string } }).barrier?.mode).not.toBe("shamir");
+  });
+
+  // The create step refuses a seal mode the wizard cannot offer even when the
+  // barrier step lets one through. The barrier step cannot be made to, so the
+  // spec stands in for that regression by writing the store directly -- the
+  // same module instance the app runs -- after a valid barrier step.
+  test("the create step refuses an unavailable seal mode the barrier step let through", async ({ page }) => {
+    await captureDatabaseCreates(page);
+    await navigateToSummaryWithConfig(page, "enc-backstop", "File", "Passphrase");
+
+    await page.evaluate(async () => {
+      const storeModule = "/src/stores/database-wizard.svelte.ts";
+      const { dbWizardStore } = await import(/* @vite-ignore */ storeModule);
+      dbWizardStore.sealMode = "shamir";
+      dbWizardStore.sealConfig = { mode: "shamir", sharesRequired: 2, sharesTotal: 3 };
+    });
+
+    await page.locator("main").getByRole("button", { name: "Create Database" }).click();
+    await expect(
+      page.getByText(/The shamir barrier is not available: Available once per-database Shamir share holders ship\./),
+    ).toBeVisible({ timeout: INIT_TIMEOUT });
+    expect(await databaseCreatesSoFar(page)).toHaveLength(0);
+
+    // The refusal still takes the passphrase out of the store.
+    const left = await page.evaluate(async () => {
+      const storeModule = "/src/stores/database-wizard.svelte.ts";
+      const { dbWizardStore } = await import(/* @vite-ignore */ storeModule);
+      return dbWizardStore.barrierPassphrase as string;
+    });
+    expect(left).toBe("");
   });
 });
 

@@ -17,7 +17,12 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import type { Client } from "@qrdb/sdk";
-  import { dbWizardStore, takeBarrierPassphrase } from "$stores/database-wizard.svelte.ts";
+  import {
+    dbWizardStore,
+    takeBarrierPassphrase,
+    unavailableSealModes,
+    SealModeUnavailableError,
+  } from "$stores/database-wizard.svelte.ts";
 
   let {
     client,
@@ -115,6 +120,14 @@
     // Taken (and cleared from the store) before anything can fail, so the
     // passphrase outlives neither a successful nor a failed request.
     const barrierSecret = takeBarrierPassphrase();
+    // Backstop for the barrier step: a seal mode the wizard cannot offer is
+    // refused here, before any request is built or sent.
+    const unavailable = dbWizardStore.barrierEnabled
+      ? unavailableSealModes[dbWizardStore.sealMode]
+      : undefined;
+    if (unavailable !== undefined) {
+      throw new SealModeUnavailableError(dbWizardStore.sealMode, unavailable);
+    }
     const req = {
       name: dbWizardStore.name,
       engine: dbWizardStore.engine,

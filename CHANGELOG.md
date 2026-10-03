@@ -23,7 +23,8 @@ are not reconstructed here — their history is in the git log.
   the summary says only that it is set. The barrier now defaults to none, so
   a barrier is chosen, never implied. Leaving the wizard by any route clears
   the passphrase. The Shamir card is disabled, with a tooltip, until
-  per-database Shamir share holders ship; a per-database Shamir barrier
+  per-database Shamir share holders ship, and the create step refuses a
+  Shamir barrier itself should the card ever let one through; a per-database Shamir barrier
   request -- from any client -- is refused with
   `database.UnsupportedBarrierStrategyError` as 400 / `INVALID_ARGUMENT`
   instead of 500. The TypeScript SDK's

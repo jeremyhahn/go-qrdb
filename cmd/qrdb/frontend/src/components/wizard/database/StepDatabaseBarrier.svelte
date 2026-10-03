@@ -15,7 +15,7 @@
   limitations under the License.
 -->
 <script lang="ts">
-  import { dbWizardStore } from "$stores/database-wizard.svelte.ts";
+  import { dbWizardStore, unavailableSealModes } from "$stores/database-wizard.svelte.ts";
   import type { SealMode } from "@qrdb/sdk";
 
   let { onNext, onBack }: { onNext: () => void; onBack: () => void } = $props();
@@ -46,13 +46,11 @@
   let passphrase: string = $state("");
   let passphraseConfirm: string = $state("");
 
-  /** Seal mode options for the card selector. A mode with `unavailable`
-   * set is shown, disabled, with that text as its tooltip. */
-  const sealModes: readonly {
+  /** Seal mode options for the card selector. */
+  const sealModeOptions: readonly {
     id: SealMode;
     label: string;
     description: string;
-    unavailable?: string;
   }[] = [
     {
       id: "none",
@@ -71,11 +69,15 @@
       label: "Shamir (M-of-N)",
       description:
         "Advanced: Shamir secret sharing requires multiple key holders to unseal this database.",
-      // The server refuses a per-database Shamir barrier until per-database
-      // share holders ship; offering it would only produce that refusal.
-      unavailable: "Available once per-database Shamir share holders ship.",
     },
-  ] as const;
+  ];
+
+  /** The cards. A mode listed in unavailableSealModes is shown, disabled, with
+   * its reason as the tooltip. */
+  const sealModes = sealModeOptions.map((mode) => ({
+    ...mode,
+    unavailable: unavailableSealModes[mode.id],
+  }));
 
   /** Validation: when Shamir is selected, sharesRequired must be <= sharesTotal, both > 0. */
   let shamirValid = $derived(

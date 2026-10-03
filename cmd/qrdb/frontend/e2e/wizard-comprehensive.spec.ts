@@ -33,6 +33,10 @@ import {
   expect,
   secondLaunchEmbeddedState,
 } from "./fixtures/wails-mock.ts";
+import {
+  captureDatabaseCreates,
+  capturedDatabaseCreates,
+} from "./fixtures/database-create-capture.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -193,6 +197,27 @@ test.describe("Engine Type Combinations", () => {
     await expect(page.getByText("Disabled", { exact: true })).toBeVisible();
 
     await createAndVerifyComplete(page, "vec-pebble-none");
+  });
+
+  test("Vector engine + File + passphrase shows in summary, sends all three, and completes", async ({ page }) => {
+    await captureDatabaseCreates(page);
+    await navigateToSummaryEmbedded(
+      page, "vec-file-pass", "Vector", "File", "Passphrase",
+    );
+
+    await expect(page.getByText("Vector", { exact: true })).toBeVisible();
+    await expect(page.getByText("File", { exact: true })).toBeVisible();
+    await expect(page.getByText("Passphrase", { exact: true })).toBeVisible();
+
+    await createAndVerifyComplete(page, "vec-file-pass");
+    const creates = await capturedDatabaseCreates(page);
+    expect(creates).toHaveLength(1);
+    expect(creates[0]).toMatchObject({
+      name: "vec-file-pass",
+      engine: "vector",
+      backend: "file",
+      barrier: { enabled: true, mode: "passphrase", secret: "e2e-barrier-passphrase" },
+    });
   });
 
   test("Switching engine type preserves database name", async ({ page }) => {

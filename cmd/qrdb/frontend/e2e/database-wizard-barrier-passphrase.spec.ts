@@ -27,46 +27,13 @@
 
 import { test, expect, secondLaunchEmbeddedState } from "./fixtures/wails-mock.ts";
 import type { Page } from "@playwright/test";
+import {
+  captureDatabaseCreates,
+  capturedDatabaseCreates,
+} from "./fixtures/database-create-capture.ts";
 
 const STEP_TIMEOUT = 10_000;
 const PASSPHRASE = "wizard-barrier-passphrase-7c2e";
-
-/** Records every DatabaseBinding.Create request; optionally fails the call. */
-async function captureCreates(page: Page, fail: boolean): Promise<void> {
-  await page.addInitScript((failCreate: boolean) => {
-    const w = window as unknown as Record<string, unknown>;
-    w.__capturedDbCreateRequests = [];
-    const db = (
-      w.go as Record<string, Record<string, Record<string, unknown>>>
-    )?.main?.DatabaseBinding;
-    if (db && typeof db.Create === "function") {
-      const orig = db.Create as (...args: unknown[]) => Promise<unknown>;
-      db.Create = async (...args: unknown[]): Promise<unknown> => {
-        (w.__capturedDbCreateRequests as unknown[]).push(
-          JSON.parse(JSON.stringify(args[0])),
-        );
-        if (failCreate) {
-          throw new Error("database: barrier refused for this database");
-        }
-        return orig(...args);
-      };
-    }
-  }, fail);
-}
-
-async function capturedCreates(page: Page): Promise<Record<string, unknown>[]> {
-  await page.waitForFunction(
-    () =>
-      ((window as unknown as Record<string, unknown>)
-        .__capturedDbCreateRequests as unknown[]).length > 0,
-    { timeout: STEP_TIMEOUT },
-  );
-  return page.evaluate(
-    () =>
-      (window as unknown as Record<string, unknown>)
-        .__capturedDbCreateRequests as Record<string, unknown>[],
-  );
-}
 
 /**
  * Records every console message the page writes, so a test can assert the
@@ -155,7 +122,7 @@ test.describe("Database Wizard - barrier passphrase", () => {
   test("create sends enabled: true with the passphrase, and the passphrase is never shown", async ({
     page,
   }) => {
-    await captureCreates(page, false);
+    await captureDatabaseCreates(page);
     const logged = captureConsole(page);
     await toBarrierStep(page, "barrier-create-db");
     await choosePassphrase(page);
@@ -168,7 +135,7 @@ test.describe("Database Wizard - barrier passphrase", () => {
     await expect(page.locator("body")).not.toContainText(PASSPHRASE);
 
     await page.locator("main").getByRole("button", { name: "Create Database" }).click();
-    const captured = await capturedCreates(page);
+    const captured = await capturedDatabaseCreates(page);
     expect(captured).toHaveLength(1);
     expect(captured[0].barrier).toEqual({
       enabled: true,
@@ -186,7 +153,7 @@ test.describe("Database Wizard - barrier passphrase", () => {
   });
 
   test("a failed create does not show the passphrase", async ({ page }) => {
-    await captureCreates(page, true);
+    await captureDatabaseCreates(page, { fail: true });
     const logged = captureConsole(page);
     await toBarrierStep(page, "barrier-fail-db");
     await choosePassphrase(page);
@@ -196,7 +163,7 @@ test.describe("Database Wizard - barrier passphrase", () => {
     await expect(page.getByText(/barrier refused for this database/)).toBeVisible({
       timeout: STEP_TIMEOUT,
     });
-    const captured = await capturedCreates(page);
+    const captured = await capturedDatabaseCreates(page);
     expect((captured[0].barrier as Record<string, unknown>).secret).toBe(PASSPHRASE);
     await expect(page.locator("body")).not.toContainText(PASSPHRASE);
     expectNoPassphraseLogged(logged);

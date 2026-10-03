@@ -36,6 +36,7 @@ import {
   raftClusterState,
 } from "./fixtures/wails-mock.ts";
 import type { Page } from "@playwright/test";
+import { captureDatabaseCreates, capturedDatabaseCreates } from "./fixtures/database-create-capture.ts";
 
 const STEP_TIMEOUT = 10_000;
 
@@ -153,24 +154,8 @@ test.describe("Database Wizard - Dedicated WAL — raft server", () => {
   test("checking Dedicated WAL sends dedicatedWal: true in the create request", async ({
     page,
   }) => {
-    // Register the capture wrapper BEFORE page.goto so it runs after
-    // injectWailsMock but before the app boots, wrapping the raw mock.
-    await page.addInitScript(() => {
-      const w = window as unknown as Record<string, unknown>;
-      w.__capturedDbCreateRequests = [];
-      const db = (
-        w.go as Record<string, Record<string, Record<string, unknown>>>
-      )?.main?.DatabaseBinding;
-      if (db && typeof db.Create === "function") {
-        const orig = db.Create as (...args: unknown[]) => Promise<unknown>;
-        db.Create = async (...args: unknown[]): Promise<unknown> => {
-          (w.__capturedDbCreateRequests as unknown[]).push(
-            JSON.parse(JSON.stringify(args[0])),
-          );
-          return orig(...args);
-        };
-      }
-    });
+    // Before page.goto, so the wrapper is in place when the app boots.
+    await captureDatabaseCreates(page);
 
     await advanceToRaftStep(page);
 
@@ -185,19 +170,7 @@ test.describe("Database Wizard - Dedicated WAL — raft server", () => {
 
     await advanceRaftToCreate(page);
 
-    // Wait until DatabaseBinding.Create has been called.
-    await page.waitForFunction(
-      () =>
-        ((window as unknown as Record<string, unknown>)
-          .__capturedDbCreateRequests as unknown[]).length > 0,
-      { timeout: STEP_TIMEOUT },
-    );
-
-    const captured = await page.evaluate(
-      () =>
-        (window as unknown as Record<string, unknown>)
-          .__capturedDbCreateRequests as Record<string, unknown>[],
-    );
+    const captured = await capturedDatabaseCreates(page);
     expect(captured.length).toBeGreaterThan(0);
     expect(captured[0].dedicatedWal).toBe(true);
   });
@@ -205,22 +178,7 @@ test.describe("Database Wizard - Dedicated WAL — raft server", () => {
   test("leaving Dedicated WAL unchecked omits dedicatedWal from the create request", async ({
     page,
   }) => {
-    await page.addInitScript(() => {
-      const w = window as unknown as Record<string, unknown>;
-      w.__capturedDbCreateRequests = [];
-      const db = (
-        w.go as Record<string, Record<string, Record<string, unknown>>>
-      )?.main?.DatabaseBinding;
-      if (db && typeof db.Create === "function") {
-        const orig = db.Create as (...args: unknown[]) => Promise<unknown>;
-        db.Create = async (...args: unknown[]): Promise<unknown> => {
-          (w.__capturedDbCreateRequests as unknown[]).push(
-            JSON.parse(JSON.stringify(args[0])),
-          );
-          return orig(...args);
-        };
-      }
-    });
+    await captureDatabaseCreates(page);
 
     await advanceToRaftStep(page);
 
@@ -229,18 +187,7 @@ test.describe("Database Wizard - Dedicated WAL — raft server", () => {
 
     await advanceRaftToCreate(page);
 
-    await page.waitForFunction(
-      () =>
-        ((window as unknown as Record<string, unknown>)
-          .__capturedDbCreateRequests as unknown[]).length > 0,
-      { timeout: STEP_TIMEOUT },
-    );
-
-    const captured = await page.evaluate(
-      () =>
-        (window as unknown as Record<string, unknown>)
-          .__capturedDbCreateRequests as Record<string, unknown>[],
-    );
+    const captured = await capturedDatabaseCreates(page);
     expect(captured.length).toBeGreaterThan(0);
     // dedicatedWal must be absent or falsy when the toggle is off.
     expect(captured[0].dedicatedWal).toBeFalsy();
