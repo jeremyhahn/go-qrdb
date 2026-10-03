@@ -2471,6 +2471,28 @@ func runStart(f *startFlags) (err error) {
 			}
 			if ceremonyCA != nil {
 				serverOpts = append(serverOpts, server.WithCeremonyCA(ceremonyCA))
+				// bundle.SetClusterCA must be fed the PERSISTED cluster CA
+				// (ceremony.NewProviderCA over svcNode's ClusterCAProv, the
+				// replicated-store-backed cakey.Provider), never the
+				// bootstrap-window `ceremonyCA` local variable above: that
+				// one is resolved once, from the TLS bundle's own
+				// CAKeyPEM/CACertPEM, BEFORE BuildServices runs, and
+				// BuildServices's buildSealServices unconditionally
+				// ReplaceCA's the ceremony core service's CA with the
+				// persisted one once ClusterCAProv exists -- so the
+				// bootstrap-window value is stale for the entire life of
+				// this node from that point on. Resolving the ceremony's
+				// CURRENT CA here, after BuildServices, gets the live one;
+				// its own CACertificate() still resolves ClusterCAProv
+				// fresh on every call (ceremony.ProviderCA's own doc
+				// comment), so a later re-seal/re-unseal or HSM failover is
+				// still reflected without re-wiring.
+				clusterCA := ceremonyCA
+				if coreSvc, ok := service.CeremonyServiceCore(svcNode.Ceremony); ok {
+					if liveCA := coreSvc.CA(); liveCA != nil {
+						clusterCA = liveCA
+					}
+				}
 				// The dynamic client-auth trust pool (wireClientTrustPool,
 				// installed before any listener started) resolves the
 				// cluster CA fresh on every handshake, both to add it to the
@@ -2481,7 +2503,7 @@ func runStart(f *startFlags) (err error) {
 				// whether this call ever runs; what it adds is the cluster
 				// CA's own membership in the pool and its exemption from the
 				// per-tenant check (go-qrdb#560 review, B2-2).
-				bundle.SetClusterCA(ceremonyCA)
+				bundle.SetClusterCA(clusterCA)
 			}
 			if svcNode.CertProv != nil {
 				serverOpts = append(serverOpts, server.WithCertProvider(svcNode.CertProv))
