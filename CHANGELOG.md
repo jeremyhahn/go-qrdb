@@ -11,6 +11,16 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.33.0-alpha] - 2026-10-03
+
+Per-tenant compaction, database wizard encryption, and discovery parity. This release contains BREAKING changes; see the entries below. Highlights:
+
+- **Compaction is per tenant database, never store-global.** Each database gets its own compaction floor. Reads above the floor keep etcd semantics: the value live at the floor stays readable. Another database's compaction never cancels your watches.
+- **Scheduled compaction policies are replicated state.** They live in the database's own store and run on the group leader only, so they survive failover and restart and are covered by backup. The platform node-keyspace policy is set through a new platform-only verb (`admin:node_compaction`) on every transport, not node config.
+- **One feature-gate error:** `featuregate.NotActiveError` (503 / Unavailable) replaces the per-feature errors.
+- **Desktop database wizard:** collects an encryption passphrase and actually creates the barrier. Shamir is disabled until per-database share holders ship.
+- **Raft discovery parity:** the Go SDK, the TS SDK and MCP can set every discovery block. Secrets stay write-only and are bound to their destination, including top-level peers.
+
 ### Fixed
 
 - **The desktop database wizard's barrier works.** It sent the barrier block
