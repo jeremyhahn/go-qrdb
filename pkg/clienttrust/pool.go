@@ -89,6 +89,12 @@ type clusterCABox struct{ ca ClusterCA }
 type poolCache struct {
 	built time.Time
 	pool  *x509.CertPool
+	// keyBOnly holds ONLY the Key B certificates fetched to build pool --
+	// never the static base, never the cluster CA -- so
+	// isRegisteredKeyBCA can ask "is this issuer SOME tenant's Key B CA"
+	// without re-fetching CACertPEMs on every authentication check. Built
+	// from the SAME src.CACertPEMs call pool is, at zero extra cost.
+	keyBOnly *x509.CertPool
 }
 
 // New returns a Pool with neither a Key B provider nor a cluster CA
@@ -185,12 +191,22 @@ func (p *Pool) IsClusterCA(cert *x509.Certificate) bool {
 // retroactively impose tenant-matching on a CA the composer trusted before
 // Key B was ever in the picture.
 //
-// Reflects the base pool observed on the MOST RECENT handshake this Pool's
-// GetConfigForClient hook served (populated by resolveClientCAs, which
-// always runs -- as the TLS handshake -- before any authentication on the
-// same connection consults this). nil (Wire was never called, or no
-// connection has completed a handshake through it yet) is never a match:
-// fail closed, same as every other resolution failure in this type.
+// Reflects the static pool captured ONCE, at Wire time -- this listener's
+// OWN configuration, fixed for this Pool's lifetime -- never resampled
+// per-connection or per-handshake. Re-reading cfg.ClientCAs on every call
+// would let one connection's view of a concurrently-mutated config leak
+// into another's authentication decision; capturing it once at Wire makes
+// the exemption's scope a property of THIS listener, not of whichever
+// connection's handshake happened to run most recently. nil (Wire was
+// never called) is never a match: fail closed, same as every other
+// resolution failure in this type.
+//
+// Refuses the exemption outright when issuer is ALSO a registered Key B
+// CA for some tenant (isRegisteredKeyBCA), uncertain or not: an operator
+// (or a test harness) that accidentally adds a tenant's Key B CA to the
+// static ClientCAs must not thereby grant that CA a blanket, any-tenant
+// pass -- it stays scoped to its own tenant via the ordinary per-tenant
+// check below.
 func (p *Pool) IsStaticallyTrusted(issuer *x509.Certificate) bool {
 	if issuer == nil {
 		return false
@@ -199,7 +215,34 @@ func (p *Pool) IsStaticallyTrusted(issuer *x509.Certificate) bool {
 	if pool == nil {
 		return false
 	}
-	_, err := issuer.Verify(x509.VerifyOptions{Roots: pool, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}})
+	if _, err := issuer.Verify(x509.VerifyOptions{Roots: pool, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}); err != nil {
+		return false
+	}
+	return !p.isRegisteredKeyBCA(issuer)
+}
+
+// isRegisteredKeyBCA reports whether issuer verifies against the Key-B-only
+// portion of the most recently cached widened pool (see poolCache.keyBOnly)
+// -- i.e. whether it is SOME tenant's registered Key B CA, regardless of
+// which.
+//
+// No Key B provider installed at all (SetKeyBProvider never called) answers
+// false unconditionally: with no Key B concept in play for this Pool, there
+// is no Key B CA issuer could "accidentally" be. Otherwise, uncertain (a
+// provider IS installed but no handshake has built the cache yet) answers
+// true: IsStaticallyTrusted's caller treats "might be a Key B CA" the same
+// as "is one" and refuses the static exemption, because granting a blanket
+// pass on an unproven negative is the wrong direction to be wrong in.
+func (p *Pool) isRegisteredKeyBCA(issuer *x509.Certificate) bool {
+	box := p.provider.Load()
+	if box == nil || box.prov == nil {
+		return false
+	}
+	cached := p.cache.Load()
+	if cached == nil || cached.keyBOnly == nil {
+		return true
+	}
+	_, err := issuer.Verify(x509.VerifyOptions{Roots: cached.keyBOnly, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}})
 	return err == nil
 }
 
@@ -236,14 +279,19 @@ func (p *Pool) VerifyIssuer(ctx context.Context, tenantID string, issuer *x509.C
 
 // Wire installs cfg.GetConfigForClient, so that every client-facing
 // listener using cfg verifies a presented client certificate against Key A
-// (cfg.ClientCAs, read fresh on every connection -- NOT captured here --
-// since the caller may still be finishing TLS setup when Wire runs) plus
-// every tenant's Key B CA certificate, read from whatever provider
+// (cfg.ClientCAs, read fresh on every connection via the closure below --
+// the WIDENING decision reads the live field, so an operator rotating
+// additional client CA files is picked up without re-wiring) plus every
+// tenant's Key B CA certificate, read from whatever provider
 // SetKeyBProvider most recently installed -- see resolveClientCAs for
 // exactly how SetClusterCA's presence, absence, or failure each affect
-// this.
+// this. cfg.ClientCAs is ALSO captured once, right here, as a fixed
+// snapshot for IsStaticallyTrusted's exemption specifically -- see its own
+// doc comment for why that check needs a stable, Wire-time value rather
+// than the live field the widening decision reads.
 //
-// Call once per *tls.Config, before any listener sharing it starts.
+// Call once per *tls.Config, after cfg.ClientCAs already holds its Key-A
+// baseline, and before any listener sharing it starts.
 // Returning (nil, nil) from the installed hook keeps crypto/tls on the
 // original, unmodified cfg -- the correct behavior before SetKeyBProvider
 // has been called, on a reseal (CACertPEMs then fails: see
@@ -262,6 +310,10 @@ func (p *Pool) VerifyIssuer(ctx context.Context, tenantID string, issuer *x509.C
 // its trust pool is built independently, directly from the cluster CA
 // certificate.
 func (p *Pool) Wire(cfg *tls.Config) {
+	// Captured ONCE, here, for IsStaticallyTrusted's exemption -- see its
+	// own doc comment for why this must be a fixed, Wire-time snapshot
+	// rather than resampled per connection.
+	p.staticBase.Store(cfg.ClientCAs)
 	cfg.GetConfigForClient = func(*tls.ClientHelloInfo) (*tls.Config, error) {
 		return p.configForClient(cfg)
 	}
@@ -304,12 +356,6 @@ func (p *Pool) configForClient(base *tls.Config) (*tls.Config, error) {
 //     whatever was cached, which is why this check runs before the cache
 //     read below, every time.
 func (p *Pool) resolveClientCAs(ctx context.Context, baseClientCAs *x509.CertPool) (*x509.CertPool, error) {
-	// Remember the listener's CURRENT static ClientCAs so VerifyIssuer's
-	// IsStaticallyTrusted exemption reflects it -- stored unconditionally,
-	// before any step below that can fail, since this is independent of
-	// whether Key B widening succeeds on this particular call.
-	p.staticBase.Store(baseClientCAs)
-
 	// The cluster CA is resolved FIRST, on every call -- but its absence
 	// splits into two different outcomes. Never configured at all
 	// (*ClusterCANotConfiguredError) is a deployment shape with no cluster
@@ -357,10 +403,15 @@ func (p *Pool) resolveClientCAs(ctx context.Context, baseClientCAs *x509.CertPoo
 	if clusterCACert != nil {
 		pool.AddCert(clusterCACert)
 	}
+	// keyBOnly holds ONLY the certificates just fetched -- never the static
+	// base, never the cluster CA -- so isRegisteredKeyBCA can ask "is this
+	// issuer SOME tenant's Key B CA" without re-fetching CACertPEMs.
+	keyBOnly := x509.NewCertPool()
 	for _, certPEM := range pems {
 		pool.AppendCertsFromPEM(certPEM)
+		keyBOnly.AppendCertsFromPEM(certPEM)
 	}
 
-	p.cache.Store(&poolCache{built: time.Now(), pool: pool})
+	p.cache.Store(&poolCache{built: time.Now(), pool: pool, keyBOnly: keyBOnly})
 	return pool, nil
 }

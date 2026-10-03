@@ -536,10 +536,9 @@ func TestPool_VerifyIssuer_StaticClientCAExempt(t *testing.T) {
 	cfg := baseConfig(t, staticPool)
 
 	pool := New()
-	pool.Wire(cfg)
+	pool.Wire(cfg) // captures staticPool as the fixed static-base snapshot
 	// No ClusterCA, no Key B provider at all: staticCert is trusted ONLY
 	// because it was already in cfg.ClientCAs.
-	getConfigForClient(t, cfg) // runs the handshake path, populating staticBase
 
 	if err := pool.VerifyIssuer(context.Background(), "any-tenant", staticCert); err != nil {
 		t.Errorf("expected a CA already in the static ClientCAs to be exempt regardless of tenant, got: %v", err)
@@ -575,6 +574,126 @@ func TestPool_VerifyIssuer_StaticExemptionDoesNotLeakToKeyB(t *testing.T) {
 	var mismatch *IssuerNotTrustedError
 	if !errors.As(err, &mismatch) {
 		t.Fatalf("expected *IssuerNotTrustedError, got %T: %v", err, err)
+	}
+}
+
+// TestPool_IsStaticallyTrusted_RefusesIssuerAlsoRegisteredAsKeyBCA is the
+// red/green proof for the misconfiguration the static exemption must not
+// paper over: tenant A's Key B CA certificate ends up ALSO present in the
+// listener's static ClientCAs (an operator copy/paste error, or a test
+// harness that reuses the same CA for both roles). Without the
+// isRegisteredKeyBCA check, IsStaticallyTrusted would grant that CA a
+// blanket, any-tenant pass merely because it verifies against the static
+// pool; a leaf claiming to be tenant B, signed by tenant A's Key B CA,
+// would then authenticate as tenant B.
+func TestPool_IsStaticallyTrusted_RefusesIssuerAlsoRegisteredAsKeyBCA(t *testing.T) {
+	keyBPEMA, keyBCertA := genCAPEM(t)
+
+	// The misconfiguration: tenant A's own Key B CA is ALSO in the static
+	// ClientCAs pool.
+	staticPool := x509.NewCertPool()
+	staticPool.AddCert(keyBCertA)
+	cfg := baseConfig(t, staticPool)
+
+	pool := New()
+	pool.Wire(cfg)
+	pool.SetKeyBProvider(&fakeCertProvider{
+		pems:     [][]byte{keyBPEMA},
+		registry: map[string]*x509.Certificate{"A": keyBCertA},
+	})
+	// Run the handshake path once so the Key-B-only cache is built from the
+	// SAME CACertPEMs the registry mirrors.
+	if got := getConfigForClient(t, cfg); got == nil {
+		t.Fatal("expected a widened config")
+	}
+
+	if pool.IsStaticallyTrusted(keyBCertA) {
+		t.Fatal("expected the static exemption to be refused for an issuer that is also a registered Key B CA")
+	}
+
+	// The per-tenant binding still correctly scopes it to tenant A alone:
+	// accepted for A, refused for a leaf claiming any other tenant.
+	if err := pool.VerifyIssuer(context.Background(), "A", keyBCertA); err != nil {
+		t.Errorf("expected tenant A's own Key B CA to still be accepted for tenant A, got: %v", err)
+	}
+	err := pool.VerifyIssuer(context.Background(), "B", keyBCertA)
+	if err == nil {
+		t.Fatal("expected tenant A's Key B CA, even though it is ALSO in the static ClientCAs, to be refused for a leaf claiming tenant B")
+	}
+	var mismatch *IssuerNotTrustedError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("expected *IssuerNotTrustedError, got %T: %v", err, err)
+	}
+}
+
+// TestPool_IsStaticallyTrusted_UncertainBeforeCacheRefusesClosed proves
+// isRegisteredKeyBCA's "uncertain" branch: a Key B provider IS installed
+// (so there is a Key B concept in play for this Pool), but no handshake has
+// run yet, so poolCache.keyBOnly does not exist. IsStaticallyTrusted must
+// refuse the exemption rather than guess, because granting a blanket pass
+// on an unproven negative is the wrong direction to be wrong in.
+func TestPool_IsStaticallyTrusted_UncertainBeforeCacheRefusesClosed(t *testing.T) {
+	_, staticCert := genCAPEM(t)
+	staticPool := x509.NewCertPool()
+	staticPool.AddCert(staticCert)
+	cfg := baseConfig(t, staticPool)
+
+	pool := New()
+	pool.Wire(cfg)
+	pool.SetKeyBProvider(&fakeCertProvider{})
+	// No handshake run: cfg.GetConfigForClient is never invoked, so
+	// p.cache.Load() is still nil here.
+
+	if pool.IsStaticallyTrusted(staticCert) {
+		t.Fatal("expected the static exemption to be refused while the Key-B-only cache is still unbuilt")
+	}
+}
+
+// TestPool_VerifyIssuer_ProviderWithoutCertSourceRefused proves VerifyIssuer
+// itself -- not just the widening path TestPool_ProviderWithoutCertSourceFallsBackToStatic
+// covers -- refuses an issuer when a CertProvider is installed but does not
+// implement CertSource (the shape of a CertProvider an embedder swapped in
+// wholesale via server.WithCertProvider, not required to support multi-
+// tenant enumeration).
+func TestPool_VerifyIssuer_ProviderWithoutCertSourceRefused(t *testing.T) {
+	_, keyACert := genCAPEM(t)
+	_, keyBCert := genCAPEM(t)
+	pool := New()
+	pool.SetClusterCA(&fakeClusterCA{cert: keyACert})
+	pool.SetKeyBProvider(&fakePlainCertProvider{})
+
+	err := pool.VerifyIssuer(context.Background(), "A", keyBCert)
+	if err == nil {
+		t.Fatal("expected refusal when the installed CertProvider does not implement CertSource")
+	}
+	var refused *IssuerNotTrustedError
+	if !errors.As(err, &refused) {
+		t.Fatalf("expected *IssuerNotTrustedError, got %T: %v", err, err)
+	}
+}
+
+// TestPool_VerifyIssuer_IsTenantIssuerErrorWrapped proves VerifyIssuer wraps
+// a CertSource.IsTenantIssuer failure (e.g. the barrier sealing mid-check)
+// in *IssuerNotTrustedError with Err set, rather than losing the cause or
+// returning nil as if the issuer were accepted.
+func TestPool_VerifyIssuer_IsTenantIssuerErrorWrapped(t *testing.T) {
+	_, keyACert := genCAPEM(t)
+	_, keyBCert := genCAPEM(t)
+	issuerErr := errors.New("barrier sealed mid-check")
+	pool := New()
+	pool.SetClusterCA(&fakeClusterCA{cert: keyACert})
+	pool.SetKeyBProvider(&fakeCertProvider{issuerErr: issuerErr})
+
+	err := pool.VerifyIssuer(context.Background(), "A", keyBCert)
+	if err == nil {
+		t.Fatal("expected refusal when CertSource.IsTenantIssuer itself fails")
+	}
+	var refused *IssuerNotTrustedError
+	if !errors.As(err, &refused) {
+		t.Fatalf("expected *IssuerNotTrustedError, got %T: %v", err, err)
+	}
+	if !errors.Is(err, issuerErr) {
+		t.Fatalf("expected the underlying IsTenantIssuer error to be reachable via errors.Is/Unwrap, got: %v", err)
 	}
 }
 
