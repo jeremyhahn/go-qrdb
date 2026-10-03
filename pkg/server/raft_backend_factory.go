@@ -954,7 +954,7 @@ func (f *RaftBackendFactory) startShardAsMember(
 		dataDir:      absDir,
 		hub:          hub,
 		lessor:       lessor,
-		services:     buildDataPlaneServices(f.adapter, shardID, hub),
+		services:     buildDataPlaneServices(f.adapter, shardID, hub, service.WithDedicatedKeyspace()),
 		cancel:       cancel,
 		dedicatedWAL: registeredWAL,
 

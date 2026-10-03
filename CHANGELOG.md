@@ -1700,6 +1700,12 @@ A clustered SDK boot that fails can now be retried cleanly. Highlights:
   `DatabaseInfo.compactionUnavailable` (gRPC `compaction_unavailable`, field 18; the CLI shows
   "Compaction: unavailable"), unknown rather than off -- and the cause is logged as
   `service.CompactionPolicyReadError`.
+- **A shared store refuses the empty compaction prefix.** The empty prefix -- and the empty
+  compaction-state scope -- is a whole store: one database's on a dedicated raft group, every
+  database at once on the system shard or a volume tenant's host. The MVCC service took it on
+  any store; it is refused now (`service.CompactPrefixInvalidError`, nothing proposed) unless the
+  service is built with the new `service.WithDedicatedKeyspace`, which only dedicated raft
+  groups' services are.
 
 ## [0.33.0-alpha] - 2026-10-03
 

@@ -479,9 +479,14 @@ func newDataPlaneCreateFunc(tb *seal.TenantBarrier, lessor *lease.Lessor, hub *w
 // volume Host and the dedicated per-database raft shards. Vector storage is
 // intentionally omitted: it requires a separate per-tenant Pebble vector store
 // rather than the Raft state machine, which is out of scope here.
-func buildDataPlaneServices(host service.Host, shardID uint64, hub *watch.Hub) *DatabaseServices {
+//
+// mvccOpts configure the MVCC service: a dedicated per-database raft shard
+// passes service.WithDedicatedKeyspace, because the shard is that one
+// database's whole keyspace; the volume Host, which every database of the
+// tenant shares, passes nothing, so it refuses the empty compaction prefix.
+func buildDataPlaneServices(host service.Host, shardID uint64, hub *watch.Hub, mvccOpts ...service.MVCCKVServiceOption) *DatabaseServices {
 	kv := service.NewKVService(host, shardID)
-	mvcc := service.NewMVCCKVService(host, shardID)
+	mvcc := service.NewMVCCKVService(host, shardID, mvccOpts...)
 	idx := service.NewIndexService(host, shardID)
 	txn := service.NewTransactionService(host, shardID)
 	return &DatabaseServices{

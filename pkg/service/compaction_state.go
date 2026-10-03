@@ -111,7 +111,7 @@ func (s *MVCCKVService) RecordCompactionSample(ctx context.Context, scope string
 // before proposing, and proposes nothing until the group's feature gate
 // reports every replica can apply the command.
 func (s *MVCCKVService) proposeCompactionState(ctx context.Context, cmd protocol.CompactionStateCommand) error {
-	if !compaction.ValidScope(cmd.Scope) {
+	if !compaction.ValidScope(cmd.Scope) || !s.ownsWholeStore(cmd.Scope) {
 		return &CompactPrefixInvalidError{Prefix: cmd.Scope}
 	}
 	if gated, ok := s.host.(FeatureGatedHost); ok && !gated.FeatureEnabled(s.shardID, featuregate.PrefixCompaction) {

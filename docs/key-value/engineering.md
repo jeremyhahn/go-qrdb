@@ -739,7 +739,11 @@ of the store that holds the data it governs, beside the durable lease table
 The scope is the database's `<tenant>/<database>/` namespace on a store many
 databases share (the shared shard; a volume tenant's own host), `""` on a raft
 group that is one database's own, and `compaction.NodeScope` for the
-platform's node keyspace ("Node-keyspace compaction" above). The `0x00` prefix
+platform's node keyspace ("Node-keyspace compaction" above). Only a raft
+group's own services take `""` -- as a scope or as a compaction prefix
+(`service.WithDedicatedKeyspace`, set for dedicated raft groups alone); on a
+shared store it would be every database at once, and is refused
+(`service.CompactPrefixInvalidError`) before anything is proposed. The `0x00` prefix
 is the state machines' reserved-record prefix: the record is never a user key,
 consumes no revision, fires no watch and is never itself compacted.
 

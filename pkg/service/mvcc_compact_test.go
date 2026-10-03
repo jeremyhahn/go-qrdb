@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 )
 
@@ -172,7 +173,7 @@ func TestMVCCKVService_CompactPrefix_RefusesAnUnsafePrefix(t *testing.T) {
 			t.Fatalf("CompactPrefix(%q) proposed %v", prefix, *cmds)
 		}
 	}
-	for _, prefix := range []string{"acme/app/", "system/system/", ""} {
+	for _, prefix := range []string{"acme/app/", "system/system/"} {
 		host, cmds := recordingHost(sm.Result{Value: 1})
 		if err := NewMVCCKVService(host, 1).(PrefixCompactor).CompactPrefix(context.Background(), prefix, 5); err != nil {
 			t.Fatalf("CompactPrefix(%q) = %v", prefix, err)
@@ -180,5 +181,37 @@ func TestMVCCKVService_CompactPrefix_RefusesAnUnsafePrefix(t *testing.T) {
 		if len(*cmds) != 1 {
 			t.Fatalf("CompactPrefix(%q) proposed %d commands", prefix, len(*cmds))
 		}
+	}
+}
+
+// TestMVCCKVService_EmptyPrefixOnlyOnADedicatedStore: the empty prefix is a
+// whole store. On a store many databases share -- the system shard, a
+// volume tenant's host -- that is every database at once, so it is refused,
+// for a compaction and for a compaction-state record alike, and nothing is
+// proposed. Only a store that is one database's own keyspace (a dedicated
+// raft group, WithDedicatedKeyspace) takes it.
+func TestMVCCKVService_EmptyPrefixOnlyOnADedicatedStore(t *testing.T) {
+	host, cmds := recordingHost(sm.Result{Value: 1})
+	shared := NewMVCCKVService(host, 1).(*MVCCKVService)
+	var unsafe *CompactPrefixInvalidError
+	if err := shared.CompactPrefix(context.Background(), "", 5); !errors.As(err, &unsafe) {
+		t.Fatalf("CompactPrefix(\"\") on a shared store = %v, want *CompactPrefixInvalidError", err)
+	}
+	if err := shared.SetCompactionPolicy(context.Background(), "", compaction.Binding{
+		Policy: &compaction.Policy{Mode: compaction.Revision, RetainRevisions: 1},
+	}); !errors.As(err, &unsafe) {
+		t.Fatalf("SetCompactionPolicy(\"\") on a shared store = %v, want *CompactPrefixInvalidError", err)
+	}
+	if len(*cmds) != 0 {
+		t.Fatalf("a shared store proposed %d commands for the empty prefix", len(*cmds))
+	}
+
+	host, cmds = recordingHost(sm.Result{Value: 1})
+	dedicated := NewMVCCKVService(host, 1, WithDedicatedKeyspace()).(*MVCCKVService)
+	if err := dedicated.CompactPrefix(context.Background(), "", 5); err != nil {
+		t.Fatalf("CompactPrefix(\"\") on a dedicated store = %v", err)
+	}
+	if len(*cmds) != 1 {
+		t.Fatalf("a dedicated store proposed %d commands, want 1", len(*cmds))
 	}
 }

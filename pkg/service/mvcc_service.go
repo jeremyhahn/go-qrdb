@@ -167,6 +167,11 @@ type MVCCKVService struct {
 	// noRevisionHistory is set when the shard's state machine keeps no MVCC
 	// revision history (see WithoutRevisionHistory).
 	noRevisionHistory bool
+
+	// dedicatedKeyspace is set when the shard is one database's whole
+	// keyspace (WithDedicatedKeyspace); only then is the empty compaction
+	// prefix a database's.
+	dedicatedKeyspace bool
 }
 
 // MVCCKVServiceOption configures an MVCCKVService.
@@ -889,7 +894,7 @@ func (s *MVCCKVService) CompactNodeKeyspace(ctx context.Context, revision int64)
 // once the group's feature gate reports every replica can apply it
 // (*featuregate.NotActiveError otherwise).
 func (s *MVCCKVService) CompactPrefix(ctx context.Context, prefix string, revision int64) error {
-	if !isDatabaseKeyspace(prefix) {
+	if !isDatabaseKeyspace(prefix) || !s.ownsWholeStore(prefix) {
 		return &CompactPrefixInvalidError{Prefix: prefix}
 	}
 	if revision < 1 {
@@ -1152,4 +1157,20 @@ func prefixEnd(prefix []byte) []byte {
 		}
 	}
 	return nil
+}
+
+// ownsWholeStore reports whether prefix may name a database on this shard: the
+// empty prefix is the whole store, one database's only on a dedicated
+// keyspace (WithDedicatedKeyspace). Every other prefix is unaffected.
+func (s *MVCCKVService) ownsWholeStore(prefix string) bool {
+	return prefix != "" || s.dedicatedKeyspace
+}
+
+// WithDedicatedKeyspace declares that the shard holds exactly one
+// database's keyspace -- a dedicated raft group -- so the empty compaction
+// prefix and compaction-state scope name that one database. Without it the
+// shard is shared (the system shard, a volume tenant's host), where the empty
+// prefix would be every database at once, and it is refused.
+func WithDedicatedKeyspace() MVCCKVServiceOption {
+	return func(s *MVCCKVService) { s.dedicatedKeyspace = true }
 }
