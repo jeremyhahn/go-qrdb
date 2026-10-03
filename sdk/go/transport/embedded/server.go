@@ -19,10 +19,12 @@ import (
 	"errors"
 	"log/slog"
 	"path/filepath"
+	"strconv"
 
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/cockroachdb/pebble/v2/vfs"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
@@ -36,6 +38,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
@@ -265,6 +268,17 @@ type ServerConfig struct {
 	// Logger is the structured logger for the server. Defaults to
 	// slog.Default() if nil.
 	Logger *slog.Logger
+
+	// AuditTrail, when set, is the file of the server's compliance audit
+	// trail -- the same hash-chained file, ring and operational log qrdbd
+	// keeps (audit.OpenTrail) -- and audit.DefaultTrailFile is qrdbd's
+	// name for it. A relative path is under DataDir. Empty, the default,
+	// keeps no trail. NewServer opens it before anything else, so the
+	// barrier records from its first moment, and a trail that cannot be
+	// opened fails NewServer (*AuditTrailError) with nothing started. The
+	// barrier records its events on it, keyed by the system tenant, and the
+	// transport serves the audit query from it; Shutdown closes it.
+	AuditTrail string
 }
 
 // BarrierConfig controls the encryption barrier.
@@ -366,6 +380,47 @@ type Server struct {
 	hub        *watch.Hub
 	lessor     *lease.Lessor
 	stopExpiry func()
+
+	// trail is the compliance audit trail ServerConfig.AuditTrail opens,
+	// nil when none is kept. It closes last.
+	trail audit.AuditLogger
+}
+
+// AuditTrailError is returned by NewServer when the configured compliance
+// audit trail cannot be opened. The server does not start: one configured to
+// keep a trail does not run without it.
+type AuditTrailError struct {
+	Path string
+	Err  error
+}
+
+// Error returns a human-readable description.
+func (e *AuditTrailError) Error() string {
+	return "embedded: compliance audit trail " + strconv.Quote(e.Path) + " cannot be opened: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *AuditTrailError) Unwrap() error { return e.Err }
+
+// openAuditTrail opens the trail config.AuditTrail names, or returns nil
+// when it names none. A relative path is resolved under DataDir, which it
+// then requires.
+func openAuditTrail(config *ServerConfig) (audit.AuditLogger, error) {
+	path := config.AuditTrail
+	if path == "" {
+		return nil, nil
+	}
+	if !filepath.IsAbs(path) {
+		if config.DataDir == "" {
+			return nil, &ServerConfigError{Field: "AuditTrail", Message: "a relative path needs DataDir"}
+		}
+		path = filepath.Join(config.DataDir, path)
+	}
+	trail, err := audit.OpenTrail(path)
+	if err != nil {
+		return nil, &AuditTrailError{Path: path, Err: err}
+	}
+	return trail, nil
 }
 
 // NewServer creates an embedded QRDB server from the given configuration.
@@ -391,6 +446,21 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	}
 
 	srv := &Server{logger: logger}
+
+	// The compliance trail is opened before anything else, so the barrier
+	// records from its first moment, and a trail that cannot be opened stops
+	// the start with nothing running. A start that fails later closes it.
+	trail, err := openAuditTrail(config)
+	if err != nil {
+		return nil, err
+	}
+	srv.trail = trail
+	started := false
+	defer func() {
+		if !started {
+			srv.closeTrail()
+		}
+	}()
 
 	// Sequence the boot so the seal barrier is constructed and unsealed
 	// before the data-plane PebbleDB is opened. This is required because
@@ -490,6 +560,9 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	if barrierSvc != nil {
 		opts = append(opts, WithBarrierService(barrierSvc))
 	}
+	if srv.trail != nil {
+		opts = append(opts, WithAuditLogger(srv.trail))
+	}
 
 	// Create transport and SDK client.
 	tp, err := New(kvSvc, adminSvc, opts...)
@@ -511,6 +584,7 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	}
 
 	srv.client = client
+	started = true
 	return srv, nil
 }
 
@@ -566,10 +640,27 @@ func (s *Server) Shutdown(_ context.Context) error {
 		s.pebbleDB = nil
 	}
 
+	// 5. The trail closes last: everything above may still record on it.
+	if s.trail != nil {
+		if err := s.trail.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		s.trail = nil
+	}
+
 	if firstErr != nil {
 		return &ShutdownError{Err: firstErr}
 	}
 	return nil
+}
+
+// closeTrail closes the compliance trail, when one is kept. Used by NewServer
+// error paths.
+func (s *Server) closeTrail() {
+	if s.trail != nil {
+		_ = s.trail.Close()
+		s.trail = nil
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -681,6 +772,8 @@ func (s *Server) setupBarrier(
 
 	barrierCfg := seal.BarrierConfig{
 		RootKeyPath: "root-key",
+		// The barrier records on the compliance trail, when one is kept.
+		AuditLogger: seal.NewComplianceAuditLogger(s.trail, tenantid.System, seal.SystemBarrierAuditName),
 	}
 
 	// Resolve the effective strategy. The canonical options are none /

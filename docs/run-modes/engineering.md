@@ -81,6 +81,15 @@ The daemon selects the mode with `mode: standalone | raft` in YAML or
   never elect a replacement.
 - **Standalone skips the raft identity requirements**; only `raft.data_dir`
   stays mandatory.
+- **Every composer can keep the compliance audit trail.** The flat
+  `embedded.NewServer` keeps it when `ServerConfig.AuditTrail` names its file
+  (relative to `DataDir`; `audit.DefaultTrailFile` is qrdbd's name; empty,
+  the default, keeps none): `audit.OpenTrail`, opened before anything else,
+  failing the start with `*embedded.AuditTrailError` when it cannot be opened,
+  closed last by `Shutdown`. Its barrier records on it
+  (`seal.NewComplianceAuditLogger`, the system tenant) and the transport
+  serves the audit query from it. It has no share-holder authority, so there
+  are no holder events to wire. See [../audit/](../audit/).
 - **Every no-argument `*Node` accessor performs a race-free read** from any
   goroutine at any point — a fully constructed value or nil, never a torn one.
   **`Close` blocks on an in-flight `Unseal` boot or system `EnableEncryption`**

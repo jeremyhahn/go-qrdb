@@ -77,6 +77,12 @@ are not reconstructed here — their history is in the git log.
   database barrier manager takes it through `database.WithBarrierAuditTrail`.
   Before, `seal.BarrierConfig.AuditLogger` was never configured, so these
   events reached no trail. `audit.OpenTrail` is the one trail composition.
+- **The SDK's flat `embedded.NewServer` keeps a compliance trail when
+  configured** (`ServerConfig.AuditTrail`, off by default; relative paths are
+  under `DataDir`). It is `audit.OpenTrail`, opened before anything else and
+  failing the start with `*embedded.AuditTrailError` when it cannot be
+  opened; the barrier records on it and the transport serves the audit query
+  from it.
 - **The desktop's embedded server keeps a compliance trail when enabled**
   (`EmbeddedConfig.Audit`, off by default; `audit-events.ndjson` under the
   data directory unless `path` says otherwise). It is opened before the seal
