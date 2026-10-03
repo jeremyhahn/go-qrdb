@@ -668,6 +668,30 @@ func TestHandleJoinRequest_SealedRefusesBeforeConsumingToken(t *testing.T) {
 	}
 }
 
+// TestHandleJoinRequest_InfrastructureFailureRefused proves a genuine store
+// failure (as opposed to a refused token) is reported with the SAME generic
+// message as a refused token: it carries no information distinguishing
+// "your token was wrong" from "something broke," so it adds nothing to a
+// token-validity oracle either.
+func TestHandleJoinRequest_InfrastructureFailureRefused(t *testing.T) {
+	provider := newTestClusterCAProvider(t)
+	store := &faultyJoinStore{AtomicKVStore: kvstore.NewMemoryKVStore(), failGetOnPrefix: joinTokenPrefix}
+
+	nodeKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	csrDER, err := buildJoinCSR(nodeKey, "")
+	if err != nil {
+		t.Fatalf("buildJoinCSR: %v", err)
+	}
+
+	resp := HandleJoinRequest(context.Background(), provider, store, testTrustDomain, &JoinRequest{
+		Token:  "any-token",
+		CSRDER: csrDER,
+	})
+	if resp.Error != "join request could not be processed" {
+		t.Fatalf("response = %q, want the generic infrastructure-failure message", resp.Error)
+	}
+}
+
 func TestJoinServer_SigningFailureRefused(t *testing.T) {
 	realProvider := newTestClusterCAProvider(t)
 	caCert, err := realProvider.Certificate(context.Background())
