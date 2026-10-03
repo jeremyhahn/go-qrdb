@@ -23,6 +23,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // secondReadHook is the system holder authority as the barrier's
@@ -41,6 +42,53 @@ func (d *secondReadHook) PrepareRoster(ctx context.Context, domain seal.QuorumDo
 		d.hook()
 	}
 	return d.CeremonyDistributor.PrepareRoster(ctx, domain, threshold, policy, exclude)
+}
+
+// sealHook is the holder authority as the barrier's distributor, running
+// hook just before it seals the shares (Distribute): after the roster was
+// read, before the holders' records are read again.
+type sealHook struct {
+	seal.CeremonyDistributor
+	calls int
+	hook  func()
+}
+
+func (d *sealHook) Distribute(ctx context.Context, secret *secure.Buffer, roster *seal.HolderRoster, digest []byte) (int, error) {
+	d.calls++
+	if d.calls == 1 && d.hook != nil {
+		d.hook()
+	}
+	return d.CeremonyDistributor.Distribute(ctx, secret, roster, digest)
+}
+
+// TestBarrierService_GenerateRecoveryKeysRefusesARacingRegistration pins
+// that the barrier service generates the recovery key through the recovery
+// holder authority: a recovery holder registered between the roster read and
+// the sealing of the shares is refused with
+// ceremony.ErrInitializationInProgress, and the generation completes with
+// the holders its roster named.
+func TestBarrierService_GenerateRecoveryKeysRefusesARacingRegistration(t *testing.T) {
+	e := newHolderSvcEnv(t, 2, 2)
+	e.register(seal.DomainUnseal, newSvcHolder(t, "alice"), newSvcHolder(t, "bob"))
+	_, err := e.svc.BarrierInitializeShamir(adminCtx(), 2, 2, "")
+	require.NoError(t, err)
+	e.register(seal.DomainRecovery, newSvcHolder(t, "rita"), newSvcHolder(t, "rob"))
+	dist := &sealHook{CeremonyDistributor: e.core}
+	e.barrier.SetCeremonyDistributor(dist)
+	var registerErr error
+	dist.hook = func() {
+		ruth := newSvcHolder(t, "ruth")
+		_, registerErr = e.svc.BarrierOfficerRegister(adminCtx(), seal.DomainRecovery, &BarrierOfficerRegisterRequest{Username: ruth.name, CSRPEM: ruth.csr})
+	}
+
+	info, err := e.svc.BarrierGenerateRecoveryKeys(adminCtx(), 2, "")
+	require.NoError(t, err, "the generation completes")
+	assert.Equal(t, 2, info.ShareCount)
+	require.Equal(t, 1, dist.calls, "the hook ran before the shares were sealed")
+	require.ErrorIs(t, registerErr, ceremony.ErrInitializationInProgress)
+	list, err := e.svc.BarrierOfficerList(context.Background(), seal.DomainRecovery)
+	require.NoError(t, err)
+	assert.Len(t, list, 2, "ruth was not enrolled")
 }
 
 // TestBarrierService_InitializeShamirRefusesARacingRegistration pins that

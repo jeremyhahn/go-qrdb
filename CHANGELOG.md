@@ -126,7 +126,13 @@ are not reconstructed here — their history is in the git log.
   (`ceremony.ScopedCeremonyService.InitializeShamir`), and the system
   barrier's -- the ceremony's initialization and
   `BarrierService.BarrierInitializeShamir` -- through the new
-  `ceremony.CeremonyService.InitializeShamir`.
+  `ceremony.CeremonyService.InitializeShamir`. The recovery key's generation
+  is held to the same rule through the new
+  `ceremony.CeremonyService.GenerateRecoveryKeys`
+  (`BarrierService.BarrierGenerateRecoveryKeys` included): a recovery
+  holder's registration or unenrolment, or a second generation, while it
+  runs is refused rather than changing the holder set between the roster and
+  the sealed shares.
 - **A Shamir database can no longer be enrolled past N before
   initialization.** Two browser tabs, the database wizard beside the database
   view, or the CLI could enrol more holders than the M-of-N fixed at create;

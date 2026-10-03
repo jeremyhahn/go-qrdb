@@ -17,6 +17,7 @@ package ceremony
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -105,6 +106,44 @@ func TestRegister_RefusedWhileTheSystemBarrierInitializes(t *testing.T) {
 	list, err := e.svc.ListOfficers(ctx, seal.DomainUnseal)
 	require.NoError(t, err)
 	assert.Len(t, list, 2, "carol was not enrolled")
+}
+
+// TestRecoveryHolders_RefusedWhileTheRecoveryKeyIsGenerated pins the
+// recovery domain's initialization: generating the recovery key reads the
+// recovery holder set to build the roster, then reads the holders' records
+// again to seal each one's share. A recovery holder registered or unenrolled
+// between the two reads is refused with ErrInitializationInProgress, so the
+// set the key is split to is the set the roster names, and the generation
+// completes.
+func TestRecoveryHolders_RefusedWhileTheRecoveryKeyIsGenerated(t *testing.T) {
+	ctx := context.Background()
+	e := newHolderEnv(t, 2, 2)
+	e.initShamir("", newHolder(t, "so-1", ""), newHolder(t, "so-2", ""))
+	e.register(seal.DomainRecovery, newHolder(t, "rita", ""), newHolder(t, "rob", ""))
+	dist := &hookedDistributor{CeremonyDistributor: e.svc}
+	e.barrier.SetCeremonyDistributor(dist)
+	var registerErr, unenrolErr, secondErr error
+	dist.hook = func() {
+		_, registerErr = e.svc.RegisterOfficer(ctx, seal.DomainRecovery, newHolder(t, "ruth", "").request("admin-1"))
+		unenrolErr = e.svc.recovery.unenrol(ctx, &e.svc.deps, "rob")
+		// Bounded: without the refusal a second generation waits for the
+		// first's redistribution slot, which the first holds until it returns.
+		bounded, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		_, secondErr = e.svc.GenerateRecoveryKeys(bounded, 2, "")
+	}
+
+	res, err := e.svc.GenerateRecoveryKeys(ctx, 2, "")
+	require.NoError(t, err, "the generation completes")
+	assert.Equal(t, 2, res.ShareCount)
+	require.Equal(t, 1, dist.calls, "the recovery roster was read once, the hook after it")
+	require.ErrorIs(t, registerErr, ErrInitializationInProgress)
+	require.ErrorIs(t, unenrolErr, ErrInitializationInProgress)
+	require.ErrorIs(t, secondErr, ErrInitializationInProgress)
+
+	list, err := e.svc.ListOfficers(ctx, seal.DomainRecovery)
+	require.NoError(t, err)
+	assert.Len(t, list, 2, "ruth was not enrolled and rob was not removed")
 }
 
 // TestRegister_RefusedWhileInitializing is the regression for a registration

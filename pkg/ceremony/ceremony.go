@@ -361,6 +361,18 @@ func (s *CeremonyService) InitializeShamir(ctx context.Context, policy seal.Fact
 	return s.system.initializeShamir(ctx, &s.mu, barrier, policy)
 }
 
+// GenerateRecoveryKeys generates the system barrier's recovery key
+// (seal.StorageBarrier.GenerateRecoveryKeys) with the recovery domain's
+// initialization marked in flight: a recovery holder's registration or
+// unenrolment, or a second generation, is refused with
+// ErrInitializationInProgress until it has finished.
+func (s *CeremonyService) GenerateRecoveryKeys(ctx context.Context, threshold int, policy seal.FactorPolicy) (*seal.RecoveryKeyResult, error) {
+	s.mu.Lock()
+	barrier := s.barrier
+	s.mu.Unlock()
+	return s.recovery.generateRecoveryKeys(ctx, &s.mu, barrier, threshold, policy)
+}
+
 // validateInitOptions checks the request before any work is done.
 func validateInitOptions(opts *InitializeOptions) error {
 	if opts.SOPin == "" {

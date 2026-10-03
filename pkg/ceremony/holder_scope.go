@@ -548,10 +548,38 @@ func (h *holderScope) refuseOverCapacity(ctx context.Context) error {
 // because the barrier calls back into PrepareRoster, Distribute and
 // Committed, which take it.
 func (h *holderScope) initializeShamir(ctx context.Context, mu sync.Locker, barrier *seal.StorageBarrier, policy seal.FactorPolicy) (*seal.ShamirInitParams, error) {
+	var params *seal.ShamirInitParams
+	err := h.whileInitializing(mu, func() error {
+		var err error
+		params, err = barrier.InitializeShamir(ctx, policy)
+		return err
+	})
+	return params, err
+}
+
+// generateRecoveryKeys generates barrier's recovery key, the recovery
+// domain's initialization, with it marked in flight exactly as
+// initializeShamir marks an unseal-domain one: the barrier reads the recovery
+// holder set for the roster and again for each holder's record when it seals
+// the shares, and a registration or unenrolment between the two is refused.
+func (h *holderScope) generateRecoveryKeys(ctx context.Context, mu sync.Locker, barrier *seal.StorageBarrier, threshold int, policy seal.FactorPolicy) (*seal.RecoveryKeyResult, error) {
+	var res *seal.RecoveryKeyResult
+	err := h.whileInitializing(mu, func() error {
+		var err error
+		res, err = barrier.GenerateRecoveryKeys(ctx, threshold, policy)
+		return err
+	})
+	return res, err
+}
+
+// whileInitializing runs initialize with the scope's initialization marked in
+// flight (initializing), or refuses with ErrInitializationInProgress when one
+// already is. mu guards the mark and is not held while initialize runs.
+func (h *holderScope) whileInitializing(mu sync.Locker, initialize func() error) error {
 	mu.Lock()
 	if h.initializing {
 		mu.Unlock()
-		return nil, ErrInitializationInProgress
+		return ErrInitializationInProgress
 	}
 	h.initializing = true
 	mu.Unlock()
@@ -560,7 +588,7 @@ func (h *holderScope) initializeShamir(ctx context.Context, mu sync.Locker, barr
 		h.initializing = false
 		mu.Unlock()
 	}()
-	return barrier.InitializeShamir(ctx, policy)
+	return initialize()
 }
 
 // unenrol removes an enrolled holder from a scope whose barrier is not yet

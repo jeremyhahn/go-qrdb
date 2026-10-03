@@ -414,9 +414,16 @@ func (s *BarrierService) BarrierInitializeShamir(ctx context.Context, threshold,
 	return &ShamirInitInfo{Threshold: result.Threshold, TotalShares: result.TotalShares, ShareCount: result.ShareCount}, nil
 }
 
-// BarrierGenerateRecoveryKeys creates the recovery-key domain.
+// BarrierGenerateRecoveryKeys creates the recovery-key domain. With a
+// ceremony service it generates through the recovery holder authority
+// (ceremony.CeremonyService.GenerateRecoveryKeys), which refuses a recovery
+// holder registration or unenrolment until the generation has finished.
 func (s *BarrierService) BarrierGenerateRecoveryKeys(ctx context.Context, threshold int, policy seal.FactorPolicy) (*RecoveryKeysInfo, error) {
-	result, err := s.barrier.GenerateRecoveryKeys(ctx, threshold, policy)
+	generate := s.barrier.GenerateRecoveryKeys
+	if s.ceremony != nil {
+		generate = s.ceremony.GenerateRecoveryKeys
+	}
+	result, err := generate(ctx, threshold, policy)
 	if err != nil {
 		return nil, err
 	}

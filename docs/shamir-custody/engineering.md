@@ -41,6 +41,7 @@ func (s *CeremonyService) BeginQuorum(ctx, domain, op, username, factor string) 
 func (s *CeremonyService) RevokeOfficer(ctx, domain, username string, threshold int) (*seal.QuorumRoundInfo, error)
 func (s *CeremonyService) StartRekey(ctx, domain, p seal.RekeyParams) (*seal.QuorumRoundInfo, error)
 func (s *CeremonyService) InitializeShamir(ctx, policy seal.FactorPolicy) (*seal.ShamirInitParams, error)
+func (s *CeremonyService) GenerateRecoveryKeys(ctx, threshold int, policy seal.FactorPolicy) (*seal.RecoveryKeyResult, error)
 func (s *CeremonyService) SetAuditLogger(l audit.AuditLogger)
 func (t *ScopedCeremonyService) StartRekey(ctx, barrier *seal.StorageBarrier, p seal.RekeyParams) (*seal.QuorumRoundInfo, error)
 func (s *CeremonyService) Rebind(barrier *seal.StorageBarrier)
@@ -120,7 +121,13 @@ a registration, an unenrolment or a second initialization between the two is
 refused with `ceremony.ErrInitializationInProgress` (`ABORTED`; retry once it
 finishes). Admitted, a registration there would be dealt a share the key was
 never sized for and fail the split, and an unenrolment would leave the
-barrier initialized with no share set. The removal
+barrier initialized with no share set. The recovery domain's initialization
+is held to the same rule: the recovery key is generated through
+`CeremonyService.GenerateRecoveryKeys` (`BarrierService.BarrierGenerateRecoveryKeys`
+included), which marks the recovery scope's initialization in flight on the
+same mark, so a recovery holder registered or unenrolled between the roster
+read and the sealing of the shares -- or a second generation -- is refused
+with `ceremony.ErrInitializationInProgress`. The removal
 is recorded (`holder-unenrol`) before the holder is removed and, under the
 node's `fail-closed` audit posture, refused when the trail cannot record it. The engine verb serves
 any scope; only the database scope exposes it, the one whose N is fixed
