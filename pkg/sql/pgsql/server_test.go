@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"io"
 	"log/slog"
@@ -336,6 +337,95 @@ func TestServer_StartWithTLSAndVerifyConnection(t *testing.T) {
 	require.NoError(t, err)
 	s.Stop()
 }
+
+// TestBuildPgTLSConfig_DynamicHookWidensClientCAs proves PG connections see
+// the per-tenant Key B trust pool a shared *clienttrust.Pool widens
+// ClientCAs with on every handshake: the static base carries a narrow
+// (Key-A-only) pool, the dynamic hook returns a wider one, and
+// buildPgTLSConfig's composed hook must return the WIDE pool, not the
+// static base it cloned from. An earlier version of this function
+// overwrote base.GetConfigForClient outright and would have returned the
+// narrow pool here (go-qrdb#560 review).
+func TestBuildPgTLSConfig_DynamicHookWidensClientCAs(t *testing.T) {
+	staticPool := x509.NewCertPool()
+	widePool := x509.NewCertPool()
+
+	base := &tls.Config{
+		MinVersion: tls.VersionTLS13,
+		ClientCAs:  staticPool,
+		GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
+			return &tls.Config{MinVersion: tls.VersionTLS13, ClientCAs: widePool}, nil
+		},
+	}
+
+	got := buildPgTLSConfig(base, nil)
+	require.NotNil(t, got.GetConfigForClient)
+
+	perConn, err := got.GetConfigForClient(&tls.ClientHelloInfo{})
+	require.NoError(t, err)
+	assert.Same(t, widePool, perConn.ClientCAs)
+	assert.Equal(t, tls.RequireAndVerifyClientCert, perConn.ClientAuth)
+	assert.Nil(t, perConn.GetConfigForClient, "the returned per-connection config must not carry a live hook")
+}
+
+// TestBuildPgTLSConfig_NoDynamicHookStillRequiresClientCert proves the
+// static (no Key B provider wired yet) path still mandates mTLS: with no
+// existing GetConfigForClient and no Authenticator, buildPgTLSConfig
+// returns a plain clone (no hook installed at all) with ClientAuth raised.
+func TestBuildPgTLSConfig_NoDynamicHookStillRequiresClientCert(t *testing.T) {
+	base := &tls.Config{MinVersion: tls.VersionTLS12}
+	got := buildPgTLSConfig(base, nil)
+	assert.Equal(t, tls.RequireAndVerifyClientCert, got.ClientAuth)
+	assert.Nil(t, got.GetConfigForClient)
+}
+
+// TestBuildPgTLSConfig_AuthenticatorStoresTLSStateOnDynamicPath proves the
+// Authenticator's VerifyConnection wrapper still runs -- and still calls
+// through to whatever VerifyConnection the widened dynamic config carried
+// -- when a dynamic trust-pool hook is also present, so Key B works over
+// PG and the auth middleware chain still sees the handshake's TLS state.
+func TestBuildPgTLSConfig_AuthenticatorStoresTLSStateOnDynamicPath(t *testing.T) {
+	var dynamicVerifyCalled bool
+	base := &tls.Config{
+		MinVersion: tls.VersionTLS13,
+		GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
+			return &tls.Config{
+				MinVersion: tls.VersionTLS13,
+				VerifyConnection: func(tls.ConnectionState) error {
+					dynamicVerifyCalled = true
+					return nil
+				},
+			}, nil
+		},
+	}
+
+	mw := authmw.New(&auth.NoopAuthorizer{})
+	authenticator := NewAuthenticator(mw)
+	got := buildPgTLSConfig(base, authenticator)
+
+	remoteAddr := &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5432}
+	perConn, err := got.GetConfigForClient(&tls.ClientHelloInfo{
+		Conn: &fakeConnWithRemoteAddr{remoteAddr: remoteAddr},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, perConn.VerifyConnection)
+
+	require.NoError(t, perConn.VerifyConnection(tls.ConnectionState{}))
+	assert.True(t, dynamicVerifyCalled, "the dynamic config's own VerifyConnection must still run")
+
+	stored, ok := authenticator.tlsState.Load(remoteAddr.String())
+	require.True(t, ok, "StoreTLSState must have recorded the handshake for this remote address")
+	assert.NotNil(t, stored)
+}
+
+// fakeConnWithRemoteAddr implements just enough of net.Conn for
+// tls.ClientHelloInfo.Conn.RemoteAddr() to resolve.
+type fakeConnWithRemoteAddr struct {
+	net.Conn
+	remoteAddr net.Addr
+}
+
+func (f *fakeConnWithRemoteAddr) RemoteAddr() net.Addr { return f.remoteAddr }
 
 func TestServer_ServeErrorLogging(t *testing.T) {
 	// Test the serve() error logging path where wireSrv.Serve returns a

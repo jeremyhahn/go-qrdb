@@ -252,6 +252,70 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	return s
 }
 
+// buildPgTLSConfig returns the *tls.Config psql-wire serves connections
+// with: a clone of base with ClientAuth raised to RequireAndVerifyClientCert
+// (PgSQL mandates mTLS -- all connections must present a client
+// certificate, overriding whatever VerifyClientCertIfGiven the caller
+// inherited), composed with whatever dynamic hook base already carries
+// rather than overwriting base.GetConfigForClient outright.
+//
+// A shared *clienttrust.Pool installs that dynamic hook (via Pool.Wire)
+// across every client-facing listener, to widen ClientCAs with every
+// tenant's Key B CA certificate on each handshake. Overwriting it the way
+// an earlier version of this function did pinned every PG connection to
+// whatever ClientCAs base held at Wire time, silently losing Key B over
+// this transport (go-qrdb#560 review). Calling the existing hook first and
+// reasserting RequireAndVerifyClientCert on its result -- plus, when
+// authenticator is non-nil, wrapping VerifyConnection so it also stores
+// each handshake's ConnectionState in the Authenticator's sync.Map keyed
+// by remote address, the bridge between psql-wire's TLS handshake and our
+// auth middleware chain -- is what lets both the static and the dynamic
+// (widened) path reach PG the same way every other client-facing
+// transport does.
+func buildPgTLSConfig(base *tls.Config, authenticator *Authenticator) *tls.Config {
+	tlsCfg := base.Clone()
+	tlsCfg.ClientAuth = tls.RequireAndVerifyClientCert
+
+	existingDynamic := tlsCfg.GetConfigForClient
+	existingVerify := tlsCfg.VerifyConnection
+	if existingDynamic == nil && authenticator == nil {
+		return tlsCfg
+	}
+	tlsCfg.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+		dynBase := tlsCfg
+		verify := existingVerify
+		if existingDynamic != nil {
+			dynCfg, err := existingDynamic(hello)
+			if err != nil {
+				return nil, err
+			}
+			if dynCfg != nil {
+				dynBase = dynCfg
+				verify = dynCfg.VerifyConnection
+			}
+		}
+		perConn := dynBase.Clone()
+		perConn.GetConfigForClient = nil // prevent infinite recursion
+		perConn.ClientAuth = tls.RequireAndVerifyClientCert
+		if authenticator != nil {
+			remoteAddr := hello.Conn.RemoteAddr()
+			perConn.VerifyConnection = func(cs tls.ConnectionState) error {
+				if verify != nil {
+					if err := verify(cs); err != nil {
+						return err
+					}
+				}
+				authenticator.StoreTLSState(remoteAddr, &cs)
+				return nil
+			}
+		} else {
+			perConn.VerifyConnection = verify
+		}
+		return perConn, nil
+	}
+	return tlsCfg
+}
+
 // Start initializes the SQL engine, creates the psql-wire server, opens
 // a TCP listener, and begins serving connections in a background goroutine.
 func (s *Server) Start() error {
@@ -338,37 +402,7 @@ func (s *Server) Start() error {
 
 	// Configure TLS options.
 	if s.tlsConfig != nil {
-		tlsCfg := s.tlsConfig.Clone()
-
-		// PgSQL mandates mTLS — all connections must present a client
-		// certificate. Override the inherited VerifyClientCertIfGiven
-		// with RequireAndVerifyClientCert.
-		tlsCfg.ClientAuth = tls.RequireAndVerifyClientCert
-
-		// Set up per-connection VerifyConnection callback via
-		// GetConfigForClient so that each TLS handshake stores its
-		// ConnectionState in the Authenticator's sync.Map keyed by
-		// the remote address. This is the bridge between psql-wire's
-		// TLS handshake and our auth middleware chain.
-		if authenticator != nil {
-			existingVerify := tlsCfg.VerifyConnection
-			tlsCfg.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
-				perConn := tlsCfg.Clone()
-				perConn.GetConfigForClient = nil // prevent infinite recursion
-				remoteAddr := hello.Conn.RemoteAddr()
-				perConn.VerifyConnection = func(cs tls.ConnectionState) error {
-					if existingVerify != nil {
-						if err := existingVerify(cs); err != nil {
-							return err
-						}
-					}
-					authenticator.StoreTLSState(remoteAddr, &cs)
-					return nil
-				}
-				return perConn, nil
-			}
-		}
-
+		tlsCfg := buildPgTLSConfig(s.tlsConfig, authenticator)
 		wireOpts = append(wireOpts,
 			wire.TLSConfig(tlsCfg),
 			wire.ClientAuth(tls.RequireAndVerifyClientCert),
