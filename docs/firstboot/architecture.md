@@ -185,11 +185,26 @@ paths through the ceremony instead of through `firstboot.Dependencies.CA` /
 4. **A crash between steps 1 and 2** loses the in-memory certificate before
    it is durably recorded. The admin-credential step is retriable: re-running
    `qrdb init` with the same (or different) flags on the already-initialized
-   ceremony issues a FRESH credential and durably records it again, gated on
-   the admin not already holding a live binding
-   (`service.CeremonyServiceWithAdminRebind`, `*AdminAlreadyBoundError`) so a
-   retry after the first binding committed is refused rather than silently
-   replacing a working credential.
+   ceremony issues a FRESH credential, gated on the admin not already
+   holding a live binding (`service.CeremonyServiceWithAdminRebind`,
+   `*AdminAlreadyBoundError`) so a retry after the first binding committed
+   is refused rather than silently replacing a working credential. What
+   happens to that fresh credential depends on WHEN the retry lands:
+   - **Before this boot's own first boot has run** (the daemon is still
+     stuck waiting during startup), the retry's credential durably records
+     through the SAME pending-admin-cert hand-off step 1/2 use, and this
+     boot's OWN first-boot call picks it up and binds it — unchanged from
+     above.
+   - **Against an already-booted, already-serving node** (first boot ran
+     once, successfully or not, and is never invoked a second time), there
+     is no first-boot call left to pick a pending record up. The retry
+     binds the fresh certificate directly, in the SAME call
+     (`CeremonyServiceWithAdminRebind.bindReissuedCredential`): it never
+     returns a credential that looks successful but is not actually
+     bound. A bind it cannot complete — no `CertBinder`
+     wired, or the admin user does not exist on this cluster yet — is a
+     typed refusal instead of a result (`*service.AdminRebindNoBinderError`,
+     `*service.AdminRebindAdminNotFoundError`, `*service.AdminRebindBindError`).
 5. **No record and no binding within the bound** is
    `*firstboot.NoPendingAdminCredentialError`, naming the retry command. This
    is the ONLY way a default (`required`) boot can still refuse: no ceremony

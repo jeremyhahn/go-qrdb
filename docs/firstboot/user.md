@@ -137,9 +137,21 @@ First boot waited for the admin's certificate to arrive (it may have been
 issued by `qrdb init` on a different node of the cluster) and nothing showed
 up in time. The admin-credential step is retriable: re-run `qrdb init` with
 `--admin-csr`, `--admin-cert`, or `--admin-generate`, against the node that
-is current Raft leader (`qrdb status`), and it issues a fresh credential and
-retries the binding. Nothing about this is destructive — it does not touch the
-barrier, the CA, or the SO/User PINs.
+is current Raft leader (`qrdb status`). The retry both issues a fresh
+credential AND binds it to the admin account, in the same call — it never
+hands back a credential that looks successful but is not actually bound.
+Nothing about this is destructive — it does not touch the barrier, the CA,
+or the SO/User PINs.
+
+If the retry cannot complete the bind it refuses rather than returning an
+unbound credential: "admin-credential reissue has no CertBinder wired" means
+this composition's own wiring is missing the piece that binds a certificate
+(an operator/configuration gap, not something retrying fixes); "the
+bootstrap admin does not exist yet to bind it to" means first boot itself
+has not created the admin account on this cluster yet — retry again once it
+has (or once `qrdb status` shows this node as leader, if a different node is
+about to run first boot); any other bind failure names its own cause and is
+retriable once that cause is resolved.
 
 **"the bootstrap admin … could not log in under it" (auth.mtls_binding_policy
 is "required").** The admin exists but has no live certificate binding —

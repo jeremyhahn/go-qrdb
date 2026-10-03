@@ -108,7 +108,7 @@ func TestCeremonyServiceWithLeaderGate_ComposesOverAdminRebind(t *testing.T) {
 	require.True(t, ok)
 
 	unbound := &fakeAdminLookup{err: errors.New("no binding")}
-	rebound := NewCeremonyServiceWithAdminRebind(inner, core, unbound)
+	rebound := NewCeremonyServiceWithAdminRebind(inner, core, unbound, nil)
 	gated := NewCeremonyServiceWithLeaderGate(rebound, fakeLeaderChecker{isLeader: true, leaderAddr: "127.0.0.1:63001"})
 
 	// First call (leader, uninitialized): succeeds through both decorators.

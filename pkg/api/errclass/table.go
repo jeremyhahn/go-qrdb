@@ -1003,6 +1003,21 @@ var ceremonyRules = []rule{
 	// within the bound: retriable by re-running `qrdb init`, not a
 	// server-side fault.
 	as(&firstboot.NoPendingAdminCredentialError{}, FailedPrecondition),
+	// This composition never wired a CertBinder into the admin-credential
+	// retry path: an operator/configuration gap, not something retrying
+	// fixes.
+	as(&service.AdminRebindNoBinderError{}, FailedPrecondition),
+	// The admin lookup needed to bind a reissued certificate failed: a
+	// server-side fault, since the request itself asked for nothing that
+	// could cause this.
+	as(&service.AdminRebindLookupError{Cause: errors.New("sample")}, Internal),
+	// A reissue succeeded but the bootstrap admin does not exist yet (first
+	// boot has not created it on this cluster): retriable once it has,
+	// not a server-side fault.
+	as(&service.AdminRebindAdminNotFoundError{}, FailedPrecondition),
+	// Binding the reissued certificate failed after it was successfully
+	// minted: a server-side fault in the one place reissue is ever bound.
+	as(&service.AdminRebindBindError{Cause: errors.New("sample")}, Internal),
 }
 
 // migrationRules are the enable-encryption migration conditions.

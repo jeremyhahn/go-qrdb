@@ -16,10 +16,14 @@ package service
 
 import (
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
 // AdminRebindLookupTimeout bounds how long CeremonyServiceWithAdminRebind
@@ -45,6 +49,61 @@ func (e *AdminAlreadyBoundError) Error() string {
 		"the admin-credential step is retriable only until the first binding commits"
 }
 
+// AdminRebindNoBinderError is returned by CeremonyServiceWithAdminRebind when
+// it was constructed with no CertBinder (go-qrdb#548 review: B5): reissuing a
+// certificate with nothing wired to bind it would hand the caller a
+// credential that looks successful but authenticates nothing, which this
+// wrapper refuses to do -- a composition gap, not a retriable condition.
+type AdminRebindNoBinderError struct{}
+
+// Error implements error.
+func (e *AdminRebindNoBinderError) Error() string {
+	return "service: admin-credential reissue has no CertBinder wired, so the reissued certificate cannot be bound"
+}
+
+// AdminRebindLookupError wraps a failure reading the admin user back after a
+// successful reissue, so CeremonyInitialize can bind the reissued
+// certificate to its ID. Never returned alongside a credential: the caller
+// gets this error INSTEAD of a result, never both.
+type AdminRebindLookupError struct {
+	Cause error
+}
+
+// Error implements error.
+func (e *AdminRebindLookupError) Error() string {
+	return "service: could not look up the bootstrap admin to bind the reissued certificate: " + e.Cause.Error()
+}
+
+// Unwrap exposes the underlying cause for errors.Is / errors.As.
+func (e *AdminRebindLookupError) Unwrap() error { return e.Cause }
+
+// AdminRebindAdminNotFoundError is returned when a reissue succeeds but the
+// bootstrap admin user does not exist yet to bind the fresh certificate to
+// -- first boot has not created it on this cluster yet. The reissued
+// certificate is discarded rather than returned unbound; the caller's next
+// `qrdb init` after first boot completes reissues again.
+type AdminRebindAdminNotFoundError struct{}
+
+// Error implements error.
+func (e *AdminRebindAdminNotFoundError) Error() string {
+	return "service: admin-credential reissue succeeded but the bootstrap admin does not exist yet to bind it to; retry once first boot has created it"
+}
+
+// AdminRebindBindError wraps a failure binding the reissued certificate's
+// SPKI thumbprint to the admin user, including a failure computing that
+// thumbprint from the certificate ReissueAdminCredential just produced.
+type AdminRebindBindError struct {
+	Cause error
+}
+
+// Error implements error.
+func (e *AdminRebindBindError) Error() string {
+	return "service: failed to bind the reissued admin certificate: " + e.Cause.Error()
+}
+
+// Unwrap exposes the underlying cause for errors.Is / errors.As.
+func (e *AdminRebindBindError) Unwrap() error { return e.Cause }
+
 // CeremonyServiceWithAdminRebind wraps a CeremonyServicer so that calling
 // CeremonyInitialize on an ALREADY-initialized ceremony is treated as a retry
 // of the admin-credential step (go-qrdb#548) rather than refused outright,
@@ -56,17 +115,28 @@ func (e *AdminAlreadyBoundError) Error() string {
 // failure) loses that in-memory value before a composer durably records it,
 // re-running `qrdb init` with the SAME flags re-issues a fresh credential
 // through the identical validation Initialize applies.
+//
+// Reissue BINDS the fresh certificate itself, in the same call, through
+// binder (go-qrdb#548 review: B5): ReissueAdminCredential only mints a
+// certificate, exactly as Initialize's own admin-credential step does, and
+// an operator re-running `qrdb init` to repair a lost binding is asking for
+// a working login, not a certificate to bind by hand. A reissue this
+// wrapper cannot bind -- no binder wired, the admin does not exist yet, or
+// the bind call itself fails -- is reported as an error, NEVER returned as
+// a successful-looking result: this wrapper must not hand back a credential
+// that authenticates nothing.
 type CeremonyServiceWithAdminRebind struct {
 	CeremonyServicer
-	core  *ceremony.CeremonyService
-	users firstboot.AdminLookup
+	core   *ceremony.CeremonyService
+	users  firstboot.AdminLookup
+	binder firstboot.CertBinder
 }
 
 // NewCeremonyServiceWithAdminRebind wraps inner, whose underlying
 // *ceremony.CeremonyService is core, adding the admin-credential retry path
-// gated against users.
-func NewCeremonyServiceWithAdminRebind(inner CeremonyServicer, core *ceremony.CeremonyService, users firstboot.AdminLookup) *CeremonyServiceWithAdminRebind {
-	return &CeremonyServiceWithAdminRebind{CeremonyServicer: inner, core: core, users: users}
+// gated against users and bound through binder.
+func NewCeremonyServiceWithAdminRebind(inner CeremonyServicer, core *ceremony.CeremonyService, users firstboot.AdminLookup, binder firstboot.CertBinder) *CeremonyServiceWithAdminRebind {
+	return &CeremonyServiceWithAdminRebind{CeremonyServicer: inner, core: core, users: users, binder: binder}
 }
 
 // CeremonyInitialize delegates to the wrapped CeremonyInitialize while the
@@ -116,5 +186,58 @@ func (s *CeremonyServiceWithAdminRebind) CeremonyInitialize(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
+	if err := s.bindReissuedCredential(ctx, result.AdminCertPEM); err != nil {
+		return nil, err
+	}
 	return ceremonyInitResultFromCore(result), nil
+}
+
+// bindReissuedCredential binds certPEM -- ReissueAdminCredential's just-minted
+// certificate -- to the bootstrap admin's SPKI thumbprint, so a caller never
+// receives a reissued credential this wrapper has not already made usable
+// (go-qrdb#548 review: B5). Unlike the boot-time pending-admin-cert hand-off
+// (which exists for the window BEFORE the admin user exists, racing across
+// nodes), the admin reissue reaches is, by construction, already past that
+// window: CeremonyInitialize only treats a call as a reissue once the
+// ceremony itself is no longer awaiting its first Initialize, and binding a
+// thumbprint is a single additive write (AddCertBinding) with no
+// create-if-absent race to coordinate, so there is nothing the pending-cert
+// store's extra durability would add here that a direct bind does not
+// already give.
+func (s *CeremonyServiceWithAdminRebind) bindReissuedCredential(ctx context.Context, certPEM []byte) error {
+	if s.binder == nil {
+		return &AdminRebindNoBinderError{}
+	}
+	admin, err := s.users.GetUserByUsername(ctx, tenantid.System, user.BootstrapAdminUsername)
+	if err != nil {
+		return &AdminRebindLookupError{Cause: err}
+	}
+	if admin == nil {
+		return &AdminRebindAdminNotFoundError{}
+	}
+	thumbprint, tperr := spkiThumbprintFromCertPEM(certPEM)
+	if tperr != nil {
+		return &AdminRebindBindError{Cause: tperr}
+	}
+	if err := s.binder.BindAdminCert(ctx, tenantid.System, admin.ID, thumbprint); err != nil {
+		return &AdminRebindBindError{Cause: err}
+	}
+	return nil
+}
+
+// spkiThumbprintFromCertPEM parses a PEM certificate and returns its
+// canonical SPKI thumbprint. Mirrors pkg/firstboot's and pkg/bootstrap's own
+// unexported helpers of the same name and shape -- neither is importable
+// here without a cycle, so this is the service layer's own copy of the same
+// three-line operation.
+func spkiThumbprintFromCertPEM(certPEM []byte) (string, error) {
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return "", errors.New("service: reissued admin cert PEM has no CERTIFICATE block")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", err
+	}
+	return user.ComputeSPKIThumbprint(cert), nil
 }

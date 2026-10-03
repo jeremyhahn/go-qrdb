@@ -1883,7 +1883,7 @@ func runStart(f *startFlags) (err error) {
 					leader := hostLeaderChecker{
 						host: svcHost, shardID: shard.ShardKV, replicaID: f.replicaID, members: members,
 					}
-					rebound := service.NewCeremonyServiceWithAdminRebind(ceremonySvc, coreSvc, svcNode.User)
+					rebound := service.NewCeremonyServiceWithAdminRebind(ceremonySvc, coreSvc, svcNode.User, firstboot.UserCertBinder{Users: svcNode.User})
 					ceremonySvc = service.NewCeremonyServiceWithLeaderGate(rebound, leader)
 				}
 			}
