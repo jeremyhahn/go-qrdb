@@ -275,3 +275,49 @@ type nativeLockoutBackend struct {
 func (n *nativeLockoutBackend) GetLockoutStatus() *LockoutStatus { return n.status }
 
 var _ PINBackend = (*nativeLockoutBackend)(nil)
+
+// TestWithLockoutClock_TheLockoutRunsOnTheInjectedClock: a decoration made
+// with WithLockoutClock measures its backoff on that clock -- frozen, the
+// lockout holds whatever the wall clock does; advanced past the backoff, the
+// right PIN is admitted again.
+func TestWithLockoutClock_TheLockoutRunsOnTheInjectedClock(t *testing.T) {
+	inner := newProvisionBackend(t)
+	if err := inner.SetSOPIN("", lockoutSOPIN); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_000_000, 0)
+	b := NewLockoutBackend(inner, WithLockoutClock(func() time.Time { return now }))
+	spendFreeFailures(t, b)
+	requireLocked(t, b.VerifySOPIN(lockoutSOPIN), auth.SOPINBaseBackoff)
+	if status := b.GetLockoutStatus(); !status.IsLocked || !status.LockoutUntil.Equal(now.Add(auth.SOPINBaseBackoff)) {
+		t.Fatalf("status = %+v, want locked until the injected now plus the base backoff", status)
+	}
+	now = now.Add(auth.SOPINBaseBackoff)
+	if err := b.VerifySOPIN(lockoutSOPIN); err != nil {
+		t.Fatalf("the right PIN once the injected clock passed the backoff = %v", err)
+	}
+}
+
+// TestWithLockoutClock_OnlyTheFirstDecorationIsConfigured: options configure
+// the decoration a call creates; decorating the same raw backend again with
+// other options returns the first decoration, on the first clock, so every
+// consumer still shares one lockout. A nil clock keeps time.Now.
+func TestWithLockoutClock_OnlyTheFirstDecorationIsConfigured(t *testing.T) {
+	inner := newProvisionBackend(t)
+	if err := inner.SetSOPIN("", lockoutSOPIN); err != nil {
+		t.Fatal(err)
+	}
+	frozen := time.Unix(1_000_000, 0)
+	first := NewLockoutBackend(inner, WithLockoutClock(func() time.Time { return frozen }))
+	second := NewLockoutBackend(inner, WithLockoutClock(func() time.Time { return frozen.Add(time.Hour) }))
+	if first != second {
+		t.Fatal("a second decoration with other options is a different lockout")
+	}
+	if got := first.(*lockoutBackend).shared.lockout.Now(); !got.Equal(frozen) {
+		t.Fatalf("the shared lockout reads %v, want the first decoration's clock", got)
+	}
+	wall := NewLockoutBackend(newProvisionBackend(t), WithLockoutClock(nil))
+	if got := wall.(*lockoutBackend).shared.lockout.Now(); time.Since(got) > time.Minute || got.Before(frozen.Add(time.Hour)) {
+		t.Fatalf("a nil clock reads %v, want time.Now", got)
+	}
+}

@@ -126,23 +126,50 @@ var (
 // A backend that implements auth.SOPINKnownGoodStore (SoftwareBackend does)
 // persists the lockout's known-good set, so a Security Officer's exemption
 // from the aggregate cap survives a restart.
-func NewLockoutBackend(backend PINBackend) PINBackend {
+//
+// opts configure the decoration when this call creates it (WithLockoutClock).
+// They do not reconfigure a decoration that already exists: the first
+// decoration of a backend is the one every consumer shares, so the composer
+// that chooses the backend -- lifecycle.NewSealStorePINBackend, or whoever
+// injects one -- is the one that sets them.
+func NewLockoutBackend(backend PINBackend, opts ...LockoutOption) PINBackend {
 	if backend == nil {
 		return nil
 	}
 	if _, ok := backend.(*lockoutBackend); ok {
 		return backend
 	}
+	var cfg lockoutConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 	if t := reflect.TypeOf(backend); t.Kind() != reflect.Pointer {
-		refused := newLockoutBackend(backend, nil)
+		refused := newLockoutBackend(backend, cfg.clock)
 		refused.shared.refused = &LockoutBackendKindError{Type: t.String()}
 		return refused
 	}
 	if existing, ok := lockoutRegistry.Load(backend); ok {
 		return existing.(*lockoutBackend) //nolint:errcheck // type assertion on a value this container only ever holds
 	}
-	decorated, _ := lockoutRegistry.LoadOrStore(backend, newLockoutBackend(backend, nil))
+	decorated, _ := lockoutRegistry.LoadOrStore(backend, newLockoutBackend(backend, cfg.clock))
 	return decorated.(*lockoutBackend) //nolint:errcheck // type assertion on a value this container only ever holds
+}
+
+// LockoutOption configures the SO PIN lockout NewLockoutBackend creates.
+type LockoutOption func(*lockoutConfig)
+
+// lockoutConfig is what LockoutOptions set.
+type lockoutConfig struct {
+	clock func() time.Time
+}
+
+// WithLockoutClock makes the lockout read time from clock instead of
+// time.Now -- its backoffs, its aggregate window and its stale-counter
+// eviction all run on it. A composer whose time is not the wall clock (a
+// simulation, a deterministic test of the composition) sets it; nil keeps
+// time.Now.
+func WithLockoutClock(clock func() time.Time) LockoutOption {
+	return func(c *lockoutConfig) { c.clock = clock }
 }
 
 // lockoutRegistry maps each raw backend NewLockoutBackend has decorated to its

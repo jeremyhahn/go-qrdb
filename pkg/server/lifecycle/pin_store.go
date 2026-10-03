@@ -66,7 +66,10 @@ func (s sealPINStore) Put(ctx context.Context, key string, value []byte) error {
 // backend is chosen, before the composer hands it to lifecycle (Infra) and to
 // the server (server.WithPINBackend): both receive this one decorated
 // instance, so every SO PIN check on the node counts against one counter.
-func NewSealStorePINBackend(backend seal.StorageBackend) (pin.PINBackend, error) {
+//
+// opts configure the lockout (pin.WithLockoutClock); this is where the node's
+// one decoration is made, so it is where they take effect.
+func NewSealStorePINBackend(backend seal.StorageBackend, opts ...pin.LockoutOption) (pin.PINBackend, error) {
 	if backend == nil {
 		return nil, &NilSealStoreError{}
 	}
@@ -74,5 +77,5 @@ func NewSealStorePINBackend(backend seal.StorageBackend) (pin.PINBackend, error)
 	if err != nil {
 		return nil, err
 	}
-	return pin.NewLockoutBackend(software), nil
+	return pin.NewLockoutBackend(software, opts...), nil
 }

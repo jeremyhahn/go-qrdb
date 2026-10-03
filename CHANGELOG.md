@@ -13,6 +13,13 @@ are not reconstructed here — their history is in the git log.
 
 ### Added
 
+- **`pin.WithLockoutClock`** sets the clock the SO PIN lockout's backoffs,
+  aggregate window and stale-counter eviction run on.
+  `pin.NewLockoutBackend` and `lifecycle.NewSealStorePINBackend` take it as a
+  variadic `pin.LockoutOption`, so every existing call is unchanged. It
+  configures only the first decoration of a backend, the one every consumer
+  shares.
+
 - **`transport.RequestError.RetryAfter`, re-exported as `sdk.RequestError`.**
   A refusal that names how long to wait before a retry can succeed -- a
   throttled quorum request or sign-csr, an SO PIN lockout, a rate-limited

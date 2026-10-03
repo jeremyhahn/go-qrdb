@@ -170,7 +170,11 @@ the last initial holder claims.
     its pointer identity, so it must be a pointer: a value-typed backend is
     refused, and every SO PIN check through it fails closed with
     `pin.LockoutBackendKindError` without comparing the PIN, rather than
-    getting a fresh budget on each decoration.
+    getting a fresh budget on each decoration. The lockout reads time from
+    `time.Now` unless the decoration is made with `pin.WithLockoutClock`
+    (`pin.NewLockoutBackend` and `lifecycle.NewSealStorePINBackend` take it);
+    options configure only the first decoration of a backend, the one every
+    consumer shares.
   - It is installed once, where the node's backend is chosen:
     `lifecycle.NewSealStorePINBackend` returns the seal-store backend already
     decorated, and `server.WithPINBackend` decorates an injected backend when

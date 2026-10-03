@@ -22,6 +22,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -37,6 +38,21 @@ const (
 	lockoutRightPIN = "so-pin-1234"
 	lockoutWrongPIN = "wrong-pin-0000"
 )
+
+// lockoutEpoch is the frozen instant the composition tests' lockouts read as
+// now.
+var lockoutEpoch = time.Unix(1_000_000, 0)
+
+// newFrozenClockPINBackend is the daemon's seal-store PIN backend, with its
+// SO PIN lockout on a clock that does not move. A lockout engaged by a test's
+// wrong PINs therefore holds for the rest of the test however long the test
+// takes -- under coverage load each SO PIN check is a KDF, and the first
+// backoff is only a second -- so the tests assert the counting, never a race
+// against the wall clock.
+func newFrozenClockPINBackend() (pin.PINBackend, error) {
+	return lifecycle.NewSealStorePINBackend(seal.NewMemoryBackend(),
+		pin.WithLockoutClock(func() time.Time { return lockoutEpoch }))
+}
 
 // soPINComposition is a node's SO-PIN-gated surface built through the
 // production composition seams: the ceremony through lifecycle's Infra, the
@@ -101,7 +117,7 @@ func (c *soPINComposition) rekeyWithRightPIN() error {
 // server -- wrong SO PINs spent on a seal count against the same lockout as
 // a rekey, so the right PIN is then refused for the rekey.
 func TestSOPINLockout_DaemonComposition_SealGuessesLockRekey(t *testing.T) {
-	pins, err := lifecycle.NewSealStorePINBackend(seal.NewMemoryBackend())
+	pins, err := newFrozenClockPINBackend()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,6 +140,11 @@ func TestSOPINLockout_InjectedComposition_SealGuessesLockRekey(t *testing.T) {
 	if err := injected.SetSOPIN("", lockoutRightPIN); err != nil {
 		t.Fatal(err)
 	}
+	// The first decoration of a raw backend is the one every consumer shares;
+	// making it here, on a frozen clock, keeps the lockout from expiring
+	// mid-test. WithPINBackend is still handed the RAW backend and resolves
+	// that same decoration.
+	pin.NewLockoutBackend(injected, pin.WithLockoutClock(func() time.Time { return lockoutEpoch }))
 	opts := []server.ServerOption{server.WithPINBackend(injected)}
 	c := composeSOPINSurface(t, server.ResolveCryptoOptions(opts...).PINBackend, opts...)
 	c.guessBySeal(t)
@@ -140,7 +161,7 @@ func TestSOPINLockout_InjectedComposition_SealGuessesLockRekey(t *testing.T) {
 // answer tells a right PIN from a wrong one, and every call is a free guess.
 // None of the calls may count against the lockout either.
 func TestSOPINLockout_InitializeOnInitializedRefusedBeforePIN(t *testing.T) {
-	pins, err := lifecycle.NewSealStorePINBackend(seal.NewMemoryBackend())
+	pins, err := newFrozenClockPINBackend()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +194,7 @@ func TestSOPINLockout_InitializeOnInitializedRefusedBeforePIN(t *testing.T) {
 // authenticated SO's rekey with the right PIN is still admitted, so anonymous
 // traffic cannot deny the operator the governance operations.
 func TestSOPINLockout_AnonymousGuessesNeverLockAnAuthenticatedSO(t *testing.T) {
-	pins, err := lifecycle.NewSealStorePINBackend(seal.NewMemoryBackend())
+	pins, err := newFrozenClockPINBackend()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +219,7 @@ func TestSOPINLockout_AnonymousGuessesNeverLockAnAuthenticatedSO(t *testing.T) {
 // TestSOPINLockout_RightPINBeforeLockoutIsAdmitted is the positive control:
 // fewer than the free failures, then the right PIN, reaches the barrier.
 func TestSOPINLockout_RightPINBeforeLockoutIsAdmitted(t *testing.T) {
-	pins, err := lifecycle.NewSealStorePINBackend(seal.NewMemoryBackend())
+	pins, err := newFrozenClockPINBackend()
 	if err != nil {
 		t.Fatal(err)
 	}
