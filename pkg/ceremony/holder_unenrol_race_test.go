@@ -74,6 +74,39 @@ func initRaceScopes(t *testing.T) map[string]func(dist *hookedDistributor) (*Sco
 	}
 }
 
+// TestRegister_RefusedWhileTheSystemBarrierInitializes is the system scope's
+// regression for a registration racing a Shamir initialization: the system
+// barrier is initialized through its holder authority
+// (CeremonyService.InitializeShamir), so an unseal-key holder registered
+// just before the barrier's second read is refused rather than failing the
+// split and leaving the barrier to need a restart.
+func TestRegister_RefusedWhileTheSystemBarrierInitializes(t *testing.T) {
+	ctx := context.Background()
+	e := newHolderEnv(t, 2, 2)
+	dist := &hookedDistributor{CeremonyDistributor: e.svc}
+	e.barrier.SetCeremonyDistributor(dist)
+	var registerErr, secondInitErr error
+	dist.beforeSecond = func() {
+		_, registerErr = e.svc.RegisterOfficer(ctx, seal.DomainUnseal, newHolder(t, "carol", "").request("admin-1"))
+		_, secondInitErr = e.svc.InitializeShamir(ctx, "")
+	}
+	for _, h := range []*testHolder{newHolder(t, "alice", ""), newHolder(t, "bob", "")} {
+		_, err := e.svc.RegisterOfficer(ctx, seal.DomainUnseal, h.request("admin-1"))
+		require.NoError(t, err)
+	}
+
+	params, err := e.svc.InitializeShamir(ctx, "")
+	require.NoError(t, err, "the initialization completes")
+	assert.Equal(t, 2, params.ShareCount)
+	require.GreaterOrEqual(t, dist.calls, 2, "the barrier read the holder set twice, the hook before the second")
+	require.ErrorIs(t, registerErr, ErrInitializationInProgress)
+	require.ErrorIs(t, secondInitErr, ErrInitializationInProgress)
+
+	list, err := e.svc.ListOfficers(ctx, seal.DomainUnseal)
+	require.NoError(t, err)
+	assert.Len(t, list, 2, "carol was not enrolled")
+}
+
 // TestRegister_RefusedWhileInitializing is the regression for a registration
 // racing the barrier's initialization: the barrier marks itself initialized,
 // then reads the holder set again to split the key, and a holder enrolled

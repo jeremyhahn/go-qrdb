@@ -40,6 +40,7 @@ func (s *CeremonyService) CompleteClaimShare(ctx, domain, username, nonceHex str
 func (s *CeremonyService) BeginQuorum(ctx, domain, op, username, factor string) (*QuorumChallenge, error)
 func (s *CeremonyService) RevokeOfficer(ctx, domain, username string, threshold int) (*seal.QuorumRoundInfo, error)
 func (s *CeremonyService) StartRekey(ctx, domain, p seal.RekeyParams) (*seal.QuorumRoundInfo, error)
+func (s *CeremonyService) InitializeShamir(ctx, policy seal.FactorPolicy) (*seal.ShamirInitParams, error)
 func (s *CeremonyService) SetAuditLogger(l audit.AuditLogger)
 func (t *ScopedCeremonyService) StartRekey(ctx, barrier *seal.StorageBarrier, p seal.RekeyParams) (*seal.QuorumRoundInfo, error)
 func (s *CeremonyService) Rebind(barrier *seal.StorageBarrier)
@@ -107,11 +108,13 @@ one whose key is lost before it was ever used, is removed without a quorum
 `DatabaseBarrierOfficerUnenrol`, on every transport); its place is free for
 another holder. On an initialized barrier every holder may hold a share and
 unenrolment is refused with `ceremony.ErrUnenrolInitialized`: removal is a
-revocation, a rekey the remaining holders complete. A database barrier, and
-a tenant barrier under Shamir custody, is initialized through its holder
-authority (`ScopedCeremonyService.InitializeShamir`; the tenant service's
-Shamir initialization goes through it too), which marks the initialization in
-flight: the barrier reads the holder set twice -- to validate it, and after
+revocation, a rekey the remaining holders complete. Every Shamir barrier is
+initialized through its holder authority -- a database's and a tenant's
+through `ScopedCeremonyService.InitializeShamir` (the tenant service's Shamir
+initialization included), the system barrier's through
+`CeremonyService.InitializeShamir` (the ceremony's initialization and
+`BarrierService.BarrierInitializeShamir` included) -- which marks the
+initialization in flight: the barrier reads the holder set twice -- to validate it, and after
 generating the key, once it already reads as initialized, to split it -- and
 a registration, an unenrolment or a second initialization between the two is
 refused with `ceremony.ErrInitializationInProgress` (`ABORTED`; retry once it

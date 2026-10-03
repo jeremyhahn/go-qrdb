@@ -105,21 +105,7 @@ func (t *ScopedCeremonyService) RegisterOfficer(ctx context.Context, req Registe
 // Shamir initialization of a tenant or database barrier goes through here;
 // one made on the barrier directly is not serialized against them.
 func (t *ScopedCeremonyService) InitializeShamir(ctx context.Context, barrier *seal.StorageBarrier, policy seal.FactorPolicy) (*seal.ShamirInitParams, error) {
-	t.mu.Lock()
-	if t.holder.initializing {
-		t.mu.Unlock()
-		return nil, ErrInitializationInProgress
-	}
-	t.holder.initializing = true
-	t.mu.Unlock()
-	defer func() {
-		t.mu.Lock()
-		t.holder.initializing = false
-		t.mu.Unlock()
-	}()
-	// The barrier calls back into PrepareRoster, Distribute and Committed,
-	// which take t.mu, so it is not held here.
-	return barrier.InitializeShamir(ctx, policy)
+	return t.holder.initializeShamir(ctx, &t.mu, barrier, policy)
 }
 
 // UnenrolOfficer removes an enrolled holder before the barrier is

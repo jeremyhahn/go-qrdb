@@ -23,6 +23,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
@@ -537,6 +538,29 @@ func (h *holderScope) refuseOverCapacity(ctx context.Context) error {
 		return &HolderLimitReachedError{Total: n}
 	}
 	return nil
+}
+
+// initializeShamir initializes barrier under Shamir custody with the scope's
+// initialization marked in flight (initializing): a registration, an
+// unenrolment or a second initialization is refused with
+// ErrInitializationInProgress until it returns. mu is the owning service's
+// lock, which guards the mark; it is not held across the initialization,
+// because the barrier calls back into PrepareRoster, Distribute and
+// Committed, which take it.
+func (h *holderScope) initializeShamir(ctx context.Context, mu sync.Locker, barrier *seal.StorageBarrier, policy seal.FactorPolicy) (*seal.ShamirInitParams, error) {
+	mu.Lock()
+	if h.initializing {
+		mu.Unlock()
+		return nil, ErrInitializationInProgress
+	}
+	h.initializing = true
+	mu.Unlock()
+	defer func() {
+		mu.Lock()
+		h.initializing = false
+		mu.Unlock()
+	}()
+	return barrier.InitializeShamir(ctx, policy)
 }
 
 // unenrol removes an enrolled holder from a scope whose barrier is not yet

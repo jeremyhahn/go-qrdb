@@ -104,11 +104,14 @@ are not reconstructed here — their history is in the git log.
   was admitted -- the barrier already read as initialized, so a database's
   N no longer limited it -- and the split failed with "2 shares were
   requested but 3 holders are enrolled", the barrier rolled back and needing
-  a restart. A database's or a tenant's registration while its custody is
-  being initialized is now refused with `ceremony.ErrInitializationInProgress`
-  (`ABORTED`; retry), like an unenrolment, and the tenant service's Shamir
+  a restart. A registration while the barrier's custody is being initialized
+  is now refused with `ceremony.ErrInitializationInProgress` (`ABORTED`;
+  retry), like an unenrolment, in every scope: the tenant service's Shamir
   initialization goes through the tenant's holder authority
-  (`ceremony.ScopedCeremonyService.InitializeShamir`) so it is serialized too.
+  (`ceremony.ScopedCeremonyService.InitializeShamir`), and the system
+  barrier's -- the ceremony's initialization and
+  `BarrierService.BarrierInitializeShamir` -- through the new
+  `ceremony.CeremonyService.InitializeShamir`.
 - **A Shamir database can no longer be enrolled past N before
   initialization.** Two browser tabs, the database wizard beside the database
   view, or the CLI could enrol more holders than the M-of-N fixed at create;

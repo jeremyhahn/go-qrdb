@@ -334,7 +334,7 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	// InitializeShamir calls back into this service (the distributor), so
 	// the lock is released first.
 	s.barrier.SetShamirConfig(&seal.ShamirConfig{Threshold: opts.Threshold, TotalShares: len(opts.Officers)})
-	params, err := s.barrier.InitializeShamir(ctx, opts.Policy)
+	params, err := s.InitializeShamir(ctx, opts.Policy)
 	if err != nil {
 		return nil, err
 	}
@@ -347,6 +347,18 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	s.logger.Info("ceremony initialized; share holders must claim their envelopes",
 		slog.Int("threshold", params.Threshold), slog.Int("holders", params.TotalShares))
 	return result, nil
+}
+
+// InitializeShamir initializes the system barrier under Shamir custody
+// (seal.StorageBarrier.InitializeShamir) with the unseal domain's
+// initialization marked in flight (holderScope.initializeShamir): a
+// registration, an unenrolment or a second initialization is refused with
+// ErrInitializationInProgress until it has finished.
+func (s *CeremonyService) InitializeShamir(ctx context.Context, policy seal.FactorPolicy) (*seal.ShamirInitParams, error) {
+	s.mu.Lock()
+	barrier := s.barrier
+	s.mu.Unlock()
+	return s.system.initializeShamir(ctx, &s.mu, barrier, policy)
 }
 
 // validateInitOptions checks the request before any work is done.

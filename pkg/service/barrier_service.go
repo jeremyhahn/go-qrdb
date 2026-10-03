@@ -396,11 +396,18 @@ func (s *BarrierService) BarrierStatus(_ context.Context) (*BarrierStatusInfo, e
 
 // BarrierInitializeShamir initializes the barrier under Shamir custody. The
 // request's threshold and share count win over the daemon configuration.
+// With a ceremony service it initializes through the system holder authority
+// (ceremony.CeremonyService.InitializeShamir), which refuses a holder
+// registration or unenrolment until the initialization has finished.
 func (s *BarrierService) BarrierInitializeShamir(ctx context.Context, threshold, totalShares int, policy seal.FactorPolicy) (*ShamirInitInfo, error) {
 	if threshold != 0 || totalShares != 0 {
 		s.barrier.SetShamirConfig(&seal.ShamirConfig{Threshold: threshold, TotalShares: totalShares})
 	}
-	result, err := s.barrier.InitializeShamir(ctx, policy)
+	initialize := s.barrier.InitializeShamir
+	if s.ceremony != nil {
+		initialize = s.ceremony.InitializeShamir
+	}
+	result, err := initialize(ctx, policy)
 	if err != nil {
 		return nil, err
 	}
