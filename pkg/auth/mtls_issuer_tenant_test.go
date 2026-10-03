@@ -25,6 +25,7 @@ import (
 	"crypto/x509/pkix"
 	"errors"
 	"math/big"
+	"strings"
 	"testing"
 	"time"
 )
@@ -101,20 +102,30 @@ func testLeafSignedBy(t *testing.T, ca *x509.Certificate, caKey *ecdsa.PrivateKe
 	return leaf
 }
 
-// errIssuerNotTrusted is the typed sentinel fakeIssuerVerifier returns for
-// every refusal; the authenticator never inspects its value -- it only
-// cares whether VerifyIssuer returned nil -- but a typed sentinel keeps the
-// double honest about not using fmt.Errorf.
-var errIssuerNotTrusted = errors.New("auth: issuer not trusted for tenant")
+// fakeIssuerNotTrustedError is the typed error fakeIssuerVerifier returns
+// for every refusal; the authenticator never inspects its value -- it only
+// cares whether VerifyIssuer returned nil -- but a typed struct, not a bare
+// errors.New sentinel, keeps the double honest to this project's
+// typed-errors-only convention.
+type fakeIssuerNotTrustedError struct{ TenantID string }
+
+func (e *fakeIssuerNotTrustedError) Error() string {
+	return "auth: issuer not trusted for tenant " + e.TenantID
+}
 
 // fakeIssuerVerifier implements auth.IssuerVerifier the way *clienttrust.Pool
 // does in production: ONE object answers both IsClusterCA and VerifyIssuer,
 // so a test can never construct the "Key B trusted but binding unenforced"
-// state B2-2 ruled out.
+// state B2-2 ruled out. staticallyTrusted mirrors
+// clienttrust.Pool.IsStaticallyTrusted's exemption -- a CA the composer
+// already trusted via the listener's own static ClientCAs, exempt from the
+// per-tenant check for a DIFFERENT reason than the cluster CA is -- so a
+// test here can exercise that shape too, not only the cluster-CA one.
 type fakeIssuerVerifier struct {
-	clusterCA *x509.Certificate            // Key A; nil means none configured
-	registry  map[string]*x509.Certificate // tenantID -> registered Key B CA
-	err       error                        // when set, VerifyIssuer always fails with it
+	clusterCA         *x509.Certificate            // Key A; nil means none configured
+	staticallyTrusted *x509.Certificate            // exempt via static ClientCAs; nil means none configured
+	registry          map[string]*x509.Certificate // tenantID -> registered Key B CA
+	err               error                        // when set, VerifyIssuer always fails with it
 }
 
 func (f *fakeIssuerVerifier) IsClusterCA(issuer *x509.Certificate) bool {
@@ -124,19 +135,26 @@ func (f *fakeIssuerVerifier) IsClusterCA(issuer *x509.Certificate) bool {
 	return bytes.Equal(f.clusterCA.Raw, issuer.Raw)
 }
 
+func (f *fakeIssuerVerifier) isStaticallyTrusted(issuer *x509.Certificate) bool {
+	if f.staticallyTrusted == nil || issuer == nil {
+		return false
+	}
+	return bytes.Equal(f.staticallyTrusted.Raw, issuer.Raw)
+}
+
 func (f *fakeIssuerVerifier) VerifyIssuer(_ context.Context, tenantID string, issuer *x509.Certificate) error {
 	if f.err != nil {
 		return f.err
 	}
-	if f.IsClusterCA(issuer) {
+	if f.IsClusterCA(issuer) || f.isStaticallyTrusted(issuer) {
 		return nil
 	}
 	registered, ok := f.registry[tenantID]
 	if !ok || issuer == nil || registered.Raw == nil || issuer.Raw == nil {
-		return errIssuerNotTrusted
+		return &fakeIssuerNotTrustedError{TenantID: tenantID}
 	}
 	if !bytes.Equal(registered.Raw, issuer.Raw) {
-		return errIssuerNotTrusted
+		return &fakeIssuerNotTrustedError{TenantID: tenantID}
 	}
 	return nil
 }
@@ -237,6 +255,31 @@ func TestMTLSAuthenticator_IssuerTenantBinding_ClusterCAExempt(t *testing.T) {
 	}
 }
 
+// TestMTLSAuthenticator_IssuerTenantBinding_StaticallyTrustedCAAccepted
+// mirrors ClusterCAExempt for the OTHER exemption clienttrust.Pool grants:
+// a CA already trusted via the listener's own static ClientCAs (an
+// operator-supplied additional client CA, or a test harness establishing
+// mTLS identity independent of Key A/Key B), which is exempt from the
+// per-tenant check for a different reason than the cluster CA is.
+func TestMTLSAuthenticator_IssuerTenantBinding_StaticallyTrustedCAAccepted(t *testing.T) {
+	staticCA, staticKey := testCA(t, "operator-static-ca")
+	keyBCA_B, _ := testCA(t, "tenant-B-key-b")
+	leaf := testLeafSignedBy(t, staticCA, staticKey, "officer", []string{"B"})
+
+	verifier := &fakeIssuerVerifier{
+		staticallyTrusted: staticCA,
+		registry:          map[string]*x509.Certificate{"B": keyBCA_B},
+	}
+	authn := NewMTLSAuthenticator(WithIssuerVerifier(verifier))
+
+	state := &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{leaf, staticCA}}}
+	ctx := WithTLSState(context.Background(), state)
+
+	if _, err := authn.Authenticate(ctx); err != nil {
+		t.Fatalf("expected a statically-trusted CA's leaf to authenticate regardless of OU, got: %v", err)
+	}
+}
+
 func TestMTLSAuthenticator_IssuerTenantBinding_CheckerErrorRefuses(t *testing.T) {
 	keyBCA_A, keyBKeyA := testCA(t, "tenant-A-key-b")
 	leaf := testLeafSignedBy(t, keyBCA_A, keyBKeyA, "alice", []string{"A"})
@@ -299,4 +342,71 @@ func TestMTLSAuthenticator_IssuerTenantBinding_AnySatisfyingChainAccepted(t *tes
 	if _, err := authn.Authenticate(ctx); err != nil {
 		t.Fatalf("expected acceptance when a LATER verified chain satisfies the binding, got: %v", err)
 	}
+}
+
+// TestMTLSAuthenticator_IssuerTenantBinding_ShortChainSkipped proves
+// verifyIssuer skips any verified chain with no direct issuer entry
+// (len(chain) < 2 -- a bare leaf, which crypto/tls can report when the leaf
+// itself is in the root pool) rather than indexing into it, and still
+// accepts once a LATER, well-formed chain satisfies the binding.
+func TestMTLSAuthenticator_IssuerTenantBinding_ShortChainSkipped(t *testing.T) {
+	clusterCA, _ := testCA(t, "cluster-ca")
+	keyBCA, keyBKey := testCA(t, "tenant-a-key-b")
+	leaf := testLeafSignedBy(t, keyBCA, keyBKey, "alice", []string{"A"})
+
+	verifier := &fakeIssuerVerifier{
+		clusterCA: clusterCA,
+		registry:  map[string]*x509.Certificate{"A": keyBCA},
+	}
+	authn := NewMTLSAuthenticator(WithIssuerVerifier(verifier))
+
+	shortChain := []*x509.Certificate{leaf} // no direct issuer entry
+	goodChain := []*x509.Certificate{leaf, keyBCA}
+	state := &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{shortChain, goodChain}}
+	ctx := WithTLSState(context.Background(), state)
+
+	if _, err := authn.Authenticate(ctx); err != nil {
+		t.Fatalf("expected the short chain to be skipped and the good chain to satisfy the binding, got: %v", err)
+	}
+}
+
+// TestIssuerTenantMismatchError_Error covers both quoteTenant branches
+// (a named tenant and the empty-tenant-ID "(system)" rendering) and both
+// Unwrap shapes (with and without an underlying cause), none of which
+// errors.As alone -- used throughout this file -- ever exercises.
+func TestIssuerTenantMismatchError_Error(t *testing.T) {
+	t.Run("named tenant, no cause", func(t *testing.T) {
+		err := &IssuerTenantMismatchError{TenantID: "acme"}
+		if !strings.Contains(err.Error(), `"acme"`) {
+			t.Errorf("expected the quoted tenant ID in the message, got %q", err.Error())
+		}
+		if !errors.Is(err, ErrInvalidCertificate) {
+			t.Error("expected errors.Is to reach ErrInvalidCertificate via Unwrap")
+		}
+		if got := err.Unwrap(); len(got) != 1 || got[0] != ErrInvalidCertificate {
+			t.Errorf("Unwrap() = %v, want [ErrInvalidCertificate]", got)
+		}
+	})
+
+	t.Run("empty tenant ID renders as system", func(t *testing.T) {
+		err := &IssuerTenantMismatchError{}
+		if !strings.Contains(err.Error(), `"(system)"`) {
+			t.Errorf("expected the system-tenant rendering in the message, got %q", err.Error())
+		}
+	})
+
+	t.Run("with a cause", func(t *testing.T) {
+		cause := errors.New("barrier sealed")
+		err := &IssuerTenantMismatchError{TenantID: "acme", Err: cause}
+		if !strings.Contains(err.Error(), "barrier sealed") {
+			t.Errorf("expected the cause in the message, got %q", err.Error())
+		}
+		if !errors.Is(err, cause) {
+			t.Error("expected errors.Is to reach the cause via Unwrap")
+		}
+		got := err.Unwrap()
+		if len(got) != 2 || got[0] != ErrInvalidCertificate || got[1] != cause {
+			t.Errorf("Unwrap() = %v, want [ErrInvalidCertificate, cause]", got)
+		}
+	})
 }
