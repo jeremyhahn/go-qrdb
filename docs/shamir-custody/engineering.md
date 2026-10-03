@@ -39,6 +39,9 @@ func (s *CeremonyService) BeginClaimShare(ctx, domain, username, callerThumbprin
 func (s *CeremonyService) CompleteClaimShare(ctx, domain, username, nonceHex string, sig []byte, callerThumbprint string) (*ShareClaimResult, error)
 func (s *CeremonyService) BeginQuorum(ctx, domain, op, username, factor string) (*QuorumChallenge, error)
 func (s *CeremonyService) RevokeOfficer(ctx, domain, username string, threshold int) (*seal.QuorumRoundInfo, error)
+func (s *CeremonyService) StartRekey(ctx, domain, p seal.RekeyParams) (*seal.QuorumRoundInfo, error)
+func (s *CeremonyService) SetAuditLogger(l audit.AuditLogger)
+func (t *ScopedCeremonyService) StartRekey(ctx, barrier *seal.StorageBarrier, p seal.RekeyParams) (*seal.QuorumRoundInfo, error)
 func (s *CeremonyService) Rebind(barrier *seal.StorageBarrier)
 func ParseShareEnvelope(raw []byte) (*ShareEnvelope, error)
 func (e *ShareEnvelope) Open(priv *hpke.PrivateKey) ([]byte, error)
@@ -53,6 +56,10 @@ distributor and verifier, for the sealed window and the full node alike.
 `sdk/go` — `transport.BarrierClient` and `transport.TenantClient` carry the
 holder methods listed in [api.md](api.md); `sdk/go/transport/embedded`
 serves them in-process.
+
+Every rekey of a holder set -- a revocation included -- is opened through its
+holder authority's `StartRekey`, never on the barrier directly, so the opening
+is on the compliance trail. `HolderDeps.Audit` is that trail.
 
 `pkg/seal/sealtest` — `sealtest.Custody` installs an in-memory distributor and
 verifier and drives quorum rounds, for tests of code that sits on a Shamir
@@ -407,12 +414,32 @@ and policy are per distribution, not configuration.
   factors; a duplicate submission, a non-designated factor and a revoked
   holder are refused; revocation and rekey need the quorum; a rekey to
   `any-enrolled` admits a holder's other factor.
+- **Audit** (`pkg/ceremony/holder_audit_test.go`): each scope -- system,
+  recovery, tenant and database -- through every holder event and its refusal,
+  keyed by the owning tenant, with the trail searched for every share,
+  envelope, nonce, signature, factor response and holder key the flow
+  handled; a refused record leaves the operation's outcome unchanged. The
+  tenant, database and barrier services' rekey and revocation verbs are
+  pinned to open their rounds through the authority. `cmd/qrdbd` pins that
+  the trail is open in the sealed window, that start fails before the window
+  when it cannot be opened, and that an unseal quorum gathered there is
+  recorded.
 - No `time.Sleep`: expiry is driven through the clock seam.
 
 ## Observability
 
-The barrier emits audit events `distribute`, `rekey-start`, `quorum-share`
-(allow / deny, with the holder and op) and `quorum-complete`, alongside
-`initialize`, `unseal` and `seal`. The ceremony
-service logs enrolment (holder, role, designated factor, KEM) and claims.
+Every holder scope records its holder events on the node's compliance trail
+(`HolderDeps.Audit`), keyed by the scope's owning tenant: `holder-register`,
+`holder-claim`, `holder-quorum-submit`, `holder-rekey-start` and
+`holder-revoked`, refusals included, with the scope, the holder and the
+operation and never a share, an envelope, a PIN, a signature, a factor
+response or a key. The daemon opens the trail before the sealed window, so
+the claims and unseal quorums served there are recorded; see
+[../audit/architecture.md](../audit/architecture.md#the-trail-exists-before-the-sealed-window).
+
+The barrier also emits its own events `distribute`, `rekey-start`,
+`quorum-share` (allow / deny, with the holder and op) and `quorum-complete`,
+alongside `initialize`, `unseal` and `seal`, to a `seal.AuditLogger` when its
+configuration carries one. The ceremony service logs enrolment (holder, role,
+designated factor, KEM) and claims.
 Holder status is available from the list operation and never includes a share.

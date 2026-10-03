@@ -25,6 +25,8 @@ func NewCeremonyService(cfg *CeremonyConfig, barrier *seal.StorageBarrier, log *
 func (s *CeremonyService) SetCA(ca CeremonyCA)
 func (s *CeremonyService) SetFactorRegistry(r *authfactors.FactorRegistry)
 func (s *CeremonyService) SetPINBackend(b pin.PINBackend)
+func (s *CeremonyService) SetQuorumLimiter(l QuorumLimitFunc)
+func (s *CeremonyService) SetAuditLogger(l audit.AuditLogger)
 func (s *CeremonyService) Initialize(ctx, ca CeremonyCA, opts *InitializeOptions) (*InitResult, error)
 func (s *CeremonyService) SignCSRInit(ctx, username, soPin string, csrPEM []byte, role string) (*SignCSRInitResult, error)
 ```
@@ -33,7 +35,10 @@ func (s *CeremonyService) SignCSRInit(ctx, username, soPin string, csrPEM []byte
 `seal.HolderVerifier`, and serves the holder operations documented in
 [../shamir-custody/engineering.md](../shamir-custody/engineering.md).
 `NewTenantCeremonyService` builds the same engine for a tenant barrier over the
-system ceremony's `HolderDeps` (CA, factor registry).
+system ceremony's `HolderDeps` (CA, factor registry, quorum limiter and
+compliance audit trail). `SetCA` keeps the first CA wired; `SetAuditLogger`
+replaces the trail, so a composer that reopens its trail hands the ceremony
+the new one.
 
 The CA seam:
 

@@ -286,6 +286,10 @@ distinct, authenticated holders present.
   reconstructed key is wiped after use.
 - **Membership changes need the quorum.** Adding, removing or re-policing
   holders is a rekey, and a rekey completes only with M current holders.
+- **Every holder event is on the record.** Enrolment, claim, quorum
+  submission, rekey start and revocation are recorded on the node's
+  compliance trail in every scope, keyed by the scope's owning tenant, from
+  the sealed window on; no record carries a share, an envelope or a key.
 - **Holder certificates are not login credentials.** A certificate carrying a
   holder profile OU authenticates with no roles, whatever its common name.
 

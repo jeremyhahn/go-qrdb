@@ -30,6 +30,7 @@ import (
 	"slices"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
@@ -185,6 +186,15 @@ type Infra struct {
 	// always available; hardware factors (FIDO2, PIV, ...) are registered
 	// by the composer.
 	FactorRegistry *authfactors.FactorRegistry
+
+	// AuditLogger is the node's compliance audit trail. The ceremony service
+	// records every share-holder event on it -- system, recovery, tenant and
+	// database scopes alike, each keyed by its owning tenant -- so a composer
+	// that serves a sealed window passes the SAME trail to
+	// BuildSealServicesOnly as to BuildServices, opened before the window:
+	// that is where holders claim envelopes and unseal quorums are gathered.
+	// Nil records no holder events.
+	AuditLogger audit.AuditLogger
 
 	// Logger is used for service-level structured logging. When nil,
 	// slog.Default() is used.
@@ -1001,6 +1011,7 @@ func ceremonyService(infra Infra, log *slog.Logger) (*ceremony.CeremonyService, 
 	// and one that does not is never left without a lockout.
 	svc.SetPINBackend(pin.NewLockoutBackend(infra.PINBackend))
 	svc.SetQuorumLimiter(QuorumLimit)
+	svc.SetAuditLogger(infra.AuditLogger)
 	return svc, nil
 }
 

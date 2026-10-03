@@ -26,6 +26,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
@@ -68,9 +69,16 @@ func dbAdminCtx(tenantID string) context.Context {
 // in tenant acme on a dedicated store.
 func newHolderDatabaseService(t *testing.T) (*DatabaseService, *database.Manager) {
 	t.Helper()
+	return newAuditedHolderDatabaseService(t, nil)
+}
+
+// newAuditedHolderDatabaseService is newHolderDatabaseService with trail as
+// the holder authority's compliance audit trail.
+func newAuditedHolderDatabaseService(t *testing.T, trail audit.AuditLogger) (*DatabaseService, *database.Manager) {
+	t.Helper()
 	svc, mgr := newTestDatabaseServiceWithBarrier(t)
 	ca, _ := ceremonytest.NewCA(t, "Database Holder CA")
-	svc.barrierMgr.SetHolderDeps(ceremony.HolderDeps{CA: ca})
+	svc.barrierMgr.SetHolderDeps(ceremony.HolderDeps{CA: ca, Audit: trail})
 	// Created through the manager: a tenant-scoped create discards a
 	// caller-supplied data directory and only a volume or raft tenant gets a
 	// dedicated store, which this test does not need to provision.

@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -318,9 +319,14 @@ func ceremonyCAFromBundle(bundle *TLSBundle) (ceremony.CeremonyCA, error) {
 // both. For the same reason carried, the ceremony service an in-process
 // migration carried out of the previous boot iteration (nil on a cold
 // boot), is reused here rather than replaced.
-func awaitUnseal(sigCtx context.Context, f *startFlags, bundle *TLSBundle, sub *sealSubsystem, ceremonyCA ceremony.CeremonyCA, carried *ceremony.CeremonyService) (*lifecycle.Node, error) {
+//
+// complianceAudit is the node's compliance audit trail, already open: the
+// holder events of the window -- envelope claims, quorum submissions -- are
+// recorded on it.
+func awaitUnseal(sigCtx context.Context, f *startFlags, bundle *TLSBundle, sub *sealSubsystem, ceremonyCA ceremony.CeremonyCA, carried *ceremony.CeremonyService, complianceAudit audit.AuditLogger) (*lifecycle.Node, error) {
 	sealNode, err := lifecycle.BuildSealServicesOnly(sigCtx, lifecycle.Infra{
 		CeremonyCoreSvc:           carried,
+		AuditLogger:               complianceAudit,
 		DataDir:                   f.dataDir,
 		SealBarrier:               sub.SealBarrier,
 		BarrierRegistry:           sub.BarrierRegistry,

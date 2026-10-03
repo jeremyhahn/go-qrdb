@@ -1159,6 +1159,19 @@ func runStart(f *startFlags) (err error) {
 		context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer sigStop()
 
+	// The compliance audit trail is opened BEFORE the seal subsystem, so it
+	// exists through the sealed window: share holders claim their envelopes
+	// and gather unseal quorums there, and those events are recorded on it
+	// (lifecycle.Infra.AuditLogger). It is the node's one trail, for the
+	// life of the process -- every boot iteration, an in-process migration's
+	// included, records on it -- and the node does not start without it
+	// (openComplianceAudit).
+	complianceAudit, err := openComplianceAudit(sigCtx, f.dataDir, f.processHardening)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = complianceAudit.Close() }()
+
 	// System-scope enable-encryption recycles the data plane IN-PROCESS: the
 	// migration handler enqueues onto migrateCh and the boot loop below tears the
 	// data plane down, re-encrypts the system host's stores, adopts the keyed
@@ -1284,7 +1297,7 @@ func runStart(f *startFlags) (err error) {
 			// survive into the post-unseal service graph.
 			var sealedWindowNode *lifecycle.Node
 			if sealSub != nil && sealSub.SealBarrier.IsSealed() {
-				sealNode, err := awaitUnseal(sigCtx, f, bundle, sealSub, ceremonyCA, carriedCeremony)
+				sealNode, err := awaitUnseal(sigCtx, f, bundle, sealSub, ceremonyCA, carriedCeremony, complianceAudit)
 				if err == nil && barrierUnsealed != nil {
 					barrierUnsealed()
 				}
@@ -1502,6 +1515,7 @@ func runStart(f *startFlags) (err error) {
 				CeremonyDataDir:           filepath.Join(f.dataDir, "seal"),
 				CeremonyCA:                ceremonyCA,
 				CeremonyCoreSvc:           ceremonyCoreSvc,
+				AuditLogger:               complianceAudit,
 				SPIFFETrustDomain:         f.spiffeTrustDomain,
 				MTLSBindingPolicy:         f.mtlsBindingPolicy,
 				PINBackend:                pinBackend,
@@ -1630,35 +1644,14 @@ func runStart(f *startFlags) (err error) {
 					bootStrategy = bootstrap.StrategyShamir
 				}
 			}
-			// Compliance-grade AuditLogger is always constructed, regardless of
-			// --auth-enabled, because FIPS/FedRAMP/PCI-DSS/HIPAA require an audit
-			// trail even in environments where RBAC is disabled. The AuditLogger is
-			// injected into all protocol servers so the /v1/audit/events endpoint
-			// is available and seal/ceremony/custodian operations emit events. It is
-			// built BEFORE the user/role stores so IAM mutations (create/update/
-			// delete/enable/disable, role permission changes) emit an audit trail.
+			// The compliance audit trail, opened before the seal subsystem
+			// (openComplianceAudit), is injected into all protocol servers so
+			// the /v1/audit/events endpoint is available, and is handed to the
+			// user/role stores BEFORE they exist so IAM mutations
+			// (create/update/delete/enable/disable, role permission changes)
+			// emit an audit trail.
 			runtimeKVAdapter := newKVServiceAdapter(authKVSvc, nil, nil)
-			chainFile, err := audit.NewFileLogger(filepath.Join(f.dataDir, "audit-events.ndjson"))
-			if err != nil {
-				_ = shutdownNode(nodeCloser)
-				return &AuthBootstrapError{Step: "compliance audit file", Err: err}
-			}
-			complianceAudit := audit.NewAggregateLogger(
-				chainFile,
-				audit.NewRingBuffer(10000),
-				audit.NewSlogSink(),
-			)
-			defer func() { _ = complianceAudit.Close() }()
 			_ = runtimeKVAdapter // used below when auth is enabled
-
-			// A node that runs inspectable does so on the record: the opt-out
-			// honoured at the top of start is written to the compliance trail
-			// the moment the trail exists, and a node that cannot record it
-			// does not run.
-			if err := auditInspectionOptOut(sigCtx, complianceAudit, f.processHardening); err != nil {
-				_ = shutdownNode(nodeCloser)
-				return err
-			}
 
 			// Under auth.mtls_binding_policy "required" every user store
 			// refuses any change that would lock the bootstrap admin out of

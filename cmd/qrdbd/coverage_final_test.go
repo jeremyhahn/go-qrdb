@@ -829,7 +829,7 @@ func TestAwaitUnseal_BuildSealServicesOnlyError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
-	_, err = awaitUnseal(ctx, badF, bundle, sub, nil, nil)
+	_, err = awaitUnseal(ctx, badF, bundle, sub, nil, nil, nil)
 	if err != nil {
 		t.Logf("awaitUnseal returned (acceptable): %v", err)
 	}

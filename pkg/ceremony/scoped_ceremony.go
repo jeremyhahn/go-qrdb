@@ -114,7 +114,7 @@ func (t *ScopedCeremonyService) BeginClaimShare(ctx context.Context, username, c
 func (t *ScopedCeremonyService) CompleteClaimShare(ctx context.Context, username, nonceHex string, signature []byte, callerThumbprint string) (*ShareClaimResult, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.holder.completeClaim(ctx, username, nonceHex, signature, callerThumbprint)
+	return t.holder.completeClaim(ctx, &t.deps, username, nonceHex, signature, callerThumbprint)
 }
 
 // BeginQuorum issues a factor challenge for a holder's submission to op on
@@ -123,6 +123,21 @@ func (t *ScopedCeremonyService) BeginQuorum(ctx context.Context, barrier *seal.S
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.holder.beginQuorum(ctx, &t.deps, barrier, op, username, factor)
+}
+
+// StartRekey opens a rekey round on barrier, the tenant or database barrier
+// this service is installed on (seal.StorageBarrier.StartRekey), and records
+// its opening, or its refusal, on the compliance trail. Every rekey of the
+// scope's holder set, a revocation included, is opened here.
+func (t *ScopedCeremonyService) StartRekey(ctx context.Context, barrier *seal.StorageBarrier, params seal.RekeyParams) (*seal.QuorumRoundInfo, error) {
+	// The barrier calls back into PrepareRoster, which takes t.mu, so the
+	// lock is held only to read the deps.
+	t.mu.Lock()
+	deps := t.deps
+	t.mu.Unlock()
+	info, err := barrier.StartRekey(ctx, seal.DomainUnseal, params)
+	t.holder.recordRekeyStart(ctx, &deps, params, err)
+	return info, err
 }
 
 // PrepareRoster implements seal.CeremonyDistributor.
@@ -143,7 +158,7 @@ func (t *ScopedCeremonyService) Distribute(ctx context.Context, secret *secure.B
 func (t *ScopedCeremonyService) Committed(ctx context.Context, roster *seal.HolderRoster, removed []string) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.holder.committed(ctx, roster, removed)
+	return t.holder.committed(ctx, &t.deps, roster, removed)
 }
 
 // AdmitSubmission implements seal.HolderVerifier: a share submission passes

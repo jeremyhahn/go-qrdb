@@ -117,6 +117,23 @@ decisions := audit.NewDecisionLogger(sink)   // -> middleware.WithAuditLogger
 **Auditing is always constructed**, regardless of `auth.enabled`: FedRAMP,
 PCI DSS and HIPAA require a trail even where RBAC is off.
 
+**The daemon composes the trail before the seal subsystem**
+(`openComplianceAudit` in `cmd/qrdbd`), once per process, and writes the
+process-inspection opt-out to it as its first record. A trail that cannot be
+opened is `*AuthBootstrapError` (step `compliance audit file`) and an opt-out
+it cannot record is `*InspectionOptOutAuditError`; either stops start before
+any barrier is built. The same sink is then handed to:
+
+- `lifecycle.Infra.AuditLogger` for both `BuildSealServicesOnly` (the sealed
+  window) and `BuildServices`. The ceremony service takes it through
+  `ceremony.CeremonyService.SetAuditLogger`, and `ceremony.HolderDeps.Audit`
+  carries it to every tenant and database holder authority;
+- the user and role stores, the credential service, the authorization and SO
+  gates, and every protocol server, as before.
+
+`sdk/go/node` passes the caller's `server.WithAuditLogger` sink as
+`Infra.AuditLogger` for every graph it builds.
+
 > **Correction (now applied throughout).** Earlier revisions of this document
 > described a `New(cfg, kvStore)` factory selecting between `kvLogger`,
 > `fileLogger`, `multiLogger` and `noopLogger` on `audit.enabled` /
@@ -559,6 +576,19 @@ With metadata, as a nested group:
 | `admin.snapshot` | `shard:{id}` | admin operations |
 | `admin.member.add` / `admin.member.remove` | `shard:{id}` | membership management |
 | `auth.denied` | `{resource}` | authentication middleware |
+| `holder-register` / `holder-claim` / `holder-quorum-submit` / `holder-rekey-start` / `holder-revoked` | `share-holder` | the share-holder engine (`pkg/ceremony`), every scope |
+
+The share-holder events carry the scope's owning tenant as `tenant_id` and
+these attributes only: `scope` (`system`, `recovery`, `tenant:<id>`,
+`database:<tenant>/<name>`), `domain`, `holder`, and per event `role`
+(register), `share_index` (claim), `op` (quorum submit, rekey start),
+`threshold` and `policy` (rekey start). The actor is the authenticated
+identity; with none, the holder once it has proved itself (a claim, a quorum
+submission), the enroller, or `share-holder-quorum` for a revocation the
+quorum completed; otherwise `anonymous`. A refusal's outcome is
+`denied:<reason>` for a claim or submission that did not authenticate and
+`failure:<reason>` otherwise. They are emitted with `EmitBestEffort`,
+component `share-holder`.
 
 ## Configuration
 

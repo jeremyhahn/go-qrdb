@@ -41,13 +41,13 @@ func TestHolderScope_CommittedWithoutStagedSetIsRefused(t *testing.T) {
 	require.NoError(t, staged.Store("alice", []byte("envelope-d2")))
 	h.staged, h.stagedDistribution = staged, "d2"
 
-	err = h.committed(ctx, &seal.HolderRoster{Domain: seal.DomainUnseal, Distribution: "d1"}, nil)
+	err = h.committed(ctx, nil, &seal.HolderRoster{Domain: seal.DomainUnseal, Distribution: "d1"}, nil)
 	var missing *StagedDistributionMissingError
 	require.True(t, errors.As(err, &missing), "got %v", err)
 	require.Equal(t, "d1", missing.Distribution)
 	require.Same(t, inForce, h.store, "the envelopes in force are untouched")
 	require.Same(t, staged, h.staged, "another distribution's staged set is untouched")
 
-	require.NoError(t, h.committed(ctx, &seal.HolderRoster{Domain: seal.DomainUnseal, Distribution: "d2"}, nil))
+	require.NoError(t, h.committed(ctx, nil, &seal.HolderRoster{Domain: seal.DomainUnseal, Distribution: "d2"}, nil))
 	require.Same(t, staged, h.store, "the matching staged set is swapped in")
 }

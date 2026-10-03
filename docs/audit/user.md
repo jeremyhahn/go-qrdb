@@ -91,7 +91,10 @@ done
 ## What is recorded
 
 Identity changes, role changes, certificate issuance and revocation, every
-barrier operation, cluster administration, and **every permission denial**.
+barrier operation, cluster administration, **every share-holder event** --
+enrolments, envelope claims, quorum submissions, rekeys and revocations, in
+every scope, including the unseal quorum a sealed node gathers before it
+starts -- and **every permission denial**.
 Each entry names the actor, the actor's **role at that moment**, the tenant, the
 resource, the action, the outcome, the client IP and a request ID.
 

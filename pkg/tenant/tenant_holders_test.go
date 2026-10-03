@@ -24,8 +24,10 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
+	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
@@ -71,8 +73,15 @@ func tenantAdminCtx(tenantID string) context.Context {
 // newHolderTenantService builds a tenant service with holder deps wired.
 func newHolderTenantService(t *testing.T) *TenantService {
 	t.Helper()
+	return newAuditedHolderTenantService(t, nil)
+}
+
+// newAuditedHolderTenantService is newHolderTenantService with trail as the
+// holder authorities' compliance audit trail.
+func newAuditedHolderTenantService(t *testing.T, trail audit.AuditLogger) *TenantService {
+	t.Helper()
 	svc, err := NewTenantService(seal.NewMemoryBackend(), newTestBarrierRegistry(t), testLogger(),
-		WithTenantHolderDeps(ceremony.HolderDeps{CA: newTenantHolderCA(t)}))
+		WithTenantHolderDeps(ceremony.HolderDeps{CA: newTenantHolderCA(t), Audit: trail}))
 	if err != nil {
 		t.Fatalf("NewTenantService: %v", err)
 	}
@@ -269,5 +278,55 @@ func TestTenantBarrierHolders_Refusals(t *testing.T) {
 	}
 	if _, err := svc.TenantBarrierQuorumSubmit(own, "victim", nil); err == nil {
 		t.Error("a nil submission must be refused")
+	}
+}
+
+// TestTenantBarrierHolders_RekeyStartsAreAudited pins that the tenant
+// service's rekey and revocation verbs open their rounds through the tenant's
+// holder authority, so both are on the trail, keyed by the tenant.
+func TestTenantBarrierHolders_RekeyStartsAreAudited(t *testing.T) {
+	const tenantID = "acme"
+	ring := audit.NewRingBuffer(64)
+	svc := newAuditedHolderTenantService(t, ring)
+	ctx := tenantAdminCtx(tenantID)
+	if _, err := svc.CreateTenant(context.Background(), tenantID, "Acme", ""); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	for _, h := range []*tenantHolder{newTenantHolder(t, "alice"), newTenantHolder(t, "bob")} {
+		if _, err := svc.TenantBarrierOfficerRegister(ctx, tenantID, &ceremony.RegisterOfficerRequest{Username: h.name, CSRPEM: h.csr}); err != nil {
+			t.Fatalf("register %s: %v", h.name, err)
+		}
+	}
+	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, nil, 2, 2, seal.StrategyShamir); err != nil {
+		t.Fatalf("init shamir: %v", err)
+	}
+
+	if _, err := svc.TenantBarrierRekeyStart(ctx, tenantID, 2, ""); err != nil {
+		t.Fatalf("rekey start: %v", err)
+	}
+	var breaks *seal.RevocationBreaksQuorumError
+	if _, err := svc.TenantBarrierOfficerRevoke(ctx, tenantID, "bob", 0); !errors.As(err, &breaks) {
+		t.Fatalf("revoking below the threshold = %v, want RevocationBreaksQuorumError", err)
+	}
+
+	var starts []audit.AuditEvent
+	for _, ev := range ring.Snapshot() {
+		if ev.Action == ceremony.ActionHolderRekeyStart {
+			starts = append(starts, ev)
+		}
+	}
+	if len(starts) != 2 {
+		t.Fatalf("rekey-start records = %d, want 2: %+v", len(starts), starts)
+	}
+	for _, ev := range starts {
+		if ev.TenantID != tenantID || ev.Attributes["scope"] != ceremony.ScopeTenant(tenantID).String() || ev.Actor != "tenant-admin" {
+			t.Fatalf("record = %+v, want tenant %q, scope tenant:%s, actor tenant-admin", ev, tenantID, tenantID)
+		}
+	}
+	if starts[0].Outcome != audit.OutcomeSuccess {
+		t.Fatalf("rekey start outcome = %q", starts[0].Outcome)
+	}
+	if !strings.HasPrefix(starts[1].Outcome, audit.OutcomeFailure+":") || starts[1].Attributes["holder"] != "bob" {
+		t.Fatalf("refused revocation record = %+v", starts[1])
 	}
 }

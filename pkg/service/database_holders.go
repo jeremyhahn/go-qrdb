@@ -228,11 +228,11 @@ func (s *DatabaseService) DatabaseBarrierQuorumSubmit(ctx context.Context, name 
 
 // DatabaseBarrierRekeyStart implements DatabaseHolderServicer.
 func (s *DatabaseService) DatabaseBarrierRekeyStart(ctx context.Context, name string, threshold int, policy seal.FactorPolicy) (*QuorumRoundInfo, error) {
-	_, barrier, err := s.databaseHolders(ctx, name)
+	holders, barrier, err := s.databaseHolders(ctx, name)
 	if err != nil {
 		return nil, err
 	}
-	return barrier.StartRekey(ctx, seal.DomainUnseal, seal.RekeyParams{Threshold: threshold, Policy: policy})
+	return holders.StartRekey(ctx, barrier, seal.RekeyParams{Threshold: threshold, Policy: policy})
 }
 
 // DatabaseBarrierOfficerRevoke implements DatabaseHolderServicer: a rekey
@@ -242,11 +242,11 @@ func (s *DatabaseService) DatabaseBarrierOfficerRevoke(ctx context.Context, name
 	if username == "" {
 		return nil, ceremony.ErrMissingUsername
 	}
-	_, barrier, err := s.databaseHolders(ctx, name)
+	holders, barrier, err := s.databaseHolders(ctx, name)
 	if err != nil {
 		return nil, err
 	}
-	return barrier.StartRekey(ctx, seal.DomainUnseal, seal.RekeyParams{Threshold: threshold, Remove: []string{username}})
+	return holders.StartRekey(ctx, barrier, seal.RekeyParams{Threshold: threshold, Remove: []string{username}})
 }
 
 // setDatabaseStatus reflects a barrier transition on the database's status.

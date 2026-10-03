@@ -2151,14 +2151,15 @@ func (s *TenantService) TenantBarrierQuorumSubmit(ctx context.Context, tenantID 
 
 // TenantBarrierRekeyStart opens a rekey round on the tenant barrier.
 func (s *TenantService) TenantBarrierRekeyStart(ctx context.Context, tenantID string, threshold int, policy seal.FactorPolicy) (*seal.QuorumRoundInfo, error) {
-	if _, err := s.holderAuthority(ctx, tenantID, "rekey-start"); err != nil {
+	tsvc, err := s.holderAuthority(ctx, tenantID, "rekey-start")
+	if err != nil {
 		return nil, err
 	}
 	tb, err := s.registry.GetTenant(tenantID)
 	if err != nil {
 		return nil, &BarrierError{TenantID: tenantID, Op: "rekey-start", Err: err}
 	}
-	info, err := tb.Barrier().StartRekey(ctx, seal.DomainUnseal, seal.RekeyParams{Threshold: threshold, Policy: policy})
+	info, err := tsvc.StartRekey(ctx, tb.Barrier(), seal.RekeyParams{Threshold: threshold, Policy: policy})
 	if err != nil {
 		return nil, &BarrierError{TenantID: tenantID, Op: "rekey-start", Err: err}
 	}
@@ -2171,14 +2172,15 @@ func (s *TenantService) TenantBarrierOfficerRevoke(ctx context.Context, tenantID
 	if username == "" {
 		return nil, &BarrierError{TenantID: tenantID, Op: "officer-revoke", Err: ceremony.ErrMissingUsername}
 	}
-	if _, err := s.holderAuthority(ctx, tenantID, "officer-revoke"); err != nil {
+	tsvc, err := s.holderAuthority(ctx, tenantID, "officer-revoke")
+	if err != nil {
 		return nil, err
 	}
 	tb, err := s.registry.GetTenant(tenantID)
 	if err != nil {
 		return nil, &BarrierError{TenantID: tenantID, Op: "officer-revoke", Err: err}
 	}
-	info, err := tb.Barrier().StartRekey(ctx, seal.DomainUnseal, seal.RekeyParams{Threshold: threshold, Remove: []string{username}})
+	info, err := tsvc.StartRekey(ctx, tb.Barrier(), seal.RekeyParams{Threshold: threshold, Remove: []string{username}})
 	if err != nil {
 		return nil, &BarrierError{TenantID: tenantID, Op: "officer-revoke", Err: err}
 	}

@@ -312,15 +312,17 @@ client — confines the filter to the **caller's own tenant**
 **The rule has no exception for the system tenant.** An identity in the system
 tenant holding `audit:query` reads the system tenant's events and the
 **platform events** — those that carry no tenant at all, such as the node's own
-inspection opt-out, and a custodian revocation or
-unseal-share submission naming a custodian that does not exist. It is refused
-every other tenant's events, exactly as a tenant Admin is refused the system
-tenant's and its neighbours'.
+inspection opt-out. It is refused every other tenant's events, exactly as a
+tenant Admin is refused the system tenant's and its neighbours'.
 
-**An event of a tenant-scoped flow names its tenant.** A custodian's
-registration and revocation (refusals included) and its share-claim and
-unseal-share steps carry the custodian's tenant, so that tenant's auditors read
-them and nobody else's do.
+**An event of a tenant-scoped flow names its tenant.** Every share-holder event
+-- a holder's registration, envelope claim and quorum submission, a rekey
+start and a revocation, refusals included -- carries the tenant that owns the
+holder's scope: a tenant barrier's holders their tenant, a database barrier's
+holders the database's tenant, and the system and recovery holders the system
+tenant. That tenant's auditors read them and nobody else's do. A submission
+naming a holder that does not exist is recorded in the scope it was made to,
+so it is the scope's tenant's too.
 
 **Nothing else in the filter can widen it.** The tenant match is applied to
 every event before the page is cut, so the time range, the actor, resource,
@@ -339,6 +341,61 @@ unbound context is the system tenant — the in-process host.
 **BREAKING:** before this rule the query honoured whatever `tenant_id` the
 request carried, and an empty one read every tenant's events, so a tenant Admin
 holding `audit:query` read the whole node's trail.
+
+## The trail exists before the sealed window
+
+**The node opens its compliance trail before it builds its barrier**, and
+does not start without it. A Shamir-sealed node gathers its unseal quorum in
+the sealed window -- before the data plane, the key-value store or any
+tenant's store exists -- and holders claim their envelopes there on first
+boot. Those are among the most security-relevant events the node has, so they
+are recorded on the same trail as everything else, not on a second one, and
+not later.
+
+The daemon therefore opens the trail -- the hash-chained file, the ring and
+the operational log -- ahead of the seal subsystem, for the life of the
+process: every boot iteration, an in-process encryption migration's included,
+records on the one trail. Opening it fails start **closed**, exactly as it did
+when the trail was opened after unseal: a trail that cannot be opened stops
+the node before any barrier is built or any sealed window served.
+
+**The process-inspection opt-out is still the trail's first record.** It is
+written the moment the trail exists -- now before the seal subsystem rather
+than after unseal -- and a node that cannot record it does not run.
+
+The SDK node records on the trail its caller supplies (`server.WithAuditLogger`),
+which exists before the node does, so its sealed window is recorded too.
+
+### Share-holder events
+
+Every holder scope -- system, recovery, tenant and database -- records five
+events on the trail through the one holder engine, keyed by the scope's
+owning tenant. Each names the scope, the holder and the outcome; quorum
+events name the operation. **None carries a share, an envelope, a PIN, a
+claim signature, a factor response or a key.** They are post-hoc records: by
+the time one is written the operation has happened or been refused, so a
+trail that refuses the record is counted on
+`qrdb_audit_write_failures_total{component="share-holder"}` and logged, and
+does not change the operation's outcome.
+
+| Event | Recorded when |
+|---|---|
+| `holder-register` | a holder is enrolled, or the enrolment refused |
+| `holder-claim` | a holder claims its envelope, or the claim is refused |
+| `holder-quorum-submit` | a share submission's holder is authenticated, or refused |
+| `holder-rekey-start` | a rekey round opens, a revocation's included, or is refused |
+| `holder-revoked` | a revoked holder's record is removed, once the rekey is durable |
+
+### The replicated in-tenant trail
+
+The trail is node-local. A replicated trail held inside each tenant -- records
+appended through the replicated store rather than to one node's file -- is
+planned, and is not part of this feature. When it exists it cannot take the
+sealed window's records directly: the store it appends through is behind the
+barrier that window is opening. Those records go to the node's trail as they
+happen, as they do today; the replicated trail can carry them by buffering
+the window's events in memory and appending them once the barrier is
+unsealed. Nothing here buffers them, and nothing here depends on that.
 
 ## Trust boundaries
 

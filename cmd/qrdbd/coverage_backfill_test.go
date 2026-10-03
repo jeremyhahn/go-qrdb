@@ -823,7 +823,7 @@ func TestAwaitUnseal_NilSealBarrier(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	sealNode, err := awaitUnseal(ctx, f, bundle, sub, nil, nil)
+	sealNode, err := awaitUnseal(ctx, f, bundle, sub, nil, nil, nil)
 	require.Error(t, err)
 	require.Nil(t, sealNode)
 	var listenerErr *SealedListenerStartupError
@@ -862,7 +862,7 @@ func TestAwaitUnseal_ServerStartFails(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err = awaitUnseal(ctx, f, bundle, sub, nil, nil)
+	_, err = awaitUnseal(ctx, f, bundle, sub, nil, nil, nil)
 	// With occupied ports, srv.Start() should fail with a bind error
 	// for non-root users, which wraps in SealedListenerStartupError.
 	if err != nil {

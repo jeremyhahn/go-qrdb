@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -166,6 +167,16 @@ func (s *CeremonyService) SetQuorumLimiter(l QuorumLimitFunc) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.deps.QuorumLimiter = l
+}
+
+// SetAuditLogger installs the compliance audit trail every holder event is
+// recorded on (HolderDeps.Audit). It is carried to every tenant and database
+// holder authority built from HolderDeps. Unlike the CA it replaces what was
+// installed: a composer that reopens its trail hands the ceremony the new one.
+func (s *CeremonyService) SetAuditLogger(l audit.AuditLogger) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deps.Audit = l
 }
 
 // SetPINBackend installs the PIN backend, decorated with the SO PIN lockout
@@ -482,7 +493,7 @@ func (s *CeremonyService) CompleteClaimShare(ctx context.Context, domain seal.Qu
 	if err != nil {
 		return nil, err
 	}
-	res, err := h.completeClaim(ctx, username, nonceHex, signature, callerThumbprint)
+	res, err := h.completeClaim(ctx, &s.deps, username, nonceHex, signature, callerThumbprint)
 	if err != nil {
 		return nil, err
 	}
@@ -513,7 +524,26 @@ func (s *CeremonyService) RevokeOfficer(ctx context.Context, domain seal.QuorumD
 	if username == "" {
 		return nil, ErrMissingUsername
 	}
-	return s.barrier.StartRekey(ctx, domain, seal.RekeyParams{Threshold: threshold, Remove: []string{username}})
+	return s.StartRekey(ctx, domain, seal.RekeyParams{Threshold: threshold, Remove: []string{username}})
+}
+
+// StartRekey opens a rekey round for domain on the system barrier
+// (seal.StorageBarrier.StartRekey) and records its opening, or its refusal,
+// on the compliance trail. Every rekey of a system or recovery holder set,
+// a revocation included, is opened here.
+func (s *CeremonyService) StartRekey(ctx context.Context, domain seal.QuorumDomain, params seal.RekeyParams) (*seal.QuorumRoundInfo, error) {
+	// The barrier calls back into PrepareRoster, which takes s.mu, so the
+	// lock is held only to read what the rekey needs.
+	s.mu.Lock()
+	barrier, deps := s.barrier, s.deps
+	h, err := s.scope(domain)
+	s.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	info, err := barrier.StartRekey(ctx, domain, params)
+	h.recordRekeyStart(ctx, &deps, params, err)
+	return info, err
 }
 
 // PrepareRoster implements seal.CeremonyDistributor.
@@ -546,7 +576,7 @@ func (s *CeremonyService) Committed(ctx context.Context, roster *seal.HolderRost
 	if err != nil {
 		return err
 	}
-	return h.committed(ctx, roster, removed)
+	return h.committed(ctx, &s.deps, roster, removed)
 }
 
 // AdmitSubmission implements seal.HolderVerifier: a share submission passes

@@ -96,8 +96,15 @@ the message before treating any non-zero exit as a tamper finding; see
 
 Identity (`user.*`, `role.*`), certificates (`cert.generate`, `cert.revoke`),
 the barrier (`seal.initialize`, `unseal`, `seal`, `rotate`, `rekey`), cluster
-administration (`admin.drain`, `admin.snapshot`, `admin.member.add/remove`), and
-**every permission denial** (`auth.denied`).
+administration (`admin.drain`, `admin.snapshot`, `admin.member.add/remove`),
+share holders (`holder-register`, `holder-claim`, `holder-quorum-submit`,
+`holder-rekey-start`, `holder-revoked`, resource `share-holder`), and **every
+permission denial** (`auth.denied`).
+
+```bash
+# Who submitted shares to the last unseal quorum?
+qrdb audit query --action holder-quorum-submit
+```
 
 ## Server-side configuration
 

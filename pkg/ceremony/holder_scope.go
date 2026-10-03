@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
@@ -56,6 +57,14 @@ type HolderDeps struct {
 	// node's composer always installs one (lifecycle wires the shared
 	// pkg/ratelimit engine).
 	QuorumLimiter QuorumLimitFunc
+
+	// Audit is the node's compliance audit trail. Every holder scope records
+	// its holder events on it -- registration, claim, quorum submission,
+	// rekey start and revocation -- keyed by the scope's owning tenant
+	// (holder_audit.go). The composer opens it before the sealed window, so
+	// the claims and quorums that window serves are recorded too. Nil
+	// records nothing.
+	Audit audit.AuditLogger
 }
 
 // QuorumLimitFunc decides whether one quorum-challenge request may
@@ -298,11 +307,29 @@ func (h *holderScope) persist(ctx context.Context, rec *PersistentOfficer) error
 	return h.registry.Save(ctx, rec)
 }
 
-// register enrols one holder: it has the CA issue the holder a certificate
+// register enrols one holder (enrol) and records the enrolment, or its
+// refusal, on the compliance trail.
+func (h *holderScope) register(ctx context.Context, d *HolderDeps, req RegisterOfficerRequest) (*RegisterOfficerResult, error) {
+	res, err := h.enrol(ctx, d, req)
+	role := req.Role
+	if role == "" {
+		role = seal.RoleSecurityOfficer
+	}
+	h.record(ctx, d, holderEvent{
+		action: ActionHolderRegister,
+		holder: req.Username,
+		actor:  req.Enroller,
+		attrs:  map[string]any{"role": string(role)},
+		err:    err,
+	})
+	return res, err
+}
+
+// enrol enrols one holder: it has the CA issue the holder a certificate
 // carrying a CA-assigned identity, records the envelope recipient key and
 // every enrolled factor's public material, and persists the public record.
 // No share exists at this point; shares come only from a distribution.
-func (h *holderScope) register(ctx context.Context, d *HolderDeps, req RegisterOfficerRequest) (*RegisterOfficerResult, error) {
+func (h *holderScope) enrol(ctx context.Context, d *HolderDeps, req RegisterOfficerRequest) (*RegisterOfficerResult, error) {
 	if req.Role == "" {
 		req.Role = seal.RoleSecurityOfficer
 	}
@@ -678,7 +705,11 @@ func (h *holderScope) discardStaged() {
 // holder can claim. The barrier serialises its redistributions per domain, so
 // this does not happen through it; the refusal makes any other caller's
 // interleaving loud instead of silent.
-func (h *holderScope) committed(ctx context.Context, roster *seal.HolderRoster, removed []string) error {
+//
+// Each removed holder's revocation is recorded on the compliance trail once
+// its record is deleted -- the rekey that revoked it is durable by then -- and
+// a deletion that fails is recorded as a failed revocation.
+func (h *holderScope) committed(ctx context.Context, d *HolderDeps, roster *seal.HolderRoster, removed []string) error {
 	if !h.promoteStaged(roster.Distribution) {
 		return &StagedDistributionMissingError{Distribution: roster.Distribution}
 	}
@@ -686,7 +717,9 @@ func (h *holderScope) committed(ctx context.Context, roster *seal.HolderRoster, 
 		return err
 	}
 	for _, name := range removed {
-		if err := h.registry.Delete(ctx, name); err != nil {
+		err := h.registry.Delete(ctx, name)
+		h.record(ctx, d, holderEvent{action: ActionHolderRevoked, holder: name, actor: holderActorQuorum, err: err})
+		if err != nil {
 			return err
 		}
 		h.logger.Info("share holder revoked", slog.String("scope", h.scope.String()), slog.String("username", name))
@@ -740,9 +773,25 @@ func (h *holderScope) beginClaim(ctx context.Context, username, callerThumbprint
 	return c, nil
 }
 
-// completeClaim verifies the signature over the claim nonce and delivers the
+// completeClaim runs the claim (claim) and records it, or its refusal, on
+// the compliance trail. The record names the holder and the share index; the
+// envelope is never part of it.
+func (h *holderScope) completeClaim(ctx context.Context, d *HolderDeps, username, nonceHex string, signature []byte, callerThumbprint string) (*ShareClaimResult, error) {
+	res, err := h.claim(ctx, username, nonceHex, signature, callerThumbprint)
+	ev := holderEvent{action: ActionHolderClaim, holder: username, err: err, denied: err != nil}
+	if err == nil {
+		// The signature over the nonce, by the enrolled key, proved the
+		// caller is the holder.
+		ev.actor = username
+		ev.attrs = map[string]any{"share_index": res.ShareIndex}
+	}
+	h.record(ctx, d, ev)
+	return res, err
+}
+
+// claim verifies the signature over the claim nonce and delivers the
 // holder's envelope exactly once, destroying the protected copy.
-func (h *holderScope) completeClaim(ctx context.Context, username, nonceHex string, signature []byte, callerThumbprint string) (*ShareClaimResult, error) {
+func (h *holderScope) claim(ctx context.Context, username, nonceHex string, signature []byte, callerThumbprint string) (*ShareClaimResult, error) {
 	if username == "" {
 		return nil, ErrMissingUsername
 	}
@@ -1150,12 +1199,33 @@ func randomBytes(n int) []byte {
 	return b
 }
 
-// verifyHolder implements seal.HolderVerifier for the scope. The challenge is
-// consumed whatever the outcome.
+// verifyHolder implements seal.HolderVerifier for the scope (authenticate)
+// and records the submission's authentication on the compliance trail: the
+// holder named, the operation and the outcome. The proof and the share are
+// never part of the record.
+func (h *holderScope) verifyHolder(ctx context.Context, d *HolderDeps, domain seal.QuorumDomain, op seal.QuorumOp, holder string, roster *seal.HolderRoster, digest []byte, proof seal.HolderProof) error {
+	err := h.authenticate(ctx, d, domain, op, holder, roster, digest, proof)
+	ev := holderEvent{
+		action: ActionHolderQuorumSubmit,
+		holder: holder,
+		attrs:  map[string]any{"op": string(op)},
+		err:    err,
+		denied: err != nil,
+	}
+	if err == nil {
+		// The factor response proved the caller is the holder.
+		ev.actor = holder
+	}
+	h.record(ctx, d, ev)
+	return err
+}
+
+// authenticate checks a submission's proof. The challenge is consumed
+// whatever the outcome.
 //
 // A challenge is looked up in the real table and then the decoy table, so a
 // decoy is answered by the same checks and the same Verify as a real one.
-func (h *holderScope) verifyHolder(ctx context.Context, d *HolderDeps, domain seal.QuorumDomain, op seal.QuorumOp, holder string, roster *seal.HolderRoster, digest []byte, proof seal.HolderProof) error {
+func (h *holderScope) authenticate(ctx context.Context, d *HolderDeps, domain seal.QuorumDomain, op seal.QuorumOp, holder string, roster *seal.HolderRoster, digest []byte, proof seal.HolderProof) error {
 	p, ok := h.quorum[proof.ChallengeID]
 	delete(h.quorum, proof.ChallengeID)
 	if !ok {

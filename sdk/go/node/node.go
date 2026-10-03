@@ -488,14 +488,17 @@ func (n *Node) sealedWindowCeremonyCore() *ceremony.CeremonyService {
 }
 
 // withHolderInfra fills infra's share-holder dependencies: the PIN backend,
-// and the caller's factor registry and ceremony CA.
+// and the caller's factor registry, ceremony CA and compliance audit trail.
 // Without the CA the ceremony service cannot issue a holder certificate, so
-// no share holder could be enrolled on an SDK-built node.
+// no share holder could be enrolled on an SDK-built node. The audit trail is
+// the caller's own (server.WithAuditLogger), which exists before the node
+// does, so the holder events of the sealed window are recorded on it too.
 func (n *Node) withHolderInfra(infra lifecycle.Infra, cfg *qrdbconfig.Config, serverOpts []server.ServerOption) lifecycle.Infra {
 	crypto := server.ResolveCryptoOptions(serverOpts...)
 	infra.PINBackend = n.pinBackend(serverOpts)
 	infra.FactorRegistry = crypto.FactorRegistry
 	infra.CeremonyCA = crypto.CeremonyCA
+	infra.AuditLogger = crypto.AuditLogger
 	return infra
 }
 

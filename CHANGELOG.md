@@ -11,6 +11,31 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Added
+
+- **Share-holder events are on the compliance audit trail, in every scope.**
+  The holder engine records `holder-register`, `holder-claim`,
+  `holder-quorum-submit`, `holder-rekey-start` and `holder-revoked` --
+  refusals included -- for the system, recovery, tenant and database scopes,
+  keyed by the scope's owning tenant, so a tenant's auditors read its holders'
+  events and nobody else's do. Records name the scope, the holder and the
+  operation, and never a share, an envelope, a PIN, a signature, a factor
+  response or a key. New: `ceremony.HolderDeps.Audit`,
+  `ceremony.CeremonyService.SetAuditLogger`, `lifecycle.Infra.AuditLogger`,
+  and `StartRekey` on `ceremony.CeremonyService` and
+  `ceremony.ScopedCeremonyService`, through which every rekey and revocation
+  of a holder set now opens. `sdk/go/node` hands the caller's
+  `server.WithAuditLogger` trail to the holder engine.
+
+### Changed
+
+- **`qrdbd` opens its compliance audit trail before the sealed window.** The
+  trail used to be opened after unseal, so the envelope claims and unseal
+  quorums a sealed node serves were recorded nowhere. It is now opened before
+  the seal subsystem, once per process, and start still fails closed when it
+  cannot be opened -- now before any barrier is built. The process-inspection
+  opt-out remains its first record.
+
 ## [0.35.1-alpha] - 2026-10-03
 
 Sealing test hardening. Highlights:
