@@ -241,8 +241,11 @@ func TestConsumeJoinToken_WrongTrustDomainRefused(t *testing.T) {
 	assertJoinRefused(t, err)
 }
 
-func TestConsumeJoinToken_IdentityAdmissionPutIfAbsentErrorSurfacesTyped(t *testing.T) {
-	store := &faultyJoinStore{AtomicKVStore: kvstore.NewMemoryKVStore(), failPutIfAbsentOnPrefix: joinIdentityPrefix}
+// TestConsumeJoinToken_IdentityAdmissionExistsErrorSurfacesTyped proves
+// ConsumeJoinToken's read-only "already admitted" check surfaces a genuine
+// store failure as *JoinTokenStoreError, distinct from a refusal.
+func TestConsumeJoinToken_IdentityAdmissionExistsErrorSurfacesTyped(t *testing.T) {
+	store := &faultyJoinStore{AtomicKVStore: kvstore.NewMemoryKVStore(), failExistsOnPrefix: joinIdentityPrefix}
 	token, _, err := MintJoinToken(context.Background(), store, "test.cluster", "node-1", time.Hour)
 	if err != nil {
 		t.Fatalf("MintJoinToken: %v", err)
@@ -250,7 +253,20 @@ func TestConsumeJoinToken_IdentityAdmissionPutIfAbsentErrorSurfacesTyped(t *test
 	_, err = ConsumeJoinToken(context.Background(), store, "test.cluster", token)
 	var storeErr *JoinTokenStoreError
 	if !errors.As(err, &storeErr) {
-		t.Fatalf("ConsumeJoinToken with a failing identity PutIfAbsent = %v, want *JoinTokenStoreError", err)
+		t.Fatalf("ConsumeJoinToken with a failing identity Exists check = %v, want *JoinTokenStoreError", err)
+	}
+}
+
+// TestMarkJoinIdentityAdmitted_PutIfAbsentErrorSurfacesTyped proves
+// MarkJoinIdentityAdmitted -- called only after a successful issuance, per
+// HandleJoinRequest -- surfaces a genuine store failure as
+// *JoinTokenStoreError.
+func TestMarkJoinIdentityAdmitted_PutIfAbsentErrorSurfacesTyped(t *testing.T) {
+	store := &faultyJoinStore{AtomicKVStore: kvstore.NewMemoryKVStore(), failPutIfAbsentOnPrefix: joinIdentityPrefix}
+	err := MarkJoinIdentityAdmitted(context.Background(), store, "spiffe://test.cluster/node/node-1")
+	var storeErr *JoinTokenStoreError
+	if !errors.As(err, &storeErr) {
+		t.Fatalf("MarkJoinIdentityAdmitted with a failing PutIfAbsent = %v, want *JoinTokenStoreError", err)
 	}
 }
 
@@ -260,8 +276,15 @@ func TestConsumeJoinToken_AlreadyAdmittedIdentityRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MintJoinToken (first): %v", err)
 	}
-	if _, err := ConsumeJoinToken(context.Background(), store, "test.cluster", tokenOne); err != nil {
+	boundNodeURI, err := ConsumeJoinToken(context.Background(), store, "test.cluster", tokenOne)
+	if err != nil {
 		t.Fatalf("ConsumeJoinToken (first, should succeed): %v", err)
+	}
+	// Mirrors HandleJoinRequest: the identity is marked admitted only
+	// after issuance would have succeeded -- ConsumeJoinToken itself never
+	// does this (see jointoken.go's doc comment).
+	if err := MarkJoinIdentityAdmitted(context.Background(), store, boundNodeURI); err != nil {
+		t.Fatalf("MarkJoinIdentityAdmitted: %v", err)
 	}
 
 	// A SECOND token minted for the SAME node identity: the identity is
@@ -273,6 +296,34 @@ func TestConsumeJoinToken_AlreadyAdmittedIdentityRefused(t *testing.T) {
 	}
 	_, err = ConsumeJoinToken(context.Background(), store, "test.cluster", tokenTwo)
 	assertJoinRefused(t, err)
+}
+
+// TestConsumeJoinToken_SignFailureAfterConsumeLeavesIdentityRetryable
+// proves the core guarantee HandleJoinRequest's reordering exists for: a
+// token consumed by ConsumeJoinToken, with NO subsequent
+// MarkJoinIdentityAdmitted call (standing in for a signing failure between
+// the two), leaves the identity free for a freshly minted token to
+// succeed -- the node ID is never retired by a transient post-consumption
+// failure.
+func TestConsumeJoinToken_SignFailureAfterConsumeLeavesIdentityRetryable(t *testing.T) {
+	store := kvstore.NewMemoryKVStore()
+	tokenOne, _, err := MintJoinToken(context.Background(), store, "test.cluster", "node-1", time.Hour)
+	if err != nil {
+		t.Fatalf("MintJoinToken (first): %v", err)
+	}
+	if _, err := ConsumeJoinToken(context.Background(), store, "test.cluster", tokenOne); err != nil {
+		t.Fatalf("ConsumeJoinToken (first): %v", err)
+	}
+	// Signing "fails" here: HandleJoinRequest would return without ever
+	// calling MarkJoinIdentityAdmitted.
+
+	tokenTwo, _, err := MintJoinToken(context.Background(), store, "test.cluster", "node-1", time.Hour)
+	if err != nil {
+		t.Fatalf("MintJoinToken (retry): %v", err)
+	}
+	if _, err := ConsumeJoinToken(context.Background(), store, "test.cluster", tokenTwo); err != nil {
+		t.Fatalf("ConsumeJoinToken (retry) = %v, want success: the identity must not be retired by an unmarked consume", err)
+	}
 }
 
 // assertJoinRefused fails the test unless err is *JoinRefusedError.
@@ -295,6 +346,7 @@ type faultyJoinStore struct {
 	kvstore.AtomicKVStore
 
 	failGetOnPrefix              string
+	failExistsOnPrefix           string
 	failPutIfAbsentOnPrefix      string
 	failCompareAndDeleteOnPrefix string
 
@@ -307,6 +359,13 @@ func (f *faultyJoinStore) Get(ctx context.Context, key string) ([]byte, error) {
 		return nil, errInjectedFault
 	}
 	return f.AtomicKVStore.Get(ctx, key)
+}
+
+func (f *faultyJoinStore) Exists(ctx context.Context, key string) (bool, error) {
+	if f.failExistsOnPrefix != "" && strings.HasPrefix(key, f.failExistsOnPrefix) {
+		return false, errInjectedFault
+	}
+	return f.AtomicKVStore.Exists(ctx, key)
 }
 
 func (f *faultyJoinStore) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {

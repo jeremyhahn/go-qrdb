@@ -153,6 +153,12 @@ func MintJoinToken(ctx context.Context, store kvstore.AtomicKVStore, trustDomain
 // domain, is still spent by having been presented, so retrying it against
 // a different trust domain or after waiting out a clock skew gains an
 // attacker nothing.
+//
+// This does NOT mark the identity admitted -- it only refuses a token
+// bound to an identity ALREADY marked (a read-only check). Call
+// MarkJoinIdentityAdmitted once the caller has actually issued a leaf; see
+// HandleJoinRequest's doc comment for why that is deliberately a separate,
+// later step.
 func ConsumeJoinToken(ctx context.Context, store kvstore.AtomicKVStore, trustDomain, token string) (boundNodeURI string, err error) {
 	if token == "" {
 		return "", errJoinTokenRejected
@@ -206,15 +212,37 @@ func ConsumeJoinToken(ctx context.Context, store kvstore.AtomicKVStore, trustDom
 	}
 
 	identityKey := joinIdentityPrefix + identity.String()
-	admitted, err := store.PutIfAbsent(ctx, identityKey, []byte(time.Now().UTC().Format(time.RFC3339)))
+	alreadyAdmitted, err := store.Exists(ctx, identityKey)
 	if err != nil {
-		return "", &JoinTokenStoreError{Op: "putifabsent", Detail: identityKey, Err: err}
+		return "", &JoinTokenStoreError{Op: "exists", Detail: identityKey, Err: err}
 	}
-	if !admitted {
+	if alreadyAdmitted {
 		return "", errJoinTokenRejected
 	}
 
 	return identity.String(), nil
+}
+
+// MarkJoinIdentityAdmitted records that nodeURI has been admitted through
+// the member-side CSR join mechanism, so a later join attempt presenting a
+// (new, validly minted) token for the same identity is refused by
+// ConsumeJoinToken rather than silently re-admitted. Called by
+// HandleJoinRequest ONLY after IssueLeafForKey has actually issued a leaf
+// -- never bundled with ConsumeJoinToken's token consumption -- so that a
+// signing failure after the token is consumed leaves the identity free for
+// a retry with a freshly minted token. See HandleJoinRequest's doc comment
+// for the full reasoning and the narrow race this ordering accepts.
+//
+// A false return (no error, not admitted) means a concurrent caller won
+// the race to mark this identity first -- both callers had already issued
+// a leaf by this point, so this is reported for logging, not as a failure
+// requiring either leaf to be revoked.
+func MarkJoinIdentityAdmitted(ctx context.Context, store kvstore.AtomicKVStore, nodeURI string) error {
+	identityKey := joinIdentityPrefix + nodeURI
+	if _, err := store.PutIfAbsent(ctx, identityKey, []byte(time.Now().UTC().Format(time.RFC3339))); err != nil {
+		return &JoinTokenStoreError{Op: "putifabsent", Detail: identityKey, Err: err}
+	}
+	return nil
 }
 
 // errJoinTokenRejected is the one wire-visible reason every ConsumeJoinToken

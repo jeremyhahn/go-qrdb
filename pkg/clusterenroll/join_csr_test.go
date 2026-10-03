@@ -693,6 +693,149 @@ func TestHandleJoinRequest_InfrastructureFailureRefused(t *testing.T) {
 	}
 }
 
+// TestHandleJoinRequest_InvalidCSRDoesNotConsumeToken proves a malformed
+// CSR is refused WITHOUT consuming the presented token: the same token,
+// retried with a corrected CSR, must still succeed.
+func TestHandleJoinRequest_InvalidCSRDoesNotConsumeToken(t *testing.T) {
+	provider := newTestClusterCAProvider(t)
+	store := kvstore.NewMemoryKVStore()
+	token := mintTestJoinToken(t, store, "node-retry-1")
+
+	resp := HandleJoinRequest(context.Background(), provider, store, testTrustDomain, &JoinRequest{
+		Token:  token,
+		CSRDER: []byte("not a csr at all"),
+	})
+	if resp.Error != "invalid certificate signing request" {
+		t.Fatalf("response = %q, want the invalid-CSR message", resp.Error)
+	}
+
+	nodeKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	csrDER, err := buildJoinCSR(nodeKey, "")
+	if err != nil {
+		t.Fatalf("buildJoinCSR: %v", err)
+	}
+	resp2 := HandleJoinRequest(context.Background(), provider, store, testTrustDomain, &JoinRequest{
+		Token:  token,
+		CSRDER: csrDER,
+	})
+	if resp2.Error != "" || len(resp2.CertPEM) == 0 {
+		t.Fatalf("retry with the SAME token after a malformed CSR = %+v, want a successfully issued leaf", resp2)
+	}
+}
+
+// TestHandleJoinRequest_ProofOfPossessionFailureDoesNotConsumeToken proves
+// a CSR whose self-signature does not check out is refused WITHOUT
+// consuming the presented token, for the same reason: the problem is this
+// attempt's CSR, not the token.
+func TestHandleJoinRequest_ProofOfPossessionFailureDoesNotConsumeToken(t *testing.T) {
+	provider := newTestClusterCAProvider(t)
+	store := kvstore.NewMemoryKVStore()
+	token := mintTestJoinToken(t, store, "node-retry-2")
+
+	nodeKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	csrDER, err := buildJoinCSR(nodeKey, "")
+	if err != nil {
+		t.Fatalf("buildJoinCSR: %v", err)
+	}
+	// Corrupt the trailing signature bytes: the CSR still parses (the
+	// ASN.1 structure and lengths are unchanged), but CheckSignature must
+	// now fail.
+	corrupted := bytes.Clone(csrDER)
+	corrupted[len(corrupted)-1] ^= 0xFF
+
+	resp := HandleJoinRequest(context.Background(), provider, store, testTrustDomain, &JoinRequest{
+		Token:  token,
+		CSRDER: corrupted,
+	})
+	if resp.Error != "certificate signing request: proof of possession failed" {
+		t.Fatalf("response = %q, want the proof-of-possession message", resp.Error)
+	}
+
+	resp2 := HandleJoinRequest(context.Background(), provider, store, testTrustDomain, &JoinRequest{
+		Token:  token,
+		CSRDER: csrDER,
+	})
+	if resp2.Error != "" || len(resp2.CertPEM) == 0 {
+		t.Fatalf("retry with the SAME token after a PoP failure = %+v, want a successfully issued leaf", resp2)
+	}
+}
+
+// signingFailureSigner is a crypto.Signer whose Sign always fails, standing
+// in for a transient device/network fault during issuance -- distinct from
+// signingFailureProvider, whose Signer() call itself fails (caught by
+// HandleJoinRequest's preflight check, before the token is ever touched).
+type signingFailureSigner struct {
+	pub crypto.PublicKey
+}
+
+func (s *signingFailureSigner) Public() crypto.PublicKey { return s.pub }
+
+func (s *signingFailureSigner) Sign(io.Reader, []byte, crypto.SignerOpts) ([]byte, error) {
+	return nil, errors.New("device unreachable mid-signature")
+}
+
+// issuanceFailureProvider is a cakey.Provider double whose Signer()
+// SUCCEEDS (passing HandleJoinRequest's preflight check) but whose
+// returned Signer fails on Sign -- the scenario HandleJoinRequest's
+// reordering exists for: a failure DURING issuance, after the token has
+// already been consumed.
+type issuanceFailureProvider struct {
+	cert *x509.Certificate
+}
+
+func (p *issuanceFailureProvider) Signer(context.Context) (crypto.Signer, error) {
+	return &signingFailureSigner{pub: p.cert.PublicKey}, nil
+}
+
+func (p *issuanceFailureProvider) Certificate(context.Context) (*x509.Certificate, error) {
+	return p.cert, nil
+}
+
+// TestHandleJoinRequest_SignFailureAfterConsumeLeavesIdentityRetryable is
+// the owner-required proof for the consume-before-mark ordering: a
+// signing failure that happens AFTER the token is consumed (CSR and PoP
+// already validated) must not retire the node identity -- a fresh token
+// minted for the SAME node ID must still succeed once signing works again.
+func TestHandleJoinRequest_SignFailureAfterConsumeLeavesIdentityRetryable(t *testing.T) {
+	realProvider := newTestClusterCAProvider(t)
+	caCert, err := realProvider.Certificate(context.Background())
+	if err != nil {
+		t.Fatalf("Certificate: %v", err)
+	}
+	failingProvider := &issuanceFailureProvider{cert: caCert}
+
+	store := kvstore.NewMemoryKVStore()
+	token := mintTestJoinToken(t, store, "node-retry-3")
+	nodeKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	csrDER, err := buildJoinCSR(nodeKey, "")
+	if err != nil {
+		t.Fatalf("buildJoinCSR: %v", err)
+	}
+
+	resp := HandleJoinRequest(context.Background(), failingProvider, store, testTrustDomain, &JoinRequest{
+		Token:  token,
+		CSRDER: csrDER,
+	})
+	if resp.Error != "signing failed" {
+		t.Fatalf("response = %+v, want the signing-failed message", resp)
+	}
+
+	// The node identity must NOT be retired: a freshly minted token for
+	// the SAME node ID, against a working provider, succeeds.
+	retryToken := mintTestJoinToken(t, store, "node-retry-3")
+	retryCSRDER, err := buildJoinCSR(nodeKey, "")
+	if err != nil {
+		t.Fatalf("buildJoinCSR (retry): %v", err)
+	}
+	resp2 := HandleJoinRequest(context.Background(), realProvider, store, testTrustDomain, &JoinRequest{
+		Token:  retryToken,
+		CSRDER: retryCSRDER,
+	})
+	if resp2.Error != "" || len(resp2.CertPEM) == 0 {
+		t.Fatalf("retry for the same node ID after a sign failure = %+v, want a successfully issued leaf", resp2)
+	}
+}
+
 func TestJoinServer_SigningFailureRefused(t *testing.T) {
 	realProvider := newTestClusterCAProvider(t)
 	caCert, err := realProvider.Certificate(context.Background())

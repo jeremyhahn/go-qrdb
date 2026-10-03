@@ -169,15 +169,39 @@ type JoinResponse struct {
 
 // HandleJoinRequest is the transport-agnostic core of member-side CSR
 // signing, shared by every transport binding (Noise_NK's JoinServer, the
-// SPKI/Direct HTTPS route in pkg/api/rest): single-use token consumption
-// (ConsumeJoinToken), CSR parse and proof-of-possession check, then
-// issuance through the cluster CA provider FOR THE TOKEN'S BOUND IDENTITY
-// -- req.NodeURI is never consulted; a token binds the identity, the
-// joiner does not get to assert one of its own choosing. It never reads a
-// private key out of provider -- IssueLeafForKey signs with it, nothing
-// more -- and the only error detail returned to the wire is the single,
-// cause-independent reason ConsumeJoinToken reports (no token-validity
-// oracle).
+// SPKI/Direct HTTPS route in pkg/api/rest): CSR parse and
+// proof-of-possession check, THEN single-use token consumption
+// (ConsumeJoinToken), then issuance through the cluster CA provider FOR
+// THE TOKEN'S BOUND IDENTITY -- req.NodeURI is never consulted; a token
+// binds the identity, the joiner does not get to assert one of its own
+// choosing. It never reads a private key out of provider -- IssueLeafForKey
+// signs with it, nothing more -- and the only error detail returned to the
+// wire is the single, cause-independent reason ConsumeJoinToken reports (no
+// token-validity oracle).
+//
+// The CSR and its proof of possession are checked BEFORE the token is
+// touched: a malformed CSR or a failed signature check is a defect in THIS
+// attempt, not evidence the token is bad, and the joiner can retry with a
+// corrected CSR and the SAME token. Burning the token on a CSR-shaped
+// problem would turn a client-side bug into a forced re-mint.
+//
+// The token is consumed (ConsumeJoinToken) once the CSR is known-good, but
+// the joined identity is marked admitted (MarkJoinIdentityAdmitted) only
+// AFTER IssueLeafForKey actually succeeds -- never bundled with
+// consumption. A signing failure (a transient device/network fault; the
+// barrier sealing mid-request) after the token is already consumed must
+// remain retryable: an admin mints a fresh token for the SAME node identity
+// and the retry proceeds normally, rather than that node ID being retired
+// forever because a token happened to get burned moments before a
+// transient failure. The cost of this ordering is a narrow, deliberately
+// accepted race: two tokens minted for the same not-yet-admitted identity
+// could both be consumed and both reach IssueLeafForKey concurrently before
+// either marks the identity admitted, yielding two valid leaves for one
+// identity instead of the intended one. That is a bookkeeping anomaly, not
+// a security hole -- it requires an admin to have minted two tokens for
+// the same unjoined identity in the first place -- and is strictly better
+// than the alternative this replaces: permanently locking a node ID out
+// after any transient post-consumption failure.
 //
 // store is the replicated kvstore the signing member's join tokens are
 // minted into (see MintJoinToken) -- the SAME store cakey.SoftwareProvider
@@ -198,6 +222,14 @@ func HandleJoinRequest(ctx context.Context, provider cakey.Provider, store kvsto
 		return &JoinResponse{Error: "join request could not be processed"}
 	}
 
+	csr, err := x509.ParseCertificateRequest(req.CSRDER)
+	if err != nil {
+		return &JoinResponse{Error: "invalid certificate signing request"}
+	}
+	if err := csr.CheckSignature(); err != nil {
+		return &JoinResponse{Error: "certificate signing request: proof of possession failed"}
+	}
+
 	boundNodeURI, err := ConsumeJoinToken(ctx, store, trustDomain, req.Token)
 	if err != nil {
 		var refused *JoinRefusedError
@@ -211,17 +243,25 @@ func HandleJoinRequest(ctx context.Context, provider cakey.Provider, store kvsto
 		return &JoinResponse{Error: "join request could not be processed"}
 	}
 
-	csr, err := x509.ParseCertificateRequest(req.CSRDER)
-	if err != nil {
-		return &JoinResponse{Error: "invalid certificate signing request"}
-	}
-	if err := csr.CheckSignature(); err != nil {
-		return &JoinResponse{Error: "certificate signing request: proof of possession failed"}
-	}
-
 	certPEM, err := clusterca.IssueLeafForKey(ctx, provider, csr.PublicKey, boundNodeURI)
 	if err != nil {
+		// The token is already consumed, but the identity is NOT marked
+		// admitted (that happens only below, on success): a fresh token
+		// minted for boundNodeURI can retry. See the doc comment above for
+		// the accepted narrow race this trades for that retryability.
 		return &JoinResponse{Error: "signing failed"}
+	}
+
+	if err := MarkJoinIdentityAdmitted(ctx, store, boundNodeURI); err != nil {
+		// The leaf is already issued and is about to be returned to the
+		// joiner below -- the one thing that matters to it. A failure to
+		// record the bookkeeping entry must not turn into withholding a
+		// certificate that already exists; it only means a future token
+		// for this identity is not refused by ConsumeJoinToken's
+		// already-admitted check, which a live-membership check (see
+		// MintJoinToken) still covers once that node is actually a member.
+		slog.ErrorContext(ctx, "member-side CSR join: issued a leaf but failed to record admission",
+			"node_uri", boundNodeURI, "error", err)
 	}
 	return &JoinResponse{CertPEM: certPEM}
 }
