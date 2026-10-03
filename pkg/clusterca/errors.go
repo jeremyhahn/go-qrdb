@@ -41,3 +41,18 @@ func (e *ProviderError) Error() string {
 func (e *ProviderError) Unwrap() error {
 	return e.Err
 }
+
+// WeakKeyError is returned by IssueLeafForKey when the caller-supplied
+// public key (from a joiner's CSR, which this package never generates
+// itself) is not strong enough for a cluster-member leaf: ECDSA weaker
+// than P-256, an RSA key under 2048 bits, or any other key type Go's
+// crypto/x509 does not itself classify as one of ECDSA, Ed25519 or RSA.
+type WeakKeyError struct {
+	// KeyType names the key's Go type, for a caller that wants to log it.
+	KeyType string
+}
+
+// Error returns a human-readable description.
+func (e *WeakKeyError) Error() string {
+	return "clusterca: CSR public key is not strong enough for a cluster-member leaf (" + e.KeyType + ")"
+}
