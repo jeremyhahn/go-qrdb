@@ -23,6 +23,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 )
@@ -246,14 +247,14 @@ func TestClaimShardID_ExhaustionIsTyped(t *testing.T) {
 func TestClaimShardID_WaitsForActivation(t *testing.T) {
 	store := kvstore.NewMemoryKVStore()
 	active := false
-	c, err := shard.NewClaimer(store, shard.WithActivation("cluster-shard-ids", func() bool { return active }))
+	c, err := shard.NewClaimer(store, shard.WithActivation(featuregate.ClusterShardIDs, func() bool { return active }))
 	if err != nil {
 		t.Fatalf("NewClaimer: %v", err)
 	}
 	_, err = c.ClaimShardID(context.Background())
-	var inactive *shard.FeatureNotActiveError
-	if !errors.As(err, &inactive) || inactive.Feature != "cluster-shard-ids" {
-		t.Fatalf("claim before activation = %v, want *FeatureNotActiveError", err)
+	var inactive *featuregate.NotActiveError
+	if !errors.As(err, &inactive) || inactive.Feature != featuregate.ClusterShardIDs {
+		t.Fatalf("claim before activation = %v, want *featuregate.NotActiveError", err)
 	}
 	if msg := inactive.Error(); !strings.Contains(msg, `"cluster-shard-ids"`) {
 		t.Fatalf("error text %q does not name the feature", msg)

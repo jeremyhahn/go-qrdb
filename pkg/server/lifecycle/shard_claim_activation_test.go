@@ -48,9 +48,9 @@ func TestNewShardClaimer_WaitsForClusterShardIDs(t *testing.T) {
 		t.Fatalf("newShardClaimer: %v", err)
 	}
 	_, err = claimer.ClaimShardID(context.Background())
-	var inactive *shard.FeatureNotActiveError
-	if !errors.As(err, &inactive) || inactive.Feature != string(featuregate.ClusterShardIDs) {
-		t.Fatalf("claim before activation = %v, want *shard.FeatureNotActiveError{cluster-shard-ids}", err)
+	var inactive *featuregate.NotActiveError
+	if !errors.As(err, &inactive) || inactive.Feature != featuregate.ClusterShardIDs {
+		t.Fatalf("claim before activation = %v, want *featuregate.NotActiveError{cluster-shard-ids}", err)
 	}
 	if raw, _ := store.Get(context.Background(), shard.HighWaterKey); raw != nil {
 		t.Fatalf("a refused claim wrote the high-water mark: %q", raw)
@@ -69,8 +69,8 @@ func TestNewShardClaimer_OtherFeaturesDoNotActivateClaims(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newShardClaimer: %v", err)
 	}
-	var inactive *shard.FeatureNotActiveError
+	var inactive *featuregate.NotActiveError
 	if _, err := claimer.ClaimShardID(context.Background()); !errors.As(err, &inactive) {
-		t.Fatalf("claim with only guarded-writes active = %v, want *shard.FeatureNotActiveError", err)
+		t.Fatalf("claim with only guarded-writes active = %v, want *featuregate.NotActiveError", err)
 	}
 }

@@ -408,7 +408,7 @@ func HostMembership(h ShardMembershipReader) MembershipSource
   (`shard.Claimer`, see [../databases/engineering.md](../databases/engineering.md#cluster-wide-shard-ids)),
   using the KV engine's existing compare-and-set. The claim is gated on the
   feature: on a host that gates features, every claim -- and so every raft
-  database create -- is refused with `*shard.FeatureNotActiveError` (503 /
+  database create -- is refused with `*featuregate.NotActiveError` (503 /
   `UNAVAILABLE`, retryable) until `cluster-shard-ids` is active cluster-wide,
   so no node claims while another may still allocate per node. Its activation
   also applies the downgrade rule: once every node claims, a binary that

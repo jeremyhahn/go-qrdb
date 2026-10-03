@@ -22,7 +22,6 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 )
@@ -1128,21 +1127,6 @@ type CompactRevisionFutureError struct {
 func (e *CompactRevisionFutureError) Error() string {
 	return "service: compaction revision " + strconv.FormatInt(e.Requested, 10) +
 		" is a future revision (current: " + strconv.FormatInt(e.Current, 10) + ")"
-}
-
-// FeatureNotEnabledError is returned, before anything is proposed, for a
-// command that uses a cluster feature the group's feature gate has not
-// enabled: some replica of the group may run a binary that cannot apply it,
-// and would refuse the entry while its peers applied it.
-type FeatureNotEnabledError struct {
-	Feature featuregate.Feature
-	ShardID uint64
-}
-
-// Error returns a human-readable description.
-func (e *FeatureNotEnabledError) Error() string {
-	return "service: feature " + string(e.Feature) + " is not yet enabled on shard " +
-		strconv.FormatUint(e.ShardID, 10) + "; every replica must run a release that supports it"
 }
 
 // compactRefusalErrors maps each compaction refusal the state machine encodes

@@ -53,7 +53,7 @@ func TestMVCCKVService_CompactNodeKeyspace_Refusals(t *testing.T) {
 
 	inner, gatedCmds := recordingHost(sm.Result{})
 	gated := &gatedHost{mockHost: inner, enabled: map[uint64]bool{1: false}}
-	var gate *FeatureNotEnabledError
+	var gate *featuregate.NotActiveError
 	if err := nodeCompactor(gated).CompactNodeKeyspace(context.Background(), 5); !errors.As(err, &gate) || gate.Feature != featuregate.NodeCompaction {
 		t.Fatalf("before the gate = %v", err)
 	}

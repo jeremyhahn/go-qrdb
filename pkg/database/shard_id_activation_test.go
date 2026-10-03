@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 )
@@ -33,7 +34,7 @@ import (
 func TestShardIDs_RaftCreateWaitsForClusterShardIDs(t *testing.T) {
 	var active atomic.Bool
 	claimer, err := shard.NewClaimer(kvstore.NewMemoryKVStore(),
-		shard.WithActivation("cluster-shard-ids", active.Load))
+		shard.WithActivation(featuregate.ClusterShardIDs, active.Load))
 	if err != nil {
 		t.Fatalf("shard.NewClaimer: %v", err)
 	}
@@ -44,9 +45,9 @@ func TestShardIDs_RaftCreateWaitsForClusterShardIDs(t *testing.T) {
 
 	cfg := DatabaseConfig{Name: "early", Engine: EngineKV, Backend: BackendMemory, Raft: validRaftConfig(0)}
 	_, err = m.Create(cfg)
-	var inactive *shard.FeatureNotActiveError
-	if !errors.As(err, &inactive) || inactive.Feature != "cluster-shard-ids" {
-		t.Fatalf("raft create before activation = %v, want *shard.FeatureNotActiveError", err)
+	var inactive *featuregate.NotActiveError
+	if !errors.As(err, &inactive) || inactive.Feature != featuregate.ClusterShardIDs {
+		t.Fatalf("raft create before activation = %v, want *featuregate.NotActiveError", err)
 	}
 	if inactive.Error() == "" {
 		t.Fatal("empty error text")

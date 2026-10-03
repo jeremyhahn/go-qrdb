@@ -65,7 +65,7 @@ func TestMVCCKVService_CompactPrefix_WaitsForTheFeatureGate(t *testing.T) {
 	host := &gatedHost{mockHost: inner, enabled: map[uint64]bool{1: false}}
 
 	err := NewMVCCKVService(host, 1).(PrefixCompactor).CompactPrefix(context.Background(), "acme/app/", 5)
-	var gate *FeatureNotEnabledError
+	var gate *featuregate.NotActiveError
 	if !errors.As(err, &gate) || gate.Feature != featuregate.PrefixCompaction || gate.ShardID != 1 {
 		t.Fatalf("CompactPrefix before the gate opened = %v (%T)", err, err)
 	}
@@ -146,7 +146,6 @@ func TestCompactErrors_Messages(t *testing.T) {
 		&CompactScopeRequiredError{},
 		&CompactRevisionInvalidError{Revision: -1},
 		&CompactRevisionFutureError{Requested: 9, Current: 3},
-		&FeatureNotEnabledError{Feature: featuregate.PrefixCompaction, ShardID: 7},
 		&CompactPrefixInvalidError{Prefix: "acme/"},
 	} {
 		if msg := err.Error(); len(msg) < len("service: ") || msg[:len("service: ")] != "service: " {

@@ -37,7 +37,7 @@ func newShardClaimer(store kvstore.KVStore, host service.Host) (*shard.Claimer, 
 	}
 	var opts []shard.ClaimerOption
 	if gated, ok := host.(service.FeatureGatedHost); ok {
-		opts = append(opts, shard.WithActivation(string(featuregate.ClusterShardIDs), func() bool {
+		opts = append(opts, shard.WithActivation(featuregate.ClusterShardIDs, func() bool {
 			return gated.FeatureEnabled(shard.ShardKV, featuregate.ClusterShardIDs)
 		}))
 	}

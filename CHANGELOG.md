@@ -109,6 +109,15 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed — BREAKING
 
+- **BREAKING: one refusal for every feature-gated operation.** `shard.FeatureNotActiveError`
+  is replaced by `featuregate.NotActiveError` (`Feature`, and `ShardID` when the feature is
+  needed of one group's replicas), which every operation that waits on cluster-feature
+  activation returns: a raft database create before `cluster-shard-ids`, and a prefix, node
+  or compaction-state command before `prefix-compaction` or `node-compaction`. It is classified
+  Unavailable on every transport (REST 503, gRPC/Unix `UNAVAILABLE`, QUIC
+  `StatusUnavailable`) because it clears once activation completes. `shard.WithActivation`
+  takes a `featuregate.Feature`.
+
 - **BREAKING: `Compact` compacts the scoped database's history, and only its owning tenant
   may call it.** It used to compact the whole store and was reserved to the system tenant;
   `mvcc:compact` moved from `ScopeCross` to `ScopeSelfStrict`, and `sdk.PermissionMVCCCompact`
@@ -123,8 +132,8 @@ are not reconstructed here — their history is in the git log.
   node-keyspace policy (see Added), never by `Compact`.
 - **BREAKING: Raft opcode 13 (`OpMVCCCompact`) is retired** and replaced by
   `OpMVCCCompactPrefix` (14, payload `[revision:8][prefixLen:2][prefix]`), proposed only once
-  the new cluster feature `prefix-compaction` is enabled (`service.FeatureNotEnabledError`
-  before then). A log holding opcode 13 is refused as an unknown opcode. The compacted marker
+  the new cluster feature `prefix-compaction` is enabled (`featuregate.NotActiveError`, 503 /
+  `UNAVAILABLE`, before then). A log holding opcode 13 is refused as an unknown opcode. The compacted marker
   `[0x04]` becomes one floor key per prefix (`[0x04][prefix]`); an existing `[0x04]` loads as
   the floor of the empty prefix.
 - **BREAKING: compaction validates its revision.** Below 1 is

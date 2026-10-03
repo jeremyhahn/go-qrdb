@@ -84,3 +84,27 @@ func (e *UnsupportedReplicaError) Error() string {
 		", which the group uses; a joining node's advertisement is published by its enrollment, " +
 		"a member's by its own gate -- enroll or upgrade the node first"
 }
+
+// NotActiveError refuses an operation that depends on a cluster feature the
+// cluster has not yet activated: until every node -- for a group's command,
+// every replica of the group -- runs a binary that implements the feature,
+// using it could let one node act on what another cannot apply. Nothing was
+// done. It is the one refusal for every feature-gated operation, and it is
+// transient: the operation succeeds once activation completes, so it is
+// classified Unavailable on every transport.
+type NotActiveError struct {
+	// Feature is the feature the operation needs.
+	Feature Feature
+	// ShardID is the group whose replicas must all support the feature, or
+	// zero for a feature the operation needs cluster-wide.
+	ShardID uint64
+}
+
+// Error implements error.
+func (e *NotActiveError) Error() string {
+	msg := "featuregate: cluster feature " + strconv.Quote(string(e.Feature)) + " is not active yet"
+	if e.ShardID != 0 {
+		msg += " on shard " + strconv.FormatUint(e.ShardID, 10)
+	}
+	return msg + ": every node must run a release that supports it"
+}

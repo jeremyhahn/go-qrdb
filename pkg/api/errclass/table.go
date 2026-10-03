@@ -271,7 +271,6 @@ var restoreRules = []rule{
 	// compact, and a feature the group has not enabled is not usable here
 	// yet. Neither is the caller's request to fix.
 	as(&service.CompactScopeRequiredError{}, Unprocessable),
-	as(&service.FeatureNotEnabledError{}, Unprocessable),
 	as(&service.CompactPrefixInvalidError{}, InvalidArgument),
 	as(&service.CompactRevisionInvalidError{}, InvalidArgument),
 	as(&service.CompactRevisionFutureError{}, InvalidArgument),
@@ -375,10 +374,12 @@ var databaseRules = []rule{
 	// No shard ID remains to issue. Nothing a retry can change: the space is
 	// spent for the life of the cluster.
 	as(&shard.ShardIDExhaustedError{}, ResourceExhausted),
-	// A raft create before the cluster activated cluster-wide shard IDs: the
-	// node is not yet able to issue one. A retry succeeds once every node runs
-	// a binary that claims.
-	as(&shard.FeatureNotActiveError{Feature: "cluster-shard-ids"}, Unavailable),
+	// An operation that needs a cluster feature the cluster has not yet
+	// activated -- a raft create before cluster-wide shard IDs, a compaction
+	// or compaction-state command before prefix-compaction or
+	// node-compaction. Nothing was done, and a retry succeeds once every node
+	// runs a binary that implements the feature: transient, so Unavailable.
+	as(&featuregate.NotActiveError{Feature: featuregate.ClusterShardIDs}, Unavailable),
 	// A claim that lost the race on every attempt, or whose store did not
 	// answer: nothing was created, and a retry can succeed.
 	as(&shard.ClaimContentionError{Attempts: 1}, Unavailable),

@@ -115,7 +115,7 @@ func (s *MVCCKVService) proposeCompactionState(ctx context.Context, cmd protocol
 		return &CompactPrefixInvalidError{Prefix: cmd.Scope}
 	}
 	if gated, ok := s.host.(FeatureGatedHost); ok && !gated.FeatureEnabled(s.shardID, featuregate.PrefixCompaction) {
-		return &FeatureNotEnabledError{Feature: featuregate.PrefixCompaction, ShardID: s.shardID}
+		return &featuregate.NotActiveError{Feature: featuregate.PrefixCompaction, ShardID: s.shardID}
 	}
 	encoded, err := protocol.EncodeCompactionState(cmd)
 	if err != nil {

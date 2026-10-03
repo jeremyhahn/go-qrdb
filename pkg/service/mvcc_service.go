@@ -861,7 +861,7 @@ func (s *MVCCKVService) CompactNodeKeyspace(ctx context.Context, revision int64)
 		return &CompactRevisionInvalidError{Revision: revision}
 	}
 	if gated, ok := s.host.(FeatureGatedHost); ok && !gated.FeatureEnabled(s.shardID, featuregate.NodeCompaction) {
-		return &FeatureNotEnabledError{Feature: featuregate.NodeCompaction, ShardID: s.shardID}
+		return &featuregate.NotActiveError{Feature: featuregate.NodeCompaction, ShardID: s.shardID}
 	}
 	cmd, encErr := protocol.EncodeMVCCCompactNode(revision)
 	if encErr != nil {
@@ -887,7 +887,7 @@ func (s *MVCCKVService) CompactNodeKeyspace(ctx context.Context, revision int64)
 // refused by the state machine (*CompactRevisionFutureError,
 // *RevisionCompactedError) and changes nothing. The command is proposed only
 // once the group's feature gate reports every replica can apply it
-// (*FeatureNotEnabledError otherwise).
+// (*featuregate.NotActiveError otherwise).
 func (s *MVCCKVService) CompactPrefix(ctx context.Context, prefix string, revision int64) error {
 	if !isDatabaseKeyspace(prefix) {
 		return &CompactPrefixInvalidError{Prefix: prefix}
@@ -896,7 +896,7 @@ func (s *MVCCKVService) CompactPrefix(ctx context.Context, prefix string, revisi
 		return &CompactRevisionInvalidError{Revision: revision}
 	}
 	if gated, ok := s.host.(FeatureGatedHost); ok && !gated.FeatureEnabled(s.shardID, featuregate.PrefixCompaction) {
-		return &FeatureNotEnabledError{Feature: featuregate.PrefixCompaction, ShardID: s.shardID}
+		return &featuregate.NotActiveError{Feature: featuregate.PrefixCompaction, ShardID: s.shardID}
 	}
 	cmd, encErr := protocol.EncodeMVCCCompactPrefix([]byte(prefix), revision)
 	if encErr != nil {

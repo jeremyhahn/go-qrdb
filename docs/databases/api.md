@@ -277,7 +277,7 @@ refusal as a server fault.)*
 | Target: backend conflicts with the tenant's isolation (OD-7, ruled B) | 400 | `FAILED_PRECONDITION` — `database.BackendIsolationConflictError` |
 | Target: a database's binding cannot be opened | 503 | `UNAVAILABLE` — `database.BindingUnavailableError` |
 | Target: a local-binding database's owning node is unreachable (OD-2, ruled A) | 503 | `UNAVAILABLE` — `database.BindingOwnerUnavailableError` |
-| Target: the cluster feature gate for a command is not yet open on every member | 503 | `FAILED_PRECONDITION` — typed feature-gate refusal |
+| Target: the cluster feature gate for a command is not yet open on every member | 503 | `UNAVAILABLE` — `featuregate.NotActiveError`, the one feature-gate refusal |
 | Target: create carrying `engine` (OD-13, ruled A) | 400 | `INVALID_ARGUMENT` |
 
 ## Pagination

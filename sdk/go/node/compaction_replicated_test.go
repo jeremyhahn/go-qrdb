@@ -26,6 +26,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -103,7 +104,7 @@ func setPolicy(t *testing.T, ctx context.Context, n *Node, owner, db string, pol
 		if err == nil {
 			return
 		}
-		var gate *service.FeatureNotEnabledError
+		var gate *featuregate.NotActiveError
 		if !errors.As(err, &gate) || time.Now().After(deadline) {
 			t.Fatalf("UpdateCompactionForTenant(%s): %v", db, err)
 		}

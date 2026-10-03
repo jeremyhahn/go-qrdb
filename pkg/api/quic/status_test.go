@@ -326,7 +326,7 @@ var conditions = []conditionRow{
 	{"consistency unmet", &service.ConsistencyError{Level: "linearizable", Reason: "no quorum"}, wire.StatusFailedPrecondition, codes.FailedPrecondition},
 	{"PIN not set", pin.ErrPINNotSet, wire.StatusFailedPrecondition, codes.FailedPrecondition},
 	{"compaction without a database scope", &service.CompactScopeRequiredError{}, wire.StatusFailedPrecondition, codes.FailedPrecondition},
-	{"compaction feature not yet enabled", &service.FeatureNotEnabledError{Feature: "prefix-compaction", ShardID: 1}, wire.StatusFailedPrecondition, codes.FailedPrecondition},
+	{"compaction feature not yet active", &featuregate.NotActiveError{Feature: featuregate.PrefixCompaction, ShardID: 1}, wire.StatusUnavailable, codes.Unavailable},
 	{"compaction to a future revision", &service.CompactRevisionFutureError{Requested: 9, Current: 3}, wire.StatusInvalidArgument, codes.InvalidArgument},
 	{"compaction to revision zero", &service.CompactRevisionInvalidError{Revision: 0}, wire.StatusInvalidArgument, codes.InvalidArgument},
 	{"PIN strategy unset", pin.ErrStrategyNotSet, wire.StatusFailedPrecondition, codes.FailedPrecondition},

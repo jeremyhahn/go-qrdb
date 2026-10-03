@@ -103,9 +103,9 @@ func TestCompactionState_RefusedBeforeTheGateActivates(t *testing.T) {
 		"sample": func() error { return svc.RecordCompactionSample(ctx, "acme/app/", time.Now(), 1) },
 		"clear":  func() error { return svc.ClearCompactionState(ctx, "acme/app/") },
 	} {
-		var gate *FeatureNotEnabledError
+		var gate *featuregate.NotActiveError
 		if err := write(); !errors.As(err, &gate) || gate.Feature != featuregate.PrefixCompaction {
-			t.Fatalf("%s before the gate opened = %v, want *FeatureNotEnabledError for prefix-compaction", name, err)
+			t.Fatalf("%s before the gate opened = %v, want *featuregate.NotActiveError for prefix-compaction", name, err)
 		}
 	}
 	if len(*cmds) != 0 {

@@ -812,7 +812,7 @@ How a claim works:
 - **No claim before activation.** On a host whose groups can hold other
   binaries (one that answers `FeatureEnabled`, the raft adapter), the claimer
   is built with `shard.WithActivation`: every claim -- and so every raft
-  database create -- is refused with `*shard.FeatureNotActiveError` (503 /
+  database create -- is refused with `*featuregate.NotActiveError` (503 /
   `UNAVAILABLE`, retryable) until `featuregate.ClusterShardIDs` is active
   cluster-wide, and the store is not touched. Before activation an old node
   could still allocate per node, and a rolling upgrade would otherwise have a
