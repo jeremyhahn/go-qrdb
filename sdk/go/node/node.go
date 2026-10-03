@@ -493,22 +493,45 @@ func (n *Node) sealedWindowCeremonyCore() *ceremony.CeremonyService {
 // no share holder could be enrolled on an SDK-built node. The audit trail is
 // the caller's own (server.WithAuditLogger), which exists before the node
 // does, so the holder events of the sealed window are recorded on it too.
-func (n *Node) withHolderInfra(infra lifecycle.Infra, cfg *qrdbconfig.Config, serverOpts []server.ServerOption) lifecycle.Infra {
+func (n *Node) withHolderInfra(infra lifecycle.Infra, cfg *qrdbconfig.Config, serverOpts []server.ServerOption) (lifecycle.Infra, error) {
 	crypto := server.ResolveCryptoOptions(serverOpts...)
 	infra.PINBackend = n.pinBackend(serverOpts)
 	infra.FactorRegistry = crypto.FactorRegistry
 	infra.CeremonyCA = crypto.CeremonyCA
 	infra.AuditLogger = crypto.AuditLogger
 	// The holder events recorded before they take effect follow the node's
-	// one audit failure posture. An unrecognised value refuses the boot where
-	// the authorization middleware parses it; until then the secure default
-	// stands.
+	// one audit failure posture. The sealed window's graph is built before the
+	// authorization middleware parses it, so an unrecognised value refuses the
+	// graph here -- as it refuses qrdbd's start -- rather than resolving to
+	// either posture.
 	if cfg != nil {
-		if policy, err := audit.ParseFailurePolicy(cfg.Auth.AuditFailurePolicy); err == nil {
-			infra.AuditFailurePolicy = policy
+		policy, err := audit.ParseFailurePolicy(cfg.Auth.AuditFailurePolicy)
+		if err != nil {
+			return infra, err
 		}
+		infra.AuditFailurePolicy = policy
 	}
-	return infra
+	return infra, nil
+}
+
+// buildServices builds the full service graph over infra with the node's
+// holder infra (withHolderInfra).
+func (n *Node) buildServices(ctx context.Context, infra lifecycle.Infra, cfg *qrdbconfig.Config, serverOpts []server.ServerOption) (*lifecycle.Node, error) {
+	infra, err := n.withHolderInfra(infra, cfg, serverOpts)
+	if err != nil {
+		return nil, err
+	}
+	return lifecycle.BuildServices(ctx, infra)
+}
+
+// buildSealServices builds the sealed window's service graph over infra with
+// the node's holder infra (withHolderInfra).
+func (n *Node) buildSealServices(ctx context.Context, infra lifecycle.Infra, cfg *qrdbconfig.Config, serverOpts []server.ServerOption) (*lifecycle.Node, error) {
+	infra, err := n.withHolderInfra(infra, cfg, serverOpts)
+	if err != nil {
+		return nil, err
+	}
+	return lifecycle.BuildSealServicesOnly(ctx, infra)
 }
 
 // close releases the seal store and the volume-pool state store (in that
@@ -1054,7 +1077,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 	profile := profileCfg.EffectiveCapabilities()
 	profile.WarnUnencryptedAtRest(n.logger)
 
-	svcNode, err := lifecycle.BuildServices(ctx, n.withHolderInfra(lifecycle.Infra{
+	svcNode, err := n.buildServices(ctx, lifecycle.Infra{
 		Host:              localHost,
 		WatchHub:          watchHub,
 		DataDir:           pending.dataDir,
@@ -1086,7 +1109,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		// because the TenantService is constructed inside BuildServices.
 		StrategyRegistry:          server.ResolveCryptoOptions(pending.serverOpts...).StrategyRegistry,
 		DefaultTenantEntitlements: n.defaultTenantEntitlements,
-	}, pending.cfg, pending.serverOpts))
+	}, pending.cfg, pending.serverOpts)
 	if err != nil {
 		_ = localHost.Close()
 		_ = n.stg.Close()
@@ -1531,7 +1554,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	// services and the tenant infrastructure exist.
 	n.clusterSeal = clusterseal.NewDeferred()
 
-	svcNode, err := lifecycle.BuildServices(ctx, n.withHolderInfra(lifecycle.Infra{
+	svcNode, err := n.buildServices(ctx, lifecycle.Infra{
 		ClusterSealer:     n.clusterSeal,
 		Host:              hostAdapter,
 		NoRevisionHistory: !clusteredKeepsRevisionHistory(pending.cfg),
@@ -1567,7 +1590,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		// hardware/cloud seal strategies resolve in clustered mode too.
 		StrategyRegistry:          server.ResolveCryptoOptions(pending.serverOpts...).StrategyRegistry,
 		DefaultTenantEntitlements: n.defaultTenantEntitlements,
-	}, pending.cfg, pending.serverOpts))
+	}, pending.cfg, pending.serverOpts)
 	if err != nil {
 		_ = host.Close()
 		_ = dbManager.Close()
@@ -2061,14 +2084,14 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 
 		// Build the sealed-window service graph (barrier + ceremony +
 		// credential only) so they are accessible even before full boot.
-		sealNode, sealNodeErr := lifecycle.BuildSealServicesOnly(ctx, n.withHolderInfra(lifecycle.Infra{
+		sealNode, sealNodeErr := n.buildSealServices(ctx, lifecycle.Infra{
 			DataDir:           dataDir,
 			SealBarrier:       sub.barrier,
 			BarrierRegistry:   sub.barrierRegistry,
 			CredentialCoreSvc: sub.credCoreSvc,
 			CeremonyDataDir:   sub.sealDataDir,
 			Logger:            log,
-		}, cfg, serverOpts))
+		}, cfg, serverOpts)
 		if sealNodeErr != nil {
 			_ = sub.close()
 			return nil, &ServicesCreateError{Err: sealNodeErr}
@@ -2247,14 +2270,14 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		}
 		n.adoptSealSubsystem(sub)
 
-		sealNode, sealNodeErr := lifecycle.BuildSealServicesOnly(ctx, n.withHolderInfra(lifecycle.Infra{
+		sealNode, sealNodeErr := n.buildSealServices(ctx, lifecycle.Infra{
 			DataDir:           dataDir,
 			SealBarrier:       sub.barrier,
 			BarrierRegistry:   sub.barrierRegistry,
 			CredentialCoreSvc: sub.credCoreSvc,
 			CeremonyDataDir:   sub.sealDataDir,
 			Logger:            log,
-		}, cfg, serverOpts))
+		}, cfg, serverOpts)
 		if sealNodeErr != nil {
 			_ = sub.close()
 			return nil, &ServicesCreateError{Err: sealNodeErr}

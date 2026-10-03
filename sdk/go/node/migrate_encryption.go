@@ -431,7 +431,7 @@ func (p *nodeMigrationProvider) Reopen(ctx context.Context, scope service.Barrie
 		}
 
 		if keyed.IsSealed() {
-			sealNode, serr := lifecycle.BuildSealServicesOnly(ctx, n.withHolderInfra(lifecycle.Infra{
+			sealNode, serr := n.buildSealServices(ctx, lifecycle.Infra{
 				DataDir:           pending.dataDir,
 				SealBarrier:       keyed,
 				BarrierRegistry:   n.barrierRegistry.Load(),
@@ -439,7 +439,7 @@ func (p *nodeMigrationProvider) Reopen(ctx context.Context, scope service.Barrie
 				CeremonyDataDir:   filepath.Join(pending.dataDir, "seal"),
 				CeremonyCoreSvc:   n.sealedWindowCeremonyCore(),
 				Logger:            n.logger,
-			}, pending.cfg, pending.serverOpts))
+			}, pending.cfg, pending.serverOpts)
 			if serr != nil {
 				return &MigrationReopenError{Reason: "rebuild seal-window services after shamir migration", Err: serr}
 			}
