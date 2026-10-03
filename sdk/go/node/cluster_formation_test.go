@@ -36,6 +36,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -549,6 +550,10 @@ func TestClusteredNode_UnsealRetriesAfterACancelledBoot(t *testing.T) {
 	if err := nodes[0].Unseal(ctx, creds()); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Unseal of a lone founder with its ctx cancelled: err = %v, want context.Canceled", err)
 	}
+	if !nodes[0].IsSealed() {
+		t.Fatal("a cancelled boot must leave the node sealed")
+	}
+	assertAllTenantBarriersSealed(t, nodes[0].BarrierRegistry())
 
 	errs := make([]error, len(nodes))
 	var wg sync.WaitGroup
@@ -571,5 +576,151 @@ func TestClusteredNode_UnsealRetriesAfterACancelledBoot(t *testing.T) {
 	defer putCancel()
 	if err := putUntilCommitted(putCtx, client.KV(), "retried", []byte("v")); err != nil {
 		t.Fatalf("Put through the retried node: %v", err)
+	}
+}
+
+// assertAllTenantBarriersSealed fails the test if any barrier registered in
+// reg -- a per-tenant barrier a tenant-isolation reattach may have unsealed
+// before the boot that drove it was cancelled -- reports unsealed. reg may
+// be nil (seal disabled or no BarrierRegistry); a nil registry trivially
+// satisfies the check.
+func assertAllTenantBarriersSealed(t *testing.T, reg *seal.BarrierRegistry) {
+	t.Helper()
+	if reg == nil {
+		return
+	}
+	for _, id := range reg.ListTenants() {
+		tb, err := reg.GetTenant(id)
+		if err != nil {
+			t.Fatalf("GetTenant(%s): %v", id, err)
+		}
+		if tb.IsSealed() {
+			continue
+		}
+		t.Fatalf("tenant %s barrier is unsealed after a cancelled boot that reports the node sealed", id)
+	}
+}
+
+// TestClusteredNode_UnsealRetriesAfterACancelledBoot_TenantBarriersSealed
+// covers the tenant-isolation path: BuildTenantInfra -> RestoreVolumeTenants
+// unseals every auto-unseal tenant barrier it finds in ONE pass, before
+// reattachVolumeTenants (re-)starts each tenant's per-tenant Host -- a
+// sequence of single-node Raft elections that, with several tenants, takes
+// long enough to land a cancellation reliably inside it. A cancellation
+// there must not leave a tenant's DEK live in memory while the node itself
+// reports sealed, and a retried Unseal must still complete the boot.
+func TestClusteredNode_UnsealRetriesAfterACancelledBoot_TenantBarriersSealed(t *testing.T) {
+	ctx := context.Background()
+	cfg := sealClustered(newRaftIsolationConfig(t))
+	creds := func() seal.Credentials { return seal.MustCredentials([]byte("tenant-seal-cancel-test")) }
+	const tenantCount = 6
+
+	// First boot, unsealed in full: create several auto-unseal volume tenants
+	// so their barrier key material and tenant-root records persist under
+	// cfg.Raft.DataDir and the volume pool for the second boot to restore.
+	n1, err := NewClusteredNode(ctx, cfg, raftMembers(), nil,
+		WithTenantIsolation(), WithDefaultTenantEntitlements(volumeEntitlements()))
+	if err != nil {
+		t.Fatalf("NewClusteredNode (first boot): %v", err)
+	}
+	if err := n1.Unseal(ctx, creds()); err != nil {
+		t.Fatalf("first boot Unseal: %v", err)
+	}
+	for i := 0; i < tenantCount; i++ {
+		id := fmt.Sprintf("tenant-%02d", i)
+		if _, err := n1.Services().Tenant.CreateTenant(ctx, id, id,
+			tenant.IsolationVolume, tenant.WithBarrierAutoUnseal(true)); err != nil {
+			t.Fatalf("CreateTenant(%s): %v", id, err)
+		}
+	}
+	if err := n1.Close(); err != nil {
+		t.Fatalf("Close (first boot): %v", err)
+	}
+
+	// Re-open the same data directory: the system barrier is sealed again
+	// (NewClusteredNode never auto-unseals a passphrase barrier), so this
+	// Unseal re-runs completeClusteredBoot from scratch, including
+	// BuildTenantInfra's restore-and-reattach of the tenants just created.
+	//
+	// The cancellation delay is retried with an increasing budget rather than
+	// fixed: this machine's single-node election latency varies enough
+	// (observed ~150ms-900ms per election in this suite) that a single fixed
+	// delay sometimes lands before RestoreVolumeTenants has registered any
+	// tenant barrier, and sometimes after the whole boot has already
+	// succeeded. Landing is judged by a signal that does not depend on the
+	// fix under test: RestoreVolumeTenants registers every tenant barrier it
+	// finds in one synchronous pass BEFORE the per-tenant Host reattach loop
+	// even starts, so "at least one tenant is registered" means that pass
+	// ran to completion regardless of what happens to a registered barrier's
+	// sealed state afterward -- which is exactly the question this test asks.
+	var (
+		n2        *Node
+		unsealErr error
+	)
+	delay := 400 * time.Millisecond
+	const maxAttempts = 6
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		n2, err = NewClusteredNode(ctx, cfg, raftMembers(), nil,
+			WithTenantIsolation(), WithDefaultTenantEntitlements(volumeEntitlements()))
+		if err != nil {
+			t.Fatalf("NewClusteredNode (second boot, attempt %d): %v", attempt, err)
+		}
+		cancelCtx, cancel := context.WithCancel(context.Background())
+		timer := time.AfterFunc(delay, cancel)
+		unsealErr = n2.Unseal(cancelCtx, creds())
+		timer.Stop()
+		cancel()
+		if unsealErr != nil && len(n2.BarrierRegistry().ListTenants()) > 0 {
+			break
+		}
+		_ = n2.Close()
+		n2 = nil
+		delay += 300 * time.Millisecond
+	}
+	if n2 == nil {
+		t.Fatalf("could not land a cancellation inside tenant reattach after %d attempts", maxAttempts)
+	}
+	t.Cleanup(func() { _ = n2.Close() })
+
+	if !n2.IsSealed() {
+		t.Fatal("a cancelled boot must leave the node sealed")
+	}
+	assertAllTenantBarriersSealed(t, n2.BarrierRegistry())
+
+	// The failure path must also clear the components this attempt built so
+	// a retry's accessors cannot hand out a host or feature gate this failed
+	// boot already closed. svcNode must not be left holding the full
+	// (now-stopped) post-boot node either: BuildSealServicesOnly's seal-only
+	// node has no KV service (the data plane needs a live Host), so a
+	// non-nil KV here means Services() is still handing out the attempt's
+	// closed data plane.
+	if n2.host != nil {
+		t.Fatal("a cancelled boot must clear the host so a retry does not reuse a closed one")
+	}
+	if n2.featureGate != nil {
+		t.Fatal("a cancelled boot must clear the feature gate so a retry does not reuse a closed one")
+	}
+	if svc := n2.Services(); svc != nil && svc.KV != nil {
+		t.Fatal("a cancelled boot must not leave Services() handing out the stopped post-boot data plane")
+	}
+
+	// The retried Unseal must still complete the boot, and every tenant
+	// barrier must be unsealed again through the retry.
+	if err := n2.Unseal(context.Background(), creds()); err != nil {
+		t.Fatalf("retried Unseal: %v", err)
+	}
+	reg := n2.BarrierRegistry()
+	if reg == nil {
+		t.Fatal("BarrierRegistry must be present on a seal-enabled node")
+	}
+	for i := 0; i < tenantCount; i++ {
+		id := fmt.Sprintf("tenant-%02d", i)
+		tb, gerr := reg.GetTenant(id)
+		if gerr != nil {
+			t.Fatalf("GetTenant(%s) after the retried boot: %v", id, gerr)
+		}
+		if tb.IsSealed() {
+			t.Fatalf("tenant %s barrier must be unsealed after the retried boot completes", id)
+		}
 	}
 }

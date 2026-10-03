@@ -26,6 +26,18 @@ are not reconstructed here — their history is in the git log.
   boot left the barrier reporting unsealed with its key already wiped and no
   boot pending, so the next `Unseal` reported a node that never booted as
   ready. The node is now left sealed, and the next `Unseal` boots it.
+- **A cancelled boot seals every tenant barrier, not only the system one.**
+  On the tenant-isolation path, `BuildTenantInfra` unseals every auto-unseal
+  tenant barrier (`BarrierRegistry.RestoreVolumeTenants`) before re-attaching
+  each tenant's per-tenant Host; the failure defer sealed only the system
+  `StorageBarrier`, so a cancellation landing in that reattach left every
+  restored tenant's DEK live in memory while `IsSealed()` reported `true`.
+  The defer now seals through the `BarrierRegistry` (`SealAll`) when one is
+  present -- tenants, then the system barrier -- falling back to the bare
+  barrier seal otherwise, and clears the host and feature gate a failed
+  attempt built (restoring the pre-attempt services node rather than the
+  stopped post-boot one) so a retried `Unseal` never hands out a component
+  the failed attempt already closed.
 
 ## [0.33.0-alpha] - 2026-10-03
 

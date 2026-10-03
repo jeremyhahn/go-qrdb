@@ -218,7 +218,12 @@ fails with `*server.ShardLeaderWaitError` (no leader) or
 `*server.ShardReadWaitError` (a leader that never committed), naming what it
 saw. The constructor honours its `ctx`: cancel it to give up early. A sealed
 founder waits the same way in `Unseal`; one that fails or is cancelled stays
-sealed, and the next `Unseal` boots it.
+sealed, and the next `Unseal` boots it. This re-seals the barrier even if it
+was unsealed through a Shamir quorum ceremony rather than a single
+credential: a cancelled boot seals the system barrier AND every tenant
+barrier the cancelled attempt had already restored, so the retried `Unseal`
+needs a fresh quorum of share holders to resubmit their shares -- the
+ceremony's progress from the cancelled attempt is not retained.
 
 ```go
 cc := client.Cluster()

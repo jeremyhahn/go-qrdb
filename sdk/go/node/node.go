@@ -1259,6 +1259,14 @@ func (n *Node) startReclaimSweepStandalone(sweeper *service.ReclaimSweeper) {
 // server.
 func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingClusteredBoot) (err error) {
 	n.pendingClustered = nil
+	// Snapshot the seal-only services node the constructor built (Barrier,
+	// Ceremony, Credential, a seal-backed Tenant service -- see
+	// lifecycle.BuildSealServicesOnly) before this attempt may overwrite it
+	// with the full post-boot node. A failure restores this snapshot rather
+	// than clearing svcNode outright, so the ceremony/credential API a retry
+	// caller may still need stays reachable through Services() across a
+	// failed attempt, exactly as it was before this attempt ran.
+	preBootSvcNode := n.svcNode.Load()
 	// A boot that fails -- its ctx cancelled while the system shard waits
 	// for a quorum, say -- tears down what it built and leaves the node
 	// SEALED and bootable. Closing the host has already wiped the system
@@ -1266,12 +1274,30 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	// restoring pending makes the next Unseal re-derive the key and run this
 	// again, rather than find an "unsealed" barrier with no key and nothing
 	// pending and report the node booted.
+	//
+	// On the tenant-isolation path, BuildTenantInfra unseals every
+	// auto-unseal tenant barrier (via RestoreVolumeTenants) before this
+	// function can fail, so sealing only the system barrier here would leave
+	// those tenant DEKs live in memory while IsSealed() reports true. Seal
+	// through the BarrierRegistry (as Close and closeSeal do) when one is
+	// present, so every registered tenant barrier is sealed alongside the
+	// system one; fall back to the bare barrier when there is no registry.
 	defer func() {
 		if err != nil {
-			if b := n.barrier.Load(); b != nil {
+			if barrierRegistry := n.barrierRegistry.Load(); barrierRegistry != nil {
+				_ = barrierRegistry.SealAll()
+			} else if b := n.barrier.Load(); b != nil {
 				_ = b.Seal()
 			}
 			n.pendingClustered = pending
+			// Clear the components this attempt built so a retried Unseal's
+			// accessors cannot hand out a host or feature gate that this
+			// failed boot already closed, and restore svcNode to its
+			// pre-attempt (seal-only, or an earlier failed attempt's)
+			// snapshot rather than the full node this attempt stopped.
+			n.host = nil
+			n.featureGate = nil
+			n.svcNode.Store(preBootSvcNode)
 		}
 	}()
 
