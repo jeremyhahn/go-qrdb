@@ -96,6 +96,13 @@ func newVolumePooledRegistryWith(t *testing.T, sysStrat seal.SealingStrategy) *s
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
+	// RegisterVolumeTenant/ReattachVolumeTenant refuse with ErrSealed while
+	// the system barrier is sealed; every caller of this helper registers a
+	// volume tenant immediately, so the system barrier must be initialized
+	// (and so unsealed) up front.
+	if err := system.Initialize(context.Background(), seal.Credentials{}); err != nil {
+		t.Fatalf("system barrier Initialize: %v", err)
+	}
 	return reg
 }
 

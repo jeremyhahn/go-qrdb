@@ -55,6 +55,13 @@ func TestCreateTenant_Volume_AllocatesDataRootAndBarrier(t *testing.T) {
 	svc, reg := newVolumeService(t)
 	ctx := context.Background()
 
+	// RegisterVolumeTenant (reached via CreateTenant) refuses with ErrSealed
+	// while the system barrier is sealed; this test is about the tenant's own
+	// (self-managed, left sealed) barrier, not the system barrier's state.
+	if err := reg.SystemBarrier().Initialize(ctx, seal.Credentials{}); err != nil {
+		t.Fatalf("system barrier Initialize: %v", err)
+	}
+
 	info, err := svc.CreateTenant(ctx, "vtenant", "Volume Tenant", IsolationVolume)
 	if err != nil {
 		t.Fatalf("CreateTenant(volume): %v", err)

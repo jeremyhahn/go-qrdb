@@ -67,6 +67,21 @@ func newDataRootServiceOpts(t *testing.T, opts ...TenantServiceOption) (*TenantS
 	return svc, reg
 }
 
+// newDataRootServiceOptsUnsealed is newDataRootServiceOpts with its registry's
+// system barrier already initialized (and so unsealed):
+// BarrierRegistry.RegisterVolumeTenant/ReattachVolumeTenant -- which
+// CreateTenant(IsolationVolume/IsolationRaft, WithDataRoot(...)) reaches --
+// refuse with ErrSealed otherwise, and these WithDataRoot tests are about the
+// DataRoot-overlap guard, not the system barrier's own seal state.
+func newDataRootServiceOptsUnsealed(t *testing.T, opts ...TenantServiceOption) (*TenantService, *seal.BarrierRegistry) {
+	t.Helper()
+	svc, reg := newDataRootServiceOpts(t, opts...)
+	if err := reg.SystemBarrier().Initialize(context.Background(), seal.Credentials{}); err != nil {
+		t.Fatalf("system barrier Initialize: %v", err)
+	}
+	return svc, reg
+}
+
 // TestDataRootsOverlap covers the component-aware containment helper directly,
 // including the /data/foo vs /data/foo2 guard that a naive strings.HasPrefix
 // would get wrong.
@@ -165,7 +180,7 @@ func TestCreateTenant_WithDataRoot_RejectsSystemDataDirOverlap(t *testing.T) {
 // TestCreateTenant_WithDataRoot_RejectsSiblingTenantOverlap verifies a
 // dedicated DataRoot nested under an existing tenant's DataRoot is rejected.
 func TestCreateTenant_WithDataRoot_RejectsSiblingTenantOverlap(t *testing.T) {
-	svc, _ := newDataRootServiceOpts(t)
+	svc, _ := newDataRootServiceOptsUnsealed(t)
 	ctx := context.Background()
 	diskA := filepath.Join(t.TempDir(), "disk", "tenant-a")
 	if _, err := svc.CreateTenant(ctx, "ta", "Tenant A", IsolationVolume, WithDataRoot(diskA)); err != nil {
@@ -187,7 +202,7 @@ func TestCreateTenant_WithDataRoot_RejectsSiblingTenantOverlap(t *testing.T) {
 // separate dedicated DataRoot is accepted, and that two sibling tenant roots
 // /base/foo and /base/foo2 do NOT falsely overlap (the naive-prefix guard).
 func TestCreateTenant_WithDataRoot_AcceptsSeparatePath(t *testing.T) {
-	svc, _ := newDataRootServiceOpts(t)
+	svc, _ := newDataRootServiceOptsUnsealed(t)
 	ctx := context.Background()
 	base := t.TempDir()
 	diskFoo := filepath.Join(base, "foo")
@@ -294,7 +309,7 @@ func TestValidateExplicitDataRoot_RejectsSymlink(t *testing.T) {
 // pool allocation, and that the barrier's on-disk state is actually created
 // under it.
 func TestCreateTenant_WithDataRoot_Volume(t *testing.T) {
-	svc := newDataRootService(t)
+	svc, _ := newDataRootServiceOptsUnsealed(t)
 	ctx := context.Background()
 	dataRoot := filepath.Join(t.TempDir(), "dedicated-disk", "vtenant")
 
@@ -313,7 +328,7 @@ func TestCreateTenant_WithDataRoot_Volume(t *testing.T) {
 // TestCreateTenant_WithDataRoot_Raft verifies that WithDataRoot pins an
 // IsolationRaft tenant's DataRoot the same way as IsolationVolume.
 func TestCreateTenant_WithDataRoot_Raft(t *testing.T) {
-	svc := newDataRootService(t)
+	svc, _ := newDataRootServiceOptsUnsealed(t)
 	ctx := context.Background()
 	dataRoot := filepath.Join(t.TempDir(), "dedicated-disk", "rtenant")
 

@@ -297,6 +297,13 @@ func TestStoreResolver_VolumeTenantRoutesThroughBarrier(t *testing.T) {
 	shared, svc, reg, resolver := newResolverFixtureFor(t, volumeEntitlements())
 	ctx := context.Background()
 
+	// RegisterVolumeTenant (reached via CreateTenant) refuses with ErrSealed
+	// while the system barrier is sealed; this test is about the tenant's
+	// own barrier sealing IAM, not the system barrier's state.
+	if err := reg.SystemBarrier().Initialize(ctx, seal.Credentials{}); err != nil {
+		t.Fatalf("system barrier Initialize: %v", err)
+	}
+
 	if _, err := svc.CreateTenant(ctx, "vault-vol", "Volume", IsolationVolume); err != nil {
 		t.Fatalf("CreateTenant(volume): %v", err)
 	}
@@ -350,6 +357,13 @@ func TestStoreResolver_VolumeTenantRoutesThroughBarrier(t *testing.T) {
 func TestStoreResolver_RaftTenantRoutesThroughBarrier(t *testing.T) {
 	shared, svc, reg, resolver := newResolverFixtureFor(t, raftEntitlements())
 	ctx := context.Background()
+
+	// RegisterVolumeTenant (reached via CreateTenant) refuses with ErrSealed
+	// while the system barrier is sealed; this test is about the tenant's
+	// own barrier sealing IAM, not the system barrier's state.
+	if err := reg.SystemBarrier().Initialize(ctx, seal.Credentials{}); err != nil {
+		t.Fatalf("system barrier Initialize: %v", err)
+	}
 
 	if _, err := svc.CreateTenant(ctx, "vault-raft", "Raft", IsolationRaft); err != nil {
 		t.Fatalf("CreateTenant(raft): %v", err)

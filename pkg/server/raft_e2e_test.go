@@ -92,12 +92,10 @@ type raftE2EStack struct {
 // transport-neutral resolver every protocol uses.
 func newRaftE2EStack(t *testing.T) *raftE2EStack {
 	t.Helper()
-	ctx := context.Background()
 
+	// newVolumePooledRegistry already initializes (and so unseals) the
+	// system barrier.
 	reg := newVolumePooledRegistry(t)
-	if err := reg.SystemBarrier().Initialize(ctx, seal.Credentials{}); err != nil {
-		t.Fatalf("system barrier Initialize: %v", err)
-	}
 
 	tenants, err := tenant.NewTenantService(seal.NewMemoryBackend(), reg, volTestLogger(),
 		tenant.WithDefaultEntitlements(&quota.Entitlements{
