@@ -176,6 +176,92 @@ func TestGuardedMemoryStore_PutAllIfAllUnchanged_WritePutErrorPropagates(t *test
 	}
 }
 
+// TestGuardedMemoryStore_PutAllIfAllUnchanged_RollsBackOnMidBatchWriteFailure
+// proves the batch is all-or-nothing even when the FAILURE is not a guard
+// refusal but a write itself failing partway through -- here, the second
+// write of two violating a unique index the first write did not. The first
+// write must not be left applied once the batch as a whole is refused.
+func TestGuardedMemoryStore_PutAllIfAllUnchanged_RollsBackOnMidBatchWriteFailure(t *testing.T) {
+	s := NewGuardedMemoryStore()
+	ctx := context.Background()
+
+	if err := s.RegisterEntityIndexes("widget", []kvstore.EntityIndex{
+		{FieldName: "Name", JSONFieldName: "name", Unique: true},
+	}); err != nil {
+		t.Fatalf("RegisterEntityIndexes: %v", err)
+	}
+	// Seed a record outside the batch that already claims "taken" on the
+	// unique index, so the batch's second write collides with it.
+	if err := s.Put(ctx, "widget/existing", []byte(`{"name":"taken"}`)); err != nil {
+		t.Fatalf("Put (seed): %v", err)
+	}
+
+	applied, err := s.PutAllIfAllUnchanged(ctx, nil, []kvstore.KV{
+		{Key: "widget/a", Value: []byte(`{"name":"free"}`)},
+		{Key: "widget/b", Value: []byte(`{"name":"taken"}`)}, // collides with widget/existing
+	})
+	if err == nil {
+		t.Fatal("PutAllIfAllUnchanged with a unique-index collision on the second write succeeded, want an error")
+	}
+	if applied {
+		t.Fatal("PutAllIfAllUnchanged reported applied=true despite the second write failing")
+	}
+
+	// The all-or-nothing guarantee: the FIRST write, which landed in the
+	// store before the second one failed, must have been rolled back.
+	if v, getErr := s.Get(ctx, "widget/a"); getErr != nil || v != nil {
+		t.Fatalf("Get(widget/a) after a rolled-back batch = %q, %v; want absent", v, getErr)
+	}
+	if v, getErr := s.Get(ctx, "widget/b"); getErr != nil || v != nil {
+		t.Fatalf("Get(widget/b) after a rolled-back batch = %q, %v; want absent", v, getErr)
+	}
+	// The pre-existing, out-of-batch record must be untouched.
+	if v, getErr := s.Get(ctx, "widget/existing"); getErr != nil || string(v) != `{"name":"taken"}` {
+		t.Fatalf("Get(widget/existing) = %q, %v; want the original seed value untouched", v, getErr)
+	}
+}
+
+// TestGuardedMemoryStore_PutAllIfAllUnchanged_RollsBackAnOverwriteOnMidBatchWriteFailure
+// is RollsBackOnMidBatchWriteFailure's sibling for rollback's OTHER
+// restoration path: a write that OVERWRITES a key the store already held,
+// not one that created a brand new key. The first write must be restored
+// to its ORIGINAL value, not left at the batch's half-applied value and
+// not deleted either.
+func TestGuardedMemoryStore_PutAllIfAllUnchanged_RollsBackAnOverwriteOnMidBatchWriteFailure(t *testing.T) {
+	s := NewGuardedMemoryStore()
+	ctx := context.Background()
+
+	if err := s.RegisterEntityIndexes("widget", []kvstore.EntityIndex{
+		{FieldName: "Name", JSONFieldName: "name", Unique: true},
+	}); err != nil {
+		t.Fatalf("RegisterEntityIndexes: %v", err)
+	}
+	if err := s.Put(ctx, "widget/a", []byte(`{"name":"old"}`)); err != nil {
+		t.Fatalf("Put (seed widget/a): %v", err)
+	}
+	if err := s.Put(ctx, "widget/existing", []byte(`{"name":"taken"}`)); err != nil {
+		t.Fatalf("Put (seed widget/existing): %v", err)
+	}
+
+	applied, err := s.PutAllIfAllUnchanged(ctx, nil, []kvstore.KV{
+		{Key: "widget/a", Value: []byte(`{"name":"new"}`)},   // overwrites an existing key
+		{Key: "widget/b", Value: []byte(`{"name":"taken"}`)}, // collides with widget/existing
+	})
+	if err == nil {
+		t.Fatal("PutAllIfAllUnchanged with a unique-index collision on the second write succeeded, want an error")
+	}
+	if applied {
+		t.Fatal("PutAllIfAllUnchanged reported applied=true despite the second write failing")
+	}
+
+	if v, getErr := s.Get(ctx, "widget/a"); getErr != nil || string(v) != `{"name":"old"}` {
+		t.Fatalf("Get(widget/a) after a rolled-back overwrite = %q, %v; want the ORIGINAL value restored", v, getErr)
+	}
+	if v, getErr := s.Get(ctx, "widget/b"); getErr != nil || v != nil {
+		t.Fatalf("Get(widget/b) after a rolled-back batch = %q, %v; want absent", v, getErr)
+	}
+}
+
 func TestGuardedMemoryStore_IsAlsoAPlainKVStore(t *testing.T) {
 	var s kvstore.KVStore = NewGuardedMemoryStore()
 	ctx := context.Background()

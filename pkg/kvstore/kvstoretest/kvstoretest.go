@@ -43,6 +43,14 @@ import (
 // other and against the plain KVStore methods it inherits, so a test
 // driving both at once (a batch write racing an ordinary Put) still sees a
 // consistent store.
+//
+// A batch is all-or-nothing even when a WRITE fails partway through, not
+// only when a guard refuses up front: PutAllIfAllUnchanged snapshots every
+// write key's prior state before applying any of them, and rolls every
+// already-applied write back to that snapshot the moment one write fails --
+// a later write's unique-index violation, or a cancelled ctx discovered
+// mid-batch. A caller sees either every write or none, never a prefix of
+// the batch left in the store.
 type GuardedMemoryStore struct {
 	*kvstore.MemoryKVStore
 	batchMu sync.Mutex
@@ -50,6 +58,15 @@ type GuardedMemoryStore struct {
 
 // Compile-time interface check.
 var _ kvstore.MultiGuardedBatchKVStore = (*GuardedMemoryStore)(nil)
+
+// batchPriorState is a write key's value immediately before a batch
+// touched it, captured so a mid-batch failure can restore exactly that
+// state rather than leave the key at whatever the batch's own partial
+// application left behind.
+type batchPriorState struct {
+	existed bool
+	value   []byte
+}
 
 // NewGuardedMemoryStore returns a fresh, empty GuardedMemoryStore.
 func NewGuardedMemoryStore() *GuardedMemoryStore {
@@ -65,6 +82,14 @@ func (s *GuardedMemoryStore) PutAllIfUnchanged(ctx context.Context, guardKey str
 // PutAllIfAllUnchanged applies writes only while every guard holds: a nil
 // Guard.Value requires the key to be absent, any other value requires it to
 // be present and equal.
+//
+// The writes themselves are then all-or-nothing too. Put can fail for a
+// reason that has nothing to do with ctx -- a unique-index violation on
+// the SECOND write of a batch whose first write already landed, in
+// particular -- so this snapshots every write key's prior value before
+// applying any of them and rolls every already-applied write back the
+// moment one fails, rather than leaving a prefix of the batch in the store
+// with the rest refused.
 func (s *GuardedMemoryStore) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
 	s.batchMu.Lock()
 	defer s.batchMu.Unlock()
@@ -87,10 +112,48 @@ func (s *GuardedMemoryStore) PutAllIfAllUnchanged(ctx context.Context, guards []
 			return false, nil
 		}
 	}
+
+	snapshot := make(map[string]batchPriorState, len(writes))
 	for _, w := range writes {
-		if err := s.Put(ctx, w.Key, w.Value); err != nil {
+		if _, seen := snapshot[w.Key]; seen {
+			continue
+		}
+		existing, err := s.Get(ctx, w.Key)
+		if err != nil {
 			return false, err
 		}
+		snapshot[w.Key] = batchPriorState{existed: existing != nil, value: existing}
+	}
+
+	applied := make([]string, 0, len(writes))
+	for _, w := range writes {
+		if err := s.Put(ctx, w.Key, w.Value); err != nil {
+			s.rollback(applied, snapshot)
+			return false, err
+		}
+		applied = append(applied, w.Key)
 	}
 	return true, nil
+}
+
+// rollback restores every key in appliedKeys to the batchPriorState
+// recorded before this batch touched it, undoing the most recently applied
+// write first so a key written more than once in the same batch ends up
+// back at its ORIGINAL value rather than an intermediate one.
+//
+// It runs with batchMu already held by the caller and uses a background
+// context: a rollback is this store's own cleanup after ITS write failed,
+// not a new operation subject to the caller's ctx, and an already-expired
+// ctx must not be allowed to block the very cleanup it triggered.
+func (s *GuardedMemoryStore) rollback(appliedKeys []string, snapshot map[string]batchPriorState) {
+	ctx := context.Background()
+	for i := len(appliedKeys) - 1; i >= 0; i-- {
+		key := appliedKeys[i]
+		prior := snapshot[key]
+		if prior.existed {
+			_ = s.Put(ctx, key, prior.value)
+			continue
+		}
+		_ = s.Delete(ctx, key)
+	}
 }
