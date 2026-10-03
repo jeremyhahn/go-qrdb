@@ -16,6 +16,8 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -23,6 +25,7 @@ import (
 	"path/filepath"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -282,10 +285,18 @@ func initSealSubsystem(f *startFlags, sigCtx context.Context, complianceAudit au
 }
 
 // ceremonyCAFromBundle builds the CeremonyCA used to sign Security
-// Officer CSRs from the node's TLS bundle. The signed officer
-// certificates chain to the same CA the server trusts for mTLS client
-// authentication, so a registered officer can immediately open an
-// authenticated session to claim their share.
+// Officer CSRs from the node's TLS bundle, for the pre-store bootstrap
+// window only: BuildSealServicesOnly runs before the KV service exists, so
+// there is no cakey.SoftwareProvider (or injected HSM/TPM/KMS provider) to
+// resolve Key A through yet, and this bundle's in-memory key is the only
+// material available. It is wrapped in a cakey.StaticProvider -- itself a
+// cakey.Provider -- and signed through via ceremony.NewProviderCA, the
+// SAME CeremonyCA type every other Key A consumer uses once the provider
+// seam is reachable, rather than ceremony.NewLocalCA's own independent
+// parse-and-hold-raw-PEM path. lifecycle.BuildServices overrides this with
+// a FRESH ceremony.NewProviderCA(n.ClusterCAProv) once the replicated
+// store -- and so the real, cluster-wide Key A provider -- is live; see its
+// own doc comment.
 //
 // Returns (nil, nil) when the bundle carries no CA private key: with
 // BYO TLS certificates the daemon cannot sign on the operator's CA's
@@ -296,12 +307,46 @@ func ceremonyCAFromBundle(bundle *TLSBundle) (ceremony.CeremonyCA, error) {
 	if bundle == nil || len(bundle.CAKeyPEM) == 0 {
 		return nil, nil
 	}
-	ca, err := ceremony.NewLocalCA(bundle.CACertPEM, bundle.CAKeyPEM)
+
+	certBlock, _ := pem.Decode(bundle.CACertPEM)
+	if certBlock == nil {
+		return nil, &CeremonyCAError{Err: &ceremony.CACertParseError{Err: errNoPEMBlockInCACert}}
+	}
+	caCert, err := x509.ParseCertificate(certBlock.Bytes)
+	if err != nil {
+		return nil, &CeremonyCAError{Err: &ceremony.CACertParseError{Err: err}}
+	}
+
+	keyBlock, _ := pem.Decode(bundle.CAKeyPEM)
+	if keyBlock == nil {
+		return nil, &CeremonyCAError{Err: &ceremony.CAKeyParseError{Err: errNoPEMBlockInCAKey}}
+	}
+	caKey, err := x509.ParseECPrivateKey(keyBlock.Bytes)
+	if err != nil {
+		return nil, &CeremonyCAError{Err: &ceremony.CAKeyParseError{Err: err}}
+	}
+
+	provider, err := cakey.NewStaticProvider(caKey, caCert)
+	if err != nil {
+		return nil, &CeremonyCAError{Err: err}
+	}
+	ca, err := ceremony.NewProviderCA(provider)
 	if err != nil {
 		return nil, &CeremonyCAError{Err: err}
 	}
 	return ca, nil
 }
+
+// errNoPEMBlockInCACert and errNoPEMBlockInCAKey name a bundle's bootstrap
+// CA material that does not decode as PEM, matching the messages
+// ceremony.NewLocalCA's own parsing used -- wrapped here by the same typed
+// *ceremony.CACertParseError / *ceremony.CAKeyParseError callers already
+// match on, even though construction now goes through
+// cakey.StaticProvider + ceremony.NewProviderCA rather than NewLocalCA.
+var (
+	errNoPEMBlockInCACert = errors.New("no PEM block in CA certificate")
+	errNoPEMBlockInCAKey  = errors.New("no PEM block in CA key")
+)
 
 // awaitUnseal brings up the pre-host sealed-window listener: an
 // API-only multi-protocol server that exposes ONLY the seal-related

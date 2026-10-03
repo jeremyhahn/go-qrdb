@@ -570,18 +570,47 @@ outside `pkg/cakey` ever holds `*ecdsa.PrivateKey` for a CA key again.
 ### `cakey.SoftwareProvider` — the built-in backend
 
 `cakey.SoftwareProvider` is what runs when nothing is injected: an ECDSA
-P-256 key, barrier-encrypted, persisted through `kvstore.KVStore` — qrdb's
-storage abstraction, not the Raft log specifically. The same type and the
-same two records (`{prefix}wrapped_key`, `{prefix}cert_pem`) serve:
+P-256 key, persisted through `kvstore.AtomicKVStore` — qrdb's storage
+abstraction, not the Raft log specifically — under a prefix the caller
+supplies. It currently backs **Key A, the cluster CA**, under
+`__sys:cluster_ca/` — no tenant, one per cluster. (Key B, the per-tenant
+login CA under `__sys:cert_ca/{tenantID}/`, is `pkg/cert.DefaultCertProvider`
+today, a separate implementation; see that package's own docs for its
+record shape and barrier handling, which this document does not claim.)
 
-- **Key A, the cluster CA**, under `__sys:cluster_ca/` — no tenant, one per
-  cluster.
-- **Key B, the login CA**, under `__sys:cert_ca/{tenantID}/` — one per
-  tenant, exactly as today.
+The key and certificate are written and read together as ONE record
+(`{prefix}material`), never as two separate Puts: a design that split them
+into `{prefix}wrapped_key` and `{prefix}cert_pem` left a window in which a
+crash, or two callers racing to generate or adopt, could leave the key from
+one write beside the certificate from another. `kvStore.PutIfAbsent` makes
+"does material already exist" and "write it" one indivisible step, so
+concurrent generation (several nodes racing to become the cluster's first)
+converges on exactly one CA rather than each writing its own candidate over
+the other's.
 
-Because `kvstore.KVStore` is the same interface in standalone mode (the
-local store) and Raft mode (the replicated store), `SoftwareProvider` has
-no mode-specific branch and is tested against both.
+**The record carries no additional encryption of its own layered on by this
+package.** An earlier revision wrapped the key with the writing node's
+`seal.EncryptionBarrier` before the Put (`barrier.Encrypt`/`Decrypt` calls in
+`software.go`); because Key A's record is REPLICATED and every node's
+barrier is its own, not shared cluster-wide, every node other than the one
+that wrote it failed to decrypt its own copy. What protects Key A now is
+the same thing that protects every other system-shard record: this node's
+own at-rest storage encryption when one is configured (`pkg/seal/encfs`,
+transparent below `kvstore.KVStore`), cluster mTLS while Raft replicates the
+write, and nothing at all under seal strategy `none` — see
+[../backup-restore/architecture.md](../backup-restore/architecture.md#ca-key-material)
+for what that means for a backup. `seal.EncryptionBarrier` is still a
+constructor argument, but `SoftwareProvider` now consults it only for
+`IsSealed()`: CA material is generated, adopted, signed with, or read only
+while unsealed, exactly as before, but that gate no longer performs any
+encryption of its own.
+
+Because `kvstore.AtomicKVStore` is the same interface in standalone mode
+(the local store) and Raft mode (the replicated store), `SoftwareProvider`
+has no mode-specific branch and is tested against both, including two
+providers with two INDEPENDENT barriers over one shared store -- standing in
+for two cluster nodes with their own, unrelated at-rest encryption -- both
+reading the same CA.
 
 ### Injection
 

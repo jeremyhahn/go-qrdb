@@ -213,6 +213,33 @@ func (s *CeremonyService) CA() CeremonyCA {
 	return s.deps.CA
 }
 
+// ReplaceCA swaps the CeremonyCA used for pre-operational signing with ca,
+// but ONLY while the ceremony has not yet been initialized
+// (State() == StateAwaitingInit). Once Initialize has established its own
+// CA, that CA is authoritative and ReplaceCA is a no-op — the same
+// invariant SetCA protects, generalized to a caller that needs to swap a
+// PREVIOUSLY set convenience CA for a later, better one without waiting for
+// the ceremony to ever run.
+//
+// This is what lets cmd/qrdbd move ceremony-sign-csr off the bootstrap
+// window's cakey.StaticProvider-backed CeremonyCA (the in-memory cluster
+// CA key, held before any store exists) onto the replicated store's
+// cakey.SoftwareProvider (or an injected HSM/TPM/KMS provider) once that
+// store is live: SetCA's own "never overwrite" rule, read literally, would
+// make the bootstrap CA permanent for the life of the process, because it
+// was the first value SetCA ever saw.
+func (s *CeremonyService) ReplaceCA(ca CeremonyCA) {
+	if ca == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state != StateAwaitingInit {
+		return
+	}
+	s.deps.CA = ca
+}
+
 // State returns the current ceremony state.
 func (s *CeremonyService) State() CeremonyState {
 	s.mu.Lock()

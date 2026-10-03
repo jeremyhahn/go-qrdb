@@ -971,6 +971,74 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 	}
 
 	if infra.BarrierRegistry != nil {
+		// CertProvider uses the KV service as its underlying store and the
+		// barrier for transparent encryption of certificate material.
+		certStore := newKVStoreAdapter(n.KV, n.Index)
+		n.CertProv = cert.NewDefaultProvider(certStore, infra.SealBarrier,
+			cert.WithTrustDomain(infra.SPIFFETrustDomain))
+
+		// Cluster CA (Key A): an injected provider replaces the built-in one
+		// entirely. Otherwise the built-in cakey.SoftwareProvider is
+		// constructed to ADOPT in-memory key material this boot's caller
+		// holds -- the bootstrap crash window, generated before any store
+		// existed on the node that is bootstrapping the cluster -- or,
+		// when the caller holds none, to behave exactly like CertProv (Key
+		// B): generate on first use when the store is empty, load when it
+		// is not. Every ordinary caller of BuildServices (standalone mode,
+		// the SDK, tests) supplies no material at all. Only cmd/qrdbd's
+		// Raft-mode bootstrap supplies material, and only while its local
+		// ca-key.pem cache still exists; it deletes that cache ONLY after
+		// confirming persistence, so "no material AND an empty store"
+		// cannot arise from a prior successful boot -- see
+		// docs/certificate-authority/architecture.md, "Bootstrap crash
+		// window".
+		//
+		// Construction performs NO I/O: adoption/initialization is lazy,
+		// deferred to first Signer/Certificate use. The replicated store is
+		// not yet readable immediately after BuildServices runs in Raft
+		// mode -- the shard has no leader yet -- so reading it here would
+		// race that window on every single boot, not only the bootstrap one.
+		if infra.ClusterCAKeyProvider != nil {
+			n.ClusterCAProv = infra.ClusterCAKeyProvider
+		} else {
+			n.ClusterCAProv = clusterca.NewProvider(certStore, infra.SealBarrier,
+				cakey.WithAdoptMaterial(infra.ClusterCAKeyPEM, infra.ClusterCACertPEM))
+		}
+
+		// Once Key A is reachable through a provider (the replicated store's
+		// cakey.SoftwareProvider, or an injected HSM/TPM/KMS one -- either
+		// way, n.ClusterCAProv above), ceremony signing moves onto it,
+		// overriding whatever CeremonyCA infra.CeremonyCA supplied. That
+		// input is the bootstrap-window CeremonyCA
+		// (ceremony.NewProviderCA(cakey.StaticProvider), wrapping the
+		// in-memory key cmd/qrdbd's awaitUnseal holds before any store
+		// exists) built for BuildSealServicesOnly, which has no KV service
+		// and so no ClusterCAProv to offer. BuildServices is reached only
+		// after the store is live, so from here on ceremony-sign-csr
+		// resolves the signer and certificate fresh from ClusterCAProv on
+		// every call (ProviderCA's own doc comment) -- reflecting a
+		// re-seal/re-unseal or an HSM failover immediately, exactly like
+		// every other post-unseal consumer of Key A. This runs BEFORE
+		// buildTenantServiceOpts below, which reads the ceremony CA back out
+		// via coreSvc.CA() for WithTenantCeremonyCA -- a tenant created from
+		// here on must see the SAME override, not the bootstrap-window value
+		// that was live when n.Ceremony was first constructed.
+		if n.Ceremony != nil && n.ClusterCAProv != nil {
+			if coreSvc, ok := service.CeremonyServiceCore(n.Ceremony); ok {
+				if providerCA, caErr := ceremony.NewProviderCA(n.ClusterCAProv); caErr == nil {
+					// ReplaceCA, not SetCA: the ceremony core service may be
+					// the SAME instance reused from the sealed window
+					// (Infra.CeremonyCoreSvc), whose SetCA(infra.CeremonyCA)
+					// already ran there and set a bootstrap-window CA.
+					// SetCA's "never overwrite" rule would make that
+					// permanent; ReplaceCA swaps it for ClusterCAProv unless
+					// the ceremony has since become operational (Initialize
+					// ran its own CA, which stays authoritative).
+					coreSvc.ReplaceCA(providerCA)
+				}
+			}
+		}
+
 		tenantOpts := buildTenantServiceOpts(infra)
 		if n.Ceremony != nil {
 			if coreSvc, ok := service.CeremonyServiceCore(n.Ceremony); ok {
@@ -1005,39 +1073,6 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 				slog.Int("count", migrated))
 		}
 
-		// CertProvider uses the KV service as its underlying store and the
-		// barrier for transparent encryption of certificate material.
-		certStore := newKVStoreAdapter(n.KV, n.Index)
-		n.CertProv = cert.NewDefaultProvider(certStore, infra.SealBarrier,
-			cert.WithTrustDomain(infra.SPIFFETrustDomain))
-
-		// Cluster CA (Key A): an injected provider replaces the built-in one
-		// entirely. Otherwise the built-in cakey.SoftwareProvider is
-		// constructed to ADOPT in-memory key material this boot's caller
-		// holds -- the bootstrap crash window, generated before any store
-		// existed on the node that is bootstrapping the cluster -- or,
-		// when the caller holds none, to behave exactly like CertProv (Key
-		// B): generate on first use when the store is empty, load when it
-		// is not. Every ordinary caller of BuildServices (standalone mode,
-		// the SDK, tests) supplies no material at all. Only cmd/qrdbd's
-		// Raft-mode bootstrap supplies material, and only while its local
-		// ca-key.pem cache still exists; it deletes that cache ONLY after
-		// confirming persistence, so "no material AND an empty store"
-		// cannot arise from a prior successful boot -- see
-		// docs/certificate-authority/architecture.md, "Bootstrap crash
-		// window".
-		//
-		// Construction performs NO I/O: adoption/initialization is lazy,
-		// deferred to first Signer/Certificate use. The replicated store is
-		// not yet readable immediately after BuildServices runs in Raft
-		// mode -- the shard has no leader yet -- so reading it here would
-		// race that window on every single boot, not only the bootstrap one.
-		if infra.ClusterCAKeyProvider != nil {
-			n.ClusterCAProv = infra.ClusterCAKeyProvider
-		} else {
-			n.ClusterCAProv = clusterca.NewProvider(certStore, infra.SealBarrier,
-				cakey.WithAdoptMaterial(infra.ClusterCAKeyPEM, infra.ClusterCACertPEM))
-		}
 	}
 
 	return nil
@@ -1218,14 +1253,20 @@ func barrierServiceOpts(infra Infra) []service.BarrierServiceOption {
 	return opts
 }
 
-// newKVStoreAdapter returns a kvstore.KVStore backed by the given KVServicer.
-// Writes are proposed through the service; reads are linearizable.
+// newKVStoreAdapter returns a kvstore.AtomicKVStore backed by the given
+// KVServicer. Writes are proposed through the service; reads are
+// linearizable. Every engine implements PutIfAbsent/CompareAndSwap/
+// CompareAndDelete natively (kvStoreAdapter's own doc comment), so the
+// widened return type costs nothing and lets a caller needing the atomic
+// capability -- cakey.NewSoftwareProvider's PutIfAbsent-arbitrated
+// generate-or-adopt, in particular -- use this adapter directly rather
+// than re-asserting for a capability it already has.
 //
 // idx is the IndexServicer for the SAME shard, which is what makes the
 // returned store's secondary indexes real. Pass nil only where no index
 // subsystem exists; the store then refuses index operations with
 // kvstore.ErrIndexUnsupported rather than answering them empty.
-func newKVStoreAdapter(svc service.KVServicer, idx service.IndexServicer) kvstore.KVStore {
+func newKVStoreAdapter(svc service.KVServicer, idx service.IndexServicer) kvstore.AtomicKVStore {
 	return &kvStoreAdapter{svc: svc, idx: idx}
 }
 

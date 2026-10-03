@@ -1126,9 +1126,16 @@ func TestBuildSealServicesOnly_ReusesCeremonyCoreSvc(t *testing.T) {
 	}
 }
 
-// TestBuildServices_WiresCeremonyCA verifies the full-boot path installs
-// Infra.CeremonyCA on the ceremony core service.
-func TestBuildServices_WiresCeremonyCA(t *testing.T) {
+// TestBuildServices_OverridesCeremonyCAWithClusterCAProv is the B4 proof:
+// once BuildServices constructs a cluster CA (Key A) provider --
+// BarrierRegistry non-nil is what triggers that, in this fixture the
+// built-in cakey.SoftwareProvider -- ceremony signing moves onto it,
+// overriding whatever bootstrap-window CeremonyCA Infra.CeremonyCA
+// supplied (cmd/qrdbd's StaticProvider-backed one, stubbed here). Before
+// this fix, ceremony-sign-csr kept signing with the in-memory bootstrap
+// key forever, never moving to the replicated store's Key A once it
+// became the cluster's actual CA of record.
+func TestBuildServices_OverridesCeremonyCAWithClusterCAProv(t *testing.T) {
 	host := newLocalHost()
 	defer func() { _ = host.Close() }()
 
@@ -1152,18 +1159,48 @@ func TestBuildServices_WiresCeremonyCA(t *testing.T) {
 	}
 	defer func() { _ = node.Stop(context.Background()) }()
 
+	if node.ClusterCAProv == nil {
+		t.Fatal("fixture: BuildServices did not construct a cluster CA provider")
+	}
+
 	coreSvc, ok := service.CeremonyServiceCore(node.Ceremony)
 	if !ok {
 		t.Fatal("CeremonyServiceCore: core service not exposed")
 	}
-	if got := coreSvc.CA(); got != ceremony.CeremonyCA(ca) {
-		t.Errorf("ceremony CA = %v, want the Infra-supplied CA", got)
+	got := coreSvc.CA()
+	if got == ceremony.CeremonyCA(ca) {
+		t.Fatal("ceremony CA is still the bootstrap-window stub; BuildServices did not override it with the cluster CA provider")
+	}
+	providerCA, ok := got.(*ceremony.ProviderCA)
+	if !ok {
+		t.Fatalf("ceremony CA = %T, want *ceremony.ProviderCA wrapping node.ClusterCAProv", got)
+	}
+
+	// Signing through the override actually reaches node.ClusterCAProv: the
+	// certificate it issues chains to that provider's own CA certificate,
+	// not to the stub's (which errors on every call and so could never have
+	// produced one).
+	want, err := node.ClusterCAProv.Certificate(context.Background())
+	if err != nil {
+		t.Fatalf("ClusterCAProv.Certificate: %v", err)
+	}
+	got2, err := providerCA.CACertificate()
+	if err != nil {
+		t.Fatalf("ProviderCA.CACertificate: %v", err)
+	}
+	if got2.SerialNumber.Cmp(want.SerialNumber) != 0 {
+		t.Fatalf("ProviderCA resolves a different CA than node.ClusterCAProv: serial %s != %s", got2.SerialNumber, want.SerialNumber)
 	}
 }
 
 // TestBuildServices_ReusesCeremonyCoreSvc verifies the full-boot path reuses
 // a sealed-window ceremony core service supplied via Infra.CeremonyCoreSvc —
-// Gap B of the daemon Security Officer claim chain.
+// Gap B of the daemon Security Officer claim chain. The CA on that reused
+// core service is still overridden to the cluster CA provider (B4, see
+// TestBuildServices_OverridesCeremonyCAWithClusterCAProv): reuse is about the
+// core SERVICE instance (and so its in-memory enclave state, pending officer
+// registrations, etc.), not about pinning whatever CA it happened to be
+// signing with during the sealed window.
 func TestBuildServices_ReusesCeremonyCoreSvc(t *testing.T) {
 	host := newLocalHost()
 	defer func() { _ = host.Close() }()
@@ -1198,8 +1235,10 @@ func TestBuildServices_ReusesCeremonyCoreSvc(t *testing.T) {
 	if coreSvc != core {
 		t.Error("ceremony core service was rebuilt; expected the Infra-supplied instance to be reused")
 	}
-	if got := coreSvc.CA(); got != ceremony.CeremonyCA(ca) {
-		t.Errorf("ceremony CA = %v, want the sealed-window CA preserved", got)
+	if got := coreSvc.CA(); got == ceremony.CeremonyCA(ca) {
+		t.Fatal("ceremony CA on the reused core service is still the bootstrap-window stub; want it overridden to the cluster CA provider")
+	} else if _, ok := got.(*ceremony.ProviderCA); !ok {
+		t.Fatalf("ceremony CA = %T, want *ceremony.ProviderCA wrapping node.ClusterCAProv", got)
 	}
 }
 

@@ -54,17 +54,18 @@ func Subject() pkix.Name {
 	}
 }
 
-// NewProvider returns the built-in software-backed Provider for Key A:
-// barrier-encrypted, persisted through kvStore. kvStore is the node's
-// ordinary storage abstraction -- the local store in standalone mode, the
-// replicated store in Raft mode -- so this provider behaves identically in
-// either, and material adopted or generated in one mode reads back
-// correctly in the other.
+// NewProvider returns the built-in software-backed Provider for Key A,
+// persisted through kvStore. kvStore is the node's ordinary storage
+// abstraction -- the local store in standalone mode, the replicated store
+// in Raft mode -- so this provider behaves identically in either, and
+// material adopted or generated in one mode reads back correctly in the
+// other. It must support atomic conditional writes (kvstore.AtomicKVStore):
+// see cakey.NewSoftwareProvider on why.
 //
 // Construction performs no I/O (see cakey.NewSoftwareProvider): opts is
 // typically cakey.WithAdoptMaterial when the caller holds in-memory
 // bootstrap material (the crash window), and omitted otherwise.
-func NewProvider(kvStore kvstore.KVStore, barrier seal.EncryptionBarrier, opts ...cakey.SoftwareProviderOption) *cakey.SoftwareProvider {
+func NewProvider(kvStore kvstore.AtomicKVStore, barrier seal.EncryptionBarrier, opts ...cakey.SoftwareProviderOption) *cakey.SoftwareProvider {
 	return cakey.NewSoftwareProvider(kvStore, barrier, Prefix, Subject(), clustertls.CAValidity, opts...)
 }
 

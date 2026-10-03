@@ -314,37 +314,23 @@ func ResumeAdvertiser(opts *Options, mat *clustertls.Material, logger *slog.Logg
 		return nil, nil
 	}
 
-	// "Material present" is not a state -- it is four files, written one at a
-	// time. PersistMaterial writes ca.pem, node-cert.pem, node-key.pem and
-	// then ca-key.pem, each atomically but the SEQUENCE not, and LoadFromDir
-	// treats ca-key.pem as optional (it early-returns "no cache" only when all
-	// three of the others are absent). So a process that stopped after
-	// node-key.pem leaves a cache that loads cleanly with CAKeyPEM == nil,
-	// and a first node would then advertise an enrollment endpoint while no
-	// longer holding the CA key that makes it the cluster's CA holder.
-	//
-	// This is the same defect as the non-atomic role write, one level out. The
-	// ordering invariant treated PersistMaterial as a single transition
-	// exactly as it first treated persistRole as one, and for the same reason:
-	// the hard part was the ordering, so the granularity of each operand went
-	// unexamined.
-	//
-	// The check is derived from what a first node MUST HOLD rather than from
-	// the write order, so reordering PersistMaterial moves nothing here: the
-	// CA certificate it serves and the CA key it keeps (and never serves) are
-	// the two a first node cannot do without. The node's own leaf
-	// (node-cert.pem, node-key.pem) is not served by the advertiser and is
-	// already required by LoadFromDir, which fails closed with
-	// *PartialMaterialError when any of its three are missing.
-	var missing []string
+	// The advertiser serves only the CA CERTIFICATE -- an anchor-only bundle,
+	// never a private key (StartAnchorAdvertiser's own doc comment) -- so
+	// ca.pem is the one file a first node's resumed listener cannot do
+	// without. ca-key.pem is NOT required here, and checking for it was a
+	// standing defect once the cluster CA (Key A) moved to the replicated
+	// store (pkg/clusterca, cakey.SoftwareProvider): cmd/qrdbd deletes
+	// ca-key.pem from disk once that persistence is confirmed, which is
+	// EVERY boot after the first successful one -- so a check that required
+	// it here made the first node's own second restart fail closed with
+	// *IncompleteFirstNodeMaterialError forever, the opposite of what
+	// go-qrdb#241 (this function's own reason for existing) closed for every
+	// other first-node restart case. The node's own leaf (node-cert.pem,
+	// node-key.pem) is not served by the advertiser either and is already
+	// required by LoadFromDir, which fails closed with *PartialMaterialError
+	// when any of its three are missing.
 	if len(mat.CACertPEM) == 0 {
-		missing = append(missing, "ca.pem")
-	}
-	if len(mat.CAKeyPEM) == 0 {
-		missing = append(missing, "ca-key.pem")
-	}
-	if len(missing) > 0 {
-		return nil, &IncompleteFirstNodeMaterialError{Dir: opts.DataDir, Missing: missing}
+		return nil, &IncompleteFirstNodeMaterialError{Dir: opts.DataDir, Missing: []string{"ca.pem"}}
 	}
 
 	// The bind host is validated here for the same reason path 5 validates it

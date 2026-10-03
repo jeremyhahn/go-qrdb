@@ -716,18 +716,17 @@ func TestResumedAdvertiserReleasesItsPortOnStop(t *testing.T) {
 	}
 }
 
-// TestResume_FailsClosedWhenTheFirstNodeCacheLacksTheCAKey.
-//
-// The state: a first node whose process stopped inside PersistMaterial, after
-// node-key.pem was durable and before ca-key.pem was. LoadFromDir treats
-// ca-key.pem as optional, so the cache loads cleanly with CAKeyPEM == nil and
-// the recorded role still says first-node.
-//
-// Before the check, that node started an enrollment listener with no CA
-// private key: it reported healthy and answered while unable to stand behind
-// any enrollment, and the failure surfaced on the joining node. Fail closed,
-// and name THIS node's directory, so the operator is not sent to the joiner.
-func TestResume_FailsClosedWhenTheFirstNodeCacheLacksTheCAKey(t *testing.T) {
+// TestResume_SurvivesRestartAfterTheCAKeyCacheIsDeleted is the B3 proof: a
+// first node whose local ca-key.pem cache was removed -- which is cmd/qrdbd's
+// OWN confirmClusterCAPersisted step, run once the cluster CA (Key A) is
+// durably in the replicated store (pkg/clusterca, cakey.SoftwareProvider),
+// and which therefore happens on every first node's SECOND and every later
+// boot -- still resumes its enrollment listener. The advertiser serves only
+// the CA CERTIFICATE (never the key: StartAnchorAdvertiser's own doc
+// comment), so ca.pem is all ResumeAdvertiser needs; requiring ca-key.pem
+// here made a first node's own second restart fail closed forever, which is
+// the defect this test now pins shut.
+func TestResume_SurvivesRestartAfterTheCAKeyCacheIsDeleted(t *testing.T) {
 	dir := t.TempDir()
 	opts := firstNodeOpts(t, dir, freePort(t))
 
@@ -737,12 +736,12 @@ func TestResume_FailsClosedWhenTheFirstNodeCacheLacksTheCAKey(t *testing.T) {
 	}
 	adv.Stop()
 
-	// Exactly what the interrupted write leaves behind: everything else
-	// durable, ca-key.pem never renamed into place.
+	// Exactly what cmd/qrdbd's confirmClusterCAPersisted leaves behind once
+	// Key A is confirmed durable in the replicated store: every other cached
+	// file untouched, ca-key.pem gone.
 	if err := os.Remove(filepath.Join(dir, "ca-key.pem")); err != nil {
-		t.Fatalf("simulate the interrupted persist: %v", err)
+		t.Fatalf("simulate the confirmed-persist cache eviction: %v", err)
 	}
-	// The cache must still look complete, or this is not the case under test.
 	mat, err := clustertls.LoadFromDir(dir)
 	if err != nil || mat == nil {
 		t.Fatalf("LoadFromDir no longer accepts the cache (mat=%v err=%v); the premise is gone", mat != nil, err)
@@ -755,20 +754,15 @@ func TestResume_FailsClosedWhenTheFirstNodeCacheLacksTheCAKey(t *testing.T) {
 	}
 
 	_, adv2, err := Resolve(context.Background(), opts, discardLogger())
-	if adv2 != nil {
-		adv2.Stop()
-		t.Error("an enrollment listener was started by a first node holding no CA private key")
+	if err != nil {
+		t.Fatalf("boot 2 (ca-key.pem already evicted): %v", err)
 	}
-	var incomplete *IncompleteFirstNodeMaterialError
-	if !errors.As(err, &incomplete) {
-		t.Fatalf("Resolve error = %v (%T); want *IncompleteFirstNodeMaterialError", err, err)
+	if adv2 == nil {
+		t.Fatal("a first node restarting after its CA key cache was deleted got no enrollment listener")
 	}
-	if incomplete.Dir != dir {
-		t.Errorf("error names %q; it must name THIS node's data directory, because the "+
-			"symptom shows up on the joining node", incomplete.Dir)
-	}
-	if len(incomplete.Missing) != 1 || incomplete.Missing[0] != "ca-key.pem" {
-		t.Errorf("Missing = %v; want exactly [ca-key.pem]", incomplete.Missing)
+	t.Cleanup(adv2.Stop)
+	if !dialable(t, adv2) {
+		return
 	}
 }
 

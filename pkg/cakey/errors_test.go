@@ -75,6 +75,32 @@ func TestGenerateError(t *testing.T) {
 	}
 }
 
+func TestMaterialCorruptError(t *testing.T) {
+	wrapped := errors.New("inner")
+	err := &MaterialCorruptError{Err: wrapped}
+	if !strings.Contains(err.Error(), "inner") {
+		t.Fatalf("Error() = %q, want it to contain %q", err.Error(), "inner")
+	}
+	if !strings.Contains(err.Error(), "corrupt") {
+		t.Fatalf("Error() = %q, want it to mention corrupt", err.Error())
+	}
+	if err.Unwrap() != wrapped {
+		t.Fatalf("Unwrap() = %v, want %v", err.Unwrap(), wrapped)
+	}
+
+	bare := &MaterialCorruptError{}
+	if bare.Error() == "" {
+		t.Fatal("Error() on a bare MaterialCorruptError must not be empty")
+	}
+}
+
+func TestMaterialMismatchError(t *testing.T) {
+	err := &MaterialMismatchError{}
+	if !strings.Contains(err.Error(), "mismatch") && !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("Error() = %q, want it to describe a mismatch", err.Error())
+	}
+}
+
 func TestNotInitializedError(t *testing.T) {
 	err := &NotInitializedError{}
 	if !strings.Contains(err.Error(), "initialized") {
