@@ -368,8 +368,9 @@ which exists before the node does, so its sealed window is recorded too. The
 desktop's embedded server keeps the same trail when it is enabled
 (`EmbeddedConfig.Audit`, off by default), and so does the SDK's flat
 `embedded.NewServer` (`ServerConfig.AuditTrail`, off by default), on the same
-rules: opened before the seal barrier, and a configured trail that cannot be
-opened stops the start. No composer is left without one.
+rules: opened before the seal barrier, confined to the data directory -- a
+symbolic link in it cannot carry the trail outside -- and a configured trail
+that cannot be opened stops the start. No composer is left without one.
 
 ### Barrier events
 

@@ -14,6 +14,8 @@
 
 package audit
 
+import "path/filepath"
+
 // DefaultTrailFile is the compliance trail's file name under a node's data
 // directory: qrdbd's, and the desktop embedded server's when it keeps one.
 const DefaultTrailFile = "audit-events.ndjson"
@@ -28,9 +30,17 @@ const TrailRingSize = 10000
 // every node composer -- the daemon, the desktop's embedded server -- opens,
 // so their trails are the same thing. The file is opened, or created, here:
 // a path that cannot be is returned as the file logger's error and nothing
-// is opened.
+// is opened. The file is confined to path's directory (NewFileLogger).
 func OpenTrail(path string) (AuditLogger, error) {
-	chain, err := NewFileLogger(path)
+	return OpenTrailIn(filepath.Dir(path), filepath.Base(path))
+}
+
+// OpenTrailIn is OpenTrail for the file name below dir, a node's data
+// directory, confined to dir (NewFileLoggerIn): a symbolic link in the data
+// directory -- at name, or at a directory on its path -- that resolves
+// outside it refuses the trail rather than carrying it there.
+func OpenTrailIn(dir, name string) (AuditLogger, error) {
+	chain, err := NewFileLoggerIn(dir, name)
 	if err != nil {
 		return nil, err
 	}

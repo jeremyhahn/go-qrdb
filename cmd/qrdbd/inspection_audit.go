@@ -16,7 +16,6 @@ package main
 
 import (
 	"context"
-	"path/filepath"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	secure "github.com/jeremyhahn/go-qrdb/sdk/go/secure"
@@ -39,7 +38,7 @@ const complianceAuditFile = audit.DefaultTrailFile
 // cannot record is *InspectionOptOutAuditError, after which the trail is
 // closed. Either way start returns before any barrier is built.
 func openComplianceAudit(ctx context.Context, dataDir string, hardening secure.ProcessHardening) (audit.AuditLogger, error) {
-	sink, err := audit.OpenTrail(filepath.Join(dataDir, complianceAuditFile))
+	sink, err := audit.OpenTrailIn(dataDir, complianceAuditFile)
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "compliance audit file", Err: err}
 	}

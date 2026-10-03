@@ -79,7 +79,7 @@ func TestChainFileLogger_HashChainIntegrity(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	if err := verifyChainFile(context.Background(), path); err != nil {
+	if err := verifyChainFile(context.Background(), testTrailDir(t, path), path); err != nil {
 		t.Fatalf("VerifyChain: unexpected error: %v", err)
 	}
 }
@@ -123,7 +123,7 @@ func TestChainFileLogger_VerifyChain_Tamper(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	err = verifyChainFile(context.Background(), path)
+	err = verifyChainFile(context.Background(), testTrailDir(t, path), path)
 	if err == nil {
 		t.Fatal("expected ChainBrokenError, got nil")
 	}
@@ -492,7 +492,7 @@ func TestChainFileLogger_VerifyChainSet_CancellationIsCheckedAtTheCallBoundary(t
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err = verifyChainSegment(canceled, path)
+	_, err = verifyChainSegment(canceled, testTrailDir(t, path), path)
 	var ce *VerificationCanceledError
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected *VerificationCanceledError, got %v (%T)", err, err)
@@ -547,7 +547,7 @@ func TestChainFileLogger_VerifyChainSet_CancellationIsCheckedPerRecord(t *testin
 	const budget = 250 // fewer than totalRecords: cancellation fires mid-file
 	cc := &countedErrContext{Context: context.Background(), budget: budget}
 
-	_, err = verifyChainSegment(cc, path)
+	_, err = verifyChainSegment(cc, testTrailDir(t, path), path)
 	var ce *VerificationCanceledError
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected *VerificationCanceledError after %d records, got %v (%T) after %d Err() calls -- "+
@@ -642,7 +642,7 @@ func TestChainFileLogger_VerifyChainSet_ConcurrentCallsShareOneWinner(t *testing
 	l.scan = func(ctx context.Context, path string) (*ChainVerification, error) {
 		arrivals <- struct{}{}
 		<-release
-		return verifyChainSet(ctx, path)
+		return verifyChainSet(ctx, testTrailDir(t, path), path)
 	}
 
 	var wg sync.WaitGroup
@@ -711,7 +711,7 @@ func TestChainFileLogger_InitPrevDigest_Restores(t *testing.T) {
 		t.Fatalf("Close (l2): %v", err)
 	}
 
-	if err := verifyChainFile(context.Background(), path); err != nil {
+	if err := verifyChainFile(context.Background(), testTrailDir(t, path), path); err != nil {
 		t.Fatalf("verifyChainFile after re-open: %v", err)
 	}
 }
@@ -844,7 +844,8 @@ func TestChainFileLogger_Query_NonexistentFile(t *testing.T) {
 	}
 	// Create a fresh logger pointing at the removed path — this will create a new file.
 	// To truly test scanFile with nonexistent path, call it directly.
-	events, err := scanFile(filepath.Join(t.TempDir(), "does-not-exist.ndjson"), Filter{Limit: 10})
+	missing := filepath.Join(t.TempDir(), "does-not-exist.ndjson")
+	events, err := scanFile(testTrailDir(t, missing), missing, Filter{Limit: 10})
 	if err != nil {
 		t.Fatalf("scanFile on nonexistent path: expected nil error, got %v", err)
 	}
@@ -865,8 +866,11 @@ func TestChainFileLogger_PruneOldFiles_NonexistentDir(t *testing.T) {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 
+	// The trail's directory is the subdir's parent, so the subdir is a name
+	// in it that can be removed.
 	l := &ChainFileLogger{
 		path:          path,
+		dir:           testTrailDir(t, subdir),
 		maxBytes:      100 * 1024 * 1024,
 		retentionDays: 30,
 		syncPerWrite:  true,
@@ -909,7 +913,8 @@ func TestChainFileLogger_Emit_WithAttributes(t *testing.T) {
 }
 
 func TestVerifyChainFile_NonexistentFile(t *testing.T) {
-	err := verifyChainFile(context.Background(), filepath.Join(t.TempDir(), "missing.ndjson"))
+	missing := filepath.Join(t.TempDir(), "missing.ndjson")
+	err := verifyChainFile(context.Background(), testTrailDir(t, missing), missing)
 	if err == nil {
 		t.Fatal("expected error for nonexistent file, got nil")
 	}
@@ -991,7 +996,7 @@ func TestVerifyChainFile_SkipsInvalidJSON(t *testing.T) {
 	_ = f.Close()
 
 	// verifyChainFile should skip the invalid line and not return ChainBrokenError.
-	if err := verifyChainFile(context.Background(), path); err != nil {
+	if err := verifyChainFile(context.Background(), testTrailDir(t, path), path); err != nil {
 		t.Fatalf("verifyChainFile: unexpected error on invalid JSON line: %v", err)
 	}
 }
@@ -1018,7 +1023,7 @@ func TestScanFile_SkipsInvalidJSON(t *testing.T) {
 	_, _ = f.WriteString("not-valid-json\n")
 	_ = f.Close()
 
-	events, err := scanFile(path, Filter{Limit: 10})
+	events, err := scanFile(testTrailDir(t, path), path, Filter{Limit: 10})
 	if err != nil {
 		t.Fatalf("scanFile: unexpected error: %v", err)
 	}

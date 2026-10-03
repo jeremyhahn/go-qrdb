@@ -84,7 +84,9 @@ The daemon selects the mode with `mode: standalone | raft` in YAML or
 - **Every composer can keep the compliance audit trail.** The flat
   `embedded.NewServer` keeps it when `ServerConfig.AuditTrail` names its file
   (relative to `DataDir`; `audit.DefaultTrailFile` is qrdbd's name; empty,
-  the default, keeps none): `audit.OpenTrail`, opened before anything else,
+  the default, keeps none): `audit.OpenTrailIn`, confined to `DataDir` -- or
+  an absolute path's own directory -- so a symbolic link cannot carry it
+  outside, opened before anything else,
   failing the start with `*embedded.AuditTrailError` when it cannot be opened,
   closed last by `Shutdown`. Its barrier records on it
   (`seal.NewComplianceAuditLogger`, the system tenant) and the transport

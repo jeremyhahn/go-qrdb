@@ -22,7 +22,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -203,8 +202,8 @@ func decodeDigest(prevHash string) ([sha256.Size]byte, bool) {
 // A line that will not unmarshal is SKIPPED, not folded, matching
 // initPrevDigest: a torn line is not a record, and both readers must agree on
 // that or they diverge on the one file a crash leaves behind.
-func verifyChainSegment(ctx context.Context, path string) (*chainSegment, error) {
-	file, err := os.Open(path) // #nosec G304 -- path is the audit sink's own configured file or an archive of it.
+func verifyChainSegment(ctx context.Context, dir *trailDir, path string) (*chainSegment, error) {
+	file, err := dir.open(path)
 	if err != nil {
 		return nil, &FileError{Path: path, Err: err}
 	}
@@ -293,8 +292,8 @@ func verifyChainSegment(ctx context.Context, path string) (*chainSegment, error)
 //
 // It says nothing about where the file sits in the set -- that is
 // verifyChainSet's question.
-func verifyChainFile(ctx context.Context, path string) error {
-	_, err := verifyChainSegment(ctx, path)
+func verifyChainFile(ctx context.Context, dir *trailDir, path string) error {
+	_, err := verifyChainSegment(ctx, dir, path)
 	return err
 }
 
@@ -313,13 +312,13 @@ func verifyChainFile(ctx context.Context, path string) error {
 //
 // The ORDER IS NOT TRUSTED. It only decides which file a diagnostic mentions
 // first; the chain order verifyChainSet reports is derived from the digests.
-func rotationSetFiles(path string) (paths []string, active bool, err error) {
+func rotationSetFiles(trail *trailDir, path string) (paths []string, active bool, err error) {
 	dir := filepath.Dir(path)
 	base := filepath.Base(path)
 	ext := filepath.Ext(base)
 	stem := strings.TrimSuffix(base, ext)
 
-	entries, err := os.ReadDir(dir)
+	entries, err := trail.readDir(dir)
 	if err != nil {
 		return nil, false, &FileError{Path: dir, Err: err}
 	}
@@ -404,8 +403,8 @@ const (
 // or the empty file a rotation has just opened -- are verified and then left
 // out of the linking. They hand off nothing, so treating them as links would
 // fork the walk on honest data.
-func verifyChainSet(ctx context.Context, path string) (*ChainVerification, error) {
-	return verifyChainSetAt(ctx, path, nil)
+func verifyChainSet(ctx context.Context, dir *trailDir, path string) (*ChainVerification, error) {
+	return verifyChainSetAt(ctx, dir, path, nil)
 }
 
 // verifyChainSetAt is verifyChainSet with the writer's rotation sequence
@@ -421,7 +420,7 @@ func verifyChainSet(ctx context.Context, path string) (*ChainVerification, error
 // while it looked. Any other attempt is a race, never an absence. A nil
 // generation -- a set whose writer is not in this process -- leaves the
 // listings as the only evidence.
-func verifyChainSetAt(ctx context.Context, path string, generation func() uint64) (*ChainVerification, error) {
+func verifyChainSetAt(ctx context.Context, dir *trailDir, path string, generation func() uint64) (*ChainVerification, error) {
 	backoff := verifyScanBackoff
 	stableAbsences := 0
 	for attempt := 0; attempt < verifyScanAttempts; attempt++ {
@@ -441,12 +440,12 @@ func verifyChainSetAt(ctx context.Context, path string, generation func() uint64
 		if generation != nil {
 			genBefore = generation()
 		}
-		before, active, err := rotationSetFiles(path)
+		before, active, err := rotationSetFiles(dir, path)
 		if err != nil {
 			return nil, err
 		}
-		v, walkErr := linkChainSet(ctx, before)
-		after, _, err := rotationSetFiles(path)
+		v, walkErr := linkChainSet(ctx, dir, before)
+		after, _, err := rotationSetFiles(dir, path)
 		if err != nil {
 			return nil, err
 		}
@@ -478,13 +477,13 @@ func verifyChainSetAt(ctx context.Context, path string, generation func() uint64
 // linkChainSet verifies each file and links them into one chain. It is
 // verifyChainSet's body, separated so the caller can repeat it against a
 // fresh listing.
-func linkChainSet(ctx context.Context, paths []string) (*ChainVerification, error) {
+func linkChainSet(ctx context.Context, dir *trailDir, paths []string) (*ChainVerification, error) {
 	segs := make([]*chainSegment, 0, len(paths))
 	for _, p := range paths {
 		if err := ctx.Err(); err != nil {
 			return nil, &VerificationCanceledError{Path: p, Err: err}
 		}
-		seg, err := verifyChainSegment(ctx, p)
+		seg, err := verifyChainSegment(ctx, dir, p)
 		if err != nil {
 			return nil, err
 		}

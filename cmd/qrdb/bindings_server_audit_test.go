@@ -136,3 +136,54 @@ func TestEmbeddedServerBinding_AuditTrailFailsClosed(t *testing.T) {
 		t.Fatal("empty error text")
 	}
 }
+
+// A symbolic link inside the data directory does not carry the trail out of
+// it: the trail is opened inside the data directory as an os.Root, so a link
+// at the trail's name, or at a directory on its path, that resolves outside
+// refuses the start, and nothing is written where it points.
+func TestEmbeddedServerBinding_AuditTrailStaysInTheDataDir(t *testing.T) {
+	outside := t.TempDir()
+	victim := filepath.Join(outside, "victim.ndjson")
+	if err := os.WriteFile(victim, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, setup := range map[string]func(dataDir string) string{
+		"the trail's name": func(dataDir string) string {
+			if err := os.Symlink(victim, filepath.Join(dataDir, audit.DefaultTrailFile)); err != nil {
+				t.Fatal(err)
+			}
+			return ""
+		},
+		"a directory on its path": func(dataDir string) string {
+			if err := os.Symlink(outside, filepath.Join(dataDir, "audit")); err != nil {
+				t.Fatal(err)
+			}
+			return filepath.Join("audit", "trail.ndjson")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			esb := newAuditEmbedded(t)
+			dataDir := t.TempDir()
+			path := setup(dataDir)
+			var auditErr *EmbeddedAuditError
+			err := esb.StartEmbedded(&EmbeddedConfig{StorageBackend: "memory", DataDir: dataDir, Audit: &EmbeddedAuditConfig{Enabled: true, Path: path}})
+			if !errors.As(err, &auditErr) {
+				_ = esb.StopEmbedded()
+				t.Fatalf("a trail linked out of the data directory = %v (%T), want EmbeddedAuditError", err, err)
+			}
+			if esb.IsEmbedded() || esb.auditTrail != nil {
+				t.Fatal("a refused start left the server or its trail behind")
+			}
+			entries, err := os.ReadDir(outside)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 1 {
+				t.Fatalf("files outside the data directory = %v, want only the untouched victim", entries)
+			}
+			if info, err := os.Stat(victim); err != nil || info.Size() != 0 {
+				t.Fatalf("the file the link points at was written: %v, %v", info, err)
+			}
+		})
+	}
+}

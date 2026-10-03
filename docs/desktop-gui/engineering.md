@@ -217,7 +217,10 @@ in `StartEmbedded`, so the seal barrier records from its first moment. It is
 handed to the system barrier, the tenant registry, the service graph (holder
 and database barrier events) and the embedded transport (the audit query), and
 closed by `StopEmbedded`. A path that is absolute or leaves the data directory
-is refused.
+is refused, and the trail is confined to the data directory
+(`audit.OpenTrailIn`): a symbolic link in it, at the trail's name or at a
+directory on its path, that resolves outside refuses the start
+(`EmbeddedAuditError`) rather than carrying the trail there.
 
 The GUI's own state machine is the operator-visible signal: `unseal` means the
 server is sealed, and a missing view means the capability is absent. Neither is

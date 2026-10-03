@@ -98,6 +98,17 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **A symbolic link can no longer carry the compliance trail out of its data
+  directory.** The trail followed links: one at the trail's name, or at a
+  directory on its path, sent the desktop's, the SDK embedded server's and
+  qrdbd's trail -- its writes, rotation renames, retention removals and
+  reads -- wherever it pointed. The chain file logger now opens the trail's
+  directory as an `os.Root` and resolves every file operation inside it; a
+  link that resolves outside refuses the trail (`*audit.FileError`) and a
+  name that climbs out is `audit.ErrOutsideTrailDir`. New:
+  `audit.NewFileLoggerIn` and `audit.OpenTrailIn(dataDir, name)`, which every
+  composer now opens its trail with; `NewFileLogger` and `OpenTrail` confine
+  to the file's own directory.
 - **A holder registration racing a Shamir initialization no longer wedges
   the barrier.** The barrier marks itself initialized and then reads the
   holder set again to split the key; a registration landing between the two

@@ -272,8 +272,10 @@ type ServerConfig struct {
 	// AuditTrail, when set, is the file of the server's compliance audit
 	// trail -- the same hash-chained file, ring and operational log qrdbd
 	// keeps (audit.OpenTrail) -- and audit.DefaultTrailFile is qrdbd's
-	// name for it. A relative path is under DataDir. Empty, the default,
-	// keeps no trail. NewServer opens it before anything else, so the
+	// name for it. A relative path is under DataDir, and the trail is
+	// confined to DataDir -- or, for an absolute path, to the file's own
+	// directory (audit.OpenTrailIn): a symbolic link there that resolves
+	// outside refuses the trail. Empty, the default, keeps no trail. NewServer opens it before anything else, so the
 	// barrier records from its first moment, and a trail that cannot be
 	// opened fails NewServer (*AuditTrailError) with nothing started. The
 	// barrier records its events on it, keyed by the system tenant, and the
@@ -410,15 +412,19 @@ func openAuditTrail(config *ServerConfig) (audit.AuditLogger, error) {
 	if path == "" {
 		return nil, nil
 	}
+	// The trail is confined to the directory it is opened in -- DataDir for
+	// a relative path, the file's own directory for an absolute one -- so a
+	// symbolic link there cannot carry it anywhere else.
+	dir, name := filepath.Dir(path), filepath.Base(path)
 	if !filepath.IsAbs(path) {
 		if config.DataDir == "" {
 			return nil, &ServerConfigError{Field: "AuditTrail", Message: "a relative path needs DataDir"}
 		}
-		path = filepath.Join(config.DataDir, path)
+		dir, name = config.DataDir, path
 	}
-	trail, err := audit.OpenTrail(path)
+	trail, err := audit.OpenTrailIn(dir, name)
 	if err != nil {
-		return nil, &AuditTrailError{Path: path, Err: err}
+		return nil, &AuditTrailError{Path: filepath.Join(dir, name), Err: err}
 	}
 	return trail, nil
 }

@@ -368,8 +368,9 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 // openEmbeddedAudit opens the compliance trail cfg.Audit enables, under the
 // data directory, or returns nil when it is off. A path that leaves the data
 // directory is refused with *AuditPathOutsideDataDirError, and a trail that
-// cannot be opened with *EmbeddedAuditError: either way the server does not
-// start.
+// cannot be opened -- one a symbolic link would carry out of the data
+// directory among them -- with *EmbeddedAuditError: either way the server
+// does not start.
 func (b *EmbeddedServerBinding) openEmbeddedAudit(cfg *EmbeddedConfig) (audit.AuditLogger, error) {
 	if cfg.Audit == nil || !cfg.Audit.Enabled {
 		return nil, nil
@@ -385,10 +386,12 @@ func (b *EmbeddedServerBinding) openEmbeddedAudit(cfg *EmbeddedConfig) (audit.Au
 	if err != nil {
 		return nil, err
 	}
-	path := filepath.Join(dataDir, rel)
-	trail, err := audit.OpenTrail(path)
+	// The trail is confined to the data directory: a symbolic link in it, at
+	// the trail's name or at a directory on its path, that resolves outside
+	// refuses the start rather than carrying the trail there.
+	trail, err := audit.OpenTrailIn(dataDir, rel)
 	if err != nil {
-		return nil, &EmbeddedAuditError{Path: path, Err: err}
+		return nil, &EmbeddedAuditError{Path: filepath.Join(dataDir, rel), Err: err}
 	}
 	return trail, nil
 }

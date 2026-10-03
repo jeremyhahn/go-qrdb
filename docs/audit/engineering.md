@@ -31,6 +31,11 @@ type AuditLogger interface {
 type Filter struct{ /* ... */ TenantID string; Untenanted bool /* ... */ }
 
 func NewFileLogger(path string, opts ...ChainFileOption) (*ChainFileLogger, error)
+func NewFileLoggerIn(dir, name string, opts ...ChainFileOption) (*ChainFileLogger, error)
+func OpenTrail(path string) (AuditLogger, error)
+func OpenTrailIn(dir, name string) (AuditLogger, error)
+
+var ErrOutsideTrailDir error // a trail name that leaves its directory
 func NewRingBuffer(capacity int) *RingBuffer
 func NewSlogSink() *SlogSink
 func NewNoopLogger() *NoopLogger
@@ -137,10 +142,25 @@ sealed window's and the full one -- which are the graphs that carry a holder
 authority; a node with seal disabled has no holders to record. With it goes
 the node's `auth.audit_failure_policy` as `Infra.AuditFailurePolicy`.
 
-The composition itself is `audit.OpenTrail(path)` -- the chain file, a ring of
-`audit.TrailRingSize` events and the operational log -- shared by the daemon
-and the desktop's embedded server, at `audit.DefaultTrailFile` under the data
-directory. The same sink reaches every barrier's own events through
+The composition itself is `audit.OpenTrailIn(dataDir, name)` -- the chain
+file, a ring of `audit.TrailRingSize` events and the operational log --
+shared by the daemon, the desktop's embedded server and the SDK's flat
+embedded server, at `audit.DefaultTrailFile` under the data directory.
+
+**The trail is confined to the directory it is opened in.** The chain file
+logger opens that directory as an `os.Root` (`NewFileLoggerIn`; `NewFileLogger`
+and `OpenTrail` confine to the file's own directory) and resolves every file
+operation of the trail inside it: the active file's open, a rotation's
+rename, the archive name it picks and the directory sync after it,
+retention's listing and removals, and the query and verification readers. A
+symbolic link in the directory -- at the trail's name, or at a directory on
+its path -- that resolves outside is refused (`*FileError` wrapping the
+root's error), so the trail is never written, renamed or read anywhere else;
+a link that stays inside is followed. A name that climbs out of the
+directory is `*FileError` wrapping `ErrOutsideTrailDir` before anything is
+opened. The confinement holds for the life of the logger: a directory on the
+path swapped for an outward link after the trail opened fails the next
+rotation rather than following it. The same sink reaches every barrier's own events through
 `seal.NewComplianceAuditLogger`: the system barrier's configuration, the
 tenant registry (`seal.WithAuditTrail`) and the database barrier manager
 (`database.WithBarrierAuditTrail`). There is one trail and one emitter per

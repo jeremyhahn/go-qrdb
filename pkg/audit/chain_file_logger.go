@@ -31,7 +31,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/util/fsync"
 	"github.com/jeremyhahn/go-qrdb/pkg/util/metrics"
 )
 
@@ -107,7 +106,10 @@ func WithSyncPerWrite(v bool) ChainFileOption {
 //     record (a record that follows one -- see #268 -- chains over it) and
 //     takes the handoff from the digest standing BEFORE a terminal anchor.
 type ChainFileLogger struct {
-	path          string
+	path string
+	// dir is the directory the trail is confined to (trailDir): every file
+	// operation below resolves inside it.
+	dir           *trailDir
 	maxBytes      int64
 	retentionDays int
 	syncPerWrite  bool
@@ -209,9 +211,31 @@ type ChainFileLogger struct {
 // On startup, rotated files older than retentionDays are deleted. The active
 // log file is opened for append; the prevDigest is initialised by scanning
 // the tail of the file.
+//
+// The trail is confined to path's directory (see NewFileLoggerIn).
 func NewFileLogger(path string, opts ...ChainFileOption) (*ChainFileLogger, error) {
+	return NewFileLoggerIn(filepath.Dir(path), filepath.Base(path), opts...)
+}
+
+// NewFileLoggerIn opens the audit log file name below dir and returns a
+// ChainFileLogger confined to dir: the directory is opened as an os.Root and
+// every file operation of the trail -- the active file, its rotation
+// archives, retention and the readers -- resolves inside it, so a symbolic
+// link in dir, at name or at a directory on its path, cannot carry the trail
+// outside it (*FileError wrapping the root's refusal). name must be local to
+// dir (filepath.IsLocal); one that is not is *FileError wrapping
+// ErrOutsideTrailDir.
+func NewFileLoggerIn(dir, name string, opts ...ChainFileOption) (*ChainFileLogger, error) {
+	if !filepath.IsLocal(name) {
+		return nil, &FileError{Path: filepath.Join(dir, name), Err: ErrOutsideTrailDir}
+	}
+	trail, err := openTrailDir(dir)
+	if err != nil {
+		return nil, err
+	}
 	l := &ChainFileLogger{
-		path:          path,
+		path:          trail.path(name),
+		dir:           trail,
 		maxBytes:      100 * 1024 * 1024, // 100 MiB
 		retentionDays: 90,
 		syncPerWrite:  true,
@@ -226,6 +250,7 @@ func NewFileLogger(path string, opts ...ChainFileOption) (*ChainFileLogger, erro
 	}
 
 	if err := l.openFile(); err != nil {
+		_ = trail.close()
 		return nil, err
 	}
 
@@ -235,7 +260,7 @@ func NewFileLogger(path string, opts ...ChainFileOption) (*ChainFileLogger, erro
 // openFile opens (or creates) the active audit log file and initialises
 // prevDigest from the last event in the file.
 func (l *ChainFileLogger) openFile() error {
-	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0o600)
+	f, err := l.dir.openFile(l.path, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0o600)
 	if err != nil {
 		// Leave l.f NIL rather than whatever it was. A failure here used to
 		// leave the previous, already-closed handle in place, which every
@@ -592,7 +617,7 @@ func (l *ChainFileLogger) rename(oldpath, newpath string) error {
 	if l.renameFunc != nil {
 		return l.renameFunc(oldpath, newpath)
 	}
-	return fsync.Rename(oldpath, newpath)
+	return l.dir.rename(oldpath, newpath)
 }
 
 // Query scans the active file and returns events matching the filter.
@@ -604,7 +629,7 @@ func (l *ChainFileLogger) Query(_ context.Context, f Filter) (*Page, error) {
 	path := l.path
 	l.mu.Unlock()
 
-	events, err := scanFile(path, f)
+	events, err := scanFile(l.dir, path, f)
 	if err != nil {
 		return nil, err
 	}
@@ -670,20 +695,26 @@ func (l *ChainFileLogger) VerifyChainSet(ctx context.Context) (*ChainVerificatio
 	if l.scan != nil {
 		return l.scan(ctx, l.path)
 	}
-	return verifyChainSetAt(ctx, l.path, l.rotations.Load)
+	return verifyChainSetAt(ctx, l.dir, l.path, l.rotations.Load)
 }
 
-// Close flushes and closes the underlying file.
+// Close flushes and closes the underlying file, and releases the trail's
+// directory. It is idempotent.
 func (l *ChainFileLogger) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.f == nil {
-		l.closed = true
+	if l.closed {
 		return nil
 	}
-	err := l.f.Close()
-	l.f = nil
 	l.closed = true
+	var err error
+	if l.f != nil {
+		err = l.f.Close()
+		l.f = nil
+	}
+	if l.dir != nil {
+		err = errors.Join(err, l.dir.close())
+	}
 	return err
 }
 
@@ -767,7 +798,7 @@ func (l *ChainFileLogger) rotate() error {
 	// of this rename still matters -- the size bound and the archive boundary
 	// depend on it -- but it is no longer the difference between a verifiable
 	// trail and an unverifiable one.
-	archivePath := rotatedPath(l.path)
+	archivePath := rotatedPath(l.dir, l.path)
 	// From the rename until the replacement file is open the active name does
 	// not exist. Mark that window for the lock-free verifier: odd while open,
 	// and even again when rotate returns -- by a DEFER, so it is even again
@@ -818,7 +849,7 @@ func (l *ChainFileLogger) pruneOldFiles() error {
 	ext := filepath.Ext(base)
 	stem := strings.TrimSuffix(base, ext)
 
-	entries, err := os.ReadDir(dir)
+	entries, err := l.dir.readDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -840,7 +871,7 @@ func (l *ChainFileLogger) pruneOldFiles() error {
 			continue
 		}
 		if info.ModTime().Before(cutoff) {
-			if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
+			if err := l.dir.remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
 				slog.Error("audit: failed to prune rotated file", "name", name, "error", err)
 			}
 		}
@@ -853,14 +884,14 @@ func (l *ChainFileLogger) pruneOldFiles() error {
 // ---------------------------------------------------------------------------
 
 // rotatedPath returns an archive path derived from path, stamped with the
-// current date and a monotonic counter to avoid collisions.
-func rotatedPath(path string) string {
+// current date and a monotonic counter to avoid collisions, free in dir.
+func rotatedPath(dir *trailDir, path string) string {
 	ext := filepath.Ext(path)
 	stem := strings.TrimSuffix(path, ext)
 	stamp := time.Now().UTC().Format("2006-01-02")
 	for i := 0; i < 1000; i++ {
 		candidate := fmt.Sprintf("%s-%s-%03d%s", stem, stamp, i, ext)
-		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+		if _, err := dir.stat(candidate); os.IsNotExist(err) {
 			return candidate
 		}
 	}
@@ -920,9 +951,10 @@ func allZero(b [sha256.Size]byte) bool {
 	return true
 }
 
-// scanFile opens the NDJSON file at path and returns all events matching f.
-func scanFile(path string, f Filter) ([]AuditEvent, error) {
-	file, err := os.Open(path)
+// scanFile opens the NDJSON file at path, in dir, and returns all events
+// matching f.
+func scanFile(dir *trailDir, path string, f Filter) ([]AuditEvent, error) {
+	file, err := dir.open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
