@@ -829,7 +829,7 @@ func (s *DatabaseService) CreateWithCredentials(ctx context.Context, cfg databas
 	if err := cfg.Barrier.Validate(); err != nil {
 		return nil, err
 	}
-	if err := refuseEtcdNotCompiled(cfg.Protocol.Etcd); err != nil {
+	if err := RefuseEtcdNotCompiled(cfg.Protocol.Etcd); err != nil {
 		return nil, err
 	}
 	if err := s.validateRaftTopology(cfg.Name, &cfg); err != nil {
@@ -1075,15 +1075,18 @@ func (s *DatabaseService) UpdateProtocol(name string, protocol database.Protocol
 	return &info, nil
 }
 
-// refuseEtcdNotCompiled returns a typed *CapabilityUnsupportedError when etcd
+// RefuseEtcdNotCompiled returns a typed *CapabilityUnsupportedError when etcd
 // is being enabled on a binary not built with qrdb_etcd, or nil otherwise
-// (etcd not requested, or this binary has it). Every entry point that can
-// persist an EtcdConfig -- Create, CreateForTenant, UpdateEtcd,
-// UpdateEtcdForTenant -- calls this before the manager is reached, so the
-// typed refusal is what every transport sees and nothing is ever written for
-// a protocol this binary cannot serve. See docs/etcd-compatibility/
-// architecture.md's Build Tags section.
-func refuseEtcdNotCompiled(etcd *database.EtcdConfig) error {
+// (etcd not requested, or this binary has it). Exported so every entry point
+// that can persist an EtcdConfig calls the SAME check: Create, CreateForTenant,
+// UpdateEtcd and UpdateEtcdForTenant in this file (before the manager is
+// reached, so nothing is ever written for a protocol this binary cannot
+// serve) and cmd/qrdbd's boot-time `databases:` YAML provisioning
+// (provision.go), which creates databases through *database.Manager
+// directly rather than through this service -- the one caller this check
+// would otherwise miss. See docs/etcd-compatibility/architecture.md's Build
+// Tags section.
+func RefuseEtcdNotCompiled(etcd *database.EtcdConfig) error {
 	if etcd == nil || !etcd.Enabled || capabilities.Has("etcd") {
 		return nil
 	}
@@ -1093,7 +1096,7 @@ func refuseEtcdNotCompiled(etcd *database.EtcdConfig) error {
 // UpdateEtcd updates the etcd wire protocol configuration for the named
 // database and returns the updated runtime information.
 func (s *DatabaseService) UpdateEtcd(name string, etcd *database.EtcdConfig) (*database.DatabaseInfo, error) {
-	if err := refuseEtcdNotCompiled(etcd); err != nil {
+	if err := RefuseEtcdNotCompiled(etcd); err != nil {
 		return nil, err
 	}
 	if err := s.manager.UpdateEtcd(name, etcd); err != nil {
@@ -1355,7 +1358,7 @@ func (s *DatabaseService) CreateForTenantWithCredentials(ctx context.Context, cf
 	if err := cfg.Barrier.Validate(); err != nil {
 		return nil, err
 	}
-	if err := refuseEtcdNotCompiled(cfg.Protocol.Etcd); err != nil {
+	if err := RefuseEtcdNotCompiled(cfg.Protocol.Etcd); err != nil {
 		return nil, err
 	}
 	if tenantid.IsSystem(tenant.FromContext(ctx)) {
@@ -1952,7 +1955,7 @@ func (s *DatabaseService) UpdateProtocolForTenant(ctx context.Context, name stri
 // UpdateEtcdForTenant updates the etcd wire protocol configuration for the named
 // database with tenant enforcement and returns the updated runtime information.
 func (s *DatabaseService) UpdateEtcdForTenant(ctx context.Context, name string, etcd *database.EtcdConfig) (*database.DatabaseInfo, error) {
-	if err := refuseEtcdNotCompiled(etcd); err != nil {
+	if err := RefuseEtcdNotCompiled(etcd); err != nil {
 		return nil, err
 	}
 	if err := s.manager.UpdateEtcdForTenant(ctx, name, etcd); err != nil {
