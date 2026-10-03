@@ -11,6 +11,13 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.35.1-alpha] - 2026-10-03
+
+Sealing test hardening. Highlights:
+
+- **Tests pin how the database quorum is routed and how the database unseal gate is wired.** Two read-only accessors back them: `seal.BarrierRegistry.TenantUnsealRefused` and `database.DatabaseBarrierManager.UnsealRefused`.
+- **The gRPC barrier-seal tests now wire an SO PIN backend, as a real composer does.** They were red under tag sets without `qrdb_ts`.
+
 ### Added
 
 - `seal.BarrierRegistry.TenantUnsealRefused` and
