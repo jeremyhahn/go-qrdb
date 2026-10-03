@@ -262,18 +262,50 @@ func fromTransportSQLConfig(c *transport.DatabaseSQLConfig) *database.SQLConfig 
 	return &database.SQLConfig{Concurrency: database.Concurrency(c.Concurrency)}
 }
 
-// fromTransportRaftConfig converts transport raft config to domain type.
+// fromTransportRaftConfig converts transport raft config to domain type, every
+// field and discovery block included.
 func fromTransportRaftConfig(rc *transport.DatabaseRaftConfig) *database.DatabaseRaftConfig {
 	if rc == nil {
 		return nil
 	}
-	return &database.DatabaseRaftConfig{
+	out := &database.DatabaseRaftConfig{
 		ClusterMode:    database.RaftClusterMode(rc.ClusterMode),
 		ReplicaID:      rc.ReplicaID,
 		RaftAddress:    rc.RaftAddress,
 		Peers:          rc.Peers,
 		LocalNodeCount: rc.LocalNodeCount,
+		Discovery:      database.DiscoveryMethod(rc.Discovery),
 	}
+	if s := rc.Static; s != nil {
+		out.Static = &database.StaticDiscoveryConfig{Peers: s.Peers, SharedSecret: s.SharedSecret}
+	}
+	if mc := rc.Multicast; mc != nil {
+		out.Multicast = &database.MulticastDiscoveryConfig{
+			SharedSecret:     mc.SharedSecret,
+			MulticastGroup:   mc.MulticastGroup,
+			Interface:        mc.Interface,
+			MinPeers:         mc.MinPeers,
+			AnnounceInterval: mc.AnnounceInterval,
+			DiscoverTimeout:  mc.DiscoverTimeout,
+		}
+	}
+	if d := rc.DNS; d != nil {
+		out.DNS = &database.DNSDiscoveryConfig{
+			Service:       d.Service,
+			Proto:         d.Proto,
+			Domain:        d.Domain,
+			LookupTimeout: d.LookupTimeout,
+		}
+	}
+	if tk := rc.Token; tk != nil {
+		out.Token = &database.TokenDiscoveryConfig{
+			Endpoint:    tk.Endpoint,
+			Token:       tk.Token,
+			ClusterSize: tk.ClusterSize,
+			Timeout:     tk.Timeout,
+		}
+	}
+	return out
 }
 
 // fromTransportBarrierConfig converts transport barrier config to domain type.

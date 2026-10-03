@@ -211,8 +211,20 @@ are not reconstructed here — their history is in the git log.
   `local_node_count`, `multicast_announce_interval`,
   `multicast_discover_timeout`, `dns_lookup_timeout`, `token_timeout`), and a
   block is sent when `discovery_method` names it or any of its arguments is
-  given. The Go SDK's MCP transport now sends `peers` and `localNodeCount`, as
-  its other transports do.
+  given.
+- **Both SDKs can set Raft discovery.** The SDKs' Raft request type had no
+  discovery fields, so no SDK caller could set discovery on any transport, and
+  the Go SDK's MCP transport also dropped `peers` and `localNodeCount`. The Go
+  SDK's `transport.DatabaseRaftConfig` and the TypeScript SDK's
+  `DatabaseRaftConfig` now carry `discovery` and the `static`, `multicast`,
+  `dns` and `token` blocks (`StaticDiscoveryConfig`, `MulticastDiscoveryConfig`,
+  `DNSDiscoveryConfig`, `TokenDiscoveryConfig`) with their write-only secrets,
+  and every Go SDK transport -- REST, gRPC, Unix, QUIC, MCP and embedded --
+  sends all of it. gRPC and Unix share one request converter. The TypeScript
+  `DatabaseRaftInfo` no longer extends `DatabaseRaftConfig`, since a response
+  block reports a secret only as set; it declares the same top-level fields.
+  The TypeScript SDK now also exports `DatabaseRaftInfo` and the discovery
+  info and request types.
 
 ### Security
 

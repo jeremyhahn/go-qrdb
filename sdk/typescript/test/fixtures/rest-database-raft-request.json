@@ -1,0 +1,37 @@
+{
+  "clusterMode": "distributed",
+  "replicaId": 2,
+  "raftAddress": "db2.example.com:63001",
+  "peers": [
+    "db2.example.com:63001",
+    "db3.example.com:63001"
+  ],
+  "localNodeCount": 5,
+  "discovery": "static",
+  "static": {
+    "peers": [
+      "db4.example.com:63001"
+    ],
+    "sharedSecret": "static-secret-7e1a5c3b9d"
+  },
+  "multicast": {
+    "sharedSecret": "multicast-secret-2f6d8b4a0c",
+    "multicastGroup": "239.255.0.9:63100",
+    "interface": "eth1",
+    "minPeers": 4,
+    "announceInterval": "3s",
+    "discoverTimeout": "45s"
+  },
+  "dns": {
+    "service": "qrdb-raft",
+    "proto": "tcp",
+    "domain": "cluster.example.com",
+    "lookupTimeout": "7s"
+  },
+  "token": {
+    "endpoint": "https://discovery.example.com/join",
+    "token": "discovery-token-5c9e1b7d3a",
+    "clusterSize": 5,
+    "timeout": "90s"
+  }
+}

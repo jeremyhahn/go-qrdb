@@ -2049,9 +2049,16 @@ export interface NodeCompactionBody {
 }
 
 /**
- * Raft consensus configuration for a database. There is no shard ID: the cluster
- * issues it when the database is created, it never changes, and it is
- * reported as {@link DatabaseInfo.shardId}.
+ * Raft consensus configuration as a request sets it on a database. There is no
+ * shard ID: the cluster issues it when the database is created, it never
+ * changes, and it is reported as {@link DatabaseInfo.shardId}. A response
+ * reports the configuration as a {@link DatabaseRaftInfo}.
+ *
+ * A Raft update replaces the whole configuration: a discovery block left out
+ * is removed, secret and all. A block sent without its secret keeps the stored
+ * secret while the block's destination is unchanged, so settings read back --
+ * responses never carry secrets -- can be written back without them. The Go
+ * SDK's `transport.DatabaseRaftConfig`.
  */
 export interface DatabaseRaftConfig {
     /** Cluster mode (e.g. "single", "multi"). */
@@ -2064,6 +2071,64 @@ export interface DatabaseRaftConfig {
     readonly peers?: readonly string[];
     /** Number of local nodes in the cluster. */
     readonly localNodeCount?: number;
+    /** Peer discovery method (static, multicast, dns, token). */
+    readonly discovery?: string;
+    /** Static discovery settings. */
+    readonly static?: StaticDiscoveryConfig;
+    /** Multicast discovery settings. */
+    readonly multicast?: MulticastDiscoveryConfig;
+    /** DNS discovery settings. */
+    readonly dns?: DNSDiscoveryConfig;
+    /** Token discovery settings. */
+    readonly token?: TokenDiscoveryConfig;
+}
+
+/** Static peer discovery as a request sets it. */
+export interface StaticDiscoveryConfig {
+    /** Peer addresses. */
+    readonly peers?: readonly string[];
+    /** HMAC shared secret. Write-only: a response reports only that it is set. */
+    readonly sharedSecret?: string;
+}
+
+/** UDP multicast peer discovery as a request sets it. */
+export interface MulticastDiscoveryConfig {
+    /** HMAC shared secret. Write-only: a response reports only that it is set. */
+    readonly sharedSecret?: string;
+    /** Multicast group address. */
+    readonly multicastGroup?: string;
+    /** Network interface the announcements use. */
+    readonly interface?: string;
+    /** Peers to find before forming the cluster. */
+    readonly minPeers?: number;
+    /** Interval between announcements, as a Go duration. */
+    readonly announceInterval?: string;
+    /** How long discovery waits for peers, as a Go duration. */
+    readonly discoverTimeout?: string;
+}
+
+/** DNS SRV peer discovery as a request sets it. It holds no secret. */
+export interface DNSDiscoveryConfig {
+    /** SRV service name. */
+    readonly service?: string;
+    /** SRV protocol. */
+    readonly proto?: string;
+    /** Domain the SRV records live under. */
+    readonly domain: string;
+    /** Lookup timeout, as a Go duration. */
+    readonly lookupTimeout?: string;
+}
+
+/** Token-based peer discovery as a request sets it. */
+export interface TokenDiscoveryConfig {
+    /** Discovery service endpoint. */
+    readonly endpoint: string;
+    /** Bootstrap token. Write-only: a response reports only that it is set. */
+    readonly token?: string;
+    /** Expected cluster size. */
+    readonly clusterSize: number;
+    /** Discovery timeout, as a Go duration. */
+    readonly timeout?: string;
 }
 
 /** Static peer discovery as a database reports it. */
@@ -2119,7 +2184,17 @@ export interface TokenDiscoveryInfo {
 
 /** Raft configuration as a database reports it. Discovery secrets are
  * write-only: each is reported only as set. The Go SDK's `DatabaseRaftInfo`. */
-export interface DatabaseRaftInfo extends DatabaseRaftConfig {
+export interface DatabaseRaftInfo {
+    /** Cluster mode (e.g. "single", "multi"). */
+    readonly clusterMode: string;
+    /** Replica identifier for this database. */
+    readonly replicaId?: number;
+    /** Raft transport address. */
+    readonly raftAddress?: string;
+    /** Addresses of peer nodes. */
+    readonly peers?: readonly string[];
+    /** Number of local nodes in the cluster. */
+    readonly localNodeCount?: number;
     /** Peer discovery method (static, multicast, dns, token). */
     readonly discovery?: string;
     /** Static discovery settings. */

@@ -61,7 +61,7 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 	}
 
 	if req.Raft != nil {
-		pbReq.Raft = transportRaftConfigToProto(req.Raft)
+		pbReq.Raft = dbconv.RaftConfig(req.Raft)
 	}
 
 	if req.Barrier != nil {
@@ -184,7 +184,7 @@ func (t *Transport) UpdateDatabaseRaft(ctx context.Context, req transport.Update
 	}
 
 	if req.Raft != nil {
-		pbReq.Raft = transportRaftConfigToProto(req.Raft)
+		pbReq.Raft = dbconv.RaftConfig(req.Raft)
 	}
 
 	resp, err := t.client.DatabaseUpdateRaft(ctx, pbReq)
@@ -314,15 +314,3 @@ func (t *Transport) UpdateDatabaseConnection(ctx context.Context, req transport.
 // ---------------------------------------------------------------------------
 // Proto conversion helpers
 // ---------------------------------------------------------------------------
-
-// transportRaftConfigToProto converts an SDK transport DatabaseRaftConfig to
-// its protobuf representation.
-func transportRaftConfigToProto(r *transport.DatabaseRaftConfig) *pb.DatabaseRaftConfig {
-	return &pb.DatabaseRaftConfig{
-		ClusterMode:    r.ClusterMode,
-		ReplicaId:      r.ReplicaID,
-		RaftAddress:    r.RaftAddress,
-		Peers:          r.Peers,
-		LocalNodeCount: int32(r.LocalNodeCount),
-	}
-}

@@ -274,30 +274,6 @@ func TestUnixProtoToLockInfo_Valid(t *testing.T) {
 }
 
 // ===========================================================================
-// transport_database.go proto conversion helpers
-// ===========================================================================
-
-func TestUnixTransportRaftConfigToProto_RoundTrip(t *testing.T) {
-	in := &transport.DatabaseRaftConfig{
-		ClusterMode:    "multi",
-		ReplicaID:      8,
-		RaftAddress:    "10.0.0.1:5000",
-		Peers:          []string{"8=10.0.0.1:5000"},
-		LocalNodeCount: 5,
-	}
-	out := transportRaftConfigToProto(in)
-	if out == nil {
-		t.Fatal("nil result")
-	}
-	if out.GetClusterMode() != "multi" || out.GetReplicaId() != 8 {
-		t.Errorf("raft mismatch: %+v", out)
-	}
-	if out.GetLocalNodeCount() != 5 {
-		t.Errorf("LocalNodeCount = %d, want 5", out.GetLocalNodeCount())
-	}
-}
-
-// ===========================================================================
 // transport_mvcc.go protoToMVCCKeyValue
 // ===========================================================================
 

@@ -444,21 +444,6 @@ func TestGRPCDatabase_ConvertersDirect(t *testing.T) {
 	if got := transportProtocolConfigToProto(pcMin); got == nil {
 		t.Fatal("expected non-nil")
 	}
-
-	// transportRaftConfigToProto - nil and populated.
-	if got := transportRaftConfigToProto(nil); got != nil {
-		t.Fatal("nil should return nil")
-	}
-	rc := &transport.DatabaseRaftConfig{
-		ClusterMode:    "single",
-		ReplicaID:      1,
-		RaftAddress:    "127.0.0.1:8000",
-		Peers:          []string{"a"},
-		LocalNodeCount: 1,
-	}
-	if got := transportRaftConfigToProto(rc); got == nil {
-		t.Fatal("expected non-nil")
-	}
 }
 
 // ===========================================================================

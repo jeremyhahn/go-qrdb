@@ -420,4 +420,49 @@ func applyRaftArgs(args map[string]any, raft *transport.DatabaseRaftConfig, pref
 	if raft.LocalNodeCount != 0 {
 		args[prefix+"local_node_count"] = raft.LocalNodeCount
 	}
+	if raft.Discovery != "" {
+		args["discovery_method"] = raft.Discovery
+	}
+	applyDiscoveryArgs(args, raft)
+}
+
+// applyDiscoveryArgs adds each discovery block the request sets. The server
+// sends a block when any of its arguments is given, so every non-secret
+// argument of a set block is sent, empty or not: a block whose only stored
+// field is its secret is then still sent back. A secret is sent only when
+// set -- an empty one asks the server to keep the stored secret.
+func applyDiscoveryArgs(args map[string]any, raft *transport.DatabaseRaftConfig) {
+	secret := func(name, value string) {
+		if value != "" {
+			args[name] = value
+		}
+	}
+	if s := raft.Static; s != nil {
+		peers := s.Peers
+		if peers == nil {
+			peers = []string{}
+		}
+		args["static_peers"] = peers
+		secret("static_shared_secret", s.SharedSecret)
+	}
+	if mc := raft.Multicast; mc != nil {
+		args["multicast_group"] = mc.MulticastGroup
+		args["multicast_interface"] = mc.Interface
+		args["multicast_min_peers"] = mc.MinPeers
+		args["multicast_announce_interval"] = mc.AnnounceInterval
+		args["multicast_discover_timeout"] = mc.DiscoverTimeout
+		secret("multicast_shared_secret", mc.SharedSecret)
+	}
+	if d := raft.DNS; d != nil {
+		args["dns_domain"] = d.Domain
+		args["dns_service"] = d.Service
+		args["dns_proto"] = d.Proto
+		args["dns_lookup_timeout"] = d.LookupTimeout
+	}
+	if tk := raft.Token; tk != nil {
+		args["token_endpoint"] = tk.Endpoint
+		args["token_cluster_size"] = tk.ClusterSize
+		args["token_timeout"] = tk.Timeout
+		secret("token_value", tk.Token)
+	}
 }

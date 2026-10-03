@@ -269,8 +269,22 @@ leaving a block out does on every other transport. *(Changed: MCP built only
 the block `discovery_method` named, so every MCP Raft update removed the other
 blocks and their secrets, and it had no arguments for `peers`,
 `localNodeCount`, `announceInterval`, `discoverTimeout`, `lookupTimeout` or the
-token `timeout`. The Go SDK's MCP transport now sends `peers` and
-`localNodeCount` too.)*
+token `timeout`.)*
+
+Both SDKs set every one of these fields. The request type -- `DatabaseRaftConfig`
+in the Go SDK (`transport.DatabaseRaftConfig`) and the TypeScript SDK -- carries
+`discovery` and the `static`, `multicast`, `dns` and `token` blocks
+(`StaticDiscoveryConfig`, `MulticastDiscoveryConfig`, `DNSDiscoveryConfig`,
+`TokenDiscoveryConfig`), each secret included and omitted when empty, and every
+Go SDK transport (REST, gRPC, Unix, QUIC, MCP, embedded) sends all of it. The
+request keys are pinned by a recorded request,
+`sdk/typescript/test/fixtures/rest-database-raft-request.json`: the Go test
+`TestDatabaseRaftRequestWire_*` holds it to the Go SDK's encoding and decodes it
+through the REST handler refusing unknown keys, and the TypeScript test
+`database-raft-request-wire.test.ts` holds the TypeScript types to it. *(Changed:
+the SDK request types had no discovery fields, so no SDK caller could set
+discovery on any transport; the Go SDK's MCP transport also dropped `peers` and
+`localNodeCount`.)*
 
 `DatabaseBarrierConfig` fields: `enabled`, `mode` (`passphrase|shamir`),
 `sharesRequired`, `sharesTotal`, `secret`. A per-database barrier is built in

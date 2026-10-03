@@ -30,51 +30,14 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 )
 
-// fullRaftConfig sets every field a caller can set in a Raft configuration
-// (all but the issued shard ID), each to a value no default produces.
-func fullRaftConfig() *database.DatabaseRaftConfig {
-	return &database.DatabaseRaftConfig{
-		ClusterMode:    database.RaftDistributed,
-		ReplicaID:      2,
-		RaftAddress:    "db2.example.com:63001",
-		Peers:          []string{"db2.example.com:63001", "db3.example.com:63001"},
-		LocalNodeCount: 5,
-		Discovery:      database.DiscoveryStatic,
-		Static: &database.StaticDiscoveryConfig{
-			Peers:        []string{"db4.example.com:63001"},
-			SharedSecret: "parity-static-secret",
-		},
-		Multicast: &database.MulticastDiscoveryConfig{
-			SharedSecret:     "parity-multicast-secret",
-			MulticastGroup:   "239.255.0.9:63100",
-			Interface:        "eth1",
-			MinPeers:         4,
-			AnnounceInterval: "3s",
-			DiscoverTimeout:  "45s",
-		},
-		DNS: &database.DNSDiscoveryConfig{
-			Service:       "qrdb-raft",
-			Proto:         "tcp",
-			Domain:        "cluster.example.com",
-			LookupTimeout: "7s",
-		},
-		Token: &database.TokenDiscoveryConfig{
-			Endpoint:    "https://discovery.example.com/join",
-			Token:       "parity-token",
-			ClusterSize: 5,
-			Timeout:     "90s",
-		},
-	}
-}
-
-// fullDiscoveryArgs is fullRaftConfig's discovery blocks as MCP arguments; the
+// fullDiscoveryArgs is dbwiretest.FullRaftConfig's discovery blocks as MCP arguments; the
 // names are shared by the create and update tools.
 func fullDiscoveryArgs() map[string]any {
 	return map[string]any{
 		"discovery_method":            "static",
 		"static_peers":                []any{"db4.example.com:63001"},
-		"static_shared_secret":        "parity-static-secret",
-		"multicast_shared_secret":     "parity-multicast-secret",
+		"static_shared_secret":        dbwiretest.FullStaticSecret,
+		"multicast_shared_secret":     dbwiretest.FullMulticastSecret,
 		"multicast_group":             "239.255.0.9:63100",
 		"multicast_interface":         "eth1",
 		"multicast_min_peers":         4,
@@ -85,36 +48,9 @@ func fullDiscoveryArgs() map[string]any {
 		"dns_domain":                  "cluster.example.com",
 		"dns_lookup_timeout":          "7s",
 		"token_endpoint":              "https://discovery.example.com/join",
-		"token_value":                 "parity-token",
+		"token_value":                 dbwiretest.FullDiscoveryToken,
 		"token_cluster_size":          5,
 		"token_timeout":               "90s",
-	}
-}
-
-// assertEverySettableFieldSet fails for any zero field reachable from v other
-// than the issued shard ID, so a field added to the Raft configuration without
-// an MCP argument fails the parity tests below instead of passing them.
-func assertEverySettableFieldSet(t *testing.T, v reflect.Value, path string) {
-	t.Helper()
-	switch v.Kind() {
-	case reflect.Pointer:
-		if v.IsNil() {
-			t.Errorf("%s is nil", path)
-			return
-		}
-		assertEverySettableFieldSet(t, v.Elem(), path)
-	case reflect.Struct:
-		for i := range v.NumField() {
-			f := v.Type().Field(i)
-			if path == "raft" && f.Name == "ShardID" {
-				continue
-			}
-			assertEverySettableFieldSet(t, v.Field(i), path+"."+f.Name)
-		}
-	default:
-		if v.IsZero() {
-			t.Errorf("%s is zero", path)
-		}
 	}
 }
 
@@ -122,8 +58,7 @@ func assertEverySettableFieldSet(t *testing.T, v reflect.Value, path string) {
 // the top-level peers and local node count, and every discovery block in full
 // (announce interval, discover timeout, lookup timeout, token timeout).
 func TestDatabaseUpdateRaftTool_EveryFieldReachesTheService(t *testing.T) {
-	want := fullRaftConfig()
-	assertEverySettableFieldSet(t, reflect.ValueOf(want), "raft")
+	dbwiretest.AssertEveryFieldSet(t, dbwiretest.FullRaftConfig(), "ShardID")
 
 	svc := newRealDatabaseService(t)
 	dbwiretest.Seed(t, svc)
@@ -146,17 +81,12 @@ func TestDatabaseUpdateRaftTool_EveryFieldReachesTheService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := *stored.Raft
-	got.ShardID = 0
-	if !reflect.DeepEqual(&got, want) {
-		t.Fatalf("stored Raft config =\n%+v\nwant\n%+v", &got, want)
-	}
+	dbwiretest.AssertRaftConfig(t, "MCP", stored.Raft)
 }
 
 // The create tool carries the same fields, under its raft_ prefix for the
 // top-level ones.
 func TestDatabaseCreateTool_EveryRaftFieldReachesTheService(t *testing.T) {
-	want := fullRaftConfig()
 	// A create with a Raft configuration is issued a shard ID, so the Manager
 	// claims them, as every production composition's does.
 	claimer, err := shard.NewClaimer(kvstore.NewMemoryKVStore())
@@ -189,11 +119,7 @@ func TestDatabaseCreateTool_EveryRaftFieldReachesTheService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := *stored.Raft
-	got.ShardID = 0
-	if !reflect.DeepEqual(&got, want) {
-		t.Fatalf("stored Raft config =\n%+v\nwant\n%+v", &got, want)
-	}
+	dbwiretest.AssertRaftConfig(t, "MCP create", stored.Raft)
 }
 
 // A read-modify-write through MCP keeps every block it sends back. The update

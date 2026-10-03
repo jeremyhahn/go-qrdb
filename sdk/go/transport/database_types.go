@@ -156,12 +156,61 @@ type UpdateDatabaseCompactionRequest struct {
 
 // DatabaseRaftConfig holds Raft consensus settings a request sets on a
 // database. A response reports them as a DatabaseRaftInfo.
+//
+// A Raft update replaces the whole configuration: a discovery block left nil
+// is removed, secret and all. A block sent with its secret empty keeps the
+// stored secret while the block's destination is unchanged, so a client that
+// read the database back -- responses never carry secrets -- can write its
+// settings back without them.
 type DatabaseRaftConfig struct {
-	ClusterMode    string   `json:"clusterMode"`
-	ReplicaID      uint64   `json:"replicaId,omitempty"`
-	RaftAddress    string   `json:"raftAddress,omitempty"`
-	Peers          []string `json:"peers,omitempty"`
-	LocalNodeCount int      `json:"localNodeCount,omitempty"`
+	ClusterMode    string                    `json:"clusterMode"`
+	ReplicaID      uint64                    `json:"replicaId,omitempty"`
+	RaftAddress    string                    `json:"raftAddress,omitempty"`
+	Peers          []string                  `json:"peers,omitempty"`
+	LocalNodeCount int                       `json:"localNodeCount,omitempty"`
+	Discovery      string                    `json:"discovery,omitempty"`
+	Static         *StaticDiscoveryConfig    `json:"static,omitempty"`
+	Multicast      *MulticastDiscoveryConfig `json:"multicast,omitempty"`
+	DNS            *DNSDiscoveryConfig       `json:"dns,omitempty"`
+	Token          *TokenDiscoveryConfig     `json:"token,omitempty"`
+}
+
+// StaticDiscoveryConfig is static peer discovery as a request sets it.
+// SharedSecret is write-only: a response reports it only as set
+// (StaticDiscoveryInfo.SharedSecretSet).
+type StaticDiscoveryConfig struct {
+	Peers        []string `json:"peers,omitempty"`
+	SharedSecret string   `json:"sharedSecret,omitempty"`
+}
+
+// MulticastDiscoveryConfig is UDP multicast peer discovery as a request sets
+// it. SharedSecret is write-only.
+type MulticastDiscoveryConfig struct {
+	SharedSecret     string `json:"sharedSecret,omitempty"`
+	MulticastGroup   string `json:"multicastGroup,omitempty"`
+	Interface        string `json:"interface,omitempty"`
+	MinPeers         int    `json:"minPeers,omitempty"`
+	AnnounceInterval string `json:"announceInterval,omitempty"`
+	DiscoverTimeout  string `json:"discoverTimeout,omitempty"`
+}
+
+// DNSDiscoveryConfig is DNS SRV peer discovery as a request sets it. It holds
+// no secret.
+type DNSDiscoveryConfig struct {
+	Service       string `json:"service,omitempty"`
+	Proto         string `json:"proto,omitempty"`
+	Domain        string `json:"domain"`
+	LookupTimeout string `json:"lookupTimeout,omitempty"`
+}
+
+// TokenDiscoveryConfig is token-based peer discovery as a request sets it.
+// Token is write-only: a response reports it only as set
+// (TokenDiscoveryInfo.TokenSet).
+type TokenDiscoveryConfig struct {
+	Endpoint    string `json:"endpoint"`
+	Token       string `json:"token,omitempty"`
+	ClusterSize int    `json:"clusterSize"`
+	Timeout     string `json:"timeout,omitempty"`
 }
 
 // DatabaseBarrierConfig holds encryption barrier settings for a database.

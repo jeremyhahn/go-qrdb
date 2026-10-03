@@ -12,9 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package dbconv converts the protobuf database information message into the
-// transport-neutral DatabaseInfo. The gRPC and Unix transports receive the
-// same message, so the conversion lives here once. It is internal: only the
+// Package dbconv converts between the protobuf database messages and the
+// transport-neutral types: the DatabaseInfo a response carries, and the Raft
+// configuration a request sends. The gRPC and Unix transports exchange the
+// same messages, so each conversion lives here once. It is internal: only the
 // transport implementations may import it.
 package dbconv
 
@@ -123,6 +124,54 @@ func raftInfo(r *pb.DatabaseRaftInfo) *transport.DatabaseRaftInfo {
 			TokenSet:    tk.GetTokenSet(),
 			ClusterSize: int(tk.GetClusterSize()),
 			Timeout:     tk.GetTimeout(),
+		}
+	}
+	return out
+}
+
+// RaftConfig converts a Raft request configuration to its protobuf message,
+// every field and discovery block included; nil stays nil. A discovery block
+// carries its secret only when the caller set one: an empty secret asks the
+// server to keep the stored one.
+func RaftConfig(r *transport.DatabaseRaftConfig) *pb.DatabaseRaftConfig {
+	if r == nil {
+		return nil
+	}
+	out := &pb.DatabaseRaftConfig{
+		ClusterMode:    r.ClusterMode,
+		ReplicaId:      r.ReplicaID,
+		RaftAddress:    r.RaftAddress,
+		Peers:          r.Peers,
+		LocalNodeCount: int32(r.LocalNodeCount),
+		Discovery:      r.Discovery,
+	}
+	if s := r.Static; s != nil {
+		out.Static = &pb.DatabaseStaticDiscovery{Peers: s.Peers, SharedSecret: s.SharedSecret}
+	}
+	if mc := r.Multicast; mc != nil {
+		out.Multicast = &pb.DatabaseMulticastDiscovery{
+			SharedSecret:     mc.SharedSecret,
+			MulticastGroup:   mc.MulticastGroup,
+			Iface:            mc.Interface,
+			MinPeers:         int32(mc.MinPeers),
+			AnnounceInterval: mc.AnnounceInterval,
+			DiscoverTimeout:  mc.DiscoverTimeout,
+		}
+	}
+	if d := r.DNS; d != nil {
+		out.Dns = &pb.DatabaseDNSDiscovery{
+			Service:       d.Service,
+			Proto:         d.Proto,
+			Domain:        d.Domain,
+			LookupTimeout: d.LookupTimeout,
+		}
+	}
+	if tk := r.Token; tk != nil {
+		out.Token = &pb.DatabaseTokenDiscovery{
+			Endpoint:    tk.Endpoint,
+			Token:       tk.Token,
+			ClusterSize: int32(tk.ClusterSize),
+			Timeout:     tk.Timeout,
 		}
 	}
 	return out
