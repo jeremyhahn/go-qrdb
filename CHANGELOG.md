@@ -11,6 +11,14 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.33.1-alpha] - 2026-10-03
+
+A clustered SDK boot that fails can now be retried cleanly. Highlights:
+
+- **A failed or cancelled clustered boot leaves the node sealed and retryable.** Every tenant barrier is sealed, and every data-plane accessor is cleared.
+- **A retried boot is fully alive.** Lease reaping, the reclaim sweep and tenant shard reconciliation now run on a live context after a retry.
+- **The readiness wait honours the caller's context.**
+
 ### Fixed
 
 - **The readiness wait honours the caller's context.** `NewClusteredNode`,
