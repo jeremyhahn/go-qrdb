@@ -23,7 +23,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -100,7 +102,9 @@ func TestCeremonyServiceWithAdminRebind_RefusesWhenAlreadyBound(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{AdminGenerate: true})
+	_, err = wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{
+		SOPin: "test-so-pin", AdminGenerate: true,
+	})
 	var already *AdminAlreadyBoundError
 	require.ErrorAs(t, err, &already)
 }
@@ -162,7 +166,9 @@ func TestCeremonyServiceWithAdminRebind_PropagatesUnverifiableLookup(t *testing.
 	})
 	require.NoError(t, err)
 
-	_, err = wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{AdminGenerate: true})
+	_, err = wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{
+		SOPin: "test-so-pin", AdminGenerate: true,
+	})
 	require.Error(t, err)
 	var already *AdminAlreadyBoundError
 	assert.False(t, errors.As(err, &already), "an unverifiable lookup must not be treated as unbound")
@@ -327,4 +333,58 @@ func TestCeremonyServiceWithAdminRebind_AdminNotFoundRefuses(t *testing.T) {
 	if missing.binds != 0 {
 		t.Fatalf("BindAdminCert calls = %d, want 0: there is no admin ID to bind to", missing.binds)
 	}
+}
+
+// TestCeremonyServiceWithAdminRebind_RestartThenAwaitingRetry is the
+// go-qrdb#560 review fix: "after a restart the ceremony state is lost" --
+// a fresh *ceremony.CeremonyService over the SAME barrier and PIN backend
+// (a restart) must NOT treat CeremonyInitialize as a first-ever Initialize
+// (which could mint an unbound certificate and re-provision the SO/User
+// PINs for whoever calls first). It drives the exact sequence the
+// awaiting-admin-credential retry takes after a restart: a wrong SO PIN is
+// refused, and the CORRECT SO PIN binds and notifies on the FIRST attempt
+// -- not a second one, which would mean the first attempt was consumed by
+// a spurious Initialize replay rather than refused outright.
+func TestCeremonyServiceWithAdminRebind_RestartThenAwaitingRetry(t *testing.T) {
+	barrier, _ := newTestSoftwareBarrier(t)
+	pins := pintest.NewBackend(t)
+	ca := newTestCeremonyCA(t)
+
+	core1, err := ceremony.NewCeremonyService(&ceremony.CeremonyConfig{DataDir: t.TempDir()}, barrier, testLogger())
+	require.NoError(t, err)
+	core1.SetPINBackend(pins)
+	_, err = NewCeremonyService(core1).CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{
+		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminGenerate: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, ceremony.StateOperational, core1.State())
+
+	// "restart": a FRESH core over the SAME barrier + PIN store -- no Go
+	// value carries over, only what the barrier and PIN backend persisted.
+	core2, err := ceremony.NewCeremonyService(&ceremony.CeremonyConfig{DataDir: t.TempDir()}, barrier, testLogger())
+	require.NoError(t, err)
+	core2.SetPINBackend(pins)
+	core2.SetCA(ca) // the composer's boot sequence re-wires the CA on every boot
+	require.Equal(t, ceremony.StateOperational, core2.State(),
+		"state must be restored across the restart, not reset to awaiting_init")
+
+	unbound := &fakeAdminLookup{u: &user.User{ID: 1, Username: "admin", TenantID: tenantid.System, Lifecycle: user.LifecycleActive}}
+	notifier := &fakeAdminBoundNotifier{}
+	wrapped := NewCeremonyServiceWithAdminRebind(NewCeremonyService(core2), core2, unbound, unbound, notifier)
+
+	_, werr := wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{
+		SOPin: "wrong", UserPin: "test-user-pin", AdminGenerate: true,
+	})
+	require.Error(t, werr, "a wrong SO PIN after a restart must be refused, not treated as a fresh Initialize")
+	assert.False(t, errors.Is(werr, ceremony.ErrAlreadyInitialized), "the state must be read as already-initialized, not re-run through Initialize at all")
+	assert.Equal(t, 0, unbound.binds, "a refused reissue must never bind anything")
+
+	res, err := wrapped.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{
+		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminGenerate: true,
+	})
+	require.NoError(t, err, "the correct SO PIN must bind on the FIRST attempt after a restart")
+	require.NotNil(t, res)
+	assert.NotEmpty(t, res.AdminCertPEM)
+	assert.Equal(t, 1, unbound.binds)
+	assert.Equal(t, 1, notifier.calls)
 }

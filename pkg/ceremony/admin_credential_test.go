@@ -22,6 +22,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
 )
 
 // TestInitialize_AdminCredential_Generate covers the default path (go-qrdb#548):
@@ -318,6 +321,36 @@ func TestReissueAdminCredential_HonoursCSRPath(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, result.AdminKeyPEM)
 	assert.Equal(t, AdminCredentialCSR, result.AdminCredentialSource)
+}
+
+// TestReissueAdminCredential_UnprovisionedBackendRefuses is the go-qrdb#560
+// re-review's B1 fix: ReissueAdminCredential verifies the SO PIN through
+// pin.RequireProvisionedSOPIN, not pin.RequireSOPIN. RequireSOPIN's own
+// documented convenience -- an UNPROVISIONED backend admits any PIN,
+// because "the node has no PIN to check yet, and provisioning one is the
+// first administrative act" -- is correct for a FRESH ceremony but is never
+// the right answer for a reissue: an already-initialized ceremony always
+// provisioned its SO PIN during Initialize (validateInitOptions refuses an
+// empty one), so a backend that reads as unprovisioned here can only mean
+// something is wrong, and must refuse rather than silently agree with a
+// caller who presented no PIN at all. Constructed by swapping in a fresh,
+// never-provisioned backend after Initialize -- not a path production
+// reaches, but the one RequireSOPIN-vs-RequireProvisionedSOPIN difference
+// this call can only expose that way.
+func TestReissueAdminCredential_UnprovisionedBackendRefuses(t *testing.T) {
+	svc := newTestCeremonyService(t, defaultConfig(), testBarrier(t))
+
+	_, err := svc.Initialize(context.Background(), newMockCA(t), &InitializeOptions{
+		SOPin:         "test-so-pin",
+		UserPin:       "test-user-pin",
+		AdminGenerate: true,
+	})
+	require.NoError(t, err)
+
+	svc.SetPINBackend(pintest.NewBackend(t))
+
+	_, err = svc.ReissueAdminCredential(context.Background(), &InitializeOptions{SOPin: "whatever", AdminGenerate: true})
+	assert.ErrorIs(t, err, pin.ErrPINNotSet)
 }
 
 // TestCACertPool_BeforeInitialize covers the not-yet-initialized case.

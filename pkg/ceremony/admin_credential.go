@@ -384,6 +384,25 @@ func (s *CeremonyService) LastIssuedAdminCertPEM() ([]byte, AdminCredentialSourc
 	return s.lastAdminCertPEM, s.lastAdminSource
 }
 
+// VerifyReissueSOPIN verifies soPIN against the SO PIN this ceremony was
+// provisioned with -- the SAME gate ReissueAdminCredential itself applies
+// before any side effect (pin.RequireProvisionedSOPIN).
+//
+// Exported so a composer's wrapper (service.CeremonyServiceWithAdminRebind)
+// can check it FIRST, before any other read of ceremony or admin state --
+// an admin-binding lookup, in particular -- that would otherwise tell an
+// UNAUTHENTICATED caller something (whether the admin is already bound, or
+// that a lookup is failing) before that caller has ever presented a valid
+// SO PIN (go-qrdb#560 review B1, re-review: "check the SO PIN before
+// returning AdminAlreadyBound or a lookup error, so unauthenticated callers
+// learn nothing").
+func (s *CeremonyService) VerifyReissueSOPIN(ctx context.Context, soPIN string) error {
+	s.mu.Lock()
+	pins := s.pins
+	s.mu.Unlock()
+	return pin.RequireProvisionedSOPIN(ctx, pins, soPIN)
+}
+
 // ReissueAdminCredential re-runs the admin-credential step (go-qrdb#548) on
 // an ALREADY-initialized ceremony: it issues a fresh bootstrap admin
 // certificate through the same CSR-sign / BYOC / generate resolution
@@ -415,11 +434,21 @@ func (s *CeremonyService) ReissueAdminCredential(ctx context.Context, opts *Init
 	// the SO PIN this ceremony was provisioned with, verified before any
 	// side effect -- the CA bundle read, the credential issuance, all of
 	// it -- so a caller with no SO PIN cannot reach any of them.
+	//
+	// pin.RequireProvisionedSOPIN, not RequireSOPIN (go-qrdb#560 re-review):
+	// an already-initialized ceremony always has a provisioned SO PIN --
+	// validateInitOptions refuses an empty one, and Initialize provisions it
+	// unconditionally before this state is ever reachable -- so admitting an
+	// UNPROVISIONED backend here, as RequireSOPIN's own documented "nothing
+	// to check yet" convenience does, could never be the correct answer for
+	// THIS call; it would only ever mean the invariant above was violated,
+	// and this must refuse rather than silently agree with a caller who
+	// presented no PIN at all.
 	var soPIN string
 	if opts != nil {
 		soPIN = opts.SOPin
 	}
-	if err := pin.RequireSOPIN(ctx, s.pins, soPIN); err != nil {
+	if err := pin.RequireProvisionedSOPIN(ctx, s.pins, soPIN); err != nil {
 		return nil, err
 	}
 

@@ -159,6 +159,22 @@ func (s *CeremonyServiceWithAdminRebind) CeremonyInitialize(ctx context.Context,
 		return s.CeremonyServicer.CeremonyInitialize(ctx, ca, opts)
 	}
 
+	// The SO PIN is verified FIRST, before anything else that could tell an
+	// unauthenticated caller something about ceremony state -- in
+	// particular, whether the admin already holds a binding
+	// (*AdminAlreadyBoundError) or that the binding lookup itself is
+	// failing (go-qrdb#560 review B1, re-review). Without this, a caller
+	// presenting no SO PIN at all -- or the wrong one -- could learn the
+	// admin's binding state merely by attempting a reissue, before ever
+	// authenticating to this operation.
+	var soPIN string
+	if opts != nil {
+		soPIN = opts.SOPin
+	}
+	if err := s.core.VerifyReissueSOPIN(ctx, soPIN); err != nil {
+		return nil, err
+	}
+
 	bindErr := firstboot.VerifyAdminCertBindingWithin(ctx, s.users, AdminRebindLookupTimeout)
 	if bindErr == nil {
 		return nil, &AdminAlreadyBoundError{}
