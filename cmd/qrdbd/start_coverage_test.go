@@ -24,13 +24,14 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
-	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"math/big"
 	"net"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

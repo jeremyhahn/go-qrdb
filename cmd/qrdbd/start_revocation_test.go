@@ -17,8 +17,9 @@ package main
 import (
 	"context"
 	"errors"
-	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"

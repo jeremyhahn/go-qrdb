@@ -25,9 +25,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-quicraft/test/performance/perfresult"
+
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	qtransport "github.com/jeremyhahn/go-qrdb/sdk/go/transport/quic"
-	"github.com/jeremyhahn/go-quicraft/test/performance/perfresult"
 )
 
 // createQUICTransport creates a new independent QUIC transport connected

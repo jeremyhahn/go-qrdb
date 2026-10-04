@@ -23,7 +23,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -31,6 +30,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

@@ -24,8 +24,9 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-quicraft/test/performance/perfresult"
+
+	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 )
 
 // ---------------------------------------------------------------------------

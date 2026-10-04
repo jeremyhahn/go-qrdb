@@ -17,8 +17,9 @@ package main
 import (
 	"context"
 	"errors"
-	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 
 	tenantpkg "github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	userpkg "github.com/jeremyhahn/go-qrdb/pkg/user"

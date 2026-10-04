@@ -23,8 +23,9 @@ package main
 import (
 	"context"
 	"errors"
-	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 
 	"github.com/jeremyhahn/go-objstore/pkg/common"
 	"github.com/jeremyhahn/go-objstore/pkg/local"

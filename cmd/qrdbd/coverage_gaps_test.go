@@ -23,7 +23,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
-	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -33,6 +32,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

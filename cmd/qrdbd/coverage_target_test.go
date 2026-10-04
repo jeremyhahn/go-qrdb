@@ -17,11 +17,12 @@ package main
 import (
 	"context"
 	"errors"
-	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

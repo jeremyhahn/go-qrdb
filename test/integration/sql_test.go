@@ -27,10 +27,12 @@ import (
 	"testing"
 	"time"
 
+	"net/http"
+
 	gomysql "github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5"
+
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
-	"net/http"
 )
 
 // startSingleNodeWithSQL starts a single-node QRDB instance with MySQL and

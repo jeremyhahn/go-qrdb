@@ -40,12 +40,13 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
-	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
-	qtransport "github.com/jeremyhahn/go-qrdb/sdk/go/transport/quic"
 	"github.com/quic-go/quic-go/http3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+
+	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	qtransport "github.com/jeremyhahn/go-qrdb/sdk/go/transport/quic"
 )
 
 const (
