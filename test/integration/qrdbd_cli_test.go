@@ -46,10 +46,12 @@ var qrdbdCompletionMarker = map[string]string{
 
 // TestQrdbdCompletion_CLI_ProducesAScriptPerShell drives qrdbd completion
 // <shell> for every shell cobra generates and asserts its documented content
-// marker, then additionally runs the real interpreter syntax checker when
-// that interpreter is present on the host. Skip guards are forbidden, so
-// fish/powershell (absent on every Linux host this suite runs on) are
-// asserted by content marker alone instead of being skipped.
+// marker; bash additionally gets its script run through the real `bash -n`
+// syntax checker, unconditionally -- bash is always present (every
+// devcontainer and every host this suite runs on), so this is never
+// LookPath-guarded. Skip guards are forbidden, so fish/powershell/zsh
+// (not guaranteed present) are asserted by content marker alone, which is
+// an assertion every run makes, not a skip.
 func TestQrdbdCompletion_CLI_ProducesAScriptPerShell(t *testing.T) {
 	binary := buildBinary(t)
 
@@ -64,12 +66,7 @@ func TestQrdbdCompletion_CLI_ProducesAScriptPerShell(t *testing.T) {
 				t.Fatalf("qrdbd completion %s: expected output to contain %q, got: %s", shell, qrdbdCompletionMarker[shell], out)
 			}
 
-			interpreter, ok := completionInterpreter[shell]
-			if !ok {
-				return
-			}
-			interpPath, lookErr := exec.LookPath(interpreter)
-			if lookErr != nil {
+			if shell != "bash" {
 				return
 			}
 
@@ -77,9 +74,9 @@ func TestQrdbdCompletion_CLI_ProducesAScriptPerShell(t *testing.T) {
 			if werr := os.WriteFile(scriptPath, []byte(out), 0o600); werr != nil {
 				t.Fatalf("qrdbd completion %s: write script: %v", shell, werr)
 			}
-			checkOut, checkErr := exec.Command(interpPath, "-n", scriptPath).CombinedOutput()
+			checkOut, checkErr := exec.Command("bash", "-n", scriptPath).CombinedOutput()
 			if checkErr != nil {
-				t.Fatalf("%s -n %s: %v\noutput: %s", interpreter, scriptPath, checkErr, checkOut)
+				t.Fatalf("bash -n %s: %v\noutput: %s", scriptPath, checkErr, checkOut)
 			}
 		})
 	}

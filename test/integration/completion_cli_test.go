@@ -30,12 +30,13 @@
 // with no daemon reachable at all, which this file proves directly by never
 // passing --server/--ca-file/etc to the CLI invocations below.
 //
-// Skip guards are forbidden in this codebase, so a shell absent from the
-// host (fish and powershell, on every Linux CI runner and devcontainer) is
-// never skipped: this file always asserts the shell documented content
-// marker, and additionally shells out to the real interpreter syntax
-// checker (bash -n / zsh -n) whenever that interpreter is present on the
-// host, rather than assuming it never fails.
+// Skip guards are forbidden in this codebase. bash is always present (every
+// devcontainer and every host this suite runs on), so its script is
+// additionally syntax-checked with `bash -n` UNCONDITIONALLY -- never
+// LookPath-guarded, which would silently skip the check the one time bash
+// is genuinely missing instead of failing loudly. zsh/fish/powershell are
+// NOT guaranteed present, so only their documented content marker is
+// asserted for them; that is an assertion every run makes, not a skip.
 package integration_test
 
 import (
@@ -60,19 +61,11 @@ var completionMarker = map[string]string{
 	"powershell": "powershell completion for qrdb",
 }
 
-// completionInterpreter names the real shell binary that can syntax-check
-// the given shell script, for the shells with a batch parse-only mode.
-// powershell has none reachable on a Linux host and is intentionally absent.
-var completionInterpreter = map[string]string{
-	"bash": "bash",
-	"zsh":  "zsh",
-	"fish": "fish",
-}
-
 // TestCompletion_CLI_ProducesAScriptPerShell drives qrdb completion <shell>
-// for every shell cobra generates and asserts its documented content marker,
-// then additionally runs the real interpreter syntax checker when that
-// interpreter is present on the host.
+// for every shell cobra generates and asserts its documented content
+// marker; bash additionally gets its script run through the real `bash -n`
+// syntax checker, unconditionally (bash is always present here -- see the
+// package doc comment above).
 func TestCompletion_CLI_ProducesAScriptPerShell(t *testing.T) {
 	cli := buildCLIBinary(t)
 
@@ -87,12 +80,7 @@ func TestCompletion_CLI_ProducesAScriptPerShell(t *testing.T) {
 				t.Fatalf("qrdb completion %s: expected output to contain %q, got: %s", shell, completionMarker[shell], out)
 			}
 
-			interpreter, ok := completionInterpreter[shell]
-			if !ok {
-				return
-			}
-			interpPath, lookErr := exec.LookPath(interpreter)
-			if lookErr != nil {
+			if shell != "bash" {
 				return
 			}
 
@@ -100,9 +88,9 @@ func TestCompletion_CLI_ProducesAScriptPerShell(t *testing.T) {
 			if werr := os.WriteFile(scriptPath, []byte(out), 0o600); werr != nil {
 				t.Fatalf("qrdb completion %s: write script: %v", shell, werr)
 			}
-			checkOut, checkErr := exec.Command(interpPath, "-n", scriptPath).CombinedOutput()
+			checkOut, checkErr := exec.Command("bash", "-n", scriptPath).CombinedOutput()
 			if checkErr != nil {
-				t.Fatalf("%s -n %s: %v\noutput: %s", interpreter, scriptPath, checkErr, checkOut)
+				t.Fatalf("bash -n %s: %v\noutput: %s", scriptPath, checkErr, checkOut)
 			}
 		})
 	}
