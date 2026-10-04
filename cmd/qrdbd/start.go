@@ -34,6 +34,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -2745,14 +2746,13 @@ func runStart(f *startFlags) (err error) {
 					dynamicMembershipStarted()
 				}
 			case !standalone:
-				advertiser, aErr := startNodeAdvertiser(bootCtx, f, kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc)
+				publisher, aErr := startNodeAdvertiser(bootCtx, f, kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc)
 				if aErr != nil {
 					srv.Stop()
 					_ = shutdownNode(nodeCloser)
 					return aErr
 				}
-				memberRecord = advertiser
-				slog.Info("member record published", "node_id", f.replicaID)
+				memberRecord = publisher
 			}
 
 			slog.Info("qrdbd node started, waiting for signals")
@@ -3308,12 +3308,40 @@ type memberRecordCloser interface {
 	Close() error
 }
 
+// memberRecordRetryInterval paces the member record's publication while the
+// system shard cannot yet accept it.
+const memberRecordRetryInterval = 500 * time.Millisecond
+
+// memberRecordPublisher publishes this node's lease-backed member record in
+// the background and withdraws it on Close.
+type memberRecordPublisher struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+	adv    atomic.Pointer[cluster.Advertiser]
+}
+
+// Close stops publishing, waits for the publisher to return, and withdraws
+// the record if it was published.
+func (p *memberRecordPublisher) Close() error {
+	p.cancel()
+	<-p.done
+	if adv := p.adv.Swap(nil); adv != nil {
+		return adv.Close()
+	}
+	return nil
+}
+
 // startNodeAdvertiser publishes this node's lease-backed member record --
 // its Raft address, the API endpoints it serves and the features it supports
 // -- and keeps the lease alive, without the dynamic-membership
 // reconfiguration loop. It runs on every raft-mode node that does not run
 // dynamic membership (which publishes the same record itself), so every
 // member is reachable by replica id.
+//
+// Publishing is a replicated write, so it runs in the background, retrying
+// until it lands: boot never waits on a quorum, and a shutdown during boot
+// stops it rather than failing. Only a configuration it cannot publish --
+// no embedded client, endpoints that do not resolve -- fails here.
 func startNodeAdvertiser(
 	ctx context.Context,
 	f *startFlags,
@@ -3322,7 +3350,7 @@ func startNodeAdvertiser(
 	mvccSvc service.MVCCKVServicer,
 	leaseSvc service.LeaseServicer,
 	watchSvc service.WatchServicer,
-) (*cluster.Advertiser, error) {
+) (*memberRecordPublisher, error) {
 	client, err := newEmbeddedClient(kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc)
 	if err != nil {
 		return nil, err
@@ -3331,17 +3359,30 @@ func startNodeAdvertiser(
 	if err != nil {
 		return nil, err
 	}
-	advertiser, err := client.NewNodeAdvertiser(
-		cluster.Member{NodeID: f.replicaID, Address: f.raftAddress, APIEndpoints: endpoints, Features: featuregate.SupportedNames()},
-		cluster.AdvertiseConfig{},
-	)
-	if err != nil {
-		return nil, err
-	}
-	if err := advertiser.Start(ctx); err != nil {
-		return nil, err
-	}
-	return advertiser, nil
+	self := cluster.Member{NodeID: f.replicaID, Address: f.raftAddress, APIEndpoints: endpoints, Features: featuregate.SupportedNames()}
+	pctx, cancel := context.WithCancel(ctx)
+	p := &memberRecordPublisher{cancel: cancel, done: make(chan struct{})}
+	go func() {
+		defer close(p.done)
+		for pctx.Err() == nil {
+			adv, aerr := client.NewNodeAdvertiser(self, cluster.AdvertiseConfig{})
+			if aerr != nil {
+				slog.Error("member record: advertiser not built", slog.Any("error", aerr))
+				return
+			}
+			if serr := adv.Start(pctx); serr == nil {
+				p.adv.Store(adv)
+				slog.Info("member record published", "node_id", f.replicaID)
+				return
+			}
+			_ = adv.Close()
+			select {
+			case <-pctx.Done():
+			case <-time.After(memberRecordRetryInterval):
+			}
+		}
+	}()
+	return p, nil
 }
 
 // newEmbeddedClient builds an in-process (embedded) qrdb SDK client over the
