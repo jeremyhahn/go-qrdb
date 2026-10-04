@@ -185,6 +185,25 @@ sweep becoming an enumeration of the internal keyspace.
   deterministic consequence of valid committed input travels back in
   `Result.Data`, never as a Go error. See
   [Refusal and fault at the apply seam](#refusal-and-fault-at-the-apply-seam).
+- **`GetHash` never hashes a state between two halves of the same batch or
+  recovery.** `KVStateMachine`, `ConcurrentStateMachine` and `DiskAdapter`
+  each hold one `sync.RWMutex` ("batch") shared by every `Update` and
+  `RecoverSnapshot`/`RecoverFromSnapshot` call and exclusive to `GetHash`.
+  `Update` and recovery hold it for their WHOLE span — one call for a
+  multi-entry batch, not once per entry — so a replica comparison never sees
+  a state no replica settles in. `DiskAdapter.Update` applies one entry per
+  call for its own index-stamping reasons; it takes the lock itself, once,
+  around that whole per-entry loop, and calls `KVStateMachine`'s unlocked
+  `applyEntries` rather than its locking `Update` for each entry, so the
+  lock is not released and reacquired between entries of what its own
+  caller hands it as one batch. The trade-off this accepts: `GetHash` is a
+  diagnostic, replica-divergence-detection path, not a hot path, so
+  blocking every concurrent apply for however long one hash takes is an
+  accepted cost here, in exchange for never answering from a half-applied
+  or half-recovered state — a stall this package is willing to risk on this
+  one diagnostic path specifically because it is not the kind of apply-path
+  stall this project otherwise designs against. `Lookup` takes no part in
+  this lock at all, so reads are unaffected either way.
 
 ### Refusal and fault at the apply seam
 

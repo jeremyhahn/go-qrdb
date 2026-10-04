@@ -221,15 +221,24 @@ func (a *DiskAdapter) Open(_ context.Context, _ string, _ <-chan struct{}) (uint
 //
 // The index is written once more after the entries, so an entry that wrote
 // nothing (a declined guard, a refusal) still advances the marker.
+//
+// The batch lock is taken once for this whole loop, not once per entry
+// (go-qrdb#584 B1): calling KVStateMachine.Update per entry, as this used
+// to, took and released that lock on every iteration, so GetHash -- which
+// takes it exclusively -- could run between any two entries of what this
+// method's own caller sees as one batch. applyEntries is Update's dispatch
+// loop with no locking of its own, for exactly this caller.
 func (a *DiskAdapter) Update(_ context.Context, entries []sm.Entry, results []sm.Result) error {
 	if len(entries) == 0 {
 		return nil
 	}
+	a.batch.RLock()
+	defer a.batch.RUnlock()
 	for i := range entries {
 		if a.stamp != nil {
 			a.stamp.index = entries[i].Index
 		}
-		err := a.KVStateMachine.Update(entries[i:i+1], results[i:i+1])
+		err := a.applyEntries(entries[i:i+1], results[i:i+1])
 		if a.stamp != nil {
 			a.stamp.index = 0
 		}

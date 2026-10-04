@@ -141,6 +141,20 @@ func NewKVStateMachine(backend Backend, opts ...KVOption) *KVStateMachine {
 func (k *KVStateMachine) Update(entries []sm.Entry, results []sm.Result) error {
 	k.batch.RLock()
 	defer k.batch.RUnlock()
+	return k.applyEntries(entries, results)
+}
+
+// applyEntries is Update's dispatch loop without the batch lock: the caller
+// must already hold at least batch.RLock() for the whole span entries
+// belongs to. Update takes that lock once around one full call's entries;
+// DiskAdapter.Update (go-qrdb#584 B1) takes it once around its OWN loop,
+// which applies one entry per call so each entry's write lands in its own
+// storage batch, and calls this directly so the lock is held for that
+// WHOLE loop rather than reacquired every entry -- reacquiring it let
+// GetHash observe state between entries within what DiskAdapter's own
+// caller sees as one batch, exactly the half-applied state the lock exists
+// to keep GetHash from hashing.
+func (k *KVStateMachine) applyEntries(entries []sm.Entry, results []sm.Result) error {
 	for i := range entries {
 		cmd := entries[i].Cmd
 		if len(cmd) == 0 {

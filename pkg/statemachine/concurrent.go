@@ -386,7 +386,16 @@ func (c *ConcurrentStateMachine) SaveSnapshot(_ context.Context, snapshotCtx int
 // replacing all existing state. It waits for pending async persistence
 // goroutines to complete, clears the storage, and rebuilds both cache
 // and storage from the snapshot data.
+//
+// It holds batch exclusively for the whole recovery (go-qrdb#584, same
+// class as B1): GetHash takes batch.Lock() too, and without this a hash
+// could land mid-recovery -- after the cache and storage were cleared but
+// before some or all entries were restored -- which is a state no replica
+// settles in, same reasoning as a hash mid-Update.
 func (c *ConcurrentStateMachine) RecoverFromSnapshot(_ context.Context, r io.Reader, stopper <-chan struct{}) error {
+	c.batch.Lock()
+	defer c.batch.Unlock()
+
 	// Wait for any in-flight async persistence to finish before clearing.
 	c.wg.Wait()
 

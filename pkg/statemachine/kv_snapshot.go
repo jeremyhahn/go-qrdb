@@ -21,8 +21,14 @@ func (k *KVStateMachine) SaveSnapshot(w io.Writer, stopper <-chan struct{}) erro
 	return k.backend.SaveSnapshot(w, stopper)
 }
 
-// RecoverSnapshot delegates snapshot recovery to the backend.
+// RecoverSnapshot delegates snapshot recovery to the backend, holding
+// batch exclusively for the whole recovery (go-qrdb#584, same class as
+// GetHash's own fix): GetHash takes batch.Lock() too, and without this a
+// hash could land mid-recovery, a state no replica settles in, same
+// reasoning as a hash mid-Update.
 func (k *KVStateMachine) RecoverSnapshot(r io.Reader, stopper <-chan struct{}) error {
+	k.batch.Lock()
+	defer k.batch.Unlock()
 	return k.backend.RecoverSnapshot(r, stopper)
 }
 
