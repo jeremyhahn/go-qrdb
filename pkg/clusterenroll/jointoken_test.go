@@ -512,6 +512,71 @@ func TestPromoteJoinIdentityAdmitted_StoreErrorSurfacesTyped(t *testing.T) {
 	}
 }
 
+// TestPromoteJoinIdentityAdmitted_RecoversWhenTheSwapCommittedDespiteAnError
+// is the B1 residual review item: a CompareAndSwap error means the swap's
+// OUTCOME is unknown, not that it failed. A timeout arriving after the
+// write actually landed looks identical, from here, to one before it did
+// -- and treating every error as "did not happen" leaves the record
+// admitted forever (no later Reserve/Mint/Consume can ever reclaim an
+// ADMITTED value the way it reclaims an expired PENDING one) while the
+// caller, told the promotion failed, refuses to return the leaf it
+// already signed. The fix re-reads the key on error and reports success
+// when it finds exactly the admitted value just attempted.
+func TestPromoteJoinIdentityAdmitted_RecoversWhenTheSwapCommittedDespiteAnError(t *testing.T) {
+	ctx := context.Background()
+	store := &faultyJoinStore{
+		AtomicKVStore:                         kvstore.NewMemoryKVStore(),
+		failCompareAndSwapAfterCommitOnPrefix: joinIdentityPrefix,
+	}
+	const nodeURI = "node-ambiguous-promote"
+
+	reserved, pending, err := ReserveJoinIdentity(ctx, store, nodeURI, 0)
+	if err != nil || !reserved {
+		t.Fatalf("ReserveJoinIdentity: reserved=%v, err=%v", reserved, err)
+	}
+
+	if err := PromoteJoinIdentityAdmitted(ctx, store, nodeURI, pending); err != nil {
+		t.Fatalf("PromoteJoinIdentityAdmitted = %v, want nil: the swap committed despite the injected error, so this must recover and report success", err)
+	}
+
+	// The record is genuinely admitted now, not merely treated as if: a
+	// second reservation attempt for the same identity must see it as
+	// admitted (identityBlocks' non-pending branch), and the stored value
+	// must not still parse as a live PENDING record.
+	identityKey := joinIdentityPrefix + nodeURI
+	got, getErr := store.Get(ctx, identityKey)
+	if getErr != nil {
+		t.Fatalf("Get after recovery: %v", getErr)
+	}
+	if _, isPending := parsePendingDeadline(got); isPending {
+		t.Fatalf("identity record is still PENDING after a recovered promotion: %q", got)
+	}
+	if reserved, _, err := ReserveJoinIdentity(ctx, store, nodeURI, 0); err != nil || reserved {
+		t.Fatalf("ReserveJoinIdentity after recovered promotion: reserved=%v, err=%v, want false, nil", reserved, err)
+	}
+}
+
+// TestPromoteJoinIdentityAdmitted_StillFailsWhenTheSwapNeverCommitted is
+// the companion case: when the re-read does NOT find the admitted value
+// (the swap genuinely never landed), the original error must still
+// surface -- the recovery path must not mask a real failure.
+func TestPromoteJoinIdentityAdmitted_StillFailsWhenTheSwapNeverCommitted(t *testing.T) {
+	ctx := context.Background()
+	store := &faultyJoinStore{AtomicKVStore: kvstore.NewMemoryKVStore(), failCompareAndSwapOnPrefix: joinIdentityPrefix}
+	const nodeURI = "node-genuine-promote-failure"
+
+	reserved, pending, err := ReserveJoinIdentity(ctx, store, nodeURI, 0)
+	if err != nil || !reserved {
+		t.Fatalf("ReserveJoinIdentity: reserved=%v, err=%v", reserved, err)
+	}
+
+	err = PromoteJoinIdentityAdmitted(ctx, store, nodeURI, pending)
+	var storeErr *JoinTokenStoreError
+	if !errors.As(err, &storeErr) {
+		t.Fatalf("PromoteJoinIdentityAdmitted (swap never committed) = %v, want *JoinTokenStoreError", err)
+	}
+}
+
 // TestPromoteJoinIdentityAdmitted_SurvivesACanceledCallerContext proves B1
 // item 3: Promote finalizes a signing success that already happened, so a
 // caller ctx canceled at exactly this moment (the client gave up, or the
@@ -713,6 +778,13 @@ type faultyJoinStore struct {
 	forcePutIfAbsentFalseOnPrefix      string
 	forceCompareAndDeleteFalseOnPrefix string
 	forceCompareAndSwapFalseOnPrefix   string
+
+	// failCompareAndSwapAfterCommitOnPrefix simulates the ambiguous-outcome
+	// case failCompareAndSwapOnPrefix does not: the swap is performed for
+	// real against the embedded store (so it DOES commit when the compare
+	// matches) and an error is returned anyway, the shape of a timeout
+	// that arrives after the write already landed.
+	failCompareAndSwapAfterCommitOnPrefix string
 }
 
 func (f *faultyJoinStore) Get(ctx context.Context, key string) ([]byte, error) {
@@ -755,6 +827,13 @@ func (f *faultyJoinStore) CompareAndSwap(ctx context.Context, key string, expect
 	}
 	if f.forceCompareAndSwapFalseOnPrefix != "" && strings.HasPrefix(key, f.forceCompareAndSwapFalseOnPrefix) {
 		return false, nil
+	}
+	if f.failCompareAndSwapAfterCommitOnPrefix != "" && strings.HasPrefix(key, f.failCompareAndSwapAfterCommitOnPrefix) {
+		swapped, err := f.AtomicKVStore.CompareAndSwap(ctx, key, expected, next)
+		if err != nil {
+			return swapped, err
+		}
+		return swapped, errInjectedFault
 	}
 	return f.AtomicKVStore.CompareAndSwap(ctx, key, expected, next)
 }

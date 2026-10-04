@@ -35,6 +35,7 @@
 package clusterenroll
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"log/slog"
@@ -452,6 +453,19 @@ func ReserveJoinIdentity(ctx context.Context, store kvstore.AtomicKVStore, nodeU
 // that has ALREADY happened, so the caller's ctx being canceled or past
 // its deadline at this exact moment must not also abort the write that
 // keeps the ledger consistent with the certificate already issued.
+//
+// A CompareAndSwap error means the swap's OUTCOME is unknown, not that it
+// failed: a timeout after the write actually committed looks identical
+// from here to one before it did. Treating every error as "did not
+// happen" is itself a wedge -- the record is admitted forever either way,
+// but the caller, told it failed, refuses to return the leaf it already
+// signed, so the node that should hold it never does, and ConsumeJoinToken
+// already spent the one-use token getting here. On an error, this
+// re-reads the key: if it now holds exactly the admitted value this call
+// just attempted, the swap DID commit despite the error, and it is safe
+// to report success so the caller returns the leaf. A re-read that fails,
+// or finds anything else, leaves the original error as the honest answer
+// -- the outcome is still genuinely unknown.
 func PromoteJoinIdentityAdmitted(ctx context.Context, store kvstore.AtomicKVStore, nodeURI string, pending []byte) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), promoteReleaseTimeout)
 	defer cancel()
@@ -459,6 +473,9 @@ func PromoteJoinIdentityAdmitted(ctx context.Context, store kvstore.AtomicKVStor
 	admitted := []byte(time.Now().UTC().Format(time.RFC3339))
 	swapped, err := store.CompareAndSwap(ctx, identityKey, pending, admitted)
 	if err != nil {
+		if current, getErr := store.Get(ctx, identityKey); getErr == nil && bytes.Equal(current, admitted) {
+			return nil
+		}
 		return &JoinTokenStoreError{Op: "compareandswap", Detail: identityKey, Err: err}
 	}
 	if !swapped {
