@@ -937,7 +937,7 @@ func TestCLI_RecoveryOfficerFlow_EndToEnd(t *testing.T) {
 
 	// The recover op requires the barrier SEALED; this node's primary
 	// strategy is "none", so the single-caller seal applies.
-	if out, err := runQRDB(t, cli, node.restArgsAdmin(), "barrier", "seal", "-y"); err != nil {
+	if out, err := runQRDB(t, cli, node.restArgsAdmin(), "barrier", "seal", "-y", "--so-pin", "SOPIN12345"); err != nil {
 		t.Fatalf("barrier seal: %v\noutput: %s", err, out)
 	}
 

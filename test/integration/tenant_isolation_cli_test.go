@@ -642,7 +642,7 @@ func TestTenantIsolation_SystemSealed_BlocksTenantData_PerProtocol(t *testing.T)
 
 	// Seal the SYSTEM barrier as the system admin identity.
 	sysConn := node.cliArgsFor(setupProto)
-	if out, err := runQRDB(t, node.cli, sysConn, "barrier", "seal", "-y"); err != nil {
+	if out, err := runQRDB(t, node.cli, sysConn, "barrier", "seal", "-y", "--so-pin", harnessSOPIN); err != nil {
 		t.Fatalf("barrier seal: %v\noutput: %s", err, out)
 	}
 

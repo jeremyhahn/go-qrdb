@@ -2288,6 +2288,14 @@ func waitForBarrierStatusReachable(t *testing.T, ca *testCA, port int, timeout t
 	t.Fatalf("timed out after %v waiting for barrier status at port %d", timeout, port)
 }
 
+// harnessSOPIN and harnessUserPIN are the PIN pair initAndUnsealBarrier
+// provisions on every node it initializes. A test that drives an SO-gated
+// operation (seal, rekey, recovery) on such a node presents harnessSOPIN.
+const (
+	harnessSOPIN   = "integration-harness-so-pin"
+	harnessUserPIN = "integration-harness-user-pin"
+)
+
 // initAndUnsealBarrier brings up the system barrier on the given admin port
 // and returns this CA's one shared bootstrap admin identity's certificate
 // and key paths (see adminIdentity). "qrdb init" is the only system
@@ -2320,8 +2328,8 @@ func initAndUnsealBarrier(t *testing.T, ca *testCA, port int, passphrase string)
 
 	client := mtlsHTTPClient(t, ca, 10*time.Second)
 	body, err := json.Marshal(map[string]any{
-		"so_pin":         "integration-harness-so-pin",
-		"user_pin":       "integration-harness-user-pin",
+		"so_pin":         harnessSOPIN,
+		"user_pin":       harnessUserPIN,
 		"admin_cert_pem": string(adminCertPEM),
 		"secret":         passphrase,
 	})
