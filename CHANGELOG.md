@@ -11,6 +11,15 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.38.0-alpha] - 2026-10-03
+
+Strict configuration loading. This release contains BREAKING changes; see the entries below. Highlights:
+
+- **qrdbd refuses a configuration file with an unknown key.** The typed `UnknownFieldError` names the key's full path and line (for example `databases[0].protocol`), so a mistyped or outdated setting can no longer be silently ignored.
+- **Standard YAML features still work.** Anchors, aliases and `<<` merge keys load, and a typo inside an aliased or merged block is caught too.
+- **A key for a feature compiled out of this binary is still recognized.** It is refused with the existing "not compiled in" error, not reported as unknown.
+- **Documentation fixes.** Every documented example now loads under the strict check. Stale examples documented settings that do not exist (`tls.auto_tls`, a top-level `cluster:` block, `storage.engine`, nested `databases[].protocol`).
+
 ### Changed — BREAKING
 
 - **`qrdbd` refuses a config file that carries a key the schema does not
