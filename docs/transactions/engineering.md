@@ -142,7 +142,16 @@ the JSON wire form carries **integers**, not names. A client that hardcodes
   import path.
 - **Import size ceilings are per transport**: 100 MB on REST, gRPC, Unix and
   MCP; approximately 63 MB on QUIC, set by the QUIC wire protocol's shared
-  per-RPC payload cap.
+  per-RPC payload cap. On gRPC and Unix the 100 MB ceiling is an explicit
+  opt-in (`grpcapi.WithMaxImportMessageSize` / `unixapi.WithMaxImportMessageSize`,
+  re-exported as `sdk.WithGRPCMaxImportMessageSize`): grpc-go buffers an
+  incoming message up to the server's configured receive bound before any
+  interceptor runs, so leaving every RPC able to accept 100+ MB by default
+  would let an unauthenticated peer force that allocation with no rate limit
+  of its own (go-qrdb#576). `cmd/qrdbd` opts in, since BatchImport over every
+  transport is one of its shipped capabilities; an embedder that builds
+  `pkg/api/grpc` or `pkg/api/unix` (or `pkg/server`) directly without opting in
+  gets a 4 MiB default on EVERY RPC those servers expose, not just import.
 
 ## Error semantics
 

@@ -288,6 +288,10 @@ over the same services, not a seventh transport.
 | MCP request no authenticator accepts, with authentication configured | 401 at the HTTP layer before the MCP layer reads the body, with `WWW-Authenticate` when `mcp.WithBearerChallenge` is set | **yes** |
 | MCP request body over `maxRequestBodyBytes` (the base64 batch-import bound plus 1 MiB) | the read fails with `*http.MaxBytesError` and the request is refused | **yes** |
 | MCP request body over 1 MiB (`maxAnonymousRequestBodyBytes`) on a listener without authentication -- the boot-time sealed-window listener, or a node with authentication off | refused the same way. Its callers are anonymous, and everything it serves them is a small JSON-RPC document | **yes** |
+| MCP connection beyond `DefaultMaxConnections` (configurable with `mcp.WithMaxConnections`) | the accept is not handed to the HTTP server until an existing connection closes (`netutil.LimitListener`); it never reads a byte in the meantime | **yes** |
+| gRPC or Unix socket message over `DefaultMaxRecvMsgSize` (4 MiB), when the server has not opted into `WithMaxImportMessageSize` | `codes.ResourceExhausted`, enforced by grpc-go before any interceptor (so before auth) runs | **yes** |
+| gRPC or Unix socket connection opening more than `DefaultMaxConcurrentStreams` simultaneous RPCs (configurable with `WithMaxConcurrentStreams`) | grpc-go refuses the extra stream at the HTTP/2 layer | **yes** |
+| gRPC or Unix socket client ping faster than the keepalive `EnforcementPolicy`'s `MinTime` (5s) with no active stream | connection closed with `ENHANCE_YOUR_CALM` | **yes** |
 | Malformed public gRPC method name | rejected at registration; startup fails | **yes** |
 | Module gRPC method declared public with no permission option, projected onto QUIC | skipped (logged); unreachable over QUIC only | n/a |
 | `ModuleAuthFallback` returning no identity | request unauthenticated | **yes** |
