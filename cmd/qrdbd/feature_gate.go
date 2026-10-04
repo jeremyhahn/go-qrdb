@@ -17,6 +17,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // startFeatureGate refuses -- with *featuregate.UnsupportedFeatureError --
@@ -31,6 +33,19 @@ import (
 // With a gate it then advertises this binary's features under the node's
 // committed system-shard address and starts the gate; the returned closer
 // withdraws the advertisement and stops the gate.
+//
+// Self-advertisement is a leased membership record (cluster.Advertiser),
+// which some state machine types -- "memory", "disk" -- do not implement
+// (they return *statemachine.ServiceNotConfiguredError{Service: "lease"},
+// which the embedded transport reports as
+// *transport.CapabilityUnsupportedError: see that type's own doc comment,
+// "a consumer that wants to degrade gracefully ... detects it with
+// errors.As"). client.StartFeatureGate's compatibility check
+// (gate.CheckActivated) runs and must already have passed before
+// self-advertisement is ever attempted, so a node on such a state machine
+// boots and serves without advertising its own features or watching for
+// newly-activated ones -- exactly as if no gate had been built at all --
+// rather than exiting over an accelerator this build never required.
 func startFeatureGate(ctx context.Context, gate *featuregate.Gate, svc *lifecycle.Node) (io.Closer, error) {
 	if gate == nil {
 		err := server.WhileSystemShardSettling(ctx, func() error {
@@ -49,6 +64,13 @@ func startFeatureGate(ctx context.Context, gate *featuregate.Gate, svc *lifecycl
 		return serr
 	})
 	if err != nil {
+		var unsupported *transport.CapabilityUnsupportedError
+		if errors.As(err, &unsupported) {
+			slog.Warn("feature-gate self-advertisement unavailable on this state machine; "+
+				"booting without it",
+				slog.String("reason", unsupported.Message))
+			return nopCloser{}, nil
+		}
 		return nil, err
 	}
 	return featureGateCloser{adv: adv, gate: gate}, nil

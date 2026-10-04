@@ -23,9 +23,40 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 )
+
+// leaseUnsupportedServicer stands in for a state machine type ("memory",
+// "disk") that implements no lease subsystem at all: every call answers
+// *service.CapabilityUnsupportedError, the same typed error
+// statemachine.ServiceNotConfiguredError{Service: "lease"} surfaces as at
+// the service layer, which the embedded transport reports as
+// *transport.CapabilityUnsupportedError (see TestStartFeatureGate_
+// DegradesWhenLeaseIsUnavailable).
+type leaseUnsupportedServicer struct{}
+
+func (leaseUnsupportedServicer) Grant(context.Context, int64) (*lease.Lease, error) {
+	return nil, &service.CapabilityUnsupportedError{Message: "statemachine: lease not configured"}
+}
+
+func (leaseUnsupportedServicer) Revoke(context.Context, int64) error {
+	return &service.CapabilityUnsupportedError{Message: "statemachine: lease not configured"}
+}
+
+func (leaseUnsupportedServicer) KeepAlive(context.Context, int64) (*lease.Lease, error) {
+	return nil, &service.CapabilityUnsupportedError{Message: "statemachine: lease not configured"}
+}
+
+func (leaseUnsupportedServicer) TimeToLive(context.Context, int64) (*lease.Lease, error) {
+	return nil, &service.CapabilityUnsupportedError{Message: "statemachine: lease not configured"}
+}
+
+func (leaseUnsupportedServicer) Leases(context.Context) ([]*lease.Lease, error) {
+	return nil, &service.CapabilityUnsupportedError{Message: "statemachine: lease not configured"}
+}
 
 // soloMembers is a system shard whose only replica is this node.
 type soloMembers struct{}
@@ -92,4 +123,32 @@ func TestStartFeatureGate_AdvertisesAndActivates(t *testing.T) {
 	_, recorded := store[featuregate.ActivationPrefix+string(featuregate.GuardedWrites)]
 	assert.True(t, recorded, "activation must be recorded in the system store")
 	require.NoError(t, closer.Close())
+}
+
+// TestStartFeatureGate_DegradesWhenLeaseIsUnavailable is the go-qrdb
+// hotfix/cakey-restart proof: a state machine with no lease subsystem
+// (service.LeaseServicer nil, standing in for the "memory"/"disk" sm types
+// TestDEK_Cluster_EveryNodeDecryptsEveryVersion and
+// TestRaftSMOverFileStorage_ThreeNodeCluster both boot with) answers
+// self-advertisement with *transport.CapabilityUnsupportedError
+// (translated from *service.CapabilityUnsupportedError at the embedded
+// transport boundary). Before this fix, startFeatureGate propagated it as
+// a fatal boot error -- "cluster: membership: failed to register self:
+// transport: unsupported capability: statemachine: lease not configured"
+// -- crashing every node on such a state machine, including the leader,
+// which then stranded its followers on "not leader, leader unknown"
+// forever. The node must boot and serve without the optional
+// advertisement instead.
+func TestStartFeatureGate_DegradesWhenLeaseIsUnavailable(t *testing.T) {
+	store := map[string][]byte{}
+	svc := gateServices(store)
+	svc.Lease = &leaseUnsupportedServicer{}
+	g := soloGate(t)
+	t.Cleanup(func() { _ = g.Close() })
+
+	closer, err := startFeatureGate(context.Background(), g, svc)
+	require.NoError(t, err)
+	require.NoError(t, closer.Close())
+	assert.False(t, g.Activated(featuregate.GuardedWrites),
+		"a degraded gate never started, so it tracks no activation locally")
 }

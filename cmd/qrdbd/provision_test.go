@@ -267,6 +267,72 @@ func TestAwaitLeader_ReturnsOnceALeaderIsKnown(t *testing.T) {
 	require.NoError(t, awaitLeader(context.Background(), electedLeader{}, 1))
 }
 
+// flakyProvisioner answers *service.NotLeaderError (leader unknown) for
+// the first notLeaderUntil-1 Provision/UpdateSQL/UpdateProtocol calls, then
+// delegates to the wrapped provisioner -- standing in for the system
+// shard's settling window immediately after awaitLeader confirms a leader
+// is locally known (go-qrdb hotfix/cakey-restart, cause 3's pattern
+// reproduced at the database drop-fence write: TestDEK_Cluster_* and
+// TestRaftSMOverFileStorage_ThreeNodeCluster both failed this way on a real
+// multi-node cluster).
+type flakyProvisioner struct {
+	databaseProvisioner
+	calls          int
+	notLeaderUntil int
+}
+
+func (p *flakyProvisioner) transientRefusal() error {
+	p.calls++
+	if p.notLeaderUntil > 0 && p.calls < p.notLeaderUntil {
+		return &service.NotLeaderError{ShardID: 1}
+	}
+	return nil
+}
+
+func (p *flakyProvisioner) Provision(ctx context.Context, cfg database.DatabaseConfig) (*database.Database, error) {
+	if err := p.transientRefusal(); err != nil {
+		return nil, err
+	}
+	return p.databaseProvisioner.Provision(ctx, cfg)
+}
+
+func (p *flakyProvisioner) UpdateSQL(name string, cfg *database.SQLConfig) error {
+	if err := p.transientRefusal(); err != nil {
+		return err
+	}
+	return p.databaseProvisioner.UpdateSQL(name, cfg)
+}
+
+func (p *flakyProvisioner) UpdateProtocol(name string, cfg database.ProtocolConfig) error {
+	if err := p.transientRefusal(); err != nil {
+		return err
+	}
+	return p.databaseProvisioner.UpdateProtocol(name, cfg)
+}
+
+// TestProvisionDatabases_RetriesTransientNotLeader proves provisionDatabases
+// retries a settling-window *service.NotLeaderError on its own write calls
+// rather than failing boot the moment awaitLeader's local check is stale.
+func TestProvisionDatabases_RetriesTransientNotLeader(t *testing.T) {
+	mgr := database.NewManager(nil, t.TempDir())
+	t.Cleanup(func() { _ = mgr.Close() })
+	flaky := &flakyProvisioner{databaseProvisioner: mgr, notLeaderUntil: 3}
+
+	require.NoError(t, provisionDatabases(context.Background(), provisionFlags(""), flaky, electedLeader{}))
+	assert.Equal(t, 3, flaky.calls)
+	_, err := mgr.Get("orders")
+	require.NoError(t, err)
+}
+
+// TestProvisionDatabases_NonLeaderErrorsDoNotRetry proves a non-transient
+// failure (anything other than *service.NotLeaderError) is returned on the
+// FIRST call, with no retry: waiting cannot fix it.
+func TestProvisionDatabases_NonLeaderErrorsDoNotRetry(t *testing.T) {
+	boom := errors.New("disk full")
+	err := provisionDatabases(context.Background(), provisionFlags(""), failingProvisioner{err: boom}, electedLeader{})
+	assert.ErrorIs(t, err, boom)
+}
+
 // An invalid configured database is rejected up front, with the typed
 // error its validation reports, and a valid configuration passes.
 func TestValidateConfiguredDatabases(t *testing.T) {

@@ -21,6 +21,7 @@ import (
 	"log/slog"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 )
@@ -51,12 +52,24 @@ var _ databaseProvisioner = (*database.Manager)(nil)
 // leader: a proposal made before any leader is elected is refused rather
 // than queued, and a follower's proposal is forwarded only once it knows
 // where to.
+//
+// awaitLeader only confirms a leader is locally KNOWN, not that the shard
+// has finished settling onto it (the same ReadIndex warm-up / election
+// churn server.WhileSystemShardSettling exists for elsewhere in this
+// daemon's boot): the drop-fence write itself can still race that window
+// and come back *service.NotLeaderError with no leader named, immediately
+// after awaitLeader returned successfully. Every write below is retried
+// through WhileSystemShardSettling for exactly that reason; any other
+// error class is returned at once.
 func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisioner, node leaderReporter) error {
 	if err := awaitLeader(ctx, node, shard.ShardKV); err != nil {
 		return &DatabaseProvisionError{Step: "wait for leader", Err: err}
 	}
 	for _, cfg := range configuredDatabases(f) {
-		if _, err := dbs.Provision(ctx, cfg); err != nil {
+		if err := server.WhileSystemShardSettling(ctx, func() error {
+			_, err := dbs.Provision(ctx, cfg)
+			return err
+		}); err != nil {
 			return err
 		}
 		// The file declares the database's SQL settings: a database that
@@ -64,7 +77,9 @@ func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisio
 		// same way the SQL-database special case below reapplies its
 		// protocol config on every boot.
 		if cfg.SQL != nil {
-			if err := dbs.UpdateSQL(cfg.Name, cfg.SQL); err != nil {
+			if err := server.WhileSystemShardSettling(ctx, func() error {
+				return dbs.UpdateSQL(cfg.Name, cfg.SQL)
+			}); err != nil {
 				return err
 			}
 		}
@@ -74,14 +89,18 @@ func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisio
 	}
 	_, err := dbs.Get(f.sqlDatabase)
 	if err == nil {
-		return dbs.UpdateProtocol(f.sqlDatabase, sqlDatabaseConfig(f).Protocol)
+		return server.WhileSystemShardSettling(ctx, func() error {
+			return dbs.UpdateProtocol(f.sqlDatabase, sqlDatabaseConfig(f).Protocol)
+		})
 	}
 	var nfe *database.NotFoundError
 	var dde *database.DroppingError
 	switch {
 	case errors.As(err, &nfe):
-		_, err := dbs.Provision(ctx, sqlDatabaseConfig(f))
-		return err
+		return server.WhileSystemShardSettling(ctx, func() error {
+			_, err := dbs.Provision(ctx, sqlDatabaseConfig(f))
+			return err
+		})
 	case errors.As(err, &dde):
 		// The SQL database is fenced by a drop still in flight, most likely
 		// one a crash interrupted. Failing boot would leave the node
