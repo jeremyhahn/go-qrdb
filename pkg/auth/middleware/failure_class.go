@@ -293,7 +293,19 @@ var authFailureRules = []struct {
 	}},
 	{"SOPINUnavailableError", func(err error) (AuthFailureClass, bool) {
 		var e *SOPINUnavailableError
-		return AuthFailureUnavailable, errors.As(err, &e)
+		if !errors.As(err, &e) {
+			return AuthFailureUnknown, false
+		}
+		// go-enclave v0.7.0-alpha: a context that ends while the PIN is
+		// being sealed or opened fails with an error matching BOTH the
+		// enclave sentinel and ctx.Err(). That is the caller giving up, not
+		// a node-side fault — decline here so errclass's own contextRules
+		// (which run after every family block) report it as a cancellation
+		// or a deadline instead of "unavailable".
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return AuthFailureUnknown, false
+		}
+		return AuthFailureUnavailable, true
 	}},
 	{"auth.AuthError", func(err error) (AuthFailureClass, bool) {
 		var authErr *auth.AuthError

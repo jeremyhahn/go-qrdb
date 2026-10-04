@@ -49,6 +49,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
+
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 )
 
 // dominantRules win however deeply their condition is wrapped.
@@ -199,6 +201,18 @@ var dataPlaneRules = []rule{
 	as(&service.LeaseExpiredError{}, NotFound),
 	as(&service.LeaseExistsError{}, AlreadyExists),
 	as(&service.NotLeaderError{}, Unavailable),
+	// go-quicraft v0.17.0's membership rejections, ahead of MembershipError's
+	// own blanket Internal row below (genericRules): an add that would bind a
+	// Raft address or node identity another ACTIVE member already holds is a
+	// naming conflict the caller can resolve (pick another address, or the
+	// identity that member already committed), never a server fault.
+	is(quicraft.ErrDuplicateMemberAddress, AlreadyExists),
+	is(quicraft.ErrDuplicateMemberIdentity, AlreadyExists),
+	// StartShard's refusal when this host's own TLS certificate's SAN list
+	// also covers a peer's address: the certificate must be reissued
+	// narrower before the shard can start. A configuration precondition the
+	// operator corrects, not a transient fault.
+	is(quicraft.ErrSharedPeerCertificate, FailedPrecondition),
 	// A request the protocol cannot encode was never proposed (go-qrdb#52).
 	as(&service.EncodeRequestError{}, InvalidArgument),
 	// A guard that could not be built or applied to a command -- a compare
