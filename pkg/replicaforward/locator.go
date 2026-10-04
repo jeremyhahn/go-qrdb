@@ -93,58 +93,71 @@ func NewLocator(members MemberSource, cache *LeaderCache, selfRaftAddr string, l
 // Cache returns the leader cache the Locator reads and updates.
 func (l *Locator) Cache() *LeaderCache { return l.cache }
 
+// maxAnswers is how many targets a forward may reach: the first, and the
+// one retry a refusal earns.
+const maxAnswers = 2
+
 // Forward forwards a refused request over proto: first to the cached leader
 // or, on a miss, the placement's leader hint resolved through the member
-// records; then, at most once more, to the leader a NotLeader names or the
-// next replica in placement order. It returns the target that served, or
-// *NoTargetServedError when none did -- the caller then answers with the
-// original refusal -- or send's error.
+// records; then, after a refusal, at most once more, to the leader a
+// NotLeader names or the next replica in placement order. A replica that is
+// unreachable -- the request never left this node -- does not spend the
+// retry; it is skipped for the next replica, each replica at most once. It
+// returns the target that served, or *NoTargetServedError when none did --
+// the caller then answers with the original refusal -- or send's error.
 func (l *Locator) Forward(ctx context.Context, refusal *placement.NotAReplicaError, proto cluster.APIProtocol, send SendFunc) (Target, error) {
 	var view *memberView
-	first, ok := l.cached(refusal, proto)
+	next, ok := l.cached(refusal, proto)
 	if !ok {
 		v, err := l.view(ctx)
 		if err != nil {
 			return Target{}, err
 		}
 		view = v
-		first, ok = view.firstTarget(refusal, proto, l.self)
-		if !ok {
-			return Target{}, &NoTargetServedError{TenantID: refusal.TenantID, Database: refusal.Database, Protocol: proto}
+		if next, ok = view.nextTarget(refusal, proto, l.self, nil, Result{}); !ok {
+			return Target{}, l.noTarget(refusal, proto)
 		}
 	}
 
-	res, err := send(ctx, first)
-	if err != nil {
+	tried := map[string]bool{}
+	answers := 0
+	for {
+		tried[next.RaftAddr] = true
+		res, err := send(ctx, next)
+		if err != nil {
+			l.cache.Evict(refusal.ShardID)
+			return Target{}, err
+		}
+		if res.Outcome == Served {
+			l.remember(refusal, next, proto, view)
+			l.logger.Debug("replicaforward: forwarded", "tenant", refusal.TenantID, "database", refusal.Database,
+				"protocol", proto, "target", next.RaftAddr, "attempt", len(tried))
+			return next, nil
+		}
 		l.cache.Evict(refusal.ShardID)
-		return Target{}, err
-	}
-	if res.Outcome == Served {
-		l.remember(refusal, first, proto, view)
-		return first, nil
-	}
-
-	l.cache.Evict(refusal.ShardID)
-	if view == nil {
-		v, verr := l.view(ctx)
-		if verr != nil {
-			return Target{}, verr
+		if res.Outcome != Unreachable {
+			if answers++; answers == maxAnswers {
+				return Target{}, l.noTarget(refusal, proto)
+			}
 		}
-		view = v
+		if view == nil {
+			v, verr := l.view(ctx)
+			if verr != nil {
+				return Target{}, verr
+			}
+			view = v
+		}
+		if next, ok = view.nextTarget(refusal, proto, l.self, tried, res); !ok {
+			return Target{}, l.noTarget(refusal, proto)
+		}
 	}
-	second, ok := view.retryTarget(refusal, proto, l.self, first, res)
-	if !ok {
-		return Target{}, &NoTargetServedError{TenantID: refusal.TenantID, Database: refusal.Database, Protocol: proto}
-	}
-	res, err = send(ctx, second)
-	if err != nil {
-		return Target{}, err
-	}
-	if res.Outcome != Served {
-		return Target{}, &NoTargetServedError{TenantID: refusal.TenantID, Database: refusal.Database, Protocol: proto}
-	}
-	l.remember(refusal, second, proto, view)
-	return second, nil
+}
+
+// noTarget logs and returns the forward's failure to find a replica that
+// served.
+func (l *Locator) noTarget(refusal *placement.NotAReplicaError, proto cluster.APIProtocol) error {
+	l.logger.Warn("replicaforward: no target", "tenant", refusal.TenantID, "database", refusal.Database, "protocol", proto)
+	return &NoTargetServedError{TenantID: refusal.TenantID, Database: refusal.Database, Protocol: proto}
 }
 
 // cached returns the shard's cached leader as a target for proto.
@@ -233,20 +246,11 @@ func (v *memberView) candidates(refusal *placement.NotAReplicaError, proto clust
 	return out
 }
 
-// firstTarget is the first candidate.
-func (v *memberView) firstTarget(refusal *placement.NotAReplicaError, proto cluster.APIProtocol, self string) (Target, bool) {
-	c := v.candidates(refusal, proto, self)
-	if len(c) == 0 {
-		return Target{}, false
-	}
-	return c[0], true
-}
-
-// retryTarget chooses the one retry after first answered res: the leader a
-// NotLeader names when its member is known, otherwise the next candidate
-// that is not first.
-func (v *memberView) retryTarget(refusal *placement.NotAReplicaError, proto cluster.APIProtocol, self string, first Target, res Result) (Target, bool) {
-	if res.Outcome == NotLeader && res.LeaderRaftAddr != "" && res.LeaderRaftAddr != self && res.LeaderRaftAddr != first.RaftAddr {
+// nextTarget chooses the next target after the last one answered res: the
+// leader a NotLeader names when its member is known and it was not tried,
+// otherwise the first candidate not yet tried -- the leader hint first.
+func (v *memberView) nextTarget(refusal *placement.NotAReplicaError, proto cluster.APIProtocol, self string, tried map[string]bool, res Result) (Target, bool) {
+	if res.Outcome == NotLeader && res.LeaderRaftAddr != "" && res.LeaderRaftAddr != self && !tried[res.LeaderRaftAddr] {
 		replicaID := uint64(0)
 		for _, r := range refusal.Replicas {
 			if r.RaftAddr == res.LeaderRaftAddr {
@@ -258,7 +262,7 @@ func (v *memberView) retryTarget(refusal *placement.NotAReplicaError, proto clus
 		}
 	}
 	for _, c := range v.candidates(refusal, proto, self) {
-		if c.RaftAddr != first.RaftAddr {
+		if !tried[c.RaftAddr] {
 			return c, true
 		}
 	}

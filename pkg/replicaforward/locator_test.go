@@ -234,3 +234,69 @@ func TestLeaderCache_Invalidation(t *testing.T) {
 		t.Fatal("Clear left entries")
 	}
 }
+
+// fourNodes: replicas a (the leader hint), b and d; c is self.
+func fourNodes() (*members, *placement.NotAReplicaError) {
+	ms, refusal := threeNodes()
+	ms.list = append(ms.list, member(4, "d:1", "d:grpc"))
+	refusal.Replicas = append(refusal.Replicas, placement.Replica{ReplicaID: 4, NodeID: "d:1", RaftAddr: "d:1"})
+	return ms, refusal
+}
+
+// TestForward_AnUnreachableReplicaDoesNotSpendTheRetry: the leader died, so
+// the request never left this node for it; the replica tried next is a
+// follower naming the new leader, and the one retry reaches it.
+func TestForward_AnUnreachableReplicaDoesNotSpendTheRetry(t *testing.T) {
+	ms, refusal := fourNodes()
+	l := NewLocator(ms, NewLeaderCache(), "c:1", nil)
+	s := &sender{answers: map[string]Result{
+		"a:1": {Outcome: Unreachable},
+		"b:1": {Outcome: NotLeader, LeaderRaftAddr: "d:1"},
+	}}
+
+	got, err := l.Forward(context.Background(), refusal, cluster.APIProtocolGRPC, s.send)
+	if err != nil || got.RaftAddr != "d:1" {
+		t.Fatalf("Forward = %+v, %v (sent %+v); want the new leader d:1", got, err, s.sent)
+	}
+	if c, _ := l.Cache().Get(1000); c.RaftAddr != "d:1" {
+		t.Fatalf("cache = %+v; want the new leader", c)
+	}
+}
+
+// TestForward_TwoAnswersAtMost: however many replicas there are, no more than
+// two targets are sent a request that reaches them.
+func TestForward_TwoAnswersAtMost(t *testing.T) {
+	ms, refusal := fourNodes()
+	l := NewLocator(ms, NewLeaderCache(), "c:1", nil)
+	s := &sender{answers: map[string]Result{
+		"a:1": {Outcome: NotLeader},
+		"b:1": {Outcome: NotLeader},
+		"d:1": {Outcome: NotLeader},
+	}}
+	_, err := l.Forward(context.Background(), refusal, cluster.APIProtocolGRPC, s.send)
+	var none *NoTargetServedError
+	if !errors.As(err, &none) || len(s.sent) != 2 {
+		t.Fatalf("Forward = %v after %d sends; want *NoTargetServedError after two answers", err, len(s.sent))
+	}
+}
+
+// TestForward_EveryReplicaUnreachable: each replica is tried once, and the
+// forward ends in no target.
+func TestForward_EveryReplicaUnreachable(t *testing.T) {
+	ms, refusal := fourNodes()
+	cache := NewLeaderCache()
+	cache.Put(1000, CachedLeader{TenantID: "acme", Database: "orders", ReplicaID: 1, RaftAddr: "a:1",
+		Endpoints: map[cluster.APIProtocol]string{cluster.APIProtocolGRPC: "a:grpc"}})
+	l := NewLocator(ms, cache, "c:1", nil)
+	s := &sender{answers: map[string]Result{
+		"a:1": {Outcome: Unreachable}, "b:1": {Outcome: Unreachable}, "d:1": {Outcome: Unreachable},
+	}}
+	_, err := l.Forward(context.Background(), refusal, cluster.APIProtocolGRPC, s.send)
+	var none *NoTargetServedError
+	if !errors.As(err, &none) || len(s.sent) != 3 {
+		t.Fatalf("Forward = %v after sends %+v; want each replica tried once, then no target", err, s.sent)
+	}
+	if _, ok := cache.Get(1000); ok {
+		t.Fatal("an unreachable leader stayed cached")
+	}
+}
