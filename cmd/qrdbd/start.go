@@ -4078,23 +4078,41 @@ func runFirstBoot(ctx context.Context, node raftNode, shardID uint64, userSvc us
 	// immediately without waiting for ReadIndex.
 	//
 	// The fast path only skips Phase 3 when the existing admin is ALREADY
-	// the System user. An admin created before go-qrdb#106 -- or one whose
-	// flag did not persist for any other reason -- carries System: false,
-	// and returning here unconditionally skipped the ONLY code path that
-	// ever repairs that: firstboot.Initialize/BootstrapSystem's idempotent
+	// the System user AND already holds a live certificate binding. An
+	// admin created before go-qrdb#106 -- or one whose flag did not
+	// persist for any other reason -- carries System: false, and
+	// returning here unconditionally skipped the ONLY code path that ever
+	// repairs that: firstboot.Initialize/BootstrapSystem's idempotent
 	// createAdminUser, whose UsernameExistsError branch calls
 	// reconcileExistingAdmin. A cluster upgraded across #106 would keep an
 	// admin that was permanently System: false and therefore deletable,
 	// forever, because every subsequent start took this same early return.
+	//
+	// go-qrdb#548 review, item 2: System: true was ALSO taken as proof the
+	// admin needs nothing further, which skipped the B6 repair in the one
+	// place that actually runs at boot -- an admin created but never
+	// bound (a crash between createAdminUser and BindAdminCert, on an
+	// EARLIER run) stayed unbound forever, because this fast path never
+	// gave firstboot.Initialize's own needsBinding check a chance to run.
+	// user.AdminLoginBlocker is the exact predicate needsBinding is built
+	// from (verifyAdminBindings wraps it the same way), so this fast path
+	// and the repair it falls through to can never disagree about what
+	// "needs binding" means.
 	if existingAdmin, ok := adminExists(ctx, userSvc, tenantid.System); ok {
-		if existingAdmin.System {
-			slog.Debug("first-boot: admin user exists and is already the System user, skipping")
+		if existingAdmin.System && user.AdminLoginBlocker(existingAdmin, time.Now().UTC()) == "" {
+			slog.Debug("first-boot: admin user exists, is already the System user, and holds a live certificate binding, skipping")
 			return nil
 		}
-		slog.Info("first-boot: admin user exists but is not yet the System user; running reconciliation",
-			slog.Uint64("user_id", existingAdmin.ID))
+		if existingAdmin.System {
+			slog.Info("first-boot: admin user exists and is the System user, but holds no live certificate binding; running reconciliation to repair it",
+				slog.Uint64("user_id", existingAdmin.ID))
+		} else {
+			slog.Info("first-boot: admin user exists but is not yet the System user; running reconciliation",
+				slog.Uint64("user_id", existingAdmin.ID))
+		}
 		// Fall through to Phase 3: its idempotent init path reconciles the
-		// existing admin's System flag without minting a second user.
+		// existing admin's System flag and/or certificate binding without
+		// minting a second user.
 	}
 
 	// Phase 2.5: Resolve the bootstrap admin's certificate, if any is

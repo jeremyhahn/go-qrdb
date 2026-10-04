@@ -16,9 +16,16 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"math/big"
 	"net"
 	"os"
 	"path/filepath"
@@ -302,6 +309,7 @@ type mockUserServicer struct {
 	getUserByUsernameFn func(ctx context.Context, tenantID, username string) (*user.User, error)
 	getUserByEmailFn    func(ctx context.Context, tenantID, email string) (*user.User, error)
 	createUserFn        func(ctx context.Context, req *user.CreateUserRequest) (*user.User, error)
+	addCertBindingFn    func(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*user.User, error)
 }
 
 func (m *mockUserServicer) CreateUser(ctx context.Context, req *user.CreateUserRequest) (*user.User, error) {
@@ -354,7 +362,10 @@ func (m *mockUserServicer) UserByCertThumbprint(_ context.Context, _ string) (*u
 	return nil, nil
 }
 
-func (m *mockUserServicer) AddCertBinding(_ context.Context, _ uint64, _ string, _ int64) (*user.User, error) {
+func (m *mockUserServicer) AddCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*user.User, error) {
+	if m.addCertBindingFn != nil {
+		return m.addCertBindingFn(ctx, userID, thumbprint, notAfterUnix)
+	}
 	return nil, nil
 }
 
@@ -512,15 +523,22 @@ func (m *mockTenantServicer) TenantBarrierOfficerRevoke(_ context.Context, _, _ 
 // ---------------------------------------------------------------------------
 
 // TestRunFirstBoot_AdminAlreadyExists is the fast-path case: an admin that
-// is already the System user is skipped entirely (go-qrdb#106/#192 round 2
-// narrowed this from "admin exists" to "admin exists AND is already
-// System" — an admin that exists but is not yet System falls through to
-// the full bootstrap path instead, so it gets reconciled; see
-// TestRunFirstBoot_AdminExistsButNotSystem_FallsThroughToReconcile).
+// is already the System user AND already holds a live certificate binding
+// is skipped entirely (go-qrdb#106/#192 round 2 narrowed this from "admin
+// exists" to "admin exists AND is already System"; go-qrdb#548 review item
+// 2 narrowed it again to also require a live binding -- an admin that
+// exists, is System, but holds NO live binding falls through to repair
+// instead; see TestRunFirstBoot_AdminSystemButUnbound_FallsThroughToRepair).
+// An admin that exists but is not yet System falls through to the full
+// bootstrap path too, so it gets reconciled; see
+// TestRunFirstBoot_AdminExistsButNotSystem_FallsThroughToReconcile.
 func TestRunFirstBoot_AdminAlreadyExists(t *testing.T) {
 	userSvc := &mockUserServicer{
 		getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
-			return &user.User{ID: 9001, Username: "admin", System: true}, nil
+			return &user.User{
+				ID: 9001, Username: "admin", System: true, Lifecycle: user.LifecycleActive,
+				CertBindings: []user.CertBinding{{Thumbprint: "abc", NotAfter: time.Now().Add(365 * 24 * time.Hour)}},
+			}, nil
 		},
 	}
 	roleSvc := &mockRoleServicer{}
@@ -528,6 +546,121 @@ func TestRunFirstBoot_AdminAlreadyExists(t *testing.T) {
 
 	err := runFirstBoot(context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
 	require.NoError(t, err)
+}
+
+// TestRunFirstBoot_AdminSystemButUnbound_FallsThroughToRepair is the
+// go-qrdb#548 review's item 2 fix: an admin that already exists and is
+// already the System user, but holds NO live certificate binding -- the
+// B6 gap a crash between createAdminUser and BindAdminCert leaves on an
+// earlier run -- must NOT be skipped by the fast path. runFirstBoot must
+// fall through to the full bootstrap path so pkg/firstboot's own
+// needsBinding repair gets a chance to run, exactly as the not-yet-System
+// case already does. Asserted the same way its sibling is: CreateUser is
+// called, proving the fall-through happened.
+func TestRunFirstBoot_AdminSystemButUnbound_FallsThroughToRepair(t *testing.T) {
+	createCalled := false
+	userSvc := &mockUserServicer{
+		getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
+			// System: true, but CertBindings is empty -- created, never bound.
+			return &user.User{ID: 9001, Username: "admin", System: true}, nil
+		},
+		createUserFn: func(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
+			createCalled = true
+			return &user.User{ID: 9001, Username: req.Username, TenantID: req.TenantID, System: true}, nil
+		},
+	}
+	roleSvc := &mockRoleServicer{}
+	node := &mockRaftNode{} // default: leader ready
+
+	err := runFirstBoot(context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
+	require.NoError(t, err)
+	if !createCalled {
+		t.Fatal("expected runFirstBoot to fall through to the bootstrap path (CreateUser) for a System admin with no live certificate binding")
+	}
+}
+
+// selfSignedAdminCertPEM mints a self-signed "CN=admin" certificate and
+// returns it PEM-encoded alongside the SPKI thumbprint a binding records.
+// Self-signed so the SAME bytes can stand in for both the presented
+// certificate and the trust anchor it chains to (clientCACertPEM) --
+// adoptPresentedAdminCert's chain check is satisfied without a second CA.
+func selfSignedAdminCertPEM(t *testing.T) (certPEM []byte, thumbprint string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "admin", OrganizationalUnit: []string{tenantid.System, "administrator"}},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	require.NoError(t, err)
+	cert, err := x509.ParseCertificate(der)
+	require.NoError(t, err)
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), user.ComputeSPKIThumbprint(cert)
+}
+
+// TestRunFirstBoot_CrashRecovery_UnboundAdminPlusPendingRecord_Binds is the
+// go-qrdb#548 review's item 2 qrdbd-level crash test: an admin created on an
+// earlier run but never bound (System: true, no live CertBindings -- the
+// B6 gap), PLUS a pending admin-certificate record left by that earlier
+// run's ceremony-initialize, boots and gets bound: runFirstBoot's fast path
+// must fall through to Phase 2.5 (which resolves the pending record) and
+// Phase 3 (whose needsBinding repair binds it), not skip straight to
+// "nothing to do" because the admin already carries System: true.
+func TestRunFirstBoot_CrashRecovery_UnboundAdminPlusPendingRecord_Binds(t *testing.T) {
+	certPEM, wantThumbprint := selfSignedAdminCertPEM(t)
+
+	var boundUserID uint64
+	var boundThumbprint string
+	userSvc := &mockUserServicer{
+		getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
+			// System: true, but CertBindings is empty -- created, never bound,
+			// exactly the state a crash between createAdminUser and
+			// BindAdminCert leaves on an earlier run.
+			return &user.User{ID: 9001, Username: "admin", System: true}, nil
+		},
+		// The mock's CreateUser always "succeeds" rather than modelling a
+		// real store's username-uniqueness constraint (UsernameExistsError
+		// -> reconcileExistingAdmin), the same simplification
+		// TestRunFirstBoot_AdminSystemButUnbound_FallsThroughToRepair makes:
+		// returning the SAME id the lookup above reports stands in for "this
+		// is the existing admin, not a new one" without needing the fuller
+		// username-collision fixture pkg/firstboot/firstboot_test.go already
+		// covers end to end with a faithful store double.
+		createUserFn: func(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
+			return &user.User{ID: 9001, Username: req.Username, TenantID: req.TenantID, System: true}, nil
+		},
+		addCertBindingFn: func(_ context.Context, userID uint64, thumbprint string, _ int64) (*user.User, error) {
+			boundUserID = userID
+			boundThumbprint = thumbprint
+			return &user.User{ID: userID, Username: "admin", System: true}, nil
+		},
+	}
+	roleSvc := &mockRoleServicer{}
+	node := &mockRaftNode{} // default: leader ready
+
+	// The pending record ceremony-initialize wrote on the earlier,
+	// interrupted run: present now, under MTLSBindingEnrolled a single Get
+	// resolves it (firstboot.ResolveAdminCertForFirstBoot), no replication
+	// wait needed.
+	pendingStore := &mockKVServicer{
+		getFn: func(_ context.Context, key string) ([]byte, error) {
+			return certPEM, nil
+		},
+	}
+
+	err := runFirstBoot(
+		context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{},
+		false, nil, "", auth.MTLSBindingEnrolled,
+		pendingStore, nil, certPEM, // ceremonyCA nil; clientCACertPEM is the self-signed cert's own trust anchor
+	)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(9001), boundUserID, "the existing, still-unbound admin must be the one bound, not a freshly minted user")
+	assert.Equal(t, wantThumbprint, boundThumbprint, "the bound thumbprint must come from the pending record's certificate")
 }
 
 // TestRunFirstBoot_AdminExistsButNotSystem_FallsThroughToReconcile is the

@@ -128,15 +128,22 @@ func TestRunFirstBoot_WithBarriers_AdminAlreadyExists(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = sub.Close() }()
 
-	// Admin exists AND is already the System user → runFirstBoot skips
-	// bootstrap.BootstrapSystem entirely (go-qrdb#106/#192 round 2: the fast
-	// path only skips reconciliation when there is nothing left to
-	// reconcile; an admin that exists but is not yet System still falls
-	// through to the full, idempotent bootstrap path so it gets promoted —
-	// see TestRunFirstBoot_WithBarriers_AdminExistsButNotSystem_Reconciles).
+	// Admin exists, is already the System user, AND already holds a live
+	// certificate binding → runFirstBoot skips bootstrap.BootstrapSystem
+	// entirely (go-qrdb#106/#192 round 2: the fast path only skips
+	// reconciliation when there is nothing left to reconcile; an admin
+	// that exists but is not yet System still falls through to the full,
+	// idempotent bootstrap path so it gets promoted — see
+	// TestRunFirstBoot_WithBarriers_AdminExistsButNotSystem_Reconciles —
+	// and go-qrdb#548 review item 2: a System admin with NO live binding
+	// falls through too, so pkg/firstboot's own repair gets a chance to
+	// run; see TestRunFirstBoot_WithBarriers_AdminSystemButUnbound_Repairs).
 	userSvc := &mockUserServicer{
 		getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
-			return &user.User{ID: 9001, Username: "admin", System: true}, nil
+			return &user.User{
+				ID: 9001, Username: "admin", System: true, Lifecycle: user.LifecycleActive,
+				CertBindings: []user.CertBinding{{Thumbprint: "abc", NotAfter: time.Now().Add(365 * 24 * time.Hour)}},
+			}, nil
 		},
 	}
 	roleSvc := &mockRoleServicer{}
