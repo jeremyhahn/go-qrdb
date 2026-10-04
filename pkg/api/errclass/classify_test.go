@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -160,6 +161,31 @@ func TestClassify_ServiceConditionsTheTableOnceMissed(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := Classify(wrapped{tc.err}); got != tc.want {
 				t.Errorf("got %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestClassify_TenantLocationRefusals pins the classes of the refusals that
+// keep a tenant's location a pool and slot resolved on each node, bare and
+// wrapped by a service layer.
+func TestClassify_TenantLocationRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want Class
+	}{
+		{"explicit data root retired", &tenant.DataRootRetiredError{TenantID: "t", DataRoot: "/d"}, InvalidArgument},
+		{"stored tenant record names a path", &tenant.PersistedDataRootError{TenantID: "t", DataRoot: "/d"}, FailedPrecondition},
+		{"tenant-root record names a path", &seal.AbsoluteDataRootRecordError{TenantID: "t", DataRoot: "/d"}, FailedPrecondition},
+		{"recorded slot does not resolve here", &seal.TenantRootUnresolvedError{TenantID: "t", Pool: "p", Err: errors.New("x")}, FailedPrecondition},
+		{"removal outside this node's pool", &seal.DataRootOutsideLocalRootsError{DataRoot: "/d"}, Internal},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for name, e := range map[string]error{"bare": tc.err, "wrapped": wrapped{tc.err}} {
+				if got := Classify(e); got != tc.want {
+					t.Errorf("%s: got %s, want %s", name, got, tc.want)
+				}
 			}
 		})
 	}

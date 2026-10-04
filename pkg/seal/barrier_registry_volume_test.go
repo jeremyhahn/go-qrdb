@@ -15,11 +15,18 @@
 package seal
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/jeremyhahn/go-objstore/pkg/common"
+	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
+
+	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
 
 // pebbleAbsent reports whether NO Pebble store exists at path, treating a
@@ -62,7 +69,7 @@ func TestRegisterVolumeTenant_AllocatesDataRootAndBarrier(t *testing.T) {
 	reg, roots, _ := newPooledRegistryUnsealed(t)
 	ctx := context.Background()
 
-	dataRoot, tb, err := reg.RegisterVolumeTenant(ctx, "vol-alpha", "", false)
+	dataRoot, tb, err := reg.RegisterVolumeTenant(ctx, "vol-alpha", false)
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant: %v", err)
 	}
@@ -97,40 +104,141 @@ func TestRegisterVolumeTenant_AllocatesDataRootAndBarrier(t *testing.T) {
 	}
 }
 
-// TestRegisterVolumeTenant_ExplicitDataRoot verifies that passing an explicit
-// DataRoot (the boot re-attach path) binds the barrier to that exact on-disk
-// location verbatim instead of allocating a new path from the pool. The real
-// daemon re-attach uses a fresh registry/process with the persisted DataRoot.
-func TestRegisterVolumeTenant_ExplicitDataRoot(t *testing.T) {
-	reg, _, _ := newPooledRegistryUnsealed(t)
+// secondNodeOptions builds a pool for a SECOND node: the same pool name with
+// the same number of candidate paths, at different directories -- what another
+// node's configuration maps the pool to. It shares nothing with the first
+// node's pool except the name.
+func secondNodeOptions(t *testing.T) (opts []Option, roots []string) {
+	t.Helper()
+	c1, p1 := configuredLocal(t)
+	c2, p2 := configuredLocal(t)
+	mgr := objpool.NewManager()
+	state, _, _ := newStateStore(t)
+	if err := mgr.Register("default", []common.Storage{c1, c2}, &objpool.RoundRobinStrategy{State: state}); err != nil {
+		t.Fatalf("second node pool Register: %v", err)
+	}
+	perTenantReg := pebblestore.NewPerTenantRegistry()
+	t.Cleanup(func() { _ = perTenantReg.CloseAll(context.Background()) })
+	return []Option{WithVolumePool(mgr, state, "default"), WithPerTenantRegistry(perTenantReg)}, []string{p1, p2}
+}
+
+// slotOfRoot returns the index of the pool root dataRoot lies under, or -1.
+func slotOfRoot(roots []string, tenantID, dataRoot string) int {
+	for i, r := range roots {
+		if filepath.Join(r, tenantID) == dataRoot {
+			return i
+		}
+	}
+	return -1
+}
+
+// TestTenantRootRecord_RecordsPoolAndSlotNotPath verifies the persisted
+// tenant-root record names the pool and relative slot the tenant was given and
+// carries no filesystem path: the record is replicated, and a path would name
+// the registering node's disk.
+func TestTenantRootRecord_RecordsPoolAndSlotNotPath(t *testing.T) {
+	reg, roots, _ := newPooledRegistryUnsealed(t)
 	ctx := context.Background()
 
-	explicit := t.TempDir()
-	root, tb, err := reg.RegisterVolumeTenant(ctx, "vol-beta", explicit, false)
+	dataRoot, _, err := reg.RegisterVolumeTenant(ctx, "vol-rec", false)
 	if err != nil {
-		t.Fatalf("RegisterVolumeTenant (explicit): %v", err)
+		t.Fatalf("RegisterVolumeTenant: %v", err)
 	}
-	if root != explicit {
-		t.Errorf("DataRoot = %q, want explicit %q", root, explicit)
+	raw, err := reg.SystemBarrier().Get(ctx, tenantRootKeyPrefix+"vol-rec")
+	if err != nil {
+		t.Fatalf("read tenant-root record: %v", err)
 	}
-	assertPebbleAtPath(t, filepath.Join(explicit, "barrier"))
+	if bytes.Contains(raw, []byte("data_root")) || bytes.Contains(raw, []byte(dataRoot)) {
+		t.Fatalf("tenant-root record %s names a path; it must record only the pool and slot", raw)
+	}
+	var rec tenantRootRecord
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		t.Fatalf("decode tenant-root record: %v", err)
+	}
+	if rec.Pool != "default" || rec.Slot != slotOfRoot(roots, "vol-rec", dataRoot) {
+		t.Fatalf("record = pool %q slot %d, want pool default slot %d", rec.Pool, rec.Slot, slotOfRoot(roots, "vol-rec", dataRoot))
+	}
+}
 
-	if err := reg.UnsealTenant(ctx, "vol-beta", Credentials{}); err == nil {
-		// A freshly-registered, never-initialized barrier cannot be unsealed;
-		// initialize then verify it becomes usable.
-		t.Log("unexpected unseal success on uninitialized barrier")
+// TestLocalTenantDataRoot_ResolvesAgainstThisNodesPool is the cross-node
+// data-loss regression: two nodes share the replicated tenant-root record but
+// map the pool to different directories. The second node must resolve the
+// tenant to ITS OWN candidate path for the recorded slot -- never the path the
+// first node registered at, which on a shared host is the first node's live
+// directory.
+func TestLocalTenantDataRoot_ResolvesAgainstThisNodesPool(t *testing.T) {
+	ctx := context.Background()
+	system, optsA, rootsA := newShareableComponents(t)
+	if err := system.Initialize(ctx, MustCredentials([]byte("pool-test-pass"))); err != nil {
+		t.Fatalf("system barrier Initialize: %v", err)
 	}
-	if err := reg.InitializeTenant(ctx, "vol-beta", Credentials{}); err != nil {
-		t.Fatalf("InitializeTenant: %v", err)
+	nodeA, err := NewBarrierRegistry(poolTestLogger(), system, optsA...)
+	if err != nil {
+		t.Fatalf("NewBarrierRegistry (node A): %v", err)
 	}
-	if tb.IsSealed() {
-		t.Error("barrier still sealed after Initialize")
+	rootA, _, err := nodeA.RegisterVolumeTenant(ctx, "shared", false)
+	if err != nil {
+		t.Fatalf("RegisterVolumeTenant on node A: %v", err)
+	}
+	slot := slotOfRoot(rootsA, "shared", rootA)
+	if slot < 0 {
+		t.Fatalf("node A root %q is not under its pool %v", rootA, rootsA)
+	}
+
+	optsB, rootsB := secondNodeOptions(t)
+	nodeB, err := NewBarrierRegistry(poolTestLogger(), system, optsB...)
+	if err != nil {
+		t.Fatalf("NewBarrierRegistry (node B): %v", err)
+	}
+	rootB, err := nodeB.LocalTenantDataRoot(ctx, "shared")
+	if err != nil {
+		t.Fatalf("LocalTenantDataRoot on node B: %v", err)
+	}
+	if want := filepath.Join(rootsB[slot], "shared"); rootB != want {
+		t.Fatalf("node B resolved %q, want its own slot-%d path %q (node A's is %q)", rootB, slot, want, rootA)
+	}
+}
+
+// TestTenantRootRecord_AbsolutePathRefused verifies a tenant-root record that
+// carries a path is refused rather than trusted: LocalTenantDataRoot returns
+// *AbsoluteDataRootRecordError naming the tenant and the path, and boot restore
+// skips the tenant without opening anything at that path.
+func TestTenantRootRecord_AbsolutePathRefused(t *testing.T) {
+	ctx := context.Background()
+	system, opts, _ := newShareableComponents(t)
+	if err := system.Initialize(ctx, MustCredentials([]byte("pool-test-pass"))); err != nil {
+		t.Fatalf("system barrier Initialize: %v", err)
+	}
+	foreign := filepath.Join(t.TempDir(), "another-node", "legacy")
+	rec := `{"pool":"default","slot":0,"data_root":"` + foreign + `","auto_unseal":true}`
+	if err := system.Put(ctx, tenantRootKeyPrefix+"legacy", []byte(rec)); err != nil {
+		t.Fatalf("system.Put legacy record: %v", err)
+	}
+	reg, err := NewBarrierRegistry(poolTestLogger(), system, opts...)
+	if err != nil {
+		t.Fatalf("NewBarrierRegistry: %v", err)
+	}
+
+	_, err = reg.LocalTenantDataRoot(ctx, "legacy")
+	var abs *AbsoluteDataRootRecordError
+	if !errors.As(err, &abs) || abs.TenantID != "legacy" || abs.DataRoot != foreign {
+		t.Fatalf("LocalTenantDataRoot = %v, want *AbsoluteDataRootRecordError for legacy at %s", err, foreign)
+	}
+	if err := reg.RestoreVolumeTenants(ctx); err != nil {
+		t.Fatalf("RestoreVolumeTenants must skip, not abort on, a refused record: %v", err)
+	}
+	if _, gerr := reg.GetTenant("legacy"); gerr == nil {
+		t.Error("a tenant whose record names a path must not be restored")
+	}
+	if !pebbleAbsent(t, filepath.Join(foreign, "barrier")) {
+		t.Error("restore opened a store at the path a refused record named")
 	}
 }
 
 // TestReattachVolumeTenant_PresentStoreSucceeds verifies the boot re-attach
 // path succeeds when the tenant's persisted barrier store is present on disk:
-// reg1 creates it, a fresh reg2 (same system barrier + pool) re-attaches it.
+// reg1 creates it, a fresh reg2 (same system barrier + pool) re-attaches it at
+// the directory the recorded slot resolves to.
 func TestReattachVolumeTenant_PresentStoreSucceeds(t *testing.T) {
 	ctx := context.Background()
 	system, opts, _ := newShareableComponents(t)
@@ -142,17 +250,20 @@ func TestReattachVolumeTenant_PresentStoreSucceeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry (reg1): %v", err)
 	}
-	dataRoot := t.TempDir()
-	if _, _, err := reg1.RegisterVolumeTenant(ctx, "present", dataRoot, false); err != nil {
+	dataRoot, _, err := reg1.RegisterVolumeTenant(ctx, "present", false)
+	if err != nil {
 		t.Fatalf("RegisterVolumeTenant (create): %v", err)
 	}
 	assertPebbleAtPath(t, filepath.Join(dataRoot, "barrier"))
+	if err := reg1.ReleaseTenant(ctx, "present"); err != nil {
+		t.Fatalf("ReleaseTenant (reg1): %v", err)
+	}
 
 	reg2, err := NewBarrierRegistry(poolTestLogger(), system, opts...)
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry (reg2): %v", err)
 	}
-	root, tb, err := reg2.ReattachVolumeTenant(ctx, "present", dataRoot, false)
+	root, tb, err := reg2.ReattachVolumeTenant(ctx, "present", false)
 	if err != nil {
 		t.Fatalf("ReattachVolumeTenant (present store): %v", err)
 	}
@@ -165,28 +276,35 @@ func TestReattachVolumeTenant_PresentStoreSucceeds(t *testing.T) {
 }
 
 // TestReattachVolumeTenant_AbsentStoreReturnsMountMissing is the L3 regression
-// guard: re-attaching at a persisted DataRoot whose barrier store is NOT
-// present (dedicated mount absent, or an empty leftover dir) must fail closed
-// with DataRootMountMissingError and must NOT mint a fresh empty barrier.
+// guard: re-attaching a tenant whose recorded slot resolves to a directory
+// whose barrier store is NOT present (the pool's mount absent, or an empty
+// leftover dir) must fail closed with DataRootMountMissingError and must NOT
+// mint a fresh empty barrier.
 func TestReattachVolumeTenant_AbsentStoreReturnsMountMissing(t *testing.T) {
 	ctx := context.Background()
+	record := []byte(`{"pool":"default","slot":0,"auto_unseal":false}`)
 
 	t.Run("missing directory", func(t *testing.T) {
-		reg, _, _ := newPooledRegistryUnsealed(t)
-		dataRoot := filepath.Join(t.TempDir(), "unmounted", "vt") // never created
-		_, _, err := reg.ReattachVolumeTenant(ctx, "absent", dataRoot, false)
-		assertMountMissing(t, reg, "absent", dataRoot, err)
+		reg, roots, _ := newPooledRegistryUnsealed(t)
+		if err := reg.SystemBarrier().Put(ctx, tenantRootKeyPrefix+"absent", record); err != nil {
+			t.Fatalf("put record: %v", err)
+		}
+		_, _, err := reg.ReattachVolumeTenant(ctx, "absent", false)
+		assertMountMissing(t, reg, "absent", filepath.Join(roots[0], "absent"), err)
 	})
 
 	t.Run("empty barrier directory", func(t *testing.T) {
-		reg, _, _ := newPooledRegistryUnsealed(t)
-		dataRoot := t.TempDir()
+		reg, roots, _ := newPooledRegistryUnsealed(t)
+		if err := reg.SystemBarrier().Put(ctx, tenantRootKeyPrefix+"empty", record); err != nil {
+			t.Fatalf("put record: %v", err)
+		}
+		dataRoot := filepath.Join(roots[0], "empty")
 		// Simulate the mount being present but the barrier store never
 		// populated (an empty {dataRoot}/barrier directory).
 		if err := os.MkdirAll(filepath.Join(dataRoot, "barrier"), 0o700); err != nil {
 			t.Fatalf("mkdir empty barrier: %v", err)
 		}
-		_, _, err := reg.ReattachVolumeTenant(ctx, "empty", dataRoot, false)
+		_, _, err := reg.ReattachVolumeTenant(ctx, "empty", false)
 		assertMountMissing(t, reg, "empty", dataRoot, err)
 	})
 }
@@ -208,46 +326,21 @@ func assertMountMissing(t *testing.T, reg *BarrierRegistry, tenantID, dataRoot s
 	}
 }
 
-// TestRegisterVolumeTenant_FreshCreateNonExistentDirWorks verifies the CREATE
-// path (RegisterVolumeTenant, mustExist=false) is NOT broken by the re-attach
-// assertion: a first-ever WithDataRoot tenant whose directory does not exist
-// yet is created normally.
-func TestRegisterVolumeTenant_FreshCreateNonExistentDirWorks(t *testing.T) {
-	reg, _, _ := newPooledRegistryUnsealed(t)
-	ctx := context.Background()
-	dataRoot := filepath.Join(t.TempDir(), "fresh", "vt") // does not exist yet
-
-	root, tb, err := reg.RegisterVolumeTenant(ctx, "fresh", dataRoot, false)
-	if err != nil {
-		t.Fatalf("RegisterVolumeTenant (fresh non-existent dir): %v", err)
-	}
-	if root != dataRoot {
-		t.Errorf("root = %q, want %q", root, dataRoot)
-	}
-	if tb == nil {
-		t.Fatal("expected non-nil TenantBarrier")
-	}
-	assertPebbleAtPath(t, filepath.Join(dataRoot, "barrier"))
-}
-
 // TestRegisterVolumeTenant_SealedSystemBarrierRefusesClosed verifies that
 // RegisterVolumeTenant (and, by the same shared registerVolumeTenant,
 // ReattachVolumeTenant) refuses with ErrSealed while the system barrier is
 // sealed, rather than silently proceeding: refuseClaimedRoot cannot read the
-// tenant-root records it compares DataRoots against while sealed, so it
-// treats "sealed" the same as "nothing is claimed" and returns nil -- a
-// direct call on this registry (bypassing TenantService.CreateTenant, whose
-// own tombstone check already fails closed through the sealed barrier)
-// must not be able to use that to skip the DataRoot-overlap guard and open a
-// Pebble store anyway.
+// tenant-root records it compares DataRoots against while sealed, so a direct
+// call on this registry (bypassing TenantService.CreateTenant, whose own
+// tombstone check already fails closed through the sealed barrier) must not be
+// able to skip the DataRoot-overlap guard and open a Pebble store anyway.
 func TestRegisterVolumeTenant_SealedSystemBarrierRefusesClosed(t *testing.T) {
 	// newPooledRegistry's system barrier starts sealed (never initialized);
 	// this test is the one place in the file that must NOT unseal it.
-	reg, _, _ := newPooledRegistry(t)
+	reg, roots, _ := newPooledRegistry(t)
 	ctx := context.Background()
-	dataRoot := filepath.Join(t.TempDir(), "sealed-refusal", "vt")
 
-	_, tb, err := reg.RegisterVolumeTenant(ctx, "sealed-refusal", dataRoot, false)
+	_, tb, err := reg.RegisterVolumeTenant(ctx, "sealed-refusal", false)
 	if !errors.Is(err, ErrSealed) {
 		t.Fatalf("RegisterVolumeTenant on a sealed system barrier = %v, want ErrSealed", err)
 	}
@@ -257,12 +350,14 @@ func TestRegisterVolumeTenant_SealedSystemBarrierRefusesClosed(t *testing.T) {
 	if _, gerr := reg.GetTenant("sealed-refusal"); gerr == nil {
 		t.Error("tenant must NOT be registered after a sealed-system refusal")
 	}
-	if !pebbleAbsent(t, filepath.Join(dataRoot, "barrier")) {
-		t.Error("a Pebble store was opened despite the sealed-system refusal; must fail closed before touching storage")
+	for _, r := range roots {
+		if !pebbleAbsent(t, filepath.Join(r, "sealed-refusal", "barrier")) {
+			t.Error("a Pebble store was opened despite the sealed-system refusal; must fail closed before touching storage")
+		}
 	}
 
 	// ReattachVolumeTenant shares the same guard.
-	_, tb, err = reg.ReattachVolumeTenant(ctx, "sealed-refusal", dataRoot, false)
+	_, tb, err = reg.ReattachVolumeTenant(ctx, "sealed-refusal", false)
 	if !errors.Is(err, ErrSealed) {
 		t.Fatalf("ReattachVolumeTenant on a sealed system barrier = %v, want ErrSealed", err)
 	}
@@ -272,22 +367,22 @@ func TestRegisterVolumeTenant_SealedSystemBarrierRefusesClosed(t *testing.T) {
 }
 
 // TestRestoreVolumeTenants_MissingMountSkipped verifies that boot restore fails
-// a tenant whose dedicated mount is absent CLOSED (skips it, logs) instead of
+// a tenant whose pool mount is absent CLOSED (skips it, logs) instead of
 // silently opening a fresh empty barrier — and does not abort the whole node.
 func TestRestoreVolumeTenants_MissingMountSkipped(t *testing.T) {
 	ctx := context.Background()
-	system, opts, _ := newShareableComponents(t)
+	system, opts, roots := newShareableComponents(t)
 	if err := system.Initialize(ctx, MustCredentials([]byte("pool-test-pass"))); err != nil {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 
-	// Persist a tenant-root record pointing at a DataRoot that was never
-	// created (the dedicated disk is not mounted this boot).
-	missingRoot := filepath.Join(t.TempDir(), "unmounted-disk", "vt")
-	rec := `{"data_root":"` + missingRoot + `","auto_unseal":false}`
+	// Persist a tenant-root record whose slot resolves to a directory that
+	// was never created (the pool's disk was not mounted this boot).
+	rec := `{"pool":"default","slot":1,"auto_unseal":false}`
 	if err := system.Put(ctx, tenantRootKeyPrefix+"ghost", []byte(rec)); err != nil {
 		t.Fatalf("system.Put missing-mount record: %v", err)
 	}
+	missingRoot := filepath.Join(roots[1], "ghost")
 
 	reg, err := NewBarrierRegistry(poolTestLogger(), system, opts...)
 	if err != nil {
@@ -319,7 +414,7 @@ func TestRegisterVolumeTenant_SystemManagedAutoUnseal(t *testing.T) {
 		t.Fatalf("system barrier Initialize: %v", err)
 	}
 
-	_, tb, err := reg.RegisterVolumeTenant(ctx, "vol-auto", "", true)
+	_, tb, err := reg.RegisterVolumeTenant(ctx, "vol-auto", true)
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant (auto): %v", err)
 	}
@@ -352,7 +447,7 @@ func TestRegisterVolumeTenant_SelfManagedStaysSealed(t *testing.T) {
 	reg, _, _ := newPooledRegistryUnsealed(t)
 	ctx := context.Background()
 
-	_, tb, err := reg.RegisterVolumeTenant(ctx, "vol-self", "", false)
+	_, tb, err := reg.RegisterVolumeTenant(ctx, "vol-self", false)
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant (self): %v", err)
 	}
@@ -366,7 +461,7 @@ func TestRegisterVolumeTenant_SelfManagedStaysSealed(t *testing.T) {
 func TestRegisterVolumeTenant_RejectsTraversalID(t *testing.T) {
 	reg, _, _ := newPooledRegistry(t)
 
-	if _, _, err := reg.RegisterVolumeTenant(context.Background(), "../escape", "", false); err == nil {
+	if _, _, err := reg.RegisterVolumeTenant(context.Background(), "../escape", false); err == nil {
 		t.Fatal("expected error for traversal tenant ID, got nil")
 	}
 }
@@ -376,7 +471,7 @@ func TestRegisterVolumeTenant_RejectsTraversalID(t *testing.T) {
 func TestRegisterVolumeTenant_EmptyTenantID(t *testing.T) {
 	reg, _, _ := newPooledRegistry(t)
 
-	_, _, err := reg.RegisterVolumeTenant(context.Background(), "", "", false)
+	_, _, err := reg.RegisterVolumeTenant(context.Background(), "", false)
 	if err == nil {
 		t.Fatal("expected ErrEmptyTenantID, got nil")
 	}
@@ -393,7 +488,7 @@ func TestRegisterVolumeTenant_NoPoolConfigured(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
-	if _, _, err := reg.RegisterVolumeTenant(context.Background(), "vol-x", "", false); err == nil {
+	if _, _, err := reg.RegisterVolumeTenant(context.Background(), "vol-x", false); err == nil {
 		t.Fatal("expected ErrPoolNotConfigured, got nil")
 	}
 }
@@ -408,7 +503,7 @@ func TestLocalTenantDataRoot(t *testing.T) {
 
 	// Pre-register the tenant so the pool's round-robin state advances and we
 	// can compare the resulting path.
-	dataRoot, _, err := reg.RegisterVolumeTenant(ctx, "loc-alpha", "", false)
+	dataRoot, _, err := reg.RegisterVolumeTenant(ctx, "loc-alpha", false)
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant: %v", err)
 	}
@@ -485,7 +580,7 @@ func TestRestoreVolumeTenants_RestoredAfterFreshRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry (reg1): %v", err)
 	}
-	dataRoot1, _, err := reg1.RegisterVolumeTenant(ctx, "vol-restore", "", false)
+	dataRoot1, _, err := reg1.RegisterVolumeTenant(ctx, "vol-restore", false)
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant on reg1: %v", err)
 	}
@@ -552,7 +647,7 @@ func TestRestoreVolumeTenants_AutoUnsealUnsealed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry (reg1): %v", err)
 	}
-	_, _, err = reg1.RegisterVolumeTenant(ctx, "vol-auto-restore", "", true)
+	_, _, err = reg1.RegisterVolumeTenant(ctx, "vol-auto-restore", true)
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant (auto): %v", err)
 	}
@@ -595,7 +690,7 @@ func TestRestoreVolumeTenants_SelfManagedStaysSealed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry (reg1): %v", err)
 	}
-	if _, _, err := reg1.RegisterVolumeTenant(ctx, "vol-self-restore", "", false); err != nil {
+	if _, _, err := reg1.RegisterVolumeTenant(ctx, "vol-self-restore", false); err != nil {
 		t.Fatalf("RegisterVolumeTenant (self): %v", err)
 	}
 
@@ -634,7 +729,7 @@ func TestRestoreVolumeTenants_IdempotentWhenAlreadyRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
-	if _, _, err := reg.RegisterVolumeTenant(ctx, "vol-idem", "", false); err != nil {
+	if _, _, err := reg.RegisterVolumeTenant(ctx, "vol-idem", false); err != nil {
 		t.Fatalf("RegisterVolumeTenant: %v", err)
 	}
 
@@ -679,7 +774,7 @@ func TestLocalTenantDataRoot_FallsBackToPersistentStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBarrierRegistry (reg1): %v", err)
 	}
-	dataRoot1, _, err := reg1.RegisterVolumeTenant(ctx, "loc-fallback", "", false)
+	dataRoot1, _, err := reg1.RegisterVolumeTenant(ctx, "loc-fallback", false)
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant on reg1: %v", err)
 	}
@@ -847,7 +942,7 @@ func TestRestoreVolumeTenants_AutoUnsealFailure(t *testing.T) {
 	// The persistent DataRoot record is written, but the barrier Pebble has
 	// no root-key blob. When reg2 restores and calls UnsealTenant it will
 	// receive ErrNotInitialized, log a warning, and continue.
-	if _, _, err := reg1.RegisterVolumeTenant(ctx, "uninit-auto", "", true); err != nil {
+	if _, _, err := reg1.RegisterVolumeTenant(ctx, "uninit-auto", true); err != nil {
 		t.Fatalf("RegisterVolumeTenant: %v", err)
 	}
 
@@ -923,7 +1018,7 @@ func TestRegisterVolumeTenant_MigrationRecoverer_RunsBeforeBarrierBuild(t *testi
 			return nil
 		}))
 
-	if _, _, err := reg.RegisterVolumeTenant(ctx, "vol-recover", "", true); err != nil {
+	if _, _, err := reg.RegisterVolumeTenant(ctx, "vol-recover", true); err != nil {
 		t.Fatalf("RegisterVolumeTenant: %v", err)
 	}
 	if calls != 1 {
@@ -948,7 +1043,7 @@ func TestRegisterVolumeTenant_MigrationRecoverer_FailsClosed(t *testing.T) {
 	reg.Attach(WithMigrationRecoverer(
 		func(context.Context, StorageBackend, string) error { return sentinel }))
 
-	_, _, err := reg.RegisterVolumeTenant(ctx, "vol-recover-fail", "", true)
+	_, _, err := reg.RegisterVolumeTenant(ctx, "vol-recover-fail", true)
 	var mre *MigrationRecoveryError
 	if !errors.As(err, &mre) {
 		t.Fatalf("err = %v, want *MigrationRecoveryError", err)

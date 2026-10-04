@@ -37,12 +37,14 @@ qrdb tenant create --id acme --name "Acme Corp"
 
 qrdb tenant create --id secure-co --name "Secure Co" --isolation-type volume
 
-qrdb tenant create --id big-co --name "Big Co" --isolation-type raft \
-     --data-root /mnt/tenant-disks/big-co
+qrdb tenant create --id big-co --name "Big Co" --isolation-type raft
 ```
 
-`--data-root` pins the tenant to a specific disk instead of taking a volume from
-the pool. The directory must be empty or not exist yet.
+A `volume` or `raft` tenant takes a directory from the volume pool. Every node
+keeps that tenant in its own pool, at `{pool path}/{tenant}`: the cluster
+records which pool and slot the tenant got, and each node maps that to its own
+disk. `--data-root` is retired and refused -- a path names one node's disk, and
+a dedicated disk is configured as a volume pool on every node instead.
 
 **Isolation cannot change once the tenant holds data.** Get this right at
 creation, or migrate the data.

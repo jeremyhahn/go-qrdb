@@ -278,7 +278,7 @@ func TestRaftBackendFactory_SealedFailsClosed(t *testing.T) {
 	ctx := context.Background()
 
 	// Self-managed registration: registered but NOT initialized -> sealed.
-	dataRoot, tb, err := reg.RegisterVolumeTenant(ctx, "sealed", "", false)
+	dataRoot, tb, err := reg.RegisterVolumeTenant(ctx, "sealed", false)
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant: %v", err)
 	}

@@ -204,10 +204,10 @@ func TestReplicatedSlot_RegisterVolumeTenant_SameSlot(t *testing.T) {
 	nodeB := newReplicatedNode(t, rr, slotStore)
 
 	// Warm up so the tenant under test gets relative slot 1.
-	if _, _, err := nodeA.reg.RegisterVolumeTenant(ctx, "warmup", "", false); err != nil {
+	if _, _, err := nodeA.reg.RegisterVolumeTenant(ctx, "warmup", false); err != nil {
 		t.Fatalf("RegisterVolumeTenant(warmup) node A: %v", err)
 	}
-	if _, _, err := nodeA.reg.RegisterVolumeTenant(ctx, "t1", "", false); err != nil {
+	if _, _, err := nodeA.reg.RegisterVolumeTenant(ctx, "t1", false); err != nil {
 		t.Fatalf("RegisterVolumeTenant(t1) node A: %v", err)
 	}
 	slotA := nodeA.slotOf("t1")
@@ -215,45 +215,11 @@ func TestReplicatedSlot_RegisterVolumeTenant_SameSlot(t *testing.T) {
 		t.Fatalf("t1 landed at slot %d on node A, want 1", slotA)
 	}
 
-	if _, _, err := nodeB.reg.RegisterVolumeTenant(ctx, "t1", "", false); err != nil {
+	if _, _, err := nodeB.reg.RegisterVolumeTenant(ctx, "t1", false); err != nil {
 		t.Fatalf("RegisterVolumeTenant(t1) node B: %v", err)
 	}
 	if slotB := nodeB.slotOf("t1"); slotB != slotA {
 		t.Fatalf("node B resolved t1 to slot %d, want %d", slotB, slotA)
-	}
-}
-
-// TestReplicatedSlot_MigrationSeedsAssignment proves the Phase 2 compatibility
-// migration: when a node re-attaches a tenant with an already-known node-local
-// DataRoot (RegisterVolumeTenant with a provided path) and no replicated
-// assignment exists, the slot is seeded from that local path so a peer
-// resolving the tenant afterwards lands on the same relative slot — even though
-// the two nodes use independent node-local cursors.
-func TestReplicatedSlot_MigrationSeedsAssignment(t *testing.T) {
-	ctx := context.Background()
-	slotStore := NewMemoryBackend()
-
-	// Independent cursors: a fresh pick would land both at slot 0. Resolution
-	// must instead come from the seeded assignment.
-	storeA, _, _ := newStateStore(t)
-	storeB, _, _ := newStateStore(t)
-	nodeA := newReplicatedNode(t, &objpool.RoundRobinStrategy{State: storeA}, slotStore)
-	nodeB := newReplicatedNode(t, &objpool.RoundRobinStrategy{State: storeB}, slotStore)
-
-	// Re-attach t1 on node A at its slot-1 root (simulating a pre-Phase-2
-	// node-local DataRoot record). This seeds assign/t1 = slot 1.
-	providedRoot := filepath.Join(nodeA.roots[1], "t1")
-	if _, _, err := nodeA.reg.RegisterVolumeTenant(ctx, "t1", providedRoot, false); err != nil {
-		t.Fatalf("RegisterVolumeTenant(t1, provided) node A: %v", err)
-	}
-
-	// Node B provisions t1 fresh: it must resolve the seeded slot 1, not pick
-	// slot 0 from its own cursor.
-	if _, _, err := nodeB.reg.RegisterVolumeTenant(ctx, "t1", "", false); err != nil {
-		t.Fatalf("RegisterVolumeTenant(t1) node B: %v", err)
-	}
-	if slotB := nodeB.slotOf("t1"); slotB != 1 {
-		t.Fatalf("node B resolved migrated t1 to slot %d, want 1 (seeded)", slotB)
 	}
 }
 
@@ -317,7 +283,7 @@ func TestReplicatedSlot_UnresolvableRecordRepicks(t *testing.T) {
 	storeA, _, _ := newStateStore(t)
 	node := newReplicatedNode(t, &objpool.RoundRobinStrategy{State: storeA}, store)
 
-	if _, _, err := node.reg.RegisterVolumeTenant(ctx, "t1", "", false); err != nil {
+	if _, _, err := node.reg.RegisterVolumeTenant(ctx, "t1", false); err != nil {
 		t.Fatalf("RegisterVolumeTenant(t1): %v", err)
 	}
 	if got := node.slotOf("t1"); got != 0 {
@@ -355,7 +321,7 @@ func TestReplicatedSlot_LostRaceDefersToWinner(t *testing.T) {
 	storeA, _, _ := newStateStore(t)
 	node := newReplicatedNode(t, &objpool.RoundRobinStrategy{State: storeA}, store)
 
-	if _, _, err := node.reg.RegisterVolumeTenant(ctx, "t1", "", false); err != nil {
+	if _, _, err := node.reg.RegisterVolumeTenant(ctx, "t1", false); err != nil {
 		t.Fatalf("RegisterVolumeTenant(t1): %v", err)
 	}
 	if got := node.slotOf("t1"); got != 1 {
@@ -380,38 +346,11 @@ func TestReplicatedSlot_CorruptRecordRepicks(t *testing.T) {
 	storeA, _, _ := newStateStore(t)
 	node := newReplicatedNode(t, &objpool.RoundRobinStrategy{State: storeA}, store)
 
-	if _, _, err := node.reg.RegisterVolumeTenant(ctx, "t1", "", false); err != nil {
+	if _, _, err := node.reg.RegisterVolumeTenant(ctx, "t1", false); err != nil {
 		t.Fatalf("RegisterVolumeTenant(t1): %v", err)
 	}
 	if got := node.slotOf("t1"); got != 0 {
 		t.Fatalf("corrupt record should re-pick to slot 0, got %d", got)
-	}
-}
-
-// TestReplicatedSlot_SeedNonCandidateBaseSkips proves that seeding from a local
-// DataRoot whose base is not one of the pool's candidates is a no-op (no
-// assignment recorded), so a peer still picks independently.
-func TestReplicatedSlot_SeedNonCandidateBaseSkips(t *testing.T) {
-	ctx := context.Background()
-	slotStore := NewMemoryBackend()
-	storeA, _, _ := newStateStore(t)
-	nodeA := newReplicatedNode(t, &objpool.RoundRobinStrategy{State: storeA}, slotStore)
-
-	// Re-attach with a DataRoot OUTSIDE the pool's candidate set; seeding must
-	// find no matching slot and record nothing.
-	outside := filepath.Join(t.TempDir(), "t1")
-	if _, _, err := nodeA.reg.RegisterVolumeTenant(ctx, "t1", outside, false); err != nil {
-		t.Fatalf("RegisterVolumeTenant(t1, outside): %v", err)
-	}
-
-	// A peer must find no recorded assignment and pick its own slot 0.
-	storeB, _, _ := newStateStore(t)
-	nodeB := newReplicatedNode(t, &objpool.RoundRobinStrategy{State: storeB}, slotStore)
-	if _, _, err := nodeB.reg.RegisterVolumeTenant(ctx, "t1", "", false); err != nil {
-		t.Fatalf("RegisterVolumeTenant(t1) node B: %v", err)
-	}
-	if got := nodeB.slotOf("t1"); got != 0 {
-		t.Fatalf("node B should pick slot 0 (no seeded assignment), got %d", got)
 	}
 }
 

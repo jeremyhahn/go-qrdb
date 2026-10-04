@@ -374,7 +374,7 @@ func revocationRoundTrip(t *testing.T, tenantID string, revocation auth.Revocati
 	leaderReg := newTestRegistry(t)
 	initTestSystemBarrier(t, leaderReg)
 	leaderDataRoot := t.TempDir()
-	leaderBarrier := initLeaderTenant(t, leaderReg, tenantID, leaderDataRoot)
+	leaderBarrier := initLeaderTenant(t, leaderReg, tenantID)
 
 	ca := newTestCA(t)
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")

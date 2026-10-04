@@ -32,7 +32,7 @@ import (
 func TestReleaseTenant_ThenDropRecords_KeepsTheBytesUntilTheCallerDecides(t *testing.T) {
 	ctx := context.Background()
 	reg, system := newPooledTestRegistry(t)
-	dataRoot, _, err := reg.RegisterVolumeTenant(ctx, "acme", "", true)
+	dataRoot, _, err := reg.RegisterVolumeTenant(ctx, "acme", true)
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant: %v", err)
 	}
@@ -79,40 +79,6 @@ func TestReleaseTenant_ThenDropRecords_KeepsTheBytesUntilTheCallerDecides(t *tes
 	}
 }
 
-// TestRegisterVolumeTenant_RefusesARootAnotherRecordClaims: a create may not
-// take a directory another tenant's tenant-root record on this node still
-// names -- the deleted-tenant reconcile would read that record and remove the
-// new tenant's directory.
-func TestRegisterVolumeTenant_RefusesARootAnotherRecordClaims(t *testing.T) {
-	ctx := context.Background()
-	reg, _ := newPooledTestRegistry(t)
-	claimed, _, err := reg.RegisterVolumeTenant(ctx, "retired", filepath.Join(t.TempDir(), "disk"), false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The retired tenant's barrier is gone from memory, its record is not --
-	// the state of a node that missed the delete.
-	if err := reg.ReleaseTenant(ctx, "retired"); err != nil {
-		t.Fatal(err)
-	}
-
-	for _, root := range []string{claimed, filepath.Join(claimed, "nested")} {
-		_, _, err := reg.RegisterVolumeTenant(ctx, "newcomer", root, false)
-		var dc *DataRootClaimedError
-		if !errors.As(err, &dc) || dc.ClaimedBy != "retired" {
-			t.Fatalf("RegisterVolumeTenant(%s) = %v; want *DataRootClaimedError claimed by retired", root, err)
-		}
-		if dc.Error() == "" {
-			t.Fatal("empty error message")
-		}
-	}
-
-	// Re-attach of the SAME tenant, and a create at an unrelated root, are fine.
-	if _, _, err := reg.RegisterVolumeTenant(ctx, "other", filepath.Join(t.TempDir(), "other"), false); err != nil {
-		t.Fatalf("an unrelated root was refused: %v", err)
-	}
-}
-
 // TestTenantDataRootCandidates_NamesEveryLocalPlace covers the three sources:
 // the in-memory registration, the persisted record and the pool-derived path.
 func TestTenantDataRootCandidates_NamesEveryLocalPlace(t *testing.T) {
@@ -123,7 +89,7 @@ func TestTenantDataRootCandidates_NamesEveryLocalPlace(t *testing.T) {
 		t.Fatalf("PoolBasePaths = %v, %v", bases, err)
 	}
 
-	dataRoot, _, err := reg.RegisterVolumeTenant(ctx, "acme", "", true)
+	dataRoot, _, err := reg.RegisterVolumeTenant(ctx, "acme", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,9 +101,10 @@ func TestTenantDataRootCandidates_NamesEveryLocalPlace(t *testing.T) {
 		t.Fatalf("candidates = %v; want the one pool DataRoot, de-duplicated", got)
 	}
 
-	// A record naming a different directory is reported beside the pool path.
-	elsewhere := filepath.Join(t.TempDir(), "moved")
-	rec, _ := json.Marshal(tenantRootRecord{DataRoot: elsewhere})
+	// A record for a tenant not registered in memory resolves to this node's
+	// own pool path for its slot -- the same directory the pool-derived scan
+	// names, reported once.
+	rec, _ := json.Marshal(tenantRootRecord{Pool: "default", Slot: 0})
 	if err := system.Put(ctx, tenantRootStorePrefix+"ghost", rec); err != nil {
 		t.Fatal(err)
 	}
@@ -145,9 +112,18 @@ func TestTenantDataRootCandidates_NamesEveryLocalPlace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]bool{elsewhere: true, filepath.Join(bases[0], "ghost"): true}
-	if len(got) != 2 || !want[got[0]] || !want[got[1]] {
-		t.Fatalf("candidates = %v; want %v", got, want)
+	if want := filepath.Join(bases[0], "ghost"); len(got) != 1 || got[0] != want {
+		t.Fatalf("candidates = %v; want only %q", got, want)
+	}
+
+	// A record that names a path is refused, never offered as a candidate.
+	legacy, _ := json.Marshal(tenantRootRecord{Pool: "default", DataRoot: filepath.Join(t.TempDir(), "moved")})
+	if err := system.Put(ctx, tenantRootStorePrefix+"legacy", legacy); err != nil {
+		t.Fatal(err)
+	}
+	var abs *AbsoluteDataRootRecordError
+	if _, err := reg.TenantDataRootCandidates(ctx, "legacy"); !errors.As(err, &abs) {
+		t.Fatalf("candidates for a record naming a path = %v; want *AbsoluteDataRootRecordError", err)
 	}
 
 	if _, err := reg.TenantDataRootCandidates(ctx, ""); !errors.Is(err, ErrEmptyTenantID) {
@@ -173,48 +149,6 @@ func TestTenantDataRootCandidates_WithoutAPoolUsesOnlyTheRecords(t *testing.T) {
 	}
 }
 
-// TestTenantDataRootCandidates_ReturnsRecordsAsRecorded: a candidate is
-// returned exactly as recorded, never cleaned. "<dir>/a/.." cleans to "<dir>",
-// a different directory that exists, so cleaning it here would hand a caller
-// the parent to judge instead of the record. Duplicates are still collapsed on
-// the cleaned form.
-func TestTenantDataRootCandidates_ReturnsRecordsAsRecorded(t *testing.T) {
-	ctx := context.Background()
-	reg, system := newPooledTestRegistry(t)
-	bases, err := reg.PoolBasePaths(ctx)
-	if err != nil || len(bases) != 1 {
-		t.Fatalf("PoolBasePaths = %v, %v", bases, err)
-	}
-
-	dotted := filepath.Join(t.TempDir(), "a") + "/.."
-	rec, _ := json.Marshal(tenantRootRecord{DataRoot: dotted})
-	if err := system.Put(ctx, tenantRootStorePrefix+"dotted", rec); err != nil {
-		t.Fatal(err)
-	}
-	got, err := reg.TenantDataRootCandidates(ctx, "dotted")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 2 || got[0] != dotted {
-		t.Fatalf("candidates = %v; want the record %q as recorded, then the pool path", got, dotted)
-	}
-
-	// A record naming the pool path with a trailing separator is the same
-	// directory: it is reported once, in the form the record holds.
-	trailing := filepath.Join(bases[0], "twin") + "/"
-	rec, _ = json.Marshal(tenantRootRecord{DataRoot: trailing})
-	if err := system.Put(ctx, tenantRootStorePrefix+"twin", rec); err != nil {
-		t.Fatal(err)
-	}
-	got, err = reg.TenantDataRootCandidates(ctx, "twin")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 1 || got[0] != trailing {
-		t.Fatalf("candidates = %v; want only %q", got, trailing)
-	}
-}
-
 // TestHasTenantState_TracksEveryHoldingOfAnId walks one id through each kind
 // of state the registry can hold for it -- the in-memory barrier, the
 // tenant-root record, the slot assignment -- and back to none.
@@ -226,7 +160,7 @@ func TestHasTenantState_TracksEveryHoldingOfAnId(t *testing.T) {
 	if err != nil || held {
 		t.Fatalf("before registration = %v, %v; want false", held, err)
 	}
-	if _, _, err := reg.RegisterVolumeTenant(ctx, "acme", "", true); err != nil {
+	if _, _, err := reg.RegisterVolumeTenant(ctx, "acme", true); err != nil {
 		t.Fatal(err)
 	}
 	if held, err = reg.HasTenantState(ctx, "acme"); err != nil || !held {
@@ -255,7 +189,7 @@ func TestHasTenantState_TracksEveryHoldingOfAnId(t *testing.T) {
 func TestHasTenantState_SealedSystemBarrierStillSeesTheSlot(t *testing.T) {
 	ctx := context.Background()
 	reg, system := newPooledTestRegistry(t, WithReplicatedSlotStore(NewMemoryBackend()))
-	if _, _, err := reg.RegisterVolumeTenant(ctx, "acme", "", true); err != nil {
+	if _, _, err := reg.RegisterVolumeTenant(ctx, "acme", true); err != nil {
 		t.Fatal(err)
 	}
 	if err := reg.ReleaseTenant(ctx, "acme"); err != nil {

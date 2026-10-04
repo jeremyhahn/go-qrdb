@@ -97,6 +97,33 @@ are not reconstructed here — their history is in the git log.
   leases. The lease table is refused to client writes and hidden from reads and
   enumeration. No new opcode and no feature gate.
 
+### Security
+
+- **BREAKING: a node never opens or deletes a tenant directory another node
+  recorded.** A `volume` or `raft` tenant's directory was recorded as an
+  absolute path -- in its tenant-root record, its tenant record and its
+  placement replicas -- by the node that allocated it, and every other node
+  trusted that path. On hosts that share a filesystem, a node opened another
+  node's live Pebble directory, and the placement reconciler's demotion purge
+  deleted another node's data. A tenant's location is now recorded as the
+  volume pool and relative slot it was given, and each node resolves that slot
+  to its own pool path (`BarrierRegistry.LocalTenantDataRoot`); tenant records
+  and placement replicas carry no path. A record that names one is refused
+  rather than trusted: `*seal.AbsoluteDataRootRecordError`,
+  `*tenant.PersistedDataRootError` and `*server.PlacementDataRootError`. There
+  is no migration; re-create such a tenant. Every removal of a tenant or shard
+  directory (`BarrierRegistry.RemoveDataRoot`,
+  `RaftBackendFactory.CloseAndPurge`) refuses any path not strictly inside one
+  of this node's own volume-pool paths
+  (`*seal.DataRootOutsideLocalRootsError`).
+- **BREAKING: `tenant create --data-root` is refused.** An explicit data root
+  named one node's disk. The request -- `data_root` on every transport and
+  `tenant.WithDataRoot` -- is refused with `*tenant.DataRootRetiredError` (400 /
+  `INVALID_ARGUMENT`) before anything is created; a dedicated disk is
+  configured as a volume pool. `seal.BarrierRegistry.RegisterVolumeTenant`,
+  `ReattachVolumeTenant` and `ImportTenant` no longer take a data root, and
+  `placement.PlaceRequest.DataRootForNode` is removed.
+
 ## [0.40.0-alpha] - 2026-10-04
 
 The CA key provider seam and replicated cluster CA. This release contains BREAKING changes; see the entries below. Highlights:

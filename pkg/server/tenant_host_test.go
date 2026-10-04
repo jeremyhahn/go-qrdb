@@ -111,7 +111,7 @@ func newVolumePooledRegistryWith(t *testing.T, sysStrat seal.SealingStrategy) *s
 func registerVolumeTenant(t *testing.T, reg *seal.BarrierRegistry, id string) (string, *seal.TenantBarrier) {
 	t.Helper()
 	ctx := context.Background()
-	dataRoot, tb, err := reg.RegisterVolumeTenant(ctx, id, "", false)
+	dataRoot, tb, err := reg.RegisterVolumeTenant(ctx, id, false)
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant(%s): %v", id, err)
 	}
@@ -359,7 +359,7 @@ func TestTenantHostRegistry_LazyBuildAfterUnseal(t *testing.T) {
 	ctx := context.Background()
 
 	// Self-managed registration: registered but NOT initialized -> sealed.
-	dataRoot, tb, err := reg.RegisterVolumeTenant(ctx, "lazy", "", false)
+	dataRoot, tb, err := reg.RegisterVolumeTenant(ctx, "lazy", false)
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant: %v", err)
 	}

@@ -199,36 +199,6 @@ func TestRecordSlotAssignment_RaceLoseUnresolvablePool(t *testing.T) {
 	}
 }
 
-// TestSeedSlotAssignment_AlreadyRecorded calls seedSlotAssignment when the
-// tenant already has a recorded slot assignment in the replicated store. The
-// function must return without re-recording.
-//
-// Covers: barrier_registry.go line 444-446 (early return when assignment found).
-func TestSeedSlotAssignment_AlreadyRecorded(t *testing.T) {
-	t.Parallel()
-	slotStore := NewMemoryBackend()
-	reg, roots := buildPoolRegistry(t, slotStore)
-	ctx := context.Background()
-
-	// Pre-record an assignment so seedSlotAssignment finds it on the first call.
-	existing, err := json.Marshal(slotAssignment{Pool: "default", Slot: 0})
-	if err != nil {
-		t.Fatalf("json.Marshal: %v", err)
-	}
-	if err := slotStore.Put(ctx, slotAssignmentPrefix+"seed-tenant", existing); err != nil {
-		t.Fatalf("pre-seed: %v", err)
-	}
-
-	// seedSlotAssignment must return without modifying the store.
-	before, _ := slotStore.Get(ctx, slotAssignmentPrefix+"seed-tenant")
-	reg.seedSlotAssignment(ctx, "seed-tenant", roots[0])
-	after, _ := slotStore.Get(ctx, slotAssignmentPrefix+"seed-tenant")
-
-	if string(before) != string(after) {
-		t.Fatalf("seedSlotAssignment modified store despite assignment already present")
-	}
-}
-
 // TestExportSealedBlob_GetErrorPassthrough verifies that ExportSealedBlob
 // propagates a storage-layer Get error that is NOT ErrSecretNotFound. When
 // the underlying backend fails with an unexpected error the function must

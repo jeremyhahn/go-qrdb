@@ -123,7 +123,7 @@ func newTenantCreateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&barrierAutoUnseal, "barrier-auto-unseal", false,
 		"For a dedicated-isolation tenant (barrier/volume/raft), use system-managed auto-unseal instead of the secure self-managed default (entitlement-gated)")
 	cmd.Flags().StringVar(&dataRoot, "data-root", "",
-		"For a volume/raft isolation tenant, pin the dedicated filesystem DataRoot to this absolute path instead of pool allocation (e.g. a dedicated disk mount); must name an empty or not-yet-existing directory")
+		"Retired: refused by the server. A tenant's location is a named volume pool resolved on each node; configure a dedicated disk as a volume pool instead")
 
 	return cmd
 }

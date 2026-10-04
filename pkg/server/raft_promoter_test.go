@@ -16,10 +16,13 @@ package server
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
 // startLocalRaftShard starts one dedicated raft database shard on a fresh
@@ -123,6 +126,39 @@ func TestRaftBackendFactory_CloseAndPurge_RemovesDataDir(t *testing.T) {
 	f.mu.Unlock()
 	if running {
 		t.Fatal("the shard is still registered after CloseAndPurge")
+	}
+}
+
+// TestRaftBackendFactory_CloseAndPurge_RefusesADirectoryOutsideThisNodesPool
+// asserts the purge never deletes outside this node's own volume pool: a shard
+// whose directory resolved anywhere else -- another node's path on a shared
+// host -- is stopped, its directory is left exactly as it was, and the purge is
+// refused with *seal.DataRootOutsideLocalRootsError.
+func TestRaftBackendFactory_CloseAndPurge_RefusesADirectoryOutsideThisNodesPool(t *testing.T) {
+	host, _ := newSharedTestHost(t)
+	reg := newVolumePooledRegistry(t)
+	src := newFakeRaftInfoSource()
+	f := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg, src, volTestLogger())
+	t.Cleanup(func() { _ = f.CloseAll() })
+
+	registerVolumeTenant(t, reg, "rp")
+	foreignRoot := filepath.Join(t.TempDir(), "another-node", "rp")
+	src.add("rp", "app", 1105, foreignRoot)
+	if _, err := f.Services(context.Background(), "rp", "app"); err != nil {
+		t.Fatalf("Services: %v", err)
+	}
+	foreignDir := filepath.Join(foreignRoot, "databases", "app")
+	if _, err := os.Stat(foreignDir); err != nil {
+		t.Fatalf("precondition: the shard's data dir %q must exist: %v", foreignDir, err)
+	}
+
+	err := f.CloseAndPurge("rp", "app")
+	var outside *seal.DataRootOutsideLocalRootsError
+	if !errors.As(err, &outside) || outside.DataRoot != foreignDir {
+		t.Fatalf("CloseAndPurge = %v, want *seal.DataRootOutsideLocalRootsError for %s", err, foreignDir)
+	}
+	if _, err := os.Stat(foreignDir); err != nil {
+		t.Fatalf("a directory outside this node's pool was removed: %v", err)
 	}
 }
 

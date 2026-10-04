@@ -1719,22 +1719,14 @@ func (s *DatabaseService) persistPlacement(ctx context.Context, tenantID string,
 	if rf < 1 {
 		rf = 1
 	}
-	dataDir := info.DataDir
-	localNodeID := s.localNodeID
+	// The plan records no path for any replica: every node, the creating one
+	// included, resolves its own replica's directory from the tenant's volume
+	// pool and slot (placementRaftInfoSource's LocalRootResolver).
 	plan, err := s.placementScheduler.Place(ctx, placement.PlaceRequest{
 		TenantID: tenantID,
 		Database: info.Name,
 		ShardID:  info.ShardID,
 		RF:       rf,
-		// Return the leader's dataDir only for the local node; remote replicas
-		// record "" so each follower computes its own local pool path via the
-		// LocalRootResolver wired into placementRaftInfoSource.
-		DataRootForNode: func(nodeID string) string {
-			if localNodeID == "" || nodeID == localNodeID {
-				return dataDir
-			}
-			return ""
-		},
 	})
 	if err != nil {
 		return nil, err

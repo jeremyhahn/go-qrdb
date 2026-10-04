@@ -33,10 +33,6 @@ var (
 	// is not positive.
 	ErrInvalidRF = errors.New("placement: replication factor must be positive")
 
-	// ErrNilDataRootFunc is returned by Place when PlaceRequest.DataRootForNode
-	// is nil.
-	ErrNilDataRootFunc = errors.New("placement: data-root function must not be nil")
-
 	// ErrEmptyTenant is returned when a tenant ID is empty.
 	ErrEmptyTenant = errors.New("placement: tenant id must not be empty")
 

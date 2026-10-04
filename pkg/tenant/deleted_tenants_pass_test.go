@@ -91,8 +91,9 @@ func TestReconcileDeletedTenants_ReservedRootItselfIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	putTenantRootRecord(t, svc, "vres", reserved)
-	retireElsewhere(t, store, &TenantInfo{ID: "vres", IsolationType: IsolationVolume})
+	// A retired id whose pool directory IS the reserved root.
+	putTenantRootRecord(t, svc, "system-data", map[string]any{"pool": "default", "slot": 0})
+	retireElsewhere(t, store, &TenantInfo{ID: "system-data", IsolationType: IsolationVolume})
 
 	report, err := svc.ReconcileDeletedTenants(ctx)
 	if err != nil {
@@ -101,7 +102,7 @@ func TestReconcileDeletedTenants_ReservedRootItselfIsRefused(t *testing.T) {
 	if !dirExists(t, reserved) {
 		t.Fatal("a reserved root inside a pool base was removed")
 	}
-	if !hasSkip(report, "vres", reserved, SkipOverlapsReservedRoot) {
+	if !hasSkip(report, "system-data", reserved, SkipOverlapsReservedRoot) {
 		t.Fatalf("report = %+v; want %s skipped as %s", report, reserved, SkipOverlapsReservedRoot)
 	}
 }
@@ -143,20 +144,26 @@ func TestReconcileDeletedTenants_EverySkipIsLoggedAtWarn(t *testing.T) {
 	if err := reg.SystemBarrier().Initialize(ctx, seal.Credentials{}); err != nil {
 		t.Fatal(err)
 	}
+	bases, _ := reg.PoolBasePaths(ctx)
+	reserved := filepath.Join(bases[0], "system-data")
+	if err := mkdirAll(reserved); err != nil {
+		t.Fatal(err)
+	}
 	var logs syncBuffer
 	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	svc, err := NewTenantService(store, reg, logger, WithDefaultEntitlements(volumeEntitlements()))
+	svc, err := NewTenantService(store, reg, logger,
+		WithDefaultEntitlements(volumeEntitlements()), WithReservedDataRoots(reserved))
 	if err != nil {
 		t.Fatal(err)
 	}
-	putTenantRootRecord(t, svc, "vrel", "relative/dir")
-	retireElsewhere(t, store, &TenantInfo{ID: "vrel", IsolationType: IsolationVolume})
+	putTenantRootRecord(t, svc, "system-data", map[string]any{"pool": "default", "slot": 0})
+	retireElsewhere(t, store, &TenantInfo{ID: "system-data", IsolationType: IsolationVolume})
 
 	if _, err := svc.ReconcileDeletedTenants(ctx); err != nil {
 		t.Fatal(err)
 	}
 	out := logs.String()
-	for _, want := range []string{"level=WARN", "tenant_id=vrel", "path=relative/dir", "reason=" + SkipNotCanonical} {
+	for _, want := range []string{"level=WARN", "tenant_id=system-data", "path=" + reserved, "reason=" + SkipOverlapsReservedRoot} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("log lacks %q:\n%s", want, out)
 		}
@@ -182,11 +189,11 @@ func TestReconcileDeletedTenants_OneFailingIdDoesNotStopTheOthers(t *testing.T) 
 
 	boom := errors.New("device busy")
 	real := svc.removeAll
-	svc.removeAll = func(path string) error {
+	svc.removeAll = func(ctx context.Context, path string) error {
 		if path == first.DataRoot {
 			return boom
 		}
-		return real(path)
+		return real(ctx, path)
 	}
 
 	report, err := svc.ReconcileDeletedTenants(ctx)
@@ -262,37 +269,6 @@ func TestReconcileDeletedTenants_FullyReclaimedIdsAreShortCircuited(t *testing.T
 	}
 }
 
-// TestCreateTenant_ClaimedByARetiredTenantNamesTheVerb: when the record that
-// claims the DataRoot belongs to a RETIRED tenant, the refusal says so and
-// names the verb that reclaims it.
-func TestCreateTenant_ClaimedByARetiredTenantNamesTheVerb(t *testing.T) {
-	ctx := context.Background()
-	svc, _, store := newReconcileService(t)
-	disk := filepath.Join(t.TempDir(), "disk")
-	gone, err := svc.CreateTenant(ctx, "vgone", "Gone", IsolationVolume, WithDataRoot(disk))
-	if err != nil {
-		t.Fatal(err)
-	}
-	retireElsewhere(t, store, gone)
-	if err := removeAllForTest(disk); err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.registry.ReleaseTenant(ctx, "vgone"); err != nil {
-		t.Fatal(err)
-	}
-
-	_, err = svc.CreateTenant(ctx, "vnew", "New", IsolationVolume, WithDataRoot(disk))
-	var oe *DataRootOverlapError
-	if !errors.As(err, &oe) {
-		t.Fatalf("CreateTenant = %v; want *DataRootOverlapError", err)
-	}
-	for _, want := range []string{"retired tenant vgone", "qrdb tenant reconcile-deleted"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("error %q does not mention %q", err, want)
-		}
-	}
-}
-
 func mkdirAll(path string) error         { return os.MkdirAll(path, 0o700) }
 func removeAllForTest(path string) error { return os.RemoveAll(path) }
 
@@ -329,8 +305,7 @@ func (m *mountedRootRemover) Remove(path string) error {
 // rmdir of the mount itself and retrying it on every pass forever.
 func TestReconcileDeletedTenants_MountPointDataRootIsReclaimed(t *testing.T) {
 	ctx := context.Background()
-	disk := filepath.Join(t.TempDir(), "tenant-disk")
-	remover := &mountedRootRemover{mounts: map[string]bool{disk: true}}
+	remover := &mountedRootRemover{mounts: map[string]bool{}}
 	store := seal.NewMemoryBackend()
 	reg := newTestBarrierRegistry(t, seal.WithDirectoryRemover(remover))
 	if err := reg.SystemBarrier().Initialize(ctx, seal.Credentials{}); err != nil {
@@ -340,10 +315,13 @@ func TestReconcileDeletedTenants_MountPointDataRootIsReclaimed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gone, err := svc.CreateTenant(ctx, "vmount", "Mounted", IsolationVolume, WithDataRoot(disk))
+	gone, err := svc.CreateTenant(ctx, "vmount", "Mounted", IsolationVolume)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The tenant's pool directory is a mount point -- a disk for one tenant.
+	disk := gone.DataRoot
+	remover.mounts[disk] = true
 	if err := os.WriteFile(filepath.Join(disk, "leftover"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}

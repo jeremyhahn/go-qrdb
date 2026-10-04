@@ -15,16 +15,18 @@
 
 //go:build integration
 
-// tenant_data_root_cli_test.go drives `qrdb tenant create --data-root` through
-// the real client CLI binary (cmd/qrdb) as a subprocess talking REST-over-TLS
-// to a live qrdbd node, proving FEATURE B (an operator-pinned dedicated-disk
-// DataRoot for IsolationVolume/IsolationRaft tenants) end-to-end: the tenant's
-// data is physically placed under the requested path AND encrypted at rest
-// under the tenant's own barrier, exactly like a pool-allocated DataRoot.
+// tenant_data_root_cli_test.go drives tenant placement through the real
+// client CLI binary (cmd/qrdb) as a subprocess talking REST-over-TLS to a live
+// qrdbd node. A tenant's location is a volume pool resolved on each node, so:
 //
-// The IsolationRaft case additionally proves FEATURE C's `local` Raft cluster
-// topology is honored end-to-end (CLI -> REST -> service -> manager) for a
-// dedicated-raft database created under the pinned-DataRoot tenant.
+//   - `qrdb tenant create --data-root` is refused, for every dedicated
+//     isolation type, and nothing is created at the path;
+//   - an IsolationVolume / IsolationRaft tenant's data is placed in this
+//     node's own pool, under {pool}/{tenant}, and encrypted at rest under the
+//     tenant's own barrier.
+//
+// The IsolationRaft case additionally proves the `local` Raft cluster topology
+// is honored end-to-end (CLI -> REST -> service -> manager).
 package integration_test
 
 import (
@@ -82,9 +84,10 @@ tenant:
 }
 
 // startDataRootTenantNode starts a single-node daemon configured with
-// writeDataRootTenantConfig and returns the admin port, node data dir, and a
-// system-admin CLI connArgs slice ready for tenant/role/user provisioning.
-func startDataRootTenantNode(t *testing.T, bin string, logPrefix string) (adminPort int, dataDir string, ca *testCA, sysConnArgs []string) {
+// writeDataRootTenantConfig and returns the admin port, the node's volume-pool
+// path, and a system-admin CLI connArgs slice ready for tenant/role/user
+// provisioning.
+func startDataRootTenantNode(t *testing.T, bin string, logPrefix string) (adminPort int, volumePoolDir string, ca *testCA, sysConnArgs []string) {
 	t.Helper()
 	ca = generateTestCA(t)
 	nodeCert, nodeKey := ca.generateNodeCert(t)
@@ -92,8 +95,8 @@ func startDataRootTenantNode(t *testing.T, bin string, logPrefix string) (adminP
 	raftPort := allocatePorts(t, 1)[0]
 	adminPort = allocateTCPPorts(t, 1)[0]
 	grpcPort := allocateTCPPorts(t, 1)[0]
-	dataDir = t.TempDir()
-	volumePoolDir := t.TempDir()
+	dataDir := t.TempDir()
+	volumePoolDir = t.TempDir()
 	cfgPath := writeDataRootTenantConfig(t, volumePoolDir)
 
 	args := []string{
@@ -122,7 +125,7 @@ func startDataRootTenantNode(t *testing.T, bin string, logPrefix string) (adminP
 
 	adminCertPath, adminKeyPath := ca.generateAdminClientCert(t, dataDir)
 	sysConnArgs = restConnArgs(ca, adminCertPath, adminKeyPath, adminPort)
-	return adminPort, dataDir, ca, sysConnArgs
+	return adminPort, volumePoolDir, ca, sysConnArgs
 }
 
 // provisionTenantCLIIdentity grants a tenant's mTLS identity (CN=admin,
@@ -171,47 +174,73 @@ type cliDataRootTenantJSON struct {
 	DataRoot      string `json:"data_root"`
 }
 
-// TestCLI_TenantCreate_DataRoot_Volume_PlacesDataAndEncrypts proves FEATURE B
-// for an IsolationVolume tenant: `qrdb tenant create --data-root <dir>`
-// places the tenant's barrier AND its data under the operator-supplied path
-// (never a pool-allocated one), and the live data plane physically encrypts
-// it -- a plaintext value written through KV never appears on disk under that
-// directory.
-func TestCLI_TenantCreate_DataRoot_Volume_PlacesDataAndEncrypts(t *testing.T) {
+// TestCLI_TenantCreate_DataRoot_IsRefused proves `qrdb tenant create
+// --data-root` is refused for every dedicated isolation type with the typed
+// refusal naming named volume pools, and that nothing is created at the path.
+func TestCLI_TenantCreate_DataRoot_IsRefused(t *testing.T) {
+	bin := buildBinary(t)
+	cli := buildCLIBinary(t)
+	_, _, _, sysConnArgs := startDataRootTenantNode(t, bin, "[tenant-dataroot-refused] ")
+
+	for _, iso := range []string{"volume", "raft"} {
+		t.Run(iso, func(t *testing.T) {
+			tenantID := fmt.Sprintf("dr-%s-%d", iso, time.Now().UnixNano())
+			explicit := filepath.Join(t.TempDir(), "dedicated-disk", tenantID)
+			out, err := runQRDB(t, cli, sysConnArgs, "tenant", "create",
+				"--id", tenantID,
+				"--name", "Explicit DataRoot Tenant",
+				"--isolation-type", iso,
+				"--barrier-auto-unseal",
+				"--data-root", explicit,
+			)
+			if err == nil {
+				t.Fatalf("tenant create --data-root must be refused; output: %s", out)
+			}
+			if !strings.Contains(out, "volume pool") {
+				t.Fatalf("the refusal must name named volume pools; output: %s", out)
+			}
+			if _, statErr := os.Stat(explicit); !os.IsNotExist(statErr) {
+				t.Fatalf("the refused path %s was created: %v", explicit, statErr)
+			}
+			if out, err := runQRDB(t, cli, sysConnArgs, "tenant", "get", tenantID); err == nil {
+				t.Fatalf("a refused tenant exists: %s", out)
+			}
+		})
+	}
+}
+
+// TestCLI_TenantCreate_PoolPlacement_Volume_PlacesDataAndEncrypts proves an
+// IsolationVolume tenant's barrier and data are placed in THIS node's volume
+// pool, at {pool}/{tenant}, and that the live data plane physically encrypts
+// them -- a plaintext value written through KV never appears on disk there.
+func TestCLI_TenantCreate_PoolPlacement_Volume_PlacesDataAndEncrypts(t *testing.T) {
 	bin := buildBinary(t)
 	cli := buildCLIBinary(t)
 
-	adminPort, dataDir, ca, sysConnArgs := startDataRootTenantNode(t, bin, "[tenant-dataroot-volume] ")
+	adminPort, poolDir, ca, sysConnArgs := startDataRootTenantNode(t, bin, "[tenant-pool-volume] ")
 	sysClient := mtlsHTTPClient(t, ca, 15*time.Second)
 
-	tenantID := fmt.Sprintf("vol-dr-%d", time.Now().UnixNano())
-	explicitDataRoot := filepath.Join(t.TempDir(), "dedicated-disk", tenantID)
+	tenantID := fmt.Sprintf("vol-pool-%d", time.Now().UnixNano())
+	tenantRoot := filepath.Join(poolDir, tenantID)
 
 	out, err := runQRDB(t, cli, sysConnArgs, "--output", "json", "tenant", "create",
 		"--id", tenantID,
-		"--name", "Volume DataRoot Tenant",
+		"--name", "Volume Pool Tenant",
 		"--isolation-type", "volume",
 		"--barrier-auto-unseal",
-		"--data-root", explicitDataRoot,
 	)
 	if err != nil {
-		t.Fatalf("tenant create --data-root: %v\noutput: %s", err, out)
+		t.Fatalf("tenant create: %v\noutput: %s", err, out)
 	}
 	var tenantResp cliDataRootTenantJSON
 	if decErr := json.Unmarshal([]byte(out), &tenantResp); decErr != nil {
 		t.Fatalf("decode tenant create JSON: %v\noutput: %s", decErr, out)
 	}
-	if tenantResp.DataRoot != explicitDataRoot {
-		t.Fatalf("tenant DataRoot = %q, want the operator-supplied path %q (must NOT be pool-allocated)", tenantResp.DataRoot, explicitDataRoot)
+	if tenantResp.DataRoot != tenantRoot {
+		t.Fatalf("tenant DataRoot = %q, want this node's pool path %q", tenantResp.DataRoot, tenantRoot)
 	}
-
-	// Proof (a): the tenant's barrier is physically placed under the
-	// requested path, not the volume pool.
-	if _, statErr := os.Stat(filepath.Join(explicitDataRoot, "barrier")); statErr != nil {
-		t.Fatalf("barrier subdirectory not found under explicit DataRoot %q: %v", explicitDataRoot, statErr)
-	}
-	if strings.Contains(dataDir, explicitDataRoot) {
-		t.Fatalf("sanity: explicit DataRoot must be independent of the node's own --data-dir")
+	if _, statErr := os.Stat(filepath.Join(tenantRoot, "barrier")); statErr != nil {
+		t.Fatalf("barrier subdirectory not found under %q: %v", tenantRoot, statErr)
 	}
 
 	tenantConnArgs := provisionTenantCLIIdentity(t, ca, adminPort, sysClient, tenantID)
@@ -222,7 +251,7 @@ func TestCLI_TenantCreate_DataRoot_Volume_PlacesDataAndEncrypts(t *testing.T) {
 		t.Fatalf("tenant database create: %v\noutput: %s", err, out)
 	}
 
-	key, value := "greeting", "hello-volume-dataroot-plaintext-marker"
+	key, value := "greeting", "hello-volume-pool-plaintext-marker"
 	out, err = runQRDB(t, cli, tenantConnArgs, "--database", dbName, "kv", "put", key, value)
 	if err != nil {
 		t.Fatalf("kv put: %v\noutput: %s", err, out)
@@ -235,46 +264,44 @@ func TestCLI_TenantCreate_DataRoot_Volume_PlacesDataAndEncrypts(t *testing.T) {
 		t.Fatalf("kv get %s = %q, want %q", key, strings.TrimSpace(out), value)
 	}
 
-	// Proof (b): the plaintext value never appears anywhere under the
-	// operator-pinned DataRoot -- physical encryption at rest, not inert
-	// bookkeeping.
-	assertPlaintextAbsentInDir(t, explicitDataRoot, []byte(value))
+	// The plaintext value never appears anywhere under the tenant's pool
+	// directory -- physical encryption at rest, not inert bookkeeping.
+	assertPlaintextAbsentInDir(t, tenantRoot, []byte(value))
 }
 
-// TestCLI_TenantCreate_DataRoot_Raft_PlacesDataAndEncrypts proves FEATURE B
-// for an IsolationRaft tenant (each database gets its own dedicated Raft
-// shard rooted under the tenant's pinned DataRoot) AND FEATURE C's `local`
-// Raft cluster-mode topology, requested explicitly via
-// `qrdb database create --cluster-mode local`, is honored end-to-end.
-func TestCLI_TenantCreate_DataRoot_Raft_PlacesDataAndEncrypts(t *testing.T) {
+// TestCLI_TenantCreate_PoolPlacement_Raft_PlacesDataAndEncrypts proves an
+// IsolationRaft tenant's dedicated shards are rooted in THIS node's pool
+// directory for the tenant, encrypted under its barrier, and that the `local`
+// Raft cluster-mode topology requested via `qrdb database create
+// --cluster-mode local` is honored end-to-end.
+func TestCLI_TenantCreate_PoolPlacement_Raft_PlacesDataAndEncrypts(t *testing.T) {
 	bin := buildBinary(t)
 	cli := buildCLIBinary(t)
 
-	adminPort, _, ca, sysConnArgs := startDataRootTenantNode(t, bin, "[tenant-dataroot-raft] ")
+	adminPort, poolDir, ca, sysConnArgs := startDataRootTenantNode(t, bin, "[tenant-pool-raft] ")
 	sysClient := mtlsHTTPClient(t, ca, 15*time.Second)
 
-	tenantID := fmt.Sprintf("raft-dr-%d", time.Now().UnixNano())
-	explicitDataRoot := filepath.Join(t.TempDir(), "dedicated-disk", tenantID)
+	tenantID := fmt.Sprintf("raft-pool-%d", time.Now().UnixNano())
+	tenantRoot := filepath.Join(poolDir, tenantID)
 
 	out, err := runQRDB(t, cli, sysConnArgs, "--output", "json", "tenant", "create",
 		"--id", tenantID,
-		"--name", "Raft DataRoot Tenant",
+		"--name", "Raft Pool Tenant",
 		"--isolation-type", "raft",
 		"--barrier-auto-unseal",
-		"--data-root", explicitDataRoot,
 	)
 	if err != nil {
-		t.Fatalf("tenant create --data-root: %v\noutput: %s", err, out)
+		t.Fatalf("tenant create: %v\noutput: %s", err, out)
 	}
 	var tenantResp cliDataRootTenantJSON
 	if decErr := json.Unmarshal([]byte(out), &tenantResp); decErr != nil {
 		t.Fatalf("decode tenant create JSON: %v\noutput: %s", decErr, out)
 	}
-	if tenantResp.DataRoot != explicitDataRoot {
-		t.Fatalf("tenant DataRoot = %q, want the operator-supplied path %q (must NOT be pool-allocated)", tenantResp.DataRoot, explicitDataRoot)
+	if tenantResp.DataRoot != tenantRoot {
+		t.Fatalf("tenant DataRoot = %q, want this node's pool path %q", tenantResp.DataRoot, tenantRoot)
 	}
-	if _, statErr := os.Stat(filepath.Join(explicitDataRoot, "barrier")); statErr != nil {
-		t.Fatalf("barrier subdirectory not found under explicit DataRoot %q: %v", explicitDataRoot, statErr)
+	if _, statErr := os.Stat(filepath.Join(tenantRoot, "barrier")); statErr != nil {
+		t.Fatalf("barrier subdirectory not found under %q: %v", tenantRoot, statErr)
 	}
 
 	tenantConnArgs := provisionTenantCLIIdentity(t, ca, adminPort, sysClient, tenantID)
@@ -296,18 +323,14 @@ func TestCLI_TenantCreate_DataRoot_Raft_PlacesDataAndEncrypts(t *testing.T) {
 	if decErr := json.Unmarshal([]byte(out), &dbInfo); decErr != nil {
 		t.Fatalf("decode database create JSON: %v\noutput: %s", decErr, out)
 	}
-	// FEATURE C proof: the explicitly requested "local" topology is honored
-	// and persisted, not silently overwritten by the server-side default.
 	if dbInfo.Raft.ClusterMode != "local" {
 		t.Fatalf("database Raft.ClusterMode = %q, want %q (explicit --cluster-mode local must be honored)", dbInfo.Raft.ClusterMode, "local")
 	}
-	// FEATURE B proof: the dedicated shard's state-machine data is rooted
-	// under the tenant's pinned DataRoot, not a pool-allocated path.
-	if !strings.HasPrefix(dbInfo.DataDir, explicitDataRoot) {
-		t.Fatalf("database DataDir = %q, want it rooted under the pinned tenant DataRoot %q", dbInfo.DataDir, explicitDataRoot)
+	if !strings.HasPrefix(dbInfo.DataDir, tenantRoot) {
+		t.Fatalf("database DataDir = %q, want it rooted under the tenant's pool directory %q", dbInfo.DataDir, tenantRoot)
 	}
 
-	key, value := "greeting", "hello-raft-dataroot-plaintext-marker"
+	key, value := "greeting", "hello-raft-pool-plaintext-marker"
 	out, err = runQRDB(t, cli, tenantConnArgs, "--database", dbName, "kv", "put", key, value)
 	if err != nil {
 		t.Fatalf("kv put: %v\noutput: %s", err, out)
@@ -320,8 +343,5 @@ func TestCLI_TenantCreate_DataRoot_Raft_PlacesDataAndEncrypts(t *testing.T) {
 		t.Fatalf("kv get %s = %q, want %q", key, strings.TrimSpace(out), value)
 	}
 
-	// Proof: the dedicated raft shard's on-disk state is encrypted under the
-	// tenant barrier -- the plaintext value never appears anywhere under the
-	// pinned DataRoot.
-	assertPlaintextAbsentInDir(t, explicitDataRoot, []byte(value))
+	assertPlaintextAbsentInDir(t, tenantRoot, []byte(value))
 }

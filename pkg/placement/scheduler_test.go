@@ -27,9 +27,6 @@ type mockTopology struct {
 
 func (m *mockTopology) Nodes() []NodeLoad { return m.nodes }
 
-// identityDataRoot maps a node ID to a deterministic data root for assertions.
-func identityDataRoot(nodeID string) string { return "/data/" + nodeID }
-
 // newScheduler builds a scheduler over the given nodes, failing the test on a
 // construction error.
 func newScheduler(t *testing.T, nodes []NodeLoad) *Scheduler {
@@ -44,11 +41,10 @@ func newScheduler(t *testing.T, nodes []NodeLoad) *Scheduler {
 // baseRequest returns a valid PlaceRequest with the given RF.
 func baseRequest(rf int) PlaceRequest {
 	return PlaceRequest{
-		TenantID:        "acme",
-		Database:        "orders",
-		ShardID:         1000,
-		RF:              rf,
-		DataRootForNode: identityDataRoot,
+		TenantID: "acme",
+		Database: "orders",
+		ShardID:  1000,
+		RF:       rf,
 	}
 }
 
@@ -77,12 +73,15 @@ func TestPlace_PicksDistinctLeastLoaded(t *testing.T) {
 	if p.Replicas[0].NodeID != "n2" || p.Replicas[1].NodeID != "n3" {
 		t.Fatalf("selected %s,%s, want n2,n3", p.Replicas[0].NodeID, p.Replicas[1].NodeID)
 	}
-	// Replica IDs are 1..RF and the data root comes from the request func.
+	// Replica IDs are 1..RF, and no replica names a path: each node resolves
+	// its own directory.
 	if p.Replicas[0].ReplicaID != 1 || p.Replicas[1].ReplicaID != 2 {
 		t.Errorf("replica IDs = %d,%d, want 1,2", p.Replicas[0].ReplicaID, p.Replicas[1].ReplicaID)
 	}
-	if p.Replicas[0].DataRoot != "/data/n2" {
-		t.Errorf("data root = %q, want /data/n2", p.Replicas[0].DataRoot)
+	for _, r := range p.Replicas {
+		if r.DataRoot != "" {
+			t.Errorf("replica %d names the path %q; placement records none", r.ReplicaID, r.DataRoot)
+		}
 	}
 }
 
@@ -214,7 +213,6 @@ func TestPlace_Validation(t *testing.T) {
 		{"empty database", func(r *PlaceRequest) { r.Database = "" }, ErrEmptyDatabase},
 		{"zero shard", func(r *PlaceRequest) { r.ShardID = 0 }, ErrZeroShard},
 		{"bad rf", func(r *PlaceRequest) { r.RF = 0 }, ErrInvalidRF},
-		{"nil data root", func(r *PlaceRequest) { r.DataRootForNode = nil }, ErrNilDataRootFunc},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

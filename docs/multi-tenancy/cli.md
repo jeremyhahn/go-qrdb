@@ -20,15 +20,18 @@ below give the real spelling per verb.
 | `--id` | string | — | tenant ID, must be unique |
 | `--name` | string | — | human-readable name |
 | `--isolation-type` | string | `prefix` | `prefix \| barrier \| volume \| raft` |
-| `--data-root` | string | pool allocation | for `volume`/`raft`: pin the dedicated `DataRoot` to an **absolute path** instead of allocating from the pool; must name an empty or not-yet-existing directory |
+| `--data-root` | string | — | **retired, refused** (`*DataRootRetiredError`, 400 / `INVALID_ARGUMENT`): a tenant's location is a named volume pool resolved on each node, never a path |
 | `--barrier-auto-unseal` | bool | false | for a dedicated-isolation tenant, use **system-managed** auto-unseal instead of the secure self-managed default — **entitlement-gated** |
 
 ```bash
 qrdb tenant create --id acme --name "Acme Corp"
 qrdb tenant create --id secure-co --name "Secure Co" --isolation-type volume
-qrdb tenant create --id big-co --name "Big Co" --isolation-type raft \
-     --data-root /mnt/tenant-disks/big-co
+qrdb tenant create --id big-co --name "Big Co" --isolation-type raft
 ```
+
+A `volume` or `raft` tenant is allocated a directory from the node's volume
+pool. The replicated record names the pool and the slot within it, never a
+path, and each node resolves that slot to its own directory, `{pool path}/{tenant}`.
 
 `--barrier-auto-unseal` trades custody for convenience: the tenant's key is
 wrapped under the *system* barrier so the node can unseal it without the tenant

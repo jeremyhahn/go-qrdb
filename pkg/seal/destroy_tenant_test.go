@@ -106,7 +106,7 @@ func TestDestroyTenant_RemovesTheRecordsThatWouldRestoreIt(t *testing.T) {
 	ctx := context.Background()
 	reg, system := newPooledTestRegistry(t)
 
-	dataRoot, _, err := reg.RegisterVolumeTenant(ctx, "acme", "", true)
+	dataRoot, _, err := reg.RegisterVolumeTenant(ctx, "acme", true)
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestDestroyTenant_IsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	reg, _ := newPooledTestRegistry(t)
 
-	if _, _, err := reg.RegisterVolumeTenant(ctx, "acme", "", true); err != nil {
+	if _, _, err := reg.RegisterVolumeTenant(ctx, "acme", true); err != nil {
 		t.Fatalf("RegisterVolumeTenant: %v", err)
 	}
 	if err := reg.DestroyTenant(ctx, "acme"); err != nil {
@@ -194,11 +194,11 @@ func TestDestroyTenant_LeavesOtherTenantsAlone(t *testing.T) {
 	ctx := context.Background()
 	reg, system := newPooledTestRegistry(t)
 
-	rootA, _, err := reg.RegisterVolumeTenant(ctx, "acme", "", true)
+	rootA, _, err := reg.RegisterVolumeTenant(ctx, "acme", true)
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant(acme): %v", err)
 	}
-	rootB, _, err := reg.RegisterVolumeTenant(ctx, "globex", "", true)
+	rootB, _, err := reg.RegisterVolumeTenant(ctx, "globex", true)
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant(globex): %v", err)
 	}
@@ -269,7 +269,7 @@ func TestDestroyTenant_RecoversTheDataRootFromThePersistedRecord(t *testing.T) {
 	ctx := context.Background()
 	reg, _ := newPooledTestRegistry(t)
 
-	dataRoot, _, err := reg.RegisterVolumeTenant(ctx, "acme", "", true)
+	dataRoot, _, err := reg.RegisterVolumeTenant(ctx, "acme", true)
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant: %v", err)
 	}

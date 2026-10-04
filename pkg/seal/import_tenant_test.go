@@ -68,7 +68,7 @@ func TestBarrierRegistry_ImportTenant_AutoUnseal(t *testing.T) {
 	leaderReg, _, _ := newPooledRegistry(t)
 	initSystemBarrierForImport(t, leaderReg)
 
-	leaderDataRoot, leaderTB, err := leaderReg.RegisterVolumeTenant(ctx, "leader-tenant", "", true)
+	leaderDataRoot, leaderTB, err := leaderReg.RegisterVolumeTenant(ctx, "leader-tenant", true)
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant(leader): %v", err)
 	}
@@ -87,7 +87,7 @@ func TestBarrierRegistry_ImportTenant_AutoUnseal(t *testing.T) {
 	followerReg, _, _ := newPooledRegistry(t)
 	initSystemBarrierForImport(t, followerReg)
 
-	followerTB, err := followerReg.ImportTenant(ctx, "replicated-tenant", "", true, exported, nil)
+	followerTB, err := followerReg.ImportTenant(ctx, "replicated-tenant", true, exported, nil)
 	if err != nil {
 		t.Fatalf("ImportTenant(autoUnseal=true): %v", err)
 	}
@@ -129,7 +129,7 @@ func TestBarrierRegistry_ImportTenant_AutoUnseal_CrossNodeDEKParity(t *testing.T
 	leaderReg, _, _ := newPooledRegistry(t)
 	initSystemBarrierForImport(t, leaderReg)
 
-	_, leaderTB, err := leaderReg.RegisterVolumeTenant(ctx, "dek-leader", "", true)
+	_, leaderTB, err := leaderReg.RegisterVolumeTenant(ctx, "dek-leader", true)
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant(dek-leader): %v", err)
 	}
@@ -152,7 +152,7 @@ func TestBarrierRegistry_ImportTenant_AutoUnseal_CrossNodeDEKParity(t *testing.T
 	followerReg, _, _ := newPooledRegistry(t)
 	initSystemBarrierForImport(t, followerReg)
 
-	followerTB, err := followerReg.ImportTenant(ctx, "dek-follower", "", true, exported, nil)
+	followerTB, err := followerReg.ImportTenant(ctx, "dek-follower", true, exported, nil)
 	if err != nil {
 		t.Fatalf("ImportTenant(dek-follower): %v", err)
 	}
@@ -178,7 +178,7 @@ func TestBarrierRegistry_ImportTenant_SelfManaged(t *testing.T) {
 
 	blob := buildValidSealedBlob(t)
 
-	followerTB, err := reg.ImportTenant(ctx, "self-managed-tenant", "", false, nil, blob)
+	followerTB, err := reg.ImportTenant(ctx, "self-managed-tenant", false, nil, blob)
 	if err != nil {
 		t.Fatalf("ImportTenant(autoUnseal=false): %v", err)
 	}
@@ -204,7 +204,7 @@ func TestBarrierRegistry_ImportTenant_AutoUnseal_NilImportedKey(t *testing.T) {
 	reg, _, _ := newPooledRegistry(t)
 	initSystemBarrierForImport(t, reg)
 
-	_, err := reg.ImportTenant(ctx, "nil-key-tenant", "", true, nil, nil)
+	_, err := reg.ImportTenant(ctx, "nil-key-tenant", true, nil, nil)
 	if !errors.Is(err, ErrImportedKeyNil) {
 		t.Errorf("expected ErrImportedKeyNil, got %v", err)
 	}
@@ -218,7 +218,7 @@ func TestBarrierRegistry_ImportTenant_SelfManaged_NilBlob(t *testing.T) {
 	reg, _, _ := newPooledRegistry(t)
 	initSystemBarrierForImport(t, reg)
 
-	_, err := reg.ImportTenant(ctx, "nil-blob-tenant", "", false, nil, nil)
+	_, err := reg.ImportTenant(ctx, "nil-blob-tenant", false, nil, nil)
 	if !errors.Is(err, ErrImportSealedBlobNil) {
 		t.Errorf("expected ErrImportSealedBlobNil, got %v", err)
 	}
@@ -237,7 +237,7 @@ func TestBarrierRegistry_ImportTenant_Idempotency(t *testing.T) {
 	// Create a leader to get a valid exported key.
 	leaderReg, _, _ := newPooledRegistry(t)
 	initSystemBarrierForImport(t, leaderReg)
-	_, leaderTB, err := leaderReg.RegisterVolumeTenant(ctx, "idem-leader", "", true)
+	_, leaderTB, err := leaderReg.RegisterVolumeTenant(ctx, "idem-leader", true)
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant(idem-leader): %v", err)
 	}
@@ -250,7 +250,7 @@ func TestBarrierRegistry_ImportTenant_Idempotency(t *testing.T) {
 	}
 
 	// First import — must succeed.
-	if _, err := reg.ImportTenant(ctx, "idem-tenant", "", true, exported, nil); err != nil {
+	if _, err := reg.ImportTenant(ctx, "idem-tenant", true, exported, nil); err != nil {
 		t.Fatalf("first ImportTenant: %v", err)
 	}
 
@@ -259,7 +259,7 @@ func TestBarrierRegistry_ImportTenant_Idempotency(t *testing.T) {
 	// in-memory tenants map) or a per-tenant Pebble "already opened" error (from
 	// the per-tenant Pebble registry which refuses to open the same tenant at a
 	// second path). Either outcome proves the call is rejected.
-	_, err = reg.ImportTenant(ctx, "idem-tenant", "", true, exported, nil)
+	_, err = reg.ImportTenant(ctx, "idem-tenant", true, exported, nil)
 	if err == nil {
 		t.Error("second ImportTenant with same tenantID must return an error")
 	}

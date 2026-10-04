@@ -96,7 +96,7 @@ var malformedOpenErrs = []error{
 }
 
 // modeImporter is the function type dispatched per delivery Mode.
-type modeImporter func(ctx context.Context, r *Receiver, meta keydelivery.Meta, dataRoot string, plaintext []byte) error
+type modeImporter func(ctx context.Context, r *Receiver, meta keydelivery.Meta, plaintext []byte) error
 
 // modeHandlers is the map-based dispatch for delivery modes. Map-based
 // dispatch is preferred over switch per project conventions.
@@ -273,7 +273,7 @@ func (r *Receiver) Handler() http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, "unknown delivery mode")
 			return
 		}
-		if importErr := handler(ctx, r, env.Meta, replica.DataRoot, plaintext); importErr != nil {
+		if importErr := handler(ctx, r, env.Meta, plaintext); importErr != nil {
 			if errors.Is(importErr, seal.ErrAlreadyInitialized) ||
 				errors.Is(importErr, seal.ErrTenantAlreadyExists) {
 				// Idempotent: key already installed by a prior delivery.
@@ -386,21 +386,21 @@ func httpCodeForOpenErr(err error) int {
 // The caller wipes plaintext, but unmarshal base64-decodes the root key into a
 // FRESH allocation (imported.RootKey) that the caller's defer never touches, so
 // it is wiped here explicitly regardless of import outcome.
-func importSystemManaged(ctx context.Context, r *Receiver, meta keydelivery.Meta, dataRoot string, plaintext []byte) error {
+func importSystemManaged(ctx context.Context, r *Receiver, meta keydelivery.Meta, plaintext []byte) error {
 	imported, err := unmarshalKeyPayload(plaintext)
 	if err != nil {
 		return errors.Join(ErrMalformedBody, err)
 	}
 	defer enclave.Wipe(imported.RootKey)
-	_, err = r.registry.ImportTenant(ctx, meta.TenantID, dataRoot, true, imported, nil)
+	_, err = r.registry.ImportTenant(ctx, meta.TenantID, true, imported, nil)
 	return err
 }
 
 // importSelfManaged handles ModeSelfManaged: treat the plaintext as the
 // already-sealed blob and call BarrierRegistry.ImportTenant with
 // autoUnseal=false. The barrier remains sealed; the tenant unseals later.
-func importSelfManaged(ctx context.Context, r *Receiver, meta keydelivery.Meta, dataRoot string, plaintext []byte) error {
-	_, err := r.registry.ImportTenant(ctx, meta.TenantID, dataRoot, false, nil, plaintext)
+func importSelfManaged(ctx context.Context, r *Receiver, meta keydelivery.Meta, plaintext []byte) error {
+	_, err := r.registry.ImportTenant(ctx, meta.TenantID, false, nil, plaintext)
 	return err
 }
 

@@ -560,3 +560,37 @@ func (e *ResidueReconcileFailuresError) Unwrap() []error {
 	}
 	return out
 }
+
+// DataRootRetiredError refuses CreateTenant's explicit data root
+// (WithDataRoot, `tenant create --data-root`). A path names one node's disk;
+// recorded in replicated tenant state it was trusted by every other node,
+// which opened -- and on reclamation deleted -- a directory it did not own. A
+// dedicated disk is placed through a named volume pool, which every node maps
+// to its own mount.
+type DataRootRetiredError struct {
+	TenantID string
+	DataRoot string
+}
+
+// Error returns a human-readable description naming the replacement.
+func (e *DataRootRetiredError) Error() string {
+	return "tenant: explicit data root " + e.DataRoot + " for tenant " + e.TenantID +
+		" is refused: a tenant's location is a named volume pool resolved on each node, not a path;" +
+		" configure the disk as a volume pool on every node instead"
+}
+
+// PersistedDataRootError refuses a stored tenant record that carries a
+// DataRoot. The record is replicated and a path names one node's disk, so a
+// record naming one is refused rather than trusted; the tenant must be
+// re-created on a named volume pool.
+type PersistedDataRootError struct {
+	TenantID string
+	DataRoot string
+}
+
+// Error returns a human-readable description naming the fix.
+func (e *PersistedDataRootError) Error() string {
+	return "tenant: tenant " + e.TenantID + "'s stored record names the data root " + e.DataRoot +
+		"; a tenant's location is resolved on each node from its volume pool, so the record is refused" +
+		" -- re-create the tenant on a named volume pool"
+}

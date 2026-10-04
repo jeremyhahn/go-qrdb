@@ -88,9 +88,11 @@ type Replica struct {
 	// RequestAddNodeWithIdentity when the replica is materialized.
 	RaftAddr string `json:"raft_addr"`
 
-	// DataRoot is the on-disk root under which this replica keeps its
-	// state-machine data on its host node.
-	DataRoot string `json:"data_root"`
+	// DataRoot is never written. The placement table is replicated and a path
+	// names one node's disk, so every node resolves its own replica's
+	// directory from the tenant's volume pool and slot. A record that carries
+	// one is refused by the shard factory rather than trusted.
+	DataRoot string `json:"data_root,omitempty"`
 
 	// State distinguishes a founding/established replica from one added
 	// dynamically after the group formed (scale-up). The zero value

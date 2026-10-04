@@ -86,10 +86,16 @@ type TenantInfo struct {
 	IsolationType IsolationType       `json:"isolation_type,omitempty"`
 	Quotas        *quota.Quotas       `json:"quotas,omitempty"`
 	Entitlements  *quota.Entitlements `json:"entitlements,omitempty"`
-	// DataRoot is the dedicated filesystem root allocated from the volume
-	// pool for IsolationVolume tenants. It is the parent of the tenant's
-	// "barrier" (IAM Pebble) and "databases" (per-tenant Raft host state)
+	// DataRoot is the dedicated filesystem root of an IsolationVolume or
+	// IsolationRaft tenant ON THIS NODE: the parent of the tenant's "barrier"
+	// (IAM Pebble) and "databases" (per-tenant Raft host state)
 	// subdirectories. Empty for prefix/barrier tenants.
+	//
+	// It is never persisted. The record is replicated, and a path names one
+	// node's disk, so GetTenant and ListTenants resolve it on each node from
+	// the tenant's recorded volume pool and slot (see
+	// seal.BarrierRegistry.LocalTenantDataRoot). A stored record that carries
+	// one is refused with *PersistedDataRootError.
 	DataRoot string `json:"data_root,omitempty"`
 	// BarrierAutoUnseal selects the dedicated-isolation tenant's barrier
 	// key-management mode. False (the secure default) means self-managed: the
@@ -113,10 +119,9 @@ type createTenantConfig struct {
 	// mode for a dedicated-isolation tenant. Default false (self-managed).
 	barrierAutoUnseal bool
 
-	// dataRoot is the caller-requested dedicated-disk DataRoot (WithDataRoot).
-	// nil means "no preference" (the default: allocate from the configured
-	// volume pool). A non-nil pointer to an empty string is a caller error
-	// (ErrEmptyDataRoot) rather than being silently treated as unset.
+	// dataRoot records that the caller asked for an explicit data root
+	// (WithDataRoot). Explicit paths are retired: CreateTenant refuses the
+	// request with *DataRootRetiredError.
 	dataRoot *string
 }
 
@@ -128,18 +133,11 @@ func WithBarrierAutoUnseal(autoUnseal bool) CreateTenantOption {
 	return func(c *createTenantConfig) { c.barrierAutoUnseal = autoUnseal }
 }
 
-// WithDataRoot pins an IsolationVolume or IsolationRaft tenant's dedicated
-// filesystem DataRoot to a caller-supplied path instead of letting
-// RegisterVolumeTenant allocate one from the configured volume pool. This
-// lets an operator place a tenant's data on a dedicated disk or mount for
-// performance or capacity isolation.
-//
-// path must be a non-empty, absolute, already-canonical path naming an empty
-// or not-yet-existing directory (see validateExplicitDataRoot); CreateTenant
-// rejects it otherwise. It is only meaningful for IsolationVolume and
-// IsolationRaft tenants -- CreateTenant rejects it with
-// DataRootIsolationTypeError for prefix/barrier isolation, where a tenant has
-// no dedicated filesystem location.
+// WithDataRoot asks for an explicit filesystem DataRoot. Explicit paths are
+// retired -- a path names one node's disk, and replicated, it was trusted by
+// every other node -- so CreateTenant refuses the request with
+// *DataRootRetiredError. A dedicated disk is placed through a named volume
+// pool, which every node maps to its own mount.
 func WithDataRoot(path string) CreateTenantOption {
 	return func(c *createTenantConfig) { c.dataRoot = &path }
 }
@@ -426,7 +424,7 @@ type TenantService struct {
 	// RemoveDataRoot in every composition, which empties a mount point rather
 	// than failing on it. It is a field so a test can make a removal fail and
 	// prove a second pass still finds the directory.
-	removeAll func(path string) error
+	removeAll func(ctx context.Context, path string) error
 
 	logger *slog.Logger
 }
@@ -565,31 +563,9 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 		return nil, ErrSystemTenantMustBePrefix
 	}
 
-	// WithDataRoot pins a dedicated-isolation tenant's DataRoot to an
-	// operator-supplied path instead of pool allocation. It is only
-	// meaningful for IsolationVolume / IsolationRaft, whose tenants get a
-	// dedicated filesystem DataRoot in the first place; validate the path
-	// itself (absolute, canonical, empty-on-disk) before any registration
-	// side effect runs.
-	var explicitDataRoot string
+	// An explicit data root is retired: refuse it before any side effect.
 	if cfg.dataRoot != nil {
-		if isolationType != IsolationVolume && isolationType != IsolationRaft {
-			return nil, &DataRootIsolationTypeError{TenantID: id, IsolationType: isolationType}
-		}
-		if err := validateExplicitDataRoot(*cfg.dataRoot); err != nil {
-			return nil, err
-		}
-		explicitDataRoot = *cfg.dataRoot
-		// A pool-allocated DataRoot is contained by construction (its slot is a
-		// strict child of a pool base, unique per tenant). An explicit
-		// dedicated-disk DataRoot is outside any pool, so reject it up front if
-		// it overlaps the pool base, the system data dir, or another tenant's
-		// DataRoot — nesting one dedicated tree inside another causes
-		// data-confusion. Boot re-attach reuses an already-validated, persisted
-		// root and is not re-checked here.
-		if err := s.checkDataRootOverlap(ctx, id, explicitDataRoot); err != nil {
-			return nil, err
-		}
+		return nil, &DataRootRetiredError{TenantID: id, DataRoot: *cfg.dataRoot}
 	}
 
 	// Check for existing tenant metadata. Like the tombstone check this is a
@@ -643,9 +619,7 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 		// credential-free. For a self-managed tenant the barrier is registered
 		// SEALED and left uninitialized: the tenant admin drives Initialize and
 		// Unseal, and the per-tenant Host builds lazily only after unseal.
-		// explicitDataRoot is empty unless WithDataRoot was used, in which case
-		// RegisterVolumeTenant reuses it instead of allocating from the pool.
-		root, _, regErr := s.registry.RegisterVolumeTenant(ctx, id, explicitDataRoot, cfg.barrierAutoUnseal)
+		root, _, regErr := s.registry.RegisterVolumeTenant(ctx, id, cfg.barrierAutoUnseal)
 		if regErr != nil {
 			return nil, s.volumeRegisterError(ctx, id, "register-volume", regErr)
 		}
@@ -673,10 +647,8 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 		// on the SHARED system Host (one shard per database) and are started by
 		// the server-layer RaftBackendFactory; only the barrier + DataRoot are
 		// provisioned here. System-managed vs self-managed key handling matches
-		// IsolationVolume. explicitDataRoot is empty unless WithDataRoot was
-		// used, in which case RegisterVolumeTenant reuses it instead of
-		// allocating from the pool.
-		root, _, regErr := s.registry.RegisterVolumeTenant(ctx, id, explicitDataRoot, cfg.barrierAutoUnseal)
+		// IsolationVolume.
+		root, _, regErr := s.registry.RegisterVolumeTenant(ctx, id, cfg.barrierAutoUnseal)
 		if regErr != nil {
 			return nil, s.volumeRegisterError(ctx, id, "register-raft", regErr)
 		}
@@ -707,7 +679,7 @@ func (s *TenantService) CreateTenant(ctx context.Context, id, name string, isola
 		info.Quotas = &quota.Quotas{CurrentRaftGroups: 1}
 	}
 
-	data, err := json.Marshal(info)
+	data, err := encodeTenantInfo(info)
 	if err != nil {
 		// Roll back barrier registration on marshal failure.
 		_ = s.registry.UnregisterTenant(id)
@@ -792,51 +764,6 @@ func (s *TenantService) rollbackRegistration(ctx context.Context, id string, iso
 	_ = s.registry.UnregisterTenant(id)
 }
 
-// checkDataRootOverlap rejects an operator-supplied dedicated DataRoot that
-// overlaps a reserved storage location. It composes the three overlap sources
-// CreateTenant can reach:
-//
-//   - (a) the configured volume-pool base paths, resolved from the barrier
-//     registry (empty when no pool is configured);
-//   - (b) the reserved roots injected via WithReservedDataRoots (the daemon's
-//     system data dir);
-//   - (c) every existing tenant's DataRoot, from the metadata store.
-//
-// dataRoot is assumed already absolute and canonical (validateExplicitDataRoot
-// ran first). Overlap is equal-or-ancestor in either direction, so a request
-// that nests inside, contains, or equals a reserved path is rejected with a
-// *DataRootOverlapError. The /data/foo vs /data/foo2 non-overlap is preserved
-// by dataRootsOverlap's component-aware comparison.
-func (s *TenantService) checkDataRootOverlap(ctx context.Context, tenantID, dataRoot string) error {
-	poolBases, err := s.registry.PoolBasePaths(ctx)
-	if err != nil {
-		return &BarrierError{TenantID: tenantID, Op: "pool-base-paths", Err: err}
-	}
-	for _, base := range poolBases {
-		if dataRootsOverlap(dataRoot, base) {
-			return &DataRootOverlapError{DataRoot: dataRoot, Conflict: base, Kind: "volume pool"}
-		}
-	}
-	for _, res := range s.reservedDataRoots {
-		if dataRootsOverlap(dataRoot, res) {
-			return &DataRootOverlapError{DataRoot: dataRoot, Conflict: res, Kind: "system data dir"}
-		}
-	}
-	tenants, err := s.ListTenants(ctx)
-	if err != nil {
-		return err
-	}
-	for _, t := range tenants {
-		if t.ID == tenantID || t.DataRoot == "" {
-			continue
-		}
-		if dataRootsOverlap(dataRoot, t.DataRoot) {
-			return &DataRootOverlapError{DataRoot: dataRoot, Conflict: t.DataRoot, Kind: "tenant " + t.ID}
-		}
-	}
-	return nil
-}
-
 // registerDedicatedBarrier registers an IsolationBarrier tenant's per-tenant
 // barrier in the chosen key-management mode. For a system-managed (auto-unseal)
 // tenant the DEK is wrapped under the system barrier and the barrier is
@@ -893,7 +820,7 @@ func (s *TenantService) UpdateTenant(ctx context.Context, tenantID string, patch
 	}
 	info.UpdatedAt = time.Now().UTC()
 
-	data, err := json.Marshal(info)
+	data, err := encodeTenantInfo(info)
 	if err != nil {
 		return nil, &StoreError{Op: "marshal", Err: err}
 	}
@@ -924,11 +851,13 @@ func (s *TenantService) GetTenant(ctx context.Context, tenantID string) (*Tenant
 		return nil, newStoreError("get", err)
 	}
 
-	var info TenantInfo
-	if err := json.Unmarshal(data, &info); err != nil {
-		return nil, &StoreError{Op: "unmarshal", Err: err}
+	info, err := decodeTenantInfo(tenantID, data)
+	if err != nil {
+		return nil, err
 	}
-
+	if err := s.resolveLocalDataRoot(ctx, &info); err != nil {
+		return nil, err
+	}
 	return &info, nil
 }
 
@@ -1011,12 +940,19 @@ func (s *TenantService) ListTenants(ctx context.Context) ([]TenantInfo, error) {
 			return nil, newStoreError("get", err)
 		}
 
-		var info TenantInfo
-		if err := json.Unmarshal(data, &info); err != nil {
+		info, err := decodeTenantInfo(strings.TrimPrefix(key, metadataPrefix), data)
+		if err != nil {
+			var persisted *PersistedDataRootError
+			if errors.As(err, &persisted) {
+				return nil, err
+			}
 			s.logger.Warn("skipping corrupt tenant metadata",
 				slog.String("key", key),
 				slog.String("error", err.Error()))
 			continue
+		}
+		if err := s.resolveLocalDataRoot(ctx, &info); err != nil {
+			return nil, err
 		}
 		tenants = append(tenants, info)
 	}
@@ -1252,7 +1188,7 @@ func (s *TenantService) UpdateQuotas(ctx context.Context, tenantID string, quota
 	info.Quotas = quotas
 	info.UpdatedAt = time.Now().UTC()
 
-	data, err := json.Marshal(info)
+	data, err := encodeTenantInfo(info)
 	if err != nil {
 		return nil, &StoreError{Op: "marshal", Err: err}
 	}
@@ -1286,7 +1222,7 @@ func (s *TenantService) UpdateEntitlements(ctx context.Context, tenantID string,
 	info.Entitlements = entitlements
 	info.UpdatedAt = time.Now().UTC()
 
-	data, err := json.Marshal(info)
+	data, err := encodeTenantInfo(info)
 	if err != nil {
 		return nil, &StoreError{Op: "marshal", Err: err}
 	}
@@ -1449,7 +1385,7 @@ func (s *TenantService) IncrementQuotaUsage(ctx context.Context, tenantID string
 		return nil, &StoreError{Op: "increment-quota", Err: err}
 	}
 	info.UpdatedAt = time.Now().UTC()
-	data, err := json.Marshal(info)
+	data, err := encodeTenantInfo(info)
 	if err != nil {
 		return nil, &StoreError{Op: "marshal", Err: err}
 	}
@@ -1494,7 +1430,7 @@ func (s *TenantService) DecrementQuotaUsage(ctx context.Context, tenantID string
 		return nil, &StoreError{Op: "decrement-quota", Err: err}
 	}
 	info.UpdatedAt = time.Now().UTC()
-	data, err := json.Marshal(info)
+	data, err := encodeTenantInfo(info)
 	if err != nil {
 		return nil, &StoreError{Op: "marshal", Err: err}
 	}
@@ -1535,7 +1471,7 @@ func (s *TenantService) SetQuotaUsage(ctx context.Context, tenantID string, reso
 		return nil, &StoreError{Op: "set-quota-usage", Err: err}
 	}
 	info.UpdatedAt = time.Now().UTC()
-	data, err := json.Marshal(info)
+	data, err := encodeTenantInfo(info)
 	if err != nil {
 		return nil, &StoreError{Op: "marshal", Err: err}
 	}
@@ -2194,4 +2130,43 @@ func (s *TenantService) TenantBarrierOfficerRevoke(ctx context.Context, tenantID
 		return nil, &BarrierError{TenantID: tenantID, Op: "officer-revoke", Err: err}
 	}
 	return info, nil
+}
+
+// encodeTenantInfo marshals info for the replicated metadata store. DataRoot
+// is a path on one node, so it is never written: every node resolves its own
+// (resolveLocalDataRoot).
+func encodeTenantInfo(info *TenantInfo) ([]byte, error) {
+	rec := *info
+	rec.DataRoot = ""
+	return json.Marshal(&rec)
+}
+
+// decodeTenantInfo unmarshals a stored tenant record. A record that carries a
+// DataRoot names one node's path and is refused with *PersistedDataRootError.
+func decodeTenantInfo(tenantID string, data []byte) (TenantInfo, error) {
+	var info TenantInfo
+	if err := json.Unmarshal(data, &info); err != nil {
+		return TenantInfo{}, &StoreError{Op: "unmarshal", Err: err}
+	}
+	if info.DataRoot != "" {
+		return TenantInfo{}, &PersistedDataRootError{TenantID: tenantID, DataRoot: info.DataRoot}
+	}
+	return info, nil
+}
+
+// resolveLocalDataRoot fills info.DataRoot with the tenant's directory on THIS
+// node for the isolation types that have one, from the tenant's recorded
+// volume pool and slot. A tenant whose location does not resolve here fails
+// closed rather than being reported without a root, which a caller would
+// place under the system data directory instead.
+func (s *TenantService) resolveLocalDataRoot(ctx context.Context, info *TenantInfo) error {
+	if info.IsolationType != IsolationVolume && info.IsolationType != IsolationRaft {
+		return nil
+	}
+	root, err := s.registry.LocalTenantDataRoot(ctx, info.ID)
+	if err != nil {
+		return &BarrierError{TenantID: info.ID, Op: "resolve-data-root", Err: err}
+	}
+	info.DataRoot = root
+	return nil
 }

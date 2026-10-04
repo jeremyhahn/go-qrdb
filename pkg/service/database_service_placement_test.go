@@ -176,10 +176,11 @@ func TestCreateForTenant_PersistsPlacement(t *testing.T) {
 	if p.LeaderReplicaID == 0 {
 		t.Errorf("placement leader replica ID unset")
 	}
-	// Every replica's data root is the database's DataDir at this stage.
+	// No replica names a path: each node resolves its own directory from the
+	// tenant's volume pool.
 	for _, r := range p.Replicas {
-		if r.DataRoot != info.DataDir {
-			t.Errorf("replica data root = %q, want %q", r.DataRoot, info.DataDir)
+		if r.DataRoot != "" {
+			t.Errorf("replica %d records the path %q; placement records none", r.ReplicaID, r.DataRoot)
 		}
 	}
 }
@@ -215,11 +216,11 @@ func newPlacementDatabaseServiceWithLocalNode(t *testing.T, info *tenant.TenantI
 	return svc, store
 }
 
-// TestCreateForTenant_PersistsPlacementLocalNodeDataRoot verifies the BUG 1 fix:
-// when localNodeID is set, only the local node's placement Replica.DataRoot is
-// populated with the leader's DataDir; remote replicas record "" so each follower
-// can resolve its own local pool path.
-func TestCreateForTenant_PersistsPlacementLocalNodeDataRoot(t *testing.T) {
+// TestCreateForTenant_PersistsPlacementWithNoPathForAnyReplica verifies the
+// creating node records no path even for its own replica: the placement table
+// is replicated, a path names the creating node's disk, and every node -- this
+// one included -- resolves its own replica's directory from the tenant's pool.
+func TestCreateForTenant_PersistsPlacementWithNoPathForAnyReplica(t *testing.T) {
 	const localNode = "local:1"
 	nodes := healthyNodes(localNode, "remote:1", "remote:2")
 	f := &fakeReplicaQuota{q: &quota.Quotas{MaxReplicasPerGroup: 5, MaxTotalReplicas: 100}}
@@ -228,8 +229,7 @@ func TestCreateForTenant_PersistsPlacementLocalNodeDataRoot(t *testing.T) {
 
 	cfg := testDBConfig("bug1db")
 	cfg.Replicas = 3
-	info, err := svc.CreateForTenant(ctx, cfg)
-	if err != nil {
+	if _, err := svc.CreateForTenant(ctx, cfg); err != nil {
 		t.Fatalf("CreateForTenant: %v", err)
 	}
 
@@ -241,25 +241,17 @@ func TestCreateForTenant_PersistsPlacementLocalNodeDataRoot(t *testing.T) {
 		t.Fatalf("expected 3 replicas, got %d", len(p.Replicas))
 	}
 
-	var localCount, emptyCount int
+	localCount := 0
 	for _, r := range p.Replicas {
 		if r.NodeID == localNode {
-			if r.DataRoot != info.DataDir {
-				t.Errorf("local replica DataRoot = %q, want %q (leader DataDir)", r.DataRoot, info.DataDir)
-			}
 			localCount++
-		} else {
-			if r.DataRoot != "" {
-				t.Errorf("remote replica %q DataRoot = %q, want empty string", r.NodeID, r.DataRoot)
-			}
-			emptyCount++
+		}
+		if r.DataRoot != "" {
+			t.Errorf("replica on %q records the path %q; placement records none", r.NodeID, r.DataRoot)
 		}
 	}
 	if localCount != 1 {
 		t.Errorf("local replica count = %d, want 1", localCount)
-	}
-	if emptyCount != 2 {
-		t.Errorf("remote replica count = %d, want 2", emptyCount)
 	}
 }
 

@@ -445,7 +445,11 @@ removal that fails leaves the records, so a retry still finds the directory.
 directory; the code removes the directory first.)
 
 The removal is `BarrierRegistry.RemoveDataRoot`: it removes everything
-**inside** the `DataRoot`, then the root itself. A dedicated `DataRoot` is
+**inside** the `DataRoot`, then the root itself. It removes nothing that is not
+strictly inside one of this node's own volume-pool paths: anything else is
+refused with `*seal.DataRootOutsideLocalRootsError` before the filesystem is
+touched. `RaftBackendFactory.CloseAndPurge`, which purges a demoted replica's
+shard directory, applies the same guard (`RequireInsideLocalPool`). A dedicated `DataRoot` is
 often a mount point, and rmdir on a mount point fails with `EBUSY` (or
 `EXDEV`) however empty it is; a root that has been emptied and refuses its own
 removal that way counts as reclaimed and is left for the operator to unmount.
@@ -455,6 +459,29 @@ replaces, so the failure paths are testable without a failing disk.
 
 It returns `ErrTenantNotFound` when the tenant was not registered here at all,
 which `DeleteTenant` treats as success so the delete stays re-issuable.
+
+### Where a tenant lives
+
+A `volume` or `raft` tenant's location is replicated state, so it is recorded
+in terms every node resolves against its own disks and never as a path:
+
+| Record | Holds |
+|---|---|
+| `__registry:tenant_root/{id}` | the pool name, the relative slot, the auto-unseal flag |
+| `__sys:volumepool/assign/{id}` | the pool and slot the cluster-wide cursor gave the tenant |
+| the tenant record (`TenantInfo`) | no `DataRoot`: it is resolved on read |
+| `placement.Replica` | no `DataRoot`: each node resolves its own replica's directory |
+
+`BarrierRegistry.LocalTenantDataRoot` resolves the slot to **this node's**
+candidate path and joins the tenant id; `TenantService.GetTenant` and
+`ListTenants` fill `DataRoot` from it, and `placementRaftInfoSource` builds a
+shard's directory from it. A record that carries a path -- a tenant-root
+record (`*seal.AbsoluteDataRootRecordError`), a tenant record
+(`*PersistedDataRootError`) or a placement replica (`*PlacementDataRootError`)
+-- is refused rather than trusted: a path names the disk of the node that wrote
+it, and trusted on another node it opened, and on reclamation deleted, a
+directory that node did not own. There is no migration for such records; the
+tenant is re-created on a named pool.
 
 ### Failure modes
 

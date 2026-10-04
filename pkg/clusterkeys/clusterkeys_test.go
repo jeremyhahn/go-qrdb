@@ -262,10 +262,10 @@ func initTestSystemBarrier(t *testing.T, reg *seal.BarrierRegistry) {
 
 // initLeaderTenant initializes a tenant barrier on a leader registry.
 // Returns the sealed StorageBarrier after Initialize.
-func initLeaderTenant(t *testing.T, reg *seal.BarrierRegistry, tenantID, dataRoot string) *seal.StorageBarrier {
+func initLeaderTenant(t *testing.T, reg *seal.BarrierRegistry, tenantID string) *seal.StorageBarrier {
 	t.Helper()
 	ctx := context.Background()
-	_, tb, err := reg.RegisterVolumeTenant(ctx, tenantID, dataRoot, true)
+	_, tb, err := reg.RegisterVolumeTenant(ctx, tenantID, true)
 	if err != nil {
 		t.Fatalf("RegisterVolumeTenant(%s): %v", tenantID, err)
 	}
@@ -802,7 +802,7 @@ func TestHandler_SystemManaged_RoundTrip(t *testing.T) {
 	leaderReg := newTestRegistry(t)
 	initTestSystemBarrier(t, leaderReg)
 	leaderDataRoot := t.TempDir()
-	leaderBarrier := initLeaderTenant(t, leaderReg, "tenant-sysmanaged", leaderDataRoot)
+	leaderBarrier := initLeaderTenant(t, leaderReg, "tenant-sysmanaged")
 
 	leaderKey, err := leaderBarrier.GetMasterKey()
 	if err != nil {
@@ -875,7 +875,7 @@ func TestHandler_SelfManaged_RoundTrip(t *testing.T) {
 	leaderReg := newTestRegistry(t)
 	initTestSystemBarrier(t, leaderReg)
 	leaderDataRoot := t.TempDir()
-	leaderBarrier := initLeaderTenant(t, leaderReg, "tenant-selfmanaged", leaderDataRoot)
+	leaderBarrier := initLeaderTenant(t, leaderReg, "tenant-selfmanaged")
 
 	// ---- Follower setup ----
 	ca := newTestCA(t)
@@ -929,7 +929,7 @@ func TestHandler_IdempotentDelivery(t *testing.T) {
 	leaderReg := newTestRegistry(t)
 	initTestSystemBarrier(t, leaderReg)
 	leaderDataRoot := t.TempDir()
-	leaderBarrier := initLeaderTenant(t, leaderReg, "tenant-idem", leaderDataRoot)
+	leaderBarrier := initLeaderTenant(t, leaderReg, "tenant-idem")
 
 	ca := newTestCA(t)
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
@@ -977,7 +977,7 @@ func TestHandler_NoPeerCert_DowngradeWarning(t *testing.T) {
 	leaderReg := newTestRegistry(t)
 	initTestSystemBarrier(t, leaderReg)
 	leaderDataRoot := t.TempDir()
-	leaderBarrier := initLeaderTenant(t, leaderReg, "tenant-nodl", leaderDataRoot)
+	leaderBarrier := initLeaderTenant(t, leaderReg, "tenant-nodl")
 
 	ca := newTestCA(t)
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
@@ -1208,7 +1208,7 @@ func TestDistributeTenantKey_SkipsSelf(t *testing.T) {
 	leaderReg := newTestRegistry(t)
 	initTestSystemBarrier(t, leaderReg)
 	leaderDataRoot := t.TempDir()
-	leaderBarrier := initLeaderTenant(t, leaderReg, "tenant-skip", leaderDataRoot)
+	leaderBarrier := initLeaderTenant(t, leaderReg, "tenant-skip")
 
 	// ---- Follower setup ----
 	ca := newTestCA(t)

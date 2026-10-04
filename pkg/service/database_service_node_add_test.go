@@ -428,11 +428,10 @@ func TestCreateForTenant_AddFollowerNodePassesCorrectReplicaIDs(t *testing.T) {
 	// Retrieve the persisted placement by placing the same request the service
 	// would have computed to verify the call arguments.
 	plan, planErr := scheduler.Place(context.Background(), placement.PlaceRequest{
-		TenantID:        "nodeadd-tenant",
-		Database:        "replicacheck",
-		ShardID:         info.ShardID,
-		RF:              3,
-		DataRootForNode: func(string) string { return info.DataDir },
+		TenantID: "nodeadd-tenant",
+		Database: "replicacheck",
+		ShardID:  info.ShardID,
+		RF:       3,
 	})
 	if planErr != nil {
 		t.Fatalf("reference Place: %v", planErr)

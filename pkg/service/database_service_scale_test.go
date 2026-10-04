@@ -1218,11 +1218,10 @@ func TestScaleForTenant_ManagerMissesDB_PlacementIsAuthoritative(t *testing.T) {
 		&quota.Quotas{MaxReplicasPerGroup: 10, MaxTotalReplicas: 100}, nil)
 
 	plan, err := svc.placementScheduler.Place(scaleCtx(), placement.PlaceRequest{
-		TenantID:        scaleTenantID,
-		Database:        "db1",
-		ShardID:         4242,
-		RF:              2,
-		DataRootForNode: func(string) string { return "" },
+		TenantID: scaleTenantID,
+		Database: "db1",
+		ShardID:  4242,
+		RF:       2,
 	})
 	if err != nil {
 		t.Fatalf("Place: %v", err)
@@ -1267,11 +1266,10 @@ func TestScaleForTenant_ManagerMissesDB_ScaleDownAlsoWorks(t *testing.T) {
 		&quota.Quotas{MaxReplicasPerGroup: 10, MaxTotalReplicas: 100}, nil)
 
 	plan, err := svc.placementScheduler.Place(scaleCtx(), placement.PlaceRequest{
-		TenantID:        scaleTenantID,
-		Database:        "db1",
-		ShardID:         4243,
-		RF:              3,
-		DataRootForNode: func(string) string { return "" },
+		TenantID: scaleTenantID,
+		Database: "db1",
+		ShardID:  4243,
+		RF:       3,
 	})
 	if err != nil {
 		t.Fatalf("Place: %v", err)

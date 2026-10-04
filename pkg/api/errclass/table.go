@@ -112,6 +112,16 @@ var dominantRules = []rule{
 	// the barrier's sentinel unwrapped (go-qrdb#464 round 6).
 	is(seal.ErrSealed, Unavailable),
 
+	// A tenant's location is a volume pool and slot resolved on each node.
+	// Dominant, because the tenant and database services wrap them in their
+	// own barrier errors: a record naming a path is refused until the tenant
+	// is re-created on a named pool; a recorded pool or slot this node does
+	// not configure is the operator's to add; a removal outside this node's
+	// pool is refused as a fault.
+	as(&seal.AbsoluteDataRootRecordError{}, FailedPrecondition),
+	as(&seal.TenantRootUnresolvedError{}, FailedPrecondition),
+	as(&seal.DataRootOutsideLocalRootsError{}, Internal),
+
 	// Cluster sealing. Dominant, because the tenant and database services
 	// wrap them in their own barrier errors: a seal or clear record whose
 	// outcome is unknown, and a node that cannot confirm the seal records,
@@ -681,6 +691,12 @@ var tenantRules = []rule{
 	// verb that frees it. A precondition the caller clears by choosing another
 	// path or reconciling.
 	as(&tenant.DataRootOverlapError{}, FailedPrecondition),
+	// An explicit data root is retired: a tenant is placed through a named
+	// volume pool. The request itself is what the caller must change.
+	as(&tenant.DataRootRetiredError{}, InvalidArgument),
+	// A stored record that names a path is refused rather than trusted; the
+	// tenant must be re-created on a named volume pool.
+	as(&tenant.PersistedDataRootError{}, FailedPrecondition),
 	// A page size or page token the caller supplied that cannot be honoured.
 	as(&tenant.InvalidPageRequestError{}, InvalidArgument),
 	is(tenant.ErrEmptyDataRoot, InvalidArgument),

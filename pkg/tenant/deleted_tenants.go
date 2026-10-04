@@ -541,7 +541,7 @@ func (s *TenantService) removeResidue(ctx context.Context, id, path string, g *r
 	if overlapsAny(path, fresh) {
 		return SkipOverlapsLiveTenant, nil, nil
 	}
-	if err := s.removeAll(path); err != nil {
+	if err := s.removeAll(ctx, path); err != nil {
 		return "", &ResidueReconcileError{TenantID: id, Op: "remove", Path: path, Err: err}, nil
 	}
 	return "", nil, nil
@@ -592,13 +592,9 @@ func (s *TenantService) liveTenantRootsStrict(ctx context.Context) ([]string, er
 			}
 			return nil, &StoreError{Op: "get", Err: err}
 		}
-		var info TenantInfo
-		if err := json.Unmarshal(data, &info); err != nil {
-			return nil, &StoreError{Op: "decode " + key, Err: err}
-		}
 		id := strings.TrimPrefix(key, metadataPrefix)
-		if info.DataRoot != "" {
-			roots = append(roots, filepath.Clean(info.DataRoot))
+		if _, err := decodeTenantInfo(id, data); err != nil {
+			return nil, err
 		}
 		local, err := s.registry.TenantDataRootCandidates(ctx, id)
 		if err != nil {

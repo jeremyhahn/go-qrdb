@@ -15,12 +15,15 @@
 package seal
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"syscall"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/validation"
 )
 
 // DirectoryRemover is the filesystem surface the registry reclaims a tenant's
@@ -77,7 +80,16 @@ func (r *BarrierRegistry) directoryRemover() DirectoryRemover {
 //
 // An absent root is already reclaimed. A root that is not a directory is
 // removed as the path it is.
-func (r *BarrierRegistry) RemoveDataRoot(root string) error {
+//
+// Only a directory strictly inside one of this node's own volume-pool paths
+// is ever removed: anything else is refused with
+// *DataRootOutsideLocalRootsError before the filesystem is touched, so a
+// record naming another node's path -- or any path a caller was handed --
+// can never delete it.
+func (r *BarrierRegistry) RemoveDataRoot(ctx context.Context, root string) error {
+	if err := r.RequireInsideLocalPool(ctx, root); err != nil {
+		return err
+	}
 	d := r.directoryRemover()
 	entries, err := d.ReadDir(root)
 	switch {
@@ -107,4 +119,24 @@ func (r *BarrierRegistry) RemoveDataRoot(root string) error {
 	default:
 		return err
 	}
+}
+
+// RequireInsideLocalPool returns *DataRootOutsideLocalRootsError unless path
+// is strictly inside one of this node's own volume-pool paths. The path is
+// compared as given and cleaned, so neither a ".." component nor an equal
+// path (a pool root itself) passes.
+func (r *BarrierRegistry) RequireInsideLocalPool(ctx context.Context, path string) error {
+	bases, err := r.PoolBasePaths(ctx)
+	if err != nil {
+		return err
+	}
+	if path != filepath.Clean(path) {
+		return &DataRootOutsideLocalRootsError{DataRoot: path}
+	}
+	for _, base := range bases {
+		if validation.IsPathAncestor(filepath.Clean(base), path) {
+			return nil
+		}
+	}
+	return &DataRootOutsideLocalRootsError{DataRoot: path}
 }

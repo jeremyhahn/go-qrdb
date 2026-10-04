@@ -129,15 +129,16 @@ separately by `X-QRDB-Database` or its per-transport equivalent. Detail:
 ```json
 { "id": "acme", "name": "Acme Corp",
   "isolation_type": "volume",
-  "data_root": "/mnt/tenant-disks/acme",
   "barrier_auto_unseal": false }
 ```
 
 `isolation_type`: `prefix` (default) · `barrier` · `volume` · `raft`.
-`data_root` pins the dedicated `DataRoot` to an absolute path instead of
-allocating from the volume pool, and must name an empty or not-yet-existing
-directory. `barrier_auto_unseal` selects **system-managed** auto-unseal over the
-secure self-managed default and is **entitlement-gated**.
+`barrier_auto_unseal` selects **system-managed** auto-unseal over the secure
+self-managed default and is **entitlement-gated**. A request carrying
+`data_root` is refused (`*DataRootRetiredError`, 400 / `INVALID_ARGUMENT`): a
+tenant's location is a volume pool and slot, resolved on each node. In a
+response, `data_root` is the tenant's directory **on the node that answered**,
+resolved from that pool and slot; it is never stored.
 
 Quotas — `-1` unlimited, `0` system default:
 
@@ -290,6 +291,9 @@ leaks to a caller with no access to the tier.
 | Reconcile deleted: a live tenant record is unreadable, or the tombstones cannot be listed | 500 | `INTERNAL` — `*ResidueReconcileError` naming the step; the pass stopped, and re-running resumes |
 | Reconcile deleted: one or more retired ids failed | 200 | `OK` — the report, with `failed` naming each failed tenant, step, path and message; every other id was still reclaimed, a failed id keeps its records, and re-running resumes. The Go SDK returns the response and a `*transport.ReconcileDeletedTenantsError` |
 | Create with a `DataRoot` that overlaps a volume pool, a reserved data root or another tenant's `DataRoot` | 409 | `FAILED_PRECONDITION` — `*DataRootOverlapError`. When the other tenant is a retired one whose residue this node has not reclaimed, the message names it as a retired tenant and carries the remedy: run `qrdb tenant reconcile-deleted` on that node. Previously unmapped on every transport and reported as 500 / `INTERNAL` |
+| Create with `data_root` | 400 | `INVALID_ARGUMENT` — `*DataRootRetiredError`; nothing is created at the path |
+| Read a tenant whose stored record names a path | 409 | `FAILED_PRECONDITION` — `*PersistedDataRootError`; the record is refused, never trusted. Re-create the tenant |
+| A tenant-root record that names a path, or a recorded pool slot this node does not configure | 409 | `FAILED_PRECONDITION` — `*seal.AbsoluteDataRootRecordError` / `*seal.TenantRootUnresolvedError` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | A tenant's Admin naming another tenant, or setting its own plan | 403 | `PERMISSION_DENIED` |
 | Tenant id containing `/`, `\`, a control byte, or `.`/`..` | 400 | `INVALID_ARGUMENT` — `*InvalidTenantIDCharError` / `*InvalidTenantIDError`. Previously 500 / `INTERNAL` on create |

@@ -72,17 +72,18 @@ func (m *mountPointRemover) Remove(path string) error {
 func TestRemoveDataRoot_MountPointIsReclaimedOnceEmptied(t *testing.T) {
 	for name, errno := range map[string]error{"EBUSY": syscall.EBUSY, "EXDEV": syscall.EXDEV} {
 		t.Run(name, func(t *testing.T) {
-			root := filepath.Join(t.TempDir(), "mnt")
+			rm := &mountPointRemover{mounts: map[string]bool{}, rmdirErr: errno}
+			reg, _ := newPooledTestRegistry(t, WithDirectoryRemover(rm))
+			root := filepath.Join(poolBase(t, reg), "mnt")
+			rm.mounts[root] = true
 			if err := os.MkdirAll(filepath.Join(root, "barrier"), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.WriteFile(filepath.Join(root, "databases"), []byte("x"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			rm := &mountPointRemover{mounts: map[string]bool{root: true}, rmdirErr: errno}
-			reg, _ := newPooledTestRegistry(t, WithDirectoryRemover(rm))
 
-			if err := reg.RemoveDataRoot(root); err != nil {
+			if err := reg.RemoveDataRoot(context.Background(), root); err != nil {
 				t.Fatalf("RemoveDataRoot on an emptied mount point = %v; want reclaimed", err)
 			}
 			entries, err := os.ReadDir(root)
@@ -96,25 +97,28 @@ func TestRemoveDataRoot_MountPointIsReclaimedOnceEmptied(t *testing.T) {
 // TestRemoveDataRoot_OtherRmdirFailuresAreReported: only the mount-point
 // errnos count as reclaimed; any other rmdir failure is reported.
 func TestRemoveDataRoot_OtherRmdirFailuresAreReported(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "d")
+	ctx := context.Background()
+	rm := &mountPointRemover{mounts: map[string]bool{}, rmdirErr: syscall.EACCES}
+	reg, _ := newPooledTestRegistry(t, WithDirectoryRemover(rm))
+	base := poolBase(t, reg)
+	root := filepath.Join(base, "d")
+	rm.mounts[root] = true
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	rm := &mountPointRemover{mounts: map[string]bool{root: true}, rmdirErr: syscall.EACCES}
-	reg, _ := newPooledTestRegistry(t, WithDirectoryRemover(rm))
-	if err := reg.RemoveDataRoot(root); !errors.Is(err, syscall.EACCES) {
+	if err := reg.RemoveDataRoot(ctx, root); !errors.Is(err, syscall.EACCES) {
 		t.Fatalf("RemoveDataRoot = %v; want the EACCES", err)
 	}
 	// An absent root is already reclaimed.
-	if err := reg.RemoveDataRoot(filepath.Join(t.TempDir(), "never")); err != nil {
+	if err := reg.RemoveDataRoot(ctx, filepath.Join(base, "never")); err != nil {
 		t.Fatalf("RemoveDataRoot(absent) = %v; want nil", err)
 	}
 	// A regular file where the root should be is removed as the path it is.
-	file := filepath.Join(t.TempDir(), "file")
+	file := filepath.Join(base, "file")
 	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := reg.RemoveDataRoot(file); err != nil {
+	if err := reg.RemoveDataRoot(ctx, file); err != nil {
 		t.Fatalf("RemoveDataRoot(file) = %v", err)
 	}
 	if _, err := os.Lstat(file); !os.IsNotExist(err) {
@@ -130,7 +134,7 @@ func TestDestroyTenant_FailedRemovalKeepsTheRecords(t *testing.T) {
 	ctx := context.Background()
 	rm := &mountPointRemover{mounts: map[string]bool{}, failAll: syscall.EIO}
 	reg, system := newPooledTestRegistry(t, WithDirectoryRemover(rm))
-	dataRoot, _, err := reg.RegisterVolumeTenant(ctx, "acme", filepath.Join(t.TempDir(), "disk"), true)
+	dataRoot, _, err := reg.RegisterVolumeTenant(ctx, "acme", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,61 +162,48 @@ func TestDestroyTenant_FailedRemovalKeepsTheRecords(t *testing.T) {
 	}
 }
 
-// listFailingBackend is a real memory backend whose List can be made to fail.
-type listFailingBackend struct {
-	*MemoryBackend
-	failList error
-}
-
-func (b *listFailingBackend) List(ctx context.Context, prefix string) ([]string, error) {
-	if b.failList != nil {
-		return nil, b.failList
+// poolBase returns the single pool path of a newPooledTestRegistry registry.
+func poolBase(t *testing.T, reg *BarrierRegistry) string {
+	t.Helper()
+	bases, err := reg.PoolBasePaths(context.Background())
+	if err != nil || len(bases) != 1 {
+		t.Fatalf("PoolBasePaths = %v, %v; want one pool path", bases, err)
 	}
-	return b.MemoryBackend.List(ctx, prefix)
+	return bases[0]
 }
 
-// TestRefuseClaimedRoot_ListFailureIsTyped: a registration that cannot read
-// the records it must check refuses, with a typed error -- never proceeds as
-// if nothing claimed the root.
-func TestRefuseClaimedRoot_ListFailureIsTyped(t *testing.T) {
+// TestRemoveDataRoot_RefusesAPathOutsideThisNodesPool: removal acts only
+// strictly inside one of this node's own pool paths. A directory anywhere else
+// -- another node's pool on a shared host, the pool root itself, or a path that
+// escapes with ".." -- is refused with *DataRootOutsideLocalRootsError and left
+// exactly as it was, whatever record or caller named it.
+func TestRemoveDataRoot_RefusesAPathOutsideThisNodesPool(t *testing.T) {
 	ctx := context.Background()
-	base := &listFailingBackend{MemoryBackend: NewMemoryBackend()}
-	system, err := NewStorageBarrier(testLogger(), base, BarrierConfig{RootKeyPath: "system/root-key"}, testSoftwareStrategy(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := system.Initialize(ctx, Credentials{}); err != nil {
-		t.Fatal(err)
-	}
-	reg, err := NewBarrierRegistry(testLogger(), system)
-	if err != nil {
-		t.Fatal(err)
-	}
-	boom := errors.New("store unavailable")
-	base.failList = boom
-	err = reg.refuseClaimedRoot(ctx, "acme", "/srv/disk")
-	var ce *ClaimedRootCheckError
-	if !errors.As(err, &ce) || ce.TenantID != "acme" || !errors.Is(err, boom) {
-		t.Fatalf("refuseClaimedRoot = %v; want *ClaimedRootCheckError wrapping the list failure", err)
-	}
-	if ce.Error() == "" {
-		t.Fatal("empty message")
-	}
-}
+	reg, _ := newPooledTestRegistry(t)
+	base := poolBase(t, reg)
 
-// TestRefuseClaimedRoot_SealedSystemBarrierHasNoRecordsToCheck: with the
-// system barrier sealed no record is readable, so there is nothing to refuse
-// on -- the same answer the registration's own record write gives.
-func TestRefuseClaimedRoot_SealedSystemBarrierHasNoRecordsToCheck(t *testing.T) {
-	system, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), BarrierConfig{RootKeyPath: "system/root-key"}, testSoftwareStrategy(t))
-	if err != nil {
+	foreign := filepath.Join(t.TempDir(), "another-node", "tenant")
+	if err := os.MkdirAll(filepath.Join(foreign, "barrier"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	reg, err := NewBarrierRegistry(testLogger(), system)
-	if err != nil {
-		t.Fatal(err)
+	for _, path := range []string{
+		foreign,
+		base,
+		filepath.Join(base, "tenant") + "/../../escape",
+	} {
+		err := reg.RemoveDataRoot(ctx, path)
+		var outside *DataRootOutsideLocalRootsError
+		if !errors.As(err, &outside) || outside.DataRoot != path {
+			t.Fatalf("RemoveDataRoot(%s) = %v; want *DataRootOutsideLocalRootsError", path, err)
+		}
+		if outside.Error() == "" {
+			t.Fatal("empty message")
+		}
 	}
-	if err := reg.refuseClaimedRoot(context.Background(), "acme", "/srv/disk"); err != nil {
-		t.Fatalf("refuseClaimedRoot with a sealed system barrier = %v; want nil", err)
+	if _, err := os.Stat(filepath.Join(foreign, "barrier")); err != nil {
+		t.Fatalf("the refused foreign directory was touched: %v", err)
+	}
+	if _, err := os.Stat(base); err != nil {
+		t.Fatalf("the refused pool root was touched: %v", err)
 	}
 }

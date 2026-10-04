@@ -104,6 +104,24 @@ func (e *RaftBackendError) Error() string {
 // Unwrap returns the underlying error for errors.Is/As.
 func (e *RaftBackendError) Unwrap() error { return e.Err }
 
+// PlacementDataRootError refuses a placement record whose replica names a
+// filesystem path. The placement table is replicated and a path names the
+// disk of the node that wrote it, so every node resolves its own replica's
+// directory from the tenant's volume pool instead; a record carrying a path is
+// refused rather than opened. The database must be re-created.
+type PlacementDataRootError struct {
+	TenantID string
+	Database string
+	DataRoot string
+}
+
+// Error implements the error interface.
+func (e *PlacementDataRootError) Error() string {
+	return "server: placement for " + e.TenantID + "/" + e.Database + " names the path " + e.DataRoot +
+		"; a replica's directory is resolved on each node from the tenant's volume pool, so the record is refused" +
+		" -- re-create the database"
+}
+
 // ShardNotManagedError is returned by RaftBackendFactory's
 // service.ShardRestarter methods (StopForRestore, RestartAfterRestore) when
 // shardID is not a dedicated per-database Raft shard this factory manages —
@@ -1086,6 +1104,12 @@ func (f *RaftBackendFactory) CloseAndPurge(tenantID, db string) error {
 	if err := f.stopShard(rs); err != nil {
 		return err
 	}
+	// Delete only inside this node's own volume pool: a shard directory is
+	// resolved locally, so anything else is a path this node does not own,
+	// and is refused however the shard came to name it.
+	if err := f.barrierReg.RequireInsideLocalPool(context.Background(), rs.dataDir); err != nil {
+		return &RaftBackendError{TenantID: tenantID, Database: db, Op: "purge-data-dir", Err: err}
+	}
 	if err := os.RemoveAll(rs.dataDir); err != nil {
 		return &RaftBackendError{TenantID: tenantID, Database: db, Op: "purge-data-dir", Err: err}
 	}
@@ -1308,10 +1332,10 @@ type placementRaftInfoSource struct {
 // still defers to the fallback so this stage never regresses (multi-node
 // placement materialization is Phase 4c-1d).
 //
-// BUG 1 fix: leaders record "" in Replica.DataRoot for non-local replicas so
-// each follower resolves its own local pool path. When DataRoot is empty and
-// localRootResolver is configured, databaseInfo calls the resolver to compute
+// Placement records no path for any replica, so each node resolves its own:
+// databaseInfo calls the localRootResolver to compute this node's
 // {pool_root}/{tenantID} and returns {pool_root}/{tenantID}/databases/{db}.
+// A record that carries a path is refused (*PlacementDataRootError).
 func (s *placementRaftInfoSource) databaseInfo(tenantID, db string, ignoreFence bool) (uint64, string, bool) {
 	shardID, dataDir, _, ok, err := s.databaseAndPlacementInfo(tenantID, db)
 	if err != nil {
@@ -1344,12 +1368,12 @@ func (s *placementRaftInfoSource) databaseAndPlacementInfo(tenantID, db string) 
 	if !assigned {
 		return 0, "", nil, false, nil
 	}
+	// A placement record names no path: one would name the disk of the node
+	// that wrote it. Refuse a record that carries one rather than open it.
 	if r.DataRoot != "" {
-		return p.ShardID, r.DataRoot, p, true, nil
+		return 0, "", nil, false, &PlacementDataRootError{TenantID: tenantID, Database: db, DataRoot: r.DataRoot}
 	}
-	// DataRoot is empty — this node is a follower replica recorded with "" by
-	// the leader's persistPlacement. Resolve the local pool path if a resolver
-	// is wired in.
+	// Resolve this node's own directory for the tenant.
 	if s.localRootResolver == nil {
 		return 0, "", nil, false, nil
 	}

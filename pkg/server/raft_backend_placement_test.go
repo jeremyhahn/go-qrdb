@@ -19,7 +19,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -110,16 +109,23 @@ func newPlacementStore(t *testing.T) *placement.Store {
 	return store
 }
 
+// poolRootResolver resolves every tenant to /pool/<tenant>, standing in for
+// seal.BarrierRegistry.LocalTenantDataRoot.
+func poolRootResolver(_ context.Context, tenantID string) (string, error) {
+	return "/pool/" + tenantID, nil
+}
+
 // TestPlacementInfoSource_LocalReplicaWins verifies the placement entry's shard
-// ID and the LOCAL replica's data root take precedence over the fallback.
+// ID wins over the fallback and the local replica's directory is THIS node's,
+// resolved from the tenant's pool.
 func TestPlacementInfoSource_LocalReplicaWins(t *testing.T) {
 	store := newPlacementStore(t)
 	ctx := context.Background()
 	if err := store.Put(ctx, &placement.Placement{
 		TenantID: "rt", Database: "orders", ShardID: 7777, RF: 2, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
-			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1", DataRoot: "/placement/local"},
-			{ReplicaID: 2, NodeID: "other:1", RaftAddr: "other:1", DataRoot: "/placement/other"},
+			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1"},
+			{ReplicaID: 2, NodeID: "other:1", RaftAddr: "other:1"},
 		},
 	}); err != nil {
 		t.Fatalf("Put: %v", err)
@@ -128,7 +134,8 @@ func TestPlacementInfoSource_LocalReplicaWins(t *testing.T) {
 	fallback := newFakeRaftInfoSource()
 	fallback.add("rt", "orders", 1234, "/meta/root") // different shard/dir
 
-	src := &placementRaftInfoSource{store: store, localNodeID: "local:1", fallback: fallback, timeout: placementResolveTimeout}
+	src := &placementRaftInfoSource{store: store, localNodeID: "local:1", fallback: fallback,
+		timeout: placementResolveTimeout, localRootResolver: poolRootResolver}
 	shardID, dataDir, ok := src.databaseInfo("rt", "orders", false)
 	if !ok {
 		t.Fatalf("databaseInfo not ok")
@@ -136,8 +143,38 @@ func TestPlacementInfoSource_LocalReplicaWins(t *testing.T) {
 	if shardID != 7777 {
 		t.Errorf("shard = %d, want 7777 (from placement)", shardID)
 	}
-	if dataDir != "/placement/local" {
-		t.Errorf("dataDir = %q, want /placement/local (local replica)", dataDir)
+	if dataDir != "/pool/rt/databases/orders" {
+		t.Errorf("dataDir = %q, want /pool/rt/databases/orders (this node's pool)", dataDir)
+	}
+}
+
+// TestPlacementInfoSource_RefusesAReplicaPath verifies a placement record whose
+// local replica names a path is refused with *PlacementDataRootError, never
+// opened: the path names the disk of the node that wrote it.
+func TestPlacementInfoSource_RefusesAReplicaPath(t *testing.T) {
+	store := newPlacementStore(t)
+	ctx := context.Background()
+	if err := store.Put(ctx, &placement.Placement{
+		TenantID: "rt", Database: "orders", ShardID: 7777, RF: 1, LeaderReplicaID: 1,
+		Replicas: []placement.Replica{
+			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1", DataRoot: "/another-node/rt/databases/orders"},
+		},
+	}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	src := &placementRaftInfoSource{store: store, localNodeID: "local:1", fallback: newFakeRaftInfoSource(),
+		timeout: placementResolveTimeout, localRootResolver: poolRootResolver}
+
+	_, _, _, ok, err := src.databaseAndPlacementInfo("rt", "orders")
+	var pe *PlacementDataRootError
+	if ok || !errors.As(err, &pe) || pe.DataRoot != "/another-node/rt/databases/orders" {
+		t.Fatalf("databaseAndPlacementInfo = ok %v, %v; want *PlacementDataRootError", ok, err)
+	}
+	if pe.Error() == "" {
+		t.Fatal("empty message")
+	}
+	if _, _, ok := src.databaseInfo("rt", "orders", false); ok {
+		t.Fatal("databaseInfo resolved a placement record that names a path")
 	}
 }
 
@@ -167,7 +204,7 @@ func TestPlacementInfoSource_NoLocalReplicaFallsBack(t *testing.T) {
 	if err := store.Put(ctx, &placement.Placement{
 		TenantID: "rt", Database: "orders", ShardID: 7777, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
-			{ReplicaID: 1, NodeID: "remote:1", RaftAddr: "remote:1", DataRoot: "/placement/remote"},
+			{ReplicaID: 1, NodeID: "remote:1", RaftAddr: "remote:1"},
 		},
 	}); err != nil {
 		t.Fatalf("Put: %v", err)
@@ -212,10 +249,10 @@ func TestPlacementInfoSource_EmptyDataRootResolvesLocally(t *testing.T) {
 		TenantID: "follower", Database: "orders", ShardID: 9001, RF: 3,
 		LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
-			{ReplicaID: 1, NodeID: "leader:1", RaftAddr: "leader:1", DataRoot: "/leader/data"},
+			{ReplicaID: 1, NodeID: "leader:1", RaftAddr: "leader:1"},
 			// local node recorded with empty DataRoot (as written by the leader).
-			{ReplicaID: 2, NodeID: "local:1", RaftAddr: "local:1", DataRoot: ""},
-			{ReplicaID: 3, NodeID: "other:1", RaftAddr: "other:1", DataRoot: ""},
+			{ReplicaID: 2, NodeID: "local:1", RaftAddr: "local:1"},
+			{ReplicaID: 3, NodeID: "other:1", RaftAddr: "other:1"},
 		},
 	}); err != nil {
 		t.Fatalf("Put: %v", err)
@@ -261,8 +298,8 @@ func TestPlacementInfoSource_EmptyDataRootNoResolverFallsBack(t *testing.T) {
 		TenantID: "follower", Database: "orders", ShardID: 9001, RF: 2,
 		LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
-			{ReplicaID: 1, NodeID: "leader:1", RaftAddr: "leader:1", DataRoot: "/leader/data"},
-			{ReplicaID: 2, NodeID: "local:1", RaftAddr: "local:1", DataRoot: ""},
+			{ReplicaID: 1, NodeID: "leader:1", RaftAddr: "leader:1"},
+			{ReplicaID: 2, NodeID: "local:1", RaftAddr: "local:1"},
 		},
 	}); err != nil {
 		t.Fatalf("Put: %v", err)
@@ -304,7 +341,7 @@ func TestPlacementInfoSource_PlacementInfoDelegatesToDatabaseAndPlacement(t *tes
 	p := &placement.Placement{
 		TenantID: "rt", Database: "db", ShardID: 5555, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
-			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1", DataRoot: "/root"},
+			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1"},
 		},
 	}
 	if err := store.Put(ctx, p); err != nil {
@@ -312,10 +349,11 @@ func TestPlacementInfoSource_PlacementInfoDelegatesToDatabaseAndPlacement(t *tes
 	}
 
 	src := &placementRaftInfoSource{
-		store:       store,
-		localNodeID: "local:1",
-		fallback:    newFakeRaftInfoSource(),
-		timeout:     placementResolveTimeout,
+		store:             store,
+		localNodeID:       "local:1",
+		fallback:          newFakeRaftInfoSource(),
+		timeout:           placementResolveTimeout,
+		localRootResolver: poolRootResolver,
 	}
 
 	got, ok, _ := src.placementInfo("rt", "db")
@@ -344,8 +382,7 @@ func TestServices_PlacementMemberStart(t *testing.T) {
 	reg := newVolumePooledRegistry(t)
 	ctx := context.Background()
 
-	dataRoot, _ := registerVolumeTenant(t, reg, "pm")
-	shardDataDir := filepath.Join(dataRoot, "databases", "db")
+	registerVolumeTenant(t, reg, "pm")
 
 	store := newPlacementStore(t)
 	if err := store.Put(ctx, &placement.Placement{
@@ -355,7 +392,6 @@ func TestServices_PlacementMemberStart(t *testing.T) {
 				ReplicaID: sharedHostReplicaID,
 				NodeID:    sharedHostRaftAddr,
 				RaftAddr:  sharedHostRaftAddr,
-				DataRoot:  shardDataDir,
 			},
 		},
 	}); err != nil {
@@ -424,8 +460,7 @@ func TestServices_PlacementMemberStart_JoinFlagFromReplicaState(t *testing.T) {
 			ctx := context.Background()
 
 			tenantID := fmt.Sprintf("jf%d", i)
-			dataRoot, _ := registerVolumeTenant(t, reg, tenantID)
-			shardDataDir := filepath.Join(dataRoot, "databases", "db")
+			registerVolumeTenant(t, reg, tenantID)
 			shardID := uint64(9500 + i)
 
 			store := newPlacementStore(t)
@@ -436,7 +471,6 @@ func TestServices_PlacementMemberStart_JoinFlagFromReplicaState(t *testing.T) {
 						ReplicaID: sharedHostReplicaID,
 						NodeID:    sharedHostRaftAddr,
 						RaftAddr:  sharedHostRaftAddr,
-						DataRoot:  shardDataDir,
 						State:     tt.state,
 					},
 				},
@@ -469,14 +503,15 @@ func TestPlacementInfoSource_DedicatedWAL(t *testing.T) {
 	if err := store.Put(ctx, &placement.Placement{
 		TenantID: "rt", Database: "orders", ShardID: 7777, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
-			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1", DataRoot: "/placement/local"},
+			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1"},
 		},
 		DedicatedWAL: true,
 	}); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	fallback := newFakeRaftInfoSource()
-	src := &placementRaftInfoSource{store: store, localNodeID: "local:1", fallback: fallback, timeout: placementResolveTimeout}
+	src := &placementRaftInfoSource{store: store, localNodeID: "local:1", fallback: fallback,
+		timeout: placementResolveTimeout, localRootResolver: poolRootResolver}
 	if !src.dedicatedWAL("rt", "orders") {
 		t.Errorf("dedicatedWAL from placement = false, want true")
 	}
@@ -521,10 +556,11 @@ func newPlacementRaftFactory(t *testing.T, store *placement.Store, localNodeID s
 	t.Helper()
 	host, _ := newSharedTestHost(t)
 	src := &placementRaftInfoSource{
-		store:       store,
-		localNodeID: localNodeID,
-		fallback:    newFakeRaftInfoSource(),
-		timeout:     placementResolveTimeout,
+		store:             store,
+		localNodeID:       localNodeID,
+		fallback:          newFakeRaftInfoSource(),
+		timeout:           placementResolveTimeout,
+		localRootResolver: reg.LocalTenantDataRoot,
 	}
 	f := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg, src, volTestLogger())
 	t.Cleanup(func() { _ = f.CloseAll() })
@@ -539,13 +575,13 @@ func newPlacementRaftFactory(t *testing.T, store *placement.Store, localNodeID s
 func TestRaftBackendFactory_Services_RefusesCachedShardWhenPlacementDropping(t *testing.T) {
 	store := newPlacementStore(t)
 	reg := newVolumePooledRegistry(t)
-	dataRoot, _ := registerVolumeTenant(t, reg, "rt")
+	registerVolumeTenant(t, reg, "rt")
 	ctx := context.Background()
 
 	if err := store.Put(ctx, &placement.Placement{
 		TenantID: "rt", Database: "orders", ShardID: 5001, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
-			{ReplicaID: 1, NodeID: "node-a", RaftAddr: sharedHostRaftAddr, DataRoot: dataRoot},
+			{ReplicaID: 1, NodeID: "node-a", RaftAddr: sharedHostRaftAddr},
 		},
 	}); err != nil {
 		t.Fatalf("Put: %v", err)
@@ -582,13 +618,13 @@ func TestRaftBackendFactory_Services_RefusesCachedShardWhenPlacementDropping(t *
 func TestRaftBackendFactory_Services_RefusesCachedShardWhenPlacementDeleted(t *testing.T) {
 	store := newPlacementStore(t)
 	reg := newVolumePooledRegistry(t)
-	dataRoot, _ := registerVolumeTenant(t, reg, "rt")
+	registerVolumeTenant(t, reg, "rt")
 	ctx := context.Background()
 
 	if err := store.Put(ctx, &placement.Placement{
 		TenantID: "rt", Database: "orders", ShardID: 5005, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
-			{ReplicaID: 1, NodeID: sharedHostRaftAddr, RaftAddr: sharedHostRaftAddr, DataRoot: dataRoot},
+			{ReplicaID: 1, NodeID: sharedHostRaftAddr, RaftAddr: sharedHostRaftAddr},
 		},
 	}); err != nil {
 		t.Fatalf("Put: %v", err)
@@ -658,13 +694,13 @@ func TestRaftBackendFactory_Services_FallbackShardUnaffectedByMissingPlacement(t
 func TestRaftBackendFactory_RefuseIfDropping_RefusesAfterCachedShardIsFenced(t *testing.T) {
 	store := newPlacementStore(t)
 	reg := newVolumePooledRegistry(t)
-	dataRoot, _ := registerVolumeTenant(t, reg, "rt")
+	registerVolumeTenant(t, reg, "rt")
 	ctx := context.Background()
 
 	if err := store.Put(ctx, &placement.Placement{
 		TenantID: "rt", Database: "orders", ShardID: 5010, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
-			{ReplicaID: 1, NodeID: sharedHostRaftAddr, RaftAddr: sharedHostRaftAddr, DataRoot: dataRoot},
+			{ReplicaID: 1, NodeID: sharedHostRaftAddr, RaftAddr: sharedHostRaftAddr},
 		},
 	}); err != nil {
 		t.Fatalf("Put: %v", err)
@@ -738,13 +774,13 @@ func TestDatabaseFenceApply_PassThroughViewCarriesTheGuard(t *testing.T) {
 func TestRaftBackendFactory_Services_RefusesFreshResolutionWhenPlacementDropping(t *testing.T) {
 	store := newPlacementStore(t)
 	reg := newVolumePooledRegistry(t)
-	dataRoot, _ := registerVolumeTenant(t, reg, "rt")
+	registerVolumeTenant(t, reg, "rt")
 	ctx := context.Background()
 
 	if err := store.Put(ctx, &placement.Placement{
 		TenantID: "rt", Database: "orders", ShardID: 5002, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
-			{ReplicaID: 1, NodeID: "node-a", RaftAddr: sharedHostRaftAddr, DataRoot: dataRoot},
+			{ReplicaID: 1, NodeID: "node-a", RaftAddr: sharedHostRaftAddr},
 		},
 		Dropping: true,
 	}); err != nil {
@@ -793,13 +829,13 @@ func TestRefusalFromPlacement(t *testing.T) {
 func TestRaftBackendFactory_FenceServicesResolvesADroppingDatabase(t *testing.T) {
 	store := newPlacementStore(t)
 	reg := newVolumePooledRegistry(t)
-	dataRoot, _ := registerVolumeTenant(t, reg, "rt")
+	registerVolumeTenant(t, reg, "rt")
 	ctx := context.Background()
 
 	if err := store.Put(ctx, &placement.Placement{
 		TenantID: "rt", Database: "orders", ShardID: 5020, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
-			{ReplicaID: 1, NodeID: sharedHostRaftAddr, RaftAddr: sharedHostRaftAddr, DataRoot: dataRoot},
+			{ReplicaID: 1, NodeID: sharedHostRaftAddr, RaftAddr: sharedHostRaftAddr},
 		},
 	}); err != nil {
 		t.Fatalf("Put: %v", err)
@@ -845,14 +881,14 @@ func TestRaftBackendFactory_FenceServicesResolvesADroppingDatabase(t *testing.T)
 func TestRaftBackendFactory_CachedShardOfADroppedIncarnation(t *testing.T) {
 	store := newPlacementStore(t)
 	reg := newVolumePooledRegistry(t)
-	dataRoot, _ := registerVolumeTenant(t, reg, "rt")
+	registerVolumeTenant(t, reg, "rt")
 	ctx := context.Background()
 	place := func(shardID uint64) {
 		t.Helper()
 		if err := store.Put(ctx, &placement.Placement{
 			TenantID: "rt", Database: "orders", ShardID: shardID, RF: 1, LeaderReplicaID: 1,
 			Replicas: []placement.Replica{
-				{ReplicaID: 1, NodeID: sharedHostRaftAddr, RaftAddr: sharedHostRaftAddr, DataRoot: dataRoot},
+				{ReplicaID: 1, NodeID: sharedHostRaftAddr, RaftAddr: sharedHostRaftAddr},
 			},
 		}); err != nil {
 			t.Fatalf("Put: %v", err)

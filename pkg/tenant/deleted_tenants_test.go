@@ -333,12 +333,12 @@ func TestReconcileDeletedTenants_NeverTouchesALiveTenant(t *testing.T) {
 	}
 }
 
-// TestReconcileDeletedTenants_StaleRecordNamingALiveDirectoryIsSkipped covers
-// the dangerous case: a node that missed the delete still holds the retired
-// tenant's record, and that record names a directory a LIVE tenant now uses
-// (an operator-supplied DataRoot reused after the delete). The directory must
-// be left alone and the skip reported.
-func TestReconcileDeletedTenants_StaleRecordNamingALiveDirectoryIsSkipped(t *testing.T) {
+// TestReconcileDeletedTenants_StaleRecordNamingALiveDirectoryIsRefused covers
+// the dangerous case: a node holds a retired tenant's record that names a
+// directory a LIVE tenant uses. A record naming a path is refused outright, so
+// the directory is left alone and the id's reclamation fails with the typed
+// refusal rather than acting on the path.
+func TestReconcileDeletedTenants_StaleRecordNamingALiveDirectoryIsRefused(t *testing.T) {
 	ctx := context.Background()
 	svc, _, store := newReconcileService(t)
 	live, err := svc.CreateTenant(ctx, "vlive", "Live", IsolationVolume)
@@ -356,20 +356,15 @@ func TestReconcileDeletedTenants_StaleRecordNamingALiveDirectoryIsSkipped(t *tes
 	retireElsewhere(t, store, &TenantInfo{ID: "vold", Name: "Old", IsolationType: IsolationVolume})
 
 	report, err := svc.ReconcileDeletedTenants(ctx)
-	if err != nil {
-		t.Fatal(err)
+	var abs *seal.AbsoluteDataRootRecordError
+	if !errors.As(err, &abs) || abs.TenantID != "vold" {
+		t.Fatalf("ReconcileDeletedTenants = %v; want vold's path-naming record refused", err)
 	}
 	if !dirExists(t, live.DataRoot) {
 		t.Fatal("a stale record for a retired id removed a LIVE tenant's DataRoot")
 	}
-	found := false
-	for _, s := range report.Skipped {
-		if s.TenantID == "vold" && s.Path == filepath.Clean(live.DataRoot) && s.Reason == SkipOverlapsLiveTenant {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("report = %+v; want the live directory reported as skipped (%s)", report, SkipOverlapsLiveTenant)
+	if report == nil || len(report.Reclaimed) != 0 {
+		t.Fatalf("report = %+v; want nothing reclaimed", report)
 	}
 }
 
@@ -402,9 +397,10 @@ func TestReconcileDeletedTenants_LiveRecordBesideATombstoneIsSkippedWhole(t *tes
 	}
 }
 
-// TestReconcileDeletedTenants_ReservedRootIsSkipped: a record naming a
-// volume-pool base (or anything containing one) is never removed.
-func TestReconcileDeletedTenants_ReservedRootIsSkipped(t *testing.T) {
+// TestReconcileDeletedTenants_RecordNamingThePoolBaseIsRefused: a record
+// naming a volume-pool base is refused like any record that names a path, and
+// the pool base is never removed.
+func TestReconcileDeletedTenants_RecordNamingThePoolBaseIsRefused(t *testing.T) {
 	ctx := context.Background()
 	svc, reg, store := newReconcileService(t)
 	bases, err := reg.PoolBasePaths(ctx)
@@ -418,14 +414,15 @@ func TestReconcileDeletedTenants_ReservedRootIsSkipped(t *testing.T) {
 	retireElsewhere(t, store, &TenantInfo{ID: "vpool", IsolationType: IsolationVolume})
 
 	report, err := svc.ReconcileDeletedTenants(ctx)
-	if err != nil {
-		t.Fatal(err)
+	var abs *seal.AbsoluteDataRootRecordError
+	if !errors.As(err, &abs) || abs.TenantID != "vpool" {
+		t.Fatalf("ReconcileDeletedTenants = %v; want vpool's path-naming record refused", err)
 	}
 	if !dirExists(t, bases[0]) {
 		t.Fatal("the reconcile removed a volume-pool base")
 	}
-	if len(report.Skipped) != 1 || report.Skipped[0].Reason != SkipOverlapsReservedRoot {
-		t.Fatalf("report = %+v; want the pool base skipped as %s", report, SkipOverlapsReservedRoot)
+	if report == nil || len(report.Reclaimed) != 0 {
+		t.Fatalf("report = %+v; want nothing reclaimed", report)
 	}
 }
 

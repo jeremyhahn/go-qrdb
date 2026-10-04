@@ -74,10 +74,6 @@ type PlaceRequest struct {
 	// with ErrInsufficientNodes when fewer than RF healthy distinct nodes
 	// exist.
 	RF int
-
-	// DataRootForNode maps a selected node's ID to the on-disk root the
-	// replica should use on that node. Required.
-	DataRootForNode func(nodeID string) string
 }
 
 // SchedulerOption customizes a Scheduler.
@@ -164,10 +160,6 @@ func (s *Scheduler) Place(ctx context.Context, req PlaceRequest) (*Placement, er
 	if req.RF < 1 {
 		return nil, ErrInvalidRF
 	}
-	if req.DataRootForNode == nil {
-		return nil, ErrNilDataRootFunc
-	}
-
 	candidates := s.admitted(req.ShardID, healthyDistinct(s.topo.Nodes()))
 	if len(candidates) < req.RF {
 		return nil, &InsufficientNodesError{Have: len(candidates), Need: req.RF}
@@ -181,7 +173,6 @@ func (s *Scheduler) Place(ctx context.Context, req PlaceRequest) (*Placement, er
 			ReplicaID: uint64(i + 1),
 			NodeID:    n.NodeID,
 			RaftAddr:  n.RaftAddr,
-			DataRoot:  req.DataRootForNode(n.NodeID),
 		})
 	}
 

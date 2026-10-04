@@ -366,7 +366,7 @@ func placement1(tenantID, db string, shardID uint64) *placement.Placement {
 		RF:              1,
 		LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
-			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1", DataRoot: "/data/" + db},
+			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1"},
 		},
 	}
 }
@@ -429,7 +429,7 @@ func TestTenantShardReconciler_IgnoresUnassigned(t *testing.T) {
 	p := &placement.Placement{
 		TenantID: "acme", Database: "db", ShardID: 1001, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
-			{ReplicaID: 1, NodeID: "other:1", RaftAddr: "other:1", DataRoot: "/data"},
+			{ReplicaID: 1, NodeID: "other:1", RaftAddr: "other:1"},
 		},
 	}
 	r, _ := newTestReconciler(t, factory, nil, p)
@@ -478,7 +478,7 @@ func TestTenantShardReconciler_DemotionTeardown(t *testing.T) {
 	demoted := &placement.Placement{
 		TenantID: "acme", Database: "orders", ShardID: 1001, RF: 1, LeaderReplicaID: 2,
 		Replicas: []placement.Replica{
-			{ReplicaID: 2, NodeID: "other:1", RaftAddr: "other:1", DataRoot: "/data"},
+			{ReplicaID: 2, NodeID: "other:1", RaftAddr: "other:1"},
 		},
 	}
 	r, _ := newTestReconciler(t, factory, nil, demoted)
@@ -794,7 +794,7 @@ func TestTenantShardReconciler_HandleEvent_PutDemotion(t *testing.T) {
 	p := &placement.Placement{
 		TenantID: "acme", Database: "db", ShardID: 1001, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
-			{ReplicaID: 1, NodeID: "other:1", RaftAddr: "other:1", DataRoot: "/data"},
+			{ReplicaID: 1, NodeID: "other:1", RaftAddr: "other:1"},
 		},
 	}
 	r.handleEvent(context.Background(), placement.Event{
@@ -826,7 +826,7 @@ func TestTenantShardReconciler_HandleEvent_PutNoLocalReplica_NotRunning(t *testi
 	p := &placement.Placement{
 		TenantID: "acme", Database: "db", ShardID: 1001, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
-			{ReplicaID: 1, NodeID: "other:1", RaftAddr: "other:1", DataRoot: "/data"},
+			{ReplicaID: 1, NodeID: "other:1", RaftAddr: "other:1"},
 		},
 	}
 	r.handleEvent(context.Background(), placement.Event{
@@ -1010,7 +1010,7 @@ func TestTenantShardReconciler_DemotionPurgesByDefault(t *testing.T) {
 	demoted := &placement.Placement{
 		TenantID: "acme", Database: "orders", ShardID: 1001, RF: 1, LeaderReplicaID: 2,
 		Replicas: []placement.Replica{
-			{ReplicaID: 2, NodeID: "other:1", RaftAddr: "other:1", DataRoot: "/data"},
+			{ReplicaID: 2, NodeID: "other:1", RaftAddr: "other:1"},
 		},
 	}
 	r, _ := newTestReconciler(t, factory, nil, demoted)
@@ -1036,7 +1036,7 @@ func TestTenantShardReconciler_WithPurgeOnDemotionFalse(t *testing.T) {
 	demoted := &placement.Placement{
 		TenantID: "acme", Database: "orders", ShardID: 1001, RF: 1, LeaderReplicaID: 2,
 		Replicas: []placement.Replica{
-			{ReplicaID: 2, NodeID: "other:1", RaftAddr: "other:1", DataRoot: "/data"},
+			{ReplicaID: 2, NodeID: "other:1", RaftAddr: "other:1"},
 		},
 	}
 	store, err := placement.NewStore(newMemKV())
@@ -1095,7 +1095,7 @@ func joiningPlacement1(tenantID, db string, shardID uint64) *placement.Placement
 		RF:              1,
 		LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
-			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1", DataRoot: "/data/" + db, State: placement.ReplicaStateObserver},
+			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1", State: placement.ReplicaStateObserver},
 		},
 	}
 }
@@ -1217,8 +1217,8 @@ func TestTenantShardReconciler_ObserverReadyPromotedToActiveByLeader(t *testing.
 	p := &placement.Placement{
 		TenantID: "acme", Database: "orders", ShardID: 1001, RF: 2, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
-			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1", DataRoot: "/data/orders"},
-			{ReplicaID: 2, NodeID: "remote:1", RaftAddr: "remote:1", DataRoot: "", State: placement.ReplicaStateObserverReady},
+			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1"},
+			{ReplicaID: 2, NodeID: "remote:1", RaftAddr: "remote:1", State: placement.ReplicaStateObserverReady},
 		},
 	}
 	store, err := placement.NewStore(newMemKV())
@@ -1315,8 +1315,8 @@ func TestTenantShardReconciler_DroppingPlacement_ReadyObserverNeverPromotedToAct
 		TenantID: "acme", Database: "orders", ShardID: 1001, RF: 2, LeaderReplicaID: 1,
 		Dropping: true,
 		Replicas: []placement.Replica{
-			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1", DataRoot: "/data/orders"},
-			{ReplicaID: 2, NodeID: "remote:1", RaftAddr: "remote:1", DataRoot: "", State: placement.ReplicaStateObserverReady},
+			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1"},
+			{ReplicaID: 2, NodeID: "remote:1", RaftAddr: "remote:1", State: placement.ReplicaStateObserverReady},
 		},
 	}
 	store, err := placement.NewStore(newMemKV())
@@ -1405,8 +1405,8 @@ func TestTenantShardReconciler_ObserverReadyNotPromoted_WhenNotLeader(t *testing
 	p := &placement.Placement{
 		TenantID: "acme", Database: "orders", ShardID: 1001, RF: 2, LeaderReplicaID: 9,
 		Replicas: []placement.Replica{
-			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1", DataRoot: "/data/orders", State: placement.ReplicaStateObserverReady},
-			{ReplicaID: 9, NodeID: "remote:1", RaftAddr: "remote:1", DataRoot: "/data/orders"},
+			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1", State: placement.ReplicaStateObserverReady},
+			{ReplicaID: 9, NodeID: "remote:1", RaftAddr: "remote:1"},
 		},
 	}
 	store, err := placement.NewStore(newMemKV())
@@ -1446,7 +1446,7 @@ func TestTenantShardReconciler_NoPromoter_ObserverReadyNeverPromoted(t *testing.
 	p := &placement.Placement{
 		TenantID: "acme", Database: "orders", ShardID: 1001, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
-			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1", DataRoot: "/data/orders", State: placement.ReplicaStateObserverReady},
+			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1", State: placement.ReplicaStateObserverReady},
 		},
 	}
 	r, store := newTestReconciler(t, factory, nil, p)
@@ -1471,7 +1471,7 @@ func TestTenantShardReconciler_ObserverReadyPromotion_FailurePreservesState(t *t
 	p := &placement.Placement{
 		TenantID: "acme", Database: "orders", ShardID: 1001, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
-			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1", DataRoot: "/data/orders", State: placement.ReplicaStateObserverReady},
+			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1", State: placement.ReplicaStateObserverReady},
 		},
 	}
 	store, err := placement.NewStore(newMemKV())

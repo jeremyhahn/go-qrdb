@@ -208,7 +208,7 @@ func TestRaftBackendFactory_EvictionPurgesOnlyTheDroppedShard(t *testing.T) {
 		if err := store.Put(ctx, &placement.Placement{
 			TenantID: "rt", Database: "orders", ShardID: shardID, RF: 1, LeaderReplicaID: 1,
 			Replicas: []placement.Replica{
-				{ReplicaID: 1, NodeID: sharedHostRaftAddr, RaftAddr: sharedHostRaftAddr, DataRoot: dataRoot},
+				{ReplicaID: 1, NodeID: sharedHostRaftAddr, RaftAddr: sharedHostRaftAddr},
 			},
 		}); err != nil {
 			t.Fatalf("Put: %v", err)
@@ -219,8 +219,11 @@ func TestRaftBackendFactory_EvictionPurgesOnlyTheDroppedShard(t *testing.T) {
 	if _, err := f.Services(ctx, "rt", "orders"); err != nil {
 		t.Fatalf("Services(): %v", err)
 	}
-	oldDir := filepath.Join(dataRoot, "shard-5040")
-	newDir := filepath.Join(dataRoot, "shard-5041")
+	// Placement names no path: the database's directory is this node's pool
+	// directory for the tenant.
+	dbDir := filepath.Join(dataRoot, "databases", "orders")
+	oldDir := filepath.Join(dbDir, "shard-5040")
+	newDir := filepath.Join(dbDir, "shard-5041")
 	if _, err := os.Stat(oldDir); err != nil {
 		t.Fatalf("precondition: the first shard's directory %s: %v", oldDir, err)
 	}
