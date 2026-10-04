@@ -157,7 +157,7 @@ func TestSealBinding_Stub_Unseal(t *testing.T) {
 func TestSealBinding_Stub_Seal(t *testing.T) {
 	log := testLogger(t)
 	b := NewSealBinding(log, nil, nil)
-	err := b.Seal()
+	err := b.Seal("SO123")
 	var fde *FeatureDisabledError
 	if !errors.As(err, &fde) {
 		t.Fatalf("expected FeatureDisabledError, got %T: %v", err, err)

@@ -28,6 +28,18 @@ and `POST /v1/barrier/rekey/start`, in
 Shamir barrier (`ErrShamirUnsealRequiresQuorum`) and `BarrierSeal` refuses one
 (`ErrShamirBarrierRequiresQuorum`).
 
+**Seal carries the SO PIN.** Once an SO PIN is provisioned (`qrdb init`
+provisions one), `BarrierSeal` is refused (`pin.ErrPINInvalid`, 401 /
+`Unauthenticated`) without it. The PIN travels in the request's `so_pin` field
+on every transport:
+
+| Client | How the PIN is supplied |
+|---|---|
+| CLI | `qrdb barrier seal --so-pin <pin>` |
+| Go SDK | `BarrierSeal(ctx)` with the PIN bound by `transport.WithSOPIN(ctx, pin)`; every network transport fills `so_pin` from it |
+| TypeScript SDK | `client.seal.seal(soPin)` |
+| Desktop binding | `SealBinding.Seal(soPin)` |
+
 ### Who may call these
 
 The node barrier belongs to the platform, not to a tenant. Every permission in

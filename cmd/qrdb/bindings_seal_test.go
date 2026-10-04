@@ -326,21 +326,51 @@ func TestSealBinding_Unseal_NotConnected(t *testing.T) {
 // SealBinding.Seal
 // ---------------------------------------------------------------------------
 
+// TestSealBinding_Seal_Success verifies Seal binds the SO PIN to the seal
+// call's context (transport.WithSOPIN), where every network transport reads
+// it; the embedded transport hands that context to the service unchanged.
 func TestSealBinding_Seal_Success(t *testing.T) {
-	var sealCalled bool
+	var sealCalled, bound bool
+	var got string
 	svc := &mockBarrierService{
-		sealFn: func(_ context.Context) error {
+		sealFn: func(ctx context.Context) error {
 			sealCalled = true
-			return nil
+			pin, ok, err := transport.SOPINFromContext(ctx)
+			got, bound = string(pin), ok
+			return err
 		},
 	}
 	b := newSealTestBinding(t, svc)
 
-	if err := b.Seal(); err != nil {
+	if err := b.Seal("SO123"); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
 	if !sealCalled {
 		t.Error("expected BarrierSeal to be invoked")
+	}
+	if !bound || got != "SO123" {
+		t.Fatalf("seal call carried SO PIN %q (bound=%v), want %q", got, bound, "SO123")
+	}
+}
+
+// TestSealBinding_Seal_EmptyPINBindsNone verifies an empty SO PIN binds
+// nothing, for a server with no SO PIN provisioned.
+func TestSealBinding_Seal_EmptyPINBindsNone(t *testing.T) {
+	var bound bool
+	svc := &mockBarrierService{
+		sealFn: func(ctx context.Context) error {
+			_, ok, err := transport.SOPINFromContext(ctx)
+			bound = ok
+			return err
+		},
+	}
+	b := newSealTestBinding(t, svc)
+
+	if err := b.Seal(""); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	if bound {
+		t.Fatal("Seal with an empty SO PIN bound one")
 	}
 }
 
@@ -350,7 +380,7 @@ func TestSealBinding_Seal_ServiceError(t *testing.T) {
 	}
 	b := newSealTestBinding(t, svc)
 
-	if err := b.Seal(); !errors.Is(err, errBarrierTest) {
+	if err := b.Seal("SO123"); !errors.Is(err, errBarrierTest) {
 		t.Fatalf("expected seal error propagated, got %v", err)
 	}
 }
@@ -359,7 +389,7 @@ func TestSealBinding_Seal_NotConnected(t *testing.T) {
 	log := testLogger(t)
 	b := NewSealBinding(log, nil, NewConnectionBinding(log))
 
-	err := b.Seal()
+	err := b.Seal("SO123")
 	if err == nil {
 		t.Fatal("expected error from Seal when not connected")
 	}

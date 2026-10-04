@@ -1949,9 +1949,13 @@ export class RestClient implements Client {
                 });
                 return { sealed: false, sharesProvided: 0, sharesRequired: 0 };
             },
-            seal: async (): Promise<void> => {
+            seal: async (soPin?: string): Promise<void> => {
                 this.ensureConnected();
-                await this.fetchVoid('/v1/barrier/seal', { method: 'POST' });
+                // The server's SO gate reads so_pin; without a PIN the body
+                // stays empty, which the server accepts when none is set.
+                await this.fetchVoid('/v1/barrier/seal', soPin === undefined || soPin === ''
+                    ? { method: 'POST' }
+                    : { method: 'POST', ...jsonBody({ so_pin: soPin }) });
             },
             status: async (): Promise<SealStatus> => {
                 this.ensureConnected();

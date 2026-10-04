@@ -173,6 +173,21 @@ test.describe("Admin - Seal Manager", () => {
       ).toBeVisible();
     });
 
+    test("seal sends the SO PIN entered in the confirmation", async ({ page }) => {
+      await navigateToSealManager(page);
+
+      const main = page.locator("main");
+
+      await main.getByRole("button", { name: "Seal", exact: true }).click();
+      await page.getByTestId("seal-so-pin").fill("SO123");
+      await main.getByRole("button", { name: "Confirm Seal" }).click();
+
+      await expect.poll(() => page.evaluate(() => {
+        const w = window as unknown as { __QRDB_MOCK_STATE__: { sealSoPins?: string[] } };
+        return w.__QRDB_MOCK_STATE__.sealSoPins ?? [];
+      }), { timeout: LOAD_TIMEOUT }).toEqual(["SO123"]);
+    });
+
     test("seal cancel does not seal", async ({ page }) => {
       await navigateToSealManager(page);
 

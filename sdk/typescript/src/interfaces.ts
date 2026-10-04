@@ -1421,8 +1421,11 @@ export interface SealClient {
      * Transitions the server back to sealed state, zeroing the master
      * key. A Shamir barrier is sealed by a holder quorum instead; the
      * server refuses this request for it.
+     *
+     * @param soPin - The Security Officer PIN. Required once an SO PIN is
+     *   provisioned (`qrdb init` provisions one); omit it otherwise.
      */
-    seal(): Promise<void>;
+    seal(soPin?: string): Promise<void>;
 
     /**
      * Returns the current seal state of the server.

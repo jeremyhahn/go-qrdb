@@ -2091,6 +2091,20 @@ Cluster-wide sealing. This release contains BREAKING changes; see the entries be
   `CURSOR_TYPE_READ_ONLY` with libmysqlclient. See
   `docs/sql/upstream-gaps.md`.
 
+### Fixed
+
+- **`qrdb barrier seal --so-pin` sends the SO PIN.** The CLI parsed the flag
+  and dropped it, so once `qrdb init` had provisioned an SO PIN every CLI seal
+  was refused with `pin: invalid PIN` on every transport. The command now binds
+  the PIN with `transport.WithSOPIN`, which every network transport already
+  reads into the request's `so_pin` field. The Go SDK's
+  `BarrierSeal(ctx)` is unchanged: a caller binds the PIN to `ctx`.
+- **BREAKING: the TypeScript SDK and the desktop app seal with the SO PIN.**
+  `SealClient.seal(soPin?)` sends `so_pin` (REST) or passes it to the desktop
+  binding, whose Go signature is now `SealBinding.Seal(soPin string)`; the
+  Seal Manager's confirmation asks for the SO PIN. Neither could seal a node
+  with an SO PIN provisioned before.
+
 ## [0.34.2-alpha] - 2026-10-03
 
 The database wizard offers Shamir custody. Highlights:

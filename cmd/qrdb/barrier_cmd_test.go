@@ -26,6 +26,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // ---------------------------------------------------------------------------
@@ -400,17 +402,50 @@ func TestBarrierSealCmd_ConfirmWithY(t *testing.T) {
 	}
 }
 
-// TestBarrierSealCmd_AcceptsSOPin verifies the --so-pin flag is parsed
-// successfully even though wire-level propagation is the sibling agent's
-// concern (interface ripple out of scope here).
-func TestBarrierSealCmd_AcceptsSOPin(t *testing.T) {
-	root := newBarrierTestRoot(t, &mockBarrierService{})
+// TestBarrierSealCmd_ForwardsSOPin verifies --so-pin reaches the seal call
+// bound to its context (transport.WithSOPIN), which is where every network
+// transport reads the SO PIN it sends: the embedded transport hands the
+// context to the service unchanged, so the service sees exactly what a
+// network transport would put on the wire.
+func TestBarrierSealCmd_ForwardsSOPin(t *testing.T) {
+	var got string
+	var bound bool
+	svc := &mockBarrierService{sealFn: func(ctx context.Context) error {
+		pin, ok, err := transport.SOPINFromContext(ctx)
+		if err != nil {
+			return err
+		}
+		got, bound = string(pin), ok
+		return nil
+	}}
+	root := newBarrierTestRoot(t, svc)
 	out, err := executeCommand(root, "barrier", "seal", "--so-pin", "SO123", "-y")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(out, "OK") {
 		t.Errorf("expected OK in output: %q", out)
+	}
+	if !bound || got != "SO123" {
+		t.Fatalf("seal call carried SO PIN %q (bound=%v), want %q", got, bound, "SO123")
+	}
+}
+
+// TestBarrierSealCmd_NoSOPinBindsNone verifies a seal without --so-pin binds
+// no PIN, so a server with no SO PIN provisioned is not sent one.
+func TestBarrierSealCmd_NoSOPinBindsNone(t *testing.T) {
+	var bound bool
+	svc := &mockBarrierService{sealFn: func(ctx context.Context) error {
+		_, ok, err := transport.SOPINFromContext(ctx)
+		bound = ok
+		return err
+	}}
+	root := newBarrierTestRoot(t, svc)
+	if _, err := executeCommand(root, "barrier", "seal", "-y"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if bound {
+		t.Fatal("seal without --so-pin bound an SO PIN")
 	}
 }
 

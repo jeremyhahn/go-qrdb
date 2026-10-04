@@ -471,13 +471,17 @@ Examples:
 					return err
 				}
 			}
-			// The --so-pin flag is parsed for surface parity with the
-			// canonical CLI tree; PIN propagation rides on the SDK auth
-			// context (same model the ceremony surface uses) once the
-			// server-side handler honors it. Accepting the flag here
-			// keeps the four-CLI surface lock-step.
-			_ = f.soPin
-			if err := client.Barrier().BarrierSeal(cmd.Context()); err != nil {
+			// BarrierSeal takes no request of its own: every network
+			// transport reads the SO PIN from the context
+			// (transport.WithSOPIN) and sends it in the request's so_pin
+			// field and the transport's PIN header or metadata. An empty
+			// --so-pin binds nothing.
+			ctx, release, err := transport.WithSOPIN(cmd.Context(), []byte(f.soPin))
+			if err != nil {
+				return err
+			}
+			defer release()
+			if err := client.Barrier().BarrierSeal(ctx); err != nil {
 				return err
 			}
 			printOK()

@@ -151,17 +151,26 @@ func (b *SealBinding) Unseal(secret string) (*UnsealProgress, error) {
 }
 
 // Seal seals the barrier, preventing further data access until it is
-// unsealed again. Shamir barriers reject direct sealing — a holder quorum
-// submitting to the seal op is required — and that policy is enforced by
-// the barrier service, surfacing here as an error.
-func (b *SealBinding) Seal() error {
+// unsealed again. soPin is the Security Officer PIN, required once one is
+// provisioned and empty otherwise; it rides the call's context
+// (transport.WithSOPIN), which is where every network transport reads it.
+// Shamir barriers reject direct sealing — a holder quorum submitting to the
+// seal op is required — and that policy is enforced by the barrier service,
+// surfacing here as an error.
+func (b *SealBinding) Seal(soPin string) error {
 	b.logger.Debug("Seal called")
 	cl, err := b.conn.loadClient()
 	if err != nil {
 		b.logger.Error("Seal failed", "error", err)
 		return err
 	}
-	if err := cl.Barrier().BarrierSeal(context.Background()); err != nil {
+	ctx, release, err := transport.WithSOPIN(context.Background(), []byte(soPin))
+	if err != nil {
+		b.logger.Error("Seal failed", "error", err)
+		return err
+	}
+	defer release()
+	if err := cl.Barrier().BarrierSeal(ctx); err != nil {
 		b.logger.Error("Seal failed", "error", err)
 		return err
 	}

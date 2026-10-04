@@ -37,6 +37,11 @@
   // The node barrier's cluster seal state; null from a server that reports none.
   let clusterSeal: ClusterSeal | null = $state(null);
   let clusterUnsealLoading: boolean = $state(false);
+  /**
+   * The Security Officer PIN for the seal, required once one is provisioned
+   * (`qrdb init` provisions one). Cleared whenever the confirmation closes.
+   */
+  let sealSoPin: string = $state("");
 
   let pollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -233,9 +238,10 @@
   async function handleSeal(): Promise<void> {
     try {
       sealLoading = true;
-      await client.seal.seal();
+      await client.seal.seal(sealSoPin === "" ? undefined : sealSoPin);
       showToast("success", "Server sealed successfully");
       showSealConfirm = false;
+      sealSoPin = "";
       await fetchSealStatus();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to seal server";
@@ -655,6 +661,19 @@
               <AlertTriangle class="h-5 w-5 shrink-0" />
               <span>Are you sure? The server will reject all operations until unsealed.</span>
             </div>
+            <div class="form-control mt-2 max-w-xs">
+              <label class="label" for="seal-so-pin">
+                <span class="label-text text-xs">SO PIN</span>
+              </label>
+              <input
+                id="seal-so-pin"
+                type="password"
+                autocomplete="off"
+                class="input input-bordered input-sm"
+                bind:value={sealSoPin}
+                data-testid="seal-so-pin"
+              />
+            </div>
             <div class="mt-2 flex gap-2">
               <button
                 class="btn btn-error btn-sm"
@@ -668,7 +687,7 @@
               </button>
               <button
                 class="btn btn-ghost btn-sm"
-                onclick={() => { showSealConfirm = false; }}
+                onclick={() => { showSealConfirm = false; sealSoPin = ""; }}
               >
                 Cancel
               </button>

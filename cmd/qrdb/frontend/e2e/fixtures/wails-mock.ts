@@ -86,6 +86,11 @@ export interface MockState {
    * "embedded" when omitted.
    */
   profileType?: 'embedded' | 'external';
+  /**
+   * The SO PIN each SealBinding.Seal call received, in order. The mock
+   * appends to it, so a test can assert the PIN the Seal Manager sent.
+   */
+  sealSoPins?: string[];
   sealStatus: {
     sealed: boolean;
     initialized: boolean;
@@ -545,9 +550,12 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             s.unsealProgress.sealed = false;
             return { sealed: false, sharesProvided: 0, sharesRequired: 0 };
           },
-          Seal: async () => {
+          // SealBinding.Seal(soPin): the PIN is recorded so a test can
+          // assert what the Seal Manager sent.
+          Seal: async (soPin: string) => {
             maybeReject("SealBinding.Seal");
             const s = getState();
+            s.sealSoPins = [...(s.sealSoPins ?? []), soPin];
             s.sealStatus.sealed = true;
           },
           Initialize: async (_secret: string) => {

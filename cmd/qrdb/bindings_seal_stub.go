@@ -49,7 +49,7 @@ func (b *SealBinding) Unseal(_ string) (*UnsealProgress, error) {
 }
 
 // Seal returns a FeatureDisabledError.
-func (b *SealBinding) Seal() error {
+func (b *SealBinding) Seal(_ string) error {
 	return &FeatureDisabledError{Feature: "embedded"}
 }
 

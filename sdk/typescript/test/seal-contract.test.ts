@@ -267,6 +267,27 @@ describe('seal client – seal', () => {
         const seal = calls.find((c) => c.path === '/v1/barrier/seal');
         expect(seal?.method).toBe('POST');
     });
+
+    it('sends the SO PIN in so_pin', async () => {
+        const client = await connectedClient();
+        const { calls } = installRouter({ 'POST /v1/barrier/seal': { status: 204 } });
+
+        await client.seal.seal('SO123');
+
+        const seal = calls.find((c) => c.path === '/v1/barrier/seal');
+        expect(seal?.method).toBe('POST');
+        expect(seal?.body).toEqual({ so_pin: 'SO123' });
+    });
+
+    it('sends no body without an SO PIN', async () => {
+        const client = await connectedClient();
+        const { calls } = installRouter({ 'POST /v1/barrier/seal': { status: 204 } });
+
+        await client.seal.seal();
+
+        const seal = calls.find((c) => c.path === '/v1/barrier/seal');
+        expect(seal?.body).toBeUndefined();
+    });
 });
 
 // ---------------------------------------------------------------------------
