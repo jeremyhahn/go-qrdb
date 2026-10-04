@@ -5,7 +5,6 @@ package commands
 
 import (
 	"bytes"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -166,94 +165,6 @@ func (r *TestRunner) RunCommandWithProtocol(t *testing.T, protocol ProtocolType,
 	return r.RunCommand(t, args...)
 }
 
-// BuildCommandArgs builds the full argument list for a command definition.
-func (r *TestRunner) BuildCommandArgs(cmd CommandDefinition, overrides map[string]string) []string {
-	var args []string
-
-	// Add command parts.
-	args = append(args, cmd.Command...)
-
-	// Add required positional args.
-	for _, arg := range cmd.RequiredArgs {
-		if arg.IsPositional {
-			value := arg.Value
-			if override, ok := overrides[arg.Description]; ok {
-				value = override
-			}
-			args = append(args, value)
-		} else {
-			value := arg.Value
-			if override, ok := overrides[arg.Flag]; ok {
-				value = override
-			}
-			args = append(args, "--"+arg.Flag, value)
-		}
-	}
-
-	// Add optional args if provided in overrides or with defaults.
-	for _, arg := range cmd.OptionalArgs {
-		if value, ok := overrides[arg.Flag]; ok {
-			args = append(args, "--"+arg.Flag, value)
-		} else if arg.Value != "" {
-			args = append(args, "--"+arg.Flag, arg.Value)
-		}
-	}
-
-	return args
-}
-
-// ExecuteCommandWithProtocol runs a command with a specific protocol.
-func (r *TestRunner) ExecuteCommandWithProtocol(t *testing.T, protocol ProtocolType, cmd CommandDefinition, overrides map[string]string) (string, string, error) {
-	t.Helper()
-	args := r.BuildCommandArgs(cmd, overrides)
-	return r.RunCommandWithProtocol(t, protocol, args...)
-}
-
-// TestResult represents the result of running a command test.
-type TestResult struct {
-	Command  CommandDefinition
-	Protocol ProtocolType
-	Stdout   string
-	Stderr   string
-	Error    error
-	Duration time.Duration
-	Passed   bool
-	Message  string
-}
-
-// RunCommandTest runs a single command test and returns the result.
-func (r *TestRunner) RunCommandTest(t *testing.T, protocol ProtocolType, cmd CommandDefinition, overrides map[string]string) *TestResult {
-	t.Helper()
-
-	start := time.Now()
-	stdout, stderr, err := r.ExecuteCommandWithProtocol(t, protocol, cmd, overrides)
-	duration := time.Since(start)
-
-	result := &TestResult{
-		Command:  cmd,
-		Protocol: protocol,
-		Stdout:   stdout,
-		Stderr:   stderr,
-		Error:    err,
-		Duration: duration,
-		Passed:   err == nil,
-	}
-
-	if err != nil {
-		result.Message = fmt.Sprintf("Command failed: %v", err)
-	} else {
-		for _, expected := range cmd.ExpectedOutputContains {
-			if !strings.Contains(stdout+stderr, expected) {
-				result.Passed = false
-				result.Message = fmt.Sprintf("Output missing expected content: %s", expected)
-				break
-			}
-		}
-	}
-
-	return result
-}
-
 // Helper functions.
 
 func getProjectRoot() string {
@@ -270,9 +181,4 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
-}
-
-// GenerateUniqueKeyID generates a unique key ID for tests.
-func GenerateUniqueKeyID(prefix string) string {
-	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
 }
