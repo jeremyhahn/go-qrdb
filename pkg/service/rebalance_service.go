@@ -459,6 +459,13 @@ func (s *RebalanceService) ExecuteRebalance(ctx context.Context, plan *Rebalance
 				if errors.As(err, &nle) {
 					return nil, err
 				}
+				s.logger.Warn("rebalance: move failed",
+					slog.Uint64("shard_id", move.ShardID),
+					slog.String("tenant", p.TenantID),
+					slog.String("database", p.Database),
+					slog.String("from_node", move.FromNode),
+					slog.String("to_node", move.ToNode),
+					slog.Any("error", err))
 				failed++
 				continue
 			}

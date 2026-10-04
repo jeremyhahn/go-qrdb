@@ -1208,6 +1208,68 @@ func TestTenantShardReconciler_ObserverPromotedToObserverReady(t *testing.T) {
 	}
 }
 
+// TestTenantShardReconciler_AnObserverThatNeverStartedIsNotReady: a
+// replica whose shard could not start here -- its tenant's key has not
+// arrived, say -- is not joining because it is not running at all, and must
+// not be reported caught up. Marking it ObserverReady would let the leader
+// promote a replica that holds no data and is not even an observer member,
+// adding it straight to the voting set. It is marked once its shard runs and
+// has finished joining, by the watch path as by the poll.
+func TestTenantShardReconciler_AnObserverThatNeverStartedIsNotReady(t *testing.T) {
+	for name, drive := range map[string]func(r *TenantShardReconciler, p *placement.Placement){
+		"poll": func(r *TenantShardReconciler, _ *placement.Placement) { r.ReconcileOnce(context.Background()) },
+		"watch": func(r *TenantShardReconciler, p *placement.Placement) {
+			r.handleEvent(context.Background(), placement.Event{Type: placement.EventPut, TenantID: p.TenantID, Database: p.Database, Placement: p})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			factory := newFakeShardLifecycle()
+			startable := false
+			factory.attachFn = func(string, string) error {
+				if !startable {
+					return errors.New("tenant key not delivered yet")
+				}
+				return nil
+			}
+			p := joiningPlacement1("acme", "orders", 1001)
+			observer := newFakeJoinObserver()
+			observer.setCaughtUp(1001) // not joining -- because it never started
+			store, err := placement.NewStore(newMemKV())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Put(context.Background(), p); err != nil {
+				t.Fatal(err)
+			}
+			r := NewTenantShardReconciler(store, factory, "local:1", nil, WithJoinObserver(observer))
+
+			state := func() placement.ReplicaState {
+				t.Helper()
+				got, err := store.Get(context.Background(), "acme", "orders")
+				if err != nil {
+					t.Fatal(err)
+				}
+				local, _ := got.ReplicaForNode("local:1")
+				return local.State
+			}
+			drive(r, p)
+			if s := state(); s != placement.ReplicaStateObserver {
+				t.Fatalf("a replica whose shard never started is %v; want it left an observer", s)
+			}
+
+			startable = true
+			current, err := store.Get(context.Background(), "acme", "orders")
+			if err != nil {
+				t.Fatal(err)
+			}
+			drive(r, current)
+			if s := state(); s != placement.ReplicaStateObserverReady {
+				t.Fatalf("a running, caught-up observer is %v; want ObserverReady", s)
+			}
+		})
+	}
+}
+
 // TestTenantShardReconciler_ObserverReadyPromotedToActiveByLeader proves
 // that once a replica reaches ReplicaStateObserverReady, the reconciler
 // promotes it to ReplicaStateActive (a full voting member) exactly when this

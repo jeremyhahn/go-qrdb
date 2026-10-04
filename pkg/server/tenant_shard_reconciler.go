@@ -266,9 +266,11 @@ func (r *TenantShardReconciler) ReconcileOnce(ctx context.Context) {
 		if _, ok := p.ReplicaForNode(r.selfNodeID); !ok {
 			continue
 		}
-		r.ensureStarted(ctx, p)
+		running := r.ensureStarted(ctx, p)
 		r.maybeRestartPromotedLocal(ctx, p)
-		r.maybePromoteToObserverReady(ctx, p)
+		if running {
+			r.maybePromoteToObserverReady(ctx, p)
+		}
 		r.maybePromoteReadyObservers(ctx, p)
 	}
 
@@ -524,13 +526,17 @@ func (r *TenantShardReconciler) maybePromoteReadyObservers(ctx context.Context, 
 // when it is not already running and the tenant barrier is ready. If the barrier
 // is absent or sealed the start is deferred without error — it will be retried
 // on the next reconcile pass.
-func (r *TenantShardReconciler) ensureStarted(ctx context.Context, p *placement.Placement) {
+//
+// It reports whether the shard is running here now. Only a running replica can
+// have caught up: a shard that never started is not joining either, and must
+// not be taken for an observer that finished (maybePromoteToObserverReady).
+func (r *TenantShardReconciler) ensureStarted(ctx context.Context, p *placement.Placement) bool {
 	if r.sealRecords != nil && (r.sealRecords.Refuses(clusterseal.TenantBarrier(p.TenantID)) ||
 		r.sealRecords.Refuses(clusterseal.DatabaseBarrier(p.TenantID, p.Database))) {
 		r.logger.Debug("placement reconciler: tenant or database sealed cluster-wide, deferring shard start",
 			slog.String("tenant", p.TenantID),
 			slog.String("database", p.Database))
-		return
+		return false
 	}
 	if r.barriers != nil {
 		tb, err := r.barriers.GetTenant(p.TenantID)
@@ -538,7 +544,7 @@ func (r *TenantShardReconciler) ensureStarted(ctx context.Context, p *placement.
 			r.logger.Debug("placement reconciler: barrier not ready, deferring shard start",
 				slog.String("tenant", p.TenantID),
 				slog.String("database", p.Database))
-			return
+			return false
 		}
 	}
 
@@ -547,7 +553,9 @@ func (r *TenantShardReconciler) ensureStarted(ctx context.Context, p *placement.
 			slog.String("tenant", p.TenantID),
 			slog.String("database", p.Database),
 			slog.Any("error", err))
+		return false
 	}
+	return true
 }
 
 // Run drives the reconciler lifecycle. It calls ReconcileOnce immediately
@@ -612,8 +620,9 @@ func (r *TenantShardReconciler) handleEvent(ctx context.Context, ev placement.Ev
 			break
 		}
 		if _, ok := ev.Placement.ReplicaForNode(r.selfNodeID); ok {
-			r.ensureStarted(ctx, ev.Placement)
-			r.maybePromoteToObserverReady(ctx, ev.Placement)
+			if r.ensureStarted(ctx, ev.Placement) {
+				r.maybePromoteToObserverReady(ctx, ev.Placement)
+			}
 			r.maybePromoteReadyObservers(ctx, ev.Placement)
 			break
 		}
