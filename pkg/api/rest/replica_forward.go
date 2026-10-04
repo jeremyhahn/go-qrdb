@@ -365,6 +365,8 @@ func (c *refusalCatcher) release() {
 	}
 	c.held = false
 	c.passHeader()
+	// #nosec G705 -- the handler's own answer, held back unchanged and
+	// released as it was written; nothing here composes it.
 	_, _ = c.w.Write(c.buf.Bytes())
 	c.buf.Reset()
 }

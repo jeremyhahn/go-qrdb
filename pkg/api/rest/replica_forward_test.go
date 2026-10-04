@@ -151,7 +151,24 @@ func newRESTFwdCluster(t *testing.T, ca *replicaforwardtest.CA, timeout time.Dur
 	return c
 }
 
-func (c *restFwdCluster) put(t *testing.T, body string, header ...string) *http.Response {
+// restAnswer is an answer the ingress node gave, read whole.
+type restAnswer struct {
+	status int
+	header http.Header
+	body   string
+}
+
+// answerOf reads resp's body; the caller closes it.
+func answerOf(t *testing.T, resp *http.Response) restAnswer {
+	t.Helper()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return restAnswer{status: resp.StatusCode, header: resp.Header, body: string(b)}
+}
+
+func (c *restFwdCluster) put(t *testing.T, body string, header ...string) restAnswer {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodPut, c.url+"/kv/k1?consistency=strong", strings.NewReader(body))
 	if err != nil {
@@ -166,25 +183,16 @@ func (c *restFwdCluster) put(t *testing.T, body string, header ...string) *http.
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = resp.Body.Close() })
-	return resp
-}
-
-func readBody(t *testing.T, resp *http.Response) string {
-	t.Helper()
-	b, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(b)
+	defer func() { _ = resp.Body.Close() }()
+	return answerOf(t, resp)
 }
 
 // refusalBody decodes resp as the ingress node's NotAReplica refusal.
-func refusalBody(t *testing.T, resp *http.Response) *placement.NotAReplicaError {
+func refusalBody(t *testing.T, a restAnswer) *placement.NotAReplicaError {
 	t.Helper()
 	var body errorResponse
-	if err := json.Unmarshal([]byte(readBody(t, resp)), &body); err != nil || resp.StatusCode != http.StatusServiceUnavailable || body.Code != replicaforward.ReasonNotAReplica {
-		t.Fatalf("answer %d %+v (%v); want the NOT_A_REPLICA refusal", resp.StatusCode, body, err)
+	if err := json.Unmarshal([]byte(a.body), &body); err != nil || a.status != http.StatusServiceUnavailable || body.Code != replicaforward.ReasonNotAReplica {
+		t.Fatalf("answer %d %+v (%v); want the NOT_A_REPLICA refusal", a.status, body, err)
 	}
 	refusal, err := replicaforward.ParseNotAReplica(body.Metadata)
 	if err != nil {
@@ -199,12 +207,11 @@ func TestReplicaForwardREST_ForwardsAsTheCallerAndRelaysTheAnswer(t *testing.T) 
 	c := newRESTFwdCluster(t, ca, 5*time.Second, b)
 
 	resp := c.put(t, `{"value":"hello"}`)
-	body := readBody(t, resp)
-	if resp.StatusCode != http.StatusOK || !strings.Contains(body, `"served_by":"node-1"`) {
-		t.Fatalf("answer %d %s; want the replica's", resp.StatusCode, body)
+	if resp.status != http.StatusOK || !strings.Contains(resp.body, `"served_by":"node-1"`) {
+		t.Fatalf("answer %d %s; want the replica's", resp.status, resp.body)
 	}
-	if resp.Header.Get("X-Target-Says") != "hello" || resp.Header.Get(replicaforward.MetadataForwardedTo) != "1" {
-		t.Fatalf("headers %v; want the replica's and %s: 1", resp.Header, replicaforward.MetadataForwardedTo)
+	if resp.header.Get("X-Target-Says") != "hello" || resp.header.Get(replicaforward.MetadataForwardedTo) != "1" {
+		t.Fatalf("headers %v; want the replica's and %s: 1", resp.header, replicaforward.MetadataForwardedTo)
 	}
 	seen := b.lastSeen(t)
 	if seen.verifyErr != nil || seen.subject != "alice" || seen.body != `{"value":"hello"}` {
@@ -240,8 +247,8 @@ func TestReplicaForwardREST_NotLeaderRetriesTheNamedLeader(t *testing.T) {
 	c := newRESTFwdCluster(t, ca, 5*time.Second, b, cc)
 
 	resp := c.put(t, "v")
-	if resp.StatusCode != http.StatusOK || resp.Header.Get(replicaforward.MetadataForwardedTo) != "2" {
-		t.Fatalf("answer %d (%s); want the named leader, replica 2", resp.StatusCode, readBody(t, resp))
+	if resp.status != http.StatusOK || resp.header.Get(replicaforward.MetadataForwardedTo) != "2" {
+		t.Fatalf("answer %d (%s); want the named leader, replica 2", resp.status, resp.body)
 	}
 	if b.calls.Load() != 1 || cc.calls.Load() != 1 {
 		t.Fatalf("calls b=%d c=%d; want one each", b.calls.Load(), cc.calls.Load())
@@ -254,8 +261,8 @@ func TestReplicaForwardREST_UnreachableRetriesTheNextReplica(t *testing.T) {
 	cc := startRESTTarget(t, ca, "node-2", "raft-c")
 	c := newRESTFwdCluster(t, ca, 5*time.Second, dead, cc)
 
-	if resp := c.put(t, "v"); resp.StatusCode != http.StatusOK || cc.calls.Load() != 1 {
-		t.Fatalf("answer %d after %d calls to the next replica; want it served there", resp.StatusCode, cc.calls.Load())
+	if resp := c.put(t, "v"); resp.status != http.StatusOK || cc.calls.Load() != 1 {
+		t.Fatalf("answer %d after %d calls to the next replica; want it served there", resp.status, cc.calls.Load())
 	}
 }
 
@@ -282,9 +289,9 @@ func TestReplicaForwardREST_AFailureAfterSendingIsNotRetried(t *testing.T) {
 
 			resp := c.put(t, "v")
 			var body errorResponse
-			_ = json.Unmarshal([]byte(readBody(t, resp)), &body)
-			if resp.StatusCode < 500 || body.Code == replicaforward.ReasonNotAReplica {
-				t.Fatalf("answer %d %+v; want the failure, not the refusal", resp.StatusCode, body)
+			_ = json.Unmarshal([]byte(resp.body), &body)
+			if resp.status < 500 || body.Code == replicaforward.ReasonNotAReplica {
+				t.Fatalf("answer %d %+v; want the failure, not the refusal", resp.status, body)
 			}
 			if cc.calls.Load() != 0 {
 				t.Fatalf("a request that may have applied was sent again (%d)", cc.calls.Load())
@@ -301,8 +308,8 @@ func TestReplicaForwardREST_TheTargetsErrorIsTheAnswer(t *testing.T) {
 		return true
 	}
 	c := newRESTFwdCluster(t, ca, 5*time.Second, b)
-	if resp := c.put(t, "v"); resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("answer %d; want the replica's 404", resp.StatusCode)
+	if resp := c.put(t, "v"); resp.status != http.StatusNotFound {
+		t.Fatalf("answer %d; want the replica's 404", resp.status)
 	}
 }
 
@@ -343,7 +350,7 @@ func TestReplicaForwardREST_TheWatchStreamIsNotForwarded(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if refusalBody(t, resp); b.calls.Load() != 0 {
+	if refusalBody(t, answerOf(t, resp)); b.calls.Load() != 0 {
 		t.Fatal("the watch stream was forwarded")
 	}
 }
