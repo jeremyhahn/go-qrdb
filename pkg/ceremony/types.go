@@ -225,11 +225,13 @@ type InitResult struct {
 
 	// AdminCertPEM is the bootstrap admin's issued or adopted certificate
 	// (go-qrdb#548). Always present on a successful Initialize: signed from
-	// AdminCSRPEM, adopted from AdminCertPEM, or generated when neither was
-	// supplied. The SAME bytes are persisted as the pending-admin-credential
-	// record first boot reads to bind it; this copy is returned so a caller
-	// that wants it immediately (the CLI, an SDK embedder) does not have to
-	// wait for first boot.
+	// AdminCSRPEM, adopted from AdminCertPEM, or generated when AdminGenerate
+	// was explicitly set -- there is no credential-less default, and
+	// omitting AdminCSRPEM, AdminCertPEM and AdminGenerate all three refuses
+	// before Initialize does anything else. The SAME bytes are persisted as
+	// the pending-admin-credential record first boot reads to bind it; this
+	// copy is returned so a caller that wants it immediately (the CLI, an
+	// SDK embedder) does not have to wait for first boot.
 	AdminCertPEM []byte
 
 	// AdminKeyPEM is the generated private key, present ONLY when

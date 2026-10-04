@@ -201,13 +201,14 @@ func (e *AdminCredentialAlreadyPendingError) Error() string {
 // NoPendingAdminCredentialError is returned by AwaitPendingAdminCert when
 // neither an admin binding nor a pending certificate record appeared within
 // the bound. The admin-credential step is retriable (go-qrdb#548): re-running
-// `qrdb init` -- with --admin-csr, --admin-cert, or no flags to generate --
-// issues a fresh credential and writes a new pending record, as long as no
-// binding has committed yet.
+// `qrdb init` -- with exactly one of --admin-csr, --admin-cert or
+// --admin-generate; there is no credential-less default -- issues a fresh
+// credential and writes a new pending record, as long as no binding has
+// committed yet.
 type NoPendingAdminCredentialError struct{}
 
 // Error implements error.
 func (e *NoPendingAdminCredentialError) Error() string {
 	return "firstboot: no admin certificate binding and no pending admin credential record; " +
-		`re-run "qrdb init" (with --admin-csr, --admin-cert, or no flags to generate) to retry the admin-credential step`
+		`re-run "qrdb init" (with exactly one of --admin-csr, --admin-cert or --admin-generate) to retry the admin-credential step`
 }

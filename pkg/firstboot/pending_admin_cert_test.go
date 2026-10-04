@@ -284,7 +284,7 @@ func TestAwaitPendingAdminCert_AlreadyPastDeadlineRefusesImmediately(t *testing.
 	if !errors.As(err, &noCred) {
 		t.Fatalf("err = %T(%v), want *NoPendingAdminCredentialError", err, err)
 	}
-	if got, want := noCred.Error(), `firstboot: no admin certificate binding and no pending admin credential record; re-run "qrdb init" (with --admin-csr, --admin-cert, or no flags to generate) to retry the admin-credential step`; got != want {
+	if got, want := noCred.Error(), `firstboot: no admin certificate binding and no pending admin credential record; re-run "qrdb init" (with exactly one of --admin-csr, --admin-cert or --admin-generate) to retry the admin-credential step`; got != want {
 		t.Fatalf("Error() = %q, want %q", got, want)
 	}
 }

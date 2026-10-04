@@ -148,8 +148,9 @@ refuse every fresh boot.
 paths through the ceremony instead of through `firstboot.Dependencies.CA` /
 `Signer` directly:
 
-1. **`qrdb init` selects the path** (`--admin-csr`, `--admin-cert` +
-   `--admin-cert-pool`, or neither to generate) and sends it to
+1. **`qrdb init` selects the path** (exactly one of `--admin-csr`,
+   `--admin-cert` + `--admin-cert-pool`, or `--admin-generate`; there is no
+   credential-less default) and sends it to
    `pkg/ceremony.CeremonyService.Initialize`, which performs the CSR-sign,
    BYOC-validate, or generate-and-sign SYNCHRONOUSLY, where the CA is
    available — no admin account exists yet, and signing does not need one.
