@@ -241,14 +241,18 @@ type BatchService struct {
 	// cluster CA's key material, specifically -- has no other
 	// interception point. nil means no guard: the zero value of
 	// BatchService imports every well-formed row, as it always has. Set
-	// via setImportKeyGuard, which NewHardConfinedBatch calls.
+	// via SetImportKeyGuard, which NewHardConfinedBatch calls through the
+	// ImportKeyGuardSetter interface.
 	importKeyGuard func(key string) error
 }
 
-// setImportKeyGuard installs (or clears, with nil) the per-row key guard
-// importRecords consults before proposing a write. Package-private: the
-// only caller is NewHardConfinedBatch.
-func (s *BatchService) setImportKeyGuard(guard func(key string) error) {
+// Compile-time interface assertion.
+var _ ImportKeyGuardSetter = (*BatchService)(nil)
+
+// SetImportKeyGuard installs (or clears, with nil) the per-row key guard
+// importRecords consults before proposing a write. See ImportKeyGuardSetter;
+// the only caller in this codebase is NewHardConfinedBatch.
+func (s *BatchService) SetImportKeyGuard(guard func(key string) error) {
 	s.importKeyGuard = guard
 }
 

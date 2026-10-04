@@ -48,6 +48,13 @@ func (m *fnBatchService) Import(ctx context.Context, data io.Reader, opts servic
 	return m.importFn(ctx, data, opts)
 }
 
+// SetImportKeyGuard satisfies service.ImportKeyGuardSetter as a no-op:
+// this double tests the "batch import" command's own plumbing (flags,
+// output formatting, error propagation), never the hard-confinement
+// feature, and its fixtures never name the confined key -- a deliberate,
+// visible opt-out for this one concern, not an accidental one.
+func (m *fnBatchService) SetImportKeyGuard(func(string) error) {}
+
 // executeBatchCmd builds an embedded SDK client over batchSvc, installs it
 // as the package-level client, and executes the "batch" command tree with
 // args.

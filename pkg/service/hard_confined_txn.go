@@ -136,32 +136,62 @@ func (h *hardConfinedTxn) ExecuteEntity(ctx context.Context, req *TransactionEnt
 // it parses a caller-supplied file into rows and proposes the resulting
 // encoded ops directly, the same way ExecuteEntity does, so there is no
 // "ops" value for Execute's own check to inspect before Import has
-// already built and proposed them. NewHardConfinedBatch instead injects a
-// row-key guard into the *BatchService it wraps (when the wrapped value is
-// one), which importRecords consults per row before a write for a
-// hard-confined key is ever proposed. Import itself still gets an explicit
-// override below -- a thin passthrough -- so it is not silently promoted
-// through embedding the way it would be if this type relied on the
-// embedded BatchServicer alone; the confinement happens one layer down, at
-// the proposal site, which is where Import's own vulnerability lives.
+// already built and proposed them. NewHardConfinedBatch instead installs a
+// row-key guard on the wrapped value through ImportKeyGuardSetter (when it
+// satisfies that interface), which importRecords consults per row before a
+// write for a hard-confined key is ever proposed. Import itself still gets
+// an explicit override below -- a thin passthrough when the guard
+// installed, an outright refusal when it could not -- so it is not
+// silently promoted through embedding the way it would be if this type
+// relied on the embedded BatchServicer alone; the confinement happens one
+// layer down, at the proposal site, which is where Import's own
+// vulnerability lives.
 type hardConfinedBatch struct {
 	BatchServicer
+
+	// importGuardInstalled records whether NewHardConfinedBatch was able to
+	// install the row-key guard on the wrapped value. false for any
+	// BatchServicer that does not satisfy ImportKeyGuardSetter -- a test
+	// double with no confinement needs of its own, or a future alternate
+	// implementation that forgot to -- in which case Import has no way to
+	// confine itself and must refuse rather than import unguarded.
+	importGuardInstalled bool
+}
+
+// ImportKeyGuardSetter is satisfied by a BatchServicer that can accept an
+// externally-supplied row-key guard for Import to consult per row before
+// proposing a write. *BatchService is the one production implementation;
+// NewHardConfinedBatch installs the hard-confinement guard through this
+// interface when the wrapped value satisfies it, so a future alternate
+// BatchServicer implementation opts in the same way, rather than this
+// package needing to know its concrete type. A BatchServicer that does not
+// satisfy it gets Import refused outright (see
+// HardConfinedImportGuardUnavailableError): there is no other way to
+// confine its writes.
+type ImportKeyGuardSetter interface {
+	// SetImportKeyGuard installs (or clears, with nil) the guard Import
+	// consults for each row's storage key before proposing its write.
+	SetImportKeyGuard(guard func(key string) error)
 }
 
 // NewHardConfinedBatch wraps svc, or returns nil unchanged so a resolver
 // that found no service configured for a scope keeps reporting that
-// rather than a wrapped nil satisfying the interface. When svc is a
-// *BatchService, it also installs a row-key guard so Import -- which
-// proposes rows directly and never calls Execute -- refuses a
-// hard-confined row instead of writing it.
+// rather than a wrapped nil satisfying the interface. When svc satisfies
+// ImportKeyGuardSetter, it also installs a row-key guard so Import --
+// which proposes rows directly and never calls Execute -- refuses a
+// hard-confined row instead of writing it. When svc does not satisfy it,
+// no guard can be installed, and Import refuses outright
+// (HardConfinedImportGuardUnavailableError) rather than importing with no
+// confinement at all.
 func NewHardConfinedBatch(svc BatchServicer) BatchServicer {
 	if svc == nil {
 		return nil
 	}
-	if bs, ok := svc.(*BatchService); ok {
-		bs.setImportKeyGuard(hardConfinedImportKeyGuard)
+	setter, ok := svc.(ImportKeyGuardSetter)
+	if ok {
+		setter.SetImportKeyGuard(hardConfinedImportKeyGuard)
 	}
-	return &hardConfinedBatch{BatchServicer: svc}
+	return &hardConfinedBatch{BatchServicer: svc, importGuardInstalled: ok}
 }
 
 // hardConfinedImportKeyGuard is the *BatchService row-key guard
@@ -172,6 +202,18 @@ func hardConfinedImportKeyGuard(key string) error {
 		return &HardConfinedKeyError{Key: key}
 	}
 	return nil
+}
+
+// HardConfinedImportGuardUnavailableError is returned by Import when the
+// wrapped BatchServicer is not a *BatchService, so NewHardConfinedBatch
+// could not install the row-key guard Import relies on for confinement.
+// Refusing is the fail-closed choice: importing unguarded would let a row
+// naming the cluster CA's key material through with no check at all.
+type HardConfinedImportGuardUnavailableError struct{}
+
+// Error returns a human-readable description.
+func (e *HardConfinedImportGuardUnavailableError) Error() string {
+	return "service: Import has no hard-confinement guard to enforce on this BatchServicer and refuses rather than import unguarded"
 }
 
 func (h *hardConfinedBatch) Execute(ctx context.Context, ops []Op) ([]OpResponse, error) {
@@ -200,13 +242,17 @@ func (h *hardConfinedBatch) ExecuteEntity(ctx context.Context, req *BatchEntityR
 }
 
 // Import is declared explicitly rather than relying on promotion through
-// embedding, even though its body delegates straight through: the actual
-// confinement for Import happens one layer down, via the row-key guard
-// NewHardConfinedBatch installs on a wrapped *BatchService (see above).
-// Declaring it here keeps every BatchServicer method accounted for on
-// this type, rather than leaving one to arrive by promotion where a
-// reviewer -- or the reflection test asserting this -- would have to know
-// to look for it.
+// embedding: the actual confinement for Import happens one layer down, via
+// the row-key guard NewHardConfinedBatch installs on a wrapped
+// *BatchService (see above), so this delegates straight through ONLY when
+// that guard was actually installed. When it was not -- the wrapped value
+// is some other BatchServicer, a test double or a future alternate
+// implementation -- there is no confinement for Import to rely on at all,
+// and importing anyway would silently let a row naming the cluster CA's
+// key material through, so this refuses instead.
 func (h *hardConfinedBatch) Import(ctx context.Context, file io.Reader, opts ImportOptions) (*ImportResult, error) {
+	if !h.importGuardInstalled {
+		return nil, &HardConfinedImportGuardUnavailableError{}
+	}
 	return h.BatchServicer.Import(ctx, file, opts)
 }

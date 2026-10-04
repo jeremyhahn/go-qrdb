@@ -369,6 +369,75 @@ func TestHardConfinedBatch_ImportOrdinaryRowsPassThrough(t *testing.T) {
 	}
 }
 
+// fakeBatchWithOwnGuard is a BatchServicer double that implements
+// ImportKeyGuardSetter itself, standing in for a future alternate
+// BatchServicer implementation (not *BatchService) that wants Import
+// confined. It records the installed guard and applies it to every
+// imported row, proving NewHardConfinedBatch's installation path works
+// through the INTERFACE, not a concrete-type assertion.
+type fakeBatchWithOwnGuard struct {
+	BatchServicer
+	guard func(key string) error
+}
+
+func (f *fakeBatchWithOwnGuard) SetImportKeyGuard(guard func(key string) error) {
+	f.guard = guard
+}
+
+func (f *fakeBatchWithOwnGuard) Import(_ context.Context, _ io.Reader, _ ImportOptions) (*ImportResult, error) {
+	if f.guard == nil {
+		return nil, errors.New("no guard installed")
+	}
+	if err := f.guard(confinedKey); err == nil {
+		return nil, errors.New("guard did not refuse the confined key")
+	}
+	return &ImportResult{Total: 1, Succeeded: 1}, nil
+}
+
+// TestHardConfinedBatch_InstallsTheGuardThroughTheInterface proves
+// NewHardConfinedBatch installs the hard-confinement guard on any
+// BatchServicer satisfying ImportKeyGuardSetter, not only a concrete
+// *BatchService -- the interface, not a type assertion to one production
+// struct, is what a future alternate implementation opts into.
+func TestHardConfinedBatch_InstallsTheGuardThroughTheInterface(t *testing.T) {
+	fake := &fakeBatchWithOwnGuard{}
+	batch := NewHardConfinedBatch(fake)
+
+	if fake.guard == nil {
+		t.Fatal("NewHardConfinedBatch did not install a guard on a BatchServicer satisfying ImportKeyGuardSetter")
+	}
+	if _, err := batch.Import(context.Background(), strings.NewReader(""), ImportOptions{}); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+}
+
+// TestHardConfinedBatch_ImportRefusesWhenTheGuardCouldNotBeInstalled is the
+// non-blocking review item: when the wrapped BatchServicer is not a
+// *BatchService, NewHardConfinedBatch cannot install the row-key guard
+// Import relies on, and Import must refuse outright rather than import
+// unguarded -- a fake (or a future alternate BatchServicer implementation)
+// gets a typed refusal, not silent, unconfined passthrough.
+func TestHardConfinedBatch_ImportRefusesWhenTheGuardCouldNotBeInstalled(t *testing.T) {
+	ctx := context.Background()
+	fake := &fakeBatch{}
+	batch := NewHardConfinedBatch(fake)
+
+	_, err := batch.Import(ctx, strings.NewReader("key,value\nordinary-1,v1\n"), ImportOptions{
+		Format:     "csv",
+		KeyField:   "key",
+		ValueMode:  "field",
+		ValueField: "value",
+		SkipHeader: true,
+	})
+	var guardErr *HardConfinedImportGuardUnavailableError
+	if !errors.As(err, &guardErr) {
+		t.Fatalf("Import on a non-*BatchService wrapped value = %v, want *HardConfinedImportGuardUnavailableError", err)
+	}
+	if fake.called {
+		t.Fatal("Import reached the underlying servicer despite the refusal")
+	}
+}
+
 func TestHardConfinedBatch_OrdinaryBatchesPassThrough(t *testing.T) {
 	ctx := context.Background()
 	fake := &fakeBatch{}

@@ -281,6 +281,13 @@ func (m *mockBatchService) Import(_ context.Context, _ io.Reader, _ service.Impo
 	return nil, nil
 }
 
+// SetImportKeyGuard satisfies service.ImportKeyGuardSetter as a no-op:
+// this double is shared across CLI/binding plumbing tests, never the
+// hard-confinement feature, and no fixture using it names the confined
+// key -- a deliberate, visible opt-out for this one concern, not an
+// accidental one.
+func (m *mockBatchService) SetImportKeyGuard(func(string) error) {}
+
 // ---------------------------------------------------------------------------
 // Mock watch service
 // ---------------------------------------------------------------------------

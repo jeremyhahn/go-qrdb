@@ -213,6 +213,12 @@ var dataPlaneRules = []rule{
 	// doc comment). The same class as RestoreInternalKeyError: an
 	// authority the caller does not have, not a malformed request.
 	as(&service.HardConfinedKeyError{}, PermissionDenied),
+	// Import on a BatchServicer that is not a *BatchService: no row-key
+	// guard could be installed, so Import refuses rather than let an
+	// unguarded file import reach the cluster CA's key material. Same
+	// class as HardConfinedKeyError -- a fail-closed refusal, not a
+	// malformed request.
+	as(&service.HardConfinedImportGuardUnavailableError{}, PermissionDenied),
 }
 
 // vectorRules are the vector-service conditions (go-qrdb#331).

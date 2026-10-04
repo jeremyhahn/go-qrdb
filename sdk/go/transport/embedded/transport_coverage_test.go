@@ -1986,6 +1986,16 @@ func (b *fullBatchService) Import(ctx context.Context, r io.Reader, opts service
 	return &service.ImportResult{Total: 1, Succeeded: 1}, nil
 }
 
+// SetImportKeyGuard satisfies service.ImportKeyGuardSetter as a no-op:
+// this double tests ImportFile's wire-level plumbing (the transport's
+// mapping between transport.ImportResult and service.ImportResult), never
+// the hard-confinement feature, and its inputs below ("k,v\n1,2", "")
+// never name the confined key -- so declaring it here (rather than
+// leaving NewHardConfinedBatch to refuse Import outright for a
+// BatchServicer with no confinement of its own) is a deliberate,
+// visible opt-out for this one concern, not an accidental one.
+func (b *fullBatchService) SetImportKeyGuard(func(string) error) {}
+
 // ===========================================================================
 // ImportFile tests
 // ===========================================================================
