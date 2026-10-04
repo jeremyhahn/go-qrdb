@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -156,6 +157,56 @@ func TestAuthorizeTenantBarrierInit_TrustOnFirstInit(t *testing.T) {
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "admin", TenantID: "t1"})
 	if err := m.AuthorizeTenantBarrierInit(ctx, "t1", &fakeBarrierStatusReader{initialized: false}); err != nil {
 		t.Fatalf("trust-on-first-init = %v, want nil", err)
+	}
+}
+
+// holderIdentity returns an identity authenticated with a holder (Security
+// Officer/custodian) certificate for tenantID, stamped exactly as the mTLS
+// authenticator stamps one -- auth.HolderProfileMetadataKey set to the
+// profile OU. Such an identity is never enriched from the user store (see
+// auth.IsHolderIdentity), so it holds no roles.
+func holderIdentity(tenantID, profile string) *auth.Identity {
+	return &auth.Identity{
+		Subject:  "custodian",
+		TenantID: tenantID,
+		Metadata: map[string]string{auth.HolderProfileMetadataKey: profile},
+	}
+}
+
+// TestAuthorizeTenantBarrierInit_HolderIdentityNeverOpensTheWindow proves a
+// share-holder certificate can never trigger trust-on-first-init for a
+// tenant barrier. Every element of
+// TestAuthorizeTenantBarrierInit_TrustOnFirstInit's admitted case is
+// reproduced here -- RBAC denies, the caller's own tenant, the barrier never
+// initialized -- except the caller authenticated with a holder certificate
+// rather than an ordinary tenant identity. A share-holder cert proves
+// custody of a quorum share, not an operator identity entitled to
+// initialize the tenant's IAM barrier; admitting it here would let a
+// custodian who will never hold an RBAC grant stand up a tenant's entire
+// identity store.
+func TestAuthorizeTenantBarrierInit_HolderIdentityNeverOpensTheWindow(t *testing.T) {
+	deny := &mockAuthorizer{err: errors.New("rbac: permission denied")}
+	m := New(deny)
+	ctx := auth.WithIdentity(context.Background(), holderIdentity("t1", holderprofile.Custodian))
+	if err := m.AuthorizeTenantBarrierInit(ctx, "t1", &fakeBarrierStatusReader{initialized: false}); err == nil {
+		t.Fatal("a share-holder identity must never initialize a tenant barrier via trust-on-first-init")
+	}
+}
+
+// TestAuthorizeTenantBarrierSealedOp_HolderIdentityNeverOpensTheWindow
+// proves the sealed-window fallback (status/unseal while IAM is
+// unreachable) is refused the same way for a holder identity, even when the
+// middleware's own sealed marker is present on it. A custodian's whole
+// reason to exist is custody of a Shamir share toward the ceremony
+// quorum -- the barrier operations this window exists to unblock are not
+// that path.
+func TestAuthorizeTenantBarrierSealedOp_HolderIdentityNeverOpensTheWindow(t *testing.T) {
+	m := New(&mockAuthorizer{})
+	id := holderIdentity("t1", holderprofile.SecurityOfficer)
+	id.Metadata[tenantIAMSealedMetadataKey] = "true"
+	ctx := auth.WithIdentity(context.Background(), id)
+	if err := m.AuthorizeTenantBarrierSealedOp(ctx, "t1", permission.TenantBarrierUnseal); err == nil {
+		t.Fatal("a share-holder identity must never pass the sealed-window fallback")
 	}
 }
 

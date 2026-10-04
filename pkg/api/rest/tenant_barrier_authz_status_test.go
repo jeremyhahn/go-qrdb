@@ -33,6 +33,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // grantingAuthorizer permits everything, so these tests isolate the AUDIT
@@ -152,6 +154,53 @@ type denyingAuthorizer struct{}
 
 func (denyingAuthorizer) Authorize(_ context.Context, _ *auth.Identity, _, _ string) error {
 	return auth.ErrUnauthorized
+}
+
+// holderBarrierRequest drives one tenant-barrier route through the real
+// dispatcher with a holder (custodian/SO) identity bound the way the mTLS
+// authenticator binds one -- auth.HolderProfileMetadataKey set to profile,
+// never enriched from the user store.
+func holderBarrierRequest(t *testing.T, srv *Server, method, path, profile string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, path, nil)
+	id := &auth.Identity{
+		Subject:  "custodian",
+		TenantID: "acme",
+		Metadata: map[string]string{auth.HolderProfileMetadataKey: profile},
+	}
+	ctx := auth.WithIdentity(req.Context(), id)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req.WithContext(ctx))
+	return rec
+}
+
+// TestTenantBarrierInit_HolderIdentityRefusedEvenWhenUninitialized is the
+// REST half of go-qrdb#560 review item 4: a custodian identity for tenant
+// acme, RBAC denying, the barrier never initialized -- exactly the state
+// that admits an ORDINARY tenant identity through trust-on-first-init --
+// must still be refused. The reviewer's probe got nil (200 OK); this test
+// requires 403.
+func TestTenantBarrierInit_HolderIdentityRefusedEvenWhenUninitialized(t *testing.T) {
+	svc := &mockTenantService{
+		tenantBarrierStatusFn: func(_ context.Context, tenantID string) (*tenant.TenantBarrierStatus, error) {
+			return &tenant.TenantBarrierStatus{TenantID: tenantID, Initialized: false}, nil
+		},
+		tenantBarrierInitFn: func(_ context.Context, _ string, _ []byte, _, _ int) error {
+			t.Fatal("the tenant service must never be reached: the holder identity should be refused before the business logic runs")
+			return nil
+		},
+	}
+	srv := newTenantServer(svc)
+	WithAuthMiddleware(authmw.New(denyingAuthorizer{}))(srv)
+
+	for _, profile := range []string{holderprofile.Custodian, holderprofile.SecurityOfficer} {
+		t.Run(profile, func(t *testing.T) {
+			rec := holderBarrierRequest(t, srv, http.MethodPost, "/v1/tenants/acme/barrier/init", profile)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403: a share-holder certificate must never initialize a tenant barrier", rec.Code)
+			}
+		})
+	}
 }
 
 // TestWriteAuthzErrorJSON_FallbackStaysForbidden pins the fallback choice.

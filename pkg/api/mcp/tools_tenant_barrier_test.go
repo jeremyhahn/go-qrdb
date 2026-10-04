@@ -26,7 +26,10 @@ import (
 
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -115,6 +118,62 @@ func TestHandleTenantBarrierInit_ServiceError(t *testing.T) {
 	}
 	if te.Tool != "qrdb_tenant_barrier_init" {
 		t.Errorf("expected tool 'qrdb_tenant_barrier_init', got %q", te.Tool)
+	}
+}
+
+// denyEverything is the canonical RBAC refusal, over the real
+// authmw.AuthMiddleware -- not a stub authorize closure -- so this test
+// exercises the production composition (handleTenantBarrierInit wired to
+// authmw.AuthorizeTenantBarrierInit) rather than a test double that could
+// drift from it.
+type denyEverything struct{}
+
+func (denyEverything) Authorize(_ context.Context, _ *auth.Identity, _, _ string) error {
+	return auth.ErrUnauthorized
+}
+
+// TestHandleTenantBarrierInit_HolderIdentityRefusedEvenWhenUninitialized is
+// the MCP half of go-qrdb#560 review item 4: a custodian/SO identity for
+// tenant acme, RBAC denying, the barrier never initialized -- exactly the
+// state that admits an ORDINARY tenant identity through trust-on-first-init
+// -- must still be refused the qrdb_tenant_barrier_init tool.
+func TestHandleTenantBarrierInit_HolderIdentityRefusedEvenWhenUninitialized(t *testing.T) {
+	svc := newMockTenantService()
+	svc.barrierStatusFn = func(_ context.Context, id string) (*tenant.TenantBarrierStatus, error) {
+		return &tenant.TenantBarrierStatus{TenantID: id, Initialized: false}, nil
+	}
+	svc.barrierInitFn = func(_ context.Context, _ string, _ []byte, _, _ int) error {
+		t.Fatal("the tenant service must never be reached: a share-holder identity must be refused before the business logic runs")
+		return nil
+	}
+
+	mw := authmw.New(denyEverything{})
+	authorize := func(ctx context.Context, tenantID string) error {
+		return mw.AuthorizeTenantBarrierInit(ctx, tenantID, svc)
+	}
+	handler := handleTenantBarrierInit(svc, authorize)
+
+	for _, profile := range []string{holderprofile.Custodian, holderprofile.SecurityOfficer} {
+		t.Run(profile, func(t *testing.T) {
+			id := &auth.Identity{
+				Subject:  "custodian",
+				TenantID: "acme",
+				Metadata: map[string]string{auth.HolderProfileMetadataKey: profile},
+			}
+			ctx := auth.WithIdentity(context.Background(), id)
+
+			req := buildCallToolRequest(t, "qrdb_tenant_barrier_init", map[string]any{
+				"tenant_id":  "acme",
+				"passphrase": "x",
+			})
+			result, err := handler(ctx, req)
+			if err != nil {
+				t.Fatalf("unexpected transport error: %v", err)
+			}
+			if !result.IsError {
+				t.Fatal("expected an MCP error result: a share-holder certificate must never initialize a tenant barrier")
+			}
+		})
 	}
 }
 

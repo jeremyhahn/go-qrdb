@@ -125,6 +125,15 @@ func (m *AuthMiddleware) AuthorizeTenantBarrierInit(ctx context.Context, tenantI
 	if caller == nil || caller.TenantID != tenantID || status == nil {
 		return rbacErr
 	}
+	// A share-holder certificate proves custody of a quorum share, not an
+	// operator identity entitled to initialize a tenant's IAM barrier.
+	// IsHolderIdentity callers are never enriched from the user store and
+	// so will never hold tenant_barrier:init; admitting one here would let
+	// a custodian or Security Officer stand up a tenant's entire identity
+	// store through a window meant for the tenant's own first operator.
+	if auth.IsHolderIdentity(caller) {
+		return rbacErr
+	}
 	st, err := status.TenantBarrierStatus(ctx, tenantID)
 	if err != nil || st == nil || st.Initialized {
 		return rbacErr
@@ -170,6 +179,11 @@ func (m *AuthMiddleware) AuthorizeTenantBarrierSealedOp(ctx context.Context, ten
 	}
 	caller := auth.IdentityFromContext(ctx)
 	if caller == nil || caller.TenantID != tenantID || !IdentityIAMSealed(caller) {
+		return rbacErr
+	}
+	// See AuthorizeTenantBarrierInit: a share-holder identity never opens
+	// either bootstrap window.
+	if auth.IsHolderIdentity(caller) {
 		return rbacErr
 	}
 	// The RBAC denial above was already audited; record the final decision
