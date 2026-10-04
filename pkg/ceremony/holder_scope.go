@@ -453,6 +453,10 @@ func (h *holderScope) enrol(ctx context.Context, d *HolderDeps, req RegisterOffi
 	if !validPrincipalName(req.Username) {
 		return nil, &InvalidHolderNameError{Name: req.Username}
 	}
+	resolved, err := resolveFactors(d, req)
+	if err != nil {
+		return nil, err
+	}
 	designated, err := designatedFactor(req)
 	if err != nil {
 		return nil, err
@@ -476,7 +480,7 @@ func (h *holderScope) enrol(ctx context.Context, d *HolderDeps, req RegisterOffi
 		return nil, err
 	}
 
-	factors, err := h.enrolFactors(ctx, d, req, cert)
+	factors, err := h.enrolFactors(ctx, req, resolved, cert)
 	if err != nil {
 		return nil, err
 	}
@@ -688,11 +692,13 @@ func (h *holderScope) nameFree(ctx context.Context, username string) error {
 	}
 }
 
-// enrolFactors enrols "mtls" from the issued certificate and every requested
-// additional factor through its registered implementation.
-func (h *holderScope) enrolFactors(ctx context.Context, d *HolderDeps, req RegisterOfficerRequest, cert *x509.Certificate) ([]seal.RosterFactor, error) {
-	me := mtls.EnrollmentFromCertificate(req.Username, h.tenantID, cert)
-	out := []seal.RosterFactor{{Name: me.FactorName, EnrollmentID: me.EnrollmentID, PublicKey: me.PublicKey, Metadata: me.Metadata}}
+// resolveFactors resolves every additional factor req names, in order. A
+// name that is empty, repeated, or "mtls" (enrolled from the certificate
+// already) is *DuplicateFactorError and one the node does not know is
+// *authfactors.FactorNotFoundError. It reads the request and the registry
+// alone, so a registration is refused for them before the gate.
+func resolveFactors(d *HolderDeps, req RegisterOfficerRequest) ([]authfactors.Factor, error) {
+	out := make([]authfactors.Factor, 0, len(req.Factors))
 	seen := map[string]bool{mtls.Name: true}
 	for _, fe := range req.Factors {
 		if fe.Name == "" || seen[fe.Name] {
@@ -703,6 +709,19 @@ func (h *holderScope) enrolFactors(ctx context.Context, d *HolderDeps, req Regis
 		if err != nil {
 			return nil, err
 		}
+		out = append(out, f)
+	}
+	return out, nil
+}
+
+// enrolFactors enrols "mtls" from the issued certificate and every requested
+// additional factor through its implementation, resolved beforehand
+// (resolveFactors) in req.Factors' order.
+func (h *holderScope) enrolFactors(ctx context.Context, req RegisterOfficerRequest, resolved []authfactors.Factor, cert *x509.Certificate) ([]seal.RosterFactor, error) {
+	me := mtls.EnrollmentFromCertificate(req.Username, h.tenantID, cert)
+	out := []seal.RosterFactor{{Name: me.FactorName, EnrollmentID: me.EnrollmentID, PublicKey: me.PublicKey, Metadata: me.Metadata}}
+	for i, fe := range req.Factors {
+		f := resolved[i]
 		e, err := f.Enroll(ctx, &authfactors.EnrollParams{UserID: req.Username, TenantID: h.tenantID, MethodParams: fe.Params})
 		if err != nil {
 			return nil, &HolderFactorEnrollmentError{Factor: fe.Name, Err: err}

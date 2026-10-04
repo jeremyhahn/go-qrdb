@@ -20,8 +20,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/util/fsync"
 )
 
 // ErrOutsideTrailDir is returned when a chain-file trail is named by a path
@@ -44,6 +42,12 @@ var ErrOutsideTrailDir = errors.New("audit: path leaves the trail's directory")
 type trailDir struct {
 	root *os.Root
 	base string
+
+	// syncFunc, when non-nil, replaces the fsync of a directory a rename
+	// changed (syncDir). It exists because a directory sync's failure is a
+	// property of the filesystem: a test fails it at the operation, where
+	// the bytes on disk would be identical either way.
+	syncFunc func(dir *os.File) error
 }
 
 // openTrailDir opens base, the directory a trail is confined to.
@@ -132,14 +136,35 @@ func (d *trailDir) rename(oldpath, newpath string) error {
 	if err := d.root.Rename(oldName, newName); err != nil {
 		return err
 	}
-	newDir := filepath.Dir(newpath)
-	if err := fsync.Dir(newDir); err != nil {
+	newDir := filepath.Dir(newName)
+	if err := d.syncDir(newDir); err != nil {
 		return err
 	}
-	if oldDir := filepath.Dir(oldpath); oldDir != newDir {
-		return fsync.Dir(oldDir)
+	if oldDir := filepath.Dir(oldName); oldDir != newDir {
+		return d.syncDir(oldDir)
 	}
 	return nil
+}
+
+// syncDir fsyncs the directory name in the root, opened through the root
+// like every other file of the trail, so the sync reaches the directory the
+// rename changed and nothing a link names. The close error is reported when
+// the sync itself succeeded: a failed close can mean the sync did not reach
+// stable storage.
+func (d *trailDir) syncDir(name string) error {
+	f, err := d.root.Open(name)
+	if err != nil {
+		return err
+	}
+	sync := (*os.File).Sync
+	if d.syncFunc != nil {
+		sync = d.syncFunc
+	}
+	if err := sync(f); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // close releases the root.

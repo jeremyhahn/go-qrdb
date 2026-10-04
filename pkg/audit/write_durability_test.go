@@ -22,8 +22,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/util/fsync"
 )
 
 // TestRotate_DoesNotReportSuccessBeforeTheArchiveEntryIsDurable.
@@ -48,7 +46,7 @@ func TestRotate_DoesNotReportSuccessBeforeTheArchiveEntryIsDurable(t *testing.T)
 	l.Emit(context.Background(), testEvent("henry", "kv", "delete"))
 
 	sentinel := errors.New("directory sync refused")
-	t.Cleanup(fsync.SetForTest(func(string) error { return sentinel }))
+	l.dir.syncFunc = func(*os.File) error { return sentinel }
 
 	l.mu.Lock()
 	rotErr := l.rotate()
@@ -81,11 +79,11 @@ func TestRotate_KeepsLoggingAfterADurabilityFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = l.Close() })
 
-	restore := fsync.SetForTest(func(string) error { return errors.New("directory sync refused") })
+	l.dir.syncFunc = func(*os.File) error { return errors.New("directory sync refused") }
 	l.mu.Lock()
 	_ = l.rotate()
 	l.mu.Unlock()
-	restore()
+	l.dir.syncFunc = nil
 
 	if l.f == nil {
 		t.Fatal("logger has no open file after a failed rotation; every subsequent Emit " +
@@ -114,17 +112,30 @@ func TestRotate_SyncsTheDirectoryOnASuccessfulRotation(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = l.Close() })
 
-	var synced []string
-	restore := fsync.SetForTest(func(d string) error { synced = append(synced, d); return nil })
+	// The directory is synced through the trail's root: the file synced is
+	// the trail's directory itself.
+	var synced []os.FileInfo
+	l.dir.syncFunc = func(f *os.File) error {
+		info, err := f.Stat()
+		if err != nil {
+			return err
+		}
+		synced = append(synced, info)
+		return f.Sync()
+	}
 	l.mu.Lock()
 	rotErr := l.rotate()
 	l.mu.Unlock()
-	restore()
+	l.dir.syncFunc = nil
 
 	if rotErr != nil {
 		t.Fatalf("rotate: %v", rotErr)
 	}
-	if len(synced) != 1 || synced[0] != dir {
-		t.Errorf("synced dirs = %v; want exactly [%s]", synced, dir)
+	want, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(synced) != 1 || !os.SameFile(synced[0], want) {
+		t.Errorf("synced %d directories; want exactly the trail's directory %s, once", len(synced), dir)
 	}
 }

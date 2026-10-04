@@ -280,6 +280,7 @@ var holderReasonTypes = []struct {
 	{isType[*UnsupportedHolderKeyError], reasonInvalidRequest},
 	{isType[*EncryptionKeyRequiredError], reasonInvalidRequest},
 	{isType[*DuplicateFactorError], reasonInvalidRequest},
+	{isType[*HolderFactorEnrollmentError], reasonInvalidRequest},
 	{isType[*FactorNotEnrolledError], reasonFactorNotAdmitted},
 	{isType[*seal.FactorNotAdmittedError], reasonFactorNotAdmitted},
 	{isType[*authfactors.FactorNotFoundError], reasonFactorNotAdmitted},

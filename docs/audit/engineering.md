@@ -662,8 +662,10 @@ Each gated operation therefore leaves its records in one of three sequences:
 The second record is post-hoc (`audit.EmitBestEffort`): the operation has run
 when it is written. A gate refusal under `fail-closed` leaves neither record
 -- the sink that refused the first would refuse the second, and the
-operation did not run. Input validation runs before the gate, a registration's
-designated factor included, so invalid input is never `permitted`.
+operation did not run. Input validation runs before the gate -- a registration's
+factor names (an empty, repeated or unknown one) and its designated factor
+included -- so invalid input is never `permitted`; a factor that refuses the
+enrolment itself does so after the gate, `failure:invalid-request`.
 Refusals, quorum submissions and revocations stay post-hoc
 (`audit.EmitBestEffort`, `qrdb_audit_write_failures_total{component="share-holder"}`):
 the operation has already been refused or completed when they are written.

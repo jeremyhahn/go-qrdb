@@ -229,7 +229,7 @@ func TestHolderAudit_GatedRegisterFailingAfterTheGate(t *testing.T) {
 			got := outcomesOf(ring, a.scope, ActionHolderRegister, "alice")
 			require.Len(t, got, 2, "the gate's record and the outcome's: %v", got)
 			assert.Equal(t, audit.OutcomePermitted, got[0])
-			assert.True(t, strings.HasPrefix(got[1], audit.OutcomeFailure+":"), got[1])
+			assert.Equal(t, audit.OutcomeFailure+":"+reasonInvalidRequest, got[1], "a factor's refused enrolment has its own fixed reason")
 			assert.NotContains(t, got, audit.OutcomeSuccess, "a registration that failed was recorded as a success")
 		})
 	}
@@ -257,6 +257,46 @@ func TestHolderAudit_GatedOperationsRecordPermittedThenSuccess(t *testing.T) {
 			assert.Equal(t, want, outcomesOf(ring, a.scope, ActionHolderClaim, "alice"), "claim")
 			assert.Equal(t, want, outcomesOf(ring, a.scope, ActionHolderRekeyStart, "carol"), "rekey start")
 		})
+	}
+}
+
+// TestHolderAudit_FactorNamesValidatedBeforeTheGate pins, in every scope,
+// that a registration's factor list is input validated before the gate: an
+// empty factor name, one named twice and one the node does not know are each
+// refused with nothing permitted -- a refusing trail does not turn them into
+// gate refusals, and the trail carries each refusal alone.
+func TestHolderAudit_FactorNamesValidatedBeforeTheGate(t *testing.T) {
+	params := newHolder(t, "x", "").withAuthenticator(t).auth.EnrollParams()
+	cases := map[string]struct {
+		factors []FactorEnrolment
+		want    func(error) bool
+	}{
+		"empty name": {[]FactorEnrolment{{Name: ""}}, isType[*DuplicateFactorError]},
+		"named twice": {[]FactorEnrolment{{Name: testFactorName, Params: params}, {Name: testFactorName, Params: params}},
+			isType[*DuplicateFactorError]},
+		"mtls named": {[]FactorEnrolment{{Name: "mtls"}}, isType[*DuplicateFactorError]},
+		"unknown":    {[]FactorEnrolment{{Name: "no-such-factor"}}, isType[*authfactors.FactorNotFoundError]},
+	}
+	for name := range auditScopes(t, nil) {
+		for cname, c := range cases {
+			t.Run(name+"/"+cname, func(t *testing.T) {
+				trail := &switchableTrail{ring: audit.NewRingBuffer(64)}
+				a := auditScopes(t, trail)[name](t)
+				req := newHolder(t, "alice", "").request("admin-1")
+				req.Factors = c.factors
+
+				trail.refuse = true
+				_, err := a.register(context.Background(), req)
+				require.True(t, c.want(err), "under a refusing trail = %v (%T), want the input refusal", err, err)
+				trail.refuse = false
+
+				_, err = a.register(context.Background(), req)
+				require.True(t, c.want(err), err)
+				got := outcomesOf(trail.ring, a.scope, ActionHolderRegister, "alice")
+				require.Len(t, got, 1, "the refusal alone: %v", got)
+				assert.True(t, strings.HasPrefix(got[0], audit.OutcomeFailure+":"), got[0])
+			})
+		}
 	}
 }
 

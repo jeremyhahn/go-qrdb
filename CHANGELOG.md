@@ -35,7 +35,8 @@ are not reconstructed here — their history is in the git log.
   is the new `audit.OutcomePermitted` (`permitted`), never `success`: a second
   record carries the operation's `success` or `failure` once it has run, so
   the hash-chained trail never holds a success for an effect that did not
-  happen. Input validation, a registration's designated factor included, runs
+  happen. Input validation -- a registration's factor names (empty, repeated
+  or unknown) and its designated factor included -- runs
   before the gate. A refusal's reason is a
   fixed token, never an error's text, and a caller-chosen holder name that
   is not a valid principal name is recorded as `(invalid-name)`.
