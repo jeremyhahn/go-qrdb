@@ -239,6 +239,9 @@ func TestPlacementInfoSource_NoLocalReplicaIsRefused(t *testing.T) {
 	if ok || !errors.As(err, &nar) {
 		t.Fatalf("databaseAndPlacementInfo = ok %v, %v; want *placement.NotAReplicaError", ok, err)
 	}
+	if nar.LeaderReplicaID != 1 {
+		t.Fatalf("NotAReplicaError.LeaderReplicaID = %d; want the placement's leader hint 1, which replica forwarding starts from", nar.LeaderReplicaID)
+	}
 	if nar.NodeID != "local:1" || nar.ShardID != 7777 || len(nar.Replicas) != 1 || nar.Replicas[0].NodeID != "remote:1" {
 		t.Fatalf("NotAReplicaError = %+v; want local:1 refused for shard 7777 with replica remote:1", nar)
 	}

@@ -1375,7 +1375,7 @@ func (s *placementRaftInfoSource) databaseAndPlacementInfo(tenantID, db string) 
 		// a replica, which acknowledged writes the real replicas never saw.
 		return 0, "", nil, false, &placement.NotAReplicaError{
 			TenantID: tenantID, Database: db, ShardID: p.ShardID,
-			NodeID: s.localNodeID, Replicas: p.Replicas,
+			NodeID: s.localNodeID, Replicas: p.Replicas, LeaderReplicaID: p.LeaderReplicaID,
 		}
 	}
 	// A placement record names no path: one would name the disk of the node

@@ -161,6 +161,10 @@ type NotAReplicaError struct {
 	NodeID string
 	// Replicas is the replica set the placement names.
 	Replicas []Replica
+	// LeaderReplicaID is the placement's bootstrap leader -- a hint, not a
+	// fact: Raft may have elected another replica since. Replica forwarding
+	// tries it first. Zero when the placement names none.
+	LeaderReplicaID uint64
 }
 
 // Error implements the error interface.
