@@ -138,23 +138,70 @@ func (h *hardConfinedMVCC) GetAtRevisionWithConsistency(ctx context.Context, key
 // which, over this UN-namespaced servicer, genuinely reaches
 // "__sys:cluster_ca/..." in the underlying store, unlike a namespaced
 // tenant view -- must not refuse outright just because that key happens
-// to lie within it. Revision and TotalCount reflect the underlying
-// servicer's real answer, not the filtered count: a caller that needs an
-// exact count re-derives it from the filtered keys if it must.
+// to lie within it. The one exception is the point form (end empty, per
+// MVCCKVServicer.Range's own "only the key at start" convention): that is
+// a single-key read like Get, with nothing to filter, so it is refused
+// outright instead.
+//
+// TotalCount is corrected, not merely left at the underlying answer: a
+// CountOnly caller (WithCountOnly, which returns no key-values at all)
+// would otherwise learn whether the confined key falls within [start, end)
+// purely from how the count changes across ranges, without ever seeing a
+// key-value to filter. confinedCountInRange issues a second, bounded
+// CountOnly query restricted to the overlap with the confined namespace --
+// skipped entirely when [start, end) doesn't reach that namespace at all,
+// which is every ordinary application range -- and that count, not the
+// filtered-slice length, is what gets subtracted, so it is correct whether
+// or not this call itself was CountOnly.
 func (h *hardConfinedMVCC) Range(ctx context.Context, start, end []byte, opts ...RangeOption) ([]*KeyValue, int64, int64, error) {
+	if len(end) == 0 && isHardConfinedKey(string(start)) {
+		return nil, 0, 0, &HardConfinedKeyError{Key: string(start)}
+	}
 	kvs, revision, total, err := h.mvcc.Range(ctx, start, end, opts...)
 	if err != nil {
 		return nil, 0, 0, err
 	}
-	return filterHardConfinedKeyValues(kvs), revision, total, nil
+	confined, err := h.confinedCountInRange(ctx, start, end, func(ctx context.Context, s, e []byte, ro ...RangeOption) ([]*KeyValue, int64, int64, error) {
+		return h.mvcc.Range(ctx, s, e, ro...)
+	})
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	return filterHardConfinedKeyValues(kvs), revision, total - confined, nil
 }
 
 func (h *hardConfinedMVCC) RangeWithConsistency(ctx context.Context, start, end []byte, opts consistency.ReadOptions, rangeOpts ...RangeOption) ([]*KeyValue, int64, int64, error) {
+	if len(end) == 0 && isHardConfinedKey(string(start)) {
+		return nil, 0, 0, &HardConfinedKeyError{Key: string(start)}
+	}
 	kvs, revision, total, err := h.mvcc.RangeWithConsistency(ctx, start, end, opts, rangeOpts...)
 	if err != nil {
 		return nil, 0, 0, err
 	}
-	return filterHardConfinedKeyValues(kvs), revision, total, nil
+	confined, err := h.confinedCountInRange(ctx, start, end, func(ctx context.Context, s, e []byte, ro ...RangeOption) ([]*KeyValue, int64, int64, error) {
+		return h.mvcc.RangeWithConsistency(ctx, s, e, opts, ro...)
+	})
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	return filterHardConfinedKeyValues(kvs), revision, total - confined, nil
+}
+
+// confinedCountInRange returns how many hard-confined keys fall within
+// [start, end), via a dedicated WithCountOnly sub-query restricted to the
+// overlap of [start, end) with the confined namespace -- issued only when
+// there is an overlap at all, so an ordinary application range that never
+// touches "__sys:cluster_ca/" costs nothing beyond the overlap check.
+func (h *hardConfinedMVCC) confinedCountInRange(ctx context.Context, start, end []byte, rangeFn func(ctx context.Context, start, end []byte, opts ...RangeOption) ([]*KeyValue, int64, int64, error)) (int64, error) {
+	if !hardConfinedRangeOverlaps(string(start), string(end)) {
+		return 0, nil
+	}
+	clampedStart, clampedEnd := clampRangeToHardConfined(start, end)
+	_, _, confined, err := rangeFn(ctx, clampedStart, clampedEnd, WithCountOnly())
+	if err != nil {
+		return 0, err
+	}
+	return confined, nil
 }
 
 // filterHardConfinedKeyValues returns a new slice with any *KeyValue whose

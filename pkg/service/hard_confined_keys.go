@@ -93,6 +93,22 @@ func hardConfinedPrefixOverlaps(prefix string) bool {
 	return strings.HasPrefix(hardConfinedPrefix, prefix) || strings.HasPrefix(prefix, hardConfinedPrefix)
 }
 
+// clampRangeToHardConfined returns the intersection of [start, end) with
+// [hardConfinedPrefix, hardConfinedPrefixEnd), for a caller that has
+// already established the two ranges overlap (hardConfinedRangeOverlaps)
+// and needs a sub-range query scoped to exactly the confined portion.
+func clampRangeToHardConfined(start, end []byte) (clampedStart, clampedEnd []byte) {
+	clampedStart = start
+	if string(start) < hardConfinedPrefix {
+		clampedStart = []byte(hardConfinedPrefix)
+	}
+	clampedEnd = end
+	if len(end) == 0 || string(end) > hardConfinedPrefixEnd {
+		clampedEnd = []byte(hardConfinedPrefixEnd)
+	}
+	return clampedStart, clampedEnd
+}
+
 // filterHardConfinedKeys returns a new slice with hard-confined keys
 // removed, for FilterInternalKeys' owner-escape branch (internal_keys.go)
 // and for the embedded-transport decorators' List/Scan overrides.

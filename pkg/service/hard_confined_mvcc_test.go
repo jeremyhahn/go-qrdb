@@ -66,17 +66,34 @@ func (f *fakeMVCC) GetAtRevisionWithConsistency(_ context.Context, key string, _
 	return &KeyValue{Key: []byte(key), Value: f.store[key]}, nil
 }
 
-// Range returns every key in the fake's store as a KeyValue, ignoring
-// start/end entirely: the tests exercising it only care whether the
-// DECORATOR filters the confined key out of whatever the wrapped servicer
-// answers with, not real range semantics.
-func (f *fakeMVCC) Range(_ context.Context, _, _ []byte, _ ...RangeOption) ([]*KeyValue, int64, int64, error) {
+// Range filters the fake's store by the half-open interval [start, end),
+// matching MVCCKVServicer.Range's own point-form convention (an empty end
+// means only the key at start) -- real enough range semantics for
+// confinedCountInRange's own sub-range CountOnly query against this fake
+// to be meaningful, not just the decorator's post-hoc filter of an
+// unconditionally-full answer.
+func (f *fakeMVCC) Range(_ context.Context, start, end []byte, opts ...RangeOption) ([]*KeyValue, int64, int64, error) {
 	f.calledRange = true
-	out := make([]*KeyValue, 0, len(f.store))
-	for k, v := range f.store {
-		out = append(out, &KeyValue{Key: []byte(k), Value: v})
+	ro := ApplyRangeOptions(opts)
+
+	var matched []*KeyValue
+	if len(end) == 0 {
+		if v, ok := f.store[string(start)]; ok {
+			matched = append(matched, &KeyValue{Key: start, Value: v})
+		}
+	} else {
+		for k, v := range f.store {
+			if k >= string(start) && k < string(end) {
+				matched = append(matched, &KeyValue{Key: []byte(k), Value: v})
+			}
+		}
 	}
-	return out, 1, int64(len(out)), nil
+
+	total := int64(len(matched))
+	if ro.CountOnly {
+		return nil, 1, total, nil
+	}
+	return matched, 1, total, nil
 }
 
 func (f *fakeMVCC) RangeWithConsistency(ctx context.Context, start, end []byte, _ consistency.ReadOptions, opts ...RangeOption) ([]*KeyValue, int64, int64, error) {
@@ -169,6 +186,69 @@ func TestHardConfinedMVCC_RangeFiltersTheConfinedKeyFromAWideOpenSweep(t *testin
 	}
 	if len(kvs) != 1 || string(kvs[0].Key) != "ordinary/a" {
 		t.Fatalf("Range = %v, want exactly the non-confined key", kvs)
+	}
+}
+
+// TestHardConfinedMVCC_RangePointFormRefusesTheConfinedKey proves Range's
+// point form (end empty, "only the key at start" per
+// MVCCKVServicer.Range's own convention) is refused outright like Get,
+// rather than filtered down to an empty success -- the same distinction
+// hardConfinedKV draws between a point read and an enumeration.
+func TestHardConfinedMVCC_RangePointFormRefusesTheConfinedKey(t *testing.T) {
+	ctx := context.Background()
+	fake := newFakeMVCC()
+	fake.store[confinedKey] = []byte("the cluster CA's private key")
+	mvcc := NewHardConfinedMVCC(fake)
+
+	_, _, _, err := mvcc.Range(ctx, []byte(confinedKey), nil)
+	var confErr *HardConfinedKeyError
+	if !errors.As(err, &confErr) {
+		t.Fatalf("Range(confinedKey, nil) = %v, want *HardConfinedKeyError", err)
+	}
+	if fake.calledRange {
+		t.Fatal("Range(confinedKey, nil) reached the underlying servicer; the point form must refuse before delegating")
+	}
+}
+
+// TestHardConfinedMVCC_RangeCountOnlyDoesNotLeakTheConfinedKeysPresence is
+// the B2c regression proof: a CountOnly range returns no key-values for
+// the decorator's own filter to act on, so without correcting the count
+// itself, a caller could learn whether the confined key falls inside
+// [start, end) purely from how the total changes -- the exact binary-search
+// shape a transaction compare's refusal (not filter) already exists to
+// deny on a different surface.
+func TestHardConfinedMVCC_RangeCountOnlyDoesNotLeakTheConfinedKeysPresence(t *testing.T) {
+	ctx := context.Background()
+	fake := newFakeMVCC()
+	fake.store[confinedKey] = []byte("the cluster CA's private key")
+	fake.store["ordinary/a"] = []byte("1")
+	fake.store["ordinary/b"] = []byte("2")
+	mvcc := NewHardConfinedMVCC(fake)
+
+	// A wide-open CountOnly range: the raw total (asked of the fake
+	// directly, bypassing the decorator) is 3; the decorator's answer must
+	// be 2, the count with the confined key excluded.
+	_, _, rawTotal, err := fake.Range(ctx, []byte(""), []byte("\xff"), WithCountOnly())
+	if err != nil || rawTotal != 3 {
+		t.Fatalf("sanity check: fake.Range raw total = %d, %v; want 3, nil", rawTotal, err)
+	}
+
+	_, _, total, err := mvcc.Range(ctx, []byte(""), []byte("\xff"), WithCountOnly())
+	if err != nil {
+		t.Fatalf("Range(CountOnly): %v", err)
+	}
+	if total != 2 {
+		t.Fatalf("Range(CountOnly) total = %d, want 2 (the confined key excluded, not merely absent from a result slice that was never returned)", total)
+	}
+
+	// A range that does not reach the confined namespace at all must not
+	// pay for -- or alter the answer with -- the extra sub-query.
+	_, _, narrowTotal, err := mvcc.Range(ctx, []byte("ordinary/"), []byte("ordinary0"), WithCountOnly())
+	if err != nil {
+		t.Fatalf("Range(ordinary/, CountOnly): %v", err)
+	}
+	if narrowTotal != 2 {
+		t.Fatalf("Range(ordinary/, CountOnly) total = %d, want 2 (unaffected by a namespace it never overlaps)", narrowTotal)
 	}
 }
 
