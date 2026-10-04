@@ -71,33 +71,57 @@ import (
 // in the 3-node admin-cluster harness is initialized and unsealed with.
 const adminClusterPassphrase = "admin-cluster-harness-passphrase"
 
-// start3NodeMultiProtocolCluster boots a 3-node qrdbd cluster with every
-// transport enabled (REST, gRPC, QUIC, MCP, Unix) on each node, TLS and
-// authentication on, and a passphrase-strategy system barrier initialized
-// and unsealed on every node. It returns all 3 nodes as *multiProtoNode
-// (the same handle type startMultiProtocolNode uses, so every existing
-// runCLIProto-based test helper works unmodified against a cluster member)
-// plus the index of the node that won leadership of shard 1.
-func start3NodeMultiProtocolCluster(t *testing.T) (nodes [3]*multiProtoNode, leaderIdx int) {
+// adminClusterSpareReplica is a genesis member of the cluster
+// start3NodeMultiProtocolCluster boots beyond the 3 control nodes, one per
+// protocol in multiProtocols. Its own process keeps running for the whole
+// test, but go-quicraft stops a replica participating in its shard within
+// seconds of a Raft config change that removes it -- including refreshing
+// its own feature-gate advertisement's lease, which needs the very
+// consensus membership just took it out of -- so a spare's address is only
+// a valid joiner for a brief window right after ITS OWN removal. Every
+// protocol therefore gets its OWN spare, removed only immediately before
+// that protocol's add/remove cycle (see testAdminMemberLifecycleOverProtocol),
+// rather than one spare shared across all 5 and removed once up front, which
+// is time enough for earlier protocols but not later ones under load
+// (go-qrdb#593).
+type adminClusterSpareReplica struct {
+	replicaID uint64
+	raftAddr  string
+}
+
+// start3NodeMultiProtocolCluster boots a (3+len(multiProtocols))-node qrdbd
+// cluster with every transport enabled (REST, gRPC, QUIC, MCP, Unix) on each
+// node, TLS and authentication on, and a passphrase-strategy system barrier
+// initialized and unsealed on every node. Every node beyond the first 3 is a
+// genesis member of shard 1 and is handed back as a adminClusterSpareReplica,
+// one per protocol, still a CURRENT member -- see that type's doc comment for
+// why removal is deferred to the moment each spare is actually used. It
+// returns the 3 control nodes as *multiProtoNode (the same handle type
+// startMultiProtocolNode uses, so every existing runCLIProto-based test
+// helper works unmodified against a cluster member), the index of the node
+// that won leadership of shard 1, and the spares slice (len(multiProtocols),
+// in the same order).
+func start3NodeMultiProtocolCluster(t *testing.T) (nodes [3]*multiProtoNode, leaderIdx int, spares []adminClusterSpareReplica) {
 	t.Helper()
 
+	n := 3 + len(multiProtocols)
 	bin := buildBinary(t)
 	cli := buildCLIBinary(t)
 	ca := generateTestCA(t)
 	cfgPath := writeMultiProtocolSealConfig(t)
 
-	raftPorts := allocatePorts(t, 3)
-	quicPorts := allocatePorts(t, 3)
-	adminPorts := allocateTCPPorts(t, 3)
-	grpcPorts := allocateTCPPorts(t, 3)
-	mcpPorts := allocateTCPPorts(t, 3)
+	raftPorts := allocatePorts(t, n)
+	quicPorts := allocatePorts(t, n)
+	adminPorts := allocateTCPPorts(t, n)
+	grpcPorts := allocateTCPPorts(t, n)
+	mcpPorts := allocateTCPPorts(t, n)
 	peersFlag := buildPeersFlag(raftPorts)
 	nodeTLS, memberIDs := ca.clusterNodeTLS(t, len(raftPorts))
 
-	dataDirs := make([]string, 3)
-	unixSockets := make([]string, 3)
+	dataDirs := make([]string, n)
+	unixSockets := make([]string, n)
 
-	for i := range 3 {
+	for i := range n {
 		dataDirs[i] = t.TempDir()
 
 		// Unix socket paths are limited to ~108 bytes by the kernel and
@@ -136,14 +160,14 @@ func start3NodeMultiProtocolCluster(t *testing.T) (nodes [3]*multiProtoNode, lea
 		startNode(t, bin, args, fmt.Sprintf("[admincluster-node%d] ", i+1))
 	}
 
-	// Sealed-window: initialize and unseal the passphrase barrier on all 3
+	// Sealed-window: initialize and unseal the passphrase barrier on all n
 	// nodes in parallel, exactly as TestClusterEnableEncryption_SystemScope_RF3
 	// does for the "none" strategy -- each node's local storage barrier must
 	// be unsealed before that node's own Raft host (and therefore every
 	// other transport on that node) starts serving.
 	var sealWg sync.WaitGroup
-	sealWg.Add(3)
-	for i := range 3 {
+	sealWg.Add(n)
+	for i := range n {
 		go func(idx int) {
 			defer sealWg.Done()
 			waitForBarrierStatusReachable(t, ca, adminPorts[idx], 90*time.Second)
@@ -159,40 +183,76 @@ func start3NodeMultiProtocolCluster(t *testing.T) (nodes [3]*multiProtoNode, lea
 	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
 	warmupWrite(t, ca, leaderPort, 15*time.Second)
 
+	// Leadership of an 8-voter genesis group can land on any of them,
+	// including one of the 5 nodes meant as spares -- the 3 "control" nodes
+	// are therefore chosen AFTER the election, always including whichever
+	// genesis index actually won it, rather than being hardcoded as the
+	// first 3. The rest, in their original order, are the spares.
+	var controlGenesisIdx []int
+	for i := range n {
+		if adminPorts[i] == leaderPort {
+			controlGenesisIdx = append(controlGenesisIdx, i)
+		}
+	}
+	for i := range n {
+		if len(controlGenesisIdx) == 3 {
+			break
+		}
+		if adminPorts[i] != leaderPort {
+			controlGenesisIdx = append(controlGenesisIdx, i)
+		}
+	}
+	isControl := make(map[int]bool, 3)
+	for _, idx := range controlGenesisIdx {
+		isControl[idx] = true
+	}
+
+	spares = make([]adminClusterSpareReplica, 0, n-3)
+	for i := range n {
+		if isControl[i] {
+			continue
+		}
+		spares = append(spares, adminClusterSpareReplica{
+			replicaID: uint64(i + 1),
+			raftAddr:  fmt.Sprintf("127.0.0.1:%d", raftPorts[i]),
+		})
+	}
+
 	clientCert, clientKey := ca.generateAdminClientCert(t, t.TempDir())
 
 	leaderIdx = -1
-	for i := range 3 {
-		nodes[i] = &multiProtoNode{
+	for pos, idx := range controlGenesisIdx {
+		nodes[pos] = &multiProtoNode{
 			cli:        cli,
 			ca:         ca,
-			dataDir:    dataDirs[i],
+			dataDir:    dataDirs[idx],
 			clientCert: clientCert,
 			clientKey:  clientKey,
-			unixSocket: unixSockets[i],
-			restPort:   adminPorts[i],
-			grpcPort:   grpcPorts[i],
-			mcpPort:    mcpPorts[i],
-			quicPort:   quicPorts[i],
+			unixSocket: unixSockets[idx],
+			restPort:   adminPorts[idx],
+			grpcPort:   grpcPorts[idx],
+			mcpPort:    mcpPorts[idx],
+			quicPort:   quicPorts[idx],
 			passphrase: adminClusterPassphrase,
 		}
-		if adminPorts[i] == leaderPort {
-			leaderIdx = i
+		if adminPorts[idx] == leaderPort {
+			leaderIdx = pos
 		}
 	}
 	if leaderIdx == -1 {
-		t.Fatalf("start3NodeMultiProtocolCluster: leader admin port %d not found among %v", leaderPort, adminPorts)
+		t.Fatalf("start3NodeMultiProtocolCluster: leader admin port %d not found among the control nodes %v",
+			leaderPort, controlGenesisIdx)
 	}
 
-	// Confirm every transport on every node is actually serving before
-	// handing the cluster to callers.
+	// Confirm every transport on every control node is actually serving
+	// before handing the cluster to callers.
 	for i := range 3 {
 		for _, proto := range multiProtocols {
 			waitForCLIProtoReady(t, nodes[i], proto, 60*time.Second)
 		}
 	}
 
-	return nodes, leaderIdx
+	return nodes, leaderIdx, spares
 }
 
 // adminTopologyDisplay mirrors transport.TopologyResponse's wire JSON
@@ -284,22 +344,23 @@ func TestAdminCapabilities_CLI_PerProtocol(t *testing.T) {
 // 5 protocol subtests (each subtest namespaces its own throwaway replica ID
 // so they never collide).
 func TestAdminCluster_CLI_PerProtocol(t *testing.T) {
-	nodes, leaderIdx := start3NodeMultiProtocolCluster(t)
+	nodes, leaderIdx, spares := start3NodeMultiProtocolCluster(t)
 	followerIdx := (leaderIdx + 1) % 3
 
-	// quicraft refuses to re-admit a replica ID that was ever previously
-	// removed from the shard ("raft: node was previously removed"), so a
+	// quicraft refuses to re-admit a replica ID -- or a member identity --
+	// it has ever removed ("raft: node was previously removed" /
+	// "node identity belongs to a replica this shard has removed"), so a
 	// throwaway replica ID cannot be recomputed as "one more than whatever
 	// admin peers currently shows" in each protocol subtest -- once a
 	// subtest adds AND removes its throwaway replica, that ID is
 	// permanently retired and a later subtest recomputing from the
-	// (now 3-member) peer list would collide with it. A single monotonic
-	// counter shared across all 5 protocol subtests guarantees every
-	// subtest gets a fresh, never-before-used replica ID.
-	nextReplicaID := nextAdminPeerReplicaID(t, nodes[leaderIdx], multiProtocols[0])
+	// (now 3+len(spares)-member) peer list would collide with it. A single
+	// monotonic counter, starting one past the highest genesis replica ID,
+	// guarantees every subtest gets a fresh, never-before-used replica ID.
+	nextReplicaID := uint64(len(nodes)+len(spares)) + 1
 
-	for _, proto := range multiProtocols {
-		proto := proto
+	for i, proto := range multiProtocols {
+		proto, spare := proto, spares[i]
 		t.Run(proto.name, func(t *testing.T) {
 			testAdminTopologyOverProtocol(t, nodes[leaderIdx], proto, "leader")
 			testAdminTopologyOverProtocol(t, nodes[followerIdx], proto, "follower")
@@ -307,7 +368,7 @@ func TestAdminCluster_CLI_PerProtocol(t *testing.T) {
 			testAdminSnapshotOverProtocol(t, nodes[followerIdx], proto, "follower")
 			testAdminSnapshotOverProtocol(t, nodes[leaderIdx], proto, "leader")
 
-			testAdminMemberLifecycleOverProtocol(t, nodes[leaderIdx], proto, nextReplicaID)
+			testAdminMemberLifecycleOverProtocol(t, nodes[leaderIdx], proto, nextReplicaID, spare)
 		})
 		nextReplicaID++
 	}
@@ -399,29 +460,53 @@ func testAdminSnapshotOverProtocol(t *testing.T, node *multiProtoNode, proto mul
 	}
 }
 
-// testAdminMemberLifecycleOverProtocol adds the throwaway replica newReplicaID
-// to shard 1 against the cluster LEADER over proto, confirms it is
-// reflected in `admin peers`, then removes it and confirms it disappears --
-// the realistic non-REST usage pattern documented in this file's header
-// comment (member writes must be routed to the leader on every transport
-// except REST, which alone auto-forwards). newReplicaID must never have
-// been used by an earlier add/remove cycle in this test run -- see
-// TestAdminCluster_CLI_PerProtocol's monotonic counter, which exists
-// because quicraft permanently refuses to re-admit a once-removed replica
-// ID ("raft: node was previously removed").
-func testAdminMemberLifecycleOverProtocol(t *testing.T, leader *multiProtoNode, proto multiProtocol, newReplicaID uint64) {
+// testAdminMemberLifecycleOverProtocol first removes spare -- a genesis
+// member of shard 1 dedicated to this protocol, still a CURRENT member at
+// this point (see adminClusterSpareReplica's doc comment) -- then adds a
+// brand-new throwaway replica newReplicaID at spare's now-freed real Raft
+// address against the cluster LEADER over proto, confirms it is reflected
+// in `admin peers`, then removes it and confirms it disappears -- the
+// realistic non-REST usage pattern documented in this file's header comment
+// (member writes must be routed to the leader on every transport except
+// REST, which alone auto-forwards).
+//
+// The add happens immediately after spare's removal, with no other Raft
+// traffic against shard 1 in between: go-quicraft stops a removed replica
+// participating in its old shard within seconds, including refreshing its
+// own feature-gate advertisement's lease (see adminClusterSpareReplica), so
+// spare's address is only a valid joiner for a brief window right after its
+// removal -- every protocol gets its own spare precisely so this window
+// never has to stretch across 5 protocols' worth of topology and snapshot
+// calls.
+//
+// newReplicaID must never have been used by an earlier add/remove cycle in
+// this test run -- see TestAdminCluster_CLI_PerProtocol's monotonic counter,
+// which exists because quicraft permanently refuses to re-admit a
+// once-removed replica ID ("raft: node was previously removed") or member
+// identity ("node identity belongs to a replica this shard has removed").
+// Reusing spare's ADDRESS is fine: that restriction is keyed on replica ID
+// and member identity, never on address.
+func testAdminMemberLifecycleOverProtocol(t *testing.T, leader *multiProtoNode, proto multiProtocol, newReplicaID uint64, spare adminClusterSpareReplica) {
 	t.Helper()
 
-	placeholderAddr := "127.0.0.1:1"
+	removeSpareOut, err := runCLIProto(t, leader, proto, "admin", "member", "remove",
+		fmt.Sprintf("%d", spare.replicaID), "--shard-id", "1")
+	if err != nil {
+		t.Fatalf("[%s] admin member remove (spare replica %d): %v\noutput: %s", proto.name, spare.replicaID, err, removeSpareOut)
+	}
+	if !strings.Contains(removeSpareOut, "OK") {
+		t.Fatalf("[%s] admin member remove (spare): expected OK, got: %s", proto.name, removeSpareOut)
+	}
 
-	// The throwaway replica is on no real node, so no committed membership
-	// names it: its member identity is supplied, as an operator does for a
-	// brand-new node. It is unique per replica ID because go-quicraft refuses
-	// one identity bound to two replicas.
+	// The replica being added is on no real node of its own -- it shares
+	// spare's now-freed address -- so no committed membership names it yet:
+	// its member identity is supplied, as an operator does for a brand-new
+	// node. It is unique per replica ID because go-quicraft refuses one
+	// identity bound to two replicas (current or once-removed).
 	sum := sha256.Sum256([]byte(fmt.Sprintf("throwaway-replica-%d", newReplicaID)))
 	identity := "spki:" + hex.EncodeToString(sum[:])
 
-	out, err := runCLIProto(t, leader, proto, "admin", "member", "add", placeholderAddr,
+	out, err := runCLIProto(t, leader, proto, "admin", "member", "add", spare.raftAddr,
 		"--shard-id", "1", "--replica-id", fmt.Sprintf("%d", newReplicaID), "--identity", identity)
 	if err != nil {
 		t.Fatalf("[%s] admin member add (replica %d): %v\noutput: %s", proto.name, newReplicaID, err, out)
@@ -453,36 +538,6 @@ func testAdminMemberLifecycleOverProtocol(t *testing.T, leader *multiProtoNode, 
 	if err == nil {
 		t.Fatalf("[%s] admin member remove (non-numeric replica ID) unexpectedly succeeded, output: %s", proto.name, out)
 	}
-}
-
-// nextAdminPeerReplicaID reads `admin peers` for shard 1 against node over
-// proto and returns one more than the highest replica ID currently
-// present, guaranteeing an unused ID for a throwaway add/remove cycle.
-func nextAdminPeerReplicaID(t *testing.T, node *multiProtoNode, proto multiProtocol) uint64 {
-	t.Helper()
-	out, err := runCLIProto(t, node, proto, "--output", "json", "admin", "peers")
-	if err != nil {
-		t.Fatalf("[%s] admin peers: %v\noutput: %s", proto.name, err, out)
-	}
-	var peers adminPeersDisplay
-	if jerr := json.Unmarshal([]byte(out), &peers); jerr != nil {
-		t.Fatalf("[%s] decode `admin peers` JSON: %v\noutput: %s", proto.name, jerr, out)
-	}
-	var maxID uint64
-	for _, shard := range peers.Shards {
-		if shard.ShardID != 1 {
-			continue
-		}
-		for _, p := range shard.Peers {
-			if p.ReplicaID > maxID {
-				maxID = p.ReplicaID
-			}
-		}
-	}
-	if maxID == 0 {
-		t.Fatalf("[%s] admin peers: could not determine an existing replica_id for shard 1: %+v", proto.name, peers)
-	}
-	return maxID + 1
 }
 
 // adminPeersContainsReplica reports whether `admin peers` for shard 1

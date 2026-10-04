@@ -30,6 +30,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 )
 
@@ -200,6 +201,129 @@ func startThreeNodeClusterSPIFFE(t *testing.T, smType string) ([]int, []int, *te
 	return adminPorts, grpcPorts, ca
 }
 
+// spareClusterReplica is a 4th genesis member of a startThreeNodeClusterWithSpareSPIFFE
+// cluster, removed from shard 1 immediately after boot (see that function's
+// doc comment) so its real Raft address and member identity are a valid --
+// but currently unused -- joiner for an add/remove-forwarding test.
+type spareClusterReplica struct {
+	shardID   uint64
+	replicaID uint64
+	raftAddr  string
+	identity  string
+	adminPort int
+}
+
+// startThreeNodeClusterWithSpareSPIFFE boots a 4-node SPIFFE cluster exactly
+// like startThreeNodeClusterSPIFFE, except a 4th node is also started as a
+// genesis member of shard 1 and then immediately removed again -- an
+// uncontested setup step, direct to the leader, done before returning to the
+// caller. POST /membership/remove carries no feature-gate admission check
+// (service.AdminService.RemoveMember proposes the Raft config change
+// directly), so removing a genesis member this way is always safe.
+//
+// The 4th node's PROCESS keeps running after the removal. Its own feature
+// gate published a live, lease-backed advertisement for its real Raft
+// address when it booted as a genesis member (gate.AdvertisedSelf succeeds
+// for a genesis voter; a node that is not already a member of the system
+// shard cannot call it at all, so an invented address can never satisfy
+// admission once a feature has activated cluster-wide -- see
+// docs/clustering/engineering.md, "Joining a new node after activation",
+// and pkg/cluster/featuregate's AdmitReplica/Supports). That advertisement's
+// lease keeps refreshing on the node's own keepalive loop independently of
+// shard 1's Raft membership, so the spare's address and identity remain a
+// VALID joiner the gate will admit -- exactly as a real joining node's would
+// be -- for as long as the test leaves the spare process running.
+func startThreeNodeClusterWithSpareSPIFFE(t *testing.T, smType string) (adminPorts []int, ca *testCA, spare spareClusterReplica) {
+	t.Helper()
+	bin := buildBinary(t)
+	ca = generateTestCA(t)
+	const n = 4
+	ports := allocatePorts(t, n)
+	allAdminPorts := allocateTCPPorts(t, n)
+	grpcPorts := allocateTCPPorts(t, n)
+	peersFlag := buildPeersFlag(ports)
+	dataDirs := make([]string, n)
+
+	peerAdminURLs := make(map[string]string, n)
+	for i := range n {
+		raftAddr := fmt.Sprintf("127.0.0.1:%d", ports[i])
+		peerAdminURLs[raftAddr] = fmt.Sprintf("https://127.0.0.1:%d", allAdminPorts[i])
+	}
+	cfgPath := writePeerAdminURLConfig(t, peerAdminURLs)
+
+	nodeCertPaths := make([]string, n)
+	nodeKeyPaths := make([]string, n)
+	for i := range n {
+		raftAddr := fmt.Sprintf("127.0.0.1:%d", ports[i])
+		nodeCertPaths[i], nodeKeyPaths[i] = ca.generateNodeCertWithSPIFFE(t, raftAddr, clusterTestTrustDomain)
+	}
+	memberIDs := memberIdentitiesFlag(t, nodeCertPaths)
+
+	for i := range n {
+		dataDir := t.TempDir()
+		dataDirs[i] = dataDir
+
+		raftAddr := fmt.Sprintf("127.0.0.1:%d", ports[i])
+		nodeCertPath, nodeKeyPath := nodeCertPaths[i], nodeKeyPaths[i]
+
+		args := []string{
+			"start",
+			"--config", cfgPath,
+			"--listen", fmt.Sprintf("0.0.0.0:%d", ports[i]),
+			"--raft-address", raftAddr,
+			"--data-dir", dataDir,
+			"--sm", smType,
+			"--discovery", "static",
+			"--peers", peersFlag,
+			"--member-identities", memberIDs,
+			"--shard-id", "1",
+			"--replica-id", fmt.Sprintf("%d", i+1),
+			"--admin-port", fmt.Sprintf("%d", allAdminPorts[i]),
+			"--grpc-port", fmt.Sprintf("%d", grpcPorts[i]),
+			"--tls-ca-file", ca.CertPath,
+			"--tls-cert-file", nodeCertPath,
+			"--tls-key-file", nodeKeyPath,
+		}
+
+		prefix := fmt.Sprintf("[spare-node%d] ", i+1)
+		startNode(t, bin, args, prefix)
+	}
+
+	for i, dir := range dataDirs {
+		waitForHealthy(t, dir, 60*time.Second)
+		waitForAdmin(t, ca.Pool, allAdminPorts[i], 90*time.Second)
+	}
+
+	leaderPort := waitForLeaderViaAdmin(t, ca, allAdminPorts, 60*time.Second)
+	warmupWrite(t, ca, leaderPort, 15*time.Second)
+
+	spareCertPEM, err := os.ReadFile(nodeCertPaths[n-1])
+	if err != nil {
+		t.Fatalf("startThreeNodeClusterWithSpareSPIFFE: read spare cert: %v", err)
+	}
+	spareIdentity, err := cluster.MemberIdentityFromPEM(spareCertPEM)
+	if err != nil {
+		t.Fatalf("startThreeNodeClusterWithSpareSPIFFE: spare member identity: %v", err)
+	}
+	spare = spareClusterReplica{
+		shardID:   1,
+		replicaID: n,
+		raftAddr:  fmt.Sprintf("127.0.0.1:%d", ports[n-1]),
+		identity:  spareIdentity,
+		adminPort: allAdminPorts[n-1],
+	}
+
+	removeCode, removeBody := httpMembershipRemove(t, ca, leaderPort, spare.shardID, spare.replicaID)
+	if removeCode != http.StatusOK {
+		t.Fatalf("startThreeNodeClusterWithSpareSPIFFE: setup removal of spare replica %d: status %d, body %s",
+			spare.replicaID, removeCode, removeBody)
+	}
+
+	// The 3 control nodes' admin ports, in the same order startThreeNodeClusterSPIFFE
+	// would have returned them for a plain 3-node cluster.
+	return allAdminPorts[:n-1], ca, spare
+}
+
 // waitForSettledFollowerView polls port's own /status until it reports a
 // non-leader shard whose leader_id is both known (non-zero) and distinct
 // from its own replica_id, or the timeout elapses. This guards against
@@ -250,7 +374,7 @@ func waitForSettledFollowerView(t *testing.T, ca *testCA, port int, timeout time
 // committed there -- so the follower-originated request succeeds end to
 // end, exactly as if it had been issued directly to the leader.
 func TestCluster_MembershipAdd_ForwardsToLeader(t *testing.T) {
-	adminPorts, _, ca := startThreeNodeClusterSPIFFE(t, "pebble")
+	adminPorts, ca, spare := startThreeNodeClusterWithSpareSPIFFE(t, "pebble")
 	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
 
 	var followerPort int
@@ -273,16 +397,28 @@ func TestCluster_MembershipAdd_ForwardsToLeader(t *testing.T) {
 	// different leader" rather than racing the election.
 	waitForSettledFollowerView(t, ca, followerPort, 30*time.Second)
 
-	// Discover the shard ID and the highest existing replica ID from the
-	// leader's /peers -- unlike /status (which only reports the LOCAL
-	// node's own shard entry), /peers lists every member of the shard, so
-	// the computed next replica ID is guaranteed unused cluster-wide.
-	shardID, newReplicaID := nextReplicaID(t, ca, leaderPort)
+	// The replica being added uses spare's real ADDRESS: a real 4th node,
+	// still running, whose address is a valid joiner of the cluster's
+	// feature gate -- see startThreeNodeClusterWithSpareSPIFFE's doc
+	// comment. A throwaway address invented out of thin air is no longer
+	// admissible once a feature (guarded-writes among them) has activated
+	// cluster-wide (*featuregate.UnsupportedReplicaError).
+	//
+	// The replica ID and the member identity must both be FRESH, reusing
+	// neither of spare's own: go-quicraft permanently refuses to re-admit
+	// either a replica ID ("raft: node was previously removed") or a member
+	// identity ("node identity belongs to a replica this shard has
+	// removed") it has ever removed, and startThreeNodeClusterWithSpareSPIFFE's
+	// setup removed spare's. Its ADDRESS alone is reusable, since the
+	// feature gate's admission check -- and go-quicraft's duplicate-address
+	// refusal -- are about the address a replica is CURRENTLY using, not
+	// its history.
+	shardID, newReplicaID := spare.shardID, spare.replicaID+1
 
 	// Issue the add against the FOLLOWER. A 500 here means the
 	// leader-forward fix regressed; a 200 means the follower forwarded the
 	// request and the leader committed the membership change.
-	code, body := httpMembershipAdd(t, ca, followerPort, shardID, newReplicaID, "127.0.0.1:1", ca.newMemberIdentity(t))
+	code, body := httpMembershipAdd(t, ca, followerPort, shardID, newReplicaID, spare.raftAddr, ca.newMemberIdentity(t))
 	if code != http.StatusOK {
 		t.Fatalf("POST /membership/add to follower (port %d): status %d, body %s, want 200 (forwarded to leader)",
 			followerPort, code, body)
@@ -326,19 +462,22 @@ func TestCluster_MembershipAdd_ForwardsToLeader(t *testing.T) {
 
 // TestCluster_MembershipRemove_ForwardsToLeader mirrors
 // TestCluster_MembershipAdd_ForwardsToLeader for the removal path: it first
-// adds a throwaway replica directly against the LEADER (an uncontested setup
-// step, not itself under test), then issues POST /membership/remove for that
-// replica against a FOLLOWER admin port. Before the leader-forward fix this
-// failed the same way AddMember did -- quicraft.NotLeaderError buried inside
-// *service.MembershipError left the REST handler with no routing information,
-// so any non-leader node answered with a generic 500. With the fix in place
-// the follower recognizes the not-leader condition, forwards the request
-// over the shared forwardToLeader path (re-signing the on-behalf-of
-// assertion so the leader re-authorizes as the original "admin" caller), and
-// the leader commits the removal -- so the follower-originated remove
-// succeeds end to end and the replica disappears from the leader's /peers.
+// (re-)adds spare, a real 4th node, directly against the LEADER (an
+// uncontested setup step, not itself under test -- see
+// startThreeNodeClusterWithSpareSPIFFE's doc comment for why spare's address
+// and identity are a valid joiner of the cluster's feature gate), then
+// issues POST /membership/remove for that replica against a FOLLOWER admin
+// port. Before the leader-forward fix this failed the same way AddMember
+// did -- quicraft.NotLeaderError buried inside *service.MembershipError
+// left the REST handler with no routing information, so any non-leader node
+// answered with a generic 500. With the fix in place the follower
+// recognizes the not-leader condition, forwards the request over the shared
+// forwardToLeader path (re-signing the on-behalf-of assertion so the leader
+// re-authorizes as the original "admin" caller), and the leader commits the
+// removal -- so the follower-originated remove succeeds end to end and the
+// replica disappears from the leader's /peers.
 func TestCluster_MembershipRemove_ForwardsToLeader(t *testing.T) {
-	adminPorts, _, ca := startThreeNodeClusterSPIFFE(t, "pebble")
+	adminPorts, ca, spare := startThreeNodeClusterWithSpareSPIFFE(t, "pebble")
 	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
 
 	var followerPort int
@@ -358,16 +497,18 @@ func TestCluster_MembershipRemove_ForwardsToLeader(t *testing.T) {
 	// through it.
 	waitForSettledFollowerView(t, ca, followerPort, 30*time.Second)
 
-	// Discover the shard ID and the highest existing replica ID from the
-	// leader's /peers, exactly as the add-forward test does.
-	shardID, extraReplicaID := nextReplicaID(t, ca, leaderPort)
+	// A fresh replica ID and member identity, one past spare's own, reusing
+	// only spare's real ADDRESS -- see TestCluster_MembershipAdd_ForwardsToLeader's
+	// identical reasoning on why the ID and identity must be fresh while the
+	// address need not be.
+	shardID, extraReplicaID := spare.shardID, spare.replicaID+1
 
-	// Setup: add a throwaway replica directly against the LEADER. This is
-	// not the behavior under test (that is
+	// Setup: add a replica at spare's address directly against the LEADER.
+	// This is not the behavior under test (that is
 	// TestCluster_MembershipAdd_ForwardsToLeader's job) -- it only exists so
 	// there is a real, currently-committed replica to remove without
 	// touching any of the 3 real cluster members' quorum eligibility.
-	addCode, addBody := httpMembershipAdd(t, ca, leaderPort, shardID, extraReplicaID, "127.0.0.1:1", ca.newMemberIdentity(t))
+	addCode, addBody := httpMembershipAdd(t, ca, leaderPort, shardID, extraReplicaID, spare.raftAddr, ca.newMemberIdentity(t))
 	if addCode != http.StatusOK {
 		t.Fatalf("setup: POST /membership/add to leader (port %d): status %d, body %s, want 200",
 			leaderPort, addCode, addBody)
