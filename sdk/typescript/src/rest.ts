@@ -13,6 +13,7 @@
 // limitations under the License.
 
 import {
+    ceremonyOfficerWire,
     decodeBase64Utf8,
     decodeMVCCKV,
     decodeOpResponses,
@@ -2034,17 +2035,24 @@ export class RestClient implements Client {
         return {
             initialize: async (req: CeremonyInitializeRequest): Promise<CeremonyInitializeResponse> => {
                 this.ensureConnected();
-                // Spreading req lets jsonBody's deep camelCase->snake_case
-                // conversion handle every field, officers included, so
-                // undefined optional fields drop out of the JSON body the
-                // same way the server's `omitempty` tags expect. secret is
-                // the one field needing a VALUE transform, not just a key
-                // one: base64 on the wire, since the server field is
+                // officers is rendered field by field via
+                // ceremonyOfficerWire, not through jsonBody's deep
+                // camelCase->snake_case conversion: a factor's params
+                // belong to the factor and must never be re-cased (see
+                // ceremonyOfficerWire, holderEnrolmentWire). Every other
+                // field here is flat, so deepCamelToSnake is exactly what
+                // the server's `omitempty` tags expect for them. secret is
+                // the remaining field needing a VALUE transform, not just
+                // a key one: base64 on the wire, since the server field is
                 // `[]byte` so it can be zeroized (see seal.initialize).
-                const body: Record<string, unknown> = { ...req };
-                if (req.secret) body.secret = encodeBase64Utf8(req.secret);
+                const { officers, secret, ...flat } = req;
+                const body = deepCamelToSnake(flat) as Record<string, unknown>;
+                if (secret) body.secret = encodeBase64Utf8(secret);
+                if (officers && officers.length > 0) {
+                    body.officers = officers.map(ceremonyOfficerWire);
+                }
                 const resp = await this.fetchJSON<CeremonyInitializeResponse>('/v1/ceremony/initialize',
-                    { method: 'POST', ...jsonBody(body) },
+                    { method: 'POST', ...wireBody(body) },
                 );
                 // admin_key_pem is base64 on the wire for the same reason
                 // secret is on the way in; decoded back to plain PEM text

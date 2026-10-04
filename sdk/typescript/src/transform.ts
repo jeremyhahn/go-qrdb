@@ -13,6 +13,7 @@
 // limitations under the License.
 
 import type {
+    CeremonyOfficerRequest,
     DatabaseBarrierStatus,
     DistanceMetric,
     MVCCKeyValue,
@@ -435,6 +436,31 @@ export function normalizeDatabaseBarrierStatus(status: DatabaseBarrierStatus): D
     }
     const { initializedAt: _never, ...rest } = status;
     return rest;
+}
+
+/**
+ * Renders one `CeremonyInitializeRequest.officers` entry in the server's
+ * wire form, field by field -- the same reason {@link holderEnrolmentWire}
+ * is: a factor's `params` belong to the factor and are sent exactly as
+ * given, so a blanket {@link deepCamelToSnake} over the whole ceremony
+ * request would incorrectly re-case them. `qrdb init` is the ONLY system
+ * bootstrap, so `CeremonyOfficerRequest` now carries the same
+ * encryptionKem/encryptionKey/factors/designated fields
+ * `OfficerRegisterRequest` does; this mirrors `holderEnrolmentWire` rather
+ * than duplicating its field-by-field logic under a different name by
+ * accident.
+ */
+export function ceremonyOfficerWire(o: CeremonyOfficerRequest): Record<string, unknown> {
+    const wire: Record<string, unknown> = { username: o.username };
+    if (o.role) wire.role = o.role;
+    wire.csr_pem = o.csrPem;
+    if (o.encryptionKem) wire.encryption_kem = o.encryptionKem;
+    if (o.encryptionKey) wire.encryption_key = o.encryptionKey;
+    if (o.factors && o.factors.length > 0) {
+        wire.factors = o.factors.map((f) => (f.params ? { name: f.name, params: f.params } : { name: f.name }));
+    }
+    if (o.designated) wire.designated = o.designated;
+    return wire;
 }
 
 /**

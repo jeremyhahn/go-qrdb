@@ -39,7 +39,14 @@ const (
 )
 
 // OfficerConfig names one share holder enrolled by the initialization
-// ceremony.
+// ceremony. `qrdb init` is the ONLY system bootstrap, so it is also the only
+// place Shamir custody over the system barrier can be established; a holder
+// who needs a separate envelope key, an additional factor, or a designated
+// factor cannot get one any other way, which is why OfficerConfig carries
+// the same fields RegisterOfficerRequest does. Initialize enrolls every
+// Officer through holderScope.register, the identical engine call
+// RegisterOfficer makes for post-init enrollment -- there is no second
+// registration path.
 type OfficerConfig struct {
 	// Username is the unique identifier for the holder.
 	Username string
@@ -50,6 +57,20 @@ type OfficerConfig struct {
 	// CSRPEM is the PEM-encoded certificate signing request from the holder.
 	// It supplies the holder's public key; the CA assigns the identity.
 	CSRPEM []byte
+
+	// EncryptionKEM and EncryptionKey name an optional separate share-envelope
+	// recipient key. Without one the certificate key receives the envelopes,
+	// which needs an ECDSA P-256/P-384 (or X25519-convertible) key.
+	EncryptionKEM string
+	EncryptionKey []byte
+
+	// Factors are additional authentication factors to enrol. "mtls" is
+	// always enrolled, from the issued certificate.
+	Factors []FactorEnrolment
+
+	// Designated names the factor fixed at enrolment under the designated
+	// factor policy; "mtls" when empty.
+	Designated string
 }
 
 // CeremonyConfig holds the configuration for an initialization ceremony. It

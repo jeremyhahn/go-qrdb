@@ -256,7 +256,10 @@ func TenantRevokeToPB(req *transport.TenantOfficerRevokeRequest) *pb.TenantBarri
 	return &pb.TenantBarrierOfficerRevokeRequest{TenantId: req.TenantID, Username: req.Username, Threshold: int32(req.Threshold)} //nolint:gosec
 }
 
-// CeremonyInitToPB encodes a ceremony initialization.
+// CeremonyInitToPB encodes a ceremony initialization. Officer Factors carry
+// the same factorsToPB/FactorParamsError encoding RegisterToPB uses
+// (go-qrdb#4578 review item 1): CeremonyOfficer is now the same shape as
+// OfficerRegisterRequest.
 //
 // Secret is now bytes end to end (go-qrdb#560 review item 7, follow-up):
 // transport.CeremonyInitializeRequest.Secret is []byte, the same as the
@@ -264,10 +267,22 @@ func TenantRevokeToPB(req *transport.TenantOfficerRevokeRequest) *pb.TenantBarri
 // the gRPC client call this builds the request for is synchronous: it
 // marshals and sends req before this function's caller can regain control
 // to wipe anything.
-func CeremonyInitToPB(req *transport.CeremonyInitializeRequest) *pb.CeremonyInitializeRequest {
+func CeremonyInitToPB(req *transport.CeremonyInitializeRequest) (*pb.CeremonyInitializeRequest, error) {
 	officers := make([]*pb.CeremonyOfficer, len(req.Officers))
 	for i, o := range req.Officers {
-		officers[i] = &pb.CeremonyOfficer{Username: o.Username, Role: o.Role, CsrPem: o.CSRPEM}
+		factors, err := factorsToPB(o.Factors)
+		if err != nil {
+			return nil, err
+		}
+		officers[i] = &pb.CeremonyOfficer{
+			Username:      o.Username,
+			Role:          o.Role,
+			CsrPem:        o.CSRPEM,
+			EncryptionKem: o.EncryptionKEM,
+			EncryptionKey: o.EncryptionKey,
+			Factors:       factors,
+			Designated:    o.Designated,
+		}
 	}
 	return &pb.CeremonyInitializeRequest{
 		SoPin:                  req.SOPin,
@@ -283,7 +298,7 @@ func CeremonyInitToPB(req *transport.CeremonyInitializeRequest) *pb.CeremonyInit
 		AdminCertPoolPem:       req.AdminCertPoolPEM,
 		AdminGenerate:          req.AdminGenerate,
 		Secret:                 req.Secret,
-	}
+	}, nil
 }
 
 // CeremonyInitFromPB decodes a ceremony initialization result.

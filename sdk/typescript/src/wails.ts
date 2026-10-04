@@ -228,6 +228,7 @@ import type { AuditFilter, AuditPage } from './audit.js';
 import { NotImplementedError } from './errors.js';
 
 import {
+    ceremonyOfficerWire,
     decodeMVCCKV,
     decodeOpResponses,
     decodeRestoreResult,
@@ -1596,13 +1597,22 @@ export class WailsClient implements Client {
         const b = wrapBindings(getBindings().main.CeremonyBinding);
         return {
             initialize: async (req: CeremonyInitializeRequest): Promise<CeremonyInitializeResponse> => {
-                // secret is the one field needing a VALUE transform, not
-                // only a key one: the Go field is []byte so the server can
+                // officers is rendered field by field via
+                // ceremonyOfficerWire, not through toSnake's deep
+                // camelCase->snake_case conversion: a factor's params
+                // belong to the factor and must never be re-cased (see
+                // ceremonyOfficerWire, holderEnrolmentWire). secret is the
+                // one remaining field needing a VALUE transform, not only
+                // a key one: the Go field is []byte so the server can
                 // zeroize it after use, and encoding/json renders []byte as
                 // base64 (see seal.initialize's identical treatment).
-                const payload: Record<string, unknown> = { ...req };
-                if (req.secret) payload.secret = encodeBase64Utf8(req.secret);
-                const resp = await b.Initialize(toSnake(payload)) as CeremonyInitializeResponse;
+                const { officers, secret, ...flat } = req;
+                const payload = toSnake(flat) as Record<string, unknown>;
+                if (secret) payload.secret = encodeBase64Utf8(secret);
+                if (officers && officers.length > 0) {
+                    payload.officers = officers.map(ceremonyOfficerWire);
+                }
+                const resp = await b.Initialize(payload) as CeremonyInitializeResponse;
                 // admin_key_pem is base64 on the wire for the same reason;
                 // decoded back to plain PEM text here so the caller never
                 // deals with base64 either way.

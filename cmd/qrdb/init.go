@@ -80,6 +80,7 @@ type initFlags struct {
 	policy          string
 	officers        []string
 	custodians      []string
+	officersFile    string
 	adminCSR        string
 	adminCert       string
 	adminCertPool   string
@@ -136,6 +137,12 @@ this call: it stays sealed until holders later reconstruct it from their
 shares. Each holder then claims its sealed share envelope with 'barrier
 officer claim'.
 
+--officers/--custodians can only name a holder's username and CSR. A
+holder that also needs a separate share-envelope key, an additional
+authentication factor, or a designated factor uses --officers-file
+instead: a JSON document naming every holder with the full shape (see
+docs/ceremony/cli.md), mutually exclusive with --officers/--custodians.
+
 The bootstrap admin's certificate is resolved in this same call through
 exactly one of --admin-csr (CSR-sign, the admin's key never leaves this
 machine), --admin-cert (bring-your-own-certificate, nothing is issued), or
@@ -152,6 +159,9 @@ Examples:
             --officers alice=alice.csr --officers bob=bob.csr \
             --custodians carol=carol.csr --custodians dave=dave.csr \
             --custodians erin=erin.csr
+  qrdb init --barrier-strategy shamir --shares 5 --threshold 3 \
+            --so-pin SOPIN --user-pin USERPIN \
+            --officers-file officers.json
   qrdb init --barrier-strategy none --so-pin SOPIN --user-pin USERPIN \
             --admin-csr admin.csr
   QRDB_SO_PIN=... QRDB_USER_PIN=... qrdb init --barrier-strategy none --admin-generate`,
@@ -189,9 +199,11 @@ func registerInitFlags(cmd *cobra.Command, f *initFlags) {
 	cmd.Flags().StringVar(&f.sans, "sans", "",
 		"Comma-separated additional DNS / IP SANs")
 	cmd.Flags().StringArrayVar(&f.officers, "officers", nil,
-		"Security Officer share holder: username=path/to/csr.pem (repeatable; required when --barrier-strategy=shamir with --threshold >= 2)")
+		"Security Officer share holder: username=path/to/csr.pem (repeatable; required when --barrier-strategy=shamir with --threshold >= 2). Mutually exclusive with --officers-file.")
 	cmd.Flags().StringArrayVar(&f.custodians, "custodians", nil,
-		"Key custodian share holder: username=path/to/csr.pem (repeatable)")
+		"Key custodian share holder: username=path/to/csr.pem (repeatable). Mutually exclusive with --officers-file.")
+	cmd.Flags().StringVar(&f.officersFile, "officers-file", "",
+		"Path to a JSON file naming every initial share holder with the full holder shape (separate envelope key, extra factors, designated factor) that --officers/--custodians cannot express; see docs/ceremony/cli.md. Mutually exclusive with --officers/--custodians.")
 	cmd.Flags().StringVar(&f.policy, "policy", "",
 		"Factor policy of the initial share set: designated (default) or any-enrolled")
 	cmd.Flags().StringVar(&f.adminCSR, "admin-csr", "",
@@ -293,6 +305,12 @@ func resolveAndValidateInitFlags(cmd *cobra.Command, f *initFlags, envPrefix str
 	if f.adminCertPool != "" && f.adminCert == "" {
 		return &InvalidArgError{Arg: "--admin-cert-pool", Reason: "only valid with --admin-cert"}
 	}
+	if f.officersFile != "" && (len(f.officers) > 0 || len(f.custodians) > 0) {
+		return &InvalidArgError{
+			Arg:    "--officers-file",
+			Reason: "mutually exclusive with --officers/--custodians: name every holder one way or the other, not both",
+		}
+	}
 	return nil
 }
 
@@ -339,15 +357,30 @@ func parseOfficerFlags(flag, role string, raw []string) ([]transport.CeremonyOff
 // reached. The generate path is dev/test/evaluation only; runInit warns
 // loudly when it is used.
 func runInit(cmd *cobra.Command, f *initFlags) error {
-	officers, err := parseOfficerFlags("--officers", transport.RoleSecurityOfficer, f.officers)
-	if err != nil {
-		return err
+	var officers []transport.CeremonyOfficerRequest
+	if f.officersFile != "" {
+		// --officers-file is the rich-holder path (go-qrdb#4578 review
+		// item 1): separate envelope keys, extra factors, and the
+		// designated factor, none of which username=path/to/csr.pem can
+		// express. resolveAndValidateInitFlags already refused combining
+		// it with --officers/--custodians.
+		var err error
+		officers, err = parseOfficersFile(f.officersFile)
+		if err != nil {
+			return err
+		}
+	} else {
+		var err error
+		officers, err = parseOfficerFlags("--officers", transport.RoleSecurityOfficer, f.officers)
+		if err != nil {
+			return err
+		}
+		custodians, cerr := parseOfficerFlags("--custodians", transport.RoleCustodian, f.custodians)
+		if cerr != nil {
+			return cerr
+		}
+		officers = append(officers, custodians...)
 	}
-	custodians, err := parseOfficerFlags("--custodians", transport.RoleCustodian, f.custodians)
-	if err != nil {
-		return err
-	}
-	officers = append(officers, custodians...)
 	// --shares is N, and the key is split to exactly the named holders, so
 	// the two must agree. With no holders named the ceremony's own M-of-N
 	// validation refuses the request.

@@ -210,7 +210,15 @@ func CeremonyInitFrom(req *transport.CeremonyInitializeRequest) *service.Ceremon
 	if len(req.Officers) > 0 {
 		holders = make([]service.CeremonyOfficerConfig, len(req.Officers))
 		for i, o := range req.Officers {
-			holders[i] = service.CeremonyOfficerConfig{Username: o.Username, Role: seal.HolderRole(o.Role), CSRPEM: o.CSRPEM}
+			holders[i] = service.CeremonyOfficerConfig{
+				Username:      o.Username,
+				Role:          seal.HolderRole(o.Role),
+				CSRPEM:        o.CSRPEM,
+				EncryptionKEM: o.EncryptionKEM,
+				EncryptionKey: o.EncryptionKey,
+				Factors:       FactorsFrom(o.Factors),
+				Designated:    o.Designated,
+			}
 		}
 	}
 	return &service.CeremonyInitializeOptions{

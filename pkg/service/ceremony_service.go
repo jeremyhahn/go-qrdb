@@ -116,7 +116,11 @@ type CeremonyInitializeOptions struct {
 }
 
 // CeremonyOfficerConfig names one initial share holder. CSRPEM is a PEM
-// string, the canonical wire form.
+// string, the canonical wire form. It carries the same fields
+// BarrierOfficerRegisterRequest does (go-qrdb#4578 review item 1):
+// CeremonyInitialize is the ONLY way to establish Shamir custody over the
+// system barrier, so it is also the only place a holder can get a separate
+// envelope key, an extra factor, or a designated factor.
 type CeremonyOfficerConfig struct {
 	// Username is the holder's unique identifier.
 	Username string
@@ -126,6 +130,17 @@ type CeremonyOfficerConfig struct {
 
 	// CSRPEM supplies the holder's public key.
 	CSRPEM string
+
+	// EncryptionKEM and EncryptionKey name an optional separate
+	// share-envelope recipient key (HPKE suite name and key encoding).
+	EncryptionKEM string
+	EncryptionKey []byte
+
+	// Factors are additional authentication factors to enrol.
+	Factors []ceremony.FactorEnrolment
+
+	// Designated names the designated factor; empty means "mtls".
+	Designated string
 }
 
 // CeremonyInitResult contains the output of a successful initialization.
@@ -232,7 +247,15 @@ func (s *CeremonyService) CeremonyInitialize(ctx context.Context, ca ceremony.Ce
 	}
 	officers := make([]ceremony.OfficerConfig, len(opts.Officers))
 	for i, o := range opts.Officers {
-		officers[i] = ceremony.OfficerConfig{Username: o.Username, Role: o.Role, CSRPEM: []byte(o.CSRPEM)}
+		officers[i] = ceremony.OfficerConfig{
+			Username:      o.Username,
+			Role:          o.Role,
+			CSRPEM:        []byte(o.CSRPEM),
+			EncryptionKEM: o.EncryptionKEM,
+			EncryptionKey: o.EncryptionKey,
+			Factors:       o.Factors,
+			Designated:    o.Designated,
+		}
 	}
 	copts := &ceremony.InitializeOptions{
 		SOPin:                  opts.SOPin,

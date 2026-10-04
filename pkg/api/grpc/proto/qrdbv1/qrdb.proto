@@ -3698,11 +3698,25 @@ message BarrierRecoveryStatusResponse {
 // ===========================================================================
 
 // CeremonyOfficer describes a single officer for M-of-N initialization.
+// CeremonyOfficer names one initial share holder. `qrdb init` is the ONLY
+// system bootstrap, so it carries the same fields
+// BarrierOfficerRegisterRequest does (go-qrdb#4578 review item 1): it is
+// also the only place Shamir custody over the system barrier is ever
+// established, and a holder who needs a separate envelope key, an extra
+// factor, or a designated factor has no other registration path.
 message CeremonyOfficer {
     string username = 1;
     string csr_pem = 2;
     // role is "so" or "custodian"; empty means "so".
     string role = 3;
+    // encryption_kem and encryption_key name an optional separate
+    // share-envelope recipient key (HPKE suite name and key encoding).
+    string encryption_kem = 4;
+    bytes  encryption_key = 5;
+    // factors are additional authentication factors to enrol.
+    repeated HolderFactorEnrolment factors = 6;
+    // designated names the designated factor; empty means "mtls".
+    string designated = 7;
 }
 
 // CeremonyHolderCert is one enrolled holder's issued certificate.

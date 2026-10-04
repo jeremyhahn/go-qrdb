@@ -308,6 +308,10 @@ type holderE2E struct {
 // e2eSOPIN is the barrier SO PIN the share-holder scenario provisions.
 const e2eSOPIN = "so-pin-1234"
 
+// e2eUserPIN is the user-level PIN CeremonyInitialize requires alongside
+// e2eSOPIN; the scenario itself never exercises user-PIN-gated operations.
+const e2eUserPIN = "user-pin-1234"
+
 // newHolderE2E prepares the CA, server TLS, factor registry, holders and the
 // node configuration for tk.
 func newHolderE2E(t *testing.T, tk transportKind) *holderE2E {
@@ -510,42 +514,57 @@ func (e *holderE2E) adminClient() transport.BarrierClient {
 }
 
 // enrolAndInitialize has the admin enrol every holder and initialize 3-of-5
-// custody, in-process: an uninitialized node has no RBAC store yet, so this
-// is the embedded composer's path (the remote path is qrdb init).
-//
-// BarrierOfficerRegister still goes through e.svc (e.n.Services().Barrier):
-// registration is unaffected by go-qrdb#560 review item 8. The Shamir
-// initialization itself, though, can no longer go through
-// BarrierService.BarrierInitializeShamir on this ceremony-backed service --
-// it now unconditionally refuses with *SystemBarrierInitRefusedError,
-// exactly as BarrierInitialize already did, because qrdb init is the only
-// system bootstrap. It goes through the ceremony's own InitializeShamir
-// instead, the same holder-authority path qrdb init itself uses, over the
-// same underlying barrier.
+// custody through `qrdb init`'s own call, service.CeremonyServicer's
+// CeremonyInitialize: a ceremony-backed node refuses BarrierInitializeShamir
+// on the system barrier outright (go-qrdb#560 review item 8; go-qrdb#4578
+// review item 1), because Initialize is the ONLY system bootstrap and the
+// only place that registration can happen. The rich per-holder data --
+// separate envelope keys, additional factors, the designated factor --
+// travels through the same transport.CeremonyOfficerRequest/
+// holderwire.CeremonyInitFrom conversion a real REST or embedded `qrdb init`
+// caller uses, not a shortcut: CeremonyOfficerRequest now carries everything
+// OfficerRegisterRequest does, and Initialize registers every officer
+// through the identical holder-engine call BarrierOfficerRegister makes.
 func (e *holderE2E) enrolAndInitialize() {
 	e.t.Helper()
-	svc := e.n.Services().Barrier
+	svc := e.n.Services().Ceremony
 	ctx := boundedCtx(e.t)
-	for _, name := range e.names() {
-		h := e.holders[name]
-		res, err := svc.BarrierOfficerRegister(ctx, seal.DomainUnseal, holderwire.RegisterFrom(h.registerRequest()))
-		if err != nil {
-			e.t.Fatalf("register %s: %v", name, err)
-		}
-		h.recordCert(e.t, holderwire.RegisterTo(res).CertPEM)
+	names := e.names()
+	officers := make([]transport.CeremonyOfficerRequest, 0, len(names))
+	for _, name := range names {
+		req := e.holders[name].registerRequest()
+		officers = append(officers, transport.CeremonyOfficerRequest{
+			Username:      req.Username,
+			Role:          req.Role,
+			CSRPEM:        req.CSRPEM,
+			EncryptionKEM: req.EncryptionKEM,
+			EncryptionKey: req.EncryptionKey,
+			Factors:       req.Factors,
+			Designated:    req.Designated,
+		})
 	}
-	core, ok := service.CeremonyServiceCore(e.n.Services().Ceremony)
-	if !ok {
-		e.t.Fatal("node's CeremonyServicer has no ceremony core")
-	}
-	barrier := e.n.BarrierRegistry().SystemBarrier()
-	barrier.SetShamirConfig(&seal.ShamirConfig{Threshold: e2eThreshold, TotalShares: e2eTotal})
-	params, err := core.InitializeShamir(ctx, seal.FactorPolicyDesignated)
+	opts := holderwire.CeremonyInitFrom(&transport.CeremonyInitializeRequest{
+		SOPin:     e2eSOPIN,
+		UserPin:   e2eUserPIN,
+		Threshold: e2eThreshold,
+		Policy:    string(seal.FactorPolicyDesignated),
+		Officers:  officers,
+		Hostname:  "127.0.0.1",
+		// AdminGenerate is the dev/test/evaluation-only admin-credential
+		// path (go-qrdb#548): this scenario tests share-holder custody,
+		// not admin-credential issuance, so the simplest valid selection
+		// is used and the returned admin key is otherwise ignored.
+		AdminGenerate: true,
+	})
+	result, err := svc.CeremonyInitialize(ctx, e.ca, opts)
 	if err != nil {
-		e.t.Fatalf("initialize shamir: %v", err)
+		e.t.Fatalf("ceremony initialize: %v", err)
 	}
-	if params.ShareCount != e2eTotal {
-		e.t.Fatalf("shares distributed = %d, want %d", params.ShareCount, e2eTotal)
+	if result.ShareCount != e2eTotal {
+		e.t.Fatalf("shares distributed = %d, want %d", result.ShareCount, e2eTotal)
+	}
+	for i, name := range names {
+		e.holders[name].recordCert(e.t, string(result.Holders[i].CertPEM))
 	}
 }
 

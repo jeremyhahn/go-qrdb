@@ -1,6 +1,6 @@
 # Initialization Ceremony — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
 
 ## Exported surface
 
@@ -79,9 +79,16 @@ every certificate a `CeremonyCA` returns and records nothing for it, returning
 key usage, or another set of extended key usages).
 
 `InitializeOptions.Officers` is the list of initial share holders
-(`OfficerConfig{Username, Role, CSRPEM}`); `Policy` is the factor policy of
+(`OfficerConfig{Username, Role, CSRPEM, EncryptionKEM, EncryptionKey,
+Factors, Designated}` — the same fields `RegisterOfficerRequest` takes:
+`Initialize` is the ONLY system bootstrap, so
+it is also the only place a holder can get a separate envelope key, an
+extra factor, or a designated factor); `Policy` is the factor policy of
 the initial share set; `Enroller` is the authenticated caller, which may not
-appear among the holders.
+appear among the holders. `Initialize` registers each officer through
+`holderScope.register` — the identical call `RegisterOfficer` makes for
+post-initialization enrolment — so there is exactly one registration path,
+not two that could drift apart.
 
 `ThresholdInitializer` implementations register through `ThresholdRegistry`;
 qrdb ships only `NoopThresholdInitializer`.

@@ -38,7 +38,12 @@ share-claim route of its own.
   "threshold": 3, "policy": "designated",
   "officers": [
     { "username": "alice", "role": "so",        "csr_pem": "-----BEGIN CERTIFICATE REQUEST-----…" },
-    { "username": "carol", "role": "custodian", "csr_pem": "…" }
+    {
+      "username": "carol", "role": "custodian", "csr_pem": "…",
+      "encryption_kem": "dhkem-x25519", "encryption_key": "yJRYgAtmk1A…",
+      "factors": [{ "name": "fido2", "params": { "attestation": "…" } }],
+      "designated": "fido2"
+    }
   ],
   "hostname": "db.example.com", "sans": ["db.example.com"],
   "admin_csr_pem": "…", "admin_cert_pem": "…", "admin_cert_pool_pem": "…",
@@ -52,6 +57,21 @@ one the request is refused. `threshold >= 2` requires `officers` — every
 initial share holder, officers and custodians alike, each with its role — and
 fails closed with `ErrNoOfficers` without them. The unseal key is split
 `threshold`-of-`len(officers)`. The caller may not name itself among them.
+
+**Each officer carries the same fields `POST /v1/barrier/officers`
+(`OfficerRegisterRequest`, [../shamir-custody/api.md](../shamir-custody/api.md))
+does**: `Initialize` is the ONLY system
+bootstrap, so it is also the only place Shamir custody over the system
+barrier is ever established, and a holder who needs any of the fields below
+has no other registration path to get them through. `encryption_kem`/
+`encryption_key` name an optional separate share-envelope recipient key
+(HPKE suite, base64 public key); without one the certificate key receives
+the envelope. `factors` are additional authentication factors to enrol
+(`mtls` is always enrolled, from the issued certificate). `designated`
+names the factor fixed at enrolment under the designated factor policy;
+`mtls` when empty. `Initialize` registers every officer through the
+identical holder-engine call `BarrierOfficerRegister` makes — there is no
+second registration path.
 
 **`secret` is `bytes`, base64-encoded on the wire** (**BREAKING**: it was a
 plain string before; see CHANGELOG) -- a Go string is immutable and can

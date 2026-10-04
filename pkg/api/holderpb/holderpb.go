@@ -229,13 +229,28 @@ func TenantRegisterToPB(r *ceremony.RegisterOfficerResult) *pb.TenantBarrierOffi
 }
 
 // CeremonyInitFromPB converts a ceremony initialization request; see
-// holderwire.CeremonyInitFrom.
-func CeremonyInitFromPB(req *pb.CeremonyInitializeRequest) *service.CeremonyInitializeOptions {
+// holderwire.CeremonyInitFrom. Officer Factors carry the same
+// FactorsFromPB/FactorParamsError decoding RegisterFromPB uses
+// (go-qrdb#4578 review item 1): CeremonyOfficer is now the same shape as
+// BarrierOfficerRegisterRequest.
+func CeremonyInitFromPB(req *pb.CeremonyInitializeRequest) (*service.CeremonyInitializeOptions, error) {
 	var holders []service.CeremonyOfficerConfig
 	if len(req.GetOfficers()) > 0 {
 		holders = make([]service.CeremonyOfficerConfig, len(req.GetOfficers()))
 		for i, o := range req.GetOfficers() {
-			holders[i] = service.CeremonyOfficerConfig{Username: o.GetUsername(), Role: seal.HolderRole(o.GetRole()), CSRPEM: o.GetCsrPem()}
+			factors, err := FactorsFromPB(o.GetFactors())
+			if err != nil {
+				return nil, err
+			}
+			holders[i] = service.CeremonyOfficerConfig{
+				Username:      o.GetUsername(),
+				Role:          seal.HolderRole(o.GetRole()),
+				CSRPEM:        o.GetCsrPem(),
+				EncryptionKEM: o.GetEncryptionKem(),
+				EncryptionKey: o.GetEncryptionKey(),
+				Factors:       factors,
+				Designated:    o.GetDesignated(),
+			}
 		}
 	}
 	return &service.CeremonyInitializeOptions{
@@ -252,7 +267,7 @@ func CeremonyInitFromPB(req *pb.CeremonyInitializeRequest) *service.CeremonyInit
 		AdminCertPoolPEM:       req.GetAdminCertPoolPem(),
 		AdminGenerate:          req.GetAdminGenerate(),
 		Secret:                 req.GetSecret(),
-	}
+	}, nil
 }
 
 // CeremonyInitToPB converts a ceremony initialization result.

@@ -54,7 +54,11 @@ func (s *qrdbServiceServer) CeremonyInitialize(ctx context.Context, req *pb.Cere
 	// follow-up).
 	defer secure.Wipe(req.Secret)
 
-	result, err := s.ceremonySvc.CeremonyInitialize(ctx, s.ceremonyCA, holderpb.CeremonyInitFromPB(req))
+	opts, err := holderpb.CeremonyInitFromPB(req)
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	result, err := s.ceremonySvc.CeremonyInitialize(ctx, s.ceremonyCA, opts)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}

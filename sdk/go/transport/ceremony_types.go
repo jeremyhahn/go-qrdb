@@ -15,14 +15,31 @@
 package transport
 
 // CeremonyOfficerRequest describes one initial share holder. The node's CA
-// assigns the certificate identity; the CSR supplies only the public key,
-// which is also the key the holder's share envelope is sealed to and the
-// key its mtls factor proves possession of. Role is "so" (the default) or
-// "custodian".
+// assigns the certificate identity; the CSR supplies only the public key.
+// Role is "so" (the default) or "custodian".
+//
+// `qrdb init` is the ONLY system bootstrap, so it is also the only place
+// Shamir custody over the system barrier is ever established -- a holder
+// who needs a separate envelope key, an extra factor, or a designated
+// factor has no other registration path to get one through. This struct
+// therefore carries the same fields OfficerRegisterRequest does
+// (go-qrdb#4578 review item 1); CeremonyInitialize registers every officer
+// through the identical holder-engine call BarrierOfficerRegister makes.
+//
+// EncryptionKEM/EncryptionKey name an optional separate share-envelope
+// recipient key; without one the certificate key receives the envelope,
+// which needs an ECDSA P-256/P-384 (or X25519-convertible) key. Factors are
+// additional authentication factors to enrol ("mtls" is always enrolled,
+// from the issued certificate). Designated names the factor fixed at
+// enrolment under the designated factor policy; "mtls" when empty.
 type CeremonyOfficerRequest struct {
-	Username string `json:"username"`
-	Role     string `json:"role,omitempty"`
-	CSRPEM   string `json:"csr_pem"`
+	Username      string                  `json:"username"`
+	Role          string                  `json:"role,omitempty"`
+	CSRPEM        string                  `json:"csr_pem"`
+	EncryptionKEM string                  `json:"encryption_kem,omitempty"`
+	EncryptionKey []byte                  `json:"encryption_key,omitempty"`
+	Factors       []HolderFactorEnrolment `json:"factors,omitempty"`
+	Designated    string                  `json:"designated,omitempty"`
 }
 
 // CeremonyInitializeRequest holds the parameters for initializing the

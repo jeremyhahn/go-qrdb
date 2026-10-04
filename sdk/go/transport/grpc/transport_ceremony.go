@@ -44,7 +44,11 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 	}
 	resolved := *req
 	resolved.SOPin = soPIN
-	resp, err := t.client.CeremonyInitialize(ctx, holderconv.CeremonyInitToPB(&resolved))
+	in, err := holderconv.CeremonyInitToPB(&resolved)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := t.client.CeremonyInitialize(ctx, in)
 	if err != nil {
 		return nil, mapGRPCError("CeremonyInitialize", err)
 	}

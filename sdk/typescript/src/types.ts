@@ -2032,6 +2032,21 @@ export interface CeremonyOfficerRequest {
     readonly role?: HolderRole;
     /** PEM-encoded certificate signing request from the holder. */
     readonly csrPem: string;
+    /**
+     * HPKE suite of a separate envelope key (for example "dhkem-x25519" or
+     * "mlkem768-x25519"). Without it the envelope is sealed to the
+     * certificate key (P-256 or P-384). `qrdb init` (this request) is the
+     * ONLY system bootstrap, so it is also the only place a holder can get
+     * one -- the same field {@link OfficerRegisterRequest.encryptionKem}
+     * carries for post-init enrolment.
+     */
+    readonly encryptionKem?: string;
+    /** Base64 envelope public key for `encryptionKem`. */
+    readonly encryptionKey?: string;
+    /** Factors to enrol beyond the built-in `mtls`. */
+    readonly factors?: readonly HolderFactorEnrolment[];
+    /** The designated factor; the server defaults it to "mtls". */
+    readonly designated?: string;
 }
 
 /**

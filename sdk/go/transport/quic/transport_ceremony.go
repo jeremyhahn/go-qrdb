@@ -44,8 +44,12 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 	}
 	resolved := *req
 	resolved.SOPin = soPIN
+	in, err := holderconv.CeremonyInitToPB(&resolved)
+	if err != nil {
+		return nil, err
+	}
 	var resp pb.CeremonyInitializeResponse
-	if err := t.callPB(ctx, "ceremony.Initialize", holderconv.CeremonyInitToPB(&resolved), &resp); err != nil {
+	if err := t.callPB(ctx, "ceremony.Initialize", in, &resp); err != nil {
 		return nil, err
 	}
 	return holderconv.CeremonyInitFromPB(&resp), nil

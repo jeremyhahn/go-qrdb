@@ -61,7 +61,7 @@ func toolCeremonyInitialize() mcp.Tool {
 			mcp.Description("Factor policy of the initial share set: designated (default) or any-enrolled."),
 		),
 		mcp.WithString("officers",
-			mcp.Description("Initial share holders, JSON-encoded: an array of {\"username\":..., \"role\":\"so\"|\"custodian\", \"csr_pem\":...} objects, e.g. '[{\"username\":\"alice\",\"role\":\"so\",\"csr_pem\":\"...\"}]'. Takes precedence over server configuration when non-empty."),
+			mcp.Description("Initial share holders, JSON-encoded: an array of {\"username\":..., \"role\":\"so\"|\"custodian\", \"csr_pem\":..., \"encryption_kem\":..., \"encryption_key\":..., \"factors\":[...], \"designated\":...} objects, e.g. '[{\"username\":\"alice\",\"role\":\"so\",\"csr_pem\":\"...\"}]'. encryption_kem/encryption_key name an optional separate share-envelope key (HPKE suite, base64 public key) -- without one the certificate key receives the envelope. factors is a JSON array of additional factor enrolments: [{\"name\":...,\"params\":{...}}]. designated names the factor fixed at enrolment under the designated policy; mtls when empty. Takes precedence over server configuration when non-empty."),
 		),
 		mcp.WithString("hostname",
 			mcp.Description("The primary hostname for TLS certificate generation. Takes precedence over server configuration when provided."),

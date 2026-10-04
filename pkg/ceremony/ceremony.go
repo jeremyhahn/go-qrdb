@@ -501,12 +501,21 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	}
 
 	for _, o := range opts.Officers {
-		reg, rerr := s.system.register(ctx, &s.deps, RegisterOfficerRequest{
-			Username: o.Username,
-			Role:     o.Role,
-			CSRPEM:   o.CSRPEM,
-			Enroller: opts.Enroller,
-		})
+		req := RegisterOfficerRequest{
+			Username:   o.Username,
+			Role:       o.Role,
+			CSRPEM:     o.CSRPEM,
+			Factors:    o.Factors,
+			Designated: o.Designated,
+			Enroller:   opts.Enroller,
+		}
+		if o.EncryptionKEM != "" || len(o.EncryptionKey) > 0 {
+			req.EncryptionKey = &EncryptionKeyEnrolment{KEM: o.EncryptionKEM, PublicKey: o.EncryptionKey}
+		}
+		// s.system.register is the SAME holderScope.register call
+		// RegisterOfficer makes (via s.scope) for post-init enrollment --
+		// there is no second registration path for the rich holder data.
+		reg, rerr := s.system.register(ctx, &s.deps, req)
 		if rerr != nil {
 			s.mu.Unlock()
 			return nil, rerr

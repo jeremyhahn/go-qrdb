@@ -92,17 +92,43 @@ func TestQuorumConversions(t *testing.T) {
 
 // TestCeremonyInit pins the protobuf ceremony initialization conversions.
 func TestCeremonyInit(t *testing.T) {
-	opts := CeremonyInitFromPB(&pb.CeremonyInitializeRequest{
+	opts, err := CeremonyInitFromPB(&pb.CeremonyInitializeRequest{
 		SoPin: "so", UserPin: "user", CredentialSealStrategy: "shamir", Threshold: 2, Policy: "designated",
-		Officers: []*pb.CeremonyOfficer{{Username: "alice", Role: "so", CsrPem: "a"}},
+		Officers: []*pb.CeremonyOfficer{{
+			Username: "alice", Role: "so", CsrPem: "a",
+			EncryptionKem: "x25519", EncryptionKey: []byte("pub"),
+			Factors:    []*pb.HolderFactorEnrolment{{Name: "fido2"}},
+			Designated: "fido2",
+		}},
 		Hostname: "db.example.com", Sans: []string{"db.example.com"},
 	})
+	if err != nil {
+		t.Fatalf("CeremonyInitFromPB: %v", err)
+	}
 	if opts.SOPin != "so" || opts.Threshold != 2 || opts.Policy != seal.FactorPolicyDesignated || len(opts.Officers) != 1 ||
 		opts.Officers[0].Role != seal.RoleSecurityOfficer || opts.Officers[0].CSRPEM != "a" || opts.Hostname != "db.example.com" {
 		t.Errorf("CeremonyInitFromPB = %+v", opts)
 	}
-	if empty := CeremonyInitFromPB(&pb.CeremonyInitializeRequest{}); empty.Officers != nil {
+	// The rich holder fields -- EncryptionKEM/EncryptionKey/Factors/
+	// Designated -- must survive the same way BarrierOfficerRegisterRequest's
+	// do (go-qrdb#4578 review item 1): Initialize is the only place Shamir
+	// custody over the system barrier is ever established.
+	o := opts.Officers[0]
+	if o.EncryptionKEM != "x25519" || string(o.EncryptionKey) != "pub" || len(o.Factors) != 1 ||
+		o.Factors[0].Name != "fido2" || o.Designated != "fido2" {
+		t.Errorf("CeremonyInitFromPB officer enrichment = %+v", o)
+	}
+	empty, err := CeremonyInitFromPB(&pb.CeremonyInitializeRequest{})
+	if err != nil {
+		t.Fatalf("CeremonyInitFromPB(empty): %v", err)
+	}
+	if empty.Officers != nil {
 		t.Errorf("no holders must stay nil: %+v", empty.Officers)
+	}
+	if _, err := CeremonyInitFromPB(&pb.CeremonyInitializeRequest{
+		Officers: []*pb.CeremonyOfficer{{Username: "bob", Factors: []*pb.HolderFactorEnrolment{{Name: "fido2", ParamsJson: []byte("not-json")}}}},
+	}); err == nil {
+		t.Error("malformed factor params_json must be refused, not silently dropped")
 	}
 	resp := CeremonyInitToPB(&service.CeremonyInitResult{
 		SPKIPin: "pin", CACertPEM: []byte("ca"), State: "initialized", ShareCount: 1,

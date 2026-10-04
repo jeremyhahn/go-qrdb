@@ -55,7 +55,11 @@ func (s *Server) handleCeremonyInitialize(ctx context.Context, payload []byte) (
 	// follow-up).
 	defer secure.Wipe(req.Secret)
 
-	result, err := s.ceremonySvc.CeremonyInitialize(ctx, s.ceremonyCA, holderpb.CeremonyInitFromPB(&req))
+	opts, err := holderpb.CeremonyInitFromPB(&req)
+	if err != nil {
+		return nil, err
+	}
+	result, err := s.ceremonySvc.CeremonyInitialize(ctx, s.ceremonyCA, opts)
 	if err != nil {
 		return nil, err
 	}
