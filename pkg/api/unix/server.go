@@ -115,9 +115,14 @@ type Server struct {
 	// sealedWindowListener is the boot-time sealed-window listener's probe,
 	// and selects that listener's interceptors. Nil for a regular listener.
 	sealedWindowListener sealedwindow.ListenerProbe
-	server               *grpc.Server
-	listener             net.Listener
-	serveWg              sync.WaitGroup
+
+	// awaitingAdminCredentialProbe controls the awaiting-admin-credential
+	// gate (go-qrdb#548 review item 3). See the TCP gRPC server's
+	// WithAwaitingAdminCredentialProbe for its admission rule.
+	awaitingAdminCredentialProbe awaitingAdminCredentialProbe
+	server                       *grpc.Server
+	listener                     net.Listener
+	serveWg                      sync.WaitGroup
 
 	// maxConcurrentStreams is the server's configured per-connection stream
 	// cap. Zero means grpcpkg.DefaultMaxConcurrentStreams; see
@@ -265,6 +270,14 @@ type sealedWindowProbe interface {
 	IsSealed() bool
 }
 
+// awaitingAdminCredentialProbe is the abstraction the awaiting-admin-
+// credential interceptor needs (go-qrdb#548 review item 3). Mirrors
+// grpcpkg's unexported interface of the same name, for the same reason
+// sealedWindowProbe above does.
+type awaitingAdminCredentialProbe interface {
+	AwaitingAdminCredential() bool
+}
+
 // WithSealedWindowProbe installs the sealed-window unary and streaming
 // interceptors on the Unix socket gRPC server, using the exact same
 // allowlist and semantics as the TCP gRPC server (grpcpkg.SealedWindowAllowlist).
@@ -289,6 +302,13 @@ func WithSealedWindowListener(probe sealedwindow.ListenerProbe) ServerOption {
 		s.sealedWindowProbe = probe
 		s.sealedWindowListener = probe
 	}
+}
+
+// WithAwaitingAdminCredentialProbe installs the awaiting-admin-credential
+// gate (go-qrdb#548 review item 3), exactly as the TCP gRPC server's
+// WithAwaitingAdminCredentialProbe does.
+func WithAwaitingAdminCredentialProbe(probe awaitingAdminCredentialProbe) ServerOption {
+	return func(s *Server) { s.awaitingAdminCredentialProbe = probe }
 }
 
 // WithPINBackend configures the Unix socket server with the canonical
@@ -608,13 +628,24 @@ func (s *Server) Start() error {
 		streamInterceptors = append(streamInterceptors, sealedStream)
 	}
 
+	// The awaiting-admin-credential gate (go-qrdb#548 review item 3) is
+	// composed exactly as the TCP gRPC server composes it: wrapping the
+	// chain's own combined form, not appended as a chain member, since it
+	// must be able to skip the whole chain -- auth included -- for the two
+	// methods it allows.
+	unaryChain := grpcpkg.ChainUnaryServerInterceptors(unaryInterceptors...)
+	streamChain := grpcpkg.ChainStreamServerInterceptors(streamInterceptors...)
+	if s.awaitingAdminCredentialProbe != nil {
+		unaryChain = grpcpkg.AwaitingAdminCredentialUnaryInterceptor(s.awaitingAdminCredentialProbe, grpcpkg.AwaitingAdminCredentialAllowlist, unaryChain)
+		streamChain = grpcpkg.AwaitingAdminCredentialStreamInterceptor(s.awaitingAdminCredentialProbe, grpcpkg.AwaitingAdminCredentialAllowlist, streamChain)
+	}
 	maxStreams := s.maxConcurrentStreams
 	if maxStreams == 0 {
 		maxStreams = grpcpkg.DefaultMaxConcurrentStreams
 	}
 	serverOpts := []grpc.ServerOption{
-		grpc.ChainUnaryInterceptor(unaryInterceptors...),
-		grpc.ChainStreamInterceptor(streamInterceptors...),
+		grpc.UnaryInterceptor(unaryChain),
+		grpc.StreamInterceptor(streamChain),
 		grpc.MaxRecvMsgSize(grpcpkg.DefaultMaxRecvMsgSize),
 		grpc.MaxConcurrentStreams(maxStreams),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{

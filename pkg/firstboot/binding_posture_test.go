@@ -505,3 +505,82 @@ func TestVerifyAdminCertBindingWithin(t *testing.T) {
 		}
 	})
 }
+
+// TestAwaitingAdminCredentialProbe_PolicyGate covers the go-qrdb#548 review
+// item 3 probe's first check: any policy other than MTLSBindingRequired
+// reports false WITHOUT reading the store at all -- this boot state exists
+// only for the posture that refuses to boot an admin-unbound node outright.
+func TestAwaitingAdminCredentialProbe_PolicyGate(t *testing.T) {
+	lookup := &countingLookup{users: newRealUsers(t)}
+	p := &AwaitingAdminCredentialProbe{Policy: auth.MTLSBindingEnrolled, Users: lookup}
+	if p.AwaitingAdminCredential() {
+		t.Fatal("MTLSBindingEnrolled must never report awaiting")
+	}
+	if lookup.calls != 0 {
+		t.Fatalf("lookups = %d, want 0: the policy gate must short-circuit before any read", lookup.calls)
+	}
+}
+
+// TestAwaitingAdminCredentialProbe_UnboundThenBoundNoRestart covers the
+// transition the review requires: an unbound admin under "required"
+// reports awaiting, and once a binding appears it reports not-awaiting on
+// the very next call past the recheck interval -- no restart, no new probe
+// instance.
+func TestAwaitingAdminCredentialProbe_UnboundThenBoundNoRestart(t *testing.T) {
+	users := newRealUsers(t)
+	admin := createAdmin(t, users)
+	p := &AwaitingAdminCredentialProbe{
+		Policy:          auth.MTLSBindingRequired,
+		Users:           users,
+		RecheckInterval: time.Nanosecond, // re-reads on every call for this test
+	}
+	if !p.AwaitingAdminCredential() {
+		t.Fatal("an admin created but never bound must report awaiting")
+	}
+	thumb := user.ComputeSPKIThumbprint(parseTestCert(t, realCertPEM(t)))
+	if _, err := users.AddCertBinding(context.Background(), admin.ID, thumb, 0); err != nil {
+		t.Fatalf("AddCertBinding: %v", err)
+	}
+	if p.AwaitingAdminCredential() {
+		t.Fatal("the SAME probe must report not-awaiting once the admin is bound, with no restart")
+	}
+}
+
+// TestAwaitingAdminCredentialProbe_MissingAdminIsNotAwaiting covers the
+// carve-out shared with sdk/go/node's own verifyExistingAdminBinding: an
+// admin that does not exist YET is not a lockout. Whatever eventually
+// creates it enforces the policy at that point; a node that simply has not
+// run first boot yet (or never will, because an embedder manages identities
+// outside the bootstrap-admin ceremony entirely) must not be stuck
+// "awaiting" forever over an account it never intends to create.
+func TestAwaitingAdminCredentialProbe_MissingAdminIsNotAwaiting(t *testing.T) {
+	p := &AwaitingAdminCredentialProbe{Policy: auth.MTLSBindingRequired, Users: newRealUsers(t)}
+	if p.AwaitingAdminCredential() {
+		t.Fatal("an admin that does not exist yet must not report awaiting")
+	}
+}
+
+// TestAwaitingAdminCredentialProbe_CachesWithinTheInterval covers the
+// load-bounding half: within RecheckInterval, repeated calls answer from
+// the cached verdict rather than re-reading the store on every one -- every
+// transport gate calls this on every request, so an unbounded read rate
+// would put a linearizable read on the hot path of EVERY request, not only
+// the two ceremony verbs this state actually serves.
+func TestAwaitingAdminCredentialProbe_CachesWithinTheInterval(t *testing.T) {
+	users := newRealUsers(t)
+	createAdmin(t, users)
+	lookup := &countingLookup{users: users}
+	p := &AwaitingAdminCredentialProbe{
+		Policy:          auth.MTLSBindingRequired,
+		Users:           lookup,
+		RecheckInterval: time.Hour,
+	}
+	for i := 0; i < 5; i++ {
+		if !p.AwaitingAdminCredential() {
+			t.Fatal("an unbound admin must report awaiting")
+		}
+	}
+	if lookup.calls != 1 {
+		t.Fatalf("lookups = %d, want 1: repeated calls within RecheckInterval must not re-read the store", lookup.calls)
+	}
+}

@@ -153,15 +153,33 @@ has (or once `qrdb status` shows this node as leader, if a different node is
 about to run first boot); any other bind failure names its own cause and is
 retriable once that cause is resolved.
 
-**"the bootstrap admin … could not log in under it" (auth.mtls_binding_policy
-is "required").** The admin exists but has no live certificate binding —
-typically because its one enrolled key expired, or because a fleet was moved
-to `required` before every account finished migrating. Start with
-`auth.mtls_binding_policy: enrolled`, enrol the admin's certificate
-(`POST /users/{id}/cert-bindings`), then set `required` again. See
-[../identity-rbac/user.md](../identity-rbac/user.md#moving-a-fleet-to-required-certificate-enrolment).
-Note `enrolled` does **not** meet FedRAMP, HIPAA or PCI DSS 4.0 — it is a
-migration step, not a resting configuration.
+**The node logs "awaiting admin credential" and most endpoints refuse with
+503 (auth.mtls_binding_policy is "required").** The bootstrap admin exists
+but has no live certificate binding — typically because its one enrolled key
+expired, because a fleet was moved to `required` before every account
+finished migrating, or because this is a fresh node whose first `qrdb init`
+never completed the bind. The node does **not** refuse to boot over this: it
+starts every listener — REST, gRPC, native QUIC, MCP, the embedded transport,
+the Unix socket transport — in a reduced "awaiting admin credential" state
+that serves exactly two things, with no certificate or other identity
+required to reach either:
+
+- `qrdb status` / `GET /v1/ceremony/status` — so you can confirm the state
+  without a credential.
+- `qrdb init` / `POST /v1/ceremony/initialize` — the SAME admin-credential
+  retry described above. Run it with `--admin-csr`, `--admin-cert`, or
+  `--admin-generate` against the current Raft leader; the SO/User PINs in
+  the request are the only credential this call needs.
+
+Every other endpoint answers `503` /
+`{"code":"AWAITING_ADMIN_CREDENTIAL"}` until that retry binds a
+certificate. The transition back to normal serving happens on the node's
+very next check of the binding — there is no flag to flip and nothing to
+restart. If you would rather not wait for a production binding right now,
+`auth.mtls_binding_policy: enrolled` lifts the restriction entirely (not a
+resting configuration — it does not meet FedRAMP, HIPAA or PCI DSS 4.0); see
+[../identity-rbac/user.md](../identity-rbac/user.md#moving-a-fleet-to-required-certificate-enrolment)
+for migrating a fleet the other direction, back to `required`.
 
 **"AdminCSRPEM and AdminCertPEM are mutually exclusive" / "conflicting admin
 cert inputs".** You gave both `--admin-csr` and `--admin-cert`. Signing the

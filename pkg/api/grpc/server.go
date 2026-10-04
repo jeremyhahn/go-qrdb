@@ -135,6 +135,16 @@ type Server struct {
 	// and selects that listener's interceptors. Nil for a regular listener.
 	sealedWindowListener sealedwindow.ListenerProbe
 
+	// awaitingAdminCredentialProbe controls the awaiting-admin-credential
+	// gate (go-qrdb#548 review item 3). While it reports true, only
+	// ceremony status and ceremony-initialize are served -- routed
+	// directly to the RPC handler, bypassing every other interceptor
+	// including auth, since there is no bound identity to authenticate as
+	// -- and every other method is refused with
+	// *middleware.AwaitingAdminCredentialError. When nil the gate is not
+	// installed.
+	awaitingAdminCredentialProbe awaitingAdminCredentialProbe
+
 	// modules holds capability modules whose gRPC services are attached
 	// to the *grpc.Server at construction. Set via WithServiceModules by
 	// the server orchestrator.
@@ -458,6 +468,13 @@ func WithSealedWindowListener(probe sealedwindow.ListenerProbe) ServerOption {
 	}
 }
 
+// WithAwaitingAdminCredentialProbe installs the awaiting-admin-credential
+// gate (go-qrdb#548 review item 3). See AwaitingAdminCredentialUnaryInterceptor
+// for its admission rule.
+func WithAwaitingAdminCredentialProbe(probe awaitingAdminCredentialProbe) ServerOption {
+	return func(s *Server) { s.awaitingAdminCredentialProbe = probe }
+}
+
 // WithServiceRegistry configures the gRPC server with a per-(tenant, database)
 // service registry. When set, every data-plane RPC resolves its servicer from
 // the registry using the authenticated tenant and the x-qrdb-database metadata
@@ -610,13 +627,26 @@ func (s *Server) Start() error {
 		streamInterceptors = append(streamInterceptors,
 			sealedWindowStream(s.sealedWindowProbe, nil, s.sealedWindowListener))
 	}
+	// The awaiting-admin-credential gate (go-qrdb#548 review item 3) must be
+	// able to skip the ENTIRE chain above -- authMW included -- for the two
+	// methods it allows, which grpc.ChainUnaryInterceptor's ServerOption
+	// form cannot express (each interceptor only ever sees the NEXT one, not
+	// the combined chain or the bare RPC handler). It is therefore composed
+	// as a single grpc.UnaryInterceptor/StreamInterceptor wrapping the
+	// chain's own combined form, rather than appended as a chain member.
+	unaryChain := ChainUnaryServerInterceptors(unaryInterceptors...)
+	streamChain := ChainStreamServerInterceptors(streamInterceptors...)
+	if s.awaitingAdminCredentialProbe != nil {
+		unaryChain = AwaitingAdminCredentialUnaryInterceptor(s.awaitingAdminCredentialProbe, AwaitingAdminCredentialAllowlist, unaryChain)
+		streamChain = AwaitingAdminCredentialStreamInterceptor(s.awaitingAdminCredentialProbe, AwaitingAdminCredentialAllowlist, streamChain)
+	}
 	maxStreams := s.maxConcurrentStreams
 	if maxStreams == 0 {
 		maxStreams = DefaultMaxConcurrentStreams
 	}
 	serverOpts := []grpc.ServerOption{
-		grpc.ChainUnaryInterceptor(unaryInterceptors...),
-		grpc.ChainStreamInterceptor(streamInterceptors...),
+		grpc.UnaryInterceptor(unaryChain),
+		grpc.StreamInterceptor(streamChain),
 		grpc.MaxRecvMsgSize(DefaultMaxRecvMsgSize),
 		grpc.MaxConcurrentStreams(maxStreams),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{

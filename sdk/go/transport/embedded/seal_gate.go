@@ -16,6 +16,7 @@ package embedded
 
 import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
@@ -36,6 +37,23 @@ type SealProbe interface {
 // it. Without a probe the transport gates nothing.
 func WithSealProbe(p SealProbe) Option {
 	return func(t *Transport) { t.sealProbe = p }
+}
+
+// AwaitingAdminCredentialProbe reports whether the node is currently
+// "awaiting admin credential" (go-qrdb#548 review item 3): auth.mtls_binding_policy
+// is "required" and the bootstrap admin holds no live certificate binding.
+type AwaitingAdminCredentialProbe interface {
+	AwaitingAdminCredential() bool
+}
+
+// WithAwaitingAdminCredentialProbe gates this transport, and every
+// database-scoped transport derived from it, on p: while p reports
+// awaiting, every request outside awaitingAdminCredentialAllowlist
+// (ceremony status and ceremony-initialize) is refused with
+// *middleware.AwaitingAdminCredentialError. Without a probe the transport
+// gates nothing on this axis.
+func WithAwaitingAdminCredentialProbe(p AwaitingAdminCredentialProbe) Option {
+	return func(t *Transport) { t.awaitingAdminCredentialProbe = p }
 }
 
 // WithSealStreams subscribes this transport's own watches to the node's
@@ -64,12 +82,25 @@ var ungatedLifecycleMethods = map[string]struct{}{
 // derived once from the canonical table every transport derives from.
 var embeddedAllowlist = sealedwindow.EmbeddedAllowlist()
 
+// awaitingAdminCredentialAllowlist is the awaiting-admin-credential
+// allowlist for this transport (ceremony status and ceremony-initialize),
+// derived from the same canonical table.
+var awaitingAdminCredentialAllowlist = sealedwindow.EmbeddedAwaitingAdminCredential()
+
 // gate refuses method while the seal probe is closed, unless the method is
-// on the sealed-window allowlist. It runs first in every request method, so
-// a refused request reads none of its arguments. The decision is the same
-// one the network listeners make (sealedwindow.Decide): the embedded
-// transport is always the regular, authenticated side of the gate.
+// on the sealed-window allowlist, and separately refuses it while the node
+// is awaiting admin credential (go-qrdb#548 review item 3) unless the
+// method is one of the two that state still serves. It runs first in every
+// request method, so a refused request reads none of its arguments. The
+// sealed-window decision is the same one the network listeners make
+// (sealedwindow.Decide): the embedded transport is always the regular,
+// authenticated side of the gate.
 func (t *Transport) gate(method string) error {
+	if t.awaitingAdminCredentialProbe != nil && t.awaitingAdminCredentialProbe.AwaitingAdminCredential() {
+		if _, ok := awaitingAdminCredentialAllowlist[method]; !ok {
+			return &authmw.AwaitingAdminCredentialError{}
+		}
+	}
 	if t.sealProbe == nil {
 		return nil
 	}

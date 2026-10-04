@@ -324,6 +324,17 @@ type serverOptions struct {
 	// mcpMaxConnections overrides the MCP server's DefaultMaxConnections; see
 	// WithMCPMaxConnections. Zero leaves the MCP server's own default.
 	mcpMaxConnections int
+
+	// awaitingAdminCredentialProbe controls the awaiting-admin-credential
+	// gate on every network transport (go-qrdb#548 review item 3). While
+	// the probe reports awaiting, only ceremony status and
+	// ceremony-initialize are served -- admitted with no authentication at
+	// all, since there is no bound identity to authenticate as -- and
+	// every other request is refused with
+	// *middleware.AwaitingAdminCredentialError. Wired identically across
+	// protocol servers so operators see the same envelope on every
+	// transport. See WithAwaitingAdminCredentialProbe.
+	awaitingAdminCredentialProbe AwaitingAdminCredentialProbe
 }
 
 // SealedWindowProbe is the abstraction the sealed-window middleware /
@@ -332,6 +343,14 @@ type serverOptions struct {
 // IsSealed method; tests may substitute a deterministic fake.
 type SealedWindowProbe interface {
 	IsSealed() bool
+}
+
+// AwaitingAdminCredentialProbe is the abstraction the awaiting-admin-
+// credential gate needs to know whether the node is currently "awaiting
+// admin credential" (go-qrdb#548 review item 3): auth.mtls_binding_policy
+// is "required" and the bootstrap admin holds no live certificate binding.
+type AwaitingAdminCredentialProbe interface {
+	AwaitingAdminCredential() bool
 }
 
 // ServerOption configures optional Server dependencies.
@@ -502,6 +521,19 @@ func WithSealedWindowProbe(probe SealedWindowProbe) ServerOption {
 	return func(o *serverOptions) {
 		o.sealedWindowProbe = probe
 		o.sealedWindowListener = false
+	}
+}
+
+// WithAwaitingAdminCredentialProbe installs the awaiting-admin-credential
+// gate on REST, gRPC, native QUIC, MCP and the Unix socket transport
+// (go-qrdb#548 review item 3). While probe.AwaitingAdminCredential()
+// returns true, only ceremony status and ceremony-initialize are served,
+// with no authentication at all; every other request is refused with
+// *middleware.AwaitingAdminCredentialError. Once the probe reports false
+// every transport serves normally, with no restart required.
+func WithAwaitingAdminCredentialProbe(probe AwaitingAdminCredentialProbe) ServerOption {
+	return func(o *serverOptions) {
+		o.awaitingAdminCredentialProbe = probe
 	}
 }
 
@@ -1626,6 +1658,9 @@ func (s *Server) startREST() error {
 		// rest.NewSealedWindowServer below.
 		restOpts = append(restOpts, rest.WithSealedWindowProbe(s.opts.sealedWindowProbe))
 	}
+	if s.opts.awaitingAdminCredentialProbe != nil {
+		restOpts = append(restOpts, rest.WithAwaitingAdminCredentialProbe(s.opts.awaitingAdminCredentialProbe))
+	}
 	if s.opts.batchSvc != nil {
 		restOpts = append(restOpts, rest.WithBatch(s.opts.batchSvc))
 	}
@@ -1889,6 +1924,9 @@ func (s *Server) startGRPC() error {
 			grpcOpts = append(grpcOpts, grpcapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
 		}
 	}
+	if s.opts.awaitingAdminCredentialProbe != nil {
+		grpcOpts = append(grpcOpts, grpcapi.WithAwaitingAdminCredentialProbe(s.opts.awaitingAdminCredentialProbe))
+	}
 	if s.opts.barrierSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithBarrierService(s.opts.barrierSvc))
 	}
@@ -2026,6 +2064,9 @@ func (s *Server) startQUIC() error {
 			quicOpts = append(quicOpts, quicapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
 		}
 	}
+	if s.opts.awaitingAdminCredentialProbe != nil {
+		quicOpts = append(quicOpts, quicapi.WithAwaitingAdminCredentialProbe(s.opts.awaitingAdminCredentialProbe))
+	}
 	if s.opts.collectionSvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithCollectionService(s.opts.collectionSvc))
 	}
@@ -2162,6 +2203,9 @@ func (s *Server) startUnix() error {
 		} else {
 			unixOpts = append(unixOpts, unixapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
 		}
+	}
+	if s.opts.awaitingAdminCredentialProbe != nil {
+		unixOpts = append(unixOpts, unixapi.WithAwaitingAdminCredentialProbe(s.opts.awaitingAdminCredentialProbe))
 	}
 	if s.opts.barrierSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithBarrierService(s.opts.barrierSvc))
@@ -2307,6 +2351,9 @@ func (s *Server) startMCP() error {
 		// The boot-time listener's gate is installed by
 		// mcpapi.NewSealedWindowServer below.
 		mcpOpts = append(mcpOpts, mcpapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+	}
+	if s.opts.awaitingAdminCredentialProbe != nil {
+		mcpOpts = append(mcpOpts, mcpapi.WithAwaitingAdminCredentialProbe(s.opts.awaitingAdminCredentialProbe))
 	}
 	if s.opts.barrierSvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithBarrierService(s.opts.barrierSvc))

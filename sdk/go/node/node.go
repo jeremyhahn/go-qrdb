@@ -2987,20 +2987,33 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		return &AuthMiddlewareWiringError{Err: err}
 	}
 	// The mTLS enrolment posture: "enrolled" unless the embedder's config says
-	// otherwise, and an unrecognised value fails the node's start. Under
-	// "required" the node refuses to start when an EXISTING bootstrap admin
-	// could not log in by certificate, and Node.FirstBoot holds first-boot to
-	// the same policy -- so an embedder cannot boot with the admin locked out
-	// (the owner's refuse-to-boot ruling, go-qrdb#517).
+	// otherwise, and an unrecognised value fails the node's start.
+	//
+	// Under "required", an EXISTING bootstrap admin that cannot log in by
+	// certificate no longer fails the node's start (go-qrdb#548 review item
+	// 3, reversing the earlier ruling, go-qrdb#517): the node boots into
+	// "awaiting admin credential" instead, via awaitingAdminCredentialProbe
+	// below, serving ONLY ceremony status and ceremony-initialize until a
+	// certificate binds. Node.FirstBoot still holds first-boot itself to
+	// the same policy -- an admin it CREATES unbound is first-boot's own
+	// repair loop to close, not this boot-time check's.
 	bindingPolicy, err := auth.ParseMTLSBindingPolicy(cfg.Auth.MTLSBindingPolicy)
 	if err != nil {
 		return &AuthMiddlewareWiringError{Err: err}
 	}
 	n.bindingPolicy.Store(int32(bindingPolicy))
+	var awaitingAdminCredentialProbe *firstboot.AwaitingAdminCredentialProbe
 	if bindingPolicy == auth.MTLSBindingRequired && cfg.Auth.IsEnabled() {
 		if verr := verifyExistingAdminBinding(ctx, svcNode.User, firstboot.AdminBindingLookupTimeout); verr != nil {
-			return &AuthMiddlewareWiringError{Err: verr}
+			slog.Warn(`node: auth.mtls_binding_policy is "required" and the bootstrap admin holds no live certificate binding; `+
+				`booting into "awaiting admin credential"`,
+				slog.String("error", verr.Error()))
 		}
+		awaitingAdminCredentialProbe = &firstboot.AwaitingAdminCredentialProbe{
+			Policy: bindingPolicy,
+			Users:  svcNode.User,
+		}
+		embeddedOpts = append(embeddedOpts, embedded.WithAwaitingAdminCredentialProbe(awaitingAdminCredentialProbe))
 	}
 	// A self-issued cluster's cakey.Provider (svcNode.ClusterCAProv) must be
 	// ESTABLISHED before the trust pool below ever resolves it: the trust
@@ -3207,6 +3220,9 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	}
 	allOpts = append(allOpts, n.raftTenantClusterOptions(svcNode, cfg, authMW, standalone)...)
 	allOpts = append(allOpts, n.clusterJoin.ServerOptions()...)
+	if awaitingAdminCredentialProbe != nil {
+		allOpts = append(allOpts, server.WithAwaitingAdminCredentialProbe(awaitingAdminCredentialProbe))
+	}
 	if barrier != nil {
 		allOpts = append(allOpts, server.WithSealedWindowProbe(barrier))
 	}

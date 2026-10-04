@@ -545,6 +545,96 @@ func MCPTransition() map[string]struct{} {
 	return out
 }
 
+// AwaitingAdminCredentialVerbs is the verb set served while a node is in the
+// "awaiting admin credential" boot state (go-qrdb#548 review item 3):
+// auth.mtls_binding_policy is "required" and the bootstrap admin holds no
+// live certificate binding. Reusing the canonical Table rather than a
+// second allowlist means the two verbs can never drift from the names
+// every other sealed-window derivation already uses.
+//
+//   - VerbCeremonyStatus -- so an operator (or `qrdb status`-style tooling)
+//     can see ceremony state while the node is otherwise refusing
+//     everything.
+//   - VerbCeremonyInitialize -- CeremonyServiceWithAdminRebind treats a
+//     call here as the admin-credential retry once the ceremony is
+//     already initialized, which is the ONLY way out of this boot state.
+//     Its own request body carries the SO/User PINs CeremonyInitialize
+//     verifies, and the service-layer leader gate
+//     (CeremonyServiceWithLeaderGate) refuses it on any node that is not
+//     the Raft leader -- both already enforced one layer down, so this
+//     gate's only job is deciding whether the request reaches that service
+//     call at all.
+//
+// Unlike the sealed-window listener's allowlist, a request admitted here is
+// NEVER authenticated: there is no bound identity to authenticate as, which
+// is the whole reason the node is in this state. See
+// AwaitingAdminCredentialClosedMessage for the refusal every other verb
+// gets.
+var AwaitingAdminCredentialVerbs = []Verb{VerbCeremonyStatus, VerbCeremonyInitialize}
+
+// RESTAwaitingAdminCredential derives the REST entries of
+// AwaitingAdminCredentialVerbs from Table.
+func RESTAwaitingAdminCredential() []string {
+	var out []string
+	for _, v := range AwaitingAdminCredentialVerbs {
+		out = append(out, Table[v].REST...)
+	}
+	return out
+}
+
+// GRPCFullMethodAwaitingAdminCredential derives the fully-qualified gRPC
+// methods of AwaitingAdminCredentialVerbs on serviceName.
+func GRPCFullMethodAwaitingAdminCredential(serviceName string) map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, v := range AwaitingAdminCredentialVerbs {
+		if m := Table[v].GRPC; m != "" {
+			out["/"+serviceName+"/"+m] = struct{}{}
+		}
+	}
+	return out
+}
+
+// QUICAwaitingAdminCredential derives the native QUIC methods of
+// AwaitingAdminCredentialVerbs.
+func QUICAwaitingAdminCredential() map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, v := range AwaitingAdminCredentialVerbs {
+		if m := Table[v].QUIC; m != "" {
+			out[m] = struct{}{}
+		}
+	}
+	return out
+}
+
+// MCPAwaitingAdminCredential derives the MCP tool names of
+// AwaitingAdminCredentialVerbs.
+func MCPAwaitingAdminCredential() map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, v := range AwaitingAdminCredentialVerbs {
+		if m := Table[v].MCP; m != "" {
+			out[m] = struct{}{}
+		}
+	}
+	return out
+}
+
+// EmbeddedAwaitingAdminCredential derives the embedded transport's method
+// names of AwaitingAdminCredentialVerbs.
+func EmbeddedAwaitingAdminCredential() map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, v := range AwaitingAdminCredentialVerbs {
+		if m := Table[v].Embedded; m != "" {
+			out[m] = struct{}{}
+		}
+	}
+	return out
+}
+
+// AwaitingAdminCredentialClosedMessage is the refusal text every transport's
+// awaiting-admin-credential gate gives a request that is not on
+// AwaitingAdminCredentialVerbs' allowlist, while the node is in that state.
+const AwaitingAdminCredentialClosedMessage = "node is awaiting admin credential: only ceremony status and ceremony initialize (the admin-credential retry) are served until an admin certificate binds"
+
 // Admission closes the window between the boot-time sealed-window listener's
 // check of the barrier and the request it admits. A gate samples the barrier
 // when a request arrives; without Admission a request admitted while sealed

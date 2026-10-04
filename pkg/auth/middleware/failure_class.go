@@ -416,6 +416,17 @@ var authFailureRules = []struct {
 		var e *auth.SOPINLockedError
 		return AuthFailureRateLimited, errors.As(err, &e)
 	}},
+	// The "awaiting admin credential" gate's refusal (go-qrdb#548 review item
+	// 3): the node is up and serving the two verbs that boot state allows,
+	// but this request names neither. Neither the credential nor a grant
+	// failed -- there IS no bound credential yet -- so this is the same
+	// shape as AuthFailureUnavailable's other members: retry is the honest
+	// instruction, and it becomes true the moment an admin certificate
+	// binds.
+	{"AwaitingAdminCredentialError", func(err error) (AuthFailureClass, bool) {
+		var e *AwaitingAdminCredentialError
+		return AuthFailureUnavailable, errors.As(err, &e)
+	}},
 }
 
 // ClassifyAuthError reports what kind of failure err represents, or

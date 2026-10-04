@@ -278,6 +278,15 @@ type Server struct {
 	// (/v1/cluster/keydelivery and /v1/cluster/nodekey). When nil these
 	// routes are not registered.
 	clusterKeyReceiver ClusterKeyReceiver
+
+	// awaitingAdminCredentialProbe controls the awaiting-admin-credential
+	// gate (go-qrdb#548 review item 3). While it reports true, only
+	// ceremony status and ceremony-initialize are served -- anonymously,
+	// bypassing authMW entirely, since there is no bound identity to
+	// authenticate as -- and every other request is refused with
+	// *middleware.AwaitingAdminCredentialError. When nil the gate is not
+	// installed and the server behaves as before.
+	awaitingAdminCredentialProbe awaitingAdminCredentialProbe
 }
 
 // ServerOption configures optional Server dependencies.
@@ -792,6 +801,21 @@ func WithSealedWindowListener(probe sealedwindow.ListenerProbe) ServerOption {
 	}
 }
 
+// WithAwaitingAdminCredentialProbe installs the awaiting-admin-credential
+// gate (go-qrdb#548 review item 3). While probe.AwaitingAdminCredential()
+// returns true, every request not naming ceremony status or
+// ceremony-initialize is refused with *middleware.AwaitingAdminCredentialError
+// (503); the two it allows are routed directly to the router, bypassing
+// authMW -- there is no bound identity to authenticate as, which is the
+// whole reason the node is in this state. Once the probe reports false
+// every request reaches the normal chain (authMW, sealed-window, SO gate)
+// unchanged, with no restart required.
+func WithAwaitingAdminCredentialProbe(probe awaitingAdminCredentialProbe) ServerOption {
+	return func(s *Server) {
+		s.awaitingAdminCredentialProbe = probe
+	}
+}
+
 // WithClusterKeyReceiver registers the cluster peer key-delivery routes when
 // set. The receiver handles /v1/cluster/keydelivery (POST) for incoming HPKE
 // envelopes and /v1/cluster/nodekey (GET) for certificate advertisement. Both
@@ -1010,6 +1034,17 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	}
 	if s.sealedWindowProbe != nil {
 		handler = sealedWindowGate(s.sealedWindowProbe, nil, s.sealedWindowListener)(handler)
+	}
+	// The awaiting-admin-credential gate (go-qrdb#548 review item 3) is
+	// OUTERMOST of the auth-related layers: while its probe reports
+	// awaiting, the two verbs it allows are routed directly to r (the raw
+	// router), bypassing SO dual-factor, authMW and the sealed-window gate
+	// entirely -- there is no bound identity to authenticate as. Every
+	// other request is refused before any of those layers run. Once the
+	// probe reports false, every request falls through to `handler`
+	// (everything built above, unchanged).
+	if s.awaitingAdminCredentialProbe != nil {
+		handler = AwaitingAdminCredentialMiddleware(s.awaitingAdminCredentialProbe, r)(handler)
 	}
 	handler = scopeMiddleware(handler)
 	if s.corsConfig != nil {

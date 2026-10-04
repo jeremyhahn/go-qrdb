@@ -2379,6 +2379,13 @@ func runStart(f *startFlags) (err error) {
 				if authResult.soAuthenticator != nil {
 					serverOpts = append(serverOpts, server.WithSOAuthenticator(authResult.soAuthenticator))
 				}
+				// go-qrdb#548 review item 3: non-nil only under
+				// auth.mtls_binding_policy "required". Installs the
+				// awaiting-admin-credential gate on every network
+				// transport; see bootstrapAuthEnforcement.
+				if authResult.awaitingAdminCredentialProbe != nil {
+					serverOpts = append(serverOpts, server.WithAwaitingAdminCredentialProbe(authResult.awaitingAdminCredentialProbe))
+				}
 			}
 			if barrierSvc != nil {
 				serverOpts = append(serverOpts, server.WithBarrierService(barrierSvc))
@@ -3565,6 +3572,16 @@ type authBootstrapResult struct {
 	auditLogger     audit.Logger
 	authMW          *middleware.AuthMiddleware
 	soAuthenticator *auth.SOAuthenticator
+
+	// awaitingAdminCredentialProbe is non-nil whenever auth.mtls_binding_policy
+	// is "required" (go-qrdb#548 review item 3): the daemon no longer
+	// refuses to boot when the bootstrap admin holds no live certificate
+	// binding. Instead it starts every listener with this probe installed
+	// (server.WithAwaitingAdminCredentialProbe), serving ONLY ceremony
+	// status and ceremony-initialize (the admin-credential retry) until a
+	// certificate binds -- at which point the SAME probe reports
+	// not-awaiting and every transport serves normally, with no restart.
+	awaitingAdminCredentialProbe *firstboot.AwaitingAdminCredentialProbe
 }
 
 // bootstrapUserRoleStores initializes the user and role stores unconditionally.
@@ -3931,26 +3948,43 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, da
 	}
 
 	// The mTLS enrolment posture (go-qrdb#517). An unrecognised value aborts
-	// the boot. Under "required" the boot ALSO aborts when the bootstrap admin
-	// could not log in by certificate -- the owner's ruling on the lockout the
-	// posture creates: a node that started would admit nobody able to repair
-	// it. This daemon's first boot wires no CertBinder, so a fresh node under
-	// "required" stops here; the documented migration enrols the admin under
-	// "enrolled" first.
+	// the boot.
 	//
 	// The admin is read through the LINEARIZABLE runtime store, not the
 	// StaleRead boot store: first-boot waited for the admin RECORD to
 	// replicate, but a binding enrolled on the leader afterwards may not have
 	// reached this follower yet, and judging the stale record would refuse a
 	// boot that should succeed. A read that cannot be served yet is retried
-	// for a bounded time before it refuses.
+	// for a bounded time before it is treated as a verdict.
+	//
+	// Under "required", a bootstrap admin that still cannot log in by
+	// certificate after that bounded wait no longer aborts the boot
+	// (go-qrdb#548 review item 3, reversing the earlier ruling: a node that
+	// started would admit nobody able to repair it). Instead it boots into
+	// "awaiting admin credential": every listener starts, but
+	// awaitingAdminCredentialProbe makes every transport serve ONLY
+	// ceremony status and ceremony-initialize (CeremonyServiceWithAdminRebind's
+	// admin-credential retry) until a certificate binds -- at which point
+	// the SAME probe reports not-awaiting and every transport serves
+	// normally, with no restart. That retry is otherwise unreachable: the
+	// daemon wires no CertBinder into first boot's OWN CA/Signer path, so a
+	// fresh node under "required" has no other way to bind a certificate
+	// than `qrdb init` against the leader.
 	bindingPolicy, err := auth.ParseMTLSBindingPolicy(mtlsBindingPolicy)
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "auth.mtls_binding_policy", Err: err}
 	}
+	var awaitingAdminCredentialProbe *firstboot.AwaitingAdminCredentialProbe
 	if bindingPolicy == auth.MTLSBindingRequired {
 		if err := firstboot.VerifyAdminCertBindingWithin(ctx, mgmt.userSvc, adminBindingWait); err != nil {
-			return nil, &AuthBootstrapError{Step: "auth.mtls_binding_policy", Err: err}
+			slog.Warn(`auth.mtls_binding_policy is "required" and the bootstrap admin holds no live certificate binding; `+
+				`booting into "awaiting admin credential" -- re-run "qrdb init" against the Raft leader with `+
+				`--admin-csr, --admin-cert or --admin-generate to bind one`,
+				slog.String("error", err.Error()))
+		}
+		awaitingAdminCredentialProbe = &firstboot.AwaitingAdminCredentialProbe{
+			Policy: bindingPolicy,
+			Users:  mgmt.userSvc,
 		}
 	}
 
@@ -4002,9 +4036,10 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, da
 	}
 
 	return &authBootstrapResult{
-		auditLogger:     auditLogger,
-		authMW:          authMW,
-		soAuthenticator: soAuthenticator,
+		auditLogger:                  auditLogger,
+		authMW:                       authMW,
+		soAuthenticator:              soAuthenticator,
+		awaitingAdminCredentialProbe: awaitingAdminCredentialProbe,
 	}, nil
 }
 

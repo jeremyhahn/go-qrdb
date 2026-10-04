@@ -134,45 +134,44 @@ func TestBootstrapAuthEnforcement_InvalidMTLSBindingPolicyFailsBoot(t *testing.T
 	assert.True(t, errors.As(err, &inv))
 }
 
-// TestBootstrapAuthEnforcement_RequiredWithUnboundAdminRefusesBoot is the
-// stock-daemon case the ruling addresses: first boot wires no CertBinder, so
-// the admin it created holds no binding, and "required" would lock it out.
-func TestBootstrapAuthEnforcement_RequiredWithUnboundAdminRefusesBoot(t *testing.T) {
+// TestBootstrapAuthEnforcement_RequiredWithUnboundAdminBootsAwaiting is the
+// stock-daemon case go-qrdb#548 review item 3 addresses: first boot wires no
+// CertBinder, so the admin it created holds no binding. Under the EARLIER
+// ruling "required" locked the node out by refusing to boot at all; the
+// review reversed that -- the node now boots into "awaiting admin
+// credential" instead, with awaitingAdminCredentialProbe reporting it, so a
+// retried `qrdb init` against the leader has a running daemon to reach.
+func TestBootstrapAuthEnforcement_RequiredWithUnboundAdminBootsAwaiting(t *testing.T) {
 	result, err := runAuthBootstrapWithPolicy(t, bootstrapForBindingPolicy(t), "required")
-	require.Nil(t, result)
-	var abe *AuthBootstrapError
-	require.True(t, errors.As(err, &abe), "err = %v", err)
-	assert.Equal(t, "auth.mtls_binding_policy", abe.Step)
-	var refusal *firstboot.AdminCertBindingRequiredError
-	require.True(t, errors.As(err, &refusal), "err = %v", err)
-	assert.Equal(t, firstboot.AdminBindingNone, refusal.Reason)
-	// Diagnosable and undoable: the message names the way back.
-	assert.Contains(t, err.Error(), `"enrolled"`)
-	assert.Contains(t, err.Error(), "users:add_cert_binding")
+	require.NoError(t, err)
+	require.NotNil(t, result.awaitingAdminCredentialProbe)
+	assert.True(t, result.awaitingAdminCredentialProbe.AwaitingAdminCredential(),
+		"an unbound admin under \"required\" must report awaiting")
+	_ = result.auditLogger.Close()
 }
 
 // TestBootstrapAuthEnforcement_EnrolledWithUnboundAdminBoots is the control:
-// the same unbound admin boots under the explicit "enrolled" opt-out, so the
-// refusal above is the DEFAULT posture's and nothing else's. The empty
-// string is NOT equivalent to "enrolled" (go-qrdb#548: the zero value / an
-// omitted policy is "required"), so it is covered by
-// TestBootstrapAuthEnforcement_RequiredWithUnboundAdminRefusesBoot instead,
-// not here.
+// the same unbound admin boots under the explicit "enrolled" opt-out, with
+// no awaiting-admin-credential probe at all -- that boot state exists ONLY
+// for "required", so the "enrolled" posture is nothing else's.
 func TestBootstrapAuthEnforcement_EnrolledWithUnboundAdminBoots(t *testing.T) {
 	result, err := runAuthBootstrapWithPolicy(t, bootstrapForBindingPolicy(t), "enrolled")
 	require.NoError(t, err)
 	assert.Equal(t, auth.MTLSBindingEnrolled, result.authMW.MTLSBindingPolicy())
+	assert.Nil(t, result.awaitingAdminCredentialProbe)
 	_ = result.auditLogger.Close()
 }
 
 // TestBootstrapAuthEnforcement_EmptyPolicyIsRequired pins the go-qrdb#548
 // default: an empty auth.mtls_binding_policy resolves to "required", not
-// "enrolled" -- the same unbound admin that boots under "enrolled" above is
-// refused when the policy string is simply omitted.
+// "enrolled" -- the same unbound admin that boots under "enrolled" above
+// reports awaiting when the policy string is simply omitted.
 func TestBootstrapAuthEnforcement_EmptyPolicyIsRequired(t *testing.T) {
-	_, err := runAuthBootstrapWithPolicy(t, bootstrapForBindingPolicy(t), "")
-	var refusal *firstboot.AdminCertBindingRequiredError
-	require.True(t, errors.As(err, &refusal), "err = %v", err)
+	result, err := runAuthBootstrapWithPolicy(t, bootstrapForBindingPolicy(t), "")
+	require.NoError(t, err)
+	require.NotNil(t, result.awaitingAdminCredentialProbe)
+	assert.True(t, result.awaitingAdminCredentialProbe.AwaitingAdminCredential())
+	_ = result.auditLogger.Close()
 }
 
 // servingAdmin serves the admin record the daemon REALLY created, with the
@@ -206,14 +205,18 @@ func TestBootstrapAuthEnforcement_RequiredWithBoundAdminBoots(t *testing.T) {
 	result, err := runAuthBootstrapWithPolicy(t, mgmt, "required")
 	require.NoError(t, err)
 	assert.Equal(t, auth.MTLSBindingRequired, result.authMW.MTLSBindingPolicy())
+	require.NotNil(t, result.awaitingAdminCredentialProbe)
+	assert.False(t, result.awaitingAdminCredentialProbe.AwaitingAdminCredential(),
+		"a bound admin under \"required\" must never report awaiting")
 	_ = result.auditLogger.Close()
 }
 
 // TestBootstrapAuthEnforcement_RequiredJudgesTheLinearizableRecord: on a
 // follower the StaleRead boot store may not have the binding the leader
 // enrolled yet. The check reads the linearizable store, so a lagging stale
-// record does not refuse a boot that should succeed -- and a linearizable
-// record with no binding still refuses, whatever the stale store says.
+// record does not stop a boot that should serve normally -- and a
+// linearizable record with no binding boots awaiting, whatever the stale
+// store says.
 func TestBootstrapAuthEnforcement_RequiredJudgesTheLinearizableRecord(t *testing.T) {
 	binding := user.CertBinding{Thumbprint: adminThumbprint(t), Kind: user.CertBindingSPKIThumbprint}
 
@@ -224,21 +227,28 @@ func TestBootstrapAuthEnforcement_RequiredJudgesTheLinearizableRecord(t *testing
 	mgmt.bootUserSvc, mgmt.userSvc = lagging, committed
 	result, err := runAuthBootstrapWithPolicy(t, mgmt, "required")
 	require.NoError(t, err, "a lagging stale record refused the boot")
+	require.NotNil(t, result.awaitingAdminCredentialProbe)
+	assert.False(t, result.awaitingAdminCredentialProbe.AwaitingAdminCredential(),
+		"the linearizable record is bound, so this must not report awaiting")
 	_ = result.auditLogger.Close()
 
 	mgmt = bootstrapForBindingPolicy(t)
 	stale, committedUnbound := servingAdmin(t, mgmt, binding), servingAdmin(t, mgmt)
 	mgmt.bootUserSvc, mgmt.userSvc = stale, committedUnbound
-	_, err = runAuthBootstrapWithPolicy(t, mgmt, "required")
-	var refusal *firstboot.AdminCertBindingRequiredError
-	require.True(t, errors.As(err, &refusal), "err = %v", err)
-	assert.Equal(t, firstboot.AdminBindingNone, refusal.Reason)
+	result, err = runAuthBootstrapWithPolicy(t, mgmt, "required")
+	require.NoError(t, err)
+	require.NotNil(t, result.awaitingAdminCredentialProbe)
+	assert.True(t, result.awaitingAdminCredentialProbe.AwaitingAdminCredential(),
+		"the linearizable record has no binding, so this must report awaiting regardless of the stale store")
+	_ = result.auditLogger.Close()
 }
 
 // TestBootstrapAuthEnforcement_RequiredWaitsOutAnUnreadableStore: a
 // linearizable read that cannot be served yet is retried within the bounded
-// wait and then judged; past the bound the boot is refused with the lookup
-// failure.
+// wait and then judged; past the bound the boot proceeds into "awaiting
+// admin credential" rather than refusing outright (go-qrdb#548 review item
+// 3) -- an unreadable store is treated exactly like an unbound admin, fail
+// closed to the safer boot state rather than failing the boot.
 func TestBootstrapAuthEnforcement_RequiredWaitsOutAnUnreadableStore(t *testing.T) {
 	saved := adminBindingWait
 	t.Cleanup(func() { adminBindingWait = saved })
@@ -258,6 +268,9 @@ func TestBootstrapAuthEnforcement_RequiredWaitsOutAnUnreadableStore(t *testing.T
 	}
 	result, err := runAuthBootstrapWithPolicy(t, mgmt, "required")
 	require.NoError(t, err, "a transiently unreadable store refused the boot")
+	require.NotNil(t, result.awaitingAdminCredentialProbe)
+	assert.False(t, result.awaitingAdminCredentialProbe.AwaitingAdminCredential(),
+		"the store answered bound once the transient failures cleared, so this must not report awaiting")
 	_ = result.auditLogger.Close()
 
 	adminBindingWait = 100 * time.Millisecond
@@ -267,9 +280,13 @@ func TestBootstrapAuthEnforcement_RequiredWaitsOutAnUnreadableStore(t *testing.T
 			return nil, errors.New("read index not ready")
 		},
 	}
-	_, err = runAuthBootstrapWithPolicy(t, mgmt, "required")
-	var lookup *firstboot.AdminLookupError
-	assert.True(t, errors.As(err, &lookup), "err = %v", err)
+	result, err = runAuthBootstrapWithPolicy(t, mgmt, "required")
+	require.NoError(t, err, "a store that never answers must boot awaiting, not refuse")
+	require.NotNil(t, result.awaitingAdminCredentialProbe)
+	result.awaitingAdminCredentialProbe.LookupTimeout = 100 * time.Millisecond
+	assert.True(t, result.awaitingAdminCredentialProbe.AwaitingAdminCredential(),
+		"a store that never answers must report awaiting, fail closed to the safer boot state")
+	_ = result.auditLogger.Close()
 }
 
 func TestApplyConfigToFlags_MTLSBindingPolicy(t *testing.T) {

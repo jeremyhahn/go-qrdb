@@ -272,6 +272,13 @@ func (s *Server) authorizeTenantBarrierSealedOp(ctx context.Context, tenantID st
 func (s *Server) toolAuthzMiddleware() mcpserver.ToolHandlerMiddleware {
 	return func(next mcpserver.ToolHandlerFunc) mcpserver.ToolHandlerFunc {
 		return func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+			// The awaiting-admin-credential gate (go-qrdb#548 review item 3),
+			// positioned before this middleware in the chain, already
+			// decided this call needs no identity at all -- there is none to
+			// authorize while the node is in that boot state.
+			if awaitingAdminCredentialAdmitted(ctx) {
+				return next(ctx, req)
+			}
 			// The SO PIN bound for this request is wiped once the call is
 			// done, whether or not the tool was SO-gated.
 			defer authmw.WipeSOFactor(ctx)

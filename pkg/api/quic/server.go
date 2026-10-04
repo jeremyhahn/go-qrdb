@@ -102,6 +102,10 @@ type Server struct {
 	// and selects that listener's gate. Nil for a regular listener.
 	sealedWindowListener sealedwindow.ListenerProbe
 
+	// awaitingAdminCredentialProbe controls the awaiting-admin-credential
+	// gate (go-qrdb#548 review item 3). See WithAwaitingAdminCredentialProbe.
+	awaitingAdminCredentialProbe awaitingAdminCredentialProbe
+
 	// registry, when set, resolves data-plane services per (tenant, database)
 	// scope. The tenant comes from the authenticated identity; the database
 	// from the request frame's database field. When nil, the singleton service
@@ -360,6 +364,16 @@ func WithSealedWindowListener(probe sealedwindow.ListenerProbe) ServerOption {
 		s.sealedWindowProbe = probe
 		s.sealedWindowListener = probe
 	}
+}
+
+// WithAwaitingAdminCredentialProbe installs the awaiting-admin-credential
+// gate (go-qrdb#548 review item 3): while probe reports awaiting, only
+// ceremony status and ceremony-initialize are dispatched, skipping auth,
+// the SO gate and the sealed-window gate entirely -- there is no bound
+// identity to authenticate as -- and every other method is refused with
+// wire.StatusUnavailable + *middleware.AwaitingAdminCredentialError.
+func WithAwaitingAdminCredentialProbe(probe awaitingAdminCredentialProbe) ServerOption {
+	return func(s *Server) { s.awaitingAdminCredentialProbe = probe }
 }
 
 // WithPINBackend configures the QUIC server with the canonical
@@ -882,65 +896,86 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 	ctx = withConnectionState(ctx, conn)
 	ctx = tenant.WithDatabase(ctx, database)
 
-	// Auth: authenticate and authorize if middleware is configured.
-	if s.authMW != nil {
-		if onBehalf != nil {
-			ctx, err = s.authenticateOnBehalf(ctx, conn, method, payload, onBehalf)
-		} else {
-			ctx, err = s.authenticate(ctx, conn)
-		}
-		if err != nil {
-			st, body := errorFrame(wire.StatusUnauthenticated, err)
-			_ = s.writeResponse(stream, requestID, st, body)
-			s.logRequest(method, requestID, st, start)
-			return
-		}
-
-		if authErr := s.authorize(ctx, method, payload); authErr != nil {
-			// The status follows the CLASS of the failure, not the call site.
-			// Hard-coding PermissionDenied told a caller whose request this
-			// node merely could not RECORD that it was not permitted, and
-			// permission-denied is terminal in every client.
-			authStatus, body := errorFrame(authzStatus(authErr), authErr)
-			_ = s.writeResponse(stream, requestID, authStatus, body)
-			s.logRequest(method, requestID, authStatus, start)
-			return
-		}
-	}
-
-	// The SO dual-factor gate, after authorization and before any handler,
-	// exactly where the REST and gRPC transports apply it. It runs whenever
-	// there is a gate, auth middleware or not: with nothing to authenticate
-	// the caller there is no SO to admit, so it fails closed rather than
-	// being skipped.
-	if s.soGate != nil {
-		if soErr := s.enforceSOGate(ctx, conn, method, payload); soErr != nil {
-			soStatus, body := errorFrame(authzStatus(soErr), soErr)
-			_ = s.writeResponse(stream, requestID, soStatus, body)
-			s.logRequest(method, requestID, soStatus, start)
-			return
-		}
-	}
-
-	// Sealed-window gate: while the barrier is sealed, every method not on
-	// SealedWindowAllowlist is rejected so operators can still drive the
-	// unseal flow (barrier.*/ceremony.*) and liveness probes (admin.Health,
-	// admin.Status) over the native QUIC transport. On the boot-time
-	// sealed-window listener every method is rejected once the barrier is
-	// unsealed. Mirrors the REST/gRPC sealed-window middleware/interceptors.
-	if s.sealedWindowListener != nil {
-		// Held until this request completes; see sealedwindow.Admission.
-		_, transition := sealedWindowTransition[method]
-		defer s.sealedWindowListener.Admit(transition)()
-	}
-	if refusal, refused := s.sealedWindowRefusal(ctx, method); refused {
-		st, body := errorFrameBody(refusal.status, wire.ErrorPayload{Message: refusal.msg})
+	// The awaiting-admin-credential gate (go-qrdb#548 review item 3) runs
+	// BEFORE auth, the SO gate and the sealed-window gate, and -- when it
+	// admits a method -- skips all three of them entirely: there is no
+	// bound identity to authenticate as, which is the whole reason the
+	// node is in this state. A refused method never reaches any gate
+	// below, or any handler. This check is on the already-unwrapped
+	// method (see the OnBehalf decode above), so a cluster peer forwarding
+	// a call on a caller's behalf gets exactly the same allowlist
+	// treatment as a direct caller: it cannot smuggle a non-allowlisted
+	// method past the gate by wrapping it in an OnBehalf envelope, and it
+	// cannot be made to skip real authentication via this gate unless the
+	// forwarded method is itself genuinely allowlisted.
+	awaiting := s.awaitingAdminCredentialProbe != nil && s.awaitingAdminCredentialProbe.AwaitingAdminCredential()
+	if awaiting && !awaitingAdminCredentialAllowed(method) {
+		st, body := errorFrame(wire.StatusUnavailable, &authmw.AwaitingAdminCredentialError{})
 		_ = s.writeResponse(stream, requestID, st, body)
 		s.logRequest(method, requestID, st, start)
 		return
 	}
-	if s.sealedWindowListener != nil {
-		ctx = sealedwindow.WithAnonymous(ctx)
+	if !awaiting {
+		// Auth: authenticate and authorize if middleware is configured.
+		if s.authMW != nil {
+			if onBehalf != nil {
+				ctx, err = s.authenticateOnBehalf(ctx, conn, method, payload, onBehalf)
+			} else {
+				ctx, err = s.authenticate(ctx, conn)
+			}
+			if err != nil {
+				st, body := errorFrame(wire.StatusUnauthenticated, err)
+				_ = s.writeResponse(stream, requestID, st, body)
+				s.logRequest(method, requestID, st, start)
+				return
+			}
+
+			if authErr := s.authorize(ctx, method, payload); authErr != nil {
+				// The status follows the CLASS of the failure, not the call site.
+				// Hard-coding PermissionDenied told a caller whose request this
+				// node merely could not RECORD that it was not permitted, and
+				// permission-denied is terminal in every client.
+				authStatus, body := errorFrame(authzStatus(authErr), authErr)
+				_ = s.writeResponse(stream, requestID, authStatus, body)
+				s.logRequest(method, requestID, authStatus, start)
+				return
+			}
+		}
+
+		// The SO dual-factor gate, after authorization and before any handler,
+		// exactly where the REST and gRPC transports apply it. It runs whenever
+		// there is a gate, auth middleware or not: with nothing to authenticate
+		// the caller there is no SO to admit, so it fails closed rather than
+		// being skipped.
+		if s.soGate != nil {
+			if soErr := s.enforceSOGate(ctx, conn, method, payload); soErr != nil {
+				soStatus, body := errorFrame(authzStatus(soErr), soErr)
+				_ = s.writeResponse(stream, requestID, soStatus, body)
+				s.logRequest(method, requestID, soStatus, start)
+				return
+			}
+		}
+
+		// Sealed-window gate: while the barrier is sealed, every method not on
+		// SealedWindowAllowlist is rejected so operators can still drive the
+		// unseal flow (barrier.*/ceremony.*) and liveness probes (admin.Health,
+		// admin.Status) over the native QUIC transport. On the boot-time
+		// sealed-window listener every method is rejected once the barrier is
+		// unsealed. Mirrors the REST/gRPC sealed-window middleware/interceptors.
+		if s.sealedWindowListener != nil {
+			// Held until this request completes; see sealedwindow.Admission.
+			_, transition := sealedWindowTransition[method]
+			defer s.sealedWindowListener.Admit(transition)()
+		}
+		if refusal, refused := s.sealedWindowRefusal(ctx, method); refused {
+			st, body := errorFrameBody(refusal.status, wire.ErrorPayload{Message: refusal.msg})
+			_ = s.writeResponse(stream, requestID, st, body)
+			s.logRequest(method, requestID, st, start)
+			return
+		}
+		if s.sealedWindowListener != nil {
+			ctx = sealedwindow.WithAnonymous(ctx)
+		}
 	}
 
 	// Watch is server-streaming: it writes a stream of response frames on this

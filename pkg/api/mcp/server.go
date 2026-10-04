@@ -133,6 +133,10 @@ type Server struct {
 	// and selects that listener's gate. Nil for a regular listener.
 	sealedWindowListener sealedwindow.ListenerProbe
 
+	// awaitingAdminCredentialProbe controls the awaiting-admin-credential
+	// gate (go-qrdb#548 review item 3). See WithAwaitingAdminCredentialProbe.
+	awaitingAdminCredentialProbe awaitingAdminCredentialProbe
+
 	// bearerChallenge, when non-empty, is the exact WWW-Authenticate header
 	// value returned with 401 Unauthorized when a request to the MCP
 	// endpoint carries no credential any configured authenticator accepts.
@@ -518,6 +522,16 @@ func WithSealedWindowListener(probe sealedwindow.ListenerProbe) ServerOption {
 	}
 }
 
+// WithAwaitingAdminCredentialProbe installs the awaiting-admin-credential
+// gate (go-qrdb#548 review item 3): while probe reports awaiting, only the
+// ceremony status and ceremony-initialize tools are served -- admitted with
+// no authorization check at all, since there is no bound identity to
+// authorize -- and every other tool call is refused with
+// wire.CodeUnavailable.
+func WithAwaitingAdminCredentialProbe(probe awaitingAdminCredentialProbe) ServerOption {
+	return func(s *Server) { s.awaitingAdminCredentialProbe = probe }
+}
+
 // WithServiceRegistry configures the MCP server with a per-(tenant, database)
 // service registry. When set, data-plane tool handlers resolve their servicer
 // from the registry using the authenticated tenant and the optional "database"
@@ -580,6 +594,14 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	// classified on one deployment and opaque on another is the
 	// inconsistency this transport has just stopped having.
 	s.toolMiddlewares = []mcpserver.ToolHandlerMiddleware{errorCodeMiddleware()}
+	// The awaiting-admin-credential gate (go-qrdb#548 review item 3) runs
+	// BEFORE toolAuthzMiddleware so it can admit its two allowed tools with
+	// NO authorization check at all -- there is no bound identity to
+	// authorize while the node is in this boot state -- and refuse every
+	// other tool before toolAuthzMiddleware, or the tool handler, ever runs.
+	if s.awaitingAdminCredentialProbe != nil {
+		s.toolMiddlewares = append(s.toolMiddlewares, s.awaitingAdminCredentialMiddleware())
+	}
 	if s.authMW != nil || s.soGate != nil {
 		s.toolMiddlewares = append(s.toolMiddlewares, s.toolAuthzMiddleware())
 	}

@@ -125,6 +125,11 @@ type Transport struct {
 	// WithSealProbe. Nil gates nothing.
 	sealProbe SealProbe
 
+	// awaitingAdminCredentialProbe gates every request outside the
+	// awaiting-admin-credential allowlist (go-qrdb#548 review item 3); see
+	// WithAwaitingAdminCredentialProbe. Nil gates nothing.
+	awaitingAdminCredentialProbe AwaitingAdminCredentialProbe
+
 	// sealStreams is the node's cluster-seal stream registry; see
 	// WithSealStreams. Nil leaves this transport's own watches unguarded.
 	sealStreams *clusterseal.Streams
