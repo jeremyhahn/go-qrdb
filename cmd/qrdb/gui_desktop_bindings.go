@@ -55,6 +55,7 @@ type guiBindings struct {
 	tenant      *TenantBinding
 	backup      *BackupBinding
 	officer     *OfficerBinding
+	ceremony    *CeremonyBinding
 	rebalance   *RebalanceBinding
 	lock        *LockBinding
 	credential  *CredentialBinding
@@ -101,6 +102,7 @@ func createGUIBindings(log *logger.Logger, logFile string) *guiBindings {
 		tenant:      NewTenantBinding(log, conn),
 		backup:      NewBackupBinding(log, conn),
 		officer:     NewOfficerBinding(log, conn),
+		ceremony:    NewCeremonyBinding(log, conn),
 		rebalance:   NewRebalanceBinding(log, conn),
 		lock:        NewLockBinding(log, conn),
 		credential:  NewCredentialBinding(log, conn),
@@ -138,6 +140,7 @@ func (b *guiBindings) bindList() []interface{} {
 		b.tenant,
 		b.backup,
 		b.officer,
+		b.ceremony,
 		b.rebalance,
 		b.lock,
 		b.credential,

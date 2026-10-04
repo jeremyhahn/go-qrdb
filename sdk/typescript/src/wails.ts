@@ -17,6 +17,7 @@ import type {
     AuditQueryClient,
     BackupClient,
     BatchClient,
+    CeremonyClient,
     CertClient,
     Client,
     CollectionClient,
@@ -55,6 +56,11 @@ import type {
     ImportOptions,
     ImportResult,
     CapabilitiesResponse,
+    CeremonyInitializeRequest,
+    CeremonyInitializeResponse,
+    CeremonySignCSRRequest,
+    CeremonySignCSRResponse,
+    CeremonyStatusResponse,
     CertBundle,
     CompactNamespaceRequest,
     CompactNamespaceResponse,
@@ -227,6 +233,7 @@ import {
     decodeRestoreResult,
     deepSnakeToCamel,
     deepCamelToSnake,
+    decodeBase64Utf8,
     distanceMetricToIpcWire,
     encodeBase64Utf8,
     holderEnrolmentWire,
@@ -332,6 +339,7 @@ interface WailsBindings {
         TenantBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         BackupBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         OfficerBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
+        CeremonyBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         RebalanceBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         LockBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         CredentialBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
@@ -1574,6 +1582,38 @@ export class WailsClient implements Client {
             },
             unenrolDatabaseOfficer: async (req: DatabaseOfficerUnenrolRequest): Promise<void> => {
                 await b.UnenrolDatabaseHolder(req.database, req.username);
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Ceremony
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get ceremony(): CeremonyClient {
+        const b = wrapBindings(getBindings().main.CeremonyBinding);
+        return {
+            initialize: async (req: CeremonyInitializeRequest): Promise<CeremonyInitializeResponse> => {
+                // secret is the one field needing a VALUE transform, not
+                // only a key one: the Go field is []byte so the server can
+                // zeroize it after use, and encoding/json renders []byte as
+                // base64 (see seal.initialize's identical treatment).
+                const payload: Record<string, unknown> = { ...req };
+                if (req.secret) payload.secret = encodeBase64Utf8(req.secret);
+                const resp = await b.Initialize(toSnake(payload)) as CeremonyInitializeResponse;
+                // admin_key_pem is base64 on the wire for the same reason;
+                // decoded back to plain PEM text here so the caller never
+                // deals with base64 either way.
+                return resp.adminKeyPem
+                    ? { ...resp, adminKeyPem: decodeBase64Utf8(resp.adminKeyPem) }
+                    : resp;
+            },
+            status: async (): Promise<CeremonyStatusResponse> => {
+                return b.Status() as Promise<CeremonyStatusResponse>;
+            },
+            signCSR: async (req: CeremonySignCSRRequest): Promise<CeremonySignCSRResponse> => {
+                return b.SignCSR(toSnake(req)) as Promise<CeremonySignCSRResponse>;
             },
         };
     }

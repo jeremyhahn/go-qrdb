@@ -35,6 +35,7 @@ import type {
     AuditQueryClient,
     BackupClient,
     BatchClient,
+    CeremonyClient,
     CertClient,
     Client,
     CollectionClient,
@@ -73,6 +74,11 @@ import type {
     ImportOptions,
     ImportResult,
     CapabilitiesResponse,
+    CeremonyInitializeRequest,
+    CeremonyInitializeResponse,
+    CeremonySignCSRRequest,
+    CeremonySignCSRResponse,
+    CeremonyStatusResponse,
     CertBundle,
     CompactNamespaceRequest,
     CompactNamespaceResponse,
@@ -2010,6 +2016,47 @@ export class RestClient implements Client {
                 if (req.shamirTotal) payload.shamir_total = req.shamirTotal;
                 return this.fetchJSON<EnableEncryptionResponse>('/v1/barrier/enable-encryption',
                     { method: 'POST', ...jsonBody(payload) },
+                );
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Ceremony
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get ceremony(): CeremonyClient {
+        return {
+            initialize: async (req: CeremonyInitializeRequest): Promise<CeremonyInitializeResponse> => {
+                this.ensureConnected();
+                // Spreading req lets jsonBody's deep camelCase->snake_case
+                // conversion handle every field, officers included, so
+                // undefined optional fields drop out of the JSON body the
+                // same way the server's `omitempty` tags expect. secret is
+                // the one field needing a VALUE transform, not just a key
+                // one: base64 on the wire, since the server field is
+                // `[]byte` so it can be zeroized (see seal.initialize).
+                const body: Record<string, unknown> = { ...req };
+                if (req.secret) body.secret = encodeBase64Utf8(req.secret);
+                const resp = await this.fetchJSON<CeremonyInitializeResponse>('/v1/ceremony/initialize',
+                    { method: 'POST', ...jsonBody(body) },
+                );
+                // admin_key_pem is base64 on the wire for the same reason
+                // secret is on the way in; decoded back to plain PEM text
+                // here so the caller never deals with base64 either way.
+                return resp.adminKeyPem
+                    ? { ...resp, adminKeyPem: decodeBase64Utf8(resp.adminKeyPem) }
+                    : resp;
+            },
+            status: async (): Promise<CeremonyStatusResponse> => {
+                this.ensureConnected();
+                return this.fetchJSON<CeremonyStatusResponse>('/v1/ceremony/status');
+            },
+            signCSR: async (req: CeremonySignCSRRequest): Promise<CeremonySignCSRResponse> => {
+                this.ensureConnected();
+                return this.fetchJSON<CeremonySignCSRResponse>('/v1/ceremony/sign-csr',
+                    { method: 'POST', ...jsonBody(req) },
                 );
             },
         };

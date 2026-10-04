@@ -2017,6 +2017,145 @@ export interface UnsealProgress {
 }
 
 // ---------------------------------------------------------------------------
+// Ceremony types
+// ---------------------------------------------------------------------------
+
+/**
+ * One initial share holder named in a ceremony initialization request.
+ * The node's CA assigns the certificate identity; the CSR supplies only
+ * the public key.
+ */
+export interface CeremonyOfficerRequest {
+    /** Unique holder username. */
+    readonly username: string;
+    /** Holder role; the server defaults it to "so". */
+    readonly role?: HolderRole;
+    /** PEM-encoded certificate signing request from the holder. */
+    readonly csrPem: string;
+}
+
+/**
+ * Request to run the initialization ceremony (`qrdb init`'s server-side
+ * counterpart): brings up the system barrier, resolves the server's TLS
+ * identity, and issues the bootstrap admin's certificate, all in one
+ * call. A `threshold` of 2 or more additionally initializes Shamir
+ * custody over `officers`.
+ */
+export interface CeremonyInitializeRequest {
+    /** Security Officer PIN to seal, when a PIN backend is configured. */
+    readonly soPin?: string;
+    /** User PIN to seal, when a PIN backend is configured. */
+    readonly userPin?: string;
+    /** How credentials are sealed at rest; the server's configured default when omitted. */
+    readonly credentialSealStrategy?: string;
+    /** Shamir threshold (M). 2 or more selects M-of-N custody over `officers`. */
+    readonly threshold?: number;
+    /** Factor policy of the initial share set; the server defaults it to "designated". */
+    readonly policy?: FactorPolicy;
+    /** Initial share holders. Required when `threshold` is 2 or more. */
+    readonly officers?: readonly CeremonyOfficerRequest[];
+    /** Primary hostname for the server's TLS certificate. */
+    readonly hostname?: string;
+    /** Additional Subject Alternative Names for the TLS certificate. */
+    readonly sans?: readonly string[];
+    /** PEM-encoded CSR for the bootstrap admin's certificate (CSR-sign path). */
+    readonly adminCsrPem?: string;
+    /** PEM-encoded, caller-supplied bootstrap admin certificate (bring-your-own-certificate path). */
+    readonly adminCertPem?: string;
+    /** PEM-encoded CA bundle `adminCertPem` must chain to, when it is not self-signed. */
+    readonly adminCertPoolPem?: string;
+    /**
+     * Selects the generate path explicitly: the server mints the
+     * bootstrap admin's key pair and returns the private key exactly
+     * once. Dev/test/evaluation ONLY -- does not meet FedRAMP, HIPAA or
+     * PCI DSS. Exactly one of `adminCsrPem`, `adminCertPem` or
+     * `adminGenerate` must be set; there is no credential-less default.
+     */
+    readonly adminGenerate?: boolean;
+    /**
+     * The system barrier's passphrase for the single-admin path
+     * (`threshold` < 2); omit it for M-of-N, where the barrier stays
+     * sealed until officers reconstruct it from their shares, and for
+     * the "none" strategy. The wire field is `[]byte` so the server can
+     * zeroize it after use; base64 on the wire, plaintext here (see
+     * {@link SealClient.initialize}).
+     */
+    readonly secret?: string;
+}
+
+/**
+ * One initial holder's CA-issued certificate, part of a ceremony
+ * initialization result. Never a share: each holder claims its own
+ * envelope separately.
+ */
+export interface CeremonyHolderCertificate {
+    /** Holder username. */
+    readonly username: string;
+    /** Holder role. */
+    readonly role: string;
+    /** PEM-encoded holder certificate issued by the ceremony CA. */
+    readonly certPem: string;
+}
+
+/**
+ * Result of a successful ceremony initialization.
+ */
+export interface CeremonyInitializeResponse {
+    /** Base64-encoded SHA-256 hash of the CA certificate's SubjectPublicKeyInfo. */
+    readonly spkiPin: string;
+    /** PEM-encoded CA certificate. */
+    readonly caCertPem: string;
+    /** PEM-encoded TLS certificate issued for the server. */
+    readonly tlsCertPem: string;
+    /** Ceremony state after initialization. */
+    readonly state: string;
+    /** Number of share envelopes distributed (0 for the single-admin path). */
+    readonly shareCount: number;
+    /** Each initial holder's CA-issued certificate. */
+    readonly holders?: readonly CeremonyHolderCertificate[];
+    /** The bootstrap admin's issued or adopted certificate. */
+    readonly adminCertPem?: string;
+    /**
+     * The bootstrap admin's generated private key, present ONLY when
+     * `adminCredentialSource` is `"generated"`. Returned exactly once;
+     * the server retains no copy -- capture it immediately, there is no
+     * way to retrieve it again.
+     */
+    readonly adminKeyPem?: string;
+    /** Which path produced `adminCertPem`: `"csr"`, `"byoc"` or `"generated"`. */
+    readonly adminCredentialSource?: string;
+}
+
+/** Current state of the initialization ceremony. */
+export interface CeremonyStatusResponse {
+    /** `"awaiting_init"`, `"enrolling"`, or `"operational"`. */
+    readonly state: string;
+    /** Base64-encoded SHA-256 hash of the CA certificate's SubjectPublicKeyInfo. */
+    readonly spkiPin?: string;
+}
+
+/**
+ * Request to sign a CSR during the initialization ceremony, issuing a
+ * HOLDER certificate (never a login account) under SO PIN authorization.
+ */
+export interface CeremonySignCSRRequest {
+    /** The officer or service username requesting CSR signing. */
+    readonly username: string;
+    /** The Security Officer PIN authorizing the signing operation. */
+    readonly soPin: string;
+    /** PEM-encoded certificate signing request. */
+    readonly csrPem: string;
+    /** Certificate role profile to apply: "so" or "custodian". */
+    readonly role: string;
+}
+
+/** Result of a ceremony CSR signing. */
+export interface CeremonySignCSRResponse {
+    /** PEM-encoded, CA-issued certificate. */
+    readonly certPem: string;
+}
+
+// ---------------------------------------------------------------------------
 // Embedded server types
 // ---------------------------------------------------------------------------
 

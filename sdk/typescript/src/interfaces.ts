@@ -169,6 +169,13 @@ import type {
     EnableEncryptionRequest,
     EnableEncryptionResponse,
 
+    // Ceremony
+    CeremonyInitializeRequest,
+    CeremonyInitializeResponse,
+    CeremonyStatusResponse,
+    CeremonySignCSRRequest,
+    CeremonySignCSRResponse,
+
     // Share-holder administration
     OfficerRegisterRequest,
     OfficerRegisterResponse,
@@ -1466,6 +1473,55 @@ export interface SealClient {
 }
 
 // ---------------------------------------------------------------------------
+// Ceremony
+// ---------------------------------------------------------------------------
+
+/**
+ * CeremonyClient drives the initialization ceremony -- `qrdb init`'s
+ * server-side counterpart. One call brings the system barrier up,
+ * resolves the server's TLS identity (self-issued when a CeremonyCA is
+ * configured, or the operator's own BYO-TLS leaf otherwise), and issues
+ * the bootstrap admin's certificate through exactly one of three
+ * credential paths (CSR-sign, bring-your-own-certificate, or generate --
+ * dev/test/evaluation only). A threshold of 2 or more additionally enrols
+ * `officers` and initializes Shamir custody over them in the same call.
+ *
+ * Unlike {@link SealClient}, which only brings up the barrier, this is the
+ * ONLY way to bring up a ceremony-backed system barrier (`qrdbd`,
+ * `sdk/go/node` compositions): `seal.initialize`/`seal.initializeShamir`
+ * are refused on one once it carries a ceremony, and point back here.
+ */
+export interface CeremonyClient {
+    /**
+     * Runs the initialization ceremony. Refused once the ceremony has
+     * already run.
+     *
+     * @param req - Ceremony initialization parameters.
+     * @returns The issued certificates and, for the generate
+     *   admin-credential path, the bootstrap admin's private key
+     *   (returned exactly once -- capture it immediately, there is no
+     *   way to retrieve it again).
+     */
+    initialize(req: CeremonyInitializeRequest): Promise<CeremonyInitializeResponse>;
+
+    /**
+     * Returns the current ceremony state and SPKI pin.
+     */
+    status(): Promise<CeremonyStatusResponse>;
+
+    /**
+     * Signs a CSR during the initialization ceremony, issuing a HOLDER
+     * certificate (role `so` or `custodian`, which carries no roles)
+     * under SO PIN authorization. A login certificate for a user-facing
+     * account is a separate path ({@link CertClient}), requiring an
+     * authenticated, authorized caller rather than only the SO PIN.
+     *
+     * @param req - Username, SO PIN, CSR and role.
+     */
+    signCSR(req: CeremonySignCSRRequest): Promise<CeremonySignCSRResponse>;
+}
+
+// ---------------------------------------------------------------------------
 // Share-holder administration
 // ---------------------------------------------------------------------------
 
@@ -2222,6 +2278,15 @@ export interface Client {
 
     /** Seal/unseal lifecycle management. */
     readonly seal: SealClient;
+
+    /**
+     * Initialization ceremony: `qrdb init`'s server-side counterpart.
+     * Separate from {@link seal} because it additionally issues the
+     * server's TLS identity and the bootstrap admin's certificate in the
+     * same call; {@link seal.initializeShamir} brings up Shamir custody
+     * ALONE, over a node that already has its admin and TLS identity.
+     */
+    readonly ceremony: CeremonyClient;
 
     /** Share-holder administration: enrolment, listing, rekey and revocation. */
     readonly officers: OfficerClient;
