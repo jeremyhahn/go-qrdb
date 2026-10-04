@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"time"
 
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/pbkdf2"
@@ -106,6 +107,12 @@ type SOAuthenticator struct {
 	// one lockout every SO PIN check on the node is held to.
 	lockout *SOPINLockout
 
+	// lockoutClock overrides the SO PIN lockout's clock (see
+	// WithSOPINLockoutClock). It is read only while building lockout, in
+	// NewSOAuthenticator; nil means the lockout runs on time.Now, as in
+	// production.
+	lockoutClock func() time.Time
+
 	// auditFailure is what VerifySOPIN does when a verification outcome
 	// cannot be recorded (go-qrdb#445).
 	//
@@ -136,6 +143,16 @@ func WithSOAuditFailurePolicy(p audit.FailurePolicy) SOOption {
 	return func(a *SOAuthenticator) { a.auditFailure = p }
 }
 
+// WithSOPINLockoutClock makes the SO PIN lockout read time from clock
+// instead of time.Now. Production never sets it; a test does, so a lockout
+// backoff is judged against the clock the test controls rather than
+// however much wall-clock time actually elapsed between two calls -- which
+// a loaded host can stretch well past a short backoff with no code at
+// fault, turning a deterministic lockout assertion into a flake.
+func WithSOPINLockoutClock(clock func() time.Time) SOOption {
+	return func(a *SOAuthenticator) { a.lockoutClock = clock }
+}
+
 // NewSOAuthenticator constructs an SOAuthenticator. store, auditLogger and
 // logger must all be non-nil.
 //
@@ -151,10 +168,14 @@ func NewSOAuthenticator(store kvstore.KVStore, auditLogger audit.AuditLogger, lo
 	if logger == nil {
 		return nil, ErrNilLogger
 	}
-	a := &SOAuthenticator{store: store, audit: auditLogger, logger: logger, lockout: NewSOPINLockout(nil, WithKnownGoodStore(soKnownGoodStore{store: store}))}
+	a := &SOAuthenticator{store: store, audit: auditLogger, logger: logger}
 	for _, opt := range opts {
 		opt(a)
 	}
+	// Built after the options loop so WithSOPINLockoutClock's clock reaches
+	// the lockout at construction; SOPINLockout has no way to change its
+	// clock once built.
+	a.lockout = NewSOPINLockout(a.lockoutClock, WithKnownGoodStore(soKnownGoodStore{store: store}))
 	return a, nil
 }
 

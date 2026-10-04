@@ -220,10 +220,10 @@ func TestRotateSOPIN_SuccessEmitsAudit(t *testing.T) {
 // Helper
 // ---------------------------------------------------------------------------
 
-func newSOAuth(t *testing.T) *auth.SOAuthenticator {
+func newSOAuth(t *testing.T, opts ...auth.SOOption) *auth.SOAuthenticator {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
-	a, err := auth.NewSOAuthenticator(newSOMemKV(), &soNoopAudit{}, logger)
+	a, err := auth.NewSOAuthenticator(newSOMemKV(), &soNoopAudit{}, logger, opts...)
 	if err != nil {
 		t.Fatalf("NewSOAuthenticator: %v", err)
 	}

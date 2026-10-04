@@ -17,19 +17,47 @@ package auth_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 )
+
+// manualClock is a mutex-protected time.Time a test advances explicitly,
+// used wherever a lockout backoff must be judged against a time the test
+// controls rather than however much wall-clock time a loaded host actually
+// let elapse between two calls.
+type manualClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func newManualClock(start time.Time) *manualClock { return &manualClock{now: start} }
+
+func (c *manualClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *manualClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
 
 // TestSOAuthenticator_VerifySOPINLocksOut: the per-tenant SO PIN is held to
 // the same lockout as the node SO PIN (auth.SOPINLockout): after the free
 // wrong PINs for a tenant, even the right PIN is refused with
 // *auth.SOPINLockedError, without being compared, while another tenant is
-// unaffected.
+// unaffected. The lockout runs on a manualClock the test alone advances, so
+// the assertion is decided by how many calls happened, never by how much
+// wall-clock time a loaded host let elapse between them.
 func TestSOAuthenticator_VerifySOPINLocksOut(t *testing.T) {
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "so", TenantID: "tenant-1"})
-	a := newSOAuth(t)
+	clock := newManualClock(time.Now())
+	a := newSOAuth(t, auth.WithSOPINLockoutClock(clock.Now))
 	for _, tenant := range []string{"tenant-1", "tenant-2"} {
 		if err := a.SetSOPIN(ctx, tenant, []byte("correct-horse-battery-staple")); err != nil {
 			t.Fatalf("SetSOPIN %s: %v", tenant, err)
