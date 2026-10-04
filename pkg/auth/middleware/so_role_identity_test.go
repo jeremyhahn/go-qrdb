@@ -71,11 +71,11 @@ func seededSORoles(t *testing.T) (role.RoleServicer, string) {
 	return roles, so.ID
 }
 
-func newSORealFixture(t *testing.T) *soRealFixture {
+func newSORealFixture(t *testing.T, opts ...auth.SOOption) *soRealFixture {
 	t.Helper()
 	ctx := context.Background()
 	roles, soRoleID := seededSORoles(t)
-	verifier, err := auth.NewSOAuthenticator(kvstore.NewMemoryKVStore(), audit.NewRingBuffer(64), discardLogger())
+	verifier, err := auth.NewSOAuthenticator(kvstore.NewMemoryKVStore(), audit.NewRingBuffer(64), discardLogger(), opts...)
 	if err != nil {
 		t.Fatalf("NewSOAuthenticator: %v", err)
 	}

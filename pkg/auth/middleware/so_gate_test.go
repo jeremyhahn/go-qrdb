@@ -21,7 +21,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -40,11 +42,27 @@ import (
 // seal:rekey, which is in SOPermissions.
 const soGateMethod = "/qrdb.v1.QRDBService/BarrierRekeyStart"
 
-func newTestSOGate(t *testing.T) (*SOGate, string) {
+func newTestSOGate(t *testing.T, opts ...auth.SOOption) (*SOGate, string) {
 	t.Helper()
 	roles, soRoleID := seededSORoles(t)
-	f := newSORealFixture(t)
+	f := newSORealFixture(t, opts...)
 	return NewSOGate(roles, f.verifier, audit.NewRingBuffer(16), audit.FailClosed, nil), soRoleID
+}
+
+// manualClock is a mutex-protected time.Time a test advances explicitly, so
+// a lockout backoff is judged against a time the test controls rather than
+// however much wall-clock time a loaded host let elapse between two calls.
+type manualClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func newManualClock(start time.Time) *manualClock { return &manualClock{now: start} }
+
+func (c *manualClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
 }
 
 func officerCtx(soRoleID string) context.Context {
@@ -341,9 +359,13 @@ func TestSOFactorFromHTTPRequest(t *testing.T) {
 // TestSOGate_LockedOutSOPINIsRateLimited: once a tenant's SO PIN is locked
 // out, the gate answers the right PIN with the lockout itself -- 429 /
 // ResourceExhausted with the delay -- not "invalid SO PIN", which would tell
-// an officer holding a good PIN to fix it.
+// an officer holding a good PIN to fix it. The lockout runs on a
+// manualClock the test alone controls, so the assertion is decided by how
+// many calls happened, never by how much wall-clock time a loaded host let
+// elapse between them.
 func TestSOGate_LockedOutSOPINIsRateLimited(t *testing.T) {
-	gate, soRoleID := newTestSOGate(t)
+	clock := newManualClock(time.Now())
+	gate, soRoleID := newTestSOGate(t, auth.WithSOPINLockoutClock(clock.Now))
 	enforce := func(pinText string) error {
 		return gate.Enforce(WithSOFactor(officerCtx(soRoleID), NewSOFactor([]byte(pinText), true, "")), permission.SealRekey, "r", "a")
 	}
